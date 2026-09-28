@@ -26,14 +26,19 @@ import (
 // formatVersion/projectionID already show how easy that is to forget.
 var schemaID = schemaFieldFingerprint()
 
-// schemaFieldFingerprint walks every field reachable from t (following
-// pointers, slices, arrays, and maps) and returns a short deterministic hash
-// of their json names, paths, and Go types. Unexported fields, and fields
-// tagged json:"-", are excluded, matching what encoding/json (and so
-// DisallowUnknownFields) actually sees. time.Time and interface/`any` values
-// are treated as leaves: their own fields are Go runtime state, not part of
-// the JSON contract, and an `any`-typed destination has no fixed field set
-// for DisallowUnknownFields to enforce in the first place.
+// schemaFieldFingerprint walks every field reachable from transcript.Entry
+// (following pointers, slices, arrays, and maps) and returns a short
+// deterministic hash of their json names, paths, Go types, and full json
+// struct tags (an option change alone, like "count" -> "count,string",
+// decodes a value differently, the same as a renamed field). Unexported
+// fields are excluded unless they are embedded (anonymous) struct types,
+// whose exported fields encoding/json promotes and recurses into regardless
+// of the embedding field's own visibility; fields tagged json:"-" are
+// excluded too. Both match what encoding/json (and so DisallowUnknownFields)
+// actually sees. time.Time and interface/`any` values are treated as leaves:
+// their own fields are Go runtime state, not part of the JSON contract, and
+// an `any`-typed destination has no fixed field set for
+// DisallowUnknownFields to enforce in the first place.
 func schemaFieldFingerprint() string {
 	var fields []string
 	var walk func(prefix string, t reflect.Type, depth int)
@@ -58,11 +63,25 @@ func schemaFieldFingerprint() string {
 				return
 			}
 			for f := range t.Fields() {
-				if f.PkgPath != "" { // unexported: encoding/json ignores it
-					continue
+				if f.PkgPath != "" {
+					// Unexported: encoding/json ignores it, unless it is an
+					// embedded (anonymous) struct type, whose exported
+					// fields it promotes and recurses into regardless of
+					// the embedding field's own visibility.
+					if !f.Anonymous {
+						continue
+					}
+					et := f.Type
+					for et.Kind() == reflect.Pointer {
+						et = et.Elem()
+					}
+					if et.Kind() != reflect.Struct {
+						continue
+					}
 				}
 				name := f.Name
-				if tag, ok := f.Tag.Lookup("json"); ok {
+				tag, hasTag := f.Tag.Lookup("json")
+				if hasTag {
 					n, _, _ := strings.Cut(tag, ",")
 					if n == "-" {
 						continue
@@ -72,7 +91,10 @@ func schemaFieldFingerprint() string {
 					}
 				}
 				path := prefix + "." + name
-				fields = append(fields, path+":"+f.Type.String())
+				// The full tag, not just the name: an option change alone
+				// (e.g. json:"count" -> json:"count,string") changes how a
+				// value decodes just as much as a renamed field does.
+				fields = append(fields, path+":"+f.Type.String()+":"+tag)
 				walk(path, f.Type, depth+1)
 			}
 		default:

@@ -78,7 +78,7 @@ func TestChangedSinceReturnsCreatedAndUpdatedRecords(t *testing.T) {
 
 // TestChangedSinceDoesNotReportATurnWhoseEntryDidNotChangeItsSummary requires
 // stampTurn to log updatedTurn only when an entry actually moves the
-// wire-visible summary (status/lifecycle/started/usage/model): a TOOL_RESULTS
+// wire-visible summary (status/lifecycle/started/usage): a TOOL_RESULTS
 // entry that completes a call with no usage of its own, mid-turn, is not the
 // turn's first entry (so the old code logged it unconditionally) but changes
 // nothing ChangedSince's caller would need to re-fetch.
