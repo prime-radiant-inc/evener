@@ -8,17 +8,20 @@
 // the platform's storage adapter and the authoritative-read/lifecycle
 // orchestration that drives the dispatcher.
 //
-// The assertion anchors on the ownership sentence itself: the list of
-// responsibilities that sentence hands to applications must not name mutation
-// reconciliation. It is an absence check with no positive phrase match, so an
-// unrelated README rewording cannot turn a docs edit red. The README is read
-// through Vite's `?raw` import because the package declares no @types/node, so
-// node:fs is not an option in its tests.
+// The check scans every sentence that names "Applications" and requires none
+// of them to assign mutation reconciliation: an absence check that does not
+// pin the subject wording, so a valid rewording ("Applications retain
+// credentials ...") still passes, while a sentence handing reconciliation back
+// to applications fails. The README is read through Vite's `?raw` import
+// because the package declares no @types/node, so node:fs is not an option in
+// its tests.
 import { expect, test } from "vitest";
 import readme from "./README.md?raw";
 
-test("the README's ownership sentence does not assign mutation reconciliation to applications", () => {
-  const ownership = /Applications own[^.]*\./.exec(readme.replace(/\s+/g, " "));
-  expect(ownership, "the README must still name what applications own").not.toBeNull();
-  expect(ownership?.[0]).not.toMatch(/mutation reconciliation/i);
+test("the README never assigns mutation reconciliation to applications", () => {
+  const applicationsSentences = readme.replace(/\s+/g, " ").match(/[^.]*\bApplications\b[^.]*\./g) ?? [];
+  expect(applicationsSentences.length, "the README must still name what applications own").toBeGreaterThan(0);
+  for (const sentence of applicationsSentences) {
+    expect(sentence).not.toMatch(/mutation reconciliation/i);
+  }
 });
