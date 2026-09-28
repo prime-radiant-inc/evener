@@ -794,16 +794,12 @@ func (m *Manager) hostGateHeldBy(name string, holder hostops.Holder) bool {
 	return m.hostGateEntryFor(name, holder) != nil
 }
 
-// supervisesChannel reports whether a live reconnect loop already owns ch.
-func (m *Manager) supervisesChannel(name string, ch *Channel) bool {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	for loop := range m.supervisors[name] {
-		if loop.ch == ch {
-			return true
-		}
-	}
-	return false
+// supervisesChannel reports whether a live reconnect loop already owns ch. The
+// mark lives on the channel and is maintained by the loop that owns it
+// (startSupervise sets it, the loop's exit clears it), so the answer cannot go
+// stale behind a loop whose channel changed.
+func (m *Manager) supervisesChannel(ch *Channel) bool {
+	return ch != nil && ch.supervised.Load()
 }
 
 // attachHandoff builds the caller's post-verification handoff for ch: under the
@@ -822,7 +818,7 @@ func (m *Manager) attachHandoff(host hostreg.Host, ch *Channel, holder hostops.H
 			if entry == nil {
 				return
 			}
-			if m.supervisesChannel(host.Name, ch) {
+			if m.supervisesChannel(ch) {
 				// An existing loop owns this channel; a second would only race
 				// it to the same reconnect.
 				result = true
@@ -851,7 +847,12 @@ func (m *Manager) attachHandoff(host hostreg.Host, ch *Channel, holder hostops.H
 // The caller presents the holder its hold registered (the operation's record
 // id): a gate held by some other holder is not the caller's hold, so a call
 // presenting a different holder refuses before any dial rather than publish
-// under another holder's exclusion.
+// under another holder's exclusion. explicit distinguishes the two arms: the
+// first attach (true) keeps Ensure's explicit-attach semantics, the
+// first-attach bootstrap included; the restart's reattach (false) is
+// reconnect-shaped — the restart already produced the serving hub, and a
+// reconnect never starts one (Ensure's supervisor path passes false for the
+// same reason).
 //
 // A predecessor mapped under the name (the channel a restart dropped when the
 // operation reattaches) is replaced and reaped here, with its outstanding
@@ -863,7 +864,7 @@ func (m *Manager) attachHandoff(host hostreg.Host, ch *Channel, holder hostops.H
 // once — a repeat reports the first result — and it refuses when the gate is no
 // longer held by the caller's own holder, so a released or stolen hold never
 // starts a supervisor outside the caller's exclusion.
-func (m *Manager) AttachUnderGate(ctx context.Context, host hostreg.Host, holder hostops.Holder) (*Channel, func() bool, error) {
+func (m *Manager) AttachUnderGate(ctx context.Context, host hostreg.Host, holder hostops.Holder, explicit bool) (*Channel, func() bool, error) {
 	name := strings.TrimSpace(host.Name)
 	if name == "" {
 		return nil, nil, errors.New("sshconn: an attach-under-gate needs a host name")
@@ -902,7 +903,7 @@ func (m *Manager) AttachUnderGate(ctx context.Context, host hostreg.Host, holder
 	defer cancel()
 	stopClose := context.AfterFunc(m.baseCtx, cancel)
 	defer stopClose()
-	ch, err := m.ensureOnce(attemptCtx, host, true)
+	ch, err := m.ensureOnce(attemptCtx, host, explicit)
 	if err != nil {
 		if m.baseCtx.Err() != nil && !isTerminal(err) {
 			// Close canceling the attempt, not the host, is why.
@@ -914,6 +915,15 @@ func (m *Manager) AttachUnderGate(ctx context.Context, host hostreg.Host, holder
 		// own events (Close emits the Detached; a canceled caller emits
 		// nothing), exactly as Ensure suppresses them there.
 		if m.baseCtx.Err() == nil && ctx.Err() == nil {
+			if isTerminal(err) && stale == nil && !errors.Is(err, ErrManagerClosed) {
+				// The host row's last-attach-error surfaces EventFailed; with no
+				// predecessor to own the terminal outcome, this attach is where
+				// the terminal cause is announced, exactly as Ensure announces
+				// it. A reattach with a predecessor keeps the predecessor's
+				// supervisor (it must still reconnect), so no terminal event is
+				// claimed for it here.
+				m.failedEvent(name, err)
+			}
 			m.stateEvent(name, StateDisconnected)
 		}
 		return nil, nil, err
@@ -2365,7 +2375,7 @@ func (m *Manager) supervise(ctx context.Context, host hostreg.Host, ch *Channel,
 // predecessor still parked in backoff instead of leaking it.
 func (m *Manager) startSupervise(host hostreg.Host, ch *Channel, lock *hostLockGate) bool {
 	ctx, cancel := context.WithCancel(m.baseCtx)
-	loop := &supervisorLoop{host: host, ch: ch, cancel: cancel}
+	loop := &supervisorLoop{host: host, cancel: cancel}
 	m.mu.Lock()
 	if m.closed {
 		// Close already ran. A supervisor started now would only race its Wait, and
@@ -2378,6 +2388,12 @@ func (m *Manager) startSupervise(host hostreg.Host, ch *Channel, lock *hostLockG
 		m.supervisors[host.Name] = map[*supervisorLoop]struct{}{}
 	}
 	m.supervisors[host.Name][loop] = struct{}{}
+	// Supervision is tracked on the channel itself, not on the loop's
+	// start-time copy: a channel is supervised exactly while a loop owns it,
+	// and the loop clears the mark as it deregisters. An attach-handoff asks
+	// the channel, so it cannot miss a loop that has moved past the state it
+	// started with.
+	ch.supervised.Store(true)
 	// The supervisor goroutine outlives this call and keeps gating on lock, so
 	// it takes its own live-user reference here — under m.mu, before the
 	// goroutine exists, and while the caller's reference still pins the entry
@@ -2402,6 +2418,7 @@ func (m *Manager) startSupervise(host hostreg.Host, ch *Channel, lock *hostLockG
 				}
 			}
 			m.mu.Unlock()
+			ch.supervised.Store(false)
 			cancel()
 			// The loop no longer touches the gate, so its reference goes with
 			// it — the last one out drops the entry.
@@ -2424,11 +2441,7 @@ type supervisorLoop struct {
 	// host is the registration this loop reconnects. The teardown fences read
 	// it, so a stale removal cannot cancel the reconnect of a host that was
 	// re-added under the same name after the removal looked.
-	host hostreg.Host
-	// ch is the channel this loop owns. It lets an attach-handoff ask whether a
-	// channel already has a supervisor instead of starting a second loop that
-	// would only race the first to the same reconnect.
-	ch     *Channel
+	host   hostreg.Host
 	cancel context.CancelFunc
 }
 
@@ -3285,6 +3298,11 @@ type Channel struct {
 	closeOnce sync.Once
 	closeErr  error
 	stopped   chan struct{}
+	// supervised reports whether a live reconnect loop owns this channel: set
+	// by startSupervise when the loop registers, cleared by the loop as it
+	// exits. An attach-handoff reads it to avoid starting a second loop for a
+	// channel that already has one.
+	supervised atomic.Bool
 }
 
 // Client returns the initialized AppWire client over this channel.

@@ -827,7 +827,7 @@ func (m *hubHostManager) runOperationWorker(ctx context.Context, work opWork) {
 		// on any earlier exit (a failed probe or restart must not strand it).
 		if _, attached := m.attachedClient(work.entry); !attached {
 			h, err := m.attachOperationChannel(ctx, id, work.entry,
-				"attach-first: the host had no usable attached channel, so the restart attaches it under the held host gate")
+				"attach-first: the host had no usable attached channel, so the restart attaches it under the held host gate", true)
 			if h != nil {
 				// A published channel keeps its handoff even when the call
 				// reports a failure, so it is never left unsupervised.
@@ -872,7 +872,7 @@ func (m *hubHostManager) runOperationWorker(ctx context.Context, work opWork) {
 	// while holding the gate is a deadlock: the gate is non-reentrant.
 	if restartFollows {
 		h, err := m.attachOperationChannel(ctx, id, work.entry,
-			"restart verified; reattaching the host under the held host gate")
+			"restart verified; reattaching the host under the held host gate", false)
 		if h != nil {
 			// A published replacement keeps its handoff even when the call
 			// reports a failure, so it is never left unsupervised.
@@ -1028,7 +1028,7 @@ func (m *hubHostManager) refreshOperation(ctx context.Context, id string, work o
 // the work to the gate-aware primitive, which never re-acquires the
 // non-reentrant gate. The returned handoff starts the channel's supervisor
 // under the same held gate after the post-operation verification.
-func (m *hubHostManager) attachOperationChannel(ctx context.Context, id string, entry hostreg.Host, progress string) (func() bool, error) {
+func (m *hubHostManager) attachOperationChannel(ctx context.Context, id string, entry hostreg.Host, progress string, explicit bool) (func() bool, error) {
 	m.recordProgress(id, progress)
 	if m.cfg.attachUnderGate == nil {
 		// No manager owns channels here (tests, embedders): there is nothing to
@@ -1046,7 +1046,7 @@ func (m *hubHostManager) attachOperationChannel(ctx context.Context, id string, 
 	if err := m.cfg.gate.HoldAs(entry.Name, holder); err != nil {
 		return nil, fmt.Errorf("the operation holder could not be published on host %q's gate, so the attach under it cannot run: %w", entry.Name, err)
 	}
-	handoff, err := m.cfg.attachUnderGate(ctx, entry, holder)
+	handoff, err := m.cfg.attachUnderGate(ctx, entry, holder, explicit)
 	if err != nil {
 		return nil, fmt.Errorf("the operation-owned attach for host %q failed: %w", entry.Name, err)
 	}

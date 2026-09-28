@@ -9,6 +9,7 @@ package sshconn
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -67,7 +68,7 @@ func TestAttachUnderGatePublishesUnderTheHeldGateAndSuppressesTheSupervisor(t *t
 	}
 	defer release()
 
-	ch, handoff, err := m.AttachUnderGate(context.Background(), host, attachUnderGateCaller())
+	ch, handoff, err := m.AttachUnderGate(context.Background(), host, attachUnderGateCaller(), true)
 	if err != nil {
 		t.Fatalf("AttachUnderGate under the held gate: %v", err)
 	}
@@ -124,7 +125,7 @@ func TestAttachUnderGateRetiresTheLostPredecessorAndPairsItsEvents(t *testing.T)
 	defer release()
 	first.markLost()
 
-	replacement, handoff, err := m.AttachUnderGate(context.Background(), host, attachUnderGateCaller())
+	replacement, handoff, err := m.AttachUnderGate(context.Background(), host, attachUnderGateCaller(), true)
 	if err != nil {
 		t.Fatalf("AttachUnderGate over the lost predecessor: %v", err)
 	}
@@ -180,7 +181,7 @@ func TestAttachUnderGateHandoffStartsTheSupervisorThatReconnectsAfterTheGate(t *
 		t.Fatalf("TryAcquire: %v", err)
 	}
 	first.markLost()
-	replacement, handoff, err := m.AttachUnderGate(context.Background(), host, attachUnderGateCaller())
+	replacement, handoff, err := m.AttachUnderGate(context.Background(), host, attachUnderGateCaller(), true)
 	if err != nil {
 		t.Fatalf("AttachUnderGate: %v", err)
 	}
@@ -213,7 +214,7 @@ func TestAttachUnderGateHandoffStartsTheSupervisorThatReconnectsAfterTheGate(t *
 func TestAttachUnderGateRefusesWithoutTheHeldGate(t *testing.T) {
 	m, fr, host := attachUnderGateManager(t, Options{})
 
-	_, _, err := m.AttachUnderGate(context.Background(), host, attachUnderGateCaller())
+	_, _, err := m.AttachUnderGate(context.Background(), host, attachUnderGateCaller(), true)
 	if !errors.Is(err, hostops.ErrGateNotHeld) {
 		t.Fatalf("AttachUnderGate without the gate = %v, want hostops.ErrGateNotHeld", err)
 	}
@@ -243,7 +244,7 @@ func TestAttachUnderGateRefusesAStaleRegistration(t *testing.T) {
 		t.Fatalf("registry Add: %v", err)
 	}
 
-	_, _, err = m.AttachUnderGate(context.Background(), host, attachUnderGateCaller())
+	_, _, err = m.AttachUnderGate(context.Background(), host, attachUnderGateCaller(), true)
 	if !errors.Is(err, ErrHostNotFound) {
 		t.Fatalf("AttachUnderGate with a stale registration = %v, want ErrHostNotFound", err)
 	}
@@ -265,7 +266,7 @@ func TestAttachUnderGateRequiresTheCallersOwnHold(t *testing.T) {
 	}
 	defer otherRelease()
 
-	_, _, err = m.AttachUnderGate(context.Background(), host, attachUnderGateCaller())
+	_, _, err = m.AttachUnderGate(context.Background(), host, attachUnderGateCaller(), true)
 	if !errors.Is(err, hostops.ErrGateNotHeld) {
 		t.Fatalf("AttachUnderGate under another holder = %v, want hostops.ErrGateNotHeld", err)
 	}
@@ -306,7 +307,7 @@ func TestAttachUnderGateReapsAndNeverAnnouncesADropAfterPublish(t *testing.T) {
 	}
 	defer release()
 
-	ch, handoff, err := m.AttachUnderGate(context.Background(), stamped, attachUnderGateCaller())
+	ch, handoff, err := m.AttachUnderGate(context.Background(), stamped, attachUnderGateCaller(), true)
 	if !errors.Is(err, ErrSSHStart) {
 		t.Fatalf("AttachUnderGate with a drop after publish = %v, want the dropped-channel refusal", err)
 	}
@@ -349,7 +350,7 @@ func TestAttachUnderGateLiveChannelHandoffEnsuresSupervision(t *testing.T) {
 
 	// The first attach publishes the channel and deliberately starts no
 	// supervisor; its handoff is not taken.
-	first, _, err := m.AttachUnderGate(context.Background(), host, attachUnderGateCaller())
+	first, _, err := m.AttachUnderGate(context.Background(), host, attachUnderGateCaller(), true)
 	if err != nil {
 		t.Fatalf("first AttachUnderGate: %v", err)
 	}
@@ -360,7 +361,7 @@ func TestAttachUnderGateLiveChannelHandoffEnsuresSupervision(t *testing.T) {
 	// The restart's channel drop has not been observed yet: the second call
 	// finds the channel live. Its handoff must still give the channel a
 	// supervisor.
-	second, handoff, err := m.AttachUnderGate(context.Background(), host, attachUnderGateCaller())
+	second, handoff, err := m.AttachUnderGate(context.Background(), host, attachUnderGateCaller(), true)
 	if err != nil {
 		t.Fatalf("second AttachUnderGate: %v", err)
 	}
@@ -388,7 +389,7 @@ func TestAttachUnderGateHandoffRefusesAfterTheHolderChanged(t *testing.T) {
 	if err != nil {
 		t.Fatalf("TryAcquire: %v", err)
 	}
-	_, handoff, err := m.AttachUnderGate(context.Background(), host, attachUnderGateCaller())
+	_, handoff, err := m.AttachUnderGate(context.Background(), host, attachUnderGateCaller(), true)
 	if err != nil {
 		t.Fatalf("AttachUnderGate: %v", err)
 	}
@@ -427,7 +428,7 @@ func TestAttachUnderGateLiveChannelWithASupervisorDoesNotDoubleSupervise(t *test
 	}
 	defer release()
 
-	ch, handoff, err := m.AttachUnderGate(context.Background(), host, attachUnderGateCaller())
+	ch, handoff, err := m.AttachUnderGate(context.Background(), host, attachUnderGateCaller(), true)
 	if err != nil {
 		t.Fatalf("AttachUnderGate: %v", err)
 	}
@@ -450,7 +451,7 @@ func TestAttachUnderGateRefusesAClosedManager(t *testing.T) {
 	if err := m.Close(); err != nil {
 		t.Fatalf("Close: %v", err)
 	}
-	_, _, err := m.AttachUnderGate(context.Background(), host, attachUnderGateCaller())
+	_, _, err := m.AttachUnderGate(context.Background(), host, attachUnderGateCaller(), true)
 	if !errors.Is(err, ErrManagerClosed) {
 		t.Fatalf("AttachUnderGate on a closed manager = %v, want ErrManagerClosed", err)
 	}
@@ -491,7 +492,7 @@ func TestAttachUnderGateEmitsDisconnectedOnAnAttachFailure(t *testing.T) {
 	}
 	defer release()
 
-	if _, _, err := m.AttachUnderGate(context.Background(), stamped, attachUnderGateCaller()); err == nil {
+	if _, _, err := m.AttachUnderGate(context.Background(), stamped, attachUnderGateCaller(), true); err == nil {
 		t.Fatal("AttachUnderGate succeeded without a runnable bridge")
 	}
 	mu.Lock()
@@ -503,5 +504,89 @@ func TestAttachUnderGateEmitsDisconnectedOnAnAttachFailure(t *testing.T) {
 	mu.Unlock()
 	if last != StateDisconnected {
 		t.Fatalf("last state after a failed attach = %q, want %q (states: %v)", last, StateDisconnected, snapshot)
+	}
+}
+
+// TestAttachUnderGateExplicitControlsTheBootstrap pins the two arms' Ensure
+// semantics: explicit=true keeps the first-attach bootstrap (nothing answered
+// health, so the ladder would start a hub), while the reconnect-shaped
+// explicit=false never issues a start command — a reattach after a restart
+// must not start a hub of its own.
+func TestAttachUnderGateExplicitControlsTheBootstrap(t *testing.T) {
+	host := attachUnderGateHost()
+	fr := &fakeRunner{
+		// Nothing answers the health probe: an explicit attach would take the
+		// first-attach bootstrap path.
+		runFn:   cannedRun(map[string][]byte{"api/health": nil}),
+		startFn: goodStartFn(t),
+	}
+	m := newTestManager(t, testRegistry(t, host), fr, Options{controllerVersionOverride: "dev"})
+	stamped, ok := m.reg.Get(host.Name)
+	if !ok {
+		t.Fatalf("the test registry holds no %q", host.Name)
+	}
+	release, err := m.TryAcquire(host.Name, attachUnderGateCaller())
+	if err != nil {
+		t.Fatalf("TryAcquire: %v", err)
+	}
+	defer release()
+
+	if _, _, err := m.AttachUnderGate(context.Background(), stamped, attachUnderGateCaller(), false); err != nil {
+		t.Fatalf("AttachUnderGate(explicit=false): %v", err)
+	}
+	for _, argv := range fr.recordedRuns() {
+		joined := strings.Join(argv, " ")
+		for _, bootstrap := range []string{"systemctl", "launchctl", "nohup", "lsof", "ss -"} {
+			if strings.Contains(joined, bootstrap) {
+				t.Fatalf("explicit=false issued a bootstrap command (%q): %v", bootstrap, argv)
+			}
+		}
+	}
+}
+
+// TestAttachUnderGateEmitsFailedOnATerminalAttachFailure pins the terminal
+// event: with no predecessor to own the outcome, a terminal attach failure is
+// announced as EventFailed (the host row's last-attach-error source) before the
+// disconnected state, exactly as Ensure announces it.
+func TestAttachUnderGateEmitsFailedOnATerminalAttachFailure(t *testing.T) {
+	host := attachUnderGateHost()
+	var mu sync.Mutex
+	var failedErr error
+	fr := &fakeRunner{
+		// The host speaks another protocol: the attach ladder's terminal
+		// ErrProtocolIncompatible.
+		runFn:   cannedRun(map[string][]byte{"launch-check": []byte(`{"protocol":"evener-appwire-v5","version":"dev","launch_flags":["api-log"]}`)}),
+		startFn: goodStartFn(t),
+	}
+	m := newTestManager(t, testRegistry(t, host), fr, Options{
+		controllerVersionOverride: "dev",
+		OnEvent: func(ev Event) {
+			if ev.Kind != EventFailed || ev.Host != host.Name {
+				return
+			}
+			mu.Lock()
+			failedErr = ev.Err
+			mu.Unlock()
+		},
+	})
+	stamped, ok := m.reg.Get(host.Name)
+	if !ok {
+		t.Fatalf("the test registry holds no %q", host.Name)
+	}
+	release, err := m.TryAcquire(host.Name, attachUnderGateCaller())
+	if err != nil {
+		t.Fatalf("TryAcquire: %v", err)
+	}
+	defer release()
+
+	_, _, err = m.AttachUnderGate(context.Background(), stamped, attachUnderGateCaller(), true)
+	if !errors.Is(err, ErrProtocolIncompatible) {
+		t.Fatalf("AttachUnderGate = %v, want ErrProtocolIncompatible", err)
+	}
+	mu.Lock()
+	got := failedErr
+	mu.Unlock()
+	if got == nil {
+		t.Fatal("a terminal attach failure emitted no EventFailed")
 	}
 }

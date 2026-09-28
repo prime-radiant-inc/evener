@@ -161,7 +161,7 @@ type deploySeams struct {
 	// attachUnderGate is the operation-owned attach/reattach seam (§6 seam (d)).
 	// Nil takes a handoff-only stub: no manager owns channels in these tests, so
 	// the worker's reattach is a no-op unless a test scripts it.
-	attachUnderGate func(ctx context.Context, entry hostreg.Host, holder hostops.Holder) (func() bool, error)
+	attachUnderGate func(ctx context.Context, entry hostreg.Host, holder hostops.Holder, explicit bool) (func() bool, error)
 	lastKnown       func(entry hostreg.Host, probe hubcore.HostRuntimeProbe, facts hubcore.HostPlanFacts) error
 	counters        *deployCounters
 }
@@ -225,7 +225,7 @@ func deployTestHub(t *testing.T, configPath string, entries []hostreg.Host, seam
 	}
 	attachUnderGate := seams.attachUnderGate
 	if attachUnderGate == nil {
-		attachUnderGate = func(context.Context, hostreg.Host, hostops.Holder) (func() bool, error) {
+		attachUnderGate = func(context.Context, hostreg.Host, hostops.Holder, bool) (func() bool, error) {
 			return func() bool { return true }, nil
 		}
 	}
@@ -892,8 +892,11 @@ func TestHostDeployPlannedRestartReattachesUnderTheHeldGate(t *testing.T) {
 			restartSawGateHeld.Store(gateHeldBy(m, entry.Name))
 			return nil
 		},
-		attachUnderGate: func(_ context.Context, got hostreg.Host, holder hostops.Holder) (func() bool, error) {
+		attachUnderGate: func(_ context.Context, got hostreg.Host, holder hostops.Holder, explicit bool) (func() bool, error) {
 			reattachSawGateHeld.Store(gateHeldBy(m, entry.Name))
+			if explicit {
+				t.Error("the post-restart reattach ran with explicit=true; a reattach must never bootstrap a hub")
+			}
 			live, ok := m.liveHost(got.Name)
 			if !ok || !hostreg.SameRegistration(live, got) {
 				return nil, fmt.Errorf("the reattach ran for %q/%d, not the live registration %+v", got.Name, got.Generation, live)
@@ -970,8 +973,14 @@ func TestHostRestartUnattachedAttachFirstsUnderTheHeldGate(t *testing.T) {
 			attachedState.Store(false) // the restart drops the channel
 			return nil
 		},
-		attachUnderGate: func(_ context.Context, _ hostreg.Host, _ hostops.Holder) (func() bool, error) {
+		attachUnderGate: func(_ context.Context, _ hostreg.Host, _ hostops.Holder, explicit bool) (func() bool, error) {
 			call := attachCalls.Add(1)
+			if call == 1 && !explicit {
+				t.Error("the attach-first arm ran with explicit=false; a first attach keeps the bootstrap semantics")
+			}
+			if call == 2 && explicit {
+				t.Error("the post-restart reattach ran with explicit=true; a reattach must never bootstrap a hub")
+			}
 			if !gateHeldBy(m, entry.Name) {
 				attachGateFree.Store(true)
 			}
@@ -1040,10 +1049,16 @@ func TestHostRestartDroppedChannelAttachFirstsUnderTheHeldGate(t *testing.T) {
 			attachState.Store(false) // the restart drops the channel
 			return nil
 		},
-		attachUnderGate: func(_ context.Context, _ hostreg.Host, _ hostops.Holder) (func() bool, error) {
+		attachUnderGate: func(_ context.Context, _ hostreg.Host, _ hostops.Holder, explicit bool) (func() bool, error) {
 			call := attachCalls.Add(1)
 			if call == 1 {
 				attachFirstCalls.Add(1)
+			}
+			if call == 1 && !explicit {
+				t.Error("the attach-first arm ran with explicit=false; a first attach keeps the bootstrap semantics")
+			}
+			if call == 2 && explicit {
+				t.Error("the post-restart reattach ran with explicit=true; a reattach must never bootstrap a hub")
 			}
 			attachState.Store(true)
 			return func() bool { return true }, nil
@@ -1094,7 +1109,7 @@ func TestHostRestartAttachFirstHandsOffWhenTheRestartFails(t *testing.T) {
 		restart: func(context.Context, hostreg.Host, sshconn.Preflight) error {
 			return errors.New("the restart command failed before replacing the process")
 		},
-		attachUnderGate: func(_ context.Context, _ hostreg.Host, _ hostops.Holder) (func() bool, error) {
+		attachUnderGate: func(_ context.Context, _ hostreg.Host, _ hostops.Holder, explicit bool) (func() bool, error) {
 			attachedState.Store(true)
 			return func() bool {
 				handoffSawGateHeld.Store(gateHeldBy(m, entry.Name))
@@ -1237,7 +1252,10 @@ func TestHostRestartRestoresTheHolderAfterANestedEnsureDeploy(t *testing.T) {
 	var store *hostops.Store
 	m, store, _ = deployTestHub(t, configPath, []hostreg.Host{entry}, deploySeams{
 		probe: restartProbeScript(t, "dev", "dev", before, after),
-		attachUnderGate: func(_ context.Context, got hostreg.Host, holder hostops.Holder) (func() bool, error) {
+		attachUnderGate: func(_ context.Context, got hostreg.Host, holder hostops.Holder, explicit bool) (func() bool, error) {
+			if explicit {
+				t.Error("the post-restart reattach ran with explicit=true; a reattach must never bootstrap a hub")
+			}
 			// The attach ladder ran an Ensure-triggered deploy: its recorder
 			// promoted the gate to the inner operation, and its finish restored
 			// the manager holder, exactly as m.EnsureDeploy/finishEnsureDeploy
@@ -1291,7 +1309,7 @@ func TestHostRestartRestoresTheOperationHolderBeforeTheAttach(t *testing.T) {
 	var store *hostops.Store
 	m, store, _ = deployTestHub(t, configPath, []hostreg.Host{entry}, deploySeams{
 		probe: restartProbeScript(t, "dev", "dev", before, after),
-		attachUnderGate: func(_ context.Context, _ hostreg.Host, holder hostops.Holder) (func() bool, error) {
+		attachUnderGate: func(_ context.Context, _ hostreg.Host, holder hostops.Holder, explicit bool) (func() bool, error) {
 			// The primitive refuses unless the gate carries the presented
 			// holder, so standing that check in here makes a lost promotion
 			// observably fatal without it.
@@ -1367,7 +1385,10 @@ func TestHostRestartKeepsThePublishedChannelsHandoffWhenTheHolderRestoreFails(t 
 	var store *hostops.Store
 	m, store, _ = deployTestHub(t, configPath, []hostreg.Host{entry}, deploySeams{
 		probe: restartProbeScript(t, "dev", "dev", before, after),
-		attachUnderGate: func(_ context.Context, _ hostreg.Host, _ hostops.Holder) (func() bool, error) {
+		attachUnderGate: func(_ context.Context, _ hostreg.Host, _ hostops.Holder, explicit bool) (func() bool, error) {
+			if explicit {
+				t.Error("the post-restart reattach ran with explicit=true; a reattach must never bootstrap a hub")
+			}
 			return func() bool {
 				handoffCalls.Add(1)
 				return true
@@ -1459,7 +1480,7 @@ func TestHostRestartAttachFirstProbesTheFreshlyAttachedClient(t *testing.T) {
 			attachState.Store(false) // the restart drops the channel
 			return nil
 		},
-		attachUnderGate: func(_ context.Context, _ hostreg.Host, _ hostops.Holder) (func() bool, error) {
+		attachUnderGate: func(_ context.Context, _ hostreg.Host, _ hostops.Holder, explicit bool) (func() bool, error) {
 			published.Store(&appwire.Client{})
 			attachState.Store(true)
 			return func() bool { return true }, nil
