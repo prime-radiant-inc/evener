@@ -1,10 +1,12 @@
 package hub
 
 import (
+	"errors"
 	"fmt"
 	"maps"
 	"unicode/utf8"
 
+	"primeradiant.com/evener/cmd/evener-hub/internal/hostfence"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hostops"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hostreg"
 )
@@ -40,6 +42,40 @@ type HostRecord struct {
 	// PresenceEpoch is the name's presence counter (spec §1): advanced on
 	// every add, remove, re-add and expiry purge.
 	PresenceEpoch uint64 `toml:"presence_epoch"`
+	// BootstrapAttempted is crash-fencing §6:133's durable bootstrap-attempt
+	// fence: a first-contact delivery started, written in its own atomic
+	// hub.toml write before the attempt's first remote side effect. It is never
+	// cleared — a host carrying it without HelperInstalled takes the fenced path
+	// on every later attempt (§6:137).
+	BootstrapAttempted bool `toml:"bootstrap_attempted,omitempty"`
+	// HelperInstalled is §6:137's converged flag: the pinned fencing helper was
+	// delivered to the host and the finalizing atomic write recorded it.
+	HelperInstalled bool `toml:"helper_installed,omitempty"`
+	// HelperVersion is §6:131's "prior helper version record": the helper
+	// version the finalize recorded. Zero means no version record. It is present
+	// exactly with HelperInstalled.
+	HelperVersion uint64 `toml:"helper_version,omitempty"`
+}
+
+// provisioning projects the record's bootstrap half (crash-fencing §6) into the
+// fencing package's shape. It is the one conversion between the file's flat
+// record fields and the bootstrap rule.
+func (r HostRecord) provisioning() hostfence.Provisioning {
+	return hostfence.Provisioning{
+		AttemptFenced:   r.BootstrapAttempted,
+		HelperInstalled: r.HelperInstalled,
+		HelperVersion:   r.HelperVersion,
+	}
+}
+
+// withProvisioning returns r carrying p's bootstrap flags, leaving the identity
+// fields alone: the record machinery owns the identity, the bootstrap flow owns
+// the flags.
+func (r HostRecord) withProvisioning(p hostfence.Provisioning) HostRecord {
+	r.BootstrapAttempted = p.AttemptFenced
+	r.HelperInstalled = p.HelperInstalled
+	r.HelperVersion = p.HelperVersion
+	return r
 }
 
 // HostGeneration is one [generations."<name>"] table: the per-name generation
@@ -108,6 +144,18 @@ func hostGenerationFor(entry hostreg.Host) HostGeneration {
 		IncarnationID: entry.IncarnationID,
 		PresenceEpoch: entry.PresenceEpoch,
 	}
+}
+
+// hostProvisioningRecords projects the file's per-host records onto the
+// bootstrap record set the store carries (crash-fencing §6:131-137). A name
+// whose record carries no flag contributes the zero value, so the store's set
+// is exactly the file's flags.
+func hostProvisioningRecords(records map[string]HostRecord) map[string]hostfence.Provisioning {
+	provisioning := make(map[string]hostfence.Provisioning, len(records))
+	for name, record := range records {
+		provisioning[name] = record.provisioning()
+	}
+	return provisioning
 }
 
 // resolveHostIdentity maps the records a hub.toml file carries onto the
@@ -231,7 +279,7 @@ func fileOnlyHostEntries(cfg Config, known, entries []hostreg.Host) []HostConfig
 // eviction, a live-name purge): their file generations entry is superseded by
 // the advanced mark the derivation is writing, so the older copy must not ride
 // back in through preservation.
-func hubTOMLRecordTables(cfg Config, entries, known []hostreg.Host, highWater map[string]HostGeneration, purgedNames map[string]struct{}) (map[string]HostRecord, map[string]HostGeneration) {
+func hubTOMLRecordTables(cfg Config, entries, known []hostreg.Host, highWater map[string]HostGeneration, provisioning map[string]hostfence.Provisioning, purgedNames map[string]struct{}) (map[string]HostRecord, map[string]HostGeneration) {
 	preserve := known != nil
 	owned := make(map[string]struct{}, len(known)+len(entries))
 	if preserve {
@@ -243,6 +291,20 @@ func hubTOMLRecordTables(cfg Config, entries, known []hostreg.Host, highWater ma
 		}
 	}
 	records, generations := hostFileRecordSet(entries, highWater)
+	// The bootstrap flags (crash-fencing §6) ride the derived record: the write
+	// carries the store's projection where it has one, and otherwise preserves
+	// the flag the file already holds for the same name. The derived record
+	// mints only the identity triple, so without this overlay an unrelated
+	// rewrite would drop the attempt fence or the helperInstalled convergence.
+	for name, record := range records {
+		if p, ok := provisioning[name]; ok {
+			records[name] = record.withProvisioning(p)
+			continue
+		}
+		if fileRecord, ok := cfg.HostRecords[name]; ok {
+			records[name] = record.withProvisioning(fileRecord.provisioning())
+		}
+	}
 	if preserve {
 		for name, record := range cfg.HostRecords {
 			if _, ok := owned[name]; ok {
@@ -282,6 +344,9 @@ func validateHostRecords(records map[string]HostRecord, generations map[string]H
 			}
 			return fmt.Errorf("host_records[%q] carries an incomplete record (%q, %d)", name, record.IncarnationID, record.PresenceEpoch)
 		}
+		if err := validateHostProvisioning(record); err != nil {
+			return fmt.Errorf("host_records[%q]: %w", name, err)
+		}
 	}
 	for name, mark := range generations {
 		if !mark.complete() {
@@ -306,6 +371,25 @@ func validateHostRecords(records map[string]HostRecord, generations map[string]H
 			return fmt.Errorf("host %q carries two presence epochs: host_records has %d, generations has %d",
 				name, record.PresenceEpoch, mark.PresenceEpoch)
 		}
+	}
+	return nil
+}
+
+// validateHostProvisioning checks the bootstrap flags crash-fencing §6 puts on
+// the machine record. The flag pair is written whole by the finalizing write
+// (§6:137) and the attempt fence always precedes it (§6:133), so a version
+// record without the installed flag, an installed flag without a version
+// record, or an installed flag without its attempt fence is a shape no writer
+// of this build emits — a reserved value whose shape cannot be decoded, refused
+// loudly rather than silently reinterpreted on the next rewrite.
+func validateHostProvisioning(record HostRecord) error {
+	switch {
+	case record.HelperVersion != 0 && !record.HelperInstalled:
+		return fmt.Errorf("carries a helper_version record (%d) without helper_installed", record.HelperVersion)
+	case record.HelperInstalled && record.HelperVersion == 0:
+		return errors.New("carries helper_installed without a helper_version record")
+	case record.HelperInstalled && !record.BootstrapAttempted:
+		return errors.New("carries helper_installed without the bootstrap-attempt fence")
 	}
 	return nil
 }
@@ -460,6 +544,79 @@ func hubTOMLStagedReceiptTables(cfg Config, entries, known []hostreg.Host, marke
 		out[name] = marker
 	}
 	return out
+}
+
+// hostBootstrapStore is hostfence.BootstrapStore over the manager's hub.toml
+// record machinery: the read of one host's bootstrap record and the two atomic
+// writes crash-fencing §6:133/:137 pins — the attempt fence in its own write
+// before the attempt's first remote side effect, and the finalizing write that
+// converges helperInstalled with the delivered version. Each write goes through
+// the record machinery's one derive-then-install path, so the file and the
+// store cannot disagree about the flags.
+//
+// BOUNDARY (S21): the first-contact caller that drives hostfence.Bootstrap —
+// the attach/Ensure wiring that runs the flow on a host's first contact — is
+// the deploy-pipeline surface's later slice. This slice lands the record
+// machinery, the fence and the gate the flow needs; until that caller lands,
+// bootstrapStore is consumed by the tests that pin both crash windows.
+type hostBootstrapStore struct{ m *hubHostManager }
+
+// bootstrapStore returns the bootstrap record seam the first-contact flow
+// writes through.
+func (m *hubHostManager) bootstrapStore() hostfence.BootstrapStore { return hostBootstrapStore{m: m} }
+
+// Provisioning reads the host's current bootstrap record.
+func (s hostBootstrapStore) Provisioning(host string) (hostfence.Provisioning, error) {
+	s.m.cfg.mu.Lock()
+	defer s.m.cfg.mu.Unlock()
+	return s.m.cfg.store.provisioningFor(host), nil
+}
+
+// PersistAttemptFence writes §6:133's durable bootstrap-attempt fence in its
+// own atomic hub.toml write.
+func (s hostBootstrapStore) PersistAttemptFence(host string) (hostfence.Provisioning, error) {
+	return s.m.persistProvisioning(host, func(p hostfence.Provisioning) hostfence.Provisioning {
+		p.AttemptFenced = true
+		return p
+	})
+}
+
+// FinalizeBootstrap converges helperInstalled with the delivered version in the
+// finalizing atomic write (§6:137).
+func (s hostBootstrapStore) FinalizeBootstrap(host string, helperVersion uint64) (hostfence.Provisioning, error) {
+	return s.m.persistProvisioning(host, func(p hostfence.Provisioning) hostfence.Provisioning {
+		p.HelperInstalled = true
+		p.HelperVersion = helperVersion
+		return p
+	})
+}
+
+// persistProvisioning applies mutate to one live host's bootstrap record and
+// lands the result in one atomic hub.toml write under the mutation lock. A
+// failed write installs nothing, so the store's record stays exactly as it was
+// and the caller re-reads it; a name that is not a live entry refuses before
+// any write (a bootstrap flag has no meaning for a removed name).
+func (m *hubHostManager) persistProvisioning(host string, mutate func(hostfence.Provisioning) hostfence.Provisioning) (hostfence.Provisioning, error) {
+	m.cfg.mu.Lock()
+	defer m.cfg.mu.Unlock()
+	entries := m.cfg.store.snapshot()
+	live := false
+	for _, entry := range entries {
+		if entry.Name == host {
+			live = true
+			break
+		}
+	}
+	if !live {
+		return hostfence.Provisioning{}, fmt.Errorf("host %q is not a live host, so no bootstrap record was written", host)
+	}
+	next := mutate(m.cfg.store.provisioningFor(host))
+	if err := m.persistHosts(entries, entries, hostPersistChange{
+		provisioning: &pendingHostProvisioning{Name: host, Provisioning: next},
+	}); err != nil {
+		return hostfence.Provisioning{}, err
+	}
+	return next, nil
 }
 
 // hubTOMLTeardownRemnantTables derives the teardown-remnant tables a rewrite

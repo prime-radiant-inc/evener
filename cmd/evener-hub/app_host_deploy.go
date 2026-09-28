@@ -38,6 +38,7 @@ import (
 	"time"
 
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/cmd/evener-hub/internal/hostfence"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hostops"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hostreg"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
@@ -449,6 +450,13 @@ func (m *hubHostManager) probeForOperation(ctx context.Context, entry hostreg.Ho
 // predates the handler and every other read failure is `probe-failed` with the
 // failure half named.
 func (m *hubHostManager) operationProbeRefusal(name string, err error) error {
+	// The helper gate's refusals ride the conflict class and are checked first:
+	// crash-fencing §6:161 pins that `fencing-helper-*` is never `probe-failed`,
+	// even when a gate refusal happens to wrap a probe read (the helper
+	// self-test is itself a read-only round trip).
+	if wire, ok := helperGateWireRefusal(err); ok {
+		return wire
+	}
 	switch {
 	case errors.Is(err, errHostDetached):
 		return hostDetachedRefusal(name)
@@ -466,6 +474,22 @@ func (m *hubHostManager) operationProbeRefusal(name string, err error) error {
 		return appwire.ProbeFailed(name, appwire.ProbeFailureReadFailed, fmt.Sprintf(
 			"probing host %q's running state failed: %v", name, err))
 	}
+}
+
+// helperGateWireRefusal maps crash-fencing §8's typed helper-gate refusal onto
+// its AppWire envelope: the conflict class, with the host and the pinned helper
+// version the operator must install out-of-band. ok is false for any other
+// error, so a caller can only classify a genuine gate refusal this way.
+func helperGateWireRefusal(err error) (appwire.WireError, bool) {
+	gate, ok := errors.AsType[*hostfence.HelperGateError](err)
+	if !ok {
+		return appwire.WireError{}, false
+	}
+	message := gate.Error()
+	if gate.Discriminator == hostfence.DiscriminatorHelperUntrusted {
+		return appwire.FencingHelperUntrusted(gate.Host, gate.PinnedVersion, gate.ObservedVersion, message), true
+	}
+	return appwire.FencingHelperAbsent(gate.Host, gate.PinnedVersion, message), true
 }
 
 // hostDetachedRefusal is §11's `host-detached`: the channel is gone, the token
