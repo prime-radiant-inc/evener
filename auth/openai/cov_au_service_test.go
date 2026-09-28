@@ -241,7 +241,7 @@ func TestStatusFromRecordNeedsLoginRequiresBothExpiredAndNoRefreshToken(t *testi
 			record := sampleAuthRecord()
 			record.Expiry = tc.expiry
 			record.RefreshToken = tc.refreshToken
-			if got := svc.statusFromRecord(record); got.NeedsLogin != tc.wantNeedsLogin {
+			if got := svc.statusFromRecord(t.TempDir(), "openai", record); got.NeedsLogin != tc.wantNeedsLogin {
 				t.Fatalf("statusFromRecord(expiry=%v, refreshToken=%q).NeedsLogin = %t, want %t", tc.expiry, tc.refreshToken, got.NeedsLogin, tc.wantNeedsLogin)
 			}
 		})
