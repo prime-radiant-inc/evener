@@ -3,6 +3,7 @@
 package hostfence
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 
@@ -47,6 +48,11 @@ func ReapLocalOrphanBoundary(store *hostops.Store, opts ReapOptions) (int, error
 		entries, err := boundaryEntries(record.PendingSpawns)
 		if err != nil {
 			failures = append(failures, fmt.Errorf("record %s: %w", record.ID, err))
+			continue
+		}
+		if record.State == hostops.StateOrphanUnverified && bytes.Equal(record.OrphanBoundary, entries) {
+			// Nothing new to persist: the boundary this platform can describe is
+			// already recorded, so a later boot writes nothing.
 			continue
 		}
 		if _, err := store.SetOrphanBoundary(record.ID, entries, nil); err != nil {

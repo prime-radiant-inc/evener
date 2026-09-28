@@ -502,6 +502,31 @@ func openLegacyTerminalIntentStore(t *testing.T) *hostops.Store {
 	return store
 }
 
+// TestReapUnverifiableBoundaryPathKeepsTheIntent pins the fail-closed arm
+// against the real seam: a persisted cgroup path outside any reachable cgroup2
+// hierarchy must never read as a vanished (clean) boundary, so the intent is
+// kept and the record stays fenced.
+func TestReapUnverifiableBoundaryPathKeepsTheIntent(t *testing.T) {
+	store, _ := newReapStore(t)
+	record := newReapRecord(t, store, "h1")
+	if _, err := store.ArmSpawnIntent(record.ID, hostops.SpawnIntent{
+		Nonce: "n1", Platform: hostops.SpawnPlatformLinux, CgroupID: filepath.Join(t.TempDir(), "child"),
+	}); err != nil {
+		t.Fatalf("ArmSpawnIntent: %v", err)
+	}
+	dropped, err := ReapLocalOrphanBoundary(store, ReapOptions{})
+	if err == nil {
+		t.Fatal("an unverifiable boundary path produced no diagnostic")
+	}
+	if dropped != 0 {
+		t.Fatalf("reap dropped %d; want the intent kept", dropped)
+	}
+	stored, _ := store.Record(record.ID)
+	if stored.State != hostops.StateOrphanUnverified || len(stored.PendingSpawns) != 1 {
+		t.Fatalf("the record = %q/%+v, want orphan-unverified with the intent kept", stored.State, stored.PendingSpawns)
+	}
+}
+
 // TestReapNonEnforcingBoundaryNeverClears pins the Darwin arm's fail-closed
 // rule: where an empty enumeration is not proof (a setsid'd descendant leaves
 // the pair), the pass never reads the boundary as clean, never signals, and

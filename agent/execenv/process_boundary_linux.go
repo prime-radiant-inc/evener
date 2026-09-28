@@ -104,25 +104,43 @@ func ownCgroupDir() (string, error) {
 	return "", fmt.Errorf("%w: this process has no cgroup v2 membership", ErrBoundaryUnavailable)
 }
 
-// openBoundary reopens a persisted Linux boundary for the boot reap: the
-// directory must still exist and still be a cgroup2 directory, or the boundary
-// is gone or unverifiable, never silently empty.
+// openBoundary reopens a persisted Linux boundary for the boot reap. It proves
+// the path lies inside a reachable cgroup2 hierarchy first, and only then reads
+// the child's absence: a path under a mount this process cannot reach (a
+// vanished mount, a namespace, a persisted path that never named a cgroup) is
+// unverifiable and fails closed, while a child missing from an otherwise
+// verifiable cgroup2 hierarchy is genuinely gone — the kernel removes only
+// empty cgroups, so it holds no process.
 func openBoundary(id BoundaryIdentity) (*Boundary, error) {
 	if id.Platform != BoundaryPlatformLinux {
 		return nil, fmt.Errorf("%w: platform %q is not the linux arm", ErrBoundaryUnavailable, id.Platform)
 	}
-	// Existence first: the kernel removes a cgroup only when it is empty, so a
-	// vanished boundary is reported as gone — already clean — never as
-	// unverifiable. The mount check then refuses a path that exists but is not a
-	// cgroup2 directory.
-	boundary, err := newLinuxCgroupBoundary(id.CgroupID)
-	if err != nil {
+	if err := verifyCgroup2Hierarchy(filepath.Dir(id.CgroupID)); err != nil {
 		return nil, err
 	}
-	if err := requireCgroup2(id.CgroupID); err != nil {
-		return nil, err
+	return newLinuxCgroupBoundary(id.CgroupID)
+}
+
+// verifyCgroup2Hierarchy walks up from dir to the nearest existing ancestor and
+// requires it to be a cgroup2 directory. That proves dir's path lies inside a
+// reachable cgroup2 hierarchy, so a child missing under it is genuinely gone
+// rather than unverifiable. An ancestor that cannot be stat'd for any reason
+// other than absence, or a walk that reaches the filesystem root without
+// finding a cgroup2 directory, is ErrBoundaryUnavailable.
+func verifyCgroup2Hierarchy(dir string) error {
+	for current := dir; ; current = filepath.Dir(current) {
+		info, err := os.Stat(current)
+		switch {
+		case err == nil && info.IsDir():
+			return requireCgroup2(current)
+		case err != nil && !errors.Is(err, os.ErrNotExist):
+			return fmt.Errorf("%w: stat %s: %w", ErrBoundaryUnavailable, current, err)
+		}
+		if current == "/" || current == "." {
+			break
+		}
 	}
-	return boundary, nil
+	return fmt.Errorf("%w: %s is outside any cgroup2 hierarchy", ErrBoundaryUnavailable, dir)
 }
 
 // newLinuxCgroupBoundary binds the operations to one cgroup directory. It
@@ -197,7 +215,10 @@ func linuxCgroupMembers(dir string) ([]BoundaryMember, error) {
 	for field := range strings.FieldsSeq(string(raw)) {
 		pid, err := strconv.Atoi(field)
 		if err != nil || pid <= 0 {
-			continue
+			// A membership row no kernel writes: the enumeration cannot prove
+			// what it read, so it fails closed rather than silently narrowing the
+			// candidate set.
+			return nil, fmt.Errorf("%w: the membership of %s carries an unparseable pid %q", ErrBoundaryUnavailable, dir, field)
 		}
 		token, err := observeLinuxStartToken(pid)
 		if errors.Is(err, ErrBoundaryMemberGone) {

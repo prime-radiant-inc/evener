@@ -217,14 +217,41 @@ func TestBoundaryObserveReportsAGoneMember(t *testing.T) {
 	}
 }
 
-// TestBoundaryOpenReportsAGoneBoundary pins the vanished-boundary arm: the
-// kernel only removes a cgroup that is empty, so a boundary whose directory no
-// longer exists is one the reap may read as already clean.
+// TestBoundaryOpenReportsAGoneBoundary pins the vanished-boundary arm: a child
+// missing from an otherwise verifiable cgroup2 hierarchy is gone — the kernel
+// only removes an empty cgroup — and the reap may read it as already clean.
 func TestBoundaryOpenReportsAGoneBoundary(t *testing.T) {
-	dir := filepath.Join(t.TempDir(), "removed")
+	if err := requireCgroup2(cgroup2Mount); err != nil {
+		t.Skipf("no cgroup2 mount: %v", err)
+	}
+	dir := filepath.Join(cgroup2Mount, fmt.Sprintf("evener-missing-%d", os.Getpid()), "child")
 	_, err := OpenBoundary(BoundaryIdentity{Platform: BoundaryPlatformLinux, CgroupID: dir})
 	if !errors.Is(err, ErrBoundaryGone) {
 		t.Fatalf("OpenBoundary(missing dir) = %v, want ErrBoundaryGone", err)
+	}
+}
+
+// TestBoundaryOpenRefusesAnUnverifiablePath pins the fail-closed half: a
+// persisted path outside any reachable cgroup2 hierarchy (a vanished mount, a
+// namespace, a path that never named a cgroup) must never read as a clean,
+// vanished boundary.
+func TestBoundaryOpenRefusesAnUnverifiablePath(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "child")
+	if _, err := OpenBoundary(BoundaryIdentity{Platform: BoundaryPlatformLinux, CgroupID: dir}); !errors.Is(err, ErrBoundaryUnavailable) {
+		t.Fatalf("OpenBoundary(outside a cgroup2 hierarchy) = %v, want ErrBoundaryUnavailable", err)
+	}
+}
+
+// TestBoundaryMembersFailClosedOnAnUnparseablePid pins the enumeration rule: a
+// membership row that is not a pid cannot be silently skipped, because that
+// would narrow the candidate set behind the caller's back.
+func TestBoundaryMembersFailClosedOnAnUnparseablePid(t *testing.T) {
+	boundary := fakeBoundary(t)
+	if err := os.WriteFile(filepath.Join(boundary.Identity().CgroupID, "cgroup.procs"), []byte("not-a-pid\n"), 0o644); err != nil {
+		t.Fatalf("write cgroup.procs: %v", err)
+	}
+	if _, err := boundary.Members(); !errors.Is(err, ErrBoundaryUnavailable) {
+		t.Fatalf("Members(unparseable row) = %v, want ErrBoundaryUnavailable", err)
 	}
 }
 
