@@ -665,6 +665,18 @@ func TestSessionCloseMarksBackgroundShellCancelledBeforeEnvCleanup(t *testing.T)
 	s := newShellToolTestSession(t, SessionConfig{StateDir: stateDir})
 	sessionID := s.ID()
 
+	// Close marks the running shell cancelled, signals it, then joins its real
+	// durable completion before the environment cleanup can reap the process.
+	// Wait on that real completion with production's graceful-shutdown window
+	// rather than the shared 200ms test window: under full-suite load a killed
+	// shell's finalization can outlast the short window, and closeRuntimeState
+	// then abandons the job — leaving the record "running" instead of the
+	// cancellation this test exists to pin. The join returns as soon as the
+	// shell finalizes, so the wider window costs nothing on a normal run.
+	// TRIPWIRE: production's defaultCloseGrace (agent/jobs.go, 5s) only fires
+	// on a genuine finalization hang.
+	s.jobManager.closeGrace = 5 * time.Second
+
 	res := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
 		ID:        "c1",
 		Name:      "shell",
