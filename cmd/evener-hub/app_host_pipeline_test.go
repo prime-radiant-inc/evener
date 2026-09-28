@@ -1746,3 +1746,125 @@ func TestCompensateStagedCrossFileLeavesTheRecordWhenAStepFails(t *testing.T) {
 		})
 	}
 }
+
+// TestBootCompensationArmedClearsWithNoConfigDocument pins S7's carried-in low:
+// when the config path is set but its document is absent, the boot pipeline
+// still runs the compensation pass and the orphan-stash prune, so an armed
+// record clears through its explicit absent-file arm and its stash is removed.
+// Before the fix the pass returned before either ran, wedging the record until
+// a file reappeared.
+func TestBootCompensationArmedClearsWithNoConfigDocument(t *testing.T) {
+	entry := pipelineEntry("m4", 2)
+	fixture, token, _ := newPipelineRemovalFixture(t, entry, true)
+	stash := hubTOMLStashPath(fixture.configPath, "test-key")
+	if _, err := os.Stat(stash); err != nil {
+		t.Fatalf("the fixture did not leave a stash: %v", err)
+	}
+	// The crash state: an armed record naming the stash, and no config document
+	// at all.
+	if err := fixture.store.ArmCompensation(hostops.Compensation{
+		Host: "m4", Phase: hostops.CompensationArmed, Rows: []hostops.Token{token},
+		Stash: stash, Generation: 2,
+	}); err != nil {
+		t.Fatalf("ArmCompensation: %v", err)
+	}
+	if err := os.Remove(fixture.configPath); err != nil {
+		t.Fatalf("remove hub.toml: %v", err)
+	}
+
+	m := fixture.manager(t)
+	if _, ok := m.cfg.ops.Compensation("m4"); ok {
+		t.Fatal("boot did not clear the armed compensation record with no config document")
+	}
+	if _, err := os.Stat(stash); !os.IsNotExist(err) {
+		t.Fatal("boot did not prune the cleared compensation's stash")
+	}
+}
+
+// TestBootCompensationSurvivesAnUnreadableConfigDocument pins the other half of
+// the carry-in fix: hostFileRecords reports false for a document that cannot be
+// decoded, but that is not genuine absence, so the boot must leave the armed
+// record and its stash alone rather than discarding the only durable copy of
+// the pre-mutation hub.toml.
+func TestBootCompensationSurvivesAnUnreadableConfigDocument(t *testing.T) {
+	entry := pipelineEntry("m4", 2)
+	fixture, token, _ := newPipelineRemovalFixture(t, entry, true)
+	stash := hubTOMLStashPath(fixture.configPath, "test-key")
+	if err := fixture.store.ArmCompensation(hostops.Compensation{
+		Host: "m4", Phase: hostops.CompensationArmed, Rows: []hostops.Token{token},
+		Stash: stash, Generation: 2,
+	}); err != nil {
+		t.Fatalf("ArmCompensation: %v", err)
+	}
+	// The document exists but cannot be decoded.
+	if err := os.WriteFile(fixture.configPath, []byte("= = = not TOML [[[\n"), 0o600); err != nil {
+		t.Fatalf("write undecodable hub.toml: %v", err)
+	}
+
+	m := fixture.manager(t)
+	if _, ok := m.cfg.ops.Compensation("m4"); !ok {
+		t.Fatal("boot cleared the armed compensation over a document it could not decode")
+	}
+	if _, err := os.Stat(stash); err != nil {
+		t.Fatalf("boot pruned the stash over a document it could not decode: %v", err)
+	}
+}
+
+// TestHostFileAbsentOrEmptyContract pins the helper's chosen contract: genuine
+// absence is a missing or zero-byte document, an undecodable document is not
+// absence, and an unset path is neither — the caller screens it out, which
+// keeps the fail-closed reading free of a "no path means clear everything" arm.
+func TestHostFileAbsentOrEmptyContract(t *testing.T) {
+	entry := pipelineEntry("m4", 2)
+	fixture := newPipelineFixture(t, []hostreg.Host{entry}, nil)
+	m := fixture.manager(t)
+	if err := os.Remove(fixture.configPath); err != nil {
+		t.Fatalf("remove hub.toml: %v", err)
+	}
+	if !m.hostFileAbsentOrEmpty() {
+		t.Fatal("a missing document is absence")
+	}
+	if err := os.WriteFile(fixture.configPath, []byte("= = = not TOML [[[\n"), 0o600); err != nil {
+		t.Fatalf("write undecodable hub.toml: %v", err)
+	}
+	if m.hostFileAbsentOrEmpty() {
+		t.Fatal("an undecodable document is not absence")
+	}
+	m.cfg.configPath = ""
+	if m.hostFileAbsentOrEmpty() {
+		t.Fatal("an unset path is not absence; the boot caller screens it out")
+	}
+	if err := os.WriteFile(fixture.configPath, nil, 0o600); err != nil {
+		t.Fatalf("write zero-byte hub.toml: %v", err)
+	}
+	m.cfg.configPath = fixture.configPath
+	if !m.hostFileAbsentOrEmpty() {
+		t.Fatal("a zero-byte document is absence")
+	}
+}
+
+// TestBootCompensationClearsWithAZeroByteConfigDocument pins the zero-byte half
+// of the absence contract end to end: an empty document is genuine absence, so
+// the armed record clears through its absent-file arm and the stash is pruned.
+func TestBootCompensationClearsWithAZeroByteConfigDocument(t *testing.T) {
+	entry := pipelineEntry("m4", 2)
+	fixture, token, _ := newPipelineRemovalFixture(t, entry, true)
+	stash := hubTOMLStashPath(fixture.configPath, "test-key")
+	if err := fixture.store.ArmCompensation(hostops.Compensation{
+		Host: "m4", Phase: hostops.CompensationArmed, Rows: []hostops.Token{token},
+		Stash: stash, Generation: 2,
+	}); err != nil {
+		t.Fatalf("ArmCompensation: %v", err)
+	}
+	if err := os.WriteFile(fixture.configPath, nil, 0o600); err != nil {
+		t.Fatalf("write zero-byte hub.toml: %v", err)
+	}
+
+	m := fixture.manager(t)
+	if _, ok := m.cfg.ops.Compensation("m4"); ok {
+		t.Fatal("boot did not clear the armed compensation for a zero-byte document")
+	}
+	if _, err := os.Stat(stash); !os.IsNotExist(err) {
+		t.Fatal("boot did not prune the cleared compensation's stash")
+	}
+}
