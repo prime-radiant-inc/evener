@@ -34,6 +34,7 @@ const harness = vi.hoisted(() => ({
 	focusListeners: new Set<(focused: boolean) => void>(),
 	actionSheet: vi.fn(),
 	prompt: vi.fn(),
+	reduceMotion: false,
 }));
 
 vi.mock("react-native", async () => {
@@ -43,6 +44,10 @@ vi.mock("react-native", async () => {
 		Alert: { ...native.Alert, prompt: (...args: unknown[]) => harness.prompt(...args) },
 		ActionSheetIOS: { showActionSheetWithOptions: (...args: unknown[]) => harness.actionSheet(...args) },
 		Keyboard: { dismiss: () => {} },
+		AccessibilityInfo: {
+			isReduceMotionEnabled: () => Promise.resolve(harness.reduceMotion),
+			addEventListener: () => ({ remove: () => {} }),
+		},
 	};
 });
 // The organization journal names each change it records.
@@ -2203,6 +2208,96 @@ it("drops a project row's pending mark once the project's page shows it landed (
 	await settle();
 	expect(fake.requests.filter((read) => read.resource === "project_page" && read.tier === "current")).toHaveLength(2);
 	expect(hubSeenMarks(id).isSeenOnHub(projectUnseen)).toBe(false);
+	act(() => tree.unmount());
+});
+
+/** Opens search, types a query that finds the evener project, and taps it. */
+async function revealFromSearch(tree: ReactTestRenderer, query = "even") {
+	const bar = searchField(tree);
+	bar.focus();
+	await bar.type(query);
+	const [result] = tree.root.findAll((node) => node.props.testID === "project-result");
+	expect(result.props.accessibilityLabel).toBe("evener, project, /home/jesse/git/evener");
+	act(() => result.props.onPress());
+}
+const layOutAt = (node: ReactTestInstance, y: number, height: number) =>
+	act(() => node.props.onLayout({ nativeEvent: { layout: { x: 0, y, width: 390, height } } }));
+const revealTarget = (tree: ReactTestRenderer) => tree.root.find((node) => node.props.testID === "project-reveal");
+
+it("opens a project from search: leaves search, unfolds the project and scrolls it a third of the way down", async () => {
+	const id = hubId();
+	adoptedAnHourAgo(id);
+	const fake = hub({ ...fleet, catalogs: { projects: [evenerProject()] }, projectPages: { "evener:current": [localWork] } });
+	connect(id, fake.client, "ready");
+	const { tree, scrollTo } = await mountWithInstances(navigation());
+	layOutAt(boardScroller(tree), 0, 600);
+	expect(projectRows(tree, "evener")[0].props.accessibilityState).toEqual({ expanded: false });
+	await revealFromSearch(tree);
+	// Search is gone, and the query counts as a recent search.
+	expect(hasCancel(tree)).toBe(false);
+	expect(tree.root.findAll((node) => node.props.testID === "search-result")).toHaveLength(0);
+	expect(JSON.parse(harness.kv.get(`evener.native.recent-searches.${id}`) ?? "[]")).toEqual(["even"]);
+	expect(projectRows(tree, "evener")[0].props.accessibilityState).toEqual({ expanded: true });
+	await settle();
+	expect(hasRow(tree, "Local work")).toBe(true);
+	// It scrolls once both the project row and its section have laid out, in
+	// either order: the row sits 30% of the way down the viewport.
+	const calls = scrollTo.mock.calls.length;
+	layOutAt(revealTarget(tree), 60, 48);
+	expect(scrollTo.mock.calls.length).toBe(calls);
+	layOutAt(projectSection(tree, "projects"), 900, 400);
+	expect(scrollTo).toHaveBeenLastCalledWith({ y: 900 + 60 - 0.3 * (600 - 48), animated: true });
+	// Once there, the reveal is done.
+	expect(tree.root.findAll((node) => node.props.testID === "project-reveal")).toHaveLength(0);
+	act(() => tree.unmount());
+});
+
+it("scrolls to a project from search without animating while Reduce Motion is on", async () => {
+	const id = hubId();
+	adoptedAnHourAgo(id);
+	harness.reduceMotion = true;
+	try {
+		connect(id, hub({ ...fleet, catalogs: { projects: [evenerProject()] } }).client, "ready");
+		const { tree, scrollTo } = await mountWithInstances(navigation());
+		layOutAt(boardScroller(tree), 0, 600);
+		await revealFromSearch(tree);
+		layOutAt(projectSection(tree, "projects"), 100, 400);
+		layOutAt(revealTarget(tree), 40, 48);
+		// Near the top, it scrolls no further up than the Board's start.
+		expect(scrollTo).toHaveBeenLastCalledWith({ y: 0, animated: false });
+		act(() => tree.unmount());
+	} finally {
+		harness.reduceMotion = false;
+	}
+});
+
+it("opens a project from search inside its host when hosts come first, unfolding the way there", async () => {
+	const id = hubId();
+	adoptedAnHourAgo(id);
+	harness.kv.set(`evener.native.board-organize.${id}`, JSON.stringify("host-project"));
+	// Its host is folded; the Projects section is open, so its catalog is read.
+	harness.kv.set(`evener.native.board-sections.${id}`, JSON.stringify({ "host:local": true }));
+	connect(id, hub({ ...fleet, manifest: twoHosts(), catalogs: { projects: [evenerProject()] } }).client, "ready");
+	const { tree } = await mountWithInstances(navigation());
+	await revealFromSearch(tree);
+	expect(JSON.parse(harness.kv.get(`evener.native.board-sections.${id}`) ?? "{}")).toMatchObject({
+		projects: false,
+		"host:local": false,
+		"project:evener@local": false,
+	});
+	expect(revealTarget(tree)).toBeTruthy();
+	act(() => tree.unmount());
+});
+
+it("lists no projects in search that the Board hasn't loaded", async () => {
+	const id = hubId();
+	adoptedAnHourAgo(id);
+	connect(id, hub({ ...fleet, catalogs: { projects: [evenerProject()] } }).client, "ready");
+	const tree = await mount(navigation());
+	const bar = searchField(tree);
+	bar.focus();
+	await bar.type("nothing like it");
+	expect(tree.root.findAll((node) => node.props.testID === "project-result")).toHaveLength(0);
 	act(() => tree.unmount());
 });
 
