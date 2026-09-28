@@ -1259,28 +1259,43 @@ rather than resolved in prose here:
   length would not reach the highest version already written, or
   re-deriving the update log from surviving record versions, before a
   caller passes it a client-recorded (not-necessarily-current) length.
-- ~~**Cross-version schema skew on a shared sidecar.**~~ Fixed: `meta` now
-  carries `SchemaID`, a hash of every JSON field reachable from
-  `transcript.Entry` (`schemaFieldFingerprint` in
-  `internal/transcriptindex/schema_identity.go`), and `readMeta` checks it
-  alongside `format`/`projection`. A build whose `schema.Turn`/`llm.Message`
-  shape differs — a field added, removed, renamed, or retyped — fails
-  `readMeta` closed the same way a `format`/`projection` mismatch always
-  did, which the existing `x.build == ""` fallback in `extend` turns into a
-  rebuild. `TestCorruptSidecarRebuilds`'s "other schema identity" case pins
-  it.
+- ~~**Cross-version schema skew on a shared sidecar.**~~ Fixed: `meta`'s
+  `Projection` now carries `schemaID` folded in (`currentProjection` in
+  `internal/transcriptindex/schema_identity.go`), a hash of every JSON
+  field reachable from `transcript.Entry` (`schemaFields`, walked by
+  `schemaFieldFingerprint`), rather than a separate field. `readMeta`'s
+  existing `Projection != projectionID`-shaped check (now
+  `Projection != currentProjection()`) catches a mismatch the same way a
+  bare `projection` string change always did, which the existing
+  `x.build == ""` fallback in `extend` turns into a rebuild. Folding the
+  hash into the field every reader has always compared — instead of a new
+  field only a schema-aware reader would look at — means a binary that
+  predates this check entirely still rejects a schema-mismatched sidecar
+  written by a schema-aware build (the downgrade direction), not only the
+  reverse. `TestCorruptSidecarRebuilds`'s "other schema identity" case pins
+  it, and `schemaFields` has its own direct tests
+  (`internal/transcriptindex/schema_identity_test.go`) against synthetic
+  structs differing by exactly one shape change each.
 - ~~**`ChangedSince` over-reports turns.**~~ Fixed: `stampTurn` now snapshots
   the turn record's wire-visible fields (`summaryOf` in
   `internal/transcriptindex/build.go`: status, failure detail, completion,
   start, usage — not `Version`, which advances on every entry regardless,
-  nor `Model`, which only ever reaches a client through an item's own
-  `Model` field) before and after applying an entry, and logs `updatedTurn`
-  only when they differ. The crash-replay redo path (an entry already
-  applied before a truncated extension) still logs unconditionally, since
-  there is no fresh mutation there to diff against.
-  `TestChangedSinceDoesNotReportATurnWhoseEntryDidNotChangeItsSummary` pins
-  the negative case; `turnScalars`/`turnSummaryChanged` in
+  nor `Model`/`Awaiting*`, which have no corresponding field on
+  `appwire.Turn` at all to diverge over) before and after applying an
+  entry, and logs `updatedTurn` only when they differ. The crash-replay
+  redo path (an entry already applied before a truncated extension) still
+  logs unconditionally, since there is no fresh mutation there to diff
+  against. `TestChangedSinceDoesNotReportATurnWhoseEntryDidNotChangeItsSummary`
+  pins the negative case; `turnScalars`/`turnSummaryChanged` in
   `internal/transcriptindex/updates_test.go` separate "is this the current
   turn" from "did the summary change" so the existing reference oracles
   (`TestChangedSinceReturnsCreatedAndUpdatedRecords`,
-  `TestChangedSinceReturnsWhatLaterEntriesChanged`) hold both ways.
+  `TestChangedSinceReturnsWhatLaterEntriesChanged`) hold both ways. One
+  visible consequence: a turn whose only later change is its `Version`
+  counter (no wire-visible field moved) can leave a live client's held
+  `Version` for that turn behind the file's until some other change resends
+  it — bounded harm, since nothing reads `Version` for anything but display
+  order and idempotent upsert (`server/transcript_parity_test.go`'s
+  `parityBeforeRestart` documents the one scenario this surfaces in,
+  timing-dependent since it depends on where a live publish boundary lands
+  relative to a turn's entries, not on scripted content).

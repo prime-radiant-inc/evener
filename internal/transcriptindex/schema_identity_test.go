@@ -46,24 +46,14 @@ func TestSchemaFieldsIsSensitiveToShapeChanges(t *testing.T) {
 		A string `json:"a"`
 		B int    `json:"b,string"`
 	}
-	type embeddedInner struct {
-		X int `json:"x"`
-	}
-	type withEmbedded struct {
-		embeddedInner
-	}
-	type withNamedOfSameType struct {
-		Inner embeddedInner `json:"inner"`
-	}
 
 	baseline := fingerprintOf[base]()
 	cases := map[string][]string{
-		"added field":               fingerprintOf[addedField](),
-		"removed field":             fingerprintOf[removedField](),
-		"renamed json key":          fingerprintOf[renamedJSONKey](),
-		"retyped field":             fingerprintOf[retypedField](),
-		"tag option added":          fingerprintOf[tagOptionAdded](),
-		"embedded vs named of type": fingerprintOf[withNamedOfSameType](),
+		"added field":      fingerprintOf[addedField](),
+		"removed field":    fingerprintOf[removedField](),
+		"renamed json key": fingerprintOf[renamedJSONKey](),
+		"retyped field":    fingerprintOf[retypedField](),
+		"tag option added": fingerprintOf[tagOptionAdded](),
 	}
 	for name, got := range cases {
 		if slices.Equal(got, baseline) {
@@ -76,13 +66,35 @@ func TestSchemaFieldsIsSensitiveToShapeChanges(t *testing.T) {
 	if got, want := fingerprintOf[base](), baseline; !slices.Equal(got, want) {
 		t.Errorf("schemaFields(base) not stable across calls\n  first:  %v\n  second: %v", want, got)
 	}
+}
 
-	// An embedded field's fingerprint differs from a same-named, same-typed
-	// but embedded field elsewhere too (withEmbedded vs withNamedOfSameType),
-	// confirming the anonymous bit is actually load-bearing and not just
-	// present-but-ignored.
-	if slices.Equal(fingerprintOf[withEmbedded](), fingerprintOf[withNamedOfSameType]()) {
-		t.Errorf("schemaFields did not distinguish an embedded field from a named field of the identical type")
+// TestSchemaFieldsDistinguishesEmbeddedFromNamed isolates exactly the
+// anonymous bit schemaFields folds in: EmbeddedInner (embedded) and
+// EmbeddedInner EmbeddedInner (a named field whose Go field name happens to
+// equal its type's exported name, so it resolves to the identical json name,
+// tag, and Type.String() as the embedded case, with no tag on either side)
+// differ only in whether the field is anonymous. Both fields must be
+// exported for this to isolate only that bit: an unexported field skips the
+// unexported-and-not-anonymous branch entirely regardless of promotion,
+// which would make the two cases differ for an unrelated reason.
+// encoding/json decodes the exported pair differently regardless (an
+// embedded field's own fields promote to this level; a named field's nest
+// under its key), so schemaFields must tell them apart — a control
+// comparison that also happened to differ in path, tag, json name, or
+// export status (as earlier versions of this test did) could pass even if
+// the anonymous bit were dropped entirely.
+func TestSchemaFieldsDistinguishesEmbeddedFromNamed(t *testing.T) {
+	type EmbeddedInner struct {
+		X int `json:"x"`
+	}
+	type withEmbedded struct {
+		EmbeddedInner
+	}
+	type withNamedOfSameName struct {
+		EmbeddedInner EmbeddedInner
+	}
+	if slices.Equal(fingerprintOf[withEmbedded](), fingerprintOf[withNamedOfSameName]()) {
+		t.Errorf("schemaFields did not distinguish an embedded field from a named field of the identical name, type, and tag")
 	}
 }
 

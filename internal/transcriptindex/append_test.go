@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strconv"
 	"testing"
 
 	"primeradiant.com/evener/agent/schema"
@@ -517,8 +518,11 @@ func TestCorruptSidecarRebuilds(t *testing.T) {
 			// written and what the old bare "Projection != projectionID"
 			// check alone would have accepted — so this pins that the
 			// schema fold is actually load-bearing here, not merely that
-			// some mismatched string rebuilds.
-			rewriteMetaField(t, dir, "projection", `"transcript-read-model-v5"`)
+			// some mismatched string rebuilds. Quoting the constant, not a
+			// literal copy of today's value, so a future projectionID bump
+			// keeps this pinned to "the bare projection, no schema suffix"
+			// rather than silently going stale.
+			rewriteMetaField(t, dir, "projection", strconv.Quote(projectionID))
 		}},
 	}
 	for _, tc := range cases {
