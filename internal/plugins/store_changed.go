@@ -15,8 +15,12 @@ type StoreChanged struct {
 }
 
 // OnStoreChanged installs fn as the callback lockStore's release invokes,
-// once per lock session, with whatever that session changed — never when a
-// session changed nothing. This is the one hook a
+// once per lock session, with whatever store file that session wrote or rename
+// it left between the two names — never when it neither wrote a file nor left a
+// rename half done. This reports writes that landed, not a session's net
+// effect: a write that lands and is then restored still counts, because it is
+// reported the instant it lands and a concurrent reader could have seen it.
+// This is the one hook a
 // caller of Install, AddMarketplace, ListMarketplaces, and every other method
 // that takes the store lock can rely on to learn a write happened, instead of
 // threading its own success signal back by hand: the flag is set by the write
