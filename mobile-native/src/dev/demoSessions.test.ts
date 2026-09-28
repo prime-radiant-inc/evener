@@ -17,7 +17,7 @@ import { notesBarPreview } from "../session/sessionNotes.js";
 import { contextChips, sessionStateLine } from "../session/sessionState.js";
 import { subagentLine } from "../session/subagentLine.js";
 import { runSummary, runSummaryText, sessionRows } from "../session/transcriptRows.js";
-import { fleetSessions } from "./demoFleet.js";
+import { demoSessionId, fleetSessions } from "./demoFleet.js";
 import { createDemoSessions, DEMO_MODEL_LIST } from "./demoSessions.js";
 
 const NOW = Date.parse("2026-09-28T21:00:00.000Z");
@@ -56,6 +56,12 @@ describe("the demo sessions behind Appendix A's Session frames", () => {
 	it("serves a valid thread for every fleet session, so the title's swipe always lands on a real neighbor", () => {
 		const refs = fleetSessions().map((session) => session.ref);
 		expect(sessions.map((thread) => thread.evener.ref)).toEqual(refs);
+		// No two sessions, subagents included, share a hub id.
+		const ids = sessions.flatMap((thread) => [
+			thread.sessionId,
+			...(thread.evener.diagnostics?.delegates ?? []).map((delegate) => delegate.childSessionId),
+		]);
+		expect(new Set(ids).size).toBe(ids.length);
 		for (const session of fleetSessions()) {
 			const { thread, conversation } = open(session.slug);
 			expect(thread.name).toBe(session.title);
@@ -97,6 +103,11 @@ describe("the demo sessions behind Appendix A's Session frames", () => {
 		expect(runs.length).toBeGreaterThanOrEqual(2);
 		for (const run of runs) expect(runSummaryText(runSummary(run.steps))).toMatch(/^\d+ steps? · \d+[smh]/);
 		const lines = subagentsOf(rows).map((row) => subagentLine(row, model.delegates, NOW));
+		// Each delegate names its subagent's transcript by the ref the Board's
+		// child row carries (demoFleet.ts).
+		expect(model.delegates?.find((delegate) => delegate.delegateId === "g-settle")?.transcriptRef).toBe(
+			`local:${demoSessionId("g-settle")}`,
+		);
 		expect(lines).toContainEqual(
 			expect.objectContaining({
 				title: "Fix race in tree settle",

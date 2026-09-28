@@ -547,10 +547,13 @@ function toChildRow(
 ): NavigationSessionSummary {
 	const { state, live } = SUBAGENT_WIRE_STATE[sub.state];
 	const { capped, omitted } = capChildren(sub.children ?? []);
+	// A subagent is a session like any other, named by a hub-shaped id; its
+	// parent's delegates name its transcript by this same ref (demoSessions.ts).
+	const sessionId = demoSessionId(sub.id);
 	return {
-		ref: `${ownerHostId}:${sub.id}`,
+		ref: `${ownerHostId}:${sessionId}`,
 		host_id: ownerHostId,
-		session_id: sub.id,
+		session_id: sessionId,
 		title: sub.title,
 		project,
 		state,
