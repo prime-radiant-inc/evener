@@ -77,9 +77,9 @@ Decisions the spec and the server plan leave open, with the reason for each.
 
 1. **The revision is the sha256 of the whole file's bytes.** The server plan sketched a weak tag from size, time and the head's hash. A content hash is simpler and stronger: touching a file without changing it keeps its revision, and an edit past the 512 KiB head changes it. It costs one full read, measured at 7.4 ms for 16 MiB.
 2. **Files over 16 MiB (`docRevisionMaxBytes`) carry no revision.** Reading a huge log on every foreground to hash it is not worth it; the phone falls back to comparing what it was shown, as today. The limit is 5 times the largest markdown file measured.
-3. **Size and revision come from one pass.** The read hashes exactly the bytes it counted, so the total and the revision describe one version even while the file is being written. This replaces `docRawTotalSize`'s second stat.
+3. **Size and revision come from one pass.** The read hashes exactly the bytes it counted, so the total and the revision describe one version even while the file is being written. A file that grows past 16 MiB during the read gets no revision and a size of at least what the read found (found by review on the plan PR). This replaces `docRawTotalSize`'s second stat.
 4. **The time rides as `X-Doc-Modified-At` in Unix milliseconds,** not `Last-Modified`. `Last-Modified` has one-second precision and an HTTP-date the phone would have to parse by hand (whether React Native's Hermes parses that date format was not checked, so the plan avoids it), and it would invite heuristic caching.
-5. **`Cache-Control: private, no-cache`.** Every cache must revalidate before reuse, so a changed file is never shown from a cache; with the `ETag`, revalidation costs a 304 and no body. Browsers send `If-None-Match` for such a response on their own (RFC 9111). Whether iOS's `NSURLSession` under React Native's `fetch` does the same was not measured, and nothing here relies on it: the phone reads `revision` from the response either way.
+5. **`Cache-Control: private, no-cache`, and `If-None-Match` answered by the rules of RFC 9110 13.1.2** (weak comparison, and `*` matches). Every cache must revalidate before reuse, so a changed file is never shown from a cache; with the `ETag`, revalidation costs a 304 and no body. Browsers send `If-None-Match` for such a response on their own (RFC 9111). Whether iOS's `NSURLSession` under React Native's `fetch` does the same was not measured, and nothing here relies on it: the phone reads `revision` from the response either way.
 6. **An empty file is served empty, not 404.** The single `f.Read` treated it as missing. The rewrite reads with `io.ReadFull`, so the phone no longer says an empty file "isn't in this session's folder any more".
 
 **S7, remote documents**
@@ -113,9 +113,9 @@ Each has a recommendation; the plan is written to the recommendation, and none b
 3. **An old version shown from a cache.**
    - The revision headers must not let a browser or the phone show a document that changed since.
    - Pinned by `TestDocFile_Raw_NamesTheRevisionItServed` (`private, no-cache`) and `TestDocFile_Raw_IfNoneMatchRevalidates` (200 with the new bytes after an edit) (Task 34.1).
-4. **A change the revision misses.**
-   - An edit past the 512 KiB head must change the revision.
-   - Pinned by `TestDocFile_Raw_RevisionFollowsTheWholeFile` (Task 34.1).
+4. **A change the revision misses, or a size that lies.**
+   - An edit past the 512 KiB head must change the revision. A file at exactly the 16 MiB limit is still hashed, and one that grows past it while being read reports no revision and a size no smaller than what was read.
+   - Pinned by `TestDocFile_Raw_RevisionFollowsTheWholeFile`, `TestDocFile_Raw_RevisionAtTheHashLimit` and `TestReadDocFile_GrowingPastTheHashLimitReportsWhatWasRead` (Task 34.1).
 5. **An old host that reads as a missing file.**
    - A host without the method must not make the phone say the file is gone.
    - Pinned by the 501 case of `TestDocFileRouteMapsHostRefusals` (Task 35.2) and the `host-unsupported` tests in `docContent.test.ts` and `DocPane.test.tsx` (Task 35.3).
@@ -176,7 +176,7 @@ This lane changes `mobile-native/` only through the shared package. Once each PR
   - `func readDocFile(abs string) (docFileRead, error)` (the same name and arity as today, so the fuzz seeds that call `_, _ = readDocFile(...)` compile unchanged)
   - `func writeDocFileRaw(w http.ResponseWriter, r *http.Request, doc docFileRead)`
   - `const docRevisionMaxBytes = 16 * 1024 * 1024`
-  - Test helpers `docRevisionOf(content []byte) string` and `writeDocAt(t, path, content, modified)` (it creates parent directories).
+  - Test helpers `docRevisionOf(content []byte) string` and `writeDocAt(t, path, content, modified)` (it creates parent directories; Task 35.1's tests write into `plans/`).
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -210,6 +210,9 @@ func docRevisionOf(content []byte) string {
 
 func writeDocAt(t *testing.T, path string, content []byte, modified time.Time) {
 	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
 	if err := os.WriteFile(path, content, 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -286,7 +289,7 @@ func TestDocFile_Raw_IfNoneMatchRevalidates(t *testing.T) {
 	writeDocAt(t, path, []byte("first"), time.UnixMilli(1_790_000_000_000))
 	etag := docRawRequest(t, web, session, "notes.txt").Header().Get("ETag")
 
-	for _, header := range []string{etag, `"other", ` + etag, "W/" + etag} {
+	for _, header := range []string{etag, `"other", ` + etag, "W/" + etag, "*"} {
 		rec := docRawRequestIfNoneMatch(t, web, session, "notes.txt", header)
 		if rec.Code != http.StatusNotModified || rec.Body.Len() != 0 || rec.Header().Get("ETag") != etag {
 			t.Fatalf("If-None-Match %s: status=%d body=%q ETag=%q, want 304, empty, %s", header, rec.Code, rec.Body.String(), rec.Header().Get("ETag"), etag)
@@ -332,6 +335,61 @@ func TestDocFile_Raw_NoRevisionPastTheHashLimit(t *testing.T) {
 	}
 }
 
+// A file of exactly docRevisionMaxBytes is still hashed: the limit is inclusive.
+func TestDocFile_Raw_RevisionAtTheHashLimit(t *testing.T) {
+	web, cwd, session := docServeTestServer(t)
+	path := filepath.Join(cwd, "limit.log")
+	f, err := os.Create(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Truncate(docRevisionMaxBytes); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	rec := docRawRequest(t, web, session, "limit.log")
+	if got, want := rec.Header().Get("ETag"), `"`+docRevisionOf(make([]byte, docRevisionMaxBytes))+`"`; got != want {
+		t.Fatalf("ETag=%q, want %q at exactly the limit", got, want)
+	}
+}
+
+// A file that grows past the hash limit while it is read has no revision, and
+// its size is at least what the read found, never the smaller size the stat
+// saw before the open. The stat is stubbed to report the file as it was a
+// moment earlier, which is the order a concurrent writer produces.
+func TestReadDocFile_GrowingPastTheHashLimitReportsWhatWasRead(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "growing.log")
+	f, err := os.Create(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Truncate(docRevisionMaxBytes + 100); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+	small := filepath.Join(t.TempDir(), "earlier.log")
+	writeDocAt(t, small, []byte("short"), time.UnixMilli(1_790_000_000_000))
+	oldStat := docStat
+	t.Cleanup(func() { docStat = oldStat })
+	docStat = func(string) (os.FileInfo, error) { return os.Stat(small) }
+
+	read, err := readDocFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if read.Revision != "" {
+		t.Fatalf("Revision=%q, want none for a file that grew past the limit", read.Revision)
+	}
+	if read.TotalSize <= docRevisionMaxBytes {
+		t.Fatalf("TotalSize=%d, want more than the %d bytes the read found", read.TotalSize, docRevisionMaxBytes)
+	}
+}
+
 // An empty file is a document with nothing in it, not a missing one.
 func TestDocFile_Raw_EmptyFileIsServedEmpty(t *testing.T) {
 	web, cwd, session := docServeTestServer(t)
@@ -349,8 +407,8 @@ func TestDocFile_Raw_EmptyFileIsServedEmpty(t *testing.T) {
 
 - [ ] **Step 2: Run them to see them fail**
 
-Run: `go test ./cmd/evener-hub -run 'TestDocFile_Raw_(NamesThe|RevisionFollows|IfNoneMatch|NoRevision|EmptyFile)' -count=1`
-Expected: build failure, `undefined: docRevisionMaxBytes`. Once the constant alone exists, every test fails on the missing `ETag`, and `TestDocFile_Raw_EmptyFileIsServedEmpty` fails with status 404.
+Run: `go test ./cmd/evener-hub -run 'TestDocFile_Raw_(NamesThe|RevisionFollows|IfNoneMatch|NoRevision|RevisionAtThe|EmptyFile)|TestReadDocFile_Growing' -count=1`
+Expected: build failure, `undefined: docRevisionMaxBytes`. Once the constant alone exists, the `/doc/file` tests fail on the missing `ETag`, `TestDocFile_Raw_EmptyFileIsServedEmpty` fails with status 404, and `TestReadDocFile_GrowingPastTheHashLimitReportsWhatWasRead` fails to build until `readDocFile` returns a `docFileRead`.
 
 - [ ] **Step 3: Read the file once, and write what the read found**
 
@@ -410,7 +468,7 @@ diff --git a/cmd/evener-hub/doc_serve.go b/cmd/evener-hub/doc_serve.go
  }
  
  // handleDocImage serves a validated image file inside a session's working
-@@ -171,27 +181,54 @@ func sessionCWD(cfg hubcore.WebConfig, session string) (string, bool) {
+@@ -171,27 +181,59 @@ func sessionCWD(cfg hubcore.WebConfig, session string) (string, bool) {
  	return "", false
  }
  
@@ -469,14 +527,19 @@ diff --git a/cmd/evener-hub/doc_serve.go b/cmd/evener-hub/doc_serve.go
 +	if err != nil {
 +		return docFileRead{}, err
 +	}
-+	if total := int64(n) + rest; total <= docRevisionMaxBytes {
-+		read.TotalSize, read.Revision = total, hex.EncodeToString(hash.Sum(nil))
++	total := int64(n) + rest
++	if total > docRevisionMaxBytes {
++		// The file grew past the limit while it was read: no revision, and a
++		// size of at least what the read found.
++		read.TotalSize = max(read.TotalSize, total)
++		return read, nil
 +	}
++	read.TotalSize, read.Revision = total, hex.EncodeToString(hash.Sum(nil))
 +	return read, nil
  }
  
  // looksBinaryBytes reports whether a byte slice looks like binary content. A
-@@ -216,34 +253,50 @@ func looksBinaryBytes(data []byte) bool {
+@@ -216,34 +258,50 @@ func looksBinaryBytes(data []byte) bool {
  // application/octet-stream are both honest about the content and never
  // browser-executable.
  //
@@ -532,12 +595,12 @@ diff --git a/cmd/evener-hub/doc_serve.go b/cmd/evener-hub/doc_serve.go
 -func docRawTotalSize(abs string, read int) int64 {
 -	if info, err := docStat(abs); err == nil {
 -		return info.Size()
-+// ifNoneMatchNames reports whether an If-None-Match header lists etag. The
-+// comparison is weak, as RFC 9110 section 13.1.2 has it: a W/ prefix on a
-+// listed tag is ignored.
++// ifNoneMatchNames reports whether an If-None-Match header lists etag, or is
++// "*", which matches any current version. The comparison is weak, as RFC 9110
++// section 13.1.2 has it: a W/ prefix on a listed tag is ignored.
 +func ifNoneMatchNames(header, etag string) bool {
 +	for listed := range strings.SplitSeq(header, ",") {
-+		if strings.TrimPrefix(strings.TrimSpace(listed), "W/") == etag {
++		if listed = strings.TrimSpace(listed); listed == "*" || strings.TrimPrefix(listed, "W/") == etag {
 +			return true
 +		}
  	}
@@ -1921,6 +1984,7 @@ git commit -m "feat(web): a host that can't send documents yet says to open it t
   - These passed: `go build ./...`; `go vet` plain, with `evenerfuzz` and for Windows on `./cmd/evener-hub/...` and `./appwire/...`; `golangci-lint` 2.13.1 on `./cmd/evener-hub/`, `./appwire/` and `./cmd/evener-hub/internal/appsource/`; the whole `./cmd/evener-hub/...`, `./appwire/...` and `./internal/appwirets` suites; the two coverage fuzz seeds; `TestGeneratedFileCurrent`; the frontend typecheck and its `src` vitest suites; the package's vitest suite (2,676 tests); `mobile-native`'s `npm run check` and its Reader tests.
   - Each red step named above was run and failed as described.
   - The first dry run of Task 34.1 found the linter's `modernize` findings (`strings.SplitSeq`, `maps.Copy`); the code above carries the fix.
+  - The plan PR's review found `writeDocAt`'s directory creation in the wrong task, a stale size for a file growing past the hash limit mid-read, and no test at the limit itself or for `If-None-Match: *`. The dry run was rebuilt with the fixes and every check above re-run.
 - **Not run.** `make test-web-browser` and `make test-native` as a whole (nothing here renders on the phone), `make lint` as a whole (the pinned linter ran per package), a real two-machine ssh attach (the proxy test runs a real host hub over a WebSocket AppWire channel; the ssh transport carries the same frames), and anything on Linux.
 - **Placeholders.** None: every task carries its code or the exact edit.
 - **Names.** One spelling across tasks:
