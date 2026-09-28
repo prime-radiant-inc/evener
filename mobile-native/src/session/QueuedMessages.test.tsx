@@ -1,6 +1,7 @@
 // The ghosts above the composer as a person sees them: each bubble's text,
 // caption and buttons, the menu a tap opens, and the row that leads to the
 // rest of the queue.
+import { createElement } from "react";
 import type { ReactTestRenderer } from "react-test-renderer";
 import { act } from "react-test-renderer";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -16,6 +17,8 @@ vi.mock("react-native", async () => ({
 vi.mock("expo-symbols", () => ({ SymbolView: "SymbolView" }));
 
 beforeEach(() => native.showActionSheetWithOptions.mockReset());
+
+const Image = (props: { accessibilityLabel: string }) => createElement("Image", props);
 
 const queued: Ghost = {
 	key: "queue:queue_1",
@@ -136,6 +139,24 @@ it("says why an action you'd expect isn't there", () => {
 	const { tree } = mount([{ ...refused, buttons: ["discard"], note }]);
 	expect(renderedText(tree)).toContain(note);
 	expect(pressable(tree, "Edit")).toBeUndefined();
+});
+
+it("shows the images an unconfirmed send carried in its own bubble, and only there", () => {
+	const tree = render(
+		<QueuedMessages
+			ghosts={[queued, unconfirmed]}
+			disabled={false}
+			canEdit
+			editHint={null}
+			draftAttachments={<Image accessibilityLabel="Image 1: proof.png" />}
+			onAction={() => {}}
+			onMore={() => {}}
+		/>,
+	);
+	const images = tree.root.findAll((node) => String(node.type) === "Image" && node.props.accessibilityLabel === "Image 1: proof.png");
+	expect(images).toHaveLength(1);
+	const bubble = pressable(tree, `${unconfirmed.text}. ${unconfirmed.caption}`);
+	expect(bubble?.findAll((node) => String(node.type) === "Image" && node.props.accessibilityLabel === "Image 1: proof.png")).toHaveLength(1);
 });
 
 describe("tapping a ghost", () => {

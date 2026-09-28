@@ -2,6 +2,7 @@
 // 14): the ghosts `ghosts()` lists, at most three of them queued. The rest of
 // the queue is one quiet row that opens the Queue sheet (ruling 18).
 import { SymbolView } from "expo-symbols";
+import type { ReactNode } from "react";
 import { Platform, Pressable, Text, useWindowDimensions, View } from "react-native";
 import { useColors } from "../ui";
 import { GhostBubble } from "./GhostBubble";
@@ -12,11 +13,21 @@ export interface QueuedMessagesProps {
 	disabled: boolean;
 	canEdit: boolean;
 	editHint: string | null;
+	/** The images an unconfirmed send carried, shown in its bubble. */
+	draftAttachments?: ReactNode;
 	onAction(ghost: Ghost, action: GhostAction): void;
 	onMore(): void;
 }
 
-export function QueuedMessages({ ghosts, disabled, canEdit, editHint, onAction, onMore }: QueuedMessagesProps) {
+export function QueuedMessages({
+	ghosts,
+	disabled,
+	canEdit,
+	editHint,
+	draftAttachments,
+	onAction,
+	onMore,
+}: QueuedMessagesProps) {
 	const { palette } = useColors();
 	const { fontScale } = useWindowDimensions();
 	const scale = Platform.OS === "ios" ? fontScale : 1;
@@ -32,6 +43,7 @@ export function QueuedMessages({ ghosts, disabled, canEdit, editHint, onAction, 
 					disabled={disabled}
 					canEdit={canEdit}
 					editHint={editHint}
+					attachments={ghost.origin.kind === "draft" ? draftAttachments : undefined}
 					onAction={(action) => onAction(ghost, action)}
 				/>
 			))}

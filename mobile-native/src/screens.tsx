@@ -2158,6 +2158,13 @@ export function ConversationScreen({
 				disabled={ghostBusy}
 				canEdit={canEditGhost}
 				editHint={ghostEditHint}
+				draftAttachments={
+					<ImageAttachments
+						document={document}
+						selection={imageSelection}
+						uncertain
+					/>
+				}
 				onAction={(ghost, action) => {
 					void runGhostAction(ghost, action).then((message) => {
 						if (message) toaster.show(message);

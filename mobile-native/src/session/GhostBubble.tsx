@@ -3,6 +3,7 @@
 // right-aligned, dashed and unfilled, with what it is waiting for beneath it
 // and the actions it offers as text buttons. Tapping the bubble opens the
 // rest of its actions.
+import type { ReactNode } from "react";
 import { ActionSheetIOS, Alert, Platform, Pressable, Text, useWindowDimensions, View } from "react-native";
 import { typeRoles } from "../design/tokens";
 import { useColors } from "../ui";
@@ -31,10 +32,12 @@ export interface GhostBubbleProps {
 	canEdit: boolean;
 	/** Why Edit can't bring the message back right now. */
 	editHint: string | null;
+	/** What the message carried besides its text, such as images. */
+	attachments?: ReactNode;
 	onAction(action: GhostAction): void;
 }
 
-export function GhostBubble({ ghost, disabled, canEdit, editHint, onAction }: GhostBubbleProps) {
+export function GhostBubble({ ghost, disabled, canEdit, editHint, attachments, onAction }: GhostBubbleProps) {
 	const { palette } = useColors();
 	const { fontScale } = useWindowDimensions();
 	const scale = Platform.OS === "ios" ? fontScale : 1;
@@ -101,6 +104,7 @@ export function GhostBubble({ ghost, disabled, canEdit, editHint, onAction }: Gh
 				>
 					{ghost.text}
 				</Text>
+				{attachments}
 			</Pressable>
 			<Text {...caption}>{ghost.caption}</Text>
 			{ghost.note ? <Text {...caption}>{ghost.note}</Text> : null}
