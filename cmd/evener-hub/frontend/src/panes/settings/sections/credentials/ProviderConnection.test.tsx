@@ -932,6 +932,42 @@ test("the store's own post-save refresh does not invalidate the completed check"
   expect(screen.getByRole("button", { name: "Continue" })).toBeTruthy();
   expect(screen.queryByText("Connection or configuration changed")).toBeNull();
 });
+test("the store's own debounced post-save refresh does not invalidate an in-flight check", async () => {
+  // The original flake (issue #1435): the store's own debounced listing refetch
+  // (250ms after the save) landed while the credential check was still in
+  // flight; read as foreign, it reset the flow, so the check's answer never
+  // reached Continue. The sibling test above covers the completed-check phase;
+  // this one holds the check pending so the in-flight window is pinned.
+  const { user, client } = setup();
+  scriptSave(client);
+  const pending = deferred<{ provider: string; status: string; message: string }>();
+  client.on("evener/auth/test", () => pending.promise);
+  await choose(user);
+  await user.type(screen.getByLabelText("API key"), "draft");
+  // A fake clock owns the store's 250ms debounce, so it cannot fire until this
+  // test fires it - the check is guaranteed to still be in flight when its
+  // answer lands.
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+  fireEvent.click(screen.getByRole("button", { name: "Save and check" }));
+  // Flush the save/refresh microtask chain to the pending check without
+  // advancing the clock (0ms drains microtasks, fires no timer).
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(0);
+  });
+  expect(screen.getByRole("button", { name: "Checking model list…" })).toHaveProperty("disabled", true);
+  // Fire the store's own debounced refresh while the check is pending; its
+  // answer installs a fresh rows array, which reads as a listing move.
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(300);
+  });
+  vi.useRealTimers();
+  await act(async () => {
+    pending.resolve({ provider: "anthropic", status: "success", message: "" });
+    await pending.promise;
+  });
+  expect(await screen.findByRole("button", { name: "Continue" })).toBeTruthy();
+  expect(screen.queryByText("Connection or configuration changed")).toBeNull();
+});
 test("a slow save response extends the echo window so its late own echo keeps Continue", async () => {
   const { user, client, connected } = setup();
   const save = deferred<typeof saved>();

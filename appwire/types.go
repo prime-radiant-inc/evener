@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"reflect"
 )
 
 // ProtocolVersion is compared exactly at the handshake
@@ -200,6 +201,20 @@ const (
 	// request naming the intended (generation, incarnation id) pair. See
 	// HostRestartParams.
 	MethodEvenerHostRestart = "evener/host/restart"
+	// MethodEvenerHostTeardownRetry resumes one named teardown remnant
+	// (registry spec 08 §6/§11): it looks the remnant up by its opaque id — the
+	// lookup never requires a current live entry — try-acquires the host's
+	// gate, claims under the mutation lock, runs the pinned teardown to
+	// completion with no lock held, and finalizes from the observed result. Its
+	// result is the six-arm `outcome` x `hostKind` union. See
+	// HostTeardownRetryParams.
+	MethodEvenerHostTeardownRetry = "evener/host/teardown-retry"
+	// MethodEvenerHostTeardownRecover clears a remnant whose pinned target is
+	// unresolvable, on an authenticated operator's audited attestation
+	// (registry spec 08 §6/§11): gate first, the safety checks immediately
+	// before the clearing write, and the attestation recorded on the original
+	// receipt beside `remnantResolvedAt`. See HostTeardownRecoverParams.
+	MethodEvenerHostTeardownRecover = "evener/host/teardown-recover"
 	// MethodEvenerHostRunning serves one hub's own running build and health to
 	// the controller probing it (deploy pipeline 08b §6 step 2, §10). It is
 	// served locally by every hub and admitted only over an attached controller
@@ -4507,6 +4522,15 @@ type HostRow struct {
 	// with a zero-row projection still renders `retainedRows: 0`.
 	RetainedRows  *int `json:"retainedRows,omitempty"`
 	RowsTruncated bool `json:"rowsTruncated,omitempty"`
+	// OpenRemnantID is present exactly on rows — live or tombstone — whose name
+	// holds an open remnant: the blocking remnant's id the remnant fence's
+	// `remnant-open` refusal also names (registry spec 08 §11).
+	OpenRemnantID string `json:"openRemnantId,omitempty"`
+	// EscalationAgeSec is present only on rows — live or tombstone — whose name
+	// holds an open remnant past the escalation bound: the escalation age the
+	// expiry-escalation rule promises, in whole seconds. Absent everywhere else
+	// per the absent-when-unknown rule.
+	EscalationAgeSec *int64 `json:"escalationAgeSec,omitempty"`
 }
 
 // HostListResponse is evener/host/list's result (component 08 slice 1): every
@@ -4843,4 +4867,451 @@ type HostNotificationParams struct {
 	Host   string          `json:"host"`
 	Method string          `json:"method"`
 	Params json.RawMessage `json:"params,omitempty"`
+}
+
+// ---------------------------------------------------------------------------
+// The mutation-result union (registry spec 08 §11)
+// ---------------------------------------------------------------------------
+
+// The four discriminator values the mutation-result union carries.
+const (
+	HostMutationOutcomeCommitted        = "committed"
+	HostMutationOutcomeTeardownFailure  = "committed-with-teardown-failure"
+	HostMutationOutcomeCollisionDropped = "collision-dropped"
+	HostMutationOutcomeAmbiguous        = "ambiguous"
+)
+
+// RemovedRow is evener/host/remove's dedicated removed-row arm (registry spec
+// 08 §11): `{name, removed: true, retainedRows}` plus the tombstone's retained
+// effective HostConfig fields, `attached: false`, `midEnsure: false`, and the
+// removed entry's `origin`, `generation`, and `incarnationId` per `list`
+// tombstone values. It is NOT a HostRow: the catalog and the regenerated client
+// carry it as its own interface, and both it and HostRow carry `incarnationId`,
+// so the UI can always construct the guarded-mutation pair.
+type RemovedRow struct {
+	Name       string   `json:"name"`
+	Address    string   `json:"address,omitempty"`
+	User       string   `json:"user,omitempty"`
+	KeyPath    string   `json:"keyPath,omitempty"`
+	EvenerPath string   `json:"evenerPath,omitempty"`
+	ConfigPath string   `json:"configPath,omitempty"`
+	Addr       string   `json:"addr,omitempty"`
+	Roots      []string `json:"roots,omitempty"`
+	Origin     string   `json:"origin"`
+	// Generation and IncarnationID are the removed entry's pair — what a
+	// re-add mints strictly above.
+	Generation    uint64 `json:"generation"`
+	IncarnationID string `json:"incarnationId"`
+	// Removed is always true on this arm; Attached and MidEnsure are always
+	// false, per `list`'s tombstone values.
+	Removed   bool `json:"removed"`
+	Attached  bool `json:"attached"`
+	MidEnsure bool `json:"midEnsure"`
+	// RetainedRows is the tombstone's retained-projection count; a nil renders
+	// as an absent key, exactly as HostRow's tombstone arm does.
+	RetainedRows  *int `json:"retainedRows,omitempty"`
+	RowsTruncated bool `json:"rowsTruncated,omitempty"`
+	// EscalationAgeSec is present only when the row's name holds an escalated
+	// open remnant, mirroring HostRow.
+	EscalationAgeSec *int64 `json:"escalationAgeSec,omitempty"`
+	// OpenRemnantID is present exactly on rows whose name holds an open
+	// remnant, mirroring HostRow.
+	OpenRemnantID string `json:"openRemnantId,omitempty"`
+}
+
+// HostMutationCommitted is the union's clean arm: the mutation landed and every
+// planned teardown completed. `host` is a HostRow for add/update and a
+// RemovedRow for remove's clean path.
+type HostMutationCommitted struct {
+	Outcome string  `json:"outcome"`
+	Host    HostRow `json:"host"`
+}
+
+// HostMutationCommittedRemoved is remove's clean arm: the same outcome with the
+// dedicated removed-row shape.
+type HostMutationCommittedRemoved struct {
+	Outcome string     `json:"outcome"`
+	Host    RemovedRow `json:"host"`
+}
+
+// HostMutationTeardownFailure is the union's failure arm: the mutation is
+// committed but a post-commit teardown failed. `seam` names the failed rebind
+// step and `remnantId` is mandatory — the retry handle
+// `evener/host/teardown-retry` resumes. The committed row is always present so
+// the UI renders it with a teardown-retry affordance.
+type HostMutationTeardownFailure struct {
+	Outcome   string  `json:"outcome"`
+	Seam      string  `json:"seam"`
+	RemnantID string  `json:"remnantId"`
+	Host      HostRow `json:"host"`
+}
+
+// HostMutationTeardownFailureRemoved is remove's teardown-failure arm, carrying
+// the removed-row shape for the same reason.
+type HostMutationTeardownFailureRemoved struct {
+	Outcome   string     `json:"outcome"`
+	Seam      string     `json:"seam"`
+	RemnantID string     `json:"remnantId"`
+	Host      RemovedRow `json:"host"`
+}
+
+// HostMutationCollisionDropped is the union's dropped arm: the post-rename
+// reconcile observed a foreign write that replaced the just-committed staged
+// entry, so the file's bytes won. `droppedEntry` is the staged effective config
+// "in the same lowerCamel shape as `HostRow`'s config fields — never a literal
+// `HostConfig`", and `winningFingerprint` is the winning hub.toml fingerprint.
+// `host` is the authoritative row whenever the file still holds the name; when
+// the re-read finds the name gone entirely (a hand-edit deletion) the arm
+// carries no `host` and sets `removed: true`.
+type HostMutationCollisionDropped struct {
+	Outcome            string   `json:"outcome"`
+	DroppedEntry       HostRow  `json:"droppedEntry"`
+	WinningFingerprint string   `json:"winningFingerprint"`
+	Host               *HostRow `json:"host,omitempty"`
+	Removed            bool     `json:"removed,omitempty"`
+}
+
+// HostMutationAmbiguous is the union's keyless-ambiguous arm (registry spec 08
+// §5): "returned only by a keyless `add` retry that observes its intended row —
+// the row may be the caller's committed mutation, a pre-existing identical row,
+// or another client's remove/re-add, so the response claims no commit and
+// carries no receipt semantics".
+type HostMutationAmbiguous struct {
+	Outcome     string  `json:"outcome"`
+	ObservedRow HostRow `json:"observedRow"`
+}
+
+// HostMutationResult is the mutation-result union evener/host/add,
+// evener/host/update, and evener/host/remove return (registry spec 08 §11):
+// exactly one arm is set. The embedded pointers make the union marshal as the
+// arm it carries — never as a merged shape with optional-ified fields the
+// absent-when-unknown rule cannot distinguish — while the catalog still carries
+// one named Go struct per arm (MethodResultArms).
+type HostMutationResult struct {
+	*HostMutationCommitted
+	*HostMutationCommittedRemoved
+	*HostMutationTeardownFailure
+	*HostMutationTeardownFailureRemoved
+	*HostMutationCollisionDropped
+	*HostMutationAmbiguous
+}
+
+// MarshalJSON renders the one arm the union carries. The arms are disjoint
+// shapes with distinct discriminators, but several of them declare `outcome` —
+// encoding/json drops a field two same-depth embedded structs both declare, so
+// without this marshaller the discriminator would silently vanish from the
+// bytes a client branches on. Exactly one arm must be set; nothing is a
+// programming error no response may hide.
+func (u HostMutationResult) MarshalJSON() ([]byte, error) {
+	arms := make([]any, 0, 6)
+	for _, arm := range []any{
+		u.HostMutationCommitted, u.HostMutationCommittedRemoved,
+		u.HostMutationTeardownFailure, u.HostMutationTeardownFailureRemoved,
+		u.HostMutationCollisionDropped, u.HostMutationAmbiguous,
+	} {
+		if arm != nil && !isNilArm(arm) {
+			arms = append(arms, arm)
+		}
+	}
+	if len(arms) == 0 {
+		return nil, errors.New("appwire: host mutation result carries no arm")
+	}
+	if len(arms) > 1 {
+		return nil, errors.New("appwire: host mutation result carries more than one arm")
+	}
+	return json.Marshal(arms[0])
+}
+
+// isNilArm reports whether a typed arm pointer is nil.
+func isNilArm(arm any) bool {
+	value := reflect.ValueOf(arm)
+	return value.Kind() == reflect.Ptr && value.IsNil()
+}
+
+// UnmarshalJSON reads the arm the discriminator names, and refuses anything
+// else: a result whose `outcome` is none of the four values is not a mutation
+// result this protocol defines, so a client fails loudly instead of reading a
+// zero-valued arm.
+func (u *HostMutationResult) UnmarshalJSON(raw []byte) error {
+	var probe struct {
+		Outcome string          `json:"outcome"`
+		Host    json.RawMessage `json:"host"`
+	}
+	if err := json.Unmarshal(raw, &probe); err != nil {
+		return err
+	}
+	*u = HostMutationResult{}
+	hasHost := len(probe.Host) > 0 && string(probe.Host) != "null"
+	// Which row shape the arm carries is read off the host object itself: the
+	// dedicated removed row carries `midEnsure` and never `midAttach`, while a
+	// live row is the other way round (each is non-optional on its own shape).
+	// A remove's arms always carry the removed shape and add/update's never do,
+	// so a client that knows its method can narrow on the discriminator alone;
+	// this keeps the union decodable on its own too.
+	removed := false
+	if hasHost {
+		var shape map[string]json.RawMessage
+		if err := json.Unmarshal(probe.Host, &shape); err == nil {
+			_, removed = shape["midEnsure"]
+		}
+	}
+	switch probe.Outcome {
+	case HostMutationOutcomeCommitted:
+		if removed {
+			arm := HostMutationCommittedRemoved{}
+			if err := json.Unmarshal(raw, &arm); err != nil {
+				return err
+			}
+			u.HostMutationCommittedRemoved = &arm
+			return nil
+		}
+		arm := HostMutationCommitted{}
+		if err := json.Unmarshal(raw, &arm); err != nil {
+			return err
+		}
+		u.HostMutationCommitted = &arm
+		return nil
+	case HostMutationOutcomeTeardownFailure:
+		if removed {
+			arm := HostMutationTeardownFailureRemoved{}
+			if err := json.Unmarshal(raw, &arm); err != nil {
+				return err
+			}
+			u.HostMutationTeardownFailureRemoved = &arm
+			return nil
+		}
+		arm := HostMutationTeardownFailure{}
+		if err := json.Unmarshal(raw, &arm); err != nil {
+			return err
+		}
+		u.HostMutationTeardownFailure = &arm
+		return nil
+	case HostMutationOutcomeCollisionDropped:
+		arm := HostMutationCollisionDropped{}
+		if err := json.Unmarshal(raw, &arm); err != nil {
+			return err
+		}
+		u.HostMutationCollisionDropped = &arm
+		return nil
+	case HostMutationOutcomeAmbiguous:
+		arm := HostMutationAmbiguous{}
+		if err := json.Unmarshal(raw, &arm); err != nil {
+			return err
+		}
+		u.HostMutationAmbiguous = &arm
+		return nil
+	default:
+		return fmt.Errorf("appwire: host mutation result carries outcome %q, want one of %q, %q, %q, %q",
+			probe.Outcome, HostMutationOutcomeCommitted, HostMutationOutcomeTeardownFailure,
+			HostMutationOutcomeCollisionDropped, HostMutationOutcomeAmbiguous)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// evener/host/teardown-retry and evener/host/teardown-recover (registry §11)
+// ---------------------------------------------------------------------------
+
+// HostTeardownRetryParams is the evener/host/teardown-retry payload (registry
+// spec 08 §6/§11): the opaque id of the remnant whose pinned teardown to
+// resume. Lookup is by id alone — "lookup never requires a current live entry
+// and later mutations cannot strand it".
+type HostTeardownRetryParams struct {
+	RemnantID string `json:"remnantId"`
+}
+
+// The three outcomes the retry's six declared arms cross with the two host
+// shapes (registry spec 08 §11: "three outcomes crossed with both host
+// shapes").
+const (
+	HostTeardownOutcomeComplete  = "teardown-complete"
+	HostTeardownOutcomeCleared   = "already-cleared"
+	HostTeardownOutcomeFailed    = "committed-with-teardown-failure"
+	HostTeardownOutcomeRecovered = "recovered-cleared"
+)
+
+// The two host shapes the retry and recover arms carry.
+const (
+	HostKindLive    = "live"
+	HostKindRemoved = "removed"
+)
+
+// HostTeardownRetryCompleteLive is `teardown-complete` for a remnant whose
+// pinned generation is still live: the teardown is done and the row renders.
+type HostTeardownRetryCompleteLive struct {
+	Outcome          string  `json:"outcome"`
+	HostKind         string  `json:"hostKind"`
+	Host             HostRow `json:"host"`
+	RemnantID        string  `json:"remnantId"`
+	EscalationAgeSec *int64  `json:"escalationAgeSec,omitempty"`
+}
+
+// HostTeardownRetryCompleteRemoved is `teardown-complete` for a remnant whose
+// pinned generation was removed.
+type HostTeardownRetryCompleteRemoved struct {
+	Outcome          string     `json:"outcome"`
+	HostKind         string     `json:"hostKind"`
+	Host             RemovedRow `json:"host"`
+	RemnantID        string     `json:"remnantId"`
+	EscalationAgeSec *int64     `json:"escalationAgeSec,omitempty"`
+}
+
+// HostTeardownRetryClearedLive is the `already-cleared` idempotent-replay arm
+// for a live generation: "a retry naming an already-cleared remnant returns the
+// already-cleared success arm, a receipt-returned no-op".
+type HostTeardownRetryClearedLive struct {
+	Outcome          string  `json:"outcome"`
+	HostKind         string  `json:"hostKind"`
+	Host             HostRow `json:"host"`
+	RemnantID        string  `json:"remnantId"`
+	EscalationAgeSec *int64  `json:"escalationAgeSec,omitempty"`
+}
+
+// HostTeardownRetryClearedRemoved is the `already-cleared` replay arm for a
+// removed generation.
+type HostTeardownRetryClearedRemoved struct {
+	Outcome          string     `json:"outcome"`
+	HostKind         string     `json:"hostKind"`
+	Host             RemovedRow `json:"host"`
+	RemnantID        string     `json:"remnantId"`
+	EscalationAgeSec *int64     `json:"escalationAgeSec,omitempty"`
+}
+
+// HostTeardownRetryFailedLive is the timeout arm for a live generation: "the
+// same failure outcome as the mutation-result union, carrying the still-open
+// remnant's details for a later retry", with `seam` naming the failed seam.
+type HostTeardownRetryFailedLive struct {
+	Outcome          string  `json:"outcome"`
+	HostKind         string  `json:"hostKind"`
+	Host             HostRow `json:"host"`
+	RemnantID        string  `json:"remnantId"`
+	Seam             string  `json:"seam"`
+	EscalationAgeSec *int64  `json:"escalationAgeSec,omitempty"`
+}
+
+// HostTeardownRetryFailedRemoved is the timeout arm for a removed generation.
+type HostTeardownRetryFailedRemoved struct {
+	Outcome          string     `json:"outcome"`
+	HostKind         string     `json:"hostKind"`
+	Host             RemovedRow `json:"host"`
+	RemnantID        string     `json:"remnantId"`
+	Seam             string     `json:"seam"`
+	EscalationAgeSec *int64     `json:"escalationAgeSec,omitempty"`
+}
+
+// HostTeardownRetryResult is evener/host/teardown-retry's six-arm result union
+// (registry spec 08 §11): three outcomes crossed with both host shapes, exactly
+// one arm set.
+type HostTeardownRetryResult struct {
+	*HostTeardownRetryCompleteLive
+	*HostTeardownRetryCompleteRemoved
+	*HostTeardownRetryClearedLive
+	*HostTeardownRetryClearedRemoved
+	*HostTeardownRetryFailedLive
+	*HostTeardownRetryFailedRemoved
+}
+
+// MarshalJSON renders the one arm the retry union carries.
+func (u HostTeardownRetryResult) MarshalJSON() ([]byte, error) {
+	arms := make([]any, 0, 6)
+	for _, arm := range []any{
+		u.HostTeardownRetryCompleteLive, u.HostTeardownRetryCompleteRemoved,
+		u.HostTeardownRetryClearedLive, u.HostTeardownRetryClearedRemoved,
+		u.HostTeardownRetryFailedLive, u.HostTeardownRetryFailedRemoved,
+	} {
+		if arm != nil && !isNilArm(arm) {
+			arms = append(arms, arm)
+		}
+	}
+	if len(arms) == 0 {
+		return nil, errors.New("appwire: teardown-retry result carries no arm")
+	}
+	if len(arms) > 1 {
+		return nil, errors.New("appwire: teardown-retry result carries more than one arm")
+	}
+	return json.Marshal(arms[0])
+}
+
+// UnmarshalJSON reads the arm the `outcome`/`hostKind` pair names. An unknown
+// pair is refused: a client fails loudly rather than reading a zero arm.
+func (u *HostTeardownRetryResult) UnmarshalJSON(raw []byte) error {
+	var probe struct {
+		Outcome  string `json:"outcome"`
+		HostKind string `json:"hostKind"`
+	}
+	if err := json.Unmarshal(raw, &probe); err != nil {
+		return err
+	}
+	*u = HostTeardownRetryResult{}
+	decode := func(target any) error { return json.Unmarshal(raw, target) }
+	switch probe.Outcome + "/" + probe.HostKind {
+	case HostTeardownOutcomeComplete + "/" + HostKindLive:
+		arm := HostTeardownRetryCompleteLive{}
+		if err := decode(&arm); err != nil {
+			return err
+		}
+		u.HostTeardownRetryCompleteLive = &arm
+	case HostTeardownOutcomeComplete + "/" + HostKindRemoved:
+		arm := HostTeardownRetryCompleteRemoved{}
+		if err := decode(&arm); err != nil {
+			return err
+		}
+		u.HostTeardownRetryCompleteRemoved = &arm
+	case HostTeardownOutcomeCleared + "/" + HostKindLive:
+		arm := HostTeardownRetryClearedLive{}
+		if err := decode(&arm); err != nil {
+			return err
+		}
+		u.HostTeardownRetryClearedLive = &arm
+	case HostTeardownOutcomeCleared + "/" + HostKindRemoved:
+		arm := HostTeardownRetryClearedRemoved{}
+		if err := decode(&arm); err != nil {
+			return err
+		}
+		u.HostTeardownRetryClearedRemoved = &arm
+	case HostTeardownOutcomeFailed + "/" + HostKindLive:
+		arm := HostTeardownRetryFailedLive{}
+		if err := decode(&arm); err != nil {
+			return err
+		}
+		u.HostTeardownRetryFailedLive = &arm
+	case HostTeardownOutcomeFailed + "/" + HostKindRemoved:
+		arm := HostTeardownRetryFailedRemoved{}
+		if err := decode(&arm); err != nil {
+			return err
+		}
+		u.HostTeardownRetryFailedRemoved = &arm
+	default:
+		return fmt.Errorf("appwire: teardown-retry result carries outcome %q with hostKind %q, want one of the six declared arms",
+			probe.Outcome, probe.HostKind)
+	}
+	return nil
+}
+
+// HostTeardownAttestation is the audited recovery attestation (registry spec 08
+// §6/§11): the operator's identity, the one statement this build accepts, and
+// the instant the absence was observed.
+type HostTeardownAttestation struct {
+	Operator   string `json:"operator"`
+	Statement  string `json:"statement"`
+	ObservedAt string `json:"observedAt"`
+}
+
+// HostTeardownRecoverParams is the evener/host/teardown-recover payload
+// (registry spec 08 §6/§11).
+type HostTeardownRecoverParams struct {
+	RemnantID   string                  `json:"remnantId"`
+	Attestation HostTeardownAttestation `json:"attestation"`
+}
+
+// HostTeardownRecoverResult is evener/host/teardown-recover's result (registry
+// spec 08 §11): `{outcome: "recovered-cleared", remnantId, clearedName,
+// clearedAt, hostKind}` — "the response carries no live row because the recover
+// clears a remnant whose teardown never produced one". A retry naming an
+// already-recovered id replays the same shape from the persisted record.
+type HostTeardownRecoverResult struct {
+	Outcome     string `json:"outcome"`
+	RemnantID   string `json:"remnantId"`
+	ClearedName string `json:"clearedName"`
+	ClearedAt   string `json:"clearedAt"`
+	HostKind    string `json:"hostKind"`
 }

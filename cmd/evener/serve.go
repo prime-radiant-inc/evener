@@ -48,6 +48,15 @@ import (
 // deliberately does not do.
 const shutdownDrainWaitBudget = 30 * time.Second
 
+// Daemon HTTP listener deadlines: ReadHeaderTimeout bounds the pre-auth window
+// before a peer finishes its request headers (before AuthGuard runs);
+// IdleTimeout bounds an idle keep-alive socket. Neither governs a hijacked
+// AppWire connection, so long-lived streams are unaffected.
+const (
+	daemonHTTPReadHeaderTimeout = 10 * time.Second
+	daemonHTTPIdleTimeout       = 120 * time.Second
+)
+
 // retirementReaderDrainBudget bounds how long a committed retirement waits for
 // in-flight readers to leave before giving up on them. A drain that runs out
 // skips the release that follows it — release expects a drained readers set —
@@ -1873,7 +1882,11 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 		go func() { _ = retirement.Run(ctx, consumeRetirementClaim) }()
 	}
 
-	httpSrv := &http.Server{Handler: srv}
+	httpSrv := &http.Server{
+		Handler:           srv,
+		ReadHeaderTimeout: daemonHTTPReadHeaderTimeout,
+		IdleTimeout:       daemonHTTPIdleTimeout,
+	}
 	shutdownDone := make(chan struct{})
 	go func() {
 		defer close(shutdownDone)
