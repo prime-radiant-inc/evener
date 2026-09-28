@@ -1671,7 +1671,7 @@ func validateResetScratchGraph(manifest ScratchManifest) error {
 			return fmt.Errorf("retention reference %q of kind %q is claimed by no carried binding slot", ref.Dir, ref.Kind)
 		}
 	}
-	named := make(map[string]struct{})
+	named := consumerNamedBindingIDs(manifest.Consumers)
 	for _, consumer := range manifest.Consumers {
 		roles := []string{consumer.CurrentBindingID, consumer.ParentSharedBindingID, consumer.WorktreeRestoreBindingID}
 		roles = append(roles, consumer.AbandonedBindingIDs...)
@@ -1682,7 +1682,6 @@ func validateResetScratchGraph(manifest ScratchManifest) error {
 			if _, ok := bindingIDs[id]; !ok {
 				return fmt.Errorf("retention consumer %q references unknown binding %q", consumer.SessionID, id)
 			}
-			named[id] = struct{}{}
 		}
 	}
 	for id := range ownsLease {
@@ -1899,27 +1898,21 @@ func repairScratchRetentionLocked(owner ScratchOwner) (ScratchManifest, bool, er
 	changed := len(dropped) > 0
 	for i := range current.Bindings {
 		binding := &current.Bindings[i]
+		_, consumerNamed := named[binding.BindingID]
 		for kind, slot := range binding.Slots {
 			slotDir, err := canonicalScratchPath(slot.Dir)
 			if err != nil {
 				return ScratchManifest{}, false, err
 			}
-			if _, gone := dropped[slotDir]; gone {
-				delete(binding.Slots, kind)
-				changed = true
-			}
-		}
-		// A lease-owning binding no consumer role names can never be adopted on
-		// restore, and the graph reader fails closed on it — so a manifest left
-		// holding one (a publication that claimed a binding before its consumer
-		// row landed, then stopped) would wedge every later restore of this
-		// root. Demote it to the historical, slotless shape the reader keeps.
-		// Its allocation stays retained by its own reference.
-		if _, ok := named[binding.BindingID]; ok {
-			continue
-		}
-		for kind, slot := range binding.Slots {
-			if slot.OwnsLease {
+			_, gone := dropped[slotDir]
+			// Drop a slot whose directory this repair removed, and demote a slot
+			// it cannot attribute: a lease-owning binding no consumer role names
+			// can never be adopted on restore, and the graph reader fails closed
+			// on it, so a manifest left holding one (a publication that claimed a
+			// binding before its consumer row landed, then stopped) would wedge
+			// every later restore of this root. The allocation stays retained by
+			// its own reference.
+			if gone || (!consumerNamed && slot.OwnsLease) {
 				delete(binding.Slots, kind)
 				changed = true
 			}
