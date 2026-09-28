@@ -2115,6 +2115,12 @@ export interface NavigationProjectSummary {
   session_count: number;
 }
 
+export interface NavigationQuestion {
+  text: string;
+  options?: string[];
+  count: number;
+}
+
 export interface NavigationReadBase {
   generationId: string;
   revision: number;
@@ -2208,6 +2214,12 @@ export interface NavigationSessionSummary {
    */
   approval_tool?: string;
   approval_target?: string;
+  /**
+   * Question is the first question of the session's pending ask (S1b). It
+   * is present only on a row that carries AskPending and whose daemon named
+   * the question.
+   */
+  question?: NavigationQuestion;
   dormant?: boolean;
   /**
    * Offline marks a row folded into the merged list from a source that is

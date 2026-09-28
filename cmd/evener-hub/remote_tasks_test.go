@@ -12,52 +12,105 @@ import (
 	"primeradiant.com/evener/rendezvous"
 )
 
-// The hub's own list rows carry a root's task progress, and an in-process
-// subagent alias carries only the fields it owns. Comparing the WHOLE alias
-// entry -- rather than asserting each root-only field is cleared one at a
-// time -- means a field added to the root later (a pending question, a
-// failure summary, a last message) needs no field-specific "only on the
-// root" test of its own: it is covered the moment it is missing from the
-// alias literal in localDaemonEntriesFromRoster (S13b; fixes #2589).
-func TestLocalDaemonEntriesFromRosterAliasCarriesOnlyItsOwnFields(t *testing.T) {
-	tasks := &appwire.TaskAggregate{Total: 2, Done: 1, Remaining: 1}
-	card := appwire.SandboxEscalationRequested{ThreadID: "sess_root", Ref: "local:sess_root", EscalationID: "esc_1", Tool: "write_file", Kind: "file", DeniedPath: "/srv/docs/a.md"}
-	caps := appwire.ThreadCapabilities{Send: true}
-	rootEntry := rendezvous.Entry{Protocol: appwire.ProtocolVersion, Endpoint: "ws://127.0.0.1:50001/rpc", ThreadID: "sess_root", SessionID: "sess_root"}
-	live := hubcore.LiveEntry{
-		Entry:                 rootEntry,
-		SessionID:             "sess_root",
-		Status:                appwire.ThreadStatusActive,
-		PendingAsk:            true,
-		PendingEscalation:     true,
-		PendingEscalations:    []appwire.SandboxEscalationRequested{card},
-		RunningJobs:           []appwire.EvenerJobInfo{{JobID: "job_1"}},
-		CompletedJobs:         []appwire.EvenerJobInfo{{JobID: "job_0"}},
-		Watches:               []appwire.EvenerWatchInfo{{ID: "watch_root"}},
-		Capabilities:          caps,
-		CapabilitiesKnown:     true,
-		Subagents:             appwire.SubagentTally{Running: 1},
-		LastTurnEndedAt:       time.UnixMilli(1_700_000_000_000),
-		Tasks:                 tasks,
-		RunningSubagentIDs:    []string{"sess_child"},
-		RunningSubagentStates: map[string]string{"sess_child": "working"},
-		ChildWatches:          map[string][]appwire.EvenerWatchInfo{"sess_child": {{ID: "watch_child"}}},
+// fillEveryFieldNonZero reflectively sets every exported field of v (an
+// addressable struct) to a representative non-zero value, recursing through
+// pointers, slices, maps and nested structs. time.Time is filled directly
+// (its own fields are unexported, so reflection can't reach them).
+//
+// A test that copies only SOME of a source struct's fields into a derived
+// value, then compares the derived value against an explicit "want", cannot
+// tell "this field was correctly left out" from "this field happened to be
+// the zero value on both sides" unless every field starts non-zero. Filling
+// every field first is what lets TestLocalDaemonEntriesFromRosterAliasCarriesOnlyItsOwnFields's
+// single whole-struct comparison stand in for a field-by-field
+// "only on the root" test for every current AND future field, with no
+// fixture update required when a new field is added to hubcore.LiveEntry.
+func fillEveryFieldNonZero(t *testing.T, v reflect.Value) {
+	t.Helper()
+	if v.Type() == reflect.TypeFor[time.Time]() {
+		v.Set(reflect.ValueOf(time.UnixMilli(1_700_000_000_000)))
+		return
 	}
+	switch v.Kind() {
+	case reflect.String:
+		v.SetString("x")
+	case reflect.Bool:
+		v.SetBool(true)
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+		v.SetInt(1)
+	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
+		v.SetUint(1)
+	case reflect.Float32, reflect.Float64:
+		v.SetFloat(1)
+	case reflect.Slice:
+		elem := reflect.New(v.Type().Elem()).Elem()
+		fillEveryFieldNonZero(t, elem)
+		v.Set(reflect.Append(reflect.MakeSlice(v.Type(), 0, 1), elem))
+	case reflect.Map:
+		key := reflect.New(v.Type().Key()).Elem()
+		fillEveryFieldNonZero(t, key)
+		val := reflect.New(v.Type().Elem()).Elem()
+		fillEveryFieldNonZero(t, val)
+		m := reflect.MakeMap(v.Type())
+		m.SetMapIndex(key, val)
+		v.Set(m)
+	case reflect.Pointer:
+		p := reflect.New(v.Type().Elem())
+		fillEveryFieldNonZero(t, p.Elem())
+		v.Set(p)
+	case reflect.Struct:
+		for _, field := range v.Fields() {
+			if field.CanSet() {
+				fillEveryFieldNonZero(t, field)
+			}
+		}
+	default:
+		t.Fatalf("fillEveryFieldNonZero: unhandled kind %v (type %v) — teach it this shape", v.Kind(), v.Type())
+	}
+}
+
+// The hub's own list rows carry a root's task progress and pending question,
+// and an in-process subagent alias carries only the fields it owns. Every
+// field of live starts non-zero (fillEveryFieldNonZero), so comparing the
+// WHOLE alias entry against an explicit "want" of only the fields the alias
+// is meant to carry means a field added to the root later (a failure summary,
+// a last message) needs no field-specific "only on the root" test of its own,
+// and no update to this fixture: any root-only field the alias literal in
+// localDaemonEntriesFromRoster accidentally starts copying makes the
+// comparison fail the moment it stops being nil/zero on one side only (S13b
+// and S1b; fixes #2589).
+func TestLocalDaemonEntriesFromRosterAliasCarriesOnlyItsOwnFields(t *testing.T) {
+	var live hubcore.LiveEntry
+	fillEveryFieldNonZero(t, reflect.ValueOf(&live).Elem())
+	// Fields that drive the alias's construction, rather than being carried
+	// or withheld verbatim, need specific, mutually consistent values instead
+	// of the filler's arbitrary ones.
+	rootEntry := rendezvous.Entry{Protocol: appwire.ProtocolVersion, Endpoint: "ws://127.0.0.1:50001/rpc", ThreadID: "sess_root", SessionID: "sess_root"}
+	live.Entry = rootEntry
+	live.SessionID = "sess_root"
+	live.Crashed = false // a crashed entry is skipped entirely; must not be filled true
+	live.RunningSubagentIDs = []string{"sess_child"}
+	live.RunningSubagentStates = map[string]string{"sess_child": "working"}
+	childWatches := []appwire.EvenerWatchInfo{{ID: "watch_child"}}
+	live.ChildWatches = map[string][]appwire.EvenerWatchInfo{"sess_child": childWatches}
 
 	entries := localDaemonEntriesFromRoster([]hubcore.LiveEntry{live})
 	if len(entries) != 2 {
 		t.Fatalf("entries = %+v, want the root and its one alias", entries)
 	}
-	if !reflect.DeepEqual(entries[0].Tasks, tasks) {
-		t.Fatalf("root entry tasks = %+v, want %+v", entries[0].Tasks, tasks)
+	if !reflect.DeepEqual(entries[0].Tasks, live.Tasks) {
+		t.Fatalf("root entry tasks = %+v, want %+v", entries[0].Tasks, live.Tasks)
+	}
+	if !reflect.DeepEqual(entries[0].PendingQuestion, live.PendingQuestion) {
+		t.Fatalf("root entry question = %+v, want %+v", entries[0].PendingQuestion, live.PendingQuestion)
 	}
 	want := appsource.LocalDaemonEntry{
 		Entry:             rootEntry,
 		SessionID:         "sess_child",
 		OwnerSessionID:    "sess_root",
 		Status:            "working",
-		Watches:           []appwire.EvenerWatchInfo{{ID: "watch_child"}},
-		Capabilities:      caps,
+		Watches:           childWatches,
+		Capabilities:      live.Capabilities,
 		CapabilitiesKnown: true,
 		ReadOnlyAlias:     true,
 	}

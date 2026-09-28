@@ -39,6 +39,12 @@ type LiveEntry struct {
 	// A card carries the full literal denied path for informed consent, so it
 	// reaches human clients only, as thread/read's cards already do.
 	PendingEscalations []appwire.SandboxEscalationRequested
+	// PendingQuestion is the first question of the daemon's pending ask
+	// (S1b), from the same root row as PendingAsk; nil while none waits and
+	// from a daemon that predates it. A row names it only while PendingAsk is
+	// set, and rosterFingerprint hashes it: a question answered and another
+	// asked between two probes leaves PendingAsk and Status where they were.
+	PendingQuestion *appwire.PendingQuestion
 	// Capabilities mirrors the daemon's own Evener capability set from the
 	// probe that produced this entry, so list projections can advertise the
 	// daemon's answer instead of a hand approximation (#1840's one-answer
@@ -117,6 +123,9 @@ type ProbeResult struct {
 	// PendingEscalations mirrors LiveEntry.PendingEscalations: the blocked
 	// cards from the same root row, in raise order.
 	PendingEscalations []appwire.SandboxEscalationRequested
+	// PendingQuestion mirrors LiveEntry.PendingQuestion: the first pending
+	// question from the same root row as PendingAsk (S1b).
+	PendingQuestion *appwire.PendingQuestion
 	// Capabilities is the daemon's own Evener capability set from the same
 	// projection cut as Status. CapabilitiesKnown reports whether this probe
 	// read one: a failed, protocol-mismatched, or legacy probe leaves the set
@@ -199,6 +208,7 @@ func CloneLiveEntry(in LiveEntry) LiveEntry {
 	out := in
 	out.ActiveFlags = append([]string(nil), in.ActiveFlags...)
 	out.PendingEscalations = append([]appwire.SandboxEscalationRequested(nil), in.PendingEscalations...)
+	out.PendingQuestion = appwire.ClonePendingQuestion(in.PendingQuestion)
 	out.RunningSubagentIDs = append([]string(nil), in.RunningSubagentIDs...)
 	out.RunningSubagentStates = cloneSubagentStates(in.RunningSubagentStates)
 	out.RunningJobs = cloneRunningJobs(in.RunningJobs)
@@ -465,6 +475,19 @@ func rosterFingerprint(bySess map[string]LiveEntry) uint64 {
 		for _, card := range bySess[id].PendingEscalations {
 			_, _ = h.Write([]byte(card.EscalationID))
 			_, _ = h.Write([]byte{0})
+		}
+		_, _ = h.Write([]byte{0})
+		// A row names the first pending question, and a question answered and
+		// another asked between two probes holds the ask flag and the status
+		// still (S1b).
+		if question := bySess[id].PendingQuestion; question != nil {
+			_, _ = h.Write([]byte(question.Question))
+			_, _ = h.Write([]byte{0})
+			for _, label := range question.Options {
+				_, _ = h.Write([]byte(label))
+				_, _ = h.Write([]byte{0})
+			}
+			_, _ = h.Write([]byte(strconv.Itoa(question.Count)))
 		}
 		_, _ = h.Write([]byte{0})
 		// The daemon's capability answer is per-session observable state in
@@ -1393,6 +1416,7 @@ func liveEntryFromProbe(e rendezvous.Entry, result ProbeResult) LiveEntry {
 		PendingAsk:            result.PendingAsk,
 		PendingEscalation:     result.PendingEscalation,
 		PendingEscalations:    result.PendingEscalations,
+		PendingQuestion:       result.PendingQuestion,
 		Capabilities:          result.Capabilities,
 		CapabilitiesKnown:     result.CapabilitiesKnown,
 		RunningSubagentIDs:    result.RunningSubagentIDs,
@@ -1470,6 +1494,7 @@ func (r *Roster) ReadSpawnedThread(ctx context.Context, entry rendezvous.Entry, 
 		ActiveFlags: append([]string(nil), root.Status.ActiveFlags...),
 		PendingAsk:  root.Evener.AskPending, PendingEscalation: len(root.Evener.PendingEscalations) > 0,
 		PendingEscalations: root.Evener.PendingEscalations,
+		PendingQuestion:    root.Evener.PendingQuestion,
 		RunningJobs:        runningJobs, CompletedJobs: completedJobs,
 		Watches: diagnosticsWatches(root.Evener.Diagnostics),
 		Tasks:   root.Evener.Tasks,
