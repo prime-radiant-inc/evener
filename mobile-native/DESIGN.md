@@ -116,6 +116,7 @@ The implementation switches between light and dark palettes through the native c
 ### Neutral
 - **Paper background** (`#FAF9F6` light, `#191918` dark): Main reading and browsing canvas.
 - **Soft surface** (`#F4F3EE` light, `#20201E` dark): Inputs and raised native-looking controls.
+- **Raised** (`#FCFBF8` light, `#232320` dark): The Session's composer and ask dock.
 - **Primary text** (`#252521` light, `#F2F1EB` dark): Project and session content.
 - **Secondary text** (`#5F5F57` light, `#B0AFA6` dark): Counts, metadata, and quiet state explanations.
 - **Quiet border** (`#DDDCD4` light, `#34342F` dark): Sparse row and input boundaries.
