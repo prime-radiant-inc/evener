@@ -816,7 +816,7 @@ func (b *builder) addContributor(slot uint64, c contributor, version uint64) err
 	// between the two must leave a leftover update-log row behind it, or a
 	// later CatchUpTo for a length short of this entry could truncate the
 	// log away and find nothing telling it the committed slot below was
-	// already overwritten (transcriptindex.unsafeLeftoverUpdate reads
+	// already overwritten (Index.leftoverUpdatesToCommittedSlots reads
 	// exactly that row to force a rebuild rather than leak the overwrite
 	// past Window.Length).
 	if err := b.logUpdate(updatedItem, slot, c.Offset); err != nil {

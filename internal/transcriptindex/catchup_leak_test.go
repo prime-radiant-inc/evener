@@ -250,9 +250,9 @@ func TestCatchUpToInsideTheCausingEntryStillRebuilds(t *testing.T) {
 // addContributor used to overwrite a tool call item's record in place and
 // only log that update afterward, so a kill between the write and the log
 // left the committed slot already changed with no leftover update-log row
-// to make unsafeLeftoverUpdate notice it -- any reader sharing the sidecar
-// (regardless of what length it has itself caught up to, since a table read
-// goes straight to the slot on disk) would see the call completed before
+// to make leftoverUpdatesToCommittedSlots notice it -- any reader sharing
+// the sidecar (regardless of what length it has itself caught up to, since
+// a table read goes straight to the slot on disk) would see the call completed before
 // its own covered length admits the completing entry exists. addContributor
 // now logs first, matching stampTurn: a kill between the two
 // (testKillAfterItemUpdateLog) leaves a leftover row with the item's
@@ -313,5 +313,113 @@ func TestAddContributorLogsBeforeOverwritingSoAKillLeavesTheCommittedItemUntouch
 	got.Incarnation, want.Incarnation = "", ""
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("daemon after the kill (never asked past floor %d) = %s, want the reference (never interrupted) %s", floor, dump(got), dump(want))
+	}
+}
+
+// TestALeftoverUpdateRowReadErrorMarksTheIndexForRebuild: a read error while
+// extend scans leftover update-log rows (leftoverUpdatesToCommittedSlots)
+// must go through x.fail like any other index read error, so the index is
+// marked stale and the next catch-up rebuilds instead of failing on the same
+// unreadable row forever. The read error is injected by swapping the update
+// log's handle for a write-only one on the same file: Stat still works, so
+// the leftover row is found, but reading it fails.
+func TestALeftoverUpdateRowReadErrorMarksTheIndexForRebuild(t *testing.T) {
+	fx := namedResults()
+	path, lines := writeHeaderOnly(t, fx)
+	dir := t.TempDir()
+	appendBytes(t, path, joinLines(lines[:len(lines)-5]))
+	x := openIndex(t, path, dir)
+	updatesPath := filepath.Join(x.dir, x.build, x.updatesName)
+
+	// A leftover row past the committed count, as a killed extension leaves.
+	f, err := os.OpenFile(updatesPath, os.O_APPEND|os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.Write(make([]byte, updateRecordSize)); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+	writeOnly, err := os.OpenFile(updatesPath, os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := x.updates.file.Close(); err != nil {
+		t.Fatal(err)
+	}
+	x.updates.file = writeOnly
+
+	appendBytes(t, path, joinLines(lines[len(lines)-5:]))
+	if err := x.CatchUp(); !errors.Is(err, errCorrupt) {
+		t.Fatalf("catch-up over an unreadable leftover row: err = %v, want errCorrupt", err)
+	}
+	builds := x.rebuilds
+	catchUp(t, x)
+	if x.rebuilds != builds+1 {
+		t.Fatalf("builds = %d, want the index rebuilt after the leftover row's read error (was %d)", x.rebuilds, builds)
+	}
+	assertAllWindows(t, x, path)
+}
+
+// TestCatchUpToShortOfALeftoverItemUpdateRebuilds pins the item-kind arm of
+// leftoverUpdatesToCommittedSlots with a short CatchUpTo. Every entry that
+// updates an item in place also stamps that item's turn, logging an
+// updatedTurn row for the same offset, so a kill after the whole entry
+// (simulateKill) leaves a turn row that forces the rebuild on its own and
+// hides whether the item arm works. Killing between the item's update-log
+// row and its overwrite (testKillAfterItemUpdateLog) leaves an updatedItem
+// row alone, so only the item arm can see it: a second handle's CatchUpTo
+// for a length inside the result entry must rebuild on that row, and still
+// answer as a reference that was never interrupted does.
+func TestCatchUpToShortOfALeftoverItemUpdateRebuilds(t *testing.T) {
+	header := transcript.Header{SessionID: "kill_item_short", CreatedAt: fixtureClock, ProfileID: "openai", Model: "gpt-test"}
+	lines := [][]byte{
+		encodeEntry(t, 1, assistant(call("call_1", "shell", `{"cmd":"ls"}`))),
+		encodeEntry(t, 2, results(result("call_1", "shell", "a.txt"))),
+	}
+
+	path := filepath.Join(t.TempDir(), "session.transcript.jsonl")
+	if err := os.WriteFile(path, encodeHeader(t, header), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+
+	appendBytes(t, path, lines[0])
+	hub := openIndex(t, path, dir)
+	floor := hub.meta.Length
+	daemon := openIndex(t, path, dir)
+	reference := openIndex(t, path, filepath.Join(t.TempDir(), "reference"))
+
+	midOfResult := floor + int64(len(lines[1]))/2
+
+	appendBytes(t, path, lines[1])
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	testKillAfterItemUpdateLog = func() error {
+		return errors.New("killed between the update-log row and the item overwrite")
+	}
+	t.Cleanup(func() { testKillAfterItemUpdateLog = nil })
+	if err := hub.CatchUpTo(info.Size()); err == nil {
+		t.Fatal("the killed extension returned success")
+	}
+	testKillAfterItemUpdateLog = nil
+
+	builds := daemon.rebuilds
+	if err := daemon.CatchUpTo(midOfResult); err != nil {
+		t.Fatal(err)
+	}
+	if daemon.rebuilds != builds+1 {
+		t.Fatalf("builds = %d, want the leftover updatedItem row to force a rebuild (was %d)", daemon.rebuilds, builds)
+	}
+	if err := reference.CatchUpTo(midOfResult); err != nil {
+		t.Fatal(err)
+	}
+	got, want := changedIgnoringIncarnation(t, daemon), changedIgnoringIncarnation(t, reference)
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("daemon after CatchUpTo(%d) inside the result entry = %s, want the reference (never interrupted) %s", midOfResult, dump(got), dump(want))
 	}
 }
