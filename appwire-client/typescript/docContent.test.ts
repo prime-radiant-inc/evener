@@ -241,6 +241,14 @@ describe("readDocFile", () => {
     await expect(readDocFile("s1", "gone.txt", port)).rejects.toMatchObject({ kind: "not-found", status: 404 });
   });
 
+  test("a 501 (the session's host predates S7 document reads) rejects with a host-unsupported DocFileError", async () => {
+    const port = respondWith(new Response("remote document unavailable", { status: 501 }));
+    await expect(readDocFile("h1:s1", "plan.md", port)).rejects.toMatchObject({
+      kind: "host-unsupported",
+      status: 501,
+    });
+  });
+
   test("any other non-ok status rejects with a generic error DocFileError carrying the status", async () => {
     const port = respondWith(new Response("boom", { status: 500 }));
     await expect(readDocFile("s1", "x.txt", port)).rejects.toMatchObject({ kind: "error", status: 500 });
