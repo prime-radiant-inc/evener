@@ -669,16 +669,25 @@ function fleetAnswers(
 		return projectKey;
 	}
 
+	// The tier a row is served under, in one place: the location branch reports
+	// this tier and a reveal then asks that exact project_page tier, so the two
+	// must come from one computation. An archived row's is "archived", a
+	// hub-test-env test-run row's is "current" (test runs are never split by
+	// age), every other row's current or recent by the same 24h boundary.
+	function servedTier(raw: RawSession): "current" | "recent" | "archived" {
+		return raw.archived ? "archived" : raw.test || raw.ago < D ? "current" : "recent";
+	}
+
 	// Every tier is a real, fully pageable list -- including archived, now
 	// that SESSIONS carries all 271 (5 named plus the generated filler) --
 	// so callers page it with the same page() every other resource uses
 	// instead of a bespoke "5 rows, 266 remaining forever" shortcut.
 	function tierRows(projectKey: string, tier: "current" | "recent" | "archived"): NavigationSessionSummary[] {
-		if (tier === "archived") return projectKey === "evener" ? archivedRaw.map(rowOf) : [];
-		if (projectKey === "hub-test-env") return tier === "current" ? testRunRaw.map(rowOf) : [];
-		const inProject = projectSessionsRaw(sessionsList, projectKey);
-		const inTier = tier === "current" ? inProject.filter((raw) => raw.ago < D) : inProject.filter((raw) => raw.ago >= D);
-		return inTier.map(rowOf);
+		if (tier === "archived") return projectKey === "evener" ? archivedRaw.filter((raw) => servedTier(raw) === tier).map(rowOf) : [];
+		if (projectKey === "hub-test-env") return testRunRaw.filter((raw) => servedTier(raw) === tier).map(rowOf);
+		return projectSessionsRaw(sessionsList, projectKey)
+			.filter((raw) => servedTier(raw) === tier)
+			.map(rowOf);
 	}
 
 	// A value the wire's own uint32 field could actually carry: a safe integer
@@ -797,17 +806,15 @@ function fleetAnswers(
 			}
 			case "location": {
 				const ref = params.ref as string;
-				const raw = SESSIONS.find((session) => rowOf(session).ref === ref);
+				const raw = sessionsList.find((session) => rowOf(session).ref === ref);
 				if (!raw) throw new Error(`Unknown demonstration session location: ${ref}`);
 				// The hub's location is a shallow summary (navigation_projection.go's
 				// projectShallow), not a row with its descendants: a location resource
-				// holds exactly one entity. Its tier must be the one tierRows serves the
-				// row under, since a reveal reads this tier and then asks that exact
-				// project_page: an archived row's is "archived", and a test-run row's is
-				// "current" (tierRows serves every hub-test-env row under current only,
-				// never by age), otherwise current or recent by the same age split.
-				const tier = raw.archived ? "archived" : raw.test || raw.ago < D ? "current" : "recent";
-				const response = respond(params, {
+				// holds exactly one entity. servedTier is the one place this row's tier
+				// is decided, so the reveal that asks this exact tier's project_page
+				// cannot drift from what tierRows serves it under.
+				const tier = servedTier(raw);
+				const response = respond(revision, params, {
 					session: { ...rowOf(raw), children: [] },
 					top_level_ref: ref,
 					top_level: true,
