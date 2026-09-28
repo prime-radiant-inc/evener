@@ -316,3 +316,43 @@ func TestHubNoticesReadHoldsItsLockAcrossDerive(t *testing.T) {
 		t.Fatalf("derive order = %v, want %v: each read's derive must fully finish before the next one starts", order, want)
 	}
 }
+
+// A daemon's refresh the issuer refused for good raises the sign-in notice
+// (#2479): the refusal is noted beside the record, the evener/auth/list row
+// reads it, and the notice names the instance while its access token is still
+// good. A later sign-in, which saves a new record, clears it.
+func TestHubNoticesNameARefusedRefresh(t *testing.T) {
+	now := time.Date(2026, 9, 27, 12, 0, 0, 0, time.UTC)
+	auth := newHubAuthController(map[string]string{"OPENAI_API_KEY": ""})
+	auth.stateDir = t.TempDir()
+	attachTestRegistry(t, auth)
+	auth.now = func() time.Time { return now }
+	record := authopenai.AuthRecord{
+		Version: 1, Provider: "openai", Source: authopenai.AuthSourceOAuth,
+		ObtainedAt: now.Add(-time.Hour), TokenType: "Bearer", AccessToken: "stored-access-token",
+		RefreshToken: "stored-refresh-token", Expiry: now.Add(time.Hour),
+	}
+	if err := authopenai.SaveAuth(auth.stateDir, "openai-codex", record); err != nil {
+		t.Fatal(err)
+	}
+	notices := &hubNotices{auth: func() (appwire.AuthListResponse, error) { return auth.List(appwire.EmptyParams{}) }}
+	if got, _ := notices.derive(context.Background()); len(got) != 0 {
+		t.Fatalf("notices before any refusal = %+v, want none", got)
+	}
+
+	if err := authopenai.RecordRefreshRejection(auth.stateDir, "openai-codex", record.RefreshToken, now); err != nil {
+		t.Fatal(err)
+	}
+	want := []appwire.HubNotice{{ID: "signInRequired:openai-codex", Kind: appwire.NoticeKindSignInRequired, Subject: "openai-codex"}}
+	if got, _ := notices.derive(context.Background()); !reflect.DeepEqual(got, want) {
+		t.Fatalf("notices after a refusal = %+v, want %+v", got, want)
+	}
+
+	record.RefreshToken = "fresh-refresh-token"
+	if err := authopenai.SaveAuth(auth.stateDir, "openai-codex", record); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := notices.derive(context.Background()); len(got) != 0 {
+		t.Fatalf("notices after signing in again = %+v, want none", got)
+	}
+}
