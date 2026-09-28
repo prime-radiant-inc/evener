@@ -326,6 +326,24 @@ describe("a Board row (spec 7.2)", () => {
 		button.props.onAccessibilityAction({ nativeEvent: { actionName: "archive" } });
 		expect(onAccessibilityAction).toHaveBeenCalledWith({ nativeEvent: { actionName: "archive" } });
 	});
+
+	it("washes amber behind its content, fading out, when it has just entered Needs you", () => {
+		const washes = (tree: ReactTestRenderer) => tree.root.findAll((node) => node.type === ("Animated.View" as never));
+		const tree = mount({ wash: 2 });
+		const [wash] = washes(tree);
+		expect(washes(tree)).toHaveLength(1);
+		expect(wash.props.pointerEvents).toBe("none");
+		const style = styleOf(wash);
+		expect(style).toMatchObject({ position: "absolute", top: 0, right: 0, bottom: 0, left: 0 });
+		expect(style.backgroundColor).toBe(palette.attentionBg);
+		// The mocked timing lands on its target at once: faded out.
+		expect((style.opacity as { value: number }).value).toBe(0);
+		// It sits behind the row's content: the button's first child.
+		const [first] = pressable(tree).children as ReactTestInstance[];
+		expect(washes({ root: first } as ReactTestRenderer)).toEqual([wash]);
+		expect(washes(mount({ wash: 0 }))).toHaveLength(0);
+		expect(washes(mount())).toHaveLength(0);
+	});
 });
 
 /** The Pressable's style for a press state: the inert test host never calls

@@ -1,11 +1,20 @@
 import type { NavigationSessionSummary, SessionActivity } from "@evener/appwire-client";
 import { relativeAge } from "@evener/appwire-client/state/navigation";
 import { SymbolView } from "expo-symbols";
-import type { ReactElement } from "react";
-import { type AccessibilityActionEvent, type AccessibilityActionInfo, Platform, Pressable, Text, View } from "react-native";
+import { type ReactElement, useEffect, useState } from "react";
+import {
+	type AccessibilityActionEvent,
+	type AccessibilityActionInfo,
+	Animated,
+	Platform,
+	Pressable,
+	Text,
+	View,
+} from "react-native";
 import type { Palette } from "../design/tokens";
 import { useColors, useTextScale } from "../ui";
 import { bandOf, type ClassifiedRow, lastLine, stateWord, type Usual, type WhyLine, whyLine } from "./attention";
+import { WASH_MS } from "./settledList";
 import { StateMark } from "./StateMark";
 
 export interface BoardRowProps {
@@ -36,6 +45,9 @@ export interface BoardRowProps {
 	 * pressable a touch reaches, so the menu's press has to live on it. */
 	onLongPress?: () => void;
 	delayLongPress?: number;
+	/** Non-zero while the row has just entered Needs you: each new value
+	 * washes it amber again (spec 7.3). */
+	wash?: number;
 }
 
 /** Where a row's title starts: its 16pt padding, the 28pt mark column and
@@ -119,6 +131,7 @@ export function BoardRow({
 	onAccessibilityAction,
 	onLongPress,
 	delayLongPress,
+	wash = 0,
 }: BoardRowProps): ReactElement {
 	const { palette } = useColors();
 	const scale = useTextScale();
@@ -155,6 +168,7 @@ export function BoardRow({
 				opacity: dimmed ? 0.5 : 1,
 			})}
 		>
+			{wash ? <Wash key={wash} /> : null}
 			<View style={{ height: lineOne, justifyContent: "center" }}>
 				<StateMark
 					state={state}
@@ -218,6 +232,24 @@ export function BoardRow({
 				) : null}
 			</View>
 		</Pressable>
+	);
+}
+
+/** The amber wash behind a row that just entered Needs you (spec 7.3): full
+ * at once, then fading out over WASH_MS. Reduce Motion keeps it (ruling 23):
+ * it is a fade, and with rows jumping it is the only cue to where one landed.
+ * Remounted by its key for each new wash. */
+function Wash() {
+	const { palette } = useColors();
+	const [opacity] = useState(() => new Animated.Value(1));
+	useEffect(() => {
+		Animated.timing(opacity, { toValue: 0, duration: WASH_MS, useNativeDriver: true }).start();
+	}, [opacity]);
+	return (
+		<Animated.View
+			pointerEvents="none"
+			style={{ position: "absolute", top: 0, right: 0, bottom: 0, left: 0, backgroundColor: palette.attentionBg, opacity }}
+		/>
 	);
 }
 

@@ -27,6 +27,8 @@ import type { ConversationClientLike } from "../../../mobile/src/services/conver
 import { alertRequests, render, renderedText, screenConnection, swipeableCalls } from "../renderNative.testkit";
 import { sheetKey } from "../sheet/sheetHosts";
 import { ACTIVITY_POLL_MS, STALE_AFTER_MS } from "./activityPoll";
+import { ROW_MOVE } from "./boardMotion";
+import { BoardRow } from "./BoardRow";
 import { BoardScreen } from "./BoardScreen";
 import { PulseMeter } from "./PulseMeter";
 import { hubSeenMarks } from "./hubSeen";
@@ -34,6 +36,7 @@ import { seenMarkers } from "./nativeBoardMemory";
 import { SESSION_ID } from "./organizationTestUtils";
 import { ROW_ACTION_LABELS } from "./rowActions";
 import { type RowMenuHost, rowMenuHosts } from "./RowMenu";
+import { WASH_MS } from "./settledList";
 
 const harness = vi.hoisted(() => ({
 	connection: {} as Record<string, unknown>,
@@ -46,6 +49,10 @@ const harness = vi.hoisted(() => ({
 	actionSheet: vi.fn(),
 	prompt: vi.fn(),
 	sqlite: new Map<string, unknown>(),
+	/** What AccessibilityInfo says of Reduce Motion. */
+	reduceMotion: false,
+	/** AppState's change listeners. */
+	appState: new Set<(state: string) => void>(),
 }));
 
 vi.mock("react-native", async () => {
@@ -55,9 +62,20 @@ vi.mock("react-native", async () => {
 		Alert: { ...native.Alert, prompt: (...args: unknown[]) => harness.prompt(...args) },
 		ActionSheetIOS: { showActionSheetWithOptions: (...args: unknown[]) => harness.actionSheet(...args) },
 		Keyboard: { dismiss: () => {} },
-		AccessibilityInfo: { announceForAccessibility: () => {} },
+		AccessibilityInfo: {
+			announceForAccessibility: () => {},
+			isReduceMotionEnabled: () => Promise.resolve(harness.reduceMotion),
+			addEventListener: () => ({ remove: () => {} }),
+		},
+		AppState: {
+			addEventListener: (_type: string, listener: (state: string) => void) => {
+				harness.appState.add(listener);
+				return { remove: () => harness.appState.delete(listener) };
+			},
+		},
 	};
 });
+vi.mock("react-native-reanimated", async () => (await import("../renderNative.testkit")).reanimatedModuleMock());
 vi.mock("react-native-gesture-handler/ReanimatedSwipeable", async () =>
 	(await import("../renderNative.testkit")).gestureHandlerModuleMock(),
 );
@@ -132,6 +150,7 @@ beforeEach(() => {
 	vi.setSystemTime(NOW);
 	harness.focused = true;
 	harness.stack = { index: 0, routes: [{ key: "Sessions", name: "Sessions" }] };
+	harness.reduceMotion = false;
 });
 function setFocused(focused: boolean) {
 	harness.focused = focused;
@@ -555,6 +574,9 @@ it("renders the fleet's bands in order with their counts, and Idle starts folded
 			node.findAll((child) => child.type === ("Text" as never) && child.props.children === "2 idle").length > 0,
 	);
 	act(() => idleCount.props.onPress());
+	// The unfold applies when the scroll to Idle ends, as any change does.
+	expect(hasRow(tree, "Old chore")).toBe(false);
+	listEvent(tree, "onMomentumScrollEnd");
 	expect(hasRow(tree, "Old chore")).toBe(true);
 	act(() => tree.unmount());
 });
@@ -685,6 +707,9 @@ it("unfolds a folded category when its chip is tapped", async () => {
 		(node) => node.props.testID === "chip" && node.props.accessibilityLabel === "Mine, 3 sessions",
 	);
 	act(() => chip.props.onPress());
+	// The unfold applies when the scroll to it ends, as any change does.
+	expect(hasRow(tree, "Kept note")).toBe(false);
+	listEvent(tree, "onMomentumScrollEnd");
 	expect(hasRow(tree, "Kept note")).toBe(true);
 	expect(JSON.parse(harness.kv.get(`evener.native.board-sections.${id}`) ?? "null")).toMatchObject({ "pin:pins-1": false });
 	act(() => tree.unmount());
@@ -3690,4 +3715,174 @@ it("stops providing the menu's host when the Board goes away", async () => {
 	expect(rowMenuHosts.get(sheetKey(id))).toBeDefined();
 	act(() => tree.unmount());
 	expect(rowMenuHosts.get(sheetKey(id))).toBeUndefined();
+});
+
+// The list holds still (spec 7.3, ruling 22): while a finger is on it, it
+// scrolls or glides, the app scrolls it, a row's swipe or the row menu is
+// open, and it applies every change at once when it settles.
+
+/** Live's band headers and rows in screen order: a header as its text, a
+ * row as its title. */
+function listOrder(tree: ReactTestRenderer): string[] {
+	return tree.root
+		.find((node) => node.props.testID === "live-block")
+		.findAll((node) => node.type === BoardRow || (node.type === ("Text" as never) && node.props.testID === "band-header"))
+		.map((node) => (node.type === BoardRow ? node.props.item.row.title : joinedText(node)));
+}
+const boardRowTitled = (tree: ReactTestRenderer, title: string) =>
+	tree.root.findAll((node) => node.type === BoardRow && node.props.item.row.title === title)[0];
+/** Sends one of the list's touch or scroll events, as the scroller would. */
+function listEvent(tree: ReactTestRenderer, handler: string, nativeEvent: Record<string, unknown> = {}) {
+	act(() => boardScroller(tree).props[handler]({ nativeEvent }));
+}
+const liftFinger = (tree: ReactTestRenderer) => listEvent(tree, "onTouchEnd", { touches: [] });
+const workingOrder = [
+	"NEEDS YOU · 2",
+	"Fix retry loop",
+	"Pick a name",
+	"FINISHED · 1",
+	"Ship it",
+	"WORKING · 1",
+	"Build docs",
+	"Idle · 2",
+];
+/** A Board over the default fleet whose working row can turn into a question. */
+async function mountAskingFleet(nav = navigation(), withInstances = false) {
+	const id = hubId();
+	adoptedAnHourAgo(id);
+	const shape: Fleet = { ...fleet, live: [[...fleet.live[0]]], needsYou: [...fleet.needsYou] };
+	const fake = hub(shape);
+	connect(id, fake.client, "ready");
+	const mounted = withInstances ? await mountWithInstances(nav) : { tree: await mount(nav), scrollTo: vi.fn() };
+	/** "Build docs" stops to ask a question. */
+	const ask = async () => {
+		const question = { ...working, state: "awaiting" as const, ask_pending: true };
+		shape.live[0] = shape.live[0].map((row) => (row.ref === working.ref ? question : row));
+		shape.needsYou = [...shape.needsYou, question];
+		act(() =>
+			fake.invalidate(1, [
+				{ kind: "section", section: "live" },
+				{ kind: "section", section: "needs_you" },
+			]),
+		);
+		await settle();
+	};
+	return { id, ...mounted, ask };
+}
+/** Whether "Build docs" still sits in Working, where it was. */
+const heldInWorking = (tree: ReactTestRenderer) =>
+	expect(listOrder(tree)).toEqual(["NEEDS YOU · 3", ...workingOrder.slice(1)]);
+/** Whether "Build docs" moved into Needs you, and Working is gone. */
+function movedToNeedsYou(tree: ReactTestRenderer) {
+	const order = listOrder(tree);
+	expect(order.indexOf("Build docs")).toBeLessThan(order.indexOf("FINISHED · 1"));
+	expect(order).not.toContain("WORKING · 1");
+}
+
+it("keeps a row in its place while a finger is on the list, then moves it into Needs you, washed, 100ms after the finger lifts", async () => {
+	const { tree, ask } = await mountAskingFleet();
+	expect(listOrder(tree)).toEqual(workingOrder);
+	listEvent(tree, "onTouchStart");
+	await ask();
+	heldInWorking(tree);
+	// Held, the row shows what it is now.
+	expect(boardRowTitled(tree, "Build docs").props.item.state).toBe("question");
+	expect(texts(tree)).toContain("Question");
+	liftFinger(tree);
+	await advance(99);
+	heldInWorking(tree);
+	await advance(1);
+	movedToNeedsYou(tree);
+	expect(boardRowTitled(tree, "Build docs").props.wash).toBeGreaterThan(0);
+	expect(boardRowTitled(tree, "Ship it").props.wash).toBe(0);
+	await advance(WASH_MS);
+	expect(boardRowTitled(tree, "Build docs").props.wash).toBe(0);
+});
+
+it("waits for a fling's glide to end before applying a change", async () => {
+	const { tree, ask } = await mountAskingFleet();
+	listEvent(tree, "onScrollBeginDrag");
+	listEvent(tree, "onScrollEndDrag");
+	listEvent(tree, "onMomentumScrollBegin");
+	await ask();
+	await advance(1000);
+	heldInWorking(tree);
+	listEvent(tree, "onMomentumScrollEnd");
+	movedToNeedsYou(tree);
+});
+
+it("holds the list while a chip's scroll animates, until the scroll ends", async () => {
+	const { tree, scrollTo, ask } = await mountAskingFleet(navigation(), true);
+	pressChip(tree, chipLabels(tree)[0]);
+	expect(scrollTo).toHaveBeenLastCalledWith({ y: 0, animated: true });
+	await ask();
+	await advance(500);
+	heldInWorking(tree);
+	listEvent(tree, "onMomentumScrollEnd");
+	movedToNeedsYou(tree);
+});
+
+it("holds the list while a row's swipe actions are open, until the row closes", async () => {
+	const { tree, ask } = await mountAskingFleet();
+	act(() => swipeableOf(tree, "Ship it").props.onSwipeableOpenStartDrag());
+	await ask();
+	await advance(1000);
+	heldInWorking(tree);
+	act(() => swipeableOf(tree, "Ship it").props.onSwipeableClose());
+	movedToNeedsYou(tree);
+});
+
+it("holds the list while the row menu is open, until it closes", async () => {
+	const nav = navigation();
+	const { id, tree, ask } = await mountAskingFleet(nav);
+	act(() => rowTitled(tree, "Ship it").props.onLongPress());
+	expect(nav.navigate).toHaveBeenLastCalledWith("RowMenuSheet", { hubId: id, ref: "local:done", archived: false });
+	await ask();
+	await advance(1000);
+	heldInWorking(tree);
+	act(() => menuHost(id).closed());
+	movedToNeedsYou(tree);
+});
+
+it("lets go of a held change when a screen is pushed over the Board, but not for its own sheet", async () => {
+	const nav = navigation();
+	const { tree, ask } = await mountAskingFleet(nav);
+	listEvent(tree, "onTouchStart");
+	await ask();
+	harness.stack = sheetOverBoard;
+	rerender(tree, nav);
+	heldInWorking(tree);
+	harness.stack = screenOverBoard;
+	rerender(tree, nav);
+	movedToNeedsYou(tree);
+});
+
+it("lets go of a held change when the app leaves the foreground", async () => {
+	const { tree, ask } = await mountAskingFleet();
+	listEvent(tree, "onTouchStart");
+	await ask();
+	heldInWorking(tree);
+	act(() => {
+		for (const listener of harness.appState) listener("inactive");
+	});
+	movedToNeedsYou(tree);
+});
+
+it("moves rows with the spring, and without it under Reduce Motion, when app scrolls don't animate or hold", async () => {
+	const { tree } = await mountAskingFleet();
+	const moving = () =>
+		boardScroller(tree).findAll((node) => node.type === ("Animated.View" as never) && "layout" in node.props);
+	expect(moving().length).toBeGreaterThan(0);
+	for (const view of moving()) expect(view.props.layout).toBe(ROW_MOVE);
+
+	harness.reduceMotion = true;
+	const calm = await mountAskingFleet(navigation(), true);
+	for (const view of calm.tree.root.findAll(
+		(node) => node.type === ("Animated.View" as never) && "layout" in node.props,
+	))
+		expect(view.props.layout).toBeUndefined();
+	pressChip(calm.tree, chipLabels(calm.tree)[0]);
+	expect(calm.scrollTo).toHaveBeenLastCalledWith({ y: 0, animated: false });
+	await calm.ask();
+	movedToNeedsYou(calm.tree);
 });
