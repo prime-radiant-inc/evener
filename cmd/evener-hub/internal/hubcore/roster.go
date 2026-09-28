@@ -111,6 +111,12 @@ type LiveEntry struct {
 	// the hub's seen marker, so rosterFingerprint hashes it: a turn that starts
 	// and ends between two probes leaves Status unchanged and moves only this.
 	LastTurnEndedAt time.Time
+	// Profile is the provider instance the session's current model runs on,
+	// from its probe; the embedded Entry's Provider is the one it started on,
+	// and a model switch leaves that behind. A sign-in notice counts the
+	// sessions it blocks by it (S11). No row shows it, so rosterFingerprint
+	// leaves it out.
+	Profile string
 }
 
 // ProbeResult is the dynamic session state returned by a daemon liveness probe.
@@ -156,6 +162,9 @@ type ProbeResult struct {
 	// LastTurnEndedAt is when the listed root's last turn ended (S4); zero from
 	// a daemon that predates it, or before any turn has ended.
 	LastTurnEndedAt time.Time
+	// Profile mirrors LiveEntry.Profile: the provider instance of the root's
+	// current model.
+	Profile string
 	// ProtocolMismatch: the endpoint answered, but as a daemon this hub cannot
 	// talk to (restart required). Such an answer names no session of its own,
 	// so it does not vouch for the entry's PID the way a bound answer does.
@@ -1431,6 +1440,7 @@ func liveEntryFromProbe(e rendezvous.Entry, result ProbeResult) LiveEntry {
 		Activity:              result.Activity,
 		Subagents:             result.Subagents,
 		LastTurnEndedAt:       result.LastTurnEndedAt,
+		Profile:               result.Profile,
 	})
 }
 
@@ -1502,7 +1512,8 @@ func (r *Roster) ReadSpawnedThread(ctx context.Context, entry rendezvous.Entry, 
 		// and every current daemon stamps its capability set on the thread
 		// projection this read answered from, so the caps beside the status
 		// are the daemon's own answer — not an approximation.
-		Capabilities: root.Evener.Capabilities, CapabilitiesKnown: true}
+		Capabilities: root.Evener.Capabilities, CapabilitiesKnown: true,
+		Profile: root.Evener.Profile}
 	if root.Evener.Diagnostics != nil {
 		result.RunningSubagentStates = make(map[string]string)
 		for _, delegate := range root.Evener.Diagnostics.Delegates {
