@@ -1837,6 +1837,7 @@ func (p navigationProjector) projectShallow(node hubcore.TreeNode) hubapi.Naviga
 		ApprovalTarget:      truncateNavigationRunes(node.ApprovalTarget, maxNavigationLabelRunes),
 		Question:            navigationQuestion(node.Question),
 		Failure:             navigationFailure(node.Failure),
+		LastMessage:         appwire.Excerpt(node.LastMessage, appwire.MaxMessageExcerptRunes),
 		Dormant:             node.Dormant,
 		Offline:             p.projection.sourceOffline(ref.HostID),
 		UpdatedAt:           optionalTime(node.UpdatedAt),

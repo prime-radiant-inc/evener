@@ -2355,6 +2355,15 @@ export interface NavigationSessionSummary {
    * crashed.
    */
   failure?: NavigationFailure;
+  /**
+   * LastMessage is the opening of the session's last agent message (S1d):
+   * a Finished row's why line and the long-press preview's excerpt, one
+   * line of at most appwire.MaxMessageExcerptRunes. It is the agent's own
+   * words, never its reasoning or a tool's output. A live session's comes
+   * from its daemon and an ended one's from its meta; subagent rows carry
+   * none.
+   */
+  last_message?: string;
   dormant?: boolean;
   /**
    * Offline marks a row folded into the merged list from a source that is

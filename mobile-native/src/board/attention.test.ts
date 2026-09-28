@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { NavigationSessionSummary } from "@evener/appwire-client";
+import { QUIET_AFTER_MS, STUCK_AFTER_MS } from "@evener/appwire-client";
 import {
 	approvalRefs,
 	bandOf,
@@ -194,6 +195,25 @@ describe("Live bands (spec 7.1)", () => {
 		expect(bands.idle.map((item) => item.row.ref)).toEqual(["seen-new", "seen-old"]);
 	});
 
+	it("floats a may-be-stuck session to the top of Working when isStuck is given (spec 7.1, S5)", () => {
+		const live = [
+			row("work-a", { state: "active", updated_at: at(1) }),
+			row("work-b-stuck", { state: "active", updated_at: at(2) }),
+			row("work-c", { state: "active", updated_at: at(3) }),
+			row("work-d-stuck", { state: "active", updated_at: at(4) }),
+		];
+		const isStuck = (r: NavigationSessionSummary) => r.ref.endsWith("-stuck");
+		const bands = liveBands(live, [], () => false, isStuck);
+		// Both stuck rows float up, keeping their own relative (hub) order;
+		// the rest keep theirs too.
+		expect(bands.working.map((item) => item.row.ref)).toEqual(["work-b-stuck", "work-d-stuck", "work-a", "work-c"]);
+	});
+
+	it("keeps the hub's order for Working when isStuck is omitted, same as before S5", () => {
+		const live = [row("work-a", { state: "active", updated_at: at(1) }), row("work-b", { state: "active", updated_at: at(2) })];
+		expect(liveBands(live, [], () => false).working.map((item) => item.row.ref)).toEqual(["work-a", "work-b"]);
+	});
+
 	it("orders Finished and Idle by when the turn ended, falling back to updated_at, and leaves Needs you alone", () => {
 		const live = [
 			// Renamed lately, but its turn ended long ago.
@@ -309,6 +329,68 @@ describe("why lines on the fallbacks (spec 7.2, 18)", () => {
 		expect(workingActivity(running)).toBe("Running go test ./agent/...");
 		expect(workingActivity(row("s", { state: "active" }))).toBe("Working");
 		expect(whyLine({ row: running, state: "working" })).toEqual({ text: "Running go test ./agent/..." });
+	});
+});
+
+describe("the working why line reads S5's activity (spec 7.1, 13.1)", () => {
+	const minutes = [0, 0, 0, 0, 0, 0, 0];
+	const working = row("s", { state: "active" });
+
+	it("trusts the activity read's subagent tally over the row's own children", () => {
+		// The row's children say nothing is running, but the activity read
+		// (every depth, S3's eventual replacement for the children guess) says
+		// otherwise - and activity wins.
+		const withChild = row("s", { state: "active", children: [row("c", { state: "active" })] });
+		const activity = { ref: "s", minutes, runningSubagents: 3 };
+		expect(whyLine({ row: withChild, state: "working" }, activity, 0)).toEqual({
+			text: "Waiting on 3 subagents",
+		});
+		expect(whyLine({ row: working, state: "working" }, { ...activity, runningSubagents: 1 }, 0)).toEqual({
+			text: "Waiting on 1 subagent",
+		});
+	});
+
+	it("reads Quiet after three minutes and May be stuck (in the attention tone) after ten", () => {
+		const quiet = { ref: "s", minutes, runningSubagents: 0, quietForMs: QUIET_AFTER_MS };
+		expect(whyLine({ row: working, state: "working" }, quiet, 0)).toEqual({ text: "Quiet 3m" });
+		const stuck = { ref: "s", minutes, runningSubagents: 0, quietForMs: STUCK_AFTER_MS };
+		expect(whyLine({ row: working, state: "working" }, stuck, 0)).toEqual({
+			text: "May be stuck · no updates for 10m",
+			stuck: true,
+		});
+	});
+
+	it("counts time since the read toward the quiet duration shown", () => {
+		const activity = { ref: "s", minutes, runningSubagents: 0, quietForMs: 2 * 60_000 };
+		expect(whyLine({ row: working, state: "working" }, activity, 60_000)).toEqual({ text: "Quiet 3m" });
+	});
+
+	it("never shows a stuck or quiet label while subagents are running (Jesse's ruling)", () => {
+		const activity = { ref: "s", minutes, runningSubagents: 1, quietForMs: 15 * 60_000 };
+		expect(whyLine({ row: working, state: "working" }, activity, 0)).toEqual({ text: "Waiting on 1 subagent" });
+	});
+
+	it("falls back to the command, or Working, once activity says nothing is running and it isn't quiet yet", () => {
+		const activity = { ref: "s", minutes, runningSubagents: 0 };
+		expect(whyLine({ row: working, state: "working" }, activity, 0)).toEqual({ text: "Working" });
+		const running = row("s", {
+			state: "active",
+			running_jobs: [{ job_id: "j", job_type: "shell", status: "running", command: "go test ./agent/..." }],
+		});
+		expect(whyLine({ row: running, state: "working" }, activity, 0)).toEqual({ text: "Running go test ./agent/..." });
+	});
+
+	it("never lets a stale children-based subagent guess override an activity read of zero", () => {
+		// Without S5 data, this row would read "Waiting on 1 subagent" (children
+		// count) - once a real read says zero are running, that must win.
+		const withChild = row("s", { state: "active", children: [row("c", { state: "active" })] });
+		const activity = { ref: "s", minutes, runningSubagents: 0 };
+		expect(whyLine({ row: withChild, state: "working" }, activity, 0)).toEqual({ text: "Working" });
+	});
+
+	it("keeps the pre-S5 fallback (the row's own children and jobs) when there is no activity read at all", () => {
+		const withChild = row("s", { state: "active", children: [row("c", { state: "active" })] });
+		expect(whyLine({ row: withChild, state: "working" })).toEqual({ text: "Waiting on 1 subagent" });
 	});
 });
 

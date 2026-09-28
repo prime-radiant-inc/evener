@@ -60,5 +60,8 @@ describe("what a step has to show (spec 8.2)", () => {
 	it("has nothing to show for a step that carries none", () => {
 		expect(stepEvidence(step("grep", { pattern: "x" }))).toEqual([]);
 		expect(stepEvidence(step("apply_patch", {}))).toEqual([]);
+		// An edit whose arguments carry neither side has no diff to draw.
+		expect(stepEvidence(step("edit_file", {}))).toEqual([]);
+		expect(stepEvidence(step("edit_file", { file_path: "a.go" }))).toEqual([]);
 	});
 });

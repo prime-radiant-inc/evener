@@ -1,4 +1,4 @@
-import type { NavigationSessionSummary } from "@evener/appwire-client";
+import type { NavigationSessionSummary, SessionActivity } from "@evener/appwire-client";
 import { relativeAge } from "@evener/appwire-client/state/navigation";
 import { SymbolView } from "expo-symbols";
 import type { ReactElement } from "react";
@@ -20,6 +20,12 @@ export interface BoardRowProps {
 	usual: Usual;
 	hostLabel: (hostId: string) => string;
 	hasDraft: boolean;
+	/** S5's latest activity read for this session; absent before the Board's
+	 * poll answers for it, on a hub that predates S5, or while disconnected. */
+	activity?: SessionActivity;
+	/** How long ago that read landed, which quiet time keeps counting from;
+	 * null without one. */
+	msSinceRead: number | null;
 	now: number;
 	onOpen: (row: NavigationSessionSummary) => void;
 	/** Half opacity and busy while a change to this row is on its way. */
@@ -100,6 +106,8 @@ export function BoardRow({
 	usual,
 	hostLabel,
 	hasDraft,
+	activity,
+	msSinceRead,
 	now,
 	onOpen,
 	dimmed = false,
@@ -111,7 +119,7 @@ export function BoardRow({
 	const { row, state } = item;
 	const signal = variant === "signal";
 	const needsYou = signal && bandOf(state) === "needsYou";
-	const why = signal ? whyLine(item) : null;
+	const why = signal ? whyLine(item, activity, msSinceRead ?? 0) : null;
 	const last = signal ? lastLine(row, usual, hostLabel) : null;
 	const age = relativeAge(row.updated_at, now);
 	const word = stateWord(state);
@@ -140,7 +148,13 @@ export function BoardRow({
 			})}
 		>
 			<View style={{ height: lineOne, justifyContent: "center" }}>
-				<StateMark state={state} moving={moving} connected={connected} />
+				<StateMark
+					state={state}
+					moving={moving}
+					connected={connected}
+					stuck={why?.stuck}
+					perMinute={activity?.minutes}
+				/>
 			</View>
 			<View style={{ flex: 1, minWidth: 0 }}>
 				<View style={{ flexDirection: "row", alignItems: "flex-start", columnGap: 8 }}>
@@ -195,7 +209,7 @@ export function BoardRow({
 							marginTop: 2,
 							fontSize: 15 * scale,
 							lineHeight: 20 * scale,
-							color: why.word ? palette.inkHi : palette.inkMid,
+							color: why.word ? palette.inkHi : why.stuck ? palette.attentionInk : palette.inkMid,
 						}}
 					>
 						{why.word ? (

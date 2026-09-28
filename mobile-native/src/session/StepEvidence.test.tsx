@@ -39,7 +39,7 @@ describe("a command's output", () => {
 	const shell = step("shell", { arguments: '{"command":"go test"}', description: "Run the tests", output });
 
 	it("shows the first 40 lines, and the rest in a full log", () => {
-		const tree = render(<StepEvidence step={shell} hubId="hub-1" />);
+		const tree = render(<StepEvidence step={shell} evidence={stepEvidence(shell)} hubId="hub-1" />);
 		const shown = texts(tree.root).filter((node) => /^line \d+$/.test(node.props.accessibilityLabel ?? ""));
 		expect(shown.map((node) => node.props.accessibilityLabel)).toEqual(
 			Array.from({ length: 40 }, (_, n) => `line ${n + 1}`),
@@ -57,7 +57,7 @@ describe("a command's output", () => {
 
 	it("offers no full log when every line already shows", () => {
 		const short = step("shell", { output: "ok" });
-		const tree = render(<StepEvidence step={short} hubId="hub-1" />);
+		const tree = render(<StepEvidence step={short} evidence={stepEvidence(short)} hubId="hub-1" />);
 		expect(tree.root.findAll((node) => /^Show all/.test(node.props.accessibilityLabel ?? ""))).toEqual([]);
 	});
 });
@@ -68,7 +68,7 @@ describe("an edit's diff", () => {
 	});
 
 	it("heads the diff with its counts, the minus a real minus sign", () => {
-		const tree = render(<StepEvidence step={edit} hubId="hub-1" />);
+		const tree = render(<StepEvidence step={edit} evidence={stepEvidence(edit)} hubId="hub-1" />);
 		const plus = byText(tree.root, "+1");
 		const minus = byText(tree.root, "−2");
 		expect(plus?.props.style).toMatchObject({ color: ALIVE_INK });
@@ -76,7 +76,7 @@ describe("an edit's diff", () => {
 	});
 
 	it("washes added and removed lines, and leaves the file headers quiet", () => {
-		const tree = render(<StepEvidence step={edit} hubId="hub-1" />);
+		const tree = render(<StepEvidence step={edit} evidence={stepEvidence(edit)} hubId="hub-1" />);
 		const background = (value: string) => byText(tree.root, value)?.props.style.backgroundColor;
 		expect(background("+uno")).toBe(DIFF_ADD);
 		expect(background("-one")).toBe(DIFF_DEL);
@@ -88,16 +88,15 @@ describe("an edit's diff", () => {
 
 describe("a write and an error", () => {
 	it("says which file it wrote, the path in Menlo", () => {
-		const tree = render(
-			<StepEvidence step={step("write_file", { arguments: '{"file_path":"notes.md"}' })} hubId="hub-1" />,
-		);
+		const write = step("write_file", { arguments: '{"file_path":"notes.md"}' });
+		const tree = render(<StepEvidence step={write} evidence={stepEvidence(write)} hubId="hub-1" />);
 		expect(byText(tree.root, "Wrote notes.md")).toBeDefined();
 		expect(byText(tree.root, "notes.md")?.props.style).toMatchObject({ fontFamily: "Menlo" });
 	});
 
 	it("shows the error in danger ink, and its exit code", () => {
 		const failed = step("shell", { error: "exit status 1", exitCode: 1 }, { state: "failed" });
-		const tree = render(<StepEvidence step={failed} hubId="hub-1" />);
+		const tree = render(<StepEvidence step={failed} evidence={stepEvidence(failed)} hubId="hub-1" />);
 		expect(byText(tree.root, "exit status 1")?.props.style).toMatchObject({ color: DANGER_INK, fontSize: 15, lineHeight: 20 });
 		expect(byText(tree.root, "Exit 1")?.props.style).toMatchObject({ color: INK_LOW });
 	});
@@ -107,19 +106,20 @@ describe("a step's images", () => {
 	it("show as thumbnails under its evidence", () => {
 		const images = [{ id: "a:out:0", src: "/doc/image?1" }];
 		const shot = { ...step("screenshot", {}), images };
-		const tree = render(<StepEvidence step={shot} hubId="hub-1" />);
+		const tree = render(<StepEvidence step={shot} evidence={stepEvidence(shot)} hubId="hub-1" />);
 		const thumbnails = tree.root.findAll((node) => String(node.type) === "TranscriptImages");
 		expect(thumbnails.map((node) => [node.props.images, node.props.hubId])).toEqual([[images, "hub-1"]]);
 	});
 });
 
-describe("a step whose object changes every frame", () => {
-	it("works out its evidence once while its data stays the same", () => {
+describe("the evidence it draws", () => {
+	it("is the evidence its row worked out, never its own", () => {
 		const shell = step("shell", { output: "ok" });
-		const tree = render(<StepEvidence step={shell} hubId="hub-1" />);
+		const evidence = stepEvidence(shell);
 		const calls = vi.mocked(stepEvidence).mock.calls.length;
-		for (let frame = 0; frame < 3; frame += 1) act(() => tree.update(<StepEvidence step={{ ...shell }} hubId="hub-1" />));
+		const tree = render(<StepEvidence step={shell} evidence={evidence} hubId="hub-1" />);
+		act(() => tree.update(<StepEvidence step={{ ...shell }} evidence={evidence} hubId="hub-1" />));
 		expect(vi.mocked(stepEvidence).mock.calls.length).toBe(calls);
+		expect(texts(tree.root).some((node) => node.props.accessibilityLabel === "ok")).toBe(true);
 	});
 });
-
