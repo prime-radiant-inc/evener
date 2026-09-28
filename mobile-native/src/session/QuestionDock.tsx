@@ -183,7 +183,14 @@ export function QuestionDock({
 							// first; their canonical labels are distinct.
 							key={option.label}
 							accessibilityRole={question.multiSelect ? "checkbox" : "radio"}
-							accessibilityLabel={option.shown?.label ?? option.label}
+							// The caption and the detail sit inside the row, which VoiceOver
+							// reads by its label alone, so both go into what it reads.
+							accessibilityLabel={
+								option.recommended
+									? `${option.shown?.label ?? option.label}, Recommended`
+									: (option.shown?.label ?? option.label)
+							}
+							accessibilityHint={option.shown?.detail || undefined}
 							accessibilityState={{ checked, disabled: !editable }}
 							disabled={!editable}
 							onPress={() => {

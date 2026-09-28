@@ -111,10 +111,16 @@ describe("the question dock (spec 8.4)", () => {
 
 	it("lists the recommended option first, says so, and starts with it chosen", () => {
 		const { tree } = mount([question("q1", "Flags", ["Keep them", "Drop them"], "Drop them")]);
-		expect(optionLabels(tree)).toEqual(["Drop them", "Keep them"]);
+		expect(optionLabels(tree)).toEqual(["Drop them, Recommended", "Keep them"]);
 		expect(renderedText(tree)).toContain("· Recommended");
-		expect(pressable(tree, "Drop them")?.props.accessibilityState).toMatchObject({ checked: true });
+		expect(pressable(tree, "Drop them, Recommended")?.props.accessibilityState).toMatchObject({ checked: true });
 		expect(renderedText(tree)).toContain("Send answer");
+	});
+
+	it("reads each option's recommendation and detail to VoiceOver", () => {
+		const { tree } = mount([question("q1", "Flags", ["Keep them", "Drop them"], "Drop them")]);
+		expect(pressable(tree, "Drop them, Recommended")?.props.accessibilityHint).toBe("About drop them");
+		expect(pressable(tree, "Keep them")?.props.accessibilityHint).toBe("About keep them");
 	});
 
 	it("moves to the next question when you choose, and back with Previous question", () => {
@@ -185,7 +191,7 @@ describe("the question dock (spec 8.4)", () => {
 		});
 		const send = pressable(tree, "Send answer");
 		expect(send?.props.accessibilityState).toMatchObject({ disabled: true });
-		expect(pressable(tree, "Drop them")?.props.accessibilityState).toMatchObject({ disabled: true });
+		expect(pressable(tree, "Drop them, Recommended")?.props.accessibilityState).toMatchObject({ disabled: true });
 		act(() => send?.props.onPress());
 		expect(onSend).not.toHaveBeenCalled();
 	});
