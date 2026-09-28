@@ -762,6 +762,8 @@ function fleetAnswers(
 		const sessions = sessionsList.filter((raw) => projectKeyOf(raw) === key && !raw.test);
 		return sessions.length > 0 && sessions.every((raw) => raw.archived);
 	};
+	// An active project counts only its unarchived sessions, unlike the real
+	// hub's TotalSessionCount, so evener keeps the fixture's count.
 	const projects = projectKeys
 		.filter((key) => !allArchived(key))
 		.map((key) => projectSummary(sessionsList, key, projectSessionsRaw(sessionsList, key).length));
