@@ -61,7 +61,12 @@ function testThread(ref: string): Thread {
 }
 
 function readResponse(ref: string): ThreadReadResponse {
-  return { thread: testThread(ref) };
+  return {
+    thread: testThread(ref),
+    bootGeneration: "1",
+    epoch: 1,
+    snapshot: { incarnation: "inc-1", length: 0 },
+  };
 }
 
 function connectFakeClient(state: ConnectionState = "ready"): FakeClient {
@@ -83,8 +88,15 @@ function nextMutationPersistence(targetRef: string): Promise<void> {
 
 function startTurn(fake: FakeClient, ref: string, turnId: string): void {
   fake.emitNotification({
-    method: "turn/started",
-    params: { threadId: `thr_${ref}`, ref, turn: { id: turnId, status: "inProgress", itemsView: "" } },
+    method: "history/updated",
+    params: {
+      threadId: `thr_${ref}`,
+      ref: "ref-1",
+      bootGeneration: "1",
+      epoch: 1,
+      snapshot: { incarnation: "inc-1", length: 1 },
+      turns: [{ id: turnId, status: "inProgress", itemsView: "" }],
+    },
   });
 }
 

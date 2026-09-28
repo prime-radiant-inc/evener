@@ -10,8 +10,8 @@ import (
 // Record sizes. Records are fixed-size so a record's slot names its offset,
 // and an append can rewrite one in place.
 const (
-	itemRecordSize   = 124
-	turnRecordSize   = 96
+	itemRecordSize   = 132
+	turnRecordSize   = 160
 	contributorSize  = 32
 	contextEntrySize = contributorSize + 12 // contributor + TurnID strRef
 	updateRecordSize = 24
@@ -47,6 +47,7 @@ type itemRecord struct {
 	Opener    contributor
 	Completer contributor // Length 0 until a later entry contributes
 	Middle    strRef      // contributors between opener and completer, encoded
+	Flags     uint32
 	// Context is the entries whose ToolCallRegistry state (Names/CommRawArgs/
 	// LastAssistantText/LastAssistantTurnID) the projection needs before
 	// Opener projects the visible item, encoded as a []contextEntry, oldest
@@ -59,6 +60,13 @@ type itemRecord struct {
 	Context strRef
 }
 
+// Item record flags.
+const (
+	// itemUnreadable marks the item standing for an entry that does not
+	// decode: the reader projects it without decoding the opener.
+	itemUnreadable uint32 = 1 << iota
+)
+
 // contextEntry is one entry a communicate result item's registry replay must
 // visit before Opener: the assistant entry's position (reused from
 // contributor, though its Name is unused here) plus the logical turn id the
@@ -69,31 +77,60 @@ type contextEntry struct {
 	TurnID strRef
 }
 
-// Turn statuses, as the summary's latest lifecycle entry sets them.
+// Turn kinds. A legacy turn is today's adjacency group of legacy entries;
+// the others are new-format turns, named by the TurnKind their first entry
+// records.
+const (
+	turnKindLegacy uint32 = iota
+	turnKindExecution
+	turnKindGap
+	turnKindDelivery
+	turnKindPrelude
+	// turnKindUnreadable holds one entry that does not decode.
+	turnKindUnreadable
+)
+
+// Turn statuses. Only a new-format execution is ever open.
 const (
 	statusCompleted uint32 = iota
 	statusFailed
 	statusInterrupted
+	statusOpen
 )
 
-// turnRecord summarizes one logical turn: everything needed to stamp the turn
-// without reading its entries.
+// turnRecord summarizes one turn: everything needed to stamp the turn
+// without reading its entries, and to apply the turn's next entry.
 //
-// Lifecycle names the latest entry that sets the turn's status, and Status is
-// the status it set. Today's grouping has one rule for it: a turn is failed
-// once any TURN_FAILURE is in it, and the latest one carries the diagnostic;
-// otherwise it is interrupted once an interrupted STEERING is in it.
+// A legacy turn's status is today's latch: failed once any TURN_FAILURE is in
+// it, otherwise interrupted once an interrupted STEERING is in it. A
+// new-format execution is open until a TURN_COMPLETION sets its status, and a
+// TURN_REOPEN opens it again; every other new-format turn is completed. The
+// latest TURN_FAILURE carries the diagnostic of a failed status either way.
+//
+// The Awaiting fields are the spec's "open round's call records"
+// (Incremental use): the opener's offset and length only, never the calls'
+// names or arguments, which extension reads back from the entry when its
+// TOOL_RESULTS lands, outside any server lock. Memory stays bounded by the
+// number of calls, not by their argument size.
 type turnRecord struct {
 	ID              strRef
+	Kind            uint32
 	FirstOffset     int64
 	FirstOrdinal    uint64
-	LifecycleOffset int64
-	LifecycleLength uint32 // 0: no entry carries the status's diagnostic
 	Status          uint32
+	FailureOffset   int64
+	FailureLength   uint32 // 0: no TURN_FAILURE
+	CompletedAt     int64  // unix ms, from the latest completion entry; 0 when none
+	DurationMS      int64
+	HasCompletion   bool
 	Started         bool     // StartedAt is set
 	StartedAt       int64    // unix ms of the first entry with a timestamp
 	Usage           [4]int64 // input, output, cache read, total tokens
-	Version         uint64   // highest accounted entry ordinal + 1
+	Model           strRef   // the latest entry's model, for cost at egress
+	AwaitingOffset  int64    // the latest ASSISTANT entry with tool calls
+	AwaitingLength  uint32   // 0: none
+	AwaitingOrdinal uint64
+	Version         uint64 // highest accounted entry ordinal + 1
 }
 
 // Update-log record kinds.
@@ -205,6 +242,7 @@ func encodeItem(r itemRecord) []byte {
 	c.putContributor(r.Opener)
 	c.putContributor(r.Completer)
 	c.putRef(r.Middle)
+	c.putU32(r.Flags)
 	c.putRef(r.Context)
 	return c.buf
 }
@@ -220,63 +258,9 @@ func decodeItem(buf []byte) itemRecord {
 	c.contributor(&r.Opener)
 	c.contributor(&r.Completer)
 	c.ref(&r.Middle)
+	c.u32(&r.Flags)
 	c.ref(&r.Context)
 	return r
-}
-
-func encodeTurn(r turnRecord) []byte {
-	c := codec{buf: make([]byte, turnRecordSize)}
-	c.putRef(r.ID)
-	c.putI64(r.FirstOffset)
-	c.putU64(r.FirstOrdinal)
-	c.putI64(r.LifecycleOffset)
-	c.putU32(r.LifecycleLength)
-	c.putU32(r.Status)
-	c.putBool(r.Started)
-	c.putI64(r.StartedAt)
-	for _, v := range r.Usage {
-		c.putI64(v)
-	}
-	c.putU64(r.Version)
-	return c.buf
-}
-
-func decodeTurn(buf []byte) turnRecord {
-	var r turnRecord
-	c := codec{buf: buf}
-	c.ref(&r.ID)
-	c.i64(&r.FirstOffset)
-	c.u64(&r.FirstOrdinal)
-	c.i64(&r.LifecycleOffset)
-	c.u32(&r.LifecycleLength)
-	c.u32(&r.Status)
-	c.bool(&r.Started)
-	c.i64(&r.StartedAt)
-	for i := range r.Usage {
-		c.i64(&r.Usage[i])
-	}
-	c.u64(&r.Version)
-	return r
-}
-
-func encodeContributors(list []contributor) []byte {
-	c := codec{buf: make([]byte, len(list)*contributorSize)}
-	for _, v := range list {
-		c.putContributor(v)
-	}
-	return c.buf
-}
-
-func decodeContributors(buf []byte) ([]contributor, error) {
-	if len(buf)%contributorSize != 0 {
-		return nil, fmt.Errorf("%w: contributor list of %d bytes", errCorrupt, len(buf))
-	}
-	list := make([]contributor, len(buf)/contributorSize)
-	c := codec{buf: buf}
-	for i := range list {
-		c.contributor(&list[i])
-	}
-	return list, nil
 }
 
 func (c *codec) contextEntry(v *contextEntry) {
@@ -305,6 +289,77 @@ func decodeContextEntries(buf []byte) ([]contextEntry, error) {
 	c := codec{buf: buf}
 	for i := range list {
 		c.contextEntry(&list[i])
+	}
+	return list, nil
+}
+
+func encodeTurn(r turnRecord) []byte {
+	c := codec{buf: make([]byte, turnRecordSize)}
+	c.putRef(r.ID)
+	c.putU32(r.Kind)
+	c.putI64(r.FirstOffset)
+	c.putU64(r.FirstOrdinal)
+	c.putU32(r.Status)
+	c.putI64(r.FailureOffset)
+	c.putU32(r.FailureLength)
+	c.putI64(r.CompletedAt)
+	c.putI64(r.DurationMS)
+	c.putBool(r.HasCompletion)
+	c.putBool(r.Started)
+	c.putI64(r.StartedAt)
+	for _, v := range r.Usage {
+		c.putI64(v)
+	}
+	c.putRef(r.Model)
+	c.putI64(r.AwaitingOffset)
+	c.putU32(r.AwaitingLength)
+	c.putU64(r.AwaitingOrdinal)
+	c.putU64(r.Version)
+	return c.buf
+}
+
+func decodeTurn(buf []byte) turnRecord {
+	var r turnRecord
+	c := codec{buf: buf}
+	c.ref(&r.ID)
+	c.u32(&r.Kind)
+	c.i64(&r.FirstOffset)
+	c.u64(&r.FirstOrdinal)
+	c.u32(&r.Status)
+	c.i64(&r.FailureOffset)
+	c.u32(&r.FailureLength)
+	c.i64(&r.CompletedAt)
+	c.i64(&r.DurationMS)
+	c.bool(&r.HasCompletion)
+	c.bool(&r.Started)
+	c.i64(&r.StartedAt)
+	for i := range r.Usage {
+		c.i64(&r.Usage[i])
+	}
+	c.ref(&r.Model)
+	c.i64(&r.AwaitingOffset)
+	c.u32(&r.AwaitingLength)
+	c.u64(&r.AwaitingOrdinal)
+	c.u64(&r.Version)
+	return r
+}
+
+func encodeContributors(list []contributor) []byte {
+	c := codec{buf: make([]byte, len(list)*contributorSize)}
+	for _, v := range list {
+		c.putContributor(v)
+	}
+	return c.buf
+}
+
+func decodeContributors(buf []byte) ([]contributor, error) {
+	if len(buf)%contributorSize != 0 {
+		return nil, fmt.Errorf("%w: contributor list of %d bytes", errCorrupt, len(buf))
+	}
+	list := make([]contributor, len(buf)/contributorSize)
+	c := codec{buf: buf}
+	for i := range list {
+		c.contributor(&list[i])
 	}
 	return list, nil
 }

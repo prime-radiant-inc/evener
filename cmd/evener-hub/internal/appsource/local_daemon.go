@@ -104,6 +104,11 @@ type LocalDaemonEntry struct {
 	// carries it into appwire.EvenerThread.LastTurnEndedAt so a controller
 	// reading this hub can tell Finished from Idle. A read-only alias has none.
 	LastTurnEndedAt int64
+	// Tasks mirrors hubcore.LiveEntry.Tasks: the root's task-list progress
+	// (S13b). threadFromEntry carries a copy into appwire.EvenerThread.Tasks,
+	// so a controller hub shows a remote session's task line. nil means the
+	// daemon cannot read its task state; a read-only alias has none.
+	Tasks *appwire.TaskAggregate
 }
 
 func NewLocalDaemonSource(sourceID string, entries func() []rendezvous.Entry, client *http.Client) *LocalDaemonSource {
@@ -1157,6 +1162,7 @@ func (s *LocalDaemonSource) threadFromEntry(item LocalDaemonEntry) appwire.Threa
 			AskPending:         item.PendingAsk,
 			PendingEscalations: append([]appwire.SandboxEscalationRequested(nil), item.PendingEscalations...),
 			LastTurnEndedAt:    item.LastTurnEndedAt,
+			Tasks:              appwire.CloneTaskAggregate(item.Tasks),
 		},
 		Status: appwire.ThreadStatus{Type: status},
 	}

@@ -13,7 +13,7 @@ func ownershipFixture() Entry {
 	return Entry{
 		PID:          4242,
 		Address:      "127.0.0.1:7890",
-		Protocol:     "evener-appwire-v5",
+		Protocol:     "evener-appwire-v6",
 		Endpoint:     "ws://127.0.0.1:7890/appwire",
 		SourceID:     "local",
 		ThreadID:     "thread_1",

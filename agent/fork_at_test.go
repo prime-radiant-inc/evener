@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -252,19 +253,30 @@ func TestForkSessionAtUserTurn_RejectsNonUserDivergence(t *testing.T) {
 	if !strings.Contains(err.Error(), "USER_INPUT") {
 		t.Errorf("error should mention USER_INPUT, got %v", err)
 	}
+	// The hub maps this refusal to appwire.InvalidParams rather than an
+	// internal error, so a client can tell "you named a bad item" apart from
+	// a hub failure. errors.Is is what the hub's mapping checks.
+	if !errors.Is(err, ErrDivergencePositionNotUserInput) {
+		t.Errorf("error should wrap ErrDivergencePositionNotUserInput, got %v", err)
+	}
 }
 
 // TestForkSessionAtUserTurn_RejectsOutOfRange verifies divergenceTurn=0 and
-// divergenceTurn beyond the parent's entry count both error.
+// divergenceTurn beyond the parent's entry count both error, and both wrap
+// ErrDivergencePositionOutOfRange so the hub can map them to InvalidParams.
 func TestForkSessionAtUserTurn_RejectsOutOfRange(t *testing.T) {
 	t.Parallel()
 	stateDir, parentID := buildParentSession(t)
 
 	if _, _, err := ForkSessionAtUserTurn(stateDir, parentID, 0, ""); err == nil {
 		t.Error("ForkSessionAtUserTurn(divergenceTurn=0) should return an error")
+	} else if !errors.Is(err, ErrDivergencePositionOutOfRange) {
+		t.Errorf("divergenceTurn=0 error should wrap ErrDivergencePositionOutOfRange, got %v", err)
 	}
 	if _, _, err := ForkSessionAtUserTurn(stateDir, parentID, 10, ""); err == nil {
 		t.Error("ForkSessionAtUserTurn(divergenceTurn=10) should return an error when the parent has 4 entries")
+	} else if !errors.Is(err, ErrDivergencePositionOutOfRange) {
+		t.Errorf("divergenceTurn=10 error should wrap ErrDivergencePositionOutOfRange, got %v", err)
 	}
 }
 
