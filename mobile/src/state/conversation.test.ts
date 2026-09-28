@@ -2166,6 +2166,42 @@ describe("ConversationStore", () => {
         createdAt: 7,
       });
     });
+
+    // Each case runs on idle and on systemError. The owner's ruling on #2514
+    // (merged the same day): a session resting on a failed turn reports
+    // status systemError until its next turn, and deriveSendQueueAvailability
+    // already treats systemError as a live resting snapshot
+    // (LIVE_SNAPSHOT_STATUSES). The queue gate must behave the same on this
+    // status as it does on idle.
+    it.each(["idle", "systemError"] as const)(
+      "queues a second message while this client's own send is still unreflected, resting on %s",
+      async (status) => {
+        const service = new FakeConversationService();
+        service.openConv = makeConversation({ status: { type: status } });
+        const store = createConversationStore();
+        await store.getState().open(service, "ref-1");
+        store.getState().bindPendingMutations(fakePort({ outbox: [outbox()] }));
+        await yieldMicrotask();
+        expect(store.getState().conversation?.status.type).toBe(status);
+        await store.getState().queue(service, textInput("second"));
+        expect(store.getState().error).toBeNull();
+        expect(service.queueCallCount).toBe(1);
+      },
+    );
+
+    it.each(["idle", "systemError"] as const)(
+      "still refuses a queue resting on %s with nothing of this client's in flight",
+      async (status) => {
+        const service = new FakeConversationService();
+        service.openConv = makeConversation({ status: { type: status } });
+        const store = createConversationStore();
+        await store.getState().open(service, "ref-1");
+        store.getState().bindPendingMutations(fakePort({ outbox: [outbox({ state: "canceled" })] }));
+        await yieldMicrotask();
+        await expect(store.getState().queue(service, textInput("second"))).rejects.toThrow("no active turn");
+        expect(service.queueCallCount).toBe(0);
+      },
+    );
   });
 
   // The web's rule (decision 2): a refused mutation surfaces its typed error

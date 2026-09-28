@@ -305,6 +305,27 @@ describe("a Board row (spec 7.2)", () => {
 		expect(pressedStyle(tree, false)).toMatchObject({ paddingHorizontal: 16 });
 		expect(pressedStyle(tree, false).minHeight).toBeGreaterThanOrEqual(44);
 	});
+
+	it("dims to half opacity and reads busy while its change is on its way", () => {
+		const tree = mount({ dimmed: true });
+		expect(pressedStyle(tree, false).opacity).toBe(0.5);
+		expect(pressable(tree).props.accessibilityState).toEqual({ busy: true });
+		const plain = mount();
+		expect(pressedStyle(plain, false).opacity).toBe(1);
+		expect(pressable(plain).props.accessibilityState).toEqual({ busy: false });
+	});
+
+	it("gives VoiceOver the row's actions on its one button", () => {
+		const onAccessibilityAction = vi.fn();
+		const tree = mount({
+			accessibilityActions: [{ name: "archive", label: "Archive" }],
+			onAccessibilityAction,
+		});
+		const button = pressable(tree);
+		expect(button.props.accessibilityActions).toEqual([{ name: "archive", label: "Archive" }]);
+		button.props.onAccessibilityAction({ nativeEvent: { actionName: "archive" } });
+		expect(onAccessibilityAction).toHaveBeenCalledWith({ nativeEvent: { actionName: "archive" } });
+	});
 });
 
 /** The Pressable's style for a press state: the inert test host never calls

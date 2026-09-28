@@ -4,6 +4,7 @@
 // kv-store.
 import type {
 	AnyNotification,
+	AppwireClientLike,
 	AuthStatusResponse,
 	ConnectionState,
 	NavigationInvalidationTarget,
@@ -15,6 +16,7 @@ import type {
 	SessionActivity,
 	SessionSeenMark,
 	SessionSeenSetParams,
+	Thread,
 } from "@evener/appwire-client";
 import { WireError } from "@evener/appwire-client";
 import { manifest, wireV2 } from "@evener/appwire-client/testing/navigation";
@@ -22,12 +24,13 @@ import type { ReactTestInstance, ReactTestRenderer } from "react-test-renderer";
 import { act, create } from "react-test-renderer";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type { ConversationClientLike } from "../../../mobile/src/services/conversation";
-import { alertRequests, render, renderedText, screenConnection } from "../renderNative.testkit";
+import { alertRequests, render, renderedText, screenConnection, swipeableCalls } from "../renderNative.testkit";
 import { ACTIVITY_POLL_MS, STALE_AFTER_MS } from "./activityPoll";
 import { BoardScreen } from "./BoardScreen";
 import { PulseMeter } from "./PulseMeter";
 import { hubSeenMarks } from "./hubSeen";
 import { seenMarkers } from "./nativeBoardMemory";
+import { SESSION_ID } from "./organizationTestUtils";
 
 const harness = vi.hoisted(() => ({
 	connection: {} as Record<string, unknown>,
@@ -39,6 +42,7 @@ const harness = vi.hoisted(() => ({
 	focusListeners: new Set<(focused: boolean) => void>(),
 	actionSheet: vi.fn(),
 	prompt: vi.fn(),
+	sqlite: new Map<string, unknown>(),
 }));
 
 vi.mock("react-native", async () => {
@@ -48,10 +52,31 @@ vi.mock("react-native", async () => {
 		Alert: { ...native.Alert, prompt: (...args: unknown[]) => harness.prompt(...args) },
 		ActionSheetIOS: { showActionSheetWithOptions: (...args: unknown[]) => harness.actionSheet(...args) },
 		Keyboard: { dismiss: () => {} },
+		AccessibilityInfo: { announceForAccessibility: () => {} },
+	};
+});
+vi.mock("react-native-gesture-handler/ReanimatedSwipeable", async () =>
+	(await import("../renderNative.testkit")).gestureHandlerModuleMock(),
+);
+// Stop goes through the process's real mutation runtime, over an in-memory
+// SQLite double (one per database name, as the device keeps one file). The
+// runtime and its double live for the whole file, so every test shares one
+// outbox: records are keyed by hub and session, and hubId() gives each test
+// its own hub. A test must never assert on the outbox as a whole.
+vi.mock("expo-sqlite", async () => {
+	const { openSqliteSyncDouble } = await import("../sqliteSync.testkit");
+	return {
+		openDatabaseSync: (name: string) => {
+			if (!harness.sqlite.has(name)) harness.sqlite.set(name, openSqliteSyncDouble().port);
+			return harness.sqlite.get(name);
+		},
 	};
 });
 // The organization journal names each change it records.
-vi.mock("expo-crypto", () => ({ randomUUID: () => `change-${Math.random()}` }));
+vi.mock("expo-crypto", () => ({
+	randomUUID: () => `change-${Math.random()}`,
+	getRandomValues: (array: Uint8Array) => array,
+}));
 vi.mock("expo-symbols", () => ({ SymbolView: "SymbolView" }));
 vi.mock("react-native-safe-area-context", () => ({
 	useSafeAreaInsets: () => ({ top: 47, bottom: 34, left: 0, right: 0 }),
@@ -120,7 +145,7 @@ afterEach(() => {
 });
 
 // Each test uses its own hub, because nativeBoardMemory keeps one SeenMarkers
-// per hub for the life of the module.
+// per hub, and the mutation runtime one outbox, for the life of the module.
 let hubCount = 0;
 function hubId() {
 	hubCount += 1;
@@ -199,11 +224,13 @@ const fleet: Fleet = {
 /** A hub that answers navigation reads by params, and search and the
  * sign-in and plugin lists from the fleet; `hold` keeps a navigation read
  * unanswered until the test releases it, and `fail` rejects it. It accepts
- * every category rename and delete and every project favorite and archive
- * (`mutations` records them, and a favorite shows in the catalog after),
- * unless `refuse` says to reject one, and `holdChanges` keeps them
- * unanswered until `release`. It accepts every seen mark, and `seen`
- * records each call's marks. */
+ * every category rename and delete and every project or session favorite and
+ * archive (`mutations` records them, and a favorite or archive shows in the
+ * catalog or the session's location after), unless `refuse` says to reject
+ * one, and `holdChanges` keeps them unanswered until `release`. It accepts
+ * every seen mark, and `seen` records each call's marks. It answers a
+ * session's thread/read from its row's state and applies every
+ * turn/interrupt, recording both in `threadCalls`. */
 function hub(
 	shape: Fleet,
 	hold: (params: NavigationReadParams) => boolean = () => false,
@@ -215,6 +242,10 @@ function hub(
 	const lists: string[] = [];
 	const searches: string[] = [];
 	const mutations: Array<{ method: string; params: unknown }> = [];
+	const threadCalls: Array<{ method: string; params: unknown }> = [];
+	// The sessions the hub has archived, by ref.
+	const archivedRefs = new Set<string>();
+	const sessionRows = () => [...shape.live.flat(), ...shape.needsYou, ...Object.values(shape.pinned).flat()];
 	const seen: SessionSeenMark[][] = [];
 	const listeners = new Set<(event: AnyNotification) => void>();
 	const held: Array<() => void> = [];
@@ -222,6 +253,10 @@ function hub(
 		const offset = params.offset ?? 0;
 		if (params.resource === "manifest") return shape.manifest;
 		if (params.resource === "pin_catalog") return { pin_sections: shape.pins, remaining: 0 };
+		if (params.resource === "location") {
+			const row = sessionRows().find((candidate) => candidate.ref === params.ref);
+			return row ? { session: row } : {};
+		}
 		if (params.resource === "pin_section") {
 			const rows = shape.pinned[params.sectionId ?? ""];
 			if (!rows) throw new Error(`no category ${params.sectionId}`);
@@ -249,9 +284,28 @@ function hub(
 		}
 		throw new Error(`no Live page at offset ${offset}`);
 	};
-	const client: ConversationClientLike = {
+	const client: ConversationClientLike & Pick<AppwireClientLike, "state" | "onStateChange"> = {
+		state: "ready",
+		onStateChange: () => () => {},
 		request: (method, params) =>
 			new Promise((resolve, reject) => {
+				if (method === "thread/read" || method === "turn/interrupt") {
+					threadCalls.push({ method, params });
+					const { ref } = params as { ref: string };
+					if (method === "thread/read") {
+						const row = sessionRows().find((candidate) => candidate.ref === ref);
+						resolve({ thread: threadOf(ref, row?.state === "active" ? "active" : "idle") } as never);
+					} else
+						resolve({
+							receipt: {
+								clientMutationId: (params as { clientMutationId: string }).clientMutationId,
+								disposition: "applied",
+								threadId: `thread:${ref}`,
+								projectionState: "pending",
+							},
+						} as never);
+					return;
+				}
 				if (
 					method === "evener/pin-section/rename" ||
 					method === "evener/pin-section/delete" ||
@@ -265,7 +319,13 @@ function hub(
 							return;
 						}
 						if (method === "evener/archive/set") {
-							const change = params as { id: string; archived: boolean };
+							const change = params as { kind: string; id: string; archived: boolean };
+							if (change.kind === "session") {
+								// This hub's session is named by its bare id, another host's by its ref.
+								const ref = change.id.includes(":") ? change.id : `local:${change.id}`;
+								if (change.archived) archivedRefs.add(ref);
+								else archivedRefs.delete(ref);
+							}
 							for (const catalog of Object.values(shape.catalogs ?? {}))
 								for (const project of catalog ?? []) if (project.key === change.id) project.is_archived = change.archived;
 						}
@@ -333,16 +393,20 @@ function hub(
 					reject(new Error("request timed out"));
 					return;
 				}
-				const respond = () =>
-					resolve(
-						wireV2(
-							{ ...read, representationVersion: 2, offset: read.offset ?? 0, limit: read.limit ?? 50 },
-							answer(read),
-							`etag-${read.resource}-${read.offset ?? 0}`,
-							1,
-							"generation-test",
-						),
+				const respond = () => {
+					const response = wireV2(
+						{ ...read, representationVersion: 2, offset: read.offset ?? 0, limit: read.limit ?? 50 },
+						answer(read),
+						`etag-${read.resource}-${read.offset ?? 0}`,
+						1,
+						"generation-test",
 					);
+					if (read.resource === "location")
+						(response.data as { metadata: Record<string, unknown> }).metadata.tier = archivedRefs.has(read.ref ?? "")
+							? "archived"
+							: "current";
+					resolve(response);
+				};
 				if (hold(read)) held.push(respond);
 				else respond();
 			}),
@@ -361,6 +425,7 @@ function hub(
 			for (const listener of listeners) listener({ method: "evener/auth/updated", params: {} } as AnyNotification);
 		},
 		mutations,
+		threadCalls,
 		seen,
 		invalidate: (sequence: number, targets: NavigationInvalidationTarget[]) => {
 			for (const listener of listeners)
@@ -2965,4 +3030,250 @@ it("drops the Projects chip once the projects catalog loads empty, as the sectio
 	expect(sectionHeaders(tree)).toEqual([]);
 	expect(chipLabels(tree)).toEqual(["Live, 5 sessions, 2 need you", "Mine, 3 sessions"]);
 	act(() => tree.unmount());
+});
+
+/** A session's thread as thread/read answers it: `status` is its turn. */
+function threadOf(ref: string, status: string): Thread {
+	return {
+		id: `thread:${ref}`,
+		sessionId: ref,
+		preview: "",
+		ephemeral: false,
+		modelProvider: "anthropic",
+		createdAt: 1,
+		updatedAt: 1,
+		status: { type: status },
+		cwd: "/tmp",
+		cliVersion: "1.0.0",
+		source: "local",
+		turns: [],
+		evener: {
+			ref,
+			instanceId: `instance:${ref}`,
+			capabilities: {
+				send: true,
+				steer: true,
+				interrupt: true,
+				compact: true,
+				clear: true,
+				forkFromTurn: true,
+				shutdown: true,
+				changeModel: true,
+				changeVisionModel: true,
+				sharedNotes: true,
+				queue: true,
+				goal: true,
+				rename: true,
+			},
+			queue: { revision: 0, depth: 0, preview: [] },
+		},
+	};
+}
+
+// Rows the organization journal can archive: this hub's sessions carry real
+// session ids (archiveTarget checks their shape), and another host's goes by
+// its ref.
+const OTHER_SESSION_ID = "1bCdEfGhIjKlMnOpQrStUv";
+const swipeWorking = session(`local:${SESSION_ID}`, {
+	session_id: SESSION_ID,
+	title: "Refactor parser",
+	state: "active",
+	updated_at: minutesAgo(1),
+});
+const swipeFinished = session(`local:${OTHER_SESSION_ID}`, {
+	session_id: OTHER_SESSION_ID,
+	title: "Write changelog",
+	updated_at: minutesAgo(4),
+});
+const swipePark = session("paradise-park:pp", {
+	host_id: "paradise-park",
+	session_id: "pp",
+	title: "Park chore",
+	updated_at: minutesAgo(6),
+});
+const swipeFleet = (): Fleet => ({
+	live: [[swipeWorking, swipeFinished, swipePark]],
+	needsYou: [],
+	pins: [],
+	pinned: {},
+	manifest: manifest({
+		sources: [laptopSource, { ...parkSource, online: true }],
+		sections: { live: { count: 3 }, needs_you: { count: 0 }, pin_sections: { count: 0 } },
+		catalogs: catalogCounts(0, 0, 0),
+	}),
+});
+/** The swipeable around the Board row with this title. */
+function swipeableOf(tree: ReactTestRenderer, title: string) {
+	return tree.root
+		.findAll((node) => node.type === ("ReanimatedSwipeable" as never))
+		.filter((node) => node.findAll(isRowTitled(title)).length > 0)[0];
+}
+/** The buttons a swipe reveals on one side, rendered as the swipeable would. */
+function revealed(swipeable: ReactTestInstance, side: "left" | "right"): ReactTestInstance[] {
+	const panel = swipeable.props[side === "left" ? "renderLeftActions" : "renderRightActions"];
+	if (!panel) return [];
+	return render(panel()).root.findAll((node) => node.type === ("Pressable" as never));
+}
+const revealedLabels = (swipeable: ReactTestInstance, side: "left" | "right") =>
+	revealed(swipeable, side).map((button) => button.props.accessibilityLabel);
+function pressRevealed(swipeable: ReactTestInstance, side: "left" | "right", label: string) {
+	const button = revealed(swipeable, side).find((node) => node.props.accessibilityLabel === label);
+	if (!button) throw new Error(`no ${label} on the ${side}`);
+	act(() => button.props.onPress());
+}
+/** A full swipe right, begun well clear of the screen's left edge. */
+function swipeRight(swipeable: ReactTestInstance) {
+	act(() => swipeable.findByProps({ testID: "swipe-row-content" }).props.onTouchStart({ nativeEvent: { pageX: 200 } }));
+	act(() => swipeable.props.onSwipeableOpen("right"));
+}
+async function mountSwipeFleet(fake: ReturnType<typeof hub>, nav = navigation()) {
+	const id = hubId();
+	adoptedAnHourAgo(id);
+	connect(id, fake.client, "ready");
+	const tree = await mount(nav);
+	return { id, tree, nav };
+}
+
+it("gives a working row Archive on the right swipe and Stop and Pin on the left, a finished row no Stop, and another host's row Archive too", async () => {
+	const { tree } = await mountSwipeFleet(hub(swipeFleet()));
+	const working = swipeableOf(tree, "Refactor parser");
+	expect(revealedLabels(working, "left")).toEqual(["Archive"]);
+	expect(revealedLabels(working, "right")).toEqual(["Stop", "Pin"]);
+	expect(revealedLabels(swipeableOf(tree, "Write changelog"), "right")).toEqual(["Pin"]);
+	expect(revealedLabels(swipeableOf(tree, "Park chore"), "left")).toEqual(["Archive"]);
+	// VoiceOver reaches the same actions on the row itself.
+	expect(rowTitled(tree, "Refactor parser").props.accessibilityActions).toEqual([
+		{ name: "archive", label: "Archive" },
+		{ name: "stop", label: "Stop" },
+		{ name: "pin", label: "Pin" },
+	]);
+});
+
+it("archives a local row on a full swipe right, dims it until the hub confirms, and Undo unarchives it", async () => {
+	const fake = hub(swipeFleet(), undefined, undefined, { holdChanges: true });
+	const { tree } = await mountSwipeFleet(fake);
+	swipeableCalls.closes = 0;
+	swipeRight(swipeableOf(tree, "Refactor parser"));
+	expect(swipeableCalls.closes).toBe(1);
+	await settle();
+	expect(fake.mutations).toEqual([
+		{ method: "evener/archive/set", params: { kind: "session", id: SESSION_ID, archived: true } },
+	]);
+	const dimmed = rowTitled(tree, "Refactor parser");
+	expect(dimmed.props.style({ pressed: false }).opacity).toBe(0.5);
+	expect(dimmed.props.accessibilityState).toEqual({ busy: true });
+	act(() => fake.release());
+	await settle();
+	expect(rowTitled(tree, "Refactor parser").props.style({ pressed: false }).opacity).toBe(1);
+	expect(texts(tree)).toContain("Archived");
+	pressLabel(tree, "Undo");
+	await settle();
+	act(() => fake.release());
+	await settle();
+	expect(fake.mutations.at(-1)).toEqual({
+		method: "evener/archive/set",
+		params: { kind: "session", id: SESSION_ID, archived: false },
+	});
+	expect(texts(tree)).toContain("Unarchived");
+	expect(texts(tree)).not.toContain("Refresh");
+	expect(texts(tree)).not.toContain("Reconnect");
+});
+
+it("archives another host's row by its ref", async () => {
+	const fake = hub(swipeFleet());
+	const { tree } = await mountSwipeFleet(fake);
+	swipeRight(swipeableOf(tree, "Park chore"));
+	await settle();
+	expect(fake.mutations).toEqual([
+		{ method: "evener/archive/set", params: { kind: "session", id: "paradise-park:pp", archived: true } },
+	]);
+	expect(texts(tree)).toContain("Archived");
+});
+
+it("says nothing when an archive can't be confirmed, and settles the journal so the row can swipe again", async () => {
+	const fake = hub(swipeFleet(), undefined, undefined, { refuse: true });
+	const { tree } = await mountSwipeFleet(fake);
+	swipeRight(swipeableOf(tree, "Refactor parser"));
+	await settle();
+	expect(fake.mutations).toHaveLength(1);
+	expect(texts(tree)).not.toContain("Archived");
+	expect(renderedText(tree)).not.toMatch(/Refresh|Reconnect|confirm/);
+	// The Board read the session back, so its organization actions return.
+	expect(revealedLabels(swipeableOf(tree, "Refactor parser"), "left")).toEqual(["Archive"]);
+	expect(rowTitled(tree, "Refactor parser").props.style({ pressed: false }).opacity).toBe(1);
+});
+
+it("stops a working row through the durable runtime: a fresh read, then the interrupt, then Stopped", async () => {
+	const fake = hub(swipeFleet());
+	const { tree } = await mountSwipeFleet(fake);
+	pressRevealed(swipeableOf(tree, "Refactor parser"), "right", "Stop");
+	await settle();
+	await vi.waitFor(() => expect(fake.threadCalls.map((call) => call.method)).toEqual(["thread/read", "turn/interrupt"]));
+	expect(fake.threadCalls[1]?.params).toMatchObject({
+		ref: `local:${SESSION_ID}`,
+		expectedInstanceId: `instance:local:${SESSION_ID}`,
+	});
+	expect(texts(tree)).toContain("Stopped");
+});
+
+it("opens Pin to category for a row's Pin", async () => {
+	const { id, tree, nav } = await mountSwipeFleet(hub(swipeFleet()));
+	pressRevealed(swipeableOf(tree, "Write changelog"), "right", "Pin");
+	expect(nav.navigate).toHaveBeenCalledWith("PinAssignment", {
+		hubId: id,
+		ref: `local:${OTHER_SESSION_ID}`,
+		title: "Write changelog",
+	});
+});
+
+it("offers no swipe action on any row while reconnecting", async () => {
+	const fake = hub(swipeFleet());
+	const { id, tree, nav } = await mountSwipeFleet(fake);
+	connect(id, fake.client, "reconnecting");
+	rerender(tree, nav);
+	const swipeables = tree.root.findAll((node) => node.type === ("ReanimatedSwipeable" as never));
+	expect(swipeables).toHaveLength(3);
+	for (const swipeable of swipeables) {
+		expect(swipeable.props.renderLeftActions).toBeUndefined();
+		expect(swipeable.props.renderRightActions).toBeUndefined();
+	}
+});
+
+it("puts swipes on pinned categories' rows and project sessions too", async () => {
+	const id = hubId();
+	adoptedAnHourAgo(id);
+	const pinnedRow = session(`local:${OTHER_SESSION_ID}`, {
+		session_id: OTHER_SESSION_ID,
+		title: "Pinned note",
+		live: false,
+		updated_at: minutesAgo(600),
+	});
+	const archivedRow = session(`local:${SESSION_ID}`, {
+		session_id: SESSION_ID,
+		title: "Old archived work",
+		live: false,
+		updated_at: minutesAgo(3000),
+	});
+	const shape: Fleet = {
+		live: [[working]],
+		needsYou: [],
+		pins: [{ id: "pins-1", name: "Mine", count: 1 }],
+		pinned: { "pins-1": [pinnedRow] },
+		manifest: manifest({
+			sources: [laptopSource],
+			sections: { live: { count: 1 }, needs_you: { count: 0 }, pin_sections: { count: 1 } },
+			catalogs: catalogCounts(1, 0, 0),
+		}),
+		catalogs: { projects: [evenerProject()] },
+		projectPages: { "evener:archived": [archivedRow] },
+	};
+	connect(id, hub(shape).client, "ready");
+	const tree = await mount(navigation());
+	expect(revealedLabels(swipeableOf(tree, "Pinned note"), "left")).toEqual(["Archive"]);
+	// Unfold the project, then its Archived group.
+	pressLabel(tree, "evener");
+	await settle();
+	pressLabel(tree, "Archived, 1 session");
+	await settle();
+	expect(revealedLabels(swipeableOf(tree, "Old archived work"), "left")).toEqual(["Unarchive"]);
 });

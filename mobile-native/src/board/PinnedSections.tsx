@@ -4,7 +4,8 @@ import { useReducer } from "react";
 import { type LayoutChangeEvent, Platform, Pressable, Text, View } from "react-native";
 import { useColors, useTextScale } from "../ui";
 import { type ClassifiedRow, sectionLabel } from "./attention";
-import { bandHeaderText, BoardRows, FoldChevron, type RowContext } from "./BoardRow";
+import { bandHeaderText, FoldChevron } from "./BoardRow";
+import { BoardRows, type RowContext } from "./BoardRows";
 import { foldedSections } from "./nativeBoardMemory";
 
 const EMPTY_HINT = "Touch and hold a session and choose Pin to category.";

@@ -65,6 +65,56 @@ func TestRunPluginSelectionValidationPrecedesMarketplaceSeeding(t *testing.T) {
 	}
 }
 
+// The seeding warning is best-effort, but best-effort does not mean
+// process-global: a library-style caller supplies stderr to route Evener's
+// diagnostics, and this warning must go through that stream like the plugin
+// warnings beside it. A failing seed hook drives the warning; the injected
+// buffer must receive it and the process-global stream must not.
+func TestRunSeedingWarningUsesInjectedStderr(t *testing.T) {
+	oldResolve := runResolvePlugins
+	oldEnsure := runEnsureUserConfigDirs
+	oldSeed := runSeedMarketplaces
+	t.Cleanup(func() {
+		runResolvePlugins = oldResolve
+		runEnsureUserConfigDirs = oldEnsure
+		runSeedMarketplaces = oldSeed
+	})
+	runResolvePlugins = func(context.Context, []string, *[]string) (plugins.LaunchPluginResolution, error) {
+		return plugins.LaunchPluginResolution{}, nil
+	}
+	runEnsureUserConfigDirs = func() error { return nil }
+	runSeedMarketplaces = func(context.Context) error { return errors.New("seed failed") }
+
+	// Swap the process-global stderr onto a private file so a warning that
+	// bypasses the injected stream lands somewhere we can read instead of the
+	// test runner's own output. This test is serial (it mutates package seams).
+	procStderr, err := os.CreateTemp(t.TempDir(), "proc-stderr")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { procStderr.Close() }) // runs last
+	oldStderr := os.Stderr
+	os.Stderr = procStderr
+	t.Cleanup(func() { os.Stderr = oldStderr }) // runs first
+
+	var stderr bytes.Buffer
+	_ = run(context.Background(), runConfig{workDir: t.TempDir(), stateDir: t.TempDir(), stdout: io.Discard, stderr: &stderr})
+
+	if !strings.Contains(stderr.String(), "warning: seeding default marketplaces: seed failed") {
+		t.Errorf("injected stderr = %q, want the seeding warning", stderr.String())
+	}
+	if _, err := procStderr.Seek(0, io.SeekStart); err != nil {
+		t.Fatal(err)
+	}
+	got, err := io.ReadAll(procStderr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(got), "seeding default marketplaces") {
+		t.Errorf("process stderr = %q, want the warning routed through the injected stream", got)
+	}
+}
+
 func TestRunPassesResolvedPluginDirsToSessionConfig(t *testing.T) {
 	installRunScriptedProvider(t, &scriptedProvider{name: "openai"})
 	selectedDir := t.TempDir()
