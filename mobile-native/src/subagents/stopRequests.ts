@@ -15,6 +15,9 @@ interface StopRecord {
 	coordinatorRef: string;
 	requestedAt: number;
 	stopped?: true;
+	/** Sent as a direct stop (S6), which ends the subagent's own run and
+	 * leaves its subagents running; else asked of the coordinator. */
+	direct?: true;
 }
 
 export type StopRequestView = "requested" | "stopped" | null;
@@ -36,21 +39,30 @@ export class StopRequests {
 						coordinatorRef: record.coordinatorRef,
 						requestedAt: record.requestedAt,
 						...(record.stopped === true ? { stopped: true as const } : {}),
+						...(record.direct === true ? { direct: true as const } : {}),
 					};
 	}
 
-	/** You sent the coordinator a stop request for this subagent. */
-	request(coordinatorRef: string, row: SubagentRow, now: number): void {
-		this.records[row.id] = { coordinatorRef, requestedAt: now };
+	/** You asked for this subagent to stop: of its coordinator, or directly
+	 * (S6). */
+	request(coordinatorRef: string, row: SubagentRow, now: number, { direct = false } = {}): void {
+		this.records[row.id] = { coordinatorRef, requestedAt: now, ...(direct ? { direct: true as const } : {}) };
 		this.save();
 	}
 
-	/** Pending while the subagent still works; stopped once it stopped after you asked. */
+	/** Pending while what you asked to stop still works; stopped once it
+	 * stopped after you asked. */
 	view(row: SubagentRow): StopRequestView {
 		const record = this.records[row.id];
 		if (!record) return null;
 		if (record.stopped) return "stopped";
-		return row.active ? "requested" : null;
+		return stillWorking(record, row) ? "requested" : null;
+	}
+
+	/** Whether your request was a direct stop (S6) rather than a request of
+	 * the coordinator. */
+	direct(row: SubagentRow): boolean {
+		return this.records[row.id]?.direct === true;
 	}
 
 	/** Settles requests against a fresh read of one coordinator's tree, and
@@ -61,7 +73,7 @@ export class StopRequests {
 		let changed = false;
 		for (const row of rows) {
 			const record = this.records[row.id];
-			if (!record || record.coordinatorRef !== coordinatorRef || record.stopped || row.active) continue;
+			if (!record || record.coordinatorRef !== coordinatorRef || record.stopped || stillWorking(record, row)) continue;
 			if (subtreeStopped(row.delegate)) {
 				record.stopped = true;
 				stopped.push(row);
@@ -91,6 +103,13 @@ export class StopRequests {
 		this.revision += 1;
 		for (const listener of [...this.listeners]) listener();
 	}
+}
+
+/** What a request asked to stop is still working. A coordinator's stop can
+ * take the subagent's whole subtree, so it waits on any of it; a direct stop
+ * ends only the subagent's own run (S6), so it waits on that alone. */
+function stillWorking(record: StopRecord, row: SubagentRow): boolean {
+	return record.direct ? row.state === "running" : row.active;
 }
 
 export function forgetStopRequests(storage: SyncStringStorage, hubId: string): void {

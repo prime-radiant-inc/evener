@@ -120,3 +120,43 @@ describe("stop requests you sent a coordinator (spec 9, ruling 10)", () => {
 		expect(calls).toBe(1);
 	});
 });
+
+// S6: a direct stop ends the subagent's own run and leaves its subagents
+// running (the S6 plan's ruling 1), so it settles on the subagent's own run.
+describe("a stop you sent directly (S6)", () => {
+	const runningWithChild = d("fix", {
+		runStartedAt: "2026-09-28T10:00:00.000Z",
+		child: session("local:fix", [d("child", { runStartedAt: "2026-09-28T10:01:00.000Z" })]),
+	});
+	const cancelledWithChild = d("fix", {
+		terminal: true,
+		outcome: "cancelled",
+		child: session("local:fix", [d("child", { runStartedAt: "2026-09-28T10:01:00.000Z" })]),
+	});
+
+	it("is pending while the subagent's own run goes on, and says it's direct", () => {
+		const requests = new StopRequests(memoryStorage(), "hub-1");
+		requests.request("local:coord", row(runningWithChild), 1000, { direct: true });
+		expect(requests.view(row(runningWithChild))).toBe("requested");
+		expect(requests.direct(row(runningWithChild))).toBe(true);
+	});
+
+	it("settles once its own run is cancelled, though its subagents still work", () => {
+		const requests = new StopRequests(memoryStorage(), "hub-1");
+		requests.request("local:coord", row(runningWithChild), 1000, { direct: true });
+		expect(requests.reconcile("local:coord", rows(cancelledWithChild)).map((stoppedRow) => stoppedRow.id)).toEqual(["fix"]);
+		expect(requests.view(row(cancelledWithChild))).toBe("stopped");
+	});
+
+	it("keeps that it was direct through a relaunch", () => {
+		const storage = memoryStorage();
+		new StopRequests(storage, "hub-1").request("local:coord", row(runningWithChild), 1000, { direct: true });
+		expect(new StopRequests(storage, "hub-1").direct(row(runningWithChild))).toBe(true);
+	});
+
+	it("isn't direct when you asked the coordinator", () => {
+		const requests = new StopRequests(memoryStorage(), "hub-1");
+		requests.request("local:coord", row(working), 1000);
+		expect(requests.direct(row(working))).toBe(false);
+	});
+});
