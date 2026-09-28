@@ -345,6 +345,14 @@ describe("when nothing can change", () => {
 		expect(pressable(tree, "Low")?.props.disabled).toBe(false);
 	});
 
+	it("stays open while the hub is away, holding every choice and standing in for the models", () => {
+		provide(conversation(), {}, { controls: null, ready: false });
+		const tree = sheet();
+		expect(navigation.goBack).not.toHaveBeenCalled();
+		expect(tree.root.findAll((node) => node.props.testID === "model-skeleton").length).toBeGreaterThan(0);
+		expect(pressable(tree, "Low")?.props.disabled).toBe(true);
+	});
+
 	it("leaves when its session's screen is gone", () => {
 		provide(conversation());
 		sheet();

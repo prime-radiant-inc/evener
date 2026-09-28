@@ -2033,7 +2033,9 @@ export function ConversationScreen({
 		: "";
 	const sessionInfoHost = useMemo<SessionInfoHost | undefined>(
 		() =>
-			conversation && controls
+			// Provided while the screen lives, with or without controls, so a
+			// connection blip never closes an open sheet or loses its input.
+			conversation
 				? {
 						session: conversation,
 						controls,
@@ -2056,7 +2058,7 @@ export function ConversationScreen({
 	// The model sheet's host (ruling 37).
 	const modelHost = useMemo<ModelHost | undefined>(
 		() =>
-			conversation && controls
+			conversation
 				? { session: conversation, controls, ready, toast: toaster.show }
 				: undefined,
 		[conversation, controls, ready, toaster.show],

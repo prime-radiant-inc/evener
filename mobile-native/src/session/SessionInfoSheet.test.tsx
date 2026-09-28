@@ -355,6 +355,15 @@ describe("what the sheet shows (spec 8.6)", () => {
 		expect(renderedText(sheet())).toContain("Could not confirm the action: refused");
 	});
 
+	it("stays open while the hub is away, showing what it knows with its actions held", () => {
+		const { host } = provide(conversation({ capabilities: { ...NONE, compact: true } }));
+		replaceHost({ ...host, controls: null, ready: false });
+		const tree = sheet();
+		expect(navigation.goBack).not.toHaveBeenCalled();
+		expect(texts(tree)).toContain("Work hub");
+		expect(pressable(tree, "Compact context")?.props.disabled).toBe(true);
+	});
+
 	it("leaves when its session's screen is gone", () => {
 		provide(conversation());
 		sheet();

@@ -6,13 +6,13 @@
 import { useNavigation } from "@react-navigation/native";
 import type { NativeStackNavigationProp, NativeStackScreenProps } from "@react-navigation/native-stack";
 import { type SFSymbol, SymbolView } from "expo-symbols";
-import { Children, type ReactElement, type ReactNode, useState, useSyncExternalStore } from "react";
+import { Children, type ReactElement, type ReactNode, useState } from "react";
 import { Alert, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
 import { markFor } from "../board/StateMark";
 import { typeRoles } from "../design/tokens";
 import type { MobileConversation } from "../projectedRows";
 import type { Routes } from "../screens";
-import type { SessionControls } from "../sessionControls";
+import { type SessionControls, useControlsState } from "../sessionControls";
 import { Sheet, useSheet } from "../sheet/Sheet";
 import { sheetHosts, sheetKey, useSheetHost } from "../sheet/sheetHosts";
 import { Toast, type ToastController, type ToastMessage, useToast } from "../Toast";
@@ -34,7 +34,8 @@ export type SessionInfoAction = "aside" | "fork" | "compact" | "pin" | "archive"
 
 export interface SessionInfoHost {
 	session: MobileConversation;
-	controls: SessionControls;
+	/** Null while the hub is away: the sheet still shows what it knows. */
+	controls: SessionControls | null;
 	hostLabel(hostId: string): string;
 	/** The model and its effort, as the composer's chip names them. */
 	modelLabel: string;
@@ -110,7 +111,7 @@ function SessionInfoBody({
 }) {
 	const { palette } = useColors();
 	const navigation = useNavigation<NativeStackNavigationProp<Routes>>();
-	const state = useSyncExternalStore(host.controls.subscribe, host.controls.getSnapshot);
+	const state = useControlsState(host.controls);
 	const { session, ready } = host;
 	const capabilities = session.capabilities;
 	const where = whereFacts(session, host.hostLabel);
@@ -132,12 +133,14 @@ function SessionInfoBody({
 			setEditing(null);
 			return;
 		}
+		// The new name waits in the field until the hub can take it.
+		if (!host.controls || !ready) return;
 		if ((await host.controls.rename(editing.text)) === true) {
 			setEditing(null);
 			toast.show({ text: "Session renamed" });
 		}
 	};
-	const error = state.error && !(state.lastAction && MODEL_ACTIONS.has(state.lastAction)) ? state.error : null;
+	const error = state?.error && !(state.lastAction && MODEL_ACTIONS.has(state.lastAction)) ? state.error : null;
 	return (
 		<ScrollView
 			automaticallyAdjustKeyboardInsets
@@ -179,7 +182,7 @@ function SessionInfoBody({
 				{capabilities.changeVisionModel ? (
 					<Row
 						label="Vision model"
-						text={visionModelLabel(session.visionModel, state.catalog?.data)}
+						text={visionModelLabel(session.visionModel, state?.catalog?.data)}
 						onPress={() => navigation.navigate("ModelSheet", { hubId, ref: sessionRef, setting: "vision" })}
 					/>
 				) : null}

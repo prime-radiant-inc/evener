@@ -6,12 +6,12 @@
 // the session and its controls through modelHosts.
 import { type ModelDescriptor, sessionEffortLevels } from "@evener/appwire-client";
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
-import { useEffect, useState, useSyncExternalStore } from "react";
+import { useEffect, useState } from "react";
 import { Pressable, Text, TextInput, View } from "react-native";
 import { ChoiceRow, ModelPicker } from "../ModelPicker";
 import type { MobileConversation } from "../projectedRows";
 import type { Routes } from "../screens";
-import type { SessionControls } from "../sessionControls";
+import { type SessionControls, useControlsState } from "../sessionControls";
 import { Sheet, useSheet } from "../sheet/Sheet";
 import { sheetHosts, sheetKey, useSheetHost } from "../sheet/sheetHosts";
 import type { ToastMessage } from "../Toast";
@@ -20,7 +20,8 @@ import { effortName } from "./sessionFacts";
 
 export interface ModelHost {
 	session: MobileConversation;
-	controls: SessionControls;
+	/** Null while the hub is away: the sheet stays, and nothing can change. */
+	controls: SessionControls | null;
 	/** Whether the session can take a change now: connected, open and idle. */
 	ready: boolean;
 	/** The session's own toast, for a change that closed the sheet. */
@@ -56,18 +57,19 @@ function ModelSheetBody({
 	const { palette } = useColors();
 	const scale = useTextScale();
 	const { session, controls, ready } = host;
-	const state = useSyncExternalStore(controls.subscribe, controls.getSnapshot);
+	const state = useControlsState(controls);
 	// The screen loads the catalog when it opens; a sheet opened before that
-	// finished, or after it failed, asks again.
+	// finished, after it failed, or while the hub was away asks again.
 	useEffect(() => {
+		if (!controls) return;
 		const { catalog, loadingModels } = controls.getSnapshot();
 		if (!catalog && !loadingModels) void controls.loadModels();
 	}, [controls]);
-	const busy = !ready || state.pending !== null;
+	const busy = !controls || !ready || state?.pending != null;
 	const levels = vision ? [] : sessionEffortLevels(session.reasoningEffortLevels, session.supportsReasoning);
 	const current = vision ? session.visionModel : session.modelProvider;
 	const canChange = vision ? session.capabilities.changeVisionModel : session.capabilities.changeModel;
-	const error = state.modelError ?? (state.lastAction && MODEL_ACTIONS.has(state.lastAction) ? state.error : null);
+	const error = state?.modelError ?? (state?.lastAction && MODEL_ACTIONS.has(state.lastAction) ? state.error : null);
 	const closeOn = (change: Promise<boolean>, then?: () => void) =>
 		void change.then((changed) => {
 			if (!changed) return;
@@ -79,6 +81,7 @@ function ModelSheetBody({
 			finish();
 			return;
 		}
+		if (!controls) return;
 		if (vision) closeOn(controls.changeVisionModel(model.provider, model.model));
 		else
 			closeOn(controls.changeModel(model.provider, model.model), () =>
@@ -111,7 +114,7 @@ function ModelSheetBody({
 					levels={levels}
 					current={session.reasoningEffort ?? ""}
 					disabled={busy}
-					choose={(level) => void controls.setReasoningEffort(level)}
+					choose={(level) => void controls?.setReasoningEffort(level)}
 				/>
 			) : null}
 			{error ? (
@@ -128,8 +131,8 @@ function ModelSheetBody({
 	return (
 		<Sheet title={vision ? "Vision model" : "Model"} done={{ onPress: () => finish() }} accessory={pinned}>
 			<ModelPicker
-				catalog={state.catalog}
-				loading={state.loadingModels}
+				catalog={state?.catalog ?? null}
+				loading={state?.loadingModels ?? true}
 				query={query}
 				visionOnly={vision}
 				current={current}
@@ -142,13 +145,13 @@ function ModelSheetBody({
 								title="Session model"
 								selected={session.visionModel === ""}
 								disabled={busy || !canChange}
-								onPress={() => closeOn(controls.setVisionModel(""))}
+								onPress={() => controls && closeOn(controls.setVisionModel(""))}
 							/>
 							<ChoiceRow
 								title="Off"
 								selected={session.visionModel === "off"}
 								disabled={busy || !canChange}
-								onPress={() => closeOn(controls.setVisionModel("off"))}
+								onPress={() => controls && closeOn(controls.setVisionModel("off"))}
 							/>
 						</>
 					) : null

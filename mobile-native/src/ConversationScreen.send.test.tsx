@@ -17,6 +17,7 @@ import { QuestionDock } from "./session/QuestionDock";
 import { sheetKey } from "./sheet/sheetHosts";
 import { holdQuote, takeQuote } from "./session/pendingQuote";
 import { modelHosts } from "./session/ModelSheet";
+import { SessionInfoSheet } from "./session/SessionInfoSheet";
 
 const harness = vi.hoisted(() => ({
 	connection: {} as Record<string, unknown>,
@@ -919,7 +920,53 @@ it("names the model on the composer's chip, which opens the model sheet with the
 	expect(navigation.navigate).toHaveBeenCalledWith("ModelSheet", { hubId: "hub-1", ref: "ref-model", setting: "model" });
 	const host = modelHosts.get(sheetKey("hub-1", "ref-model"));
 	expect(host?.session.modelProvider).toBe("anthropic/claude-sonnet-5");
-	expect(host?.controls.getSnapshot().catalog?.data).toHaveLength(1);
+	expect(host?.controls?.getSnapshot().catalog?.data).toHaveLength(1);
+});
+
+it("keeps the Session sheet and a half-typed name through a connection blip, and saves once the hub is back", async () => {
+	vi.mocked(navigation.goBack).mockClear();
+	const served = thread("ref-blip", "idle");
+	(served as unknown as { evener: Record<string, unknown> }).evener.capabilities = { ...CAPABILITIES, rename: true };
+	const { tree, hub } = await mount(served);
+	const params = { hubId: "hub-1", ref: "ref-blip" };
+	const sheet = render(
+		<SessionInfoSheet
+			route={{ key: "session-info", name: "SessionInfoSheet", params } as unknown as ComponentProps<typeof SessionInfoSheet>["route"]}
+			navigation={navigation as unknown as ComponentProps<typeof SessionInfoSheet>["navigation"]}
+		/>,
+	);
+	const title = sheet.root.findAll(
+		(node) => String(node.type) === "Pressable" && String(node.props.accessibilityLabel).endsWith(", rename"),
+	)[0];
+	if (!title) throw new Error("no rename");
+	act(() => title.props.onPress());
+	const nameField = () => sheet.root.find((node) => String(node.type) === "TextInput");
+	act(() => nameField().props.onChangeText("Settle race"));
+
+	const screenAt = (state: string) => {
+		harness.connection = { ...harness.connection, state };
+		const route = { key: "conversation-ref-blip", name: "Conversation", params: { ...params, title: "Session" } };
+		act(() =>
+			tree.update(<ConversationScreen route={route as unknown as ConversationScreenProps["route"]} navigation={navigation} />),
+		);
+	};
+	screenAt("connecting");
+	await settle();
+	expect(navigation.goBack).not.toHaveBeenCalled();
+	expect(nameField().props.value).toBe("Settle race");
+	// Save waits for the hub.
+	await act(async () => nameField().props.onSubmitEditing());
+	expect(hub.requests.filter((request) => request.method === "evener/thread/name/set")).toEqual([]);
+	expect(nameField().props.value).toBe("Settle race");
+
+	screenAt("ready");
+	await settle();
+	await act(async () => nameField().props.onSubmitEditing());
+	await settle();
+	expect(hub.requests.filter((request) => request.method === "evener/thread/name/set").map((request) => request.params)).toEqual([
+		{ ref: "ref-blip", name: "Settle race" },
+	]);
+	act(() => sheet.unmount());
 });
 
 describe("a session that can't take a message yet (ruling 20)", () => {
