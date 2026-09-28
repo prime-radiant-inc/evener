@@ -39,9 +39,7 @@ describe("drafts across navigation", () => {
 			draft: "composed after returning",
 			unconfirmed: null,
 		});
-		expect(
-			library.open({ ...destination, hubId: "two" }).getSnapshot().record.draft,
-		).toBe("");
+		expect(library.open({ ...destination, hubId: "two" }).getSnapshot().record.draft).toBe("");
 	});
 
 	it("does not let a late completion or stale screen recreate a removed hub's drafts", async () => {

@@ -1,13 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { WireError } from "@evener/appwire-client";
-import type {
-	ModelListResponse,
-	Thread,
-} from "@evener/appwire-client";
-import {
-	type ConversationClientLike,
-	createConversationService,
-} from "../../mobile/src/services/conversation";
+import type { ModelListResponse, Thread } from "@evener/appwire-client";
+import { type ConversationClientLike, createConversationService } from "../../mobile/src/services/conversation";
 import { SessionControls } from "./sessionControls";
 
 async function boundary(actions: {
@@ -71,17 +65,13 @@ async function boundary(actions: {
 				await actions.vision?.((params as { visionModel: string }).visionModel);
 				return {};
 			}
-			if (method === "evener/thread/name/set")
-				await actions.rename?.((params as { name: string }).name);
+			if (method === "evener/thread/name/set") await actions.rename?.((params as { name: string }).name);
 			else if (method === "thread/compact/start") await actions.compact?.();
 			else if (method === "thread/shutdown") await actions.shutdown?.();
-			else if (method === "evener/thread/forceStop")
-				await actions.forceStop?.();
+			else if (method === "evener/thread/forceStop") await actions.forceStop?.();
 			else if (method === "thread/resume") await actions.resume?.();
 			else if (method === "thread/reasoning-effort/set")
-				await actions.reasoning?.(
-					(params as { reasoningEffort: string }).reasoningEffort,
-				);
+				await actions.reasoning?.((params as { reasoningEffort: string }).reasoningEffort);
 			else throw new Error(`Unexpected method ${method}`);
 			return {};
 		},
@@ -227,30 +217,27 @@ describe("conversation-owned session controls", () => {
 		expect(await controls.forceStop()).toBe(false);
 		expect(attempts).toBe(0);
 	});
-	it.each([undefined, true])(
-		"sets a catalog vision model with support metadata %j",
-		async (supportsVision) => {
-			const applied: string[] = [];
-			const controls = new SessionControls(
-				await boundary({
-					models: async () => ({
-						data: [{ provider: "one", model: "vision", supportsVision }],
-					}),
-					vision: async (value) => {
-						applied.push(value);
-					},
+	it.each([undefined, true])("sets a catalog vision model with support metadata %j", async (supportsVision) => {
+		const applied: string[] = [];
+		const controls = new SessionControls(
+			await boundary({
+				models: async () => ({
+					data: [{ provider: "one", model: "vision", supportsVision }],
 				}),
-				async () => {},
-				() => {},
-				() => true,
-				() => null,
-				() => true,
-			);
-			await controls.loadModels();
-			expect(await controls.changeVisionModel("one", "vision")).toBe(true);
-			expect(applied).toEqual(["one/vision"]);
-		},
-	);
+				vision: async (value) => {
+					applied.push(value);
+				},
+			}),
+			async () => {},
+			() => {},
+			() => true,
+			() => null,
+			() => true,
+		);
+		await controls.loadModels();
+		expect(await controls.changeVisionModel("one", "vision")).toBe(true);
+		expect(applied).toEqual(["one/vision"]);
+	});
 	it("rejects a catalog model explicitly marked as not supporting vision", async () => {
 		let attempts = 0;
 		const service = await boundary({

@@ -24,7 +24,10 @@ afterEach(() => {
 	vi.useRealTimers();
 });
 
-function toolbar(state: ConnectionState, over: { fatal?: boolean; onNewSession?: () => void; disabled?: boolean } = {}) {
+function toolbar(
+	state: ConnectionState,
+	over: { fatal?: boolean; onNewSession?: () => void; disabled?: boolean } = {},
+) {
 	return (
 		<BoardToolbar
 			state={state}

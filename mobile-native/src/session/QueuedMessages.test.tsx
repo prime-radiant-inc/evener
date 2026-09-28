@@ -75,7 +75,12 @@ const refused: Ghost = {
 	menu: [],
 	origin: {
 		kind: "recovery",
-		row: { clientMutationId: "cmid-9", status: "rejected", text: "recover this message", actions: ["restore", "discard"] },
+		row: {
+			clientMutationId: "cmid-9",
+			status: "rejected",
+			text: "recover this message",
+			actions: ["restore", "discard"],
+		},
 	},
 };
 
@@ -194,10 +199,14 @@ it("shows the images an unconfirmed send carried in its own bubble, and only the
 			onMore={() => {}}
 		/>,
 	);
-	const images = tree.root.findAll((node) => String(node.type) === "Image" && node.props.accessibilityLabel === "Image 1: proof.png");
+	const images = tree.root.findAll(
+		(node) => String(node.type) === "Image" && node.props.accessibilityLabel === "Image 1: proof.png",
+	);
 	expect(images).toHaveLength(1);
 	const bubble = pressable(tree, `${unconfirmed.text}. ${unconfirmed.caption}`);
-	expect(bubble?.findAll((node) => String(node.type) === "Image" && node.props.accessibilityLabel === "Image 1: proof.png")).toHaveLength(1);
+	expect(
+		bubble?.findAll((node) => String(node.type) === "Image" && node.props.accessibilityLabel === "Image 1: proof.png"),
+	).toHaveLength(1);
 });
 
 describe("tapping a ghost", () => {

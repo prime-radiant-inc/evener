@@ -8,11 +8,7 @@
 // The hub has no host-scoped project read, so a project's pages are read once
 // and every row sits under the host its own host_id names: a session shows
 // once, however many hosts own its project (ruling 11).
-import type {
-	NavigationProjectSummary,
-	NavigationSessionSummary,
-	Source,
-} from "@evener/appwire-client";
+import type { NavigationProjectSummary, NavigationSessionSummary, Source } from "@evener/appwire-client";
 import {
 	CONTROLLER_SOURCE_ID,
 	canonicalHostId,
@@ -21,10 +17,7 @@ import {
 	projectHostIds,
 	sessionGroupHostId,
 } from "@evener/appwire-client/state/navigation";
-import type {
-	ProjectBrowserSnapshot,
-	ProjectSessionTier,
-} from "../projectBrowser";
+import type { ProjectBrowserSnapshot, ProjectSessionTier } from "../projectBrowser";
 import type { OrganizeBy } from "./boardMemory";
 
 export type Grouping = "flat" | OrganizeBy;
@@ -113,8 +106,7 @@ export function projectLiveCount(project: NavigationProjectSummary): number | nu
 
 const allRows = (pages: ProjectPages | undefined) =>
 	pages ? [...pages.current.rows, ...pages.recent.rows, ...pages.archived.rows] : [];
-const activeRows = (pages: ProjectPages | undefined) =>
-	pages ? [...pages.current.rows, ...pages.recent.rows] : [];
+const activeRows = (pages: ProjectPages | undefined) => (pages ? [...pages.current.rows, ...pages.recent.rows] : []);
 const pinnedFirst = (projects: readonly NavigationProjectSummary[]) =>
 	[...projects].sort((a, b) => Number(!!b.favorite) - Number(!!a.favorite));
 const onHost = (hostId: string | null) => (row: NavigationSessionSummary) =>
@@ -127,7 +119,12 @@ export function projectTreeItems(input: ProjectTreeInput): ProjectTreeItem[] {
 	if (mode === "host-project") hostFirst(out, input);
 	else for (const project of pinnedFirst(input.projects)) projectFirst(out, input, project, mode === "project-host");
 	if (input.remainingProjects > 0)
-		out.push({ kind: "moreProjects", key: `${input.section}/more-projects`, depth: 0, remaining: input.remainingProjects });
+		out.push({
+			kind: "moreProjects",
+			key: `${input.section}/more-projects`,
+			depth: 0,
+			remaining: input.remainingProjects,
+		});
 	return out;
 }
 
@@ -135,13 +132,21 @@ export function projectTreeItems(input: ProjectTreeInput): ProjectTreeItem[] {
  * read once: "failed" when one of those first reads failed. */
 function placeholder(out: ProjectTreeItem[], prefix: string, tiers: readonly TierPage[], depth: number): void {
 	const failed = tiers.some((page) => !page.loaded && page.error !== null);
-	out.push(failed ? { kind: "failed", key: `${prefix}/failed`, depth } : { kind: "loading", key: `${prefix}/loading`, depth });
+	out.push(
+		failed ? { kind: "failed", key: `${prefix}/failed`, depth } : { kind: "loading", key: `${prefix}/loading`, depth },
+	);
 }
 
 /** Today's and Recent's captions and rows, of one host or of every host. A
  * session the hub lists in both tiers (it crossed the 24-hour line between the
  * two reads) shows once, under Today, as projectBrowser's `sessions` does. */
-function activeItems(out: ProjectTreeItem[], prefix: string, pages: ProjectPages, hostId: string | null, depth: number): void {
+function activeItems(
+	out: ProjectTreeItem[],
+	prefix: string,
+	pages: ProjectPages,
+	hostId: string | null,
+	depth: number,
+): void {
 	const shown = new Set<string>();
 	const belongs = onHost(hostId);
 	for (const [tier, label] of [
@@ -160,10 +165,23 @@ function activeItems(out: ProjectTreeItem[], prefix: string, pages: ProjectPages
 
 /** Today's and Recent's rows that load more; they belong to the project, so
  * they appear once (ruling 12). */
-function moreItems(out: ProjectTreeItem[], prefix: string, pages: ProjectPages, projectKey: string, depth: number): void {
+function moreItems(
+	out: ProjectTreeItem[],
+	prefix: string,
+	pages: ProjectPages,
+	projectKey: string,
+	depth: number,
+): void {
 	for (const tier of ["current", "recent"] as const)
 		if (pages[tier].remaining > 0)
-			out.push({ kind: "more", key: `${prefix}/more:${tier}`, depth, projectKey, tier, remaining: pages[tier].remaining });
+			out.push({
+				kind: "more",
+				key: `${prefix}/more:${tier}`,
+				depth,
+				projectKey,
+				tier,
+				remaining: pages[tier].remaining,
+			});
 }
 
 /** The folded Archived group: its count only once every archived row is loaded. */
@@ -183,10 +201,19 @@ function archivedItems(
 	const fold = `${containerFold}:archived`;
 	const folded = input.isFolded(fold, input.section !== "archived");
 	const key = `${itemKey(input.section, containerFold)}/archived`;
-	out.push({ kind: "archivedGroup", key, fold, depth, count: pages.archived.remaining === 0 ? rows.length : null, folded });
+	out.push({
+		kind: "archivedGroup",
+		key,
+		fold,
+		depth,
+		count: pages.archived.remaining === 0 ? rows.length : null,
+		folded,
+	});
 	if (folded) return;
-	for (const row of rows) out.push({ kind: "session", key: `${key}/${row.ref}`, depth: depth + 1, row, archived: true });
-	if (remaining > 0) out.push({ kind: "more", key: `${key}/more`, depth: depth + 1, projectKey, tier: "archived", remaining });
+	for (const row of rows)
+		out.push({ kind: "session", key: `${key}/${row.ref}`, depth: depth + 1, row, archived: true });
+	if (remaining > 0)
+		out.push({ kind: "more", key: `${key}/more`, depth: depth + 1, projectKey, tier: "archived", remaining });
 }
 
 /** "Project, then host", or a flat section: project rows, with per-host
@@ -247,7 +274,10 @@ function hostFirst(out: ProjectTreeItem[], input: ProjectTreeInput): void {
 		const pages = input.pages.get(project.key);
 		return { project, pages, ...hostCopies(project, pages, input.sources) };
 	});
-	for (const host of orderedHosts(placed.flatMap(({ hostIds }) => hostIds), input.sources)) {
+	for (const host of orderedHosts(
+		placed.flatMap(({ hostIds }) => hostIds),
+		input.sources,
+	)) {
 		const fold = hostFold(host.id);
 		const folded = input.isFolded(fold, false);
 		out.push({

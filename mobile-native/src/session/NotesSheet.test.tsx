@@ -124,7 +124,9 @@ function sheet(focusEditor?: boolean): ReactTestRenderer {
 }
 
 const editor = (tree: ReactTestRenderer) =>
-	tree.root.findAll((node) => String(node.type) === "TextInput").find((node) => node.props.accessibilityLabel === "Your note");
+	tree.root
+		.findAll((node) => String(node.type) === "TextInput")
+		.find((node) => node.props.accessibilityLabel === "Your note");
 
 function editorStyle(input: ReactTestInstance) {
 	return [input.props.style].flat().reduce((all, style) => ({ ...all, ...style }), {});
@@ -358,7 +360,9 @@ describe("links", () => {
 		expect(clipboard.setStringAsync).toHaveBeenCalledWith("https://example.com/pr/1");
 		act(() => choose?.(2));
 		await flush();
-		expect(requests.filter((request) => request.method === "urls/remove").map((request) => request.params.id)).toEqual(["u1"]);
+		expect(requests.filter((request) => request.method === "urls/remove").map((request) => request.params.id)).toEqual([
+			"u1",
+		]);
 		expect(renderedText(tree)).toContain("Link removed. Only the agent can add links.");
 		expect(navigation.goBack).not.toHaveBeenCalled();
 	});
@@ -396,7 +400,9 @@ describe("links", () => {
 		expect(renderedText(render(swipeables[0]?.props.renderRightActions()))).toBe("Remove");
 		swipeRowFully(swipeables[0], "left");
 		await flush();
-		expect(requests.filter((request) => request.method === "urls/remove").map((request) => request.params.id)).toEqual(["u1"]);
+		expect(requests.filter((request) => request.method === "urls/remove").map((request) => request.params.id)).toEqual([
+			"u1",
+		]);
 		expect(renderedText(tree)).toContain("Link removed. Only the agent can add links.");
 	});
 
@@ -415,7 +421,9 @@ describe("links", () => {
 		expect(row?.props.accessibilityActions).toEqual([{ name: "remove", label: "Remove link" }]);
 		act(() => row?.props.onAccessibilityAction({ nativeEvent: { actionName: "remove" } }));
 		await flush();
-		expect(requests.filter((request) => request.method === "urls/remove").map((request) => request.params.id)).toEqual(["u1"]);
+		expect(requests.filter((request) => request.method === "urls/remove").map((request) => request.params.id)).toEqual([
+			"u1",
+		]);
 		expect(renderedText(tree)).toContain("Link removed. Only the agent can add links.");
 	});
 
@@ -455,9 +463,9 @@ describe("closing the sheet", () => {
 		act(() => tree.unmount());
 		mounted.splice(mounted.indexOf(tree), 1);
 		await flush();
-		expect(requests.filter((request) => request.method === "notes/human/set").map((request) => request.params.note)).toEqual([
-			"keep the tests",
-		]);
+		expect(
+			requests.filter((request) => request.method === "notes/human/set").map((request) => request.params.note),
+		).toEqual(["keep the tests"]);
 		expect(saved).toHaveBeenCalledWith({ saved: true, woke: true });
 	});
 
@@ -495,8 +503,8 @@ describe("closing the sheet", () => {
 		act(() => tree.unmount());
 		mounted.splice(mounted.indexOf(tree), 1);
 		await flush();
-		expect(requests.filter((request) => request.method === "notes/human/set").map((request) => request.params.note)).toEqual([
-			"keep the tests",
-		]);
+		expect(
+			requests.filter((request) => request.method === "notes/human/set").map((request) => request.params.note),
+		).toEqual(["keep the tests"]);
 	});
 });

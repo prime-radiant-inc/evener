@@ -26,9 +26,7 @@ export function LogViewer({ title, text, onClose }: { title: string; text: strin
 					data={lines}
 					contentContainerStyle={{ padding: 16 }}
 					renderItem={({ item }) => <AnsiOutputLine line={item} />}
-					ListFooterComponent={
-						cut ? <Copy muted>{`Showing the first ${MAX_ITEM_BYTES / 1024} KB`}</Copy> : null
-					}
+					ListFooterComponent={cut ? <Copy muted>{`Showing the first ${MAX_ITEM_BYTES / 1024} KB`}</Copy> : null}
 				/>
 			</SafeAreaView>
 		</Modal>

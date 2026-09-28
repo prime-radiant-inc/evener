@@ -308,10 +308,7 @@ it("marks the same session ref and turn end again when the screen's hub changes"
 	view.hubId = `session-seen-hub-${hubCount}`;
 	hook.rerender();
 	await settle();
-	expect(sent).toEqual([
-		[{ ref: "local:s", seenThrough: T }],
-		[{ ref: "local:s", seenThrough: T }],
-	]);
+	expect(sent).toEqual([[{ ref: "local:s", seenThrough: T }], [{ ref: "local:s", seenThrough: T }]]);
 	hook.unmount();
 });
 

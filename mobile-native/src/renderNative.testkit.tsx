@@ -26,11 +26,7 @@ import {
 	type ReactTestRenderer,
 	type ReactTestRendererJSON,
 } from "react-test-renderer";
-import type {
-	AnyNotification,
-	ConnectionState,
-	InstanceListResponse,
-} from "@evener/appwire-client";
+import type { AnyNotification, ConnectionState, InstanceListResponse } from "@evener/appwire-client";
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
 
 // React 19's act() only drives effects when it is told it is inside a test
@@ -64,13 +60,7 @@ export function nativeModuleMock() {
 			props.ListHeaderComponent ?? null,
 			...props.sections.flatMap((section) => [
 				props.renderSectionHeader?.({ section }) ?? null,
-				...section.data.map((item) =>
-					createElement(
-						"Item",
-						{ key: item.name },
-						props.renderItem?.({ item }) ?? null,
-					),
-				),
+				...section.data.map((item) => createElement("Item", { key: item.name }, props.renderItem?.({ item }) ?? null)),
 			]),
 			props.sections.length === 0 ? (props.ListEmptyComponent ?? null) : null,
 			props.ListFooterComponent ?? null,
@@ -406,10 +396,7 @@ export function scriptedClient(
  * themselves share (#2164). A test whose scenario needs a different hub,
  * retry or verdict spreads its override over the result, so the outlier
  * stays visible at its use. */
-export function screenConnection(
-	client: unknown,
-	state: ConnectionState,
-): Record<string, unknown> {
+export function screenConnection(client: unknown, state: ConnectionState): Record<string, unknown> {
 	return {
 		activeProfile: { id: "hub-1", name: "Work hub" },
 		client,
@@ -477,13 +464,6 @@ export function textOf(node: ReactTestInstance): string {
 
 /** The first mounted Pressable whose accessibility label is `label`, found
  * the way VoiceOver finds a button; undefined when there is none. */
-export function pressable(
-	tree: ReactTestRenderer,
-	label: string,
-): ReactTestInstance | undefined {
-	return tree.root.findAll(
-		(node) =>
-			String(node.type) === "Pressable" &&
-			node.props.accessibilityLabel === label,
-	)[0];
+export function pressable(tree: ReactTestRenderer, label: string): ReactTestInstance | undefined {
+	return tree.root.findAll((node) => String(node.type) === "Pressable" && node.props.accessibilityLabel === label)[0];
 }

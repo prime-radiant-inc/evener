@@ -21,13 +21,7 @@ import { ProviderSignIn } from "./providerSignIn";
 import { recordClientReadyHub } from "./connectionIdentity";
 import { ProviderEditor } from "./ProviderEditor";
 import { ProvidersScreen } from "./ProvidersScreen";
-import {
-	alertRequests,
-	render,
-	renderedText,
-	screenConnection,
-	scriptedClient,
-} from "./renderNative.testkit";
+import { alertRequests, render, renderedText, screenConnection, scriptedClient } from "./renderNative.testkit";
 
 // What useConnection answers with. vi.hoisted because vi.mock's factory is
 // hoisted above every module import and may not close over a module-level let.
@@ -56,7 +50,7 @@ const rows: InstanceListResponse = {
 			activeSource: "store",
 			hasStoredOAuth: false,
 			credentialRequired: true,
-				endpointFingerprint: "fp-work",
+			endpointFingerprint: "fp-work",
 		},
 	],
 	availableProviders: [],
@@ -67,15 +61,11 @@ const rows: InstanceListResponse = {
  * scopes to. The host mock renders every Modal's content regardless of its
  * visible prop, so a tree can hold more than one and content tells them
  * apart. */
-function modalContaining(
-	tree: ReactTestRenderer,
-	needle: string,
-): ReactTestInstance {
+function modalContaining(tree: ReactTestRenderer, needle: string): ReactTestInstance {
 	const modals = tree.root
 		.findAll((node) => (node.type as unknown as string) === "Modal")
 		.filter((modal) => subtreeText(modal).includes(needle));
-	if (modals.length !== 1)
-		throw new Error(`expected one modal containing "${needle}"`);
+	if (modals.length !== 1) throw new Error(`expected one modal containing "${needle}"`);
 	return modals[0];
 }
 
@@ -218,9 +208,7 @@ it("keeps the provider wall through a fatal retry until the replacement is ready
 	});
 	await act(async () => {});
 	expect(replacement.methods.length).toBeGreaterThan(0);
-	expect(
-		replacement.methods.every((method) => method === "evener/instance/list"),
-	).toBe(true);
+	expect(replacement.methods.every((method) => method === "evener/instance/list")).toBe(true);
 });
 
 it("keeps the provider editor draft and exposes reconnect inside its modal", async () => {
@@ -276,8 +264,7 @@ it("a flap disables provider mutation controls, not only OAuth sign-in", async (
 	});
 	// Named by their button text, which Action forwards as accessibilityLabel
 	// when no separate `label` is given (ui.tsx).
-	const label = (name: string) =>
-		tree.root.findByProps({ accessibilityLabel: name });
+	const label = (name: string) => tree.root.findByProps({ accessibilityLabel: name });
 	expect(label("Add provider instance").props.disabled).toBe(false);
 	expect(label("Test credentials").props.disabled).toBe(false);
 	expect(label("Edit instance").props.disabled).toBe(false);
@@ -298,9 +285,7 @@ it("a flap disables provider mutation controls, not only OAuth sign-in", async (
 /** Presses the one rendered control whose accessibility label matches. */
 function press(tree: ReactTestRenderer, matches: (label: string) => boolean) {
 	const target = tree.root.find(
-		(node) =>
-			typeof node.props.accessibilityLabel === "string" &&
-			matches(node.props.accessibilityLabel),
+		(node) => typeof node.props.accessibilityLabel === "string" && matches(node.props.accessibilityLabel),
 	);
 	act(() => {
 		target.props.onPress();
@@ -350,11 +335,7 @@ it("reconciles an applied removal and warns instead of reporting a failure", asy
 
 	await openRemoveConfirmation(tree);
 
-	expect(hub.methods).toEqual([
-		"evener/instance/list",
-		"evener/instance/remove",
-		"evener/instance/list",
-	]);
+	expect(hub.methods).toEqual(["evener/instance/list", "evener/instance/remove", "evener/instance/list"]);
 	const text = renderedText(tree);
 	expect(text).toContain("The instance was removed on the hub");
 	expect(text).not.toContain("The operation could not be confirmed");
@@ -403,11 +384,9 @@ it("asserts the row's endpoint on an edit and reconciles the conflict", async ()
 	alertRequests.length = 0;
 	const hub = scriptedClient(rows, {
 		"evener/instance/edit": [
-			new WireError(
-				"work no longer resolves to the endpoint this form was opened on",
-				-32013,
-				{ evenerErrorInfo: ErrorEndpointConflict },
-			),
+			new WireError("work no longer resolves to the endpoint this form was opened on", -32013, {
+				evenerErrorInfo: ErrorEndpointConflict,
+			}),
 		],
 		"evener/instance/list": [rows, rows],
 	});
@@ -426,18 +405,12 @@ it("asserts the row's endpoint on an edit and reconciles the conflict", async ()
 	await act(async () => {});
 	await act(async () => {});
 
-	const edit = hub.requests.find(
-		(request) => request.method === "evener/instance/edit",
-	);
+	const edit = hub.requests.find((request) => request.method === "evener/instance/edit");
 	expect(edit?.params).toMatchObject({
 		name: "work",
 		expectedEndpointFingerprint: "fp-work",
 	});
-	expect(hub.methods).toEqual([
-		"evener/instance/list",
-		"evener/instance/edit",
-		"evener/instance/list",
-	]);
+	expect(hub.methods).toEqual(["evener/instance/list", "evener/instance/edit", "evener/instance/list"]);
 	const text = renderedText(tree);
 	expect(text).toContain("changed to a different endpoint");
 	expect(text).not.toContain("work no longer resolves");
@@ -457,11 +430,9 @@ it("reconciles an endpoint-conflict removal: clears, refreshes, and warns", asyn
 	alertRequests.length = 0;
 	const hub = scriptedClient(rows, {
 		"evener/instance/remove": [
-			new WireError(
-				"work no longer resolves to the endpoint this form was opened on",
-				-32013,
-				{ evenerErrorInfo: ErrorEndpointConflict },
-			),
+			new WireError("work no longer resolves to the endpoint this form was opened on", -32013, {
+				evenerErrorInfo: ErrorEndpointConflict,
+			}),
 		],
 		"evener/instance/list": [rows, rows],
 	});
@@ -474,18 +445,12 @@ it("reconciles an endpoint-conflict removal: clears, refreshes, and warns", asyn
 
 	await openRemoveConfirmation(tree);
 
-	const removal = hub.requests.find(
-		(request) => request.method === "evener/instance/remove",
-	);
+	const removal = hub.requests.find((request) => request.method === "evener/instance/remove");
 	expect(removal?.params).toMatchObject({
 		name: "work",
 		expectedEndpointFingerprint: "fp-work",
 	});
-	expect(hub.methods).toEqual([
-		"evener/instance/list",
-		"evener/instance/remove",
-		"evener/instance/list",
-	]);
+	expect(hub.methods).toEqual(["evener/instance/list", "evener/instance/remove", "evener/instance/list"]);
 	const text = renderedText(tree);
 	expect(text).toContain("changed to a different endpoint");
 	expect(text).not.toContain("The operation could not be confirmed");
@@ -565,11 +530,9 @@ it("asserts the endpoint the editor was opened on across a flap's recovery", asy
 	const hub = scriptedClient(opened, {
 		"evener/instance/list": [opened, moved],
 		"evener/instance/edit": [
-			new WireError(
-				"work no longer resolves to the endpoint this form was opened on",
-				-32013,
-				{ evenerErrorInfo: ErrorEndpointConflict },
-			),
+			new WireError("work no longer resolves to the endpoint this form was opened on", -32013, {
+				evenerErrorInfo: ErrorEndpointConflict,
+			}),
 		],
 	});
 	harness.connection = screenConnection(hub.client, "ready");
@@ -601,9 +564,7 @@ it("asserts the endpoint the editor was opened on across a flap's recovery", asy
 
 	// The save asserts the endpoint this form was opened on, so the hub - not
 	// this client - adjudicates the moved destination.
-	const edit = hub.requests.find(
-		(request) => request.method === "evener/instance/edit",
-	);
+	const edit = hub.requests.find((request) => request.method === "evener/instance/edit");
 	expect(edit?.params).toMatchObject({
 		name: "work",
 		baseUrl: "https://work.example",
@@ -644,9 +605,7 @@ it("saves without a warning when a flap's recovery finds the endpoint unchanged"
 	await act(async () => {});
 	press(tree, (label) => label === "Edit instance");
 	await act(async () => {});
-	const url = tree.root.find(
-		(node) => node.props.accessibilityLabel === "Base URL (optional)",
-	);
+	const url = tree.root.find((node) => node.props.accessibilityLabel === "Base URL (optional)");
 	act(() => {
 		url.props.onChangeText("https://work2.example");
 	});
@@ -664,9 +623,7 @@ it("saves without a warning when a flap's recovery finds the endpoint unchanged"
 	await act(async () => {});
 	await act(async () => {});
 
-	const edit = hub.requests.find(
-		(request) => request.method === "evener/instance/edit",
-	);
+	const edit = hub.requests.find((request) => request.method === "evener/instance/edit");
 	expect(edit?.params).toMatchObject({
 		name: "work",
 		baseUrl: "https://work2.example",
@@ -674,11 +631,7 @@ it("saves without a warning when a flap's recovery finds the endpoint unchanged"
 	});
 	// The save applied: no conflict warning, and the editor closed on the
 	// completed write.
-	expect(hub.methods).toEqual([
-		"evener/instance/list",
-		"evener/instance/list",
-		"evener/instance/edit",
-	]);
+	expect(hub.methods).toEqual(["evener/instance/list", "evener/instance/list", "evener/instance/edit"]);
 	const text = renderedText(tree);
 	expect(text).not.toContain("changed to a different endpoint");
 	expect(text).not.toContain("Save instance");
@@ -706,11 +659,7 @@ it("shows the connection status and reconnect inside an open editor modal", asyn
 	});
 	const modal = modalContaining(tree, "Save instance");
 	expect(subtreeText(modal)).toContain("reconnecting");
-	expect(
-		modal.findAll(
-			(node) => node.props.accessibilityLabel === "Reconnect",
-		).length,
-	).toBeGreaterThan(0);
+	expect(modal.findAll((node) => node.props.accessibilityLabel === "Reconnect").length).toBeGreaterThan(0);
 	// The draft survived: the modal is still the editor's.
 	expect(subtreeText(modal)).toContain("Save instance");
 });
@@ -718,9 +667,7 @@ it("shows the connection status and reconnect inside an open editor modal", asyn
 it("starts a sign-in from behind the banner without a doomed client", async () => {
 	const fake = new FakeClient("ready");
 	const oauth: InstanceListResponse = {
-		instances: [
-			{ ...rows.instances[0]!, auth: "oauth", authModes: ["oauth"] },
-		],
+		instances: [{ ...rows.instances[0]!, auth: "oauth", authModes: ["oauth"] }],
 		availableProviders: [],
 	};
 	fake.on("evener/instance/list", () => oauth);
@@ -754,11 +701,7 @@ it("starts a sign-in from behind the banner without a doomed client", async () =
 	expect(setConnection.mock.calls[0]?.[0]).toBe(null);
 	const sheet = modalContaining(tree, "Waiting for this hub to reconnect");
 	expect(subtreeText(sheet)).toContain("reconnecting");
-	expect(
-		sheet.findAll(
-			(node) => node.props.accessibilityLabel === "Reconnect",
-		).length,
-	).toBeGreaterThan(0);
+	expect(sheet.findAll((node) => node.props.accessibilityLabel === "Reconnect").length).toBeGreaterThan(0);
 
 	// Recovery hands the flow the connection it was opened without, and the
 	// exchange proceeds.
@@ -769,18 +712,14 @@ it("starts a sign-in from behind the banner without a doomed client", async () =
 	await act(async () => {});
 	await act(async () => {});
 	expect(setConnection).toHaveBeenCalledWith(fake);
-	expect(fake.calls.map((call) => call.method)).toContain(
-		"evener/auth/device/start",
-	);
+	expect(fake.calls.map((call) => call.method)).toContain("evener/auth/device/start");
 	expect(renderedText(tree)).toContain("WORK-1234");
 	setConnection.mockRestore();
 });
 
 it("resumes a banner-started sign-in after a manual retry's listing read lands", async () => {
 	const oauth: InstanceListResponse = {
-		instances: [
-			{ ...rows.instances[0]!, auth: "oauth", authModes: ["oauth"] },
-		],
+		instances: [{ ...rows.instances[0]!, auth: "oauth", authModes: ["oauth"] }],
 		availableProviders: [],
 	};
 	const first = new FakeClient("ready");
@@ -841,9 +780,7 @@ it("resumes a banner-started sign-in after a manual retry's listing read lands",
 	await act(async () => {});
 	await act(async () => {});
 	await act(async () => {});
-	expect(
-		second.calls.map((call) => call.method),
-	).toContain("evener/auth/device/start");
+	expect(second.calls.map((call) => call.method)).toContain("evener/auth/device/start");
 	expect(renderedText(tree)).toContain("WORK-5678");
 });
 
@@ -852,9 +789,7 @@ it("treats a route re-keyed to another hub as a fresh screen", async () => {
 	fakeA.on("evener/instance/list", () => rows);
 	harness.connection = screenConnection(fakeA as unknown as ConversationClientLike, "ready");
 	const forHub = (hubId: string) =>
-		({ route: { params: { hubId } } }) as unknown as ComponentProps<
-			typeof ProvidersScreen
-		>;
+		({ route: { params: { hubId } } }) as unknown as ComponentProps<typeof ProvidersScreen>;
 	const tree = render(<ProvidersScreen {...forHub("hub-1")} />);
 	await act(async () => {});
 	expect(renderedText(tree)).toContain("work");
@@ -910,9 +845,7 @@ it("treats a route re-keyed to another hub as a fresh screen", async () => {
 // guard alone is now closed before the surface can mount.
 it("walls the re-key window against the previous hub's recorded client", async () => {
 	const oauth: InstanceListResponse = {
-		instances: [
-			{ ...rows.instances[0]!, auth: "oauth", authModes: ["oauth"] },
-		],
+		instances: [{ ...rows.instances[0]!, auth: "oauth", authModes: ["oauth"] }],
 		availableProviders: [],
 	};
 	const stale = new FakeClient("ready");
@@ -945,12 +878,8 @@ it("walls the re-key window against the previous hub's recorded client", async (
 	// exchange runs against the previous hub's client — the strongest form
 	// of the round-58 contract, closed one layer up.
 	expect(renderedText(tree)).toContain("Connect to New hub");
-	expect(
-		tree.root.findAll((node) => typeof node.props.onSignIn === "function"),
-	).toHaveLength(0);
-	expect(
-		stale.calls.map((call) => call.method),
-	).not.toContain("evener/auth/device/start");
+	expect(tree.root.findAll((node) => typeof node.props.onSignIn === "function")).toHaveLength(0);
+	expect(stale.calls.map((call) => call.method)).not.toContain("evener/auth/device/start");
 
 	// The connection re-points: its own dial for hub-2 transitions into
 	// ready on the replacement — recorded for hub-2 at ITS dial — and the
@@ -986,9 +915,7 @@ it("walls the re-key window against the previous hub's recorded client", async (
 
 	// Open a sign-in by invoking the screen's own callback, exactly as the
 	// row's affordance does.
-	const openers = tree.root.findAll(
-		(node) => typeof node.props.onSignIn === "function",
-	);
+	const openers = tree.root.findAll((node) => typeof node.props.onSignIn === "function");
 	if (openers.length === 0) throw new Error("no onSignIn affordance mounted");
 	act(() => openers[0]!.props.onSignIn("work"));
 	await act(async () => {});
@@ -997,9 +924,7 @@ it("walls the re-key window against the previous hub's recorded client", async (
 	// hub's client was never handed over.
 	expect(setConnection).toHaveBeenCalledWith(replacement);
 	expect(setConnection).not.toHaveBeenCalledWith(stale);
-	expect(
-		replacement.calls.map((call) => call.method),
-	).toContain("evener/auth/device/start");
+	expect(replacement.calls.map((call) => call.method)).toContain("evener/auth/device/start");
 	expect(renderedText(tree)).toContain("WORK-5678");
 	setConnection.mockRestore();
 });

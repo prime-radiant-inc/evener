@@ -32,22 +32,12 @@ export async function readOrganizationNavigation(
 ): Promise<OrganizationObservation> {
 	const operation = checkpoint.operation;
 	if (operation.kind !== "archive" && operation.kind !== "favorite")
-		throw Error(
-			"Return to the previous organization screen to check that change.",
-		);
+		throw Error("Return to the previous organization screen to check that change.");
 	const { params } = operation;
 	const sessionRef =
-		operation.kind === "archive" && params.kind === "session"
-			? archivedSessionRef(params.id)
-			: undefined;
-	if (sessionRef === null)
-		throw Error("This session's archive change can't be checked here.");
-	const navigation = await navigationReadback(
-		client,
-		checkpoint.receipt,
-		current,
-		confirmReceipt,
-	);
+		operation.kind === "archive" && params.kind === "session" ? archivedSessionRef(params.id) : undefined;
+	if (sessionRef === null) throw Error("This session's archive change can't be checked here.");
+	const navigation = await navigationReadback(client, checkpoint.receipt, current, confirmReceipt);
 	let title: string, state: OrganizationObservation["state"], matches: boolean;
 	if (operation.kind === "archive" && sessionRef !== undefined) {
 		const ref = sessionRef;
@@ -61,15 +51,12 @@ export async function readOrganizationNavigation(
 			// This hub's row names its session by id; another host's row is
 			// that host's, which its ref already names.
 			(local
-				? location.session.session_id !== params.id ||
-					location.session.host_id !== "local"
+				? location.session.session_id !== params.id || location.session.host_id !== "local"
 				: location.session.host_id === "local") ||
 			!location.top_level ||
 			!["current", "recent", "archived"].includes(location.tier ?? "")
 		)
-			throw Error(
-				"This session's current organization could not be confirmed.",
-			);
+			throw Error("This session's current organization could not be confirmed.");
 		title = location.session.title || "Untitled session";
 		state = location.tier as "current" | "recent" | "archived";
 		matches = (state === "archived") === operation.params.archived;
@@ -87,34 +74,20 @@ export async function readOrganizationNavigation(
 					limit: 50,
 				});
 				const page = response.data as NavigationProjectCatalog | null;
-				if (
-					!page ||
-					(version !== undefined && version !== response.version.revision)
-				)
-					throw Error(
-						"Projects changed while checking this item. Refresh to try again.",
-					);
+				if (!page || (version !== undefined && version !== response.version.revision))
+					throw Error("Projects changed while checking this item. Refresh to try again.");
 				version = response.version.revision;
 				remaining = page.remaining;
 				project = page.projects.find((row) => row.key === params.id);
 				if (project || page.remaining === 0) break;
-				if (page.projects.length === 0)
-					throw Error("The project list did not advance.");
+				if (page.projects.length === 0) throw Error("The project list did not advance.");
 				offset += page.projects.length;
 			} while (remaining > 0);
 			if (project) break;
 		}
-		if (!project)
-			throw Error(
-				"The previous project could not be found. Refresh to try again.",
-			);
-		if (
-			operation.kind === "archive" &&
-			project.working_dir !== operation.params.workingDir
-		)
-			throw Error(
-				"The project's working directory changed. Its organization could not be confirmed.",
-			);
+		if (!project) throw Error("The previous project could not be found. Refresh to try again.");
+		if (operation.kind === "archive" && project.working_dir !== operation.params.workingDir)
+			throw Error("The project's working directory changed. Its organization could not be confirmed.");
 		title = projectName(project);
 		if (operation.kind === "favorite") {
 			state = project.favorite ? "pinned" : "unpinned";
@@ -131,8 +104,7 @@ export async function readOrganizationNavigation(
 		generationId: navigation.generationId,
 		title,
 		state,
-		settled:
-			matches && (operation.kind === "favorite" || checkpoint.receipt !== null),
+		settled: matches && (operation.kind === "favorite" || checkpoint.receipt !== null),
 	};
 }
 

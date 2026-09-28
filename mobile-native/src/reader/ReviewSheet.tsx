@@ -173,7 +173,11 @@ export function ReviewSheet({ route, navigation }: NativeStackScreenProps<Routes
 							textAlignVertical: "top",
 						}}
 					/>
-					<SendButton label="Send review" disabled={verdict === null || !canSend || sending} onPress={() => void submit()} />
+					<SendButton
+						label="Send review"
+						disabled={verdict === null || !canSend || sending}
+						onPress={() => void submit()}
+					/>
 				</View>
 				{why ? (
 					<Text allowFontScaling={allowFontScaling} style={{ ...small, color: palette.inkMid }}>
@@ -186,14 +190,20 @@ export function ReviewSheet({ route, navigation }: NativeStackScreenProps<Routes
 					</Text>
 				) : null}
 				{comments.length === 0 ? (
-					<Text allowFontScaling={allowFontScaling} style={{ color: palette.inkMid, fontSize: 15 * scale, lineHeight: 20 * scale }}>
+					<Text
+						allowFontScaling={allowFontScaling}
+						style={{ color: palette.inkMid, fontSize: 15 * scale, lineHeight: 20 * scale }}
+					>
 						No comments. Touch and hold a paragraph to add one.
 					</Text>
 				) : (
 					comments.map((comment) => (
 						<View key={comment.id} style={{ gap: 6 }}>
 							<QuoteBlock words={comment.quote} limit={120} size={14} lineHeight={19} />
-							<Text allowFontScaling={allowFontScaling} style={{ color: palette.inkHi, fontSize: 15 * scale, lineHeight: 20 * scale }}>
+							<Text
+								allowFontScaling={allowFontScaling}
+								style={{ color: palette.inkHi, fontSize: 15 * scale, lineHeight: 20 * scale }}
+							>
 								{comment.text}
 							</Text>
 						</View>

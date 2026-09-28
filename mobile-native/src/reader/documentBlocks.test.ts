@@ -42,7 +42,10 @@ describe("a document as the Reader draws it (spec 10.2, ruling 12)", () => {
 		expect(documentBlocks(plan).map((block) => [block.kind, block.markdown])).toEqual([
 			["heading", "# Fix the settle/drain race"],
 			["heading", "## Problem"],
-			["paragraph", "The retirement drain and the tree settle pass both take the tree lock.\nWhen settle runs first, it can mark the tree idle."],
+			[
+				"paragraph",
+				"The retirement drain and the tree settle pass both take the tree lock.\nWhen settle runs first, it can mark the tree idle.",
+			],
 			["listItem", "1. Settle waits for the drain."],
 			["listItem", "2. The drain signals completion through a **channel**, not a `shared` flag."],
 			["listItem", "3. Add a regression test."],
@@ -128,7 +131,9 @@ it("reads a setext heading as its words, without its underline", () => {
 });
 
 it("reads links and images as their words", () => {
-	expect(plainText("See [the plan](docs/plan.md) and ![the diagram](out/d.png).")).toBe("See the plan and the diagram.");
+	expect(plainText("See [the plan](docs/plan.md) and ![the diagram](out/d.png).")).toBe(
+		"See the plan and the diagram.",
+	);
 });
 
 it("hashes the same text the same way every time, and different text differently", () => {

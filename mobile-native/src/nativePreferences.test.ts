@@ -75,10 +75,7 @@ describe("NativePreferences", () => {
 	it("loads confirmed domains and applies matching changed notifications", async () => {
 		const client = fakeClient();
 		client.handlers.set("evener/settings/keybindings/get", () => keybindings);
-		client.handlers.set(
-			"evener/settings/transcriptDisplay/get",
-			() => transcript,
-		);
+		client.handlers.set("evener/settings/transcriptDisplay/get", () => transcript);
 		const model = new NativePreferences(client, features);
 		await model.refresh();
 		expect(model.getSnapshot().keybindings.confirmed).toEqual(keybindings);
@@ -113,9 +110,7 @@ describe("NativePreferences", () => {
 		}));
 		const model = new NativePreferences(client, features);
 		await model.refresh();
-		expect(
-			model.getSnapshot().transcriptMobile.confirmed?.config.content,
-		).toEqual({
+		expect(model.getSnapshot().transcriptMobile.confirmed?.config.content).toEqual({
 			kind: "custom",
 			toolIntent: true,
 			toolCalls: false,
@@ -127,10 +122,7 @@ describe("NativePreferences", () => {
 	it("uses the confirmed revision and retains the draft after an uncertain write", async () => {
 		const client = fakeClient();
 		client.handlers.set("evener/settings/keybindings/get", () => keybindings);
-		client.handlers.set(
-			"evener/settings/transcriptDisplay/get",
-			() => transcript,
-		);
+		client.handlers.set("evener/settings/transcriptDisplay/get", () => transcript);
 		client.handlers.set("evener/settings/keybindings/patch", () => {
 			throw new Error("connection lost after dispatch");
 		});
@@ -146,20 +138,13 @@ describe("NativePreferences", () => {
 		expect(model.getSnapshot().keybindings.writeUncertain).toBe(true);
 		await model.refresh();
 		expect(model.getSnapshot().keybindings.writeUncertain).toBe(false);
-		expect(
-			client.requests.filter(
-				(request) => request.method === "evener/settings/keybindings/patch",
-			),
-		).toHaveLength(1);
+		expect(client.requests.filter((request) => request.method === "evener/settings/keybindings/patch")).toHaveLength(1);
 	});
 
 	it("projects the keybindings draft without the store's internal generation stamp", async () => {
 		const client = fakeClient();
 		client.handlers.set("evener/settings/keybindings/get", () => keybindings);
-		client.handlers.set(
-			"evener/settings/transcriptDisplay/get",
-			() => transcript,
-		);
+		client.handlers.set("evener/settings/transcriptDisplay/get", () => transcript);
 		const model = new NativePreferences(client, features);
 		await model.refresh();
 		const rules = [{ action: "composer.focus", chord: "Meta+P" }];
@@ -240,28 +225,17 @@ function deferred<T>() {
 function setupDomain(domain: "keybindings" | "transcript") {
 	const client = fakeClient();
 	client.handlers.set("evener/settings/keybindings/get", () => keybindings);
-	client.handlers.set(
-		"evener/settings/transcriptDisplay/get",
-		() => transcript,
-	);
+	client.handlers.set("evener/settings/transcriptDisplay/get", () => transcript);
 	const model = new NativePreferences(client, features);
 	const isKeys = domain === "keybindings";
-	const get = isKeys
-		? "evener/settings/keybindings/get"
-		: "evener/settings/transcriptDisplay/get";
-	const patch = isKeys
-		? "evener/settings/keybindings/patch"
-		: "evener/settings/transcriptDisplay/patch";
+	const get = isKeys ? "evener/settings/keybindings/get" : "evener/settings/transcriptDisplay/get";
+	const patch = isKeys ? "evener/settings/keybindings/patch" : "evener/settings/transcriptDisplay/patch";
 	const old = isKeys ? keybindings : transcript;
 	const result = isKeys
 		? { ...keybindings, revision: 4, rules: [] }
 		: { layout: "mobile" as const, revision: 5, config: toWireConfig(config) };
-	const snapshot = () =>
-		isKeys
-			? model.getSnapshot().keybindings
-			: model.getSnapshot().transcriptMobile;
-	const save = () =>
-		isKeys ? model.saveKeybindings([]) : model.saveTranscript(config);
+	const snapshot = () => (isKeys ? model.getSnapshot().keybindings : model.getSnapshot().transcriptMobile);
+	const save = () => (isKeys ? model.saveKeybindings([]) : model.saveTranscript(config));
 	client.handlers.set(patch, () => result);
 	return { client, model, get, patch, old, result, snapshot, save };
 }
@@ -306,14 +280,10 @@ for (const domain of ["keybindings", "transcript"] as const) {
 		});
 		await expect(f.save()).rejects.toThrow();
 		await expect(f.save()).rejects.toThrow();
-		expect(f.client.requests.filter((x) => x.method === f.patch)).toHaveLength(
-			2,
-		);
+		expect(f.client.requests.filter((x) => x.method === f.patch)).toHaveLength(2);
 		f.model.dispose();
 		await expect(f.save()).rejects.toThrow();
-		expect(f.client.requests.filter((x) => x.method === f.patch)).toHaveLength(
-			2,
-		);
+		expect(f.client.requests.filter((x) => x.method === f.patch)).toHaveLength(2);
 	});
 	it(`${domain}: late hub A events cannot alter hub B`, async () => {
 		const a = setupDomain(domain);
@@ -331,9 +301,7 @@ for (const domain of ["keybindings", "transcript"] as const) {
 		held.resolve(a.old);
 		await read;
 		expect(b.model.getSnapshot()).toBe(before);
-		expect(b.client.requests.filter((x) => x.method === b.patch)).toHaveLength(
-			0,
-		);
+		expect(b.client.requests.filter((x) => x.method === b.patch)).toHaveLength(0);
 	});
 }
 
@@ -353,15 +321,10 @@ it("does not overwrite the fallback rules when hub settings failed to load", asy
 		draftError: null,
 		hubError: "unreadable settings",
 		loadError: "unreadable settings",
-		error:
-			"The hub could not load its saved shortcuts. Repair the hub settings file before editing.",
+		error: "The hub could not load its saved shortcuts. Repair the hub settings file before editing.",
 	});
-	expect(client.requests.map((x) => x.method)).toEqual([
-		"evener/settings/keybindings/get",
-	]);
-	expect(model.getSnapshot().keybindings.confirmed?.rules).toEqual(
-		keybindings.rules,
-	);
+	expect(client.requests.map((x) => x.method)).toEqual(["evener/settings/keybindings/get"]);
+	expect(model.getSnapshot().keybindings.confirmed?.rules).toEqual(keybindings.rules);
 });
 
 it("preserves the hub diagnostic when draft recovery clears its own error", async () => {
@@ -409,15 +372,8 @@ function draftStorage() {
 }
 function persistedPreferences(storage = draftStorage().storage) {
 	const client = fakeClient();
-	client.handlers.set(
-		"evener/settings/transcriptDisplay/get",
-		() => transcript,
-	);
-	const model = new NativePreferences(
-		client,
-		{ keybindingsSettings: false, transcriptDisplaySettings: true },
-		storage,
-	);
+	client.handlers.set("evener/settings/transcriptDisplay/get", () => transcript);
+	const model = new NativePreferences(client, { keybindingsSettings: false, transcriptDisplaySettings: true }, storage);
 	return { client, model, storage };
 }
 const transcriptPatch = "evener/settings/transcriptDisplay/patch";
@@ -432,9 +388,7 @@ it("restores a draft synchronously and preserves its base across read and confli
 	await f.model.editTranscript(proposedConfig);
 	f.model.dispose();
 	const next = persistedPreferences(f.storage);
-	expect(next.model.getSnapshot().transcriptMobile.draft?.config).toEqual(
-		proposedConfig,
-	);
+	expect(next.model.getSnapshot().transcriptMobile.draft?.config).toEqual(proposedConfig);
 	next.client.handlers.set("evener/settings/transcriptDisplay/get", () => ({
 		...transcript,
 		mobile: { revision: 6, config: toWireConfig(config) },
@@ -450,9 +404,7 @@ it("restores a draft synchronously and preserves its base across read and confli
 		conflict: false,
 		draft: { revision: 6 },
 	});
-	expect(next.client.requests.some((r) => r.method === transcriptPatch)).toBe(
-		false,
-	);
+	expect(next.client.requests.some((r) => r.method === transcriptPatch)).toBe(false);
 });
 
 it("checkpoints before dispatch and refuses edits, discard, or duplicate save during a write", async () => {
@@ -557,12 +509,8 @@ it("storage failure prevents dispatch and exposes a fixed safe error", async () 
 		},
 	});
 	await f.model.refresh();
-	await expect(f.model.saveTranscript(proposedConfig)).rejects.toThrow(
-		"Could not save",
-	);
-	expect(f.client.requests.some((r) => r.method === transcriptPatch)).toBe(
-		false,
-	);
+	await expect(f.model.saveTranscript(proposedConfig)).rejects.toThrow("Could not save");
+	expect(f.client.requests.some((r) => r.method === transcriptPatch)).toBe(false);
 	expect(f.model.getSnapshot().transcriptMobile.error).not.toContain("secret");
 });
 
@@ -593,15 +541,11 @@ it("resolves a post-apply PATCH failure by adopting the applied value, without b
 	await f.model.refresh();
 	const applied = { ...config, content: { kind: "preset" as const, level: "full" as const } };
 	f.client.handlers.set(transcriptPatch, () => {
-		throw new WireError(
-			"transcript display applied then a follow-up step failed",
-			-32603,
-			{
-				evenerErrorInfo: "transcriptDisplayPostApply",
-				layout: "mobile",
-				applied: { revision: 5, config: toWireConfig(applied) },
-			},
-		);
+		throw new WireError("transcript display applied then a follow-up step failed", -32603, {
+			evenerErrorInfo: "transcriptDisplayPostApply",
+			layout: "mobile",
+			applied: { revision: 5, config: toWireConfig(applied) },
+		});
 	});
 	await f.model.saveTranscript(proposedConfig);
 	expect(f.model.getSnapshot().transcriptMobile).toMatchObject({
@@ -623,15 +567,11 @@ it("rejects a post-apply error when the layout does not match", async () => {
 	const f = persistedPreferences();
 	await f.model.refresh();
 	f.client.handlers.set(transcriptPatch, () => {
-		throw new WireError(
-			"transcript display applied then a follow-up step failed",
-			-32603,
-			{
-				evenerErrorInfo: "transcriptDisplayPostApply",
-				layout: "desktop",
-				applied: { revision: 5, config: toWireConfig(proposedConfig) },
-			},
-		);
+		throw new WireError("transcript display applied then a follow-up step failed", -32603, {
+			evenerErrorInfo: "transcriptDisplayPostApply",
+			layout: "desktop",
+			applied: { revision: 5, config: toWireConfig(proposedConfig) },
+		});
 	});
 	await expect(f.model.saveTranscript(proposedConfig)).rejects.toThrow();
 	expect(f.model.getSnapshot().transcriptMobile).toMatchObject({
@@ -727,9 +667,7 @@ describe("transcriptMobile projection (A10)", () => {
 			draft: { revision: 4, config: proposedConfig },
 			draftUnreadable: false,
 		});
-		expect(
-			f.client.requests.filter((request) => request.method === transcriptPatch),
-		).toHaveLength(0);
+		expect(f.client.requests.filter((request) => request.method === transcriptPatch)).toHaveLength(0);
 	});
 
 	it("surfaces an unreadable transcript draft record and clears it on discard", async () => {
@@ -869,11 +807,7 @@ describe("transcriptMobile projection (A10)", () => {
 				replaceIf: (key, expected, next) => {
 					writes += 1;
 					if (writes === 1) throw new Error("quota exceeded");
-					return storeBackend.replaceIf(
-						key,
-						expected,
-						next as TranscriptDraftCheckpoint,
-					);
+					return storeBackend.replaceIf(key, expected, next as TranscriptDraftCheckpoint);
 				},
 			}),
 		);
@@ -900,9 +834,7 @@ describe("transcriptMobile projection (A10)", () => {
 		// projects to a new generation rather than a fresh store. Its revision
 		// numbering may restart, so mobile revision 4 is not the 4 the draft was
 		// composed against: the projected conflict field must surface that.
-		const store = (
-			model as unknown as { transcripts: TranscriptDisplayStore }
-		).transcripts;
+		const store = (model as unknown as { transcripts: TranscriptDisplayStore }).transcripts;
 		store.beginReadyGeneration();
 		await model.refresh();
 		expect(model.getSnapshot().transcriptMobile.conflict).toBe(true);

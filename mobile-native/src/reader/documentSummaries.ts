@@ -29,7 +29,13 @@ function summarize(document: LoadedDocument): DocumentSummary | null {
 const summaryKey = (sessionRef: string, path: string, updatedAt?: string) =>
 	JSON.stringify([sessionRef, path, updatedAt ?? ""]);
 
-export function summaryEntry(hubId: string, origin: string, sessionRef: string, path: string, updatedAt?: string): SummaryEntry {
+export function summaryEntry(
+	hubId: string,
+	origin: string,
+	sessionRef: string,
+	path: string,
+	updatedAt?: string,
+): SummaryEntry {
 	let entries = hubs.get(hubId);
 	if (!entries) {
 		entries = new Map();
@@ -51,7 +57,12 @@ export function summaryEntry(hubId: string, origin: string, sessionRef: string, 
 }
 
 /** The summary already read for this document, if any. */
-export function knownSummary(hubId: string, sessionRef: string, path: string, updatedAt?: string): DocumentSummary | null {
+export function knownSummary(
+	hubId: string,
+	sessionRef: string,
+	path: string,
+	updatedAt?: string,
+): DocumentSummary | null {
 	return hubs.get(hubId)?.get(summaryKey(sessionRef, path, updatedAt))?.summary ?? null;
 }
 

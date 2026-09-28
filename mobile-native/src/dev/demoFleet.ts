@@ -109,19 +109,58 @@ export function demoSessionId(slug: string): string {
 // Names cycled through for a swarm whose members aren't individually named in
 // the fixture, copied verbatim from data.js's swarmNames.
 const SWARM_NAMES = [
-	"Reproduce TestRetirementTreeSettle locally", "Bisect settle ordering change", "Check drain ordering in tests", "Audit delegate settle callers",
-	"Run agent tests under -race", "Run hubcore tests under -race", "Check appwire projector ordering", "Stabilize TestFoldPublicationMarkers",
-	"Trace retirement drain wakeups", "Verify job tree revisions", "Run cmd/evener-hub browser guards", "Check interrupt marker ownership",
-	"Explore retirement drain callers", "Review settle lock scope", "Run linux -race on agent", "Check TestQueueRetirement flake",
-	"Read CI logs for run 34717544502", "Compare failing seeds", "Check compaction fold timing", "Audit watch timer shutdown",
-	"Run jobstore descendant merge tests", "Check delegate attention flags", "Stabilize TestTranscriptPaging", "Probe navigation invalidation order",
-	"Run make lint on changed modules", "Check go vet windows tags", "Replay failing job trees", "Measure settle pass duration",
-	"Check restart continuity path", "Verify cancel queued on retire", "Run hub relay tests", "Inspect secret-scan output",
-	"Check stacked merge duplication", "Run appwire codec tests", "Verify ask pending clears", "Run TUI transcript suite",
-	"Check mutation outbox replay", "Run native shared-session tests", "Stabilize TestRelayCloseFrame", "Check projector item paging",
-	"Run fuzz smoke on tool args", "Verify steering injection order", "Check delegate budget accounting", "Run workspace isolation tests",
-	"Verify lane branch disposal", "Check CI cache keys", "Run makefile audits", "Check TestHostAttachRetry",
-	"Verify session namer fallback", "Run SDK package qualification", "Check provider retry caps", "Run docs freshness check",
+	"Reproduce TestRetirementTreeSettle locally",
+	"Bisect settle ordering change",
+	"Check drain ordering in tests",
+	"Audit delegate settle callers",
+	"Run agent tests under -race",
+	"Run hubcore tests under -race",
+	"Check appwire projector ordering",
+	"Stabilize TestFoldPublicationMarkers",
+	"Trace retirement drain wakeups",
+	"Verify job tree revisions",
+	"Run cmd/evener-hub browser guards",
+	"Check interrupt marker ownership",
+	"Explore retirement drain callers",
+	"Review settle lock scope",
+	"Run linux -race on agent",
+	"Check TestQueueRetirement flake",
+	"Read CI logs for run 34717544502",
+	"Compare failing seeds",
+	"Check compaction fold timing",
+	"Audit watch timer shutdown",
+	"Run jobstore descendant merge tests",
+	"Check delegate attention flags",
+	"Stabilize TestTranscriptPaging",
+	"Probe navigation invalidation order",
+	"Run make lint on changed modules",
+	"Check go vet windows tags",
+	"Replay failing job trees",
+	"Measure settle pass duration",
+	"Check restart continuity path",
+	"Verify cancel queued on retire",
+	"Run hub relay tests",
+	"Inspect secret-scan output",
+	"Check stacked merge duplication",
+	"Run appwire codec tests",
+	"Verify ask pending clears",
+	"Run TUI transcript suite",
+	"Check mutation outbox replay",
+	"Run native shared-session tests",
+	"Stabilize TestRelayCloseFrame",
+	"Check projector item paging",
+	"Run fuzz smoke on tool args",
+	"Verify steering injection order",
+	"Check delegate budget accounting",
+	"Run workspace isolation tests",
+	"Verify lane branch disposal",
+	"Check CI cache keys",
+	"Run makefile audits",
+	"Check TestHostAttachRetry",
+	"Verify session namer fallback",
+	"Run SDK package qualification",
+	"Check provider retry caps",
+	"Run docs freshness check",
 ];
 
 type ProtoHost = "magic-kingdom" | "paradise-park";
@@ -217,7 +256,8 @@ function genericChildren(sessionId: string, counts: { run: number; fail: number;
 	const pick = (i: number) => SWARM_NAMES[(prefix.length * 7 + i * 3) % SWARM_NAMES.length] as string;
 	const out: RawSubagent[] = [];
 	let k = 0;
-	for (let i = 0; i < counts.fail; i++) out.push({ id: `${prefix}${k}`, title: pick(k++), state: "failed", ago: 20 * M });
+	for (let i = 0; i < counts.fail; i++)
+		out.push({ id: `${prefix}${k}`, title: pick(k++), state: "failed", ago: 20 * M });
 	for (let i = 0; i < counts.run; i++) out.push({ id: `${prefix}${k}`, title: pick(k++), state: "running", ago: 10 });
 	for (let i = 0; i < counts.done; i++) out.push({ id: `${prefix}${k}`, title: pick(k++), state: "done", ago: 40 * M });
 	return out;
@@ -238,8 +278,20 @@ const SESSIONS: RawSession[] = [
 		ago: 2 * M,
 		children: RETRY_CHILDREN,
 	},
-	{ id: "s-audit", title: "Audit Tool Descriptions for Implied Options", state: "question", ago: 14 * M, subs: { run: 0, fail: 0, done: 8 } },
-	{ id: "s-mirror", title: "Mirror Docs Site Locally", project: "prime-radiant-inc.github.io", state: "approval", ago: 21 * M },
+	{
+		id: "s-audit",
+		title: "Audit Tool Descriptions for Implied Options",
+		state: "question",
+		ago: 14 * M,
+		subs: { run: 0, fail: 0, done: 8 },
+	},
+	{
+		id: "s-mirror",
+		title: "Mirror Docs Site Locally",
+		project: "prime-radiant-inc.github.io",
+		state: "approval",
+		ago: 21 * M,
+	},
 	{ id: "s-namer", title: "Tune Session Namer Token Cap", state: "restart", ago: 47 * M },
 
 	// Finished, not yet seen (4)
@@ -292,7 +344,13 @@ const SESSIONS: RawSession[] = [
 		subs: { run: 2, fail: 0, done: 1 },
 		activity: "Running make test-wasm",
 	},
-	{ id: "s-resume", title: "Fix Missing Prompt on Session Resume", state: "working", ago: 4, activity: "Reading agent/session_resume.go" },
+	{
+		id: "s-resume",
+		title: "Fix Missing Prompt on Session Resume",
+		state: "working",
+		ago: 4,
+		activity: "Reading agent/session_resume.go",
+	},
 	{
 		id: "s-readintent",
 		title: "Fix Missing File Read Intent Lines",
@@ -332,14 +390,49 @@ const SESSIONS: RawSession[] = [
 	{ id: "s-roster", title: "Hub Roster Latency", state: "shutdown", ago: 1 * D },
 	{ id: "s-sandbox", title: "Sandbox Network Egress Audit", state: "shutdown", ago: 2 * D },
 	{ id: "s-skills", title: "Skills Lifecycle Cleanup", project: "superpowers", state: "shutdown", ago: 3 * D },
-	{ id: "s-house", title: "Thermostat Schedule Script", host: "paradise-park", project: "house", state: "shutdown", ago: 4 * D },
+	{
+		id: "s-house",
+		title: "Thermostat Schedule Script",
+		host: "paradise-park",
+		project: "house",
+		state: "shutdown",
+		ago: 4 * D,
+	},
 	{ id: "s-copy", title: "Tighten Pricing Page Copy", project: "copy-writing", state: "shutdown", ago: 5 * D },
-	{ id: "s-wasm2", title: "WASM Linker Symbol Clash", host: "paradise-park", project: "c-to-wasm", state: "shutdown", ago: 2 * D },
+	{
+		id: "s-wasm2",
+		title: "WASM Linker Symbol Clash",
+		host: "paradise-park",
+		project: "c-to-wasm",
+		state: "shutdown",
+		ago: 2 * D,
+	},
 
 	// Test runs (3)
-	{ id: "s-test1", title: "Live Stack Smoke: Session on Host", project: "hub-test-env", state: "shutdown", ago: 20 * H, test: true },
-	{ id: "s-test2", title: "Retirement Browser Guard Run", project: "hub-test-env", state: "shutdown", ago: 26 * H, test: true },
-	{ id: "s-test3", title: "Spawn Guard Fixture Session", project: "hub-test-env", state: "shutdown", ago: 30 * H, test: true },
+	{
+		id: "s-test1",
+		title: "Live Stack Smoke: Session on Host",
+		project: "hub-test-env",
+		state: "shutdown",
+		ago: 20 * H,
+		test: true,
+	},
+	{
+		id: "s-test2",
+		title: "Retirement Browser Guard Run",
+		project: "hub-test-env",
+		state: "shutdown",
+		ago: 26 * H,
+		test: true,
+	},
+	{
+		id: "s-test3",
+		title: "Spawn Guard Fixture Session",
+		project: "hub-test-env",
+		state: "shutdown",
+		ago: 30 * H,
+		test: true,
+	},
 
 	// Archived (5)
 	{ id: "s-gocache", title: "Investigate Go Test Caching", state: "shutdown", ago: 6 * D, archived: true },
@@ -868,7 +961,8 @@ function fleetAnswers(
 		if (offset < 0) throw new Error(`offset must not be negative: ${offset}`);
 		let limit = maximum;
 		if (params.limit !== undefined) {
-			if (!fitsWireUint32(params.limit)) throw new Error(`limit must be an integer the wire can carry: ${params.limit}`);
+			if (!fitsWireUint32(params.limit))
+				throw new Error(`limit must be an integer the wire can carry: ${params.limit}`);
 			if (params.limit <= 0) throw new Error("limit must be greater than zero");
 			if (params.limit > maximum) throw new Error(`limit exceeds maximum of ${maximum}`);
 			limit = params.limit;
@@ -925,7 +1019,12 @@ function fleetAnswers(
 				// a silent fallback to the projects catalog.
 				if (params.catalog !== "projects" && params.catalog !== "archived_projects" && params.catalog !== "test_runs")
 					throw new Error(`Unknown demonstration catalog: ${params.catalog}`);
-				const source = params.catalog === "archived_projects" ? archivedProjects : params.catalog === "test_runs" ? testRunProjects : projects;
+				const source =
+					params.catalog === "archived_projects"
+						? archivedProjects
+						: params.catalog === "test_runs"
+							? testRunProjects
+							: projects;
 				const { page: rows, remaining } = page(source, params, NAVIGATION_CATALOG_LIMIT);
 				return respond(revision, params, { projects: rows, remaining });
 			}
@@ -957,7 +1056,13 @@ function fleetAnswers(
 					throw new Error(`Unknown demonstration tier: ${params.tier}`);
 				const tier = params.tier;
 				const { page: sessions, remaining } = page(tierRows(projectKey, tier), params, NAVIGATION_SECTION_LIMIT);
-				return respond(revision, params, { key: projectKey, tier, sessions, remaining, truncated: anyTruncated(sessions) });
+				return respond(revision, params, {
+					key: projectKey,
+					tier,
+					sessions,
+					remaining,
+					truncated: anyTruncated(sessions),
+				});
 			}
 			case "location": {
 				const ref = params.ref as string;

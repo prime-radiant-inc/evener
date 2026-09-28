@@ -30,11 +30,7 @@ export type LiveReadiness = () => boolean;
  * born under the previous hub is refused however often it re-renders, until
  * the connection reports a client that genuinely arrived — and proved ready —
  * under the scope it is asked to authorize. */
-export function useLiveReadiness(
-	scope: string,
-	client: object | null,
-	state: ConnectionState,
-): LiveReadiness {
+export function useLiveReadiness(scope: string, client: object | null, state: ConnectionState): LiveReadiness {
 	// The pairing is settled by the effect below, never during render: a
 	// render React abandons midway must not leave ref writes behind.
 	const current = useRef({ scope, client, state });
@@ -115,11 +111,7 @@ export function useLiveReadiness(
  * flap. `fatal` names a close a retry cannot fix (a protocol mismatch,
  * connectionRecovery.ts's ConnectionFailureKind), which stays a wall even
  * once something has been shown, since nothing behind the banner can help. */
-export function connectionDisplay(
-	state: ConnectionState,
-	everReady: boolean,
-	fatal: boolean,
-): ConnectionDisplay {
+export function connectionDisplay(state: ConnectionState, everReady: boolean, fatal: boolean): ConnectionDisplay {
 	if (state === "ready") return "none";
 	if (!everReady || fatal) return "wall";
 	return "banner";
@@ -235,8 +227,7 @@ export function useConnectionDisplay(
 		}
 		if (
 			state === "ready" &&
-			((transitionedIntoReady && pairingServesHub) ||
-				(trust.trusted && trust.scope === hubId && pairingServesHub))
+			((transitionedIntoReady && pairingServesHub) || (trust.trusted && trust.scope === hubId && pairingServesHub))
 		) {
 			// The retention arm keys on readiness this hub actually earned,
 			// claimed through a pairing the identity record vouches for.

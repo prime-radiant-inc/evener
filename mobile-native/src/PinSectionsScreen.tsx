@@ -10,21 +10,13 @@ import type { Routes } from "./screens";
 import { Action, Copy, ErrorMessage, styles, useColors } from "./ui";
 import { usePinNavigation } from "./usePinNavigation";
 
-export function PinSectionsScreen({
-	route,
-	navigation,
-}: NativeStackScreenProps<Routes, "PinSections">) {
+export function PinSectionsScreen({ route, navigation }: NativeStackScreenProps<Routes, "PinSections">) {
 	const pin = usePinNavigation(route.params.hubId);
 	const colors = useColors();
 	return (
-		<SafeAreaView
-			edges={["bottom", "left", "right"]}
-			style={[styles.fill, { backgroundColor: colors.background }]}
-		>
+		<SafeAreaView edges={["bottom", "left", "right"]} style={[styles.fill, { backgroundColor: colors.background }]}>
 			{!pin.belongs ? (
-				<Copy>
-					This hub is no longer selected. Return to Hubs to reconnect.
-				</Copy>
+				<Copy>This hub is no longer selected. Return to Hubs to reconnect.</Copy>
 			) : (
 				<PinCatalogList
 					sections={pin.page?.rows ?? []}
@@ -35,9 +27,7 @@ export function PinSectionsScreen({
 					stale={pin.page?.stale ?? false}
 					remaining={pin.page?.remaining ?? 0}
 					pending={pin.action?.pending ?? false}
-					uncertain={
-						!!pin.action?.uncertain || !!pin.action?.storageUnavailable
-					}
+					uncertain={!!pin.action?.uncertain || !!pin.action?.storageUnavailable}
 					previousChange={!!pin.action?.recovery}
 					error={pin.action?.error ?? pin.page?.error ?? null}
 					refresh={() => {
@@ -45,12 +35,7 @@ export function PinSectionsScreen({
 						else pin.retry();
 					}}
 					more={() => {
-						if (
-							pin.isCurrent() &&
-							pin.confirmed &&
-							!pin.action?.pending &&
-							!pin.action?.uncertain
-						)
+						if (pin.isCurrent() && pin.confirmed && !pin.action?.pending && !pin.action?.uncertain)
 							void pin.pages?.more();
 					}}
 					open={(section) =>
@@ -67,10 +52,7 @@ export function PinSectionsScreen({
 }
 
 const sessionKey = (row: NavigationSessionSummary) => row.ref;
-export function PinnedSectionScreen({
-	route,
-	navigation,
-}: NativeStackScreenProps<Routes, "PinnedSection">) {
+export function PinnedSectionScreen({ route, navigation }: NativeStackScreenProps<Routes, "PinnedSection">) {
 	const { hubId, sectionId, title } = route.params;
 	const pin = usePinNavigation(hubId, undefined, sectionId);
 	const colors = useColors();
@@ -88,12 +70,7 @@ export function PinnedSectionScreen({
 	);
 	const section = pin.observed?.section;
 	const ready =
-		pin.ready &&
-		pin.focused &&
-		pin.confirmed &&
-		!pin.action?.pending &&
-		!pin.action?.uncertain &&
-		!!section;
+		pin.ready && pin.focused && pin.confirmed && !pin.action?.pending && !pin.action?.uncertain && !!section;
 	const header = (
 		<View style={{ gap: 8, paddingBottom: 12 }}>
 			<Copy>{section?.name ?? title}</Copy>
@@ -110,9 +87,7 @@ export function PinnedSectionScreen({
 					{pin.ready ? "Refresh section" : "Reconnect"}
 				</Action>
 			) : null}
-			{pin.confirmed && !section ? (
-				<Copy>This section no longer exists. Its sessions are kept.</Copy>
-			) : null}
+			{pin.confirmed && !section ? <Copy>This section no longer exists. Its sessions are kept.</Copy> : null}
 			<Action
 				tone="quiet"
 				onPress={() =>
@@ -128,14 +103,9 @@ export function PinnedSectionScreen({
 		</View>
 	);
 	return (
-		<SafeAreaView
-			edges={["bottom", "left", "right"]}
-			style={[styles.fill, { backgroundColor: colors.background }]}
-		>
+		<SafeAreaView edges={["bottom", "left", "right"]} style={[styles.fill, { backgroundColor: colors.background }]}>
 			{!pin.belongs ? (
-				<Copy>
-					This hub is no longer selected. Return to Hubs to reconnect.
-				</Copy>
+				<Copy>This hub is no longer selected. Return to Hubs to reconnect.</Copy>
 			) : pages && !(pin.confirmed && !section) ? (
 				<PageList
 					header={header}
@@ -143,16 +113,10 @@ export function PinnedSectionScreen({
 					ready={ready}
 					rowKey={sessionKey}
 					childRows={(row) => row.children ?? []}
-					omitted={(row) =>
-						(row.omitted_descendants ?? 0) + (row.more_subagents ?? 0)
-					}
+					omitted={(row) => (row.omitted_descendants ?? 0) + (row.more_subagents ?? 0)}
 					organization={() => null}
 					title={(row) => row.title || "Untitled session"}
-					detail={(row) =>
-						row.ask_pending || row.state === "awaiting"
-							? "Needs you"
-							: row.state
-					}
+					detail={(row) => (row.ask_pending || row.state === "awaiting" ? "Needs you" : row.state)}
 					empty={
 						pin.confirmed && !section
 							? "The section was removed; its sessions are kept."

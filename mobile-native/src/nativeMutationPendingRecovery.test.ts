@@ -185,9 +185,7 @@ test("(3) a never-attempted record dispatches only when readiness holds, never e
 
 	// Boot: the durable row is visible, but nothing has left the client. The
 	// target gate is closed until an authoritative read opens it.
-	expect(store.getState().pendingMutations?.map((row) => row.id)).toEqual([
-		record.clientMutationId,
-	]);
+	expect(store.getState().pendingMutations?.map((row) => row.id)).toEqual([record.clientMutationId]);
 	expect(turnStarts(client)).toBe(0);
 
 	// Readiness: the matching authoritative read opens the gate and the record
@@ -230,10 +228,7 @@ test("(2) an unknown outcome stays blocked, never auto-resumes, and surfaces thr
 	await runtime.storage.markAttempted(record.clientMutationId);
 	const blockedRead = runtime.beginAuthoritativeRead("hub-1", "ref-1", client);
 	await runtime.reconcileAuthoritativeRead(blockedRead!, readResponse("ref-1", { authoritative: false }));
-	await waitFor(
-		() => store.getState().pendingMutations?.[0]?.state === "blockedUnknown",
-		"the blocked row surfaces",
-	);
+	await waitFor(() => store.getState().pendingMutations?.[0]?.state === "blockedUnknown", "the blocked row surfaces");
 
 	// Surfaces through the landed stack: the store's pending row carries the
 	// blockedUnknown state.
@@ -294,9 +289,7 @@ test("(4) storage/hub-ref identities stay isolated across a restart", async () =
 	restarted.getState().bindPendingMutations(createConversationMutationPendingPort(runtime, keyA));
 	await waitFor(() => restarted.getState().pendingMutations?.length === 1, "the restarted store restores hub-a's row");
 	expect(restarted.getState().pendingMutations).toHaveLength(1);
-	expect(restarted.getState().pendingMutations?.map((row) => row.id)).not.toContain(
-		foreign.clientMutationId,
-	);
+	expect(restarted.getState().pendingMutations?.map((row) => row.id)).not.toContain(foreign.clientMutationId);
 });
 
 test("(1/restart) a dispatched-but-unsettled mutation survives a restart and settles without re-dispatch", async () => {
@@ -334,10 +327,7 @@ test("(1/restart) a dispatched-but-unsettled mutation survives a restart and set
 		const store = createConversationStore();
 		await store.getState().open(fakeService(conversation()) as never, "ref-1");
 		store.getState().bindPendingMutations(createConversationMutationPendingPort(second, key));
-		await waitFor(
-			() => store.getState().pendingMutations?.length === 1,
-			"the in-flight row survives the restart",
-		);
+		await waitFor(() => store.getState().pendingMutations?.length === 1, "the in-flight row survives the restart");
 
 		// Boot does not re-dispatch it: the gate stays closed until an
 		// authoritative read opens it.
@@ -346,10 +336,7 @@ test("(1/restart) a dispatched-but-unsettled mutation survives a restart and set
 		// The server acknowledges it: the authoritative read naming it settles
 		// the durable row exactly once, with no second client call.
 		const settle = second.beginAuthoritativeRead("hub-1", "ref-1", secondClient);
-		await second.reconcileAuthoritativeRead(
-			settle!,
-			readResponse("ref-1", { ids: [record.clientMutationId] }),
-		);
+		await second.reconcileAuthoritativeRead(settle!, readResponse("ref-1", { ids: [record.clientMutationId] }));
 		await waitFor(() => store.getState().pendingMutations?.length === 0, "the acknowledged row removes");
 		expect(store.getState().pendingMutations).toEqual([]);
 		expect(turnStarts(secondClient)).toBe(0);
@@ -403,10 +390,7 @@ test("(restart) a fresh runtime over a reopened database restores the durable ro
 		const store = createConversationStore();
 		await store.getState().open(fakeService(conversation()) as never, "ref-1");
 		store.getState().bindPendingMutations(createConversationMutationPendingPort(second, key));
-		await waitFor(
-			() => store.getState().pendingMutations?.length === 2,
-			"both durable rows are restored",
-		);
+		await waitFor(() => store.getState().pendingMutations?.length === 2, "both durable rows are restored");
 
 		// Dispatch behavior on boot: nothing leaves the client.
 		expect(turnStarts(secondClient)).toBe(0);

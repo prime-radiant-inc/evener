@@ -35,7 +35,12 @@ it("fills a checked task box with accent-fill so its white checkmark stays legib
 it("sets agent prose in Source Serif 4 at 17/26 and headings in the system font", () => {
 	mode.scheme = "light";
 	const s = markdownStyle("Hello");
-	expect(s.paragraph).toMatchObject({ fontFamily: "SourceSerif4-Regular", fontSize: 17, lineHeight: 26, color: "#252521" });
+	expect(s.paragraph).toMatchObject({
+		fontFamily: "SourceSerif4-Regular",
+		fontSize: 17,
+		lineHeight: 26,
+		color: "#252521",
+	});
 	expect(s.list).toMatchObject({ fontFamily: "SourceSerif4-Regular", markerFontWeight: "normal" });
 	expect(s.blockquote).toMatchObject({ fontFamily: "SourceSerif4-Regular" });
 	expect(s.h1).toMatchObject({ fontSize: 20, fontWeight: "600" });

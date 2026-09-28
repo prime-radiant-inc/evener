@@ -14,31 +14,23 @@ import { ghosts } from "./session/ghosts";
 describe("native demonstration hub", () => {
 	it("changes the observed queue and rejects stale identities and revisions", async () => {
 		const hub = await createDemoHub(0);
-		const client = createHubClient(
-			hub.origin,
-			"",
-			(url) => new WebSocket(url) as unknown as WebSocketLike,
-		);
+		const client = createHubClient(hub.origin, "", (url) => new WebSocket(url) as unknown as WebSocketLike);
 		const service = createConversationService(client);
 		try {
 			await client.connect();
 			await service.open("demo:playground");
 			await service.send([{ type: "text", text: "Start" }]);
 			await service.open("demo:playground");
-			for (const text of ["First", "Second", "Third"])
-				await service.queue([{ type: "text", text }]);
+			for (const text of ["First", "Second", "Third"]) await service.queue([{ type: "text", text }]);
 			const observed = await service.open("demo:playground");
 			expect(observed.queue?.texts).toEqual(["First", "Second", "Third"]);
 			const [first, second] = observed.queue?.ids ?? [];
-			if (!first || !second || !observed.instanceId || !observed.queue)
-				throw new Error("Missing queue guards");
+			if (!first || !second || !observed.instanceId || !observed.queue) throw new Error("Missing queue guards");
 			await service.cancelQueued(0, first, observed.instanceId);
-			await expect(
-				service.cancelQueued(0, first, observed.instanceId),
-			).rejects.toMatchObject({ code: -32013 });
-			await expect(
-				service.drainAsSteer(observed.queue.revision, observed.instanceId),
-			).rejects.toMatchObject({ code: -32013 });
+			await expect(service.cancelQueued(0, first, observed.instanceId)).rejects.toMatchObject({ code: -32013 });
+			await expect(service.drainAsSteer(observed.queue.revision, observed.instanceId)).rejects.toMatchObject({
+				code: -32013,
+			});
 			const remaining = await service.open("demo:playground");
 			expect(remaining.queue?.texts).toEqual(["Second", "Third"]);
 			await service.promoteQueuedAsSteer(0, second, observed.instanceId);
@@ -55,22 +47,15 @@ describe("native demonstration hub", () => {
 	});
 
 	it("projects exact reference Markdown through the real conversation service", async () => {
-		const markdown =
-			"## Reference\n\nA **bold** paragraph.\n\n```ts\nconst n = 1;\n```";
+		const markdown = "## Reference\n\nA **bold** paragraph.\n\n```ts\nconst n = 1;\n```";
 		const hub = await createDemoHub(0, markdown);
-		const client = createHubClient(
-			hub.origin,
-			"",
-			(url) => new WebSocket(url) as unknown as WebSocketLike,
-		);
+		const client = createHubClient(hub.origin, "", (url) => new WebSocket(url) as unknown as WebSocketLike);
 		const service = createConversationService(client);
 		try {
 			await client.connect();
 			const conversation = await service.open("demo:playground");
 			expect(conversation.items).toEqual(
-				expect.arrayContaining([
-					expect.objectContaining({ kind: "assistant", markdown }),
-				]),
+				expect.arrayContaining([expect.objectContaining({ kind: "assistant", markdown })]),
 			);
 		} finally {
 			service.close();
@@ -82,27 +67,16 @@ describe("native demonstration hub", () => {
 		const first = await createDemoHub(0);
 		const second = await createDemoHub(0);
 		const clients = [first, second].map((hub) =>
-			createHubClient(
-				hub.origin,
-				"",
-				(url) => new WebSocket(url) as unknown as WebSocketLike,
-			),
+			createHubClient(hub.origin, "", (url) => new WebSocket(url) as unknown as WebSocketLike),
 		);
 		const services = clients.map((client) => createConversationService(client));
 		try {
 			await Promise.all(clients.map((client) => client.connect()));
 			const [firstService, secondService] = services;
-			if (!firstService || !secondService)
-				throw new Error("Missing test service");
-			await Promise.all(
-				services.map((service) => service.open("demo:playground")),
-			);
-			await firstService.send([
-				{ type: "text", text: "Only on the first hub" },
-			]);
-			expect((await firstService.open("demo:playground")).status.type).toBe(
-				"active",
-			);
+			if (!firstService || !secondService) throw new Error("Missing test service");
+			await Promise.all(services.map((service) => service.open("demo:playground")));
+			await firstService.send([{ type: "text", text: "Only on the first hub" }]);
+			expect((await firstService.open("demo:playground")).status.type).toBe("active");
 			const untouched = await secondService.open("demo:playground");
 			expect(untouched.status.type).toBe("idle");
 			expect(untouched.items).toHaveLength(0);
@@ -114,11 +88,7 @@ describe("native demonstration hub", () => {
 	});
 	it("creates distinct conversations with selected launch settings and preserves the opening input", async () => {
 		const hub = await createDemoHub(0);
-		const client = createHubClient(
-			hub.origin,
-			"",
-			(url) => new WebSocket(url) as unknown as WebSocketLike,
-		);
+		const client = createHubClient(hub.origin, "", (url) => new WebSocket(url) as unknown as WebSocketLike);
 		const conversation = createConversationService(client);
 		try {
 			await client.connect();
@@ -147,14 +117,10 @@ describe("native demonstration hub", () => {
 			});
 			expect(opened.capabilities.interrupt).toBe(true);
 			await conversation.interrupt();
-			expect(
-				(await conversation.open(second.thread.evener.ref)).items,
-			).toHaveLength(0);
+			expect((await conversation.open(second.thread.evener.ref)).items).toHaveLength(0);
 			const roster = await client.request("thread/list", { limit: 50 });
 			expect(roster.data).toHaveLength(3);
-			expect(roster.data.map((thread) => thread.evener.ref)).toContain(
-				first.thread.evener.ref,
-			);
+			expect(roster.data.map((thread) => thread.evener.ref)).toContain(first.thread.evener.ref);
 		} finally {
 			conversation.close();
 			client.close();
@@ -163,11 +129,7 @@ describe("native demonstration hub", () => {
 	});
 	it("drives the shared stores through notification-triggered active and idle projections", async () => {
 		const hub = await createDemoHub(0);
-		const client = createHubClient(
-			hub.origin,
-			"",
-			(url) => new WebSocket(url) as unknown as WebSocketLike,
-		);
+		const client = createHubClient(hub.origin, "", (url) => new WebSocket(url) as unknown as WebSocketLike);
 		const service = createConversationService(client);
 		const store = createConversationStore();
 		const sink = createActivityStore().getState();
@@ -184,9 +146,7 @@ describe("native demonstration hub", () => {
 			await store.getState().openProjected(service, sink, "demo:playground");
 			const active = statusChanged("active");
 			store.getState().setDraft("Scripted mobile turn");
-			await store
-				.getState()
-				.send(service, [{ type: "text", text: store.getState().draft }]);
+			await store.getState().send(service, [{ type: "text", text: store.getState().draft }]);
 			await active;
 			expect(store.getState().conversation?.capabilities.interrupt).toBe(true);
 			expect(store.getState().draft).toBe("");
@@ -204,19 +164,13 @@ describe("native demonstration hub", () => {
 
 	it("uses the real handshake, instance-bound send, projection, and interrupt", async () => {
 		const hub = await createDemoHub(0);
-		const client = createHubClient(
-			hub.origin,
-			"",
-			(url) => new WebSocket(url) as unknown as WebSocketLike,
-		);
+		const client = createHubClient(hub.origin, "", (url) => new WebSocket(url) as unknown as WebSocketLike);
 		const service = createConversationService(client);
 		try {
 			await client.connect();
 			const initial = await service.open("demo:playground");
 			expect(initial.capabilities.send).toBe(true);
-			const receipt = await service.send([
-				{ type: "text", text: "  mobile input\n🦋  " },
-			]);
+			const receipt = await service.send([{ type: "text", text: "  mobile input\n🦋  " }]);
 			expect(receipt.projectionState).toBe("pending");
 			const active = await service.open("demo:playground");
 			expect(active.status.type).toBe("active");
@@ -236,11 +190,7 @@ describe("native demonstration hub", () => {
 					input: [],
 				}),
 			).rejects.toThrow();
-			expect(
-				(await service.open("demo:playground")).items.filter(
-					(item) => item.kind === "user",
-				),
-			).toHaveLength(1);
+			expect((await service.open("demo:playground")).items.filter((item) => item.kind === "user")).toHaveLength(1);
 		} finally {
 			service.close();
 			client.close();
@@ -250,11 +200,7 @@ describe("native demonstration hub", () => {
 
 	it("stamps clientMutationId on the user message it creates for turn/start, like the real projector", async () => {
 		const hub = await createDemoHub(0);
-		const client = createHubClient(
-			hub.origin,
-			"",
-			(url) => new WebSocket(url) as unknown as WebSocketLike,
-		);
+		const client = createHubClient(hub.origin, "", (url) => new WebSocket(url) as unknown as WebSocketLike);
 		const service = createConversationService(client);
 		try {
 			await client.connect();
@@ -267,9 +213,7 @@ describe("native demonstration hub", () => {
 				clientMutationId,
 				input: [{ type: "text", text: "Hello" }],
 			});
-			const userItem = started.turn.items?.find(
-				(item) => item.type === "userMessage",
-			);
+			const userItem = started.turn.items?.find((item) => item.type === "userMessage");
 			expect(userItem?.clientMutationId).toBe(clientMutationId);
 		} finally {
 			service.close();
@@ -282,11 +226,7 @@ describe("native demonstration hub", () => {
 describe("native demonstration hub's redesign fleet", () => {
 	it("answers no navigation, search, auth or plugin method without EVENER_DEMO_FLEET", async () => {
 		const hub = await createDemoHub(0);
-		const client = createHubClient(
-			hub.origin,
-			"",
-			(url) => new WebSocket(url) as unknown as WebSocketLike,
-		);
+		const client = createHubClient(hub.origin, "", (url) => new WebSocket(url) as unknown as WebSocketLike);
 		try {
 			const handshake = await client.connect();
 			expect(handshake.navigation).toBeUndefined();
@@ -302,9 +242,7 @@ describe("native demonstration hub's redesign fleet", () => {
 			await expect(client.request("evener/plugin/list", {})).rejects.toThrow();
 			// The flag being off doesn't touch the existing demo flows.
 			const roster = await client.request("thread/list", { limit: 5 });
-			expect(roster.data.map((thread) => thread.evener.ref)).toContain(
-				"demo:playground",
-			);
+			expect(roster.data.map((thread) => thread.evener.ref)).toContain("demo:playground");
 		} finally {
 			client.close();
 			await hub.close();
@@ -313,11 +251,7 @@ describe("native demonstration hub's redesign fleet", () => {
 
 	it("serves the redesign's fleet once EVENER_DEMO_FLEET is on, alongside the existing demo thread", async () => {
 		const hub = await createDemoHub(0, undefined, {});
-		const client = createHubClient(
-			hub.origin,
-			"",
-			(url) => new WebSocket(url) as unknown as WebSocketLike,
-		);
+		const client = createHubClient(hub.origin, "", (url) => new WebSocket(url) as unknown as WebSocketLike);
 		try {
 			const handshake = await client.connect();
 			expect(handshake.navigation).toMatchObject({ version: 1, readVersions: [2] });
@@ -334,9 +268,7 @@ describe("native demonstration hub's redesign fleet", () => {
 			const plugins = await client.request("evener/plugin/list", {});
 			expect(plugins.plugins).toHaveLength(14);
 			const roster = await client.request("thread/list", { limit: 5 });
-			expect(roster.data.map((thread) => thread.evener.ref)).toContain(
-				"demo:playground",
-			);
+			expect(roster.data.map((thread) => thread.evener.ref)).toContain("demo:playground");
 		} finally {
 			client.close();
 			await hub.close();
@@ -345,11 +277,7 @@ describe("native demonstration hub's redesign fleet", () => {
 
 	it("marks paradise-park's manifest source offline when the fleet starts with offlineHost", async () => {
 		const hub = await createDemoHub(0, undefined, { offlineHost: true });
-		const client = createHubClient(
-			hub.origin,
-			"",
-			(url) => new WebSocket(url) as unknown as WebSocketLike,
-		);
+		const client = createHubClient(hub.origin, "", (url) => new WebSocket(url) as unknown as WebSocketLike);
 		try {
 			await client.connect();
 			const manifest = await client.request("evener/navigation/read", {
@@ -359,10 +287,7 @@ describe("native demonstration hub's redesign fleet", () => {
 			const snapshot = manifest.data as {
 				metadata: { sources: { id: string; online: boolean }[] };
 			};
-			expect(
-				snapshot.metadata.sources.find((source) => source.id === "paradise-park")
-					?.online,
-			).toBe(false);
+			expect(snapshot.metadata.sources.find((source) => source.id === "paradise-park")?.online).toBe(false);
 		} finally {
 			client.close();
 			await hub.close();
@@ -371,11 +296,7 @@ describe("native demonstration hub's redesign fleet", () => {
 
 	it("tells a connected client navigation changed when a working row asks its question", async () => {
 		const hub = await createDemoHub(0, undefined, {});
-		const client = createHubClient(
-			hub.origin,
-			"",
-			(url) => new WebSocket(url) as unknown as WebSocketLike,
-		);
+		const client = createHubClient(hub.origin, "", (url) => new WebSocket(url) as unknown as WebSocketLike);
 		const invalidated = navigationInvalidated(client);
 		try {
 			// The initialize answer means the hub holds this socket, so the
@@ -401,12 +322,8 @@ describe("native demonstration hub's redesign fleet", () => {
 				section: "needs_you",
 			});
 			expect(needsYou.revision).toBe(payload.targets[0]?.revision);
-			const entities = (
-				needsYou.data as { entities: { value: { session_id?: string } }[] }
-			).entities;
-			expect(entities.map((entity) => entity.value.session_id)).toContain(
-				demoSessionId("s-gateway"),
-			);
+			const entities = (needsYou.data as { entities: { value: { session_id?: string } }[] }).entities;
+			expect(entities.map((entity) => entity.value.session_id)).toContain(demoSessionId("s-gateway"));
 		} finally {
 			client.close();
 			await hub.close();
@@ -416,11 +333,7 @@ describe("native demonstration hub's redesign fleet", () => {
 	it("tells a client connecting after the question the sequence it already reached", async () => {
 		const hub = await createDemoHub(0, undefined, {});
 		hub.askQuestion();
-		const client = createHubClient(
-			hub.origin,
-			"",
-			(url) => new WebSocket(url) as unknown as WebSocketLike,
-		);
+		const client = createHubClient(hub.origin, "", (url) => new WebSocket(url) as unknown as WebSocketLike);
 		try {
 			// The navigation store refuses a reconnect whose sequence is below
 			// the last one it accepted, so a phone connected through the
@@ -435,11 +348,7 @@ describe("native demonstration hub's redesign fleet", () => {
 
 	it("archives a session, tells connected clients, and answers with a receipt the phone's check confirms", async () => {
 		const hub = await createDemoHub(0, undefined, {});
-		const client = createHubClient(
-			hub.origin,
-			"",
-			(url) => new WebSocket(url) as unknown as WebSocketLike,
-		);
+		const client = createHubClient(hub.origin, "", (url) => new WebSocket(url) as unknown as WebSocketLike);
 		const invalidated = navigationInvalidated(client);
 		try {
 			const handshake = await client.connect();
@@ -450,9 +359,7 @@ describe("native demonstration hub's redesign fleet", () => {
 				archived: true,
 			});
 			expect(response.ok).toBe(true);
-			expect(response.navigation.generation_id).toBe(
-				handshake.navigation?.generationId,
-			);
+			expect(response.navigation.generation_id).toBe(handshake.navigation?.generationId);
 			expect(await invalidated).toEqual({
 				generationId: response.navigation.generation_id,
 				sequence: 1,
@@ -490,11 +397,7 @@ describe("native demonstration hub's redesign fleet", () => {
 		// advance would otherwise fire and time out, dropping the socket.
 		vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
 		const hub = await createDemoHub(0, undefined, { askAfterSeconds: 5 });
-		const client = createHubClient(
-			hub.origin,
-			"",
-			(url) => new WebSocket(url) as unknown as WebSocketLike,
-		);
+		const client = createHubClient(hub.origin, "", (url) => new WebSocket(url) as unknown as WebSocketLike);
 		const invalidated = navigationInvalidated(client);
 		try {
 			await client.connect();
@@ -516,11 +419,7 @@ describe("native demonstration hub's fleet sessions", () => {
 		body: (client: ReturnType<typeof createHubClient>) => Promise<void>,
 	) {
 		const hub = await createDemoHub(0, undefined, fleetOptions);
-		const client = createHubClient(
-			hub.origin,
-			"",
-			(url) => new WebSocket(url) as unknown as WebSocketLike,
-		);
+		const client = createHubClient(hub.origin, "", (url) => new WebSocket(url) as unknown as WebSocketLike);
 		try {
 			await client.connect();
 			await body(client);
@@ -539,9 +438,7 @@ describe("native demonstration hub's fleet sessions", () => {
 		await withHub({}, async (client) => {
 			const service = createConversationService(client);
 			try {
-				for (const session of fleetSessions().filter(
-					(candidate) => candidate.state !== "shutdown",
-				)) {
+				for (const session of fleetSessions().filter((candidate) => candidate.state !== "shutdown")) {
 					const conversation = await service.open(session.ref);
 					expect(conversation.name).toBe(session.title);
 					expect(conversation.items.length).toBeGreaterThan(0);
@@ -565,17 +462,11 @@ describe("native demonstration hub's fleet sessions", () => {
 				if (!instanceId) throw new Error("Missing instance id");
 				await service.queue([{ type: "text", text: "One more thing" }]);
 				const queued = await service.open(refOf("s-pr2138"));
-				expect(queued.queue?.texts).toEqual([
-					"When CI is green, post a summary on the PR.",
-					"One more thing",
-				]);
+				expect(queued.queue?.texts).toEqual(["When CI is green, post a summary on the PR.", "One more thing"]);
 				// Steer now, while the turn runs.
 				const [first, second] = queued.queue?.ids ?? [];
 				if (!first || !second) throw new Error("Missing queue ids");
-				expect(ghosts(queued, [], null, []).map((ghost) => ghost.buttons)).toEqual([
-					["steerNow"],
-					["steerNow"],
-				]);
+				expect(ghosts(queued, [], null, []).map((ghost) => ghost.buttons)).toEqual([["steerNow"], ["steerNow"]]);
 				await service.promoteQueuedAsSteer(0, first, instanceId);
 				// Stop with a message queued holds it, and Send now releases it.
 				await service.interrupt();
@@ -604,8 +495,7 @@ describe("native demonstration hub's fleet sessions", () => {
 			try {
 				const opened = await service.open(refOf("s-stumble"));
 				const [first] = opened.queue?.ids ?? [];
-				if (!first || !opened.instanceId || !opened.queue)
-					throw new Error("Missing queue guards");
+				if (!first || !opened.instanceId || !opened.queue) throw new Error("Missing queue guards");
 				await service.cancelQueued(0, first, opened.instanceId);
 				const cancelled = await service.open(refOf("s-stumble"));
 				expect(cancelled.queue?.depth).toBe(4);
@@ -742,13 +632,10 @@ describe("native demonstration hub's fleet sessions", () => {
 	});
 });
 
-function navigationInvalidated(
-	client: ReturnType<typeof createHubClient>,
-): Promise<unknown> {
+function navigationInvalidated(client: ReturnType<typeof createHubClient>): Promise<unknown> {
 	return new Promise((resolve) => {
 		client.onNotification((notification) => {
-			if (notification.method === "evener/navigation/invalidated")
-				resolve(notification.params);
+			if (notification.method === "evener/navigation/invalidated") resolve(notification.params);
 		});
 	});
 }

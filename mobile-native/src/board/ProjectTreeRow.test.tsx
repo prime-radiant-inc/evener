@@ -33,19 +33,43 @@ const pressables = (tree: ReactTestRenderer) => tree.root.findAll((node) => node
 
 describe("host rows", () => {
 	it("says an offline host is Offline, with no count", () => {
-		const tree = draw({ kind: "host", key: "h", fold: "host:paradise-park", depth: 0, host: park, liveCount: null, folded: false });
+		const tree = draw({
+			kind: "host",
+			key: "h",
+			fold: "host:paradise-park",
+			depth: 0,
+			host: park,
+			liveCount: null,
+			folded: false,
+		});
 		expect(texts(tree)).toEqual(["paradise-park", "Offline"]);
 		expect(symbols(tree)).toEqual(["server.rack", "chevron.down"]);
 	});
 
 	it("counts a connected host's live sessions", () => {
-		const tree = draw({ kind: "host", key: "h", fold: "host:local", depth: 0, host: laptop, liveCount: 3, folded: true });
+		const tree = draw({
+			kind: "host",
+			key: "h",
+			fold: "host:local",
+			depth: 0,
+			host: laptop,
+			liveCount: 3,
+			folded: true,
+		});
 		expect(texts(tree)).toEqual(["Laptop", "3 live"]);
 		expect(symbols(tree)).toEqual(["server.rack", "chevron.right"]);
 	});
 
 	it("shows no state for a connected host whose count isn't known", () => {
-		const tree = draw({ kind: "host", key: "h", fold: "host:local", depth: 0, host: laptop, liveCount: null, folded: true });
+		const tree = draw({
+			kind: "host",
+			key: "h",
+			fold: "host:local",
+			depth: 0,
+			host: laptop,
+			liveCount: null,
+			folded: true,
+		});
 		expect(texts(tree)).toEqual(["Laptop"]);
 	});
 });
@@ -83,14 +107,30 @@ describe("project rows", () => {
 
 	it("opens its menu on a long press", () => {
 		const onLongPress = vi.fn();
-		const item: ProjectRowItem = { kind: "project", key: "p", fold: "f", depth: 0, project: project(), liveCount: null, folded: true };
+		const item: ProjectRowItem = {
+			kind: "project",
+			key: "p",
+			fold: "f",
+			depth: 0,
+			project: project(),
+			liveCount: null,
+			folded: true,
+		};
 		const tree = render(<ProjectTreeRow item={item} onPress={() => {}} onLongPress={onLongPress} />);
 		act(() => pressables(tree)[0].props.onLongPress());
 		expect(onLongPress).toHaveBeenCalledTimes(1);
 	});
 
 	it("dims while a change to the project is on its way", () => {
-		const item: ProjectRowItem = { kind: "project", key: "p", fold: "f", depth: 0, project: project(), liveCount: null, folded: true };
+		const item: ProjectRowItem = {
+			kind: "project",
+			key: "p",
+			fold: "f",
+			depth: 0,
+			project: project(),
+			liveCount: null,
+			folded: true,
+		};
 		const opacity = (changing: boolean) => {
 			const tree = render(<ProjectTreeRow item={item} onPress={() => {}} changing={changing} />);
 			return pressables(tree)[0].props.style({ pressed: false }).opacity;
@@ -124,7 +164,10 @@ describe("the rows inside a project", () => {
 
 	it("loads more when its more row is pressed", () => {
 		const onPress = vi.fn();
-		const tree = draw({ kind: "more", key: "m", depth: 1, projectKey: "evener", tier: "recent", remaining: 12 }, onPress);
+		const tree = draw(
+			{ kind: "more", key: "m", depth: 1, projectKey: "evener", tier: "recent", remaining: 12 },
+			onPress,
+		);
 		expect(texts(tree)).toEqual(["12 more"]);
 		act(() => pressables(tree)[0].props.onPress());
 		expect(onPress).toHaveBeenCalledTimes(1);
@@ -171,6 +214,8 @@ it("reports whether each folding row is open", () => {
 
 it("indents each row 16pt per depth after the 16pt margin", () => {
 	const tree = draw({ kind: "tier", key: "t", depth: 2, label: "Recent" });
-	const flat = tree.root.findAll((node) => node.type === ("View" as never) && node.props.style?.paddingLeft !== undefined);
+	const flat = tree.root.findAll(
+		(node) => node.type === ("View" as never) && node.props.style?.paddingLeft !== undefined,
+	);
 	expect(flat[0].props.style.paddingLeft).toBe(16 + 2 * 16);
 });

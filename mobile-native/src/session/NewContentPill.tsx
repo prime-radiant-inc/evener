@@ -17,7 +17,12 @@ export function NewContentPill({ count, onPress }: { count: number; onPress: () 
 		>
 			<Text
 				allowFontScaling={Platform.OS !== "ios"}
-				style={{ fontSize: 15 * scale, lineHeight: 20 * scale, color: palette.accentInk, fontVariant: ["tabular-nums"] }}
+				style={{
+					fontSize: 15 * scale,
+					lineHeight: 20 * scale,
+					color: palette.accentInk,
+					fontVariant: ["tabular-nums"],
+				}}
 			>{`↓ ${count} new`}</Text>
 		</Pressable>
 	);

@@ -75,7 +75,18 @@ describe("the config a session projects at", () => {
 	it("knows the current level for the menu's check", () => {
 		expect(currentLevel("full", hub)).toBe("full");
 		expect(currentLevel(null, hub)).toBe("intent");
-		expect(currentLevel(null, makeTranscriptDisplayConfig({ kind: "custom", toolIntent: true, toolCalls: false, reasoning: true, expandByDefault: false }))).toBe("custom");
+		expect(
+			currentLevel(
+				null,
+				makeTranscriptDisplayConfig({
+					kind: "custom",
+					toolIntent: true,
+					toolCalls: false,
+					reasoning: true,
+					expandByDefault: false,
+				}),
+			),
+		).toBe("custom");
 		expect(currentLevel(null, null)).toBeNull();
 	});
 });
@@ -107,7 +118,9 @@ describe("the level chosen for each session", () => {
 		const levels = new DetailLevels(storage, "hub-a");
 		expect(levels.get("s1")).toBeNull();
 		expect(levels.get("s2")).toBe("full");
-		expect(new DetailLevels(memoryStorage(new Map([["evener.native.detail-level.hub-a", "{nope"]])), "hub-a").get("s2")).toBeNull();
+		expect(
+			new DetailLevels(memoryStorage(new Map([["evener.native.detail-level.hub-a", "{nope"]])), "hub-a").get("s2"),
+		).toBeNull();
 	});
 
 	it("keeps working in memory when storage throws", () => {

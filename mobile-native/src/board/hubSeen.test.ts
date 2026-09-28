@@ -97,9 +97,9 @@ describe("which path decides a row", () => {
 		// The device says unread; the hub says seen, and wins.
 		expect(seen.isSeen(ended("unseen-here", T, false))).toBe(true);
 		// The device's epoch says seen; the hub says unseen, and wins.
-		expect(seen.isSeen(row("fresh", { turn_ended_at: iso(T - 120_000), unseen: true, updated_at: iso(T - 120_000) }))).toBe(
-			false,
-		);
+		expect(
+			seen.isSeen(row("fresh", { turn_ended_at: iso(T - 120_000), unseen: true, updated_at: iso(T - 120_000) })),
+		).toBe(false);
 		// Without turn_ended_at the device decides: updated after its epoch.
 		expect(seen.isSeen(row("fresh"))).toBe(false);
 		markers.markSeen(row("fresh"));

@@ -108,8 +108,7 @@ export class HubSeenMarks {
 			if (!entry) continue;
 			const ended = hubTurnEnd(row);
 			if (ended === null) continue;
-			const done =
-				"unread" in entry.mark ? row.unseen === true : row.unseen !== true || ended > entry.mark.seenThrough;
+			const done = "unread" in entry.mark ? row.unseen === true : row.unseen !== true || ended > entry.mark.seenThrough;
 			if (done) {
 				this.pending.delete(row.ref);
 				changed = true;

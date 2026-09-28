@@ -58,7 +58,11 @@ describe("the documents a message names (spec 8.2)", () => {
 		expect(messageDocuments("[plan](file:///home/jesse/git/evener/docs/plan.md)", cwd, none)).toEqual(["docs/plan.md"]);
 		expect(messageDocuments("[`plan.md`](docs/plan.md)", cwd, none)).toEqual(["docs/plan.md"]);
 		expect(
-			messageDocuments("[`docs/plan.md`](https://github.com/prime-radiant-inc/evener/blob/main/docs/plan.md)", cwd, none),
+			messageDocuments(
+				"[`docs/plan.md`](https://github.com/prime-radiant-inc/evener/blob/main/docs/plan.md)",
+				cwd,
+				none,
+			),
 		).toEqual(["docs/plan.md"]);
 	});
 
@@ -76,9 +80,9 @@ describe("the documents a message names (spec 8.2)", () => {
 
 	it("takes a bare file name only when the session wrote that file", () => {
 		expect(messageDocuments("Updated `README.md`.", cwd, none)).toEqual([]);
-		expect(messageDocuments("Updated `README.md`.", cwd, new Map([["README.md", "2026-09-26T11:39:00.000Z"]]))).toEqual([
-			"README.md",
-		]);
+		expect(messageDocuments("Updated `README.md`.", cwd, new Map([["README.md", "2026-09-26T11:39:00.000Z"]]))).toEqual(
+			["README.md"],
+		);
 	});
 });
 

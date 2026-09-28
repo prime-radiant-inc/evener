@@ -13,13 +13,9 @@ import type {
 	NavigationActionStorage,
 	NavigationOperation,
 } from "./navigationActionRepository";
-import {
-	type SessionDeletionResult,
-	sessionDeletionResult,
-} from "./sessionDeletionResult";
+import { type SessionDeletionResult, sessionDeletionResult } from "./sessionDeletionResult";
 
-const unresolved =
-	"A previous organization change needs to be checked. Refresh before making another change.";
+const unresolved = "A previous organization change needs to be checked. Refresh before making another change.";
 const storageError =
 	"Could not read or save organization recovery on this device. Refresh to retry; no change will be sent until recovery is available.";
 
@@ -35,15 +31,9 @@ export class NavigationActions {
 	private disposed = false;
 	constructor(
 		private client: ConversationClientLike,
-		private refresh: (
-			receipt: NavigationMutation,
-			checkpoint?: NavigationActionCheckpoint,
-		) => Promise<void>,
+		private refresh: (receipt: NavigationMutation, checkpoint?: NavigationActionCheckpoint) => Promise<void>,
 		private current: () => boolean,
-		private reconcileCurrent: (
-			checkpoint?: NavigationActionCheckpoint,
-			acceptCurrent?: boolean,
-		) => Promise<void>,
+		private reconcileCurrent: (checkpoint?: NavigationActionCheckpoint, acceptCurrent?: boolean) => Promise<void>,
 		private storage?: NavigationActionStorage,
 		private confirmCurrent: () => void = () => {},
 	) {
@@ -88,27 +78,19 @@ export class NavigationActions {
 	}
 	archive(target: Omit<ArchiveParams, "archived">, archived: boolean) {
 		const params = { ...target, archived };
-		return this.run({ kind: "archive", params }, () =>
-			this.client.request("evener/archive/set", params),
-		);
+		return this.run({ kind: "archive", params }, () => this.client.request("evener/archive/set", params));
 	}
 	favorite(id: string, favorited: boolean) {
 		const params = { kind: "project", id, favorited };
-		return this.run({ kind: "favorite", params }, () =>
-			this.client.request("evener/favorite/set", params),
-		);
+		return this.run({ kind: "favorite", params }, () => this.client.request("evener/favorite/set", params));
 	}
 	assignPin(target: SessionPinAssignParams) {
 		const params = { ...target };
-		return this.run({ kind: "assignPin", params }, () =>
-			this.client.request("evener/session-pin/assign", params),
-		);
+		return this.run({ kind: "assignPin", params }, () => this.client.request("evener/session-pin/assign", params));
 	}
 	unpin(target: SessionPinUnpinParams) {
 		const params = { ...target };
-		return this.run({ kind: "unpin", params }, () =>
-			this.client.request("evener/session-pin/unpin", params),
-		);
+		return this.run({ kind: "unpin", params }, () => this.client.request("evener/session-pin/unpin", params));
 	}
 	renamePinSection(target: PinSectionRenameParams) {
 		const params = { ...target };
@@ -125,10 +107,7 @@ export class NavigationActions {
 	deleteSession(target: SessionDeleteParams) {
 		const params = { ...target };
 		return this.run({ kind: "deleteSession", params }, async () => {
-			const response = await this.client.request(
-				"evener/session/delete",
-				params,
-			);
+			const response = await this.client.request("evener/session/delete", params);
 			return {
 				ok: true,
 				navigation: response.navigation,
@@ -177,17 +156,12 @@ export class NavigationActions {
 			return;
 		this.publish({ ...this.state, pending: true });
 		try {
-			await this.reconcileCurrent(
-				checkpoint ?? undefined,
-				accepted !== undefined,
-			);
+			await this.reconcileCurrent(checkpoint ?? undefined, accepted !== undefined);
 			if (this.disposed) return;
 			if (!this.current()) throw Error("scope changed");
 			this.confirmCurrent();
-			if (checkpoint && this.storage && !this.storage.finish(checkpoint))
-				throw Error("recovery changed");
-			if (!checkpoint && this.storage?.load())
-				throw Error("another organization change started");
+			if (checkpoint && this.storage && !this.storage.finish(checkpoint)) throw Error("recovery changed");
+			if (!checkpoint && this.storage?.load()) throw Error("another organization change started");
 			this.publish({
 				...this.state,
 				pending: false,
@@ -229,13 +203,7 @@ export class NavigationActions {
 			deletion?: SessionDeletionResult;
 		}>,
 	) {
-		if (
-			this.disposed ||
-			!this.current() ||
-			this.state.pending ||
-			this.state.uncertain ||
-			this.state.storageUnavailable
-		)
+		if (this.disposed || !this.current() || this.state.pending || this.state.uncertain || this.state.storageUnavailable)
 			return;
 		// Other screens share the same hub journal; a model created earlier must not
 		// overwrite a newer screen's unresolved operation.
@@ -270,14 +238,9 @@ export class NavigationActions {
 				savingRecovery = true;
 				// Preserve a known result even when its screen has gone away. Exact
 				// checkpoint matching prevents a late reply overwriting another action.
-				checkpoint = this.storage.acknowledge(
-					checkpoint,
-					response.navigation,
-					response.deletion,
-				);
+				checkpoint = this.storage.acknowledge(checkpoint, response.navigation, response.deletion);
 				savingRecovery = false;
-				if (!this.disposed)
-					this.publish({ ...this.state, recovery: checkpoint });
+				if (!this.disposed) this.publish({ ...this.state, recovery: checkpoint });
 			}
 			if (this.disposed) return;
 			if (!this.current()) throw Error("scope changed");

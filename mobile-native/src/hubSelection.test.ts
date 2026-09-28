@@ -29,14 +29,8 @@ class DeferredStorage implements SecureStorage {
 		return { entered: entered.promise, release: release.resolve };
 	}
 	block(key: string) {
-		this.gates.set(
-			key,
-			new Promise<void>((resolve) => this.release.set(key, resolve)),
-		);
-		this.entered.set(
-			key,
-			new Promise<void>((resolve) => this.enteredResolvers.set(key, resolve)),
-		);
+		this.gates.set(key, new Promise<void>((resolve) => this.release.set(key, resolve)));
+		this.entered.set(key, new Promise<void>((resolve) => this.enteredResolvers.set(key, resolve)));
 	}
 	waitUntilEntered(key: string) {
 		const entered = this.entered.get(key);
@@ -239,32 +233,29 @@ describe("HubSelection", () => {
 		expect(h.selected).toBe("saved-2");
 	});
 
-	it.each(["write", "delete", "read"] as const)(
-		"reconciles removal when storage %s fails",
-		async (failure) => {
-			const h = harness();
-			await h.selection.save({
-				name: "A",
-				origin: "https://a.test",
-				token: "a",
-			});
-			if (failure === "write") h.storage.failWrite = true;
-			if (failure === "delete") h.storage.failDelete = true;
-			if (failure === "read") h.storage.failRead = true;
-			const cleaned: string[] = [];
-			await expect(
-				h.selection.remove("saved-1", {
-					removeHub: (id) => {
-						cleaned.push(id);
-					},
-				}),
-			).rejects.toThrow();
-			const removed = failure === "delete";
-			expect(h.selected).toBe(removed ? null : "saved-1");
-			expect(h.roster.map((p) => p.id)).toEqual(removed ? [] : ["saved-1"]);
-			expect(cleaned).toEqual(removed ? ["saved-1"] : []);
-		},
-	);
+	it.each(["write", "delete", "read"] as const)("reconciles removal when storage %s fails", async (failure) => {
+		const h = harness();
+		await h.selection.save({
+			name: "A",
+			origin: "https://a.test",
+			token: "a",
+		});
+		if (failure === "write") h.storage.failWrite = true;
+		if (failure === "delete") h.storage.failDelete = true;
+		if (failure === "read") h.storage.failRead = true;
+		const cleaned: string[] = [];
+		await expect(
+			h.selection.remove("saved-1", {
+				removeHub: (id) => {
+					cleaned.push(id);
+				},
+			}),
+		).rejects.toThrow();
+		const removed = failure === "delete";
+		expect(h.selected).toBe(removed ? null : "saved-1");
+		expect(h.roster.map((p) => p.id)).toEqual(removed ? [] : ["saved-1"]);
+		expect(cleaned).toEqual(removed ? ["saved-1"] : []);
+	});
 
 	it("drops a removed row even when the follow-up roster cannot be read", async () => {
 		const h = harness();

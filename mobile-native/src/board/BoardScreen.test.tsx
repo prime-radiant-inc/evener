@@ -204,7 +204,12 @@ const session = (ref: string, over: Partial<NavigationSessionSummary> = {}): Nav
 	...over,
 });
 const failing = session("local:fail", { title: "Fix retry loop", state: "errored", updated_at: minutesAgo(2) });
-const asking = session("local:ask", { title: "Pick a name", state: "awaiting", ask_pending: true, updated_at: minutesAgo(3) });
+const asking = session("local:ask", {
+	title: "Pick a name",
+	state: "awaiting",
+	ask_pending: true,
+	updated_at: minutesAgo(3),
+});
 const working = session("local:work", { title: "Build docs", state: "active", updated_at: minutesAgo(1) });
 const finished = session("local:done", { title: "Ship it", updated_at: minutesAgo(4) });
 const idleOne = session("local:idle-1", { title: "Old chore", dormant: true, updated_at: minutesAgo(120) });
@@ -373,7 +378,8 @@ function hub(
 								else archivedRefs.delete(ref);
 							}
 							for (const catalog of Object.values(shape.catalogs ?? {}))
-								for (const project of catalog ?? []) if (project.key === change.id) project.is_archived = change.archived;
+								for (const project of catalog ?? [])
+									if (project.key === change.id) project.is_archived = change.archived;
 						}
 						if (method === "evener/session-pin/assign") {
 							// A new category's name makes it, or reuses one that has it.
@@ -587,7 +593,8 @@ it("renders the fleet's bands in order with their counts, and Idle starts folded
 	expect(bandHeaders(tree)).toEqual(["NEEDS YOU · 2", "FINISHED · 1", "WORKING · 1", "Idle · 2"]);
 	expect(renderedText(tree)).toContain("2 need you");
 	expect(texts(tree)).toEqual(expect.arrayContaining(["1 finished", "1 working", "2 idle"]));
-	for (const title of ["Fix retry loop", "Pick a name", "Ship it", "Build docs"]) expect(hasRow(tree, title)).toBe(true);
+	for (const title of ["Fix retry loop", "Pick a name", "Ship it", "Build docs"])
+		expect(hasRow(tree, title)).toBe(true);
 	expect(hasRow(tree, "Old chore")).toBe(false);
 	pressLabel(tree, "Idle, 2 sessions");
 	expect(hasRow(tree, "Old chore")).toBe(true);
@@ -670,8 +677,9 @@ const pinSection = (tree: ReactTestRenderer, name: string) =>
 	tree.root.find(
 		(node) =>
 			node.props.testID === "pin-section" &&
-			node.findAll((child) => child.props.testID === "pin-header" && child.props.accessibilityLabel.startsWith(`${name}, `))
-				.length > 0,
+			node.findAll(
+				(child) => child.props.testID === "pin-header" && child.props.accessibilityLabel.startsWith(`${name}, `),
+			).length > 0,
 	);
 const opacity = (tree: ReactTestRenderer, name: string) => pinSection(tree, name).props.style.opacity;
 /** Opens a category's menu and chooses Delete; returns the confirmation. */
@@ -739,7 +747,9 @@ it("unfolds a folded category when its chip is tapped", async () => {
 	expect(hasRow(tree, "Kept note")).toBe(false);
 	listEvent(tree, "onMomentumScrollEnd");
 	expect(hasRow(tree, "Kept note")).toBe(true);
-	expect(JSON.parse(harness.kv.get(`evener.native.board-sections.${id}`) ?? "null")).toMatchObject({ "pin:pins-1": false });
+	expect(JSON.parse(harness.kv.get(`evener.native.board-sections.${id}`) ?? "null")).toMatchObject({
+		"pin:pins-1": false,
+	});
 	act(() => tree.unmount());
 });
 
@@ -916,7 +926,10 @@ it("gives every control a touch target at least 44pt tall", async () => {
 	connect(id, hub(fleet).client, "ready");
 	const tree = await mount(navigation());
 	const flat = (style: unknown): Record<string, number> =>
-		Object.assign({}, ...[typeof style === "function" ? style({ pressed: false }) : style].flat(Number.POSITIVE_INFINITY));
+		Object.assign(
+			{},
+			...[typeof style === "function" ? style({ pressed: false }) : style].flat(Number.POSITIVE_INFINITY),
+		);
 	const short = tree.root
 		.findAll((node) => node.type === ("Pressable" as never))
 		.map((node) => {
@@ -965,42 +978,13 @@ it("starts a fresh Board when you switch hubs, and stops the old hub's", async (
 	act(() => tree.unmount());
 });
 
-it("offers the hub menu as an alert off iOS, without Hub settings while the hub is out of reach", async () => {
-	const { Platform } = (await import("react-native")) as unknown as { Platform: { OS: string } };
-	const id = hubId();
-	adoptedAnHourAgo(id);
-	connect(id, hub(fleet).client, "ready");
-	const nav = navigation();
-	const tree = await mount(nav);
-	Platform.OS = "android";
-	try {
-		const buttonLabels = () => (alertRequests.at(-1)?.buttons ?? []).map((button) => button.text);
-		const pressHubButton = () => {
-			const hubButton = render(headerOptions(nav).unstable_headerLeftItems({})[0].element);
-			act(() => hubButton.root.findByType("Pressable" as never).props.onPress());
-			act(() => hubButton.unmount());
-		};
-		pressHubButton();
-		expect(alertRequests.at(-1)?.title).toBe("Work hub");
-		expect(buttonLabels()).toEqual(["Hub settings", "Switch hub", "Cancel"]);
-		act(() => alertRequests.at(-1)?.buttons?.[1].onPress?.());
-		expect(nav.navigate).toHaveBeenLastCalledWith("Hubs");
-		// An alert has no disabled buttons, so Hub settings leaves the list.
-		connect(id, null, "connecting");
-		rerender(tree, nav);
-		pressHubButton();
-		expect(buttonLabels()).toEqual(["Switch hub", "Cancel"]);
-	} finally {
-		Platform.OS = "ios";
-	}
-	act(() => tree.unmount());
-});
-
 /** The search field at the top of the Board's scroller, driven the way a
  * person drives it. */
 function searchField(tree: ReactTestRenderer) {
 	const input = () =>
-		tree.root.find((node) => node.type === ("TextInput" as never) && node.props.accessibilityLabel === "Search sessions");
+		tree.root.find(
+			(node) => node.type === ("TextInput" as never) && node.props.accessibilityLabel === "Search sessions",
+		);
 	return {
 		input,
 		focus: () => act(() => input().props.onFocus()),
@@ -1037,7 +1021,10 @@ it("puts the search field first in the Board's scroller, which starts scrolled j
 	// No header search bar: it neither hid on scroll nor kept the chips pinned.
 	expect(headerOptions(nav).headerSearchBarOptions).toBeUndefined();
 	const scroller = boardScroller(tree);
-	const [first] = scroller.findAll((node) => node.props.testID === "search-field" || node.props.testID === "notice" || node.props.testID === "live-block");
+	const [first] = scroller.findAll(
+		(node) =>
+			node.props.testID === "search-field" || node.props.testID === "notice" || node.props.testID === "live-block",
+	);
 	expect(first.props.testID).toBe("search-field");
 	// Pulling down reveals the field (spec 7.3).
 	const height = first.props.style.height;
@@ -1189,7 +1176,11 @@ it("opens a result only a pinned category lists the way the Board opens its row,
 	bar.focus();
 	await bar.type("pinned");
 	act(() => resultTitled(tree, "Pinned draft").props.onPress());
-	expect(nav.navigate).toHaveBeenLastCalledWith("Conversation", { hubId: id, ref: "local:pinned", title: "Pinned draft" });
+	expect(nav.navigate).toHaveBeenLastCalledWith("Conversation", {
+		hubId: id,
+		ref: "local:pinned",
+		title: "Pinned draft",
+	});
 	expect(seenMarkers(id).isSeen(pinnedOnly)).toBe(true);
 	act(() => tree.unmount());
 });
@@ -1253,7 +1244,9 @@ it("remembers the queries you opened a result from, per hub, and clears them", a
 	expect(texts(tree)).toContain("RECENT");
 	expect(
 		tree.root
-			.findAll((node) => node.type === ("Pressable" as never) && node.props.accessibilityLabel?.startsWith("Search for "))
+			.findAll(
+				(node) => node.type === ("Pressable" as never) && node.props.accessibilityLabel?.startsWith("Search for "),
+			)
 			.map((node) => node.props.accessibilityLabel),
 	).toEqual(["Search for build", "Search for ship"]);
 	expect(JSON.parse(harness.kv.get(`evener.native.recent-searches.${id}`) ?? "null")).toEqual(["build", "ship"]);
@@ -1316,7 +1309,8 @@ function deviceDisagrees(hub: string) {
 	adoptedAnHourAgo(hub);
 	seenMarkers(hub).markUnread("local:hub-seen");
 }
-const stateOf = (tree: ReactTestRenderer, title: string) => rowTitled(tree, title).props.accessibilityLabel.split(", ")[1];
+const stateOf = (tree: ReactTestRenderer, title: string) =>
+	rowTitled(tree, title).props.accessibilityLabel.split(", ")[1];
 
 it("takes Finished or Idle from the hub for a row that carries its turn end, whatever the device's markers say", async () => {
 	const id = hubId();
@@ -1345,7 +1339,11 @@ it("marks a hub row seen through its turn end when you open it, and clears its d
 	const nav = navigation();
 	const tree = await mount(nav);
 	act(() => rowTitled(tree, "Hub unseen").props.onPress());
-	expect(nav.navigate).toHaveBeenLastCalledWith("Conversation", { hubId: id, ref: "local:hub-unseen", title: "Hub unseen" });
+	expect(nav.navigate).toHaveBeenLastCalledWith("Conversation", {
+		hubId: id,
+		ref: "local:hub-unseen",
+		title: "Hub unseen",
+	});
 	// The hub's rows still say unseen; the pending mark wins until they catch up.
 	expect(bandHeaders(tree)).toEqual(["NEEDS YOU · 2", "FINISHED · 1", "WORKING · 1", "Idle · 2"]);
 	await settle();
@@ -1476,15 +1474,13 @@ it("offers no Reconnect or Refresh anywhere", async () => {
 			...(item.menu?.items.map((entry) => entry.label) ?? []),
 		])
 		.filter((label): label is string => typeof label === "string");
-	// The hub button is a custom view: read what it draws and the menu it opens.
+	// The hub button is a custom view: read what it draws. It opens the Hub
+	// sheet, whose own pages pin that they never ask to reconnect.
 	const hubButton = render(headerItems[0].element);
-	act(() => hubButton.root.findByType("Pressable" as never).props.onPress());
-	const hubMenu: string[] = harness.actionSheet.mock.calls.at(-1)?.[0].options ?? [];
-	expect(hubMenu.length).toBeGreaterThan(0);
 	const labels = tree.root
 		.findAll((node) => typeof node.props.accessibilityLabel === "string")
 		.map((node) => node.props.accessibilityLabel as string);
-	for (const text of [...texts(tree), ...labels, ...headerLabels, ...texts(hubButton), ...hubMenu])
+	for (const text of [...texts(tree), ...labels, ...headerLabels, ...texts(hubButton)])
 		expect(text).not.toMatch(/^(Reconnect|Refresh|Retry)\b/);
 	expect(renderedText(tree)).not.toMatch(/Reconnect\b|Refresh|pull/i);
 	act(() => hubButton.unmount());
@@ -1559,7 +1555,10 @@ it("on a device's first run, reads every Live page before adopting, so nothing f
 	// Live is sorted by attention, so the newest session sits on page 2.
 	const newest = session("local:newest", { title: "Newest", updated_at: minutesAgo(1) });
 	const older = session("local:older", { title: "Older", updated_at: minutesAgo(30) });
-	const fake = hub({ ...fleet, live: [[failing, older], [newest]], needsYou: [failing] }, (read) => (read.offset ?? 0) > 0);
+	const fake = hub(
+		{ ...fleet, live: [[failing, older], [newest]], needsYou: [failing] },
+		(read) => (read.offset ?? 0) > 0,
+	);
 	connect(id, fake.client, "ready");
 	const tree = await mount(navigation());
 	expect(fake.requests.filter((read) => read.section === "live").map((read) => read.offset)).toEqual([0, 2]);
@@ -1610,7 +1609,7 @@ it("shows the Draft tag on sessions with a saved draft", async () => {
 	act(() => tree.unmount());
 });
 
-it("puts the hub's name and menu on the left and search on the right", async () => {
+it("puts the hub's name on the left, opening the Hub, and search on the right", async () => {
 	const id = hubId();
 	adoptedAnHourAgo(id);
 	connect(id, hub(fleet).client, "ready");
@@ -1619,7 +1618,7 @@ it("puts the hub's name and menu on the left and search on the right", async () 
 	const options = headerOptions(nav);
 	expect(options.title).toBe("");
 	// One control, as spec 7.1 draws it: the hub's name and a chevron in a
-	// single header item that opens the hub menu.
+	// single header item that opens the Hub sheet (spec 12).
 	const hubItems = options.unstable_headerLeftItems({});
 	expect(hubItems).toHaveLength(1);
 	expect(hubItems[0].type).toBe("custom");
@@ -1627,7 +1626,8 @@ it("puts the hub's name and menu on the left and search on the right", async () 
 	expect(texts(hubButton)).toEqual(["Work hub"]);
 	expect(hubButton.root.findAllByType("SymbolView" as never).map((node) => node.props.name)).toEqual(["chevron.down"]);
 	const press = hubButton.root.findByType("Pressable" as never);
-	expect(press.props.accessibilityLabel).toBe("Work hub, hub menu");
+	expect(press.props.accessibilityLabel).toBe("Work hub");
+	expect(press.props.accessibilityHint).toBe("Opens the Hub");
 	// A long hub name truncates inside the capsule instead of growing it
 	// into Search (the window is 390pt wide here).
 	expect(press.props.style.maxWidth).toBeLessThanOrEqual(390 * 0.6);
@@ -1635,20 +1635,15 @@ it("puts the hub's name and menu on the left and search on the right", async () 
 	expect(hubName.props.numberOfLines).toBe(1);
 	expect(hubName.props.style).toMatchObject({ flexShrink: 1 });
 	act(() => press.props.onPress());
-	const [sheet, choose] = harness.actionSheet.mock.calls.at(-1) ?? [];
-	expect(sheet).toMatchObject({ options: ["Hub settings", "Switch hub", "Cancel"], cancelButtonIndex: 2 });
-	expect(sheet.disabledButtonIndices).toEqual([]);
-	act(() => choose(0));
-	expect(nav.navigate).toHaveBeenLastCalledWith("HubSettings", { hubId: id });
-	act(() => choose(1));
-	expect(nav.navigate).toHaveBeenLastCalledWith("Hubs");
+	expect(nav.navigate).toHaveBeenLastCalledWith("Hub", { screen: "HubHome", params: { hubId: id } });
+	expect(harness.actionSheet).not.toHaveBeenCalled();
 	act(() => hubButton.unmount());
-	// Hub settings needs the hub; Switch hub doesn't.
+	// The Hub opens with the hub out of reach too: it keeps its last data.
 	connect(id, null, "connecting");
 	rerender(tree, nav);
 	const offline = render(headerOptions(nav).unstable_headerLeftItems({})[0].element);
 	act(() => offline.root.findByType("Pressable" as never).props.onPress());
-	expect(harness.actionSheet.mock.calls.at(-1)?.[0].disabledButtonIndices).toEqual([0]);
+	expect(nav.navigate).toHaveBeenLastCalledWith("Hub", { screen: "HubHome", params: { hubId: id } });
 	act(() => offline.unmount());
 	expect(options.unstable_headerRightItems({})).toEqual([expect.objectContaining({ label: "Search" })]);
 	act(() => tree.unmount());
@@ -2224,7 +2219,9 @@ it("keeps a row's Working order in step with its label when elapsed time alone c
 	adoptedAnHourAgo(id);
 	const shape: Fleet = {
 		...busyFleet,
-		activity: [{ ref: "local:migrate", minutes: [0, 0, 0], runningSubagents: 0, quietForMs: STUCK_AFTER_MS - ACTIVITY_POLL_MS }],
+		activity: [
+			{ ref: "local:migrate", minutes: [0, 0, 0], runningSubagents: 0, quietForMs: STUCK_AFTER_MS - ACTIVITY_POLL_MS },
+		],
 	};
 	const fake = hub(shape);
 	connect(id, fake.client, "ready");
@@ -2372,7 +2369,9 @@ it("shows the hub's notices under the chips, above Live, after Update needed, an
 		"superpowers is brokenPlugins",
 	]);
 	// The notices sit in the scroller, before the Live block.
-	const order = boardScroller(tree).findAll((node) => node.props.testID === "notice" || node.props.testID === "live-block");
+	const order = boardScroller(tree).findAll(
+		(node) => node.props.testID === "notice" || node.props.testID === "live-block",
+	);
 	expect(order.map((node) => node.props.testID)).toEqual(["notice", "notice", "notice", "live-block"]);
 	pressLabel(tree, "Sign in, openai sign-in expired");
 	expect(nav.navigate).toHaveBeenLastCalledWith("Providers", { hubId: id });
@@ -2696,7 +2695,11 @@ const revealTarget = (tree: ReactTestRenderer) => tree.root.find((node) => node.
 it("opens a project from search: leaves search, unfolds the project and scrolls it a third of the way down", async () => {
 	const id = hubId();
 	adoptedAnHourAgo(id);
-	const fake = hub({ ...fleet, catalogs: { projects: [evenerProject()] }, projectPages: { "evener:current": [localWork] } });
+	const fake = hub({
+		...fleet,
+		catalogs: { projects: [evenerProject()] },
+		projectPages: { "evener:current": [localWork] },
+	});
 	connect(id, fake.client, "ready");
 	const { tree, scrollTo } = await mountWithInstances(navigation());
 	layOutAt(boardScroller(tree), 0, 600);
@@ -2885,14 +2888,20 @@ it("keeps every project row on screen from a dropped client until the new client
 it("pins a project to the top from its long-press menu, dimming it until the hub confirms", async () => {
 	const id = hubId();
 	adoptedAnHourAgo(id);
-	const fake = hub({ ...fleet, catalogs: { projects: [evenerProject()] } }, undefined, undefined, { holdChanges: true });
+	const fake = hub({ ...fleet, catalogs: { projects: [evenerProject()] } }, undefined, undefined, {
+		holdChanges: true,
+	});
 	connect(id, fake.client, "ready");
 	const tree = await mount(navigation());
 	const [row] = projectRows(tree, "evener");
 	expect(rowOpacity(row)).toBe(1);
 	act(() => row.props.onLongPress());
 	const [sheet, choose] = harness.actionSheet.mock.calls.at(-1) ?? [];
-	expect(sheet).toEqual({ title: "evener", options: ["Pin to top", "Archive project", "Cancel"], cancelButtonIndex: 2 });
+	expect(sheet).toEqual({
+		title: "evener",
+		options: ["Pin to top", "Archive project", "Cancel"],
+		cancelButtonIndex: 2,
+	});
 	act(() => choose(0));
 	await settle();
 	expect(fake.mutations).toEqual([
@@ -2961,7 +2970,9 @@ it("reads a tier's next page once its more row is at least half on screen", asyn
 	const more = tree.root.find((node) => node.props.testID === "project-more");
 	act(() => {
 		scroller.props.onLayout?.({ nativeEvent: { layout: { x: 0, y: 0, width: 390, height: 700 } } });
-		projectSection(tree, "projects").props.onLayout({ nativeEvent: { layout: { x: 0, y: 600, width: 390, height: 1400 } } });
+		projectSection(tree, "projects").props.onLayout({
+			nativeEvent: { layout: { x: 0, y: 600, width: 390, height: 1400 } },
+		});
 		// 600 + 1000 is well past the 700pt viewport.
 		more.props.onLayout({ nativeEvent: { layout: { x: 0, y: 1000, width: 390, height: 44 } } });
 	});
@@ -2969,13 +2980,17 @@ it("reads a tier's next page once its more row is at least half on screen", asyn
 	expect(pageReads(fake)).not.toContain("recent@20");
 	// Scrolled so only a quarter of the row shows: still nothing.
 	act(() =>
-		scroller.props.onScroll({ nativeEvent: { contentOffset: { x: 0, y: 1611 - 700 }, layoutMeasurement: { width: 390, height: 700 } } }),
+		scroller.props.onScroll({
+			nativeEvent: { contentOffset: { x: 0, y: 1611 - 700 }, layoutMeasurement: { width: 390, height: 700 } },
+		}),
 	);
 	await settle();
 	expect(pageReads(fake)).not.toContain("recent@20");
 	// Half of it on screen.
 	act(() =>
-		scroller.props.onScroll({ nativeEvent: { contentOffset: { x: 0, y: 1622 - 700 }, layoutMeasurement: { width: 390, height: 700 } } }),
+		scroller.props.onScroll({
+			nativeEvent: { contentOffset: { x: 0, y: 1622 - 700 }, layoutMeasurement: { width: 390, height: 700 } },
+		}),
 	);
 	await settle();
 	expect(pageReads(fake).filter((read) => read === "recent@20")).toHaveLength(1);
@@ -3026,7 +3041,9 @@ it("reads no more of a project section while search results fill the scroller", 
 	const more = tree.root.find((node) => node.props.testID === "project-more");
 	act(() => {
 		boardScroller(tree).props.onLayout?.({ nativeEvent: { layout: { x: 0, y: 0, width: 390, height: 700 } } });
-		projectSection(tree, "projects").props.onLayout({ nativeEvent: { layout: { x: 0, y: 600, width: 390, height: 1400 } } });
+		projectSection(tree, "projects").props.onLayout({
+			nativeEvent: { layout: { x: 0, y: 600, width: 390, height: 1400 } },
+		});
 		more.props.onLayout({ nativeEvent: { layout: { x: 0, y: 1000, width: 390, height: 44 } } });
 	});
 	await settle();
@@ -3129,7 +3146,9 @@ it("offers the project menu as an alert off iOS, archiving the project", async (
 	const { Platform } = (await import("react-native")) as unknown as { Platform: { OS: string } };
 	const id = hubId();
 	adoptedAnHourAgo(id);
-	const fake = hub({ ...fleet, catalogs: { projects: [evenerProject()] } }, undefined, undefined, { holdChanges: true });
+	const fake = hub({ ...fleet, catalogs: { projects: [evenerProject()] } }, undefined, undefined, {
+		holdChanges: true,
+	});
 	connect(id, fake.client, "ready");
 	const tree = await mount(navigation());
 	Platform.OS = "android";
@@ -3193,14 +3212,18 @@ it("reads the catalog's next page once its more projects row is at least half on
 	const more = tree.root.find((node) => node.props.testID === "project-more-projects");
 	act(() => {
 		scroller.props.onLayout?.({ nativeEvent: { layout: { x: 0, y: 0, width: 390, height: 700 } } });
-		projectSection(tree, "projects").props.onLayout({ nativeEvent: { layout: { x: 0, y: 600, width: 390, height: 2500 } } });
+		projectSection(tree, "projects").props.onLayout({
+			nativeEvent: { layout: { x: 0, y: 600, width: 390, height: 2500 } },
+		});
 		more.props.onLayout({ nativeEvent: { layout: { x: 0, y: 2400, width: 390, height: 44 } } });
 	});
 	await settle();
 	expect(projectCatalogPages(fake)).toEqual([0]);
 	// The row's top half is on screen.
 	act(() =>
-		scroller.props.onScroll({ nativeEvent: { contentOffset: { x: 0, y: 3022 - 700 }, layoutMeasurement: { width: 390, height: 700 } } }),
+		scroller.props.onScroll({
+			nativeEvent: { contentOffset: { x: 0, y: 3022 - 700 }, layoutMeasurement: { width: 390, height: 700 } },
+		}),
 	);
 	await settle();
 	expect(projectCatalogPages(fake)).toEqual([0, 50]);
@@ -3211,7 +3234,9 @@ it("reads the catalog's next page once its more projects row is at least half on
 it("archives a project from its long-press menu, dimming it until the hub confirms", async () => {
 	const id = hubId();
 	adoptedAnHourAgo(id);
-	const fake = hub({ ...fleet, catalogs: { projects: [evenerProject()] } }, undefined, undefined, { holdChanges: true });
+	const fake = hub({ ...fleet, catalogs: { projects: [evenerProject()] } }, undefined, undefined, {
+		holdChanges: true,
+	});
 	connect(id, fake.client, "ready");
 	const tree = await mount(navigation());
 	act(() => projectRows(tree, "evener")[0].props.onLongPress());
@@ -3431,7 +3456,9 @@ it("stops a working row through the durable runtime: a fresh read, then the inte
 	const { tree } = await mountSwipeFleet(fake);
 	pressRevealed(swipeableOf(tree, "Refactor parser"), "right", "Stop");
 	await settle();
-	await vi.waitFor(() => expect(fake.threadCalls.map((call) => call.method)).toEqual(["thread/read", "turn/interrupt"]));
+	await vi.waitFor(() =>
+		expect(fake.threadCalls.map((call) => call.method)).toEqual(["thread/read", "turn/interrupt"]),
+	);
 	expect(fake.threadCalls[1]?.params).toMatchObject({
 		ref: `local:${SESSION_ID}`,
 		expectedInstanceId: `instance:local:${SESSION_ID}`,
@@ -3862,7 +3889,9 @@ it("stops, pins and archives from the menu as the swipes do", async () => {
 	});
 	act(() => host.act(menuItem(host, `local:${SESSION_ID}`), "stop"));
 	await settle();
-	await vi.waitFor(() => expect(fake.threadCalls.map((call) => call.method)).toEqual(["thread/read", "turn/interrupt"]));
+	await vi.waitFor(() =>
+		expect(fake.threadCalls.map((call) => call.method)).toEqual(["thread/read", "turn/interrupt"]),
+	);
 	expect(texts(tree)).toContain("Stopped");
 	act(() => host.act(menuItem(host, "paradise-park:pp"), "archive"));
 	await settle();
@@ -3899,7 +3928,9 @@ it("stops providing the menu's host when the Board goes away", async () => {
 function listOrder(tree: ReactTestRenderer): string[] {
 	return tree.root
 		.find((node) => node.props.testID === "live-block")
-		.findAll((node) => node.type === BoardRow || (node.type === ("Text" as never) && node.props.testID === "band-header"))
+		.findAll(
+			(node) => node.type === BoardRow || (node.type === ("Text" as never) && node.props.testID === "band-header"),
+		)
 		.map((node) => (node.type === BoardRow ? node.props.item.row.title : joinedText(node)));
 }
 const boardRowTitled = (tree: ReactTestRenderer, title: string) =>
@@ -4139,7 +4170,9 @@ it("leads the toolbar with Select, which puts a checkbox on every session row an
 	expect(pressables(tree, "New session")).toHaveLength(1);
 	pressLabel(tree, "Select");
 	expect(pressables(tree, "New session")).toHaveLength(0);
-	expect(["Done", "Archive", "Pin", "Mark as read"].map((label) => pressables(tree, label).length)).toEqual([1, 1, 1, 1]);
+	expect(["Done", "Archive", "Pin", "Mark as read"].map((label) => pressables(tree, label).length)).toEqual([
+		1, 1, 1, 1,
+	]);
 	const rows = tree.root.findAllByType(BoardRow);
 	expect(rows.map((row) => row.props.selected)).toEqual([false, false, false]);
 	// Select mode's rows neither swipe nor open a menu.
@@ -4245,7 +4278,11 @@ it("pins the chosen sessions to a category picked from the sheet", async () => {
 		{ title: string; options: string[]; cancelButtonIndex: number },
 		(index: number) => void,
 	];
-	expect(options).toMatchObject({ title: "Pin to category", options: ["Release", "New category…", "Cancel"], cancelButtonIndex: 2 });
+	expect(options).toMatchObject({
+		title: "Pin to category",
+		options: ["Release", "New category…", "Cancel"],
+		cancelButtonIndex: 2,
+	});
 	act(() => choose(0));
 	await settle();
 	expect(fake.mutations).toEqual([

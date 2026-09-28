@@ -4,16 +4,7 @@
 // tray; steering is something you do to a queued message.
 import { SymbolView } from "expo-symbols";
 import { type ReactNode, type RefObject, useState } from "react";
-import {
-	ActionSheetIOS,
-	Alert,
-	Platform,
-	Pressable,
-	Text,
-	TextInput,
-	useWindowDimensions,
-	View,
-} from "react-native";
+import { ActionSheetIOS, Alert, Platform, Pressable, Text, TextInput, useWindowDimensions, View } from "react-native";
 import { allowFontScaling, useColors, useTextScale } from "../ui";
 import { ExpandedEditor } from "./ExpandedEditor";
 import { SendButton } from "./SendButton";
@@ -65,8 +56,7 @@ export function Composer({
 	// Typed line breaks count before layout has measured anything; the
 	// measured height catches long lines that wrap. The half line of slack
 	// keeps rounding in the measurement from offering the editor at six.
-	const overflows =
-		value.split("\n").length > MAX_LINES || contentHeight > (MAX_LINES + 0.5) * lineHeight;
+	const overflows = value.split("\n").length > MAX_LINES || contentHeight > (MAX_LINES + 0.5) * lineHeight;
 	function openAddMenu() {
 		const choices = [
 			{ text: "Photo library", onPress: onPhotoLibrary },
@@ -164,8 +154,7 @@ export function ModelChip({ label, onPress }: { label: string; onPress?: () => v
 			{label}
 		</Text>
 	);
-	if (!onPress)
-		return <View style={{ minHeight: 44, flexDirection: "row", alignItems: "center" }}>{text}</View>;
+	if (!onPress) return <View style={{ minHeight: 44, flexDirection: "row", alignItems: "center" }}>{text}</View>;
 	return (
 		<Pressable
 			accessibilityRole="button"

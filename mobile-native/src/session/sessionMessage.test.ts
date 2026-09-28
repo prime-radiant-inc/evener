@@ -199,7 +199,13 @@ describe("submitting a message to a session", () => {
 			},
 		};
 		const client = new FakeClient("ready");
-		await submitSessionMessage(runtime, client, target, "steer", "Stop subagent “Fix race in tree settle”: it has failed.");
+		await submitSessionMessage(
+			runtime,
+			client,
+			target,
+			"steer",
+			"Stop subagent “Fix race in tree settle”: it has failed.",
+		);
 		expect(calls).toEqual([
 			[
 				"submit",
@@ -286,7 +292,12 @@ describe("following a session from a screen above it", () => {
 		await link.read({ follow: true });
 		client.emitNotification({
 			method: "thread/status/changed",
-			params: { threadId: "thread-1", ref: "local:coord", status: { type: "idle" }, capabilities: capabilities({ steer: false }) },
+			params: {
+				threadId: "thread-1",
+				ref: "local:coord",
+				status: { type: "idle" },
+				capabilities: capabilities({ steer: false }),
+			},
 		});
 		client.emitNotification({
 			method: "thread/status/changed",

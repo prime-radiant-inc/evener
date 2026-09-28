@@ -1,9 +1,6 @@
 import { expect, it } from "vitest";
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
-import {
-	type NavigationActionCheckpoint,
-	nativeNavigationActions,
-} from "./navigationActionRepository";
+import { type NavigationActionCheckpoint, nativeNavigationActions } from "./navigationActionRepository";
 import { NavigationActions } from "./navigationActions";
 
 function fixture() {
@@ -15,9 +12,7 @@ function fixture() {
 		set: (key, value) => {
 			values.set(key, value);
 		},
-		deleteIf: (key, value) =>
-			JSON.stringify(values.get(key)) === JSON.stringify(value) &&
-			values.delete(key),
+		deleteIf: (key, value) => JSON.stringify(values.get(key)) === JSON.stringify(value) && values.delete(key),
 	});
 	const checkpoint = storage.begin({
 		kind: "archive",
@@ -107,8 +102,7 @@ it("never accepts a replaced checkpoint or an unrelated operation", async () => 
 		kind: "unpin",
 		params: { sessionRef: "local:session" },
 	});
-	for (const expected of [f.checkpoint, next])
-		await f.actions.keepOrganizationState(expected);
+	for (const expected of [f.checkpoint, next]) await f.actions.keepOrganizationState(expected);
 	expect(f.storage.load()).toEqual(next);
 	expect(f.reads()).toBe(0);
 	expect(f.writes()).toBe(0);
