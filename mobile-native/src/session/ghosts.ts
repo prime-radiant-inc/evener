@@ -90,7 +90,6 @@ export function ghosts(
 			? undefined
 			: own.findLast(
 					(entry) =>
-						!steering(entry) &&
 						(entry.method === "send" || entry.method === "queue") &&
 						normalizeText(entry.text) === normalizeText(unconfirmedDraft.sentText),
 				);
