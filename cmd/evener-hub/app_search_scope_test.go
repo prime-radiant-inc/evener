@@ -479,3 +479,31 @@ func TestHubSearchLiveArchivedFollowsTheOwningSource(t *testing.T) {
 		t.Fatalf("live archived = %v, want %v", archived, want)
 	}
 }
+
+// A live session's archived flag must still resolve its owning project when
+// the roster entry carries none: production roster ingestion never sets
+// LiveEntry.Project (only the Board's tree-building path resolves one, onto
+// its own local copy that search never sees), so the flag falls back to the
+// past entry's state directory, named by its project's ID, the same way
+// pastSearchResult already does.
+func TestHubSearchLiveArchivedFallsBackToThePastEntrysProjectWhenRosterCarriesNone(t *testing.T) {
+	now := time.Now()
+	projectsRoot := filepath.Join(t.TempDir(), "projects")
+	pe, sessionID := seedSearchSession(t, projectsRoot, "alpha", now, schema.NewTurn(schema.TurnUserInput, llm.User("hello")))
+	past := hubcore.NewPastIndex(filepath.Join(projectsRoot, "*"))
+	if _, err := past.Rebuild(); err != nil {
+		t.Fatal(err)
+	}
+	archive := hubcore.NewArchiveStore(filepath.Join(t.TempDir(), "index.db"))
+	if err := archive.Set("", "project", filepath.Base(pe.StateDir), true, now); err != nil {
+		t.Fatal(err)
+	}
+	roster := hubcore.NewRosterWithEntries(hubcore.LiveEntry{PID: 1, SessionID: sessionID, Status: appwire.ThreadStatusIdle})
+	resp, err := hubSearch(context.Background(), hubcore.WebConfig{Past: past, Roster: roster, Archive: archive}, appwire.SearchParams{}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(resp.Live) != 1 || !resp.Live[0].Archived {
+		t.Fatalf("live = %+v, want the session marked archived", resp.Live)
+	}
+}

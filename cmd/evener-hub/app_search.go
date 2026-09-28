@@ -135,9 +135,18 @@ func searchScopeAdmits(scope string, result appwire.SearchResult, live bool) boo
 func liveSearchResult(cfg hubcore.WebConfig, le hubcore.LiveEntry, decisions map[hubcore.ArchiveKey]bool, now time.Time) appwire.SearchResult {
 	// A live session with no meta yet has no last activity to age.
 	lastActivity := now
+	// The roster never carries Project (only the Board's tree-building path
+	// resolves one, onto its own local copy search never sees), so
+	// LiveSessionArchived would always see it empty and skip the project
+	// decision. Fall back to the past entry's state directory, named by its
+	// project's ID, the same way pastSearchResult resolves a past entry's.
+	archiveEntry := le
 	if cfg.Past != nil {
 		if pe, ok := cfg.Past.Find(le.SessionID); ok {
 			lastActivity = hubcore.OrderUpdatedAt(pe.Meta.UpdatedAt, pe.Meta.CreatedAt)
+			if archiveEntry.Project.ID == "" {
+				archiveEntry.Project.ID = filepath.Base(pe.StateDir)
+			}
 		}
 	}
 	return appwire.SearchResult{
@@ -149,7 +158,7 @@ func liveSearchResult(cfg hubcore.WebConfig, le hubcore.LiveEntry, decisions map
 		Ref:             hubRefFromTreeNodeID(le.SessionID).String(),
 		AskPending:      le.PendingAsk,
 		ApprovalPending: le.PendingEscalation,
-		Archived:        hubcore.LiveSessionArchived(decisions, le, lastActivity, now),
+		Archived:        hubcore.LiveSessionArchived(decisions, archiveEntry, lastActivity, now),
 	}
 }
 
