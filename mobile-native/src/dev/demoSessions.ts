@@ -833,8 +833,10 @@ function sessionThread(session: FleetSession, now: number): Thread {
 	const active = status === "active";
 	const entries = content.entries ?? genericEntries(session);
 	const turn = turnOf(session, entries, content.error, now);
+	// A hub names a thread by its session id (cmd/evener-hub/app_threadread.go),
+	// the id part of the session's ref.
 	const sessionId = demoSessionId(session.slug);
-	const threadId = `demo-thread-${session.slug}`;
+	const threadId = sessionId;
 	const updatedAt = Math.floor((now - session.ago * 1000) / 1000);
 	const thread: Thread = {
 		id: threadId,

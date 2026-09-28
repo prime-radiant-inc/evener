@@ -70,6 +70,17 @@ describe("the demo sessions behind Appendix A's Session frames", () => {
 		}
 	});
 
+	it("names each thread by its session id, the id part of its Board ref, as the hub does", () => {
+		// The hub's thread id is its session id (cmd/evener-hub/app_threadread.go);
+		// the Subagents list checks a tree's root against it.
+		const idOf = (ref: string) => ref.slice(ref.indexOf(":") + 1);
+		for (const thread of sessions) {
+			expect(thread.id).toBe(idOf(thread.evener.ref));
+			expect(thread.sessionId).toBe(thread.id);
+		}
+		expect(threadOf("s-pr2138").id).toBe(demoSessionId("s-pr2138"));
+	});
+
 	it("frame 7: a working session at Intent, with its chips, notes, runs and a failed subagent", () => {
 		const { model, rows } = open("s-pr2138");
 		expect(model.name).toBe("Get PR 2138 Test Clean");
