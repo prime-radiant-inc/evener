@@ -186,6 +186,21 @@ type WebConfig struct {
 	// epoch is the caller's durable probe epoch, presented on the wire (never a
 	// default, never absent).
 	RemoteHostPlanProbe func(ctx context.Context, host hostreg.Host, client *appwire.Client, epoch appwire.FencingEpoch) (HostRuntimeProbe, error)
+	// RemoteHostOrphanVerify is the `evener/host/orphan-resolve` boundary
+	// enumeration seam (crash-fencing spec 08c §5): the read-only per-variant
+	// clean-rule check the resolve runs before its one atomic write, returning
+	// nil only when the persisted boundary is proven clean. Nil takes the
+	// platform default — the hostfence local clean rule, or a fail-closed
+	// "enumeration unavailable" on a platform with no local process boundary.
+	// The remote lease arm's verifier has no production wiring yet, so a
+	// remote-fencing record fails closed (transient busy) until it does. The hub
+	// performs no SSH on this path.
+	RemoteHostOrphanVerify func(record hostops.Record) error
+	// HostOrphanAttestationMaxAge is the owner-set maximum attestation age for
+	// `evener/host/orphan-resolve` (crash-fencing spec 08c §5): an observation
+	// older than this refuses validation with no clearance. Zero takes the
+	// shipped default (one hour).
+	HostOrphanAttestationMaxAge time.Duration
 	// HostProbeTimeout bounds one evener/host/running round trip in the plan's
 	// gated probe (deploy pipeline 08b §6 step 2: "deadline-bounded with an
 	// explicit owner-adjustable probe timeout"). Zero takes

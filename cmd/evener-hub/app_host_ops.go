@@ -807,9 +807,10 @@ func operationsResponse(page hostops.OperationsPage) (appwire.HostOperationsResp
 
 // operationRecordWire renders one stored record as §10's OperationRecord. The
 // `compacted` marker is set exactly on a read-only replay rebuilt from a dedup
-// tombstone; the fencing-owned fields (`orphanBoundary`, `orphanResolved`,
-// `attestation`) stay absent until their owning slices register them, exactly
-// as appwire.OperationRecord's own comment records.
+// tombstone; `orphanBoundary` is the §9 per-member union present exactly on an
+// `orphan-unverified` record (an explicit `[]` when verified empty), and
+// `orphanResolved`/`attestation` are §5's resolved-record marker and the
+// operator attestation persisted beside it.
 func operationRecordWire(record hostops.Record) (appwire.OperationRecord, error) {
 	state, err := operationWireState(record.State)
 	if err != nil {
@@ -827,6 +828,25 @@ func operationRecordWire(record hostops.Record) (appwire.OperationRecord, error)
 		UpdatedAt:         record.UpdatedAt.Format(time.RFC3339),
 		HostRemoved:       record.HostRemoved,
 		Compacted:         record.Compacted,
+	}
+	if record.State == hostops.StateOrphanUnverified {
+		entries, err := decodeOrphanBoundary(record.OrphanBoundary)
+		if err != nil {
+			return appwire.OperationRecord{}, fmt.Errorf("record %s carries an unreadable orphan boundary: %w", record.ID, err)
+		}
+		wire.OrphanBoundary = &entries
+	}
+	if record.OrphanResolved {
+		wire.OrphanResolved = true
+	}
+	if record.OrphanAttestation != nil {
+		wire.Attestation = &appwire.HostOrphanResolveAttestation{
+			Operator:    record.OrphanAttestation.Operator,
+			Statement:   record.OrphanAttestation.Statement,
+			RecordID:    record.OrphanAttestation.RecordID,
+			BoundaryRef: record.OrphanAttestation.BoundaryRef,
+			ObservedAt:  record.OrphanAttestation.ObservedAt,
+		}
 	}
 	for _, entry := range record.Progress {
 		wire.Progress = append(wire.Progress, appwire.OperationProgressEntry{

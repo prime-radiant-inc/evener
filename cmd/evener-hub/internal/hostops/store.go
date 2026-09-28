@@ -1302,8 +1302,8 @@ var ownedObjectKeys = map[string]map[string]struct{}{
 		"compactSeq", "tombstones", "compactionMarks", "compactionFloor", "removedHosts",
 		"pendingCompensation", "fencingQuarantines"),
 	"records[]": keysOf("id", "clientOperationId", "host", "kind", "state", "generation",
-		"incarnationId", "fencingEpoch", "orphanBoundary", "progress", "result",
-		"pendingSpawns", "createdAt", "updatedAt", "hostRemoved", "sequence"),
+		"incarnationId", "fencingEpoch", "orphanBoundary", "orphanResolved", "attestation",
+		"progress", "result", "pendingSpawns", "createdAt", "updatedAt", "hostRemoved", "sequence"),
 	// §3's pending-spawn intents are objects this store decodes, so their keys
 	// are canonical too — never left opaque, or a case variant would be silently
 	// rewritten on the next save.
