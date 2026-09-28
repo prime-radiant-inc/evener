@@ -535,6 +535,23 @@ func (s *Store) Transition(id string, to State, change func(*Record)) (Record, e
 	if record.State.Terminal() {
 		return Record{}, fmt.Errorf("%w: record %q is already %q", ErrRecordTerminal, id, record.State)
 	}
+	// A record its host's fencing marker names is a fencing quarantine, and §5
+	// clears a quarantine through one dedicated fencing resolve, which clears
+	// the marker, the boundary, the open intents and the state in ONE atomic
+	// write (slice S20). This edge cannot promise that: the boundary is the
+	// caller's callback to clear and the intents are a separate store
+	// operation, so a marker-only clear here would commit a half-resolved
+	// quarantine and invite resolutions that skip the boundary cleanup. A
+	// quarantined exit is therefore refused deliberately, by type, instead of
+	// committing a record that has left the state and failing afterwards in
+	// validateSnapshot with a schema error that leaves the marker naming a
+	// resolved record.
+	if record.State == StateOrphanUnverified && to != StateOrphanUnverified {
+		if marker, marked := next.FencingQuarantines[record.Host]; marked && marker.RecordID == record.ID {
+			return Record{}, fmt.Errorf("%w: record %q is a fencing-quarantined record (host %q's marker names it); its quarantine clears only through the dedicated fencing resolve — marker, boundary, intents and state in one atomic write (slice S20) — never through Transition",
+				ErrInvalidTransition, id, record.Host)
+		}
+	}
 	// Spec §4 and §7 name exactly one exit from the fencing state: "the
 	// `orphan-unverified`→`interrupted` resolution" — a record whose boundary has
 	// not been verified must never become a success. The rest of the graph

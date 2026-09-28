@@ -925,6 +925,48 @@ func TestScriptKillReportsUndeliveredSignal(t *testing.T) {
 	}
 }
 
+// TestScriptEpochAboveSignedWidthIsAccepted pins the helper's epoch range to
+// the controller's: Epoch.Validate rejects only 0 and the guard schema is
+// uint64, so an opSeq above the shell's signed integer width must be accepted —
+// never refused as malformed by a comparison that errors on it.
+func TestScriptEpochAboveSignedWidthIsAccepted(t *testing.T) {
+	remote := newFenceRemote(t)
+	const aboveMaxInt64 = "9223372036854775808"
+	if _, stderr, code := remote.run(nil, "takeover", "boot-1", aboveMaxInt64); code != 0 {
+		t.Fatalf("takeover with opSeq %s exited %d: %s", aboveMaxInt64, code, stderr)
+	}
+	if _, stderr, code := remote.run(nil, "advance", "boot-1", aboveMaxInt64); code != 0 {
+		t.Fatalf("advance with opSeq %s exited %d: %s", aboveMaxInt64, code, stderr)
+	}
+	status := remote.status()
+	want := Epoch{BootID: "boot-1", OpSeq: 9223372036854775808}
+	if status.Epoch == nil || *status.Epoch != want {
+		t.Fatalf("status after the takeover with opSeq %s = %+v, want %+v", aboveMaxInt64, status, want)
+	}
+}
+
+// TestScriptBootHighWaterAboveUint64Refuses pins the guard schema's exact
+// bound: a per-boot high-water one past MaxUint64 is not a value the guard's
+// own reader accepts, so status refuses as state-corrupt instead of letting it
+// wedge later epochs by emitting a non-uint64.
+func TestScriptBootHighWaterAboveUint64Refuses(t *testing.T) {
+	remote := newFenceRemote(t)
+	remote.settle(Epoch{BootID: "boot-1", OpSeq: 1})
+	guard := filepath.Join(remote.state, "guard")
+	raw, err := os.ReadFile(guard)
+	if err != nil {
+		t.Fatalf("read guard: %v", err)
+	}
+	if err := os.WriteFile(guard, append(raw, []byte("boot.h2\t18446744073709551616\n")...), 0o600); err != nil {
+		t.Fatalf("write guard: %v", err)
+	}
+	if _, stderr, code := remote.run(nil, "status"); code == 0 {
+		t.Fatal("status with a high-water above MaxUint64 succeeded, want refusal")
+	} else if err := DecodeRefusal([]byte(stderr)); !errors.Is(err, ErrStateCorrupt) {
+		t.Fatalf("status with a high-water above MaxUint64 = %v, want ErrStateCorrupt", err)
+	}
+}
+
 // TestScriptGuardSequenceIncrementsPastSignedWidth pins the increment's string
 // arithmetic: guard epochs above MaxInt64 are valid schema values, so the
 // advance and the takeover must move them exactly instead of wrapping or

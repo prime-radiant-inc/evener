@@ -351,3 +351,73 @@ func TestFencingQuarantineKeyIsOptionalOnRead(t *testing.T) {
 		t.Fatal("a null-marker store reported a quarantine marker")
 	}
 }
+
+// TestTransitionRefusesTheFencingQuarantinedExit pins §5's clearing rule at the
+// one edge that could half-resolve a quarantine: a record its host's marker
+// names clears only through the dedicated fencing resolve — marker, boundary,
+// intents and state in one atomic write (slice S20) — so the general transition
+// edge refuses with a typed error naming both the reason and the way out,
+// instead of committing a record that has left the state and failing later in
+// validateSnapshot with a schema error.
+func TestTransitionRefusesTheFencingQuarantinedExit(t *testing.T) {
+	store, path := openTestStore(t)
+	record := runningTestRecord(t, store, "h1", "client-h1")
+	quarantined, err := store.QuarantineFencing(record.ID, json.RawMessage(remoteFencingBoundaryJSON))
+	if err != nil {
+		t.Fatalf("QuarantineFencing: %v", err)
+	}
+	before := string(mustReadFile(t, path))
+	for _, to := range []State{StateInterrupted, StateComplete, StateFailed} {
+		// A real resolution clears the boundary and carries the terminal
+		// result, so the only thing left to refuse this transition is the
+		// quarantine's own rule.
+		_, err := store.Transition(quarantined.ID, to, func(r *Record) {
+			r.OrphanBoundary = nil
+			r.Result = &Result{OK: false, Message: "resolved out-of-band"}
+		})
+		if !errors.Is(err, ErrInvalidTransition) {
+			t.Fatalf("Transition(%q) of a fencing-quarantined record: err = %v, want ErrInvalidTransition", to, err)
+		}
+		if !strings.Contains(err.Error(), "fencing-quarantined") || !strings.Contains(err.Error(), "one atomic write") {
+			t.Fatalf("Transition(%q) refusal = %v, want it to name the quarantine and the atomic resolve", to, err)
+		}
+	}
+	if got := string(mustReadFile(t, path)); got != before {
+		t.Fatal("a refused fencing-quarantined exit rewrote the store file")
+	}
+	stored, ok := store.Record(quarantined.ID)
+	if !ok || stored.State != StateOrphanUnverified {
+		t.Fatalf("the record = %+v (ok %v), want it left orphan-unverified", stored, ok)
+	}
+	if marker, ok := store.FencingQuarantine("h1"); !ok || marker.RecordID != quarantined.ID {
+		t.Fatalf("the marker = (%+v, %v), want it left naming %s", marker, ok, quarantined.ID)
+	}
+}
+
+// TestTransitionResolvesALocalOrphanWithoutAMarker pins the guard against
+// over-refusal: an orphan-unverified record that no fencing marker names — a
+// local reap's record, or any other writer's — keeps its exact current
+// behavior, so the quarantine refusal can never fence a resolution the spec
+// allows.
+func TestTransitionResolvesALocalOrphanWithoutAMarker(t *testing.T) {
+	store, _ := openTestStore(t)
+	record := createTestRecord(t, store, "h1")
+	if _, err := store.Transition(record.ID, StateOrphanUnverified, func(r *Record) {
+		r.OrphanBoundary = json.RawMessage(`[{"host":"h1","kind":"local-linux"}]`)
+	}); err != nil {
+		t.Fatalf("Transition(orphan-unverified): %v", err)
+	}
+	if _, ok := store.FencingQuarantine("h1"); ok {
+		t.Fatal("a local orphan carried a fencing marker")
+	}
+	resolved, err := store.Transition(record.ID, StateInterrupted, func(r *Record) {
+		r.OrphanBoundary = nil
+		r.Result = &Result{OK: false, Message: "resolved after the local reap"}
+	})
+	if err != nil {
+		t.Fatalf("Transition(interrupted) on a local orphan: %v, want it to resolve as today", err)
+	}
+	if resolved.State != StateInterrupted {
+		t.Fatalf("resolved state = %q, want %q", resolved.State, StateInterrupted)
+	}
+}

@@ -395,22 +395,6 @@ guard_file_valid() { # <snapshot>
 		}' >/dev/null 2>&1
 }
 
-# guard_boot_high_water_valid bounds every per-boot high-water to a uint64, the
-# schema the Go decoder unmarshals it into. guard_file_valid's coarse check
-# (digits, at most 20) lets a value above the maximum through, and such a value
-# both wedges every later status/takeover/advance controller-side (the emitted
-# JSON is not a uint64) and overflows the shell's own comparisons, silently
-# skipping the stale-epoch refusal. is_uint64 is the exact bound the Go side
-# applies, so an out-of-range value refuses as state-corrupt — never a bypass,
-# and never a value this helper emits.
-guard_boot_high_water_valid() { # <snapshot>
-	printf '%s\n' "$1" | while IFS="$TAB" read -r key value; do
-		case $key in
-		boot.*) is_uint64 "$value" || exit 1 ;;
-		esac
-	done
-}
-
 # read_guard loads the guard state into GUARD_* globals. A missing file is the
 # empty state (a host no fencing has touched); a present file outside the schema
 # is corrupt and fails closed.
@@ -428,8 +412,11 @@ read_guard() {
 	FENCE_GUARD=0
 	[ -f "$GUARD_FILE" ] || return 0
 	GUARD_SNAPSHOT=$(cat "$GUARD_FILE" 2>/dev/null) || return 1
+	# The schema's boot.* branch bounds every per-boot high-water to a uint64
+	# exactly (the same bound the Go decoder applies), so this single check is
+	# the whole gate for them — a value past the maximum refuses as corrupt
+	# rather than wedging later status/takeover/advance calls.
 	guard_file_valid "$GUARD_SNAPSHOT" || return 1
-	guard_boot_high_water_valid "$GUARD_SNAPSHOT" || return 1
 	[ "$(guard_field "$GUARD_SNAPSHOT" version)" = "$PROTOCOL" ] || return 1
 	GUARD_EPOCH=$(guard_field "$GUARD_SNAPSHOT" guardEpoch)
 	EPOCH_BOOT=$(guard_field "$GUARD_SNAPSHOT" epochBootId)
@@ -800,8 +787,11 @@ parse_epoch() { # <bootId> <opSeq>
 	*) ;;
 	esac
 	[ "${#E_BOOT}" -le 128 ] || return 1
-	is_uint64 "$E_SEQ" || return 1
-	[ "$E_SEQ" -ge 1 ] || return 1
+	# The zero test is a string compare, like check_boot_pair's and
+	# read_holder's: `[ … -ge 1 ]` errors on a value above the shell's signed
+	# integer width, and an errored test must never read as a refusal — an
+	# opSeq above MaxInt64 is valid for Epoch.Validate and the guard's schema.
+	is_uint64 "$E_SEQ" && [ "$E_SEQ" != 0 ] || return 1
 	return 0
 }
 
