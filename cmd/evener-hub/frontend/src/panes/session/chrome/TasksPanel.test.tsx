@@ -9,6 +9,7 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, expect, test } from "vitest";
 import { connectionStore } from "../../../stores/connection";
 import { resetThreadsStoreForTests } from "../../../stores/threads";
+import { readModuleCss, topRuleBlock } from "../../../styles/cssBlock";
 import { Toast } from "../../../widgets";
 import { resetDisclosureStoreForTests } from "../../../widgets/disclosure/disclosureStore";
 import { resetToastStoreForTests } from "../../../widgets/toast/store";
@@ -486,6 +487,22 @@ test("the prompt disclosure summary reaches the tap floor on a coarse pointer", 
   const rule = coarse![1]!.match(/\.promptSummary\s*\{([^}]*)\}/);
   expect(rule, "the coarse-pointer block must override .promptSummary").not.toBeNull();
   expect(rule![1]).toContain("min-height: var(--tap-min)");
+});
+
+// jsdom computes no cascade, so the caption pin is asserted against the
+// stylesheet's own source - readModuleCss/topRuleBlock from styles/cssBlock,
+// the technique the tap-floor test above and agentMessageSize.contract.test.ts
+// use - with comments stripped so an in-rule comment can never satisfy or
+// defeat an assertion. The sizing rationale lives in the .promptDetails rule
+// comment in taskspanel.module.css.
+test("the prompt disclosure renders its markdown at the caption step, not prose size", () => {
+  const css = readModuleCss(import.meta.url, "taskspanel.module.css");
+  const details = topRuleBlock(css, ".promptDetails").replace(/\/\*[\s\S]*?\*\//g, "");
+  expect(details).toContain("--prose-font-size: var(--font-size-caption)");
+  const body = topRuleBlock(css, ".promptBody").replace(/\/\*[\s\S]*?\*\//g, "");
+  expect(body, "the Markdown root owns the body's size; a host-side font-size never applied").not.toMatch(
+    /(^|[;{\s])font-size\s*:/m,
+  );
 });
 
 test("the prompt disclosure shows a one-line markdown preview collapsed and the full markdown body open", async () => {
