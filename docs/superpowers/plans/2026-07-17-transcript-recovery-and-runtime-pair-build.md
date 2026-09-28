@@ -28,7 +28,7 @@
 - Modify: `cmd/evener-hub/assets/renderer.js`
 
 **Interfaces:**
-- Consumes: AppWire errors with an own `code` property, created by `cmd/evener-hub/assets/appwire.js:errorFromWire`.
+- Consumes: AppWire errors with an own `code` property, created by `cmd/serf-hub/assets/appwire.js:errorFromWire`.
 - Produces: `EvenerRenderer.isAppwireApplicationError(err) bool` and `showConnectionBanner(level, detail)` support for `level === "unavailable"`.
 
 - [ ] **Step 1: Add the failing application-error behavior case**
