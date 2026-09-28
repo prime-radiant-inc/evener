@@ -100,21 +100,23 @@ export async function createDemoHub(
 		...(demoFleet ? { navigation: navigationCapability() } : {}),
 	};
 	let turnNumber = 0;
+	// Makes the fleet's working row ask its question and tells every socket
+	// connected at that moment, as a real hub broadcasts navigation changes
+	// to every navigation client. Returned for tests to fire on demand.
+	function askQuestion() {
+		const notification = JSON.stringify({
+			jsonrpc: "2.0",
+			method: "evener/navigation/invalidated",
+			params: requireFleet().askQuestion(),
+		});
+		for (const socket of server.clients)
+			if (socket.readyState === WebSocket.OPEN) socket.send(notification);
+	}
 	// EVENER_DEMO_FLEET_ASK_AFTER: counted from the hub's start, not from any
-	// one client's connection, and told to every socket connected by then --
-	// a real hub broadcasts navigation changes to every navigation client.
+	// one client's connection.
 	const askTimer =
 		demoFleet && fleetOptions?.askAfterSeconds !== undefined
-			? setTimeout(() => {
-					const payload = demoFleet.askQuestion();
-					const notification = JSON.stringify({
-						jsonrpc: "2.0",
-						method: "evener/navigation/invalidated",
-						params: payload,
-					});
-					for (const socket of server.clients)
-						if (socket.readyState === WebSocket.OPEN) socket.send(notification);
-				}, fleetOptions.askAfterSeconds * 1000)
+			? setTimeout(askQuestion, fleetOptions.askAfterSeconds * 1000)
 			: undefined;
 	function resync(thread: Thread) {
 		for (const [socket, refs] of subscribers)
@@ -433,6 +435,7 @@ export async function createDemoHub(
 	});
 	return {
 		origin: `http://127.0.0.1:${address.port}`,
+		askQuestion,
 		close: () =>
 			new Promise<void>((resolve, reject) => {
 				clearTimeout(askTimer);

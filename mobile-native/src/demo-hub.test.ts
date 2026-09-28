@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import WebSocket from "ws";
 import type { WebSocketLike } from "@evener/appwire-client";
 import { createConversationService } from "../../mobile/src/services/conversation";
@@ -367,22 +367,18 @@ describe("native demonstration hub's redesign fleet", () => {
 	});
 
 	it("tells a connected client navigation changed when a working row asks its question", async () => {
-		// Long enough for a local connect to finish first: the question is
-		// timed from the hub's start and told only to sockets open by then.
-		const hub = await createDemoHub(0, undefined, { askAfterSeconds: 0.2 });
+		const hub = await createDemoHub(0, undefined, {});
 		const client = createHubClient(
 			hub.origin,
 			"",
 			(url) => new WebSocket(url) as unknown as WebSocketLike,
 		);
-		const invalidated = new Promise<unknown>((resolve) => {
-			client.onNotification((notification) => {
-				if (notification.method === "evener/navigation/invalidated")
-					resolve(notification.params);
-			});
-		});
+		const invalidated = navigationInvalidated(client);
 		try {
+			// The initialize answer means the hub holds this socket, so the
+			// question below reaches it.
 			const handshake = await client.connect();
+			hub.askQuestion();
 			const payload = (await invalidated) as {
 				generationId: string;
 				sequence: number;
@@ -413,4 +409,38 @@ describe("native demonstration hub's redesign fleet", () => {
 			await hub.close();
 		}
 	});
+
+	it("asks the question from its askAfterSeconds timer", async () => {
+		// Only the timer functions are faked: the sockets still need real I/O.
+		// The delay stays under the client's 20s heartbeat, which the same
+		// advance would otherwise fire and time out, dropping the socket.
+		vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+		const hub = await createDemoHub(0, undefined, { askAfterSeconds: 5 });
+		const client = createHubClient(
+			hub.origin,
+			"",
+			(url) => new WebSocket(url) as unknown as WebSocketLike,
+		);
+		const invalidated = navigationInvalidated(client);
+		try {
+			await client.connect();
+			vi.advanceTimersByTime(5_000);
+			expect(await invalidated).toMatchObject({ sequence: 1 });
+		} finally {
+			vi.useRealTimers();
+			client.close();
+			await hub.close();
+		}
+	});
 });
+
+function navigationInvalidated(
+	client: ReturnType<typeof createHubClient>,
+): Promise<unknown> {
+	return new Promise((resolve) => {
+		client.onNotification((notification) => {
+			if (notification.method === "evener/navigation/invalidated")
+				resolve(notification.params);
+		});
+	});
+}
