@@ -205,6 +205,7 @@ no router (reserved).
 | `evener/host/update` | hub | `HostUpdateParams` | `HostMutationCommitted \| HostMutationCommittedRemoved \| HostMutationTeardownFailure \| HostMutationTeardownFailureRemoved \| HostMutationCollisionDropped \| HostMutationAmbiguous` | Edits one live host entry in place (every field but the name; the name is the target) and retires the host's channel with the identity it replaced; the edit is written into the machine-managed hub.toml. Result is the mutation-result union. |
 | `evener/host/teardown-retry` | hub | `HostTeardownRetryParams` | `HostTeardownRetryCompleteLive \| HostTeardownRetryCompleteRemoved \| HostTeardownRetryClearedLive \| HostTeardownRetryClearedRemoved \| HostTeardownRetryFailedLive \| HostTeardownRetryFailedRemoved` | Resumes one named teardown remnant by its opaque id: gate first, claim under the mutation lock, the pinned teardown run to completion with a bounded deadline, then finalization from the observed result. Result is the six-arm outcome x hostKind union; an unknown or purged id is the typed teardown-unknown-key refusal. |
 | `evener/host/teardown-recover` | hub | `HostTeardownRecoverParams` | `HostTeardownRecoverResult` | Clears an open remnant whose pinned target is unresolvable, on an authenticated operator's audited teardown-verified-absent attestation: gate first, the safety checks immediately before the clearing write, the attestation recorded on the original receipt beside remnantResolvedAt, and a typed resolved-remnant record persisted in the same atomic write. |
+| `evener/host/orphan-resolve` | hub | `HostOrphanResolveParams` | `OperationRecord` | Resolves one orphan-unverified record by its opaque id (crash-fencing 08c §5): re-runs the persisted-boundary enumeration under the caller's session authentication, validates a present attestation (caller, record, boundary, freshness), and on a clean boundary transitions the record to interrupted with the orphanResolved marker and the attestation, clearing the record's boundary, every open pending-spawn intent and the per-host quarantine marker in one atomic store write. Members still present refuse transient-busy; an unknown id is typed not-found; a boundary-unavailable record resolves only with the attestation; a lost-response retry replays the persisted resolution. |
 | `evener/host/plan` | hub | `HostPlanParams` | `HostPlanPlanned \| HostPlanNoToken` | Plans one deploy against a named host and mints the single-use confirmation token evener/host/deploy consumes: refreshes the host's preflight facts without a gate, probes its running state, and answers with either the plan plus token (HostPlanPlanned) or the no-token arm (HostPlanNoToken) naming why nothing was minted and whether the refusal is terminal. |
 | `evener/host/deploy` | hub | `HostDeployParams` | `HostDeployResponse` | Consumes a plan's confirmation token and starts the deploy operation it names: dedup-first on the client operation ID, then the token's single-use consume under the host gate after the running probe and under-gate re-resolution, and a durable pending operation record whose worker runs the 04b deploy path outside the RPC. |
 | `evener/host/restart` | hub | `HostRestartParams` | `HostRestartResponse` | Starts a restart operation for one named host: dedup on the client operation ID and the intended (generation, incarnation id) pair, the gated under-gate re-resolution and terminal-operation scan, then a durable pending operation record whose worker runs the 04b restart path outside the RPC. |
@@ -973,6 +974,14 @@ _(no fields)_
 | `incarnationId` | `string` | yes |  |
 | `hostBoundaries` | `map[string]interface {}` | yes |  |
 | `nextCursor` | `string` | yes |  |
+
+
+### `HostOrphanResolveParams`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `id` | `string` |  |  |
+| `attestation` | `*appwire.HostOrphanResolveAttestation` | yes |  |
 
 
 ### `HostPlan`
@@ -1854,6 +1863,28 @@ _(no fields)_
 | Field | Go type | Omitempty | Embedded |
 |-------|---------|-----------|----------|
 | `notices` | `[]appwire.HubNotice` |  |  |
+
+
+### `OperationRecord`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `id` | `string` |  |  |
+| `clientOperationId` | `string` |  |  |
+| `host` | `string` |  |  |
+| `generation` | `uint64` |  |  |
+| `incarnationId` | `string` |  |  |
+| `kind` | `string` |  |  |
+| `state` | `appwire.OperationState` |  |  |
+| `orphanBoundary` | `*[]appwire.BoundaryEntry` | yes |  |
+| `orphanResolved` | `bool` | yes |  |
+| `attestation` | `*appwire.HostOrphanResolveAttestation` | yes |  |
+| `progress` | `[]appwire.OperationProgressEntry` | yes |  |
+| `result` | `*appwire.OperationResult` | yes |  |
+| `createdAt` | `string` |  |  |
+| `updatedAt` | `string` |  |  |
+| `hostRemoved` | `bool` |  |  |
+| `compacted` | `bool` | yes |  |
 
 
 ### `OverlayDeltaParams`
