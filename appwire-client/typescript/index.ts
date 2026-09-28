@@ -94,7 +94,14 @@ export {
 // chunkViewBackingForTests is deliberately absent here; the white-box test hook
 // is published through the non-shipped testing/reducerHooks.ts instead.
 export { pendingTextJoined } from "./chunkview";
-export type { AnyNotification, AppwireClientOptions, ConnectionState, TerminalReason } from "./client";
+export type {
+  AnyNotification,
+  AppwireClientOptions,
+  ConnectionState,
+  SubscriberErrorInfo,
+  SubscriberErrorPhase,
+  TerminalReason,
+} from "./client";
 export { APPWIRE_PROTOCOL_VERSION, AppwireClient } from "./client";
 export type { AppwireClientLike } from "./clientLike";
 export type {

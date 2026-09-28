@@ -5,7 +5,16 @@
 //   (ruling 10);
 // - a time marker introduces the first turn, a turn that starts after ten
 //   quiet minutes, and a new day.
-import { answeredAskUserSuffix, parseArgs, str, type ThreadModel, type TurnModel } from "@evener/appwire-client";
+import {
+	answeredAskUserSuffix,
+	type AskUserQuestion,
+	type ItemModel,
+	parseArgs,
+	parseAskUserQuestions,
+	str,
+	type ThreadModel,
+	type TurnModel,
+} from "@evener/appwire-client";
 import { hubTime } from "../board/attention";
 import { readerKey } from "../readerPosition";
 import { type RunStep, rowTurnId, type TimelineRow } from "../timeline";
@@ -74,15 +83,26 @@ export function sessionRows(rows: readonly TimelineRow[], turns: readonly TurnTi
 	return out;
 }
 
+/** The questions an earlier ask_user row shows (QuestionHistory), or
+ * undefined when its arguments name none it can read. */
+export function askRowQuestions(row: Extract<TimelineRow, { kind: "activity" }>): AskUserQuestion[] | undefined {
+	return row.label === "ask_user" ? parseAskUserQuestions({ argumentsJSON: row.detail.arguments } as ItemModel) : undefined;
+}
+
+// A composed answer reply: "[answers]" and then numbered lines like
+// '1. [Choice] → "Drop them"' (the package's composeAskAnswers).
+const ANSWER_REPLY = /^\[answers\]\n\d+\. \[/;
+
 /** Drops the "[answers]" message you sent a question, once a question row
- * came before it: that row shows your answer beneath the question (spec 8.2,
- * "Question (history)"). A message that merely starts with "[answers]" and
- * answers nothing on screen stays. */
+ * that shows its questions came before it: that row shows your answer
+ * beneath the question (spec 8.2, "Question (history)"). A message that only
+ * looks like answers, or follows a question row that can't show itself,
+ * stays. */
 export function hideAnswerMessages(rows: readonly TimelineRow[]): TimelineRow[] {
 	let asked = false;
 	return rows.filter((row) => {
-		if (row.kind === "activity" && row.label === "ask_user") asked = true;
-		return !(asked && row.kind === "user" && row.text.startsWith("[answers]\n"));
+		if (row.kind === "activity" && askRowQuestions(row)) asked = true;
+		return !(asked && row.kind === "user" && ANSWER_REPLY.test(row.text));
 	});
 }
 

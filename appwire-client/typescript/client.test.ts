@@ -11,9 +11,11 @@ import {
   HEARTBEAT_TIMEOUT_MS,
   RECONNECT_BASE_MS,
   RESUME_REQUEST_TIMEOUT_MS,
+  type SubscriberErrorInfo,
+  type SubscriberErrorPhase,
 } from "./client";
 import type { AppwireClientLike } from "./clientLike";
-import { ConnectionClosedError, RequestTimeoutError, WireError } from "./errors";
+import { ConnectionClosedError, errorText, RequestTimeoutError, WireError } from "./errors";
 import { FAKE_INITIALIZE_RESULT, FakeSocket } from "./testing/fakeSocket";
 import { rpcURLFromLocation } from "./transport";
 import type { InitializeResponse } from "./types.gen";
@@ -813,6 +815,106 @@ describe("AppwireClient", () => {
     expect(result).toEqual(FAKE_INITIALIZE_RESULT);
     expect(states).toEqual(["connecting", "ready"]);
     expect(readyCount).toBe(1);
+  });
+});
+
+describe("subscriber error diagnostics", () => {
+  // Regression test: every isolated subscriber catch discarded its exception
+  // outright, so a consumer that threw missed an update while the client went
+  // on reporting a healthy transport, with no diagnostic naming the failure.
+  // The optional seam reports the phase and exception; fan-out isolation and
+  // the successful handshake are preserved.
+  test("reports each isolated subscriber failure with its phase, and later listeners still run", async () => {
+    const fake = new FakeSocket({ autoInitialize: true });
+    const diagnostics: SubscriberErrorInfo[] = [];
+    const client = new AppwireClient({
+      url: "ws://x/rpc",
+      socketFactory: () => fake,
+      onSubscriberError: (info) => diagnostics.push(info),
+    });
+
+    const states: ConnectionState[] = [];
+    let readyCount = 0;
+    let handshakeCount = 0;
+    let notificationCount = 0;
+    client.onStateChange(() => {
+      throw new Error("state boom");
+    });
+    client.onStateChange((s) => states.push(s));
+    client.onReady(() => {
+      throw new Error("ready boom");
+    });
+    client.onReady(() => {
+      readyCount += 1;
+    });
+    client.onHandshakeResult(() => {
+      throw new Error("handshake boom");
+    });
+    client.onHandshakeResult(() => {
+      handshakeCount += 1;
+    });
+    client.onNotification(() => {
+      throw new Error("notification boom");
+    });
+    client.onNotification(() => {
+      notificationCount += 1;
+    });
+
+    const result = await connectReady(fake, client);
+    fake.receive({ method: "thread/started", params: { secret: "payload" } });
+
+    // The failure is isolated: the connection still reaches ready, the
+    // handshake result is unchanged, and every later listener still ran.
+    expect(client.state).toBe("ready");
+    expect(result).toEqual(FAKE_INITIALIZE_RESULT);
+    expect(states).toEqual(["connecting", "ready"]);
+    expect(readyCount).toBe(1);
+    expect(handshakeCount).toBe(1);
+    expect(notificationCount).toBe(1);
+
+    // ...and now it is visible: one diagnostic per subscriber throw, naming
+    // the exception. State dispatches on both "connecting" and "ready", so two
+    // state diagnostics are expected — asserting the multiset (not a Set, which
+    // would collapse them) pins that a reporter missing a throw still fails.
+    const phases: SubscriberErrorPhase[] = diagnostics.map((d) => d.phase);
+    expect(phases).toHaveLength(5);
+    expect([...phases].sort()).toEqual(["handshakeResult", "notification", "ready", "state", "state"]);
+    const messages = diagnostics.map((d) => errorText(d.error));
+    expect(messages).toContain("state boom");
+    expect(messages).toContain("ready boom");
+    expect(messages).toContain("handshake boom");
+    expect(messages).toContain("notification boom");
+
+    // Payload-redacted: the diagnostic carries the phase and exception only,
+    // never the notification payload that happened to be in flight.
+    for (const info of diagnostics) {
+      expect(Object.keys(info).sort()).toEqual(["error", "phase"]);
+    }
+  });
+
+  test("a throwing diagnostic handler cannot corrupt dispatch", async () => {
+    const fake = new FakeSocket({ autoInitialize: true });
+    const client = new AppwireClient({
+      url: "ws://x/rpc",
+      socketFactory: () => fake,
+      onSubscriberError: () => {
+        throw new Error("diagnostic handler boom");
+      },
+    });
+
+    let notifications = 0;
+    client.onNotification(() => {
+      throw new Error("notification boom");
+    });
+    client.onNotification(() => {
+      notifications += 1;
+    });
+
+    await connectReady(fake, client);
+    fake.receive({ method: "thread/started", params: {} });
+
+    expect(client.state).toBe("ready");
+    expect(notifications).toBe(1);
   });
 });
 
