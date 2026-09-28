@@ -308,9 +308,9 @@ func TestHubRelayCanonicalIdleRetiresChildBeforeRoot(t *testing.T) {
 	childAck := make(chan struct{})
 	deliveries <- appsource.RelayDelivery{
 		Notification: appwire.Notification{
-			Method: appwire.NotifyAgentMessageDelta,
-			Params: testRawJSON(t, appwire.AgentMessageDeltaParams{
-				Ref: childRef, ThreadID: "canonical-child", TurnID: "turn-child", ItemID: "item-child", Delta: "stale",
+			Method: appwire.NotifyOverlayDelta,
+			Params: testRawJSON(t, appwire.OverlayDeltaParams{
+				Ref: childRef, ThreadID: "canonical-child", Delta: "stale",
 			}),
 		},
 		Acknowledge: func() { close(childAck) },
@@ -325,15 +325,15 @@ func TestHubRelayCanonicalIdleRetiresChildBeforeRoot(t *testing.T) {
 	rootAck := make(chan struct{})
 	deliveries <- appsource.RelayDelivery{
 		Notification: appwire.Notification{
-			Method: appwire.NotifyAgentMessageDelta,
-			Params: testRawJSON(t, appwire.AgentMessageDeltaParams{
-				Ref: rootRef, ThreadID: "canonical-root", TurnID: "turn-root", ItemID: "item-root", Delta: "live",
+			Method: appwire.NotifyOverlayDelta,
+			Params: testRawJSON(t, appwire.OverlayDeltaParams{
+				Ref: rootRef, ThreadID: "canonical-root", Delta: "live",
 			}),
 		},
 		Acknowledge: func() { close(rootAck) },
 	}
-	if got := <-root.Notifications(); got.Method != appwire.NotifyAgentMessageDelta {
-		t.Fatalf("root notification method = %q, want %q", got.Method, appwire.NotifyAgentMessageDelta)
+	if got := <-root.Notifications(); got.Method != appwire.NotifyOverlayDelta {
+		t.Fatalf("root notification method = %q, want %q", got.Method, appwire.NotifyOverlayDelta)
 	}
 	<-rootAck
 
@@ -1029,12 +1029,10 @@ func TestHubAtomicRejoinFansOutAndAcknowledgesAfterResponse(t *testing.T) {
 		onCommit: func() {
 			deliveries <- appsource.RelayDelivery{
 				Notification: appwire.Notification{
-					Method: appwire.NotifyAgentMessageDelta,
-					Params: testRawJSON(t, appwire.AgentMessageDeltaParams{
+					Method: appwire.NotifyOverlayDelta,
+					Params: testRawJSON(t, appwire.OverlayDeltaParams{
 						ThreadID: thread.ID,
 						Ref:      thread.Evener.Ref,
-						TurnID:   "turn-delivery",
-						ItemID:   "item-delivery",
 						Delta:    "after snapshot",
 					}),
 				},
@@ -1077,8 +1075,8 @@ func TestHubAtomicRejoinFansOutAndAcknowledgesAfterResponse(t *testing.T) {
 		t.Fatalf("qualified relay subscriber count = %d, want 1", got)
 	}
 	notification := <-client.Notifications()
-	if notification.Method != appwire.NotifyAgentMessageDelta {
-		t.Fatalf("notification method = %q, want %q", notification.Method, appwire.NotifyAgentMessageDelta)
+	if notification.Method != appwire.NotifyOverlayDelta {
+		t.Fatalf("notification method = %q, want %q", notification.Method, appwire.NotifyOverlayDelta)
 	}
 	<-acknowledged
 }
@@ -1097,12 +1095,10 @@ func TestHubAtomicRejoinWritesResponseBeforePostCutNotification(t *testing.T) {
 		onCommit: func() {
 			deliveries <- appsource.RelayDelivery{
 				Notification: appwire.Notification{
-					Method: appwire.NotifyAgentMessageDelta,
-					Params: testRawJSON(t, appwire.AgentMessageDeltaParams{
+					Method: appwire.NotifyOverlayDelta,
+					Params: testRawJSON(t, appwire.OverlayDeltaParams{
 						ThreadID: thread.ID,
 						Ref:      thread.Evener.Ref,
-						TurnID:   "turn-wire-order",
-						ItemID:   "item-wire-order",
 						Delta:    "after snapshot",
 					}),
 				},
@@ -1166,7 +1162,7 @@ func TestHubAtomicRejoinWritesResponseBeforePostCutNotification(t *testing.T) {
 	if notification.err != nil || notification.message.Notification == nil {
 		t.Fatalf("second hydration frame = %+v, want post-cut notification", notification)
 	}
-	if notification.message.Notification.Method != appwire.NotifyAgentMessageDelta {
+	if notification.message.Notification.Method != appwire.NotifyOverlayDelta {
 		t.Fatalf("post-cut method = %q", notification.message.Notification.Method)
 	}
 }
@@ -1537,9 +1533,9 @@ func TestHubRelayIdleRetirementYieldsToConcurrentActorCommand(t *testing.T) {
 	acknowledged := make(chan struct{})
 	lease.deliveries <- appsource.RelayDelivery{
 		Notification: appwire.Notification{
-			Method: appwire.NotifyAgentMessageDelta,
-			Params: testRawJSON(t, appwire.AgentMessageDeltaParams{
-				Ref: thread.Evener.Ref, ThreadID: thread.ID, TurnID: "turn-idle-command", ItemID: "item-idle-command", Delta: "live",
+			Method: appwire.NotifyOverlayDelta,
+			Params: testRawJSON(t, appwire.OverlayDeltaParams{
+				Ref: thread.Evener.Ref, ThreadID: thread.ID, Delta: "live",
 			}),
 		},
 		Acknowledge: func() { close(acknowledged) },
@@ -1860,7 +1856,7 @@ func TestHubRelayRemapFencesOldFanoutBeforeBroadcast(t *testing.T) {
 	var parkOnce sync.Once
 	cfg := hubcore.WebConfig{HubStateRoot: t.TempDir(), Past: hubcore.NewPastIndex("")}
 	cfg.RelayHooks.BeforeCanonicalPublish = func(_ string, notification appwire.Notification) {
-		var params appwire.AgentMessageDeltaParams
+		var params appwire.OverlayDeltaParams
 		if json.Unmarshal(notification.Params, &params) != nil || params.Delta != "stale old publication" {
 			return
 		}
@@ -1887,8 +1883,8 @@ func TestHubRelayRemapFencesOldFanoutBeforeBroadcast(t *testing.T) {
 	go func() {
 		oldLease.deliveries <- appsource.RelayDelivery{
 			Notification: appwire.Notification{
-				Method: appwire.NotifyAgentMessageDelta,
-				Params: testRawJSON(t, appwire.AgentMessageDeltaParams{
+				Method: appwire.NotifyOverlayDelta,
+				Params: testRawJSON(t, appwire.OverlayDeltaParams{
 					Ref: oldTargetRef, ThreadID: "publication-fence-old", Delta: "stale old publication",
 				}),
 			},
@@ -1923,8 +1919,8 @@ func TestHubRelayRemapFencesOldFanoutBeforeBroadcast(t *testing.T) {
 	liveAcknowledged := make(chan struct{})
 	replacementLease.deliveries <- appsource.RelayDelivery{
 		Notification: appwire.Notification{
-			Method: appwire.NotifyAgentMessageDelta,
-			Params: testRawJSON(t, appwire.AgentMessageDeltaParams{
+			Method: appwire.NotifyOverlayDelta,
+			Params: testRawJSON(t, appwire.OverlayDeltaParams{
 				Ref: newTargetRef, ThreadID: "publication-fence-new", Delta: "live replacement publication",
 			}),
 		},
@@ -1932,7 +1928,7 @@ func TestHubRelayRemapFencesOldFanoutBeforeBroadcast(t *testing.T) {
 	}
 	select {
 	case notification := <-client.Notifications():
-		var params appwire.AgentMessageDeltaParams
+		var params appwire.OverlayDeltaParams
 		if err := json.Unmarshal(notification.Params, &params); err != nil {
 			t.Fatal(err)
 		}
@@ -1983,7 +1979,7 @@ func TestHubRelayCanceledRemapStopsWaitingForPublicationDrain(t *testing.T) {
 	var entryOnce sync.Once
 	cfg := hubcore.WebConfig{}
 	cfg.RelayHooks.AfterCanonicalPublishEntry = func(_ string, notification appwire.Notification) {
-		var params appwire.AgentMessageDeltaParams
+		var params appwire.OverlayDeltaParams
 		if json.Unmarshal(notification.Params, &params) != nil || params.Delta != "hold old publication" {
 			return
 		}
@@ -2005,8 +2001,8 @@ func TestHubRelayCanceledRemapStopsWaitingForPublicationDrain(t *testing.T) {
 	go func() {
 		oldLease.deliveries <- appsource.RelayDelivery{
 			Notification: appwire.Notification{
-				Method: appwire.NotifyAgentMessageDelta,
-				Params: testRawJSON(t, appwire.AgentMessageDeltaParams{Ref: oldTarget, Delta: "hold old publication"}),
+				Method: appwire.NotifyOverlayDelta,
+				Params: testRawJSON(t, appwire.OverlayDeltaParams{Ref: oldTarget, Delta: "hold old publication"}),
 			},
 			Acknowledge: func() { close(oldAcknowledged) },
 		}
@@ -2319,13 +2315,13 @@ func TestHubRelayUnknownTargetDoesNotHeadOfLineBlockKnownDelivery(t *testing.T) 
 	t.Cleanup(func() { observeHubRelayWait = previous })
 	unknownAck := make(chan struct{})
 	deliveries <- appsource.RelayDelivery{
-		Notification: appwire.Notification{Method: appwire.NotifyAgentMessageDelta, Params: []byte(`{"ref":"local:foreign"}`)},
+		Notification: appwire.Notification{Method: appwire.NotifyOverlayDelta, Params: []byte(`{"ref":"local:foreign"}`)},
 		Acknowledge:  func() { close(unknownAck) },
 	}
 	<-waitEntered
 	knownAck := make(chan struct{})
 	deliveries <- appsource.RelayDelivery{
-		Notification: appwire.Notification{Method: appwire.NotifyAgentMessageDelta, Params: []byte(`{"ref":"local:review-hol"}`)},
+		Notification: appwire.Notification{Method: appwire.NotifyOverlayDelta, Params: []byte(`{"ref":"local:review-hol"}`)},
 		Acknowledge:  func() { close(knownAck) },
 	}
 	select {
@@ -2412,8 +2408,8 @@ func TestHubRelayPendingTargetPreservesOrderWhileKnownTargetProgresses(t *testin
 	for _, delta := range []string{"first", "second"} {
 		lease.deliveries <- appsource.RelayDelivery{
 			Notification: appwire.Notification{
-				Method: appwire.NotifyAgentMessageDelta,
-				Params: testRawJSON(t, appwire.AgentMessageDeltaParams{Ref: childTarget, Delta: delta}),
+				Method: appwire.NotifyOverlayDelta,
+				Params: testRawJSON(t, appwire.OverlayDeltaParams{Ref: childTarget, Delta: delta}),
 			},
 			Acknowledge: func() { ackOrder <- delta },
 		}
@@ -2421,8 +2417,8 @@ func TestHubRelayPendingTargetPreservesOrderWhileKnownTargetProgresses(t *testin
 	knownAck := make(chan struct{})
 	lease.deliveries <- appsource.RelayDelivery{
 		Notification: appwire.Notification{
-			Method: appwire.NotifyAgentMessageDelta,
-			Params: testRawJSON(t, appwire.AgentMessageDeltaParams{Ref: rootRef, Delta: "known"}),
+			Method: appwire.NotifyOverlayDelta,
+			Params: testRawJSON(t, appwire.OverlayDeltaParams{Ref: rootRef, Delta: "known"}),
 		},
 		Acknowledge: func() { close(knownAck) },
 	}
@@ -2502,7 +2498,7 @@ func TestHubRelayPendingDeliveryLimitCleansUpOnCanonicalStop(t *testing.T) {
 		proceeded := make(chan struct{})
 		delivery := appsource.RelayDelivery{
 			Notification: appwire.Notification{
-				Method: appwire.NotifyAgentMessageDelta,
+				Method: appwire.NotifyOverlayDelta,
 				Params: testRawJSON(t, map[string]any{"ref": fmt.Sprintf("local:pending-foreign-%d", i)}),
 			},
 			Acknowledge: func() { acknowledged <- i },
@@ -2627,9 +2623,9 @@ func TestHubRelayRemapRetainsAuthoritativeRouteDuringReplacementRead(t *testing.
 	go func() {
 		replacementLease.deliveries <- appsource.RelayDelivery{
 			Notification: appwire.Notification{
-				Method: appwire.NotifyAgentMessageDelta,
-				Params: testRawJSON(t, appwire.AgentMessageDeltaParams{
-					Ref: newAuthoritativeRef, ThreadID: "remap-read-authoritative-new", TurnID: "turn-remap-read", ItemID: "item-remap-read", Delta: "during read",
+				Method: appwire.NotifyOverlayDelta,
+				Params: testRawJSON(t, appwire.OverlayDeltaParams{
+					Ref: newAuthoritativeRef, ThreadID: "remap-read-authoritative-new", Delta: "during read",
 				}),
 			},
 			Acknowledge: func() { close(acknowledged) },
@@ -2676,8 +2672,8 @@ deliveryLoop:
 				}
 				break deliveryLoop
 			}
-			if notification.Method == appwire.NotifyAgentMessageDelta {
-				var params appwire.AgentMessageDeltaParams
+			if notification.Method == appwire.NotifyOverlayDelta {
+				var params appwire.OverlayDeltaParams
 				if json.Unmarshal(notification.Params, &params) == nil && params.Delta == "during read" {
 					deltaCount++
 				}
@@ -2795,9 +2791,9 @@ func TestHubRelayRemapDoesNotStealSiblingRouteCollision(t *testing.T) {
 		acknowledged := make(chan struct{})
 		leaseB.deliveries <- appsource.RelayDelivery{
 			Notification: appwire.Notification{
-				Method: appwire.NotifyAgentMessageDelta,
-				Params: testRawJSON(t, appwire.AgentMessageDeltaParams{
-					Ref: collisionRef, ThreadID: "collision-authoritative", TurnID: "turn-collision", ItemID: "item-collision", Delta: delta,
+				Method: appwire.NotifyOverlayDelta,
+				Params: testRawJSON(t, appwire.OverlayDeltaParams{
+					Ref: collisionRef, ThreadID: "collision-authoritative", Delta: delta,
 				}),
 			},
 			Acknowledge: func() { close(acknowledged) },
@@ -2892,9 +2888,9 @@ func TestHubRelayRemapMovesDownstreamAndTargetRouteOwnership(t *testing.T) {
 	staleAck := make(chan struct{})
 	newLeaseValue.deliveries <- appsource.RelayDelivery{
 		Notification: appwire.Notification{
-			Method: appwire.NotifyAgentMessageDelta,
-			Params: testRawJSON(t, appwire.AgentMessageDeltaParams{
-				Ref: oldTargetRef, ThreadID: "authoritative-old", TurnID: "turn-old", ItemID: "item-old", Delta: "stale",
+			Method: appwire.NotifyOverlayDelta,
+			Params: testRawJSON(t, appwire.OverlayDeltaParams{
+				Ref: oldTargetRef, ThreadID: "authoritative-old", Delta: "stale",
 			}),
 		},
 		Acknowledge: func() { close(staleAck) },
@@ -2909,15 +2905,15 @@ func TestHubRelayRemapMovesDownstreamAndTargetRouteOwnership(t *testing.T) {
 	liveAck := make(chan struct{})
 	newLeaseValue.deliveries <- appsource.RelayDelivery{
 		Notification: appwire.Notification{
-			Method: appwire.NotifyAgentMessageDelta,
-			Params: testRawJSON(t, appwire.AgentMessageDeltaParams{
-				Ref: newTargetRef, ThreadID: "authoritative-new", TurnID: "turn-new", ItemID: "item-new", Delta: "live",
+			Method: appwire.NotifyOverlayDelta,
+			Params: testRawJSON(t, appwire.OverlayDeltaParams{
+				Ref: newTargetRef, ThreadID: "authoritative-new", Delta: "live",
 			}),
 		},
 		Acknowledge: func() { close(liveAck) },
 	}
-	if got := <-client.Notifications(); got.Method != appwire.NotifyAgentMessageDelta {
-		t.Fatalf("replacement route method = %q, want %q", got.Method, appwire.NotifyAgentMessageDelta)
+	if got := <-client.Notifications(); got.Method != appwire.NotifyOverlayDelta {
+		t.Fatalf("replacement route method = %q, want %q", got.Method, appwire.NotifyOverlayDelta)
 	}
 	<-liveAck
 	select {
@@ -3125,12 +3121,10 @@ func TestHubAtomicRelayPublicationStopsAfterDeletionWins(t *testing.T) {
 	acknowledged := make(chan struct{})
 	deliveries <- appsource.RelayDelivery{
 		Notification: appwire.Notification{
-			Method: appwire.NotifyAgentMessageDelta,
-			Params: testRawJSON(t, appwire.AgentMessageDeltaParams{
+			Method: appwire.NotifyOverlayDelta,
+			Params: testRawJSON(t, appwire.OverlayDeltaParams{
 				ThreadID: threadID,
 				Ref:      ref,
-				TurnID:   "turn-deleted",
-				ItemID:   "item-deleted",
 				Delta:    "must not publish",
 			}),
 		},
@@ -3206,12 +3200,10 @@ func TestHubRelayPublicationWaitsForHeldTargetAlias(t *testing.T) {
 	acknowledged := make(chan struct{})
 	deliveries <- appsource.RelayDelivery{
 		Notification: appwire.Notification{
-			Method: appwire.NotifyAgentMessageDelta,
-			Params: testRawJSON(t, appwire.AgentMessageDeltaParams{
+			Method: appwire.NotifyOverlayDelta,
+			Params: testRawJSON(t, appwire.OverlayDeltaParams{
 				ThreadID: threadID,
 				Ref:      ref,
-				TurnID:   "turn-held",
-				ItemID:   "item-held",
 				Delta:    "delayed not dropped",
 			}),
 		},
@@ -3237,8 +3229,8 @@ func TestHubRelayPublicationWaitsForHeldTargetAlias(t *testing.T) {
 	}
 	select {
 	case notification := <-client.Notifications():
-		if notification.Method != appwire.NotifyAgentMessageDelta {
-			t.Fatalf("released target alias published %s, want %s", notification.Method, appwire.NotifyAgentMessageDelta)
+		if notification.Method != appwire.NotifyOverlayDelta {
+			t.Fatalf("released target alias published %s, want %s", notification.Method, appwire.NotifyOverlayDelta)
 		}
 	case <-time.After(time.Second):
 		t.Fatal("released target alias dropped the acknowledged frame")
@@ -3622,10 +3614,10 @@ func TestHubRelayPendingFrameWakesOnARoutePublishItRaced(t *testing.T) {
 	go func() {
 		replacementLease.deliveries <- appsource.RelayDelivery{
 			Notification: appwire.Notification{
-				Method: appwire.NotifyAgentMessageDelta,
-				Params: testRawJSON(t, appwire.AgentMessageDeltaParams{
+				Method: appwire.NotifyOverlayDelta,
+				Params: testRawJSON(t, appwire.OverlayDeltaParams{
 					Ref: newAuthoritativeRef, ThreadID: "wake-authoritative-new",
-					TurnID: "turn-wake", ItemID: "item-wake", Delta: "raced publish",
+					Delta: "raced publish",
 				}),
 			},
 			Acknowledge: func() { close(acknowledged) },
@@ -3645,8 +3637,8 @@ func TestHubRelayPendingFrameWakesOnARoutePublishItRaced(t *testing.T) {
 	close(resumeListener)
 	select {
 	case got := <-client.Notifications():
-		if got.Method != appwire.NotifyAgentMessageDelta {
-			t.Fatalf("notification after raced publish method = %q, want %q", got.Method, appwire.NotifyAgentMessageDelta)
+		if got.Method != appwire.NotifyOverlayDelta {
+			t.Fatalf("notification after raced publish method = %q, want %q", got.Method, appwire.NotifyOverlayDelta)
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("parked notification slept through the route publication it raced")

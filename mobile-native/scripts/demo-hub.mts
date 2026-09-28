@@ -81,7 +81,7 @@ export async function createDemoHub(
 	let sessionNumber = 0;
 	const handshake: InitializeResponse = {
 		serverInfo: { name: "Native UI demonstration", version: "1" },
-		protocolVersion: "evener-appwire-v5",
+		protocolVersion: "evener-appwire-v6",
 		sourceId: "demo",
 		features: {
 			threadList: true,
