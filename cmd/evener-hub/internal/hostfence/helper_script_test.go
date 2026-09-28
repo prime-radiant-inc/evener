@@ -570,11 +570,14 @@ func TestScriptCorruptHolderFailsClosed(t *testing.T) {
 	remote.settle(Epoch{BootID: "boot-1", OpSeq: 1})
 	holder := filepath.Join(remote.state, "leases", "holder")
 	for name, content := range map[string]string{
-		"one token":   "boot-1\n",
-		"bad boot id": "boot/1 3\n",
-		"zero op seq": "boot-1 0\n",
-		"extra token": "boot-1 3 extra\n",
-		"garbage":     "not a holder\n",
+		"one token":        "boot-1\n",
+		"bad boot id":      "boot/1 3\n",
+		"zero op seq":      "boot-1 0\n",
+		"extra token":      "boot-1 3 extra\n",
+		"garbage":          "not a holder\n",
+		"empty boot":       " 3\n",
+		"absent with seq":  "- 5\n",
+		"leading zero seq": "boot-1 03\n",
 	} {
 		if err := os.WriteFile(holder, []byte(content), 0o600); err != nil {
 			t.Fatalf("%s: write holder: %v", name, err)
@@ -866,6 +869,288 @@ func TestScriptNonNumericExitRefuses(t *testing.T) {
 		t.Fatal("entries with a non-numeric exit succeeded, want refusal")
 	} else if err := DecodeRefusal([]byte(stderr)); !errors.Is(err, ErrStateCorrupt) {
 		t.Fatalf("entries = %v, want ErrStateCorrupt", err)
+	}
+}
+
+// TestScriptPostSpawnFailureKillsDescendants pins the tracking-failure path:
+// when the wrapper cannot record the spawned command, it kills the command and
+// every descendant still carrying its nonce before refusing, so no side-effect
+// work survives untracked.
+func TestScriptPostSpawnFailureKillsDescendants(t *testing.T) {
+	if _, err := os.Stat("/proc/self/environ"); err != nil {
+		t.Skip("descendant tracking needs /proc (Linux)")
+	}
+	remote := newFenceRemote(t)
+	epoch := Epoch{BootID: "boot-1", OpSeq: 1}
+	remote.settle(epoch)
+	work := t.TempDir()
+	command := fmt.Sprintf("sleep 60 & echo $! > %s/descendant; sleep 60", work)
+	start := time.Now()
+	_, stderr, code := remote.run([]string{"EVENER_FENCE_FAULT_AFTER_SPAWN=1"}, "perform", epoch.BootID, "1", command)
+	if code != 69 {
+		t.Fatalf("faulted perform exited %d, want 69: %s", code, stderr)
+	}
+	if elapsed := time.Since(start); elapsed > 10*time.Second {
+		t.Fatalf("faulted perform took %s, want the command and its descendants killed", elapsed)
+	}
+	raw, err := os.ReadFile(filepath.Join(work, "descendant"))
+	if err != nil {
+		t.Fatalf("the command never ran: %v", err)
+	}
+	pid, err := strconv.Atoi(strings.TrimSpace(string(raw)))
+	if err != nil {
+		t.Fatalf("parse descendant pid %q: %v", raw, err)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for processAlive(t, pid) {
+		if time.Now().After(deadline) {
+			killProcess(pid)
+			t.Fatalf("descendant %d survived the tracking-failure kill", pid)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+// processAlive reports whether pid names a live process, through kill -0 so the
+// test needs no platform-specific syscalls.
+func processAlive(t *testing.T, pid int) bool {
+	t.Helper()
+	return exec.Command("sh", "-c", fmt.Sprintf("kill -0 %d 2>/dev/null", pid)).Run() == nil
+}
+
+// killProcess signals a pid the test started, for cleanup.
+func killProcess(pid int) {
+	_ = exec.Command("sh", "-c", fmt.Sprintf("kill -9 %d 2>/dev/null", pid)).Run()
+}
+
+// TestScriptDescendantIdentityRevalidated pins that a recorded descendant is
+// ours only while it still carries the exact nonce and the recorded start
+// token: a reused pid naming unrelated work reads clean and is never signaled.
+func TestScriptDescendantIdentityRevalidated(t *testing.T) {
+	if _, err := os.Stat("/proc/self/environ"); err != nil {
+		t.Skip("descendant tracking needs /proc (Linux)")
+	}
+	remote := newFenceRemote(t)
+	epoch := Epoch{BootID: "boot-1", OpSeq: 1}
+	remote.settle(epoch)
+	work := t.TempDir()
+	goFile := filepath.Join(work, "go")
+	command := fmt.Sprintf(`touch %s/started; i=0; while [ ! -f %s ]; do i=$((i+1)); [ "$i" -gt 200 ] && exit 9; sleep 0.05; done`, work, goFile)
+	performDone := make(chan struct{})
+	go func() {
+		defer close(performDone)
+		if _, stderr, code := remote.run(nil, "perform", epoch.BootID, "1", command); code != 0 {
+			t.Errorf("perform exited %d: %s", code, stderr)
+		}
+	}()
+	waitForFile(t, filepath.Join(work, "started"))
+	entry := waitForRunningEntry(t, remote)
+	// An unrelated live process: its pid is real, but it carries neither the
+	// entry's nonce nor its recorded start token.
+	unrelated := exec.Command("sh", "-c", "sleep 30")
+	if err := unrelated.Start(); err != nil {
+		t.Fatalf("start unrelated process: %v", err)
+	}
+	defer func() { _ = unrelated.Process.Kill(); _, _ = unrelated.Process.Wait() }()
+	entryPath := filepath.Join(remote.state, "leases", entry.ID)
+	raw, err := os.ReadFile(entryPath)
+	if err != nil {
+		t.Fatalf("read entry: %v", err)
+	}
+	broken := string(raw)
+	broken = strings.Replace(broken, fmt.Sprintf("pid\t%d\n", *entry.Ownership.PID),
+		fmt.Sprintf("pid\t%d\n", unrelated.Process.Pid), 1)
+	broken = strings.Replace(broken, fmt.Sprintf("pidStartTime\t%s\n", entry.Ownership.PIDStartTime),
+		"pidStartTime\t999999999\n", 1)
+	broken = strings.Replace(broken, "descendants\t\n",
+		fmt.Sprintf("descendants\t%d:999999999\n", unrelated.Process.Pid), 1)
+	if broken == string(raw) {
+		t.Fatalf("entry carried nothing to rewrite: %q", raw)
+	}
+	if err := os.WriteFile(entryPath, []byte(broken), 0o600); err != nil {
+		t.Fatalf("write entry: %v", err)
+	}
+	stdout, stderr, code := remote.run(nil, "recheck", entry.ID)
+	if code != 0 {
+		t.Fatalf("recheck exited %d: %s", code, stderr)
+	}
+	recheck, err := DecodeRecheck([]byte(stdout))
+	if err != nil {
+		t.Fatalf("DecodeRecheck(%q) = %v", stdout, err)
+	}
+	if recheck.Live {
+		t.Fatalf("recheck(unrelated descendant) = %+v, want clean: the pid is not ours", recheck)
+	}
+	if !processAlive(t, unrelated.Process.Pid) {
+		t.Fatal("the unrelated process was signaled or killed")
+	}
+	if err := os.WriteFile(goFile, []byte("go"), 0o600); err != nil {
+		t.Fatalf("release the command: %v", err)
+	}
+	<-performDone
+}
+
+// TestScriptHolderMismatchRefuses pins that advance and perform require the
+// lease holder to name the epoch they act on: a crash between the guard and
+// holder writes leaves the takeover replay (which repairs it) as the only way
+// forward.
+func TestScriptHolderMismatchRefuses(t *testing.T) {
+	remote := newFenceRemote(t)
+	epoch := Epoch{BootID: "boot-1", OpSeq: 1}
+	if _, stderr, code := remote.run([]string{"EVENER_FENCE_FAULT_AFTER_GUARD=1"}, "takeover", epoch.BootID, "1"); code == 0 {
+		t.Fatalf("faulted takeover exited 0: %s", stderr)
+	}
+	if _, stderr, code := remote.run(nil, "advance", epoch.BootID, "1"); code == 0 {
+		t.Fatal("advance past a missing holder succeeded, want refusal")
+	} else if err := DecodeRefusal([]byte(stderr)); !errors.Is(err, ErrStateCorrupt) {
+		t.Fatalf("advance past a missing holder = %v, want ErrStateCorrupt", err)
+	}
+	// The takeover replay repairs the holder, and the advance may then run.
+	if _, stderr, code := remote.run(nil, "takeover", epoch.BootID, "1"); code != 0 {
+		t.Fatalf("takeover replay exited %d: %s", code, stderr)
+	}
+	if _, stderr, code := remote.run(nil, "advance", epoch.BootID, "1"); code != 0 {
+		t.Fatalf("advance after repair exited %d: %s", code, stderr)
+	}
+	// A holder naming another epoch is corrupt too.
+	if err := os.WriteFile(filepath.Join(remote.state, "leases", "holder"), []byte("boot-9 9\n"), 0o600); err != nil {
+		t.Fatalf("overwrite holder: %v", err)
+	}
+	if _, stderr, code := remote.run(nil, "perform", epoch.BootID, "1", "true"); code == 0 {
+		t.Fatal("perform with a mismatched holder succeeded, want refusal")
+	} else if err := DecodeRefusal([]byte(stderr)); !errors.Is(err, ErrStateCorrupt) {
+		t.Fatalf("perform with a mismatched holder = %v, want ErrStateCorrupt", err)
+	}
+}
+
+// TestScriptLeadingZeroNumbersRefuse pins that every numeric field the helper
+// persists is canonical: a leading-zero value would be emitted verbatim into
+// JSON, where it is not a number, so it is refused before it reaches the guard.
+func TestScriptLeadingZeroNumbersRefuse(t *testing.T) {
+	remote := newFenceRemote(t)
+	epoch := Epoch{BootID: "boot-1", OpSeq: 1}
+	if _, stderr, code := remote.run(nil, "takeover", epoch.BootID, "01"); code == 0 {
+		t.Fatal("takeover with a leading-zero op sequence succeeded, want refusal")
+	} else if err := DecodeRefusal([]byte(stderr)); !errors.Is(err, ErrMalformed) {
+		t.Fatalf("takeover with a leading-zero op sequence = %v, want ErrMalformed", err)
+	}
+	remote.settle(epoch)
+	guard := filepath.Join(remote.state, "guard")
+	raw, err := os.ReadFile(guard)
+	if err != nil {
+		t.Fatalf("read guard: %v", err)
+	}
+	broken := strings.Replace(string(raw), "guardEpoch\t2\n", "guardEpoch\t02\n", 1)
+	if broken == string(raw) {
+		t.Fatalf("guard carried no guardEpoch to break: %q", raw)
+	}
+	if err := os.WriteFile(guard, []byte(broken), 0o600); err != nil {
+		t.Fatalf("write guard: %v", err)
+	}
+	if _, stderr, code := remote.run(nil, "status"); code == 0 {
+		t.Fatal("status with a leading-zero guard epoch succeeded, want refusal")
+	} else if err := DecodeRefusal([]byte(stderr)); !errors.Is(err, ErrStateCorrupt) {
+		t.Fatalf("status with a leading-zero guard epoch = %v, want ErrStateCorrupt", err)
+	}
+}
+
+// TestScriptDualIdentityEntryRefuses pins the one-variant ownership rule on the
+// shell side, matching Ownership.Validate: a file naming two identities is
+// corrupt, never laundered into single-variant JSON.
+func TestScriptDualIdentityEntryRefuses(t *testing.T) {
+	remote := newFenceRemote(t)
+	epoch := Epoch{BootID: "boot-1", OpSeq: 1}
+	remote.settle(epoch)
+	if _, stderr, code := remote.run(nil, "perform", epoch.BootID, "1", "true"); code != 0 {
+		t.Fatalf("perform exited %d: %s", code, stderr)
+	}
+	entriesDir := filepath.Join(remote.state, "leases")
+	names, err := os.ReadDir(entriesDir)
+	if err != nil {
+		t.Fatalf("read leases: %v", err)
+	}
+	var entryPath string
+	for _, name := range names {
+		if name.Name() != "holder" {
+			entryPath = filepath.Join(entriesDir, name.Name())
+		}
+	}
+	if entryPath == "" {
+		t.Fatal("no lease entry")
+	}
+	raw, err := os.ReadFile(entryPath)
+	if err != nil {
+		t.Fatalf("read entry: %v", err)
+	}
+	// A pid-owned entry relabelled nonce-owned keeps its pid fields: two
+	// identities in one entry.
+	broken := strings.Replace(string(raw), "ownershipKind\tpid\n", "ownershipKind\tnonce\n", 1)
+	if broken == string(raw) {
+		t.Fatalf("entry carried no pid ownership to dual-identity: %q", raw)
+	}
+	if err := os.WriteFile(entryPath, []byte(broken), 0o600); err != nil {
+		t.Fatalf("write entry: %v", err)
+	}
+	if _, stderr, code := remote.run(nil, "entries"); code == 0 {
+		t.Fatal("entries with a dual-identity entry succeeded, want refusal")
+	} else if err := DecodeRefusal([]byte(stderr)); !errors.Is(err, ErrStateCorrupt) {
+		t.Fatalf("entries = %v, want ErrStateCorrupt", err)
+	}
+}
+
+// TestScriptBootDashHighWaterRefuses pins validator parity with the Go boot-id
+// rule: "-" is the absence sentinel, never a high-water boot id.
+func TestScriptBootDashHighWaterRefuses(t *testing.T) {
+	remote := newFenceRemote(t)
+	remote.settle(Epoch{BootID: "boot-1", OpSeq: 1})
+	guard := filepath.Join(remote.state, "guard")
+	raw, err := os.ReadFile(guard)
+	if err != nil {
+		t.Fatalf("read guard: %v", err)
+	}
+	if err := os.WriteFile(guard, append(raw, []byte("boot.-\t1\n")...), 0o600); err != nil {
+		t.Fatalf("write guard: %v", err)
+	}
+	if _, stderr, code := remote.run(nil, "status"); code == 0 {
+		t.Fatal("status with a boot.- high-water succeeded, want refusal")
+	} else if err := DecodeRefusal([]byte(stderr)); !errors.Is(err, ErrStateCorrupt) {
+		t.Fatalf("status with a boot.- high-water = %v, want ErrStateCorrupt", err)
+	}
+}
+
+// TestScriptSignalExitsAndReleasesLock pins the signal trap: an interrupt
+// releases the exclusive lease and exits, never continuing the critical
+// section.
+func TestScriptSignalExitsAndReleasesLock(t *testing.T) {
+	remote := newFenceRemote(t)
+	epoch := Epoch{BootID: "boot-1", OpSeq: 1}
+	remote.settle(epoch)
+	work := t.TempDir()
+	command := fmt.Sprintf("sleep 1; touch %s/sideeffect", work)
+	cmd, err := remote.start(nil, "perform", epoch.BootID, "1", command)
+	if err != nil {
+		t.Fatalf("start perform: %v", err)
+	}
+	waitForFile(t, filepath.Join(remote.state, "lock"))
+	if err := cmd.Process.Signal(os.Interrupt); err != nil {
+		t.Fatalf("signal helper: %v", err)
+	}
+	done := make(chan error, 1)
+	go func() { done <- cmd.Wait() }()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		_ = cmd.Process.Kill()
+		t.Fatal("the interrupted helper did not exit")
+	}
+	if _, err := os.Stat(filepath.Join(remote.state, "lock")); err == nil {
+		t.Fatal("the interrupted helper left the exclusive lease held")
+	}
+	// The helper exited rather than continuing to its side effect: give the
+	// orphaned command time to finish and prove the helper never reached it.
+	time.Sleep(1500 * time.Millisecond)
+	if _, err := os.Stat(filepath.Join(work, "sideeffect")); err == nil {
+		t.Fatal("the command completed despite the interrupt")
 	}
 }
 

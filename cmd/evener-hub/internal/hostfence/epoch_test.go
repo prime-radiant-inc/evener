@@ -93,6 +93,21 @@ func TestEpochFromRecordRawField(t *testing.T) {
 
 // TestGuardAdmitsOnlyCurrentUnfencedEpoch pins §4's server-side check: "A step
 // whose presented epoch no longer equals the guard refuses server-side".
+// TestEpochFromRawNarrowsHostopsShape pins the deliberate asymmetry with
+// hostops: the store's reader admits any object carrying bootId/opSeq (the
+// retention tests persist an extra key), while the fencing layer refuses a
+// shape the spec never defined.
+func TestEpochFromRawNarrowsHostopsShape(t *testing.T) {
+	raw := json.RawMessage(`{"bootId":"boot-9","opSeq":12,"pad":true}`)
+	record := hostops.Record{FencingEpoch: raw}
+	if _, ok := record.FencingEpochValue(); !ok {
+		t.Fatal("hostops refused the raw field its own retention tests persist")
+	}
+	if _, ok := EpochFromRaw(raw); ok {
+		t.Fatal("hostfence admitted an epoch carrying a key the spec never defined")
+	}
+}
+
 func TestGuardAdmitsOnlyCurrentUnfencedEpoch(t *testing.T) {
 	current := Epoch{BootID: "boot-1", OpSeq: 5}
 	guard := GuardState{Version: 1, GuardEpoch: 4, Epoch: &current, Holder: &current}

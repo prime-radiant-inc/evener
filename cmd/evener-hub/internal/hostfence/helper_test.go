@@ -338,8 +338,8 @@ func TestWrapperTakeoverAdvancesDecodesAndRefuses(t *testing.T) {
 	runner := &fakeRunner{stdout: `{"version":1,"guardEpoch":5,"epoch":{"bootId":"b1","opSeq":3},` +
 		`"fence":{"epoch":{"bootId":"b1","opSeq":4},"superseded":{"bootId":"b1","opSeq":3},"guardEpoch":5},` +
 		`"superseded":null,"holder":{"bootId":"b1","opSeq":4},"entries":1,"bootHighWater":{"b1":4}}`}
-	wrapper := Wrapper{Runner: runner, Host: "h1"}
-	status, err := wrapper.Takeover(context.Background(), Epoch{BootID: "b1", OpSeq: 4})
+	verified := Verified{Wrapper{Runner: runner, Host: "h1"}}
+	status, err := verified.Takeover(context.Background(), Epoch{BootID: "b1", OpSeq: 4})
 	if err != nil {
 		t.Fatalf("Takeover = %v", err)
 	}
@@ -352,18 +352,18 @@ func TestWrapperTakeoverAdvancesDecodesAndRefuses(t *testing.T) {
 	// A refusal on stderr with a nonzero exit is the typed server-side refusal,
 	// never a decoded success.
 	refusing := &fakeRunner{stderr: RefusalPrefix + `{"version":1,"refused":true,"error":"stale-epoch","detail":"older"}`, exit: 75}
-	if _, err := (Wrapper{Runner: refusing, Host: "h1"}).Takeover(context.Background(), Epoch{BootID: "b1", OpSeq: 4}); !errors.Is(err, ErrStaleEpoch) {
+	if _, err := (Verified{Wrapper{Runner: refusing, Host: "h1"}}).Takeover(context.Background(), Epoch{BootID: "b1", OpSeq: 4}); !errors.Is(err, ErrStaleEpoch) {
 		t.Fatalf("Takeover(refusal) = %v, want ErrStaleEpoch", err)
 	}
 	// A success exit with unparsable output is refused, never treated as an
 	// empty state that authorizes a mutation.
 	garbled := &fakeRunner{stdout: `not json`}
-	if _, err := (Wrapper{Runner: garbled, Host: "h1"}).Takeover(context.Background(), Epoch{BootID: "b1", OpSeq: 4}); err == nil {
+	if _, err := (Verified{Wrapper{Runner: garbled, Host: "h1"}}).Takeover(context.Background(), Epoch{BootID: "b1", OpSeq: 4}); err == nil {
 		t.Fatal("Takeover(garbled) = nil error, want refusal")
 	}
 	// The wrapper refuses a zero epoch locally: it never presents an absent
 	// epoch to the remote.
-	if _, err := (Wrapper{Runner: runner, Host: "h1"}).Takeover(context.Background(), Epoch{}); err == nil {
+	if _, err := (Verified{Wrapper{Runner: runner, Host: "h1"}}).Takeover(context.Background(), Epoch{}); err == nil {
 		t.Fatal("Takeover(zero epoch) = nil error, want refusal")
 	}
 	if len(runner.commands) != 1 {
@@ -374,6 +374,48 @@ func TestWrapperTakeoverAdvancesDecodesAndRefuses(t *testing.T) {
 // TestWrapperPerformSeparatesChildFailuresFromRefusals pins that a wrapped
 // command's own output is never read as a wrapper refusal: only a prefixed
 // refusal at a helper refusal exit code is the typed error.
+// TestCheckRequiresVerifiedHelperBeforeMutation pins the gate: the mutating
+// operations live only on a Verified handle, Check refuses an absent or
+// untrusted helper with the typed refusal, and no mutating command is issued in
+// that case.
+func TestCheckRequiresVerifiedHelperBeforeMutation(t *testing.T) {
+	// Absent: the version round trip fails.
+	absent := &fakeRunner{exit: 1}
+	if _, err := (Wrapper{Runner: absent, Host: "h1"}).Check(context.Background()); !errors.Is(err, new(HelperGateError)) && !isHelperGate(err, DiscriminatorHelperAbsent) {
+		t.Fatalf("Check(absent) = %v, want a fencing-helper-absent refusal", err)
+	}
+	if len(absent.commands) != 1 || !strings.HasSuffix(absent.commands[0], "version") {
+		t.Fatalf("Check(absent) issued %q, want only the read-only version probe", absent.commands)
+	}
+	// Untrusted: the helper answers another version.
+	old := &fakeRunner{stdout: "9\n"}
+	if _, err := (Wrapper{Runner: old, Host: "h1"}).Check(context.Background()); !isHelperGate(err, DiscriminatorHelperUntrusted) {
+		t.Fatalf("Check(old version) = %v, want a fencing-helper-untrusted refusal", err)
+	}
+	if len(old.commands) != 1 {
+		t.Fatalf("Check(old version) issued %q, want only the version probe", old.commands)
+	}
+	// Verified: the handle is returned and mutations run.
+	trusted := &fakeRunner{stdout: "1\n"}
+	verified, err := (Wrapper{Runner: trusted, Host: "h1"}).Check(context.Background())
+	if err != nil {
+		t.Fatalf("Check(trusted) = %v, want the verified handle", err)
+	}
+	trusted.stdout = `{"version":1,"guardEpoch":1,"epoch":null,"fence":{"epoch":{"bootId":"b1","opSeq":1},"superseded":null,"guardEpoch":1},"superseded":null,"holder":{"bootId":"b1","opSeq":1},"entries":0,"bootHighWater":{"b1":1}}`
+	if _, err := verified.Takeover(context.Background(), Epoch{BootID: "b1", OpSeq: 1}); err != nil {
+		t.Fatalf("Verified.Takeover = %v", err)
+	}
+	if len(trusted.commands) != 2 || !strings.Contains(trusted.commands[1], "takeover") {
+		t.Fatalf("verified commands = %q, want the version probe then the takeover", trusted.commands)
+	}
+}
+
+// isHelperGate reports whether err is the named helper-gate refusal.
+func isHelperGate(err error, discriminator string) bool {
+	var refusal *HelperGateError
+	return errors.As(err, &refusal) && refusal.Discriminator == discriminator
+}
+
 func TestWrapperPerformSeparatesChildFailuresFromRefusals(t *testing.T) {
 	epoch := Epoch{BootID: "boot-1", OpSeq: 4}
 	// The refusal token is the invocation's own secret. A child can print
@@ -387,7 +429,7 @@ func TestWrapperPerformSeparatesChildFailuresFromRefusals(t *testing.T) {
 		t.Fatalf("PerformCommand = %q, want the invocation token presented (%q)", command, token)
 	}
 	spoofed := &fakeRunner{stderr: RefusalPrefix + `{"version":1,"refused":true,"error":"stale-epoch","token":"guess"}`, exit: 75}
-	result, err := (Wrapper{Runner: spoofed, Host: "h1"}).Perform(context.Background(), epoch, "deploy")
+	result, err := (Verified{Wrapper{Runner: spoofed, Host: "h1"}}).Perform(context.Background(), epoch, "deploy")
 	if err != nil {
 		t.Fatalf("Perform(spoofed refusal) = %v, want the child's own failure", err)
 	}
@@ -397,14 +439,14 @@ func TestWrapperPerformSeparatesChildFailuresFromRefusals(t *testing.T) {
 	// A child's own stderr before a genuine trailing refusal does not hide it.
 	// The genuine refusal carries the token Perform minted for this call, which
 	// the runner reads back out of the command it was handed.
-	if _, err := (Wrapper{Runner: &tokenEchoRunner{reason: "fenced", exit: 75, noise: true}, Host: "h1"}).Perform(context.Background(), epoch, "deploy"); !errors.Is(err, ErrFenced) {
+	if _, err := (Verified{Wrapper{Runner: &tokenEchoRunner{reason: "fenced", exit: 75, noise: true}, Host: "h1"}}).Perform(context.Background(), epoch, "deploy"); !errors.Is(err, ErrFenced) {
 		t.Fatalf("Perform(genuine refusal after noise) = %v, want ErrFenced", err)
 	}
-	if _, err := (Wrapper{Runner: &tokenEchoRunner{reason: "io-error", exit: 69}, Host: "h1"}).Perform(context.Background(), epoch, "deploy"); !errors.Is(err, ErrHelperIO) {
+	if _, err := (Verified{Wrapper{Runner: &tokenEchoRunner{reason: "io-error", exit: 69}, Host: "h1"}}).Perform(context.Background(), epoch, "deploy"); !errors.Is(err, ErrHelperIO) {
 		t.Fatalf("Perform(io-error) = %v, want ErrHelperIO", err)
 	}
 	// A helper refusal at a non-refusal exit code is still the child's status.
-	if _, err := (Wrapper{Runner: &tokenEchoRunner{reason: "stale-epoch", exit: 9}, Host: "h1"}).Perform(context.Background(), epoch, "deploy"); err != nil {
+	if _, err := (Verified{Wrapper{Runner: &tokenEchoRunner{reason: "stale-epoch", exit: 9}, Host: "h1"}}).Perform(context.Background(), epoch, "deploy"); err != nil {
 		t.Fatalf("Perform(refusal at child exit) = %v, want the child's own failure", err)
 	}
 }
@@ -416,29 +458,35 @@ func TestLeaseEntryDescendants(t *testing.T) {
 	entry := LeaseEntry{
 		ID: "n1", Command: "deploy", RegisteredAt: "2026-09-28T10:00:00Z",
 		Ownership: Ownership{PID: new(41), PIDStartTime: "777"},
-		State:     LeaseRunning, Descendants: []int{41, 42},
+		State:     LeaseRunning, Descendants: []Descendant{{PID: 41, StartToken: "777"}, {PID: 42, StartToken: "888"}},
 	}
 	if err := entry.Validate(); err != nil {
 		t.Fatalf("Validate(descendants) = %v, want nil", err)
 	}
 	if err := (LeaseEntry{
 		ID: "n1", Command: "deploy", RegisteredAt: "2026-09-28T10:00:00Z",
-		Ownership: Ownership{Nonce: "n1"}, State: LeaseExited, Exit: new(0), Descendants: []int{7},
+		Ownership: Ownership{Nonce: "n1"}, State: LeaseExited, Exit: new(0), Descendants: []Descendant{{PID: 7, StartToken: "1"}},
 	}).Validate(); err == nil {
 		t.Fatal("Validate(exited with descendants) = nil, want refusal")
 	}
 	if err := (LeaseEntry{
 		ID: "n1", Command: "deploy", RegisteredAt: "2026-09-28T10:00:00Z",
-		Ownership: Ownership{Nonce: "n1"}, State: LeaseRunning, Descendants: []int{0},
+		Ownership: Ownership{Nonce: "n1"}, State: LeaseRunning, Descendants: []Descendant{{PID: 0, StartToken: "1"}},
 	}).Validate(); err == nil {
 		t.Fatal("Validate(zero-pid descendant) = nil, want refusal")
 	}
+	if err := (LeaseEntry{
+		ID: "n1", Command: "deploy", RegisteredAt: "2026-09-28T10:00:00Z",
+		Ownership: Ownership{Nonce: "n1"}, State: LeaseRunning, Descendants: []Descendant{{PID: 7}},
+	}).Validate(); err == nil {
+		t.Fatal("Validate(token-less descendant) = nil, want refusal")
+	}
 	// A not-live answer may carry the descendants it checked: each was verified
 	// gone, and the list is the evidence of what was checked.
-	if recheck, err := DecodeRecheck([]byte(`{"version":1,"id":"n1","live":false,"state":"running","ownership":{"pid":41,"pidStartTime":"777"},"descendants":[42]}`)); err != nil || recheck.Live || len(recheck.Descendants) != 1 {
+	if recheck, err := DecodeRecheck([]byte(`{"version":1,"id":"n1","live":false,"state":"running","ownership":{"pid":41,"pidStartTime":"777"},"descendants":[{"pid":42,"startToken":"888"}]}`)); err != nil || recheck.Live || len(recheck.Descendants) != 1 {
 		t.Fatalf("DecodeRecheck(checked descendants) = (%+v, %v), want not-live with the checked list", recheck, err)
 	}
-	if recheck, err := DecodeRecheck([]byte(`{"version":1,"id":"n1","live":true,"state":"running","ownership":{"pid":41,"pidStartTime":"777"},"descendants":[42]}`)); err != nil || len(recheck.Descendants) != 1 {
+	if recheck, err := DecodeRecheck([]byte(`{"version":1,"id":"n1","live":true,"state":"running","ownership":{"pid":41,"pidStartTime":"777"},"descendants":[{"pid":42,"startToken":"888"}]}`)); err != nil || len(recheck.Descendants) != 1 {
 		t.Fatalf("DecodeRecheck(descendants) = (%+v, %v), want the descendants decoded", recheck, err)
 	}
 }
@@ -468,7 +516,7 @@ func (r *tokenEchoRunner) Run(_ context.Context, command string) (string, string
 func TestWrapperPerformReturnsChildStatus(t *testing.T) {
 	runner := &fakeRunner{stdout: "deployed\n", exit: 3}
 	wrapper := Wrapper{Runner: runner, Host: "h1"}
-	result, err := wrapper.Perform(context.Background(), Epoch{BootID: "b1", OpSeq: 4}, "deploy --now")
+	result, err := (Verified{wrapper}).Perform(context.Background(), Epoch{BootID: "b1", OpSeq: 4}, "deploy --now")
 	if err != nil {
 		t.Fatalf("Perform = %v", err)
 	}

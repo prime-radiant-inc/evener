@@ -39,8 +39,11 @@ const (
 	// HelperStateEnv is the environment variable overriding HelperStateDir.
 	HelperStateEnv = "EVENER_FENCE_STATE"
 	// TokenEnv carries the per-invocation refusal token to the helper; the
-	// helper clears it for the wrapped command, so only the helper can present
-	// it back.
+	// helper clears it for the wrapped command, so the helper's own refusals
+	// carry a marker the command's stderr cannot present by accident. A
+	// same-uid command can still read its parent's exec-time environment on
+	// platforms that expose it, so this is a confusion barrier, not a
+	// cryptographic boundary.
 	TokenEnv = "EVENER_FENCE_TOKEN"
 	// RefusalPrefix is the marker the helper's refusal reports carry on stderr.
 	// A wrapped command's own stderr can therefore never masquerade as a
@@ -260,8 +263,10 @@ func (w Wrapper) AdvanceCommand(e Epoch) (string, error) {
 //
 // The returned token is the invocation's refusal token: it is presented to the
 // helper's own environment, cleared for the wrapped command, and echoed in any
-// refusal the helper writes. A command's stderr can therefore never be mistaken
-// for a wrapper refusal — it cannot know the token.
+// refusal the helper writes. A command's stderr is therefore never mistaken for
+// a wrapper refusal by accident. This is a confusion barrier, not a
+// cryptographic boundary: a same-uid command can read its parent's exec-time
+// environment on platforms that expose it.
 func (w Wrapper) PerformCommand(e Epoch, command string) (string, string, error) {
 	if err := e.Validate(); err != nil {
 		return "", "", err
@@ -337,13 +342,44 @@ func (w Wrapper) Verify(ctx context.Context) error {
 	return VerifyHelper(w.Host, HelperVersion, probe)
 }
 
+// Verified is a helper that passed the read-only presence/version gate. It is
+// the only handle that exposes the mutating operations, so a caller cannot
+// mutate, advance, or kill through an absent, stale, or untrusted helper: the
+// gate runs once per fencing operation (§6's "before the kill/wait step"), and
+// the handle it returns is what S18's worker sequences takeover, bounded
+// kill/wait, advance, and perform from.
+type Verified struct{ Wrapper }
+
+// Check runs §6's helper presence-and-version gate and returns the verified
+// handle its mutating operations require. A refusal is the typed
+// `fencing-helper-absent`/`fencing-helper-untrusted` error; nothing mutating is
+// issued in that case.
+func (w Wrapper) Check(ctx context.Context) (Verified, error) {
+	probe, err := w.Probe(ctx)
+	if err != nil {
+		return Verified{}, err
+	}
+	if err := VerifyHelper(w.Host, HelperVersion, probe); err != nil {
+		return Verified{}, err
+	}
+	return Verified{w}, nil
+}
+
 // Status reads the guard and lease state.
 func (w Wrapper) Status(ctx context.Context) (Status, error) {
 	return w.guardCall(ctx, w.StatusCommand())
 }
 
 // Takeover runs the preemptive fence-takeover and returns the state it landed.
-func (w Wrapper) Takeover(ctx context.Context, e Epoch) (Status, error) {
+// It exists only on a Verified helper: no mutation runs behind an unverified
+// helper.
+func (v Verified) Takeover(ctx context.Context, e Epoch) (Status, error) {
+	w := v.Wrapper
+	return w.takeover(ctx, e)
+}
+
+// takeover is Takeover's body, kept on Wrapper for the verified handle.
+func (w Wrapper) takeover(ctx context.Context, e Epoch) (Status, error) {
 	command, err := w.TakeoverCommand(e)
 	if err != nil {
 		return Status{}, err
@@ -351,8 +387,15 @@ func (w Wrapper) Takeover(ctx context.Context, e Epoch) (Status, error) {
 	return w.guardCall(ctx, command)
 }
 
-// Advance runs the compare-and-advance and returns the state it landed.
-func (w Wrapper) Advance(ctx context.Context, e Epoch) (Status, error) {
+// Advance runs the compare-and-advance and returns the state it landed. It
+// exists only on a Verified helper.
+func (v Verified) Advance(ctx context.Context, e Epoch) (Status, error) {
+	w := v.Wrapper
+	return w.advance(ctx, e)
+}
+
+// advance is Advance's body, kept on Wrapper for the verified handle.
+func (w Wrapper) advance(ctx context.Context, e Epoch) (Status, error) {
 	command, err := w.AdvanceCommand(e)
 	if err != nil {
 		return Status{}, err
@@ -392,8 +435,14 @@ func (w Wrapper) Recheck(ctx context.Context, id string) (Recheck, error) {
 // Perform runs one register-fence-perform guarded unit. A nonzero ExitCode with
 // no decoded refusal is the wrapped command's own failure; a refusal is the
 // typed error and means the command never ran (or was aborted before its
-// irreversible step).
-func (w Wrapper) Perform(ctx context.Context, e Epoch, command string) (PerformResult, error) {
+// irreversible step). It exists only on a Verified helper.
+func (v Verified) Perform(ctx context.Context, e Epoch, command string) (PerformResult, error) {
+	w := v.Wrapper
+	return w.perform(ctx, e, command)
+}
+
+// perform is Perform's body, kept on Wrapper for the verified handle.
+func (w Wrapper) perform(ctx context.Context, e Epoch, command string) (PerformResult, error) {
 	full, token, err := w.PerformCommand(e, command)
 	if err != nil {
 		return PerformResult{}, err

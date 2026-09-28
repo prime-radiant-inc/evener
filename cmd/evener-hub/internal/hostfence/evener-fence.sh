@@ -84,7 +84,9 @@
 #
 # EVENER_FENCE_TOKEN, when set, is echoed in every refusal: the caller mints it
 # per invocation and clears it for the wrapped command, so a command's own
-# stderr can never pass for a wrapper refusal. EVENER_FENCE_LOCK_ATTEMPTS bounds
+# stderr cannot accidentally pass for a wrapper refusal. A same-uid command can
+# still read its parent's environment on platforms that expose it, so this is a
+# confusion barrier, not a cryptographic boundary against a hostile command. EVENER_FENCE_LOCK_ATTEMPTS bounds
 # a waiter's 0.1s retries against a live holder (default 100).
 
 set -eu
@@ -142,6 +144,16 @@ json_escape() { # one value as a JSON string body
 is_uint() {
 	case $1 in
 	'' | *[!0-9]*) return 1 ;;
+	*) return 0 ;;
+	esac
+}
+
+# is_canonical_uint additionally refuses a leading zero: a value like 001 is
+# stored and emitted verbatim into JSON, where 001 is not a number, so the
+# controller would read the state as corrupt.
+is_canonical_uint() {
+	case $1 in
+	'' | *[!0-9]* | 0[0-9]*) return 1 ;;
 	*) return 0 ;;
 	esac
 }
@@ -238,7 +250,10 @@ steal_stale_lock() {
 	if [ ! -e "$LOCK_FILE" ] && mv "$stale" "$LOCK_FILE" 2>/dev/null; then
 		return 1
 	fi
-	rm -f "$stale" 2>/dev/null || true
+	# A live owner's claim whose path was taken by a newer claimant: never
+	# delete it. Park it under a unique name so the claim survives the race
+	# (the owner's release compares its own pid and leaves the new claim alone).
+	mv "$stale" "$STATE_DIR/.claim.abandoned.$$" 2>/dev/null || true
 	return 1
 }
 
@@ -269,7 +284,7 @@ guard_file_valid() { # <snapshot>
 		}
 		NF != 2 { bad = 1 }
 		$1 ~ /^boot\./ {
-			if ($1 !~ /^boot\.[A-Za-z0-9._-]+$/ || $2 !~ /^[0-9]+$/ || $2 + 0 < 1) { bad = 1 }
+			if ($1 !~ /^boot\.[A-Za-z0-9._-]+$/ || $1 == "boot.-" || $2 !~ /^[1-9][0-9]*$/) { bad = 1 }
 		}
 		{ seen[$1]++ }
 		END {
@@ -311,8 +326,8 @@ read_guard() {
 	FENCE_SUP_BOOT=$(guard_field "$GUARD_SNAPSHOT" fenceSupersededBootId)
 	FENCE_SUP_SEQ=$(guard_field "$GUARD_SNAPSHOT" fenceSupersededOpSeq)
 	FENCE_GUARD=$(guard_field "$GUARD_SNAPSHOT" fenceGuardEpoch)
-	is_uint "$GUARD_EPOCH" || return 1
-	is_uint "$FENCE_GUARD" || return 1
+	is_canonical_uint "$GUARD_EPOCH" || return 1
+	is_canonical_uint "$FENCE_GUARD" || return 1
 	check_boot_pair "$EPOCH_BOOT" "$EPOCH_SEQ" || return 1
 	check_boot_pair "$SUP_BOOT" "$SUP_SEQ" || return 1
 	check_boot_pair "$FENCE_BOOT" "$FENCE_SEQ" || return 1
@@ -335,7 +350,7 @@ check_boot_pair() { # <bootId> <opSeq>
 	-) [ "$2" = 0 ] || return 1 ;;
 	'') return 1 ;;
 	*[!A-Za-z0-9._-]*) return 1 ;;
-	*) is_uint "$2" && [ "$2" -ge 1 ] || return 1 ;;
+	*) is_canonical_uint "$2" && [ "$2" -ge 1 ] || return 1 ;;
 	esac
 	return 0
 }
@@ -402,9 +417,10 @@ read_holder() { # sets HOLDER_BOOT and HOLDER_SEQ
 	HOLDER_BOOT=${line%% *}
 	HOLDER_SEQ=${line#* }
 	case $HOLDER_BOOT in
-	-) HOLDER_SEQ=0 ;;
+	'') return 1 ;;
+	-) [ "$HOLDER_SEQ" = 0 ] || return 1 ;;
 	*[!A-Za-z0-9._-]*) return 1 ;;
-	*) is_uint "$HOLDER_SEQ" && [ "$HOLDER_SEQ" -ge 1 ] || return 1 ;;
+	*) is_canonical_uint "$HOLDER_SEQ" && [ "$HOLDER_SEQ" -ge 1 ] || return 1 ;;
 	esac
 	return 0
 }
@@ -529,28 +545,37 @@ load_entry() {
 	exited | killed)
 		# A terminal entry carries its numeric exit and no descendants: the
 		# command's own children must be gone before the entry reads settled.
-		is_uint "$ENTRY_EXIT" || return 1
+		is_canonical_uint "$ENTRY_EXIT" || return 1
 		[ -z "$ENTRY_DESCENDANTS" ] || return 1
 		;;
 	*) return 1 ;;
 	esac
 	for descendant in $ENTRY_DESCENDANTS; do
-		is_uint "$descendant" && [ "$descendant" -ge 1 ] || return 1
+		case $descendant in
+		*:*)
+			descendant_pid=${descendant%%:*}
+			descendant_start=${descendant#*:}
+			is_canonical_uint "$descendant_pid" && [ "$descendant_pid" -ge 1 ] && [ -n "$descendant_start" ] || return 1
+			;;
+		*) return 1 ;;
+		esac
 	done
 	case $ENTRY_KIND in
 	pid)
-		is_uint "$ENTRY_PID" || return 1
+		is_canonical_uint "$ENTRY_PID" || return 1
 		[ "$ENTRY_PID" -ge 1 ] || return 1
 		[ -n "$ENTRY_START" ] || return 1
 		[ -z "$ENTRY_NONCE" ] && [ -z "$ENTRY_CGROUP" ] || return 1
 		;;
 	nonce)
 		[ -n "$ENTRY_NONCE" ] || return 1
+		[ -z "$ENTRY_PID" ] || return 1
 		[ -z "$ENTRY_CGROUP" ] || return 1
 		[ -z "$ENTRY_START" ] || return 1
 		;;
 	cgroup)
 		[ -n "$ENTRY_CGROUP" ] || return 1
+		[ -z "$ENTRY_PID" ] || return 1
 		[ -z "$ENTRY_NONCE" ] && [ -z "$ENTRY_START" ] || return 1
 		;;
 	*) return 1 ;;
@@ -596,7 +621,7 @@ emit_entries() {
 			for descendant in $ENTRY_DESCENDANTS; do
 				[ "$first_descendant" -eq 1 ] || printf ','
 				first_descendant=0
-				printf '%s' "$descendant"
+				printf '{"pid":%s,"startToken":"%s"}' "${descendant%%:*}" "$(json_escape "${descendant#*:}")"
 			done
 			printf ']'
 		fi
@@ -658,7 +683,7 @@ parse_epoch() { # <bootId> <opSeq>
 	*) ;;
 	esac
 	[ "${#E_BOOT}" -le 128 ] || return 1
-	is_uint "$E_SEQ" || return 1
+	is_canonical_uint "$E_SEQ" || return 1
 	[ "$E_SEQ" -ge 1 ] || return 1
 	return 0
 }
@@ -744,6 +769,12 @@ do_advance() {
 	if [ "$FENCE_BOOT" != "$E_BOOT" ] || [ "$FENCE_SEQ" != "$E_SEQ" ]; then
 		refuse_stale "the fence names $FENCE_BOOT/$FENCE_SEQ, not $E_BOOT/$E_SEQ"
 	fi
+	# The lease holder is part of the fencing state: a takeover whose holder
+	# write was lost is repaired by its replay, never advanced past.
+	read_holder || refuse_corrupt "the lease holder is outside its schema"
+	if [ "$HOLDER_BOOT" != "$E_BOOT" ] || [ "$HOLDER_SEQ" != "$E_SEQ" ]; then
+		refuse_corrupt "the lease holder $HOLDER_BOOT/$HOLDER_SEQ does not name the fenced epoch $E_BOOT/$E_SEQ; replay the takeover"
+	fi
 	EPOCH_BOOT=$E_BOOT
 	EPOCH_SEQ=$E_SEQ
 	GUARD_EPOCH=$((GUARD_EPOCH + 1))
@@ -810,7 +841,9 @@ descendants_of() { # <nonce>
 		case $pid in '' | *[!0-9]*) continue ;; esac
 		[ "$pid" = "$$" ] && continue
 		if [ -n "$(grep -al "EVENER_FENCE_NONCE=$1" "$envfile" 2>/dev/null || true)" ]; then
-			printf '%s ' "$pid"
+			start=$(pid_start_time "$pid" 2>/dev/null || true)
+			[ -n "$start" ] || start=unknown
+			printf '%s:%s ' "$pid" "$start"
 		fi
 	done
 }
@@ -823,8 +856,13 @@ do_perform() { # <bootId> <opSeq> <command>
 	if [ "$EPOCH_BOOT" != "$1" ] || [ "$EPOCH_SEQ" != "$2" ]; then
 		refuse_stale "epoch $1/$2 no longer equals the guard's $EPOCH_BOOT/$EPOCH_SEQ"
 	fi
+	read_holder || refuse_corrupt "the lease holder is outside its schema"
+	if [ "$HOLDER_BOOT" != "$EPOCH_BOOT" ] || [ "$HOLDER_SEQ" != "$EPOCH_SEQ" ]; then
+		refuse_corrupt "the lease holder $HOLDER_BOOT/$HOLDER_SEQ does not name the guard epoch $EPOCH_BOOT/$EPOCH_SEQ"
+	fi
 	command=$3
 	nonce=$(mint_nonce)
+	child_nonce=$nonce
 	registered=$(date -u '+%Y-%m-%dT%H:%M:%SZ' 2>/dev/null || printf 0)
 	# Register before the side effects start: the entry exists while the command
 	# runs, and a crash between registration and spawn leaves it registered (fail
@@ -878,7 +916,28 @@ do_perform() { # <bootId> <opSeq> <command>
 # refuses: a tracking write that fails after the spawn must never leave a
 # side-effect process running untracked.
 post_spawn_failure() {
+	# Kill the command and every descendant still carrying its nonce, and give
+	# them a bounded chance to leave, before refusing: a tracking failure must
+	# not leave side-effect work running untracked.
 	kill "$child" 2>/dev/null || true
+	attempt=0
+	while [ "$attempt" -lt 20 ]; do
+		remaining=$(descendants_of "${child_nonce:-}")
+		[ -z "$remaining" ] && break
+		for descendant in $remaining; do
+			descendant_pid=${descendant%%:*}
+			descendant_start=${descendant#*:}
+			# Signal only an instance we can still identify: the nonce matched
+			# at collection, and the start token must still match here.
+			kill -0 "$descendant_pid" 2>/dev/null || continue
+			current=$(current_start_token "$descendant_pid" || true)
+			if [ -z "$current" ] || [ "$current" = "$descendant_start" ]; then
+				kill "$descendant_pid" 2>/dev/null || true
+			fi
+		done
+		attempt=$((attempt + 1))
+		sleep 0.1
+	done
 	wait "$child" 2>/dev/null || true
 	refuse io-error "$1" 69
 }
@@ -927,9 +986,17 @@ do_recheck() { # <id>
 			;;
 		esac
 		for descendant in $ENTRY_DESCENDANTS; do
-			# A recorded descendant that is still signalable keeps the entry
-			# live; one demonstrably gone no longer does.
-			if kill -0 "$descendant" 2>/dev/null; then
+			# A recorded descendant counts only while it still carries this
+			# invocation's exact nonce AND the kernel-owned start token recorded
+			# beside it: a reused pid without both is not the wrapper's work and
+			# must never be treated — or signaled — as it.
+			descendant_pid=${descendant%%:*}
+			descendant_start=${descendant#*:}
+			kill -0 "$descendant_pid" 2>/dev/null || continue
+			grep -alqs "EVENER_FENCE_NONCE=$id" "/proc/$descendant_pid/environ" 2>/dev/null || continue
+			current=$(current_start_token "$descendant_pid" || true)
+			if [ -z "$current" ] || [ "$current" = "$descendant_start" ]; then
+				# Identity proven, or unprovable: live, fail closed.
 				live=true
 				break
 			fi
@@ -946,7 +1013,7 @@ do_recheck() { # <id>
 		for descendant in $ENTRY_DESCENDANTS; do
 			[ "$first_descendant" -eq 1 ] || printf ','
 			first_descendant=0
-			printf '%s' "$descendant"
+			printf '{"pid":%s,"startToken":"%s"}' "${descendant%%:*}" "$(json_escape "${descendant#*:}")"
 		done
 		printf ']'
 	fi
@@ -977,14 +1044,16 @@ takeover)
 	[ $# -eq 2 ] || refuse_malformed "takeover needs an epoch"
 	parse_epoch "$1" "$2" || refuse_malformed "malformed fencing epoch"
 	acquire_lock || refuse busy "the remote lease is held" 75
-	trap 'release_lock' EXIT HUP INT TERM
+	trap 'release_lock' EXIT
+	trap 'release_lock; exit 1' HUP INT TERM
 	do_takeover
 	;;
 advance)
 	[ $# -eq 2 ] || refuse_malformed "advance needs an epoch"
 	parse_epoch "$1" "$2" || refuse_malformed "malformed fencing epoch"
 	acquire_lock || refuse busy "the remote lease is held" 75
-	trap 'release_lock' EXIT HUP INT TERM
+	trap 'release_lock' EXIT
+	trap 'release_lock; exit 1' HUP INT TERM
 	do_advance
 	;;
 perform)
@@ -992,7 +1061,8 @@ perform)
 	parse_epoch "$1" "$2" || refuse_malformed "malformed fencing epoch"
 	[ -n "$3" ] || refuse_malformed "perform needs a command"
 	acquire_lock || refuse busy "the remote lease is held" 75
-	trap 'release_lock' EXIT HUP INT TERM
+	trap 'release_lock' EXIT
+	trap 'release_lock; exit 1' HUP INT TERM
 	do_perform "$1" "$2" "$3"
 	;;
 recheck)

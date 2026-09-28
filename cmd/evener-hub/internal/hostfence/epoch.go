@@ -43,6 +43,7 @@ import (
 	"fmt"
 	"io"
 	"maps"
+	"strings"
 	"unicode/utf8"
 
 	"primeradiant.com/evener/cmd/evener-hub/internal/hostops"
@@ -176,6 +177,14 @@ func EpochFromRecord(record hostops.Record) (Epoch, bool) {
 // epoch. The raw field's interior is the crash-fencing spec's schema, so this
 // decode is strict like the store's own tables: a value outside it is refused
 // rather than half-read.
+//
+// Deliberate narrowing: hostops keeps the raw field verbatim and its own
+// Record.FencingEpochValue admits any object carrying bootId/opSeq (the store's
+// retention tests persist an extra `pad` key), while the fencing layer refuses
+// any key beyond the two the spec pins. That asymmetry is intentional — a
+// record whose epoch carries fields this layer does not understand is not a
+// fencible epoch, and acting on it would present a shape the spec never
+// defined — and TestEpochFromRawNarrowsHostopsShape pins both readings.
 func EpochFromRaw(raw json.RawMessage) (Epoch, bool) {
 	if len(raw) == 0 {
 		return Epoch{}, false
@@ -521,12 +530,37 @@ type LeaseEntry struct {
 	Exit *int `json:"exit,omitempty"`
 	// ExitedAt is the RFC3339 exit time, present once it exited or was killed.
 	ExitedAt string `json:"exitedAt,omitempty"`
-	// Descendants are the PIDs still carrying the command's per-spawn nonce
-	// after the command itself exited: work the wrapper's own child left
-	// behind. While any survive the entry stays in a live state — a command's
-	// unobserved children are never clean (§9's mirror of §3) — and a fencing
-	// kill can address them.
-	Descendants []int `json:"descendants,omitempty"`
+	// Descendants are the surviving children of the command: work the wrapper's
+	// own child left behind after it exited. While any of them still matches its
+	// recorded identity the entry stays in a live state — a command's children
+	// are never clean just because the immediate child exited (§9's mirror of
+	// §3) — and a fencing kill revalidates the same identity before signaling.
+	Descendants []Descendant `json:"descendants,omitempty"`
+}
+
+// Descendant is one surviving child of a wrapped command: the PID the wrapper
+// observed carrying its per-spawn nonce, plus the kernel-owned start token it
+// observed beside it. Both are revalidated — the exact nonce in the process's
+// environment and the start token — before the process is treated as owned
+// work or signaled, so a reused PID is never mistaken for the command's child.
+type Descendant struct {
+	// PID is the surviving process's process id.
+	PID int `json:"pid"`
+	// StartToken is the kernel-owned start token observed for it, or "unknown"
+	// when the platform would not report one (which fails closed: the process
+	// reads live and is never signaled).
+	StartToken string `json:"startToken"`
+}
+
+// Validate checks one descendant record.
+func (d Descendant) Validate() error {
+	if d.PID < 1 {
+		return fmt.Errorf("%w: a descendant carries pid %d", ErrInvalidGuard, d.PID)
+	}
+	if strings.TrimSpace(d.StartToken) == "" {
+		return fmt.Errorf("%w: descendant %d carries no start token", ErrInvalidGuard, d.PID)
+	}
+	return nil
 }
 
 // Lease entry states.
@@ -570,9 +604,9 @@ func (e LeaseEntry) Validate() error {
 	default:
 		return fmt.Errorf("%w: lease entry %q carries state %q", ErrInvalidGuard, e.ID, e.State)
 	}
-	for _, pid := range e.Descendants {
-		if pid < 1 {
-			return fmt.Errorf("%w: lease entry %q records descendant pid %d", ErrInvalidGuard, e.ID, pid)
+	for _, descendant := range e.Descendants {
+		if err := descendant.Validate(); err != nil {
+			return fmt.Errorf("%w: lease entry %q: %w", ErrInvalidGuard, e.ID, err)
 		}
 	}
 	return nil
@@ -636,9 +670,8 @@ type Recheck struct {
 	// Ownership is the stored identity the answer was checked against.
 	Ownership Ownership `json:"ownership"`
 	// Descendants are the command's surviving children the answer was checked
-	// against: an answer claiming no live holder while its entry still carries
-	// descendants would read work clean that is not.
-	Descendants []int `json:"descendants,omitempty"`
+	// against, each revalidated by its exact nonce and start token.
+	Descendants []Descendant `json:"descendants,omitempty"`
 }
 
 // DecodeStatus decodes the helper's guard/lease report. The helper's output is
@@ -734,9 +767,9 @@ func DecodeRecheck(raw []byte) (Recheck, error) {
 	if recheck.Live && recheck.State == "" {
 		return Recheck{}, fmt.Errorf("%w: a recheck answer reports no entry live", ErrInvalidGuard)
 	}
-	for _, pid := range recheck.Descendants {
-		if pid < 1 {
-			return Recheck{}, fmt.Errorf("%w: a recheck answer records descendant pid %d", ErrInvalidGuard, pid)
+	for _, descendant := range recheck.Descendants {
+		if err := descendant.Validate(); err != nil {
+			return Recheck{}, err
 		}
 	}
 	// A not-live answer may still carry the descendants it checked: each was
