@@ -1,219 +1,249 @@
-import { useEffect, useMemo, useState, useSyncExternalStore } from "react";
-import { ActivityIndicator, FlatList, TextInput, View } from "react-native";
-import type { ModelDescriptor } from "@evener/appwire-client";
-import { modelPickerEntries } from "./modelPickerEntries";
-import type { SessionControls } from "./sessionControls";
-import { Action, Choice, Copy, ErrorMessage, styles, useColors } from "./ui";
+// The model sheet's list (spec 8.5): "Recent", then each provider's models,
+// each row with its name, its context and price, the registry's notes, and a
+// check on the current model. It is the sheet's one scroll view, so what
+// stays in reach (search, Effort) lives in the sheet's header instead.
+import type { ModelDescriptor, ModelListResponse } from "@evener/appwire-client";
+import { SymbolView } from "expo-symbols";
+import { type ReactNode, useState } from "react";
+import { Pressable, SectionList, Text, View } from "react-native";
+import { type ModelPickerEntry, type ModelSection, modelSections } from "./modelPickerEntries";
+import { allowFontScaling, useColors, useTextScale } from "./ui";
 
 export function ModelPicker({
-  controls,
-  currentModel,
-  ready,
-  done,
-  setting = "model",
+	catalog,
+	loading,
+	query,
+	visionOnly,
+	current,
+	disabled,
+	choose,
+	header,
 }: {
-  controls: SessionControls;
-  currentModel: string;
-  ready: boolean;
-  done: () => void;
-  setting?: "model" | "vision";
+	catalog: ModelListResponse | null;
+	loading: boolean;
+	query: string;
+	visionOnly: boolean;
+	/** The current model, "provider/model". */
+	current: string;
+	disabled: boolean;
+	choose(model: ModelDescriptor): void;
+	/** Rows above the models, such as the vision model's Session model and Off. */
+	header?: ReactNode;
 }) {
-  const colors = useColors();
-  const state = useSyncExternalStore(controls.subscribe, controls.getSnapshot);
-  const [search, setSearch] = useState("");
-  const [showDiagnostics, setShowDiagnostics] = useState(false);
-  const [selected, setSelected] = useState<ModelDescriptor | null>(null);
-  useEffect(() => {
-    setSelected(null);
-    void controls.loadModels();
-  }, [controls, setting]);
-  const models = useMemo(() => {
-    const query = search.trim().toLowerCase();
-    return (state.catalog?.data ?? []).filter(
-      (model) =>
-        (setting !== "vision" || model.supportsVision !== false) &&
-        `${model.displayName ?? ""} ${model.provider} ${model.model}`
-          .toLowerCase()
-          .includes(query),
-    );
-  }, [state.catalog, search, setting]);
-  const disabled = !ready || state.pending !== null || state.loadingModels;
-  const entries = useMemo(() => modelPickerEntries(models), [models]);
-  const available =
-    selected &&
-    state.catalog?.data.some(
-      (entry) =>
-        entry.provider === selected.provider &&
-        entry.model === selected.model &&
-        (setting !== "vision" || entry.supportsVision !== false),
-    );
-  return (
-    <View
-      style={[styles.fill, { paddingHorizontal: 20, gap: 12, paddingTop: 16 }]}
-    >
-      <Copy
-        muted
-      >{`${setting === "vision" ? "Vision model" : "Current"} · ${currentModel || (setting === "vision" ? "Session model" : "")}`}</Copy>
-      <TextInput
-        accessibilityLabel="Search models"
-        value={search}
-        onChangeText={setSearch}
-        placeholder="Search models or providers"
-        placeholderTextColor={colors.secondary}
-        autoCapitalize="none"
-        autoCorrect={false}
-        style={[
-          styles.input,
-          {
-            color: colors.text,
-            borderColor: colors.border,
-            backgroundColor: colors.surface,
-          },
-        ]}
-      />
-      <ErrorMessage message={state.modelError} />
-      <ErrorMessage
-        message={
-          state.lastAction === "changeModel" ||
-          state.lastAction === "setVisionModel"
-            ? state.error
-            : null
-        }
-      />
-      {state.loadingModels ? (
-        <ActivityIndicator
-          accessibilityLabel="Loading models"
-          color={colors.accent}
-        />
-      ) : null}
-      {state.modelError ? (
-        <Action
-          disabled={disabled}
-          onPress={() => {
-            void controls.loadModels();
-          }}
-        >
-          Retry model list
-        </Action>
-      ) : null}
-      <FlatList
-        style={styles.fill}
-        data={entries}
-        keyboardShouldPersistTaps="handled"
-        keyExtractor={(entry) =>
-          JSON.stringify([entry.model.provider, entry.model.model])
-        }
-        ListHeaderComponent={
-          setting === "vision" ? (
-            <View style={{ gap: 8, paddingBottom: 12 }}>
-              <Choice
-                label="Use session model"
-                selected={currentModel === ""}
-                disabled={disabled}
-                onPress={() =>
-                  void controls.setVisionModel("").then((changed) => {
-                    if (changed) done();
-                  })
-                }
-              />
-              <Choice
-                label="Disable vision"
-                selected={currentModel === "off"}
-                disabled={disabled}
-                onPress={() =>
-                  void controls.setVisionModel("off").then((changed) => {
-                    if (changed) done();
-                  })
-                }
-              />
-            </View>
-          ) : state.catalog?.diagnostics?.length ? (
-            <View style={{ gap: 8, paddingBottom: 12 }}>
-              <Action
-                tone="quiet"
-                expanded={showDiagnostics}
-                onPress={() => setShowDiagnostics((shown) => !shown)}
-              >
-                {`Catalog notices (${state.catalog.diagnostics.length})`}
-              </Action>
-              {showDiagnostics &&
-                state.catalog.diagnostics.map((diagnostic) => (
-                  <Copy muted key={JSON.stringify(diagnostic)}>
-                    {[diagnostic.provider, diagnostic.message, diagnostic.hint]
-                      .filter(Boolean)
-                      .join(" · ")}
-                  </Copy>
-                ))}
-            </View>
-          ) : null
-        }
-        ListEmptyComponent={
-          !state.loadingModels && !state.modelError ? (
-            <Copy muted>
-              {search.trim()
-                ? "No models match your search."
-                : "No models are available for this session."}
-            </Copy>
-          ) : null
-        }
-        renderItem={({ item }) => (
-          <View>
-            <Choice
-              label={item.label}
-              selected={
-                selected?.provider === item.model.provider &&
-                selected.model === item.model.model
-              }
-              disabled={disabled}
-              onPress={() => setSelected(item.model)}
-            />
-            {item.warnings.map((warning, warningIndex) => (
-              <View
-                key={`${warning}-${warningIndex}`}
-                style={{ paddingLeft: 16, paddingRight: 8, paddingBottom: 4 }}
-              >
-                <Copy muted>{`⚠ ${warning}`}</Copy>
-              </View>
-            ))}
-          </View>
-        )}
-      />
-      <View
-        style={{
-          borderTopWidth: 1,
-          borderColor: colors.border,
-          paddingVertical: 12,
-          gap: 8,
-        }}
-      >
-        {selected ? (
-          <Copy
-            muted
-          >{`Selected · ${selected.provider}/${selected.model}`}</Copy>
-        ) : null}
-        {state.pending === "changeModel" ||
-        state.pending === "setVisionModel" ? (
-          <ActivityIndicator
-            accessibilityLabel="Changing model"
-            color={colors.accent}
-          />
-        ) : null}
-        <Action
-          disabled={disabled || !available}
-          onPress={() => {
-            if (!selected) return;
-            const change =
-              setting === "vision"
-                ? controls.changeVisionModel(selected.provider, selected.model)
-                : controls.changeModel(selected.provider, selected.model);
-            void change.then((changed) => {
-              if (changed) done();
-            });
-          }}
-        >
-          {setting === "vision" ? "Use vision model" : "Use model"}
-        </Action>
-      </View>
-    </View>
-  );
+	const sections: ModelSection[] = catalog ? modelSections(catalog, query, visionOnly) : [];
+	return (
+		<SectionList
+			sections={sections}
+			keyboardShouldPersistTaps="handled"
+			keyboardDismissMode="on-drag"
+			stickySectionHeadersEnabled={false}
+			contentContainerStyle={{ paddingBottom: 24 }}
+			keyExtractor={(entry) => `${entry.model.provider}/${entry.model.model}`}
+			ListHeaderComponent={
+				<>
+					{header}
+					{catalog?.diagnostics?.length ? <CatalogNotices diagnostics={catalog.diagnostics} /> : null}
+				</>
+			}
+			renderSectionHeader={({ section }) => <SectionTitle title={section.title} />}
+			renderItem={({ item }) => (
+				<ModelRow
+					entry={item}
+					selected={`${item.model.provider}/${item.model.model}` === current}
+					disabled={disabled}
+					onPress={() => choose(item.model)}
+				/>
+			)}
+			ListEmptyComponent={
+				loading || !catalog ? (
+					<ModelSkeleton />
+				) : (
+					<Quiet>{query.trim() ? "No models match your search." : "No models are available for this session."}</Quiet>
+				)
+			}
+		/>
+	);
+}
+
+/** One choice with a check when it's the current one: a model row, or the
+ * vision model's Session model and Off. */
+export function ChoiceRow({
+	title,
+	selected,
+	disabled,
+	onPress,
+	children,
+}: {
+	title: string;
+	selected: boolean;
+	disabled: boolean;
+	onPress(): void;
+	children?: ReactNode;
+}) {
+	const { palette } = useColors();
+	const scale = useTextScale();
+	return (
+		<Pressable
+			accessibilityRole="button"
+			accessibilityLabel={title}
+			accessibilityState={{ selected, disabled }}
+			disabled={disabled}
+			onPress={onPress}
+			style={({ pressed }) => ({
+				minHeight: 44,
+				flexDirection: "row",
+				alignItems: "center",
+				gap: 12,
+				paddingHorizontal: 16,
+				paddingVertical: 8,
+				opacity: disabled ? 0.4 : 1,
+				backgroundColor: pressed ? palette.pressed : "transparent",
+			})}
+		>
+			<View style={{ flex: 1, gap: 2 }}>
+				<Text
+					testID="model-title"
+					allowFontScaling={allowFontScaling}
+					style={{ color: palette.inkHi, fontSize: 17 * scale, lineHeight: 22 * scale }}
+				>
+					{title}
+				</Text>
+				{children}
+			</View>
+			{selected ? <SymbolView name="checkmark" tintColor={palette.accentInk} size={17 * scale} /> : null}
+		</Pressable>
+	);
+}
+
+function ModelRow({
+	entry,
+	selected,
+	disabled,
+	onPress,
+}: {
+	entry: ModelPickerEntry;
+	selected: boolean;
+	disabled: boolean;
+	onPress(): void;
+}) {
+	return (
+		<ChoiceRow title={entry.title} selected={selected} disabled={disabled} onPress={onPress}>
+			{entry.detail ? <Caption>{entry.detail}</Caption> : null}
+			{entry.warnings.map((warning) => (
+				<Caption key={warning} warning>
+					{warning}
+				</Caption>
+			))}
+		</ChoiceRow>
+	);
+}
+
+function Caption({ children, warning = false }: { children: string; warning?: boolean }) {
+	const { palette } = useColors();
+	const scale = useTextScale();
+	return (
+		<Text
+			allowFontScaling={allowFontScaling}
+			style={{
+				color: warning ? palette.attentionInk : palette.inkMid,
+				fontSize: 13 * scale,
+				lineHeight: 18 * scale,
+				fontVariant: ["tabular-nums"],
+			}}
+		>
+			{children}
+		</Text>
+	);
+}
+
+function SectionTitle({ title }: { title: string }) {
+	const { palette } = useColors();
+	const scale = useTextScale();
+	return (
+		<Text
+			testID="section-title"
+			accessibilityRole="header"
+			allowFontScaling={allowFontScaling}
+			style={{
+				paddingHorizontal: 16,
+				paddingTop: 16,
+				paddingBottom: 4,
+				color: palette.inkMid,
+				fontSize: 12 * scale,
+				lineHeight: 16 * scale,
+				fontWeight: "600",
+				letterSpacing: 12 * 0.06,
+				textTransform: "uppercase",
+			}}
+		>
+			{title}
+		</Text>
+	);
+}
+
+/** The catalog's notices (a provider it couldn't list), folded under one
+ * line until asked for. */
+function CatalogNotices({ diagnostics }: { diagnostics: NonNullable<ModelListResponse["diagnostics"]> }) {
+	const { palette } = useColors();
+	const scale = useTextScale();
+	const [open, setOpen] = useState(false);
+	return (
+		<View style={{ paddingHorizontal: 16, paddingTop: 8, gap: 4 }}>
+			<Pressable
+				accessibilityRole="button"
+				accessibilityState={{ expanded: open }}
+				onPress={() => setOpen((shown) => !shown)}
+				style={{ minHeight: 44, justifyContent: "center" }}
+			>
+				<Text
+					allowFontScaling={allowFontScaling}
+					style={{ color: palette.accentInk, fontSize: 15 * scale, lineHeight: 20 * scale }}
+				>
+					{`Catalog notices (${diagnostics.length})`}
+				</Text>
+			</Pressable>
+			{open
+				? diagnostics.map((diagnostic) => (
+						<Caption key={JSON.stringify(diagnostic)}>
+							{[diagnostic.provider, diagnostic.message, diagnostic.hint].filter(Boolean).join(" · ")}
+						</Caption>
+					))
+				: null}
+		</View>
+	);
+}
+
+const SKELETON_ROWS = [
+	{ id: "first", width: "60%" },
+	{ id: "second", width: "45%" },
+	{ id: "third", width: "60%" },
+	{ id: "fourth", width: "45%" },
+] as const;
+
+/** Stand-in rows while the models load: the list's shape, never a spinner. */
+function ModelSkeleton() {
+	const { palette } = useColors();
+	return (
+		<View style={{ paddingHorizontal: 16, paddingTop: 16, gap: 20 }}>
+			{SKELETON_ROWS.map((row) => (
+				<View key={row.id} testID="model-skeleton" style={{ gap: 6 }}>
+					<View style={{ width: row.width, height: 14, borderRadius: 4, backgroundColor: palette.edge }} />
+					<View style={{ width: "35%", height: 10, borderRadius: 4, backgroundColor: palette.edge }} />
+				</View>
+			))}
+		</View>
+	);
+}
+
+function Quiet({ children }: { children: string }) {
+	const { palette } = useColors();
+	const scale = useTextScale();
+	return (
+		<Text
+			allowFontScaling={allowFontScaling}
+			style={{ paddingHorizontal: 16, paddingTop: 16, color: palette.inkMid, fontSize: 15 * scale, lineHeight: 20 * scale }}
+		>
+			{children}
+		</Text>
+	);
 }
