@@ -155,7 +155,16 @@ This is the judgment that matters: an editor reading each version's writing, sid
   --out /tmp/lab/rank-sets.txt --key /tmp/lab/rank-key.json
 ```
 
-`--out` is what you hand a reviewer. `--key` is rank-sets' own key, mapping each set's letters back to real labels; keep it out of the reviewer's sight the same way you kept `review-pack`'s key out. `--prompt` points at the versioned judgment instructions (`rank-reviewer-prompt-v1.md` by default): what counts as bad writing, kept separate from the mechanical answer format so it can evolve on its own.
+`--out` is what you hand a reviewer. `--key` is rank-sets' own key, mapping each set's letters back to real labels; keep it out of the reviewer's sight the same way you kept `review-pack`'s key out. `--prompt` points at the versioned judgment instructions: what counts as bad writing, kept separate from the mechanical answer format so it can evolve on its own.
+
+Two reviewer prompts ship here. `rank-reviewer-prompt-v1.md` (the default) judges writing only: outcome first, plain words, no padding, no repetition. `rank-reviewer-prompt-judgment-v1.md` judges the whole packet the way you would judge a new senior colleague: judgment first (did it get the substance right, notice the thing that made the obvious answer wrong, push back when it should have), then writing. Reach for judgment-v1 in a round that changes what the agent does, not just how it writes; reach for v1 when behavior is already settled and the round is a pure prose change. Pass `--prompt` to choose:
+
+```bash
+/tmp/lab/evener-fluency rank-sets \
+  --review-pack-key /tmp/lab/review-key.json --packets /tmp/lab/review/packets \
+  --out /tmp/lab/rank-sets.txt --key /tmp/lab/rank-key.json \
+  --prompt tools/prompt-eval/rank-reviewer-prompt-judgment-v1.md
+```
 
 A set in `/tmp/lab/rank-sets.txt` looks like this:
 
