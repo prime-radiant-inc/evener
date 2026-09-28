@@ -4438,7 +4438,7 @@ it("offers nothing for a document left two hours ago, or with none left", async 
 });
 
 it("drops the Continue reading row when its two hours run out, even on an idle Board", async () => {
-	vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+	vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval", "Date"] });
 	try {
 		const id = hubId();
 		adoptedAnHourAgo(id);

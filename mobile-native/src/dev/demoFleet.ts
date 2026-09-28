@@ -30,7 +30,7 @@ import type {
 	SearchResponse,
 	Source,
 } from "@evener/appwire-client";
-import { type DemoCoordinator, demoActivityTree } from "./demoSubagents.js";
+import { type DemoCoordinator, type DemoSubagent, demoActivityTree } from "./demoSubagents.js";
 
 // The generation id the fleet's navigationCapability advertises in demo-hub.mts's
 // initialize handshake. Every wireV2 response must carry the exact same id:
@@ -169,22 +169,11 @@ type ProtoHost = "magic-kingdom" | "paradise-park";
 // the wire's below. "shutdown" covers every non-live session (shut down,
 // test-run and archived alike -- data.js sets `live: false` on all of them).
 export type ProtoState = "failed" | "question" | "approval" | "restart" | "yourmove" | "working" | "idle" | "shutdown";
-type SubState = "running" | "failed" | "done";
+type SubState = RawSubagent["state"];
 
-export interface RawSubagent {
-	id: string;
-	title: string;
-	state: SubState;
-	ago: number;
-	// data.js's detail for a named swarm (data.js:209-259), which the Subagents
-	// list's rows show (demoSubagents.ts).
-	elapsed?: number; // seconds it ran
-	model?: string;
-	lane?: string; // its own worktree's branch
-	tokens?: string; // "1.2M", "210K"
-	line?: string; // its why line
-	children?: RawSubagent[];
-}
+// A subagent as data.js's swarms name it, with the detail the Subagents
+// list's rows show (demoSubagents.ts).
+export type RawSubagent = DemoSubagent;
 
 interface RawSession {
 	id: string;
@@ -1050,27 +1039,37 @@ export function createDemoFleet(options: DemoFleetOptions = {}): DemoFleet {
 		navigationCapability: () => ({ ...capability(DEMO_FLEET_GENERATION), sequence }),
 		askQuestion,
 		archive,
-		answerJobsList: (params) => {
-			const raw = sessionsList.find((candidate) => sessionRef(candidate) === params.ref);
-			return demoActivityTree(
-				raw ? coordinatorOf(raw) : { ref: params.ref ?? "", title: "", model: "", subagents: [] },
-				startupMs,
-			);
-		},
+		answerJobsList: (params) => demoActivityTree(coordinatorFor(sessionsList, params.ref ?? ""), startupMs),
 	};
 }
 
-// A fleet session as the coordinator of its subagents (demoSubagents.ts).
-function coordinatorOf(raw: RawSession): DemoCoordinator {
-	const host = hostId(raw.host);
-	return {
-		ref: sessionRef(raw),
-		title: raw.title,
-		model: raw.model ?? "",
-		subagents: rawChildren(raw),
-		// The same refs the Board's child rows and the sessions' delegates use.
-		subagentRef: (id) => hostSessionRef(host, id),
-	};
+// The fleet session or subagent a ref names, as the coordinator of the
+// subagents it started (demoSubagents.ts); nobody's, an empty tree. A
+// subagent's are its children, named as the Board's child rows and the
+// sessions' delegates name them.
+function coordinatorFor(sessions: readonly RawSession[], ref: string): DemoCoordinator {
+	for (const raw of sessions) {
+		const host = hostId(raw.host);
+		const subagentRef = (id: string) => hostSessionRef(host, id);
+		const model = raw.model ?? "";
+		if (sessionRef(raw) === ref) return { ref, title: raw.title, model, subagents: rawChildren(raw), subagentRef };
+		const sub = findSubagent(rawChildren(raw), ref, subagentRef);
+		if (sub) return { ref, title: sub.title, model: sub.model ?? model, subagents: sub.children ?? [], subagentRef };
+	}
+	return { ref, title: "", model: "", subagents: [], subagentRef: (id) => id };
+}
+
+function findSubagent(
+	subagents: readonly RawSubagent[],
+	ref: string,
+	refOf: (id: string) => string,
+): RawSubagent | undefined {
+	for (const sub of subagents) {
+		if (refOf(sub.id) === ref) return sub;
+		const nested = findSubagent(sub.children ?? [], ref, refOf);
+		if (nested) return nested;
+	}
+	return undefined;
 }
 
 // Every answer the fleet gives, for one fixed list of sessions at one

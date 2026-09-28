@@ -18,6 +18,7 @@ const coordinator: DemoCoordinator = {
 	ref: "local:s-pr2138",
 	title: "Get PR 2138 Test Clean",
 	model: "glm-5.3-vision",
+	subagentRef: (id) => `local:${id}`,
 	subagents: [
 		{
 			id: "g-settle",

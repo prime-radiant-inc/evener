@@ -1,9 +1,9 @@
 // The demo fleet's subagents and documents, as the hub serves them: the
 // activity tree behind the Subagents list (evener/jobs/list) and the
-// documents the Reader opens (/doc/file); each subagent's own session
-// (thread/read) is demoSessions.ts's. Built from the same raw swarm the Board's navigation rows come
-// from (demoFleet.ts, after the prototype's data.js), so the Board, the list
-// and the transcript agree (spec Appendix B).
+// documents the Reader opens (/doc/file). Built from the same raw swarm the
+// Board's navigation rows come from (demoFleet.ts, after the prototype's
+// data.js), so the Board, the list and the transcript agree (spec Appendix
+// B). Each subagent's own session (thread/read) is demoSessions.ts's.
 export interface DemoSubagent {
 	id: string;
 	title: string;
@@ -28,14 +28,8 @@ export interface DemoCoordinator {
 	title: string;
 	model: string;
 	subagents: readonly DemoSubagent[];
-	/** How the fleet names a subagent's own session; its host and its id
-	 * unless the fleet derives real-shaped ids (demoFleet.ts hostSessionRef). */
-	subagentRef?: (id: string) => string;
-}
-
-// A subagent's own session ref, and the session id inside it.
-function subagentRefOf(coordinator: DemoCoordinator, id: string): string {
-	return coordinator.subagentRef?.(id) ?? `${hostOf(coordinator.ref)}:${id}`;
+	/** How the fleet names a subagent's own session (demoFleet.ts hostSessionRef). */
+	subagentRef: (id: string) => string;
 }
 
 export function demoTokens(label: string | undefined): number {
@@ -45,7 +39,6 @@ export function demoTokens(label: string | undefined): number {
 	return Math.round(Number(match[1]) * scale);
 }
 
-const hostOf = (ref: string) => ref.slice(0, ref.indexOf(":"));
 const idOf = (ref: string) => ref.slice(ref.indexOf(":") + 1);
 const iso = (ms: number) => new Date(ms).toISOString();
 const DEFAULT_ELAPSED_SECONDS = 300;
@@ -74,7 +67,7 @@ function session(sessionId: string, ref: string, label: string, entries: unknown
 /** evener/jobs/list's answer for a coordinator: its subagents, nested as they were started. */
 export function demoActivityTree(coordinator: DemoCoordinator, startupMs: number): { data: unknown } {
 	const toEntry = (sub: DemoSubagent, ownerSessionId: string): { entry: unknown; counts: Counts } => {
-		const ref = subagentRefOf(coordinator, sub.id);
+		const ref = coordinator.subagentRef(sub.id);
 		const sessionId = idOf(ref);
 		const running = sub.state === "running";
 		const elapsed = (sub.elapsed ?? DEFAULT_ELAPSED_SECONDS) * 1000;

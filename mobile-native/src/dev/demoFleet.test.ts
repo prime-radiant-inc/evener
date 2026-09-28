@@ -965,6 +965,15 @@ describe("demo fleet subagents", () => {
 		});
 	});
 
+	it("gives a subagent that started subagents its own tree, as its transcript's delegates name them", () => {
+		const coordinator = parseActivityTree(fleet.answerJobsList({ ref: pr2138 }).data);
+		const settle = flattenSubagents(coordinator as never).find((row) => row.title === "Fix race in tree settle");
+		if (!settle) throw new Error("no Fix race in tree settle");
+		const tree = parseActivityTree(fleet.answerJobsList({ ref: settle.ref }).data);
+		expect(tree?.root.ref).toBe(settle.ref);
+		expect(flattenSubagents(tree as never).map((row) => row.title)).toEqual(["Check drain ordering in tests"]);
+	});
+
 	it("gives a session with no subagents an empty tree", () => {
 		const other = parseActivityTree(fleet.answerJobsList({ ref: `local:${demoSessionId("s-gateway")}` }).data);
 		expect(other?.root.entries).toEqual([]);

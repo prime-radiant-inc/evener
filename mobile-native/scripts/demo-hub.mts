@@ -95,8 +95,8 @@ export async function createDemoHub(
 				)
 			: null;
 	const http = createServer((request, response) => {
-		const url = new URL(request.url ?? "/", "http://demo");
-		if (!documents || request.method !== "GET" || url.pathname !== "/doc/file") {
+		const url = URL.parse(request.url ?? "/", "http://demo");
+		if (!url || !documents || request.method !== "GET" || url.pathname !== "/doc/file") {
 			response.writeHead(404).end();
 			return;
 		}
