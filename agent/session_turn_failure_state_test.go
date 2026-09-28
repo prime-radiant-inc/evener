@@ -41,8 +41,8 @@ func TestHistoryEndsInTurnFailure(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			if got := historyEndsInTurnFailure(c.history); got != c.want {
-				t.Fatalf("historyEndsInTurnFailure = %v, want %v", got, c.want)
+			if _, got := historyTurnFailure(c.history); got != c.want {
+				t.Fatalf("historyTurnFailure found a failure = %v, want %v", got, c.want)
 			}
 		})
 	}

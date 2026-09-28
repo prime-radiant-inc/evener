@@ -30,7 +30,7 @@ Two coupled rules, both mandatory:
    a tool list and an instruction). The tools exist precisely because these
    reconstructions rot. Run the tool.
 
-This mirrors evener's own `agent/prompts/sections/transcripts.md` rule: use the
+This mirrors the transcripts rule in evener's own `agent/prompts/system.md.tmpl`: use the
 transcript tools, do not read raw transcript files directly.
 
 ## The diagnose → findings loop

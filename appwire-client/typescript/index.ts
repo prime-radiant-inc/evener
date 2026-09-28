@@ -106,7 +106,7 @@ export type {
 } from "./commandCatalog";
 export { createCommandCatalog, createSessionCommandCatalog, sessionPluginNames } from "./commandCatalog";
 export type { InputAttachment } from "./composerInput";
-export { buildComposerInput, buildInput, canonicalSkillNames } from "./composerInput";
+export { buildComposerInput, buildInput, canonicalSkillNames, formatQuoteBlock, mergeDraftText } from "./composerInput";
 export type { CredentialLayerView, InstanceProviderGroup } from "./credentialLabels";
 export {
   activeSourceLabel,
@@ -150,6 +150,7 @@ export type { DocFileContent, DocFileErrorKind } from "./docContent";
 export { DOC_FILE_MAX_BYTES, DocFileError, docFileRawURL, docImageURL } from "./docContent";
 export type { DiscardStoredDraftResult } from "./draftCheckpointPort";
 export { canonicalJson } from "./draftCheckpointPort";
+export { diffStats, editDiffText } from "./editDiff";
 export type { EntityIdMatch, EntityKind } from "./entityIds";
 export { entityKindOf, findEntityIds, jobOwnerSessionId } from "./entityIds";
 export type { DelegateEntityView, EntityView, JobEntityView, OpenTarget, WatchEntityView } from "./entityView";

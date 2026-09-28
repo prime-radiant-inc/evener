@@ -961,6 +961,7 @@ func appThreadTreeEntries(thread appwire.Thread) (schema.SessionMeta, hubcore.Li
 		PendingEscalation:  len(thread.Evener.PendingEscalations) > 0,
 		PendingEscalations: thread.Evener.PendingEscalations,
 		PendingQuestion:    appwire.ClonePendingQuestion(thread.Evener.PendingQuestion),
+		Failure:            appwire.CloneThreadFailure(thread.Evener.Failure),
 		Project:            project,
 	}
 	entry.RunningJobs, entry.CompletedJobs = hubcore.SplitNonAgentJobs(diagnosticsJobs(thread.Evener.Diagnostics))

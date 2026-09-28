@@ -1,22 +1,14 @@
-import * as Clipboard from "expo-clipboard";
 import { memo, useMemo } from "react";
-import { AccessibilityInfo, Alert, Linking, Platform } from "react-native";
+import { type AccessibilityActionEvent, type AccessibilityActionInfo, Alert, Linking, Platform } from "react-native";
 import {
   EnrichedMarkdownText,
   type MarkdownStyle,
 } from "react-native-enriched-markdown";
+import { copyText } from "./clipboard";
 import { fonts, typeRoles } from "./design/tokens";
 import { externalMarkdownLink } from "./markdownLinks";
 import { useColors } from "./ui";
 
-async function copy(text: string) {
-  try {
-    await Clipboard.setStringAsync(text);
-    AccessibilityInfo.announceForAccessibility("Copied");
-  } catch {
-    Alert.alert("Could not copy", "Select the text and try copying again.");
-  }
-}
 function showLink(target: string) {
   const url = externalMarkdownLink(target);
   Alert.alert(
@@ -36,7 +28,7 @@ function showLink(target: string) {
       {
         text: "Copy destination",
         onPress: () => {
-          void copy(target);
+          void copyText(target);
         },
       },
       { text: "Cancel", style: "cancel" },
@@ -56,7 +48,7 @@ async function openLink(target: string) {
       {
         text: "Copy destination",
         onPress: () => {
-          void copy(target);
+          void copyText(target);
         },
       },
       { text: "Cancel", style: "cancel" },
@@ -64,10 +56,19 @@ async function openLink(target: string) {
   }
 }
 
+// `selectable` false hands touch and hold to the caller's own menu (the
+// transcript's agent message), so the text's native selection menu, and the
+// "Copy response" item added to it, go with it.
 export const MarkdownResponse = memo(function MarkdownResponse({
   markdown,
+  selectable = true,
+  accessibilityActions,
+  onAccessibilityAction,
 }: {
   markdown: string;
+  selectable?: boolean;
+  accessibilityActions?: AccessibilityActionInfo[];
+  onAccessibilityAction?: (event: AccessibilityActionEvent) => void;
 }) {
   const colors = useColors();
   const markdownStyle = useMemo<MarkdownStyle>(() => {
@@ -190,7 +191,7 @@ export const MarkdownResponse = memo(function MarkdownResponse({
       markdown={markdown}
       markdownStyle={markdownStyle}
       flavor="github"
-      selectable
+      selectable={selectable}
       allowFontScaling
       enableTaskListItemToggle={false}
       streamingAnimation={false}
@@ -199,14 +200,20 @@ export const MarkdownResponse = memo(function MarkdownResponse({
         void openLink(url);
       }}
       onLinkLongPress={({ url }) => showLink(url)}
-      contextMenuItems={[
-        {
-          text: "Copy response",
-          onPress: () => {
-            void copy(markdown);
-          },
-        },
-      ]}
+      contextMenuItems={
+        selectable
+          ? [
+              {
+                text: "Copy response",
+                onPress: () => {
+                  void copyText(markdown);
+                },
+              },
+            ]
+          : undefined
+      }
+      accessibilityActions={accessibilityActions}
+      onAccessibilityAction={onAccessibilityAction}
     />
   );
 });

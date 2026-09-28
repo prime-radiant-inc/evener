@@ -2,7 +2,6 @@ package agent
 
 import (
 	"context"
-	"embed"
 	"errors"
 	"strings"
 	"testing"
@@ -19,12 +18,11 @@ import (
 // precisely so a test can do this; it is the only way to reach that path,
 // because the templates it renders are compiled into the binary.
 func forceSystemPromptRenderFailure(t *testing.T) {
-	t.Helper()
-	old := renderEmbeddedSystemPrompt
-	renderEmbeddedSystemPrompt = func(*sectionResolver, embed.FS, string, string, promptData) (string, []promptSource, error) {
-		return "", nil, errors.New("forced render failure")
+	old := executeSystemPromptTemplate
+	executeSystemPromptTemplate = func(promptData) (string, error) {
+		return "", errors.New("forced render failure")
 	}
-	t.Cleanup(func() { renderEmbeddedSystemPrompt = old })
+	t.Cleanup(func() { executeSystemPromptTemplate = old })
 }
 
 // awaitOrFail runs fn and fails loudly if it has not returned within the

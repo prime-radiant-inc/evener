@@ -8,7 +8,15 @@
 //
 // Production code never imports this module: it is a .testkit, and vitest's
 // default include collects only *.test.* files as suites.
-import { createElement, type ReactElement, type ReactNode } from "react";
+import {
+	createElement,
+	type ForwardedRef,
+	forwardRef,
+	type ReactElement,
+	type ReactNode,
+	type Ref,
+	useImperativeHandle,
+} from "react";
 import {
 	act,
 	create,
@@ -64,13 +72,16 @@ export function nativeModuleMock() {
 			props.sections.length === 0 ? (props.ListEmptyComponent ?? null) : null,
 		);
 	const FlatList = (props: {
+		ref?: Ref<unknown>;
 		data?: unknown[];
 		keyExtractor?: (item: unknown, index: number) => string;
 		renderItem?: (info: { item: unknown }) => ReactNode;
 		ListHeaderComponent?: ReactNode;
+		ListFooterComponent?: ReactNode;
 		ListEmptyComponent?: ReactNode;
-	}) =>
-		createElement(
+	}) => {
+		useImperativeHandle(props.ref, () => flatListHandle, []);
+		return createElement(
 			"FlatList",
 			null,
 			props.ListHeaderComponent ?? null,
@@ -82,7 +93,9 @@ export function nativeModuleMock() {
 				),
 			),
 			(props.data ?? []).length === 0 ? (props.ListEmptyComponent ?? null) : null,
+			props.ListFooterComponent ?? null,
 		);
+	};
 
 	// KeyboardAvoidingView only shifts layout; the test tree renders its
 	// children unchanged.
@@ -135,11 +148,55 @@ export function nativeModuleMock() {
 	};
 }
 
+/** How many times a mocked swipeable's ref was closed; reset it per test. */
+export const swipeableCalls = { closes: 0 };
+
+/** react-native-gesture-handler/ReanimatedSwipeable as an inert host element:
+ * it renders its children and carries every prop, so a test finds it by type
+ * and drives its callbacks; its ref's close() is counted. */
+export function gestureHandlerModuleMock() {
+	const ReanimatedSwipeable = forwardRef(function ReanimatedSwipeable(
+		props: { children?: ReactNode } & Record<string, unknown>,
+		ref: ForwardedRef<unknown>,
+	) {
+		useImperativeHandle(ref, () => ({
+			close: () => {
+				swipeableCalls.closes += 1;
+			},
+			openLeft: () => {},
+			openRight: () => {},
+			reset: () => {},
+		}));
+		return createElement("ReanimatedSwipeable", props, props.children);
+	});
+	return {
+		__esModule: true,
+		default: ReanimatedSwipeable,
+		SwipeDirection: { LEFT: "left", RIGHT: "right" },
+	};
+}
+
+/** Every scroll a mounted FlatList was asked for, oldest first: the stub's
+ * ref records scrollToIndex, scrollToOffset and scrollToEnd (directly or
+ * through getScrollResponder) instead of moving anything. A test clears it
+ * before the mount it cares about. */
+export const flatListCalls: { method: string; args?: unknown }[] = [];
+
+const flatListHandle = {
+	scrollToIndex: (args: unknown) => void flatListCalls.push({ method: "scrollToIndex", args }),
+	scrollToOffset: (args: unknown) => void flatListCalls.push({ method: "scrollToOffset", args }),
+	scrollToEnd: (args?: unknown) => void flatListCalls.push({ method: "scrollToEnd", args }),
+	getScrollResponder: () => ({
+		scrollToEnd: (args?: unknown) => void flatListCalls.push({ method: "scrollToEnd", args }),
+	}),
+};
+
 /** One Alert.alert call the mounted tree made. */
 export interface AlertRequest {
 	title: string;
 	message?: string;
 	buttons?: { text?: string; style?: string; onPress?: () => void }[];
+	options?: { cancelable?: boolean };
 }
 
 /** Every Alert.alert call the mounted tree made, oldest first. A test that
@@ -151,8 +208,9 @@ function recordAlert(
 	title: string,
 	message?: string,
 	buttons?: AlertRequest["buttons"],
+	options?: AlertRequest["options"],
 ): void {
-	alertRequests.push({ title, message, buttons });
+	alertRequests.push({ title, message, buttons, options });
 }
 
 /** The client a test hands the credential store: every request method it is
@@ -262,6 +320,12 @@ export function renderedText(tree: ReactTestRenderer): string {
 	if (Array.isArray(json)) for (const node of json) visit(node);
 	else visit(json);
 	return chunks.join(" ");
+}
+
+/** The text one node reads as: its strings and its descendants', joined with
+ * nothing between them, the way nested Text elements run together on screen. */
+export function textOf(node: ReactTestInstance): string {
+	return node.children.map((child) => (typeof child === "string" ? child : textOf(child))).join("");
 }
 
 /** The first mounted Pressable whose accessibility label is `label`, found

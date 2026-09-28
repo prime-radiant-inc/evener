@@ -620,10 +620,22 @@ function sessionList(tree: ReturnType<typeof render>) {
 		/** The block's wrapper reporting a new height, as layout would. */
 		measure: (height: number) =>
 			act(() => block().parent?.props.onLayout({ nativeEvent: { layout: { height } } })),
-		scroll: (y: number) => act(() => list().props.onScroll({ nativeEvent: { contentOffset: { y } } })),
+		// contentSize/layoutMeasurement match ConversationScreen.send.test.tsx's
+		// own scrollTo: tall enough that these small offsets never cross the
+		// "near the live end" threshold onScroll also checks.
+		scroll: (y: number) =>
+			act(() =>
+				list().props.onScroll({
+					nativeEvent: { contentOffset: { y }, contentSize: { height: 4_000 }, layoutMeasurement: { height: 600 } },
+				}),
+			),
 		drag: (y: number) => {
 			act(() => list().props.onScrollBeginDrag());
-			act(() => list().props.onScroll({ nativeEvent: { contentOffset: { y } } }));
+			act(() =>
+				list().props.onScroll({
+					nativeEvent: { contentOffset: { y }, contentSize: { height: 4_000 }, layoutMeasurement: { height: 600 } },
+				}),
+			);
 			act(() => list().props.onScrollEndDrag());
 		},
 	};
