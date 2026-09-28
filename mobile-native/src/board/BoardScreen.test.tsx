@@ -2252,6 +2252,22 @@ it("opens a project from search: leaves search, unfolds the project and scrolls 
 	act(() => tree.unmount());
 });
 
+it("scrolls to a project from search that was already unfolded", async () => {
+	const id = hubId();
+	adoptedAnHourAgo(id);
+	const project = evenerProject({ default_expanded: true });
+	connect(id, hub({ ...fleet, catalogs: { projects: [project] } }).client, "ready");
+	const { tree, scrollTo } = await mountWithInstances(navigation());
+	layOutAt(boardScroller(tree), 0, 600);
+	expect(projectRows(tree, "evener")[0].props.accessibilityState).toEqual({ expanded: true });
+	await revealFromSearch(tree);
+	// Leaving search mounts the sections afresh, so both layouts arrive.
+	layOutAt(projectSection(tree, "projects"), 900, 400);
+	layOutAt(revealTarget(tree), 60, 48);
+	expect(scrollTo).toHaveBeenLastCalledWith({ y: 900 + 60 - 0.3 * (600 - 48), animated: true });
+	act(() => tree.unmount());
+});
+
 it("scrolls to a project from search without animating while Reduce Motion is on", async () => {
 	const id = hubId();
 	adoptedAnHourAgo(id);

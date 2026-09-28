@@ -431,7 +431,10 @@ function Board({ hubId, hubName, navigation }: { hubId: string; hubName: string;
 	// Search's project hit (spec 7.4): unfold the way to the project, then,
 	// once its row and the Projects section have both laid out (in either
 	// order), scroll the row 30% of the way down the viewport, as a list's
-	// scrollToItem with viewPosition 0.3 would.
+	// scrollToItem with viewPosition 0.3 would. A reveal starts from search,
+	// whose results replace the sections, so leaving search mounts them
+	// afresh and both layouts always arrive, even for a project already
+	// unfolded; the section's offset from before search could be stale.
 	const revealProject = (projectKey: string) => {
 		const { view } = projectSections.projects;
 		const project = view.projects.find((candidate) => candidate.key === projectKey);
