@@ -1291,6 +1291,11 @@ func registerThreadHandlers(
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerSessionImage, func(_ context.Context, params appwire.SessionImageParams) (appwire.SessionImageResponse, error) {
 		return sessionImageFromHub(cfg, params)
 	})
+	// evener/session/document is the AppWire counterpart of the raw /doc/file
+	// read, for the controller's /doc/file proxy (S7).
+	appserver.HandleTyped(server.Router(), appwire.MethodEvenerSessionDocument, func(_ context.Context, params appwire.SessionDocumentParams) (appwire.SessionDocumentResponse, error) {
+		return sessionDocumentFromHub(cfg, params)
+	})
 	appserver.HandleTyped(server.Router(), appwire.MethodThreadList, func(ctx context.Context, params appwire.ThreadListParams) (appwire.ThreadListResponse, error) {
 		return hubThreadList(ctx, cfg, sources, params)
 	})
