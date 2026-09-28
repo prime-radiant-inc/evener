@@ -608,6 +608,15 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 		_, _ = fmt.Fprintf(stderr, "[hub] %v\n", err)
 		return err
 	}
+	// The operation store loads before the web server is built; a loaded
+	// compensation record whose stash reference is not this hub.toml family's
+	// own must never become a read, restore, or remove target, so a foreign
+	// path refuses startup (the machine-managed-file posture: a record this
+	// build cannot account for is refused loudly, never served).
+	if err := validateHostOpsStashReferences(opsStore, opts.configPath); err != nil {
+		_, _ = fmt.Fprintf(stderr, "[hub] %v\n", err)
+		return err
+	}
 	web := newWebServer(hubcore.WebConfig{
 		HubAddr:                   cfg.Addr,
 		AuthToken:                 authToken,
@@ -936,6 +945,22 @@ func openHostOpsStore(stateRoot string, stderr io.Writer, retention hostops.Rete
 			"[hub] host operation store quarantined %s (custody %s, quarantine epoch %d); the replacement store serves the custody's orphan-unverified records only, and every name that custody closed stays closed until orphan-resolve\n",
 			signal.QuarantinedFile, signal.CustodyFile, signal.QuarantineEpoch)
 	}
+	// §7's boot order starts here: the store load plus the safety-critical local
+	// reap of its local orphan boundary FIRST, before hub.toml loads, before the
+	// interrupted transition, and before anything serves. Crash-fencing §3
+	// (slice S19) owns that reap; this is the named seam it fills, and nothing
+	// here does its work — no host is touched, no epoch is advanced. Its failure
+	// contract is fail-closed and durable, never a startup refusal: an
+	// unverifiable boundary keeps its `pending-spawn` intent open and marks the
+	// affected records `orphan-unverified` with the host admission-fenced,
+	// retried on every boot (crash-fencing §3's local-reap rule and §7's boot
+	// reaping order). The error below is what that implementation reports; the
+	// hub serves either way, exactly as it does when this seam is a no-op.
+	if reaped, err := reapLocalOrphanBoundary(store); err != nil {
+		_, _ = fmt.Fprintf(stderr, "[hub] host operation store opened, but its local orphan boundary was not reaped: %v\n", err)
+	} else if reaped > 0 {
+		_, _ = fmt.Fprintf(stderr, "[hub] host operation store reaped %d local orphan boundary row(s)\n", reaped)
+	}
 	if reaped, err := store.ReapExpiredTokens(); err != nil {
 		_, _ = fmt.Fprintf(stderr, "[hub] host operation store opened, but its expired confirmation tokens were not reaped: %v\n", err)
 	} else if reaped > 0 {
@@ -955,6 +980,27 @@ func openHostOpsStore(stateRoot string, stderr io.Writer, retention hostops.Rete
 		_, _ = fmt.Fprintf(stderr, "[hub] host operation store moved %d in-flight operation(s) to interrupted\n", interrupted)
 	}
 	return store, nil
+}
+
+// reapLocalOrphanBoundary is the named seam for crash-fencing §3's
+// safety-critical local reap: the FIRST step of §7's boot order, run
+// immediately after the operation store loads and before hub.toml loads, the
+// interrupted transition, or any request is served. Slice S19 owns the reap —
+// it resolves the store's local orphan boundary so a crashed epoch's remote
+// fence is never crossed locally — and this slice deliberately builds none of
+// it (no remote call, no guard advance, no kill/wait); the seam exists so the
+// order and the call site are real today.
+//
+// The reap's failure contract, per crash-fencing §3, is fail-closed and
+// durable, never a startup refusal: enumeration that cannot verify an orphan
+// keeps the boundary's `pending-spawn` intent open and marks the affected
+// records `orphan-unverified` with the host admission-fenced, and every
+// subsequent boot retries it (§7). The returned error is that implementation's
+// to report; this call site logs it and serves, because a failed reap fences
+// affected hosts through the record, not through the hub's startup.
+func reapLocalOrphanBoundary(store *hostops.Store) (int, error) {
+	_ = store
+	return 0, nil
 }
 
 // hostOperationRetention maps the hub's owner knobs onto the operation store's

@@ -107,6 +107,20 @@ type Config struct {
 	// spec 08 §6), keyed by the server-generated attempt id: the claim a retry
 	// or recover writes beside the remnant it claims.
 	TeardownAttempts map[string]HostTeardownAttempt `toml:"teardown_attempts"`
+	// PendingStoreSync is hub.toml's cross-file commit intent section
+	// (deploy-pipeline spec 08b §9), keyed by host name: the exact store rows a
+	// commit's swap is deleting or invalidating, plus the hub.toml generation
+	// the intent belongs to. The mutation's atomic write carries it, the store's
+	// purge applies it after the swap, and a follow-up atomic write clears it.
+	// At most one intent per host.
+	PendingStoreSync map[string]HostStoreSyncIntent `toml:"pending_store_sync"`
+	// MirrorCommits is hub.toml's generation-mirror commit-marker section
+	// (deploy-pipeline spec 08b §4), keyed by host name: the (hub.toml
+	// generation, store-mirror generation) pair every hub.toml commit that also
+	// advances a mirrored store-side generation writes. Boot reconciles the
+	// store mirror against the file's marks with these as the authorization
+	// evidence.
+	MirrorCommits map[string]HostMirrorCommit `toml:"mirror_commits"`
 
 	// PluginAutoUpgrade is the global on/off switch for the background plugin
 	// auto-upgrade daemon (design doc §9.1). Defaults to on: the meaningful
@@ -524,6 +538,17 @@ func decodeConfig(name, data string) (Config, error) {
 	if err := validateHostTeardownAttempts(cfg.TeardownAttempts, cfg.TeardownRemnants); err != nil {
 		return cfg, fmt.Errorf("validate teardown attempts: %w", err)
 	}
+	// The cross-file commit intent and the generation-mirror markers are the
+	// deploy pipeline's machine-managed sections (08b §4/§9): a record whose
+	// shape this build cannot decode — an intent without rows or a generation,
+	// a marker without a generation — is refused loudly before any rewrite, the
+	// same reserved-namespace posture the sections above take.
+	if err := validateHostStoreSync(cfg.PendingStoreSync); err != nil {
+		return cfg, fmt.Errorf("validate pending store sync: %w", err)
+	}
+	if err := validateHostMirrorCommits(cfg.MirrorCommits); err != nil {
+		return cfg, fmt.Errorf("validate mirror commits: %w", err)
+	}
 	// Every field of a reserved record must decode: the two tables are decoded
 	// into typed structs and rebuilt on every rewrite, so a field this build does
 	// not know would be silently dropped by the next write. Spec 08 §6 is
@@ -535,7 +560,8 @@ func decodeConfig(name, data string) (Config, error) {
 	for _, key := range metadata.Undecoded() {
 		if len(key) > 1 && (key[0] == "host_records" || key[0] == "generations" || key[0] == "mutation_receipts" ||
 			key[0] == "tombstones" || key[0] == "pruned_receipts" || key[0] == "staged_receipts" ||
-			key[0] == "teardown_remnants" || key[0] == "teardown_attempts") {
+			key[0] == "teardown_remnants" || key[0] == "teardown_attempts" ||
+			key[0] == "pending_store_sync" || key[0] == "mirror_commits") {
 			return cfg, fmt.Errorf("config %s: reserved record %s carries a field this build does not decode; refusing rather than dropping it on the next rewrite", name, key.String())
 		}
 	}

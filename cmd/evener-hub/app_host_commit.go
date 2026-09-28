@@ -96,6 +96,11 @@ type hostCommitPlan struct {
 	Known   []hostreg.Host
 	// Tombstone rides a removal's own write, exactly as before.
 	Tombstone *hostTombstoneStage
+	// StoreSync rides a removal's own write when it has a token row to purge:
+	// the cross-file commit intent (deploy-pipeline 08b §9) hub.toml's atomic
+	// write carries, so the store purge that applies it is recoverable after a
+	// crash.
+	StoreSync *pendingHostStoreSync
 	// Pinned is the committed teardown target the marker stages before any
 	// teardown executes.
 	Pinned HostPendingTeardown
@@ -137,6 +142,9 @@ func stagedChange(plan *hostCommitPlan, marker HostStagedReceipt) hostPersistCha
 	if plan.Tombstone != nil {
 		change.tombstone = plan.Tombstone
 	}
+	if plan.StoreSync != nil {
+		change.storeSync = plan.StoreSync
+	}
 	return change
 }
 
@@ -175,7 +183,7 @@ func (m *hubHostManager) stageCommit(plan *hostCommitPlan, now time.Time) error 
 // marker survives to be finalized (fabricating a `committed` receipt for a
 // refused mutation) and the provisional receipt survives as a dedup hit.
 func compensationChange(plan *hostCommitPlan) hostPersistChange {
-	return hostPersistChange{dropMarker: plan.Name, dropReceipt: plan.Key}
+	return hostPersistChange{dropMarker: plan.Name, dropReceipt: plan.Key, dropStoreSync: plan.Name}
 }
 
 // flipRuntimeSwapped runs spec §5's step (3)'s second half: the runtime phase
@@ -545,7 +553,14 @@ func (m *hubHostManager) finalizeOrphanMarkerIfAny(ctx context.Context, name str
 	entries := m.cfg.store.snapshot()
 	claimed := marker
 	claimed.FinalizingToken = mintFinalizingToken()
-	if err := m.persistHosts(entries, entries, hostPersistChange{marker: &pendingHostMarker{Name: name, Marker: claimed}}); err != nil {
+	// The name this finalization owns: the write's records for it must win over
+	// the file's older copies. A removal's name is not in the live set, so
+	// without this the preservation rule would ride the file's older receipt
+	// (the staged provisional one) back over the finalized receipt this write
+	// carries — the marker would drop while its finalized outcome, remnant, or
+	// `bootRecovered` marker never rendered.
+	known := ownedEntrySet(entries, name)
+	if err := m.persistHosts(entries, known, hostPersistChange{marker: &pendingHostMarker{Name: name, Marker: claimed}}); err != nil {
 		m.cfg.mu.Unlock()
 		return nil, err
 	}
@@ -618,10 +633,22 @@ func (m *hubHostManager) finalizeOrphanMarkerIfAny(ctx context.Context, name str
 		receipt.RemnantID = ""
 	}
 	entries = m.cfg.store.snapshot()
-	if err := m.persistHosts(entries, entries, change); err != nil {
+	if err := m.persistHosts(entries, known, change); err != nil {
 		return nil, err
 	}
 	return &receipt, nil
+}
+
+// ownedEntrySet returns entries plus a name-only placeholder for name, so the
+// writer's ownership rules treat name as this write's to change. Callers pass
+// it as `known` when the write must carry a removed (or otherwise non-live)
+// name's records authoritatively; the placeholder never becomes a live entry —
+// the write's `entries` slice is what renders.
+func ownedEntrySet(entries []hostreg.Host, name string) []hostreg.Host {
+	out := make([]hostreg.Host, 0, len(entries)+1)
+	out = append(out, entries...)
+	out = append(out, hostreg.Host{Name: name})
+	return out
 }
 
 // hostMutationKindForMarker recovers the mutation kind a marker belongs to from
