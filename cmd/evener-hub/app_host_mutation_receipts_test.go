@@ -734,11 +734,12 @@ func TestHostMutationReceiptDroppedWhenTheCommitUnCommits(t *testing.T) {
 	}
 }
 
-// TestHostMutationReceiptDroppedWhenTheLivePhaseFails pins the same rule for an
-// edit whose live phase refuses: the commit's receipt is dropped with the
-// rollback, and a later call under the same key commits fresh — never a replay
-// of a mutation the API reported as failed.
-func TestHostMutationReceiptDroppedWhenTheLivePhaseFails(t *testing.T) {
+// TestHostMutationReceiptKeptWhenTheLivePhaseFails pins the commit-point rule
+// for an edit whose rebind refuses: the commit landed, so its receipt stays —
+// carrying the `committed-with-teardown-failure` outcome and the pre-minted
+// remnant id of the repair handle (spec 08 §6) — and the original mutationId
+// replays it rather than re-applying.
+func TestHostMutationReceiptKeptWhenTheLivePhaseFails(t *testing.T) {
 	f := newUpdateFixture(t)
 	otherReg, err := hostreg.New(nil)
 	if err != nil {
@@ -752,15 +753,34 @@ func TestHostMutationReceiptDroppedWhenTheLivePhaseFails(t *testing.T) {
 	if _, err := f.m.Update(context.Background(), params); err == nil {
 		t.Fatal("Update over a live seam that refuses succeeded, want the failure")
 	}
-	if got := len(receiptsFor(t, f.m, params.MutationID)); got != 0 {
-		t.Fatalf("the un-committed edit left %d receipts in memory, want none", got)
+	receipts := receiptsFor(t, f.m, params.MutationID)
+	if len(receipts) != 1 {
+		t.Fatalf("the committed edit left %d receipts in memory, want exactly one", len(receipts))
+	}
+	var receipt HostMutationReceipt
+	for _, stored := range receipts {
+		receipt = stored
+	}
+	if receipt.Outcome != hostReceiptOutcomeTeardownFailure || receipt.RemnantID == "" {
+		t.Fatalf("receipt = %+v, want the teardown-failure outcome with a remnant", receipt)
+	}
+	if _, open := f.m.cfg.store.markedRemnantFor("side"); !open {
+		t.Fatal("the receipt names a remnant the store does not carry")
 	}
 	cfg, err := LoadConfig(f.configPath)
 	if err != nil {
 		t.Fatalf("load hub.toml: %v", err)
 	}
-	if len(cfg.MutationReceipts) != 0 {
-		t.Fatalf("the un-committed edit left %d receipts in hub.toml, want none", len(cfg.MutationReceipts))
+	if len(cfg.MutationReceipts) != 1 {
+		t.Fatalf("hub.toml carries %d receipts, want the committed edit's one", len(cfg.MutationReceipts))
+	}
+	for _, stored := range cfg.MutationReceipts {
+		if stored.Outcome != hostReceiptOutcomeTeardownFailure || stored.RemnantID != receipt.RemnantID {
+			t.Fatalf("stored receipt = %+v, want the recorded failure arm with remnant %q", stored, receipt.RemnantID)
+		}
+	}
+	if _, durable := cfg.TeardownRemnants[receipt.RemnantID]; !durable {
+		t.Fatalf("hub.toml does not carry remnant %q beside the receipt", receipt.RemnantID)
 	}
 }
 
@@ -803,6 +823,18 @@ name = "side"
 		{
 			name: "unknown outcome",
 			section: fmt.Sprintf(`[mutation_receipts.%q]
+outcome = "torn-write"
+generation = 2
+incarnation_id = "inc-1"
+committed_at = "2026-09-27T12:00:00Z"
+[mutation_receipts.%q.row]
+name = "side"
+`, validKey, validKey),
+			want: `outcome "torn-write"`,
+		},
+		{
+			name: "collision-dropped without its fields",
+			section: fmt.Sprintf(`[mutation_receipts.%q]
 outcome = "collision-dropped"
 generation = 2
 incarnation_id = "inc-1"
@@ -810,7 +842,7 @@ committed_at = "2026-09-27T12:00:00Z"
 [mutation_receipts.%q.row]
 name = "side"
 `, validKey, validKey),
-			want: `outcome "collision-dropped"`,
+			want: "with no dropped_entry",
 		},
 		{
 			name: "unknown field",
@@ -819,7 +851,7 @@ outcome = "committed"
 generation = 2
 incarnation_id = "inc-1"
 committed_at = "2026-09-27T12:00:00Z"
-winning_fingerprint = "deadbeef"
+superseded_token = "deadbeef"
 [mutation_receipts.%q.row]
 name = "side"
 `, validKey, validKey),

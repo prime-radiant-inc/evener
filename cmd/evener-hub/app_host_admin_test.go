@@ -464,6 +464,13 @@ func TestHostAdminAllowListMatchesCatalog(t *testing.T) {
 		// controller opened through the bridge, and the probe is never forwarded
 		// onward to a third hub. A proxy forward is denied deliberately.
 		"evener/host/running": false,
+		// Slice 12's teardown-repair mutations are controller-local for the same
+		// reason the rest of the registry surface is: they resume or clear THIS
+		// controller's own teardown remnants against its own hub.toml and
+		// channels. A peer hub forwarding them would repair another hub's
+		// teardowns, so both are denied deliberately.
+		"evener/host/teardown-retry":   false,
+		"evener/host/teardown-recover": false,
 		// The credential push is controller-LOCAL: it reads this controller's
 		// own store and dispatches to a host itself, like evener/host/request.
 		// It is never a proxied call, so a peer hub cannot make this hub push

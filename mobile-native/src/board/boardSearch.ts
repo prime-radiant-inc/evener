@@ -98,9 +98,13 @@ export function createSearchController(): SearchController {
 }
 
 /** The Sessions group: live results, then past ones in All; live only in
- * Live. */
+ * Live. The hub's past index holds live sessions' records too, and its past
+ * results don't leave them out, so a session that is live shows once, as its
+ * live result. */
 export function sessionResults(results: SearchResponse, scope: SearchScope): SearchResult[] {
-	return scope === "live" ? results.live : [...results.live, ...results.past];
+	if (scope === "live") return results.live;
+	const live = new Set(results.live.map((result) => result.ref));
+	return [...results.live, ...results.past.filter((result) => !live.has(result.ref))];
 }
 
 /** A result's mark, in boardState's precedence (attention.ts). A result
