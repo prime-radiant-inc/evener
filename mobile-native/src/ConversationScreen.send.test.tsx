@@ -147,6 +147,7 @@ const navigation = {
 	getState: () => navigationState.state,
 	navigate: vi.fn(),
 	push: vi.fn(),
+	pop: vi.fn(),
 	goBack: vi.fn(),
 	setParams: vi.fn(),
 	setOptions: vi.fn(),
@@ -575,6 +576,34 @@ it("gives Send a typed command's own label, so VoiceOver hears what it runs", as
 	await type(tree, "/steer now");
 	expect(pressable(tree, "Steer")).toBeDefined();
 	expect(hub.mutations()).toEqual([]);
+});
+
+it("keeps the session open when /shutdown is typed and completed (ruling 19)", async () => {
+	const served = thread("ref-typed-shutdown", "idle");
+	// thread() shares the module-level CAPABILITIES object; clone it so this
+	// test's shutdown capability never leaks into a later test's fixture.
+	served.evener = {
+		...served.evener,
+		capabilities: { ...served.evener.capabilities, shutdown: true },
+	};
+	const { tree, hub } = await mount(served);
+	await type(tree, "/shutdown");
+	const send = pressable(tree, "Shut down");
+	expect(send?.props.accessibilityState).toMatchObject({ disabled: false });
+	const reads = () => hub.requests.filter(({ method }) => method === "thread/read").length;
+	const readsBefore = reads();
+
+	await press(tree, "Shut down");
+
+	expect(hub.requests.filter(({ method }) => method === "thread/shutdown")).toEqual([
+		{ method: "thread/shutdown", params: { ref: "ref-typed-shutdown" } },
+	]);
+	// It rereads the session it stays on instead of closing it and leaving.
+	expect(reads()).toBeGreaterThan(readsBefore);
+	expect(navigation.pop).not.toHaveBeenCalled();
+	expect(navigation.goBack).not.toHaveBeenCalled();
+	expect(field(tree)).toBeDefined();
+	tree.unmount();
 });
 
 it("does nothing when a Stop lands after the turn already ended", async () => {
