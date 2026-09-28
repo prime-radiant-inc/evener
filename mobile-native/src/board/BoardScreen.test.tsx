@@ -24,7 +24,14 @@ import type { ReactTestInstance, ReactTestRenderer } from "react-test-renderer";
 import { act, create } from "react-test-renderer";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type { ConversationClientLike } from "../../../mobile/src/services/conversation";
-import { alertRequests, render, renderedText, screenConnection, swipeableCalls } from "../renderNative.testkit";
+import {
+	alertRequests,
+	render,
+	renderedText,
+	screenConnection,
+	swipeableCalls,
+	swipeRowFully,
+} from "../renderNative.testkit";
 import { sheetKey } from "../sheet/sheetHosts";
 import { ACTIVITY_POLL_MS, STALE_AFTER_MS } from "./activityPoll";
 import { ROW_MOVE } from "./boardMotion";
@@ -79,6 +86,9 @@ vi.mock("react-native", async () => {
 vi.mock("react-native-reanimated", async () => (await import("../renderNative.testkit")).reanimatedModuleMock());
 vi.mock("react-native-gesture-handler/ReanimatedSwipeable", async () =>
 	(await import("../renderNative.testkit")).gestureHandlerModuleMock(),
+);
+vi.mock("react-native-gesture-handler", async () =>
+	(await import("../renderNative.testkit")).gestureDetectorModuleMock(),
 );
 // Stop goes through the process's real mutation runtime, over an in-memory
 // SQLite double (one per database name, as the device keeps one file). The
@@ -955,37 +965,6 @@ it("starts a fresh Board when you switch hubs, and stops the old hub's", async (
 	act(() => tree.unmount());
 });
 
-it("offers the hub menu as an alert off iOS, without Hub settings while the hub is out of reach", async () => {
-	const { Platform } = (await import("react-native")) as unknown as { Platform: { OS: string } };
-	const id = hubId();
-	adoptedAnHourAgo(id);
-	connect(id, hub(fleet).client, "ready");
-	const nav = navigation();
-	const tree = await mount(nav);
-	Platform.OS = "android";
-	try {
-		const buttonLabels = () => (alertRequests.at(-1)?.buttons ?? []).map((button) => button.text);
-		const pressHubButton = () => {
-			const hubButton = render(headerOptions(nav).unstable_headerLeftItems({})[0].element);
-			act(() => hubButton.root.findByType("Pressable" as never).props.onPress());
-			act(() => hubButton.unmount());
-		};
-		pressHubButton();
-		expect(alertRequests.at(-1)?.title).toBe("Work hub");
-		expect(buttonLabels()).toEqual(["Hub settings", "Switch hub", "Cancel"]);
-		act(() => alertRequests.at(-1)?.buttons?.[1].onPress?.());
-		expect(nav.navigate).toHaveBeenLastCalledWith("Hubs");
-		// An alert has no disabled buttons, so Hub settings leaves the list.
-		connect(id, null, "connecting");
-		rerender(tree, nav);
-		pressHubButton();
-		expect(buttonLabels()).toEqual(["Switch hub", "Cancel"]);
-	} finally {
-		Platform.OS = "ios";
-	}
-	act(() => tree.unmount());
-});
-
 /** The search field at the top of the Board's scroller, driven the way a
  * person drives it. */
 function searchField(tree: ReactTestRenderer) {
@@ -1466,15 +1445,13 @@ it("offers no Reconnect or Refresh anywhere", async () => {
 			...(item.menu?.items.map((entry) => entry.label) ?? []),
 		])
 		.filter((label): label is string => typeof label === "string");
-	// The hub button is a custom view: read what it draws and the menu it opens.
+	// The hub button is a custom view: read what it draws. It opens the Hub
+	// sheet, whose own pages pin that they never ask to reconnect.
 	const hubButton = render(headerItems[0].element);
-	act(() => hubButton.root.findByType("Pressable" as never).props.onPress());
-	const hubMenu: string[] = harness.actionSheet.mock.calls.at(-1)?.[0].options ?? [];
-	expect(hubMenu.length).toBeGreaterThan(0);
 	const labels = tree.root
 		.findAll((node) => typeof node.props.accessibilityLabel === "string")
 		.map((node) => node.props.accessibilityLabel as string);
-	for (const text of [...texts(tree), ...labels, ...headerLabels, ...texts(hubButton), ...hubMenu])
+	for (const text of [...texts(tree), ...labels, ...headerLabels, ...texts(hubButton)])
 		expect(text).not.toMatch(/^(Reconnect|Refresh|Retry)\b/);
 	expect(renderedText(tree)).not.toMatch(/Reconnect\b|Refresh|pull/i);
 	act(() => hubButton.unmount());
@@ -1600,7 +1577,7 @@ it("shows the Draft tag on sessions with a saved draft", async () => {
 	act(() => tree.unmount());
 });
 
-it("puts the hub's name and menu on the left and search on the right", async () => {
+it("puts the hub's name on the left, opening the Hub, and search on the right", async () => {
 	const id = hubId();
 	adoptedAnHourAgo(id);
 	connect(id, hub(fleet).client, "ready");
@@ -1609,7 +1586,7 @@ it("puts the hub's name and menu on the left and search on the right", async () 
 	const options = headerOptions(nav);
 	expect(options.title).toBe("");
 	// One control, as spec 7.1 draws it: the hub's name and a chevron in a
-	// single header item that opens the hub menu.
+	// single header item that opens the Hub sheet (spec 12).
 	const hubItems = options.unstable_headerLeftItems({});
 	expect(hubItems).toHaveLength(1);
 	expect(hubItems[0].type).toBe("custom");
@@ -1617,7 +1594,8 @@ it("puts the hub's name and menu on the left and search on the right", async () 
 	expect(texts(hubButton)).toEqual(["Work hub"]);
 	expect(hubButton.root.findAllByType("SymbolView" as never).map((node) => node.props.name)).toEqual(["chevron.down"]);
 	const press = hubButton.root.findByType("Pressable" as never);
-	expect(press.props.accessibilityLabel).toBe("Work hub, hub menu");
+	expect(press.props.accessibilityLabel).toBe("Work hub");
+	expect(press.props.accessibilityHint).toBe("Opens the Hub");
 	// A long hub name truncates inside the capsule instead of growing it
 	// into Search (the window is 390pt wide here).
 	expect(press.props.style.maxWidth).toBeLessThanOrEqual(390 * 0.6);
@@ -1625,20 +1603,15 @@ it("puts the hub's name and menu on the left and search on the right", async () 
 	expect(hubName.props.numberOfLines).toBe(1);
 	expect(hubName.props.style).toMatchObject({ flexShrink: 1 });
 	act(() => press.props.onPress());
-	const [sheet, choose] = harness.actionSheet.mock.calls.at(-1) ?? [];
-	expect(sheet).toMatchObject({ options: ["Hub settings", "Switch hub", "Cancel"], cancelButtonIndex: 2 });
-	expect(sheet.disabledButtonIndices).toEqual([]);
-	act(() => choose(0));
-	expect(nav.navigate).toHaveBeenLastCalledWith("HubSettings", { hubId: id });
-	act(() => choose(1));
-	expect(nav.navigate).toHaveBeenLastCalledWith("Hubs");
+	expect(nav.navigate).toHaveBeenLastCalledWith("Hub", { screen: "HubHome", params: { hubId: id } });
+	expect(harness.actionSheet).not.toHaveBeenCalled();
 	act(() => hubButton.unmount());
-	// Hub settings needs the hub; Switch hub doesn't.
+	// The Hub opens with the hub out of reach too: it keeps its last data.
 	connect(id, null, "connecting");
 	rerender(tree, nav);
 	const offline = render(headerOptions(nav).unstable_headerLeftItems({})[0].element);
 	act(() => offline.root.findByType("Pressable" as never).props.onPress());
-	expect(harness.actionSheet.mock.calls.at(-1)?.[0].disabledButtonIndices).toEqual([0]);
+	expect(nav.navigate).toHaveBeenLastCalledWith("Hub", { screen: "HubHome", params: { hubId: id } });
 	act(() => offline.unmount());
 	expect(options.unstable_headerRightItems({})).toEqual([expect.objectContaining({ label: "Search" })]);
 	act(() => tree.unmount());
@@ -3325,11 +3298,6 @@ function pressRevealed(swipeable: ReactTestInstance, side: "left" | "right", lab
 	if (!button) throw new Error(`no ${label} on the ${side}`);
 	act(() => button.props.onPress());
 }
-/** A full swipe right, begun well clear of the screen's left edge. */
-function swipeRight(swipeable: ReactTestInstance) {
-	act(() => swipeable.findByProps({ testID: "swipe-row-content" }).props.onTouchStart({ nativeEvent: { pageX: 200 } }));
-	act(() => swipeable.props.onSwipeableOpen("right"));
-}
 async function mountSwipeFleet(fake: ReturnType<typeof hub>, nav = navigation()) {
 	const id = hubId();
 	adoptedAnHourAgo(id);
@@ -3371,7 +3339,7 @@ it("archives a local row on a full swipe right, dims it until the hub confirms, 
 	const fake = hub(swipeFleet(), undefined, undefined, { holdChanges: true });
 	const { tree } = await mountSwipeFleet(fake);
 	swipeableCalls.closes = 0;
-	swipeRight(swipeableOf(tree, "Refactor parser"));
+	swipeRowFully(swipeableOf(tree, "Refactor parser"), "right");
 	expect(swipeableCalls.closes).toBe(1);
 	await settle();
 	expect(fake.mutations).toEqual([
@@ -3400,7 +3368,7 @@ it("archives a local row on a full swipe right, dims it until the hub confirms, 
 it("archives another host's row by its ref", async () => {
 	const fake = hub(swipeFleet());
 	const { tree } = await mountSwipeFleet(fake);
-	swipeRight(swipeableOf(tree, "Park chore"));
+	swipeRowFully(swipeableOf(tree, "Park chore"), "right");
 	await settle();
 	expect(fake.mutations).toEqual([
 		{ method: "evener/archive/set", params: { kind: "session", id: "paradise-park:pp", archived: true } },
@@ -3411,7 +3379,7 @@ it("archives another host's row by its ref", async () => {
 it("says nothing when an archive can't be confirmed, and settles the journal so the row can swipe again", async () => {
 	const fake = hub(swipeFleet(), undefined, undefined, { refuse: true });
 	const { tree } = await mountSwipeFleet(fake);
-	swipeRight(swipeableOf(tree, "Refactor parser"));
+	swipeRowFully(swipeableOf(tree, "Refactor parser"), "right");
 	await settle();
 	expect(fake.mutations).toHaveLength(1);
 	expect(texts(tree)).not.toContain("Archived");

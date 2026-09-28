@@ -1,5 +1,6 @@
 import type { CellRendererProps } from "@react-native/virtualized-lists";
 import { useHeaderHeight } from "@react-navigation/elements";
+import type { NavigatorScreenParams } from "@react-navigation/native";
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
 import * as Clipboard from "expo-clipboard";
 import { randomUUID } from "expo-crypto";
@@ -67,6 +68,7 @@ import { canComposeFor, conversationControls, queueActionRefusal } from "./conve
 import type { HubProfile } from "./connection";
 import { goalObjective, submitGoalCommand } from "./goalCommand";
 import { HubEditor } from "./HubEditor";
+import type { HubRoutes } from "./hub/hubSheetContext";
 import { ImageAttachments } from "./ImageAttachments";
 import { ImageSelection } from "./imageSelection";
 import {
@@ -256,6 +258,8 @@ export type Routes = {
 	};
 	Hubs: undefined;
 	Sessions: undefined;
+	/** The Hub sheet (spec 12), a modal holding its own stack of pages. */
+	Hub: NavigatorScreenParams<HubRoutes>;
 	NewSession: { hubId: string; hubName: string };
 	/** openedBy says Next opened this session (ruling 2), so Next from it
 	 * replaces it. slideFrom says the title's swipe opened it as the

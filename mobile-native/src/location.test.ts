@@ -445,6 +445,16 @@ describe("last mobile location", () => {
 		).toBeNull();
 		expect(locationForRoute({ name: "Sessions" }, null)).toBeNull();
 	});
+	it("reopens the Board, not the Hub sheet, after a relaunch (ruling 27)", () => {
+		const board = { key: "board", name: "Sessions" };
+		const sheet = {
+			key: "hub",
+			name: "Hub",
+			params: { screen: "HubHome", params: { hubId: "studio" } },
+		};
+		const saved = routeToSave({ index: 1, routes: [board, sheet] });
+		expect(saved && locationForRoute(saved, "studio")).toEqual({ hubId: "studio" });
+	});
 	it("rejects malformed or unsupported persisted values", () => {
 		for (const raw of [
 			"{",

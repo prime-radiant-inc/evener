@@ -8,6 +8,7 @@ import { createConversationStore } from "../../mobile/src/state/conversation";
 import { createDemoHub } from "../scripts/demo-hub.mjs";
 import { createHubClient } from "./connection";
 import { demoSessionId } from "./dev/demoFleet.js";
+import { readOrganizationNavigation } from "./organizationNavigation";
 
 describe("native demonstration hub", () => {
 	it("changes the observed queue and rejects stale identities and revisions", async () => {
@@ -425,6 +426,57 @@ describe("native demonstration hub's redesign fleet", () => {
 			// question must be told 1 again when it comes back.
 			const handshake = await client.connect();
 			expect(handshake.navigation?.sequence).toBe(1);
+		} finally {
+			client.close();
+			await hub.close();
+		}
+	});
+
+	it("archives a session, tells connected clients, and answers with a receipt the phone's check confirms", async () => {
+		const hub = await createDemoHub(0, undefined, {});
+		const client = createHubClient(
+			hub.origin,
+			"",
+			(url) => new WebSocket(url) as unknown as WebSocketLike,
+		);
+		const invalidated = navigationInvalidated(client);
+		try {
+			const handshake = await client.connect();
+			const id = demoSessionId("s-deslop");
+			const response = await client.request("evener/archive/set", {
+				kind: "session",
+				id,
+				archived: true,
+			});
+			expect(response.ok).toBe(true);
+			expect(response.navigation.generation_id).toBe(
+				handshake.navigation?.generationId,
+			);
+			expect(await invalidated).toEqual({
+				generationId: response.navigation.generation_id,
+				sequence: 1,
+				targets: response.navigation.targets,
+			});
+			// The Board's journal settles an archive through this same check
+			// (useBoardOrganization.ts, organizationCheck.ts).
+			const observation = await readOrganizationNavigation(
+				client,
+				{
+					id: "archive",
+					operation: {
+						kind: "archive",
+						params: { kind: "session", id, archived: true },
+					},
+					receipt: response.navigation,
+				},
+				() => true,
+				true,
+			);
+			expect(observation).toMatchObject({
+				state: "archived",
+				title: "Deslop README Pass",
+				settled: true,
+			});
 		} finally {
 			client.close();
 			await hub.close();

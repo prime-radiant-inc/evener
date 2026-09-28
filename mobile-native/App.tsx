@@ -13,6 +13,7 @@ import { SafeAreaProvider } from "react-native-safe-area-context";
 import { BoardScreen } from "./src/board/BoardScreen";
 import { RowMenuSheet } from "./src/board/RowMenu";
 import { ConnectionProvider, useConnection } from "./src/ConnectionProvider";
+import { HubSheet } from "./src/hub/HubSheet";
 import { ForkScreen } from "./src/ForkScreen";
 import { HubSettingsScreen } from "./src/HubSettingsScreen";
 import { KeybindingPreferencesScreen } from "./src/KeybindingPreferencesScreen";
@@ -203,6 +204,11 @@ function Navigation() {
 						options={({ route }) => ({
 							title: route.params.title || "Project",
 						})}
+					/>
+					<Stack.Screen
+						name="Hub"
+						component={HubSheet}
+						options={{ presentation: "modal", headerShown: false }}
 					/>
 					<Stack.Screen
 						name="NewSession"

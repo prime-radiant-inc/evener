@@ -10,6 +10,7 @@ import {
 	NAVIGATION_SECTION_LIMIT,
 	navigationParamsToResourceKey,
 } from "@evener/appwire-client/state/navigation";
+import { archiveTarget } from "../board/rowActions.js";
 import { localSessionId } from "../sessionDeletionResult.js";
 import { capChildren, createDemoFleet, DEMO_FLEET_GENERATION, demoSessionId } from "./demoFleet.js";
 
@@ -736,5 +737,149 @@ describe("demo fleet offline propagation", () => {
 		const pr2138 = findRow(liveRows(fleet), "s-pr2138"); // local/magic-kingdom
 		expect(pr2138.children.length).toBeGreaterThan(0);
 		expect(pr2138.children.every((child) => child.offline === undefined)).toBe(true);
+	});
+});
+
+describe("demo fleet archive", () => {
+	const fleet = () => createDemoFleet({ now: STARTUP });
+	const tierOf = (demo: ReturnType<typeof createDemoFleet>, ref: string) =>
+		read(demo, params({ resource: "location", ref })).tier;
+	// Every resource the archive changes, at the fleet's one new revision,
+	// and the loaded project pages, as the real hub's session archive names
+	// them (cmd/evener-hub/app_archive.go, navigation_service.go's
+	// commitTargetsLocked).
+	const archiveTargets = (revision: number, projectKey: string) => [
+		{ kind: "manifest", revision },
+		{ kind: "section", section: "live", revision },
+		{ kind: "section", section: "needs_you", revision },
+		{ kind: "catalog", catalog: "projects", revision },
+		{ kind: "catalog", catalog: "archived_projects", revision },
+		{ kind: "project", projectKey, revision },
+		{ kind: "all_loaded_projects" },
+	];
+
+	it("offers Archive on every Live row: a local row by its session id, another host's by its ref", () => {
+		for (const row of liveRows(fleet())) {
+			expect(archiveTarget(row)).toEqual({ kind: "session", id: row.host_id === "local" ? row.session_id : row.ref });
+		}
+	});
+
+	it("takes an archived session out of Live and answers with the receipt and invalidation a real hub sends", () => {
+		const demo = fleet();
+		const deslop = findRow(liveRows(demo), "s-deslop");
+		const before = demo.answerNavigationRead(params({ resource: "section", section: "live" }));
+		const { response, invalidated } = demo.archive({ kind: "session", id: deslop.session_id, archived: true });
+		const after = demo.answerNavigationRead(params({ resource: "section", section: "live" }));
+		expect(after.revision).toBeGreaterThan(before.revision);
+		expect(liveRows(demo).map((row) => row.session_id)).not.toContain(deslop.session_id);
+		expect(liveRows(demo)).toHaveLength(19);
+		expect(tierOf(demo, deslop.ref)).toBe("archived");
+		const targets = archiveTargets(after.revision, "deslop");
+		expect(response).toEqual({ ok: true, navigation: { generation_id: DEMO_FLEET_GENERATION, targets } });
+		expect(invalidated).toEqual({ generationId: DEMO_FLEET_GENERATION, sequence: 1, targets });
+		expect(demo.navigationCapability().sequence).toBe(1);
+	});
+
+	it("brings an unarchived session back to Live as it was, where it was", () => {
+		const demo = fleet();
+		const order = liveRows(demo).map((row) => row.session_id);
+		const deslop = findRow(liveRows(demo), "s-deslop");
+		demo.archive({ kind: "session", id: deslop.session_id, archived: true });
+		const { invalidated } = demo.archive({ kind: "session", id: deslop.session_id, archived: false });
+		expect(findRow(liveRows(demo), "s-deslop")).toEqual(deslop);
+		expect(liveRows(demo).map((row) => row.session_id)).toEqual(order);
+		expect(tierOf(demo, deslop.ref)).toBe("current");
+		expect(invalidated.sequence).toBe(2);
+	});
+
+	it("archives another host's session by its ref, and a local one by its local: ref", () => {
+		const demo = fleet();
+		const retry = findRow(liveRows(demo), "s-retry");
+		const deslop = findRow(liveRows(demo), "s-deslop");
+		demo.archive({ kind: "session", id: retry.ref, archived: true });
+		demo.archive({ kind: "session", id: deslop.ref, archived: true });
+		expect(tierOf(demo, retry.ref)).toBe("archived");
+		expect(tierOf(demo, deslop.ref)).toBe("archived");
+	});
+
+	it("keeps an archive when the working row later asks its question", () => {
+		const demo = fleet();
+		const deslop = findRow(liveRows(demo), "s-deslop");
+		demo.archive({ kind: "session", id: deslop.session_id, archived: true });
+		demo.askQuestion();
+		expect(liveRows(demo).map((row) => row.session_id)).not.toContain(deslop.session_id);
+		expect(findRow(liveRows(demo), "s-gateway").ask_pending).toBe(true);
+	});
+
+	it("keeps an archived session in its own project's Archived tier, where its location sends a reveal", () => {
+		const demo = fleet();
+		const deslop = findRow(liveRows(demo), "s-deslop");
+		demo.archive({ kind: "session", id: deslop.session_id, archived: true });
+		const location = read(demo, params({ resource: "location", ref: deslop.ref }));
+		expect(location).toMatchObject({ project_key: "deslop", tier: "archived" });
+		const tier = sessionsOf(
+			read(demo, params({ resource: "project_page", projectKey: "deslop", tier: "archived" })),
+		);
+		expect(tier.map((row) => row.session_id)).toEqual([deslop.session_id]);
+	});
+
+	it("moves a project whose every session is archived into Archived projects, and back on unarchive", () => {
+		const demo = fleet();
+		const keys = (catalog: string) =>
+			(read(demo, params({ resource: "catalog", catalog, limit: 100 })).projects as { key: string }[]).map(
+				(project) => project.key,
+			);
+		const projectsBefore = keys("projects");
+		demo.archive({ kind: "session", id: demoSessionId("s-deslop"), archived: true });
+		expect(keys("projects")).not.toContain("deslop");
+		expect(read(demo, params({ resource: "catalog", catalog: "archived_projects", limit: 100 })).projects).toEqual([
+			expect.objectContaining({ key: "evener", session_count: 271 }),
+			expect.objectContaining({ key: "deslop", session_count: 1 }),
+		]);
+		expect(read(demo, params({ resource: "manifest" })).catalogs).toMatchObject({
+			projects: { count: projectsBefore.length - 1 },
+			archived_projects: { count: 2 },
+		});
+		demo.archive({ kind: "session", id: demoSessionId("s-deslop"), archived: false });
+		expect(keys("projects")).toEqual(projectsBefore);
+		expect(keys("archived_projects")).toEqual(["evener"]);
+	});
+
+	it("keeps an archived pinned session in its pin section", () => {
+		const demo = fleet();
+		const pinCatalog = () => read(demo, params({ resource: "pin_catalog", limit: 100 })).pin_sections;
+		const research = () =>
+			sessionsOf(read(demo, params({ resource: "pin_section", sectionId: "research" }))).map((row) => row.session_id);
+		const catalogBefore = pinCatalog();
+		const researchBefore = research();
+		const pinSectionsBefore = (read(demo, params({ resource: "manifest" })).sections as { pin_sections: unknown })
+			.pin_sections;
+		demo.archive({ kind: "session", id: demoSessionId("s-diff"), archived: true });
+		expect(research()).toContain(demoSessionId("s-diff"));
+		expect(research()).toEqual(researchBefore);
+		expect(pinCatalog()).toEqual(catalogBefore);
+		expect((read(demo, params({ resource: "manifest" })).sections as { pin_sections: unknown }).pin_sections).toEqual(
+			pinSectionsBefore,
+		);
+	});
+
+	it("stops counting an archived working or failed row in the manifest's summary", () => {
+		const demo = fleet();
+		demo.archive({ kind: "session", id: demoSessionId("s-gateway"), archived: true });
+		demo.archive({ kind: "session", id: findRow(liveRows(demo), "s-retry").ref, archived: true });
+		const manifest = read(demo, params({ resource: "manifest" }));
+		expect(manifest.attentionSummary).toEqual({ needsYou: 3, error: 0, working: 8 });
+		expect(manifest.sections).toMatchObject({ live: { count: 18 }, needs_you: { count: 3 } });
+	});
+
+	it("refuses a project archive and a session it doesn't hold, changing nothing", () => {
+		const demo = fleet();
+		expect(() => demo.archive({ kind: "project", id: "deslop", archived: true })).toThrow(
+			"The demo fleet archives sessions only",
+		);
+		expect(() => demo.archive({ kind: "session", id: "0000000000000000000000", archived: true })).toThrow(
+			"Unknown demonstration session: 0000000000000000000000",
+		);
+		expect(demo.navigationCapability().sequence).toBe(0);
 	});
 });
