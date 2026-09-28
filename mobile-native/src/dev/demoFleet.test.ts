@@ -254,6 +254,14 @@ describe("demo fleet location", () => {
 		expect(read(fleet, params({ resource: "location", ref: "local:s-roster" }))).toMatchObject({ tier: "recent" });
 	});
 
+	it("reports a test-run session under the tier project_page actually serves it", () => {
+		// tierRows serves every hub-test-env row under "current", so a location must
+		// not derive "recent" from age for s-test2 (26h) or a reveal would ask a
+		// project_page tier that returns an empty page (navigationReveal.ts).
+		for (const ref of ["local:s-test1", "local:s-test2", "local:s-test3"])
+			expect(read(fleet, params({ resource: "location", ref }))).toMatchObject({ tier: "current" });
+	});
+
 	it("leaves pin_section_id off a row that sits in no pin section", () => {
 		expect(read(fleet, params({ resource: "location", ref: "local:s-audit" }))).not.toHaveProperty("pin_section_id");
 	});

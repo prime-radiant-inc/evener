@@ -801,10 +801,12 @@ function fleetAnswers(
 				if (!raw) throw new Error(`Unknown demonstration session location: ${ref}`);
 				// The hub's location is a shallow summary (navigation_projection.go's
 				// projectShallow), not a row with its descendants: a location resource
-				// holds exactly one entity. Its tier is the one the Board's archive
-				// check compares: an archived row's is "archived", every other row's
-				// current or recent by the same age split tierRows uses.
-				const tier = raw.archived ? "archived" : raw.ago < D ? "current" : "recent";
+				// holds exactly one entity. Its tier must be the one tierRows serves the
+				// row under, since a reveal reads this tier and then asks that exact
+				// project_page: an archived row's is "archived", and a test-run row's is
+				// "current" (tierRows serves every hub-test-env row under current only,
+				// never by age), otherwise current or recent by the same age split.
+				const tier = raw.archived ? "archived" : raw.test || raw.ago < D ? "current" : "recent";
 				const response = respond(params, {
 					session: { ...rowOf(raw), children: [] },
 					top_level_ref: ref,
