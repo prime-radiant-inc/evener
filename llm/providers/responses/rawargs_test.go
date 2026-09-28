@@ -209,6 +209,26 @@ func rawArgumentsDoneSSE(doneArgs string) []byte {
 		"event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_1\",\"status\":\"completed\",\"model\":\"gpt-5.5\",\"output\":[],\"usage\":{\"input_tokens\":3,\"output_tokens\":2,\"total_tokens\":5}}}\n\n")
 }
 
+// rawMultipleArgumentsDoneSSE interleaves two calls' delta fragments, then
+// makes each arguments.done event authoritative with distinct raw bytes.
+func rawMultipleArgumentsDoneSSE(firstDone, secondDone string) []byte {
+	firstPrefix := `{"first":"`
+	firstSuffix := "\xfddraft\"}"
+	secondPrefix := `{"second":"`
+	secondSuffix := "\xfcdraft\"}"
+	return []byte("event: response.output_item.added\ndata: {\"type\":\"response.output_item.added\",\"item\":{\"id\":\"fc_1\",\"type\":\"function_call\",\"call_id\":\"call_1\",\"name\":\"first\"}}\n\n" +
+		"event: response.output_item.added\ndata: {\"type\":\"response.output_item.added\",\"item\":{\"id\":\"fc_2\",\"type\":\"function_call\",\"call_id\":\"call_2\",\"name\":\"second\"}}\n\n" +
+		"event: response.function_call_arguments.delta\ndata: {\"type\":\"response.function_call_arguments.delta\",\"item_id\":\"fc_2\",\"delta\":" + string(jsonStringToken(secondPrefix)) + "}\n\n" +
+		"event: response.function_call_arguments.delta\ndata: {\"type\":\"response.function_call_arguments.delta\",\"item_id\":\"fc_1\",\"delta\":" + string(jsonStringToken(firstPrefix)) + "}\n\n" +
+		"event: response.function_call_arguments.delta\ndata: {\"type\":\"response.function_call_arguments.delta\",\"item_id\":\"fc_2\",\"delta\":" + string(jsonStringToken(secondSuffix)) + "}\n\n" +
+		"event: response.function_call_arguments.delta\ndata: {\"type\":\"response.function_call_arguments.delta\",\"item_id\":\"fc_1\",\"delta\":" + string(jsonStringToken(firstSuffix)) + "}\n\n" +
+		"event: response.function_call_arguments.done\ndata: {\"type\":\"response.function_call_arguments.done\",\"item_id\":\"fc_1\",\"arguments\":" + string(jsonStringToken(firstDone)) + "}\n\n" +
+		"event: response.function_call_arguments.done\ndata: {\"type\":\"response.function_call_arguments.done\",\"call_id\":\"call_2\",\"item_id\":\"fc_2\",\"arguments\":" + string(jsonStringToken(secondDone)) + "}\n\n" +
+		"event: response.output_item.done\ndata: {\"type\":\"response.output_item.done\",\"item\":{\"id\":\"fc_1\",\"type\":\"function_call\",\"call_id\":\"call_1\",\"name\":\"first\"}}\n\n" +
+		"event: response.output_item.done\ndata: {\"type\":\"response.output_item.done\",\"item\":{\"id\":\"fc_2\",\"type\":\"function_call\",\"call_id\":\"call_2\",\"name\":\"second\"}}\n\n" +
+		"event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_1\",\"status\":\"completed\",\"model\":\"gpt-5.5\",\"output\":[]}}\n\n")
+}
+
 // decodeRawArgsStream runs the responses streaming decode with a scripted
 // SSE body and returns the tool-call Arguments from the final response.
 func decodeRawArgsStream(t *testing.T, sseBody string) []byte {
@@ -285,6 +305,44 @@ func TestRawArgs_Stream_ArgumentsDonePreservesRawBytes(t *testing.T) {
 	if !bytes.Equal(settledArgs, want) {
 		t.Fatalf("settled Arguments = %q (% x), want %q (% x)", settledArgs, settledArgs, want, want)
 	}
+}
+
+func TestRawArgs_Stream_MultipleArgumentsDonePreserveCallRouting(t *testing.T) {
+	want := [][]byte{
+		[]byte(`{"first":"` + "\xff" + `final"}`),
+		[]byte(`{"second":"` + "\xfe" + `final"}`),
+	}
+	srv, _ := server(t, http.StatusOK, string(rawMultipleArgumentsDoneSSE(string(want[0]), string(want[1]))))
+	res := liveRes(srv, nil)
+	s, err := (&Protocol{Client: srv.Client()}).Stream(context.Background(), llm.ShapeRequest(userReq("hi"), res), res)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	endArgs := map[string][]byte{}
+	var settledArgs [][]byte
+	for ev := range s.Events() {
+		switch ev.Type {
+		case llm.StreamEventError:
+			t.Fatalf("stream error: %v", ev.Err)
+		case llm.StreamEventToolCallEnd:
+			if _, exists := endArgs[ev.ToolCall.ID]; exists {
+				t.Fatalf("duplicate ToolCallEnd for %q", ev.ToolCall.ID)
+			}
+			endArgs[ev.ToolCall.ID] = append([]byte(nil), ev.ToolCall.Arguments...)
+		case llm.StreamEventFinish:
+			settledArgs = responseToolCallArguments(*ev.Response)
+		}
+	}
+	if len(endArgs) != len(want) {
+		t.Fatalf("ToolCallEnd count = %d, want %d", len(endArgs), len(want))
+	}
+	for i, callID := range []string{"call_1", "call_2"} {
+		if !bytes.Equal(endArgs[callID], want[i]) {
+			t.Fatalf("ToolCallEnd %s Arguments = %q (% x), want %q (% x)", callID, endArgs[callID], endArgs[callID], want[i], want[i])
+		}
+	}
+	assertRawArgsByIndex(t, settledArgs, want)
 }
 
 // TestRawArgs_Stream_NonCanonicalJSON asserts non-canonical valid JSON in
