@@ -33,6 +33,17 @@ describe("who else needs you (spec 13.2)", () => {
 		expect(nextSession(bands, "failed")?.ref).toBe("question");
 		expect(nextSession(liveBands([working], [], () => false), "working")).toBeNull();
 	});
+
+	it("walks on through everyone who needs you, and wraps around", () => {
+		const a = row("a", { state: "errored", updated_at: at(1) });
+		const b = row("b", { state: "errored", updated_at: at(2) });
+		const c = row("c", { state: "errored", updated_at: at(3) });
+		const three = liveBands([a, b, c], [a, b, c], () => false);
+		expect(nextSession(three, "a")?.ref).toBe("b");
+		expect(nextSession(three, "b")?.ref).toBe("c");
+		expect(nextSession(three, "c")?.ref).toBe("a");
+		expect(nextSession(liveBands([a], [a], () => false), "a")).toBeNull();
+	});
 });
 
 describe("Live order for the title bar's swipes (spec 6)", () => {

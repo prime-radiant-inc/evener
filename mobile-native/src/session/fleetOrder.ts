@@ -10,10 +10,16 @@ export function othersNeedingYou(bands: LiveBands, currentRef: string): Navigati
 	return bands.needsYou.map((item) => item.row).filter((row) => row.ref !== currentRef);
 }
 
-/** Next's destination, in Needs you order. Phase 6's alerts put "whichever
- * session alerted you most recently" first (ruling 11). */
+/** Next's destination: the session after this one in Needs you order,
+ * wrapping around, so Next walks through everyone who needs you instead of
+ * bouncing between the first two; the first of them when this one doesn't
+ * need you. Phase 6's alerts put "whichever session alerted you most
+ * recently" first (ruling 11). */
 export function nextSession(bands: LiveBands, currentRef: string): NavigationSessionSummary | null {
-	return othersNeedingYou(bands, currentRef)[0] ?? null;
+	const order = bands.needsYou.map((item) => item.row);
+	const index = order.findIndex((row) => row.ref === currentRef);
+	if (index === -1) return order[0] ?? null;
+	return order.length > 1 ? order[(index + 1) % order.length] : null;
 }
 
 export function liveOrder(bands: LiveBands): NavigationSessionSummary[] {
