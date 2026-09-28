@@ -1710,6 +1710,7 @@ func buildTreeAtWithProjects(metas []schema.SessionMeta, live []LiveEntry, decis
 		approval := firstApprovalFor(le.SessionID)
 		node := TreeNode{
 			ID:              le.SessionID,
+			Ref:             liveRefMap[le.SessionID],
 			State:           st,
 			Kind:            "session",
 			AskPending:      le.PendingAsk,
