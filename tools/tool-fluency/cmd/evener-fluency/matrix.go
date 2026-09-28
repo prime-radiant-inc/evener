@@ -65,6 +65,10 @@ func runMatrixCommand(args []string) error {
 	defineRunFlags(fs, &base, &systemPromptAppend)
 	var versionFlags cmdutil.StringSliceFlag
 	fs.Var(&versionFlags, "version", "LABEL=BIN: a prompt version and its evener binary (repeatable)")
+	versionManifestPath := fs.String("version-manifest", "", "YAML file mapping labels to git refs; matrix resolves and builds each one itself")
+	versionCache := fs.String("version-cache", "", "directory to cache binaries built from --version-manifest, keyed by commit (required with --version-manifest)")
+	repo := fs.String("repo", ".", "git repository --version-manifest resolves refs and builds against")
+	buildPackage := fs.String("build-package", "./cmd/evener", "package --version-manifest builds for each resolved commit")
 	models := fs.String("models", "", "comma-separated models, such as lunarouter/deepseek-4.1-flash")
 	maxConcurrent := fs.Int("max-concurrent", 2, "most runs at once; the gateway caps concurrent requests")
 	if err := fs.Parse(args); err != nil {
@@ -86,13 +90,35 @@ func runMatrixCommand(args []string) error {
 	if *maxConcurrent < 1 {
 		return errors.New("--max-concurrent must be at least 1")
 	}
+	if *versionManifestPath != "" && *versionCache == "" {
+		return errors.New("--version-manifest needs --version-cache, a directory to cache the binaries it builds")
+	}
 	var versions []matrixVersion
+	seenLabel := map[string]bool{}
 	for _, v := range versionFlags {
 		label, bin, err := parseLabeled(v)
 		if err != nil {
 			return err
 		}
 		versions = append(versions, matrixVersion{Label: label, Bin: bin})
+		seenLabel[label] = true
+	}
+	if *versionManifestPath != "" {
+		manifest, err := loadVersionManifest(*versionManifestPath)
+		if err != nil {
+			return err
+		}
+		built, err := versionsFromManifest(*repo, *versionCache, *buildPackage, manifest)
+		if err != nil {
+			return err
+		}
+		for _, v := range built {
+			if seenLabel[v.Label] {
+				return fmt.Errorf("label %q is in both --version and --version-manifest", v.Label)
+			}
+			seenLabel[v.Label] = true
+			versions = append(versions, v)
+		}
 	}
 	var modelList []string
 	for m := range strings.SplitSeq(*models, ",") {
@@ -101,7 +127,7 @@ func runMatrixCommand(args []string) error {
 		}
 	}
 	if len(versions) == 0 || len(modelList) == 0 {
-		return errors.New("need at least one --version and one model in --models")
+		return errors.New("need at least one --version or --version-manifest entry, and one model in --models")
 	}
 	base.harness = "cli"
 	base.systemPromptAppend = []string(systemPromptAppend)
