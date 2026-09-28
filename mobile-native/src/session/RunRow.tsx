@@ -83,7 +83,7 @@ export function RunRow({
 			{live ? null : open ? "▾ " : "▸ "}
 			{`${runHeadText(summary)} · `}
 			{summary.parts.map((part, index) => (
-				<Fragment key={part.text}>
+				<Fragment key={part.family}>
 					{index > 0 ? ", " : null}
 					{part.text}
 					{part.failed > 0 ? <Text style={{ color: palette.dangerInk }}>{runPartFailedText(part)}</Text> : null}

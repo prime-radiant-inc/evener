@@ -166,6 +166,9 @@ export function timeMarkerText(at: number, now: number, timeZone?: string): stri
 }
 
 export interface RunPart {
+	/** The kind of step the part counts. A run has one part per family, so
+	 * this is the part's identity while its words change as the run grows. */
+	family: Family;
 	text: string;
 	/** Drawn after the text as "(2 failed)", in red ink even when folded. */
 	failed: number;
@@ -178,7 +181,7 @@ export interface RunSummary {
 	failed: number;
 }
 
-type Family = "read" | "edit" | "search" | "fetch" | "webSearch" | "shell" | "other";
+export type Family = "read" | "edit" | "search" | "fetch" | "webSearch" | "shell" | "other";
 
 const FAMILIES: Record<string, Family> = {
 	read_file: "read",
@@ -282,7 +285,7 @@ export function runSummary(steps: readonly RunStep[]): RunSummary {
 	return {
 		steps: steps.length,
 		...(durationMs === undefined ? {} : { durationMs }),
-		parts: [...groups.values()].map((group) => ({ text: partText(group), failed: group.failed })),
+		parts: [...groups.values()].map((group) => ({ family: group.family, text: partText(group), failed: group.failed })),
 		failed,
 	};
 }

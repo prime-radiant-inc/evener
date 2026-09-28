@@ -1,4 +1,4 @@
-import type { ReactTestInstance } from "react-test-renderer";
+import { act, type ReactTestInstance } from "react-test-renderer";
 import { describe, expect, it, vi } from "vitest";
 import { render, textOf } from "../renderNative.testkit";
 import type { RunStep, TimelineRow } from "../timeline";
@@ -59,6 +59,22 @@ describe("a run folded into one line", () => {
 		expect(failed?.props.style).toMatchObject({ color: DANGER_INK });
 		// Folded, no step shows.
 		expect(texts(tree.root).some((node) => textOf(node) === "Read the session loop")).toBe(false);
+	});
+
+	// A part is keyed by its kind of step, never by its words: when "ran go
+	// test" becomes "ran 3 commands" as the run grows, React updates that part
+	// where it is instead of tearing it down and mounting a new one.
+	it("keeps each part in place while its words change", () => {
+		const props = { live: false, expanded: false, onToggle: () => {}, onStep: () => {} };
+		const tree = render(<RunRow run={run} {...props} />);
+		const failedCount = () => texts(tree.root).find((node) => textOf(node) === " (2 failed)");
+		const before = failedCount();
+		expect(before).toBeDefined();
+		const grown: Run = { ...run, steps: [...run.steps, step("e", "shell", { command: "ls" })] };
+		act(() => tree.update(<RunRow run={grown} {...props} />));
+		const line = tree.root.findAll((node) => node.props.accessibilityLabel?.startsWith?.("5 steps"))[0];
+		expect(textOf(line)).toBe("▸ 5 steps · read 1 file, ran 3 commands (2 failed), searched once");
+		expect(failedCount()).toBe(before);
 	});
 
 	it("is one 44pt pressable that asks to expand", () => {

@@ -216,9 +216,9 @@ describe("a run's one line", () => {
 			steps: 12,
 			durationMs: 480_000,
 			parts: [
-				{ text: "read 6 files", failed: 0 },
-				{ text: "ran go test", failed: 2 },
-				{ text: "edited 3 files", failed: 0 },
+				{ family: "read", text: "read 6 files", failed: 0 },
+				{ family: "shell", text: "ran go test", failed: 2 },
+				{ family: "edit", text: "edited 3 files", failed: 0 },
 			],
 			failed: 2,
 		});
@@ -227,9 +227,9 @@ describe("a run's one line", () => {
 
 	it("says one step, and names commands only when it knows them all", () => {
 		expect(runSummaryText(runSummary([step("a", "read_file")]))).toBe("1 step · read 1 file");
-		expect(runSummary([shell("a", "go test"), shell("b", "npm run check")]).parts).toEqual([{ text: "ran 2 commands", failed: 0 }]);
-		expect(runSummary([shell("a", undefined), shell("b", "go test")]).parts).toEqual([{ text: "ran 2 commands", failed: 0 }]);
-		expect(runSummary([shell("a", "ls -la")]).parts).toEqual([{ text: "ran ls", failed: 0 }]);
+		expect(runSummary([shell("a", "go test"), shell("b", "npm run check")]).parts).toEqual([{ family: "shell", text: "ran 2 commands", failed: 0 }]);
+		expect(runSummary([shell("a", undefined), shell("b", "go test")]).parts).toEqual([{ family: "shell", text: "ran 2 commands", failed: 0 }]);
+		expect(runSummary([shell("a", "ls -la")]).parts).toEqual([{ family: "shell", text: "ran ls", failed: 0 }]);
 	});
 
 	// A settled step at a compact detail level carries no clock times, so a
