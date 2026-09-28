@@ -78,12 +78,15 @@ func FuzzSessionMetaPersistence(f *testing.F) {
 					t.Fatalf("LoadSessionMeta value diverges across filesystems for id=%s", id)
 				}
 			case opList:
-				listOS, errOS := listSessionMetasFS(osFs, dir)
-				listMem, errMem := listSessionMetasFS(memFs, dir)
+				listOS, failOS, errOS := listSessionMetasFSWithErrors(osFs, dir)
+				listMem, failMem, errMem := listSessionMetasFSWithErrors(memFs, dir)
 				requireMetaErrParity(t, "ListSessionMetas", errOS, errMem)
 				if errOS == nil && !bytes.Equal(marshalMetas(t, listOS), marshalMetas(t, listMem)) {
 					t.Fatalf("ListSessionMetas value diverges across filesystems:\n os =%s\n mem=%s",
 						marshalMetas(t, listOS), marshalMetas(t, listMem))
+				}
+				if errOS == nil && len(failOS) != len(failMem) {
+					t.Fatalf("ListSessionMetas failure count diverges across filesystems: os=%d mem=%d", len(failOS), len(failMem))
 				}
 			}
 
