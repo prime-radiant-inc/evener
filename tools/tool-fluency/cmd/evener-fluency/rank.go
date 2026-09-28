@@ -474,13 +474,16 @@ func runRankScore(args []string) error {
 	keyPath := fs.String("key", "", "rank-sets' key.json")
 	var reviewFiles cmdutil.StringSliceFlag
 	fs.Var(&reviewFiles, "reviews", "a reviewer's JSON-lines output (repeatable)")
-	detail := fs.Bool("detail", false, "also list each set's unblinded ranking and why")
+	detail := fs.Bool("detail", false, "also list each set's unblinded ranking and why (not with --json: its output is plain text)")
 	asJSON := fs.Bool("json", false, "emit JSON instead of a table")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 	if *keyPath == "" || len(reviewFiles) == 0 {
 		return errors.New("--key and at least one --reviews file are required")
+	}
+	if *asJSON && *detail {
+		return errors.New("--json and --detail cannot be combined: --detail's output is plain text, which would corrupt the JSON on stdout")
 	}
 	data, err := os.ReadFile(*keyPath)
 	if err != nil {
