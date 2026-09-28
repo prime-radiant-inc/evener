@@ -1,0 +1,41 @@
+schema: 1
+id: prose.research-conflicting
+tool: prompt-eval
+prompt: |
+  What's the largest file our uploader can send to Parcelhub in one request? The notes I collected are in research/. Put the answer in ANSWER.md with a first line of exactly "Limit: <N> MB", then tell me.
+fixture:
+  files:
+    go.mod: |
+      module example.com/uploader
+
+      go 1.22
+
+      require github.com/parcelhub/parcelhub-go v2.4.1+incompatible
+    uploader.go: |
+      package uploader
+
+      // Send uploads one file to Parcelhub with the v2 client.
+      func Send(path string) error { return nil }
+    research/parcelhub-docs.md: |
+      # Parcelhub API reference (current)
+
+      Uploads: a single request may carry up to 50 MB. Larger files must use the chunked upload endpoint.
+    research/parcelhub-changelog.md: |
+      # Parcelhub client changelog
+
+      ## v3.0.0
+      - Single-request upload limit raised from 10 MB to 50 MB. Requires the v3 client; v2 clients are still capped at 10 MB by the server.
+
+      ## v2.4.0
+      - Retries on 503.
+    research/blog-post.md: |
+      # Moving our photo archive to Parcelhub (2023)
+
+      Parcelhub caps a single upload at 5 MB, so we split every photo over that into chunks.
+expect:
+  allow_tool_errors: true
+  checks:
+    - name: answers for the v2 client
+      run: "head -n 1 ANSWER.md | grep -qx 'Limit: 10 MB'"
+reference: |
+  printf 'Limit: 10 MB\n\nThe uploader uses the v2 client, and the server caps v2 clients at 10 MB; the 50 MB limit needs v3.\n' > ANSWER.md

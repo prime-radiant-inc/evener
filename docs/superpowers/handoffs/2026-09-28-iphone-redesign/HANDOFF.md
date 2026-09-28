@@ -15,7 +15,7 @@ The goal: land phases 2 through 7 of the roadmap on main, built to the spec. It'
 | Phase 3 plan | `docs/superpowers/plans/2026-09-26-iphone-redesign-phase3-session.md` |
 | Phase 4 plan | `docs/superpowers/plans/2026-09-26-iphone-redesign-phase4-subagents-reader.md` |
 | Phase 5 plan | `docs/superpowers/plans/2026-09-26-iphone-redesign-phase5-new-session-hub.md` |
-| Phase 6 plan, part 1 | `docs/superpowers/plans/2026-09-26-iphone-redesign-phase6-attention-resilience.md` (parts 2 and 3 are open PRs #2588 and #2586) |
+| Phase 6 plan, part 1 | `docs/superpowers/plans/2026-09-26-iphone-redesign-phase6-attention-resilience.md` (parts 2 and 3 are `...-phase6-attention-resilience-part2.md` and `...-part3.md`) |
 | Server (phase 7) | `docs/superpowers/plans/2026-09-26-iphone-redesign-server-additions.md`, with S4/S5/S3 in `...-server-s4-s5-s3.md` and S1/S13b in `2026-09-27-iphone-redesign-server-s1-s13b.md` |
 
 The plans carry numbered rulings (for example, phase 2 part 3's ruling 21). Where a ruling below changes one, this memo says so.
@@ -25,12 +25,12 @@ The plans carry numbered rulings (for example, phase 2 part 3's ruling 21). Wher
 | Phase | State |
 |---|---|
 | 1 Foundations | Merged: #2436, #2448, #2443, #2454. |
-| 2 Board | Merged: #2463, #2471, #2518, #2591, #2618, #2619, #2630, #2596, #2581, #2623, #2615, #2639, #2625, #2634. Left: PR 8 activity pulse (#2651), PRs 4a/4b/4c (swipes, long-press menu, select mode), search's Projects results group, fast-follows #2682 and #2689, and the phase's screenshots (Appendix A frames 1-7, part 3 Task 17). |
-| 3 Session | 13 PRs in three lanes (A: 1, 2, 3, 10, 11, 12; B: 4, 5, 6; C: 7, 8, 9; then 13). PR 1 (#2578) and PR 7 (#2575) are being brought up to main to merge. PR 4 is in its review round. The rest haven't started. |
-| 4 Subagents and Reader | Plan merged (#2515). 9 PRs, not started. |
-| 5 New session and Hub | Plan merged (#2505). 13 PRs, not started. |
-| 6 Attention and resilience | Part 1 of the plan merged (#2511). Parts 2 and 3 (#2588, #2586) are being revised to fix their review findings. Not started. |
-| 7 Server | Merged: PR 1 #2473, PR 2 #2514, PR 3 #2508, PR 4 #2560, PR 5 #2513, PR 6 #2526, PR 7 #2641, PR 8 #2675, PR 10 #2652, PR 12 #2502, PR 13 #2642; S5 #2561, #2582, #2593; S4 #2566, #2584; S3 #2570, #2587. Left: PR 9 (S1c failure summary), PR 11 (S1d on rows), S11 and S14 (a plan is being written), then S12, S7, S9, S8, S6 (stop only), S15-S19, and #2479 (a rejected token refresh isn't recorded; the Board's sign-in notice wants it). |
+| 2 Board | Merged, screenshots included (#2791). |
+| 3 Session | PRs 1-12 merged. Left: PR 13. |
+| 4 Subagents and Reader | PRs 1-8 merged (#2767, #2912, #2930, #2762, #2784, #2894, #2866, #2900, #2954). Left: PR 9. |
+| 5 New session and Hub | Plan merged (#2505). PR 1 (the Hub sheet, #2934) merged. PR 8 (#2947) is open. The other PRs haven't started. |
+| 6 Attention and resilience | The plan is merged in three parts (#2511, #2588, #2586). No phone PRs yet. |
+| 7 Server | Merged: PRs 1-19, 22-25, 30-32, 34, 35. Deferred, dropped or not needed: S8, S12, S16, S18 (see the rulings). Left: PR 36 (S17, its plan is merged in #2940). |
 
 A live status board with one row per PR and issue is the tracker artifact in Jesse's claude.ai account: https://claude.ai/artifact/J9GdVqPL6dCZGkFYHqUn86 (private until he shares it).
 
@@ -40,21 +40,8 @@ Branches marked "local" exist only in a worktree under `.claude/worktrees/` on J
 
 | Work | Branch | Next step |
 |---|---|---|
-| Phase 2 PR 8, activity pulse (#2651) | `claude/iphone-redesign-p2-activity` | Last review and /simplify, merge main, merge on green |
-| Phase 2 PR 4a, swipes | `claude/iphone-redesign-p2-swipes` (local) | Review, /simplify, open the PR; checked on the simulator |
-| Phase 2 PRs 4b and 4c | not started | Same owner as 4a, in order |
-| Search's Projects results group | not started | Deferred from #2634; uses 3b's `revealProject` |
-| Seen-marker fast-follow (#2682) | open | Merge on green |
-| Search duplicate fast-follow (#2689) | open | Merge on green |
-| Phase 3 PR 1 (#2578) | `claude/iphone-redesign-p3-pr1` | Merged with main, its tests failed: the navigation mock lacks `useNavigationState` and `__DEV__` is undefined. Fix, then merge on green |
-| Phase 3 PR 7 (#2575) | `claude/iphone-redesign-p3-pr7` | One review round (below), a `screens.tsx` conflict with main, then merge on green |
-| Phase 3 PR 4 | `claude/iphone-redesign-p3-pr4` (local) | Its review found one bug and one spec deviation; fix, re-review, open the PR |
-| Server PR 9 (S1c) | `claude/iphone-server-p9-s1c` (local) | Tasks 9.3-9.5 on top of PR 8, then the PR |
-| Server S11 and S14 plan | `claude/iphone-server-plan-s11-s14` (local) | Being written; a docs PR |
-| Phase 6 plan parts 2 and 3 (#2588, #2586) | open | Fixing RoboRev's findings, then merge |
-| Flake fix for #2607 (#2650) | open | A cleanup pass and one RoboRev Medium, then merge |
-
-#2575's review round, ruled on 2026-09-27: runs show durations at Intent, while a step shown only as its summary keeps its clock time (spec 8.2); the copies of `timeOf` use `board/attention`'s `hubTime`; opening a run skips attachment rows; `RunRow` gets stable keys.
+| Phase 5 PR 8, the New session's rules, memory and host-routed reads (#2947) | `claude/iphone-redesign-p5-pr8` | Review, /simplify, merge on green |
+| Phase 3 PR 13, phase 4 PR 9, the rest of phase 5, all of phase 6, server PR 36 | not started | Take them in any order; ready PRs merge on green |
 
 Handed to an engineer (small, off the critical path): #2664 (server Lows batch 5, pushed on `claude/iphone-server-lows-5`, two review findings left), #2665 (five Board search and notice polish items), #2614, #2646, #2655, #2669, #2670, #2681, #2629 (a "doesn't need you" band on the web), and #2497 (tests that fail or hang only on macOS).
 
@@ -93,6 +80,19 @@ Handed to an engineer (small, off the critical path): #2664 (server Lows batch 5
 - 2026-09-27: Ready phase 2 PRs can merge without waiting for RoboRev.
 - 2026-09-28: "Don't hold back. Merge." Phases no longer land in order. Every ready PR merges once CI is green on its merged head.
 - 2026-09-28: One alert per needs-you state ("no. one alert is great."). A session that already needs you does not alert again when it asks a new question or names a new approval target (phase 6 part 2, question 3).
+- 2026-09-28: One alert per session: a session that already needs you doesn't alert again when it asks for something new.
+- 2026-09-28: S16 (transcript records of queued delivery and approval decisions) is deferred. The phone keeps its fallback: no "Queued" tag and no approval history.
+- 2026-09-28: Stopping a subagent directly (S6) leaves its background jobs and the subagents it started running, and it stops whatever run is current, with no fence.
+- 2026-09-28: Board search's Projects group shows in the All scope only.
+- 2026-09-28: A turn that ends while you watch a session marks it seen.
+- 2026-09-28: Next cycles through the sessions that need you, in Needs you order, and wraps around.
+- 2026-09-28: An explicit unread from another device sticks while you watch, until a newer turn ends.
+- 2026-09-28: Phases no longer land in order ("don't hold back. merge."). Ready PRs merge on green CI.
+- 2026-09-28: S12 (scoped approvals) is not needed: approvals don't come up in real use.
+- 2026-09-28: S8 (launch recipes) is deferred entirely. The phone's New session sheet just remembers the latest settings used.
+- 2026-09-28: S18 (starting a session in a new worktree branch) is dropped: an isolated worktree is made by the agent with its own tool, not by the harness at launch. The New session sheet's Branch row shows the current branch as information only.
+- 2026-09-28: The demo hub's playground session reflects queued and steered mutations the way the real hub does, so ghost bubbles clear.
+- 2026-09-28: mobile-native now has a formatter-only Biome config (#2902). Format touched files with `npx biome format --write <files> --vcs-enabled=false --vcs-use-ignore-file=false` from mobile-native; the flags are needed inside worktrees (#2948).
 - Sequencing (coordinator, 2026-09-27): S11 and S14 come before S12, since approvals are rare.
 
 ### Standing rules
@@ -128,7 +128,7 @@ These live in gitignored `.superpowers/` folders on Jesse's Mac.
 ## Gotchas
 
 - Every worktree needs its own `npm ci` in `mobile-native`, `cmd/evener-hub/frontend` and `appwire-client/typescript`. Never run `npm ci` through a symlinked `node_modules`; it deletes the shared install under every other worktree.
-- Never run Biome in `mobile-native` or `mobile`: neither has a Biome config.
+- Biome in `mobile-native` is formatter-only (see the rulings). Never run it in `mobile`, which has no config.
 - Run gofmt as `$(go env GOROOT)/bin/gofmt`. Run `go vet` also with `-tags evenerfuzz` and with `GOOS=windows`.
 - Some tests fail or hang only on macOS (#2497). CI is the judge.
 - The simulator is shared: one lane at a time. Metro runs on 8081 and the demo hub on 9196 (`cd mobile-native && EVENER_DEMO_FLEET=1 npx tsx scripts/demo-hub.mts`). The booted iPhone 17 Pro has a Debug build of main's native code, so JavaScript-only changes need no `xcodebuild`. The demo fleet answers no mutations and doesn't serve the `location` navigation read.
