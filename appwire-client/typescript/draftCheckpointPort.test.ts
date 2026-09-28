@@ -431,4 +431,13 @@ describe("canonicalJson", () => {
     expect(typeof canonicalJson(() => {})).toBe("string");
     expect(typeof canonicalJson(Symbol("s"))).toBe("string");
   });
+
+  it("matches JSON.stringify for nested non-serializable values", () => {
+    // A canonical encoding must be stable under a JSON round-trip: a nested
+    // undefined/function/symbol is what JSON.stringify drops (an object key)
+    // or turns into null (an array item), so the canonical form must do the
+    // same rather than leak a non-JSON token like `undefined`.
+    expect(canonicalJson([undefined, () => {}, Symbol("s"), 1, null])).toBe("[null,null,null,1,null]");
+    expect(canonicalJson({ a: undefined, b: () => {}, c: Symbol("s"), d: 1, e: null })).toBe('{"d":1,"e":null}');
+  });
 });
