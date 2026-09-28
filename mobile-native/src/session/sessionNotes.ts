@@ -1,0 +1,258 @@
+// The session's shared notes and links (spec 8.8): what the notes bar
+// previews, what the editor's status line says, and the controller that
+// saves your note and removes links.
+//
+// Saving is a direct notes/human/set: the durable runtime carries only the
+// four turn kinds (ruling 32). So a note that hasn't reached the hub is kept
+// on this phone, under evener.native.note-draft.<hubId>, until it does
+// (Review Focus 5).
+import type { NotesHumanSetResponse, ThreadModel } from "@evener/appwire-client";
+import type { ConversationClientLike } from "../../../mobile/src/services/conversation";
+import type { SyncStringStorage } from "../syncStringStorage";
+
+/** The daemon clamps a note to 1,000 runes (agent/session_notes.go:29); the
+ * editor stops there so nothing is clipped silently. */
+export const NOTE_LIMIT = 1000;
+/** Leaving the field saves ten seconds later, as the web does
+ * (cmd/evener-hub/frontend/src/stores/humanNoteDrafts.ts). */
+export const SAVE_AFTER_BLUR_MS = 10_000;
+
+export type NotesGlyph = "person" | "sparkles" | "link";
+
+export interface NotesBarPreview {
+	glyph: NotesGlyph;
+	text: string;
+	/** Trailing "3 links" when a note shows and links exist: a bare glyph and
+	 * count read as attachments (spec 8.8). */
+	links?: string;
+}
+
+const oneLine = (text: string) => text.replace(/\s+/g, " ").trim();
+const linkCount = (count: number) => `${count} ${count === 1 ? "link" : "links"}`;
+
+export function notesBarPreview(
+	session: Pick<ThreadModel, "humanNote" | "agentNote" | "sessionUrls" | "capabilities">,
+): NotesBarPreview | null {
+	// The package's canReadSharedNotes rule (sharedNotesAvailability.ts).
+	if (session.capabilities.sharedNotes !== true) return null;
+	const count = session.sessionUrls.length;
+	const links = count > 0 ? linkCount(count) : undefined;
+	const human = oneLine(session.humanNote);
+	if (human) return { glyph: "person", text: `Your note: ${human}`, links };
+	const agent = oneLine(session.agentNote);
+	if (agent) return { glyph: "sparkles", text: `Agent's note: ${agent}`, links };
+	const only = count === 1 ? session.sessionUrls[0] : undefined;
+	if (only) return { glyph: "link", text: only.label?.trim() || only.url };
+	if (count > 1) return { glyph: "link", text: linkCount(count) };
+	return null;
+}
+
+export type NotePhase = "clean" | "editing" | "scheduled" | "saving" | "saved" | "failed";
+
+export function noteStatusLine(phase: NotePhase, working: boolean): string {
+	if (phase === "scheduled") return "Saves in 10 seconds, or when you close this.";
+	if (phase === "saving") return "Saving…";
+	if (phase === "saved") return "Saved";
+	if (phase === "failed") return "Couldn't save your note yet. It's kept on this phone.";
+	return working
+		? "Your note stays on this session. The agent is told when it changes."
+		: "Your note stays on this session. Saving it will wake the agent.";
+}
+
+const draftKey = (hubId: string) => `evener.native.note-draft.${hubId}`;
+
+function readDrafts(storage: SyncStringStorage, hubId: string): Record<string, string> {
+	try {
+		const value: unknown = JSON.parse(storage.getItemSync(draftKey(hubId)) ?? "{}");
+		if (typeof value !== "object" || value === null || Array.isArray(value)) return {};
+		return Object.fromEntries(
+			Object.entries(value).filter((entry): entry is [string, string] => typeof entry[1] === "string"),
+		);
+	} catch {
+		return {};
+	}
+}
+
+function writeDrafts(storage: SyncStringStorage, hubId: string, drafts: Record<string, string>): void {
+	try {
+		if (Object.keys(drafts).length > 0) storage.setItemSync(draftKey(hubId), JSON.stringify(drafts));
+		else storage.removeItemSync(draftKey(hubId));
+	} catch {
+		// The in-memory text still holds it for this launch.
+	}
+}
+
+export function forgetNoteDrafts(storage: SyncStringStorage, hubId: string): void {
+	try {
+		storage.removeItemSync(draftKey(hubId));
+	} catch {
+		// Nothing stored to forget.
+	}
+}
+
+export interface NotesControllerOptions {
+	client: Pick<ConversationClientLike, "request">;
+	hubId: string;
+	ref: string;
+	/** The live session's instance id, read at each request. */
+	instanceId(): string | undefined;
+	/** Your note as the hub last reported it. */
+	savedNote(): string;
+	/** Whether a turn is running, read at each save. */
+	working(): boolean;
+	storage: SyncStringStorage;
+	uuid(): string;
+}
+
+export interface SaveOutcome {
+	saved: boolean;
+	/** The save woke an agent that wasn't in a turn: the toast says the agent is reading it. */
+	woke: boolean;
+}
+
+interface NoteState {
+	text: string;
+	phase: NotePhase;
+}
+
+export class NotesController {
+	private state: NoteState;
+	private timer: ReturnType<typeof setTimeout> | null = null;
+	private saving: Promise<SaveOutcome> | null = null;
+	private listeners = new Set<() => void>();
+
+	constructor(private readonly options: NotesControllerOptions) {
+		const kept = readDrafts(options.storage, options.hubId)[options.ref];
+		this.state = kept !== undefined ? { text: kept, phase: "failed" } : { text: options.savedNote(), phase: "clean" };
+	}
+
+	getSnapshot = (): NoteState => this.state;
+
+	subscribe = (listener: () => void): (() => void) => {
+		this.listeners.add(listener);
+		return () => this.listeners.delete(listener);
+	};
+
+	/** The hub's note changed (evener/notes/updated). Follow it, unless there
+	 * is text here the hub hasn't confirmed: that stays yours. */
+	sync(): void {
+		if (this.state.phase !== "clean" && this.state.phase !== "saved") return;
+		const hub = this.options.savedNote();
+		if (hub !== this.state.text) this.publish({ text: hub, phase: this.state.phase });
+	}
+
+	edit(text: string): void {
+		this.cancelTimer();
+		const clipped = text.slice(0, NOTE_LIMIT);
+		this.keep(clipped);
+		this.publish({ text: clipped, phase: "editing" });
+	}
+
+	/** Returning to the field cancels a scheduled save, as the web does. */
+	focus(): void {
+		if (this.state.phase !== "scheduled") return;
+		this.cancelTimer();
+		this.publish({ ...this.state, phase: "editing" });
+	}
+
+	blur(): void {
+		if (!this.unsaved()) return;
+		this.cancelTimer();
+		this.timer = setTimeout(() => {
+			this.timer = null;
+			void this.flush();
+		}, SAVE_AFTER_BLUR_MS);
+		this.publish({ ...this.state, phase: "scheduled" });
+	}
+
+	/** Save now, if anything is unsaved. Closing the sheet, backgrounding the
+	 * app and opening the session connected all call this. */
+	flush(): Promise<SaveOutcome> {
+		this.cancelTimer();
+		if (!this.unsaved()) return Promise.resolve({ saved: false, woke: false });
+		this.saving ??= this.save().finally(() => {
+			this.saving = null;
+		});
+		return this.saving;
+	}
+
+	async removeLink(id: string): Promise<boolean> {
+		const instanceId = this.options.instanceId();
+		if (!instanceId) return false;
+		try {
+			await this.options.client.request("urls/remove", {
+				ref: this.options.ref,
+				clientMutationId: this.options.uuid(),
+				expectedInstanceId: instanceId,
+				id,
+			});
+			return true;
+		} catch (error) {
+			// Already gone counts as removed, as on the web (NotesPanel.tsx).
+			return error instanceof Error && error.message.includes("no URL entry with id");
+		}
+	}
+
+	dispose(): void {
+		this.cancelTimer();
+		this.listeners.clear();
+	}
+
+	private unsaved(): boolean {
+		return this.state.phase === "failed" || this.state.text !== this.options.savedNote();
+	}
+
+	private async save(): Promise<SaveOutcome> {
+		const text = this.state.text;
+		const instanceId = this.options.instanceId();
+		if (!instanceId) {
+			this.publish({ ...this.state, phase: "failed" });
+			return { saved: false, woke: false };
+		}
+		const working = this.options.working();
+		this.publish({ ...this.state, phase: "saving" });
+		try {
+			const response: NotesHumanSetResponse = await this.options.client.request("notes/human/set", {
+				ref: this.options.ref,
+				clientMutationId: this.options.uuid(),
+				expectedInstanceId: instanceId,
+				note: text,
+			});
+			if (this.state.text === text) {
+				this.forget();
+				this.publish({ text: response.note, phase: "saved" });
+			} else {
+				// Typed on during the save: the newer text stays kept and unsaved.
+				this.publish({ ...this.state, phase: "editing" });
+			}
+			// An unchanged note projects "removed" and wakes no one
+			// (agent/session_notes_rpc.go).
+			return { saved: true, woke: !working && response.receipt.projectionState === "pending" };
+		} catch {
+			this.publish({ ...this.state, phase: "failed" });
+			return { saved: false, woke: false };
+		}
+	}
+
+	private keep(text: string): void {
+		const drafts = readDrafts(this.options.storage, this.options.hubId);
+		drafts[this.options.ref] = text;
+		writeDrafts(this.options.storage, this.options.hubId, drafts);
+	}
+
+	private forget(): void {
+		const drafts = readDrafts(this.options.storage, this.options.hubId);
+		delete drafts[this.options.ref];
+		writeDrafts(this.options.storage, this.options.hubId, drafts);
+	}
+
+	private cancelTimer(): void {
+		if (this.timer !== null) clearTimeout(this.timer);
+		this.timer = null;
+	}
+
+	private publish(state: NoteState): void {
+		this.state = state;
+		for (const listener of [...this.listeners]) listener();
+	}
+}
