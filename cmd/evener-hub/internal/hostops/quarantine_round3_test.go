@@ -263,6 +263,9 @@ func TestQuarantineNeverRenamesACleanStoreUnderAStaleIntent(t *testing.T) {
 		if _, err := os.Stat(quarantineCustodyPath(path, stamp)); !errors.Is(err, os.ErrNotExist) {
 			t.Fatalf("the cleared intent left its unreferenced custody file behind (stat err = %v)", err)
 		}
+		if reopened.Quarantine() != nil {
+			t.Fatalf("Quarantine() = %+v after the stale intent's custody was cleared, want nil", reopened.Quarantine())
+		}
 		if err := forgetStore(path); err != nil {
 			t.Fatalf("forgetStore: %v", err)
 		}
@@ -275,6 +278,9 @@ func TestQuarantineNeverRenamesACleanStoreUnderAStaleIntent(t *testing.T) {
 		}
 		if got := again.CursorEpoch().QuarantineEpoch; got != 1 {
 			t.Fatalf("the epoch after the clear = %d, want the persisted 1", got)
+		}
+		if again.Quarantine() != nil {
+			t.Fatalf("the second open resurrected a signal for a cleared custody: %+v", again.Quarantine())
 		}
 	})
 	t.Run("a different corrupt file is quarantined under a new intent", func(t *testing.T) {

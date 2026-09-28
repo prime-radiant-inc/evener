@@ -1109,8 +1109,9 @@ func nextControllerIDs(base uint64, count int) ([]string, error) {
 	return ids, nil
 }
 
-// statKind describes one path for the artifact scans: what the directory holds
-// beside the store.
+// readDirNames lists the entry names of the directory beside a store, for the
+// artifact scans. A missing directory is empty — a store that was never beside
+// anything has no artifacts — while any other read failure is reported.
 func readDirNames(fs afero.Fs, dir string) ([]string, error) {
 	entries, err := afero.ReadDir(fs, dir)
 	if err != nil {

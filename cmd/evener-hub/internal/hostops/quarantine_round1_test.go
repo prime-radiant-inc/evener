@@ -419,6 +419,9 @@ func TestQuarantineRefusesArtifactMismatches(t *testing.T) {
 		if _, err := os.Stat(custodyPath); !errors.Is(err, os.ErrNotExist) {
 			t.Fatalf("the orphan custody was not cleared (stat err = %v)", err)
 		}
+		if store.Quarantine() != nil {
+			t.Fatalf("Quarantine() = %+v after the orphan custody was cleared, want nil", store.Quarantine())
+		}
 		if err := forgetStore(path); err != nil {
 			t.Fatalf("forgetStore: %v", err)
 		}

@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -128,6 +129,11 @@ type quarantineArtifacts struct {
 	// either has its aside or is the one a pending intent names).
 	custodyStamps map[string]bool
 	asideStamps   map[string]bool
+	// custodyEpochs maps each custody file's timestamp to the epoch it carries,
+	// so a cleanup that removes some custody files can re-derive the
+	// operator-visible signal over the survivors instead of handing back one
+	// naming a file it just deleted.
+	custodyEpochs map[string]uint64
 	// sidecarEpoch is the durable counter the sidecar file carried on its own
 	// (zero when there is none). resolveStoreFS persists the live epoch whenever
 	// it exceeds it, so the counter cannot regress if the custody files are
@@ -148,6 +154,7 @@ func scanQuarantineArtifacts(fs afero.Fs, storePath string) (quarantineArtifacts
 	artifacts := quarantineArtifacts{
 		custodyStamps: map[string]bool{},
 		asideStamps:   map[string]bool{},
+		custodyEpochs: map[string]uint64{},
 		priorImports:  map[string]custodyFence{},
 	}
 	sidecarEpoch, found, err := readQuarantineEpochFile(fs, storePath)
@@ -188,6 +195,7 @@ func scanQuarantineArtifacts(fs afero.Fs, storePath string) (quarantineArtifacts
 				}
 			}
 			artifacts.custodyStamps[stamp] = true
+			artifacts.custodyEpochs[stamp] = custody.QuarantineEpoch
 			fenceByID := make(map[string]custodyFence, len(custody.Fences))
 			for _, fence := range custody.Fences {
 				fenceByID[fence.RecordID] = fence
@@ -297,6 +305,34 @@ func stampOf(custodyPath, base string) string {
 	return strings.TrimSuffix(strings.TrimPrefix(name, base+quarantineCustodyInfix), ".json")
 }
 
+// signalAfterRemoving re-derives the operator-visible signal over the custody
+// files a cleanup left behind: the highest-epoch survivor, with the filename
+// timestamp only as a tie-breaker, or nil when none is left. The scan's signal
+// may name a file the cleanup just removed, and handing that back would make
+// Store.Quarantine() and the boot log name a custody file that no longer exists
+// — asserting a quarantine the store does not carry. The re-scan keeps a real
+// survivor visible: a custody file that is still on disk may still be the
+// evidence the operator needs to resolve the names it closed.
+func (a quarantineArtifacts) signalAfterRemoving(storePath string, removed ...string) *QuarantineSignal {
+	best := ""
+	for stamp, epoch := range a.custodyEpochs {
+		if slices.Contains(removed, stamp) {
+			continue
+		}
+		if best == "" || epoch > a.custodyEpochs[best] || (epoch == a.custodyEpochs[best] && stamp > best) {
+			best = stamp
+		}
+	}
+	if best == "" {
+		return nil
+	}
+	return &QuarantineSignal{
+		QuarantinedFile: storePath,
+		CustodyFile:     quarantineCustodyPath(storePath, best),
+		QuarantineEpoch: a.custodyEpochs[best],
+	}
+}
+
 // quarantineFailed classifies a quarantine-path failure: it is a store-corrupt
 // refusal (the load path's own class) that additionally names the incomplete
 // custody, so a caller can tell "quarantine could not be performed" from "the
@@ -354,6 +390,7 @@ func resolveStoreFS(fs afero.Fs, path string, faults storeFaults) (snapshot, uin
 		}
 	}
 	var orphans []string
+	var orphanStamps []string
 	storeLoads := false
 	for stamp := range artifacts.custodyStamps {
 		if artifacts.asideStamps[stamp] || stamp == pendingStamp {
@@ -372,6 +409,7 @@ func resolveStoreFS(fs afero.Fs, path string, faults storeFaults) (snapshot, uin
 				ErrQuarantineIncomplete, quarantineCustodyPath(path, stamp)))
 		}
 		orphans = append(orphans, quarantineCustodyPath(path, stamp))
+		orphanStamps = append(orphanStamps, stamp)
 	}
 	if haveIntent {
 		custody, err := readCustodyFile(fs, intent.CustodyFile, path)
@@ -414,10 +452,22 @@ func resolveStoreFS(fs afero.Fs, path string, faults storeFaults) (snapshot, uin
 				if err := clearQuarantineIntent(fs, path, faults); err != nil {
 					return snapshot{}, 0, nil, err
 				}
+				removed := slices.Clone(orphanStamps)
 				if !asideExists {
+					// The intent's own custody is orphaned by definition here (its
+					// aside is missing), so it goes with the intent.
 					if err := removeQuarantineArtifact(fs, intent.CustodyFile, faults); err != nil {
 						return snapshot{}, 0, nil, err
 					}
+					removed = append(removed, pendingStamp)
+				}
+				for _, orphan := range orphans {
+					if err := removeQuarantineArtifact(fs, orphan, faults); err != nil {
+						return snapshot{}, 0, nil, err
+					}
+				}
+				if len(removed) > 0 {
+					signal = artifacts.signalAfterRemoving(path, removed...)
 				}
 				if err := writeQuarantineEpoch(fs, path, epoch, faults); err != nil {
 					return snapshot{}, 0, nil, err
@@ -471,10 +521,13 @@ func resolveStoreFS(fs afero.Fs, path string, faults storeFaults) (snapshot, uin
 
 	state, loadErr := loadFS(fs, path)
 	if loadErr == nil {
-		for _, orphan := range orphans {
-			if err := removeQuarantineArtifact(fs, orphan, faults); err != nil {
-				return snapshot{}, 0, nil, err
+		if len(orphans) > 0 {
+			for _, orphan := range orphans {
+				if err := removeQuarantineArtifact(fs, orphan, faults); err != nil {
+					return snapshot{}, 0, nil, err
+				}
 			}
+			signal = artifacts.signalAfterRemoving(path, orphanStamps...)
 		}
 		return state, epoch, signal, nil
 	}
