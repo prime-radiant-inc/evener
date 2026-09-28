@@ -326,12 +326,14 @@ func assembleCustody(custody custodyFile) (custodyFile, error) {
 // families a fence, an ownership pair or the record-set accounting can stand on
 // are typed and strictly decoded, and the families the replacement store
 // replaces wholesale — tokens, probe epochs, the guard epoch, the wall clock,
-// the compaction ledger — are consumed as raw regions only. §4 starts the
-// replacement with zero outstanding tokens and no history, so a row that fails
-// its own schema in one of those families is not a lost fence; refusing startup
-// over it would brick the hosts for bit-rot of data the quarantine discards by
-// design. Every key the writer emits is declared here, so an unknown top-level
-// key is still refused: a file carrying one is not a file this store wrote.
+// the compaction ledger, and §9's `pendingCompensation` set (whose preimage
+// rows the token family shares) — are consumed as raw regions only. §4 starts
+// the replacement with zero outstanding tokens and no history, so a row that
+// fails its own schema in one of those families is not a lost fence; refusing
+// startup over it would brick the hosts for bit-rot of data the quarantine
+// discards by design. Every key the writer emits is declared here, so an unknown
+// top-level key is still refused: a file carrying one is not a file this store
+// wrote.
 type custodyDocument struct {
 	Version                *uint64                    `json:"version"`
 	Sequence               *uint64                    `json:"sequence"`
@@ -348,6 +350,7 @@ type custodyDocument struct {
 	ProbeEpochSeq          json.RawMessage            `json:"probeEpochSeq"`
 	GuardEpoch             json.RawMessage            `json:"guardEpoch"`
 	WallClockHighWaterMark json.RawMessage            `json:"wallClockHighWaterMark"`
+	PendingCompensation    json.RawMessage            `json:"pendingCompensation"`
 }
 
 // readStoreForCustody decodes a corrupt store file for the custody snapshot. It

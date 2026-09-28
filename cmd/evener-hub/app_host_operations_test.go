@@ -99,8 +99,12 @@ func TestHostOperationsReadsThroughTheRealServer(t *testing.T) {
 	if len(page.Operations) != 1 || page.Operations[0].ID != first.ID {
 		t.Fatalf("page operations = %+v, want the first record %q", page.Operations, first.ID)
 	}
-	if page.Operations[0].ClientOperationID != "op-1" || page.Operations[0].State != appwire.OperationStatePending {
-		t.Fatalf("record = %+v, want op-1 pending", page.Operations[0])
+	// The seeded records were pending when the store was written; the manager's
+	// §7 boot pass moves every in-flight record to `interrupted` before it
+	// serves, so the page renders that terminal state (the read path serves what
+	// the store holds).
+	if page.Operations[0].ClientOperationID != "op-1" || page.Operations[0].State != appwire.OperationStateInterrupted {
+		t.Fatalf("record = %+v, want op-1 interrupted", page.Operations[0])
 	}
 	if page.Generation != 0 || page.IncarnationID != "" {
 		t.Fatalf("unfiltered page carried pair %d/%q, want none", page.Generation, page.IncarnationID)

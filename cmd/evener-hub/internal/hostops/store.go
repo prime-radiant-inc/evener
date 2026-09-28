@@ -152,6 +152,15 @@ type snapshot struct {
 	// GuardEpoch is the fencing epoch the serving hub last admitted from its
 	// caller (§10). Optional on read: absent means no epoch was ever presented.
 	GuardEpoch *GuardEpoch `json:"guardEpoch"`
+	// Compensations is §9's `pendingCompensation` record set: the token-row
+	// preimages a removal's commit captured before its purge, keyed by host
+	// name, each carrying the phase machine and the stash reference the
+	// hub.toml restore applies. A record still open at boot means a swap
+	// compensation has not converged, and the boot pass re-runs it by phase.
+	// Optional on read for the same reason as Tokens: the key arrived after the
+	// store shipped, so a file without it — or with it null — is a store that
+	// has armed no compensation.
+	Compensations map[string]Compensation `json:"pendingCompensation"`
 	// WallClockHighWaterMark is the durable high-water wall clock (§3's rollback
 	// guard): the greatest wall-clock value any token pass has observed. It
 	// never moves backward, and the zero Time means no pass has observed a clock
@@ -652,9 +661,64 @@ type storeFile struct {
 	ProbeEpochSeq map[string]uint64 `json:"probeEpochSeq"`
 	// GuardEpoch is optional on read (see snapshot.GuardEpoch).
 	GuardEpoch *GuardEpoch `json:"guardEpoch"`
+	// Compensations is optional on read (see snapshot.Compensations): absent and
+	// null both decode to nil, which is "no compensation armed yet".
+	Compensations map[string]compensationFile `json:"pendingCompensation"`
 	// WallClockHighWaterMark is optional on read: absent, null and the zero
 	// instant all mean no pass has observed a clock yet.
 	WallClockHighWaterMark time.Time `json:"wallClockHighWaterMark"`
+}
+
+// compensationFile is the decode shape of one pendingCompensation record. Every
+// field is a pointer so a record that omits one — or carries null — is refused
+// rather than decoded as a zero-valued record, exactly as the token shape does
+// it; rows decode through tokenFile so a preimage row carries the whole token
+// schema.
+type compensationFile struct {
+	Host       *string      `json:"host"`
+	Phase      *string      `json:"phase"`
+	Rows       *[]tokenFile `json:"rows"`
+	Stash      *string      `json:"stashReference"`
+	Generation *uint64      `json:"generation"`
+}
+
+// compensation maps the decode shape to a record, refusing every omitted field
+// and normalizing the retired `compensating-sidecar` spelling to its live
+// alias.
+func (f compensationFile) compensation() (Compensation, error) {
+	for _, required := range []struct {
+		present bool
+		what    string
+	}{
+		{f.Host != nil, "host"},
+		{f.Phase != nil, "phase"},
+		{f.Rows != nil, "rows"},
+		{f.Stash != nil, "stash reference"},
+		{f.Generation != nil, "generation"},
+	} {
+		if !required.present {
+			return Compensation{}, fmt.Errorf("a compensation record carries no %s", required.what)
+		}
+	}
+	rows := make([]Token, len(*f.Rows))
+	for i, encoded := range *f.Rows {
+		mapped, err := encoded.token()
+		if err != nil {
+			return Compensation{}, err
+		}
+		rows[i] = mapped
+	}
+	record := Compensation{
+		Host:       *f.Host,
+		Phase:      CompensationPhase(*f.Phase),
+		Rows:       rows,
+		Stash:      *f.Stash,
+		Generation: *f.Generation,
+	}
+	if err := validateCompensation(record); err != nil {
+		return Compensation{}, err
+	}
+	return record.normalized(), nil
 }
 
 // tombstoneFile is the decode shape of one dedup tombstone. It carries the
@@ -849,6 +913,20 @@ func readStoreFS(fs afero.Fs, path string) (snapshot, error) {
 			tokens[i] = mapped
 		}
 	}
+	var compensations map[string]Compensation
+	if file.Compensations != nil {
+		compensations = make(map[string]Compensation, len(file.Compensations))
+		for host, encoded := range file.Compensations {
+			record, err := encoded.compensation()
+			if err != nil {
+				return snapshot{}, fmt.Errorf("%w: %s: %w", ErrStoreCorrupt, path, err)
+			}
+			if record.Host != host {
+				return snapshot{}, fmt.Errorf("%w: compensation[%q] names %q in its record", ErrStoreCorrupt, host, record.Host)
+			}
+			compensations[host] = record
+		}
+	}
 	state := snapshot{
 		Version:                *file.Version,
 		Sequence:               *file.Sequence,
@@ -858,6 +936,7 @@ func readStoreFS(fs afero.Fs, path string) (snapshot, error) {
 		Boundaries:             file.Boundaries,
 		RemovedHosts:           file.RemovedHosts,
 		Tokens:                 tokens,
+		Compensations:          compensations,
 		ProbeEpochSeq:          file.ProbeEpochSeq,
 		GuardEpoch:             file.GuardEpoch,
 		// The mark is normalized like every stored timestamp: an offset form
@@ -946,6 +1025,21 @@ func saveFS(fs afero.Fs, path string, state snapshot, faults storeFaults) (renam
 		// Same rule for the removal markers: a store that has seen no removal
 		// writes an empty object, never null.
 		state.RemovedHosts = map[string]RemovedHost{}
+	}
+	if state.Compensations == nil {
+		// Same rule for the armed compensation records: a store that has armed
+		// none writes an empty object, never null.
+		state.Compensations = map[string]Compensation{}
+	} else {
+		// A record's preimage is a list: an empty one writes an empty array,
+		// never null, so the key's shape never depends on whether the purge had
+		// rows to carry.
+		for host, record := range state.Compensations {
+			if record.Rows == nil {
+				record.Rows = []Token{}
+				state.Compensations[host] = record
+			}
+		}
 	}
 	data, err := json.Marshal(state)
 	if err != nil {
@@ -1151,7 +1245,8 @@ func preservedMode(fs afero.Fs, path string) (os.FileMode, bool) {
 var ownedObjectKeys = map[string]map[string]struct{}{
 	"": keysOf("version", "sequence", "allocatorHighWaterMark", "records", "boundaries",
 		"tokens", "probeEpochs", "probeEpochSeq", "guardEpoch", "wallClockHighWaterMark",
-		"compactSeq", "tombstones", "compactionMarks", "compactionFloor", "removedHosts"),
+		"compactSeq", "tombstones", "compactionMarks", "compactionFloor", "removedHosts",
+		"pendingCompensation"),
 	"records[]": keysOf("id", "clientOperationId", "host", "kind", "state", "generation",
 		"incarnationId", "fencingEpoch", "orphanBoundary", "progress", "result",
 		"createdAt", "updatedAt", "hostRemoved", "sequence"),
@@ -1174,6 +1269,14 @@ var ownedObjectKeys = map[string]map[string]struct{}{
 		"freshnessBoundSec", "mintedAt", "expiresAt"),
 	"probeEpochs[]": keysOf("host", "bootId", "opSeq", "generation", "incarnationId", "createdAt"),
 	"guardEpoch":    keysOf("bootId", "opSeq"),
+	// The armed compensation records are objects this store decodes, and their
+	// preimage rows carry the whole token schema, so both key sets are
+	// canonical too.
+	"pendingCompensation[]": keysOf("host", "phase", "rows", "stashReference", "generation"),
+	"pendingCompensation[].rows[]": keysOf("host", "value", "generation", "incarnationId", "entryHash",
+		"hubTomlFingerprint", "factsRevision", "factsCapturedAt", "targetPath",
+		"controllerRevision", "runningVersion", "runningHealthy", "processStartTime",
+		"freshnessBoundSec", "mintedAt", "expiresAt"),
 }
 
 // keysOf builds one canonical key set.
@@ -1399,6 +1502,18 @@ func ownedKeysFor(owned map[string]map[string]struct{}, path string) (map[string
 		canonical, ok := owned["removedHosts[]"]
 		return canonical, ok
 	}
+	if key, ok := strings.CutPrefix(path, "pendingCompensation."); ok && key != "" {
+		// The record's preimage rows are objects this store decodes too, and the
+		// walk reaches them as "<map>.<name>.rows[]" (the array itself carries
+		// no keys).
+		if strings.HasSuffix(key, ".rows[]") {
+			return owned["pendingCompensation[].rows[]"], true
+		}
+		if strings.HasSuffix(key, ".rows") {
+			return nil, false
+		}
+		return owned["pendingCompensation[]"], true
+	}
 	return nil, false
 }
 
@@ -1571,6 +1686,17 @@ func validateSnapshot(state snapshot) error {
 	if err := validateTokenRows(state.Tokens); err != nil {
 		return err
 	}
+	// Armed compensation records carry the same refuse-always rule: a record
+	// outside the phase machine or carrying a row outside the token schema is
+	// never served, and its key must be the host it names.
+	for host, record := range state.Compensations {
+		if record.Host != host {
+			return fmt.Errorf("%w: compensation[%q] names %q in its record", ErrInvalidRecord, host, record.Host)
+		}
+		if err := validateCompensation(record); err != nil {
+			return err
+		}
+	}
 	// Probe epochs and the guard epoch carry the same refuse-always rule: a row
 	// outside the schema a persist writes never enters the file, and the
 	// set-level rules (one probe row per host, a row's sequence at or below its
@@ -1621,6 +1747,7 @@ func cloneSnapshot(state snapshot) snapshot {
 	out.CompactionMarks = append([]CompactionMark(nil), state.CompactionMarks...)
 	out.RemovedHosts = maps.Clone(state.RemovedHosts)
 	out.Tokens = cloneTokens(state.Tokens)
+	out.Compensations = cloneCompensations(state.Compensations)
 	out.ProbeEpochs = slices.Clone(state.ProbeEpochs)
 	out.ProbeEpochSeq = maps.Clone(state.ProbeEpochSeq)
 	out.GuardEpoch = cloneGuardEpoch(state.GuardEpoch)
