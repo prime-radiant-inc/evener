@@ -95,6 +95,39 @@ func (s *WebServer) handleDocFile(w http.ResponseWriter, r *http.Request) {
 	writeDocFileRaw(w, r, doc)
 }
 
+// sessionDocumentFromHub serves the evener/session/document AppWire method: one
+// document out of THIS hub's own local session state, for the controller's
+// /doc/file proxy (S7). It is the AppWire counterpart of handleDocFile and
+// resolves the path by the same rule (sessionCWD, which refuses a session id
+// naming another source, then fspaths.ResolveInRoot), so a remote read is
+// confined to the session's folder exactly as a local one is.
+func sessionDocumentFromHub(cfg hubcore.WebConfig, params appwire.SessionDocumentParams) (appwire.SessionDocumentResponse, error) {
+	if params.SessionID == "" || params.Path == "" {
+		return appwire.SessionDocumentResponse{}, appwire.InvalidParams("sessionId and path are required")
+	}
+	cwd, ok := sessionCWD(cfg, canonicalRouteID(params.SessionID))
+	if !ok {
+		return appwire.SessionDocumentResponse{}, appwire.ResourceNotFound("session not found")
+	}
+	abs, err := fspaths.ResolveInRoot(cwd, params.Path)
+	if errors.Is(err, fspaths.ErrPathEscapesRoot) {
+		return appwire.SessionDocumentResponse{}, appwire.PathOutsideSession("path must resolve inside the session's working directory")
+	}
+	if err != nil {
+		return appwire.SessionDocumentResponse{}, appwire.ResourceNotFound("document not found")
+	}
+	doc, err := readDocFile(cwd, abs)
+	if err != nil {
+		return appwire.SessionDocumentResponse{}, appwire.ResourceNotFound("document not found")
+	}
+	return appwire.SessionDocumentResponse{
+		Data:       doc.Data,
+		TotalSize:  doc.TotalSize,
+		Revision:   doc.Revision,
+		ModifiedAt: docModifiedMillis(doc.ModifiedAt),
+	}, nil
+}
+
 // handleDocImage serves a validated image file inside a session's working
 // directory. It mirrors /doc/file's containment boundary, but only streams v1
 // supported image media types for inline output-image previews. A
@@ -300,8 +333,7 @@ func looksBinaryBytes(data []byte) bool {
 // revision is answered 304 without the body.
 func writeDocFileRaw(w http.ResponseWriter, r *http.Request, doc docFileRead) {
 	w.Header().Set("Cache-Control", "private, no-cache")
-	// A time at or before the epoch is sent as no time at all.
-	if ms := doc.ModifiedAt.UnixMilli(); ms > 0 {
+	if ms := docModifiedMillis(doc.ModifiedAt); ms != 0 {
 		w.Header().Set("X-Doc-Modified-At", strconv.FormatInt(ms, 10))
 	}
 	etag := ""
@@ -323,6 +355,12 @@ func writeDocFileRaw(w http.ResponseWriter, r *http.Request, doc docFileRead) {
 		w.Header().Set("X-Doc-Total-Size", strconv.FormatInt(doc.TotalSize, 10))
 	}
 	_, _ = w.Write(doc.Data)
+}
+
+// docModifiedMillis is a modification time in Unix milliseconds, or 0 for a
+// time at or before the epoch, which is sent as no time at all.
+func docModifiedMillis(modified time.Time) int64 {
+	return max(modified.UnixMilli(), 0)
 }
 
 // ifNoneMatchNames reports whether an If-None-Match header lists etag, or is

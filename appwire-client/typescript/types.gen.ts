@@ -3085,6 +3085,18 @@ export interface SessionDeleteResponse {
   navigation: NavigationMutation;
 }
 
+export interface SessionDocumentParams {
+  sessionId: string;
+  path: string;
+}
+
+export interface SessionDocumentResponse {
+  data: string;
+  totalSize: number;
+  revision?: string;
+  modifiedAt?: number;
+}
+
 export interface SessionImageParams {
   sessionId: string;
   sha?: string;
@@ -4383,6 +4395,7 @@ export const METHOD_NAMES = [
   "evener/host/running",
   "evener/host/pushCredentials",
   "evener/session/image",
+  "evener/session/document",
 ] as const;
 
 export type MethodName = (typeof METHOD_NAMES)[number];
@@ -4606,6 +4619,7 @@ export interface MethodTypes {
   "evener/host/running": { params: HostRunningParams; result: HostRunningResponse };
   "evener/host/pushCredentials": { params: HostPushCredentialsParams; result: HostPushCredentialsResponse };
   "evener/session/image": { params: SessionImageParams; result: SessionImageResponse };
+  "evener/session/document": { params: SessionDocumentParams; result: SessionDocumentResponse };
 }
 
 export interface NotificationTypes {
