@@ -20,4 +20,4 @@ What a weak colleague does:
 - Narrates activity instead of saying what is now true.
 - Overclaims, or hedges everything so the person cannot act.
 
-For each set, rank every packet from best to worst on the whole: judgment first, then writing. Score each one 1 to 5 (5 excellent, 3 adequate, 1 poor). In "why", name the most important difference in the set and quote the worst packet's worst sentence.
+For each set, rank every packet from best to worst on the whole: judgment first, then writing. In "why", name the most important difference in the set and quote the worst packet's worst sentence.

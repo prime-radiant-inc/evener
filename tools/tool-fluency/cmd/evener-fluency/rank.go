@@ -190,7 +190,7 @@ Read every packet in a set before ranking it. For each set, on its own line, wri
 
 {"set": <set number>, "ranking": ["B", "A", "C"], "writing": {"A": 4, "B": 5, "C": 2}, "why": "one sentence, quoting the worst packet"}
 
-"ranking" lists every packet's letter in the set, best writing first. "writing" scores every packet 1-5 (3 good, 2 acceptable, 1 poor). "why" says the single most important thing about the set and quotes the worst packet.
+"ranking" lists every packet's letter in the set, best writing first. "writing" scores every packet 1-5 (5 excellent, 3 adequate, 1 poor). "why" says the single most important thing about the set and quotes the worst packet.
 `
 
 // renderRankSets renders the reviewer prompt, the answer format, and every
