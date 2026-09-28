@@ -1085,7 +1085,7 @@ func readOperationsLocked(state *snapshot, q OperationsQuery, live CursorEpoch) 
 			generation, incarnation = pinnedPair.Generation, pinnedPair.IncarnationID
 		case detailOnly && len(records) == 1:
 			generation, incarnation = records[0].Generation, records[0].IncarnationID
-		case !havePinnedPair && q.Generation == nil:
+		case !havePinnedPair && !detailOnly && q.Generation == nil:
 			if entry, ok := current[q.Host]; ok && entry.Unmirrored {
 				generation, incarnation = entry.Boundary.Generation, entry.Boundary.IncarnationID
 			}
