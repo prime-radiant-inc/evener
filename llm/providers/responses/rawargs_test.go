@@ -194,6 +194,21 @@ func rawArgsResponsesSSE(argsContent string) string {
 		"event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_1\",\"status\":\"completed\",\"model\":\"gpt-5.5\",\"output\":[{\"id\":\"fc_1\",\"type\":\"function_call\",\"call_id\":\"call_1\",\"name\":\"write_file\",\"arguments\":" + deltaEsc + "}],\"usage\":{\"input_tokens\":3,\"output_tokens\":2,\"total_tokens\":5}}}\n\n"
 }
 
+// rawArgumentsDoneSSE builds the gateway fallback shape where the authoritative
+// function_call_arguments.done event is the last event carrying arguments:
+// output_item.done omits them and response.completed has empty output.
+func rawArgumentsDoneSSE(doneArgs string) []byte {
+	firstDelta := `{"path":"`
+	secondDelta := "\xffdraft.txt\"}"
+	doneToken := string(jsonStringToken(doneArgs))
+	return []byte("event: response.output_item.added\ndata: {\"type\":\"response.output_item.added\",\"item\":{\"id\":\"fc_1\",\"type\":\"function_call\",\"call_id\":\"call_1\",\"name\":\"write_file\"}}\n\n" +
+		"event: response.function_call_arguments.delta\ndata: {\"type\":\"response.function_call_arguments.delta\",\"item_id\":\"fc_1\",\"delta\":" + string(jsonStringToken(firstDelta)) + "}\n\n" +
+		"event: response.function_call_arguments.delta\ndata: {\"type\":\"response.function_call_arguments.delta\",\"item_id\":\"fc_1\",\"delta\":" + string(jsonStringToken(secondDelta)) + "}\n\n" +
+		"event: response.function_call_arguments.done\ndata: {\"type\":\"response.function_call_arguments.done\",\"item_id\":\"fc_1\",\"arguments\":" + doneToken + "}\n\n" +
+		"event: response.output_item.done\ndata: {\"type\":\"response.output_item.done\",\"item\":{\"id\":\"fc_1\",\"type\":\"function_call\",\"call_id\":\"call_1\",\"name\":\"write_file\"}}\n\n" +
+		"event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_1\",\"status\":\"completed\",\"model\":\"gpt-5.5\",\"output\":[],\"usage\":{\"input_tokens\":3,\"output_tokens\":2,\"total_tokens\":5}}}\n\n")
+}
+
 // decodeRawArgsStream runs the responses streaming decode with a scripted
 // SSE body and returns the tool-call Arguments from the final response.
 func decodeRawArgsStream(t *testing.T, sseBody string) []byte {
@@ -237,6 +252,38 @@ func TestRawArgs_Stream_InvalidUTF8(t *testing.T) {
 	}
 	if bytes.Contains(got, []byte{0xEF, 0xBF, 0xBD}) {
 		t.Fatalf("stream Arguments contains U+FFFD, want raw 0xff preserved: % x", got)
+	}
+}
+
+func TestRawArgs_Stream_ArgumentsDonePreservesRawBytes(t *testing.T) {
+	want := []byte(`{"path":"` + "\xfe" + `final.txt"}`)
+	srv, _ := server(t, http.StatusOK, string(rawArgumentsDoneSSE(string(want))))
+	res := liveRes(srv, nil)
+	s, err := (&Protocol{Client: srv.Client()}).Stream(context.Background(), llm.ShapeRequest(userReq("hi"), res), res)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var endArgs, settledArgs []byte
+	for ev := range s.Events() {
+		switch ev.Type {
+		case llm.StreamEventError:
+			t.Fatalf("stream error: %v", ev.Err)
+		case llm.StreamEventToolCallEnd:
+			endArgs = append([]byte(nil), ev.ToolCall.Arguments...)
+		case llm.StreamEventFinish:
+			calls := ev.Response.ToolCalls()
+			if len(calls) != 1 {
+				t.Fatalf("settled ToolCalls() = %d, want 1", len(calls))
+			}
+			settledArgs = append([]byte(nil), calls[0].Arguments...)
+		}
+	}
+	if !bytes.Equal(endArgs, want) {
+		t.Fatalf("ToolCallEnd Arguments = %q (% x), want %q (% x)", endArgs, endArgs, want, want)
+	}
+	if !bytes.Equal(settledArgs, want) {
+		t.Fatalf("settled Arguments = %q (% x), want %q (% x)", settledArgs, settledArgs, want, want)
 	}
 }
 

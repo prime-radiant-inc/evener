@@ -151,6 +151,21 @@ func TestExtractRecordedResponse_ResponsesSSE_AccumulatedRawArguments(t *testing
 	}
 }
 
+func TestExtractRecordedResponse_ResponsesSSE_ArgumentsDoneRawArguments(t *testing.T) {
+	want := []byte(`{"path":"` + "\xfe" + `final.txt"}`)
+	resp, err := ExtractRecordedResponse(rawArgumentsDoneSSE(string(want)), "gpt-5.5")
+	if err != nil {
+		t.Fatalf("ExtractRecordedResponse: %v", err)
+	}
+	calls := resp.ToolCalls()
+	if len(calls) != 1 {
+		t.Fatalf("ToolCalls() = %d, want 1", len(calls))
+	}
+	if !bytes.Equal(calls[0].Arguments, want) {
+		t.Fatalf("Arguments = %q (% x), want %q (% x)", calls[0].Arguments, calls[0].Arguments, want, want)
+	}
+}
+
 // TestExtractRecordedResponse_EmptyBody covers the empty body error path.
 func TestExtractRecordedResponse_EmptyBody(t *testing.T) {
 	if _, err := ExtractRecordedResponse([]byte("   "), "gpt-5.2"); err == nil {

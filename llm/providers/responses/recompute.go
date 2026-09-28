@@ -110,7 +110,7 @@ func extractResponsesFromSSE(body []byte, requestedModel string) (llm.Response, 
 		case "response.function_call_arguments.delta":
 			acc.HandleFunctionCallArgumentsDelta(payload)
 		case "response.function_call_arguments.done":
-			acc.HandleFunctionCallArgumentsDone(payload)
+			acc.HandleFunctionCallArgumentsDone(payload, ev.Data)
 		case "response.output_item.done":
 			acc.HandleOutputItemDone(payload, ev.Data)
 		case "response.completed":

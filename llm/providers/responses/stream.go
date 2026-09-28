@@ -150,10 +150,12 @@ func (acc *responsesOutputAccumulator) HandleFunctionCallArgumentsDelta(payload 
 
 // HandleFunctionCallArgumentsDone applies a
 // response.function_call_arguments.done event's authoritative full-arguments
-// string, overriding whatever deltas were accumulated so far, resolving
-// call_id via item_id when needed. ok is false when the event carried no
-// resolvable call_id -- the caller should pass the raw payload through.
-func (acc *responsesOutputAccumulator) HandleFunctionCallArgumentsDone(payload map[string]any) (state *responsesToolState, ok bool) {
+// bytes, overriding whatever deltas were accumulated so far, resolving
+// call_id via item_id when needed. eventData preserves bytes the decoded
+// payload string coerced; capture or unescape failure falls back to that
+// string. ok is false when the event carried no resolvable call_id -- the
+// caller should pass the raw payload through.
+func (acc *responsesOutputAccumulator) HandleFunctionCallArgumentsDone(payload map[string]any, eventData []byte) (state *responsesToolState, ok bool) {
 	argsStr, _ := payload["arguments"].(string)
 	callID, _ := payload["call_id"].(string)
 	itemID, _ := payload["item_id"].(string)
@@ -173,6 +175,12 @@ func (acc *responsesOutputAccumulator) HandleFunctionCallArgumentsDone(payload m
 	}
 	if argsStr != "" {
 		st.args.Reset()
+		if rawArgs, rawOK := captureResponsesArgumentsDoneRaw(eventData); rawOK && rawArgs != nil {
+			if content, err := protocolhttp.RawStringContent(rawArgs); err == nil {
+				st.args.Write(content)
+				return st, true
+			}
+		}
 		st.args.WriteString(argsStr)
 	}
 	return st, true
@@ -481,7 +489,7 @@ func (p *Protocol) decodeStream(sctx context.Context, cancel context.CancelFunc,
 				tc := llm.ToolCallData{ID: st.id, ItemID: st.itemID, Name: st.name, Arguments: []byte(delta), Type: "function"}
 				s.Send(llm.StreamEvent{Type: llm.StreamEventToolCallDelta, ToolCall: &tc})
 			case "response.function_call_arguments.done":
-				if _, ok := acc.HandleFunctionCallArgumentsDone(payload); !ok {
+				if _, ok := acc.HandleFunctionCallArgumentsDone(payload, ev.Data); !ok {
 					s.Send(llm.StreamEvent{Type: llm.StreamEventProviderEvent, Raw: payload})
 				}
 			case "response.output_item.done":
@@ -575,6 +583,18 @@ func captureResponsesDeltaRaw(eventData []byte) (json.RawMessage, bool) {
 		return nil, false
 	}
 	return focused.Delta, true
+}
+
+// captureResponsesArgumentsDoneRaw captures an arguments.done event's
+// authoritative string token without decoding it through a Go string first.
+func captureResponsesArgumentsDoneRaw(eventData []byte) (json.RawMessage, bool) {
+	var focused struct {
+		Arguments json.RawMessage `json:"arguments"`
+	}
+	if err := json.Unmarshal(eventData, &focused); err != nil {
+		return nil, false
+	}
+	return focused.Arguments, true
 }
 
 // captureResponsesOutputItemRaw extracts the raw item token from an
