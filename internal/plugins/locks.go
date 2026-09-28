@@ -102,18 +102,35 @@ func (m *Manager) lockStore(ctx context.Context, acquire lockAcquirer, timeout t
 // contention (errLockContention, retry shortly), an unusable store root
 // (errStoreRootUnset/errStoreRootNotAbsolute), and a cancellation or deadline.
 //
-// acquireStoreLock is also reached by Doctor's read-only walk and by the
-// bundled-cache lock, which do not come through here: Doctor reports locally,
-// so naming the lock file it could not take is the point for its admin, and the
-// bundled lock is not an RPC verb.
+// The raw acquisition error is kept as the result's cause, so errors.Is still
+// reaches whatever the acquirer failed with - one of those sentinels, an fs
+// error, or a test's own injected error - while the wire text names none of it.
+//
+// acquireStoreLock is also reached by Doctor's read-only walk, which does not
+// come through here: Doctor reports locally, so naming the lock file it could
+// not take is the point for its admin.
 func (m *Manager) lockFailed(err error) error {
 	_, _ = fmt.Fprintf(m.stderr(), "warning: taking the plugin store lock: %v\n", err)
-	base := "the plugin store lock could not be taken; see the hub's log for detail"
+	msg := "the plugin store lock could not be taken; see the hub's log for detail"
+	// A refusal a caller has to act on - contention to retry, a store root to
+	// fix, a cancellation - is named on the wire, path-free.
 	if cause := editFailureIdentity(err); cause != nil {
-		return &pathFreeError{fmt.Errorf("%s: %w", base, cause)}
+		msg = fmt.Sprintf("%s: %v", msg, cause)
 	}
-	return &pathFreeError{errors.New(base)}
+	return &lockAcquisitionError{msg: msg, cause: err}
 }
+
+// lockAcquisitionError is lockFailed's result: path-free wire text laid over the
+// raw acquisition error, which a caller reaches through Unwrap (so errors.Is
+// still finds it) but never sees in the message (so the lock file's absolute
+// path stays in the hub's log).
+type lockAcquisitionError struct {
+	msg   string
+	cause error
+}
+
+func (e *lockAcquisitionError) Error() string { return e.msg }
+func (e *lockAcquisitionError) Unwrap() error { return e.cause }
 
 // reportingRelease wraps release so that, in order: this session's
 // accumulated change is captured and cleared, the store lock is let go, and
@@ -148,9 +165,16 @@ func (m *Manager) migrateStore(ctx context.Context) error {
 // acquireBundledLock takes the bundled cache's lock for one mutation of
 // <Root>/bundled. Every bundled-cache mutation acquires here and nowhere else,
 // and it goes through acquireStoreLock so the store-root check lands on this
-// lock the same way it lands on the store lock.
+// lock the same way it lands on the store lock. Its failure is scrubbed through
+// lockFailed too: PreviewForLaunch readies the bundled store, and the hub's
+// plugin/preview copies that error onto its wire diagnostic, so the bundled
+// lock file's absolute path must not be in it.
 func (m *Manager) acquireBundledLock(ctx context.Context, timeout time.Duration) (func(), error) {
-	return m.acquireStoreLock(ctx, acquireLock, m.bundledLockPath(), timeout)
+	release, err := m.acquireStoreLock(ctx, acquireLock, m.bundledLockPath(), timeout)
+	if err != nil {
+		return nil, m.lockFailed(err)
+	}
+	return release, nil
 }
 
 // acquireLock takes an exclusive flock on lockPath, retrying with capped
