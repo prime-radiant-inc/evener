@@ -42,11 +42,13 @@ const docRevisionMaxBytes = 16 * 1024 * 1024
 // id names a session on another host, so its file is read by the owning host
 // (serveRemoteSessionDocument); a local id reads this hub's own filesystem.
 //
-// The guard chain below (session/path presence, cwd containment) runs before
-// the format check, so a raw and a non-raw request reject the same out-of-cwd
-// or unknown-session input identically — only a fully valid request reaches the
-// format gate, where a raw request is served (writeDocFileRaw) and anything
-// else is refused.
+// For a local session the guard chain below (session/path presence, cwd
+// containment) runs before the format check, so a raw and a non-raw request
+// reject the same out-of-cwd or unknown-session input identically — only a
+// fully valid request reaches the format gate, where a raw request is served
+// (writeDocFileRaw) and anything else is refused. A host-qualified session
+// checks the format first, so the host is never asked for a request this route
+// would refuse.
 //
 // Security: the only file paths we serve are ones that resolve to a location
 // inside the session's cwd. We clean the request path, reject any residual
