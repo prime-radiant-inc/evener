@@ -39,7 +39,6 @@ import {
 	formatQuoteBlock,
 	mergeDraftText,
 	parseSlashToken,
-	sessionEffortLevels,
 	spliceSlashCommand,
 	type TranscriptDisplayConfigV1,
 	translateAttachmentMarkers,
@@ -166,7 +165,7 @@ import { type SessionMenuAction, sessionMenu } from "./session/sessionMenu";
 import { confirmShutDown, type SessionInfoAction, type SessionInfoHost, sessionInfoHosts } from "./session/SessionInfoSheet";
 import { SessionNotice } from "./session/SessionNotice";
 import { useSessionRestart } from "./session/sessionRestart";
-import { canDeleteSavedSession, latestForkPoint, modelChipLabel } from "./session/sessionFacts";
+import { canDeleteSavedSession, canOpenModelSheet, latestForkPoint, modelChipLabel } from "./session/sessionFacts";
 import {
 	type ChipKind,
 	contextChips,
@@ -2284,13 +2283,7 @@ export function ConversationScreen({
 	}
 	// The chip opens the model sheet when there is something there to change:
 	// the model, or its effort.
-	const modelChangeable =
-		!!conversation &&
-		(conversation.capabilities.changeModel ||
-			sessionEffortLevels(
-				conversation.reasoningEffortLevels,
-				conversation.supportsReasoning,
-			).length > 0);
+	const modelChangeable = !!conversation && canOpenModelSheet(conversation);
 	const composerSettings =
 		conversation && canCompose ? (
 			<ModelChip

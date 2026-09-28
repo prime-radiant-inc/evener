@@ -21,6 +21,7 @@ import { wrapAfterSlashes } from "./format";
 import {
 	accessFacts,
 	canDeleteSavedSession,
+	canOpenModelSheet,
 	latestForkPoint,
 	notesSummary,
 	pluginsLine,
@@ -174,7 +175,7 @@ function SessionInfoBody({
 					text={host.modelLabel}
 					accessibilityLabel={`Model, ${host.modelLabel}`}
 					onPress={
-						capabilities.changeModel
+						canOpenModelSheet(session)
 							? () => navigation.navigate("ModelSheet", { hubId, ref: sessionRef, setting: "model" })
 							: undefined
 					}

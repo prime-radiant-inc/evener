@@ -233,11 +233,17 @@ describe("what the sheet shows (spec 8.6)", () => {
 		expect(navigation.navigate).toHaveBeenCalledWith("ModelSheet", { hubId: HUB, ref: REF, setting: "model" });
 	});
 
-	it("names the model without offering a change the session can't make", () => {
+	it("opens the model sheet for Effort when the model itself can't change", () => {
 		provide(conversation());
+		press(sheet(), "Model, Claude Sonnet 5 · High");
+		expect(navigation.navigate).toHaveBeenCalledWith("ModelSheet", { hubId: HUB, ref: REF, setting: "model" });
+	});
+
+	it("names the model without offering a change the session can't make", () => {
+		provide(conversation({ reasoningEffortLevels: [], supportsReasoning: false }), { modelLabel: "Claude Sonnet 5" });
 		const tree = sheet();
-		expect(texts(tree)).toContain("Claude Sonnet 5 · High");
-		expect(pressable(tree, "Model, Claude Sonnet 5 · High")).toBeUndefined();
+		expect(texts(tree)).toContain("Claude Sonnet 5");
+		expect(pressable(tree, "Model, Claude Sonnet 5")).toBeUndefined();
 	});
 
 	it("offers the vision model only when the session can change it", () => {

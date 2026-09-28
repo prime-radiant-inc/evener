@@ -1,8 +1,9 @@
-import type { ModelDescriptor } from "@evener/appwire-client";
+import type { ModelDescriptor, ThreadCapabilities } from "@evener/appwire-client";
 import { describe, expect, it } from "vitest";
 import {
 	accessFacts,
 	canDeleteSavedSession,
+	canOpenModelSheet,
 	effortName,
 	hostIdOf,
 	latestForkPoint,
@@ -202,5 +203,20 @@ describe("Delete", () => {
 		expect(canDeleteSavedSession({ ref: local, status: { type: "idle" } })).toBe(false);
 		expect(canDeleteSavedSession({ ref: local, status: { type: "closed" } })).toBe(false);
 		expect(canDeleteSavedSession({ ref: "paradise-park:s2", status: { type: "notLoaded" } })).toBe(false);
+	});
+});
+
+describe("the model sheet has something to change", () => {
+	const session = (changeModel: boolean, levels: string[], supportsReasoning = levels.length > 0) => ({
+		capabilities: { changeModel } as ThreadCapabilities,
+		reasoningEffortLevels: levels,
+		supportsReasoning,
+	});
+	it("when the model or its effort can change", () => {
+		expect(canOpenModelSheet(session(true, []))).toBe(true);
+		expect(canOpenModelSheet(session(false, ["low", "high"]))).toBe(true);
+		// Reasoning without listed levels gets the default ladder.
+		expect(canOpenModelSheet(session(false, [], true))).toBe(true);
+		expect(canOpenModelSheet(session(false, []))).toBe(false);
 	});
 });

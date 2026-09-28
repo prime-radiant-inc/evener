@@ -131,6 +131,18 @@ export function modelChipLabel(
 	return levels.length > 0 ? `${name} · ${effortName(session.reasoningEffort ?? "")}` : name;
 }
 
+/** Whether the model sheet has something to change: the model, or its
+ * effort. The composer's chip and the Session sheet's Model row both open it
+ * on this, so Effort is reachable from either. */
+export function canOpenModelSheet(
+	session: Pick<ThreadModel, "capabilities" | "reasoningEffortLevels" | "supportsReasoning">,
+): boolean {
+	return (
+		session.capabilities.changeModel ||
+		sessionEffortLevels(session.reasoningEffortLevels, session.supportsReasoning).length > 0
+	);
+}
+
 /** The Session sheet's vision model row: "off" turns vision off, and empty
  * uses the session's own model. */
 export function visionModelLabel(visionModel: string, catalog: readonly ModelDescriptor[] | undefined): string {
