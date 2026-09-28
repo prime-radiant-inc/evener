@@ -2,15 +2,13 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { LaunchConfigResolved, LaunchOption } from "@evener/appwire-client";
-import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
-import { afterEach, expect, test, vi } from "vitest";
+import { expect, test, vi } from "vitest";
 import { enterText } from "../../textEntryTestUtils";
 import type { ModelCatalog as ModelCatalogEnvelope } from "../../widgets";
 import { AdvancedOptions } from "./AdvancedOptions";
-
-afterEach(() => cleanup());
 
 function option(partial: Partial<LaunchOption> & { wireField: string; kind: string; label: string }): LaunchOption {
   return { field: partial.wireField, group: "general", perLaunch: true, ...partial };

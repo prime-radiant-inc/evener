@@ -228,6 +228,21 @@ func TestHostAttachTimedOutDeployIsHubLaunchError(t *testing.T) {
 			info:      appwire.ErrorHubLaunch,
 		},
 		{
+			// The cross-target default refusal is terminal and deploy-family:
+			// it must reach the browser as hubLaunch, not as a generic internal
+			// error, even though it is not wrapped in ErrDeploy.
+			name:      "cross-target own-executable refusal",
+			attachErr: fmt.Errorf("%w: host %q: this controller's own executable targets linux/amd64 but the host runs darwin/arm64, and the installer fallback has no published artifact to pin for this controller's build; set Options.BuildSource", sshconn.ErrOwnExecutableCannotServe, "alpha"),
+			info:      appwire.ErrorHubLaunch,
+		},
+		{
+			// The deploy-disabled refusal is terminal and deploy-family too,
+			// and its remedy (DeployHelp) is only useful if it is typed.
+			name:      "deploy-disabled refusal",
+			attachErr: fmt.Errorf("%w: host %q: this controller was started with deploying disabled, so it will not install a build on any host; run this hub without -no-deploy", sshconn.ErrDeployDisabled, "alpha"),
+			info:      appwire.ErrorHubLaunch,
+		},
+		{
 			name:      "genuine transport timeout",
 			attachErr: fmt.Errorf("attach alpha: %w", context.DeadlineExceeded),
 			info:      appwire.ErrorSessionUnavailable,

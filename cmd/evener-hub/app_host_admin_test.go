@@ -459,6 +459,10 @@ func TestHostAdminAllowListMatchesCatalog(t *testing.T) {
 		// so a peer hub must not drive them by forwarding the request.
 		"evener/host/deploy":  false,
 		"evener/host/restart": false,
+		// The deploy pipeline's operations read (08b §8) is controller-local for
+		// the same reason: it pages THIS controller's own operation store, so a
+		// peer hub must not page it by forwarding the request.
+		"evener/host/operations": false,
 		// evener/host/running is the direction-scoped peer probe (08b §10), not a
 		// forwarded resource: it is served only on the attached session its
 		// controller opened through the bridge, and the probe is never forwarded

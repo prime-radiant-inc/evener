@@ -11,9 +11,9 @@ import (
 	"primeradiant.com/evener/hubapi"
 )
 
-// liveTaskRows projects rows onto the Live section and returns them by session
+// liveNavigationRows projects rows onto the Live section and returns them by session
 // ID, after proving the section passes the hub's own schema.
-func liveTaskRows(t *testing.T, rows []hubcore.TreeNode) map[string]hubapi.NavigationSessionSummary {
+func liveNavigationRows(t *testing.T, rows []hubcore.TreeNode) map[string]hubapi.NavigationSessionSummary {
 	t.Helper()
 	projection, err := buildNavigationProjection(navigationBuildInputs{GenerationID: "generation", Revision: 1, Tree: hubcore.Tree{Live: rows}})
 	if err != nil {
@@ -38,7 +38,7 @@ func liveTaskRows(t *testing.T, rows []hubcore.TreeNode) map[string]hubapi.Navig
 // record at all.
 func TestNavigationProjectionCarriesTaskProgress(t *testing.T) {
 	long := strings.Repeat("é", maxNavigationLabelRunes+10)
-	rows := liveTaskRows(t, []hubcore.TreeNode{
+	rows := liveNavigationRows(t, []hubcore.TreeNode{
 		{ID: "session-planned", Title: "planned", Kind: "session", State: "active", Tasks: &appwire.TaskAggregate{
 			Total: 7, Done: 2, Cancelled: 1, Remaining: 4, Current: &appwire.TaskSummary{ID: 4, Description: "Fix the settle/drain race"},
 		}},
@@ -81,7 +81,7 @@ func TestNavigationProjectionCarriesTaskProgress(t *testing.T) {
 // than carried: one invalid summary would make the whole resource, every other
 // row in it included, unreadable. The row itself stays listed.
 func TestNavigationProjectionDropsTaskProgressTheSchemaRefuses(t *testing.T) {
-	rows := liveTaskRows(t, []hubcore.TreeNode{
+	rows := liveNavigationRows(t, []hubcore.TreeNode{
 		{ID: "session-oversettled", Title: "oversettled", Kind: "session", State: "active", Tasks: &appwire.TaskAggregate{Total: 2, Done: 2, Cancelled: 1}},
 		{ID: "session-negative", Title: "negative", Kind: "session", State: "active", Tasks: &appwire.TaskAggregate{Total: 3, Done: -1}},
 		{ID: "session-valid", Title: "valid", Kind: "session", State: "active", Tasks: &appwire.TaskAggregate{Total: 3, Done: 1, Remaining: 2}},

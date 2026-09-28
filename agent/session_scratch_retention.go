@@ -1609,6 +1609,24 @@ func (s *Session) prepareRetainedScratch() error {
 	if manifest.Released || len(manifest.References) == 0 {
 		return nil
 	}
+	// A referenced allocation whose directory was removed out of band — a tmp
+	// reaper, an operator's rm, a crashed reclaimer — can never be reacquired:
+	// its identity pin went with the directory, so the reacquisition below
+	// would fail closed and wedge every later restore of this root forever. A
+	// referenced directory whose pin was lost is the startup sweep's next
+	// victim. Detect either case first (a lock-free scan) so a healthy manifest
+	// pays no extra manifest lock or write, then repair before reacquiring: the
+	// surviving allocations restore as before, and a consumer whose allocation
+	// was dropped finds no slot and provisions fresh scratch.
+	if sandbox.ScratchRetentionNeedsRepair(manifest) {
+		manifest, _, err = sandbox.RepairScratchRetention(owner)
+		if err != nil {
+			return fmt.Errorf("retained scratch: %w", err)
+		}
+		if manifest.Released || len(manifest.References) == 0 {
+			return nil
+		}
+	}
 	// Fail closed on an incomplete or contradictory reference→binding→consumer
 	// graph before reacquiring a single lease. A crash between publishing a
 	// pin/reference and publishing the binding or consumer that maps it would

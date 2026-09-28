@@ -35,6 +35,7 @@ import (
 	"primeradiant.com/evener/agent/skill"
 	"primeradiant.com/evener/agent/task"
 	"primeradiant.com/evener/agent/transcript"
+	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/internal/apptranscript"
 	"primeradiant.com/evener/llm"
 	"primeradiant.com/evener/llm/registry"
@@ -123,11 +124,17 @@ type Session struct {
 	// durable manifest diverged from the live environment and no later swap
 	// repaired it, so preparation must fail closed rather than trust the
 	// manifest. Guarded by mu.
-	scratchRetentionErr      error
-	delegateController       *delegateTreeController
-	delegateRootSessionID    string
-	owningDelegateID         string
-	ownsDelegateController   bool
+	scratchRetentionErr    error
+	delegateController     *delegateTreeController
+	delegateRootSessionID  string
+	owningDelegateID       string
+	ownsDelegateController bool
+	// subagentTallyForTest overrides SubagentTally's answer when set. A fresh
+	// session with no subagents reports the same empty tally as any other, so
+	// a cross-package test that needs to tell two sessions' tally seams apart
+	// (SubagentTallyForTest) has no real value to seed short of running a
+	// whole delegate tree; this gives it one.
+	subagentTallyForTest     *appwire.SubagentTally
 	artifactStore            artifactStore
 	ownsArtifactStore        bool
 	client                   *llm.Client

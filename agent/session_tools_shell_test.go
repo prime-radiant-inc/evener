@@ -665,6 +665,18 @@ func TestSessionCloseMarksBackgroundShellCancelledBeforeEnvCleanup(t *testing.T)
 	s := newShellToolTestSession(t, SessionConfig{StateDir: stateDir})
 	sessionID := s.ID()
 
+	// Close marks the running shell cancelled, signals it, then joins its real
+	// durable completion before the environment cleanup can reap the process.
+	// Wait on that real completion with production's graceful-shutdown window
+	// rather than the shared 200ms test window: under full-suite load a killed
+	// shell's finalization can outlast the short window, and closeRuntimeState
+	// then abandons the job — leaving the record "running" instead of the
+	// cancellation this test exists to pin. The join returns as soon as the
+	// shell finalizes, so the wider window costs nothing on a normal run.
+	// TRIPWIRE: production's defaultCloseGrace (agent/jobs.go, 5s) only fires
+	// on a genuine finalization hang.
+	s.jobManager.closeGrace = 5 * time.Second
+
 	res := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
 		ID:        "c1",
 		Name:      "shell",
@@ -1428,6 +1440,38 @@ func TestFormatShellResultPromotionFooter(t *testing.T) {
 	}
 	if strings.Contains(got, "timed out") {
 		t.Fatalf("promotion footer = %q, must not say the command itself timed out", got)
+	}
+}
+
+// TestFormatShellResultBackgroundReminderOneShot pins #2644: the background-job
+// reminder must not promise a wake that a one-shot run cannot deliver. Under
+// `evener run` (TurnEndsProcess) the process exits once the turn's work drains,
+// and a background job still running then is stopped unless a job_watch is set.
+// The serve-mode reminder keeps its notify-and-wake wording.
+func TestFormatShellResultBackgroundReminderOneShot(t *testing.T) {
+	t.Parallel()
+	direct := shellToolResult{
+		JobID:  "job_bg",
+		Type:   "shell",
+		Status: string(jobstore.StatusRunning),
+		Mode:   "background",
+	}
+
+	normal := formatShellResult(direct)
+	if !strings.Contains(normal, "You do not need to wait for it explicitly") {
+		t.Fatalf("serve-mode reminder = %q, want the notify-and-wake wording", normal)
+	}
+
+	direct.TurnEndsProcess = true
+	oneShot := formatShellResult(direct)
+	if strings.Contains(oneShot, "You do not need to wait for it explicitly") {
+		t.Fatalf("one-shot reminder = %q, must not claim no wait is needed", oneShot)
+	}
+	if !strings.Contains(oneShot, "job_watch") {
+		t.Fatalf("one-shot reminder = %q, want it to name the job_watch remedy", oneShot)
+	}
+	if strings.Contains(normal, "job_watch") {
+		t.Fatalf("serve-mode reminder = %q, must not mention the one-shot job_watch remedy", normal)
 	}
 }
 

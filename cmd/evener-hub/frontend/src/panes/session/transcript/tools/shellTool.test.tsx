@@ -119,27 +119,17 @@ test("exec_command and run_shell_command alias to the same descriptor as shell",
   expect(toolRendererFor("run_shell_command")).toBe(shell);
 });
 
-// --- autoExpand ---------------------------------------------------------
+// --- autoExpand: none ---------------------------------------------------
+// A failed command does not auto-open its row: a failure earns the glyph and
+// data-attention, and the reader opens the row to read the output. The shell
+// descriptor therefore carries no autoExpand at all (the exit code still
+// drives failed(), so the row never loses its failure signal).
 
-test("autoExpand: true when the parsed exit code is nonzero", () => {
+test("autoExpand: the shell descriptor never auto-opens a row, clean or failed", () => {
   const d = toolRendererFor("shell");
-  expect(d.autoExpand?.(withCommand("false", { output: "x\n[exit 1]" }))).toBe(true);
-});
-
-test("autoExpand: false on a clean exit", () => {
-  const d = toolRendererFor("shell");
-  expect(d.autoExpand?.(withCommand("true", { output: "x\n[exit 0]" }))).toBe(false);
-});
-
-test("autoExpand: true for a nonzero exit reported via the buffered fallback's exit_code= trailer", () => {
-  const d = toolRendererFor("shell");
-  const out = "stdout\nexit_code=1 duration_ms=5 timed_out=false";
-  expect(d.autoExpand?.(withCommand("false", { output: out }))).toBe(true);
-});
-
-test("autoExpand: false when no exit code is detectable at all (no false failure signal)", () => {
-  const d = toolRendererFor("shell");
-  expect(d.autoExpand?.(withCommand("sleep 10", { output: "still going" }))).toBe(false);
+  expect(d.autoExpand).toBeUndefined();
+  // The failure signal itself is untouched.
+  expect(d.failed?.(withCommand("false", { output: "x\n[exit 1]" }))).toBe(true);
 });
 
 // --- typed exitCode (wire-honesty spec Part A) ----------------------------
@@ -156,14 +146,9 @@ test("failed: the typed exitCode wins over a conflicting output footer", () => {
   expect(d.failed?.(clean)).toBe(false);
 });
 
-test("autoExpand: true from a typed nonzero exitCode with no footer text", () => {
+test("failed: true from a typed nonzero exitCode with no footer text", () => {
   const d = toolRendererFor("shell");
-  expect(d.autoExpand?.(withCommand("make test", { exitCode: 2, output: "boom" }))).toBe(true);
-});
-
-test("autoExpand: a typed exit 0 wins over a conflicting nonzero footer (no false auto-expand)", () => {
-  const d = toolRendererFor("shell");
-  expect(d.autoExpand?.(withCommand("make test", { exitCode: 0, output: "x\n[exit 5]" }))).toBe(false);
+  expect(d.failed?.(withCommand("make test", { exitCode: 2, output: "boom" }))).toBe(true);
 });
 
 // --- body -----------------------------------------------------------------

@@ -1036,6 +1036,14 @@ func (s *Session) scheduleRootAttentionRetryLocked() {
 			s.rootAttentionRetry.delay = jobNotificationRetryInitialDelay
 		}
 		s.attentionMu.Unlock()
+		// The seam fires for a callback that passed every early return above --
+		// live generation, rail not parked -- whether or not it then notifies. It
+		// is the ownership lease, not the notify, that projects the notification
+		// blocker, so a stale or parked timer must never reach it and a test's
+		// pause can only belong to the live retry.
+		if observe := s.cfg.testOnly.rootAttentionRetryCallback; observe != nil {
+			observe()
+		}
 		if shouldWake {
 			s.notify()
 		}

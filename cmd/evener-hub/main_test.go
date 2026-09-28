@@ -172,6 +172,62 @@ func TestRunMainCreatesAppWireTraceAndWarnsAboutRawPayloads(t *testing.T) {
 	}
 }
 
+// The startup banners (listening address, auth URL, auth token path) must
+// reach the stderr runMain was given, not the process's real stderr: a
+// caller that redirects diagnostics (this test, or a future embedder) would
+// otherwise never see them.
+func TestRunMainPrintsStartupBannersToTheGivenStderr(t *testing.T) {
+	_, cfg, deps := newTraceMainTestDeps(t)
+
+	var stderr bytes.Buffer
+	if err := runMain([]string{"-addr", cfg.Addr, "-evener", "/bin/evener"}, &stderr, deps); err != nil {
+		t.Fatalf("runMain: %v, stderr=%s", err, stderr.String())
+	}
+	output := stderr.String()
+	for _, want := range []string{"listening on", "auth URL", "auth token also at"} {
+		if !strings.Contains(output, want) {
+			t.Errorf("stderr missing %q banner:\n%s", want, output)
+		}
+	}
+}
+
+// The "past index rebuild" failure diagnostic and the "resolved evener at"
+// banner are the last two startup lines that bypassed the stderr runMain was
+// given, hardcoded to os.Stderr. Every other startup diagnostic already
+// routes through the parameter; these must too, or a caller that redirects
+// diagnostics never sees them.
+func TestRunMainRoutesRemainingDiagnosticsToTheGivenStderr(t *testing.T) {
+	root, cfg, deps := newTraceMainTestDeps(t)
+	// An unparseable state glob makes PastIndex.Rebuild fail, so runMain
+	// emits its "past index rebuild" diagnostic. newTraceMainTestDeps's
+	// loadConfig closure returns its own captured cfg, so hand runMain the
+	// cfg this test mutates.
+	cfg.StateGlob = "["
+	deps.loadConfig = func(string, bool) (Config, error) { return cfg, nil }
+	// With no -evener flag runMain resolves a sibling or PATH "evener" and
+	// announces where it found one; put one on PATH so resolution succeeds
+	// without depending on a real install.
+	binDir := filepath.Join(root, "bin")
+	if err := os.MkdirAll(binDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(binDir, "evener"), []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	var stderr bytes.Buffer
+	if err := runMain([]string{"-addr", cfg.Addr}, &stderr, deps); err != nil {
+		t.Fatalf("runMain: %v, stderr=%s", err, stderr.String())
+	}
+	output := stderr.String()
+	for _, want := range []string{"past index rebuild", "resolved evener at"} {
+		if !strings.Contains(output, want) {
+			t.Errorf("stderr missing %q diagnostic:\n%s", want, output)
+		}
+	}
+}
+
 func TestRunMainAppWireTraceCapturesRPCConnection(t *testing.T) {
 	root, cfg, deps := newTraceMainTestDeps(t)
 	ctx := t.Context()

@@ -1934,15 +1934,16 @@ type removeOutcome struct {
 	err  error
 }
 
-// parkedRemoval is one removal held in its released teardown window: the
+// parkedRemoval is one removal held in its post-commit teardown window: the
 // manager's test-only park seam (testOnlyParkPostCommit) holds the removal after
-// its durable commit, after the mutation mutex and its per-host gate
-// reservation are released, and immediately before the manager teardown. That
-// is the window registry spec 08 §5 describes — the commit has landed and the
-// mark fences the name — and it stays open until release. The seam replaces
-// the old parked-Ensure technique, which no longer reaches this window: the
-// guarded remove try-acquires the gate before its commit, so a gate holder
-// now refuses the removal busy instead of parking it.
+// its durable commit, with the mutation mutex released and its per-host gate
+// reservation still held (spec 08 §4's "gate released last"), and immediately
+// before the manager teardown — which runs under that reservation. That is the
+// window in which the commit has landed, the mark fences the name, and no gate
+// waiter can enter; it stays open until release. The seam replaces the old
+// parked-Ensure technique, which no longer reaches this window: the guarded
+// remove try-acquires the gate before its commit, so a gate holder now refuses
+// the removal busy instead of parking it.
 type parkedRemoval struct {
 	m          *hubHostManager
 	sources    *appsource.Registry
@@ -1959,10 +1960,10 @@ type parkedRemoval struct {
 	outcome   removeOutcome
 }
 
-// startParkedRemoval drives the removal of name into its released window over
+// startParkedRemoval drives the removal of name into its post-commit window over
 // a real SSH manager: the Add calls commit through the manager's registry, the
-// Remove commits, releases its gate reservation, and parks on the test seam
-// before running its teardown. "keep" is a second host so the window's
+// Remove commits and parks on the test seam before running its teardown, its
+// gate reservation still held. "keep" is a second host so the window's
 // refusals and saves have an unrelated entry to leave alone. The cleanup
 // releases the park and drains the removal goroutine (registered after the
 // manager's, so it runs first): a failing test's teardown never races a

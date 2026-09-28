@@ -1283,13 +1283,17 @@ below (phase 4):
   limit-aware truncation across the real/flushed boundary, a later pairing
   entry superseding it). `referenceTurns`/`referenceCandidates` and the
   `TestReferenceEqualsTodaysFileProjectionApartFromPositions` oracle now
-  flush too, so a wrong index can't pass. `meta.PendingCommunicate` forces a
-  full rebuild instead of an incremental extend while a call is pending,
-  since `restoreBuilder` cannot reconstruct `commCalls` (matching the
-  `errRebuild` policy used elsewhere). `ChangedSince` still does not surface
-  a flushed item — it has no itemRecord or update-log entry to begin with —
-  which is out of this fix's scope (Latest/Before only) and not currently a
-  problem (nothing reads from this index in production yet).
+  flush too, so a wrong index can't pass. `meta.PendingCommunicate` no
+  longer forces a rebuild on its own (stale after #2545): `restoreBuilder`
+  reconstructs `commCalls`/`lastAssistant*` from `meta.CommCalls`/
+  `meta.LastAssistant*` instead, and `extend` rebuilds only as a defensive
+  fallback for the case those fields predate a build that persists them
+  (`!lastAssistantKnown` with a pending call — see `extend` in
+  `internal/transcriptindex/index.go`). `ChangedSince` still does not
+  surface a flushed item — it has no itemRecord or update-log entry to
+  begin with — which is out of this fix's scope (Latest/Before only) and
+  is bounded harm rather than "not currently a problem": this index has
+  read production traffic since phase 3 (cmd/evener-hub's read path).
 - ~~**`CatchUpTo`'s truncate-first extension can leak in-place updates past
   the requested length.**~~ Fixed, and now live rather than latent: daemon
   callers pass a recorded length (`server/thread_history.go`,
@@ -1314,25 +1318,36 @@ below (phase 4):
   `TestCatchUpToShorterThanAKilledExtensionsReachRedoesTheLeftoverUpdate`
   (`internal/transcriptindex/catchup_leak_test.go`), using the existing
   `testKillAfterRecordWrites` seam.
-- **Cross-version schema skew on a shared sidecar.** `readMeta` accepts a
-  build whose `format`/`projection` match, but nothing records which
-  binary's `schema.Turn`/`llm.Message` shape built it. Reads decode
-  contributor entries with `agent/transcript.DecodeValidatedEntry`, which
-  skips the strict unknown-field check `DecodeEntry` applies everywhere
-  else (deliberately, since the index re-decodes only bytes it already
-  validated once, at build time, in the same process). An index one binary
-  built and a different (older or newer) binary later reads would silently
-  drop fields the reader's schema doesn't declare, instead of failing the
-  whole transcript the way every other reader does. Needs either the
-  reader to re-run the strict decode when the build might predate it, or a
-  schema/decoder identity folded into `projectionID` so a mismatched build
-  fails closed into a rebuild.
-- **`ChangedSince` over-reports turns.** `stampTurn` logs `updatedTurn` for
-  every entry after a turn's first, regardless of whether the wire-visible
-  summary (status/lifecycle/started/usage) actually changed, so
-  `ChangedSince` returns every turn present after the snapshot length, not
-  only the ones an entry "completed or restamped" as Task 4c's acceptance
-  criteria describe. Bounded harm today (clients upsert idempotently), but
-  it no longer bounds the resend set as intended. Needs `stampTurn` to log
-  `updatedTurn` only on an actual summary change, and a test asserting the
-  unchanged turns `ChangedSince` must NOT return.
+- ~~**Cross-version schema skew on a shared sidecar.**~~ Fixed: `meta`'s
+  `Projection` now carries `schemaID` folded in (`currentProjection` in
+  `internal/transcriptindex/schema_identity.go`), a hash of every JSON
+  field reachable from `transcript.Entry` (`schemaFields`, walked by
+  `schemaFieldFingerprint`), rather than a separate field. `readMeta`'s
+  existing `Projection != projectionID`-shaped check (now
+  `Projection != currentProjection()`) catches a mismatch the same way a
+  bare `projection` string change always did, which the existing
+  `x.build == ""` fallback in `extend` turns into a rebuild. Folding the
+  hash into the field every reader has always compared — instead of a new
+  field only a schema-aware reader would look at — means a binary that
+  predates this check entirely still rejects a schema-mismatched sidecar
+  written by a schema-aware build (the downgrade direction), not only the
+  reverse. `TestCorruptSidecarRebuilds`'s "other schema identity" case pins
+  it, and `schemaFields` has its own direct tests
+  (`internal/transcriptindex/schema_identity_test.go`) against synthetic
+  structs differing by exactly one shape change each.
+- ~~**`ChangedSince` over-reports turns.**~~ Resolved by decision, not by
+  code: `stampTurn` logging `updatedTurn` for every entry after a turn's
+  first is correct, not a bug. `Version` is itself a field of the
+  wire-visible `appwire.Turn` (`json:"version,omitempty"`, see
+  `appwire/types.go`), and every contributing entry advances it
+  (`stampTurn` sets `r.Version = version` unconditionally); a turn whose
+  other summary fields hold steady but whose `Version` moved has still
+  changed on the wire, so reporting it is exactly what "completed or
+  restamped" should mean once `Version` is counted as part of the summary.
+  A prior version of this fix made `stampTurn` log only on a change to the
+  other fields (status/lifecycle/started/usage), which left a live client's
+  held `Version` for such a turn behind the file's — a live-vs-file
+  divergence phase 3 had at zero — until some other change resent it; the
+  parity harness needed a timing-dependent escape hatch to tolerate that,
+  which was itself a symptom of the regression rather than a legitimate
+  accommodation. No code change.

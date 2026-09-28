@@ -2983,21 +2983,34 @@ async function handleReady(
 //     runs at import time, before any action can possibly run) case where
 //     an action reaches requireClient() before that subscription has taken
 //     effect.
-function rewireClient(client: AppwireClientLike): void {
-  if (client === wiredClient) return;
+// teardownWiring retires the current connection generation: its handlers are
+// unsubscribed and its generation-scoped bookkeeping (epochs, wire
+// subscriptions, owned hydrations, dispatch state) is cleared. rewireClient
+// calls it before wiring the next client; detachClient calls it when
+// connectionStore drops its client entirely. Both leave wiredClient not yet
+// updated by the caller, so a stale firing between the two calls still sees
+// the outgoing client's identity (never a half-swapped one).
+function teardownWiring(): void {
   readyEpoch += 1;
   threadsStore.setState({ mutationAuthorityRefs: new Set() });
-  // A different client is a different connection: every wire subscription
-  // this generation tracked belongs to a socket that is gone, so drop the
-  // whole set — handleReady's re-reads re-subscribe the still-tracked refs on
-  // the new client.
+  // A different (or absent) client is a different connection: every wire
+  // subscription this generation tracked belongs to a socket that is gone, so
+  // drop the whole set — handleReady's re-reads re-subscribe the still-tracked
+  // refs on the new client.
   wireSubscribedRefs.clear();
   retireAllOwnedHydrations();
   dispatchReadyClient = null;
   dispatchReadyEpoch = -1;
   dispatchableMutationRefs.clear();
   unwireNotification?.();
+  unwireNotification = null;
   unwireReady?.();
+  unwireReady = null;
+}
+
+function rewireClient(client: AppwireClientLike): void {
+  if (client === wiredClient) return;
+  teardownWiring();
   wiredClient = client;
   unwireNotification = client.onNotification(handleNotification);
   unwireReady = client.onReady(
@@ -3034,6 +3047,18 @@ function rewireClient(client: AppwireClientLike): void {
   }
 }
 
+// detachClient tears the wiring down when connectionStore loses its client
+// (state.client === null — a disconnect or reset). Without it wiredClient
+// keeps pointing at the last client and its onNotification/onReady handlers
+// stay registered, so a detached client that later reaches "ready" still
+// passes readyGenerationCallback's currentClient() guard (which reads
+// wiredClient) and runs handleReady for a connection this store no longer
+// holds (issue #1749).
+function detachClient(): void {
+  teardownWiring();
+  wiredClient = null;
+}
+
 // A new connection (a reconnect, or a swapped-in client that is already
 // ready) cannot be trusted to tell a live merge from a replace by identity
 // alone: the daemon it lands on can report the very same boot generation,
@@ -3064,6 +3089,7 @@ connectionStore.subscribe((state) => {
     threadsStore.setState({ mutationAuthorityRefs: new Set() });
   }
   if (state.client) rewireClient(state.client);
+  else if (wiredClient !== null) detachClient();
 });
 
 // requireClient reads the client connection.ts wired via

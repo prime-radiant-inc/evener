@@ -228,8 +228,9 @@ The existing `--font-size-caption/ui/body/pane-title/page-title/display` ramp re
 reading step is 18px at M in both viewports. Weights are 400/500/600; leading body/ui/title is
 1.6/1.4/1.25; display tracking remains −0.02em.
 
-Markdown defaults to the prose face/size while retaining `--prose-font-size` and `--markdown-ink`
-caller hooks. Inline code stays JetBrains Mono at 0.86em with a quiet underline; fenced code
+Markdown keeps the prose face but composes with its host's size (the root falls back to `1em`);
+reading surfaces pin `--prose-font-size: var(--font-size-prose)` on the host that owns their
+prose, and `--markdown-ink` stays the ink hook. Inline code stays JetBrains Mono at 0.86em with a quiet underline; fenced code
 explicitly keeps the mono face. Markdown tables use Inter at body size, tabular figures,
 wrapping labels and fine horizontal rules. PaneScaffold and EmptyState headings use the serif;
 buttons, fields, dialog labels and other compact operational headings do not inherit it globally.
@@ -528,7 +529,7 @@ six independent checks:
 7. **Every `var(--name)` without a fallback resolves to a declaration** somewhere under
    `src/` (tokens.css or a module's own local property). Exempt: dockview's `--dv-*` and the
    runtime-set names JS or an inline style declares (`--keyboard-inset`, `--rail-width`,
-   `--tap-min`, `--fill`, `--markdown-ink`, `--prose-font-size`, `--prose-ink`,
+   `--tap-min`, `--fill`, `--markdown-ink`, `--prose-ink`,
    `--density-scale`, `--font-scale`). Four undefined tokens had shipped before this check
    (`--radius-sm` twice, `--edge-hi`, `--font-size-title`), each silently falling back to the
    property's initial value.

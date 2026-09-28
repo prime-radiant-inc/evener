@@ -1,10 +1,6 @@
-import { cleanup, render, screen } from "@testing-library/react";
-import { afterEach, expect, test } from "vitest";
+import { render, screen } from "@testing-library/react";
+import { expect, test } from "vitest";
 import { SeenDivider } from "./SeenDivider";
-
-afterEach(() => {
-  cleanup();
-});
 
 test("renders a labelled marker naming this as new content, not a bare line", () => {
   render(<SeenDivider />);

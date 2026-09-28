@@ -10,6 +10,13 @@
   word-break: break-word;
 }
 
+/* The pane's reading surface: the Markdown widget composes with its host
+ * (1em fallback), so the pane pins the shared prose reading step here for
+ * markdown documents. */
+.markdown {
+  --prose-font-size: var(--font-size-prose);
+}
+
 .imageButton {
   display: block;
   width: 100%;

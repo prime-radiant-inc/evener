@@ -1,6 +1,6 @@
-import { cleanup, render, screen } from "@testing-library/react";
+import { render, screen } from "@testing-library/react";
 import { IDBFactory } from "fake-indexeddb";
-import { afterEach, beforeEach, expect, test } from "vitest";
+import { beforeEach, expect, test } from "vitest";
 import { MutationOutboxIndexedDB } from "../../../stores/mutationOutboxIndexedDB";
 import type { InputAttachment } from "../../../stores/threads";
 import { resetThreadsStoreForTests } from "../../../stores/threads";
@@ -16,10 +16,6 @@ beforeEach(() => {
   // be reaped by another test's thread snapshot, and vice versa.
   resetThreadsStoreForTests();
   resetPendingTurnsStoreForTests();
-});
-
-afterEach(() => {
-  cleanup();
 });
 
 // A successful perform() deliberately does NOT reconcile the entry (see

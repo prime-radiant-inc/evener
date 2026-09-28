@@ -1480,6 +1480,123 @@ func TestProjectTurn_RepairedCommunicateRendersDeliveredMessage(t *testing.T) {
 	}
 }
 
+// TestProjectTurn_HealedCommunicateWithoutRecoverableMessageRendersRawBytes
+// pins the corner where a healed communicate's raw bytes repair to valid JSON
+// that carries no message field. The hub's markdown fallback
+// (agent/transcript_render.go writeResultToolMessage) surfaces the raw bytes
+// the model sent; the reload projection must do the same instead of dropping
+// the call. Live never reaches this corner (a healed call carries a message),
+// so the raw-arguments fallback is the same defense-in-depth the hub keeps.
+func TestProjectTurn_HealedCommunicateWithoutRecoverableMessageRendersRawBytes(t *testing.T) {
+	// Malformed JSON (unquoted key) that RepairJSON heals to {"foo":"bar"} — a
+	// valid object with no "message" (or output.message) to recover.
+	const rawArgs = `{foo: "bar"}`
+	reg := NewToolCallRegistry()
+	assistantItems := ProjectTurn("turn_1", 1, schema.Turn{
+		Kind: schema.TurnAssistant,
+		Message: llm.Message{Content: []llm.ContentPart{{
+			Kind: llm.ContentToolCall,
+			ToolCall: &llm.ToolCallData{
+				ID:           "call_comm_unrecoverable",
+				Name:         "communicate",
+				Arguments:    []byte(`{}`),
+				RawArguments: rawArgs,
+			},
+		}}},
+	}, reg, nil, nil)
+	if len(assistantItems) != 0 {
+		t.Fatalf("want 0 items from assistant turn (raw bytes deferred to result), got %d: %+v", len(assistantItems), assistantItems)
+	}
+
+	resultItems := ProjectTurn("turn_2", 2, schema.Turn{
+		Kind: schema.TurnToolResults,
+		Message: llm.Message{Content: []llm.ContentPart{{
+			Kind: llm.ContentToolResult,
+			ToolResult: &llm.ToolResultData{
+				ToolCallID: "call_comm_unrecoverable",
+				Name:       "communicate",
+				IsError:    false,
+			},
+		}}},
+	}, reg, nil, nil)
+
+	if len(resultItems) != 1 {
+		t.Fatalf("want 1 item (agentMessage with the raw-arguments fallback), got %d: %+v", len(resultItems), resultItems)
+	}
+	if resultItems[0].Type != "agentMessage" {
+		t.Fatalf("Type = %q, want agentMessage", resultItems[0].Type)
+	}
+	if resultItems[0].Text != rawArgs {
+		t.Errorf("Text = %q, want the raw bytes %q (mirroring the hub's fallback)", resultItems[0].Text, rawArgs)
+	}
+}
+
+// TestProjectTurn_HealedCommunicateFallbackIsBoundedAndOneLine pins the
+// bounding and one-line contract of the raw-arguments fallback. A pathological
+// payload is truncated to communicateRawFallbackMaxRunes runes (the hub's
+// truncRunes appends the ellipsis after the cut, so the result may be one rune
+// longer), and newlines collapse to spaces with carriage returns stripped —
+// the same rendering the hub's oneLine(truncRunes(...)) produces.
+func TestProjectTurn_HealedCommunicateFallbackIsBoundedAndOneLine(t *testing.T) {
+	// Not valid JSON (repair cannot recover a message), so the fallback runs.
+	longPayload := "line1\nline2\r\n" + strings.Repeat("x", 400)
+	items := projectHealedCommunicateFallback(t, longPayload)
+	if len(items) != 1 {
+		t.Fatalf("want 1 item, got %d: %+v", len(items), items)
+	}
+	got := items[0].Text
+	if got != "" && len([]rune(got)) > communicateRawFallbackMaxRunes+1 {
+		t.Errorf("fallback rune length = %d, want at most %d (bound plus the ellipsis)", len([]rune(got)), communicateRawFallbackMaxRunes+1)
+	}
+	if !strings.HasSuffix(got, "…") {
+		t.Errorf("fallback %q must end in an ellipsis", got)
+	}
+	if strings.ContainsAny(got, "\n\r") {
+		t.Errorf("fallback %q must be one line (no newline or carriage return)", got)
+	}
+	if !strings.HasPrefix(got, "line1 line2 ") {
+		t.Errorf("fallback %q must collapse newlines to spaces and strip CR", got)
+	}
+
+	// A short, newline-and-CR payload renders exactly collapsed.
+	short := projectHealedCommunicateFallback(t, "line1\nline2\r")
+	if len(short) != 1 || short[0].Text != "line1 line2" {
+		t.Errorf("short fallback = %+v, want one item with text %q", short, "line1 line2")
+	}
+
+	// Whitespace-only raw bytes are skipped whether short or longer than the
+	// bound: truncating first would leave a stray ellipsis and emit a spurious
+	// whitespace item, so the check runs on the raw input.
+	for _, blankRaw := range []string{"\r \r", strings.Repeat(" ", communicateRawFallbackMaxRunes+20)} {
+		if blank := projectHealedCommunicateFallback(t, blankRaw); len(blank) != 0 {
+			t.Errorf("blank fallback for %q = %+v, want no items", blankRaw, blank)
+		}
+	}
+}
+
+// projectHealedCommunicateFallback projects a healed communicate whose raw
+// bytes cannot recover a message, returning the result turn's items.
+func projectHealedCommunicateFallback(t *testing.T, rawArgs string) []appwire.ThreadItem {
+	t.Helper()
+	reg := NewToolCallRegistry()
+	ProjectTurn("turn_1", 1, schema.Turn{
+		Kind: schema.TurnAssistant,
+		Message: llm.Message{Content: []llm.ContentPart{{
+			Kind: llm.ContentToolCall,
+			ToolCall: &llm.ToolCallData{
+				ID: "call_comm_fallback", Name: "communicate", Arguments: []byte(`{}`), RawArguments: rawArgs,
+			},
+		}}},
+	}, reg, nil, nil)
+	return ProjectTurn("turn_2", 2, schema.Turn{
+		Kind: schema.TurnToolResults,
+		Message: llm.Message{Content: []llm.ContentPart{{
+			Kind:       llm.ContentToolResult,
+			ToolResult: &llm.ToolResultData{ToolCallID: "call_comm_fallback", Name: "communicate", IsError: false},
+		}}},
+	}, reg, nil, nil)
+}
+
 // TestProjectTurn_RejectedCommunicateRendersAsToolError verifies that a
 // rejected communicate (IsError=true, PrevalOnly=true) renders as a
 // commandExecution tool/error item, NOT an agentMessage. Live suppresses

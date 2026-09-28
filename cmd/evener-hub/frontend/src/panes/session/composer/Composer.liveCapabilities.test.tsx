@@ -32,10 +32,10 @@
 
 import type { AnyNotification, Thread, ThreadCapabilities, ThreadReadResponse } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
-import { act, cleanup, render, screen } from "@testing-library/react";
+import { act, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { IDBFactory } from "fake-indexeddb";
-import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
+import { beforeAll, beforeEach, expect, test, vi } from "vitest";
 import { ClientProvider } from "../../../shell/clientContext";
 import { connectionStore } from "../../../stores/connection";
 import { resetPrefsStoreForTests } from "../../../stores/prefs";
@@ -231,10 +231,6 @@ beforeEach(() => {
   resetPendingTurnsStoreForTests();
   resetAskDockStoreForTests();
   resetToastStoreForTests();
-});
-
-afterEach(() => {
-  cleanup();
 });
 
 // Kata 06t8's report, end to end: a cold exited session opened from the rail,
