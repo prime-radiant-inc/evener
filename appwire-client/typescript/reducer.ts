@@ -2849,7 +2849,13 @@ function mergeVersionedPage<M extends ThreadModel>(
       const range = resp.authoritative ? fragmentRange(fresh.items) : undefined;
       const turns = mergeHistory(range ? dropItemsInRange(held.turns, range[0], range[1]) : held.turns, fresh);
       const next = takeCursor ? { ...model, olderCursor: resp.nextCursor } : model;
-      return withDisplay(next, { ...held, turns }, model.overlay ?? {});
+      // Pages accumulate under one snapshot identity: pageDisposition only
+      // merges a page whose length is at least held's, so the held length
+      // always advances to it (never back), and a page arriving later with a
+      // length short of what has already accumulated is discarded rather
+      // than silently held alongside newer content.
+      const length = readIdentity(resp).length;
+      return withDisplay(next, { ...held, turns, length }, model.overlay ?? {});
     }
   }
 }

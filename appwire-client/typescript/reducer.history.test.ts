@@ -447,11 +447,29 @@ describe("request generations and incarnations", () => {
 
   test("backfill pages accumulate in any order and drop when their snapshot is older", () => {
     const model = hydrate([turn("t3", 5, [item("t3", 4)])], { length: 500 });
-    const newerPage = mergeOlderItemPage(model, page([turn("t2", 3, [item("t2", 2)])], { length: 600 }));
-    const olderPage = mergeOlderItemPage(newerPage, page([turn("t1", 1, [item("t1", 0)])], { length: 500 }));
-    expect(shown(olderPage).map(([id]) => id)).toEqual(["t1", "t2", "t3"]);
-    const shorter = mergeOlderItemPage(olderPage, page([turn("t0", 1, [item("t0", 0)])], { length: 400 }));
-    expect(shorter.turns).toBe(olderPage.turns);
+    const samePage = mergeOlderItemPage(model, page([turn("t2", 3, [item("t2", 2)])], { length: 500 }));
+    const anotherAtSameLength = mergeOlderItemPage(samePage, page([turn("t1", 1, [item("t1", 0)])], { length: 500 }));
+    expect(shown(anotherAtSameLength).map(([id]) => id)).toEqual(["t1", "t2", "t3"]);
+    const shorter = mergeOlderItemPage(anotherAtSameLength, page([turn("t0", 1, [item("t0", 0)])], { length: 400 }));
+    expect(shorter.turns).toBe(anotherAtSameLength.turns);
+  });
+
+  // Pages accumulate only under one snapshot identity: the held length
+  // advances to a merged page's length (pageDisposition already requires it
+  // be at least held's), so a page that arrives later naming a length short
+  // of what has already accumulated is dropped rather than silently held
+  // alongside newer content -- the held length can never regress, or a
+  // stale-length page could quietly ride alongside content past it.
+  test("the held length advances on backfill, so a later page short of it is dropped", () => {
+    const model = hydrate([turn("t3", 5, [item("t3", 4)])], { length: 500 });
+    const grown = mergeOlderItemPage(model, page([turn("t2", 3, [item("t2", 2)])], { length: 600 }));
+    expect(grown.history?.length).toBe(600);
+    const stale = mergeOlderItemPage(grown, page([turn("t1", 1, [item("t1", 0)])], { length: 500 }));
+    expect(stale.turns).toBe(grown.turns);
+    expect(stale.history?.length).toBe(600);
+    const further = mergeOlderItemPage(grown, page([turn("t1", 1, [item("t1", 0)])], { length: 700 }));
+    expect(shown(further).map(([id]) => id)).toEqual(["t1", "t2", "t3"]);
+    expect(further.history?.length).toBe(700);
   });
 
   test("pages of a newly seen incarnation wait for its latest window; others are discarded", () => {

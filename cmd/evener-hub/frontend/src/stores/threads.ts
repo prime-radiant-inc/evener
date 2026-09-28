@@ -1427,6 +1427,35 @@ function heldSnapshotFor(baseModel: ThreadModel | undefined): SnapshotIdentity |
   return history?.incarnation === undefined ? undefined : { incarnation: history.incarnation, length: history.length };
 }
 
+// Issues thread/read carrying the held snapshot, and retries once without it
+// when the server answers TranscriptItemCursorStale: a held snapshot whose
+// length the kept update log no longer reaches (spec's "Below-floor
+// update-log requests" follow-up) cannot be answered with the window alone -
+// held items outside it may have changed with no way to tell - so the hub
+// rejects it rather than silently merging a bare window. Asking again with no
+// held snapshot gets a full latest-window replacement instead.
+async function requestThreadRead(
+  client: AppwireClientLike,
+  ref: string,
+  includeTurns: boolean,
+  subscribe: boolean,
+  pending: PendingThreadHydration,
+): Promise<ThreadReadResponse> {
+  const held = heldSnapshotFor(pending.baseModel);
+  try {
+    return await client.request(
+      "thread/read",
+      threadReadParams(ref, includeTurns, subscribe, pending.requestGeneration, held),
+    );
+  } catch (err) {
+    if (held === undefined || !isStaleCursorError(err)) throw err;
+    return await client.request(
+      "thread/read",
+      threadReadParams(ref, includeTurns, subscribe, pending.requestGeneration, undefined),
+    );
+  }
+}
+
 interface ThreadHydration {
   model: ThreadModel;
   response: ThreadReadResponse;
@@ -1491,10 +1520,7 @@ async function hydrateAndSubscribe(
   let response: ThreadReadResponse;
   const { subscribe, markSubscribed } = wireSubscribeDecision(ref);
   try {
-    response = await client.request(
-      "thread/read",
-      threadReadParams(ref, true, subscribe, pending.requestGeneration, heldSnapshotFor(pending.baseModel)),
-    );
+    response = await requestThreadRead(client, ref, true, subscribe, pending);
   } catch (err) {
     // thread/read is answered from the daemon's in-memory snapshot, so a
     // rejection here is a transport failure, not a slow file read and not a
@@ -1605,10 +1631,7 @@ async function hydrateAndSubscribeWatch(
   let resp: ThreadReadResponse;
   const { subscribe, markSubscribed } = wireSubscribeDecision(ref);
   try {
-    resp = await client.request(
-      "thread/read",
-      threadReadParams(ref, includeTurns, subscribe, pending.requestGeneration, heldSnapshotFor(pending.baseModel)),
-    );
+    resp = await requestThreadRead(client, ref, includeTurns, subscribe, pending);
   } catch (err) {
     markThreadDeletedIfFenced(ref, err);
     if (isTranscriptHistoryFailedError(err) && pending.baseModel) {
