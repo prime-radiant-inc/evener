@@ -11,7 +11,7 @@ import { useConnection } from "../ConnectionProvider";
 import { getNativeMutationRuntime } from "../nativeMutationRuntime";
 import type { Routes } from "../screens";
 import { SendButton } from "../session/SendButton";
-import { stopRequestKind, submitSessionMessage } from "../session/sessionMessage";
+import { SessionLink, stopRequestKind, submitSessionMessage } from "../session/sessionMessage";
 import { Sheet, useSheet } from "../sheet/Sheet";
 import { allowFontScaling, useColors, useTextScale } from "../ui";
 import { stopRequests } from "./nativeStopRequests";
@@ -37,10 +37,15 @@ export function StopSubagentSheet({ route }: NativeStackScreenProps<Routes, "Sto
 	);
 
 	// The message starts as the prefill once the row is known; editing it
-	// makes it unsaved input.
+	// makes it unsaved input. The prefill is written once, from the row as it first reads, so neither
+	// the words nor "edited" shift when the tree moves under the sheet.
+	const [seed, setSeed] = useState<string | null>(null);
+	useEffect(() => {
+		if (row && seed === null) setSeed(prefill(row));
+	}, [row, seed]);
 	const [text, setText] = useState<string | null>(null);
-	const words = text ?? (row ? prefill(row) : "");
-	const edited = text !== null && row !== undefined && row !== null && text !== prefill(row);
+	const words = text ?? seed ?? "";
+	const edited = text !== null && text !== seed;
 	const [failure, setFailure] = useState<string | null>(null);
 	const [sending, setSending] = useState(false);
 	const sheet = useSheet({ dirty: edited, discardTitle: "Discard this message?" });
@@ -48,8 +53,9 @@ export function StopSubagentSheet({ route }: NativeStackScreenProps<Routes, "Sto
 	// A subagent the whole tree no longer lists has nothing left to stop. A
 	// tree that's only partly listed may hold it in what's missing.
 	useEffect(() => {
-		if (row === null && !snapshot.partial) sheet.finish();
-	}, [row, snapshot.partial, sheet]);
+		// An edited message stays for you to keep or discard.
+		if (row === null && !snapshot.partial && !edited) sheet.finish();
+	}, [row, snapshot.partial, edited, sheet]);
 
 	// The coordinator's state, read without taking the connection's
 	// subscription, which the transcript under this sheet follows. A read
@@ -63,15 +69,22 @@ export function StopSubagentSheet({ route }: NativeStackScreenProps<Routes, "Sto
 
 	const canSend = online && !sending && words.trim() !== "" && kind !== null && row !== undefined && row !== null;
 	const submit = async () => {
-		if (!canSend || !coordinatorState || !kind || !row) return;
+		if (!canSend || !client || !row) return;
 		setSending(true);
 		setFailure(null);
 		try {
+			// The coordinator may have finished its turn, or restarted, since
+			// the sheet read it: Send asks again, so a stop steers only a turn
+			// that's still running, and names the instance that's there now.
+			const link = new SessionLink(client, coordinator.ref);
+			const now = await link.read({ follow: false }).finally(() => link.dispose());
+			const kindNow = stopRequestKind(now);
+			if (!kindNow) throw new Error("The coordinator can't take a message right now.");
 			await submitSessionMessage(
 				getNativeMutationRuntime(),
 				client,
-				{ hubId, ref: coordinator.ref, threadId: coordinatorState.threadId, instanceId: coordinatorState.instanceId },
-				kind,
+				{ hubId, ref: coordinator.ref, threadId: now.threadId, instanceId: now.instanceId },
+				kindNow,
 				words.trim(),
 			);
 		} catch (error) {

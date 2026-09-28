@@ -345,3 +345,22 @@ it("stays open while the tree is only partly listed", async () => {
 	await mount();
 	expect(sheetNavigation.goBack).not.toHaveBeenCalled();
 });
+
+it("sends as the coordinator is when you press Send, not as it was when the sheet opened", async () => {
+	const mounted = await mount();
+	status = "idle";
+	await send(mounted);
+	await vi.waitFor(() => expect(mutations().map((call) => call.method)).toEqual(["turn/start"]));
+});
+
+it("keeps an edited message open when the subagent leaves the tree, rather than dropping it", async () => {
+	const mounted = await mount();
+	act(() => field(mounted).props.onChangeText("Stop it please."));
+	client.on("evener/jobs/list", () => ({ data: { ...tree(), revision: 2, root: { ...tree().root, entries: [] } } }) as never);
+	client.emitNotification({
+		method: "evener/jobs/treeUpdated",
+		params: { threadId: COORDINATOR.threadId, ref: COORDINATOR.ref, revision: 2 },
+	} as never);
+	await settle();
+	expect(sheetNavigation.goBack).not.toHaveBeenCalled();
+});
