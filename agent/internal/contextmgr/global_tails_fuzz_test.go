@@ -253,15 +253,19 @@ func gctStrategyTails(t *testing.T, token string) {
 	if err := os.WriteFile(appendRoot, []byte("blocked"), 0o600); err != nil {
 		t.Fatalf("create append-blocked root: %v", err)
 	}
-	appendHost := &fakeStrategyHost{stateDir: appendRoot, id: "child", profile: profile}
-	appendSLS, err := NewSessionLogStrategy(NewManager(profile, client, cheapmodel.New(client)), appendHost)
-	if err != nil {
-		t.Fatalf("construct append-failing session log: %v", err)
-	}
+	// The fork must succeed so the append is the failure under test: a
+	// best-effort append failure stays a warning inside the strategy and must
+	// not become an error to the caller (CORE-10 surfaces only a failed
+	// auxiliary summarization).
 	appendClient := llm.NewClient()
 	appendClient.Register(&agenttest.ScriptedAdapter{Provider: profile.ID(), Responder: func(llm.Request) llm.Response {
 		return llm.Response{Message: llm.Assistant(`{"action":"shell","summary":"done","outcome":"success"}`)}
 	}})
+	appendHost := &fakeStrategyHost{stateDir: appendRoot, id: "child", profile: profile}
+	appendSLS, err := NewSessionLogStrategy(NewManager(profile, appendClient, cheapmodel.New(appendClient)), appendHost)
+	if err != nil {
+		t.Fatalf("construct append-failing session log: %v", err)
+	}
 	if err := appendSLS.AfterAction(ctx, longHistory, appendClient); err != nil {
 		t.Fatalf("best-effort append failure escaped: %v", err)
 	}
