@@ -51,6 +51,10 @@ type WebServer struct {
 	// liveModels caches raw live /models listings for this server; per-server
 	// so another WebServer (different provider config) never shares entries.
 	liveModels *modelsCache
+	// launchModels caches the evener launch model list per working dir, so a
+	// picker open does not re-run `evener launch-check --models` (a live
+	// provider listing that takes seconds) every time.
+	launchModels *launchModelsCache
 	// treeCache memoizes the shared tree projection used by the remaining
 	// mutation handlers. NavigationService owns AppWire navigation generations
 	// and captures its source directly rather than using this cache.
@@ -162,6 +166,7 @@ func newWebServer(cfg hubcore.WebConfig, appwireTrace *appserver.WebSocketTrace)
 		startedAt:                 time.Now().UTC(),
 		lastGoodThreads:           map[string][]appwire.Thread{},
 		liveModels:                &modelsCache{},
+		launchModels:              &launchModelsCache{entries: map[string]*launchModelsEntry{}, refreshing: map[string]bool{}},
 		treeCache:                 &hubcore.TreeCache{},
 		manifestFS:                assetsRoot(),
 		frontendHash:              fHash,
@@ -172,6 +177,9 @@ func newWebServer(cfg hubcore.WebConfig, appwireTrace *appserver.WebSocketTrace)
 	}
 	if web.cfg.LiveModels == nil {
 		web.cfg.LiveModels = web.fetchLiveModels
+	}
+	if web.cfg.LaunchModels == nil {
+		web.cfg.LaunchModels = web.fetchLaunchModels
 	}
 	web.navigation = newNavigationService(navigationServiceConfig{Source: webNavigationSource{web: web}})
 	server, hostAdmin, hostManage, notices := newHubAppServerWithNavigationAndTrace(web.cfg, sources, web.navigation, web.resolveTopLevelSessionRef, appwireTrace)

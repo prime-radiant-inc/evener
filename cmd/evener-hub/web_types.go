@@ -21,6 +21,36 @@ type modelsCache struct {
 
 const liveModelsTTL = 5 * time.Minute
 
+// launchModelsCache is a per-WebServer cache of the evener launch model list
+// (the `evener launch-check --models` contract), keyed by the working directory
+// that scopes it ("" for the unscoped list). The launch check spawns a child
+// and re-lists every provider live, which takes seconds; serving the picker
+// from this cache is what keeps model/list from paying that cost on every open.
+type launchModelsCache struct {
+	mu      sync.Mutex
+	entries map[string]*launchModelsEntry
+	// refreshing marks a working-dir key whose stale entry is being re-fetched
+	// in the background, so a burst of requests starts one refresh, not many.
+	refreshing map[string]bool
+}
+
+type launchModelsEntry struct {
+	resp     appwire.ModelListResponse
+	gen      uint64
+	filledAt time.Time
+}
+
+// launchModelsTTL is how long a cached launch model list is served without a
+// background refresh. It matches liveModelsTTL: the same prefetch cadence that
+// refreshes the live listings the launch check re-reads, so the two caches
+// track the same provider inventory.
+const launchModelsTTL = liveModelsTTL
+
+// launchModelsMaxEntries bounds the working-dir keys one server caches: the
+// spawn pane scopes its list by the directory being typed, so the key space is
+// user-driven. The oldest entry is evicted past the cap.
+const launchModelsMaxEntries = 64
+
 // WorkspaceData is the template data for the workspace partial.
 type WorkspaceData struct {
 	ID          string

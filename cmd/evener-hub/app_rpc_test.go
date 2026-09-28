@@ -8971,6 +8971,36 @@ func TestHubRPCModelListPrefersEvenerLaunchContract(t *testing.T) {
 	}
 }
 
+// TestHubRPCModelListCachesLaunchContract: two model/list RPCs (two picker
+// opens) must spawn `evener launch-check --models` once, not once per open.
+// Before the hub cached the launch contract, every open paid the full live
+// provider listing again.
+func TestHubRPCModelListCachesLaunchContract(t *testing.T) {
+	spawner := &countLaunchContractSpawner{modelsFn: func(int, string) appwire.ModelListResponse {
+		return appwire.ModelListResponse{Data: []appwire.ModelDescriptor{{Provider: "openai", Model: "gpt-5.5"}}}
+	}}
+	hub := newHubRPCTestServer(t, hubcore.WebConfig{Spawner: spawner})
+	defer hub.Close()
+	client := dialHubRPC(t, hub)
+	defer client.Close()
+
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	for i := 0; i < 2; i++ {
+		resp, err := client.ModelList(context.Background(), appwire.ModelListParams{})
+		if err != nil {
+			t.Fatalf("ModelList: %v", err)
+		}
+		if len(resp.Data) != 1 || resp.Data[0].Model != "gpt-5.5" {
+			t.Fatalf("models=%+v", resp.Data)
+		}
+	}
+	if got := spawner.callCount(); got != 1 {
+		t.Fatalf("launch contract called %d times for two model/list RPCs, want 1", got)
+	}
+}
+
 func TestHubRPCModelListUsesWorkingDirForEvenerLaunchContract(t *testing.T) {
 	spawner := &fakeRPCWorkingDirModelContractSpawner{
 		fallback: appwire.ModelListResponse{

@@ -55,6 +55,7 @@ func FuzzMainBootstrapPass6(f *testing.F) {
 			loadCredentials: func(string) (*credentials.Store, error) { return &credentials.Store{}, nil },
 			startLivePrefetch: func(context.Context, *hubcore.ProviderRegistry, time.Duration, func(func()), func()) {
 			},
+			startLaunchPrefetch: func(context.Context, *WebServer, time.Duration, func(func())) {},
 			notifyContext: func(context.Context, ...os.Signal) (context.Context, context.CancelFunc) {
 				return ctx, func() {}
 			},

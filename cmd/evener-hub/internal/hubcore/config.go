@@ -264,7 +264,12 @@ type WebConfig struct {
 	ResolveGitHead   func(ctx context.Context, dir string) (string, error) // nil → real `git`
 	ResolveGitOrigin func(ctx context.Context, dir string) (string, error) // nil → real `git`
 	LiveModels       func(ctx context.Context) []appwire.ModelDescriptor   // nil → real provider query
-	MkdirAll         func(path string, perm os.FileMode) error             // nil → os.MkdirAll
+	// LaunchModels serves the evener launch model list for a working directory
+	// ("" = unscoped). nil → the configured spawner is asked directly, which
+	// spawns `evener launch-check --models` on every call. The hub wires its
+	// cached loader so a model picker open does not re-run that live listing.
+	LaunchModels func(ctx context.Context, workingDir string) (appwire.ModelListResponse, error)
+	MkdirAll     func(path string, perm os.FileMode) error // nil → os.MkdirAll
 }
 
 // Spawner forks a evener serve subprocess and waits for its rendezvous file to appear.
