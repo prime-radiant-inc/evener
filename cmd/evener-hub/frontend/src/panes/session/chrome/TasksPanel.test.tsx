@@ -501,7 +501,7 @@ test("the prompt disclosure renders its markdown at the caption step, not prose 
   expect(details).toContain("--prose-font-size: var(--font-size-caption)");
   const body = topRuleBlock(css, ".promptBody").replace(/\/\*[\s\S]*?\*\//g, "");
   expect(body, "the Markdown root owns the body's size; a host-side font-size never applied").not.toMatch(
-    /font-size\s*:/,
+    /(^|[;{\s])font-size\s*:/m,
   );
 });
 
