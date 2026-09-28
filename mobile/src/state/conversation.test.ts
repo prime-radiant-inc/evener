@@ -10735,6 +10735,39 @@ describe("ConversationStore", () => {
       await store.getState().rehydrate(service, sink);
       expect(rowById(store, "call-1")).toMatchObject({ detail: { output: "held output" } });
     });
+
+    // RoboRev round 3 (Medium): the discarded read still SUCCEEDED (the wire
+    // answered; the model just declined to apply it) — resumeProjected must
+    // not read the untouched acceptedRehydrate=null as a failure and tear
+    // down a healthy subscription over a read that merely lost an identity
+    // race (e.g. a resync bumped epoch/bootGeneration past what this read's
+    // own snapshot carries).
+    it("resumeProjected stays open and keeps the subscription when its read is discarded as stale", async () => {
+      const service = new FakeConversationService();
+      service.readProjectionResult = makeReadProjectionResult(
+        makeThread({ turns: [makeTurn({ id: "t0", items: [] })] }),
+        ALL_TRUE_CAPS,
+        true,
+      );
+      const store = createConversationStore();
+      const sink = createFakeSink();
+      await store.getState().openProjected(service, sink, "ref-1");
+      const held = store.getState().conversation!;
+      store.setState({
+        conversation: { ...held, history: held.history && { ...held.history, length: 10 } },
+      });
+      store.getState().suspendProjected();
+      // A stale response: same incarnation, SHORTER length than the held 10.
+      service.readProjectionResult = makeReadProjectionResult(
+        makeThread({ turns: [makeTurn({ id: "t0", items: [] })] }),
+        ALL_TRUE_CAPS,
+        true,
+      );
+      await store.getState().resumeProjected(service, sink, "ref-1");
+      expect(store.getState().status).toBe("open");
+      expect(store.getState().error).toBeNull();
+      expect(service.notificationHandler).not.toBeNull();
+    });
   });
 
   // #1919 follow-up (retained-turn bound): loadOlder's page turns used to be

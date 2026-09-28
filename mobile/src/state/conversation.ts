@@ -1351,19 +1351,6 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
   // rehydrate's state within the same generation.
   let rehydrateToken = 0;
 
-  // #1919 follow-up: bound retained page-turn data. The keep-window is the
-  // retained display set itself — the final capped rows at the publish site
-  // (loadOlder's pageMerged, rehydrate's rehydrateSeated). A turn whose items
-  // intersect it keeps full payloads: those are exactly the turns a fresh
-  // reread's window can merge against, so trimming them would change
-  // mergeHistory's version-supersession behavior. A turn outside the window
-  // can no longer display anything or supply anything the window needs, so
-  // only its identity + usage metadata survive — its items trim to `[]`, and
-  // a later page/rehydrate that re-serves the turn's content merges it back
-  // in on mergeHistory's own "identity not found, splice it in" path (Task
-  // 17 (v6 read path): no page-ownership bookkeeping is needed to make that
-  // safe, since a real v6 turn id never gets reassigned the way the pre-v6
-  // merge's fragments could).
   // Review round 3 (Medium): a level-carrying publish (the frame publish,
   // setDisplayConfig) widens the window to level-independent rows — see
   // retentionWindowItems — so the display level never decides retention.
@@ -1388,6 +1375,19 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
     return levelItems.concat(capItems(projectConversation(model).items));
   }
 
+  // #1919 follow-up: bound retained page-turn data. The keep-window is the
+  // retained display set itself — the final capped rows at the publish site
+  // (loadOlder's pageMerged, rehydrate's rehydrateSeated). A turn whose items
+  // intersect it keeps full payloads: those are exactly the turns a fresh
+  // reread's window can merge against, so trimming them would change
+  // mergeHistory's version-supersession behavior. A turn outside the window
+  // can no longer display anything or supply anything the window needs, so
+  // only its identity + usage metadata survive — its items trim to `[]`, and
+  // a later page/rehydrate that re-serves the turn's content merges it back
+  // in on mergeHistory's own "identity not found, splice it in" path (Task
+  // 17 (v6 read path): no page-ownership bookkeeping is needed to make that
+  // safe, since a real v6 turn id never gets reassigned the way the pre-v6
+  // merge's fragments could).
   function boundRetainedTurns(
     turns: TurnModel[],
     retainedItems: MobileTimelineItem[],
@@ -2056,7 +2056,13 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
           // this discarded read's own turns as fresh, authoritative content
           // for the strip pass below, clearing real held payloads (an
           // image, a tool's output) a NEWER frame or read already settled.
+          // The read itself still SUCCEEDED (the wire answered; the model
+          // just declined to apply it) — mark it accepted before returning,
+          // or resumeProjected reads the untouched acceptedRehydrate=null
+          // from entry as a failure and tears down a healthy subscription
+          // over a read that merely lost an identity race.
           if (sameInstance && currentConvForMerge !== null && appliedModel === currentConvForMerge) {
+            acceptedRehydrate = { generation: gen, sink };
             return;
           }
           // A fresh read can reissue a paged/retained item under a DIFFERENT
