@@ -1745,23 +1745,34 @@ func ScratchDirectoryRetained(dir string) (bool, error) {
 	return true, fmt.Errorf("sandbox: retention manifest for %q has no reference to its pin", dir)
 }
 
-// PruneMissingScratchReferences drops every retention reference whose
-// allocation directory no longer exists, together with any binding slot that
-// named one of them, and returns the committed manifest. A missing directory is
-// unrecoverable: MkdirTemp mints unique names and nothing ever re-creates one,
-// and the directory's identity pin lived inside it, so a restore's
-// reacquisition (OpenRetainedSessionScratch) would fail closed on that
-// reference and wedge every later restore of this root — and its retirement —
-// forever. After the prune the owning consumer finds no slot and provisions
-// fresh scratch. References whose directory still exists are preserved
-// untouched, including historical pinned references no binding owns.
+// RepairScratchRetention reconciles a root's retention manifest with the disk.
+// It drops every retention reference whose allocation directory no longer
+// exists, together with any binding slot that named one, and it re-publishes
+// the identity pin of every referenced directory whose pin is missing.
+//
+// A missing directory is unrecoverable: MkdirTemp mints unique names and
+// nothing ever re-creates one, and the directory's pin lived inside it, so a
+// restore's reacquisition (OpenRetainedSessionScratch) would fail closed on
+// that reference and wedge every later restore of this root forever. After the
+// prune the owning consumer finds no slot and provisions fresh scratch.
+//
+// A referenced directory whose pin was lost is the startup sweep's next
+// victim: ScratchDirectoryRetained reads a pinless directory collectible, so
+// the sweep would delete a directory the manifest still references, leaving a
+// dangling reference. Re-publishing the pin restores the invariant the sweep
+// relies on — a live reference always carries its pin — instead of weakening
+// the sweep's own contract.
+//
+// References whose directory still exists and whose pin is present are
+// preserved untouched, including historical pinned references no binding owns.
 //
 // The read-modify-write runs under the manifest lock and rebases on the current
 // manifest, so it serializes with every other writer and cannot clobber a
 // concurrent commit. A released manifest is returned unchanged: its tombstone
 // already authorizes ordinary collection of everything it names. written
-// reports whether the prune changed durable state.
-func PruneMissingScratchReferences(owner ScratchOwner) (ScratchManifest, bool, error) {
+// reports whether the manifest itself changed; a re-published pin is durable on
+// its own and does not rewrite the manifest.
+func RepairScratchRetention(owner ScratchOwner) (ScratchManifest, bool, error) {
 	var (
 		manifest ScratchManifest
 		written  bool
@@ -1769,7 +1780,7 @@ func PruneMissingScratchReferences(owner ScratchOwner) (ScratchManifest, bool, e
 	err := RetryScratchLockContention(func() error {
 		return WithScratchRetentionLock(owner, func() error {
 			var err error
-			manifest, written, err = pruneMissingScratchReferencesLocked(owner)
+			manifest, written, err = repairScratchRetentionLocked(owner)
 			return err
 		})
 	})
@@ -1779,10 +1790,33 @@ func PruneMissingScratchReferences(owner ScratchOwner) (ScratchManifest, bool, e
 	return manifest, written, nil
 }
 
-// pruneMissingScratchReferencesLocked is the prune's read-modify-write. The
-// caller holds owner's manifest lock, so the load, the transform and the write
-// are one serialized transaction against every other manifest writer.
-func pruneMissingScratchReferencesLocked(owner ScratchOwner) (ScratchManifest, bool, error) {
+// ScratchRetentionNeedsRepair reports whether RepairScratchRetention would drop
+// a reference or re-publish a pin: a reference whose directory is gone, or a
+// referenced directory whose identity pin is missing. It only reads, so a
+// restore can skip the manifest lock and write for an intact manifest.
+func ScratchRetentionNeedsRepair(manifest ScratchManifest) bool {
+	for _, ref := range manifest.References {
+		dir, err := canonicalScratchPath(ref.Dir)
+		if err != nil {
+			return true
+		}
+		if _, statErr := os.Stat(dir); statErr != nil {
+			if errors.Is(statErr, fs.ErrNotExist) {
+				return true
+			}
+			continue
+		}
+		if _, pinErr := readScratchDirectoryPin(dir); os.IsNotExist(pinErr) {
+			return true
+		}
+	}
+	return false
+}
+
+// repairScratchRetentionLocked is the repair's read-modify-write. The caller
+// holds owner's manifest lock, so the load, the transform and the write are one
+// serialized transaction against every other manifest writer.
+func repairScratchRetentionLocked(owner ScratchOwner) (ScratchManifest, bool, error) {
 	current, err := loadScratchRetention(owner)
 	if err != nil {
 		return ScratchManifest{}, false, err
@@ -1803,6 +1837,15 @@ func pruneMissingScratchReferencesLocked(owner ScratchOwner) (ScratchManifest, b
 			}
 			dropped[dir] = struct{}{}
 			continue
+		}
+		// A referenced directory whose pin was lost is collectible the moment a
+		// sweep runs. Restore the pin here so the reference stays protected; an
+		// unreadable or foreign pin is left for the collector's conservative
+		// retain, and writeScratchDirectoryPin refuses a conflicting one.
+		if _, pinErr := readScratchDirectoryPin(dir); os.IsNotExist(pinErr) {
+			if err := writeScratchDirectoryPin(dir, owner, ref); err != nil {
+				return ScratchManifest{}, false, err
+			}
 		}
 		survivors = append(survivors, ref)
 	}

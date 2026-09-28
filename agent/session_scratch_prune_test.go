@@ -124,11 +124,11 @@ func TestPrepareRetainedScratchPrunesMissingAllocation(t *testing.T) {
 	}
 }
 
-// TestPruneMissingScratchReferencesNoOpOnHealthyManifest proves the prune is a
+// TestRepairScratchRetentionNoOpOnHealthyManifest proves the prune is a
 // no-op for a healthy manifest: no durable write, no revision bump, no
 // reference or slot churn. The restore path only reaches the prune when a
 // reference's directory is gone, so a healthy manifest must never be rewritten.
-func TestPruneMissingScratchReferencesNoOpOnHealthyManifest(t *testing.T) {
+func TestRepairScratchRetentionNoOpOnHealthyManifest(t *testing.T) {
 	workDir := t.TempDir()
 	base := t.TempDir()
 	owner := sandbox.ScratchOwner{StateDir: t.TempDir(), RootSessionID: "prune-noop-root"}
@@ -156,9 +156,9 @@ func TestPruneMissingScratchReferencesNoOpOnHealthyManifest(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	_, written, err := sandbox.PruneMissingScratchReferences(owner)
+	_, written, err := sandbox.RepairScratchRetention(owner)
 	if err != nil {
-		t.Fatalf("PruneMissingScratchReferences: %v", err)
+		t.Fatalf("RepairScratchRetention: %v", err)
 	}
 	if written {
 		t.Fatal("prune reported a write for a healthy manifest")
@@ -236,11 +236,11 @@ func TestPrepareRetainedScratchPrunesToEmpty(t *testing.T) {
 	}
 }
 
-// TestPruneMissingScratchReferencesSkipsReleasedManifest proves the prune
+// TestRepairScratchRetentionSkipsReleasedManifest proves the prune
 // returns a released manifest untouched: a tombstone already authorizes
 // ordinary collection of everything it names, so the prune must not write over
 // it or reanimate a dropped reference.
-func TestPruneMissingScratchReferencesSkipsReleasedManifest(t *testing.T) {
+func TestRepairScratchRetentionSkipsReleasedManifest(t *testing.T) {
 	workDir := t.TempDir()
 	base := t.TempDir()
 	owner := sandbox.ScratchOwner{StateDir: t.TempDir(), RootSessionID: "prune-released-root"}
@@ -275,9 +275,9 @@ func TestPruneMissingScratchReferencesSkipsReleasedManifest(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	got, written, err := sandbox.PruneMissingScratchReferences(owner)
+	got, written, err := sandbox.RepairScratchRetention(owner)
 	if err != nil {
-		t.Fatalf("PruneMissingScratchReferences: %v", err)
+		t.Fatalf("RepairScratchRetention: %v", err)
 	}
 	if written {
 		t.Fatal("prune wrote a released manifest")

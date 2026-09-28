@@ -2748,3 +2748,66 @@ func TestVerifyDyingReferencePin(t *testing.T) {
 		t.Fatal("an unreadable pin must abort the death, not let the reference drop silently")
 	}
 }
+
+// TestScratchRetentionRepairRepinsLostPinSoTheSweepSparesIt proves the repair
+// restores a referenced directory's lost identity pin, so the startup sweep can
+// no longer read the directory collectible and delete one the manifest still
+// references. The control pins the hazard: the same state without the repair is
+// collected.
+func TestScratchRetentionRepairRepinsLostPinSoTheSweepSparesIt(t *testing.T) {
+	base, workspace := scratchRetentionBase(t)
+	owner := ScratchOwner{StateDir: t.TempDir(), RootSessionID: identifier.MustNewSessionID()}
+	aged := time.Now().Add(-2 * crashedSessionScratchMaxAge)
+
+	kept, err := NewSessionScratch(base, workspace)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := kept.Pin(owner, ScratchReference{Dir: kept.Dir, Kind: "unsandboxed"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := kept.Retain(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(filepath.Join(kept.Dir, scratchPinName)); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := RepairScratchRetention(owner); err != nil {
+		t.Fatalf("repair: %v", err)
+	}
+	if _, err := readScratchDirectoryPin(kept.Dir); err != nil {
+		t.Fatalf("repair did not re-publish the lost pin: %v", err)
+	}
+	if err := os.Chtimes(kept.Dir, aged, aged); err != nil {
+		t.Fatal(err)
+	}
+	if err := SweepCrashedSessionScratch(workspace); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(kept.Dir); err != nil {
+		t.Fatalf("repaired referenced directory was collected: %v", err)
+	}
+
+	lost, err := NewSessionScratch(base, workspace)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := lost.Pin(owner, ScratchReference{Dir: lost.Dir, Kind: "unsandboxed"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := lost.Retain(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(filepath.Join(lost.Dir, scratchPinName)); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(lost.Dir, aged, aged); err != nil {
+		t.Fatal(err)
+	}
+	if err := SweepCrashedSessionScratch(workspace); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(lost.Dir); !os.IsNotExist(err) {
+		t.Fatalf("control: pinless referenced directory should have been collected: %v", err)
+	}
+}
