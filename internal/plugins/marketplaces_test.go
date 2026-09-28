@@ -672,8 +672,15 @@ func TestEditMarketplace_RetriesTheAsideRestoreAfterADoubleFault(t *testing.T) {
 	if errors.Is(err, errRenameRollbackIncomplete) {
 		t.Fatalf("err = %v, want no rollback-incomplete marker once the undo restored the clone", err)
 	}
-	if strings.Contains(err.Error(), dest) || strings.Contains(err.Error(), aside) {
-		t.Fatalf("err = %v, want no absolute path in the client-facing error", err)
+	// Speaking the path-free message exactly pins that the retry-success branch
+	// reaches editFailed's scrub: fail neither returns the raw swap error (which
+	// names dest, .old and the staging dir) nor re-attaches the sentinel.
+	wantErr := fmt.Sprintf("marketplace %q: the edit failed; see the hub's log for detail", "acme")
+	if err.Error() != wantErr {
+		t.Fatalf("err = %q, want the path-free %q", err.Error(), wantErr)
+	}
+	if path := m.marketplacesDir(); strings.Contains(err.Error(), path) {
+		t.Fatalf("err = %v, want no absolute plugin-store path", err)
 	}
 	// The failed swap must not strand the old clone: the undo retried the
 	// restore, so the recorded source's clone is back and .old is gone.
