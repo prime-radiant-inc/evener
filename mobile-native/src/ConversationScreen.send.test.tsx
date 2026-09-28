@@ -268,6 +268,9 @@ function hubClient(served: Thread, failedReads = 0, readLatencyMs = 0, olderCurs
 			listeners.add(listener);
 			return () => listeners.delete(listener);
 		},
+		forceStop: async (ref: string) => {
+			requests.push({ method: "forceStop", params: { ref } });
+		},
 		resumeThread: async (ref: string) => {
 			requests.push({ method: "resumeThread", params: { ref } });
 		},
@@ -895,6 +898,37 @@ it("resumes a paused session from its error", async () => {
 	expect(hub.requests.filter((request) => request.method === "resumeThread").map((request) => request.params.ref)).toEqual([
 		"ref-error-resume",
 	]);
+});
+
+describe("a session that can't take a message yet (ruling 20)", () => {
+	it("asks for a restart in the composer's place, and restarts by stopping and resuming", async () => {
+		const served = thread("ref-restart", "idle");
+		(served as unknown as { status: unknown }).status = { type: "restartRequired" };
+		const { tree, hub } = await mount(served);
+		expect(renderedText(tree)).toContain("This session runs an older Evener. Restart it to pick up the hub's update.");
+		expect(field(tree)).toBeUndefined();
+		await press(tree, "Restart session");
+		expect(
+			hub.requests
+				.filter((request) => request.method === "forceStop" || request.method === "resumeThread")
+				.map((request) => [request.method, request.params.ref]),
+		).toEqual([
+			["forceStop", "ref-restart"],
+			["resumeThread", "ref-restart"],
+		]);
+	});
+
+	it("offers Resume in the composer's place for a paused session", async () => {
+		const served = thread("ref-paused", "idle");
+		(served as unknown as { evener: Record<string, unknown> }).evener.resumeRequired = true;
+		const { tree, hub } = await mount(served);
+		expect(renderedText(tree)).toContain("This session is paused.");
+		expect(field(tree)).toBeUndefined();
+		await press(tree, "Resume");
+		expect(hub.requests.filter((request) => request.method === "resumeThread").map((request) => request.params.ref)).toEqual([
+			"ref-paused",
+		]);
+	});
 });
 
 it("opens sign-in from an error that says a sign-in failed", async () => {

@@ -16,6 +16,7 @@ import { Sheet, useSheet } from "../sheet/Sheet";
 import { sheetHosts, sheetKey, useSheetHost } from "../sheet/sheetHosts";
 import { Toast, type ToastController, useToast } from "../Toast";
 import { allowFontScaling, Copy, useColors, useTextScale } from "../ui";
+import { wrapAfterSlashes } from "./format";
 import { type NotesController, noteStatusLine, type SaveOutcome } from "./sessionNotes";
 
 export interface NotesHost {
@@ -232,8 +233,6 @@ function linkKind(url: string): LinkKind {
 	return "other";
 }
 
-/** A URL may wrap only after a slash: a zero-width space follows each one. */
-const wrapAfterSlashes = (url: string) => url.replace(/\//g, "/​");
 
 function LinkRow({
 	link,

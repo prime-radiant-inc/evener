@@ -2,6 +2,8 @@
 // (ruling 21). That is where it runs, its access, its plugins and its usage.
 // The same file names the model for the composer's chip (spec 8.5).
 import { type ModelDescriptor, sessionEffortLevels, type ThreadModel } from "@evener/appwire-client";
+import type { MobileTimelineItem } from "../projectedRows";
+import { localSessionId } from "../sessionDeletionResult";
 import { compactCount, compactDuration } from "./format";
 
 /** A ref names its host first ("<host>:<session>"); "local" is the hub's own. */
@@ -111,15 +113,65 @@ export function effortName(level: string): string {
 	return EFFORT_NAMES[level] ?? `${level.charAt(0).toUpperCase()}${level.slice(1)}`;
 }
 
-/** The composer's chip: the model as the catalog names it (a model is called
- * one way everywhere people read it), then its effort when the model has
- * levels. Before the catalog loads, the model id stands in. */
+/** A model as the catalog names it (a model is called one way everywhere
+ * people read it). Before the catalog loads, the model id stands in. */
+function modelName(modelProvider: string, catalog: readonly ModelDescriptor[] | undefined): string {
+	const match = catalog?.find((entry) => `${entry.provider}/${entry.model}` === modelProvider);
+	return match?.displayName || modelProvider.slice(modelProvider.indexOf("/") + 1) || "Model";
+}
+
+/** The composer's chip: the model's name, then its effort when the model has
+ * levels. */
 export function modelChipLabel(
 	session: Pick<ThreadModel, "modelProvider" | "reasoningEffort" | "reasoningEffortLevels" | "supportsReasoning">,
 	catalog: readonly ModelDescriptor[] | undefined,
 ): string {
-	const match = catalog?.find((entry) => `${entry.provider}/${entry.model}` === session.modelProvider);
-	const name = match?.displayName || session.modelProvider.slice(session.modelProvider.indexOf("/") + 1) || "Model";
+	const name = modelName(session.modelProvider, catalog);
 	const levels = sessionEffortLevels(session.reasoningEffortLevels, session.supportsReasoning);
 	return levels.length > 0 ? `${name} · ${effortName(session.reasoningEffort ?? "")}` : name;
+}
+
+/** The Session sheet's vision model row: "off" turns vision off, and empty
+ * uses the session's own model. */
+export function visionModelLabel(visionModel: string, catalog: readonly ModelDescriptor[] | undefined): string {
+	if (visionModel === "off") return "Off";
+	if (visionModel === "") return "Session model";
+	return modelName(visionModel, catalog);
+}
+
+/** The Notes & links row: "Your note · agent note · 3 links", naming only the
+ * parts present, or "None". */
+export function notesSummary(session: Pick<ThreadModel, "humanNote" | "agentNote" | "sessionUrls">): string {
+	const count = session.sessionUrls.length;
+	const parts = [
+		session.humanNote.trim() ? "Your note" : "",
+		session.agentNote.trim() ? "agent note" : "",
+		count > 0 ? `${count} ${count === 1 ? "link" : "links"}` : "",
+	].filter(Boolean);
+	return parts.length > 0 ? parts.join(" · ") : "None";
+}
+
+/** Where "Fork from latest" forks: your latest message with a transcript
+ * entry a fork can start from, by the rule a message's own "Fork from here"
+ * follows (TimelineItem's YourMessage, the screen's forkMessage). */
+export function latestForkPoint(
+	items: readonly MobileTimelineItem[],
+): { entryIndex: number; preview: string } | null {
+	for (let index = items.length - 1; index >= 0; index -= 1) {
+		const item = items[index];
+		if (
+			item?.kind === "user" &&
+			item.transcriptEntryIndex !== undefined &&
+			Number.isSafeInteger(item.transcriptEntryIndex) &&
+			item.transcriptEntryIndex > 0
+		)
+			return { entryIndex: item.transcriptEntryIndex, preview: item.text };
+	}
+	return null;
+}
+
+/** Whether Delete can remove the session's saved copy: a local session that
+ * isn't loaded, which is what SessionDeletion deletes. */
+export function canDeleteSavedSession(session: Pick<ThreadModel, "ref" | "status">): boolean {
+	return localSessionId(session.ref) !== null && session.status.type === "notLoaded";
 }

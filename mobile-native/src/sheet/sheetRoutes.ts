@@ -48,6 +48,8 @@ export const SHEET_ROUTES = {
 	CommentsSheet: sheetOptions(["medium", "large"], "medium"),
 	// You type the review's note in it (ruling 26).
 	ReviewSheet: sheetOptions(["medium", "large"], "large"),
+	// The Session sheet opens at full height (spec 8.6).
+	SessionInfoSheet: sheetOptions(["medium", "large"], "large"),
 } satisfies { [Name in keyof Routes]?: NativeStackNavigationOptions };
 
 export function isSheetRoute(name: string): boolean {

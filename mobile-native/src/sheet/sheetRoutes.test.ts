@@ -44,6 +44,9 @@ describe("a sheet's size (spec 6)", () => {
 		expect(SHEET_ROUTES.RowMenuSheet).toEqual(sheetOptions(["medium", "large"], "medium"));
 		expect(isSheetRoute("QueueSheet")).toBe(true);
 		expect(SHEET_ROUTES.QueueSheet).toEqual(sheetOptions(["medium", "large"], "medium"));
+		// The Session sheet opens at large (spec 8.6) and drags to half.
+		expect(isSheetRoute("SessionInfoSheet")).toBe(true);
+		expect(SHEET_ROUTES.SessionInfoSheet).toEqual(sheetOptions(["medium", "large"], "large"));
 	});
 });
 

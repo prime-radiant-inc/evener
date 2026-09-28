@@ -2,11 +2,15 @@ import type { ModelDescriptor } from "@evener/appwire-client";
 import { describe, expect, it } from "vitest";
 import {
 	accessFacts,
+	canDeleteSavedSession,
 	effortName,
 	hostIdOf,
+	latestForkPoint,
 	modelChipLabel,
+	notesSummary,
 	pluginsLine,
 	usageFacts,
+	visionModelLabel,
 	whereFacts,
 } from "./sessionFacts";
 
@@ -139,5 +143,64 @@ describe("the model chip (spec 8.5)", () => {
 		["turbo", "Turbo"],
 	])("effort %s reads %s", (level, name) => {
 		expect(effortName(level)).toBe(name);
+	});
+});
+
+describe("the vision model row", () => {
+	const catalog: ModelDescriptor[] = [{ provider: "lunaroute", model: "glm-5.3-vision", displayName: "GLM 5.3 Vision" }];
+	it("reads Off, Session model, or the model as the catalog names it", () => {
+		expect(visionModelLabel("off", catalog)).toBe("Off");
+		expect(visionModelLabel("", catalog)).toBe("Session model");
+		expect(visionModelLabel("lunaroute/glm-5.3-vision", catalog)).toBe("GLM 5.3 Vision");
+		expect(visionModelLabel("lunaroute/glm-5.3-vision", undefined)).toBe("glm-5.3-vision");
+	});
+});
+
+describe("the Notes & links row", () => {
+	const link = { id: "u1", url: "https://example.com" };
+	it("names only the parts present", () => {
+		expect(notesSummary({ humanNote: "keep it", agentNote: "on it", sessionUrls: [link, link, link] })).toBe(
+			"Your note · agent note · 3 links",
+		);
+		expect(notesSummary({ humanNote: " ", agentNote: "on it", sessionUrls: [link] })).toBe("agent note · 1 link");
+		expect(notesSummary({ humanNote: "keep it", agentNote: "", sessionUrls: [] })).toBe("Your note");
+		expect(notesSummary({ humanNote: "", agentNote: "", sessionUrls: [link, link] })).toBe("2 links");
+	});
+
+	it("says None when nothing is shared", () => {
+		expect(notesSummary({ humanNote: "", agentNote: "", sessionUrls: [] })).toBe("None");
+	});
+});
+
+describe("Fork from latest", () => {
+	it("forks from your latest message the transcript can fork from", () => {
+		expect(
+			latestForkPoint([
+				{ kind: "user", id: "a", text: "first", transcriptEntryIndex: 1 },
+				{ kind: "assistant", id: "b", markdown: "ok" },
+				{ kind: "user", id: "c", text: "second", transcriptEntryIndex: 4 },
+				{ kind: "user", id: "d", text: "not yet written" },
+			] as Parameters<typeof latestForkPoint>[0]),
+		).toEqual({ entryIndex: 4, preview: "second" });
+	});
+
+	it("has nothing to fork from without such a message", () => {
+		expect(
+			latestForkPoint([
+				{ kind: "user", id: "a", text: "unwritten" },
+				{ kind: "user", id: "b", text: "the first entry", transcriptEntryIndex: 0 },
+			] as Parameters<typeof latestForkPoint>[0]),
+		).toBeNull();
+		expect(latestForkPoint([])).toBeNull();
+	});
+});
+
+describe("Delete", () => {
+	it("deletes only a saved local session that isn't loaded", () => {
+		const local = "local:AbCdEfGhIjKlMnOpQrStUv";
+		expect(canDeleteSavedSession({ ref: local, status: { type: "notLoaded" } })).toBe(true);
+		expect(canDeleteSavedSession({ ref: local, status: { type: "idle" } })).toBe(false);
+		expect(canDeleteSavedSession({ ref: local, status: { type: "closed" } })).toBe(false);
+		expect(canDeleteSavedSession({ ref: "paradise-park:s2", status: { type: "notLoaded" } })).toBe(false);
 	});
 });

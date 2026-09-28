@@ -41,6 +41,7 @@ import {
 	type Routes,
 } from "./src/screens";
 import { NotesSheet } from "./src/session/NotesSheet";
+import { SessionInfoSheet } from "./src/session/SessionInfoSheet";
 import { SHEET_ROUTES } from "./src/sheet/sheetRoutes";
 import { QueueSheet } from "./src/QueueSheet";
 import { CommentSheet } from "./src/reader/CommentSheet";
@@ -257,6 +258,11 @@ function Navigation() {
 							name="ReviewSheet"
 							component={ReviewSheet}
 							options={SHEET_ROUTES.ReviewSheet}
+						/>
+						<Stack.Screen
+							name="SessionInfoSheet"
+							component={SessionInfoSheet}
+							options={SHEET_ROUTES.SessionInfoSheet}
 						/>
 					</Stack.Group>
 				</Stack.Navigator>
