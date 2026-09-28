@@ -13,6 +13,7 @@ import type { DockviewApi, IDockviewPanel, SerializedDockview } from "dockview-c
 import { useStore } from "zustand";
 import { createStore } from "zustand/vanilla";
 import { type PaneTypeId, paneFor } from "./paneRegistry";
+import { paramString, refParam } from "./routing";
 
 // Which of the workspace's two slots a pane lives in. The main slot holds
 // exactly ONE pane - the big one in the top left, beside the rail - and
@@ -131,6 +132,41 @@ const pendingPaneFocus = new Set<string>();
 
 export function isPaneOpen(state: WorkspaceStoreState, type: PaneTypeId, params: unknown): boolean {
   return state.panes.some((pane) => pane.type === type && sameParams(pane.params, params));
+}
+
+// A transcript names its SUBJECT in `ref`, and a job log's subject is a job
+// ("job:<id>" - the prefix panes/transcript/Transcript.tsx switches on), not a
+// session. A job log belongs to the session that owns the job, which the
+// opener records in `parentRef`; a ref with this prefix therefore reads as no
+// session on its own.
+const JOB_REF_PREFIX = "job:";
+
+// The session a pane is about, or null when it is about none. The key that
+// names it depends on the pane: the session pane and its companion panels
+// name it `ref`; a transcript names its subject in `ref`, falling to
+// `parentRef` when that subject is a job; a doc names its session under
+// `session` (panes/doc/openDoc.ts). Every other pane (welcome, settings,
+// spawn) names no session at all.
+function paneSessionRef(pane: OpenPaneRecord | undefined): string | null {
+  const params = pane?.params as { ref?: unknown; parentRef?: unknown; session?: unknown } | null | undefined;
+  const ref = refParam(params);
+  if (ref !== null) return ref.startsWith(JOB_REF_PREFIX) ? paramString(params?.parentRef) : ref;
+  return paramString(params?.session);
+}
+
+// The session the workspace is currently SHOWING: the session the focused
+// pane is about, or - when it is about none, e.g. a settings pane focused
+// beside a session still holding main - the session the main pane is about.
+// That is the rail's answer to "which session am I looking at", and what marks
+// its row as the selected item.
+//
+// Deliberately wider than AppShell's own focusedSessionRef, which answers a
+// narrower question ("is a session PANE the focused pane?") for the
+// composer/needs-you chords and must ignore a subagent's companion panel.
+// This one follows those panels and falls back to main.
+export function currentSessionRef(state: WorkspaceStoreState): string | null {
+  const focused = state.panes.find((pane) => pane.id === state.focusedPaneId);
+  return paneSessionRef(focused) ?? paneSessionRef(state.panes.find((pane) => pane.slot === "main"));
 }
 
 export function requestPaneFocus(paneId: string): void {
