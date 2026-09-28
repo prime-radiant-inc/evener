@@ -37,7 +37,7 @@ import { openPalette, paletteStore } from "./palette/paletteController";
 import { RailHost } from "./rail";
 import { adjacentLiveSessionRef } from "./rail/liveSessionCycle";
 import { needsYouRefs, nextNeedsYouRef, openNeedsYouSession } from "./rail/needsYouCycle";
-import { navigate, urlToPane } from "./routing";
+import { navigate, refParam, urlToPane } from "./routing";
 import { cycleSessionPane } from "./sessionCycle";
 import { openNestedSessionWithOwner, openTopLevelSession } from "./sessionPlacement";
 import { isSinglePaneRoute } from "./singlePane";
@@ -155,12 +155,6 @@ function usePathname(): string {
   return pathname;
 }
 
-function sessionRefFromRouteParams(params: unknown): string | null {
-  if (typeof params !== "object" || params === null) return null;
-  const ref = (params as { ref?: unknown }).ref;
-  return typeof ref === "string" && ref.length > 0 ? ref : null;
-}
-
 function sameRouteParams(a: unknown, b: unknown): boolean {
   return JSON.stringify(a) === JSON.stringify(b);
 }
@@ -173,7 +167,7 @@ function focusedSessionRef(): string | null {
   const state = workspaceStore.getState();
   const pane = state.panes.find((p) => p.id === state.focusedPaneId);
   if (pane?.type !== "session") return null;
-  return sessionRefFromRouteParams(pane.params);
+  return refParam(pane.params);
 }
 
 function routePlacementIsApplied(
@@ -197,7 +191,7 @@ function routePlacementIsApplied(
     return main.type === matchingType && sameRouteParams(main.params, route.params) && matchingPanes.length === 1;
   }
 
-  const ref = sessionRefFromRouteParams(route.params);
+  const ref = refParam(route.params);
   if (ref === null) return false;
   const sessionRefOf = (pane: { params: unknown }): string | null => {
     const paneRef = (pane.params as { ref?: unknown }).ref;
@@ -266,7 +260,7 @@ function openRouteAsPane(
   }
 
   if (route.type === "session") {
-    const ref = sessionRefFromRouteParams(route.params);
+    const ref = refParam(route.params);
     if (ref === null) return;
 
     if (locationGone) {
@@ -308,7 +302,7 @@ function reconcileWelcomeRouteWithLocation(location: NavigationSessionLocation |
   const main = workspaceStore.getState().mainPane();
   if (main?.type !== "session") return;
 
-  const childRef = sessionRefFromRouteParams(main.params);
+  const childRef = refParam(main.params);
   if (childRef === null) return;
 
   if (location.top_level || location.ref !== childRef) return;
@@ -512,9 +506,8 @@ export function AppShell({ client: injectedClient, bannerDelayMs, bannerCreateCl
   const connectionState = useConnectionStore((s) => s.state);
   const pathname = usePathname();
   const route = urlToPane(pathname);
-  const sessionRouteRef = route?.type === "session" ? sessionRefFromRouteParams(route.params) : null;
-  const restoredSessionRef =
-    route?.type === "welcome" ? sessionRefFromRouteParams(workspaceStore.getState().mainPane()?.params) : null;
+  const sessionRouteRef = route?.type === "session" ? refParam(route.params) : null;
+  const restoredSessionRef = route?.type === "welcome" ? refParam(workspaceStore.getState().mainPane()?.params) : null;
   const locationRef = sessionRouteRef ?? restoredSessionRef;
   const navigationMode = useNavigationStore((state) => state.mode);
   const locationResource = useNavigationStore(selectLocation(locationRef ?? ""));
@@ -637,7 +630,7 @@ export function AppShell({ client: injectedClient, bannerDelayMs, bannerCreateCl
       openNeedsYouSession(ref);
       const workspace = workspaceStore.getState();
       const main = workspace.mainPane();
-      if (main === null || main.type !== "session" || sessionRefFromRouteParams(main.params) !== ref) {
+      if (main === null || main.type !== "session" || refParam(main.params) !== ref) {
         openTopLevelSession(ref);
         return;
       }

@@ -12,6 +12,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"strings"
 	"sync"
@@ -73,7 +74,7 @@ type probeFakeRunner struct {
 	stdio *probeFakeStdio
 }
 
-const probeGoodLaunchCheck = `{"protocol":"evener-appwire-v5","version":"dev","launch_flags":["api-log"]}`
+var probeGoodLaunchCheck = fmt.Sprintf(`{"protocol":%q,"version":"dev","launch_flags":["api-log"]}`, appwire.ProtocolVersion)
 
 func (r *probeFakeRunner) Run(_ context.Context, argv []string, _ io.Reader) ([]byte, error) {
 	joined := strings.Join(argv, " ")

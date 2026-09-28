@@ -2386,6 +2386,7 @@ func (runtime delegateRuntime) restoreIdle(started delegateStartCommit) (*subage
 			parentDelegateID:              started.lease.delegateID,
 			forwardJobEvent:               s.jobManager.forwardEvent,
 			descendantEvent:               s.cfg.spawn.descendantEvent,
+			descendantRecorded:            s.cfg.spawn.descendantRecorded,
 			parentSteer:                   s.SteerWithProvenance,
 			parentSystemNotification:      s.routeSystemNotification,
 			subagentTask:                  descriptor.Task,

@@ -47,7 +47,7 @@ func TestRound13DirtyControllerDeployRefusalIsTerminal(t *testing.T) {
 		case strings.Contains(joined, "XDG_STATE_HOME"):
 			return []byte("HOME=/home/dev\nXDG_STATE_HOME=\nXDG_CONFIG_HOME=\n"), nil
 		case strings.Contains(joined, "launch-check"):
-			return []byte(`{"protocol":"evener-appwire-v5","version":"` + dirty + `","launch_flags":["api-log"]}`), nil
+			return []byte(`{"protocol":"evener-appwire-v6","version":"` + dirty + `","launch_flags":["api-log"]}`), nil
 		case strings.Contains(joined, "api/health"):
 			// The host already reports the controller's identical dirty version.
 			return []byte(`{"version":"` + dirty + `","started_at":"2026-01-01T00:00:00Z","mobile_api_version":1,"hub_addr":"127.0.0.1:9180"}`), nil
@@ -306,7 +306,7 @@ func TestRound13BootstrapStartStillVerifiesAnUnverifiableBuild(t *testing.T) {
 		case strings.Contains(joined, "XDG_STATE_HOME"):
 			return []byte("HOME=/home/dev\nXDG_STATE_HOME=\nXDG_CONFIG_HOME=\n"), nil
 		case strings.Contains(joined, "launch-check"):
-			return []byte(`{"protocol":"evener-appwire-v5","version":"dev","launch_flags":["api-log"]}`), nil
+			return []byte(`{"protocol":"evener-appwire-v6","version":"dev","launch_flags":["api-log"]}`), nil
 		case strings.Contains(joined, "api/health"):
 			if !launched {
 				return nil, errors.New("curl: (7) Failed to connect")

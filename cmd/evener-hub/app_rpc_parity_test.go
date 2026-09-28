@@ -389,9 +389,9 @@ func TestHubRPCThreadForkExitedSessionSucceeds(t *testing.T) {
 		t.Fatalf("Initialize: %v", err)
 	}
 	resp, err := client.ThreadFork(context.Background(), appwire.ThreadForkParams{
-		Ref:          "local:" + sessionID,
-		SourceTurnID: "turn_1",
-		EditedInput:  "edited",
+		Ref:           "local:" + sessionID,
+		SourceItemKey: "apptranscript-item-v2:t_1:0:0",
+		EditedInput:   "edited",
 	})
 	if err != nil {
 		t.Fatalf("ThreadFork on exited session: %v", err)
