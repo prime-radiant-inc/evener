@@ -1,6 +1,7 @@
 package appitempaging
 
 import (
+	"cmp"
 	"fmt"
 
 	"primeradiant.com/evener/appwire"
@@ -191,13 +192,7 @@ func validateCandidates(candidates []TranscriptItemCandidate) error {
 }
 
 func comparePosition(a, b appwire.ThreadItemPosition) int {
-	if a.Entry < b.Entry || (a.Entry == b.Entry && a.Item < b.Item) {
-		return -1
-	}
-	if a == b {
-		return 0
-	}
-	return 1
+	return cmp.Or(cmp.Compare(a.Entry, b.Entry), cmp.Compare(a.Item, b.Item), cmp.Compare(a.Sub, b.Sub))
 }
 
 func cloneTurnWithoutItems(turn appwire.Turn) appwire.Turn {

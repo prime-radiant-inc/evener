@@ -6172,6 +6172,68 @@ describe("ConversationStore", () => {
       expect(below?.members).toBeUndefined();
     });
 
+    // The R38 split re-projects each sub-run through activityRunRow, which
+    // rebuilds the row from the run's first member. A tail sub-run of one
+    // member comes back as that member's own row, so it must keep the
+    // member's turnId: the reader's transcript folds runs and finds the live
+    // run by turn (sessionRows, liveRunId, openingTarget). Before the fix the
+    // rebuilt row dropped the id, so the run had no turn.
+    it("keeps a split cluster's single-member tail row's turn id", async () => {
+      const thread = makeThread({
+        turns: [
+          makeTurn({
+            id: "t1",
+            status: "completed",
+            items: [commandExecItem("a-tool", "shell", "completed"), commandExecItem("b-tool", "shell", "completed")],
+          }),
+        ],
+      });
+      const store = await openProjectedThread(thread, true);
+      // The two completed calls cluster into one row whose members are [a, b].
+      const clustered = rows(store).find((row) => row.id === "a-tool");
+      expect(clustered?.kind === "activity" ? clustered.members?.map((member) => member.id) : undefined).toEqual([
+        "a-tool",
+        "b-tool",
+      ]);
+      store.getState().applyNotification({
+        method: "warning",
+        params: {
+          threadId: "thread-1",
+          ref: "ref-1",
+          title: "Provider",
+          message: "careful",
+        },
+      } as AnyNotification);
+      // A newer same-family activity arrives AFTER the notice, on a new turn:
+      // the run splits at the anchored member (b-tool), leaving the tail as a
+      // sub-run of the single new member.
+      store.getState().applyNotification({
+        method: "history/updated",
+        params: {
+          threadId: "thread-1",
+          ref: "ref-1",
+          bootGeneration: "1",
+          epoch: 1,
+          snapshot: { incarnation: "inc-1", length: 1 },
+          turns: [{ id: "t2", itemsView: "default", status: "inProgress" }],
+          items: [
+            {
+              type: "commandExecution",
+              id: "c-tool",
+              toolName: "shell",
+              status: "completed",
+              turnId: "t2",
+            } as ThreadItem,
+          ],
+        },
+      } as AnyNotification);
+      const split = rows(store).filter((row) => row.kind === "activity");
+      expect(split.map((row) => row.id)).toEqual(["a-tool", "c-tool"]);
+      const tail = split[1];
+      expect(tail?.members).toBeUndefined();
+      expect(tail?.turnId).toBe("t2");
+    });
+
     // RoboRev review round 1: the anchor a notice records when it arrives
     // over an ALREADY-CLUSTERED row. The cluster's top-level identity
     // belongs to its FIRST member, so a notice that arrived after the
