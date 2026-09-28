@@ -295,6 +295,7 @@ afterEach(() => {
 	fleet.live = [];
 	fleet.needsYou = [];
 	fleet.sources = undefined;
+	fleet.revision = undefined;
 	vi.unstubAllGlobals();
 });
 
@@ -2118,6 +2119,38 @@ describe("moving between sessions (spec 8.3, 13.2)", () => {
 			panTitle(-200, -2000, false);
 			expect(navigation.replace).not.toHaveBeenCalled();
 		});
+	});
+
+	it("marks a turn that ends while you watch seen through the hub's own turn end", async () => {
+		fleet.live = [failing, fleetSession("ref-watching", { state: "working", updated_at: at(1), turn_ended_at: at(1) })];
+		const served = thread("ref-watching", "active");
+		const { hub } = await mount(served);
+		const seenMarks = () =>
+			hub.requests.filter((request) => request.method === "evener/session/seen/set").map((request) => request.params);
+		expect(seenMarks()).toEqual([]);
+		// The turn ends: the daemon says so, and the hub stamps the turn end
+		// on the session's Live row and says Live changed.
+		fleet.live = [
+			failing,
+			fleetSession("ref-watching", { state: "idle", updated_at: at(7), turn_ended_at: at(7), unseen: true }),
+		];
+		fleet.revision = 2;
+		act(() => {
+			hub.notify({
+				method: "thread/status/changed",
+				params: { threadId: served.id, ref: "ref-watching", status: { type: "idle" } },
+			} as AnyNotification);
+			hub.notify({
+				method: "evener/navigation/invalidated",
+				params: {
+					generationId: "generation-test",
+					sequence: 1,
+					targets: [{ kind: "section", section: "live", revision: 2 }],
+				},
+			} as AnyNotification);
+		});
+		await settle();
+		expect(seenMarks()).toEqual([{ sessions: [{ ref: "ref-watching", seenThrough: Date.parse(at(7)) }] }]);
 	});
 
 	it("names the session's host from the manifest in the Session sheet", async () => {

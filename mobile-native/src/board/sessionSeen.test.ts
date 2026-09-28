@@ -1,17 +1,40 @@
-// The session screen marks itself seen (S4): once per visit to the front,
-// through the loaded snapshot's turn end, on the hub's own controller.
-import type { SessionSeenMark } from "@evener/appwire-client";
-import { expect, it } from "vitest";
+// The session screen marks itself seen (S4) while it is in front: through
+// the loaded snapshot's turn end, and through the fleet's row for it when a
+// turn ends while you watch (Jesse's ruling, 2026-09-29).
+import { type NavigationSessionSummary, type SessionSeenMark, WireError } from "@evener/appwire-client";
+import { expect, it, vi } from "vitest";
 import type { ConversationClientLike } from "../../../mobile/src/services/conversation";
 import { renderHook } from "../renderNative.testkit";
+import { fleetSession } from "../session/fleetTestUtils";
 import { hubSeenMarks } from "./hubSeen";
+import { seenMarkers, useBoardSeen } from "./nativeBoardMemory";
 import { useMarkSeenInFront } from "./sessionSeen";
+
+// The device's own markers, in memory.
+const kv = vi.hoisted(() => new Map<string, string>());
+vi.mock("expo-sqlite/kv-store", () => ({
+	Storage: {
+		getItemSync: (key: string) => kv.get(key) ?? null,
+		setItemSync: (key: string, value: string) => kv.set(key, value),
+		removeItemSync: (key: string) => kv.delete(key),
+	},
+}));
 
 const T = Date.UTC(2026, 8, 26, 12, 0);
 const iso = (ms: number) => new Date(ms).toISOString();
 
+/** Runs enough microtask rounds for the hub's answer to a mark, and the
+ * bookkeeping it settles, to finish. */
+async function settle() {
+	for (let step = 0; step < 30; step++) await Promise.resolve();
+}
+
 let hubCount = 0;
-function setup() {
+/** `refuse` makes the hub answer every mark with invalid params, a refusal
+ * for good. `fail` makes the next call fail for now, as a dropped connection
+ * does. */
+function setup({ refuse = false, fail = false } = {}) {
+	let failNext = fail;
 	hubCount += 1;
 	const hubId = `session-seen-hub-${hubCount}`;
 	const sent: SessionSeenMark[][] = [];
@@ -19,20 +42,40 @@ function setup() {
 		request: (method, params) => {
 			if (method !== "evener/session/seen/set") throw new Error(`unexpected ${method}`);
 			sent.push((params as { sessions: SessionSeenMark[] }).sessions);
+			if (refuse) return Promise.reject(new WireError("invalid params", -32602));
+			if (failNext) {
+				failNext = false;
+				return Promise.reject(new Error("connection closed"));
+			}
 			return Promise.resolve({ ok: true, changed: true, navigation: { generation_id: "g", targets: [] } } as never);
 		},
 		onNotification: () => () => {},
 	};
+	// The device's own markers, first run a minute before T.
+	const markers = seenMarkers(hubId);
+	markers.adoptEpoch([{ updated_at: iso(T - 60_000) }]);
 	const view = {
+		hubId,
 		inFront: true,
 		client: client as ConversationClientLike | null,
 		conversation: null as { lastTurnEndedAt?: string } | null,
+		/** The fleet's row for this session, once the fleet has read it. */
+		row: undefined as NavigationSessionSummary | undefined,
 	};
 	const hook = renderHook(() =>
-		useMarkSeenInFront({ hubId, ref: "local:s" }, view.inFront, view.client, view.conversation),
+		useMarkSeenInFront(
+			{ hubId: view.hubId, ref: "local:s" },
+			view.inFront,
+			view.client,
+			view.conversation,
+			view.row,
+			useBoardSeen(view.hubId),
+		),
 	);
-	return { hubId, sent, view, hook, client };
+	return { hubId, sent, view, hook, client, markers };
 }
+
+const fleetRow = (over: Partial<NavigationSessionSummary>) => fleetSession("local:s", over);
 
 it("marks the session seen through its turn end once it has loaded in front", () => {
 	const { sent, view, hook } = setup();
@@ -43,13 +86,122 @@ it("marks the session seen through its turn end once it has loaded in front", ()
 	hook.unmount();
 });
 
-it("doesn't mark a newer turn that ends while the screen stays in front", () => {
+it("marks a turn that ends while the screen stays in front through the hub row's new turn end", async () => {
+	const { sent, view, hook } = setup();
+	view.conversation = { lastTurnEndedAt: iso(T) };
+	view.row = fleetRow({ turn_ended_at: iso(T), updated_at: iso(T), unseen: false });
+	hook.rerender();
+	await settle();
+	// The turn ends, and the fleet's next read shows the hub's stamp for it.
+	view.row = fleetRow({ turn_ended_at: iso(T + 5_000), updated_at: iso(T + 5_000), unseen: true });
+	hook.rerender();
+	expect(sent).toEqual([[{ ref: "local:s", seenThrough: T }], [{ ref: "local:s", seenThrough: T + 5_000 }]]);
+	hook.unmount();
+});
+
+it("marks through a newer turn end a re-read of the session brings while in front", async () => {
 	const { sent, view, hook } = setup();
 	view.conversation = { lastTurnEndedAt: iso(T) };
 	hook.rerender();
+	await settle();
 	view.conversation = { lastTurnEndedAt: iso(T + 5_000) };
 	hook.rerender();
-	expect(sent).toHaveLength(1);
+	expect(sent).toEqual([[{ ref: "local:s", seenThrough: T }], [{ ref: "local:s", seenThrough: T + 5_000 }]]);
+	hook.unmount();
+});
+
+it("sends a refused mark once, however often the hub's refusal re-renders the screen", async () => {
+	const { sent, view, hook } = setup({ refuse: true });
+	view.conversation = {};
+	view.row = fleetRow({ turn_ended_at: iso(T), updated_at: iso(T), unseen: true });
+	hook.rerender();
+	await settle();
+	hook.rerender();
+	expect(sent).toEqual([[{ ref: "local:s", seenThrough: T }]]);
+	hook.unmount();
+});
+
+it("sends a mark once across rerenders with the same row and snapshot", async () => {
+	const { hubId, sent, view, hook } = setup();
+	view.conversation = { lastTurnEndedAt: iso(T) };
+	view.row = fleetRow({ turn_ended_at: iso(T), updated_at: iso(T), unseen: true });
+	hook.rerender();
+	await settle();
+	// The hub's rows show the mark landed, so nothing is pending any more.
+	hubSeenMarks(hubId).prune([fleetRow({ turn_ended_at: iso(T), unseen: false })]);
+	hook.rerender();
+	hook.rerender();
+	expect(sent).toEqual([[{ ref: "local:s", seenThrough: T }]]);
+	hook.unmount();
+});
+
+it("leaves an unread another device marked at the turn end it already marked", async () => {
+	const { hubId, sent, view, hook } = setup();
+	view.conversation = {};
+	view.row = fleetRow({ turn_ended_at: iso(T), updated_at: iso(T), unseen: true });
+	hook.rerender();
+	await settle();
+	hubSeenMarks(hubId).prune([fleetRow({ turn_ended_at: iso(T), unseen: false })]);
+	// Mark as unread elsewhere: the hub reads unseen at the same turn end.
+	view.row = fleetRow({ turn_ended_at: iso(T), updated_at: iso(T), unseen: true });
+	hook.rerender();
+	expect(sent).toEqual([[{ ref: "local:s", seenThrough: T }]]);
+	// A turn that then ends while you watch is marked.
+	view.row = fleetRow({ turn_ended_at: iso(T + 5_000), updated_at: iso(T + 5_000), unseen: true });
+	hook.rerender();
+	expect(sent).toEqual([[{ ref: "local:s", seenThrough: T }], [{ ref: "local:s", seenThrough: T + 5_000 }]]);
+	hook.unmount();
+});
+
+it("doesn't mark a turn that ends while another screen is in front", async () => {
+	const { sent, view, hook } = setup();
+	view.conversation = { lastTurnEndedAt: iso(T) };
+	view.row = fleetRow({ turn_ended_at: iso(T), updated_at: iso(T), unseen: false });
+	hook.rerender();
+	await settle();
+	view.inFront = false;
+	hook.rerender();
+	view.row = fleetRow({ turn_ended_at: iso(T + 5_000), updated_at: iso(T + 5_000), unseen: true });
+	hook.rerender();
+	expect(sent).toEqual([[{ ref: "local:s", seenThrough: T }]]);
+	hook.unmount();
+});
+
+it("marks a row the device decides on the device when it changes in front", () => {
+	const { sent, view, hook, markers } = setup();
+	view.conversation = {};
+	const row = fleetRow({ updated_at: iso(T + 5_000) });
+	expect(markers.isSeen(row)).toBe(false);
+	view.row = row;
+	hook.rerender();
+	expect(markers.isSeen(row)).toBe(true);
+	expect(sent).toEqual([]);
+	hook.unmount();
+});
+
+it("marks a row with an unreadable turn end again when its updated_at moves in front", () => {
+	const { view, hook, markers } = setup();
+	view.conversation = {};
+	view.row = fleetRow({ turn_ended_at: "not a time", updated_at: iso(T + 5_000) });
+	hook.rerender();
+	expect(markers.isSeen(view.row)).toBe(true);
+	// The device decides this row by its updated_at, so a newer one is a new
+	// thing to mark even though the unreadable stamp didn't change.
+	const newer = fleetRow({ turn_ended_at: "not a time", updated_at: iso(T + 10_000) });
+	expect(markers.isSeen(newer)).toBe(false);
+	view.row = newer;
+	hook.rerender();
+	expect(markers.isSeen(newer)).toBe(true);
+	hook.unmount();
+});
+
+it("leaves a row the device decides unmarked while another screen is in front", () => {
+	const { view, hook, markers } = setup();
+	view.inFront = false;
+	const row = fleetRow({ updated_at: iso(T + 5_000) });
+	view.row = row;
+	hook.rerender();
+	expect(markers.isSeen(row)).toBe(false);
 	hook.unmount();
 });
 
@@ -58,7 +210,7 @@ it("marks again after the screen leaves the front and comes back", async () => {
 	view.conversation = { lastTurnEndedAt: iso(T) };
 	hook.rerender();
 	// The first call is answered before the next visit.
-	for (let step = 0; step < 10; step++) await Promise.resolve();
+	await settle();
 	view.conversation = { lastTurnEndedAt: iso(T + 5_000) };
 	view.inFront = false;
 	hook.rerender();
@@ -69,15 +221,33 @@ it("marks again after the screen leaves the front and comes back", async () => {
 	hook.unmount();
 });
 
-it("marks nothing without a turn end, and counts the visit as marked", () => {
+it("marks a row again at the same turn end on a new visit to the front", async () => {
+	const { hubId, sent, view, hook } = setup();
+	view.conversation = {};
+	view.row = fleetRow({ turn_ended_at: iso(T), updated_at: iso(T), unseen: true });
+	hook.rerender();
+	await settle();
+	hubSeenMarks(hubId).prune([fleetRow({ turn_ended_at: iso(T), unseen: false })]);
+	view.inFront = false;
+	hook.rerender();
+	// Mark as unread elsewhere while another screen is in front.
+	view.row = fleetRow({ turn_ended_at: iso(T), updated_at: iso(T), unseen: true });
+	hook.rerender();
+	expect(sent).toHaveLength(1);
+	view.inFront = true;
+	hook.rerender();
+	expect(sent).toEqual([[{ ref: "local:s", seenThrough: T }], [{ ref: "local:s", seenThrough: T }]]);
+	hook.unmount();
+});
+
+it("marks nothing without a turn end, then marks the first turn that ends in front", () => {
 	const { sent, view, hook } = setup();
 	view.conversation = {};
 	hook.rerender();
 	expect(sent).toEqual([]);
-	// A turn that ends while the screen stays in front is not "opened since".
 	view.conversation = { lastTurnEndedAt: iso(T) };
 	hook.rerender();
-	expect(sent).toEqual([]);
+	expect(sent).toEqual([[{ ref: "local:s", seenThrough: T }]]);
 	hook.unmount();
 });
 
@@ -100,6 +270,22 @@ it("keeps the mark for the next ready connection while there is none", () => {
 	hook.unmount();
 });
 
+it("keeps a mark whose call failed for now pending, and sends it on the next flush", async () => {
+	const { hubId, sent, view, hook, client } = setup({ fail: true });
+	view.conversation = { lastTurnEndedAt: iso(T) };
+	hook.rerender();
+	await settle();
+	expect(sent).toEqual([[{ ref: "local:s", seenThrough: T }]]);
+	expect(hubSeenMarks(hubId).isSeenOnHub({ ref: "local:s", turn_ended_at: iso(T), unseen: true })).toBe(true);
+	// The connection comes back: the screen's next ready client flushes.
+	view.client = null;
+	hook.rerender();
+	view.client = client;
+	hook.rerender();
+	expect(sent).toEqual([[{ ref: "local:s", seenThrough: T }], [{ ref: "local:s", seenThrough: T }]]);
+	hook.unmount();
+});
+
 it("sends a mark it queued without a client once one arrives, with no Board to flush it", () => {
 	const { sent, view, hook, client } = setup();
 	view.client = null;
@@ -109,5 +295,38 @@ it("sends a mark it queued without a client once one arrives, with no Board to f
 	view.client = client;
 	hook.rerender();
 	expect(sent).toEqual([[{ ref: "local:s", seenThrough: T }]]);
+	hook.unmount();
+});
+
+it("marks the same session ref and turn end again when the screen's hub changes", async () => {
+	const { sent, view, hook } = setup();
+	view.row = fleetRow({ turn_ended_at: iso(T), unseen: true });
+	hook.rerender();
+	await settle();
+	expect(sent).toEqual([[{ ref: "local:s", seenThrough: T }]]);
+	hubCount += 1;
+	view.hubId = `session-seen-hub-${hubCount}`;
+	hook.rerender();
+	await settle();
+	expect(sent).toEqual([
+		[{ ref: "local:s", seenThrough: T }],
+		[{ ref: "local:s", seenThrough: T }],
+	]);
+	hook.unmount();
+});
+
+it("doesn't mark the fleet row again for a turn end the snapshot already marked in this stay", async () => {
+	const { sent, view, hook, hubId } = setup();
+	view.conversation = { lastTurnEndedAt: iso(T) };
+	hook.rerender();
+	await settle();
+	expect(sent).toHaveLength(1);
+	// The hub took the mark, and its row caught up.
+	hubSeenMarks(hubId).prune([fleetRow({ turn_ended_at: iso(T), unseen: false })]);
+	// Another device then marks it unread, and only now does the fleet row arrive.
+	view.row = fleetRow({ turn_ended_at: iso(T), unseen: true });
+	hook.rerender();
+	await settle();
+	expect(sent).toHaveLength(1);
 	hook.unmount();
 });

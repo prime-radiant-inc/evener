@@ -798,14 +798,19 @@ export function ConversationScreen({
 	// does nothing during that same window (Calm).
 	const chipsConnected =
 		activeProfile?.id === route.params.hubId && connectionText === null;
+	// Who else needs you (spec 13.2), for Back's count and Next.
+	const fleet = useFleet(route.params.hubId, connected ? client : null, focused);
+	const live = useMemo(() => liveOrder(fleet.bands), [fleet.bands]);
+	// This session's own row, which the fleet re-reads when a turn ends.
+	const fleetRow = useMemo(() => live.find((row) => row.ref === route.params.ref), [live, route.params.ref]);
 	useMarkSeenInFront(
 		route.params,
 		focused,
 		connected ? client : null,
 		snapshot.status === "open" ? snapshot.conversation : null,
+		fleetRow,
+		fleet.seen,
 	);
-	// Who else needs you (spec 13.2), for Back's count and Next.
-	const fleet = useFleet(route.params.hubId, connected ? client : null, focused);
 	const othersWaiting = useMemo(
 		() => othersNeedingYou(fleet.bands, route.params.ref),
 		[fleet.bands, route.params.ref],
@@ -843,7 +848,6 @@ export function ConversationScreen({
 	}
 	// A pan on the title replaces this session with its neighbor in Live
 	// order (spec 6), keeping Next's mark so Next from there still replaces.
-	const live = useMemo(() => liveOrder(fleet.bands), [fleet.bands]);
 	const previous = neighbor(live, route.params.ref, -1);
 	const next = neighbor(live, route.params.ref, 1);
 	const hasPrevious = previous !== null;
