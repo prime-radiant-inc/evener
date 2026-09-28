@@ -157,11 +157,63 @@ it("washes rows that entered Needs you, never on the first list, and clears the 
 	const list = loaded(item("a", "a", false), item("b", "b", true));
 	expect(list.getSnapshot().washed.size).toBe(0);
 	list.setItems([item("a", "a", true), item("b", "b", true), item("c", "c", true)]);
-	expect([...list.getSnapshot().washed].sort()).toEqual(["a", "c"]);
-	const token = list.getSnapshot().washToken;
+	expect([...list.getSnapshot().washed.keys()].sort()).toEqual(["a", "c"]);
 	vi.advanceTimersByTime(WASH_MS);
 	expect(list.getSnapshot().washed.size).toBe(0);
-	expect(list.getSnapshot().washToken).toBe(token);
+});
+
+it("shows the first list at once under a hold that began before it loaded, and holds that list from then on", () => {
+	const list = new SettledList<Item>();
+	list.setItems(null);
+	list.send("touchStart");
+	list.setItems([item("a"), item("b")]);
+	expect(keys(list)).toEqual(["a", "b"]);
+	expect(list.getSnapshot().held).toBe(true);
+	list.setItems([item("b"), item("a", "a2"), item("c")]);
+	expect(keys(list)).toEqual(["a", "b"]);
+	expect(texts(list)).toEqual(["a2", "b"]);
+	list.send("touchEnd");
+	vi.advanceTimersByTime(100);
+	expect(keys(list)).toEqual(["b", "a", "c"]);
+});
+
+it("gives each row that entered Needs you its own full wash, untouched by a row that enters after it", () => {
+	const list = loaded(item("a", "a", false), item("b", "b", false));
+	list.setItems([item("a", "a", true), item("b", "b", false)]);
+	const washOfA = list.getSnapshot().washed.get("a");
+	expect(washOfA).toBeGreaterThan(0);
+	vi.advanceTimersByTime(300);
+	list.setItems([item("a", "a", true), item("b", "b", true)]);
+	expect(list.getSnapshot().washed.get("a")).toBe(washOfA);
+	expect(list.getSnapshot().washed.get("b")).toBeGreaterThan(0);
+	expect(list.getSnapshot().washed.get("b")).not.toBe(washOfA);
+	vi.advanceTimersByTime(WASH_MS - 300 - 1);
+	expect([...list.getSnapshot().washed.keys()].sort()).toEqual(["a", "b"]);
+	vi.advanceTimersByTime(1);
+	expect([...list.getSnapshot().washed.keys()]).toEqual(["b"]);
+	vi.advanceTimersByTime(299);
+	expect([...list.getSnapshot().washed.keys()]).toEqual(["b"]);
+	vi.advanceTimersByTime(1);
+	expect(list.getSnapshot().washed.size).toBe(0);
+});
+
+it("starts a row's wash over when it enters Needs you again before its last wash ended", () => {
+	const list = loaded(item("a", "a", false));
+	list.setItems([item("a", "a", true)]);
+	const firstWash = list.getSnapshot().washed.get("a");
+	vi.advanceTimersByTime(300);
+	list.setItems([item("a", "a", false)]);
+	vi.advanceTimersByTime(300);
+	list.setItems([item("a", "a", true)]);
+	const secondWash = list.getSnapshot().washed.get("a");
+	expect(secondWash).toBeGreaterThan(0);
+	expect(secondWash).not.toBe(firstWash);
+	vi.advanceTimersByTime(WASH_MS - 600);
+	expect(list.getSnapshot().washed.get("a")).toBe(secondWash);
+	vi.advanceTimersByTime(599);
+	expect(list.getSnapshot().washed.get("a")).toBe(secondWash);
+	vi.advanceTimersByTime(1);
+	expect(list.getSnapshot().washed.size).toBe(0);
 });
 
 it("washes a row that entered Needs you while held only when the list settles, in its new place", () => {
@@ -172,5 +224,5 @@ it("washes a row that entered Needs you while held only when the list settles, i
 	list.send("touchEnd");
 	vi.advanceTimersByTime(100);
 	expect(keys(list)).toEqual(["n", "w"]);
-	expect([...list.getSnapshot().washed]).toEqual(["w"]);
+	expect([...list.getSnapshot().washed.keys()]).toEqual(["w"]);
 });
