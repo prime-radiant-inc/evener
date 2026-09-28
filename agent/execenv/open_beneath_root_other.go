@@ -7,14 +7,21 @@ import (
 	"os"
 )
 
-// OpenRegularBeneathRoot is the portable fallback: this platform has no
-// openat or O_NOFOLLOW, so the descriptor-relative walk is not possible.
-// The open is a plain read open (matching OpenRegularNoFollow's non-unix
-// variant), and the descriptor is fstat'd regular before the caller reads a
-// byte. Intermediate-component symlink protection relies on the pre-walk
-// (symlinkErrorDeep) which is the best available guarantee on this platform.
-// The root's own final component is still refused when it is a symlink, so a
-// caller anchoring at an intermediate directory cannot follow a swapped root.
+// OpenRegularBeneathRoot is the portable fallback: this platform has no openat
+// or O_NOFOLLOW, so neither a descriptor-relative walk nor an atomic no-follow
+// open is possible. The open is a plain read open (matching
+// OpenRegularNoFollow's non-unix variant), and the descriptor is fstat'd
+// regular before the caller reads a byte.
+//
+// Symlink protection here therefore rests on the pre-walk, not on this open:
+// the caller's own root validation and the symlinkErrorDeep component walk
+// (Lstat before open) are the best available guarantee on this platform. This
+// function additionally refuses a root that is a symlink at the moment it
+// Lstats it, but the Lstat and the os.Open(path) are separate operations, so a
+// root replaced with a symlink in that window is followed. That residual TOCTOU
+// cannot be closed without an atomic no-follow open, which this platform does
+// not provide; it is documented here rather than hidden, and it is the same
+// pre-walk boundary the unix path closes with O_NOFOLLOW on the root open.
 func OpenRegularBeneathRoot(path, root string) (*os.File, error) {
 	if root != "" {
 		if info, lerr := os.Lstat(root); lerr == nil && info.Mode()&os.ModeSymlink != 0 {
