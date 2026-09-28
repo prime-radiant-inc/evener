@@ -97,6 +97,13 @@ export interface TranscriptDisplayStoreFields {
   hubErrors: Partial<Record<ViewportClass, string>>;
   /** Confirmed defaults keep presenting across a transient disconnect. */
   hub: HubDefaultsByLayout;
+  /** The layouts whose confirmed `hub` entry the most recent publication
+   * replaced, added, or cleared. The core publishes this fact so a consumer
+   * routes per-layout work from the transition itself instead of
+   * identity-diffing `hub` between two states; a publication that does not
+   * touch `hub` leaves this value's identity alone, which is what a consumer
+   * keys on. */
+  changedLayouts: readonly ViewportClass[];
   /** Optimistic direct-write previews, retained only across transient disconnects. */
   drafts: Partial<Record<ViewportClass, TranscriptDisplayConfigV1>>;
   /** True only after the current ready generation's read has completed. */
@@ -172,6 +179,7 @@ function initialState(): TranscriptDisplayStoreFields {
     hubError: null,
     hubErrors: {},
     hub: {},
+    changedLayouts: [],
     drafts: {},
     loaded: false,
     saving: false,
@@ -409,7 +417,26 @@ export function createTranscriptDisplayStore(deps: TranscriptDisplayStoreDeps): 
     discardDraft,
     rebaseDraft,
   }));
-  const { getState, setState } = store;
+  const { getState } = store;
+  const publishState = store.setState;
+
+  /** Publishes a partial, naming - as `changedLayouts` - the layouts whose
+   * confirmed `hub` entry this publication replaces, adds, or clears. Every
+   * hub-changing publication (an accepted payload, a retirement's cleared map,
+   * a reset) funnels through here, so the fact is derived once from the hub
+   * delta rather than reconstructed downstream by identity-diffing
+   * `hub[layout]`. A publication that does not carry `hub` leaves the field's
+   * identity alone, which is what a consumer keys on. */
+  const setState: FrameworkFreeStore<TranscriptDisplayStoreState>["setState"] = (partial) => {
+    const next = typeof partial === "function" ? partial(getState()) : partial;
+    if (!Object.hasOwn(next, "hub")) {
+      publishState(partial);
+      return;
+    }
+    const previous = getState().hub;
+    const changedLayouts = LAYOUTS.filter((layout) => previous[layout] !== next.hub?.[layout]);
+    publishState({ ...next, changedLayouts });
+  };
 
   function isSupported(): boolean {
     return getState().hubSupport === "supported";
@@ -1225,6 +1252,7 @@ export function createTranscriptDisplayStore(deps: TranscriptDisplayStoreDeps): 
 
   return {
     ...store,
+    setState,
     setSupport,
     beginReadyGeneration,
     endReadyGeneration,

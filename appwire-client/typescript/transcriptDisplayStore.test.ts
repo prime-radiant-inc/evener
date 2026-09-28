@@ -161,8 +161,7 @@ describe("hub defaults", () => {
     const store = createTranscriptDisplayStore({ client });
     const layouts: string[] = [];
     store.subscribe((state, previous) => {
-      for (const layout of ["desktop", "mobile"] as const)
-        if (state.hub[layout] !== previous.hub[layout]) layouts.push(layout);
+      if (state.changedLayouts !== previous.changedLayouts) layouts.push(...state.changedLayouts);
     });
     store.setSupport("supported");
     store.beginReadyGeneration();
@@ -172,6 +171,33 @@ describe("hub defaults", () => {
       mobile: hubDefault(2, mobileConfig),
     });
     expect(layouts).toEqual(["desktop", "mobile"]);
+  });
+
+  test("a publication names the layouts whose hub entry it changed", async () => {
+    const client = serving(hubDefault(3, desktopConfig), hubDefault(2, mobileConfig));
+    const store = createTranscriptDisplayStore({ client });
+    const claimed: string[][] = [];
+    const moved: string[] = [];
+    store.subscribe((state, previous) => {
+      for (const layout of ["desktop", "mobile"] as const)
+        if (state.hub[layout] !== previous.hub[layout]) moved.push(layout);
+      if (state.changedLayouts !== previous.changedLayouts) claimed.push([...state.changedLayouts]);
+    });
+    store.setSupport("supported");
+    store.beginReadyGeneration();
+    await store.getState().refreshHubDefaults();
+    // The fact names exactly the layouts whose hub entry really moved; the
+    // support, generation and loading publications that carry no hub change
+    // leave its identity alone.
+    expect(moved).toEqual(["desktop", "mobile"]);
+    expect(claimed).toEqual([["desktop", "mobile"]]);
+
+    client.emitNotification({
+      method: changedMethod,
+      params: { layout: "mobile", revision: 5, config: toWireConfig(proposed) },
+    });
+    expect(moved).toEqual(["desktop", "mobile", "mobile"]);
+    expect(claimed).toEqual([["desktop", "mobile"], ["mobile"]]);
   });
 
   test("a GET reply with extra top-level keys still decodes", async () => {

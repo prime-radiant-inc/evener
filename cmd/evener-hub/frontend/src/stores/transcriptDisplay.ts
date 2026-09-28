@@ -218,10 +218,13 @@ function mirrorPackageState(store: TranscriptDisplayStore, next: PackageStoreSta
   // call already made current - never the stale values its own publication
   // carried.
   const epoch = storeEpoch;
-  if (next.hub !== previous.hub) {
-    for (const layout of ["desktop", "mobile"] as const) {
+  // The package publishes which layouts its hub transition changed; the
+  // adapter routes from that fact instead of identity-diffing `hub` between
+  // the two states.
+  if (next.changedLayouts !== previous.changedLayouts) {
+    for (const layout of next.changedLayouts) {
       if (epoch !== storeEpoch) return;
-      if (next.hub[layout] !== previous.hub[layout]) applyMirroredHubDefault(layout, store.getState().hub[layout]);
+      applyMirroredHubDefault(layout, store.getState().hub[layout]);
     }
   }
   if (epoch !== storeEpoch) return;
