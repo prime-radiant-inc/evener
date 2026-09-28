@@ -1552,6 +1552,16 @@ describe("Commands and skills (spec 8.5, ruling 15)", () => {
 	});
 });
 
+/** Chooses an item in the ⋯ menu the screen set last. */
+function chooseMenu(label: string) {
+	const calls = vi.mocked(navigation.setOptions).mock.calls as [NativeStackNavigationOptions][];
+	const options = calls.map(([options]) => options).findLast((options) => options.unstable_headerRightItems);
+	const [menu] = (options?.unstable_headerRightItems?.({ canGoBack: true }) ?? []) as NativeStackHeaderItemMenu[];
+	const found = menu?.menu.items.find((item) => item.label === label) as NativeStackHeaderItemMenuAction | undefined;
+	if (!found) throw new Error(`no ${label} in the header menu`);
+	act(() => found.onPress());
+}
+
 describe("Find in session (spec 8.7, ruling 29)", () => {
 	const palette = paletteFor("light");
 
@@ -1562,16 +1572,6 @@ describe("Find in session (spec 8.7, ruling 29)", () => {
 			askReplyTurn("turn_2", "Anything else?", "Nothing else."),
 		];
 		return served;
-	}
-
-	/** Chooses an item in the ⋯ menu the screen set last. */
-	function chooseMenu(label: string) {
-		const calls = vi.mocked(navigation.setOptions).mock.calls as [NativeStackNavigationOptions][];
-		const options = calls.map(([options]) => options).findLast((options) => options.unstable_headerRightItems);
-		const [menu] = (options?.unstable_headerRightItems?.({ canGoBack: true }) ?? []) as NativeStackHeaderItemMenu[];
-		const found = menu?.menu.items.find((item) => item.label === label) as NativeStackHeaderItemMenuAction | undefined;
-		if (!found) throw new Error(`no ${label} in the header menu`);
-		act(() => found.onPress());
 	}
 
 	function findField(tree: ReactTestRenderer) {
@@ -1998,14 +1998,7 @@ describe("moving between sessions (spec 8.3, 13.2)", () => {
 	it("shows no Next while the find bar is open", async () => {
 		const { tree } = await mount(thread("ref-finding", "idle"));
 		expect(capsule(tree)).toBeDefined();
-		const calls = vi.mocked(navigation.setOptions).mock.calls as [NativeStackNavigationOptions][];
-		const options = calls.map(([options]) => options).findLast((options) => options.unstable_headerRightItems);
-		const [menu] = (options?.unstable_headerRightItems?.({ canGoBack: true }) ?? []) as NativeStackHeaderItemMenu[];
-		const find = menu?.menu.items.find((item) => item.label === "Find in session") as
-			| NativeStackHeaderItemMenuAction
-			| undefined;
-		if (!find) throw new Error("no Find in session");
-		act(() => find.onPress());
+		chooseMenu("Find in session");
 		expect(capsule(tree)).toBeUndefined();
 	});
 
