@@ -41,6 +41,28 @@ const preTurnParkSeconds = 3
 // to measure.
 func parkInPreTurnWork(t *testing.T, sentinel string) string {
 	t.Helper()
+	return parkInPreTurnWorkRunning(t, sentinel, fmt.Sprintf("sleep %d", preTurnParkSeconds))
+}
+
+// parkInPreTurnWorkUntil is parkInPreTurnWork with the window held open until
+// release exists instead of for a fixed span. A fixed span races the machine:
+// under CI load the RPC round trips between the wire going active and the Stop
+// can outlast any park short enough to stay under the 10s inline-span cap, and
+// the run then reports "the park closed before the Stop landed" -- a load
+// artifact, not a result. Gating on the test's own release removes that timing
+// assumption: the Stop lands inside the window however long the round trips
+// take, and the inline span's 10s cap still bounds a run that never releases.
+// It touches marker first, so the test can wait for the window to open rather
+// than infer it from the wire's own timing.
+func parkInPreTurnWorkUntil(t *testing.T, sentinel, marker, release string) string {
+	t.Helper()
+	return parkInPreTurnWorkRunning(t, sentinel, fmt.Sprintf("touch %s; while [ ! -f %s ]; do sleep 0.1; done", marker, release))
+}
+
+// parkInPreTurnWorkRunning writes the plugin whose command body is span: the
+// inline !`cmd` a parked run executes. It returns the --plugin-dir.
+func parkInPreTurnWorkRunning(t *testing.T, sentinel, span string) string {
+	t.Helper()
 	dir := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(dir, ".claude-plugin"), 0o755); err != nil {
 		t.Fatalf("create plugin metadata dir: %v", err)
@@ -55,12 +77,31 @@ func parkInPreTurnWork(t *testing.T, sentinel string) string {
 	// Only a PLUGIN command executes its inline spans; a evener-wide command
 	// expands inert (agent/session_slash_command.go). The sentinel rides in the
 	// body so the model request proves this expansion is what ran.
-	body := fmt.Sprintf("---\ndescription: hold the session in pre-turn work\n---\n%s !`sleep %d`\n",
-		sentinel, preTurnParkSeconds)
+	body := fmt.Sprintf("---\ndescription: hold the session in pre-turn work\n---\n%s !`%s`\n",
+		sentinel, span)
 	if err := os.WriteFile(filepath.Join(dir, "commands", "park.md"), []byte(body), 0o600); err != nil {
 		t.Fatalf("write park command: %v", err)
 	}
 	return dir
+}
+
+// awaitFile waits for path to exist, so a test can synchronize on a signal a
+// parked pre-turn command makes rather than on a fixed span or the wire's own
+// timing.
+func awaitFile(ctx context.Context, t *testing.T, path, what string) {
+	t.Helper()
+	deadline := time.Now().Add(30 * time.Second)
+	for time.Now().Before(deadline) {
+		if _, err := os.Stat(path); err == nil {
+			return
+		}
+		select {
+		case <-ctx.Done():
+			t.Fatalf("waiting for %s: %v", what, ctx.Err())
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+	t.Fatalf("timed out waiting for %s (%s)", what, path)
 }
 
 // requireStopLandsDuringPreTurnWork asserts the invariant that replaced the
@@ -128,7 +169,11 @@ func TestE2E_ControlInvariantDuringPreTurnWorkOnTheFirstTurn(t *testing.T) {
 	client := stack.dialRPC(ctx, t)
 
 	const openingSentinel = "EVENER-E2E-FIRST-TURN-PARKED"
-	pluginDir := parkInPreTurnWork(t, openingSentinel)
+	// Hold the pre-turn window open until the Stop below has landed, rather
+	// than for a fixed span a loaded machine can outlast.
+	marker := filepath.Join(t.TempDir(), "parked")
+	release := filepath.Join(t.TempDir(), "release-park")
+	pluginDir := parkInPreTurnWorkUntil(t, openingSentinel, marker, release)
 
 	started, err := clientRequest[appwire.ThreadStartResponse](ctx, client, appwire.MethodThreadStart, appwire.ThreadStartParams{
 		Harness: "evener",
@@ -154,17 +199,40 @@ func TestE2E_ControlInvariantDuringPreTurnWorkOnTheFirstTurn(t *testing.T) {
 		}
 	})
 
-	// Wait for the state a user would act on: the composer is showing Stop.
-	firstTurn := awaitActiveTurn(ctx, t, client, ref, "")
-	t.Logf("on the first turn, before any model round, the wire published status=active activeTurnId=%s", firstTurn)
-
+	// The window is open once the parked command has started. Synchronizing on
+	// the park's own signal, rather than on the wire, is what makes this
+	// deterministic: on the opening turn the wire's active turn id is only
+	// published as the window closes, so waiting for it (awaitActiveTurn) put
+	// the Stop at the boundary and raced the closing park under CI load.
+	awaitFile(ctx, t, marker, "the parked pre-turn window to open")
+	read, err := clientRequest[appwire.ThreadReadResponse](ctx, client, appwire.MethodThreadRead, appwire.ThreadReadParams{Ref: ref})
+	if err != nil {
+		t.Fatalf("thread/read inside the pre-turn window: %v", err)
+	}
+	// The composer's control derivation reads the STATUS alone (never
+	// activeTurnId; see Composer.tsx and appwire-client's submitRouting), so
+	// status=active with interrupt=true is the whole of the gate that shows Stop
+	// while the session is working across its pre-turn work.
+	if read.Thread.Status.Type != string(appwire.ThreadStatusActive) {
+		t.Fatalf("the wire published status=%q while the session was in pre-turn work, want %q: the composer would not be showing Stop", read.Thread.Status.Type, appwire.ThreadStatusActive)
+	}
+	if !read.Thread.Evener.Capabilities.Interrupt {
+		t.Fatalf("interrupt=false while the session is working in pre-turn work: the composer hides Stop")
+	}
+	t.Logf("on the first turn, inside its pre-turn work, the wire published status=active (activeTurnId=%q) with steer=%v interrupt=%v",
+		read.Thread.Evener.ActiveTurnID, read.Thread.Evener.Capabilities.Steer, read.Thread.Evener.Capabilities.Interrupt)
 	receipt, interruptErr := clientRequest[appwire.TurnInterruptResponse](ctx, client, appwire.MethodTurnInterrupt, appwire.TurnInterruptParams{
 		Ref:                ref,
 		ClientMutationID:   newMutationID(t),
 		ExpectedInstanceID: localInstanceIDForTestRef(ref),
 	})
+	// The Stop has landed (or been refused): release the park so the inline
+	// command ends whether or not the Stop's cancellation already reached it.
+	if err := os.WriteFile(release, []byte("go"), 0o600); err != nil {
+		t.Fatalf("release the park: %v", err)
+	}
 	requireStopLandsDuringPreTurnWork(ctx, t, provider, receipt, interruptErr, "on the first turn")
-	t.Logf("a Stop pressed on the FIRST turn, with no queue and no turn boundary, while the wire showed status=active activeTurnId=%s, was applied", firstTurn)
+	t.Logf("a Stop pressed on the FIRST turn, with no queue and no turn boundary, while the wire showed status=active, was applied")
 
 	// The Stop cancelled the turn inside its pre-turn work, so the model was
 	// never called and the session settles without one. That is the whole
