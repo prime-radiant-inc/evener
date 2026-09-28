@@ -273,6 +273,12 @@ func runLLMCall(ctx context.Context, cfg llmCallConfig) error {
 		opts.Metadata = m
 	}
 
+	// Validate --format before branching so an invalid value is rejected no
+	// matter which output mode is selected. Schema mode still writes JSON.
+	if cfg.format != "text" && cfg.format != "json" {
+		return fmt.Errorf("invalid --format %q: must be text|json", cfg.format)
+	}
+
 	if cfg.schema != "" {
 		schema, err := readJSONSchemaFile(cfg.schema)
 		if err != nil {
@@ -294,9 +300,6 @@ func runLLMCall(ctx context.Context, cfg llmCallConfig) error {
 		return writeJSON(cfg.stdout, res.Output, cfg.pretty)
 	}
 
-	if cfg.format != "text" && cfg.format != "json" {
-		return fmt.Errorf("invalid --format %q: must be text|json", cfg.format)
-	}
 	if cfg.format == "json" {
 		opts.ResponseFormat = &llm.ResponseFormat{Type: "json"}
 	}
