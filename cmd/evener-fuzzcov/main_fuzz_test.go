@@ -11,9 +11,9 @@ import (
 )
 
 // gapInputSeeds are both the fuzz corpus seeds and the deterministic cases
-// TestGapInputsOracles pins. The last two name the regression scenarios #2372
-// calls out: a coverpkg-bearing registry and a registry whose lone target
-// leaves a universe entry uncovered.
+// TestGapInputsOracles pins. "registry coverpkg" and "uncovered universe entry"
+// cover the scenarios #2372 calls out; the two "sentinel collision" entries pin
+// the false failure a fuzz input naming the oracle's uncovered package caused.
 var gapInputSeeds = []struct{ name, registry, ignore string }{
 	{"valid ignore", "native:llm:.:FuzzParseSSE", "example.com/x  # reason"},
 	{"reasonless ignore", "rapid:.:./internal/appserver:TestRouterSeqFuzz", "example.com/y"},
