@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { titleSwipeDirection } from "./titleSwipe";
+import { replaceAnimation, titleSwipeDirection } from "./titleSwipe";
 
 describe("which way a pan on the title moves through Live order (spec 6)", () => {
 	it.each([
@@ -15,4 +15,9 @@ describe("which way a pan on the title moves through Live order (spec 6)", () =>
 	])("$translationX pt at $velocityX pt/s is $direction", ({ translationX, velocityX, direction }) => {
 		expect(titleSwipeDirection(translationX, velocityX)).toBe(direction);
 	});
+});
+
+it("slides the previous session in from the left, as a pop does, and any other replace as a push", () => {
+	expect(replaceAnimation("left")).toBe("pop");
+	expect(replaceAnimation(undefined)).toBe("push");
 });

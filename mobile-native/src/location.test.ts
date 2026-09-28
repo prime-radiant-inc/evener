@@ -406,6 +406,17 @@ describe("last mobile location", () => {
 			),
 		).toEqual({ hubId: "studio", conversation: { ref: "same/ref", title: "Build" } });
 	});
+	it("saves a session the title's swipe opened as any other, so a relaunch doesn't slide it in (spec 6)", () => {
+		expect(
+			locationForRoute(
+				{
+					name: "Conversation",
+					params: { hubId: "studio", ref: "same/ref", title: "Build", slideFrom: "left" },
+				},
+				"studio",
+			),
+		).toEqual({ hubId: "studio", conversation: { ref: "same/ref", title: "Build" } });
+	});
 	it("returning to Hubs clears the saved destination", () => {
 		const repo = new LocationRepository(storage());
 		repo.save({ hubId: "studio" });

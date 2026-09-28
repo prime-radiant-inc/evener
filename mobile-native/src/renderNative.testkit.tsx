@@ -210,6 +210,43 @@ export function gestureHandlerModuleMock() {
 	};
 }
 
+/** A Gesture.Pan() builder as a record: each setting a test reads lands in
+ * `config`, and each callback in `handlers`, so a test drives the gesture's
+ * end by hand. */
+export interface PanGestureMock {
+	config: Record<string, unknown>;
+	handlers: { onEnd?(event: { translationX: number; velocityX: number }): void };
+}
+
+/** react-native-gesture-handler's GestureDetector and Gesture.Pan for
+ * vitest: the detector is a host element carrying its gesture, and the pan
+ * a PanGestureMock whose builder methods return it. */
+export function gestureDetectorModuleMock() {
+	const pan = (): PanGestureMock => {
+		const gesture = { config: {}, handlers: {} } as PanGestureMock;
+		const setting = (name: string) => (value: unknown) => {
+			gesture.config[name] = value;
+			return builder;
+		};
+		const builder = Object.assign(gesture, {
+			activeOffsetX: setting("activeOffsetX"),
+			failOffsetY: setting("failOffsetY"),
+			runOnJS: setting("runOnJS"),
+			onEnd: (handler: PanGestureMock["handlers"]["onEnd"]) => {
+				gesture.handlers.onEnd = handler;
+				return builder;
+			},
+		});
+		return builder;
+	};
+	return {
+		__esModule: true,
+		GestureDetector: (props: { gesture: unknown; children?: ReactNode }) =>
+			createElement("GestureDetector", props, props.children),
+		Gesture: { Pan: pan },
+	};
+}
+
 /** react-native-reanimated for vitest: Animated.ScrollView is a host
  * "ScrollView" carrying every prop (the Board's scroller, found and driven
  * as a plain one is), Animated.View a host element, and LinearTransition a

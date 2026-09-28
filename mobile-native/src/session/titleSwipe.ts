@@ -14,3 +14,10 @@ export function titleSwipeDirection(translationX: number, velocityX: number): 1 
 	if (left === right) return null;
 	return left ? 1 : -1;
 }
+
+/** How a session that replaced another slides in (the Conversation route's
+ * animationTypeForReplace): the previous one in Live order from the left, as
+ * a pop does, and any other from the right, as a push does. */
+export function replaceAnimation(slideFrom: "left" | undefined): "pop" | "push" {
+	return slideFrom === "left" ? "pop" : "push";
+}

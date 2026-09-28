@@ -138,7 +138,7 @@ import {
 import { FloatingStack } from "./session/FloatingStack";
 import { NewContentPill } from "./session/NewContentPill";
 import { BackButton } from "./session/BackButton";
-import { nextNavigation, nextSession, othersNeedingYou } from "./session/fleetOrder";
+import { liveOrder, neighbor, nextNavigation, nextSession, othersNeedingYou } from "./session/fleetOrder";
 import { NextCapsule } from "./session/NextCapsule";
 import { useFleet } from "./session/useFleet";
 import { QueuedMessages } from "./session/QueuedMessages";
@@ -257,8 +257,10 @@ export type Routes = {
 	Sessions: undefined;
 	NewSession: { hubId: string; hubName: string };
 	/** openedBy says Next opened this session (ruling 2), so Next from it
-	 * replaces it. location.ts never persists it. */
-	Conversation: { hubId: string; ref: string; title: string; openedBy?: "next" };
+	 * replaces it. slideFrom says the title's swipe opened it as the previous
+	 * session in Live order, so it slides in from the left (spec 6).
+	 * location.ts persists neither. */
+	Conversation: { hubId: string; ref: string; title: string; openedBy?: "next"; slideFrom?: "left" };
 	TasksSheet: { hubId: string; ref: string; threadId: string; hasTasks: boolean };
 	NotesSheet: { hubId: string; ref: string; focusEditor?: boolean };
 	QueueSheet: { hubId: string; ref: string };
@@ -815,11 +817,14 @@ export function ConversationScreen({
 			),
 		});
 	}, [navigation, othersWaitingCount]);
-	// Opens a session that needs you, marked seen the way the Board marks a
+	// Leaving for another session marks it seen, the way the Board marks a
 	// row it opens (spec 8.3).
-	function openNext(target: NavigationSessionSummary) {
+	function leaveFor(target: NavigationSessionSummary) {
 		Keyboard.dismiss();
 		fleet.seen.markRead(connected ? client : null, [target]);
+	}
+	function openNext(target: NavigationSessionSummary) {
+		leaveFor(target);
 		const params = {
 			hubId: route.params.hubId,
 			ref: target.ref,
@@ -829,6 +834,20 @@ export function ConversationScreen({
 		if (nextNavigation(route.params.openedBy) === "replace")
 			navigation.replace("Conversation", params);
 		else navigation.push("Conversation", params);
+	}
+	// A pan on the title replaces this session with its neighbor in Live
+	// order (spec 6), keeping Next's mark so Next from there still replaces.
+	function swipeToSession(direction: 1 | -1) {
+		const target = neighbor(liveOrder(fleet.bands), route.params.ref, direction);
+		if (!target) return;
+		leaveFor(target);
+		navigation.replace("Conversation", {
+			hubId: route.params.hubId,
+			ref: target.ref,
+			title: target.title,
+			...(route.params.openedBy ? { openedBy: route.params.openedBy } : {}),
+			...(direction === -1 ? { slideFrom: "left" as const } : {}),
+		});
 	}
 	// Touch and hold on Next lists who needs you, first eight (spec 8.3).
 	function chooseNext() {
@@ -1356,9 +1375,11 @@ export function ConversationScreen({
 	// render, which React's own rules reserve for effects.
 	const chooseSessionActionRef = useRef(chooseSessionAction);
 	const runSessionActionRef = useRef(runSessionAction);
+	const swipeToSessionRef = useRef(swipeToSession);
 	useEffect(() => {
 		chooseSessionActionRef.current = chooseSessionAction;
 		runSessionActionRef.current = runSessionAction;
+		swipeToSessionRef.current = swipeToSession;
 	});
 	useEffect(() => {
 		navigation.setOptions({
@@ -1371,6 +1392,7 @@ export function ConversationScreen({
 								title={children}
 								line={stateLine}
 								onPress={() => openSessionDestination("session")}
+								onSwipe={(direction) => swipeToSessionRef.current(direction)}
 							/>
 						)
 					: undefined,
