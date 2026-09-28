@@ -2285,13 +2285,14 @@ export function ConversationScreen({
 	}
 	// The chip opens the model sheet when there is something there to change:
 	// the model, or its effort.
-	const modelChangeable = !!conversation && canOpenModelSheet(conversation);
 	const composerSettings =
 		conversation && canCompose ? (
 			<ModelChip
 				label={modelLabel}
 				onPress={
-					controls && modelChangeable ? () => openModelSheet("model") : undefined
+					controls && canOpenModelSheet(conversation)
+						? () => openModelSheet("model")
+						: undefined
 				}
 			/>
 		) : null;
