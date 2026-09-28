@@ -1,11 +1,10 @@
 // A subagent in the transcript (spec 8.2): the web's shape, a 2pt left rail
 // in the state's hue with no card or pill. The title and the state's time sit
 // on one line, the latest activity beneath. Tapping opens its own transcript.
-import { Platform, Pressable, Text, View } from "react-native";
-import { useColors, useTextScale } from "../ui";
+import { Pressable, Text, View } from "react-native";
+import { allowFontScaling, useColors, useTextScale } from "../ui";
 import type { SubagentLine } from "./subagentLine";
 
-const allowFontScaling = Platform.OS !== "ios";
 
 export function SubagentRow({ line, onOpen }: { line: SubagentLine; onOpen?: (ref: string, title: string) => void }) {
 	const { palette } = useColors();

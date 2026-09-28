@@ -1,12 +1,11 @@
 // A settled thought (spec 8.2, "Thinking"): "Thought for 12s ›", folded; it
 // opens to the thought in the serif. The live thought is the status tray's
 // line (ruling 10), so it never reaches the transcript.
-import { Platform, Pressable, Text } from "react-native";
+import { Pressable, Text } from "react-native";
 import { fonts } from "../design/tokens";
-import { useColors, useTextScale } from "../ui";
+import { allowFontScaling, useColors, useTextScale } from "../ui";
 import { compactDuration } from "./format";
 
-const allowFontScaling = Platform.OS !== "ios";
 
 export function ThoughtRow({
 	durationMs,

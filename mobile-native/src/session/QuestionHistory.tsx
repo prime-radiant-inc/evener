@@ -3,11 +3,10 @@
 // beneath. While a question is still open the dock is the question, so the
 // transcript never shows the live one this way.
 import type { AskUserQuestion } from "@evener/appwire-client";
-import { Platform, Text, View } from "react-native";
+import { Text, View } from "react-native";
 import { fonts } from "../design/tokens";
-import { useColors, useTextScale } from "../ui";
+import { allowFontScaling, useColors, useTextScale } from "../ui";
 
-const allowFontScaling = Platform.OS !== "ios";
 
 export function QuestionHistory({ questions, answer }: { questions: readonly AskUserQuestion[]; answer: string | undefined }) {
 	const { palette } = useColors();

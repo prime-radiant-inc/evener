@@ -4,10 +4,9 @@
 // chevron and opens to what it says.
 import { SymbolView } from "expo-symbols";
 import type { ReactNode } from "react";
-import { Platform, Pressable, Text, View } from "react-native";
-import { useColors, useTextScale } from "../ui";
+import { Pressable, Text, View } from "react-native";
+import { allowFontScaling, useColors, useTextScale } from "../ui";
 
-const allowFontScaling = Platform.OS !== "ios";
 
 export function SystemEvent({
 	label,

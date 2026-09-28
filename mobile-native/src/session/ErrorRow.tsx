@@ -1,10 +1,9 @@
 // An error in the transcript (spec 8.2, "Error"): a red rule, the hub's words
 // as they are, and at most one action (errorAction).
-import { Platform, Pressable, Text, View } from "react-native";
-import { useColors, useTextScale } from "../ui";
+import { Pressable, Text, View } from "react-native";
+import { allowFontScaling, useColors, useTextScale } from "../ui";
 import type { ErrorAction } from "./errorAction";
 
-const allowFontScaling = Platform.OS !== "ios";
 
 const ACTION_LABELS: Record<ErrorAction, string> = { resume: "Resume", signIn: "Sign in", retry: "Retry" };
 
