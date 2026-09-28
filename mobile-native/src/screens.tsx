@@ -1692,27 +1692,13 @@ export function ConversationScreen({
 			void applyCommand();
 			return;
 		}
-		const live = store.getState();
 		if (
-			!service ||
-			!ready ||
-			controls?.getSnapshot().pending != null ||
 			imageSelection.getSnapshot().busy ||
-			unconfirmedSend !== null ||
-			pendingQuestions(live.conversation).length > 0 ||
-			live.pendingMutation?.status === "pending" ||
-			!live.conversation
+			pendingQuestions(store.getState().conversation).length > 0
 		)
 			return;
-		// Route on what is true at the press, the way the web composer
-		// re-derives at submit: a turn may have started or ended since render.
-		const liveAction = sendAction(
-			live.conversation,
-			live.pendingMutations,
-			connectionReady.current,
-		);
-		if (liveAction === "none") return;
-		const kind = liveAction === "queue" ? "queue" : "send";
+		const kind = liveSendKind();
+		if (!service || kind === null) return;
 		setActionError(null);
 		try {
 			await document.submit(async (text, images) => {
@@ -1724,6 +1710,29 @@ export function ConversationScreen({
 			// "Delivery unconfirmed" card document.submit leaves says what
 			// happened and what to do.
 		}
+	}
+	// Whether a message can go out right now, and whether it sends or queues:
+	// routed on what is true at the press, the way the web composer re-derives
+	// at submit, since a turn may have started or ended since render. Send and
+	// an error row's Retry both ask.
+	function liveSendKind(): "send" | "queue" | null {
+		const live = store.getState();
+		if (
+			!service ||
+			!ready ||
+			controls?.getSnapshot().pending != null ||
+			unconfirmedSend !== null ||
+			live.pendingMutation?.status === "pending" ||
+			!live.conversation
+		)
+			return null;
+		const liveAction = sendAction(
+			live.conversation,
+			live.pendingMutations,
+			connectionReady.current,
+		);
+		if (liveAction === "none") return null;
+		return liveAction === "queue" ? "queue" : "send";
 	}
 	// Sends or queues one message the way Send does, and says whether the hub
 	// took it.
@@ -1741,23 +1750,8 @@ export function ConversationScreen({
 	// An error row's Retry sends Jesse's sentence as your message through
 	// Send's own path (ruling 26), leaving whatever you were typing alone.
 	async function retryFailedTurn() {
-		const live = store.getState();
-		if (
-			!service ||
-			!ready ||
-			controls?.getSnapshot().pending != null ||
-			unconfirmedSend !== null ||
-			live.pendingMutation?.status === "pending" ||
-			!live.conversation
-		)
-			return;
-		const liveAction = sendAction(
-			live.conversation,
-			live.pendingMutations,
-			connectionReady.current,
-		);
-		if (liveAction === "none") return;
-		const kind = liveAction === "queue" ? "queue" : "send";
+		const kind = liveSendKind();
+		if (!service || kind === null) return;
 		setActionError(null);
 		try {
 			await document.submitText(RETRY_MESSAGE, (text, images) =>

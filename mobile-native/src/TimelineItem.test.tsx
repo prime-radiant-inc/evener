@@ -530,6 +530,14 @@ describe("a subagent", () => {
 		expect(rail(render(<TimelineItem item={row("completed")} hubId="hub" sessionRef="s" />).root)).toBe(EDGE_STRONG);
 	});
 
+	it("is a full 44pt target even with no activity line", () => {
+		const done = { ...delegate, status: "completed", terminal: true };
+		const tree = render(
+			<TimelineItem item={row("completed")} hubId="hub" sessionRef="s" delegates={[done]} openSubagent={() => {}} />,
+		);
+		expect(tree.root.findAll((node) => node.props.accessibilityRole === "button")[0].props.style).toMatchObject({ minHeight: 44 });
+	});
+
 	it("opens the subagent's own transcript when pressed", () => {
 		const openSubagent = vi.fn();
 		const tree = render(
@@ -588,6 +596,12 @@ describe("a system event", () => {
 			lineHeight: 18,
 			color: INK_LOW,
 		});
+	});
+
+	it("is a full 44pt target to open", () => {
+		const tree = render(<TimelineItem item={notice()} hubId="hub" sessionRef="event-target" />);
+		const target = tree.root.findAll((node) => node.props.accessibilityRole === "button")[0];
+		expect(target.props.style).toMatchObject({ minHeight: 44 });
 	});
 
 	it("opens a labelled steering notice's text", () => {

@@ -244,6 +244,9 @@ function hubClient(served: Thread, failedReads = 0, readLatencyMs = 0, olderCurs
 			listeners.add(listener);
 			return () => listeners.delete(listener);
 		},
+		resumeThread: async (ref: string) => {
+			requests.push({ method: "resumeThread", params: { ref } });
+		},
 		request: async (method: string, params: Record<string, unknown>) => {
 			requests.push({ method, params });
 			if (method === "thread/read") {
@@ -640,5 +643,36 @@ it("opens a session switched to in place at its own newer reply, never the last 
 	expect(renderedText(tree)).toContain("ask turn_2");
 	const indexes = flatListCalls.filter((call) => call.method === "scrollToIndex").map((call) => (call.args as { index: number }).index);
 	expect(indexes).toContain(3);
+});
+
+// A session whose last turn failed, as the hub reads it.
+function failedTurn(ref: string, message: string, resumeRequired = false): Thread {
+	const served = thread(ref, "idle");
+	(served as unknown as { turns: unknown[] }).turns = [
+		{
+			id: "turn_1",
+			status: "failed",
+			itemsView: "default",
+			error: { message },
+			items: [{ id: "u-1", turnId: "turn_1", type: "userMessage", status: "completed", text: "run the tests" }],
+		},
+	];
+	if (resumeRequired) (served as unknown as { evener: Record<string, unknown> }).evener.resumeRequired = true;
+	return served;
+}
+
+it("resumes a paused session from its error", async () => {
+	const { tree, hub } = await mount(failedTurn("ref-error-resume", "go test exited 1", true));
+	await press(tree, "Resume");
+	expect(hub.requests.filter((request) => request.method === "resumeThread").map((request) => request.params.ref)).toEqual([
+		"ref-error-resume",
+	]);
+});
+
+it("opens sign-in from an error that says a sign-in failed", async () => {
+	vi.mocked(navigation.navigate).mockClear();
+	const { tree } = await mount(failedTurn("ref-error-sign-in", "401 Unauthorized"));
+	await press(tree, "Sign in");
+	expect(navigation.navigate).toHaveBeenCalledWith("Providers", { hubId: "hub-1" });
 });
 

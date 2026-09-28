@@ -46,9 +46,9 @@ export function SystemEvent({
 				accessibilityLabel={label ?? text}
 				accessibilityState={{ expanded }}
 				onPress={onToggle}
-				style={{ flexDirection: "row", alignItems: "flex-start", minHeight: 24 }}
+				style={{ flexDirection: "row", alignItems: "center", minHeight: 44 }}
 			>
-				<View style={{ width: 16, paddingTop: 5 * scale }}>
+				<View style={{ width: 16 }}>
 					<SymbolView name="diamond" tintColor={palette.inkLow} size={8 * scale} />
 				</View>
 				<View style={{ flex: 1, minWidth: 0 }}>{line}</View>

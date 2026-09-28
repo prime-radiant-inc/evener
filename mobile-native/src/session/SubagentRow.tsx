@@ -48,6 +48,7 @@ export function SubagentRow({ line, onOpen }: { line: SubagentLine; onOpen?: (re
 			accessibilityLabel={`${line.title}, ${line.stateText}${line.activity ? `, ${line.activity}` : ""}`}
 			accessibilityHint="Opens the subagent"
 			onPress={() => onOpen(ref, line.title)}
+			style={{ minHeight: 44, justifyContent: "center" }}
 		>
 			{body}
 		</Pressable>
