@@ -45,6 +45,11 @@ type LiveEntry struct {
 	// set, and rosterFingerprint hashes it: a question answered and another
 	// asked between two probes leaves PendingAsk and Status where they were.
 	PendingQuestion *appwire.PendingQuestion
+	// Failure summarizes the failed turn the session rests on (S1c), from the
+	// same root row as Status; the daemon sends it only while that status is
+	// systemError. rosterFingerprint hashes it: a turn retried and failed
+	// again between two probes leaves Status where it was.
+	Failure *appwire.ThreadFailure
 	// Capabilities mirrors the daemon's own Evener capability set from the
 	// probe that produced this entry, so list projections can advertise the
 	// daemon's answer instead of a hand approximation (#1840's one-answer
@@ -126,6 +131,9 @@ type ProbeResult struct {
 	// PendingQuestion mirrors LiveEntry.PendingQuestion: the first pending
 	// question from the same root row as PendingAsk (S1b).
 	PendingQuestion *appwire.PendingQuestion
+	// Failure mirrors LiveEntry.Failure: the failure summary from the same
+	// root row as Status (S1c).
+	Failure *appwire.ThreadFailure
 	// Capabilities is the daemon's own Evener capability set from the same
 	// projection cut as Status. CapabilitiesKnown reports whether this probe
 	// read one: a failed, protocol-mismatched, or legacy probe leaves the set
@@ -209,6 +217,7 @@ func CloneLiveEntry(in LiveEntry) LiveEntry {
 	out.ActiveFlags = append([]string(nil), in.ActiveFlags...)
 	out.PendingEscalations = append([]appwire.SandboxEscalationRequested(nil), in.PendingEscalations...)
 	out.PendingQuestion = appwire.ClonePendingQuestion(in.PendingQuestion)
+	out.Failure = appwire.CloneThreadFailure(in.Failure)
 	out.RunningSubagentIDs = append([]string(nil), in.RunningSubagentIDs...)
 	out.RunningSubagentStates = cloneSubagentStates(in.RunningSubagentStates)
 	out.RunningJobs = cloneRunningJobs(in.RunningJobs)
@@ -488,6 +497,19 @@ func rosterFingerprint(bySess map[string]LiveEntry) uint64 {
 				_, _ = h.Write([]byte{0})
 			}
 			_, _ = h.Write([]byte(strconv.Itoa(question.Count)))
+		}
+		_, _ = h.Write([]byte{0})
+		// A Failed row says why, and a turn retried and failed again between
+		// two probes holds the status still (S1c).
+		if failure := bySess[id].Failure; failure != nil {
+			_, _ = h.Write([]byte(failure.Title))
+			_, _ = h.Write([]byte{0})
+			if cause := failure.Cause; cause != nil {
+				for _, field := range []string{cause.Kind, cause.Provider, cause.Model, strconv.Itoa(cause.Status)} {
+					_, _ = h.Write([]byte(field))
+					_, _ = h.Write([]byte{0})
+				}
+			}
 		}
 		_, _ = h.Write([]byte{0})
 		// The daemon's capability answer is per-session observable state in
@@ -1417,6 +1439,7 @@ func liveEntryFromProbe(e rendezvous.Entry, result ProbeResult) LiveEntry {
 		PendingEscalation:     result.PendingEscalation,
 		PendingEscalations:    result.PendingEscalations,
 		PendingQuestion:       result.PendingQuestion,
+		Failure:               result.Failure,
 		Capabilities:          result.Capabilities,
 		CapabilitiesKnown:     result.CapabilitiesKnown,
 		RunningSubagentIDs:    result.RunningSubagentIDs,
@@ -1495,6 +1518,7 @@ func (r *Roster) ReadSpawnedThread(ctx context.Context, entry rendezvous.Entry, 
 		PendingAsk:  root.Evener.AskPending, PendingEscalation: len(root.Evener.PendingEscalations) > 0,
 		PendingEscalations: root.Evener.PendingEscalations,
 		PendingQuestion:    root.Evener.PendingQuestion,
+		Failure:            root.Evener.Failure,
 		RunningJobs:        runningJobs, CompletedJobs: completedJobs,
 		Watches: diagnosticsWatches(root.Evener.Diagnostics),
 		Tasks:   root.Evener.Tasks,

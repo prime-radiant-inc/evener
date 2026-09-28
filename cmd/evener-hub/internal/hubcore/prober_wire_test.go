@@ -24,6 +24,7 @@ import (
 type wireProbeEnvelopeSource struct {
 	askPending  bool
 	question    *appwire.PendingQuestion
+	failure     *appwire.ThreadFailure
 	escalations []appwire.SandboxEscalationRequested
 	detailed    server.DetailedStatus
 	tasks       *appwire.TaskAggregate
@@ -148,6 +149,7 @@ func (s wireProbeEnvelopeSource) PendingQuestion() *appwire.PendingQuestion {
 	}
 	return nil
 }
+func (s wireProbeEnvelopeSource) RestingFailure() *appwire.ThreadFailure { return s.failure }
 func (s wireProbeEnvelopeSource) PendingEscalations() []appwire.SandboxEscalationRequested {
 	return s.escalations
 }

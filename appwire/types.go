@@ -912,6 +912,11 @@ type EvenerThread struct {
 	// absent from an older daemon. Snapshot-only: thread/status/changed
 	// carries AskPending, and nothing carries the question's text.
 	PendingQuestion *PendingQuestion `json:"pendingQuestion,omitempty"`
+	// Failure summarizes the failed turn the session rests on (S1c). It is
+	// present only while the thread's status is systemError, and absent from
+	// an older daemon and for a failure that recorded no diagnostic.
+	// Snapshot-only: no notification carries it.
+	Failure *ThreadFailure `json:"failure,omitempty"`
 	// PendingEscalations is the M7 surface-on-entry snapshot: the redacted approval
 	// cards for any sandbox-exemption escalations currently blocked on this session,
 	// so a client entering / reconnecting to / not-having-seen-live this session
@@ -978,6 +983,16 @@ type SubagentTally struct {
 	Running int `json:"running"`
 	Failed  int `json:"failed"`
 	Done    int `json:"done"`
+}
+
+// ThreadFailure summarizes the failed turn a session rests on (S1c): the
+// failure's headline (the diagnostic classifier's title, such as "Provider
+// error" or "Usage limit reached", cut to one line of MaxFailureTitleRunes)
+// and its structured cause. It never carries the failure's message, which can
+// quote a provider's error body; the transcript's error row has that.
+type ThreadFailure struct {
+	Title string           `json:"title,omitempty"`
+	Cause *DiagnosticCause `json:"cause,omitempty"`
 }
 
 // PendingQuestion is the first question of a session's pending ask (S1b): what

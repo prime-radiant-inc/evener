@@ -126,6 +126,7 @@ func cloneTreeNodesContext(ctx context.Context, nodes []TreeNode) ([]TreeNode, e
 		out[index].Watches = appwire.CloneEvenerWatches(node.Watches)
 		out[index].Tasks = appwire.CloneTaskAggregate(node.Tasks)
 		out[index].Question = appwire.ClonePendingQuestion(node.Question)
+		out[index].Failure = appwire.CloneThreadFailure(node.Failure)
 		children, err := cloneTreeNodesContext(ctx, node.Children)
 		if err != nil {
 			return nil, err
@@ -450,6 +451,12 @@ type TreeNode struct {
 	// builder sets it from one closure and only while AskPending is set, so a
 	// row always names the question it says is pending.
 	Question *appwire.PendingQuestion
+	// Failure says why a Failed row failed (LiveEntry.Failure, S1c): its
+	// daemon's summary, or the hub's own crashed cause for a crash-retained
+	// entry. Every builder sets it from one closure, and only on a row whose
+	// session is failed itself: a coordinator's row never names a subagent's
+	// failure.
+	Failure *appwire.ThreadFailure
 	// Dormant is true for a session that has never run: no model response and
 	// no accepted user input. An empty-prompt spawn creates one, and it reports
 	// State "idle" — the same word a session that ran and finished reports — so
@@ -1085,6 +1092,22 @@ func buildTreeAtWithProjects(metas []schema.SessionMeta, live []LiveEntry, decis
 		return nil
 	}
 
+	// failureFor resolves why a session failed from the same live map, so its
+	// rows agree (S1c). A crash-retained entry's daemon is gone, so its rows
+	// say it crashed whatever it last reported; an errored entry names the
+	// summary its daemon reported; any other session names none, whatever its
+	// entry still carries. Each row gets its own copy.
+	failureFor := func(id string) *appwire.ThreadFailure {
+		entry := liveMap[id]
+		if entry.Crashed {
+			return &appwire.ThreadFailure{Cause: &appwire.DiagnosticCause{Kind: hubapi.NavigationFailureCrashed}}
+		}
+		if NormalizeState(entry.Status) != "errored" {
+			return nil
+		}
+		return appwire.CloneThreadFailure(entry.Failure)
+	}
+
 	// tasksFor resolves a session's task-list progress from its own live
 	// entry, the same live map stateFor reads, so every builder below puts the
 	// same progress on every row of one session and a child row never borrows
@@ -1274,6 +1297,7 @@ func buildTreeAtWithProjects(metas []schema.SessionMeta, live []LiveEntry, decis
 		approvalPending := approvalPendingFor(m.ID)
 		approval := firstApprovalFor(m.ID)
 		question := pendingQuestionFor(m.ID)
+		failure := failureFor(m.ID)
 		subagentTally := subagentsFor(m.ID)
 		turnEndedAt := turnEndedAtFor(m.ID)
 		if parentDead {
@@ -1282,6 +1306,7 @@ func buildTreeAtWithProjects(metas []schema.SessionMeta, live []LiveEntry, decis
 			approvalPending = false
 			approval = appwire.SandboxEscalationRequested{}
 			question = nil
+			failure = nil
 			subagentTally = appwire.SubagentTally{}
 			turnEndedAt = time.Time{}
 		}
@@ -1304,6 +1329,7 @@ func buildTreeAtWithProjects(metas []schema.SessionMeta, live []LiveEntry, decis
 			ApprovalTool:    approval.Tool,
 			ApprovalTarget:  approval.DeniedPath,
 			Question:        question,
+			Failure:         failure,
 			Dormant:         dormantFor(m.ID),
 			Kind:            kind,
 			CreatedAt:       OrderCreatedAt(m.CreatedAt, m.UpdatedAt),
@@ -1555,6 +1581,7 @@ func buildTreeAtWithProjects(metas []schema.SessionMeta, live []LiveEntry, decis
 				ApprovalTool:    approval.Tool,
 				ApprovalTarget:  approval.DeniedPath,
 				Question:        pendingQuestionFor(le.SessionID),
+				Failure:         failureFor(le.SessionID),
 				Dormant:         dormantFor(le.SessionID),
 				Kind:            "session",
 				Title:           ShortID(le.SessionID),
@@ -1667,6 +1694,7 @@ func buildTreeAtWithProjects(metas []schema.SessionMeta, live []LiveEntry, decis
 			ApprovalTool:    approval.Tool,
 			ApprovalTarget:  approval.DeniedPath,
 			Question:        pendingQuestionFor(le.SessionID),
+			Failure:         failureFor(le.SessionID),
 			Dormant:         dormantFor(le.SessionID),
 			RunningJobs:     appwire.CloneEvenerJobs(le.RunningJobs),
 			CompletedJobs:   appwire.CloneEvenerJobs(le.CompletedJobs),

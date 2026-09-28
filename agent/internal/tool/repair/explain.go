@@ -623,6 +623,16 @@ func constraintMessage(toolName string, containerSchema map[string]any, displayP
 		for i, name := range missing {
 			missing[i] = fmt.Sprintf("%s.%s", displayPath, name)
 		}
+		// When the missing list was resolved from a combinator branch's own
+		// schema, the container's top-level example need not satisfy that branch
+		// — for a branch that requires a property the top-level shape omits, the
+		// example would leave out the very property just named missing, coaching
+		// a retry that fails the same way. Omit it rather than show one that is
+		// not checked against the branch (issue #622 review).
+		if branchSchema != nil {
+			return fmt.Sprintf("%s: argument %q is missing required properties: %s.",
+				toolName, displayPath, strings.Join(missing, ", "))
+		}
 		return fmt.Sprintf("%s: argument %q is missing required properties: %s.\nExample: %s",
 			toolName, displayPath, strings.Join(missing, ", "), exampleForField(containerSchema, field))
 	}

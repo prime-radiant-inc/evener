@@ -112,6 +112,7 @@ func cloneEvenerThread(e EvenerThread) EvenerThread {
 	e.Activity = CloneThreadActivity(e.Activity)
 	e.Subagents = clonePointer(e.Subagents)
 	e.PendingQuestion = ClonePendingQuestion(e.PendingQuestion)
+	e.Failure = CloneThreadFailure(e.Failure)
 	// Capabilities is all bools (value type) — no copy needed.
 	return e
 }
@@ -145,6 +146,17 @@ func ClonePendingQuestion(value *PendingQuestion) *PendingQuestion {
 	}
 	clone := *value
 	clone.Options = append([]string(nil), value.Options...)
+	return &clone
+}
+
+// CloneThreadFailure returns a copy of value whose cause is its own; nil stays
+// nil.
+func CloneThreadFailure(value *ThreadFailure) *ThreadFailure {
+	if value == nil {
+		return nil
+	}
+	clone := *value
+	clone.Cause = clonePointer(value.Cause)
 	return &clone
 }
 

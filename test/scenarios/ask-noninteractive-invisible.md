@@ -91,7 +91,7 @@ available to turn it off).
   sessions. An assistant-text mention is reported separately and is not an invocation.
 - Each explicit request-body expansion has no tool definition whose structured name is
   `ask_user`, and does contain the non-interactive prompt section
-  (`agent/prompts/sections/non-interactive.md.tmpl`). The summary itself contains no body
+  (from `agent/prompts/system.md.tmpl`). The summary itself contains no body
   data and states `credential_values_excluded: true`.
 - Falsification: if `ask_user` appears in the tool list of a `--non-interactive` or one-shot
   session, gating is broken.
