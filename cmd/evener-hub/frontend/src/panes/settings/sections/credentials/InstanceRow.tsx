@@ -21,6 +21,7 @@ import {
 } from "@evener/appwire-client";
 import { Button, Chevron, Chip, StatusDot } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
+import { VisuallyHidden } from "../../../../widgets/internal/VisuallyHidden";
 import styles from "./InstanceRow.module.css";
 
 const CLASS = {
@@ -84,16 +85,20 @@ export function InstanceRow(props: InstanceRowProps) {
         {props.onHostSignIn !== undefined && (
           <div className={CLASS.action}>
             {/* The visible text is the same for every Codex row, so the
-                accessible name names the instance this control signs in on:
-                with two Codex-capable instances on one host, a screen-reader or
-                voice-control user is otherwise offered identically named
-                controls and cannot tell which one each acts on (issue #2285). */}
-            <Button
-              variant="quiet"
-              aria-label={`Sign in to ${instance.name} on host`}
-              onClick={() => props.onHostSignIn?.(instance.name)}
-            >
-              Sign in on host
+                accessible name must also name the instance this control signs
+                in on: with two Codex-capable instances on one host, a
+                screen-reader or voice-control user is otherwise offered
+                identically named controls and cannot tell which one each acts
+                on (issue #2285). The instance is APPENDED to the visible label
+                as a visually-hidden suffix rather than set as an aria-label,
+                which would REPLACE the name: WCAG 2.5.3 (Label in Name) needs
+                the accessible name to contain the words on the button, or a
+                voice-control user who says "Sign in on host" has no name to
+                hit. The space before the suffix is load-bearing: the name is the
+                button's children concatenated, so without it the two halves run
+                together (see ModelSwitchTrigger). */}
+            <Button variant="quiet" onClick={() => props.onHostSignIn?.(instance.name)}>
+              Sign in on host <VisuallyHidden>to {instance.name}</VisuallyHidden>
             </Button>
           </div>
         )}
