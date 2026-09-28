@@ -107,6 +107,49 @@ describe("ActivityPoll (S5)", () => {
 		expect(poll.activity("local:a")?.minutes).toEqual([0, 0, 0, 0, 0, 0, 5]);
 	});
 
+	it("discards a response that lands after stop()", async () => {
+		const fake = client();
+		const settlements = gateSettlements(fake, "evener/activity/read");
+		const poll = new ActivityPoll(fake);
+		poll.start();
+		await vi.advanceTimersByTimeAsync(0); // poll #1 in flight
+		poll.stop();
+		settlements[0]?.resolve({ sessions: [activityA] });
+		await vi.advanceTimersByTimeAsync(0);
+		expect(poll.activity("local:a")).toBeUndefined();
+		expect(poll.msSinceRead()).toBeNull();
+	});
+
+	it("a method-not-found answer landing after stop() does not disable the hub", async () => {
+		const fake = client();
+		const settlements = gateSettlements(fake, "evener/activity/read");
+		const poll = new ActivityPoll(fake);
+		poll.start();
+		await vi.advanceTimersByTimeAsync(0); // poll #1 in flight
+		poll.stop();
+		settlements[0]?.reject(new WireError("no such method", -32601));
+		await vi.advanceTimersByTimeAsync(0);
+		expect(poll.supported).toBe(true);
+	});
+
+	it("a stale method-not-found does not disable a hub a newer poll already found supported", async () => {
+		const fake = client();
+		const settlements = gateSettlements(fake, "evener/activity/read");
+		const poll = new ActivityPoll(fake);
+		poll.start();
+		await vi.advanceTimersByTimeAsync(0); // poll #1 in flight
+		await vi.advanceTimersByTimeAsync(ACTIVITY_POLL_MS); // poll #2 in flight
+		expect(settlements).toHaveLength(2);
+		// The newer poll (#2) proves the hub supports S5 before the older one's
+		// stale method-not-found answer lands.
+		settlements[1]?.resolve({ sessions: [activityA] });
+		await vi.advanceTimersByTimeAsync(0);
+		settlements[0]?.reject(new WireError("no such method", -32601));
+		await vi.advanceTimersByTimeAsync(0);
+		expect(poll.supported).toBe(true);
+		expect(poll.activity("local:a")).toEqual(activityA);
+	});
+
 	it("stops for good on a method-not-found answer, and a later start() is a no-op", async () => {
 		const fake = client();
 		fake.on("evener/activity/read", () => {

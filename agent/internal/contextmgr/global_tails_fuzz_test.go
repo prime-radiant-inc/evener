@@ -235,11 +235,13 @@ func gctStrategyTails(t *testing.T, token string) {
 	}
 
 	blockedRoot := t.TempDir()
-	if err := os.MkdirAll(blockedRoot+"/sessions", 0o700); err != nil {
-		t.Fatalf("create sessions directory: %v", err)
-	}
-	if err := os.WriteFile(blockedRoot+"/sessions/child.log.jsonl", []byte(strings.Repeat("x", 70_000)), 0o600); err != nil {
-		t.Fatalf("create unreadable session log: %v", err)
+	// A directory where the log file should be is unreadable regardless of the
+	// record-size bound, so constructing the strategy must surface the load
+	// error. (A 70 KB junk record used to serve this purpose by tripping the
+	// scanner's default token ceiling; #2395 replaced that implicit ceiling with
+	// an explicit, matched bound, so the fixture no longer depends on it.)
+	if err := os.MkdirAll(blockedRoot+"/sessions/child.log.jsonl", 0o700); err != nil {
+		t.Fatalf("create invalid session log path: %v", err)
 	}
 	badHost := &fakeStrategyHost{stateDir: blockedRoot, id: "child", profile: profile}
 	if _, err := NewSessionLogStrategy(NewManager(profile, client, cheapmodel.New(client)), badHost); err == nil {
@@ -253,15 +255,19 @@ func gctStrategyTails(t *testing.T, token string) {
 	if err := os.WriteFile(appendRoot, []byte("blocked"), 0o600); err != nil {
 		t.Fatalf("create append-blocked root: %v", err)
 	}
-	appendHost := &fakeStrategyHost{stateDir: appendRoot, id: "child", profile: profile}
-	appendSLS, err := NewSessionLogStrategy(NewManager(profile, client, cheapmodel.New(client)), appendHost)
-	if err != nil {
-		t.Fatalf("construct append-failing session log: %v", err)
-	}
+	// The fork must succeed so the append is the failure under test: a
+	// best-effort append failure stays a warning inside the strategy and must
+	// not become an error to the caller (CORE-10 surfaces only a failed
+	// auxiliary summarization).
 	appendClient := llm.NewClient()
 	appendClient.Register(&agenttest.ScriptedAdapter{Provider: profile.ID(), Responder: func(llm.Request) llm.Response {
 		return llm.Response{Message: llm.Assistant(`{"action":"shell","summary":"done","outcome":"success"}`)}
 	}})
+	appendHost := &fakeStrategyHost{stateDir: appendRoot, id: "child", profile: profile}
+	appendSLS, err := NewSessionLogStrategy(NewManager(profile, appendClient, cheapmodel.New(appendClient)), appendHost)
+	if err != nil {
+		t.Fatalf("construct append-failing session log: %v", err)
+	}
 	if err := appendSLS.AfterAction(ctx, longHistory, appendClient); err != nil {
 		t.Fatalf("best-effort append failure escaped: %v", err)
 	}

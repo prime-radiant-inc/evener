@@ -20,6 +20,7 @@ import {
 	type MutationRecoveryRecord,
 	type SecureRandomSource,
 } from "@evener/appwire-client/state/mutation";
+import { READ_ITEM_LIMIT } from "../../mobile/src/services/conversation";
 import type {
 	ConversationMutationKind,
 	ConversationMutationRequest,
@@ -125,6 +126,15 @@ export class NativeMutationRuntime
 		{ client: AppwireClientLike; token: symbol; readToken?: symbol; unsubscribe: () => void }
 	>();
 	readonly #blockedTargets = new Set<string>();
+	// The mutations this phone submitted to each target, by id, with when:
+	// reconcilePendingEntries' submittedHere. An authoritative read that lists
+	// a send as pending settles its durable record before any turn shows it,
+	// and then only this says the send was this phone's (Review Focus 4).
+	// Kept for this launch, and bounded on both levels, since the app's process
+	// can live through many sessions: an id matters for one read round trip.
+	// A target's ids outlive its registration, because a reconnect
+	// re-registers it just when a send's provenance matters.
+	readonly #submittedHere = new Map<string, Map<string, number>>();
 	readonly #storageListeners = new Set<NativeMutationStorageListener>();
 	#started = false;
 	// Bumped by every start and stop. A start attempt's failure rollback and
@@ -345,6 +355,49 @@ export class NativeMutationRuntime
 		return "reconciled";
 	}
 
+	/** Releases a registered target that is waiting for an authoritative read,
+	 * with a read that leaves the connection's thread subscription alone.
+	 *
+	 * A screen stacked above a session (a subagent's stop request to its
+	 * coordinator, a review from the Reader) submits to that session while the
+	 * session's own screen is mounted under it but not reading. After a
+	 * reconnect that target stays blocked until an authoritative read, so the
+	 * message would wait for a trip back. This read has the window the
+	 * session's own read uses (conversation.ts readProjection), and so the same
+	 * proof of what already landed; it omits only the subscription, which
+	 * belongs to whatever the screen on top is showing. An open target is left
+	 * alone, and a target registered to another client can't be read for.
+	 *
+	 * One difference from the session's own read: on a transient failure the
+	 * hub may answer a read that doesn't subscribe from the session's persisted
+	 * history (allowsPastFallbackAfterLiveReadFailure, cmd/evener-hub). That
+	 * answer isn't mutation-authoritative and lists no pending mutations, so
+	 * it settles only records its transcript shows landed, and otherwise marks
+	 * unconfirmed records blockedUnknown, never proving one absent. */
+	async settleTarget(
+		hubId: string,
+		targetRef: string,
+		client: AppwireClientLike,
+	): Promise<"open" | "reconciled" | "blocked" | "stale" | "unregistered"> {
+		const targetKey = nativeMutationTargetKey(hubId, targetRef);
+		if (!this.#targets.has(targetKey)) return "unregistered";
+		if (!this.#blockedTargets.has(targetKey)) return "open";
+		const lease = this.beginAuthoritativeRead(hubId, targetRef, client);
+		if (!lease) return "blocked";
+		let response: ThreadReadResponse;
+		try {
+			response = await client.request("thread/read", {
+				ref: targetRef,
+				includeTurns: true,
+				itemsView: "fragment",
+				itemLimit: READ_ITEM_LIMIT,
+			});
+		} catch {
+			return "blocked";
+		}
+		return this.reconcileAuthoritativeRead(lease, response);
+	}
+
 	#isCurrentRead(lease: NativeMutationReadLease): boolean {
 		const target = this.#targets.get(lease.targetKey);
 		return (
@@ -388,8 +441,33 @@ export class NativeMutationRuntime
 		};
 		await this.start();
 		const record = await this.#outbox.enqueueIntent(intent, undefined, barrier);
+		this.#rememberSubmitted(record.targetRef, record.clientMutationId, record.createdAt);
 		this.#notifyStorageChange([record.targetRef]);
 		return undefined;
+	}
+
+	/** The mutations this phone submitted to a target this launch, by id,
+	 * with when (reconcilePendingEntries' submittedHere). */
+	submittedHere(targetKey: string): ReadonlyMap<string, number> {
+		return this.#submittedHere.get(targetKey) ?? NOTHING_SUBMITTED;
+	}
+
+	#rememberSubmitted(targetKey: string, clientMutationId: string, createdAt: number): void {
+		// Re-inserted so the targets stay in the order they were last written to.
+		const submitted = this.#submittedHere.get(targetKey) ?? new Map<string, number>();
+		this.#submittedHere.delete(targetKey);
+		this.#submittedHere.set(targetKey, submitted);
+		if (this.#submittedHere.size > SUBMITTED_TARGETS_LIMIT) {
+			const longestAgo = this.#submittedHere.keys().next().value;
+			if (longestAgo !== undefined) this.#submittedHere.delete(longestAgo);
+		}
+		submitted.set(clientMutationId, createdAt);
+		// A send the daemon still lists as pending is recent; the oldest ids
+		// have long since shown up in a turn, where they need no provenance.
+		if (submitted.size > SUBMITTED_HERE_LIMIT) {
+			const oldest = submitted.keys().next().value;
+			if (oldest !== undefined) submitted.delete(oldest);
+		}
 	}
 
 	#notifyStorageChange(targetRefs: readonly string[]): void {
@@ -403,6 +481,10 @@ export class NativeMutationRuntime
 		}
 	}
 }
+
+const NOTHING_SUBMITTED: ReadonlyMap<string, number> = new Map();
+const SUBMITTED_HERE_LIMIT = 100;
+const SUBMITTED_TARGETS_LIMIT = 50;
 
 function createNativeMutationRuntime(): NativeMutationRuntime {
 	const database = openDatabaseSync("evener-mutations.db");

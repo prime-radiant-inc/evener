@@ -3,6 +3,7 @@
 // searched for. Kept in expo-sqlite's kv-store under per-hub keys that
 // ConnectionProvider.removeHub clears.
 import { isPlainObject } from "@evener/appwire-client";
+import { readJson, writeJson } from "../deviceStorage";
 import type { SyncStringStorage } from "../syncStringStorage";
 import { hubTime } from "./attention";
 
@@ -13,21 +14,6 @@ const recentSearchesKey = (hubId: string) => `evener.native.recent-searches.${hu
 const MARK_LIMIT = 500;
 const RECENT_LIMIT = 8;
 
-function readJson(storage: SyncStringStorage, key: string): unknown {
-	try {
-		const raw = storage.getItemSync(key);
-		return raw ? JSON.parse(raw) : null;
-	} catch {
-		return null;
-	}
-}
-function writeJson(storage: SyncStringStorage, key: string, value: unknown): void {
-	try {
-		storage.setItemSync(key, JSON.stringify(value));
-	} catch {
-		// The in-memory copy still serves this launch.
-	}
-}
 interface SeenRecord {
 	through?: string;
 	unread?: true;
