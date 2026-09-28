@@ -42,10 +42,11 @@ import {
   useSubagentRow,
 } from "../panes/session/transcript/tools/subagentModuleStore";
 import { resetWorkspaceStoreForTests, workspaceStore } from "../shell/workspace";
+import { getToasts, resetToastStoreForTests } from "../widgets/toast/store";
 import { connectionStore, useConnectionStore } from "./connection";
 import { editHumanNote, syncHumanNote, useHumanNoteDraft } from "./humanNoteDrafts";
 import { MutationDispatcher } from "./mutationDispatcher";
-import { MutationOutboxIndexedDB, MutationStorageTimeoutError } from "./mutationOutboxIndexedDB";
+import { MutationOutboxIndexedDB, MutationStorageTimeoutError, STORAGE_RESET_NOTICE } from "./mutationOutboxIndexedDB";
 import { holdIndexedDBEvent, neverSettlingRequest } from "./testing/stalledIndexedDB";
 import {
   appendFrameTime,
@@ -12691,4 +12692,30 @@ test("the store latches mutationStorageWedged when a wedged adapter cannot reset
   await vi.runAllTimersAsync();
   expect(threadsStore.getState().mutationStorageWedged).toBe(true);
   await read;
+});
+
+test("a destructive storage reset surfaces an error toast about unrecovered queued messages", async () => {
+  resetToastStoreForTests();
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  const open = globalThis.indexedDB.open.bind(globalThis.indexedDB);
+  let mainOpens = 0;
+  vi.spyOn(globalThis.indexedDB, "open").mockImplementation((name: string, version?: number) => {
+    if (name === "evener-mutation-outbox") {
+      mainOpens += 1;
+      if (mainOpens <= 2) return neverSettlingRequest();
+    }
+    return open(name, version);
+  });
+  try {
+    const read = readMutationPersistence("ref_a").catch(() => undefined);
+    await vi.advanceTimersByTimeAsync(10_000); // the first open watchdog
+    await vi.advanceTimersByTimeAsync(10_000); // the non-destructive retry's watchdog
+    await read;
+    expect(mainOpens).toBeGreaterThanOrEqual(3);
+    expect(getToasts().filter((toast) => toast.kind === "error" && toast.text === STORAGE_RESET_NOTICE)).toHaveLength(
+      1,
+    );
+  } finally {
+    resetToastStoreForTests();
+  }
 });

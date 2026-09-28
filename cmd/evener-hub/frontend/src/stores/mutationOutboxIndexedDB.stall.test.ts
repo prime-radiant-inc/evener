@@ -133,10 +133,12 @@ test("a wedged open heals by probing, deleting, and reopening so the enqueue com
     return open(name, version);
   });
   const wedged: boolean[] = [];
+  const resets: number[] = [];
   const storage = new MutationOutboxIndexedDB({
     indexedDB,
     databaseName,
     onStorageWedged: (value) => wedged.push(value),
+    onStorageReset: () => resets.push(1),
   });
   vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
   const enqueue = storage.enqueueIntent(intent);
@@ -146,6 +148,7 @@ test("a wedged open heals by probing, deleting, and reopening so the enqueue com
   expect(await storage.listOutbox()).toEqual([record]);
   expect(mainOpens).toBeGreaterThanOrEqual(3);
   expect(wedged).toEqual([]);
+  expect(resets).toHaveLength(1);
   storage.close();
 });
 
@@ -176,6 +179,72 @@ test("a single transient open timeout retries without deleting the database or l
   expect(await storage.listOutbox()).toEqual([seeded, committed]);
   expect(deleteDatabase).not.toHaveBeenCalled();
   expect(opens).toBe(2);
+  storage.close();
+});
+
+test("concurrent operations share one reset and both settle successfully", async () => {
+  const indexedDB = new IDBFactory();
+  const databaseName = "evener-mutation-outbox-concurrent-reset";
+  const open = indexedDB.open.bind(indexedDB);
+  let mainOpens = 0;
+  vi.spyOn(indexedDB, "open").mockImplementation((name: string, version?: number) => {
+    if (name === databaseName) {
+      mainOpens += 1;
+      if (mainOpens <= 2) return neverSettlingRequest();
+    }
+    return open(name, version);
+  });
+  const storage = new MutationOutboxIndexedDB({ indexedDB, databaseName });
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  const read = storage.listOutbox();
+  const enqueue = storage.enqueueIntent(intent);
+  await vi.advanceTimersByTimeAsync(10_000); // the first open watchdog
+  await vi.advanceTimersByTimeAsync(10_000); // the non-destructive retry's watchdog
+  // Both callers awaited the one shared recovery and settled: neither rejected
+  // with "Mutation outbox connection was closed" from a clobbered reopen.
+  const [before, record] = await Promise.all([read, enqueue]);
+  expect(Array.isArray(before)).toBe(true);
+  expect(record.intentSequence).toBe(1);
+  expect(await storage.listOutbox()).toEqual([record]);
+  storage.close();
+});
+
+test("the wedged latch clears after the cooldown so a recovered origin heals", async () => {
+  const indexedDB = new IDBFactory();
+  const databaseName = "evener-mutation-outbox-cooldown";
+  const open = indexedDB.open.bind(indexedDB);
+  const deleteDatabase = indexedDB.deleteDatabase.bind(indexedDB);
+  let wedged = true;
+  vi.spyOn(indexedDB, "open").mockImplementation((name: string, version?: number) =>
+    wedged ? neverSettlingRequest() : open(name, version),
+  );
+  vi.spyOn(indexedDB, "deleteDatabase").mockImplementation((name: string) =>
+    wedged ? neverSettlingRequest() : deleteDatabase(name),
+  );
+  let now = 0;
+  const states: boolean[] = [];
+  const storage = new MutationOutboxIndexedDB({
+    indexedDB,
+    databaseName,
+    now: () => now,
+    onStorageWedged: (value) => states.push(value),
+  });
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  const first = storage.listOutbox().then(
+    () => undefined,
+    (error: unknown) => error,
+  );
+  await vi.advanceTimersByTimeAsync(10_000); // the first open watchdog
+  await vi.advanceTimersByTimeAsync(10_000); // the non-destructive retry's watchdog
+  await vi.advanceTimersByTimeAsync(3_000); // the probe watchdog
+  expect(await first).toBeInstanceOf(MutationStorageWedgedError);
+  expect(states).toEqual([true]);
+  // The multi-tab hold releases and the cooldown elapses: the latch clears, the
+  // normal ladder runs again, and onStorageWedged(false) fires.
+  wedged = false;
+  now = 15_000;
+  expect(await storage.listOutbox()).toEqual([]);
+  expect(states).toEqual([true, false]);
   storage.close();
 });
 

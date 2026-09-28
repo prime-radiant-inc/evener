@@ -45,6 +45,7 @@ import {
 import { useStore } from "zustand";
 import { createStore } from "zustand/vanilla";
 import { releaseSubagentRows } from "../panes/session/transcript/tools/subagentModuleStore";
+import { pushToast } from "../widgets/toast/store";
 import { resetActivityPanelStoreForTests } from "./activityPanel";
 import { resetActivitySummaryStoreForTests } from "./activitySummary";
 import { connectedClientPort, connectionStore } from "./connection";
@@ -62,7 +63,7 @@ import {
   type MutationRecoveryRecord,
   type MutationStopBarrier,
 } from "./mutationOutbox";
-import { MutationOutboxIndexedDB } from "./mutationOutboxIndexedDB";
+import { MutationOutboxIndexedDB, STORAGE_RESET_NOTICE } from "./mutationOutboxIndexedDB";
 import { createReadyGenerationCallback } from "./readyGenerationCallback";
 import { createSecureUUID } from "./secureUUID";
 import { resetTasksPanelStoreForTests } from "./tasksPanel";
@@ -963,6 +964,12 @@ function getMutationRuntime(): MutationRuntime | null {
       },
       onStorageWedged: (wedged) => {
         if (isCurrentMutationRuntime(runtime)) threadsStore.setState({ mutationStorageWedged: wedged });
+      },
+      onStorageReset: () => {
+        if (!isCurrentMutationRuntime(runtime)) return;
+        // The reset deleted queued rows it could not read first, so tell the
+        // user once rather than let the loss be silent.
+        pushToast("error", STORAGE_RESET_NOTICE);
       },
     });
   // §6's note-row supersede discard commits fire-and-forget AFTER the settle

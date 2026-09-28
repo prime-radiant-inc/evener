@@ -34,6 +34,9 @@ export interface MutationOutboxIndexedDBOptions {
   now?: () => number;
   onWriteStalled?: (waiting: boolean) => void;
   onStorageWedged?: (wedged: boolean) => void;
+  // Fired once when a reset actually deletes the database and reopens it. The
+  // delete is destructive, so the owner reports it to the user.
+  onStorageReset?: () => void;
   // Storage-fault seam used to prove IndexedDB rollback at commit boundaries.
   beforeCommit?: (operation: MutationOutboxOperation) => void;
 }
@@ -58,6 +61,11 @@ const STORAGE_WAIT_MS = 10_000;
 // step that either answers or latches the adapter wedged, never a durable write.
 const PROBE_WAIT_MS = 3_000;
 const DELETE_WAIT_MS = 5_000;
+// How long the wedged latch fails fast before the normal ladder is allowed to
+// try the origin again. A stuck coordinator usually stays stuck, but a released
+// multi-tab hold or a recovered origin can heal, and the cooldown is what lets
+// it self-heal instead of needing a reload.
+const WEDGED_RETRY_MS = 15_000;
 // The store scope every enqueue transaction opens: the three active record
 // stores plus the sequence store. All three record stores are locked so the
 // cross-store clientMutationId uniqueness check (#assertMutationIdAvailable)
@@ -77,6 +85,12 @@ export class MutationStorageTimeoutError extends Error {
 // site's data recovers it.
 export const STORAGE_WEDGED_GUIDANCE =
   "Reload the page; if it stays stuck, clear this site's data in your browser settings.";
+
+// The one-line notice for a successful destructive reset: the rows the delete
+// discarded could not be read first (see #runOpenRecovery), so the user is told
+// rather than left to discover the loss.
+export const STORAGE_RESET_NOTICE =
+  "Message storage had to be reset. Queued messages from before the reset could not be recovered.";
 
 export class MutationStorageWedgedError extends Error {
   constructor() {
@@ -142,9 +156,12 @@ export class MutationOutboxIndexedDB {
   readonly #beforeCommit: ((operation: MutationOutboxOperation) => void) | undefined;
   readonly #onWriteStalled: ((waiting: boolean) => void) | undefined;
   readonly #onStorageWedged: ((wedged: boolean) => void) | undefined;
+  readonly #onStorageReset: (() => void) | undefined;
   #supersededDiscardListener: ((targetRef: string) => void) | undefined;
   #stalledWrites = 0;
   #wedged = false;
+  #wedgedRetryAt = 0;
+  #recoveryPromise: Promise<IDBDatabase> | undefined;
   #databasePromise: Promise<IDBDatabase> | undefined;
   #database: IDBDatabase | undefined;
 
@@ -159,6 +176,7 @@ export class MutationOutboxIndexedDB {
     this.#beforeCommit = options.beforeCommit;
     this.#onWriteStalled = options.onWriteStalled;
     this.#onStorageWedged = options.onStorageWedged;
+    this.#onStorageReset = options.onStorageReset;
   }
 
   close(): void {
@@ -756,10 +774,15 @@ export class MutationOutboxIndexedDB {
   }
 
   async #open(): Promise<IDBDatabase> {
-    // The wedged latch short-circuits the open. A stuck connection
-    // coordinator never fires success, error, or blocked, so waiting the full
-    // watchdog again can only repeat the same timeout.
-    if (this.#wedged) throw new MutationStorageWedgedError();
+    // The wedged latch fails fast only for the cooldown: a stuck connection
+    // coordinator never fires success, error, or blocked, so retrying
+    // immediately can only repeat the same timeout. Once the cooldown elapses
+    // the latch clears and the normal ladder runs again, so a recovered origin
+    // or a released multi-tab hold self-heals instead of needing a reload.
+    if (this.#wedged) {
+      if (this.#now() < this.#wedgedRetryAt) throw new MutationStorageWedgedError();
+      this.#unwedge();
+    }
     if (this.#database) return this.#database;
     if (this.#databasePromise) return this.#databasePromise;
     const opening = new Promise<IDBDatabase>((resolve, reject) => {
@@ -927,8 +950,8 @@ export class MutationOutboxIndexedDB {
     }
   }
 
-  // The open ladder, kept separate from #open so a failed reset cannot recurse
-  // into itself or split the wedged-latch invariant.
+  // The single gate every transaction passes. A first open timeout hands off to
+  // #runOpenRecovery below, deduped so concurrent callers share one ladder.
   async #openWithRecovery(): Promise<IDBDatabase> {
     try {
       return await this.#open();
@@ -936,32 +959,61 @@ export class MutationOutboxIndexedDB {
       // VersionError/blocked/InvalidStateError are real faults this path must
       // not treat as a wedge. Only a timeout can be the coordinator stalling.
       if (!(error instanceof MutationStorageTimeoutError)) throw error;
-      // One timeout is not proof of a wedge: a tab frozen mid-open can trip the
-      // watchdog and answer on the very next request. Retry once BEFORE
-      // touching durable state, because the reset below deletes the database
-      // and would lose queued intents a transient timeout preserved.
-      try {
-        return await this.#open();
-      } catch (retryError) {
-        if (!(retryError instanceof MutationStorageTimeoutError)) throw retryError;
-        // Two timeouts in a row: the wedged-coordinator signature. Probe,
-        // delete, and reopen at most once, and latch wedged if that fails.
-        if (!(await this.#resetWedgedDatabase())) {
-          this.#wedge();
-          throw new MutationStorageWedgedError();
-        }
-        try {
-          // The successful #open already clears the latch; #wedged cannot be
-          // true here, since a latched #open would have thrown above.
-          return await this.#open();
-        } catch (finalError) {
-          if (finalError instanceof MutationStorageTimeoutError) {
-            this.#wedge();
-            throw new MutationStorageWedgedError();
-          }
-          throw finalError;
-        }
+    }
+    // Every concurrent caller that timed out shares ONE recovery. Without this
+    // gate each would run its own: the reset clears #databasePromise and waits
+    // on the delete, so caller A can reopen first and then caller B's reset
+    // clears that and opens its own connection, whose arrival closes A's
+    // recovered one ("Mutation outbox connection was closed"). Sharing the
+    // promise means the ladder runs once and every caller awaits its result.
+    if (!this.#recoveryPromise) {
+      const recovery = this.#runOpenRecovery();
+      this.#recoveryPromise = recovery;
+      const clear = () => {
+        if (this.#recoveryPromise === recovery) this.#recoveryPromise = undefined;
+      };
+      recovery.then(clear, clear);
+    }
+    return await this.#recoveryPromise;
+  }
+
+  // The retry/reset ladder, kept out of #open so a failed reset cannot recurse
+  // into itself or split the wedged-latch invariant.
+  async #runOpenRecovery(): Promise<IDBDatabase> {
+    // One timeout is not proof of a wedge: a tab frozen mid-open can trip the
+    // watchdog and answer on the very next request. Retry once BEFORE touching
+    // durable state, because the reset below deletes the database and would lose
+    // queued intents a transient timeout preserved.
+    try {
+      return await this.#open();
+    } catch (retryError) {
+      if (!(retryError instanceof MutationStorageTimeoutError)) throw retryError;
+    }
+    // Two timeouts in a row: the wedged-coordinator signature. Probe, delete,
+    // and reopen at most once, and latch wedged if that fails.
+    //
+    // The reset is destructive: it deletes the database, so queued
+    // outbox/optimistic/recovery rows are gone. A drain is impossible here - the
+    // wedged database's reads run through the same #open that never settles, so
+    // no record can be read or exported before the delete - and the user's own
+    // alternative, clearing the site's data, discards the same records. That is
+    // why the delete is reported through onStorageReset rather than hidden.
+    if (!(await this.#resetWedgedDatabase())) {
+      this.#wedge();
+      throw new MutationStorageWedgedError();
+    }
+    try {
+      // The successful #open already clears the latch; #wedged cannot be true
+      // here, since a latched #open would have thrown before the retry above.
+      const database = await this.#open();
+      this.#notifyQuietly(() => this.#onStorageReset?.());
+      return database;
+    } catch (finalError) {
+      if (finalError instanceof MutationStorageTimeoutError) {
+        this.#wedge();
+        throw new MutationStorageWedgedError();
       }
+      throw finalError;
     }
   }
 
@@ -1053,10 +1105,12 @@ export class MutationOutboxIndexedDB {
   }
 
   // Latch wedged and drop the connection state. The notification fires once,
-  // on the false -> true transition only.
+  // on the false -> true transition only. The cooldown is stamped here so
+  // #open fails fast for its length, then lets the normal ladder retry.
   #wedge(): void {
     const wasWedged = this.#wedged;
     this.#wedged = true;
+    this.#wedgedRetryAt = this.#now() + WEDGED_RETRY_MS;
     this.#database?.close();
     this.#database = undefined;
     this.#databasePromise = undefined;
