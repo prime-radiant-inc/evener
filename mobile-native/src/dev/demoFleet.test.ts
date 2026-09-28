@@ -195,16 +195,26 @@ describe("demo fleet subagent trees", () => {
 		expect(pr2138.children).toHaveLength(50);
 		expect(pr2138.omitted_descendants).toBe(4);
 		expect(pr2138.children.every((child) => child.kind === "subagent")).toBe(true);
-		const settle = pr2138.children.find((child) => child.session_id === "g-settle");
+		const settle = pr2138.children.find((child) => child.session_id === demoSessionId("g-settle"));
 		expect(settle).toMatchObject({ state: "errored", live: false });
 		expect(settle?.children).toHaveLength(1);
-		expect(settle?.children[0]).toMatchObject({ session_id: "g-settle-1", state: "active", live: true });
+		expect(settle?.children[0]).toMatchObject({
+			session_id: demoSessionId("g-settle-1"),
+			ref: `local:${demoSessionId("g-settle-1")}`,
+			state: "active",
+			live: true,
+		});
 	});
 
 	it("gives a small named swarm its real titles (s-retry: r-1..r-4)", () => {
 		const rows = liveRows(fleet);
 		const retry = findRow(rows, "s-retry");
-		expect(retry.children.map((child) => child.session_id)).toEqual(["r-1", "r-2", "r-3", "r-4"]);
+		// A subagent is named the way the hub names any session, the same id its
+		// parent's delegates carry (demoSessions.ts).
+		expect(retry.children.map((child) => child.session_id)).toEqual(["r-1", "r-2", "r-3", "r-4"].map(demoSessionId));
+		expect(retry.children.map((child) => child.ref)).toEqual(
+			["r-1", "r-2", "r-3", "r-4"].map((slug) => `paradise-park:${demoSessionId(slug)}`),
+		);
 		expect(retry.children.map((child) => child.state)).toEqual(["ended", "ended", "errored", "ended"]);
 		// Children run on the same host as their parent.
 		expect(retry.children.every((child) => child.host_id === "paradise-park")).toBe(true);

@@ -169,10 +169,10 @@ type ProtoHost = "magic-kingdom" | "paradise-park";
 // The prototype's own state vocabulary (data.js sessions[].state), mapped to
 // the wire's below. "shutdown" covers every non-live session (shut down,
 // test-run and archived alike -- data.js sets `live: false` on all of them).
-type ProtoState = "failed" | "question" | "approval" | "restart" | "yourmove" | "working" | "idle" | "shutdown";
+export type ProtoState = "failed" | "question" | "approval" | "restart" | "yourmove" | "working" | "idle" | "shutdown";
 type SubState = "running" | "failed" | "done";
 
-interface RawSubagent {
+export interface RawSubagent {
 	id: string;
 	title: string;
 	state: SubState;
@@ -659,7 +659,7 @@ const SESSIONS: RawSession[] = [
 // "hub-test-env" project data.js's comment says test-run sessions belong to.
 // working_dir mirrors magic-kingdom's root ("/home/jesse/git") plus data.js's
 // path for each; "home" is the bare root.
-const PROJECT_META: { key: string; workingDir: string }[] = [
+export const PROJECT_META: { key: string; workingDir: string }[] = [
 	{ key: "evener", workingDir: "/home/jesse/git/prime-radiant-inc/evener" },
 	{ key: "c-to-wasm", workingDir: "/home/jesse/git/c-to-wasm" },
 	{ key: "prime-radiant-inc.github.io", workingDir: "/home/jesse/git/prime-radiant/prime-radiant-inc.github.io" },
@@ -674,7 +674,7 @@ const PROJECT_META: { key: string; workingDir: string }[] = [
 
 // data.js's `plugins`, minus fields the wire type doesn't carry (desc, counts,
 // the optional newer-version hint).
-const PLUGINS: { id: string; mp: string; on: boolean; version: string }[] = [
+export const PLUGINS: { id: string; mp: string; on: boolean; version: string }[] = [
 	{ id: "superpowers", mp: "superpowers-marketplace", on: true, version: "6.4.1" },
 	{ id: "elements-of-style", mp: "superpowers-marketplace", on: true, version: "1.2.0" },
 	{ id: "claude-session-driver", mp: "superpowers-marketplace", on: true, version: "0.9.3" },
@@ -694,7 +694,7 @@ const PLUGINS: { id: string; mp: string; on: boolean; version: string }[] = [
 // The one provider the Board's notice needs (data.js: codex-jesse-fsck.com,
 // "Sign-in expired"); the other 10 providers in data.js aren't needed for the
 // one thing requirement 2 asks the auth list to prove (the sign-in notice).
-const EXPIRED_PROVIDER = "codex-jesse-fsck.com";
+export const EXPIRED_PROVIDER = "codex-jesse-fsck.com";
 
 function hostId(host: ProtoHost | undefined): string {
 	return (host ?? "magic-kingdom") === "magic-kingdom" ? "local" : "paradise-park";
@@ -738,10 +738,13 @@ function toChildRow(
 ): NavigationSessionSummary {
 	const { state, live } = SUBAGENT_WIRE_STATE[sub.state];
 	const { capped, omitted } = capChildren(sub.children ?? []);
+	// A subagent is a session like any other, named by a hub-shaped id; its
+	// parent's delegates name its transcript by this same ref (demoSessions.ts).
+	const sessionId = demoSessionId(sub.id);
 	return {
-		ref: `${ownerHostId}:${sub.id}`,
+		ref: hostSessionRef(ownerHostId, sub.id),
 		host_id: ownerHostId,
-		session_id: sub.id,
+		session_id: sessionId,
 		title: sub.title,
 		project,
 		state,
@@ -782,9 +785,63 @@ function projectKeyOf(raw: { project?: string }): string {
 	return raw.project ?? "evener";
 }
 
+// The ref the wire names a session or subagent by: the host that owns it and
+// the hub-shaped id of its fixture slug.
+export function hostSessionRef(host: string, slug: string): string {
+	return `${host}:${demoSessionId(slug)}`;
+}
+
 // The ref the wire names a fleet session by: its owning host and its id.
 function sessionRef(raw: RawSession): string {
-	return `${hostId(raw.host)}:${demoSessionId(raw.id)}`;
+	return hostSessionRef(hostId(raw.host), raw.id);
+}
+
+// A fleet session as demoSessions.ts needs it to serve the session's own
+// thread/read: the row's identity and state, where it runs, and its subagent
+// tree, uncapped (a session's own delegates are not a navigation list).
+export interface FleetSession {
+	slug: string;
+	ref: string;
+	hostId: string;
+	title: string;
+	state: ProtoState;
+	workingDir: string;
+	ago: number;
+	activity?: string;
+	subagents: RawSubagent[];
+}
+
+// The ref the fleet names a session by, from its fixture slug.
+export function fleetSessionRef(slug: string): string {
+	const raw = SESSIONS.find((candidate) => candidate.id === slug);
+	if (!raw) throw new Error(`Unknown demonstration session: ${slug}`);
+	return sessionRef(raw);
+}
+
+// Every session the fleet holds, in the fleet's own order.
+export function fleetSessions(): FleetSession[] {
+	return SESSIONS.map((raw) => {
+		const projectKey = projectKeyOf(raw);
+		return {
+			slug: raw.id,
+			ref: sessionRef(raw),
+			hostId: hostId(raw.host),
+			title: raw.title,
+			state: raw.state,
+			// hub-test-env is the one project PROJECT_META leaves without a folder.
+			workingDir:
+				PROJECT_META.find((project) => project.key === projectKey)?.workingDir ?? `/home/jesse/git/${projectKey}`,
+			ago: raw.ago,
+			...(raw.activity ? { activity: raw.activity } : {}),
+			subagents: rawChildren(raw),
+		};
+	});
+}
+
+// The plugins a fleet session starts with: data.js's defaultPlugins, every
+// enabled one.
+export function enabledPluginNames(): string[] {
+	return PLUGINS.filter((plugin) => plugin.on).map((plugin) => plugin.id);
 }
 
 function toRow(raw: RawSession, startupMs: number, offlineHost: boolean): NavigationSessionSummary {
@@ -907,7 +964,7 @@ export interface DemoFleet extends FleetAnswers {
 // The working row EVENER_DEMO_FLEET_ASK_AFTER turns into a question: a plain
 // local "evener" session with no pin category, subagents or running job, so
 // the only thing that changes on the Board is its band.
-const ASKING_SESSION_ID = "s-gateway";
+export const ASKING_SESSION_ID = "s-gateway";
 const ASKING_PROJECT = projectKeyOf(SESSIONS.find((raw) => raw.id === ASKING_SESSION_ID) ?? {});
 
 export function createDemoFleet(options: DemoFleetOptions = {}): DemoFleet {

@@ -28,7 +28,7 @@ import {
   useConnectionStore,
 } from "./connection";
 import { hostRequest, isLocalHost } from "./hostRouting";
-import { HOST_GATE_TIMEOUT_MS, type HostsLoadState, hostsStore, useHostsStore } from "./hosts";
+import { HOST_GATE_TIMEOUT_MS, type HostsLoadState, hostsStore, isConfiguredHost, useHostsStore } from "./hosts";
 import { ownClientId } from "./mutationClientIdentity";
 
 export {
@@ -292,6 +292,11 @@ export function useHostInstances(host: string): HostInstanceState {
       // this read has to wait for that one.
       const live = hostsStore.getState();
       if (live.reading > 0 || live.load.phase === "error") return;
+    } else if (!isConfiguredHost(load, host)) {
+      // The registry answered again, and its recovered snapshot no longer names
+      // this host: there is no listing to read, and the pane has already
+      // unmounted the remote view. The recovery issues nothing.
+      return;
     }
     void fetchHost(host);
   }, [shouldRead, host, revision, reading, generation, load.phase]);
@@ -311,20 +316,19 @@ export function useHostInstances(host: string): HostInstanceState {
 /** retryHostRead is a consumer's retry for a remote host's listing. The read is
  * held while the registry's own read has FAILED (see useHostInstances), so the
  * retry re-reads the registry first when that is what failed - the listing then
- * follows on its own; otherwise it re-reads the host. Consumers that know nothing
- * about the registry (the spawn form) get a retry that works anyway. */
+ * follows from useHostInstances's recovery effect, which OWNS that read; the
+ * retry must not issue a second one alongside it (one read per recovery).
+ * Otherwise it re-reads the host. Consumers that know nothing about the registry
+ * (the spawn form) get a retry that works anyway. */
 export function retryHostRead(host: string): void {
   if (isLocalHost(host)) return;
   if (hostsStore.getState().load.phase === "error") {
-    // The registry's own failure held the read back: re-read IT, and the host's
-    // listing is read once it answers - even when its snapshot is unchanged and
-    // advanced no revision (one retry, not a poll loop).
-    void hostsStore
-      .getState()
-      .fetch()
-      .then(() => {
-        if (hostsStore.getState().load.phase !== "error") void fetchHost(host);
-      });
+    // The registry's own failure held the read back: re-read IT. When it
+    // recovers, the mounted useHostInstances effect issues the host's read once -
+    // and only while the recovered registry still names the host. Issuing it here
+    // too would double every recovery, and would read a host this pane may have
+    // already unmounted.
+    void hostsStore.getState().fetch();
     return;
   }
   void fetchHost(host);
