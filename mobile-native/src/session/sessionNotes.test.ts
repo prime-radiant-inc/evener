@@ -132,6 +132,8 @@ describe("saving your note (spec 8.8; Review Focus 5)", () => {
 		expect(await notes.flush()).toEqual({ saved: false, woke: false });
 		expect(hub.requests).toEqual([]);
 		expect([...hub.storage.values.keys()].some((key) => key.includes("note-draft"))).toBe(true);
+		// No save is armed any more, so the status line mustn't promise one.
+		expect(notes.getSnapshot().phase).toBe("editing");
 	});
 
 	it("goes back to clean without saving again when you edit back to the hub's note during a save", async () => {

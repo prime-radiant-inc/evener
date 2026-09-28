@@ -185,7 +185,13 @@ export class NotesController {
 	 * app and opening the session connected all call this. */
 	flush(): Promise<SaveOutcome> {
 		this.cancelTimer();
-		if (!this.unsaved() || !this.options.writable()) return Promise.resolve({ saved: false, woke: false });
+		if (!this.unsaved()) return Promise.resolve({ saved: false, woke: false });
+		if (!this.options.writable()) {
+			// The note stays on this phone; with the timer gone, no save is
+			// scheduled any more, so the status line must stop promising one.
+			if (this.state.phase === "scheduled") this.publish({ ...this.state, phase: "editing" });
+			return Promise.resolve({ saved: false, woke: false });
+		}
 		this.saving ??= this.saveUntilClean().finally(() => {
 			this.saving = null;
 		});
