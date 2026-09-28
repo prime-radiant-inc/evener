@@ -67,7 +67,10 @@ import { type BoardItem, groupItems, liveItems, pinnedItems, projectItems } from
 import type { OrganizeBy, SeenMarkers } from "./boardMemory";
 import { ROW_MOVE } from "./boardMotion";
 import { createSearchController, projectResults, type SearchScope } from "./boardSearch";
+import { documentMemory } from "../reader/nativeDocumentMemory";
+import { openDocumentInSession } from "../reader/openDocument";
 import { BoardNotices, NoticeRow } from "./BoardNotices";
+import { ContinueReadingRow } from "./ContinueReadingRow";
 import { BandHeader, FoldChevron, Hairline, TITLE_INSET } from "./BoardRow";
 import { BoardListRow, type RowContext } from "./BoardRows";
 import { BoardToolbar } from "./BoardToolbar";
@@ -288,6 +291,11 @@ function Board({
 		[snapshot.live.rows, snapshot.needsYou.rows, snapshot.pinSections, ...projectViews],
 	);
 	useHubSeenMarks(hubMarks, actionsClient, loadedRows);
+	// The document you left partway in the last two hours (spec 7.1). The
+	// window is checked as the Board renders, so it runs no clock.
+	const documents = documentMemory(hubId);
+	useSyncExternalStore(documents.subscribe, documents.getRevision);
+	const continueReading = documents.continueReading();
 	const hubNotices = useMemo(
 		() => notices({ auth: snapshot.auth, sources: sources ?? [], plugins: snapshot.plugins, loadedRows }),
 		[snapshot.auth, sources, snapshot.plugins, loadedRows],
@@ -966,6 +974,21 @@ function Board({
 						<>
 							{fatal ? <NoticeRow text={UPDATE_NEEDED_HINT} /> : null}
 							<BoardNotices hubId={hubId} notices={hubNotices} navigation={navigation} />
+							{continueReading ? (
+								<ContinueReadingRow
+									trail={continueReading}
+									onOpen={(trail) =>
+										openDocumentInSession(navigation, {
+											hubId,
+											sessionRef: trail.sessionRef,
+											path: trail.path,
+											reviewRef: trail.reviewRef,
+											reviewTitle: trail.reviewTitle,
+											...(trail.updatedAt === undefined ? {} : { updatedAt: trail.updatedAt }),
+										})
+									}
+								/>
+							) : null}
 							<View
 								testID="live-block"
 								onLayout={(event) => {
