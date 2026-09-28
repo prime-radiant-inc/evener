@@ -11548,6 +11548,76 @@ test("forceStop with no connected client restores a pre-existing obligation exac
   expect(refresh).not.toHaveBeenCalled();
 });
 
+// RoboRev Medium (PR 2862, round 11): each forceStop captured the obligation
+// map's value and restored it unconditionally when it aborted, so overlapping
+// stops clobbered the one shared recovery obligation. The obligation now lives
+// in the refcounted stop group: captured once on the 0 -> 1 transition and
+// restored on the 1 -> 0 transition only when no member ever signalled a
+// daemon. An aborting member never writes back its own captured value over an
+// entry another still-active member owns.
+test("an aborted forceStop cannot clear the obligation a second stop owns", async () => {
+  // Only the first stop's cancellation write fails; the second proceeds.
+  let cancels = 0;
+  const storage = new MutationOutboxIndexedDB({
+    beforeCommit(operation) {
+      if (operation === "cancelUnattempted" && ++cancels === 1) throw new Error("storage unavailable");
+    },
+  });
+  setMutationStorageForTests(storage);
+  const ref = "ref_a";
+  const fake = connectFakeClient();
+  fake.on("thread/read", () => readResponse(ref));
+  await threadsStore.getState().ensureThread(ref);
+  const forceStopRpc = vi.spyOn(fake, "forceStop").mockResolvedValue(undefined);
+
+  const first = threadsStore.getState().forceStop(ref);
+  const second = threadsStore.getState().forceStop(ref);
+  await expect(first).rejects.toThrow("storage unavailable");
+  await second;
+
+  // The second stop reached the daemon, so the fence must stay armed even
+  // though the aborted first stop's restore ran while it was still draining.
+  expect(forceStopRpc).toHaveBeenCalledTimes(1);
+  expect(threadsStore.getState().restartBlockingObligations.has(ref)).toBe(true);
+  expect(threadsStore.getState().stoppingRefs.has(ref)).toBe(false);
+});
+
+test("two overlapping aborted forceStops leave the obligation at its pre-group value", async () => {
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  connectionStore.setState({ client: null, state: "idle" });
+  const ref = "local:offline-owned";
+  const original = Symbol();
+  threadsStore.setState((state) => ({
+    restartBlockingObligations: new Map(state.restartBlockingObligations).set(ref, original),
+  }));
+  const refresh = vi.spyOn(threadsStore.getState(), "refreshThread");
+
+  const first = threadsStore.getState().forceStop(ref);
+  const second = threadsStore.getState().forceStop(ref);
+  await expect(first).rejects.toThrow("threads store: no client connected");
+  await expect(second).rejects.toThrow("threads store: no client connected");
+
+  // Neither stop reached a daemon: the obligation is exactly the pre-group
+  // value, never a sibling stop's arming symbol.
+  expect(threadsStore.getState().restartBlockingObligations.get(ref)).toBe(original);
+  expect(threadsStore.getState().restartBlockingObligations.size).toBe(1);
+  expect(threadsStore.getState().stoppingRefs.has(ref)).toBe(false);
+  expect(refresh).not.toHaveBeenCalled();
+});
+
+test("two overlapping aborted forceStops leave no stale obligation when none existed", async () => {
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  connectionStore.setState({ client: null, state: "idle" });
+  const ref = "local:offline";
+  const first = threadsStore.getState().forceStop(ref);
+  const second = threadsStore.getState().forceStop(ref);
+  await expect(first).rejects.toThrow("threads store: no client connected");
+  await expect(second).rejects.toThrow("threads store: no client connected");
+  expect(threadsStore.getState().restartBlockingObligations.has(ref)).toBe(false);
+});
+
 test("a stale client's ready callback cannot begin a generation for a replaced client", async () => {
   const stale = new FakeClient("connecting");
   const current = new FakeClient("ready");

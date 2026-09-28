@@ -26,6 +26,7 @@ import {
   discardRecoveryMutation,
   type InputAttachment,
   installResumeOnlyProjection,
+  notifyReadyForMutationDispatch,
   readMutationPersistence,
   resendRecoveryMutation,
   retryBlockedMutation,
@@ -66,8 +67,12 @@ const pendingTurnsStore = createPendingTurnsStore<MutationAttachment>({
 // hasQueuedNonSend) reads this through the registered isLoaded below to fail
 // closed until a ref's own durable read resolves: before that the outbox map is
 // empty for the ref whether or not durable rows exist, so "no uncertainty"
-// there is not yet evidence. Cleared only by the test reset hook - a real page
-// never un-loads a ref it has read.
+// there is not yet evidence. A ref is un-loaded when a refresh that could
+// replace its rows starts, and re-loaded only once that refresh still owns it
+// when it resolves (markProjectionLoaded): a ref read once is not "loaded"
+// while a newer durable read that may publish blocked or queued rows is in
+// flight, so the stale projection cannot answer for it. Cleared by the test
+// reset hook too.
 const loadedRefs = new Set<string>();
 
 // Publish this projection's synchronous delivery-uncertain read into the
@@ -111,7 +116,26 @@ export function refreshPendingTurnsProjection(ref?: string): Promise<boolean> {
   return trackProjectionWork(readProjectionIntoStore(ref));
 }
 
+// Un-loads the readiness of every ref a refresh will cover, BEFORE its read
+// starts: while the read is in flight its rows are not published yet, so
+// trusting the previous projection through that window is exactly the stale
+// "loaded, no uncertainty" answer that can fold a resume ahead of a newly
+// written blockedUnknown or queued non-send row. A specific refresh covers
+// exactly its ref. An all-targets refresh covers every ref this page currently
+// tracks - the same refs markProjectionLoaded marks, and every ref the
+// resume-only predicate can be asked about (a ref with no tracked model answers
+// false regardless of readiness). The resolved read re-establishes readiness
+// for the refs it still owns.
+function invalidateProjectionLoaded(ref?: string): void {
+  if (ref !== undefined) {
+    loadedRefs.delete(ref);
+    return;
+  }
+  for (const target of threadsStore.getState().threads.keys()) loadedRefs.delete(target);
+}
+
 async function readProjectionIntoStore(ref?: string): Promise<boolean> {
+  invalidateProjectionLoaded(ref);
   const accepted = await projectionFence.refresh(persistencePort, ref);
   if (!accepted) return false;
   const { snapshot } = accepted;
@@ -135,7 +159,16 @@ async function readProjectionIntoStore(ref?: string): Promise<boolean> {
   // the rows, and marks it loaded when it does. Otherwise the predicate would
   // read "loaded, no uncertainty" from a projection the winner has not filled
   // in yet and fold a resume ahead of blocked or queued rows.
-  markProjectionLoaded(accepted, ref, targets, snapshot);
+  const loaded = markProjectionLoaded(accepted, ref, targets, snapshot);
+  // A read that just established readiness may be exactly what a parked
+  // dispatch was waiting for: a resume-only ref's head send parks while its
+  // ref's durable outbox read is in flight (the fail-closed readiness the
+  // predicate reads), and nothing else re-attempts it once the read resolves.
+  // Hand the refs that (re)gained readiness to the store's own dispatch
+  // scheduler - the same explicit hand-off publishAndReconcileThreadHydration
+  // makes when its reconciliation opens the gate. A ref with no dispatchable
+  // mutation is a no-op there.
+  if (loaded.length > 0) notifyReadyForMutationDispatch(loaded);
   return true;
 }
 
@@ -144,26 +177,34 @@ async function readProjectionIntoStore(ref?: string): Promise<boolean> {
 // commit's advance superseded stays unloaded so the winner marks it. A specific
 // read names its ref. A global read covers every ref this page tracks (a
 // tracked ref with no durable rows was read and found empty) plus every ref the
-// snapshot named, each gated the same way.
+// snapshot named, each gated the same way. Returns the refs this call newly
+// marked, so the caller can hand exactly those to the dispatch scheduler.
 function markProjectionLoaded(
   refresh: MutationProjectionRefresh<MutationAttachment>,
   ref: string | undefined,
   targets: ReadonlySet<string>,
   snapshot: MutationPersistenceSnapshot<MutationAttachment>,
-): void {
+): string[] {
+  const loaded: string[] = [];
+  const mark = (target: string): void => {
+    if (!refresh.stillOwns(target) || loadedRefs.has(target)) return;
+    loadedRefs.add(target);
+    loaded.push(target);
+  };
   if (ref !== undefined) {
-    if (refresh.stillOwns(ref)) loadedRefs.add(ref);
-    return;
+    mark(ref);
+    return loaded;
   }
   for (const target of targets) {
-    if (refresh.stillOwns(target)) loadedRefs.add(target);
+    mark(target);
   }
   for (const target of threadsStore.getState().threads.keys()) {
-    if (refresh.stillOwns(target)) loadedRefs.add(target);
+    mark(target);
   }
   for (const record of [...snapshot.outbox, ...snapshot.optimistic, ...snapshot.recovery]) {
-    if (refresh.stillOwns(record.targetRef)) loadedRefs.add(record.targetRef);
+    mark(record.targetRef);
   }
+  return loaded;
 }
 
 // The commit feed's fast path (advancing the fence and landing the record

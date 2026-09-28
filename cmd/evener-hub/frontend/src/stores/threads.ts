@@ -942,6 +942,20 @@ function scheduleMutationDispatch(runtime: MutationRuntime, targetRefs: Iterable
     });
 }
 
+// The dispatch gate a durable projection read opens. A resume-only ref's head
+// send parks while its ref's outbox read is in flight (the pending-turns
+// projection fails readiness closed through that window, and the predicate
+// reads it), so the read resolving is what unparks it. Nothing else re-attempts
+// that dispatch, so the projection hands the refs that (re)gained readiness
+// here - the same explicit send-aside publishAndReconcileThreadHydration makes
+// when its reconciliation opens the gate. A ref with no dispatchable mutation
+// is a no-op.
+export function notifyReadyForMutationDispatch(refs: Iterable<string>): void {
+  const runtime = getMutationRuntime();
+  if (!runtime) return;
+  scheduleMutationDispatch(runtime, refs);
+}
+
 function handleDiscoveredMutations(runtime: MutationRuntime, targetRefs: Iterable<string>): void {
   if (!isCurrentMutationRuntime(runtime)) return;
   const refs = [...new Set([...targetRefs, ...threadsStore.getState().mutationReconciliationFailures])];
@@ -1155,31 +1169,70 @@ function markStopping(ref: string, stopping: boolean): void {
   });
 }
 
-// The number of Force stops this module has in flight for a ref. markStopping
-// is a boolean Set with no ownership: two overlapping stops would clear the
-// fence when the FIRST completed, while the second was still draining, and a
-// stale thread/read refresh could then clear the restart obligation too -
-// reopening mutation dispatch for the rest of the stop window. The count keeps
-// the fence armed until the last stop returns, whichever order they finish in
-// (a token would still clear early if the owner finished first).
-const activeStops = new Map<string, number>();
-
-// Arm the stopping fence on the 0 -> 1 transition only: every overlapping stop
-// shares the one fence, and endStop clears it once the count returns to 0.
-function beginStop(ref: string): void {
-  const count = (activeStops.get(ref) ?? 0) + 1;
-  activeStops.set(ref, count);
-  if (count === 1) markStopping(ref, true);
+// The refcounted group of Force stops this module has in flight for a ref.
+// markStopping is a boolean Set with no ownership: two overlapping stops would
+// clear the fence when the FIRST completed, while the second was still draining,
+// and a stale thread/read refresh could then clear the restart obligation too -
+// reopening mutation dispatch for the rest of the stop window. A bare count
+// fixes that early clear but not the shared recovery obligation: each stop
+// capturing the map's value and restoring it on its own abort can clobber a
+// fence a sibling still owns, or write back a sibling's arming symbol. So the
+// group records the pre-group obligation once, on the 0 -> 1 transition, and
+// whether any member signalled a daemon, and settles both on the 1 -> 0
+// transition.
+interface StopGroup {
+  count: number;
+  // The obligation the ref held before the group's first stop armed its own
+  // fence. endStop restores it only when no member of the group reached a
+  // daemon.
+  previousObligation: symbol | undefined;
+  // Whether any member reached client.forceStop, i.e. signalled a daemon. A
+  // group that did keeps its armed fence (a later snapshot clears it); one that
+  // never did restores previousObligation exactly.
+  signalled: boolean;
 }
+const activeStops = new Map<string, StopGroup>();
 
-function endStop(ref: string): void {
-  const count = activeStops.get(ref) ?? 0;
-  if (count > 1) {
-    activeStops.set(ref, count - 1);
+// Arm the stopping fence and the recovery obligation on the 0 -> 1 transition
+// only: every overlapping stop shares the one group, and endStop settles it once
+// the count returns to 0. Capturing the pre-group obligation here - not per
+// call - is what keeps an aborting stop from restoring a value another stop
+// still owns.
+function beginStop(ref: string): void {
+  const existing = activeStops.get(ref);
+  if (existing) {
+    existing.count += 1;
     return;
   }
+  const previousObligation = threadsStore.getState().restartBlockingObligations.get(ref);
+  activeStops.set(ref, { count: 1, previousObligation, signalled: false });
+  markStopping(ref, true);
+  threadsStore.setState((state) => ({
+    restartBlockingObligations: new Map(state.restartBlockingObligations).set(ref, Symbol()),
+  }));
+}
+
+// Settle one member's return. `signalled` is true when the member reached
+// client.forceStop (even if the RPC then rejected: the signal may still have
+// reached the daemon). On the 1 -> 0 transition restore the pre-group obligation
+// only when no member of the group ever signalled; a group that signalled keeps
+// the fence armed until a later snapshot clears it, and no aborting member
+// writes back its own captured value over an entry a sibling still owns.
+function endStop(ref: string, signalled: boolean): void {
+  const group = activeStops.get(ref);
+  if (!group) return;
+  if (signalled) group.signalled = true;
+  group.count -= 1;
+  if (group.count > 0) return;
   activeStops.delete(ref);
   markStopping(ref, false);
+  if (group.signalled) return;
+  threadsStore.setState((state) => {
+    const restartBlockingObligations = new Map(state.restartBlockingObligations);
+    if (group.previousObligation === undefined) restartBlockingObligations.delete(ref);
+    else restartBlockingObligations.set(ref, group.previousObligation);
+    return { restartBlockingObligations };
+  });
 }
 
 // The explicit Resume action is the one user intent that still starts a daemon
@@ -4068,77 +4121,53 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
 
   async forceStop(ref) {
     cancelPendingUserIntents(ref);
-    // Arm the stopping fence before the first await and keep it armed while a
-    // second overlapping Stop of the ref is still draining: beginStop/endStop
-    // clear it on the last stop to return, not the first.
+    // Arm the stopping fence and the recovery obligation synchronously with the
+    // drain, BEFORE the first await: the hub holds Stopping > 0 for the whole
+    // window and refuses even turn/start there (cmd/evener-hub's
+    // sessionActionRecoveryError), so the store's own admission -
+    // currentDispatchClient, enqueueMutationIntent, and every control surface
+    // that reads this obligation - must fence that window too, not only the
+    // restartRequired state the drain leaves behind. The in-flight Stop is not
+    // itself a fence, so arming after the cancellation write's await would leave
+    // that write's window unfenced. beginStop arms the group's shared fence and
+    // captures the pre-group obligation on the 0 -> 1 transition; endStop
+    // settles both when the last overlapping stop returns.
     beginStop(ref);
+    // Whether this stop reached a daemon signal. A Stop that proceeds keeps the
+    // fence; only a group in which no stop ever signalled restores the captured
+    // obligation, on its last return.
+    let signalled = false;
     try {
-      // Arm the recovery fence synchronously with the drain, BEFORE the first
-      // await: the hub holds Stopping > 0 for the whole window and refuses even
-      // turn/start there (cmd/evener-hub's sessionActionRecoveryError), so the
-      // store's own admission - currentDispatchClient, enqueueMutationIntent,
-      // and every control surface that reads this obligation - must fence that
-      // window too, not only the restartRequired state the drain leaves behind.
-      // The in-flight Stop is not itself a fence, so arming after the
-      // cancellation write's await would leave that write's window unfenced.
-      // Capture the current obligation so an abort that touches no daemon can
-      // restore exactly it; a Stop that proceeds keeps the fence.
-      const previousObligation = threadsStore.getState().restartBlockingObligations.get(ref);
-      // One restore for every abort that never reached a daemon (the
-      // cancellation write failed, or no client was connected to signal):
-      // put the obligation back exactly as captured, deleting the key when
-      // there was none.
-      const restorePreviousObligation = () => {
-        threadsStore.setState((state) => {
-          const restartBlockingObligations = new Map(state.restartBlockingObligations);
-          if (previousObligation === undefined) restartBlockingObligations.delete(ref);
-          else restartBlockingObligations.set(ref, previousObligation);
-          return { restartBlockingObligations };
-        });
-      };
-      threadsStore.setState((state) => ({
-        restartBlockingObligations: new Map(state.restartBlockingObligations).set(ref, Symbol()),
-      }));
-      try {
-        // Write-first (stop-cancellation-outbox §4): the cancellation lands
-        // durably before the stop RPC, so a storage failure aborts the stop here
-        // with the daemon untouched and the user free to retry.
-        await cancelUnattemptedMutations(ref);
-      } catch (error) {
-        // The stop aborted before the daemon was touched, so the user is free
-        // to retry: restore the obligation armed above to exactly its captured
-        // state before rethrowing.
-        restorePreviousObligation();
-        throw error;
-      }
+      // Write-first (stop-cancellation-outbox §4): the cancellation lands
+      // durably before the stop RPC, so a storage failure aborts the stop here
+      // with the daemon untouched and the user free to retry.
+      await cancelUnattemptedMutations(ref);
       // Resolve the client in its own step, so a lookup failure is
       // distinguishable by construction from a signal failure: no client
       // means no signal reached any daemon, so - exactly like the
-      // cancellation-storage abort above - the obligation must be restored,
-      // and refreshThread must NOT be kicked (while offline it cannot clear
-      // the fence and only leaves a live session's recovery fenced).
-      let client: AppwireClientLike;
-      try {
-        client = requireClient();
-      } catch (error) {
-        restorePreviousObligation();
-        throw error;
-      }
-      try {
-        await client.forceStop(ref);
-      } catch (error) {
+      // cancellation-storage abort above - the obligation is restored on the
+      // group's last return, and refreshThread must NOT be kicked (while
+      // offline it cannot clear the fence and only leaves a live session's
+      // recovery fenced).
+      const client = requireClient();
+      // Reaching the call counts as signalling even if it rejects below: the
+      // signal may have reached the daemon despite failed exit confirmation.
+      signalled = true;
+      await client.forceStop(ref);
+    } catch (error) {
+      if (signalled) {
         // The signal may have succeeded despite failed exit confirmation.
-        // The fence armed above is retained until a fresh snapshot proves it
-        // can clear. Reconcile the hub's recovery requirement without
+        // The fence armed by beginStop is retained until a fresh snapshot
+        // proves it can clear. Reconcile the hub's recovery requirement without
         // delaying this error.
         void threadsStore
           .getState()
           .refreshThread(ref)
           .catch(() => {});
-        throw error;
       }
+      throw error;
     } finally {
-      endStop(ref);
+      endStop(ref, signalled);
     }
   },
 
