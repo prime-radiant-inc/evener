@@ -374,7 +374,9 @@ func (m *Manager) Remove(ctx context.Context, plugin, marketplace string) error 
 // itself, since Remove has already saved the uninstall by the time this runs.
 // The error wraps ErrPluginUninstalledCacheRemains, so a caller can tell this
 // applied-with-litter outcome from a plain refusal by errors.Is instead of
-// assuming a non-nil error means the plugin is still installed. removeErr's own
+// assuming a non-nil error means the plugin is still installed; the sentinel's
+// own comment records that no production caller branches on it yet, because
+// #1634's plugin-updated broadcast is what refreshes clients. removeErr's own
 // text can carry this machine's absolute plugin-store path (os.RemoveAll
 // returns a *fs.PathError that names it), so it goes to the hub's log instead
 // of the RPC caller.
