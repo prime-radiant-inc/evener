@@ -11,7 +11,7 @@ export function patchAddedLines(pkg: string, version: string, path: string): str
 	const patchPath = fileURLToPath(new URL(`../patches/${pkg}+${version}.patch`, import.meta.url));
 	const lines = readFileSync(patchPath, "utf8").split("\n");
 	const start = lines.findIndex((line) => line.startsWith(`diff --git a/node_modules/${pkg}/${path} `));
-	if (start === -1) throw new Error(`the patch has no diff for ${path}`);
+	if (start === -1) throw new Error(`the ${pkg}@${version} patch has no diff for ${path}`);
 	const rest = lines.slice(start + 1);
 	const end = rest.findIndex((line) => line.startsWith("diff --git "));
 	const body = end === -1 ? rest : rest.slice(0, end);

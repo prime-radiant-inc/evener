@@ -23,13 +23,15 @@ import { patchAddedLines } from "./packagePatch.testkit";
 // test below fails on that upgrade, since patch-package only warns when a
 // patch no longer matches the installed version.
 describe("react-native-gesture-handler sheet touch-cancellation patch", () => {
-	const manager = () => patchAddedLines("react-native-gesture-handler", "2.32.0", "apple/RNGestureHandlerManager.mm");
+	const patchedVersion = "2.32.0";
+	const manager = () =>
+		patchAddedLines("react-native-gesture-handler", patchedVersion, "apple/RNGestureHandlerManager.mm");
 
 	it("patches the version installed, so an upgrade to the fixed release retires it", () => {
 		const packageJson = fileURLToPath(
 			new URL("../node_modules/react-native-gesture-handler/package.json", import.meta.url),
 		);
-		expect(JSON.parse(readFileSync(packageJson, "utf8")).version).toBe("2.32.0");
+		expect(JSON.parse(readFileSync(packageJson, "utf8")).version).toBe(patchedVersion);
 	});
 
 	it("installs the root recognizer on a modally presented screen", () => {
