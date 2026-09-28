@@ -66,6 +66,12 @@ export default defineConfig({
       "@evener/appwire-client/state/navigation": path.join(appwirePackageDir, "state", "navigation", "index.ts"),
       "@evener/appwire-client/state/credentials": path.join(appwirePackageDir, "state", "credentials", "index.ts"),
       "@evener/appwire-client/state/extensions": path.join(appwirePackageDir, "state", "extensions", "index.ts"),
+      "@evener/appwire-client/state/mutation/testing": path.join(
+        appwirePackageDir,
+        "state",
+        "mutation",
+        "testing.ts",
+      ),
       "@evener/appwire-client/state/mutation": path.join(appwirePackageDir, "state", "mutation", "index.ts"),
       "@evener/appwire-client/state/connection": path.join(appwirePackageDir, "state", "connection", "index.ts"),
       "@evener/appwire-client/testing": path.join(appwirePackageDir, "testing"),
