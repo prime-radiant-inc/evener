@@ -414,7 +414,12 @@ it("gives Send a typed command's own label, so VoiceOver hears what it runs", as
 
 it("keeps the session open when /shutdown is typed and completed (ruling 19)", async () => {
 	const served = thread("ref-typed-shutdown", "idle");
-	(served.evener.capabilities as { shutdown: boolean }).shutdown = true;
+	// thread() shares the module-level CAPABILITIES object; clone it so this
+	// test's shutdown capability never leaks into a later test's fixture.
+	served.evener = {
+		...served.evener,
+		capabilities: { ...served.evener.capabilities, shutdown: true },
+	};
 	const { tree, hub } = await mount(served);
 	await type(tree, "/shutdown");
 	const send = pressable(tree, "Shut down");
