@@ -2097,7 +2097,7 @@ git commit -m "refactor(hub): one atomic writer and strict reader for hub state 
 - Modify: `appwire/keybindings.go` (drop `decodeKeybindingsStrictJSON`, `keybindingsObjectFields` and `requireKeybindingsFields`, `:158-193`, for `strict_json.go`'s; their seven call sites; the `io` import)
 - Modify: `appwire/errors.go` (`ErrorLaunchRecipesPostRename` after `ErrorKeybindingsPostRename`, `:56`)
 - Modify: `appwire/clone.go` (`CloneLaunchConfigLayer` before `cloneCodexErrorInfo`; `maps` and `slices` imports)
-- Modify: `cmd/evener-hub/internal/appsource/remote_hub_probe.go` (delete `cloneLaunchConfigLayer`, `:259-286`; its two callers use `appwire.CloneLaunchConfigLayer`)
+- Modify: `cmd/evener-hub/internal/appsource/remote_hub_probe.go` (delete `cloneLaunchConfigLayer`, `:259-286`; its three call sites, `:236` in `HostCapabilities`' clone and `:293`, `:296` in `cloneLaunchConfigResolved`, call `appwire.CloneLaunchConfigLayer`)
 - Modify: `appwire/protocol.go` (two method rows after the keybindings patch row, `:256`; a notification row after the keybindings one, `:365`)
 - Modify: `appwire/protocol_test.go` (the `global` map, `:495`)
 - Regenerate: `appwire-client/typescript/types.gen.ts`, `docs/appwire-protocol.md`
@@ -2552,7 +2552,7 @@ func CloneLaunchConfigLayer(l LaunchConfigLayer) LaunchConfigLayer {
 }
 ```
 
-In `remote_hub_probe.go`, delete `cloneLaunchConfigLayer` and call `appwire.CloneLaunchConfigLayer` in its two places in `cloneLaunchConfigResolved` (the local `ptrClone` stays: `cloneLaunchConfigResolved` still uses it).
+In `remote_hub_probe.go`, delete `cloneLaunchConfigLayer` and call `appwire.CloneLaunchConfigLayer` at all three of its call sites: `out.LaunchGlobal = …` (`:236`, the capabilities clone) and the two in `cloneLaunchConfigResolved` (`:293`, `:296`). `go build ./cmd/evener-hub/...` fails on any one missed. The local `ptrClone` stays: `cloneLaunchConfigResolved` still uses it.
 
 `appwire/protocol.go`, after the `MethodEvenerSettingsKeybindingsPatch` row:
 
