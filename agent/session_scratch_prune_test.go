@@ -287,3 +287,73 @@ func TestRepairScratchRetentionSkipsReleasedManifest(t *testing.T) {
 			got.Released, released.Revision, got.Revision, len(released.References), len(got.References))
 	}
 }
+
+// TestPrepareRetainedScratchAdoptsOrphanOwningBinding proves a restore keeps and
+// attributes a lease-owning binding no consumer names — the state a
+// publication-and-stop leaves — instead of failing the graph validation closed,
+// which wedged every resume of the root. The repair names the binding in the
+// owning session's consumer row (as its current binding when the row has none,
+// else in its abandoned set) and keeps its owning slot, so the graph validates
+// and the allocation stays adoptable.
+func TestPrepareRetainedScratchAdoptsOrphanOwningBinding(t *testing.T) {
+	workDir := t.TempDir()
+	base := t.TempDir()
+	root, owner := newPruneTestRoot(t)
+	orphan := pinTestScratch(t, owner, base, workDir)
+	manifest, err := sandbox.LoadScratchRetention(owner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := sandbox.UpdateScratchBindings(owner, manifest.Revision, []sandbox.ScratchBinding{{
+		BindingID: "orphan", OwnerSessionID: owner.RootSessionID, WorkingDir: workDir,
+		Slots: map[string]sandbox.ScratchSlot{sandbox.ScratchKindUnsandboxed: {Dir: orphan.Dir, OwnsLease: true}},
+	}}, nil); err != nil {
+		t.Fatalf("publish an orphan owning binding: %v", err)
+	}
+	if err := orphan.Retain(); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := root.prepareRetainedScratch(); err != nil {
+		t.Fatalf("prepareRetainedScratch wedged on an orphan owning binding: %v", err)
+	}
+	after, err := sandbox.LoadScratchRetention(owner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var row *sandbox.ScratchConsumerBinding
+	for i := range after.Consumers {
+		if after.Consumers[i].SessionID == owner.RootSessionID {
+			row = &after.Consumers[i]
+		}
+	}
+	if row == nil {
+		t.Fatalf("the restore reconstructed no consumer row for the owning session: %+v", after.Consumers)
+	}
+	named := row.CurrentBindingID == "orphan" ||
+		row.ParentSharedBindingID == "orphan" ||
+		row.WorktreeRestoreBindingID == "orphan"
+	for _, id := range row.AbandonedBindingIDs {
+		if id == "orphan" {
+			named = true
+		}
+	}
+	if !named {
+		t.Fatalf("the restore left the orphan owning binding named by no consumer role: %+v", row)
+	}
+	slotKept := false
+	for _, binding := range after.Bindings {
+		if binding.BindingID != "orphan" {
+			continue
+		}
+		if slot, ok := binding.Slots[sandbox.ScratchKindUnsandboxed]; ok && slot.OwnsLease {
+			slotKept = true
+		}
+	}
+	if !slotKept {
+		t.Fatalf("the restore dropped the orphan's owning slot: %+v", after.Bindings)
+	}
+	if err := root.validateRetainedScratchPresent(); err != nil {
+		t.Fatalf("retirement readiness failed after the repair: %v", err)
+	}
+}
