@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hostops"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hostreg"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
@@ -244,7 +245,7 @@ func TestBootStoreSyncClearsAnIntentWhosePurgeLanded(t *testing.T) {
 // clears the record and its stash.
 func TestBootCompensationArmedWithRowsPresentRestoresHubTOML(t *testing.T) {
 	entry := pipelineEntry("m4", 2)
-	fixture, token := newPipelineRemovalFixture(t, entry, false)
+	fixture, token := newPipelineRemovalFixture(t, entry, true)
 	fixture.appendTOML(t, "[pending_store_sync.m4]\ngeneration = 2\ntoken_values = [\""+token.Value+"\"]\n")
 	if err := fixture.store.ArmCompensation(hostops.Compensation{
 		Host: "m4", Phase: hostops.CompensationArmed, Rows: []hostops.Token{token},
@@ -263,10 +264,43 @@ func TestBootCompensationArmedWithRowsPresentRestoresHubTOML(t *testing.T) {
 	if _, ok := m.cfg.ops.OutstandingToken("m4"); !ok {
 		t.Fatal("boot dropped rows the purge never landed for")
 	}
+	// The restored host is actually served: the runtime arm re-applied it to
+	// the live registry before the record cleared.
+	served, err := m.List(context.Background(), appwire.EmptyParams{})
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if _, listed := hostRowNamed(served.Hosts, "m4"); !listed {
+		t.Fatalf("the restored host is not served: %+v", served.Hosts)
+	}
 	cfg, _ := readPipelineConfig(t, fixture.configPath)
 	if _, live := hostEntryNamed(hostRegistryEntries(cfg), "m4"); !live {
 		t.Fatal("boot did not restore hub.toml from the stash")
 	}
+	// A second boot over the converged pair serves the host too, and the
+	// compensation does not come back.
+	second := newHubHostManager(nil, nil, hubcore.WebConfig{
+		RemoteHostRegistry:   fixture.registry,
+		RemoteHostOpsStore:   fixture.store,
+		RemoteHostConfigPath: fixture.configPath,
+	}, fixture.configPath, fixture.registry, nil)
+	served, err = second.List(context.Background(), appwire.EmptyParams{})
+	if err != nil {
+		t.Fatalf("List (second boot): %v", err)
+	}
+	if _, listed := hostRowNamed(served.Hosts, "m4"); !listed {
+		t.Fatalf("the second boot does not serve the restored host: %+v", served.Hosts)
+	}
+}
+
+// hostRowNamed returns the listed row for name, if the page carries one.
+func hostRowNamed(rows []appwire.HostRow, name string) (appwire.HostRow, bool) {
+	for _, row := range rows {
+		if row.Name == name {
+			return row, true
+		}
+	}
+	return appwire.HostRow{}, false
 }
 
 // TestBootCompensationPurgeLandedReinsertsTheRows pins §9's hubtoml arm: the
@@ -835,6 +869,34 @@ func TestMirrorHighWaterRaiseRaisesATombstonedNamesTwin(t *testing.T) {
 	}, nil); err != nil {
 		t.Fatalf("MirrorBoundaries: %v", err)
 	}
+	// The boot rolls the mirror back and must raise the tombstoned name's
+	// [generations] twin together with the tombstone (S11 ties the pair).
+	fixture.manager(t)
+	cfg, _ := readPipelineConfig(t, fixture.configPath)
+	mark, carried := cfg.Generations["m4"]
+	if !carried || mark.Generation != 9 {
+		t.Fatalf("generations high-water = %+v/%v, want the discarded generation 9", mark, carried)
+	}
+	tombstone, carried := cfg.Tombstones["m4"]
+	if !carried || tombstone.Generation != 9 {
+		t.Fatalf("tombstone = %+v/%v, want the raised generation 9", tombstone, carried)
+	}
+	if tombstone.IncarnationID != mark.IncarnationID || tombstone.PresenceEpoch != mark.PresenceEpoch {
+		t.Fatalf("the tombstone/twin pair disagrees: %+v vs %+v", tombstone, mark)
+	}
+	// A follow-up boot finds the pair converged and writes nothing.
+	before, err := os.ReadFile(fixture.configPath)
+	if err != nil {
+		t.Fatalf("read hub.toml: %v", err)
+	}
+	fixture.manager(t)
+	after, err := os.ReadFile(fixture.configPath)
+	if err != nil {
+		t.Fatalf("read hub.toml: %v", err)
+	}
+	if !bytes.Equal(before, after) {
+		t.Fatal("a converged raise was rewritten by the next boot")
+	}
 }
 
 // TestBootPrunesAnOrphanStash pins the stash's boot cleanup: a stash no open
@@ -853,13 +915,60 @@ func TestBootPrunesAnOrphanStash(t *testing.T) {
 	}
 }
 
+// TestCompensateStagedCrossFileLeavesAStaleRecordUntouched pins the ownership
+// rule (L6): an open record from an earlier mutation of the same name (another
+// generation, another commit's stash) is not this commit's to clear, and both
+// stashes are left alone.
+func TestCompensateStagedCrossFileLeavesAStaleRecordUntouched(t *testing.T) {
+	entry := pipelineEntry("keep", 2)
+	fixture, token := newPipelineRemovalFixture(t, entry, false)
+	m := fixture.manager(t)
+	stash := hubTOMLStashPath(fixture.configPath)
+	if err := os.WriteFile(stash, []byte("# this commit's stash\n"), 0o600); err != nil {
+		t.Fatalf("write stash: %v", err)
+	}
+	staleStash := filepath.Join(fixture.dir, "earlier.stash")
+	if err := os.WriteFile(staleStash, []byte("# an earlier commit's stash\n"), 0o600); err != nil {
+		t.Fatalf("write stale stash: %v", err)
+	}
+	if err := fixture.store.ArmCompensation(hostops.Compensation{
+		Host: "keep", Phase: hostops.CompensationArmed, Rows: []hostops.Token{token},
+		Stash: staleStash, Generation: 7,
+	}); err != nil {
+		t.Fatalf("ArmCompensation: %v", err)
+	}
+	plan := &hostCommitPlan{Kind: hostMutationRemove, Name: "keep", Key: "test-key", Entry: entry}
+	cause := errors.New("injected arm failure")
+	m.cfg.mu.Lock()
+	m.markMutating("keep")
+	if _, err := m.compensateStagedCrossFile(plan, []hostreg.Host{entry}, cause, stash); err == nil {
+		t.Fatal("the compensation reported success")
+	}
+	m.cfg.mu.Lock()
+	marked := m.isMutating("keep")
+	m.cfg.mu.Unlock()
+	if marked {
+		t.Fatal("the compensation left the mutation mark set")
+	}
+	record, open := m.cfg.ops.Compensation("keep")
+	if !open || record.Generation != 7 || record.Stash != staleStash {
+		t.Fatalf("the stale record was touched: %+v/%v, want generation 7 and its own stash", record, open)
+	}
+	if _, err := os.Stat(stash); err != nil {
+		t.Fatalf("this commit's stash was pruned: %v", err)
+	}
+	if _, err := os.Stat(staleStash); err != nil {
+		t.Fatalf("the stale record's stash was pruned: %v", err)
+	}
+}
+
 // TestCompensateStagedCrossFileLeavesTheRecordWhenAStepFails pins §9's live
 // failure posture: when any step of the arm fails the record and its stash are
 // left for the next boot — never a cleared compensation beside a half-restored
 // state — the mutation mark is released on every path, and a retry with the
 // failure gone converges and prunes the stash.
 func TestCompensateStagedCrossFileLeavesTheRecordWhenAStepFails(t *testing.T) {
-	for _, failedStep := range []string{"advance-rows", "reinsert"} {
+	for _, failedStep := range []string{"advance-rows", "reinsert", "advance-clear", "clear"} {
 		t.Run(failedStep, func(t *testing.T) {
 			entry := pipelineEntry("keep", 2)
 			fixture, token := newPipelineRemovalFixture(t, entry, false)
@@ -907,8 +1016,13 @@ func TestCompensateStagedCrossFileLeavesTheRecordWhenAStepFails(t *testing.T) {
 				t.Fatal("the compensation left the mutation mark set")
 			}
 			wantPhase := hostops.CompensationHubTOML
-			if failedStep == "reinsert" {
+			switch failedStep {
+			case "reinsert":
 				wantPhase = hostops.CompensationRows
+			case "advance-clear":
+				wantPhase = hostops.CompensationRuntime
+			case "clear":
+				wantPhase = hostops.CompensationClear
 			}
 			record, open := m.cfg.ops.Compensation("keep")
 			if !open || hostops.NormalizeCompensationPhase(record.Phase) != wantPhase {

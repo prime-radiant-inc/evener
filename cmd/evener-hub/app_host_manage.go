@@ -819,7 +819,17 @@ func writeHubTOMLHostsRecords(path string, entries, known []hostreg.Host, record
 	} else {
 		doc["hosts"] = tables
 	}
-	hostRecords, generations := hubTOMLRecordTables(fileCfg, entries, known, records.highWater, records.droppedTombstones)
+	// The preservation rule skips the names whose records this very derivation
+	// raised (the boot mirror pass's discarded generations): their [generations]
+	// record and tombstone twin are the raise, and the file's older copy must
+	// not ride back over either.
+	preserved := records.droppedTombstones
+	if len(records.raisedHighWater) > 0 {
+		preserved = make(map[string]struct{}, len(records.droppedTombstones)+len(records.raisedHighWater))
+		maps.Copy(preserved, records.droppedTombstones)
+		maps.Copy(preserved, records.raisedHighWater)
+	}
+	hostRecords, generations := hubTOMLRecordTables(fileCfg, entries, known, records.highWater, preserved)
 	if len(hostRecords) == 0 {
 		delete(doc, "host_records")
 	} else {
@@ -836,7 +846,7 @@ func writeHubTOMLHostsRecords(path string, entries, known []hostreg.Host, record
 	} else {
 		doc["mutation_receipts"] = receiptTables
 	}
-	tombstoneTables := hubTOMLTombstoneTables(fileCfg, entries, known, records.tombstones, records.droppedTombstones)
+	tombstoneTables := hubTOMLTombstoneTables(fileCfg, entries, known, records.tombstones, preserved)
 	if len(tombstoneTables) == 0 {
 		delete(doc, "tombstones")
 	} else {
@@ -3069,14 +3079,22 @@ func (m *hubHostManager) reconcileTokenRows() {
 	}
 	view := hostops.TokenRowReconcile{
 		Live:    map[string]uint64{},
-		Removed: map[string]struct{}{},
+		Removed: map[string]hostops.HostRemovedMark{},
 		Covered: map[string]map[string]struct{}{},
 	}
 	for _, entry := range hostRegistryEntries(fileCfg) {
 		view.Live[entry.Name] = entry.Generation
 	}
-	for name := range fileCfg.Tombstones {
-		view.Removed[name] = struct{}{}
+	for name, tombstone := range fileCfg.Tombstones {
+		if _, live := view.Live[name]; live {
+			// A live re-add supersedes the tombstone: its rows belong to the new
+			// incarnation and are not the removed one's to delete.
+			continue
+		}
+		view.Removed[name] = hostops.HostRemovedMark{
+			Generation:    tombstone.Generation,
+			IncarnationID: tombstone.IncarnationID,
+		}
 	}
 	for name, intent := range fileCfg.PendingStoreSync {
 		covered := view.Covered[name]
@@ -3190,7 +3208,18 @@ func (m *hubHostManager) resumeArmedCompensation(record hostops.Compensation) {
 			m.logf("boot compensation for %q not resumed: %v", record.Host, err)
 			return
 		}
-		m.clearCompensation(record, "the purge never landed; hub.toml restored")
+		// The purge never landed and the rows are untouched, but the swap
+		// compensation still owes the runtime revert: advance the record and
+		// follow the same arms a crash after the restore would (the restore is
+		// idempotent), so the record clears only once the runtime serves the
+		// restored set — never a cleared compensation beside a runtime that does
+		// not serve it.
+		if err := m.cfg.ops.AdvanceCompensation(record.Host, hostops.CompensationHubTOML); err != nil {
+			m.logf("boot compensation for %q not advanced past the restore: %v", record.Host, err)
+			return
+		}
+		record.Phase = hostops.CompensationHubTOML
+		m.resumeCompensation(record)
 	default:
 		if err := m.cfg.ops.AdvanceCompensation(record.Host, hostops.CompensationHubTOML); err != nil {
 			m.logf("boot compensation for %q not advanced: %v", record.Host, err)

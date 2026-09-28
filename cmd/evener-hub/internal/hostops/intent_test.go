@@ -303,7 +303,7 @@ func TestReconcileTokenRowsDropsStaleAndRemovedRows(t *testing.T) {
 	absent := mintTokenAt(t, store, "absent", 3)
 	view := TokenRowReconcile{
 		Live:    map[string]uint64{"live": 7, "advanced": 8},
-		Removed: map[string]struct{}{"gone": {}},
+		Removed: map[string]HostRemovedMark{"gone": {Generation: 7, IncarnationID: testTokenHash("inc-gone")[:36]}},
 		Covered: map[string]map[string]struct{}{"covered": {covered.Value: {}}},
 	}
 	dropped, err := store.ReconcileTokenRows(view)
@@ -319,6 +319,41 @@ func TestReconcileTokenRowsDropsStaleAndRemovedRows(t *testing.T) {
 		}
 	}
 	_ = []Token{liveCurrent, stale, removed, absent}
+}
+
+// TestReconcileTokenRowsMatchesTheTombstonedIncarnation pins the pair rule: a
+// token row drops only when the tombstone names its exact (generation,
+// incarnation) pair — an old-incarnation tombstone never deletes a live
+// re-add's row, and a tombstone a live re-add superseded matches nothing.
+func TestReconcileTokenRowsMatchesTheTombstonedIncarnation(t *testing.T) {
+	store, _, _ := openClockStore(t)
+	readd := mintTokenAt(t, store, "m4", 9)
+	removedRow := mintTokenAt(t, store, "m9", 2)
+	view := TokenRowReconcile{
+		Live: map[string]uint64{"m4": 9},
+		Removed: map[string]HostRemovedMark{
+			// The name was re-added: this tombstone's incarnation is not the
+			// live row's, and the live name supersedes it.
+			"m4": {Generation: 2, IncarnationID: "incarnation-m4-old"},
+			// This one names the removed incarnation exactly.
+			"m9": {Generation: 2, IncarnationID: testTokenHash("inc-m9")[:36]},
+		},
+	}
+	dropped, err := store.ReconcileTokenRows(view)
+	if err != nil {
+		t.Fatalf("ReconcileTokenRows: %v", err)
+	}
+	if dropped != 1 {
+		t.Fatalf("ReconcileTokenRows dropped %d, want 1 (the tombstoned incarnation's row)", dropped)
+	}
+	if _, ok := store.OutstandingToken("m4"); !ok {
+		t.Fatal("an old-incarnation tombstone deleted a live re-add's token row")
+	}
+	if _, ok := store.OutstandingToken("m9"); ok {
+		t.Fatal("the tombstoned incarnation's token row survived")
+	}
+	_ = readd
+	_ = removedRow
 }
 
 // TestApplyHostRemovedPassMarksOnlyTheMatchingPair pins §4's tombstone pass:

@@ -455,6 +455,14 @@ func (m *hubHostManager) compensateStagedCrossFile(plan *hostCommitPlan, previou
 		m.pruneHubTOMLStash(stash)
 		return appwire.HostMutationResult{}, err
 	}
+	if record.Generation != plan.Entry.Generation || record.Stash != stash {
+		// A stale record from an earlier mutation of this name (a crash left it
+		// open and this commit armed nothing): it is not this commit's to clear,
+		// and its stash is the earlier commit's restore source.
+		m.logf("remove %q compensation: the open record (generation %d, stash %q) does not belong to this commit (generation %d, stash %q); the record and its stash are left untouched",
+			plan.Name, record.Generation, record.Stash, plan.Entry.Generation, stash)
+		return appwire.HostMutationResult{}, err
+	}
 	if !rollbackConverged {
 		// The hub.toml restore did not converge: leave the record and its stash
 		// for the next boot to retry, never a cleared compensation beside a

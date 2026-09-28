@@ -63,6 +63,9 @@ func nonNilRecords(records hostTOMLRecords) hostTOMLRecords {
 	if records.droppedStoreSync == nil {
 		records.droppedStoreSync = map[string]struct{}{}
 	}
+	if records.raisedHighWater == nil {
+		records.raisedHighWater = map[string]struct{}{}
+	}
 	if records.prunedReceipts == nil {
 		records.prunedReceipts = map[string]PrunedReceiptMarker{}
 	}
@@ -295,6 +298,9 @@ func (m *hubHostManager) deriveHostTOMLRecords(entries, known []hostreg.Host, ch
 	if records.droppedStoreSync == nil {
 		records.droppedStoreSync = map[string]struct{}{}
 	}
+	if records.raisedHighWater == nil {
+		records.raisedHighWater = map[string]struct{}{}
+	}
 	if records.droppedRemnants == nil {
 		records.droppedRemnants = map[string]struct{}{}
 	}
@@ -334,6 +340,7 @@ func (m *hubHostManager) deriveHostTOMLRecords(entries, known []hostreg.Host, ch
 	// same generation (validateHostTombstones ties the pair).
 	for name, raised := range change.highWaterRaises {
 		records.highWater[name] = raised
+		records.raisedHighWater[name] = struct{}{}
 		if tombstone, ok := records.tombstones[name]; ok {
 			tombstone.Generation = raised.Generation
 			records.tombstones[name] = tombstone

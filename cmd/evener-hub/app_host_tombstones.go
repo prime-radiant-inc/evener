@@ -158,6 +158,12 @@ type hostTOMLRecords struct {
 	// window's, whose name is neither live nor tombstoned) could never clear:
 	// the file's older copy would ride back in on every boot.
 	droppedStoreSync map[string]struct{}
+	// raisedHighWater names the marks this derivation raised (the boot mirror
+	// pass's discarded generations). The writer's preservation rule re-emits a
+	// generation record for a name the write does not own, so without this set
+	// the file's older record would ride back over the raise — and for a
+	// tombstoned name the twin pair would then disagree and refuse the write.
+	raisedHighWater map[string]struct{}
 }
 
 // hostTombstoneStage is the tombstone a removal stages into the very write

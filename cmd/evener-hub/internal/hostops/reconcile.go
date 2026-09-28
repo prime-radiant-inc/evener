@@ -143,8 +143,10 @@ type TokenRowReconcile struct {
 	// removal, hub.toml's compensation already restored, and the row must go.
 	Live map[string]uint64
 	// Removed names the hosts that resolve at boot to a tombstone: every token
-	// row of a removed host is dropped (§7).
-	Removed map[string]struct{}
+	// row pinned to the tombstoned incarnation is dropped (§7). The pair
+	// matters: a live re-add carries a different incarnation id, and its rows
+	// are not this tombstone's to delete.
+	Removed map[string]HostRemovedMark
 	// Covered maps a host to the row values a live intent names. The forward
 	// pass owns those rows; this pass leaves them for it, so the two can never
 	// fight over one row.
@@ -173,10 +175,14 @@ func (s *Store) ReconcileTokenRows(view TokenRowReconcile) (int, error) {
 				continue
 			}
 		}
-		_, removed := view.Removed[row.Host]
+		mark, removed := view.Removed[row.Host]
 		liveGeneration, live := view.Live[row.Host]
 		switch {
-		case removed:
+		case removed && !live && row.Generation == mark.Generation && row.IncarnationID == mark.IncarnationID:
+			// The tombstone names this exact removed incarnation. A tombstone a
+			// live re-add superseded (the name is live again) matches nothing:
+			// the re-add's rows carry a different pair, and generation-only
+			// matching would delete a live incarnation's token.
 			dropped++
 		case live && row.Generation < liveGeneration:
 			dropped++
