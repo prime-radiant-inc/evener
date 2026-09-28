@@ -1070,6 +1070,17 @@ func (s *Session) drainJobTreeWith(ctx context.Context, recheck <-chan time.Time
 				return lastResult, err
 			}
 		}
+		// A steer admitted while this delegate's run is parked here must not
+		// wait for the drain to end on its own (#2796): an owned background job
+		// can hold the drain open indefinitely, and none of the drain's
+		// notification turns carries the admission, so the caller's "steered"
+		// would be a silent no-op. Stop draining and let the run take its
+		// steering continuation, whose model request binds and drains the
+		// admission. The steer is consumed before the run re-enters this drain,
+		// so the early return does not spin.
+		if s.hasPendingStableSteering() {
+			return lastResult, nil
+		}
 		// Parked attention does not drive the rung: a Stop's park defers it,
 		// and the notification turn would only stand down at the admission
 		// gate and spin the drain loop at full rate.

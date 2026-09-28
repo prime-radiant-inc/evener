@@ -168,6 +168,16 @@ func (s *Session) hasPendingStableDelegateAttention() bool {
 	return s != nil && s.isRootDelegateAttentionReceiver() && s.delegateController.hasPendingDelegateAttention()
 }
 
+// hasPendingStableSteering reports whether this session's own delegate
+// generation holds an admitted steering message no model request has consumed
+// yet. A delegate run parked in its finalization drain reads this to run a turn
+// so the steering is acted on rather than stranded until an owned job ends
+// (#2796). The root session owns no delegate generation, so it is always false
+// there.
+func (s *Session) hasPendingStableSteering() bool {
+	return s != nil && s.owningDelegateID != "" && s.delegateController != nil && s.delegateController.generationOwesSteering(s.owningDelegateID)
+}
+
 // autonomyInFlight reports whether autonomous work will move this session
 // without user input: pending job notifications, queued input, or live child
 // subagents. Reads take each signal's own lock sequentially — never nested —
