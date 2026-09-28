@@ -70,13 +70,12 @@ func assertAllWindows(t testing.TB, x *Index, path string) {
 // assertSampledWindows is assertAllWindows's cheaper sibling: it proves the
 // same thing a caller of assertAllWindows wants — a rebuilt index reads back
 // correctly — without the O(items x limits) walk of every Before boundary at
-// every limit, a walk that runs to about ten minutes under -race on CI for
-// TestReplacedTruncatedOrRewrittenTranscriptRebuilds's four subtests over the
-// "everything" fixture. assertAllCandidates already proves every item, full
-// stop, by paging the whole transcript once; this adds only the specific
-// boundaries a pagination bug is likeliest to break: the first and last
-// items, a couple next to them, and the midpoint, each at a small and a
-// full-page limit.
+// every limit, a walk that adds up fast when a test repeats it (see
+// TestAppendEntryByEntryMatchesTheReference). assertAllCandidates already
+// proves every item, full stop, by paging the whole transcript once; this
+// adds only the specific boundaries a pagination bug is likeliest to break:
+// the first and last items, a couple next to them, and the midpoint, each at
+// a small and a full-page limit.
 func assertSampledWindows(t testing.TB, x *Index, path string) {
 	t.Helper()
 	assertAllCandidates(t, x, path)

@@ -206,7 +206,19 @@ func TestAppendEntryByEntryMatchesTheReference(t *testing.T) {
 				t.Fatalf("line %d: extending rebuilt the index", i)
 			}
 		}
-		assertAllCandidates(t, x, path)
+		// The full boundary sweep at every prefix is O(lines x items x
+		// limits): about 30s alone, and ten minutes under -race on a loaded
+		// runner, enough to time out the whole package. -short (make test,
+		// the race lanes) samples each prefix and sweeps the final
+		// transcript once; ROOT_FULL=1 keeps the sweep at every prefix.
+		if testing.Short() {
+			assertSampledWindows(t, x, path)
+		} else {
+			assertAllCandidates(t, x, path)
+			assertAllWindows(t, x, path)
+		}
+	}
+	if testing.Short() {
 		assertAllWindows(t, x, path)
 	}
 }
