@@ -22,7 +22,7 @@
 // column; SessionChrome now lives in the composer's own PromptCard control row.
 
 import type { ThreadModel } from "@evener/appwire-client";
-import { configFingerprint, projectThread, resolveEffectiveConfig } from "@evener/appwire-client";
+import { configFingerprint, formatQuoteBlock, projectThread, resolveEffectiveConfig } from "@evener/appwire-client";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useStore } from "zustand";
 import type { PaneProps } from "../../shell/paneRegistry";
@@ -57,7 +57,6 @@ import { useTranscriptScrollKeys } from "./transcript/flow/useTranscriptScrollKe
 import { HeldSteerAnnouncements } from "./transcript/messages/HeldSteerAnnouncements";
 import { HeldSteerStack, heldSteerEntries, useHeldSteerEpoch } from "./transcript/messages/HeldSteerStack";
 import { SelectionQuote } from "./transcript/SelectionQuote";
-import { formatQuoteBlock } from "./transcript/selectionQuoteLogic";
 import {
   TranscriptBody,
   transcriptAnchorEntriesForRows,
@@ -358,6 +357,13 @@ export default function Session({ params, paneId, focused: paneFocused }: PanePr
   const renderRows = useMemo(() => (projection ? transcriptRowsForProjection(projection) : []), [projection]);
   const anchorEntries = useMemo(() => transcriptAnchorEntriesForRows(renderRows), [renderRows]);
   const sourceTurnRowIndexes = useMemo(() => transcriptSourceTurnRowIndexesForRows(renderRows), [renderRows]);
+  // The projection/rows/anchors trio travels to TranscriptBody as one prepared
+  // view: this pane already derives all three for its scroll manifest, so the
+  // body reuses them instead of deriving a second copy on every model revision.
+  const preparedView = useMemo(
+    () => (projection ? { projection, rows: renderRows, anchorEntries } : undefined),
+    [projection, renderRows, anchorEntries],
+  );
 
   // VirtualList's own imperative handle (getScrollElement/scrollToIndex) is
   // the seam useTranscriptScroll needs for every scroll-behavior concern
@@ -532,6 +538,7 @@ export default function Session({ params, paneId, focused: paneFocused }: PanePr
       <TranscriptBody
         model={model}
         config={displayConfig}
+        preparedView={preparedView}
         surface="live"
         disclosureScope={`transcript:live:${ref}`}
         sessionRef={ref}

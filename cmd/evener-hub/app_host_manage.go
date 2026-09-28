@@ -10,12 +10,12 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"sort"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/BurntSushi/toml"
-	"github.com/google/uuid"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-hub/internal/appsource"
 	"primeradiant.com/evener/cmd/evener-hub/internal/fsdurability"
@@ -283,6 +283,56 @@ type pendingHostReceipt struct {
 type hostPersistChange struct {
 	receipt   *pendingHostReceipt
 	tombstone *hostTombstoneStage
+	// marker, remnant, resolved, and attempt are the teardown-repair records
+	// one write stages beyond the store's own set: the staged-receipt marker a
+	// commit's step-(2) write carries and its flip writes move, the durable
+	// remnant a committed-with-teardown-failure writes in the write that
+	// finalizes its receipt, the typed resolved record a clearance writes, and
+	// the attempt record a `teardown-retry`/`teardown-recover` claim writes.
+	// Like the receipt and the tombstone they are merged by the derivation and
+	// installed only by a successful write, so a failed write and the
+	// compensation behind it leave the store exactly as it was.
+	marker        *pendingHostMarker
+	remnant       *pendingHostRemnant
+	resolved      *pendingHostRemnant
+	attempt       *pendingHostAttempt
+	fencedAttempt *pendingHostAttempt
+	// carryReceipts are receipts this write carries beyond the store's own set
+	// and its own commit's: the collision write adopts the file's bytes when a
+	// foreign edit won the race, and must adopt that file's records with it
+	// rather than drop them as an owned name's superseded history.
+	carryReceipts map[string]HostMutationReceipt
+	// dropReceipt names the scoped receipt key this write removes: a
+	// compensation must take the provisional receipt its own staged write
+	// installed with it, or an un-committed mutation leaves a receipt behind
+	// that a later replay reads as a recorded outcome (S10's un-commit paths
+	// dropped it the same way).
+	dropReceipt string
+	// dropMarker names a host whose staged-receipt marker this write removes:
+	// the post-commit write that replaces the marker with the finalized receipt
+	// is a write that carries no marker for its host, and the derivation must
+	// drop the stored one rather than preserve it.
+	dropMarker string
+}
+
+// pendingHostMarker is the staged-receipt marker one hub.toml write carries,
+// keyed by the host name the marker map is keyed by.
+type pendingHostMarker struct {
+	Name   string
+	Marker HostStagedReceipt
+}
+
+// pendingHostRemnant is one teardown-remnant record (open or resolved) a
+// hub.toml write carries.
+type pendingHostRemnant struct {
+	RemnantID string
+	Remnant   HostTeardownRemnant
+}
+
+// pendingHostAttempt is one teardown-attempt record a hub.toml write carries.
+type pendingHostAttempt struct {
+	AttemptID string
+	Attempt   HostTeardownAttempt
 }
 
 // hostStore is the durable host set: every live entry, in the order a rewrite
@@ -333,6 +383,24 @@ type hostStore struct {
 	// that a superseded receipt was compacted away, so a replay naming the
 	// marked key refuses `stale-entry` instead of fresh-applying.
 	prunedReceipts map[string]PrunedReceiptMarker
+	// stagedReceipts is the durable staged-receipt marker set the file carries,
+	// keyed by host name (spec 08 §5; app_host_remnants.go): at most one staged
+	// entry per host, so a staged marker for host A never blocks a mutation on
+	// host B. A commit's step-(2) write installs its own marker here, the flip
+	// writes move it, and the post-commit write replaces it with the finalized
+	// receipt.
+	stagedReceipts map[string]HostStagedReceipt
+	// remnants is the durable teardown-remnant set the file carries, keyed by
+	// the server-generated remnantId (spec 08 §6; app_host_remnants.go). An open
+	// remnant fences its host name for every lifecycle and attach path; a
+	// cleared one stays as the typed resolved record the `already-cleared` and
+	// `recovered-cleared` replays render.
+	remnants map[string]HostTeardownRemnant
+	// attempts is the durable teardown-attempt set the file carries, keyed by
+	// the server-generated attempt id: the claim `teardown-retry` and
+	// `teardown-recover` write in the same atomic hub.toml write that claims the
+	// remnant, and the fence a timed-out run leaves standing.
+	attempts map[string]HostTeardownAttempt
 }
 
 // set installs entries as the store's contents; the constructor calls it once
@@ -342,14 +410,6 @@ func (s *hostStore) set(entries []hostreg.Host) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.entries = entries
-}
-
-// clearHighWater drops name's high-water record: a removal that never
-// committed must not leave one behind. Callers hold hostManagerConfig.mu.
-func (s *hostStore) clearHighWater(name string) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	delete(s.highWater, name)
 }
 
 // setHighWaterMap installs the file's high-water records at boot; the
@@ -389,15 +449,6 @@ func (s *hostStore) addReceipt(key string, receipt HostMutationReceipt) {
 	s.receipts[key] = receipt
 }
 
-// dropReceipt removes one receipt: a mutation that un-commits after its commit
-// write landed must leave no receipt behind, in memory or on disk. Callers hold
-// hostManagerConfig.mu.
-func (s *hostStore) dropReceipt(key string) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	delete(s.receipts, key)
-}
-
 // receiptsSnapshot returns a copy of the stored receipt set, keyed by scoped
 // key. It takes only the store's own mutex, so the dedup read can run before
 // the host gate and the mutation lock (§5 orders dedup first); a writer's
@@ -426,6 +477,18 @@ func (s *hostStore) tombstoneSnapshot() map[string]HostTombstone {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return maps.Clone(s.tombstones)
+}
+
+// entryByName returns the store's live entry for name, if it holds one.
+func (s *hostStore) entryByName(name string) (hostreg.Host, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, entry := range s.entries {
+		if entry.Name == name {
+			return entry, true
+		}
+	}
+	return hostreg.Host{}, false
 }
 
 // hasTombstone reports whether name is present solely as a tombstone — the
@@ -458,21 +521,15 @@ func (s *hostStore) installRecords(records hostTOMLRecords) {
 	defer s.mu.Unlock()
 	s.tombstones = records.tombstones
 	s.prunedReceipts = records.prunedReceipts
+	s.stagedReceipts = records.stagedReceipts
+	s.remnants = records.remnants
+	s.attempts = records.attempts
 	if records.highWater != nil {
 		s.highWater = records.highWater
 	}
 	if records.receipts != nil {
 		s.receipts = records.receipts
 	}
-}
-
-// clearTombstone drops name's tombstone: a removal that un-commits after its
-// commit write landed must leave no tombstone behind, in memory or on disk.
-// Callers hold hostManagerConfig.mu.
-func (s *hostStore) clearTombstone(name string) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	delete(s.tombstones, name)
 }
 
 // poison records err as the reason the durable host set is not fully loaded.
@@ -731,6 +788,24 @@ func writeHubTOMLHostsRecords(path string, entries, known []hostreg.Host, record
 		delete(doc, "pruned_receipts")
 	} else {
 		doc["pruned_receipts"] = prunedTables
+	}
+	stagedTables := hubTOMLStagedReceiptTables(fileCfg, entries, known, records.stagedReceipts, records.droppedStaged)
+	if len(stagedTables) == 0 {
+		delete(doc, "staged_receipts")
+	} else {
+		doc["staged_receipts"] = stagedTables
+	}
+	remnantTables := hubTOMLTeardownRemnantTables(fileCfg, entries, known, records.remnants, records.droppedRemnants)
+	if len(remnantTables) == 0 {
+		delete(doc, "teardown_remnants")
+	} else {
+		doc["teardown_remnants"] = remnantTables
+	}
+	attemptTables := hubTOMLTeardownAttemptTables(fileCfg, entries, known, records.attempts, records.remnants, records.droppedAttempts)
+	if len(attemptTables) == 0 {
+		delete(doc, "teardown_attempts")
+	} else {
+		doc["teardown_attempts"] = attemptTables
 	}
 	if migrated {
 		doc[legacySidecarMigratedKey] = true
@@ -1207,6 +1282,31 @@ type hubHostManager struct {
 	// instead of racing it (testing.md's "Prove a Wait with a Signal" rule); nil
 	// in production.
 	testOnlyParkPostCommit func(name string)
+	// testOnlyParkInCommit, when non-nil, is called by Add immediately after it
+	// enters its mutation critical section (the mutation lock held, nothing
+	// exposed yet). It exists so a test can park a commit inside that section
+	// deterministically instead of racing it — the testOnlyParkPostCommit
+	// precedent, for the *pre*-commit window. Nil in production.
+	testOnlyParkInCommit func(name string)
+	// testOnlyBeforePinnedRun, when non-nil, is called by `teardown-retry` after
+	// it releases its gate reservation and immediately before the pinned teardown
+	// runs. It exists so a test can hold the host gate at that instant and prove
+	// the bounded deadline still terminates the retry — the manager's teardown
+	// paths block on that gate and take no context. Nil in production.
+	testOnlyBeforePinnedRun func(name string)
+	// testOnlyAfterStage, when non-nil, is called at the end of a commit's
+	// step-(2) write, with the mutation lock still held — the staged-write→flip
+	// window. It exists so a test can open that window deterministically (a
+	// foreign hub.toml write) and prove the compensation drops the marker and
+	// the provisional receipt the staged write installed. Nil in production.
+	testOnlyAfterStage func(name string)
+	// testOnlyTeardown, when non-nil, replaces the post-commit teardown the
+	// mutation handlers run (the manager's RemoveHost/UpdateHost, or the
+	// registry's own Remove/Update with no manager wired). It exists so a test
+	// can produce the commit-point failure spec 08 §6 defines — a teardown that
+	// fails after the commit landed — without a live host, the
+	// testOnlyParkPostCommit precedent. Nil in production.
+	testOnlyTeardown func(ctx context.Context, name string) error
 }
 
 // newHubHostManager builds the manager over the live registries. hosts is the
@@ -1253,6 +1353,13 @@ func newHubHostManager(sources *appsource.Registry, manager *sshconn.Manager, cf
 		policy:           hostRecordPolicyFor(cfg),
 		logf:             logf,
 	}}
+	// The remnant fence is wired to the real record set (registry spec 08 §6):
+	// every gate that consults it — the retention and capacity exemptions, the
+	// boot collision rule, `deploy`/`restart`/`plan`, attach, and the
+	// re-add/update/remove refusals — reads the durable open remnants rather
+	// than a placeholder. A nil seam would answer "no remnant" and silently
+	// disable the host-wide fence, so it is never left nil.
+	m.cfg.remnantFence = m.openRemnantID
 	if m.cfg.planFacts == nil && manager != nil {
 		// The production refresh seam (deploy pipeline 08b §6 step 1): the
 		// ungated one-shot SSH preflight the manager runs against the host, read
@@ -1343,9 +1450,25 @@ func newHubHostManager(sources *appsource.Registry, manager *sshconn.Manager, cf
 	// alongside the host entries (spec §15: "boot restores them alongside the
 	// host entries, and they survive controller restarts").
 	m.cfg.store.setRecordMaps(fileRecords.Tombstones, fileRecords.PrunedReceipts)
+	// The teardown-repair records load with the other machine-managed sections;
+	// decodeConfig already validated each shape, so they are restored as-is (the
+	// same hard startup-error posture a corrupt host entry takes).
+	m.cfg.store.setRemnantMaps(fileRecords.StagedReceipts, fileRecords.TeardownRemnants, fileRecords.TeardownAttempts)
 	collided := false
 	if hasFile {
 		collided = m.breakBootTombstoneCollision(fileRecords)
+	}
+	// Boot finalizes each staged-receipt marker by the persisted phase and flags
+	// (spec §5: "Boot finalizes each host entry by the persisted phase and flags
+	// ... and the receipt records `bootRecovered: true`"). A marker is the
+	// durable evidence of a commit whose post-commit write was lost, so boot
+	// runs the phase-aware recovery and finalizes from the observed result
+	// before the hub serves; a failure is logged and leaves the marker for the
+	// next mutation-path write or the next boot.
+	for _, name := range sortedStagedMarkerNames(m.cfg.store.stagedSnapshot()) {
+		if _, err := m.finalizeOrphanMarkerIfAny(context.Background(), name, true); err != nil {
+			m.logf("boot finalization of the staged receipt marker for %q refused: %v", name, err)
+		}
 	}
 	migrated, err := m.migrateLegacyHostSidecar()
 	if err != nil {
@@ -1393,10 +1516,26 @@ func (m *hubHostManager) breakBootTombstoneCollision(records Config) bool {
 		if _, collides := records.Tombstones[entry.Name]; !collides {
 			continue
 		}
-		if m.remnantGated(entry.Name) {
-			// S12's fenced arm: a live entry must never be minted over an open
-			// remnant. Unreachable while the gated-name source is empty.
-			continue
+		{
+			if remnantID, open := m.openRemnantID(entry.Name); open {
+				// Spec §6's fenced arm: "a boot collision involving a
+				// remnant-gated name leaves the open remnant resumable by
+				// `remnantId`: the boot-collision above-mark bump is forbidden
+				// while a remnant is open for that name — boot excludes the
+				// colliding live entry from the live set as
+				// `blocked-pending-teardown` (never published live) until
+				// `teardown-retry` resolves it, so no live incarnation is ever
+				// created over an open remnant". The name stays in hub.toml and
+				// leaves the live set here; `teardown-retry` resolves the remnant
+				// and the operator's next boot (or re-add) publishes it.
+				m.logf("host %q is blocked-pending-teardown: open remnant %s fences the colliding live entry; resume it through evener/host/teardown-retry", entry.Name, remnantID)
+				m.cfg.store.remove(entry.Name)
+				if err := m.cfg.hosts.Remove(entry.Name); err != nil {
+					m.logf("host %q not excluded from the live set: %v", entry.Name, err)
+				}
+				collided = true
+				continue
+			}
 		}
 		rebased, err := m.cfg.hosts.RebaseBootCollision(entry.Name)
 		if err != nil {
@@ -1700,8 +1839,8 @@ func hostManageHandler[Req, Resp any](h func(context.Context, Req) (Resp, error)
 // directly.
 func registerHostManageHandlers(server *appserver.Server, sources *appsource.Registry, cfg hubcore.WebConfig, hosts *hostreg.Registry, navigation *NavigationService, logf func(format string, args ...any)) *hubHostManager {
 	m := newHubHostManager(sources, cfg.RemoteHostSSHManager, cfg, cfg.RemoteHostConfigPath, hosts, logf)
-	appserver.HandleTyped(server.Router(), appwire.MethodEvenerHostAdd, hostManageHandler(func(ctx context.Context, params appwire.HostAddParams) (appwire.HostRow, error) {
-		row, err := m.Add(ctx, params)
+	appserver.HandleTyped(server.Router(), appwire.MethodEvenerHostAdd, hostManageHandler(func(ctx context.Context, params appwire.HostAddParams) (appwire.HostMutationResult, error) {
+		row, err := m.AddResult(ctx, params)
 		if err == nil && navigation != nil {
 			navigation.Invalidate(navigationChangeHint{Sources: true})
 		}
@@ -1709,15 +1848,15 @@ func registerHostManageHandlers(server *appserver.Server, sources *appsource.Reg
 	}))
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerHostList, hostManageHandler(m.List))
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerHostStatus, hostManageHandler(m.Status))
-	appserver.HandleTyped(server.Router(), appwire.MethodEvenerHostRemove, hostManageHandler(func(ctx context.Context, params appwire.HostRemoveParams) (appwire.HostRemoveResponse, error) {
-		resp, err := m.Remove(ctx, params)
+	appserver.HandleTyped(server.Router(), appwire.MethodEvenerHostRemove, hostManageHandler(func(ctx context.Context, params appwire.HostRemoveParams) (appwire.HostMutationResult, error) {
+		resp, err := m.RemoveResult(ctx, params)
 		if err == nil && navigation != nil {
 			navigation.Invalidate(navigationChangeHint{Sources: true})
 		}
 		return resp, err
 	}))
-	appserver.HandleTyped(server.Router(), appwire.MethodEvenerHostUpdate, hostManageHandler(func(ctx context.Context, params appwire.HostUpdateParams) (appwire.HostUpdateResponse, error) {
-		resp, err := m.Update(ctx, params)
+	appserver.HandleTyped(server.Router(), appwire.MethodEvenerHostUpdate, hostManageHandler(func(ctx context.Context, params appwire.HostUpdateParams) (appwire.HostMutationResult, error) {
+		resp, err := m.UpdateResult(ctx, params)
 		// An edit can change the host's roots, which is what a source's identity
 		// addresses; both add and remove invalidate the manifest's sources on
 		// commit, and an edit that moves a source must converge the same way
@@ -1726,6 +1865,18 @@ func registerHostManageHandlers(server *appserver.Server, sources *appsource.Reg
 			navigation.Invalidate(navigationChangeHint{Sources: true})
 		}
 		return resp, err
+	}))
+	// The teardown-repair mutations register here, with the registry surface
+	// they repair: both act on this controller's own hub.toml records and
+	// channels, so they are controller-local like add/update/remove — refused
+	// for a remote origin and never added to remoteHostAdminMethods (pinned by
+	// TestHostManageNotForwarded) — and routed with catalog entries in the same
+	// change (the router-vs-catalog invariant).
+	appserver.HandleTyped(server.Router(), appwire.MethodEvenerHostTeardownRetry, hostManageHandler(func(ctx context.Context, params appwire.HostTeardownRetryParams) (appwire.HostTeardownRetryResult, error) {
+		return m.TeardownRetry(ctx, params)
+	}))
+	appserver.HandleTyped(server.Router(), appwire.MethodEvenerHostTeardownRecover, hostManageHandler(func(ctx context.Context, params appwire.HostTeardownRecoverParams) (appwire.HostTeardownRecoverResult, error) {
+		return m.TeardownRecover(ctx, params)
 	}))
 	// evener/host/plan rides the same manager and the same registration-time
 	// origin guard the settings mutations do (app_host_ops.go): plan is a
@@ -1779,7 +1930,7 @@ func (m *hubHostManager) hostOnline(host string) bool {
 // the machine-managed hub.toml (registry spec 08 §6/§19, decided 2026-09-26;
 // the spec-correction PR carries the §6/§19 rewrite).
 func hostEntryRow(host hostreg.Host) appwire.HostRow {
-	return appwire.HostRow{
+	row := appwire.HostRow{
 		Name:          host.Name,
 		Address:       host.SSH,
 		User:          host.User,
@@ -1792,6 +1943,7 @@ func hostEntryRow(host hostreg.Host) appwire.HostRow {
 		Generation:    host.Generation,
 		IncarnationID: host.IncarnationID,
 	}
+	return row
 }
 
 // hostRow renders one host's list row: the effective entry fields plus live
@@ -2013,6 +2165,35 @@ func hostMutationConflict(name string) error {
 	return appwire.Conflict(fmt.Sprintf("host %q: a mutation is already in progress; retry once it finishes", name))
 }
 
+// remnantFenceRefusal is registry spec 08 §6's typed `remnant-open` conflict
+// refusal: an open remnant fences the name for every lifecycle and attach path
+// until teardown succeeds, and the refusal names the blocking `remnantId` —
+// "never the gate-busy form — the fence names the blocking `remnantId`, not an
+// in-flight operation".
+func remnantFenceRefusal(name, remnantID string) error {
+	return appwire.RemnantOpen(remnantID, fmt.Sprintf(
+		"host %q: an open teardown remnant (%s) fences this name; resume it through evener/host/teardown-retry first",
+		name, remnantID))
+}
+
+// teardownUnknownKeyRefusal is §6/§11's typed `teardown-unknown-key` not-found
+// refusal: "unknown or purged ID → typed `teardown-unknown-key` not-found". A
+// cleared remnant whose resolved record still survives is NOT this arm — it
+// returns `already-cleared`.
+func teardownUnknownKeyRefusal(remnantID string) error {
+	return appwire.TeardownUnknownKey(remnantID, fmt.Sprintf(
+		"no teardown remnant %q is recorded; it was never minted, or its cleared record was purged by retention", remnantID))
+}
+
+// concurrentEditRefusal is §11's typed `concurrent-edit` conflict refusal for
+// the commit path: the hub.toml fingerprint moved between the validation read
+// and the commit's final check after bounded retries.
+func concurrentEditRefusal(stagedFingerprint, observedFingerprint string) error {
+	return appwire.ConcurrentEdit(stagedFingerprint, observedFingerprint, fmt.Sprintf(
+		"hub.toml changed under the mutation (staged %s, observed %s); re-read the host list and retry",
+		stagedFingerprint, observedFingerprint))
+}
+
 // hostEntryField maps a hostreg validation refusal to the input it blames, in
 // the wire spelling the dialog's own inputs use (HostEntry's fields), so a
 // message lands on the control the operator can fix. A refusal that blames the
@@ -2071,210 +2252,12 @@ func hostEntryToHost(name string, entry appwire.HostEntry) hostreg.Host {
 	}
 }
 
-// Add registers one host entry: name + SSH address + key path. It
-// validates exactly like hub.toml loading (component-03 rules) and refuses a
-// name the live set already holds — the duplicate refusal applies
-// to live entries only: a removed name is gone, so re-add works — and refuses
-// a name whose removal is still in flight, so a re-add cannot race the
-// removal's finish.
-//
-// The commit is durable-first: hub.toml is rewritten before anything is
-// exposed, so a write failure commits nothing (no registry entry, no store
-// row, no source) and the caller can retry. The name's retained attach state
-// resets at the top of the commit, before anything is exposed, so a
-// concurrent attach that starts the moment the entry becomes visible cannot
-// have its lifecycle state erased by the re-add's own cleanup. Only after
-// the write lands does the live set gain the entry — registry, store row, and a fully wired
-// source — at which point the host is attachable without a restart. A live
-// insert that fails after the write rolls hub.toml back to the pre-add
-// contents (rollbackHubTOML), so the durable state never keeps an add the API
-// reported as failed; so does a write that fails behind its own rename, which
-// leaves the entry durable while nothing is live — no reported-failed add
-// can resurrect on the next start.
+// Add is the pre-union adapter over AddResult: it returns the committed row and
+// reports a non-committed arm as the error that arm means, so a caller that
+// speaks only the shipped shape never reads a teardown failure or a dropped
+// commit as success. The wire handlers call the Result methods directly.
 func (m *hubHostManager) Add(ctx context.Context, params appwire.HostAddParams) (appwire.HostRow, error) {
-	if err := guardControllerLocalHosts(ctx); err != nil {
-		return appwire.HostRow{}, err
-	}
-	name := strings.TrimSpace(params.Entry.Name)
-	// The add's mutationId is optional (spec 08 §4/§5): when present it must
-	// still be a §1-shaped id (non-empty, at most 128 bytes), and its shape is
-	// validated before anything else. A keyless add skips dedup below and is
-	// non-retryable as a continuation (§5).
-	if params.MutationID != "" {
-		if err := mutationIDShapeRefusal(name, params.MutationID); err != nil {
-			return appwire.HostRow{}, err
-		}
-	}
-	// Dedup runs first for a keyed add — before the entry is validated and
-	// before the live-name duplicate check (§5's fixed processing order, §11:
-	// "a retried `add` cannot duplicate"): a replay returns the recorded
-	// receipt without re-applying, and a mutationId colliding with a
-	// current-generation receipt of a different name or kind refuses typed.
-	if params.MutationID != "" {
-		current, currentKnown := m.currentHostIdentity(name)
-		hit, err := m.lookupHostMutationReceipt(hostReceiptQuery{
-			MutationID:   params.MutationID,
-			Name:         name,
-			Kind:         hostMutationAdd,
-			Current:      current,
-			CurrentKnown: currentKnown,
-		})
-		if err != nil {
-			return appwire.HostRow{}, err
-		}
-		if hit != nil {
-			return hostReceiptRow(hit.Receipt, hostMutationAdd), nil
-		}
-	}
-	// A keyless add commits an audit record under a server-generated key —
-	// "no client idempotency semantics", so no client can replay or collide
-	// with it (§11). The key is minted before the commit and rides the same
-	// atomic write as the entry, so the crash/audit trail has no keyless gap.
-	auditKey := params.MutationID
-	if auditKey == "" {
-		auditKey = uuid.NewString()
-	}
-	// The wire's entry is the whole configured host, so the add path stores what
-	// the dialog collected instead of the three fields slice 1 carried: the
-	// entry is normalized and validated as one record, exactly as hub.toml
-	// loading does.
-	entry := hostreg.Normalize(hostEntryToHost(params.Entry.Name, params.Entry))
-	// Validate without inserting: validateHostEntry runs the exact checks
-	// hub.toml loading runs (name grammar, reserved name, ssh destination,
-	// user/ssh agreement, non-empty roots, the config_path/addr pair, and the
-	// addr host rules) over this one entry without touching live state, so
-	// nothing is exposed before the durable save below.
-	if err := validateHostEntry(entry); err != nil {
-		return appwire.HostRow{}, hostValidationRefusal(entry.Name, err)
-	}
-	// The commit below is the read-modify-write cycle the mutation mutex
-	// exists for; the mutex is released before the response row's facts read,
-	// which runs on the network and must not hold up concurrent commits — the
-	// same reason List and Status build rows lock-free.
-	m.cfg.mu.Lock()
-	// A removal of this name in flight must not admit a re-add: Remove's
-	// teardown runs without the mutation mutex, and an add landing inside
-	// that window would race the removal's finish — a re-registered source
-	// or store row the finish then drops, or a live channel for a host
-	// being removed. The refusal commits nothing, the hub.toml write included.
-	if m.isMutating(entry.Name) {
-		m.cfg.mu.Unlock()
-		return appwire.HostRow{}, hostMutationConflict(entry.Name)
-	}
-	if _, ok := m.cfg.hosts.Get(entry.Name); ok {
-		m.cfg.mu.Unlock()
-		return appwire.HostRow{}, appwire.InvalidParams(fmt.Sprintf("host %q: %v", entry.Name, hostreg.ErrDuplicateHost))
-	}
-	// A re-added name starts with no stale record, and the reset has to run
-	// HERE — before the save and the registry insert expose anything: the
-	// lifecycle events a concurrent attach delivers land through
-	// observeEvent, which takes no mutation mutex, so once the entry is
-	// visible an attach can record its midAttach or lastAttachError at any
-	// moment, and a drop that runs after the insert erases that record along
-	// with the stale one. Before the insert no record
-	// for the new generation can exist — every attach path requires the live
-	// entry — so a reset placed here sweeps exactly the stale state the
-	// re-add must not inherit, and nothing else. It hands the swept record
-	// back so a refusal below can put it back: a refused add commits nothing,
-	// the retained state included.
-	priorState := m.cfg.state.detach(entry.Name)
-	// A re-add — a name present solely as a tombstone — also clears the
-	// name-keyed caches for the new incarnation (spec §15). The tombstone's
-	// presence at this point is the condition: the derivation's purge removes
-	// it in the write below.
-	reAddedFromTombstone := m.cfg.store.hasTombstone(entry.Name)
-	// Mint the identity before the durable write. Spec 08 §15 requires the write
-	// that first records the host to also record its identity — "minted fresh on
-	// every add/re-add in the same atomic hub.toml write that mints the
-	// generation" — so the entry carries the stamped triple into the write, and
-	// the live insert below applies that same identity instead of minting a
-	// second one. Stamping advances the counters: a refused add leaves a gap,
-	// which is what "monotone and never reused" means for them.
-	identity, err := m.cfg.hosts.Stamp(entry)
-	if err != nil {
-		m.cfg.state.restore(entry.Name, priorState)
-		m.cfg.mu.Unlock()
-		return appwire.HostRow{}, err
-	}
-	entry = stampedEntry(entry, identity)
-	// The receipt the commit's own atomic write persists: pinned to the
-	// identity this add mints, carrying the row the response renders.
-	receipt := newHostMutationReceipt(auditKey, hostMutationAdd, entry, time.Now())
-	// A keyless add is non-retryable as a continuation; its receipt is the
-	// server-keyed audit record spec §11 defines, and the audit marker is what
-	// selects the audit compaction bound instead of the keyed receipt rules.
-	receipt.Audit = params.MutationID == ""
-	receiptKey := hostMutationReceiptKey(auditKey, entry.Name, hostMutationAdd, hostMutationIdentity{
-		Generation:    entry.Generation,
-		IncarnationID: entry.IncarnationID,
-	})
-	// Durable commit first: hub.toml is the record of truth for every host,
-	// so the entry is exposed only after the write landed. The
-	// pre-save snapshot is the rollback copy: should the live insert below
-	// fail, the file must not keep the entry (a failed add resurrecting on
-	// the next start).
-	prev := m.cfg.store.snapshot()
-	if err := m.persistOrCompensate(append(prev, entry), prev, hostPersistChange{receipt: &pendingHostReceipt{Key: receiptKey, Receipt: receipt}}); err != nil {
-		// A failure the rename already committed is compensated back to the
-		// pre-add contents (persistOrCompensate), so the refusal cannot stand
-		// as a pre-commit one and the next start cannot resurrect an add this
-		// call reports as failed.
-		m.cfg.state.restore(entry.Name, priorState)
-		m.cfg.mu.Unlock()
-		return appwire.HostRow{}, err
-	}
-	if err := m.addHostToRegistry(entry); err != nil {
-		// The live insert refused — e.g. an SSH manager with no registry, the
-		// one seam that can fail here — so the API reports failure and the
-		// file rolls back to the pre-add contents: a retry starts from the
-		// same durable state, instead of the next start silently completing
-		// an add this call reported as failed. The rollback still runs under
-		// the mutex: it is part of the commit, and a concurrent Add's own
-		// save must not interleave with restoring the file.
-		m.cfg.state.restore(entry.Name, priorState)
-		err = m.rollbackHubTOML(prev, unionHosts(prev, append([]hostreg.Host(nil), entry)), err)
-		m.cfg.mu.Unlock()
-		return appwire.HostRow{}, err
-	}
-	// The response row's retained-state fold is fenced on the entry's
-	// generation (hostRow), which the registry stamps at insert — the local
-	// entry predates the stamp. Reread the stored entry so the row carries the
-	// identity this call committed; a concurrent remove that already dropped
-	// it leaves the local entry, whose stale generation then fails the fence
-	// and renders the row without retained state — nothing a host that no
-	// longer exists may claim anyway.
-	if stored, ok := m.cfg.hosts.Get(entry.Name); ok {
-		entry = stored
-	}
-	m.cfg.store.add(entry)
-	// The receipt enters the dedup table only now: the durable write landed
-	// and the live insert held, so a concurrent keyed replay finding it names
-	// a mutation that really committed.
-	m.cfg.store.addReceipt(receiptKey, receipt)
-	if reAddedFromTombstone {
-		// A re-add clears the name-keyed caches (spec 08 §15: "re-add also
-		// clears the name-keyed caches (snapshot rows and last-known preflight
-		// facts) as part of its staged commit — an in-flight refresh from the
-		// removed incarnation or a stale name-keyed cache entry can never
-		// republish rows for the new host"). The removal's own write captured
-		// the rows into its tombstone, so dropping them here loses nothing: the
-		// tree re-applies the tombstone's retained rows until the new
-		// incarnation's first successful walk replaces them. The cache drop
-		// retires the old registration generation before registerSource mints
-		// the new one, so a walk holding the old capture cannot publish under
-		// the re-added name.
-		if m.cfg.remoteCache != nil {
-			m.cfg.remoteCache.RemoveSource(entry.Name)
-		}
-		if m.cfg.forgetLastGoodThreads != nil {
-			m.cfg.forgetLastGoodThreads(entry.Name)
-		}
-	}
-	m.registerSource(entry)
-	m.cfg.mu.Unlock()
-	// The commit is complete, so the row reads a fully added host — the entry
-	// this call committed, whatever concurrent mutations do around it.
-	return m.hostRow(ctx, entry), nil
+	return committedHostRow(m.AddResult(ctx, params))
 }
 
 // addHostToRegistry inserts entry into the live registry. With the SSH
@@ -2325,32 +2308,6 @@ func (m *hubHostManager) dropHostDerivedState(name string) {
 	if m.cfg.forgetLastGoodThreads != nil {
 		m.cfg.forgetLastGoodThreads(name)
 	}
-}
-
-// persistOrCompensate writes entries durably and, when the write's rename
-// already committed before its directory step failed, compensates the live
-// state back with previous — the content the file must hold for the live set
-// and the file to stay in step — before returning the failure. A plain
-// pre-rename refusal wrote nothing and is returned unchanged.
-//
-// change carries the records the mutation this write commits stages beyond the
-// store's own set: its receipt (which rides the same atomic write as the
-// commit, spec 08 §5) and, for a removal, the tombstone its write persists. A
-// compensation drops them with the failed mutation, because nothing the
-// derivation wrote is installed until the write returns success.
-func (m *hubHostManager) persistOrCompensate(entries, previous []hostreg.Host, change hostPersistChange) error {
-	if err := m.persistHosts(entries, previous, change); err != nil {
-		if hubTOMLRenameCommitted(err) {
-			// The rollback restores previous while still carrying hand-added
-			// extras: the union of the before and after sets tells the writer
-			// every name this mutation touched is accounted for, so the extras
-			// are exactly the operator's out-of-band entries and neither the
-			// mutation's own change nor a hand-added neighbour is lost.
-			return m.rollbackHubTOML(previous, unionHosts(previous, entries), err)
-		}
-		return err
-	}
-	return nil
 }
 
 // unionHosts returns a and b's distinct entries by name, in a-then-b order.
@@ -2493,8 +2450,8 @@ func (m *hubHostManager) mirrorBoundaries(entries, known []hostreg.Host, highWat
 // directory step failed is the other case: the file already holds previous,
 // so the state agrees and only the rollback's crash durability is uncertain
 // — reported as landed beside the cause, never as a failed rollback.
-func (m *hubHostManager) rollbackHubTOML(previous, known []hostreg.Host, cause error) error {
-	if err := m.persistHosts(previous, known, hostPersistChange{}); err != nil {
+func (m *hubHostManager) rollbackHubTOML(previous, known []hostreg.Host, cause error, change hostPersistChange) error {
+	if err := m.persistHosts(previous, known, change); err != nil {
 		if hubTOMLRenameCommitted(err) {
 			// The rollback's own rename landed: the file holds previous, the
 			// content the rollback exists to restore, and only its
@@ -2564,6 +2521,14 @@ func (m *hubHostManager) List(ctx context.Context, _ appwire.EmptyParams) (appwi
 		}
 		rows = append(rows, tombstoneRow(tombstone))
 	}
+	// Every row — live or tombstone — carries the remnant fence's own fields
+	// (spec §11): `openRemnantId` exactly when the name holds an open remnant,
+	// and `escalationAgeSec` when that remnant is past the escalation bound, so
+	// a reader can name the blocking remnant for the teardown-retry affordance
+	// without a second lookup.
+	for i := range rows {
+		m.stampRemnantRow(&rows[i])
+	}
 	slices.SortStableFunc(rows, func(a, b appwire.HostRow) int { return strings.Compare(a.Name, b.Name) })
 	return appwire.HostListResponse{Hosts: rows}, nil
 }
@@ -2585,604 +2550,33 @@ func (m *hubHostManager) Status(ctx context.Context, params appwire.HostStatusPa
 		return appwire.HostStatusResponse{}, appwire.InvalidParams(fmt.Sprintf("unknown host %q", name))
 	}
 	m.cfg.mu.Unlock()
-	return appwire.HostStatusResponse{Host: m.hostRow(ctx, host)}, nil
+	row := m.hostRow(ctx, host)
+	m.stampRemnantRow(&row)
+	return appwire.HostStatusResponse{Host: row}, nil
 }
 
-// Remove deregisters one live host entry: its store row, its source, its
-// registry entry, and its channel all go, and the name is gone until
-// re-added. Every live host is removable — hub.toml is the machine-managed
-// store the hub writes, so there is no file-declared class to protect
-// (registry spec 08 §6/§19, decided 2026-09-26; the spec-correction PR carries
-// the rewrite); unknown names are InvalidParams; a removal
-// already in flight for the name is a Conflict.
-//
-// The removal runs in three phases. The commit phase holds the mutation
-// mutex: validation, the durable-first store write (hub.toml loses the entry
-// before any live state changes, so a write failure leaves the host fully
-// intact and the caller can retry — a failure behind the write's own rename
-// included, compensated back to the live contents before the refusal
-// returns), the store row's drop in the same
-// critical section (the store is what every later save derives its contents
-// from, so a row kept past the save would let a concurrent Add or Remove
-// re-persist an entry this removal already committed), and the mutation mark
-// that fences the name. The mutex then releases for the teardown itself: the
-// manager-owned RemoveHost blocks on the per-host gate a supervisor holds for
-// a whole reconnect/ensure cycle and on the ssh child's exit, so holding the
-// mutation mutex across it would freeze every concurrent host/list,
-// host/status, and host/add behind one host's removal.
-// The mark fences the window instead: Add, Update, and a second Remove refuse
-// the name, so nothing re-exposes, edits, or double-tears a host whose removal
-// is in flight. The finish phase retakes the mutex, clears the mark, and
-// completes the bookkeeping. A teardown that fails rolls hub.toml forward
-// again to keep the entry (rollbackHubTOML over the live snapshot), so the
-// durable state never forgets a host the live set still holds, and the cleared
-// mark leaves the name retryable. Nothing is resurrected: the entry, its source,
-// its channel, and its retained attach state are all gone by the time a
-// successful Remove returns — and so are its cached remote-thread rows, so
-// its sessions stop rendering with the removal instead of lingering live
-// until the refresher's next tick.
-func (m *hubHostManager) Remove(ctx context.Context, params appwire.HostRemoveParams) (appwire.HostRemoveResponse, error) {
-	if err := guardControllerLocalHosts(ctx); err != nil {
-		return appwire.HostRemoveResponse{}, err
+// stampRemnantRow fills a row's remnant-fence fields from the durable remnant
+// set: `openRemnantId` exactly when the name holds an open remnant, and
+// `escalationAgeSec` only when that remnant is past the escalation bound. Both
+// stay absent otherwise, per the absent-when-unknown rule.
+func (m *hubHostManager) stampRemnantRow(row *appwire.HostRow) {
+	remnantID, open := m.cfg.store.markedRemnantFor(row.Name)
+	if !open {
+		return
 	}
-	name := strings.TrimSpace(params.Name)
-	// Spec 08 §4/§5's ordering, shared with update: the required-together guard
-	// fields are checked before the dedup lookup, the dedup lookup runs before
-	// the gate, and the pair is checked under the mutation lock past the dedup
-	// check.
-	if err := hostGuardedMutationRefusal(name, params.MutationID, params.ExpectedGeneration, params.ExpectedIncarnationID); err != nil {
-		return appwire.HostRemoveResponse{}, err
+	row.OpenRemnantID = remnantID
+	if remnant, ok := m.cfg.store.remnantByID(remnantID); ok {
+		row.EscalationAgeSec = m.escalationAgeSec(remnant)
 	}
-	current, currentKnown := m.currentHostIdentity(name)
-	hit, err := m.lookupHostMutationReceipt(hostReceiptQuery{
-		MutationID:   params.MutationID,
-		Name:         name,
-		Kind:         hostMutationRemove,
-		Current:      current,
-		CurrentKnown: currentKnown,
-	})
-	if err != nil {
-		return appwire.HostRemoveResponse{}, err
-	}
-	if hit != nil {
-		// A replay returns the recorded removed row — never not-found, and
-		// never a second teardown. This is the arm a lost-response remove
-		// retry after a re-add lands on: the recorded outcome comes back for
-		// recovery, and the new incarnation is untouched.
-		return appwire.HostRemoveResponse{Host: hostReceiptRow(hit.Receipt, hostMutationRemove)}, nil
-	}
-	// The per-host gate is reserved before the mutation lock (deploy pipeline
-	// 08b §5) and held across the durable commit; a held gate — a deploy or
-	// restart in flight, an Ensure, a plan's mint window — is the typed busy
-	// refusal. It is released before the teardown below, which takes the same
-	// per-host lock internally (§5: "released across post-commit teardowns").
-	releaseGate, err := m.acquireHostGate(name, hostops.Holder{Kind: hostops.HolderManager, Activity: "remove"})
-	if err != nil {
-		return appwire.HostRemoveResponse{}, err
-	}
-	defer releaseGate()
-	// Commit phase: the removal's durable state and the in-memory store
-	// change together, under the mutation mutex, as one read-modify-write
-	// cycle.
-	m.cfg.mu.Lock()
-	if m.isMutating(name) {
-		m.cfg.mu.Unlock()
-		return appwire.HostRemoveResponse{}, hostMutationConflict(name)
-	}
-	host, ok := m.cfg.hosts.Get(name)
-	if !ok {
-		m.cfg.mu.Unlock()
-		return appwire.HostRemoveResponse{}, appwire.InvalidParams(fmt.Sprintf("unknown host %q", name))
-	}
-	// The guarded pair, checked under the mutation lock against the live
-	// entry's current pair — past the dedup check, so a replay never reaches
-	// it. A mismatch on either half is the typed `stale-entry` refusal
-	// committing nothing: a lost-response remove retry landing after a re-add
-	// with a fresh key refuses stale instead of tearing down the new
-	// incarnation.
-	if host.Generation != params.ExpectedGeneration || host.IncarnationID != params.ExpectedIncarnationID {
-		m.cfg.mu.Unlock()
-		return appwire.HostRemoveResponse{}, hostStaleEntryRefusal(name, hostMutationIdentity{
-			Generation:    params.ExpectedGeneration,
-			IncarnationID: params.ExpectedIncarnationID,
-		}, hostMutationIdentity{Generation: host.Generation, IncarnationID: host.IncarnationID})
-	}
-	// Persist first: the durable store loses the entry before any live
-	// state changes, so a save failure resurrects nothing — the host stays
-	// fully intact and the caller can retry. A failure the rename already
-	// committed leaves the file without the entry while the live set still
-	// holds the host, so it is compensated back to the live contents before
-	// the refusal is returned — the store row is still in place (it drops
-	// only after a successful save), so the snapshot still carries the entry.
-	//
-	// The removal also advances the name's presence epoch in that same write
-	// (spec 08 §1: "advanced on every add, remove, re-add, and expiry purge"),
-	// recorded as the name's high-water triple: the removed incarnation's
-	// generation and id with the epoch the removal moved to, so a later re-add
-	// mints above it and a paginated reader can still validate the removed
-	// boundary. NextPresenceEpoch is the one place that arithmetic lives: the
-	// registry's own Remove applies the same rule when the live entry drops in
-	// the teardown below.
-	advanced, err := m.cfg.hosts.NextPresenceEpoch(host.Name)
-	if err != nil {
-		// The advance spec 08 §1 requires for a removal cannot be minted, so the
-		// removal refuses with nothing staged: the name keeps its live record and
-		// the host stays fully intact.
-		m.cfg.mu.Unlock()
-		return appwire.HostRemoveResponse{}, fmt.Errorf("remove host %q: %w", name, err)
-	}
-	// The tombstone is built HERE, in the commit phase, and not in the finish
-	// phase that drops the derived state: its retained projection is the
-	// source's last-known-good rows, and the finish phase's
-	// forgetLastGoodThreads drops exactly those rows. Capturing after that
-	// forget would persist an empty projection for a host whose sessions were
-	// read a moment ago (spec 08 §15: "the retained projection of the source's
-	// last-known-good rows"). The projection is bounded newest-first here, so
-	// the write is one atomic record with the sizes its caps promise.
-	var retainedRows []appwire.Thread
-	if m.cfg.lastGoodThreads != nil {
-		retainedRows = m.cfg.lastGoodThreads(host.Name)
-	}
-	tombstone := newHostTombstone(host, advanced, retainedRows, m.nowTime(), m.cfg.policy)
-	// The receipt rides the removal's own atomic write, pinned to the removed
-	// incarnation's pair (a removal advances the presence epoch, never the
-	// generation), so the lost-response replay later hits under the very pair
-	// its commit landed.
-	receipt := newHostMutationReceipt(params.MutationID, hostMutationRemove, host, time.Now())
-	receiptKey := hostMutationReceiptKey(params.MutationID, host.Name, hostMutationRemove, hostMutationIdentity{
-		Generation:    host.Generation,
-		IncarnationID: host.IncarnationID,
-	})
-	if err := m.persistOrCompensate(m.cfg.store.without(host.Name), m.cfg.store.snapshot(), hostPersistChange{receipt: &pendingHostReceipt{Key: receiptKey, Receipt: receipt}, tombstone: &hostTombstoneStage{Tombstone: tombstone}}); err != nil {
-		// The removal committed nothing: the write derived (and would have
-		// installed) the tombstone and its high-water twin, but a failed write
-		// installs nothing, so the name keeps its live record and the host
-		// stays fully intact.
-		m.cfg.mu.Unlock()
-		return appwire.HostRemoveResponse{}, err
-	}
-	// The row drops with the save it belongs to, in the same critical
-	// section: a concurrent Add or Remove committing in the window below
-	// derives its save from the store, and a row still present here would
-	// re-persist an entry this removal already committed — the next start
-	// would resurrect the host this call is removing.
-	m.cfg.store.remove(host.Name)
-	// The receipt enters the dedup table now that the durable write landed; a
-	// teardown that fails below drops it again with the un-commit, so the
-	// table never serves a receipt for a removal that did not stand.
-	m.cfg.store.addReceipt(receiptKey, receipt)
-	// The removal also drops the host's outstanding confirmation tokens (§3:
-	// "live `remove` revokes every outstanding token row for the name"). The
-	// pendingStoreSync revocation *intent* is §9's; this is the durable effect
-	// it must carry, applied in its own atomic store write after the hub.toml
-	// commit — which cannot be unwound — so a failure is logged rather than
-	// returned. The rows that would survive it are inert: every deploy compares
-	// the token's bound (generation, incarnation id) with the registry's current
-	// pair, and this removal retires both halves, while a re-add mints a fresh
-	// pair that no older token can name.
-	// A teardown that later fails un-commits the removal above but not this
-	// revocation: the name stays live with no outstanding token, so the next
-	// deploy re-plans — the fail-closed direction, and the one that never leaves
-	// a live host a token that outlived its plan.
-	// The mark fences the name for the window the mutex is about to release.
-	m.markMutating(host.Name)
-	m.cfg.mu.Unlock()
-	// The gate is released across the teardown (spec 08b §5: "released across
-	// post-commit teardowns"): manager.RemoveHost takes the same per-host lock
-	// internally, so holding this reservation across it would deadlock. Stage,
-	// persist, and the store swap above all ran under the reservation.
-	//
-	// BOUNDARY (S13): §4's "gate released last" — a reservation held through
-	// the teardown so the released window cannot be entered at all — is S13's
-	// attachUnderGate-class work. This slice releases here, before the manager
-	// call, because the manager's teardown takes the same non-reentrant
-	// per-host lock; the mutation mark fences the name for the window in the
-	// meantime.
-	releaseGate()
-	if m.testOnlyParkPostCommit != nil {
-		m.testOnlyParkPostCommit(host.Name)
-	}
-	// The revocation itself runs after the mutation mutex is released: it is a
-	// whole-file store write, and the store's own mutex (innermost, per spec §4's
-	// lock order) already serializes it against every other store write, so
-	// holding the manager's mutex across that file I/O would stall every
-	// concurrent add/list/status on one host's removal for no ordering gain. The
-	// mark set just above still fences the name for this window.
-	m.revokeHostTokens(host.Name)
-
-	// Teardown, mutex-free: with a manager wired, RemoveHost drops the
-	// registry entry, stops the supervisor, and clears the channel under the
-	// host lock in one step, so a concurrent Ensure cannot publish a fresh
-	// channel after deregistration; without one (tests, embedders) the
-	// registry's own Remove is the whole story.
-	var teardownErr error
-	if m.cfg.manager != nil {
-		if err := m.cfg.manager.RemoveHost(host.Name); err != nil {
-			teardownErr = fmt.Errorf("remove host %q: %w", host.Name, err)
-		}
-	} else if err := m.cfg.hosts.Remove(host.Name); err != nil {
-		teardownErr = err
-	}
-
-	// Finish phase: the mutex comes back for the bookkeeping, and the mark
-	// clears on both exits — a success leaves the name addable again, a
-	// failure leaves it fully intact and retryable.
-	m.cfg.mu.Lock()
-	m.unmarkMutating(host.Name)
-	if teardownErr != nil {
-		// The teardown failed before dropping anything live (RemoveHost
-		// refuses ahead of its registry step), so the removal un-commits: the
-		// store row returns and the file regains it. The rollback saves the
-		// live snapshot, not a pre-remove copy: concurrent Adds and Removes
-		// may have committed in the window, and their entries must survive.
-		m.cfg.store.add(host)
-		// The removal un-commits, so its receipt goes with it — in memory and,
-		// via the rollback's owned-name rule, out of the file the failed
-		// commit wrote.
-		m.cfg.store.dropReceipt(receiptKey)
-		// The staged high-water entry goes with the removal it belonged to: the
-		// name is live again, and a mark left behind would claim an advance
-		// that never committed.
-		m.cfg.store.clearHighWater(host.Name)
-		// The tombstone the commit wrote goes with it too: the name is live
-		// again, so the rollback write must not leave a removed-host record (or
-		// a `list` row) for a host the live set holds.
-		m.cfg.store.clearTombstone(host.Name)
-		err := m.rollbackHubTOML(m.cfg.store.snapshot(), m.cfg.store.snapshot(), teardownErr)
-		m.cfg.mu.Unlock()
-		return appwire.HostRemoveResponse{}, err
-	}
-	// The name's derived state — source, attach record, remote-thread cache
-	// rows, and the retained last-known-good list — goes with the entry, in
-	// the order dropHostDerivedState documents. The cache rows matter here
-	// in particular: the refresher's next tick is up to 30s away, and
-	// sourceOnline fail-opens for the now-unregistered source ID, so those
-	// rows would keep rendering the removed host's sessions as live until
-	// then; the host can serve no future refresh, so they go now — and the
-	// host's registration generation drops with them, so a refresh walking
-	// while the removal committed cannot republish them.
-	m.dropHostDerivedState(host.Name)
-	m.cfg.mu.Unlock()
-	// The removal row carries the whole effective entry it removed — the same
-	// fields a list or status row renders — not the name/address/key subset
-	// slice 1 needed: the wire's HostRow now carries the configured entry, so a
-	// removal response that dropped User, EvenerPath, ConfigPath, Addr, or Roots
-	// would be a different shape than every other row for the same host.
-	removedRow := hostEntryRow(host)
-	removedRow.Removed = true
-	return appwire.HostRemoveResponse{Host: removedRow}, nil
 }
 
-// Update applies one edit to a live host entry: the durable hub.toml entry,
-// the store row, the live registry entry, and the host's channel. Name is
-// immutable — it is the target this call addresses, never a value it changes,
-// because it keys source IDs, cached rows, manager state, and the file's own
-// entries. Every live host is editable — hub.toml is the machine-managed store
-// the hub writes, so there is no file-declared class to protect (registry spec
-// 08 §6/§19); unknown names are InvalidParams; a mutation already in flight for
-// the name is a Conflict.
-//
-// The three phases mirror Remove's, which is what keeps the durable-first order
-// and the compensation paths in one shape:
-//
-//   - Commit, under the mutation mutex: refuse an in-flight mutation on the
-//     name, require a live entry, validate the entry BEFORE anything is
-//     written — validateHostEntry is the same call the add flow runs, so a
-//     refusal commits nothing and an entry the registry would reject never
-//     reaches the file — persist durable-first with one atomic write that
-//     replaces the entry in place, replace the store row in the same critical
-//     section, set the mark, release the mutex.
-//   - Live, mutex-free: with a manager wired, manager.UpdateHost replaces the
-//     registry entry and retires the channel under the per-host gate as one
-//     atomic step; without one, read the pre-swap entry, call the registry's own
-//     Update, and retire the name's retained attach record by that entry's
-//     generation — the generation-scoped clear the manager path's hook performs,
-//     so a stale row racing the clear is still fenced. An error means nothing in
-//     the registry or manager changed: the registry refuses ahead of its own
-//     swap.
-//   - Finish, under the mutex: clear the mark, compensate a failed live phase
-//     by rolling hub.toml back to the live set as it stands now — not a
-//     pre-commit copy, so a concurrent add or removal that committed in this
-//     window survives — and, on success, compare the roots this call replaced
-//     with the stored entry's. A roots edit drops the remote-thread cache entry,
-//     retires the old source, clears its retained last-known-good list, then
-//     registers the source afresh before building the response row from the
-//     entry the registry now holds. Retiring both identities before the clear
-//     fences any in-flight old-source walk out of re-storing obsolete rows.
-//
-// An edit never dials, deploys, or attaches: its live effects are exactly the
-// registry replacement, the teardown, and the derived-state reconciliation.
-func (m *hubHostManager) Update(ctx context.Context, params appwire.HostUpdateParams) (appwire.HostUpdateResponse, error) {
-	if err := guardControllerLocalHosts(ctx); err != nil {
-		return appwire.HostUpdateResponse{}, err
+// sortedStagedMarkerNames returns a staged-marker set's host names in sorted
+// order, so the boot's finalization pass walks a deterministic order.
+func sortedStagedMarkerNames(markers map[string]HostStagedReceipt) []string {
+	names := make([]string, 0, len(markers))
+	for name := range markers {
+		names = append(names, name)
 	}
-	name := strings.TrimSpace(params.Name)
-	// Spec 08 §4/§5's ordering: the required-together guard fields are checked
-	// before the dedup lookup, so a request missing any of them is a validation
-	// refusal committing nothing — never a receipt replay and never a fresh
-	// apply. The pair itself is checked under the mutation lock below, past the
-	// dedup lookup.
-	if err := hostGuardedMutationRefusal(name, params.MutationID, params.ExpectedGeneration, params.ExpectedIncarnationID); err != nil {
-		return appwire.HostUpdateResponse{}, err
-	}
-	// Dedup-first (spec §5): a replay returns the recorded receipt with no
-	// pair check, no gate, and no re-apply; a mutationId already used by a
-	// current-generation receipt of another name or kind refuses typed.
-	current, currentKnown := m.currentHostIdentity(name)
-	hit, err := m.lookupHostMutationReceipt(hostReceiptQuery{
-		MutationID:   params.MutationID,
-		Name:         name,
-		Kind:         hostMutationUpdate,
-		Current:      current,
-		CurrentKnown: currentKnown,
-	})
-	if err != nil {
-		return appwire.HostUpdateResponse{}, err
-	}
-	if hit != nil {
-		return appwire.HostUpdateResponse{Host: hostReceiptRow(hit.Receipt, hostMutationUpdate)}, nil
-	}
-	// The per-host gate is reserved before the mutation lock (deploy pipeline
-	// 08b §5: gate first, lock second) and held across the durable commit. A
-	// held gate — a deploy/restart, an Ensure, a plan's mint window — is the
-	// typed busy refusal, past the dedup check so a replay above never
-	// consulted it. It is released before the live phase's manager call below,
-	// which takes the same per-host lock internally.
-	releaseGate, err := m.acquireHostGate(name, hostops.Holder{Kind: hostops.HolderManager, Activity: "update"})
-	if err != nil {
-		return appwire.HostUpdateResponse{}, err
-	}
-	defer releaseGate()
-	// params.Entry.Name is deliberately not read: the update's target is
-	// params.Name, and not reading the entry's own name is what makes a rename
-	// unrepresentable rather than merely refused. Name is immutable — it keys
-	// source IDs, cached rows, manager state, and the file's own entries — so the
-	// request has nowhere to put a new one.
-	entry := hostreg.Normalize(hostEntryToHost(name, params.Entry))
-	// Commit phase: the durable state and the in-memory store change together,
-	// under the mutation mutex, as one read-modify-write cycle. Its refusals are
-	// ordered as the surface specifies: the in-flight mark first (a conflict — the
-	// name is transiently held and the caller retries), then the target itself —
-	// a live entry, so a gone or tombstone-only name is not found — and only then the
-	// entry's shape. Resolving the target before validating the entry is what
-	// keeps a generic field refusal from masking the more specific target refusal
-	// an invalid entry aimed at a hub.toml name or an unknown name would
-	// otherwise hide.
-	m.cfg.mu.Lock()
-	if m.isMutating(name) {
-		m.cfg.mu.Unlock()
-		return appwire.HostUpdateResponse{}, hostMutationConflict(name)
-	}
-	before, ok := m.cfg.hosts.Get(name)
-	if !ok {
-		m.cfg.mu.Unlock()
-		return appwire.HostUpdateResponse{}, appwire.InvalidParams(fmt.Sprintf("unknown host %q", name))
-	}
-	// The guarded pair, checked under the mutation lock against the target's
-	// current (generation, incarnation id) — past the dedup check, so a replay
-	// never reaches it (spec §4/§11). A mismatch on either half is the typed
-	// `stale-entry` refusal committing nothing: no receipt, no write, no live
-	// change. This is also what refuses a delayed retry carrying a pre-bump
-	// generation with no matching current-generation receipt, so it can never
-	// overwrite fields an intervening update changed.
-	if before.Generation != params.ExpectedGeneration || before.IncarnationID != params.ExpectedIncarnationID {
-		m.cfg.mu.Unlock()
-		return appwire.HostUpdateResponse{}, hostStaleEntryRefusal(name, hostMutationIdentity{
-			Generation:    params.ExpectedGeneration,
-			IncarnationID: params.ExpectedIncarnationID,
-		}, hostMutationIdentity{Generation: before.Generation, IncarnationID: before.IncarnationID})
-	}
-	// Validate before the write: a refusal here commits nothing, and an entry the
-	// registry would reject never reaches the file. The registry re-runs the same
-	// validation under its own lock; this check is what keeps the file clean, not
-	// a substitute for it. It runs last of the commit-phase refusals so an invalid
-	// entry still gets the target's own refusal above, and still before the
-	// durable save so nothing is written when it refuses.
-	if err := validateHostEntry(entry); err != nil {
-		m.cfg.mu.Unlock()
-		return appwire.HostUpdateResponse{}, hostValidationRefusal(name, err)
-	}
-	// Mint the identity the swap will carry before the write, exactly as Add
-	// does and for the same reason (spec 08 §15): the generation this edit
-	// advances to must be recorded by the write that records the edit, and the
-	// swap below applies the stamped generation instead of minting a second one.
-	identity, err := m.cfg.hosts.Stamp(entry)
-	if err != nil {
-		m.cfg.mu.Unlock()
-		return appwire.HostUpdateResponse{}, err
-	}
-	entry = stampedEntry(entry, identity)
-	// The receipt the commit's own atomic write persists: pinned to the
-	// post-bump generation the edit advances to and the incarnation id it
-	// keeps (§5's "for `update`, the post-bump value the same commit advances
-	// to"), so a commit-then-replay hits under the generation the commit
-	// actually landed.
-	receipt := newHostMutationReceipt(params.MutationID, hostMutationUpdate, entry, time.Now())
-	receiptKey := hostMutationReceiptKey(params.MutationID, entry.Name, hostMutationUpdate, hostMutationIdentity{
-		Generation:    entry.Generation,
-		IncarnationID: entry.IncarnationID,
-	})
-	// Persist first: the durable store holds the edited entry before any live
-	// state changes, so a save failure leaves the host fully intact and the
-	// caller can retry. A failure the rename already committed leaves the file
-	// holding the edit while the live set still holds the old entry, so it is
-	// compensated back before the refusal returns.
-	if err := m.persistOrCompensate(m.cfg.store.withReplaced(entry), m.cfg.store.snapshot(), hostPersistChange{receipt: &pendingHostReceipt{Key: receiptKey, Receipt: receipt}}); err != nil {
-		m.cfg.mu.Unlock()
-		return appwire.HostUpdateResponse{}, err
-	}
-	// The store row moves with the save it belongs to, in the same critical
-	// section: a concurrent Add or Remove committing in the window below derives
-	// its save from the store, and a row still holding the old entry would
-	// re-persist it, undoing the edit on the next start.
-	m.cfg.store.replace(entry)
-	// The receipt enters the dedup table now that the durable write landed: a
-	// concurrent replay finding it names an edit that really committed. The
-	// live phase below may still un-commit the edit, and then the receipt is
-	// dropped with the rollback — the file and the table stay in step.
-	m.cfg.store.addReceipt(receiptKey, receipt)
-	m.markMutating(name)
-	m.cfg.mu.Unlock()
-	// The gate is released across the live phase (spec 08b §5: "released
-	// across post-commit teardowns"): manager.UpdateHost takes the same
-	// per-host lock internally to rebind/tear down, so holding this
-	// reservation across it would deadlock. Stage, persist, and the store swap
-	// above all ran under the reservation.
-	//
-	// BOUNDARY (S13): §4's "gate released last" — a reservation held through
-	// the rebind/teardown so the released window cannot be entered at all — is
-	// S13's attachUnderGate-class work. This slice releases here, before the
-	// manager call, because the manager's rebind takes the same non-reentrant
-	// per-host lock; the mutation mark fences the name for the window in the
-	// meantime.
-	releaseGate()
-	if m.testOnlyParkPostCommit != nil {
-		m.testOnlyParkPostCommit(name)
-	}
-
-	// Live phase, mutex-free: the manager's swap blocks on the per-host gate a
-	// supervisor can hold for a whole reconnect/ensure cycle, so holding the
-	// mutation mutex across it would freeze every concurrent host/list,
-	// host/status, and host/add. The mark fences the window instead.
-	var liveErr error
-	if m.cfg.manager != nil {
-		// The retiring identity's name-keyed attach record is retired from inside
-		// the manager's own gate hold, in the same hold as the swap: UpdateHost
-		// runs this hook after it has replaced the registry entry and torn down the
-		// retired identity's channel, and still before it releases the gate,
-		// handing it the entry the swap replaced. The retired identity's Detached
-		// is emitted earlier in that same hold, and no lifecycle event for the new
-		// identity can interleave between the swap and the retirement, because
-		// every event is delivered synchronously with the gate held.
-		//
-		// The retirement is generation-scoped rather than a mere delete. A row that
-		// captured the still-current old entry before the swap can be parked
-		// outside this gate (the row build runs without the mutation mutex), pass
-		// hostEntryCurrent before the swap, and only reach its state write after
-		// this hook deleted the record — a late write that a bare remove would let
-		// recreate the retired identity's facts. Marking the retired entry's
-		// generation (retired.Generation) fences that row: its generation is at or
-		// below the mark, so its apply folds nothing and its recordKnown writes
-		// nothing, while a row built from the new identity's higher generation is
-		// served and records normally. The hook must not call back into the
-		// manager (the gate is non-reentrant) and must not take the mutation mutex
-		// (another goroutine may hold it while parked on this gate) — it only
-		// touches the record state's own lock.
-		if err := m.cfg.manager.UpdateHost(entry, func(retired hostreg.Host) {
-			m.cfg.state.retire(name, retired.Generation)
-		}); err != nil {
-			liveErr = fmt.Errorf("update host %q: %w", name, err)
-		}
-	} else {
-		// No sshconn manager is wired (tests, embedders), so no lifecycle event can
-		// exist for the new identity: retiring inline on the successful swap gives
-		// the same guarantee the manager path's hook holds, and this also clears an
-		// offline host's retained error and facts when an address edit has no
-		// channel to tear down. The pre-swap entry's generation is read immediately
-		// before the swap — the mark fences rows built from it, exactly as the
-		// manager path fences rows built from the entry its swap replaced, so a
-		// stale row still racing the clear cannot resurrect the retired identity's
-		// state even with no manager.
-		prior, _ := m.cfg.hosts.Get(name)
-		if err := m.cfg.hosts.Update(entry); err != nil {
-			liveErr = err
-		} else {
-			m.cfg.state.retire(name, prior.Generation)
-		}
-	}
-
-	// Finish phase: the mutex comes back for the bookkeeping, and the mark clears
-	// on both exits.
-	m.cfg.mu.Lock()
-	m.unmarkMutating(name)
-	if liveErr != nil {
-		// The live phase refused ahead of changing anything, so the edit
-		// un-commits: the store row goes back to the live entry and the file
-		// follows it. The rollback saves the live snapshot, not a pre-commit
-		// copy: concurrent Adds and Removes may have committed in the window,
-		// and their entries must survive.
-		//
-		// An absent live entry makes the un-commit a removal, exactly as the
-		// finish phase's vanished arm below: a directly driven registry can drop
-		// the name while this edit runs (the mutation mark only fences this
-		// manager's own paths), and restoring the committed row would then write
-		// the edit for a name that is not live — an edit a later Add duplicates
-		// and the next hub.toml load rejects. The committed row is dropped before
-		// the snapshot is taken, so the rollback writes the live set without it.
-		if live, ok := m.cfg.hosts.Get(name); ok {
-			m.cfg.store.replace(live)
-		} else {
-			m.cfg.store.remove(name)
-			// The name's derived state goes with the dropped row, exactly as the
-			// finish phase's vanished arm below retires it and in the order
-			// dropHostDerivedState documents. The committed row is already gone,
-			// so nothing renders this name again.
-			m.dropHostDerivedState(name)
-		}
-		// The edit un-commits, so its receipt goes with it — in memory and, via
-		// the rollback's owned-name rule below, out of the file the failed
-		// commit wrote. A mutation the API reports as failed must leave no
-		// receipt a later replay could serve as committed.
-		m.cfg.store.dropReceipt(receiptKey)
-		// The un-commit drops the name from the live set, so the rollback's
-		// known set must name it too — otherwise the writer would read the
-		// vanished entry as a hand-added one and keep it.
-		err := m.rollbackHubTOML(m.cfg.store.snapshot(), unionHosts(m.cfg.store.snapshot(), []hostreg.Host{entry}), liveErr)
-		m.cfg.mu.Unlock()
-		return appwire.HostUpdateResponse{}, err
-	}
-	stored, ok := m.cfg.hosts.Get(name)
-	if !ok {
-		// A concurrent removal took the name while this edit's teardown ran —
-		// impossible for the same name through this manager (the mark fences it),
-		// but a directly driven registry could still have dropped it: the entry
-		// is gone, so there is no row to render. Remove the committed store row
-		// and save that live snapshot before refusing; otherwise a later Add would
-		// append beside the stale edit and poison the next hub.toml load as a
-		// duplicate name.
-		refusal := appwire.InvalidParams(fmt.Sprintf("unknown host %q", name))
-		// The committed edit is dropped with the vanished name, so its receipt
-		// goes too: nothing committed stands for a name that is not live.
-		m.cfg.store.dropReceipt(receiptKey)
-		m.cfg.store.remove(name)
-		// The name's derived state goes with it, exactly as Remove's finish
-		// phase retires it and in the order dropHostDerivedState documents. The
-		// store row is already gone, so nothing renders this name again.
-		m.dropHostDerivedState(name)
-		err := m.rollbackHubTOML(m.cfg.store.snapshot(), unionHosts(m.cfg.store.snapshot(), []hostreg.Host{entry}), refusal)
-		m.cfg.mu.Unlock()
-		return appwire.HostUpdateResponse{}, err
-	}
-	// The source's identity owns its derived rows, so a roots edit changes what
-	// the source addresses and everything keyed to the old roots goes with it:
-	// the remote-thread cache entry (its per-source generation included), the
-	// source itself, and the web server's retained last-known-good list, after
-	// which the source is registered afresh under the new roots. Both identities
-	// must retire before retention is cleared: an in-flight old-source walk then
-	// fails either its cache-generation fence or its source-instance ownership
-	// check and cannot re-store obsolete rows after the clear. The cache drop also
-	// stays before registerSource, so it cannot delete the generation the fresh
-	// registration mints.
-	//
-	// A non-roots edit changes nothing the source's identity owns: it is the same
-	// source, its cache generation still owns its rows, and the retained list is
-	// still this host's — an edit of the SSH address or a path must not blank the
-	// host's sessions in the tree.
-	if !slices.Equal(before.Roots, stored.Roots) {
-		if m.cfg.remoteCache != nil {
-			m.cfg.remoteCache.RemoveSource(name)
-		}
-		if m.cfg.sources != nil {
-			m.cfg.sources.Remove(name)
-		}
-		if m.cfg.forgetLastGoodThreads != nil {
-			m.cfg.forgetLastGoodThreads(name)
-		}
-		m.registerSource(stored)
-	}
-	m.cfg.mu.Unlock()
-	// The row's retained-state fold is fenced on the entry's generation, so the
-	// reread above is what makes the returned row the identity this call
-	// committed.
-	return appwire.HostUpdateResponse{Host: m.hostRow(ctx, stored)}, nil
+	sort.Strings(names)
+	return names
 }

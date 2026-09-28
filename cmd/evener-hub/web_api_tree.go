@@ -931,6 +931,9 @@ func appThreadTreeEntries(thread appwire.Thread) (schema.SessionMeta, hubcore.Li
 		},
 		ParentSessionID: appThreadTreeParentSessionID(thread, ref),
 		IsSubagent:      thread.Evener.Kind == "subagent",
+		// The row's last message reaches the tree through the meta too, so an
+		// offline host's last-known row, which is not live, keeps it (S1d).
+		LastMessage: thread.Evener.LastMessage,
 	}
 	// Issue #152: a hub-synthesized fork (parent set, not a subagent) must
 	// stamp DivergenceTurn so the 96cp invariant (ParentSessionID != "" &&
@@ -961,6 +964,7 @@ func appThreadTreeEntries(thread appwire.Thread) (schema.SessionMeta, hubcore.Li
 		PendingEscalation:  len(thread.Evener.PendingEscalations) > 0,
 		PendingEscalations: thread.Evener.PendingEscalations,
 		PendingQuestion:    appwire.ClonePendingQuestion(thread.Evener.PendingQuestion),
+		Failure:            appwire.CloneThreadFailure(thread.Evener.Failure),
 		Project:            project,
 	}
 	entry.RunningJobs, entry.CompletedJobs = hubcore.SplitNonAgentJobs(diagnosticsJobs(thread.Evener.Diagnostics))
@@ -971,6 +975,7 @@ func appThreadTreeEntries(thread appwire.Thread) (schema.SessionMeta, hubcore.Li
 		entry.Subagents = *thread.Evener.Subagents
 	}
 	entry.LastTurnEndedAt = hubcore.UnixMilliTime(thread.Evener.LastTurnEndedAt)
+	entry.LastMessage = thread.Evener.LastMessage
 	// The remote hub's root row carries its session's task progress (S13b), so
 	// the remote row shows its task line like a local one.
 	entry.Tasks = appwire.CloneTaskAggregate(thread.Evener.Tasks)

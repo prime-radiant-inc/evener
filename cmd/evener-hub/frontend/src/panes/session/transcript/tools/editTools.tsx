@@ -17,36 +17,14 @@
 // classifier it uses for real diffs.
 
 import type { ItemModel } from "@evener/appwire-client";
-import { parseArgs, str } from "@evener/appwire-client";
+import { diffStats, editDiffText, parseArgs, str } from "@evener/appwire-client";
 import { DiffBlock } from "../../../../widgets";
 import type { ToolRenderProps } from "../toolRenderers";
 import { registerToolRenderer } from "../toolRenderers";
 
-// diffStats counts add/del lines the same way DiffBlock's own parser does
-// (a "+++"/"---" file-header line never counts as content).
-function diffStats(text: string): { added: number; removed: number } {
-  let added = 0;
-  let removed = 0;
-  for (const line of text.split("\n")) {
-    if (line.startsWith("+++") || line.startsWith("---")) continue;
-    if (line.startsWith("+")) added += 1;
-    else if (line.startsWith("-")) removed += 1;
-  }
-  return { added, removed };
-}
-
 function diffResultText(text: string): string {
   const { added, removed } = diffStats(text);
   return added === 0 && removed === 0 ? "ok" : `+${added} -${removed}`;
-}
-
-// editDiffText mirrors renderer-tools.js's editDiffText: a flat synthesized
-// diff (no real @@ hunk range) - every old_string line prefixed "-", every
-// new_string line prefixed "+", framed by "---"/"+++" file-name headers.
-function editDiffText(path: string, oldString: string, newString: string): string {
-  const oldLines = oldString.split("\n").map((l) => `-${l}`);
-  const newLines = newString.split("\n").map((l) => `+${l}`);
-  return [`--- ${path}`, `+++ ${path}`, ...oldLines, ...newLines].join("\n");
 }
 
 function EditFileBody({ item }: ToolRenderProps) {

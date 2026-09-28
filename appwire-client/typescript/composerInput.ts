@@ -60,3 +60,29 @@ export function buildComposerInput(
 ): InputItem[] {
   return buildInput(translateAttachmentMarkers(text, attachments), attachments, skillNames);
 }
+
+// Text going back into a draft: after exactly one blank line (the draft's
+// own trailing whitespace dropped), or in place of a blank draft. "prefix"
+// puts it in front with no separator, for the web palette's slash-command
+// insert: a command parses only at the start of the draft. Shared so the web
+// and the phone put a queued message back into the composer the same way
+// (spec 8.5: "after a blank line ... as the web does").
+export function mergeDraftText(existing: string, addition: string, placement: "append" | "prefix" = "append"): string {
+  if (placement === "prefix") return `${addition}${existing}`;
+  return existing.trim() === "" ? addition : `${existing.replace(/\s+$/, "")}\n\n${addition}`;
+}
+
+/**
+ * Turns a raw text-selection string into a markdown blockquote: outer
+ * whitespace-only lines are dropped, every remaining line gets its own
+ * "> " prefix (an internal blank line becomes a bare "> "), and the block
+ * ends with one blank line so it reads as its own paragraph once appended
+ * after whatever the composer draft already holds. An empty/whitespace-only
+ * selection formats to "" - callers never insert a lone blank block.
+ */
+export function formatQuoteBlock(selectedText: string): string {
+  const trimmed = selectedText.trim();
+  if (trimmed === "") return "";
+  const lines = trimmed.split(/\r\n|\n/);
+  return `${lines.map((line) => `> ${line}`).join("\n")}\n\n`;
+}

@@ -70,7 +70,7 @@ func (s *Session) swapEnvAndRefresh(next *execenv.LocalExecutionEnvironment, rec
 		return err
 	}
 	// Step 0 — move the session's scratch onto next BEFORE any command runs on
-	// it: the git snapshot and the pre-warm below spawn through next, and a
+	// it: the git snapshot below spawns through next, and a
 	// command is what mints a scratch on an environment that owns none. Adopting
 	// after them would find next already owning a fresh one, keep it, and retain
 	// the session's original — a silently changed $EVENER_SCRATCH_DIR and an
@@ -128,16 +128,13 @@ func (s *Session) swapEnvAndRefresh(next *execenv.LocalExecutionEnvironment, rec
 		hook(refreshCtx)
 	}
 
-	// Step 1 — OUTSIDE s.mu: compute the new EnvInfo and its git snapshot, and
-	// pre-warm next's git-root cache. The git snapshot forks several `git`
-	// subprocesses and `git status` can take seconds on a big repo; s.mu must
-	// never be held across a subprocess (it would stall every event emit,
-	// Meta() autosave, and hub poll while forking). The pre-warm is load
-	// bearing, not an optimization: step 2's refreshSystemPromptCache calls
-	// renderSystemPrompt, which calls execenv.GitRootOrEmpty(next, ...) again —
-	// next's memoization cache starts empty (WithWorkingDirectory gives it a
-	// fresh gitRoots cache), so without this call step 2 would fork
-	// `git rev-parse --show-toplevel` while holding s.mu.
+	// Step 1 — OUTSIDE s.mu: compute the new EnvInfo and its git snapshot. The
+	// git snapshot forks several `git` subprocesses and `git status` can take
+	// seconds on a big repo; s.mu must never be held across a subprocess (it
+	// would stall every event emit, Meta() autosave, and hub poll while
+	// forking). Step 2's refreshSystemPromptCache runs under s.mu, so the
+	// prompt render must never start a subprocess either: it reads session
+	// state and files only.
 	newWD := next.WorkingDirectory()
 	ei := s.snapshotEnvironmentInfo(next)
 	if !s.cfg.testOnly.skipGitSnapshot {
@@ -150,15 +147,10 @@ func (s *Session) swapEnvAndRefresh(next *execenv.LocalExecutionEnvironment, rec
 			ei.GitOriginURL = gitOriginURL(refreshCtx, next, newWD)
 		}
 	}
-	if !s.cfg.NoProjectPrompts {
-		// Pre-warm next's git-root cache; see the lock-order comment above.
-		_ = execenv.GitRootOrEmptyContext(refreshCtx, next, newWD)
-	}
-
 	// Step 2 — under s.mu: atomically install env+envInfo (so the two are
 	// never observed in a torn intermediate state) and rebuild the caches that
-	// derive from them. next's git-root cache is already warm, so this render
-	// hits the cache instead of forking.
+	// derive from them. The prompt render here reads session state and files
+	// only and starts no subprocess.
 	s.mu.Lock()
 	if s.closing {
 		s.mu.Unlock()

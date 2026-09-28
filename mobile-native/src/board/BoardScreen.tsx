@@ -1,13 +1,25 @@
-import type {
-	NavigationPinSectionDescriptor,
-	NavigationProjectSummary,
-	NavigationSessionSummary,
-	SearchResult,
+import {
+	humanizeState,
+	type NavigationPinSectionDescriptor,
+	type NavigationProjectSummary,
+	type NavigationSessionSummary,
+	quietState,
+	type SearchResult,
 } from "@evener/appwire-client";
 import { useFocusEffect, useIsFocused } from "@react-navigation/native";
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
 import { SymbolView } from "expo-symbols";
-import { type ReactNode, type RefObject, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import {
+	type ReactNode,
+	type RefObject,
+	useCallback,
+	useEffect,
+	useMemo,
+	useReducer,
+	useRef,
+	useState,
+	useSyncExternalStore,
+} from "react";
 import {
 	ActionSheetIOS,
 	Alert,
@@ -25,8 +37,11 @@ import {
 import type { ConversationClientLike } from "../../../mobile/src/services/conversation";
 import { useConnection } from "../ConnectionProvider";
 import { reconnectDelay } from "../hubConnection";
+import { getNativeMutationRuntime } from "../nativeMutationRuntime";
 import { drafts } from "../nativeDrafts";
 import type { Routes } from "../screens";
+import { useScreenInFront } from "../sheet/useScreenInFront";
+import { Toast, useToast } from "../Toast";
 import { Action, useColors, useTextScale } from "../ui";
 import {
 	type Band,
@@ -41,12 +56,15 @@ import {
 	summaryText,
 	usualPlace,
 } from "./attention";
+import { ACTIVITY_POLL_MS, ActivityPoll, isFreshRead } from "./activityPoll";
 import type { OrganizeBy, SeenMarkers } from "./boardMemory";
+import { createSearchController, type SearchScope } from "./boardSearch";
 import { BoardNotices, NoticeRow } from "./BoardNotices";
-import { BandHeader, BoardRows, FoldChevron, type RowContext } from "./BoardRow";
+import { BandHeader, FoldChevron } from "./BoardRow";
+import { BoardRows, type RowContext } from "./BoardRows";
 import { BoardToolbar } from "./BoardToolbar";
 import { type BoardController, type BoardSnapshot, createBoardController } from "./boardData";
-import { createSearchController, type SearchScope } from "./boardSearch";
+import { BoardStops, stopToast } from "./boardStops";
 import { BoardSeen, type HubSeenMarks, hubSeenMarks } from "./hubSeen";
 import { foldedSections, organizeByPreference, recentSearches, seenMarkers } from "./nativeBoardMemory";
 import { notices } from "./notices";
@@ -63,7 +81,10 @@ import {
 	SECTION_FOLDS,
 } from "./projectTree";
 import { projectName, ProjectSectionHeader, ProjectTreeRow } from "./ProjectTreeRow";
+import { fleetMinutes } from "./pulse";
 import { PulseMeter } from "./PulseMeter";
+import { archivingSessionId, type RowActionContext } from "./rowActions";
+import { archiveRow, rowSwipes, type SwipeRowAction } from "./rowSwipes";
 import { SearchResults } from "./SearchResults";
 import { type BoardOrganization, organizationOpen, useBoardOrganization } from "./useBoardOrganization";
 import { PROJECT_SECTIONS, showExpanded, useProjectSections } from "./useProjectSections";
@@ -84,18 +105,40 @@ type MoreItem = Extract<ProjectTreeItem, { kind: "more" | "moreProjects" }>;
 
 /** Home (spec 7.1): every live session ordered by who needs you, then the
  * user's pinned categories, projects and archive. */
-export function BoardScreen({ navigation }: Props) {
+export function BoardScreen({ navigation, route }: Props) {
 	const { activeProfile } = useConnection();
 	const { palette } = useColors();
 	if (!activeProfile) return <View style={{ flex: 1, backgroundColor: palette.page }} />;
-	return <Board key={activeProfile.id} hubId={activeProfile.id} hubName={activeProfile.name} navigation={navigation} />;
+	return (
+		<Board
+			key={activeProfile.id}
+			hubId={activeProfile.id}
+			hubName={activeProfile.name}
+			navigation={navigation}
+			routeKey={route.key}
+		/>
+	);
 }
 
-function Board({ hubId, hubName, navigation }: { hubId: string; hubName: string; navigation: Navigation }) {
-	const { client, state, fatal } = useConnection();
+function Board({
+	hubId,
+	hubName,
+	navigation,
+	routeKey,
+}: {
+	hubId: string;
+	hubName: string;
+	navigation: Navigation;
+	routeKey: string;
+}) {
+	const { client, state, fatal, activeProfile } = useConnection();
 	const { palette } = useColors();
 	const connected = state === "ready";
 	const focused = useIsFocused();
+	// Activity keeps polling while only a sheet covers the Board: the sheet
+	// is part of the screen under it.
+	const inFront = useScreenInFront(routeKey);
+	const { activityOf, msSinceRead, revision: activityRevision } = useActivityPoll(client, connected, inFront);
 	const [board] = useState(createBoardController);
 	useEffect(() => () => board.dispose(), [board]);
 	const snapshot = useSyncExternalStore(board.subscribe, board.getSnapshot);
@@ -133,12 +176,26 @@ function Board({ hubId, hubName, navigation }: { hubId: string; hubName: string;
 	// The retry rests while the Board is out of view: the controller is
 	// paused then, and a paused read is cancelled, not answered.
 	useReadRetry(board, connected && focused ? client : null, snapshot);
-	useHubSeenMarks(hubMarks, connected ? client : null, snapshot);
 
 	const bands = useMemo(
-		() => liveBands(snapshot.live.rows, snapshot.needsYou.rows, (row) => seen.isSeen(row)),
+		() =>
+			liveBands(
+				snapshot.live.rows,
+				snapshot.needsYou.rows,
+				(row) => seen.isSeen(row),
+				(row) => {
+					const activity = activityOf(row.ref);
+					return activity ? quietState(activity, msSinceRead ?? 0)?.state === "stuck" : false;
+				},
+			),
 		// The revisions re-run isSeen after a mark, a pruned mark or first run.
-		[snapshot.live.rows, snapshot.needsYou.rows, seen, seenRevision, hubSeenRevision],
+		// activityRevision re-runs isStuck after each read, and activityOf
+		// changes when the connection drops or returns, or the read goes
+		// stale. msSinceRead is left out on purpose: it changes on every
+		// render, so it would re-sort Working every time, and a row's place
+		// only needs to be as fresh as the last read (its why line reads
+		// msSinceRead live).
+		[snapshot.live.rows, snapshot.needsYou.rows, seen, seenRevision, hubSeenRevision, activityOf, activityRevision],
 	);
 	useFirstRun(board, markers, snapshot, focused);
 
@@ -155,6 +212,13 @@ function Board({ hubId, hubName, navigation }: { hubId: string; hubName: string;
 	);
 	const folds = useCategoryFolds(hubId);
 	const organization = useBoardOrganization(hubId);
+	const toast = useToast();
+	// Stop from the Board (ruling 17), one per hub. A new client lets go of
+	// every Stop the old one was delivering; an interrupt not yet sent stays
+	// in the outbox, delivered as any durable Stop is.
+	const [stops] = useState(() => new BoardStops(getNativeMutationRuntime, hubId));
+	useEffect(() => () => stops.dispose(), [stops]);
+	useEffect(() => () => stops.releaseAll(), [stops, client]);
 	const categoryMenu = pinnedCategoryMenu(organization, () => board.getSnapshot().pins.rows);
 	const projectSections = useProjectSections(hubId);
 	const [organizeBy, setOrganizeBy] = useState(() => organizeByPreference(hubId).get());
@@ -172,6 +236,7 @@ function Board({ hubId, hubName, navigation }: { hubId: string; hubName: string;
 		],
 		[snapshot.live.rows, snapshot.needsYou.rows, snapshot.pinSections, ...projectViews],
 	);
+	useHubSeenMarks(hubMarks, connected ? client : null, loadedRows);
 	const hubNotices = useMemo(
 		() => notices({ auth: snapshot.auth, sources: sources ?? [], plugins: snapshot.plugins, loadedRows }),
 		[snapshot.auth, sources, snapshot.plugins, loadedRows],
@@ -320,9 +385,36 @@ function Board({ hubId, hubName, navigation }: { hubId: string; hubName: string;
 			onPress: () => scrollTo("archived"),
 		});
 
-	const rowContext: RowContext = { connected, usual, hostLabel, now, onOpen: openSession, draftRefs };
-	const rows = (items: ClassifiedRow[], variant: "signal" | "quiet", moving: boolean) => (
-		<BoardRows items={items} variant={variant} moving={moving} context={rowContext} />
+	// What a row's actions may do now (rulings 16 and 21), by whether it sits
+	// in an archived tier.
+	const rowContext = (archived: boolean): RowActionContext => ({
+		connected: connected && activeProfile?.id === hubId,
+		organizationReady: organization.ready,
+		archived,
+	});
+	const runRowAction = (item: ClassifiedRow, action: SwipeRowAction) => {
+		const { row } = item;
+		if (action === "pin") navigation.navigate("PinAssignment", { hubId, ref: row.ref, title: row.title });
+		else if (action === "stop" && client)
+			void stops.stop(client, row.ref).then((outcome) => toast.show({ text: stopToast(outcome, row.title) }));
+		else if (action === "archive" || action === "unarchive")
+			void archiveRow(organization, row, action === "archive", toast);
+	};
+	const archivingId = archivingSessionId(organization.state);
+	const listContext: RowContext = {
+		connected,
+		usual,
+		hostLabel,
+		now,
+		onOpen: openSession,
+		draftRefs,
+		activityOf,
+		msSinceRead,
+		swipes: (item, archived) =>
+			rowSwipes(item, rowContext(archived), archivingId, (action) => runRowAction(item, action)),
+	};
+	const rows = (items: ClassifiedRow[], variant: "signal" | "quiet", moving: boolean, archived = false) => (
+		<BoardRows items={items} variant={variant} moving={moving} archived={archived} context={listContext} />
 	);
 	const band = (key: Exclude<Band, "idle">, moving: boolean) =>
 		bands[key].length ? (
@@ -332,6 +424,12 @@ function Board({ hubId, hubName, navigation }: { hubId: string; hubName: string;
 			</View>
 		) : null;
 	const summary = liveSummary(bands);
+	// The fleet meter sums the working sessions the poll has read so far, and
+	// stays still until it has read one.
+	const workingMinutes = bands.working
+		.map((item) => activityOf(item.row.ref)?.minutes)
+		.filter((minutes): minutes is number[] => minutes !== undefined);
+	const fleetPerMinute = workingMinutes.length ? fleetMinutes(workingMinutes) : undefined;
 
 	// Projects (or Hosts), Test runs and Archived, after the pinned categories.
 	const hostSources = sources ?? [];
@@ -430,7 +528,12 @@ function Board({ hubId, hubName, navigation }: { hubId: string; hubName: string;
 		if (item.kind === "session")
 			return (
 				<View key={item.key} style={{ marginLeft: 16 * item.depth }}>
-					{rows([{ row: item.row, state: boardState(item.row, false, seen.isSeen(item.row)) }], "quiet", false)}
+					{rows(
+						[{ row: item.row, state: boardState(item.row, false, seen.isSeen(item.row)) }],
+						"quiet",
+						false,
+						item.archived,
+					)}
 				</View>
 			);
 		if (item.kind === "more" || item.kind === "moreProjects")
@@ -468,7 +571,9 @@ function Board({ hubId, hubName, navigation }: { hubId: string; hubName: string;
 	else
 		live = (
 			<>
-				{summary ? <SummaryLine summary={summary} connected={connected} onJump={jumpToBand} /> : null}
+				{summary ? (
+					<SummaryLine summary={summary} connected={connected} perMinute={fleetPerMinute} onJump={jumpToBand} />
+				) : null}
 				{band("needsYou", false)}
 				{band("finished", false)}
 				{band("working", true)}
@@ -486,103 +591,109 @@ function Board({ hubId, hubName, navigation }: { hubId: string; hubName: string;
 			{/* Fixed under the header; their sections aren't there while
 			    search results are. */}
 			{chips.length && !searching ? <Chips chips={chips} /> : null}
-			<ScrollView
-				ref={scroller}
-				style={{ flex: 1 }}
-				// Starts just past the search field: pulling down reveals it
-				// (spec 7.3). iOS applies this once, when the scroller mounts.
-				contentOffset={{ x: 0, y: searchFieldHeight }}
-				keyboardShouldPersistTaps="handled"
-				keyboardDismissMode="on-drag"
-				// iOS keeps that offset only while the content is taller than the
-				// viewport, so even a short Board (skeleton, empty, a few rows)
-				// is tall enough to keep the field hidden.
-				contentContainerStyle={{ paddingBottom: 24, minHeight: windowHeight + searchFieldHeight }}
-				onScroll={onScroll}
-				onLayout={(event) => {
-					viewport.current = { ...viewport.current, height: event.nativeEvent.layout.height };
-					readMoreLiveIfNear();
-					readVisibleMore();
-				}}
-				onContentSizeChange={readMoreLiveIfNear}
-				scrollEventThrottle={100}
-			>
-				<SearchField
-					inputRef={searchInput}
-					height={searchFieldHeight}
-					text={searchText}
-					searching={searching}
-					onFocus={() => setSearching(true)}
-					onChangeText={typeSearch}
-					onCancel={cancelSearch}
-				/>
-				{searching ? (
-					<SearchResults
-						search={search.snapshot}
-						scope={scope}
-						onScope={setScope}
-						connected={connected}
-						recent={recentList}
-						onOpen={openSearchResult}
-						onRecent={typeSearch}
-						onClearRecent={clearRecent}
+			<View style={{ flex: 1 }}>
+				<ScrollView
+					ref={scroller}
+					style={{ flex: 1 }}
+					// Starts just past the search field: pulling down reveals it
+					// (spec 7.3). iOS applies this once, when the scroller mounts.
+					contentOffset={{ x: 0, y: searchFieldHeight }}
+					keyboardShouldPersistTaps="handled"
+					keyboardDismissMode="on-drag"
+					// iOS keeps that offset only while the content is taller than the
+					// viewport, so even a short Board (skeleton, empty, a few rows)
+					// is tall enough to keep the field hidden.
+					contentContainerStyle={{ paddingBottom: 24, minHeight: windowHeight + searchFieldHeight }}
+					onScroll={onScroll}
+					onLayout={(event) => {
+						viewport.current = { ...viewport.current, height: event.nativeEvent.layout.height };
+						readMoreLiveIfNear();
+						readVisibleMore();
+					}}
+					onContentSizeChange={readMoreLiveIfNear}
+					scrollEventThrottle={100}
+				>
+					<SearchField
+						inputRef={searchInput}
+						height={searchFieldHeight}
+						text={searchText}
+						searching={searching}
+						onFocus={() => setSearching(true)}
+						onChangeText={typeSearch}
+						onCancel={cancelSearch}
 					/>
-				) : (
-					<>
-						{fatal ? <NoticeRow text={INCOMPATIBLE} /> : null}
-						<BoardNotices hubId={hubId} notices={hubNotices} navigation={navigation} />
-						<View
-							testID="live-block"
-							onLayout={(event) => {
-								const { y, height } = event.nativeEvent.layout;
-								offsets.current.live = y;
-								liveEnd.current = y + height;
-								readMoreLiveIfNear();
-							}}
-						>
-							{live}
-						</View>
-						{pins.map((pin) => (
-							<PinnedSection
-								key={pin.id}
-								section={pin}
-								page={snapshot.pinSections[pin.id]}
-								classify={classify}
-								context={rowContext}
-								folded={folds.isFolded(pin.id)}
-								onToggle={() => folds.setFolded(pin.id, !folds.isFolded(pin.id))}
-								onMenu={categoryMenu.menuFor(pin)}
-								changing={categoryMenu.changing(pin.id)}
-								onLayout={measure(`pin:${pin.id}`)}
-							/>
-						))}
-						{shownSections.map(({ section, folded, items }) => (
+					{searching ? (
+						<SearchResults
+							search={search.snapshot}
+							scope={scope}
+							onScope={setScope}
+							connected={connected}
+							recent={recentList}
+							onOpen={openSearchResult}
+							onRecent={typeSearch}
+							onClearRecent={clearRecent}
+						/>
+					) : (
+						<>
+							{fatal ? <NoticeRow text={INCOMPATIBLE} /> : null}
+							<BoardNotices hubId={hubId} notices={hubNotices} navigation={navigation} />
 							<View
-								key={section}
-								testID={`project-section:${section}`}
+								testID="live-block"
 								onLayout={(event) => {
-									measure(section)(event);
-									readVisibleMore();
+									const { y, height } = event.nativeEvent.layout;
+									offsets.current.live = y;
+									liveEnd.current = y + height;
+									readMoreLiveIfNear();
 								}}
-								style={{ paddingTop: 10 }}
 							>
-								<ProjectSectionHeader
-									title={projectHeaders[section].title}
-									label={projectHeaders[section].label}
-									folded={folded}
-									onToggle={() => setFolded(SECTION_FOLDS[section].fold, !folded)}
-									organize={
-										section === "projects" && projectGrouping !== "flat"
-											? { by: organizeBy, onChange: chooseOrganizeBy }
-											: null
-									}
-								/>
-								{items.map((item) => projectItem(section, item))}
+								{live}
 							</View>
-						))}
-					</>
-				)}
-			</ScrollView>
+							{pins.map((pin) => (
+								<PinnedSection
+									key={pin.id}
+									section={pin}
+									page={snapshot.pinSections[pin.id]}
+									classify={classify}
+									context={listContext}
+									folded={folds.isFolded(pin.id)}
+									onToggle={() => folds.setFolded(pin.id, !folds.isFolded(pin.id))}
+									onMenu={categoryMenu.menuFor(pin)}
+									changing={categoryMenu.changing(pin.id)}
+									onLayout={measure(`pin:${pin.id}`)}
+								/>
+							))}
+							{shownSections.map(({ section, folded, items }) => (
+								<View
+									key={section}
+									testID={`project-section:${section}`}
+									onLayout={(event) => {
+										measure(section)(event);
+										readVisibleMore();
+									}}
+									style={{ paddingTop: 10 }}
+								>
+									<ProjectSectionHeader
+										title={projectHeaders[section].title}
+										label={projectHeaders[section].label}
+										folded={folded}
+										onToggle={() => setFolded(SECTION_FOLDS[section].fold, !folded)}
+										organize={
+											section === "projects" && projectGrouping !== "flat"
+												? { by: organizeBy, onChange: chooseOrganizeBy }
+												: null
+										}
+									/>
+									{items.map((item) => projectItem(section, item))}
+								</View>
+							))}
+						</>
+					)}
+				</ScrollView>
+				{/* The toast floats 10pt above the toolbar. */}
+				<View pointerEvents="box-none" style={{ position: "absolute", left: 0, right: 0, bottom: 10 }}>
+					<Toast toast={toast.toast} dismiss={toast.dismiss} />
+				</View>
+			</View>
 			<BoardToolbar state={state} fatal={fatal} newSessionDisabled={!connected} onNewSession={newSession} />
 		</View>
 	);
@@ -813,22 +924,66 @@ function useFirstRun(board: BoardController, markers: SeenMarkers, snapshot: Boa
 	}, [board, markers, snapshot, focused]);
 }
 
+const noSubscription = () => () => {};
+const noRevision = () => 0;
+
+/** S5's activity for every live session (activityPoll.ts), polled while
+ * connected and in front. A poll is bound to the client it was made with, so
+ * each client gets a fresh one, and there is none without a client. The
+ * revision changes whenever the poll's report does: a read lands, or the hub
+ * turns out to predate S5.
+ *
+ * The underlying client survives a reconnect (hubConnection.ts), so a poll
+ * that stops on disconnect still holds its last read, and a hub that reports
+ * ready but has stopped delivering reads leaves the same stale data behind
+ * without ever disconnecting at all - reading either as current would let a
+ * read merely aging past isFreshRead's threshold read as "stuck", a false
+ * alarm about the connection or the hub rather than the session (Jesse's
+ * ruling). Gating the RETURNED reading on `connected` AND freshness, and
+ * never handing back the poll itself, means no caller can read around this:
+ * every row, its meter and the Working order all fall back to their pre-S5
+ * appearance the moment either one fails, and agree with each other since
+ * there is only the one gate. Nothing re-renders the Board when a read merely
+ * ages, so while a fresh read is on screen the recheck below re-renders at
+ * the polling cadence, dropping the read within one interval of its going
+ * stale, whatever becomes of the poll meanwhile. With no fresh read on screen
+ * there is nothing to expire, so it doesn't run: not before the first read
+ * lands, not while reads keep failing, and never on a hub that predates S5. */
+function useActivityPoll(client: ConversationClientLike | null, connected: boolean, inFront: boolean) {
+	const poll = useMemo(() => (client ? new ActivityPoll(client) : null), [client]);
+	const revision = useSyncExternalStore(poll?.subscribe ?? noSubscription, poll?.getRevision ?? noRevision);
+	useEffect(() => {
+		if (!poll || !connected || !inFront) return;
+		poll.start();
+		return () => poll.stop();
+	}, [poll, connected, inFront]);
+	const msSinceRead = poll?.msSinceRead() ?? null;
+	const reading = connected && isFreshRead(msSinceRead) ? poll : null;
+	const [, recheck] = useReducer((n: number) => n + 1, 0);
+	useEffect(() => {
+		if (!reading || !inFront) return;
+		const timer = setInterval(recheck, ACTIVITY_POLL_MS);
+		return () => clearInterval(timer);
+	}, [reading, inFront]);
+	const activityOf = useCallback((ref: string) => reading?.activity(ref), [reading]);
+	return { revision, activityOf, msSinceRead: reading ? msSinceRead : null };
+}
+
 /** The hub's seen marks (S4): marks go out whenever the connection is ready,
  * which resends any a dropped connection lost and sends those made while
- * offline, and each pending mark is pruned once the Board's rows show it
- * landed. */
+ * offline, and each pending mark is pruned once a row the Board has loaded,
+ * from any section, shows it landed. */
 function useHubSeenMarks(
 	hubMarks: HubSeenMarks,
 	client: ConversationClientLike | null,
-	snapshot: Pick<BoardSnapshot, "live" | "needsYou" | "pinSections">,
+	loadedRows: readonly NavigationSessionSummary[],
 ) {
 	useEffect(() => {
 		hubMarks.flush(client);
 	}, [hubMarks, client]);
-	const { live, needsYou, pinSections } = snapshot;
 	useEffect(() => {
-		hubMarks.prune([live.rows, needsYou.rows, ...Object.values(pinSections).map((page) => page.rows)].flat());
-	}, [hubMarks, live.rows, needsYou.rows, pinSections]);
+		hubMarks.prune(loadedRows);
+	}, [hubMarks, loadedRows]);
 }
 
 /** While any of the Board's reads has failed on a ready connection (Live,
@@ -1075,10 +1230,13 @@ function Chips({ chips }: { chips: ChipProps[] }) {
 function SummaryLine({
 	summary,
 	connected,
+	perMinute,
 	onJump,
 }: {
 	summary: LiveSummary;
 	connected: boolean;
+	/** The fleet meter's per-minute counts; absent, it shows its still fallback. */
+	perMinute?: readonly number[];
 	onJump: (band: Band) => void;
 }) {
 	const { palette } = useColors();
@@ -1118,7 +1276,7 @@ function SummaryLine({
 							opacity: pressed ? 0.6 : 1,
 						})}
 					>
-						{band === "working" ? <PulseMeter tone={connected ? "alive" : "gray"} /> : null}
+						{band === "working" ? <PulseMeter tone={connected ? "alive" : "gray"} perMinute={perMinute} /> : null}
 						<Text
 							allowFontScaling={Platform.OS !== "ios"}
 							style={{

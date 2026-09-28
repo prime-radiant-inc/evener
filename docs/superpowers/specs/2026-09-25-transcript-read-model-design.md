@@ -1210,8 +1210,8 @@ previous phase has landed.
 
 ## Follow-ups from the final spec review (phase 4)
 
-The last roborev round on this spec raised these. Two remain open; three are
-resolved below (phase 4, PR C):
+The last roborev round on this spec raised these. All five are resolved
+below (phase 4):
 
 - ~~**COMMUNICATE and completion durability when fsync fails.**~~ Resolved:
   RETRY. A recorded-but-unsynced entry (`*RetainedUnsyncedError`) is adopted
@@ -1229,10 +1229,34 @@ resolved below (phase 4, PR C):
   `TestRetainedCompletionOnAnUnservedSessionKeepsRunningAfterExhaustingRetries`
   (`agent/session_fail_closed_test.go`), driven deterministically with a fake
   clock (no real sleeps).
-- **Below-floor update-log requests.** Give the client an explicit
-  whole-history replacement signal, or answer with `TranscriptItemCursorStale`.
-- **Backfill accumulation.** Require the same snapshot identity for pages that
-  accumulate, and define how the held length advances on backfill.
+- ~~**Below-floor update-log requests.**~~ Resolved: a same-incarnation
+  `LatestSince` whose held length predates the kept update log answers
+  `TranscriptItemCursorStale` (`internal/transcriptindex.LatestSince`
+  propagates `ErrUpdateLogTruncated` instead of swallowing it into a bare
+  window; `pastEntryLatestItems` in `cmd/evener-hub/app_threadread.go` maps
+  the error to `appwire.TranscriptItemCursorStale()`). The window alone
+  cannot be trusted there: held items outside it may have changed since,
+  with no way for the caller to tell, so silently merging it would risk
+  serving stale content. The daemon's own `ChangedSince` call (`project`,
+  `server/thread_history.go`) already treated the same error as a failure
+  and rebuilt; this only changes the hub's non-daemon (daemonless) read path.
+- ~~**Backfill accumulation.**~~ Resolved: pages accumulate under the held
+  incarnation, and the held length never advances from a page. A page's
+  snapshot length is the transcript length the index had when it answered
+  `Before`, not a promise that everything through that length was
+  delivered: `Before` only returns items older than the cursor, so a page
+  can carry a longer length than held without carrying the live items
+  created in between. Advancing held to it would make the next
+  latest-window read's `heldSnapshot` claim completeness through a length
+  whose in-between changes it never saw, and `LatestSince`'s
+  `ChangedSince(held.length)` would then skip them silently were more than
+  one window's worth of items to land before the next latest-window read —
+  the reading that risks silently holding (missing, in this case) live
+  data. Only a latest-window read (and its accompanying `changes`) verifies
+  completeness up to a length, so only that advances held; `pageDisposition`
+  keeps comparing a page's length against that one true watermark, never one
+  a page pushed forward, which is what "the same snapshot identity" holds
+  pages to.
 - ~~**`RetainedUnsyncedError` boundary tests.**~~ Resolved: adoption was
   already covered
   (`TestAppendSyncedReportsRetainedUnsyncedForAdoptionWithoutDuplication`).
@@ -1266,19 +1290,30 @@ resolved below (phase 4, PR C):
   a flushed item — it has no itemRecord or update-log entry to begin with —
   which is out of this fix's scope (Latest/Before only) and not currently a
   problem (nothing reads from this index in production yet).
-- **`CatchUpTo`'s truncate-first extension can leak in-place updates past
-  the requested length.** `extend`'s truncate loop assumes the following
+- ~~**`CatchUpTo`'s truncate-first extension can leak in-place updates past
+  the requested length.**~~ Fixed, and now live rather than latent: daemon
+  callers pass a recorded length (`server/thread_history.go`,
+  `server/history_read.go`) while the hub's `CatchUp` goes to the transcript's
+  current file size on the same sidecar, so a shorter `CatchUpTo` after a
+  longer one really happens. `extend`'s truncate loop assumed the following
   scan re-applies every entry whose in-place update it just truncated away;
-  a `CatchUpTo(length)` call for a `length` that stops before re-scanning
-  such an entry loses that update-log record without redoing it, so
-  `Latest`/`Before` can return content beyond `Window.Length` and
-  `ChangedSince` can omit the change. Latent in phase 1: every current
-  caller only calls it (via `CatchUp`) with the transcript's current full
-  size, never a smaller recorded length, so the truncated records are
-  always re-scanned. Needs either a rebuild fallback when the requested
-  length would not reach the highest version already written, or
-  re-deriving the update log from surviving record versions, before a
-  caller passes it a client-recorded (not-necessarily-current) length.
+  that held only when the scan reached at least as far as an extension
+  interrupted after writing its records but before committing meta had
+  gotten, never for a shorter `length`: an update-log row past the committed
+  count can log an in-place update to an already-committed record (a slot
+  truncate never touches, since it precedes the committed counts), and
+  discarding that row without the shorter scan ever revisiting its entry
+  left `Latest`/`Before` free to return content beyond `Window.Length` while
+  `ChangedSince` omitted the change. `extend` (`internal/transcriptindex/
+  index.go`) now inspects the update log's leftover rows
+  (`unsafeLeftoverUpdate`) before truncating: a leftover row logging an
+  in-place update to an already-committed item or turn whose causing entry
+  this call's length would not completely re-scan forces a rebuild (keeping
+  the incarnation, since the transcript still extends the covered prefix)
+  instead of the truncate-and-rescan path. Pinned by
+  `TestCatchUpToShorterThanAKilledExtensionsReachRedoesTheLeftoverUpdate`
+  (`internal/transcriptindex/catchup_leak_test.go`), using the existing
+  `testKillAfterRecordWrites` seam.
 - **Cross-version schema skew on a shared sidecar.** `readMeta` accepts a
   build whose `format`/`projection` match, but nothing records which
   binary's `schema.Turn`/`llm.Message` shape built it. Reads decode

@@ -1,7 +1,10 @@
 package doctor
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -499,5 +502,140 @@ func TestListSessions_JSONFields(t *testing.T) {
 		if _, ok := row[key]; !ok {
 			t.Errorf("SessionRow JSON missing field %q: %s", key, string(b))
 		}
+	}
+}
+
+// hashTree fingerprints every path and byte under root, so a read-only
+// enumeration can prove it left the state tree byte-identical.
+func hashTree(t testing.TB, root string) string {
+	t.Helper()
+	h := sha256.New()
+	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		rel, err := filepath.Rel(root, path)
+		if err != nil {
+			return err
+		}
+		h.Write([]byte(rel))
+		h.Write([]byte{0})
+		if d.IsDir() {
+			return nil
+		}
+		b, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		h.Write(b)
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return hex.EncodeToString(h.Sum(nil))
+}
+
+// TestListSessions_CorruptMetaListedAsUnreadable is DATA-10's regression: a
+// session whose .meta.json is present but unparseable must appear in
+// Unreadable, not vanish from the enumeration. Before the fix, ListSessions
+// delegated discovery to schema.ListSessionMetas, which silently skips corrupt
+// metadata, so a corrupt session produced zero Sessions, zero Unreadable and a
+// nil error — a clean-looking undercount of the sessions most in need of
+// recovery. The forensic contract (see UnreadableSession) is that every
+// primary identity is reported readable or unreadable exactly once, and the
+// read-only sweep must not mutate the tree.
+func TestListSessions_CorruptMetaListedAsUnreadable(t *testing.T) {
+	base := t.TempDir()
+	bucket := stateHomeBucket(base, hash1)
+
+	// readable: a healthy session with transcript + meta.
+	writeSessionsFixtureSession(t, bucket, sidB,
+		transcript.Header{CreatedAt: time.Now(), Model: "m"}, nil, schema.SessionMeta{Model: "m", TurnCount: 0}, nil, time.Now())
+
+	// unreadable (missing transcript): a valid meta with no transcript file.
+	if err := schema.SaveSessionMeta(bucket, schema.SessionMeta{ID: sidA}); err != nil {
+		t.Fatal(err)
+	}
+
+	// unreadable (corrupt meta): a valid filename whose bytes are not JSON.
+	corruptSID := newSessionsTestSID(t)
+	corruptPath := filepath.Join(bucket, "sessions", corruptSID+".meta.json")
+	writeFile(t, corruptPath, "{ this is not valid json")
+
+	before := hashTree(t, base)
+
+	res, err := ListSessions(base, SessionsOpts{})
+	if err != nil {
+		t.Fatalf("ListSessions: %v", err)
+	}
+
+	// Each of the three primary identities appears exactly once, as a row or
+	// as an unreadable entry — never twice, never zero times.
+	readable := map[string]int{}
+	for _, r := range res.Sessions {
+		readable[r.SessionID]++
+	}
+	unreadable := map[string]int{}
+	for _, u := range res.Unreadable {
+		unreadable[u.SessionID]++
+	}
+	for _, sid := range []string{sidA, sidB, corruptSID} {
+		if got := readable[sid] + unreadable[sid]; got != 1 {
+			t.Errorf("session %s appears %d times across readable+unreadable, want exactly 1 (readable=%d unreadable=%d)",
+				sid, got, readable[sid], unreadable[sid])
+		}
+	}
+	if readable[sidB] != 1 {
+		t.Errorf("healthy session %s should be readable, got readable=%d unreadable=%d", sidB, readable[sidB], unreadable[sidB])
+	}
+	if unreadable[corruptSID] != 1 {
+		t.Fatalf("corrupt-meta session %s should be reported unreadable, got unreadable=%+v", corruptSID, res.Unreadable)
+	}
+	for _, u := range res.Unreadable {
+		if u.SessionID != corruptSID {
+			continue
+		}
+		if u.Error == "" {
+			t.Error("corrupt-meta unreadable entry should carry a non-empty error")
+		}
+		if u.TranscriptRef == "" {
+			t.Errorf("corrupt-meta unreadable entry should carry a transcript ref: %+v", u)
+		}
+	}
+
+	if after := hashTree(t, base); after != before {
+		t.Errorf("ListSessions mutated the state tree: before=%s after=%s", before, after)
+	}
+}
+
+// TestListSessions_SymlinkedMetaListedAsUnreadable covers the other
+// present-but-unloadable metadata shape the DATA-10 contract names: a
+// valid-id .meta.json that is a symlink. The sweep must not follow the link
+// (the security refusal is unchanged) but must still name the session in
+// Unreadable rather than silently dropping it.
+func TestListSessions_SymlinkedMetaListedAsUnreadable(t *testing.T) {
+	base := t.TempDir()
+	bucket := stateHomeBucket(base, hash1)
+	sessDir := filepath.Join(bucket, "sessions")
+	if err := os.MkdirAll(sessDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	sid := newSessionsTestSID(t)
+	target := filepath.Join(t.TempDir(), sid+".meta.json")
+	writeFile(t, target, `{"id":"`+sid+`"}`)
+	if err := os.Symlink(target, filepath.Join(sessDir, sid+".meta.json")); err != nil {
+		t.Fatal(err)
+	}
+
+	res, err := ListSessions(base, SessionsOpts{})
+	if err != nil {
+		t.Fatalf("ListSessions: %v", err)
+	}
+	if len(res.Sessions) != 0 {
+		t.Fatalf("symlinked meta must not produce a readable row, got %+v", res.Sessions)
+	}
+	if len(res.Unreadable) != 1 || res.Unreadable[0].SessionID != sid || res.Unreadable[0].Error == "" {
+		t.Fatalf("unreadable = %+v, want one entry naming %s", res.Unreadable, sid)
 	}
 }

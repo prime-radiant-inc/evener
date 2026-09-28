@@ -93,6 +93,20 @@ type Config struct {
 	// 08 §6), keyed by the full five-part scoped receipt key. Each marker is
 	// the bounded proof that a superseded receipt was compacted away.
 	PrunedReceipts map[string]PrunedReceiptMarker `toml:"pruned_receipts"`
+	// StagedReceipts is hub.toml's durable staged-receipt marker section
+	// (registry spec 08 §5), keyed by host name: the transient marker one
+	// commit's step-(2) write carries until its post-commit write replaces it
+	// with the finalized receipt. At most one marker per host.
+	StagedReceipts map[string]HostStagedReceipt `toml:"staged_receipts"`
+	// TeardownRemnants is hub.toml's durable teardown-remnant section (registry
+	// spec 08 §6), keyed by the server-generated remnantId: the open remnants a
+	// committed-with-teardown-failure left behind and the typed resolved records
+	// their clearances wrote.
+	TeardownRemnants map[string]HostTeardownRemnant `toml:"teardown_remnants"`
+	// TeardownAttempts is hub.toml's durable teardown-attempt section (registry
+	// spec 08 §6), keyed by the server-generated attempt id: the claim a retry
+	// or recover writes beside the remnant it claims.
+	TeardownAttempts map[string]HostTeardownAttempt `toml:"teardown_attempts"`
 
 	// PluginAutoUpgrade is the global on/off switch for the background plugin
 	// auto-upgrade daemon (design doc §9.1). Defaults to on: the meaningful
@@ -180,6 +194,16 @@ type Config struct {
 	// A non-positive value is floored to the default at load.
 	HostKeylessAuditMaxCount int           `toml:"host_keyless_audit_max_count"`
 	HostKeylessAuditTTL      time.Duration `toml:"host_keyless_audit_ttl"`
+	// The teardown-repair bounds (registry spec 08 §6): the cleared-remnant
+	// marker bounds, the recovery-marker bounds, and the attempt-history bound
+	// per remnant. Non-positive values take the documented defaults.
+	HostRemnantClearedMaxCount  int           `toml:"host_remnant_cleared_max_count"`
+	HostRemnantClearedTTL       time.Duration `toml:"host_remnant_cleared_ttl"`
+	HostRemnantRecoveryMaxCount int           `toml:"host_remnant_recovery_max_count"`
+	HostRemnantRecoveryTTL      time.Duration `toml:"host_remnant_recovery_ttl"`
+	HostRemnantAttemptMaxCount  int           `toml:"host_remnant_attempt_max_count"`
+	HostRemnantTeardownTimeout  time.Duration `toml:"host_remnant_teardown_timeout"`
+	HostRemnantEscalationAge    time.Duration `toml:"host_remnant_escalation_age"`
 }
 
 const (
@@ -226,6 +250,36 @@ const (
 	// rather than outcome recovery.
 	DefaultHostKeylessAuditMaxCount = 64
 	DefaultHostKeylessAuditTTL      = 30 * 24 * time.Hour
+	// DefaultHostRemnantClearedMaxCount and DefaultHostRemnantClearedTTL are the
+	// cleared-remnant marker bounds spec §6 names: "owner-set cleared-marker TTL
+	// plus an at-most-64-newest-per-name count bound in the same owner-knob
+	// family". The TTL matches the tombstone retention so a lost-response retry
+	// keeps its `already-cleared` replay for the window the tombstone lives, and
+	// past it reads `teardown-unknown-key` exactly as the spec requires.
+	DefaultHostRemnantClearedMaxCount = 64
+	DefaultHostRemnantClearedTTL      = 7 * 24 * time.Hour
+	// DefaultHostRemnantRecoveryMaxCount and DefaultHostRemnantRecoveryTTL are
+	// the recovery-marker bounds spec §11 names: "at most 64 newest recovery
+	// records per name plus a recovery-marker TTL in the same owner-knob family
+	// as the cleared-marker TTL".
+	DefaultHostRemnantRecoveryMaxCount = 64
+	DefaultHostRemnantRecoveryTTL      = 7 * 24 * time.Hour
+	// DefaultHostRemnantAttemptMaxCount bounds the attempt history one remnant
+	// keeps: the newest attempts survive so a timed-out attempt's record stays
+	// readable while a churn of retries cannot grow hub.toml without limit.
+	DefaultHostRemnantAttemptMaxCount = 8
+	// DefaultHostRemnantTeardownTimeout is the retry's bounded execution
+	// deadline (spec §6: "the retry's own teardown run carries a bounded
+	// execution deadline of the same owner-set family"). Two minutes is long
+	// enough for a local supervisor/channel teardown to drain and short enough
+	// that a stuck remote surfaces the terminal outcome with a live retry handle
+	// instead of holding the host gate.
+	DefaultHostRemnantTeardownTimeout = 2 * time.Minute
+	// DefaultHostRemnantEscalationAge is the bound past which an open remnant's
+	// row reports `escalationAgeSec` (spec §11): an hour is long enough that a
+	// transient teardown failure resolves itself through one retry and short
+	// enough that an operator hears about a remnant that is not going away.
+	DefaultHostRemnantEscalationAge = time.Hour
 )
 
 // DefaultConfig returns a Config populated with sensible defaults.
@@ -255,6 +309,13 @@ func DefaultConfig() Config {
 		HostPrunedReceiptTTL:          DefaultHostPrunedReceiptTTL,
 		HostKeylessAuditMaxCount:      DefaultHostKeylessAuditMaxCount,
 		HostKeylessAuditTTL:           DefaultHostKeylessAuditTTL,
+		HostRemnantClearedMaxCount:    DefaultHostRemnantClearedMaxCount,
+		HostRemnantClearedTTL:         DefaultHostRemnantClearedTTL,
+		HostRemnantRecoveryMaxCount:   DefaultHostRemnantRecoveryMaxCount,
+		HostRemnantRecoveryTTL:        DefaultHostRemnantRecoveryTTL,
+		HostRemnantAttemptMaxCount:    DefaultHostRemnantAttemptMaxCount,
+		HostRemnantTeardownTimeout:    DefaultHostRemnantTeardownTimeout,
+		HostRemnantEscalationAge:      DefaultHostRemnantEscalationAge,
 	}
 }
 
@@ -415,6 +476,22 @@ func decodeConfig(name, data string) (Config, error) {
 	if err := validatePrunedReceipts(cfg.PrunedReceipts); err != nil {
 		return cfg, fmt.Errorf("validate pruned receipts: %w", err)
 	}
+	// The teardown-repair records (registry spec 08 §5/§6) are the sections this
+	// slice adds: the staged-receipt markers a commit's step-(2) write carries,
+	// the open remnants and typed resolved records their clearances leave, and
+	// the attempt records a retry claims. Each is refused loudly when its shape
+	// is one this build cannot decode, so a marker or remnant that reached the
+	// file from a newer build is a hard startup error rather than a silently
+	// reinterpreted (or dropped) record.
+	if err := validateHostStagedReceipts(cfg.StagedReceipts); err != nil {
+		return cfg, fmt.Errorf("validate staged receipts: %w", err)
+	}
+	if err := validateHostTeardownRemnants(cfg.TeardownRemnants); err != nil {
+		return cfg, fmt.Errorf("validate teardown remnants: %w", err)
+	}
+	if err := validateHostTeardownAttempts(cfg.TeardownAttempts, cfg.TeardownRemnants); err != nil {
+		return cfg, fmt.Errorf("validate teardown attempts: %w", err)
+	}
 	// Every field of a reserved record must decode: the two tables are decoded
 	// into typed structs and rebuilt on every rewrite, so a field this build does
 	// not know would be silently dropped by the next write. Spec 08 §6 is
@@ -425,7 +502,8 @@ func decodeConfig(name, data string) (Config, error) {
 	// operator's data and are not this check's business.
 	for _, key := range metadata.Undecoded() {
 		if len(key) > 1 && (key[0] == "host_records" || key[0] == "generations" || key[0] == "mutation_receipts" ||
-			key[0] == "tombstones" || key[0] == "pruned_receipts") {
+			key[0] == "tombstones" || key[0] == "pruned_receipts" || key[0] == "staged_receipts" ||
+			key[0] == "teardown_remnants" || key[0] == "teardown_attempts") {
 			return cfg, fmt.Errorf("config %s: reserved record %s carries a field this build does not decode; refusing rather than dropping it on the next rewrite", name, key.String())
 		}
 	}
