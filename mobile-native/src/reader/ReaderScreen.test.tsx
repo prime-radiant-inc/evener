@@ -677,8 +677,8 @@ describe("comments (Task 16)", () => {
 		return mountSheet(<CommentSheet route={{ key: "comment", name: "CommentSheet", params } as never} navigation={sheetNavigation as never} />);
 	}
 
-	function commentsSheet() {
-		const params = { hubId: "studio", sessionRef: "local:fix", path: PATH, reviewRef: "local:coord", reviewTitle: "Coordinator" };
+	function commentsSheet(over: Record<string, unknown> = {}) {
+		const params = { hubId: "studio", sessionRef: "local:fix", path: PATH, reviewRef: "local:coord", reviewTitle: "Coordinator", ...over };
 		return mountSheet(
 			<CommentsSheet route={{ key: "comments", name: "CommentsSheet", params } as never} navigation={sheetNavigation as never} />,
 		);
@@ -814,11 +814,14 @@ describe("comments (Task 16)", () => {
 
 	// A running subagent's session read carries no capabilities (ruling 30),
 	// so its document collects comments and offers Send review only once the
-	// session can take a message.
+	// session can take a message. The review goes to the session the document
+	// was opened in (ruling 16), so both refs name it.
+	const ownSession = { reviewRef: "local:fix", reviewTitle: "Fix race" };
+
 	it("offers Send review, in the bar and the Comments sheet, only while the review session can take a message", async () => {
 		memory.addComment(KEY, { blockIndex: 1, blockHash: goal.hash, quote: goal.text, text: "Say which run." });
-		const { tree, navigation, rerender } = await mount();
-		const sheet = commentsSheet();
+		const { tree, navigation, rerender } = await mount(PATH, ownSession);
+		const sheet = commentsSheet(ownSession);
 		expect(pressable(tree, "Send review")).toBeUndefined();
 		expect(pressable(sheet, "Send review")).toBeUndefined();
 		act(() =>
@@ -833,7 +836,7 @@ describe("comments (Task 16)", () => {
 			}),
 		);
 		await rerender();
-		const params = { hubId: "studio", sessionRef: "local:fix", path: PATH, reviewRef: "local:coord", reviewTitle: "Coordinator" };
+		const params = { hubId: "studio", sessionRef: "local:fix", path: PATH, ...ownSession };
 		act(() => pressable(tree, "Send review")?.props.onPress());
 		expect(navigation.navigate).toHaveBeenCalledWith("ReviewSheet", params);
 		act(() => pressable(sheet, "Send review")?.props.onPress());
@@ -846,8 +849,8 @@ describe("comments (Task 16)", () => {
 			...threadRead("idle"),
 			thread: { ...threadRead("idle").thread, evener: { ...threadRead("idle").thread.evener, capabilities: { send: true } as never } },
 		}));
-		const { tree } = await mount();
+		const { tree } = await mount(PATH, ownSession);
 		expect(pressable(tree, "Send review")).toBeDefined();
-		expect(pressable(commentsSheet(), "Send review")).toBeUndefined();
+		expect(pressable(commentsSheet(ownSession), "Send review")).toBeUndefined();
 	});
 });
