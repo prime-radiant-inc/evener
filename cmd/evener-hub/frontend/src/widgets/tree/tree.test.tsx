@@ -1,12 +1,10 @@
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen } from "@testing-library/react";
 import { useState } from "react";
-import { afterEach, expect, test, vi } from "vitest";
+import { expect, test, vi } from "vitest";
 import { Tree, type TreeNode } from "./index";
-
-afterEach(cleanup);
 
 // Flattened visible order for this fixture: a, b, b1, c
 // (b is expanded so b1 shows; c is collapsed so c1 stays hidden).

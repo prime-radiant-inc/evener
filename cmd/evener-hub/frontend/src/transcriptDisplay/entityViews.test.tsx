@@ -1,9 +1,7 @@
 import type { EntityView } from "@evener/appwire-client";
-import { cleanup, render, screen } from "@testing-library/react";
-import { afterEach, expect, test } from "vitest";
+import { render, screen } from "@testing-library/react";
+import { expect, test } from "vitest";
 import { EntityViewsProvider, useEntityViews } from "./entityViews";
-
-afterEach(cleanup);
 
 function Probe() {
   const entities = useEntityViews();

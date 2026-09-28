@@ -593,6 +593,45 @@ func TestInstances_EditImplicitWritesShadowingEntry(t *testing.T) {
 	}
 }
 
+// TestInstances_EditClearOnlyOnAnImplicitInstanceWritesNoShadow is #1024: a
+// clear flag on an implicit instance (one the environment or a curated
+// provider supplies) has no authored value to clear. Writing the row back
+// would author [providers.<name>] with nothing but its id - an empty shadow
+// that changes no behavior (the name still inherits by matching) but leaves
+// noise in providers.toml. The clear is a no-op, not an error and not a write.
+func TestInstances_EditClearOnlyOnAnImplicitInstanceWritesNoShadow(t *testing.T) {
+	cases := []struct {
+		name   string
+		params appwire.InstanceEditParams
+	}{
+		{"clearBaseUrl", appwire.InstanceEditParams{ClearBaseURL: true}},
+		{"clearProtocol", appwire.InstanceEditParams{ClearProtocol: true}},
+		{"clearSurface", appwire.InstanceEditParams{ClearSurface: true}},
+		{"clearAPIKeyEnv", appwire.InstanceEditParams{ClearAPIKeyEnv: true}},
+		{"clearCredentialHeader", appwire.InstanceEditParams{ClearCredentialHeader: true}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newInstancesFixture(t, map[string]string{"GROQ_API_KEY": "gk"})
+			params := tc.params
+			params.Name = "groq"
+			if err := f.ctl.Edit(params); err != nil {
+				t.Fatalf("Edit(%s): %v", tc.name, err)
+			}
+			if providers := readConfigProviders(t, f.tomlPath); len(providers) != 0 {
+				t.Fatalf("a clear-only edit on an implicit instance authored %v", providers)
+			}
+			after := entry(t, f.ctl.List(), "groq")
+			if !after.Implicit {
+				t.Fatalf("groq stopped being implicit: %+v", after)
+			}
+			if after.ActiveSource != "env:GROQ_API_KEY" {
+				t.Fatalf("ActiveSource = %q, want the inherited credential left alone", after.ActiveSource)
+			}
+		})
+	}
+}
+
 // TestInstances_EditWithoutClearLeavesAnAuthoredBaseURLAlone: neither an
 // omitted BaseURL nor ClearBaseURL=false must disturb an already-authored
 // override — only an explicit new value or an explicit clear touches it
@@ -4006,8 +4045,11 @@ func TestInstances_EditRenameCarriesARefreshRefusalMarker(t *testing.T) {
 }
 
 // If the note can't be carried, the rename must say so rather than silently
-// deleting the old record and its marker: a caller told only "renamed" would
-// have no way to know the sign-in signal was dropped.
+// dropping the sign-in signal - but it still finishes the rename like every
+// other layer's own failure does (the stored-key move and the OAuth record
+// copy/delete are each attempted independently of the others' outcome), so a
+// marker-copy failure alone does not leave the instance under both names at
+// once.
 func TestInstances_EditRenameReportsARefreshRefusalMarkerItCouldNotCarry(t *testing.T) {
 	f := newInstancesFixture(t, nil)
 	if err := f.ctl.Create(appwire.InstanceCreateParams{Name: "work", Base: "openai-codex"}); err != nil {
@@ -4038,14 +4080,16 @@ func TestInstances_EditRenameReportsARefreshRefusalMarkerItCouldNotCarry(t *test
 	if err == nil || !strings.Contains(err.Error(), "refresh-refusal marker") {
 		t.Fatalf("Edit(rename) = %v, want the refused marker copy reported", err)
 	}
-	// The old record (and its marker) is left in place rather than deleted,
-	// since deleting it would drop the only surviving copy of the marker.
-	old, loadErr := authopenai.LoadAuth(f.stateDir, "work")
-	if loadErr != nil {
-		t.Fatalf("the old OAuth record was deleted even though its marker could not be carried: %v", loadErr)
+	// The rename still finished: no duplicate record under both names.
+	if _, loadErr := authopenai.LoadAuth(f.stateDir, "work"); !errors.Is(loadErr, authopenai.ErrAuthNotFound) {
+		t.Fatalf("the old OAuth record was left behind even though the rename otherwise finished (err = %v)", loadErr)
 	}
-	if !authopenai.RefreshRejected(f.stateDir, "work", old) {
-		t.Fatal("the old instance's own marker was lost")
+	moved, loadErr := authopenai.LoadAuth(f.stateDir, "personal")
+	if loadErr != nil {
+		t.Fatalf("the new OAuth record is missing: %v", loadErr)
+	}
+	if authopenai.RefreshRejected(f.stateDir, "personal", moved) {
+		t.Fatal("the marker reports carried even though its copy failed")
 	}
 }
 

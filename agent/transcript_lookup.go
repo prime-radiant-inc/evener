@@ -227,10 +227,10 @@ func symlinkErrorDeep(path, root string) error {
 // the same shared enumeration with FollowSymlinks. The doctor is an operator
 // forensic tool that must see everything on disk; the agent's model-facing
 // read paths hold the higher bar — a symlink under projects/ could point
-// outside the state root and expose transcripts from elsewhere, so the agent
-// never follows them. The doctor intentionally still follows symlinks per
-// #2275 ("this is a user tool. allow symlinked buckets.") — do not
-// "harmonize" the two sides without the owner.
+// outside the state root and expose transcripts from elsewhere (#2205), so
+// the agent never follows them. The doctor intentionally still follows
+// symlinks per #2275 ("this is a user tool. allow symlinked buckets.") — do
+// not "harmonize" the two sides without the owner.
 func enumerateBuckets(stateHome string) ([]string, error) {
 	// Validate the glob pattern for well-formedness BEFORE the prefix
 	// not-exists shortcut below. A stateHome containing unmatched glob

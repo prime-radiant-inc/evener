@@ -1,10 +1,10 @@
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { cleanup, render, screen } from "@testing-library/react";
+import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { createRef } from "react";
-import { afterEach, expect, test, vi } from "vitest";
+import { expect, test, vi } from "vitest";
 import { requireClass } from "../internal/requireClass";
 import rawStyles from "./button.module.css";
 import { Button, type ButtonProps } from "./index";
@@ -14,13 +14,6 @@ const styles = {
   primary: requireClass(rawStyles.primary, "button.module.css", "primary"),
   md: requireClass(rawStyles.md, "button.module.css", "md"),
 };
-
-// This project doesn't wire @testing-library/react's auto-cleanup into a
-// global vitest setup file (vite.config.ts's setupFiles is empty, and that
-// file is out of scope for this task), so every widget test file cleans up
-// its own renders explicitly: without this, a later test's queries can
-// match a still-mounted element from an earlier test in the same file.
-afterEach(cleanup);
 
 test("renders its children as the visible label", () => {
   render(<Button>Save changes</Button>);

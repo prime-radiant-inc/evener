@@ -1,14 +1,12 @@
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { cleanup, render, screen } from "@testing-library/react";
+import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { afterEach, expect, test, vi } from "vitest";
+import { expect, test, vi } from "vitest";
 import { requireClass } from "../internal/requireClass";
 import rawStyles from "./chip.module.css";
 import { Chip, type ChipTone } from "./index";
-
-afterEach(cleanup);
 
 const styles = {
   neutral: requireClass(rawStyles.neutral, "chip.module.css", "neutral"),
