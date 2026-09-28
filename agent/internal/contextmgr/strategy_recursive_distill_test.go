@@ -2,6 +2,7 @@ package contextmgr
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -10,6 +11,21 @@ import (
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/llm"
 )
+
+// failingCaptureAdapter records each summary request and fails it, modelling an
+// auxiliary-model outage that keeps the micro-summary cadence watermark back.
+type failingCaptureAdapter struct{ reqs []llm.Request }
+
+func (a *failingCaptureAdapter) Name() string { return "openai" }
+
+func (a *failingCaptureAdapter) Complete(_ context.Context, req llm.Request) (llm.Response, error) {
+	a.reqs = append(a.reqs, req)
+	return llm.Response{}, errors.New("aux model down")
+}
+
+func (a *failingCaptureAdapter) Stream(context.Context, llm.Request) (llm.Stream, error) {
+	return nil, llm.ErrStreamUnsupported
+}
 
 // recursiveDistillTurns builds n visible assistant turns.
 func recursiveDistillTurns(n int) []schema.Turn {
@@ -464,6 +480,104 @@ func TestRecursiveDistillStrategy_MicroSummaryCoversCadenceSpan(t *testing.T) {
 	for _, want := range []string{"ACTION-MARK-01", "ACTION-MARK-05", "ACTION-MARK-10"} {
 		if !strings.Contains(prompt, want) {
 			t.Fatalf("micro-summary prompt dropped %q from the cadence span:\n%s", want, prompt)
+		}
+	}
+}
+
+// TestRecursiveDistillStrategy_SpanSurvivesCompactionShrink pins that a
+// compaction between micro-summaries cannot make the next span skip the turns
+// appended right after it. An index-based mark stored before the shrink would
+// slice past those turns once history regrew beyond the stale index; the
+// time-anchored mark must include the first turn of the new period.
+func TestRecursiveDistillStrategy_SpanSurvivesCompactionShrink(t *testing.T) {
+	client := llm.NewClient()
+	f := &fakeAdapter{name: "openai"}
+	client.Register(f)
+
+	cm := NewManager(testProfile("openai", "test", 500), client, cheapmodel.New(client))
+	cm.PreserveRecentTurns = 2
+	s := NewRecursiveDistillStrategy(cm)
+	ctx := context.Background()
+
+	history := make([]schema.Turn, 0, 128)
+	for action := 1; action <= 10; action++ {
+		mark := fmt.Sprintf("A-MARK-%02d", action)
+		history = append(history,
+			schema.NewTurn(schema.TurnAssistant, llm.Assistant(mark+" assistant")),
+			schema.NewTurn(schema.TurnToolResults, llm.ToolResultNamed(fmt.Sprintf("a%d", action), "shell", mark+" result", false)),
+		)
+		if err := s.AfterAction(ctx, history, client); err != nil {
+			t.Fatalf("AfterAction A%d: %v", action, err)
+		}
+	}
+	if got := len(s.microSummaries); got != 1 {
+		t.Fatalf("first micro-summaries = %d, want 1", got)
+	}
+
+	// Force a compaction that shrinks retained history below the ten-action
+	// span the first period occupied.
+	history = recursiveDistillGrowTokens(history)
+	grown := len(history)
+	if err := s.ManageContext(ctx, &history, 0, noopEmit); err != nil {
+		t.Fatalf("ManageContext: %v", err)
+	}
+	if len(history) >= grown {
+		t.Fatalf("compaction did not shrink history: %d -> %d", grown, len(history))
+	}
+	if len(history) >= 20 {
+		t.Fatalf("retained history %d is not below the old twenty-turn mark", len(history))
+	}
+
+	for action := 11; action <= 20; action++ {
+		mark := fmt.Sprintf("B-MARK-%02d", action)
+		history = append(history,
+			schema.NewTurn(schema.TurnAssistant, llm.Assistant(mark+" assistant")),
+			schema.NewTurn(schema.TurnToolResults, llm.ToolResultNamed(fmt.Sprintf("b%d", action), "shell", mark+" result", false)),
+		)
+		if err := s.AfterAction(ctx, history, client); err != nil {
+			t.Fatalf("AfterAction B%d: %v", action, err)
+		}
+	}
+	if got := len(s.microSummaries); got != 2 {
+		t.Fatalf("micro-summaries = %d, want 2", got)
+	}
+	reqs := f.Requests()
+	if len(reqs) != 2 {
+		t.Fatalf("micro-summary requests = %d, want 2", len(reqs))
+	}
+	second := reqs[1].Messages[0].Text()
+	if !strings.Contains(second, "B-MARK-11 assistant") {
+		t.Fatalf("post-compaction span dropped its first turn:\n%s", second)
+	}
+}
+
+// TestRecursiveDistillStrategy_MicroSummaryPromptIsBounded pins that a
+// micro-summary failure streak, which deliberately keeps the watermark back and
+// retries against a growing span, cannot inflate its own retry prompt without
+// limit.
+func TestRecursiveDistillStrategy_MicroSummaryPromptIsBounded(t *testing.T) {
+	adapter := &failingCaptureAdapter{}
+	client := llm.NewClient()
+	client.Register(adapter)
+
+	cm := NewManager(NewOpenAIProfile("gpt-5.2"), client, cheapmodel.New(client))
+	s := NewRecursiveDistillStrategy(cm)
+	ctx := context.Background()
+
+	history := make([]schema.Turn, 0, 512)
+	for action := 1; action <= 150; action++ {
+		history = append(history,
+			schema.NewTurn(schema.TurnAssistant, llm.Assistant(fmt.Sprintf("action %d %s", action, strings.Repeat("a", 200)))),
+			schema.NewTurn(schema.TurnToolResults, llm.ToolResultNamed(fmt.Sprintf("t%d", action), "shell", fmt.Sprintf("action %d %s", action, strings.Repeat("r", 120)), false)),
+		)
+		_ = s.AfterAction(ctx, history, client) // the outage is surfaced; not this test's subject
+	}
+	if len(adapter.reqs) == 0 {
+		t.Fatal("no micro-summary attempts recorded")
+	}
+	for i, req := range adapter.reqs {
+		if got := len(req.Messages[0].Text()); got > 32_000 {
+			t.Fatalf("summary request %d prompt grew unbounded: %d chars", i, got)
 		}
 	}
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/internal/tool"
@@ -33,10 +34,12 @@ type RecursiveDistillStrategy struct {
 	actions     int
 	lastMicroAt int // action count at last micro-summary
 	lastMacroAt int // action count at last macro-summary
-	// microMarkTurns is the attention-transparent history length at the last
-	// successful micro-summary, so the next one distills every turn accumulated
-	// across the whole ten-action cadence span rather than a fixed tail.
-	microMarkTurns int
+	// microMark is the timestamp of the last turn covered by the last successful
+	// micro-summary. The next summary distills every turn after it, so a
+	// ten-action cadence spans all of its turns rather than a fixed tail. Time
+	// is used instead of a history index because compaction, marker replacement
+	// and restore reorder or drop entries, which would silently skip turns.
+	microMark time.Time
 	// aux holds the last micro/macro summary failure so a turn that skips the
 	// cadence guard keeps reporting the degradation instead of clearing it
 	// before the next eligible retry.
@@ -139,7 +142,9 @@ func (s *RecursiveDistillStrategy) AfterAction(ctx context.Context, history []sc
 	} else {
 		s.microSummaries = append(s.microSummaries, micro)
 		s.lastMicroAt = s.actions
-		s.microMarkTurns = len(history)
+		if len(history) > 0 {
+			s.microMark = history[len(history)-1].Timestamp
+		}
 	}
 
 	// Macro-summary every 50 completed actions (when we've accumulated 5
@@ -166,22 +171,31 @@ func (s *RecursiveDistillStrategy) AfterAction(ctx context.Context, history []sc
 
 // microSpan returns the attention-transparent turns accumulated since the last
 // successful micro-summary. A ten-action cadence spans roughly twenty turns, so
-// distilling only a fixed tail would drop the earlier half of every period once
-// compaction removes it. Compaction can shrink history below the mark; then the
-// whole retained history is the span, since nothing older survives to distill.
+// distilling only a fixed tail would drop the earlier half of every period. The
+// mark is a turn timestamp rather than a history index, so a marker swap or
+// compaction cannot shift it; when nothing is newer than the mark (a first
+// summary, or a restored strategy), the whole retained history is the span.
 func (s *RecursiveDistillStrategy) microSpan(history []schema.Turn) []schema.Turn {
-	if s.microMarkTurns > 0 && s.microMarkTurns < len(history) {
-		return history[s.microMarkTurns:]
+	if s.microMark.IsZero() {
+		return history
+	}
+	for i, turn := range history {
+		if turn.Timestamp.After(s.microMark) {
+			return history[i:]
+		}
 	}
 	return history
 }
 
 // microSummarize distills the supplied turns into 1-2 sentences.
 func (s *RecursiveDistillStrategy) microSummarize(ctx context.Context, history []schema.Turn) (string, error) {
-	recent := history
+	// Bound the assembled prompt so a failure streak, which deliberately keeps
+	// the watermark back and retries against an ever-growing span, cannot inflate
+	// its own retry payload without limit.
+	const maxMicroSummaryChars = 30_000
 
 	var b strings.Builder
-	for _, t := range recent {
+	for _, t := range history {
 		switch t.Kind {
 		case schema.TurnAssistant:
 			b.WriteString("Assistant: ")
@@ -194,6 +208,10 @@ func (s *RecursiveDistillStrategy) microSummarize(ctx context.Context, history [
 					fmt.Fprintf(&b, "Tool(%s): %s\n", p.ToolResult.Name, truncate(content, 100))
 				}
 			}
+		}
+		if b.Len() >= maxMicroSummaryChars {
+			b.WriteString("\n[... truncated ...]\n")
+			break
 		}
 	}
 
