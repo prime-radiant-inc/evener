@@ -123,15 +123,13 @@ func TestRunConcurrentCallsDoNotRace(t *testing.T) {
 	t.Cleanup(func() { processGetenv = oldGetenv })
 
 	var wg sync.WaitGroup
-	for i := 0; i < 2; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+	for range 2 {
+		wg.Go(func() {
 			var stderr bytes.Buffer
 			if code := Run([]string{"-h"}, nil, io.Discard, &stderr); code != 0 {
 				t.Errorf("concurrent Run(-h) = %d, want 0", code)
 			}
-		}()
+		})
 	}
 	wg.Wait()
 }
