@@ -926,6 +926,14 @@ func (m *Manager) AttachUnderGate(ctx context.Context, host hostreg.Host, holder
 				// supervisor (it must still reconnect), so no terminal event is
 				// claimed for it here.
 				m.failedEvent(name, err)
+				// stale == nil does not mean no supervisor exists: a loop that
+				// retired its own channel clears the map and waits out its
+				// backoff, and it would retry into this same terminal cause and
+				// announce a second EventFailed for one host. Ensure's terminal
+				// arm stops such a loop; this one must too. With a predecessor
+				// (stale != nil) its own supervisor owns the terminal
+				// announcement, so it is deliberately left running there.
+				m.stopSupervisor(name)
 			}
 			m.stateEvent(name, StateDisconnected)
 		}
@@ -2657,6 +2665,14 @@ func isTerminal(err error) bool {
 		return false
 	}
 }
+
+// Terminal reports whether err belongs to the attach ladder's terminal class:
+// the causes a retry cannot fix — a protocol or version mismatch, an
+// unsupported host, launch-contract and deploy-artifact refusals, a missing
+// host, an unusable address, and a closed manager. Callers that bound their own
+// retries (the hub's post-restart reattach) use it to fail fast instead of
+// waiting out a window on a cause that cannot change.
+func Terminal(err error) bool { return isTerminal(err) }
 
 // ErrControllerDirty is the exported alias for the terminal dirty-controller
 // deploy refusal (errControllerDirty, deploy.go): this controller was built

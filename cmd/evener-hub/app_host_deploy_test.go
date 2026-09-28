@@ -1150,6 +1150,158 @@ func TestHostRestartAttachFirstHandsOffWhenTheRestartFails(t *testing.T) {
 	}
 }
 
+// TestHostRestartReattachRetriesATransientAttachFailure pins the restored
+// tolerance: under the held gate the dropped channel's supervisor cannot
+// reconnect, so a host still coming back up after a reboot can refuse the
+// reattach dial with a retryable error. A transient failure is retried within
+// the refresh window instead of failing the whole restart on the first dial,
+// and the record shows the reattach path exactly once — retries are one step,
+// not many.
+func TestHostRestartReattachRetriesATransientAttachFailure(t *testing.T) {
+	entry := deployTestHost()
+	entry.Generation = 2
+	entry.IncarnationID = "inc-new"
+	configPath := deployTestConfigPath(t, entry)
+	before := time.Date(2026, 9, 27, 12, 0, 0, 0, time.UTC)
+	after := before.Add(time.Minute)
+	var attachCalls, handedOff atomic.Int64
+	var m *hubHostManager
+	var store *hostops.Store
+	m, store, _ = deployTestHub(t, configPath, []hostreg.Host{entry}, deploySeams{
+		probe:          restartProbeScript(t, "dev", "dev", before, after),
+		clientAttached: func(string) (*appwire.Client, bool) { return &appwire.Client{}, true },
+		attached:       func(string) (sshconn.Preflight, bool) { return deployTestFacts(entry), true },
+		restart:        func(context.Context, hostreg.Host, sshconn.Preflight) error { return nil },
+		attachUnderGate: func(_ context.Context, _ hostreg.Host, _ hostops.Holder, explicit bool) (func() bool, error) {
+			if explicit {
+				t.Error("the post-restart reattach ran with explicit=true; a reattach must never bootstrap a hub")
+			}
+			if call := attachCalls.Add(1); call <= 2 {
+				// The host is not accepting dials yet: a retryable transport error.
+				return nil, errors.New("dial tcp 10.0.0.5:22: connect: connection refused")
+			}
+			return func() bool { handedOff.Add(1); return true }, nil
+		},
+	})
+	m.cfg.probeTimeout = 300 * time.Millisecond // refreshWindow = 1.2s: two retries fit
+	response, err := m.Restart(context.Background(), appwire.HostRestartParams{
+		Name: entry.Name, OperationID: "op-1", Generation: 2, IncarnationID: "inc-new",
+	})
+	if err != nil {
+		t.Fatalf("Restart: %v", err)
+	}
+	record := waitOperationState(t, store, response.ID, hostops.StateComplete)
+	if record.Result == nil || !record.Result.OK {
+		t.Fatalf("transient-reattach restart record result = %+v, want ok", record.Result)
+	}
+	if got := attachCalls.Load(); got != 3 {
+		t.Fatalf("attach calls = %d, want 3 (two transient refusals, then the success)", got)
+	}
+	if got := handedOff.Load(); got != 1 {
+		t.Fatalf("handoff calls = %d, want 1", got)
+	}
+	progress := progressText(record)
+	if got := strings.Count(progress, "reattaching the host under the held host gate"); got != 1 {
+		t.Fatalf("the record shows %d reattach progress lines, want 1:\n%s", got, progress)
+	}
+}
+
+// TestHostRestartReattachFailsFastOnATerminalAttachFailure pins the other side
+// of the tolerance: a terminal attach cause cannot be fixed by waiting, so the
+// reattach fails on the first attempt and the record carries the terminal
+// cause verbatim.
+func TestHostRestartReattachFailsFastOnATerminalAttachFailure(t *testing.T) {
+	entry := deployTestHost()
+	entry.Generation = 2
+	entry.IncarnationID = "inc-new"
+	configPath := deployTestConfigPath(t, entry)
+	before := time.Date(2026, 9, 27, 12, 0, 0, 0, time.UTC)
+	after := before.Add(time.Minute)
+	var attachCalls atomic.Int64
+	var m *hubHostManager
+	var store *hostops.Store
+	m, store, _ = deployTestHub(t, configPath, []hostreg.Host{entry}, deploySeams{
+		probe:          restartProbeScript(t, "dev", "dev", before, after),
+		clientAttached: func(string) (*appwire.Client, bool) { return &appwire.Client{}, true },
+		attached:       func(string) (sshconn.Preflight, bool) { return deployTestFacts(entry), true },
+		restart:        func(context.Context, hostreg.Host, sshconn.Preflight) error { return nil },
+		attachUnderGate: func(_ context.Context, _ hostreg.Host, _ hostops.Holder, _ bool) (func() bool, error) {
+			attachCalls.Add(1)
+			return nil, sshconn.ErrProtocolIncompatible
+		},
+	})
+	m.cfg.probeTimeout = 300 * time.Millisecond
+	response, err := m.Restart(context.Background(), appwire.HostRestartParams{
+		Name: entry.Name, OperationID: "op-1", Generation: 2, IncarnationID: "inc-new",
+	})
+	if err != nil {
+		t.Fatalf("Restart: %v", err)
+	}
+	record := waitOperationState(t, store, response.ID, hostops.StateFailed)
+	if got := attachCalls.Load(); got != 1 {
+		t.Fatalf("attach calls = %d, want 1: a terminal cause must not be retried", got)
+	}
+	if record.Result == nil || record.Result.OK {
+		t.Fatalf("terminal-reattach restart record result = %+v, want a failure", record.Result)
+	}
+	if msg := record.Result.Message; !strings.Contains(msg, "host protocol incompatible") {
+		t.Fatalf("the record does not carry the terminal cause:\n%s", msg)
+	}
+	if progress := progressText(record); strings.Count(progress, "reattaching the host under the held host gate") != 1 {
+		t.Fatalf("the record does not show the reattach path exactly once:\n%s", progress)
+	}
+}
+
+// TestHostRestartReattachReportsAnExhaustedRefreshWindow pins the honest
+// failure arm: when the host never comes back within the refresh window, the
+// retry stops at the bound, the operation fails with a message naming the
+// window, and the last cause travels with it — never a claim of success.
+func TestHostRestartReattachReportsAnExhaustedRefreshWindow(t *testing.T) {
+	entry := deployTestHost()
+	entry.Generation = 2
+	entry.IncarnationID = "inc-new"
+	configPath := deployTestConfigPath(t, entry)
+	before := time.Date(2026, 9, 27, 12, 0, 0, 0, time.UTC)
+	after := before.Add(time.Minute)
+	var attachCalls atomic.Int64
+	var m *hubHostManager
+	var store *hostops.Store
+	m, store, _ = deployTestHub(t, configPath, []hostreg.Host{entry}, deploySeams{
+		probe:          restartProbeScript(t, "dev", "dev", before, after),
+		clientAttached: func(string) (*appwire.Client, bool) { return &appwire.Client{}, true },
+		attached:       func(string) (sshconn.Preflight, bool) { return deployTestFacts(entry), true },
+		restart:        func(context.Context, hostreg.Host, sshconn.Preflight) error { return nil },
+		attachUnderGate: func(_ context.Context, _ hostreg.Host, _ hostops.Holder, _ bool) (func() bool, error) {
+			attachCalls.Add(1)
+			return nil, errors.New("dial tcp 10.0.0.5:22: connect: connection refused")
+		},
+	})
+	m.cfg.probeTimeout = 100 * time.Millisecond // refreshWindow = 400ms
+	response, err := m.Restart(context.Background(), appwire.HostRestartParams{
+		Name: entry.Name, OperationID: "op-1", Generation: 2, IncarnationID: "inc-new",
+	})
+	if err != nil {
+		t.Fatalf("Restart: %v", err)
+	}
+	record := waitOperationState(t, store, response.ID, hostops.StateFailed)
+	if got := attachCalls.Load(); got < 2 || got > 3 {
+		t.Fatalf("attach calls = %d, want the retry bounded by the window (2 or 3)", got)
+	}
+	if record.Result == nil || record.Result.OK {
+		t.Fatalf("exhausted-window restart record result = %+v, want a failure", record.Result)
+	}
+	msg := record.Result.Message
+	if !strings.Contains(msg, "did not reattach within the refresh window after the restart") {
+		t.Fatalf("the failure does not name the exhausted window:\n%s", msg)
+	}
+	if !strings.Contains(msg, "connection refused") {
+		t.Fatalf("the last cause did not travel with the failure:\n%s", msg)
+	}
+	if progress := progressText(record); strings.Count(progress, "reattaching the host under the held host gate") != 1 {
+		t.Fatalf("the record does not show the reattach path exactly once:\n%s", progress)
+	}
+}
+
 // promotionFailingGate fails the first HoldAs it sees — the record promotion
 // startOperation logs as non-fatal — and tracks the holder its inner gate
 // carries, so a test can prove the worker restores the holder before its attach

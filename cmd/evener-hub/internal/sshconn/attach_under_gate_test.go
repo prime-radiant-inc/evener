@@ -9,8 +9,10 @@ package sshconn
 import (
 	"context"
 	"errors"
+	"io"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -840,5 +842,117 @@ func TestStartSuperviseRefusalLeavesTheChannelUnmarked(t *testing.T) {
 	}
 	if n := supervisorLoops(m, host.Name); n != 0 {
 		t.Fatalf("supervisor loops after the refused start = %d, want 0", n)
+	}
+}
+
+// TestAttachUnderGateTerminalFailureStopsAParkedSupervisor pins the round-9
+// finding: a terminal attach failure must stop a supervisor that retired its
+// own channel and is waiting out a backoff — stale == nil does not mean no
+// supervisor exists — or that loop retries into the same terminal cause and
+// announces a second EventFailed for one host for one cause. Ensure's terminal
+// arm stops such a loop, and AttachUnderGate must mirror it.
+func TestAttachUnderGateTerminalFailureStopsAParkedSupervisor(t *testing.T) {
+	host := attachUnderGateHost()
+	var mu sync.Mutex
+	var failures []error
+	countFailures := func() int {
+		mu.Lock()
+		defer mu.Unlock()
+		return len(failures)
+	}
+	var terminalDials atomic.Bool
+	good := cannedRun(nil)
+	bad := cannedRun(map[string][]byte{"launch-check": []byte(`{"protocol":"evener-appwire-v5","version":"dev","launch_flags":["api-log"]}`)})
+	fr := &fakeRunner{
+		runFn: func(ctx context.Context, argv []string, stdin io.Reader) ([]byte, error) {
+			if terminalDials.Load() {
+				return bad(ctx, argv, stdin)
+			}
+			return good(ctx, argv, stdin)
+		},
+		startFn: goodStartFn(t),
+	}
+	backoffParked := make(chan struct{}, 1)
+	resume := make(chan struct{})
+	exited := make(chan struct{}, 1)
+	var parkedOnce sync.Once
+	m := newTestManager(t, testRegistry(t, host), fr, Options{
+		controllerVersionOverride: "dev",
+		sleep: func(ctx context.Context, _ time.Duration) error {
+			parkedOnce.Do(func() {
+				select {
+				case backoffParked <- struct{}{}:
+				case <-ctx.Done():
+				}
+				select {
+				case <-resume:
+				case <-ctx.Done():
+				}
+			})
+			return ctx.Err()
+		},
+		superviseExited: func(string) {
+			select {
+			case exited <- struct{}{}:
+			default:
+			}
+		},
+		OnEvent: func(ev Event) {
+			if ev.Kind != EventFailed || ev.Host != host.Name {
+				return
+			}
+			mu.Lock()
+			failures = append(failures, ev.Err)
+			mu.Unlock()
+		},
+	})
+	stamped, ok := m.reg.Get(host.Name)
+	if !ok {
+		t.Fatalf("the test registry holds no %q", host.Name)
+	}
+
+	if _, err := m.Ensure(context.Background(), stamped.Name); err != nil {
+		t.Fatalf("Ensure: %v", err)
+	}
+	ch := m.currentChannel(host.Name)
+	if ch == nil {
+		t.Fatal("Ensure installed no channel")
+	}
+	// From here on the host is unreachable in the terminal class: the same
+	// protocol-mismatch refusal for every dial.
+	terminalDials.Store(true)
+	ch.markLost()
+	select {
+	case <-backoffParked:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the dropped loop never reached its backoff")
+	}
+	if m.currentChannel(host.Name) != nil {
+		t.Fatal("the dropped loop did not clear the map before its backoff")
+	}
+
+	release, err := m.TryAcquire(host.Name, attachUnderGateCaller())
+	if err != nil {
+		t.Fatalf("TryAcquire: %v", err)
+	}
+	_, _, err = m.AttachUnderGate(context.Background(), stamped, attachUnderGateCaller(), true)
+	release()
+	if !errors.Is(err, ErrProtocolIncompatible) {
+		t.Fatalf("AttachUnderGate = %v, want ErrProtocolIncompatible", err)
+	}
+	if got := countFailures(); got != 1 {
+		t.Fatalf("EventFailed count after the terminal attach = %d, want 1", got)
+	}
+
+	// Let the parked loop wake: without the stop it retries the same terminal
+	// dial and announces the failure a second time.
+	close(resume)
+	select {
+	case <-exited:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the parked supervisor never stood down")
+	}
+	if got := countFailures(); got != 1 {
+		t.Fatalf("EventFailed count after the parked supervisor retried = %d, want 1: the same terminal cause was announced twice for one host", got)
 	}
 }
