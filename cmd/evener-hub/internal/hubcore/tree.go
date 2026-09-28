@@ -411,6 +411,14 @@ func SessionArchived(decisions map[ArchiveKey]bool, sessionID, projectID, source
 		classifySession(decisionFor(decisions, sessionID), lastActivity, now) == "archived"
 }
 
+// LiveSessionArchived is SessionArchived for a live entry, consulting only the
+// project decision of the source that owns it: a project can merge the same
+// ID/path across hosts, so a different host archiving the shared project ID
+// does not archive this host's still-live session.
+func LiveSessionArchived(decisions map[ArchiveKey]bool, entry LiveEntry, lastActivity, now time.Time) bool {
+	return SessionArchived(decisions, entry.SessionID, entry.Project.ID, liveEntrySource(entry), lastActivity, now)
+}
+
 // classifySession returns a session's sidebar tier from its last activity and
 // archive decision. A user decision (archive/unarchive) overrides the auto rule;
 // otherwise inactivity older than archiveWindow auto-archives.
@@ -1664,11 +1672,7 @@ func buildTreeAtWithProjects(metas []schema.SessionMeta, live []LiveEntry, decis
 		if _, hasMeta := metaMap[node.ID]; hasMeta {
 			lastActivity = node.UpdatedAt
 		}
-		// A project can merge the same ID/path across hosts, but an archive
-		// decision is source-qualified: consult only the source that owns
-		// this entry, so a different host archiving the shared project ID
-		// does not hide this host's still-live session.
-		if SessionArchived(decisions, node.ID, entry.Project.ID, liveEntrySource(entry), lastActivity, now) {
+		if LiveSessionArchived(decisions, entry, lastActivity, now) {
 			continue
 		}
 		unarchivedLive = append(unarchivedLive, node)

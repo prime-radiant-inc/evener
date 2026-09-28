@@ -3,6 +3,8 @@ package hubcore
 import (
 	"testing"
 	"time"
+
+	"primeradiant.com/evener/identifier"
 )
 
 // SessionArchived is the rail's rule (S14 reports it as a search result's
@@ -33,6 +35,29 @@ func TestSessionArchivedFollowsTheRail(t *testing.T) {
 	} {
 		if got := SessionArchived(decisions, tc.id, tc.project, tc.source, tc.lastActivity, now); got != tc.want {
 			t.Errorf("%s: SessionArchived = %t, want %t", tc.name, got, tc.want)
+		}
+	}
+}
+
+// LiveSessionArchived asks the rail's question of a live entry, consulting the
+// project decision of the source that owns it: a remote host's archive of its
+// project archives its own live session, never this hub's session in a
+// project of the same ID.
+func TestLiveSessionArchivedConsultsTheOwningSource(t *testing.T) {
+	now := time.Date(2026, 9, 27, 12, 0, 0, 0, time.UTC)
+	decisions := map[ArchiveKey]bool{{Kind: "project", ID: "p", Source: "h"}: true}
+	project := identifier.Project{ID: "p"}
+	for _, tc := range []struct {
+		name  string
+		entry LiveEntry
+		want  bool
+	}{
+		{"remote entry", LiveEntry{SourceID: "h", SessionID: "h:s", Project: project}, true},
+		{"remote identity", LiveEntry{SessionID: "h:s", Project: project}, true},
+		{"this hub's entry", LiveEntry{SourceID: "local", SessionID: "s", Project: project}, false},
+	} {
+		if got := LiveSessionArchived(decisions, tc.entry, now, now); got != tc.want {
+			t.Errorf("%s: LiveSessionArchived = %t, want %t", tc.name, got, tc.want)
 		}
 	}
 }

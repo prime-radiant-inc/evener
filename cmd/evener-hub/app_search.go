@@ -125,7 +125,7 @@ func liveSearchResult(cfg hubcore.WebConfig, le hubcore.LiveEntry, title string,
 		Ref:             hubRefFromTreeNodeID(le.SessionID).String(),
 		AskPending:      le.PendingAsk,
 		ApprovalPending: le.PendingEscalation,
-		Archived:        hubcore.SessionArchived(decisions, le.SessionID, le.Project.ID, "", lastActivity, now),
+		Archived:        hubcore.LiveSessionArchived(decisions, le, lastActivity, now),
 	}
 }
 

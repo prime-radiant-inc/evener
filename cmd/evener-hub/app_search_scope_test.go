@@ -13,6 +13,7 @@ import (
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubtest"
+	"primeradiant.com/evener/identifier"
 	"primeradiant.com/evener/llm"
 )
 
@@ -255,5 +256,33 @@ func TestHubSearchInSessionsFollowsTheScope(t *testing.T) {
 		if got := searchIDs(resp.InSessions); !reflect.DeepEqual(got, want) {
 			t.Errorf("%s: inSessions %v, want %v (recent %s)", scope, got, want, recent.ID)
 		}
+	}
+}
+
+// A live session's archived flag consults the project decision of the source
+// that owns it, as the Board's Live section does: a remote host archiving its
+// project archives its own live session there, never this hub's live session
+// in a project of the same ID.
+func TestHubSearchLiveArchivedFollowsTheOwningSource(t *testing.T) {
+	now := time.Date(2026, 9, 27, 12, 0, 0, 0, time.UTC)
+	archive := hubcore.NewArchiveStore(filepath.Join(t.TempDir(), "index.db"))
+	if err := archive.Set("h", "project", "shared", true, now); err != nil {
+		t.Fatal(err)
+	}
+	project := identifier.Project{ID: "shared"}
+	roster := hubcore.NewRosterWithEntries(
+		hubcore.LiveEntry{PID: 1, SourceID: "h", SessionID: "h:remote", Project: project, Status: appwire.ThreadStatusIdle},
+		hubcore.LiveEntry{PID: 2, SourceID: "local", SessionID: "own", Project: project, Status: appwire.ThreadStatusIdle},
+	)
+	resp, err := hubSearch(context.Background(), hubcore.WebConfig{Roster: roster, Archive: archive}, appwire.SearchParams{}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	archived := map[string]bool{}
+	for _, result := range resp.Live {
+		archived[result.ID] = result.Archived
+	}
+	if want := map[string]bool{"h:remote": true, "own": false}; !reflect.DeepEqual(archived, want) {
+		t.Fatalf("live archived = %v, want %v", archived, want)
 	}
 }
