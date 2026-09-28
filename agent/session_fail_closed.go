@@ -168,10 +168,17 @@ func (s *Session) settleRetainedUnsynced(retained *transcript.RetainedUnsyncedEr
 // retryDurabilityUntilSettledOrExhausted is settleRetainedUnsynced's retry
 // loop; split out so tests can call it synchronously.
 func (s *Session) retryDurabilityUntilSettledOrExhausted(retained *transcript.RetainedUnsyncedError, what string) {
-	writer := s.attachedTranscript()
 	lastErr := error(retained)
 	for attempt := range durabilityRetryAttempts {
 		s.sclock().Sleep(durabilityRetryBackoff(attempt))
+		// Re-fetched every attempt, not captured once: attention recovery can
+		// reopen the transcript on a new *Writer for the same file mid-retry,
+		// closing the old handle. A stale handle would read Closed() true on
+		// a session that never shut down and abandon the retry silently. An
+		// EstablishDurability barrier on the reopened handle still settles
+		// the earlier bytes -- fsync flushes the whole file, not only what
+		// this handle itself wrote.
+		writer := s.attachedTranscript()
 		if writer == nil || writer.Closed() {
 			return // the session is shutting down, not a genuine durability failure
 		}
@@ -181,7 +188,7 @@ func (s *Session) retryDurabilityUntilSettledOrExhausted(retained *transcript.Re
 		}
 		lastErr = err
 	}
-	if writer == nil || writer.Closed() {
+	if writer := s.attachedTranscript(); writer == nil || writer.Closed() {
 		return // the session shut down while the last attempt was in flight
 	}
 	if !s.servedByDaemon() {

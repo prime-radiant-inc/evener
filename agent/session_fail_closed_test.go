@@ -544,6 +544,7 @@ type retainedBarrierFs struct {
 	armed      bool // the marked line is now retained; barrier calls start counting
 	remaining  int
 	barrierErr error
+	succeeded  int // real (unfaulted) Sync() calls this fs let through, once armed
 }
 
 func (fs *retainedBarrierFs) OpenFile(name string, flag int, mode os.FileMode) (afero.File, error) {
@@ -583,7 +584,13 @@ func (file *retainedBarrierFile) Sync() error {
 		return err
 	}
 	file.fs.mu.Unlock()
-	return file.File.Sync()
+	err := file.File.Sync()
+	if err == nil {
+		file.fs.mu.Lock()
+		file.fs.succeeded++
+		file.fs.mu.Unlock()
+	}
+	return err
 }
 
 func (file *retainedBarrierFile) Truncate(size int64) error {
@@ -601,7 +608,7 @@ func (file *retainedBarrierFile) Truncate(size int64) error {
 // attachRetainedBarrierWrite swaps s's writer for one whose next write of an
 // entry of kind is retained (its own sync and rollback fail), then fails
 // EstablishDurability barrierFailures times before a barrier call succeeds.
-func attachRetainedBarrierWrite(t *testing.T, s *Session, kind schema.TurnKind, barrierFailures int) {
+func attachRetainedBarrierWrite(t *testing.T, s *Session, kind schema.TurnKind, barrierFailures int) *retainedBarrierFs {
 	t.Helper()
 	fs := &retainedBarrierFs{Fs: afero.NewOsFs(), marker: []byte(`"kind":"` + string(kind) + `"`), remaining: barrierFailures, barrierErr: errors.New("injected barrier failure")}
 	w, _, err := transcript.OpenWriterForSessionWithFS(fs, s.TranscriptPath(), s.ID())
@@ -614,6 +621,7 @@ func attachRetainedBarrierWrite(t *testing.T, s *Session, kind schema.TurnKind, 
 	s.transcript = w
 	s.mu.Unlock()
 	t.Cleanup(func() { _ = previous.Close() })
+	return fs
 }
 
 // driveDurabilityRetries advances clk once per pending retry attempt, up to
@@ -735,5 +743,72 @@ func TestRetainedCompletionOnAnUnservedSessionKeepsRunningAfterExhaustingRetries
 	}
 	if failClosedDiagnostics(got) != 0 {
 		t.Fatal("an unserved session failed closed after exhausting durability retries")
+	}
+}
+
+// The retry loop must re-fetch the attached writer every attempt, not
+// capture it once: attention recovery legitimately reopens the transcript on
+// a NEW *transcript.Writer for the same file mid-retry and closes the old
+// handle (agent/session_attention.go's foldDelegateAttentionDurability). A
+// stale captured handle would read Closed() true on a session that never
+// shut down and silently abandon the retry, losing the durability debt with
+// no warning and no fail-closed. A barrier call on the reopened handle still
+// settles the earlier bytes: fsync flushes the whole file, not only what
+// that specific handle itself wrote.
+func TestRetainedCompletionSettlesAfterTheWriterIsReopenedMidRetry(t *testing.T) {
+	clk := agenttest.NewFakeClock()
+	s, adapter := newFailClosedSessionWithClock(t, nil, clk)
+	served := serveFailClosedSession(s)
+	// The original writer never settles on its own.
+	attachRetainedBarrierWrite(t, s, schema.TurnCompletion, durabilityRetryAttempts+1)
+	adapter.script(func(context.Context) (llm.Response, error) {
+		return communicateResponse(true, "settles after reopen"), nil
+	})
+	baseline := clk.BlockedCount()
+	if _, err := s.ProcessInput(context.Background(), "finish", nil); err != nil {
+		t.Fatalf("ProcessInput: %v", err)
+	}
+	// Wake the retry goroutine's first sleep; it fails against the original
+	// writer and re-arms its second sleep. Wait for it to actually park there
+	// (not just for Advance to return) before touching the writer at all: an
+	// Advance only delivers to the goroutine's channel and returns, it does
+	// not wait for the goroutine to resume and finish its post-wake work, so
+	// swapping the writer right after Advance would race the goroutine's own
+	// re-fetch of it.
+	clk.BlockUntil(baseline + 1)
+	clk.Advance(durabilityRetryMaxDelay)
+	clk.BlockUntil(baseline + 1)
+	// Now it is safely parked in Sleep, not mid-flight: simulate attention
+	// recovery, which swaps in a writer that settles immediately and closes
+	// the old one, exactly as setTranscriptLocked + writer.Close() does in
+	// production.
+	s.mu.Lock()
+	oldWriter := s.transcript
+	s.mu.Unlock()
+	newFS := attachRetainedBarrierWrite(t, s, schema.TurnCompletion, 0)
+	// The old writer is still dirty against a barrier that never succeeds, so
+	// its own Close() also fails its flush; that failure is not what this
+	// test is about (production's real fault would be a genuine disk error,
+	// not this injected one) -- only that Close() marks it closed, which it
+	// does before returning any error.
+	_ = oldWriter.Close()
+	if !oldWriter.Closed() {
+		t.Fatal("setup: the old writer must be marked closed for this test to exercise the stale-handle bug")
+	}
+	// One more attempt is all a fixed retry loop needs: it re-fetches the
+	// writer, finds the reopened one, and its barrier succeeds immediately.
+	clk.Advance(durabilityRetryMaxDelay)
+	s.sendersWG.Wait()
+	if refusal := s.failedClosedRefusal(); refusal != nil {
+		t.Fatalf("failed closed after a legitimate writer reopen mid-retry: %v", refusal)
+	}
+	newFS.mu.Lock()
+	succeeded := newFS.succeeded
+	newFS.mu.Unlock()
+	if succeeded == 0 {
+		t.Fatal("the retry loop never reached the reopened writer's barrier; it abandoned the retry on the stale handle instead")
+	}
+	if got := failClosedDiagnostics(served.settle(s)); got != 0 {
+		t.Fatalf("%d fail-closed diagnostics, want 0: the reopened writer settled durability", got)
 	}
 }
