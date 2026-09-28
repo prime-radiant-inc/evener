@@ -157,11 +157,29 @@ it("washes rows that entered Needs you, never on the first list, and clears the 
 	const list = loaded(item("a", "a", false), item("b", "b", true));
 	expect(list.getSnapshot().washed.size).toBe(0);
 	list.setItems([item("a", "a", true), item("b", "b", true), item("c", "c", true)]);
-	expect([...list.getSnapshot().washed].sort()).toEqual(["a", "c"]);
-	const token = list.getSnapshot().washToken;
+	expect([...list.getSnapshot().washed.keys()].sort()).toEqual(["a", "c"]);
 	vi.advanceTimersByTime(WASH_MS);
 	expect(list.getSnapshot().washed.size).toBe(0);
-	expect(list.getSnapshot().washToken).toBe(token);
+});
+
+it("gives each row that entered Needs you its own full wash, untouched by a row that enters after it", () => {
+	const list = loaded(item("a", "a", false), item("b", "b", false));
+	list.setItems([item("a", "a", true), item("b", "b", false)]);
+	const washOfA = list.getSnapshot().washed.get("a");
+	expect(washOfA).toBeGreaterThan(0);
+	vi.advanceTimersByTime(300);
+	list.setItems([item("a", "a", true), item("b", "b", true)]);
+	expect(list.getSnapshot().washed.get("a")).toBe(washOfA);
+	expect(list.getSnapshot().washed.get("b")).toBeGreaterThan(0);
+	expect(list.getSnapshot().washed.get("b")).not.toBe(washOfA);
+	vi.advanceTimersByTime(WASH_MS - 300 - 1);
+	expect([...list.getSnapshot().washed.keys()].sort()).toEqual(["a", "b"]);
+	vi.advanceTimersByTime(1);
+	expect([...list.getSnapshot().washed.keys()]).toEqual(["b"]);
+	vi.advanceTimersByTime(299);
+	expect([...list.getSnapshot().washed.keys()]).toEqual(["b"]);
+	vi.advanceTimersByTime(1);
+	expect(list.getSnapshot().washed.size).toBe(0);
 });
 
 it("washes a row that entered Needs you while held only when the list settles, in its new place", () => {
@@ -172,5 +190,5 @@ it("washes a row that entered Needs you while held only when the list settles, i
 	list.send("touchEnd");
 	vi.advanceTimersByTime(100);
 	expect(keys(list)).toEqual(["n", "w"]);
-	expect([...list.getSnapshot().washed]).toEqual(["w"]);
+	expect([...list.getSnapshot().washed.keys()]).toEqual(["w"]);
 });

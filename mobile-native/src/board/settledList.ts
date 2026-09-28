@@ -12,10 +12,11 @@ export interface SettledSnapshot<T> {
 	/** What the list shows. */
 	display: readonly T[];
 	held: boolean;
-	/** The rows that entered Needs you at the last change applied, for WASH_MS. */
-	washed: ReadonlySet<string>;
-	/** Moves on whenever `washed` gains rows, so a row can wash again. */
-	washToken: number;
+	/** Each row washing now, for WASH_MS from when it entered Needs you, by
+	 * its wash's number: a new number for every entry, so a row can wash
+	 * again, and the same one until that wash ends, so a row entering later
+	 * never restarts another's fade. */
+	washed: ReadonlyMap<string, number>;
 }
 
 export interface SettleTimers {
@@ -34,8 +35,9 @@ export class SettledList<T extends HoldableItem> {
 	#latest: readonly T[] | null = null;
 	#applied: readonly T[] | null = null;
 	readonly #order = new HeldOrder<T>();
-	#washTimer: unknown = null;
-	#snapshot: SettledSnapshot<T> = { display: [], held: false, washed: new Set(), washToken: 0 };
+	readonly #washTimers = new Map<string, unknown>();
+	#washCount = 0;
+	#snapshot: SettledSnapshot<T> = { display: [], held: false, washed: new Map() };
 	readonly #listeners = new Set<() => void>();
 	#disposed = false;
 	readonly #timers: SettleTimers;
@@ -94,7 +96,7 @@ export class SettledList<T extends HoldableItem> {
 	dispose(): void {
 		this.#disposed = true;
 		this.#timers.clear(this.#deadline);
-		this.#timers.clear(this.#washTimer);
+		for (const timer of this.#washTimers.values()) this.#timers.clear(timer);
 		this.#listeners.clear();
 	}
 
@@ -125,12 +127,21 @@ export class SettledList<T extends HoldableItem> {
 			this.#publish({ display: items, held: false });
 			return;
 		}
-		this.#timers.clear(this.#washTimer);
-		this.#washTimer = this.#timers.set(() => {
-			this.#washTimer = null;
-			this.#publish({ washed: new Set() });
-		}, WASH_MS);
-		this.#publish({ display: items, held: false, washed: entered, washToken: this.#snapshot.washToken + 1 });
+		const washed = new Map(this.#snapshot.washed);
+		for (const key of entered) {
+			washed.set(key, ++this.#washCount);
+			this.#timers.clear(this.#washTimers.get(key));
+			this.#washTimers.set(
+				key,
+				this.#timers.set(() => {
+					this.#washTimers.delete(key);
+					const remaining = new Map(this.#snapshot.washed);
+					remaining.delete(key);
+					this.#publish({ washed: remaining });
+				}, WASH_MS),
+			);
+		}
+		this.#publish({ display: items, held: false, washed });
 	}
 
 	#publish(change: Partial<SettledSnapshot<T>>): void {

@@ -788,7 +788,7 @@ function Board({
 						moving={item.moving}
 						archived={item.archived}
 						selected={selecting ? chosen.has(item.item.row.ref) : undefined}
-						wash={settled.washed.has(item.key) ? settled.washToken : 0}
+						wash={settled.washed.get(item.key) ?? 0}
 						context={listContext}
 						onSwipeActive={(active) => list.setInteraction(`swipe:${item.key}`, active)}
 					/>
