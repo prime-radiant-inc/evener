@@ -663,3 +663,168 @@ func TestThreadHistoryQuarantinesAnUnreadableEntry(t *testing.T) {
 	}
 	hx.expectQuiet(t)
 }
+
+// A gap that reopens after a range containing an undecodable line must
+// resume numbering from the lines actually consumed, not from
+// gap.ordinal + len(decoded records): the undecodable line took an ordinal
+// too, so counting only decoded records undercounts every entry replayed
+// after it. fillOverlayGap's own loop only reopens a gap when another
+// overflow lands mid-replay (rare and timing-dependent in production); the
+// threadHistoryFillGapHook test seam lands it deterministically instead of
+// racing a real one.
+func TestFillOverlayGapAfterAnUndecodableLineResumesAtTheRightOrdinal(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "gap_ordinal.transcript.jsonl")
+	writer, err := transcript.NewWriterNoSync(path, transcript.Header{SessionID: "th_gap"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = writer.Close() })
+
+	first := recordLine(t, writer, schema.NewTurn(schema.TurnUserInput, llm.User("first")))
+	garbage := recordLine(t, writer, schema.NewTurn(schema.TurnUserInput, llm.User("garbage")))
+	corruptLine(t, path, garbage)
+	filler := recordLine(t, writer, schema.NewTurn(schema.TurnUserInput, llm.User("filler")))
+	call := llm.ToolCallData{ID: "call1", Name: "shell", Arguments: json.RawMessage(`{}`)}
+	assistant := recordLine(t, writer, schema.Turn{
+		Kind:    schema.TurnAssistant,
+		Message: llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{{Kind: llm.ContentToolCall, ToolCall: &call}}},
+	})
+	// results is never itself replayed: it stays past what the gap ever
+	// covers, so the test controls exactly when the overlay learns of it
+	// (below), after the live tool-call-start below, matching production's
+	// order (the call starts live before its own TOOL_RESULTS is recorded).
+	results := recordLine(t, writer, schema.NewTurn(schema.TurnToolResults, llm.ToolResultNamed("call1", "shell", "done", false)))
+
+	// The lines, in ordinal order: first(0), garbage(1, undecodable),
+	// filler(2), assistant(3, the tool call), results(4). The true ordinal
+	// of the assistant entry is 3.
+	const assistantTrueOrdinal = 3
+
+	cache := transcriptindex.NewCache(transcriptindex.DefaultCacheCapacity)
+	t.Cleanup(func() { _ = cache.Close() })
+	overlay := appoverlay.New(appoverlay.NewBudget(1 << 20))
+	t.Cleanup(overlay.Close)
+	h := newThreadHistory(threadHistoryConfig{
+		threadID:       "th_gap",
+		ref:            "local:th_gap",
+		bootGeneration: "1",
+		path:           path,
+		cache:          cache,
+		overlay:        overlay,
+		publish:        func(appwire.HistoryUpdatedParams) error { return nil },
+		resync:         func(uint64) {},
+	})
+	t.Cleanup(h.close)
+
+	// The gap opens right after "first" and is set to close after "filler"
+	// (a range containing the undecodable "garbage" line); the hook then
+	// extends it to cover "assistant" too, simulating a second overflow
+	// landing while this replay was in flight. "results" stays outside
+	// every replay range; the test feeds it explicitly, later.
+	h.mu.Lock()
+	h.gap = &overlayGap{ordinal: 1, offset: first.Offset + first.Length}
+	h.recordedLength = filler.Offset + filler.Length
+	h.mu.Unlock()
+	bumped := false
+	threadHistoryFillGapHook = func(threadID string) {
+		if bumped || threadID != "th_gap" {
+			return
+		}
+		bumped = true
+		h.mu.Lock()
+		h.recordedLength = assistant.Offset + assistant.Length
+		h.mu.Unlock()
+	}
+	t.Cleanup(func() { threadHistoryFillGapHook = nil })
+
+	if err := h.fillOverlayGap(); err != nil {
+		t.Fatalf("fillOverlayGap: %v", err)
+	}
+	if !bumped {
+		t.Fatal("setup: the hook never fired, so this never exercised a reopened gap")
+	}
+	h.mu.Lock()
+	closedGap := h.gap
+	h.mu.Unlock()
+	if closedGap != nil {
+		t.Fatalf("gap = %+v after replay, want closed", closedGap)
+	}
+
+	// The assistant entry's tool call was learned at replay time (from the
+	// wrong ordinal, if the bug is present); a live TOOL_CALL_START arriving
+	// after replay picks up whatever historyKey learnCalls computed.
+	changes := overlay.Event(events.SessionEvent{
+		Kind: events.EventToolCallStart,
+		Data: events.ToolCallStartData{ToolName: "shell", CallID: "call1"},
+	})
+	if len(changes) != 1 {
+		t.Fatalf("tool call start produced %d changes, want 1", len(changes))
+	}
+	upserted, ok := changes[0].Params.(appwire.OverlayUpsertedParams)
+	if !ok {
+		t.Fatalf("change params = %T, want OverlayUpsertedParams", changes[0].Params)
+	}
+	want := transcriptindex.ItemKey("", appwire.ThreadItemPosition{Entry: assistantTrueOrdinal + 1, Item: 0})
+	if got := upserted.Item.HistoryKey; got != want {
+		t.Fatalf("tool call historyKey = %q, want %q (the assistant entry's true ordinal %d)", got, want, assistantTrueOrdinal)
+	}
+
+	// The later TOOL_RESULTS entry prunes the running slot regardless (it
+	// matches by call id, not by the possibly-wrong historyKey), but a
+	// stale slot is still worth pinning: it must be gone.
+	overlay.Recorded(transcript.Record{
+		Recorded: true,
+		Ordinal:  assistantTrueOrdinal + 1,
+		Offset:   results.Offset,
+		Length:   results.Length,
+		Turn:     schema.NewTurn(schema.TurnToolResults, llm.ToolResultNamed("call1", "shell", "done", false)),
+	})
+	if got := overlay.Snapshot(); slotForCall(got, "call1") {
+		t.Fatalf("the tool call's overlay slot is still running after its TOOL_RESULTS: %+v", got)
+	}
+}
+
+// recordLine appends turn and returns its record, failing the test if it did
+// not land.
+func recordLine(t *testing.T, w *transcript.Writer, turn schema.Turn) transcript.Record {
+	t.Helper()
+	rec, err := w.Record(turn, transcript.RecordOptions{})
+	if err != nil || !rec.Recorded {
+		t.Fatalf("record %s = %+v, %v", turn.Kind, rec, err)
+	}
+	return rec
+}
+
+// corruptLine rewrites rec's line in place to one that fails to decode, same
+// length as corruptNext's technique.
+func corruptLine(t *testing.T, path string, rec transcript.Record) {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	original := data[rec.Offset : rec.Offset+rec.Length]
+	corrupt := bytes.Replace(original, []byte(`"kind":"entry"`), []byte(`"kind":"entrx"`), 1)
+	if bytes.Equal(corrupt, original) {
+		t.Fatalf("entry line %s has no record kind to corrupt", original)
+	}
+	f, err := os.OpenFile(path, os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close() //nolint:errcheck // fixture
+	if _, err := f.WriteAt(corrupt, rec.Offset); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// slotForCall reports whether snapshot still carries a running tool slot for
+// callID.
+func slotForCall(snapshot []appwire.OverlayItem, callID string) bool {
+	for _, item := range snapshot {
+		if item.CallID == callID && item.Kind == appwire.OverlayTool {
+			return true
+		}
+	}
+	return false
+}

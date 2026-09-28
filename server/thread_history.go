@@ -42,6 +42,14 @@ var threadHistoryRebuildHook func(threadID string) error
 // share a package with may still be projecting.
 var threadHistoryPublishedHook atomic.Pointer[func(threadID string, length int64)]
 
+// threadHistoryFillGapHook, when set, runs inside fillOverlayGap's loop once
+// per iteration, after that iteration's read has been applied to the overlay
+// but before the loop decides whether the gap closed. It lets a test land a
+// deterministic "another overflow landed during replay" without a real race:
+// the loop's own re-check of gapEndLocked sees whatever the hook just did.
+// Test seam only; nil in production.
+var threadHistoryFillGapHook func(threadID string)
+
 // threadHistoryMaxRebuilds is how many rebuilds in a row may fail, or be
 // overrun by a queue overflow before they catch up, before the thread's
 // history enters its failed state (spec: "If the rebuild itself fails three
@@ -714,7 +722,7 @@ func (h *threadHistory) fillOverlayGap() error {
 		if gap == nil {
 			return nil
 		}
-		records, err := readRecordedEntries(h.path, *gap, end)
+		records, nextOrdinal, err := readRecordedEntries(h.path, *gap, end)
 		if err != nil {
 			return err
 		}
@@ -722,12 +730,15 @@ func (h *threadHistory) fillOverlayGap() error {
 		for _, rec := range records {
 			h.overlay.Recorded(rec)
 		}
+		if threadHistoryFillGapHook != nil {
+			threadHistoryFillGapHook(h.threadID)
+		}
 		h.mu.Lock()
 		closed := h.gapEndLocked() == end
 		if closed {
 			h.gap = nil
 		} else {
-			h.gap = &overlayGap{ordinal: gap.ordinal + uint64(len(records)), offset: end}
+			h.gap = &overlayGap{ordinal: nextOrdinal, offset: end}
 		}
 		h.mu.Unlock()
 		h.applyMu.Unlock()
@@ -740,26 +751,28 @@ func (h *threadHistory) fillOverlayGap() error {
 // readRecordedEntries reads the recorded entry lines from from up to end as
 // records, numbering them from from's ordinal. A line that does not decode
 // takes its ordinal and nothing else: the overlay has nothing to learn from
-// it, and the index reports it.
-func readRecordedEntries(path string, from overlayGap, end int64) ([]transcript.Record, error) {
+// it, and the index reports it. nextOrdinal is the ordinal one past the last
+// line consumed (decoded or not) -- what a gap reopened after this read must
+// resume numbering from, since len(records) alone undercounts by however many
+// lines in the range failed to decode.
+func readRecordedEntries(path string, from overlayGap, end int64) (records []transcript.Record, nextOrdinal uint64, err error) {
 	if end <= from.offset {
-		return nil, nil
+		return nil, from.ordinal, nil
 	}
 	f, err := os.Open(path)
 	if err != nil {
-		return nil, fmt.Errorf("open transcript: %w", err)
+		return nil, from.ordinal, fmt.Errorf("open transcript: %w", err)
 	}
 	defer f.Close() //nolint:errcheck // read-only
 	reader := bufio.NewReaderSize(io.NewSectionReader(f, from.offset, end-from.offset), 64<<10)
-	var records []transcript.Record
 	offset, ordinal := from.offset, from.ordinal
 	for {
-		line, complete, n, err := transcript.ReadLine(reader, transcript.DefaultMaxLineBytes)
-		if err != nil {
-			return nil, fmt.Errorf("read transcript: %w", err)
+		line, complete, n, lineErr := transcript.ReadLine(reader, transcript.DefaultMaxLineBytes)
+		if lineErr != nil {
+			return nil, ordinal, fmt.Errorf("read transcript: %w", lineErr)
 		}
 		if !complete {
-			return records, nil
+			return records, ordinal, nil
 		}
 		start := offset
 		offset += n
@@ -767,7 +780,7 @@ func readRecordedEntries(path string, from overlayGap, end int64) ([]transcript.
 		if len(trimmed) == 0 {
 			continue
 		}
-		if entry, err := transcript.DecodeEntry(trimmed); err == nil {
+		if entry, decodeErr := transcript.DecodeEntry(trimmed); decodeErr == nil {
 			records = append(records, transcript.Record{Recorded: true, Ordinal: ordinal, Seq: entry.Seq, Offset: start, Length: n, Turn: entry.Turn})
 		}
 		ordinal++
