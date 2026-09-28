@@ -13,8 +13,9 @@ import (
 
 // refreshRejectionSuffix names the note beside an instance's auth record that
 // says the issuer permanently refused the record's refresh token (#2479). It
-// does not end in ".json", so it can never be another instance's record.
-const refreshRejectionSuffix = ".json.refresh-rejected"
+// is appended to the record's own path, so the note does not end in ".json"
+// and can never be another instance's record.
+const refreshRejectionSuffix = ".refresh-rejected"
 
 // refreshRejection is the note's content: which refresh token the issuer
 // refused, by its SHA-256 (never the token itself), and when.
@@ -24,7 +25,7 @@ type refreshRejection struct {
 }
 
 func refreshRejectionPath(stateDir, instanceName string) string {
-	return filepath.Join(stateDir, authDirName, filepath.Base(instanceName)+refreshRejectionSuffix)
+	return AuthFilePath(stateDir, instanceName) + refreshRejectionSuffix
 }
 
 func refreshTokenDigest(refreshToken string) string {
