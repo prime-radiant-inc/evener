@@ -3347,14 +3347,12 @@ test("a session whose harness advertises no send at all renders NO card, not a d
   expect(screen.queryByRole("textbox", { name: /message/i })).toBeNull();
 });
 
-// Regression for the review finding on the reduced branch. A stopped local
-// session is recovery-fenced (resumeRequired -> the wire advertises send:false
-// and the store holds a restart-blocking obligation). The composer keeps its
-// card so the draft and the recovery notice's explicit Resume action stay
-// reachable, but Send must not be offered: turn/start no longer carries an
-// implicit resume in this branch, so a Send here would either implicitly
-// resume the session or toast a refusal.
-test("a stopped local session offers no Send, only the explicit Resume action", async () => {
+// A merely-resumable local session (a shut-down `notLoaded` snapshot the hub
+// overlays resumeRequired on, no Stop in flight) folds the resume into the send:
+// the hub admits turn/start while only ResumeRequired stands (cmd/evener-hub's
+// sessionActionRecoveryError turn/start carve-out), so the composer offers Send
+// and the first press resumes the session. The card and its writing surface stay.
+test("a merely-resumable stopped local session offers Send and sends turn/start", async () => {
   const user = userEvent.setup();
   const ref = "local:stopped-recovery";
   const fake = await mountComposer(ref, {
@@ -3367,6 +3365,15 @@ test("a stopped local session offers no Send, only the explicit Resume action", 
       queue: { revision: 0 },
     },
   });
+  fake.on("turn/start", (params) => ({
+    receipt: {
+      clientMutationId: params.clientMutationId,
+      disposition: "applied",
+      threadId: "thread_a",
+      projectionState: "reflected",
+    },
+    turn: { id: "turn_resumed", status: "inProgress", itemsView: "" },
+  }));
   await waitFor(() => expect(threadsStore.getState().restartBlockingObligations.has(ref)).toBe(true));
   // The card stays: it is the writing surface the retained draft lives in.
   expect(screen.getByTestId("composer-input-card")).toBeTruthy();
@@ -3379,20 +3386,20 @@ test("a stopped local session offers no Send, only the explicit Resume action", 
   await user.click(editor);
   await user.type(editor, "omt");
 
-  expect(submitButton().disabled).toBe(true);
-  // The Mod+Enter chord reaches the form by the same route the button does; it
-  // must refuse too, never dispatching a turn/start that resumes the session.
-  await user.keyboard("{Meta>}{Enter}{/Meta}");
+  expect(submitButton().disabled).toBe(false);
+  await user.click(submitButton());
   await flushPendingTurnsProjectionForTests();
-  expect(fake.calls.filter((call) => call.method === "turn/start")).toEqual([]);
+  const calls = fake.calls.filter((call) => call.method === "turn/start");
+  expect(calls).toHaveLength(1);
+  expect(calls[0]?.params).toMatchObject({ ref, input: [{ type: "text", text: "omt" }] });
 });
 
-// Regression for the RoboRev finding on the fenced-session surface. The hub
-// stamps send:true on every notLoaded thread (pastThreadCapabilities), so a
-// stopped local session can advertise Send while a restart-blocking obligation
-// still fences it. availabilityFor refuses both routes for that snapshot, so an
-// ENABLED button here could only produce a refusal toast - the rendered Send
-// must be disabled, exactly as it is when the wire itself advertises send:false.
+// A snapshot that advertises send is not the hub's resume-fenced shape: the
+// resume requirement clears send:false together with resumeRequired
+// (applyThreadResumeRequirement). The client-side obligation still fences it -
+// with no wire send fence the resume-only carve-out does not apply - so the
+// rendered Send stays disabled rather than offering a press against an
+// obligation the wire never confirmed.
 test("a fenced stopped local session that advertises send renders a disabled Send", async () => {
   const user = userEvent.setup();
   const ref = "local:stopped-send-advertised";
@@ -3400,8 +3407,6 @@ test("a fenced stopped local session that advertises send renders a disabled Sen
     status: { type: "notLoaded" },
     evener: {
       ref,
-      // send:true is the shape the finding is about: the hub's stamp for a cold
-      // thread, held beside the store's restart-blocking obligation.
       capabilities: PAST_THREAD_CAPABILITIES,
       mutationStateAuthoritative: false,
       resumeRequired: true,
@@ -3420,14 +3425,12 @@ test("a fenced stopped local session that advertises send renders a disabled Sen
   expect(fake.calls.filter((call) => call.method === "turn/start")).toEqual([]);
 });
 
-// Regression for the RoboRev Medium on PR 1393 (fee4eb8): the local recovery
-// fence only applied to notLoaded snapshots. A fenced local session can also
-// hydrate LIVE - idle with resumeRequired:true and send:false - and the
-// availability table falls through to plain-send mode for that shape (it
-// never consults capabilities.send for an idle status), so Send rendered
-// ENABLED and routed to turn/start despite the store's restart-blocking
-// obligation. The fence now covers a local target in whatever status it
-// hydrates as, for as long as the obligation stands.
+// The fence still covers a LIVE snapshot. A live read during a Stop relays the
+// daemon's still-active status while the hub overlays resumeRequired beside it
+// (applyThreadResumeRequirement), and the store arms the obligation on that
+// hydration. An idle status is NOT a shut-down status, so this is not the
+// merely-resumable carve-out (isResumeOnlyLocal keys on SHUT_DOWN_STATUSES):
+// the hub still refuses turn/start while the Stop drains, so Send stays disabled.
 test("a live fenced idle local session renders a disabled Send and sends no turn/start", async () => {
   const user = userEvent.setup();
   const ref = "local:live-fenced-idle";
@@ -3452,15 +3455,10 @@ test("a live fenced idle local session renders a disabled Send and sends no turn
   expect(fake.calls.filter((call) => call.method === "turn/start")).toEqual([]);
 });
 
-// Regression for the RoboRev Medium on PR 1393 (298d8ac): the ended-session
-// Send gate consulted only the notLoaded-scoped fence, while availabilityFor
-// fences every non-active status. The hub stamps CLOSED frames with send:true
-// too (stampClosedThreadCapabilities), and a live notification folds that
-// frame in without clearing the store's restart-blocking obligation, so a
-// closed local session can advertise Send while the obligation still fences
-// it. availabilityFor refuses both routes for exactly that snapshot, so an
-// ENABLED Send here could only produce the refusal toast this branch exists
-// to eliminate; the rendered Send must be disabled instead.
+// A closed local frame carries send:true (stampClosedThreadCapabilities); it is
+// not the hub's resume-fenced shape, which clears send:false alongside
+// resumeRequired (applyThreadResumeRequirement). With no wire send fence the
+// resume-only carve-out does not apply, so Send stays disabled.
 test("a fenced closed local session that advertises send renders a disabled Send", async () => {
   const user = userEvent.setup();
   const ref = "local:closed-send-advertised";
@@ -3468,10 +3466,6 @@ test("a fenced closed local session that advertises send renders a disabled Send
     status: { type: "closed" },
     evener: {
       ref,
-      // The hub's closed-frame stamp (send stays true), held beside the
-      // store's restart-blocking obligation: resumeRequired:true sets the
-      // obligation at hydrate, and only a compatible read without it clears
-      // the obligation - a closed frame is not that read.
       capabilities: PAST_THREAD_CAPABILITIES,
       mutationStateAuthoritative: false,
       resumeRequired: true,

@@ -12,7 +12,7 @@
 // their own boundaries.
 
 import { NO_ACTIVE_TURN, type SessionControls, sessionControls, type ThreadModel } from "@evener/appwire-client";
-import { isLocalRecoveryFenced, threadsStore } from "./threads";
+import { isLocalRecoveryFenced, isResumeOnlyLocal, threadsStore } from "./threads";
 
 export type SessionControl = keyof SessionControls["reason"];
 
@@ -43,7 +43,7 @@ export function pressRefusal(ref: string, control: SessionControl): string | und
 // press handlers derive from this one predicate (the composer module cannot
 // lend QueueStrip its copy: Composer imports QueueStrip), and each call site
 // adds the shape its own surface needs.
-export { isLocalRecoveryFenced };
+export { isLocalRecoveryFenced, isResumeOnlyLocal };
 
 // The same fence as a press reads it: the obligation as the store holds it
 // NOW, not as the subscribing render saw it (this module's own render-vs-press

@@ -61,6 +61,7 @@ import { useCommandCatalog } from "../../../stores/commandCatalog";
 import {
   controlsFor,
   isLocalRecoveryFenced,
+  isResumeOnlyLocal,
   liveThreadModel,
   pressLocalRecoveryFenced,
   pressRefusal,
@@ -796,12 +797,18 @@ export function Composer({ ref, focused }: ComposerProps) {
   const renderedModel: ThreadModel = model;
   const activeTurnId = model.activeTurnId;
   const ended = SHUT_DOWN_STATUSES.has(model.status.type);
-  // A stopped local session is recovery-fenced. It keeps its follow-up card so
-  // the retained draft and the recovery notice's explicit Resume action stay
-  // reachable, but Send and Queue are NOT offered: turn/start no longer carries
-  // an implicit resume on this branch, and the wire already advertises
-  // send=false for this snapshot. The explicit Resume action is what resumes it.
-  const recoveryFencedLocal = isLocalRecoveryFenced(ref, recoveryRequired) && model.status.type === "notLoaded";
+  // A merely-resumable local session: the hub folds the resume into a send
+  // (turn/start is admitted while only ResumeRequired stands), so its card keeps
+  // the Send surface and it needs no separate Resume action.
+  const resumeOnlyLocal = isResumeOnlyLocal(ref, model);
+  // The fence with the resume-only carve-out removed: what still blocks Send.
+  const recoveryStillFenced = isLocalRecoveryFenced(ref, recoveryRequired) && !resumeOnlyLocal;
+  // A stopped local session that is STILL fenced (a Stop in flight, active drain,
+  // or an incompatible restartRequired daemon) keeps its follow-up card so the
+  // retained draft stays reachable, but Send and Queue are not offered. A merely-
+  // resumable session is offered Send instead, so it is carved out here.
+  const recoveryFencedLocal =
+    isLocalRecoveryFenced(ref, recoveryRequired) && !resumeOnlyLocal && model.status.type === "notLoaded";
   const queueDepth = model.queue?.depth ?? 0;
   // What this session may be asked to do now: one derivation for every control
   // surface (stores/liveControls.ts), with the rationale (status alone, never
@@ -833,21 +840,23 @@ export function Composer({ ref, focused }: ComposerProps) {
     pendingSend: boolean,
     restartObligated: boolean,
   ): { canSend: boolean; canQueue: boolean } {
-    // A recovery-fenced local session has no send/queue until the user resumes
-    // it, in WHATEVER status the snapshot carries - active included. The
+    // A recovery-fenced local session has no send/queue in WHATEVER status the
+    // snapshot carries - active included - EXCEPT a merely-resumable one. The
     // fence's own window is exactly one where an ACTIVE snapshot can carry
     // it: a live read during a Stop relays the daemon's still-active status
     // while the hub overlays resumeRequired beside it
     // (applyThreadResumeRequirement), and the store arms the obligation on
-    // that very hydration. The hub's recovery admission then refuses
-    // turn/start AND turn/queue for the whole window
-    // (sessionActionRecoveryError keys on the resume locks, never the
-    // projected status), so the availability table's queue-mode answer for
-    // the still-running turn could only mint durable intent that parks
-    // until the explicit Resume action clears the fence. The explicit
-    // Resume action is the only thing that resumes it.
+    // that very hydration. The hub's recovery admission still refuses
+    // turn/queue for the whole window (sessionActionRecoveryError keys on the
+    // resume locks, never the projected status), so the availability table's
+    // queue-mode answer for the still-running turn could only mint durable
+    // intent that parks. turn/start is the exception the hub now admits: a
+    // merely-resumable session (shut-down snapshot, no Stop in flight) folds
+    // the resume into the send, so Send is offered while Queue is not.
     if (isLocalRecoveryFenced(target.ref, restartObligated)) {
-      return { canSend: false, canQueue: false };
+      return isResumeOnlyLocal(target.ref, target)
+        ? { canSend: true, canQueue: false }
+        : { canSend: false, canQueue: false };
     }
     const tableAvailability = deriveSendQueueAvailability({
       statusType: target.status.type,
@@ -907,7 +916,7 @@ export function Composer({ ref, focused }: ComposerProps) {
   // card for exactly the sessions the hub says are resumable. When the wire
   // really advertises no send, no card is rendered at all - an unusable field
   // is worse than no field.
-  const showFollowUpCard = ended && (canSendWhenEnded || recoveryFencedLocal);
+  const showFollowUpCard = ended && (canSendWhenEnded || recoveryFencedLocal || resumeOnlyLocal);
   // A finished session's card earns its control row once the user engages with
   // it - focused, or holding text or an attachment. Content matters as well as
   // focus: a restored draft, or a blur with text still in the field, must not
@@ -916,7 +925,7 @@ export function Composer({ ref, focused }: ComposerProps) {
   // control row reachable while the fence stands, which is the whole point of
   // keeping the card at all. Every OTHER local notLoaded snapshot rests exactly
   // like a non-local one.
-  const followUpEngaged = recoveryFencedLocal || followUpFocused || hasContent;
+  const followUpEngaged = recoveryFencedLocal || resumeOnlyLocal || followUpFocused || hasContent;
   // While the card rests, its control row - and with it the composer chrome
   // that opts into initial activity discovery - is not mounted. A saved
   // notLoaded session with send enabled is exactly that shape, so mount a
@@ -1697,7 +1706,7 @@ export function Composer({ ref, focused }: ComposerProps) {
                           disabled={
                             actionPending ||
                             !hasContent ||
-                            !(ended ? canSendWhenEnded && !isLocalRecoveryFenced(ref, recoveryRequired) : canCompose)
+                            !(ended ? (canSendWhenEnded || resumeOnlyLocal) && !recoveryStillFenced : canCompose)
                           }
                         >
                           <span className={CLASS.submitLabel}>Send</span>

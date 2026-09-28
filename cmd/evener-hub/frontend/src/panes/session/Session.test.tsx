@@ -2972,6 +2972,38 @@ test("explains that an incompatible daemon needs an explicit restart", async () 
   expect(fake.calls.filter((call) => call.method === "thread/resume" || call.method === "turn/start")).toHaveLength(0);
 });
 
+// A merely-resumable local session needs no special UI: sending a prompt resumes
+// it (the hub folds the resume into turn/start), so its standalone Resume notice
+// and button are dropped. The two other causes of the obligation keep the
+// notice - a restartRequired daemon above, and a session with uncertain messages
+// (which the Resume action reconciles).
+test("a merely-resumable local session shows no standalone Resume notice", async () => {
+  const fake = connectFakeClient();
+  const ref = "local:resume-only-notice";
+  fake.on("thread/read", () =>
+    readResponse(ref, {
+      status: { type: "notLoaded" },
+      evener: {
+        ref,
+        // The hub's resume fence pairs resumeRequired with send:false
+        // (applyThreadResumeRequirement); this is that wire shape.
+        capabilities: { ...CAPABILITIES, send: false },
+        mutationStateAuthoritative: false,
+        resumeRequired: true,
+        queue: { revision: 0 },
+      },
+    }),
+  );
+  render(
+    <ClientProvider client={fake}>
+      <Session params={{ ref }} paneId="p1" focused={true} />
+    </ClientProvider>,
+  );
+  await waitFor(() => expect(threadsStore.getState().restartBlockingObligations.has(ref)).toBe(true));
+  expect(screen.queryByRole("button", { name: "Resume session" })).toBeNull();
+  expect(screen.queryByRole("alert")).toBeNull();
+});
+
 test("refreshes a restarted session without closing its pane", async () => {
   const fake = connectFakeClient();
   let replaced = false;

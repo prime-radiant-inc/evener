@@ -40,6 +40,7 @@ import {
   mutationErrorData,
   notificationRoutingKey,
   resolvePendingEscalation,
+  SHUT_DOWN_STATUSES,
   WireError,
 } from "@evener/appwire-client";
 import { useStore } from "zustand";
@@ -818,7 +819,10 @@ function currentDispatchClient(targetRef?: string): AppwireClientLike | null {
   if (
     targetRef &&
     (pendingMutationReconciliations.has(targetRef) ||
-      threadsStore.getState().restartBlockingObligations.has(targetRef) ||
+      // A merely-resumable session's send must dispatch: the hub folds its
+      // resume into turn/start, so the obligation does not park the mutation.
+      // Every other obligation (Stop drain, restartRequired) still blocks it.
+      (threadsStore.getState().restartBlockingObligations.has(targetRef) && !resumeOnlyLocalModel(targetRef)) ||
       threadsStore.getState().mutationReconciliationFailures.has(targetRef))
   )
     return null;
@@ -1794,10 +1798,12 @@ function composerMutationIntent(
 // The local recovery fence. A LOCAL session carrying a restart-blocking
 // obligation (a Stop in flight, or a snapshot the daemon reports as
 // restartRequired/resumeRequired) admits no session action at all while the
-// obligation stands: the hub's recovery admission refuses turn/start,
-// turn/steer, turn/queue and every other fenced mutation for exactly that
-// window (cmd/evener-hub's sessionActionRecoveryError reads the resume locks,
-// never the projected status), so even a still-ACTIVE snapshot is fenced while
+// obligation stands: the hub's recovery admission refuses turn/steer,
+// turn/queue and every other fenced mutation for exactly that window
+// (cmd/evener-hub's sessionActionRecoveryError reads the resume locks, never
+// the projected status), with turn/start carved out only for the merely-
+// resumable shape isResumeOnlyLocal names, so even a still-ACTIVE snapshot is
+// fenced while
 // a Stop drains - a live read relays the daemon's active status with
 // resumeRequired overlaid beside it (applyThreadResumeRequirement), and the
 // store arms the obligation on that very hydration. An offered press in that
@@ -1808,6 +1814,37 @@ function composerMutationIntent(
 // re-exports it for the surfaces.
 export function isLocalRecoveryFenced(ref: string, restartObligated: boolean): boolean {
   return ref.startsWith("local:") && restartObligated;
+}
+
+// A LOCAL session that only needs a resume. The hub expresses its resume
+// requirement as one wire fence: applyThreadResumeRequirement overlays
+// resumeRequired AND clears capabilities.send together on a shut-down snapshot
+// (a daemon that has exited), and no hub read path sets resumeRequired without
+// also fencing send. turn/start now folds that resume into the send
+// (cmd/evener-hub's sessionActionRecoveryError turn/start carve-out), so the
+// composer offers Send and no standalone Resume action. Deliberately narrow -
+// it is NOT the whole recovery fence. A Stop in flight / active drain arms the
+// same obligation on a LIVE status (active or idle, which SHUT_DOWN_STATUSES
+// excludes) and still refuses turn/start, a restartRequired daemon needs the
+// older daemon stopped first, and a snapshot whose wire still advertises send is
+// not the hub's resume-fenced shape; all keep the fence.
+export function isResumeOnlyLocal(
+  ref: string,
+  model: Pick<ThreadModel, "resumeRequired" | "status" | "capabilities">,
+): boolean {
+  return (
+    ref.startsWith("local:") &&
+    model.resumeRequired === true &&
+    model.capabilities.send !== true &&
+    SHUT_DOWN_STATUSES.has(model.status.type)
+  );
+}
+
+// isResumeOnlyLocal over the store's current model for ref, for the press-time
+// paths that hold a ref but not a model (enqueueMutationIntent).
+function resumeOnlyLocalModel(ref: string): boolean {
+  const model = threadsStore.getState().threads.get(ref);
+  return model !== undefined && isResumeOnlyLocal(ref, model);
 }
 
 // The verbs the shared admission fences, each mapped to the refusal its own
@@ -1825,7 +1862,10 @@ export function isLocalRecoveryFenced(ref: string, restartObligated: boolean): b
 // (shell/palette/commands.ts's own carve-out, pinned there), so interrupt
 // still enqueues and settles after Resume rather than refusing here. Any
 // method absent from this table is therefore not fenced at admission - the
-// table is the whole policy.
+// table is the whole policy. turn/start is fenced only while the fence is NOT
+// the merely-resumable case (isResumeOnlyLocal): a session that only needs
+// resume folds it into the send, so enqueueMutationIntent carves that method
+// out - a live Stop drain or a restartRequired daemon still refuses it.
 const RECOVERY_FENCE_REFUSALS: Record<string, string> = {
   "turn/start": "Send isn't available until this session is resumed",
   "turn/steer": "Steer isn't available until this session is resumed",
@@ -1851,7 +1891,13 @@ async function enqueueMutationIntent(
   const fenceRefusal = RECOVERY_FENCE_REFUSALS[intent.method];
   if (
     fenceRefusal !== undefined &&
-    isLocalRecoveryFenced(ref, threadsStore.getState().restartBlockingObligations.has(ref))
+    isLocalRecoveryFenced(ref, threadsStore.getState().restartBlockingObligations.has(ref)) &&
+    // A merely-resumable session folds its resume into turn/start - the hub
+    // admits it (cmd/evener-hub's sessionActionRecoveryError turn/start
+    // carve-out) - so its send must not be refused here. turn/start on a live
+    // Stop drain or a restartRequired daemon is not this case; every other
+    // fenced verb keeps the refusal unchanged.
+    !(intent.method === "turn/start" && resumeOnlyLocalModel(ref))
   )
     throw new Error(fenceRefusal);
   const client = requireClient();

@@ -303,7 +303,7 @@ func sessionActionRecoveryError(ctx context.Context, cfg hubcore.WebConfig, ref,
 		return err
 	}
 	state := sessionRecoveryState(cfg, ref, threadID)
-	if state.Stopping > 0 || state.ResumeRequired {
+	if state.Stopping > 0 || (state.ResumeRequired && !sessionAdmitsResumeRequired(ctx, ref, threadID)) {
 		return sessionResumeRequiredError()
 	}
 	if state.Epoch != epoch {
@@ -312,11 +312,28 @@ func sessionActionRecoveryError(ctx context.Context, cfg hubcore.WebConfig, ref,
 	return nil
 }
 
+// sessionAdmitsResumeRequired reports whether the request that carries ctx is a
+// turn/start for the same local session. Sending a prompt folds the resume into
+// the send — app_relay.go's prepareRelay auto-resumes a not-live session on
+// turn/start — so a session that only needs a resume is admitted rather than
+// refused with the explicit-resume fence. This is the ONLY carve-out: a Stop in
+// flight (Stopping > 0), a stale admission epoch, the connection fence, and an
+// incompatible daemon (daemonRestartRequiredError) are all still refused, and
+// every action other than turn/start keeps the fence unchanged.
+func sessionAdmitsResumeRequired(ctx context.Context, ref, threadID string) bool {
+	admission, ok := ctx.Value(sessionRecoveryAdmissionKey{}).(sessionRecoveryAdmission)
+	return ok && admission.admitResumeRequired && admission.sessionID == deletionThreadID(ref, threadID)
+}
+
 type sessionRecoveryAdmissionKey struct{}
 
 type sessionRecoveryAdmission struct {
 	sessionID string
 	epoch     uint64
+	// admitResumeRequired marks a turn/start request: it is the one method whose
+	// action (a send) folds a pending resume into itself, so the resume-only
+	// fence does not refuse it. sessionAdmitsResumeRequired reads it.
+	admitResumeRequired bool
 }
 
 // admitSessionRecovery captures only the requested local identity; it performs
@@ -375,7 +392,11 @@ func admitSessionRecovery(ctx context.Context, cfg hubcore.WebConfig, message ap
 	if id == "" {
 		return ctx
 	}
-	return context.WithValue(ctx, sessionRecoveryAdmissionKey{}, sessionRecoveryAdmission{sessionID: id, epoch: cfg.ResumeLocks.RecoveryState(id).Epoch})
+	admission := sessionRecoveryAdmission{sessionID: id, epoch: cfg.ResumeLocks.RecoveryState(id).Epoch}
+	if message.Request.Method == appwire.MethodTurnStart {
+		admission.admitResumeRequired = true
+	}
+	return context.WithValue(ctx, sessionRecoveryAdmissionKey{}, admission)
 }
 
 func sessionRequestRecoveryEpoch(ctx context.Context, cfg hubcore.WebConfig, ref, threadID string) uint64 {

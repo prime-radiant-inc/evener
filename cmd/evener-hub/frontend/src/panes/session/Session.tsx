@@ -30,7 +30,7 @@ import { navigate, paneToURL } from "../../shell/routing";
 import { ForceStopDialog } from "../../shell/sessionMenu/ForceStopDialog";
 import { workspaceStore } from "../../shell/workspace";
 import { connectionStore } from "../../stores/connection";
-import { controlsFor } from "../../stores/liveControls";
+import { controlsFor, isResumeOnlyLocal } from "../../stores/liveControls";
 import { useNavigationStore } from "../../stores/navigation/store";
 import { resumeStopBaseline, threadsStore, useThreadsStore } from "../../stores/threads";
 import { transcriptDisplayStore } from "../../stores/transcriptDisplay";
@@ -515,9 +515,16 @@ export default function Session({ params, paneId, focused: paneFocused }: PanePr
       ? model.parentRef
       : undefined;
 
+  // A merely-resumable session (a shut-down snapshot the hub overlays
+  // resumeRequired on, no Stop in flight) needs no special UI: sending a prompt
+  // resumes it. It drops the standalone Resume action and its notice. The other
+  // two causes of the obligation keep the notice - a restartRequired daemon and
+  // a session with uncertain messages still carry reconciliation the Resume
+  // action performs - so only the clean resume case is carved out.
+  const resumeOnlyLocal = isResumeOnlyLocal(ref, model);
   const showRestartNotice =
     model.status.type === "restartRequired" ||
-    restartPending ||
+    (restartPending && !resumeOnlyLocal) ||
     (blockedMutations.length > 0 && (model.status.type === "notLoaded" || !mutationStateAuthoritative));
 
   const cadence = <Cadence state={cadenceStateForStatus(model.status.type)} frameTimes={frameTimes} now={now} />;
