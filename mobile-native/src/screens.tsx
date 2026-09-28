@@ -722,6 +722,14 @@ export function ConversationScreen({
 	const unconfirmedSend = draft.submitting ? null : draft.record.unconfirmed;
 	const connected =
 		connectionState === "ready" && activeProfile?.id === route.params.hubId;
+	const connectionText = useConnectionStatusText(connectionState, fatal);
+	// The same debounced signal the connection bar itself waits on (spec 14:
+	// "a blip shorter than this reconnects without a word"), so the chips
+	// never flicker through a hide-and-show the bar stays silent for, and a
+	// visible chip's tap (below, in openSessionDestination) never silently
+	// does nothing during that same window (Calm).
+	const chipsConnected =
+		activeProfile?.id === route.params.hubId && connectionText === null;
 	useMarkSeenInFront(
 		route.params,
 		focused,
@@ -1017,7 +1025,10 @@ export function ConversationScreen({
 				});
 				return;
 			}
-			if (!client || !connected) return;
+			// The same debounced signal the chips (and the connection bar) use:
+			// a blip shorter than the bar's own grace period must not make an
+			// already-visible chip's tap silently do nothing (Calm).
+			if (!client || !chipsConnected) return;
 			if (destination === "tasks") {
 				navigation.navigate("TasksSheet", {
 					hubId: route.params.hubId,
@@ -1038,7 +1049,7 @@ export function ConversationScreen({
 		[
 			store,
 			client,
-			connected,
+			chipsConnected,
 			route.params.hubId,
 			route.params.ref,
 			activeProfile?.name,
@@ -1058,8 +1069,7 @@ export function ConversationScreen({
 	const stateLine = conversation
 		? sessionStateLine(conversation, Date.now())
 		: null;
-	const connectionText = useConnectionStatusText(connectionState, fatal);
-	const chips = conversation ? contextChips(conversation, connected) : [];
+	const chips = conversation ? contextChips(conversation, chipsConnected) : [];
 	const headerHiding = useHeaderHiding();
 	// The header block floats over the list; the list reserves its height.
 	const [sessionHeaderHeight, setSessionHeaderHeight] = useState(0);

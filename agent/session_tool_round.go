@@ -378,9 +378,17 @@ func (s *Session) notifyStrategyAfterAction(ctx context.Context) error {
 	s.mu.Lock()
 	hist := append([]schema.Turn(nil), s.history...)
 	s.mu.Unlock()
-	if err := s.strategy.AfterAction(ctx, hist, s.client); err != nil {
+	afterErr := s.strategy.AfterAction(ctx, hist, s.client)
+	// Warn once per failing streak: a repeated failure is suppressed while a
+	// successful call clears the state so a later failure warns again.
+	degraded := afterErr != nil
+	s.mu.Lock()
+	warn := degraded && !s.strategyDegraded
+	s.strategyDegraded = degraded
+	s.mu.Unlock()
+	if warn {
 		if abortErr := s.withResponseSideEffects(ctx, func() {
-			s.emit(events.EventWarning, events.WarningData{Message: "strategy AfterAction error: " + err.Error()})
+			s.emit(events.EventWarning, warningDataFromError("strategy AfterAction error: "+afterErr.Error(), afterErr))
 		}); abortErr != nil {
 			return abortErr
 		}

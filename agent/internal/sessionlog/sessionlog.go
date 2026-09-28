@@ -18,6 +18,16 @@ import (
 	"github.com/spf13/afero"
 )
 
+// maxRecordBytes is the largest single JSONL record Append will write, and the
+// reader ceiling that guarantees every record it writes can be read back. It is
+// the writer/reader contract for this package: Append refuses a marshaled
+// record above this bound, and loadFromDisk's scanner admits anything up to and
+// including it. The bound keeps the log's established ability to carry a large
+// summary (the OODA truncation path appends one at ~85 KB) while staying far
+// above any realistic one-line record and far below a raw transcript, so a
+// corrupt or hostile record cannot force an unbounded allocation.
+const maxRecordBytes = 1 << 20 // 1 MiB
+
 // SessionLogEntry is a structured summary of one action.
 type SessionLogEntry struct {
 	Kind         string   `json:"kind,omitempty"`          // optional category tag (e.g. "advisory")
@@ -85,6 +95,10 @@ func (l *SessionLog) loadFromDisk() error {
 
 	tail := &tailReader{r: f}
 	scanner := bufio.NewScanner(tail)
+	// bufio rejects a token of exactly the configured maximum, so the ceiling
+	// sits one byte above the writer's bound: a record of exactly maxRecordBytes
+	// scans back, and the framing newline is not part of the token.
+	scanner.Buffer(make([]byte, 0, 64*1024), maxRecordBytes+1)
 	for scanner.Scan() {
 		line := scanner.Text()
 		if line == "" {
@@ -135,15 +149,23 @@ func (l *SessionLog) Append(entry SessionLogEntry) error {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
+	data, err := l.marshal(entry)
+	if err != nil {
+		return err
+	}
+	if len(data) > maxRecordBytes {
+		return fmt.Errorf("session log record too large: %d bytes exceeds %d-byte limit", len(data), maxRecordBytes)
+	}
+
 	// Append to in-memory list
 	l.entries = append(l.entries, entry)
 
 	// Persist to disk (append-only)
-	return l.appendToDisk(entry)
+	return l.appendToDisk(data)
 }
 
-// appendToDisk writes a single entry to the log file.
-func (l *SessionLog) appendToDisk(entry SessionLogEntry) error {
+// appendToDisk writes one marshaled entry to the log file.
+func (l *SessionLog) appendToDisk(data []byte) error {
 	if err := l.fs.MkdirAll(filepath.Dir(l.path), 0o755); err != nil {
 		return fmt.Errorf("create log directory: %w", err)
 	}
@@ -152,11 +174,6 @@ func (l *SessionLog) appendToDisk(entry SessionLogEntry) error {
 		return err
 	}
 	defer func() { _ = f.Close() }() // best-effort observability log; the write error below is what matters
-
-	data, err := l.marshal(entry)
-	if err != nil {
-		return err
-	}
 
 	record := make([]byte, 0, len(data)+2)
 	if l.tornTail {
