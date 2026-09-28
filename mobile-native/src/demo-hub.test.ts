@@ -558,7 +558,10 @@ describe("native demonstration hub's fleet sessions", () => {
 	it("serves no fleet session without EVENER_DEMO_FLEET", async () => {
 		await withHub(undefined, async (client) => {
 			await expect(
-				client.request("thread/read", { ref: refOf("s-pr2138") }),
+				client.request("thread/read", {
+					ref: refOf("s-pr2138"),
+					includeTurns: false,
+				}),
 			).rejects.toThrow("Unknown demonstration session");
 		});
 	});
