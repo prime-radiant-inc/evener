@@ -189,6 +189,9 @@ export function cwdRelative(filePath: string, cwd: string): string | undefined {
     return p.split("/").includes("..") ? undefined : p;
   }
   const prefix = cwd.endsWith("/") ? cwd : `${cwd}/`;
-  if (p === cwd) return undefined; // the folder itself is not a file
-  return p.startsWith(prefix) ? p.slice(prefix.length) : undefined;
+  if (!p.startsWith(prefix)) return undefined;
+  // The folder itself (with or without its trailing slash) is not a file, and
+  // a ".." segment could climb back out of it.
+  const rel = p.slice(prefix.length);
+  return rel === "" || rel.split("/").includes("..") ? undefined : rel;
 }
