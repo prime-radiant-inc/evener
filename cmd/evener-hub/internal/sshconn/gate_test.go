@@ -376,3 +376,171 @@ func TestEnsureDeployScopesItsSpawnCommandsAndNotThePreflight(t *testing.T) {
 		}
 	}
 }
+
+// ensureCommandSighting is one command the Ensure ladder ran, with the spawn
+// scope it ran under and whether the Ensure record was still non-terminal at
+// that moment.
+type ensureCommandSighting struct {
+	command    string
+	scope      *SpawnScope
+	recordOpen bool
+}
+
+// ensureDeployTestHarness builds the Ensure ladder for a host whose on-disk
+// build is this controller's predecessor: the ladder deploys this controller's
+// build and then restarts the hub onto it. The hook creates a real record and
+// returns its scope plus a finish that transitions the record the way the hub's
+// own finish does. restartErr, when non-nil, fails the restart leg's
+// `systemctl restart`.
+func ensureDeployTestHarness(t *testing.T, restartErr error) (*Manager, *hostops.Store, *string, *[]ensureCommandSighting) {
+	t.Helper()
+	host := hostreg.Host{Name: "alpha", SSH: "alpha.example", EvenerPath: "/opt/evener/bin/evener"}
+	fr := deployRunner(t,
+		func(call int) ([]byte, error) {
+			if call == 0 {
+				return []byte(`{"protocol":"evener-appwire-v4","version":"oldsha","launch_flags":["api-log"]}`), nil
+			}
+			return []byte(`{"protocol":"evener-appwire-v6","version":"newsha","launch_flags":["api-log"]}`), nil
+		},
+		func(int) ([]byte, error) {
+			return []byte(`{"version":"newsha","mobile_api_version":1,"hub_addr":"127.0.0.1:9180"}`), nil
+		},
+	)
+	store := ensureDeployTestStore(t)
+	var recordID string
+	var seen []ensureCommandSighting
+	innerRun := fr.runFn
+	fr.runFn = func(ctx context.Context, argv []string, stdin io.Reader) ([]byte, error) {
+		command := strings.Join(argv, " ")
+		scope, _ := SpawnScopeFrom(ctx)
+		open := false
+		if recordID != "" {
+			if record, ok := store.Record(recordID); ok {
+				open = !record.State.Terminal()
+			}
+		}
+		seen = append(seen, ensureCommandSighting{command: command, scope: scope, recordOpen: open})
+		if strings.Contains(command, "systemctl restart") && restartErr != nil {
+			return nil, restartErr
+		}
+		return innerRun(ctx, argv, stdin)
+	}
+	m := newTestManager(t, testRegistry(t, host), fr, Options{
+		controllerVersionOverride: "newsha",
+		BuildBinary:               writeStageBinary,
+	})
+	m.SetEnsureDeployHook(func(host hostreg.Host) (*SpawnScope, func(error), error) {
+		record, err := store.Create(hostops.NewRecord{
+			ClientOperationID: "ensure-1",
+			Host:              host.Name,
+			Kind:              hostops.KindDeploy,
+			Generation:        host.Generation,
+			IncarnationID:     host.IncarnationID,
+		})
+		if err != nil {
+			return nil, nil, err
+		}
+		recordID = record.ID
+		return NewSpawnScope(record.ID, store), func(err error) {
+			if err == nil {
+				_, _ = store.TransitionToState(record.ID, hostops.StateComplete,
+					&hostops.Result{OK: true, Message: "Ensure-triggered deploy complete"}, "complete")
+				return
+			}
+			_, _ = store.TransitionToState(record.ID, hostops.StateFailed,
+				&hostops.Result{OK: false, Message: err.Error()}, "failed")
+		}, nil
+	})
+	return m, store, &recordID, &seen
+}
+
+// ensureDeployTestStore opens the real operation store the Ensure spawn-scope
+// tests arm against.
+func ensureDeployTestStore(t *testing.T) *hostops.Store {
+	t.Helper()
+	store, err := hostops.Open(hostops.StorePath(t.TempDir()))
+	if err != nil {
+		t.Fatalf("hostops.Open: %v", err)
+	}
+	return store
+}
+
+// restartSightings returns the commands that ran the restart leg.
+func restartSightings(seen []ensureCommandSighting) []ensureCommandSighting {
+	var out []ensureCommandSighting
+	for _, run := range seen {
+		if strings.Contains(run.command, "systemctl restart") {
+			out = append(out, run)
+		}
+	}
+	return out
+}
+
+// TestEnsureDeployKeepsTheRecordOpenThroughTheArmedRestartLeg pins M1: an
+// Ensure that deploys and then restarts keeps the deploy record non-terminal
+// through the restart leg and arms the leg's ssh subprocesses with the record's
+// spawn scope (so `systemctl restart` cannot be an unowned crash orphan), and
+// the record completes only after the leg.
+func TestEnsureDeployKeepsTheRecordOpenThroughTheArmedRestartLeg(t *testing.T) {
+	m, store, recordID, seen := ensureDeployTestHarness(t, nil)
+
+	if _, err := m.Ensure(context.Background(), "alpha"); err != nil {
+		t.Fatalf("Ensure: %v", err)
+	}
+	restarts := restartSightings(*seen)
+	if len(restarts) == 0 {
+		t.Fatal("the scenario never reached the restart leg; the pin would be vacuous")
+	}
+	for _, run := range restarts {
+		if run.scope == nil {
+			t.Fatalf("the restart leg ran unarmed: %s", run.command)
+		}
+		if run.scope.RecordID != *recordID {
+			t.Fatalf("the restart leg's scope names record %q, want %s", run.scope.RecordID, *recordID)
+		}
+		if !run.recordOpen {
+			t.Fatal("the deploy record was already terminal when the restart leg ran: ArmSpawnIntent refuses a terminal record, so the leg cannot be armed")
+		}
+	}
+	record, ok := store.Record(*recordID)
+	if !ok {
+		t.Fatal("the Ensure record disappeared")
+	}
+	if record.State != hostops.StateComplete {
+		t.Fatalf("record state = %q, want complete after a clean deploy and restart leg", record.State)
+	}
+}
+
+// TestEnsureRestartLegFailureFailsTheStillOpenRecord pins M1's failure half: a
+// restart leg that fails must record the failure on the record the deploy kept
+// open — never a `complete` record for an operation that did not finish.
+func TestEnsureRestartLegFailureFailsTheStillOpenRecord(t *testing.T) {
+	m, store, recordID, seen := ensureDeployTestHarness(t, errors.New("systemctl restart failed"))
+
+	_, err := m.Ensure(context.Background(), "alpha")
+	if err == nil || !strings.Contains(err.Error(), "systemctl restart failed") {
+		t.Fatalf("Ensure error = %v, want the restart leg's failure surfaced", err)
+	}
+	restarts := restartSightings(*seen)
+	if len(restarts) == 0 {
+		t.Fatal("the scenario never reached the restart leg; the pin would be vacuous")
+	}
+	for _, run := range restarts {
+		if run.scope == nil {
+			t.Fatalf("the failing restart leg ran unarmed: %s", run.command)
+		}
+		if !run.recordOpen {
+			t.Fatal("the record was already terminal when the failing restart leg ran")
+		}
+	}
+	record, ok := store.Record(*recordID)
+	if !ok {
+		t.Fatal("the Ensure record disappeared")
+	}
+	if record.State != hostops.StateFailed {
+		t.Fatalf("record state = %q, want failed after the restart leg failed", record.State)
+	}
+	if record.Result == nil || !strings.Contains(record.Result.Message, "systemctl restart failed") {
+		t.Fatalf("record result = %+v, want the restart leg's failure verbatim", record.Result)
+	}
+}

@@ -3,12 +3,13 @@ package sshconn
 // Tests for the operation-scoped spawn ownership seam (§3's pre-spawn
 // lifecycle) as the production wiring carries it: one operation's durable
 // record plus the local boundary machinery its ssh subprocesses are owned
-// through. The platform-neutral half — the context carrier and the
-// unscoped-spawn pin — lives here; the spawn lifecycle's own tests live in
+// through. The platform-neutral half — the context carrier and the fakes the
+// lifecycle tests share — lives here; the spawn lifecycle's own tests live in
 // spawnfence_unix_test.go.
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
 	"sync"
 	"syscall"
@@ -63,18 +64,29 @@ type fenceFakeStore struct {
 	log *fenceTestLog
 
 	armErr, matchErr, dropErr error
+	// armLandedOnErr models the store's post-rename failure: the intent landed
+	// durably even though ArmSpawnIntent reported an error.
+	armLandedOnErr bool
 
 	open    []hostops.SpawnIntent
 	matched []fenceMatch
 	dropped []string
 
-	armCalls, matchCalls, dropCalls int
+	// orphanWrites are the raw boundaries SetOrphanBoundary persisted.
+	orphanWrites []json.RawMessage
+	orphanErr    error
+
+	armCalls, matchCalls, dropCalls, orphanCalls int
 }
 
 func (f *fenceFakeStore) ArmSpawnIntent(recordID string, intent hostops.SpawnIntent) (hostops.Record, error) {
 	f.armCalls++
 	f.log.add("arm")
 	if f.armErr != nil {
+		if f.armLandedOnErr {
+			f.open = append(f.open, intent)
+			return hostops.Record{ID: recordID}, f.armErr
+		}
 		return hostops.Record{}, f.armErr
 	}
 	f.open = append(f.open, intent)
@@ -101,6 +113,16 @@ func (f *fenceFakeStore) DropSpawnIntent(recordID, nonce string) error {
 	f.dropped = append(f.dropped, nonce)
 	f.removeOpen(nonce)
 	return nil
+}
+
+func (f *fenceFakeStore) SetOrphanBoundary(recordID string, boundary json.RawMessage, _ []string) (hostops.Record, error) {
+	f.orphanCalls++
+	f.log.add("orphan-boundary")
+	if f.orphanErr != nil {
+		return hostops.Record{}, f.orphanErr
+	}
+	f.orphanWrites = append(f.orphanWrites, append(json.RawMessage(nil), boundary...))
+	return hostops.Record{ID: recordID}, nil
 }
 
 func (f *fenceFakeStore) removeOpen(nonce string) {
@@ -195,32 +217,5 @@ func TestSpawnScopeCarriesThroughDerivedContexts(t *testing.T) {
 	}
 	if _, ok := SpawnScopeFrom(WithSpawnScope(context.Background(), nil)); ok {
 		t.Fatal("a nil scope arms the context")
-	}
-}
-
-// TestUnscopedSpawnTouchesNoBoundaryOrIntentStore pins the read-only half: a
-// spawn on a context with no scope must not create a boundary, arm an intent,
-// match, or drop. It is exactly the plain spawn the read-only preflight path
-// uses — §6 exempts those one-shots, and no record owns them.
-func TestUnscopedSpawnTouchesNoBoundaryOrIntentStore(t *testing.T) {
-	log := &fenceTestLog{}
-	store := &fenceFakeStore{log: log}
-	boundary := &fenceFakeBoundary{log: log, id: BoundaryID{Platform: BoundaryPlatformLinux, CgroupID: "/cg/plain"}}
-
-	out, err := (execRunner{}).Run(context.Background(), []string{"/bin/sh", "-c", "printf plain"}, nil)
-	if err != nil {
-		t.Fatalf("unscoped Run: %v", err)
-	}
-	if string(out) != "plain" {
-		t.Fatalf("unscoped Run output = %q, want plain", out)
-	}
-	if got := log.joined(); got != "" {
-		t.Fatalf("an unscoped spawn touched the fence: %s", got)
-	}
-	if store.armCalls+store.matchCalls+store.dropCalls != 0 {
-		t.Fatalf("an unscoped spawn used the intent store: %+v", store)
-	}
-	if boundary.closeCalls != 0 {
-		t.Fatal("an unscoped spawn closed a boundary")
 	}
 }

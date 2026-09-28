@@ -10,6 +10,7 @@ package sshconn
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -157,10 +158,38 @@ func TestFencedSpawnRefusesWhenNoBoundaryCanBePreCreated(t *testing.T) {
 	}
 }
 
-// TestFencedSpawnRefusesWhenTheIntentCannotBePersisted pins the pre-spawn
-// write: an intent that cannot land means nothing may be launched, and the
-// empty boundary is torn down rather than left behind.
-func TestFencedSpawnRefusesWhenTheIntentCannotBePersisted(t *testing.T) {
+// TestUnscopedSpawnTouchesNoBoundaryOrIntentStore pins the read-only half: a
+// spawn on a context with no scope must not create a boundary, arm an intent,
+// match, or drop. It is exactly the plain spawn the read-only preflight path
+// uses — §6 exempts those one-shots, and no record owns them.
+func TestUnscopedSpawnTouchesNoBoundaryOrIntentStore(t *testing.T) {
+	log := &fenceTestLog{}
+	store := &fenceFakeStore{log: log}
+	boundary := &fenceFakeBoundary{log: log, id: BoundaryID{Platform: BoundaryPlatformLinux, CgroupID: "/cg/plain"}}
+
+	out, err := (execRunner{}).Run(context.Background(), []string{"/bin/sh", "-c", "printf plain"}, nil)
+	if err != nil {
+		t.Fatalf("unscoped Run: %v", err)
+	}
+	if string(out) != "plain" {
+		t.Fatalf("unscoped Run output = %q, want plain", out)
+	}
+	if got := log.joined(); got != "" {
+		t.Fatalf("an unscoped spawn touched the fence: %s", got)
+	}
+	if store.armCalls+store.matchCalls+store.dropCalls != 0 {
+		t.Fatalf("an unscoped spawn used the intent store: %+v", store)
+	}
+	if boundary.closeCalls != 0 {
+		t.Fatal("an unscoped spawn closed a boundary")
+	}
+}
+
+// TestSpawnRefusedAfterAFailedArmTearsTheBoundaryDownFirst pins the arm-failure
+// order: nothing may be launched without a persisted intent, and the intent may
+// be dropped only AFTER the boundary's teardown proved it clean — a drop ahead
+// of an untorn boundary would leave an untracked boundary no reap can find.
+func TestSpawnRefusedAfterAFailedArmTearsTheBoundaryDownFirst(t *testing.T) {
 	log := &fenceTestLog{}
 	store := &fenceFakeStore{log: log, armErr: errors.New("store write failed")}
 	boundary := &fenceFakeBoundary{log: log, id: BoundaryID{Platform: BoundaryPlatformLinux, CgroupID: "/cg/op-1"}}
@@ -175,11 +204,128 @@ func TestFencedSpawnRefusesWhenTheIntentCannotBePersisted(t *testing.T) {
 	if _, statErr := os.Stat(marker); !errors.Is(statErr, os.ErrNotExist) {
 		t.Fatalf("the child ran without a persisted intent (marker stat = %v)", statErr)
 	}
-	if !boundary.closed {
-		t.Fatal("the boundary was not torn down after the refused arm")
+	closeAt, dropAt := log.index("close"), log.index("drop")
+	if closeAt < 0 || dropAt < 0 || closeAt > dropAt {
+		t.Fatalf("the teardown must precede the intent drop; log: %s", log.joined())
 	}
-	if len(store.open) != 0 {
-		t.Fatalf("open intents = %d, want none", len(store.open))
+	if !boundary.closed || len(store.open) != 0 || store.orphanCalls != 0 {
+		t.Fatalf("boundary closed=%t open=%d orphan writes=%d, want a converged refusal", boundary.closed, len(store.open), store.orphanCalls)
+	}
+}
+
+// TestSpawnRefusedAfterAFailedArmKeepsALandedIntentWhenTheBoundaryWillNotClose
+// pins the post-rename arm failure: the store can report an error for a write
+// that landed durably, so the landed intent must stay armed when the boundary
+// will not come down — it is the durable trace the boot reap retries.
+func TestSpawnRefusedAfterAFailedArmKeepsALandedIntentWhenTheBoundaryWillNotClose(t *testing.T) {
+	log := &fenceTestLog{}
+	store := &fenceFakeStore{log: log, armErr: errors.New("post-rename failure"), armLandedOnErr: true}
+	boundary := &fenceFakeBoundary{log: log, id: BoundaryID{Platform: BoundaryPlatformLinux, CgroupID: "/cg/op-1"}, closeErr: syscall.EBUSY}
+	scope := fencedTestScope(log, store, boundary)
+	scope.settle = 50 * time.Millisecond
+
+	_, err := (execRunner{}).Run(WithSpawnScope(context.Background(), scope),
+		[]string{"/bin/sh", "-c", "printf ran > /dev/null"}, nil)
+	if err == nil || !errors.Is(err, syscall.EBUSY) {
+		t.Fatalf("Run error = %v, want the arm refusal and the teardown failure joined", err)
+	}
+	if len(store.open) != 1 {
+		t.Fatalf("open intents = %d, want the landed intent kept as the trace", len(store.open))
+	}
+	if store.orphanCalls != 0 {
+		t.Fatalf("orphan-boundary writes = %d, want none: the armed intent is the trace", store.orphanCalls)
+	}
+	if len(store.dropped) != 0 {
+		t.Fatal("the landed intent was dropped ahead of an unverified teardown")
+	}
+}
+
+// TestSpawnRefusedAfterAFailedArmRecordsTheBoundaryWhenNoIntentLanded pins the
+// other half of the same failure: when nothing landed, the untorn boundary must
+// still be tracked, and §9's local-markerless entry persisted through the
+// store's unverified-boundary write is what the boot reap enumerates.
+func TestSpawnRefusedAfterAFailedArmRecordsTheBoundaryWhenNoIntentLanded(t *testing.T) {
+	log := &fenceTestLog{}
+	store := &fenceFakeStore{log: log, armErr: errors.New("store write failed")}
+	boundary := &fenceFakeBoundary{log: log, id: BoundaryID{Platform: BoundaryPlatformLinux, CgroupID: "/cg/op-1"}, closeErr: syscall.EBUSY}
+	scope := fencedTestScope(log, store, boundary)
+	scope.settle = 50 * time.Millisecond
+
+	_, err := (execRunner{}).Run(WithSpawnScope(context.Background(), scope),
+		[]string{"/bin/sh", "-c", "printf ran > /dev/null"}, nil)
+	if err == nil || !errors.Is(err, syscall.EBUSY) {
+		t.Fatalf("Run error = %v, want the refusal and the teardown failure joined", err)
+	}
+	if store.orphanCalls != 1 || len(store.orphanWrites) != 1 {
+		t.Fatalf("orphan-boundary writes = %d, want exactly one durable trace", store.orphanCalls)
+	}
+	var members []struct {
+		Kind     string
+		Platform string
+		CgroupID string
+		Nonce    string
+	}
+	if err := json.Unmarshal(store.orphanWrites[0], &members); err != nil || len(members) != 1 {
+		t.Fatalf("the persisted boundary = %s (%v), want one local-markerless entry", store.orphanWrites[0], err)
+	}
+	entry := members[0]
+	if entry.Kind != "local-markerless" || entry.Platform != BoundaryPlatformLinux || entry.CgroupID != "/cg/op-1" || entry.Nonce == "" {
+		t.Fatalf("the persisted boundary entry = %+v, want a reaping local-markerless entry", entry)
+	}
+}
+
+// TestSpawnRefusedAfterASpawnAttrFailureConvergesWhenTheBoundaryCloses pins the
+// SpawnAttr arm with a clean teardown: the armed intent is dropped only after
+// the boundary proves empty, and the refusal is the SpawnAttr failure.
+func TestSpawnRefusedAfterASpawnAttrFailureConvergesWhenTheBoundaryCloses(t *testing.T) {
+	log := &fenceTestLog{}
+	store := &fenceFakeStore{log: log}
+	boundary := &fenceFakeBoundary{log: log, id: BoundaryID{Platform: BoundaryPlatformLinux, CgroupID: "/cg/op-1"}, attrErr: errors.New("no spawn handle")}
+	scope := fencedTestScope(log, store, boundary)
+
+	_, err := (execRunner{}).Run(WithSpawnScope(context.Background(), scope),
+		[]string{"/bin/sh", "-c", "printf ran > /dev/null"}, nil)
+	if err == nil || !strings.Contains(err.Error(), "no spawn handle") {
+		t.Fatalf("Run error = %v, want the SpawnAttr refusal surfaced", err)
+	}
+	closeAt, dropAt := log.index("close"), log.index("drop")
+	if closeAt < 0 || dropAt < 0 || closeAt > dropAt {
+		t.Fatalf("the teardown must precede the intent drop; log: %s", log.joined())
+	}
+	if len(store.open) != 0 || len(store.dropped) != 1 {
+		t.Fatalf("open=%d dropped=%v, want the armed intent converged after the teardown", len(store.open), store.dropped)
+	}
+	if store.orphanCalls != 0 {
+		t.Fatalf("orphan-boundary writes = %d, want none after a clean teardown", store.orphanCalls)
+	}
+}
+
+// TestSpawnRefusedAfterASpawnAttrFailureRetainsTheArmedIntentWhenTheBoundaryWillNotClose
+// pins the fail-closed side: the intent is armed, so a boundary that will not
+// come down keeps it for the boot reap rather than dropping it into an
+// untracked boundary.
+func TestSpawnRefusedAfterASpawnAttrFailureRetainsTheArmedIntentWhenTheBoundaryWillNotClose(t *testing.T) {
+	log := &fenceTestLog{}
+	store := &fenceFakeStore{log: log}
+	boundary := &fenceFakeBoundary{
+		log:      log,
+		id:       BoundaryID{Platform: BoundaryPlatformLinux, CgroupID: "/cg/op-1"},
+		attrErr:  errors.New("no spawn handle"),
+		closeErr: syscall.EBUSY,
+	}
+	scope := fencedTestScope(log, store, boundary)
+	scope.settle = 50 * time.Millisecond
+
+	_, err := (execRunner{}).Run(WithSpawnScope(context.Background(), scope),
+		[]string{"/bin/sh", "-c", "printf ran > /dev/null"}, nil)
+	if err == nil || !errors.Is(err, syscall.EBUSY) {
+		t.Fatalf("Run error = %v, want the SpawnAttr refusal and the teardown failure joined", err)
+	}
+	if len(store.open) != 1 || len(store.dropped) != 0 {
+		t.Fatalf("open=%d dropped=%v, want the armed intent kept for the boot reap", len(store.open), store.dropped)
+	}
+	if store.orphanCalls != 0 {
+		t.Fatalf("orphan-boundary writes = %d, want none: the intent already names the boundary", store.orphanCalls)
 	}
 }
 
@@ -381,12 +527,12 @@ func TestCrashBetweenArmAndSpawnIsConvergedByTheBootReap(t *testing.T) {
 	scope := &SpawnScope{RecordID: record.ID, store: store}
 	boundary := &fenceFakeBoundary{log: &fenceTestLog{}, id: BoundaryID{Platform: BoundaryPlatformLinux, CgroupID: "/cg/op-1"}}
 
-	nonce, err := scope.armSpawnIntent(boundary)
+	nonce, landed, err := scope.armSpawnIntent(boundary)
 	if err != nil {
 		t.Fatalf("armSpawnIntent: %v", err)
 	}
-	if nonce == "" {
-		t.Fatal("armSpawnIntent minted no nonce")
+	if nonce == "" || !landed {
+		t.Fatalf("armSpawnIntent = %q/%t, want a minted nonce and a landed intent", nonce, landed)
 	}
 	if got := store.SpawnIntentRecords(); len(got) != 1 {
 		t.Fatalf("persisted intents = %d, want 1: the pre-spawn write is what makes the boundary reapable", len(got))
@@ -492,7 +638,7 @@ func TestSpawnedButUnmatchedIntentStaysFencedAtBoot(t *testing.T) {
 	scope := &SpawnScope{RecordID: record.ID, store: store}
 	boundary := &fenceFakeBoundary{log: &fenceTestLog{}, id: BoundaryID{Platform: BoundaryPlatformLinux, CgroupID: "/cg/op-1"}}
 
-	if _, err := scope.armSpawnIntent(boundary); err != nil {
+	if _, _, err := scope.armSpawnIntent(boundary); err != nil {
 		t.Fatalf("armSpawnIntent: %v", err)
 	}
 	// The spawn itself: a real localhost child the launcher never got to match.
@@ -595,5 +741,52 @@ func TestDeployForOperationCarriesTheScopeToItsCommands(t *testing.T) {
 		if !run.scoped {
 			t.Fatalf("a deploy command ran with no spawn scope: %s", run.command)
 		}
+	}
+}
+
+// TestUnverifiedBoundaryTraceIsReapable drives the fallback trace end to end:
+// the §9 local-markerless entry a refused spawn persists (no intent landed, the
+// boundary would not come down) is exactly what the boot reap enumerates, tears
+// down, and resolves — never an untracked boundary.
+func TestUnverifiedBoundaryTraceIsReapable(t *testing.T) {
+	store := newFenceStore(t)
+	record := newRunningFenceRecord(t, store)
+	boundary := &fenceFakeBoundary{log: &fenceTestLog{}, id: BoundaryID{Platform: BoundaryPlatformLinux, CgroupID: "/cg/op-1"}}
+
+	entries, err := markerlessBoundaryEntries(boundary.Identity(), "nonce-trace")
+	if err != nil {
+		t.Fatalf("markerlessBoundaryEntries: %v", err)
+	}
+	if _, err := store.SetOrphanBoundary(record.ID, entries, nil); err != nil {
+		t.Fatalf("SetOrphanBoundary: %v", err)
+	}
+	got, ok := store.Record(record.ID)
+	if !ok || got.State != hostops.StateOrphanUnverified {
+		t.Fatalf("record = %+v, want orphan-unverified", got)
+	}
+
+	var opened []execenv.BoundaryIdentity
+	handle := &fenceReapHandle{}
+	dropped, err := hostfence.ReapLocalOrphanBoundary(store, hostfence.ReapOptions{
+		Open: func(id execenv.BoundaryIdentity) (hostfence.LocalBoundaryHandle, error) {
+			opened = append(opened, id)
+			return handle, nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("ReapLocalOrphanBoundary: %v", err)
+	}
+	if dropped != 1 {
+		t.Fatalf("reap converged %d row(s), want 1", dropped)
+	}
+	if len(opened) != 1 || opened[0].CgroupID != "/cg/op-1" {
+		t.Fatalf("the reap opened %+v, want the persisted markerless cgroup", opened)
+	}
+	if !handle.closed {
+		t.Fatal("the reap did not tear the marked boundary down")
+	}
+	resolved, ok := store.Record(record.ID)
+	if !ok || resolved.State != hostops.StateInterrupted {
+		t.Fatalf("record = %+v, want interrupted once the trace was reaped", resolved)
 	}
 }

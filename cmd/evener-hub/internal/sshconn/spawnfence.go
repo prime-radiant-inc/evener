@@ -20,6 +20,7 @@ package sshconn
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -59,6 +60,10 @@ type SpawnIntentStore interface {
 	// DropSpawnIntent is the clean-convergence write: it removes one open
 	// intent and is idempotent.
 	DropSpawnIntent(recordID, nonce string) error
+	// SetOrphanBoundary persists a fresh `orphan-unverified` boundary: the
+	// fail-closed trace for a pre-created boundary whose teardown failed while
+	// no armed intent names it.
+	SetOrphanBoundary(recordID string, boundary json.RawMessage, dropNonces []string) (hostops.Record, error)
 }
 
 // BoundaryID is one pre-created boundary's ownership identity: §9's
@@ -169,27 +174,16 @@ func (s *SpawnScope) runFenced(ctx context.Context, argv []string, stdin io.Read
 	if err != nil {
 		return nil, fmt.Errorf("sshconn: the spawn is refused: %w", err)
 	}
-	nonce, err := s.armSpawnIntent(boundary)
+	nonce, landed, err := s.armSpawnIntent(boundary)
 	if err != nil {
-		// The write may have landed even though it reported (a rename that
-		// landed with a follow-up error); the drop is idempotent, so converge
-		// eagerly. An intent left behind would still have an empty boundary,
-		// which the boot reap reads as clean — never a wedge.
-		if nonce != "" {
-			_ = s.store.DropSpawnIntent(s.RecordID, nonce)
-		}
-		_ = boundary.Close()
-		return nil, fmt.Errorf("sshconn: the spawn is refused: %w", err)
+		return nil, s.refuseSpawn(boundary, nonce, landed, err)
 	}
 	attr, release, err := boundary.SpawnAttr()
 	if err != nil {
-		// No child exists and no attributes were applied, so the armed intent is
-		// spawnless: drop it and tear the empty boundary down. A drop that cannot
-		// land leaves an intent whose boundary is empty, which the boot reap reads
-		// as clean.
-		_ = s.store.DropSpawnIntent(s.RecordID, nonce)
-		_ = boundary.Close()
-		return nil, fmt.Errorf("sshconn: the spawn is refused: %w", err)
+		// The intent IS armed here, so the boundary's teardown comes first: it
+		// is what decides whether the intent can be dropped or must stay for
+		// the boot reap.
+		return nil, s.refuseSpawn(boundary, nonce, true, err)
 	}
 	out, err := runOneShot(ctx, argv, stdin, attr, release, func(pid int) error {
 		token, observeErr := boundary.Observe(pid)
@@ -209,21 +203,79 @@ func (s *SpawnScope) runFenced(ctx context.Context, argv []string, stdin io.Read
 
 // armSpawnIntent mints this spawn's server-generated nonce and persists the
 // pre-spawn intent on the scope's record, in its own durable write, BEFORE the
-// exec. It returns the nonce even on failure, so a caller can make its best
-// effort to drop what may have landed.
-func (s *SpawnScope) armSpawnIntent(boundary SpawnBoundary) (string, error) {
-	nonce, err := hostops.NewSpawnNonce()
+// exec. It returns the nonce even on failure, and reports whether the write
+// landed: the store can report an error for a write that did land (its
+// post-rename failure), and a landed intent is the boundary's durable trace.
+func (s *SpawnScope) armSpawnIntent(boundary SpawnBoundary) (nonce string, landed bool, err error) {
+	nonce, err = hostops.NewSpawnNonce()
 	if err != nil {
-		return "", err
+		return "", false, err
 	}
 	intent, err := spawnIntentFor(boundary.Identity(), nonce)
 	if err != nil {
-		return nonce, err
+		return nonce, false, err
 	}
-	if _, err := s.store.ArmSpawnIntent(s.RecordID, intent); err != nil {
-		return nonce, err
+	record, err := s.store.ArmSpawnIntent(s.RecordID, intent)
+	if err != nil {
+		// A populated record means the write landed despite the error; the
+		// caller must keep that intent rather than dropping it into an untracked
+		// boundary.
+		return nonce, record.ID != "", err
 	}
-	return nonce, nil
+	return nonce, true, nil
+}
+
+// refuseSpawn converges a spawn refused before its exec. The boundary's
+// teardown comes first, and the intent is dropped only once that teardown
+// proves the boundary clean. A boundary that will not come down is never left
+// untracked — the boot reap can only converge what the record names:
+//
+//   - a landed pre-spawn intent stays armed (it already names the boundary), and
+//   - with no landed intent, the boundary itself is persisted as §9's
+//     local-markerless entry through the store's `orphan-unverified` write, so
+//     the next boot's reap enumerates and retries it.
+//
+// The refusal carries every cleanup failure joined, so an untorn boundary stays
+// visible even when the store write that would have traced it also failed.
+func (s *SpawnScope) refuseSpawn(boundary SpawnBoundary, nonce string, intentLanded bool, refusal error) error {
+	refusal = fmt.Errorf("sshconn: the spawn is refused: %w", refusal)
+	closeErr := closeBoundaryWithin(boundary, s.settleOrDefault())
+	if closeErr != nil {
+		closeErr = fmt.Errorf("the pre-created boundary could not be torn down, so its cleanup stays fenced for the boot reap: %w", closeErr)
+		if intentLanded && nonce != "" {
+			return errors.Join(refusal, closeErr)
+		}
+		return errors.Join(refusal, closeErr, s.recordUnverifiedBoundary(boundary, nonce))
+	}
+	// The boundary is proven clean. The drop is idempotent, so it is attempted
+	// whenever a nonce was minted — including after an arm that reported an
+	// error, which may still have landed.
+	if nonce != "" {
+		if dropErr := s.store.DropSpawnIntent(s.RecordID, nonce); dropErr != nil {
+			return errors.Join(refusal, fmt.Errorf("the pre-spawn intent could not be dropped after a clean teardown: %w", dropErr))
+		}
+	}
+	return refusal
+}
+
+// recordUnverifiedBoundary persists a boundary that would not come down as §9's
+// local-markerless entry on the record, in the store's `orphan-unverified`
+// write, so the boot reap retries the enumeration instead of the boundary going
+// untracked. A boundary with no nonce (the entropy failure that refused the arm
+// before minting one) cannot be named in §9's schema; that failure is reported
+// rather than written as an entry no verifier accepts.
+func (s *SpawnScope) recordUnverifiedBoundary(boundary SpawnBoundary, nonce string) error {
+	if nonce == "" {
+		return errors.New("the boundary could not be recorded as orphan-unverified: no nonce was minted to name it")
+	}
+	entries, err := markerlessBoundaryEntries(boundary.Identity(), nonce)
+	if err != nil {
+		return fmt.Errorf("the boundary could not be recorded as orphan-unverified: %w", err)
+	}
+	if _, err := s.store.SetOrphanBoundary(s.RecordID, entries, nil); err != nil {
+		return fmt.Errorf("the boundary could not be recorded as orphan-unverified: %w", err)
+	}
+	return nil
 }
 
 // spawnIntentFor renders one boundary identity plus nonce as §3's persisted
@@ -247,6 +299,44 @@ func spawnIntentFor(id BoundaryID, nonce string) (hostops.SpawnIntent, error) {
 	}
 }
 
+// markerlessBoundaryEntries renders §9's local-markerless variant for one
+// pre-created boundary with no launcher marker: the entry an
+// `orphan-unverified` write carries when a refused spawn's boundary would not
+// come down and no armed intent names it. The shape matches
+// hostops.validateBoundaryEntry and the reap's groupPersistedBoundary exactly
+// (arm-appropriate fields only, unknown keys refused).
+func markerlessBoundaryEntries(id BoundaryID, nonce string) (json.RawMessage, error) {
+	type entry struct {
+		Kind     string `json:"kind"`
+		Platform string `json:"platform"`
+		// §9's BoundaryEntry schema is lowerCamel on the wire and in the store
+		// (hostops' tagliatelle carve-out covers the same shape).
+		CgroupID  string `json:"cgroupId,omitempty"` //nolint:tagliatelle // §9's BoundaryEntry schema is lowerCamel
+		PGID      *int   `json:"pgid,omitempty"`
+		SessionID *int   `json:"sessionId,omitempty"` //nolint:tagliatelle // §9's BoundaryEntry schema is lowerCamel
+		Nonce     string `json:"nonce"`
+	}
+	member := entry{Kind: "local-markerless", Nonce: nonce}
+	switch id.Platform {
+	case BoundaryPlatformLinux:
+		if id.CgroupID == "" {
+			return nil, fmt.Errorf("%w: the pre-created boundary carries no cgroup id", ErrSpawnBoundaryUnavailable)
+		}
+		member.Platform = BoundaryPlatformLinux
+		member.CgroupID = id.CgroupID
+	case BoundaryPlatformDarwin:
+		if id.PGID <= 0 || id.SessionID <= 0 {
+			return nil, fmt.Errorf("%w: the pre-created boundary carries no (pgid, session id) pair", ErrSpawnBoundaryUnavailable)
+		}
+		member.Platform = BoundaryPlatformDarwin
+		pgid, session := id.PGID, id.SessionID
+		member.PGID, member.SessionID = &pgid, &session
+	default:
+		return nil, fmt.Errorf("%w: the pre-created boundary carries platform %q", ErrSpawnBoundaryUnavailable, id.Platform)
+	}
+	return json.Marshal([]entry{member})
+}
+
 // convergeSpawn tears one spawn's boundary down once its child is gone and
 // drops the intent only when the boundary is proven clean. The order is
 // close-then-drop: a crash between the two leaves an intent whose boundary is
@@ -260,11 +350,7 @@ func spawnIntentFor(id BoundaryID, nonce string) (hostops.SpawnIntent, error) {
 // reaped child's own exit is the clean rule and the teardown is best-effort.
 func (s *SpawnScope) convergeSpawn(boundary SpawnBoundary, nonce string) error {
 	if boundary.Enforcing() {
-		settle := s.settle
-		if settle <= 0 {
-			settle = spawnBoundarySettle
-		}
-		if err := closeBoundaryWithin(boundary, settle); err != nil {
+		if err := closeBoundaryWithin(boundary, s.settleOrDefault()); err != nil {
 			return fmt.Errorf("the boundary still holds a member the launcher never observed, so the spawn intent stays open for the boot reap or orphan-resolve: %w", err)
 		}
 	} else {
@@ -274,6 +360,15 @@ func (s *SpawnScope) convergeSpawn(boundary SpawnBoundary, nonce string) error {
 		return fmt.Errorf("the spawn intent could not be dropped after a clean teardown: %w", err)
 	}
 	return nil
+}
+
+// settleOrDefault bounds one boundary teardown: the caller's override in tests,
+// else the shipped default.
+func (s *SpawnScope) settleOrDefault() time.Duration {
+	if s.settle > 0 {
+		return s.settle
+	}
+	return spawnBoundarySettle
 }
 
 // closeBoundaryWithin tears a boundary down within wait, retrying only the

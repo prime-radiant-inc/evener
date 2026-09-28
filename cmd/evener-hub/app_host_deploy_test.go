@@ -2079,20 +2079,23 @@ func TestDeployWorkerScopesItsMutatingStepsAndNotTheReadOnlyRefresh(t *testing.T
 	}
 	waitOperationState(t, store, response.ID, hostops.StateComplete)
 
-	if deployScope == nil {
+	mu.Lock()
+	deploy, restart, refresh := deployScope, restartScope, refreshScope
+	mu.Unlock()
+	if deploy == nil {
 		t.Fatal("the deploy step ran with no spawn scope, so its ssh subprocesses would be unowned")
 	}
-	if deployScope.RecordID != response.ID {
-		t.Fatalf("deploy step scope record = %q, want %s", deployScope.RecordID, response.ID)
+	if deploy.RecordID != response.ID {
+		t.Fatalf("deploy step scope record = %q, want %s", deploy.RecordID, response.ID)
 	}
-	if restartScope == nil {
+	if restart == nil {
 		t.Fatal("the planned restart leg ran with no spawn scope")
 	}
-	if restartScope.RecordID != response.ID {
-		t.Fatalf("restart leg scope record = %q, want %s", restartScope.RecordID, response.ID)
+	if restart.RecordID != response.ID {
+		t.Fatalf("restart leg scope record = %q, want %s", restart.RecordID, response.ID)
 	}
-	if refreshScope != nil {
-		t.Fatalf("the post-operation read-only refresh ran armed under record %q, want no scope", refreshScope.RecordID)
+	if refresh != nil {
+		t.Fatalf("the post-operation read-only refresh ran armed under record %q, want no scope", refresh.RecordID)
 	}
 }
 
@@ -2133,13 +2136,16 @@ func TestRestartWorkerScopesItsRestartStepAndNotTheReadOnlyRefresh(t *testing.T)
 	}
 	waitOperationState(t, store, response.ID, hostops.StateComplete)
 
-	if restartScope == nil {
+	mu.Lock()
+	restart, refresh := restartScope, refreshScope
+	mu.Unlock()
+	if restart == nil {
 		t.Fatal("the restart step ran with no spawn scope, so its ssh subprocesses would be unowned")
 	}
-	if restartScope.RecordID != response.ID {
-		t.Fatalf("restart step scope record = %q, want %s", restartScope.RecordID, response.ID)
+	if restart.RecordID != response.ID {
+		t.Fatalf("restart step scope record = %q, want %s", restart.RecordID, response.ID)
 	}
-	if refreshScope != nil {
-		t.Fatalf("the post-operation read-only refresh ran armed under record %q, want no scope", refreshScope.RecordID)
+	if refresh != nil {
+		t.Fatalf("the post-operation read-only refresh ran armed under record %q, want no scope", refresh.RecordID)
 	}
 }

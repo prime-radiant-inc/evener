@@ -1933,6 +1933,13 @@ func (m *Manager) ensureOnce(ctx context.Context, host hostreg.Host, explicit bo
 	}
 
 	deploy, restart := m.ensureDecision(host.Name, facts, expected, running, runningKnown, hubPresent)
+	// The Ensure deploy's record spans the restart leg a deploy plans
+	// (crash-fencing §3): ArmSpawnIntent refuses a terminal record, so the
+	// record stays open until the leg's outcome lands, and the leg's ssh
+	// subprocesses are armed into it. A deploy-only attempt finishes at the end
+	// of its deploy block, exactly where it always did.
+	var finishEnsureDeploy func(error)
+	var deployScope *SpawnScope
 	if deploy {
 		m.stateEvent(host.Name, StateDeploying)
 		// The Ensure-triggered deploy is a durable fenced operation (deploy
@@ -1940,8 +1947,6 @@ func (m *Manager) ensureOnce(ctx context.Context, host hostreg.Host, explicit bo
 		// before the deploy's first remote write, and the gate hold publishes
 		// the operation so a contender's busy refusal names it. A hook that
 		// cannot persist the record refuses the deploy with nothing launched.
-		var finishEnsureDeploy func(error)
-		var deployScope *SpawnScope
 		if hook := m.ensureDeployHook(); hook != nil {
 			scope, finish, err := hook(host)
 			if err != nil {
@@ -1997,13 +2002,24 @@ func (m *Manager) ensureOnce(ctx context.Context, host hostreg.Host, explicit bo
 			}
 			return nil, err
 		}
-		if finishEnsureDeploy != nil {
-			finishEnsureDeploy(nil)
+		if !restart {
+			// A deploy with no restart leg planned is over: finish where the
+			// deploy-only path always finished.
+			if finishEnsureDeploy != nil {
+				finishEnsureDeploy(nil)
+			}
 		}
 	}
 	if restart {
 		m.stateEvent(host.Name, StateRestarting)
 		restartCtx, cancelRestart := context.WithTimeout(ctx, m.opts.deployLimit())
+		if deployScope != nil {
+			// The deploy record owns the restart leg it planned: the leg's ssh
+			// subprocesses are armed into the still-open record, so a crash
+			// during the restart is convergent at the next boot instead of
+			// leaving an unowned ssh child.
+			restartCtx = WithSpawnScope(restartCtx, deployScope)
+		}
 		var restartErr error
 		if pending := m.pendingRestart(host.Name); pending.command != "" && !runningKnown {
 			// A previous restart killed the old hub and left no listener. There is
@@ -2014,7 +2030,16 @@ func (m *Manager) ensureOnce(ctx context.Context, host hostreg.Host, explicit bo
 		}
 		cancelRestart()
 		if restartErr != nil {
+			// The record stayed open through the leg, so the leg's failure is
+			// recorded on it — never a `complete` record for an operation that
+			// did not finish.
+			if finishEnsureDeploy != nil {
+				finishEnsureDeploy(restartErr)
+			}
 			return nil, restartErr
+		}
+		if finishEnsureDeploy != nil {
+			finishEnsureDeploy(nil)
 		}
 	}
 	if restart && !deploy {
