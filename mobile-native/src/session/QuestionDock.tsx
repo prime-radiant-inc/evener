@@ -21,6 +21,7 @@ import {
 } from "../questionAnswers";
 import { allowFontScaling, useColors, useTextScale } from "../ui";
 import { foldedLabel, orderedOptions, primaryLabel, questionHeader } from "./askDockCopy";
+import { dockCard } from "./dockCard";
 import { SymbolButton } from "./SymbolButton";
 import type { QuestionDraft } from "./useQuestionDraft";
 
@@ -54,15 +55,7 @@ export function QuestionDock({
 	const { palette } = useColors();
 	const scale = useTextScale();
 	const { selections, activeIndex } = draft;
-	const card = {
-		marginHorizontal: 16,
-		marginBottom: 8,
-		borderWidth: 1,
-		borderColor: palette.attentionEdge,
-		borderRadius: 12,
-		borderCurve: "continuous" as const,
-		backgroundColor: palette.surface,
-	};
+	const card = dockCard(palette);
 	const caption = { fontSize: 13 * scale, lineHeight: 18 * scale, color: palette.inkMid };
 	if (folded) {
 		const unanswered = questions.filter((question) => !selections[question.key]?.resolution).length;

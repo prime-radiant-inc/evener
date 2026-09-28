@@ -10,6 +10,7 @@ import type { ApprovalControls } from "../approvalControls";
 import { fonts } from "../design/tokens";
 import { allowFontScaling, useColors, useTextScale } from "../ui";
 import { approvalCard } from "./askDockCopy";
+import { dockCard } from "./dockCard";
 
 export interface ApprovalDockProps {
 	request: SandboxEscalationRequested;
@@ -102,19 +103,7 @@ export function ApprovalDock({ request, controls, onDecided }: ApprovalDockProps
 	}
 	const body = { allowFontScaling, style: { fontSize: 15 * scale, lineHeight: 20 * scale, color: palette.inkMid } };
 	return (
-		<View
-			style={{
-				marginHorizontal: 16,
-				marginBottom: 8,
-				padding: 16,
-				gap: 8,
-				borderWidth: 1,
-				borderColor: palette.attentionEdge,
-				borderRadius: 12,
-				borderCurve: "continuous",
-				backgroundColor: palette.surface,
-			}}
-		>
+		<View style={{ ...dockCard(palette), padding: 16, gap: 8 }}>
 			<View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
 				<SymbolView name="hand.raised.circle.fill" tintColor={palette.attention} size={22 * scale} />
 				<Text
