@@ -340,7 +340,7 @@ func TestHubNoticesNameARefusedRefresh(t *testing.T) {
 		t.Fatalf("notices before any refusal = %+v, want none", got)
 	}
 
-	if err := authopenai.RecordRefreshRejection(auth.stateDir, "openai-codex", record.RefreshToken, now); err != nil {
+	if err := authopenai.RecordRefreshRejection(auth.stateDir, "openai-codex", record, now); err != nil {
 		t.Fatal(err)
 	}
 	want := []appwire.HubNotice{{ID: "signInRequired:openai-codex", Kind: appwire.NoticeKindSignInRequired, Subject: "openai-codex"}}

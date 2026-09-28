@@ -191,14 +191,19 @@ func WriteAuthFile(path string, data []byte) error {
 // (false, nil).
 func DeleteAuth(stateDir, instanceName string) (bool, error) {
 	path := AuthFilePath(stateDir, instanceName)
-	// A signed-out instance has no refresh token for a refusal to be about.
-	_ = clearRefreshRejection(stateDir, instanceName)
 	if err := os.Remove(path); err != nil {
 		if errors.Is(err, os.ErrNotExist) {
+			// Already signed out: no refresh token remains for a refusal to
+			// be about.
+			_ = clearRefreshRejection(stateDir, instanceName)
 			return false, nil
 		}
 		return false, fmt.Errorf("delete auth file: %w", err)
 	}
+	// A signed-out instance has no refresh token for a refusal to be about.
+	// Cleared only after the record is actually gone, so a failed remove
+	// never loses the note while the refused record is still on disk.
+	_ = clearRefreshRejection(stateDir, instanceName)
 	return true, nil
 }
 

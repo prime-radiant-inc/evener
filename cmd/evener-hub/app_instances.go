@@ -1389,13 +1389,24 @@ func (c *hubInstancesController) moveCredentials(oldName, newName string) error 
 	case err != nil:
 		problems = append(problems, fmt.Sprintf("OAuth record not read: %v", err))
 	default:
+		// The refusal marker (#2479) is keyed by the old instance name, so it
+		// does not follow the rename on its own: read it before the copy,
+		// under the name it is actually filed under.
+		refused := authopenai.RefreshRejected(c.auth.stateDir, oldName, record)
 		// The record's provider field names the instance it belongs to (the
 		// OAuth completion paths set it), so it follows the rename.
 		record.Provider = newName
 		if err := c.auth.saveAuth(c.auth.stateDir, newName, record); err != nil {
 			problems = append(problems, fmt.Sprintf("OAuth record not copied: %v", err))
-		} else if _, err := c.auth.deleteAuth(c.auth.stateDir, oldName); err != nil {
-			problems = append(problems, fmt.Sprintf("OAuth record for %q left behind: %v", oldName, err))
+		} else {
+			if refused {
+				// Without this, the renamed instance reports signed in and
+				// healthy until its next failed refresh re-notes the refusal.
+				_ = authopenai.RecordRefreshRejection(c.auth.stateDir, newName, record, c.auth.now())
+			}
+			if _, err := c.auth.deleteAuth(c.auth.stateDir, oldName); err != nil {
+				problems = append(problems, fmt.Sprintf("OAuth record for %q left behind: %v", oldName, err))
+			}
 		}
 	}
 	if len(problems) > 0 {

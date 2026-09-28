@@ -17,10 +17,16 @@ import (
 // and can never be another instance's record.
 const refreshRejectionSuffix = ".refresh-rejected"
 
-// refreshRejection is the note's content: which refresh token the issuer
-// refused, by its SHA-256 (never the token itself), and when.
+// refreshRejection is the note's content: which record the issuer's refusal
+// was about — its refresh token, by SHA-256 (never the token itself), and its
+// ObtainedAt — and when. ObtainedAt is a second key beside the token digest
+// because an issuer that does not rotate refresh tokens can leave the token
+// unchanged across a save: a concurrent refresh that raced the one being
+// refused, and won, still moves ObtainedAt forward, so the note keyed on both
+// stops matching once a newer record replaces the one it was about.
 type refreshRejection struct {
 	RefreshTokenSHA256 string    `json:"refresh_token_sha256"`
+	RecordObtainedAt   time.Time `json:"record_obtained_at"`
 	RejectedAt         time.Time `json:"rejected_at"`
 }
 
@@ -33,14 +39,19 @@ func refreshTokenDigest(refreshToken string) string {
 	return hex.EncodeToString(sum[:])
 }
 
-// RecordRefreshRejection notes that the issuer permanently refused
-// refreshToken for instanceName, so status can say signing in again is needed
-// (#2479). It never rewrites the auth record: another process refreshing the
-// same record may be saving the token that replaced this one, and rewriting
-// the record could put the refused token back over it. The note names the
-// refused token, so it stops mattering once the record holds another.
-func RecordRefreshRejection(stateDir, instanceName, refreshToken string, at time.Time) error {
-	data, err := json.Marshal(refreshRejection{RefreshTokenSHA256: refreshTokenDigest(refreshToken), RejectedAt: at.UTC()})
+// RecordRefreshRejection notes that the issuer permanently refused record's
+// refresh token for instanceName, so status can say signing in again is
+// needed (#2479). It never rewrites the auth record: another process
+// refreshing the same record may be saving the token that replaced this one,
+// and rewriting the record could put the refused token back over it. The note
+// names the record it was about (its refresh token and ObtainedAt), so it
+// stops mattering once the record moves on to another.
+func RecordRefreshRejection(stateDir, instanceName string, record AuthRecord, at time.Time) error {
+	data, err := json.Marshal(refreshRejection{
+		RefreshTokenSHA256: refreshTokenDigest(record.RefreshToken),
+		RecordObtainedAt:   record.ObtainedAt.UTC(),
+		RejectedAt:         at.UTC(),
+	})
 	if err != nil {
 		return fmt.Errorf("marshal refresh rejection: %w", err)
 	}
@@ -53,7 +64,9 @@ func RecordRefreshRejection(stateDir, instanceName, refreshToken string, at time
 
 // RefreshRejected reports whether the issuer permanently refused record's
 // refresh token, as RecordRefreshRejection noted it. No note, an unreadable
-// one, or a note about any other token is false.
+// one, or a note about a different record (another refresh token, or the same
+// token on a record a concurrent successful refresh already moved past) is
+// false.
 func RefreshRejected(stateDir, instanceName string, record AuthRecord) bool {
 	data, err := os.ReadFile(refreshRejectionPath(stateDir, instanceName))
 	if err != nil {
@@ -63,7 +76,8 @@ func RefreshRejected(stateDir, instanceName string, record AuthRecord) bool {
 	if err := json.Unmarshal(data, &rejection); err != nil {
 		return false
 	}
-	return rejection.RefreshTokenSHA256 == refreshTokenDigest(record.RefreshToken)
+	return rejection.RefreshTokenSHA256 == refreshTokenDigest(record.RefreshToken) &&
+		rejection.RecordObtainedAt.Equal(record.ObtainedAt.UTC())
 }
 
 // clearRefreshRejection removes instanceName's note, if there is one. SaveAuth

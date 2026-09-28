@@ -223,7 +223,7 @@ func TestHubRPCAuthStatusReportsOAuthRefreshAndLoginStates(t *testing.T) {
 			ctrl.stateDir = t.TempDir()
 			attachTestRegistry(t, ctrl)
 			ctrl.now = func() time.Time { return now }
-			if err := authopenai.SaveAuth(ctrl.stateDir, "openai-codex", authopenai.AuthRecord{
+			record := authopenai.AuthRecord{
 				Version:      1,
 				Provider:     "openai",
 				Source:       authopenai.AuthSourceOAuth,
@@ -234,11 +234,12 @@ func TestHubRPCAuthStatusReportsOAuthRefreshAndLoginStates(t *testing.T) {
 				RefreshToken: tc.refreshToken,
 				Expiry:       tc.expiry,
 				Email:        "stored@example.com",
-			}); err != nil {
+			}
+			if err := authopenai.SaveAuth(ctrl.stateDir, "openai-codex", record); err != nil {
 				t.Fatal(err)
 			}
 			if tc.refused {
-				if err := authopenai.RecordRefreshRejection(ctrl.stateDir, "openai-codex", tc.refreshToken, now); err != nil {
+				if err := authopenai.RecordRefreshRejection(ctrl.stateDir, "openai-codex", record, now); err != nil {
 					t.Fatal(err)
 				}
 			}

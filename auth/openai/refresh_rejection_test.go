@@ -82,7 +82,7 @@ func TestRuntimeCredentialsNotesNoRefusalForATransientFailure(t *testing.T) {
 func TestRefreshRefusalNamesOnlyTheRefusedToken(t *testing.T) {
 	stateDir := t.TempDir()
 	refused := sampleAuthRecord()
-	if err := RecordRefreshRejection(stateDir, "openai", refused.RefreshToken, time.Now()); err != nil {
+	if err := RecordRefreshRejection(stateDir, "openai", refused, time.Now()); err != nil {
 		t.Fatal(err)
 	}
 	if !RefreshRejected(stateDir, "openai", refused) {
@@ -103,7 +103,7 @@ func TestRefreshRefusalNamesOnlyTheRefusedToken(t *testing.T) {
 func TestSaveAuthClearsARefreshRefusal(t *testing.T) {
 	stateDir := t.TempDir()
 	record := sampleAuthRecord()
-	if err := RecordRefreshRejection(stateDir, "openai", record.RefreshToken, time.Now()); err != nil {
+	if err := RecordRefreshRejection(stateDir, "openai", record, time.Now()); err != nil {
 		t.Fatal(err)
 	}
 	if err := SaveAuth(stateDir, "openai", record); err != nil {
@@ -124,7 +124,7 @@ func TestRuntimeCredentialsRefreshClearsAnEarlierRefusal(t *testing.T) {
 	if err := SaveAuth(stateDir, "openai", record); err != nil {
 		t.Fatal(err)
 	}
-	if err := RecordRefreshRejection(stateDir, "openai", record.RefreshToken, now); err != nil {
+	if err := RecordRefreshRejection(stateDir, "openai", record, now); err != nil {
 		t.Fatal(err)
 	}
 	svc := newTestService(now)
@@ -152,7 +152,7 @@ func TestDeleteAuthClearsARefreshRefusal(t *testing.T) {
 	if err := SaveAuth(stateDir, "openai", record); err != nil {
 		t.Fatal(err)
 	}
-	if err := RecordRefreshRejection(stateDir, "openai", record.RefreshToken, time.Now()); err != nil {
+	if err := RecordRefreshRejection(stateDir, "openai", record, time.Now()); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := DeleteAuth(stateDir, "openai"); err != nil {
@@ -167,7 +167,7 @@ func TestDeleteAuthClearsARefreshRefusal(t *testing.T) {
 // be read as an instance's auth record: its name does not end in ".json".
 func TestRefreshRefusalNoteIsPrivateAndNotARecord(t *testing.T) {
 	stateDir := t.TempDir()
-	if err := RecordRefreshRejection(stateDir, "openai", "secret-refresh-token", time.Now()); err != nil {
+	if err := RecordRefreshRejection(stateDir, "openai", AuthRecord{RefreshToken: "secret-refresh-token"}, time.Now()); err != nil {
 		t.Fatal(err)
 	}
 	path := refreshRejectionPath(stateDir, "openai")
@@ -188,5 +188,60 @@ func TestRefreshRefusalNoteIsPrivateAndNotARecord(t *testing.T) {
 	}
 	if strings.Contains(string(data), "secret-refresh-token") {
 		t.Fatal("the note carries the refresh token itself")
+	}
+}
+
+// A failed delete (anything but the file already being gone) must not lose
+// the note: the record is still there, refused, and the caller sees the
+// error, so a retry (or the next failed refresh) still has the signal.
+func TestDeleteAuthKeepsTheNoteWhenTheDeleteFails(t *testing.T) {
+	stateDir := t.TempDir()
+	record := sampleAuthRecord()
+	// Force os.Remove to fail with something other than ErrNotExist: a
+	// non-empty directory sitting where the record's file would be.
+	path := AuthFilePath(stateDir, "openai")
+	if err := os.MkdirAll(path, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(path, "child"), []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := RecordRefreshRejection(stateDir, "openai", record, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := DeleteAuth(stateDir, "openai"); err == nil {
+		t.Fatal("DeleteAuth over a non-empty directory unexpectedly succeeded")
+	}
+	if !RefreshRejected(stateDir, "openai", record) {
+		t.Fatal("the note was cleared even though the delete failed")
+	}
+}
+
+// An issuer that does not rotate refresh tokens can still race two concurrent
+// refreshes to a split result: one succeeds and saves a new record (a fresh
+// access token and ObtainedAt, even though the refresh token itself is
+// unchanged), the other is permanently refused for the same, now-superseded
+// refresh token and notes it. Because the token alone would still match, the
+// note also has to compare the record's ObtainedAt, so a note taken from the
+// stale (pre-refresh) record does not misreport the now-current one.
+func TestRefreshRefusalDoesNotMisreportARecordANonRotatingRefreshAlreadyReplaced(t *testing.T) {
+	stateDir := t.TempDir()
+	stale := sampleAuthRecord()
+	stale.ObtainedAt = time.Now().Add(-time.Hour)
+	if err := RecordRefreshRejection(stateDir, "openai", stale, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+
+	current := stale
+	current.ObtainedAt = time.Now()
+	current.AccessToken = "fresh-access-token"
+	if RefreshRejected(stateDir, "openai", current) {
+		t.Fatal("a record a concurrent successful refresh already replaced is reported refused")
+	}
+	// The stale record itself, as read at the moment of the refusal, is still
+	// reported refused: the guard only distinguishes it from what replaced it.
+	if !RefreshRejected(stateDir, "openai", stale) {
+		t.Fatal("the exact record the refusal was about is not reported refused")
 	}
 }

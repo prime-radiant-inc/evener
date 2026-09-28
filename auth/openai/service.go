@@ -487,7 +487,7 @@ func (s *Service) ResolveRuntimeCredentials(ctx context.Context, stateDir, insta
 			// Note the refusal where status can read it (#2479). Best effort:
 			// the turn fails with ErrLoginRequired either way, and the next
 			// attempt refreshes again rather than trusting the note.
-			_ = RecordRefreshRejection(stateDir, instanceName, record.RefreshToken, s.now())
+			_ = RecordRefreshRejection(stateDir, instanceName, record, s.now())
 			return RuntimeCredentials{}, loginRequiredError(err)
 		}
 		return RuntimeCredentials{}, fmt.Errorf("refresh OpenAI auth: %w", err)

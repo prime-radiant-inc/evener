@@ -3906,6 +3906,39 @@ func TestInstances_EditRenamesEntryDefaultStoredKeyAndOAuthRecord(t *testing.T) 
 	}
 }
 
+// The refusal marker (#2479) is keyed by instance name, so moveCredentials
+// has to carry it explicitly: without that, renaming an instance whose
+// refresh token the issuer permanently refused would report the renamed
+// instance signed in and healthy until its next failed refresh re-noted it.
+func TestInstances_EditRenameCarriesARefreshRefusalMarker(t *testing.T) {
+	f := newInstancesFixture(t, nil)
+	if err := f.ctl.Create(appwire.InstanceCreateParams{Name: "work", Base: "openai-codex"}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	record := makeOAuthRecord("work", "")
+	if err := authopenai.SaveAuth(f.stateDir, "work", record); err != nil {
+		t.Fatalf("SaveAuth: %v", err)
+	}
+	if err := authopenai.RecordRefreshRejection(f.stateDir, "work", record, time.Now()); err != nil {
+		t.Fatalf("RecordRefreshRejection: %v", err)
+	}
+
+	if err := f.ctl.Edit(appwire.InstanceEditParams{Name: "work", NewName: "personal"}); err != nil {
+		t.Fatalf("Edit(rename): %v", err)
+	}
+
+	moved, err := authopenai.LoadAuth(f.stateDir, "personal")
+	if err != nil {
+		t.Fatalf("OAuth record did not move: %v", err)
+	}
+	if !authopenai.RefreshRejected(f.stateDir, "personal", moved) {
+		t.Fatal("the renamed instance lost its refresh-refusal marker")
+	}
+	if authopenai.RefreshRejected(f.stateDir, "work", moved) {
+		t.Fatal("the old instance name still carries the marker after the rename")
+	}
+}
+
 // breakCredentialWrites makes every later credentials.toml save fail for a
 // real filesystem reason rather than a stubbed one: the store writes through
 // <path>.tmp and renames, so a directory occupying that name refuses the open
