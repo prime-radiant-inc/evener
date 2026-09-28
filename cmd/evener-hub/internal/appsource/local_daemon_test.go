@@ -734,11 +734,13 @@ func TestLocalDaemonSourceListFallbackFoldsDaemonStatus(t *testing.T) {
 		Steer: true, Interrupt: true, Compact: true, Shutdown: true,
 		ChangeModel: true, ChangeVisionModel: true, Queue: true,
 		Goal: true, SharedNotes: true, Rename: true, SkillInput: true,
+		StopSubagent: true,
 	}
 	wantClearWithheld := appwire.ThreadCapabilities{
 		Send: true, Steer: true, Interrupt: true, Compact: true, Shutdown: true,
 		ChangeModel: true, ChangeVisionModel: true, Queue: true,
 		Goal: true, SharedNotes: true, Rename: true, SkillInput: true,
+		StopSubagent: true,
 	}
 	if got := capsByID["th_processing"]; got != wantActive {
 		t.Fatalf("active row = %+v, want the daemon's active answer (Send and Clear folded): %+v", got, wantActive)

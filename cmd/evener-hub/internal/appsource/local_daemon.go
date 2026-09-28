@@ -1307,6 +1307,10 @@ func listRowCapabilities(item LocalDaemonEntry, status string) appwire.ThreadCap
 		// genuinely lacks the support still refuses each selection
 		// honestly.
 		SkillInput: true,
+		// The daemon advertises the subagent stop whenever it is wired and
+		// the session is open, like Interrupt. A descendant alias never gets
+		// it: the stop targets the root that owns the tree.
+		StopSubagent: !item.ReadOnlyAlias && !closed,
 	}
 }
 

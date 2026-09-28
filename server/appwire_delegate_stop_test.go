@@ -70,6 +70,20 @@ func TestHandleDelegateStop(t *testing.T) {
 	})
 }
 
+// The root advertises the stop while its daemon wires it, so a client offers
+// "Stop subagent" instead of asking the coordinator (S6).
+func TestRootCapabilitiesAdvertiseStopSubagent(t *testing.T) {
+	s := NewServer(ServerConfig{})
+	s.SetAppIdentity("local", "root")
+	if s.appThread().Evener.Capabilities.StopSubagent {
+		t.Fatal("a daemon without the stop wired advertises it")
+	}
+	s.SetDelegateStopFunc(func(string) (appwire.DelegateStopOutcome, error) { return appwire.DelegateStopStopping, nil })
+	if !s.appThread().Evener.Capabilities.StopSubagent {
+		t.Fatal("a daemon with the stop wired does not advertise it")
+	}
+}
+
 // wireErrorInfo is the evener error kind a handler's error carries, "" when
 // it is not a wire error.
 func wireErrorInfo(err error) appwire.ErrorInfo {

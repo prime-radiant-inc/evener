@@ -1392,6 +1392,12 @@ type ThreadCapabilities struct {
 	// against the live daemon. ValidateSkillInputSupport keeps skill items
 	// rejected wherever this capability is false.
 	SkillInput bool `json:"skillInput,omitempty"`
+	// StopSubagent advertises evener/delegate/stop on a root session (S6):
+	// true while its daemon wires the stop and the session is open. Absent
+	// from an older daemon, from a session with no daemon running (it runs no
+	// subagents), and from a subagent's own thread: the stop targets the root
+	// that owns the tree.
+	StopSubagent bool `json:"stopSubagent,omitempty"`
 }
 
 // EvenerHookEventStatus describes a single hook event's registration state.

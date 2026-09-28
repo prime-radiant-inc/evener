@@ -30,6 +30,7 @@ func allRemoteThreadCapabilities() appwire.ThreadCapabilities {
 		SharedNotes:       true,
 		Rename:            true,
 		SkillInput:        true,
+		StopSubagent:      true,
 	}
 }
 
@@ -154,6 +155,9 @@ func TestRemoteHubCapabilitiesMatchForwardedMethods(t *testing.T) {
 		}},
 		{"Rename", map[string]func() error{
 			"SetThreadName": func() error { return source.SetThreadName(ctx, appwire.ThreadNameSetParams{}) },
+		}},
+		{"StopSubagent", map[string]func() error{
+			"StopDelegate": func() error { _, err := source.StopDelegate(ctx, appwire.DelegateStopParams{}); return err },
 		}},
 		{"SkillInput", map[string]func() error{
 			"StartTurn": func() error { _, err := source.StartTurn(ctx, appwire.TurnStartParams{}); return err },
