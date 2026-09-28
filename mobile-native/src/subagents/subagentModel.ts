@@ -169,7 +169,8 @@ export interface StripSegment {
 	width: number;
 }
 
-const STRIP_ORDER: readonly SubagentState[] = ["failed", "running", "done"];
+/** The order states take everywhere: the strip, the list and the chips. */
+export const STATE_ORDER: readonly SubagentState[] = ["failed", "running", "done"];
 const STRIP_MIN: Record<SubagentState, number> = { failed: 3, running: 1, done: 0 };
 
 /** The strip's segments in the list's own order, sized by count (spec 9):
@@ -182,7 +183,7 @@ export function stripSegments(
 	gap = 1,
 ): StripSegment[] {
 	if (tally.failed === 0 && tally.running === 0) return [];
-	const present = STRIP_ORDER.filter((state) => tally[state] > 0);
+	const present = STATE_ORDER.filter((state) => tally[state] > 0);
 	const available = Math.max(0, width - gap * (present.length - 1));
 	const total = present.reduce((sum, state) => sum + tally[state], 0);
 	const floored = new Set(present.filter((state) => (available * tally[state]) / total < STRIP_MIN[state]));

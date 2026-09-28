@@ -1,5 +1,6 @@
 import {
 	matchesSearch,
+	STATE_ORDER,
 	type SubagentRow,
 	type SubagentState,
 	subagentSections,
@@ -13,8 +14,6 @@ export type SubagentListItem =
 	| { kind: "doneFold"; count: number; open: boolean }
 	| { kind: "missing"; title: string };
 
-/** The list's order, and the chips': failed first, then running, then done. */
-export const STATE_ORDER: readonly SubagentState[] = ["failed", "running", "done"];
 
 /** The list's items for a filter and a search (spec 9): failed, then
  * running, then done, where done is one folded row under All until you open

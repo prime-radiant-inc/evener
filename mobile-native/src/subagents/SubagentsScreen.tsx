@@ -13,11 +13,12 @@ import { useConnection } from "../ConnectionProvider";
 import { HubModels } from "../hubModels";
 import type { Routes } from "../screens";
 import { allowFontScaling, useColors, useTextScale } from "../ui";
-import { STATE_ORDER, type SubagentFilter, type SubagentListItem, subagentListItems, subagentListKey } from "./subagentList";
+import { type SubagentFilter, type SubagentListItem, subagentListItems, subagentListKey } from "./subagentList";
 import {
 	countLabel,
 	flattenSubagents,
 	SEARCH_AFTER,
+	STATE_ORDER,
 	type SubagentRow,
 	type SubagentState,
 	sameModel,
@@ -58,10 +59,11 @@ export function SubagentsScreen({ route, navigation }: NativeStackScreenProps<Ro
 	);
 
 	const modelName = useModelNames(hubId);
+	// A subagent's screen is its session (ruling 30): the session route until
+	// PR 3's "Subagent" screen, which adds the coordinator's stop controls.
 	const openRow = useCallback(
-		(row: SubagentRow) =>
-			navigation.navigate("Subagent", { hubId, ref: row.ref, title: row.title, coordinator: { ref, threadId, title } }),
-		[navigation, hubId, ref, threadId, title],
+		(row: SubagentRow) => navigation.navigate("Conversation", { hubId, ref: row.ref, title: row.title }),
+		[navigation, hubId],
 	);
 
 	const count = countLabel(tally.total, snapshot.partial);

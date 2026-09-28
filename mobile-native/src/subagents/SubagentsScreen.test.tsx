@@ -197,14 +197,15 @@ it("reads a failure, a nested subagent, another model, a branch and tokens on th
 	expect(shown).toContain("6m");
 });
 
-it("opens a subagent's own session over its coordinator", async () => {
+// A subagent's screen is its session (ruling 30). Until PR 3's "Subagent"
+// screen lands, a row opens it on the session route every navigator has.
+it("opens a subagent's own session", async () => {
 	const tree = await mount();
 	act(() => pressable(tree, "Fix race in tree settle, Failed, go test exited 1 (3 times), 6 minutes")?.props.onPress());
-	expect(navigation.navigate).toHaveBeenCalledWith("Subagent", {
+	expect(navigation.navigate).toHaveBeenCalledWith("Conversation", {
 		hubId: "hub-1",
 		ref: "local:race",
 		title: "Fix race in tree settle",
-		coordinator: COORDINATOR,
 	});
 });
 
