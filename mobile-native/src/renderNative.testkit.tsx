@@ -12,6 +12,7 @@ import { createElement, type ReactElement, type ReactNode } from "react";
 import {
 	act,
 	create,
+	type ReactTestInstance,
 	type ReactTestRenderer,
 	type ReactTestRendererJSON,
 } from "react-test-renderer";
@@ -261,4 +262,17 @@ export function renderedText(tree: ReactTestRenderer): string {
 	if (Array.isArray(json)) for (const node of json) visit(node);
 	else visit(json);
 	return chunks.join(" ");
+}
+
+/** The first mounted Pressable whose accessibility label is `label`, found
+ * the way VoiceOver finds a button; undefined when there is none. */
+export function pressable(
+	tree: ReactTestRenderer,
+	label: string,
+): ReactTestInstance | undefined {
+	return tree.root.findAll(
+		(node) =>
+			String(node.type) === "Pressable" &&
+			node.props.accessibilityLabel === label,
+	)[0];
 }

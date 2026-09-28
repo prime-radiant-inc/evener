@@ -1,6 +1,6 @@
 import { act } from "react-test-renderer";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import { render, renderHook, renderedText } from "./renderNative.testkit";
+import { pressable, render, renderHook, renderedText } from "./renderNative.testkit";
 import { TOAST_ACTION_MS, TOAST_MS, Toast, useToast } from "./Toast";
 
 const announce = vi.hoisted(() => vi.fn());
@@ -62,14 +62,28 @@ it("runs the action and dismisses when its button is pressed", () => {
 		<Toast toast={{ id: 1, text: "Session archived", action: { label: "Undo", run } }} dismiss={dismiss} />,
 	);
 	expect(renderedText(tree)).toContain("Session archived");
-	const undo = tree.root.find(
-		(node) => String(node.type) === "Pressable" && node.props.accessibilityLabel === "Undo",
-	);
-	act(() => undo.props.onPress());
+	act(() => pressable(tree, "Undo")?.props.onPress());
 	expect(run).toHaveBeenCalledOnce();
 	expect(dismiss).toHaveBeenCalledOnce();
 });
 
 it("renders nothing without a toast", () => {
 	expect(render(<Toast toast={null} dismiss={() => {}} />).toJSON()).toBeNull();
+});
+
+it("dismisses before running the action, so a follow-up toast the action shows survives the same batch", () => {
+	let controller!: ReturnType<typeof useToast>;
+	function Harness() {
+		controller = useToast();
+		return <Toast toast={controller.toast} dismiss={controller.dismiss} />;
+	}
+	const tree = render(<Harness />);
+	act(() =>
+		controller.show({
+			text: "Session archived",
+			action: { label: "Undo", run: () => controller.show({ text: "Restored" }) },
+		}),
+	);
+	act(() => pressable(tree, "Undo")?.props.onPress());
+	expect(renderedText(tree)).toContain("Restored");
 });
