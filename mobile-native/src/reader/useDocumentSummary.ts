@@ -19,6 +19,9 @@ export function useDocumentSummary(
 		() => knownSummary(hubId, sessionRef, path, updatedAt),
 	);
 	useEffect(() => {
+		// Until the hub's profile loads there's nowhere to read from, and a read
+		// against no origin would stand in for the real one.
+		if (origin === "") return;
 		const entry = summaryEntry(hubId, origin, sessionRef, path, updatedAt);
 		setSummary(entry.summary ?? null);
 		if (entry.summary) return;

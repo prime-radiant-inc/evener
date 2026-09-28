@@ -3,7 +3,7 @@
 // per document and shared by every chip that shows it.
 import { act, type ReactTestRenderer } from "react-test-renderer";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { pressable, render, renderedText } from "../renderNative.testkit";
+import { render, renderedText } from "../renderNative.testkit";
 import { DocumentChip } from "./DocumentChip";
 import { DocumentMemory } from "./documentMemory";
 import { forgetDocumentSummaries } from "./documentSummaries";
@@ -123,6 +123,21 @@ it("reads a document once for every chip that shows it", async () => {
 	chip();
 	await settle();
 	expect(fetchSpy).toHaveBeenCalledOnce();
+});
+
+it("waits for the hub's origin before it reads, then reads from it", async () => {
+	harness.connection = { profiles: [], state: "connecting" };
+	const first = chip();
+	await settle();
+	expect(fetchSpy).not.toHaveBeenCalled();
+	harness.connection = { profiles: [{ id: "studio", name: "Studio", origin: "https://hub.test" }], state: "ready" };
+	act(() =>
+		first.update(<DocumentChip hubId="studio" sessionRef="local:fix" path={PATH} onOpen={() => {}} />),
+	);
+	await settle();
+	expect(fetchSpy).toHaveBeenCalledOnce();
+	expect(String(fetchSpy.mock.calls[0]?.[0])).toMatch(/^https:\/\/hub\.test\/doc\/file/);
+	expect(renderedText(first)).toContain("Fix the settle/drain race");
 });
 
 it("keeps the file name after a failed read, and reads again when a chip mounts next", async () => {
