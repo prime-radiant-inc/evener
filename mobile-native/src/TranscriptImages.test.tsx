@@ -1,7 +1,7 @@
 import type { ReactNode } from "react";
 import { act, type ReactTestInstance } from "react-test-renderer";
 import { describe, expect, it, vi } from "vitest";
-import { render, renderedText } from "./renderNative.testkit";
+import { flatListCalls, render, renderedText } from "./renderNative.testkit";
 import { TranscriptImages } from "./TranscriptImages";
 
 vi.mock("react-native", async () => ({
@@ -58,3 +58,24 @@ describe("a row of images (spec 8.2)", () => {
 		expect(pager(tree.root)).toBeUndefined();
 	});
 });
+
+describe("the viewer with VoiceOver", () => {
+	it("moves between images without a swipe: swipe up or down on it", () => {
+		const tree = render(<TranscriptImages images={images} hubId="hub-1" />);
+		act(() => thumbnails(tree.root)[0].props.onPress());
+		const list = pager(tree.root);
+		expect(list.props.accessibilityRole).toBe("adjustable");
+		expect(list.props.accessibilityValue).toEqual({ text: "Image 1 of 2" });
+		expect(list.props.accessibilityActions.map((action: { name: string }) => action.name)).toEqual(["increment", "decrement"]);
+		flatListCalls.length = 0;
+		act(() => list.props.onAccessibilityAction({ nativeEvent: { actionName: "increment" } }));
+		expect(renderedText(tree)).toContain("2 of 2");
+		expect(flatListCalls).toEqual([{ method: "scrollToIndex", args: { index: 1, animated: true } }]);
+		// It stops at the last image rather than wrapping.
+		act(() => pager(tree.root).props.onAccessibilityAction({ nativeEvent: { actionName: "increment" } }));
+		expect(renderedText(tree)).toContain("2 of 2");
+		act(() => pager(tree.root).props.onAccessibilityAction({ nativeEvent: { actionName: "decrement" } }));
+		expect(renderedText(tree)).toContain("1 of 2");
+	});
+});
+
