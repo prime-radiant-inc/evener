@@ -853,8 +853,10 @@ waitLoop:
 	case <-observerLinkDone:
 		// Observer links completed in time.
 	case <-observerDeadline.C():
-		// Timeout waiting for observer links. This is best-effort, so we don't fail.
-		// Just log and continue.
+		// Timeout waiting for observer links. This is best-effort, so we don't
+		// fail the close; the dropped wait is reported so a blocked metadata
+		// writer is not silently indistinguishable from a clean drain.
+		jm.warnObserverLinkTimeout("close")
 	}
 
 	return errors.Join(watchCleanupErr, waitErr)
@@ -902,8 +904,25 @@ func (jm *jobManager) releaseQuiescentRuntime() error {
 	select {
 	case <-observerDone:
 	case <-deadline.C():
+		jm.warnObserverLinkTimeout("quiescent release")
 	}
 	return jm.closeStoreOnly()
+}
+
+// warnObserverLinkTimeout reports that the named bounded shutdown wait for
+// observer-link metadata persistence expired. The wait stays best-effort: the
+// diagnostic does not fail the close, extend the deadline, or block shutdown.
+// It exists so a slow or blocked metadata writer is not reported as a clean
+// drain, and the phase names which shutdown path gave up. Observer-link
+// metadata is UI/discovery state, not delegate result authority, so one warning
+// per shutdown is the whole obligation.
+func (jm *jobManager) warnObserverLinkTimeout(phase string) {
+	if jm == nil || jm.emit == nil {
+		return
+	}
+	jm.emit(events.EventWarning, events.WarningData{
+		Message: fmt.Sprintf("job manager %s timed out waiting for observer-link metadata", phase),
+	}, nil)
 }
 
 // hasRuntimeObligationsLocked is the single definition of the work
