@@ -57,7 +57,11 @@ export function useReadRetry({
 			const settle = () => {
 				if (attempt !== generation.current) return;
 				inFlight.current = false;
-				if (readStatus() !== "open") setFailures((count) => count + 1);
+				// Only a retry that left the store on an error counts. One that a
+				// newer read took over ("opening") doesn't: if that read fails too,
+				// the status turns back to "error" and the retry re-arms at the
+				// same step.
+				if (readStatus() === "error") setFailures((count) => count + 1);
 			};
 			resume().then(settle, settle);
 		}, reconnectDelay(failures - 1));

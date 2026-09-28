@@ -76,3 +76,24 @@ it("lets an old session's late retry count for nothing, and never block the new 
 		pending[1]?.();
 	});
 });
+
+it("doesn't count a retry that finished while a newer read was still opening", async () => {
+	const state = { status: "error" as ConversationStatus };
+	// Another read (the screen's own resume on focus, say) takes over while
+	// this retry is out: the store reads "opening" when the retry settles.
+	const resume = vi.fn(async () => {
+		state.status = "opening";
+	});
+	const hook = renderHook(() =>
+		useReadRetry({ status: state.status, active: true, resetKey: "ref-1", readStatus: () => state.status, resume }),
+	);
+	await advance(0);
+	expect(resume).toHaveBeenCalledTimes(1);
+	expect(hook.result.current).toBe(1);
+	// That newer read fails: the retry re-arms at the same step.
+	state.status = "error";
+	hook.rerender();
+	await advance(0);
+	expect(resume).toHaveBeenCalledTimes(2);
+	hook.unmount();
+});

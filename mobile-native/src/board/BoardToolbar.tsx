@@ -1,19 +1,9 @@
 import type { ConnectionState } from "@evener/appwire-client";
 import { SymbolView } from "expo-symbols";
-import { useEffect, useState } from "react";
 import { Platform, Pressable, Text, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useColors, useTextScale } from "../ui";
-import { connectionStatus, OFFLINE_AFTER_MS, RECONNECTING_AFTER_MS } from "./connectionStatus";
-
-const MINUTE = 60_000;
-
-interface Down {
-	since: number;
-	/** When the toolbar last saw the connection live, or null when it never
-	 * has this launch. */
-	lastLiveAt: number | null;
-}
+import { useConnectionStatusText } from "./connectionStatus";
 
 /** The Board's bottom toolbar (spec 7.1): the connection status in the
  * middle, and New session on the trailing side. Select arrives in PR 4. */
@@ -31,36 +21,7 @@ export function BoardToolbar({
 	const { palette } = useColors();
 	const scale = useTextScale();
 	const { bottom } = useSafeAreaInsets();
-	const live = state === "ready";
-	const [down, setDown] = useState<Down | null>(() => (live ? null : { since: Date.now(), lastLiveAt: null }));
-	const [now, setNow] = useState(Date.now);
-	// The status depends on elapsed time, so while the connection is down the
-	// toolbar re-renders at the 2-second and 30-second marks and then once a
-	// minute for the age. A live Board runs no clock.
-	useEffect(() => {
-		if (live) {
-			setDown(null);
-			return () => {
-				const at = Date.now();
-				setDown({ since: at, lastLiveAt: at });
-				setNow(at);
-			};
-		}
-		const tick = () => setNow(Date.now());
-		let minutes: ReturnType<typeof setInterval> | undefined;
-		const timers = [
-			setTimeout(tick, RECONNECTING_AFTER_MS),
-			setTimeout(() => {
-				tick();
-				minutes = setInterval(tick, MINUTE);
-			}, OFFLINE_AFTER_MS),
-		];
-		return () => {
-			for (const timer of timers) clearTimeout(timer);
-			if (minutes !== undefined) clearInterval(minutes);
-		};
-	}, [live]);
-	const status = connectionStatus(state, fatal, down?.since ?? null, down?.lastLiveAt ?? null, now);
+	const status = useConnectionStatusText(state, fatal);
 	return (
 		<View
 			style={{

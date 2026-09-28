@@ -19,6 +19,7 @@ import {
 	truncateText,
 	type MobileTimelineItem,
 } from "./projectedRows";
+import { errorAction } from "./session/errorAction";
 import { TimelineItem } from "./TimelineItem";
 import { Platform } from "react-native";
 import { alertRequests, render, renderedText, textOf } from "./renderNative.testkit";
@@ -451,5 +452,213 @@ describe("a run in the transcript", () => {
 		const tree = render(<TimelineItem item={run} hubId="hub" sessionRef="run-live" live />);
 		expect(header(tree.root)).toBeUndefined();
 		expect(renderedText(tree)).toContain("agent/session.go");
+	});
+});
+
+function texts(root: ReactTestInstance) {
+	return root.findAll((node) => String(node.type) === "Text");
+}
+
+describe("a settled thought", () => {
+	const thought = (durationMs?: number): TimelineRow => ({
+		kind: "activity",
+		id: "r-1",
+		label: "Reasoning",
+		family: "reasoning",
+		state: "completed",
+		detail: { output: "Weigh the options first.", ...(durationMs === undefined ? {} : { durationMs }) },
+	});
+
+	it("reads how long it took, folded, and opens to the thought", () => {
+		const tree = render(<TimelineItem item={thought(12_000)} hubId="hub" sessionRef="thought-open" />);
+		const line = tree.root.findAll((node) => node.props.accessibilityRole === "button")[0];
+		expect(textOf(line)).toBe("Thought for 12s ›");
+		expect(renderedText(tree)).not.toContain("Weigh the options first.");
+		act(() => line.props.onPress());
+		expect(renderedText(tree)).toContain("Weigh the options first.");
+	});
+
+	it("says only that it thought when the length is unknown", () => {
+		const tree = render(<TimelineItem item={thought()} hubId="hub" sessionRef="thought-plain" />);
+		expect(textOf(tree.root.findAll((node) => node.props.accessibilityRole === "button")[0])).toBe("Thought ›");
+	});
+
+	it("reads a thought it can't show as one quiet line, with no rule", () => {
+		const row: TimelineRow = { kind: "failure", id: "r-2", title: "Thought not shown", detail: "", thought: true };
+		const tree = render(<TimelineItem item={row} hubId="hub" sessionRef="thought-hidden" />);
+		expect(renderedText(tree)).toContain("Thought not shown");
+		expect(tree.root.findAll((node) => node.props.style?.borderLeftWidth !== undefined)).toEqual([]);
+		expect(texts(tree.root).find((node) => textOf(node) === "Thought not shown")?.props.style).toMatchObject({ color: INK_LOW });
+	});
+});
+
+describe("a subagent", () => {
+	const ALIVE = "#189A4D";
+	const DANGER = "#E3474C";
+	const EDGE_STRONG = "#B7B6AC";
+	const row = (state: "running" | "failed" | "completed"): TimelineRow => ({
+		kind: "activity",
+		id: "item-1",
+		label: "delegate",
+		family: "tool",
+		state,
+		detail: { callId: "call-1", description: "Audit the store" },
+	});
+	const delegate = {
+		delegateId: "d1",
+		ownerSessionId: "s0",
+		rootSessionId: "s0",
+		childSessionId: "s1",
+		transcriptRef: "local:child-1",
+		type: "delegate",
+		lifecycle: "running",
+		phase: "running",
+		status: "running",
+		resumable: false,
+		needsAttention: false,
+		projectionRevision: 1,
+		description: "Audit the store",
+		originItemId: "item-1",
+		runningForMs: 60_000,
+	};
+	const rail = (root: ReactTestInstance) =>
+		root.findAll((node) => node.props.style?.borderLeftWidth === 2)[0]?.props.style.borderLeftColor;
+
+	it("rails its row in its state's hue", () => {
+		expect(rail(render(<TimelineItem item={row("running")} hubId="hub" sessionRef="s" delegates={[delegate]} />).root)).toBe(ALIVE);
+		expect(rail(render(<TimelineItem item={row("failed")} hubId="hub" sessionRef="s" />).root)).toBe(DANGER);
+		expect(rail(render(<TimelineItem item={row("completed")} hubId="hub" sessionRef="s" />).root)).toBe(EDGE_STRONG);
+	});
+
+	it("is a full 44pt target even with no activity line", () => {
+		const done = { ...delegate, status: "completed", terminal: true };
+		const tree = render(
+			<TimelineItem item={row("completed")} hubId="hub" sessionRef="s" delegates={[done]} openSubagent={() => {}} />,
+		);
+		expect(tree.root.findAll((node) => node.props.accessibilityRole === "button")[0].props.style).toMatchObject({ minHeight: 44 });
+	});
+
+	it("opens the subagent's own transcript when pressed", () => {
+		const openSubagent = vi.fn();
+		const tree = render(
+			<TimelineItem item={row("running")} hubId="hub" sessionRef="s" delegates={[delegate]} openSubagent={openSubagent} />,
+		);
+		expect(renderedText(tree)).toContain("running · 1m");
+		tree.root.findAll((node) => node.props.accessibilityRole === "button")[0].props.onPress();
+		expect(openSubagent).toHaveBeenCalledWith("local:child-1", "Audit the store");
+	});
+});
+
+describe("a question you answered", () => {
+	const row: TimelineRow = {
+		kind: "activity",
+		id: "ask-1",
+		label: "ask_user",
+		family: "tool",
+		state: "completed",
+		detail: {
+			arguments: JSON.stringify({
+				questions: [{ header: "Choice", question: "Keep or drop the implied options?", options: [{ label: "Drop them", detail: "" }] }],
+			}),
+		},
+	};
+
+	it("shows the question with your answer beneath", () => {
+		const tree = render(<TimelineItem item={row} hubId="hub" sessionRef="s" answerFor={() => "Drop them"} />);
+		expect(renderedText(tree)).toContain("Keep or drop the implied options?");
+		expect(renderedText(tree)).toContain("You answered: Drop them");
+	});
+
+	it("shows the question alone while it has no answer", () => {
+		const tree = render(<TimelineItem item={row} hubId="hub" sessionRef="s" answerFor={() => undefined} />);
+		expect(renderedText(tree)).toContain("Keep or drop the implied options?");
+		expect(renderedText(tree)).not.toContain("You answered");
+	});
+});
+
+describe("a system event", () => {
+	const notice = (over: Partial<Extract<TimelineRow, { kind: "notice" }>> = {}): TimelineRow => ({
+		kind: "notice",
+		id: "n-1",
+		origin: "system",
+		family: "lifecycle",
+		tone: "info",
+		text: "Context compacted · 412K → 38K tokens",
+		...over,
+	});
+
+	it("reads quietly beside a diamond", () => {
+		const tree = render(<TimelineItem item={notice()} hubId="hub" sessionRef="event" />);
+		const diamond = tree.root.findAllByType("SymbolView" as never)[0];
+		expect([diamond?.props.name, diamond?.props.tintColor]).toEqual(["diamond", INK_LOW]);
+		expect(texts(tree.root).find((node) => textOf(node) === "Context compacted · 412K → 38K tokens")?.props.style).toMatchObject({
+			fontSize: 13,
+			lineHeight: 18,
+			color: INK_LOW,
+		});
+	});
+
+	it("is a full 44pt target to open", () => {
+		const tree = render(<TimelineItem item={notice()} hubId="hub" sessionRef="event-target" />);
+		const target = tree.root.findAll((node) => node.props.accessibilityRole === "button")[0];
+		expect(target.props.style).toMatchObject({ minHeight: 44 });
+	});
+
+	it("opens a labelled steering notice's text", () => {
+		const reminder = notice({ origin: "steering", steeringKind: "task-nudge", text: "Remember the open task." });
+		const tree = render(<TimelineItem item={reminder} hubId="hub" sessionRef="event-open" />);
+		expect(renderedText(tree)).toContain("Task reminder");
+		expect(renderedText(tree)).not.toContain("Remember the open task.");
+		act(() => tree.root.findAll((node) => node.props.accessibilityRole === "button")[0].props.onPress());
+		expect(renderedText(tree)).toContain("Remember the open task.");
+	});
+});
+
+describe("an error", () => {
+	const DANGER_INK = "#C51D23";
+	const failure = (detail: string, turnId = "turn_2"): TimelineRow => ({
+		kind: "failure",
+		id: `failure:${turnId}`,
+		title: "The turn failed",
+		detail,
+		turnId,
+	});
+	const session = (resumeRequired = false) => ({ resumeRequired, turns: [{ id: "turn_1" }, { id: "turn_2" }] as never });
+	function show(row: TimelineRow, resumeRequired = false) {
+		const onErrorAction = vi.fn();
+		const tree = render(
+			<TimelineItem
+				item={row}
+				hubId="hub"
+				sessionRef="error"
+				errorActionFor={(failed) => errorAction(failed, session(resumeRequired), true)}
+				onErrorAction={onErrorAction}
+			/>,
+		);
+		const buttons = tree.root.findAll((node) => node.props.accessibilityRole === "button" && typeof node.props.onPress === "function");
+		return { tree, onErrorAction, buttons };
+	}
+
+	it("draws a red rule, the title and the detail", () => {
+		const { tree } = show(failure("go test exited 1"));
+		expect(tree.root.findAll((node) => node.props.style?.borderLeftWidth === 2)[0]?.props.style.borderLeftColor).toBe(DANGER_INK);
+		expect(texts(tree.root).find((node) => textOf(node) === "The turn failed")?.props.style).toMatchObject({ fontWeight: "600", fontSize: 15 });
+		expect(renderedText(tree)).toContain("go test exited 1");
+	});
+
+	it("offers Sign in for an expired sign-in", () => {
+		const { buttons, onErrorAction } = show(failure("401 Unauthorized"));
+		expect(buttons.map((button) => button.props.accessibilityLabel)).toEqual(["Sign in"]);
+		buttons[0].props.onPress();
+		expect(onErrorAction).toHaveBeenCalledWith("signIn");
+	});
+
+	it("offers Resume on a paused session", () => {
+		expect(show(failure("go test exited 1"), true).buttons.map((button) => button.props.accessibilityLabel)).toEqual(["Resume"]);
+	});
+
+	it("offers Retry under the latest turn only", () => {
+		expect(show(failure("go test exited 1")).buttons.map((button) => button.props.accessibilityLabel)).toEqual(["Retry"]);
+		expect(show(failure("go test exited 1", "turn_1")).buttons).toEqual([]);
 	});
 });

@@ -295,3 +295,81 @@ func TestAppendBatchFailClosedDistinguishesClosedFromRecorded(t *testing.T) {
 		t.Fatalf("synced appendBatch on a closed writer = (retained %v, err %v), want ErrWriterClosed", retained, err)
 	}
 }
+
+// RetainedUnsyncedError boundary: a retained record's durability debt is not
+// permanent. AppendSynced adopts it (returns *RetainedUnsyncedError) when its
+// own fsync, its rollback, and the recovery barrier all fail; a LATER,
+// unfaulted EstablishDurability call (an owner's periodic barrier, or the
+// next successful append's own fsync) settles the debt without touching the
+// file again. Durable ops after the header: Seek 4, Write 5, Sync 6 (fault),
+// rollback Truncate 7 (fault), barrier Sync 9 (fault) -- matching
+// TestAppendSyncedReportsRetainedUnsyncedForAdoptionWithoutDuplication. Every
+// op past 9 is unfaulted.
+func TestRetainedUnsyncedRecordIsSettledByALaterSuccessfulFsync(t *testing.T) {
+	plan := faultPlan(6)
+	plan[7] = 0x00 // rollback truncate fails: the whole line stays
+	plan[9] = 0x00 // recovery barrier fsync fails: durability unestablished
+	base := afero.NewMemMapFs()
+	w, err := newWriterFS(fault.FS(base, fault.FromBytes(plan)), faultTranscriptPath, faultTestHeader(), true)
+	if err != nil {
+		t.Fatalf("newWriterFS: %v", err)
+	}
+	err = w.AppendSynced(schema.NewTurn(schema.TurnUserInput, llm.User("retained, settled later")))
+	if !errors.Is(err, ErrRetainedUnsynced) {
+		t.Fatalf("AppendSynced error = %v, want ErrRetainedUnsynced", err)
+	}
+	if !w.dirty {
+		t.Fatal("setup: a retained record must leave the writer dirty (durability owed)")
+	}
+	// A later barrier call, past every faulted op, succeeds and settles the debt.
+	if err := w.EstablishDurability(); err != nil {
+		t.Fatalf("later EstablishDurability = %v, want nil: the barrier eventually succeeds", err)
+	}
+	if w.dirty {
+		t.Fatal("a successful later barrier left the writer dirty; the debt should be settled")
+	}
+	if entries := faultTestEntries(t, base); len(entries) != 1 {
+		t.Fatalf("entries = %d, want the one record, still not duplicated after settling", len(entries))
+	}
+}
+
+// RetainedUnsyncedError boundary: a crash between adoption and the next fsync.
+// The retained record is a whole line in the file (a returning reader finds
+// it) even though the process that adopted it never gets to fsync again.
+// Reopening the file (openWriterFS, the resume path a restart takes) must
+// find the entry exactly once: resume's own recovery (the tail's framed scan
+// and its own EstablishDurability-equivalent) neither drops it nor duplicates
+// it, and the reopened writer's next Seq continues past it.
+func TestRetainedUnsyncedRecordSurvivesACrashBeforeTheNextFsync(t *testing.T) {
+	plan := faultPlan(6)
+	plan[7] = 0x00 // rollback truncate fails: the whole line stays
+	plan[9] = 0x00 // recovery barrier fsync fails: durability unestablished
+	base := afero.NewMemMapFs()
+	w, err := newWriterFS(fault.FS(base, fault.FromBytes(plan)), faultTranscriptPath, faultTestHeader(), true)
+	if err != nil {
+		t.Fatalf("newWriterFS: %v", err)
+	}
+	err = w.AppendSynced(schema.NewTurn(schema.TurnUserInput, llm.User("retained across a crash")))
+	if !errors.Is(err, ErrRetainedUnsynced) {
+		t.Fatalf("AppendSynced error = %v, want ErrRetainedUnsynced", err)
+	}
+	// A crash: the process never closes w, and never fsyncs again. Reopen the
+	// same underlying file directly (no Close on w), as a restart would.
+	reopened, err := openWriterFS(base, faultTranscriptPath)
+	if err != nil {
+		t.Fatalf("openWriterFS after a crash: %v", err)
+	}
+	entries := faultTestEntries(t, base)
+	if len(entries) != 1 {
+		t.Fatalf("entries after reopen = %d, want the retained entry exactly once", len(entries))
+	}
+	if got := entries[0].Turn.Kind; got != schema.TurnUserInput {
+		t.Fatalf("recovered entry kind = %s, want %s", got, schema.TurnUserInput)
+	}
+	if err := reopened.Append(schema.NewTurn(schema.TurnAssistant, llm.Assistant("after reopen"))); err != nil {
+		t.Fatalf("Append after reopen: %v", err)
+	}
+	if entries := faultTestEntries(t, base); len(entries) != 2 {
+		t.Fatalf("entries after reopen and one more append = %d, want 2 (no duplicate of the retained one)", len(entries))
+	}
+}

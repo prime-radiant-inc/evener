@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -19,6 +18,7 @@ import (
 	"primeradiant.com/evener/cmd/evener-tui/internal/tuipick"
 	"primeradiant.com/evener/internal/transcriptindex"
 	"primeradiant.com/evener/llm"
+	"primeradiant.com/evener/llm/registry"
 )
 
 type hubTreeMsg struct {
@@ -697,20 +697,19 @@ func logoutHubAuth(client *appwire.Client, provider string) tea.Cmd {
 	}
 }
 
-// datedSnapshotSuffix and prettifyModelDisplayName are duplicated from the hub
-// model-picker implementation in cmd/evener-hub/app_models.go because the TUI
-// and hub are separate binaries.
-var datedSnapshotSuffix = regexp.MustCompile(`-\d{8}(-v\d+)?$`)
-
+// isDatedSnapshotModelID reports whether a model id names a dated snapshot
+// rather than a family. The rule is the registry's own — one implementation
+// covering "-YYYYMMDD", Bedrock's "-vN:N" revision and Vertex's "@YYYYMMDD" —
+// so the TUI picker cannot disagree with resolution about what is dated.
 func isDatedSnapshotModelID(ref string) bool {
 	if i := strings.LastIndex(ref, "/"); i >= 0 {
 		ref = ref[i+1:]
 	}
-	return datedSnapshotSuffix.MatchString(ref)
+	return registry.StripDatedSuffix(ref) != ref
 }
 
 func prettifyModelDisplayName(id string) string {
-	base := datedSnapshotSuffix.ReplaceAllString(id, "")
+	base := registry.StripDatedSuffix(id)
 	segments := strings.Split(base, "-")
 	for idx, seg := range segments {
 		if seg == "" {

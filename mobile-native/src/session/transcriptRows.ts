@@ -5,7 +5,7 @@
 //   (ruling 10);
 // - a time marker introduces the first turn, a turn that starts after ten
 //   quiet minutes, and a new day.
-import { parseArgs, str, type TurnModel } from "@evener/appwire-client";
+import { answeredAskUserSuffix, parseArgs, str, type ThreadModel, type TurnModel } from "@evener/appwire-client";
 import { hubTime } from "../board/attention";
 import { readerKey } from "../readerPosition";
 import { type RunStep, rowTurnId, type TimelineRow } from "../timeline";
@@ -72,6 +72,32 @@ export function sessionRows(rows: readonly TimelineRow[], turns: readonly TurnTi
 		out.push(row);
 	}
 	return out;
+}
+
+/** Drops the "[answers]" message you sent a question, once a question row
+ * came before it: that row shows your answer beneath the question (spec 8.2,
+ * "Question (history)"). A message that merely starts with "[answers]" and
+ * answers nothing on screen stays. */
+export function hideAnswerMessages(rows: readonly TimelineRow[]): TimelineRow[] {
+	let asked = false;
+	return rows.filter((row) => {
+		if (row.kind === "activity" && row.label === "ask_user") asked = true;
+		return !(asked && row.kind === "user" && row.text.startsWith("[answers]\n"));
+	});
+}
+
+/** Your answer to the question the ask_user item `itemId` asked, for its
+ * history row ("You answered: Drop them"), or undefined before you answer.
+ * The package's suffix reads " — answered: Drop them"; the row wants the
+ * answer alone. */
+export function answerTo(model: Pick<ThreadModel, "turns"> | null, itemId: string): string | undefined {
+	if (!model) return undefined;
+	for (const turn of model.turns) {
+		const item = turn.items.find((candidate) => candidate.id === itemId);
+		if (!item) continue;
+		return answeredAskUserSuffix(model as ThreadModel, item)?.replace(/^ \u2014 answered: /, "");
+	}
+	return undefined;
 }
 
 /** The run that is still growing: the last run of the turn in progress. A

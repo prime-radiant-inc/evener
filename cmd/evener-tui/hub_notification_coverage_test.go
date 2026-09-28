@@ -51,6 +51,9 @@ var notifyMethodsDeliberatelyIgnored = []string{
 	// unwrapped as the underlying method and is dispatched above — so there is no
 	// case to give it.
 	appwire.NotifyEvenerHostNotification,
+	// Hub notices (S11) are the phone's and web's Board rows. The TUI shows no
+	// notices; its provider and host screens read their own status.
+	appwire.NotifyEvenerNoticesChanged,
 }
 
 // kata e79v: evener/thread/modelRetry was added to the catalog and the TUI ignored
