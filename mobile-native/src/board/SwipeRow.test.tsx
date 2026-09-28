@@ -115,6 +115,32 @@ it("keeps a full swipe decided at release when a new touch lands while the row s
 	expect(swipeableCalls.closes).toBe(2);
 });
 
+it("forgets a finished swipe's drag when a new touch begins, so a touch with no drag never acts", () => {
+	const { leading, tracker, touchStart, release, open } = mount();
+	touchStart(200);
+	release(250);
+	open("right");
+	expect(leading.run).toHaveBeenCalledOnce();
+	act(() => tracker?.handlers.onBegin?.());
+	open("right");
+	expect(leading.run).toHaveBeenCalledOnce();
+	expect(swipeableCalls.closes).toBe(2);
+});
+
+it("decides at will-open, so a release the tracker reports later never undoes a full swipe", () => {
+	const { swipeable, leading, tracker, touchStart } = mount();
+	touchStart(200);
+	act(() => {
+		tracker?.handlers.onBegin?.();
+		tracker?.handlers.onUpdate?.({ translationX: 250 });
+	});
+	act(() => swipeable.props.onSwipeableWillOpen("right"));
+	act(() => tracker?.handlers.onEnd?.({ translationX: 150, velocityX: 0 }, true));
+	act(() => swipeable.props.onSwipeableOpen("right"));
+	expect(leading.run).toHaveBeenCalledOnce();
+	expect(swipeableCalls.closes).toBe(1);
+});
+
 it("holds its tracker still while the row is switched off", () => {
 	const tree = render(
 		<SwipeRow destructive={{ key: "cancel", label: "Cancel", run: vi.fn() }} enabled={false}>
