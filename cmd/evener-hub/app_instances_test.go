@@ -1312,6 +1312,31 @@ func TestInstances_RemoveRestoresARefreshRefusalMarkerWhenTheConfigWriteFails(t 
 	}
 }
 
+// The marker is a best-effort, self-healing sidecar (the next failed refresh
+// re-notes it), unlike the OAuth record itself, so an unreadable marker must
+// not block a removal the way an unreadable record does.
+func TestInstances_RemoveIgnoresAnUnreadableRefreshRefusalMarker(t *testing.T) {
+	f := newInstancesFixture(t, nil)
+	if err := f.ctl.Create(appwire.InstanceCreateParams{Name: "work", Base: "openai-codex"}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if err := authopenai.SaveAuth(f.stateDir, "work", makeOAuthRecord("work", "")); err != nil {
+		t.Fatalf("SaveAuth: %v", err)
+	}
+	// A directory where the marker file would be: os.ReadFile refuses it with
+	// something other than ErrNotExist.
+	if err := os.MkdirAll(authopenai.RefreshRejectionPath(f.stateDir, "work"), 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+
+	if err := f.ctl.Remove(appwire.InstanceRemoveParams{Name: "work"}); err != nil {
+		t.Fatalf("Remove: %v, want the unreadable marker to be ignored", err)
+	}
+	if _, ok := f.ctl.reg.Get().Instance("work"); ok {
+		t.Fatal("the instance was not removed")
+	}
+}
+
 // The cleanup is two destructive steps, so its own failure has the same
 // asymmetry the config write has: the stored key is deleted before the OAuth
 // record is even attempted, and a failure on the second step leaves the
@@ -3977,6 +4002,50 @@ func TestInstances_EditRenameCarriesARefreshRefusalMarker(t *testing.T) {
 	}
 	if authopenai.RefreshRejected(f.stateDir, "work", moved) {
 		t.Fatal("the old instance name still carries the marker after the rename")
+	}
+}
+
+// If the note can't be carried, the rename must say so rather than silently
+// deleting the old record and its marker: a caller told only "renamed" would
+// have no way to know the sign-in signal was dropped.
+func TestInstances_EditRenameReportsARefreshRefusalMarkerItCouldNotCarry(t *testing.T) {
+	f := newInstancesFixture(t, nil)
+	if err := f.ctl.Create(appwire.InstanceCreateParams{Name: "work", Base: "openai-codex"}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	record := makeOAuthRecord("work", "")
+	if err := authopenai.SaveAuth(f.stateDir, "work", record); err != nil {
+		t.Fatalf("SaveAuth: %v", err)
+	}
+	if err := authopenai.RecordRefreshRejection(f.stateDir, "work", record, time.Now()); err != nil {
+		t.Fatalf("RecordRefreshRejection: %v", err)
+	}
+	// A non-empty directory where the new name's marker would be written: an
+	// empty one would just be removed by the record save's own (unrelated)
+	// best-effort clear of "personal"'s marker before RecordRefreshRejection
+	// ever runs, leaving nothing to obstruct the write it's meant to prove
+	// fails. Non-empty, the clear's os.Remove fails too (harmlessly, since
+	// it's best effort), and the write's rename onto it still fails.
+	markerPath := authopenai.RefreshRejectionPath(f.stateDir, "personal")
+	if err := os.MkdirAll(markerPath, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(markerPath, "child"), []byte("x"), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	err := f.ctl.Edit(appwire.InstanceEditParams{Name: "work", NewName: "personal"})
+	if err == nil || !strings.Contains(err.Error(), "refresh-refusal marker") {
+		t.Fatalf("Edit(rename) = %v, want the refused marker copy reported", err)
+	}
+	// The old record (and its marker) is left in place rather than deleted,
+	// since deleting it would drop the only surviving copy of the marker.
+	old, loadErr := authopenai.LoadAuth(f.stateDir, "work")
+	if loadErr != nil {
+		t.Fatalf("the old OAuth record was deleted even though its marker could not be carried: %v", loadErr)
+	}
+	if !authopenai.RefreshRejected(f.stateDir, "work", old) {
+		t.Fatal("the old instance's own marker was lost")
 	}
 }
 

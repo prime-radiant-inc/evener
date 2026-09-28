@@ -1399,13 +1399,26 @@ func (c *hubInstancesController) moveCredentials(oldName, newName string) error 
 		if err := c.auth.saveAuth(c.auth.stateDir, newName, record); err != nil {
 			problems = append(problems, fmt.Sprintf("OAuth record not copied: %v", err))
 		} else {
+			// The old record (and, if refused, its still-valid old marker)
+			// is deleted only once the new name genuinely carries everything
+			// it needs to: deleting it regardless would drop the marker on
+			// both names at once if copying it failed.
+			markerCarried := true
 			if refused {
 				// Without this, the renamed instance reports signed in and
-				// healthy until its next failed refresh re-notes the refusal.
-				_ = authopenai.RecordRefreshRejection(c.auth.stateDir, newName, record, c.auth.now())
+				// healthy until its next failed refresh re-notes the refusal:
+				// reported like the record copy above, so a caller who reads
+				// "renamed" only for the marker to have silently not followed
+				// it has a way to know.
+				if err := authopenai.RecordRefreshRejection(c.auth.stateDir, newName, record, c.auth.now()); err != nil {
+					markerCarried = false
+					problems = append(problems, fmt.Sprintf("refresh-refusal marker not copied: %v", err))
+				}
 			}
-			if _, err := c.auth.deleteAuth(c.auth.stateDir, oldName); err != nil {
-				problems = append(problems, fmt.Sprintf("OAuth record for %q left behind: %v", oldName, err))
+			if markerCarried {
+				if _, err := c.auth.deleteAuth(c.auth.stateDir, oldName); err != nil {
+					problems = append(problems, fmt.Sprintf("OAuth record for %q left behind: %v", oldName, err))
+				}
 			}
 		}
 	}
@@ -1631,10 +1644,7 @@ func (c *hubInstancesController) Remove(params appwire.InstanceRemoveParams) (er
 	if err != nil {
 		return err
 	}
-	refusalBytes, hasRefusal, err := c.captureRefreshRejectionFile(name)
-	if err != nil {
-		return err
-	}
+	refusalBytes, hasRefusal := c.captureRefreshRejectionFile(name)
 
 	// Whether the config authored this instance is read before the cleanup, so
 	// its failure below is classified by the same question every later branch
@@ -1909,17 +1919,19 @@ func (c *hubInstancesController) captureOAuthFile(name string) ([]byte, bool, er
 // failure can write it back too. DeleteAuth clears the marker once the record
 // delete succeeds, so a rollback that restores only the record would report
 // the instance signed in and healthy even though its refresh token is still
-// permanently refused. A missing marker (the common case: nothing was ever
-// refused) is (nil, false, nil), the same shape captureOAuthFile uses.
-func (c *hubInstancesController) captureRefreshRejectionFile(name string) ([]byte, bool, error) {
+// permanently refused.
+//
+// Unlike captureOAuthFile, an unreadable marker never refuses the removal:
+// the marker is a best-effort, self-healing sidecar of the record (the next
+// failed refresh re-notes it), not the record itself, so losing it is a
+// smaller problem than blocking a removal the user asked for. A missing or
+// unreadable marker is (nil, false), the same shape as no marker at all.
+func (c *hubInstancesController) captureRefreshRejectionFile(name string) ([]byte, bool) {
 	raw, err := os.ReadFile(authopenai.RefreshRejectionPath(c.auth.stateDir, name))
-	if err == nil {
-		return raw, true, nil
+	if err != nil {
+		return nil, false
 	}
-	if errors.Is(err, os.ErrNotExist) {
-		return nil, false, nil
-	}
-	return nil, false, fmt.Errorf("remove %s: read refresh-refusal marker to preserve it: %w", name, err)
+	return raw, true
 }
 
 // removalSupply names the layer an instance resolves from, so a failed
