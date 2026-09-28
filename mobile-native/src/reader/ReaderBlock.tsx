@@ -147,6 +147,8 @@ export interface ReaderBlockProps {
 	onAction?: (action: BlockAction, block: DocumentBlock, words?: string) => void;
 	/** The block's menu opened (its index) or closed (null). */
 	onMenu?: (index: number | null) => void;
+	/** A tap on the block, which ends a selection. */
+	onTap?: () => void;
 }
 
 export const ReaderBlock = memo(function ReaderBlock({
@@ -157,6 +159,7 @@ export const ReaderBlock = memo(function ReaderBlock({
 	commentCount = 0,
 	onAction,
 	onMenu,
+	onTap,
 }: ReaderBlockProps) {
 	const { palette } = useColors();
 	const menu = useMemo<MenuItem[]>(
@@ -188,6 +191,7 @@ export const ReaderBlock = memo(function ReaderBlock({
 		<Pressable
 			testID={`block-${block.index}`}
 			accessible={false}
+			onPress={onTap}
 			onLongPress={() => {
 				onMenu?.(block.index);
 				showMenu(menu, menuPreview(block.text), () => onMenu?.(null));

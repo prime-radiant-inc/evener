@@ -788,6 +788,22 @@ describe("comments (Task 16)", () => {
 		expect(selectable(1)).toBe(false);
 	});
 
+	// The library says nothing when its selection menu closes, so a tap ends
+	// the selection: on another block, or on this one, where a tap is what
+	// dismisses a selection.
+	it("ends a selection when you tap a block", async () => {
+		const { tree } = await mount();
+		const selectable = (index: number) =>
+			block(tree, index).find((node) => String(node.type) === "EnrichedMarkdownText").props.selectable;
+		choose(openMenu(tree, 1), "Select text");
+		expect(selectable(1)).toBe(true);
+		act(() => block(tree, 3).props.onPress());
+		expect(selectable(1)).toBe(false);
+		choose(openMenu(tree, 1), "Select text");
+		act(() => block(tree, 1).props.onPress());
+		expect(selectable(1)).toBe(false);
+	});
+
 	it("keeps a comment whose paragraph changed, without a marker or a Show", async () => {
 		const older = documentBlocks(OLDER)[1];
 		if (!older) throw new Error("no block");

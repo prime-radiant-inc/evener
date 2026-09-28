@@ -347,13 +347,15 @@ export function ReaderScreen({ route, navigation }: NativeStackScreenProps<Route
 	};
 
 	// The block whose menu is open, and the one Select text chose. Pressing
-	// another block ends a selection.
+	// another block ends a selection, and so does a tap on any block: the
+	// markdown view doesn't say when its selection menu closes.
 	const [menuOpen, setMenuOpen] = useState<number | null>(null);
 	const [selecting, setSelecting] = useState<number | null>(null);
 	const onMenu = useCallback((index: number | null) => {
 		setMenuOpen(index);
 		if (index !== null) setSelecting((current) => (current === index ? current : null));
 	}, []);
+	const endSelection = useCallback(() => setSelecting(null), []);
 	const sheetParams = { hubId, sessionRef, path, reviewRef, reviewTitle };
 	// The rows keep one callback; it reaches this render's values through the ref.
 	const act = useRef((_action: BlockAction, _block: DocumentBlock, _words?: string) => {});
@@ -444,6 +446,7 @@ export function ReaderScreen({ route, navigation }: NativeStackScreenProps<Route
 							commentCount={commentCounts.get(item.block.index)}
 							onAction={onAction}
 							onMenu={onMenu}
+							onTap={endSelection}
 						/>
 					) : (
 						<CodeLine number={item.index + 1} text={item.text} lines={lines} />
