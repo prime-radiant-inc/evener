@@ -7,8 +7,10 @@ import { afterAll, afterEach, beforeEach, expect, type MockInstance, test, vi } 
 import { registerPaneForTests } from "../../shell/paneRegistry";
 import { registerDockviewApi, resetWorkspaceStoreForTests } from "../../shell/workspace";
 import { resetThreadsStoreForTests } from "../../stores/threads";
+import { readModuleCss } from "../../styles/cssBlock";
 import { browserDocPort } from "./browserDocPort";
 import DocPane from "./DocPane";
+import docpaneStyles from "./docpane.module.css";
 // Side-effect import: registers the real "doc" pane type (index.tsx), needed
 // below so workspaceStore.openPane("doc", ...) can seed an already-open doc
 // pane to focus away from before testing that Back moves focus back.
@@ -44,6 +46,18 @@ afterEach(() => {
   registerDockviewApi(null); // never leak a fake dockview host to another test
 });
 
+// The doc pane is a reading surface: the Markdown widget composes with its
+// host, so the pane pins the prose step on its own host element or its
+// documents would render at the ambient body step (see the .markdown rule
+// comment in docpane.module.css). jsdom computes no cascade, so this reads
+// the stylesheet's own source. This pins BODY text - headings and tables
+// keep the widget's fixed ramp (see widgets/markdown).
+test("the doc pane's markdown body text reads at the prose step, pinned on the pane's own host element", () => {
+  const css = readModuleCss(import.meta.url, "docpane.module.css").replace(/\/\*[\s\S]*?\*\//g, "");
+  expect(css.match(/--prose-font-size/g)).toHaveLength(1);
+  expect(css).toMatch(/\.markdown\s*\{[^}]*--prose-font-size:\s*var\(--font-size-prose\);/);
+});
+
 function textContent(over: Partial<DocFileContent> = {}): DocFileContent {
   return { text: "", binary: false, mediaType: "text/plain", truncated: false, sizeBytes: 0, ...over };
 }
@@ -66,6 +80,11 @@ test("a markdown file renders through the sanitizing Markdown widget, not a raw 
   // The Markdown widget turns `# Heading` into a real <h1>; a <pre> never would.
   const heading = await screen.findByRole("heading", { name: "Heading" });
   expect(heading.tagName).toBe("H1");
+  // The pin's wiring, not just its CSS: the markdown root must sit inside the
+  // pane's .markdown host element, which carries --prose-font-size. Without
+  // this, a wrapper rename would leave the CSS contract test above green while
+  // the documents silently fall back to the ambient body step.
+  expect(heading.closest(`.${docpaneStyles.markdown}`)).toBeTruthy();
 });
 
 test("a markdown file with raw HTML in the source has it neutralized (sanitizer posture, beyond legacy)", async () => {
