@@ -21,7 +21,7 @@ const REPO_ROOT = join(SRC, "..", "..", "..", "..");
 // setupFiles, so a registration there is as redundant as one in src.
 const ROOTS = [SRC, join(REPO_ROOT, "appwire-client", "typescript")];
 // Generated and dependency trees are not test sources: the AppWire package gets
-// a real node_modules from `npm ci --prefix appwire-client/typescript`, and
+// a real node_modules when its own install runs for the qualification gate, and
 // descending it would slow the scan and read third-party files.
 const SKIPPED_DIRS = new Set(["node_modules", "dist"]);
 // The same file set vite.config.ts's test.include collects: `{test,spec}` with
@@ -42,11 +42,13 @@ function testFilesUnder(dir: string): string[] {
   return files.sort();
 }
 
-// An afterEach whose whole callback is the cleanup call, in any spelling. The
-// block branch allows only whitespace and an optional trailing comma between the
-// braces, so a hook with any other statement does not match.
+// An afterEach whose whole callback is the cleanup call, in any spelling: a bare
+// call, an arrow returning it (sync or async), or a block whose only statement it
+// is. Trailing commas are allowed, and the block branch admits only whitespace, a
+// semicolon, and commas between the braces, so a hook with any other statement
+// does not match.
 const PER_FILE_CLEANUP =
-  /afterEach\(\s*(?:cleanup\s*|\(\s*\)\s*=>\s*(?:cleanup\(\)\s*|{\s*cleanup\(\)\s*;?\s*,?\s*})\s*)\s*\)\s*;?/;
+  /afterEach\(\s*(?:async\s+)?(?:cleanup|\s*\(\s*\)\s*=>\s*(?:cleanup\(\)|{\s*cleanup\(\)\s*;?\s*,?\s*}))\s*,?\s*\)\s*;?/;
 
 // Comments carry prose about cleanup() (and this file names the pattern), so the
 // match runs on a comment-stripped copy.
