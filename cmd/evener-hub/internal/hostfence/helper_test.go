@@ -93,6 +93,65 @@ func TestShellQuote(t *testing.T) {
 	}
 }
 
+// TestWrapperOverridePathIsQuoted pins that a caller-supplied helper path never
+// becomes shell syntax, while the trusted default keeps its remote-HOME
+// expansion.
+// TestGuardHighWaterRetiresOldBoots pins the durable per-boot high-water: an
+// epoch the guard already admitted from that boot never takes over again, even
+// after later boots have settled, while a newer epoch of the same boot still
+// may.
+func TestGuardHighWaterRetiresOldBoots(t *testing.T) {
+	oldA := Epoch{BootID: "boot-a", OpSeq: 1}
+	bootB := Epoch{BootID: "boot-b", OpSeq: 1}
+	bootC := Epoch{BootID: "boot-c", OpSeq: 1}
+	settled := GuardState{
+		Version: 1, GuardEpoch: 6, Epoch: &bootC, Holder: &bootC, Superseded: &bootB,
+		BootHighWater: map[string]uint64{"boot-a": 1, "boot-b": 1, "boot-c": 1},
+	}
+	if _, err := settled.Takeover(oldA); !errors.Is(err, ErrStaleEpoch) {
+		t.Fatalf("Takeover(old boot A epoch) = %v, want ErrStaleEpoch", err)
+	}
+	newerA := Epoch{BootID: "boot-a", OpSeq: 2}
+	next, err := settled.Takeover(newerA)
+	if err != nil {
+		t.Fatalf("Takeover(newer epoch of an old boot) = %v, want success", err)
+	}
+	if got := next.BootHighWater["boot-a"]; got != 2 {
+		t.Fatalf("high-water after takeover = %d, want 2", got)
+	}
+	if err := next.Validate(); err != nil {
+		t.Fatalf("takeover result fails validation: %v", err)
+	}
+	if err := (GuardState{Version: 1, BootHighWater: map[string]uint64{"bad boot": 1}}).Validate(); !errors.Is(err, ErrInvalidGuard) {
+		t.Fatalf("Validate(invalid high-water key) = %v, want ErrInvalidGuard", err)
+	}
+}
+
+func TestWrapperOverridePathIsQuoted(t *testing.T) {
+	for name, path := range map[string]string{
+		"space":    "/tmp/fence dir/evener-fence",
+		"metachar": "/tmp/fence; rm -rf / #",
+		"subshell": "/tmp/$(touch pwned)/fence",
+		"backtick": "/tmp/`touch pwned`/fence",
+	} {
+		takeover, err := Wrapper{Path: path}.TakeoverCommand(Epoch{BootID: "boot-1", OpSeq: 1})
+		if err != nil {
+			t.Fatalf("%s: TakeoverCommand = %v", name, err)
+		}
+		if !strings.HasPrefix(takeover, shellQuote(path)+" ") {
+			t.Errorf("%s: TakeoverCommand = %q, want the path single-quoted whole", name, takeover)
+		}
+		if strings.Contains(takeover, path+" ") && strings.ContainsAny(path, " ;$`") {
+			t.Errorf("%s: TakeoverCommand = %q, want the raw path never interpolated unquoted", name, takeover)
+		}
+	}
+	// The default stays the trusted double-quoted form: the remote shell must
+	// still expand its own HOME.
+	if !strings.HasPrefix(Wrapper{}.VersionCommand(), HelperRemotePath+" ") {
+		t.Errorf("default command = %q, want the expandable default path", Wrapper{}.VersionCommand())
+	}
+}
+
 func TestWrapperCommandsCarryThePresentedEpoch(t *testing.T) {
 	epoch := Epoch{BootID: "boot-1", OpSeq: 7}
 	takeover, err := Wrapper{}.TakeoverCommand(epoch)
@@ -135,7 +194,8 @@ func TestWrapperCommandsCarryThePresentedEpoch(t *testing.T) {
 // emits is refused, never half-understood.
 func TestDecodersValidateHelperJSON(t *testing.T) {
 	statusJSON := `{"version":1,"guardEpoch":4,"epoch":{"bootId":"b1","opSeq":3},` +
-		`"fence":null,"superseded":{"bootId":"b0","opSeq":9},"holder":{"bootId":"b1","opSeq":3},"entries":2}`
+		`"fence":null,"superseded":{"bootId":"b0","opSeq":9},"holder":{"bootId":"b1","opSeq":3},"entries":2,` +
+		`"bootHighWater":{"b1":3}}`
 	status, err := DecodeStatus([]byte(statusJSON))
 	if err != nil {
 		t.Fatalf("DecodeStatus = %v", err)
@@ -165,8 +225,9 @@ func TestDecodeRefusalMapsTypedErrors(t *testing.T) {
 		"busy":          ErrHelperBusy,
 		"state-corrupt": ErrStateCorrupt,
 		"malformed":     ErrMalformed,
+		"io-error":      ErrHelperIO,
 	} {
-		raw := `{"version":1,"refused":true,"error":"` + reason + `","detail":"detail text"}`
+		raw := RefusalPrefix + `{"version":1,"refused":true,"error":"` + reason + `","detail":"detail text"}`
 		err := DecodeRefusal([]byte(raw))
 		if !errors.Is(err, want) {
 			t.Errorf("DecodeRefusal(%s) = %v, want %v", reason, err, want)
@@ -176,11 +237,16 @@ func TestDecodeRefusalMapsTypedErrors(t *testing.T) {
 			t.Errorf("DecodeRefusal(%s) detail lost: %+v", reason, err)
 		}
 	}
-	if err := DecodeRefusal([]byte(`{"version":1,"refused":true,"error":"stale-epoch-typo"}`)); err == nil {
+	if err := DecodeRefusal([]byte(RefusalPrefix + `{"version":1,"refused":true,"error":"stale-epoch-typo"}`)); err == nil {
 		t.Error("DecodeRefusal(unknown reason) = nil error, want refusal")
 	}
 	if err := DecodeRefusal([]byte(`{"version":1,"error":"stale-epoch"}`)); err == nil {
 		t.Error("DecodeRefusal(unmarked refusal) = nil error, want refusal")
+	}
+	// An unprefixed object — what a wrapped command's own stderr looks like — is
+	// never a wrapper refusal.
+	if err := DecodeRefusal([]byte(`{"version":1,"refused":true,"error":"stale-epoch"}`)); !errors.Is(err, ErrMalformed) {
+		t.Errorf("DecodeRefusal(unprefixed) = %v, want ErrMalformed", err)
 	}
 }
 
@@ -222,14 +288,34 @@ func TestDecodeEntriesAndRecheck(t *testing.T) {
 		"unknown state":           `{"version":1,"entries":[{"id":"n","command":"c","registeredAt":"t","ownership":{"nonce":"n"},"state":"gone"}]}`,
 		"empty command":           `{"version":1,"entries":[{"id":"n","command":"","registeredAt":"t","ownership":{"nonce":"n"},"state":"running"}]}`,
 		"unknown field":           `{"version":1,"entries":[{"id":"n","command":"c","registeredAt":"t","ownership":{"nonce":"n"},"state":"running","extra":1}]}`,
+		"version only":            `{"version":1}`,
+		"missing entries array":   `{"version":1,"envelope":[]}`,
+		"null entries":            `{"version":1,"entries":null}`,
+		"entry missing ownership": `{"version":1,"entries":[{"id":"n","command":"c","registeredAt":"t","state":"running"}]}`,
 	}
 	for name, raw := range bad {
 		if _, err := DecodeEntries([]byte(raw)); err == nil {
 			t.Errorf("%s: DecodeEntries = nil error, want refusal", name)
 		}
 	}
-	if _, err := DecodeRecheck([]byte(`{"version":1,"id":"n1","live":"yes"}`)); err == nil {
-		t.Error("DecodeRecheck(bad live) = nil error, want refusal")
+	for name, raw := range map[string]string{
+		"bad live":          `{"version":1,"id":"n1","live":"yes"}`,
+		"version only":      `{"version":1}`,
+		"missing live":      `{"version":1,"id":"n1","state":"running","ownership":{"nonce":"n1"}}`,
+		"missing id":        `{"version":1,"live":true,"state":"running","ownership":{"nonce":"n1"}}`,
+		"missing state":     `{"version":1,"id":"n1","live":true,"ownership":{"nonce":"n1"}}`,
+		"missing own":       `{"version":1,"id":"n1","live":true,"state":"running"}`,
+		"null ownership":    `{"version":1,"id":"n1","live":true,"state":"running","ownership":null}`,
+		"live while exited": `{"version":1,"id":"n1","live":true,"state":"exited","ownership":{"nonce":"n1"}}`,
+	} {
+		if _, err := DecodeRecheck([]byte(raw)); err == nil {
+			t.Errorf("%s: DecodeRecheck = nil error, want refusal", name)
+		}
+	}
+	// A settled guard may still be reported with no live entry, and a recheck
+	// whose entry is gone carries an empty state.
+	if _, err := DecodeRecheck([]byte(`{"version":1,"id":"n1","live":false,"state":"","ownership":{"nonce":"n1"}}`)); err != nil {
+		t.Errorf("DecodeRecheck(absent entry) = %v, want nil", err)
 	}
 }
 
@@ -251,7 +337,7 @@ func (f *fakeRunner) Run(ctx context.Context, command string) (string, string, i
 func TestWrapperTakeoverAdvancesDecodesAndRefuses(t *testing.T) {
 	runner := &fakeRunner{stdout: `{"version":1,"guardEpoch":5,"epoch":{"bootId":"b1","opSeq":3},` +
 		`"fence":{"epoch":{"bootId":"b1","opSeq":4},"superseded":{"bootId":"b1","opSeq":3},"guardEpoch":5},` +
-		`"superseded":null,"holder":{"bootId":"b1","opSeq":4},"entries":1}`}
+		`"superseded":null,"holder":{"bootId":"b1","opSeq":4},"entries":1,"bootHighWater":{"b1":4}}`}
 	wrapper := Wrapper{Runner: runner, Host: "h1"}
 	status, err := wrapper.Takeover(context.Background(), Epoch{BootID: "b1", OpSeq: 4})
 	if err != nil {
@@ -265,7 +351,7 @@ func TestWrapperTakeoverAdvancesDecodesAndRefuses(t *testing.T) {
 	}
 	// A refusal on stderr with a nonzero exit is the typed server-side refusal,
 	// never a decoded success.
-	refusing := &fakeRunner{stderr: `{"version":1,"refused":true,"error":"stale-epoch","detail":"older"}`, exit: 75}
+	refusing := &fakeRunner{stderr: RefusalPrefix + `{"version":1,"refused":true,"error":"stale-epoch","detail":"older"}`, exit: 75}
 	if _, err := (Wrapper{Runner: refusing, Host: "h1"}).Takeover(context.Background(), Epoch{BootID: "b1", OpSeq: 4}); !errors.Is(err, ErrStaleEpoch) {
 		t.Fatalf("Takeover(refusal) = %v, want ErrStaleEpoch", err)
 	}
@@ -282,6 +368,35 @@ func TestWrapperTakeoverAdvancesDecodesAndRefuses(t *testing.T) {
 	}
 	if len(runner.commands) != 1 {
 		t.Fatalf("zero epoch produced a remote command: %q", runner.commands)
+	}
+}
+
+// TestWrapperPerformSeparatesChildFailuresFromRefusals pins that a wrapped
+// command's own output is never read as a wrapper refusal: only a prefixed
+// refusal at a helper refusal exit code is the typed error.
+func TestWrapperPerformSeparatesChildFailuresFromRefusals(t *testing.T) {
+	epoch := Epoch{BootID: "boot-1", OpSeq: 4}
+	childLike := &fakeRunner{stderr: `{"version":1,"refused":true,"error":"stale-epoch"}`, exit: 9}
+	result, err := (Wrapper{Runner: childLike, Host: "h1"}).Perform(context.Background(), epoch, "deploy)")
+	if err != nil {
+		t.Fatalf("Perform(child-like stderr) = %v, want the child's own failure", err)
+	}
+	if result.ExitCode != 9 {
+		t.Fatalf("Perform(child-like stderr) = %+v, want the child exit status", result)
+	}
+	// Even the helper's own marker, at a non-helper exit code, is the child's
+	// output: the refusal codes are the helper's.
+	prefixedAtChildCode := &fakeRunner{stderr: RefusalPrefix + `{"version":1,"refused":true,"error":"stale-epoch"}`, exit: 9}
+	if _, err := (Wrapper{Runner: prefixedAtChildCode, Host: "h1"}).Perform(context.Background(), epoch, "deploy"); err != nil {
+		t.Fatalf("Perform(prefixed at child exit) = %v, want the child's own failure", err)
+	}
+	refusing := &fakeRunner{stderr: RefusalPrefix + `{"version":1,"refused":true,"error":"fenced"}`, exit: 75}
+	if _, err := (Wrapper{Runner: refusing, Host: "h1"}).Perform(context.Background(), epoch, "deploy"); !errors.Is(err, ErrFenced) {
+		t.Fatalf("Perform(prefixed refusal at 75) = %v, want ErrFenced", err)
+	}
+	ioFailure := &fakeRunner{stderr: RefusalPrefix + `{"version":1,"refused":true,"error":"io-error","detail":"x"}`, exit: 69}
+	if _, err := (Wrapper{Runner: ioFailure, Host: "h1"}).Perform(context.Background(), epoch, "deploy"); !errors.Is(err, ErrHelperIO) {
+		t.Fatalf("Perform(io-error) = %v, want ErrHelperIO", err)
 	}
 }
 

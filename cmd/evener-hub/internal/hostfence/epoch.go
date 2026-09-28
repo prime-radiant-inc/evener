@@ -42,6 +42,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"unicode/utf8"
 
 	"primeradiant.com/evener/cmd/evener-hub/internal/hostops"
@@ -85,17 +86,30 @@ func (e Epoch) IsZero() bool { return e.BootID == "" && e.OpSeq == 0 }
 // refused fail-closed rather than relied on shell quoting to contain it, and
 // the helper refuses the same values server-side.
 func (e Epoch) Validate() error {
-	switch {
-	case e.BootID == "":
-		return fmt.Errorf("%w: the epoch presents no boot id", ErrInvalidEpoch)
-	case len(e.BootID) > MaxBootIDBytes:
-		return fmt.Errorf("%w: the boot id is %d bytes, over the %d-byte bound", ErrInvalidEpoch, len(e.BootID), MaxBootIDBytes)
-	case !utf8.ValidString(e.BootID):
-		return fmt.Errorf("%w: the boot id is not valid UTF-8", ErrInvalidEpoch)
-	case !shellTokenSafe(e.BootID):
-		return fmt.Errorf("%w: the boot id %q is outside the shell-token-safe set [A-Za-z0-9._-]", ErrInvalidEpoch, e.BootID)
-	case e.OpSeq == 0:
+	if err := validateBootID(e.BootID); err != nil {
+		return err
+	}
+	if e.OpSeq == 0 {
 		return fmt.Errorf("%w: the epoch presents no op sequence", ErrInvalidEpoch)
+	}
+	return nil
+}
+
+// validateBootID checks one controller boot id. "-" is refused: the helper's
+// state files use it as the absent-field sentinel, so admitting it as a boot id
+// would let an epoch serialize as absent and never settle.
+func validateBootID(bootID string) error {
+	switch {
+	case bootID == "":
+		return fmt.Errorf("%w: the epoch presents no boot id", ErrInvalidEpoch)
+	case bootID == "-":
+		return fmt.Errorf("%w: %q is the state files' absence sentinel, not a boot id", ErrInvalidEpoch, bootID)
+	case len(bootID) > MaxBootIDBytes:
+		return fmt.Errorf("%w: the boot id is %d bytes, over the %d-byte bound", ErrInvalidEpoch, len(bootID), MaxBootIDBytes)
+	case !utf8.ValidString(bootID):
+		return fmt.Errorf("%w: the boot id is not valid UTF-8", ErrInvalidEpoch)
+	case !shellTokenSafe(bootID):
+		return fmt.Errorf("%w: the boot id %q is outside the shell-token-safe set [A-Za-z0-9._-]", ErrInvalidEpoch, bootID)
 	}
 	return nil
 }
@@ -212,6 +226,13 @@ type GuardState struct {
 	// Holder is the epoch holding the exclusive per-host remote lease (§4: the
 	// takeover "installs the new epoch as the lease holder").
 	Holder *Epoch `json:"holder"`
+	// BootHighWater is the durable per-boot high-water the guard keeps: the
+	// highest op sequence it has ever admitted from each controller boot id.
+	// Within one boot the pair is ordered, and remembering the high-water makes
+	// that order durable across boots, so an epoch the guard already admitted
+	// can never take over again even after later boots have settled. Cross-boot
+	// order stays the guard file's monotonic sequence (§4), never this map.
+	BootHighWater map[string]uint64 `json:"bootHighWater"`
 }
 
 // Validate checks one decoded guard state against the schema the helper writes.
@@ -226,6 +247,14 @@ func (g GuardState) Validate() error {
 			if err := epoch.Validate(); err != nil {
 				return err
 			}
+		}
+	}
+	for bootID, highWater := range g.BootHighWater {
+		if err := validateBootID(bootID); err != nil {
+			return fmt.Errorf("%w: %w", ErrInvalidGuard, err)
+		}
+		if highWater == 0 {
+			return fmt.Errorf("%w: boot %q carries a zero high-water", ErrInvalidGuard, bootID)
 		}
 	}
 	if g.Fence == nil {
@@ -308,6 +337,11 @@ func (g GuardState) Takeover(e Epoch) (GuardState, error) {
 	if previous != nil && previous.BootID == e.BootID && e.OpSeq <= previous.OpSeq {
 		return GuardState{}, fmt.Errorf("%w: epoch %+v is no newer than the guard's holder %+v", ErrStaleEpoch, e, *previous)
 	}
+	if highWater, seen := g.BootHighWater[e.BootID]; seen && e.OpSeq <= highWater {
+		// The durable per-boot high-water: an epoch this boot already admitted
+		// never takes over again, even after later boots have settled.
+		return GuardState{}, fmt.Errorf("%w: epoch %+v is at or below boot %q's high-water %d", ErrStaleEpoch, e, e.BootID, highWater)
+	}
 	next := g
 	next.GuardEpoch++
 	if previous != nil {
@@ -320,6 +354,11 @@ func (g GuardState) Takeover(e Epoch) (GuardState, error) {
 	}
 	holder := e
 	next.Holder = &holder
+	next.BootHighWater = maps.Clone(g.BootHighWater)
+	if next.BootHighWater == nil {
+		next.BootHighWater = map[string]uint64{}
+	}
+	next.BootHighWater[e.BootID] = e.OpSeq
 	return next, nil
 }
 
@@ -551,6 +590,8 @@ type Status struct {
 	Holder     *Epoch      `json:"holder"`
 	// Entries is how many lease entries the state holds.
 	Entries int `json:"entries"`
+	// BootHighWater is the guard's durable per-boot high-water map.
+	BootHighWater map[string]uint64 `json:"bootHighWater"`
 }
 
 // Guard returns the guard half of the report as the state the guard rules
@@ -559,6 +600,7 @@ func (s Status) Guard() GuardState {
 	return GuardState{
 		Version: s.Version, GuardEpoch: s.GuardEpoch, Epoch: s.Epoch,
 		Fence: s.Fence, Superseded: s.Superseded, Holder: s.Holder,
+		BootHighWater: s.BootHighWater,
 	}
 }
 
@@ -590,6 +632,15 @@ func DecodeStatus(raw []byte) (Status, error) {
 	if err := decodeStrict(raw, &status); err != nil {
 		return Status{}, err
 	}
+	// Every field the helper emits is required: a response that omits one has
+	// not been understood, so it is refused rather than read as a zero value
+	// (an omitted guard epoch or entry count must never read as "no fence" or
+	// "no live leases").
+	if err := requireFields(raw, []string{
+		"version", "guardEpoch", "epoch", "fence", "superseded", "holder", "entries", "bootHighWater",
+	}, map[string]bool{"epoch": true, "fence": true, "superseded": true, "holder": true}); err != nil {
+		return Status{}, err
+	}
 	if status.Version != ProtocolVersion {
 		return Status{}, fmt.Errorf("%w: version %d, want %d", ErrInvalidGuard, status.Version, ProtocolVersion)
 	}
@@ -616,6 +667,9 @@ func DecodeEntries(raw []byte) ([]LeaseEntry, error) {
 	if err := decodeStrict(raw, &envelope); err != nil {
 		return nil, err
 	}
+	if err := requireFields(raw, []string{"version", "entries"}, nil); err != nil {
+		return nil, err
+	}
 	if envelope.Version != ProtocolVersion {
 		return nil, fmt.Errorf("%w: version %d, want %d", ErrInvalidGuard, envelope.Version, ProtocolVersion)
 	}
@@ -633,6 +687,9 @@ func DecodeRecheck(raw []byte) (Recheck, error) {
 	if err := decodeStrict(raw, &recheck); err != nil {
 		return Recheck{}, err
 	}
+	if err := requireFields(raw, []string{"version", "id", "live", "state", "ownership"}, nil); err != nil {
+		return Recheck{}, err
+	}
 	if recheck.Version != ProtocolVersion {
 		return Recheck{}, fmt.Errorf("%w: version %d, want %d", ErrInvalidGuard, recheck.Version, ProtocolVersion)
 	}
@@ -643,17 +700,54 @@ func DecodeRecheck(raw []byte) (Recheck, error) {
 	case "":
 		// No entry matched the presented identity: the answer is the not-live
 		// one, and there is no stored state to validate.
-	default:
-		switch recheck.State {
-		case LeaseRegistering, LeaseRunning, LeaseExited, LeaseKilled:
-		default:
-			return Recheck{}, fmt.Errorf("%w: a recheck answer carries state %q", ErrInvalidGuard, recheck.State)
+	case LeaseRegistering, LeaseRunning:
+		// A running entry may report not-live: that is the reused-or-dead
+		// instance reading clean for that member. Live is the claim that must
+		// match the state.
+	case LeaseExited, LeaseKilled:
+		if recheck.Live {
+			return Recheck{}, fmt.Errorf("%w: a recheck answer reports a %s entry live", ErrInvalidGuard, recheck.State)
 		}
+	default:
+		return Recheck{}, fmt.Errorf("%w: a recheck answer carries state %q", ErrInvalidGuard, recheck.State)
+	}
+	// A live answer requires a live state: "live" is the enumeration's clean
+	// verdict, so it must never be claimed for a settled entry.
+	if recheck.Live && recheck.State == "" {
+		return Recheck{}, fmt.Errorf("%w: a recheck answer reports no entry live", ErrInvalidGuard)
 	}
 	if err := recheck.Ownership.Validate(); err != nil {
 		return Recheck{}, err
 	}
 	return recheck, nil
+}
+
+// requireFields refuses a decoded object that omits one of the keys the helper
+// always emits. nullable names the keys whose value may be the JSON literal
+// null (an explicit absence the helper writes); every other named key must be
+// present and non-null. Strict decoding alone cannot catch this: an omitted
+// field decodes to the zero value, which a verifier could otherwise read as the
+// benign case.
+func requireFields(raw []byte, required []string, nullable map[string]bool) error {
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &fields); err != nil {
+		return fmt.Errorf("%w: %w", ErrInvalidGuard, err)
+	}
+	for _, key := range required {
+		value, ok := fields[key]
+		if !ok {
+			return fmt.Errorf("%w: the object carries no %q field", ErrInvalidGuard, key)
+		}
+		if !nullable[key] && jsonIsNull(value) {
+			return fmt.Errorf("%w: the %q field is null", ErrInvalidGuard, key)
+		}
+	}
+	return nil
+}
+
+// jsonIsNull reports whether a raw value is the JSON literal null.
+func jsonIsNull(raw json.RawMessage) bool {
+	return bytes.Equal(bytes.TrimSpace(raw), []byte("null"))
 }
 
 // decodeStrict decodes one JSON value with the store's decode discipline: no

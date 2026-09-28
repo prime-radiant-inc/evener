@@ -35,6 +35,24 @@ const (
 	HelperStateDir = "~/.local/state/evener/fence"
 	// HelperStateEnv is the environment variable overriding HelperStateDir.
 	HelperStateEnv = "EVENER_FENCE_STATE"
+	// RefusalPrefix is the marker the helper's refusal reports carry on stderr.
+	// A wrapped command's own stderr can therefore never masquerade as a
+	// wrapper refusal: the decoder requires the marker and the helper's own
+	// refusal exit code (HelperExitMalformed/HelperExitIO/HelperExitRefusal).
+	RefusalPrefix = "evener-fence: "
+)
+
+// The helper's exit codes: success is 0, a wrapped command exits with its own
+// status, and a refusal carries one of these. The Go side gates refusal
+// decoding on them so a child that happens to exit with a refusal-shaped
+// stderr is still the child's failure.
+const (
+	// HelperExitMalformed is a malformed request.
+	HelperExitMalformed = 64
+	// HelperExitIO is a corrupt state file or an I/O failure.
+	HelperExitIO = 69
+	// HelperExitRefusal is a fencing refusal (stale epoch, pending fence, busy).
+	HelperExitRefusal = 75
 )
 
 // helperScript carries the helper's bytes. S21's bootstrap ships these bytes to
@@ -179,10 +197,13 @@ type Wrapper struct {
 	Path string
 }
 
-// remotePath is the helper path this wrapper addresses.
+// remotePath is the helper path this wrapper addresses. The default is the
+// trusted constant whose double quotes let the remote shell expand its own
+// HOME; a caller-supplied override is single-quoted whole, so a path with
+// spaces or metacharacters can never become shell syntax.
 func (w Wrapper) remotePath() string {
 	if strings.TrimSpace(w.Path) != "" {
-		return w.Path
+		return shellQuote(w.Path)
 	}
 	return HelperRemotePath
 }
@@ -359,8 +380,13 @@ func (w Wrapper) Perform(ctx context.Context, e Epoch, command string) (PerformR
 	if exit == 0 {
 		return result, nil
 	}
-	if refusal := decodeRefusalBytes([]byte(stderr)); refusal != nil {
-		return PerformResult{}, refusal
+	// A refusal is the helper's own report: its marker, at one of its own exit
+	// codes. Anything else — however refusal-shaped — is the wrapped command's
+	// own output and failure.
+	if exit == HelperExitMalformed || exit == HelperExitIO || exit == HelperExitRefusal {
+		if refusal := decodeRefusalBytes([]byte(stderr)); refusal != nil {
+			return PerformResult{}, refusal
+		}
 	}
 	return result, nil
 }
@@ -396,6 +422,11 @@ var ErrStaleEpoch = errors.New("hostfence: stale fencing epoch")
 // until the guard advance lands the new operation performs no mutating remote
 // step (§4).
 var ErrFenced = errors.New("hostfence: a fence-takeover is pending")
+
+// ErrHelperIO reports a helper I/O failure or corrupt state: the helper refused
+// before (or after killing) the wrapped command, so the command must be
+// treated as never having run.
+var ErrHelperIO = errors.New("hostfence: the remote wrapper hit an I/O failure")
 
 // ErrHelperBusy reports the helper's exclusive lease could not be taken within
 // its bounded wait: another wrapper operation holds it. The caller's own
@@ -439,6 +470,8 @@ func (r *HelperRefusalError) Unwrap() error {
 		return ErrHelperBusy
 	case "state-corrupt":
 		return ErrStateCorrupt
+	case "io-error":
+		return ErrHelperIO
 	case "malformed":
 		return ErrMalformed
 	default:
@@ -458,10 +491,16 @@ func DecodeRefusal(raw []byte) error {
 }
 
 // decodeRefusalBytes decodes a refusal, returning nil when the bytes are not
-// one.
+// one. The helper's marker is required and stripped first: an unprefixed object
+// is a wrapped command's stderr, never a wrapper report.
 func decodeRefusalBytes(raw []byte) *HelperRefusalError {
+	text := strings.TrimSpace(string(raw))
+	body, marked := strings.CutPrefix(text, RefusalPrefix)
+	if !marked {
+		return nil
+	}
 	var refusal HelperRefusalError
-	decodeErr := decodeStrict(raw, &refusal)
+	decodeErr := decodeStrict([]byte(strings.TrimSpace(body)), &refusal)
 	if decodeErr == nil && refusal.Refused && refusal.Version == ProtocolVersion && refusal.Unwrap() != nil {
 		return &refusal
 	}

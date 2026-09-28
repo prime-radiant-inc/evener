@@ -46,8 +46,11 @@
 #   guard       flat, one "key<TAB>value" line per field. Keys: version,
 #               guardEpoch, epochBootId, epochOpSeq, supersededBootId,
 #               supersededOpSeq, fenceBootId, fenceOpSeq,
-#               fenceSupersededBootId, fenceSupersededOpSeq, fenceGuardEpoch.
-#               "-" means absent; op sequences and the guard epoch are decimal.
+#               fenceSupersededBootId, fenceSupersededOpSeq, fenceGuardEpoch,
+#               plus one "boot.<bootId><TAB><opSeq>" high-water record per boot
+#               the guard has admitted. "-" means absent; op sequences and the
+#               guard epoch are decimal. A key outside this set is corrupt, and
+#               an empty boot value is corrupt rather than absent.
 #   leases/     one file per lease entry, named by the entry id (the per-spawn
 #               nonce). Fields: id, command (stored JSON-escaped), registeredAt,
 #               state, ownershipKind, pid, pidStartTime, nonce, cgroupId, exit,
@@ -57,13 +60,23 @@
 #               left by a dead holder is taken over only when its recorded PID
 #               is gone).
 #
-# Refusals: one JSON object on stderr, {"version":1,"refused":true,
-# "error":"<reason>","detail":"..."}, with reason one of stale-epoch, fenced,
-# busy, state-corrupt, malformed, io-error. Exit codes: 0 success; the wrapped
-# command's own status for perform; 64 malformed request; 69 corrupt state or
-# I/O failure; 75 fencing refusal. Nothing here kills: kill/wait and the
-# quarantine marker belong to the fencing worker (S18), which verifies entries
-# through `entries` and `recheck` before signaling.
+# Refusals: "evener-fence: " then one JSON object on stderr, {"version":1,
+# "refused":true,"error":"<reason>","detail":"..."}, with reason one of
+# stale-epoch, fenced, busy, state-corrupt, malformed, io-error. The prefix is
+# the helper's own marker, so a wrapped command's stderr can never masquerade as
+# a wrapper refusal; the Go decoder requires the prefix and the helper's own
+# exit code. Exit codes: 0 success; the wrapped command's own status for
+# perform; 64 malformed request; 69 corrupt state or I/O failure; 75 fencing
+# refusal. Nothing here kills a remote process: kill/wait and the quarantine
+# marker belong to the fencing worker (S18), which verifies entries through
+# `entries` and `recheck` before signaling.
+#
+# Two environment seams exist for the tests' fault injection, mirroring the Go
+# stores' fault seams: EVENER_FENCE_FAULT_AFTER_GUARD=1 exits right after a
+# takeover's guard write (before the holder write, the crash window the replay
+# reconciliation repairs), and EVENER_FENCE_FAULT_AFTER_SPAWN=1 fails the
+# post-spawn entry write so the kill-on-tracking-failure path is exercised.
+# Neither is set in production.
 
 set -eu
 umask 077
@@ -81,7 +94,9 @@ LOCK_HOLDER=$LOCK_DIR/holder
 TAB=$(printf '\t')
 
 refuse() { # refuse <reason> <detail> <exit>
-	printf '{"version":%d,"refused":true,"error":"%s","detail":"%s"}\n' \
+	# Refusals wear the helper's own marker so a wrapped command's stderr can
+	# never masquerade as one; the Go side strips and requires it.
+	printf 'evener-fence: {"version":%d,"refused":true,"error":"%s","detail":"%s"}\n' \
 		"$PROTOCOL" "$1" "$(json_escape "$2")" >&2
 	exit "$3"
 }
@@ -92,15 +107,27 @@ refuse_fenced() { refuse fenced "$1" 75; }
 refuse_corrupt() { refuse state-corrupt "$1" 69; }
 
 json_escape() { # one value as a JSON string body
+	# A per-character loop, not gsub: backslash handling in a gsub replacement
+	# is awk-dependent (identity on gawk/POSIX), and the loop is exact. Every
+	# C0 control except NUL is emitted as a \u00XX escape, so the value is
+	# always valid JSON and always one line.
 	printf '%s' "$1" | awk '
-		BEGIN { ORS = "" }
+		BEGIN {
+			ORS = ""
+			for (i = 1; i < 32; i++) { ctrl[sprintf("%c", i)] = sprintf("\\u%04x", i) }
+		}
 		{
-			gsub(/\\/, "\\\\")
-			gsub(/"/, "\\\"")
-			gsub(/\t/, "\\t")
-			gsub(/\r/, "\\r")
+			out = ""
+			n = length($0)
+			for (i = 1; i <= n; i++) {
+				c = substr($0, i, 1)
+				if (c == "\\") { out = out "\\\\" }
+				else if (c == "\"") { out = out "\\\"" }
+				else if (c in ctrl) { out = out ctrl[c] }
+				else { out = out c }
+			}
 			if (NR > 1) { printf "\\n" }
-			printf "%s", $0
+			printf "%s", out
 		}'
 }
 
@@ -141,9 +168,9 @@ acquire_lock() {
 			if ! kill -0 "$holder" 2>/dev/null; then
 				# The holder is gone: a crashed wrapper cannot release a mkdir
 				# lock, and failing closed forever would fence the host on a
-				# crash. Only a demonstrably dead holder's lock is taken over.
-				rm -rf "$LOCK_DIR" 2>/dev/null || true
-				continue
+				# crash. The takeover is atomic and identity-checked so only
+				# one waiter discards only the lock it observed dead.
+				steal_stale_lock "$holder"
 			fi
 			;;
 		esac
@@ -153,7 +180,35 @@ acquire_lock() {
 	done
 }
 
-release_lock() { rm -rf "$LOCK_DIR" 2>/dev/null || true; }
+# steal_stale_lock moves the lock directory aside atomically — exactly one
+# waiter wins the rename — and discards the moved lock only when its recorded
+# holder is the dead PID the caller observed. A moved lock naming a different,
+# live holder was replaced between the observation and the rename; it is put
+# back, never discarded.
+steal_stale_lock() { # <observed-holder-pid>
+	stale=$STATE_DIR/.tmp.lock.$$
+	mv "$LOCK_DIR" "$stale" 2>/dev/null || return 1
+	moved=$(cat "$stale/holder" 2>/dev/null || true)
+	if [ "$moved" = "$1" ]; then
+		rm -rf "$stale" 2>/dev/null || true
+		return 0
+	fi
+	if mv "$stale" "$LOCK_DIR" 2>/dev/null; then
+		return 1
+	fi
+	# The path is occupied again by a fresh owner, so the moved lock's holder
+	# can no longer be holding it; discard it and let the loop retry.
+	rm -rf "$stale" 2>/dev/null || true
+	return 1
+}
+
+release_lock() {
+	# Never remove a lock this invocation does not own: an unconditional rm
+	# could delete a lock a later owner acquired after ours was stolen.
+	holder=$(cat "$LOCK_HOLDER" 2>/dev/null || true)
+	[ "$holder" = "$$" ] || return 0
+	rm -rf "$LOCK_DIR" 2>/dev/null || true
+}
 
 # --- guard file --------------------------------------------------------------
 
@@ -167,11 +222,20 @@ guard_field() { # <snapshot> <key>
 
 guard_file_valid() { # <snapshot>
 	printf '%s\n' "$1" | awk -F"$TAB" '
+		BEGIN {
+			split("version guardEpoch epochBootId epochOpSeq supersededBootId supersededOpSeq fenceBootId fenceOpSeq fenceSupersededBootId fenceSupersededOpSeq fenceGuardEpoch", keys, " ")
+			for (i in keys) { fixed[keys[i]] = 1 }
+		}
 		NF != 2 { bad = 1 }
+		$1 ~ /^boot\./ {
+			if ($1 !~ /^boot\.[A-Za-z0-9._-]+$/ || $2 !~ /^[0-9]+$/ || $2 + 0 < 1) { bad = 1 }
+		}
 		{ seen[$1]++ }
 		END {
-			for (key in seen) { if (seen[key] != 1) { bad = 1 } }
-			split("version guardEpoch epochBootId epochOpSeq supersededBootId supersededOpSeq fenceBootId fenceOpSeq fenceSupersededBootId fenceSupersededOpSeq fenceGuardEpoch", keys, " ")
+			for (key in seen) {
+				if (seen[key] != 1) { bad = 1 }
+				if (!(key in fixed) && key !~ /^boot\./) { bad = 1 }
+			}
 			for (i in keys) { if (!(keys[i] in seen)) { bad = 1 } }
 			exit bad ? 1 : 0
 		}' >/dev/null 2>&1
@@ -182,6 +246,7 @@ guard_file_valid() { # <snapshot>
 # is corrupt and fails closed.
 read_guard() {
 	GUARD_EPOCH=0
+	GUARD_SNAPSHOT=""
 	EPOCH_BOOT=-
 	EPOCH_SEQ=0
 	SUP_BOOT=-
@@ -206,27 +271,33 @@ read_guard() {
 	FENCE_SUP_SEQ=$(guard_field "$GUARD_SNAPSHOT" fenceSupersededOpSeq)
 	FENCE_GUARD=$(guard_field "$GUARD_SNAPSHOT" fenceGuardEpoch)
 	is_uint "$GUARD_EPOCH" || return 1
-	is_uint "$EPOCH_SEQ" || return 1
-	is_uint "$SUP_SEQ" || return 1
-	is_uint "$FENCE_SEQ" || return 1
-	is_uint "$FENCE_SUP_SEQ" || return 1
 	is_uint "$FENCE_GUARD" || return 1
-	for boot in "$EPOCH_BOOT" "$SUP_BOOT" "$FENCE_BOOT" "$FENCE_SUP_BOOT"; do
-		case $boot in
-		-) ;;
-		*[!A-Za-z0-9._-]*) return 1 ;;
-		*) ;;
-		esac
-	done
-	[ "$EPOCH_BOOT" = "-" ] || [ "$EPOCH_SEQ" -ge 1 ] || return 1
-	[ "$SUP_BOOT" = "-" ] || [ "$SUP_SEQ" -ge 1 ] || return 1
-	[ "$FENCE_BOOT" = "-" ] || [ "$FENCE_SEQ" -ge 1 ] || return 1
-	[ "$FENCE_SUP_BOOT" = "-" ] || [ "$FENCE_SUP_SEQ" -ge 1 ] || return 1
-	[ "$FENCE_BOOT" = "-" ] || [ "$FENCE_GUARD" -ge 1 ] || return 1
+	check_boot_pair "$EPOCH_BOOT" "$EPOCH_SEQ" || return 1
+	check_boot_pair "$SUP_BOOT" "$SUP_SEQ" || return 1
+	check_boot_pair "$FENCE_BOOT" "$FENCE_SEQ" || return 1
+	check_boot_pair "$FENCE_SUP_BOOT" "$FENCE_SUP_SEQ" || return 1
+	if [ "$FENCE_BOOT" = "-" ]; then
+		[ "$FENCE_GUARD" = 0 ] || return 1
+	else
+		[ "$FENCE_GUARD" -ge 1 ] || return 1
+	fi
 	return 0
 }
 
-write_guard() {
+# check_boot_pair validates one (bootId, opSeq) field pair: "-" is the absent
+# form with op sequence 0, and anything else must be a non-empty token-safe boot
+# id with a positive sequence. An empty boot id is corrupt, never absent.
+check_boot_pair() { # <bootId> <opSeq>
+	case $1 in
+	-) [ "$2" = 0 ] || return 1 ;;
+	'') return 1 ;;
+	*[!A-Za-z0-9._-]*) return 1 ;;
+	*) is_uint "$2" && [ "$2" -ge 1 ] || return 1 ;;
+	esac
+	return 0
+}
+
+write_guard() { # [<bootId> <opSeq>] — records this boot's admitted high-water
 	ensure_state
 	tmp=$STATE_DIR/.tmp.guard.$$
 	{
@@ -241,6 +312,7 @@ write_guard() {
 		printf 'fenceSupersededBootId\t%s\n' "$FENCE_SUP_BOOT"
 		printf 'fenceSupersededOpSeq\t%s\n' "$FENCE_SUP_SEQ"
 		printf 'fenceGuardEpoch\t%s\n' "$FENCE_GUARD"
+		boot_records "${1:-}" "${2:-}"
 	} >"$tmp" || refuse io-error "cannot write the guard file" 69
 	chmod 600 "$tmp" 2>/dev/null || true
 	sync_path "$tmp"
@@ -249,6 +321,20 @@ write_guard() {
 		refuse io-error "cannot replace the guard file" 69
 	}
 	sync_path "$STATE_DIR"
+}
+
+# boot_records re-emits every durable per-boot high-water record, replacing the
+# one for the boot a takeover is admitting. A boot's high-water is the highest
+# op sequence the guard has ever admitted from it, so an epoch the guard already
+# saw can never take over again even after later boots have settled.
+boot_records() { # [<bootId> <opSeq>]
+	printf '%s\n' "${GUARD_SNAPSHOT:-}" | awk -F"$TAB" -v boot="${1:-}" -v seq="${2:-}" '
+		$1 ~ /^boot\./ {
+			if (boot != "" && $1 == "boot." boot) { next }
+			print $1 "\t" $2
+			next
+		}
+		END { if (boot != "") { print "boot." boot "\t" seq } }'
 }
 
 # --- lease holder and entries ------------------------------------------------
@@ -309,12 +395,18 @@ entry_field() { # <snapshot> <key>
 
 entry_file_valid() { # <snapshot>
 	printf '%s\n' "$1" | awk -F"$TAB" '
+		BEGIN {
+			split("id command registeredAt state ownershipKind pid pidStartTime nonce cgroupId exit exitedAt", keys, " ")
+			for (i in keys) { allowed[keys[i]] = 1 }
+		}
 		NF != 2 { bad = 1 }
 		{ seen[$1]++ }
 		END {
-			split("id command registeredAt state ownershipKind pid pidStartTime nonce cgroupId exit exitedAt", keys, " ")
+			for (key in seen) {
+				if (seen[key] != 1) { bad = 1 }
+				if (!(key in allowed)) { bad = 1 }
+			}
 			for (i in keys) { if (!(keys[i] in seen)) { bad = 1 } }
-			for (key in seen) { if (seen[key] != 1) { bad = 1 } }
 			exit bad ? 1 : 0
 		}' >/dev/null 2>&1
 }
@@ -324,7 +416,9 @@ entry_file_valid() { # <snapshot>
 write_entry() { # id command registeredAt state kind pid start nonce cgroupId exit exitedAt
 	ensure_state
 	id=$1
-	tmp=$LEASE_DIR/.tmp.$id.$$
+	# The temp lives outside the enumerated lease directory so no reader can
+	# ever glob a half-written record; the rename into place stays atomic.
+	tmp=$STATE_DIR/.tmp.entry.$id.$$
 	{
 		printf 'id\t%s\n' "$1"
 		printf 'command\t%s\n' "$2"
@@ -337,14 +431,18 @@ write_entry() { # id command registeredAt state kind pid start nonce cgroupId ex
 		printf 'cgroupId\t%s\n' "$9"
 		printf 'exit\t%s\n' "${10}"
 		printf 'exitedAt\t%s\n' "${11}"
-	} >"$tmp" || refuse io-error "cannot write lease entry $id" 69
+	} >"$tmp" 2>/dev/null || {
+		rm -f "$tmp"
+		return 1
+	}
 	chmod 600 "$tmp" 2>/dev/null || true
 	sync_path "$tmp"
-	mv "$tmp" "$LEASE_DIR/$id" || {
+	mv "$tmp" "$LEASE_DIR/$id" 2>/dev/null || {
 		rm -f "$tmp"
-		refuse io-error "cannot replace lease entry $id" 69
+		return 1
 	}
 	sync_path "$LEASE_DIR"
+	return 0
 }
 
 entry_ownership_json() { # kind pid start nonce cgroup
@@ -410,7 +508,9 @@ count_entries() {
 	count=0
 	for path in "$LEASE_DIR"/*; do
 		[ -f "$path" ] || continue
-		[ "$(basename "$path")" = holder ] && continue
+		case $(basename "$path") in
+		holder | .tmp.*) continue ;;
+		esac
 		count=$((count + 1))
 	done
 	printf '%s' "$count"
@@ -421,7 +521,9 @@ emit_entries() {
 	first=1
 	for path in "$LEASE_DIR"/*; do
 		[ -f "$path" ] || continue
-		[ "$(basename "$path")" = holder ] && continue
+		case $(basename "$path") in
+		holder | .tmp.*) continue ;;
+		esac
 		load_entry "$path" || refuse_corrupt "lease entry $(basename "$path") is outside its schema"
 		[ "$first" -eq 1 ] || printf ','
 		first=0
@@ -459,12 +561,23 @@ fence_json() {
 	fi
 }
 
+boot_high_water_json() {
+	printf '%s\n' "${GUARD_SNAPSHOT:-}" | awk -F"$TAB" '
+		BEGIN { printf "{"; first = 1 }
+		$1 ~ /^boot\./ {
+			if (!first) { printf "," }
+			first = 0
+			printf "\"%s\":%s", substr($1, 6), $2
+		}
+		END { printf "}" }'
+}
+
 emit_status() {
 	read_holder || refuse_corrupt "the lease holder is outside its schema"
-	printf '{"version":%s,"guardEpoch":%s,"epoch":%s,"fence":%s,"superseded":%s,"holder":%s,"entries":%s}\n' \
+	printf '{"version":%s,"guardEpoch":%s,"epoch":%s,"fence":%s,"superseded":%s,"holder":%s,"entries":%s,"bootHighWater":%s}\n' \
 		"$PROTOCOL" "$GUARD_EPOCH" "$(epoch_json "$EPOCH_BOOT" "$EPOCH_SEQ")" \
 		"$(fence_json)" "$(epoch_json "$SUP_BOOT" "$SUP_SEQ")" \
-		"$(epoch_json "$HOLDER_BOOT" "$HOLDER_SEQ")" "$(count_entries)"
+		"$(epoch_json "$HOLDER_BOOT" "$HOLDER_SEQ")" "$(count_entries)" "$(boot_high_water_json)"
 }
 
 load_guard_or_refuse() {
@@ -477,7 +590,7 @@ parse_epoch() { # <bootId> <opSeq>
 	E_BOOT=$1
 	E_SEQ=$2
 	case $E_BOOT in
-	'' | *[!A-Za-z0-9._-]*) return 1 ;;
+	'' | - | *[!A-Za-z0-9._-]*) return 1 ;;
 	*) ;;
 	esac
 	[ "${#E_BOOT}" -le 128 ] || return 1
@@ -487,6 +600,16 @@ parse_epoch() { # <bootId> <opSeq>
 }
 
 # --- operations --------------------------------------------------------------
+
+# repair_holder reconciles an incomplete takeover: when the fence is already
+# durable but the holder write was lost to a crash, the retry must repair it
+# before reporting success.
+repair_holder() { # <bootId> <opSeq>
+	read_holder || refuse_corrupt "the lease holder is outside its schema"
+	if [ "$HOLDER_BOOT" != "$1" ] || [ "$HOLDER_SEQ" != "$2" ]; then
+		write_holder "$1" "$2"
+	fi
+}
 
 do_takeover() {
 	load_guard_or_refuse
@@ -498,14 +621,22 @@ do_takeover() {
 	fi
 	if [ "$FENCE_BOOT" != "-" ]; then
 		if [ "$FENCE_BOOT" = "$E_BOOT" ] && [ "$FENCE_SEQ" = "$E_SEQ" ]; then
+			repair_holder "$E_BOOT" "$E_SEQ"
 			emit_status
 			return 0
 		fi
 		refuse_fenced "a fence for epoch $FENCE_BOOT/$FENCE_SEQ is still pending"
 	fi
 	if [ "$EPOCH_BOOT" = "$E_BOOT" ] && [ "$EPOCH_SEQ" = "$E_SEQ" ]; then
+		repair_holder "$E_BOOT" "$E_SEQ"
 		emit_status
 		return 0
+	fi
+	highwater=$(guard_field "$GUARD_SNAPSHOT" "boot.$E_BOOT")
+	if [ -n "$highwater" ] && is_uint "$highwater" && [ "$E_SEQ" -le "$highwater" ]; then
+		# The durable per-boot high-water: an epoch this boot already admitted
+		# never takes over again, even after later boots have settled.
+		refuse_stale "epoch $E_BOOT/$E_SEQ is at or below boot $E_BOOT's high-water $highwater"
 	fi
 	read_holder || refuse_corrupt "the lease holder is outside its schema"
 	previous_boot=$HOLDER_BOOT
@@ -527,7 +658,12 @@ do_takeover() {
 		SUP_BOOT=$previous_boot
 		SUP_SEQ=$previous_seq
 	fi
-	write_guard
+	write_guard "$E_BOOT" "$E_SEQ"
+	if [ "${EVENER_FENCE_FAULT_AFTER_GUARD:-0}" = 1 ]; then
+		# Test-only fault injection: die between the guard write and the holder
+		# write, modelling the crash window the replay reconciliation repairs.
+		exit 70
+	fi
 	write_holder "$E_BOOT" "$E_SEQ"
 	emit_status
 }
@@ -593,7 +729,8 @@ do_perform() { # <bootId> <opSeq> <command>
 	# Register before the side effects start: the entry exists while the command
 	# runs, and a crash between registration and spawn leaves it registered (fail
 	# closed) rather than invisible.
-	write_entry "$nonce" "$(json_escape "$command")" "$registered" registering nonce '' '' "$nonce" '' '' ''
+	write_entry "$nonce" "$(json_escape "$command")" "$registered" registering nonce '' '' "$nonce" '' '' '' ||
+		refuse io-error "cannot register the lease entry" 69
 	EVENER_FENCE_NONCE=$nonce EVENER_FENCE_STATE=$STATE_DIR sh -c "$command" &
 	child=$!
 	start=$(pid_start_time "$child" || true)
@@ -610,15 +747,29 @@ do_perform() { # <bootId> <opSeq> <command>
 		own_start=$(json_escape "$start")
 		own_nonce=''
 	fi
-	write_entry "$nonce" "$(json_escape "$command")" "$registered" running "$own_kind" "$own_pid" "$own_start" "$own_nonce" '' '' ''
+	if [ "${EVENER_FENCE_FAULT_AFTER_SPAWN:-0}" = 1 ]; then
+		post_spawn_failure "cannot record the lease entry (injected fault)"
+	fi
+	write_entry "$nonce" "$(json_escape "$command")" "$registered" running "$own_kind" "$own_pid" "$own_start" "$own_nonce" '' '' '' ||
+		post_spawn_failure "cannot record the lease entry"
 	status=0
 	wait "$child" || status=$?
 	exited=$(date -u '+%Y-%m-%dT%H:%M:%SZ' 2>/dev/null || printf 0)
 	# A command that exited, however it exited, is recorded exited: the lease
 	# file's exit state is what a verifier enumerates. A killed orphan is marked
 	# by the fencing worker's kill path (S18) through the same entry file.
-	write_entry "$nonce" "$(json_escape "$command")" "$registered" exited "$own_kind" "$own_pid" "$own_start" "$own_nonce" '' "$status" "$exited"
+	write_entry "$nonce" "$(json_escape "$command")" "$registered" exited "$own_kind" "$own_pid" "$own_start" "$own_nonce" '' "$status" "$exited" ||
+		refuse io-error "cannot record the lease exit" 69
 	exit "$status"
+}
+
+# post_spawn_failure kills the command the wrapper just started, reaps it, and
+# refuses: a tracking write that fails after the spawn must never leave a
+# side-effect process running untracked.
+post_spawn_failure() {
+	kill "$child" 2>/dev/null || true
+	wait "$child" 2>/dev/null || true
+	refuse io-error "$1" 69
 }
 
 do_recheck() { # <id>

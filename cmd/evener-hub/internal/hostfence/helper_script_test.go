@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -564,6 +565,33 @@ func TestScriptCorruptHolderFailsClosed(t *testing.T) {
 	}
 }
 
+// TestScriptEmptyBootIDRefuses pins the explicit empty-field rule: an empty
+// epoch/lease boot value is corrupt even when the line still splits into two
+// awk fields, never the "-" absence form.
+func TestScriptEmptyBootIDRefuses(t *testing.T) {
+	remote := newFenceRemote(t)
+	remote.settle(Epoch{BootID: "boot-1", OpSeq: 1})
+	guard := filepath.Join(remote.state, "guard")
+	raw, err := os.ReadFile(guard)
+	if err != nil {
+		t.Fatalf("read guard: %v", err)
+	}
+	broken := strings.Replace(string(raw), "epochBootId\tboot-1\n", "epochBootId\t\n", 1)
+	if broken == string(raw) {
+		t.Fatalf("guard did not carry the expected epoch line: %q", raw)
+	}
+	if err := os.WriteFile(guard, []byte(broken), 0o600); err != nil {
+		t.Fatalf("write guard: %v", err)
+	}
+	for _, op := range [][]string{{"status"}, {"advance", "boot-1", "1"}} {
+		if _, stderr, code := remote.run(nil, op...); code == 0 {
+			t.Fatalf("%v on an empty boot id succeeded, want refusal", op)
+		} else if err := DecodeRefusal([]byte(stderr)); !errors.Is(err, ErrStateCorrupt) {
+			t.Fatalf("%v = %v, want ErrStateCorrupt", op, err)
+		}
+	}
+}
+
 func TestScriptStateFilesAreOwnerOnly(t *testing.T) {
 	remote := newFenceRemote(t)
 	remote.settle(Epoch{BootID: "boot-1", OpSeq: 1})
@@ -579,6 +607,275 @@ func TestScriptStateFilesAreOwnerOnly(t *testing.T) {
 		t.Fatalf("seed holder: %v", err)
 	}
 	assertNoTempFiles(t, remote.state)
+}
+
+// TestScriptCommandEscapingRoundTrip pins the lease file's JSON escaping: a
+// command carrying backslashes, quotes, tabs, and newlines must survive
+// perform -> entries -> decode byte-for-byte, with the file still one field per
+// line.
+func TestScriptCommandEscapingRoundTrip(t *testing.T) {
+	remote := newFenceRemote(t)
+	epoch := Epoch{BootID: "boot-1", OpSeq: 1}
+	remote.settle(epoch)
+	command := "true # back\\slash \"double\" 'single' $HOME `tick`\n: # tab\there \\d"
+	if _, stderr, code := remote.run(nil, "perform", epoch.BootID, "1", command); code != 0 {
+		t.Fatalf("perform exited %d: %s", code, stderr)
+	}
+	stdout, stderr, code := remote.run(nil, "entries")
+	if code != 0 {
+		t.Fatalf("entries exited %d: %s", code, stderr)
+	}
+	entries, err := DecodeEntries([]byte(stdout))
+	if err != nil {
+		t.Fatalf("DecodeEntries(%q) = %v", stdout, err)
+	}
+	if len(entries) != 1 || entries[0].Command != command {
+		t.Fatalf("command round-trip = %q, want %q", entries[0].Command, command)
+	}
+}
+
+// TestScriptTakeoverReplayRepairsHolder pins the takeover retry's
+// reconciliation: a replay of a pending fence must leave the lease holder
+// naming the fencing epoch, never a half-landed takeover.
+func TestScriptTakeoverReplayRepairsHolder(t *testing.T) {
+	remote := newFenceRemote(t)
+	epoch := Epoch{BootID: "boot-1", OpSeq: 1}
+	if _, stderr, code := remote.run(nil, "takeover", epoch.BootID, "1"); code != 0 {
+		t.Fatalf("takeover exited %d: %s", code, stderr)
+	}
+	// A lost holder write: the fence is durable, the holder is not.
+	holder := filepath.Join(remote.state, "leases", "holder")
+	if err := os.WriteFile(holder, []byte("boot-9 9\n"), 0o600); err != nil {
+		t.Fatalf("overwrite holder: %v", err)
+	}
+	stdout, stderr, code := remote.run(nil, "takeover", epoch.BootID, "1")
+	if code != 0 {
+		t.Fatalf("takeover replay exited %d: %s", code, stderr)
+	}
+	status, err := DecodeStatus([]byte(stdout))
+	if err != nil {
+		t.Fatalf("DecodeStatus = %v", err)
+	}
+	if status.Holder == nil || *status.Holder != epoch {
+		t.Fatalf("replay holder = %+v, want %+v", status.Holder, epoch)
+	}
+	raw, err := os.ReadFile(holder)
+	if err != nil || strings.TrimSpace(string(raw)) != "boot-1 1" {
+		t.Fatalf("holder after replay = %q (err %v), want the fencing epoch", raw, err)
+	}
+}
+
+// TestScriptTakeoverCrashBetweenWrites injects the crash the reconciliation
+// exists for: the guard write lands, the holder write does not, and the retry
+// repairs before reporting success.
+func TestScriptTakeoverCrashBetweenWrites(t *testing.T) {
+	remote := newFenceRemote(t)
+	epoch := Epoch{BootID: "boot-1", OpSeq: 1}
+	if _, stderr, code := remote.run([]string{"EVENER_FENCE_FAULT_AFTER_GUARD=1"}, "takeover", epoch.BootID, "1"); code == 0 {
+		t.Fatalf("faulted takeover exited 0: %s", stderr)
+	}
+	holder := filepath.Join(remote.state, "leases", "holder")
+	if _, err := os.Stat(holder); err == nil {
+		raw, _ := os.ReadFile(holder)
+		t.Fatalf("faulted takeover left a holder %q, want the crash window", raw)
+	}
+	// The fence is durable, so the retry is a replay that repairs the holder.
+	if _, stderr, code := remote.run(nil, "takeover", epoch.BootID, "1"); code != 0 {
+		t.Fatalf("retry exited %d: %s", code, stderr)
+	}
+	raw, err := os.ReadFile(holder)
+	if err != nil || strings.TrimSpace(string(raw)) != "boot-1 1" {
+		t.Fatalf("holder after retry = %q (err %v), want the fencing epoch", raw, err)
+	}
+	if status := remote.status(); status.Holder == nil || *status.Holder != epoch || status.Fence == nil {
+		t.Fatalf("status after retry = %+v, want the fence with the repaired holder", status)
+	}
+}
+
+// TestScriptOldBootEpochStaysStale pins the durable per-boot high-water: after
+// boots A, B, and C settle, the old boot-A epoch can never take over again,
+// while a newer epoch of boot A still may.
+func TestScriptOldBootEpochStaysStale(t *testing.T) {
+	remote := newFenceRemote(t)
+	for _, boot := range []string{"boot-a", "boot-b", "boot-c"} {
+		remote.settle(Epoch{BootID: boot, OpSeq: 1})
+	}
+	_, stderr, code := remote.run(nil, "takeover", "boot-a", "1")
+	if code == 0 {
+		t.Fatal("old boot-A takeover succeeded, want refusal")
+	}
+	if err := DecodeRefusal([]byte(stderr)); !errors.Is(err, ErrStaleEpoch) {
+		t.Fatalf("old boot-A takeover = %v, want ErrStaleEpoch", err)
+	}
+	if _, stderr, code := remote.run(nil, "takeover", "boot-a", "2"); code != 0 {
+		t.Fatalf("newer boot-A epoch refused: %d: %s", code, stderr)
+	}
+}
+
+// TestScriptUnknownStateKeysRefuse pins the validator parity with the Go
+// decoder's DisallowUnknownFields: a guard or entry file carrying a key the
+// writer never emits is corrupt, never silently accepted.
+func TestScriptUnknownStateKeysRefuse(t *testing.T) {
+	remote := newFenceRemote(t)
+	epoch := Epoch{BootID: "boot-1", OpSeq: 1}
+	remote.settle(epoch)
+	guard := filepath.Join(remote.state, "guard")
+	raw, err := os.ReadFile(guard)
+	if err != nil {
+		t.Fatalf("read guard: %v", err)
+	}
+	if err := os.WriteFile(guard, append(raw, []byte("unexpectedKey\t1\n")...), 0o600); err != nil {
+		t.Fatalf("add unknown guard key: %v", err)
+	}
+	for _, op := range [][]string{{"status"}, {"advance", "boot-1", "1"}} {
+		if _, stderr, code := remote.run(nil, op...); code == 0 {
+			t.Fatalf("%v on an unknown guard key succeeded, want refusal", op)
+		} else if err := DecodeRefusal([]byte(stderr)); !errors.Is(err, ErrStateCorrupt) {
+			t.Fatalf("%v = %v, want ErrStateCorrupt", op, err)
+		}
+	}
+	// Put a valid guard back and do the same for a lease entry.
+	if err := os.WriteFile(guard, raw, 0o600); err != nil {
+		t.Fatalf("restore guard: %v", err)
+	}
+	if _, stderr, code := remote.run(nil, "perform", epoch.BootID, "1", "true"); code != 0 {
+		t.Fatalf("perform exited %d: %s", code, stderr)
+	}
+	entriesDir := filepath.Join(remote.state, "leases")
+	names, err := os.ReadDir(entriesDir)
+	if err != nil {
+		t.Fatalf("read leases: %v", err)
+	}
+	var entryPath string
+	for _, name := range names {
+		if name.Name() != "holder" {
+			entryPath = filepath.Join(entriesDir, name.Name())
+		}
+	}
+	if entryPath == "" {
+		t.Fatal("no lease entry to corrupt")
+	}
+	entryRaw, err := os.ReadFile(entryPath)
+	if err != nil {
+		t.Fatalf("read entry: %v", err)
+	}
+	if err := os.WriteFile(entryPath, append(entryRaw, []byte("unexpectedKey\t1\n")...), 0o600); err != nil {
+		t.Fatalf("add unknown entry key: %v", err)
+	}
+	if _, stderr, code := remote.run(nil, "entries"); code == 0 {
+		t.Fatal("entries with an unknown entry key succeeded, want refusal")
+	} else if err := DecodeRefusal([]byte(stderr)); !errors.Is(err, ErrStateCorrupt) {
+		t.Fatalf("entries = %v, want ErrStateCorrupt", err)
+	}
+}
+
+// TestScriptIgnoresStrayTempFiles pins the reader contract for the atomic-write
+// temp files: a stray dot-named temp in the lease directory is never an entry,
+// so entries/status can not read a half-written record.
+func TestScriptIgnoresStrayTempFiles(t *testing.T) {
+	remote := newFenceRemote(t)
+	epoch := Epoch{BootID: "boot-1", OpSeq: 1}
+	remote.settle(epoch)
+	if _, stderr, code := remote.run(nil, "perform", epoch.BootID, "1", "true"); code != 0 {
+		t.Fatalf("perform exited %d: %s", code, stderr)
+	}
+	for _, name := range []string{".tmp.entry.stray", ".tmp.stray"} {
+		if err := os.WriteFile(filepath.Join(remote.state, "leases", name), []byte("junk"), 0o600); err != nil {
+			t.Fatalf("write %s: %v", name, err)
+		}
+	}
+	stdout, stderr, code := remote.run(nil, "entries")
+	if code != 0 {
+		t.Fatalf("entries exited %d: %s", code, stderr)
+	}
+	entries, err := DecodeEntries([]byte(stdout))
+	if err != nil || len(entries) != 1 {
+		t.Fatalf("entries = %+v (err %v), want the one real entry", entries, err)
+	}
+	if status := remote.status(); status.Entries != 1 {
+		t.Fatalf("status entry count = %d, want 1 (the strays are not entries)", status.Entries)
+	}
+}
+
+// TestScriptPostSpawnWriteFailureKillsChild pins the fail-closed I/O path: when
+// the running-entry write fails after the spawn, the wrapper kills the command
+// it just started and refuses, never returning while the command runs
+// untracked.
+func TestScriptPostSpawnWriteFailureKillsChild(t *testing.T) {
+	remote := newFenceRemote(t)
+	epoch := Epoch{BootID: "boot-1", OpSeq: 1}
+	remote.settle(epoch)
+	work := t.TempDir()
+	command := fmt.Sprintf("touch %s/started; exec sleep 30", work)
+	start := time.Now()
+	_, stderr, code := remote.run([]string{"EVENER_FENCE_FAULT_AFTER_SPAWN=1"}, "perform", epoch.BootID, "1", command)
+	if code != 69 {
+		t.Fatalf("faulted perform exited %d, want 69: %s", code, stderr)
+	}
+	if err := DecodeRefusal([]byte(stderr)); !errors.Is(err, ErrHelperIO) {
+		t.Fatalf("faulted perform = %v, want ErrHelperIO", err)
+	}
+	if elapsed := time.Since(start); elapsed > 10*time.Second {
+		t.Fatalf("faulted perform took %s, want the child killed rather than awaited", elapsed)
+	}
+	if _, err := os.Stat(filepath.Join(work, "started")); err != nil {
+		t.Fatalf("the command never started: %v", err)
+	}
+}
+
+// TestScriptConcurrentPerformsSerialize pins the exclusive lease: concurrent
+// wrapper invocations never overlap, so exactly one critical section runs at a
+// time.
+func TestScriptConcurrentPerformsSerialize(t *testing.T) {
+	remote := newFenceRemote(t)
+	epoch := Epoch{BootID: "boot-1", OpSeq: 1}
+	remote.settle(epoch)
+	work := t.TempDir()
+	var wg sync.WaitGroup
+	failures := make(chan string, 8)
+	for i := range 4 {
+		wg.Add(1)
+		go func(n int) {
+			defer wg.Done()
+			mine := filepath.Join(work, fmt.Sprintf("in-cs-%d", n))
+			command := fmt.Sprintf(
+				`touch %s; others=0; for f in %s/in-cs-*; do [ "$f" = "%s" ] || others=$((others+1)); done; `+
+					`if [ "$others" -ne 0 ]; then exit 3; fi; sleep 0.1; rm -f %s`,
+				mine, work, mine, mine)
+			if _, stderr, code := remote.run(nil, "perform", epoch.BootID, "1", command); code != 0 {
+				failures <- fmt.Sprintf("perform %d exited %d: %s", n, code, stderr)
+			}
+		}(i)
+	}
+	wg.Wait()
+	close(failures)
+	for failure := range failures {
+		t.Error(failure)
+	}
+	stdout, stderr, code := remote.run(nil, "entries")
+	if code != 0 {
+		t.Fatalf("entries exited %d: %s", code, stderr)
+	}
+	entries, err := DecodeEntries([]byte(stdout))
+	if err != nil || len(entries) != 4 {
+		t.Fatalf("entries = %d (err %v), want the four serialized commands", len(entries), err)
+	}
+}
+
+// TestScriptRefusesDashBootID pins that the state files' absence sentinel is
+// never a fencing epoch: "-" refuses as malformed rather than serializing as an
+// absent epoch.
+func TestScriptRefusesDashBootID(t *testing.T) {
+	remote := newFenceRemote(t)
+	for _, op := range [][]string{{"takeover", "-", "1"}, {"advance", "-", "1"}, {"perform", "-", "1", "true"}} {
+		_, stderr, code := remote.run(nil, op...)
+		if code == 0 {
+			t.Fatalf("%v with boot id \"-\" succeeded, want refusal", op)
+		}
+		if err := DecodeRefusal([]byte(stderr)); !errors.Is(err, ErrMalformed) {
+			t.Fatalf("%v = %v, want ErrMalformed", op, err)
+		}
+	}
 }
 
 // helpers
@@ -664,9 +961,14 @@ func TestScriptExitCodesAndStderrShape(t *testing.T) {
 	if err := DecodeRefusal([]byte(stderr)); !errors.Is(err, ErrMalformed) {
 		t.Fatalf("unknown op = %v, want ErrMalformed", err)
 	}
+	// Refusals wear the helper's own marker, so a wrapped command's stderr can
+	// never masquerade as one: the prefix, then exactly one JSON object.
+	if !strings.HasPrefix(stderr, RefusalPrefix) {
+		t.Fatalf("refusal %q does not start with %q", stderr, RefusalPrefix)
+	}
 	var raw map[string]any
-	if err := json.Unmarshal([]byte(stderr), &raw); err != nil {
-		t.Fatalf("refusal is not one JSON object: %q", stderr)
+	if err := json.Unmarshal([]byte(strings.TrimPrefix(stderr, RefusalPrefix)), &raw); err != nil {
+		t.Fatalf("refusal is not one JSON object after its prefix: %q", stderr)
 	}
 	_, _, code = remote.run(nil, "takeover")
 	if code == 0 {
