@@ -96,6 +96,13 @@ type MessageSearch struct {
 	// writeMu keeps a Refresh and a Forget from interleaving their writes to
 	// one session.
 	writeMu sync.Mutex
+	// forgetGen counts, per session, how many times Forget has removed it.
+	// A Refresh reads a transcript before it writes what it found, and a
+	// deletion's Forget can run on another goroutine in between: Refresh
+	// captures the session's generation before the read and apply refuses to
+	// write unless the generation is still the one it captured, so a
+	// concurrent Forget is never undone by a read that started before it.
+	forgetGen map[string]int64
 }
 
 // MessageSearchSession names one session the index covers: its ID and where
@@ -182,7 +189,7 @@ func OpenMessageSearch(path string) (*MessageSearch, error) {
 		_ = db.Close()
 		return nil, err
 	}
-	return &MessageSearch{db: db, read: readTranscriptItems}, nil
+	return &MessageSearch{db: db, read: readTranscriptItems, forgetGen: map[string]int64{}}, nil
 }
 
 // migrateMessageSearch leaves a current index alone and replaces anything
@@ -256,6 +263,10 @@ func (x *MessageSearch) Refresh(ctx context.Context, sessions []MessageSearchSes
 		if known && held.snapshot.Incarnation != "" {
 			since = &held.snapshot
 		}
+		// Captured before the read, which can take a while: apply compares
+		// this against the generation at write time, so a Forget that lands
+		// during the read (a concurrent deletion) is never undone below.
+		sinceGen := x.forgetGeneration(session.ID)
 		read, err := x.read(session.TranscriptPath, since)
 		if err != nil {
 			if !errors.Is(err, transcript.ErrUnsupportedFormat) {
@@ -263,7 +274,7 @@ func (x *MessageSearch) Refresh(ctx context.Context, sessions []MessageSearchSes
 			}
 			read = transcriptItems{replace: true}
 		}
-		if err := x.apply(ctx, session.ID, stamp, read); err != nil {
+		if err := x.apply(ctx, session.ID, stamp, read, sinceGen); err != nil {
 			return failures, err
 		}
 	}
@@ -397,10 +408,15 @@ func searchableMessage(item appwire.ThreadItem) bool {
 // session's messages from before the read or after it and never a mix: a
 // replace drops every row first; otherwise each changed item's row is dropped
 // and written again while the item is a message. Then it records stamp and the
-// read's snapshot.
-func (x *MessageSearch) apply(ctx context.Context, sessionID string, stamp transcriptStamp, read transcriptItems) error {
+// read's snapshot. sinceGen is the session's forget generation captured before
+// the read; if a Forget landed since (the generation moved), the read is
+// stale and apply writes nothing, so a concurrent deletion is never undone.
+func (x *MessageSearch) apply(ctx context.Context, sessionID string, stamp transcriptStamp, read transcriptItems, sinceGen int64) error {
 	x.writeMu.Lock()
 	defer x.writeMu.Unlock()
+	if x.forgetGen[sessionID] != sinceGen {
+		return nil
+	}
 	tx, err := x.db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("index session %s: %w", sessionID, err)
@@ -435,7 +451,9 @@ ON CONFLICT(session_id) DO UPDATE SET size = excluded.size, mod_time_ns = exclud
 
 // Forget removes one session from the index: its messages and its transcript
 // record. Deleting a session calls it, so the session's words leave search at
-// once rather than at the next Refresh.
+// once rather than at the next Refresh. It also advances the session's forget
+// generation, so a Refresh whose read of this session started before this
+// call cannot write the session back afterward (apply, above).
 func (x *MessageSearch) Forget(ctx context.Context, sessionID string) error {
 	x.writeMu.Lock()
 	defer x.writeMu.Unlock()
@@ -449,7 +467,18 @@ func (x *MessageSearch) Forget(ctx context.Context, sessionID string) error {
 			return fmt.Errorf("forget session %s: %w", sessionID, err)
 		}
 	}
-	return tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("forget session %s: %w", sessionID, err)
+	}
+	x.forgetGen[sessionID]++
+	return nil
+}
+
+// forgetGeneration is sessionID's current forget generation.
+func (x *MessageSearch) forgetGeneration(sessionID string) int64 {
+	x.writeMu.Lock()
+	defer x.writeMu.Unlock()
+	return x.forgetGen[sessionID]
 }
 
 // Match finds the messages that hold every word of query, each word matching

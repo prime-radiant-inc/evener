@@ -411,6 +411,34 @@ func TestMessageSearchForgetsSessions(t *testing.T) {
 	}
 }
 
+// A Refresh reads a session's transcript, then writes what it found; a
+// deletion's Forget can land in between, on another goroutine, after the read
+// but before the write. The write must not resurrect what the concurrent
+// Forget just removed. This drives that race deterministically: the read hook
+// itself calls Forget the moment the read completes, standing in for the
+// other goroutine that would otherwise need to win a timing race.
+func TestMessageSearchRefreshDoesNotResurrectASessionForgottenDuringItsRead(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "sessions", "s1.transcript.jsonl")
+	writeTestTranscript(t, path, "s1", settleTurns()...)
+	index := openTestMessageSearch(t)
+	next := index.read
+	index.read = func(path string, held *appwire.SnapshotIdentity) (transcriptItems, error) {
+		items, err := next(path, held)
+		if err == nil {
+			if err := index.Forget(context.Background(), "s1"); err != nil {
+				t.Fatal(err)
+			}
+		}
+		return items, err
+	}
+	if _, err := index.Refresh(context.Background(), []MessageSearchSession{{ID: "s1", TranscriptPath: path}}); err != nil {
+		t.Fatal(err)
+	}
+	if matches, _ := index.Match(context.Background(), "settle", 3); len(matches) != 0 {
+		t.Fatalf("matches = %+v, want none: the concurrent Forget must win over the read that started before it", matches)
+	}
+}
+
 // search.db holds message text, so it and the WAL file SQLite creates beside
 // it are the owner's alone.
 func TestMessageSearchFilesAreOwnerOnly(t *testing.T) {
