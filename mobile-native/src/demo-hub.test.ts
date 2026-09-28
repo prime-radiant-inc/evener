@@ -277,11 +277,7 @@ describe("native demonstration hub's redesign fleet", () => {
 
 	it("serves New session's reads for each host and starts a session on paradise-park", async () => {
 		const hub = await createDemoHub(0, undefined, {});
-		const client = createHubClient(
-			hub.origin,
-			"",
-			(url) => new WebSocket(url) as unknown as WebSocketLike,
-		);
+		const client = createHubClient(hub.origin, "", (url) => new WebSocket(url) as unknown as WebSocketLike);
 		try {
 			await client.connect();
 			const recent = await client.request("evener/projects/recent", {});

@@ -24,7 +24,12 @@ const OFFLINE_ERROR = "ssh: connect to host paradise-park port 22: Operation tim
 // data.js's `providers`. `auth` is how the prototype signs in: an account
 // (oauth), a key, or nothing (ollama).
 const PROVIDERS: { id: string; base: string; auth: "oauth" | "key" | "none"; models: string[] }[] = [
-	{ id: "lunaroute", base: "openai-compatible", auth: "key", models: ["deepseek-4.1-flash", "glm-5.3-vision", "glm-5.2-vision", "glm-5.3-flash", "glm-5.3"] },
+	{
+		id: "lunaroute",
+		base: "openai-compatible",
+		auth: "key",
+		models: ["deepseek-4.1-flash", "glm-5.3-vision", "glm-5.2-vision", "glm-5.3-flash", "glm-5.3"],
+	},
 	{ id: EXPIRED_PROVIDER, base: "codex", auth: "oauth", models: ["gpt-5.6", "gpt-5.6-luna", "gpt-6-astra"] },
 	{ id: "codex-jesse-at-pr", base: "codex", auth: "oauth", models: ["gpt-5.6"] },
 	{ id: "oai-jrv", base: "openai", auth: "key", models: ["gpt-5.5", "codex-auto-review"] },
@@ -71,7 +76,10 @@ const MARKETPLACES: { id: string; source: MarketplaceEntry["source"] }[] = [
 // What PLUGINS (demoFleet.ts) leaves out: data.js's description and counts
 // text for each plugin, keyed by its id.
 const PLUGIN_FACTS: Record<string, { description: string; counts: string }> = {
-	superpowers: { description: "Brainstorming, TDD, debugging, plans and reviews", counts: "38 skills · 3 agents · 6 commands · 2 hooks" },
+	superpowers: {
+		description: "Brainstorming, TDD, debugging, plans and reviews",
+		counts: "38 skills · 3 agents · 6 commands · 2 hooks",
+	},
 	"elements-of-style": { description: "Write clearly and concisely", counts: "1 skill" },
 	"claude-session-driver": { description: "Manage other agent sessions as workers", counts: "1 skill · 1 command" },
 	"private-journal-mcp": { description: "A private journal the agent can write to", counts: "1 MCP server" },
@@ -251,7 +259,9 @@ export function createDemoSetup(fleet: DemoFleet, options: { offlineHost?: boole
 			"evener/launch/resolve": () => ({ effective: { ...LAUNCH_DEFAULTS }, layers: {}, provenance: {} }),
 			"model/list": () => ({
 				data: MODELS.map(modelDescriptor),
-				recent: RECENT_MODELS.map((id) => modelDescriptor(MODELS.find(([model]) => model === id) as (typeof MODELS)[number])),
+				recent: RECENT_MODELS.map((id) =>
+					modelDescriptor(MODELS.find(([model]) => model === id) as (typeof MODELS)[number]),
+				),
 			}),
 			"evener/plugin/preview": ({ launchOverrides }: MethodTypes["evener/plugin/preview"]["params"]) => {
 				const chosen = launchOverrides?.enabledPlugins;
@@ -289,7 +299,9 @@ export function createDemoSetup(fleet: DemoFleet, options: { offlineHost?: boole
 		"evener/host/request": ({ host, method, params }) => {
 			if (host !== HOST) throw new Error(`unknown host ${host}`);
 			if (!FORWARDED.has(method)) throw new Error(`method "${method}" is not a permitted remote admin method`);
-			const forward = paradiseLaunch[method as keyof typeof paradiseLaunch] as ((params: unknown) => unknown) | undefined;
+			const forward = paradiseLaunch[method as keyof typeof paradiseLaunch] as
+				| ((params: unknown) => unknown)
+				| undefined;
 			if (!forward) throw new Error(`demoSetup: ${method} isn't forwarded by the demo`);
 			return forward(params ?? {}) as MethodTypes["evener/host/request"]["result"];
 		},
@@ -336,7 +348,16 @@ export function createDemoSetup(fleet: DemoFleet, options: { offlineHost?: boole
 	};
 }
 
-function modelDescriptor([model, displayName, provider, contextK, input, output, vision, efforts]: (typeof MODELS)[number]): ModelDescriptor {
+function modelDescriptor([
+	model,
+	displayName,
+	provider,
+	contextK,
+	input,
+	output,
+	vision,
+	efforts,
+]: (typeof MODELS)[number]): ModelDescriptor {
 	return {
 		provider,
 		model,
@@ -354,7 +375,13 @@ function modelDescriptor([model, displayName, provider, contextK, input, output,
 function instanceEntry(provider: (typeof PROVIDERS)[number], index: number): InstanceEntry {
 	const signIn = {
 		oauth: { authModes: ["oauth"], activeSource: "oauth", hasStoredOAuth: true, credentialRequired: true },
-		key: { authModes: ["apiKey"], activeSource: "store", hasStoredOAuth: false, credentialRequired: true, hasStoredFile: true },
+		key: {
+			authModes: ["apiKey"],
+			activeSource: "store",
+			hasStoredOAuth: false,
+			credentialRequired: true,
+			hasStoredFile: true,
+		},
 		none: { authModes: [], activeSource: "none", hasStoredOAuth: false, credentialRequired: false },
 	}[provider.auth];
 	return {

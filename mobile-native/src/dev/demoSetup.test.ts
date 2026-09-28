@@ -173,7 +173,9 @@ describe("launching", () => {
 	});
 
 	it("resolves the hub's launch defaults", () => {
-		expect(setup().answer("evener/launch/resolve", { cwd: "/home/jesse/git/prime-radiant-inc/evener" }).effective).toEqual({
+		expect(
+			setup().answer("evener/launch/resolve", { cwd: "/home/jesse/git/prime-radiant-inc/evener" }).effective,
+		).toEqual({
 			sandbox: "workspace-write",
 			sandboxNet: true,
 			contextStrategy: "compact",
@@ -189,7 +191,9 @@ describe("launching", () => {
 		expect(forward("evener/projects/recent", {})).toEqual({
 			data: ["/Users/jesse/git/evener", "/Users/jesse/git/c-to-wasm"],
 		});
-		expect(forward("evener/path/validate", { path: "/home/jesse/git/prime-radiant-inc/evener", kind: "dir" })).toMatchObject({
+		expect(
+			forward("evener/path/validate", { path: "/home/jesse/git/prime-radiant-inc/evener", kind: "dir" }),
+		).toMatchObject({
 			valid: false,
 		});
 		expect(forward("evener/git/head", { cwd: "/Users/jesse/git/evener" })).toEqual({ head: "main" });
@@ -200,9 +204,9 @@ describe("launching", () => {
 		expect(() =>
 			demo.answer("evener/host/request", { host: "paradise-park", method: "evener/instance/delete", params: {} }),
 		).toThrow('method "evener/instance/delete" is not a permitted remote admin method');
-		expect(() =>
-			demo.answer("evener/host/request", { host: "elsewhere", method: "model/list", params: {} }),
-		).toThrow("unknown host elsewhere");
+		expect(() => demo.answer("evener/host/request", { host: "elsewhere", method: "model/list", params: {} })).toThrow(
+			"unknown host elsewhere",
+		);
 	});
 
 	it("leaves methods it doesn't serve to the rest of the demo hub", () => {
