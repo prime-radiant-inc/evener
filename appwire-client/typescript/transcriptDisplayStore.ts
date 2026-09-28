@@ -1285,6 +1285,10 @@ export function createTranscriptDisplayStore(deps: TranscriptDisplayStoreDeps): 
         draftUnreadable: _draftUnreadable,
         draftConflict: _draftConflict,
         draftError: _draftError,
+        // The wrapper is the sole producer of changedLayouts: spreading the
+        // initial empty array here would churn the identity consumers key on
+        // even when the reset moves no hub entry.
+        changedLayouts: _changedLayouts,
         ...lifecycle
       } = initialState();
       try {

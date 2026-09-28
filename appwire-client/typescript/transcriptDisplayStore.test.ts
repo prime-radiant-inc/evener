@@ -220,6 +220,17 @@ describe("hub defaults", () => {
     expect(resetClaimed).toEqual([["desktop", "mobile"]]);
   });
 
+  test("a publication that moves no hub entry keeps the changed-layouts identity", () => {
+    const store = createTranscriptDisplayStore({ client: new FakeClient("ready") });
+    const claimed: string[][] = [];
+    store.subscribe((state, previous) => {
+      if (state.changedLayouts !== previous.changedLayouts) claimed.push([...state.changedLayouts]);
+    });
+    store.reset();
+    expect(store.getState().hub).toEqual({});
+    expect(claimed).toEqual([]);
+  });
+
   test("a function-form update runs its updater exactly once", () => {
     const store = createTranscriptDisplayStore({ client: new FakeClient("ready") });
     let calls = 0;
