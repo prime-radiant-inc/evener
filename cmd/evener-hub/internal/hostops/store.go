@@ -134,6 +134,13 @@ type snapshot struct {
 	// that has mirrored no boundary yet, not a schema-invalid file. Every write
 	// emits it as an object.
 	Boundaries map[string]Boundary `json:"boundaries"`
+	// FencingQuarantines is §4's durable per-host fencing-quarantine marker set
+	// (crash-fencing spec), keyed by host name: the marker lands in the same
+	// atomic write as the fencing-timeout record it names. Like Boundaries it is
+	// optional on read — the key arrived after the store shipped, so a file
+	// without it is a store no fencing timeout has closed — and every write
+	// emits it as an object.
+	FencingQuarantines map[string]FencingQuarantine `json:"fencingQuarantines"`
 	// Tokens is the outstanding confirmation-token row set (deploy-pipeline §3):
 	// at most one row per host name, because minting supersedes. Like Boundaries
 	// it is optional on read — the key arrived after the store shipped, so a
@@ -528,6 +535,23 @@ func (s *Store) Transition(id string, to State, change func(*Record)) (Record, e
 	if record.State.Terminal() {
 		return Record{}, fmt.Errorf("%w: record %q is already %q", ErrRecordTerminal, id, record.State)
 	}
+	// A record its host's fencing marker names is a fencing quarantine, and §5
+	// clears a quarantine through one dedicated fencing resolve, which clears
+	// the marker, the boundary, the open intents and the state in ONE atomic
+	// write (slice S20). This edge cannot promise that: the boundary is the
+	// caller's callback to clear and the intents are a separate store
+	// operation, so a marker-only clear here would commit a half-resolved
+	// quarantine and invite resolutions that skip the boundary cleanup. A
+	// quarantined exit is therefore refused deliberately, by type, instead of
+	// committing a record that has left the state and failing afterwards in
+	// validateSnapshot with a schema error that leaves the marker naming a
+	// resolved record.
+	if record.State == StateOrphanUnverified && to != StateOrphanUnverified {
+		if marker, marked := next.FencingQuarantines[record.Host]; marked && marker.RecordID == record.ID {
+			return Record{}, fmt.Errorf("%w: record %q is a fencing-quarantined record (host %q's marker names it); its quarantine clears only through the dedicated fencing resolve — marker, boundary, intents and state in one atomic write (slice S20) — never through Transition",
+				ErrInvalidTransition, id, record.Host)
+		}
+	}
 	// Spec §4 and §7 name exactly one exit from the fencing state: "the
 	// `orphan-unverified`→`interrupted` resolution" — a record whose boundary has
 	// not been verified must never become a success. The rest of the graph
@@ -666,6 +690,10 @@ type storeFile struct {
 	// Boundaries is optional on read (see snapshot.Boundaries): absent and null
 	// both decode to nil, which is "no boundary mirrored yet".
 	Boundaries map[string]Boundary `json:"boundaries"`
+	// FencingQuarantines is optional on read (see
+	// snapshot.FencingQuarantines): absent and null both decode to nil, which
+	// is "no fencing timeout has closed a host yet".
+	FencingQuarantines map[string]FencingQuarantine `json:"fencingQuarantines"`
 	// Tokens is optional on read (see snapshot.Tokens): absent and null both
 	// decode to nil, which is "no token minted yet".
 	Tokens *[]tokenFile `json:"tokens"`
@@ -948,6 +976,7 @@ func readStoreFS(fs afero.Fs, path string) (snapshot, error) {
 		Records:                records,
 		CompactSeq:             file.CompactSeq,
 		Boundaries:             file.Boundaries,
+		FencingQuarantines:     file.FencingQuarantines,
 		RemovedHosts:           file.RemovedHosts,
 		Tokens:                 tokens,
 		Compensations:          compensations,
@@ -998,6 +1027,12 @@ func readStoreFS(fs afero.Fs, path string) (snapshot, error) {
 		state.Records[i].CreatedAt = state.Records[i].CreatedAt.UTC()
 		state.Records[i].UpdatedAt = state.Records[i].UpdatedAt.UTC()
 	}
+	// The fencing-quarantine markers' timestamps take the same normalization, so
+	// a hand-edited or imported offset form never survives a rewrite either.
+	for host, marker := range state.FencingQuarantines {
+		marker.QuarantinedAt = marker.QuarantinedAt.UTC()
+		state.FencingQuarantines[host] = marker
+	}
 	return state, nil
 }
 
@@ -1020,6 +1055,11 @@ func saveFS(fs afero.Fs, path string, state snapshot, faults storeFaults) (renam
 		// the key is always present in a file this store wrote, so absent/null
 		// stays what it is — the pre-boundary file shape.
 		state.Boundaries = map[string]Boundary{}
+	}
+	if state.FencingQuarantines == nil {
+		// Same rule for the fencing-quarantine markers: a store that has closed
+		// no host writes an empty object, never null.
+		state.FencingQuarantines = map[string]FencingQuarantine{}
 	}
 	if state.Tokens == nil {
 		// Same rule for the token rows: a store that has minted nothing writes an
@@ -1260,7 +1300,7 @@ var ownedObjectKeys = map[string]map[string]struct{}{
 	"": keysOf("version", "sequence", "allocatorHighWaterMark", "records", "boundaries",
 		"tokens", "probeEpochs", "probeEpochSeq", "guardEpoch", "wallClockHighWaterMark",
 		"compactSeq", "tombstones", "compactionMarks", "compactionFloor", "removedHosts",
-		"pendingCompensation"),
+		"pendingCompensation", "fencingQuarantines"),
 	"records[]": keysOf("id", "clientOperationId", "host", "kind", "state", "generation",
 		"incarnationId", "fencingEpoch", "orphanBoundary", "progress", "result",
 		"pendingSpawns", "createdAt", "updatedAt", "hostRemoved", "sequence"),
@@ -1279,8 +1319,9 @@ var ownedObjectKeys = map[string]map[string]struct{}{
 	// The per-name removal markers are objects this store decodes, so their
 	// keys are canonical too: a case variant (Go matches JSON field names
 	// case-insensitively) would be silently rewritten on the next save.
-	"removedHosts[]": keysOf("removedAt", "generation", "incarnationId"),
-	"boundaries[]":   keysOf("generation", "incarnationId", "presenceEpoch"),
+	"removedHosts[]":       keysOf("removedAt", "generation", "incarnationId"),
+	"boundaries[]":         keysOf("generation", "incarnationId", "presenceEpoch"),
+	"fencingQuarantines[]": keysOf("recordId", "quarantinedAt"),
 	"tokens[]": keysOf("host", "value", "generation", "incarnationId", "entryHash",
 		"hubTomlFingerprint", "factsRevision", "factsCapturedAt", "targetPath",
 		"controllerRevision", "runningVersion", "runningHealthy", "processStartTime",
@@ -1715,6 +1756,47 @@ func validateSnapshot(state snapshot) error {
 			return err
 		}
 	}
+	// Fencing-quarantine markers carry the same refuse-always rule: a marker
+	// names the host's open orphan-unverified record — the `orphan-resolve` way
+	// out that clears it in the same atomic write — so a marker whose record is
+	// missing, resolved or another host's is not a state this store's writer
+	// produces.
+	for host, marker := range state.FencingQuarantines {
+		if err := validateBoundaryName(host); err != nil {
+			return err
+		}
+		if _, err := parseAllocatorID(marker.RecordID); err != nil {
+			return fmt.Errorf("%w: fencing quarantine for %q names %q, not a controller-assigned record id",
+				ErrInvalidRecord, host, marker.RecordID)
+		}
+		if marker.QuarantinedAt.IsZero() {
+			return fmt.Errorf("%w: fencing quarantine for %q carries no timestamp", ErrInvalidRecord, host)
+		}
+		index := slices.IndexFunc(state.Records, func(record Record) bool { return record.ID == marker.RecordID })
+		if index < 0 {
+			return fmt.Errorf("%w: fencing quarantine for %q names missing record %s", ErrInvalidRecord, host, marker.RecordID)
+		}
+		if record := state.Records[index]; record.State != StateOrphanUnverified || record.Host != host {
+			return fmt.Errorf("%w: fencing quarantine for %q names record %s in state %q for host %q",
+				ErrInvalidRecord, host, marker.RecordID, record.State, record.Host)
+		} else if !boundaryHasRemoteFencing(record.OrphanBoundary) {
+			return fmt.Errorf("%w: fencing quarantine for %q names record %s whose boundary is not remote-fencing",
+				ErrInvalidRecord, host, marker.RecordID)
+		}
+	}
+	// The equivalence runs both ways: a record whose boundary is the
+	// remote-fencing variant is a fencing quarantine, so its host's marker must
+	// name it. A store carrying one half but not the other would disagree with
+	// what custody recovery and the admission fence read.
+	for _, record := range state.Records {
+		if record.State != StateOrphanUnverified || !boundaryHasRemoteFencing(record.OrphanBoundary) {
+			continue
+		}
+		if marker, ok := state.FencingQuarantines[record.Host]; !ok || marker.RecordID != record.ID {
+			return fmt.Errorf("%w: record %s carries a remote-fencing boundary but host %q carries no matching quarantine marker",
+				ErrInvalidRecord, record.ID, record.Host)
+		}
+	}
 	// Probe epochs and the guard epoch carry the same refuse-always rule: a row
 	// outside the schema a persist writes never enters the file, and the
 	// set-level rules (one probe row per host, a row's sequence at or below its
@@ -1758,6 +1840,7 @@ func cloneSnapshot(state snapshot) snapshot {
 		out.Records[i] = cloneRecord(record)
 	}
 	out.Boundaries = maps.Clone(state.Boundaries)
+	out.FencingQuarantines = maps.Clone(state.FencingQuarantines)
 	out.Tombstones = make([]Tombstone, len(state.Tombstones))
 	for i, tombstone := range state.Tombstones {
 		out.Tombstones[i] = cloneTombstone(tombstone)
