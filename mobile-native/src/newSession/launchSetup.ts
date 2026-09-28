@@ -83,12 +83,11 @@ export function sameSetup(a: LaunchSetup, b: LaunchSetup): boolean {
 		a.model?.provider === b.model?.provider &&
 		a.model?.model === b.model?.model &&
 		a.effort === b.effort &&
-		sameNames(a.overrides.enabledPlugins, b.overrides.enabledPlugins) &&
-		a.overrides.sandbox === b.overrides.sandbox &&
-		a.overrides.sandboxNet === b.overrides.sandboxNet &&
-		a.overrides.contextStrategy === b.overrides.contextStrategy &&
-		a.overrides.maxSubagentDepth === b.overrides.maxSubagentDepth &&
-		a.overrides.maxRounds === b.overrides.maxRounds
+		OWNED_FIELDS.every((field) =>
+			field === "enabledPlugins"
+				? sameNames(a.overrides.enabledPlugins, b.overrides.enabledPlugins)
+				: a.overrides[field] === b.overrides[field],
+		)
 	);
 }
 
@@ -96,14 +95,10 @@ export function sameSetup(a: LaunchSetup, b: LaunchSetup): boolean {
  * setup started for that project on that host; else the newest setup on this
  * hub, moved there; null when nothing was ever started from this phone. */
 export function lastSetupFor(history: readonly RememberedSetup[], host: string, cwd: string): LaunchSetup | null {
-	let exact: RememberedSetup | null = null;
-	let newest: RememberedSetup | null = null;
-	for (const entry of history) {
-		if (!newest || entry.at > newest.at) newest = entry;
-		if (entry.setup.host === host && entry.setup.cwd === cwd && (!exact || entry.at > exact.at)) exact = entry;
-	}
-	if (exact) return exact.setup;
-	return newest ? { ...newest.setup, host, cwd } : null;
+	const exact = newestSetup(history.filter((entry) => entry.setup.host === host && entry.setup.cwd === cwd));
+	if (exact) return exact;
+	const newest = newestSetup(history);
+	return newest ? { ...newest, host, cwd } : null;
 }
 
 /** The newest setup started from this phone: where a sheet with nothing in
