@@ -5,7 +5,7 @@ import type { ReactElement } from "react";
 import { type AccessibilityActionEvent, type AccessibilityActionInfo, Platform, Pressable, Text, View } from "react-native";
 import type { Palette } from "../design/tokens";
 import { useColors, useTextScale } from "../ui";
-import { bandOf, type ClassifiedRow, lastLine, stateWord, type Usual, whyLine } from "./attention";
+import { bandOf, type ClassifiedRow, lastLine, stateWord, type Usual, type WhyLine, whyLine } from "./attention";
 import { StateMark } from "./StateMark";
 
 export interface BoardRowProps {
@@ -194,34 +194,7 @@ export function BoardRow({
 						</View>
 					) : null}
 				</View>
-				{why ? (
-					<Text
-						allowFontScaling={Platform.OS !== "ios"}
-						numberOfLines={needsYou ? 2 : 1}
-						ellipsizeMode="tail"
-						style={{
-							marginTop: 2,
-							fontSize: 15 * scale,
-							lineHeight: 20 * scale,
-							color: why.word ? palette.inkHi : palette.inkMid,
-						}}
-					>
-						{why.word ? (
-							<>
-								<Text
-									style={{
-										fontWeight: "600",
-										color: why.hue === "danger" ? palette.dangerInk : palette.attentionInk,
-									}}
-								>
-									{why.word}
-								</Text>
-								{" · "}
-							</>
-						) : null}
-						{why.text}
-					</Text>
-				) : null}
+				{why ? <WhyText why={why} numberOfLines={needsYou ? 2 : 1} marginTop={2} /> : null}
 				{last ? (
 					<View style={{ marginTop: 4, flexDirection: "row", alignItems: "center", columnGap: 6, overflow: "hidden" }}>
 						{last.task ? <Fact glyph="checklist" text={last.task} scale={scale} shrink /> : null}
@@ -234,11 +207,46 @@ export function BoardRow({
 	);
 }
 
+/** A row's why line (spec 7.2): the state's word in its hue, when it has
+ * one, then the reason. */
+export function WhyText({ why, numberOfLines, marginTop }: { why: WhyLine; numberOfLines?: number; marginTop?: number }) {
+	const { palette } = useColors();
+	const scale = useTextScale();
+	return (
+		<Text
+			allowFontScaling={Platform.OS !== "ios"}
+			numberOfLines={numberOfLines}
+			ellipsizeMode="tail"
+			style={{
+				marginTop,
+				fontSize: 15 * scale,
+				lineHeight: 20 * scale,
+				color: why.word ? palette.inkHi : palette.inkMid,
+			}}
+		>
+			{why.word ? (
+				<>
+					<Text
+						style={{
+							fontWeight: "600",
+							color: why.hue === "danger" ? palette.dangerInk : palette.attentionInk,
+						}}
+					>
+						{why.word}
+					</Text>
+					{" · "}
+				</>
+			) : null}
+			{why.text}
+		</Text>
+	);
+}
+
 /** A glyph and a fact on the last line, which never wraps. A `shrink` fact
  * gives up width when the line runs out of room, tail-truncating its text;
  * the others keep theirs. Only the task line shrinks: its title comes after
  * the "Task 4 of 7 · " prefix, so the title truncates first (spec 7.2). */
-function Fact({
+export function Fact({
 	glyph,
 	text,
 	scale,

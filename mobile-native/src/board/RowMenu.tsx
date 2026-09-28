@@ -15,6 +15,7 @@ import { Sheet, useSheet } from "../sheet/Sheet";
 import { sheetHosts, sheetKey, useSheetHost } from "../sheet/sheetHosts";
 import { useColors, useTextScale } from "../ui";
 import { type ClassifiedRow, stateWord, whyLine } from "./attention";
+import { Fact, WhyText } from "./BoardRow";
 import { ROW_ACTION_LABELS, type RowAction } from "./rowActions";
 import { StateMark } from "./StateMark";
 
@@ -60,10 +61,8 @@ export function RowPreviewCard({
 	const { palette } = useColors();
 	const scale = useTextScale();
 	const { row, state } = item;
-	const why = whyLine(item);
-	const facts: { glyph: SFSymbol; text: string }[] = [];
-	if (row.project) facts.push({ glyph: "folder", text: row.project });
-	facts.push({ glyph: "server.rack", text: hostLabel(row.host_id) });
+	// Finished, Idle and Shut down have no reason: the word says it.
+	const why = whyLine(item) ?? { text: stateWord(state) };
 	return (
 		<Pressable
 			accessibilityRole="button"
@@ -92,36 +91,10 @@ export function RowPreviewCard({
 					{row.title}
 				</Text>
 			</View>
-			<Text
-				allowFontScaling={Platform.OS !== "ios"}
-				style={{ fontSize: 15 * scale, lineHeight: 20 * scale, color: why?.word ? palette.inkHi : palette.inkMid }}
-			>
-				{why?.word ? (
-					<>
-						<Text
-							style={{ fontWeight: "600", color: why.hue === "danger" ? palette.dangerInk : palette.attentionInk }}
-						>
-							{why.word}
-						</Text>
-						{" · "}
-					</>
-				) : null}
-				{/* Finished, Idle and Shut down have no reason: the word says it. */}
-				{why ? why.text : stateWord(state)}
-			</Text>
+			<WhyText why={why} />
 			<View style={{ flexDirection: "row", alignItems: "center", columnGap: 8 }}>
-				{facts.map((fact) => (
-					<View key={fact.glyph} style={{ flexDirection: "row", alignItems: "center", columnGap: 3, flexShrink: 1 }}>
-						<SymbolView name={fact.glyph} size={13 * scale} tintColor={palette.inkLow} />
-						<Text
-							allowFontScaling={Platform.OS !== "ios"}
-							numberOfLines={1}
-							style={{ flexShrink: 1, fontSize: 13 * scale, lineHeight: 18 * scale, color: palette.inkLow }}
-						>
-							{fact.text}
-						</Text>
-					</View>
-				))}
+				{row.project ? <Fact glyph="folder" text={row.project} scale={scale} shrink /> : null}
+				<Fact glyph="server.rack" text={hostLabel(row.host_id)} scale={scale} shrink />
 			</View>
 		</Pressable>
 	);
