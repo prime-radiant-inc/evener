@@ -82,6 +82,8 @@ export function QuestionDock({
 			<Pressable
 				accessibilityRole="button"
 				accessibilityLabel={label}
+				// The label names the bar; VoiceOver reads why an answer didn't go after it.
+				accessibilityHint={error ?? undefined}
 				accessibilityState={{ expanded: false, disabled: false }}
 				onPress={() => onFold(false)}
 				style={({ pressed }) => ({
@@ -94,9 +96,16 @@ export function QuestionDock({
 					opacity: pressed ? 0.6 : 1,
 				})}
 			>
-				<Text allowFontScaling={allowFontScaling} style={{ flex: 1, fontSize: 15 * scale, lineHeight: 20 * scale, color: palette.inkHi }}>
-					{label}
-				</Text>
+				<View style={{ flex: 1, paddingVertical: 4 }}>
+					<Text allowFontScaling={allowFontScaling} style={{ fontSize: 15 * scale, lineHeight: 20 * scale, color: palette.inkHi }}>
+						{label}
+					</Text>
+					{error ? (
+						<Text allowFontScaling={allowFontScaling} numberOfLines={1} style={{ ...caption, color: palette.dangerInk }}>
+							{error}
+						</Text>
+					) : null}
+				</View>
 				<SymbolView name="chevron.up" tintColor={palette.inkMid} size={15 * scale} />
 			</Pressable>
 		);

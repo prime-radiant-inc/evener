@@ -1552,6 +1552,9 @@ export function ConversationScreen({
 	// composer back: both start over for each new batch of questions.
 	const [questionFolded, setQuestionFolded] = useState(false);
 	const [composerBack, setComposerBack] = useState(false);
+	// Why the answers didn't go: the dock's own line, open or folded. Every
+	// other failure keeps the screen's error area.
+	const [answerError, setAnswerError] = useState<string | null>(null);
 	const dockBatch = questionBatch
 		? questionBatch.id + questionsIdentity(questionBatch.questions)
 		: null;
@@ -1560,6 +1563,7 @@ export function ConversationScreen({
 		setDockFor(dockBatch);
 		setQuestionFolded(false);
 		setComposerBack(false);
+		setAnswerError(null);
 	}
 	// What this conversation may be asked to do now (conversationControls.ts):
 	// every affordance and submission below reads it, never a raw capability.
@@ -1774,7 +1778,7 @@ export function ConversationScreen({
 			!questionBatches.getSnapshot().includes(batch)
 		)
 			return false;
-		setActionError(null);
+		setAnswerError(null);
 		let acceptedAnswers = false;
 		try {
 			await document.submitText(text, async (input) => {
@@ -1801,7 +1805,7 @@ export function ConversationScreen({
 			)
 				await store.getState().rehydrate(service, activitySink);
 		} catch {
-			setActionError(
+			setAnswerError(
 				"Could not confirm delivery. Your answers are retained; check delivery before trying again.",
 			);
 		} finally {
@@ -2225,8 +2229,7 @@ export function ConversationScreen({
 	// message never drops out of sight.
 	const waitingForAgent = (
 		<>
-			{/* While a question waits, the dock says why its answer didn't go. */}
-			<ErrorMessage message={questionBatch ? null : actionError} />
+			<ErrorMessage message={actionError} />
 			{draft.error ? (
 				<View style={{ alignItems: "flex-start" }}>
 					<ErrorMessage message={draft.error} />
@@ -2722,7 +2725,7 @@ export function ConversationScreen({
 									onSend={(selections) => {
 										void sendAnswers(questionBatch, selections);
 									}}
-									error={actionError}
+									error={answerError}
 								/>
 							) : null}
 							{bottom.tray ? (

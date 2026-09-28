@@ -7,9 +7,11 @@ import { createElement } from "react";
 import { act, type ReactTestRenderer } from "react-test-renderer";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { AnyNotification, Thread } from "@evener/appwire-client";
-import { flatListCalls, pressable, render, renderedText, screenConnection } from "./renderNative.testkit";
+import { getNativeMutationRuntime, nativeMutationTargetKey } from "./nativeMutationRuntime";
+import { flatListCalls, pressable, render, renderedText, screenConnection, textOf } from "./renderNative.testkit";
 import { queueHosts } from "./QueueSheet";
 import { ConversationScreen } from "./screens";
+import { QuestionDock } from "./session/QuestionDock";
 import { sheetKey } from "./sheet/sheetHosts";
 
 const harness = vi.hoisted(() => ({
@@ -447,6 +449,43 @@ describe("a question waiting for an answer (spec 8.4)", () => {
 			[{ type: "text", text: '[answers]\n1. [Choice] \u2192 "Drop them"' }],
 		]);
 		expect(renderedText(tree)).toContain("Answer sent");
+	});
+
+	it("keeps a refused message's failed Edit out of the dock, in the screen's error area", async () => {
+		const ref = "ref-question-ghost";
+		const { tree } = await mount(thread(ref, "awaiting", true));
+		// A message the hub refused, as a ghost that offers Edit.
+		const runtime = getNativeMutationRuntime();
+		const targetKey = nativeMutationTargetKey("hub-1", ref);
+		const record = await runtime.storage.enqueueIntent({
+			targetRef: targetKey,
+			method: "turn/queue",
+			payload: { ref, input: [{ type: "text", text: "recover this message" }] },
+			attachments: [],
+			optimisticDisplay: { method: "turn/queue" },
+		});
+		await runtime.storage.transferToRecovery(record.clientMutationId, "rejected", "daemon refused");
+		await act(async () => {
+			await runtime.discardRecovery("no-such-row", targetKey);
+		});
+		await settle();
+		// The device can't write the draft, so Edit can't bring the message back.
+		const drafts = sqlite.ports.get("evener-drafts.db") as { runSync: (...args: unknown[]) => unknown };
+		const runSync = drafts.runSync;
+		drafts.runSync = () => {
+			throw new Error("disk full");
+		};
+		try {
+			await press(tree, "Edit");
+		} finally {
+			drafts.runSync = runSync;
+		}
+		const failure = "This message could not be restored to the draft.";
+		expect(renderedText(tree)).toContain(failure);
+		const dock = tree.root.findAll((node) => node.type === QuestionDock);
+		expect(dock).toHaveLength(1);
+		expect(textOf(dock[0])).toContain("Keep or drop the implied options?");
+		expect(textOf(dock[0])).not.toContain(failure);
 	});
 
 	it("folds to a bar, and the composer comes back beneath it", async () => {

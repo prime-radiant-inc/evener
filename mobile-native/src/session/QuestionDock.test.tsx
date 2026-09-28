@@ -62,7 +62,7 @@ const two = [question("q1", "Flags", ["Keep them", "Drop them"]), question("q2",
 
 function mount(
 	questions: AskQuestionRef[],
-	{ ready = true, folded = false }: { ready?: boolean; folded?: boolean } = {},
+	{ ready = true, folded = false, error = null }: { ready?: boolean; folded?: boolean; error?: string | null } = {},
 ) {
 	const onSend = vi.fn<(selections: QuestionSelections) => void>();
 	const onFold = vi.fn<(folded: boolean) => void>();
@@ -79,6 +79,7 @@ function mount(
 				onFold={onFold}
 				onOtherAnswer={onOtherAnswer}
 				onSend={onSend}
+				error={error}
 			/>
 		);
 	}
@@ -152,6 +153,24 @@ describe("the question dock (spec 8.4)", () => {
 		expect(renderedText(folded.tree)).not.toContain("Question 1 of 2");
 		press(folded.tree, "Answer 2 questions");
 		expect(folded.onFold).toHaveBeenCalledWith(false);
+	});
+
+	it("says why an answer didn't go, folded too", () => {
+		const error = "Could not confirm delivery. Your answers are retained; check delivery before trying again.";
+		const open = mount(two, { error });
+		expect(renderedText(open.tree)).toContain(error);
+		const folded = mount(two, { folded: true, error });
+		expect(renderedText(folded.tree)).toContain(error);
+		expect(renderedText(folded.tree)).toContain("Answer 2 questions");
+	});
+
+	it("counts every question on the folded bar while each has only its recommendation", () => {
+		const seeded = [
+			question("q1", "Flags", ["Keep them", "Drop them"], "Drop them"),
+			question("q2", "Tests", ["Run them", "Skip them"], "Run them"),
+		];
+		const { tree } = mount(seeded, { folded: true });
+		expect(renderedText(tree)).toContain("Answer 2 questions");
 	});
 
 	it("hands Other answer… to the composer", () => {
