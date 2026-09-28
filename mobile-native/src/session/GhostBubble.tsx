@@ -164,12 +164,15 @@ export function GhostBubble({ ghost, disabled, canEdit, editHint, attachments, b
 		</View>
 	);
 	// Cancel takes the same path as the menu's, which checks at the moment
-	// it runs that the message is still the one you swiped.
-	const cancels = !disabled && (ghost.buttons.includes("cancel") || ghost.menu.includes("cancel"));
+	// it runs that the message is still the one you swiped. While another
+	// action runs the row holds still, and stays mounted so the bubble
+	// never remounts.
+	const cancels = ghost.buttons.includes("cancel") || ghost.menu.includes("cancel");
 	return cancels ? (
 		<SwipeRow
 			destructive={{ key: "cancel", label: BUTTON_LABELS.cancel, run: () => onAction("cancel") }}
 			backdrop={palette[backdrop]}
+			enabled={!disabled}
 		>
 			{bubble}
 		</SwipeRow>

@@ -48,6 +48,8 @@ export type SwipeRowProps = {
 	 * of its own, since the action panels are drawn behind the row as soon
 	 * as it moves. */
 	backdrop?: string;
+	/** False holds the row still without unmounting its content. */
+	enabled?: boolean;
 	children: ReactNode;
 } & (
 	| {
@@ -80,7 +82,15 @@ export function swipeAccessibility(leading: SwipeAction | undefined, trailing: r
 	};
 }
 
-export function SwipeRow({ leading, trailing = [], destructive, onActiveChange, backdrop, children }: SwipeRowProps) {
+export function SwipeRow({
+	leading,
+	trailing = [],
+	destructive,
+	onActiveChange,
+	backdrop,
+	enabled = true,
+	children,
+}: SwipeRowProps) {
 	const { palette } = useColors();
 	const { width } = useWindowDimensions();
 	const swipeable = useRef<SwipeableMethods>(null);
@@ -128,6 +138,7 @@ export function SwipeRow({ leading, trailing = [], destructive, onActiveChange, 
 	return (
 		<ReanimatedSwipeable
 			ref={swipeable}
+			enabled={enabled}
 			// Takes the left edge band out of the row's pan, so the system's back
 			// gesture keeps drags that begin there (spec 7.3).
 			hitSlop={{ left: -EDGE_ZONE_PT }}

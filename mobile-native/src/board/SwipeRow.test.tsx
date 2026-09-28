@@ -154,6 +154,16 @@ describe("a destructive swipe (spec 8.5, 8.8)", () => {
 		expect(tree.root.findByProps({ testID: "swipe-row-content" }).props.style).toEqual({ backgroundColor: "#123456" });
 	});
 
+	it("stays mounted but still while switched off", () => {
+		const tree = render(
+			<SwipeRow destructive={{ key: "cancel", label: "Cancel", run: vi.fn() }} enabled={false}>
+				<Text>ghost</Text>
+			</SwipeRow>,
+		);
+		expect(tree.root.findByType("ReanimatedSwipeable" as never).props.enabled).toBe(false);
+		expect(mount().swipeable.props.enabled).toBe(true);
+	});
+
 	it("keeps the row's own reveal threshold for revealed actions", () => {
 		expect(mount().swipeable.props.rightThreshold).toBeUndefined();
 	});

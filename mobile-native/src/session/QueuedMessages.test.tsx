@@ -1,12 +1,13 @@
 // The ghosts above the composer as a person sees them: each bubble's text,
 // caption and buttons, the menu a tap opens, and the row that leads to the
 // rest of the queue.
-import { createElement } from "react";
+import { createElement, useEffect } from "react";
 import type { ReactTestRenderer } from "react-test-renderer";
 import { act } from "react-test-renderer";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { paletteFor } from "../design/tokens";
 import { pressable, render, renderedText, swipeableCalls } from "../renderNative.testkit";
+import { GhostBubble } from "./GhostBubble";
 import type { Ghost, GhostAction } from "./ghosts";
 import { QueuedMessages } from "./QueuedMessages";
 
@@ -349,6 +350,32 @@ describe("swiping a ghost left (spec 8.5)", () => {
 			expect(swipeables(mount([ghost]).tree)).toHaveLength(0);
 		// A queued message the hub hasn't named yet can't be canceled.
 		expect(swipeables(mount([{ ...queued, buttons: [], menu: [] }]).tree)).toHaveLength(0);
-		expect(swipeables(mount([queued], { disabled: true }).tree)).toHaveLength(0);
+		expect(swipeables(mount([queued]).tree)[0]?.props.enabled).toBe(true);
+		expect(swipeables(mount([queued], { disabled: true }).tree)[0]?.props.enabled).toBe(false);
+	});
+
+	it("keeps the same bubble while another action starts and ends", () => {
+		let mounts = 0;
+		function Attachment() {
+			useEffect(() => {
+				mounts += 1;
+			}, []);
+			return null;
+		}
+		const bubble = (disabled: boolean) => (
+			<GhostBubble
+				ghost={queued}
+				disabled={disabled}
+				canEdit
+				editHint={null}
+				backdrop="surface"
+				attachments={<Attachment />}
+				onAction={() => {}}
+			/>
+		);
+		const tree = render(bubble(false));
+		act(() => tree.update(bubble(true)));
+		act(() => tree.update(bubble(false)));
+		expect(mounts).toBe(1);
 	});
 });
