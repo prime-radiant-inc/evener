@@ -35,6 +35,13 @@ type knownDivergence struct {
 	parityDivergence
 	Phase int
 	Why   string
+	// Flaky marks a row whose divergence depends on real scheduling (e.g.
+	// exactly where a live publish boundary lands relative to two entries of
+	// the same turn), not on the scenario's scripted content: it can occur
+	// on one run and not the next. checkParity still fails if it is ever
+	// unlisted, but never fails it as "gone" for being absent on a run where
+	// the timing happened not to produce it.
+	Flaky bool
 }
 
 type parityItem struct {
@@ -240,6 +247,9 @@ func checkParity(t testing.TB, observed map[parityDivergence]struct{}, table []k
 		}
 	}
 	for _, row := range table {
+		if row.Flaky {
+			continue
+		}
 		if _, ok := observed[row.parityDivergence]; !ok {
 			gone = append(gone, fmt.Sprintf("%s (phase %d: %s)", row, row.Phase, row.Why))
 		}
