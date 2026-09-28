@@ -787,3 +787,153 @@ func TestByteBoundNeverCommitsOverTheCapWhenTheBudgetIsExhausted(t *testing.T) {
 		t.Fatal("the byte-bound compaction removed every record instead of stopping at the fit")
 	}
 }
+
+// TestTombstoneValidationBoundsOversizedFields pins M-A: a tombstone can never
+// carry an oversized host name, too many progress entries, or an oversized
+// progress or result message — tombstones are never compaction victims, so a
+// malformed store must not load a value the byte bound could never reclaim.
+func TestTombstoneValidationBoundsOversizedFields(t *testing.T) {
+	now := time.Now().UTC()
+	base := Tombstone{
+		ID: formatAllocatorID(1), ClientOperationID: "op-1", Host: "m4", Kind: KindDeploy,
+		Generation: 7, IncarnationID: "inc-m4", State: StateComplete,
+		CreatedAt: now, UpdatedAt: now, CompactedAt: now, CompactedSeq: 1,
+		Result: &Result{OK: true, Message: "done"},
+	}
+	if err := validateTombstone(base, 1); err != nil {
+		t.Fatalf("valid tombstone: %v", err)
+	}
+	oversizedMessage := strings.Repeat("x", MaxOperationMessageBytes+1)
+	cases := map[string]struct {
+		mutate func(*Tombstone)
+		want   string
+	}{
+		"host name": {func(tm *Tombstone) { tm.Host = strings.Repeat("h", MaxHostNameBytes+1) }, "host name"},
+		"progress count": {func(tm *Tombstone) {
+			for range MaxProgressEntries + 1 {
+				tm.Progress = append(tm.Progress, ProgressEntry{TS: now, Message: "step"})
+			}
+		}, "progress entries"},
+		"progress message": {func(tm *Tombstone) { tm.Progress = []ProgressEntry{{TS: now, Message: oversizedMessage}} }, "progress message"},
+		"result message":   {func(tm *Tombstone) { tm.Result = &Result{OK: true, Message: oversizedMessage} }, "result message"},
+	}
+	for name, tc := range cases {
+		tombstone := base
+		tc.mutate(&tombstone)
+		err := validateTombstone(tombstone, 1)
+		if !errors.Is(err, ErrInvalidRecord) || !strings.Contains(err.Error(), tc.want) {
+			t.Fatalf("%s: err = %v, want ErrInvalidRecord naming %q", name, err, tc.want)
+		}
+	}
+}
+
+// TestOpenRefusesAnOversizedTombstone pins the same rule at the load: a store
+// file carrying an oversized tombstone is refused, the refusal naming the
+// field.
+func TestOpenRefusesAnOversizedTombstone(t *testing.T) {
+	body := `{"version":1,"sequence":1,"allocatorHighWaterMark":1,"compactSeq":1,"records":[],"tombstones":[` +
+		`{"id":"00000000000000000001","clientOperationId":"op-1","host":"` + strings.Repeat("h", MaxHostNameBytes+1) +
+		`","kind":"deploy","state":"complete","generation":7,"incarnationId":"inc-1","createdAt":"2026-09-26T00:00:00Z","updatedAt":"2026-09-26T00:00:00Z","hostRemoved":false,"result":{"ok":true,"message":"done"},"compactedAt":"2026-09-26T00:00:00Z","compactedSeq":1}]}`
+	path := StorePath(t.TempDir())
+	writeRawStore(t, path, 0o600, body)
+	_, err := Open(path)
+	if !errors.Is(err, ErrStoreCorrupt) || !strings.Contains(err.Error(), "host name") {
+		t.Fatalf("Open(oversized tombstone) = %v, want ErrStoreCorrupt naming the host name", err)
+	}
+}
+
+// TestStaleRemovalMarkerDoesNotCompactLiveHistory pins M-B: a re-add whose
+// clear mirror write trailed leaves the marker stale; once the old horizon
+// passes, the live host's terminal records must survive the bounds they would
+// normally survive and its boundary must stay, and the live history stays
+// replayable for the live pair.
+func TestStaleRemovalMarkerDoesNotCompactLiveHistory(t *testing.T) {
+	store, _ := openRetentionStore(t, RetentionPolicy{TerminalPerHost: 50, TerminalStoreWide: 50, RemovedHostHorizon: time.Hour})
+	base := time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC)
+	store.clock = func() time.Time { return base }
+	// The removal at pair 7 landed, then the re-add's mirror write failed: the
+	// boundary and the marker both stay at the old pair.
+	if err := store.MirrorHostState(HostMirror{
+		Boundaries: map[string]Boundary{"m4": {Generation: 7, IncarnationID: "inc-old", PresenceEpoch: 2}},
+		Removed:    map[string]RemovedHost{"m4": {RemovedAt: base.Add(-30 * time.Minute), Generation: 7, IncarnationID: "inc-old"}},
+	}); err != nil {
+		t.Fatalf("MirrorHostState: %v", err)
+	}
+	live := createOpPair(t, store, "m4", "live-1", 8, "inc-new")
+	finish(t, store, live.ID)
+	// Past the old horizon a later write must treat the host as live.
+	store.clock = func() time.Time { return base.Add(2 * time.Hour) }
+	other := createOp(t, store, "x", "x-1")
+	finish(t, store, other.ID)
+
+	if _, ok := store.Record(live.ID); !ok {
+		t.Fatal("a stale removal marker compacted the live host's terminal history")
+	}
+	if _, ok := store.Boundary("m4"); !ok {
+		t.Fatal("a stale removal marker dropped the live host's boundary")
+	}
+	replayed, hit, err := store.LookupOperation(OperationDedupQuery{
+		ClientOperationID: "live-1", Host: "m4", Kind: KindDeploy,
+		Current: OperationPair{Generation: 8, IncarnationID: "inc-new"},
+	})
+	if err != nil || !hit || replayed.ID != live.ID || replayed.Compacted {
+		t.Fatalf("live replay = %+v hit %v compacted %v err %v; want the retained live record",
+			replayed, hit, replayed.Compacted, err)
+	}
+}
+
+// TestMirrorDoesNotReproposeADroppedRemovedHostBoundary pins the Low: after a
+// removed host's last record compacts and §4 drops its boundary, a later
+// hub.toml mutation proposing the same boundary must perform no operation-store
+// write, not a write that changes nothing.
+func TestMirrorDoesNotReproposeADroppedRemovedHostBoundary(t *testing.T) {
+	store, _ := openRetentionStore(t, RetentionPolicy{TerminalPerHost: 50, TerminalStoreWide: 50, RemovedHostHorizon: time.Hour})
+	base := time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC)
+	store.clock = func() time.Time { return base }
+	if err := store.MirrorHostState(HostMirror{
+		Boundaries: map[string]Boundary{"gone": {Generation: 7, IncarnationID: "inc-gone", PresenceEpoch: 2}},
+		Removed:    map[string]RemovedHost{"gone": {RemovedAt: base.Add(-30 * time.Minute), Generation: 7, IncarnationID: "inc-gone"}},
+	}); err != nil {
+		t.Fatalf("MirrorHostState: %v", err)
+	}
+	record := createOp(t, store, "gone", "gone-1")
+	finish(t, store, record.ID)
+	store.clock = func() time.Time { return base.Add(2 * time.Hour) }
+	// An unfittable cap removes every terminal record in one write, taking the
+	// removed host's boundary with its last record; the cap then returns to
+	// roomy so the mirror write below cannot compact for its own sake.
+	store.retention.StoreMaxBytes = 1
+	victim := createOp(t, store, "x", "x-1")
+	finish(t, store, victim.ID)
+	if _, ok := store.Record(record.ID); ok {
+		t.Fatal("test setup: the removed host's record survived")
+	}
+	if _, ok := store.Boundary("gone"); ok {
+		t.Fatal("test setup: the boundary survived the last record")
+	}
+	store.retention.StoreMaxBytes = 64 << 20
+
+	writes := 0
+	store.faults.beforeRename = func() error { writes++; return nil }
+	// The hub re-proposes the high-water record's triple on its next mutation.
+	if err := store.MirrorHostState(HostMirror{
+		Boundaries: map[string]Boundary{"gone": {Generation: 7, IncarnationID: "inc-gone", PresenceEpoch: 2}},
+	}); err != nil {
+		t.Fatalf("re-propose: %v", err)
+	}
+	if writes != 0 {
+		t.Fatalf("the re-proposal performed %d operation-store write(s), want none", writes)
+	}
+	if _, ok := store.Boundary("gone"); ok {
+		t.Fatal("the re-proposal put the dropped boundary back")
+	}
+	// A live name's boundary still commits.
+	if err := store.MirrorHostState(HostMirror{
+		Boundaries: map[string]Boundary{"x": {Generation: 7, IncarnationID: "inc-x", PresenceEpoch: 1}},
+	}); err != nil {
+		t.Fatalf("live mirror: %v", err)
+	}
+	if writes != 1 {
+		t.Fatalf("live mirror writes = %d, want 1", writes)
+	}
+}

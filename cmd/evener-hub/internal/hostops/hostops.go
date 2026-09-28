@@ -47,6 +47,18 @@ import (
 // opaque, non-empty value of at most 128 bytes with no required structure.
 const MaxClientOperationIDBytes = 128
 
+// MaxHostNameBytes bounds a host name this store persists. 255 is the
+// conventional host-name ceiling and is far above any operator-chosen name,
+// while an unbounded name would let a malformed record or tombstone inflate
+// the store file past its byte bound.
+const MaxHostNameBytes = 255
+
+// MaxOperationMessageBytes bounds one progress entry's message and a terminal
+// result's message. 64 KiB is far above any progress line or outcome summary
+// the worker paths emit, while an unbounded message would let a single record
+// or tombstone dominate the store file.
+const MaxOperationMessageBytes = 64 << 10
+
 // Kind is the operation kind a record describes: spec §4's `deploy`/`restart`
 // pair. The kind is part of a record's dedup scope and never changes after
 // creation.
@@ -226,6 +238,10 @@ func validateRecord(record Record) error {
 	if record.Host == "" {
 		return fmt.Errorf("%w: record %q names no host", ErrInvalidRecord, record.ID)
 	}
+	if len(record.Host) > MaxHostNameBytes {
+		return fmt.Errorf("%w: record %q carries a %d-byte host name, over the %d-byte bound",
+			ErrInvalidRecord, record.ID, len(record.Host), MaxHostNameBytes)
+	}
 	// Every string this store persists must be valid UTF-8: encoding/json
 	// replaces invalid bytes with U+FFFD on the way out, so a value the store
 	// accepted would come back changed after a reload, and the file would hold
@@ -303,9 +319,17 @@ func validateRecord(record Record) error {
 		if entry.TS.IsZero() || entry.Message == "" {
 			return fmt.Errorf("%w: record %q carries an empty progress entry", ErrInvalidRecord, record.ID)
 		}
+		if len(entry.Message) > MaxOperationMessageBytes {
+			return fmt.Errorf("%w: record %q carries a %d-byte progress message, over the %d-byte bound",
+				ErrInvalidRecord, record.ID, len(entry.Message), MaxOperationMessageBytes)
+		}
 		if !utf8.ValidString(entry.Message) {
 			return fmt.Errorf("%w: record %q carries a progress entry that is not valid UTF-8", ErrInvalidRecord, record.ID)
 		}
+	}
+	if len(record.Progress) > MaxProgressEntries {
+		return fmt.Errorf("%w: record %q carries %d progress entries, over the %d-entry bound",
+			ErrInvalidRecord, record.ID, len(record.Progress), MaxProgressEntries)
 	}
 	// A result is terminal data: it belongs to a record that has finished — and
 	// every terminal record carries one (spec §10: "`result` is present exactly
@@ -323,6 +347,10 @@ func validateRecord(record Record) error {
 		}
 		if record.Result.Message == "" {
 			return fmt.Errorf("%w: record %q carries an empty terminal result", ErrInvalidRecord, record.ID)
+		}
+		if len(record.Result.Message) > MaxOperationMessageBytes {
+			return fmt.Errorf("%w: record %q carries a %d-byte terminal result message, over the %d-byte bound",
+				ErrInvalidRecord, record.ID, len(record.Result.Message), MaxOperationMessageBytes)
 		}
 		if !utf8.ValidString(record.Result.Message) {
 			return fmt.Errorf("%w: record %q carries a terminal result that is not valid UTF-8", ErrInvalidRecord, record.ID)

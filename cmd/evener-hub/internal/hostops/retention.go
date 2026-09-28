@@ -206,6 +206,10 @@ func validateTombstone(tombstone Tombstone, compactSeq uint64) error {
 	if tombstone.Host == "" {
 		return fmt.Errorf("%w: tombstone %q names no host", ErrInvalidRecord, tombstone.ID)
 	}
+	if len(tombstone.Host) > MaxHostNameBytes {
+		return fmt.Errorf("%w: tombstone %q carries a %d-byte host name, over the %d-byte bound",
+			ErrInvalidRecord, tombstone.ID, len(tombstone.Host), MaxHostNameBytes)
+	}
 	if len(tombstone.IncarnationID) > MaxIncarnationIDBytes {
 		return fmt.Errorf("%w: tombstone %q carries a %d-byte incarnation id, over the %d-byte bound",
 			ErrInvalidRecord, tombstone.ID, len(tombstone.IncarnationID), MaxIncarnationIDBytes)
@@ -230,6 +234,14 @@ func validateTombstone(tombstone Tombstone, compactSeq uint64) error {
 		if entry.TS.IsZero() || entry.Message == "" || !utf8.ValidString(entry.Message) {
 			return fmt.Errorf("%w: tombstone %q carries an invalid progress entry", ErrInvalidRecord, tombstone.ID)
 		}
+		if len(entry.Message) > MaxOperationMessageBytes {
+			return fmt.Errorf("%w: tombstone %q carries a %d-byte progress message, over the %d-byte bound",
+				ErrInvalidRecord, tombstone.ID, len(entry.Message), MaxOperationMessageBytes)
+		}
+	}
+	if len(tombstone.Progress) > MaxProgressEntries {
+		return fmt.Errorf("%w: tombstone %q carries %d progress entries, over the %d-entry bound",
+			ErrInvalidRecord, tombstone.ID, len(tombstone.Progress), MaxProgressEntries)
 	}
 	if tombstone.Result == nil {
 		// §10: "`result` is present exactly on terminal records" — and a
@@ -239,6 +251,10 @@ func validateTombstone(tombstone Tombstone, compactSeq uint64) error {
 	}
 	if tombstone.Result.Message == "" || !utf8.ValidString(tombstone.Result.Message) {
 		return fmt.Errorf("%w: tombstone %q carries an invalid terminal result", ErrInvalidRecord, tombstone.ID)
+	}
+	if len(tombstone.Result.Message) > MaxOperationMessageBytes {
+		return fmt.Errorf("%w: tombstone %q carries a %d-byte terminal result message, over the %d-byte bound",
+			ErrInvalidRecord, tombstone.ID, len(tombstone.Result.Message), MaxOperationMessageBytes)
 	}
 	return nil
 }
@@ -419,6 +435,8 @@ func (s *Store) MirrorHostState(mirror HostMirror) error {
 	s.cell.mu.Lock()
 	defer s.cell.mu.Unlock()
 
+	now := s.now()
+	policy := s.retentionPolicy()
 	next := cloneSnapshot(s.cell.state)
 	changed := false
 	if len(mirror.Boundaries) > 0 && next.Boundaries == nil {
@@ -426,6 +444,12 @@ func (s *Store) MirrorHostState(mirror HostMirror) error {
 	}
 	for name, boundary := range mirror.Boundaries {
 		if existing, ok := next.Boundaries[name]; ok && existing == boundary {
+			continue
+		}
+		if s.skipBoundaryProposal(&next, name, mirror, now, policy) {
+			// The name is a removed host whose history is gone: re-proposing
+			// the boundary would commit a write that §4's own rule discards
+			// with the host's last record, once per hub.toml mutation.
 			continue
 		}
 		next.Boundaries[name] = boundary
@@ -467,6 +491,32 @@ func (s *Store) MirrorHostState(mirror HostMirror) error {
 }
 
 // mirrorLiveSet is a small lookup helper for the one-mirror-write validation.
+// skipBoundaryProposal reports whether a boundary the caller proposes for name
+// would be discarded again by §4's own rule: the name's removal marker agrees
+// with the store's data (the host is genuinely removed), its removal is past
+// the tombstoneRetention horizon, it holds no records, and it carries at least
+// one dedup tombstone — the trace its compacted history left. That is the state
+// in which the historical boundary was dropped with the host's last record, so
+// re-proposing it commits a write that changes nothing. A name with no
+// tombstones never held records this store compacted, and its first mirror
+// write still lands.
+func (s *Store) skipBoundaryProposal(state *snapshot, name string, mirror HostMirror, now time.Time, policy RetentionPolicy) bool {
+	marker, marked := mirror.Removed[name]
+	if !marked {
+		marker, marked = state.RemovedHosts[name]
+	}
+	if !marked || now.Before(marker.RemovedAt.Add(policy.RemovedHostHorizon)) {
+		return false
+	}
+	if !removedMarkerAgrees(state, name, marker) {
+		return false
+	}
+	if slices.ContainsFunc(state.Records, func(record Record) bool { return record.Host == name }) {
+		return false
+	}
+	return slices.ContainsFunc(state.Tombstones, func(tombstone Tombstone) bool { return tombstone.Host == name })
+}
+
 func mirrorLiveSet(live []string) map[string]struct{} {
 	set := make(map[string]struct{}, len(live))
 	for _, name := range live {
@@ -512,9 +562,21 @@ func (s *Store) compactLocked(next *snapshot) {
 	policy := s.retentionPolicy()
 	now := s.now()
 
+	// Removed-host history is consumed only while the store's own data still
+	// agrees with the marker: a re-add whose clear mirror write trailed leaves
+	// the marker stale, and treating that live host as removed would compact
+	// its history unconditionally and drop its boundary. The agreement check is
+	// the store-side reconciliation; the marker refreshes on the next
+	// successful mirror write.
+	removed := make(map[string]RemovedHost)
+	for host, marker := range next.RemovedHosts {
+		if removedMarkerAgrees(next, host, marker) {
+			removed[host] = marker
+		}
+	}
 	pastHorizon := make(map[string]bool)
-	for host, removed := range next.RemovedHosts {
-		if !removed.RemovedAt.IsZero() && !now.Before(removed.RemovedAt.Add(policy.RemovedHostHorizon)) {
+	for host, marker := range removed {
+		if !now.Before(marker.RemovedAt.Add(policy.RemovedHostHorizon)) {
 			pastHorizon[host] = true
 		}
 	}
@@ -581,12 +643,36 @@ func (s *Store) compactLocked(next *snapshot) {
 	// the exact bytes the write will commit — the ledger marks, the advanced
 	// compactSeq and the writer's own normalizations included — without a full
 	// marshal per removed row inside the store mutex.
-	s.compactionVictimsForBytes(next, candidates, byID, victim, pastHorizon, policy, now)
+	s.compactionVictimsForBytes(next, candidates, byID, victim, pastHorizon, removed, policy, now)
 
 	if len(victim) == 0 {
 		return
 	}
-	*next = s.applyCompaction(*next, victim, pastHorizon, policy, now)
+	*next = s.applyCompaction(*next, victim, pastHorizon, removed, policy, now)
+}
+
+// removedMarkerAgrees reports whether the store's own data still describes host
+// as the removal the marker names: the mirrored boundary, when present, and
+// every retained record for the host must carry the marker's pair. A pair from
+// any other incarnation is live evidence — the name was re-added after the
+// removal — so the host is compacted as live history, never as removed
+// history, and never has its boundary dropped as removed.
+func removedMarkerAgrees(state *snapshot, host string, marker RemovedHost) bool {
+	if boundary, ok := state.Boundaries[host]; ok {
+		if boundary.Generation != marker.Generation || boundary.IncarnationID != marker.IncarnationID {
+			return false
+		}
+	}
+	for i := range state.Records {
+		record := state.Records[i]
+		if record.Host != host {
+			continue
+		}
+		if record.Generation != marker.Generation || record.IncarnationID != marker.IncarnationID {
+			return false
+		}
+	}
+	return true
 }
 
 // applyCompaction returns the exact state the compacting write commits for the
@@ -595,7 +681,7 @@ func (s *Store) compactLocked(next *snapshot) {
 // bound applied, and a removed host's historical boundary dropped with its
 // last record. The caller's snapshot is not mutated, so the byte bound can
 // measure this same transformation on a scratch copy.
-func (s *Store) applyCompaction(state snapshot, victim map[string]bool, pastHorizon map[string]bool, policy RetentionPolicy, now time.Time) snapshot {
+func (s *Store) applyCompaction(state snapshot, victim map[string]bool, pastHorizon map[string]bool, removed map[string]RemovedHost, policy RetentionPolicy, now time.Time) snapshot {
 	if len(victim) > 0 {
 		state.CompactSeq++
 	}
@@ -634,7 +720,7 @@ func (s *Store) applyCompaction(state snapshot, victim map[string]bool, pastHori
 	// Tombstone bound: "At most 50 tombstones per host ... oldest-first past
 	// the bound", with removed hosts inside their replay horizon exempt — only
 	// past the horizon does a replay open fresh (§4).
-	state.Tombstones = boundedTombstones(state.Tombstones, state.RemovedHosts, pastHorizon, policy)
+	state.Tombstones = boundedTombstones(state.Tombstones, removed, pastHorizon, policy)
 
 	// §4: the historical boundary "persists in the store's per-host boundary
 	// record until the host's last record compacts". The removal marker stays:
@@ -722,12 +808,12 @@ var maxByteMeasurements = 64
 // margin. So whenever `estimated` is at or below the cap, the committed size
 // is too — the exact checks exist to give victims back and tighten the fit,
 // and the budget-exhausted path can never return an over-cap write.
-func (s *Store) compactionVictimsForBytes(next *snapshot, candidates []compactionCandidate, byID map[string]Record, victim map[string]bool, pastHorizon map[string]bool, policy RetentionPolicy, now time.Time) bool {
+func (s *Store) compactionVictimsForBytes(next *snapshot, candidates []compactionCandidate, byID map[string]Record, victim map[string]bool, pastHorizon map[string]bool, removed map[string]RemovedHost, policy RetentionPolicy, now time.Time) bool {
 	exactSize := func() int64 {
 		if compactionMeasureHook != nil {
 			compactionMeasureHook()
 		}
-		scratch := s.applyCompaction(*next, victim, pastHorizon, policy, now)
+		scratch := s.applyCompaction(*next, victim, pastHorizon, removed, policy, now)
 		raw, err := json.Marshal(scratch)
 		if err != nil {
 			// A snapshot of this store's own values cannot fail to marshal; a
