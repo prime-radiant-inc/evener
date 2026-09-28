@@ -595,6 +595,38 @@ describe("native demonstration hub's fleet sessions", () => {
 		});
 	});
 
+	it("settles the stopped turn's open items and times, and times the next turn", async () => {
+		await withHub({}, async (client) => {
+			const service = createConversationService(client);
+			const ref = refOf("s-tasklist");
+			const read = async () => (await client.request("thread/read", { ref, includeTurns: true })).thread;
+			try {
+				const before = await read();
+				await service.open(ref);
+				await service.interrupt();
+				const stopped = await read();
+				const turn = stopped.turns?.at(-1);
+				if (!turn?.startedAt) throw new Error("the stopped turn needs its start");
+				expect(turn.status).toBe("interrupted");
+				expect(turn.items?.filter((item) => item.status === "inProgress")).toEqual([]);
+				expect(turn.items?.filter((item) => item.status === "interrupted").map((item) => item.toolName)).toEqual([
+					"delegate",
+					"delegate",
+					"shell",
+				]);
+				expect(turn.completedAt).toBeGreaterThanOrEqual(turn.startedAt);
+				expect(turn.durationMs).toBe((turn.completedAt ?? 0) - turn.startedAt);
+				expect(stopped.evener.lastTurnEndedAt).toBe(turn.completedAt);
+				expect(stopped.evener.workMillis).toBeGreaterThan(before.evener.workMillis ?? 0);
+				await service.open(ref);
+				await service.send([{ type: "text", text: "Go on" }]);
+				expect((await read()).turns?.at(-1)?.startedAt).toBeGreaterThanOrEqual(turn.completedAt ?? 0);
+			} finally {
+				service.close();
+			}
+		});
+	});
+
 	it("keeps a stopped fleet session sendable, like a daemon", async () => {
 		await withHub({}, async (client) => {
 			const service = createConversationService(client);

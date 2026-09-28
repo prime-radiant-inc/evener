@@ -830,7 +830,9 @@ function sessionThread(session: FleetSession, now: number): Thread {
 				totalTokens: usage.inputTokens + usage.outputTokens + usage.cacheReadTokens,
 			},
 			cost: usage.cost,
-			workMillis: turn.durationMs ?? now - (turn.startedAt ?? now),
+			// data.js's `base` work time: the turns before this one. A running
+			// turn's own time joins it when the turn ends, as the daemon counts.
+			workMillis: 2 * 60 * 60 * 1000,
 			contextUsed: usage.contextUsed,
 			contextWindow: usage.contextWindow,
 			access: { sandbox: "workspace-write", network: true },

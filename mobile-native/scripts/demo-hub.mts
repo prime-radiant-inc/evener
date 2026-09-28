@@ -165,6 +165,7 @@ export async function createDemoHub(
 			id: `demo-turn-${turnNumber}`,
 			itemsView: "full",
 			status: "inProgress",
+			startedAt: Date.now(),
 			items: [
 				{
 					id: `demo-user-${turnNumber}`,
@@ -184,6 +185,27 @@ export async function createDemoHub(
 		thread.turns?.push(turn);
 		setTurnRunning(thread, turn);
 		return turn;
+	}
+	// Stop: the turn ends interrupted, its open items settle as a daemon
+	// records them (a tool call cut off reads "interrupted"), and the session's
+	// clocks take the turn's time.
+	function stopTurn(thread: Thread, turn: Turn) {
+		const now = Date.now();
+		for (const item of turn.items ?? [])
+			if (item.status === "inProgress") {
+				item.status =
+					item.type === "commandExecution" ? "interrupted" : "completed";
+				item.completedAt = now;
+			}
+		turn.status = "interrupted";
+		turn.completedAt = now;
+		if (turn.startedAt !== undefined) {
+			turn.durationMs = now - turn.startedAt;
+			thread.evener.workMillis =
+				(thread.evener.workMillis ?? 0) + turn.durationMs;
+		}
+		thread.evener.lastTurnEndedAt = now;
+		setTurnRunning(thread, undefined);
 	}
 	// Moves the thread to `turn` running, or with no turn, to resting.
 	function setTurnRunning(thread: Thread, turn: Turn | undefined) {
@@ -482,8 +504,7 @@ export async function createDemoHub(
 						} else {
 							if (!turn || thread.status.type !== "active")
 								throw new Error("No active demonstration turn");
-							turn.status = "interrupted";
-							setTurnRunning(thread, undefined);
+							stopTurn(thread, turn);
 						}
 						const receipt: MutationReceipt = {
 							clientMutationId: mutation.clientMutationId,
