@@ -85,6 +85,10 @@ type WebConfig struct {
 	Favorite    *FavoriteStore    // favorite decision store; nil when not configured
 	PinSections *PinSectionStore  // named pin-section store; nil when not configured
 	SessionSeen *SessionSeenStore // per-session seen-through markers (S4); nil when not configured
+	// MessageSearch is the message-text search index (S14); nil when it is not
+	// configured or search.db could not be opened, and search then finds
+	// sessions by title and prompt only.
+	MessageSearch *MessageSearch
 
 	Inputs *InputsVersion // shared inputs-version counter; nil in tests (memo treats as version 0)
 

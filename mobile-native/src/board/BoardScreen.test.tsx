@@ -18,19 +18,22 @@ import type {
 	SessionSeenSetParams,
 	Thread,
 } from "@evener/appwire-client";
-import { WireError } from "@evener/appwire-client";
+import { STUCK_AFTER_MS, WireError } from "@evener/appwire-client";
 import { manifest, wireV2 } from "@evener/appwire-client/testing/navigation";
 import type { ReactTestInstance, ReactTestRenderer } from "react-test-renderer";
 import { act, create } from "react-test-renderer";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type { ConversationClientLike } from "../../../mobile/src/services/conversation";
 import { alertRequests, render, renderedText, screenConnection, swipeableCalls } from "../renderNative.testkit";
+import { sheetKey } from "../sheet/sheetHosts";
 import { ACTIVITY_POLL_MS, STALE_AFTER_MS } from "./activityPoll";
 import { BoardScreen } from "./BoardScreen";
 import { PulseMeter } from "./PulseMeter";
 import { hubSeenMarks } from "./hubSeen";
 import { seenMarkers } from "./nativeBoardMemory";
 import { SESSION_ID } from "./organizationTestUtils";
+import { ROW_ACTION_LABELS } from "./rowActions";
+import { type RowMenuHost, rowMenuHosts } from "./RowMenu";
 
 const harness = vi.hoisted(() => ({
 	connection: {} as Record<string, unknown>,
@@ -43,6 +46,7 @@ const harness = vi.hoisted(() => ({
 	actionSheet: vi.fn(),
 	prompt: vi.fn(),
 	sqlite: new Map<string, unknown>(),
+	reduceMotion: false,
 }));
 
 vi.mock("react-native", async () => {
@@ -52,7 +56,11 @@ vi.mock("react-native", async () => {
 		Alert: { ...native.Alert, prompt: (...args: unknown[]) => harness.prompt(...args) },
 		ActionSheetIOS: { showActionSheetWithOptions: (...args: unknown[]) => harness.actionSheet(...args) },
 		Keyboard: { dismiss: () => {} },
-		AccessibilityInfo: { announceForAccessibility: () => {} },
+		AccessibilityInfo: {
+			announceForAccessibility: () => {},
+			isReduceMotionEnabled: () => Promise.resolve(harness.reduceMotion),
+			addEventListener: () => ({ remove: () => {} }),
+		},
 	};
 });
 vi.mock("react-native-gesture-handler/ReanimatedSwipeable", async () =>
@@ -230,7 +238,9 @@ const fleet: Fleet = {
  * one, and `holdChanges` keeps them unanswered until `release`. It accepts
  * every seen mark, and `seen` records each call's marks. It answers a
  * session's thread/read from its row's state and applies every
- * turn/interrupt, recording both in `threadCalls`. */
+ * turn/interrupt, recording both in `threadCalls`. It records every
+ * thread/shutdown and session rename in `mutations` too, and accepts each
+ * unless `refuse` says to reject it with the hub's "session not found". */
 function hub(
 	shape: Fleet,
 	hold: (params: NavigationReadParams) => boolean = () => false,
@@ -304,6 +314,12 @@ function hub(
 								projectionState: "pending",
 							},
 						} as never);
+					return;
+				}
+				if (method === "thread/shutdown" || method === "evener/thread/name/set") {
+					mutations.push({ method, params });
+					if (refuse) reject(new Error("session not found"));
+					else resolve({} as never);
 					return;
 				}
 				if (
@@ -2137,6 +2153,32 @@ it("stays out of Working's stuck slot for as long as reads keep failing, not jus
 	act(() => tree.unmount());
 });
 
+it("keeps a row's Working order in step with its label when elapsed time alone crosses the stuck threshold", async () => {
+	const id = hubId();
+	adoptedAnHourAgo(id);
+	const shape: Fleet = {
+		...busyFleet,
+		activity: [{ ref: "local:migrate", minutes: [0, 0, 0], runningSubagents: 0, quietForMs: STUCK_AFTER_MS - ACTIVITY_POLL_MS }],
+	};
+	const fake = hub(shape);
+	connect(id, fake.client, "ready");
+	const tree = await mount(navigation());
+	expect(textsIn(rowTitled(tree, "Migrate schema"))).toContain("Quiet 9m");
+	expect(workingTitles(tree)).toEqual(["Build docs", "Tidy imports", "Migrate schema"]);
+
+	// The next poll times out, so nothing refreshes the read: the row crosses
+	// into stuck from elapsed time on the read already on screen, one poll
+	// interval later - still well under STALE_AFTER_MS, so it's trusted.
+	shape.activity = null;
+	await advance(ACTIVITY_POLL_MS);
+	expect(textsIn(rowTitled(tree, "Migrate schema"))).toContain("May be stuck · no updates for 10m");
+	// The label and the Working order must agree the moment the label turns,
+	// not up to a poll interval later (the label reads msSinceRead live; the
+	// sort order used to wait for the next successful read).
+	expect(workingTitles(tree)).toEqual(["Migrate schema", "Build docs", "Tidy imports"]);
+	act(() => tree.unmount());
+});
+
 it("still lets a read on screen go stale once the hub stops answering activity reads", async () => {
 	const id = hubId();
 	adoptedAnHourAgo(id);
@@ -2569,6 +2611,112 @@ it("drops a project row's pending mark once the project's page shows it landed (
 	await settle();
 	expect(fake.requests.filter((read) => read.resource === "project_page" && read.tier === "current")).toHaveLength(2);
 	expect(hubSeenMarks(id).isSeenOnHub(projectUnseen)).toBe(false);
+	act(() => tree.unmount());
+});
+
+/** Opens search, types a query that finds the evener project, and taps it. */
+async function revealFromSearch(tree: ReactTestRenderer, query = "even") {
+	const bar = searchField(tree);
+	bar.focus();
+	await bar.type(query);
+	const [result] = tree.root.findAll((node) => node.props.testID === "project-result");
+	expect(result.props.accessibilityLabel).toBe("evener, project, /home/jesse/git/evener");
+	act(() => result.props.onPress());
+}
+const layOutAt = (node: ReactTestInstance, y: number, height: number) =>
+	act(() => node.props.onLayout({ nativeEvent: { layout: { x: 0, y, width: 390, height } } }));
+const revealTarget = (tree: ReactTestRenderer) => tree.root.find((node) => node.props.testID === "project-reveal");
+
+it("opens a project from search: leaves search, unfolds the project and scrolls it a third of the way down", async () => {
+	const id = hubId();
+	adoptedAnHourAgo(id);
+	const fake = hub({ ...fleet, catalogs: { projects: [evenerProject()] }, projectPages: { "evener:current": [localWork] } });
+	connect(id, fake.client, "ready");
+	const { tree, scrollTo } = await mountWithInstances(navigation());
+	layOutAt(boardScroller(tree), 0, 600);
+	expect(projectRows(tree, "evener")[0].props.accessibilityState).toEqual({ expanded: false });
+	await revealFromSearch(tree);
+	// Search is gone, and the query counts as a recent search.
+	expect(hasCancel(tree)).toBe(false);
+	expect(tree.root.findAll((node) => node.props.testID === "search-result")).toHaveLength(0);
+	expect(JSON.parse(harness.kv.get(`evener.native.recent-searches.${id}`) ?? "[]")).toEqual(["even"]);
+	expect(projectRows(tree, "evener")[0].props.accessibilityState).toEqual({ expanded: true });
+	await settle();
+	expect(hasRow(tree, "Local work")).toBe(true);
+	// It scrolls once both the project row and its section have laid out, in
+	// either order: the row sits 30% of the way down the viewport.
+	const calls = scrollTo.mock.calls.length;
+	layOutAt(revealTarget(tree), 60, 48);
+	expect(scrollTo.mock.calls.length).toBe(calls);
+	layOutAt(projectSection(tree, "projects"), 900, 400);
+	expect(scrollTo).toHaveBeenLastCalledWith({ y: 900 + 60 - 0.3 * (600 - 48), animated: true });
+	// Once there, the reveal is done.
+	expect(tree.root.findAll((node) => node.props.testID === "project-reveal")).toHaveLength(0);
+	act(() => tree.unmount());
+});
+
+it("scrolls to a project from search that was already unfolded", async () => {
+	const id = hubId();
+	adoptedAnHourAgo(id);
+	const project = evenerProject({ default_expanded: true });
+	connect(id, hub({ ...fleet, catalogs: { projects: [project] } }).client, "ready");
+	const { tree, scrollTo } = await mountWithInstances(navigation());
+	layOutAt(boardScroller(tree), 0, 600);
+	expect(projectRows(tree, "evener")[0].props.accessibilityState).toEqual({ expanded: true });
+	await revealFromSearch(tree);
+	// Leaving search mounts the sections afresh, so both layouts arrive.
+	layOutAt(projectSection(tree, "projects"), 900, 400);
+	layOutAt(revealTarget(tree), 60, 48);
+	expect(scrollTo).toHaveBeenLastCalledWith({ y: 900 + 60 - 0.3 * (600 - 48), animated: true });
+	act(() => tree.unmount());
+});
+
+it("scrolls to a project from search without animating while Reduce Motion is on", async () => {
+	const id = hubId();
+	adoptedAnHourAgo(id);
+	harness.reduceMotion = true;
+	try {
+		connect(id, hub({ ...fleet, catalogs: { projects: [evenerProject()] } }).client, "ready");
+		const { tree, scrollTo } = await mountWithInstances(navigation());
+		layOutAt(boardScroller(tree), 0, 600);
+		await revealFromSearch(tree);
+		layOutAt(projectSection(tree, "projects"), 100, 400);
+		layOutAt(revealTarget(tree), 40, 48);
+		// Near the top, it scrolls no further up than the Board's start.
+		expect(scrollTo).toHaveBeenLastCalledWith({ y: 0, animated: false });
+		act(() => tree.unmount());
+	} finally {
+		harness.reduceMotion = false;
+	}
+});
+
+it("opens a project from search inside its host when hosts come first, unfolding the way there", async () => {
+	const id = hubId();
+	adoptedAnHourAgo(id);
+	harness.kv.set(`evener.native.board-organize.${id}`, JSON.stringify("host-project"));
+	// Its host is folded; the Projects section is open, so its catalog is read.
+	harness.kv.set(`evener.native.board-sections.${id}`, JSON.stringify({ "host:local": true }));
+	connect(id, hub({ ...fleet, manifest: twoHosts(), catalogs: { projects: [evenerProject()] } }).client, "ready");
+	const { tree } = await mountWithInstances(navigation());
+	await revealFromSearch(tree);
+	expect(JSON.parse(harness.kv.get(`evener.native.board-sections.${id}`) ?? "{}")).toMatchObject({
+		projects: false,
+		"host:local": false,
+		"project:evener@local": false,
+	});
+	expect(revealTarget(tree)).toBeTruthy();
+	act(() => tree.unmount());
+});
+
+it("lists no projects in search that the Board hasn't loaded", async () => {
+	const id = hubId();
+	adoptedAnHourAgo(id);
+	connect(id, hub({ ...fleet, catalogs: { projects: [evenerProject()] } }).client, "ready");
+	const tree = await mount(navigation());
+	const bar = searchField(tree);
+	bar.focus();
+	await bar.type("nothing like it");
+	expect(tree.root.findAll((node) => node.props.testID === "project-result")).toHaveLength(0);
 	act(() => tree.unmount());
 });
 
@@ -3133,19 +3281,33 @@ async function mountSwipeFleet(fake: ReturnType<typeof hub>, nav = navigation())
 	const tree = await mount(nav);
 	return { id, tree, nav };
 }
+/** The row menu host the Board provides, read as the sheet reads it. */
+function menuHost(id: string): RowMenuHost {
+	const host = rowMenuHosts.get(sheetKey(id));
+	if (!host) throw new Error("the Board provides no row menu host");
+	return host;
+}
+function menuItem(host: RowMenuHost, ref: string, archived = false) {
+	const item = host.item(ref, archived);
+	if (!item) throw new Error(`the Board shows no ${ref}`);
+	return item;
+}
+const rowMenuLabels = (host: RowMenuHost, ref: string, archived = false) =>
+	host.actions(menuItem(host, ref, archived), archived).map((action) => ROW_ACTION_LABELS[action]);
 
-it("gives a working row Archive on the right swipe and Stop and Pin on the left, a finished row no Stop, and another host's row Archive too", async () => {
+it("gives a working row Archive on the right swipe and Stop, Pin and More on the left, a finished row no Stop, and another host's row Archive too", async () => {
 	const { tree } = await mountSwipeFleet(hub(swipeFleet()));
 	const working = swipeableOf(tree, "Refactor parser");
 	expect(revealedLabels(working, "left")).toEqual(["Archive"]);
-	expect(revealedLabels(working, "right")).toEqual(["Stop", "Pin"]);
-	expect(revealedLabels(swipeableOf(tree, "Write changelog"), "right")).toEqual(["Pin"]);
+	expect(revealedLabels(working, "right")).toEqual(["Stop", "Pin", "More"]);
+	expect(revealedLabels(swipeableOf(tree, "Write changelog"), "right")).toEqual(["Pin", "More"]);
 	expect(revealedLabels(swipeableOf(tree, "Park chore"), "left")).toEqual(["Archive"]);
 	// VoiceOver reaches the same actions on the row itself.
 	expect(rowTitled(tree, "Refactor parser").props.accessibilityActions).toEqual([
 		{ name: "archive", label: "Archive" },
 		{ name: "stop", label: "Stop" },
 		{ name: "pin", label: "Pin" },
+		{ name: "more", label: "More" },
 	]);
 });
 
@@ -3226,7 +3388,7 @@ it("opens Pin to category for a row's Pin", async () => {
 	});
 });
 
-it("offers no swipe action on any row while reconnecting", async () => {
+it("offers only More on any row while reconnecting, and a menu of only the read marks", async () => {
 	const fake = hub(swipeFleet());
 	const { id, tree, nav } = await mountSwipeFleet(fake);
 	connect(id, fake.client, "reconnecting");
@@ -3235,8 +3397,11 @@ it("offers no swipe action on any row while reconnecting", async () => {
 	expect(swipeables).toHaveLength(3);
 	for (const swipeable of swipeables) {
 		expect(swipeable.props.renderLeftActions).toBeUndefined();
-		expect(swipeable.props.renderRightActions).toBeUndefined();
+		expect(revealedLabels(swipeable, "right")).toEqual(["More"]);
 	}
+	const menu = menuHost(id);
+	expect(rowMenuLabels(menu, `local:${OTHER_SESSION_ID}`)).toEqual(["Mark as read"]);
+	expect(rowMenuLabels(menu, `local:${SESSION_ID}`)).toEqual([]);
 });
 
 it("puts swipes on pinned categories' rows and project sessions too", async () => {
@@ -3276,4 +3441,350 @@ it("puts swipes on pinned categories' rows and project sessions too", async () =
 	pressLabel(tree, "Archived, 1 session");
 	await settle();
 	expect(revealedLabels(swipeableOf(tree, "Old archived work"), "left")).toEqual(["Unarchive"]);
+});
+
+it("ends a row's trailing swipe with More, which opens the row menu sheet, as a long press does", async () => {
+	const shape = swipeFleet();
+	shape.live = [[{ ...swipeWorking, rename: true }, swipeFinished, swipePark]];
+	const { id, tree, nav } = await mountSwipeFleet(hub(shape));
+	pressRevealed(swipeableOf(tree, "Refactor parser"), "right", "More");
+	expect(nav.navigate).toHaveBeenCalledWith("RowMenuSheet", { hubId: id, ref: `local:${SESSION_ID}`, archived: false });
+	expect(rowMenuLabels(menuHost(id), `local:${SESSION_ID}`)).toEqual([
+		"Pin to category…",
+		"Stop",
+		"Shut down",
+		"Archive",
+		"Rename",
+	]);
+	nav.navigate.mockClear();
+	const row = rowTitled(tree, "Refactor parser");
+	expect(row.props.delayLongPress).toBe(500);
+	act(() => row.props.onLongPress());
+	expect(nav.navigate).toHaveBeenCalledWith("RowMenuSheet", { hubId: id, ref: `local:${SESSION_ID}`, archived: false });
+});
+
+it("gives the row menu the copy it opened from, when a session shows in both Live and a project's Archived tier", async () => {
+	const ref = `local:${SESSION_ID}`;
+	const shape = swipeFleet();
+	shape.catalogs = { projects: [evenerProject()] };
+	shape.projectPages = {
+		"evener:archived": [
+			session(ref, {
+				session_id: SESSION_ID,
+				title: "Refactor parser (archived tier)",
+				live: false,
+				updated_at: minutesAgo(3000),
+			}),
+		],
+	};
+	shape.manifest = manifest({
+		sources: [laptopSource, { ...parkSource, online: true }],
+		sections: { live: { count: 3 }, needs_you: { count: 0 }, pin_sections: { count: 0 } },
+		catalogs: catalogCounts(1, 0, 0),
+	});
+	const { id, tree, nav } = await mountSwipeFleet(hub(shape));
+	// Unfold the project, then its Archived group, so both copies are on screen.
+	pressLabel(tree, "evener");
+	await settle();
+	pressLabel(tree, "Archived, 1 session");
+	await settle();
+	const host = menuHost(id);
+	expect(rowMenuLabels(host, ref, true)).toContain("Unarchive");
+	expect(rowMenuLabels(host, ref, true)).not.toContain("Archive");
+	expect(rowMenuLabels(host, ref, false)).toContain("Archive");
+	expect(rowMenuLabels(host, ref, false)).not.toContain("Unarchive");
+	pressRevealed(swipeableOf(tree, "Refactor parser (archived tier)"), "right", "More");
+	expect(nav.navigate).toHaveBeenCalledWith("RowMenuSheet", { hubId: id, ref, archived: true });
+	nav.navigate.mockClear();
+	act(() => rowTitled(tree, "Refactor parser (archived tier)").props.onLongPress());
+	expect(nav.navigate).toHaveBeenCalledWith("RowMenuSheet", { hubId: id, ref, archived: true });
+});
+
+it("offers Rename only on iOS, where Alert.prompt exists", async () => {
+	const { Platform } = (await import("react-native")) as unknown as { Platform: { OS: string } };
+	const shape = swipeFleet();
+	shape.live = [[{ ...swipeWorking, rename: true }, swipeFinished, swipePark]];
+	const { id } = await mountSwipeFleet(hub(shape));
+	Platform.OS = "android";
+	try {
+		expect(rowMenuLabels(menuHost(id), `local:${SESSION_ID}`)).not.toContain("Rename");
+	} finally {
+		Platform.OS = "ios";
+	}
+});
+
+it("asks before shutting a session down from the menu, then says it shut down", async () => {
+	const fake = hub(swipeFleet());
+	const { id, tree } = await mountSwipeFleet(fake);
+	const host = menuHost(id);
+	alertRequests.length = 0;
+	act(() => host.act(menuItem(host, `local:${SESSION_ID}`), "shutDown"));
+	expect(fake.mutations).toEqual([]);
+	const ask = alertRequests.at(-1);
+	expect(ask?.title).toBe("Shut down “Refactor parser”?");
+	expect(ask?.message).toBe("The agent stops. Send it a message to resume it.");
+	expect(ask?.buttons?.map((button) => [button.text, button.style])).toEqual([
+		["Cancel", "cancel"],
+		["Shut down", "destructive"],
+	]);
+	act(() => ask?.buttons?.[1]?.onPress?.());
+	await settle();
+	expect(fake.mutations).toEqual([{ method: "thread/shutdown", params: { ref: `local:${SESSION_ID}` } }]);
+	expect(texts(tree)).toContain("Session shut down");
+});
+
+it("says why a shut down failed, in the hub's words", async () => {
+	const fake = hub(swipeFleet(), undefined, undefined, { refuse: true });
+	const { id, tree } = await mountSwipeFleet(fake);
+	const host = menuHost(id);
+	alertRequests.length = 0;
+	act(() => host.act(menuItem(host, `local:${SESSION_ID}`), "shutDown"));
+	act(() => alertRequests.at(-1)?.buttons?.[1]?.onPress?.());
+	await settle();
+	expect(texts(tree)).toContain("Couldn't shut down “Refactor parser”: session not found");
+});
+
+it("renames a session from the menu with the prompt's text", async () => {
+	const fake = hub(swipeFleet());
+	const { id, tree } = await mountSwipeFleet(fake);
+	const host = menuHost(id);
+	harness.prompt.mockClear();
+	act(() => host.act(menuItem(host, `local:${SESSION_ID}`), "rename"));
+	expect(harness.prompt).toHaveBeenCalledOnce();
+	const [title, message, buttons, type, value] = harness.prompt.mock.calls[0] as [
+		string,
+		undefined,
+		{ text: string; style?: string; onPress?: (name?: string) => void }[],
+		string,
+		string,
+	];
+	expect([title, message, type, value]).toEqual(["Rename session", undefined, "plain-text", "Refactor parser"]);
+	expect(buttons.map((button) => [button.text, button.style])).toEqual([
+		["Cancel", "cancel"],
+		["Rename", undefined],
+	]);
+	act(() => buttons[1]?.onPress?.("  Parser rewrite "));
+	await settle();
+	expect(fake.mutations).toEqual([
+		{ method: "evener/thread/name/set", params: { ref: `local:${SESSION_ID}`, name: "Parser rewrite" } },
+	]);
+	expect(texts(tree)).toContain("Renamed");
+});
+
+it("says why a rename failed, in the hub's words", async () => {
+	const fake = hub(swipeFleet(), undefined, undefined, { refuse: true });
+	const { id, tree } = await mountSwipeFleet(fake);
+	const host = menuHost(id);
+	harness.prompt.mockClear();
+	act(() => host.act(menuItem(host, `local:${SESSION_ID}`), "rename"));
+	const buttons = harness.prompt.mock.calls[0]?.[2] as { onPress?: (name?: string) => void }[];
+	act(() => buttons[1]?.onPress?.("Parser rewrite"));
+	await settle();
+	expect(texts(tree)).toContain("Couldn't rename “Refactor parser”: session not found");
+});
+
+it("marks a finished row read from the menu, moving it to Idle, and unread again", async () => {
+	const { id, tree } = await mountSwipeFleet(hub(swipeFleet()));
+	const host = menuHost(id);
+	const ref = `local:${OTHER_SESSION_ID}`;
+	expect(bandHeaders(tree)).toEqual(["FINISHED · 2", "WORKING · 1"]);
+	act(() => host.act(menuItem(host, ref), "markRead"));
+	await settle();
+	expect(bandHeaders(tree)).toEqual(["FINISHED · 1", "WORKING · 1", "Idle · 1"]);
+	const read = menuHost(id);
+	expect(menuItem(read, ref).state).toBe("idle");
+	act(() => read.act(menuItem(read, ref), "markUnread"));
+	await settle();
+	expect(bandHeaders(tree)).toEqual(["FINISHED · 2", "WORKING · 1"]);
+});
+
+it("sends no read mark through another hub's client when this Board's hub isn't the active one", async () => {
+	const first = hubId();
+	const second = hubId();
+	adoptedAnHourAgo(first);
+	adoptedAnHourAgo(second);
+	// A row the hub decides (it carries a turn end), so marking it read is a
+	// hub write (BoardSeen.markRead), not just the device's own marker.
+	const row = session("local:hub-unseen", {
+		title: "Hub unseen",
+		updated_at: minutesAgo(90),
+		turn_ended_at: minutesAgo(90),
+		unseen: true,
+	});
+	const shape: Fleet = { ...fleet, live: [[row]], needsYou: [] };
+	const fakeA = hub(shape);
+	const fakeB = hub(shape);
+	connect(first, fakeA.client, "ready");
+	const nav = navigation();
+	const tree = await mount(nav);
+	const host = menuHost(first);
+	const ref = "local:hub-unseen";
+	// The active hub changes to a different one, but this Board (mounted for
+	// "first") stays up, as it would underneath a freshly-selected hub's own
+	// screen; its next render reads the new connection.
+	connect(second, fakeB.client, "ready");
+	setFocused(false);
+	setFocused(true);
+	await settle();
+	act(() => host.act(menuItem(host, ref), "markRead"));
+	await settle();
+	expect(fakeA.seen).toEqual([]);
+	expect(fakeB.seen).toEqual([]);
+	act(() => tree.unmount());
+});
+
+it("opens a session from the menu's card without marking it through another hub's client", async () => {
+	const first = hubId();
+	const second = hubId();
+	adoptedAnHourAgo(first);
+	adoptedAnHourAgo(second);
+	const row = session("local:hub-unseen", {
+		title: "Hub unseen",
+		updated_at: minutesAgo(90),
+		turn_ended_at: minutesAgo(90),
+		unseen: true,
+	});
+	const shape: Fleet = { ...fleet, live: [[row]], needsYou: [] };
+	const fakeA = hub(shape);
+	const fakeB = hub(shape);
+	connect(first, fakeA.client, "ready");
+	const nav = navigation();
+	const tree = await mount(nav);
+	const host = menuHost(first);
+	const ref = "local:hub-unseen";
+	connect(second, fakeB.client, "ready");
+	setFocused(false);
+	setFocused(true);
+	await settle();
+	act(() => host.openSession(menuItem(host, ref)));
+	await settle();
+	expect(nav.navigate).toHaveBeenCalledWith("Conversation", { hubId: first, ref, title: "Hub unseen" });
+	expect(fakeB.seen).toEqual([]);
+	act(() => tree.unmount());
+});
+
+it("sends no stop through another hub's client when this Board's hub isn't the active one", async () => {
+	const first = hubId();
+	const second = hubId();
+	adoptedAnHourAgo(first);
+	adoptedAnHourAgo(second);
+	const fakeA = hub(swipeFleet());
+	const fakeB = hub(swipeFleet());
+	connect(first, fakeA.client, "ready");
+	const nav = navigation();
+	const tree = await mount(nav);
+	const host = menuHost(first);
+	const ref = `local:${SESSION_ID}`;
+	connect(second, fakeB.client, "ready");
+	setFocused(false);
+	setFocused(true);
+	await settle();
+	act(() => host.act(menuItem(host, ref), "stop"));
+	await settle();
+	expect(fakeA.threadCalls).toEqual([]);
+	expect(fakeB.threadCalls).toEqual([]);
+	act(() => tree.unmount());
+});
+
+it("sends no shutdown through another hub's client when this Board's hub isn't the active one", async () => {
+	const first = hubId();
+	const second = hubId();
+	adoptedAnHourAgo(first);
+	adoptedAnHourAgo(second);
+	const fakeA = hub(swipeFleet());
+	const fakeB = hub(swipeFleet());
+	connect(first, fakeA.client, "ready");
+	const nav = navigation();
+	const tree = await mount(nav);
+	const host = menuHost(first);
+	const ref = `local:${SESSION_ID}`;
+	connect(second, fakeB.client, "ready");
+	setFocused(false);
+	setFocused(true);
+	await settle();
+	alertRequests.length = 0;
+	act(() => host.act(menuItem(host, ref), "shutDown"));
+	act(() => alertRequests.at(-1)?.buttons?.[1]?.onPress?.());
+	await settle();
+	expect(fakeA.mutations).toEqual([]);
+	expect(fakeB.mutations).toEqual([]);
+	act(() => tree.unmount());
+});
+
+it("sends no rename through another hub's client when this Board's hub isn't the active one", async () => {
+	const first = hubId();
+	const second = hubId();
+	adoptedAnHourAgo(first);
+	adoptedAnHourAgo(second);
+	const fakeA = hub(swipeFleet());
+	const fakeB = hub(swipeFleet());
+	connect(first, fakeA.client, "ready");
+	const nav = navigation();
+	const tree = await mount(nav);
+	const host = menuHost(first);
+	const ref = `local:${SESSION_ID}`;
+	connect(second, fakeB.client, "ready");
+	setFocused(false);
+	setFocused(true);
+	await settle();
+	harness.prompt.mockClear();
+	act(() => host.act(menuItem(host, ref), "rename"));
+	const buttons = harness.prompt.mock.calls[0]?.[2] as { onPress?: (name?: string) => void }[];
+	act(() => buttons[1]?.onPress?.("New name"));
+	await settle();
+	expect(fakeA.mutations).toEqual([]);
+	expect(fakeB.mutations).toEqual([]);
+	act(() => tree.unmount());
+});
+
+it("opens the session from the menu's card as a tap does", async () => {
+	const { id, nav } = await mountSwipeFleet(hub(swipeFleet()));
+	const host = menuHost(id);
+	act(() => host.openSession(menuItem(host, `local:${OTHER_SESSION_ID}`)));
+	expect(nav.navigate).toHaveBeenCalledWith("Conversation", {
+		hubId: id,
+		ref: `local:${OTHER_SESSION_ID}`,
+		title: "Write changelog",
+	});
+	expect(menuItem(menuHost(id), `local:${OTHER_SESSION_ID}`).state).toBe("idle");
+});
+
+it("stops, pins and archives from the menu as the swipes do", async () => {
+	const fake = hub(swipeFleet());
+	const { id, tree, nav } = await mountSwipeFleet(fake);
+	const host = menuHost(id);
+	act(() => host.act(menuItem(host, `local:${OTHER_SESSION_ID}`), "pin"));
+	expect(nav.navigate).toHaveBeenCalledWith("PinAssignment", {
+		hubId: id,
+		ref: `local:${OTHER_SESSION_ID}`,
+		title: "Write changelog",
+	});
+	act(() => host.act(menuItem(host, `local:${SESSION_ID}`), "stop"));
+	await settle();
+	await vi.waitFor(() => expect(fake.threadCalls.map((call) => call.method)).toEqual(["thread/read", "turn/interrupt"]));
+	expect(texts(tree)).toContain("Stopped");
+	act(() => host.act(menuItem(host, "paradise-park:pp"), "archive"));
+	await settle();
+	expect(fake.mutations).toEqual([
+		{ method: "evener/archive/set", params: { kind: "session", id: "paradise-park:pp", archived: true } },
+	]);
+});
+
+it("drops a row that left the Board from the menu's host", async () => {
+	const shape = swipeFleet();
+	const fake = hub(shape);
+	const { id } = await mountSwipeFleet(fake);
+	expect(menuHost(id).item("paradise-park:pp", false)).toBeDefined();
+	shape.live = [[swipeWorking, swipeFinished]];
+	act(() => fake.invalidate(1, [{ kind: "section", section: "live" }]));
+	await settle();
+	expect(menuHost(id).item("paradise-park:pp", false)).toBeUndefined();
+	expect(menuHost(id).item(`local:${SESSION_ID}`, false)).toBeDefined();
+});
+
+it("stops providing the menu's host when the Board goes away", async () => {
+	const { id, tree } = await mountSwipeFleet(hub(swipeFleet()));
+	expect(rowMenuHosts.get(sheetKey(id))).toBeDefined();
+	act(() => tree.unmount());
+	expect(rowMenuHosts.get(sheetKey(id))).toBeUndefined();
 });

@@ -27,6 +27,7 @@ import { drafts } from "./nativeDrafts";
 import { locations } from "./nativeLocation";
 import { removeOrganizationData } from "./nativeOrganization";
 import { readerPositions } from "./nativeReaderPosition";
+import { forgetDocumentsForHub } from "./reader/nativeDocumentMemory";
 import { forgetDetailLevelsForHub } from "./session/nativeDetailLevels";
 import { forgetNoteDrafts } from "./session/sessionNotes";
 
@@ -144,6 +145,7 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
 						forgetBoardForHub,
 						forgetDetailLevelsForHub,
 						(id) => forgetNoteDrafts(Storage, id),
+						forgetDocumentsForHub,
 					]);
 				},
 			}),

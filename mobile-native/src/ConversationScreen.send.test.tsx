@@ -784,3 +784,13 @@ it("follows the hub's note in the bar and the open sheet when it changes", async
 	await settle();
 	expect(hub.requests.filter((request) => request.method === "notes/human/set")).toEqual([]);
 });
+
+it("offers no Retry that couldn't send: a question still waits on the failed turn", async () => {
+	const served = thread("ref-retry-question", "idle", true);
+	const turn = (served as unknown as { turns: { status: string; error?: unknown }[] }).turns[0];
+	turn.status = "failed";
+	turn.error = { message: "go test exited 1" };
+	const { tree } = await mount(served);
+	expect(renderedText(tree)).toContain("go test exited 1");
+	expect(pressable(tree, "Retry")).toBeUndefined();
+});

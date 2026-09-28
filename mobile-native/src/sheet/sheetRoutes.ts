@@ -37,6 +37,8 @@ export function sheetOptions(detents: readonly Detent[], initial: Detent): Nativ
 export const SHEET_ROUTES = {
 	TasksSheet: sheetOptions(["medium", "large"], "medium"),
 	NotesSheet: sheetOptions(["medium", "large"], "large"),
+	// The Board row's menu (phase 2 Task 12.6) opens at half height.
+	RowMenuSheet: sheetOptions(["medium", "large"], "medium"),
 } satisfies { [Name in keyof Routes]?: NativeStackNavigationOptions };
 
 export function isSheetRoute(name: string): boolean {

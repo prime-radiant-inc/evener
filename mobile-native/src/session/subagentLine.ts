@@ -2,7 +2,7 @@
 // title, its state and how long it has been in it ("failed · 6m"), and the
 // latest activity beneath, which reads the same as in the Subagents list.
 // Pure: the row re-renders with the transcript, so no clock of its own.
-import type { EvenerDelegateInfo } from "@evener/appwire-client";
+import { delegateTiming, type EvenerDelegateInfo } from "@evener/appwire-client";
 import { projectDelegateEntry } from "../../../mobile/src/services/activity";
 import { hubTime } from "../board/attention";
 import type { TimelineRow } from "../timeline";
@@ -54,13 +54,11 @@ export function subagentLine(
 		return { title, state, stateText: state };
 	}
 	const state = stateOf(delegate);
+	// The package's timing reads the clock against the run's start and its
+	// last activity, so a running subagent keeps counting between updates.
+	const timing = state === "running" ? delegateTiming(delegate, now) : undefined;
 	const ended = hubTime(delegate.runEndedAt);
-	const since =
-		state === "running"
-			? delegate.runningForMs
-			: ended === null
-				? undefined
-				: now - ended;
+	const since = timing ? timing.durationMs : ended === null ? undefined : now - ended;
 	const stateText = since === undefined ? state : `${state} · ${compactDuration(since)}`;
 	const line: SubagentLine = { title, state, stateText, ref: delegate.transcriptRef };
 	if (state === "failed") {
@@ -69,12 +67,15 @@ export function subagentLine(
 		const waitingOn = all.filter(
 			(child) => child.parentDelegateId === delegate.delegateId && stateOf(child) === "running",
 		).length;
+		// Quiet since the later of its last activity and this run's start: a
+		// resumed subagent can still carry its last run's activity time.
+		const quietFor = timing?.quietForMs ?? 0;
 		// An agent waiting on its own subagents is never stuck (ruling 10).
 		line.activity =
 			waitingOn > 0
 				? `Waiting on ${waitingOn} ${waitingOn === 1 ? "subagent" : "subagents"}`
-				: (delegate.quietForMs ?? 0) >= QUIET_AFTER_MS
-					? `Quiet ${compactDuration(delegate.quietForMs ?? 0)}`
+				: quietFor >= QUIET_AFTER_MS
+					? `Quiet ${compactDuration(quietFor)}`
 					: "Working";
 	}
 	return line;

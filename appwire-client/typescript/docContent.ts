@@ -135,3 +135,60 @@ export async function readDocFile(session: string, path: string, port: DocPort):
 export function docImageURL(origin: string, session: string, path: string): string {
   return `${docBase(origin)}/doc/image?session=${encodeURIComponent(session)}&path=${encodeURIComponent(path)}`;
 }
+
+// filenameOf returns the last segment of a slash path: a document's name when
+// it has no title of its own, on the web's doc pane tab and the phone's Reader.
+export function filenameOf(path: string): string {
+  return (
+    path
+      .split("/")
+      .filter((segment) => segment.length > 0)
+      .at(-1) ?? path
+  );
+}
+
+// isMarkdownPath reports whether a path renders as markdown: a case-insensitive
+// .md or .markdown extension only (the Go handler's rule, strings.EqualFold on
+// filepath.Ext).
+export function isMarkdownPath(path: string): boolean {
+  return /\.(?:md|markdown)$/i.test(path);
+}
+
+// isImagePath reports whether a path is an image the hub's /doc/image route
+// serves (output_images.go): png, jpeg, gif and webp. SVG is left out there
+// as an XSS guard, so an .svg opens as a file, its source shown as text.
+export function isImagePath(path: string): boolean {
+  return /\.(?:png|jpe?g|gif|webp)$/i.test(path);
+}
+
+// fileURLToPath turns a session link's file URL (agent validation
+// canonicalizes them to file:///absolute) back into the filesystem path a
+// document read takes, percent-escapes decoded. It reads the string itself:
+// React Native's URL parses only http and https, so its pathname would be "/"
+// for every file URL. A URL naming another machine, a malformed escape, or
+// anything that isn't a file URL names no path, "".
+export function fileURLToPath(fileURL: string): string {
+  const match = /^file:\/\/(?:localhost)?(\/[^?#]*)/i.exec(fileURL.trim());
+  if (!match?.[1]) return "";
+  try {
+    return decodeURIComponent(match[1]);
+  } catch {
+    return "";
+  }
+}
+
+// cwdRelative expresses a file path relative to the session's folder, or
+// undefined when it isn't inside it. An absolute path loses the folder's
+// prefix; a relative one is already relative, unless a ".." segment climbs
+// out. The hub serves documents only from inside the folder
+// (cmd/evener-hub/doc_serve.go), so a path outside it earns no affordance.
+export function cwdRelative(filePath: string, cwd: string): string | undefined {
+  const p = filePath.trim();
+  if (p === "" || cwd === "") return undefined;
+  if (!p.startsWith("/")) {
+    return p.split("/").includes("..") ? undefined : p;
+  }
+  const prefix = cwd.endsWith("/") ? cwd : `${cwd}/`;
+  if (p === cwd) return undefined; // the folder itself is not a file
+  return p.startsWith(prefix) ? p.slice(prefix.length) : undefined;
+}

@@ -1,5 +1,5 @@
 import {
-	humanizeState,
+	errorText,
 	type NavigationPinSectionDescriptor,
 	type NavigationProjectSummary,
 	type NavigationSessionSummary,
@@ -39,9 +39,11 @@ import { useConnection } from "../ConnectionProvider";
 import { reconnectDelay } from "../hubConnection";
 import { getNativeMutationRuntime } from "../nativeMutationRuntime";
 import { drafts } from "../nativeDrafts";
+import { useReduceMotion } from "../reduceMotion";
 import type { Routes } from "../screens";
+import { sheetKey, useProvideSheetHost } from "../sheet/sheetHosts";
 import { useScreenInFront } from "../sheet/useScreenInFront";
-import { Toast, useToast } from "../Toast";
+import { Toast, type ToastController, useToast } from "../Toast";
 import { Action, useColors, useTextScale } from "../ui";
 import {
 	type Band,
@@ -58,7 +60,7 @@ import {
 } from "./attention";
 import { ACTIVITY_POLL_MS, ActivityPoll, isFreshRead } from "./activityPoll";
 import type { OrganizeBy, SeenMarkers } from "./boardMemory";
-import { createSearchController, type SearchScope } from "./boardSearch";
+import { createSearchController, projectResults, type SearchScope } from "./boardSearch";
 import { BoardNotices, NoticeRow } from "./BoardNotices";
 import { BandHeader, FoldChevron } from "./BoardRow";
 import { BoardRows, type RowContext } from "./BoardRows";
@@ -77,13 +79,22 @@ import {
 	type ProjectSection,
 	type ProjectsView,
 	type ProjectTreeItem,
+	projectRevealTarget,
 	projectTreeItems,
 	SECTION_FOLDS,
 } from "./projectTree";
 import { projectName, ProjectSectionHeader, ProjectTreeRow } from "./ProjectTreeRow";
 import { fleetMinutes } from "./pulse";
 import { PulseMeter } from "./PulseMeter";
-import { archivingSessionId, type RowActionContext } from "./rowActions";
+import {
+	archivingSessionId,
+	type RowAction,
+	type RowActionContext,
+	renameSession,
+	rowMenuActions,
+	shutDownSession,
+} from "./rowActions";
+import { type RowMenuHost, rowMenuHosts } from "./RowMenu";
 import { archiveRow, rowSwipes, type SwipeRowAction } from "./rowSwipes";
 import { SearchResults } from "./SearchResults";
 import { type BoardOrganization, organizationOpen, useBoardOrganization } from "./useBoardOrganization";
@@ -134,11 +145,18 @@ function Board({
 	const { client, state, fatal, activeProfile } = useConnection();
 	const { palette } = useColors();
 	const connected = state === "ready";
+	// This Board's own hub is the connected one, so a hub write may go out.
+	const actionsConnected = connected && activeProfile?.id === hubId;
 	const focused = useIsFocused();
 	// Activity keeps polling while only a sheet covers the Board: the sheet
 	// is part of the screen under it.
 	const inFront = useScreenInFront(routeKey);
-	const { activityOf, msSinceRead, revision: activityRevision } = useActivityPoll(client, connected, inFront);
+	const {
+		activityOf,
+		msSinceRead,
+		revision: activityRevision,
+		tick: activityTick,
+	} = useActivityPoll(client, connected, inFront);
 	const [board] = useState(createBoardController);
 	useEffect(() => () => board.dispose(), [board]);
 	const snapshot = useSyncExternalStore(board.subscribe, board.getSnapshot);
@@ -191,11 +209,24 @@ function Board({
 		// The revisions re-run isSeen after a mark, a pruned mark or first run.
 		// activityRevision re-runs isStuck after each read, and activityOf
 		// changes when the connection drops or returns, or the read goes
-		// stale. msSinceRead is left out on purpose: it changes on every
-		// render, so it would re-sort Working every time, and a row's place
-		// only needs to be as fresh as the last read (its why line reads
-		// msSinceRead live).
-		[snapshot.live.rows, snapshot.needsYou.rows, seen, seenRevision, hubSeenRevision, activityOf, activityRevision],
+		// stale. Bare msSinceRead is left out on purpose: it changes on every
+		// render, which would re-sort Working every render. activityTick
+		// (useActivityPoll's own recheck, already ticking at ACTIVITY_POLL_MS
+		// while a fresh read is on screen) stands in for it instead, so a row
+		// that crosses into stuck purely from elapsed time - no new read
+		// landing, quiet time alone reaching STUCK_AFTER_MS - still floats to
+		// the top within one poll interval of its why-line saying so, instead
+		// of waiting for the next successful read.
+		[
+			snapshot.live.rows,
+			snapshot.needsYou.rows,
+			seen,
+			seenRevision,
+			hubSeenRevision,
+			activityOf,
+			activityRevision,
+			activityTick,
+		],
 	);
 	useFirstRun(board, markers, snapshot, focused);
 
@@ -210,6 +241,12 @@ function Board({
 		() => rowClassifier(snapshot.needsYou.rows, (row) => seen.isSeen(row)),
 		[snapshot.needsYou.rows, seen, seenRevision, hubSeenRevision],
 	);
+	// A project section's session row: its approval comes from the row's own
+	// flag alone, not from the needs_you section's membership.
+	const projectRow = (row: NavigationSessionSummary): ClassifiedRow => ({
+		row,
+		state: boardState(row, false, seen.isSeen(row)),
+	});
 	const folds = useCategoryFolds(hubId);
 	const organization = useBoardOrganization(hubId);
 	const toast = useToast();
@@ -256,6 +293,7 @@ function Board({
 	const [searching, setSearching] = useState(false);
 	const [scope, setScope] = useState<SearchScope>("all");
 	const searchFieldHeight = searchFieldHeightAt(useTextScale());
+	const reduceMotion = useReduceMotion();
 	const { height: windowHeight } = useWindowDimensions();
 	const recent = recentSearches(hubId);
 	const [recentList, setRecentList] = useState(() => recent.list());
@@ -263,10 +301,13 @@ function Board({
 		setSearchText(text);
 		search.controller.setQuery(text);
 	};
-	const cancelSearch = () => {
+	const leaveSearch = () => {
 		typeSearch("");
 		setSearching(false);
 		searchInput.current?.blur?.();
+	};
+	const cancelSearch = () => {
+		leaveSearch();
 		// Tuck the field back out of view, where the Board keeps it.
 		scroller.current?.scrollTo?.({ y: searchFieldHeight, animated: true });
 	};
@@ -280,15 +321,14 @@ function Board({
 
 	const newSession = () => navigation.navigate("NewSession", { hubId, hubName });
 	const openSession = (row: NavigationSessionSummary) => {
-		seen.markRead(connected ? client : null, [row]);
+		seen.markRead(actionsConnected ? client : null, [row]);
 		navigation.navigate("Conversation", { hubId, ref: row.ref, title: row.title });
 	};
 	// A search result the Board has loaded opens like its row, so it's
 	// marked seen the same way. Any other session marks itself seen when its
 	// screen loads (useMarkSeenInFront).
 	const openSearchResult = (result: SearchResult) => {
-		recent.add(search.snapshot.query);
-		setRecentList(recent.list());
+		rememberSearch();
 		const row = loadedRows.find((loaded) => loaded.ref === result.ref);
 		if (row) openSession(row);
 		else navigation.navigate("Conversation", { hubId, ref: result.ref, title: result.title });
@@ -297,10 +337,18 @@ function Board({
 		recent.clear();
 		setRecentList(recent.list());
 	};
+	const rememberSearch = () => {
+		recent.add(search.snapshot.query);
+		setRecentList(recent.list());
+	};
 
 	// Where each section starts in the scroller, for the chips and the
 	// summary line to jump to. Bands measure inside the Live block.
 	const offsets = useRef<Record<string, number>>({});
+	// Search's project hit waiting to be scrolled to: the item key while it
+	// waits, and what has laid out since (revealProject).
+	const [revealKey, setRevealKey] = useState<string | null>(null);
+	const reveal = useRef<{ sectionTop: number | null; row: { y: number; height: number } | null } | null>(null);
 	const liveEnd = useRef<number | null>(null);
 	const measure = (key: string) => (event: LayoutChangeEvent) => {
 		offsets.current[key] = event.nativeEvent.layout.y;
@@ -386,19 +434,41 @@ function Board({
 		});
 
 	// What a row's actions may do now (rulings 16 and 21), by whether it sits
-	// in an archived tier.
-	const rowContext = (archived: boolean): RowActionContext => ({
-		connected: connected && activeProfile?.id === hubId,
-		organizationReady: organization.ready,
-		archived,
-	});
-	const runRowAction = (item: ClassifiedRow, action: SwipeRowAction) => {
+	// in an archived tier. It keeps its identity while those facts hold, so
+	// the row menu's host below changes when a row's actions can.
+	const rowContext = useCallback(
+		(archived: boolean): RowActionContext => ({
+			connected: actionsConnected,
+			organizationReady: organization.ready,
+			archived,
+		}),
+		[actionsConnected, organization.ready],
+	);
+	// The row menu, a sheet route that asks the Board's host below for the
+	// row and its actions. It carries the tier it opened from, since a
+	// session can show twice (Live and a project's Archived tier) and the two
+	// copies offer different actions (Archive vs. Unarchive).
+	const openRowMenu = (item: ClassifiedRow, archived: boolean) =>
+		navigation.navigate("RowMenuSheet", { hubId, ref: item.row.ref, archived });
+	const runRowAction = (item: ClassifiedRow, action: Exclude<SwipeRowAction, "more">) => {
 		const { row } = item;
 		if (action === "pin") navigation.navigate("PinAssignment", { hubId, ref: row.ref, title: row.title });
-		else if (action === "stop" && client)
+		else if (action === "stop" && actionsConnected && client)
 			void stops.stop(client, row.ref).then((outcome) => toast.show({ text: stopToast(outcome, row.title) }));
 		else if (action === "archive" || action === "unarchive")
 			void archiveRow(organization, row, action === "archive", toast);
+	};
+	/** The menu's actions: Pin, Stop, Archive and Unarchive as the swipes do
+	 * them, the read marks on this phone, and Shut down and Rename as the
+	 * Session sends them (rulings 18-21). */
+	const actOnRow = (item: ClassifiedRow, action: RowAction) => {
+		const { row } = item;
+		const markClient = actionsConnected ? client : null;
+		if (action === "markRead") seen.markRead(markClient, [row]);
+		else if (action === "markUnread") seen.markUnread(markClient, [row]);
+		else if (action === "shutDown") confirmShutDown(actionsConnected ? client : null, row, toast);
+		else if (action === "rename") promptRename(actionsConnected ? client : null, row, toast);
+		else runRowAction(item, action);
 	};
 	const archivingId = archivingSessionId(organization.state);
 	const listContext: RowContext = {
@@ -411,7 +481,15 @@ function Board({
 		activityOf,
 		msSinceRead,
 		swipes: (item, archived) =>
-			rowSwipes(item, rowContext(archived), archivingId, (action) => runRowAction(item, action)),
+			rowSwipes(item, rowContext(archived), archivingId, (action) =>
+				action === "more" ? openRowMenu(item, archived) : runRowAction(item, action),
+			),
+		menu: (item, archived) => ({
+			actions: menuActionsHere(item, rowContext(archived)),
+			onOpenSession: () => openSession(item.row),
+			onAction: (action) => actOnRow(item, action),
+			onOpenSheet: () => openRowMenu(item, archived),
+		}),
 	};
 	const rows = (items: ClassifiedRow[], variant: "signal" | "quiet", moving: boolean, archived = false) => (
 		<BoardRows items={items} variant={variant} moving={moving} archived={archived} context={listContext} />
@@ -473,6 +551,36 @@ function Board({
 				});
 		return { section, folded, items };
 	});
+	// The rows the row menu sheet can be about: Live's and the categories'
+	// (a fold hides them, but they stay loaded) and the project sessions in
+	// the shown tree.
+	const shownRows = useShownRows([
+		...[...bands.needsYou, ...bands.finished, ...bands.working, ...bands.idle].map((item) => ({ item, archived: false })),
+		...pins.flatMap((pin) => {
+			const page = snapshot.pinSections[pin.id];
+			return page?.loaded ? page.rows.map((row) => ({ item: classify(row), archived: false })) : [];
+		}),
+		...shownSections.flatMap(({ items }) =>
+			items.flatMap((item) => (item.kind === "session" ? [{ item: projectRow(item.row), archived: item.archived }] : [])),
+		),
+	]);
+	// The sheet reads the row live, so its actions follow the row while it's
+	// open, and hands each answer back to the Board's own handlers.
+	const menuHandlers = useRef({ actOnRow, openSession });
+	menuHandlers.current = { actOnRow, openSession };
+	const rowMenuHost = useMemo<RowMenuHost>(
+		() => ({
+			item: (ref, archived) => shownRows.get(shownRowKey(ref, archived))?.item,
+			actions: (item, archived) => menuActionsHere(item, rowContext(archived)),
+			hostLabel,
+			act: (item, action) => menuHandlers.current.actOnRow(item, action),
+			openSession: (item) => menuHandlers.current.openSession(item.row),
+			// Nothing on the Board waits for the menu to close.
+			closed: () => {},
+		}),
+		[shownRows, rowContext, hostLabel],
+	);
+	useProvideSheetHost(rowMenuHosts, sheetKey(hubId), rowMenuHost);
 	const itemsOf = (section: ProjectSection) => shownSections.find((shown) => shown.section === section)?.items ?? [];
 	// A section's catalog is read when it's first shown unfolded, so a folded
 	// Test runs or Archived costs no read.
@@ -516,6 +624,36 @@ function Board({
 			}
 		}
 	};
+	// Search's project hit (spec 7.4): unfold the way to the project, then,
+	// once its row and the Projects section have both laid out (in either
+	// order), scroll the row 30% of the way down the viewport, as a list's
+	// scrollToItem with viewPosition 0.3 would. A reveal starts from search,
+	// whose results replace the sections, so leaving search mounts them
+	// afresh and both layouts always arrive, even for a project already
+	// unfolded; the section's offset from before search could be stale.
+	const revealProject = (projectKey: string) => {
+		const { view } = projectSections.projects;
+		const project = view.projects.find((candidate) => candidate.key === projectKey);
+		if (!project) return;
+		const target = projectRevealTarget({ project, pages: view.pages.get(projectKey), sources: hostSources, organizeBy });
+		for (const fold of target.unfold) setFolded(fold, false);
+		reveal.current = { sectionTop: null, row: null };
+		setRevealKey(target.scrollTo);
+	};
+	const finishReveal = () => {
+		const pending = reveal.current;
+		if (!pending?.row || pending.sectionTop === null) return;
+		reveal.current = null;
+		setRevealKey(null);
+		const top = pending.sectionTop + pending.row.y;
+		const y = Math.max(0, top - 0.3 * (viewport.current.height - pending.row.height));
+		scroller.current?.scrollTo?.({ y, animated: !reduceMotion });
+	};
+	const openProjectResult = (project: NavigationProjectSummary) => {
+		rememberSearch();
+		leaveSearch();
+		revealProject(project.key);
+	};
 	const projectMenu = (section: ProjectSection, project: NavigationProjectSummary) => {
 		const actions = projectMenuActions(project, {
 			connected,
@@ -528,12 +666,7 @@ function Board({
 		if (item.kind === "session")
 			return (
 				<View key={item.key} style={{ marginLeft: 16 * item.depth }}>
-					{rows(
-						[{ row: item.row, state: boardState(item.row, false, seen.isSeen(item.row)) }],
-						"quiet",
-						false,
-						item.archived,
-					)}
+					{rows([projectRow(item.row)], "quiet", false, item.archived)}
 				</View>
 			);
 		if (item.kind === "more" || item.kind === "moreProjects")
@@ -549,7 +682,7 @@ function Board({
 					<ProjectTreeRow item={item} onPress={() => readMore(section, item)} />
 				</View>
 			);
-		return (
+		const row = (
 			<ProjectTreeRow
 				key={item.key}
 				item={item}
@@ -559,6 +692,20 @@ function Board({
 				onLongPress={item.kind === "project" ? projectMenu(section, item.project) : undefined}
 				changing={item.kind === "project" && journalHoldsProject(organization, item.project.key)}
 			/>
+		);
+		if (item.key !== revealKey) return row;
+		return (
+			<View
+				key={item.key}
+				testID="project-reveal"
+				onLayout={(event) => {
+					if (!reveal.current) return;
+					reveal.current.row = event.nativeEvent.layout;
+					finishReveal();
+				}}
+			>
+				{row}
+			</View>
 		);
 	};
 
@@ -632,6 +779,8 @@ function Board({
 							onOpen={openSearchResult}
 							onRecent={typeSearch}
 							onClearRecent={clearRecent}
+						projects={projectResults(projectSections.projects.view.projects, search.snapshot.query)}
+						onOpenProject={openProjectResult}
 						/>
 					) : (
 						<>
@@ -669,6 +818,10 @@ function Board({
 									onLayout={(event) => {
 										measure(section)(event);
 										readVisibleMore();
+									if (section === "projects" && reveal.current) {
+										reveal.current.sectionTop = event.nativeEvent.layout.y;
+										finishReveal();
+									}
 									}}
 									style={{ paddingTop: 10 }}
 								>
@@ -765,6 +918,62 @@ function pinnedCategoryMenu(organization: BoardOrganization, catalog: () => read
 			(operation?.kind === "renamePinSection" || operation?.kind === "deletePinSection") &&
 			operation.params.sectionId === sectionId,
 	};
+}
+
+/** A row's menu actions on this phone: Rename asks through Alert.prompt,
+ * which only iOS has. */
+function menuActionsHere(item: ClassifiedRow, context: RowActionContext): RowAction[] {
+	const actions = rowMenuActions(item, context);
+	return Platform.OS === "ios" ? actions : actions.filter((action) => action !== "rename");
+}
+
+/** Shut down from the row menu: asked first, then the Session's own
+ * request, then a toast either way. */
+function confirmShutDown(
+	client: ConversationClientLike | null,
+	row: NavigationSessionSummary,
+	toast: Pick<ToastController, "show">,
+) {
+	Alert.alert(`Shut down “${row.title}”?`, "The agent stops. Send it a message to resume it.", [
+		{ text: "Cancel", style: "cancel" },
+		{
+			text: "Shut down",
+			style: "destructive",
+			onPress: () => {
+				if (!client) return;
+				shutDownSession(client, row.ref).then(
+					() => toast.show({ text: "Session shut down" }),
+					(error: unknown) => toast.show({ text: `Couldn't shut down “${row.title}”: ${errorText(error)}` }),
+				);
+			},
+		},
+	]);
+}
+
+/** Rename from the row menu (iOS only: Alert.prompt), starting from the
+ * row's title. An empty name sends nothing. */
+function promptRename(client: ConversationClientLike | null, row: NavigationSessionSummary, toast: Pick<ToastController, "show">) {
+	Alert.prompt(
+		"Rename session",
+		undefined,
+		[
+			{ text: "Cancel", style: "cancel" },
+			{
+				text: "Rename",
+				onPress: (name?: string) => {
+					if (!client) return;
+					renameSession(client, row.ref, name ?? "").then(
+						(renamed) => {
+							if (renamed) toast.show({ text: "Renamed" });
+						},
+						(error: unknown) => toast.show({ text: `Couldn't rename “${row.title}”: ${errorText(error)}` }),
+					);
+				},
+			},
+		],
+		"plain-text",
+		row.title,
+	);
 }
 
 /** A project row's long-press menu (ruling 15): Pin to top or Unpin, and
@@ -885,6 +1094,40 @@ function SearchField({
 	);
 }
 
+type ShownRow = { item: ClassifiedRow; archived: boolean };
+
+/** A shown row's identity: its ref and the tier it sits in. A session shown
+ * in both Live and a project's Archived tier is two different shown rows, so
+ * the row menu opened from each reads its own copy and offers the right
+ * action (Archive or Unarchive) instead of always the Live copy's. */
+function shownRowKey(ref: string, archived: boolean): string {
+	return `${ref}:${archived}`;
+}
+
+/** The Board's shown rows by ref and tier: each ref keeps its first
+ * unarchived copy and its first archived copy, in screen order. The map
+ * keeps its identity while no row, state or tier changes, so the row menu's
+ * host (and an open menu) changes only when one does. */
+function useShownRows(rows: readonly ShownRow[]): ReadonlyMap<string, ShownRow> {
+	const byKey = new Map<string, ShownRow>();
+	for (const shown of rows) {
+		const key = shownRowKey(shown.item.row.ref, shown.archived);
+		if (!byKey.has(key)) byKey.set(key, shown);
+	}
+	const kept = useRef(byKey);
+	if (!sameShownRows(kept.current, byKey)) kept.current = byKey;
+	return kept.current;
+}
+
+function sameShownRows(before: ReadonlyMap<string, ShownRow>, after: ReadonlyMap<string, ShownRow>): boolean {
+	if (before.size !== after.size) return false;
+	for (const [key, shown] of after) {
+		const was = before.get(key);
+		if (!was || was.item.row !== shown.item.row || was.item.state !== shown.item.state) return false;
+	}
+	return true;
+}
+
 /** Every session row a project section's view holds, across its projects'
  * tiers. */
 function projectSessionRows(view: ProjectsView): NavigationSessionSummary[] {
@@ -948,7 +1191,11 @@ const noRevision = () => 0;
  * the polling cadence, dropping the read within one interval of its going
  * stale, whatever becomes of the poll meanwhile. With no fresh read on screen
  * there is nothing to expire, so it doesn't run: not before the first read
- * lands, not while reads keep failing, and never on a hub that predates S5. */
+ * lands, not while reads keep failing, and never on a hub that predates S5.
+ * The returned `tick` is that same recheck's counter: `bands`' isStuck sort
+ * closes over `msSinceRead`, so it needs this to re-sort Working within one
+ * poll interval of a row crossing into stuck from elapsed time alone, in
+ * step with its why-line (which reads `msSinceRead` live on every render). */
 function useActivityPoll(client: ConversationClientLike | null, connected: boolean, inFront: boolean) {
 	const poll = useMemo(() => (client ? new ActivityPoll(client) : null), [client]);
 	const revision = useSyncExternalStore(poll?.subscribe ?? noSubscription, poll?.getRevision ?? noRevision);
@@ -959,14 +1206,14 @@ function useActivityPoll(client: ConversationClientLike | null, connected: boole
 	}, [poll, connected, inFront]);
 	const msSinceRead = poll?.msSinceRead() ?? null;
 	const reading = connected && isFreshRead(msSinceRead) ? poll : null;
-	const [, recheck] = useReducer((n: number) => n + 1, 0);
+	const [tick, recheck] = useReducer((n: number) => n + 1, 0);
 	useEffect(() => {
 		if (!reading || !inFront) return;
 		const timer = setInterval(recheck, ACTIVITY_POLL_MS);
 		return () => clearInterval(timer);
 	}, [reading, inFront]);
 	const activityOf = useCallback((ref: string) => reading?.activity(ref), [reading]);
-	return { revision, activityOf, msSinceRead: reading ? msSinceRead : null };
+	return { revision, activityOf, msSinceRead: reading ? msSinceRead : null, tick };
 }
 
 /** The hub's seen marks (S4): marks go out whenever the connection is ready,
