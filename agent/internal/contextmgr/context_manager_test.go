@@ -667,8 +667,38 @@ func TestCheckpoint_WriteStatus_PairsCallsWithResults(t *testing.T) {
 		"pending.go":   writeUnconfirmed,
 	}
 	for path, want := range wants {
-		if got := data.fileWrites[path]; got != want {
-			t.Fatalf("fileWrites[%q] = %v, want %v", path, got, want)
+		got, ok := data.fileWrites[path]
+		if !ok || got != want {
+			t.Fatalf("fileWrites[%q] = %v (present=%v), want %v", path, got, ok, want)
+		}
+	}
+}
+
+// A confirmed write is sticky: a later failed or unconfirmed attempt on the
+// same path must not downgrade it out of "Files modified:", while a path whose
+// first attempt failed is confirmed once a later attempt succeeds.
+func TestCheckpoint_ConfirmedWriteNotDowngradedByLaterAttempt(t *testing.T) {
+	t.Parallel()
+	history := []schema.Turn{
+		{Kind: schema.TurnUserInput, Message: llm.User("prompt")},
+		// confirmed.go succeeds, then a later edit of the same path fails.
+		{Kind: schema.TurnAssistant, Message: assistantWithToolCall("w1", "write_file", `{"file_path":"confirmed.go"}`)},
+		{Kind: schema.TurnTool, Message: llm.ToolResultNamed("w1", "write_file", "OK", false)},
+		{Kind: schema.TurnAssistant, Message: assistantWithToolCall("w2", "edit_file", `{"file_path":"confirmed.go"}`)},
+		{Kind: schema.TurnTool, Message: llm.ToolResultNamed("w2", "edit_file", "denied", true)},
+		// retried.go fails, then a later attempt succeeds.
+		{Kind: schema.TurnAssistant, Message: assistantWithToolCall("w3", "write_file", `{"file_path":"retried.go"}`)},
+		{Kind: schema.TurnTool, Message: llm.ToolResultNamed("w3", "write_file", "denied", true)},
+		{Kind: schema.TurnAssistant, Message: assistantWithToolCall("w4", "write_file", `{"file_path":"retried.go"}`)},
+		{Kind: schema.TurnTool, Message: llm.ToolResultNamed("w4", "write_file", "OK", false)},
+		{Kind: schema.TurnAssistant, Message: llm.Assistant("done")},
+	}
+
+	result := checkpoint(history, 1, nil, "communicate")
+	line := checkpointModifiedFilesLine(result[0].Message.Text())
+	for _, path := range []string{"confirmed.go", "retried.go"} {
+		if !strings.Contains(line, path) {
+			t.Fatalf("confirmed write %q missing from Files modified: %q", path, line)
 		}
 	}
 }

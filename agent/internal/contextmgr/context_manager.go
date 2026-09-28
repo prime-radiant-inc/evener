@@ -1088,9 +1088,11 @@ type checkpointData struct {
 type checkpointWriteStatus int
 
 const (
-	writeConfirmed   checkpointWriteStatus = iota // result present and not an error
+	// writeUnconfirmed is the zero value, so a missing fileWrites entry — or any
+	// unrecognized state — is never mistaken for confirmed completed work.
+	writeUnconfirmed checkpointWriteStatus = iota // no result in the compacted prefix
+	writeConfirmed                                // result present and not an error
 	writeFailed                                   // result present and IsError
-	writeUnconfirmed                              // no result in the compacted prefix
 )
 
 // recordWrite keeps a confirmed write from being downgraded by a later attempt
