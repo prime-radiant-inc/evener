@@ -177,7 +177,9 @@ function Board({
 	const seenRevision = useSyncExternalStore(markers.subscribe, markers.getRevision);
 	const hubMarks = hubSeenMarks(hubId);
 	const hubSeenRevision = useSyncExternalStore(hubMarks.subscribe, hubMarks.getRevision);
-	const seen = useMemo(() => new BoardSeen(markers, hubMarks), [markers, hubMarks]);
+	// A new BoardSeen with each mark or pruned mark, so a memo that reads
+	// isSeen lists seen alone.
+	const seen = useMemo(() => new BoardSeen(markers, hubMarks), [markers, hubMarks, seenRevision, hubSeenRevision]);
 	const [now, setNow] = useState(Date.now);
 	const [draftRefs, setDraftRefs] = useState<Set<string>>(() => new Set());
 	// Select mode (spec 7.1): on from Select until Done or one of its
@@ -232,7 +234,7 @@ function Board({
 					return activity ? quietState(activity, msSinceRead ?? 0)?.state === "stuck" : false;
 				},
 			),
-		// The revisions re-run isSeen after a mark, a pruned mark or first run.
+		// seen re-runs isSeen after a mark, a pruned mark or first run.
 		// activityRevision re-runs isStuck after each read, and activityOf
 		// changes when the connection drops or returns, or the read goes
 		// stale. Bare msSinceRead is left out on purpose: it changes on every
@@ -247,8 +249,6 @@ function Board({
 			snapshot.live.rows,
 			snapshot.needsYou.rows,
 			seen,
-			seenRevision,
-			hubSeenRevision,
 			activityOf,
 			activityRevision,
 			activityTick,
@@ -265,13 +265,13 @@ function Board({
 
 	const classify = useMemo(
 		() => rowClassifier(snapshot.needsYou.rows, (row) => seen.isSeen(row)),
-		[snapshot.needsYou.rows, seen, seenRevision, hubSeenRevision],
+		[snapshot.needsYou.rows, seen],
 	);
 	// A project section's session row: its approval comes from the row's own
 	// flag alone, not from the needs_you section's membership.
 	const projectRow = useCallback(
 		(row: NavigationSessionSummary): ClassifiedRow => ({ row, state: boardState(row, false, seen.isSeen(row)) }),
-		[seen, seenRevision, hubSeenRevision],
+		[seen],
 	);
 	const folds = useCategoryFolds(hubId);
 	const organization = useBoardOrganization(hubId);
