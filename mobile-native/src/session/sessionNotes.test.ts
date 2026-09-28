@@ -64,7 +64,10 @@ function memoryStorage(values = new Map<string, string>()): SyncStringStorage & 
 	};
 }
 
-function harness(over: { fail?: Error; projectionState?: "pending" | "removed"; working?: boolean; instanceId?: string } = {}) {
+function harness(
+	over: { fail?: Error; projectionState?: "pending" | "removed"; working?: boolean; instanceId?: string } = {},
+) {
+	let writable = true;
 	const requests: { method: string; params: Record<string, unknown> }[] = [];
 	let saved = "";
 	let failure = over.fail ?? null;
@@ -94,6 +97,7 @@ function harness(over: { fail?: Error; projectionState?: "pending" | "removed"; 
 			instanceId: () => ("instanceId" in over ? over.instanceId : "instance-1"),
 			savedNote: () => saved,
 			working: () => over.working ?? false,
+			writable: () => writable,
 			storage,
 			uuid: () => `m-${++id}`,
 		});
@@ -107,12 +111,41 @@ function harness(over: { fail?: Error; projectionState?: "pending" | "removed"; 
 		recover: () => {
 			failure = null;
 		},
+		setWritable: (value: boolean) => {
+			writable = value;
+		},
 	};
 }
 
 describe("saving your note (spec 8.8; Review Focus 5)", () => {
 	beforeEach(() => vi.useFakeTimers());
 	afterEach(() => vi.useRealTimers());
+
+	it("sends nothing once the session stops taking notes, and keeps the note on this phone", async () => {
+		const hub = harness();
+		const notes = hub.make();
+		notes.edit("Fix causes");
+		notes.blur();
+		// The session ends within the ten seconds.
+		hub.setWritable(false);
+		await vi.advanceTimersByTimeAsync(SAVE_AFTER_BLUR_MS);
+		expect(await notes.flush()).toEqual({ saved: false, woke: false });
+		expect(hub.requests).toEqual([]);
+		expect([...hub.storage.values.keys()].some((key) => key.includes("note-draft"))).toBe(true);
+	});
+
+	it("goes back to clean without saving again when you edit back to the hub's note during a save", async () => {
+		const hub = harness();
+		hub.setSaved("A");
+		const notes = hub.make();
+		notes.sync();
+		notes.edit("B");
+		const saving = notes.flush();
+		notes.edit("A");
+		await saving;
+		expect(hub.requests.map((request) => request.params.note)).toEqual(["B"]);
+		expect(notes.getSnapshot().phase).toBe("clean");
+	});
 
 	it("saves ten seconds after you leave the field, and focusing again cancels that", async () => {
 		const hub = harness();
@@ -295,6 +328,7 @@ describe("saving your note (spec 8.8; Review Focus 5)", () => {
 				instanceId: () => "instance-1",
 				savedNote: () => "",
 				working: () => false,
+				writable: () => true,
 				storage,
 				uuid: () => "m-1",
 			});

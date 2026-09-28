@@ -96,6 +96,10 @@ export interface NotesControllerOptions {
 	savedNote(): string;
 	/** Whether a turn is running, read at each save. */
 	working(): boolean;
+	/** Whether the session takes notes now (canWriteHumanNote), read at each
+	 * save. While it doesn't, nothing is sent and the note stays on this
+	 * phone. */
+	writable(): boolean;
 	storage: SyncStringStorage;
 	uuid(): string;
 }
@@ -181,7 +185,7 @@ export class NotesController {
 	 * app and opening the session connected all call this. */
 	flush(): Promise<SaveOutcome> {
 		this.cancelTimer();
-		if (!this.unsaved()) return Promise.resolve({ saved: false, woke: false });
+		if (!this.unsaved() || !this.options.writable()) return Promise.resolve({ saved: false, woke: false });
 		this.saving ??= this.saveUntilClean().finally(() => {
 			this.saving = null;
 		});
@@ -260,8 +264,9 @@ export class NotesController {
 				this.storeDraft(undefined);
 				this.publish({ text: response.note, phase: "saved" });
 			} else {
-				// Typed on during the save: the newer text stays kept and unsaved.
-				this.publish({ ...this.state, phase: "editing" });
+				// Typed on during the save: the newer text stays kept and unsaved,
+				// unless it went back to the hub's note, which leaves nothing to send.
+				this.publish({ ...this.state, phase: this.state.text === this.options.savedNote() ? "clean" : "editing" });
 			}
 			// An unchanged note projects "removed" and wakes no one
 			// (agent/session_notes_rpc.go).

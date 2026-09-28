@@ -1880,6 +1880,10 @@ export function ConversationScreen({
 				ref: route.params.ref,
 				instanceId: () => store.getState().conversation?.instanceId,
 				savedNote: () => store.getState().conversation?.humanNote ?? "",
+				writable: () => {
+					const live = store.getState().conversation;
+					return live ? canWriteHumanNote(live) : false;
+				},
 				working: () =>
 					store.getState().conversation?.status.type === "active",
 				storage: Storage,

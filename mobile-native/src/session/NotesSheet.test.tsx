@@ -11,7 +11,7 @@ import { alertRequests, pressable, render, renderedText, textOf } from "../rende
 import type { Routes } from "../screens";
 import { sheetKey } from "../sheet/sheetHosts";
 import type { SyncStringStorage } from "../syncStringStorage";
-import { type NotesHost, NotesSheet, notesHosts } from "./NotesSheet";
+import { canWriteHumanNote, type NotesHost, NotesSheet, notesHosts } from "./NotesSheet";
 import { NOTE_LIMIT, NotesController, type SaveOutcome } from "./sessionNotes";
 
 const navigation = vi.hoisted(() => ({ goBack: vi.fn(), dispatch: vi.fn() }));
@@ -95,6 +95,7 @@ function provide(current: Session, { removeFails = false } = {}) {
 		instanceId: () => "instance",
 		savedNote: () => current.humanNote,
 		working: () => current.status.type === "active",
+		writable: () => canWriteHumanNote(current),
 		storage: memoryStorage(),
 		uuid: () => "uuid",
 	});
