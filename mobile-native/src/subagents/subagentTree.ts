@@ -80,6 +80,9 @@ export class SubagentTree {
 	 * new list has its own. */
 	setClient(client: ConversationClientLike | null): Promise<void> {
 		if (client === this.client) return this.reloading ?? Promise.resolve();
+		// A read cut off mid-way leaves the pages it hadn't reached unlisted:
+		// say so until a new read settles.
+		if (this.list && this.reloading) this.settledMissing = this.list.branches().map((branch) => branch.label);
 		this.detachList?.();
 		this.detachList = null;
 		this.list = null;

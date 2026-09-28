@@ -79,6 +79,7 @@ function specTree() {
 let client: FakeClient;
 let navigation: {
 	navigate: ReturnType<typeof vi.fn>;
+	push: ReturnType<typeof vi.fn>;
 	setOptions: ReturnType<typeof vi.fn>;
 	options: NativeStackNavigationOptions[];
 };
@@ -97,7 +98,7 @@ beforeEach(() => {
 	client = hub(() => specTree());
 	harness.connection = screenConnection(client, "ready");
 	const options: NativeStackNavigationOptions[] = [];
-	navigation = { navigate: vi.fn(), setOptions: vi.fn((next) => options.push(next)), options };
+	navigation = { navigate: vi.fn(), push: vi.fn(), setOptions: vi.fn((next) => options.push(next)), options };
 });
 afterEach(() => {
 	for (const tree of trees.splice(0)) act(() => tree.unmount());
@@ -199,11 +200,12 @@ it("reads a failure, a nested subagent, another model, a branch and tokens on th
 });
 
 // A subagent's screen is its session (ruling 30). Until PR 3's "Subagent"
-// screen lands, a row opens it on the session route every navigator has.
+// screen lands, a row pushes it on the session route, over this list, as the
+// coordinator's own subagent rows do.
 it("opens a subagent's own session", async () => {
 	const tree = await mount();
 	act(() => pressable(tree, "Fix race in tree settle, Failed, go test exited 1 (3 times), 6 minutes")?.props.onPress());
-	expect(navigation.navigate).toHaveBeenCalledWith("Conversation", {
+	expect(navigation.push).toHaveBeenCalledWith("Conversation", {
 		hubId: "hub-1",
 		ref: "local:race",
 		title: "Fix race in tree settle",

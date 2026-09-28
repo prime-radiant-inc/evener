@@ -2947,6 +2947,8 @@ export function ConversationScreen({
 					choose={openSessionDestination}
 				/>
 			) : null}
+			{/* Dormant: the Subagents list replaced its one way in, and phase 4 PR 8
+			    (plan Task 21) deletes the sheet with this state. */}
 			{activeProfile?.id === route.params.hubId &&
 			activityContext?.hubId === route.params.hubId &&
 			activityContext.ref === route.params.ref ? (
