@@ -1,14 +1,12 @@
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { cleanup, render, screen } from "@testing-library/react";
+import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { createRef, useState } from "react";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { MAX_HEIGHT_VIEWPORT_FRACTION, MIN_ROWS, Textarea } from "./index";
 import rawStyles from "./textarea.module.css";
-
-afterEach(cleanup);
 
 function ControlledTextarea(props: { autoGrow?: boolean; onChange?: (value: string) => void }) {
   const [value, setValue] = useState("");

@@ -1,10 +1,6 @@
-import { cleanup, render, screen } from "@testing-library/react";
-import { afterEach, expect, test } from "vitest";
+import { render, screen } from "@testing-library/react";
+import { expect, test } from "vitest";
 import { FlowOverlay } from "./FlowOverlay";
-
-afterEach(() => {
-  cleanup();
-});
 
 test("always renders children", () => {
   render(
