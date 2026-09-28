@@ -53,15 +53,15 @@ func searchSnippet(text string, tokens []string) []appwire.SearchSnippetPart {
 	if end < len(line) {
 		// End at the last word break before the cut, but never before the
 		// first match's end.
-		cut, atCut := end, false
+		cut, foundCut := end, false
 		for _, word := range slices.Backward(words) {
 			if word.end <= cut && (first < 0 || word.end >= words[first].end) {
 				end = word.end
-				atCut = true
+				foundCut = true
 				break
 			}
 		}
-		if !atCut && first >= 0 && words[first].end > cut {
+		if !foundCut && first >= 0 && words[first].end > cut {
 			// The first match's own word runs past the ordinary cut (a hash,
 			// a URL, a line with no spaces): keep it whole rather than
 			// cutting inside it and silently losing its mark below.
