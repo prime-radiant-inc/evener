@@ -22,7 +22,7 @@ Everything below was read on main at `6b194e38b`.
 - The prober keeps the root's `Profile` (`cmd/evener-hub/internal/hubcore/prober.go:175`) but not its model. `LiveEntry` embeds the rendezvous entry, whose `Model` is the model the daemon started on (`rendezvous/rendezvous.go:35`, written at `cmd/evener/serve.go:1862`) and goes stale after a switch.
 - An ended session's model is its meta's (`schema.SessionMeta.Model`, `agent/schema/snapshot.go:144`), which the switch's autosave keeps current (`agent/session.go:1638`).
 - `TreeNode` and `hubapi.NavigationSessionSummary` carry no model (`hubcore/tree.go:447-525`, `hubapi/navigation.go:277-371`). `LastMessage` (S1d) is the precedent this plan copies: one closure in `BuildTree` (`lastMessageFor`, `hubcore/tree.go:1161`), a probe field, a fingerprint line, a projection line, a schema bound, a codec entry and the shared fixture.
-- The only display name for a model anywhere is `prettifyModelDisplayName` (`cmd/evener-hub/app_models.go:252`): `withDisplayNames` (`:295`) fills every `model/list` row's `displayName` from it, and no source sets one of its own (no Go code assigns `DisplayName` elsewhere). So `gpt-5.6` reads "Gpt 5.6" and `claude-opus-4-7-20260101` reads "Claude Opus 4 7" in the phone's model picker today (`mobile-native/src/modelPickerEntries.ts:32`).
+- The only display name the hub and the phone give a model is `prettifyModelDisplayName` (`cmd/evener-hub/app_models.go:252`; the TUI carries its own copy, `cmd/evener-tui/hub_commands.go:711`): `withDisplayNames` (`:295`) fills every `model/list` row's `displayName` from it, and no source sets one of its own (no Go code assigns `DisplayName` elsewhere). So `gpt-5.6` reads "Gpt 5.6" and `claude-opus-4-7-20260101` reads "Claude Opus 4 7" in the phone's model picker today (`mobile-native/src/modelPickerEntries.ts:32`).
 - Remote rows: a controller builds a host's rows from the host's `thread/list` (`appThreadTreeEntries`, `cmd/evener-hub/web_api_tree.go:920`), which already copies `thread.ModelProvider` into both the meta and the entry (`:936`, `:966`). The host fills that field from the rendezvous entry's start model (`threadFromEntry`, `cmd/evener-hub/internal/appsource/local_daemon.go:1181`), so after a switch a remote row would name the old model until the host names its current one.
 
 **How a session starts (S18).**
@@ -62,7 +62,7 @@ Everything below was read on main at `6b194e38b`.
 - **Go floors** per touched module (root, and `agent/` for PR 37): `go vet`, the same with `-tags evenerfuzz`, and `GOOS=windows go vet -tags evenerfuzz`; format with `$(go env GOROOT)/bin/gofmt`, never the one on PATH; the pinned `golangci-lint` (2.13.1, `.tool-versions`) on each touched package. Its `modernize` check wants promoted fields in `LiveEntry` literals (`{PID: 1, Model: …}`, not `{Entry: rendezvous.Entry{…}}`) and `wg.Go`.
 - **TypeScript floor** (PR 36 only). From `cmd/evener-hub/frontend`: `npx biome check --write` on the touched codec files, `npx vitest run ../../../appwire-client/typescript/state/navigation`, `npm run typecheck`. Never run Biome from the repo root or in `mobile-native`, and never `npm ci` through a symlinked `node_modules`.
 - **Targeted tests only.** Run each task's tests and the gates it names; CI runs the full matrix. Some tests fail or hang on macOS only (#2497); CI (Linux) is the judge.
-- **Deterministic tests.** No network, no sleeps, no wall clock. Git tests build a one-commit repository in `t.TempDir()` with `GIT_CONFIG_GLOBAL=/dev/null` and `GIT_CONFIG_NOSYSTEM=1`, and resolve temp paths with `filepath.EvalSymlinks` (macOS's `/var` is a symlink). The daemon test drives a real `runServe` with a scripted provider. Every new test is shown failing before its code lands.
+- **Deterministic tests.** No network, no sleeps, no unbounded waits: a notification or a daemon's exit is awaited on its channel with the bounded `time.After` guard the existing tests use. Git tests build a one-commit repository in `t.TempDir()` with `GIT_CONFIG_GLOBAL=/dev/null` and `GIT_CONFIG_NOSYSTEM=1`, and resolve temp paths with `filepath.EvalSymlinks` (macOS's `/var` is a symlink). The daemon test drives a real `runServe` with a scripted provider. Every new test is shown failing before its code lands.
 - **Line numbers** are on main at `6b194e38b`. Another lane's merge moves them, so every step also names its anchor: find it by the name.
 - **Size,** measured on the dry run (production lines only; tests and generated files excluded): PR 36 about 90, PR 37 about 80, PR 38 about 200, PR 39 about 700 added and 240 removed (the helper moves out of two stores). Landing follows the handoff: a regular PR, CI green on the merged head, RoboRev's comment read, /simplify run and its fixes pushed, then an admin squash merge with `--match-head-commit <full sha>`.
 
@@ -95,7 +95,7 @@ Decisions the spec and the server plan leave open, with the reason for each.
 15. **A recipe is thread/start's own fields:** `{id, name, source?, cwd, modelProvider?, model?, reasoningEffort?, launchOverrides?, newWorktree?}`. A client starts one by copying them into `ThreadStartParams`. The server plan's `order` field is gone: the list's order is the order. The phone's `{host, model: {provider, model}}` maps field for field (`host` "local" is `source` "" or "local").
 16. **`launchOverrides` holds only the sheets' own settings:** `enabledPlugins`, `sandbox`, `sandboxNet`, `contextStrategy`, `maxSubagentDepth`, `maxRounds`. Anything else is refused, so a recipe can never carry an env var (a credential), a system prompt file or an MCP server unseen on the sheet.
 17. **A recipe records "new worktree" as a yes or no, never a branch name** (`newWorktree`), since each launch needs a new branch; the sheet asks for the name when that recipe is used (question 5).
-18. **Whole-list replace against a revision.** Add, edit, rename, reorder and delete are each a new list sent with the revision the client read. A stale revision is `CodeConflict` with the current list, so a client reapplies its one change instead of overwriting another device's. An unchanged list keeps its revision and announces nothing. At most 100 recipes; ids `[A-Za-z0-9_-]{1,64}`, minted by the client and unique; names trimmed, 1 to 40 characters, unique ignoring case (the phone's rules); every other text at most 4096 bytes of valid UTF-8. The shape is all the hub checks: whether a host, model or plugin still exists is thread/start's question when the recipe is used.
+18. **Whole-list replace against a revision.** Add, edit, rename, reorder and delete are each a new list sent with the revision the client read. A stale revision is `CodeConflict` with the current list, so a client reapplies its one change instead of overwriting another device's. An unchanged list keeps its revision and announces nothing. At most 100 recipes; ids `[A-Za-z0-9_-]{1,64}`, minted by the client and unique; names trimmed, 1 to 40 characters, unique ignoring case (the phone's rules); every other text, including the overrides' sandbox, context strategy and each plugin name, at most 4096 bytes of valid UTF-8; at most 256 enabled plugins. The shape is all the hub checks: whether a host, model or plugin still exists is thread/start's question when the recipe is used.
 19. **Decoding is strict.** A field a newer client adds is refused rather than dropped, so a save never silently loses part of a recipe. A saved file this hub cannot read (bad JSON, a newer version, an unknown field) leaves an empty list with `loadError` and refuses every set, so it is never overwritten.
 20. **One file writer.** The keybindings and transcript-display stores carry identical atomic-write, read and strict-decode code; PR 39 moves it into `hubcore/state_file.go` and the new store uses it too, rather than adding a third copy. `cloneLaunchConfigLayer` moves from `appsource` to `appwire.CloneLaunchConfigLayer` for the same reason. The deletion and recovery stores keep their own writers (issue filed with this plan).
 21. **"Same as last time" stays on each device** (question 6), and the server plan's idea of deriving it from session metas is not built.
@@ -165,7 +165,9 @@ This lane changes `mobile-native/` only through the shared package. Once each PR
 
 **Known limits.**
 - A lane made at launch stays until `manage_worktree` removes it (ruling 13).
-- The web's spawn sheet adopting recipes and the Branch choice is web work outside this lane.
+- A launch whose worktree the daemon refuses (a branch that appeared after the hub's check) exits before it listens, but, like serve's other failures after the session is built (the boot generation, the listener), it leaves the session's files in the state dir: an ended session with no turns. The hub's check before the spawn makes this a race, not a path a person walks.
+- On a case-insensitive filesystem (macOS by default), `Feature` and `feature` name one lane folder; the second create fails at `git worktree add` and rolls back, as `manage_worktree create` already does.
+- The web's spawn sheet adopting recipes and the Branch choice is web work outside this lane. (#2939)
 
 ---
 
@@ -1109,7 +1111,7 @@ and in the fresh-session branch, after `deps.newSession` succeeds (right after i
 		// listens, so no read and no first turn ever sees the session outside
 		// it. A refusal (an existing branch, a checkout that is not a git
 		// repository) ends the launch: the hub reports it as the start's
-		// failure, and the session was never announced.
+		// failure, and no client ever saw the session live.
 		if *worktreeBranch != "" {
 			if _, err := sess.StartInNewWorktree(ctx, *worktreeBranch); err != nil {
 				sess.Close()
@@ -2164,6 +2166,14 @@ func TestValidateLaunchRecipesRefusesAListOutOfShape(t *testing.T) {
 	withEnv.LaunchOverrides.Env = map[string]string{"OPENAI_API_KEY": "sk-secret"}
 	withPrompt := good()
 	withPrompt.LaunchOverrides.SystemPromptFile = "/etc/prompt"
+	tooManyPlugins := good()
+	plugins := make([]string, 257)
+	for i := range plugins {
+		plugins[i] = fmt.Sprintf("plugin-%d", i)
+	}
+	tooManyPlugins.LaunchOverrides.EnabledPlugins = &plugins
+	longSandbox := good()
+	longSandbox.LaunchOverrides.Sandbox = strings.Repeat("s", 4097)
 	for name, recipes := range map[string][]LaunchRecipe{
 		"more than the cap":          tooMany,
 		"an id with a slash":         {{ID: "a/b", Name: "n", CWD: "/w"}},
@@ -2178,6 +2188,8 @@ func TestValidateLaunchRecipesRefusesAListOutOfShape(t *testing.T) {
 		"a provider with no model":   {{ID: "a", Name: "n", CWD: "/w", ModelProvider: "lunaroute"}},
 		"an env var in its settings": {withEnv},
 		"a system prompt file":       {withPrompt},
+		"257 plugins":                {tooManyPlugins},
+		"an over-long sandbox":       {longSandbox},
 	} {
 		if err := ValidateLaunchRecipes(recipes); err == nil {
 			t.Errorf("a list with %s was accepted", name)
@@ -2306,6 +2318,8 @@ const (
 	MaxLaunchRecipeNameRunes = 40
 	// maxLaunchRecipeTextBytes bounds every other text field of a recipe.
 	maxLaunchRecipeTextBytes = 4096
+	// maxLaunchRecipePlugins bounds a recipe's enabled plugin list.
+	maxLaunchRecipePlugins = 256
 )
 
 // launchRecipeIDPattern is a recipe id: the client mints it, and it only has
@@ -2422,8 +2436,29 @@ func validateLaunchRecipe(recipe LaunchRecipe) error {
 	if recipe.ModelProvider != "" && recipe.Model == "" {
 		return errors.New("modelProvider needs a model")
 	}
-	if recipe.LaunchOverrides != nil && !launchRecipeOverridesOwned(*recipe.LaunchOverrides) {
+	if recipe.LaunchOverrides != nil {
+		return validateLaunchRecipeOverrides(*recipe.LaunchOverrides)
+	}
+	return nil
+}
+
+// validateLaunchRecipeOverrides holds a recipe's overrides to the sheets' own
+// settings, each within a bound, so a recipe list stays a small file.
+func validateLaunchRecipeOverrides(layer LaunchConfigLayer) error {
+	if !launchRecipeOverridesOwned(layer) {
 		return errors.New("launchOverrides may set only enabledPlugins, sandbox, sandboxNet, contextStrategy, maxSubagentDepth and maxRounds")
+	}
+	texts := []string{layer.Sandbox, layer.ContextStrategy}
+	if layer.EnabledPlugins != nil {
+		if len(*layer.EnabledPlugins) > maxLaunchRecipePlugins {
+			return fmt.Errorf("launchOverrides.enabledPlugins names more than %d plugins", maxLaunchRecipePlugins)
+		}
+		texts = append(texts, *layer.EnabledPlugins...)
+	}
+	for _, text := range texts {
+		if !utf8.ValidString(text) || len(text) > maxLaunchRecipeTextBytes {
+			return fmt.Errorf("launchOverrides text must be valid UTF-8 of at most %d bytes", maxLaunchRecipeTextBytes)
+		}
 	}
 	return nil
 }
@@ -3109,10 +3144,14 @@ func TestHubRPCLaunchRecipesSetRefusals(t *testing.T) {
 	if !errors.As(err, &wire) || wire.Code != appwire.CodeInvalidParams {
 		t.Fatalf("invalid set err = %v, want InvalidParams", err)
 	}
-	select {
-	case notification := <-client.Notifications():
-		t.Fatalf("a refused set was announced: %q", notification.Method)
-	default:
+	// Neither refusal was announced: the next notification is the next
+	// successful set's.
+	if err := client.Request(context.Background(), appwire.MethodEvenerLaunchRecipesSet,
+		appwire.LaunchRecipesSetParams{ExpectedRevision: 1, Recipes: []appwire.LaunchRecipe{}}, &appwire.LaunchRecipes{}); err != nil {
+		t.Fatal(err)
+	}
+	if got := receiveLaunchRecipesChanged(t, client); got.Revision != 2 {
+		t.Fatalf("next notification = %+v, want the revision 2 set, not a refusal", got)
 	}
 }
 
@@ -3282,7 +3321,7 @@ Title "feat(hub): launch recipes stored on the hub (S8, phase 7 PR 39)". The bod
 ## Self-review
 
 - **Spec coverage.** S17: 7.2's "the model's display name when 'Show model on Board rows' is on" and 12's Display toggle: PR 36 (the toggle itself is the phone's). S18: 11's "Branch: current branch, or a new worktree branch (name field)" and "the field it concerns highlighted": PRs 37 and 38 (`worktreeBranchRefused` with its problem, and `evener/worktree/check` for the row before Start). S8: 11's recipes ("host, project, model, effort, plugins, access and branch": `source`, `cwd`, `modelProvider`/`model`, `reasoningEffort`, `launchOverrides.enabledPlugins`, `sandbox`/`sandboxNet`, `newWorktree`), 12's "list, edit, reorder, delete" (whole-list set) and 18's "shared with the web" (one list on the hub, announced to every connection): PR 39. "Same as last time" stays per device (ruling 21, question 6). Spec 18's fallbacks: every field and method is optional, and the phone lane handoff names the fallback each retires.
-- **Dry run.** Every task was built on a scratch branch off `6b194e38b` (never pushed), in PR order, with each task's own tests run red first (a compile failure where the task adds the symbol) and green after, then: `go test ./cmd/evener-hub/... ./appwire/... ./hubapi/... ./cmd/evener/...`, `go test ./agent/ -run 'Worktree'`, `FuzzHubcoreScenarios`, `go vet` (plain, `evenerfuzz`, Windows) on every touched package, `golangci-lint` 2.13.1 on every touched package (0 issues), `make generate` and `make lint-generated`, the navigation codec's vitest suite and the frontend typecheck. The code blocks above are the dry run's files. On this macOS machine the full `cmd/evener` and `cmd/evener-hub/internal/hostfence` packages have failures that main has too (`TestServeResumeServesTheRestoredTranscript`, the `RetainsReferencedScratch` trio, `hostfence`'s script tests: #2497's macOS class); everything else passed.
+- **Dry run.** Every task was built on a scratch branch off `6b194e38b` (never pushed), in PR order, with each task's own tests run red first (a compile failure where the task adds the symbol) and green after, then: `go test ./cmd/evener-hub/... ./appwire/... ./hubapi/... ./cmd/evener/...`, `go test ./agent/ -run 'Worktree'`, `FuzzHubcoreScenarios`, `go vet` (plain, `evenerfuzz`, Windows) on every touched package, `golangci-lint` 2.13.1 on every touched package (0 issues), `make generate` and `make lint-generated`, the navigation codec's vitest suite and the frontend typecheck. The code blocks above are the dry run's files. On this macOS machine the full `cmd/evener` and `cmd/evener-hub/internal/hostfence` packages have failures that main has too (`TestServeResumeServesTheRestoredTranscript`, the `RetainsReferencedScratch` trio, `hostfence`'s script tests, and `agent`'s `TestRollbackFreshDelegateWorktreeUsesCarriedProjectMetadataDir`, each a `/var` against `/private/var` path: #2497's macOS class); everything else passed.
 - **Placeholders.** None: every task carries its code or names the exact edit and its anchor.
 - **Names.** `CurrentModel` (probe, live entry, local daemon entry), `TreeNode.Model`, `modelFor`, `ModelName`/`model_name`, `navigationModelName`; `ValidateWorktreeName`, `StartInNewWorktree`, `validateStartupWorktree`, `WorktreeBranch`/`worktreeBranch`, `worktreeLaunchFlag`, `MethodEvenerWorktreeCheck`, `WorktreeCheckParams`, `WorktreeCheckResponse`, `WorktreeProblem*`, `newWorktreeProblem`, `hubWorktreeCheck`, `WorktreeBranchRefused`, `ErrorWorktreeBranchRefused`, `checkWorktreeStart`; `stateFileFaults`, `writeStateFileAtomic`, `readStateFile`, `decodeStateFileStrict`, `decodeStrictPayload`, `jsonObjectFields`, `requireJSONFields`, `LaunchRecipe`, `LaunchRecipes`, `LaunchRecipesSetParams`, `ValidateLaunchRecipes`, `DecodeLaunchRecipesSetParams`, `CloneLaunchConfigLayer`, `LaunchRecipeStore`, `registerLaunchRecipeHandlers`. Each is used the same way wherever it appears.
 - **Review Focus.** Item 1: Tasks 37.1, 37.2, 38.1. Item 2: Tasks 38.2, 38.3. Item 3: Tasks 37.1, 37.2, 38.2. Item 4: Tasks 36.1, 36.3. Item 5: Tasks 39.2, 39.3.
