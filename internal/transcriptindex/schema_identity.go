@@ -75,6 +75,14 @@ func schemaFieldFingerprint() string {
 // values are treated as leaves: their own fields are Go runtime state, not
 // part of the JSON contract, and an `any`-typed destination has no fixed
 // field set for DisallowUnknownFields to enforce in the first place.
+//
+// Known limitation: this walks Go field shape, not decode behavior. A type
+// reachable from transcript.Entry that implemented json.Marshaler/
+// Unmarshaler could change how a value decodes with no change to its field
+// shape, and schemaFields would not notice. Nothing reachable from Entry
+// does today (schema.Turn, llm.Message, and everything they embed all
+// decode via plain struct-tag rules); accepted rather than built against,
+// since there is nothing concrete to test it against yet.
 func schemaFields(t reflect.Type) []string {
 	var fields []string
 	var walk func(prefix string, t reflect.Type, depth int)
@@ -99,19 +107,17 @@ func schemaFields(t reflect.Type) []string {
 				return
 			}
 			for f := range t.Fields() {
+				underlying := f.Type
+				for underlying.Kind() == reflect.Pointer {
+					underlying = underlying.Elem()
+				}
+				isStruct := underlying.Kind() == reflect.Struct
 				if f.PkgPath != "" {
 					// Unexported: encoding/json ignores it, unless it is an
 					// embedded (anonymous) struct type, whose exported
 					// fields it promotes and recurses into regardless of
 					// the embedding field's own visibility.
-					if !f.Anonymous {
-						continue
-					}
-					et := f.Type
-					for et.Kind() == reflect.Pointer {
-						et = et.Elem()
-					}
-					if et.Kind() != reflect.Struct {
+					if !f.Anonymous || !isStruct {
 						continue
 					}
 				}
@@ -123,13 +129,25 @@ func schemaFields(t reflect.Type) []string {
 					// strings.Cut("-,", ",") gives the name "-").
 					continue
 				}
-				name := f.Name
+				name, renamed := f.Name, false
 				if n, _, _ := strings.Cut(tag, ","); n != "" {
-					name = n
+					name, renamed = n, true
 				}
 				path := prefix + "." + name
 				fields = append(fields, fmt.Sprintf("%s:%s:%s:%s:anon=%v", path, f.Type.String(), f.Type.Kind(), tag, f.Anonymous))
-				walk(path, f.Type, depth+1)
+				childPrefix := path
+				if f.Anonymous && !renamed && isStruct {
+					// encoding/json promotes an embedded struct field's own
+					// exported fields to this level instead of nesting them
+					// under the embedding field's name — but only when
+					// nothing (a json tag giving it an explicit name) turns
+					// that promotion off. Walking the children at prefix
+					// (not path) models what the wire actually looks like;
+					// the field's own descriptor line above still exists to
+					// catch the embedding itself changing.
+					childPrefix = prefix
+				}
+				walk(childPrefix, f.Type, depth+1)
 			}
 		default:
 			fields = append(fields, fmt.Sprintf("%s:%s:%s", prefix, t.String(), t.Kind()))

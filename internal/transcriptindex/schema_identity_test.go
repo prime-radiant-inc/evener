@@ -3,6 +3,7 @@ package transcriptindex
 import (
 	"reflect"
 	"slices"
+	"strings"
 	"testing"
 )
 
@@ -95,6 +96,36 @@ func TestSchemaFieldsDistinguishesEmbeddedFromNamed(t *testing.T) {
 	}
 	if slices.Equal(fingerprintOf[withEmbedded](), fingerprintOf[withNamedOfSameName]()) {
 		t.Errorf("schemaFields did not distinguish an embedded field from a named field of the identical name, type, and tag")
+	}
+}
+
+// TestSchemaFieldsRecordsPromotedChildrenAtTheParentLevel requires an
+// embedded struct field's own children to be recorded at the embedding
+// field's parent level (matching where encoding/json actually places them
+// in the JSON object), not nested under the embedding field's own name —
+// while a field of the identical type that is merely named the same but not
+// embedded (encoding/json disables promotion for any anonymous field that
+// carries an explicit json name) keeps its children nested, since it isn't
+// promoted. A fingerprint that nested a promoted field's children would
+// force a rebuild for an embedding-only refactor with an identical wire
+// shape (roborev finding).
+func TestSchemaFieldsRecordsPromotedChildrenAtTheParentLevel(t *testing.T) {
+	type EmbeddedInner struct {
+		X int `json:"x"`
+	}
+	type withEmbedded struct {
+		EmbeddedInner
+	}
+	type withRenamedEmbedded struct {
+		EmbeddedInner `json:"named"`
+	}
+	promoted := fingerprintOf[withEmbedded]()
+	if !slices.ContainsFunc(promoted, func(s string) bool { return strings.HasPrefix(s, ".x:") }) {
+		t.Errorf("schemaFields(withEmbedded) = %v, want a promoted child at \".x\" (the parent level), not nested under \".EmbeddedInner.x\"", promoted)
+	}
+	renamed := fingerprintOf[withRenamedEmbedded]()
+	if !slices.ContainsFunc(renamed, func(s string) bool { return strings.HasPrefix(s, ".named.x:") }) {
+		t.Errorf("schemaFields(withRenamedEmbedded) = %v, want the child nested under \".named.x\": a json tag renaming an embedded field turns off promotion", renamed)
 	}
 }
 
