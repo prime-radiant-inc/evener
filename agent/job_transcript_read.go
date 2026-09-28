@@ -44,6 +44,18 @@ var lstatJobOutputFile = os.Lstat
 // directory — swapped for a symlink after the locate, and the root open itself
 // refuses a symlinked projects/ (O_NOFOLLOW), while an ancestor above the
 // anchored root stays followable by design.
+//
+// Accepted residual: ancestors above the anchored root — the state home and
+// evener/ — are followed, not no-followed. That is the lane's standing
+// boundary, not new exposure: before this change the root was evener/ and the
+// root open had no O_NOFOLLOW, so a symlinked evener/ was followed too; the
+// transcript and api-log reads anchor lower still (at the bucket), leaving both
+// evener/ and projects/ as followed ancestors. The state root is deliberately
+// trusted so hosts with a symlinked $HOME/XDG_STATE_HOME still read, and
+// validateLayoutPrefix Lstats evener/, projects/, and the bucket at locate time
+// and refuses symlinks there. The residual is a swap of an ancestor above the
+// anchored root inside the locate-to-open window, which #2594-round-3 accepted
+// for this path.
 func jobOutputOpenRoot(path string) string {
 	candidate := filepath.Dir(filepath.Clean(path))
 	for {
@@ -353,6 +365,9 @@ func locateLocalJobRetainedTarget(currentStateDir, jobID string) (localJobRetain
 	// baseline. That residual is explicit and accepted because changing those
 	// seam signatures would break the fixed injection boundary; replacements
 	// during the wrapper's own Lstat/open interval are refused.
+	// Swaps of an ancestor above the anchored root (evener/ or the state home)
+	// inside this locator's locate-to-open window are likewise accepted, the
+	// same boundary the transcript and api-log reads carry (see jobOutputOpenRoot).
 	return localJobRetainedTarget{
 		JobID:      jobID,
 		Record:     location.Record,
