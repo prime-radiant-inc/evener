@@ -262,6 +262,7 @@ describe("the demo sessions behind Appendix A's Session frames", () => {
 			goal: false,
 			sharedNotes: true,
 			rename: false,
+			skillInput: false,
 		});
 	});
 

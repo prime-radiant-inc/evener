@@ -44,6 +44,7 @@ import type {
 	UrlsRemoveResponse,
 } from "@evener/appwire-client";
 import { SHUT_DOWN_STATUSES, WireError } from "@evener/appwire-client";
+import { canWriteHumanNote } from "../session/sessionNotes";
 import {
 	demoSessionId,
 	enabledPluginNames,
@@ -706,6 +707,7 @@ const NO_CAPABILITIES: ThreadCapabilities = {
 	goal: false,
 	sharedNotes: false,
 	rename: false,
+	skillInput: false,
 };
 
 // A session's capabilities as the hub advertises them for its status:
@@ -930,11 +932,17 @@ export function createDemoSessions(options: DemoSessionsOptions = {}): Thread[] 
 	return fleetSessions().map((session) => sessionThread(session, now));
 }
 
-// A notes change must reach a session that takes shared notes, and name the
-// instance it read. A stale instance is refused as the daemon refuses it
+// A notes change must reach a session that can take notes now, by the rule
+// the phone's Notes sheet follows (canWriteHumanNote), and name the instance
+// it read. A stale instance is refused as the daemon refuses it
 // (server/appwire_runtime.go, appwire.MutationNotAccepted).
 function requireSharedNotes(thread: Thread, expectedInstanceId: string, clientMutationId: string): void {
-	if (!thread.evener.capabilities.sharedNotes) throw new Error("This session doesn't take shared notes");
+	const writable = canWriteHumanNote({
+		status: thread.status,
+		resumeRequired: thread.evener.resumeRequired ?? false,
+		capabilities: thread.evener.capabilities,
+	});
+	if (!writable) throw new Error("This session can't take notes now");
 	if (expectedInstanceId !== thread.evener.instanceId)
 		throw new WireError("thread instance is stale", -32013, {
 			evenerErrorInfo: "conflict",
@@ -966,15 +974,16 @@ function normalizeNote(text: string): string {
 // the agent in a turn of its own, which the receipt names; an unchanged one
 // projects "removed" and wakes no one, as the daemon's does
 // (agent/session_notes_rpc.go).
-export function setHumanNote(thread: Thread, params: NotesHumanSetParams): NotesHumanSetResponse {
+export function setHumanNote(thread: Thread, params: NotesHumanSetParams, now: number): NotesHumanSetResponse {
 	requireSharedNotes(thread, params.expectedInstanceId, params.clientMutationId);
 	const note = normalizeNote(params.note ?? "");
 	const changed = note !== (thread.evener.humanNote ?? "");
 	thread.evener.humanNote = note;
-	if (changed)
+	let turnId: string | undefined;
+	if (changed) {
 		// The note steers the agent, recorded as the daemon records it
 		// (agent/session_notes_rpc.go); the phone shows it as your note's row.
-		thread.turns?.at(-1)?.items?.push({
+		const steer: ThreadItem = {
 			id: `demo-note-${params.clientMutationId}`,
 			type: "steering",
 			source: "user",
@@ -982,7 +991,27 @@ export function setHumanNote(thread: Thread, params: NotesHumanSetParams): Notes
 			text: `${HUMAN_NOTE_STEER_PREFIX} ${note || "(whiteboard cleared)"}`,
 			clientMutationId: params.clientMutationId,
 			status: "completed",
-		});
+		};
+		const running =
+			thread.status.type === "active"
+				? thread.turns?.find((turn) => turn.id === thread.evener.activeTurnId)
+				: undefined;
+		if (running) running.items?.push(steer);
+		else {
+			// A resting session wakes to read it, as the daemon's
+			// wakeForPendingSteering starts a turn, which Stop can end.
+			const turn: Turn = {
+				id: `${thread.id}-note-${params.clientMutationId}`,
+				itemsView: "full",
+				status: "inProgress",
+				startedAt: now,
+				items: [{ ...steer, startedAt: now }],
+			};
+			thread.turns?.push(turn);
+			startFleetTurn(thread, turn, now);
+		}
+		turnId = running?.id ?? thread.evener.activeTurnId;
+	}
 	return {
 		note,
 		receipt: {
@@ -991,7 +1020,7 @@ export function setHumanNote(thread: Thread, params: NotesHumanSetParams): Notes
 			threadId: thread.id,
 			...(thread.evener.instanceId ? { instanceId: thread.evener.instanceId } : {}),
 			projectionState: changed ? "pending" : "removed",
-			...(changed ? { turnId: `turn_note_${params.clientMutationId}` } : {}),
+			...(turnId ? { turnId } : {}),
 		},
 	};
 }

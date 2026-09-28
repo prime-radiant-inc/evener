@@ -14,6 +14,54 @@ import { readOrganizationNavigation } from "./organizationNavigation";
 import { ghosts } from "./session/ghosts";
 
 describe("native demonstration hub", () => {
+	it("starts a turn when a resting playground is steered or its held message is sent", async () => {
+		const hub = await createDemoHub(0);
+		const client = createHubClient(hub.origin, "", (url) => new WebSocket(url) as unknown as WebSocketLike);
+		const read = async () =>
+			(await client.request("thread/read", { ref: "demo:playground", includeTurns: true })).thread;
+		const identity = { ref: "demo:playground", expectedInstanceId: "demo-instance" };
+		const lastUserText = (thread: Awaited<ReturnType<typeof read>>) =>
+			thread.turns?.at(-1)?.items?.find((item) => item.type === "userMessage")?.text;
+		try {
+			await client.connect();
+			await client.request("turn/start", {
+				...identity,
+				clientMutationId: "start-1",
+				input: [{ type: "text", text: "Go" }],
+			});
+			await client.request("turn/queue", {
+				...identity,
+				clientMutationId: "queue-1",
+				input: [{ type: "text", text: "Held one" }],
+			});
+			await client.request("turn/interrupt", { ...identity, clientMutationId: "stop-1" });
+			const held = await read();
+			expect(held.status.type).toBe("idle");
+			await client.request("turn/promoteQueuedAsSteer", {
+				...identity,
+				clientMutationId: "promote-1",
+				index: 0,
+				expectedEntryId: held.evener.queue.ids?.[0] ?? "",
+			});
+			const sent = await read();
+			expect(sent.status.type).toBe("active");
+			expect(lastUserText(sent)).toBe("Held one");
+			await client.request("turn/interrupt", { ...identity, clientMutationId: "stop-2" });
+			const steered = await client.request("turn/steer", {
+				...identity,
+				clientMutationId: "steer-1",
+				input: [{ type: "text", text: "Steered while resting" }],
+			});
+			const woken = await read();
+			expect(woken.status.type).toBe("active");
+			expect(steered.receipt.turnId).toBe(woken.evener.activeTurnId);
+			expect(lastUserText(woken)).toBe("Steered while resting");
+		} finally {
+			client.close();
+			await hub.close();
+		}
+	});
+
 	it("changes the observed queue and rejects stale identities and revisions", async () => {
 		const hub = await createDemoHub(0);
 		const client = createHubClient(hub.origin, "", (url) => new WebSocket(url) as unknown as WebSocketLike);
@@ -733,6 +781,44 @@ describe("native demonstration hub's fleet sessions", () => {
 		});
 	});
 
+	it("wakes a resting session with a changed note, in a real turn Stop can end", async () => {
+		await withHub({}, async (client) => {
+			const ref = fleetSessionRef("s-diff");
+			const { thread } = await client.request("thread/read", { ref, includeTurns: false });
+			expect(thread.status.type).toBe("idle");
+			const saved = await client.request("notes/human/set", {
+				ref,
+				clientMutationId: "note-wake",
+				expectedInstanceId: thread.evener.instanceId ?? "",
+				note: "Cite the web version too.",
+			});
+			const after = (await client.request("thread/read", { ref, includeTurns: true })).thread;
+			expect(after.status.type).toBe("active");
+			expect(after.evener.capabilities.interrupt).toBe(true);
+			expect(saved.receipt.turnId).toBe(after.evener.activeTurnId);
+			const turn = after.turns?.find((candidate) => candidate.id === after.evener.activeTurnId);
+			expect(turn?.items).toContainEqual(
+				expect.objectContaining({ type: "steering", steeringKind: "human-note", clientMutationId: "note-wake" }),
+			);
+		});
+	});
+
+	it("refuses notes writes on a session that can't take notes, as the phone does", async () => {
+		await withHub({}, async (client) => {
+			for (const slug of ["s-roster", "s-namer"]) {
+				const ref = fleetSessionRef(slug);
+				const { thread } = await client.request("thread/read", { ref, includeTurns: false });
+				const expectedInstanceId = thread.evener.instanceId ?? "";
+				await expect(
+					client.request("notes/human/set", { ref, clientMutationId: `note-${slug}`, expectedInstanceId, note: "x" }),
+				).rejects.toMatchObject({ code: -32602, message: "This session can't take notes now" });
+				await expect(
+					client.request("urls/remove", { ref, clientMutationId: `link-${slug}`, expectedInstanceId, id: "u-2290" }),
+				).rejects.toMatchObject({ code: -32602, message: "This session can't take notes now" });
+			}
+		});
+	});
+
 	it("saves your note and removes a link on a fleet session", async () => {
 		await withHub({}, async (client) => {
 			const ref = fleetSessionRef("s-pr2138");
@@ -802,7 +888,7 @@ describe("native demonstration hub's fleet sessions", () => {
 					expectedInstanceId: "demo-instance",
 					note: "x",
 				}),
-			).rejects.toThrow("This session doesn't take shared notes");
+			).rejects.toThrow("This session can't take notes now");
 		});
 	});
 

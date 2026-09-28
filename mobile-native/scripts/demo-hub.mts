@@ -10,6 +10,7 @@ import type {
 	ModelListResponse,
 	MutationReceipt,
 	NavigationInvalidatedPayload,
+	NotesHumanSetParams,
 	Thread,
 	Turn,
 	TurnStartParams,
@@ -49,7 +50,8 @@ const PLAYGROUND_MODEL_LIST = {
 // The fleet sessions' shared-notes and approval methods, served only with
 // EVENER_DEMO_FLEET.
 const FLEET_SESSION_METHODS = {
-	"notes/human/set": setHumanNote,
+	"notes/human/set": (thread: Thread, params: NotesHumanSetParams) =>
+		setHumanNote(thread, params, Date.now()),
 	"urls/remove": removeLink,
 	"evener/sandbox/escalation/resolve": resolveEscalation,
 } as const;
@@ -461,14 +463,10 @@ export async function createDemoHub(
 								clientMutationId: params.clientMutationId,
 								status: "completed",
 							});
-						else if (
-							steering &&
-							method !== "turn/steer" &&
-							fleetRefs.has(selected.evener.ref)
-						)
-							// Sending a fleet session's held message (Stop parked the
-							// queue) starts a turn with it, as a daemon does. The
-							// playground never holds a queue: Stop takes its steering away.
+						else if (steering)
+							// A resting session wakes with the message: a steer, or a
+							// held message sent (Stop parked the queue), starts a turn
+							// with it, as the daemon's wakeForPendingSteering does.
 							startScriptedTurn(
 								selected,
 								removedTexts.join("\n"),
