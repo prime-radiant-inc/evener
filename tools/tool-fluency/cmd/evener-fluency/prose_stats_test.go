@@ -105,10 +105,59 @@ func TestResultMessagesReadsBothFieldsOnce(t *testing.T) {
 		{`{"message":"a","output":{"message":"a"}}`, []string{"a"}},
 		{`{"message":"a","output":"plain"}`, []string{"a"}},
 		{`{not json`, nil},
+		// message absent, output given as a JSON-encoded string (the live
+		// path's repairDefaultCommunicateEnvelope shape):
+		// apptranscript.NormalizeCommunicateArguments promotes the string to
+		// an object and copies its message up, the same normalization
+		// shownMessage applies. Reading raw arguments here (skipping that
+		// normalization) would decode output as a plain string and see no
+		// message at all, though shownMessage/to_user would still find one.
+		{`{"output":"{\"message\":\"Fixed the off-by-one.\"}"}`, []string{"Fixed the off-by-one."}},
 	} {
 		if got := resultMessages(c.args); !slices.Equal(got, c.want) {
 			t.Errorf("resultMessages(%s) = %q, want %q", c.args, got, c.want)
 		}
+	}
+}
+
+// TestShownMessageAndResultMessagesAgreeOnStringValuedOutput: shownMessage
+// (what "to_user" counts) and resultMessages (what "all" counts) must decode
+// a call's arguments the same way, so a string-valued output cannot make
+// to_user see a message that all misses.
+func TestShownMessageAndResultMessagesAgreeOnStringValuedOutput(t *testing.T) {
+	t.Parallel()
+	const args = `{"output":"{\"message\":\"Fixed the off-by-one.\"}","end_turn":true}`
+	const want = "Fixed the off-by-one."
+	if got := shownMessage(args); got != want {
+		t.Errorf("shownMessage(%s) = %q, want %q", args, got, want)
+	}
+	if got := resultMessages(args); !slices.Equal(got, []string{want}) {
+		t.Errorf("resultMessages(%s) = %q, want %q", args, got, []string{want})
+	}
+}
+
+// TestExtractRunProseHandlesStringValuedOutput: the same string-valued
+// output shape, end to end through extractRunProse. Before decoding both
+// "to_user" and "all" from one normalized decode, to_user counted the
+// message (via shownMessage's normalization) while all missed it (via
+// resultMessages' raw read).
+func TestExtractRunProseHandlesStringValuedOutput(t *testing.T) {
+	t.Parallel()
+	stateDir := t.TempDir()
+	rootMeta(t, stateDir, proseRootID)
+	writeFluencyTranscript(t, stateDir, proseRootID, []schema.Turn{
+		assistantTurn(fluencyToolCall("communicate", `{"output":"{\"message\":\"Fixed the off-by-one.\"}","end_turn":true}`)),
+	})
+	p, err := extractRunProse(stateDir)
+	if err != nil {
+		t.Fatalf("extractRunProse: %v", err)
+	}
+	want := []string{"Fixed the off-by-one."}
+	if !slices.Equal(p.ToUser, want) {
+		t.Errorf("ToUser = %q, want %q", p.ToUser, want)
+	}
+	if !slices.Equal(p.All, want) {
+		t.Errorf("All = %q, want %q", p.All, want)
 	}
 }
 

@@ -85,34 +85,55 @@ func isMessageToUser(call doctor.ToolCallSummary) bool {
 	return call.IsResult || call.Name == "communicate"
 }
 
+// communicateArguments is the two message-bearing fields a result-tool call's
+// arguments can carry, decoded once from the normalized bytes
+// apptranscript.NormalizeCommunicateArguments produces. shownMessage,
+// resultMessages, and review.go's renderPacket (through shownMessage) all
+// derive from this one decode: a call must never disagree with itself about
+// what it said, such as the "output" field arriving as a JSON-encoded
+// string, which only normalization promotes to an object (issue found after
+// 7562e63b5, where resultMessages read raw, unnormalized arguments and
+// missed a message shownMessage found).
+type communicateArguments struct {
+	Message string `json:"message"`
+	Output  struct {
+		Message string `json:"message"`
+	} `json:"output"`
+}
+
+// decodeCommunicateArguments normalizes arguments the way evener's own
+// reader does, then decodes it once. Arguments that fail to normalize or
+// parse decode to the zero value: no message, matching how a malformed call
+// carries no prose.
+func decodeCommunicateArguments(arguments string) communicateArguments {
+	var args communicateArguments
+	_ = json.Unmarshal(apptranscript.NormalizeCommunicateArguments(json.RawMessage(arguments)), &args)
+	return args
+}
+
 // shownMessage returns the one message the app shows the user for a call that
 // carries a message to the user: message, or output.message when message is
-// empty, read the way the app reads it.
+// empty, matching apptranscript.CommunicateMessageFromArguments's precedence
+// on the same normalized decode.
 func shownMessage(arguments string) string {
-	return apptranscript.CommunicateMessageFromArguments(apptranscript.NormalizeCommunicateArguments(json.RawMessage(arguments)))
+	args := decodeCommunicateArguments(arguments)
+	if msg := strings.TrimSpace(args.Message); msg != "" {
+		return msg
+	}
+	return strings.TrimSpace(args.Output.Message)
 }
 
 // resultMessages returns all the prose one result-tool call carries: its
 // message, and its output.message when that says something else. Arguments
 // that are not valid JSON carry no prose.
 func resultMessages(arguments string) []string {
-	var args struct {
-		Message string          `json:"message"`
-		Output  json.RawMessage `json:"output"`
-	}
-	if err := json.Unmarshal([]byte(arguments), &args); err != nil {
-		return nil
-	}
-	var output struct {
-		Message string `json:"message"`
-	}
-	_ = json.Unmarshal(args.Output, &output) // output may be absent or not an object
+	args := decodeCommunicateArguments(arguments)
 	var out []string
 	message := strings.TrimSpace(args.Message)
 	if message != "" {
 		out = append(out, message)
 	}
-	if m := strings.TrimSpace(output.Message); m != "" && m != message {
+	if m := strings.TrimSpace(args.Output.Message); m != "" && m != message {
 		out = append(out, m)
 	}
 	return out
