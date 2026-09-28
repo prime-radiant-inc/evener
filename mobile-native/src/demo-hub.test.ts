@@ -7,6 +7,7 @@ import { createActivityStore } from "../../mobile/src/state/activity";
 import { createConversationStore } from "../../mobile/src/state/conversation";
 import { createDemoHub } from "../scripts/demo-hub.mjs";
 import { createHubClient } from "./connection";
+import { demoSessionId } from "./dev/demoFleet.js";
 
 describe("native demonstration hub", () => {
 	it("changes the observed queue and rejects stale identities and revisions", async () => {
@@ -402,7 +403,7 @@ describe("native demonstration hub's redesign fleet", () => {
 				needsYou.data as { entities: { value: { session_id?: string } }[] }
 			).entities;
 			expect(entities.map((entity) => entity.value.session_id)).toContain(
-				"s-gateway",
+				demoSessionId("s-gateway"),
 			);
 		} finally {
 			client.close();

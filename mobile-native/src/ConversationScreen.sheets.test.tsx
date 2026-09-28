@@ -84,6 +84,7 @@ vi.mock("react-native-safe-area-context", () => ({
 	useSafeAreaInsets: () => ({ top: 47, bottom: 34, left: 0, right: 0 }),
 }));
 vi.mock("expo-symbols", () => ({ SymbolView: "SymbolView" }));
+vi.mock("expo-web-browser", () => ({}));
 vi.mock("react-native-enriched-markdown", () => ({
 	EnrichedMarkdownText: "EnrichedMarkdownText",
 }));
@@ -351,6 +352,28 @@ it("opens Tasks from the header menu as the TasksSheet route", async () => {
 		ref,
 		threadId: "thread-1",
 		hasTasks: true,
+	});
+	tree.unmount();
+});
+
+it("opens Notes & links from the header menu as the NotesSheet route, without focusing the editor", async () => {
+	const { tree } = mount(withCapabilities({ sharedNotes: true }));
+	await flush();
+
+	const options = navigation.setOptions.mock.calls.at(-1)?.[0] as {
+		unstable_headerRightItems: () => {
+			menu: { items: { label: string; onPress(): void }[] };
+		}[];
+	};
+	const notes = options
+		.unstable_headerRightItems()[0]
+		?.menu.items.find((item) => item.label === "Notes & links");
+	if (!notes) throw new Error("no Notes & links item in the header menu");
+	act(() => notes.onPress());
+
+	expect(navigation.navigate).toHaveBeenCalledWith("NotesSheet", {
+		hubId: "hub-1",
+		ref,
 	});
 	tree.unmount();
 });

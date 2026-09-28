@@ -150,6 +150,12 @@ const (
 	// (daemon serves it; hub relays). It is a UI-only request, never advertised to
 	// the model.
 	MethodEvenerSandboxEscalationResolve = "evener/sandbox/escalation/resolve"
+	// MethodEvenerDelegateStop ends one subagent's current run at the user's
+	// request (S6): that subagent alone, never the subagents it started. It
+	// targets the root session (ref/threadId) and names the delegate.
+	// ScopeDaemon (the root's daemon serves it). A UI-only request, never
+	// advertised to the model.
+	MethodEvenerDelegateStop = "evener/delegate/stop"
 	// MethodEvenerHostRequest forwards one hub-scoped admin RPC to a named
 	// remote host's hub (component 07a). Host is the component-03 source ID;
 	// Method must be in the proxy's exact allow-list. See HostRequestParams.
@@ -1060,6 +1066,22 @@ type EvenerThread struct {
 	// thread/list root rows only, when the tree has at least one subagent, and
 	// never a thread/read snapshot: no notification announces its changes.
 	Subagents *SubagentTally `json:"subagents,omitempty"`
+	// Access is what the session's sandbox lets it reach (S15): the sandbox
+	// mode it started under and whether that sandbox allows the network. Every
+	// current producer sets it; it is absent from an older daemon or hub, which
+	// a client reads as "not known". Snapshot-only: a session's sandbox is
+	// fixed when it starts, so no notification carries it.
+	Access *ThreadAccess `json:"access,omitempty"`
+}
+
+// ThreadAccess is a session's sandbox mode and network setting (spec 8.6,
+// S15). Sandbox is the mode name a session starts with ("off", "read-only",
+// "workspace-write" or "restricted"). Network is true when the session may use
+// the network: always for "off", and for a sandboxed session unless it started
+// with the network turned off.
+type ThreadAccess struct {
+	Sandbox string `json:"sandbox"`
+	Network bool   `json:"network"`
 }
 
 // ThreadActivity is one pulse meter sample. Minutes holds seven one-minute
@@ -1290,6 +1312,32 @@ type SandboxEscalationResolved struct {
 	ThreadID     string `json:"threadId"`
 	Ref          string `json:"ref"`
 	EscalationID string `json:"escalationId"`
+}
+
+// DelegateStopParams is the request shape for evener/delegate/stop: the root
+// session that owns the delegate tree (ThreadID/Ref, as every turn mutation
+// names it) and the delegate to stop (EvenerDelegateInfo.DelegateID).
+type DelegateStopParams struct {
+	ThreadID   string `json:"threadId,omitempty"`
+	Ref        string `json:"ref,omitempty"`
+	DelegateID string `json:"delegateId"`
+}
+
+// DelegateStopOutcome is what evener/delegate/stop did.
+type DelegateStopOutcome string
+
+const (
+	// DelegateStopStopping: the subagent's run was cancelled. It ends as
+	// cancelled, which evener/delegate/updated reports.
+	DelegateStopStopping DelegateStopOutcome = "stopping"
+	// DelegateStopNotRunning: the subagent had no run to stop, because it was
+	// idle, finished, or already finishing. A repeated stop answers this.
+	DelegateStopNotRunning DelegateStopOutcome = "notRunning"
+)
+
+// DelegateStopResponse is the result of evener/delegate/stop.
+type DelegateStopResponse struct {
+	Outcome DelegateStopOutcome `json:"outcome"`
 }
 
 // SandboxEscalationResolveParams is the request shape for

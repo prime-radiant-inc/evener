@@ -425,11 +425,9 @@ func (s *WebServer) navigationSnapshotInputs(ctx context.Context) navigationSnap
 		if _, ok := resolvedProjects[path]; ok {
 			continue
 		}
-		id := filepath.Base(entry.StateDir)
-		if identifier.ValidateProjectID(id) != nil {
-			continue
+		if id, ok := stateDirProjectID(entry.StateDir); ok {
+			addNavigationProjectCandidate(projectCandidates, path, identifier.Project{ID: id})
 		}
-		addNavigationProjectCandidate(projectCandidates, path, identifier.Project{ID: id})
 	}
 	for path, candidates := range carriedProjectCandidates {
 		for _, project := range candidates {
@@ -471,6 +469,19 @@ func addNavigationProjectCandidate(candidates map[string]map[string]identifier.P
 	}
 	key := project.ID + "\x00" + project.CanonicalPath
 	candidates[path][key] = project
+}
+
+// stateDirProjectID reports the project ID a past entry's state directory is
+// named by. ok is false when the basename is not a well-formed project ID, so
+// every reader skips the same malformed basename instead of one of them
+// applying a project decision the others would not (#2775). The navigation
+// tree and search share it.
+func stateDirProjectID(stateDir string) (string, bool) {
+	id := filepath.Base(stateDir)
+	if identifier.ValidateProjectID(id) != nil {
+		return "", false
+	}
+	return id, true
 }
 
 func selectNavigationProjects(candidates map[string]map[string]identifier.Project) (map[string]identifier.Project, map[string][]identifier.Project, map[string]bool) {

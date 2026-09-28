@@ -12,8 +12,10 @@ import { getNativeMutationRuntime, nativeMutationTargetKey } from "./nativeMutat
 import { flatListCalls, pressable, render, renderedText, screenConnection, textOf } from "./renderNative.testkit";
 import { queueHosts } from "./QueueSheet";
 import { ConversationScreen } from "./screens";
+import { NotesSheet } from "./session/NotesSheet";
 import { QuestionDock } from "./session/QuestionDock";
 import { sheetKey } from "./sheet/sheetHosts";
+import { holdQuote, takeQuote } from "./session/pendingQuote";
 
 const harness = vi.hoisted(() => ({
 	connection: {} as Record<string, unknown>,
@@ -67,8 +69,12 @@ vi.mock("@react-navigation/native", async () => {
 			useEffect(effect, []),
 		useNavigationState: <T,>(select: (state: typeof navigationState.state) => T) =>
 			select(navigationState.state),
+		// A sheet route rendered beside the screen (NotesSheet) reads these.
+		useNavigation: () => navigation,
+		usePreventRemove: () => {},
 	};
 });
+vi.mock("expo-web-browser", () => ({ openBrowserAsync: vi.fn(async () => ({ type: "dismiss" })) }));
 vi.mock("expo-symbols", () => ({ SymbolView: "SymbolView" }));
 vi.mock("expo-clipboard", () => ({
 	setStringAsync: vi.fn(async () => {}),
@@ -147,6 +153,7 @@ const navigation = {
 	getState: () => navigationState.state,
 	navigate: vi.fn(),
 	push: vi.fn(),
+	pop: vi.fn(),
 	goBack: vi.fn(),
 	setParams: vi.fn(),
 	setOptions: vi.fn(),
@@ -245,7 +252,10 @@ function queueState(texts: string[], revision = 0) {
  * mutation, recording each request in order. It sends a frame only when a
  * test calls notify(). */
 const otherThreads = new Map<string, Thread>();
-afterEach(() => otherThreads.clear());
+afterEach(() => {
+	otherThreads.clear();
+	vi.unstubAllGlobals();
+});
 
 function hubClient(served: Thread, failedReads = 0, readLatencyMs = 0, olderCursor?: string) {
 	let readsToFail = failedReads;
@@ -274,6 +284,17 @@ function hubClient(served: Thread, failedReads = 0, readLatencyMs = 0, olderCurs
 				return { thread, ...(olderCursor ? { olderCursor } : {}) };
 			}
 			if (method === "thread/turns/list") return { data: [] };
+			if (method === "notes/human/set")
+				return {
+					note: params.note,
+					receipt: {
+						clientMutationId: params.clientMutationId,
+						disposition: "applied",
+						threadId: served.id,
+						projectionState: "pending",
+						instanceId: "instance",
+					},
+				};
 			if (method.startsWith("turn/"))
 				return {
 					receipt: {
@@ -577,6 +598,34 @@ it("gives Send a typed command's own label, so VoiceOver hears what it runs", as
 	expect(hub.mutations()).toEqual([]);
 });
 
+it("keeps the session open when /shutdown is typed and completed (ruling 19)", async () => {
+	const served = thread("ref-typed-shutdown", "idle");
+	// thread() shares the module-level CAPABILITIES object; clone it so this
+	// test's shutdown capability never leaks into a later test's fixture.
+	served.evener = {
+		...served.evener,
+		capabilities: { ...served.evener.capabilities, shutdown: true },
+	};
+	const { tree, hub } = await mount(served);
+	await type(tree, "/shutdown");
+	const send = pressable(tree, "Shut down");
+	expect(send?.props.accessibilityState).toMatchObject({ disabled: false });
+	const reads = () => hub.requests.filter(({ method }) => method === "thread/read").length;
+	const readsBefore = reads();
+
+	await press(tree, "Shut down");
+
+	expect(hub.requests.filter(({ method }) => method === "thread/shutdown")).toEqual([
+		{ method: "thread/shutdown", params: { ref: "ref-typed-shutdown" } },
+	]);
+	// It rereads the session it stays on instead of closing it and leaving.
+	expect(reads()).toBeGreaterThan(readsBefore);
+	expect(navigation.pop).not.toHaveBeenCalled();
+	expect(navigation.goBack).not.toHaveBeenCalled();
+	expect(field(tree)).toBeDefined();
+	tree.unmount();
+});
+
 it("does nothing when a Stop lands after the turn already ended", async () => {
 	const served = thread("ref-stale-stop", "active");
 	const { tree, hub } = await mount(served);
@@ -856,6 +905,147 @@ it("opens sign-in from an error that says a sign-in failed", async () => {
 });
 
 
+it("previews your note in the notes bar, and the sheet it opens saves through the screen", async () => {
+	vi.mocked(navigation.navigate).mockClear();
+	vi.mocked(navigation.goBack).mockClear();
+	const served = thread("ref-notes", "idle");
+	const evener = (served as unknown as { evener: Record<string, unknown> }).evener;
+	evener.capabilities = { ...CAPABILITIES, sharedNotes: true };
+	evener.humanNote = "keep the tests";
+	evener.sessionUrls = [
+		{ id: "u1", url: "https://example.com/pr/1", label: "The PR" },
+		{ id: "u2", url: "https://example.com/pr/2" },
+	];
+	const { tree, hub } = await mount(served);
+	const bar = pressable(tree, "Your note: keep the tests, 2 links");
+	if (!bar) throw new Error("no notes bar");
+	act(() => bar.props.onPress());
+	const params = { hubId: "hub-1", ref: "ref-notes", focusEditor: true };
+	expect(navigation.navigate).toHaveBeenCalledWith("NotesSheet", params);
+
+	// The sheet route renders beside the screen and reads the host it provides.
+	const sheetRoute = { key: "notes-sheet", name: "NotesSheet", params };
+	const sheet = render(
+		<NotesSheet
+			route={sheetRoute as unknown as ComponentProps<typeof NotesSheet>["route"]}
+			navigation={navigation as unknown as ComponentProps<typeof NotesSheet>["navigation"]}
+		/>,
+	);
+	const editor = sheet.root
+		.findAll((node) => String(node.type) === "TextInput")
+		.find((node) => node.props.accessibilityLabel === "Your note");
+	if (!editor) throw new Error("no note editor");
+	expect(editor.props.value).toBe("keep the tests");
+	act(() => editor.props.onChangeText("keep the tests green"));
+	act(() => pressable(sheet, "Done")?.props.onPress());
+	expect(navigation.goBack).toHaveBeenCalledOnce();
+	// The route leaves.
+	act(() => sheet.unmount());
+	await settle();
+
+	expect(hub.requests.filter((request) => request.method === "notes/human/set").map((request) => request.params)).toEqual([
+		expect.objectContaining({ ref: "ref-notes", expectedInstanceId: "instance", note: "keep the tests green" }),
+	]);
+	expect(renderedText(tree)).toContain("Note saved. The agent is reading it.");
+});
+
+it("shows no notes bar for a session with nothing shared", async () => {
+	const served = thread("ref-no-notes", "idle");
+	(served as unknown as { evener: Record<string, unknown> }).evener.capabilities = { ...CAPABILITIES, sharedNotes: true };
+	const { tree } = await mount(served);
+	expect(renderedText(tree)).not.toContain("Your note");
+	expect(tree.root.findAll((node) => String(node.type) === "SymbolView" && node.props.name === "person")).toEqual([]);
+});
+
+it("retries a note that failed to save once, on its own, without needing a reconnect", async () => {
+	const served = thread("ref-notes-retry", "idle");
+	(served as unknown as { evener: Record<string, unknown> }).evener.capabilities = { ...CAPABILITIES, sharedNotes: true };
+	const { hub } = await mount(served);
+	const client = hub.client as { request: (method: string, params: Record<string, unknown>) => Promise<unknown> };
+	const request = client.request;
+	let attempts = 0;
+	client.request = async (method, params) => {
+		if (method === "notes/human/set") {
+			attempts += 1;
+			if (attempts === 1) throw new Error("offline");
+		}
+		return request(method, params);
+	};
+	const params = { hubId: "hub-1", ref: "ref-notes-retry" };
+	const sheet = render(
+		<NotesSheet
+			route={{ key: "notes-sheet", name: "NotesSheet", params } as unknown as ComponentProps<typeof NotesSheet>["route"]}
+			navigation={navigation as unknown as ComponentProps<typeof NotesSheet>["navigation"]}
+		/>,
+	);
+	const editor = sheet.root
+		.findAll((node) => String(node.type) === "TextInput")
+		.find((node) => node.props.accessibilityLabel === "Your note");
+	if (!editor) throw new Error("no note editor");
+	act(() => editor.props.onChangeText("first try"));
+	act(() => pressable(sheet, "Done")?.props.onPress());
+	act(() => sheet.unmount());
+	await settle();
+	// The session stayed open, connected and in front the whole time: the
+	// screen retries the failed save on its own rather than waiting for an
+	// unrelated reconnect or remount to notice it.
+	expect(attempts).toBe(2);
+	expect(hub.requests.filter((request) => request.method === "notes/human/set").map((request) => request.params.note)).toEqual([
+		"first try",
+	]);
+});
+
+it("sends a note kept on this phone from a failed save once the session opens connected", async () => {
+	harness.kv.set("evener.native.note-draft.hub-1", JSON.stringify({ "ref-kept-note": "kept from before" }));
+	const served = thread("ref-kept-note", "idle");
+	(served as unknown as { evener: Record<string, unknown> }).evener.capabilities = { ...CAPABILITIES, sharedNotes: true };
+	const { hub } = await mount(served);
+	expect(hub.requests.filter((request) => request.method === "notes/human/set").map((request) => request.params.note)).toEqual([
+		"kept from before",
+	]);
+	expect(harness.kv.has("evener.native.note-draft.hub-1")).toBe(false);
+});
+
+it("keeps a note from a failed save on this phone while the session can't take notes", async () => {
+	harness.kv.set("evener.native.note-draft.hub-1", JSON.stringify({ "ref-kept-ended": "kept from before" }));
+	const served = thread("ref-kept-ended", "idle");
+	(served as unknown as { status: { type: string } }).status = { type: "ended" };
+	(served as unknown as { evener: Record<string, unknown> }).evener.capabilities = { ...CAPABILITIES, sharedNotes: true };
+	const { hub } = await mount(served);
+	expect(hub.requests.filter((request) => request.method === "notes/human/set")).toEqual([]);
+	expect(harness.kv.has("evener.native.note-draft.hub-1")).toBe(true);
+});
+
+it("follows the hub's note in the bar and the open sheet when it changes", async () => {
+	const served = thread("ref-notes-follow", "idle");
+	const evener = (served as unknown as { evener: Record<string, unknown> }).evener;
+	evener.capabilities = { ...CAPABILITIES, sharedNotes: true };
+	evener.humanNote = "first";
+	const { tree, hub } = await mount(served);
+	const params = { hubId: "hub-1", ref: "ref-notes-follow", focusEditor: false };
+	const sheet = render(
+		<NotesSheet
+			route={{ key: "notes-sheet", name: "NotesSheet", params } as unknown as ComponentProps<typeof NotesSheet>["route"]}
+			navigation={navigation as unknown as ComponentProps<typeof NotesSheet>["navigation"]}
+		/>,
+	);
+	act(() =>
+		hub.notify({
+			method: "evener/notes/updated",
+			params: { threadId: served.id, ref: "ref-notes-follow", humanNote: "second", agentNote: "" },
+		} as unknown as AnyNotification),
+	);
+	await settle();
+	expect(renderedText(tree)).toContain("Your note: second");
+	const editor = sheet.root
+		.findAll((node) => String(node.type) === "TextInput")
+		.find((node) => node.props.accessibilityLabel === "Your note");
+	expect(editor?.props.value).toBe("second");
+	act(() => sheet.unmount());
+	await settle();
+	expect(hub.requests.filter((request) => request.method === "notes/human/set")).toEqual([]);
+});
+
 describe("queued messages above the composer (spec 8.5)", () => {
 	it("steers with a queued message the agent hasn't reached yet", async () => {
 		const { tree, hub } = await mount(thread("ref-steer-now", "active", false, ["check the logs"]));
@@ -1045,10 +1235,50 @@ describe("an approval waiting for a decision (spec 8.4, ruling 38)", () => {
 
 it("offers no Retry that couldn't send: a question still waits on the failed turn", async () => {
 	const served = thread("ref-retry-question", "idle", true);
-	const turn = (served as unknown as { turns: { status: string; error?: unknown }[] }).turns[0];
-	turn.status = "failed";
-	turn.error = { message: "go test exited 1" };
+	// A per-test turn: spreading the shared QUESTION_TURN keeps its question
+	// while this test owns the failed status, so it never mutates the fixture
+	// the other question tests read.
+	(served as unknown as { turns: unknown[] }).turns = [
+		{ ...QUESTION_TURN, status: "failed", error: { message: "go test exited 1" } },
+	];
 	const { tree } = await mount(served);
 	expect(renderedText(tree)).toContain("go test exited 1");
 	expect(pressable(tree, "Retry")).toBeUndefined();
+});
+
+it("puts a quote held for this session into the draft when it comes back to the front, once", async () => {
+	// Quoting focuses the field on the next frame.
+	vi.stubGlobal("requestAnimationFrame", (frame: () => void) => {
+		frame();
+		return 0;
+	});
+	const { tree } = await mount(thread("ref-quote", "idle"));
+	await type(tree, "keep this");
+	const [route] = navigationState.state.routes;
+	if (!route) throw new Error("no route");
+	const rerender = async () => {
+		act(() => tree.update(<ConversationScreen route={route as never} navigation={navigation} />));
+		await settle();
+	};
+	// The Reader over this session holds a quote, and another session's.
+	navigationState.state = { index: 1, routes: [route, { key: "reader", name: "Reader" }] };
+	await rerender();
+	holdQuote("hub-1", "ref-other", "not for this session");
+	holdQuote("hub-1", "ref-quote", "The goal is green.\nThen ship it.");
+	navigationState.state = { index: 0, routes: [route] };
+	await rerender();
+	const quoted = "keep this\n\n> The goal is green.\n> Then ship it.\n\n";
+	expect(field(tree)?.props.value).toBe(quoted);
+	navigationState.state = { index: 1, routes: [route, { key: "reader", name: "Reader" }] };
+	await rerender();
+	navigationState.state = { index: 0, routes: [route] };
+	await rerender();
+	expect(field(tree)?.props.value).toBe(quoted);
+	expect(takeQuote("hub-1", "ref-other")).toBe("not for this session");
+});
+
+it("leaves the shared question fixture as the other question tests expect it", () => {
+	const turn = (thread("ref-fixture-intact", "idle", true) as unknown as { turns: { status: string; error?: unknown }[] }).turns[0];
+	expect(turn.status).toBe("completed");
+	expect(turn.error).toBeUndefined();
 });

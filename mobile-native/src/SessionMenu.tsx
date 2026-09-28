@@ -5,6 +5,7 @@ import { Action, Copy, styles, useColors } from "./ui";
 export type SessionDestination =
 	| "session"
 	| "tasks"
+	| "notes"
 	| "activity"
 	| "pin"
 	| "delete";

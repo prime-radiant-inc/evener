@@ -67,6 +67,43 @@ const ARCHIVED_TOTAL = 271; // data.js: archivedTotal (Board mockup: "ARCHIVED Â
 // project_page(tier=archived) read paging through the real, full list.
 const PROJECT_OVERVIEW_ARCHIVED_PREVIEW = 5;
 
+// The base62 alphabet the hub's own ids use
+// (appwire-client/typescript/entityIds.ts, identifier/uuid.go). A real hub
+// names a session with a 22-character id of exactly these, and a `local:` ref
+// is recognised only when its id is that shape
+// (mobile-native/src/sessionDeletionResult.ts's localSessionId). The Board's
+// archiveTarget reads a local row's identity through that same check, so a
+// session the demo fleet names with a readable slug (s-gateway, ...) must
+// still carry a real-shaped id on the wire.
+const SESSION_ID_ALPHABET = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
+
+// The 22-character wire id a fleet session with this slug carries. Derived
+// from the slug so it is stable (a slug always yields the same id) and spread
+// across the whole id space so no two fleet rows share one. The slug stays the
+// fixture's own key -- and the handle the tests name -- while only the wire's
+// ref and session_id carry this id.
+export function demoSessionId(slug: string): string {
+	// FNV-1a seeds a xorshift32 generator. A nonzero state keeps the generator
+	// periodic, and because xorshift32 is a bijection distinct seeds yield
+	// distinct sequences, so distinct slugs collide only if their hashes do --
+	// which the fleet's own uniqueness test rules out for every slug it names.
+	let state = 0x811c9dc5;
+	for (let i = 0; i < slug.length; i++) {
+		state = Math.imul(state ^ slug.charCodeAt(i), 0x01000193) >>> 0;
+	}
+	if (state === 0) state = 0x9e3779b9;
+	let id = "";
+	for (let i = 0; i < 22; i++) {
+		state ^= state << 13;
+		state >>>= 0;
+		state ^= state >>> 17;
+		state ^= state << 5;
+		state >>>= 0;
+		id += SESSION_ID_ALPHABET[state % SESSION_ID_ALPHABET.length];
+	}
+	return id;
+}
+
 // Names cycled through for a swarm whose members aren't individually named in
 // the fixture, copied verbatim from data.js's swarmNames.
 const SWARM_NAMES = [
@@ -457,15 +494,16 @@ function runningJobs(raw: RawSession): NavigationJobSummary[] | undefined {
 function toRow(raw: RawSession, startupMs: number, offlineHost: boolean): NavigationSessionSummary {
 	const owner = hostId(raw.host);
 	const project = raw.project ?? "evener";
+	const sessionId = demoSessionId(raw.id);
 	const { state, askPending, approvalPending } = WIRE_STATE[raw.state];
 	const live = raw.state !== "shutdown";
 	const offline = owner === "paradise-park" && offlineHost;
 	const { capped, omitted } = capChildren(rawChildren(raw));
 	const jobs = runningJobs(raw);
 	return {
-		ref: `${owner}:${raw.id}`,
+		ref: `${owner}:${sessionId}`,
 		host_id: owner,
-		session_id: raw.id,
+		session_id: sessionId,
 		title: raw.title,
 		project,
 		state,
@@ -669,16 +707,25 @@ function fleetAnswers(
 		return projectKey;
 	}
 
+	// The tier a row is served under, in one place: the location branch reports
+	// this tier and a reveal then asks that exact project_page tier, so the two
+	// must come from one computation. An archived row's is "archived", a
+	// hub-test-env test-run row's is "current" (test runs are never split by
+	// age), every other row's current or recent by the same 24h boundary.
+	function servedTier(raw: RawSession): "current" | "recent" | "archived" {
+		return raw.archived ? "archived" : raw.test || raw.ago < D ? "current" : "recent";
+	}
+
 	// Every tier is a real, fully pageable list -- including archived, now
 	// that SESSIONS carries all 271 (5 named plus the generated filler) --
 	// so callers page it with the same page() every other resource uses
 	// instead of a bespoke "5 rows, 266 remaining forever" shortcut.
 	function tierRows(projectKey: string, tier: "current" | "recent" | "archived"): NavigationSessionSummary[] {
-		if (tier === "archived") return projectKey === "evener" ? archivedRaw.map(rowOf) : [];
-		if (projectKey === "hub-test-env") return tier === "current" ? testRunRaw.map(rowOf) : [];
-		const inProject = projectSessionsRaw(sessionsList, projectKey);
-		const inTier = tier === "current" ? inProject.filter((raw) => raw.ago < D) : inProject.filter((raw) => raw.ago >= D);
-		return inTier.map(rowOf);
+		if (tier === "archived") return projectKey === "evener" ? archivedRaw.filter((raw) => servedTier(raw) === tier).map(rowOf) : [];
+		if (projectKey === "hub-test-env") return testRunRaw.filter((raw) => servedTier(raw) === tier).map(rowOf);
+		return projectSessionsRaw(sessionsList, projectKey)
+			.filter((raw) => servedTier(raw) === tier)
+			.map(rowOf);
 	}
 
 	// A value the wire's own uint32 field could actually carry: a safe integer
@@ -794,6 +841,35 @@ function fleetAnswers(
 				const tier = params.tier;
 				const { page: sessions, remaining } = page(tierRows(projectKey, tier), params, NAVIGATION_SECTION_LIMIT);
 				return respond(revision, params, { key: projectKey, tier, sessions, remaining, truncated: anyTruncated(sessions) });
+			}
+			case "location": {
+				const ref = params.ref as string;
+				const raw = sessionsList.find((session) => rowOf(session).ref === ref);
+				if (!raw) throw new Error(`Unknown demonstration session location: ${ref}`);
+				// The hub's location is a shallow summary (navigation_projection.go's
+				// projectShallow), not a row with its descendants: a location resource
+				// holds exactly one entity, and projectShallow sets no omitted_descendants
+				// (the child cap is a list-row fact, not the summary's), so the capped
+				// count is dropped with the children. servedTier is the one place this
+				// row's tier is decided, so the reveal that asks this exact tier's
+				// project_page cannot drift from what tierRows serves it under.
+				const tier = servedTier(raw);
+				const { omitted_descendants: _omitted, ...shallow } = rowOf(raw);
+				const response = respond(revision, params, {
+					session: { ...shallow, children: [] },
+					top_level_ref: ref,
+					top_level: true,
+				});
+				// The shared v2 encoder (wireV2) builds a location's metadata with only
+				// ref/top_level_ref/top_level; a real hub also names the row's project,
+				// tier and pin section, so they are stamped on here, the way the web's
+				// own fixture (cmd/evener-hub/frontend/src/dev/editorial-preview/
+				// fixture.ts) stamps the top_level it serves.
+				const { metadata } = response.data as { metadata: Record<string, unknown> };
+				metadata.project_key = raw.project ?? "evener";
+				metadata.tier = tier;
+				if (raw.category) metadata.pin_section_id = raw.category;
+				return response;
 			}
 			default:
 				throw new Error(`Navigation resource not served by the demo fleet: ${params.resource}`);

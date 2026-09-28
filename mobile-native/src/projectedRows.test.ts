@@ -18,6 +18,7 @@ import type {
 } from "@evener/appwire-client";
 import {
 	liveAsksFor,
+	noteFromSteer,
 	projectConversation,
 	projectedRow,
 	projectTimeline,
@@ -110,6 +111,41 @@ describe("projectedRow — item entries", () => {
 			origin: "steered",
 			turnId: "t1",
 		});
+	});
+
+	it("maps a human-note steer to a note row, stripping the daemon's prefix (spec 8.8)", () => {
+		const row = projectedRow(
+			itemEntry(
+				item({
+					type: "steering",
+					text: "human updated their whiteboard: Fix causes",
+					source: "user",
+					steeringKind: "human-note",
+				}),
+			),
+		);
+		expect(row).toEqual<MobileTimelineItem>({ kind: "note", id: "i1", text: "Fix causes", turnId: "t1" });
+	});
+
+	it("maps a cleared human-note steer to an empty note row", () => {
+		const row = projectedRow(
+			itemEntry(
+				item({
+					type: "steering",
+					text: "human updated their whiteboard: (whiteboard cleared)",
+					source: "user",
+					steeringKind: "human-note",
+				}),
+			),
+		);
+		expect(row).toEqual<MobileTimelineItem>({ kind: "note", id: "i1", text: "", turnId: "t1" });
+	});
+
+	it("keeps a user-sourced steer without the human-note kind as a user row", () => {
+		const row = projectedRow(
+			itemEntry(item({ type: "steering", text: "steer", source: "user", steeringKind: "interrupted" })),
+		);
+		expect(row).toMatchObject({ kind: "user" });
 	});
 
 	it("maps an agent message to the assistant row and joins pending deltas", () => {
@@ -348,6 +384,20 @@ describe("projectedRow — item entries", () => {
 
 	it("returns null for a ProjectedEntry kind outside the known union", () => {
 		expect(projectedRow({ kind: "futureKind" } as unknown as ProjectedEntry)).toBeNull();
+	});
+});
+
+describe("noteFromSteer (spec 8.8)", () => {
+	it("strips the daemon's prefix", () => {
+		expect(noteFromSteer("human updated their whiteboard: Fix causes")).toBe("Fix causes");
+	});
+
+	it("reads the cleared marker as an empty note", () => {
+		expect(noteFromSteer("human updated their whiteboard: (whiteboard cleared)")).toBe("");
+	});
+
+	it("returns text with no known prefix unchanged", () => {
+		expect(noteFromSteer("no prefix here")).toBe("no prefix here");
 	});
 });
 

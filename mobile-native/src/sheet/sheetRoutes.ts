@@ -36,12 +36,18 @@ export function sheetOptions(detents: readonly Detent[], initial: Detent): Nativ
  * here and its `Stack.Screen`, with these options, in App.tsx's sheet group. */
 export const SHEET_ROUTES = {
 	TasksSheet: sheetOptions(["medium", "large"], "medium"),
+	NotesSheet: sheetOptions(["medium", "large"], "large"),
 	// The Board row's menu (phase 2 Task 12.6) opens at half height.
 	RowMenuSheet: sheetOptions(["medium", "large"], "medium"),
 	// The whole queue, when more wait than the composer shows (ruling 18).
 	QueueSheet: sheetOptions(["medium", "large"], "medium"),
 	// The Reader's headings, to jump to one (ruling 26).
 	OutlineSheet: sheetOptions(["medium", "large"], "medium"),
+	// You type in it, so it opens at full height (ruling 26).
+	CommentSheet: sheetOptions(["medium", "large"], "large"),
+	CommentsSheet: sheetOptions(["medium", "large"], "medium"),
+	// You type the review's note in it (ruling 26).
+	ReviewSheet: sheetOptions(["medium", "large"], "large"),
 } satisfies { [Name in keyof Routes]?: NativeStackNavigationOptions };
 
 export function isSheetRoute(name: string): boolean {

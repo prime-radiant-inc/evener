@@ -178,6 +178,7 @@ export function PinAssignmentScreen({
 						remaining={page?.remaining ?? 0}
 						pending={action?.pending ?? false}
 						uncertain={!!action?.uncertain || !!action?.storageUnavailable}
+						previousChange={!!action?.recovery}
 						error={action?.error ?? page?.error ?? null}
 						refresh={refresh}
 						more={() => {
