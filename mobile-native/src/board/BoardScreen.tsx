@@ -604,14 +604,22 @@ function Board({
 	useEffect(() => {
 		if (!inFront) list.send("reset");
 	}, [inFront, list]);
+	// Leaving the app releases every hold; coming back while selecting takes
+	// select mode's hold again, since it lasts until Done or an action.
+	const [appActive, setAppActive] = useState(true);
 	useEffect(() => {
 		const subscription = AppState.addEventListener("change", (state) => {
-			if (state === "background" || state === "inactive") list.send("reset");
+			const away = state === "background" || state === "inactive";
+			if (away) list.send("reset");
+			setAppActive(!away);
 		});
 		return () => subscription.remove();
 	}, [list]);
 	// Select mode holds the list while the Board is in front (ruling 22).
-	useEffect(() => list.setInteraction("select", selecting && inFront), [list, selecting, inFront]);
+	useEffect(
+		() => list.setInteraction("select", selecting && inFront && appActive),
+		[list, selecting, inFront, appActive],
+	);
 	// The rows the row menu sheet can be about: Live's and the categories'
 	// (a fold hides them, but they stay loaded) and the project sessions in
 	// the shown tree.

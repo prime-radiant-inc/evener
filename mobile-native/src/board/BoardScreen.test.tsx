@@ -4147,6 +4147,22 @@ it("holds the list while selecting, and Done applies what changed", async () => 
 	expect(swipeableOf(tree, "Ship it")).toBeDefined();
 });
 
+it("holds the list again when the app comes back while selecting", async () => {
+	const { tree, ask } = await mountAskingFleet();
+	pressLabel(tree, "Select");
+	act(() => {
+		for (const listener of harness.appState) listener("inactive");
+	});
+	act(() => {
+		for (const listener of harness.appState) listener("active");
+	});
+	await ask();
+	await advance(1000);
+	heldInWorking(tree);
+	pressLabel(tree, "Done");
+	movedToNeedsYou(tree);
+});
+
 it("archives the chosen sessions one by one, leaves select mode, and Undo unarchives them", async () => {
 	const fake = hub(selectFleet());
 	const { tree } = await mountSwipeFleet(fake);
