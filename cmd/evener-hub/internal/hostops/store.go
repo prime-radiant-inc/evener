@@ -545,7 +545,7 @@ func (s *Store) Transition(id string, to State, change func(*Record)) (Record, e
 	// owns is accounted for. ResolveReapedSpawn clears the intents in the same
 	// write as the resolve, which is why it does not come through here.
 	if to.Terminal() && len(record.PendingSpawns) > 0 {
-		return Record{}, fmt.Errorf("%w: record %q carries %d open pending-spawn intent(s) and cannot become %q",
+		return Record{}, fmt.Errorf("%w: record %q carries %d open pending-spawn intent(s) and cannot become %q; drop them (Store.ClearSpawnIntents) or resolve the record (Store.ResolveReapedSpawn) first",
 			ErrInvalidTransition, id, len(record.PendingSpawns), to)
 	}
 	identity := identityOf(record)

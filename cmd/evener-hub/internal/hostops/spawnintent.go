@@ -19,8 +19,10 @@ package hostops
 // lives in agent/execenv.
 
 import (
+	"bytes"
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"slices"
@@ -406,6 +408,63 @@ func (s *Store) ResolveReapedSpawn(recordID string, nonces []string) (Record, er
 	record.Result = &Result{OK: false, Message: InterruptedNote}
 	record.UpdatedAt = nowUTC()
 	next.advanceSequence(&record)
+	if err := validateRecord(record); err != nil {
+		return Record{}, err
+	}
+	next.Records[index] = cloneRecord(record)
+	landed, err := s.commitLocked(next)
+	if err != nil && !landed {
+		return Record{}, err
+	}
+	return cloneRecord(record), err
+}
+
+// SetOrphanBoundary persists a fresh `orphan-unverified` boundary on recordID
+// and drops the named open intents, all in one atomic write. It is the local
+// reap's fail-closed write, and it exists because Store.Transition refuses a
+// same-state move: a record already in `orphan-unverified` whose boundary must
+// be narrowed (one spawned group cleared while another still held) cannot go
+// through Transition. It also covers the pending/running→orphan-unverified
+// move, so the reap has one writer for both arms.
+//
+// `orphan-unverified` is not terminal, so the durable sequence does not move.
+// A terminal record refuses: it cannot be marked. An empty boundary refuses:
+// this write only ever records an unverified boundary, never a verified-empty
+// one, which is what ResolveReapedSpawn is for.
+func (s *Store) SetOrphanBoundary(recordID string, boundary json.RawMessage, dropNonces []string) (Record, error) {
+	if s == nil {
+		return Record{}, errors.New("hostops: store is not configured")
+	}
+	if slices.Contains(dropNonces, "") {
+		return Record{}, fmt.Errorf("%w: a set names an intent's nonce", ErrInvalidSpawnIntent)
+	}
+	trimmed := bytes.TrimSpace(boundary)
+	if len(trimmed) == 0 || bytes.Equal(trimmed, []byte("[]")) || bytes.Equal(trimmed, []byte("null")) {
+		return Record{}, fmt.Errorf("%w: an orphan boundary is never empty here", ErrInvalidRecord)
+	}
+	s.cell.mu.Lock()
+	defer s.cell.mu.Unlock()
+
+	next := cloneSnapshot(s.cell.state)
+	index := slices.IndexFunc(next.Records, func(record Record) bool { return record.ID == recordID })
+	if index < 0 {
+		return Record{}, fmt.Errorf("%w: %q", ErrRecordNotFound, recordID)
+	}
+	record := next.Records[index]
+	if record.State.Terminal() {
+		return Record{}, fmt.Errorf("%w: terminal record %q cannot be marked orphan-unverified", ErrInvalidTransition, recordID)
+	}
+	kept := make([]SpawnIntent, 0, len(record.PendingSpawns))
+	for _, intent := range record.PendingSpawns {
+		if slices.Contains(dropNonces, intent.Nonce) {
+			continue
+		}
+		kept = append(kept, intent)
+	}
+	record.PendingSpawns = kept
+	record.State = StateOrphanUnverified
+	record.OrphanBoundary = append(json.RawMessage(nil), boundary...)
+	record.UpdatedAt = nowUTC()
 	if err := validateRecord(record); err != nil {
 		return Record{}, err
 	}

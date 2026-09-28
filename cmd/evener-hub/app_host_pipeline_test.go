@@ -1809,3 +1809,29 @@ func TestBootCompensationSurvivesAnUnreadableConfigDocument(t *testing.T) {
 		t.Fatalf("boot pruned the stash over a document it could not decode: %v", err)
 	}
 }
+
+// TestHostFileAbsentOrEmptyContract pins the helper's chosen contract: genuine
+// absence is a missing or zero-byte document, an undecodable document is not
+// absence, and an unset path is neither — the caller screens it out, which
+// keeps the fail-closed reading free of a "no path means clear everything" arm.
+func TestHostFileAbsentOrEmptyContract(t *testing.T) {
+	entry := pipelineEntry("m4", 2)
+	fixture := newPipelineFixture(t, []hostreg.Host{entry}, nil)
+	m := fixture.manager(t)
+	if err := os.Remove(fixture.configPath); err != nil {
+		t.Fatalf("remove hub.toml: %v", err)
+	}
+	if !m.hostFileAbsentOrEmpty() {
+		t.Fatal("a missing document is absence")
+	}
+	if err := os.WriteFile(fixture.configPath, []byte("= = = not TOML [[[\n"), 0o600); err != nil {
+		t.Fatalf("write undecodable hub.toml: %v", err)
+	}
+	if m.hostFileAbsentOrEmpty() {
+		t.Fatal("an undecodable document is not absence")
+	}
+	m.cfg.configPath = ""
+	if m.hostFileAbsentOrEmpty() {
+		t.Fatal("an unset path is not absence; the boot caller screens it out")
+	}
+}

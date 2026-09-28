@@ -49,9 +49,13 @@ type fakeBoundary struct {
 	signalErr  error
 	awaitErr   error
 	closeErr   error
-	killed     []int
-	closed     bool
+	// notEnforcing models a platform whose empty enumeration is not proof.
+	notEnforcing bool
+	killed       []int
+	closed       bool
 }
+
+func (f *fakeBoundary) Enforcing() bool { return !f.notEnforcing }
 
 func (f *fakeBoundary) Members() ([]execenv.BoundaryMember, error) {
 	if f.membersErr != nil {
@@ -496,6 +500,77 @@ func openLegacyTerminalIntentStore(t *testing.T) *hostops.Store {
 		t.Fatalf("hostops.Open: %v", err)
 	}
 	return store
+}
+
+// TestReapNonEnforcingBoundaryNeverClears pins the Darwin arm's fail-closed
+// rule: where an empty enumeration is not proof (a setsid'd descendant leaves
+// the pair), the pass never reads the boundary as clean, never signals, and
+// keeps the intent open.
+func TestReapNonEnforcingBoundaryNeverClears(t *testing.T) {
+	store, _ := newReapStore(t)
+	record := newReapRecord(t, store, "h1")
+	if _, err := store.ArmSpawnIntent(record.ID, linuxIntent("n1")); err != nil {
+		t.Fatalf("ArmSpawnIntent: %v", err)
+	}
+	handle := &fakeBoundary{notEnforcing: true}
+	var opened []execenv.BoundaryIdentity
+	dropped, err := ReapLocalOrphanBoundary(store, ReapOptions{Open: openOnce(handle, &opened)})
+	if err == nil {
+		t.Fatal("a non-enforcing boundary produced no diagnostic")
+	}
+	if dropped != 0 || len(handle.killed) != 0 {
+		t.Fatalf("reap = %d dropped, killed %v; want no clear and no signal", dropped, handle.killed)
+	}
+	stored, _ := store.Record(record.ID)
+	if stored.State != hostops.StateOrphanUnverified || len(stored.PendingSpawns) != 1 {
+		t.Fatalf("the record = %q/%+v, want orphan-unverified with the intent kept", stored.State, stored.PendingSpawns)
+	}
+}
+
+// TestReapNarrowsAnAlreadyMarkedRecordAndDropsCleanIntents pins the two-group
+// regression: a record already in `orphan-unverified` whose boundary holds one
+// clean group and one failing group must be narrowed to the failing group and
+// have the clean group's intent dropped, in one write. `Transition` refuses a
+// same-state move, so this is only correct through SetOrphanBoundary.
+func TestReapNarrowsAnAlreadyMarkedRecordAndDropsCleanIntents(t *testing.T) {
+	store, _ := newReapStore(t)
+	record := newReapRecord(t, store, "h1")
+	for _, nonce := range []string{"n1", "n2"} {
+		if _, err := store.ArmSpawnIntent(record.ID, linuxIntent(nonce)); err != nil {
+			t.Fatalf("ArmSpawnIntent(%s): %v", nonce, err)
+		}
+	}
+	marked := `[{"kind":"local-markerless","platform":"linux","cgroupId":"/cg/n1","nonce":"n1"},{"kind":"local-markerless","platform":"linux","cgroupId":"/cg/n2","nonce":"n2"}]`
+	if _, err := store.SetOrphanBoundary(record.ID, []byte(marked), nil); err != nil {
+		t.Fatalf("SetOrphanBoundary: %v", err)
+	}
+
+	open := func(id execenv.BoundaryIdentity) (LocalBoundaryHandle, error) {
+		if strings.HasSuffix(id.CgroupID, "n1") {
+			// The first group's boundary is empty: clean.
+			return &fakeBoundary{}, nil
+		}
+		// The second still holds a member no persisted pair accounts for.
+		return &fakeBoundary{members: []execenv.BoundaryMember{{PID: 9, StartToken: "1"}}}, nil
+	}
+	dropped, err := ReapLocalOrphanBoundary(store, ReapOptions{Open: open})
+	if err != nil {
+		t.Fatalf("ReapLocalOrphanBoundary: %v", err)
+	}
+	if dropped != 1 {
+		t.Fatalf("reap dropped %d; want the clean group's intent dropped", dropped)
+	}
+	stored, _ := store.Record(record.ID)
+	if stored.State != hostops.StateOrphanUnverified {
+		t.Fatalf("the record's state = %q, want it still fenced", stored.State)
+	}
+	if len(stored.PendingSpawns) != 1 || stored.PendingSpawns[0].Nonce != "n2" {
+		t.Fatalf("the intents = %+v, want only n2", stored.PendingSpawns)
+	}
+	want := `[{"kind":"local-markerless","platform":"linux","cgroupId":"/cg/n2","nonce":"n2"}]`
+	if string(stored.OrphanBoundary) != want {
+		t.Fatalf("orphanBoundary = %s, want the narrowed %s", stored.OrphanBoundary, want)
+	}
 }
 
 // TestReapCloseFailureIsUnsettled pins §3's teardown half: a boundary that does

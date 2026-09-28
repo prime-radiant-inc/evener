@@ -4,6 +4,7 @@ package hostfence
 
 import (
 	"errors"
+	"fmt"
 
 	"primeradiant.com/evener/cmd/evener-hub/internal/hostops"
 )
@@ -14,20 +15,45 @@ import (
 type ReapOptions struct{}
 
 // ErrLocalReapUnsupported reports that this platform has no local process
-// boundary to reap through, so an open pending-spawn intent cannot be
-// converged here.
+// boundary to reap through, so an open pending-spawn intent cannot be converged
+// here.
 var ErrLocalReapUnsupported = errors.New("hostfence: no local process boundary exists on this platform")
 
-// ReapLocalOrphanBoundary is the non-Unix arm of §3's local reap. With no open
-// intents it is a no-op; with one it reports the fence rather than dropping it,
-// because it has no boundary to enumerate.
+// ReapLocalOrphanBoundary is the non-Unix arm of §3's local reap. It cannot
+// enumerate a boundary, but it must not skip the durable disposition either: a
+// record left `pending` with an open intent is invisible to the admission fence
+// and skipped by the interrupted pass, so this arm marks every such record
+// `orphan-unverified` with the §9 boundary its own intent data describes. The
+// host stays fenced until an operator resolves the record. With no open intents
+// it is a no-op.
 func ReapLocalOrphanBoundary(store *hostops.Store, opts ReapOptions) (int, error) {
 	_ = opts
 	if store == nil {
 		return 0, nil
 	}
-	if len(store.SpawnIntentRecords()) > 0 {
-		return 0, ErrLocalReapUnsupported
+	var failures []error
+	for _, record := range store.SpawnIntentRecords() {
+		if record.State == hostops.StateOrphanUnverified && boundaryHasForeignVariant(record.OrphanBoundary) {
+			continue
+		}
+		if record.State.Terminal() {
+			failures = append(failures, fmt.Errorf(
+				"record %s is %s with an open spawn intent and cannot be fenced on this platform", record.ID, record.State))
+			continue
+		}
+		if record.State == hostops.StateOrphanUnverified && len(record.PendingSpawns) == 0 {
+			continue
+		}
+		entries, err := boundaryEntries(record.PendingSpawns)
+		if err != nil {
+			failures = append(failures, fmt.Errorf("record %s: %w", record.ID, err))
+			continue
+		}
+		if _, err := store.SetOrphanBoundary(record.ID, entries, nil); err != nil {
+			failures = append(failures, fmt.Errorf("record %s: %w", record.ID, err))
+			continue
+		}
+		failures = append(failures, fmt.Errorf("record %s: no local boundary can be enumerated on this platform, so the record stays fenced", record.ID))
 	}
-	return 0, nil
+	return 0, errors.Join(failures...)
 }

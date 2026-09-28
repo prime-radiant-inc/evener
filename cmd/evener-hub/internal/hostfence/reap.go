@@ -26,10 +26,8 @@ package hostfence
 
 import (
 	"bytes"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"slices"
 	"time"
 
 	"primeradiant.com/evener/agent/execenv"
@@ -46,6 +44,9 @@ const DefaultReapWait = 5 * time.Second
 // satisfies it; tests substitute a fake so every decision path is exercisable
 // without a kernel boundary.
 type LocalBoundaryHandle interface {
+	// Enforcing reports whether an empty enumeration proves every spawned
+	// process gone. A non-enforcing platform is never read as clean.
+	Enforcing() bool
 	// Members enumerates current members with kernel start tokens.
 	Members() ([]execenv.BoundaryMember, error)
 	// SignalVerified signals one member only while its token still matches.
@@ -149,19 +150,17 @@ func ReapLocalOrphanBoundary(store *hostops.Store, opts ReapOptions) (int, error
 				"record %s is %s but its boundary still holds unverified members; the intent stays open", record.ID, record.State))
 			continue
 		}
-		if record.State != hostops.StateOrphanUnverified || !bytes.Equal(record.OrphanBoundary, entries) {
-			if _, err := store.Transition(record.ID, hostops.StateOrphanUnverified, func(r *hostops.Record) {
-				r.OrphanBoundary = entries
-			}); err != nil {
-				failures = append(failures, fmt.Errorf("record %s: mark orphan-unverified: %w", record.ID, err))
-				continue
-			}
+		// One atomic write marks the record with the narrowest boundary the
+		// failing groups describe and drops the clean groups' intents at the
+		// same time, so the persist can never carry stale entries or a stale
+		// intent set. A record already in this state with this exact boundary and
+		// no intent to drop is left untouched, so a boot that finds nothing new
+		// writes nothing.
+		if record.State == hostops.StateOrphanUnverified && bytes.Equal(record.OrphanBoundary, entries) && len(cleanNonces) == 0 {
+			continue
 		}
-		// The clean groups on the same record converge independently of the
-		// failing one: dropping their intents here keeps the retry scoped to what
-		// is still unverified.
-		if err := store.ClearSpawnIntents(record.ID, cleanNonces); err != nil {
-			failures = append(failures, fmt.Errorf("record %s: %w", record.ID, err))
+		if _, err := store.SetOrphanBoundary(record.ID, entries, cleanNonces); err != nil {
+			failures = append(failures, fmt.Errorf("record %s: mark orphan-unverified: %w", record.ID, err))
 			continue
 		}
 		dropped += len(cleanNonces)
@@ -206,35 +205,6 @@ func groupSpawnIntents(intents []hostops.SpawnIntent) ([]boundaryGroup, error) {
 	return groups, nil
 }
 
-// boundaryHasForeignVariant reports whether a persisted `orphan-unverified`
-// boundary carries any member that is not one of the local reap's own variants
-// (`remote-fencing`, `boundary-unavailable`, or anything a build this old
-// cannot parse). Such a record is never the local reap's to rewrite.
-func boundaryHasForeignVariant(raw json.RawMessage) bool {
-	if len(bytes.TrimSpace(raw)) == 0 {
-		// Nil or empty bytes carry no member at all: local, with nothing foreign
-		// to protect. (An `orphan-unverified` record is validated to carry an
-		// array, so this is the defensive arm, not the common one.)
-		return false
-	}
-	var members []struct {
-		Kind string `json:"kind"`
-	}
-	if err := json.Unmarshal(raw, &members); err != nil {
-		// Present but unparseable is not this pass's evidence to act on: fail
-		// closed by leaving the record alone.
-		return true
-	}
-	for _, member := range members {
-		switch member.Kind {
-		case "local-linux", "local-darwin", "local-markerless":
-		default:
-			return true
-		}
-	}
-	return false
-}
-
 // boundaryIdentity maps one intent's platform arm onto the boundary identity.
 func boundaryIdentity(intent hostops.SpawnIntent) (execenv.BoundaryIdentity, error) {
 	switch intent.Platform {
@@ -272,6 +242,13 @@ func reapBoundaryGroup(group boundaryGroup, open func(execenv.BoundaryIdentity) 
 	members, err := handle.Members()
 	if err != nil {
 		return false, fmt.Errorf("enumeration is unavailable: %w", err)
+	}
+	if !handle.Enforcing() {
+		// §3's Darwin arm is asymmetric for exactly this: a setsid'd descendant
+		// leaves the (pgid, session id) pair, so an empty enumeration there is
+		// not proof of a clean boundary. The record stays fenced rather than
+		// cleared on a platform that cannot verify.
+		return false, errors.New("this platform's boundary cannot prove emptiness, so the record stays fenced")
 	}
 	pairs := persistedPairs(group.intents)
 	verified, unrecognized := partitionMembers(members, pairs)
@@ -390,82 +367,4 @@ func partitionMembers(members []execenv.BoundaryMember, pairs []persistedPair) (
 		}
 	}
 	return verified, unrecognized
-}
-
-// boundaryEntries renders the failing intents as §9's per-member
-// `BoundaryEntry[]`: a marked local-linux/local-darwin entry per intent that
-// carries its launcher marker, and a single local-markerless entry per
-// marker-less intent. The local variants are the ones the local reap persists;
-// the union's remote and boundary-unavailable variants belong to the fencing
-// slices that own them. Entries are sorted by nonce so a repeated boot composes
-// byte-identical bytes and skips a rewrite.
-func boundaryEntries(intents []hostops.SpawnIntent) (json.RawMessage, error) {
-	ordered := slices.Clone(intents)
-	slices.SortFunc(ordered, func(a, b hostops.SpawnIntent) int {
-		if a.Nonce < b.Nonce {
-			return -1
-		}
-		if a.Nonce > b.Nonce {
-			return 1
-		}
-		return 0
-	})
-	members := make([]any, 0, len(ordered))
-	for _, intent := range ordered {
-		entry, err := boundaryEntry(intent)
-		if err != nil {
-			return nil, err
-		}
-		members = append(members, entry)
-	}
-	raw, err := json.Marshal(members)
-	if err != nil {
-		return nil, fmt.Errorf("hostfence: render the orphan boundary: %w", err)
-	}
-	return raw, nil
-}
-
-// boundaryEntry renders one intent as its §9 entry.
-func boundaryEntry(intent hostops.SpawnIntent) (any, error) {
-	switch intent.Platform {
-	case hostops.SpawnPlatformLinux:
-		if intent.ValidMarker() {
-			return struct {
-				Kind      string `json:"kind"`
-				CgroupID  string `json:"cgroupId"`
-				Nonce     string `json:"nonce"`
-				PID       int    `json:"pid"`
-				StartTime string `json:"startTime"`
-			}{Kind: "local-linux", CgroupID: intent.CgroupID, Nonce: intent.Nonce, PID: *intent.PID, StartTime: intent.StartTime}, nil
-		}
-		return struct {
-			Kind     string `json:"kind"`
-			Platform string `json:"platform"`
-			CgroupID string `json:"cgroupId"`
-			Nonce    string `json:"nonce"`
-		}{Kind: "local-markerless", Platform: "linux", CgroupID: intent.CgroupID, Nonce: intent.Nonce}, nil
-	case hostops.SpawnPlatformDarwin:
-		if intent.PGID == nil || intent.SessionID == nil {
-			return nil, fmt.Errorf("%w: intent %q carries no darwin pair", hostops.ErrInvalidSpawnIntent, intent.Nonce)
-		}
-		if intent.ValidMarker() {
-			return struct {
-				Kind      string `json:"kind"`
-				PGID      int    `json:"pgid"`
-				SessionID int    `json:"sessionId"`
-				PID       int    `json:"pid"`
-				StartTime string `json:"startTime"`
-				Nonce     string `json:"nonce"`
-			}{Kind: "local-darwin", PGID: *intent.PGID, SessionID: *intent.SessionID, PID: *intent.PID, StartTime: intent.StartTime, Nonce: intent.Nonce}, nil
-		}
-		return struct {
-			Kind      string `json:"kind"`
-			Platform  string `json:"platform"`
-			PGID      *int   `json:"pgid"`
-			SessionID *int   `json:"sessionId"`
-			Nonce     string `json:"nonce"`
-		}{Kind: "local-markerless", Platform: "darwin", PGID: intent.PGID, SessionID: intent.SessionID, Nonce: intent.Nonce}, nil
-	default:
-		return nil, fmt.Errorf("%w: intent %q carries platform %q", hostops.ErrInvalidSpawnIntent, intent.Nonce, intent.Platform)
-	}
 }

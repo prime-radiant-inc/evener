@@ -151,6 +151,9 @@ func newLinuxCgroupBoundary(dir string) (*Boundary, error) {
 			observe:   observeLinuxStartToken,
 			signal:    signalLinuxMember,
 			release:   func() error { return linuxCgroupRelease(dir) },
+			// cgroup membership is kernel-enforced: a process is a member from
+			// clone time and cannot leave it, so an empty cgroup is proof.
+			enforces: true,
 		},
 	}, nil
 }

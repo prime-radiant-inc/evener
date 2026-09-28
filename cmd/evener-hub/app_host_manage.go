@@ -1801,12 +1801,14 @@ func (m *hubHostManager) hostFileRecords() (Config, bool) {
 }
 
 // hostFileAbsentOrEmpty reports whether the selected config path genuinely holds
-// no document: the path is unset, the file does not exist, or it exists with
-// zero bytes. It deliberately differs from hostFileRecords' ok — which is also
-// false for a file that cannot be read or that fails to decode — because the
-// boot compensation pass may only converge over real absence: clearing an armed
-// record on a read or decode failure would discard the compensation record and
-// its stash, the only durable copy of the pre-mutation hub.toml.
+// no document: the file does not exist, or it exists with zero bytes. It
+// deliberately differs from hostFileRecords' ok — which is also false for a file
+// that cannot be read or that fails to decode — because the boot compensation
+// pass may only converge over real absence: clearing an armed record on a read
+// or decode failure would discard the compensation record and its stash, the
+// only durable copy of the pre-mutation hub.toml. An unset path is the caller's
+// to screen out (reconcilePipelineBoot returns before this for an empty path);
+// it is not "absence" here, so this helper reports false for it.
 func (m *hubHostManager) hostFileAbsentOrEmpty() bool {
 	path := strings.TrimSpace(m.cfg.configPath)
 	if path == "" {

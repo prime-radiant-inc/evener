@@ -67,6 +67,10 @@ func newDarwinBoundary(pgid, sessionID int) *Boundary {
 			// A session boundary has no handle to release: the pair is the
 			// launcher's own, and it goes away with the launcher.
 			release: func() error { return nil },
+			// Not enforcing: a descendant that calls setsid leaves the pair, so
+			// an empty enumeration is not proof and the reap must never clear an
+			// intent on it (§3's Darwin arm is asymmetric for exactly this).
+			enforces: false,
 		},
 	}
 }

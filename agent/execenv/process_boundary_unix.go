@@ -158,6 +158,9 @@ type boundaryOps struct {
 	signal func(pid int, startToken string) error
 	// release tears the boundary down after it is proven clean.
 	release func() error
+	// enforces records whether membership is kernel-enforced and exhaustive
+	// enough that an empty enumeration proves every spawned process gone.
+	enforces bool
 }
 
 // Boundary is a live handle on one local process boundary.
@@ -205,6 +208,16 @@ func OpenBoundary(id BoundaryIdentity) (*Boundary, error) {
 
 // Identity returns the persisted ownership identity of this boundary.
 func (b *Boundary) Identity() BoundaryIdentity { return b.id }
+
+// Enforcing reports whether this platform's membership proves emptiness: when
+// true, an enumeration with no member means every process spawned into the
+// boundary is gone. When false the boundary cannot make that claim — Darwin's
+// (pgid, session id) pair can be left by a descendant that calls setsid, so an
+// empty enumeration there is not proof — and the caller must never read an
+// empty enumeration as a clean boundary, nor signal through it.
+func (b *Boundary) Enforcing() bool {
+	return b != nil && b.ops.enforces
+}
 
 // SpawnAttr returns the process attributes a spawn into this boundary must
 // carry, and a release the caller must call once Start has returned. Spawning
