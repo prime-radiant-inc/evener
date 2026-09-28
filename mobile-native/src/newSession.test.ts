@@ -496,3 +496,140 @@ it("uses the shared picker pipeline without attaching late results to an abandon
   expect(document.imagePreviews()).toEqual([]);
   expect(store.getState().prompt).toBe("");
 });
+
+const answer = (calls: ReturnType<typeof setup>["calls"], method: string, forwarded: string | null, value: unknown) => {
+  const call = calls.find(
+    (c) =>
+      c.method === method &&
+      (forwarded === null || (c.params as { method?: string }).method === forwarded),
+  );
+  if (!call) throw new Error(`no ${forwarded ?? method} request`);
+  calls.splice(calls.indexOf(call), 1);
+  call.response.resolve(value);
+};
+const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
+
+// changeHost ends by reading the new host's models, so each test answers that
+// read before awaiting the change.
+it("reads another host's projects and models through the hub, and starts there (Review Focus 1)", async () => {
+  const { store, calls } = setup();
+  const moving = store.getState().changeHost("paradise-park", "paradise-park");
+  answer(calls, "evener/host/request", "evener/projects/recent", { data: ["/Users/jesse/git/evener"] });
+  await flush();
+  expect(store.getState()).toMatchObject({ source: "paradise-park", cwd: "/Users/jesse/git/evener", hostNote: null });
+  answer(calls, "evener/host/request", "model/list", { data: [model] });
+  await moving;
+  const started = store.getState().submit();
+  const start = calls.find((c) => c.method === "thread/start");
+  expect(start?.params).toMatchObject({ cwd: "/Users/jesse/git/evener", source: "paradise-park" });
+  answer(calls, "thread/start", null, { thread: { id: "t", evener: { ref: "paradise-park:t" } }, turn: {} });
+  expect(await started).toMatchObject({ status: "created" });
+});
+
+it("keeps the project when the new host has it, and moves it with a note when it doesn't (ruling 17)", async () => {
+  const { store, calls } = setup();
+  await store.getState().setCwd("/home/jesse/git/evener", false);
+  const kept = store.getState().changeHost("paradise-park", "paradise-park");
+  answer(calls, "evener/host/request", "evener/path/validate", { path: "/home/jesse/git/evener", valid: true });
+  answer(calls, "evener/host/request", "evener/projects/recent", { data: ["/Users/jesse/git/docs"] });
+  await flush();
+  expect(store.getState()).toMatchObject({ cwd: "/home/jesse/git/evener", hostNote: null });
+  answer(calls, "evener/host/request", "model/list", { data: [model] });
+  await kept;
+  const moved = store.getState().changeHost("local", "magic-kingdom");
+  answer(calls, "evener/path/validate", null, { path: "/home/jesse/git/evener", valid: false });
+  answer(calls, "evener/projects/recent", null, { data: ["/home/jesse/git/docs"] });
+  await flush();
+  expect(store.getState()).toMatchObject({
+    cwd: "/home/jesse/git/docs",
+    hostNote: "evener isn't on magic-kingdom, so the project changed to docs.",
+  });
+  answer(calls, "model/list", null, { data: [model] });
+  await moved;
+});
+
+it("keeps the project when the new host can't say whether it has it", async () => {
+  const { store, calls } = setup();
+  await store.getState().setCwd("/home/jesse/git/evener", false);
+  const moving = store.getState().changeHost("paradise-park", "paradise-park");
+  const validate = calls.find((c) => (c.params as { method?: string }).method === "evener/path/validate");
+  validate?.response.reject(new Error("host went away"));
+  answer(calls, "evener/host/request", "evener/projects/recent", { data: ["/Users/jesse/git/docs"] });
+  await flush();
+  expect(store.getState()).toMatchObject({ cwd: "/home/jesse/git/evener", hostNote: null });
+  answer(calls, "evener/host/request", "model/list", { data: [model] });
+  await moving;
+});
+
+it("drops answers for the host it just left (Review Focus 2)", async () => {
+  const { store, calls } = setup();
+  const leaving = store.getState().changeHost("paradise-park", "paradise-park");
+  const staleRecent = calls.find((c) => (c.params as { method?: string }).method === "evener/projects/recent");
+  const arriving = store.getState().changeHost("local", "magic-kingdom");
+  answer(calls, "evener/projects/recent", null, { data: ["/home/jesse/git/evener"] });
+  await flush();
+  answer(calls, "model/list", null, { data: [model] });
+  await arriving;
+  staleRecent?.response.resolve({ data: ["/Users/jesse/git/elsewhere"] });
+  await leaving;
+  expect(store.getState()).toMatchObject({ source: "local", cwd: "/home/jesse/git/evener" });
+  expect(store.getState().projects).toEqual(["/home/jesse/git/evener"]);
+  expect(calls.some((c) => (c.params as { method?: string }).method === "model/list")).toBe(false);
+});
+
+it("applies a setup and settles its model against the host's list", async () => {
+  const { store, calls } = setup();
+  store.getState().applySetup({
+    host: "local",
+    cwd: "/project",
+    model: { provider: "p", model: "a" },
+    effort: "high",
+    overrides: { sandbox: "read-only", enabledPlugins: ["superpowers"] },
+  });
+  expect(store.getState()).toMatchObject({
+    source: "local",
+    cwd: "/project",
+    reasoning: "high",
+    launchOverrides: { sandbox: "read-only", enabledPlugins: ["superpowers"] },
+  });
+  answer(calls, "model/list", null, { data: [model] });
+  await flush();
+  expect(store.getState().model).toEqual(model);
+  expect(store.getState().reasoning).toBe("high");
+});
+
+it("applies a session's seed and finds its model once the host's models arrive", async () => {
+  const { store, calls } = setup();
+  store.getState().applySeed({ host: "local", cwd: "/project", model: "p/a", effort: "low" });
+  answer(calls, "model/list", null, { data: [model] });
+  await flush();
+  expect(store.getState()).toMatchObject({ source: "local", cwd: "/project", model, reasoning: "low" });
+});
+
+it("restores a draft's host, and a draft saved before hosts as the hub's own machine (ruling 28)", () => {
+  const saved = new Map<string, CreationDraft>();
+  const storage = () => ({
+    read: (hubId: string) => saved.get(hubId) ?? null,
+    write: (hubId: string, draft: CreationDraft) => {
+      saved.set(hubId, structuredClone(draft));
+    },
+    clear: (hubId: string) => saved.delete(hubId),
+  });
+  const draft: CreationDraft = {
+    cwd: "/project",
+    prompt: "",
+    harness: "",
+    model: null,
+    reasoning: "",
+    launchOverrides: {},
+    images: [],
+    unconfirmed: false,
+  };
+  saved.set("before", draft);
+  saved.set("remote", { ...draft, source: "paradise-park" });
+  expect(createNewSessionStore("before", storage).getState().source).toBe("local");
+  const remote = createNewSessionStore("remote", storage);
+  expect(remote.getState().source).toBe("paradise-park");
+  remote.getState().setPrompt("hello");
+  expect(saved.get("remote")).toMatchObject({ source: "paradise-park", prompt: "hello" });
+});

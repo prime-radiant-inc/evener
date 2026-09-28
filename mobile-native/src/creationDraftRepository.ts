@@ -7,6 +7,9 @@ import {
 import { type SqliteSync, withSavepoint } from "./sqliteSync";
 
 export interface CreationDraft {
+  /** The host to start on. Absent in a draft saved before hosts, which is
+   * the hub's own machine (ruling 28). */
+  source?: string;
   cwd: string;
   prompt: string;
   harness: string;
@@ -22,6 +25,7 @@ function decode(raw: string): SavedDraft {
   if (
     !value ||
     typeof value !== "object" ||
+    (value.source !== undefined && typeof value.source !== "string") ||
     typeof value.cwd !== "string" ||
     typeof value.prompt !== "string" ||
     typeof value.harness !== "string" ||

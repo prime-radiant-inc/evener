@@ -341,3 +341,28 @@ it("records bytes as saved only once the savepoint has released", () => {
     db.close();
   }
 });
+
+it("keeps a draft's host, and reads a draft saved without one (ruling 28)", () => {
+  const { db, adapter, repository } = fixture();
+  try {
+    repository().write("hub-a", { ...draft, source: "paradise-park" });
+    expect(repository().read("hub-a")?.source).toBe("paradise-park");
+    const { images: _images, ...stored } = draft;
+    adapter.runSync(
+      "INSERT OR REPLACE INTO creation_drafts (hub_id, draft) VALUES (?, ?)",
+      "hub-b",
+      JSON.stringify({ ...stored, images: [] }),
+    );
+    const before = repository().read("hub-b");
+    expect(before?.cwd).toBe("/project");
+    expect(before && "source" in before).toBe(false);
+    adapter.runSync(
+      "INSERT OR REPLACE INTO creation_drafts (hub_id, draft) VALUES (?, ?)",
+      "hub-c",
+      JSON.stringify({ ...stored, images: [], source: 7 }),
+    );
+    expect(() => repository().read("hub-c")).toThrow("Invalid saved creation draft.");
+  } finally {
+    db.close();
+  }
+});

@@ -17,6 +17,7 @@ import type {
   ModelDescriptor,
   Thread,
 } from "@evener/appwire-client";
+import { LOCAL_HOST } from "../../cmd/evener-hub/frontend/src/stores/hostRouting";
 import type { NewSessionService } from "../../mobile/src/services/newSession";
 import {
   type CreationDraft,
@@ -24,6 +25,13 @@ import {
   creationDraftMetadata,
 } from "./creationDraftRepository";
 import { type DraftImageData, imageInput } from "./draftImages";
+import {
+  type LaunchSetup,
+  modelFromId,
+  moveToHost,
+  type SessionSeed,
+  withOwnedOverrides,
+} from "./newSession/launchSetup";
 
 type Outcome =
   | { status: "created"; hubId: string; thread: Thread }
@@ -33,6 +41,10 @@ interface Form {
   storageError: string | null;
   unconfirmedCreation: boolean;
   retryStorage(): void;
+  /** The host the session starts on: "local" is the hub's own machine. */
+  source: string;
+  /** What moved when the host did (ruling 17), for the Host row's footer. */
+  hostNote: string | null;
   cwd: string;
   prompt: string;
   images: DraftImageData[];
@@ -60,6 +72,9 @@ interface Form {
   loadMetadata(): Promise<void>;
   loadModels(refresh?: boolean): Promise<void>;
   submit(): Promise<Outcome>;
+  changeHost(host: string, hostLabel: string): Promise<void>;
+  applySetup(setup: LaunchSetup): void;
+  applySeed(seed: SessionSeed): void;
 }
 export function creationModel(
   models: ModelDescriptor[],
@@ -68,10 +83,7 @@ export function creationModel(
 ): ModelDescriptor | null {
   const id = overrides.model?.trim();
   if (!id) return selected;
-  const matches = models.filter(
-    (model) => `${model.provider}/${model.model}` === id || model.model === id,
-  );
-  return matches.length === 1 ? (matches[0] ?? null) : null;
+  return modelFromId(id, models);
 }
 
 export function createNewSessionStore(
@@ -86,6 +98,12 @@ export function createNewSessionStore(
   let creationRequested = false;
   let saving = false;
   let lastSaved = "";
+  // Bumped by every host change and every applied setup, so a host change
+  // whose answers arrive after a newer one drops them (Review Focus 2).
+  let placement = 0;
+  // A session's model named the way it reports it, waiting for the host's
+  // model list to find it (applySeed).
+  let pendingModelId: string | null = null;
   const store = createStore<Form>((set, get) => ({
     storageLoaded: !storage,
     storageError: null,
@@ -97,6 +115,8 @@ export function createNewSessionStore(
         if (get().storageLoaded) void get().loadModels(true);
       }
     },
+    source: LOCAL_HOST,
+    hostNote: null,
     cwd: "",
     prompt: "",
     images: [],
@@ -236,7 +256,7 @@ export function createNewSessionStore(
       if (!current) return;
       try {
         const [projects, harnesses] = await Promise.all([
-          current.recentProjects(),
+          current.recentProjects(get().source),
           current.harnesses(),
         ]);
         if (generation === connection)
@@ -251,8 +271,8 @@ export function createNewSessionStore(
     },
     async loadModels(refresh = false) {
       const current = service;
-      const { cwd, harness } = get();
-      const context = JSON.stringify([cwd.trim(), harness]);
+      const { cwd, harness, source } = get();
+      const context = JSON.stringify([source, cwd.trim(), harness]);
       if (current && loadedContext === context && !refresh) return;
       const selection = get().model;
       const reasoning = get().reasoning;
@@ -265,18 +285,28 @@ export function createNewSessionStore(
       });
       if (!current) return;
       try {
-        const result = await current.models({
-          ...(cwd.trim() ? { cwd: cwd.trim() } : {}),
-          ...(harness ? { harness } : {}),
-        });
+        const result = await current.models(
+          {
+            ...(cwd.trim() ? { cwd: cwd.trim() } : {}),
+            ...(harness ? { harness } : {}),
+          },
+          source,
+        );
         if (generation === catalog) {
           loadedContext = context;
+          const seeded =
+            pendingModelId === null
+              ? null
+              : modelFromId(pendingModelId, result.data);
+          pendingModelId = null;
           const model =
+            seeded ??
             result.data.find(
               (item) =>
                 item.provider === selection?.provider &&
                 item.model === selection.model,
-            ) ?? null;
+            ) ??
+            null;
           const settingsModel = creationModel(
             result.data,
             model,
@@ -307,7 +337,8 @@ export function createNewSessionStore(
     async submit() {
       const current = service;
       const generation = connection;
-      const { cwd, prompt, harness, model, reasoning, submitting } = get();
+      const { source, cwd, prompt, harness, model, reasoning, submitting } =
+        get();
       if (
         !current ||
         submitting ||
@@ -315,7 +346,7 @@ export function createNewSessionStore(
         !cwd.trim() ||
         !get().storageLoaded ||
         (model !== null &&
-          loadedContext !== JSON.stringify([cwd.trim(), harness]))
+          loadedContext !== JSON.stringify([source, cwd.trim(), harness]))
       )
         return { status: "blocked" };
       const launchOverrides = harnessSupportsPluginSelection(
@@ -347,10 +378,13 @@ export function createNewSessionStore(
       try {
         const pluginSelection = pluginSelectionFromOverrides(launchOverrides);
         if (pluginSelection.mode === "explicit") {
-          const preview = await current.previewPlugins({
-            cwd: cwd.trim(),
-            launchOverrides,
-          });
+          const preview = await current.previewPlugins(
+            {
+              cwd: cwd.trim(),
+              launchOverrides,
+            },
+            source,
+          );
           if (generation !== connection) return { status: "obsolete" };
           const issues = pluginSelectionIssues(pluginSelection, preview);
           if (issues.length) {
@@ -375,6 +409,7 @@ export function createNewSessionStore(
         startDispatched = true;
         creationRequested = true;
         const result = await current.start({
+          source,
           cwd: cwd.trim(),
           ...(input.length ? { input } : {}),
           ...(harness ? { harness } : {}),
@@ -393,6 +428,8 @@ export function createNewSessionStore(
           try {
             storage().clear(hubId);
             set({
+              source: LOCAL_HOST,
+              hostNote: null,
               cwd: "",
               prompt: "",
               images: [],
@@ -427,10 +464,72 @@ export function createNewSessionStore(
         if (generation === connection) set({ submitting: false });
       }
     },
+    async changeHost(host, hostLabel) {
+      const state = get();
+      if (state.submitting || host === state.source) return;
+      const current = service;
+      const mine = ++placement;
+      loadedContext = null;
+      catalog++;
+      refreshingModels = false;
+      set({
+        source: host,
+        hostNote: null,
+        projects: [],
+        models: [],
+        loadingModels: false,
+      });
+      if (!current) return;
+      const cwd = state.cwd.trim();
+      // A host that can't answer keeps the project: unknown isn't absent.
+      const [exists, recent] = await Promise.all([
+        cwd
+          ? current.directoryExists(host, cwd).catch(() => null)
+          : Promise.resolve(null),
+        current.recentProjects(host).catch(() => [] as string[]),
+      ]);
+      if (mine !== placement || service !== current) return;
+      const move = moveToHost(cwd, hostLabel, exists !== false, recent);
+      set({ projects: recent, cwd: move.cwd, hostNote: move.note });
+      await get().loadModels();
+    },
+    applySetup(setup) {
+      if (get().submitting) return;
+      placement++;
+      pendingModelId = null;
+      set({
+        source: setup.host,
+        cwd: setup.cwd,
+        hostNote: null,
+        model: setup.model
+          ? { provider: setup.model.provider, model: setup.model.model }
+          : null,
+        reasoning: setup.effort,
+        launchOverrides: withOwnedOverrides(
+          get().launchOverrides,
+          setup.overrides,
+        ),
+      });
+      void get().loadModels(true);
+    },
+    applySeed(seed) {
+      if (get().submitting) return;
+      placement++;
+      pendingModelId = seed.model ?? null;
+      set({
+        source: seed.host,
+        cwd: seed.cwd,
+        hostNote: null,
+        model: null,
+        reasoning: seed.effort ?? "",
+      });
+      void get().loadModels(true);
+    },
   }));
   function snapshot(): CreationDraft {
     const state = store.getState();
     return {
+      source: state.source,
       cwd: state.cwd,
       prompt: state.prompt,
       harness: state.harness,
@@ -469,9 +568,12 @@ export function createNewSessionStore(
     try {
       const draft = storage().read(hubId);
       if (draft) {
-        const { unconfirmed, ...fields } = draft;
+        const { unconfirmed, source, ...fields } = draft;
         store.setState({
           ...fields,
+          // A draft saved before hosts has none: the hub's own machine
+          // (ruling 28).
+          source: source ?? LOCAL_HOST,
           unconfirmedCreation: unconfirmed,
           error: unconfirmed
             ? "An earlier creation could not be confirmed. Check the session list before trying again; the session may exist."
