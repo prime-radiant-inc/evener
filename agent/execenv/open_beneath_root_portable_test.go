@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -60,5 +61,87 @@ func TestOpenRegularBeneathRootNoFollowPortable_RefusesNonDirectoryFirstComponen
 	var pathErr *os.PathError
 	if !errors.As(err, &pathErr) || pathErr.Path != component {
 		t.Fatalf("error = %v, want PathError naming first component %q", err, component)
+	}
+}
+
+func TestOpenRegularBeneathRootNoFollowPortable_RefusesEscapingPath(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(filepath.Dir(root), "outside.log")
+	openerCalls := 0
+	f, err := openRegularBeneathRootNoFollowPortable(path, root, func(_, _ string) (*os.File, error) {
+		openerCalls++
+		return nil, nil
+	})
+	if f != nil {
+		_ = f.Close()
+	}
+	if openerCalls != 0 {
+		t.Fatalf("opener calls = %d, want 0 for escaping path", openerCalls)
+	}
+	if err == nil || !strings.Contains(err.Error(), "escapes root") {
+		t.Fatalf("error = %v, want legible root-escape refusal", err)
+	}
+}
+
+func TestOpenRegularBeneathRootNoFollowPortable_RefusesRootPath(t *testing.T) {
+	root := t.TempDir()
+	openerCalls := 0
+	f, err := openRegularBeneathRootNoFollowPortable(root, root, func(_, _ string) (*os.File, error) {
+		openerCalls++
+		return nil, nil
+	})
+	if f != nil {
+		_ = f.Close()
+	}
+	if openerCalls != 0 {
+		t.Fatalf("opener calls = %d, want 0 when path is root", openerCalls)
+	}
+	if err == nil || !strings.Contains(err.Error(), "root directory, not a file") {
+		t.Fatalf("error = %v, want root-is-not-file refusal", err)
+	}
+}
+
+func TestOpenRegularBeneathRootNoFollowPortable_RefusesRelError(t *testing.T) {
+	root := t.TempDir()
+	path := "relative-output.log"
+	if _, err := filepath.Rel(root, path); err == nil {
+		t.Fatalf("test setup: filepath.Rel(%q, %q) unexpectedly succeeded", root, path)
+	}
+	openerCalls := 0
+	f, err := openRegularBeneathRootNoFollowPortable(path, root, func(_, _ string) (*os.File, error) {
+		openerCalls++
+		return nil, nil
+	})
+	if f != nil {
+		_ = f.Close()
+	}
+	if openerCalls != 0 {
+		t.Fatalf("opener calls = %d, want 0 after filepath.Rel error", openerCalls)
+	}
+	if err == nil || !strings.Contains(err.Error(), "beneath") {
+		t.Fatalf("error = %v, want legible filepath.Rel refusal", err)
+	}
+}
+
+func TestOpenRegularBeneathRootNoFollowPortable_OpensDirectChild(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "output.log")
+	if err := os.WriteFile(path, []byte("payload\n"), 0o600); err != nil {
+		t.Fatalf("write direct child: %v", err)
+	}
+	openerCalls := 0
+	f, err := openRegularBeneathRootNoFollowPortable(path, root, func(gotPath, gotRoot string) (*os.File, error) {
+		openerCalls++
+		if gotPath != path || gotRoot != root {
+			t.Fatalf("opener args = (%q, %q), want (%q, %q)", gotPath, gotRoot, path, root)
+		}
+		return os.Open(gotPath)
+	})
+	if err != nil {
+		t.Fatalf("open direct child: %v", err)
+	}
+	defer func() { _ = f.Close() }()
+	if openerCalls != 1 {
+		t.Fatalf("opener calls = %d, want 1 for direct child", openerCalls)
 	}
 }
