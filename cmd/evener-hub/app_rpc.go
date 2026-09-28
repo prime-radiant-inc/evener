@@ -1223,6 +1223,11 @@ func newHubAppServerWithNavigationAndTrace(cfg hubcore.WebConfig, sources *appso
 	// afterwards would leave the handler reading an empty seam and dialing over
 	// a host whose teardown is still open.
 	cfg.HostRemnantFence = hostManage.openRemnantID
+	// The orphan fence reaches the attach path the same way, and for the same
+	// reason: attach has no manager handle, and a quarantined or
+	// orphan-unverified name must not dial. Installed before the attach handler
+	// is registered (it captures cfg by value), the HostRemnantFence precedent.
+	cfg.HostOrphanFence = hostManage.orphanAdmissionRefusal
 	// Component 06's Connect action: the browser-reachable explicit attach
 	// trigger. It wraps the Ensure-backed dialing seam and is the only method
 	// that may dial a remote host on the user's behalf.

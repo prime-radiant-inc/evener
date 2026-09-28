@@ -363,6 +363,12 @@ func TestOrphanResolveRefusesAnUnattributedAttestation(t *testing.T) {
 	if !strings.Contains(err.Error(), "authenticated identity") {
 		t.Fatalf("unattributed refusal = %q, want it to name the missing session identity", err)
 	}
+	// L1: the refusal is self-explaining — it names the missing transport
+	// identity and the pending wiring, so an operator never reads it as their own
+	// error or retries it expecting a different answer.
+	if !strings.Contains(err.Error(), "transport carries none yet") || !strings.Contains(err.Error(), "session-identity wiring") {
+		t.Fatalf("unattributed refusal = %q, want it to name the transport gap and the follow-up", err)
+	}
 	if stored, ok := store.Record(record.ID); !ok || stored.State != hostops.StateOrphanUnverified {
 		t.Fatalf("an unattributed attestation cleared the record: %+v (ok %v)", stored, ok)
 	}
@@ -778,4 +784,143 @@ func TestOperationRecordWireNormalizesAnEmptyBoundary(t *testing.T) {
 	if !strings.Contains(string(raw), `"orphanBoundary":[]`) {
 		t.Fatalf("wire bytes = %s, want an explicit []", raw)
 	}
+}
+
+// TestOrphanResolveReplaysACompactedResolution pins §5's replay horizon across
+// compaction at the handler: a resolved record that has compacted still answers
+// its persisted resolution by id, and an unmarked compacted record refuses as a
+// validation refusal (never not-found).
+func TestOrphanResolveReplaysACompactedResolution(t *testing.T) {
+	store, err := hostops.OpenWithRetention(hostops.StorePath(t.TempDir()),
+		hostops.RetentionPolicy{TerminalPerHost: 1, TerminalStoreWide: 10})
+	if err != nil {
+		t.Fatalf("OpenWithRetention: %v", err)
+	}
+	m := newHubHostManager(nil, nil, hubcore.WebConfig{
+		RemoteHostOpsStore: store,
+		RemoteHostOrphanVerify: func(_ context.Context, record hostops.Record) error {
+			return hostfence.VerifyOrphanBoundary(record, cleanLeaseVerify())
+		},
+	}, "", nil, nil)
+	record := quarantinedHubRecord(t, store, "h1")
+	if _, err := m.OrphanResolve(context.Background(), appwire.HostOrphanResolveParams{ID: record.ID}); err != nil {
+		t.Fatalf("OrphanResolve: %v", err)
+	}
+	// A second terminal record for the same host exceeds TerminalPerHost, so the
+	// resolved record compacts into a tombstone.
+	sibling := orphanLocalHubRecord(t, store, "h1", `[{"kind":"local-linux","cgroupId":"/cg/h1","nonce":"n1","pid":41,"startTime":"777"}]`)
+	if _, err := store.ResolveReapedSpawn(sibling.ID, []string{"n1"}); err != nil {
+		t.Fatalf("ResolveReapedSpawn: %v", err)
+	}
+	if _, ok := store.Record(record.ID); ok {
+		t.Fatal("the resolved record did not compact, so the replay path is untested")
+	}
+	replayed, err := m.OrphanResolve(context.Background(), appwire.HostOrphanResolveParams{ID: record.ID})
+	if err != nil || !replayed.OrphanResolved || !replayed.Compacted {
+		t.Fatalf("handler replay of the compacted id = (%+v, %v), want the persisted resolution", replayed, err)
+	}
+	if replayed.OrphanBoundary != nil {
+		t.Fatalf("replay = %+v, want no boundary", replayed)
+	}
+	// A later unmarked terminal record compacts the sibling in turn; the handler
+	// refuses it as a validation refusal, never not-found.
+	third := orphanLocalHubRecord(t, store, "h1", `[{"kind":"local-linux","cgroupId":"/cg/h1","nonce":"n1","pid":41,"startTime":"777"}]`)
+	if _, err := store.ResolveReapedSpawn(third.ID, []string{"n1"}); err != nil {
+		t.Fatalf("ResolveReapedSpawn(third): %v", err)
+	}
+	if _, ok := store.Record(sibling.ID); ok {
+		t.Fatal("the unmarked sibling did not compact")
+	}
+	assertWireCode(t, orphanErr(m.OrphanResolve(context.Background(), appwire.HostOrphanResolveParams{ID: sibling.ID})), appwire.CodeInvalidParams)
+}
+
+// TestAdmissionFenceBlocksPlanDeployRestartRemoveAndAttach pins M2's wiring:
+// §8's fence is consulted by the shared admission paths — plan, deploy, restart,
+// the mutations, and attach — with the quarantine form winning wherever the
+// marker is present and the transient form for a local-reap orphan record.
+func TestAdmissionFenceBlocksPlanDeployRestartRemoveAndAttach(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "hub.toml")
+	if err := writeHubTOMLHosts(configPath, []hostreg.Host{{Name: "side", SSH: "side.example"}}); err != nil {
+		t.Fatalf("seed hub.toml: %v", err)
+	}
+	cfg, err := LoadConfig(configPath)
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	hosts, err := hostreg.New(hostRegistryEntries(cfg))
+	if err != nil {
+		t.Fatalf("hostreg.New: %v", err)
+	}
+	store, err := hostops.Open(hostops.StorePath(dir))
+	if err != nil {
+		t.Fatalf("hostops.Open: %v", err)
+	}
+	m := newHubHostManager(nil, nil, hubcore.WebConfig{RemoteHostOpsStore: store}, configPath, hosts, nil)
+	entry, ok := hosts.Get("side")
+	if !ok {
+		t.Fatal("fixture lost the host")
+	}
+	assertAdmission := func(t *testing.T, err error, want appwire.ErrorInfo) {
+		t.Helper()
+		var wire appwire.WireError
+		if !errors.As(err, &wire) {
+			t.Fatalf("refusal = %#v, want a wire error", err)
+		}
+		switch want {
+		case appwire.ErrorHostBusyTransient:
+			if data, ok := wire.Data.(appwire.ErrorData); !ok || data.EvenerErrorInfo != want {
+				t.Fatalf("refusal data = %#v, want %q", wire.Data, want)
+			}
+		default:
+			if data, ok := wire.Data.(appwire.FencingFailureErrorData); !ok || data.EvenerErrorInfo != want || data.Host != "side" {
+				t.Fatalf("refusal data = %#v, want %q naming side", wire.Data, want)
+			}
+		}
+	}
+
+	// A local-reap orphan record fences the name: every admission path refuses
+	// transient busy before doing anything for it.
+	orphan := orphanLocalHubRecord(t, store, "side", `[{"kind":"local-linux","cgroupId":"/cg/side","nonce":"n1","pid":41,"startTime":"777"}]`)
+	assertAdmission(t, errOf(m.Plan(context.Background(), appwire.HostPlanParams{Name: "side"})), appwire.ErrorHostBusyTransient)
+	_, err = m.Deploy(context.Background(), appwire.HostDeployParams{Name: "side", Token: "tok", OperationID: "op-deploy-1"})
+	assertAdmission(t, err, appwire.ErrorHostBusyTransient)
+	_, err = m.Restart(context.Background(), appwire.HostRestartParams{
+		Name: "side", OperationID: "op-restart-1",
+		Generation: entry.Generation, IncarnationID: entry.IncarnationID,
+	})
+	assertAdmission(t, err, appwire.ErrorHostBusyTransient)
+	_, err = m.Remove(context.Background(), appwire.HostRemoveParams{
+		Name: "side", MutationID: "mut-1",
+		ExpectedGeneration: entry.Generation, ExpectedIncarnationID: entry.IncarnationID,
+	})
+	assertAdmission(t, err, appwire.ErrorHostBusyTransient)
+	attachCfg := hubcore.WebConfig{HostOrphanFence: m.orphanAdmissionRefusal}
+	_, err = hubHostAttach(context.Background(), attachCfg, appsource.NewRegistry(), hosts, appwire.HostAttachParams{Host: "side"})
+	assertAdmission(t, err, appwire.ErrorHostBusyTransient)
+	if stored, ok := store.Record(orphan.ID); !ok || stored.State != hostops.StateOrphanUnverified {
+		t.Fatalf("a refused admission moved the orphan record: %+v (ok %v)", stored, ok)
+	}
+
+	// The quarantine marker's form wins wherever it is present.
+	quarantined, err := store.Create(hostops.NewRecord{
+		ClientOperationID: "client-side-q", Host: "side", Kind: hostops.KindDeploy,
+		Generation: 7, IncarnationID: "inc-side-q",
+	})
+	if err != nil {
+		t.Fatalf("Create(quarantined): %v", err)
+	}
+	if _, err := store.Transition(quarantined.ID, hostops.StateRunning, nil); err != nil {
+		t.Fatalf("Transition: %v", err)
+	}
+	if _, err := store.QuarantineFencing(quarantined.ID, json.RawMessage(orphanResolveBoundaryJSON)); err != nil {
+		t.Fatalf("QuarantineFencing: %v", err)
+	}
+	assertAdmission(t, errOf(m.Plan(context.Background(), appwire.HostPlanParams{Name: "side"})), appwire.ErrorFencingFailure)
+	_, err = m.Deploy(context.Background(), appwire.HostDeployParams{Name: "side", Token: "tok", OperationID: "op-deploy-2"})
+	assertAdmission(t, err, appwire.ErrorFencingFailure)
+	_, err = hubHostAttach(context.Background(), attachCfg, appsource.NewRegistry(), hosts, appwire.HostAttachParams{Host: "side"})
+	assertAdmission(t, err, appwire.ErrorFencingFailure)
+	// A different name is untouched by the fence.
+	assertWireCode(t, errOf(m.Plan(context.Background(), appwire.HostPlanParams{Name: "other"})), appwire.CodeInvalidParams)
 }

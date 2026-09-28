@@ -76,7 +76,10 @@ func (m *hubHostManager) OrphanResolve(ctx context.Context, params appwire.HostO
 	if m.cfg.ops == nil {
 		return appwire.OperationRecord{}, appwire.InternalError("the host operation store is not configured, so no orphan record can be resolved")
 	}
-	record, ok := m.cfg.ops.Record(id)
+	// The lookup is tombstone-aware: a resolved record that has since compacted
+	// still replays from its persisted resolution (§5's replay horizon), so a
+	// lost-response retry of the id must never read as not-found.
+	record, ok := m.cfg.ops.RecordOrReplay(id)
 	if !ok {
 		return appwire.OperationRecord{}, appwire.ResourceNotFound(fmt.Sprintf("unknown operation record %q", id))
 	}
@@ -209,11 +212,22 @@ func (m *hubHostManager) validateOrphanAttestation(ctx context.Context, record h
 		// §5: the claimed operator "must equal the session's authenticated
 		// identity". An empty identity authorizes nothing: an unattributed
 		// attestation is refused outright, so no caller can write an audit record
-		// under a name nothing verified. (The transport's per-session identity is
-		// the crash-fencing slices' recorded boundary; until it is wired here, the
-		// attested path fails closed and the id-only path is unaffected.)
+		// under a name nothing verified.
+		//
+		// This build's transport carries no per-session principal yet: the
+		// capability token admits the connection but names no operator, and
+		// withSessionOperator has no production setter (the crash-fencing slices'
+		// recorded transport-identity boundary). The refusal is therefore
+		// self-explaining rather than silent: an attested boundary-unavailable
+		// resolve cannot clear until that wiring lands, while the id-only
+		// local-reap resolves are unaffected. FOLLOW-UP: the session-identity
+		// transport slice must stamp the authenticated principal for every
+		// evener/host/* request; the same wiring closes teardown-recover's twin
+		// gap (validateRecoveryOperator currently records an unattributed
+		// attestation as given), and that slice owns making both validators
+		// strict once the principal exists.
 		return nil, appwire.InvalidParams(fmt.Sprintf(
-			"orphan-resolve %s: an attestation requires the session's authenticated identity, and this session carries none",
+			"orphan-resolve %s: an attestation requires the session's authenticated identity, and this build's transport carries none yet — attested resolves refuse until the session-identity wiring lands (unattested local-reap resolves are unaffected)",
 			record.ID))
 	}
 	if identity != attestation.Operator {
@@ -293,6 +307,37 @@ func orphanAttestationStore(wire *appwire.HostOrphanResolveAttestation) *hostops
 		BoundaryRef: wire.BoundaryRef,
 		ObservedAt:  wire.ObservedAt,
 	}
+}
+
+// orphanAdmissionRefusal is §8's admission fence for the lifecycle and mutation
+// calls — plan, deploy, restart, add/update/remove, attach, and the fenced
+// running probe's owners: "While a quarantine marker is open for a host, that
+// host admits no new lifecycle or mutation call past admission ... all refuse
+// with the typed fencing-failure form naming the quarantined host. While any
+// orphan-unverified record is open for a host, that host admits no new
+// lifecycle or mutation call past admission ... all refuse with the typed
+// host-busy-transient form ... scoped to that host's name only". The
+// quarantine form wins wherever the marker is present (precedence). The two
+// recovery mutations keep their own orphan-fenced-busy refusal
+// (orphanFenceRefusal), and the read-only calls (list/status/operations) and
+// orphan-resolve itself bypass the fence.
+func (m *hubHostManager) orphanAdmissionRefusal(name string) error {
+	if m.cfg.ops == nil || strings.TrimSpace(name) == "" {
+		return nil
+	}
+	if _, marked := m.cfg.ops.FencingQuarantine(name); marked {
+		return appwire.FencingFailure(name, fmt.Sprintf(
+			"host %q is fencing-quarantined by its open orphan-unverified record; confirm the old remote command dead, then resolve the record through evener/host/orphan-resolve",
+			name))
+	}
+	for _, record := range m.cfg.ops.OrphanUnverified() {
+		if record.Host == name {
+			return appwire.HostBusyTransient(fmt.Sprintf(
+				"host %q holds an open orphan-unverified record (%s); resolve it through evener/host/orphan-resolve before starting new work",
+				name, record.ID))
+		}
+	}
+	return nil
 }
 
 // orphanFenceRefusal is §8's orphan-fence refusal for the calls that carry it:

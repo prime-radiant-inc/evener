@@ -173,6 +173,17 @@ func (s *Store) ResolveOrphan(recordID string, attestation *OrphanResolveAttesta
 	next := cloneSnapshot(s.cell.state)
 	index := slices.IndexFunc(next.Records, func(record Record) bool { return record.ID == recordID })
 	if index < 0 {
+		// The record may have compacted into a tombstone. A resolved record's
+		// replay must still answer from the persisted resolution (§5's replay
+		// horizon), never not-found; an unmarked compacted record is still not
+		// this call's to move, and refuses as any other non-unverified record does.
+		if replay, ok := anchorRecordLocked(&next, recordID); ok {
+			if replay.OrphanResolved && replay.State == StateInterrupted {
+				return cloneRecord(replay), nil
+			}
+			return Record{}, fmt.Errorf("%w: record %q is %q (compacted), not %q",
+				ErrInvalidTransition, recordID, replay.State, StateOrphanUnverified)
+		}
 		return Record{}, fmt.Errorf("%w: %q", ErrRecordNotFound, recordID)
 	}
 	record := next.Records[index]

@@ -380,4 +380,24 @@ func TestCompactionRetainsTheResolvedReplay(t *testing.T) {
 	if err != nil || !hit || !replayed.OrphanResolved || replayed.OrphanAttestation == nil {
 		t.Fatalf("reloaded replay = hit %v err %v record %+v; want the marker and attestation", hit, err, replayed)
 	}
+	// §5's lost-response replay runs by id, so it must survive compaction too:
+	// the resolve path consults the tombstone when the live record is gone.
+	if _, ok := store.Record(quarantined.ID); ok {
+		t.Fatal("the live resolved record was expected to have compacted")
+	}
+	replayedResolve, err := store.ResolveOrphan(quarantined.ID, nil)
+	if err != nil || !replayedResolve.OrphanResolved || !replayedResolve.Compacted {
+		t.Fatalf("ResolveOrphan(compacted id) = (%+v, %v), want the persisted resolution replay", replayedResolve, err)
+	}
+	if full, ok := store.RecordOrReplay(quarantined.ID); !ok || !full.OrphanResolved || !full.Compacted {
+		t.Fatalf("RecordOrReplay = (%+v, %v), want the tombstone replay", full, ok)
+	}
+	// An unmarked compacted record is still not the resolve's to move.
+	unmarked := runningTestRecord(t, store, "h1", "client-h1-c")
+	if _, err := store.Transition(unmarked.ID, StateComplete, func(r *Record) { r.Result = &Result{OK: true, Message: "done"} }); err != nil {
+		t.Fatalf("Transition(complete): %v", err)
+	}
+	if _, err := store.ResolveOrphan(unmarked.ID, nil); !errors.Is(err, ErrInvalidTransition) {
+		t.Fatalf("ResolveOrphan(unmarked compacted) = %v, want ErrInvalidTransition", err)
+	}
 }

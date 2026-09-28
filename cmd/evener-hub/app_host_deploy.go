@@ -253,6 +253,14 @@ func (m *hubHostManager) startOperation(ctx context.Context, req operationReques
 		return record, nil
 	}
 
+	// §8's admission fence, after the dedup replay and before any token decision
+	// or gate: a quarantined host refuses with the fencing-failure form, and a
+	// host holding an open orphan-unverified record refuses transient busy —
+	// neither admits new lifecycle or mutation work past admission.
+	if err := m.orphanAdmissionRefusal(entry.Name); err != nil {
+		return hostops.Record{}, err
+	}
+
 	// (2) The provisional token check (deploy) is a fail-fast readability check
 	// only: nothing is decided here, and a concurrent plan can supersede the
 	// value before the gate is acquired. Then the remnant fence: a fenced name

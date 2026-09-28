@@ -253,6 +253,13 @@ type WebConfig struct {
 	// Connect path) refuses the same way" as every other lifecycle path. Nil
 	// answers "no remnant".
 	HostRemnantFence func(name string) (string, bool)
+	// HostOrphanFence reports §8's admission refusal for a host name, if one
+	// fences it: the fencing-quarantine form when the marker is present, the
+	// transient-busy form when an orphan-unverified record is open, and nil when
+	// neither. The attach path has no manager handle of its own, so it reads
+	// this seam the way it reads HostRemnantFence; nil (tests, embedders) fences
+	// nothing.
+	HostOrphanFence func(name string) error
 	// HubBootID identifies this controller process incarnation for the durable
 	// probe epochs evener/host/plan persists (deploy pipeline 08b §6 step 2,
 	// crash-fencing spec §4). Empty disables probe-epoch persistence, and a plan

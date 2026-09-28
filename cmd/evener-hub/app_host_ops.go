@@ -260,6 +260,13 @@ func (m *hubHostManager) Plan(ctx context.Context, params appwire.HostPlanParams
 	if !ok {
 		return appwire.HostPlanResult{}, appwire.InvalidParams(fmt.Sprintf("unknown host %q", name))
 	}
+	// §8's admission fence, before anything else is done for the name: a
+	// quarantined host refuses with the fencing-failure form, and a host holding
+	// an open orphan-unverified record refuses transient busy — neither may
+	// reach a refresh, a probe, or a mint.
+	if err := m.orphanAdmissionRefusal(name); err != nil {
+		return appwire.HostPlanResult{}, err
+	}
 	// The local attachment answer is resolved first so every arm this handler can
 	// emit reports it truthfully — including the controller-dirty refusal, which
 	// is about this hub but still tells a client whether its host is attached: a
