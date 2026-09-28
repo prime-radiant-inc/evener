@@ -28,9 +28,10 @@ func writeRendezvous(t *testing.T, dir string, e rendezvous.Entry) {
 }
 
 // newSpawnedRoster returns an empty roster and the rendezvous entry a caller
-// hands to ReadSpawnedThread as a freshly spawned daemon's direct read. Every
-// ReadSpawnedThread test shares this setup, so the entry's identity is the same
-// in each of them.
+// hands to ReadSpawnedThread as a freshly spawned daemon's direct read. The
+// freshly-spawned ReadSpawnedThread tests share this setup, so the entry's
+// identity is the same in each of them; tests that confirm a replacement use a
+// different entry and build their own.
 func newSpawnedRoster(t *testing.T) (*Roster, rendezvous.Entry) {
 	t.Helper()
 	return NewRoster(t.TempDir(), nil), rendezvous.Entry{
