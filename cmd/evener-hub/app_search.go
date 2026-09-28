@@ -17,6 +17,7 @@ func hubSearch(cfg hubcore.WebConfig, params appwire.SearchParams) appwire.Searc
 		Past: []appwire.SearchResult{},
 	}
 	q := strings.ToLower(strings.TrimSpace(params.Query))
+	liveIDs := map[string]struct{}{}
 	if cfg.Roster != nil {
 		live := cfg.Roster.List()
 		sortLiveForSearch(live, cfg.Past)
@@ -24,6 +25,7 @@ func hubSearch(cfg hubcore.WebConfig, params appwire.SearchParams) appwire.Searc
 			if le.SessionID == "" {
 				continue
 			}
+			liveIDs[le.SessionID] = struct{}{}
 			title := liveTitle(le.SessionID, le, cfg.Past)
 			if q != "" && !strings.Contains(strings.ToLower(le.SessionID), q) && !strings.Contains(strings.ToLower(title), q) {
 				continue
@@ -42,6 +44,11 @@ func hubSearch(cfg hubcore.WebConfig, params appwire.SearchParams) appwire.Searc
 	}
 	if cfg.Past != nil {
 		for _, e := range cfg.Past.Search(q, searchPastLimit, 0) {
+			// A live session's meta file is in the past index too; keep it out of
+			// past so search never returns the same session as both live and ended.
+			if _, live := liveIDs[e.Meta.ID]; live {
+				continue
+			}
 			resp.Past = append(resp.Past, appwire.SearchResult{
 				ID:      e.Meta.ID,
 				Title:   searchPastTitle(e),

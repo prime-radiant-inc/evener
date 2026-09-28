@@ -46,6 +46,40 @@ func TestHubSearchIncludesMatchingPastSession(t *testing.T) {
 	}
 }
 
+// TestHubSearchOmitsLiveSessionFromPast pins #2681: a live session writes its
+// meta file soon after it starts, so the past index holds its record too. Search
+// must not return it twice; it belongs in Live alone, never alongside an ended
+// row carrying the same ref.
+func TestHubSearchOmitsLiveSessionFromPast(t *testing.T) {
+	root := t.TempDir()
+	project := filepath.Join(root, "projects", "project-x-0123456789")
+	const liveID = "02wMz5TxvLgZ6BB3uYgqz5"
+	if err := schema.SaveSessionMeta(project, schema.SessionMeta{
+		ID:             liveID,
+		UpdatedAt:      time.Now(),
+		Name:           "Generated Frobnitz Title",
+		OriginalPrompt: "unrelated original prompt",
+		EnvInfo:        schema.EnvironmentInfo{WorkingDir: "/projects/alpha"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	idx := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
+	if _, err := idx.Rebuild(); err != nil {
+		t.Fatal(err)
+	}
+	roster := hubcore.NewRosterWithEntries(
+		hubcore.LiveEntry{PID: 1, WorkingDir: "/projects/alpha", SessionID: liveID, Status: appwire.ThreadStatusActive},
+	)
+
+	resp := hubSearch(hubcore.WebConfig{Roster: roster, Past: idx}, appwire.SearchParams{Query: "generated"})
+	if len(resp.Live) != 1 || resp.Live[0].ID != liveID {
+		t.Fatalf("live=%+v, want the running session only", resp.Live)
+	}
+	if len(resp.Past) != 0 {
+		t.Fatalf("past=%+v, want the live session omitted", resp.Past)
+	}
+}
+
 // TestHubSearchLiveResultCarriesApprovalPending pins #2567's wire contract: a
 // live session blocked on a sandbox approval surfaces in search the same way
 // it surfaces in navigation, computed from the same LiveEntry.PendingEscalation
