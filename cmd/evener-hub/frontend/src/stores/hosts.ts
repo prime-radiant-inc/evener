@@ -65,6 +65,18 @@ interface HostsStoreState {
    * converges instead of sitting on "connecting" forever.
    */
   refresh: () => Promise<void>;
+  /**
+   * Forced quiet re-read: issues a NEW list request even while a background
+   * refresh is in flight, and answers whether THIS read's response became the
+   * current snapshot (false when the read failed or another response already
+   * owned the publish). `refresh` coalesces on the in-flight promise, and that
+   * response was captured before the caller's refusal proved the snapshot
+   * stale - a retry that waited on it would echo the same stale answer (the
+   * deploy/restart stale-entry retry is the caller; guardedMutation reads
+   * quietReRead directly for the same reason). Still a quiet read: no loading
+   * flip, and a failure keeps the last snapshot.
+   */
+  reReadForced: () => Promise<boolean>;
   add: (entry: HostEntry) => Promise<HostRow>;
   update: (params: { name: string; entry: HostEntry }) => Promise<HostRow>;
   connect: (name: string) => Promise<void>;
@@ -310,17 +322,22 @@ function hostRowEqual(a: HostRow, b: HostRow | undefined): boolean {
 // older in-flight response can never publish after it. When the currently
 // published rows are already exactly the ones this response carries, the
 // setState is skipped: the 2s poll would otherwise swap in a fresh array
-// every tick and force a re-render of an unchanged section.
-function publishReady(generation: number, client: AppwireClientLike, hosts: HostRow[]): void {
+// every tick and force a re-render of an unchanged section. It answers
+// whether THIS generation was accepted (true when it publishes or accepts the
+// equal snapshot, false on either discard) — forcedReRead reports that answer
+// to its caller, and the shared marker cannot stand in for it: a mutation's
+// re-read fence writes the marker ahead of its own response, so a discarded
+// response can still see `latestPublishedGeneration === generation`.
+function publishReady(generation: number, client: AppwireClientLike, hosts: HostRow[]): boolean {
   if (generation <= latestPublishedGeneration) {
-    return;
+    return false;
   }
   // The client fence (round 7, finding 2): a snapshot read through a connection
   // that has since been replaced describes the hub that was, so it must not
   // publish over the replacement's answer. The published marker is left where it
   // is - nothing published - so the client now connected still publishes its own.
   if (connectionStore.getState().client !== client) {
-    return;
+    return false;
   }
   latestPublishedGeneration = generation;
   const load = hostsStore.getState().load;
@@ -331,9 +348,10 @@ function publishReady(generation: number, client: AppwireClientLike, hosts: Host
   ) {
     // The same answer again: publish nothing and advance nothing, so nothing
     // derived from the registry re-reads on the poll cadence.
-    return;
+    return true;
   }
   hostsStore.setState({ load: { phase: "ready", hosts } });
+  return true;
 }
 
 /** selectableHostRows is the registry's non-removed rows, or none while it is
@@ -483,26 +501,37 @@ export function hostInstanceIdentity(host: string): number {
   return token;
 }
 
-// quietReRead is the shared quiet list read: publishReady's generation-guarded
-// publish with neither fetch's loading skeleton nor its error state. refresh
-// runs it behind the in-flight gate for the background poll, and the mutation
-// paths run it through reReadAfterMutation once their mutation has landed —
-// the mutation's own response already proved the change landed, so a failed
-// re-read must not flip the section to the error state and hide the rows that
-// were rendering; the rows stay, and the next poll or fetch converges them.
-async function quietReRead(): Promise<void> {
+// forcedReRead is the quiet read that reports whether its OWN response became
+// the current snapshot. reReadForced's caller (the deploy/restart stale-entry
+// retry) must never read a pair off a snapshot older than the refusal it is
+// recovering from: a failed read keeps the last snapshot, and a publish that
+// another response already owns changes nothing, so both answer false.
+async function forcedReRead(): Promise<boolean> {
   const generation = ++latestGeneration;
   beginListRequest();
   try {
     const read = await listHosts();
-    publishReady(generation, read.client, read.hosts);
+    return publishReady(generation, read.client, read.hosts);
   } catch {
     // A failed quiet read keeps the last snapshot: the mutation or poll that
     // issued it still stands, the rows stay rendered, and the next tick
     // retries anyway.
+    return false;
   } finally {
     endListRequest();
   }
+}
+
+// quietReRead is the shared quiet list read (forcedReRead, its answer
+// discarded): publishReady's generation-guarded publish with neither fetch's
+// loading skeleton nor its error state. refresh runs it behind the in-flight
+// gate for the background poll, and the mutation paths run it through
+// reReadAfterMutation once their mutation has landed — the mutation's own
+// response already proved the change landed, so a failed re-read must not flip
+// the section to the error state and hide the rows that were rendering; the
+// rows stay, and the next poll or fetch converges them.
+async function quietReRead(): Promise<void> {
+  await forcedReRead();
 }
 
 // reReadAfterMutation is the quiet list read behind a landed add, Connect, or
@@ -581,6 +610,8 @@ export const hostsStore = create<HostsStoreState>((set) => ({
       }
     });
   },
+
+  reReadForced: () => forcedReRead(),
 
   add: async (entry) => {
     // The wire carries one entry object (component 08 slice 2's shape, the

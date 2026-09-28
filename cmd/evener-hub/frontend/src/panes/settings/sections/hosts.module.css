@@ -59,3 +59,31 @@
   color: var(--danger);
   font-size: var(--font-size-ui);
 }
+
+/* The deploy plan confirmation's rendered fields (S14). */
+.planFields {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.planField {
+  display: flex;
+  gap: var(--space-2);
+  font-size: var(--font-size-ui);
+}
+
+.planLabel {
+  min-width: 9rem;
+  color: var(--ink-mid);
+}
+
+.planValue {
+  overflow-wrap: anywhere;
+}
+
+.planNotice {
+  margin: 0;
+  color: var(--ink-mid);
+  font-size: var(--font-size-ui);
+}
