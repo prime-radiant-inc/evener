@@ -120,6 +120,7 @@ import {
 } from "./readerPosition";
 import { type SessionDestination, SessionMenu } from "./SessionMenu";
 import { SessionSheet } from "./SessionSheet";
+import { type ErrorAction, errorAction, RETRY_MESSAGE } from "./session/errorAction";
 import { NewContentPill } from "./session/NewContentPill";
 import { TranscriptSkeleton } from "./session/TranscriptSkeleton";
 import {
@@ -1746,18 +1747,61 @@ export function ConversationScreen({
 		try {
 			await document.submit(async (text, images) => {
 				store.getState().setDraft(text);
-				const previous = store.getState().lastAcceptedMutation;
-				await store.getState()[kind](service, buildComposerInput(text, images));
-				const accepted = store.getState().lastAcceptedMutation;
-				return (
-					accepted != null && accepted !== previous && accepted.kind === kind
-				);
+				return deliver(service, kind, text, images);
 			});
 		} catch {
 			// A refused Send adds no text of its own: the draft stays, and the
 			// "Delivery unconfirmed" card document.submit leaves says what
 			// happened and what to do.
 		}
+	}
+	// Sends or queues one message the way Send does, and says whether the hub
+	// took it.
+	async function deliver(
+		through: NonNullable<typeof service>,
+		kind: "send" | "queue",
+		text: string,
+		images: Parameters<typeof buildComposerInput>[1],
+	) {
+		const previous = store.getState().lastAcceptedMutation;
+		await store.getState()[kind](through, buildComposerInput(text, images));
+		const accepted = store.getState().lastAcceptedMutation;
+		return accepted != null && accepted !== previous && accepted.kind === kind;
+	}
+	// An error row's Retry sends Jesse's sentence as your message through
+	// Send's own path (ruling 26), leaving whatever you were typing alone.
+	async function retryFailedTurn() {
+		const live = store.getState();
+		if (
+			!service ||
+			!ready ||
+			controls?.getSnapshot().pending != null ||
+			unconfirmedSend !== null ||
+			live.pendingMutation?.status === "pending" ||
+			!live.conversation
+		)
+			return;
+		const liveAction = sendAction(
+			live.conversation,
+			live.pendingMutations,
+			connectionReady.current,
+		);
+		if (liveAction === "none") return;
+		const kind = liveAction === "queue" ? "queue" : "send";
+		setActionError(null);
+		try {
+			await document.submitText(RETRY_MESSAGE, (text, images) =>
+				deliver(service, kind, text, images),
+			);
+		} catch {
+			// As with Send, a refusal leaves the delivery card to say so.
+		}
+	}
+	function runErrorAction(errorAction: ErrorAction) {
+		if (errorAction === "resume") void controls?.resume();
+		else if (errorAction === "signIn")
+			navigation.navigate("Providers", { hubId: route.params.hubId });
+		else void retryFailedTurn();
 	}
 	const composerSettings =
 		conversation && canCompose ? (
@@ -2020,6 +2064,12 @@ export function ConversationScreen({
 										delegates={conversation?.delegates}
 										openSubagent={openSubagent}
 										answerFor={answerFor}
+										errorActionFor={(row) =>
+											conversation
+												? errorAction(row, conversation, action !== "none")
+												: null
+										}
+										onErrorAction={runErrorAction}
 									/>
 								</View>
 							)}

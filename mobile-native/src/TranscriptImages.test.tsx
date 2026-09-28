@@ -1,0 +1,60 @@
+import type { ReactNode } from "react";
+import { act, type ReactTestInstance } from "react-test-renderer";
+import { describe, expect, it, vi } from "vitest";
+import { render, renderedText } from "./renderNative.testkit";
+import { TranscriptImages } from "./TranscriptImages";
+
+vi.mock("react-native", async () => ({
+	...(await import("./renderNative.testkit")).nativeModuleMock(),
+	Image: "Image",
+}));
+vi.mock("react-native-safe-area-context", () => ({
+	SafeAreaView: "SafeAreaView",
+	SafeAreaProvider: (props: { children?: ReactNode }) => props.children ?? null,
+}));
+vi.mock("expo-secure-store", () => ({ getItemAsync: vi.fn(async () => null) }));
+vi.mock("./ConnectionProvider", () => ({ useConnection: () => ({ profiles: [] }) }));
+
+const images = [
+	{ id: "a:0", src: "data:image/png;base64,AQID", name: "first.png" },
+	{ id: "a:1", src: "data:image/png;base64,BAUG", name: "second.png" },
+];
+
+function thumbnails(root: ReactTestInstance) {
+	return root.findAll((node) => String(node.type) === "Pressable" && /^Open image/.test(node.props.accessibilityLabel ?? ""));
+}
+
+function pager(root: ReactTestInstance) {
+	return root.findAll((node) => typeof node.type === "function" && node.props.pagingEnabled === true)[0];
+}
+
+describe("a row of images (spec 8.2)", () => {
+	it("shows 96pt thumbnails with rounded corners", () => {
+		const tree = render(<TranscriptImages images={images} hubId="hub-1" />);
+		expect(thumbnails(tree.root).map((node) => node.props.style)).toEqual([
+			expect.objectContaining({ width: 96, height: 96, borderRadius: 12 }),
+			expect.objectContaining({ width: 96, height: 96, borderRadius: 12 }),
+		]);
+	});
+
+	it("opens a viewer that swipes between the images", () => {
+		const tree = render(<TranscriptImages images={images} hubId="hub-1" />);
+		act(() => thumbnails(tree.root)[0].props.onPress());
+		expect(renderedText(tree)).toContain("1 of 2");
+		const list = pager(tree.root);
+		expect(list.props.horizontal).toBe(true);
+		expect(list.props.data).toEqual(images);
+		act(() => list.props.onMomentumScrollEnd({ nativeEvent: { contentOffset: { x: 390 } } }));
+		expect(renderedText(tree)).toContain("2 of 2");
+		for (const words of ["Previous image", "Next image"]) expect(renderedText(tree)).not.toContain(words);
+	});
+
+	it("opens at the image you tapped, and closes with Done", () => {
+		const tree = render(<TranscriptImages images={images} hubId="hub-1" />);
+		act(() => thumbnails(tree.root)[1].props.onPress());
+		expect(renderedText(tree)).toContain("2 of 2");
+		expect(pager(tree.root).props.initialScrollIndex).toBe(1);
+		act(() => tree.root.findAll((node) => node.props.accessibilityLabel === "Done" && typeof node.props.onPress === "function")[0].props.onPress());
+		expect(pager(tree.root)).toBeUndefined();
+	});
+});

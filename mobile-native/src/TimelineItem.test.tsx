@@ -19,6 +19,7 @@ import {
 	truncateText,
 	type MobileTimelineItem,
 } from "./projectedRows";
+import { errorAction } from "./session/errorAction";
 import { TimelineItem } from "./TimelineItem";
 import { Platform } from "react-native";
 import { alertRequests, render, renderedText, textOf } from "./renderNative.testkit";
@@ -564,5 +565,86 @@ describe("a question you answered", () => {
 		const tree = render(<TimelineItem item={row} hubId="hub" sessionRef="s" answerFor={() => undefined} />);
 		expect(renderedText(tree)).toContain("Keep or drop the implied options?");
 		expect(renderedText(tree)).not.toContain("You answered");
+	});
+});
+
+describe("a system event", () => {
+	const notice = (over: Partial<Extract<TimelineRow, { kind: "notice" }>> = {}): TimelineRow => ({
+		kind: "notice",
+		id: "n-1",
+		origin: "system",
+		family: "lifecycle",
+		tone: "info",
+		text: "Context compacted · 412K → 38K tokens",
+		...over,
+	});
+
+	it("reads quietly beside a diamond", () => {
+		const tree = render(<TimelineItem item={notice()} hubId="hub" sessionRef="event" />);
+		const diamond = tree.root.findAllByType("SymbolView" as never)[0];
+		expect([diamond?.props.name, diamond?.props.tintColor]).toEqual(["diamond", INK_LOW]);
+		expect(texts(tree.root).find((node) => textOf(node) === "Context compacted · 412K → 38K tokens")?.props.style).toMatchObject({
+			fontSize: 13,
+			lineHeight: 18,
+			color: INK_LOW,
+		});
+	});
+
+	it("opens a labelled steering notice's text", () => {
+		const reminder = notice({ origin: "steering", steeringKind: "task-nudge", text: "Remember the open task." });
+		const tree = render(<TimelineItem item={reminder} hubId="hub" sessionRef="event-open" />);
+		expect(renderedText(tree)).toContain("Task reminder");
+		expect(renderedText(tree)).not.toContain("Remember the open task.");
+		act(() => tree.root.findAll((node) => node.props.accessibilityRole === "button")[0].props.onPress());
+		expect(renderedText(tree)).toContain("Remember the open task.");
+	});
+});
+
+describe("an error", () => {
+	const DANGER_INK = "#C51D23";
+	const failure = (detail: string, turnId = "turn_2"): TimelineRow => ({
+		kind: "failure",
+		id: `failure:${turnId}`,
+		title: "The turn failed",
+		detail,
+		turnId,
+	});
+	const session = (resumeRequired = false) => ({ resumeRequired, turns: [{ id: "turn_1" }, { id: "turn_2" }] as never });
+	function show(row: TimelineRow, resumeRequired = false) {
+		const onErrorAction = vi.fn();
+		const tree = render(
+			<TimelineItem
+				item={row}
+				hubId="hub"
+				sessionRef="error"
+				errorActionFor={(failed) => errorAction(failed, session(resumeRequired), true)}
+				onErrorAction={onErrorAction}
+			/>,
+		);
+		const buttons = tree.root.findAll((node) => node.props.accessibilityRole === "button" && typeof node.props.onPress === "function");
+		return { tree, onErrorAction, buttons };
+	}
+
+	it("draws a red rule, the title and the detail", () => {
+		const { tree } = show(failure("go test exited 1"));
+		expect(tree.root.findAll((node) => node.props.style?.borderLeftWidth === 2)[0]?.props.style.borderLeftColor).toBe(DANGER_INK);
+		expect(texts(tree.root).find((node) => textOf(node) === "The turn failed")?.props.style).toMatchObject({ fontWeight: "600", fontSize: 15 });
+		expect(renderedText(tree)).toContain("go test exited 1");
+	});
+
+	it("offers Sign in for an expired sign-in", () => {
+		const { buttons, onErrorAction } = show(failure("401 Unauthorized"));
+		expect(buttons.map((button) => button.props.accessibilityLabel)).toEqual(["Sign in"]);
+		buttons[0].props.onPress();
+		expect(onErrorAction).toHaveBeenCalledWith("signIn");
+	});
+
+	it("offers Resume on a paused session", () => {
+		expect(show(failure("go test exited 1"), true).buttons.map((button) => button.props.accessibilityLabel)).toEqual(["Resume"]);
+	});
+
+	it("offers Retry under the latest turn only", () => {
+		expect(show(failure("go test exited 1")).buttons.map((button) => button.props.accessibilityLabel)).toEqual(["Retry"]);
+		expect(show(failure("go test exited 1", "turn_1")).buttons).toEqual([]);
 	});
 });

@@ -1,0 +1,67 @@
+// A system event in the transcript (spec 8.2): a diamond in a 16pt gutter and
+// the event in 13pt ink-low, two lines at most until tapped. A labelled event
+// (a steering notice, or the Session details group) shows its label with a
+// chevron and opens to what it says.
+import { SymbolView } from "expo-symbols";
+import type { ReactNode } from "react";
+import { Platform, Pressable, Text, View } from "react-native";
+import { useColors, useTextScale } from "../ui";
+
+const allowFontScaling = Platform.OS !== "ios";
+
+export function SystemEvent({
+	label,
+	text,
+	expanded,
+	onToggle,
+	children,
+}: {
+	/** Shown in place of the text until opened. */
+	label?: string;
+	text?: string;
+	expanded: boolean;
+	onToggle: () => void;
+	/** What opens under a labelled event, when it isn't plain text. */
+	children?: ReactNode;
+}) {
+	const { palette } = useColors();
+	const scale = useTextScale();
+	const quiet = { fontSize: 13 * scale, lineHeight: 18 * scale, color: palette.inkLow };
+	const line = label ? (
+		<View style={{ flexDirection: "row", alignItems: "center", gap: 4 }}>
+			<Text allowFontScaling={allowFontScaling} style={quiet}>
+				{label}
+			</Text>
+			<SymbolView name={expanded ? "chevron.down" : "chevron.right"} tintColor={palette.inkLow} size={10 * scale} />
+		</View>
+	) : (
+		<Text allowFontScaling={allowFontScaling} numberOfLines={expanded ? undefined : 2} style={quiet}>
+			{text}
+		</Text>
+	);
+	return (
+		<View>
+			<Pressable
+				accessibilityRole="button"
+				accessibilityLabel={label ?? text}
+				accessibilityState={{ expanded }}
+				onPress={onToggle}
+				style={{ flexDirection: "row", alignItems: "flex-start", minHeight: 24 }}
+			>
+				<View style={{ width: 16, paddingTop: 5 * scale }}>
+					<SymbolView name="diamond" tintColor={palette.inkLow} size={8 * scale} />
+				</View>
+				<View style={{ flex: 1, minWidth: 0 }}>{line}</View>
+			</Pressable>
+			{label && expanded ? (
+				<View style={{ paddingLeft: 16, gap: 4 }}>
+					{children ?? (
+						<Text allowFontScaling={allowFontScaling} style={quiet}>
+							{text}
+						</Text>
+					)}
+				</View>
+			) : null}
+		</View>
+	);
+}

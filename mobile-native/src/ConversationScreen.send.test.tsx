@@ -579,3 +579,23 @@ it("doesn't page older history while the hub is away", async () => {
 	expect(hub.requests.filter((request) => request.method === "thread/turns/list")).toEqual([]);
 });
 
+it("retries a failed turn with Jesse's sentence, and leaves your draft alone", async () => {
+	const served = thread("ref-retry-turn", "idle");
+	(served as unknown as { turns: unknown[] }).turns = [
+		{
+			id: "turn_1",
+			status: "failed",
+			itemsView: "default",
+			error: { message: "go test exited 1" },
+			items: [{ id: "u-1", turnId: "turn_1", type: "userMessage", status: "completed", text: "run the tests" }],
+		},
+	];
+	const { tree, hub } = await mount(served);
+	await type(tree, "keep this");
+	await press(tree, "Retry");
+	expect(hub.mutations()).toEqual(["turn/start"]);
+	const start = hub.requests.find((request) => request.method === "turn/start");
+	expect(start?.params.input).toEqual([{ type: "text", text: "Something went wrong. Please try again." }]);
+	expect(field(tree)?.props.value).toBe("keep this");
+});
+
