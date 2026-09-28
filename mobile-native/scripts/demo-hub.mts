@@ -25,7 +25,6 @@ import {
 import {
 	askWorkingSessionQuestion,
 	createDemoSessions,
-	DEMO_MODEL_LIST,
 	endTurn,
 	queuePreview,
 	refreshCapabilities,
@@ -35,8 +34,10 @@ import {
 	setHumanNote,
 	startFleetTurn,
 } from "../src/dev/demoSessions.js";
+import { createDemoSetup } from "../src/dev/demoSetup.js";
 
-// The playground's one scripted model; the fleet lists DEMO_MODEL_LIST.
+// The playground's one scripted model; with EVENER_DEMO_FLEET, demoSetup.ts
+// answers model/list instead.
 const PLAYGROUND_MODEL_LIST = {
 	data: [
 		{
@@ -70,6 +71,9 @@ export async function createDemoHub(
 	const demoFleet = fleetOptions
 		? createDemoFleet({ ...fleetOptions, now: startedAt })
 		: null;
+	// With the fleet on, New session and the Hub read the prototype's hosts,
+	// providers, plugins, models and folders (demoSetup.ts).
+	const demoSetup = demoFleet ? createDemoSetup(demoFleet, fleetOptions) : null;
 	const server = new WebSocketServer({ host: "0.0.0.0", port, path: "/rpc" });
 	await once(server, "listening");
 	const address = server.address();
@@ -277,7 +281,10 @@ export async function createDemoHub(
 				let changed: Thread | null = null;
 				let navigationChange: NavigationInvalidatedPayload | null = null;
 				const selected = threads.get(params.ref);
-				switch (request.method) {
+				if (demoSetup?.handles(request.method))
+					result = demoSetup.answer(request.method, params);
+				else
+					switch (request.method) {
 					case "initialize":
 						result = demoFleet
 							? { ...handshake, navigation: demoFleet.navigationCapability() }
@@ -295,9 +302,7 @@ export async function createDemoHub(
 						};
 						break;
 					case "model/list":
-						// The fleet's sessions pick from real-looking providers; the
-						// playground keeps its one scripted model.
-						result = demoFleet ? DEMO_MODEL_LIST : PLAYGROUND_MODEL_LIST;
+						result = PLAYGROUND_MODEL_LIST;
 						break;
 					case "thread/list":
 						result = {
@@ -314,7 +319,9 @@ export async function createDemoHub(
 						const created: Thread = structuredClone(thread);
 						created.id = `demo-thread-created-${sessionNumber}`;
 						created.sessionId = `demo-session-created-${sessionNumber}`;
-						created.evener.ref = `demo:created-${sessionNumber}`;
+						// Another host's session is named by that host, as a real
+						// hub qualifies a remote ref (appwire/refs.go).
+						created.evener.ref = `${params.source || "demo"}:created-${sessionNumber}`;
 						created.evener.instanceId = `demo-instance-created-${sessionNumber}`;
 						created.cwd = params.cwd;
 						created.modelProvider = params.modelProvider ?? "demonstration";

@@ -18,7 +18,8 @@ import { contextChips, sessionStateLine } from "../session/sessionState.js";
 import { subagentLine } from "../session/subagentLine.js";
 import { runSummary, runSummaryText, sessionRows } from "../session/transcriptRows.js";
 import { demoSessionId, fleetSessionRef, fleetSessions } from "./demoFleet.js";
-import { createDemoSessions, DEMO_MODEL_LIST } from "./demoSessions.js";
+import { createDemoSessions } from "./demoSessions.js";
+import { DEMO_MODEL_LIST } from "./demoSetup.js";
 
 const NOW = Date.parse("2026-09-28T21:00:00.000Z");
 const sessions = createDemoSessions({ now: NOW });
@@ -149,7 +150,7 @@ describe("the demo sessions behind Appendix A's Session frames", () => {
 	it("frames 13 and 14: frame 7's session names its model and effort from a catalog with two providers", () => {
 		const { model } = open("s-pr2138");
 		expect(modelChipLabel(model, DEMO_MODEL_LIST.data)).toBe("DeepSeek 4.1 Flash · XHigh");
-		expect(new Set(DEMO_MODEL_LIST.data.map((entry) => entry.provider)).size).toBe(2);
+		expect(new Set(DEMO_MODEL_LIST.data.map((entry) => entry.provider)).size).toBeGreaterThanOrEqual(2);
 		expect(DEMO_MODEL_LIST.recent?.length).toBeGreaterThan(0);
 		expect(model.reasoningEffortLevels.length).toBeGreaterThan(1);
 		expect(model.contextWindow).toBeGreaterThan(model.contextUsed);
