@@ -6,16 +6,14 @@ const none: BottomStackInput = {
 	questionPending: false,
 	folded: false,
 	composerBack: false,
-	trayShowing: false,
 };
 
 describe("the bottom of the Session (spec 8.4, ruling 38)", () => {
 	it.each([
-		["a resting session: the composer alone", {}, { dock: null, tray: false, composer: true, modelChip: true }],
-		["a working session: the tray, then the composer", { trayShowing: true }, { dock: null, tray: true, composer: true, modelChip: true }],
+		["no dock: the tray, then the composer", {}, { dock: null, tray: true, composer: true, modelChip: true }],
 		[
 			"an approval: the approval dock, and never the composer",
-			{ approvalPending: true, trayShowing: true },
+			{ approvalPending: true },
 			{ dock: "approval", tray: false, composer: false, modelChip: false },
 		],
 		[
@@ -25,7 +23,7 @@ describe("the bottom of the Session (spec 8.4, ruling 38)", () => {
 		],
 		[
 			"a question: the dock is the input",
-			{ questionPending: true, trayShowing: true },
+			{ questionPending: true },
 			{ dock: "question", tray: false, composer: false, modelChip: false },
 		],
 		[
@@ -35,7 +33,7 @@ describe("the bottom of the Session (spec 8.4, ruling 38)", () => {
 		],
 		[
 			"a folded question: the bar, and the whole composer",
-			{ questionPending: true, folded: true, trayShowing: true },
+			{ questionPending: true, folded: true },
 			{ dock: "foldedQuestion", tray: false, composer: true, modelChip: true },
 		],
 		[

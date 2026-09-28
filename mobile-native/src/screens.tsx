@@ -105,7 +105,6 @@ import { ApprovalDock } from "./session/ApprovalDock";
 import { answerWithText } from "./session/askDockCopy";
 import { bottomStack } from "./session/bottomStack";
 import { QuestionDock } from "./session/QuestionDock";
-import { trayLine } from "./session/trayLine";
 import { useQuestionDraft } from "./session/useQuestionDraft";
 import { QuestionBatches } from "./questionBatches";
 import {
@@ -2220,7 +2219,6 @@ export function ConversationScreen({
 		questionPending: questionBatch !== null,
 		folded: questionFolded,
 		composerBack,
-		trayShowing: !!conversation && trayLine(conversation, Date.now()) !== null,
 	});
 	const composerShown = canCompose && bottom.composer;
 	// What sits above the composer: failures only you can act on, then
