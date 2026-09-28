@@ -893,7 +893,6 @@ func TestParseHubOptionsDefaultNeverFiresForANonEvenerExecutable(t *testing.T) {
 	}
 }
 
-// TestParseHubOptionsExplicitDeployFlagsOverrideTheOwnExecutableDefault pins the
 // TestUnwiredRemedyNamesTheActualCause pins why the unwired state has two texts:
 // "not an evener build" is a claim about the executable, so it is returned only
 // when validateDeployFlags actually rejected the executable on its main package.

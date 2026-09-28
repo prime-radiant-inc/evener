@@ -187,12 +187,13 @@ func hubHostAttach(ctx context.Context, cfg hubcore.WebConfig, sources *appsourc
 //
 // The manager's deploy-family sentinels (ErrDeploy, ErrVersionMismatch,
 // ErrControllerDirty, ErrRunTargetUnservable, ErrDeployArtifactUnusable,
-// ErrDeployUnstamped, ErrOwnExecutableCannotServe, ErrExecutableMissing) win
-// over the source's generic deadline mapping: a timed-out deployment still
-// carries the deploy sentinel in its chain, and it must reach the browser as the
-// typed HubLaunchError the Connect surface matches, not as SessionUnavailable.
-// Every other error keeps the source's mapping, so a genuine transport timeout
-// (the deadline chain with no deploy sentinel) still becomes SessionUnavailable.
+// ErrDeployUnstamped, ErrOwnExecutableCannotServe, ErrDeployDisabled,
+// ErrExecutableMissing) win over the source's generic deadline mapping: a
+// timed-out deployment still carries the deploy sentinel in its chain, and it
+// must reach the browser as the typed HubLaunchError the Connect surface
+// matches, not as SessionUnavailable. Every other error keeps the source's
+// mapping, so a genuine transport timeout (the deadline chain with no deploy
+// sentinel) still becomes SessionUnavailable.
 func classifyHostAttachError(sources *appsource.Registry, host string, err error) error {
 	// Preserve the manager's sentinel precedence before the source's
 	// transport mapping can claim the chain: a deploy-family error wrapped
@@ -238,11 +239,13 @@ func classifyHostAttachError(sources *appsource.Registry, host string, err error
 //     (ErrDeployArtifactUnusable: the artifact targets another platform or is
 //     not evener), the cross-target own-executable refusal
 //     (ErrOwnExecutableCannotServe: the default cannot serve the host's target
-//     and the installer fallback has nothing to pin), a version mismatch a
-//     deploy would have to fix, and the missing-executable refusal a host with
-//     no deploy path produces (ErrExecutableMissing) → HubLaunchError
-//     (hubLaunch): the controller could not install or match its build on the
-//     host, so the host cannot be attached/launched.
+//     and the installer fallback has nothing to pin), the deploy-disabled
+//     refusal (ErrDeployDisabled: -no-deploy turned every install path off, so
+//     this controller will not provision any host), a version mismatch a deploy
+//     would have to fix, and the missing-executable refusal a host with no
+//     deploy path produces (ErrExecutableMissing) → HubLaunchError (hubLaunch):
+//     the controller could not install or match its build on the host, so the
+//     host cannot be attached/launched.
 //
 // An unrecognized error is returned unchanged, so it still surfaces as an
 // internal error rather than being mislabelled as a typed refusal.
@@ -263,6 +266,7 @@ func hostAttachWireError(err error) error {
 		errors.Is(err, sshconn.ErrDeployArtifactUnusable),
 		errors.Is(err, sshconn.ErrDeployUnstamped),
 		errors.Is(err, sshconn.ErrOwnExecutableCannotServe),
+		errors.Is(err, sshconn.ErrDeployDisabled),
 		errors.Is(err, sshconn.ErrExecutableMissing):
 		return appwire.HubLaunchError("host attach deploy failed: " + err.Error())
 	default:

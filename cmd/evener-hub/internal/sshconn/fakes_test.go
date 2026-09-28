@@ -249,17 +249,20 @@ func deployRunner(t *testing.T, launch func(call int) ([]byte, error), health fu
 // (runtime.GOOS/runtime.GOARCH) instead of the linux/amd64 pair deployRunner
 // hardcodes — the own-executable dispatch compares the host's facts against the
 // controller's own target, so a hardcoded pair makes such a test pass only on
-// the machine that happens to match it. A target the parser cannot round-trip
-// fails here rather than skipping: it is a test defect.
+// the machine that happens to match it. A target preflight itself cannot
+// represent (mapOS and mapArch accept Linux/Darwin and amd64/arm64 only, so no
+// host facts for another target can exist) skips: the test cannot be built here,
+// and running it against facts the controller could never read would test
+// nothing.
 func deployRunnerFor(t *testing.T, goos, goarch string, launch func(call int) ([]byte, error), health func(call int) ([]byte, error)) *fakeRunner {
 	t.Helper()
 	osName, ok := map[string]string{"linux": "Linux", "darwin": "Darwin"}[goos]
 	if !ok {
-		t.Fatalf("deployRunnerFor: no uname -s answer maps back to GOOS %q", goos)
+		t.Skipf("deployRunnerFor: preflight's mapOS cannot round-trip GOOS %q, so no host facts for it exist and this test cannot run on this platform", goos)
 	}
 	archName, ok := map[string]string{"amd64": "x86_64", "arm64": "aarch64"}[goarch]
 	if !ok {
-		t.Fatalf("deployRunnerFor: no uname -m answer maps back to GOARCH %q", goarch)
+		t.Skipf("deployRunnerFor: preflight's mapArch cannot round-trip GOARCH %q, so no host facts for it exist and this test cannot run on this platform", goarch)
 	}
 	launchCalls, healthCalls := 0, 0
 	return &fakeRunner{

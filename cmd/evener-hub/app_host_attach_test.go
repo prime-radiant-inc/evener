@@ -236,6 +236,13 @@ func TestHostAttachTimedOutDeployIsHubLaunchError(t *testing.T) {
 			info:      appwire.ErrorHubLaunch,
 		},
 		{
+			// The deploy-disabled refusal is terminal and deploy-family too,
+			// and its remedy (DeployHelp) is only useful if it is typed.
+			name:      "deploy-disabled refusal",
+			attachErr: fmt.Errorf("%w: host %q: this controller was started with deploying disabled, so it will not install a build on any host; run this hub without -no-deploy", sshconn.ErrDeployDisabled, "alpha"),
+			info:      appwire.ErrorHubLaunch,
+		},
+		{
 			name:      "genuine transport timeout",
 			attachErr: fmt.Errorf("attach alpha: %w", context.DeadlineExceeded),
 			info:      appwire.ErrorSessionUnavailable,

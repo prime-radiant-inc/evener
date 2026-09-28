@@ -36,9 +36,10 @@ const evenerMainPackage = "primeradiant.com/evener/cmd/evener"
 // separable so the default-adoption path can say which cause it hit: a build
 // that read fine and was rejected on its main package is "not an evener build",
 // while a path that no longer resolves or a file whose buildinfo cannot be read
-// is a different operator problem and must not be described as the first. The
-// message text is unchanged for callers that print the refusal; only the
-// wrapping lets a caller classify it.
+// is a different operator problem and must not be described as the first. Like
+// the package's other sentinels it contributes its text as a leading clause, so
+// a printed refusal reads "artifact is not the evener runtime: <subject> is not
+// evener: ..."; the wrapping is what lets a caller classify the cause.
 var errArtifactNotEvener = errors.New("artifact is not the evener runtime")
 
 // verifyDeployArtifactIdentity refuses a Go executable whose main package is not

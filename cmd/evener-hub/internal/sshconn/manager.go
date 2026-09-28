@@ -2480,6 +2480,15 @@ var ErrDeployUnstamped = errDeployUnstamped
 // error, the same reason ErrDeployUnstamped is.
 var ErrOwnExecutableCannotServe = errOwnExecutableCannotServe
 
+// ErrDeployDisabled is the exported alias for the terminal deploy-disabled
+// refusal (errDeployDisabled, deploy.go): the controller was started with
+// deploying turned off (the hub's -no-deploy), so it will not install a build on
+// any host, and the refusal names the remedy through DeployHelp. It is exported
+// so a caller — the hub's attach handler — can match the refusal with errors.Is
+// and surface it as a typed deploy failure (appwire.HubLaunchError) rather than a
+// generic internal error, the same reason ErrOwnExecutableCannotServe is.
+var ErrDeployDisabled = errDeployDisabled
+
 // hostLockEntry is one per-host gate together with its live-user count.
 // refs counts the hostLock acquisitions that have not been released yet —
 // holders and parked waiters both — so the entry can be dropped exactly when
