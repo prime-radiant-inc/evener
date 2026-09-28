@@ -251,16 +251,21 @@ func summarizeProse(dirs []labeledDir) ([]proseStats, error) {
 				taskFailed[k] = map[string]bool{}
 			}
 			row.Runs++
+			// A run whose status is not passed or failed (skipped_unavailable,
+			// blocked_harness, blocked_infra) says nothing about the prompt and
+			// may have no state dir worth reading at all; mirror
+			// writeReviewPack's own skip: count it as Blocked and read nothing
+			// from it, so its prose (if its state dir happens to hold any) never
+			// reaches messages, words, medians, per-1k rates, or PROSE ERRORS.
+			if res.Status != "passed" && res.Status != "failed" {
+				row.Blocked++
+				continue
+			}
 			passed := res.Status == "passed"
-			decided := passed || res.Status == "failed"
 			if passed {
 				row.Passed++
-			} else if !decided {
-				row.Blocked++
 			}
-			if decided {
-				taskFailed[k][res.Probe] = taskFailed[k][res.Probe] || !passed
-			}
+			taskFailed[k][res.Probe] = taskFailed[k][res.Probe] || !passed
 			p, err := extractRunProse(res.StateDir)
 			if err != nil {
 				row.ProseErrors++

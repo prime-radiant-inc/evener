@@ -228,6 +228,43 @@ func TestSummarizeProseLeavesBlockedRunsOutOfTaskPasses(t *testing.T) {
 	}
 }
 
+// TestSummarizeProseBlockedRunsContributeNothingButBlockedCount: a blocked
+// run counts as Blocked and nothing else, mirroring writeReviewPack's own
+// skip. Earlier tests reused one state dir across passed and blocked
+// repetitions, so they never actually exercised a blocked run whose state
+// dir holds its own readable prose (a harness abort after the model had
+// already said something) — this one gives it a distinct state dir with
+// its own message, so a regression that counts it is visible.
+func TestSummarizeProseBlockedRunsContributeNothingButBlockedCount(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	passedStateDir := filepath.Join(dir, "state-passed")
+	writeProseRun(t, passedStateDir, "Done.")
+	writeFluencyResult(t, dir, probeResult{Probe: "prose.smoke", Model: "m", Repetition: 1, Status: "passed", StateDir: passedStateDir})
+
+	blockedStateDir := filepath.Join(dir, "state-blocked")
+	writeProseRun(t, blockedStateDir, "Should never be counted.")
+	writeFluencyResult(t, dir, probeResult{Probe: "prose.smoke", Model: "m", Repetition: 2, Status: "blocked_infra", StateDir: blockedStateDir})
+
+	stats, err := summarizeProse([]labeledDir{{Label: "v0", Dir: dir}})
+	if err != nil {
+		t.Fatalf("summarizeProse: %v", err)
+	}
+	if len(stats) != 1 {
+		t.Fatalf("stats = %+v, want one row", stats)
+	}
+	s := stats[0]
+	if s.Runs != 2 || s.Passed != 1 || s.Blocked != 1 {
+		t.Fatalf("row = %+v, want 2 runs, 1 passed, 1 blocked", s)
+	}
+	if s.Messages != 1 {
+		t.Errorf("Messages = %d, want 1: the blocked run's own message must not count", s.Messages)
+	}
+	if s.ProseErrors != 0 {
+		t.Errorf("ProseErrors = %d, want 0: a blocked run must never be read at all, let alone errored", s.ProseErrors)
+	}
+}
+
 func TestParseLabeledNeedsBothParts(t *testing.T) {
 	t.Parallel()
 	for _, bad := range []string{"", "label", "=dir", "label="} {
