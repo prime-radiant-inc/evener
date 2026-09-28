@@ -53,6 +53,7 @@ import {
 	type Band,
 	boardState,
 	type ClassifiedRow,
+	hostLabeler,
 	type LiveSummary,
 	liveBands,
 	liveSummary,
@@ -73,8 +74,8 @@ import { BoardListRow, type RowContext } from "./BoardRows";
 import { BoardToolbar } from "./BoardToolbar";
 import { type BoardController, type BoardSnapshot, createBoardController } from "./boardData";
 import { BoardStops, stopToast } from "./boardStops";
-import { BoardSeen, type HubSeenMarks, hubSeenMarks } from "./hubSeen";
-import { foldedSections, organizeByPreference, recentSearches, seenMarkers } from "./nativeBoardMemory";
+import { type HubSeenMarks, hubSeenMarks } from "./hubSeen";
+import { foldedSections, organizeByPreference, recentSearches, seenMarkers, useBoardSeen } from "./nativeBoardMemory";
 import { notices } from "./notices";
 import { PinnedEmptyHint, PinnedSection, useBoardFolds, useCategoryFolds } from "./PinnedSections";
 import { journalHoldsProject, PROJECT_MENU_LABELS, type ProjectMenuAction, projectMenuActions } from "./projectMenu";
@@ -176,12 +177,8 @@ function Board({
 	useEffect(() => () => board.dispose(), [board]);
 	const snapshot = useSyncExternalStore(board.subscribe, board.getSnapshot);
 	const markers = seenMarkers(hubId);
-	const seenRevision = useSyncExternalStore(markers.subscribe, markers.getRevision);
 	const hubMarks = hubSeenMarks(hubId);
-	const hubSeenRevision = useSyncExternalStore(hubMarks.subscribe, hubMarks.getRevision);
-	// A new BoardSeen with each mark or pruned mark, so a memo that reads
-	// isSeen lists seen alone.
-	const seen = useMemo(() => new BoardSeen(markers, hubMarks), [markers, hubMarks, seenRevision, hubSeenRevision]);
+	const seen = useBoardSeen(hubId);
 	const [now, setNow] = useState(Date.now);
 	const [draftRefs, setDraftRefs] = useState<Set<string>>(() => new Set());
 	// Select mode (spec 7.1): on from Select until Done or one of its
@@ -260,10 +257,7 @@ function Board({
 
 	const usual = useMemo(() => usualPlace(snapshot.live.rows), [snapshot.live.rows]);
 	const sources = snapshot.manifest?.sources;
-	const hostLabel = useMemo(() => {
-		const labels = new Map((sources ?? []).map((source) => [source.id, source.label]));
-		return (hostId: string) => labels.get(hostId) ?? hostId;
-	}, [sources]);
+	const hostLabel = useMemo(() => hostLabeler(sources), [sources]);
 
 	const classify = useMemo(
 		() => rowClassifier(snapshot.needsYou.rows, (row) => seen.isSeen(row)),

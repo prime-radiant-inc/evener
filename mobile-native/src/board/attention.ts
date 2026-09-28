@@ -393,3 +393,13 @@ export function lastLine(
 	if (row.host_id !== usual.host) line.host = hostLabel(row.host_id);
 	return line.task || line.project || line.host ? line : null;
 }
+
+/** Names a host by its manifest source's label. A host the manifest doesn't
+ * name, or every host before the manifest loads, goes to the fallback. */
+export function hostLabeler(
+	sources: readonly { id: string; label: string }[] | undefined,
+	fallback: (hostId: string) => string = (hostId) => hostId,
+): (hostId: string) => string {
+	const labels = new Map((sources ?? []).map((source) => [source.id, source.label]));
+	return (hostId) => labels.get(hostId) ?? fallback(hostId);
+}
