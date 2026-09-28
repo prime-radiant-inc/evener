@@ -9,7 +9,9 @@ export const RETRY_MESSAGE = "Something went wrong. Please try again.";
 
 export type ErrorAction = "resume" | "signIn" | "retry";
 
-const SIGN_IN_FAILURE = /sign[- ]?in|log[- ]?in|\b401\b|unauthori[sz]ed|credentials? (?:expired|invalid)/i;
+// Credentials that expired or are invalid, in either word order.
+const SIGN_IN_FAILURE =
+	/sign[- ]?in|log[- ]?in|\b401\b|unauthori[sz]ed|credentials? (?:expired|invalid)|(?:expired|invalid) credentials?/i;
 
 export function errorAction(
 	row: { id: string; title: string; detail: string; turnId?: string },

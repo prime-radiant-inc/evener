@@ -66,7 +66,7 @@ import { ACTIVITY_POLL_MS, ActivityPoll, isFreshRead } from "./activityPoll";
 import { type BoardItem, groupItems, liveItems, pinnedItems, projectItems } from "./boardItems";
 import type { OrganizeBy, SeenMarkers } from "./boardMemory";
 import { ROW_MOVE } from "./boardMotion";
-import { createSearchController, type SearchScope } from "./boardSearch";
+import { createSearchController, projectResults, type SearchScope } from "./boardSearch";
 import { BoardNotices, NoticeRow } from "./BoardNotices";
 import { BandHeader, FoldChevron, Hairline, TITLE_INSET } from "./BoardRow";
 import { BoardListRow, type RowContext } from "./BoardRows";
@@ -85,6 +85,7 @@ import {
 	type ProjectSection,
 	type ProjectsView,
 	type ProjectTreeItem,
+	projectRevealTarget,
 	projectTreeItems,
 	SECTION_FOLDS,
 } from "./projectTree";
@@ -163,7 +164,12 @@ function Board({
 	// Activity keeps polling while only a sheet covers the Board: the sheet
 	// is part of the screen under it.
 	const inFront = useScreenInFront(routeKey);
-	const { activityOf, msSinceRead, revision: activityRevision } = useActivityPoll(client, connected, inFront);
+	const {
+		activityOf,
+		msSinceRead,
+		revision: activityRevision,
+		tick: activityTick,
+	} = useActivityPoll(client, connected, inFront);
 	const [board] = useState(createBoardController);
 	useEffect(() => () => board.dispose(), [board]);
 	const snapshot = useSyncExternalStore(board.subscribe, board.getSnapshot);
@@ -229,11 +235,24 @@ function Board({
 		// The revisions re-run isSeen after a mark, a pruned mark or first run.
 		// activityRevision re-runs isStuck after each read, and activityOf
 		// changes when the connection drops or returns, or the read goes
-		// stale. msSinceRead is left out on purpose: it changes on every
-		// render, so it would re-sort Working every time, and a row's place
-		// only needs to be as fresh as the last read (its why line reads
-		// msSinceRead live).
-		[snapshot.live.rows, snapshot.needsYou.rows, seen, seenRevision, hubSeenRevision, activityOf, activityRevision],
+		// stale. Bare msSinceRead is left out on purpose: it changes on every
+		// render, which would re-sort Working every render. activityTick
+		// (useActivityPoll's own recheck, already ticking at ACTIVITY_POLL_MS
+		// while a fresh read is on screen) stands in for it instead, so a row
+		// that crosses into stuck purely from elapsed time - no new read
+		// landing, quiet time alone reaching STUCK_AFTER_MS - still floats to
+		// the top within one poll interval of its why-line saying so, instead
+		// of waiting for the next successful read.
+		[
+			snapshot.live.rows,
+			snapshot.needsYou.rows,
+			seen,
+			seenRevision,
+			hubSeenRevision,
+			activityOf,
+			activityRevision,
+			activityTick,
+		],
 	);
 	useFirstRun(board, markers, snapshot, focused);
 
@@ -300,6 +319,7 @@ function Board({
 	const [searching, setSearching] = useState(false);
 	const [scope, setScope] = useState<SearchScope>("all");
 	const searchFieldHeight = searchFieldHeightAt(useTextScale());
+	const reduceMotion = useReduceMotion();
 	const { height: windowHeight } = useWindowDimensions();
 	const recent = recentSearches(hubId);
 	const [recentList, setRecentList] = useState(() => recent.list());
@@ -307,10 +327,13 @@ function Board({
 		setSearchText(text);
 		search.controller.setQuery(text);
 	};
-	const cancelSearch = () => {
+	const leaveSearch = () => {
 		typeSearch("");
 		setSearching(false);
 		searchInput.current?.blur?.();
+	};
+	const cancelSearch = () => {
+		leaveSearch();
 		// Tuck the field back out of view, where the Board keeps it.
 		scrollBoardTo(searchFieldHeight);
 	};
@@ -324,8 +347,7 @@ function Board({
 	// marked seen the same way. Any other session marks itself seen when its
 	// screen loads (useMarkSeenInFront).
 	const openSearchResult = (result: SearchResult) => {
-		recent.add(search.snapshot.query);
-		setRecentList(recent.list());
+		rememberSearch();
 		const row = loadedRows.find((loaded) => loaded.ref === result.ref);
 		if (row) openSession(row);
 		else navigation.navigate("Conversation", { hubId, ref: result.ref, title: result.title });
@@ -334,10 +356,18 @@ function Board({
 		recent.clear();
 		setRecentList(recent.list());
 	};
+	const rememberSearch = () => {
+		recent.add(search.snapshot.query);
+		setRecentList(recent.list());
+	};
 
 	// Where each section starts in the scroller, for the chips and the
 	// summary line to jump to. Bands measure inside the Live block.
 	const offsets = useRef<Record<string, number>>({});
+	// Search's project hit waiting to be scrolled to: the item key while it
+	// waits, and what has laid out since (revealProject).
+	const [revealKey, setRevealKey] = useState<string | null>(null);
+	const reveal = useRef<{ sectionTop: number | null; row: { y: number; height: number } | null } | null>(null);
 	const liveEnd = useRef<number | null>(null);
 	const measure = (key: string) => (event: LayoutChangeEvent) => {
 		offsets.current[key] = event.nativeEvent.layout.y;
@@ -549,7 +579,6 @@ function Board({
 	);
 	const { list, snapshot: settled } = useSettledList(boardItems);
 	const shownGroups = groupItems(settled.display);
-	const reduceMotion = useReduceMotion();
 	const rowMove = reduceMotion ? undefined : ROW_MOVE;
 	const scrollHandlers = useMemo(() => listScrollHandlers((event) => list.send(event)), [list]);
 	// Every animated scroll the Board starts holds the list until it ends.
@@ -654,6 +683,36 @@ function Board({
 			}
 		}
 	};
+	// Search's project hit (spec 7.4): unfold the way to the project, then,
+	// once its row and the Projects section have both laid out (in either
+	// order), scroll the row 30% of the way down the viewport, as a list's
+	// scrollToItem with viewPosition 0.3 would. A reveal starts from search,
+	// whose results replace the sections, so leaving search mounts them
+	// afresh and both layouts always arrive, even for a project already
+	// unfolded; the section's offset from before search could be stale.
+	const revealProject = (projectKey: string) => {
+		const { view } = projectSections.projects;
+		const project = view.projects.find((candidate) => candidate.key === projectKey);
+		if (!project) return;
+		const target = projectRevealTarget({ project, pages: view.pages.get(projectKey), sources: hostSources, organizeBy });
+		for (const fold of target.unfold) setFolded(fold, false);
+		reveal.current = { sectionTop: null, row: null };
+		setRevealKey(target.scrollTo);
+	};
+	const finishReveal = () => {
+		const pending = reveal.current;
+		if (!pending?.row || pending.sectionTop === null) return;
+		reveal.current = null;
+		setRevealKey(null);
+		const top = pending.sectionTop + pending.row.y;
+		const y = Math.max(0, top - 0.3 * (viewport.current.height - pending.row.height));
+		scroller.current?.scrollTo?.({ y, animated: !reduceMotion });
+	};
+	const openProjectResult = (project: NavigationProjectSummary) => {
+		rememberSearch();
+		leaveSearch();
+		revealProject(project.key);
+	};
 	const projectMenu = (section: ProjectSection, project: NavigationProjectSummary) => {
 		const actions = projectMenuActions(project, {
 			connected,
@@ -675,7 +734,7 @@ function Board({
 					<ProjectTreeRow item={item} onPress={() => readMore(section, item)} />
 				</View>
 			);
-		return (
+		const row = (
 			<ProjectTreeRow
 				item={item}
 				onPress={() => {
@@ -684,6 +743,20 @@ function Board({
 				onLongPress={item.kind === "project" ? projectMenu(section, item.project) : undefined}
 				changing={item.kind === "project" && journalHoldsProject(organization, item.project.key)}
 			/>
+		);
+		if (item.key !== revealKey) return row;
+		return (
+			<View
+				key={item.key}
+				testID="project-reveal"
+				onLayout={(event) => {
+					if (!reveal.current) return;
+					reveal.current.row = event.nativeEvent.layout;
+					finishReveal();
+				}}
+			>
+				{row}
+			</View>
 		);
 	};
 	/** One item of the Board's list, moving to its place with the spring. A
@@ -750,6 +823,10 @@ function Board({
 				onLayout={(event) => {
 					measure(project)(event);
 					readVisibleMore();
+					if (project === "projects" && reveal.current) {
+						reveal.current.sectionTop = event.nativeEvent.layout.y;
+						finishReveal();
+					}
 				}}
 				style={{ paddingTop: 10 }}
 			>
@@ -867,6 +944,8 @@ function Board({
 							onOpen={openSearchResult}
 							onRecent={typeSearch}
 							onClearRecent={clearRecent}
+						projects={projectResults(projectSections.projects.view.projects, search.snapshot.query)}
+						onOpenProject={openProjectResult}
 						/>
 					) : (
 						<>
@@ -1342,7 +1421,11 @@ const noRevision = () => 0;
  * the polling cadence, dropping the read within one interval of its going
  * stale, whatever becomes of the poll meanwhile. With no fresh read on screen
  * there is nothing to expire, so it doesn't run: not before the first read
- * lands, not while reads keep failing, and never on a hub that predates S5. */
+ * lands, not while reads keep failing, and never on a hub that predates S5.
+ * The returned `tick` is that same recheck's counter: `bands`' isStuck sort
+ * closes over `msSinceRead`, so it needs this to re-sort Working within one
+ * poll interval of a row crossing into stuck from elapsed time alone, in
+ * step with its why-line (which reads `msSinceRead` live on every render). */
 function useActivityPoll(client: ConversationClientLike | null, connected: boolean, inFront: boolean) {
 	const poll = useMemo(() => (client ? new ActivityPoll(client) : null), [client]);
 	const revision = useSyncExternalStore(poll?.subscribe ?? noSubscription, poll?.getRevision ?? noRevision);
@@ -1353,14 +1436,14 @@ function useActivityPoll(client: ConversationClientLike | null, connected: boole
 	}, [poll, connected, inFront]);
 	const msSinceRead = poll?.msSinceRead() ?? null;
 	const reading = connected && isFreshRead(msSinceRead) ? poll : null;
-	const [, recheck] = useReducer((n: number) => n + 1, 0);
+	const [tick, recheck] = useReducer((n: number) => n + 1, 0);
 	useEffect(() => {
 		if (!reading || !inFront) return;
 		const timer = setInterval(recheck, ACTIVITY_POLL_MS);
 		return () => clearInterval(timer);
 	}, [reading, inFront]);
 	const activityOf = useCallback((ref: string) => reading?.activity(ref), [reading]);
-	return { revision, activityOf, msSinceRead: reading ? msSinceRead : null };
+	return { revision, activityOf, msSinceRead: reading ? msSinceRead : null, tick };
 }
 
 /** The hub's seen marks (S4): marks go out whenever the connection is ready,

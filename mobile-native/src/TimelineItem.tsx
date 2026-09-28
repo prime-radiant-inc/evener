@@ -1,4 +1,4 @@
-import { type EvenerDelegateInfo, type ItemModel, parseAskUserQuestions, scopedDisclosureId } from "@evener/appwire-client";
+import { type EvenerDelegateInfo, scopedDisclosureId } from "@evener/appwire-client";
 import { type ReactNode, useMemo, useState } from "react";
 import {
 	type AccessibilityActionEvent,
@@ -25,7 +25,7 @@ import { SubagentRow } from "./session/SubagentRow";
 import { SystemEvent } from "./session/SystemEvent";
 import { subagentLine } from "./session/subagentLine";
 import { ThoughtRow } from "./session/ThoughtRow";
-import { timeMarkerText } from "./session/transcriptRows";
+import { askRowQuestions, timeMarkerText } from "./session/transcriptRows";
 import { TranscriptImages } from "./TranscriptImages";
 import {
 	isCriticalNotice,
@@ -202,7 +202,7 @@ export function TimelineItem({
 				break;
 			}
 			if (item.label === "ask_user") {
-				const questions = parseAskUserQuestions({ argumentsJSON: item.detail.arguments } as ItemModel);
+				const questions = askRowQuestions(item);
 				if (questions) {
 					content = <QuestionHistory questions={questions} answer={answerFor?.(item.id)} />;
 					break;

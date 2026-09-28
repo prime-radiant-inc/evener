@@ -2,7 +2,7 @@
 // scopes, and each result's state mark. The queries this device searched for
 // are Board memory, in boardMemory.ts. The Archived scope and "In sessions"
 // hits wait for S14.
-import type { SearchResponse, SearchResult } from "@evener/appwire-client";
+import type { NavigationProjectSummary, SearchResponse, SearchResult } from "@evener/appwire-client";
 import type { ConversationClientLike } from "../../../mobile/src/services/conversation";
 import { type BoardState, decisiveState } from "./attention";
 
@@ -105,6 +105,22 @@ export function sessionResults(results: SearchResponse, scope: SearchScope): Sea
 	if (scope === "live") return results.live;
 	const live = new Set(results.live.map((result) => result.ref));
 	return [...results.live, ...results.past.filter((result) => !live.has(result.ref))];
+}
+
+/** The Projects group: the projects the Board has loaded whose name or
+ * working directory holds the query, ignoring case, in the catalog's order.
+ * The hub's search has no project hits, so this reads the Board's own
+ * catalog. */
+export function projectResults(
+	projects: readonly NavigationProjectSummary[],
+	query: string,
+): NavigationProjectSummary[] {
+	const needle = query.trim().toLowerCase();
+	if (!needle) return [];
+	return projects.filter(
+		(project) =>
+			project.name.toLowerCase().includes(needle) || (project.working_dir ?? "").toLowerCase().includes(needle),
+	);
 }
 
 /** A result's mark, in boardState's precedence (attention.ts). A result
