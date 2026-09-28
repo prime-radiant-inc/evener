@@ -705,8 +705,7 @@ function Board({
 		reveal.current = null;
 		setRevealKey(null);
 		const top = pending.sectionTop + pending.row.y;
-		const y = Math.max(0, top - 0.3 * (viewport.current.height - pending.row.height));
-		scroller.current?.scrollTo?.({ y, animated: !reduceMotion });
+		scrollBoardTo(Math.max(0, top - 0.3 * (viewport.current.height - pending.row.height)));
 	};
 	const openProjectResult = (project: NavigationProjectSummary) => {
 		rememberSearch();

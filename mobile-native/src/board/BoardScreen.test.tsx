@@ -3972,6 +3972,42 @@ it("holds the list while a chip's scroll animates, until the scroll ends", async
 	movedToNeedsYou(tree);
 });
 
+it("holds the list while a search's project reveal scrolls, until the scroll ends", async () => {
+	const id = hubId();
+	adoptedAnHourAgo(id);
+	const shape: Fleet = {
+		...fleet,
+		live: [[...fleet.live[0]]],
+		needsYou: [...fleet.needsYou],
+		catalogs: { projects: [evenerProject()] },
+		projectPages: { "evener:current": [localWork] },
+	};
+	const fake = hub(shape);
+	connect(id, fake.client, "ready");
+	const { tree, scrollTo } = await mountWithInstances(navigation());
+	layOutAt(boardScroller(tree), 0, 600);
+	await revealFromSearch(tree);
+	await settle();
+	layOutAt(revealTarget(tree), 60, 48);
+	layOutAt(projectSection(tree, "projects"), 900, 400);
+	expect(scrollTo).toHaveBeenLastCalledWith({ y: 900 + 60 - 0.3 * (600 - 48), animated: true });
+	const question = { ...working, state: "awaiting" as const, ask_pending: true };
+	shape.live[0] = shape.live[0].map((row) => (row.ref === working.ref ? question : row));
+	shape.needsYou = [...shape.needsYou, question];
+	act(() =>
+		fake.invalidate(1, [
+			{ kind: "section", section: "live" },
+			{ kind: "section", section: "needs_you" },
+		]),
+	);
+	await settle();
+	await advance(500);
+	heldInWorking(tree);
+	listEvent(tree, "onMomentumScrollEnd");
+	movedToNeedsYou(tree);
+	act(() => tree.unmount());
+});
+
 it("holds the list while a row's swipe actions are open, until the row closes", async () => {
 	const { tree, ask } = await mountAskingFleet();
 	act(() => swipeableOf(tree, "Ship it").props.onSwipeableOpenStartDrag());
