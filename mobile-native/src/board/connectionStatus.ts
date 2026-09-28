@@ -15,10 +15,9 @@ export const RECONNECTING_AFTER_MS = 2_000;
  * what's on screen is. */
 export const OFFLINE_AFTER_MS = 30_000;
 const MINUTE = 60_000;
-/** The status for a close no retry can fix, and what it means. */
+/** The status for a close no retry can fix; INCOMPATIBLE_VERSIONS says what
+ * it means. */
 export const UPDATE_NEEDED = "Update needed";
-export const UPDATE_NEEDED_HINT =
-	"This app and the hub need compatible versions. Update the app from TestFlight, or update Evener on the hub.";
 
 /** The connection status the Board toolbar and the Session's connection bar
  * show (spec 14), or null when there is nothing to

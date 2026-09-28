@@ -44,7 +44,6 @@ interface Connection {
 	selectHub(id: string): void;
 	removeHub(id: string): Promise<void>;
 	disconnect(): void;
-	retry(): void;
 }
 const Context = createContext<Connection | null>(null);
 
@@ -113,7 +112,6 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
 	}, [selection]);
 	const selectHub = useCallback((id: string) => selection.select(id), [selection]);
 	const disconnect = useCallback(() => selection.disconnect(), [selection]);
-	const retry = useCallback(() => setAttempt((value) => value + 1), []);
 	const saveHub = useCallback((input: HubInput) => selection.save(input), [selection]);
 	const updateHub = useCallback((id: string, input: HubUpdate) => selection.update(id, input), [selection]);
 	const removeHub = useCallback(
@@ -154,7 +152,6 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
 			selectHub,
 			removeHub,
 			disconnect,
-			retry,
 		}),
 		[
 			initialLocation,
@@ -172,7 +169,6 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
 			selectHub,
 			removeHub,
 			disconnect,
-			retry,
 		],
 	);
 	return <Context.Provider value={value}>{children}</Context.Provider>;

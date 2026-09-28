@@ -15,6 +15,7 @@ import type { ConnectionState, MarketplaceEntry, PluginEntry } from "@evener/app
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { createMarketplacesStore, createPluginsStore } from "@evener/appwire-client/state/extensions";
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
+import { INCOMPATIBLE_VERSIONS } from "./connectionRecovery";
 import { MarketplaceBrowser } from "./MarketplaceBrowser";
 import { PluginsScreen } from "./PluginsScreen";
 import { createPluginMutationGate } from "./pluginMutationGate";
@@ -120,7 +121,7 @@ it("reads the plugin list again once a flap the screen survived is ready again",
 	expect(renderedText(tree)).toContain("added-while-away");
 });
 
-it("shows the connection status and reconnect inside an open plugin detail modal", async () => {
+it("shows the connection status inside an open plugin detail modal, with no Reconnect", async () => {
 	const hub = new FakeClient("ready");
 	hub.on("evener/plugin/list", () => ({ plugins: [plugin("kept")] }));
 	harness.connection = connection(hub, "ready");
@@ -135,15 +136,15 @@ it("shows the connection status and reconnect inside an open plugin detail modal
 	await act(async () => {});
 
 	// The connection drops with the detail modal open: the native modal
-	// covers the screen's banner, so the status and the manual reconnect
-	// live inside it, with the modal's own content intact.
+	// covers the screen's banner, so the status lives inside it, with the
+	// modal's own content intact. The app reconnects on its own.
 	harness.connection = connection(hub, "reconnecting");
 	await act(async () => {
 		tree.update(<PluginsScreen {...props} />);
 	});
 	const modal = modalContaining(tree, "Installation details");
 	expect(subtreeText(modal)).toContain("reconnecting");
-	expect(modal.findAll((node) => node.props.accessibilityLabel === "Reconnect").length).toBeGreaterThan(0);
+	expect(modal.findAll((node) => node.props.accessibilityLabel === "Reconnect")).toHaveLength(0);
 	expect(subtreeText(modal)).toContain("Installation details");
 });
 
@@ -190,7 +191,7 @@ it("keeps the last action's notice when a disconnected press never runs the acti
 	expect(subtreeText(modalContaining(tree, "Installation details"))).toContain("Checked for upgrades.");
 });
 
-it("walls a fatal close with the reason its retry cannot clear yet", async () => {
+it("walls a fatal close with the reason no retry can clear it", async () => {
 	const hub = new FakeClient("ready");
 	hub.on("evener/plugin/list", () => ({ plugins: [plugin("kept")] }));
 	harness.connection = connection(hub, "ready");
@@ -199,26 +200,23 @@ it("walls a fatal close with the reason its retry cannot clear yet", async () =>
 	expect(renderedText(tree)).toContain("kept");
 
 	// The connection closes fatally - a protocol mismatch. The wall that
-	// replaces the screen must say WHY: without the compatibility copy the
-	// connection carries, the wall's own reconnect reads as ineffective -
-	// nothing says why pressing it changes nothing. With it, the action is
-	// the copy's own last word ("...then reconnect"), the way back once the
-	// app and hub are updated together.
+	// replaces the screen must say WHY, with the compatibility copy the
+	// connection carries (spec 14), and offer no Reconnect.
 	harness.connection = {
 		...connection(hub, "closed"),
 		fatal: true,
-		error: "This app and hub need compatible versions. Update them together, then reconnect.",
+		error: INCOMPATIBLE_VERSIONS,
 	};
 	await act(async () => {
 		tree.update(<PluginsScreen {...props} />);
 	});
 	const walled = renderedText(tree);
 	expect(walled).toContain("Connect to Work hub to manage plugins.");
-	expect(walled).toContain("This app and hub need compatible versions. Update them together, then reconnect.");
-	expect(tree.root.findAllByProps({ accessibilityLabel: "Reconnect" })).toHaveLength(1);
+	expect(walled).toContain(INCOMPATIBLE_VERSIONS);
+	expect(tree.root.findAllByProps({ accessibilityLabel: "Reconnect" })).toHaveLength(0);
 });
 
-it("shows the connection status and reconnect inside the add-marketplace modal", async () => {
+it("shows the connection status inside the add-marketplace modal, with no Reconnect", async () => {
 	const hub = new FakeClient("ready");
 	hub.on("evener/marketplace/list", () => ({ marketplaces: [ACME] }));
 	hub.on("evener/marketplace/browse", () => ({ name: "acme", plugins: [] }));
@@ -267,7 +265,7 @@ it("shows the connection status and reconnect inside the add-marketplace modal",
 	});
 	const modal = modalContaining(tree, "Git URL");
 	expect(subtreeText(modal)).toContain("reconnecting");
-	expect(modal.findAll((node) => node.props.accessibilityLabel === "Reconnect").length).toBeGreaterThan(0);
+	expect(modal.findAll((node) => node.props.accessibilityLabel === "Reconnect")).toHaveLength(0);
 	expect(subtreeText(modal)).toContain("Git URL");
 });
 
@@ -292,7 +290,6 @@ it("treats a route re-keyed to another hub as a fresh screen", async () => {
 		client: null,
 		state: "connecting",
 		fatal: false,
-		retry: () => {},
 	};
 	await act(async () => {
 		tree.update(<PluginsScreen {...forHub("hub-2")} />);
@@ -310,7 +307,6 @@ it("treats a route re-keyed to another hub as a fresh screen", async () => {
 		client: fakeB,
 		state: "ready",
 		fatal: false,
-		retry: () => {},
 	};
 	await act(async () => {
 		tree.update(<PluginsScreen {...forHub("hub-2")} />);

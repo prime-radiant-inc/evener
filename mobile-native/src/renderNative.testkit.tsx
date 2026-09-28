@@ -389,8 +389,7 @@ export function scriptedClient(
 
 /** The connection value the retained-screen suites report through their
  * mocked ConnectionProvider: the Work hub's profile, its client, the state
- * the test drives, and the fatal flag and manual retry the retained-screen
- * wiring reads. One literal where five suites' fixtures matched field for
+ * the test drives, and the fatal flag the retained-screen wiring reads. One literal where five suites' fixtures matched field for
  * field (#1942), so the shape the screens read cannot drift between suites -
  * the test-side twin of the useRetainedScreenConnection wiring the screens
  * themselves share (#2164). A test whose scenario needs a different hub,
@@ -409,7 +408,6 @@ export function screenConnection(client: unknown, state: ConnectionState): Recor
 		fatal: false,
 		downSince: downAt,
 		lastLiveAt: downAt,
-		retry: () => {},
 	};
 }
 

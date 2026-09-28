@@ -362,7 +362,7 @@ export function createNewSessionStore(
 					error: startDispatched
 						? (error instanceof WireError ? `${error.message}\n\n` : "") +
 							"Creation failed or could not be confirmed. Your input is kept. Check the session list before trying again; the session may exist."
-						: "Could not validate selected plugins. No session was requested. Reconnect or retry; your selection is kept.",
+						: "Could not validate selected plugins. No session was requested. Try again; your selection is kept.",
 				});
 				return { status: "failed" };
 			} finally {

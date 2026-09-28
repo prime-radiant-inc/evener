@@ -9,26 +9,14 @@ import type { PinAssignmentDraft, PinAssignmentSelection } from "./pinAssignment
 import type { Routes } from "./screens";
 import { Action, Copy, ErrorMessage, styles, useColors } from "./ui";
 import { usePinNavigation } from "./usePinNavigation";
+import { HUB_NO_LONGER_SELECTED } from "./retainedScreen";
 
-const draftError =
-	"Your last saved pin proposal is kept. This edit could not be saved on this device; refresh to retry.";
+const draftError = "Your last saved pin proposal is kept. This edit could not be saved on this device. Try again.";
 
 export function PinAssignmentScreen({ route, navigation }: NativeStackScreenProps<Routes, "PinAssignment">) {
 	const { hubId, ref, title } = route.params;
-	const {
-		activeProfile,
-		ready,
-		belongs,
-		focused,
-		retry,
-		pages,
-		page,
-		actions,
-		action,
-		observed,
-		confirmed,
-		isCurrent,
-	} = usePinNavigation(hubId, ref);
+	const { activeProfile, ready, belongs, focused, pages, page, actions, action, observed, confirmed, isCurrent } =
+		usePinNavigation(hubId, ref);
 	const colors = useColors();
 	const headerHeight = useHeaderHeight();
 	const repository = useMemo(() => pinDrafts(hubId, ref), [hubId, ref]);
@@ -69,7 +57,6 @@ export function PinAssignmentScreen({ route, navigation }: NativeStackScreenProp
 			setProposal((previous) => ({ ...previous, error: draftError }));
 		}
 		if (ready) void actions?.reconcile();
-		else retry();
 	}
 	function change(selection: PinAssignmentSelection) {
 		if (blocked) return;
@@ -108,7 +95,7 @@ export function PinAssignmentScreen({ route, navigation }: NativeStackScreenProp
 				setProposal((previous) => ({
 					...previous,
 					error:
-						"The pin change was confirmed, but its saved proposal could not be cleared. Refresh before editing again.",
+						"The pin change was confirmed, but its saved proposal could not be cleared. Check the pins before editing again.",
 				}));
 			}
 		}
@@ -116,7 +103,7 @@ export function PinAssignmentScreen({ route, navigation }: NativeStackScreenProp
 	return (
 		<SafeAreaView edges={["bottom", "left", "right"]} style={[styles.fill, { backgroundColor: colors.background }]}>
 			{!belongs ? (
-				<Copy>This hub is no longer selected. Return to Hubs to reconnect.</Copy>
+				<Copy>{HUB_NO_LONGER_SELECTED}</Copy>
 			) : (
 				<KeyboardAvoidingView
 					style={styles.fill}
@@ -126,7 +113,6 @@ export function PinAssignmentScreen({ route, navigation }: NativeStackScreenProp
 					<PinAssignmentEditor
 						status={
 							<View style={{ gap: 8 }}>
-								{!ready ? <Action onPress={retry}>Reconnect</Action> : null}
 								<ErrorMessage message={selected?.error ?? null} />
 								{selected?.error ? <Action onPress={refresh}>Retry saved proposal</Action> : null}
 								{observed ? (

@@ -29,11 +29,11 @@ function props(previousChange: boolean) {
 
 it("blames the failed load when there is no previous pin change", () => {
 	const text = renderedText(render(createElement(PinCatalogList, props(false))));
-	expect(text).toContain("Refresh to reload the pinned sections.");
+	expect(text).toContain("Check the pinned sections again.");
 	expect(text).not.toContain("previous pin change");
 });
 
 it("keeps the previous-change wording when a checkpoint is present", () => {
 	const text = renderedText(render(createElement(PinCatalogList, props(true))));
-	expect(text).toContain("Refresh to confirm the previous pin change.");
+	expect(text).toContain("Check the previous pin change.");
 });

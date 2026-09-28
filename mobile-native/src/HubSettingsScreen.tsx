@@ -27,14 +27,12 @@ export function HubSettingsScreen(props: Props) {
 }
 
 function HubSettingsScreenBody({ route, navigation }: Props) {
-	const { activeProfile, state, retry, error, display, canUseConnection, renderClient } = useRetainedScreenConnection(
+	const { activeProfile, state, error, display, canUseConnection, renderClient } = useRetainedScreenConnection(
 		route.params.hubId,
 	);
 	if (activeProfile?.id !== route.params.hubId) return <Copy>{HUB_NO_LONGER_SELECTED}</Copy>;
 	if (display === "wall" || !renderClient)
-		return (
-			<ConnectionWall hubName={activeProfile.name} purpose="view hub settings" error={error} onReconnect={retry} />
-		);
+		return <ConnectionWall hubName={activeProfile.name} purpose="view hub settings" error={error} />;
 	return (
 		<>
 			{display === "banner" ? <ConnectionStatus /> : null}
@@ -85,7 +83,7 @@ function Section({ title, children }: { title: string; children: ReactNode }) {
 // The hub overview store keeps the failed request's own text in `error`;
 // this screen shows the same copy for every failure, as the web's sections
 // translate theirs at render.
-const HUB_OVERVIEW_REFRESH_FAILED = "Could not refresh hub information. Try again when connected.";
+const HUB_OVERVIEW_REFRESH_FAILED = "Could not load hub information. Try again when connected.";
 
 function HubSettings({
 	client,

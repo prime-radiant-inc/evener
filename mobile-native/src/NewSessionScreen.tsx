@@ -30,7 +30,7 @@ import type { Routes } from "./screens";
 import { Action, Choice, Copy, ErrorMessage, styles, useColors } from "./ui";
 
 export function NewSessionScreen({ route, navigation }: NativeStackScreenProps<Routes, "NewSession">) {
-	const { activeProfile, client, state, retry } = useConnection();
+	const { activeProfile, client, state } = useConnection();
 	const colors = useColors();
 	const headerHeight = useHeaderHeight();
 	const { fontScale } = useWindowDimensions();
@@ -124,8 +124,7 @@ export function NewSessionScreen({ route, navigation }: NativeStackScreenProps<R
 					<Copy muted>{route.params.hubName}</Copy>
 					{!ready ? (
 						<View>
-							<Copy muted>Reconnect to this hub to create a session. Your input is kept.</Copy>
-							<Action onPress={retry}>Reconnect</Action>
+							<Copy muted>You can create a session once the hub is back. Your input is kept.</Copy>
 						</View>
 					) : null}
 					<ErrorMessage message={form.error} />

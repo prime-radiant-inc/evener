@@ -6,7 +6,8 @@
 import { type SFSymbol, SymbolView } from "expo-symbols";
 import { type ReactNode, useCallback, useEffect, useRef, useState } from "react";
 import { Animated, Platform, Pressable, ScrollView, Text, View } from "react-native";
-import { UPDATE_NEEDED, UPDATE_NEEDED_HINT } from "../board/connectionStatus";
+import { UPDATE_NEEDED } from "../board/connectionStatus";
+import { INCOMPATIBLE_VERSIONS } from "../connectionRecovery";
 import { useReduceMotion } from "../reduceMotion";
 import { useColors, useTextScale } from "../ui";
 import { FreshDot } from "../reader/FreshDot";
@@ -66,7 +67,7 @@ export function SessionHeader({
 					<Text
 						allowFontScaling={Platform.OS !== "ios"}
 						accessibilityLiveRegion="polite"
-						accessibilityHint={status === UPDATE_NEEDED ? UPDATE_NEEDED_HINT : undefined}
+						accessibilityHint={status === UPDATE_NEEDED ? INCOMPATIBLE_VERSIONS : undefined}
 						style={{
 							fontSize: 13 * scale,
 							lineHeight: 18 * scale,

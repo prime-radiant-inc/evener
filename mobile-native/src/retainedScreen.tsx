@@ -10,18 +10,17 @@ import {
 	useLiveReadiness,
 	useRenderClient,
 } from "./connectionDisplay";
-import { Action, Copy, ErrorMessage } from "./ui";
+import { Copy, ErrorMessage } from "./ui";
 
 /** What a retained ready-only screen says when the route names a hub the
  * active profile has moved off: the data behind the screen belongs to a hub
  * the connection no longer reports, so the screen offers the way back
  * instead of that data. */
-export const HUB_NO_LONGER_SELECTED = "This hub is no longer selected. Return to Hubs to reconnect.";
+export const HUB_NO_LONGER_SELECTED = "This hub is no longer selected. Choose it again in Hubs.";
 
 /** The connection wiring every retained ready-only screen runs at the top of
  * its body - the block PluginsScreen, HubSettingsScreen and ProvidersScreen
- * each carried in their own copy (#1942): the active connection and its
- * manual retry, the display the connection yields for the screen, the live
+ * each carried in their own copy (#1942): the active connection, the display the connection yields for the screen, the live
  * readiness a deferred write or manual refresh checks against, and the client
  * a manual retry's dialing gap keeps the previous content rendered through.
  *
@@ -59,8 +58,6 @@ export interface RetainedScreenConnection {
 	client: AppwireClient | null;
 	/** The connection's current state. */
 	state: ConnectionState;
-	/** The connection's manual retry: what the wall's Reconnect action fires. */
-	retry(): void;
 	/** The connection's own failure copy - on a fatal close, the
 	 * compatibility message that says why the wall replaced the screen's
 	 * content (see `fatal`). */
@@ -80,7 +77,7 @@ export interface RetainedScreenConnection {
 /** Runs the retained ready-only screen wiring for the hub `routeHubId` the
  * route names; RetainedScreenConnection carries the contract. */
 export function useRetainedScreenConnection(routeHubId: string): RetainedScreenConnection {
-	const { activeProfile, client, state, fatal, error, retry } = useConnection();
+	const { activeProfile, client, state, fatal, error } = useConnection();
 	const display = useConnectionDisplay(activeProfile?.id, state, fatal, client);
 	const canUseConnection = useLiveReadiness(routeHubId, client, state);
 	const renderClient = useRenderClient(client, state, activeProfile?.id);
@@ -88,7 +85,6 @@ export function useRetainedScreenConnection(routeHubId: string): RetainedScreenC
 		activeProfile,
 		client,
 		state,
-		retry,
 		error,
 		display,
 		canUseConnection,
@@ -98,19 +94,16 @@ export function useRetainedScreenConnection(routeHubId: string): RetainedScreenC
 
 /** The full-screen replacement a retained ready-only screen shows instead of
  * its content: the display is a wall - nothing has ever been shown, or a
- * close no retry can clear has taken the connection - and the screen offers
- * the way back. `purpose` is the screen's own phrase for what it shows once
- * connected ("manage plugins", "view hub settings"), and the action is the
- * connection's own manual retry. The connection's own error copy renders
- * beside it: on a fatal close (a protocol mismatch) that copy is the
- * compatibility message, and without it the wall offers a reconnect that
- * reads as ineffective - the reason a retry cannot clear the close yet is
- * the one thing the wall did not say. */
+ * close no retry can clear has taken the connection. `purpose` is the
+ * screen's own phrase for what it shows once connected ("manage plugins",
+ * "view hub settings"). It offers no Reconnect: the app reconnects on its own
+ * (spec principle 2). The connection's own error copy renders beside it: on a
+ * fatal close (a protocol mismatch) that copy is the compatibility message,
+ * the one thing that says why the screen's content is gone. */
 export function ConnectionWall({
 	hubName,
 	purpose,
 	error,
-	onReconnect,
 }: {
 	hubName: string;
 	/** What the screen offers once connected, phrased to follow "Connect to
@@ -119,12 +112,10 @@ export function ConnectionWall({
 	/** The connection's own failure copy (useConnection's error): rendered
 	 * here so a fatal wall says why the screen's content is gone. */
 	error?: string | null;
-	onReconnect(): void;
 }) {
 	return (
 		<View style={{ padding: 20 }}>
 			<Copy>{`Connect to ${hubName} to ${purpose}.`}</Copy>
-			<Action onPress={onReconnect}>Reconnect</Action>
 			<ErrorMessage message={error ?? null} />
 		</View>
 	);
@@ -132,8 +123,8 @@ export function ConnectionWall({
 
 /** The connection status a screen's open modal shows in place of the banner
  * it covers: a native modal hides the screen behind it, so while one is open
- * the status and the manual reconnect have to live inside it, or the user
- * would have to dismiss the modal to reach them. Renders nothing while the
+ * the status has to live inside it, or the user would have to dismiss the
+ * modal to see it. Renders nothing while the
  * connection is ready, exactly as the banner behind the modal would. */
 export function ModalConnectionStatus({ connectionState }: { connectionState: ConnectionState }) {
 	return connectionState !== "ready" ? <ConnectionStatus /> : null;

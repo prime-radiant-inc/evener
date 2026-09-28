@@ -1,5 +1,5 @@
 import { expect, it, vi } from "vitest";
-import { UPDATE_NEEDED_HINT } from "../board/connectionStatus";
+import { INCOMPATIBLE_VERSIONS } from "../connectionRecovery";
 import { render, renderedText } from "../renderNative.testkit";
 import { Connecting, SheetStatus } from "./SheetStatus";
 
@@ -28,5 +28,5 @@ it("says a never-loaded page is connecting, or why it can't", () => {
 	status.fatal = false;
 	expect(renderedText(render(<Connecting hubName="magic-kingdom" />))).toBe("Connecting to magic-kingdom…");
 	status.fatal = true;
-	expect(renderedText(render(<Connecting hubName="magic-kingdom" />))).toBe(UPDATE_NEEDED_HINT);
+	expect(renderedText(render(<Connecting hubName="magic-kingdom" />))).toBe(INCOMPATIBLE_VERSIONS);
 });

@@ -114,7 +114,7 @@ it("ready -> reconnecting keeps the screen tree mounted and shows the banner", a
 	const tree = render(<ProvidersScreen {...props} />);
 	await act(async () => {});
 	expect(renderedText(tree)).toContain("work");
-	expect(renderedText(tree)).not.toContain("Reconnect");
+	expect(renderedText(tree)).not.toContain("reconnecting");
 
 	harness.connection = { ...harness.connection, state: "reconnecting" };
 	await act(async () => {
@@ -123,9 +123,10 @@ it("ready -> reconnecting keeps the screen tree mounted and shows the banner", a
 	const text = renderedText(tree);
 	// The list stayed mounted through the flap (never replaced by the wall) ...
 	expect(text).toContain("work");
-	// ... behind a banner announcing it.
+	// ... behind a banner announcing it, with no Reconnect: the app
+	// reconnects on its own (spec principle 2).
 	expect(text).toContain("reconnecting");
-	expect(text).toContain("Reconnect");
+	expect(tree.root.findAllByProps({ accessibilityLabel: "Reconnect" })).toHaveLength(0);
 });
 
 it("reconnecting -> ready removes the banner", async () => {
@@ -140,7 +141,7 @@ it("reconnecting -> ready removes the banner", async () => {
 	await act(async () => {
 		tree.update(<ProvidersScreen {...props} />);
 	});
-	expect(renderedText(tree)).toContain("Reconnect");
+	expect(renderedText(tree)).toContain("reconnecting");
 
 	harness.connection = { ...harness.connection, state: "ready" };
 	await act(async () => {
@@ -148,7 +149,7 @@ it("reconnecting -> ready removes the banner", async () => {
 	});
 	const text = renderedText(tree);
 	expect(text).toContain("work");
-	expect(text).not.toContain("Reconnect");
+	expect(text).not.toContain("reconnecting");
 });
 
 it("a fatal (protocol) close replaces the mounted list with the wall", async () => {
@@ -211,10 +212,9 @@ it("keeps the provider wall through a fatal retry until the replacement is ready
 	expect(replacement.methods.every((method) => method === "evener/instance/list")).toBe(true);
 });
 
-it("keeps the provider editor draft and exposes reconnect inside its modal", async () => {
+it("keeps the provider editor draft through a flap, with no Reconnect anywhere", async () => {
 	const hub = scriptedClient(rows);
-	const retry = vi.fn();
-	harness.connection = { ...screenConnection(hub.client, "ready"), retry };
+	harness.connection = screenConnection(hub.client, "ready");
 	const props = {
 		route: { params: { hubId: "hub-1" } },
 	} as unknown as ComponentProps<typeof ProvidersScreen>;
@@ -234,15 +234,8 @@ it("keeps the provider editor draft and exposes reconnect inside its modal", asy
 	});
 	const editorInput = tree.root.findByProps({ accessibilityLabel: "Instance name" });
 	expect(editorInput.props.value).toBe("draft-name");
-	const reconnects = tree.root.findAllByProps({ accessibilityLabel: "Reconnect" });
-	expect(reconnects).toHaveLength(2);
-	const modalReconnect = reconnects[reconnects.length - 1];
-	if (!modalReconnect) throw new Error("modal reconnect action was not rendered");
-	await act(async () => {
-		modalReconnect.props.onPress();
-	});
-	expect(retry).toHaveBeenCalledOnce();
-	expect(editorInput.props.value).toBe("draft-name");
+	// The app reconnects on its own (spec principle 2).
+	expect(tree.root.findAllByProps({ accessibilityLabel: "Reconnect" })).toHaveLength(0);
 });
 
 it("a flap disables provider mutation controls, not only OAuth sign-in", async () => {
@@ -637,7 +630,7 @@ it("saves without a warning when a flap's recovery finds the endpoint unchanged"
 	expect(text).not.toContain("Save instance");
 });
 
-it("shows the connection status and reconnect inside an open editor modal", async () => {
+it("shows the connection status inside an open editor modal, with no Reconnect", async () => {
 	const hub = scriptedClient(rows);
 	harness.connection = screenConnection(hub.client, "ready");
 	const props = {
@@ -659,7 +652,7 @@ it("shows the connection status and reconnect inside an open editor modal", asyn
 	});
 	const modal = modalContaining(tree, "Save instance");
 	expect(subtreeText(modal)).toContain("reconnecting");
-	expect(modal.findAll((node) => node.props.accessibilityLabel === "Reconnect").length).toBeGreaterThan(0);
+	expect(modal.findAll((node) => node.props.accessibilityLabel === "Reconnect")).toHaveLength(0);
 	// The draft survived: the modal is still the editor's.
 	expect(subtreeText(modal)).toContain("Save instance");
 });
@@ -699,9 +692,9 @@ it("starts a sign-in from behind the banner without a doomed client", async () =
 	// the sheet the sign-in opens carries the status itself, over the
 	// native modal that covers the screen's banner.
 	expect(setConnection.mock.calls[0]?.[0]).toBe(null);
-	const sheet = modalContaining(tree, "Waiting for this hub to reconnect");
+	const sheet = modalContaining(tree, "Waiting for the hub");
 	expect(subtreeText(sheet)).toContain("reconnecting");
-	expect(sheet.findAll((node) => node.props.accessibilityLabel === "Reconnect").length).toBeGreaterThan(0);
+	expect(sheet.findAll((node) => node.props.accessibilityLabel === "Reconnect")).toHaveLength(0);
 
 	// Recovery hands the flow the connection it was opened without, and the
 	// exchange proceeds.
@@ -809,7 +802,6 @@ it("treats a route re-keyed to another hub as a fresh screen", async () => {
 		client: null,
 		state: "connecting",
 		fatal: false,
-		retry: () => {},
 	};
 	await act(async () => {
 		tree.update(<ProvidersScreen {...forHub("hub-2")} />);
@@ -865,7 +857,6 @@ it("walls the re-key window against the previous hub's recorded client", async (
 		client: stale as unknown as ConversationClientLike,
 		state: "ready",
 		fatal: false,
-		retry: () => {},
 	};
 	const props = {
 		route: { params: { hubId: "hub-2" } },

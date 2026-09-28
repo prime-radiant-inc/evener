@@ -1,7 +1,8 @@
 // A sheet's word on the connection (spec 14): one line, no button. The app
 // reconnects on its own (hubConnection.ts), so nothing here asks you to.
 import { Text } from "react-native";
-import { UPDATE_NEEDED_HINT, useConnectionStatusText } from "../board/connectionStatus";
+import { useConnectionStatusText } from "../board/connectionStatus";
+import { INCOMPATIBLE_VERSIONS } from "../connectionRecovery";
 import { useConnection } from "../ConnectionProvider";
 import { allowFontScaling, useColors, useTextScale } from "../ui";
 
@@ -39,7 +40,7 @@ export function Connecting({ hubName }: { hubName: string }) {
 			allowFontScaling={allowFontScaling}
 			style={{ color: palette.inkMid, fontSize: 15 * scale, lineHeight: 20 * scale, textAlign: "center", padding: 32 }}
 		>
-			{fatal ? UPDATE_NEEDED_HINT : `Connecting to ${hubName}…`}
+			{fatal ? INCOMPATIBLE_VERSIONS : `Connecting to ${hubName}…`}
 		</Text>
 	);
 }

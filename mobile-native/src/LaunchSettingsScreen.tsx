@@ -15,7 +15,7 @@ import { Action, Copy, ErrorMessage, styles, useColors } from "./ui";
 
 type Props = NativeStackScreenProps<Routes, "LaunchSettings">;
 export function LaunchSettingsScreen({ route, navigation }: Props) {
-	const { activeProfile, client, state, retry } = useConnection();
+	const { activeProfile, client, state } = useConnection();
 	if (activeProfile?.id !== route.params.hubId) return <Copy>This hub is no longer selected.</Copy>;
 	const cwd = route.params.projectCwd ?? "/";
 	const layer = route.params.projectCwd === undefined ? "global" : "project";
@@ -25,7 +25,6 @@ export function LaunchSettingsScreen({ route, navigation }: Props) {
 			cwd={cwd}
 			layer={layer}
 			client={state === "ready" ? client : null}
-			retry={retry}
 			hubName={activeProfile.name}
 			navigation={navigation}
 		/>
@@ -42,14 +41,12 @@ function LaunchDefaults({
 	cwd,
 	layer,
 	client,
-	retry,
 	hubName,
 	navigation,
 }: {
 	cwd: string;
 	layer: LaunchConfigLayerName;
 	client: ConversationClientLike | null;
-	retry(): void;
 	hubName: string;
 	navigation: Props["navigation"];
 }) {
@@ -99,7 +96,6 @@ function LaunchDefaults({
 				{!client && (
 					<View>
 						<Copy>Disconnected. Your unsaved changes are kept here.</Copy>
-						<Action onPress={retry}>Reconnect</Action>
 					</View>
 				)}
 				<Copy muted>

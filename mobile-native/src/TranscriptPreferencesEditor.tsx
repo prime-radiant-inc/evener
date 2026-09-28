@@ -105,7 +105,9 @@ export function TranscriptPreferencesEditor({
 				<Copy muted>
 					Applies to mobile views connected to this hub. Questions, failures and active work stay visible.
 				</Copy>
-				{!connected ? <Copy muted>Reconnect to change these settings. Your saved draft is kept.</Copy> : null}
+				{!connected ? (
+					<Copy muted>You can change these settings once the hub is back. Your saved draft is kept.</Copy>
+				) : null}
 				{state.support === "unsupported" ? <Copy>This hub does not offer transcript display settings.</Copy> : null}
 				{state.support === "unknown" || (state.loading && !current) ? (
 					<Copy muted>Loading display settings…</Copy>
@@ -271,7 +273,7 @@ export function TranscriptPreferencesEditor({
 				) : null}
 				{state.error && !state.writeUncertain ? (
 					<Action disabled={!connected || state.loading || state.saving} onPress={refresh}>
-						Refresh settings
+						Try again
 					</Action>
 				) : null}
 			</ScrollView>

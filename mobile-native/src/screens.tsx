@@ -550,7 +550,7 @@ export function ConversationScreen({
 	 * "Subagent" route): the coordinator whose tree it sits in. */
 	subagentOf?: Coordinator;
 }) {
-	const { activeProfile, client, state: connectionState, fatal } = useConnection();
+	const { activeProfile, client, state: connectionState } = useConnection();
 	const focused = useScreenInFront(route.key);
 	const colors = useColors();
 	const [sessionMenuOpen, setSessionMenuOpen] = useState(false);
@@ -909,7 +909,7 @@ export function ConversationScreen({
 			if (store.getState().status === "open") await store.getState().rehydrate(service, activitySink);
 			else await store.getState().resumeProjected(service, activitySink, route.params.ref);
 			const current = store.getState();
-			if (current.status !== "open" || current.error) throw new Error("Session refresh failed");
+			if (current.status !== "open" || current.error) throw new Error("Could not read the session.");
 		};
 		return new SessionControls(
 			service,
@@ -970,7 +970,7 @@ export function ConversationScreen({
 							store.getState().conversation?.instanceId === bindingInstance,
 						async () => {
 							await store.getState().rehydrate(service, activitySink);
-							if (store.getState().error) throw new Error("Refresh failed");
+							if (store.getState().error) throw new Error("Could not read the session.");
 						},
 					)
 				: null,
