@@ -67,6 +67,16 @@ type remoteThreadFetch struct {
 	// walk read it; the publish drops its rows as unowned.
 	sourceGenerations map[string]uint64
 	generation        uint64
+	// tombstones names the sources whose rows in this fetch are tombstone-
+	// sourced: the removed hosts whose retained projections the refresh
+	// re-applied (spec 08 §15). The rows keep their metadata and their
+	// tombstone's name as their Source tag, but the tree/action logic must
+	// force them non-live with capabilities disabled — never through the
+	// `appThreadTreeLive` + `sourceOnline` predicate, whose documented
+	// fail-open on unknown source IDs would promote a removed host's rows
+	// straight back to live (web.go's sourceOnline comment names exactly that
+	// defect).
+	tombstones map[string]struct{}
 }
 
 // pokeMutationAttention nudges the attention watcher (if configured). It exists for
@@ -357,6 +367,10 @@ func (s *WebServer) navigationSnapshotInputs(ctx context.Context) navigationSnap
 
 	}
 	fetch := s.remoteThreadFetch(ctx)
+	tombstoned := func(sourceID string) bool {
+		_, isTombstone := fetch.tombstones[strings.TrimSpace(sourceID)]
+		return isTombstone
+	}
 	carriedProjectCandidates := make(map[string]map[string]identifier.Project)
 	for _, thread := range fetch.threads {
 		meta, entry, ok := appThreadTreeEntries(thread)
@@ -375,7 +389,14 @@ func (s *WebServer) navigationSnapshotInputs(ctx context.Context) navigationSnap
 		// rather than being projected live. An empty Source is treated as online
 		// (server-owned local rows), so only source-identified remote rows can
 		// be excluded.
-		if appThreadTreeLive(thread) && s.sourceOnline(thread.Source) {
+		//
+		// A tombstone-sourced row is forced non-live BEFORE the predicate: the
+		// tombstone check must never route through sourceOnline, whose
+		// fail-open on an unknown source ID would promote a removed host's
+		// active rows straight back to live (spec 08 §15 names exactly that
+		// defect). The row keeps its metadata for display; only liveness and
+		// capabilities are withheld.
+		if !tombstoned(thread.Source) && appThreadTreeLive(thread) && s.sourceOnline(thread.Source) {
 			live = append(live, entry)
 		}
 	}
@@ -495,11 +516,39 @@ func (s *WebServer) remoteThreadFetch(ctx context.Context) remoteThreadFetch {
 			complete:   snapshot.Complete,
 			sources:    snapshot.Sources,
 			generation: snapshot.Generation,
+			tombstones: tombstonedSourceNames(snapshot.Sources),
 		}
 	}
 	fetch := s.refreshRemoteThreadSnapshot(ctx)
 	fetch.generation = s.remoteFetchGeneration.Add(1)
 	return fetch
+}
+
+// tombstonedSourceNames is the tombstone tag a published snapshot carries: the
+// names whose per-source entry the refresh re-applied from a durable tombstone.
+// The tree's live predicate consumes it to force those rows non-live.
+func tombstonedSourceNames(sources map[string]hubcore.RemoteSourceSnapshot) map[string]struct{} {
+	var names map[string]struct{}
+	for sourceID, source := range sources {
+		if !source.Tombstoned {
+			continue
+		}
+		if names == nil {
+			names = make(map[string]struct{})
+		}
+		names[sourceID] = struct{}{}
+	}
+	return names
+}
+
+// retainedTombstoneSources returns the removed hosts' retained rows the tree
+// merge re-applies, one entry per unexpired (or remnant-gated) tombstone. Nil
+// when no manager is wired or no tombstone is visible.
+func (s *WebServer) retainedTombstoneSources() map[string]hubcore.RemoteSourceSnapshot {
+	if s.hostManage == nil {
+		return nil
+	}
+	return s.hostManage.retainedTombstoneSources()
 }
 
 func (s *WebServer) remoteTreeThreads(ctx context.Context) []appwire.Thread {
@@ -518,11 +567,23 @@ func (s *WebServer) refreshRemoteThreads(ctx context.Context) []appwire.Thread {
 }
 
 func (s *WebServer) refreshRemoteThreadSnapshot(ctx context.Context) remoteThreadFetch {
+	tombstoneSources := s.retainedTombstoneSources()
 	if s.sources == nil {
+		// No source registry: the publication is the tombstone merge alone.
+		var threads []appwire.Thread
+		sources := make(map[string]hubcore.RemoteSourceSnapshot, len(tombstoneSources))
+		tombstoneNames := make(map[string]struct{}, len(tombstoneSources))
+		for name, snapshot := range tombstoneSources {
+			threads = append(threads, snapshot.Threads...)
+			sources[name] = snapshot
+			tombstoneNames[name] = struct{}{}
+		}
 		return remoteThreadFetch{
 			complete:          true,
-			sources:           map[string]hubcore.RemoteSourceSnapshot{},
+			threads:           threads,
+			sources:           sources,
 			sourceGenerations: map[string]uint64{},
+			tombstones:        tombstoneNames,
 		}
 	}
 	var threads []appwire.Thread
@@ -639,7 +700,31 @@ func (s *WebServer) refreshRemoteThreadSnapshot(ctx context.Context) remoteThrea
 			IncompleteIDs: invalid,
 		}
 	}
-	return remoteThreadFetch{threads: threads, complete: complete, sources: sources, sourceGenerations: readGenerations}
+	// Snapshot merge (spec §15): AFTER enumerating the registered sources,
+	// re-apply each unexpired tombstone's last-known-good rows (marked
+	// stale, non-actionable, plus the truncation indicator), so a removed
+	// host's rows survive every subsequent refresh until its tombstone is
+	// re-added or pruned. The rows carry the tombstone's name as their
+	// Source tag and the fetch's tombstone set carries the identity the
+	// tree consumes; a concurrent re-add wins by the generation rule at
+	// publish time (the re-registration's generation makes the cache's
+	// staleness rule drop tombstone-sourced rows, and its own
+	// new-generation walk publishes the live rows).
+	//
+	// A name the walk just enumerated as a registered source — a re-add that
+	// landed mid-walk — is skipped: its freshly read live rows belong to the
+	// current registration, and the tombstone merge must not shadow them with
+	// the removed incarnation's rows or tag the source tombstoned.
+	mergedTombstones := make(map[string]struct{}, len(tombstoneSources))
+	for name, snapshot := range tombstoneSources {
+		if _, enumerated := sources[name]; enumerated {
+			continue
+		}
+		threads = append(threads, snapshot.Threads...)
+		sources[name] = snapshot
+		mergedTombstones[name] = struct{}{}
+	}
+	return remoteThreadFetch{threads: threads, complete: complete, sources: sources, sourceGenerations: readGenerations, tombstones: mergedTombstones}
 }
 
 // sourceThreadLister is the minimal slice of appsource.Source that
@@ -875,10 +960,20 @@ func appThreadTreeEntries(thread appwire.Thread) (schema.SessionMeta, hubcore.Li
 		PendingAsk:         thread.Evener.AskPending,
 		PendingEscalation:  len(thread.Evener.PendingEscalations) > 0,
 		PendingEscalations: thread.Evener.PendingEscalations,
+		PendingQuestion:    appwire.ClonePendingQuestion(thread.Evener.PendingQuestion),
 		Project:            project,
 	}
 	entry.RunningJobs, entry.CompletedJobs = hubcore.SplitNonAgentJobs(diagnosticsJobs(thread.Evener.Diagnostics))
 	entry.Watches = diagnosticsWatches(thread.Evener.Diagnostics)
+	// The remote hub's root row carries its tree's subagent tally (S3), so the
+	// remote row counts its subagents like a local one.
+	if thread.Evener.Subagents != nil {
+		entry.Subagents = *thread.Evener.Subagents
+	}
+	entry.LastTurnEndedAt = hubcore.UnixMilliTime(thread.Evener.LastTurnEndedAt)
+	// The remote hub's root row carries its session's task progress (S13b), so
+	// the remote row shows its task line like a local one.
+	entry.Tasks = appwire.CloneTaskAggregate(thread.Evener.Tasks)
 	return meta, entry, true
 }
 

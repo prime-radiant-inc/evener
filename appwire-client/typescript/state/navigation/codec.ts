@@ -160,6 +160,8 @@ const WATCH_KEYS = valueRecordKeys(
   { cadence: WATCH_CADENCE_KEYS },
 );
 const TASKS_KEYS = valueRecordKeys(["total", "done"], ["cancelled", "current_id", "current"]);
+const SUBAGENT_TALLY_KEYS = valueRecordKeys(["running", "failed", "done"]);
+const QUESTION_KEYS = valueRecordKeys(["text", "count"], ["options"]);
 const SESSION_KEYS = valueRecordKeys(
   ["ref", "host_id", "session_id", "title", "project", "state", "kind", "live", "children"],
   [
@@ -171,10 +173,14 @@ const SESSION_KEYS = valueRecordKeys(
     "approval_pending",
     "approval_tool",
     "approval_target",
+    "question",
     "dormant",
     "offline",
     "updated_at",
+    "turn_ended_at",
+    "unseen",
     "more_subagents",
+    "subagents",
     "omitted_descendants",
     "omitted_watches",
     "omitted_armed_watches",
@@ -183,7 +189,14 @@ const SESSION_KEYS = valueRecordKeys(
     "watches",
     "tasks",
   ],
-  { running_jobs: JOB_KEYS, completed_jobs: JOB_KEYS, watches: WATCH_KEYS, tasks: TASKS_KEYS },
+  {
+    running_jobs: JOB_KEYS,
+    completed_jobs: JOB_KEYS,
+    watches: WATCH_KEYS,
+    tasks: TASKS_KEYS,
+    subagents: SUBAGENT_TALLY_KEYS,
+    question: QUESTION_KEYS,
+  },
 );
 const PROJECT_KEYS = valueRecordKeys(
   ["key", "name", "session_count"],
@@ -292,6 +305,25 @@ const tasksValue = (value: unknown): boolean =>
   optional(value.current, (item) => boundedString(item, 512)) &&
   (value.done as number) + ((value.cancelled as number | undefined) ?? 0) <= (value.total as number);
 
+// Mirrors navigationSubagentTallyValid: every count is a safe non-negative
+// integer.
+const subagentTallyValue = (value: unknown): boolean =>
+  knownKeys(value, SUBAGENT_TALLY_KEYS) && count(value.running) && count(value.failed) && count(value.done);
+
+// Mirrors navigationQuestionValid's bounds: text of 1 to 200 characters, at
+// least one question counted, and at most five labels of 1 to 80 characters.
+const questionValue = (value: unknown): boolean =>
+  knownKeys(value, QUESTION_KEYS) &&
+  boundedString(value.text, 200) &&
+  value.text !== "" &&
+  count(value.count) &&
+  (value.count as number) >= 1 &&
+  optional(
+    value.options,
+    (item) =>
+      Array.isArray(item) && item.length <= 5 && item.every((label) => boundedString(label, 80) && label !== ""),
+  );
+
 function sessionValue(value: unknown): value is Record<string, unknown> {
   return (
     knownKeys(value, SESSION_KEYS) &&
@@ -313,10 +345,14 @@ function sessionValue(value: unknown): value is Record<string, unknown> {
     optional(value.approval_pending, bool) &&
     optional(value.approval_tool, (item) => identity(item)) &&
     optional(value.approval_target, (item) => boundedString(item, 512)) &&
+    optional(value.question, questionValue) &&
     optional(value.dormant, bool) &&
     optional(value.offline, bool) &&
     optional(value.updated_at, rfc3339Timestamp) &&
+    optional(value.turn_ended_at, rfc3339Timestamp) &&
+    optional(value.unseen, bool) &&
     optional(value.more_subagents, count) &&
+    optional(value.subagents, subagentTallyValue) &&
     optional(value.omitted_descendants, count) &&
     optional(value.omitted_watches, count) &&
     optional(value.omitted_armed_watches, count) &&

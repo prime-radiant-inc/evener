@@ -77,8 +77,8 @@ func FuzzFinalRPCLifecycle(f *testing.F) {
 		_, _ = hubThreadFork(ctx, hubcore.WebConfig{}, registry, appwire.ThreadForkParams{Ref: ":"})
 		_, _ = hubThreadFork(ctx, hubcore.WebConfig{}, registry, appwire.ThreadForkParams{Ref: "missing:thread"})
 		_, _ = hubThreadFork(ctx, hubcore.WebConfig{}, registry, appwire.ThreadForkParams{Ref: "remote:thread", EditedInput: "edit"})
-		_, _ = hubThreadFork(ctx, hubcore.WebConfig{}, registry, appwire.ThreadForkParams{Ref: "local:thread", SourceTurnID: "1"})
-		_, _ = hubThreadFork(ctx, hubcore.WebConfig{}, registry, appwire.ThreadForkParams{Ref: "local:thread", SourceTurnID: "1", EditedInput: "edit"})
+		_, _ = hubThreadFork(ctx, hubcore.WebConfig{}, registry, appwire.ThreadForkParams{Ref: "local:thread", SourceItemKey: "apptranscript-item-v2:t_1:0:0"})
+		_, _ = hubThreadFork(ctx, hubcore.WebConfig{}, registry, appwire.ThreadForkParams{Ref: "local:thread", SourceItemKey: "apptranscript-item-v2:t_1:0:0", EditedInput: "edit"})
 
 		// Compact distinguishes unknown refs, ordinary errors, and failed resume.
 		_ = compactThreadWithResume(ctx, hubcore.WebConfig{}, registry, appwire.ThreadCompactStartParams{Ref: "missing:thread"})

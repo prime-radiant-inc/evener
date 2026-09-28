@@ -11,6 +11,7 @@ import type {
 } from "@evener/appwire-client";
 import { AppwireClient, makeTranscriptDisplayConfig, WireError } from "@evener/appwire-client";
 import { keyID } from "@evener/appwire-client/state/navigation";
+import { deferred } from "@evener/appwire-client/testing/deferred";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { FakeSocket } from "@evener/appwire-client/testing/fakeSocket";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
@@ -131,6 +132,21 @@ function readResponse(ref: string, overrides: Partial<Thread> = {}): ThreadReadR
   return { thread: testThread(ref, overrides) };
 }
 
+// Like readResponse, but stamped with the same live-history identity
+// ("1"/epoch 1/"inc-1") this file's history/updated fixtures carry, so a
+// thread/read a test pairs with a live history/updated notification hydrates
+// straight into the versioned-history path instead of getting invalidated by
+// a boot-generation mismatch (EMPTY_HISTORY's "" vs the frame's "1") the
+// instant the first live frame lands.
+function versionedReadResponse(ref: string, overrides: Partial<Thread> = {}): ThreadReadResponse {
+  return {
+    thread: testThread(ref, overrides),
+    bootGeneration: "1",
+    epoch: 1,
+    snapshot: { incarnation: "inc-1", length: 0 },
+  };
+}
+
 function emptyActivityTree(ref: string) {
   return {
     revision: 1,
@@ -212,6 +228,22 @@ function connectFakeClient(): FakeClient {
 async function flushUntil(done: () => boolean, maxTurns = 20): Promise<void> {
   for (let i = 0; i < maxTurns && !done(); i += 1) await Promise.resolve();
 }
+
+// The pane's clock tests fake the now-tick's interval and Date, and nothing
+// else. Faking every timer would also fake setImmediate and
+// requestAnimationFrame, which fake-indexeddb and the transcript's virtualizer
+// schedule on, and advanceTimersByTimeAsync yields one real macrotask per fake
+// timer it fires: a 21s advance would take about 750 real turns (the storage
+// steps of ten discovery scans and a scroll-reconcile frame loop), enough for a
+// starved host to push the test past its timeout. With only these faked, the
+// same advance fires about seventeen timers. setTimeout stays real as well:
+// the storage's 10s transaction deadlines and the projection flush's 4s stall
+// tripwire run on it, and a long fake advance would fire them while
+// fake-indexeddb's work still runs in real time. The discovery scans the faked
+// interval still starts run on real IndexedDB, so a test settles them with the
+// projection flush after it advances, before the file's afterEach resets the
+// pending-turns store they publish into.
+const FAKE_CLOCK_ONLY: Parameters<typeof vi.useFakeTimers>[0] = { toFake: ["setInterval", "clearInterval", "Date"] };
 
 // jsdom performs no real layout (every element's offsetHeight is 0, no
 // ResizeObserver) - VirtualList's own test suite stubs this for the exact
@@ -542,7 +574,7 @@ test("falls back to the raw ref as the title when the thread has no name yet", a
   await waitFor(() => expect(screen.getByText("ref_a")).toBeTruthy());
 });
 
-function setNavigationTitle(ref: string, title: string, topLevel = true): void {
+function setNavigationTitle(ref: string, title: string, topLevel = true, fields: Record<string, unknown> = {}): void {
   const key = { kind: "location", ref } as const;
   const data = {
     generation_id: "generation_test",
@@ -560,6 +592,7 @@ function setNavigationTitle(ref: string, title: string, topLevel = true): void {
       kind: topLevel ? "session" : "fork",
       live: true,
       children: [],
+      ...fields,
     },
   };
   navigationStore.setState({
@@ -584,6 +617,31 @@ function setNavigationTitle(ref: string, title: string, topLevel = true): void {
     ]),
   });
 }
+
+// S4: opening a session pane marks the turn its row shows as seen on the hub,
+// so the session's blue dot clears on the phone too.
+test("opening the pane marks the session's unseen turn seen", async () => {
+  setNavigationTitle("ref_a", "Finished work", true, { turn_ended_at: "2026-09-26T11:58:00.123Z", unseen: true });
+  const fake = connectFakeClient();
+  fake.on("thread/read", () => readResponse("ref_a"));
+  fake.on("evener/session/seen/set", () => ({
+    ok: true,
+    changed: true,
+    navigation: { generation_id: "generation_test", targets: [] },
+  }));
+
+  render(
+    <ClientProvider client={fake}>
+      <Session params={{ ref: "ref_a" }} paneId="p1" focused={true} />
+    </ClientProvider>,
+  );
+
+  await waitFor(() =>
+    expect(fake.calls.filter((call) => call.method === "evener/session/seen/set").map((call) => call.params)).toEqual([
+      { sessions: [{ ref: "ref_a", seenThrough: Date.parse("2026-09-26T11:58:00.123Z") }] },
+    ]),
+  );
+});
 
 // kata (session-pane header fix): the pane's own in-pane header (this
 // PaneScaffold title) used to fall straight to the raw ref whenever the
@@ -663,7 +721,7 @@ async function seedPendingSteer(ref = "ref_a"): Promise<string> {
 
 test("cold-start skeleton stays through optimistic send and user echo, then ends on the first authoritative frame", async () => {
   const fake = connectFakeClient();
-  fake.on("thread/read", () => readResponse("ref_a"));
+  fake.on("thread/read", () => versionedReadResponse("ref_a"));
 
   render(
     <ClientProvider client={fake}>
@@ -678,35 +736,58 @@ test("cold-start skeleton stays through optimistic send and user echo, then ends
   });
   expect(screen.getByTestId("pending-chips")).toBeTruthy();
   expect(screen.getByTestId("pending-chips").textContent).toContain("hello");
-  expect(screen.getByTestId("cold-start-skeleton")).toBeTruthy();
+  await waitFor(() => expect(screen.getByTestId("cold-start-skeleton")).toBeTruthy());
   expect(screen.getByRole("status", { name: "Loading" })).toBeTruthy();
   expect(screen.getAllByTestId("skeleton-line").every((line) => line.getAttribute("aria-hidden") === "true")).toBe(
     true,
   );
 
   act(() => {
+    // Production always publishes the running turn id through
+    // thread/status/changed before any history/updated for that turn
+    // (SetProcessingTurn, spec's "Publishing the running turn"), so a real
+    // client always has runningTurnId set by the time this turn's own
+    // history/updated lands.
     fake.emitNotification({
-      method: "turn/started",
-      params: { ref: "ref_a", turn: { id: "turn_1", status: "inProgress", itemsView: "full" } },
+      method: "thread/status/changed",
+      params: { threadId: "thr_ref_a", ref: "ref_a", status: { type: "active" }, activeTurnId: "turn_1" },
+    } as AnyNotification);
+    fake.emitNotification({
+      method: "history/updated",
+      params: {
+        threadId: "thread-1",
+        ref: "ref_a",
+        bootGeneration: "1",
+        epoch: 1,
+        snapshot: { incarnation: "inc-1", length: 1 },
+        turns: [{ id: "turn_1", status: "inProgress", itemsView: "full" }],
+      },
     } as AnyNotification);
   });
   expect(screen.getByTestId("cold-start-skeleton")).toBeTruthy();
 
   act(() => {
     fake.emitNotification({
-      method: "item/completed",
+      method: "history/updated",
       params: {
         threadId: "thr_ref_a",
         ref: "ref_a",
-        turnId: "turn_1",
-        item: {
-          id: "user_1",
-          turnId: "turn_1",
-          type: "userMessage",
-          text: "hello",
-          status: "completed",
-          clientMutationId,
-        },
+        bootGeneration: "1",
+        epoch: 1,
+        snapshot: { incarnation: "inc-1", length: 1 },
+        items: [
+          {
+            ...{
+              id: "user_1",
+              turnId: "turn_1",
+              type: "userMessage",
+              text: "hello",
+              status: "completed",
+              clientMutationId,
+            },
+            turnId: "turn_1",
+          },
+        ],
       },
     } as AnyNotification);
   });
@@ -719,12 +800,16 @@ test("cold-start skeleton stays through optimistic send and user echo, then ends
 
   act(() => {
     fake.emitNotification({
-      method: "item/started",
+      method: "history/updated",
       params: {
         threadId: "thr_ref_a",
         ref: "ref_a",
-        turnId: "turn_1",
-        item: { id: "agent_1", turnId: "turn_1", type: "agentMessage", status: "inProgress" },
+        bootGeneration: "1",
+        epoch: 1,
+        snapshot: { incarnation: "inc-1", length: 1 },
+        items: [
+          { ...{ id: "agent_1", turnId: "turn_1", type: "agentMessage", status: "inProgress" }, turnId: "turn_1" },
+        ],
       },
     } as AnyNotification);
   });
@@ -733,7 +818,7 @@ test("cold-start skeleton stays through optimistic send and user echo, then ends
 
 test("cold-start skeleton stays through durable outbox settlement after an identified user echo", async () => {
   const fake = connectFakeClient();
-  fake.on("thread/read", () => readResponse("ref_a"));
+  fake.on("thread/read", () => versionedReadResponse("ref_a"));
 
   render(
     <ClientProvider client={fake}>
@@ -743,31 +828,47 @@ test("cold-start skeleton stays through durable outbox settlement after an ident
   await waitFor(() => expect(screen.getByText(/send the first message/i)).toBeTruthy());
 
   const clientMutationId = await act(async () => seedPendingSend());
-  expect(screen.getByTestId("cold-start-skeleton")).toBeTruthy();
+  await waitFor(() => expect(screen.getByTestId("cold-start-skeleton")).toBeTruthy());
 
   act(() => {
-    fake.emitNotification({
-      method: "turn/started",
-      params: { ref: "ref_a", turn: { id: "turn_1", status: "inProgress", itemsView: "full" } },
-    } as AnyNotification);
+    // Production publishes the running turn id through thread/status/changed
+    // before any history/updated for that turn (SetProcessingTurn).
     fake.emitNotification({
       method: "thread/status/changed",
-      params: { threadId: "thr_ref_a", ref: "ref_a", status: { type: "active" } },
+      params: { threadId: "thr_ref_a", ref: "ref_a", status: { type: "active" }, activeTurnId: "turn_1" },
     } as AnyNotification);
     fake.emitNotification({
-      method: "item/completed",
+      method: "history/updated",
+      params: {
+        threadId: "thread-1",
+        ref: "ref_a",
+        bootGeneration: "1",
+        epoch: 1,
+        snapshot: { incarnation: "inc-1", length: 1 },
+        turns: [{ id: "turn_1", status: "inProgress", itemsView: "full" }],
+      },
+    } as AnyNotification);
+    fake.emitNotification({
+      method: "history/updated",
       params: {
         threadId: "thr_ref_a",
         ref: "ref_a",
-        turnId: "turn_1",
-        item: {
-          id: "user_1",
-          turnId: "turn_1",
-          type: "userMessage",
-          text: "hello",
-          status: "completed",
-          clientMutationId,
-        },
+        bootGeneration: "1",
+        epoch: 1,
+        snapshot: { incarnation: "inc-1", length: 1 },
+        items: [
+          {
+            ...{
+              id: "user_1",
+              turnId: "turn_1",
+              type: "userMessage",
+              text: "hello",
+              status: "completed",
+              clientMutationId,
+            },
+            turnId: "turn_1",
+          },
+        ],
       },
     } as AnyNotification);
   });
@@ -785,12 +886,16 @@ test("cold-start skeleton stays through durable outbox settlement after an ident
 
   act(() => {
     fake.emitNotification({
-      method: "item/started",
+      method: "history/updated",
       params: {
         threadId: "thr_ref_a",
         ref: "ref_a",
-        turnId: "turn_1",
-        item: { id: "agent_1", turnId: "turn_1", type: "agentMessage", status: "inProgress" },
+        bootGeneration: "1",
+        epoch: 1,
+        snapshot: { incarnation: "inc-1", length: 1 },
+        items: [
+          { ...{ id: "agent_1", turnId: "turn_1", type: "agentMessage", status: "inProgress" }, turnId: "turn_1" },
+        ],
       },
     } as AnyNotification);
   });
@@ -799,7 +904,7 @@ test("cold-start skeleton stays through durable outbox settlement after an ident
 
 test("cold-start skeleton clears when the first turn terminates without an authoritative frame", async () => {
   const fake = connectFakeClient();
-  fake.on("thread/read", () => readResponse("ref_a"));
+  fake.on("thread/read", () => versionedReadResponse("ref_a"));
 
   render(
     <ClientProvider client={fake}>
@@ -811,15 +916,25 @@ test("cold-start skeleton clears when the first turn terminates without an autho
 
   act(() => {
     fake.emitNotification({
-      method: "turn/started",
-      params: { ref: "ref_a", turn: { id: "turn_1", status: "inProgress", itemsView: "full" } },
+      method: "history/updated",
+      params: {
+        threadId: "thread-1",
+        ref: "ref_a",
+        bootGeneration: "1",
+        epoch: 1,
+        snapshot: { incarnation: "inc-1", length: 1 },
+        turns: [{ id: "turn_1", status: "inProgress", itemsView: "full" }],
+      },
     } as AnyNotification);
     fake.emitNotification({
-      method: "turn/completed",
+      method: "history/updated",
       params: {
         threadId: "thr_ref_a",
         ref: "ref_a",
-        turn: { id: "turn_1", status: "failed", itemsView: "full", error: { message: "boom" } },
+        bootGeneration: "1",
+        epoch: 1,
+        snapshot: { incarnation: "inc-1", length: 1 },
+        turns: [{ id: "turn_1", status: "failed", itemsView: "full", error: { message: "boom" } }],
       },
     } as AnyNotification);
   });
@@ -853,7 +968,7 @@ test.each(["failed", "error", "cancelled"])(
   "a first turn marked %s clears the skeleton even when active flags remain",
   async (status) => {
     const fake = connectFakeClient();
-    fake.on("thread/read", () => readResponse("ref_a"));
+    fake.on("thread/read", () => versionedReadResponse("ref_a"));
 
     render(
       <ClientProvider client={fake}>
@@ -866,8 +981,15 @@ test.each(["failed", "error", "cancelled"])(
 
     act(() => {
       fake.emitNotification({
-        method: "turn/started",
-        params: { ref: "ref_a", turn: { id: "turn_1", status, itemsView: "full" } },
+        method: "history/updated",
+        params: {
+          threadId: "thread-1",
+          ref: "ref_a",
+          bootGeneration: "1",
+          epoch: 1,
+          snapshot: { incarnation: "inc-1", length: 1 },
+          turns: [{ id: "turn_1", status, itemsView: "full" }],
+        },
       } as AnyNotification);
     });
 
@@ -1183,15 +1305,8 @@ test("StrictMode's mount-unmount-remount double-invoke nets out to exactly one t
 test("survives unmount/remount mid-stream: durable state lives in the store, not component state", async () => {
   const fake = connectFakeClient();
   fake.on("thread/read", () =>
-    readResponse("ref_a", {
-      turns: [
-        {
-          id: "turn_1",
-          status: "inProgress",
-          itemsView: "full",
-          items: [{ id: "item_1", turnId: "turn_1", type: "agentMessage", status: "inProgress" }],
-        },
-      ],
+    versionedReadResponse("ref_a", {
+      turns: [{ id: "turn_1", status: "inProgress", itemsView: "full", items: [] }],
       evener: { ref: "ref_a", capabilities: CAPABILITIES, queue: { revision: 0 }, activeTurnId: "turn_1" },
     }),
   );
@@ -1214,10 +1329,31 @@ test("survives unmount/remount mid-stream: durable state lives in the store, not
   );
   await waitFor(() => expect(within(paneA.container).getByTestId("turn-block")).toBeTruthy());
 
+  // Streaming text lives in the overlay (overlay/upserted + overlay/delta),
+  // never in history/updated - a recorded item only ever arrives complete,
+  // once the ASSISTANT entry that holds it is recorded (spec's "Live history
+  // notifications").
   act(() => {
     fake.emitNotification({
-      method: "item/agentMessage/delta",
-      params: { ref: "ref_a", turnId: "turn_1", itemId: "item_1", delta: "hello" },
+      method: "overlay/upserted",
+      params: {
+        threadId: "thr_ref_a",
+        ref: "ref_a",
+        item: {
+          key: "stream:r1/0:agentMessage",
+          kind: "stream",
+          turnId: "turn_1",
+          roundId: "r1",
+          streamId: "r1/0",
+          item: {
+            type: "agentMessage",
+            id: "stream:r1/0:agentMessage",
+            turnId: "turn_1",
+            text: "hello",
+            status: "inProgress",
+          },
+        },
+      },
     } as AnyNotification);
   });
   await waitFor(() =>
@@ -1226,16 +1362,16 @@ test("survives unmount/remount mid-stream: durable state lives in the store, not
 
   paneA.unmount(); // real dockview behavior: pane A's whole tree unmounts on a tab switch
 
-  // More streams in while pane A is gone - pane B alone keeps the ref
-  // tracked, so the store keeps applying it exactly as it would for any
+  // More stream deltas arrive while pane A is gone - pane B alone keeps the
+  // ref tracked, so the store keeps applying it exactly as it would for any
   // other still-open pane.
   act(() => {
     fake.emitNotification({
-      method: "item/agentMessage/delta",
-      params: { ref: "ref_a", turnId: "turn_1", itemId: "item_1", delta: " world" },
+      method: "overlay/delta",
+      params: { threadId: "thr_ref_a", ref: "ref_a", key: "stream:r1/0:agentMessage", field: "text", delta: " world" },
     } as AnyNotification);
   });
-  expect(threadsStore.getState().threads.get("ref_a")?.turns[0]?.items[0]?.pendingText).toEqual(["hello", " world"]);
+  expect(threadsStore.getState().threads.get("ref_a")?.turns[0]?.items[0]?.text).toBe("hello world");
 
   // Remount pane A - a fresh component instance (the live stream's rendered
   // markdown from before is gone; if the rendered content depended on
@@ -1284,7 +1420,9 @@ test("Cadence's frame trace grows as live notifications arrive, sourced from the
   // millisecond after the component's last-rendered `now` reads as
   // "timestamped after now" and Cadence's own clock-skew guard (see
   // widgets/cadence's ticksFor) correctly hides it until the next tick.
-  vi.useFakeTimers();
+  // Only the interval and the clock are faked (FAKE_CLOCK_ONLY), so the
+  // storage and the transcript's frames keep running on real scheduling.
+  vi.useFakeTimers(FAKE_CLOCK_ONLY);
   const fake = connectFakeClient();
   fake.on("thread/read", () => readResponse("ref_a"));
 
@@ -1298,6 +1436,9 @@ test("Cadence's frame trace grows as live notifications arrive, sourced from the
   });
   expect(document.querySelectorAll('[data-testid="pane-cadence-slot"] rect')).toHaveLength(0);
 
+  // A live frame lands after the `now` the pane last rendered. Moving the clock
+  // one millisecond stamps this one that way; it fires no timer.
+  vi.advanceTimersByTime(1);
   act(() => {
     fake.emitNotification({
       method: "thread/status/changed",
@@ -1306,6 +1447,7 @@ test("Cadence's frame trace grows as live notifications arrive, sourced from the
   });
   // The ring itself (store-level) grows immediately - no timer involved.
   expect(threadsStore.getState().frameTimes.get("ref_a")).toHaveLength(1);
+  expect(document.querySelectorAll('[data-testid="pane-cadence-slot"] rect')).toHaveLength(0);
 
   // The pane's own `now` prop only advances on its 3s tick (Cadence itself
   // is pure/prop-driven - see widgets/cadence's own doc comment); advance
@@ -1314,6 +1456,7 @@ test("Cadence's frame trace grows as live notifications arrive, sourced from the
   await act(async () => {
     await vi.advanceTimersByTimeAsync(3_000);
   });
+  await flushPendingTurnsProjectionForTests();
   expect(document.querySelectorAll('[data-testid="pane-cadence-slot"] rect').length).toBeGreaterThan(0);
 });
 
@@ -1348,7 +1491,7 @@ function stubScrolledAway(el: HTMLElement) {
 test("scrolled away: a live item arriving shows the real NewContentPill, wired through the real VirtualList", async () => {
   const fake = connectFakeClient();
   fake.on("thread/read", () =>
-    readResponse("ref_a", {
+    versionedReadResponse("ref_a", {
       turns: [
         {
           id: "turn_1",
@@ -1374,15 +1517,23 @@ test("scrolled away: a live item arriving shows the real NewContentPill, wired t
 
   act(() => {
     fake.emitNotification({
-      method: "turn/started",
+      method: "history/updated",
       params: {
+        threadId: "thread-1",
         ref: "ref_a",
-        turn: {
-          id: "turn_2",
-          status: "completed",
-          itemsView: "full",
-          items: [{ id: "item_2", turnId: "turn_2", type: "userMessage", text: "new", status: "completed" }],
-        },
+        bootGeneration: "1",
+        epoch: 1,
+        snapshot: { incarnation: "inc-1", length: 1 },
+        turns: [
+          {
+            id: "turn_2",
+            status: "completed",
+            itemsView: "full",
+          },
+        ],
+        items: [{ id: "item_2", turnId: "turn_2", type: "userMessage", text: "new", status: "completed" }].map(
+          (it) => ({ ...it, turnId: it.turnId ?? "turn_2" }),
+        ),
       },
     } as AnyNotification);
   });
@@ -1438,7 +1589,7 @@ test("scrolled away with NO new content: the jump-to-latest pill still appears, 
 test("scrolled away: a turn FAILING while unseen upgrades the real pill to the error variant", async () => {
   const fake = connectFakeClient();
   fake.on("thread/read", () =>
-    readResponse("ref_a", {
+    versionedReadResponse("ref_a", {
       turns: [
         {
           id: "turn_1",
@@ -1467,17 +1618,27 @@ test("scrolled away: a turn FAILING while unseen upgrades the real pill to the e
   // rendered pill through Session's wiring, not just the hook's return.
   act(() => {
     fake.emitNotification({
-      method: "turn/started",
-      params: { ref: "ref_a", turn: { id: "turn_2", status: "inProgress", itemsView: "" } },
+      method: "history/updated",
+      params: {
+        threadId: "thread-1",
+        ref: "ref_a",
+        bootGeneration: "1",
+        epoch: 1,
+        snapshot: { incarnation: "inc-1", length: 1 },
+        turns: [{ id: "turn_2", status: "inProgress", itemsView: "" }],
+      },
     } as AnyNotification);
   });
   act(() => {
     fake.emitNotification({
-      method: "turn/completed",
+      method: "history/updated",
       params: {
         threadId: "thr_ref_a",
         ref: "ref_a",
-        turn: { id: "turn_2", status: "failed", itemsView: "", error: { message: "boom" } },
+        bootGeneration: "1",
+        epoch: 1,
+        snapshot: { incarnation: "inc-1", length: 1 },
+        turns: [{ id: "turn_2", status: "failed", itemsView: "", error: { message: "boom" } }],
       },
     } as AnyNotification);
   });
@@ -1512,15 +1673,23 @@ test("clicking the real NewContentPill clears it", async () => {
   fireEvent.scroll(root);
   act(() => {
     fake.emitNotification({
-      method: "turn/started",
+      method: "history/updated",
       params: {
+        threadId: "thread-1",
         ref: "ref_a",
-        turn: {
-          id: "turn_2",
-          status: "completed",
-          itemsView: "full",
-          items: [{ id: "item_2", turnId: "turn_2", type: "userMessage", text: "new", status: "completed" }],
-        },
+        bootGeneration: "1",
+        epoch: 1,
+        snapshot: { incarnation: "inc-1", length: 1 },
+        turns: [
+          {
+            id: "turn_2",
+            status: "completed",
+            itemsView: "full",
+          },
+        ],
+        items: [{ id: "item_2", turnId: "turn_2", type: "userMessage", text: "new", status: "completed" }].map(
+          (it) => ({ ...it, turnId: it.turnId ?? "turn_2" }),
+        ),
       },
     } as AnyNotification);
   });
@@ -1550,7 +1719,7 @@ test("clicking the real NewContentPill clears it", async () => {
 // footer (flex: none, always laid out after body - panescaffold.module.css)
 // beside the composer, never inside the transcript's floating overlay.
 test("the liveness line renders in the reserved footer beside the composer, never inside the transcript's floating overlay", async () => {
-  vi.useFakeTimers();
+  vi.useFakeTimers(FAKE_CLOCK_ONLY);
   const fake = connectFakeClient();
   fake.on("thread/read", () =>
     readResponse("ref_a", { status: { type: "active" }, turns: [turnFixture("turn_1", "hi")] }),
@@ -1571,6 +1740,7 @@ test("the liveness line renders in the reserved footer beside the composer, neve
   await act(async () => {
     await vi.advanceTimersByTimeAsync(21_000);
   });
+  await flushPendingTurnsProjectionForTests();
 
   const line = screen.getByTestId("liveness-line");
   expect(line.textContent).toContain("Quiet");
@@ -1974,7 +2144,7 @@ test("speaker geometry is declared only in tokens.css, not in session or turnblo
 test("a dormant session's transcript follows new content the instant its first real turn arrives, wired through the real VirtualList", async () => {
   const fake = connectFakeClient();
   fake.on("thread/read", () =>
-    readResponse("ref_a", {
+    versionedReadResponse("ref_a", {
       status: { type: "active" },
       turns: [
         {
@@ -2007,15 +2177,23 @@ test("a dormant session's transcript follows new content the instant its first r
   // re-initialize useTranscriptScroll's mount effect.
   act(() => {
     fake.emitNotification({
-      method: "turn/started",
+      method: "history/updated",
       params: {
+        threadId: "thread-1",
         ref: "ref_a",
-        turn: {
-          id: "turn_1",
-          status: "completed",
-          itemsView: "full",
-          items: [{ id: "item_1", turnId: "turn_1", type: "userMessage", text: "hello", status: "completed" }],
-        },
+        bootGeneration: "1",
+        epoch: 1,
+        snapshot: { incarnation: "inc-1", length: 1 },
+        turns: [
+          {
+            id: "turn_1",
+            status: "completed",
+            itemsView: "full",
+          },
+        ],
+        items: [{ id: "item_1", turnId: "turn_1", type: "userMessage", text: "hello", status: "completed" }].map(
+          (it) => ({ ...it, turnId: it.turnId ?? "turn_1" }),
+        ),
       },
     } as AnyNotification);
   });
@@ -2035,15 +2213,23 @@ test("a dormant session's transcript follows new content the instant its first r
 
   act(() => {
     fake.emitNotification({
-      method: "turn/started",
+      method: "history/updated",
       params: {
+        threadId: "thread-1",
         ref: "ref_a",
-        turn: {
-          id: "turn_2",
-          status: "completed",
-          itemsView: "full",
-          items: [{ id: "item_2", turnId: "turn_2", type: "userMessage", text: "second", status: "completed" }],
-        },
+        bootGeneration: "1",
+        epoch: 1,
+        snapshot: { incarnation: "inc-1", length: 1 },
+        turns: [
+          {
+            id: "turn_2",
+            status: "completed",
+            itemsView: "full",
+          },
+        ],
+        items: [{ id: "item_2", turnId: "turn_2", type: "userMessage", text: "second", status: "completed" }].map(
+          (it) => ({ ...it, turnId: it.turnId ?? "turn_2" }),
+        ),
       },
     } as AnyNotification);
   });
@@ -2061,7 +2247,7 @@ test("a dormant session's transcript follows new content the instant its first r
 // is exactly what lets this test pin "the dock is NOT the composer's child".
 test("a pending ask_user batch renders as the transcript's last row, not inside the composer", async () => {
   const fake = connectFakeClient();
-  fake.on("thread/read", () => readResponse("ref_a"));
+  fake.on("thread/read", () => versionedReadResponse("ref_a"));
 
   render(
     <ClientProvider client={fake}>
@@ -2075,8 +2261,15 @@ test("a pending ask_user batch renders as the transcript's last row, not inside 
   // live pending question (deriveAskQuestions).
   act(() => {
     fake.emitNotification({
-      method: "turn/started",
-      params: { threadId: "thr_ref_a", ref: "ref_a", turn: { id: "turn_1", status: "inProgress", itemsView: "" } },
+      method: "history/updated",
+      params: {
+        threadId: "thr_ref_a",
+        ref: "ref_a",
+        bootGeneration: "1",
+        epoch: 1,
+        snapshot: { incarnation: "inc-1", length: 1 },
+        turns: [{ id: "turn_1", status: "inProgress", itemsView: "" }],
+      },
     });
     const item = {
       type: "commandExecution",
@@ -2089,12 +2282,26 @@ test("a pending ask_user batch renders as the transcript's last row, not inside 
       }),
     };
     fake.emitNotification({
-      method: "item/started",
-      params: { threadId: "thr_ref_a", ref: "ref_a", turnId: "turn_1", item: { ...item, status: "inProgress" } },
+      method: "history/updated",
+      params: {
+        threadId: "thr_ref_a",
+        ref: "ref_a",
+        bootGeneration: "1",
+        epoch: 1,
+        snapshot: { incarnation: "inc-1", length: 1 },
+        items: [{ ...{ ...item, status: "inProgress" }, turnId: "turn_1" }],
+      },
     });
     fake.emitNotification({
-      method: "item/completed",
-      params: { threadId: "thr_ref_a", ref: "ref_a", turnId: "turn_1", item: { ...item, status: "completed" } },
+      method: "history/updated",
+      params: {
+        threadId: "thr_ref_a",
+        ref: "ref_a",
+        bootGeneration: "1",
+        epoch: 1,
+        snapshot: { incarnation: "inc-1", length: 1 },
+        items: [{ ...{ ...item, status: "completed" }, turnId: "turn_1" }],
+      },
     });
     fake.emitNotification(askPendingStatusChanged("ref_a"));
   });
@@ -2136,7 +2343,7 @@ test("a pending ask counts the dock row in the scroll coordinator's rendered row
     });
   try {
     const fake = connectFakeClient();
-    fake.on("thread/read", () => readResponse("ref_a"));
+    fake.on("thread/read", () => versionedReadResponse("ref_a"));
 
     render(
       <ClientProvider client={fake}>
@@ -2147,8 +2354,15 @@ test("a pending ask counts the dock row in the scroll coordinator's rendered row
 
     act(() => {
       fake.emitNotification({
-        method: "turn/started",
-        params: { threadId: "thr_ref_a", ref: "ref_a", turn: { id: "turn_1", status: "inProgress", itemsView: "" } },
+        method: "history/updated",
+        params: {
+          threadId: "thr_ref_a",
+          ref: "ref_a",
+          bootGeneration: "1",
+          epoch: 1,
+          snapshot: { incarnation: "inc-1", length: 1 },
+          turns: [{ id: "turn_1", status: "inProgress", itemsView: "" }],
+        },
       });
       const item = {
         type: "commandExecution",
@@ -2161,12 +2375,26 @@ test("a pending ask counts the dock row in the scroll coordinator's rendered row
         }),
       };
       fake.emitNotification({
-        method: "item/started",
-        params: { threadId: "thr_ref_a", ref: "ref_a", turnId: "turn_1", item: { ...item, status: "inProgress" } },
+        method: "history/updated",
+        params: {
+          threadId: "thr_ref_a",
+          ref: "ref_a",
+          bootGeneration: "1",
+          epoch: 1,
+          snapshot: { incarnation: "inc-1", length: 1 },
+          items: [{ ...{ ...item, status: "inProgress" }, turnId: "turn_1" }],
+        },
       });
       fake.emitNotification({
-        method: "item/completed",
-        params: { threadId: "thr_ref_a", ref: "ref_a", turnId: "turn_1", item: { ...item, status: "completed" } },
+        method: "history/updated",
+        params: {
+          threadId: "thr_ref_a",
+          ref: "ref_a",
+          bootGeneration: "1",
+          epoch: 1,
+          snapshot: { incarnation: "inc-1", length: 1 },
+          items: [{ ...{ ...item, status: "completed" }, turnId: "turn_1" }],
+        },
       });
       fake.emitNotification(askPendingStatusChanged("ref_a"));
     });
@@ -2456,7 +2684,7 @@ test("a recovery-fenced live session renders no held ghost", async () => {
 
 test("a held steer renders as the live-edge trailing row, under the AskDock when both exist", async () => {
   const fake = connectFakeClient();
-  fake.on("thread/read", () => readResponse("ref_a", liveSurfaceThread()));
+  fake.on("thread/read", () => versionedReadResponse("ref_a", liveSurfaceThread()));
 
   render(
     <ClientProvider client={fake}>
@@ -2478,8 +2706,15 @@ test("a held steer renders as the live-edge trailing row, under the AskDock when
   // deriveAskQuestions), on its own turn so it never rewrites the hydrated one.
   act(() => {
     fake.emitNotification({
-      method: "turn/started",
-      params: { threadId: "thr_ref_a", ref: "ref_a", turn: { id: "turn_2", status: "inProgress", itemsView: "" } },
+      method: "history/updated",
+      params: {
+        threadId: "thr_ref_a",
+        ref: "ref_a",
+        bootGeneration: "1",
+        epoch: 1,
+        snapshot: { incarnation: "inc-1", length: 1 },
+        turns: [{ id: "turn_2", status: "inProgress", itemsView: "" }],
+      },
     });
     const item = {
       type: "commandExecution",
@@ -2492,12 +2727,26 @@ test("a held steer renders as the live-edge trailing row, under the AskDock when
       }),
     };
     fake.emitNotification({
-      method: "item/started",
-      params: { threadId: "thr_ref_a", ref: "ref_a", turnId: "turn_2", item: { ...item, status: "inProgress" } },
+      method: "history/updated",
+      params: {
+        threadId: "thr_ref_a",
+        ref: "ref_a",
+        bootGeneration: "1",
+        epoch: 1,
+        snapshot: { incarnation: "inc-1", length: 1 },
+        items: [{ ...{ ...item, status: "inProgress" }, turnId: "turn_2" }],
+      },
     });
     fake.emitNotification({
-      method: "item/completed",
-      params: { threadId: "thr_ref_a", ref: "ref_a", turnId: "turn_2", item: { ...item, status: "completed" } },
+      method: "history/updated",
+      params: {
+        threadId: "thr_ref_a",
+        ref: "ref_a",
+        bootGeneration: "1",
+        epoch: 1,
+        snapshot: { incarnation: "inc-1", length: 1 },
+        items: [{ ...{ ...item, status: "completed" }, turnId: "turn_2" }],
+      },
     });
     fake.emitNotification(askPendingStatusChanged("ref_a"));
   });
@@ -2576,6 +2825,24 @@ test("heldEpoch bumps on arrival only - never on removal", async () => {
   try {
     const fake = connectFakeClient();
     fake.on("thread/read", () => readResponse("ref_a", liveSurfaceThread()));
+    // The hydrated session dispatches the seeded steer at once, and the steer
+    // stays held while the daemon has not answered: the test holds that
+    // answer, then gives it to make the departure.
+    const steerSent = deferred<() => void>();
+    fake.on("turn/steer", (params) => {
+      return new Promise((resolve) => {
+        steerSent.resolve(() =>
+          resolve({
+            receipt: {
+              clientMutationId: params.clientMutationId,
+              disposition: "applied",
+              threadId: "thr_ref_a",
+              projectionState: "reflected",
+            },
+          }),
+        );
+      });
+    });
 
     render(
       <ClientProvider client={fake}>
@@ -2587,13 +2854,11 @@ test("heldEpoch bumps on arrival only - never on removal", async () => {
     });
     await waitFor(() => expect(screen.getByTestId("held-steer-stack")).toBeTruthy());
     expect(Math.max(...epochs)).toBe(1); // arrival bumped it exactly once
-    // A departure: Stop-cancel the ref's unattempted rows through the same
-    // real write every Stop path makes (PendingChips.test.tsx's shape).
+    // A departure: the daemon acknowledges the steer, and settling that
+    // receipt removes the row.
+    const answerSteer = await act(() => steerSent.promise);
     await act(async () => {
-      const storage = new MutationOutboxIndexedDB();
-      await storage.cancelUnattempted("ref_a");
-      storage.close();
-      await refreshPendingTurnsProjection("ref_a");
+      answerSteer();
       await flushPendingTurnsProjectionForTests();
     });
     await waitFor(() => expect(screen.queryByTestId("held-steer-stack")).toBeNull());
@@ -2868,11 +3133,11 @@ test("explicit Resume follows the returned identity through transcript and new s
   expect(await mutationStorage.listOutbox(currentRef)).toHaveLength(0);
   await user.type(screen.getByRole("textbox", { name: /^message$/i }), "Follow up on current transcript");
   await user.click(screen.getByRole("button", { name: "Send" }));
-  await waitFor(() => expect(requests.filter(({ method }) => method === "turn/start")).toHaveLength(1));
+  await flushPendingTurnsProjectionForTests();
+  expect(requests.filter(({ method }) => method === "turn/start")).toHaveLength(1);
   expect(requests.find(({ method }) => method === "turn/start")?.params).toEqual(
     expect.objectContaining({ ref: currentRef }),
   );
-  await flushPendingTurnsProjectionForTests();
 });
 
 // RoboRev finding on the reduced branch: the explicit Resume passed
@@ -3201,11 +3466,10 @@ test.each(["success", "refused"])("hydrated restart recovery works without navig
   await user.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Force stop" }));
   // forceStop writes its cancellation durably before the RPC, so the call can
   // land after the click resolves; wait for it rather than racing the write.
-  await waitFor(() =>
-    expect(fake.calls.filter((call) => call.method === "evener/thread/forceStop")).toEqual([
-      { method: "evener/thread/forceStop", params: { ref } },
-    ]),
-  );
+  await flushPendingTurnsProjectionForTests();
+  expect(fake.calls.filter((call) => call.method === "evener/thread/forceStop")).toEqual([
+    { method: "evener/thread/forceStop", params: { ref } },
+  ]);
   expect(fake.calls.filter((call) => call.method === "thread/resume")).toHaveLength(0);
   if (outcome === "refused") {
     expect(await screen.findByText("Couldn't force stop session: no direct daemon ownership claim")).toBeTruthy();
@@ -3258,6 +3522,7 @@ test("confirmed force stop refreshes the session and exposes explicit Resume", a
   await user.click(screen.getByRole("menuitem", { name: "Force stop…" }));
   await user.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Force stop" }));
   const resume = await screen.findByRole("button", { name: "Resume session" });
+  await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
   expect(fake.calls.filter((call) => call.method === "thread/resume")).toHaveLength(0);
   await user.click(resume);
   await waitFor(() => expect(threadsStore.getState().threads.get(ref)?.status.type).toBe("idle"));
@@ -3337,7 +3602,8 @@ test.each(["notLoaded", "active", "idle"])(
       releaseReads();
       await waitFor(() => expect((resume as HTMLButtonElement).disabled).toBe(false));
       fireEvent.click(resume);
-      await waitFor(async () => expect(await mutationStorage.getOutbox(mutationId)).toBeUndefined());
+      await flushPendingTurnsProjectionForTests();
+      expect(await mutationStorage.getOutbox(mutationId)).toBeUndefined();
       expect(fake.calls.filter((call) => call.method === "thread/resume")).toHaveLength(1);
       expect(fake.calls.filter((call) => call.method === "turn/start")).toHaveLength(0);
     } finally {
@@ -3415,7 +3681,8 @@ test.each(["active", "idle"])("retained %s child preserves uncertainty until its
   const resume = await screen.findByRole("button", { name: "Resume session" });
   await waitFor(() => expect((resume as HTMLButtonElement).disabled).toBe(false));
   fireEvent.click(resume);
-  await waitFor(async () => expect(await mutationStorage.getOutbox(mutationId)).toBeUndefined());
+  await flushPendingTurnsProjectionForTests();
+  expect(await mutationStorage.getOutbox(mutationId)).toBeUndefined();
   expect(fake.calls.filter((call) => call.method === "thread/resume")).toHaveLength(1);
   expect(fake.calls.filter((call) => call.method === "turn/start")).toHaveLength(0);
 });
@@ -3459,6 +3726,7 @@ test.each(["idle", "active"])(
     expect(fake.calls.filter((call) => call.method === "evener/thread/forceStop")).toHaveLength(0);
     await user.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Force stop" }));
     expect(await screen.findByRole("button", { name: "Resume session" })).toBeTruthy();
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
     expect(fake.calls.filter((call) => call.method === "evener/thread/forceStop")).toEqual([
       { method: "evener/thread/forceStop", params: { ref } },
     ]);
@@ -3541,11 +3809,11 @@ test.each(["pending", "failed"])(
       await openForceStopDialog(user);
       expect(fake.calls.filter((call) => call.method === "evener/thread/forceStop")).toHaveLength(0);
       await user.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Force stop" }));
-      await waitFor(() =>
-        expect(fake.calls.filter((call) => call.method === "evener/thread/forceStop")).toEqual([
-          { method: "evener/thread/forceStop", params: { ref } },
-        ]),
-      );
+      await flushPendingTurnsProjectionForTests();
+      expect(fake.calls.filter((call) => call.method === "evener/thread/forceStop")).toEqual([
+        { method: "evener/thread/forceStop", params: { ref } },
+      ]);
+      await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
       expect(fake.calls.filter((call) => call.method === "thread/resume")).toHaveLength(1);
     } finally {
       await act(async () => rejectRead(new Error("fixture cleanup")));
@@ -3708,7 +3976,8 @@ test.each(["pending", "failed"])(
       await waitFor(() => expect(daemonStarted).toBe(true));
       if (outcome === "failed") {
         await act(async () => rejectRead(blocked()));
-        await waitFor(async () => expect((await mutationStorage.getOutbox(mutationId))?.state).toBe("blockedUnknown"));
+        await flushPendingTurnsProjectionForTests();
+        expect((await mutationStorage.getOutbox(mutationId))?.state).toBe("blockedUnknown");
       }
       expect(threadsStore.getState().threads.get(ref)?.status.type).toBe("notLoaded");
       await openForceStopDialog(user);
@@ -3786,6 +4055,14 @@ test.each(["model", "compact"])(
       await openForceStopDialog(user);
       expect(fake.calls.filter((call) => call.method === "evener/thread/forceStop")).toHaveLength(0);
       await user.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Force stop" }));
+      // Force stop's work runs past the click: the durable cancellation, the
+      // stop RPC (whose handler rejects the pending action), the recovery
+      // obligation, and the refresh after which the dialog closes. Awaiting
+      // the rejection alone would leave the rest to render outside act, so the
+      // test waits for the dialog to close and settles the projection reads
+      // that work started.
+      await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+      await flushPendingTurnsProjectionForTests();
       await settled;
       expect(await screen.findByRole("button", { name: "Resume session" })).toBeTruthy();
       await user.click(screen.getByRole("button", { name: /session actions/i }));
@@ -3852,6 +4129,7 @@ test.each(["idle", "active"])(
       await openForceStopDialog(user);
       await user.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Force stop" }));
       expect(await screen.findByRole("button", { name: "Resume session" })).toBeTruthy();
+      await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
       expect(fake.calls.filter((call) => call.method === "evener/thread/forceStop")).toEqual([
         { method: "evener/thread/forceStop", params: { ref } },
       ]);
@@ -3923,11 +4201,11 @@ test("a fenced notLoaded session keeps force stop reachable in the pane footer",
   await user.click(menuTrigger);
   await user.click(screen.getByRole("menuitem", { name: "Force stop…" }));
   await user.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Force stop" }));
-  await waitFor(() =>
-    expect(fake.calls.filter((call) => call.method === "evener/thread/forceStop")).toEqual([
-      { method: "evener/thread/forceStop", params: { ref } },
-    ]),
-  );
+  await flushPendingTurnsProjectionForTests();
+  expect(fake.calls.filter((call) => call.method === "evener/thread/forceStop")).toEqual([
+    { method: "evener/thread/forceStop", params: { ref } },
+  ]);
+  await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
   expect(fake.calls.filter((call) => call.method === "thread/resume")).toHaveLength(0);
 });
 

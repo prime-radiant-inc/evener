@@ -17,6 +17,17 @@
   background: var(--hover-1);
 }
 
+/* The selected row (a tree that supplies isSelected): the same aria-selected
+ * wash the command palette and segmented control use, a step stronger than the
+ * resting hover. Declared after :hover - and repeated with :hover - so the
+ * selected state holds under the pointer instead of flicking back to the
+ * lighter hover tone (disclosure.module.css's [open] rule draws the same
+ * precedence line). */
+.row[aria-selected="true"],
+.row[aria-selected="true"]:hover {
+  background: var(--hover-2);
+}
+
 .row:focus-visible {
   outline: var(--focus-ring);
   outline-offset: -2px;

@@ -109,6 +109,56 @@ export type ConversationStatus =
   | "error"
   | "closed";
 
+// The wire's nil/non-nil-empty/non-empty rule (reducer.ts's own
+// ITEM_OMISSION_TOLERANT_FIELDS, mirrored here for the mobile-only merges
+// that fall outside the shared reducer's per-turn mergeHistory): an omitted
+// field means "this entry said nothing new here", not "cleared". Read by
+// both the rehydrate reconciliation below and reconcileCrossTurnReissues.
+const SNAPSHOT_AUTHORITY_FIELDS = [
+  "images",
+  "outputImages",
+  "output",
+  "error",
+  "raw",
+  "prevalOnly",
+  "exitCode",
+  "argumentsJSON",
+  "description",
+  "toolName",
+  "callId",
+  "eventKind",
+  "steeringKind",
+  "source",
+] as const;
+
+// The known thread-scalar notifications: reducer.ts's own case for each just
+// restamps one scalar field (and lastFrameAt), never `turns` — read straight
+// off applyNotificationToThread's switch, minus history/updated, the
+// overlay/* cases (which do touch turns), evener/thread/resync (its own
+// clause) and warning (its own drop rule). The gap rule below reads this as
+// a denylist: anything NOT in this set — including a forward-compat method
+// this client has no case for at all — is transcript-shaped, and a frame
+// that leaves `turns` unchanged by reference is a gap.
+const THREAD_SCALAR_ONLY_METHODS = new Set<string>([
+  "thread/queueChanged",
+  "thread/status/changed",
+  "thread/model/changed",
+  "thread/reasoning-effort/changed",
+  "evener/goal/updated",
+  "evener/notes/updated",
+  "evener/urls/updated",
+  "thread/vision-model/changed",
+  "evener/task/updated",
+  "evener/thread/name/changed",
+  "evener/sandbox/escalation/requested",
+  "evener/sandbox/escalation/resolved",
+  "evener/job/started",
+  "evener/job/finished",
+  "evener/delegate/updated",
+  "evener/jobs/treeUpdated",
+  "evener/thread/modelRetry",
+]);
+
 // Mutation lifecycle state for send/steer/queue/interrupt. The store tracks
 // the kind, pending/failed status, the exact draft snapshot at submission,
 // the draft revision at submission (so type-then-delete after clear is
@@ -601,6 +651,64 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
   // applyHydrationResponseCut drops its buffer at the same point for the same
   // reason.
   //
+  // Task 17 (v6 read path): loadOlder and rehydrate fold page/reread content
+  // into `turns` through the pre-v6 array merges below (mergeOlderItemPageWithFolds,
+  // mergeTurnHistoryWithFolds), which know nothing of model.history — the
+  // versioned record every OTHER live frame (history/updated, overlay/*, via
+  // applyNotification -> the reducer's withDisplay) rebuilds `turns` FROM.
+  // Left unsynced, a page turn or a rehydrate's retained history lives only in
+  // `turns`, and the next such frame silently drops it (withDisplay derives
+  // `turns` from model.history.turns, not from the caller's prior `turns`).
+  // Both callers must therefore commit the SAME final turns array into both
+  // fields; this is the one place that happens; it also carries `.turns`
+  // unions of a model with no history at all (unversioned; a no-op there).
+  function withSyncedHistoryTurns<M extends MobileConversation>(
+    model: M,
+    turns: readonly TurnModel[],
+  ): M {
+    if (model.history === undefined) return model;
+    return { ...model, history: { ...model.history, turns: [...turns] } };
+  }
+
+  // A turn a history/updated frame marks itemsView "full" carries its
+  // complete current item list in this frame's own `items` (turnId-matched) —
+  // never accumulated across frames (Go's Turn.ItemsView, appwire/types.go).
+  // The shared reducer's mergeHistory deliberately never removes an item (an
+  // invariant reducer.history.test.ts pins for every OTHER caller), so a full
+  // turn's withdrawal of an item it omits is this store's own product
+  // decision (RoboRev round 18-20), applied after the reducer's own merge —
+  // to `turns` AND model.history.turns together (withSyncedHistoryTurns),
+  // or the next frame's withDisplay resurrects the withdrawn row from
+  // history.turns.
+  function withdrawOmittedFullTurns(
+    turns: readonly TurnModel[],
+    n: AnyNotification,
+  ): readonly TurnModel[] {
+    if (n.method !== "history/updated") return turns;
+    const fullTurnIds = (n.params.turns ?? [])
+      .filter((turn) => turn.itemsView === "full")
+      .map((turn) => turn.id);
+    if (fullTurnIds.length === 0) return turns;
+    const suppliedByTurn = new Map<string, Set<string>>();
+    for (const id of fullTurnIds) suppliedByTurn.set(id, new Set());
+    for (const item of n.params.items ?? []) {
+      if (item.turnId === undefined) continue;
+      suppliedByTurn.get(item.turnId)?.add(item.transcriptKey ?? item.id);
+    }
+    let changed = false;
+    const result = turns.map((turn) => {
+      const supplied = suppliedByTurn.get(turn.id);
+      if (supplied === undefined) return turn;
+      const kept = turn.items.filter((item) =>
+        supplied.has(item.transcriptKey ?? item.id),
+      );
+      if (kept.length === turn.items.length) return turn;
+      changed = true;
+      return { ...turn, items: kept };
+    });
+    return changed ? result : turns;
+  }
+
   // The package reducer over the conversation. The display rows are projected
   // from the model it returns (applyNotification below), so the rows a frame
   // produces and the rows a snapshot produces come from the one projector.
@@ -610,11 +718,135 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
   ): MobileConversation {
     const next = applyNotification(conversation, n, Date.now());
     carryFoldIdentities(conversation.turns, next.turns);
-    // #2213 round 1: settle the page-ownership record against what the
-    // frame removed from the model before anything reads it (the publish
-    // below, the reread a settled turn can request).
-    clearPageOwnershipForFrameRemovals(conversation, next, n);
-    return next;
+    // Only a frame the reducer actually folded into `turns` can withdraw or
+    // reconcile anything: an invalidated/discarded/ignored frame (the
+    // reducer's own generation/epoch/incarnation rules, reducer.ts's
+    // classifySignal) returns `turns` unchanged by reference, and a
+    // full-turn descriptor riding such a frame describes a merge that never
+    // happened.
+    if (next.turns === conversation.turns) return next;
+    // mergeHistory matches an item only within its OWN wire turn id — never
+    // across turns the way a page/rehydrate merge's turnsMatch does. A live
+    // history/updated frame that reissues a page-owned (or otherwise
+    // retained) item under a NEW turn id therefore leaves two copies
+    // standing side by side instead of one, until reconcileCrossTurnReissues
+    // folds them; only history/updated can introduce this (every other
+    // method is scalar-only or overlay-only, per the reducer's own
+    // dispatch), so other methods skip the scan.
+    const reconciled =
+      n.method === "history/updated"
+        ? reconcileCrossTurnReissues(conversation.turns, next.turns)
+        : next.turns;
+    const turns = withdrawOmittedFullTurns(reconciled, n);
+    if (turns !== reconciled) {
+      // A withdrawn identity's page ownership must retire with it: a later
+      // rehydrate's twin filter (snapshotMatchFor/pageItemIds, above) is the
+      // ONLY thing standing between a live reissue of the same bare id or
+      // transcript key — "a same-id/key different-content replacement", the
+      // wire genuinely reuses both — and that filter treats page ownership
+      // as permanent once recorded. Leaving a withdrawn identity's ownership
+      // standing resurrects unrelated later content sharing its spelling as
+      // page history it never was (RoboRev round 18-20's own worry, applied
+      // to reuse rather than omission).
+      for (const turn of reconciled) {
+        for (const item of turn.items) {
+          const identity = item.transcriptKey ?? item.id;
+          if (turns.some((t) => t.items.some((kept) => (kept.transcriptKey ?? kept.id) === identity))) continue;
+          pageItemIds.delete(identity);
+          pageItemIds.delete(item.id);
+        }
+      }
+    }
+    return turns === next.turns ? next : withSyncedHistoryTurns({ ...next, turns: [...turns] }, turns);
+  }
+
+  // See applyThreadNotification's own comment: an identity `previous` held
+  // under one turn that this frame just reissued under ANOTHER turn stays
+  // positioned at its OLD turn — a page/rehydrate merge's turnsMatch
+  // coalesces the same way, beside the row's other page-owned neighbors, not
+  // wherever the live frame's own (often freshly-opened) turn happens to
+  // sort — absorbing the reissue's fields (SNAPSHOT_AUTHORITY_FIELDS, the
+  // same fallback rehydrate's applySnapshotAuthority uses) there, and the
+  // copy the reducer's own per-turn merge just landed at the new turn drops.
+  // An identity untouched by this frame, or one already reconciled in place
+  // (both locations agree), is left alone.
+  function reconcileCrossTurnReissues(
+    previous: readonly TurnModel[],
+    turns: readonly TurnModel[],
+  ): readonly TurnModel[] {
+    const heldTurnByIdentity = new Map<string, string>();
+    for (const turn of previous) {
+      for (const item of turn.items) {
+        heldTurnByIdentity.set(item.transcriptKey ?? item.id, turn.id);
+      }
+    }
+    if (heldTurnByIdentity.size === 0) return turns;
+    const locationsByIdentity = new Map<string, string[]>();
+    const itemByLocation = new Map<string, ItemModel>();
+    for (const turn of turns) {
+      for (const item of turn.items) {
+        const identity = item.transcriptKey ?? item.id;
+        const locations = locationsByIdentity.get(identity);
+        if (locations) locations.push(turn.id);
+        else locationsByIdentity.set(identity, [turn.id]);
+        itemByLocation.set(`${turn.id}\u0000${identity}`, item);
+      }
+    }
+    const reissues = new Map<string, { oldTurn: string; newTurn: string }>();
+    for (const [identity, locations] of locationsByIdentity) {
+      if (locations.length < 2) continue;
+      const oldTurn = heldTurnByIdentity.get(identity);
+      if (oldTurn === undefined || !locations.includes(oldTurn)) continue;
+      const newTurn = locations.find((turnId) => turnId !== oldTurn);
+      if (newTurn !== undefined) reissues.set(identity, { oldTurn, newTurn });
+    }
+    if (reissues.size === 0) return turns;
+    let changed = false;
+    const result = turns.map((turn) => {
+      let turnChanged = false;
+      let items = turn.items.filter((item) => {
+        const reissue = reissues.get(item.transcriptKey ?? item.id);
+        const drop = reissue !== undefined && reissue.newTurn === turn.id;
+        if (drop) turnChanged = true;
+        return !drop;
+      });
+      items = items.map((item) => {
+        const identity = item.transcriptKey ?? item.id;
+        const reissue = reissues.get(identity);
+        if (reissue === undefined || reissue.oldTurn !== turn.id) return item;
+        const fresh = itemByLocation.get(`${reissue.newTurn}\u0000${identity}`);
+        if (fresh === undefined) return item;
+        const merged = applyCrossTurnFallback(fresh, item);
+        turnChanged = true;
+        return merged;
+      });
+      if (!turnChanged) return turn;
+      changed = true;
+      return { ...turn, items };
+    });
+    return changed ? result : turns;
+  }
+
+  // A reissue is authoritative for every field it explicitly carries; an
+  // omitted omission-tolerant field, or an omitted text field, falls back to
+  // the superseded item's value instead of clearing it (the same rule
+  // reducer.ts's private mergeReplacedItem applies within one turn — see
+  // that function's own comment for why).
+  function applyCrossTurnFallback(fresh: ItemModel, held: ItemModel): ItemModel {
+    let merged = fresh;
+    for (const field of SNAPSHOT_AUTHORITY_FIELDS) {
+      const heldValue = (held as unknown as Record<string, unknown>)[field];
+      if (heldValue === undefined || (fresh as unknown as Record<string, unknown>)[field] !== undefined) continue;
+      if (merged === fresh) merged = { ...fresh };
+      (merged as unknown as Record<string, unknown>)[field] = heldValue;
+    }
+    if (itemTextPresence(fresh) === "omitted" && itemTextPresence(held) === "provided") {
+      merged = copyItemTextPresence(
+        fresh,
+        merged === fresh ? { ...fresh, text: held.text } : { ...merged, text: held.text },
+      );
+    }
+    return merged;
   }
   // D23d: page-owned timeline identities — the item identities (and
   // failure:<turn id> row identities) the merged model carries as older-page
@@ -1449,99 +1681,6 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
     for (const claim of claimsToRetire) pageItemIds.delete(claim);
     for (const claim of claimsToAdd) pageItemIds.add(claim);
     return claimsToAdd;
-  }
-
-  // RoboRev #2213 round 1 (Medium): a reset and a full turn/completed REMOVE
-  // items from the model — the wire authoritatively withdrew them — and the
-  // page ownership those identities recorded must not outlive the removal.
-  // A stale claim promotes the identity's NEXT holder to page history: the
-  // wire reuses item ids across stream restarts (the reset→started
-  // protocol) and across turns, so a restarted live row would ride a claim
-  // that describes content the model no longer holds and survive an
-  // authoritative rehydrate that omits it. Ownership follows CONTENT, so a
-  // claim clears only when the frame took the identity's last model copy —
-  // a page copy another turn still backs keeps it (the identity-keyed rule
-  // the recorders write, and the retention a surviving page fragment owns
-  // by design). The spellings cleared are the pair every recorder writes —
-  // key-first and bare id — which is also the pair an omitted item's
-  // attachment row resolves its source by (attachmentSourceIdentity reads
-  // the source's transcript key, else the bare id the ":attachments" row id
-  // carries), so the attachment's page ownership retires with its source's.
-  function clearPageOwnershipForFrameRemovals(
-    before: MobileConversation,
-    after: MobileConversation,
-    n: AnyNotification,
-  ): void {
-    // Only the removal frames reach this walk; every other kind adds or
-    // merges content. These two are the only reducer paths that remove —
-    // a reset filters the named item out, and a full completion stamp
-    // replaces the active turn's item set (the bare and non-active settle
-    // paths never remove).
-    if (n.method !== "item/agentMessage/reset" && n.method !== "turn/completed") {
-      return;
-    }
-    // A frame the reducer dropped left the turns untouched.
-    if (after.turns === before.turns) return;
-    // RoboRev round 4 (panel M1): reconcile through the package's own
-    // identity rule — the same rule the merges match by — instead of a
-    // union of every post-frame id. Content that CONTINUES under a
-    // matching after item carries its claim to the spellings the survivor
-    // holds now, so a keyless page item a completion reissues WITH a
-    // transcript key gains the key's claim, and a reissued wire id keeps
-    // the claim its key backs while the old bare id retires; a before item
-    // with no match left the model — a replacement under the same bare id
-    // with a DIFFERENT key conflicts rather than continues — and both its
-    // spellings retire, so the next holder of the bare id inherits
-    // nothing.
-    // RoboRev round 4, review round 1: whether a before item owns a claim
-    // reads ITS OWN spelling — the key-first identity retention reads —
-    // never the bare id another item sharing the wire id may hold a claim
-    // under, and it reads the pre-walk snapshot, so the settlement's own
-    // writes cannot promote a later item. An unowned item neither gains a
-    // claim nor retires spellings another item's claim still backs.
-    const owned = new Set(pageItemIds);
-    const afterItems = after.turns.flatMap((turn) => turn.items);
-    for (const turn of before.turns) {
-      for (const item of turn.items) {
-        if (!owned.has(item.transcriptKey ?? item.id)) continue;
-        // Finding-3 (the #2213 disclosed-unfixed local finding, riding this
-        // lane): the first-identity-match selection can pair a keyless
-        // same-bare-id survivor ahead of the keyed continuation and retire a
-        // claim whose original item still stands. The pairing premise — one
-        // model holding keyless {id:X} beside keyed {id:X,K} — is unreachable
-        // through every store surface: live item frames route cross-turn by
-        // identity and merge into the existing holder (findItemTurnId's
-        // final fallback searches all turns), the page and rehydrate merges
-        // identity-fold same-identity pairs into one item, and the only
-        // remaining constructor is a wire frame installing the same identity
-        // twice within one turn's item list, which no flow produces and
-        // reconcileItemDuplicates folds at the next merge anyway. The
-        // defensive find-order preference below (unchanged reference first,
-        // then the exact-key continuation, then the identity fallback) makes
-        // the walk immune to the premise without changing any reachable
-        // pairing: keyed-vs-keyed same-id survivors never match the exact-key
-        // step, and the fallback keeps the package's own rule.
-        const survivor =
-          afterItems.find((candidate) => candidate === item) ??
-          afterItems.find(
-            (candidate) =>
-              item.transcriptKey !== undefined &&
-              candidate.transcriptKey === item.transcriptKey,
-          ) ??
-          afterItems.find((candidate) => itemIdentityMatches(candidate, item));
-        if (survivor === undefined) {
-          pageItemIds.delete(item.transcriptKey ?? item.id);
-          pageItemIds.delete(item.id);
-          continue;
-        }
-        const beforeSpellings = [item.transcriptKey ?? item.id, item.id];
-        const survivorSpellings = [survivor.transcriptKey ?? survivor.id, survivor.id];
-        for (const id of survivorSpellings) pageItemIds.add(id);
-        for (const id of beforeSpellings) {
-          if (!survivorSpellings.includes(id)) pageItemIds.delete(id);
-        }
-      }
-    }
   }
 
   // RoboRev round 24: a refresh can NAME the live working set's turn while
@@ -3119,22 +3258,6 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
             // those are local/live state the snapshot cannot speak for.
             // Page-owned items keep everything (the round-31 rule: the
             // page's retained history is not the snapshot's to withdraw).
-            const SNAPSHOT_AUTHORITY_FIELDS = [
-              "images",
-              "outputImages",
-              "output",
-              "error",
-              "raw",
-              "prevalOnly",
-              "exitCode",
-              "argumentsJSON",
-              "description",
-              "toolName",
-              "callId",
-              "eventKind",
-              "steeringKind",
-              "source",
-            ] as const;
             const applySnapshotAuthority = (item: ItemModel): ItemModel => {
               const match = snapshotMatchFor(item);
               if (match === undefined) return item;
@@ -3595,18 +3718,21 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
           // shed rows, leave the notice no anchor to seat at, and the
           // carried-filter prune would retire a warning the cap kept.
           const committedConversation = capAndTruncate(
-            seatedRehydrateItems === null
-              ? projectConversation({
-                  ...merged,
-                  turns: mergedTurns,
-                  olderCursor: wireOlderCursor,
-                }, undefined, projectConfig)
-              : {
-                  ...merged,
-                  turns: mergedTurns,
-                  olderCursor: wireOlderCursor,
-                  items: seatedRehydrateItems,
-                },
+            withSyncedHistoryTurns(
+              seatedRehydrateItems === null
+                ? projectConversation({
+                    ...merged,
+                    turns: mergedTurns,
+                    olderCursor: wireOlderCursor,
+                  }, undefined, projectConfig)
+                : {
+                    ...merged,
+                    turns: mergedTurns,
+                    olderCursor: wireOlderCursor,
+                    items: seatedRehydrateItems,
+                  },
+              mergedTurns,
+            ),
           );
           // RoboRev review round 2: page turn ownership alone must not pin
           // the store's own paging cursor across a DISJOINT refresh —
@@ -3949,11 +4075,14 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
               // atCap only stops the STORE's own paging honestly (F8); it says
               // nothing about whether the daemon actually has more history, so
               // sessionTokens must not read it as "this is the whole session".
-              conversation: {
-                ...pageConversation,
-                turns: boundedTurns,
-                olderCursor: result.nextCursor,
-              },
+              conversation: withSyncedHistoryTurns(
+                {
+                  ...pageConversation,
+                  turns: boundedTurns,
+                  olderCursor: result.nextCursor,
+                },
+                boundedTurns,
+              ),
               olderCursor: nextCursor,
               hasEarlierItems: atCap
                 ? false
@@ -4539,7 +4668,26 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
         // rule for a frame and for a snapshot, so there is nothing for a row
         // applier to disagree with. The two display bounds run after the
         // projection.
-        const applied = applyThreadNotification(state.conversation, n);
+        let applied = applyThreadNotification(state.conversation, n);
+        // activeTurnId is otherwise snapshot-only (reducer.ts's
+        // activeTurnIdFromThread runs once, at hydrate); history/updated's
+        // own turn-scalar merge (mergeHistory) only adds/updates items and
+        // turn fields by version and never moves this field. The mobile
+        // store is this field's one live writer: a frame's own turn opening
+        // (inProgress) becomes the active turn, and a frame settling the
+        // CURRENTLY active turn (any status the wire uses to close one)
+        // clears it. A frame naming some OTHER, already-settled turn changes
+        // nothing (the "not on a superseded turn" rule).
+        if (n.method === "history/updated") {
+          let activeTurnId = applied.activeTurnId;
+          for (const turn of n.params.turns ?? []) {
+            if (turn.status === "inProgress") activeTurnId = turn.id;
+            else if (turn.id === activeTurnId) activeTurnId = undefined;
+          }
+          if (activeTurnId !== applied.activeTurnId) {
+            applied = { ...applied, activeTurnId };
+          }
+        }
         // RoboRev round 34: a warning with no active turn is the one frame
         // the wire drops entirely (and never persists, so no read can carry
         // it back), yet it is a real diagnostic — the projector emits
@@ -4629,11 +4777,27 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
         // at once rather than showing an incomplete transcript until the next
         // resync. Thread-level frames (a status, a name, the queue) never
         // touch turns and are not gaps, so they are named out.
-        const touchesTranscript =
-          n.method.startsWith("item/") ||
-          n.method.startsWith("turn/") ||
-          n.method === "warning" ||
-          n.method === "evener/steering/injected";
+        //
+        // history/updated is the read model's one transcript frame now (its
+        // predecessors — the per-item/per-turn lifecycle notifications, and
+        // evener/steering/injected, whose "steering" item history/updated now
+        // carries directly — are gone). The package's applyHistoryUpdated
+        // hands back `turns` by reference whenever it merged nothing (a stale
+        // replay under the one generation state machine) or invalidated the
+        // thread (a newer epoch or incarnation than held — the read model's
+        // own gap, "a history update whose epoch is newer than held"), so
+        // the identity check below already recognizes both without a
+        // separate epoch comparison here.
+        // The gap rule is a DENYLIST, not an allowlist: per the comment
+        // above, ANY frame the reducer could not place — including a
+        // forward-compat method this client has no case for at all — is a
+        // gap when it leaves `turns` untouched by reference, and only the
+        // known thread-scalar frames (never touch turns; reducer.ts's own
+        // cases for each just restamp a scalar field and lastFrameAt) are
+        // named out. evener/thread/resync is handled by the clause's other
+        // arm above and warning by droppedByTheWiresOwnRule below, so
+        // neither needs to be named here.
+        const touchesTranscript = !THREAD_SCALAR_ONLY_METHODS.has(n.method);
         // One exception, by the wire's own rule rather than by this window's
         // contents: a warning that lands with no active turn is dropped in the
         // reducer because warnings are never transcript-persisted (its
@@ -4657,19 +4821,23 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
         // turn's items and a bare turn/completed settles the turn without
         // touching them, so the projected warning row lingered with nothing
         // in flight to clear it. The wire never persists warnings, so the
-        // canonical read is the one honest way to drop what the settle
-        // kept: a completed turn that still holds warning items requests
-        // it. A full settle stamp replaces the turn's items wire-authoritatively
-        // (no warnings survive it) and needs nothing here.
-        if (n.method === "turn/completed") {
-          const settledTurnId = (n.params as { turn?: { id?: string } }).turn
-            ?.id;
-          const settledTurn =
-            settledTurnId === undefined
-              ? undefined
-              : applied.turns.find((turn) => turn.id === settledTurnId);
-          if (settledTurn?.items.some((item) => item.type === "warning")) {
-            requestRehydrate(state.ref);
+        // canonical read is the one honest way to drop what the settle kept:
+        // a settled turn that still holds warning items requests it.
+        // turn/completed's read-model replacement, history/updated, carries
+        // the settling turn's scalars (id/status) in its own `turns` field —
+        // it never removes items itself (mergeHistory only adds/updates by
+        // identity), so a warning added before this thread's first
+        // history/updated (the narrow window in which the reducer's
+        // "warning" case still inserts a live item — see its `model.history`
+        // gate) would otherwise never get cleared once its turn settles.
+        if (n.method === "history/updated") {
+          for (const turn of n.params.turns ?? []) {
+            if (turn.status === "inProgress") continue;
+            const settledTurn = applied.turns.find((t) => t.id === turn.id);
+            if (settledTurn?.items.some((item) => item.type === "warning")) {
+              requestRehydrate(state.ref);
+              break;
+            }
           }
         }
       },

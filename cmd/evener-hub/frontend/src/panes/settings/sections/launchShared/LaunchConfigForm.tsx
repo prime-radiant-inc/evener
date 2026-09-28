@@ -40,6 +40,7 @@ import {
   type PathValidateResponse,
   PROMPT_COMPOSITE_SPECS,
   PROMPT_DEPENDENT_WIRE_FIELDS,
+  sameJsonValue,
   schemaPathKind,
 } from "@evener/appwire-client";
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -105,30 +106,12 @@ function resolvedValue(option: LaunchOption, resolvedDefaults: LaunchConfigLayer
   return (resolvedDefaults as Record<string, unknown>)[option.wireField];
 }
 
-/** sameLayerValue compares two launch-config values structurally: a layer's
- * fields hold JSON scalars, string lists and plain maps/objects, and every read
- * hands back a FRESH object even when the content is byte-for-byte the same. */
-function sameLayerValue(left: unknown, right: unknown): boolean {
-  if (Object.is(left, right)) return true;
-  if (Array.isArray(left) || Array.isArray(right)) {
-    if (!Array.isArray(left) || !Array.isArray(right) || left.length !== right.length) return false;
-    return left.every((item, index) => sameLayerValue(item, right[index]));
-  }
-  if (typeof left !== "object" || typeof right !== "object" || left === null || right === null) return false;
-  const leftRecord = left as Record<string, unknown>;
-  const rightRecord = right as Record<string, unknown>;
-  const keys = Object.keys(leftRecord);
-  return (
-    keys.length === Object.keys(rightRecord).length &&
-    keys.every((key) => Object.hasOwn(rightRecord, key) && sameLayerValue(leftRecord[key], rightRecord[key]))
-  );
-}
-
 /** sameLayer answers whether two layers carry the same content. A re-read of
  * the same owner's layer is a new OBJECT every time, so a content comparison is
- * what tells a real change from a fresh copy of the same values. */
+ * what tells a real change from a fresh copy of the same values. A layer's
+ * fields hold JSON scalars, string lists and plain maps/objects. */
 function sameLayer(left: LaunchConfigLayer, right: LaunchConfigLayer): boolean {
-  return sameLayerValue(left, right);
+  return sameJsonValue(left, right);
 }
 
 export function LaunchConfigForm({

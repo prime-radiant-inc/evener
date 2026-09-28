@@ -8,7 +8,7 @@ import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { connectionStore } from "../../../../stores/connection";
 import { setMutationClientIdentityForTests } from "../../../../stores/mutationClientIdentity";
 import { MutationOutboxIndexedDB } from "../../../../stores/mutationOutboxIndexedDB";
-import { holdIndexedDBEvent } from "../../../../stores/testing/stalledIndexedDB";
+import { holdIndexedDBEvent, holdNextWriteTransaction } from "../../../../stores/testing/stalledIndexedDB";
 import { resetThreadsStoreForTests, setMutationStorageForTests, threadsStore } from "../../../../stores/threads";
 import { useColdStartSkeleton } from "../../coldStart";
 import { readComposerDraft, writeComposerDraft } from "../draft";
@@ -21,10 +21,14 @@ import {
   submitWithPendingTracking,
   updateRecoveryPendingTurn,
   useAwaitingFirstFrameSend,
+  useBlockedMutationEntries,
   usePendingTurnEntries,
   useRecoveryEntries,
 } from "./pendingTurnsStore";
-import { flushPendingTurnsProjectionForTests } from "./testing/flushPendingTurnsProjection";
+import {
+  flushPendingTurnsProjectionForTests,
+  startFlushPastEmptyRoundForTests,
+} from "./testing/flushPendingTurnsProjection";
 
 function thread(overrides: Partial<Thread> = {}): Thread {
   return {
@@ -434,22 +438,55 @@ test("a flush cannot settle while a submit is still in flight", async () => {
     () => submitting,
   );
 
-  let flushResolved = false;
-  const flushing = flushPendingTurnsProjectionForTests().then(() => {
-    flushResolved = true;
-  });
-
-  // Give the flush every chance to finish early: more macrotask hops than its
-  // own settle round takes. If the submit is tracked, it cannot return here.
-  for (let hop = 0; hop < 5; hop += 1) {
-    await new Promise<void>((resolve) => setTimeout(resolve, 0));
-  }
-  expect(flushResolved).toBe(false);
+  const flush = await startFlushPastEmptyRoundForTests();
+  // If the submit is tracked, the flush cannot return here.
+  expect(flush.isDone()).toBe(false);
 
   releaseSubmit();
   await submitted;
-  await flushing;
-  expect(flushResolved).toBe(true);
+  await flush.done;
+  expect(flush.isDone()).toBe(true);
+});
+
+// Durable work that starts outside this file is tracked by the storage itself:
+// every transaction the mutation storage runs registers when it starts, so a
+// Force stop's cancellation or the dispatcher settling a receipt after its RPC
+// answers holds a flush open as surely as a submit does. Each row holds a real
+// write's completion.
+test.each<
+  [string, readonly string[], (storage: MutationOutboxIndexedDB, clientMutationId: string) => Promise<unknown>]
+>([
+  ["a Force stop's cancellation", ["outbox", "sequences"], (storage) => storage.cancelUnattempted("ref_a")],
+  [
+    "the dispatcher's receipt settlement",
+    ["outbox", "optimistic", "recovery"],
+    (storage, clientMutationId) => storage.settleReceipt(clientMutationId, "reflected"),
+  ],
+])("a flush cannot settle while %s write is still in flight", async (_name, stores, write) => {
+  const storage = new MutationOutboxIndexedDB();
+  const input = [{ type: "text" as const, text: "in flight" }];
+  const record = await storage.enqueueIntent({
+    targetRef: "ref_a",
+    threadId: "thread_a",
+    method: "turn/start",
+    payload: { ref: "ref_a", input },
+    attachments: [],
+    optimisticDisplay: { method: "turn/start", input },
+  });
+  await flushPendingTurnsProjectionForTests();
+  const held = holdNextWriteTransaction(stores);
+  const writing = write(storage, record.clientMutationId);
+  await held.reached;
+
+  const flush = await startFlushPastEmptyRoundForTests();
+  // If the storage registers the write, the flush cannot return here.
+  expect(flush.isDone()).toBe(false);
+
+  held.release();
+  await writing;
+  await flush.done;
+  expect(flush.isDone()).toBe(true);
+  storage.close();
 });
 
 // The flush above waits inside act(), so durable work with no completion left
@@ -625,6 +662,82 @@ test("recovery action wrappers refresh the durable projection", async () => {
   ]);
   expect(await storage.getRecovery(records[1]!.clientMutationId)).toBeUndefined();
   expect(await storage.getRecovery(records[2]!.clientMutationId)).toBeUndefined();
+});
+
+// A send the daemon rejected, as the durable recovery row a composer offers.
+async function enqueueRejectedSend(storage: MutationOutboxIndexedDB, text: string) {
+  const record = await storage.enqueueIntent({
+    targetRef: "ref_a",
+    threadId: "thread_a",
+    method: "turn/start",
+    payload: { ref: "ref_a", input: [{ type: "text", text }] },
+    attachments: [],
+    optimisticDisplay: { method: "turn/start", input: [{ type: "text", text }] },
+    composerText: text,
+  });
+  await storage.transferToRecovery(record.clientMutationId, "rejected");
+  return record;
+}
+
+// While its client is ready, the outbox rescans the shared storage every two
+// seconds for writes no announcement brought to this tab, and every scan
+// refreshes the projection. These two tests fake that interval, and nothing
+// else, so each runs one scan when it chooses.
+test("the outbox's interval scan re-renders nothing when the durable records have not changed", async () => {
+  vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+  try {
+    const storage = new MutationOutboxIndexedDB();
+    setMutationStorageForTests(storage);
+    const rejected = await enqueueRejectedSend(storage, "keep this draft");
+    await connect();
+    let renders = 0;
+    const rows = renderHook(() => {
+      renders += 1;
+      return { recovery: useRecoveryEntries("ref_a"), blocked: useBlockedMutationEntries("ref_a") };
+    });
+    await flushPendingTurnsProjectionForTests();
+    expect(rows.result.current.recovery).toEqual([
+      expect.objectContaining({ clientMutationId: rejected.clientMutationId }),
+    ]);
+    const rendersBeforeScan = renders;
+    const recoveryReads = vi.spyOn(storage, "listRecovery");
+
+    vi.advanceTimersByTime(2_000);
+    await flushPendingTurnsProjectionForTests();
+
+    expect(recoveryReads).toHaveBeenCalled();
+    expect(renders).toBe(rendersBeforeScan);
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+test("the outbox's interval scan publishes a recovery edit another tab made", async () => {
+  vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+  try {
+    const storage = new MutationOutboxIndexedDB();
+    setMutationStorageForTests(storage);
+    const rejected = await enqueueRejectedSend(storage, "first draft");
+    await connect();
+    const recovery = renderHook(() => useRecoveryEntries("ref_a"));
+    await flushPendingTurnsProjectionForTests();
+    expect(recovery.result.current).toEqual([expect.objectContaining({ composerText: "first draft" })]);
+
+    // Another tab edits the row: the write lands in the shared storage, and
+    // nothing announces it to this one.
+    await storage.updateRecoveryInput(
+      rejected.clientMutationId,
+      [{ type: "text", text: "second draft" }],
+      undefined,
+      "second draft",
+    );
+    vi.advanceTimersByTime(2_000);
+    await flushPendingTurnsProjectionForTests();
+
+    expect(recovery.result.current).toEqual([expect.objectContaining({ composerText: "second draft" })]);
+  } finally {
+    vi.useRealTimers();
+  }
 });
 
 test("a recovery resend publishes its handoff without waiting for recovery projection reads", async () => {
@@ -861,13 +974,23 @@ test("a replayed pending receipt keeps a long-running steer until its authoritat
   });
   act(() => {
     fake.emitNotification({
-      method: "evener/steering/injected",
+      method: "history/updated",
       params: {
         threadId: "thread_a",
         ref: "ref_a",
-        text: "patient steer",
-        source: "user",
-        clientMutationId: pending.result.current[0]?.id,
+        bootGeneration: "1",
+        epoch: 1,
+        snapshot: { incarnation: "inc_a", length: 1 },
+        items: [
+          {
+            type: "steering",
+            id: "item_steer_1",
+            turnId: "turn_a",
+            text: "patient steer",
+            source: "user",
+            clientMutationId: pending.result.current[0]?.id,
+          },
+        ],
       },
     });
   });
@@ -881,24 +1004,41 @@ test("a replayed pending receipt keeps a long-running steer until its authoritat
 });
 
 test("first-frame state derives from the identified active turn and needs no confirmation timer", async () => {
-  await connect({
-    turns: [
-      {
-        id: "turn_1",
-        status: "inProgress",
-        itemsView: "full",
-        items: [
+  // A plain connect() response carries no snapshot, so hydrateThread takes
+  // its legacy branch, which never derives runningTurnId (only the versioned
+  // branch's runningTurn() helper does) - awaitingFirstFrameSend reads
+  // runningTurnId (reducer.ts's model comment: the live-tracked field), so
+  // this fixture needs the versioned read path to seed it from
+  // evener.activeTurnId, exactly as a real read would.
+  const fake = new FakeClient("ready");
+  fake.on(
+    "thread/read",
+    (): ThreadReadResponse => ({
+      thread: thread({
+        turns: [
           {
-            id: "user_1",
-            turnId: "turn_1",
-            type: "userMessage",
-            text: "hello",
-            clientMutationId: "mutation_1",
+            id: "turn_1",
+            status: "inProgress",
+            itemsView: "full",
+            items: [
+              {
+                id: "user_1",
+                turnId: "turn_1",
+                type: "userMessage",
+                text: "hello",
+                clientMutationId: "mutation_1",
+              },
+            ],
           },
         ],
-      },
-    ],
-  });
+      }),
+      bootGeneration: "1",
+      epoch: 1,
+      snapshot: { incarnation: "inc-1", length: 1 },
+    }),
+  );
+  connectionStore.getState().connect(fake);
+  await threadsStore.getState().ensureThread("ref_a");
   const awaiting = renderHook(() => useAwaitingFirstFrameSend("ref_a"));
   expect(awaiting.result.current).toBe(true);
 });

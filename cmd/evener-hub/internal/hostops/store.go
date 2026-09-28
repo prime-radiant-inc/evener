@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"os"
 	"path/filepath"
 	"slices"
@@ -84,12 +85,44 @@ func RenameLanded(err error) bool {
 // and every live record. Retention and compaction (§4) are a later slice, so
 // nothing here yet removes a record or bounds the set. Every field is required
 // in the file: the kernel of the store is that a file missing one is
-// schema-invalid, never silently an empty store.
+// schema-invalid, never silently an empty store. Boundaries is the one
+// exception — it arrived after the store shipped, so a file without it (or with
+// it null) is a store that has mirrored no boundary yet; see its own comment.
 type snapshot struct {
 	Version                uint64   `json:"version"`
 	Sequence               uint64   `json:"sequence"`
 	AllocatorHighWaterMark uint64   `json:"allocatorHighWaterMark"`
 	Records                []Record `json:"records"`
+	// Boundaries is the per-host boundary record the registry mirrors (spec 08
+	// §7): the {generation, incarnationId, presenceEpoch} triple per host name.
+	// Unlike every other field it is optional on read: this key arrived after
+	// the store shipped, so a file without it — or with it null — is a store
+	// that has mirrored no boundary yet, not a schema-invalid file. Every write
+	// emits it as an object.
+	Boundaries map[string]Boundary `json:"boundaries"`
+	// Tokens is the outstanding confirmation-token row set (deploy-pipeline §3):
+	// at most one row per host name, because minting supersedes. Like Boundaries
+	// it is optional on read — the key arrived after the store shipped, so a
+	// file without it, or with it null, is a store that has minted nothing —
+	// and every write emits it as an array.
+	Tokens []Token `json:"tokens"`
+	// ProbeEpochs is the durable probe-epoch row set (deploy-pipeline §6 step 2):
+	// at most one row per host name, superseded by the host's next persist or its
+	// token mint and deleted silently at boot. Optional on read for the same
+	// reason as Tokens.
+	ProbeEpochs []ProbeEpoch `json:"probeEpochs"`
+	// ProbeEpochSeq is the durable per-host op-sequence high-water mark the probe
+	// epochs are minted from. It survives the rows' supersede and reap, so a
+	// sequence is never reused within a controller boot. Optional on read.
+	ProbeEpochSeq map[string]uint64 `json:"probeEpochSeq"`
+	// GuardEpoch is the fencing epoch the serving hub last admitted from its
+	// caller (§10). Optional on read: absent means no epoch was ever presented.
+	GuardEpoch *GuardEpoch `json:"guardEpoch"`
+	// WallClockHighWaterMark is the durable high-water wall clock (§3's rollback
+	// guard): the greatest wall-clock value any token pass has observed. It
+	// never moves backward, and the zero Time means no pass has observed a clock
+	// yet. It is optional on read for the same reason as Tokens.
+	WallClockHighWaterMark time.Time `json:"wallClockHighWaterMark"`
 }
 
 // storeCell is the lock-and-state cell one store file's handlers share.
@@ -126,6 +159,12 @@ type Store struct {
 	fs     afero.Fs
 	faults storeFaults
 	cell   *storeCell
+	// clock is the token paths' clock seam (token.go): nil reads the real
+	// clock. It is per handle, like faults, so a test can drive token expiry,
+	// the wall-clock high-water mark and the rollback guard deterministically.
+	// The record paths keep reading nowUTC directly: their timestamps are
+	// display-only and never decide a race.
+	clock func() time.Time
 }
 
 // StorePath is the operation store's file under stateRoot, beside the hub's
@@ -499,6 +538,21 @@ type storeFile struct {
 	Sequence               *uint64       `json:"sequence"`
 	AllocatorHighWaterMark *uint64       `json:"allocatorHighWaterMark"`
 	Records                *[]recordFile `json:"records"`
+	// Boundaries is optional on read (see snapshot.Boundaries): absent and null
+	// both decode to nil, which is "no boundary mirrored yet".
+	Boundaries map[string]Boundary `json:"boundaries"`
+	// Tokens is optional on read (see snapshot.Tokens): absent and null both
+	// decode to nil, which is "no token minted yet".
+	Tokens *[]tokenFile `json:"tokens"`
+	// ProbeEpochs is optional on read (see snapshot.ProbeEpochs).
+	ProbeEpochs *[]ProbeEpoch `json:"probeEpochs"`
+	// ProbeEpochSeq is optional on read (see snapshot.ProbeEpochSeq).
+	ProbeEpochSeq map[string]uint64 `json:"probeEpochSeq"`
+	// GuardEpoch is optional on read (see snapshot.GuardEpoch).
+	GuardEpoch *GuardEpoch `json:"guardEpoch"`
+	// WallClockHighWaterMark is optional on read: absent, null and the zero
+	// instant all mean no pass has observed a clock yet.
+	WallClockHighWaterMark time.Time `json:"wallClockHighWaterMark"`
 }
 
 // recordFile is the decode shape of one record. It carries the same fields as
@@ -621,11 +675,40 @@ func loadFS(fs afero.Fs, path string) (snapshot, error) {
 		}
 		records[i] = mapped
 	}
+	var tokens []Token
+	if file.Tokens != nil {
+		tokens = make([]Token, len(*file.Tokens))
+		for i, row := range *file.Tokens {
+			mapped, err := row.token()
+			if err != nil {
+				return snapshot{}, fmt.Errorf("%w: %s: %w", ErrStoreCorrupt, path, err)
+			}
+			tokens[i] = mapped
+		}
+	}
 	state := snapshot{
 		Version:                *file.Version,
 		Sequence:               *file.Sequence,
 		AllocatorHighWaterMark: *file.AllocatorHighWaterMark,
 		Records:                records,
+		Boundaries:             file.Boundaries,
+		Tokens:                 tokens,
+		ProbeEpochSeq:          file.ProbeEpochSeq,
+		GuardEpoch:             file.GuardEpoch,
+		// The mark is normalized like every stored timestamp: an offset form
+		// converts to UTC, and anything before the Unix epoch — including the
+		// year-one string a zero mark marshals to — reads as "no mark yet"
+		// (wallClockMark).
+		WallClockHighWaterMark: wallClockMark(file.WallClockHighWaterMark),
+	}
+	if file.ProbeEpochs != nil {
+		state.ProbeEpochs = make([]ProbeEpoch, len(*file.ProbeEpochs))
+		for i, row := range *file.ProbeEpochs {
+			// The row's creation timestamp is normalized like every other stored
+			// timestamp, so a hand-edited offset form never survives a rewrite.
+			row.CreatedAt = row.CreatedAt.UTC()
+			state.ProbeEpochs[i] = row
+		}
 	}
 	// Spec §8: "`createdAt`/`updatedAt` are stored UTC-normalized (`Z`-suffixed
 	// RFC3339; a stored offset form converts at write time)". Values this store
@@ -655,6 +738,17 @@ func loadFS(fs afero.Fs, path string) (snapshot, error) {
 func saveFS(fs afero.Fs, path string, state snapshot, faults storeFaults) (renamed bool, err error) {
 	if err := validateSnapshot(state); err != nil {
 		return false, err
+	}
+	if state.Boundaries == nil {
+		// A store that has mirrored nothing writes an empty object, never null:
+		// the key is always present in a file this store wrote, so absent/null
+		// stays what it is — the pre-boundary file shape.
+		state.Boundaries = map[string]Boundary{}
+	}
+	if state.Tokens == nil {
+		// Same rule for the token rows: a store that has minted nothing writes an
+		// empty array, never null.
+		state.Tokens = []Token{}
 	}
 	data, err := json.Marshal(state)
 	if err != nil {
@@ -858,12 +952,20 @@ func preservedMode(fs afero.Fs, path string) (os.FileMode, bool) {
 // opaque — a raw field's interior, whose schema the crash-fencing spec owns — so
 // its keys are not this store's to judge.
 var ownedObjectKeys = map[string]map[string]struct{}{
-	"": keysOf("version", "sequence", "allocatorHighWaterMark", "records"),
+	"": keysOf("version", "sequence", "allocatorHighWaterMark", "records", "boundaries",
+		"tokens", "probeEpochs", "probeEpochSeq", "guardEpoch", "wallClockHighWaterMark"),
 	"records[]": keysOf("id", "clientOperationId", "host", "kind", "state", "generation",
 		"incarnationId", "fencingEpoch", "orphanBoundary", "progress", "result",
 		"createdAt", "updatedAt", "hostRemoved", "sequence"),
 	"records[].result":     keysOf("ok", "message"),
 	"records[].progress[]": keysOf("ts", "message"),
+	"boundaries[]":         keysOf("generation", "incarnationId", "presenceEpoch"),
+	"tokens[]": keysOf("host", "value", "generation", "incarnationId", "entryHash",
+		"hubTomlFingerprint", "factsRevision", "factsCapturedAt", "targetPath",
+		"controllerRevision", "runningVersion", "runningHealthy", "processStartTime",
+		"freshnessBoundSec", "mintedAt", "expiresAt"),
+	"probeEpochs[]": keysOf("host", "bootId", "opSeq", "generation", "incarnationId", "createdAt"),
+	"guardEpoch":    keysOf("bootId", "opSeq"),
 }
 
 // keysOf builds one canonical key set.
@@ -1049,7 +1151,7 @@ func validateKeys(raw []byte, owned map[string]map[string]struct{}) error {
 				parent.expectKey = true
 				continue
 			}
-			if canonical, isOwned := owned[parent.path]; isOwned {
+			if canonical, isOwned := ownedKeysFor(owned, parent.path); isOwned {
 				if _, ok := canonical[value]; !ok {
 					return fmt.Errorf("object %s carries the key %q, which is not one this store writes",
 						pathLabel(parent.path), value)
@@ -1069,6 +1171,21 @@ func validateKeys(raw []byte, owned map[string]map[string]struct{}) error {
 			}
 		}
 	}
+}
+
+// ownedKeysFor resolves an object path to the canonical key set this store
+// decodes it with. A map's per-key object carries the key in its path —
+// "boundaries.<name>" — so the one map-valued record this store owns is matched
+// by its "boundaries[]" template; every other keyed object (the hand-written
+// file shapes a test or an operator might produce) is opaque to this rule.
+func ownedKeysFor(owned map[string]map[string]struct{}, path string) (map[string]struct{}, bool) {
+	if canonical, ok := owned[path]; ok {
+		return canonical, true
+	}
+	if key, ok := strings.CutPrefix(path, "boundaries."); ok && key != "" {
+		return owned["boundaries[]"], true
+	}
+	return nil, false
 }
 
 // joinKeyPath extends a parent object's path with the key naming a nested value.
@@ -1176,6 +1293,55 @@ func validateSnapshot(state snapshot) error {
 				ErrInvalidRecord, record.ID, state.AllocatorHighWaterMark)
 		}
 	}
+	// Boundary records are validated like every other value this store persists:
+	// no triple outside the writers' schema enters the file, so the boot that
+	// reconciles against these values (a later slice) never has to guess what a
+	// malformed one meant.
+	for name, boundary := range state.Boundaries {
+		if err := validateBoundary(name, boundary); err != nil {
+			return err
+		}
+	}
+	// Token rows carry the same refuse-always rule: a row outside the schema a
+	// mint writes is never served, and the set-level rules (one row per host
+	// name, one row per value) hold for hand-edited files too. Where a row's
+	// capture timestamps sit relative to the durable mark is deliberately not a
+	// load rule: §3 makes that the read path's arm, which reads such a row
+	// expired instead of corrupt.
+	if err := validateTokenRows(state.Tokens); err != nil {
+		return err
+	}
+	// Probe epochs and the guard epoch carry the same refuse-always rule: a row
+	// outside the schema a persist writes never enters the file, and the
+	// set-level rules (one probe row per host, a row's sequence at or below its
+	// host's counter) hold for hand-edited files too.
+	epochHosts := make(map[string]struct{}, len(state.ProbeEpochs))
+	for _, row := range state.ProbeEpochs {
+		if err := validateProbeEpoch(row); err != nil {
+			return err
+		}
+		if _, duplicate := epochHosts[row.Host]; duplicate {
+			return fmt.Errorf("%w: host %q carries more than one probe epoch", ErrInvalidRecord, row.Host)
+		}
+		epochHosts[row.Host] = struct{}{}
+		if seq := state.ProbeEpochSeq[row.Host]; row.OpSeq > seq {
+			return fmt.Errorf("%w: probe epoch for %q carries op sequence %d above its host's counter %d",
+				ErrInvalidRecord, row.Host, row.OpSeq, seq)
+		}
+	}
+	for host, seq := range state.ProbeEpochSeq {
+		if host == "" || !utf8.ValidString(host) {
+			return fmt.Errorf("%w: a probe-epoch sequence is keyed by an invalid host", ErrInvalidRecord)
+		}
+		if seq == 0 {
+			return fmt.Errorf("%w: host %q carries a zero probe-epoch sequence", ErrInvalidRecord, host)
+		}
+	}
+	if state.GuardEpoch != nil {
+		if err := validateGuardEpoch(*state.GuardEpoch); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
@@ -1187,6 +1353,11 @@ func cloneSnapshot(state snapshot) snapshot {
 	for i, record := range state.Records {
 		out.Records[i] = cloneRecord(record)
 	}
+	out.Boundaries = maps.Clone(state.Boundaries)
+	out.Tokens = cloneTokens(state.Tokens)
+	out.ProbeEpochs = slices.Clone(state.ProbeEpochs)
+	out.ProbeEpochSeq = maps.Clone(state.ProbeEpochSeq)
+	out.GuardEpoch = cloneGuardEpoch(state.GuardEpoch)
 	return out
 }
 
@@ -1215,3 +1386,14 @@ func parseAllocatorID(id string) (uint64, error) {
 
 // nowUTC is the one clock the store reads: display-only timestamps.
 func nowUTC() time.Time { return time.Now().UTC() }
+
+// now is the clock the token paths read: the handle's own seam when a test set
+// one, the real clock otherwise. Token deadlines, facts ages and the wall-clock
+// high-water mark all read here, so one handle's passes cannot disagree about
+// what time it is.
+func (s *Store) now() time.Time {
+	if s.clock != nil {
+		return s.clock().UTC()
+	}
+	return nowUTC()
+}

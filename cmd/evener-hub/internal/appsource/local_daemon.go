@@ -72,6 +72,12 @@ type LocalDaemonEntry struct {
 	// appwire.EvenerThread.PendingEscalations, so a controller hub listing this
 	// hub's sessions sees the approval that thread/read already shows.
 	PendingEscalations []appwire.SandboxEscalationRequested
+	// PendingQuestion mirrors hubcore.LiveEntry.PendingQuestion: the root's
+	// first pending question (S1b). threadFromEntry carries it into
+	// appwire.EvenerThread.PendingQuestion, so a controller hub listing this
+	// hub's sessions names the question as a local probe would. A read-only
+	// alias has none.
+	PendingQuestion *appwire.PendingQuestion
 	// RunningJobs carries the roster's non-terminal, non-agent work into the
 	// typed thread diagnostics consumed by hub and TUI status views.
 	RunningJobs []appwire.EvenerJobInfo
@@ -94,6 +100,21 @@ type LocalDaemonEntry struct {
 	// and the fallback takes over.
 	Capabilities      appwire.ThreadCapabilities
 	CapabilitiesKnown bool
+	// Subagents mirrors hubcore.LiveEntry.Subagents: the root's whole-tree
+	// subagent tally (S3). threadFromEntry carries it into
+	// appwire.EvenerThread.Subagents when the tree has a subagent. A read-only
+	// alias has none.
+	Subagents appwire.SubagentTally
+	// LastTurnEndedAt mirrors hubcore.LiveEntry.LastTurnEndedAt in Unix
+	// milliseconds: when the root's last turn ended (S4). threadFromEntry
+	// carries it into appwire.EvenerThread.LastTurnEndedAt so a controller
+	// reading this hub can tell Finished from Idle. A read-only alias has none.
+	LastTurnEndedAt int64
+	// Tasks mirrors hubcore.LiveEntry.Tasks: the root's task-list progress
+	// (S13b). threadFromEntry carries a copy into appwire.EvenerThread.Tasks,
+	// so a controller hub shows a remote session's task line. nil means the
+	// daemon cannot read its task state; a read-only alias has none.
+	Tasks *appwire.TaskAggregate
 }
 
 func NewLocalDaemonSource(sourceID string, entries func() []rendezvous.Entry, client *http.Client) *LocalDaemonSource {
@@ -1145,9 +1166,15 @@ func (s *LocalDaemonSource) threadFromEntry(item LocalDaemonEntry) appwire.Threa
 			InstanceID:         instanceID,
 			Capabilities:       listRowCapabilities(item, status),
 			AskPending:         item.PendingAsk,
+			PendingQuestion:    appwire.ClonePendingQuestion(item.PendingQuestion),
 			PendingEscalations: append([]appwire.SandboxEscalationRequested(nil), item.PendingEscalations...),
+			LastTurnEndedAt:    item.LastTurnEndedAt,
+			Tasks:              appwire.CloneTaskAggregate(item.Tasks),
 		},
 		Status: appwire.ThreadStatus{Type: status},
+	}
+	if tally := item.Subagents; tally != (appwire.SubagentTally{}) {
+		thread.Evener.Subagents = &tally
 	}
 	if status == appwire.ThreadStatusRestartRequired {
 		// A restart-required session cannot act, but its saved notes are still

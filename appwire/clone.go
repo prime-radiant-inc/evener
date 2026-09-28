@@ -66,6 +66,17 @@ func cloneThreadItem(item ThreadItem) ThreadItem {
 	return item
 }
 
+// CloneOverlayItem returns a copy of item that shares no mutable state with
+// it.
+func CloneOverlayItem(item OverlayItem) OverlayItem {
+	if item.Anchor != nil {
+		anchor := *item.Anchor
+		item.Anchor = &anchor
+	}
+	item.Item = cloneThreadItem(item.Item)
+	return item
+}
+
 func cloneInputItems(items []InputItem) []InputItem {
 	if items == nil {
 		return nil
@@ -100,6 +111,7 @@ func cloneEvenerThread(e EvenerThread) EvenerThread {
 	e.FailedToolCalls = clonePointer(e.FailedToolCalls)
 	e.Activity = CloneThreadActivity(e.Activity)
 	e.Subagents = clonePointer(e.Subagents)
+	e.PendingQuestion = ClonePendingQuestion(e.PendingQuestion)
 	// Capabilities is all bools (value type) — no copy needed.
 	return e
 }
@@ -122,6 +134,17 @@ func CloneThreadActivity(value *ThreadActivity) *ThreadActivity {
 	}
 	clone := *value
 	clone.Minutes = append([]int(nil), value.Minutes...)
+	return &clone
+}
+
+// ClonePendingQuestion returns a copy of value whose option labels are its
+// own; nil stays nil.
+func ClonePendingQuestion(value *PendingQuestion) *PendingQuestion {
+	if value == nil {
+		return nil
+	}
+	clone := *value
+	clone.Options = append([]string(nil), value.Options...)
 	return &clone
 }
 

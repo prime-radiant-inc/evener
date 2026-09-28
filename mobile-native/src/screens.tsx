@@ -1,6 +1,6 @@
 import type { CellRendererProps } from "@react-native/virtualized-lists";
 import { useHeaderHeight } from "@react-navigation/elements";
-import { useFocusEffect, useIsFocused } from "@react-navigation/native";
+import { useFocusEffect } from "@react-navigation/native";
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
 import * as Clipboard from "expo-clipboard";
 import {
@@ -34,13 +34,11 @@ import { SafeAreaView } from "react-native-safe-area-context";
 import {
 	type AskBatch,
 	buildComposerInput,
-	humanizeState,
 	parseSlashToken,
 	spliceSlashCommand,
 	type TranscriptDisplayConfigV1,
 } from "@evener/appwire-client";
 import { createConversationService } from "../../mobile/src/services/conversation";
-import { createRosterService } from "../../mobile/src/services/roster";
 import { createActivityStore } from "../../mobile/src/state/activity";
 import { createConversationStore } from "../../mobile/src/state/conversation";
 import {
@@ -50,6 +48,7 @@ import {
 import { ActivitySheet } from "./ActivitySheet";
 import { ApprovalSheet } from "./ApprovalSheet";
 import { ApprovalControls } from "./approvalControls";
+import { useMarkSeenInFront } from "./board/sessionSeen";
 import { CommandCompletion } from "./CommandCompletion";
 import { type ComposerSetting, ComposerSettings } from "./ComposerSettings";
 import { ComposerSettingsSheet } from "./ComposerSettingsSheet";
@@ -87,7 +86,6 @@ import {
 } from "./nativeMutationRuntime";
 import { readerPositions } from "./nativeReaderPosition";
 import { locateSession, type SessionLocation } from "./navigationReveal";
-import { ProjectSessionsList } from "./ProjectSessionsList";
 import {
 	editPairingInput,
 	importPairing as importReviewedPairing,
@@ -115,7 +113,6 @@ import {
 	restoreReaderCommand,
 	shouldApplyExactRestore,
 } from "./readerPosition";
-import { RosterSearch } from "./rosterSearch";
 import { type SessionDestination, SessionMenu } from "./SessionMenu";
 import { SessionSheet } from "./SessionSheet";
 import { SessionControls } from "./sessionControls";
@@ -127,7 +124,7 @@ import {
 } from "./session/sendAction";
 import { LiveStatusTray, useFrameCounter } from "./session/StatusTray";
 import { localSessionId } from "./sessionDeletionResult";
-import { TasksSheet } from "./TasksSheet";
+import { leaveScreen, screenInFront, useScreenInFront } from "./sheet/useScreenInFront";
 import { TimelineItem } from "./TimelineItem";
 import { Toast, useToast } from "./Toast";
 import { TranscriptUsage } from "./TranscriptUsage";
@@ -135,7 +132,6 @@ import { groupTimeline, type TimelineRow, timelineGap } from "./timeline";
 import { projectNativeTranscript } from "./transcriptPresentation";
 import { Action, Copy, ErrorMessage, styles, useColors } from "./ui";
 
-const NATIVE_ROSTER_PAGE_SIZE = 50;
 const noControls = () => null;
 const noControlSubscription = () => () => {};
 
@@ -175,6 +171,7 @@ export type Routes = {
 	Sessions: undefined;
 	NewSession: { hubId: string; hubName: string };
 	Conversation: { hubId: string; ref: string; title: string };
+	TasksSheet: { hubId: string; ref: string; threadId: string; hasTasks: boolean };
 };
 
 export function HubsScreen({
@@ -439,392 +436,16 @@ export function HubsScreen({
 	);
 }
 
-export function SessionsScreen({
-	navigation,
-}: NativeStackScreenProps<Routes, "Sessions">) {
-	const { activeProfile, client, state } = useConnection();
-	const colors = useColors();
-	const { fontScale } = useWindowDimensions();
-	const [searchText, setSearchText] = useState("");
-	const [searchActive, setSearchActive] = useState(false);
-	const focused = useIsFocused();
-	const roster = useMemo(
-		() =>
-			new RosterSearch(
-				client ? createRosterService(client, NATIVE_ROSTER_PAGE_SIZE) : null,
-			),
-		[client],
-	);
-	const {
-		rows,
-		loading: refreshing,
-		error,
-		hasMore,
-		query,
-	} = useSyncExternalStore(roster.subscribe, roster.getSnapshot);
-	const refresh = useCallback(async () => {
-		if (state === "ready" && searchActive) await roster.load();
-	}, [roster, state, searchActive]);
-	useEffect(() => {
-		setSearchText("");
-		setSearchActive(false);
-		return () => roster.cancel();
-	}, [roster]);
-	useFocusEffect(
-		useCallback(() => {
-			const unwatch =
-				client && state === "ready" && searchActive
-					? roster.watch(client)
-					: () => {};
-			return unwatch;
-		}, [roster, client, state, searchActive]),
-	);
-	function search(value: string) {
-		if (state !== "ready") return;
-		Keyboard.dismiss();
-		if (!value.trim()) {
-			setSearchActive(false);
-			roster.cancel();
-			return;
-		}
-		setSearchActive(true);
-		void roster.load(value);
-	}
-	useEffect(() => {
-		const openHubs = () => navigation.popToTop();
-		const openNew = () => {
-			if (activeProfile)
-				navigation.navigate("NewSession", {
-					hubId: activeProfile.id,
-					hubName: activeProfile.name,
-				});
-		};
-		navigation.setOptions({
-			unstable_headerLeftItems: () => [
-				{ type: "button", label: "Hubs", onPress: openHubs },
-			],
-			unstable_headerRightItems: () => [
-				{
-					type: "button",
-					label: "New session",
-					icon: { type: "sfSymbol", name: "square.and.pencil" },
-					disabled: !activeProfile || state !== "ready",
-					onPress: openNew,
-				},
-				{
-					type: "menu",
-					label: "Hub actions",
-					accessibilityLabel: "Hub actions",
-					icon: { type: "sfSymbol", name: "ellipsis" },
-					disabled: !activeProfile,
-					menu: {
-						items: [
-							{
-								type: "action",
-								label: "Hub settings",
-								disabled: state !== "ready",
-								onPress: () =>
-									navigation.navigate("HubSettings", {
-										hubId: activeProfile?.id ?? "",
-									}),
-							},
-							{
-								type: "action",
-								label: "Browse projects",
-								disabled: state !== "ready",
-								onPress: () =>
-									navigation.navigate("Projects", {
-										hubId: activeProfile?.id ?? "",
-									}),
-							},
-							{
-								type: "action",
-								label: "Pinned sections",
-								onPress: () =>
-									navigation.navigate("PinSections", {
-										hubId: activeProfile?.id ?? "",
-									}),
-							},
-						],
-					},
-				},
-			],
-			headerLeft: () => <Action onPress={openHubs}>Hubs</Action>,
-			headerRight: () => (
-				<Action
-					label="New session"
-					disabled={!activeProfile || state !== "ready"}
-					onPress={openNew}
-				>
-					{fontScale > 1.4 ? "New" : "New session"}
-				</Action>
-			),
-		});
-	}, [navigation, activeProfile, state, fontScale]);
-	const header = (
-		<View style={{ marginBottom: 4 }}>
-			<ConnectionStatus />
-			{Platform.OS !== "ios" ? (
-				<View style={[styles.row, { flexWrap: "wrap" }]}>
-					<Action
-						disabled={!activeProfile || state !== "ready"}
-						onPress={() => {
-							if (activeProfile)
-								navigation.navigate("HubSettings", {
-									hubId: activeProfile.id,
-								});
-						}}
-					>
-						Hub settings
-					</Action>
-					<Action
-						disabled={!activeProfile || state !== "ready"}
-						onPress={() => {
-							if (activeProfile)
-								navigation.navigate("Projects", {
-									hubId: activeProfile.id,
-								});
-						}}
-					>
-						Browse projects
-					</Action>
-					<Action
-						disabled={!activeProfile}
-						onPress={() => {
-							if (activeProfile)
-								navigation.navigate("PinSections", {
-									hubId: activeProfile.id,
-								});
-						}}
-					>
-						Pinned sections
-					</Action>
-				</View>
-			) : null}
-			<View style={{ paddingHorizontal: 20, paddingBottom: 8, gap: 4 }}>
-				<View style={[styles.row, { flexWrap: "wrap" }]}>
-					<TextInput
-						accessibilityLabel="Search sessions"
-						placeholder="Search sessions"
-						placeholderTextColor={colors.secondary}
-						value={searchText}
-						onChangeText={setSearchText}
-						onSubmitEditing={() => search(searchText)}
-						returnKeyType="search"
-						autoCapitalize="none"
-						autoCorrect={false}
-						style={[
-							styles.input,
-							styles.fill,
-							{
-								minWidth: fontScale > 1.4 ? "100%" : "50%",
-								color: colors.text,
-								borderColor: colors.border,
-								backgroundColor: colors.surface,
-							},
-						]}
-					/>
-					<Action
-						disabled={state !== "ready"}
-						onPress={() => search(searchText)}
-					>
-						Search
-					</Action>
-					{searchText || searchActive ? (
-						<Action
-							disabled={state !== "ready"}
-							onPress={() => {
-								setSearchText("");
-								search("");
-							}}
-						>
-							Clear
-						</Action>
-					) : null}
-				</View>
-				{searchActive && query ? (
-					<Copy muted>{`Results for “${query}”`}</Copy>
-				) : null}
-			</View>
-			<ErrorMessage message={searchActive ? error : null} />
-			{searchActive && error ? (
-				<Action
-					disabled={state !== "ready" || refreshing}
-					onPress={() => {
-						void refresh();
-					}}
-				>
-					Retry sessions
-				</Action>
-			) : null}
-		</View>
-	);
-	return (
-		<SafeAreaView
-			edges={["bottom", "left", "right"]}
-			style={[styles.fill, { backgroundColor: colors.background }]}
-		>
-			{client && activeProfile ? (
-				<View style={{ flex: 1, display: searchActive ? "none" : "flex" }}>
-					<ProjectSessionsList
-						key={activeProfile.id}
-						client={client}
-						ready={state === "ready"}
-						focused={focused && !searchActive}
-						header={header}
-						openSession={(session) =>
-							navigation.navigate("Conversation", {
-								hubId: activeProfile.id,
-								ref: session.ref,
-								title: session.title,
-							})
-						}
-						openProject={(project) =>
-							navigation.navigate("Project", {
-								hubId: activeProfile.id,
-								projectKey: project.key,
-								title: project.name,
-							})
-						}
-					/>
-				</View>
-			) : (
-				header
-			)}
-			{searchActive ? (
-				<FlatList
-					ListHeaderComponent={header}
-					keyboardShouldPersistTaps="handled"
-					data={rows}
-					keyExtractor={(item) => item.ref}
-					refreshing={refreshing}
-					onRefresh={() => {
-						void refresh();
-					}}
-					contentContainerStyle={{ paddingBottom: 16, gap: 12 }}
-					ListEmptyComponent={
-						<View style={{ paddingHorizontal: 16 }}>
-							<Copy muted>
-								{refreshing
-									? "Loading sessions…"
-									: state !== "ready"
-										? "Connect to the hub to load sessions."
-										: error
-											? "Pull down to retry loading sessions."
-											: query
-												? "No sessions match your search."
-												: "No sessions on this hub yet."}
-							</Copy>
-						</View>
-					}
-					ListFooterComponent={
-						hasMore ? (
-							<View style={{ paddingHorizontal: 16 }}>
-								<Copy muted>
-									Showing up to {NATIVE_ROSTER_PAGE_SIZE} sessions. Narrow your
-									search to find others.
-								</Copy>
-							</View>
-						) : null
-					}
-					renderItem={({ item }) => {
-						const stateLabel = humanizeState(
-							item.status,
-							item.askPending === true,
-						);
-						const signals = [
-							["active", "awaiting", "warning", "errored"].includes(item.status)
-								? stateLabel
-								: "",
-							item.askPending && item.status !== "awaiting"
-								? humanizeState("awaiting", true)
-								: "",
-						].filter(Boolean);
-						const metadataStyle = {
-							fontSize: 13 * (Platform.OS === "ios" ? fontScale : 1),
-							lineHeight: 19 * (Platform.OS === "ios" ? fontScale : 1),
-						};
-						return (
-							<Pressable
-								accessibilityRole="button"
-								accessibilityLabel={`Open ${item.title || "Untitled session"}`}
-								accessibilityHint={[
-									...(signals.length ? signals : [stateLabel]),
-									item.project,
-								]
-									.filter(Boolean)
-									.join(". ")}
-								disabled={state !== "ready" || !activeProfile}
-								onPress={() => {
-									if (activeProfile)
-										navigation.navigate("Conversation", {
-											hubId: activeProfile.id,
-											ref: item.ref,
-											title: item.title,
-										});
-								}}
-								style={[
-									{
-										marginHorizontal: 16,
-										paddingVertical: 13,
-										minHeight: Platform.OS === "android" ? 72 : 68,
-										borderBottomWidth: 0.5,
-										borderColor: colors.border,
-										gap: 4,
-									},
-								]}
-							>
-								<Text
-									allowFontScaling={Platform.OS !== "ios"}
-									numberOfLines={2}
-									style={{
-										color: colors.text,
-										fontSize: 17 * (Platform.OS === "ios" ? fontScale : 1),
-										fontWeight: "500",
-									}}
-								>
-									{item.title || "Untitled session"}
-								</Text>
-								{signals.length ? (
-									<Text
-										allowFontScaling={Platform.OS !== "ios"}
-										style={[
-											metadataStyle,
-											{
-												color:
-													item.attention === "needsYou"
-														? colors.accent
-														: colors.secondary,
-											},
-										]}
-									>
-										{signals.join(" · ")}
-									</Text>
-								) : null}
-								{item.project ? (
-									<Text
-										allowFontScaling={Platform.OS !== "ios"}
-										numberOfLines={fontScale > 1.4 ? 2 : 1}
-										ellipsizeMode={fontScale > 1.4 ? "tail" : "middle"}
-										style={[metadataStyle, { color: colors.secondary }]}
-									>
-										{item.projectLabel}
-									</Text>
-								) : null}
-							</Pressable>
-						);
-					}}
-				/>
-			) : null}
-		</SafeAreaView>
-	);
-}
-
 // Refocuses the composer after a modal closes, on AppState's "focus" event.
 // That event is Android-only (react-native's AppState "focus"/"blur" pair
 // never fires on iOS, and subscribing there raises a dev-mode red box), so
 // the subscription itself is Android-only. Extracted so this is testable
 // without mounting the whole screen.
+//
+// It asks for real focus, not whether the screen is in front
+// (useScreenInFront): the keyboard belongs to the screen the person is looking
+// at, so a session under one of its own sheets never pulls focus into its
+// composer.
 export function useFocusAfterModal(
 	navigation: { isFocused: () => boolean },
 	focusAfterModal: RefObject<boolean>,
@@ -851,7 +472,7 @@ export function ConversationScreen({
 		client,
 		state: connectionState,
 	} = useConnection();
-	const focused = useIsFocused();
+	const focused = useScreenInFront(route.key);
 	const colors = useColors();
 	const { height: windowHeight } = useWindowDimensions();
 	const [viewportHeight, setViewportHeight] = useState(windowHeight);
@@ -957,14 +578,6 @@ export function ConversationScreen({
 	const [queueOpen, setQueueOpen] = useState(false);
 	const [recoveryOpen, setRecoveryOpen] = useState(false);
 	const [sessionOpen, setSessionOpen] = useState(false);
-	const [taskContext, setTaskContext] = useState<{
-		hubId: string;
-		ref: string;
-		threadId: string;
-		hasTasks: boolean;
-		hubName: string;
-		client: NonNullable<typeof client>;
-	} | null>(null);
 	const [activityContext, setActivityContext] = useState<{
 		hubId: string;
 		ref: string;
@@ -1021,18 +634,24 @@ export function ConversationScreen({
 		imageSelection.subscribe,
 		imageSelection.getSnapshot,
 	);
-	useFocusEffect(
-		useCallback(
-			() => () => {
-				imageSelection.cancel();
-				projectLookup.current?.abort();
-			},
-			[imageSelection],
-		),
-	);
+	// Follows the screen in front rather than focus, so a photo being attached
+	// survives one of the screen's own sheets opening.
+	useEffect(() => {
+		if (!focused) return;
+		return () => {
+			imageSelection.cancel();
+			projectLookup.current?.abort();
+		};
+	}, [focused, imageSelection]);
 	const unconfirmedSend = draft.submitting ? null : draft.record.unconfirmed;
 	const connected =
 		connectionState === "ready" && activeProfile?.id === route.params.hubId;
+	useMarkSeenInFront(
+		route.params,
+		focused,
+		connected ? client : null,
+		snapshot.status === "open" ? snapshot.conversation : null,
+	);
 	// The recovery surface: this exact hub/conversation target's durable
 	// recovery rows, mounted in the recovery modal below. useRecoveryPanel
 	// acquires the runtime only once the conversation is connected (the
@@ -1155,7 +774,7 @@ export function ConversationScreen({
 		const current = store.getState();
 		if (
 			!connectionReady.current ||
-			!navigation.isFocused() ||
+			!screenInFront(navigation, route.key) ||
 			current.status !== "open" ||
 			!current.conversation?.capabilities?.forkFromTurn ||
 			!bindingInstance ||
@@ -1193,7 +812,8 @@ export function ConversationScreen({
 							store.getState().close();
 							service.close();
 							setSessionOpen(false);
-							if (navigation.isFocused()) navigation.goBack();
+							if (screenInFront(navigation, route.key))
+								leaveScreen(navigation, route.key);
 						},
 						(scope) => {
 							const current = store.getState();
@@ -1201,7 +821,7 @@ export function ConversationScreen({
 								currentDestination.current.store !== store ||
 								currentDestination.current.client !== client ||
 								!connectionReady.current ||
-								!navigation.isFocused()
+								!screenInFront(navigation, route.key)
 							)
 								return false;
 							if (scope === "destination")
@@ -1243,7 +863,7 @@ export function ConversationScreen({
 						() => store.getState().conversation?.pendingEscalations ?? [],
 						() =>
 							connectionReady.current &&
-							navigation.isFocused() &&
+							screenInFront(navigation, route.key) &&
 							store.getState().status === "open" &&
 							store.getState().conversationGeneration === bindingGeneration &&
 							store.getState().conversation?.instanceId === bindingInstance,
@@ -1301,16 +921,22 @@ export function ConversationScreen({
 				return;
 			}
 			if (!client || !connected) return;
-			const context = {
+			if (destination === "tasks") {
+				navigation.navigate("TasksSheet", {
+					hubId: route.params.hubId,
+					ref: route.params.ref,
+					threadId: current.threadId,
+					hasTasks: current.tasks != null,
+				});
+				return;
+			}
+			setActivityContext({
 				hubId: route.params.hubId,
 				ref: route.params.ref,
 				threadId: current.threadId,
 				hubName: activeProfile?.name ?? "Hub",
 				client,
-			};
-			if (destination === "tasks")
-				setTaskContext({ ...context, hasTasks: current.tasks != null });
-			else setActivityContext(context);
+			});
 		},
 		[
 			store,
@@ -1574,19 +1200,20 @@ export function ConversationScreen({
 		},
 		[],
 	);
-	useFocusEffect(
-		useCallback(() => {
-			appliedReaderRestore.current = null;
-			readerRestoreAttempts.current.reset();
-			setLayoutRevision((revision) => revision + 1);
-			return () => {
-				readerPositions.save(readerAnchor.current);
-				if (restoreFrame.current !== null)
-					cancelAnimationFrame(restoreFrame.current);
-				restoreFrame.current = null;
-			};
-		}, []),
-	);
+	// Follows the screen in front rather than focus, so opening one of the
+	// screen's own sheets neither saves nor re-applies the reading position.
+	useEffect(() => {
+		if (!focused) return;
+		appliedReaderRestore.current = null;
+		readerRestoreAttempts.current.reset();
+		setLayoutRevision((revision) => revision + 1);
+		return () => {
+			readerPositions.save(readerAnchor.current);
+			if (restoreFrame.current !== null)
+				cancelAnimationFrame(restoreFrame.current);
+			restoreFrame.current = null;
+		};
+	}, [focused]);
 	useEffect(() => {
 		const subscription = AppState.addEventListener("change", (state) => {
 			if (state !== "active") readerPositions.save(readerAnchor.current);
@@ -1649,7 +1276,7 @@ export function ConversationScreen({
 		setActionError(null);
 		const currentBinding = () =>
 			connectionReady.current &&
-			navigation.isFocused() &&
+			screenInFront(navigation, route.key) &&
 			store.getState().conversationGeneration === bindingGeneration &&
 			store.getState().conversation?.instanceId === bindingInstance;
 		commandBusy.current = true;
@@ -1743,18 +1370,12 @@ export function ConversationScreen({
 									throw new CommandArgumentError(
 										"Session tasks are unavailable.",
 									);
-								setTaskContext((open) =>
-									open
-										? null
-										: {
-												hubId: route.params.hubId,
-												ref: route.params.ref,
-												threadId: current.threadId,
-												hasTasks: current.tasks != null,
-												hubName: activeProfile?.name ?? "Hub",
-												client,
-											},
-								);
+								navigation.navigate("TasksSheet", {
+									hubId: route.params.hubId,
+									ref: route.params.ref,
+									threadId: current.threadId,
+									hasTasks: current.tasks != null,
+								});
 							}
 						},
 					});
@@ -1764,7 +1385,7 @@ export function ConversationScreen({
 				store.getState().close();
 				service.close();
 				setSessionOpen(false);
-				navigation.goBack();
+				leaveScreen(navigation, route.key);
 			} else await store.getState().rehydrate(service, activitySink);
 		} catch (error) {
 			if (!currentBinding()) return;
@@ -1782,7 +1403,7 @@ export function ConversationScreen({
 		const replace = () => {
 			if (
 				!connectionReady.current ||
-				!navigation.isFocused() ||
+				!screenInFront(navigation, route.key) ||
 				store.getState().conversationGeneration !== bindingGeneration ||
 				document.getSnapshot().submitting ||
 				document.getSnapshot().record.unconfirmed !== null
@@ -1817,7 +1438,7 @@ export function ConversationScreen({
 			!service ||
 			!ready ||
 			!connectionReady.current ||
-			!navigation.isFocused() ||
+			!screenInFront(navigation, route.key) ||
 			current.status !== "open" ||
 			current.conversationGeneration !== bindingGeneration ||
 			current.conversation?.instanceId !== bindingInstance ||
@@ -1846,7 +1467,7 @@ export function ConversationScreen({
 			if (
 				acceptedAnswers &&
 				connectionReady.current &&
-				navigation.isFocused() &&
+				screenInFront(navigation, route.key) &&
 				store.getState().conversationGeneration === bindingGeneration &&
 				store.getState().conversation?.instanceId === bindingInstance
 			)
@@ -2113,22 +1734,6 @@ export function ConversationScreen({
 					}
 					ready={ready}
 					close={() => setComposerSetting(null)}
-				/>
-			) : null}
-			{activeProfile?.id === route.params.hubId &&
-			taskContext?.hubId === route.params.hubId &&
-			taskContext.ref === route.params.ref ? (
-				<TasksSheet
-					key={`${route.params.hubId}:${route.params.ref}`}
-					client={client ?? taskContext.client}
-					sessionRef={route.params.ref}
-					threadId={conversation?.threadId ?? taskContext.threadId}
-					hasTasks={
-						conversation ? conversation.tasks != null : taskContext.hasTasks
-					}
-					connected={connected}
-					hubName={taskContext.hubName}
-					close={() => setTaskContext(null)}
 				/>
 			) : null}
 			{activeProfile?.id === route.params.hubId &&

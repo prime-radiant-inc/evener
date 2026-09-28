@@ -38,7 +38,9 @@ both apps render counts, durations and clock times with, the text and
 argument helpers a tool call's rendering is built from, the marketplace
 source label both apps show beside a registered marketplace,
 the short lowercase session-state gloss a session row's second line leads
-with, the credential labels both apps describe a provider instance's active
+with, the pulse meter's activity read decoder and the Quiet and May be stuck
+rule both apps' Boards apply (`decodeActivityRead`, `quietState`), the
+credential labels both apps describe a provider instance's active
 credential source, shadowed layers and test outcome with, the path picker's
 flat row builder with the path helpers both apps' path fields share, the
 model catalog view helpers both apps' model pickers are built from (searchable
@@ -134,8 +136,11 @@ Besides the root, `package.json` `exports` publishes these subpaths:
   through (`selectors`): launch sources, section rows with their remaining
   count and next offset, pin-section summaries, the project catalog and a
   session summary found by ref, each pure over `NavigationStoreState` and
-  adoptable by native if it ever gains a store. The subpath
-  resolves to `state/navigation/index.ts`, a barrel that re-exports the eight
+  adoptable by native if it ever gains a store, and host grouping
+  (`hostGrouping`): where a row, and a project whose rows live on several
+  hosts, sit when a client organizes sessions by host (the web rail's
+  Organize by and the phone Board's Hosts section). The subpath
+  resolves to `state/navigation/index.ts`, a barrel that re-exports the nine
   modules whole.
 - `@evener/appwire-client/state/extensions` - the extensions state layer both
   apps' plugin settings surfaces are built on: the marketplaces store

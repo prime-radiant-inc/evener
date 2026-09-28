@@ -97,6 +97,16 @@ type MethodSpec struct {
 	Summary string
 }
 
+// MethodResultArms is the union-result registration: one named Go struct per arm
+// for the methods whose result is a union rather than a single struct, keyed by
+// wire name. It sits beside Methods — whose positional entries stay shaped the
+// way every other entry is — and the generators spell such a method's result as
+// the union over its arm names, emitting each arm as its own type (deploy
+// pipeline 08b §10). A name absent here has an ordinary single-struct result.
+var MethodResultArms = map[string][]any{
+	MethodEvenerHostPlan: {HostPlanPlanned{}, HostPlanNoToken{}},
+}
+
 // NotificationSpec is one server→client notification: the wire name, the Go
 // payload type (zero value), and a one-line summary of when it fires.
 type NotificationSpec struct {
@@ -119,7 +129,7 @@ var Methods = []MethodSpec{
 	{MethodThreadTurnItemsList, ThreadTurnItemsListParams{}, ThreadTurnItemsListResponse{}, ScopeUnimplemented, "Codex-parity: paginated items for one turn. Experimental even in Codex (returns method-not-supported) and served by no evener router."},
 	{MethodThreadStart, ThreadStartParams{}, ThreadStartResponse{}, ScopeHub, "Starts a new thread and attaches a live-update relay."},
 	{MethodThreadResume, ThreadResumeParams{}, ThreadResumeResponse{}, ScopeHub, "Resumes an existing session and attaches its relay."},
-	{MethodThreadFork, ThreadForkParams{}, ThreadForkResponse{}, ScopeHub, "Forks a thread from a source turn, either replacing the turn with edited input or deferring the original input back to the client for editing (deferInput, mutually exclusive with editedInput). With `aside: true` (local evener threads only; mutually exclusive with sourceTurnId/editedInput/deferInput/label), forks the session at its tip into a side thread that inherits the parent's permissions and config."},
+	{MethodThreadFork, ThreadForkParams{}, ThreadForkResponse{}, ScopeHub, "Forks a thread from a source item (sourceItemKey), either replacing the turn with edited input or deferring the original input back to the client for editing (deferInput, mutually exclusive with editedInput). With `aside: true` (local evener threads only; mutually exclusive with sourceItemKey/editedInput/deferInput/label), forks the session at its tip into a side thread that inherits the parent's permissions and config."},
 	{MethodThreadClear, ThreadClearParams{}, ThreadClearResponse{}, ScopeBoth, "Clears the thread's conversation when no turn, queued, or approval work is unresolved."},
 	{MethodThreadModelSet, ThreadModelSetParams{}, EmptyResponse{}, ScopeBoth, "Changes the session's model/provider."},
 	{MethodEvenerThreadNameSet, ThreadNameSetParams{}, EmptyResponse{}, ScopeBoth, "Sets a user-chosen session title (rename)."},
@@ -162,7 +172,9 @@ var Methods = []MethodSpec{
 	{MethodEvenerPinSectionDelete, PinSectionDeleteParams{}, PinSectionDeleteResponse{}, ScopeHub, "Deletes a named pin section and returns its removed membership and committed navigation receipt."},
 	{MethodEvenerSessionPinAssign, SessionPinAssignParams{}, SessionPinAssignResponse{}, ScopeHub, "Assigns a top-level session to a named pin section and returns the canonical assignment and committed navigation receipt."},
 	{MethodEvenerSessionPinUnpin, SessionPinUnpinParams{}, SessionPinUnpinResponse{}, ScopeHub, "Removes a top-level session's named pin assignment and returns its committed navigation receipt."},
+	{MethodEvenerSessionSeenSet, SessionSeenSetParams{}, SessionSeenSetResponse{}, ScopeHub, "Marks sessions seen through a turn end, or unread, on the hub (S4), and returns the committed navigation receipt. Live rows then carry unseen from the hub's marker."},
 	{MethodEvenerSearch, SearchParams{}, SearchResponse{}, ScopeHub, "Searches live and persisted sessions for the hub command palette."},
+	{MethodEvenerActivityRead, ActivityReadParams{}, ActivityReadResponse{}, ScopeHub, "Reads the pulse meter (seven one-minute activity counts over the whole tree), running subagents and quiet time of the hub's live top-level sessions and its attached hosts' (S5). A client polls it while a Board or session is on screen; it is never part of navigation."},
 	{MethodEvenerHarnessesList, HarnessListParams{}, HarnessListResponse{}, ScopeHub, "Lists available harness descriptors."},
 	{MethodEvenerUpgrade, UpgradeParams{}, UpgradeResponse{}, ScopeHub, "Performs or reports a evener binary upgrade."},
 	{MethodEvenerUpdateCheck, UpdateCheckParams{}, UpdateCheckResponse{}, ScopeHub, "Compares the running hub build against a release channel's current commit; dev builds report applicable=false without a network request."},
@@ -224,6 +236,10 @@ var Methods = []MethodSpec{
 	{MethodEvenerHostStatus, HostStatusParams{}, HostStatusResponse{}, ScopeHub, "Returns one host's list row for a single named host; never dials."},
 	{MethodEvenerHostRemove, HostRemoveParams{}, HostRemoveResponse{}, ScopeHub, "Deregisters one live host entry, stopping its supervisor and dropping its channel; every live host is removable here."},
 	{MethodEvenerHostUpdate, HostUpdateParams{}, HostUpdateResponse{}, ScopeHub, "Edits one live host entry in place (every field but the name; the name is the target) and retires the host's channel with the identity it replaced; the edit is written into the machine-managed hub.toml."},
+	{MethodEvenerHostPlan, HostPlanParams{}, HostPlanResult{}, ScopeHub, "Plans one deploy against a named host and mints the single-use confirmation token evener/host/deploy consumes: refreshes the host's preflight facts without a gate, probes its running state, and answers with either the plan plus token (HostPlanPlanned) or the no-token arm (HostPlanNoToken) naming why nothing was minted and whether the refusal is terminal."},
+	{MethodEvenerHostDeploy, HostDeployParams{}, HostDeployResponse{}, ScopeHub, "Consumes a plan's confirmation token and starts the deploy operation it names: dedup-first on the client operation ID, then the token's single-use consume under the host gate after the running probe and under-gate re-resolution, and a durable pending operation record whose worker runs the 04b deploy path outside the RPC."},
+	{MethodEvenerHostRestart, HostRestartParams{}, HostRestartResponse{}, ScopeHub, "Starts a restart operation for one named host: dedup on the client operation ID and the intended (generation, incarnation id) pair, the gated under-gate re-resolution and terminal-operation scan, then a durable pending operation record whose worker runs the 04b restart path outside the RPC."},
+	{MethodEvenerHostRunning, HostRunningParams{}, HostRunningResponse{}, ScopeHub, "Serves one hub's own running build revision and authoritative health to the controller probing it over an attached session, presenting the caller's required fencing epoch: process start time is present exactly when the hub knows it, and healthy reflects the local restart-required predicate, the owner-set minimum-free-space knob, and the state-root write probe."},
 	{MethodEvenerHostPushCredentials, HostPushCredentialsParams{}, HostPushCredentialsResponse{}, ScopeHub, "Copies the controller's local provider-instance keys to one named remote host (component 07c): each local store key is joined to the host's own instance by name (the lookup folds case), and the HOST's own spelling of the matched entry is what travels as Provider to evener/auth/status and evener/auth/apiKey/conditionalSet, the host classifies and writes its own store, and each entry reports added/updated/skipped/failed."},
 	{MethodEvenerSessionImage, SessionImageParams{}, SessionImageResponse{}, ScopeHub, "Fetches one image out of the recipient hub's own local session state for the controller's host-qualified image routes (component 05): SHA addresses a replayed transcript image and Path a session-relative file inside the session's working directory; the sha branch enforces the 8 MiB bound while scanning, and the media type is re-derived from the bytes. Never an HTTP route."},
 }
@@ -292,17 +308,8 @@ var Notifications = []NotificationSpec{
 	{NotifyThreadModelChanged, ThreadModelChangedParams{}, "The session's model/provider changed mid-session (thread/model/set or an equivalent switch)."},
 	{NotifyThreadReasoningEffortChanged, ThreadReasoningEffortChangedParams{}, "The session's reasoning effort changed mid-session (thread/reasoning-effort/set)."},
 	{NotifyThreadVisionModelChanged, ThreadVisionModelChangedParams{}, "The session's vision side-channel routing changed mid-session (thread/vision-model/set)."},
-	{NotifyTurnStarted, TurnStartedParams{}, "A new turn began (inProgress)."},
-	{NotifyTurnCompleted, TurnCompletedParams{}, "A turn reached a terminal state (completed/failed/interrupted)."},
-	{NotifyItemStarted, ItemLifecycleParams{}, "A thread item began streaming."},
-	{NotifyItemCompleted, ItemLifecycleParams{}, "A thread item finished."},
-	{NotifyAgentMessageDelta, AgentMessageDeltaParams{}, "Incremental assistant-message text chunk for an item."},
-	{NotifyAgentMessageReset, AgentMessageResetParams{}, "Discard the in-progress streamed item (assistant or reasoning — a retry replaces it)."},
-	{NotifyReasoningSummaryDelta, ReasoningSummaryDeltaParams{}, "Incremental reasoning-summary text chunk for a reasoning item."},
-	{NotifyToolOutputDelta, ToolOutputDeltaParams{}, "Incremental tool-output chunk for a tool-call item."},
 	{NotifyWarning, WarningParams{}, "Non-fatal diagnostic. Also used for cancelled turns and relay-attach failures."},
 	{NotifyEvenerThreadModelRetry, ThreadModelRetryParams{}, "A model call failed with a retryable error and will be retried after a wait. Ephemeral liveness state, not a thread item."},
-	{NotifyEvenerSteeringInjected, EvenerSteeringInjectedParams{}, "A steering message was injected into the active turn."},
 	{NotifyEvenerJobStarted, EvenerJobParams{}, "A background job started."},
 	{NotifyEvenerJobFinished, EvenerJobParams{}, "A background job finished; the job carries status/reason/exitCode/output."},
 	{NotifyEvenerDelegateUpdated, EvenerDelegateParams{}, "A stable delegate projection changed."},
@@ -324,4 +331,9 @@ var Notifications = []NotificationSpec{
 	{NotifyEvenerSettingsKeybindingsChanged, KeybindingsOverrides{}, "Broadcast after the user keybinding overrides change; carries the revision and canonical rules."},
 	{NotifyEvenerSettingsAgentsDocChanged, AgentsDocResponse{}, "Broadcast after the personal AGENTS.md is written; carries the new path, existence, and content."},
 	{NotifyEvenerHostNotification, HostNotificationParams{}, "Re-emits one host-owned config notification to the controller's browser clients tagged with the source host (component 07a); local notifications keep their unwrapped methods. This is the Go-side fan-out contract: the client-side unwrapping into host-scoped stores is component 07b, and no Go-side consumer exists here."},
+	{NotifyHistoryUpdated, HistoryUpdatedParams{}, "The full current form of every item and turn whose recorded entries changed."},
+	{NotifyOverlayUpserted, OverlayUpsertedParams{}, "One overlay item (a stream, preview, running tool, or notice) was created or replaced."},
+	{NotifyOverlayDelta, OverlayDeltaParams{}, "An incremental chunk appended to one overlay item's text or output."},
+	{NotifyOverlayReset, OverlayResetParams{}, "Discard a stream's in-progress overlay item; a retry replaces it."},
+	{NotifyOverlayEnd, OverlayEndParams{}, "A round's overlay state is final and about to be replaced by recorded history."},
 }

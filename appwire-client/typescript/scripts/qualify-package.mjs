@@ -196,6 +196,8 @@ assert.equal(client.marketplaceSourceLabel({ kind: "git-subdir", url: "https://e
 assert.equal(client.humanizeState("awaiting", true), "question waiting");
 assert.equal(client.humanizeState("awaiting", false), "your move");
 assert.equal(client.humanizeState("notLoaded", false), "idle");
+assert.deepEqual(client.decodeActivityRead({ sessions: [{ ref: "local:a", minutes: [0, 1], runningSubagents: 0, quietForMs: 200000 }] }).map((session) => session.ref), ["local:a"]);
+assert.equal(client.quietState({ ref: "local:a", minutes: [0], runningSubagents: 0, quietForMs: 200000 }, 0).state, "quiet");
 const catalogEntry = { provider: "openai", model: "gpt-5", displayName: "GPT-5", supportsTools: true, contextWindow: 200000 };
 const catalogOptions = client.toCatalogOptions([catalogEntry]);
 assert.equal(catalogOptions[0].qualified, "openai/gpt-5");
@@ -547,7 +549,8 @@ const navigationStoreState: client.NavigationStoreState = client.createNavigatio
       // reads its expansion at creation, writes a toggle back through the
       // port, and re-reads the port on reset - with no client wired, so
       // nothing opens a socket), selectors (an unloaded store names no launch
-      // sources and no needs-you rows, and the row age formatter is pure).
+      // sources and no needs-you rows, and the row age formatter is pure),
+      // hostGrouping (a cluster sits under its newest member's host).
       smoke: `assert.equal(client.keyID({ kind: "section", section: "live", offset: 0, limit: 50 }), '{"kind":"section","limit":50,"offset":0,"section":"live"}');
 assert.equal(client.nextNavigationOffset(50, 25), 75);
 assert.equal(client.isNavigationUnavailable(new Error("boom")), false);
@@ -581,6 +584,7 @@ assert.equal(navigationStore.getState().expanded.get("projectnode:p"), false);
 assert.deepEqual(client.selectSources(navigationStore.getState()), []);
 assert.equal(client.selectNeedsYouCount(navigationStore.getState()), 0);
 assert.equal(client.relativeAge(new Date().toISOString()), "now");
+assert.equal(client.sessionGroupHostId({ kind: "cluster", host_id: "cluster", children: [{ host_id: "devbox" }] }), "devbox");
 `,
     },
     // The credentials state layer: the listing core each app's Providers &
@@ -1054,7 +1058,7 @@ ${presenceLoop}${surface.smoke ?? ""}`,
   }
   // Run the shipped program from the installed tarball. Only the remote server
   // is scripted; imports, sockets, handshake, client requests and output are real.
-  const serverProtocolVersion = "evener-appwire-v5";
+  const serverProtocolVersion = "evener-appwire-v6";
   const fixtureCwd = "/fixture/project";
   const responses = new Map([
     ["model/list", { params: { cwd: fixtureCwd }, result: { data: [] } }],

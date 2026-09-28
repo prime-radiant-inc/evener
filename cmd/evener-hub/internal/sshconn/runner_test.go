@@ -244,7 +244,7 @@ func TestRemoteWord(t *testing.T) {
 		"evener":                 "evener",
 		"/opt/evener/bin/evener": "/opt/evener/bin/evener",
 		"--stdio":                "--stdio",
-		"evener-appwire-v5":      "evener-appwire-v5",
+		"evener-appwire-v6":      "evener-appwire-v6",
 		"127.0.0.1:9180":         "127.0.0.1:9180",
 		"~/bin/evener":           "~/bin/evener",
 		"/home/dev/My Evener":    "'/home/dev/My Evener'",

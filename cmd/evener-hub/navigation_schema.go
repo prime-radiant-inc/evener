@@ -9,6 +9,7 @@ import (
 	"slices"
 	"unicode/utf8"
 
+	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/hubapi"
 )
 
@@ -444,7 +445,28 @@ func navigationSessionValueValid(value hubapi.NavigationSessionSummary) bool {
 			return false
 		}
 	}
-	return value.Tasks == nil || navigationTaskProgressValid(*value.Tasks)
+	return (value.Tasks == nil || navigationTaskProgressValid(*value.Tasks)) &&
+		(value.Subagents == nil || navigationSubagentTallyValid(*value.Subagents)) &&
+		(value.Question == nil || navigationQuestionValid(*value.Question))
+}
+
+// navigationQuestionValid mirrors the web codec's questionValue: text that is
+// not empty, at least one question counted, and at most five labels, none of
+// them empty. The hub also holds each text to be an excerpt at its bound
+// (appwire.Excerpt leaves it unchanged: valid UTF-8, one trimmed line, within
+// the bound), which the projector's cut always yields. The projector drops a
+// question this refuses rather than failing the whole resource.
+func navigationQuestionValid(question hubapi.NavigationQuestion) bool {
+	if question.Text == "" || appwire.Excerpt(question.Text, appwire.MaxQuestionTextRunes) != question.Text ||
+		question.Count < 1 || !navigationIntCount(question.Count) || len(question.Options) > appwire.MaxQuestionOptions {
+		return false
+	}
+	for _, label := range question.Options {
+		if label == "" || appwire.Excerpt(label, appwire.MaxQuestionOptionRunes) != label {
+			return false
+		}
+	}
+	return true
 }
 
 // navigationTaskProgressValid mirrors the web codec's tasksValue: every count is
@@ -456,6 +478,13 @@ func navigationTaskProgressValid(tasks hubapi.NavigationTaskProgress) bool {
 		navigationIntCount(tasks.Cancelled) && navigationIntCount(tasks.CurrentID) &&
 		tasks.Done <= tasks.Total && tasks.Cancelled <= tasks.Total-tasks.Done &&
 		utf8.RuneCountInString(tasks.Current) <= maxNavigationLabelRunes
+}
+
+// navigationSubagentTallyValid mirrors the web codec's subagentTallyValue: every
+// count is a safe non-negative integer. The projector drops a tally this
+// refuses rather than failing the whole resource over it.
+func navigationSubagentTallyValid(tally hubapi.NavigationSubagentTally) bool {
+	return navigationIntCount(tally.Running) && navigationIntCount(tally.Failed) && navigationIntCount(tally.Done)
 }
 
 // navigationWatchValueValid mirrors the web codec's watch row validation for one

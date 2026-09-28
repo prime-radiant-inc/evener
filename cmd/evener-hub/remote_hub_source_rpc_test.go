@@ -25,12 +25,47 @@ type remoteHubCall struct {
 }
 
 // newScriptedRemoteHub wires an initialized AppWire client to an in-memory
-// server whose replies the caller scripts, recording every request. No SSH, no
-// network, no host.
+// server whose replies the caller scripts, recording every request. A reply
+// that is an appwire.WireError is sent as that error. No SSH, no network, no
+// host.
 func newScriptedRemoteHub(t *testing.T, handle func(method string, params json.RawMessage) any) (*appwire.Client, func() []remoteHubCall) {
 	t.Helper()
 	client, calls, _ := newPushableScriptedRemoteHub(t, handle)
 	return client, calls
+}
+
+// scriptedRemoteHubReplying scripts a remote hub (newScriptedRemoteHub) that
+// answers every request for method with reply: a response, or an
+// appwire.WireError it sends back as an error.
+func scriptedRemoteHubReplying(method string, reply any) func(string, json.RawMessage) any {
+	return func(got string, _ json.RawMessage) any {
+		switch got {
+		case appwire.MethodInitialize:
+			return appwire.InitializeResponse{ProtocolVersion: appwire.ProtocolVersion, SourceID: "local"}
+		case method:
+			return reply
+		default:
+			return appwire.EmptyResponse{}
+		}
+	}
+}
+
+// scriptedRemoteHubParams decodes the params of every request for method a
+// scripted remote hub recorded, in order.
+func scriptedRemoteHubParams[P any](t *testing.T, calls []remoteHubCall, method string) []P {
+	t.Helper()
+	var decoded []P
+	for _, call := range calls {
+		if call.method != method {
+			continue
+		}
+		var params P
+		if err := json.Unmarshal(call.params, &params); err != nil {
+			t.Fatalf("decode %s params %s: %v", method, call.params, err)
+		}
+		decoded = append(decoded, params)
+	}
+	return decoded
 }
 
 // newPushableScriptedRemoteHub is newScriptedRemoteHub plus the remote hub's side
@@ -60,6 +95,12 @@ func newPushableScriptedRemoteHub(t *testing.T, handle func(method string, param
 			calls = append(calls, remoteHubCall{method: msg.Request.Method, params: msg.Request.Params})
 			mu.Unlock()
 			reply := handle(msg.Request.Method, msg.Request.Params)
+			if wireErr, ok := reply.(appwire.WireError); ok {
+				if err := server.Send(ctx, appwire.ErrorMessage(msg.Request.ID, wireErr)); err != nil {
+					return
+				}
+				continue
+			}
 			data, err := json.Marshal(reply)
 			if err != nil {
 				return

@@ -112,6 +112,9 @@ type navigationBuildInputs struct {
 	// row that shares its bare ID.
 	PinSections    []hubcore.PinSection
 	PinAssignments map[hubcore.ArchiveKey]hubcore.SessionPin
+	// SessionSeen is the hub's seen-through markers and their epoch, captured
+	// with Tree. A live row's unseen flag is computed against it (S4).
+	SessionSeen hubcore.SessionSeenSnapshot
 }
 
 type navigationProjection struct {
@@ -249,6 +252,7 @@ func cloneNavigationInputsContext(ctx context.Context, in navigationBuildInputs)
 		}
 		out.PinAssignments[key] = assignment
 	}
+	out.SessionSeen = in.SessionSeen.Clone()
 	out.Tree, err = in.Tree.SnapshotContext(ctx)
 	if err != nil {
 		return navigationBuildInputs{}, err
@@ -267,6 +271,7 @@ func cloneNavigationInputs(in navigationBuildInputs) navigationBuildInputs {
 	out.PinSections = append([]hubcore.PinSection(nil), in.PinSections...)
 	out.PinAssignments = make(map[hubcore.ArchiveKey]hubcore.SessionPin, len(in.PinAssignments))
 	maps.Copy(out.PinAssignments, in.PinAssignments)
+	out.SessionSeen = in.SessionSeen.Clone()
 	return out
 }
 
@@ -1805,11 +1810,6 @@ func (p *navigationProjector) projectNode(node hubcore.TreeNode, depth int) (hub
 
 func (p navigationProjector) projectShallow(node hubcore.TreeNode) hubapi.NavigationSessionSummary {
 	ref, _ := navigationNodeRef(node)
-	updated := node.UpdatedAt
-	var updatedAt *time.Time
-	if !updated.IsZero() {
-		updatedAt = &updated
-	}
 	pinned := p.projection.pinSectionIDFor(ref) != ""
 	watches, omittedWatches, omittedArmedWatches := navigationWatches(node.Watches)
 	return hubapi.NavigationSessionSummary{
@@ -1835,10 +1835,14 @@ func (p navigationProjector) projectShallow(node hubcore.TreeNode) hubapi.Naviga
 		ApprovalPending:     node.ApprovalPending,
 		ApprovalTool:        truncateNavigationBytes(node.ApprovalTool, maxNavigationIdentityBytes),
 		ApprovalTarget:      truncateNavigationRunes(node.ApprovalTarget, maxNavigationLabelRunes),
+		Question:            navigationQuestion(node.Question),
 		Dormant:             node.Dormant,
 		Offline:             p.projection.sourceOffline(ref.HostID),
-		UpdatedAt:           updatedAt,
+		UpdatedAt:           optionalTime(node.UpdatedAt),
 		MoreSubagents:       node.MoreSubagents,
+		Subagents:           navigationSubagentTally(node.Subagents),
+		TurnEndedAt:         optionalTime(node.TurnEndedAt),
+		Unseen:              p.projection.unseen(ref, node.TurnEndedAt),
 		RunningJobs:         navigationJobs(node.RunningJobs),
 		CompletedJobs:       navigationJobs(node.CompletedJobs),
 		Watches:             watches,
@@ -1847,6 +1851,15 @@ func (p navigationProjector) projectShallow(node hubcore.TreeNode) hubapi.Naviga
 		Tasks:               navigationTaskProgress(node.Tasks),
 		Children:            hubapi.NavigationArray[hubapi.NavigationSessionSummary]{},
 	}
+}
+
+// optionalTime is t as an optional wire timestamp: nil when t is zero, so the
+// summary omits the key.
+func optionalTime(t time.Time) *time.Time {
+	if t.IsZero() {
+		return nil
+	}
+	return &t
 }
 
 // navigationTaskProgress is the row's task line: a session's task-list progress
@@ -1868,6 +1881,35 @@ func navigationTaskProgress(tasks *appwire.TaskAggregate) *hubapi.NavigationTask
 		return nil
 	}
 	return progress
+}
+
+// navigationQuestion is a row's pending question on the wire: re-cut to the
+// wire's bounds (appwire.BoundedPendingQuestion), so a remote host or an older
+// daemon cannot widen a row, and dropped when the schema would refuse it (no
+// text left, or no question counted), the way navigationTaskProgress drops bad
+// progress rather than fail the resource.
+func navigationQuestion(question *appwire.PendingQuestion) *hubapi.NavigationQuestion {
+	if question == nil {
+		return nil
+	}
+	bounded := appwire.BoundedPendingQuestion(question.Question, question.Options, question.Count)
+	wire := hubapi.NavigationQuestion{Text: bounded.Question, Options: bounded.Options, Count: bounded.Count}
+	if !navigationQuestionValid(wire) {
+		return nil
+	}
+	return &wire
+}
+
+// navigationSubagentTally is a root row's tally on the wire: absent when the
+// tree has no subagent, and dropped when the schema would refuse it (a
+// negative count, which only a malformed daemon answer can carry), the way
+// navigationTaskProgress drops bad progress rather than fail the resource.
+func navigationSubagentTally(tally appwire.SubagentTally) *hubapi.NavigationSubagentTally {
+	wire := hubapi.NavigationSubagentTally{Running: tally.Running, Failed: tally.Failed, Done: tally.Done}
+	if wire == (hubapi.NavigationSubagentTally{}) || !navigationSubagentTallyValid(wire) {
+		return nil
+	}
+	return &wire
 }
 
 // offlineSourceIDs indexes the manifest sources whose connection state is
@@ -2134,12 +2176,18 @@ func (p navigationProjection) pinSectionIDFor(ref hubapi.Ref) string {
 	return assignment.SectionID
 }
 
+// unseen reports whether a row's last turn ended after the hub's seen-through
+// marker for it (S4). The marker is keyed by the row's own ref, the one a
+// client marks it by, so a live session's Live, project and pin rows, which
+// share that ref, agree.
+func (p navigationProjection) unseen(ref hubapi.Ref, turnEndedAt time.Time) bool {
+	return p.inputs.SessionSeen.Unseen(hubcore.SessionPinKey(ref.HostID, ref.SessionID), turnEndedAt)
+}
+
 func cloneNavigationSummary(summary hubapi.NavigationSessionSummary) hubapi.NavigationSessionSummary {
 	clone := summary
-	if summary.UpdatedAt != nil {
-		updated := *summary.UpdatedAt
-		clone.UpdatedAt = &updated
-	}
+	clone.UpdatedAt = clonePointer(summary.UpdatedAt)
+	clone.TurnEndedAt = clonePointer(summary.TurnEndedAt)
 	clone.RunningJobs = append(hubapi.NavigationArray[hubapi.NavigationJobSummary](nil), summary.RunningJobs...)
 	clone.CompletedJobs = append(hubapi.NavigationArray[hubapi.NavigationJobSummary](nil), summary.CompletedJobs...)
 	clone.Watches = append(hubapi.NavigationArray[hubapi.NavigationWatchSummary](nil), summary.Watches...)
@@ -2148,15 +2196,29 @@ func cloneNavigationSummary(summary hubapi.NavigationSessionSummary) hubapi.Navi
 		clone.Watches[index].Events = append([]string(nil), watch.Events...)
 		clone.Watches[index].DeliveryTimes = append([]string(nil), watch.DeliveryTimes...)
 	}
-	if summary.Tasks != nil {
-		tasks := *summary.Tasks
-		clone.Tasks = &tasks
+	clone.Tasks = clonePointer(summary.Tasks)
+	clone.Subagents = clonePointer(summary.Subagents)
+	if summary.Question != nil {
+		question := *summary.Question
+		question.Options = append([]string(nil), summary.Question.Options...)
+		clone.Question = &question
 	}
 	clone.Children = make(hubapi.NavigationArray[hubapi.NavigationSessionSummary], len(summary.Children))
 	for index, child := range summary.Children {
 		clone.Children[index] = cloneNavigationSummary(child)
 	}
 	return clone
+}
+
+// clonePointer returns a pointer to a shallow copy of *value; nil stays nil.
+// The summaries point only at values (a time, the task progress, the subagent
+// tally), so the copy shares nothing that can change.
+func clonePointer[T any](value *T) *T {
+	if value == nil {
+		return nil
+	}
+	clone := *value
+	return &clone
 }
 
 func navigationPage[T any](rows []T, offset uint32, limit, maximum int) ([]T, int) {

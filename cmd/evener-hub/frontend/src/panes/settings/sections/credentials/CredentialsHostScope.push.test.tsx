@@ -36,6 +36,8 @@ function instance(overrides: Partial<InstanceEntry> & Pick<InstanceEntry, "name"
 
 function hostRow(overrides: Partial<HostRow> & Pick<HostRow, "name">): HostRow {
   return {
+    generation: 1,
+    incarnationId: "inc-1",
     origin: "hub.toml",
     attached: false,
     midAttach: false,

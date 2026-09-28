@@ -1238,20 +1238,44 @@ test("codec rejects an armed omitted count above the omitted watch total", () =>
   expect(() => statusFor(undefined, 1)).toThrow();
 });
 
+// S4: a live row carries when its last turn ended and whether that turn is
+// unseen. The codec accepts both and refuses a malformed value, which the hub
+// never sends.
+test("codec accepts a row's turn end and unseen mark and refuses malformed ones", () => {
+  const session = entityKey(key, "1");
+  const statusFor = (extra: Record<string, unknown>) =>
+    decodeNavigationResponse(
+      key,
+      undefined,
+      snapshotResponse(key, {
+        ...liveSnapshot(),
+        entities: [{ key: session, kind: "session", value: { ...sessionValue("local:session"), ...extra } }],
+      }),
+    ).status;
+
+  expect(statusFor({ turn_ended_at: "2026-09-26T11:58:00.123Z", unseen: true })).toBe("snapshot");
+  expect(() => statusFor({ turn_ended_at: "yesterday" })).toThrow();
+  expect(() => statusFor({ unseen: "yes" })).toThrow();
+});
+
+// A snapshot whose one session value carries `value` under `field`, for the
+// nested value records below.
+const snapshotWithSessionField = (field: string, value: unknown): NavigationSnapshot => ({
+  ...liveSnapshot(),
+  entities: [
+    { key: entityKey(key, "1"), kind: "session", value: { ...sessionValue("local:session"), [field]: value } },
+  ],
+});
+
 // A live session's task-list progress (S13a) is a nested value record the hub
 // carries only when the list is non-empty. The codec keeps every key it knows,
 // drops a key inside the record that it does not know, and holds the record to
 // the hub schema's bounds (navigation_schema.go navigationTaskProgressValid).
-const snapshotWithTasks = (tasks: unknown): NavigationSnapshot => ({
-  ...liveSnapshot(),
-  entities: [{ key: entityKey(key, "1"), kind: "session", value: { ...sessionValue("local:session"), tasks } }],
-});
-
 test("codec keeps a session's task progress and drops keys inside it that it does not know", () => {
   const tasks = { total: 7, done: 2, cancelled: 1, current_id: 4, current: "Fix the settle/drain race" };
   const rows = materializeSnapshot(
     key,
-    decodedSnapshot(key, snapshotWithTasks({ ...tasks, future_task_key: futureValue })),
+    decodedSnapshot(key, snapshotWithSessionField("tasks", { ...tasks, future_task_key: futureValue })),
   ).sessions as Array<Record<string, unknown>>;
   expect(rows[0]?.tasks).toEqual(tasks);
   const onTheBounds = {
@@ -1260,7 +1284,7 @@ test("codec keeps a session's task progress and drops keys inside it that it doe
     current_id: Number.MAX_SAFE_INTEGER,
     current: "😀".repeat(512),
   };
-  expect(decodedSnapshot(key, snapshotWithTasks(onTheBounds)).snapshot.entities[0]?.value).toEqual({
+  expect(decodedSnapshot(key, snapshotWithSessionField("tasks", onTheBounds)).snapshot.entities[0]?.value).toEqual({
     ...sessionValue("local:session"),
     tasks: onTheBounds,
   });
@@ -1281,7 +1305,81 @@ test.each([
   ["more settled than exist", { total: 2, done: 1, cancelled: 2 }],
   ["an over-long current task", { total: 1, done: 0, current_id: 1, current: "t".repeat(513) }],
 ] as const)("codec refuses task progress with %s", (_name, tasks) => {
-  expectContentFreeRejection(key, snapshotWithTasks(tasks));
+  expectContentFreeRejection(key, snapshotWithSessionField("tasks", tasks));
+});
+
+// A live root's whole-tree subagent tally (S3) is a nested value record the hub
+// carries only when the tree has a subagent. The codec keeps every count it
+// knows, drops a key inside the record that it does not know, and holds each
+// count to the hub schema's bound (navigation_schema.go
+// navigationSubagentTallyValid).
+test("codec keeps a session's subagent tally and drops keys inside it that it does not know", () => {
+  const subagents = { running: 2, failed: 1, done: 57 };
+  const rows = materializeSnapshot(
+    key,
+    decodedSnapshot(key, snapshotWithSessionField("subagents", { ...subagents, future_tally_key: futureValue })),
+  ).sessions as Array<Record<string, unknown>>;
+  expect(rows[0]?.subagents).toEqual(subagents);
+  const onTheBounds = { running: Number.MAX_SAFE_INTEGER, failed: 0, done: Number.MAX_SAFE_INTEGER };
+  expect(decodedSnapshot(key, snapshotWithSessionField("subagents", onTheBounds)).snapshot.entities[0]?.value).toEqual({
+    ...sessionValue("local:session"),
+    subagents: onTheBounds,
+  });
+});
+
+test.each([
+  ["null", null],
+  ["a number in place of the record", 3],
+  ["a list in place of the record", [{ running: 1, failed: 0, done: 0 }]],
+  ["a missing running count", { failed: 0, done: 0 }],
+  ["a missing failed count", { running: 2, done: 57 }],
+  ["a missing done count", { running: 2, failed: 1 }],
+  ["a negative count", { running: 2, failed: -1, done: 57 }],
+  ["a fractional count", { running: 1.5, failed: 0, done: 0 }],
+  ["a count beyond the safe range", { running: Number.MAX_SAFE_INTEGER + 1, failed: 0, done: 0 }],
+  ["a string count", { running: "2", failed: 0, done: 0 }],
+] as const)("codec refuses a subagent tally with %s", (_name, subagents) => {
+  expectContentFreeRejection(key, snapshotWithSessionField("subagents", subagents));
+});
+
+// A live row asking a question names it (S1b): a nested value record the hub
+// carries only while the row's ask flag is set. The codec keeps it, drops a
+// key inside it that it does not know, and holds it to the hub schema's
+// bounds (navigation_schema.go navigationQuestionValid).
+test("codec keeps a row's pending question and drops keys inside it that it does not know", () => {
+  const question = { text: "Keep or drop the implied options?", options: ["Drop them", "Keep them"], count: 2 };
+  const rows = materializeSnapshot(
+    key,
+    decodedSnapshot(key, snapshotWithSessionField("question", { ...question, future_question_key: futureValue })),
+  ).sessions as Array<Record<string, unknown>>;
+  expect(rows[0]?.question).toEqual(question);
+  const onTheBounds = {
+    text: "😀".repeat(200),
+    options: ["😀".repeat(80), "b", "c", "d", "e"],
+    count: Number.MAX_SAFE_INTEGER,
+  };
+  expect(decodedSnapshot(key, snapshotWithSessionField("question", onTheBounds)).snapshot.entities[0]?.value).toEqual({
+    ...sessionValue("local:session"),
+    question: onTheBounds,
+  });
+});
+
+test.each([
+  ["null", null],
+  ["a string in place of the record", "Keep or drop?"],
+  ["a missing text", { count: 1 }],
+  ["an empty text", { text: "", count: 1 }],
+  ["an over-long text", { text: "t".repeat(201), count: 1 }],
+  ["a missing count", { text: "Which?" }],
+  ["no question counted", { text: "Which?", count: 0 }],
+  ["a fractional count", { text: "Which?", count: 1.5 }],
+  ["six options", { text: "Which?", options: ["a", "b", "c", "d", "e", "f"], count: 1 }],
+  ["an empty option", { text: "Which?", options: [""], count: 1 }],
+  ["an over-long option", { text: "Which?", options: ["o".repeat(81)], count: 1 }],
+  ["a non-string option", { text: "Which?", options: [7], count: 1 }],
+  ["options that are not a list", { text: "Which?", options: "a", count: 1 }],
+] as const)("codec refuses a pending question with %s", (_name, question) => {
+  expectContentFreeRejection(key, snapshotWithSessionField("question", question));
 });
 
 // cmd/evener-hub/navigation_value_records_test.go keeps this fixture naming

@@ -1,7 +1,8 @@
 import type { AppwireClientLike, HostEntry, HostRow } from "@evener/appwire-client";
-import { errorText } from "@evener/appwire-client";
+import { errorText, WireError } from "@evener/appwire-client";
 import { create, useStore } from "zustand";
 import { connectedClientPort, connectionStore } from "./connection";
+import { createSecureUUID } from "./secureUUID";
 
 // hosts.ts is the Hosts settings section's store (component 08 slice 1):
 // the evener/host/list cache plus the add/Connect/remove calls behind the
@@ -134,6 +135,78 @@ async function listHosts(): Promise<{ client: AppwireClientLike; hosts: HostRow[
   return { client, hosts: res.hosts };
 }
 
+// --- the guarded-mutation pair -----------------------------------------------
+//
+// `update` and `remove` carry the idempotency key plus the (generation,
+// incarnation id) pair the row they target currently has (registry spec 08 §4,
+// §11): the hub refuses a mismatch with the typed `stale-entry` refusal, so a
+// caller whose snapshot moved must re-read and retry instead of overwriting an
+// intervening change. The one rule this store keeps: the pair always comes from
+// a row the registry answered — the held snapshot, or a fresh list read — never
+// from a fabricated or defaulted value.
+
+/** ErrorStaleEntry is the hub's discriminator for a guarded-mutation refusal
+ * whose expected pair no longer matches the live entry (appwire.ErrorStaleEntry,
+ * appwire/errors.go, spec 08 §12). The retry path matches this string, never
+ * the numeric code - siblings share the code. */
+export const ErrorStaleEntry = "stale-entry";
+
+/** HostMutationPair is the (generation, incarnationId) pair a guarded mutation
+ * echoes back to the hub. */
+export interface HostMutationPair {
+  generation: number;
+  incarnationId: string;
+}
+
+/** heldPairFor reads name's pair from the store's current ready snapshot, or
+ * undefined when no row for the name is held. */
+function heldPairFor(name: string): HostMutationPair | undefined {
+  const load = hostsStore.getState().load;
+  if (load.phase !== "ready") return undefined;
+  const row = load.hosts.find((candidate) => candidate.name === name);
+  if (row === undefined) return undefined;
+  return { generation: row.generation, incarnationId: row.incarnationId };
+}
+
+/** pairForMutation returns the pair a guarded mutation must send for name: the
+ * held row's pair, or - when no row is held - the pair a fresh list read
+ * answers. A name the registry does not list has no pair to echo, so the store
+ * refuses locally rather than fabricating one. */
+async function pairForMutation(name: string): Promise<HostMutationPair> {
+  const held = heldPairFor(name);
+  if (held !== undefined) return held;
+  await quietReRead();
+  const reread = heldPairFor(name);
+  if (reread === undefined) {
+    throw new Error(`host "${name}" is not listed, so there is no guarded pair to send with the request`);
+  }
+  return reread;
+}
+
+/** guardedMutation sends a guarded update/remove and implements the UI retry
+ * path the spec's `stale-entry` refusal promises: the row the caller held moved
+ * under it, so the store re-reads the current pair and retries ONCE with a
+ * fresh mutationId (a replay under the old key would legitimately return the
+ * old receipt instead of applying the caller's intent). A second stale-entry
+ * surfaces to the caller - the row moved twice, and only a person can decide
+ * what to do next. */
+async function guardedMutation<T>(
+  name: string,
+  send: (pair: HostMutationPair, mutationId: string) => Promise<T>,
+): Promise<T> {
+  try {
+    return await send(await pairForMutation(name), createSecureUUID());
+  } catch (error) {
+    if (!(error instanceof WireError) || error.evenerErrorInfo !== ErrorStaleEntry) throw error;
+    // The held row is exactly what the refusal just proved stale, so the retry
+    // re-reads before it echoes anything: pairForMutation after this forced
+    // read answers the current row (or refuses locally when the registry no
+    // longer lists the name).
+    await quietReRead();
+    return await send(await pairForMutation(name), createSecureUUID());
+  }
+}
+
 // sameRoots compares two rows' roots as lists, treating an absent value and an
 // empty one as the same: the wire omits empty optional arrays, so the two
 // spellings describe the same host, and neither may make the comparator report a
@@ -159,6 +232,11 @@ function hostRowEqual(a: HostRow, b: HostRow | undefined): boolean {
     a.addr === b.addr &&
     sameRoots(a.roots, b.roots) &&
     a.origin === b.origin &&
+    // The guarded-mutation pair is part of the row's contract (registry spec 08
+    // §11): a new generation with otherwise identical content is a row the
+    // stale-retry path must observe, so the publish guard cannot swallow it.
+    a.generation === b.generation &&
+    a.incarnationId === b.incarnationId &&
     a.attached === b.attached &&
     a.serverName === b.serverName &&
     a.serverVersion === b.serverVersion &&
@@ -452,8 +530,10 @@ export const hostsStore = create<HostsStoreState>((set) => ({
   add: async (entry) => {
     // The wire carries one entry object (component 08 slice 2's shape, the
     // design record's own), so the store passes what the dialog collected
-    // straight through rather than picking three fields out of it.
-    const row = await requireClient().request("evener/host/add", { entry });
+    // straight through rather than picking three fields out of it. The
+    // mutationId is the add's client idempotency key (registry spec 08 §4):
+    // a keyed add is dedup-safe, so a transport-level retry cannot double-add.
+    const row = await requireClient().request("evener/host/add", { entry, mutationId: createSecureUUID() });
     // Re-read quietly rather than appending: the server owns ordering and
     // the row's attached state, and the list read is cheap and never dials.
     await reReadAfterMutation();
@@ -463,14 +543,23 @@ export const hostsStore = create<HostsStoreState>((set) => ({
   update: async (params) => {
     // The host being edited is named by the request's own field: name is
     // immutable, so it is the target rather than a value here (spec §3.1).
-    const { host: row } = await requireClient().request(
-      "evener/host/update",
-      {
-        name: params.name,
-        entry: params.entry,
-      },
-      { timeoutMs: HOST_GATE_TIMEOUT_MS },
-    );
+    // The guarded pair travels with it: the row the store holds is what the
+    // user saw, and a refusal means that row moved (guardedMutation retries
+    // once with the re-read pair).
+    const row = await guardedMutation(params.name, async (pair, mutationId) => {
+      const { host } = await requireClient().request(
+        "evener/host/update",
+        {
+          name: params.name,
+          entry: params.entry,
+          mutationId,
+          expectedGeneration: pair.generation,
+          expectedIncarnationId: pair.incarnationId,
+        },
+        { timeoutMs: HOST_GATE_TIMEOUT_MS },
+      );
+      return host;
+    });
     await reReadAfterMutation();
     return row;
   },
@@ -484,7 +573,18 @@ export const hostsStore = create<HostsStoreState>((set) => ({
   },
 
   remove: async (name) => {
-    await requireClient().request("evener/host/remove", { name }, { timeoutMs: HOST_GATE_TIMEOUT_MS });
+    await guardedMutation(name, (pair, mutationId) =>
+      requireClient().request(
+        "evener/host/remove",
+        {
+          name,
+          mutationId,
+          expectedGeneration: pair.generation,
+          expectedIncarnationId: pair.incarnationId,
+        },
+        { timeoutMs: HOST_GATE_TIMEOUT_MS },
+      ),
+    );
     await reReadAfterMutation();
   },
 

@@ -22,7 +22,10 @@ import { createSecureUUID, tryOrUndefined } from "./secureUUID";
 // composer marker number it was staged under: what pairs the attachment back
 // to its "[image N]" anchor in composerText when a failed record is restored
 // into a composer, recorded rather than re-derived from array position at
-// restore time.
+// restore time. `presentationId` names one staging of the bytes: a host mints
+// a new one whenever it stages bytes, so two attachments with the same
+// presentationId carry the same bytes (the projection relies on this to tell
+// a fresh read of a record from a change without reading the bytes).
 export interface MutationAttachmentRef {
   presentationId: string;
   marker: number;

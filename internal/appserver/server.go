@@ -7,6 +7,7 @@ import (
 	"log"
 	"runtime/debug"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -505,6 +506,9 @@ func (s *Server) SetBeforeSubscriptionGate(fn func()) {
 
 func (s *Server) initialize(_ context.Context, params appwire.InitializeParams) (appwire.InitializeResponse, error) {
 	if !s.cfg.AdapterNativeInitialize && params.ProtocolVersion != appwire.ProtocolVersion {
+		if olderProtocolVersion(params.ProtocolVersion) {
+			return appwire.InitializeResponse{}, appwire.UpgradeRequired(params.ProtocolVersion, appwire.ProtocolVersion)
+		}
 		return appwire.InitializeResponse{}, appwire.InvalidRequest(
 			fmt.Sprintf("protocol version %q is incompatible; want %q", params.ProtocolVersion, appwire.ProtocolVersion),
 		)
@@ -524,6 +528,26 @@ func (s *Server) initialize(_ context.Context, params appwire.InitializeParams) 
 		Features:        s.cfg.Features,
 		Navigation:      navigationCapability(capability),
 	}, nil
+}
+
+// olderProtocolVersion reports whether version is an AppWire protocol version
+// ("evener-appwire-v<N>") older than the one this server speaks.
+func olderProtocolVersion(version string) bool {
+	n, ok := protocolVersionNumber(version)
+	current, currentOK := protocolVersionNumber(appwire.ProtocolVersion)
+	return ok && currentOK && n < current
+}
+
+func protocolVersionNumber(version string) (int, bool) {
+	digits, ok := strings.CutPrefix(version, "evener-appwire-v")
+	if !ok {
+		return 0, false
+	}
+	n, err := strconv.Atoi(digits)
+	if err != nil || n < 0 || strconv.Itoa(n) != digits {
+		return 0, false
+	}
+	return n, true
 }
 
 func navigationCapability(capability *appwire.NavigationCapability) *appwire.NavigationCapability {
@@ -1486,7 +1510,12 @@ func concurrentDispatchMethod(method string) bool {
 		// out of order: hubUpdateMu plus the cross-process install lock
 		// fail a concurrent apply fast, and the restart waits on its own
 		// response flush rather than connection order.
-		appwire.MethodEvenerUpdateApply:
+		appwire.MethodEvenerUpdateApply,
+		// evener/activity/read waits up to its per-host budget on each
+		// attached host, and a phone polls it every ten seconds on the
+		// connection its sends ride. It writes nothing, and each answer
+		// replaces the last, so order does not matter to the poller.
+		appwire.MethodEvenerActivityRead:
 		return true
 	}
 	return false

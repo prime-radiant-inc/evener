@@ -5,7 +5,8 @@ package agent
 // Proves end-to-end at the session level that a provider instance whose NAME
 // differs from its TYPE:
 //   - identifies by NAME (ID(), req.Provider stamped by llm.Client)
-//   - behaves by its registry identity (system-prompt section, tool wiring)
+//   - behaves by its registry identity (tool wiring here; the system-prompt
+//     surface is pinned in session_surface_behavior_test.go)
 //
 // Prompt-cache eligibility is deliberately absent: the session stamps both
 // prompt-cache fields for every instance and the resolved row's Fields decide
@@ -15,12 +16,11 @@ package agent
 //  1. Identity by name — the "work" instance (base openai) → ID="work",
 //     ProviderID="openai"; session turn completes; the request reports
 //     provider "work".
-//  2. Behavior by surface — the same "work" instance gets the openai prompt
-//     section via renderSystemPrompt, and applyModelRequestMetadata stamps the
-//     session identity onto the request.
-//  3. "any real openai" boundary — the generic surface does NOT get the openai
-//     section (already tested individually; verified cohesively here in a single
-//     subtest).
+//  2. Behavior by surface — applyModelRequestMetadata stamps the session
+//     identity onto the request. The prompt surface the "work" instance gets
+//     is pinned in session_surface_behavior_test.go.
+//  3. "any real openai" boundary — the generic surface gets no openai prompt
+//     guidance; also pinned in session_surface_behavior_test.go.
 //  4. Cross-instance switch — resolver maps "work2/<model>" to a renamed openai
 //     profile; SetModel("work2/gpt-5.2") swaps the profile, preserves a
 //     WithCommunicateOutputSchema override, and keeps identity "work2".
@@ -71,8 +71,7 @@ func instanceTestResolver(ref string) (*provider.Profile, error) {
 //  1. ID()=="work", ProviderID()=="openai" (identity fields).
 //  2. ProcessInput returns the fake response (session is functional).
 //  3. The error-path event reports provider "work" (llm.Client stamping).
-//  4. renderSystemPrompt contains the openai section (behavior by surface).
-//  5. applyModelRequestMetadata stamps the session's request metadata.
+//  4. applyModelRequestMetadata stamps the session's request metadata.
 func TestProviderInstance_RenamedOpenAI_IdentityAndBehavior(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
@@ -125,14 +124,7 @@ func TestProviderInstance_RenamedOpenAI_IdentityAndBehavior(t *testing.T) {
 		t.Fatalf("req.Provider = %q, want work (llm.Client must stamp the instance name)", got)
 	}
 
-	// ── Assertion 3: behavior by surface — openai prompt section in system prompt ──
-	const openAIMarker = "they execute in the order you"
-	prompt, _ := sess.renderSystemPrompt(sess.env)
-	if !strings.Contains(prompt, openAIMarker) {
-		t.Fatalf("system prompt missing openai section marker %q — renamed openai instance must get openai-tagged behavior", openAIMarker)
-	}
-
-	// ── Assertion 4: the session stamps the prompt-cache fields ──
+	// ── Assertion 3: the session stamps the prompt-cache fields ──
 	// Which of them survive is the resolved row's decision at dispatch
 	// (llm.ShapeRequest, spec §7.5), not the instance name's.
 	req := llm.Request{
@@ -145,37 +137,6 @@ func TestProviderInstance_RenamedOpenAI_IdentityAndBehavior(t *testing.T) {
 	}
 	if got, want := req.PromptCacheRetention, "24h"; got != want {
 		t.Fatalf("PromptCacheRetention = %q, want %q", got, want)
-	}
-}
-
-// ── Subtest 3: "any real openai" boundary ─────────────────────────────────────
-
-// TestProviderInstance_OpenAICompatible_NoOpenAIBehavior verifies that a
-// profile on the generic surface does NOT get the OpenAI prompt section in
-// the system prompt. (Prompt-cache eligibility left this axis: the session
-// stamps the fields and the resolved row decides — see
-// session_openai_prompt_cache_test.go.)
-func TestProviderInstance_OpenAICompatible_NoOpenAIBehavior(t *testing.T) {
-	t.Parallel()
-	dir := t.TempDir()
-	c := llm.NewClient()
-	c.Register(&fakeAdapter{name: "openai-compatible"})
-
-	compatProfile := testOpenAICompatProfile("openai-compatible", "gpt-4o", 128_000)
-
-	sess, err := NewSession(c, compatProfile, execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
-		NoProjectPrompts: true,
-	})
-	if err != nil {
-		t.Fatalf("NewSession: %v", err)
-	}
-	defer sess.Close()
-
-	// System prompt must NOT contain the openai-only section.
-	const openAIMarker = "they execute in the order you"
-	prompt, _ := sess.renderSystemPrompt(sess.env)
-	if strings.Contains(prompt, openAIMarker) {
-		t.Fatalf("system prompt contains openai section marker %q — the generic surface must NOT load the openai section", openAIMarker)
 	}
 }
 

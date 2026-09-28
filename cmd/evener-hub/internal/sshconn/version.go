@@ -1365,7 +1365,7 @@ func (m *Manager) waitForHealthyHub(ctx context.Context, host hostreg.Host, expe
 			return fmt.Errorf("%w: host %q hub on :%s is still the pre-restart process (started %s, version %q); the restart did not take",
 				ErrRestart, host.Name, port, last.startedAt.Format(time.RFC3339Nano), last.version)
 		}
-		if replacing && last.version == expectedVersion && isUnverifiableVersion(expectedVersion) {
+		if replacing && last.version == expectedVersion && UnverifiableVersion(expectedVersion) {
 			// The version matched, but the identity did not prove a replacement:
 			// a "dev"/dirty version names no code, and either the pre-restart
 			// identity or this answer carries no start time, which proves nothing
@@ -1403,7 +1403,7 @@ func hubBuildSHAMatches(got, expected string) bool {
 // must be provably a different process than the one replaced — both start times
 // known and different — except for a start, which has no predecessor to exclude.
 func hubAnswerProvesReplacement(got, replaced hubIdentity, expectedVersion string, replacing bool) bool {
-	if !isUnverifiableVersion(expectedVersion) {
+	if !UnverifiableVersion(expectedVersion) {
 		return !got.sameProcessAs(replaced)
 	}
 	if !replacing {

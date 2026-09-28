@@ -68,18 +68,29 @@ func watchServeShellNotifications(client *appwire.Client, callID string) *serveS
 	go func() {
 		for notification := range client.Notifications() {
 			switch notification.Method {
-			case appwire.NotifyItemStarted, appwire.NotifyItemCompleted:
-				var params appwire.ItemLifecycleParams
-				if json.Unmarshal(notification.Params, &params) != nil || params.Item.CallID != callID {
+			case appwire.NotifyOverlayUpserted:
+				// The running call's tool state in the overlay.
+				var params appwire.OverlayUpsertedParams
+				if json.Unmarshal(notification.Params, &params) == nil && params.Item.CallID == callID {
+					signals.startedOnce.Do(func() { close(signals.started) })
+				}
+			case appwire.NotifyHistoryUpdated:
+				// The recorded call item settled by its TOOL_RESULTS entry, and
+				// the recorded completion of the turn.
+				var params appwire.HistoryUpdatedParams
+				if json.Unmarshal(notification.Params, &params) != nil {
 					continue
 				}
-				if notification.Method == appwire.NotifyItemStarted {
-					signals.startedOnce.Do(func() { close(signals.started) })
-				} else {
-					signals.completedOnce.Do(func() { close(signals.completed) })
+				for _, item := range params.Items {
+					if item.CallID == callID && item.Status == appwire.TurnStatusCompleted {
+						signals.completedOnce.Do(func() { close(signals.completed) })
+					}
 				}
-			case appwire.NotifyTurnCompleted:
-				signals.turnOnce.Do(func() { close(signals.turnComplete) })
+				for _, turn := range params.Turns {
+					if turn.ID != appwire.SystemPreludeTurnID && turn.Status == appwire.TurnStatusCompleted {
+						signals.turnOnce.Do(func() { close(signals.turnComplete) })
+					}
+				}
 			case appwire.NotifyThreadStatusChanged:
 				var params appwire.ThreadStatusChangedParams
 				if json.Unmarshal(notification.Params, &params) == nil && params.Status.Type == appwire.ThreadStatusAwaiting {
@@ -221,7 +232,7 @@ func runServeForegroundShellPersistenceCase(t *testing.T, mode foregroundShellSe
 		select {
 		case <-signals.started:
 		case <-ctx.Done():
-			t.Fatalf("foreground shell never emitted item/started: %v", ctx.Err())
+			t.Fatalf("foreground shell never showed its running tool state: %v", ctx.Err())
 		}
 		client.Close()
 		client, signals = dialServeToolResultClient(ctx, t, entry.Address, "cold-reattach", ref)
@@ -274,7 +285,7 @@ func runServeForegroundShellPersistenceCase(t *testing.T, mode foregroundShellSe
 		select {
 		case <-signals.completed:
 		case <-ctx.Done():
-			t.Fatalf("foreground shell never emitted item/completed: %v", ctx.Err())
+			t.Fatalf("foreground shell call never settled in history: %v", ctx.Err())
 		}
 	}
 	select {
@@ -304,7 +315,7 @@ func runServeForegroundShellPersistenceCase(t *testing.T, mode foregroundShellSe
 // TestRunServeForegroundShellPersistsToolResults exercises the production Hub
 // path with no subscriber, an active subscriber, and a subscriber that is
 // replaced while the foreground process is still running. Each variant proves
-// the same four checkpoints: TOOL_CALL_END reaches AppWire when observed,
+// the same four checkpoints: the settled call reaches AppWire when observed,
 // TOOL_RESULTS is durable, the next model request carries it, and the turn
 // settles instead of remaining active.
 func TestRunServeForegroundShellPersistsToolResults(t *testing.T) {

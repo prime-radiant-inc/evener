@@ -22,7 +22,7 @@ func setReplacingClearFunc(srv *Server, nextID string) {
 		if err != nil {
 			return err
 		}
-		srv.ReplaceAppIdentity(prepared, nil)
+		srv.ReplaceAppIdentity(prepared.WithBootGeneration("1"), nil)
 		return nil
 	})
 }
@@ -76,7 +76,7 @@ func TestServerAppWireThreadClearReplaysTheSameReplacement(t *testing.T) {
 		if err != nil {
 			return err
 		}
-		srv.ReplaceAppIdentity(prepared, nil)
+		srv.ReplaceAppIdentity(prepared.WithBootGeneration("1"), nil)
 		return nil
 	})
 
@@ -119,7 +119,7 @@ func TestServerAppWireThreadClearReplaysTheSameReplacement(t *testing.T) {
 	if err != nil {
 		t.Fatalf("prepare restarted identity: %v", err)
 	}
-	restarted.ReplaceAppIdentity(prepared, nil)
+	restarted.ReplaceAppIdentity(prepared.WithBootGeneration("1"), nil)
 	replayed, err := restarted.handleAppThreadClear(context.Background(), params)
 	if err != nil {
 		t.Fatalf("restart replay: %v", err)
@@ -205,7 +205,7 @@ func TestServerAppWireThreadClearFencesTurnMutationWhileReplacing(t *testing.T) 
 		if err != nil {
 			return err
 		}
-		srv.ReplaceAppIdentity(prepared, nil)
+		srv.ReplaceAppIdentity(prepared.WithBootGeneration("1"), nil)
 		return nil
 	})
 	srv.SetRetrySafeTurnFunctions(RetrySafeTurnFunctions{
@@ -343,7 +343,7 @@ func TestServerRejectsOldInstanceTurnMutationsAfterClear(t *testing.T) {
 			if err != nil {
 				t.Fatalf("prepare replacement: %v", err)
 			}
-			srv.ReplaceAppIdentity(prepared, nil)
+			srv.ReplaceAppIdentity(prepared.WithBootGeneration("1"), nil)
 			calls := 0
 			srv.SetRetrySafeTurnFunctions(RetrySafeTurnFunctions{
 				Start: func(appwire.TurnStartParams) (appwire.TurnStartResponse, error) {
@@ -404,7 +404,7 @@ func TestServerAppWireThreadClearJournalKeepsOneRecordPerRef(t *testing.T) {
 		if err != nil {
 			return err
 		}
-		srv.ReplaceAppIdentity(prepared, nil)
+		srv.ReplaceAppIdentity(prepared.WithBootGeneration("1"), nil)
 		return nil
 	})
 

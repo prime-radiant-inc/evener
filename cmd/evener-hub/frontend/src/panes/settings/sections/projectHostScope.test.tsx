@@ -19,7 +19,15 @@ import { ProjectHostScope } from "./project";
 // touches the controller's launch config.
 
 function hostRow(overrides: Partial<HostRow> & Pick<HostRow, "name">): HostRow {
-  return { origin: "hub.toml", attached: false, midAttach: false, removed: false, ...overrides };
+  return {
+    generation: 1,
+    incarnationId: "inc-1",
+    origin: "hub.toml",
+    attached: false,
+    midAttach: false,
+    removed: false,
+    ...overrides,
+  };
 }
 
 function connectFakeClient(): FakeClient {
