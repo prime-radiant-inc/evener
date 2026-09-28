@@ -1118,20 +1118,26 @@ func TestScriptBootDashHighWaterRefuses(t *testing.T) {
 	}
 }
 
-// TestScriptSignalExitsAndReleasesLock pins the signal trap: an interrupt
-// releases the exclusive lease and exits, never continuing the critical
-// section.
+// TestScriptSignalExitsAndReleasesLock pins the interrupt semantics chosen
+// from 08c §4/§9: an interrupt is a local transport failure, not a fencing
+// decision, so the wrapper releases the exclusive lease, exits, and leaves any
+// command it started running and tracked — its lease entry stays non-terminal
+// and reads live, and a later fencing takeover's kill/wait addresses it. The
+// command is started before the signal, so the test is deterministic and needs
+// no fixed sleep.
 func TestScriptSignalExitsAndReleasesLock(t *testing.T) {
 	remote := newFenceRemote(t)
 	epoch := Epoch{BootID: "boot-1", OpSeq: 1}
 	remote.settle(epoch)
 	work := t.TempDir()
-	command := fmt.Sprintf("sleep 1; touch %s/sideeffect", work)
+	command := fmt.Sprintf("touch %s/started; exec sleep 30", work)
 	cmd, err := remote.start(nil, "perform", epoch.BootID, "1", command)
 	if err != nil {
 		t.Fatalf("start perform: %v", err)
 	}
-	waitForFile(t, filepath.Join(remote.state, "lock"))
+	// The command has provably started (and the lease is held) before the
+	// signal, so the test never races the spawn.
+	waitForFile(t, filepath.Join(work, "started"))
 	if err := cmd.Process.Signal(os.Interrupt); err != nil {
 		t.Fatalf("signal helper: %v", err)
 	}
@@ -1143,8 +1149,7 @@ func TestScriptSignalExitsAndReleasesLock(t *testing.T) {
 		_ = cmd.Process.Kill()
 		t.Fatal("the interrupted helper did not exit")
 	}
-	// Poll briefly: the release runs on the process's exit path, so a loaded
-	// machine may reap the process a moment before the file is gone.
+	// The release runs on the exit path; poll rather than assume a schedule.
 	lockFile := filepath.Join(remote.state, "lock")
 	deadline := time.Now().Add(5 * time.Second)
 	for {
@@ -1156,11 +1161,73 @@ func TestScriptSignalExitsAndReleasesLock(t *testing.T) {
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
-	// The helper exited rather than continuing to its side effect: give the
-	// orphaned command time to finish and prove the helper never reached it.
-	time.Sleep(1500 * time.Millisecond)
-	if _, err := os.Stat(filepath.Join(work, "sideeffect")); err == nil {
-		t.Fatal("the command completed despite the interrupt")
+	// The started command stays tracked: its entry is non-terminal and reads
+	// live under its recorded identity, never clean.
+	stdout, stderr, code := remote.run(nil, "entries")
+	if code != 0 {
+		t.Fatalf("entries exited %d: %s", code, stderr)
+	}
+	entries, err := DecodeEntries([]byte(stdout))
+	if err != nil || len(entries) != 1 {
+		t.Fatalf("entries = %+v (err %v), want the interrupted command's entry", entries, err)
+	}
+	entry := entries[0]
+	if entry.State != LeaseRunning && entry.State != LeaseRegistering {
+		t.Fatalf("entry after interrupt = %+v, want a non-terminal, tracked command", entry)
+	}
+	if recheck := recheckID(t, remote, entry.ID); !recheck.Live {
+		t.Fatalf("recheck(after interrupt) = %+v, want live: the command is still tracked", recheck)
+	}
+	if entry.Ownership.PID != nil {
+		killProcess(*entry.Ownership.PID)
+	}
+}
+
+// TestScriptNonceMatchIsExact pins the nonce identity boundary: a process whose
+// EVENER_FENCE_NONCE value merely starts with (or extends) the command's nonce
+// is not a descendant, never recorded, and never signaled.
+func TestScriptNonceMatchIsExact(t *testing.T) {
+	if _, err := os.Stat("/proc/self/environ"); err != nil {
+		t.Skip("descendant tracking needs /proc (Linux)")
+	}
+	remote := newFenceRemote(t)
+	epoch := Epoch{BootID: "boot-1", OpSeq: 1}
+	remote.settle(epoch)
+	work := t.TempDir()
+	// Two impostors: one carrying a proper prefix of the real nonce, one
+	// carrying an extension of it. Neither may be read as the command's child.
+	command := fmt.Sprintf(
+		`EVENER_FENCE_NONCE=${EVENER_FENCE_NONCE%%??} sh -c 'sleep 30' & echo $! > %s/prefix.pid; `+
+			`EVENER_FENCE_NONCE=${EVENER_FENCE_NONCE}EXTRA sh -c 'sleep 30' & echo $! > %s/extended.pid; echo done`,
+		work, work)
+	// File-backed streams: the surviving impostors would otherwise hold the
+	// pipes open and keep the wait blocked for their full sleep.
+	if combined, _, code := remote.runFile(nil, "perform", epoch.BootID, "1", command); code != 0 {
+		t.Fatalf("perform exited %d: %s", code, combined)
+	}
+	defer func() {
+		for _, name := range []string{"prefix.pid", "extended.pid"} {
+			if raw, err := os.ReadFile(filepath.Join(work, name)); err == nil {
+				if pid, err := strconv.Atoi(strings.TrimSpace(string(raw))); err == nil {
+					killProcess(pid)
+				}
+			}
+		}
+	}()
+	stdout, stderr, code := remote.run(nil, "entries")
+	if code != 0 {
+		t.Fatalf("entries exited %d: %s", code, stderr)
+	}
+	entries, err := DecodeEntries([]byte(stdout))
+	if err != nil || len(entries) != 1 {
+		t.Fatalf("entries = %+v (err %v), want one settled entry", entries, err)
+	}
+	entry := entries[0]
+	if entry.State != LeaseExited || len(entry.Descendants) != 0 {
+		t.Fatalf("entry = %+v, want exited with no descendants: the impostor nonces are not ours", entry)
+	}
+	if recheck := recheckID(t, remote, entry.ID); recheck.Live {
+		t.Fatalf("recheck(prefix nonce) = %+v, want clean", recheck)
 	}
 }
 

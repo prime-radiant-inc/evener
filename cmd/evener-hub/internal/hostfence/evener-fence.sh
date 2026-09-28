@@ -444,7 +444,7 @@ write_holder() { # <bootId> <opSeq>
 mint_nonce() {
 	nonce=$(od -An -N16 -tx1 /dev/urandom 2>/dev/null | tr -d ' \n' || true)
 	case $nonce in
-	'' | *[!0-9a-f]*) nonce=$(printf '%s%s' "$$" "$(date +%s 2>/dev/null || printf 0)") ;;
+	'' | *[!0-9a-f]*) nonce=$(printf '%016x%016x' "$$" "$(date +%s 2>/dev/null || printf 0)") ;;
 	*) ;;
 	esac
 	printf '%s' "$nonce"
@@ -823,6 +823,14 @@ current_start_token() { # <pid>
 	pid_start_time "$1"
 }
 
+# nonce_holds reports whether one process's environment carries exactly this
+# nonce: the value is extracted and compared whole, never substring-matched, so
+# a process whose nonce merely starts with the searched value is not ours.
+nonce_holds() { # <environ path> <nonce>
+	value=$(tr '\0' '\n' <"$1" 2>/dev/null | sed -n 's/^EVENER_FENCE_NONCE=//p' || true)
+	[ "$value" = "$2" ]
+}
+
 # descendants_of prints the PIDs still carrying the command's per-spawn nonce.
 # A command's children inherit the nonce in their environment, so a survivor —
 # however it detached — is found and the entry never reads settled while it
@@ -830,11 +838,13 @@ current_start_token() { # <pid>
 # descendants and the pid/start-time identity remains the whole proof.
 descendants_of() { # <nonce>
 	[ -d /proc/self ] || return 0
-	# One grep pass decides whether any survivor exists at all; only then is the
-	# per-pid pass worth its forks. The environ file is NUL-separated, so the
-	# pattern needs no trailing NUL to match. The pass reads grep's output, never
-	# its exit status: unreadable environ files make grep exit 2 even after a
-	# match, and a nonzero status must never read as "no survivors".
+	# One substring grep decides whether any candidate exists at all; only then
+	# is the per-pid pass worth its forks. A substring hit is a candidate, never
+	# an answer: nonce_holds extracts and compares the value exactly, so a
+	# process whose nonce merely starts with the searched one is not ours. The
+	# pass reads grep's output, never its exit status: unreadable environ files
+	# make grep exit 2 even after a match, and a nonzero status must never read
+	# as "no survivors".
 	candidates=$(grep -als "EVENER_FENCE_NONCE=$1" /proc/[0-9]*/environ 2>/dev/null || true)
 	[ -n "$candidates" ] || return 0
 	for envfile in /proc/[0-9]*/environ; do
@@ -843,11 +853,10 @@ descendants_of() { # <nonce>
 		pid=${pid%/environ}
 		case $pid in '' | *[!0-9]*) continue ;; esac
 		[ "$pid" = "$$" ] && continue
-		if [ -n "$(grep -al "EVENER_FENCE_NONCE=$1" "$envfile" 2>/dev/null || true)" ]; then
-			start=$(pid_start_time "$pid" 2>/dev/null || true)
-			[ -n "$start" ] || start=unknown
-			printf '%s:%s ' "$pid" "$start"
-		fi
+		nonce_holds "$envfile" "$1" || continue
+		start=$(pid_start_time "$pid" 2>/dev/null || true)
+		[ -n "$start" ] || start=unknown
+		printf '%s:%s ' "$pid" "$start"
 	done
 }
 
@@ -1003,7 +1012,7 @@ do_recheck() { # <id>
 				live=true
 				break
 			fi
-			if [ -z "$(grep -al "EVENER_FENCE_NONCE=$id" "/proc/$descendant_pid/environ" 2>/dev/null || true)" ]; then
+			if ! nonce_holds "/proc/$descendant_pid/environ" "$id"; then
 				# The exact nonce is absent: this is not the wrapper's process.
 				continue
 			fi
