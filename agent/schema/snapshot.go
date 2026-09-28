@@ -805,15 +805,23 @@ func listSessionMetasFSWithErrors(fs afero.Fs, dir string) ([]SessionMeta, []Ses
 	var metas []SessionMeta
 	var failures []SessionMetaLoadError
 	for _, e := range entries {
-		// Reject non-regular files: a symlinked .meta.json pointing outside the
-		// state root would otherwise be loaded via afero.ReadFile which follows
-		// the link. afero.ReadDir on OsFs returns Lstat-based FileInfo, so
-		// symlinks carry ModeSymlink and IsRegular returns false.
-		if !e.Mode().IsRegular() || !strings.HasSuffix(e.Name(), ".meta.json") {
+		if !strings.HasSuffix(e.Name(), ".meta.json") {
 			continue
 		}
 		id := strings.TrimSuffix(e.Name(), ".meta.json")
+		// A filename that is not a valid session identity is not a session this
+		// sweep can name or address, so both listings skip it.
 		if identifier.ValidateSessionID(id) != nil {
+			continue
+		}
+		// Reject non-regular files: a symlinked .meta.json pointing outside the
+		// state root would otherwise be loaded via afero.ReadFile which follows
+		// the link. afero.ReadDir on OsFs returns Lstat-based FileInfo, so
+		// symlinks carry ModeSymlink and IsRegular returns false. Never open the
+		// leaf here; record the refusal so the forensic sweep names the session
+		// instead of silently dropping it.
+		if !e.Mode().IsRegular() {
+			failures = append(failures, SessionMetaLoadError{ID: id, Error: fmt.Errorf("session meta %s is not a regular file", id)})
 			continue
 		}
 		meta, err := loadSessionMetaFS(fs, dir, id)

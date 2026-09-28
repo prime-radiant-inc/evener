@@ -608,3 +608,34 @@ func TestListSessions_CorruptMetaListedAsUnreadable(t *testing.T) {
 		t.Errorf("ListSessions mutated the state tree: before=%s after=%s", before, after)
 	}
 }
+
+// TestListSessions_SymlinkedMetaListedAsUnreadable covers the other
+// present-but-unloadable metadata shape the DATA-10 contract names: a
+// valid-id .meta.json that is a symlink. The sweep must not follow the link
+// (the security refusal is unchanged) but must still name the session in
+// Unreadable rather than silently dropping it.
+func TestListSessions_SymlinkedMetaListedAsUnreadable(t *testing.T) {
+	base := t.TempDir()
+	bucket := stateHomeBucket(base, hash1)
+	sessDir := filepath.Join(bucket, "sessions")
+	if err := os.MkdirAll(sessDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	sid := newSessionsTestSID(t)
+	target := filepath.Join(t.TempDir(), sid+".meta.json")
+	writeFile(t, target, `{"id":"`+sid+`"}`)
+	if err := os.Symlink(target, filepath.Join(sessDir, sid+".meta.json")); err != nil {
+		t.Fatal(err)
+	}
+
+	res, err := ListSessions(base, SessionsOpts{})
+	if err != nil {
+		t.Fatalf("ListSessions: %v", err)
+	}
+	if len(res.Sessions) != 0 {
+		t.Fatalf("symlinked meta must not produce a readable row, got %+v", res.Sessions)
+	}
+	if len(res.Unreadable) != 1 || res.Unreadable[0].SessionID != sid || res.Unreadable[0].Error == "" {
+		t.Fatalf("unreadable = %+v, want one entry naming %s", res.Unreadable, sid)
+	}
+}

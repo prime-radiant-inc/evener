@@ -54,3 +54,43 @@ func TestListSessionMetasWithErrors_ReportsCorruptMeta(t *testing.T) {
 		t.Fatalf("ListSessionMetas = %+v, want only the valid meta %s", metas, validID)
 	}
 }
+
+// TestListSessionMetasWithErrors_ReportsNonRegularMeta proves a valid-id
+// .meta.json that is present but not a regular file (a symlink here) is named
+// as a load failure instead of silently dropped, while the tolerant listing
+// keeps rejecting it and never follows the link.
+func TestListSessionMetasWithErrors_ReportsNonRegularMeta(t *testing.T) {
+	dir := t.TempDir()
+	sessionsDir := filepath.Join(dir, sessionsSubdir)
+	if err := os.MkdirAll(sessionsDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	const sid = "02wMz5Txv1C3Hut0M8GCeB"
+	target := filepath.Join(t.TempDir(), sid+".meta.json")
+	if err := os.WriteFile(target, []byte(`{"id":"`+sid+`"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, filepath.Join(sessionsDir, sid+".meta.json")); err != nil {
+		t.Fatal(err)
+	}
+
+	metas, failures, err := ListSessionMetasWithErrors(dir)
+	if err != nil {
+		t.Fatalf("ListSessionMetasWithErrors: %v", err)
+	}
+	if len(metas) != 0 {
+		t.Fatalf("metas = %+v, want none (symlinked meta must not load)", metas)
+	}
+	if len(failures) != 1 || failures[0].ID != sid || failures[0].Error == nil {
+		t.Fatalf("failures = %+v, want one naming %s", failures, sid)
+	}
+
+	// The tolerant listing still rejects the symlinked meta outright.
+	metas, err = ListSessionMetas(dir)
+	if err != nil {
+		t.Fatalf("ListSessionMetas: %v", err)
+	}
+	if len(metas) != 0 {
+		t.Fatalf("ListSessionMetas = %+v, want none", metas)
+	}
+}
