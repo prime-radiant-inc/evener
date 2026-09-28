@@ -31,7 +31,8 @@ function StepLine({ step, hubId, sessionRef, evidenceOpenByDefault }: { step: Ru
 	// Rows re-render on every publish; keyed on the arguments text, a settled
 	// step parses its arguments (up to 64 KiB) once rather than every time.
 	const target = useMemo(() => stepTarget(step.label, step.detail.arguments), [step.label, step.detail.arguments]);
-	const hasEvidence = useStepEvidence(step).length > 0 || (step.images?.length ?? 0) > 0;
+	const evidence = useStepEvidence(step);
+	const hasEvidence = evidence.length > 0 || (step.images?.length ?? 0) > 0;
 	// The same key a standalone activity row uses, so a step keeps its open
 	// state when a level change unfolds it from its run.
 	const disclosureId = scopedDisclosureId(JSON.stringify([hubId, sessionRef]), JSON.stringify(["activity", step.id]));
@@ -95,7 +96,7 @@ function StepLine({ step, hubId, sessionRef, evidenceOpenByDefault }: { step: Ru
 			)}
 			{open ? (
 				<View style={{ paddingLeft: 23 * scale, paddingBottom: 8 }}>
-					<StepEvidence step={step} hubId={hubId} />
+					<StepEvidence step={step} evidence={evidence} hubId={hubId} />
 				</View>
 			) : null}
 		</View>
