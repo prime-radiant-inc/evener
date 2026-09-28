@@ -281,4 +281,32 @@ describe("the approval dock (spec 8.4)", () => {
 		expect(fake.controls.refresh).toHaveBeenCalledTimes(1);
 		expect(pressable(tree, "Refresh session")).toBeUndefined();
 	});
+
+	it("brings Allow and Deny back once its re-read settles, even when the error stands, and a press tries again", async () => {
+		const error = "Couldn't confirm your decision. It may already have been applied.";
+		// The decision fails, and so does the re-read after it.
+		const fake = fakeControls({}, { error }, { error });
+		const approval = request();
+		const { tree } = mount(approval, fake);
+		await press(tree, "Allow this file only");
+		expect(fake.controls.refresh).toHaveBeenCalledTimes(1);
+		expect(renderedText(tree)).toContain(error);
+		for (const label of ["Allow this file only", "Deny"])
+			expect(pressable(tree, label)?.props.accessibilityState).toMatchObject({ disabled: false });
+		await press(tree, "Deny");
+		expect(fake.controls.resolve).toHaveBeenCalledTimes(2);
+		expect(fake.controls.resolve).toHaveBeenLastCalledWith(approval, false);
+	});
+
+	it("holds Allow and Deny while its re-read is on its way", async () => {
+		const error = "Couldn't confirm your decision. It may already have been applied.";
+		const fake = fakeControls({}, { error });
+		fake.controls.refresh.mockImplementation(async () => {
+			fake.publish({ refreshing: true });
+			await new Promise<void>(() => {});
+		});
+		const { tree } = mount(request(), fake);
+		await press(tree, "Allow this file only");
+		expect(pressable(tree, "Deny")?.props.accessibilityState).toMatchObject({ disabled: true });
+	});
 });

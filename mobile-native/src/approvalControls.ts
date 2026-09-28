@@ -2,7 +2,9 @@ import type { SandboxEscalationRequested } from "@evener/appwire-client";
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
 
 // The dock re-reads the session on its own after this, so it names nothing
-// to press.
+// to press. A new decision may still be tried while it stands: the hub refuses
+// a resolve for an escalation it already settled (agent/session_escalation.go's
+// ResolveSandboxEscalation), so trying again never decides twice.
 const UNCONFIRMED =
   "Couldn't confirm your decision. It may already have been applied.";
 
@@ -69,8 +71,7 @@ export class ApprovalControls {
       this.disposed ||
       !this.current() ||
       this.state.pending ||
-      this.state.refreshing ||
-      this.state.error !== null
+      this.state.refreshing
     )
       return;
     const pending = this.approvals().find((value) => value.escalationId === displayed.escalationId);

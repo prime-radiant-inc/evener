@@ -38,7 +38,8 @@ export function ApprovalDock({ request, controls, onDecided }: ApprovalDockProps
 	);
 	const card = approvalCard(request);
 	// A decision it couldn't confirm re-reads the session once on its own, so
-	// there is no refresh to press. The error stays until a read clears it.
+	// there is no refresh to press. The error line stays until a read clears it
+	// or a new press tries again.
 	const refreshedFor = useRef(false);
 	// A decision this dock sent holds it until the approval leaves (the screen
 	// keys the dock by escalationId) or an error comes back. It lives here,
@@ -76,7 +77,12 @@ export function ApprovalDock({ request, controls, onDecided }: ApprovalDockProps
 		refreshedFor.current = true;
 		void controls.refresh();
 	}, [state.error, controls]);
-	const off = decisionSent || state.pending !== null || state.refreshing || state.error !== null;
+	// An error holds Allow and Deny only until its re-read settles: then they
+	// come back beside the error line, and a press tries again. Every step
+	// publishes (the re-read starts and settles), so reading the ref here
+	// sees each change.
+	const awaitingReRead = state.error !== null && !refreshedFor.current;
+	const off = decisionSent || state.pending !== null || state.refreshing || awaitingReRead;
 	async function decide(allowed: boolean) {
 		if (off || !controls) return;
 		// resolve says nothing of its own: a decision went out when this
