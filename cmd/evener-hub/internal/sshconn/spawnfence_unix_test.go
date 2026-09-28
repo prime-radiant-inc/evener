@@ -1,0 +1,599 @@
+//go:build linux || darwin
+
+package sshconn
+
+// §3's pre-spawn ownership lifecycle as the production spawn paths drive it,
+// with the boundary and the intent store scripted so every disposition is
+// deterministic. The junction tests at the end drive the real operation store
+// and the real boot reap: the state these tests leave behind is exactly the
+// state the reap consumes, which is what makes the reap non-inert.
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"io"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
+	"syscall"
+	"testing"
+	"time"
+
+	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/cmd/evener-hub/internal/hostfence"
+	"primeradiant.com/evener/cmd/evener-hub/internal/hostops"
+	"primeradiant.com/evener/cmd/evener-hub/internal/hostreg"
+)
+
+// fencedTestScope builds a scope over the fake store and boundary, with the
+// factory logging its own step so the lifecycle's order is pinnable.
+func fencedTestScope(log *fenceTestLog, store *fenceFakeStore, boundary *fenceFakeBoundary) *SpawnScope {
+	return &SpawnScope{
+		RecordID: "op-1",
+		store:    store,
+		create: func(string) (SpawnBoundary, error) {
+			log.add("create")
+			return boundary, nil
+		},
+	}
+}
+
+// TestFencedSpawnCreatesArmsMatchesAndDropsInOrder pins §3's sequence for one
+// spawn: the boundary is pre-created and the intent armed BEFORE the exec, the
+// launcher-observed (pid, start token) marker lands after it, and a clean exit
+// tears the boundary down and drops the intent.
+func TestFencedSpawnCreatesArmsMatchesAndDropsInOrder(t *testing.T) {
+	log := &fenceTestLog{}
+	store := &fenceFakeStore{log: log}
+	boundary := &fenceFakeBoundary{
+		log: log,
+		id:  BoundaryID{Platform: BoundaryPlatformLinux, CgroupID: "/cg/op-1"},
+		// The token is what the kernel would report; the pid is the real child's.
+		token: "4242",
+	}
+	scope := fencedTestScope(log, store, boundary)
+
+	out, err := (execRunner{}).Run(WithSpawnScope(context.Background(), scope), []string{"/bin/sh", "-c", "printf hi"}, nil)
+	if err != nil {
+		t.Fatalf("fenced Run: %v", err)
+	}
+	if string(out) != "hi" {
+		t.Fatalf("fenced Run output = %q, want hi", out)
+	}
+
+	order := []string{"create", "arm", "spawnattr", "observe", "match", "close", "drop"}
+	last := -1
+	for _, step := range order {
+		at := log.index(step)
+		if at < 0 {
+			t.Fatalf("the lifecycle skipped %q; log: %s", step, log.joined())
+		}
+		if at < last {
+			t.Fatalf("the lifecycle ran %q out of order; log: %s", step, log.joined())
+		}
+		last = at
+	}
+	if len(store.open) != 0 {
+		t.Fatalf("a clean exit left %d open intent(s), want none", len(store.open))
+	}
+	if len(store.matched) != 1 {
+		t.Fatalf("matches = %d, want exactly one", len(store.matched))
+	}
+	match := store.matched[0]
+	if match.recordID != "op-1" || match.nonce == "" {
+		t.Fatalf("match = %+v, want the scope's record and the armed nonce", match)
+	}
+	if boundary.observedPid <= 0 || match.pid != boundary.observedPid {
+		t.Fatalf("match pid = %d, observed = %d, want the real child's pid", match.pid, boundary.observedPid)
+	}
+	if match.startTime != "4242" {
+		t.Fatalf("match start token = %q, want the observed token", match.startTime)
+	}
+	if !boundary.released {
+		t.Fatal("the spawn attributes' release was never called")
+	}
+	if !boundary.closed || boundary.closeCalls != 1 {
+		t.Fatalf("boundary close calls = %d closed=%t, want one clean teardown", boundary.closeCalls, boundary.closed)
+	}
+	if len(store.dropped) != 1 || store.dropped[0] != match.nonce {
+		t.Fatalf("drops = %v, want the matched nonce %q", store.dropped, match.nonce)
+	}
+}
+
+// TestFencedSpawnConvergesWhenTheExecFails pins the spawnless-intent rule: a
+// Start that never created a process must tear the boundary down and drop the
+// armed intent — never leave a name wedged on an intent whose boundary is
+// demonstrably empty.
+func TestFencedSpawnConvergesWhenTheExecFails(t *testing.T) {
+	log := &fenceTestLog{}
+	store := &fenceFakeStore{log: log}
+	boundary := &fenceFakeBoundary{log: log, id: BoundaryID{Platform: BoundaryPlatformLinux, CgroupID: "/cg/op-1"}}
+	scope := fencedTestScope(log, store, boundary)
+
+	_, err := (execRunner{}).Run(WithSpawnScope(context.Background(), scope), []string{filepath.Join(t.TempDir(), "no-such-binary")}, nil)
+	if err == nil {
+		t.Fatal("a fenced spawn with a missing executable reported no error")
+	}
+	if store.armCalls != 1 || len(store.open) != 0 {
+		t.Fatalf("arm calls = %d, open intents = %d, want one arm converged to none", store.armCalls, len(store.open))
+	}
+	if len(store.dropped) != 1 {
+		t.Fatalf("drops = %v, want the armed intent dropped", store.dropped)
+	}
+	if !boundary.closed {
+		t.Fatal("the boundary was not torn down after the failed exec")
+	}
+}
+
+// TestFencedSpawnRefusesWhenNoBoundaryCanBePreCreated pins fail-closed: a
+// platform or host delegation that cannot pre-create the boundary spawns
+// nothing (§3: a not-yet-populated boundary can never authorize a kill, and
+// neither can no boundary at all).
+func TestFencedSpawnRefusesWhenNoBoundaryCanBePreCreated(t *testing.T) {
+	log := &fenceTestLog{}
+	store := &fenceFakeStore{log: log}
+	scope := &SpawnScope{
+		RecordID: "op-1",
+		store:    store,
+		create: func(string) (SpawnBoundary, error) {
+			log.add("create")
+			return nil, fmt.Errorf("%w: no writable cgroup2 subtree", ErrSpawnBoundaryUnavailable)
+		},
+	}
+	marker := filepath.Join(t.TempDir(), "ran")
+	_, err := (execRunner{}).Run(WithSpawnScope(context.Background(), scope),
+		[]string{"/bin/sh", "-c", "printf ran > \"$1\"", "sh", marker}, nil)
+	if !errors.Is(err, ErrSpawnBoundaryUnavailable) {
+		t.Fatalf("Run error = %v, want ErrSpawnBoundaryUnavailable", err)
+	}
+	if _, statErr := os.Stat(marker); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("the child ran without a boundary (marker stat = %v)", statErr)
+	}
+	if store.armCalls != 0 {
+		t.Fatalf("arm calls = %d, want none: an unownable spawn must not persist an intent", store.armCalls)
+	}
+}
+
+// TestFencedSpawnRefusesWhenTheIntentCannotBePersisted pins the pre-spawn
+// write: an intent that cannot land means nothing may be launched, and the
+// empty boundary is torn down rather than left behind.
+func TestFencedSpawnRefusesWhenTheIntentCannotBePersisted(t *testing.T) {
+	log := &fenceTestLog{}
+	store := &fenceFakeStore{log: log, armErr: errors.New("store write failed")}
+	boundary := &fenceFakeBoundary{log: log, id: BoundaryID{Platform: BoundaryPlatformLinux, CgroupID: "/cg/op-1"}}
+	scope := fencedTestScope(log, store, boundary)
+	marker := filepath.Join(t.TempDir(), "ran")
+
+	_, err := (execRunner{}).Run(WithSpawnScope(context.Background(), scope),
+		[]string{"/bin/sh", "-c", "printf ran > \"$1\"", "sh", marker}, nil)
+	if err == nil || !strings.Contains(err.Error(), "store write failed") {
+		t.Fatalf("Run error = %v, want the arm refusal surfaced", err)
+	}
+	if _, statErr := os.Stat(marker); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("the child ran without a persisted intent (marker stat = %v)", statErr)
+	}
+	if !boundary.closed {
+		t.Fatal("the boundary was not torn down after the refused arm")
+	}
+	if len(store.open) != 0 {
+		t.Fatalf("open intents = %d, want none", len(store.open))
+	}
+}
+
+// TestFencedSpawnRefusesWithoutAnIntentStore pins the scope's own contract: a
+// scope with no store cannot arm the intent §3 requires, so the spawn is
+// refused rather than launched unowned.
+func TestFencedSpawnRefusesWithoutAnIntentStore(t *testing.T) {
+	scope := &SpawnScope{RecordID: "op-1"}
+	marker := filepath.Join(t.TempDir(), "ran")
+	_, err := (execRunner{}).Run(WithSpawnScope(context.Background(), scope),
+		[]string{"/bin/sh", "-c", "printf ran > \"$1\"", "sh", marker}, nil)
+	if err == nil {
+		t.Fatal("a scope with no intent store spawned a child")
+	}
+	if _, statErr := os.Stat(marker); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("the child ran without an intent store (marker stat = %v)", statErr)
+	}
+}
+
+// TestFencedSpawnKillsAndConvergesWhenTheMatchFails pins the live half of
+// "crash after spawn, before the marker": when the launcher cannot observe and
+// persist the (pid, start token), the child is killed and the now-empty
+// boundary is converged (closed, intent dropped) rather than left fenced on a
+// process the launcher can no longer own.
+func TestFencedSpawnKillsAndConvergesWhenTheMatchFails(t *testing.T) {
+	log := &fenceTestLog{}
+	store := &fenceFakeStore{log: log}
+	boundary := &fenceFakeBoundary{
+		log:        log,
+		id:         BoundaryID{Platform: BoundaryPlatformLinux, CgroupID: "/cg/op-1"},
+		observeErr: errors.New("cannot read the start token"),
+	}
+	scope := fencedTestScope(log, store, boundary)
+
+	start := time.Now()
+	_, err := (execRunner{}).Run(WithSpawnScope(context.Background(), scope), []string{"/bin/sh", "-c", "sleep 30"}, nil)
+	if err == nil || !strings.Contains(err.Error(), "cannot read the start token") {
+		t.Fatalf("Run error = %v, want the observed failure surfaced", err)
+	}
+	if elapsed := time.Since(start); elapsed > 5*time.Second {
+		t.Fatalf("the unmatched child was not killed (Run took %s)", elapsed)
+	}
+	if len(store.dropped) != 1 || len(store.open) != 0 {
+		t.Fatalf("drops = %v, open = %d, want the intent converged to none", store.dropped, len(store.open))
+	}
+	if !boundary.closed {
+		t.Fatal("the boundary was not torn down after the killed child")
+	}
+}
+
+// TestFencedSpawnRetriesTheTeardownUntilTheBoundaryIsEmpty pins the bounded
+// teardown: a boundary whose last member has not been reaped yet (the kernel
+// refuses the removal) is retried, and the intent drops once it comes down.
+func TestFencedSpawnRetriesTheTeardownUntilTheBoundaryIsEmpty(t *testing.T) {
+	log := &fenceTestLog{}
+	store := &fenceFakeStore{log: log}
+	boundary := &fenceFakeBoundary{
+		log:       log,
+		id:        BoundaryID{Platform: BoundaryPlatformLinux, CgroupID: "/cg/op-1"},
+		closeErrs: []error{syscall.EBUSY, nil},
+	}
+	scope := fencedTestScope(log, store, boundary)
+	scope.settle = 500 * time.Millisecond
+
+	out, err := (execRunner{}).Run(WithSpawnScope(context.Background(), scope), []string{"/bin/sh", "-c", "printf ok"}, nil)
+	if err != nil || string(out) != "ok" {
+		t.Fatalf("fenced Run = %q/%v, want ok", out, err)
+	}
+	if boundary.closeCalls < 2 {
+		t.Fatalf("close calls = %d, want a retry after the busy refusal", boundary.closeCalls)
+	}
+	if len(store.dropped) != 1 || len(store.open) != 0 {
+		t.Fatalf("drops = %v, open = %d, want the intent dropped once the boundary came down", store.dropped, len(store.open))
+	}
+}
+
+// TestFencedSpawnKeepsTheIntentOpenWhenTheBoundaryWillNotTearDown pins the
+// fail-closed arm: a boundary that still holds a member the launcher never
+// observed is live, never clean, so the intent stays open for the next boot's
+// reap (or orphan-resolve) and the run reports the unsettled teardown.
+func TestFencedSpawnKeepsTheIntentOpenWhenTheBoundaryWillNotTearDown(t *testing.T) {
+	log := &fenceTestLog{}
+	store := &fenceFakeStore{log: log}
+	boundary := &fenceFakeBoundary{
+		log:      log,
+		id:       BoundaryID{Platform: BoundaryPlatformLinux, CgroupID: "/cg/op-1"},
+		closeErr: syscall.EBUSY,
+	}
+	scope := fencedTestScope(log, store, boundary)
+	scope.settle = 50 * time.Millisecond
+
+	out, err := (execRunner{}).Run(WithSpawnScope(context.Background(), scope), []string{"/bin/sh", "-c", "printf ok"}, nil)
+	if string(out) != "ok" {
+		t.Fatalf("fenced Run output = %q, want the command's own output kept", out)
+	}
+	if err == nil || !errors.Is(err, syscall.EBUSY) {
+		t.Fatalf("Run error = %v, want the unsettled teardown surfaced", err)
+	}
+	if len(store.dropped) != 0 || len(store.open) != 1 {
+		t.Fatalf("drops = %v, open = %d, want the intent kept open", store.dropped, len(store.open))
+	}
+}
+
+// TestNonEnforcingBoundaryDropsOnTheChildsOwnExit pins the Darwin arm's
+// asymmetry: the (pgid, session id) pair cannot prove emptiness, so the fence
+// drops the intent on the reaped child's own exit instead of requiring a
+// teardown the platform cannot offer — while the boot reap keeps its own
+// fail-closed rule for whatever a crash left open.
+func TestNonEnforcingBoundaryDropsOnTheChildsOwnExit(t *testing.T) {
+	log := &fenceTestLog{}
+	store := &fenceFakeStore{log: log}
+	boundary := &fenceFakeBoundary{
+		log:          log,
+		id:           BoundaryID{Platform: BoundaryPlatformDarwin, PGID: 100, SessionID: 100},
+		notEnforcing: true,
+		// A teardown the platform cannot offer must not wedge the record.
+		closeErr: errors.New("no teardown on this arm"),
+	}
+	scope := fencedTestScope(log, store, boundary)
+
+	out, err := (execRunner{}).Run(WithSpawnScope(context.Background(), scope), []string{"/bin/sh", "-c", "printf darwin"}, nil)
+	if err != nil || string(out) != "darwin" {
+		t.Fatalf("fenced Run = %q/%v, want darwin", out, err)
+	}
+	if len(store.dropped) != 1 || len(store.open) != 0 {
+		t.Fatalf("drops = %v, open = %d, want the intent dropped on the child's exit", store.dropped, len(store.open))
+	}
+}
+
+// --- the wiring's state as the boot reap consumes it ---
+
+// fenceReapHandle is a scripted hostfence.LocalBoundaryHandle standing in for
+// execenv's enumeration.
+type fenceReapHandle struct {
+	members    []execenv.BoundaryMember
+	membersErr error
+	closed     bool
+}
+
+func (h *fenceReapHandle) Enforcing() bool { return true }
+
+func (h *fenceReapHandle) Members() ([]execenv.BoundaryMember, error) {
+	if h.membersErr != nil {
+		return nil, h.membersErr
+	}
+	return append([]execenv.BoundaryMember(nil), h.members...), nil
+}
+
+func (h *fenceReapHandle) SignalVerified(int, string) error {
+	return errors.New("the reap signaled a member no persisted pair verified")
+}
+
+func (h *fenceReapHandle) Await(time.Duration, func([]execenv.BoundaryMember) bool) error { return nil }
+
+func (h *fenceReapHandle) Close() error {
+	h.closed = true
+	return nil
+}
+
+// newFenceStore opens a real operation store under a fresh state root.
+func newFenceStore(t *testing.T) *hostops.Store {
+	t.Helper()
+	store, err := hostops.Open(hostops.StorePath(t.TempDir()))
+	if err != nil {
+		t.Fatalf("hostops.Open: %v", err)
+	}
+	return store
+}
+
+// newRunningFenceRecord persists one running deploy record the fence arms on.
+func newRunningFenceRecord(t *testing.T, store *hostops.Store) hostops.Record {
+	t.Helper()
+	record, err := store.Create(hostops.NewRecord{
+		ClientOperationID: "client-op-1",
+		Host:              "h1",
+		Kind:              hostops.KindDeploy,
+		Generation:        7,
+		IncarnationID:     "inc-1",
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	record, err = store.TransitionToState(record.ID, hostops.StateRunning, nil, "started")
+	if err != nil {
+		t.Fatalf("TransitionToState: %v", err)
+	}
+	return record
+}
+
+// TestCrashBetweenArmAndSpawnIsConvergedByTheBootReap is the first
+// fault-injection arm: the pre-spawn intent landed and the exec never happened
+// (the boundary is pre-created and empty). The boot reap must enumerate the
+// empty boundary, tear it down, drop the intent, and leave the record able to
+// surface as `interrupted` — never a name wedged on an intent no process
+// backs.
+func TestCrashBetweenArmAndSpawnIsConvergedByTheBootReap(t *testing.T) {
+	store := newFenceStore(t)
+	record := newRunningFenceRecord(t, store)
+	scope := &SpawnScope{RecordID: record.ID, store: store}
+	boundary := &fenceFakeBoundary{log: &fenceTestLog{}, id: BoundaryID{Platform: BoundaryPlatformLinux, CgroupID: "/cg/op-1"}}
+
+	nonce, err := scope.armSpawnIntent(boundary)
+	if err != nil {
+		t.Fatalf("armSpawnIntent: %v", err)
+	}
+	if nonce == "" {
+		t.Fatal("armSpawnIntent minted no nonce")
+	}
+	if got := store.SpawnIntentRecords(); len(got) != 1 {
+		t.Fatalf("persisted intents = %d, want 1: the pre-spawn write is what makes the boundary reapable", len(got))
+	}
+
+	handle := &fenceReapHandle{}
+	dropped, err := hostfence.ReapLocalOrphanBoundary(store, hostfence.ReapOptions{
+		Open: func(execenv.BoundaryIdentity) (hostfence.LocalBoundaryHandle, error) { return handle, nil },
+	})
+	if err != nil {
+		t.Fatalf("ReapLocalOrphanBoundary: %v", err)
+	}
+	if dropped != 1 {
+		t.Fatalf("reap dropped %d intent(s), want 1", dropped)
+	}
+	if !handle.closed {
+		t.Fatal("the reap did not tear the empty boundary down")
+	}
+	if got := store.SpawnIntentRecords(); len(got) != 0 {
+		t.Fatalf("intents after the reap = %d, want none", len(got))
+	}
+	// §7's boot order runs the reap first and the interrupted transition after
+	// it: with the intent dropped, the crashed operation surfaces as
+	// `interrupted`, never a stuck pending/running record (acceptance 2).
+	if _, err := store.RecoverInterrupted(); err != nil {
+		t.Fatalf("RecoverInterrupted: %v", err)
+	}
+	got, ok := store.Record(record.ID)
+	if !ok {
+		t.Fatal("the record disappeared")
+	}
+	if got.State != hostops.StateInterrupted {
+		t.Fatalf("record state = %q, want interrupted", got.State)
+	}
+}
+
+// TestCleanExitLeavesNothingForTheBootReap is the other half: a spawn that ran
+// to completion under the fence drops its intent and closes its boundary, so
+// the record can reach a terminal state (the store refuses a terminal record
+// with an open intent) and the next boot's reap has nothing to converge.
+func TestCleanExitLeavesNothingForTheBootReap(t *testing.T) {
+	store := newFenceStore(t)
+	record := newRunningFenceRecord(t, store)
+	boundary := &fenceFakeBoundary{log: &fenceTestLog{}, id: BoundaryID{Platform: BoundaryPlatformLinux, CgroupID: "/cg/op-1"}, token: "4242"}
+	scope := &SpawnScope{
+		RecordID: record.ID,
+		store:    store,
+		create:   func(string) (SpawnBoundary, error) { return boundary, nil },
+	}
+
+	out, err := (execRunner{}).Run(WithSpawnScope(context.Background(), scope), []string{"/bin/sh", "-c", "printf ok"}, nil)
+	if err != nil || string(out) != "ok" {
+		t.Fatalf("fenced Run = %q/%v, want ok", out, err)
+	}
+	if got := store.SpawnIntentRecords(); len(got) != 0 {
+		t.Fatalf("intents after a clean exit = %d, want none", len(got))
+	}
+	if _, err := store.TransitionToState(record.ID, hostops.StateComplete, &hostops.Result{OK: true, Message: "done"}, "done"); err != nil {
+		t.Fatalf("the record could not complete after a clean fenced spawn: %v", err)
+	}
+}
+
+// TestKeptOpenIntentBlocksTheTerminalWrite pins why the drop is load-bearing:
+// while the fence has an intent open (a boundary that would not come down), the
+// store refuses to terminalize the record — the name stays fenced for the
+// boot reap or orphan-resolve instead of being recorded as finished.
+func TestKeptOpenIntentBlocksTheTerminalWrite(t *testing.T) {
+	store := newFenceStore(t)
+	record := newRunningFenceRecord(t, store)
+	boundary := &fenceFakeBoundary{
+		log:      &fenceTestLog{},
+		id:       BoundaryID{Platform: BoundaryPlatformLinux, CgroupID: "/cg/op-1"},
+		token:    "4242",
+		closeErr: syscall.EBUSY,
+	}
+	scope := &SpawnScope{
+		RecordID: record.ID,
+		store:    store,
+		create:   func(string) (SpawnBoundary, error) { return boundary, nil },
+		settle:   50 * time.Millisecond,
+	}
+
+	if _, err := (execRunner{}).Run(WithSpawnScope(context.Background(), scope), []string{"/bin/sh", "-c", "printf ok"}, nil); err == nil {
+		t.Fatal("a boundary that would not come down reported no error")
+	}
+	if got := store.SpawnIntentRecords(); len(got) != 1 {
+		t.Fatalf("intents after the unsettled teardown = %d, want 1 kept open", len(got))
+	}
+	if _, err := store.TransitionToState(record.ID, hostops.StateComplete, &hostops.Result{OK: true, Message: "done"}, "done"); err == nil {
+		t.Fatal("the store terminalized a record whose spawn intent is still open")
+	}
+}
+
+// TestSpawnedButUnmatchedIntentStaysFencedAtBoot is the second fault-injection
+// arm: the child spawned and the launcher-observed marker never landed (a crash
+// between the spawn and the post-spawn persist). The boundary holds a live
+// member no persisted pair accounts for, so the boot reap must keep the intent
+// open and mark the record `orphan-unverified` — never clean, never
+// `interrupted`, until the operator or a later enumeration resolves it.
+func TestSpawnedButUnmatchedIntentStaysFencedAtBoot(t *testing.T) {
+	store := newFenceStore(t)
+	record := newRunningFenceRecord(t, store)
+	scope := &SpawnScope{RecordID: record.ID, store: store}
+	boundary := &fenceFakeBoundary{log: &fenceTestLog{}, id: BoundaryID{Platform: BoundaryPlatformLinux, CgroupID: "/cg/op-1"}}
+
+	if _, err := scope.armSpawnIntent(boundary); err != nil {
+		t.Fatalf("armSpawnIntent: %v", err)
+	}
+	// The spawn itself: a real localhost child the launcher never got to match.
+	cmd := exec.Command("/bin/sh", "-c", "sleep 30")
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("start the boundary child: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = cmd.Process.Kill()
+		_, _ = cmd.Process.Wait()
+	})
+	token, err := execenv.ObserveProcess(cmd.Process.Pid)
+	if err != nil {
+		t.Fatalf("ObserveProcess: %v", err)
+	}
+
+	handle := &fenceReapHandle{members: []execenv.BoundaryMember{{PID: cmd.Process.Pid, StartToken: token}}}
+	dropped, err := hostfence.ReapLocalOrphanBoundary(store, hostfence.ReapOptions{
+		Open: func(execenv.BoundaryIdentity) (hostfence.LocalBoundaryHandle, error) { return handle, nil },
+	})
+	if err != nil {
+		t.Fatalf("ReapLocalOrphanBoundary: %v", err)
+	}
+	if dropped != 0 {
+		t.Fatalf("reap dropped %d intent(s) on an unrecognized live member, want 0", dropped)
+	}
+	if got := store.SpawnIntentRecords(); len(got) != 1 {
+		t.Fatalf("intents after the fail-closed reap = %d, want the intent kept open", len(got))
+	}
+	got, ok := store.Record(record.ID)
+	if !ok {
+		t.Fatal("the record disappeared")
+	}
+	if got.State != hostops.StateOrphanUnverified {
+		t.Fatalf("record state = %q, want orphan-unverified", got.State)
+	}
+	if len(got.OrphanBoundary) == 0 {
+		t.Fatal("the orphan-unverified record carries no persisted boundary")
+	}
+}
+
+// TestDeployForOperationCarriesTheScopeToItsCommands pins the seam between the
+// hub's operation worker and the fence: the context the worker hands
+// DeployForOperation is inherited by every one-shot command the deploy step
+// runs, so the spawn scope reaches execRunner's fence instead of being lost at
+// the seam. The read-only preflight, run first on a scope-less context, stays
+// unarmed.
+func TestDeployForOperationCarriesTheScopeToItsCommands(t *testing.T) {
+	host := hostreg.Host{Name: "alpha", SSH: "alpha.example", EvenerPath: "/opt/evener/bin/evener"}
+	fr := deployRunner(t,
+		func(call int) ([]byte, error) {
+			if call == 0 {
+				return []byte(`{"protocol":"` + appwire.ProtocolVersion + `","version":"oldsha","launch_flags":["api-log"]}`), nil
+			}
+			return []byte(`{"protocol":"` + appwire.ProtocolVersion + `","version":"newsha","launch_flags":["api-log"]}`), nil
+		},
+		func(int) ([]byte, error) {
+			return []byte(`{"version":"newsha","mobile_api_version":1,"hub_addr":"127.0.0.1:9180"}`), nil
+		},
+	)
+	type sighting struct {
+		command string
+		scoped  bool
+	}
+	var seen []sighting
+	innerRun := fr.runFn
+	fr.runFn = func(ctx context.Context, argv []string, stdin io.Reader) ([]byte, error) {
+		_, scoped := SpawnScopeFrom(ctx)
+		seen = append(seen, sighting{command: strings.Join(argv, " "), scoped: scoped})
+		return innerRun(ctx, argv, stdin)
+	}
+	m := newTestManager(t, testRegistry(t, host), fr, Options{
+		controllerVersionOverride: "newsha",
+		BuildBinary:               writeStageBinary,
+	})
+
+	facts, err := m.preflight(context.Background(), host)
+	if err != nil {
+		t.Fatalf("preflight: %v", err)
+	}
+	if len(seen) == 0 {
+		t.Fatal("the preflight ran no commands")
+	}
+	for _, run := range seen {
+		if run.scoped {
+			t.Fatalf("a preflight command ran armed: %s", run.command)
+		}
+	}
+
+	seen = nil
+	scope := NewSpawnScope("op-deploy-1", &fenceFakeStore{log: &fenceTestLog{}})
+	if _, _, err := m.DeployForOperation(WithSpawnScope(context.Background(), scope), host, facts); err != nil {
+		t.Fatalf("DeployForOperation: %v", err)
+	}
+	if len(seen) == 0 {
+		t.Fatal("the deploy ran no commands")
+	}
+	for _, run := range seen {
+		if !run.scoped {
+			t.Fatalf("a deploy command ran with no spawn scope: %s", run.command)
+		}
+	}
+}

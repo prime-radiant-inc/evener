@@ -8,9 +8,11 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"primeradiant.com/evener/cmd/evener-hub/internal/hostreg"
@@ -100,7 +102,27 @@ func (execRunner) Start(ctx context.Context, argv []string, stderr io.Writer) (S
 // Run executes a one-shot command with the two streams kept apart: success
 // returns stdout only, so ssh's stderr chatter cannot corrupt a parse; failure
 // returns both, so whatever explains the exit status is in hand.
+//
+// A context carrying a spawn scope runs the child inside §3's pre-created
+// boundary and drives the pending-spawn lifecycle around it
+// (spawnfence.go); every other context spawns exactly as before, which is what
+// keeps the read-only preflight (§6's exemption) and every spawn no operation
+// record owns unarmed.
 func (execRunner) Run(ctx context.Context, argv []string, stdin io.Reader) ([]byte, error) {
+	if scope, ok := SpawnScopeFrom(ctx); ok {
+		return scope.runFenced(ctx, argv, stdin)
+	}
+	return runOneShot(ctx, argv, stdin, nil, nil, nil)
+}
+
+// runOneShot runs one local one-shot child. attr, when non-nil, is applied to
+// the child (it is what places it inside a pre-created boundary); release, when
+// non-nil, is called once the start attempt has returned, successfully or not.
+// afterStart, when non-nil, is called with the child's pid right after a
+// successful Start: a non-nil return means the caller could not take ownership
+// of the process, so the child is killed and the error is joined into this
+// call's error.
+func runOneShot(ctx context.Context, argv []string, stdin io.Reader, attr *syscall.SysProcAttr, release func(), afterStart func(pid int) error) ([]byte, error) {
 	if len(argv) == 0 {
 		return nil, errors.New("empty argv")
 	}
@@ -111,7 +133,36 @@ func (execRunner) Run(ctx context.Context, argv []string, stdin io.Reader) ([]by
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 	cmd.WaitDelay = runWaitDelay
-	err := orphanpipe.ChildErr(cmd, cmd.Run())
+	if attr != nil {
+		cmd.SysProcAttr = attr
+		// A boundary spawn's attributes carry Pdeathsig on Linux, and Go
+		// documents that signal as delivered on the spawning OS thread's
+		// termination, not necessarily the process's (see Boundary.SpawnAttr):
+		// the thread that starts the child must outlive it, so lock the calling
+		// goroutine to its thread until Wait has returned.
+		runtime.LockOSThread()
+		defer runtime.UnlockOSThread()
+	}
+	if err := cmd.Start(); err != nil {
+		if release != nil {
+			release()
+		}
+		return nil, err
+	}
+	if release != nil {
+		release()
+	}
+	var markErr error
+	if afterStart != nil {
+		if err := afterStart(cmd.Process.Pid); err != nil {
+			markErr = err
+			_ = cmd.Process.Kill()
+		}
+	}
+	err := orphanpipe.ChildErr(cmd, cmd.Wait())
+	if markErr != nil {
+		err = errors.Join(markErr, err)
+	}
 	switch {
 	case err != nil:
 		return append(stdout.buf.Bytes(), stderr.buf.Bytes()...),

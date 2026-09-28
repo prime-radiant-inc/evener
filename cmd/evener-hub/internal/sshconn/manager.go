@@ -1941,14 +1941,21 @@ func (m *Manager) ensureOnce(ctx context.Context, host hostreg.Host, explicit bo
 		// the operation so a contender's busy refusal names it. A hook that
 		// cannot persist the record refuses the deploy with nothing launched.
 		var finishEnsureDeploy func(error)
+		var deployScope *SpawnScope
 		if hook := m.ensureDeployHook(); hook != nil {
-			finish, err := hook(host)
+			scope, finish, err := hook(host)
 			if err != nil {
 				return nil, err
 			}
-			finishEnsureDeploy = finish
+			deployScope, finishEnsureDeploy = scope, finish
 		}
 		deployCtx, cancelDeploy := context.WithTimeout(ctx, m.opts.deployLimit())
+		if deployScope != nil {
+			// §3: the deploy step's ssh subprocesses are armed into the record
+			// the hook just persisted, so a crash between any pre-spawn intent
+			// and the deploy's completion is convergent at the next boot.
+			deployCtx = WithSpawnScope(deployCtx, deployScope)
+		}
 		resolvedTarget, err := m.deploy(deployCtx, host, facts)
 		cancelDeploy()
 		if err != nil {
@@ -3104,9 +3111,12 @@ func (m *Manager) HoldAs(host string, holder hostops.Holder) error {
 // (deploy pipeline 08b §6). It is called with the host's per-host gate already
 // held and before any remote write of the deploy step; it mints and persists
 // the operation record carrying the deploy's fencing epoch and returns the
-// finish the step's outcome is recorded through. A non-nil error means no
+// finish the step's outcome is recorded through, plus the spawn scope (crash-
+// fencing §3) the deploy step's ssh subprocesses are armed under — the record
+// the hook persisted is the record their pre-spawn intents bind to, so a crash
+// mid-deploy leaves state the boot reap converges. A non-nil error means no
 // durable record could be persisted, so nothing may be launched.
-type EnsureDeployHook func(host hostreg.Host) (finish func(err error), err error)
+type EnsureDeployHook func(host hostreg.Host) (scope *SpawnScope, finish func(err error), err error)
 
 // SetEnsureDeployHook wires the deploy pipeline's recorder into this Manager's
 // Ensure path. It is a setter rather than an Options field because the hub's

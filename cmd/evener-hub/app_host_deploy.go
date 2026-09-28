@@ -703,6 +703,26 @@ func (m *hubHostManager) interruptLeftoverOperations() int {
 	return moved
 }
 
+// spawnScopeFor returns the local-spawn ownership scope for one operation
+// record (crash-fencing §3): every one-shot ssh subprocess the record's
+// mutating steps spawn is created, armed with its pre-spawn intent, matched,
+// and dropped through it. A hub with no operation store has no record to arm —
+// and no operation runs there either — so nil is the honest answer.
+func (m *hubHostManager) spawnScopeFor(recordID string) *sshconn.SpawnScope {
+	if m.cfg.ops == nil || recordID == "" {
+		return nil
+	}
+	return sshconn.NewSpawnScope(recordID, m.cfg.ops)
+}
+
+// withSpawnScope returns ctx carrying the operation record's spawn scope. The
+// worker wraps exactly its mutating steps with it: the deploy and restart
+// calls. The read-only refresh (and every preflight the hub runs) keeps a
+// context with no scope, so §6's exempt read-only one-shots stay unarmed.
+func (m *hubHostManager) withSpawnScope(ctx context.Context, recordID string) context.Context {
+	return sshconn.WithSpawnScope(ctx, m.spawnScopeFor(recordID))
+}
+
 // runOperationWorker executes one persisted operation to a terminal state,
 // recording progress as it goes:
 //
@@ -799,7 +819,7 @@ func (m *hubHostManager) runOperationWorker(ctx context.Context, work opWork) {
 			return
 		}
 		m.recordProgress(id, "pushing the controller's build")
-		_, afterDeploy, err := m.cfg.deployHost(ctx, work.entry, facts)
+		_, afterDeploy, err := m.cfg.deployHost(m.withSpawnScope(ctx, id), work.entry, facts)
 		if err != nil {
 			fail(err)
 			return
@@ -935,13 +955,15 @@ func (m *hubHostManager) probeBeforeRestart(ctx context.Context, work opWork) (h
 }
 
 // runRestartStep runs the 04b restart path and records the progress line both
-// the standalone and planned-restart callers share.
+// the standalone and planned-restart callers share. The restart's ssh
+// subprocesses run under the operation's spawn scope, so a crash mid-restart
+// leaves a persisted boundary plus intent the boot reap converges.
 func (m *hubHostManager) runRestartStep(ctx context.Context, id string, entry hostreg.Host, facts sshconn.Preflight) error {
 	if m.cfg.restartHost == nil {
 		return errors.New("this hub has no restart step wired, so the operation cannot run")
 	}
 	m.recordProgress(id, "restarting the host")
-	if err := m.cfg.restartHost(ctx, entry, facts); err != nil {
+	if err := m.cfg.restartHost(m.withSpawnScope(ctx, id), entry, facts); err != nil {
 		return err
 	}
 	m.recordProgress(id, "restart verified healthy")
@@ -1193,19 +1215,21 @@ func (m *hubHostManager) recordProgress(id, message string) {
 // under the caller's held gate before the deploy's first remote write, and
 // publishes the operation as the gate's holder so a contender's busy refusal is
 // `host-busy-operation` naming the record (§12's "Ensure busy names its
-// operation"). The returned finish records the step's outcome. A nil hook
-// (no operation store wired) refuses, never running the deploy unrecorded.
-func (m *hubHostManager) EnsureDeploy(host hostreg.Host) (func(error), error) {
+// operation"). The returned finish records the step's outcome, and the returned
+// spawn scope arms the deploy step's ssh subprocesses into the record (crash-
+// fencing §3). A nil hook (no operation store wired) refuses, never running the
+// deploy unrecorded.
+func (m *hubHostManager) EnsureDeploy(host hostreg.Host) (*sshconn.SpawnScope, func(error), error) {
 	ops := m.cfg.ops
 	if ops == nil {
-		return nil, errors.New("the host operation store is not configured, so an Ensure-triggered deploy cannot be recorded; nothing was launched")
+		return nil, nil, errors.New("the host operation store is not configured, so an Ensure-triggered deploy cannot be recorded; nothing was launched")
 	}
 	if strings.TrimSpace(m.cfg.bootID) == "" {
-		return nil, errors.New("this hub carries no boot id, so an Ensure-triggered deploy cannot bind its fencing epoch; nothing was launched")
+		return nil, nil, errors.New("this hub carries no boot id, so an Ensure-triggered deploy cannot bind its fencing epoch; nothing was launched")
 	}
 	clientOperationID, err := newEnsureOperationID()
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	outcome, err := ops.CreateOperation(hostops.OperationCreateRequest{
 		ClientOperationID: clientOperationID,
@@ -1219,14 +1243,14 @@ func (m *hubHostManager) EnsureDeploy(host hostreg.Host) (func(error), error) {
 		SequenceBefore: ops.Sequence(),
 	})
 	if err != nil {
-		return nil, fmt.Errorf("persisting the Ensure-triggered deploy's operation record failed, so nothing was launched: %w", err)
+		return nil, nil, fmt.Errorf("persisting the Ensure-triggered deploy's operation record failed, so nothing was launched: %w", err)
 	}
 	record := outcome.Record
 	if err := m.cfg.gate.HoldAs(host.Name, hostops.Holder{Kind: hostops.HolderOperation, OperationID: record.ID}); err != nil {
 		m.logf("host %q: the Ensure-triggered operation %s could not publish itself as the gate holder: %v",
 			host.Name, record.ID, err)
 	}
-	return func(err error) { m.finishEnsureDeploy(record.ID, host.Name, err) }, nil
+	return sshconn.NewSpawnScope(record.ID, ops), func(err error) { m.finishEnsureDeploy(record.ID, host.Name, err) }, nil
 }
 
 // finishEnsureDeploy records the Ensure deploy step's outcome: success is

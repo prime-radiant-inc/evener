@@ -280,10 +280,10 @@ func TestEnsureDeployHookRunsUnderTheGateBeforeAnyRemoteWrite(t *testing.T) {
 			return os.WriteFile(out, []byte("binary"), 0o755)
 		},
 	})
-	m.SetEnsureDeployHook(func(h hostreg.Host) (func(error), error) {
+	m.SetEnsureDeployHook(func(h hostreg.Host) (*SpawnScope, func(error), error) {
 		_, err := m.TryAcquire(h.Name, hostops.Holder{Kind: hostops.HolderPlan})
 		gateHeld <- err != nil
-		return nil, errors.New("the operation store is not configured")
+		return nil, nil, errors.New("the operation store is not configured")
 	})
 
 	_, err := m.Ensure(context.Background(), "alpha")
@@ -292,5 +292,87 @@ func TestEnsureDeployHookRunsUnderTheGateBeforeAnyRemoteWrite(t *testing.T) {
 	}
 	if held := <-gateHeld; !held {
 		t.Fatal("the Ensure deploy hook ran without the host's gate held")
+	}
+}
+
+// TestEnsureDeployScopesItsSpawnCommandsAndNotThePreflight pins the production
+// spawn wiring on the Ensure path (crash-fencing §3): every ssh subprocess the
+// deploy step spawns runs under the context carrying the record's spawn scope,
+// so each is created, armed, matched and dropped through that record — while
+// the read-only preflight (§6's exemption) runs under a context with no scope
+// and arms nothing.
+func TestEnsureDeployScopesItsSpawnCommandsAndNotThePreflight(t *testing.T) {
+	host := hostreg.Host{Name: "alpha", SSH: "alpha.example", EvenerPath: "/opt/evener/bin/evener"}
+	fr := deployRunner(t,
+		func(call int) ([]byte, error) {
+			// The on-disk build is this controller's predecessor, so the ladder
+			// decides to deploy; the re-read after the deploy sees the new build.
+			if call == 0 {
+				return []byte(`{"protocol":"evener-appwire-v4","version":"oldsha","launch_flags":["api-log"]}`), nil
+			}
+			return []byte(`{"protocol":"evener-appwire-v6","version":"newsha","launch_flags":["api-log"]}`), nil
+		},
+		func(int) ([]byte, error) {
+			return []byte(`{"version":"newsha","mobile_api_version":1,"hub_addr":"127.0.0.1:9180"}`), nil
+		},
+	)
+
+	scope := NewSpawnScope("op-ensure-1", &fenceFakeStore{log: &fenceTestLog{}})
+	type seenRun struct {
+		command string
+		scope   *SpawnScope
+		scoped  bool
+		after   bool
+	}
+	var seen []seenRun
+	hookRan := false
+	innerRun := fr.runFn
+	fr.runFn = func(ctx context.Context, argv []string, stdin io.Reader) ([]byte, error) {
+		sc, scoped := SpawnScopeFrom(ctx)
+		seen = append(seen, seenRun{command: strings.Join(argv, " "), scope: sc, scoped: scoped, after: hookRan})
+		return innerRun(ctx, argv, stdin)
+	}
+
+	m := newTestManager(t, testRegistry(t, host), fr, Options{
+		controllerVersionOverride: "newsha",
+		BuildBinary:               writeStageBinary,
+	})
+	m.SetEnsureDeployHook(func(hostreg.Host) (*SpawnScope, func(error), error) {
+		hookRan = true
+		return scope, func(error) {}, nil
+	})
+
+	if _, err := m.Ensure(context.Background(), "alpha"); err != nil {
+		t.Fatalf("Ensure: %v", err)
+	}
+	var scopedRuns, preflightScoped, pushScoped int
+	for _, run := range seen {
+		if !run.scoped {
+			continue
+		}
+		scopedRuns++
+		if run.scope != scope {
+			t.Fatalf("command %q ran under scope %p, want the hook's scope %p", run.command, run.scope, scope)
+		}
+		if !run.after {
+			preflightScoped++
+		}
+		if strings.Contains(run.command, "cat >") {
+			pushScoped++
+		}
+	}
+	if preflightScoped != 0 {
+		t.Fatalf("%d preflight command(s) ran armed, want none: §6 exempts the read-only preflight", preflightScoped)
+	}
+	if scopedRuns == 0 {
+		t.Fatal("no deploy command carried the record's spawn scope")
+	}
+	if pushScoped == 0 {
+		t.Fatal("the deploy push ran without a spawn scope")
+	}
+	for _, run := range seen {
+		if strings.Contains(run.command, "launch-check") && run.scoped {
+			t.Fatalf("the launch-check preflight ran armed: %s", run.command)
+		}
 	}
 }
