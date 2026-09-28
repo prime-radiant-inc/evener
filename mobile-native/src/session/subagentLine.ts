@@ -2,7 +2,7 @@
 // title, its state and how long it has been in it ("failed · 6m"), and the
 // latest activity beneath, which reads the same as in the Subagents list.
 // Pure: the row re-renders with the transcript, so no clock of its own.
-import type { EvenerDelegateInfo } from "@evener/appwire-client";
+import { delegateTiming, type EvenerDelegateInfo } from "@evener/appwire-client";
 import { projectDelegateEntry } from "../../../mobile/src/services/activity";
 import { hubTime } from "../board/attention";
 import type { TimelineRow } from "../timeline";
@@ -22,14 +22,6 @@ export interface SubagentLine {
 /** A subagent is quiet once no update came for this long (the web's
  * liveness threshold, ruling 10). */
 const QUIET_AFTER_MS = 20_000;
-
-// How long since `at`, read against the clock so a running subagent keeps
-// counting between updates. The snapshot's own measure (true when the
-// delegate last arrived) stands in when the hub sent no time.
-function elapsed(at: string | undefined, measured: number | undefined, now: number): number | undefined {
-	const since = hubTime(at);
-	return since === null ? measured : Math.max(0, now - since);
-}
 
 function stateOf(delegate: EvenerDelegateInfo): SubagentLine["state"] {
 	const { tone } = projectDelegateEntry(delegate);
@@ -62,13 +54,11 @@ export function subagentLine(
 		return { title, state, stateText: state };
 	}
 	const state = stateOf(delegate);
+	// The package's timing reads the clock against the run's start and its
+	// last activity, so a running subagent keeps counting between updates.
+	const timing = state === "running" ? delegateTiming(delegate, now) : undefined;
 	const ended = hubTime(delegate.runEndedAt);
-	const since =
-		state === "running"
-			? elapsed(delegate.runStartedAt, delegate.runningForMs, now)
-			: ended === null
-				? undefined
-				: now - ended;
+	const since = timing ? timing.durationMs : ended === null ? undefined : now - ended;
 	const stateText = since === undefined ? state : `${state} · ${compactDuration(since)}`;
 	const line: SubagentLine = { title, state, stateText, ref: delegate.transcriptRef };
 	if (state === "failed") {
@@ -77,7 +67,9 @@ export function subagentLine(
 		const waitingOn = all.filter(
 			(child) => child.parentDelegateId === delegate.delegateId && stateOf(child) === "running",
 		).length;
-		const quietFor = elapsed(delegate.latestActivityAt, delegate.quietForMs, now) ?? 0;
+		// Quiet since the later of its last activity and this run's start: a
+		// resumed subagent can still carry its last run's activity time.
+		const quietFor = timing?.quietForMs ?? 0;
 		// An agent waiting on its own subagents is never stuck (ruling 10).
 		line.activity =
 			waitingOn > 0

@@ -105,4 +105,11 @@ describe("a running subagent between updates", () => {
 		const stale = delegate({ runStartedAt: ago(300_000), runningForMs: 60_000, latestActivityAt: ago(240_000), quietForMs: 0 });
 		expect(subagentLine(row(), [stale], NOW)).toMatchObject({ stateText: "running · 5m", activity: "Quiet 4m" });
 	});
+
+	// A resumed subagent can still carry its last run's latestActivityAt; its
+	// quiet time starts no earlier than this run did.
+	it("isn't quiet the moment it resumes", () => {
+		const resumed = delegate({ runStartedAt: ago(5_000), latestActivityAt: ago(3_600_000), quietForMs: 0 });
+		expect(subagentLine(row(), [resumed], NOW)).toMatchObject({ stateText: "running · 5s", activity: "Working" });
+	});
 });
