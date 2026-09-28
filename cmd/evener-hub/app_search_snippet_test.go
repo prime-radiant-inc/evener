@@ -56,3 +56,21 @@ func TestSearchSnippetWithoutAMatchIsTheOpening(t *testing.T) {
 		t.Fatalf("snippet = %+v, want the unmarked opening, cut", got)
 	}
 }
+
+// A single matched word longer than searchSnippetRunes (a hash, a URL, a
+// stack-trace line with no spaces) must still be marked whole rather than cut
+// mid-word and silently losing its mark: the cut never lands before the
+// match's own end.
+func TestSearchSnippetKeepsALongMatchWhole(t *testing.T) {
+	long := strings.Repeat("x", searchSnippetRunes+40)
+	got := searchSnippet("before "+long+" after", []string{"x"})
+	var marked strings.Builder
+	for _, part := range got {
+		if part.Match {
+			marked.WriteString(part.Text)
+		}
+	}
+	if marked.String() != long {
+		t.Fatalf("marked text = %q, want the whole long match %q", marked.String(), long)
+	}
+}
