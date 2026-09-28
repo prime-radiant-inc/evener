@@ -35,11 +35,21 @@
 #   recheck <id>                  §9's nonce re-presentation: report whether the
 #                                 lease entry carrying that identity still
 #                                 names a live holder (read-only, lock-free)
+#   kill <bootId> <opSeq> <id>    §4's remote kill of one superseded-epoch lease
+#                                 entry: under this epoch's taken-over lease,
+#                                 revalidate the entry's stored ownership
+#                                 identity on the remote, signal the verified
+#                                 instance, and mark the entry killed through the
+#                                 same entry file once nothing matching that
+#                                 identity is left. A process whose identity
+#                                 cannot be verified is never signaled: the
+#                                 fencing worker's bounded wait decides.
 #
 # status, entries, and recheck are read-only and take no lock: a verifier must
 # be able to enumerate and re-present identities while a command holds the
 # exclusive lease, so they read one cat snapshot of each file and never block
-# behind a running command. Only takeover, advance, and perform take the lock.
+# behind a running command. Only takeover, advance, perform, and kill take the
+# lock.
 #
 # Files, all mode 0600 (umask 077) and written temp+fsync+rename+dir-fsync:
 #
@@ -71,16 +81,21 @@
 # exit code. Exit codes: 0 success; the wrapped command's own status for
 # perform; 64 malformed request; 69 corrupt state or I/O failure; 75 fencing
 # refusal. Nothing here kills a remote process: kill/wait and the quarantine
-# marker belong to the fencing worker (S18), which verifies entries through
-# `entries` and `recheck` before signaling.
+# marker belong to the fencing worker (S18), which enumerates the superseded
+# epoch's work through `entries` and `recheck` and signals only through `kill`,
+# where the stored ownership identity is revalidated remotely before any signal
+# and the kill is recorded through the same entry file.
 #
-# Three environment seams exist for the tests' fault injection, mirroring the Go
+# Four environment seams exist for the tests' fault injection, mirroring the Go
 # stores' fault seams: EVENER_FENCE_FAULT_AFTER_GUARD=1 exits right after a
 # takeover's guard write (before the holder write, the crash window the replay
 # reconciliation repairs), EVENER_FENCE_FAULT_AFTER_SPAWN=1 fails the post-spawn
 # entry write so the kill-on-tracking-failure path is exercised, and
 # EVENER_FENCE_FAULT_UNREADABLE_START=1 hides a live process's start token so
-# the fail-closed recheck arm is exercised. None is set in production.
+# the fail-closed recheck arm is exercised, and
+# EVENER_FENCE_FAULT_UNREADABLE_CANDIDATE=1 makes a nonce candidate
+# uninspectable so the fail-closed enumeration arm is exercised. None is set in
+# production.
 #
 # EVENER_FENCE_TOKEN, when set, is echoed in every refusal: the caller mints it
 # per invocation and clears it for the wrapped command, so a command's own
@@ -141,13 +156,6 @@ json_escape() { # one value as a JSON string body
 		}'
 }
 
-is_uint() {
-	case $1 in
-	'' | *[!0-9]*) return 1 ;;
-	*) return 0 ;;
-	esac
-}
-
 # is_canonical_uint additionally refuses a leading zero: a value like 001 is
 # stored and emitted verbatim into JSON, where 001 is not a number, so the
 # controller would read the state as corrupt.
@@ -169,6 +177,54 @@ is_uint64() {
 		return 1
 	fi
 	return 0
+}
+
+# seq_at_or_below reports whether canonical uint <a> is at or below canonical
+# uint <b>. Both callers hold is_uint64-bounded values, which may exceed the
+# shell's integer width, so the comparison is by length then lexically — the
+# same bound is_uint64 applies. `[ "$a" -le "$b" ]` errors on such a value
+# (dash: "Illegal number"), and an errored test silently skips the refusal it
+# guards, which is the stale-epoch bypass this shape closes.
+seq_at_or_below() { # <a> <b>
+	[ "${#1}" -lt "${#2}" ] && return 0
+	[ "${#1}" -gt "${#2}" ] && return 1
+	[ "$1" = "$2" ] || [ "$1" \< "$2" ]
+}
+
+# seq_exhausted reports whether a canonical uint is the schema maximum: the
+# guard's sequence then has no next value, and incrementing it would wrap (or
+# abort the shell) rather than write a guard the Go decoder accepts.
+seq_exhausted() {
+	[ "${#1}" -eq 20 ] && [ "$1" = "18446744073709551615" ]
+}
+
+# seq_increment prints the canonical uint one above <value>, by string
+# arithmetic: the shell's signed integer width cannot represent the schema's
+# full uint64 range, so `$((value + 1))` wraps or aborts for values above
+# MaxInt64. <value> must be is_uint64-validated and below the schema maximum;
+# seq_exhausted refuses that case before this is called.
+seq_increment() {
+	rest=$1
+	out=''
+	carry=1
+	while [ -n "$rest" ]; do
+		prefix=${rest%?}
+		digit=${rest#"$prefix"}
+		rest=$prefix
+		if [ "$carry" -eq 1 ]; then
+			if [ "$digit" = 9 ]; then
+				digit=0
+			else
+				digit=$((digit + 1))
+				carry=0
+			fi
+		fi
+		out=$digit$out
+	done
+	if [ "$carry" -eq 1 ]; then
+		out=1$out
+	fi
+	printf '%s' "$out"
 }
 
 sync_path() { # best-effort durability for a file or directory
@@ -209,7 +265,9 @@ acquire_lock() {
 			steal_stale_lock "$observed" || true
 			;;
 		*)
-			if ! kill -0 "$pid" 2>/dev/null; then
+			# Presence, never a signal's permission: a live owner this helper
+			# cannot signal must not read as gone (process_present).
+			if ! process_present "$pid"; then
 				# A failed steal (lost rename, replaced claim, live owner) is
 				# not an error: the bounded loop decides the outcome, so its
 				# nonzero return never aborts the helper under set -e.
@@ -265,7 +323,9 @@ steal_stale_lock() {
 	case $moved_pid in
 	'' | *[!0-9]*) ;;
 	*)
-		if kill -0 "$moved_pid" 2>/dev/null; then
+		# Presence, never a signal's permission: a live owner this helper
+		# cannot signal is not a dead one (process_present).
+		if process_present "$moved_pid"; then
 			provably_dead=false
 		fi
 		;;
@@ -321,7 +381,8 @@ guard_file_valid() { # <snapshot>
 		}
 		NF != 2 { bad = 1 }
 		$1 ~ /^boot\./ {
-			if ($1 !~ /^boot\.[A-Za-z0-9._-]+$/ || $1 == "boot.-" || $2 !~ /^[1-9][0-9]*$/ || length($2) > 20) { bad = 1 }
+			if ($1 !~ /^boot\.[A-Za-z0-9._-]+$/ || $1 == "boot.-" || $2 !~ /^[1-9][0-9]*$/) { bad = 1 }
+			else if (length($2) > 20 || (length($2) == 20 && ($2 "") > ("18446744073709551615" ""))) { bad = 1 }
 		}
 		{ seen[$1]++ }
 		END {
@@ -351,6 +412,10 @@ read_guard() {
 	FENCE_GUARD=0
 	[ -f "$GUARD_FILE" ] || return 0
 	GUARD_SNAPSHOT=$(cat "$GUARD_FILE" 2>/dev/null) || return 1
+	# The schema's boot.* branch bounds every per-boot high-water to a uint64
+	# exactly (the same bound the Go decoder applies), so this single check is
+	# the whole gate for them — a value past the maximum refuses as corrupt
+	# rather than wedging later status/takeover/advance calls.
 	guard_file_valid "$GUARD_SNAPSHOT" || return 1
 	[ "$(guard_field "$GUARD_SNAPSHOT" version)" = "$PROTOCOL" ] || return 1
 	GUARD_EPOCH=$(guard_field "$GUARD_SNAPSHOT" guardEpoch)
@@ -373,8 +438,10 @@ read_guard() {
 		[ "$FENCE_GUARD" = 0 ] || return 1
 	else
 		# The fence's sequence sits inside the guard's own, exactly as the Go
-		# validator decides: a fence ahead of the guard is corrupt.
-		[ "$FENCE_GUARD" -ge 1 ] && [ "$FENCE_GUARD" -le "$GUARD_EPOCH" ] || return 1
+		# validator decides: a fence ahead of the guard is corrupt. Both values
+		# are is_uint64-bounded, so the compare is length-then-lexical: an
+		# in-range value above the shell's integer width must not read corrupt.
+		[ "$FENCE_GUARD" != 0 ] && seq_at_or_below "$FENCE_GUARD" "$GUARD_EPOCH" || return 1
 	fi
 	return 0
 }
@@ -387,7 +454,7 @@ check_boot_pair() { # <bootId> <opSeq>
 	-) [ "$2" = 0 ] || return 1 ;;
 	'') return 1 ;;
 	*[!A-Za-z0-9._-]*) return 1 ;;
-	*) is_uint64 "$2" && [ "$2" -ge 1 ] || return 1 ;;
+	*) is_uint64 "$2" && [ "$2" != 0 ] || return 1 ;;
 	esac
 	return 0
 }
@@ -457,7 +524,7 @@ read_holder() { # sets HOLDER_BOOT and HOLDER_SEQ
 	'') return 1 ;;
 	-) [ "$HOLDER_SEQ" = 0 ] || return 1 ;;
 	*[!A-Za-z0-9._-]*) return 1 ;;
-	*) is_uint64 "$HOLDER_SEQ" && [ "$HOLDER_SEQ" -ge 1 ] || return 1 ;;
+	*) is_uint64 "$HOLDER_SEQ" && [ "$HOLDER_SEQ" != 0 ] || return 1 ;;
 	esac
 	return 0
 }
@@ -720,8 +787,11 @@ parse_epoch() { # <bootId> <opSeq>
 	*) ;;
 	esac
 	[ "${#E_BOOT}" -le 128 ] || return 1
-	is_uint64 "$E_SEQ" || return 1
-	[ "$E_SEQ" -ge 1 ] || return 1
+	# The zero test is a string compare, like check_boot_pair's and
+	# read_holder's: `[ … -ge 1 ]` errors on a value above the shell's signed
+	# integer width, and an errored test must never read as a refusal — an
+	# opSeq above MaxInt64 is valid for Epoch.Validate and the guard's schema.
+	is_uint64 "$E_SEQ" && [ "$E_SEQ" != 0 ] || return 1
 	return 0
 }
 
@@ -742,24 +812,31 @@ do_takeover() {
 	if [ "$SUP_BOOT" = "$E_BOOT" ] && [ "$SUP_SEQ" = "$E_SEQ" ]; then
 		# An epoch the guard already superseded is stale whatever else is
 		# pending: it must never be reinstalled, so this refuses before the
-		# pending-fence answer below.
+		# takeover below can supersede anything.
 		refuse_stale "epoch $E_BOOT/$E_SEQ was superseded by the guard"
 	fi
-	if [ "$FENCE_BOOT" != "-" ]; then
-		if [ "$FENCE_BOOT" = "$E_BOOT" ] && [ "$FENCE_SEQ" = "$E_SEQ" ]; then
-			repair_holder "$E_BOOT" "$E_SEQ"
-			emit_status
-			return 0
-		fi
-		refuse_fenced "a fence for epoch $FENCE_BOOT/$FENCE_SEQ is still pending"
+	if [ "$FENCE_BOOT" = "$E_BOOT" ] && [ "$FENCE_SEQ" = "$E_SEQ" ]; then
+		# A replay of this epoch's own pending fence repairs a lost holder write
+		# and reports the same fence: the sequence never advances twice for one
+		# fencing.
+		repair_holder "$E_BOOT" "$E_SEQ"
+		emit_status
+		return 0
 	fi
+	# A pending fence for a DIFFERENT epoch does not block this takeover: the
+	# new epoch supersedes the epoch that fence names — the crashed incarnation
+	# whose work the new worker kills under this lease (§4:107's "The next
+	# `deploy`/`restart` past the cleared marker runs its kill/wait plus guard
+	# advance under a fresh epoch"). The superseded check above and the
+	# holder/high-water checks below refuse an epoch the guard has already
+	# retired, so a late orphan can never move the guard backward.
 	if [ "$EPOCH_BOOT" = "$E_BOOT" ] && [ "$EPOCH_SEQ" = "$E_SEQ" ]; then
 		repair_holder "$E_BOOT" "$E_SEQ"
 		emit_status
 		return 0
 	fi
 	highwater=$(guard_field "$GUARD_SNAPSHOT" "boot.$E_BOOT")
-	if [ -n "$highwater" ] && is_uint "$highwater" && [ "$E_SEQ" -le "$highwater" ]; then
+	if [ -n "$highwater" ] && seq_at_or_below "$E_SEQ" "$highwater"; then
 		# The durable per-boot high-water: an epoch this boot already admitted
 		# never takes over again, even after later boots have settled.
 		refuse_stale "epoch $E_BOOT/$E_SEQ is at or below boot $E_BOOT's high-water $highwater"
@@ -771,10 +848,15 @@ do_takeover() {
 		previous_boot=$EPOCH_BOOT
 		previous_seq=$EPOCH_SEQ
 	fi
-	if [ "$previous_boot" != "-" ] && [ "$previous_boot" = "$E_BOOT" ] && [ "$E_SEQ" -le "$previous_seq" ]; then
+	if [ "$previous_boot" != "-" ] && [ "$previous_boot" = "$E_BOOT" ] && seq_at_or_below "$E_SEQ" "$previous_seq"; then
 		refuse_stale "epoch $E_BOOT/$E_SEQ is no newer than the guard's holder $previous_boot/$previous_seq"
 	fi
-	GUARD_EPOCH=$((GUARD_EPOCH + 1))
+	if seq_exhausted "$GUARD_EPOCH"; then
+		# The guard's sequence has no next value: the takeover cannot advance
+		# it, and wrapping would write a guard the Go decoder rejects.
+		refuse_corrupt "the guard's fencing sequence is exhausted"
+	fi
+	GUARD_EPOCH=$(seq_increment "$GUARD_EPOCH")
 	FENCE_BOOT=$E_BOOT
 	FENCE_SEQ=$E_SEQ
 	FENCE_SUP_BOOT=$previous_boot
@@ -812,9 +894,12 @@ do_advance() {
 	if [ "$HOLDER_BOOT" != "$E_BOOT" ] || [ "$HOLDER_SEQ" != "$E_SEQ" ]; then
 		refuse_corrupt "the lease holder $HOLDER_BOOT/$HOLDER_SEQ does not name the fenced epoch $E_BOOT/$E_SEQ; replay the takeover"
 	fi
+	if seq_exhausted "$GUARD_EPOCH"; then
+		refuse_corrupt "the guard's fencing sequence is exhausted"
+	fi
 	EPOCH_BOOT=$E_BOOT
 	EPOCH_SEQ=$E_SEQ
-	GUARD_EPOCH=$((GUARD_EPOCH + 1))
+	GUARD_EPOCH=$(seq_increment "$GUARD_EPOCH")
 	SUP_BOOT=$FENCE_SUP_BOOT
 	SUP_SEQ=$FENCE_SUP_SEQ
 	FENCE_BOOT=-
@@ -857,37 +942,180 @@ current_start_token() { # <pid>
 	pid_start_time "$1"
 }
 
+# nonce_value prints the exact per-spawn nonce a process's environment carries
+# (empty when it carries none), and returns nonzero when the environment cannot
+# be read: an uninspectable environment is never a nonce mismatch, and its
+# caller must read it as "cannot disprove".
+nonce_value() { # <environ path>
+	value=$(tr '\0' '\n' <"$1" 2>/dev/null) || return 1
+	printf '%s\n' "$value" | sed -n 's/^EVENER_FENCE_NONCE=//p'
+}
+
 # nonce_holds reports whether one process's environment carries exactly this
 # nonce: the value is extracted and compared whole, never substring-matched, so
 # a process whose nonce merely starts with the searched value is not ours.
 nonce_holds() { # <environ path> <nonce>
-	value=$(tr '\0' '\n' <"$1" 2>/dev/null | sed -n 's/^EVENER_FENCE_NONCE=//p' || true)
+	value=$(nonce_value "$1") || return 1
 	[ "$value" = "$2" ]
+}
+
+# process_uid prints pid's real uid from /proc/<pid>/status, or nothing when it
+# cannot be read. The status file is world-readable, unlike a process's
+# environment, so this answers for an uninspectable process too.
+process_uid() { # <pid>
+	awk '/^Uid:/ { print $2; exit }' "/proc/$1/status" 2>/dev/null || true
+}
+
+# process_state prints pid's state letter (from /proc/<pid>/stat field 3). The
+# strip is greedy to the last ") " because comm may itself contain parentheses
+# (the kernel shows "(sd-pam)" as "((sd-pam))").
+process_state() { # <pid>
+	awk '{ sub(/.*\) /, ""); print $1 }' "/proc/$1/stat" 2>/dev/null || true
+}
+
+# registered_epoch converts the entry's RFC3339 registration time to epoch
+# seconds, or prints nothing when the conversion is unavailable.
+registered_epoch() { # <rfc3339>
+	[ -n "$1" ] || return 0
+	date -d "$1" +%s 2>/dev/null || true
+}
+
+# started_after reports whether pid started at or after the epoch second in $2.
+# It reads the kernel-owned start tick beside the caller's clock facts ($3 epoch
+# seconds, $4 uptime seconds, $5 clock ticks per second — one read per scan, not
+# one per process), so it needs no wall-clock arithmetic on the process side. A
+# pid whose start cannot be determined answers yes: the caller must then fail
+# closed.
+started_after() { # <pid> <epoch> <now> <uptime> <hz>
+	if [ -z "$3" ] || [ -z "$4" ] || [ -z "$5" ]; then
+		return 0
+	fi
+	ticks=$(awk '{ sub(/.*\) /, ""); print $20 }' "/proc/$1/stat" 2>/dev/null || true)
+	is_uint64 "$ticks" || return 0
+	start_epoch=$(($3 - $4 + ticks / $5))
+	[ "$start_epoch" -ge "$2" ]
+}
+
+# process_present reports whether pid names a process this helper can observe.
+# /proc answers for an existing process even when it cannot be signaled, so a
+# permission failure is never read as "gone"; a platform without /proc falls
+# back to kill -0.
+process_present() { # <pid>
+	if [ -d "/proc/$1" ]; then
+		return 0
+	fi
+	kill -0 "$1" 2>/dev/null
+}
+
+# process_gone reports whether pid names a process that is provably gone: no
+# /proc entry, an unreaped corpse (state Z carries no work), or an entry whose
+# state cannot be read — a live task keeps /proc/<pid>/stat world-readable, so
+# an empty read is a vanished task, never an opaque one. Without /proc nothing
+# about a pid is provable, so the answer is "not gone" and the callers fall
+# through to their token checks, which fail closed.
+process_gone() { # <pid>
+	[ -d /proc/self ] || return 1
+	process_present "$1" || return 0
+	case $(process_state "$1") in
+	'' | Z) return 0 ;;
+	esac
+	return 1
 }
 
 # descendants_of prints the PIDs still carrying the command's per-spawn nonce.
 # A command's children inherit the nonce in their environment, so a survivor —
 # however it detached — is found and the entry never reads settled while it
-# lives. A platform without /proc cannot enumerate; the entry then records no
-# descendants and the pid/start-time identity remains the whole proof.
-descendants_of() { # <nonce>
-	[ -d /proc/self ] || return 0
-	# One substring grep decides whether any candidate exists at all; only then
-	# is the per-pid pass worth its forks. A substring hit is a candidate, never
-	# an answer: nonce_holds extracts and compares the value exactly, so a
-	# process whose nonce merely starts with the searched one is not ours. The
-	# pass reads grep's output, never its exit status: unreadable environ files
-	# make grep exit 2 even after a match, and a nonzero status must never read
-	# as "no survivors".
-	candidates=$(grep -als "EVENER_FENCE_NONCE=$1" /proc/[0-9]*/environ 2>/dev/null || true)
-	[ -n "$candidates" ] || return 0
-	for envfile in /proc/[0-9]*/environ; do
-		[ -r "$envfile" ] || continue
+# lives. Its exit status is part of the contract: when the scan cannot run (no
+# /proc, the helper's own environment unreadable, or grep missing) it returns
+# nonzero, and callers must read that as "cannot disprove", never as "no
+# survivors". On a platform where it cannot run, a running command records no
+# descendants, and the fencing worker's nonce arms read the member live.
+descendants_of() { # <nonce> [<since-epoch>]
+	# $2, when present, is the epoch second the entry was registered: a process
+	# that started before it cannot be this command's descendant.
+	since=${2:-}
+	nonce_scan_available || return 1
+	# The candidate grep emits is a substring hit, never an answer: the extracted
+	# value is compared exactly, so a process whose nonce merely starts with the
+	# searched one is not ours. grep's own exit status is inspected: a clean scan
+	# answers from its candidate list, while a scan that reported an error probes
+	# the environments it could not read BEFORE any candidate is compared — the
+	# match it did emit can be such a false positive, and it must never hide a
+	# possible carrier behind it. A candidate that can no longer be inspected
+	# also returns nonzero: the caller must read both as "cannot disprove",
+	# never as empty.
+	grep_status=0
+	candidates=$(grep -als "EVENER_FENCE_NONCE=$1" /proc/[0-9]*/environ 2>/dev/null) || grep_status=$?
+	if [ "$grep_status" -le 1 ]; then
+		# A clean scan: every environment grep was handed was read, so an empty
+		# candidate list is the proof no carrier exists.
+		[ -n "$candidates" ] || return 0
+	else
+		# The scan reported an error, so an environment it could not read may
+		# still carry the nonce: an unreadable environment hides it, so only a
+		# same-uid, live process that started at or after the entry's
+		# registration could still be this command's descendant. That proof
+		# skips every other uninspectable process, and a possible one leaves the
+		# enumeration unverified; without a registration second to bound them,
+		# nothing can be disproved.
+		case $since in '' | *[!0-9]*) return 2 ;; esac
+		# The registration second is the command's own spawn: the slack keeps a
+		# process started within that same second inside the bound.
+		probe_since=$((since - 2))
+		my_uid=$(process_uid "$$")
+		[ -n "$my_uid" ] || return 2
+		# The clock reads are one scan-wide fact, not one per process.
+		probe_now=$(date +%s 2>/dev/null || true)
+		probe_uptime=$(awk '{ print int($1) }' /proc/uptime 2>/dev/null || true)
+		probe_hz=$(getconf CLK_TCK 2>/dev/null || true)
+		for probe in /proc/[0-9]*/environ; do
+			if [ -r "$probe" ]; then
+				continue
+			fi
+			probe_pid=${probe#/proc/}
+			probe_pid=${probe_pid%/environ}
+			case $probe_pid in '' | *[!0-9]*) continue ;; esac
+			[ "$probe_pid" = "$$" ] && continue
+			# /proc/<pid>/status is kernel-owned and world-readable, even for a
+			# process whose environment cannot be read: a foreign uid can never
+			# carry this wrapper's nonce, and an empty read is a task that is
+			# gone, not an identity that is hidden.
+			probe_uid=$(process_uid "$probe_pid")
+			if [ -z "$probe_uid" ]; then
+				continue
+			fi
+			if [ "$probe_uid" != "$my_uid" ]; then
+				continue
+			fi
+			# The same holds for the state: a zombie can never carry the nonce,
+			# its task is dead, and an empty read is a vanished task.
+			probe_state=$(process_state "$probe_pid")
+			if [ -z "$probe_state" ]; then
+				continue
+			fi
+			if [ "$probe_state" = Z ]; then
+				continue
+			fi
+			# A same-uid live process whose environment cannot be read could
+			# carry the nonce only if it started at or after the registration;
+			# without that proof the scan cannot disprove it.
+			if started_after "$probe_pid" "$probe_since" "$probe_now" "$probe_uptime" "$probe_hz"; then
+				return 2
+			fi
+		done
+	fi
+	for envfile in $candidates; do
+		if [ "${EVENER_FENCE_FAULT_UNREADABLE_CANDIDATE:-0}" = 1 ]; then
+			# Test-only fault injection: models a candidate that cannot be
+			# inspected at the read, so the fail-closed arm is exercised.
+			return 2
+		fi
+		value=$(nonce_value "$envfile") || return 2
+		[ "$value" = "$1" ] || continue
 		pid=${envfile#/proc/}
 		pid=${pid%/environ}
 		case $pid in '' | *[!0-9]*) continue ;; esac
 		[ "$pid" = "$$" ] && continue
-		nonce_holds "$envfile" "$1" || continue
 		start=$(pid_start_time "$pid" 2>/dev/null || true)
 		[ -n "$start" ] || start=unknown
 		printf '%s:%s ' "$pid" "$start"
@@ -941,20 +1169,30 @@ do_perform() { # <bootId> <opSeq> <command>
 	status=0
 	wait "$child" || status=$?
 	exited=$(date -u '+%Y-%m-%dT%H:%M:%SZ' 2>/dev/null || printf 0)
-	survivors=$(descendants_of "$nonce")
-	if [ -n "$survivors" ]; then
-		# The command's own children outlive it: the entry stays running with
-		# them recorded, so a verifier reads it live and a fencing takeover
-		# treats the surviving work as the superseded epoch's, never as clean.
-		write_entry "$nonce" "$(json_escape "$command")" "$registered" running "$own_kind" "$own_pid" "$own_start" "$own_nonce" '' '' '' "$survivors" ||
-			refuse io-error "cannot record the lease descendants" 69
+	# The survivor enumeration is the proof the command's own children are gone,
+	# and it is read strictly: a scan that cannot run proves nothing, so the
+	# entry stays running rather than recording an exit that would exclude
+	# surviving work from every later fencing's live-entry set. The command's
+	# own exit status still rides this helper's exit code.
+	if survivors=$(descendants_of "$nonce" "$(registered_epoch "$registered")"); then
+		if [ -n "$survivors" ]; then
+			# The command's own children outlive it: the entry stays running with
+			# them recorded, so a verifier reads it live and a fencing takeover
+			# treats the surviving work as the superseded epoch's, never as clean.
+			write_entry "$nonce" "$(json_escape "$command")" "$registered" running "$own_kind" "$own_pid" "$own_start" "$own_nonce" '' '' '' "$survivors" ||
+				refuse io-error "cannot record the lease descendants" 69
+			exit "$status"
+		fi
+		# A command that exited, however it exited, is recorded exited: the lease
+		# file's exit state is what a verifier enumerates. A killed orphan is
+		# marked by the fencing worker's kill path (S18) through the same entry
+		# file.
+		write_entry "$nonce" "$(json_escape "$command")" "$registered" exited "$own_kind" "$own_pid" "$own_start" "$own_nonce" '' "$status" "$exited" '' ||
+			refuse io-error "cannot record the lease exit" 69
 		exit "$status"
 	fi
-	# A command that exited, however it exited, is recorded exited: the lease
-	# file's exit state is what a verifier enumerates. A killed orphan is marked
-	# by the fencing worker's kill path (S18) through the same entry file.
-	write_entry "$nonce" "$(json_escape "$command")" "$registered" exited "$own_kind" "$own_pid" "$own_start" "$own_nonce" '' "$status" "$exited" '' ||
-		refuse io-error "cannot record the lease exit" 69
+	write_entry "$nonce" "$(json_escape "$command")" "$registered" running "$own_kind" "$own_pid" "$own_start" "$own_nonce" '' '' '' '' ||
+		refuse io-error "cannot record the unverified lease exit" 69
 	exit "$status"
 }
 
@@ -968,16 +1206,25 @@ post_spawn_failure() {
 	kill "$child" 2>/dev/null || true
 	attempt=0
 	while [ "$attempt" -lt 20 ]; do
-		remaining=$(descendants_of "${child_nonce:-}")
-		[ -z "$remaining" ] && break
+		if remaining=$(descendants_of "${child_nonce:-}" "$(registered_epoch "$registered")"); then
+			[ -z "$remaining" ] && break
+		else
+			# The enumeration could not run: nothing is proven gone, so this
+			# attempt keeps the loop's remaining window instead of reading the
+			# failure as a clean reap.
+			remaining=''
+		fi
 		for descendant in $remaining; do
 			descendant_pid=${descendant%%:*}
 			descendant_start=${descendant#*:}
 			# Signal only an instance we can still identify: the nonce matched
-			# at collection, and the start token must still match here.
-			kill -0 "$descendant_pid" 2>/dev/null || continue
+			# at collection, and the start token must still match here. A token
+			# that cannot be read now, or that no longer matches, leaves the
+			# descendant unresolved and unsignaled — this reap never signals
+			# unverified or reused work (§3's verify-then-signal rule).
+			process_present "$descendant_pid" || continue
 			current=$(current_start_token "$descendant_pid" || true)
-			if [ -z "$current" ] || [ "$current" = "$descendant_start" ]; then
+			if [ -n "$current" ] && [ "$current" = "$descendant_start" ]; then
 				kill "$descendant_pid" 2>/dev/null || true
 			fi
 		done
@@ -1005,7 +1252,11 @@ do_recheck() { # <id>
 	running | registering)
 		case $ENTRY_KIND in
 		pid)
-			if kill -0 "$ENTRY_PID" 2>/dev/null; then
+			if ! process_gone "$ENTRY_PID"; then
+				# Presence is answered from /proc, never from a signal's
+				# permission: a live instance this helper cannot signal still
+				# reads here, while an unreaped corpse or a vanished task reads
+				# gone (process_gone).
 				current=$(current_start_token "$ENTRY_PID" || true)
 				if [ -z "$current" ]; then
 					# The process is there but its identity cannot be read: live,
@@ -1017,20 +1268,29 @@ do_recheck() { # <id>
 					# different process and reads as already clean.
 					live=true
 				fi
-			elif ps -p "$ENTRY_PID" >/dev/null 2>&1; then
-				# Present but not signalable: the identity cannot be proven.
-				live=true
 			fi
 			;;
 		nonce)
-			# A registered nonce entry whose liveness cannot be disproven stays
-			# live: fail closed, never a clean read.
-			live=true
+			# The nonce is the entry's stored ownership identity; the carrier
+			# scan below is its check.
 			;;
 		cgroup)
 			live=true
 			;;
 		esac
+		# The command's children inherit the wrapper's per-spawn nonce (the entry
+		# id), and a running command's descendants are not recorded yet: while
+		# any process carries the nonce exactly the member is live. An
+		# enumeration that cannot run, or that fails, can never read clean.
+		if nonce_scan_available; then
+			if ! carriers=$(entry_nonce_scan); then
+				live=true
+			elif [ -n "$carriers" ]; then
+				live=true
+			fi
+		else
+			live=true
+		fi
 		for descendant in $ENTRY_DESCENDANTS; do
 			# A recorded descendant counts only while it still carries this
 			# invocation's exact nonce AND the kernel-owned start token recorded
@@ -1039,14 +1299,18 @@ do_recheck() { # <id>
 			# cannot disprove the identity reads live, never clean.
 			descendant_pid=${descendant%%:*}
 			descendant_start=${descendant#*:}
-			kill -0 "$descendant_pid" 2>/dev/null || continue
-			if [ "$descendant_start" = unknown ] || [ ! -r "/proc/$descendant_pid/environ" ]; then
-				# No start token was recorded, or the environment cannot be
-				# read: the identity cannot be disproven.
+			process_present "$descendant_pid" || continue
+			if [ "$descendant_start" = unknown ]; then
+				# No start token was recorded: the identity cannot be disproven.
 				live=true
 				break
 			fi
-			if ! nonce_holds "/proc/$descendant_pid/environ" "$id"; then
+			if ! value=$(nonce_value "/proc/$descendant_pid/environ"); then
+				# The environment cannot be read now: cannot be disproven.
+				live=true
+				break
+			fi
+			if [ "$value" != "$id" ]; then
 				# The exact nonce is absent: this is not the wrapper's process.
 				continue
 			fi
@@ -1073,6 +1337,285 @@ do_recheck() { # <id>
 		printf ']'
 	fi
 	printf '}\n'
+}
+
+# --- kill --------------------------------------------------------------------
+
+# nonce_scan_available reports whether the nonce enumeration can run at all: it
+# needs /proc with the wrapper's own environment readable, and grep. A scan that
+# cannot run must never read as "no process carries the nonce" — callers fall
+# back to the stored ownership identity (and, for a nonce-owned entry, to live).
+nonce_scan_available() {
+	[ -d /proc/self ] || return 1
+	[ -r /proc/self/environ ] || return 1
+	command -v grep >/dev/null 2>&1 || return 1
+	# At least one numeric process directory must be visible: an unmatched glob
+	# would hand the scan a literal path, and its failure must not read as an
+	# empty (proven-clean) result.
+	found=false
+	for entry in /proc/[0-9]*; do
+		if [ -e "$entry" ]; then
+			found=true
+			break
+		fi
+	done
+	[ "$found" = true ] || return 1
+	return 0
+}
+
+# entry_nonce_scan prints one "pid:startToken" token per process carrying one of
+# the entry's nonces exactly. The wrapper mints the per-spawn nonce as the entry
+# id; a stored nonce field names the same value on nonce-owned entries. Its exit
+# status is nonzero when any scan could not run: the caller must then read the
+# member live, never settled. The scan's per-file semantics are descendants_of's
+# (an unreadable environment file is not this work; see its comment and
+# TestScriptNonceMatchIsExact).
+entry_nonce_scan() {
+	scan_status=0
+	since=$(registered_epoch "$ENTRY_REGISTERED")
+	for nonce in "$ENTRY_ID" "$ENTRY_NONCE"; do
+		[ -n "$nonce" ] || continue
+		descendants_of "$nonce" "$since" || scan_status=1
+	done
+	return "$scan_status"
+}
+
+# emit_target prints one live target once. The identity is the (pid, token)
+# pair, so the ownership arm's answer and the scan's answer for one process
+# collapse to one target.
+emit_target() { # <pid> <startToken>
+	case $target_seen in
+	*"|$1:$2|"*) return 0 ;;
+	esac
+	target_seen="$target_seen|$1:$2|"
+	printf '%s:%s ' "$1" "$2"
+}
+
+# entry_live_targets prints one "pid:startToken" token per process still
+# matching the entry's stored ownership identity. An empty result is the only
+# proof the member is gone; a process whose identity cannot be read prints as
+# "<pid>:unknown", which reads live and is never signaled. §9's verifier rules
+# apply: a pid is checked against its stored start time, a nonce is
+# re-presented to the wrapper, and a cgroup membership this helper cannot
+# attest fails closed.
+#
+# The nonce scan runs for every kind, not only nonce-owned entries: a command's
+# children inherit the wrapper's per-spawn nonce (the entry id), and a running
+# command never has recorded descendants — do_perform records them after the
+# command exits — so without this scan a signaled primary's surviving children
+# would be invisible and the entry would mark settled over a live orphan.
+entry_live_targets() { # (uses ENTRY_*)
+	target_seen=''
+	case $ENTRY_KIND in
+	pid)
+		if ! process_gone "$ENTRY_PID"; then
+			# Presence is answered from /proc, never from a signal's permission
+			# (process_gone): an instance this helper cannot signal is still
+			# read here, and an unreaped corpse or a vanished task reads gone.
+			current=$(current_start_token "$ENTRY_PID" || true)
+			if [ -z "$current" ]; then
+				emit_target "$ENTRY_PID" unknown
+			elif [ "$current" = "$ENTRY_START" ]; then
+				emit_target "$ENTRY_PID" "$current"
+			fi
+		fi
+		;;
+	nonce)
+		;;
+	cgroup)
+		# This helper cannot attest a cgroup membership, so the member reads
+		# live and is never signaled.
+		emit_target '-' unknown
+		;;
+	esac
+	if nonce_scan_available; then
+		if ! carriers=$(entry_nonce_scan); then
+			# The scan could not complete: liveness cannot be disproven.
+			emit_target '-' unknown
+		else
+			for target in $carriers; do
+				target_pid=${target%%:*}
+				target_start=${target#*:}
+				if [ "$target_start" = unknown ] || descendant_pair_conflicts "$target_pid" "$target_start"; then
+					emit_target "$target_pid" unknown
+				else
+					emit_target "$target_pid" "$target_start"
+				fi
+			done
+		fi
+	else
+		# A platform that cannot enumerate cannot disprove the member: an empty
+		# result here would read settled over possibly-live children.
+		emit_target '-' unknown
+	fi
+	# A recorded descendant counts only while it still carries this entry's
+	# exact nonce (the entry id is the wrapper's per-spawn nonce) and its
+	# recorded start token: a reused id is not the wrapper's work. This pass
+	# also covers a descendant whose environment cannot be read (which reads
+	# live), on platforms where the nonce scan cannot run at all.
+	for descendant in $ENTRY_DESCENDANTS; do
+		descendant_pid=${descendant%%:*}
+		descendant_start=${descendant#*:}
+		process_present "$descendant_pid" || continue
+		if [ "$descendant_start" = unknown ]; then
+			# No start token was recorded: the identity cannot be disproven.
+			emit_target "$descendant_pid" unknown
+			continue
+		fi
+		if ! value=$(nonce_value "/proc/$descendant_pid/environ"); then
+			# The environment cannot be read now: the identity cannot be
+			# disproven, so the member reads live and is never signaled.
+			emit_target "$descendant_pid" unknown
+			continue
+		fi
+		if [ "$value" != "$ENTRY_ID" ]; then
+			continue
+		fi
+		current=$(current_start_token "$descendant_pid" || true)
+		if [ -z "$current" ]; then
+			emit_target "$descendant_pid" unknown
+		elif [ "$current" = "$descendant_start" ]; then
+			emit_target "$descendant_pid" "$current"
+		fi
+		# A differing start token is a reused id: already clean for that
+		# member, never signaled.
+	done
+}
+
+# descendant_pair_conflicts reports whether pid carries a recorded descendant
+# pair whose start token differs: that pid is a reused id, not this work.
+descendant_pair_conflicts() { # <pid> <start>
+	for descendant in $ENTRY_DESCENDANTS; do
+		descendant_pid=${descendant%%:*}
+		descendant_start=${descendant#*:}
+		if [ "$descendant_pid" = "$1" ] && [ "$descendant_start" != "$2" ]; then
+			return 0
+		fi
+	done
+	return 1
+}
+
+emit_kill_report() { # <id> <state> <signaled> <live> [<remaining tokens>]
+	printf '{"version":%s,"id":"%s","signaled":%s,"live":%s,"state":"%s"' \
+		"$PROTOCOL" "$1" "$3" "$4" "$2"
+	# Only a member with a numeric pid is a process this report can name: an
+	# opaque token ("-:unknown") still makes the answer live, but there is no
+	# pid to emit.
+	started=0
+	for target in ${5:-}; do
+		target_pid=${target%%:*}
+		case $target_pid in '' | *[!0-9]*) continue ;; esac
+		if [ "$started" -eq 1 ]; then
+			printf ','
+		else
+			printf ',"remaining":['
+			started=1
+		fi
+		printf '{"pid":%s,"startToken":"%s"}' "$target_pid" "$(json_escape "${target#*:}")"
+	done
+	if [ "$started" -eq 1 ]; then
+		printf ']'
+	fi
+	printf '}\n'
+}
+
+# do_kill signals the superseded epoch's tracked work for one lease entry,
+# under the presented epoch's taken-over lease: §4's "kill (bounded kill
+# context)" step. The fencing worker's own bounded wait reads `recheck`; this
+# call revalidates the stored ownership identity on the remote before any
+# signal, gives the signaled work a bounded chance to leave, and records the
+# kill through the same entry file — state killed, exit 143, the shell's
+# SIGTERM convention — once nothing matching that identity is left. A member
+# that cannot be verified is never signaled and reads live.
+do_kill() { # <bootId> <opSeq> <id>
+	E_BOOT=$1
+	E_SEQ=$2
+	load_guard_or_refuse
+	# The caller must hold the taken-over lease: the guard carries this epoch's
+	# pending fence and the lease holder names the same epoch. Anything else is
+	# a superseded or foreign epoch, whose kill is dead.
+	if [ "$FENCE_BOOT" = "-" ] || [ "$FENCE_BOOT" != "$E_BOOT" ] || [ "$FENCE_SEQ" != "$E_SEQ" ]; then
+		refuse_stale "no fence for epoch $E_BOOT/$E_SEQ is pending"
+	fi
+	read_holder || refuse_corrupt "the lease holder is outside its schema"
+	if [ "$HOLDER_BOOT" != "$E_BOOT" ] || [ "$HOLDER_SEQ" != "$E_SEQ" ]; then
+		refuse_corrupt "the lease holder $HOLDER_BOOT/$HOLDER_SEQ does not name the fenced epoch $E_BOOT/$E_SEQ; replay the takeover"
+	fi
+	id=$3
+	case $id in '' | *[!A-Za-z0-9]*) refuse_malformed "a lease entry id is required" ;; esac
+	path=$LEASE_DIR/$id
+	if [ ! -f "$path" ]; then
+		# No entry was registered under this id: the member is already clean.
+		emit_kill_report "$id" "" false false
+		return 0
+	fi
+	load_entry "$path" || refuse_corrupt "lease entry $id is outside its schema"
+	case $ENTRY_STATE in
+	exited | killed)
+		emit_kill_report "$ENTRY_ID" "$ENTRY_STATE" false false
+		return 0
+		;;
+	esac
+	signaled=false
+	remaining=$(entry_live_targets)
+	for target in $remaining; do
+		target_pid=${target%%:*}
+		target_start=${target#*:}
+		# Signal only a fully verified identity: "unknown" is a member this
+		# helper cannot prove is the wrapper's work.
+		if [ "$target_start" = unknown ]; then
+			continue
+		fi
+		# Re-read the kernel-owned start token immediately before signaling. It
+		# narrows (never closes) the check-then-act window: the design's
+		# 2026-09-26 decision withdraws the atomic pidfd requirement — no atomic
+		# ownership-and-signal form is reachable through the helper's shell
+		# interface — and accepts the residual window. An identity that cannot
+		# be re-read now is skipped, never signaled.
+		current=$(current_start_token "$target_pid" || true)
+		if [ -z "$current" ] || [ "$current" != "$target_start" ]; then
+			continue
+		fi
+		# Only a delivered signal is reported as one: a target that left, or
+		# that this helper may not signal, between the re-read and this call is
+		# not signaled work, and the report crosses the helper's trust boundary.
+		if kill "$target_pid" 2>/dev/null; then
+			signaled=true
+		fi
+	done
+	state=$ENTRY_STATE
+	if [ "$signaled" = true ]; then
+		# Only a signaled process has something to wait for: an unverifiable
+		# member is already the answer, and polling it would burn the worker's
+		# kill budget for nothing.
+		attempt=0
+		while [ -n "$remaining" ] && [ "$attempt" -lt 20 ]; do
+			attempt=$((attempt + 1))
+			sleep 0.1
+			remaining=$(entry_live_targets)
+		done
+	fi
+	if [ -z "$remaining" ]; then
+		# Settled: a successful enumeration found no process matching the stored
+		# identity (an enumeration that cannot run, or that cannot verify a
+		# member, prints an opaque target and keeps this branch out). The
+		# fencing path marks the entry through the same entry file — exit 143,
+		# the SIGTERM convention — whether this call signaled it or found it
+		# already gone, so the lease file never keeps a live-looking entry with
+		# no live holder. The command field is passed exactly as stored (already
+		# JSON-escaped), matching do_perform's own write.
+		exited=$(date -u '+%Y-%m-%dT%H:%M:%SZ' 2>/dev/null || printf 0)
+		write_entry "$ENTRY_ID" "$ENTRY_COMMAND" "$ENTRY_REGISTERED" killed \
+			"$ENTRY_KIND" "$ENTRY_PID" "$ENTRY_START" "$ENTRY_NONCE" "$ENTRY_CGROUP" 143 "$exited" '' ||
+			refuse io-error "cannot record the killed lease entry" 69
+		state=killed
+	fi
+	if [ -z "$remaining" ]; then
+		live=false
+	else
+		live=true
+	fi
+	emit_kill_report "$ENTRY_ID" "$state" "$signaled" "$live" "$remaining"
 }
 
 # --- dispatch ----------------------------------------------------------------
@@ -1123,6 +1666,14 @@ perform)
 recheck)
 	[ $# -eq 1 ] || refuse_malformed "recheck needs a lease entry id"
 	do_recheck "$1"
+	;;
+kill)
+	[ $# -eq 3 ] || refuse_malformed "kill needs an epoch and a lease entry id"
+	parse_epoch "$1" "$2" || refuse_malformed "malformed fencing epoch"
+	trap 'release_lock' EXIT
+	trap 'release_lock; exit 1' HUP INT TERM
+	acquire_lock || refuse busy "the remote lease is held" 75
+	do_kill "$1" "$2" "$3"
 	;;
 *)
 	refuse_malformed "unknown operation $op"

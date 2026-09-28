@@ -9,7 +9,15 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AnyNotification, Thread } from "@evener/appwire-client";
 import { nativeDrafts } from "./nativeDrafts";
 import { getNativeMutationRuntime, nativeMutationTargetKey } from "./nativeMutationRuntime";
-import { flatListCalls, pressable, render, renderedText, screenConnection, textOf } from "./renderNative.testkit";
+import {
+	flatListCalls,
+	flatListScrollFailures,
+	pressable,
+	render,
+	renderedText,
+	screenConnection,
+	textOf,
+} from "./renderNative.testkit";
 import { queueHosts } from "./QueueSheet";
 import { ConversationScreen } from "./screens";
 import { NotesSheet, notesHosts } from "./session/NotesSheet";
@@ -18,6 +26,17 @@ import { sheetKey } from "./sheet/sheetHosts";
 import { holdQuote, takeQuote } from "./session/pendingQuote";
 import { modelHosts } from "./session/ModelSheet";
 import { SessionInfoSheet } from "./session/SessionInfoSheet";
+import { commandHosts } from "./session/CommandsSheet";
+import { AccessibilityInfo, ActionSheetIOS } from "react-native";
+import type {
+	NativeStackHeaderItemMenu,
+	NativeStackHeaderItemMenuAction,
+	NativeStackNavigationOptions,
+} from "@react-navigation/native-stack";
+import { paletteFor } from "./design/tokens";
+import { answerFleetRead, type FleetShape, fleetSession } from "./session/fleetTestUtils";
+import { FloatingStack } from "./session/FloatingStack";
+import { Toast } from "./Toast";
 
 const harness = vi.hoisted(() => ({
 	connection: {} as Record<string, unknown>,
@@ -155,6 +174,7 @@ const navigation = {
 	getState: () => navigationState.state,
 	navigate: vi.fn(),
 	push: vi.fn(),
+	replace: vi.fn(),
 	pop: vi.fn(),
 	goBack: vi.fn(),
 	setParams: vi.fn(),
@@ -254,12 +274,30 @@ function queueState(texts: string[], revision = 0) {
  * mutation, recording each request in order. It sends a frame only when a
  * test calls notify(). */
 const otherThreads = new Map<string, Thread>();
+// The fleet the hub answers the screen's navigation reads with: nobody else
+// needs you unless a test says so.
+const fleet: FleetShape = { live: [], needsYou: [] };
+// Every screen a test mounts. Each is unmounted after its test: a screen
+// left mounted keeps answering late reads and setting header options on the
+// shared navigation mock, so a later test reading the last header options
+// could act on it instead of its own screen.
+const mountedScreens: ReactTestRenderer[] = [];
 afterEach(() => {
+	for (const tree of mountedScreens.splice(0)) if (tree.toJSON() !== null) act(() => tree.unmount());
 	otherThreads.clear();
+	fleet.live = [];
+	fleet.needsYou = [];
+	fleet.sources = undefined;
 	vi.unstubAllGlobals();
 });
 
-function hubClient(served: Thread, failedReads = 0, readLatencyMs = 0, olderCursor?: string) {
+function hubClient(
+	served: Thread,
+	failedReads = 0,
+	readLatencyMs = 0,
+	olderCursor?: string,
+	olderTurns: unknown[] = [],
+) {
 	let readsToFail = failedReads;
 	const requests: { method: string; params: Record<string, unknown> }[] = [];
 	const listeners = new Set<(notification: AnyNotification) => void>();
@@ -288,7 +326,8 @@ function hubClient(served: Thread, failedReads = 0, readLatencyMs = 0, olderCurs
 				const thread = otherThreads.get(String(params.ref)) ?? served;
 				return { thread, ...(olderCursor ? { olderCursor } : {}) };
 			}
-			if (method === "thread/turns/list") return { data: [] };
+			// The page before the first read: older turns, and the start of history.
+			if (method === "thread/turns/list") return { data: olderTurns };
 			if (method === "model/list")
 				return {
 					data: [{ provider: "anthropic", model: "claude-sonnet-5", displayName: "Claude Sonnet 5" }],
@@ -317,7 +356,9 @@ function hubClient(served: Thread, failedReads = 0, readLatencyMs = 0, olderCurs
 						...(params.expectedEntryId ? { queueEntryIds: [params.expectedEntryId] } : {}),
 					},
 				};
-			return {};
+			if (method === "evener/session/seen/set")
+				return { ok: true, changed: true, navigation: { generation_id: "generation-test", targets: [] } };
+			return answerFleetRead(fleet, method, params) ?? {};
 		},
 	};
 	return {
@@ -336,11 +377,19 @@ function hubClient(served: Thread, failedReads = 0, readLatencyMs = 0, olderCurs
 
 async function mount(
 	served: Thread,
-	{ failedReads = 0, readLatencyMs = 0, settled = true, olderCursor = undefined as string | undefined } = {},
+	{
+		failedReads = 0,
+		readLatencyMs = 0,
+		settled = true,
+		olderCursor = undefined as string | undefined,
+		olderTurns = [] as unknown[],
+		openedBy = undefined as "next" | undefined,
+	} = {},
 ) {
-	const hub = hubClient(served, failedReads, readLatencyMs, olderCursor);
+	const hub = hubClient(served, failedReads, readLatencyMs, olderCursor, olderTurns);
 	harness.connection = {
 		...screenConnection(hub.client, "ready"),
+		profiles: [{ id: "hub-1", name: "Work hub", origin: "https://hub.test" }],
 		error: null,
 		disconnect: () => {},
 	};
@@ -348,10 +397,11 @@ async function mount(
 	const route = {
 		key: `conversation-${ref}`,
 		name: "Conversation",
-		params: { hubId: "hub-1", ref, title: "Session" },
+		params: { hubId: "hub-1", ref, title: "Session", ...(openedBy ? { openedBy } : {}) },
 	} as unknown as ConversationScreenProps["route"];
 	navigationState.state = { index: 0, routes: [route] };
 	const tree = render(<ConversationScreen route={route} navigation={navigation} />);
+	mountedScreens.push(tree);
 	if (settled) await settle();
 	return { tree, hub };
 }
@@ -683,18 +733,22 @@ it("holds Stop while a queued message is handed to the outbox", async () => {
 });
 
 // Two finished turns, each your message and the agent's reply.
-function twoTurns(ref: string): Thread {
-	const served = thread(ref, "idle");
-	const turn = (id: string) => ({
+/** A settled turn: your ask, then the agent's reply. */
+function askReplyTurn(id: string, ask = `ask ${id}`, reply = `reply ${id}`) {
+	return {
 		id,
 		status: "completed",
 		itemsView: "default",
 		items: [
-			{ id: `u-${id}`, turnId: id, type: "userMessage", status: "completed", text: `ask ${id}` },
-			{ id: `a-${id}`, turnId: id, type: "agentMessage", status: "completed", text: `reply ${id}` },
+			{ id: `u-${id}`, turnId: id, type: "userMessage", status: "completed", text: ask },
+			{ id: `a-${id}`, turnId: id, type: "agentMessage", status: "completed", text: reply },
 		],
-	});
-	(served as unknown as { turns: unknown[] }).turns = [turn("turn_1"), turn("turn_2")];
+	};
+}
+
+function twoTurns(ref: string): Thread {
+	const served = thread(ref, "idle");
+	(served as unknown as { turns: unknown[] }).turns = [askReplyTurn("turn_1"), askReplyTurn("turn_2")];
 	return served;
 }
 
@@ -1447,4 +1501,523 @@ it("leaves the shared question fixture as the other question tests expect it", (
 	const turn = (thread("ref-fixture-intact", "idle", true) as unknown as { turns: { status: string; error?: unknown }[] }).turns[0];
 	expect(turn.status).toBe("completed");
 	expect(turn.error).toBeUndefined();
+});
+
+describe("Commands and skills (spec 8.5, ruling 15)", () => {
+	// Choosing focuses the field on the next frame; these tests run it at once.
+	beforeEach(() => {
+		vi.stubGlobal("requestAnimationFrame", (frame: (time: number) => void) => {
+			frame(0);
+			return 0;
+		});
+		vi.mocked(navigation.navigate).mockClear();
+	});
+	afterEach(() => vi.unstubAllGlobals());
+
+	it("opens the sheet for a slash typed into an empty draft, and keeps the slash out", async () => {
+		const { tree } = await mount(thread("ref-slash", "idle"));
+		await type(tree, "/");
+		expect(navigation.navigate).toHaveBeenCalledWith("CommandsSheet", { hubId: "hub-1", ref: "ref-slash" });
+		expect(field(tree)?.props.value).toBe("");
+	});
+
+	it("keeps a slash typed after other words", async () => {
+		const { tree } = await mount(thread("ref-slash-later", "idle"));
+		await type(tree, "a");
+		await type(tree, "a/");
+		expect(navigation.navigate).not.toHaveBeenCalledWith("CommandsSheet", expect.anything());
+		expect(field(tree)?.props.value).toBe("a/");
+	});
+
+	it("opens the sheet from +", async () => {
+		const { tree } = await mount(thread("ref-plus", "idle"));
+		vi.mocked(ActionSheetIOS.showActionSheetWithOptions).mockClear();
+		act(() => pressable(tree, "Add")?.props.onPress());
+		const [options, choose] = vi.mocked(ActionSheetIOS.showActionSheetWithOptions).mock.calls[0] as [
+			{ options: string[] },
+			(index: number) => void,
+		];
+		act(() => choose(options.options.indexOf("Commands and skills")));
+		expect(navigation.navigate).toHaveBeenCalledWith("CommandsSheet", { hubId: "hub-1", ref: "ref-plus" });
+	});
+
+	it("puts the chosen command at the start of the draft", async () => {
+		const { tree } = await mount(thread("ref-choose", "idle"));
+		await type(tree, "hello");
+		const host = commandHosts.get(sheetKey("hub-1", "ref-choose"));
+		expect(host?.session.capabilities).toMatchObject({ send: true });
+		act(() => host?.choose("/goal"));
+		await flush();
+		expect(field(tree)?.props.value).toBe("/goal hello");
+	});
+});
+
+/** Chooses an item in the ⋯ menu the screen set last. */
+function chooseMenu(label: string) {
+	const calls = vi.mocked(navigation.setOptions).mock.calls as [NativeStackNavigationOptions][];
+	const options = calls.map(([options]) => options).findLast((options) => options.unstable_headerRightItems);
+	const [menu] = (options?.unstable_headerRightItems?.({ canGoBack: true }) ?? []) as NativeStackHeaderItemMenu[];
+	const found = menu?.menu.items.find((item) => item.label === label) as NativeStackHeaderItemMenuAction | undefined;
+	if (!found) throw new Error(`no ${label} in the header menu`);
+	act(() => found.onPress());
+}
+
+describe("Find in session (spec 8.7, ruling 29)", () => {
+	const palette = paletteFor("light");
+
+	function findTurns(ref: string): Thread {
+		const served = thread(ref, "idle");
+		(served as unknown as { turns: unknown[] }).turns = [
+			askReplyTurn("turn_1", "Fix the flaky Settle test", "The race is in settle."),
+			askReplyTurn("turn_2", "Anything else?", "Nothing else."),
+		];
+		return served;
+	}
+
+	function findField(tree: ReactTestRenderer) {
+		return tree.root
+			.findAll((node) => String(node.type) === "TextInput")
+			.find((node) => node.props.accessibilityLabel === "Find in session");
+	}
+
+	async function search(tree: ReactTestRenderer, query: string) {
+		const input = findField(tree);
+		if (!input) throw new Error("no find field");
+		act(() => input.props.onChangeText(query));
+		await settle();
+	}
+
+	const findScrolls = () =>
+		flatListCalls
+			.filter((call) => call.method === "scrollToIndex")
+			.map((call) => call.args as { index: number; viewPosition?: number })
+			.filter((args) => args.viewPosition === 0.3)
+			.map((args) => args.index);
+
+	/** The words of the rows washed as the current match: your messages'
+	 * text and the agent's markdown. */
+	const washed = (tree: ReactTestRenderer) =>
+		tree.root
+			.findAll((node) => String(node.type) === "View" && node.props.style?.backgroundColor === palette.accentBg)
+			.map((node) =>
+				node
+					.findAll((child) => String(child.type) === "Text" || String(child.type) === "EnrichedMarkdownText")
+					.map((child) => (String(child.type) === "Text" ? textOf(child) : String(child.props.markdown)))
+					.join(" "),
+			);
+
+	it("opens only the find bar, and no sheet over it", async () => {
+		const { tree } = await mount(findTurns("ref-find-only"));
+		vi.mocked(navigation.navigate).mockClear();
+		chooseMenu("Find in session");
+		await settle();
+		expect(findField(tree)).toBeDefined();
+		expect(navigation.navigate).not.toHaveBeenCalled();
+	});
+
+	it("puts the find bar where the chips were, and Done brings them back", async () => {
+		const { tree } = await mount(findTurns("ref-find-open"));
+		expect(findField(tree)).toBeUndefined();
+		chooseMenu("Find in session");
+		await settle();
+		expect(findField(tree)?.props.autoFocus).toBe(true);
+		act(() => pressable(tree, "Done")?.props.onPress());
+		await settle();
+		expect(findField(tree)).toBeUndefined();
+	});
+
+	it("shows the newest match first, then steps older and newer, washing the current row", async () => {
+		const { tree } = await mount(findTurns("ref-find-step"));
+		chooseMenu("Find in session");
+		flatListCalls.length = 0;
+		await search(tree, "settle");
+		// Rows: ask 1, reply 1, ask 2, reply 2. Both matches are in turn 1.
+		expect(renderedText(tree)).toContain("2 of 2");
+		expect(findScrolls()).toEqual([1]);
+		expect(washed(tree).join(" ")).toContain("The race is in settle.");
+		await press(tree, "Older match");
+		expect(renderedText(tree)).toContain("1 of 2");
+		expect(findScrolls()).toEqual([1, 0]);
+		expect(washed(tree).join(" ")).toContain("Fix the flaky Settle test");
+		await press(tree, "Newer match");
+		expect(renderedText(tree)).toContain("2 of 2");
+		act(() => pressable(tree, "Done")?.props.onPress());
+		await settle();
+		expect(washed(tree)).toEqual([]);
+	});
+
+	describe("a match the list hasn't rendered yet", () => {
+		// Each retry waits a frame. The frames queue here and run when a test
+		// says, so a test can act between one try and the next.
+		let frames = new Map<number, (time: number) => void>();
+		let nextFrame = 0;
+		beforeEach(() => {
+			frames = new Map();
+			vi.stubGlobal("requestAnimationFrame", (frame: (time: number) => void) => {
+				nextFrame += 1;
+				frames.set(nextFrame, frame);
+				return nextFrame;
+			});
+			vi.stubGlobal("cancelAnimationFrame", (id: number) => void frames.delete(id));
+		});
+		afterEach(() => {
+			flatListScrollFailures.remaining = 0;
+			vi.unstubAllGlobals();
+		});
+
+		/** Runs the frames waiting now; any they ask for wait for the next call. */
+		async function oneFrame() {
+			const waiting = [...frames.values()];
+			frames.clear();
+			act(() => {
+				for (const frame of waiting) frame(0);
+			});
+			await settle();
+		}
+
+		/** Runs the waiting frames, and any they ask for, until none wait. */
+		async function runFrames() {
+			while (frames.size > 0) await oneFrame();
+		}
+
+		/** Lays out the transcript cell at `index`, so the list has measured it. */
+		function measureRow(tree: ReactTestRenderer, index: number) {
+			const item = transcriptList(tree).findAll((node) => String(node.type) === "Item")[index];
+			const cell = item?.findAll((node) => String(node.type) === "View" && node.props.onLayout)[0];
+			if (!cell) throw new Error(`no cell at ${index}`);
+			act(() => cell.props.onLayout({ nativeEvent: { layout: { x: 0, y: index * 80, width: 390, height: 80 } } }));
+		}
+
+		it("keeps moving toward it until the list reaches it", async () => {
+			const { tree } = await mount(findTurns("ref-find-far"));
+			chooseMenu("Find in session");
+			flatListCalls.length = 0;
+			flatListScrollFailures.remaining = 2;
+			await search(tree, "race");
+			await runFrames();
+			// Two misses, each followed by a move near the row, then the jump lands.
+			expect(findScrolls()).toEqual([1, 1, 1]);
+			expect(flatListCalls.filter((call) => call.method === "scrollToOffset")).toHaveLength(2);
+			expect(flatListScrollFailures.remaining).toBe(0);
+		});
+
+		it("stops after a few tries when the list never gets closer", async () => {
+			const { tree } = await mount(findTurns("ref-find-stuck"));
+			chooseMenu("Find in session");
+			flatListCalls.length = 0;
+			flatListScrollFailures.remaining = 10;
+			await search(tree, "race");
+			await runFrames();
+			expect(findScrolls()).toEqual([1, 1, 1, 1]);
+		});
+
+		it("tries again for as long as each try measures rows closer to it", async () => {
+			const { tree } = await mount(findTurns("ref-find-closer"));
+			chooseMenu("Find in session");
+			flatListCalls.length = 0;
+			flatListScrollFailures.remaining = 10;
+			// "Nothing else." is the last row, index 3.
+			await search(tree, "nothing");
+			await oneFrame();
+			// A row before the match renders on the way: the budget starts over.
+			measureRow(tree, 0);
+			await runFrames();
+			expect(findScrolls()).toEqual([3, 3, 3, 3, 3, 3]);
+		});
+
+		it("scrolls no further once Done closes find", async () => {
+			const { tree } = await mount(findTurns("ref-find-done"));
+			chooseMenu("Find in session");
+			flatListCalls.length = 0;
+			flatListScrollFailures.remaining = 1;
+			await search(tree, "race");
+			act(() => pressable(tree, "Done")?.props.onPress());
+			await settle();
+			await runFrames();
+			expect(findScrolls()).toEqual([1]);
+		});
+
+		it("leaves a new search its own tries when the words change mid-way", async () => {
+			const { tree } = await mount(findTurns("ref-find-requery"));
+			chooseMenu("Find in session");
+			flatListCalls.length = 0;
+			flatListScrollFailures.remaining = 10;
+			await search(tree, "race");
+			// "Fix the flaky Settle test" is row 0.
+			await search(tree, "flaky");
+			await runFrames();
+			expect(findScrolls()).toEqual([1, 0, 0, 0, 0]);
+		});
+	});
+
+	it("tells VoiceOver the count a search settles on, and nothing on the way", async () => {
+		const { tree } = await mount(findTurns("ref-find-announce"));
+		chooseMenu("Find in session");
+		const announce = vi.spyOn(AccessibilityInfo, "announceForAccessibility");
+		try {
+			await search(tree, "settle");
+			await search(tree, "settle test");
+			expect(announce.mock.calls).toEqual([["2 of 2"], ["1 of 1"]]);
+		} finally {
+			announce.mockRestore();
+		}
+	});
+
+	it("says so when nothing matches", async () => {
+		const { tree } = await mount(findTurns("ref-find-none"));
+		chooseMenu("Find in session");
+		await search(tree, "nowhere");
+		expect(renderedText(tree)).toContain("No matches");
+	});
+
+	it("reaches back through older history for an older match", async () => {
+		const { tree, hub } = await mount(findTurns("ref-find-older"), {
+			olderCursor: "cursor-1",
+			olderTurns: [askReplyTurn("turn_0", "Is settle flaky?", "Sometimes.")],
+		});
+		chooseMenu("Find in session");
+		await search(tree, "settle");
+		expect(renderedText(tree)).toContain("2 of 2");
+		await press(tree, "Older match");
+		await press(tree, "Older match");
+		expect(hub.requests.filter((request) => request.method === "thread/turns/list").map((request) => request.params.cursor)).toEqual([
+			"cursor-1",
+		]);
+		expect(washed(tree).join(" ")).toContain("Is settle flaky?");
+		expect(renderedText(tree)).toContain("1 of 3");
+	});
+
+	it("says there are no older matches once history ends", async () => {
+		const { tree, hub } = await mount(findTurns("ref-find-end"), { olderCursor: "cursor-1" });
+		chooseMenu("Find in session");
+		await search(tree, "settle");
+		await press(tree, "Older match");
+		await press(tree, "Older match");
+		expect(hub.requests.filter((request) => request.method === "thread/turns/list")).toHaveLength(1);
+		expect(renderedText(tree)).toContain("No older matches");
+		expect(washed(tree).join(" ")).toContain("Fix the flaky Settle test");
+	});
+});
+
+describe("document chips under the agent's messages (spec 8.2)", () => {
+	const PLAN_PATH = "docs/superpowers/plans/settle-race.md";
+	const WROTE_AT = "2026-09-26T11:39:00.000Z";
+
+	function namedAfterWriting(ref: string): Thread {
+		const served = thread(ref, "idle");
+		(served as unknown as { cwd: string }).cwd = "/home/jesse/git/evener";
+		(served as unknown as { turns: unknown[] }).turns = [
+			{
+				id: "t1",
+				status: "completed",
+				itemsView: "default",
+				items: [
+					{
+						id: "write-1",
+						turnId: "t1",
+						type: "commandExecution",
+						toolName: "write_file",
+						status: "completed",
+						// A wire Thread's times are epoch milliseconds; the reducer's
+						// epochMsToISO hands documentReferences the ISO string.
+						completedAt: Date.parse(WROTE_AT),
+						argumentsJson: JSON.stringify({ file_path: `/home/jesse/git/evener/${PLAN_PATH}`, content: "# Plan" }),
+					},
+					{
+						id: "said-1",
+						turnId: "t1",
+						type: "agentMessage",
+						status: "completed",
+						text: `The plan is in \`${PLAN_PATH}\`.`,
+					},
+				],
+			},
+		];
+		return served;
+	}
+
+	it("puts a chip under a message that names a file the session wrote, and opens it in the Reader", async () => {
+		vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response("# Fix the settle race\n"));
+		vi.mocked(navigation.navigate).mockClear();
+		const { tree } = await mount(namedAfterWriting("ref-chips"));
+		await settle();
+		const chip = tree.root.findAll(
+			(node) => String(node.type) === "Pressable" && String(node.props.accessibilityLabel).startsWith("Plan, "),
+		)[0];
+		if (!chip) throw new Error("no document chip");
+		expect(renderedText(tree)).toContain("settle-race.md");
+		act(() => chip.props.onPress());
+		expect(navigation.navigate).toHaveBeenCalledWith("Reader", {
+			hubId: "hub-1",
+			sessionRef: "ref-chips",
+			path: PLAN_PATH,
+			reviewRef: "ref-chips",
+			reviewTitle: "Session",
+			updatedAt: WROTE_AT,
+		});
+	});
+
+	it("counts the session's documents on a Files chip, dotted while one is new, which opens Files & artifacts", async () => {
+		vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response("# Fix the settle race\n"));
+		vi.mocked(navigation.navigate).mockClear();
+		const { tree } = await mount(namedAfterWriting("ref-files"));
+		const files = pressable(tree, "Files, 1, new or changed");
+		if (!files) throw new Error("no Files chip");
+		act(() => files.props.onPress());
+		expect(navigation.navigate).toHaveBeenCalledWith("FilesSheet", {
+			hubId: "hub-1",
+			ref: "ref-files",
+			title: "Session",
+			documents: [{ path: PLAN_PATH, kind: "Plan", updatedAt: WROTE_AT }],
+		});
+	});
+});
+
+describe("moving between sessions (spec 8.3, 13.2)", () => {
+	const at = (minute: number) => new Date(Date.UTC(2026, 8, 26, 12, minute)).toISOString();
+	const failing = fleetSession("local:fail", {
+		title: "Fix retry loop",
+		state: "errored",
+		updated_at: at(5),
+		turn_ended_at: at(5),
+	});
+	const asking = fleetSession("local:ask", {
+		title: "Pick a name",
+		state: "awaiting",
+		ask_pending: true,
+		updated_at: at(3),
+	});
+	beforeEach(() => {
+		fleet.live = [failing];
+		fleet.needsYou = [failing, asking];
+		vi.mocked(navigation.push).mockClear();
+		vi.mocked(navigation.replace).mockClear();
+		vi.mocked(navigation.goBack).mockClear();
+		vi.mocked(ActionSheetIOS.showActionSheetWithOptions).mockClear();
+	});
+
+	/** The Back the screen set last, rendered as the header renders it. */
+	function back() {
+		const calls = vi.mocked(navigation.setOptions).mock.calls as [NativeStackNavigationOptions][];
+		const options = calls.map(([options]) => options).findLast((options) => options.headerLeft);
+		if (!options?.headerLeft) throw new Error("no headerLeft");
+		const header = render(<>{options.headerLeft({ canGoBack: true })}</>);
+		return header.root.findAll((node) => String(node.type) === "Pressable")[0];
+	}
+
+	const capsule = (tree: ReactTestRenderer) => pressable(tree, "Next, Fix retry loop");
+
+	it("counts the others that need you on Back, which goes back", async () => {
+		await mount(thread("ref-back", "idle"));
+		const button = back();
+		expect(button.props.accessibilityLabel).toBe("Back, 2 others need you");
+		act(() => button.props.onPress());
+		expect(navigation.goBack).toHaveBeenCalledTimes(1);
+	});
+
+	it("never counts this session, and shows no Next when nobody else needs you", async () => {
+		fleet.live = [];
+		fleet.needsYou = [fleetSession("ref-alone", { state: "errored", updated_at: at(1) })];
+		const { tree } = await mount(thread("ref-alone", "idle"));
+		expect(back().props.accessibilityLabel).toBe("Back");
+		expect(renderedText(tree)).not.toContain("Next");
+	});
+
+	it("opens the first session that needs you from Next, marked seen", async () => {
+		const { tree, hub } = await mount(thread("ref-next", "idle"));
+		const next = capsule(tree);
+		if (!next) throw new Error("no Next capsule");
+		await act(async () => next.props.onPress());
+		await settle();
+		expect(navigation.push).toHaveBeenCalledWith("Conversation", {
+			hubId: "hub-1",
+			ref: "local:fail",
+			title: "Fix retry loop",
+			openedBy: "next",
+		});
+		expect(navigation.replace).not.toHaveBeenCalled();
+		expect(
+			hub.requests.filter((request) => request.method === "evener/session/seen/set").map((request) => request.params),
+		).toEqual([{ sessions: [{ ref: "local:fail", seenThrough: Date.parse(at(5)) }] }]);
+	});
+
+	it("replaces a session Next opened, so Back still lands where you started", async () => {
+		const { tree } = await mount(thread("ref-next-again", "idle"), { openedBy: "next" });
+		act(() => capsule(tree)?.props.onPress());
+		expect(navigation.replace).toHaveBeenCalledWith("Conversation", {
+			hubId: "hub-1",
+			ref: "local:fail",
+			title: "Fix retry loop",
+			openedBy: "next",
+		});
+		expect(navigation.push).not.toHaveBeenCalled();
+	});
+
+	it("lists everyone who needs you on a hold, and opens the one you choose", async () => {
+		const { tree } = await mount(thread("ref-hold", "idle"));
+		act(() => capsule(tree)?.props.onLongPress());
+		const [options, choose] = vi.mocked(ActionSheetIOS.showActionSheetWithOptions).mock.calls[0] as [
+			{ options: string[]; cancelButtonIndex: number },
+			(index: number) => void,
+		];
+		expect(options).toMatchObject({ options: ["Fix retry loop", "Pick a name", "Cancel"], cancelButtonIndex: 2 });
+		act(() => choose(1));
+		expect(navigation.push).toHaveBeenCalledWith("Conversation", {
+			hubId: "hub-1",
+			ref: "local:ask",
+			title: "Pick a name",
+			openedBy: "next",
+		});
+		act(() => choose(2));
+		expect(navigation.push).toHaveBeenCalledTimes(1);
+	});
+
+	it("stacks a toast above Next, in the one column over the transcript's end, so neither covers the other", async () => {
+		const { tree } = await mount(thread("ref-stacked", "active"));
+		await press(tree, "Stop");
+		expect(renderedText(tree)).toContain("Stopped");
+		const next = capsule(tree);
+		if (!next) throw new Error("no Next capsule");
+		const stack = tree.root.findByType(FloatingStack);
+		const toast = stack.findByType(Toast);
+		expect(toast.props.toast).toMatchObject({ text: "Stopped" });
+		expect(stack.props.next).toBeTruthy();
+		// Nothing new arrived below, so there is no pill to stack.
+		expect(stack.props.pill).toBeNull();
+		expect(stack.findAll((node) => node === next)).toHaveLength(1);
+		// The toast has no other place on the screen.
+		expect(tree.root.findAllByType(Toast)).toHaveLength(1);
+	});
+
+	it("shows no Next while this session asks you something", async () => {
+		const { tree } = await mount(thread("ref-asks", "awaiting", true));
+		expect(capsule(tree)).toBeUndefined();
+		expect(back().props.accessibilityLabel).toBe("Back, 2 others need you");
+	});
+
+	it("shows no Next while the find bar is open", async () => {
+		const { tree } = await mount(thread("ref-finding", "idle"));
+		expect(capsule(tree)).toBeDefined();
+		chooseMenu("Find in session");
+		expect(capsule(tree)).toBeUndefined();
+	});
+
+	it("names the session's host from the manifest in the Session sheet", async () => {
+		fleet.sources = [{ id: "local", label: "Laptop" }];
+		await mount(thread("ref-host", "idle"));
+		const sheet = render(
+			<SessionInfoSheet
+				route={
+					{
+						key: "session-info",
+						name: "SessionInfoSheet",
+						params: { hubId: "hub-1", ref: "ref-host" },
+					} as unknown as ComponentProps<typeof SessionInfoSheet>["route"]
+				}
+				navigation={navigation as unknown as ComponentProps<typeof SessionInfoSheet>["navigation"]}
+			/>,
+		);
+		expect(renderedText(sheet)).toContain("Laptop");
+		expect(renderedText(sheet)).not.toContain("Work hub");
+	});
 });

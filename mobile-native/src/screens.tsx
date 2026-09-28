@@ -17,6 +17,7 @@ import {
 } from "react";
 import {
 	AccessibilityInfo,
+	ActionSheetIOS,
 	ActivityIndicator,
 	Alert,
 	AppState,
@@ -38,8 +39,7 @@ import {
 	buildComposerInput,
 	formatQuoteBlock,
 	mergeDraftText,
-	parseSlashToken,
-	spliceSlashCommand,
+	type NavigationSessionSummary,
 	type TranscriptDisplayConfigV1,
 	translateAttachmentMarkers,
 } from "@evener/appwire-client";
@@ -52,8 +52,8 @@ import {
 } from "../../mobile/src/state/conversationMutation";
 import { ActivitySheet } from "./ActivitySheet";
 import { ApprovalControls } from "./approvalControls";
+import { hostLabeler } from "./board/attention";
 import { useMarkSeenInFront } from "./board/sessionSeen";
-import { CommandCompletion } from "./CommandCompletion";
 import { useConnection } from "./ConnectionProvider";
 import {
 	CommandArgumentError,
@@ -87,6 +87,10 @@ import {
 	nativeMutationTargetKey,
 } from "./nativeMutationRuntime";
 import { readerPositions } from "./nativeReaderPosition";
+import { MessageDocuments } from "./reader/DocumentChip";
+import { documentReferences, fileWrites } from "./reader/documentReferences";
+import { documentMemory } from "./reader/nativeDocumentMemory";
+import { documentFreshness, type SessionDocument, sessionDocuments } from "./reader/sessionDocuments";
 import { locateSession, type SessionLocation } from "./navigationReveal";
 import {
 	editPairingInput,
@@ -131,7 +135,12 @@ import {
 	type QueueEntryRef,
 	whatCanActNow,
 } from "./session/ghosts";
+import { FloatingStack } from "./session/FloatingStack";
 import { NewContentPill } from "./session/NewContentPill";
+import { BackButton } from "./session/BackButton";
+import { nextNavigation, nextSession, othersNeedingYou } from "./session/fleetOrder";
+import { NextCapsule } from "./session/NextCapsule";
+import { useFleet } from "./session/useFleet";
 import { QueuedMessages } from "./session/QueuedMessages";
 import { TranscriptSkeleton } from "./session/TranscriptSkeleton";
 import { useReadRetry } from "./session/useReadRetry";
@@ -147,6 +156,9 @@ import { SessionControls, useControlsState } from "./sessionControls";
 import { useConnectionStatusText } from "./board/connectionStatus";
 import { Composer, ModelChip } from "./session/Composer";
 import { type ModelHost, modelHosts } from "./session/ModelSheet";
+import { type CommandsHost, commandHosts, insertInvocation } from "./session/CommandsSheet";
+import { FindBar } from "./session/FindBar";
+import { findMatches, matchLabel, stepMatch } from "./session/findInSession";
 import {
 	configForLevel,
 	currentLevel,
@@ -193,6 +205,22 @@ const NO_QUESTIONS: AskQuestionRef[] = [];
 const STEER_FAILED = { text: "Couldn't steer with this message now." };
 const STEER_ALL_FAILED = { text: "Couldn't steer with these messages now." };
 
+/** Find in session while it's open: what you typed, the current match's
+ * reader key, whether older history is being searched, and whether that
+ * search reached the start of history with nothing older. */
+interface FindState {
+	query: string;
+	key: string | null;
+	seeking: boolean;
+	exhausted: boolean;
+}
+
+/** A new query starts a new search: no current match yet, and older history
+ * is searched only when there is something to look for. */
+function newFind(query: string): FindState {
+	return { query, key: null, seeking: query.trim() !== "", exhausted: false };
+}
+
 export type Routes = {
 	SessionDeletion: { hubId: string; ref: string; title: string };
 	Fork: {
@@ -228,12 +256,15 @@ export type Routes = {
 	Hubs: undefined;
 	Sessions: undefined;
 	NewSession: { hubId: string; hubName: string };
-	Conversation: { hubId: string; ref: string; title: string };
+	/** openedBy says Next opened this session (ruling 2), so Next from it
+	 * replaces it. location.ts never persists it. */
+	Conversation: { hubId: string; ref: string; title: string; openedBy?: "next" };
 	TasksSheet: { hubId: string; ref: string; threadId: string; hasTasks: boolean };
 	NotesSheet: { hubId: string; ref: string; focusEditor?: boolean };
 	QueueSheet: { hubId: string; ref: string };
 	SessionInfoSheet: { hubId: string; ref: string };
 	ModelSheet: { hubId: string; ref: string; setting: "model" | "vision" };
+	CommandsSheet: { hubId: string; ref: string };
 	RowMenuSheet: { hubId: string; ref: string; archived: boolean };
 	Reader: {
 		hubId: string;
@@ -258,6 +289,8 @@ export type Routes = {
 	};
 	CommentsSheet: ReviewSheetParams;
 	ReviewSheet: ReviewSheetParams;
+	/** The session's documents as they were when the sheet opened (ruling 26). */
+	FilesSheet: { hubId: string; ref: string; title: string; documents: SessionDocument[] };
 };
 
 /** A document's comments and its review: the document, and the session the
@@ -576,9 +609,10 @@ export function ConversationScreen({
 	} = useConnection();
 	const focused = useScreenInFront(route.key);
 	const colors = useColors();
-	const { height: windowHeight } = useWindowDimensions();
-	const [viewportHeight, setViewportHeight] = useState(windowHeight);
 	const [sessionMenuOpen, setSessionMenuOpen] = useState(false);
+	// Find in session (ruling 29), open while non-null. The current match is
+	// remembered by its row's reader key, since older pages prepend rows.
+	const [find, setFind] = useState<FindState | null>(null);
 	const headerHeight = useHeaderHeight();
 	// The durable-mutation wiring: the store admits every mutation through a
 	// lazily-acquired process runtime (a screen that never sends never opens the
@@ -685,13 +719,16 @@ export function ConversationScreen({
 	const readerMomentum = useRef(false);
 	const restoreFrame = useRef<number | null>(null);
 	const composerInput = useRef<TextInput>(null);
-	const [composerSelection, setComposerSelection] = useState({
-		start: 0,
-		end: 0,
-	});
-	const [completionClosedAt, setCompletionClosedAt] = useState<string | null>(
-		null,
-	);
+	// Puts the caret at `caret` in the composer and focuses it, on the next
+	// frame so the field has the text the caret is placed in.
+	const focusComposerAt = useCallback((caret: number) => {
+		requestAnimationFrame(() => {
+			composerInput.current?.setNativeProps({
+				selection: { start: caret, end: caret },
+			});
+			composerInput.current?.focus();
+		});
+	}, []);
 	const focusAfterModal = useRef(false);
 	useFocusAfterModal(navigation, focusAfterModal, composerInput);
 	const [activityContext, setActivityContext] = useState<{
@@ -759,6 +796,55 @@ export function ConversationScreen({
 		connected ? client : null,
 		snapshot.status === "open" ? snapshot.conversation : null,
 	);
+	// Who else needs you (spec 13.2), for Back's count and Next.
+	const fleet = useFleet(route.params.hubId, connected ? client : null, focused);
+	const othersWaiting = useMemo(
+		() => othersNeedingYou(fleet.bands, route.params.ref),
+		[fleet.bands, route.params.ref],
+	);
+	const othersWaitingCount = othersWaiting.length;
+	useEffect(() => {
+		// iPhone only: Android keeps its own back arrow.
+		if (Platform.OS !== "ios") return;
+		navigation.setOptions({
+			headerLeft: () => (
+				<BackButton
+					count={othersWaitingCount}
+					onPress={() => navigation.goBack()}
+				/>
+			),
+		});
+	}, [navigation, othersWaitingCount]);
+	// Opens a session that needs you, marked seen the way the Board marks a
+	// row it opens (spec 8.3).
+	function openNext(target: NavigationSessionSummary) {
+		Keyboard.dismiss();
+		fleet.seen.markRead(connected ? client : null, [target]);
+		const params = {
+			hubId: route.params.hubId,
+			ref: target.ref,
+			title: target.title,
+			openedBy: "next" as const,
+		};
+		if (nextNavigation(route.params.openedBy) === "replace")
+			navigation.replace("Conversation", params);
+		else navigation.push("Conversation", params);
+	}
+	// Touch and hold on Next lists who needs you, first eight (spec 8.3).
+	function chooseNext() {
+		if (Platform.OS !== "ios") return;
+		const choices = othersWaiting.slice(0, 8);
+		ActionSheetIOS.showActionSheetWithOptions(
+			{
+				options: [...choices.map((row) => row.title), "Cancel"],
+				cancelButtonIndex: choices.length,
+			},
+			(index) => {
+				const chosen = choices[index];
+				if (chosen) openNext(chosen);
+			},
+		);
+	}
 	// The recovery surface: this exact hub/conversation target's durable
 	// recovery rows, shown as ghosts above the composer. useRecoveryPanel
 	// acquires the runtime only once the conversation is connected (the
@@ -1088,7 +1174,20 @@ export function ConversationScreen({
 	const stateLine = conversation
 		? sessionStateLine(conversation, Date.now())
 		: null;
-	const chips = conversation ? contextChips(conversation, chipsConnected) : [];
+	// Files & artifacts (spec 10.1): what the session wrote or linked, and
+	// whether any of it is new or changed since you last opened it.
+	const documents = useMemo(() => {
+		const cwd = conversation?.cwd ?? "";
+		return sessionDocuments(documentReferences(conversation?.turns ?? [], cwd), conversation?.sessionUrls ?? [], cwd);
+	}, [conversation?.turns, conversation?.sessionUrls, conversation?.cwd]);
+	const memory = documentMemory(route.params.hubId);
+	useSyncExternalStore(memory.subscribe, memory.getRevision);
+	const freshDocuments = documents.some(
+		({ path, updatedAt }) => documentFreshness(memory.lastRead({ sessionRef: route.params.ref, path }), updatedAt) !== "read",
+	);
+	const chips = conversation
+		? contextChips(conversation, chipsConnected, { count: documents.length, fresh: freshDocuments })
+		: [];
 	const headerHiding = useHeaderHiding();
 	// The header block floats over the list; the list reserves its height.
 	const [sessionHeaderHeight, setSessionHeaderHeight] = useState(0);
@@ -1111,11 +1210,18 @@ export function ConversationScreen({
 		timeline.current?.scrollToOffset({ offset: target, animated: false });
 	}, [sessionHeaderHeight]);
 	function openChip(kind: ChipKind) {
-		if (kind !== "queue") {
-			openSessionDestination(SESSION_DESTINATIONS[kind]);
-			return;
-		}
-		openQueue();
+		if (kind === "queue") openQueue();
+		else if (kind === "files") openFiles();
+		else openSessionDestination(SESSION_DESTINATIONS[kind]);
+	}
+	function openFiles() {
+		Keyboard.dismiss();
+		navigation.navigate("FilesSheet", {
+			hubId: route.params.hubId,
+			ref: route.params.ref,
+			title: route.params.title,
+			documents,
+		});
 	}
 	function openQueue() {
 		Keyboard.dismiss();
@@ -1221,6 +1327,12 @@ export function ConversationScreen({
 				levels.set(route.params.ref, action.level);
 				toaster.show({ text: levelToast(action.level) });
 				return;
+			case "find":
+				setFind(newFind(""));
+				return;
+			case "files":
+				openFiles();
+				return;
 			case "subagents":
 			case "tasks":
 			case "notes":
@@ -1269,6 +1381,7 @@ export function ConversationScreen({
 					? sessionMenu({
 							current: menuLevel,
 							hasSubagents,
+							hasDocuments: documents.length > 0,
 							connected,
 							sharedNotes: !!conversation?.capabilities.sharedNotes,
 							canAside,
@@ -1314,6 +1427,7 @@ export function ConversationScreen({
 		stateLine?.text,
 		menuLevel,
 		hasSubagents,
+		documents.length,
 		conversation?.capabilities.sharedNotes,
 		canAside,
 		canShutDown,
@@ -1359,15 +1473,45 @@ export function ConversationScreen({
 			if (quoted === "") return;
 			const merged = mergeDraftText(document.getSnapshot().record.draft, quoted);
 			document.edit(merged);
-			setComposerSelection({ start: merged.length, end: merged.length });
-			requestAnimationFrame(() => {
-				composerInput.current?.setNativeProps({
-					selection: { start: merged.length, end: merged.length },
-				});
-				composerInput.current?.focus();
-			});
+			focusComposerAt(merged.length);
 		},
-		[document],
+		[document, focusComposerAt],
+	);
+	// The documents the agent names become chips under its messages (spec
+	// 8.2), aged by the session's own writes. Every publish hands the screen
+	// new turns, even while the agent only streams text, so the writes are
+	// keyed by their content: a publish that changed no write keeps the same
+	// Map, and each message's chips skip re-reading its markdown.
+	const documentCwd = conversation?.cwd ?? "";
+	const turns = conversation?.turns;
+	const writesKey = useMemo(() => JSON.stringify([...fileWrites(turns ?? [], documentCwd)]), [turns, documentCwd]);
+	const writes = useMemo(() => new Map<string, string>(JSON.parse(writesKey) as [string, string][]), [writesKey]);
+	const openDocument = useCallback(
+		(path: string, updatedAt: string | undefined) =>
+			navigation.navigate("Reader", {
+				hubId: route.params.hubId,
+				sessionRef: route.params.ref,
+				path,
+				reviewRef: route.params.ref,
+				reviewTitle: route.params.title,
+				...(updatedAt === undefined ? {} : { updatedAt }),
+			}),
+		[navigation, route.params.hubId, route.params.ref, route.params.title],
+	);
+	// A message still streaming shows its chips once it settles.
+	const documentChips = useCallback(
+		(message: { id: string; markdown: string; streaming: boolean }) =>
+			message.streaming ? null : (
+				<MessageDocuments
+					hubId={route.params.hubId}
+					sessionRef={route.params.ref}
+					markdown={message.markdown}
+					cwd={documentCwd}
+					writes={writes}
+					open={openDocument}
+				/>
+			),
+		[route.params.hubId, route.params.ref, documentCwd, writes, openDocument],
 	);
 	// Quote in reply from a screen above this session (the Reader) holds the
 	// words until this session is in front again.
@@ -1477,6 +1621,100 @@ export function ConversationScreen({
 				// Keep failed page attempts guarded until a binding or route reset.
 			});
 	}
+	const findQuery = find?.query ?? "";
+	const findHits = useMemo(
+		() => findMatches(timelineRows, findQuery),
+		[timelineRows, findQuery],
+	);
+	const findKey = find?.key ?? null;
+	const findIndex =
+		findKey === null
+			? -1
+			: timelineRows.findIndex((row) => readerKey(row) === findKey);
+	const findCurrent = findIndex < 0 ? null : findIndex;
+	function stepFind(direction: 1 | -1) {
+		if (!find) return;
+		const next = stepMatch(findHits, findCurrent, direction);
+		if (next !== null)
+			setFind({
+				...find,
+				key: readerKey(timelineRows[next]),
+				seeking: false,
+				exhausted: false,
+			});
+		// Nothing older is loaded: look in older history.
+		else if (direction === -1)
+			setFind({ ...find, seeking: true, exhausted: false });
+	}
+	// While seeking, find the newest match older than the current one (or
+	// the newest of all), loading one older page at a time until a match
+	// appears or history ends.
+	useEffect(() => {
+		if (!find?.seeking) return;
+		const next = stepMatch(findHits, findCurrent, -1);
+		if (next !== null) {
+			setFind({ ...find, key: readerKey(timelineRows[next]), seeking: false });
+			return;
+		}
+		if (snapshot.loadingOlder) return;
+		const cursor = snapshot.olderCursor;
+		if (!cursor) {
+			// Stepped past the oldest match: say so. With none at all, the
+			// label already reads "No matches".
+			setFind({ ...find, seeking: false, exhausted: findHits.length > 0 });
+			return;
+		}
+		// Offline, or this page already failed: stop, and the next step asks again.
+		if (!service || !connected || readerPageAttempts.current.has(cursor)) {
+			setFind({ ...find, seeking: false });
+			return;
+		}
+		loadOlderPage();
+	});
+	// The current match comes into view, 30% down the list. A row the list
+	// hasn't measured fails the jump (onScrollToIndexFailed, while
+	// findJumping holds); the list then moves near it and tries again, for as
+	// long as each try measures rows closer to it, as the reader's restore
+	// does (ReaderRestoreAttempts.retryUnmeasured). A retry belongs to the
+	// match it started for: a new match or closing find cancels it, and it
+	// finds its row again when it runs, since older pages may have prepended.
+	const findJumping = useRef(false);
+	const findAttempts = useRef(new ReaderRestoreAttempts());
+	const findRetryFrame = useRef<number | null>(null);
+	const findCurrentNow = useRef(findCurrent);
+	useEffect(() => {
+		findCurrentNow.current = findCurrent;
+	});
+	function cancelFindRetry() {
+		if (findRetryFrame.current !== null)
+			cancelAnimationFrame(findRetryFrame.current);
+		findRetryFrame.current = null;
+	}
+	function retryFindMatch() {
+		findRetryFrame.current = null;
+		if (findCurrentNow.current !== null)
+			scrollToFindMatch(findCurrentNow.current);
+	}
+	function scrollToFindMatch(index: number) {
+		readerLatest.current = false;
+		readerHeader.current = false;
+		// The reading position follows the jump, so nothing pulls the list back.
+		captureSuppressed.current = false;
+		findJumping.current = true;
+		timeline.current?.scrollToIndex({ index, viewPosition: 0.3, animated: true });
+		findJumping.current = false;
+	}
+	// biome-ignore lint/correctness/useExhaustiveDependencies: only a new current match scrolls; rows prepending above it keep it in view.
+	useEffect(() => {
+		cancelFindRetry();
+		findAttempts.current.reset();
+		if (findCurrent !== null) scrollToFindMatch(findCurrent);
+		return cancelFindRetry;
+	}, [findKey]);
+	// Leaving the screen closes find.
+	useEffect(() => {
+		if (!focused) setFind(null);
+	}, [focused]);
 	// biome-ignore lint/correctness/useExhaustiveDependencies: Cell layout revisions intentionally retrigger semantic restoration.
 	useEffect(() => {
 		const anchor = readerAnchor.current;
@@ -1658,11 +1896,6 @@ export function ConversationScreen({
 			(!conversation.resumeRequired &&
 				conversation.status.type !== "restartRequired")) &&
 		(!conversation || canComposeFor(conversation));
-	const slashToken =
-		composerSelection.start === composerSelection.end &&
-		draft.record.draft !== completionClosedAt
-			? parseSlashToken(draft.record.draft, composerSelection.start)
-			: null;
 	const goalCommand = goalObjective(
 		draft.record.draft,
 		draft.record.images?.length,
@@ -2026,13 +2259,17 @@ export function ConversationScreen({
 	useEffect(() => {
 		goalActionsRef.current = { editGoal, clearGoal: () => void applyCommand(true) };
 	});
-	// Until PR 11 reads the manifest, the hub's own sessions are named for the
-	// connected hub, and any other host by its id.
+	// A host is named by the manifest's label. Until the manifest has
+	// loaded, the hub's own sessions are named for the connected hub, and any
+	// other host by its id.
 	const hubName =
 		activeProfile?.id === route.params.hubId ? activeProfile.name : null;
-	const hostLabel = useCallback(
-		(hostId: string) => (hostId === "local" && hubName ? hubName : hostId),
-		[hubName],
+	const hostLabel = useMemo(
+		() =>
+			hostLabeler(fleet.sources, (hostId) =>
+				hostId === "local" && hubName ? hubName : hostId,
+			),
+		[fleet.sources, hubName],
 	);
 	const modelLabel = conversation
 		? modelChipLabel(conversation, controlsState?.catalog?.data)
@@ -2073,6 +2310,30 @@ export function ConversationScreen({
 		modelHosts,
 		sheetKey(route.params.hubId, route.params.ref),
 		modelHost,
+	);
+	// The Commands and skills sheet's host (ruling 37). A choice lands at the
+	// start of the draft, with the caret after it for the command's argument.
+	const commandsHost = useMemo<CommandsHost | undefined>(
+		() =>
+			conversation
+				? {
+						session: conversation,
+						choose: (invocation) => {
+							const inserted = insertInvocation(
+								document.getSnapshot().record.draft,
+								invocation,
+							);
+							document.edit(inserted.text);
+							focusComposerAt(inserted.caret);
+						},
+					}
+				: undefined,
+		[conversation, document, focusComposerAt],
+	);
+	useProvideSheetHost(
+		commandHosts,
+		sheetKey(route.params.hubId, route.params.ref),
+		commandsHost,
 	);
 	// The chip names the model the way the catalog does, so the screen loads
 	// the catalog once for each binding it opens connected.
@@ -2279,6 +2540,13 @@ export function ConversationScreen({
 		},
 		[controls, navigation, route.params.hubId, retryFailedTurn],
 	);
+	function openCommands() {
+		Keyboard.dismiss();
+		navigation.navigate("CommandsSheet", {
+			hubId: route.params.hubId,
+			ref: route.params.ref,
+		});
+	}
 	function openModelSheet(setting: "model" | "vision") {
 		Keyboard.dismiss();
 		navigation.navigate("ModelSheet", {
@@ -2442,12 +2710,7 @@ export function ConversationScreen({
 			const merged = mergeDraftText(document.getSnapshot().record.draft, text);
 			document.edit(merged);
 			const cancelled = await cancel();
-			requestAnimationFrame(() => {
-				composerInput.current?.setNativeProps({
-					selection: { start: merged.length, end: merged.length },
-				});
-				composerInput.current?.focus();
-			});
+			focusComposerAt(merged.length);
 			return cancelled
 				? null
 				: { text: "Moved to your message, but it's still queued." };
@@ -2513,6 +2776,14 @@ export function ConversationScreen({
 		composerBack,
 	});
 	const composerShown = canCompose && bottom.composer;
+	// "↓ 3 new": rows that arrived below while you read above the end.
+	const newCount = awayKeys ? newRowCount(timelineRows, awayKeys) : 0;
+	// Next shows while someone else needs you, unless this session asks you
+	// something or you are finding in it (spec 8.3).
+	const nextTarget =
+		approval === null && questionBatch === null && find === null
+			? nextSession(fleet.bands, route.params.ref)
+			: null;
 	// What sits above the composer: failures only you can act on, then
 	// everything waiting to reach the agent. While the composer is hidden
 	// (the dock is open) it sits in the composer's place, so a queued
@@ -2584,8 +2855,8 @@ export function ConversationScreen({
 
 	// One render function for the list's lifetime: FlatList sees the same
 	// reference across a re-render that changes nothing a row reads (the
-	// composer's selection, the reader keying, a sheet opening), so it does not
-	// rebuild every visible transcript cell for them.
+	// reader keying, a sheet opening), so it does not rebuild every visible
+	// transcript cell for them.
 	const renderItem = useCallback(
 		({ item, index }: { item: TimelineRow; index: number }) => (
 			<View
@@ -2593,35 +2864,52 @@ export function ConversationScreen({
 					paddingBottom: timelineGap(item, timelineRows[index + 1]),
 				}}
 			>
-				<TimelineItem
-					item={item}
-					hubId={route.params.hubId}
-					sessionRef={route.params.ref}
-					activityPresentation={presentation.activityPresentation.get(item.id)}
-					expandByDefault={presentation.expandByDefault}
-					showDuration={presentation.showDuration}
-					fork={
-						snapshot.conversation?.capabilities?.forkFromTurn
-							? forkMessage
+				<View
+					style={
+						findKey !== null && readerKey(item) === findKey
+							? {
+									// The current match (ruling 29): blue means selected.
+									backgroundColor: colors.palette.accentBg,
+									borderRadius: 12,
+									marginHorizontal: -8,
+									paddingHorizontal: 8,
+								}
 							: undefined
 					}
-					forkDisabled={!connected || !focused || snapshot.status !== "open"}
-					quote={quote}
-					live={item.id === liveRun}
-					delegates={conversation?.delegates}
-					openSubagent={openSubagent}
-					answerFor={answerFor}
-					errorActionFor={(row) =>
-						conversation
-							? // Retry shows only when a press would send.
-								errorAction(row, conversation, liveSendKind() !== null)
-							: null
-					}
-					onErrorAction={runErrorAction}
-				/>
+				>
+					<TimelineItem
+						item={item}
+						hubId={route.params.hubId}
+						sessionRef={route.params.ref}
+						activityPresentation={presentation.activityPresentation.get(item.id)}
+						expandByDefault={presentation.expandByDefault}
+						showDuration={presentation.showDuration}
+						fork={
+							snapshot.conversation?.capabilities?.forkFromTurn
+								? forkMessage
+								: undefined
+						}
+						forkDisabled={!connected || !focused || snapshot.status !== "open"}
+						quote={quote}
+						live={item.id === liveRun}
+						delegates={conversation?.delegates}
+						openSubagent={openSubagent}
+						answerFor={answerFor}
+						errorActionFor={(row) =>
+							conversation
+								? // Retry shows only when a press would send.
+									errorAction(row, conversation, liveSendKind() !== null)
+								: null
+						}
+						onErrorAction={runErrorAction}
+						documentChips={documentChips}
+					/>
+				</View>
 			</View>
 		),
 		[
+			findKey,
+			colors.palette.accentBg,
 			timelineRows,
 			route.params.hubId,
 			route.params.ref,
@@ -2637,6 +2925,7 @@ export function ConversationScreen({
 			answerFor,
 			liveSendKind,
 			runErrorAction,
+			documentChips,
 		],
 	);
 
@@ -2681,12 +2970,7 @@ export function ConversationScreen({
 				behavior={Platform.OS === "ios" ? "padding" : "height"}
 				keyboardVerticalOffset={headerHeight}
 			>
-				<View
-					style={styles.fill}
-					onLayout={(event) =>
-						setViewportHeight(event.nativeEvent.layout.height)
-					}
-				>
+				<View style={styles.fill}>
 					<View style={{ flex: 1 }}>
 						<FlatList
 							ref={timeline}
@@ -2793,6 +3077,23 @@ export function ConversationScreen({
 								setLayoutRevision((revision) => revision + 1);
 							}}
 							onScrollToIndexFailed={({ index, averageItemLength }) => {
+								// A match beyond the measured rows: move near it, so the
+								// rows on the way render, then try again.
+								if (findJumping.current) {
+									const progress = furthestMeasuredRowBeforeTarget(
+										timelineRows,
+										index,
+										[...readerMeasurements.current.values()],
+									);
+									if (!findAttempts.current.retryUnmeasured(progress)) return;
+									timeline.current?.scrollToOffset({
+										offset: index * Math.max(1, averageItemLength),
+										animated: false,
+									});
+									findRetryFrame.current =
+										requestAnimationFrame(retryFindMatch);
+									return;
+								}
 								const anchor = readerAnchor.current;
 								const targetIndex = anchor
 									? resolveReaderAnchor(anchor, timelineRows)
@@ -2881,6 +3182,28 @@ export function ConversationScreen({
 							<SessionHeader
 								status={connectionText}
 								chips={chips}
+								find={
+									find ? (
+										<FindBar
+											query={find.query}
+											label={
+												find.exhausted
+													? "No older matches"
+													: find.query.trim()
+														? matchLabel(findHits, findCurrent)
+														: ""
+											}
+											searchingOlder={find.seeking && snapshot.loadingOlder}
+											settled={!find.seeking}
+											onQuery={(query) => setFind(newFind(query))}
+											onStep={stepFind}
+											onDone={() => {
+												Keyboard.dismiss();
+												setFind(null);
+											}}
+										/>
+									) : undefined
+								}
 								hidden={headerHiding.hidden}
 								onChip={openChip}
 								notes={
@@ -2901,21 +3224,27 @@ export function ConversationScreen({
 								}
 							/>
 						</View>
-						<View
-							pointerEvents="box-none"
-							style={{
-								position: "absolute",
-								left: 0,
-								right: 0,
-								bottom: 10,
-								alignItems: "center",
-							}}
-						>
-							<NewContentPill
-								count={awayKeys ? newRowCount(timelineRows, awayKeys) : 0}
-								onPress={jumpToLive}
-							/>
-						</View>
+						<FloatingStack
+							toast={
+								toaster.toast ? (
+									<Toast toast={toaster.toast} dismiss={toaster.dismiss} />
+								) : null
+							}
+							next={
+								nextTarget ? (
+									<NextCapsule
+										target={nextTarget}
+										onOpen={() => openNext(nextTarget)}
+										onHold={chooseNext}
+									/>
+								) : null
+							}
+							pill={
+								newCount > 0 ? (
+									<NewContentPill count={newCount} onPress={jumpToLive} />
+								) : null
+							}
+						/>
 					</View>
 					<View style={{ flexShrink: 1, maxHeight: "80%", marginTop: 8, gap: 4 }}>
 						<ScrollView
@@ -2958,21 +3287,6 @@ export function ConversationScreen({
 							</View>
 						</ScrollView>
 						<View>
-							{/* The toast floats 10pt above the tray, or above the
-							    composer when there is no tray. */}
-							<View
-								pointerEvents="box-none"
-								style={{
-									position: "absolute",
-									left: 0,
-									right: 0,
-									bottom: "100%",
-									paddingBottom: 10,
-									alignItems: "center",
-								}}
-							>
-								<Toast toast={toaster.toast} dismiss={toaster.dismiss} />
-							</View>
 							{bottom.dock === "approval" && approval ? (
 								<ApprovalDock
 									// A new approval starts with nothing decided.
@@ -3030,8 +3344,19 @@ export function ConversationScreen({
 								<Composer
 									value={draft.record.draft}
 									editable={draft.loaded}
-									onChangeText={(text) => document.edit(text)}
-									onSelectionChange={setComposerSelection}
+									onChangeText={(text) => {
+										// A "/" that starts an empty draft opens Commands and
+										// skills in its place (spec 8.5).
+										if (
+											text === "/" &&
+											draft.record.draft === "" &&
+											commandsHost
+										) {
+											openCommands();
+											return;
+										}
+										document.edit(text);
+									}}
 									inputRef={composerInput}
 									placeholder={composerPlaceholder(action, answering)}
 									// Under an open dock, whose own button reads "Send answer",
@@ -3053,48 +3378,11 @@ export function ConversationScreen({
 										Keyboard.dismiss();
 										void imageSelection.choose("camera");
 									}}
+									onCommands={commandsHost ? openCommands : undefined}
 									settings={bottom.modelChip ? composerSettings : null}
 									above={
 										<>
 											{waitingForAgent}
-											{connected && client && conversation && slashToken ? (
-												<CommandCompletion
-													// Suggestions use at most 40% of the composer's 80% viewport cap.
-													maxHeight={Math.min(160, viewportHeight * 0.32)}
-													client={client}
-													sessionRef={route.params.ref}
-													session={conversation}
-													query={slashToken.query}
-													close={() => setCompletionClosedAt(draft.record.draft)}
-													choose={(item) => {
-														if (
-															document.getSnapshot().record.draft !==
-															draft.record.draft
-														)
-															return;
-														const inserted = spliceSlashCommand(
-															draft.record.draft,
-															slashToken,
-															item.invocation,
-														);
-														document.edit(inserted.text);
-														setCompletionClosedAt(inserted.text);
-														setComposerSelection({
-															start: inserted.caret,
-															end: inserted.caret,
-														});
-														requestAnimationFrame(() => {
-															composerInput.current?.setNativeProps({
-																selection: {
-																	start: inserted.caret,
-																	end: inserted.caret,
-																},
-															});
-															composerInput.current?.focus();
-														});
-													}}
-												/>
-											) : null}
 											<ImageAttachments
 												document={document}
 												selection={imageSelection}

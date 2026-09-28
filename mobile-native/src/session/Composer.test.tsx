@@ -80,7 +80,25 @@ describe("Composer", () => {
 		expect(send?.props.accessibilityState).toMatchObject({ disabled: true });
 	});
 
-	it("opens Photo library and Camera from +", () => {
+	it("opens Photo library, Camera, and Commands and skills from +", () => {
+		const onCommands = vi.fn();
+		const { props, tree } = composer({ onCommands });
+		act(() => pressable(tree, "Add")?.props.onPress());
+		const [options, choose] = actionSheet.show.mock.calls[0] as [
+			{ options: string[]; cancelButtonIndex: number },
+			(index: number) => void,
+		];
+		expect(options.options).toEqual(["Photo library", "Camera", "Commands and skills", "Cancel"]);
+		expect(options.cancelButtonIndex).toBe(3);
+		act(() => choose(2));
+		expect(onCommands).toHaveBeenCalledTimes(1);
+		act(() => choose(3));
+		expect(onCommands).toHaveBeenCalledTimes(1);
+		expect(props.onPhotoLibrary).not.toHaveBeenCalled();
+		expect(props.onCamera).not.toHaveBeenCalled();
+	});
+
+	it("keeps Commands and skills out of + when the session can't list them", () => {
 		const { props, tree } = composer();
 		act(() => pressable(tree, "Add")?.props.onPress());
 		expect(actionSheet.show).toHaveBeenCalledTimes(1);
@@ -103,16 +121,19 @@ describe("Composer", () => {
 		const platform = Platform as { OS: string };
 		platform.OS = "android";
 		try {
-			const { props, tree } = composer();
+			const onCommands = vi.fn();
+			const { props, tree } = composer({ onCommands });
 			alertRequests.length = 0;
 			act(() => pressable(tree, "Add")?.props.onPress());
 			expect(actionSheet.show).not.toHaveBeenCalled();
 			const buttons = alertRequests[0]?.buttons ?? [];
-			expect(buttons.map((button) => button.text)).toEqual(["Photo library", "Camera", "Cancel"]);
+			expect(buttons.map((button) => button.text)).toEqual(["Photo library", "Camera", "Commands and skills", "Cancel"]);
 			act(() => buttons[0]?.onPress?.());
 			act(() => buttons[1]?.onPress?.());
+			act(() => buttons[2]?.onPress?.());
 			expect(props.onPhotoLibrary).toHaveBeenCalledTimes(1);
 			expect(props.onCamera).toHaveBeenCalledTimes(1);
+			expect(onCommands).toHaveBeenCalledTimes(1);
 		} finally {
 			platform.OS = "ios";
 		}

@@ -5,6 +5,7 @@ import {
 	approvalRefs,
 	bandOf,
 	boardState,
+	hostLabeler,
 	hubTime,
 	lastLine,
 	liveBands,
@@ -473,5 +474,22 @@ describe("the last line prints project and host only when unusual", () => {
 		const usual = usualPlace(fleet);
 		const finished = row("a", { tasks: { total: 2, done: 2 } });
 		expect(lastLine(finished, usual, label)).toBeNull();
+	});
+});
+
+describe("host labels from the manifest's sources", () => {
+	const sources = [{ id: "local", label: "Laptop", kind: "local", online: true }];
+
+	it("names a host by its source's label, and any other by its id", () => {
+		const label = hostLabeler(sources);
+		expect(label("local")).toBe("Laptop");
+		expect(label("paradise-park")).toBe("paradise-park");
+		expect(hostLabeler(undefined)("local")).toBe("local");
+	});
+
+	it("hands a host the manifest doesn't name to the fallback", () => {
+		const label = hostLabeler(sources, (id) => `host ${id}`);
+		expect(label("local")).toBe("Laptop");
+		expect(label("paradise-park")).toBe("host paradise-park");
 	});
 });

@@ -114,6 +114,25 @@ describe("the context chips (spec 8.1)", () => {
 		]);
 	});
 
+	it("follow Subagents with Files and its count, dotted when a document is new or changed", () => {
+		const session = { delegates: [delegate("running", 1)], tasks: { total: 7, done: 3 }, goal: null, queue: null };
+		const chips = contextChips(session, true, { count: 4, fresh: false });
+		expect(chips.map((chip) => chip.kind)).toEqual(["subagents", "files", "tasks"]);
+		expect(chips[1]).toEqual({
+			kind: "files",
+			label: "Files 4",
+			attention: false,
+			dot: false,
+			accessibilityLabel: "Files, 4",
+		});
+		expect(contextChips(session, true, { count: 4, fresh: true })[1]).toMatchObject({
+			dot: true,
+			accessibilityLabel: "Files, 4, new or changed",
+		});
+		expect(contextChips(session, true, { count: 0, fresh: false }).map((chip) => chip.kind)).not.toContain("files");
+		expect(contextChips(session, true).map((chip) => chip.kind)).not.toContain("files");
+	});
+
 	it("hides Subagents and Tasks while disconnected, since tapping either can't act (Calm); Goal and Queue don't need a connection", () => {
 		const chips = contextChips(
 			{
