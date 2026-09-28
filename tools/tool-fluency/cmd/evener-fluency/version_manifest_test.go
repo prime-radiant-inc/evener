@@ -287,10 +287,13 @@ func TestRunMatrixCommandBuildsFromVersionManifest(t *testing.T) {
 	out := t.TempDir()
 	manifest := filepath.Join(out, "versions.yaml")
 	mustWrite(t, manifest, "schema: 1\nversions:\n  v0: main\n  v1-A: other\n")
+	var mu sync.Mutex
 	var got []runConfig
 	orig := runMatrixSuite
 	t.Cleanup(func() { runMatrixSuite = orig })
 	runMatrixSuite = func(cfg runConfig) error {
+		mu.Lock()
+		defer mu.Unlock()
 		got = append(got, cfg)
 		return nil
 	}
