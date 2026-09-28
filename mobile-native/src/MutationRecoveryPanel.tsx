@@ -45,10 +45,12 @@ export interface NativeMutationRecoveryRow {
 	 * reconstitute here. Restore is withheld for such a row rather than
 	 * silently dropping the image. */
 	carriesAttachments: boolean;
-	/** Whether the record-aware fence offers Restore for this row at all,
-	 * independent of the composer. `actions` carries Restore only when the
-	 * converter result also allows it, so a row that offers Restore while its
-	 * actions lack it is offered-but-blocked. */
+	/** Whether the record offers Restore on its own: a rejected, non-interrupt
+	 * record whose text a restore can write and which carries no attachment a
+	 * text-only restore would drop. The projection derives this from the record
+	 * alone, and `actions` carries Restore exactly when it holds, so the two
+	 * always agree. Whether the composer can accept a restore right now is the
+	 * ghost's `canEdit` at render time, not a projection input. */
 	restoreOffered: boolean;
 	record: MutationRecoveryRecord<MutationAttachmentRef>;
 	actions: readonly NativeMutationRecoveryAction[];
@@ -111,9 +113,9 @@ export function recoveredComposerText(
 // carries no attachment a text-only restore would drop. A Stop's interrupt is
 // never restorable - it carries no composer text to replay - so the fence is
 // explicit rather than inferred from the text alone. This is the record-aware
-// half of the fence; the screen owns the other half - whether the composer can
-// accept a restore right now - and passes its result in, so no converter logic
-// lives here.
+// half of the fence, and now the whole of it: whether the composer can accept a
+// restore right now is the ghost's `canEdit` at render time, not a projection
+// input.
 export function recordOffersRestore(
 	record: MutationRecoveryRecord<MutationAttachmentRef>,
 ): boolean {
@@ -125,15 +127,14 @@ export function recordOffersRestore(
 	);
 }
 
-// The action derivation. Restore cannot be obtained without BOTH an explicit
-// record that passes the record-aware fence AND an explicit converter result:
-// neither has a default, so a caller cannot reach Restore by omission. The
-// discard offer is always present, so a row can never be stuck with no way out.
+// The action derivation. Restore follows the record-aware fence alone: neither
+// the fence nor its absence has a default, so a caller cannot reach Restore by
+// omission. The discard offer is always present, so a row can never be stuck
+// with no way out.
 export function nativeMutationRecoveryActions(
 	record: MutationRecoveryRecord<MutationAttachmentRef>,
-	canRestore: boolean,
 ): readonly NativeMutationRecoveryAction[] {
-	if (recordOffersRestore(record) && canRestore) return ["restore", "discard"];
+	if (recordOffersRestore(record)) return ["restore", "discard"];
 	return ["discard"];
 }
 
@@ -150,7 +151,6 @@ function targetRecoveryRecords(
 export function projectNativeMutationRecovery(
 	targetKey: string,
 	snapshot: MutationPersistenceSnapshot<MutationAttachmentRef> | null,
-	canRestore: (record: MutationRecoveryRecord<MutationAttachmentRef>) => boolean,
 ): NativeMutationRecoveryRow[] {
 	const rows: NativeMutationRecoveryRow[] = [];
 	for (const record of targetRecoveryRecords(targetKey, snapshot)) {
@@ -169,7 +169,7 @@ export function projectNativeMutationRecovery(
 			carriesAttachments,
 			restoreOffered,
 			record,
-			actions: nativeMutationRecoveryActions(record, canRestore(record)),
+			actions: nativeMutationRecoveryActions(record),
 		});
 	}
 	return rows.sort(

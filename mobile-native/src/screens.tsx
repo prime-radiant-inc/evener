@@ -877,28 +877,41 @@ export function ConversationScreen({
 	connectionReady.current = connected;
 	const bindingGeneration = snapshot.conversationGeneration;
 	const bindingInstance = snapshot.conversation?.instanceId;
-	function forkMessage(entryIndex: number, preview: string) {
-		const current = store.getState();
-		if (
-			!connectionReady.current ||
-			!screenInFront(navigation, route.key) ||
-			current.status !== "open" ||
-			!current.conversation?.capabilities?.forkFromTurn ||
-			!bindingInstance ||
-			current.conversation.instanceId !== bindingInstance ||
-			current.conversationGeneration !== bindingGeneration ||
-			!Number.isSafeInteger(entryIndex) ||
-			entryIndex <= 0
-		)
-			return;
-		Keyboard.dismiss();
-		navigation.navigate("Fork", {
-			...route.params,
-			instanceId: bindingInstance,
-			entryIndex,
-			preview,
-		});
-	}
+	// Stable across renders, so the row it is handed to does not rebuild when
+	// the screen re-renders for a reason no fork can see (the reader keying,
+	// the composer, a sheet opening).
+	const forkMessage = useCallback(
+		(entryIndex: number, preview: string) => {
+			const current = store.getState();
+			if (
+				!connectionReady.current ||
+				!screenInFront(navigation, route.key) ||
+				current.status !== "open" ||
+				!current.conversation?.capabilities?.forkFromTurn ||
+				!bindingInstance ||
+				current.conversation.instanceId !== bindingInstance ||
+				current.conversationGeneration !== bindingGeneration ||
+				!Number.isSafeInteger(entryIndex) ||
+				entryIndex <= 0
+			)
+				return;
+			Keyboard.dismiss();
+			navigation.navigate("Fork", {
+				...route.params,
+				instanceId: bindingInstance,
+				entryIndex,
+				preview,
+			});
+		},
+		[
+			store,
+			navigation,
+			route.key,
+			route.params,
+			bindingInstance,
+			bindingGeneration,
+		],
+	);
 	const controls = useMemo(() => {
 		if (!service || !connected || !focused) return null;
 		const refreshSession = async () => {
@@ -1986,7 +1999,7 @@ export function ConversationScreen({
 	// routed on what is true at the press, the way the web composer re-derives
 	// at submit, since a turn may have started or ended since render. Send and
 	// an error row's Retry both ask.
-	function liveSendKind(): "send" | "queue" | null {
+	const liveSendKind = useCallback((): "send" | "queue" | null => {
 		const live = store.getState();
 		if (
 			!service ||
@@ -2006,23 +2019,26 @@ export function ConversationScreen({
 		);
 		if (liveAction === "none") return null;
 		return liveAction === "queue" ? "queue" : "send";
-	}
+	}, [service, ready, controls, unconfirmedSend, store]);
 	// Sends or queues one message the way Send does, and says whether the hub
 	// took it.
-	async function deliver(
-		through: NonNullable<typeof service>,
-		kind: "send" | "queue",
-		text: string,
-		images: Parameters<typeof buildComposerInput>[1],
-	) {
-		const previous = store.getState().lastAcceptedMutation;
-		await store.getState()[kind](through, buildComposerInput(text, images));
-		const accepted = store.getState().lastAcceptedMutation;
-		return accepted != null && accepted !== previous && accepted.kind === kind;
-	}
+	const deliver = useCallback(
+		async (
+			through: NonNullable<typeof service>,
+			kind: "send" | "queue",
+			text: string,
+			images: Parameters<typeof buildComposerInput>[1],
+		) => {
+			const previous = store.getState().lastAcceptedMutation;
+			await store.getState()[kind](through, buildComposerInput(text, images));
+			const accepted = store.getState().lastAcceptedMutation;
+			return accepted != null && accepted !== previous && accepted.kind === kind;
+		},
+		[store],
+	);
 	// An error row's Retry sends Jesse's sentence as your message through
 	// Send's own path (ruling 26), leaving whatever you were typing alone.
-	async function retryFailedTurn() {
+	const retryFailedTurn = useCallback(async () => {
 		const kind = liveSendKind();
 		if (!service || kind === null) return;
 		setActionError(null);
@@ -2033,13 +2049,16 @@ export function ConversationScreen({
 		} catch {
 			// As with Send, a refusal leaves the unconfirmed ghost to say so.
 		}
-	}
-	function runErrorAction(errorAction: ErrorAction) {
-		if (errorAction === "resume") void controls?.resume();
-		else if (errorAction === "signIn")
-			navigation.navigate("Providers", { hubId: route.params.hubId });
-		else void retryFailedTurn();
-	}
+	}, [liveSendKind, service, document, deliver]);
+	const runErrorAction = useCallback(
+		(errorAction: ErrorAction) => {
+			if (errorAction === "resume") void controls?.resume();
+			else if (errorAction === "signIn")
+				navigation.navigate("Providers", { hubId: route.params.hubId });
+			else void retryFailedTurn();
+		},
+		[controls, navigation, route.params.hubId, retryFailedTurn],
+	);
 	const composerSettings =
 		conversation && canCompose ? (
 			<ComposerSettings
@@ -2059,7 +2078,6 @@ export function ConversationScreen({
 	const recoveryRows = projectNativeMutationRecovery(
 		recovery.targetKey,
 		recovery.snapshot,
-		() => true,
 	);
 	const allGhosts = whatCanActNow(
 		ghosts(
@@ -2335,6 +2353,64 @@ export function ConversationScreen({
 		};
 	}, []);
 
+	// One render function for the list's lifetime: FlatList sees the same
+	// reference across a re-render that changes nothing a row reads (the
+	// composer's selection, the reader keying, a sheet opening), so it does not
+	// rebuild every visible transcript cell for them.
+	const renderItem = useCallback(
+		({ item, index }: { item: TimelineRow; index: number }) => (
+			<View
+				style={{
+					paddingBottom: timelineGap(item, timelineRows[index + 1]),
+				}}
+			>
+				<TimelineItem
+					item={item}
+					hubId={route.params.hubId}
+					sessionRef={route.params.ref}
+					activityPresentation={presentation.activityPresentation.get(item.id)}
+					expandByDefault={presentation.expandByDefault}
+					showDuration={presentation.showDuration}
+					fork={
+						snapshot.conversation?.capabilities?.forkFromTurn
+							? forkMessage
+							: undefined
+					}
+					forkDisabled={!connected || !focused || snapshot.status !== "open"}
+					quote={quote}
+					live={item.id === liveRun}
+					delegates={conversation?.delegates}
+					openSubagent={openSubagent}
+					answerFor={answerFor}
+					errorActionFor={(row) =>
+						conversation
+							? // Retry shows only when a press would send.
+								errorAction(row, conversation, liveSendKind() !== null)
+							: null
+					}
+					onErrorAction={runErrorAction}
+				/>
+			</View>
+		),
+		[
+			timelineRows,
+			route.params.hubId,
+			route.params.ref,
+			presentation,
+			snapshot,
+			forkMessage,
+			connected,
+			focused,
+			quote,
+			liveRun,
+			conversation,
+			openSubagent,
+			answerFor,
+			liveSendKind,
+			runErrorAction,
+		],
+	);
+
 	return (
 		<SafeAreaView
 			edges={["bottom", "left", "right"]}
@@ -2437,44 +2513,7 @@ export function ConversationScreen({
 							}
 							CellRendererComponent={readerCellRenderer}
 							keyExtractor={(item) => item.id}
-							renderItem={({ item, index }) => (
-								<View
-									style={{
-										paddingBottom: timelineGap(item, timelineRows[index + 1]),
-									}}
-								>
-									<TimelineItem
-										item={item}
-										hubId={route.params.hubId}
-										sessionRef={route.params.ref}
-										activityPresentation={presentation.activityPresentation.get(
-											item.id,
-										)}
-										expandByDefault={presentation.expandByDefault}
-										showDuration={presentation.showDuration}
-										fork={
-											snapshot.conversation?.capabilities?.forkFromTurn
-												? forkMessage
-												: undefined
-										}
-										forkDisabled={
-											!connected || !focused || snapshot.status !== "open"
-										}
-										quote={quote}
-										live={item.id === liveRun}
-										delegates={conversation?.delegates}
-										openSubagent={openSubagent}
-										answerFor={answerFor}
-										errorActionFor={(row) =>
-											conversation
-												? // Retry shows only when a press would send.
-													errorAction(row, conversation, liveSendKind() !== null)
-												: null
-										}
-										onErrorAction={runErrorAction}
-									/>
-								</View>
-							)}
+							renderItem={renderItem}
 							// Room at the end for the Next capsule (spec 8.3).
 							contentContainerStyle={{
 								padding: 16,

@@ -962,6 +962,7 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
       ...(first.summaryOnly ? { summaryOnly: first.summaryOnly } : {}),
       ...(first.transcriptKey ? { transcriptKey: first.transcriptKey } : {}),
       ...(first.position ? { position: first.position } : {}),
+      ...(first.turnId ? { turnId: first.turnId } : {}),
     };
     if (run.length === 1) return row;
     return {

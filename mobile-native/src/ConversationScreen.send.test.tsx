@@ -1049,9 +1049,12 @@ describe("an approval waiting for a decision (spec 8.4, ruling 38)", () => {
 
 it("offers no Retry that couldn't send: a question still waits on the failed turn", async () => {
 	const served = thread("ref-retry-question", "idle", true);
-	const turn = (served as unknown as { turns: { status: string; error?: unknown }[] }).turns[0];
-	turn.status = "failed";
-	turn.error = { message: "go test exited 1" };
+	// A per-test turn: spreading the shared QUESTION_TURN keeps its question
+	// while this test owns the failed status, so it never mutates the fixture
+	// the other question tests read.
+	(served as unknown as { turns: unknown[] }).turns = [
+		{ ...QUESTION_TURN, status: "failed", error: { message: "go test exited 1" } },
+	];
 	const { tree } = await mount(served);
 	expect(renderedText(tree)).toContain("go test exited 1");
 	expect(pressable(tree, "Retry")).toBeUndefined();
@@ -1086,4 +1089,10 @@ it("puts a quote held for this session into the draft when it comes back to the 
 	await rerender();
 	expect(field(tree)?.props.value).toBe(quoted);
 	expect(takeQuote("hub-1", "ref-other")).toBe("not for this session");
+});
+
+it("leaves the shared question fixture as the other question tests expect it", () => {
+	const turn = (thread("ref-fixture-intact", "idle", true) as unknown as { turns: { status: string; error?: unknown }[] }).turns[0];
+	expect(turn.status).toBe("completed");
+	expect(turn.error).toBeUndefined();
 });

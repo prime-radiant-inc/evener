@@ -64,6 +64,7 @@ export function Toast({ toast, dismiss }: Pick<ToastController, "toast" | "dismi
 	const action = toast.action;
 	return (
 		<View
+			pointerEvents="box-none"
 			style={{
 				alignSelf: "center",
 				flexDirection: "row",
