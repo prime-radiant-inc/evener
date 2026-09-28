@@ -1850,11 +1850,7 @@ export function ConversationScreen({
 			void applyCommand();
 			return;
 		}
-		if (
-			imageSelection.getSnapshot().busy ||
-			pendingQuestions(store.getState().conversation).length > 0
-		)
-			return;
+		if (imageSelection.getSnapshot().busy) return;
 		const kind = liveSendKind();
 		if (!service || kind === null) return;
 		setActionError(null);
@@ -1881,7 +1877,9 @@ export function ConversationScreen({
 			controls?.getSnapshot().pending != null ||
 			unconfirmedSend !== null ||
 			live.pendingMutation?.status === "pending" ||
-			!live.conversation
+			!live.conversation ||
+			// A waiting question takes Send's text as its answer instead.
+			pendingQuestions(live.conversation).length > 0
 		)
 			return null;
 		const liveAction = sendAction(
@@ -2188,7 +2186,8 @@ export function ConversationScreen({
 										answerFor={answerFor}
 										errorActionFor={(row) =>
 											conversation
-												? errorAction(row, conversation, action !== "none")
+												? // Retry shows only when a press would send.
+													errorAction(row, conversation, liveSendKind() !== null)
 												: null
 										}
 										onErrorAction={runErrorAction}

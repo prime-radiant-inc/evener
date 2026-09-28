@@ -675,3 +675,13 @@ it("opens sign-in from an error that says a sign-in failed", async () => {
 	expect(navigation.navigate).toHaveBeenCalledWith("Providers", { hubId: "hub-1" });
 });
 
+
+it("offers no Retry that couldn't send: a question still waits on the failed turn", async () => {
+	const served = thread("ref-retry-question", "idle", true);
+	const turn = (served as unknown as { turns: { status: string; error?: unknown }[] }).turns[0];
+	turn.status = "failed";
+	turn.error = { message: "go test exited 1" };
+	const { tree } = await mount(served);
+	expect(renderedText(tree)).toContain("go test exited 1");
+	expect(pressable(tree, "Retry")).toBeUndefined();
+});
