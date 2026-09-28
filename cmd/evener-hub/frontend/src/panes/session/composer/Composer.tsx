@@ -66,6 +66,7 @@ import {
   pressRefusal,
 } from "../../../stores/liveControls";
 import type { MutationRecoveryRecord } from "../../../stores/mutationOutbox";
+import { STORAGE_WEDGED_GUIDANCE } from "../../../stores/mutationOutboxIndexedDB";
 import { prefsStore, usePrefsStore } from "../../../stores/prefs";
 import { type InputAttachment, threadsStore, useThreadsStore } from "../../../stores/threads";
 import {
@@ -1495,8 +1496,8 @@ export function Composer({ ref, focused }: ComposerProps) {
         </div>
       )}
       {mutationStorageWedged && (
-        <div className={CLASS.storageStatus} role="alert" aria-label="Message storage">
-          Message storage is stuck. Reload the page; if it stays stuck, clear this site's data in your browser settings.
+        <div className={CLASS.storageStatus} role="alert" aria-label="Message storage stuck">
+          {`Message storage is stuck. ${STORAGE_WEDGED_GUIDANCE}`}
         </div>
       )}
       {/* The ask dock no longer renders here: pending questions are the

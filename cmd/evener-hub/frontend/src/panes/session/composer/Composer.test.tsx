@@ -5441,13 +5441,13 @@ test("a staged skill on Send to a target without skillInput keeps the draft and 
 // instruction rather than only the transient per-send failure.
 test("the wedged storage state renders an actionable alert banner", async () => {
   await mountComposer("ref_a");
-  expect(screen.queryByRole("alert", { name: "Message storage" })).toBeNull();
+  expect(screen.queryByRole("alert", { name: "Message storage stuck" })).toBeNull();
   act(() => {
     threadsStore.setState({ mutationStorageWedged: true });
   });
-  expect(screen.getByRole("alert", { name: "Message storage" })).toBeTruthy();
+  expect(screen.getByRole("alert", { name: "Message storage stuck" })).toBeTruthy();
   act(() => {
     threadsStore.setState({ mutationStorageWedged: false });
   });
-  expect(screen.queryByRole("alert", { name: "Message storage" })).toBeNull();
+  expect(screen.queryByRole("alert", { name: "Message storage stuck" })).toBeNull();
 });

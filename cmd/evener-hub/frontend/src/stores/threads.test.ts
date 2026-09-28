@@ -46,7 +46,7 @@ import { connectionStore, useConnectionStore } from "./connection";
 import { editHumanNote, syncHumanNote, useHumanNoteDraft } from "./humanNoteDrafts";
 import { MutationDispatcher } from "./mutationDispatcher";
 import { MutationOutboxIndexedDB, MutationStorageTimeoutError } from "./mutationOutboxIndexedDB";
-import { holdIndexedDBEvent } from "./testing/stalledIndexedDB";
+import { holdIndexedDBEvent, neverSettlingRequest } from "./testing/stalledIndexedDB";
 import {
   appendFrameTime,
   ConflictError,
@@ -333,13 +333,6 @@ async function deleteMutationDatabase(): Promise<void> {
       once: true,
     });
   });
-}
-
-// A request that never fires success, error, or blocked: the wedged
-// connection-coordinator shape, where open()/deleteDatabase() return and then
-// no event ever arrives.
-function wedgedRequest(): IDBOpenDBRequest {
-  return new EventTarget() as unknown as IDBOpenDBRequest;
 }
 
 async function flushIndexedDBUntil(done: () => boolean, maxTurns = 30): Promise<void> {
@@ -12692,8 +12685,8 @@ describe("Stop cancellation durability across reload, tabs, and resume", () => {
 // it: the Composer's actionable banner reads this field.
 test("the store latches mutationStorageWedged when a wedged adapter cannot reset", async () => {
   vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
-  vi.spyOn(globalThis.indexedDB, "open").mockImplementation(() => wedgedRequest());
-  vi.spyOn(globalThis.indexedDB, "deleteDatabase").mockImplementation(() => wedgedRequest());
+  vi.spyOn(globalThis.indexedDB, "open").mockImplementation(() => neverSettlingRequest());
+  vi.spyOn(globalThis.indexedDB, "deleteDatabase").mockImplementation(() => neverSettlingRequest());
   const read = readMutationPersistence("ref_a").catch(() => undefined);
   await vi.runAllTimersAsync();
   expect(threadsStore.getState().mutationStorageWedged).toBe(true);

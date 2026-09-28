@@ -75,11 +75,12 @@ export class MutationStorageTimeoutError extends Error {
 // adapter has latched. Unlike the timeout above, retrying in this tab cannot
 // help - the storage coordinator is stuck and only a reload or clearing the
 // site's data recovers it.
+export const STORAGE_WEDGED_GUIDANCE =
+  "Reload the page; if it stays stuck, clear this site's data in your browser settings.";
+
 export class MutationStorageWedgedError extends Error {
   constructor() {
-    super(
-      "Message storage is stuck and could not be reset automatically. Reload the page; if it stays stuck, clear this site's data in your browser settings.",
-    );
+    super(`Message storage is stuck and could not be reset automatically. ${STORAGE_WEDGED_GUIDANCE}`);
     this.name = "MutationStorageWedgedError";
   }
 }
@@ -873,39 +874,7 @@ export class MutationOutboxIndexedDB {
     operation: MutationOutboxOperation | undefined,
     body: (transaction: IDBTransaction) => Promise<T>,
   ): Promise<T> {
-    let database: IDBDatabase;
-    try {
-      database = await this.#open();
-    } catch (error) {
-      // VersionError/blocked/InvalidStateError are real faults this path must
-      // not treat as a wedge. Only a timeout can be the coordinator stalling.
-      if (!(error instanceof MutationStorageTimeoutError)) throw error;
-      // One timeout is not proof of a wedge: a tab frozen mid-open can trip the
-      // watchdog and answer on the very next request. Retry once BEFORE
-      // touching durable state, because the reset below deletes the database
-      // and would lose queued intents a transient timeout preserved.
-      try {
-        database = await this.#open();
-      } catch (retryError) {
-        if (!(retryError instanceof MutationStorageTimeoutError)) throw retryError;
-        // Two timeouts in a row: the wedged-coordinator signature. Probe,
-        // delete, and reopen at most once, and latch wedged if that fails.
-        if (!(await this.#resetWedgedDatabase())) {
-          this.#wedge();
-          throw new MutationStorageWedgedError();
-        }
-        try {
-          database = await this.#open();
-          this.#unwedge();
-        } catch (finalError) {
-          if (finalError instanceof MutationStorageTimeoutError) {
-            this.#wedge();
-            throw new MutationStorageWedgedError();
-          }
-          throw finalError;
-        }
-      }
-    }
+    const database = await this.#openWithRecovery();
     const transaction = database.transaction(stores, mode);
     const completed = transactionCompletion(transaction);
     let timer: ReturnType<typeof setTimeout> | undefined;
@@ -958,8 +927,46 @@ export class MutationOutboxIndexedDB {
     }
   }
 
+  // The open ladder, kept separate from #open so a failed reset cannot recurse
+  // into itself or split the wedged-latch invariant.
+  async #openWithRecovery(): Promise<IDBDatabase> {
+    try {
+      return await this.#open();
+    } catch (error) {
+      // VersionError/blocked/InvalidStateError are real faults this path must
+      // not treat as a wedge. Only a timeout can be the coordinator stalling.
+      if (!(error instanceof MutationStorageTimeoutError)) throw error;
+      // One timeout is not proof of a wedge: a tab frozen mid-open can trip the
+      // watchdog and answer on the very next request. Retry once BEFORE
+      // touching durable state, because the reset below deletes the database
+      // and would lose queued intents a transient timeout preserved.
+      try {
+        return await this.#open();
+      } catch (retryError) {
+        if (!(retryError instanceof MutationStorageTimeoutError)) throw retryError;
+        // Two timeouts in a row: the wedged-coordinator signature. Probe,
+        // delete, and reopen at most once, and latch wedged if that fails.
+        if (!(await this.#resetWedgedDatabase())) {
+          this.#wedge();
+          throw new MutationStorageWedgedError();
+        }
+        try {
+          // The successful #open already clears the latch; #wedged cannot be
+          // true here, since a latched #open would have thrown above.
+          return await this.#open();
+        } catch (finalError) {
+          if (finalError instanceof MutationStorageTimeoutError) {
+            this.#wedge();
+            throw new MutationStorageWedgedError();
+          }
+          throw finalError;
+        }
+      }
+    }
+  }
+
   // The reset path for a timed-out open. Probe first: if the origin's
-  // IndexedDB is generally not answering - a throwaway fresh-name open also
+  // IndexedDB is generally not answering - a throwaway probe open also
   // stalls - the wedge is not this database's alone, and deleting our own store
   // would neither help nor be safe to attempt.
   async #resetWedgedDatabase(): Promise<boolean> {
@@ -970,74 +977,79 @@ export class MutationOutboxIndexedDB {
     return await this.#deleteWedgedDatabase();
   }
 
-  #probeIndexedDBHealthy(): Promise<boolean> {
-    const probeName = `${this.#databaseName}-probe-${createSecureUUID()}`;
+  // Runs one IndexedDB request under a bounded wait: true on success (running
+  // onSuccess first), false on error - and on "blocked" when the caller treats
+  // a blocked request as its verdict - and false when the watchdog fires first.
+  #boundedRequest(
+    request: IDBRequest,
+    waitMs: number,
+    options: { failOnBlocked?: boolean; onSuccess?: () => void } = {},
+  ): Promise<boolean> {
     return new Promise<boolean>((resolve) => {
       let settled = false;
       let timer: ReturnType<typeof setTimeout> | undefined;
-      const done = (healthy: boolean) => {
+      const done = (ok: boolean) => {
         if (settled) return;
         settled = true;
         if (timer !== undefined) clearTimeout(timer);
-        resolve(healthy);
+        resolve(ok);
       };
-      let request: IDBOpenDBRequest;
-      try {
-        request = this.#indexedDB.open(probeName, 1);
-      } catch {
-        done(false);
-        return;
-      }
-      timer = setTimeout(() => done(false), PROBE_WAIT_MS);
+      timer = setTimeout(() => done(false), waitMs);
       request.addEventListener(
         "success",
         () => {
-          try {
-            request.result.close();
-          } catch {
-            // A probe connection that cannot close is still a healthy origin.
-          }
-          // Best-effort cleanup of the throwaway probe database; its outcome
-          // never changes the verdict.
-          try {
-            const deletion = this.#indexedDB.deleteDatabase(probeName);
-            deletion.addEventListener("error", () => {});
-            deletion.addEventListener("blocked", () => {});
-          } catch {
-            // Ignore.
-          }
+          options.onSuccess?.();
           done(true);
         },
         { once: true },
       );
       request.addEventListener("error", () => done(false), { once: true });
-      request.addEventListener("blocked", () => done(false), { once: true });
+      if (options.failOnBlocked) request.addEventListener("blocked", () => done(false), { once: true });
+    });
+  }
+
+  #probeIndexedDBHealthy(): Promise<boolean> {
+    // ONE fixed name, not a unique one: a leftover probe from an earlier reset
+    // is then exactly the database this open reuses, so the cleanup below is
+    // idempotent instead of leaking one database per reset.
+    const probeName = `${this.#databaseName}-probe`;
+    let request: IDBOpenDBRequest;
+    try {
+      request = this.#indexedDB.open(probeName, 1);
+    } catch {
+      return Promise.resolve(false);
+    }
+    return this.#boundedRequest(request, PROBE_WAIT_MS, {
+      failOnBlocked: true,
+      onSuccess: () => {
+        try {
+          request.result.close();
+        } catch {
+          // A probe connection that cannot close is still a healthy origin.
+        }
+        // Best-effort cleanup of the throwaway probe database; its outcome
+        // never changes the verdict.
+        try {
+          const deletion = this.#indexedDB.deleteDatabase(probeName);
+          deletion.addEventListener("error", () => {}, { once: true });
+          deletion.addEventListener("blocked", () => {}, { once: true });
+        } catch {
+          // Ignore.
+        }
+      },
     });
   }
 
   #deleteWedgedDatabase(): Promise<boolean> {
-    return new Promise<boolean>((resolve) => {
-      let settled = false;
-      let timer: ReturnType<typeof setTimeout> | undefined;
-      const done = (deleted: boolean) => {
-        if (settled) return;
-        settled = true;
-        if (timer !== undefined) clearTimeout(timer);
-        resolve(deleted);
-      };
-      let request: IDBOpenDBRequest;
-      try {
-        request = this.#indexedDB.deleteDatabase(this.#databaseName);
-      } catch {
-        done(false);
-        return;
-      }
-      timer = setTimeout(() => done(false), DELETE_WAIT_MS);
-      request.addEventListener("success", () => done(true), { once: true });
-      request.addEventListener("error", () => done(false), { once: true });
-      // A "blocked" deletion can still settle later, so it is not a verdict by
-      // itself; the DELETE_WAIT_MS watchdog covers one that never does.
-    });
+    let request: IDBOpenDBRequest;
+    try {
+      request = this.#indexedDB.deleteDatabase(this.#databaseName);
+    } catch {
+      return Promise.resolve(false);
+    }
+    // A "blocked" deletion can still settle later, so it is not a verdict by
+    // itself; the DELETE_WAIT_MS watchdog covers one that never does.
+    return this.#boundedRequest(request, DELETE_WAIT_MS);
   }
 
   // Latch wedged and drop the connection state. The notification fires once,
@@ -1058,16 +1070,16 @@ export class MutationOutboxIndexedDB {
   }
 
   #notifyStorageWedged(wedged: boolean): void {
-    try {
-      this.#onStorageWedged?.(wedged);
-    } catch {
-      // Status subscribers cannot change the durable transaction outcome.
-    }
+    this.#notifyQuietly(() => this.#onStorageWedged?.(wedged));
   }
 
   #notifyWriteStalled(waiting: boolean): void {
+    this.#notifyQuietly(() => this.#onWriteStalled?.(waiting));
+  }
+
+  #notifyQuietly(notify: () => void): void {
     try {
-      this.#onWriteStalled?.(waiting);
+      notify();
     } catch {
       // Status subscribers cannot change the durable transaction outcome.
     }

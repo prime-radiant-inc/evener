@@ -4,7 +4,7 @@ import { IDBDatabase, IDBFactory, IDBObjectStore } from "fake-indexeddb";
 import { afterEach, expect, test, vi } from "vitest";
 import type { MutationIntent } from "./mutationOutbox";
 import { MutationOutboxIndexedDB, MutationStorageWedgedError } from "./mutationOutboxIndexedDB";
-import { holdIndexedDBEvent } from "./testing/stalledIndexedDB";
+import { holdIndexedDBEvent, neverSettlingRequest } from "./testing/stalledIndexedDB";
 
 const intent: MutationIntent = {
   targetRef: "local:thread-1",
@@ -14,11 +14,11 @@ const intent: MutationIntent = {
   optimisticDisplay: null,
 };
 
-// A request that never fires success, error, or blocked: the wedged
-// connection-coordinator shape, where open()/deleteDatabase() return and then
-// no event ever arrives.
-function wedgedOpenRequest(): IDBOpenDBRequest {
-  return new EventTarget() as unknown as IDBOpenDBRequest;
+// The open ladder (#openWithRecovery, #runTransaction) adds await hops over a
+// bare #open, so a single microtask no longer reaches IndexedDB. Flush a
+// bounded number of turns; the bound is a tripwire, not the mechanism.
+async function flushMicrotasks(turns = 5): Promise<void> {
+  for (let i = 0; i < turns; i += 1) await Promise.resolve();
 }
 
 afterEach(() => {
@@ -42,7 +42,7 @@ test("a stalled read stops waiting and the same adapter can reopen and read its 
     failure = error;
   });
   // #open yields even for an existing connection.
-  await Promise.resolve();
+  await flushMicrotasks();
   if (!hold) throw new Error("read did not reach IndexedDB");
   await hold.reached;
   await vi.runOnlyPendingTimersAsync();
@@ -95,7 +95,7 @@ test("a timed-out open resets the wedged database and reopens so the adapter can
       // The first two opens wedge (no success, error, or blocked ever arrives):
       // the plain retry after the first timeout also fails, so the adapter
       // reaches the destructive reset.
-      if (mainOpens <= 2) return wedgedOpenRequest();
+      if (mainOpens <= 2) return neverSettlingRequest();
     }
     return open(name, version);
   });
@@ -128,7 +128,7 @@ test("a wedged open heals by probing, deleting, and reopening so the enqueue com
     if (name === databaseName) {
       mainOpens += 1;
       // Two timeouts in a row are the wedge signature; the reset then heals.
-      if (mainOpens <= 2) return wedgedOpenRequest();
+      if (mainOpens <= 2) return neverSettlingRequest();
     }
     return open(name, version);
   });
@@ -163,7 +163,7 @@ test("a single transient open timeout retries without deleting the database or l
     opens += 1;
     // Exactly one open wedges, the way a tab frozen mid-open trips the
     // watchdog and answers on the very next request.
-    if (opens === 1) return wedgedOpenRequest();
+    if (opens === 1) return neverSettlingRequest();
     return open(name, version);
   });
   vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
@@ -181,8 +181,8 @@ test("a single transient open timeout retries without deleting the database or l
 
 test("a wedged open whose probe also stalls latches wedged and later calls fail fast", async () => {
   const indexedDB = new IDBFactory();
-  vi.spyOn(indexedDB, "open").mockImplementation(() => wedgedOpenRequest());
-  vi.spyOn(indexedDB, "deleteDatabase").mockImplementation(() => wedgedOpenRequest());
+  vi.spyOn(indexedDB, "open").mockImplementation(() => neverSettlingRequest());
+  vi.spyOn(indexedDB, "deleteDatabase").mockImplementation(() => neverSettlingRequest());
   const wedged: boolean[] = [];
   const storage = new MutationOutboxIndexedDB({ indexedDB, onStorageWedged: (value) => wedged.push(value) });
   vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
@@ -231,7 +231,7 @@ test.each([undefined, true, false])(
     const enqueue = storage.enqueueIntent(intent).finally(() => {
       settled = true;
     });
-    await Promise.resolve();
+    await flushMicrotasks();
     if (!hold) throw new Error("write did not reach IndexedDB");
     await hold.reached;
     await vi.runOnlyPendingTimersAsync();
@@ -262,7 +262,7 @@ test("a terminal abort rejects while a request callback is still withheld", asyn
     (error: unknown) => error,
   );
   try {
-    await Promise.resolve();
+    await flushMicrotasks();
     if (!hold) throw new Error("write did not reach IndexedDB");
     await hold.reached;
     // Do not release the request callback or advance the watchdog clock.
@@ -297,7 +297,7 @@ test("cancelling a stalled write rolls it back before the draft can be retried",
     failure = error;
   });
   try {
-    await Promise.resolve();
+    await flushMicrotasks();
     if (!hold) throw new Error("write did not reach IndexedDB");
     await hold.reached;
     await vi.runOnlyPendingTimersAsync();
