@@ -12,6 +12,10 @@ vi.mock("react-native", async () => ({
 	...(await import("../renderNative.testkit")).nativeModuleMock(),
 }));
 vi.mock("expo-symbols", () => ({ SymbolView: "SymbolView" }));
+// SearchResults shares BoardRow's pieces, and BoardRow.tsx loads the swipeable.
+vi.mock("react-native-gesture-handler/ReanimatedSwipeable", async () =>
+	(await import("../renderNative.testkit")).gestureHandlerModuleMock(),
+);
 
 const palette = paletteFor("light");
 const result = (id: string, over: Partial<SearchResult> = {}): SearchResult => ({
