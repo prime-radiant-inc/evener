@@ -17,10 +17,8 @@ describe("which way a pan on the title moves through Live order (spec 6)", () =>
 	});
 });
 
-it("slides a session the title's swipe or Next opened in from its side, and leaves any other replace to the library", () => {
+it("slides the previous session in from the left, and any other replace in from the right", () => {
 	expect(replaceAnimation({ slideFrom: "left" })).toBe("pop");
 	expect(replaceAnimation({ slideFrom: "right" })).toBe("push");
-	expect(replaceAnimation({ slideFrom: "left", openedBy: "next" })).toBe("pop");
-	expect(replaceAnimation({ openedBy: "next" })).toBe("push");
-	expect(replaceAnimation({})).toBeUndefined();
+	expect(replaceAnimation({})).toBe("push");
 });

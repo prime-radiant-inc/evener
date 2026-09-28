@@ -71,9 +71,20 @@ const ACTION_WIDTH = 76;
  * positive translation). */
 const LEADING_OPENED = SwipeDirection.RIGHT;
 const TRAILING_OPENED = SwipeDirection.LEFT;
+/** The layout and label type shared by a button and the destructive panel;
+ * only their colors differ. */
+const ACTION_CELL = {
+	width: ACTION_WIDTH,
+	alignItems: "center",
+	justifyContent: "center",
+} as const;
+const ACTION_LABEL = { fontSize: 13, fontWeight: "600" } as const;
 
 /** The row's actions for VoiceOver, spread on the row's accessible element. */
-export function swipeAccessibility(leading: SwipeAction | undefined, trailing: readonly SwipeAction[]) {
+export function swipeAccessibility(
+	leading: DestructiveSwipeAction | undefined,
+	trailing: readonly DestructiveSwipeAction[],
+) {
 	const actions = [...(leading ? [leading] : []), ...trailing];
 	return {
 		accessibilityActions: actions.map((action) => ({ name: action.key, label: action.label })),
@@ -106,16 +117,10 @@ export function SwipeRow({
 				close();
 				action.run();
 			}}
-			style={{
-				width: ACTION_WIDTH,
-				alignItems: "center",
-				justifyContent: "center",
-				gap: 4,
-				backgroundColor: palette[action.fill],
-			}}
+			style={{ ...ACTION_CELL, gap: 4, backgroundColor: palette[action.fill] }}
 		>
 			<SymbolView name={action.symbol} tintColor={palette.page} size={20} />
-			<Text style={{ color: palette.page, fontSize: 13, fontWeight: "600" }}>{action.label}</Text>
+			<Text style={{ ...ACTION_LABEL, color: palette.page }}>{action.label}</Text>
 		</Pressable>
 	);
 	const panel = (actions: readonly SwipeAction[]) => () => (
@@ -124,15 +129,8 @@ export function SwipeRow({
 	// Never a button: the row never rests open on it, since a drag short of
 	// the full swipe springs back.
 	const destructivePanel = (action: DestructiveSwipeAction) => () => (
-		<View
-			style={{
-				width: ACTION_WIDTH,
-				alignItems: "center",
-				justifyContent: "center",
-				backgroundColor: palette.dangerBg,
-			}}
-		>
-			<Text style={{ color: palette.dangerInk, fontSize: 13, fontWeight: "600" }}>{action.label}</Text>
+		<View style={{ ...ACTION_CELL, backgroundColor: palette.dangerBg }}>
+			<Text style={{ ...ACTION_LABEL, color: palette.dangerInk }}>{action.label}</Text>
 		</View>
 	);
 	return (
@@ -157,13 +155,10 @@ export function SwipeRow({
 					close();
 					return;
 				}
-				if (direction === LEADING_OPENED && leading) {
+				const action = direction === LEADING_OPENED ? leading : direction === TRAILING_OPENED ? destructive : undefined;
+				if (action) {
 					close();
-					leading.run();
-				}
-				if (direction === TRAILING_OPENED && destructive) {
-					close();
-					destructive.run();
+					action.run();
 				}
 			}}
 			onSwipeableClose={() => onActiveChange?.(false)}

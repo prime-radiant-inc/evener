@@ -844,17 +844,19 @@ export function ConversationScreen({
 	// A pan on the title replaces this session with its neighbor in Live
 	// order (spec 6), keeping Next's mark so Next from there still replaces.
 	const live = useMemo(() => liveOrder(fleet.bands), [fleet.bands]);
-	const hasPrevious = neighbor(live, route.params.ref, -1) !== null;
-	const hasNext = neighbor(live, route.params.ref, 1) !== null;
+	const previous = neighbor(live, route.params.ref, -1);
+	const next = neighbor(live, route.params.ref, 1);
+	const hasPrevious = previous !== null;
+	const hasNext = next !== null;
 	function swipeToSession(direction: 1 | -1) {
-		const target = neighbor(live, route.params.ref, direction);
+		const target = direction === -1 ? previous : next;
 		if (!target) return;
 		leaveFor(target);
 		navigation.replace("Conversation", {
 			hubId: route.params.hubId,
 			ref: target.ref,
 			title: target.title,
-			...(route.params.openedBy ? { openedBy: route.params.openedBy } : {}),
+			openedBy: route.params.openedBy,
 			slideFrom: direction === -1 ? "left" : "right",
 		});
 	}

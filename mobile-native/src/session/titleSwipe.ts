@@ -16,14 +16,9 @@ export function titleSwipeDirection(translationX: number, velocityX: number): 1 
 }
 
 /** How a session that replaced another slides in (the Conversation route's
- * animationTypeForReplace): one the title's swipe opened from the side it
- * came from, the previous one from the left as a pop does and the next from
- * the right as a push does, and one Next opened from the right. Any other
- * replace, such as a new session's or a fork's, keeps the library's own. */
-export function replaceAnimation(params: {
-	slideFrom?: "left" | "right";
-	openedBy?: "next";
-}): "pop" | "push" | undefined {
-	if (params.slideFrom) return params.slideFrom === "left" ? "pop" : "push";
-	return params.openedBy === "next" ? "push" : undefined;
+ * animationTypeForReplace): from the left, as a pop does, when the title's
+ * swipe opened the previous session, and otherwise from the right, as a push
+ * does, which is the navigator's own default for a replace. */
+export function replaceAnimation(params: { slideFrom?: "left" | "right" }): "pop" | "push" {
+	return params.slideFrom === "left" ? "pop" : "push";
 }

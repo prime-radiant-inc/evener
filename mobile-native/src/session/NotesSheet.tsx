@@ -11,7 +11,7 @@ import { SymbolView } from "expo-symbols";
 import * as WebBrowser from "expo-web-browser";
 import { type ReactNode, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { ActionSheetIOS, Alert, AppState, Platform, Pressable, ScrollView, Text, TextInput, View } from "react-native";
-import { SwipeRow } from "../board/SwipeRow";
+import { SwipeRow, swipeAccessibility } from "../board/SwipeRow";
 import { typeRoles } from "../design/tokens";
 import type { Routes } from "../screens";
 import { Sheet, useSheet } from "../sheet/Sheet";
@@ -302,6 +302,8 @@ function LinkRow({
 		void notes.removeLink(link.id).then((removed) =>
 			toast.show({ text: removed ? "Link removed. Only the agent can add links." : "Couldn't remove that link." }),
 		);
+	// VoiceOver names the swipe's remove in full; the panel has room for one word.
+	const removeAction = { key: "remove", label: "Remove link", run: remove };
 	const menu = () => {
 		const items = [
 			...(kind === "web" ? [{ label: "Open", run: open }] : []),
@@ -336,12 +338,7 @@ function LinkRow({
 			onPress={press}
 			onLongPress={menu}
 			// VoiceOver's stand-in for the swipe.
-			{...(writable
-				? {
-						accessibilityActions: [{ name: "remove", label: "Remove link" }],
-						onAccessibilityAction: remove,
-					}
-				: {})}
+			{...(writable ? swipeAccessibility(undefined, [removeAction]) : {})}
 			style={({ pressed }) => ({
 				minHeight: 44,
 				flexDirection: "row",
@@ -381,7 +378,7 @@ function LinkRow({
 		</Pressable>
 	);
 	return writable ? (
-		<SwipeRow destructive={{ key: "remove", label: "Remove", run: remove }} backdrop={palette.canvas}>
+		<SwipeRow destructive={{ ...removeAction, label: "Remove" }} backdrop={palette.canvas}>
 			{row}
 		</SwipeRow>
 	) : (
