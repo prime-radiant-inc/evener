@@ -691,22 +691,57 @@ it("floats the context chips over the list, opens each one's sheet, and hides th
 	tree.unmount();
 });
 
-it("hides the Subagents and Tasks chips once disconnected, since neither can act (Calm), but keeps the cached Goal and Queue chips", async () => {
+it("hides the Subagents and Tasks chips once the connection bar itself would say something, but keeps the cached Goal and Queue chips", async () => {
 	const { tree } = mount(busy);
 	await flush();
-	const { block } = sessionList(tree);
-	const label = (text: string) => block().findAll((node) => node.props.accessibilityLabel === text);
-	expect(label("Subagents, 1")).toHaveLength(1);
+	vi.useFakeTimers();
+	try {
+		const { block } = sessionList(tree);
+		const label = (text: string) => block().findAll((node) => node.props.accessibilityLabel === text);
+		expect(label("Subagents, 1")).toHaveLength(1);
 
-	// The connection drops; the thread's cached delegates/tasks survive.
-	harness.connection = { ...harness.connection, state: "reconnecting" };
-	act(() => tree.update(screen()));
+		// The connection drops; the thread's cached delegates/tasks survive.
+		harness.connection = { ...harness.connection, state: "reconnecting" };
+		act(() => tree.update(screen()));
+		// A blip shorter than the bar's own grace period (spec 14) - the chips
+		// stay exactly as visible as they were, since the bar itself says
+		// nothing yet either.
+		expect(label("Subagents, 1")).toHaveLength(1);
 
-	expect(label("Subagents, 1")).toEqual([]);
-	expect(label("Tasks, 1 of 2 done")).toEqual([]);
-	// Goal and Queue need no connection, so they still show.
-	expect(label("Goal, blocked")).toHaveLength(1);
-	expect(label("2 queued messages")).toHaveLength(1);
+		act(() => {
+			vi.advanceTimersByTime(2000);
+		});
+		act(() => tree.update(screen()));
+		expect(label("Subagents, 1")).toEqual([]);
+		expect(label("Tasks, 1 of 2 done")).toEqual([]);
+		// Goal and Queue need no connection, so they still show.
+		expect(label("Goal, blocked")).toHaveLength(1);
+		expect(label("2 queued messages")).toHaveLength(1);
+	} finally {
+		vi.useRealTimers();
+	}
+	tree.unmount();
+});
+
+it("a Subagents/Tasks chip tap still works during a blip shorter than the connection bar's own grace period (Calm)", async () => {
+	const { tree } = mount(busy);
+	await flush();
+	vi.useFakeTimers();
+	try {
+		harness.connection = { ...harness.connection, state: "reconnecting" };
+		act(() => tree.update(screen()));
+
+		const { block } = sessionList(tree);
+		const chip = (label: string) =>
+			block().findAll(
+				(node) => node.props.accessibilityRole === "button" && node.props.accessibilityLabel === label,
+			)[0];
+		expect(tree.root.findAllByType(ActivitySheet)).toEqual([]);
+		act(() => chip("Subagents, 1").props.onPress());
+		expect(tree.root.findAllByType(ActivitySheet)).toHaveLength(1);
+	} finally {
+		vi.useRealTimers();
+	}
 	tree.unmount();
 });
 

@@ -53,6 +53,14 @@ describe("the nav bar's state line (spec 8.1, 13.1)", () => {
 		[session("warning"), "warning", "Warning"],
 		[session("notLoaded"), "shutDown", "Shut down"],
 		[session("closed"), "shutDown", "Shut down"],
+		// The Session follows the Board's own attention order (ruling: they
+		// can't disagree), which checks warning and "already shut down" before
+		// a pending escalation - so a stale escalation on a warning or
+		// already-shut-down session never masks its real state.
+		[session("warning", { pendingEscalations: [escalation] }), "warning", "Warning"],
+		[session("notLoaded", { pendingEscalations: [escalation] }), "shutDown", "Shut down"],
+		[session("closed", { pendingEscalations: [escalation] }), "shutDown", "Shut down"],
+		[session("ended", { pendingEscalations: [escalation] }), "shutDown", "Shut down"],
 	] as const)("%#: %s", (input, state, text) => {
 		expect(sessionStateLine(input, NOW)).toEqual({ state, text });
 	});
