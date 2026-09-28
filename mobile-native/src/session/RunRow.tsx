@@ -6,11 +6,11 @@
 import { scopedDisclosureId } from "@evener/appwire-client";
 import { SymbolView } from "expo-symbols";
 import { Fragment, useMemo } from "react";
-import { Platform, Pressable, Text, View } from "react-native";
+import { Pressable, Text, View } from "react-native";
 import { typeRoles } from "../design/tokens";
 import { toggleDisclosure, useDisclosureOpen } from "../nativeDisclosure";
 import type { RunStep, TimelineRow } from "../timeline";
-import { useColors, useTextScale } from "../ui";
+import { allowFontScaling, useColors, useTextScale } from "../ui";
 import { useStepEvidence } from "./useStepEvidence";
 import { StepEvidence } from "./StepEvidence";
 import { runHeadText, runPartFailedText, runSummary, runSummaryText, stepTarget } from "./transcriptRows";
@@ -51,14 +51,14 @@ function StepLine({ step, hubId, sessionRef, evidenceOpenByDefault }: { step: Ru
 			</View>
 			<View style={{ flex: 1, minWidth: 0 }}>
 				<Text
-					allowFontScaling={Platform.OS !== "ios"}
+					allowFontScaling={allowFontScaling}
 					style={{ fontSize: 14 * scale, lineHeight: 19 * scale, color: palette.inkHi }}
 				>
 					{intent}
 				</Text>
 				{target ? (
 					<Text
-						allowFontScaling={Platform.OS !== "ios"}
+						allowFontScaling={allowFontScaling}
 						numberOfLines={2}
 						style={{
 							fontFamily: typeRoles.machine.fontFamily,
@@ -129,7 +129,7 @@ export function RunRow({
 	const open = live || expanded;
 	const line = (
 		<Text
-			allowFontScaling={Platform.OS !== "ios"}
+			allowFontScaling={allowFontScaling}
 			style={{ fontSize: 14 * scale, lineHeight: 19 * scale, color: palette.inkMid, fontVariant: ["tabular-nums"] }}
 		>
 			{live ? null : open ? "▾ " : "▸ "}

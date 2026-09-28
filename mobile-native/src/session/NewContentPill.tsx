@@ -1,7 +1,7 @@
 // "↓ 3 new" (spec 8.2): new content arrived below while you read above the
 // end. It never moves what you read; tapping it scrolls to the end.
-import { Platform, Pressable, Text } from "react-native";
-import { useColors, useTextScale } from "../ui";
+import { Pressable, Text } from "react-native";
+import { allowFontScaling, useColors, useTextScale } from "../ui";
 import { floatingCapsule } from "./FloatingStack";
 
 export function NewContentPill({ count, onPress }: { count: number; onPress: () => void }) {
@@ -16,7 +16,7 @@ export function NewContentPill({ count, onPress }: { count: number; onPress: () 
 			style={{ ...floatingCapsule(palette), justifyContent: "center" }}
 		>
 			<Text
-				allowFontScaling={Platform.OS !== "ios"}
+				allowFontScaling={allowFontScaling}
 				style={{
 					fontSize: 15 * scale,
 					lineHeight: 20 * scale,
