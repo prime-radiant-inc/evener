@@ -13,19 +13,28 @@ import { approvalCard } from "./askDockCopy";
 
 export interface ApprovalDockProps {
 	request: SandboxEscalationRequested;
-	controls: ApprovalControls;
+	/** Null while the hub is away: the dock still says what waits, and offers
+	 * Allow and Deny again once they can act. */
+	controls: ApprovalControls | null;
 	/** A decision the hub took and the session re-read confirms. */
 	onDecided(allowed: boolean): void;
 }
 
 // A path wraps only at its slashes: a zero-width space after each one gives
 // the line a break there and nowhere else.
-const breakAtSlashes = (path: string) => path.replaceAll("/", "/​");
+const breakAtSlashes = (path: string) => path.replaceAll("/", "/\u200b");
+
+const NO_DECISION = { pending: null, refreshing: false, error: null };
+const noDecision = () => NO_DECISION;
+const noSubscription = () => () => {};
 
 export function ApprovalDock({ request, controls, onDecided }: ApprovalDockProps) {
 	const { palette } = useColors();
 	const scale = useTextScale();
-	const state = useSyncExternalStore(controls.subscribe, controls.getSnapshot);
+	const state = useSyncExternalStore(
+		controls?.subscribe ?? noSubscription,
+		controls?.getSnapshot ?? noDecision,
+	);
 	const card = approvalCard(request);
 	// A decision it couldn't confirm re-reads the session once on its own, so
 	// there is no refresh to press. The error stays until a read clears it.
@@ -35,13 +44,13 @@ export function ApprovalDock({ request, controls, onDecided }: ApprovalDockProps
 			refreshedFor.current = false;
 			return;
 		}
-		if (refreshedFor.current) return;
+		if (refreshedFor.current || !controls) return;
 		refreshedFor.current = true;
 		void controls.refresh();
 	}, [state.error, controls]);
 	const off = state.pending !== null || state.refreshing || state.error !== null;
 	async function decide(allowed: boolean) {
-		if (off) return;
+		if (off || !controls) return;
 		// resolve says nothing of its own: a decision went out when this
 		// approval went pending, and it held when no error followed.
 		let sent = false;
@@ -88,62 +97,67 @@ export function ApprovalDock({ request, controls, onDecided }: ApprovalDockProps
 			<Text {...body}>
 				{card.partiallyRan ? `${card.scope} Part of this may already have run.` : card.scope}
 			</Text>
-			{state.error ? (
+			{controls && state.error ? (
 				<Text {...body} numberOfLines={1} style={{ ...body.style, color: palette.dangerInk }}>
 					{state.error}
 				</Text>
 			) : null}
-			<Pressable
-				accessibilityRole="button"
-				accessibilityLabel={card.primary.label}
-				accessibilityHint={card.primary.detail}
-				accessibilityState={{ disabled: off }}
-				disabled={off}
-				onPress={() => {
-					void decide(true);
-				}}
-				style={({ pressed }) => ({
-					minHeight: 44,
-					marginTop: 4,
-					paddingVertical: 8,
-					paddingHorizontal: 16,
-					alignItems: "center",
-					justifyContent: "center",
-					borderRadius: 12,
-					borderCurve: "continuous",
-					backgroundColor: palette.accentFill,
-					opacity: off ? 0.4 : pressed ? 0.6 : 1,
-				})}
-			>
-				<Text
-					allowFontScaling={allowFontScaling}
-					style={{ fontSize: 17 * scale, lineHeight: 22 * scale, fontWeight: "600", color: palette.onFill }}
-				>
-					{card.primary.label}
-				</Text>
-				<Text allowFontScaling={allowFontScaling} style={{ fontSize: 13 * scale, lineHeight: 18 * scale, color: palette.onFill }}>
-					{card.primary.detail}
-				</Text>
-			</Pressable>
-			<Pressable
-				accessibilityRole="button"
-				accessibilityLabel="Deny"
-				accessibilityState={{ disabled: off }}
-				disabled={off}
-				onPress={() => {
-					void decide(false);
-				}}
-				style={({ pressed }) => ({
-					minHeight: 44,
-					alignItems: "center",
-					justifyContent: "center",
-					opacity: off ? 0.4 : pressed ? 0.6 : 1,
-				})}
-			>
-				<Text allowFontScaling={allowFontScaling} style={{ fontSize: 17 * scale, lineHeight: 22 * scale, color: palette.inkHi }}>
-					Deny
-				</Text>
-			</Pressable>
+			{/* Allow and Deny show only while they can act. */}
+			{controls ? (
+				<>
+					<Pressable
+						accessibilityRole="button"
+						accessibilityLabel={card.primary.label}
+						accessibilityHint={card.primary.detail}
+						accessibilityState={{ disabled: off }}
+						disabled={off}
+						onPress={() => {
+							void decide(true);
+						}}
+						style={({ pressed }) => ({
+							minHeight: 44,
+							marginTop: 4,
+							paddingVertical: 8,
+							paddingHorizontal: 16,
+							alignItems: "center",
+							justifyContent: "center",
+							borderRadius: 12,
+							borderCurve: "continuous",
+							backgroundColor: palette.accentFill,
+							opacity: off ? 0.4 : pressed ? 0.6 : 1,
+						})}
+					>
+						<Text
+							allowFontScaling={allowFontScaling}
+							style={{ fontSize: 17 * scale, lineHeight: 22 * scale, fontWeight: "600", color: palette.onFill }}
+						>
+							{card.primary.label}
+						</Text>
+						<Text allowFontScaling={allowFontScaling} style={{ fontSize: 13 * scale, lineHeight: 18 * scale, color: palette.onFill }}>
+							{card.primary.detail}
+						</Text>
+					</Pressable>
+					<Pressable
+						accessibilityRole="button"
+						accessibilityLabel="Deny"
+						accessibilityState={{ disabled: off }}
+						disabled={off}
+						onPress={() => {
+							void decide(false);
+						}}
+						style={({ pressed }) => ({
+							minHeight: 44,
+							alignItems: "center",
+							justifyContent: "center",
+							opacity: off ? 0.4 : pressed ? 0.6 : 1,
+						})}
+					>
+						<Text allowFontScaling={allowFontScaling} style={{ fontSize: 17 * scale, lineHeight: 22 * scale, color: palette.inkHi }}>
+							Deny
+						</Text>
+					</Pressable>
+				</>
+			) : null}
 		</View>
 	);
 }

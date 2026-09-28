@@ -70,7 +70,7 @@ async function press(tree: ReactTestRenderer, label: string) {
 	});
 }
 
-const readable = (tree: ReactTestRenderer) => renderedText(tree).replaceAll("​", "");
+const readable = (tree: ReactTestRenderer) => renderedText(tree).replaceAll("\u200b", "");
 
 describe("the approval dock (spec 8.4)", () => {
 	it("says what the sandbox blocked, and offers the one file", () => {
@@ -84,7 +84,7 @@ describe("the approval dock (spec 8.4)", () => {
 		expect(text).toContain("Deny");
 		expect(text).not.toContain("Part of this may already have run.");
 		// A long path wraps only at its slashes.
-		expect(renderedText(tree)).toContain("/​Users/​jesse/​");
+		expect(renderedText(tree)).toContain("/\u200bUsers/\u200bjesse/\u200b");
 	});
 
 	it("allows once when the hub couldn't name the path, and says part of it ran", () => {
@@ -94,6 +94,17 @@ describe("the approval dock (spec 8.4)", () => {
 		expect(text).toContain("Just this action");
 		expect(text).not.toContain("<denied>");
 		expect(text).toContain("This session can only write inside its project folder. Part of this may already have run.");
+	});
+
+	it("without controls, says what waits and offers nothing to press", () => {
+		const onDecided = vi.fn();
+		const tree = render(<ApprovalDock request={request()} controls={null} onDecided={onDecided} />);
+		const text = readable(tree);
+		expect(text).toContain("Wants to write outside the workspace");
+		expect(text).toContain("This session can only write inside its project folder.");
+		expect(pressable(tree, "Allow this file only")).toBeUndefined();
+		expect(pressable(tree, "Deny")).toBeUndefined();
+		expect(text).not.toContain("It will ask again for the next one");
 	});
 
 	it("allows, and reports the decision once it settles", async () => {

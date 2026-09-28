@@ -2686,11 +2686,13 @@ export function ConversationScreen({
 							>
 								<Toast toast={toaster.toast} dismiss={toaster.dismiss} />
 							</View>
-							{bottom.dock === "approval" && approval && approvalControls ? (
+							{bottom.dock === "approval" && approval ? (
 								<ApprovalDock
 									// A new approval starts with nothing decided.
 									key={approval.escalationId}
 									request={approval}
+									// Null while the hub is away: the dock still says what
+									// waits, without Allow or Deny.
 									controls={approvalControls}
 									onDecided={(allowed) =>
 										toaster.show({ text: allowed ? "Allowed once" : "Denied" })

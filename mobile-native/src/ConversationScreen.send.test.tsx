@@ -878,6 +878,28 @@ describe("an approval waiting for a decision (spec 8.4, ruling 38)", () => {
 		expect(renderedText(tree)).not.toContain("approval needed");
 	});
 
+	it("keeps showing what waits while the hub is away, without Allow or Deny", async () => {
+		const { tree } = await mount(withApproval("ref-approval-away"));
+		harness.connection = { ...harness.connection, state: "connecting" };
+		const route = {
+			key: "conversation-ref-approval-away",
+			name: "Conversation",
+			params: { hubId: "hub-1", ref: "ref-approval-away", title: "Session" },
+		};
+		act(() =>
+			tree.update(
+				<ConversationScreen route={route as unknown as ConversationScreenProps["route"]} navigation={navigation} />,
+			),
+		);
+		await settle();
+		const text = renderedText(tree).replaceAll("\u200b", "");
+		expect(text).toContain("Wants to write outside the workspace");
+		expect(text).toContain("write_file  /Users/jesse/sites/docs/index.html");
+		expect(pressable(tree, "Allow this file only")).toBeUndefined();
+		expect(pressable(tree, "Deny")).toBeUndefined();
+		expect(field(tree)).toBeUndefined();
+	});
+
 	it("allows the one file, and says so", async () => {
 		const { tree, hub } = await mount(withApproval("ref-approval-allow"));
 		await press(tree, "Allow this file only");
