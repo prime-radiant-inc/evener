@@ -15,6 +15,15 @@ const harness = vi.hoisted(() => ({
 	uuid: 0,
 }));
 
+// The root stack the screen sits in, read by useScreenInFront and
+// screenInFront (screens.tsx). Kept at the screen's own route on top, so the
+// screen is in front the way a freshly opened conversation really is - this
+// suite isn't exercising sheet coverage or a pushed screen, unlike
+// ConversationScreen.sheets.test.tsx.
+const navigationState = vi.hoisted(() => ({
+	state: { index: 0, routes: [] as { key: string; name: string }[] },
+}));
+
 const sqlite = vi.hoisted(() => ({ ports: new Map<string, unknown>() }));
 
 vi.mock("react-native", async () => {
@@ -50,7 +59,8 @@ vi.mock("@react-navigation/native", async () => {
 	return {
 		useFocusEffect: (effect: () => void | (() => void)) =>
 			useEffect(effect, []),
-		useIsFocused: () => true,
+		useNavigationState: <T,>(select: (state: typeof navigationState.state) => T) =>
+			select(navigationState.state),
 	};
 });
 vi.mock("expo-symbols", () => ({ SymbolView: "SymbolView" }));
@@ -124,6 +134,7 @@ type ConversationScreenProps = ComponentProps<typeof ConversationScreen>;
 
 const navigation = {
 	isFocused: () => true,
+	getState: () => navigationState.state,
 	navigate: vi.fn(),
 	push: vi.fn(),
 	goBack: vi.fn(),
@@ -262,18 +273,13 @@ async function mount(served: Thread) {
 		disconnect: () => {},
 	};
 	const ref = String((served as unknown as { evener: { ref: string } }).evener.ref);
-	const tree = render(
-		<ConversationScreen
-			route={
-				{
-					key: `conversation-${ref}`,
-					name: "Conversation",
-					params: { hubId: "hub-1", ref, title: "Session" },
-				} as unknown as ConversationScreenProps["route"]
-			}
-			navigation={navigation}
-		/>,
-	);
+	const route = {
+		key: `conversation-${ref}`,
+		name: "Conversation",
+		params: { hubId: "hub-1", ref, title: "Session" },
+	} as unknown as ConversationScreenProps["route"];
+	navigationState.state = { index: 0, routes: [route] };
+	const tree = render(<ConversationScreen route={route} navigation={navigation} />);
 	await settle();
 	return { tree, hub };
 }
