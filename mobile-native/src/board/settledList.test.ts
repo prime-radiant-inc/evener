@@ -162,6 +162,21 @@ it("washes rows that entered Needs you, never on the first list, and clears the 
 	expect(list.getSnapshot().washed.size).toBe(0);
 });
 
+it("shows the first list at once under a hold that began before it loaded, and holds that list from then on", () => {
+	const list = new SettledList<Item>();
+	list.setItems(null);
+	list.send("touchStart");
+	list.setItems([item("a"), item("b")]);
+	expect(keys(list)).toEqual(["a", "b"]);
+	expect(list.getSnapshot().held).toBe(true);
+	list.setItems([item("b"), item("a", "a2"), item("c")]);
+	expect(keys(list)).toEqual(["a", "b"]);
+	expect(texts(list)).toEqual(["a2", "b"]);
+	list.send("touchEnd");
+	vi.advanceTimersByTime(100);
+	expect(keys(list)).toEqual(["b", "a", "c"]);
+});
+
 it("gives each row that entered Needs you its own full wash, untouched by a row that enters after it", () => {
 	const list = loaded(item("a", "a", false), item("b", "b", false));
 	list.setItems([item("a", "a", true), item("b", "b", false)]);

@@ -1512,6 +1512,24 @@ it("shows three skeleton rows until the first read lands", async () => {
 	act(() => tree.unmount());
 });
 
+it("shows the first read's rows at once under a finger that touched the skeleton, never the empty Board", async () => {
+	const id = hubId();
+	adoptedAnHourAgo(id);
+	const fake = hub(fleet, () => true);
+	connect(id, fake.client, "ready");
+	const tree = await mount(navigation());
+	expect(skeletonRows(tree)).toHaveLength(3);
+	listEvent(tree, "onTouchStart");
+	fake.release();
+	await settle();
+	expect(texts(tree)).not.toContain("Nothing's running. Start a session to put an agent to work.");
+	expect(listOrder(tree)).toEqual(workingOrder);
+	liftFinger(tree);
+	await advance(100);
+	expect(listOrder(tree)).toEqual(workingOrder);
+	act(() => tree.unmount());
+});
+
 it("says Update needed and why when no retry can fix the close", async () => {
 	const id = hubId();
 	adoptedAnHourAgo(id);

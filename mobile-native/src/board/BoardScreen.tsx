@@ -578,7 +578,9 @@ function Board({
 		],
 		[bands, idleFolded, pins, snapshot.pinSections, folds.isFolded, classify, shownSections, projectRow],
 	);
-	const { list, snapshot: settled } = useSettledList(boardItems);
+	// Nothing reaches the list before the first read lands, so a touch on the
+	// skeleton holds no empty frame over the rows that read brings.
+	const { list, snapshot: settled } = useSettledList(snapshot.loaded ? boardItems : null);
 	const shownGroups = groupItems(settled.display);
 	const rowMove = reduceMotion ? undefined : ROW_MOVE;
 	const scrollHandlers = useMemo(() => listScrollHandlers((event) => list.send(event)), [list]);
