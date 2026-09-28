@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -946,6 +947,85 @@ func TestStreamResult_TextStream_FiltersToTextDeltasOnly(t *testing.T) {
 	}
 	if strings.Join(deltas, "") != "Hello" {
 		t.Fatalf("TextStream deltas: %q", strings.Join(deltas, ""))
+	}
+}
+
+// textStreamForwarderRunning reports whether a (*StreamResult).TextStream
+// forwarding goroutine is currently live. It scans every goroutine stack into
+// buf (reused by the caller) for the forwarding closure, so an abandoned
+// forwarder parked on its downstream send is observable without draining the
+// channel it is stuck on.
+func textStreamForwarderRunning(buf []byte) bool {
+	n := runtime.Stack(buf, true)
+	return strings.Contains(string(buf[:n]), "(*StreamResult).TextStream.func")
+}
+
+// TestStreamResult_TextStream_CloseUnblocksAbandonedConsumer pins LLM-01: a
+// consumer that stops reading after the 16-entry buffer fills must be released by
+// the supported Close operation, not left parked on the downstream send forever.
+func TestStreamResult_TextStream_CloseUnblocksAbandonedConsumer(t *testing.T) {
+	const deltas = 64 // comfortably more than the TextStream buffer (16)
+	c := NewClient()
+	a := &scriptedStreamAdapter{
+		name: "openai",
+		scripts: []func(ctx context.Context, req Request) (Stream, error){
+			func(ctx context.Context, req Request) (Stream, error) {
+				_ = req
+				st := NewChanStream(nil)
+				go func() {
+					defer st.CloseSend()
+					st.Send(StreamEvent{Type: StreamEventStreamStart})
+					for i := 0; i < deltas; i++ {
+						st.Send(StreamEvent{Type: StreamEventTextDelta, TextID: "text_1", Delta: "x"})
+					}
+					<-ctx.Done()
+				}()
+				return st, nil
+			},
+		},
+	}
+	c.Register(a)
+
+	prompt := "hi"
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	res, err := StreamGenerate(ctx, GenerateOptions{
+		Client:   c,
+		Model:    "m",
+		Provider: "openai",
+		Prompt:   &prompt,
+	})
+	if err != nil {
+		t.Fatalf("StreamGenerate: %v", err)
+	}
+
+	ch := res.TextStream() // consumer abandons it: it never reads.
+	// Wait until the forwarder has filled the channel buffer and parked on its
+	// downstream send — the exact leaked state the audit describes.
+	stackBuf := make([]byte, 1<<20)
+	deadline := time.Now().Add(2 * time.Second)
+	for len(ch) < cap(ch) && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if len(ch) < cap(ch) {
+		t.Fatalf("forwarder never filled its channel buffer (len=%d cap=%d)", len(ch), cap(ch))
+	}
+	if !textStreamForwarderRunning(stackBuf) {
+		t.Fatal("precondition: TextStream forwarder should be blocked mid-send")
+	}
+
+	// The supported close operation must release the abandoned forwarder.
+	if cerr := res.Close(); cerr != nil {
+		t.Fatalf("Close: %v", cerr)
+	}
+
+	deadline = time.Now().Add(2 * time.Second)
+	for textStreamForwarderRunning(stackBuf) {
+		if time.Now().After(deadline) {
+			t.Fatal("TextStream forwarder did not terminate after Close (goroutine leak)")
+		}
+		time.Sleep(time.Millisecond)
 	}
 }
 

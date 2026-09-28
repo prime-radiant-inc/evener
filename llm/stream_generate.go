@@ -33,13 +33,22 @@ func (r *StreamResult) Close() error { return r.stream.Close() }
 
 // TextStream returns a channel that yields only the text delta strings from the
 // stream. The channel is closed when the underlying event stream ends.
+//
+// The forwarding goroutine also exits when the stream is closed via Close, so a
+// consumer that abandons the channel (stops reading) does not leave the forwarder
+// parked on its downstream send once the 16-entry buffer fills. Consumers must
+// therefore drain the channel or call Close.
 func (r *StreamResult) TextStream() <-chan string {
 	ch := make(chan string, 16)
 	go func() {
 		defer close(ch)
 		for ev := range r.stream.Events() {
 			if ev.Type == StreamEventTextDelta {
-				ch <- ev.Delta
+				select {
+				case ch <- ev.Delta:
+				case <-r.stream.closing:
+					return
+				}
 			}
 		}
 	}()
