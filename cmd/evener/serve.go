@@ -2345,6 +2345,10 @@ func (l liveThreadEnvelopeSource) PendingQuestion() *appwire.PendingQuestion {
 	return l.session().PendingQuestion()
 }
 
+func (l liveThreadEnvelopeSource) RestingFailure() *appwire.ThreadFailure {
+	return l.session().RestingFailure()
+}
+
 func (l liveThreadEnvelopeSource) PendingEscalations() []appwire.SandboxEscalationRequested {
 	return mapServePendingEscalations(l.session().PendingEscalations())
 }

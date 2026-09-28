@@ -85,19 +85,31 @@ function asksFor(callId: string): ReadonlyMap<string, AskQuestionRef[]> {
 describe("projectedRow — item entries", () => {
 	it("maps a user message to the user row, carrying its transcript entry index", () => {
 		const row = projectedRow(itemEntry(item({ type: "userMessage", text: "hi", transcriptEntryIndex: 7 }), true));
-		expect(row).toEqual<MobileTimelineItem>({ kind: "user", id: "i1", text: "hi", transcriptEntryIndex: 7 });
+		expect(row).toEqual<MobileTimelineItem>({
+			kind: "user",
+			id: "i1",
+			text: "hi",
+			transcriptEntryIndex: 7,
+			turnId: "t1",
+		});
 	});
 
 	it("omits transcriptEntryIndex when the user item has none", () => {
 		const row = projectedRow(itemEntry(item({ type: "userMessage", text: "hi" }), true));
-		expect(row).toEqual<MobileTimelineItem>({ kind: "user", id: "i1", text: "hi" });
+		expect(row).toEqual<MobileTimelineItem>({ kind: "user", id: "i1", text: "hi", turnId: "t1" });
 	});
 
 	it("maps a user-sourced steering item to the same user row, without an entry index", () => {
 		const row = projectedRow(
 			itemEntry(item({ type: "steering", text: "steer", source: "user", transcriptEntryIndex: 3 })),
 		);
-		expect(row).toEqual<MobileTimelineItem>({ kind: "user", id: "i1", text: "steer" });
+		expect(row).toEqual<MobileTimelineItem>({
+			kind: "user",
+			id: "i1",
+			text: "steer",
+			origin: "steered",
+			turnId: "t1",
+		});
 	});
 
 	it("maps an agent message to the assistant row and joins pending deltas", () => {
@@ -109,12 +121,19 @@ describe("projectedRow — item entries", () => {
 			id: "i1",
 			markdown: "hello!",
 			streaming: false,
+			turnId: "t1",
 		});
 	});
 
 	it("marks an assistant row streaming while the item is in progress", () => {
 		const row = projectedRow(itemEntry(item({ type: "agentMessage", text: "x", status: "inProgress" }), true));
-		expect(row).toEqual<MobileTimelineItem>({ kind: "assistant", id: "i1", markdown: "x", streaming: true });
+		expect(row).toEqual<MobileTimelineItem>({
+			kind: "assistant",
+			id: "i1",
+			markdown: "x",
+			streaming: true,
+			turnId: "t1",
+		});
 	});
 
 	it("maps a reasoning item to a collapsed reasoning activity with its joined text", () => {
@@ -126,6 +145,7 @@ describe("projectedRow — item entries", () => {
 			family: "reasoning",
 			state: "completed",
 			detail: { output: "thought" },
+			turnId: "t1",
 		});
 	});
 
@@ -159,6 +179,7 @@ describe("projectedRow — item entries", () => {
 				output: "a\nb",
 				callId: "call-1",
 			},
+			turnId: "t1",
 		});
 	});
 
@@ -223,6 +244,7 @@ describe("projectedRow — item entries", () => {
 			family: "informational",
 			tone: "info",
 			text: "steer",
+			turnId: "t1",
 		});
 	});
 
@@ -244,6 +266,7 @@ describe("projectedRow — item entries", () => {
 			text: "failed",
 			eventKind: "error",
 			exitCode: 1,
+			turnId: "t1",
 		});
 	});
 
@@ -270,6 +293,7 @@ describe("projectedRow — item entries", () => {
 			id: "i1",
 			title: "Space",
 			detail: "disk low — free some",
+			turnId: "t1",
 		});
 	});
 
@@ -286,6 +310,7 @@ describe("projectedRow — item entries", () => {
 			family: "unknown",
 			state: "completed",
 			detail: { output: "body" },
+			turnId: "t1",
 		});
 	});
 
@@ -298,6 +323,7 @@ describe("projectedRow — item entries", () => {
 			kind: "question",
 			id: "i1",
 			questions: [{ ...ask, callId: "call-1", key: "call-1:0" }],
+			turnId: "t1",
 		});
 	});
 
@@ -335,6 +361,7 @@ describe("projectedRow — thinking entries", () => {
 			family: "reasoning",
 			state: "running",
 			detail: {},
+			turnId: "t1",
 		});
 	});
 
@@ -359,6 +386,7 @@ describe("projectedRow — intent entries", () => {
 			// only its summary line, nothing to expand.
 			summaryOnly: true,
 			detail: { description: "Read a.ts" },
+			turnId: "t1",
 		});
 	});
 
@@ -381,8 +409,10 @@ describe("projectedRow — intent entries", () => {
 	// output, error, exit code, duration, call id) appears at
 	// tools/activity/full, where the projector routes the call through its
 	// item entry instead. The row is marked summaryOnly so the presentation
-	// layer renders the line without an expansion affordance.
-	it("carries only its summary line, dropping the full detail the source item holds", () => {
+	// layer renders the line without an expansion affordance. It keeps its
+	// two clock times as metadata, which nothing shows on the row itself, so
+	// the run it folds into can say how long it took (Jesse, 2026-09-27).
+	it("carries only its summary line and its clock times, dropping the rest of the source item's detail", () => {
 		const row = projectedRow(
 			intentEntry(
 				item({
@@ -405,7 +435,12 @@ describe("projectedRow — intent entries", () => {
 			family: "tool",
 			state: "completed",
 			summaryOnly: true,
-			detail: { description: "Run ls" },
+			detail: {
+				description: "Run ls",
+				startedAtMs: Date.parse("2024-01-01T00:00:00.000Z"),
+				endedAtMs: Date.parse("2024-01-01T00:00:01.000Z"),
+			},
+			turnId: "t1",
 		});
 	});
 
@@ -416,7 +451,8 @@ describe("projectedRow — intent entries", () => {
 		// instead of its write line. ACTION_SUMMARY_UNAVAILABLE means the
 		// source carried no description; the ruling still drops the output,
 		// exit code, duration and call id, and only the arguments the derived
-		// summary reads survive.
+		// summary reads survive, beside the clock times every summarized row
+		// keeps for its run.
 		const row = projectedRow(
 			intentEntry(
 				item({
@@ -424,13 +460,16 @@ describe("projectedRow — intent entries", () => {
 					toolName: "shell",
 					argumentsJSON: '{"cmd":"ls"}',
 					output: "a\nb",
+					startedAt: "2024-01-01T00:00:00.000Z",
+					completedAt: "2024-01-01T00:00:01.000Z",
 				}),
 			),
 		);
-		expect(row).toMatchObject({
-			kind: "activity",
-			summaryOnly: true,
-			detail: { arguments: '{"cmd":"ls"}' },
+		expect(row).toMatchObject({ kind: "activity", summaryOnly: true });
+		expect(row?.kind === "activity" && row.detail).toEqual({
+			arguments: '{"cmd":"ls"}',
+			startedAtMs: Date.parse("2024-01-01T00:00:00.000Z"),
+			endedAtMs: Date.parse("2024-01-01T00:00:01.000Z"),
 		});
 	});
 
@@ -496,6 +535,7 @@ describe("projectedRow — critical entries", () => {
 			id: "i1",
 			title: "Thought not shown",
 			detail: "",
+			turnId: "t1",
 		});
 		expect(JSON.stringify(row)).not.toContain("secret thought");
 	});
@@ -509,7 +549,13 @@ describe("projectedRow — critical entries", () => {
 		const row = projectedRow(
 			criticalEntry(item({ type: "warning", text: "msg", warning: { title: "Title" } }), "Title"),
 		);
-		expect(row).toEqual<MobileTimelineItem>({ kind: "failure", id: "i1", title: "Title", detail: "msg" });
+		expect(row).toEqual<MobileTimelineItem>({
+			kind: "failure",
+			id: "i1",
+			title: "Title",
+			detail: "msg",
+			turnId: "t1",
+		});
 	});
 
 	it("maps a critical failed tool call to a failed tool activity, not a failure row", () => {
@@ -521,6 +567,7 @@ describe("projectedRow — critical entries", () => {
 			family: "tool",
 			state: "failed",
 			detail: { error: "boom" },
+			turnId: "t1",
 		});
 	});
 
@@ -534,7 +581,83 @@ describe("projectedRow — critical entries", () => {
 
 	it("maps a critical user-sourced steering to the user row", () => {
 		const row = projectedRow(criticalEntry(item({ type: "steering", text: "steer", source: "user" })));
-		expect(row).toEqual<MobileTimelineItem>({ kind: "user", id: "i1", text: "steer" });
+		expect(row).toEqual<MobileTimelineItem>({
+			kind: "user",
+			id: "i1",
+			text: "steer",
+			origin: "steered",
+			turnId: "t1",
+		});
+	});
+});
+
+describe("projectedRow: turn id, origin, and step timing", () => {
+	it("carries the item's turn id onto a user message row", () => {
+		const row = projectedRow(itemEntry(item({ type: "userMessage", text: "hi", turnId: "turn_2" }), true));
+		expect(row).toMatchObject({ kind: "user", turnId: "turn_2" });
+	});
+
+	it("carries the item's turn id onto an agent message row", () => {
+		const row = projectedRow(itemEntry(item({ type: "agentMessage", text: "hi", turnId: "turn_2" }), true));
+		expect(row).toMatchObject({ kind: "assistant", turnId: "turn_2" });
+	});
+
+	it("marks a user-sourced steering item's row as steered", () => {
+		const row = projectedRow(itemEntry(item({ type: "steering", text: "steer", source: "user" })));
+		expect(row).toMatchObject({ kind: "user", origin: "steered" });
+	});
+
+	it("never carries an origin on a plain user message", () => {
+		const row = projectedRow(itemEntry(item({ type: "userMessage", text: "hi" }), true));
+		expect(row).not.toHaveProperty("origin");
+	});
+
+	it("parses a tool's started/completed timestamps into its activity detail", () => {
+		const startedAt = "2024-01-01T00:00:00.000Z";
+		const completedAt = "2024-01-01T00:00:01.500Z";
+		const row = projectedRow(
+			itemEntry(item({ type: "commandExecution", toolName: "shell", startedAt, completedAt })),
+		);
+		expect(row).toMatchObject({
+			kind: "activity",
+			detail: { startedAtMs: Date.parse(startedAt), endedAtMs: Date.parse(completedAt) },
+		});
+	});
+
+	it("omits startedAtMs and endedAtMs when the timestamps do not parse", () => {
+		const row = projectedRow(
+			itemEntry(
+				item({
+					type: "commandExecution",
+					toolName: "shell",
+					startedAt: "not-a-date",
+					completedAt: "also-not",
+				}),
+			),
+		);
+		expect(row).toMatchObject({ kind: "activity" });
+		const detail = (row as Extract<MobileTimelineItem, { kind: "activity" }>).detail;
+		expect(detail.startedAtMs).toBeUndefined();
+		expect(detail.endedAtMs).toBeUndefined();
+	});
+
+	it("keeps neither time, and no duration, when only one of them is known", () => {
+		for (const times of [
+			{ startedAt: "2024-01-01T00:00:00.000Z" },
+			{ startedAt: "2024-01-01T00:00:00.000Z", completedAt: "also-not" },
+			{ startedAt: "", completedAt: "2024-01-01T00:00:01.000Z" },
+		]) {
+			const row = projectedRow(itemEntry(item({ type: "commandExecution", toolName: "shell", ...times })));
+			const detail = (row as Extract<MobileTimelineItem, { kind: "activity" }>).detail;
+			expect([detail.startedAtMs, detail.endedAtMs, detail.durationMs]).toEqual([undefined, undefined, undefined]);
+		}
+	});
+
+	it("gives a turn-error failure row its turn's id, not any item's", () => {
+		const turn = { id: "turn_9", status: "failed", items: [], error: { message: "boom" } } as TurnModel;
+		const rows = projectTimeline({ turns: [turn] } as unknown as ThreadModel, new Map());
+		const failure = rows.find((row) => row.kind === "failure");
+		expect(failure).toMatchObject({ turnId: "turn_9" });
 	});
 });
 
@@ -916,13 +1039,14 @@ const rowId = (row: MobileTimelineItem): string => row.id;
 // last activity row merges the live thought (r2) and the failed turn's settled
 // thought (r3) into one cross-turn run.
 const FULL_ROWS: MobileTimelineItem[] = [
-	{ kind: "user", id: "u1", text: "please audit the config" },
+	{ kind: "user", id: "u1", text: "please audit the config", turnId: "t1" },
 	{
 		kind: "attachments",
 		id: "u1:attachments",
 		items: [{ id: "u1:0", src: "http://x/cat.png", name: "cat.png" }],
+		turnId: "t1",
 	},
-	{ kind: "user", id: "steer-user", text: "include the diff" },
+	{ kind: "user", id: "steer-user", text: "include the diff", origin: "steered", turnId: "t1" },
 	{
 		kind: "notice",
 		id: "sys-prompt",
@@ -931,6 +1055,7 @@ const FULL_ROWS: MobileTimelineItem[] = [
 		tone: "system",
 		text: "PROMPT LOADED",
 		eventKind: "system_prompt",
+		turnId: "t1",
 	},
 	{
 		kind: "notice",
@@ -940,6 +1065,7 @@ const FULL_ROWS: MobileTimelineItem[] = [
 		tone: "warning",
 		text: "provider hiccup",
 		eventKind: "error",
+		turnId: "t1",
 	},
 	{
 		kind: "notice",
@@ -949,6 +1075,7 @@ const FULL_ROWS: MobileTimelineItem[] = [
 		tone: "system",
 		text: "context compacted",
 		eventKind: "compaction",
+		turnId: "t1",
 	},
 	{
 		kind: "activity",
@@ -956,14 +1083,22 @@ const FULL_ROWS: MobileTimelineItem[] = [
 		label: "shell",
 		family: "tool",
 		state: "completed",
-		detail: { description: "  run the audit  ", durationMs: 500, callId: "call-1" },
+		detail: { description: "  run the audit  ", durationMs: 500, callId: "call-1", startedAtMs: 1000, endedAtMs: 1500 },
+		turnId: "t1",
 		members: [
 			{
 				id: "c1",
 				label: "shell",
 				family: "tool",
 				state: "completed",
-				detail: { description: "  run the audit  ", durationMs: 500, callId: "call-1" },
+				detail: {
+					description: "  run the audit  ",
+					durationMs: 500,
+					callId: "call-1",
+					startedAtMs: 1000,
+					endedAtMs: 1500,
+				},
+				turnId: "t1",
 			},
 			{
 				id: "c2",
@@ -971,6 +1106,7 @@ const FULL_ROWS: MobileTimelineItem[] = [
 				family: "tool",
 				state: "completed",
 				detail: { description: "grep the results" },
+				turnId: "t1",
 			},
 		],
 	},
@@ -981,6 +1117,7 @@ const FULL_ROWS: MobileTimelineItem[] = [
 		family: "tool",
 		state: "failed",
 		detail: { error: "boom", exitCode: 1 },
+		turnId: "t1",
 	},
 	{
 		kind: "activity",
@@ -989,8 +1126,9 @@ const FULL_ROWS: MobileTimelineItem[] = [
 		family: "reasoning",
 		state: "completed",
 		detail: { output: "auditing quietly" },
+		turnId: "t1",
 	},
-	{ kind: "failure", id: "w1", title: "Low disk", detail: "disk almost full — clean up" },
+	{ kind: "failure", id: "w1", title: "Low disk", detail: "disk almost full — clean up", turnId: "t1" },
 	{
 		kind: "activity",
 		id: "unk1",
@@ -998,6 +1136,7 @@ const FULL_ROWS: MobileTimelineItem[] = [
 		family: "unknown",
 		state: "completed",
 		detail: { output: "opaque payload" },
+		turnId: "t1",
 	},
 	{
 		kind: "question",
@@ -1012,6 +1151,7 @@ const FULL_ROWS: MobileTimelineItem[] = [
 				multiSelect: false,
 			},
 		],
+		turnId: "t1",
 	},
 	{
 		kind: "activity",
@@ -1020,6 +1160,7 @@ const FULL_ROWS: MobileTimelineItem[] = [
 		family: "tool",
 		state: "running",
 		detail: { description: "read config" },
+		turnId: "t2",
 		members: [
 			{
 				id: "c4",
@@ -1027,8 +1168,9 @@ const FULL_ROWS: MobileTimelineItem[] = [
 				family: "tool",
 				state: "running",
 				detail: { description: "read config" },
+				turnId: "t2",
 			},
-			{ id: "c5", label: "view", family: "tool", state: "completed", detail: {} },
+			{ id: "c5", label: "view", family: "tool", state: "completed", detail: {}, turnId: "t2" },
 		],
 	},
 	{
@@ -1036,8 +1178,9 @@ const FULL_ROWS: MobileTimelineItem[] = [
 		id: "c5:attachments",
 		items: [{ id: "c5:out:0", src: "http://x/shot.png", name: "shot.png", source: "screenshot" }],
 		sourceTranscriptKey: "c5",
+		turnId: "t2",
 	},
-	{ kind: "assistant", id: "a2", markdown: "working on it", streaming: true },
+	{ kind: "assistant", id: "a2", markdown: "working on it", streaming: true, turnId: "t2" },
 	{
 		kind: "activity",
 		id: "r2",
@@ -1045,6 +1188,7 @@ const FULL_ROWS: MobileTimelineItem[] = [
 		family: "reasoning",
 		state: "running",
 		detail: { output: "secret live thought" },
+		turnId: "t2",
 		members: [
 			{
 				id: "r2",
@@ -1052,6 +1196,7 @@ const FULL_ROWS: MobileTimelineItem[] = [
 				family: "reasoning",
 				state: "running",
 				detail: { output: "secret live thought" },
+				turnId: "t2",
 			},
 			{
 				id: "r3",
@@ -1059,10 +1204,17 @@ const FULL_ROWS: MobileTimelineItem[] = [
 				family: "reasoning",
 				state: "completed",
 				detail: { output: "final thought" },
+				turnId: "t3",
 			},
 		],
 	},
-	{ kind: "failure", id: "failure:t3", title: "Provider error", detail: "provider exploded\nretry" },
+	{
+		kind: "failure",
+		id: "failure:t3",
+		title: "Provider error",
+		detail: "provider exploded\nretry",
+		turnId: "t3",
+	},
 ];
 
 describe("the timeline projection delegates to the shared projector", () => {
@@ -1138,6 +1290,7 @@ describe("the timeline projection delegates to the shared projector", () => {
 				family: "reasoning",
 				state: "running",
 				detail: {},
+				turnId: "t2",
 			});
 			// The failed turn's settled thought explains the turn without its text.
 			expect(rows.find((row) => rowId(row) === "r3")).toEqual({
@@ -1145,6 +1298,7 @@ describe("the timeline projection delegates to the shared projector", () => {
 				id: "r3",
 				title: "Thought not shown",
 				detail: "",
+				turnId: "t3",
 			});
 
 			// A summarized tool call is a summary-only row at compact levels:
@@ -1160,6 +1314,9 @@ describe("the timeline projection delegates to the shared projector", () => {
 				expect(c1.detail.arguments).toBeUndefined();
 				expect(c1.detail.output).toBeUndefined();
 				expect(c1.detail.durationMs).toBeUndefined();
+				// The clock times stay, as metadata for the run's duration.
+				expect(c1.detail.startedAtMs).toBe(1000);
+				expect(c1.detail.endedAtMs).toBe(1500);
 				expect(c1.detail.callId).toBeUndefined();
 			} else {
 				expect(c1.summaryOnly).toBeUndefined();
@@ -1167,6 +1324,8 @@ describe("the timeline projection delegates to the shared projector", () => {
 					description: "  run the audit  ",
 					durationMs: 500,
 					callId: "call-1",
+					startedAtMs: 1000,
+					endedAtMs: 1500,
 				});
 			}
 			const c1Member = c1.members?.[0];
