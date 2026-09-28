@@ -35,6 +35,9 @@ vi.mock("@react-navigation/native", () => ({
 	usePreventRemove: () => {},
 }));
 vi.mock("expo-symbols", () => ({ SymbolView: "SymbolView" }));
+vi.mock("react-native-gesture-handler/ReanimatedSwipeable", async () =>
+	(await import("../renderNative.testkit")).gestureHandlerModuleMock(),
+);
 vi.mock("expo-web-browser", () => browser);
 vi.mock("expo-clipboard", () => clipboard);
 
@@ -281,7 +284,7 @@ describe("links", () => {
 		const url = tree.root.find((node) => String(node.type) === "Text" && textOf(node).startsWith("https:"));
 		expect(url.props.numberOfLines).toBeUndefined();
 		expect(url.props.style).toMatchObject({ fontFamily: "Menlo", fontSize: 13, lineHeight: 18, color: palette.inkMid });
-		expect(renderedText(tree)).toContain("The agent adds links as it works. Touch and hold one to remove it.");
+		expect(renderedText(tree)).toContain("The agent adds links as it works. Swipe left on one to remove it.");
 	});
 
 	it("says No links yet when there are none", () => {
@@ -382,13 +385,38 @@ describe("links", () => {
 		expect(renderedText(tree)).toContain("Couldn't remove that link.");
 	});
 
+	it("removes a link on a full swipe left, with the same toast as its menu (spec 8.8)", async () => {
+		const { requests } = provide(session({ sessionUrls: [web, file] }));
+		const tree = sheet();
+		const swipeables = tree.root.findAllByType("ReanimatedSwipeable" as never);
+		expect(swipeables).toHaveLength(2);
+		expect(renderedText(render(swipeables[0]?.props.renderRightActions()))).toBe("Remove");
+		const [content] = tree.root.findAllByProps({ testID: "swipe-row-content" });
+		act(() => content?.props.onTouchStart({ nativeEvent: { pageX: 200 } }));
+		act(() => swipeables[0]?.props.onSwipeableOpen("left"));
+		await flush();
+		expect(requests.filter((request) => request.method === "urls/remove").map((request) => request.params.id)).toEqual(["u1"]);
+		expect(renderedText(tree)).toContain("Link removed. Only the agent can add links.");
+	});
+
+	it("never removes a link from a swipe that began in the screen's left edge band", async () => {
+		const { requests } = provide(session({ sessionUrls: [web] }));
+		const tree = sheet();
+		const [swipeable] = tree.root.findAllByType("ReanimatedSwipeable" as never);
+		act(() => tree.root.findByProps({ testID: "swipe-row-content" }).props.onTouchStart({ nativeEvent: { pageX: 10 } }));
+		act(() => swipeable?.props.onSwipeableOpen("left"));
+		await flush();
+		expect(requests.filter((request) => request.method === "urls/remove")).toEqual([]);
+	});
+
 	it("offers no Remove link, and no Open for a file link, on a read-only session", () => {
 		provide(session({ sessionUrls: [file], status: { type: "ended" } as ThreadModel["status"] }));
 		const tree = sheet();
 		act(() => pressable(tree, "The plan, file:///Users/j/plan.md")?.props.onLongPress());
 		expect(actionSheet.mock.calls[0]?.[0]).toMatchObject({ options: ["Copy link", "Cancel"], cancelButtonIndex: 1 });
 		expect(actionSheet.mock.calls[0]?.[0].destructiveButtonIndex).toBeUndefined();
-		expect(renderedText(tree)).not.toContain("Touch and hold one to remove it.");
+		expect(renderedText(tree)).not.toContain("Swipe left on one to remove it.");
+		expect(tree.root.findAllByType("ReanimatedSwipeable" as never)).toHaveLength(0);
 	});
 });
 
