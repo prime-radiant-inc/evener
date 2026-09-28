@@ -2,9 +2,10 @@ package fuzzcov
 
 import (
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
-	"reflect"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -19,6 +20,8 @@ var gapInputSeeds = []struct{ name, registry, ignore string }{
 	{"header only", "# comment\n\nnative:agent:.:FuzzToolArgsValidate:./internal/tool,.", "# header only"},
 	{"registry coverpkg", "native:agent:.:FuzzToolArgsValidate:./internal/tool,.", "example.com/x  # reason"},
 	{"uncovered universe entry", "native:.:./parser:FuzzParse", "example.com/x  # reason"},
+	{"fuzzed sentinel collision", "native:.:./__deliberately_uncovered__:FuzzX", ""},
+	{"ignored sentinel collision", "", "m/__deliberately_uncovered__  # reason"},
 }
 
 // fuzzModulePaths is the fixed module-path map the fuzz oracle resolves registry
@@ -93,7 +96,7 @@ func checkGapInputs(t *testing.T, registry, ignore string) {
 	}
 
 	fuzzed := staticFuzzedPackages(gotTargets, fuzzModulePaths)
-	if want := modelFuzzedPackages(gotTargets); !reflect.DeepEqual(fuzzed, want) {
+	if want := modelFuzzedPackages(gotTargets); !maps.Equal(fuzzed, want) {
 		t.Fatalf("staticFuzzedPackages = %v, want %v", fuzzed, want)
 	}
 	if msg := gapRoundTripOracle(fuzzed, gotIgnore); msg != "" {
@@ -109,7 +112,7 @@ func ignoreOracle(parsed map[string]bool, err error, src string) string {
 	if (err == nil) != ok {
 		return fmt.Sprintf("readIgnore err = %v, want accepted=%v for %q", err, ok, src)
 	}
-	if ok && !reflect.DeepEqual(parsed, want) {
+	if ok && !maps.Equal(parsed, want) {
 		return fmt.Sprintf("readIgnore = %v, want %v for %q", parsed, want, src)
 	}
 	return ""
@@ -122,7 +125,7 @@ func registryOracle(parsed []target, err error, src string) string {
 	if (err == nil) != ok {
 		return fmt.Sprintf("readRegistry err = %v, want accepted=%v for %q", err, ok, src)
 	}
-	if ok && !reflect.DeepEqual(parsed, want) {
+	if ok && !slices.Equal(parsed, want) {
 		return fmt.Sprintf("readRegistry = %+v, want %+v for %q", parsed, want, src)
 	}
 	return ""
@@ -130,7 +133,9 @@ func registryOracle(parsed []target, err error, src string) string {
 
 // gapRoundTripOracle feeds parsed fuzzed/ignore sets through gapMap over a
 // universe built from them plus one deliberately uncovered entry, and returns a
-// mismatch message unless that entry is the only gap.
+// mismatch message unless every covered package is cleared and the uncovered
+// entry survives. The sentinel is checked by membership, not by a fixed gap
+// count, because a fuzz input can itself name it.
 func gapRoundTripOracle(fuzzed, ignore map[string]bool) string {
 	const uncovered = "m/__deliberately_uncovered__"
 	universe := map[string]string{}
@@ -142,16 +147,23 @@ func gapRoundTripOracle(fuzzed, ignore map[string]bool) string {
 	}
 	universe[uncovered] = "gap"
 	gaps := gapMap(universe, fuzzed, ignore)
-	if len(gaps) != 1 || gaps[0][0] != uncovered {
-		return fmt.Sprintf("gapMap = %v, want only %q (universe=%v fuzzed=%v ignore=%v)", gaps, uncovered, universe, fuzzed, ignore)
+	for _, g := range gaps {
+		if fuzzed[g[0]] || ignore[g[0]] {
+			return fmt.Sprintf("gapMap kept covered package %q (fuzzed=%v ignored=%v)", g[0], fuzzed[g[0]], ignore[g[0]])
+		}
+	}
+	wantUncovered := !fuzzed[uncovered] && !ignore[uncovered]
+	if wantUncovered != (len(gaps) == 1 && gaps[0][0] == uncovered) {
+		return fmt.Sprintf("gapMap = %v, want the uncovered sentinel to survive=%v (universe=%v fuzzed=%v ignore=%v)", gaps, wantUncovered, universe, fuzzed, ignore)
 	}
 	return ""
 }
 
 // modelFuzzedPackages is the oracle's expected package set: each parsed target
 // contributes its coverpkg (or pkg) resolved against its module import path. It
-// is deliberately separate from staticFuzzedPackages' aggregation, so a target
-// the production path drops or mis-maps turns the fuzz target red.
+// reimplements the aggregation, so a target the staticFuzzedPackages loop drops
+// or mis-maps turns the fuzz target red; the joinImport/pkgSubdir primitives it
+// shares are pinned by TestJoinImportAndPkgSubdir instead.
 func modelFuzzedPackages(targets []target) map[string]bool {
 	out := map[string]bool{}
 	for _, tg := range targets {
