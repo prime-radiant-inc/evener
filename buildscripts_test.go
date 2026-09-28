@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"testing"
@@ -125,6 +126,17 @@ func runAPIPackagePreflight(t *testing.T, packageDir string) (string, error) {
 	t.Helper()
 	command := exec.Command("scripts/sdk/api-package-preflight.sh")
 	command.Env = append(os.Environ(), "EVENER_API_PACKAGE_DIR="+packageDir)
+	output, err := command.CombinedOutput()
+	return string(output), err
+}
+
+// runAPIPackagePreflightPath is runAPIPackagePreflight with PATH replaced, so a
+// case can prove the script's Node check fires on a host with no node rather
+// than misreading the lockfile.
+func runAPIPackagePreflightPath(t *testing.T, packageDir, path string) (string, error) {
+	t.Helper()
+	command := exec.Command("scripts/sdk/api-package-preflight.sh")
+	command.Env = overlayEnv(os.Environ(), map[string]string{"EVENER_API_PACKAGE_DIR": packageDir, "PATH": path})
 	output, err := command.CombinedOutput()
 	return string(output), err
 }
@@ -272,6 +284,63 @@ func TestAPIPackagePreflightRefusesUnreadyInstalls(t *testing.T) {
 		}
 		if strings.Contains(output, "ERROR") {
 			t.Fatalf("healthy install produced a refusal; output = %s", output)
+		}
+	})
+
+	t.Run("unhealthy shared install with a matching lockfile", func(t *testing.T) {
+		root := t.TempDir()
+		work := filepath.Join(root, "appwire-client")
+		shared := filepath.Join(root, "shared")
+		lock := apiPackageLockfile(apiPackageTypescriptVersion)
+		writeTestFile(t, filepath.Join(work, "package-lock.json"), []byte(lock), 0o644)
+		writeTestFile(t, filepath.Join(shared, "package-lock.json"), []byte(lock), 0o644)
+		// The lockfile matches, so the symlink branch accepts it and the health
+		// check refuses. Its remedy must not tell the reader to npm ci through
+		// the link, which would delete the shared install.
+		if err := os.MkdirAll(filepath.Join(shared, "node_modules"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(filepath.Join(shared, "node_modules"), filepath.Join(work, "node_modules")); err != nil {
+			t.Fatalf("symlink node_modules: %v", err)
+		}
+
+		output, err := runAPIPackagePreflight(t, work)
+		if err == nil {
+			t.Fatalf("preflight accepted an unhealthy shared install; output = %s", output)
+		}
+		if !strings.Contains(output, "tsc") {
+			t.Fatalf("refusal does not name the toolchain check that failed; output = %s", output)
+		}
+		if strings.Contains(output, "cd "+work+" && npm ci") {
+			t.Fatalf("the health refusal tells the reader to run npm ci through the symlink: output = %s", output)
+		}
+		if !strings.Contains(output, "never npm ci through the symlink") {
+			t.Fatalf("refusal does not give the symlink-safe remedy; output = %s", output)
+		}
+	})
+
+	t.Run("node is not installed", func(t *testing.T) {
+		if runtime.GOOS == "windows" {
+			t.Skip("symlinked PATH fixtures need a Unix shell")
+		}
+		realDirname, err := exec.LookPath("dirname")
+		if err != nil {
+			t.Skipf("dirname is not available: %v", err)
+		}
+		// A PATH holding only dirname, which the script uses to locate the repo
+		// root, so the Node check is what refuses.
+		binDir := t.TempDir()
+		if err := os.Symlink(realDirname, filepath.Join(binDir, "dirname")); err != nil {
+			t.Fatalf("symlink dirname: %v", err)
+		}
+		dir := apiPackageFixture(t, apiPackageLockfile(apiPackageTypescriptVersion))
+
+		output, err := runAPIPackagePreflightPath(t, dir, binDir)
+		if err == nil {
+			t.Fatalf("preflight passed on a host with no node; output = %s", output)
+		}
+		if !strings.Contains(output, "Node 22") {
+			t.Fatalf("refusal does not tell the reader to install Node 22+; output = %s", output)
 		}
 	})
 }
