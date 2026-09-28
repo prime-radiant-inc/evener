@@ -808,6 +808,38 @@ func TestNextEligible_DeepCopiesNestedState(t *testing.T) {
 	}
 }
 
+// TestCurrentInProgress_DeepCopiesNestedState pins that the current-task
+// snapshot is deep-copied. currentInProgressLocked returns *Summarize(...).Current,
+// and Summarize clones the task with cloneTasks, so mutating nested fields of
+// the returned task must not reach store-owned state.
+func TestCurrentInProgress_DeepCopiesNestedState(t *testing.T) {
+	t.Parallel()
+	s, aID := seedDependentStore(t)
+	bID := s.View()[1].ID
+	if err := s.Update([]TaskUpdate{{ID: bID, Status: TaskInProgress, Notes: "note"}}); err != nil {
+		t.Fatalf("start b: %v", err)
+	}
+
+	current, ok := s.CurrentInProgress()
+	if !ok {
+		t.Fatal("CurrentInProgress found no task, want b")
+	}
+	current.DependsOn[0] = 999
+	current.Notes[0] = "mutated"
+	*current.CreatedAt = time.Unix(9999, 0)
+
+	got := s.View()[1]
+	if got.DependsOn[0] != aID {
+		t.Errorf("CurrentInProgress leaked a DependsOn alias: store now has %v", got.DependsOn)
+	}
+	if got.Notes[0] != "note" {
+		t.Errorf("CurrentInProgress leaked a Notes alias: store now has %v", got.Notes)
+	}
+	if got.CreatedAt.Equal(time.Unix(9999, 0)) {
+		t.Errorf("CurrentInProgress leaked a timestamp pointer alias: store now has %v", got.CreatedAt)
+	}
+}
+
 // TestAppend_ClonesInputDependencies pins the input side of the copy boundary:
 // once Append retains a dependency list, mutating the caller's slice must not
 // change the store or its persisted state.
