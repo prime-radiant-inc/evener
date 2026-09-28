@@ -1,0 +1,206 @@
+import type { QueueState, ThreadCapabilities } from "@evener/appwire-client";
+import type { PendingTurnEntry } from "@evener/appwire-client/state/mutation";
+import { describe, expect, it } from "vitest";
+import { type GhostSource, ghostActionTarget, ghosts, type RecoveryGhostRow, shownGhosts } from "./ghosts";
+
+const caps = (over: Partial<ThreadCapabilities> = {}): ThreadCapabilities => ({
+	send: true,
+	steer: true,
+	interrupt: true,
+	compact: true,
+	clear: true,
+	forkFromTurn: true,
+	shutdown: true,
+	changeModel: true,
+	changeVisionModel: true,
+	queue: true,
+	goal: true,
+	sharedNotes: true,
+	rename: true,
+	...over,
+});
+const queue = (texts: string[], over: Partial<QueueState> = {}): QueueState => ({
+	revision: 3,
+	depth: texts.length,
+	ids: texts.map((_, index) => `queue_${index + 1}`),
+	texts,
+	preview: texts.map((text) => text.split("\n")[0] ?? ""),
+	...over,
+});
+const session = (type: string, texts: string[] = [], over: Partial<GhostSource> = {}): GhostSource => ({
+	status: { type },
+	capabilities: caps(),
+	queue: queue(texts),
+	...over,
+});
+const pending = (over: Partial<PendingTurnEntry> = {}): PendingTurnEntry => ({
+	id: "cmid-1",
+	ref: "ref-1",
+	method: "send",
+	text: "hello",
+	imageCount: 0,
+	skillNames: [],
+	state: "submitting",
+	source: "outbox",
+	fromThisClient: true,
+	...over,
+});
+const row = (over: Partial<RecoveryGhostRow> = {}): RecoveryGhostRow => ({
+	clientMutationId: "cmid-9",
+	status: "rejected",
+	reason: "daemon refused",
+	text: "recover this message",
+	actions: ["restore", "discard"],
+	...over,
+});
+
+describe("queued messages (spec 8.5)", () => {
+	it("lists the queue oldest first, with Steer now while the agent works", () => {
+		const list = ghosts(session("active", ["first", "second"]), [], null, []);
+		expect(list.map((ghost) => ghost.text)).toEqual(["first", "second"]);
+		expect(list[0]).toMatchObject({
+			state: "queued",
+			caption: "Queued · sends when this turn ends",
+			buttons: ["steerNow"],
+			menu: ["edit", "cancel"],
+			origin: { kind: "queue", entry: { index: 0, id: "queue_1" } },
+		});
+	});
+
+	it("offers no Steer now to a harness that can't steer", () => {
+		const [ghost] = ghosts(session("active", ["first"], { capabilities: caps({ steer: false }) }), [], null, []);
+		expect(ghost?.buttons).toEqual([]);
+		expect(ghost?.menu).toEqual(["edit", "cancel"]);
+	});
+
+	it("holds a queue a Stop parked, with Send now and Cancel", () => {
+		const [ghost] = ghosts(session("idle", ["first"]), [], null, []);
+		expect(ghost).toMatchObject({
+			state: "held",
+			caption: "Held · you stopped this turn",
+			buttons: ["sendNow", "cancel"],
+		});
+	});
+
+	it("treats a queue behind a question as queued, not held", () => {
+		expect(ghosts(session("awaiting", ["first"]), [], null, [])[0]?.state).toBe("queued");
+	});
+
+	it("can't act on an entry the daemon gave no id, or edit an image-only one", () => {
+		const noIds = session("active", ["first"], { queue: queue(["first"], { ids: [] }) });
+		expect(ghosts(noIds, [], null, [])[0]).toMatchObject({ buttons: [], menu: [] });
+		const imageOnly = session("active", [""], { queue: queue([""], { preview: ["[image]"] }) });
+		expect(ghosts(imageOnly, [], null, [])[0]).toMatchObject({ text: "[image]", menu: ["cancel"] });
+	});
+});
+
+describe("messages on their way", () => {
+	it("shows your steer until the agent picks it up, and your sends until they are reflected", () => {
+		const list = ghosts(
+			session("active", ["queued"]),
+			[
+				pending({ id: "a", method: "send", state: "submitting", text: "sent" }),
+				pending({ id: "b", method: "promote", state: "accepted", text: "steered" }),
+			],
+			null,
+			[],
+		);
+		expect(list.map((ghost) => [ghost.state, ghost.text])).toEqual([
+			["steering", "steered"],
+			["queued", "queued"],
+			["sending", "sent"],
+		]);
+		expect(list[0]?.caption).toBe("Steering · arrives at the next step");
+		expect(list[2]?.caption).toBe("Sending…");
+	});
+
+	it("leaves out another client's rows and a row Stop canceled before it left the phone", () => {
+		const list = ghosts(
+			session("idle"),
+			[pending({ id: "a", fromThisClient: false }), pending({ id: "b", state: "canceled" })],
+			null,
+			[],
+		);
+		expect(list).toEqual([]);
+	});
+
+	it("asks you to check a send whose answer was lost", () => {
+		const [ghost] = ghosts(session("idle"), [pending({ state: "blockedUnknown" })], null, []);
+		expect(ghost).toMatchObject({ state: "unconfirmed", caption: "Couldn't confirm this was sent", buttons: ["check"] });
+	});
+});
+
+describe("messages that didn't make it (spec 14)", () => {
+	it("keeps an unconfirmed send with Check and Discard, and Edit on tap", () => {
+		const [ghost] = ghosts(session("idle"), [], "maybe sent", []);
+		expect(ghost).toMatchObject({
+			state: "unconfirmed",
+			text: "maybe sent",
+			buttons: ["check", "discard"],
+			menu: ["edit"],
+			origin: { kind: "draft" },
+		});
+	});
+
+	it("says why the hub refused a message, and offers Edit only when it can come back", () => {
+		expect(ghosts(session("idle"), [], null, [row()])[0]).toMatchObject({
+			state: "refused",
+			caption: "Couldn't send this · daemon refused",
+			buttons: ["edit", "discard"],
+		});
+		expect(ghosts(session("idle"), [], null, [row({ actions: ["discard"] })])[0]?.buttons).toEqual(["discard"]);
+		expect(ghosts(session("idle"), [], null, [row({ reason: undefined })])[0]?.caption).toBe("Couldn't send this");
+	});
+
+	it("asks you to check a message the phone couldn't place", () => {
+		expect(ghosts(session("idle"), [], null, [row({ status: "orphaned" })])[0]).toMatchObject({
+			state: "unconfirmed",
+			buttons: ["check", "discard"],
+			menu: ["edit"],
+		});
+	});
+
+	it("orders steers, the queue, sends, then everything that needs a look", () => {
+		const list = ghosts(
+			session("active", ["queued"]),
+			[
+				pending({ id: "u", state: "blockedUnknown", text: "lost" }),
+				pending({ id: "s", method: "steer", state: "accepted", text: "steer" }),
+				pending({ id: "q", method: "queue", state: "submitting", text: "sending" }),
+			],
+			"draft",
+			[row()],
+		);
+		expect(list.map((ghost) => ghost.state)).toEqual([
+			"steering",
+			"queued",
+			"unconfirmed",
+			"sending",
+			"unconfirmed",
+			"refused",
+		]);
+	});
+});
+
+describe("acting on the message you saw (Review Focus 2)", () => {
+	const live = queue(["a", "b", "c"]);
+	it("acts on the same entry when it is still in place", () => {
+		expect(ghostActionTarget(live, { index: 1, id: "queue_2" })).toEqual({ index: 1, id: "queue_2" });
+	});
+	it("follows an entry that moved, and refuses one that left", () => {
+		expect(ghostActionTarget(queue(["b", "c"], { ids: ["queue_2", "queue_3"] }), { index: 1, id: "queue_2" })).toEqual({
+			index: 0,
+			id: "queue_2",
+		});
+		expect(ghostActionTarget(live, { index: 0, id: "queue_9" })).toBeNull();
+		expect(ghostActionTarget(null, { index: 0, id: "queue_1" })).toBeNull();
+		expect(ghostActionTarget(live, { index: 0, id: "" })).toBeNull();
+	});
+});
+
+it("shows at most three queued messages and counts the rest, never hiding the others", () => {
+	const all = ghosts(session("active", ["1", "2", "3", "4", "5"]), [], "draft", []);
+	const { shown, moreQueued } = shownGhosts(all);
+	expect(shown.map((ghost) => ghost.text)).toEqual(["1", "2", "3", "draft"]);
+	expect(moreQueued).toBe(2);
+});

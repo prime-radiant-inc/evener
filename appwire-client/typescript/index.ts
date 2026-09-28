@@ -415,6 +415,7 @@ export {
   canSteer,
   decideSteerRoute,
   decideSubmitRoute,
+  isQueueParked,
   isSessionResting,
   isTurnActive,
   NO_ACTIVE_TURN,
