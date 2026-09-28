@@ -287,3 +287,46 @@ func TestRepairScratchRetentionSkipsReleasedManifest(t *testing.T) {
 			got.Released, released.Revision, got.Revision, len(released.References), len(got.References))
 	}
 }
+
+// TestPrepareRetainedScratchDemotesOrphanOwningBinding proves a restore clears a
+// lease-owning binding no consumer names — the state a publication-and-stop
+// leaves — instead of failing the graph validation closed, which wedged every
+// resume of the root.
+func TestPrepareRetainedScratchDemotesOrphanOwningBinding(t *testing.T) {
+	workDir := t.TempDir()
+	base := t.TempDir()
+	root, owner := newPruneTestRoot(t)
+	orphan := pinTestScratch(t, owner, base, workDir)
+	manifest, err := sandbox.LoadScratchRetention(owner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := sandbox.UpdateScratchBindings(owner, manifest.Revision, []sandbox.ScratchBinding{{
+		BindingID: "orphan", OwnerSessionID: owner.RootSessionID, WorkingDir: workDir,
+		Slots: map[string]sandbox.ScratchSlot{sandbox.ScratchKindUnsandboxed: {Dir: orphan.Dir, OwnsLease: true}},
+	}}, nil); err != nil {
+		t.Fatalf("publish an orphan owning binding: %v", err)
+	}
+	if err := orphan.Retain(); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := root.prepareRetainedScratch(); err != nil {
+		t.Fatalf("prepareRetainedScratch wedged on an orphan owning binding: %v", err)
+	}
+	after, err := sandbox.LoadScratchRetention(owner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, binding := range after.Bindings {
+		if binding.BindingID != "orphan" {
+			continue
+		}
+		if _, ok := binding.Slots[sandbox.ScratchKindUnsandboxed]; ok {
+			t.Fatal("the restore kept the orphan owning slot")
+		}
+	}
+	if err := root.validateRetainedScratchPresent(); err != nil {
+		t.Fatalf("retirement readiness failed after the repair: %v", err)
+	}
+}

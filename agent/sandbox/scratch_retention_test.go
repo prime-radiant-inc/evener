@@ -2857,3 +2857,79 @@ func TestScratchRetentionRepairTreatsACommittedWriteAsSuccess(t *testing.T) {
 		t.Fatalf("committed manifest revision = %d, want %d", manifest.Revision, before.Revision+1)
 	}
 }
+
+// TestScratchRetentionRepairDemotesOrphanOwningBinding proves the repair clears
+// a lease-owning binding that no consumer role names — the state a publication
+// leaves when it claims a binding before its consumer row lands and then stops,
+// which the graph reader fails closed on. The repair demotes the binding to the
+// historical slotless shape and keeps its allocation retained by reference.
+func TestScratchRetentionRepairDemotesOrphanOwningBinding(t *testing.T) {
+	base, workspace := scratchRetentionBase(t)
+	owner := ScratchOwner{StateDir: t.TempDir(), RootSessionID: identifier.MustNewSessionID()}
+	scratch, err := NewSessionScratch(base, workspace)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := scratch.Pin(owner, ScratchReference{Dir: scratch.Dir, Kind: "unsandboxed"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := scratch.Retain(); err != nil {
+		t.Fatal(err)
+	}
+	manifest, err := LoadScratchRetention(owner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := UpdateScratchBindings(owner, manifest.Revision, []ScratchBinding{{
+		BindingID:      "orphan",
+		OwnerSessionID: owner.RootSessionID,
+		WorkingDir:     workspace,
+		Slots:          map[string]ScratchSlot{"unsandboxed": {Dir: scratch.Dir, OwnsLease: true}},
+	}}, nil); err != nil {
+		t.Fatalf("publish an orphan owning binding: %v", err)
+	}
+	before, err := LoadScratchRetention(owner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ScratchRetentionNeedsRepair(before) {
+		t.Fatal("an orphan owning binding was not detected as needing repair")
+	}
+
+	repaired, written, err := RepairScratchRetention(owner)
+	if err != nil {
+		t.Fatalf("repair: %v", err)
+	}
+	if !written {
+		t.Fatal("the repair did not report a write")
+	}
+	var orphan *ScratchBinding
+	for i := range repaired.Bindings {
+		if repaired.Bindings[i].BindingID == "orphan" {
+			orphan = &repaired.Bindings[i]
+		}
+	}
+	if orphan == nil {
+		t.Fatal("the repair dropped the binding instead of demoting it")
+	}
+	for kind, slot := range orphan.Slots {
+		if slot.OwnsLease {
+			t.Fatalf("the repair kept orphan owning slot %q", kind)
+		}
+	}
+	referenced := false
+	for _, ref := range repaired.References {
+		if filepath.Clean(ref.Dir) == filepath.Clean(scratch.Dir) {
+			referenced = true
+		}
+	}
+	if !referenced {
+		t.Fatal("the repair dropped the allocation's reference")
+	}
+	if _, err := os.Stat(scratch.Dir); err != nil {
+		t.Fatalf("the repair removed the directory: %v", err)
+	}
+	if ScratchRetentionNeedsRepair(repaired) {
+		t.Fatal("the repaired manifest still needs repair")
+	}
+}
