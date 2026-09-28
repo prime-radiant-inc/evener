@@ -109,7 +109,7 @@ func TestRegistryProgramExploresSourceInput(t *testing.T) {
 	if len(onlyRapid) != 1 || onlyRapid[0].Kind != "rapid" || onlyRapid[0].Name != "TestOne" {
 		t.Fatalf("rapid source discovery = %+v", onlyRapid)
 	}
-	if got := registryProgramDiscover(t, []byte("package m\n\nfunc (")); got != nil {
+	if got := registryProgramDiscover(t, []byte("package m\n\nfunc (")); len(got) != 0 {
 		t.Fatalf("malformed source discovery = %+v", got)
 	}
 }

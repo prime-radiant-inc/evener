@@ -56,7 +56,7 @@ const (
 // FuzzHarvestProgram feeds arbitrary recorded-traffic bytes through the
 // harvester's per-surface record parsers. The first byte selects which recorder
 // file the rest of the payload is treated as — SSE api log, appwire log, HTTP
-// recorder log, transcript, or jobs log — and the payload becomes that file's
+// recorder log, jobs log, or transcript — and the payload becomes that file's
 // content. The oracle is the never-panic floor plus the harvester's never-leak
 // contract: re-reading everything it emitted must find no gated secret. Fixed
 // scenario coverage lives in TestHarvestProgramScenarios, not in a selector
@@ -75,7 +75,7 @@ func FuzzHarvestProgram(f *testing.F) {
 	}
 
 	f.Fuzz(func(t *testing.T, program []byte) {
-		if len(program) < 2 || len(program) > harvestProgramMaxBytes {
+		if len(program) == 0 || len(program) > harvestProgramMaxBytes {
 			return
 		}
 		harvestProgramRun(t, program[0]%harvestProgramSurfaces, program[1:])
