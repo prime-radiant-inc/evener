@@ -1683,6 +1683,33 @@ describe("host-partitioned instance lists (component 07b)", () => {
     expect(hostPartition(hostInstancesStore.getState(), "buildbox").instances).toEqual(afterEdit.instances);
     expect(hostPartition(hostInstancesStore.getState(), "buildbox").loading).toBe(false);
   });
+
+  // #2227: a recovery whose registry no longer names the host issues no read.
+  // The recovery effect owns the read, so it must check the registry's answered
+  // snapshot before issuing one - otherwise a host the user has already left (or
+  // removed) is read through the SSH channel for nothing.
+  test("a recovery whose registry no longer names the host issues no read", async () => {
+    const fake = connectFakeClient();
+    const reads: HostRequestParams[] = [];
+    fake.on("evener/host/request", (params) => {
+      reads.push(params as HostRequestParams);
+      return REMOTE_LIST as unknown as HostForwardedResult;
+    });
+
+    // The registry has failed: the read is held, and the effect records the
+    // error phase as the one to recover from.
+    hostsStore.setState({ load: { phase: "error", message: "registry unavailable" } });
+    renderHook(() => useHostInstances("buildbox"));
+    await act(async () => {});
+    expect(reads).toHaveLength(0);
+
+    // It recovers, and its snapshot no longer names buildbox.
+    await act(async () => {
+      hostsStore.setState({ load: { phase: "ready", hosts: [] } });
+    });
+
+    expect(reads).toHaveLength(0);
+  });
 });
 
 describe("auth RPCs: thin proxies, no local state mutation", () => {
