@@ -15,6 +15,7 @@ import type {
   SandboxEscalationRequested,
   SessionURL,
   TaskAggregate,
+  ThreadAccess,
   ThreadCapabilities,
   ThreadItemPosition,
   ThreadStatus,
@@ -451,6 +452,11 @@ export interface ThreadModel {
   // nothing: absent is unknown, and zero is not news.
   // Snapshot-only like usage/cost/workMillis; no live push.
   failedToolCalls?: number;
+  // The session's sandbox mode and network setting (wire EvenerThread.access,
+  // S15), for the Session sheet's Access section. Undefined when the daemon or
+  // hub predates it: not known, so the section is left out. Snapshot-only: a
+  // session's sandbox is fixed when it starts.
+  access?: ThreadAccess;
   workMillis: number;
   // activeTurnStartedAt is undefined when no turn is active (an ISO string,
   // like every other timestamp on this model, converted from the wire's

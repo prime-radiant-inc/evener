@@ -152,6 +152,7 @@ const navigation = {
 	getState: () => navigationState.state,
 	navigate: vi.fn(),
 	push: vi.fn(),
+	pop: vi.fn(),
 	goBack: vi.fn(),
 	setParams: vi.fn(),
 	setOptions: vi.fn(),
@@ -591,6 +592,34 @@ it("gives Send a typed command's own label, so VoiceOver hears what it runs", as
 	await type(tree, "/steer now");
 	expect(pressable(tree, "Steer")).toBeDefined();
 	expect(hub.mutations()).toEqual([]);
+});
+
+it("keeps the session open when /shutdown is typed and completed (ruling 19)", async () => {
+	const served = thread("ref-typed-shutdown", "idle");
+	// thread() shares the module-level CAPABILITIES object; clone it so this
+	// test's shutdown capability never leaks into a later test's fixture.
+	served.evener = {
+		...served.evener,
+		capabilities: { ...served.evener.capabilities, shutdown: true },
+	};
+	const { tree, hub } = await mount(served);
+	await type(tree, "/shutdown");
+	const send = pressable(tree, "Shut down");
+	expect(send?.props.accessibilityState).toMatchObject({ disabled: false });
+	const reads = () => hub.requests.filter(({ method }) => method === "thread/read").length;
+	const readsBefore = reads();
+
+	await press(tree, "Shut down");
+
+	expect(hub.requests.filter(({ method }) => method === "thread/shutdown")).toEqual([
+		{ method: "thread/shutdown", params: { ref: "ref-typed-shutdown" } },
+	]);
+	// It rereads the session it stays on instead of closing it and leaving.
+	expect(reads()).toBeGreaterThan(readsBefore);
+	expect(navigation.pop).not.toHaveBeenCalled();
+	expect(navigation.goBack).not.toHaveBeenCalled();
+	expect(field(tree)).toBeDefined();
+	tree.unmount();
 });
 
 it("does nothing when a Stop lands after the turn already ended", async () => {
@@ -1202,10 +1231,19 @@ describe("an approval waiting for a decision (spec 8.4, ruling 38)", () => {
 
 it("offers no Retry that couldn't send: a question still waits on the failed turn", async () => {
 	const served = thread("ref-retry-question", "idle", true);
-	const turn = (served as unknown as { turns: { status: string; error?: unknown }[] }).turns[0];
-	turn.status = "failed";
-	turn.error = { message: "go test exited 1" };
+	// A per-test turn: spreading the shared QUESTION_TURN keeps its question
+	// while this test owns the failed status, so it never mutates the fixture
+	// the other question tests read.
+	(served as unknown as { turns: unknown[] }).turns = [
+		{ ...QUESTION_TURN, status: "failed", error: { message: "go test exited 1" } },
+	];
 	const { tree } = await mount(served);
 	expect(renderedText(tree)).toContain("go test exited 1");
 	expect(pressable(tree, "Retry")).toBeUndefined();
+});
+
+it("leaves the shared question fixture as the other question tests expect it", () => {
+	const turn = (thread("ref-fixture-intact", "idle", true) as unknown as { turns: { status: string; error?: unknown }[] }).turns[0];
+	expect(turn.status).toBe("completed");
+	expect(turn.error).toBeUndefined();
 });
