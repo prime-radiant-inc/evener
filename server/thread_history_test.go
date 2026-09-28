@@ -225,9 +225,7 @@ func (hx *historyHarness) writeAt(t *testing.T, data []byte, offset int64) {
 }
 
 // updatesThrough collects history/updated notifications until one covers
-// length, keeping any resync it reads meanwhile in deferredResyncs: the harness
-// delivers the two on separate channels, so a resync can be ready before the
-// update it follows, and the reader must not treat that read order as fatal.
+// length, keeping any resync it reads meanwhile for nextResync.
 func (hx *historyHarness) updatesThrough(t *testing.T, length int64) []appwire.HistoryUpdatedParams {
 	t.Helper()
 	var got []appwire.HistoryUpdatedParams
