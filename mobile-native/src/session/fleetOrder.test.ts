@@ -1,0 +1,56 @@
+import type { NavigationSessionSummary } from "@evener/appwire-client";
+import { describe, expect, it } from "vitest";
+import { liveBands } from "../board/attention";
+import { liveOrder, neighbor, nextNavigation, nextSession, othersNeedingYou } from "./fleetOrder";
+
+const row = (ref: string, over: Partial<NavigationSessionSummary> = {}): NavigationSessionSummary => ({
+	ref,
+	host_id: "local",
+	session_id: ref,
+	title: ref,
+	project: "evener",
+	state: "idle",
+	kind: "session",
+	live: true,
+	children: [],
+	...over,
+});
+const at = (minute: number) => new Date(Date.UTC(2026, 8, 26, 12, minute)).toISOString();
+const failed = row("failed", { state: "errored", updated_at: at(5) });
+const question = row("question", { state: "awaiting", ask_pending: true, updated_at: at(1) });
+const working = row("working", { state: "active", updated_at: at(9) });
+const finished = row("finished", { state: "awaiting", updated_at: at(8) });
+const bands = liveBands([failed, question, working, finished], [failed, question], () => false);
+
+describe("who else needs you (spec 13.2)", () => {
+	it("counts every session that needs you except this one", () => {
+		expect(othersNeedingYou(bands, "failed").map((r) => r.ref)).toEqual(["question"]);
+		expect(othersNeedingYou(bands, "working").map((r) => r.ref)).toEqual(["failed", "question"]);
+	});
+
+	it("sends Next to the first of them, failures first (ruling 11)", () => {
+		expect(nextSession(bands, "working")?.ref).toBe("failed");
+		expect(nextSession(bands, "failed")?.ref).toBe("question");
+		expect(nextSession(liveBands([working], [], () => false), "working")).toBeNull();
+	});
+});
+
+describe("Live order for the title bar's swipes (spec 6)", () => {
+	it("walks Needs you, Finished, Working and Idle", () => {
+		expect(liveOrder(bands).map((r) => r.ref)).toEqual(["failed", "question", "finished", "working"]);
+	});
+
+	it("finds the neighbor either way, and nothing past the ends or off the list", () => {
+		const order = liveOrder(bands);
+		expect(neighbor(order, "question", 1)?.ref).toBe("finished");
+		expect(neighbor(order, "question", -1)?.ref).toBe("failed");
+		expect(neighbor(order, "failed", -1)).toBeNull();
+		expect(neighbor(order, "working", 1)).toBeNull();
+		expect(neighbor(order, "gone", 1)).toBeNull();
+	});
+});
+
+it("pushes from where you started, and replaces from a session Next opened (spec 8.3)", () => {
+	expect(nextNavigation(undefined)).toBe("push");
+	expect(nextNavigation("next")).toBe("replace");
+});
