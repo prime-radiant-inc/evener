@@ -987,6 +987,66 @@ describe("a session that can't take a message yet (ruling 20)", () => {
 		]);
 	});
 
+	function restartNeeded(ref: string): Thread {
+		const served = thread(ref, "idle");
+		(served as unknown as { status: unknown }).status = { type: "restartRequired" };
+		return served;
+	}
+
+	function rerender(tree: ReactTestRenderer, ref: string, state: string) {
+		harness.connection = { ...harness.connection, state };
+		const route = { key: `conversation-${ref}`, name: "Conversation", params: { hubId: "hub-1", ref, title: "Session" } };
+		act(() =>
+			tree.update(<ConversationScreen route={route as unknown as ConversationScreenProps["route"]} navigation={navigation} />),
+		);
+	}
+
+	it("still resumes after a restart whose controls were replaced while it stopped", async () => {
+		const { tree, hub } = await mount(restartNeeded("ref-restart-swap"));
+		let stopped!: () => void;
+		hub.client.forceStop = (ref: string) => {
+			hub.requests.push({ method: "forceStop", params: { ref } });
+			return new Promise<void>((resolve) => {
+				stopped = resolve;
+			});
+		};
+		await press(tree, "Restart session");
+		// A blip while the stop is on its way replaces the session's controls.
+		rerender(tree, "ref-restart-swap", "connecting");
+		await settle();
+		rerender(tree, "ref-restart-swap", "ready");
+		await settle();
+		stopped();
+		await settle();
+		expect(
+			hub.requests
+				.filter((request) => request.method === "forceStop" || request.method === "resumeThread")
+				.map((request) => request.method),
+		).toEqual(["forceStop", "resumeThread"]);
+		expect(renderedText(tree)).not.toContain("Restarting…");
+	});
+
+	it("says so in the notice when the session stopped but couldn't start again", async () => {
+		const { tree, hub } = await mount(restartNeeded("ref-restart-fails"));
+		hub.client.resumeThread = async (ref: string) => {
+			hub.requests.push({ method: "resumeThread", params: { ref } });
+			throw new Error("resume refused");
+		};
+		await press(tree, "Restart session");
+		expect(renderedText(tree)).toContain("Stopped, but couldn't start it again.");
+		expect(pressable(tree, "Restart session")?.props.disabled).toBe(false);
+	});
+
+	it("says so in the notice when the stop fails", async () => {
+		const { tree, hub } = await mount(restartNeeded("ref-stop-fails"));
+		hub.client.forceStop = async () => {
+			throw new Error("stop refused");
+		};
+		await press(tree, "Restart session");
+		expect(hub.requests.filter((request) => request.method === "resumeThread")).toEqual([]);
+		expect(renderedText(tree)).toContain("Couldn't restart this session.");
+	});
+
 	it("offers Resume in the composer's place for a paused session", async () => {
 		const served = thread("ref-paused", "idle");
 		(served as unknown as { evener: Record<string, unknown> }).evener.resumeRequired = true;

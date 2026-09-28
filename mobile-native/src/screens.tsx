@@ -165,6 +165,7 @@ import { SessionHeader, useHeaderHiding } from "./session/SessionHeader";
 import { type SessionMenuAction, sessionMenu } from "./session/sessionMenu";
 import { confirmShutDown, type SessionInfoAction, type SessionInfoHost, sessionInfoHosts } from "./session/SessionInfoSheet";
 import { SessionNotice } from "./session/SessionNotice";
+import { useSessionRestart } from "./session/sessionRestart";
 import { canDeleteSavedSession, latestForkPoint, modelChipLabel } from "./session/sessionFacts";
 import {
 	type ChipKind,
@@ -2081,16 +2082,7 @@ export function ConversationScreen({
 			: conversation?.resumeRequired
 				? "paused"
 				: null;
-	const [restarting, setRestarting] = useState(false);
-	async function restart() {
-		if (!controls) return;
-		setRestarting(true);
-		try {
-			if (await controls.forceStop()) await controls.resume();
-		} finally {
-			setRestarting(false);
-		}
-	}
+	const restart = useSessionRestart(controls, snapshot.status);
 	const notesPreview = conversation ? notesBarPreview(conversation) : null;
 	const [stopping, setStopping] = useState(false);
 	const stopBusy = useRef(false);
@@ -3115,14 +3107,15 @@ export function ConversationScreen({
 								<SessionNotice
 									kind={notice}
 									busy={
-										restarting ||
+										restart.busy ||
 										controlsState?.pending === "forceStop" ||
 										controlsState?.pending === "resume"
 									}
 									disabled={!controls}
+									error={notice === "restartNeeded" ? restart.error : null}
 									onPress={() => {
 										if (notice === "paused") void controls?.resume();
-										else void restart();
+										else void restart.restart();
 									}}
 								/>
 							) : null}

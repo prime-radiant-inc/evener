@@ -1,6 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
 import { pressable, render, renderedText } from "../renderNative.testkit";
+import { paletteFor } from "../design/tokens";
 import { SessionNotice } from "./SessionNotice";
+
+const palette = paletteFor("light");
 
 vi.mock("react-native", async () => ({
 	...(await import("../renderNative.testkit")).nativeModuleMock(),
@@ -39,5 +42,15 @@ describe("the notice in the composer's place (ruling 20)", () => {
 			pressable(render(<SessionNotice kind="paused" busy={false} disabled onPress={() => {}} />), "Resume")?.props
 				.disabled,
 		).toBe(true);
+	});
+
+	it("says what went wrong in one line, and keeps its button as the way to try again", () => {
+		const tree = render(
+			<SessionNotice kind="restartNeeded" busy={false} error="Couldn't restart this session." onPress={() => {}} />,
+		);
+		const line = tree.root.find((node) => node.props.accessibilityRole === "alert");
+		expect(line.props.children).toBe("Couldn't restart this session.");
+		expect(line.props.style).toMatchObject({ color: palette.dangerInk });
+		expect(pressable(tree, "Restart session")?.props.disabled).toBe(false);
 	});
 });

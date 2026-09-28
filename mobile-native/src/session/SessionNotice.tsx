@@ -17,12 +17,16 @@ export function SessionNotice({
 	kind,
 	busy,
 	disabled = false,
+	error = null,
 	onPress,
 }: {
 	kind: "restartNeeded" | "paused";
 	busy: boolean;
 	/** Nothing could act on the press, such as while the hub is away. */
 	disabled?: boolean;
+	/** What went wrong last time. The button is how to try again, so the line
+	 * offers nothing of its own. */
+	error?: string | null;
 	onPress: () => void;
 }) {
 	const { palette } = useColors();
@@ -38,6 +42,15 @@ export function SessionNotice({
 			>
 				{copy.text}
 			</Text>
+			{error ? (
+				<Text
+					accessibilityRole="alert"
+					allowFontScaling={allowFontScaling}
+					style={{ color: palette.dangerInk, fontSize: 13 * scale, lineHeight: 18 * scale }}
+				>
+					{error}
+				</Text>
+			) : null}
 			<Pressable
 				accessibilityRole="button"
 				accessibilityLabel={label}
