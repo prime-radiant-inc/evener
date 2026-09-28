@@ -599,6 +599,16 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 			_, _ = fmt.Fprintf(stderr, "[hub] pruned %d orphaned host-running probe file(s) under %s\n", pruned, root)
 		}
 	}
+	// The operation store loads before the web server is built; a loaded
+	// compensation record whose stash reference is not this hub.toml family's
+	// own must never become a read, restore, or remove target, so a foreign
+	// path refuses startup (the machine-managed-file posture: a record this
+	// build cannot account for is refused loudly, never served).
+	hostOpsStore := openHostOpsStore(hubStateRoot, stderr, hostOperationRetention(cfg))
+	if err := validateHostOpsStashReferences(hostOpsStore, opts.configPath); err != nil {
+		_, _ = fmt.Fprintf(stderr, "[hub] %v\n", err)
+		return err
+	}
 	web := newWebServer(hubcore.WebConfig{
 		HubAddr:                   cfg.Addr,
 		AuthToken:                 authToken,
@@ -641,7 +651,7 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 		RemoteHostRegistry:   hostRegistry,
 		RemoteHostSSHManager: sshManager,
 		RemoteHostConfigPath: opts.configPath,
-		RemoteHostOpsStore:   openHostOpsStore(hubStateRoot, stderr, hostOperationRetention(cfg)),
+		RemoteHostOpsStore:   hostOpsStore,
 		// This hub's own running identity and the two owner-adjustable
 		// deploy-pipeline knobs: the probe deadline the plan's gated probe
 		// uses, and the minimum free space evener/host/running's health

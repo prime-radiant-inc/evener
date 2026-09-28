@@ -2776,6 +2776,67 @@ func hubTOMLStashPath(configPath, receiptKey string) string {
 	return fmt.Sprintf("%s.stash.%x", configPath, sum[:8])
 }
 
+// stashKeyHexChars is the fixed width of the per-commit suffix
+// hubTOMLStashPath emits (the first 8 bytes of a SHA-256 digest).
+const stashKeyHexChars = 16
+
+// isStashKeyHex reports whether suffix is a per-commit stash name's hex half.
+func isStashKeyHex(suffix string) bool {
+	if len(suffix) != stashKeyHexChars {
+		return false
+	}
+	for _, digit := range suffix {
+		if (digit < '0' || digit > '9') && (digit < 'a' || digit > 'f') {
+			return false
+		}
+	}
+	return true
+}
+
+// ownsStashPath reports whether stash names this hub's own stash family beside
+// its hub.toml: the canonical legacy name or a per-commit
+// `<hub.toml>.stash.<16 hex>` name. Anything else is not this hub's to read,
+// restore, or remove — a tampered or foreign record names a path, never bytes
+// this hub wrote.
+func (m *hubHostManager) ownsStashPath(stash string) bool {
+	return stashPathOwnedBy(m.cfg.configPath, stash)
+}
+
+// stashPathOwnedBy is ownsStashPath's path-based twin, usable before a manager
+// exists (the load wiring validates the records it opened).
+func stashPathOwnedBy(configPath, stash string) bool {
+	path := strings.TrimSpace(configPath)
+	if path == "" || strings.TrimSpace(stash) == "" {
+		return false
+	}
+	if stash == path+".stash" {
+		// The legacy spelling an earlier build of this branch wrote; a record
+		// naming it keeps its restore source.
+		return true
+	}
+	suffix, ok := strings.CutPrefix(stash, path+".stash.")
+	return ok && isStashKeyHex(suffix)
+}
+
+// validateHostOpsStashReferences refuses a loaded compensation record whose
+// stash reference is not this hub.toml family's own: the record's path becomes
+// a restore source and an unconditional remove target, so a foreign path must
+// refuse startup (the machine-managed-file posture: a record this build cannot
+// account for is refused loudly, never served and never removed).
+func validateHostOpsStashReferences(store *hostops.Store, configPath string) error {
+	if store == nil {
+		return nil
+	}
+	for host, record := range store.Compensations() {
+		if stashPathOwnedBy(configPath, record.Stash) {
+			continue
+		}
+		return fmt.Errorf("operation store compensation for %q names stash %q, which is not a stash path beside %s; refusing to serve rather than read or remove a foreign path",
+			host, record.Stash, strings.TrimSpace(configPath))
+	}
+	return nil
+}
+
 // writeHubTOMLStash captures the selected hub.toml's current bytes into the
 // stash before a removal's staged write replaces them, so the commit is
 // compensable. It returns the stash reference the compensation record must
@@ -2852,6 +2913,9 @@ func (m *hubHostManager) restoreHubTOMLFromStash(stash string) error {
 	if strings.TrimSpace(stash) == "" {
 		return errors.New("compensation record names no stash")
 	}
+	if !m.ownsStashPath(stash) {
+		return fmt.Errorf("compensation record names stash %q, which is not a stash path beside %s", stash, path)
+	}
 	data, err := os.ReadFile(stash)
 	if err != nil {
 		return fmt.Errorf("read hub.toml stash %s: %w", stash, err)
@@ -2867,6 +2931,12 @@ func (m *hubHostManager) restoreHubTOMLFromStash(stash string) error {
 // 08 §6). A missing stash is already pruned.
 func (m *hubHostManager) pruneHubTOMLStash(stash string) {
 	if strings.TrimSpace(stash) == "" {
+		return
+	}
+	if !m.ownsStashPath(stash) {
+		// A record's path is not this hub's to remove: a tampered or foreign
+		// record must never turn into an unconditional delete.
+		m.logf("stash %q is not a stash path this hub owns; left untouched", stash)
 		return
 	}
 	if err := os.Remove(stash); err != nil && !errors.Is(err, os.ErrNotExist) {
@@ -3262,7 +3332,15 @@ func (m *hubHostManager) resumeArmedCompensation(record hostops.Compensation) {
 	switch {
 	case !hasFile || !intentLive:
 		// The commit path passed the commit point: the purge stands and nothing
-		// is resurrected.
+		// is resurrected. This arm also covers the crash window where the
+		// rows-present restore below landed and the process died before the
+		// advance: the record is still armed and the file is the restored
+		// pre-mutation bytes, which carry no intent. That state converges by
+		// construction — the boot that reads this record loaded those very
+		// bytes, so its registry, store model, and runtime already serve the
+		// restored set; the restored file carries no tombstone, so no mark was
+		// taken; and the purge never landed, so the rows are untouched and
+		// nothing needs re-inserting.
 		m.clearCompensation(record, "the intent is already cleared")
 		_ = intent
 	case rowsPresent:
@@ -3270,17 +3348,33 @@ func (m *hubHostManager) resumeArmedCompensation(record hostops.Compensation) {
 			m.logf("boot compensation for %q not resumed: %v", record.Host, err)
 			return
 		}
+		// The restored bytes are the authority for the machine records too.
+		if restored, ok := m.hostFileRecords(); ok {
+			m.installRestoredRecords(restored)
+		}
 		// The purge never landed and the rows are untouched, but the swap
-		// compensation still owes the runtime revert: advance the record and
-		// follow the same arms a crash after the restore would (the restore is
-		// idempotent), so the record clears only once the runtime serves the
-		// restored set — never a cleared compensation beside a runtime that does
-		// not serve it.
+		// compensation still owes the runtime revert. Continue from the rows
+		// arm: the hubtoml arm's commit-point check reads the intent off the
+		// file, and the restored pre-mutation bytes carry no intent by
+		// construction, so re-entering it here would clear the record without
+		// re-inserting the preimage rows, re-applying the restored runtime, or
+		// reversing the host-removed marks.
+		// The restore just ran, so the record passes through the hubtoml phase
+		// (the phase that names the restore step) and on to the rows arm. Each
+		// advance is its own store write, exactly as the restorer's per-step
+		// discipline requires: a crash between them leaves the record in
+		// `compensating-hubtoml` with the file already restored, and the next
+		// boot's hubtoml arm sees the restored bytes carry no intent and takes
+		// the commit-point clear traced there.
 		if err := m.cfg.ops.AdvanceCompensation(record.Host, hostops.CompensationHubTOML); err != nil {
 			m.logf("boot compensation for %q not advanced past the restore: %v", record.Host, err)
 			return
 		}
-		record.Phase = hostops.CompensationHubTOML
+		if err := m.cfg.ops.AdvanceCompensation(record.Host, hostops.CompensationRows); err != nil {
+			m.logf("boot compensation for %q not advanced to the rows arm: %v", record.Host, err)
+			return
+		}
+		record.Phase = hostops.CompensationRows
 		m.resumeCompensation(record)
 	default:
 		if err := m.cfg.ops.AdvanceCompensation(record.Host, hostops.CompensationHubTOML); err != nil {

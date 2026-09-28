@@ -988,31 +988,22 @@ func (m *hubHostManager) RemoveResult(ctx context.Context, params appwire.HostRe
 			purgePreimage = []hostops.Token{row}
 		}
 	}
-	// The cross-file half exists only when there is a durable hub.toml to be
-	// atomic with. A hub with no config file has no counterpart to carry an
-	// intent and no bytes a stash could restore, so the purge is the whole
-	// story and runs live in one store write (§9's two-phase machinery is for
-	// the pair of files; a missing half has nothing to converge).
-	crossFile := len(purgeValues) > 0 && strings.TrimSpace(m.cfg.configPath) != ""
-	if len(purgeValues) > 0 && !crossFile {
-		if _, err := m.cfg.ops.ApplyStoreSync(hostops.StoreSyncIntent{
-			Host:       host.Name,
-			Generation: host.Generation,
-			Values:     purgeValues,
-		}); err != nil {
-			m.logf("remove %q: outstanding confirmation tokens not dropped: %v", host.Name, err)
-		}
-	}
 	// The stash of the prior hub.toml bytes must exist before the staged write
-	// replaces them, so the swap is compensable.
+	// replaces them, so the swap is compensable. The stash is written FIRST and
+	// the cross-file half is keyed on its landing, not on the configured path:
+	// a configured path whose file does not exist yet yields no stash (there are
+	// no bytes to restore), and that is exactly the same state as a hub with no
+	// config file — no counterpart to carry an intent, nothing a compensation
+	// could restore.
 	stash := ""
-	if crossFile {
+	if len(purgeValues) > 0 {
 		stash, err = m.writeHubTOMLStash(receiptKey)
 		if err != nil {
 			m.cfg.mu.Unlock()
 			return appwire.HostMutationResult{}, err
 		}
 	}
+	crossFile := len(purgeValues) > 0 && stash != ""
 	plan := &hostCommitPlan{
 		Kind:      hostMutationRemove,
 		Name:      host.Name,
@@ -1084,6 +1075,22 @@ func (m *hubHostManager) RemoveResult(ctx context.Context, params appwire.HostRe
 			dropStoreSync: host.Name,
 		}); err != nil {
 			return m.compensateStagedCrossFile(plan, prev, err, stash)
+		}
+	} else if len(purgeValues) > 0 {
+		// No stash landed (no config file, or a configured path whose file does
+		// not exist yet): there is no cross-file counterpart to carry an
+		// intent, so the purge is the whole story and rides the commit — after
+		// the staged write and the flip landed, before the commit point (§9's
+		// ordering: a failure before this point leaves the token in place for
+		// the retry, and a failure behind it is a committed removal whose tokens
+		// are already gone). One atomic store write, logged on failure like the
+		// pre-§9 live revocation it replaces.
+		if _, err := m.cfg.ops.ApplyStoreSync(hostops.StoreSyncIntent{
+			Host:       host.Name,
+			Generation: host.Generation,
+			Values:     purgeValues,
+		}); err != nil {
+			m.logf("remove %q: outstanding confirmation tokens not dropped: %v", host.Name, err)
 		}
 	}
 	m.cfg.mu.Unlock()

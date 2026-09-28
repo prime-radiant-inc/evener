@@ -248,6 +248,9 @@ func TestBootStoreSyncClearsAnIntentWhosePurgeLanded(t *testing.T) {
 func TestBootCompensationArmedWithRowsPresentRestoresHubTOML(t *testing.T) {
 	entry := pipelineEntry("m4", 2)
 	fixture, token, _ := newPipelineRemovalFixture(t, entry, true)
+	// The crash state exists before this boot loads it: the committed file
+	// carries the intent, the record is armed with the preimage, the purge never
+	// landed (the row is present), and the stash holds the pre-remove bytes.
 	fixture.appendTOML(t, "[pending_store_sync.m4]\ngeneration = 2\ntoken_values = [\""+token.Value+"\"]\n")
 	if err := fixture.store.ArmCompensation(hostops.Compensation{
 		Host: "m4", Phase: hostops.CompensationArmed, Rows: []hostops.Token{token},
@@ -266,32 +269,30 @@ func TestBootCompensationArmedWithRowsPresentRestoresHubTOML(t *testing.T) {
 	if _, ok := m.cfg.ops.OutstandingToken("m4"); !ok {
 		t.Fatal("boot dropped rows the purge never landed for")
 	}
-	// The restored host is actually served: the runtime arm re-applied it to
-	// the live registry before the record cleared.
+	// The store's model converged to the restored records: the compensated
+	// commit's intent (loaded from the committed file) is gone.
+	if _, carried := m.cfg.store.storeSyncSnapshot()["m4"]; carried {
+		t.Fatal("the store model kept the compensated commit's intent")
+	}
+	// The runtime registry serves the restored incarnation, with the restored
+	// identity, and the listing renders it.
+	current, live := m.cfg.hosts.Get("m4")
+	if !live || current.Generation != 2 || current.IncarnationID != "inc-m4" {
+		t.Fatalf("the registry entry = %+v/%v, want the restored identity", current, live)
+	}
 	served, err := m.List(context.Background(), appwire.EmptyParams{})
 	if err != nil {
 		t.Fatalf("List: %v", err)
 	}
 	if _, listed := hostRowNamed(served.Hosts, "m4"); !listed {
-		t.Fatalf("the restored host is not served: %+v", served.Hosts)
+		t.Fatalf("the runtime does not serve the restored host: %+v", served.Hosts)
 	}
 	cfg, _ := readPipelineConfig(t, fixture.configPath)
 	if _, live := hostEntryNamed(hostRegistryEntries(cfg), "m4"); !live {
 		t.Fatal("boot did not restore hub.toml from the stash")
 	}
-	// A second boot over the converged pair serves the host too, and the
-	// compensation does not come back.
-	second := newHubHostManager(nil, nil, hubcore.WebConfig{
-		RemoteHostRegistry:   fixture.registry,
-		RemoteHostOpsStore:   fixture.store,
-		RemoteHostConfigPath: fixture.configPath,
-	}, fixture.configPath, fixture.registry, nil)
-	served, err = second.List(context.Background(), appwire.EmptyParams{})
-	if err != nil {
-		t.Fatalf("List (second boot): %v", err)
-	}
-	if _, listed := hostRowNamed(served.Hosts, "m4"); !listed {
-		t.Fatalf("the second boot does not serve the restored host: %+v", served.Hosts)
+	if _, carried := cfg.PendingStoreSync["m4"]; carried {
+		t.Fatal("the restore left the compensated commit's intent in hub.toml")
 	}
 }
 
@@ -322,6 +323,40 @@ func hostRowNamed(rows []appwire.HostRow, name string) (appwire.HostRow, bool) {
 		}
 	}
 	return appwire.HostRow{}, false
+}
+
+// TestBootCompensationArmedWithRowsPresentLeavesTheRecordWhenTheRegistryLacks
+// TheHost pins the armed rows-present arm's runtime continuation: after the
+// restore, the record must run the rows and runtime arms (not re-enter the
+// hubtoml arm's commit-point check, which would clear it against the restored
+// no-intent bytes) — so a process whose registry does not serve the restored
+// host leaves the record open in `compensating-runtime` instead of clearing a
+// compensation it cannot serve.
+func TestBootCompensationArmedWithRowsPresentLeavesTheRecordWhenTheRegistryLacksTheHost(t *testing.T) {
+	entry := pipelineEntry("m4", 2)
+	fixture, token, _ := newPipelineRemovalFixture(t, entry, false)
+	fixture.appendTOML(t, "[pending_store_sync.m4]\ngeneration = 2\ntoken_values = [\""+token.Value+"\"]\n")
+	if err := fixture.store.ArmCompensation(hostops.Compensation{
+		Host: "m4", Phase: hostops.CompensationArmed, Rows: []hostops.Token{token},
+		Stash: hubTOMLStashPath(fixture.configPath, "test-key"), Generation: 2,
+	}); err != nil {
+		t.Fatalf("ArmCompensation: %v", err)
+	}
+	m := fixture.manager(t)
+	record, open := m.cfg.ops.Compensation("m4")
+	if !open || hostops.NormalizeCompensationPhase(record.Phase) != hostops.CompensationRuntime {
+		t.Fatalf("record = %+v/%v, want it left in %s (the restored host is not served)", record, open, hostops.CompensationRuntime)
+	}
+	if _, carried := m.cfg.store.storeSyncSnapshot()["m4"]; carried {
+		t.Fatal("the store model kept the compensated commit's intent")
+	}
+	cfg, _ := readPipelineConfig(t, fixture.configPath)
+	if _, live := hostEntryNamed(hostRegistryEntries(cfg), "m4"); !live {
+		t.Fatal("the compensation did not restore hub.toml")
+	}
+	if _, ok := m.cfg.ops.OutstandingToken("m4"); !ok {
+		t.Fatal("the restored row is missing")
+	}
 }
 
 // TestBootCompensationPurgeLandedReinsertsTheRows pins §9's hubtoml arm: the
@@ -585,14 +620,15 @@ func TestBootCompensationRuntimeLeavesTheRecordWhenTheRestoredFileIsMissing(t *t
 	fixture := newPipelineFixture(t, []hostreg.Host{entry}, func(store *hostops.Store) {
 		token = pipelineToken(t, store, "m4", 2)
 	})
-	stash := filepath.Join(fixture.dir, "live.stash")
-	if err := os.WriteFile(stash, []byte("[hosts]\n"), 0o600); err != nil {
-		t.Fatalf("write stash: %v", err)
-	}
 	m := fixture.manager(t)
 	// Arm a runtime-phase record and drive the pass directly with an injected
 	// runtime-revert failure: §9 pins the record left in `compensating-runtime`
-	// with its stash intact, never cleared.
+	// with its stash intact, never cleared. The stash goes down with the arm —
+	// the boot prune removes an orphan, and no record names it yet.
+	stash := hubTOMLStashPath(fixture.configPath, "runtime-key")
+	if err := os.WriteFile(stash, []byte("[hosts]\n"), 0o600); err != nil {
+		t.Fatalf("write stash: %v", err)
+	}
 	if err := fixture.store.ArmCompensation(hostops.Compensation{
 		Host: "m4", Phase: hostops.CompensationRuntime, Rows: []hostops.Token{token},
 		Stash: stash, Generation: 2,
@@ -1252,6 +1288,117 @@ func TestRemoveWithoutAConfigFilePurgesTokensLive(t *testing.T) {
 	}
 	if _, open := m.cfg.ops.Compensation("keep"); open {
 		t.Fatal("a removal with no hub.toml armed a cross-file compensation")
+	}
+}
+
+// TestRemoveWithAConfiguredPathAndNoFilePurgesTokensLive pins M1's other half:
+// a configured hub.toml that does not exist yet has no bytes to stash, so the
+// removal skips the cross-file machinery, purges the tokens live, and succeeds
+// — never the carries-no-stash-reference schema refusal.
+func TestRemoveWithAConfiguredPathAndNoFilePurgesTokensLive(t *testing.T) {
+	entry := pipelineEntry("keep", 2)
+	fixture := newPipelineFixture(t, []hostreg.Host{entry}, func(store *hostops.Store) {
+		pipelineToken(t, store, "keep", 2)
+	})
+	if err := os.Remove(fixture.configPath); err != nil {
+		t.Fatalf("remove hub.toml: %v", err)
+	}
+	registry, err := hostreg.New([]hostreg.Host{entry})
+	if err != nil {
+		t.Fatalf("hostreg.New: %v", err)
+	}
+	m := newHubHostManager(nil, nil, hubcore.WebConfig{
+		RemoteHostRegistry:   registry,
+		RemoteHostOpsStore:   fixture.store,
+		RemoteHostConfigPath: fixture.configPath,
+	}, fixture.configPath, registry, nil)
+	if _, err := m.Remove(context.Background(), removeRequest(t, m, "keep")); err != nil {
+		t.Fatalf("Remove(keep) with a configured path and no file: %v", err)
+	}
+	if _, ok := m.cfg.ops.OutstandingToken("keep"); ok {
+		t.Fatal("the removal left its token row behind")
+	}
+	if _, open := m.cfg.ops.Compensation("keep"); open {
+		t.Fatal("a removal with no hub.toml bytes armed a cross-file compensation")
+	}
+	if names := pipelineStashSiblings(t, fixture.configPath); len(names) != 0 {
+		t.Fatalf("the removal left a stash behind: %v", names)
+	}
+}
+
+// TestNoConfigRemovalLeavesTokensWhenTheStagedCommitFails pins L1: the
+// no-cross-file purge rides the commit, so a staged write that refuses leaves
+// the token in place for the retry.
+func TestNoConfigRemovalLeavesTokensWhenTheStagedCommitFails(t *testing.T) {
+	entry := pipelineEntry("keep", 2)
+	fixture := newPipelineFixture(t, []hostreg.Host{entry}, func(store *hostops.Store) {
+		pipelineToken(t, store, "keep", 2)
+	})
+	registry, err := hostreg.New([]hostreg.Host{entry})
+	if err != nil {
+		t.Fatalf("hostreg.New: %v", err)
+	}
+	m := newHubHostManager(nil, nil, hubcore.WebConfig{
+		RemoteHostRegistry: registry,
+		RemoteHostOpsStore: fixture.store,
+	}, "", registry, nil)
+	m.cfg.store.poison(errors.New("injected store-load failure"))
+	if _, err := m.Remove(context.Background(), removeRequest(t, m, "keep")); err == nil {
+		t.Fatal("the poisoned store's removal succeeded")
+	}
+	if _, ok := m.cfg.ops.OutstandingToken("keep"); !ok {
+		t.Fatal("a failed staged commit purged the token")
+	}
+}
+
+// TestValidateHostOpsStashReferencesRefusesAForeignPath pins L2: a loaded
+// compensation record may only name this hub.toml family's stash paths, and
+// neither the restore nor the prune touches a path it does not own.
+func TestValidateHostOpsStashReferencesRefusesAForeignPath(t *testing.T) {
+	entry := pipelineEntry("keep", 2)
+	fixture := newPipelineFixture(t, []hostreg.Host{entry}, nil)
+	m := fixture.manager(t)
+	foreign := filepath.Join(t.TempDir(), "foreign.stash")
+	if err := os.WriteFile(foreign, []byte("# not this hub's\n"), 0o600); err != nil {
+		t.Fatalf("write foreign stash: %v", err)
+	}
+	if err := fixture.store.ArmCompensation(hostops.Compensation{
+		Host: "keep", Phase: hostops.CompensationArmed,
+		Stash: foreign, Generation: 2,
+	}); err != nil {
+		t.Fatalf("ArmCompensation: %v", err)
+	}
+	if err := validateHostOpsStashReferences(fixture.store, fixture.configPath); err == nil {
+		t.Fatal("a record naming a foreign stash path was accepted at load")
+	}
+	if !m.ownsStashPath(hubTOMLStashPath(fixture.configPath, "key")) {
+		t.Fatal("ownsStashPath refused this hub's own per-commit stash path")
+	}
+	if !m.ownsStashPath(fixture.configPath + ".stash") {
+		t.Fatal("ownsStashPath refused the legacy canonical stash path")
+	}
+	if m.ownsStashPath(foreign) || m.ownsStashPath("/elsewhere/hub.toml.stash."+"zz") {
+		t.Fatal("ownsStashPath accepted a path outside this hub's family")
+	}
+	m.pruneHubTOMLStash(foreign)
+	if _, err := os.Stat(foreign); err != nil {
+		t.Fatalf("the prune removed a path it does not own: %v", err)
+	}
+	if err := m.restoreHubTOMLFromStash(foreign); err == nil {
+		t.Fatal("the restore read a path it does not own")
+	}
+	// A genuine per-commit record validates.
+	if err := fixture.store.ClearCompensation("keep"); err != nil {
+		t.Fatalf("ClearCompensation: %v", err)
+	}
+	if err := fixture.store.ArmCompensation(hostops.Compensation{
+		Host: "keep", Phase: hostops.CompensationArmed,
+		Stash: hubTOMLStashPath(fixture.configPath, "key"), Generation: 2,
+	}); err != nil {
+		t.Fatalf("ArmCompensation (own path): %v", err)
+	}
+	if err := validateHostOpsStashReferences(fixture.store, fixture.configPath); err != nil {
+		t.Fatalf("a per-commit stash path was refused: %v", err)
 	}
 }
 
