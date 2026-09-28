@@ -200,7 +200,7 @@ function Effort({
 							accessibilityState={{ selected, disabled }}
 							disabled={disabled}
 							onPress={() => {
-								haptic("selection");
+								if (!selected) haptic("selection");
 								choose(level);
 							}}
 							style={[

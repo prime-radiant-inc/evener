@@ -27,6 +27,7 @@ import {
 } from "./marketplaceBrowserModel";
 import { ModalConnectionStatus } from "./retainedScreen";
 import { Action, Choice, Copy, ErrorMessage, styles, useColors } from "./ui";
+import { haptic } from "./haptics";
 
 // The stores keep each failed request's own text; this screen shows the same
 // copy for every failure, as the web's section translates its at render.
@@ -218,6 +219,7 @@ export function MarketplaceBrowser({
 				text: "Remove",
 				style: "destructive",
 				onPress: () => {
+					haptic("rigid");
 					// The dialog can stay open across another client's removal, which
 					// a trusted read lands without the name, and across the screen
 					// fencing it: re-read both the guard the screen holds now and the

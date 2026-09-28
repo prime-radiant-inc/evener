@@ -28,7 +28,6 @@ const navigationState = vi.hoisted(() => ({
 
 const sqlite = vi.hoisted(() => ({ ports: new Map<string, unknown>() }));
 
-vi.mock("expo-haptics", async () => (await import("./renderNative.testkit")).expoHapticsMock());
 vi.mock("react-native", async () => {
 	const mock = (await import("./renderNative.testkit")).nativeModuleMock();
 	return {

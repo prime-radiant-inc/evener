@@ -69,7 +69,6 @@ const harness = vi.hoisted(() => ({
 	},
 }));
 
-vi.mock("expo-haptics", async () => (await import("./renderNative.testkit")).expoHapticsMock());
 vi.mock("react-native", async () => ({
 	...(await import("./renderNative.testkit")).nativeModuleMock(),
 	ActionSheetIOS: { showActionSheetWithOptions: vi.fn() },

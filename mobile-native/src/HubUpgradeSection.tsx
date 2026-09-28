@@ -2,6 +2,7 @@ import { useCallback } from "react";
 import { ActivityIndicator, Alert, View } from "react-native";
 import type { UpgradeState } from "./hubUpgrade";
 import { Action, Copy, ErrorMessage, styles, useColors } from "./ui";
+import { haptic } from "./haptics";
 
 export interface HubUpgradeSectionProps {
 	hubName: string;
@@ -55,7 +56,14 @@ export function HubUpgradeSection({
 	const confirmStart = useCallback(() => {
 		Alert.alert(`Upgrade ${hubName}?`, `Install an update on ${hubName}. The hub may need to restart before it runs.`, [
 			{ text: "Cancel", style: "cancel" },
-			{ text: "Upgrade", style: "destructive", onPress: onStart },
+			{
+				text: "Upgrade",
+				style: "destructive",
+				onPress: () => {
+					haptic("rigid");
+					onStart();
+				},
+			},
 		]);
 	}, [hubName, onStart]);
 	const overview = "overview" in state ? state.overview : undefined;

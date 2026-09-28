@@ -23,11 +23,6 @@ import { nativeModuleMock, render, renderedText, screenConnection as connection 
 // What useConnection answers with. vi.hoisted because vi.mock's factory is
 // hoisted above every module import and may not close over a module-level let.
 const harness = vi.hoisted(() => ({ connection: {} as Record<string, unknown> }));
-// The Haptics switch (Hub > In-app alerts) is read from the device store.
-vi.mock("expo-sqlite/kv-store", () => ({
-	Storage: { getItemSync: () => null, setItemSync: () => {}, removeItemSync: () => {} },
-}));
-vi.mock("expo-haptics", async () => (await import("./renderNative.testkit")).expoHapticsMock());
 vi.mock("react-native", async () => ({
 	...(await import("./renderNative.testkit")).nativeModuleMock(),
 	Switch: "Switch",

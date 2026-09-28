@@ -16,7 +16,6 @@ import { SubagentsScreen } from "./SubagentsScreen";
 
 const harness = vi.hoisted(() => ({ connection: {} as Record<string, unknown>, kv: new Map<string, string>() }));
 
-vi.mock("expo-haptics", async () => (await import("../renderNative.testkit")).expoHapticsMock());
 vi.mock("react-native", async () => ({
 	...(await import("../renderNative.testkit")).nativeModuleMock(),
 	TextInput: "TextInput",

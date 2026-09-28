@@ -18,6 +18,7 @@ import { stopOffer } from "./stopOffer";
 import { flattenSubagents, type SubagentRow } from "./subagentModel";
 import { useCoordinatorState } from "./useCoordinatorState";
 import { useSubagentTree } from "./useSubagentTree";
+import { haptic } from "../haptics";
 
 export interface Coordinator {
 	ref: string;
@@ -99,6 +100,7 @@ export function SubagentPanel({
 					text: "Stop",
 					style: "destructive",
 					onPress: async () => {
+						haptic("rigid");
 						if (!client) return;
 						try {
 							// The stop names the coordinator's thread as it reads now: a

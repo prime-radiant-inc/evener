@@ -64,7 +64,6 @@ const harness = vi.hoisted(() => ({
 	announce: vi.fn(),
 }));
 
-vi.mock("expo-haptics", async () => (await import("../renderNative.testkit")).expoHapticsMock());
 vi.mock("react-native", async () => {
 	const native = (await import("../renderNative.testkit")).nativeModuleMock();
 	return {
@@ -613,7 +612,10 @@ it("renders the fleet's bands in order with their counts, and Idle starts folded
 			node.type === ("Pressable" as never) &&
 			node.findAll((child) => child.type === ("Text" as never) && child.props.children === "2 idle").length > 0,
 	);
+	playedHaptics.length = 0;
 	act(() => idleCount.props.onPress());
+	// Spec 16.6: a selection tick on a summary count.
+	expect(playedHaptics).toEqual(["selection"]);
 	// The unfold applies when the scroll to Idle ends, as any change does.
 	expect(hasRow(tree, "Old chore")).toBe(false);
 	listEvent(tree, "onMomentumScrollEnd");
@@ -3620,7 +3622,10 @@ it("asks before shutting a session down from the menu, then says it shut down", 
 		["Cancel", "cancel"],
 		["Shut down", "destructive"],
 	]);
+	playedHaptics.length = 0;
 	act(() => ask?.buttons?.[1]?.onPress?.());
+	// Spec 16.6: rigid on a destructive confirmation.
+	expect(playedHaptics).toEqual(["impact:rigid"]);
 	await settle();
 	expect(fake.mutations).toEqual([{ method: "thread/shutdown", params: { ref: `local:${SESSION_ID}` } }]);
 	expect(texts(tree)).toContain("Session shut down");

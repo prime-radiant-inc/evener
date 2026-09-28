@@ -16,11 +16,6 @@ import { type ModelHost, ModelSheet, modelHosts } from "./ModelSheet";
 
 const navigation = vi.hoisted(() => ({ goBack: vi.fn(), navigate: vi.fn(), dispatch: vi.fn() }));
 
-// The Haptics switch (Hub > In-app alerts) is read from the device store.
-vi.mock("expo-sqlite/kv-store", () => ({
-	Storage: { getItemSync: () => null, setItemSync: () => {}, removeItemSync: () => {} },
-}));
-vi.mock("expo-haptics", async () => (await import("../renderNative.testkit")).expoHapticsMock());
 vi.mock("react-native", async () => (await import("../renderNative.testkit")).nativeModuleMock());
 vi.mock("@react-navigation/native", () => ({
 	useNavigation: () => navigation,

@@ -12,6 +12,7 @@ import { scalarKinds } from "./launchScalar";
 import { RepositoryLaunchReview } from "./RepositoryLaunchReview";
 import type { Routes } from "./screens";
 import { Action, Copy, ErrorMessage, styles, useColors } from "./ui";
+import { haptic } from "./haptics";
 
 type Props = NativeStackScreenProps<Routes, "LaunchSettings">;
 export function LaunchSettingsScreen({ route, navigation }: Props) {
@@ -77,7 +78,10 @@ function LaunchDefaults({
 			{
 				text: "Discard",
 				style: "destructive",
-				onPress: () => navigation.dispatch(data.action),
+				onPress: () => {
+					haptic("rigid");
+					navigation.dispatch(data.action);
+				},
 			},
 		]);
 	});
@@ -129,7 +133,14 @@ function LaunchDefaults({
 							if (state.dirty)
 								Alert.alert("Reload launch defaults?", "This discards your unsaved changes.", [
 									{ text: "Cancel", style: "cancel" },
-									{ text: "Reload", style: "destructive", onPress: reload },
+									{
+										text: "Reload",
+										style: "destructive",
+										onPress: () => {
+											haptic("rigid");
+											reload();
+										},
+									},
 								]);
 							else reload();
 						}}
