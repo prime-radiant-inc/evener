@@ -1609,6 +1609,24 @@ func (s *Session) prepareRetainedScratch() error {
 	if manifest.Released || len(manifest.References) == 0 {
 		return nil
 	}
+	// An allocation whose directory was removed out of band — a tmp reaper, an
+	// operator's rm, a crashed reclaimer — can never be reacquired: its
+	// identity pin went with the directory, so the reacquisition below would
+	// fail closed and wedge every later restore of this root, and its
+	// retirement, forever. Detect the miss first (a lock-free scan) so a
+	// healthy manifest pays no extra manifest lock or write, then prune the
+	// missing rows before reacquiring: the surviving allocations restore as
+	// before, and a consumer whose allocation was dropped finds no slot and
+	// provisions fresh scratch.
+	if s.retainedScratchHasMissingAllocation(manifest) {
+		manifest, _, err = sandbox.PruneMissingScratchReferences(owner)
+		if err != nil {
+			return fmt.Errorf("retained scratch: %w", err)
+		}
+		if manifest.Released || len(manifest.References) == 0 {
+			return nil
+		}
+	}
 	// Fail closed on an incomplete or contradictory reference→binding→consumer
 	// graph before reacquiring a single lease. A crash between publishing a
 	// pin/reference and publishing the binding or consumer that maps it would
@@ -1691,6 +1709,20 @@ func (s *Session) prepareRetainedScratch() error {
 	prior := s.retainedScratch.Swap(pool)
 	releaseRetainedScratchPool(prior)
 	return nil
+}
+
+// retainedScratchHasMissingAllocation reports whether any reference names a
+// directory that no longer exists, so a restore only pays the manifest lock and
+// a durable write when there is something to prune. A stat failure other than
+// not-exist is left for the reacquisition below to report rather than treated
+// as a miss.
+func (s *Session) retainedScratchHasMissingAllocation(manifest sandbox.ScratchManifest) bool {
+	for _, ref := range manifest.References {
+		if _, err := os.Stat(canonicalScratchDir(ref.Dir)); os.IsNotExist(err) {
+			return true
+		}
+	}
+	return false
 }
 
 // adoptRetainedScratchFor transfers the owning slots of exactly bindingID from

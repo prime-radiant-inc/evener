@@ -8,6 +8,7 @@ import (
 	"sync/atomic"
 
 	"primeradiant.com/evener/agent/internal/worktree"
+	"primeradiant.com/evener/agent/sandbox"
 	"primeradiant.com/evener/agent/schema"
 )
 
@@ -119,6 +120,17 @@ func (c *RetirementController) Prepare(ctx context.Context, claim *RetirementCla
 		return nil, err
 	}
 	lanes = append(lanes, rootLanes...)
+	// A retained allocation whose directory was removed out of band can never
+	// be reacquired: its pin went with it, so validateRetainedScratchPresent
+	// would fail closed on it and block this root's retirement forever. Prune
+	// those rows first — the same repair a restore runs — so a missing
+	// directory is not a required dependency there is nothing left to release
+	// for.
+	if owner, ok := root.scratchRetentionOwner(); ok {
+		if _, _, err := sandbox.PruneMissingScratchReferences(owner); err != nil {
+			return nil, fmt.Errorf("retirement preparation: %w", err)
+		}
+	}
 	// Required scratch dependencies must still exist at their original paths
 	// under exact ownership before any release is attempted.
 	if err := root.validateRetainedScratchPresent(); err != nil {

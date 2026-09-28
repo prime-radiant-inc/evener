@@ -1745,6 +1745,102 @@ func ScratchDirectoryRetained(dir string) (bool, error) {
 	return true, fmt.Errorf("sandbox: retention manifest for %q has no reference to its pin", dir)
 }
 
+// PruneMissingScratchReferences drops every retention reference whose
+// allocation directory no longer exists, together with any binding slot that
+// named one of them, and returns the committed manifest. A missing directory is
+// unrecoverable: MkdirTemp mints unique names and nothing ever re-creates one,
+// and the directory's identity pin lived inside it, so a restore's
+// reacquisition (OpenRetainedSessionScratch) would fail closed on that
+// reference and wedge every later restore of this root — and its retirement —
+// forever. After the prune the owning consumer finds no slot and provisions
+// fresh scratch. References whose directory still exists are preserved
+// untouched, including historical pinned references no binding owns.
+//
+// The read-modify-write runs under the manifest lock and rebases on the current
+// manifest, so it serializes with every other writer and cannot clobber a
+// concurrent commit. A released manifest is returned unchanged: its tombstone
+// already authorizes ordinary collection of everything it names. written
+// reports whether the prune changed durable state.
+func PruneMissingScratchReferences(owner ScratchOwner) (ScratchManifest, bool, error) {
+	var (
+		manifest ScratchManifest
+		written  bool
+	)
+	err := RetryScratchLockContention(func() error {
+		return WithScratchRetentionLock(owner, func() error {
+			var err error
+			manifest, written, err = pruneMissingScratchReferencesLocked(owner)
+			return err
+		})
+	})
+	if err != nil {
+		return ScratchManifest{}, false, err
+	}
+	return manifest, written, nil
+}
+
+// pruneMissingScratchReferencesLocked is the prune's read-modify-write. The
+// caller holds owner's manifest lock, so the load, the transform and the write
+// are one serialized transaction against every other manifest writer.
+func pruneMissingScratchReferencesLocked(owner ScratchOwner) (ScratchManifest, bool, error) {
+	current, err := loadScratchRetention(owner)
+	if err != nil {
+		return ScratchManifest{}, false, err
+	}
+	if current.Released {
+		return current, false, nil
+	}
+	dropped := make(map[string]struct{})
+	survivors := make([]ScratchReference, 0, len(current.References))
+	for _, ref := range current.References {
+		dir, err := canonicalScratchPath(ref.Dir)
+		if err != nil {
+			return ScratchManifest{}, false, err
+		}
+		if _, statErr := os.Stat(dir); statErr != nil {
+			if !errors.Is(statErr, fs.ErrNotExist) {
+				return ScratchManifest{}, false, fmt.Errorf("sandbox: stat retention reference %q: %w", dir, statErr)
+			}
+			dropped[dir] = struct{}{}
+			continue
+		}
+		survivors = append(survivors, ref)
+	}
+	if len(dropped) == 0 {
+		return current, false, nil
+	}
+	// Dropping a reference and the slot that named its directory keeps the graph
+	// the reader validates intact by construction: surviving slots still name
+	// surviving references of their kind, no consumer role names a binding this
+	// touch removes (no binding is removed), and a binding that loses its only
+	// slot becomes the historical slotless shape the reader keeps.
+	current.References = survivors
+	for i := range current.Bindings {
+		for kind, slot := range current.Bindings[i].Slots {
+			slotDir, err := canonicalScratchPath(slot.Dir)
+			if err != nil {
+				return ScratchManifest{}, false, err
+			}
+			if _, gone := dropped[slotDir]; gone {
+				delete(current.Bindings[i].Slots, kind)
+			}
+		}
+	}
+	current.Revision++
+	if err := writeScratchRetention(owner, current); err != nil {
+		// writeScratchRetention can report the post-rename failure class after
+		// its rename committed. Re-read under the held lock — the reset/release
+		// commit discriminator — so a prune that is already durable is not
+		// reported as a failure that would fail the restore.
+		if reread, rerr := loadScratchRetention(owner); rerr == nil &&
+			!reread.Released && reread.Revision == current.Revision {
+			return reread, true, nil
+		}
+		return ScratchManifest{}, false, err
+	}
+	return current, true, nil
+}
+
 // atomicWritePrivateFile writes data to path via a same-directory temp file,
 // fsyncs the file, renames it over path, then fsyncs the containing directory.
 func atomicWritePrivateFile(path string, data []byte) error {

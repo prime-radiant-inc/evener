@@ -184,6 +184,7 @@ function RestartRequiredNotice({
           ? "Resume this session before continuing. Any uncertain messages will be checked before sending."
           : "Session restart required. Stop the older daemon, then refresh this session. Stopping interrupts active work."}
       {ownerRef && <a href={paneToURL("session", { ref: ownerRef }) ?? undefined}>Open owning session</a>}
+      {!resumeRequired && !ownerRef && <SessionForceStopRecovery sessionRef={sessionRef} />}
       <Button disabled={refreshing} onClick={() => void refresh()}>
         {resumeRequired ? "Resume session" : "Refresh session"}
       </Button>
