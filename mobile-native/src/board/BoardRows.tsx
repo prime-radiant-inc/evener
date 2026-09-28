@@ -1,11 +1,10 @@
-// The Board's swipeable row lists. They live apart from BoardRow.tsx so a
+// The Board's swipeable row. It lives apart from BoardRow.tsx so a
 // module that uses only a row's pieces (headers, hairlines, the row itself)
 // never loads react-native-gesture-handler.
 import type { SessionActivity } from "@evener/appwire-client";
 import type { ReactElement } from "react";
-import { View } from "react-native";
 import type { ClassifiedRow } from "./attention";
-import { BoardRow, type BoardRowProps, Hairline, TITLE_INSET } from "./BoardRow";
+import { BoardRow, type BoardRowProps } from "./BoardRow";
 import { RowMenu, type RowMenuProps } from "./RowMenu";
 import type { RowSwipes } from "./rowSwipes";
 import { SwipeRow, swipeAccessibility } from "./SwipeRow";
@@ -21,47 +20,47 @@ export type RowContext = Pick<BoardRowProps, "connected" | "usual" | "hostLabel"
 	activityOf: (ref: string) => SessionActivity | undefined;
 };
 
-/** A list of Board rows, each one swipeable and with a long-press menu,
- * separated by hairlines inset to the title. `archived` rows sit in an
- * archived tier. */
-export function BoardRows({
-	items,
+/** One Board row, swipeable and with a long-press menu. `archived` rows sit
+ * in an archived tier. `onSwipeActive` hears the row's swipe actions open
+ * and close. In select mode (`selected` defined) the row neither swipes nor
+ * opens a menu: it shows its checkbox, and a press chooses it. */
+export function BoardListRow({
+	item,
 	variant,
 	moving,
 	archived = false,
+	wash,
+	selected,
 	context,
+	onSwipeActive,
 }: {
-	items: readonly ClassifiedRow[];
+	item: ClassifiedRow;
 	variant: BoardRowProps["variant"];
 	moving: boolean;
 	archived?: boolean;
+	wash?: number;
+	selected?: boolean;
 	context: RowContext;
+	onSwipeActive?: (active: boolean) => void;
 }): ReactElement {
 	const { draftRefs, swipes, menu, activityOf, ...shared } = context;
+	const { leading, trailing, dimmed } = swipes(item, archived);
+	const row = {
+		item,
+		variant,
+		moving,
+		hasDraft: draftRefs.has(item.row.ref),
+		activity: activityOf(item.row.ref),
+		dimmed,
+		wash,
+		...shared,
+	};
+	if (selected !== undefined) return <BoardRow {...row} selected={selected} />;
 	return (
-		<>
-			{items.map((item, index) => {
-				const { leading, trailing, dimmed } = swipes(item, archived);
-				return (
-					<View key={item.row.ref}>
-						{index > 0 ? <Hairline inset={TITLE_INSET} /> : null}
-						<SwipeRow leading={leading} trailing={trailing}>
-							<RowMenu item={item} hostLabel={shared.hostLabel} {...menu(item, archived)}>
-								<BoardRow
-									item={item}
-									variant={variant}
-									moving={moving}
-									hasDraft={draftRefs.has(item.row.ref)}
-									activity={activityOf(item.row.ref)}
-									dimmed={dimmed}
-									{...swipeAccessibility(leading, trailing)}
-									{...shared}
-								/>
-							</RowMenu>
-						</SwipeRow>
-					</View>
-				);
-			})}
-		</>
+		<SwipeRow leading={leading} trailing={trailing} onActiveChange={onSwipeActive}>
+			<RowMenu item={item} hostLabel={shared.hostLabel} {...menu(item, archived)}>
+				<BoardRow {...row} {...swipeAccessibility(leading, trailing)} />
+			</RowMenu>
+		</SwipeRow>
 	);
 }
