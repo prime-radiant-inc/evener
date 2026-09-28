@@ -378,18 +378,22 @@ export interface OrphanFence {
   recordId: string | null;
 }
 
-/** orphanFenceFor reports whether the name is orphan-fenced, from the two
+/** orphanFenceFor reports whether `remnantId` is orphan-fenced, from the two
  * signals the landed wire carries: an `orphan-fenced-busy` refusal (fencing
  * spec 08c §8 — the discriminator the fence emits, pinned ahead of S20's
  * handler) and a tracked operation record in the `orphan-unverified` state
- * (08b §10's closed state set, read by S15's poll). S20's
- * `evener/host/orphan-resolve` is the way out; until it lands the surfaces
- * name that next step and never offer a call they cannot make. */
+ * (08b §10's closed state set, read by S15's poll). The stored refusal fences
+ * only the remnant it was returned for — a later remnant on the same name is
+ * never fenced by it — while the operation record fences the NAME, exactly as
+ * the hub's orphan fence does (08c §8: "scoped to that host's name only").
+ * S20's `evener/host/orphan-resolve` is the way out; until it lands the
+ * surfaces name that next step and never offer a call they cannot make. */
 export function orphanFenceFor(
   repair: HostRemnantRepair | undefined,
   operation: HostOperationRef | undefined,
+  remnantId: string,
 ): OrphanFence | null {
-  if (repair?.phase === "refused" && repair.refusal.kind === "orphan-fenced-busy") {
+  if (repair?.phase === "refused" && repair.refusal.kind === "orphan-fenced-busy" && repair.remnantId === remnantId) {
     return { recordId: repair.refusal.recordId ?? null };
   }
   if (operation !== undefined && operation.state === "orphan-unverified") {
@@ -696,6 +700,10 @@ interface HostOpsStoreState {
    * confirmation against the registry's current pair, never the refused
    * attempt's pair. */
   connectAndRestart: (name: string) => Promise<void>;
+  /** The resolved-remnant continuation: re-reads the registry and re-seeds the
+   * restart confirmation against the pair it answers, under a fresh operation
+   * ID — the refused attempt's pair is never resubmitted. */
+  reSeedRestart: (name: string) => Promise<void>;
   discardRestart: (name: string) => void;
   /** Reads the tracked operation's record once (08b §10's detail read) and
    * publishes what it answers: progress, the terminal outcome, or the visible
@@ -1078,6 +1086,15 @@ function repairConnectionChangedRefusal(call: "teardown-retry" | "teardown-recov
 
 function repairRefusalState(remnantId: string, action: "retry" | "recover", refusal: HostOpRefusal): HostRemnantRepair {
   return { phase: "refused", remnantId, action, refusal };
+}
+
+/** The refusal both repair actions publish when called with no remnant id:
+ * nothing was submitted, and saying so beats a silent no-op. */
+function missingRemnantIdRefusal(action: "retry" | "recover"): HostOpRefusal {
+  return {
+    kind: "unknown",
+    message: `No remnant id is named for this repair; re-read the host list and ${action === "retry" ? "retry" : "recover"} again.`,
+  };
 }
 
 export const hostOpsStore = create<HostOpsStoreState>((set, get) => ({
@@ -1503,6 +1520,34 @@ export const hostOpsStore = create<HostOpsStoreState>((set, get) => ({
     });
   },
 
+  reSeedRestart: async (name) => {
+    // The continuation a resolved remnant earns on the restart surface: the
+    // pair the refusal was made against may have moved while the repair ran
+    // (and the remnant may have belonged to a remove), so re-read first and
+    // never replay the old pair. reReadForced issues a new read rather than
+    // joining an in-flight poll that predates the resolution.
+    const published = await hostsStore.getState().reReadForced();
+    const pair = published ? currentPairFor(name) : undefined;
+    set((previous) => {
+      const current = previous.restarts[name];
+      if (current === undefined || current.phase === "started") return previous;
+      if (pair === undefined) {
+        return {
+          restarts: {
+            ...previous.restarts,
+            [name]: { ...current, phase: "failed", refusal: RESTART_PAIR_UNKNOWN_REFUSAL },
+          },
+        };
+      }
+      return {
+        restarts: {
+          ...previous.restarts,
+          [name]: { phase: "confirm", pair, operationId: createSecureUUID(), refusal: null },
+        },
+      };
+    });
+  },
+
   pollOperation: async (name) => {
     const ref = get().operations[name];
     if (ref === undefined || !operationNeedsRead(ref)) return;
@@ -1561,7 +1606,15 @@ export const hostOpsStore = create<HostOpsStoreState>((set, get) => ({
 
   teardownRetry: async (name, remnantId) => {
     const id = remnantId.trim();
-    if (id === "") return;
+    if (id === "") {
+      // Nothing to submit and nothing to name: publish the refusal instead of
+      // a silent no-op the operator cannot see. (The dialog is gated on a
+      // non-empty id too; this is the store's own guard.)
+      set((previous) => ({
+        repairs: { ...previous.repairs, [name]: repairRefusalState(id, "retry", missingRemnantIdRefusal("retry")) },
+      }));
+      return;
+    }
     let client: AppwireClientLike;
     try {
       client = requireClient();
@@ -1603,15 +1656,16 @@ export const hostOpsStore = create<HostOpsStoreState>((set, get) => ({
       set((previous) => ({
         repairs: { ...previous.repairs, [name]: { phase: "retried", remnantId: id, result: view } },
       }));
-      if (retryArmResolved(view)) {
-        // A resolved remnant changes the row: converge the pane's list without
-        // waiting for its own poll. Best-effort, like S15's post-operation
-        // refresh — a failed refresh is the poll's business.
-        void hostsStore
-          .getState()
-          .refresh()
-          .catch(() => undefined);
-      }
+      // EVERY accepted arm converges the rows, the failure arm included: a
+      // committed-with-teardown-failure response can still have moved the row
+      // (a tombstone, updated escalation data), and the row-level affordance
+      // must reflect it. reReadForced issues a NEW read rather than joining an
+      // in-flight poll that predates this response; best-effort, like S15's
+      // post-operation refresh.
+      void hostsStore
+        .getState()
+        .reReadForced()
+        .catch(() => undefined);
     } catch (error) {
       if (repairSequence(name) !== sequence) return;
       const refusal =
@@ -1624,7 +1678,12 @@ export const hostOpsStore = create<HostOpsStoreState>((set, get) => ({
 
   teardownRecover: async (name, remnantId, attestation) => {
     const id = remnantId.trim();
-    if (id === "") return;
+    if (id === "") {
+      set((previous) => ({
+        repairs: { ...previous.repairs, [name]: repairRefusalState(id, "recover", missingRemnantIdRefusal("recover")) },
+      }));
+      return;
+    }
     let client: AppwireClientLike;
     try {
       client = requireClient();
@@ -1667,9 +1726,11 @@ export const hostOpsStore = create<HostOpsStoreState>((set, get) => ({
       set((previous) => ({
         repairs: { ...previous.repairs, [name]: { phase: "cleared", remnantId: id, result: clearViewOf(result, id) } },
       }));
+      // The cleared remnant changes the row (it disappears from the list):
+      // converge it now rather than waiting for the pane's own poll.
       void hostsStore
         .getState()
-        .refresh()
+        .reReadForced()
         .catch(() => undefined);
     } catch (error) {
       if (repairSequence(name) !== sequence) return;
