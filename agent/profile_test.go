@@ -12,18 +12,14 @@ import (
 	"primeradiant.com/evener/agent/internal/tool"
 	"primeradiant.com/evener/agent/provider"
 	"primeradiant.com/evener/agent/schema"
-	"primeradiant.com/evener/internal/bundled"
 	"primeradiant.com/evener/llm"
 	"primeradiant.com/evener/llm/registry"
 )
 
 func renderPromptForTest(t *testing.T, p *provider.Profile, data promptData) string {
 	t.Helper()
-	if data.Provider == "" {
-		data.Provider = p.ID()
-	}
-	if data.Agent == "" {
-		data.Agent = defaultAgentName
+	if data.Surface == "" {
+		data.Surface = p.Surface()
 	}
 	if data.Model == "" {
 		data.Model = p.Model()
@@ -31,28 +27,9 @@ func renderPromptForTest(t *testing.T, p *provider.Profile, data promptData) str
 	if data.ResultToolName == "" {
 		data.ResultToolName = "communicate"
 	}
-	if data.RolePromptOverride == "" {
-		switch data.Agent {
-		case "coordinator", "implementer", "reviewer", "verifier", "worker", "planner", "test-engineer":
-			data.RolePromptOverride = coordinatorWorkflowAgentForTest(t, data.Agent).SystemPrompt
-		}
-	}
-	if len(data.ProfileTools) == 0 {
-		data.ProfileTools = toolEntriesFromDefinitions(p.ToolDefinitions())
-	}
-
-	resolver := &sectionResolver{
-		surface: p.ID(),
-		agent:   data.Agent,
-		agentFS: bundled.Agents(),
-		sources: []sectionSource{
-			embedSource{fs: embeddedPrompts, prefix: "prompts/sections/"},
-		},
-	}
-
-	result, _, err := resolver.RenderEmbedded(embeddedPrompts, "prompts/templates/", "system", data)
+	result, err := executeSystemPromptTemplate(data)
 	if err != nil {
-		t.Fatalf("RenderEmbedded: %v", err)
+		t.Fatalf("render system prompt: %v", err)
 	}
 	return result
 }
@@ -249,7 +226,7 @@ func TestProviderProfiles_AddIntentToWorkToolSchemas(t *testing.T) {
 func TestSystemPrompt_CoordinatorHasImpossibleDelegationException(t *testing.T) {
 	t.Parallel()
 	prompt := renderPromptForTest(t, NewOpenAIProfile("gpt-5.4"), promptData{
-		Agent: "coordinator",
+		Role: strings.TrimSpace(coordinatorWorkflowAgentForTest(t, "coordinator").SystemPrompt),
 	})
 
 	if !strings.Contains(prompt, "Exception: if the task itself is about delegation, agent behavior, or orchestration") {
@@ -269,50 +246,6 @@ func TestSystemPrompt_DefaultAgentDoesNotUseCoordinatorRole(t *testing.T) {
 	}
 	if strings.Contains(prompt, "### CRITICAL: You normally spawn an implementer") {
 		t.Fatalf("default prompt should not include coordinator delegation mandate:\n%s", prompt)
-	}
-}
-
-func TestBuildSystemPrompt_DoesNotDuplicateProviderToolDescriptions(t *testing.T) {
-	t.Parallel()
-	p := NewOpenAIProfile("gpt-5.2")
-	data := promptData{
-		WorkingDir: "/tmp",
-		Platform:   "linux",
-	}
-	data.ProfileTools = toolEntriesFromDefinitions(p.ToolDefinitions())
-
-	prompt := renderPromptForTest(t, p, data)
-
-	for _, td := range p.ToolDefinitions() {
-		desc := strings.TrimSpace(td.Description)
-		if desc != "" && strings.Contains(prompt, desc) {
-			t.Fatalf("system prompt duplicates provider tool description for %s: %q", td.Name, desc)
-		}
-	}
-}
-
-func TestBuildSystemPrompt_DoesNotDuplicateMCPOrCustomToolDescriptions(t *testing.T) {
-	t.Parallel()
-	prompt := renderPromptForTest(t, NewOpenAIProfile("gpt-5.2"), promptData{
-		WorkingDir: "/tmp",
-		Platform:   "linux",
-		MCPTools: []toolEntry{{
-			Name:        "mcp__server__search",
-			Description: "Searches the remote index with an MCP-backed provider tool.",
-		}},
-		CustomTools: []toolEntry{{
-			Name:        "project_custom",
-			Description: "Runs a project-specific custom tool.",
-		}},
-	})
-
-	for _, unwanted := range []string{
-		"Searches the remote index with an MCP-backed provider tool.",
-		"Runs a project-specific custom tool.",
-	} {
-		if strings.Contains(prompt, unwanted) {
-			t.Fatalf("system prompt duplicates tool description content %q:\n%s", unwanted, prompt)
-		}
 	}
 }
 

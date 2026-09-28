@@ -826,7 +826,6 @@ func TestJobWatchCanImmediatelyWatchReturnedBackgroundShellJob(t *testing.T) {
 	t.Parallel()
 	s := newSession(t, withConfig(SessionConfig{
 		MaxSubagentDepth: 1,
-		NoProjectPrompts: true,
 		StateDir:         packageFixtureTempDir(t, "watch-state-*"),
 	}))
 	const token = "WATCH_OUTPUT_TOKEN_ONCE"

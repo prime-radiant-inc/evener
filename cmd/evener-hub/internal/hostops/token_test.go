@@ -563,9 +563,12 @@ func TestTokenMintRefusesUnusableRequests(t *testing.T) {
 	}
 }
 
-// TestOpenRefusesTokenRowsOutsideTheSchema pins the loader's half: a hand-edited
-// row the writers never produce is a corrupt store, never a served one.
-func TestOpenRefusesTokenRowsOutsideTheSchema(t *testing.T) {
+// TestOpenQuarantinesTokenRowsOutsideTheSchema pins the loader's half: a
+// hand-edited row the writers never produce is a corrupt store, never a served
+// one. §4's custody-first quarantine takes it — the replacement store serves
+// zero outstanding tokens, and the malformed bytes are renamed aside, never
+// deleted.
+func TestOpenQuarantinesTokenRowsOutsideTheSchema(t *testing.T) {
 	row := tokenRowJSON("m4", strings.Repeat("B", minTokenValueChars), tokenEpoch, tokenEpoch.Add(time.Minute), tokenEpoch)
 	cases := map[string]string{
 		"no running-health flag": strings.Replace(tokenStoreJSON(tokenEpoch, row), `"runningHealthy":true,`, "", 1),
@@ -580,8 +583,13 @@ func TestOpenRefusesTokenRowsOutsideTheSchema(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			path := StorePath(t.TempDir())
 			writeRawStore(t, path, 0o600, body)
-			if _, err := Open(path); !errors.Is(err, ErrStoreCorrupt) {
-				t.Fatalf("Open on %s: err = %v, want ErrStoreCorrupt", name, err)
+			store, err := Open(path)
+			if err != nil {
+				t.Fatalf("Open on %s: %v", name, err)
+			}
+			wantQuarantined(t, store, path, body)
+			if tokens := storeSnapshotForTest(store).Tokens; len(tokens) != 0 {
+				t.Fatalf("the replacement store serves %d outstanding tokens, want zero", len(tokens))
 			}
 		})
 	}
@@ -867,7 +875,7 @@ func TestTokenMintIfQuiescentRefusesAConcurrentTerminalOperation(t *testing.T) {
 	store, _, _ := openClockStore(t)
 	record := createTestRecord(t, store, "m4")
 	position := store.Sequence()
-	if _, err := store.Transition(record.ID, StateComplete, nil); err != nil {
+	if _, err := store.Transition(record.ID, StateComplete, terminalChange(true)); err != nil {
 		t.Fatalf("Transition(complete): %v", err)
 	}
 

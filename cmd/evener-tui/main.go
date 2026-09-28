@@ -135,6 +135,11 @@ func run() int {
 		m.pending.SetSend(program.Send)
 	}
 	finalModel, err := program.Run()
+	// The model ends on whichever connection it runs on: a reconnect replaces
+	// the client dialHub first returned, and it closes the superseded one
+	// itself. Close the model's current client on every exit path, so a normal
+	// quit does not leave the read loop to the transport's own cleanup.
+	defer closeHubClientFromModel(finalModel)
 	// Clear the terminal title on every exit. A model-driven quit clears it via
 	// quitCmd, but bubbletea's signal handler pushes QuitMsg/InterruptMsg into
 	// the event loop without calling Update, so SIGTERM (or SIGINT with stdin
@@ -149,6 +154,14 @@ func run() int {
 		_, _ = fmt.Fprintln(standardOutput, message)
 	}
 	return 0
+}
+
+// closeHubClientFromModel releases the hub connection the TUI ended on. The
+// model owns the current client; run only borrows it to close it at exit.
+func closeHubClientFromModel(model tea.Model) {
+	if m, ok := model.(hubModel); ok && m.client != nil {
+		_ = m.client.Close()
+	}
 }
 
 func postQuitMessageFromModel(model tea.Model) string {

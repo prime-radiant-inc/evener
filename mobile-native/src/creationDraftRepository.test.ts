@@ -249,6 +249,7 @@ it("does not open the picker before the saved draft can be loaded", async () => 
         picks++;
         return [];
       },
+      capture: async () => [],
       encode: async () => "",
       id: () => "new",
     });

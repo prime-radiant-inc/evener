@@ -1858,7 +1858,7 @@ func (s *Session) delegateActor(ctx context.Context) (delegateActor, error) {
 
 func (s *Session) stableDelegateEffectiveToolNameCeiling(selection subagentModelSelection, args delegateArgs, isolationName string) []string {
 	allTools, allowedTools, deniedTools := baseSubagentToolPolicy(selection.agent, args.grantsDelegation())
-	return stableDelegateToolNameCeiling(s.reg, s.resultToolName(), allTools, allowedTools, deniedTools, args.grantsDelegation(), args.WatchParent, isolationName)
+	return stableDelegateToolNameCeiling(s.reg, s.resultToolName(), allTools, allowedTools, deniedTools, args.grantsDelegation(), isolationName)
 }
 
 func (runtime delegateRuntime) describe(ctx context.Context, args delegateArgs, brief, isolationName string, requestedSandbox *sandbox.SandboxPolicy, selection subagentModelSelection, toolNameCeiling []string) (delegatestore.Descriptor, identifier.Project, error) {
@@ -2386,6 +2386,7 @@ func (runtime delegateRuntime) restoreIdle(started delegateStartCommit) (*subage
 			parentDelegateID:              started.lease.delegateID,
 			forwardJobEvent:               s.jobManager.forwardEvent,
 			descendantEvent:               s.cfg.spawn.descendantEvent,
+			descendantRecorded:            s.cfg.spawn.descendantRecorded,
 			parentSteer:                   s.SteerWithProvenance,
 			parentSystemNotification:      s.routeSystemNotification,
 			subagentTask:                  descriptor.Task,

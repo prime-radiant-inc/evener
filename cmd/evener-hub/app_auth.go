@@ -1017,8 +1017,12 @@ func openAIStateDirFromEnv(env map[string]string) string {
 	return openAIStateDirFromEnvMap(env)
 }
 
-func openAIStatusFromRecord(now time.Time, record authopenai.AuthRecord) authopenai.AuthStatus {
-	needsLogin := record.NeedsLogin(now)
+// openAIStatusFromRecord is a Codex instance's status from its OAuth record.
+// refreshRejected says the issuer permanently refused the record's refresh
+// token (authopenai.RefreshRejected, #2479), which needs a fresh sign-in as
+// surely as an expired record with no refresh token does.
+func openAIStatusFromRecord(now time.Time, record authopenai.AuthRecord, refreshRejected bool) authopenai.AuthStatus {
+	needsLogin := record.NeedsLogin(now) || refreshRejected
 	return authopenai.AuthStatus{
 		SignedIn:     !needsLogin,
 		Source:       record.Source,
@@ -1666,7 +1670,7 @@ func (c *hubAuthController) openAIInstanceStatusKeyed(key []byte, name string, r
 	source := "none"
 	var active authopenai.AuthStatus
 	if hasRecord {
-		active = openAIStatusFromRecord(c.now(), record)
+		active = openAIStatusFromRecord(c.now(), record, authopenai.RefreshRejected(c.stateDir, name, record))
 		source = authopenai.AuthSourceOAuth
 	}
 

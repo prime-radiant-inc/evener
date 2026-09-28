@@ -13,16 +13,12 @@ import type { ItemModel } from "@evener/appwire-client";
 import { buildEntityView } from "@evener/appwire-client";
 import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { afterEach, beforeEach, expect, test } from "vitest";
+import { beforeEach, expect, test } from "vitest";
 import { resetWorkspaceStoreForTests, workspaceStore } from "../../../../shell/workspace";
 import { TranscriptRenderProvider } from "../../../../transcriptDisplay/renderContext";
 import { toolRendererFor } from "../toolRenderers";
 import "../tools";
 import "./jobWatch";
-
-afterEach(() => {
-  cleanup();
-});
 
 beforeEach(() => {
   resetWorkspaceStoreForTests();

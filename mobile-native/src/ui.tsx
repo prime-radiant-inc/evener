@@ -40,6 +40,10 @@ export function useTextScale(): number {
 	return Platform.OS === "ios" ? fontScale : 1;
 }
 
+/** Pairs with useTextScale: on iOS the text is sized by the scale itself, so
+ * the platform must not scale it a second time. */
+export const allowFontScaling = Platform.OS !== "ios";
+
 export function Action({
 	children,
 	onPress,
@@ -56,8 +60,7 @@ export function Action({
 	tone?: "accent" | "quiet" | "primary";
 }) {
 	const colors = useColors();
-	const { fontScale } = useWindowDimensions();
-	const textScale = Platform.OS === "ios" ? fontScale : 1;
+	const textScale = useTextScale();
 	return (
 		<Pressable
 			accessibilityRole="button"
@@ -109,8 +112,7 @@ export function Choice({
 	onPress(): void;
 }) {
 	const colors = useColors();
-	const { fontScale } = useWindowDimensions();
-	const textScale = Platform.OS === "ios" ? fontScale : 1;
+	const textScale = useTextScale();
 	return (
 		<Pressable
 			accessibilityRole="radio"
@@ -142,30 +144,31 @@ export function Copy({
 	numberOfLines,
 	ellipsizeMode,
 	variant = "ui",
+	selectable = true,
 }: {
 	children: ReactNode;
 	muted?: boolean;
 	label?: string;
 	numberOfLines?: number;
 	ellipsizeMode?: TextProps["ellipsizeMode"];
-	variant?: "ui" | "yourMessage";
+	variant?: "ui" | "yourMessage" | "agentProse";
+	selectable?: boolean;
 }) {
 	const colors = useColors();
-	const { fontScale } = useWindowDimensions();
-	const textScale = Platform.OS === "ios" ? fontScale : 1;
+	const textScale = useTextScale();
 	return (
 		<Text
-			selectable
+			selectable={selectable}
 			allowFontScaling={Platform.OS !== "ios"}
 			accessibilityLabel={label}
 			numberOfLines={numberOfLines}
 			ellipsizeMode={ellipsizeMode}
 			style={
-				variant === "yourMessage"
+				variant !== "ui"
 					? {
-							fontFamily: typeRoles.yourMessage.fontFamily,
-							fontSize: typeRoles.yourMessage.fontSize * textScale,
-							lineHeight: typeRoles.yourMessage.lineHeight * textScale,
+							fontFamily: typeRoles[variant].fontFamily,
+							fontSize: typeRoles[variant].fontSize * textScale,
+							lineHeight: typeRoles[variant].lineHeight * textScale,
 							color: colors.palette.prose,
 						}
 					: {
@@ -182,8 +185,7 @@ export function Copy({
 
 export function ErrorMessage({ message }: { message: string | null }) {
 	const colors = useColors();
-	const { fontScale } = useWindowDimensions();
-	const textScale = Platform.OS === "ios" ? fontScale : 1;
+	const textScale = useTextScale();
 	return message ? (
 		<Text
 			accessibilityRole="alert"
@@ -200,8 +202,7 @@ export function ErrorMessage({ message }: { message: string | null }) {
  * failure. */
 export function WarningMessage({ message }: { message: string | null }) {
 	const colors = useColors();
-	const { fontScale } = useWindowDimensions();
-	const textScale = Platform.OS === "ios" ? fontScale : 1;
+	const textScale = useTextScale();
 	return message ? (
 		<Text
 			accessibilityRole="alert"

@@ -54,9 +54,9 @@ func startProbeDaemon(t *testing.T, cfg probeDaemonConfig) (*StatusProber, rende
 	}
 	for id, state := range cfg.descendants {
 		srv.RecordDescendantAppEvent(cfg.sessionID, events.SessionEvent{
-			Kind:      events.EventUserInput,
+			Kind:      events.EventExecutionStarted,
 			SessionID: id,
-			Data:      events.UserInputData{Text: "probe fixture"},
+			Data:      events.ExecutionStartedData{TurnID: "t_probe"},
 		})
 		if state != appwire.ThreadStatusActive {
 			srv.RecordDescendantAppEvent(cfg.sessionID, events.SessionEvent{
@@ -192,8 +192,8 @@ func fuzzScenarioStatusProber_DecodesPendingEscalation(t *testing.T) {
 	prober, entry := startProbeDaemon(t, probeDaemonConfig{
 		sessionID: "01A", state: appwire.ThreadStatusActive,
 		source: wireProbeEnvelopeSource{escalations: []appwire.SandboxEscalationRequested{
-			{EscalationID: "esc_1", Tool: "write_file", Kind: "file", DeniedPath: "/home/me/sites/docs/index.md"},
-			{EscalationID: "esc_2", Tool: "edit_file", Kind: "file", DeniedPath: "/etc/hosts"},
+			{EscalationID: "esc_1", Tool: "write_file", Kind: "file_tool", DeniedPath: "/home/me/sites/docs/index.md"},
+			{EscalationID: "esc_2", Tool: "edit_file", Kind: "file_tool", DeniedPath: "/etc/hosts"},
 		}},
 	})
 	got := prober.Probe(entry)

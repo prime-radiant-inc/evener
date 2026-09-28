@@ -1203,8 +1203,9 @@ func (s *RemoteHubSource) routeNotification(client *appwire.Client, notification
 // with an internal error.
 //
 // Image URLs are rewritten as well, on every carrier a notification can use:
-// the thread of thread/started, the turn of turn/started and turn/completed, and
-// the item of item/started and item/completed (see rewriteRemoteImageURL).
+// the thread of thread/started, the turn of turn/started and turn/completed,
+// the item of item/started and item/completed, and the plural items array of
+// history/updated (see rewriteRemoteImageURL).
 func (s *RemoteHubSource) translateNotification(n appwire.Notification) (appwire.Notification, string, bool) {
 	if len(n.Params) == 0 {
 		return n, "", false
@@ -1261,6 +1262,13 @@ func (s *RemoteHubSource) translateNotification(n appwire.Notification) (appwire
 	}
 	if raw, ok := fields["item"]; ok {
 		fields["item"] = s.rewriteRawItemImageURLs(raw)
+	}
+	// history/updated (HistoryUpdatedParams) carries its turns and items in
+	// the plural "turns"/"items" arrays instead: turns carry no items of
+	// their own there (the reducer merges items in by key), so only the
+	// items array needs the item visitor.
+	if raw, ok := fields["items"]; ok {
+		fields["items"] = s.rewriteRawArray(raw, s.rewriteRawItemImageURLs)
 	}
 	if n.Method == appwire.NotifyThreadStatusChanged {
 		if rawCapabilities, ok := fields[capabilitiesField]; ok {

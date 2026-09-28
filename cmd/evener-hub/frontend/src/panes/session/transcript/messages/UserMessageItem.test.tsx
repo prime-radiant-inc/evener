@@ -6,7 +6,7 @@ import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { lazy } from "react";
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, test } from "vitest";
 import { registerPaneForTests } from "../../../../shell/paneRegistry";
 import { resetWorkspaceStoreForTests, workspaceStore } from "../../../../shell/workspace";
 import { installLocalStorage, MemoryStorage } from "../../../../storageTestUtils";
@@ -18,8 +18,6 @@ import { SessionNowContext } from "../../liveness";
 import { ignoringTurn, itemRendererFor } from "../types";
 import { UserMessageItem, UserMessageView } from "./UserMessageItem";
 import styles from "./usermessageitem.module.css";
-
-afterEach(cleanup);
 
 beforeAll(() => {
   installLocalStorage(new MemoryStorage());
@@ -331,7 +329,7 @@ describe("per-message fork affordance", () => {
   test("a user message with a sessionRef renders a Fork-from-here button; a read-only one (no ref) does not", () => {
     const { rerender } = render(
       <UserMessageItem
-        item={item({ text: "fix the bug", transcriptEntryIndex: 1 })}
+        item={item({ text: "fix the bug", transcriptKey: "apptranscript-item-v2:turn_1:0:0" })}
         turn={turn}
         live={false}
         sessionRef="ref_a"
@@ -342,20 +340,25 @@ describe("per-message fork affordance", () => {
     // No sessionRef (the read-only "open beside" transcript pane): forking
     // needs a ref to call thread/fork with, so the action is withheld.
     rerender(
-      <UserMessageItem item={item({ text: "fix the bug", transcriptEntryIndex: 1 })} turn={turn} live={false} />,
+      <UserMessageItem
+        item={item({ text: "fix the bug", transcriptKey: "apptranscript-item-v2:turn_1:0:0" })}
+        turn={turn}
+        live={false}
+      />,
     );
     expect(screen.queryByRole("button", { name: /fork from here/i })).toBeNull();
   });
 
-  // thread/fork's sourceTurnId is a TRANSCRIPT ENTRY INDEX, not a turn id:
-  // cmd/evener-hub/app_threadlifecycle.go's parseSourceTurnID hands its result
-  // straight to agent.ForkSessionAtUserTurn as a 1-based index into the
-  // parent's entry list. The turn id only coincides with that index on a
-  // transcript replayed from disk (internal/apptranscript numbers turn_N off
-  // the entry index itself); every LIVE minter numbers turns off a different
-  // counter, so sending turn.id cuts the child at an unrelated entry. The
-  // item's own transcriptEntryIndex is the only field that names the entry.
-  test("forking calls thread/fork with this message's transcript ENTRY INDEX (not the turn id), seeds the child's composer draft, and opens it as a pane", async () => {
+  // thread/fork's sourceItemKey names an item key (transcriptindex.ItemKey),
+  // not a turn id: cmd/evener-hub/app_threadlifecycle.go's parseSourceItemKey
+  // resolves it to a 1-based index into the parent's entry list and hands
+  // that straight to agent.ForkSessionAtUserTurn. The turn id only coincides
+  // with that index on a transcript replayed from disk (internal/apptranscript
+  // numbers turn_N off the entry index itself); every LIVE minter numbers
+  // turns off a different counter, so sending turn.id cuts the child at an
+  // unrelated entry. The item's own transcriptKey is the only field that
+  // names the entry.
+  test("forking calls thread/fork with this message's transcriptKey (not the turn id), seeds the child's composer draft, and opens it as a pane", async () => {
     const user = userEvent.setup();
     const fake = connectForkClient();
     let called: unknown;
@@ -368,7 +371,7 @@ describe("per-message fork affordance", () => {
     // everyday case past the first turn or two.
     render(
       <UserMessageItem
-        item={item({ text: "fix the bug", transcriptEntryIndex: 5 })}
+        item={item({ text: "fix the bug", transcriptKey: "apptranscript-item-v2:turn_1:4:0" })}
         turn={turn}
         live={false}
         sessionRef="ref_a"
@@ -376,7 +379,13 @@ describe("per-message fork affordance", () => {
     );
     await user.click(screen.getByRole("button", { name: /fork from here/i }));
 
-    await waitFor(() => expect(called).toEqual({ ref: "ref_a", sourceTurnId: "5", deferInput: true }));
+    await waitFor(() =>
+      expect(called).toEqual({
+        ref: "ref_a",
+        sourceItemKey: "apptranscript-item-v2:turn_1:4:0",
+        deferInput: true,
+      }),
+    );
     // The child opens as its own pane...
     await waitFor(() =>
       expect(workspaceStore.getState().panes.find((p) => p.type === "session")?.params).toEqual({
@@ -397,7 +406,7 @@ describe("per-message fork affordance", () => {
     render(
       <>
         <UserMessageItem
-          item={item({ text: "fix the bug", transcriptEntryIndex: 1 })}
+          item={item({ text: "fix the bug", transcriptKey: "apptranscript-item-v2:turn_1:0:0" })}
           turn={turn}
           live={false}
           sessionRef="ref_a"
@@ -411,23 +420,23 @@ describe("per-message fork affordance", () => {
     expect(workspaceStore.getState().panes).toHaveLength(0);
   });
 
-  // The no-entry-index fork: an item the transcript has not numbered names no
+  // The no-key fork: an item the transcript has not numbered names no
   // divergence position at all. The TUI's own fork draft refuses outright on
   // this (cmd/evener-tui/hub_browse.go's startForkDraft: "fork requires
   // persisted transcript turn identity" when TurnIndexFromID yields 0) rather
   // than cut a child somewhere the user never pointed at. A per-message
   // affordance refuses in the web-native way this component already uses for
   // the other unforkable case (no sessionRef, above): it is not offered.
-  test("no Fork-from-here button at all when the item carries no transcript entry index", () => {
+  test("no Fork-from-here button at all when the item carries no transcriptKey", () => {
     const { rerender } = render(
       <UserMessageItem item={item({ text: "fix the bug" })} turn={turn} live={false} sessionRef="ref_a" />,
     );
     expect(screen.queryByRole("button", { name: /fork from here/i })).toBeNull();
 
-    // Entry indexes are 1-based, so a 0 names no entry either.
+    // An empty transcriptKey names no entry either.
     rerender(
       <UserMessageItem
-        item={item({ text: "fix the bug", transcriptEntryIndex: 0 })}
+        item={item({ text: "fix the bug", transcriptKey: "" })}
         turn={turn}
         live={false}
         sessionRef="ref_a"

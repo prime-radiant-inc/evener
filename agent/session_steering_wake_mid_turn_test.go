@@ -79,8 +79,7 @@ func TestSteeringArrivingMidTurnIsDeliveredByTheWakeAfterABareTextEnd(t *testing
 	client := llm.NewClient()
 	client.Register(adapter)
 	sess = newSession(t, withClient(client), withConfig(SessionConfig{
-		StateDir:         t.TempDir(),
-		NoProjectPrompts: true,
+		StateDir: t.TempDir(),
 		testOnly: testConfig{
 			skipGitSnapshot:     true,
 			minimalSystemPrompt: true,

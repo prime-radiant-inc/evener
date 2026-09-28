@@ -1,31 +1,19 @@
 // What this device remembers about one hub's Board: which sessions you have
-// seen, which sections you folded, and how you organize projects. Kept in
-// expo-sqlite's kv-store under per-hub keys that ConnectionProvider.removeHub
-// clears.
+// seen, which sections you folded, how you organize projects, and what you
+// searched for. Kept in expo-sqlite's kv-store under per-hub keys that
+// ConnectionProvider.removeHub clears.
 import { isPlainObject } from "@evener/appwire-client";
+import { readJson, writeJson } from "../deviceStorage";
 import type { SyncStringStorage } from "../syncStringStorage";
 import { hubTime } from "./attention";
 
 const seenKey = (hubId: string) => `evener.native.seen.${hubId}`;
 const foldedKey = (hubId: string) => `evener.native.board-sections.${hubId}`;
 const organizeKey = (hubId: string) => `evener.native.board-organize.${hubId}`;
+const recentSearchesKey = (hubId: string) => `evener.native.recent-searches.${hubId}`;
 const MARK_LIMIT = 500;
+const RECENT_LIMIT = 8;
 
-function readJson(storage: SyncStringStorage, key: string): unknown {
-	try {
-		const raw = storage.getItemSync(key);
-		return raw ? JSON.parse(raw) : null;
-	} catch {
-		return null;
-	}
-}
-function writeJson(storage: SyncStringStorage, key: string, value: unknown): void {
-	try {
-		storage.setItemSync(key, JSON.stringify(value));
-	} catch {
-		// The in-memory copy still serves this launch.
-	}
-}
 interface SeenRecord {
 	through?: string;
 	unread?: true;
@@ -201,19 +189,51 @@ export class OrganizeByPreference {
 	}
 }
 
+/** The last queries you searched and opened a result from, most recent
+ * first, per device and hub. */
+export class RecentSearches {
+	private queries: string[];
+
+	constructor(
+		private readonly storage: SyncStringStorage,
+		private readonly hubId: string,
+	) {
+		const value = readJson(storage, recentSearchesKey(hubId));
+		this.queries = Array.isArray(value)
+			? value.filter((query): query is string => typeof query === "string" && query !== "").slice(0, RECENT_LIMIT)
+			: [];
+	}
+
+	list(): string[] {
+		return this.queries;
+	}
+
+	add(text: string): void {
+		const query = text.trim();
+		if (!query) return;
+		this.queries = [query, ...this.queries.filter((other) => other !== query)].slice(0, RECENT_LIMIT);
+		writeJson(this.storage, recentSearchesKey(this.hubId), this.queries);
+	}
+
+	clear(): void {
+		this.queries = [];
+		writeJson(this.storage, recentSearchesKey(this.hubId), this.queries);
+	}
+}
+
 export function forgetBoard(storage: SyncStringStorage, hubId: string): void {
 	let failed = false;
-	for (const key of [seenKey(hubId), foldedKey(hubId), organizeKey(hubId)])
+	for (const key of [seenKey(hubId), foldedKey(hubId), organizeKey(hubId), recentSearchesKey(hubId)])
 		try {
 			storage.removeItemSync(key);
 		} catch {
 			// Keep trying the other keys: a storage failure orphans this one (hub
 			// ids are fresh UUIDs, never reused, so nothing reads it again), but
 			// the caller must still hear about it. ConnectionProvider's removeHub
-			// cleanup runs this last, alongside cleanups that surface their own
-			// storage failures the same way, so rethrowing here shows the user
-			// the same "could not be deleted" message instead of a silently
-			// incomplete removal.
+			// runs this alongside other cleanups that surface their own storage
+			// failures the same way, so rethrowing here shows the user the same
+			// "could not be deleted" message instead of a silently incomplete
+			// removal.
 			failed = true;
 		}
 	if (failed) throw new Error("forgetBoard: could not remove board memory from storage");

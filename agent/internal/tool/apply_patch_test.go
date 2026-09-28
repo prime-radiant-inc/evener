@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/spf13/afero"
+
 	"primeradiant.com/evener/agent/execenv"
 )
 
@@ -72,6 +74,27 @@ func TestApplyPatch_AddUpdateMoveDelete(t *testing.T) {
 	// d.txt deleted
 	if _, err := os.Stat(filepath.Join(dir, "d.txt")); err == nil {
 		t.Fatalf("expected d.txt to be deleted")
+	}
+}
+
+// TestApplyPatch_DeleteFailureNotReportedAsApplied pins issue #2376: when the
+// filesystem removal genuinely fails (injected read-only boundary → EPERM),
+// apply_patch must return an error, not report the deleted path as applied, and
+// must leave the target on disk.
+func TestApplyPatch_DeleteFailureNotReportedAsApplied(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "keep.txt")
+	if err := os.WriteFile(target, []byte("x\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	fm := execenv.NewLocalExecutionEnvironment(dir).SetFs(afero.NewReadOnlyFs(afero.NewOsFs()))
+
+	out, err := ApplyPatch(fm, "*** Begin Patch\n*** Delete File: keep.txt\n*** End Patch\n")
+	if err == nil {
+		t.Fatalf("ApplyPatch reported success after a failed remove: %q", out)
+	}
+	if _, statErr := os.Stat(target); statErr != nil {
+		t.Errorf("a failed delete must leave the file in place: %v", statErr)
 	}
 }
 

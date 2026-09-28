@@ -73,7 +73,6 @@ JSON and TOML now agree, only the CLI's hyphens differ.
 | Max concurrent delegate turns | `--max-concurrent-delegates` | `max_concurrent_delegate_turns` |
 | Max retained terminal delegate records | `--max-retained-terminal` | `max_retained_terminal` |
 | AppWire replay buffer size | `--app-replay-size` | `app_replay_size` |
-| Suppress `.evener/prompts/` loading | `--no-project-prompts` | `no_project_prompts` |
 
 Note the CLI singular form (`--plugin-dir`, repeatable) pairs with a
 TOML/JSON plural array (`plugin_dirs = [...]`). That is intentional:
@@ -185,6 +184,5 @@ appwire/providers carve-outs intentionally stay camelCase:
 
 Hub REST/SSE shapes and TUI-internal types that previously leaked
 camelCase have all migrated: REST request bodies use `turn_id`, the
-TUI now reuses the appwire-defined `ToolOutputDeltaParams` and
-`NotificationRef` types directly instead of locally redeclaring the
-wire shape with camelCase tags.
+TUI now reuses the appwire-defined `NotificationRef` type directly
+instead of locally redeclaring the wire shape with camelCase tags.

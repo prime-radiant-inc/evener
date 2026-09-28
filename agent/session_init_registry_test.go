@@ -18,10 +18,10 @@ import (
 // registry strip at child init is gated on delegationAllowance, not depth.
 //
 // Positive case: a child with delegationAllowance > 0 retains delegate and
-// job_watch in its registry (today fails: strip runs on depth > 0).
+// job_watch in its registry.
 //
-// Negative case: a child with delegationAllowance == 0 still has delegate and
-// job_watch stripped (preserves today's leaf behaviour).
+// Negative case: a child with delegationAllowance == 0 has delegate stripped
+// while job_watch stays — watching is not delegation, so a leaf keeps it.
 func TestChildRegistryKeepsDelegateWithAllowance(t *testing.T) {
 	t.Parallel()
 	t.Run("allowance>0 retains delegate and job_watch", func(t *testing.T) {
@@ -31,8 +31,7 @@ func TestChildRegistryKeepsDelegateWithAllowance(t *testing.T) {
 		c.Register(&fakeAdapter{name: "openai"})
 
 		cfg := SessionConfig{
-			NoProjectPrompts: true,
-			StateDir:         dir,
+			StateDir: dir,
 		}
 		cfg.spawn.depth = 1
 		cfg.spawn.parentSessionID = "parent-session"
@@ -59,8 +58,7 @@ func TestChildRegistryKeepsDelegateWithAllowance(t *testing.T) {
 		c.Register(&fakeAdapter{name: "openai"})
 
 		cfg := SessionConfig{
-			NoProjectPrompts: true,
-			StateDir:         dir,
+			StateDir: dir,
 		}
 		cfg.spawn.depth = 1
 		cfg.spawn.parentSessionID = "parent-session"
@@ -343,8 +341,7 @@ func TestLeafDelegateWatchesItsOwnJobsOnly(t *testing.T) {
 	c.Register(&fakeAdapter{name: "openai"})
 
 	cfg := SessionConfig{
-		NoProjectPrompts: true,
-		StateDir:         dir,
+		StateDir: dir,
 	}
 	cfg.spawn.depth = 1
 	cfg.spawn.parentSessionID = "parent-session"

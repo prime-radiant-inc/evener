@@ -271,7 +271,8 @@ describe("effective transcript display state", () => {
     );
     expect(transcriptDisplayStore.getState().drafts.desktop).toBeUndefined();
     expect(transcriptDisplayStore.getState().hub.desktop).toEqual({ revision: 4, config: preset("full") });
-    expect(transcriptDisplayStore.getState().hubError).toBe("revision conflict");
+    expect(transcriptDisplayStore.getState().hubErrors.desktop).toBe("revision conflict");
+    expect(transcriptDisplayStore.getState().hubError).toBeNull();
   });
 
   test("ignores a stale post-apply reconciliation once a newer patch has committed", async () => {
@@ -573,6 +574,16 @@ describe("effective transcript display state", () => {
     await transcriptDisplayStore.getState().refreshHubDefaults();
     expect(transcriptDisplayStore.getState().hubSupport).toBe("unsupported");
     expect(client.calls).toHaveLength(0);
+  });
+
+  test("a relayed change does not write hub while the section is unsupported", async () => {
+    // An older hub whose handshake omits the capability resolves to
+    // "unsupported"; a change relayed for that section must not write hub.
+    const features = { ...(await new FakeClient("idle").connect()).features, transcriptDisplaySettings: false };
+    connectionStore.setState({ features });
+    expect(transcriptDisplayStore.getState().hubSupport).toBe("unsupported");
+    transcriptDisplayStore.getState().applyHubChange({ layout: "desktop", revision: 4, config: preset("chat") });
+    expect(transcriptDisplayStore.getState().hub).toEqual({});
   });
 
   test("fences notifications from a replaced client", async () => {

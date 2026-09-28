@@ -244,7 +244,9 @@ prefix, and summarize replaces the checkpoint. The old cached prefix is gone reg
 Deterministic, no LLM call required. Extracts structured state from old history:
 
 - Original task (propagated through repeated checkpoints)
-- Files modified (from `edit_file`, `write_file`, `apply_patch` tool calls)
+- Files modified (from `edit_file`, `write_file`, `apply_patch` tool calls whose
+  paired result confirmed success; failed or result-missing attempts render
+  under a distinct `Files attempted but not applied:` line, never as modified)
 - Tool call counts (sorted deterministically)
 - Last 3 shell command results with exit codes
 

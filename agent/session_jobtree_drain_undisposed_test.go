@@ -77,8 +77,7 @@ func TestOneShotDrainEscalatesAndExitsOnAnUndisposedBackgroundJob(t *testing.T) 
 		func(llm.Request) llm.Response { return finalResponse("still doing nothing") },
 	}}
 	sess := newSession(t, withAdapter(adapter), withConfig(SessionConfig{
-		NoProjectPrompts: true,
-		TurnEndsProcess:  true,
+		TurnEndsProcess: true,
 	}))
 	jobID := startUndisposedBackgroundShell(t, sess)
 
@@ -165,8 +164,7 @@ func TestOneShotDrainAnnouncementStopResolves(t *testing.T) {
 		func(llm.Request) llm.Response { return finalResponse("all wrapped up") },
 	}
 	sess := newSession(t, withAdapter(adapter), withConfig(SessionConfig{
-		NoProjectPrompts: true,
-		TurnEndsProcess:  true,
+		TurnEndsProcess: true,
 	}))
 	var releaseShell func()
 	jobID, releaseShell = startControlledBackgroundShell(t, sess, "controlled stop")
@@ -251,8 +249,7 @@ func TestOneShotDrainWaitsForForegroundShell(t *testing.T) {
 	t.Parallel()
 	adapter := &fakeAdapter{name: "openai"}
 	sess := newSession(t, withAdapter(adapter), withConfig(SessionConfig{
-		NoProjectPrompts: true,
-		TurnEndsProcess:  true,
+		TurnEndsProcess: true,
 	}))
 	se := newDelayedSuccessStreamingExecutor()
 	releaseShell := func() {
@@ -315,8 +312,7 @@ func TestOneShotDrainWaitsForForegroundShell(t *testing.T) {
 func TestUndisposedJobsYieldToOtherOutstandingWork(t *testing.T) {
 	t.Parallel()
 	sess := newSession(t, withConfig(SessionConfig{
-		NoProjectPrompts: true,
-		TurnEndsProcess:  true,
+		TurnEndsProcess: true,
 	}))
 	startUndisposedBackgroundShell(t, sess)
 	seedOwnedDurablePending(t, sess.jobManager, "other-owed-work", jobstore.JobShell)
@@ -336,8 +332,7 @@ func TestUndisposedJobsYieldToOtherOutstandingWork(t *testing.T) {
 func TestUndisposedJobsSuppressesStopPendingAnnouncement(t *testing.T) {
 	t.Parallel()
 	sess := newSession(t, withConfig(SessionConfig{
-		NoProjectPrompts: true,
-		TurnEndsProcess:  true,
+		TurnEndsProcess: true,
 	}))
 	jobID := startUndisposedBackgroundShell(t, sess)
 	// startUndisposedBackgroundShell's cleanup must be allowed to signal the
@@ -379,8 +374,7 @@ func TestUndisposedJobsSuppressesStopPendingAnnouncement(t *testing.T) {
 func TestClearedWatchResumesEscalation(t *testing.T) {
 	t.Parallel()
 	sess := newSession(t, withConfig(SessionConfig{
-		NoProjectPrompts: true,
-		TurnEndsProcess:  true,
+		TurnEndsProcess: true,
 	}))
 	jobID := startUndisposedBackgroundShell(t, sess)
 
@@ -450,8 +444,7 @@ func TestClearedWatchStartsAFreshAnnouncementEpisode(t *testing.T) {
 		func(llm.Request) llm.Response { return finalResponse("exiting") },
 	}
 	sess := newSession(t, withAdapter(adapter), withConfig(SessionConfig{
-		NoProjectPrompts: true,
-		TurnEndsProcess:  true,
+		TurnEndsProcess: true,
 	}))
 	jobID = startUndisposedBackgroundShell(t, sess)
 
@@ -612,8 +605,7 @@ func TestOneShotDrainKeepsAnswerWhenCompletionRidesAnnouncement(t *testing.T) {
 		func(llm.Request) llm.Response { return finalResponse(answer) },
 	}}
 	sess := newSession(t, withAdapter(adapter), withConfig(SessionConfig{
-		NoProjectPrompts: true,
-		TurnEndsProcess:  true,
+		TurnEndsProcess: true,
 	}))
 	jobID, releaseShell := startControlledBackgroundShell(t, sess, "controlled build")
 
@@ -672,8 +664,7 @@ func TestOneShotDrainDeliversInsteadOfAnnouncingAFinalizingJob(t *testing.T) {
 		func(llm.Request) llm.Response { return finalResponse(answer) },
 	}}
 	sess := newSession(t, withAdapter(adapter), withConfig(SessionConfig{
-		NoProjectPrompts: true,
-		TurnEndsProcess:  true,
+		TurnEndsProcess: true,
 	}))
 	jobID, releaseShell := startControlledBackgroundShell(t, sess, "controlled build")
 

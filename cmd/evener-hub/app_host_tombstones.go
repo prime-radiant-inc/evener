@@ -96,6 +96,16 @@ type hostRecordPolicy struct {
 	prunedTTL            time.Duration
 	auditMaxCount        int
 	auditTTL             time.Duration
+	// The teardown-repair bounds (spec §6/§11): the cleared-remnant marker
+	// bounds, the recovery-marker bounds, the attempt-history bound per remnant,
+	// and the retry's bounded execution deadline.
+	clearedMaxCount  int
+	clearedTTL       time.Duration
+	recoveryMaxCount int
+	recoveryTTL      time.Duration
+	attemptMaxCount  int
+	teardownTimeout  time.Duration
+	escalationAge    time.Duration
 }
 
 // hostTOMLRecords is the machine-record set one hub.toml write carries: the
@@ -121,6 +131,39 @@ type hostTOMLRecords struct {
 	// set a dropped receipt's older file copy would ride back in and a restart
 	// would serve it as the recorded outcome.
 	droppedReceipts map[string]struct{}
+	// remnants, stagedReceipts, and attempts are the teardown-repair record sets
+	// (registry spec 08 §5/§6; app_host_remnants.go): the open remnants whose
+	// fence the derivation honours, the resolved-remnant markers it bounds, the
+	// staged-receipt markers a commit's step-(2) write carries, and the attempt
+	// records a claim writes.
+	remnants       map[string]HostTeardownRemnant
+	stagedReceipts map[string]HostStagedReceipt
+	attempts       map[string]HostTeardownAttempt
+	// droppedRemnants, droppedStaged, and droppedAttempts name the
+	// teardown-repair records this derivation dropped (a re-add purge, a
+	// tombstone purge, or a bounded compaction), so the writer's preservation
+	// rule cannot ride the file's older copy back in.
+	droppedRemnants map[string]struct{}
+	droppedStaged   map[string]struct{}
+	droppedAttempts map[string]struct{}
+	// storeSync is the cross-file commit intent set (deploy-pipeline spec 08b
+	// §9) the file carries, keyed by host name: the exact store rows a commit's
+	// swap is deleting, plus the hub.toml generation the intent belongs to. A
+	// removal's staged write merges its own intent in; the writer preserves
+	// unowned names' intents verbatim.
+	storeSync map[string]HostStoreSyncIntent
+	// droppedStoreSync names the intents this derivation dropped. The writer's
+	// preservation rule re-emits an intent for a name the write does not own, so
+	// without this set an intent for a name outside the live set (a crash
+	// window's, whose name is neither live nor tombstoned) could never clear:
+	// the file's older copy would ride back in on every boot.
+	droppedStoreSync map[string]struct{}
+	// raisedHighWater names the marks this derivation raised (the boot mirror
+	// pass's discarded generations). The writer's preservation rule re-emits a
+	// generation record for a name the write does not own, so without this set
+	// the file's older record would ride back over the raise — and for a
+	// tombstoned name the twin pair would then disagree and refuse the write.
+	raisedHighWater map[string]struct{}
 }
 
 // hostTombstoneStage is the tombstone a removal stages into the very write

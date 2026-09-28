@@ -161,6 +161,8 @@ const WATCH_KEYS = valueRecordKeys(
 );
 const TASKS_KEYS = valueRecordKeys(["total", "done"], ["cancelled", "current_id", "current"]);
 const SUBAGENT_TALLY_KEYS = valueRecordKeys(["running", "failed", "done"]);
+const QUESTION_KEYS = valueRecordKeys(["text", "count"], ["options"]);
+const FAILURE_KEYS = valueRecordKeys([], ["title", "cause_kind", "provider", "status"]);
 const SESSION_KEYS = valueRecordKeys(
   ["ref", "host_id", "session_id", "title", "project", "state", "kind", "live", "children"],
   [
@@ -172,6 +174,9 @@ const SESSION_KEYS = valueRecordKeys(
     "approval_pending",
     "approval_tool",
     "approval_target",
+    "question",
+    "failure",
+    "last_message",
     "dormant",
     "offline",
     "updated_at",
@@ -193,6 +198,8 @@ const SESSION_KEYS = valueRecordKeys(
     watches: WATCH_KEYS,
     tasks: TASKS_KEYS,
     subagents: SUBAGENT_TALLY_KEYS,
+    question: QUESTION_KEYS,
+    failure: FAILURE_KEYS,
   },
 );
 const PROJECT_KEYS = valueRecordKeys(
@@ -307,6 +314,30 @@ const tasksValue = (value: unknown): boolean =>
 const subagentTallyValue = (value: unknown): boolean =>
   knownKeys(value, SUBAGENT_TALLY_KEYS) && count(value.running) && count(value.failed) && count(value.done);
 
+// Mirrors navigationQuestionValid's bounds: text of 1 to 200 characters, at
+// least one question counted, and at most five labels of 1 to 80 characters.
+const questionValue = (value: unknown): boolean =>
+  knownKeys(value, QUESTION_KEYS) &&
+  boundedString(value.text, 200) &&
+  value.text !== "" &&
+  count(value.count) &&
+  (value.count as number) >= 1 &&
+  optional(
+    value.options,
+    (item) =>
+      Array.isArray(item) && item.length <= 5 && item.every((label) => boundedString(label, 80) && label !== ""),
+  );
+
+// Mirrors navigationFailureValid: a title of 1 to 80 characters or a cause kind
+// (at least one), cause identities, and a safe non-negative status.
+const failureValue = (value: unknown): boolean =>
+  knownKeys(value, FAILURE_KEYS) &&
+  (value.title !== undefined || value.cause_kind !== undefined) &&
+  optional(value.title, (item) => boundedString(item, 80) && item !== "") &&
+  optional(value.cause_kind, (item) => identity(item)) &&
+  optional(value.provider, (item) => identity(item)) &&
+  optional(value.status, count);
+
 function sessionValue(value: unknown): value is Record<string, unknown> {
   return (
     knownKeys(value, SESSION_KEYS) &&
@@ -328,6 +359,9 @@ function sessionValue(value: unknown): value is Record<string, unknown> {
     optional(value.approval_pending, bool) &&
     optional(value.approval_tool, (item) => identity(item)) &&
     optional(value.approval_target, (item) => boundedString(item, 512)) &&
+    optional(value.question, questionValue) &&
+    optional(value.failure, failureValue) &&
+    optional(value.last_message, (item) => boundedString(item, 200) && item !== "") &&
     optional(value.dormant, bool) &&
     optional(value.offline, bool) &&
     optional(value.updated_at, rfc3339Timestamp) &&
@@ -411,18 +445,25 @@ function entityIdentityForResource(
   return { logical: `session\0${value.value.ref as string}`, anchor: false };
 }
 
+// entity checks an entity record's structure only. validateDeltaForResource
+// runs the value validator separately (entityIdentityForResource below), so
+// this stays a boolean guard rather than a second full validation (#2478).
 function entity(value: unknown, key: ResourceKey): value is NavigationEntityRecord {
-  if (
-    !exactKeys(value, ["key", "kind", "value"]) ||
-    !entityKeyValid(key, value.key) ||
-    !safeString(value.kind, 128) ||
-    !isRecord(value.value)
-  )
-    return false;
-  const kind = value.kind;
-  if (typeof kind !== "string") return false;
-  entityIdentityForResource(key, { kind, value: value.value });
-  return true;
+  return (
+    exactKeys(value, ["key", "kind", "value"]) &&
+    entityKeyValid(key, value.key) &&
+    safeString(value.kind, 128) &&
+    isRecord(value.value)
+  );
+}
+
+// validateEntity runs an entity record's structure check and its value's
+// validator once, returning the value's decoded identity. validateGraphForResource
+// needs the identity, so a single call replaces the
+// entity()+entityIdentityForResource() pair it used to run (#2478).
+function validateEntity(value: unknown, key: ResourceKey): { logical: string; anchor: boolean } {
+  if (!entity(value, key)) throw schemaError("entity schema");
+  return entityIdentityForResource(key, { kind: value.kind, value: value.value });
 }
 
 function owner(value: unknown): value is NavigationOrderContainer["owner"] {
@@ -600,10 +641,10 @@ export function validateGraphForResource(
   let anchorKey: string | undefined;
   let sessionEntities = 0;
   for (const [mapKey, item] of graph.entities) {
-    if (mapKey !== item.key || !entity(item, key)) throw schemaError("entity schema");
+    if (mapKey !== item.key) throw schemaError("entity schema");
+    const decoded = validateEntity(item, key);
     if (item.kind === "session" && ++sessionEntities > MAX_NAVIGATION_SESSION_ENTITIES)
       throw schemaError("resource graph");
-    const decoded = entityIdentityForResource(key, item);
     if (logical.has(decoded.logical)) throw schemaError("logical identity");
     logical.add(decoded.logical);
     if (decoded.anchor) {
@@ -697,14 +738,19 @@ export function validateSnapshotForResource(
     !Array.isArray(snapshot.containers)
   )
     throw schemaError("snapshot");
+  // Build the maps decode validates, rejecting a duplicate key outright.
+  // validateGraphForResource below runs each entity and container validator
+  // exactly once; validating here too made a snapshot read run them twice
+  // before merge's third pass (#2478).
   const entities = new Map<string, NavigationGraphEntity>();
   for (const item of snapshot.entities) {
-    if (!entity(item, key) || entities.has(item.key)) throw schemaError("entity schema");
-    entities.set(item.key, item);
+    if (!isRecord(item) || typeof item.key !== "string" || entities.has(item.key)) throw schemaError("entity schema");
+    entities.set(item.key, item as NavigationGraphEntity);
   }
   const containers = new Map<string, NavigationGraphContainer>();
   for (const item of snapshot.containers) {
-    if (!container(item, key) || containers.has(item.key)) throw schemaError("container schema");
+    if (!isRecord(item) || typeof item.key !== "string" || containers.has(item.key))
+      throw schemaError("container schema");
     containers.set(item.key, item as NavigationGraphContainer);
   }
   validateGraphForResource(key, versionValue, {
@@ -754,8 +800,8 @@ const RESPONSE_COMMON_KEYS = ["status", "generationId", "revision", "etag"] as c
 const RESPONSE_SNAPSHOT_KEYS = [...RESPONSE_COMMON_KEYS, "representation", "data"] as const;
 const RESPONSE_DELTA_KEYS = [...RESPONSE_COMMON_KEYS, "representation", "base", "data"] as const;
 
-// The value-record keys of an entity a resource holds; entity() already
-// refused a kind the resource cannot hold.
+// The value-record keys of an entity a resource holds; validateEntity already
+// refused, through entityIdentityForResource, a kind the resource cannot hold.
 function entityValueKeys(key: ResourceKey, kind: string): ValueRecordKeys {
   if (kind === "session") return SESSION_KEYS;
   if (kind === "pin_section") return PIN_SECTION_KEYS;

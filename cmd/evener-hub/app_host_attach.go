@@ -83,6 +83,18 @@ func hubHostAttach(ctx context.Context, cfg hubcore.WebConfig, sources *appsourc
 	if _, ok := hosts.Get(name); !ok {
 		return appwire.HostAttachResponse{}, appwire.InvalidParams(fmt.Sprintf("unknown host %q", name))
 	}
+	// The remnant fence, before any dial: an open teardown remnant fences the
+	// name host-wide, so attach refuses with the same typed `remnant-open`
+	// refusal every other lifecycle path emits — "the operator first resumes the
+	// named teardown through `evener/host/teardown-retry` ... and only then does
+	// any fenced path proceed" (registry spec 08 §6).
+	if cfg.HostRemnantFence != nil {
+		if remnantID, open := cfg.HostRemnantFence(name); open {
+			return appwire.HostAttachResponse{}, appwire.RemnantOpen(remnantID, fmt.Sprintf(
+				"host %q: an open teardown remnant (%s) fences this name; resume it through evener/host/teardown-retry first",
+				name, remnantID))
+		}
+	}
 	// The dialing seam is wired by main.go for every production hub. A hub with
 	// no seam (an embedder or a hermetic test) cannot attach anything.
 	if cfg.RemoteHostClient == nil {
@@ -187,12 +199,13 @@ func hubHostAttach(ctx context.Context, cfg hubcore.WebConfig, sources *appsourc
 //
 // The manager's deploy-family sentinels (ErrDeploy, ErrVersionMismatch,
 // ErrControllerDirty, ErrRunTargetUnservable, ErrDeployArtifactUnusable,
-// ErrDeployUnstamped, ErrExecutableMissing) win over the source's generic
-// deadline mapping: a timed-out deployment still carries the deploy sentinel in
-// its chain, and it must reach the browser as the typed HubLaunchError the
-// Connect surface matches, not as SessionUnavailable. Every other error keeps
-// the source's mapping, so a genuine transport timeout (the deadline chain with
-// no deploy sentinel) still becomes SessionUnavailable.
+// ErrDeployUnstamped, ErrOwnExecutableCannotServe, ErrDeployDisabled,
+// ErrExecutableMissing) win over the source's generic deadline mapping: a
+// timed-out deployment still carries the deploy sentinel in its chain, and it
+// must reach the browser as the typed HubLaunchError the Connect surface
+// matches, not as SessionUnavailable. Every other error keeps the source's
+// mapping, so a genuine transport timeout (the deadline chain with no deploy
+// sentinel) still becomes SessionUnavailable.
 func classifyHostAttachError(sources *appsource.Registry, host string, err error) error {
 	// Preserve the manager's sentinel precedence before the source's
 	// transport mapping can claim the chain: a deploy-family error wrapped
@@ -236,11 +249,15 @@ func classifyHostAttachError(sources *appsource.Registry, host string, err error
 //     (ErrRunTargetUnservable), the post-deploy identity refusal
 //     (ErrDeployUnstamped), the unusable-artifact refusal
 //     (ErrDeployArtifactUnusable: the artifact targets another platform or is
-//     not evener), a version mismatch a deploy would have to fix, and the
-//     missing-executable refusal a host with no deploy path produces
-//     (ErrExecutableMissing) → HubLaunchError (hubLaunch): the controller could
-//     not install or match its build on the host, so the host cannot be
-//     attached/launched.
+//     not evener), the cross-target own-executable refusal
+//     (ErrOwnExecutableCannotServe: the default cannot serve the host's target
+//     and the installer fallback has nothing to pin), the deploy-disabled
+//     refusal (ErrDeployDisabled: -no-deploy turned every install path off, so
+//     this controller will not provision any host), a version mismatch a deploy
+//     would have to fix, and the missing-executable refusal a host with no
+//     deploy path produces (ErrExecutableMissing) → HubLaunchError (hubLaunch):
+//     the controller could not install or match its build on the host, so the
+//     host cannot be attached/launched.
 //
 // An unrecognized error is returned unchanged, so it still surfaces as an
 // internal error rather than being mislabelled as a typed refusal.
@@ -260,6 +277,8 @@ func hostAttachWireError(err error) error {
 		errors.Is(err, sshconn.ErrRunTargetUnservable),
 		errors.Is(err, sshconn.ErrDeployArtifactUnusable),
 		errors.Is(err, sshconn.ErrDeployUnstamped),
+		errors.Is(err, sshconn.ErrOwnExecutableCannotServe),
+		errors.Is(err, sshconn.ErrDeployDisabled),
 		errors.Is(err, sshconn.ErrExecutableMissing):
 		return appwire.HubLaunchError("host attach deploy failed: " + err.Error())
 	default:

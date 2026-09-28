@@ -635,7 +635,10 @@
   z-index: var(--z-raised);
 }
 
-/* Flat evidence wrapper; native renderers own useful output boundaries. */
+/* Flat evidence wrapper; native renderers own useful output boundaries.
+ * Size is deliberately not declared: the Markdown widget composes with its
+ * host (1em fallback), so a renderer's text inherits the ambient body step
+ * (see widgets/markdown). */
 .body {
   margin-top: var(--space-1);
 }

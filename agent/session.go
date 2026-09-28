@@ -35,6 +35,7 @@ import (
 	"primeradiant.com/evener/agent/skill"
 	"primeradiant.com/evener/agent/task"
 	"primeradiant.com/evener/agent/transcript"
+	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/internal/apptranscript"
 	"primeradiant.com/evener/llm"
 	"primeradiant.com/evener/llm/registry"
@@ -123,11 +124,17 @@ type Session struct {
 	// durable manifest diverged from the live environment and no later swap
 	// repaired it, so preparation must fail closed rather than trust the
 	// manifest. Guarded by mu.
-	scratchRetentionErr      error
-	delegateController       *delegateTreeController
-	delegateRootSessionID    string
-	owningDelegateID         string
-	ownsDelegateController   bool
+	scratchRetentionErr    error
+	delegateController     *delegateTreeController
+	delegateRootSessionID  string
+	owningDelegateID       string
+	ownsDelegateController bool
+	// subagentTallyForTest overrides SubagentTally's answer when set. A fresh
+	// session with no subagents reports the same empty tally as any other, so
+	// a cross-package test that needs to tell two sessions' tally seams apart
+	// (SubagentTallyForTest) has no real value to seed short of running a
+	// whole delegate tree; this gives it one.
+	subagentTallyForTest     *appwire.SubagentTally
 	artifactStore            artifactStore
 	ownsArtifactStore        bool
 	client                   *llm.Client
@@ -573,6 +580,20 @@ type Session struct {
 	// roundID names the open model round, "" when none is open; guarded by
 	// mu. See roundIDForModelCall.
 	roundID string
+	// lastRoundID is the latest round the session opened, and lastRoundEnded
+	// whether its EventRoundEnded was emitted; guarded by mu.
+	lastRoundID    string
+	lastRoundEnded bool
+	// sessionStarted is set once SESSION_START is emitted; guarded by mu.
+	// Restore can run an execution before then; it is recorded whole before
+	// any consumer learns the session exists, so it is not announced.
+	sessionStarted bool
+	// executionStarted is called with each execution's TurnID before its
+	// first entry is recorded; guarded by mu. See SetExecutionStartedFunc.
+	executionStarted func(turnID string)
+	// transcriptRecorded is the recorded-entry hook installed on every writer
+	// the session attaches; guarded by mu. See SetTranscriptRecordedFunc.
+	transcriptRecorded func(transcript.Record)
 	// recoveredTurnClaimReturned bounds the recovered turn's give-back to ONE
 	// in-process retry. The first failure of the inherited turn before its prompt
 	// is recorded hands its claim back, and the runner wake drives the immediate
@@ -730,6 +751,11 @@ type Session struct {
 	// context management
 	contextMgr *contextmgr.Manager
 	strategy   contextmgr.Strategy
+	// strategyDegraded reports that the strategy's last AfterAction returned
+	// an error. While true, a repeat is suppressed so a persistently failing
+	// opt-in memory strategy cannot flood the warning channel; a successful
+	// AfterAction clears it so a later failure warns again. Guarded by mu.
+	strategyDegraded bool
 
 	// skills discovered at session startup
 	skills skill.Catalog
@@ -2168,8 +2194,8 @@ func (s *Session) appendPairedTurnVia(kind schema.TurnKind, live, persisted llm.
 // (append first, then the entry), for the same publication-transaction
 // wholeness appendTurnAfterTranscriptWrite documents. The two turns differ
 // only when a tool exposes explicitly private evidence; every other caller
-// passes the same turn twice.
-func (s *Session) recordTurn(live, persisted schema.Turn) {
+// passes the same turn twice. It reports the entry's record.
+func (s *Session) recordTurn(live, persisted schema.Turn) transcript.Record {
 	live.SkillState = live.SkillState.Clone()
 	persisted.SkillState = persisted.SkillState.Clone()
 	s.attentionMu.Lock()
@@ -2178,7 +2204,7 @@ func (s *Session) recordTurn(live, persisted schema.Turn) {
 	s.logPairPersistedLocked(persisted)
 	s.lastRecorded = recordedOrdinal{}
 	s.mu.Unlock()
-	err := s.writeTranscriptLocked(persisted)
+	rec, err := s.recordTranscriptLocked(persisted, transcript.DoorBuffered, transcript.PlaceSession)
 	if err == nil {
 		s.mu.Lock()
 		s.markLastPairOrdinalLocked()
@@ -2199,6 +2225,7 @@ func (s *Session) recordTurn(live, persisted schema.Turn) {
 		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("transcript write failed: %v", err)})
 	}
 	s.surfaceTranscriptWarnings()
+	return rec
 }
 
 // The transcript writer cannot exist for the whole of a session's life. Its
@@ -2381,7 +2408,7 @@ func (s *Session) holdTurnUntilTranscriptReady(t schema.Turn) bool {
 // accumulating for the session's lifetime.
 func (s *Session) attachTranscript(w *transcript.Writer) {
 	s.mu.Lock()
-	s.transcript = w
+	s.setTranscriptLocked(w)
 	s.transcriptReady = true
 	held := s.pendingTranscriptTurns
 	s.pendingTranscriptTurns = nil

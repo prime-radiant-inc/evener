@@ -428,34 +428,34 @@ func removeRootOnlySubagentTools(items []string) []string {
 	return removeStrings(items, rootOnlySubagentTools())
 }
 
+// intrinsicSubagentTools ride along on every typed role's tools: allow-list.
+// None is a capability a role opts into, so no role's list may take one away
+// (the untyped surface keeps them all on the deny-list path):
+//   - task_list is the child's own work list;
+//   - compact_context is context hygiene, not a capability, so a child that
+//     cannot compact can only wait for the automatic compaction unsteered;
+//   - use_skill is the skill-activation capability, without which a brief that
+//     directs a delegate to run a skill cannot be followed literally;
+//   - job_list, job_status, job_stop, and job_watch supervise the session's OWN
+//     jobs. Each authorizes its target itself — a watch's `parent` source needs
+//     delegate(watch_parent=true), and a concrete job id must be owned by the
+//     reading or stopping session (see rootOnlyJobControlTools) — so a leaf
+//     gains no reach over its parent's jobs. Without them a long foreground
+//     command promoted to a background job is unawaitable, and the one-shot
+//     drain kills it after its two escalation turns (#2645).
+var intrinsicSubagentTools = []string{"task_list", "compact_context", "use_skill", "job_list", "job_status", "job_stop", "job_watch"}
+
 func baseSubagentToolPolicy(agent *plugin.Agent, canDelegate bool) (allTools bool, allowed []string, denied []string) {
 	switch {
 	case agent != nil && agent.AllTools:
 		return true, nil, nil
 	case agent != nil && len(agent.Tools) > 0:
 		allowed = append([]string(nil), agent.Tools...)
-		allowed = appendUniqueStrings(allowed, "task_list")
-		// compact_context is context hygiene, not a capability an agent type
-		// opts into: a child that cannot compact can only wait for the
-		// automatic compaction to run unsteered. The untyped surface already
-		// keeps it (deny-list path), so listing tools: must not take it away.
-		allowed = appendUniqueStrings(allowed, "compact_context")
-		// use_skill is the skill-activation capability, not an agent-type
-		// opt-in: a brief that directs a delegate to run a skill
-		// (`use_skill("...")`) cannot be followed literally without it, and the
-		// only substitute is the untracked read_file fallback. The untyped
-		// surface already keeps it (deny-list path), so a typed role's tools:
-		// list must not silently take it away.
-		allowed = appendUniqueStrings(allowed, "use_skill")
-		// Root-only job and delegation tools in a typed role's list are
-		// allowance-gated: granted, the role keeps them and gains job_watch
-		// to supervise its delegates; a leaf loses them, on every spawn
+		allowed = appendUniqueStrings(allowed, intrinsicSubagentTools...)
+		// Delegation tools in a typed role's list are allowance-gated: a role
+		// granted delegation keeps delegate; a leaf loses it on every spawn
 		// path, exactly as the untyped surface does.
-		if canDelegate {
-			if hasString(allowed, "delegate") {
-				allowed = appendUniqueStrings(allowed, "job_watch")
-			}
-		} else {
+		if !canDelegate {
 			allowed = removeRootOnlySubagentTools(allowed)
 		}
 		return false, allowed, nil
@@ -499,7 +499,7 @@ func frozenSubagentToolNames(allTools bool, allowed, denied []string) []string {
 	}
 }
 
-func stableDelegateToolNameCeiling(reg *tool.Registry, resultToolName string, allTools bool, allowed, denied []string, canDelegate, watchParent bool, isolation string) []string {
+func stableDelegateToolNameCeiling(reg *tool.Registry, resultToolName string, allTools bool, allowed, denied []string, canDelegate bool, isolation string) []string {
 	if reg == nil {
 		return nil
 	}
@@ -521,9 +521,6 @@ func stableDelegateToolNameCeiling(reg *tool.Registry, resultToolName string, al
 			delete(selected, name)
 		}
 	}
-	if watchParent && registered["job_watch"] {
-		selected["job_watch"] = true
-	}
 	if registered[resultToolName] {
 		selected[resultToolName] = true
 	}
@@ -532,9 +529,6 @@ func stableDelegateToolNameCeiling(reg *tool.Registry, resultToolName string, al
 	}
 	if !canDelegate {
 		for _, name := range rootOnlySubagentTools() {
-			if watchParent && name == "job_watch" {
-				continue
-			}
 			delete(selected, name)
 		}
 	}
@@ -839,6 +833,7 @@ func subagentConfigFromFrozenDescriptor(frozenConfig schema.ConfigSnapshot, pare
 	subCfg.TurnEndsProcess = parentCfg.TurnEndsProcess
 	subCfg.ForceRealIO = parentCfg.ForceRealIO
 	subCfg.spawn.descendantEvent = parentCfg.spawn.descendantEvent
+	subCfg.spawn.descendantRecorded = parentCfg.spawn.descendantRecorded
 	subCfg.spawn.driveCounter = parentCfg.spawn.driveCounter
 	subCfg.spawn.treeCounter = parentCfg.spawn.treeCounter
 	subCfg.spawn.jobActivityClock = parentCfg.spawn.jobActivityClock
@@ -1040,20 +1035,19 @@ func (s *Session) prepareSubagentRunFromSelection(
 	var allTools bool
 	var allowedTools, deniedTools []string
 	if frozen != nil {
+		// The ceiling was captured at creation, when baseSubagentToolPolicy had
+		// already added the intrinsic tools, so a restore honors it instead of
+		// re-applying the current policy: the frozen ceiling is authoritative,
+		// and a descriptor written before an intrinsic tool existed keeps that
+		// older set by design (widening it here is what the session-init ceiling
+		// comment forbids). Fresh spawns carry every intrinsic tool.
 		allowedTools = append([]string(nil), frozen.ToolNameCeiling...)
 		subCfg.spawn.toolNameCeiling = append([]string(nil), allowedTools...)
 	} else {
 		// The policy follows the CHILD's granted allowance, not this session's:
-		// a leaf spawned by a coordinator must not inherit the coordinator's
-		// job-supervision tools.
+		// a leaf loses the delegation tools it cannot use, while the intrinsic
+		// job tools stay — they act on the leaf's own jobs, not the parent's.
 		allTools, allowedTools, deniedTools = baseSubagentToolPolicy(agent, childCanDelegate)
-		if subCfg.spawn.parentWatchGranted && !allTools {
-			if len(allowedTools) > 0 {
-				allowedTools = appendUniqueStrings(allowedTools, "job_watch")
-			} else {
-				deniedTools = removeStrings(deniedTools, []string{"job_watch"})
-			}
-		}
 	}
 	if frozen == nil && len(canonicalGrantTools) > 0 {
 		currentTools := s.reg.RegisteredNames()

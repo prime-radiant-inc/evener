@@ -13,6 +13,10 @@ vi.mock("react-native", async () => (await import("./src/renderNative.testkit"))
 vi.mock("react-native-gesture-handler", () => ({
 	GestureHandlerRootView: "GestureHandlerRootView",
 }));
+vi.mock("react-native-gesture-handler/ReanimatedSwipeable", async () =>
+	(await import("./src/renderNative.testkit")).gestureHandlerModuleMock(),
+);
+vi.mock("react-native-reanimated", async () => (await import("./src/renderNative.testkit")).reanimatedModuleMock());
 vi.mock("react-native-safe-area-context", () => ({
 	SafeAreaProvider: (props: { children?: ReactNode }) => props.children ?? null,
 }));

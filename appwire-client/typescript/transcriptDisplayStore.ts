@@ -515,9 +515,11 @@ export function createTranscriptDisplayStore(deps: TranscriptDisplayStoreDeps): 
     return { drafts };
   }
 
-  // A settled write clears its preview and its error slots together.
+  // A settled write clears its preview and its own layout error slot together,
+  // never the store-wide hubError: that one belongs to the hub read, and a
+  // write on one layout must not erase an outstanding read failure.
   function writeSettled(layout: ViewportClass): Partial<TranscriptDisplayStoreFields> {
-    return { ...clearPreview(layout), hubError: null, ...layoutError(layout, undefined) };
+    return { ...clearPreview(layout), ...layoutError(layout, undefined) };
   }
 
   function clearPreviews(): Partial<TranscriptDisplayStoreFields> {
@@ -948,7 +950,6 @@ export function createTranscriptDisplayStore(deps: TranscriptDisplayStoreDeps): 
       const message = errorText(error);
       setState({
         ...clearPreview(layout),
-        hubError: message,
         ...layoutError(layout, message),
       });
       throw error;
@@ -1134,7 +1135,12 @@ export function createTranscriptDisplayStore(deps: TranscriptDisplayStoreDeps): 
     try {
       value = decodePatchReply(result, layout, confirmed, requestedFingerprint);
     } catch (error) {
-      setState({ saving: false, draftConflict: true, writeUncertain: true, hubError: MALFORMED_PATCH_MESSAGE });
+      setState({
+        saving: false,
+        draftConflict: true,
+        writeUncertain: true,
+        ...layoutError(layout, MALFORMED_PATCH_MESSAGE),
+      });
       throw error;
     }
     return settleConfirmedSave(value, checkpoint, layout);

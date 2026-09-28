@@ -12,6 +12,7 @@ import (
 	"primeradiant.com/evener/agent/internal/tool"
 	"primeradiant.com/evener/agent/plugin"
 	"primeradiant.com/evener/agent/provider"
+	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/llm"
 )
 
@@ -366,15 +367,28 @@ func (s *Session) notifyStrategyAfterAction(ctx context.Context) error {
 	if abortErr := s.abortResponseProcessing(ctx); abortErr != nil {
 		return abortErr
 	}
-	// AfterAction takes []Turn (not *[]Turn) so it cannot mutate the slice. Pass
-	// s.history directly — no copy needed since the loop is single-threaded and
-	// nothing else modifies history until AfterAction returns.
+	// AfterAction takes []Turn (not *[]Turn) so it cannot mutate the slice, but
+	// a read-only parameter is not ownership: asynchronous attention delivery
+	// replaces resident entries in place and removes them with a shifting
+	// delete, both under mu, at any time. Hand the strategy a private snapshot
+	// so its reads never race those writes — the same snapshot the
+	// request-preparation path takes. The turns themselves are immutable:
+	// attention's writes replace whole elements and never mutate a turn's
+	// message, so a shallow copy of the slice is sufficient.
 	s.mu.Lock()
-	hist := s.history
+	hist := append([]schema.Turn(nil), s.history...)
 	s.mu.Unlock()
-	if err := s.strategy.AfterAction(ctx, hist, s.client); err != nil {
+	afterErr := s.strategy.AfterAction(ctx, hist, s.client)
+	// Warn once per failing streak: a repeated failure is suppressed while a
+	// successful call clears the state so a later failure warns again.
+	degraded := afterErr != nil
+	s.mu.Lock()
+	warn := degraded && !s.strategyDegraded
+	s.strategyDegraded = degraded
+	s.mu.Unlock()
+	if warn {
 		if abortErr := s.withResponseSideEffects(ctx, func() {
-			s.emit(events.EventWarning, events.WarningData{Message: "strategy AfterAction error: " + err.Error()})
+			s.emit(events.EventWarning, warningDataFromError("strategy AfterAction error: "+afterErr.Error(), afterErr))
 		}); abortErr != nil {
 			return abortErr
 		}

@@ -1030,6 +1030,19 @@ ${presenceLoop}${surface.smoke ?? ""}`,
   for (const consumer of runtimeConsumers) run(process.execPath, [join(consumerDir, consumer)], consumerDir);
   runConsumerResolveCheck();
   const listing = run("tar", ["-tzf", tarball], consumerDir);
+  // The files list decides what tsc compiles, but tsc also emits every module a
+  // listed module imports. So a module reachable only through a barrel is built,
+  // packed and shipped even when it is missing from files, and the shippedModules
+  // loops above - the one place every shipped module is reachability-checked -
+  // never see it (#1639). Read the shipped module set back off the packed tarball
+  // and require files to name all of it, so an omitted module cannot ship
+  // unqualified and unnoticed.
+  const shippedFromTarball = listing
+    .split("\n")
+    .filter((entry) => entry.startsWith("package/dist/") && entry.endsWith(".js"))
+    .map((entry) => entry.slice("package/dist/".length, -".js".length));
+  for (const module of shippedFromTarball)
+    assert(shippedModules.includes(module), `tsconfig.build.json files does not list the shipped module ${module}`);
   for (const expected of [
     ...shippedModules.flatMap((module) => [`package/dist/${module}.js`, `package/dist/${module}.d.ts`]),
     "package/README.md",
@@ -1058,7 +1071,7 @@ ${presenceLoop}${surface.smoke ?? ""}`,
   }
   // Run the shipped program from the installed tarball. Only the remote server
   // is scripted; imports, sockets, handshake, client requests and output are real.
-  const serverProtocolVersion = "evener-appwire-v5";
+  const serverProtocolVersion = "evener-appwire-v6";
   const fixtureCwd = "/fixture/project";
   const responses = new Map([
     ["model/list", { params: { cwd: fixtureCwd }, result: { data: [] } }],

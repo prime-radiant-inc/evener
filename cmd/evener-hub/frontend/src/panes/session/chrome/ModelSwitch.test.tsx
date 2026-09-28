@@ -4,9 +4,9 @@ import { fileURLToPath } from "node:url";
 import type { ModelListResponse, ThreadCapabilities, ThreadModel } from "@evener/appwire-client";
 import { WireError } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { afterEach, beforeEach, expect, test } from "vitest";
+import { beforeEach, expect, test } from "vitest";
 import { connectionStore } from "../../../stores/connection";
 import { resetThreadsStoreForTests } from "../../../stores/threads";
 import { Toast } from "../../../widgets";
@@ -109,10 +109,6 @@ beforeEach(() => {
   // earlier test in this file is still on screen, and an assertion that a
   // message is ABSENT matches the stale one instead.
   resetToastStoreForTests();
-});
-
-afterEach(() => {
-  cleanup();
 });
 
 // The trigger is addressed by a stable testid rather than by its accessible

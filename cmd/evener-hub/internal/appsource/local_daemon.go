@@ -72,6 +72,17 @@ type LocalDaemonEntry struct {
 	// appwire.EvenerThread.PendingEscalations, so a controller hub listing this
 	// hub's sessions sees the approval that thread/read already shows.
 	PendingEscalations []appwire.SandboxEscalationRequested
+	// PendingQuestion mirrors hubcore.LiveEntry.PendingQuestion: the root's
+	// first pending question (S1b). threadFromEntry carries it into
+	// appwire.EvenerThread.PendingQuestion, so a controller hub listing this
+	// hub's sessions names the question as a local probe would. A read-only
+	// alias has none.
+	PendingQuestion *appwire.PendingQuestion
+	// Failure mirrors hubcore.LiveEntry.Failure: the summary of the failed turn
+	// the root rests on (S1c). threadFromEntry carries it into
+	// appwire.EvenerThread.Failure, so a controller hub says why a remote
+	// session failed. A read-only alias has none.
+	Failure *appwire.ThreadFailure
 	// RunningJobs carries the roster's non-terminal, non-agent work into the
 	// typed thread diagnostics consumed by hub and TUI status views.
 	RunningJobs []appwire.EvenerJobInfo
@@ -104,6 +115,10 @@ type LocalDaemonEntry struct {
 	// carries it into appwire.EvenerThread.LastTurnEndedAt so a controller
 	// reading this hub can tell Finished from Idle. A read-only alias has none.
 	LastTurnEndedAt int64
+	// LastMessage mirrors hubcore.LiveEntry.LastMessage: the opening of the
+	// root's last agent message (S1d). threadFromEntry carries it into
+	// appwire.EvenerThread.LastMessage. A read-only alias has none.
+	LastMessage string
 	// Tasks mirrors hubcore.LiveEntry.Tasks: the root's task-list progress
 	// (S13b). threadFromEntry carries a copy into appwire.EvenerThread.Tasks,
 	// so a controller hub shows a remote session's task line. nil means the
@@ -1160,8 +1175,11 @@ func (s *LocalDaemonSource) threadFromEntry(item LocalDaemonEntry) appwire.Threa
 			InstanceID:         instanceID,
 			Capabilities:       listRowCapabilities(item, status),
 			AskPending:         item.PendingAsk,
+			PendingQuestion:    appwire.ClonePendingQuestion(item.PendingQuestion),
+			Failure:            appwire.CloneThreadFailure(item.Failure),
 			PendingEscalations: append([]appwire.SandboxEscalationRequested(nil), item.PendingEscalations...),
 			LastTurnEndedAt:    item.LastTurnEndedAt,
+			LastMessage:        item.LastMessage,
 			Tasks:              appwire.CloneTaskAggregate(item.Tasks),
 		},
 		Status: appwire.ThreadStatus{Type: status},

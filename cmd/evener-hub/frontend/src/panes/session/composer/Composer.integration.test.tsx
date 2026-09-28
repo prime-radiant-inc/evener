@@ -13,7 +13,7 @@ import { deferred } from "@evener/appwire-client/testing/deferred";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { act, cleanup, fireEvent, render, renderHook, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { IDBDatabase, IDBFactory, IDBObjectStore } from "fake-indexeddb";
+import { IDBFactory, IDBObjectStore } from "fake-indexeddb";
 import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
 import { ClientProvider } from "../../../shell/clientContext";
 import { installLocalStorage, MemoryStorage } from "../../../storageTestUtils";
@@ -142,7 +142,12 @@ function testThread(ref: string, overrides: Partial<Thread> = {}): Thread {
 }
 
 function readResponse(ref: string, overrides: Partial<Thread> = {}): ThreadReadResponse {
-  return { thread: testThread(ref, overrides) };
+  return {
+    thread: testThread(ref, overrides),
+    bootGeneration: "1",
+    epoch: 1,
+    snapshot: { incarnation: "inc-1", length: 0 },
+  };
 }
 
 function connectFakeClient(): FakeClient {
@@ -489,20 +494,8 @@ test("an unconfirmed storage commit stays visible and repeated Steer clicks cann
     };
   });
   await flushPendingTurnsProjectionForTests();
-  let hold: ReturnType<typeof holdIndexedDBEvent> | undefined;
-  let commitObserved: (() => void) | undefined;
-  const committed = new Promise<void>((resolve) => {
-    commitObserved = resolve;
-  });
-  const transact = IDBDatabase.prototype.transaction;
-  vi.spyOn(IDBDatabase.prototype, "transaction").mockImplementation(function (this: IDBDatabase, ...args) {
-    const transaction = transact.apply(this, args);
-    if (!hold && transaction.mode === "readwrite" && transaction.objectStoreNames.contains("sequences")) {
-      hold = holdIndexedDBEvent(transaction, "complete");
-      void hold.reached.then(() => commitObserved?.());
-    }
-    return transaction;
-  });
+  const hold = holdNextWriteTransaction(["outbox", "optimistic", "recovery", "sequences"]);
+  const committed = hold.reached;
   vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
   try {
     await act(async () => {
@@ -518,7 +511,7 @@ test("an unconfirmed storage commit stays visible and repeated Steer clicks cann
     expect(composerSteerButton().disabled).toBe(true);
     fireEvent.click(composerSteerButton());
   } finally {
-    await act(async () => hold?.release());
+    await act(async () => hold.release());
     vi.useRealTimers();
     await flushPendingTurnsProjectionForTests();
   }
@@ -691,20 +684,8 @@ test.each([
       },
     }));
     await flushPendingTurnsProjectionForTests();
-    const transact = IDBDatabase.prototype.transaction;
-    let hold: ReturnType<typeof holdIndexedDBEvent> | undefined;
-    let announceCommit: (() => void) | undefined;
-    const committed = new Promise<void>((resolve) => {
-      announceCommit = resolve;
-    });
-    vi.spyOn(IDBDatabase.prototype, "transaction").mockImplementation(function (this: IDBDatabase, ...args) {
-      const transaction = transact.apply(this, args);
-      if (!hold && transaction.mode === "readwrite" && transaction.objectStoreNames.contains("sequences")) {
-        hold = holdIndexedDBEvent(transaction, "complete");
-        void hold.reached.then(() => announceCommit?.());
-      }
-      return transaction;
-    });
+    const hold = holdNextWriteTransaction(["outbox", "optimistic", "recovery", "sequences"]);
+    const committed = hold.reached;
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
     try {
       await act(async () => {
@@ -721,7 +702,7 @@ test.each([
       if (edited) replaceEditorText(textarea() as HTMLDivElement, "new draft");
       if (edited === "same") replaceEditorText(textarea() as HTMLDivElement, "original message");
     } finally {
-      await act(async () => hold?.release());
+      await act(async () => hold.release());
       vi.useRealTimers();
       await flushPendingTurnsProjectionForTests();
     }
@@ -874,8 +855,15 @@ test("rejected inline skill input restores its atoms and resends edited prose wi
 function startTurn(fake: FakeClient, ref: string, turnId: string): void {
   act(() => {
     fake.emitNotification({
-      method: "turn/started",
-      params: { threadId: `thr_${ref}`, ref, turn: { id: turnId, status: "inProgress", itemsView: "" } },
+      method: "history/updated",
+      params: {
+        threadId: `thr_${ref}`,
+        ref: "ref-1",
+        bootGeneration: "1",
+        epoch: 1,
+        snapshot: { incarnation: "inc-1", length: 1 },
+        turns: [{ id: turnId, status: "inProgress", itemsView: "" }],
+      },
     });
   });
 }
@@ -1458,17 +1446,20 @@ test("relay recovery refreshes stale queue capability without reconnecting or re
   const user = userEvent.setup();
   const fake = connectFakeClient();
   let readCount = 0;
-  fake.on("thread/read", () => {
+  fake.on("thread/read", (params) => {
     readCount += 1;
-    return readResponse("ref_a", {
-      status: { type: "active" },
-      evener: {
-        ref: "ref_a",
-        capabilities: { ...FULL_CAPABILITIES, queue: readCount > 1 },
-        queue: { revision: 0 },
-        activeTurnId: "turn_1",
-      },
-    });
+    return {
+      ...readResponse("ref_a", {
+        status: { type: "active" },
+        evener: {
+          ref: "ref_a",
+          capabilities: { ...FULL_CAPABILITIES, queue: readCount > 1 },
+          queue: { revision: 0 },
+          activeTurnId: "turn_1",
+        },
+      }),
+      ...(params.requestGeneration !== undefined ? { requestGeneration: params.requestGeneration } : {}),
+    };
   });
   fake.on("turn/queue", (params) => ({
     receipt: {

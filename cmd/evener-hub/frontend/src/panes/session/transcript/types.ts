@@ -109,19 +109,6 @@ export function threadFingerprintForItem(
 ): string {
   if (item.type !== "commandExecution") return "";
   if (thread === undefined) return "";
-  let after = false;
-  const laterSameTool: Array<[string, string | undefined, boolean | undefined, string]> = [];
-  for (const turn of thread.turns) {
-    for (const candidate of turn.items) {
-      if (candidate.id === item.id) {
-        after = true;
-        continue;
-      }
-      if (after && candidate.toolName === item.toolName) {
-        laterSameTool.push([candidate.id, candidate.error, candidate.prevalOnly, candidate.status ?? ""]);
-      }
-    }
-  }
   // The delegate tuple must cover every field the memoized delegate row reads
   // (ToolCallItem's lifecycle line, SubagentCard, JobDetailSection):
   // exhaustion evidence, reason, usage, and run timing can all change while
@@ -147,7 +134,6 @@ export function threadFingerprintForItem(
       delegate.runStartedAt,
       delegate.runEndedAt,
     ]),
-    laterSameTool,
     summarySuffix,
   });
 }

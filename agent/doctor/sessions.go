@@ -79,9 +79,12 @@ type SessionsOpts struct {
 // ListSessions enumerates every session under stateBase (or just one
 // --bucket): the readable ones as SessionRows sorted by last activity
 // descending (most recently active first), plus every session it could not
-// read, in SessionsResult.Unreadable. One corrupt session never aborts the
-// sweep or silently vanishes from the count — mirroring ScanTurnIDs, the
-// established convention for a whole-state-root sweep.
+// read, in SessionsResult.Unreadable. A session is discovered from its primary
+// metadata identity, so even a .meta.json that is present but unparseable is
+// named in Unreadable rather than silently skipped the way a tolerant UI
+// listing would drop it. One corrupt session never aborts the sweep or
+// silently vanishes from the count — mirroring ScanTurnIDs, the established
+// convention for a whole-state-root sweep.
 func ListSessions(stateBase string, opts SessionsOpts) (SessionsResult, error) {
 	buckets, stateRoot, err := resolveBuckets(stateBase)
 	if err != nil {
@@ -103,9 +106,19 @@ func ListSessions(stateBase string, opts SessionsOpts) (SessionsResult, error) {
 	res := SessionsResult{Sessions: []SessionRow{}, Unreadable: []UnreadableSession{}}
 	delegates := delegateCache{}
 	for _, b := range buckets {
-		metas, err := schema.ListSessionMetas(b.dir)
+		metas, loadErrs, err := schema.ListSessionMetasWithErrors(b.dir)
 		if err != nil {
 			return SessionsResult{}, fmt.Errorf("list session metas in bucket %s: %w", b.dir, err)
+		}
+		// A metadata file that exists but could not be loaded is a session
+		// ListSessions cannot build a row for; report it by its
+		// filename-derived identity rather than drop it.
+		for _, le := range loadErrs {
+			res.Unreadable = append(res.Unreadable, UnreadableSession{
+				SessionID:     le.ID,
+				TranscriptRef: refFor(b.projectID, le.ID),
+				Error:         le.Error.Error(),
+			})
 		}
 		for _, meta := range metas {
 			paths := pathsFor(b, meta.ID)

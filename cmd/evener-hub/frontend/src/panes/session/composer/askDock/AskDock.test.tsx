@@ -7,7 +7,7 @@ import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { IDBFactory } from "fake-indexeddb";
-import { afterEach, beforeEach, describe, expect, onTestFinished, test, vi } from "vitest";
+import { beforeEach, describe, expect, onTestFinished, test, vi } from "vitest";
 import { connectionStore } from "../../../../stores/connection";
 import {
   putThreadModel,
@@ -20,10 +20,6 @@ import { resetComposerFocusStoreForTests, useComposerFocusRequest } from "../com
 import { AskDock, AskDockAnnouncements } from "./AskDock";
 import { askDockStore, resetAskDockStoreForTests } from "./askDockStore";
 import { ackAskUserCall, askArgs, ONE_QUESTION } from "./askDockTestUtils";
-
-afterEach(() => {
-  cleanup();
-});
 
 // --- fixtures (mirrors askDockStore.test.ts's own harness) ---------------
 
@@ -61,7 +57,12 @@ function testThread(ref: string): Thread {
 }
 
 function readResponse(ref: string): ThreadReadResponse {
-  return { thread: testThread(ref) };
+  return {
+    thread: testThread(ref),
+    bootGeneration: "1",
+    epoch: 1,
+    snapshot: { incarnation: "inc-1", length: 0 },
+  };
 }
 
 function connectFakeClient(state: ConnectionState = "ready"): FakeClient {
@@ -83,8 +84,15 @@ function nextMutationPersistence(targetRef: string): Promise<void> {
 
 function startTurn(fake: FakeClient, ref: string, turnId: string): void {
   fake.emitNotification({
-    method: "turn/started",
-    params: { threadId: `thr_${ref}`, ref, turn: { id: turnId, status: "inProgress", itemsView: "" } },
+    method: "history/updated",
+    params: {
+      threadId: `thr_${ref}`,
+      ref: "ref-1",
+      bootGeneration: "1",
+      epoch: 1,
+      snapshot: { incarnation: "inc-1", length: 1 },
+      turns: [{ id: turnId, status: "inProgress", itemsView: "" }],
+    },
   });
 }
 

@@ -7,9 +7,9 @@
 // reads no clock at all. Shared harness in ./testing/heldSteerTestUtils
 // (seeds through real storage + refresh + flush; hydrate for
 // status/reflection).
-import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor } from "@testing-library/react";
 import { IDBFactory } from "fake-indexeddb";
-import { afterEach, beforeEach, expect, test } from "vitest";
+import { beforeEach, expect, test } from "vitest";
 import { connectionStore } from "../../../../stores/connection";
 import type { MutationRecoveryKind } from "../../../../stores/mutationOutbox";
 import { MutationOutboxIndexedDB } from "../../../../stores/mutationOutboxIndexedDB";
@@ -44,10 +44,6 @@ beforeEach(() => {
   connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
   resetThreadsStoreForTests();
   resetPendingTurnsStoreForTests();
-});
-
-afterEach(() => {
-  cleanup();
 });
 
 // The first observation never announces (the reader who just opened the pane

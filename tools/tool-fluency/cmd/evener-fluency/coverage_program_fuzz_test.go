@@ -238,7 +238,7 @@ func FuzzFluencyCoverage(f *testing.F) {
 		stderr.Reset()
 		cliCfg := runConfig{evenerBin: bin, model: "openai/m", fastCheapModel: "openai/cheap", systemPromptAppend: []string{"a", " ", "b"}, reasoningEffort: "low", clearOpenAIAPIKey: true}
 		_ = runCLIProbe(context.Background(), cliCfg, probeFile{Prompt: "p"}, probeResult{WorkDir: t.TempDir(), StateDir: t.TempDir()}, &stdout, &stderr)
-		_ = cliProbeArgs(cliCfg, probeFile{Prompt: "p"}, probeResult{WorkDir: "w", StateDir: "s"})
+		_, _ = cliProbeArgs(cliCfg, probeFile{Prompt: "p"}, probeResult{WorkDir: "w", StateDir: "s"})
 
 		cfg := runConfig{model: "p/m", harness: "cli", outDir: filepath.Join(t.TempDir(), "out"), evenerBin: file, timeout: time.Second}
 		_ = runProbe(cfg, probeFile{ID: "runtime"}, 1, nil, nil)

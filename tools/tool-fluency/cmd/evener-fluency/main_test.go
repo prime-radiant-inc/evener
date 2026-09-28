@@ -32,7 +32,10 @@ func TestCLIProbeArgsIncludesSystemPromptAppendFiles(t *testing.T) {
 	probe := probeFile{Prompt: "inspect the fixture"}
 	res := probeResult{WorkDir: "/work", StateDir: "/state"}
 
-	args := cliProbeArgs(cfg, probe, res)
+	args, err := cliProbeArgs(cfg, probe, res)
+	if err != nil {
+		t.Fatalf("cliProbeArgs: %v", err)
+	}
 
 	want := []string{
 		"--system-prompt-append", "/tmp/append-a.md",

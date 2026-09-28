@@ -80,7 +80,7 @@ func (s *Session) WireState() string {
 // failed turn publishes appwire.ThreadStatusSystemError, which every client
 // shows as Failed. It rests on a failed turn when it is idle, or awaiting with
 // no pending question, and its history ends in a recorded turn failure
-// (historyEndsInTurnFailure). A pending question keeps awaiting: answering it
+// (restingFailureLocked). A pending question keeps awaiting: answering it
 // is what moves the session, and the failure stays readable in the
 // transcript. The next turn to start ends the failure, since it records a
 // turn-bearing entry; an interrupt never records a failure at all.
@@ -94,15 +94,50 @@ func (s *Session) WireState() string {
 func (s *Session) RestingWireState() string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	resting := s.state == SessionIdle || s.state == SessionAwaiting
-	if resting && len(s.askPending) == 0 && historyEndsInTurnFailure(s.history) {
+	if _, failed := s.restingFailureLocked(); failed {
 		return appwire.ThreadStatusSystemError
 	}
 	return string(s.state)
 }
 
-// historyEndsInTurnFailure reports whether the last turn-bearing record in
-// history is a recorded turn failure (a TurnFailure, written by
+// RestingFailure summarizes the failed turn the session rests on for its row's
+// why line (S1c): the failure's headline and its structured cause, never its
+// message, which can quote a provider's error body. It reads what
+// RestingWireState reads, under the same one hold, so it is present only while
+// the session publishes systemError, and a restored session summarizes the
+// failure the live one did. It is nil when the session rests on no failed
+// turn, or when the failure recorded no diagnostic (a legacy entry): the row
+// still reads Failed, and there is nothing more to say.
+func (s *Session) RestingFailure() *appwire.ThreadFailure {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	turn, failed := s.restingFailureLocked()
+	if !failed || turn.Error == nil {
+		return nil
+	}
+	failure := &appwire.ThreadFailure{Title: appwire.Excerpt(turn.Error.Title, appwire.MaxFailureTitleRunes)}
+	if cause := turn.Error.Cause; cause != nil {
+		failure.Cause = &appwire.DiagnosticCause{Kind: cause.Kind, Provider: cause.Provider, Model: cause.Model, Status: cause.Status}
+	}
+	if failure.Title == "" && failure.Cause == nil {
+		return nil
+	}
+	return failure
+}
+
+// restingFailureLocked is the recorded turn failure the session rests on: it is
+// idle, or awaiting with no pending question, and its history ends in the
+// failure (historyTurnFailure). The caller holds s.mu.
+func (s *Session) restingFailureLocked() (schema.Turn, bool) {
+	resting := s.state == SessionIdle || s.state == SessionAwaiting
+	if !resting || len(s.askPending) != 0 {
+		return schema.Turn{}, false
+	}
+	return historyTurnFailure(s.history)
+}
+
+// historyTurnFailure returns the recorded turn failure the history ends in,
+// when its last turn-bearing record is one (a TurnFailure, written by
 // emitTurnFailure and emitSteeringCarrierTurnFailure): the session's last turn
 // failed and no turn has started since. A turn-bearing record is one a turn
 // writes as it runs: user input, steering (the interrupt marker included), an
@@ -110,16 +145,16 @@ func (s *Session) RestingWireState() string {
 // TurnCheckpoint, TurnSummary, TurnModelSwitch, TurnHookCompleted,
 // TurnEnvironment, TurnNotesContext, TurnAttentionResolution) are skipped, so
 // a model switch or a hook line after the failure leaves the session failed.
-func historyEndsInTurnFailure(history []schema.Turn) bool {
+func historyTurnFailure(history []schema.Turn) (schema.Turn, bool) {
 	for i := range slices.Backward(history) {
 		switch history[i].Kind {
 		case schema.TurnFailure:
-			return true
+			return history[i], true
 		case schema.TurnUserInput, schema.TurnSteering, schema.TurnAssistant, schema.TurnTool, schema.TurnToolResults:
-			return false
+			return schema.Turn{}, false
 		}
 	}
-	return false
+	return schema.Turn{}, false
 }
 
 // sessionWorkPending reports whether work owned by this session can resume it
@@ -131,6 +166,16 @@ func (s *Session) sessionWorkPending() bool {
 
 func (s *Session) hasPendingStableDelegateAttention() bool {
 	return s != nil && s.isRootDelegateAttentionReceiver() && s.delegateController.hasPendingDelegateAttention()
+}
+
+// hasPendingStableSteering reports whether this session's own delegate
+// generation holds an admitted steering message no model request has consumed
+// yet. A delegate run parked in its finalization drain reads this to run a turn
+// so the steering is acted on rather than stranded until an owned job ends
+// (#2796). The root session owns no delegate generation, so it is always false
+// there.
+func (s *Session) hasPendingStableSteering() bool {
+	return s != nil && s.owningDelegateID != "" && s.delegateController != nil && s.delegateController.generationOwesSteering(s.owningDelegateID)
 }
 
 // autonomyInFlight reports whether autonomous work will move this session

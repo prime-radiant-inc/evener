@@ -36,7 +36,6 @@ var launchConfigLayerSchema = map[string]any{
 		"maxSubagentDepth":            map[string]any{"type": []string{"integer", "null"}},
 		"maxConcurrentDelegateTurns":  map[string]any{"type": []string{"integer", "null"}},
 		"maxRetainedTerminal":         map[string]any{"type": []string{"integer", "null"}},
-		"noProjectPrompts":            map[string]any{"type": []string{"boolean", "null"}},
 		"nonInteractive":              map[string]any{"type": []string{"boolean", "null"}},
 		"appReplaySize":               map[string]any{"type": []string{"integer", "null"}},
 		"skillsDirs":                  stringArraySchema,

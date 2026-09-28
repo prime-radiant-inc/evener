@@ -459,11 +459,22 @@ func TestHostAdminAllowListMatchesCatalog(t *testing.T) {
 		// so a peer hub must not drive them by forwarding the request.
 		"evener/host/deploy":  false,
 		"evener/host/restart": false,
+		// The deploy pipeline's operations read (08b §8) is controller-local for
+		// the same reason: it pages THIS controller's own operation store, so a
+		// peer hub must not page it by forwarding the request.
+		"evener/host/operations": false,
 		// evener/host/running is the direction-scoped peer probe (08b §10), not a
 		// forwarded resource: it is served only on the attached session its
 		// controller opened through the bridge, and the probe is never forwarded
 		// onward to a third hub. A proxy forward is denied deliberately.
 		"evener/host/running": false,
+		// Slice 12's teardown-repair mutations are controller-local for the same
+		// reason the rest of the registry surface is: they resume or clear THIS
+		// controller's own teardown remnants against its own hub.toml and
+		// channels. A peer hub forwarding them would repair another hub's
+		// teardowns, so both are denied deliberately.
+		"evener/host/teardown-retry":   false,
+		"evener/host/teardown-recover": false,
 		// The credential push is controller-LOCAL: it reads this controller's
 		// own store and dispatches to a host itself, like evener/host/request.
 		// It is never a proxied call, so a peer hub cannot make this hub push
@@ -497,6 +508,7 @@ func TestHostAdminAllowListMatchesCatalog(t *testing.T) {
 		"evener/marketplace/remove":               true,
 		"evener/mobile/pairing":                   false,
 		"evener/navigation/read":                  false,
+		"evener/notices/list":                     false,
 		"evener/path/validate":                    true, // discovery: validate against the host's filesystem
 		"evener/paths/complete":                   true, // discovery: complete against the host's filesystem
 		"evener/pin-section/delete":               false,

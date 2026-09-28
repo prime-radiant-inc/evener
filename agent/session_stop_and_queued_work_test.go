@@ -211,7 +211,6 @@ func TestStopOnMidTurnMutationParksTheQueuedMessage(t *testing.T) {
 		withDir(dir),
 		withConfig(SessionConfig{
 			MaxSubagentDepth: 1,
-			NoProjectPrompts: true,
 			StateDir:         dir,
 			testOnly:         testConfig{skipGitSnapshot: true, minimalSystemPrompt: true, noSyncJobStore: true},
 		}),

@@ -244,6 +244,35 @@ type NavigationSubagentTally struct {
 	Done    int `json:"done"`
 }
 
+// NavigationFailureCrashed is the cause_kind of a row whose daemon's process
+// exited while the hub still lists it. Nothing is left to report why, so the
+// hub says so itself (S1c).
+const NavigationFailureCrashed = "crashed"
+
+// NavigationFailure says why a Failed row failed (S1c): the failure's headline
+// ("Provider error", "Usage limit reached") and its cause's kind ("provider",
+// "transcript_failed_closed", or the hub's own NavigationFailureCrashed), the
+// provider it came from and its HTTP status, from which a client composes the
+// row's why line ("codex-jesse-fsck.com sign-in expired (401)"). It never
+// carries the failure's message, which can quote a provider's error body.
+type NavigationFailure struct {
+	Title     string `json:"title,omitempty"`
+	CauseKind string `json:"cause_kind,omitempty"`
+	Provider  string `json:"provider,omitempty"`
+	Status    int    `json:"status,omitempty"`
+}
+
+// NavigationQuestion is the first question of a live session's pending ask
+// (S1b): a Needs you row's why line ("Question · keep or drop the implied
+// options?"), the option labels a long-press preview lists, and how many
+// questions the ask holds. Text and each label are one line, cut to the
+// wire's bounds (appwire.BoundedPendingQuestion).
+type NavigationQuestion struct {
+	Text    string   `json:"text"`
+	Options []string `json:"options,omitempty"`
+	Count   int      `json:"count"`
+}
+
 // NavigationSessionSummary is the bounded recursive navigation row shape.
 type NavigationSessionSummary struct {
 	Ref          string `json:"ref"`
@@ -274,7 +303,22 @@ type NavigationSessionSummary struct {
 	// bound and the target to the label bound.
 	ApprovalTool   string `json:"approval_tool,omitempty"`
 	ApprovalTarget string `json:"approval_target,omitempty"`
-	Dormant        bool   `json:"dormant,omitempty"`
+	// Question is the first question of the session's pending ask (S1b). It
+	// is present only on a row that carries AskPending and whose daemon named
+	// the question.
+	Question *NavigationQuestion `json:"question,omitempty"`
+	// Failure says why the session failed (S1c). It is present only on a
+	// Failed row whose daemon summarized the failure, or whose daemon
+	// crashed.
+	Failure *NavigationFailure `json:"failure,omitempty"`
+	// LastMessage is the opening of the session's last agent message (S1d):
+	// a Finished row's why line and the long-press preview's excerpt, one
+	// line of at most appwire.MaxMessageExcerptRunes. It is the agent's own
+	// words, never its reasoning or a tool's output. A live session's comes
+	// from its daemon and an ended one's from its meta; subagent rows carry
+	// none.
+	LastMessage string `json:"last_message,omitempty"`
+	Dormant     bool   `json:"dormant,omitempty"`
 	// Offline marks a row folded into the merged list from a source that is
 	// currently unreachable: its last-known rows stay visible, but they are not
 	// live and cannot serve host-targeted actions until the source reattaches.

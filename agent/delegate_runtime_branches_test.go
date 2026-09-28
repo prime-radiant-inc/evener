@@ -590,7 +590,7 @@ func TestRolePreload_OperationIdentitySaveFailureFailsSpawn(t *testing.T) {
 	root := t.TempDir()
 	writeSkillMD(t, root, "opaque", "---\nname: opaque\ndescription: fixture\n---\nBODY_role_preload")
 	stateDir := t.TempDir()
-	s := newSession(t, withDir(root), withConfig(SessionConfig{StateDir: stateDir, NoProjectPrompts: true}), withoutGitSnapshot())
+	s := newSession(t, withDir(root), withConfig(SessionConfig{StateDir: stateDir}), withoutGitSnapshot())
 	repair := breakSessionMetaPath(t, s)
 	defer repair()
 
@@ -612,7 +612,7 @@ func TestRolePreload_OperationIdentitySaveFailureFailsDescribe(t *testing.T) {
 	root := t.TempDir()
 	writeSkillMD(t, root, "opaque", "---\nname: opaque\ndescription: fixture\n---\nBODY_role_describe")
 	stateDir := t.TempDir()
-	s := newSession(t, withDir(root), withConfig(SessionConfig{StateDir: stateDir, NoProjectPrompts: true}), withoutGitSnapshot())
+	s := newSession(t, withDir(root), withConfig(SessionConfig{StateDir: stateDir}), withoutGitSnapshot())
 	repair := breakSessionMetaPath(t, s)
 	defer repair()
 

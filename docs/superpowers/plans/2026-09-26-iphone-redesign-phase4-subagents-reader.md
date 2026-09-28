@@ -166,10 +166,10 @@ None open. Jesse answered this plan's three on 2026-09-26: the Activity sheet re
 
 | PR | Tasks | Model | Starts when | Lane |
 |---|---|---|---|---|
-| 1: sending from above a session, and shared helpers | 1-3 | Sonnet (the plan carries the code) | phase 3 is on main | first |
+| 1: sending from above a session, and shared helpers | 2-3 (Task 1 landed with PR 4) | Sonnet (the plan carries the code) | phase 3 is on main | first |
 | 2: the Subagents list | 4-6 | Sonnet (4-5), Opus medium (6) | PR 1 lands | A |
 | 3: a subagent's screen and Ask coordinator to stop it | 7-9 | Sonnet (7), Opus medium (8-9) | PR 2 lands | A |
-| 4: document foundations | 10-13 | Sonnet | PR 1 lands | B |
+| 4: document foundations | 10-13, and Task 1 | Sonnet | phase 3 is on main (it carries Task 1, the one piece of PR 1 it needs) | B |
 | 5: the Reader | 14-15 | Opus medium | PR 4 lands | B |
 | 6: comments and review | 16-17 | Opus medium | PRs 5 and 1 land | B |
 | 7: document chips and Files & artifacts | 18-19 | Opus medium (Task 18's pure module is written out) | PR 6 lands | B |
@@ -188,6 +188,8 @@ None open. Jesse answered this plan's three on 2026-09-26: the Activity sheet re
 PR 1 lands the pieces both lanes share: the device-storage helpers phase 2's Board memory already uses, and the path by which a screen above a session sends to it. Its first consumers are PR 3 (the stop request) and PR 6 (the review); say so in the PR description.
 
 ### Task 1: Shared device-storage helpers
+
+> **Landed with PR 4.** PR 4's Task 12 needed these helpers before PR 1 started, so PR 4 carried this task verbatim, `boardMemory.ts` change included. PR 1 starts at Task 2.
 
 **Files:**
 - Create: `mobile-native/src/deviceStorage.ts`
@@ -5627,6 +5629,12 @@ describe("the demo fleet's documents", () => {
 - [ ] **Step 2:** Implement `demoSubagents.ts` (above) and the `demoFleet.ts` and `demo-hub.mts` changes.
 - [ ] **Step 3:** Run the tests and watch them pass, then `npm run check` and `npm run check:scripts` (the script-import gate for `scripts/*.mts`).
 - [ ] **Step 4:** Run `EVENER_DEMO_FLEET=1 npx tsx scripts/demo-hub.mts`, point a Release simulator build at it, and open Get PR 2138 Test Clean's Subagents list, a subagent, and the plan.
+  PR 5a (#2784) shipped without a simulator pass, so check the Reader here too, on the plan:
+  - it reads the real plan: the caption, serif headings, list items and code blocks, with 14pt between blocks;
+  - the header's trailing items sit in order, the outline button and then ⋯, and the title moves into the nav bar once the first heading scrolls out;
+  - the headings render in Source Serif 4 SemiBold. Their weight is "600" because enriched-markdown's default heading weight is bold, so confirm iOS lands on the embedded SemiBold face and doesn't synthesize bold;
+  - scroll partway, push a screen over it and come back: it keeps its place and its highlights, and doesn't re-read for its own sheets;
+  - leave it partway and reopen it: it reopens at the same block, and the Board offers Continue reading.
 - [ ] **Step 5:** Commit (`feat(native): the demo hub serves subagents and documents`), then open PR 9: "feat(native): the demo fleet's subagents and documents (phase 4, PR 9)".
 
 ---

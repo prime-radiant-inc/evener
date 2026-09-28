@@ -169,7 +169,7 @@ func ExplainSchemaError(toolName string, params, args map[string]any, instanceLo
 		// error instead of a missing one. Attribute the branch here too.
 		ctx := newBranchCtx(params, args, containerPath)
 		if constraintKeyword != "" {
-			if specific := constraintMessage(toolName, containerSchema, fullPath, field, constraintKeyword, args, instanceLocation); specific != "" {
+			if specific := constraintMessage(toolName, containerSchema, fullPath, field, constraintKeyword, args, instanceLocation, branchConstraintSchema(params, constraintKeywordLocation)); specific != "" {
 				return specific + ctx.wrongBranchTail(args)
 			}
 		}
@@ -552,8 +552,18 @@ func actionExample(params map[string]any, selectorName, actionValue string, acti
 // minLength, minItems, maxItems, enum, required) or when the schema/value
 // shape doesn't match the keyword, so the caller falls back to the generic
 // "wrong type or value" message.
-func constraintMessage(toolName string, containerSchema map[string]any, displayPath string, field, keyword string, args map[string]any, instanceLocation string) string {
+func constraintMessage(toolName string, containerSchema map[string]any, displayPath string, field, keyword string, args map[string]any, instanceLocation string, branchSchema map[string]any) string {
 	fieldSchema, _ := schemaProps(containerSchema)[field].(map[string]any)
+	// A value constraint narrowed inside a combinator branch lives on the
+	// branch's own property schema, not the container's top-level property:
+	// reading the top-level enum announces a wider list — one that can contain
+	// the very value it calls disallowed (issue #622). branchSchema is the
+	// node the failing keyword location resolves to; the walk returns nil when
+	// it cannot resolve it (a $ref, a malformed pointer), leaving the
+	// container's top-level property to stand as before.
+	if branchSchema != nil {
+		fieldSchema = branchSchema
+	}
 	if fieldSchema == nil {
 		return ""
 	}
@@ -613,10 +623,98 @@ func constraintMessage(toolName string, containerSchema map[string]any, displayP
 		for i, name := range missing {
 			missing[i] = fmt.Sprintf("%s.%s", displayPath, name)
 		}
+		// When the missing list was resolved from a combinator branch's own
+		// schema, the container's top-level example need not satisfy that branch
+		// — for a branch that requires a property the top-level shape omits, the
+		// example would leave out the very property just named missing, coaching
+		// a retry that fails the same way. Omit it rather than show one that is
+		// not checked against the branch (issue #622 review).
+		if branchSchema != nil {
+			return fmt.Sprintf("%s: argument %q is missing required properties: %s.",
+				toolName, displayPath, strings.Join(missing, ", "))
+		}
 		return fmt.Sprintf("%s: argument %q is missing required properties: %s.\nExample: %s",
 			toolName, displayPath, strings.Join(missing, ", "), exampleForField(containerSchema, field))
 	}
 	return ""
+}
+
+// branchConstraintSchema walks a failing keyword's location into params and
+// returns the schema node that directly holds the leaf keyword — for
+// /anyOf/0/properties/sandbox/enum that is the arm's own sandbox property
+// schema, whose narrowed enum is the list that actually rejected the value.
+// Reading the constraint off the container instead would use the top-level
+// property, whose wider enum can contain the rejected value (issue #622).
+//
+// Returns nil when the location descends through no combinator (so only a
+// branch-narrowed constraint is redirected), or when the walk cannot resolve a
+// step — a $ref, a patternProperties/propertyNames applicator, a malformed
+// pointer — so the caller keeps the container's top-level property as before.
+// The arm index is the combinator's own array position, not an instance step.
+func branchConstraintSchema(params map[string]any, keywordLocation string) map[string]any {
+	segs := splitPointer(keywordLocation)
+	if len(segs) < 2 {
+		return nil
+	}
+	// The last segment is the leaf keyword; the node holding it is the property
+	// schema constraintMessage needs.
+	body := segs[:len(segs)-1]
+	cur := params
+	branch := false
+	for i := 0; i < len(body); i++ {
+		switch body[i] {
+		case "properties":
+			if i+1 >= len(body) {
+				return nil
+			}
+			child, ok := schemaProps(cur)[body[i+1]].(map[string]any)
+			if !ok {
+				return nil
+			}
+			cur = child
+			i++
+		case "items", "additionalProperties":
+			child, ok := cur[body[i]].(map[string]any)
+			if !ok {
+				return nil
+			}
+			cur = child
+		case "not":
+			child, ok := cur["not"].(map[string]any)
+			if !ok {
+				return nil
+			}
+			cur = child
+			branch = true
+		case "oneOf", "anyOf", "allOf":
+			if i+1 >= len(body) {
+				return nil
+			}
+			idx, err := strconv.Atoi(body[i+1])
+			if err != nil || idx < 0 {
+				return nil
+			}
+			arms, ok := cur[body[i]].([]any)
+			if !ok || idx >= len(arms) {
+				return nil
+			}
+			child, ok := arms[idx].(map[string]any)
+			if !ok {
+				return nil
+			}
+			cur = child
+			branch = true
+			i++
+		default:
+			return nil
+		}
+	}
+	// Only a constraint narrowed inside a combinator branch is redirected;
+	// a plain location keeps the container's top-level property as before.
+	if !branch {
+		return nil
+	}
+	return cur
 }
 
 // exampleForField renders a minimal example naming just the failing field,
