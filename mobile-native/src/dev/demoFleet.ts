@@ -15,6 +15,8 @@ import {
 } from "@evener/appwire-client/state/navigation";
 import { capability, wireV2 } from "@evener/appwire-client/testing/navigation";
 import type {
+	ArchiveParams,
+	ArchiveResponse,
 	AuthListResponse,
 	NavigationCapability,
 	NavigationInvalidatedPayload,
@@ -36,7 +38,7 @@ import type {
 // "generation mismatch"). Exported for the tests that assert it.
 export const DEMO_FLEET_GENERATION = "demo-fleet";
 // Every resource shares one revision, bumped when the fleet changes (the
-// question askQuestion below poses), so an invalidation's target revision is
+// question askQuestion below poses, or an archive), so an invalidation's target revision is
 // one the next read actually reaches: the navigation store refuses a
 // response below the revision it was told to expect.
 const respond = (revision: number, params: NavigationReadParams, data: unknown): NavigationReadResponse =>
@@ -491,6 +493,11 @@ function runningJobs(raw: RawSession): NavigationJobSummary[] | undefined {
 	];
 }
 
+// The ref the wire names a fleet session by: its owning host and its id.
+function sessionRef(raw: RawSession): string {
+	return `${hostId(raw.host)}:${demoSessionId(raw.id)}`;
+}
+
 function toRow(raw: RawSession, startupMs: number, offlineHost: boolean): NavigationSessionSummary {
 	const owner = hostId(raw.host);
 	const project = raw.project ?? "evener";
@@ -501,7 +508,7 @@ function toRow(raw: RawSession, startupMs: number, offlineHost: boolean): Naviga
 	const { capped, omitted } = capChildren(rawChildren(raw));
 	const jobs = runningJobs(raw);
 	return {
-		ref: `${owner}:${sessionId}`,
+		ref: sessionRef(raw),
 		host_id: owner,
 		session_id: sessionId,
 		title: raw.title,
@@ -595,6 +602,11 @@ export interface DemoFleet extends FleetAnswers {
 	// returns the evener/navigation/invalidated payload a real hub would send
 	// for that change.
 	askQuestion(): NavigationInvalidatedPayload;
+	// Answers evener/archive/set for a session, named as the Board's
+	// archiveTarget names it: a local row by its session id (or its local:
+	// ref), another host's by its ref. Returns the reply and the
+	// evener/navigation/invalidated payload a real hub sends for it.
+	archive(params: ArchiveParams): { response: ArchiveResponse; invalidated: NavigationInvalidatedPayload };
 }
 
 // The working row EVENER_DEMO_FLEET_ASK_AFTER turns into a question: a plain
@@ -610,11 +622,26 @@ export function createDemoFleet(options: DemoFleetOptions = {}): DemoFleet {
 	// Building the fleet from an empty list, rather than special-casing each
 	// answer, keeps every count, section and catalog below in step for free:
 	// a hub with nothing live just has nothing to filter, page or search over.
-	const sessionsList = options.empty ? [] : SESSIONS;
+	// The fleet as it stands; each change replaces it with a changed copy.
+	let sessionsList = options.empty ? [] : SESSIONS;
 	// Every resource's revision is one ahead of the navigation sequence: both
-	// start there and askQuestion advances them together.
+	// start there and each change advances them together.
 	let sequence = 0;
 	let answers = fleetAnswers(sessionsList, sequence + 1, startupMs, offlineHost, clock);
+
+	// Moves the fleet to `changed` at the next sequence and revision, and
+	// returns the evener/navigation/invalidated payload for the targets the
+	// change names at that revision.
+	function commit(
+		changed: RawSession[],
+		targets: (revision: number) => NavigationInvalidatedPayload["targets"],
+	): NavigationInvalidatedPayload {
+		sessionsList = changed;
+		sequence += 1;
+		const revision = sequence + 1;
+		answers = fleetAnswers(sessionsList, revision, startupMs, offlineHost, clock);
+		return { generationId: DEMO_FLEET_GENERATION, sequence, targets: targets(revision) };
+	}
 
 	function askQuestion(): NavigationInvalidatedPayload {
 		// A negative `ago` puts updated_at at the moment of asking, after
@@ -623,22 +650,46 @@ export function createDemoFleet(options: DemoFleetOptions = {}): DemoFleet {
 		const asked = sessionsList.map((raw) =>
 			raw.id === ASKING_SESSION_ID ? { ...raw, state: "question" as const, ago: askedAgo } : raw,
 		);
-		sequence += 1;
-		const revision = sequence + 1;
-		answers = fleetAnswers(asked, revision, startupMs, offlineHost, clock);
 		// The resources a real hub invalidates for one row's state change
 		// (cmd/evener-hub/navigation_service.go): the manifest's counts, both
 		// Board sections, and the row's project. Search has no invalidation
 		// target; the next search simply answers from the changed fleet.
+		return commit(asked, (revision) => [
+			{ kind: "manifest", revision },
+			{ kind: "section", section: "live", revision },
+			{ kind: "section", section: "needs_you", revision },
+			{ kind: "project", projectKey: ASKING_PROJECT, revision },
+		]);
+	}
+
+	function archive(params: ArchiveParams): { response: ArchiveResponse; invalidated: NavigationInvalidatedPayload } {
+		if (params.kind !== "session") throw new Error("The demo fleet archives sessions only");
+		// The hub reads a local: ref as the bare session id its rows carry
+		// (app_archive.go's NormalizeDecisionSessionID); another host's session
+		// is named by its ref.
+		const target = sessionsList.find((raw) => {
+			const ref = sessionRef(raw);
+			return params.id === ref || (ref.startsWith("local:") && params.id === demoSessionId(raw.id));
+		});
+		if (!target) throw new Error(`Unknown demonstration session: ${params.id}`);
+		const changed = sessionsList.map((raw) => (raw === target ? { ...raw, archived: params.archived } : raw));
+		// A session archive changes the manifest's counts, the Board's
+		// sections, the project catalogs' counts and the row's project, and
+		// the real hub adds every loaded project page besides
+		// (app_archive.go's AllLoadedProjects hint, appended last by
+		// navigation_service.go's commitTargetsLocked).
+		const invalidated = commit(changed, (revision) => [
+			{ kind: "manifest", revision },
+			{ kind: "section", section: "live", revision },
+			{ kind: "section", section: "needs_you", revision },
+			{ kind: "catalog", catalog: "projects", revision },
+			{ kind: "catalog", catalog: "archived_projects", revision },
+			{ kind: "project", projectKey: target.project ?? "evener", revision },
+			{ kind: "all_loaded_projects" },
+		]);
 		return {
-			generationId: DEMO_FLEET_GENERATION,
-			sequence,
-			targets: [
-				{ kind: "manifest", revision },
-				{ kind: "section", section: "live", revision },
-				{ kind: "section", section: "needs_you", revision },
-				{ kind: "project", projectKey: ASKING_PROJECT, revision },
-			],
+			response: { ok: true, navigation: { generation_id: DEMO_FLEET_GENERATION, targets: invalidated.targets } },
+			invalidated,
 		};
 	}
 
@@ -649,11 +700,12 @@ export function createDemoFleet(options: DemoFleetOptions = {}): DemoFleet {
 		answerPluginList: () => answers.answerPluginList(),
 		navigationCapability: () => ({ ...capability(DEMO_FLEET_GENERATION), sequence }),
 		askQuestion,
+		archive,
 	};
 }
 
 // Every answer the fleet gives, for one fixed list of sessions at one
-// revision; askQuestion swaps in a new one rather than mutating this.
+// revision; each change swaps in a new one rather than mutating this.
 function fleetAnswers(
 	sessionsList: RawSession[],
 	revision: number,
@@ -664,13 +716,14 @@ function fleetAnswers(
 	const rowById = new Map(sessionsList.map((raw) => [raw.id, toRow(raw, startupMs, offlineHost)]));
 	const rowOf = (raw: RawSession) => rowById.get(raw.id) as NavigationSessionSummary;
 
-	const liveRaw = sessionsList.filter((raw) => raw.state !== "shutdown");
+	// An archived session leaves Live, whatever its state.
+	const liveRaw = sessionsList.filter((raw) => raw.state !== "shutdown" && !raw.archived);
 	const liveSessions = liveRaw.map(rowOf);
 	const needsYouSessions = liveRaw.filter((raw) => NEEDS_YOU_STATES.has(raw.state)).map(rowOf);
 	// "9 working" (spec 7.1's Live summary line) is the working band itself,
 	// which excludes the approval row despite its sharing state "active".
-	const workingCount = sessionsList.filter((raw) => raw.state === "working").length;
-	const erroredCount = sessionsList.filter((raw) => raw.state === "failed").length;
+	const workingCount = liveRaw.filter((raw) => raw.state === "working").length;
+	const erroredCount = liveRaw.filter((raw) => raw.state === "failed").length;
 
 	const sources: Source[] = [
 		{ id: "local", label: "this host", kind: "local", online: true },
