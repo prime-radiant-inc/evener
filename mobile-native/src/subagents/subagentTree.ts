@@ -80,12 +80,8 @@ export class SubagentTree {
 	 * new list has its own. */
 	setClient(client: ConversationClientLike | null): Promise<void> {
 		if (client === this.client) return this.reloading ?? Promise.resolve();
-		// A read cut off mid-way leaves the pages it hadn't reached unlisted:
-		// say so until a new read settles.
-		// A read that hadn't reached its first page knows nothing new, so what
-		// the last settled read said stands.
-		const unread = this.list?.branches().map((branch) => branch.label) ?? [];
-		if (this.reloading && unread.length > 0) this.settledMissing = unread;
+		// A read cut off mid-way leaves the pages it hadn't reached unlisted.
+		if (this.list && this.reloading) this.recordMissing(this.list);
 		this.detachList?.();
 		this.detachList = null;
 		this.list = null;
@@ -181,7 +177,7 @@ export class SubagentTree {
 		// settles again, through a reconnect too; while pages are still
 		// arriving, the count isn't whole yet either.
 		const pending = list ? list.branches().map((branch) => branch.label) : [];
-		if (list && settled) this.settledMissing = pending;
+		if (list && settled) this.recordMissing(list);
 		const missing = this.settledMissing;
 		return {
 			tree: this.tree,
@@ -193,6 +189,14 @@ export class SubagentTree {
 			missing,
 			coordinatorModel: this.coordinatorModel,
 		};
+	}
+
+	/** What a list couldn't list, taken as the tree's answer. Only a read
+	 * that produced a tree speaks for it: a list with no tree (its first
+	 * read failed, or never came) knows nothing new, so the last answer
+	 * stands. */
+	private recordMissing(list: ActivityList): void {
+		if (list.getSnapshot().tree) this.settledMissing = list.branches().map((branch) => branch.label);
 	}
 
 	private publish(): void {

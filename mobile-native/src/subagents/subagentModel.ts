@@ -31,7 +31,8 @@ export interface SubagentRow {
 	state: SubagentState;
 	/** Done because it was stopped or cancelled, not because it finished its work. */
 	stopped: boolean;
-	/** It, or a subagent it started, is still working: something a stop request can stop. */
+	/** It, or a subagent it started, is still working: something a stop request
+	 * can stop. PR 3's "Ask coordinator to stop it" reads this. */
 	active: boolean;
 	/** The title of the subagent that started this one; absent for the coordinator's own. */
 	parentTitle?: string;
@@ -62,7 +63,9 @@ export function subagentStateWord(state: SubagentState): string {
 	return STATE_WORDS[state];
 }
 
-/** The subagent ended in a stop: its own run, or a run somewhere under it. */
+/** The subagent ended in a stop: its own run, or a run somewhere under it.
+ * For PR 3's stop request ("Stopped at your request"); a row's own "Stopped"
+ * is its own outcome (ruling 4). */
 export function subtreeStopped(delegate: ActivityDelegate): boolean {
 	if (delegate.terminal === true && STOPPED_OUTCOMES.has(delegate.outcome ?? "")) return true;
 	return (delegate.child?.entries ?? []).some((entry) => entry.kind === "delegate" && subtreeStopped(entry.delegate));
