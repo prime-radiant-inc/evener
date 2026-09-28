@@ -134,7 +134,9 @@ export class NotesController {
 	sync(): void {
 		if (this.state.phase !== "clean" && this.state.phase !== "saved") return;
 		const hub = this.options.savedNote();
-		if (hub !== this.state.text) this.publish({ text: hub, phase: this.state.phase });
+		// A note this controller didn't save itself makes "Saved" stale, so
+		// adopting it reads clean.
+		if (hub !== this.state.text) this.publish({ text: hub, phase: "clean" });
 	}
 
 	edit(text: string): void {

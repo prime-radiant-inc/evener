@@ -146,6 +146,17 @@ describe("saving your note (spec 8.8; Review Focus 5)", () => {
 		expect(hub.requests).toHaveLength(1);
 	});
 
+	it("goes back to clean, not stuck on Saved, once it adopts a different note from the hub", async () => {
+		const hub = harness();
+		const notes = hub.make();
+		notes.edit("Wake up");
+		expect(await notes.flush()).toEqual({ saved: true, woke: true });
+		expect(notes.getSnapshot().phase).toBe("saved");
+		hub.setSaved("Someone else's later note");
+		notes.sync();
+		expect(notes.getSnapshot()).toEqual({ text: "Someone else's later note", phase: "clean" });
+	});
+
 	it("saves at once on flush and says whether it woke the agent", async () => {
 		const idle = harness();
 		const first = idle.make();
