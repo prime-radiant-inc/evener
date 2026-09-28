@@ -12,9 +12,22 @@ import (
 	"primeradiant.com/evener/internal/appitempaging"
 )
 
+// turnScalars normalizes a turn for "is this the exact current turn"
+// comparisons in these tests: Items are compared separately, by position.
 func turnScalars(turn appwire.Turn) appwire.Turn {
 	turn.Items = nil
 	return turn
+}
+
+// turnSummaryChanged reports whether a turn's wire-visible summary differs
+// between two snapshots, ignoring Version: Version advances on every entry
+// the turn owns, changed summary or not (see stampTurn/summaryOf in
+// build.go), so it does not by itself mean ChangedSince must resend the
+// turn.
+func turnSummaryChanged(old, now appwire.Turn) bool {
+	old, now = turnScalars(old), turnScalars(now)
+	old.Version, now.Version = 0, 0
+	return !reflect.DeepEqual(old, now)
 }
 
 // TestChangedSinceReturnsWhatLaterEntriesChanged snapshots the index at every
@@ -91,7 +104,7 @@ func TestChangedSinceReturnsWhatLaterEntriesChanged(t *testing.T) {
 		}
 		for i, old := range beforeTurns {
 			now := afterTurns[i]
-			if old.ID != now.ID || reflect.DeepEqual(turnScalars(old), turnScalars(now)) {
+			if old.ID != now.ID || !turnSummaryChanged(old, now) {
 				continue
 			}
 			found := false

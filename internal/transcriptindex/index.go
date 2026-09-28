@@ -77,6 +77,13 @@ const (
 type meta struct {
 	Format     int    `json:"format"`
 	Projection string `json:"projection"`
+	// SchemaID identifies the schema.Turn/llm.Message field shape the
+	// building binary's strict decoder enforced (see schemaFieldFingerprint).
+	// readMeta checks it like Format/Projection: a build whose entries a
+	// different schema shape validated must not be adopted by a reader with
+	// a different one, since window.go re-decodes raw transcript bytes
+	// leniently and would otherwise drop an unknown field silently.
+	SchemaID string `json:"schema_id"`
 	// Incarnation names what the records describe. It changes only when the
 	// transcript stops being an extension of the covered prefix; a rebuild
 	// the index needs for itself (errRebuild) keeps it.
@@ -325,8 +332,8 @@ func (x *Index) readMeta() (meta, error) {
 	if err := json.Unmarshal(data, &m); err != nil {
 		return m, err
 	}
-	if m.Format != formatVersion || m.Projection != projectionID {
-		return m, errors.New("transcript index format or projection changed")
+	if m.Format != formatVersion || m.Projection != projectionID || m.SchemaID != schemaID {
+		return m, errors.New("transcript index format, projection, or schema identity changed")
 	}
 	return m, nil
 }
@@ -648,7 +655,7 @@ func (x *Index) buildNew(length int64, incarnation string) error {
 		return err
 	}
 	length = min(length, info.Size())
-	x.meta = meta{Format: formatVersion, Projection: projectionID, Incarnation: incarnation, FileIdentity: apptranscript.FileIdentity(info)}
+	x.meta = meta{Format: formatVersion, Projection: projectionID, SchemaID: schemaID, Incarnation: incarnation, FileIdentity: apptranscript.FileIdentity(info)}
 	x.prelude = nil
 	x.stale, x.builderStale = false, false
 	x.builder = newBuilder(x)

@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/internal/appitempaging"
 )
@@ -58,7 +59,7 @@ func TestChangedSinceReturnsCreatedAndUpdatedRecords(t *testing.T) {
 
 		var wantTurns []appwire.Turn
 		for i, now := range afterAllTurns {
-			if i >= len(beforeAllTurns) || !reflect.DeepEqual(turnScalars(beforeAllTurns[i]), turnScalars(now)) {
+			if i >= len(beforeAllTurns) || turnSummaryChanged(beforeAllTurns[i], now) {
 				wantTurns = append(wantTurns, turnScalars(now))
 			}
 		}
@@ -71,6 +72,38 @@ func TestChangedSinceReturnsCreatedAndUpdatedRecords(t *testing.T) {
 		}
 		if err := x.Close(); err != nil {
 			t.Fatal(err)
+		}
+	}
+}
+
+// TestChangedSinceDoesNotReportATurnWhoseEntryDidNotChangeItsSummary requires
+// stampTurn to log updatedTurn only when an entry actually moves the
+// wire-visible summary (status/lifecycle/started/usage/model): a TOOL_RESULTS
+// entry that completes a call with no usage of its own, mid-turn, is not the
+// turn's first entry (so the old code logged it unconditionally) but changes
+// nothing ChangedSince's caller would need to re-fetch.
+func TestChangedSinceDoesNotReportATurnWhoseEntryDidNotChangeItsSummary(t *testing.T) {
+	fx := fixture{header: everything().header, lines: []fixtureLine{
+		entryLine(opens("turn_m40", schema.TurnSpanExecution, assistant(call("a1", "read_file", `{}`)))),
+		entryLine(inTurn("turn_m40", results(result("a1", "read_file", "no usage here")))),
+	}}
+	path, lines := writeHeaderOnly(t, fx)
+	x := openIndex(t, path, t.TempDir())
+	appendBytes(t, path, lines[0])
+	catchUp(t, x)
+	held, err := x.Latest(1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	appendBytes(t, path, lines[1])
+	catchUp(t, x)
+	changes, err := x.ChangedSince(held.Length)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, turn := range changes.Turns {
+		if turn.ID == "turn_m40" {
+			t.Fatalf("ChangedSince reported turn_m40 changed for a same-usage, same-status mid-turn entry: %s", dump(turn))
 		}
 	}
 }

@@ -294,7 +294,12 @@ func TestReplacedTruncatedOrRewrittenTranscriptRebuilds(t *testing.T) {
 			if x.rebuilds != 2 {
 				t.Fatalf("builds = %d, want a rebuild after the change", x.rebuilds)
 			}
-			assertAllWindows(t, x, path)
+			// assertSampledWindows, not assertAllWindows: the point of this
+			// test is that the rebuilt index reads back correctly, not a
+			// full boundary sweep at every limit over the whole "everything"
+			// fixture four times (see its doc comment for the CI cost that
+			// bought).
+			assertSampledWindows(t, x, path)
 		})
 	}
 }
@@ -498,6 +503,15 @@ func TestCorruptSidecarRebuilds(t *testing.T) {
 		}},
 		{"fabricated last-assistant position", func(t *testing.T, dir string) {
 			rewriteMetaField(t, dir, "last_assistant_pos", `{"offset":0,"ordinal":0,"length":4294967295}`)
+		}},
+		{"other schema identity", func(t *testing.T, dir string) {
+			// A sidecar built by a binary whose schema.Turn/llm.Message shape
+			// differs must not be adopted: window.go's readEntry re-decodes
+			// raw transcript bytes with the lenient DecodeValidatedEntry,
+			// which would silently drop a field this binary's schema doesn't
+			// declare instead of failing loudly (see the "Known gap" spec
+			// section, cross-version schema skew).
+			rewriteMetaField(t, dir, "schema_id", `"deadbeefdeadbeef"`)
 		}},
 	}
 	for _, tc := range cases {
