@@ -10,7 +10,16 @@
 //   switch (Hub > In-app alerts) is read from. In memory, per test file.
 import { vi } from "vitest";
 
-vi.mock("expo-haptics", async () => (await import("./renderNative.testkit")).expoHapticsMock());
+vi.mock("expo-haptics", async () => {
+	const { playedHaptics } = await import("./renderNative.testkit");
+	return {
+		ImpactFeedbackStyle: { Light: "light", Rigid: "rigid" },
+		NotificationFeedbackType: { Success: "success", Warning: "warning" },
+		selectionAsync: async () => void playedHaptics.push("selection"),
+		impactAsync: async (style: string) => void playedHaptics.push(`impact:${style}`),
+		notificationAsync: async (type: string) => void playedHaptics.push(`notification:${type}`),
+	};
+});
 
 vi.mock("expo-sqlite/kv-store", () => {
 	const values = new Map<string, string>();
