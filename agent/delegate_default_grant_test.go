@@ -76,8 +76,13 @@ func TestCreateDelegate_DefaultGrantIsOneBelowTheGranter(t *testing.T) {
 				t.Fatal("no live child session")
 			}
 			names := live.binding.runtime.reg.RegisteredNames()
-			if names["delegate"] != tc.wantDelegate || names["job_watch"] != tc.wantDelegate {
-				t.Errorf("child delegate=%v job_watch=%v, want both %v", names["delegate"], names["job_watch"], tc.wantDelegate)
+			if names["delegate"] != tc.wantDelegate {
+				t.Errorf("child delegate=%v, want %v", names["delegate"], tc.wantDelegate)
+			}
+			// job_watch is not delegation: a leaf keeps it so it can wait on
+			// its own promoted background jobs (#2645).
+			if !names["job_watch"] {
+				t.Error("child has no job_watch: a session that can run jobs watches its own jobs at any depth")
 			}
 		})
 	}

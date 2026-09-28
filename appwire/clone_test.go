@@ -249,3 +249,19 @@ func TestCloneThreadOwnsThePendingQuestion(t *testing.T) {
 		t.Fatal("a nil question cloned to a non-nil one")
 	}
 }
+
+func TestCloneThreadOwnsTheFailure(t *testing.T) {
+	original := Thread{Evener: EvenerThread{Failure: &ThreadFailure{Title: "Provider error", Cause: &DiagnosticCause{Kind: "provider", Status: 401}}}}
+	clone := CloneThread(original)
+	if !reflect.DeepEqual(clone, original) {
+		t.Fatal("clone changed values while copying")
+	}
+	clone.Evener.Failure.Title = "changed"
+	clone.Evener.Failure.Cause.Status = 500
+	if original.Evener.Failure.Title != "Provider error" || original.Evener.Failure.Cause.Status != 401 {
+		t.Fatalf("the failure was changed through its clone: %+v", original.Evener.Failure)
+	}
+	if CloneThreadFailure(nil) != nil {
+		t.Fatal("a nil failure cloned to a non-nil one")
+	}
+}

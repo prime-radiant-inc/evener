@@ -69,12 +69,12 @@ func fillEveryFieldNonZero(t *testing.T, v reflect.Value) {
 	}
 }
 
-// The hub's own list rows carry a root's task progress and pending question,
-// and an in-process subagent alias carries only the fields it owns. Every
-// field of live starts non-zero (fillEveryFieldNonZero), so comparing the
-// WHOLE alias entry against an explicit "want" of only the fields the alias
-// is meant to carry means a field added to the root later (a failure summary,
-// a last message) needs no field-specific "only on the root" test of its own,
+// The hub's own list rows carry a root's task progress, pending question and
+// failure summary, and an in-process subagent alias carries only the fields
+// it owns. Every field of live starts non-zero (fillEveryFieldNonZero), so
+// comparing the WHOLE alias entry against an explicit "want" of only the
+// fields the alias is meant to carry means a field added to the root later (a
+// last message) needs no field-specific "only on the root" test of its own,
 // and no update to this fixture: any root-only field the alias literal in
 // localDaemonEntriesFromRoster accidentally starts copying makes the
 // comparison fail the moment it stops being nil/zero on one side only (S13b
@@ -103,6 +103,9 @@ func TestLocalDaemonEntriesFromRosterAliasCarriesOnlyItsOwnFields(t *testing.T) 
 	}
 	if !reflect.DeepEqual(entries[0].PendingQuestion, live.PendingQuestion) {
 		t.Fatalf("root entry question = %+v, want %+v", entries[0].PendingQuestion, live.PendingQuestion)
+	}
+	if !reflect.DeepEqual(entries[0].Failure, live.Failure) {
+		t.Fatalf("root entry failure = %+v, want %+v", entries[0].Failure, live.Failure)
 	}
 	want := appsource.LocalDaemonEntry{
 		Entry:             rootEntry,
