@@ -1579,7 +1579,6 @@ _(no fields)_
 | `maxSubagentDepth` | `*int` | yes |  |
 | `maxConcurrentDelegateTurns` | `*int` | yes |  |
 | `maxRetainedTerminal` | `*int` | yes |  |
-| `noProjectPrompts` | `*bool` | yes |  |
 | `nonInteractive` | `*bool` | yes |  |
 | `appReplaySize` | `*int` | yes |  |
 | `skillsDirs` | `[]string` | yes |  |

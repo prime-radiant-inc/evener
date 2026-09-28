@@ -3792,7 +3792,6 @@ type LaunchConfigLayer struct {
 	MaxSubagentDepth            *int              `json:"maxSubagentDepth,omitempty"`
 	MaxConcurrentDelegateTurns  *int              `json:"maxConcurrentDelegateTurns,omitempty"`
 	MaxRetainedTerminal         *int              `json:"maxRetainedTerminal,omitempty"`
-	NoProjectPrompts            *bool             `json:"noProjectPrompts,omitempty"`
 	NonInteractive              *bool             `json:"nonInteractive,omitempty"`
 	AppReplaySize               *int              `json:"appReplaySize,omitempty"`
 	SkillsDirs                  []string          `json:"skillsDirs,omitempty"`
