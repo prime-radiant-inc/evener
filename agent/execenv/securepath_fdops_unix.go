@@ -25,6 +25,7 @@ var (
 	secureWrite          = unix.Write
 	secureClose          = unix.Close
 	secureRenameat       = unix.Renameat
+	secureUnlinkat       = unix.Unlinkat
 	secureReadDirEntries = readDirEntries
 )
 
@@ -363,21 +364,33 @@ func (s *sandboxFS) remove(tool, abs string) error {
 		return err
 	}
 	defer func() { _ = unix.Close(parentFd) }()
-	if uerr := unix.Unlinkat(parentFd, leaf, 0); uerr != nil {
-		// The target vanished between opening its parent and unlinking it: already
-		// gone, so a best-effort delete stays a no-op success.
-		if isAbsentRemove(uerr) {
-			return nil
-		}
-		if errors.Is(uerr, unix.EISDIR) {
-			if derr := unix.Unlinkat(parentFd, leaf, unix.AT_REMOVEDIR); derr != nil && !errors.Is(derr, unix.ENOENT) {
-				return fmt.Errorf("remove %s: %w", abs, derr)
-			}
-			return nil
-		}
-		return fmt.Errorf("remove %s: %w", abs, uerr)
+	uerr := secureUnlinkat(parentFd, leaf, 0)
+	if uerr == nil {
+		return nil
 	}
-	return nil
+	// The target vanished between opening its parent and unlinking it: already
+	// gone, so a best-effort delete stays a no-op success.
+	if isAbsentRemove(uerr) {
+		return nil
+	}
+	// The leaf is not a plain file — try removing it as a directory. Linux and
+	// Darwin differ on unlink(dir)'s errno (EISDIR vs EPERM), so the fallback
+	// cannot key on EISDIR alone; instead mirror os.Remove: attempt the directory
+	// removal unconditionally, and when both fail report the rmdir error unless it
+	// is ENOTDIR (rmdir(file) is ENOTDIR on both), in which case the unlink error
+	// is the real one.
+	derr := secureUnlinkat(parentFd, leaf, unix.AT_REMOVEDIR)
+	if derr == nil {
+		return nil
+	}
+	if !errors.Is(derr, unix.ENOTDIR) {
+		uerr = derr
+	}
+	// A target that raced away between the two calls is still already gone.
+	if isAbsentRemove(uerr) {
+		return nil
+	}
+	return fmt.Errorf("remove %s: %w", abs, uerr)
 }
 
 // rename moves oldAbs to newAbs. Both endpoints must resolve beneath a writable
