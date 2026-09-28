@@ -4,7 +4,7 @@
 // Deny. There is no redirect, as on the web's approval card.
 import type { SandboxEscalationRequested } from "@evener/appwire-client";
 import { SymbolView } from "expo-symbols";
-import { useEffect, useRef, useSyncExternalStore } from "react";
+import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { Pressable, Text, View } from "react-native";
 import type { ApprovalControls } from "../approvalControls";
 import { fonts } from "../design/tokens";
@@ -39,30 +39,45 @@ export function ApprovalDock({ request, controls, onDecided }: ApprovalDockProps
 	// A decision it couldn't confirm re-reads the session once on its own, so
 	// there is no refresh to press. The error stays until a read clears it.
 	const refreshedFor = useRef(false);
+	// A decision this dock sent holds it until the approval leaves (the screen
+	// keys the dock by escalationId) or an error comes back. It lives here,
+	// above the controls, because a reconnect replaces them mid-decision: the
+	// disposed ones settle silently, and the new ones know nothing of it, so
+	// without this a second press could resolve the same approval twice.
+	const [decisionSent, setDecisionSent] = useState(false);
 	useEffect(() => {
 		if (state.error === null) {
 			refreshedFor.current = false;
 			return;
 		}
+		setDecisionSent(false);
 		if (refreshedFor.current || !controls) return;
 		refreshedFor.current = true;
 		void controls.refresh();
 	}, [state.error, controls]);
-	const off = state.pending !== null || state.refreshing || state.error !== null;
+	const off = decisionSent || state.pending !== null || state.refreshing || state.error !== null;
 	async function decide(allowed: boolean) {
 		if (off || !controls) return;
 		// resolve says nothing of its own: a decision went out when this
-		// approval went pending, and it held when no error followed.
+		// approval went pending.
 		let sent = false;
 		const stop = controls.subscribe(() => {
-			if (controls.getSnapshot().pending === request.escalationId) sent = true;
+			if (controls.getSnapshot().pending !== request.escalationId) return;
+			sent = true;
+			setDecisionSent(true);
 		});
 		try {
 			await controls.resolve(request, allowed);
 		} finally {
 			stop();
 		}
-		if (sent && controls.getSnapshot().error === null) onDecided(allowed);
+		const settled = controls.getSnapshot();
+		if (!sent) return;
+		if (settled.error !== null) setDecisionSent(false);
+		// It held when these controls settled with no error. Controls still
+		// pending were disposed mid-decision: nothing confirmed it, so the
+		// dock holds and says nothing.
+		else if (settled.pending === null) onDecided(allowed);
 	}
 	const body = { allowFontScaling, style: { fontSize: 15 * scale, lineHeight: 20 * scale, color: palette.inkMid } };
 	return (

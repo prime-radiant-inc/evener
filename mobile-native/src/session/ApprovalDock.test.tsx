@@ -125,6 +125,68 @@ describe("the approval dock (spec 8.4)", () => {
 		expect(onDecided).toHaveBeenCalledWith(false);
 	});
 
+	it("keeps a decision already sent pending when a reconnect swaps the controls (no second request)", async () => {
+		const approval = request();
+		// The first controls send the decision, then are disposed by the
+		// reconnect: their resolve settles without publishing anything more.
+		const first = fakeControls();
+		let settle = () => {};
+		first.controls.resolve.mockImplementation(async (sent: SandboxEscalationRequested) => {
+			first.publish({ pending: sent.escalationId });
+			await new Promise<void>((resolve) => {
+				settle = resolve;
+			});
+		});
+		const onDecided = vi.fn<(allowed: boolean) => void>();
+		const tree = render(<ApprovalDock request={approval} controls={first.asControls} onDecided={onDecided} />);
+		await press(tree, "Allow this file only");
+		expect(first.controls.resolve).toHaveBeenCalledTimes(1);
+		// The reconnect's new controls know nothing of that decision.
+		const second = fakeControls();
+		await act(async () => {
+			tree.update(<ApprovalDock request={approval} controls={second.asControls} onDecided={onDecided} />);
+		});
+		await act(async () => {
+			settle();
+			await new Promise((resolve) => setTimeout(resolve, 0));
+		});
+		for (const label of ["Allow this file only", "Deny"]) {
+			const button = pressable(tree, label);
+			expect(button?.props.accessibilityState).toMatchObject({ disabled: true });
+			await act(async () => button?.props.onPress());
+		}
+		expect(second.controls.resolve).not.toHaveBeenCalled();
+		expect(first.controls.resolve).toHaveBeenCalledTimes(1);
+		// Nobody confirmed it, so it says nothing was decided.
+		expect(onDecided).not.toHaveBeenCalled();
+	});
+
+	it("lets you decide again once the new controls report an error for it", async () => {
+		const approval = request();
+		const first = fakeControls();
+		first.controls.resolve.mockImplementation(async (sent: SandboxEscalationRequested) => {
+			first.publish({ pending: sent.escalationId });
+			await new Promise<void>(() => {});
+		});
+		const tree = render(<ApprovalDock request={approval} controls={first.asControls} onDecided={vi.fn()} />);
+		await press(tree, "Allow this file only");
+		const second = fakeControls({}, {}, {});
+		await act(async () => {
+			tree.update(<ApprovalDock request={approval} controls={second.asControls} onDecided={vi.fn()} />);
+		});
+		expect(pressable(tree, "Deny")?.props.accessibilityState).toMatchObject({ disabled: true });
+		await act(async () => {
+			second.publish({ error: "Couldn't confirm your decision. It may already have been applied." });
+			await new Promise((resolve) => setTimeout(resolve, 0));
+		});
+		// The dock re-reads once; the read clears the error.
+		expect(second.controls.refresh).toHaveBeenCalledTimes(1);
+		await act(async () => {
+			second.publish({ error: null });
+		});
+		expect(pressable(tree, "Deny")?.props.accessibilityState).toMatchObject({ disabled: false });
+	});
+
 	it("holds both buttons while a decision is on its way", () => {
 		const { tree } = mount(request(), fakeControls({ pending: "esc-1" }));
 		expect(pressable(tree, "Allow this file only")?.props.accessibilityState).toMatchObject({ disabled: true });
