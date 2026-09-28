@@ -242,6 +242,25 @@ func TestHubSearchDegradesWhenArchiveDecisionsFail(t *testing.T) {
 	}
 }
 
+// Unlike scope=all, where archive decisions only decorate the Archived flag,
+// scope=live and scope=archived filter on it: serving a scope-filtered
+// response built from empty (unavailable) decisions while still claiming that
+// scope was applied would misreport which sessions are archived. A broken
+// archive store must fail closed for these two scopes rather than silently
+// answer as if every explicit decision were "not archived."
+func TestHubSearchFailsClosedOnAScopedQueryWhenDecisionsFail(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "index.db")
+	if err := os.WriteFile(dbPath, []byte("not a sqlite database"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg := hubcore.WebConfig{Archive: hubcore.NewArchiveStore(dbPath), Logf: func(string, ...any) {}}
+	for _, scope := range []string{appwire.SearchScopeLive, appwire.SearchScopeArchived} {
+		if _, err := hubSearch(context.Background(), cfg, appwire.SearchParams{Query: "x", Scope: scope}, time.Now()); err == nil {
+			t.Errorf("scope %q: hubSearch returned no error with unavailable archive decisions, want it to fail closed", scope)
+		}
+	}
+}
+
 // A broken message index must not take down ID/title/prompt search either:
 // the In sessions group is simply absent.
 func TestHubSearchDegradesWhenMessageIndexFails(t *testing.T) {
@@ -375,6 +394,61 @@ func TestHubSearchInSessionsFollowsTheScope(t *testing.T) {
 		if got := searchIDs(resp.InSessions); !reflect.DeepEqual(got, want) {
 			t.Errorf("%s: inSessions %v, want %v (recent %s)", scope, got, want, recent.ID)
 		}
+	}
+}
+
+// The primary production configuration (a roster and a message index both
+// configured) must find a live session whose only match is its message text:
+// it is listed once, in Live order ahead of ended sessions, not duplicated as
+// an ended result, and follows the live/archived scopes like any other live
+// session.
+func TestHubSearchInSessionsIncludesALiveSessionMatchedOnlyByMessage(t *testing.T) {
+	now := time.Now()
+	root := t.TempDir()
+	projectsRoot := filepath.Join(root, "projects")
+	liveEntry, liveID := seedSearchSession(t, projectsRoot, "alpha", now, schema.NewTurn(schema.TurnUserInput, llm.User("settle the drain")))
+	_, endedID := seedSearchSession(t, projectsRoot, "beta", now.Add(-time.Hour), schema.NewTurn(schema.TurnUserInput, llm.User("settle it too")))
+	past := hubcore.NewPastIndex(filepath.Join(projectsRoot, "*"))
+	if _, err := past.Rebuild(); err != nil {
+		t.Fatal(err)
+	}
+	index, err := hubcore.OpenMessageSearch(filepath.Join(root, "search.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = index.Close() })
+	if _, err := index.Refresh(context.Background(), messageSearchSessions(past.All())); err != nil {
+		t.Fatal(err)
+	}
+	roster := hubcore.NewRosterWithEntries(hubcore.LiveEntry{
+		PID: 1, WorkingDir: liveEntry.Meta.EnvInfo.WorkingDir, SessionID: liveID, Status: appwire.ThreadStatusIdle,
+	})
+	cfg := hubcore.WebConfig{Past: past, Roster: roster, MessageSearch: index}
+
+	resp, err := hubSearch(context.Background(), cfg, appwire.SearchParams{Query: "settle"}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := searchIDs(resp.InSessions); !reflect.DeepEqual(got, []string{liveID, endedID}) {
+		t.Fatalf("inSessions = %v, want the live session once (Live order first), then the ended one", got)
+	}
+	if resp.InSessions[0].State == "ended" {
+		t.Fatalf("inSessions[0] = %+v, want the live session's real state, not the past group's \"ended\"", resp.InSessions[0])
+	}
+
+	live, err := hubSearch(context.Background(), cfg, appwire.SearchParams{Query: "settle", Scope: appwire.SearchScopeLive}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := searchIDs(live.InSessions); !reflect.DeepEqual(got, []string{liveID}) {
+		t.Fatalf("live scope: inSessions %v, want only the live session", got)
+	}
+	archived, err := hubSearch(context.Background(), cfg, appwire.SearchParams{Query: "settle", Scope: appwire.SearchScopeArchived}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(archived.InSessions) != 0 {
+		t.Fatalf("archived scope: inSessions = %+v, want none: neither session is archived", archived.InSessions)
 	}
 }
 

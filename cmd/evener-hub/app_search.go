@@ -37,6 +37,13 @@ func hubSearch(ctx context.Context, cfg hubcore.WebConfig, params appwire.Search
 	logf := hubLogfFor(cfg)
 	decisions, err := searchDecisions(cfg)
 	if err != nil {
+		if scope != appwire.SearchScopeAll {
+			// Live and Archived filter on the Archived flag; answering them
+			// from empty (unavailable) decisions while still claiming the
+			// scope was applied would misreport which sessions are archived.
+			// All only decorates the flag, so it can still degrade below.
+			return appwire.SearchResponse{}, err
+		}
 		// A broken archive store must not take down ID/title/prompt search,
 		// which never depended on one: degrade to "nothing archived by
 		// decision" rather than failing the whole query.
