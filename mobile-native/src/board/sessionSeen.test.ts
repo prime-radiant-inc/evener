@@ -15,8 +15,10 @@ const iso = (ms: number) => new Date(ms).toISOString();
 
 let hubCount = 0;
 /** `refuse` makes the hub answer every mark with invalid params, a refusal
- * for good. */
-function setup({ refuse = false } = {}) {
+ * for good. `fail` makes the next call fail for now, as a dropped connection
+ * does. */
+function setup({ refuse = false, fail = false } = {}) {
+	let failNext = fail;
 	hubCount += 1;
 	const hubId = `session-seen-hub-${hubCount}`;
 	const sent: SessionSeenMark[][] = [];
@@ -25,6 +27,10 @@ function setup({ refuse = false } = {}) {
 			if (method !== "evener/session/seen/set") throw new Error(`unexpected ${method}`);
 			sent.push((params as { sessions: SessionSeenMark[] }).sessions);
 			if (refuse) return Promise.reject(new WireError("invalid params", -32602));
+			if (failNext) {
+				failNext = false;
+				return Promise.reject(new Error("connection closed"));
+			}
 			return Promise.resolve({ ok: true, changed: true, navigation: { generation_id: "g", targets: [] } } as never);
 		},
 		onNotification: () => () => {},
@@ -217,6 +223,25 @@ it("marks again after the screen leaves the front and comes back", async () => {
 	hook.unmount();
 });
 
+it("marks a row again at the same turn end on a new visit to the front", async () => {
+	const { hubId, sent, view, hook } = setup();
+	view.conversation = {};
+	view.row = fleetRow({ turn_ended_at: iso(T), updated_at: iso(T), unseen: true });
+	hook.rerender();
+	for (let step = 0; step < 10; step++) await Promise.resolve();
+	hubSeenMarks(hubId).prune([fleetRow({ turn_ended_at: iso(T), unseen: false })]);
+	view.inFront = false;
+	hook.rerender();
+	// Mark as unread elsewhere while another screen is in front.
+	view.row = fleetRow({ turn_ended_at: iso(T), updated_at: iso(T), unseen: true });
+	hook.rerender();
+	expect(sent).toHaveLength(1);
+	view.inFront = true;
+	hook.rerender();
+	expect(sent).toEqual([[{ ref: "local:s", seenThrough: T }], [{ ref: "local:s", seenThrough: T }]]);
+	hook.unmount();
+});
+
 it("marks nothing without a turn end, then marks the first turn that ends in front", () => {
 	const { sent, view, hook } = setup();
 	view.conversation = {};
@@ -244,6 +269,22 @@ it("keeps the mark for the next ready connection while there is none", () => {
 	hook.rerender();
 	expect(sent).toEqual([]);
 	expect(hubSeenMarks(hubId).isSeenOnHub({ ref: "local:s", turn_ended_at: iso(T), unseen: true })).toBe(true);
+	hook.unmount();
+});
+
+it("keeps a mark whose call failed for now pending, and sends it on the next flush", async () => {
+	const { hubId, sent, view, hook, client } = setup({ fail: true });
+	view.conversation = { lastTurnEndedAt: iso(T) };
+	hook.rerender();
+	for (let step = 0; step < 10; step++) await Promise.resolve();
+	expect(sent).toEqual([[{ ref: "local:s", seenThrough: T }]]);
+	expect(hubSeenMarks(hubId).isSeenOnHub({ ref: "local:s", turn_ended_at: iso(T), unseen: true })).toBe(true);
+	// The connection comes back: the screen's next ready client flushes.
+	view.client = null;
+	hook.rerender();
+	view.client = client;
+	hook.rerender();
+	expect(sent).toEqual([[{ ref: "local:s", seenThrough: T }], [{ ref: "local:s", seenThrough: T }]]);
 	hook.unmount();
 });
 
