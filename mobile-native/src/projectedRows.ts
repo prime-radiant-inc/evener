@@ -150,6 +150,9 @@ export type MobileTimelineItem = (
 	// (the message was steered into the transcript mid-turn); a userMessage
 	// row never carries it.
 	| { kind: "user"; id: string; text: string; transcriptEntryIndex?: number; origin?: "steered" }
+	// A shared-notes update, steered in by the app itself (spec 8.8). Kept
+	// apart from "user" rows so it never renders as a message bubble.
+	| { kind: "note"; id: string; text: string }
 	| { kind: "assistant"; id: string; markdown: string; streaming: boolean }
 	| {
 			kind: "activity";
@@ -297,6 +300,13 @@ function intentRow(
 function rowForItem(it: ItemModel, context: ProjectedRowContext): MobileTimelineItem | null {
 	const identity = itemIdentity(it);
 
+	// A shared-notes update steers in as its own row, never a user bubble
+	// (spec 8.8): it shows at every level, since the projector keeps steering
+	// at every level.
+	if (it.type === "steering" && it.source === "user" && it.steeringKind === "human-note") {
+		return { kind: "note", id: it.id, text: noteFromSteer(it.text), ...identity };
+	}
+
 	// Human steering shares user input's presentation.
 	if (it.type === "userMessage" || (it.type === "steering" && it.source === "user")) {
 		return {
@@ -414,6 +424,17 @@ function criticalReasoningRow(
 }
 
 // --- item helpers ---------------------------------------------------------------
+
+// The daemon's shared-notes steer opens with this marker (last-resort
+// provenance; agent/session_notes_rpc.go's humanNoteSteerPrefix), followed by
+// the note itself or "(whiteboard cleared)" for an emptied note.
+const NOTE_STEER_PREFIX = "human updated their whiteboard: ";
+const NOTE_STEER_CLEARED = "(whiteboard cleared)";
+
+export function noteFromSteer(text: string): string {
+	const stripped = text.startsWith(NOTE_STEER_PREFIX) ? text.slice(NOTE_STEER_PREFIX.length) : text;
+	return stripped === NOTE_STEER_CLEARED ? "" : stripped;
+}
 
 function isAskUser(it: ItemModel): boolean {
 	return it.type === "commandExecution" && it.toolName === "ask_user";
@@ -1199,6 +1220,8 @@ export function boundQuestion(
 export function truncateItem(item: MobileTimelineItem, bound: BoundText): MobileTimelineItem {
 	switch (item.kind) {
 		case "user":
+			return { ...item, text: bound(item.text) };
+		case "note":
 			return { ...item, text: bound(item.text) };
 		case "assistant":
 			return { ...item, markdown: bound(item.markdown) };

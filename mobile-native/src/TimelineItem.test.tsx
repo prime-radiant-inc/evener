@@ -139,6 +139,8 @@ it("sets your message text in Source Serif 4 at 17/25 with the prose ink, keepin
 });
 
 const INK_LOW = "#6D6D64";
+const INK_MID = "#5F5F57";
+const EDGE_STRONG = "#B7B6AC";
 
 beforeEach(() => {
 	mode.scheme = "light";
@@ -369,6 +371,43 @@ describe("the agent's message", () => {
 	it("says nothing about writing while it streams: the tray says it", () => {
 		const tree = render(<TimelineItem item={reply({ streaming: true })} hubId="hub" sessionRef="s" />);
 		expect(renderedText(tree)).not.toContain("Writing");
+	});
+});
+
+describe("a saved note (spec 8.2, 8.8)", () => {
+	function render_(text: string) {
+		const row: MobileTimelineItem = { kind: "note", id: "note:1", text };
+		return render(<TimelineItem item={row} hubId="hub" sessionRef="s" />);
+	}
+
+	function caption(tree: ReturnType<typeof render>) {
+		return tree.root.findAll(
+			(node) => String(node.type) === "Text" && /your note/i.test(textOf(node)),
+		)[0];
+	}
+
+	it("reads \"You updated your note\" over the note, in the serif prose ink, behind a left rule", () => {
+		mode.scheme = "light";
+		const tree = render_("Fix causes");
+		expect(textOf(caption(tree))).toBe("You updated your note");
+		expect(caption(tree).props.style).toMatchObject({ fontSize: 13, lineHeight: 18, color: INK_MID });
+		const [body] = tree.root.findAll((node) => String(node.type) === "Text" && textOf(node) === "Fix causes");
+		expect(body.props.style).toMatchObject({
+			fontFamily: "SourceSerif4-Regular",
+			fontSize: 17,
+			lineHeight: 25,
+			color: "#252521",
+		});
+		const [rule] = tree.root.findAll((node) => node.props.style?.borderLeftWidth === 2);
+		expect(rule.props.style).toMatchObject({ borderLeftColor: EDGE_STRONG });
+		act(() => tree.unmount());
+	});
+
+	it("reads \"You cleared your note\" with no text beneath, for an emptied note", () => {
+		const tree = render_("");
+		expect(textOf(caption(tree))).toBe("You cleared your note");
+		expect(tree.root.findAll((node) => String(node.type) === "Text").length).toBe(1);
+		act(() => tree.unmount());
 	});
 });
 

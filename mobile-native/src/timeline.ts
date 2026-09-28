@@ -99,6 +99,7 @@ export function timelineGap(before: TimelineRow, after?: TimelineRow): number {
 		item.kind === "details" ||
 		item.kind === "run" ||
 		item.kind === "time" ||
+		item.kind === "note" ||
 		(item.kind === "notice" && steeringNoticeLabel(item) !== undefined);
 	return routine(before) || routine(after) ? 8 : 24;
 }

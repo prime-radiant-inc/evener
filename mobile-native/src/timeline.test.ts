@@ -70,6 +70,13 @@ it("treats a run and a time marker as routine, like details", () => {
 	expect(timelineGap(time, message)).toBeLessThan(ordinary);
 });
 
+it("treats a saved note as routine, like a run or a time marker (spec 8.8)", () => {
+	const ordinary = timelineGap(message, message);
+	const note: TimelineRow = { kind: "note", id: "note:a", text: "Fix causes" };
+	expect(timelineGap(message, note)).toBeLessThan(ordinary);
+	expect(timelineGap(note, message)).toBeLessThan(ordinary);
+});
+
 it("collapses only typed non-warning interruption notices", () => {
 	const interrupted = {
 		...setup,
