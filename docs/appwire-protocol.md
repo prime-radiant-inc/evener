@@ -1211,6 +1211,17 @@ _(no fields)_
 | `expectedIncarnationId` | `string` |  |  |
 
 
+### `HubNotice`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `id` | `string` |  |  |
+| `kind` | `string` |  |  |
+| `subject` | `string` |  |  |
+| `marketplace` | `string` | yes |  |
+| `affectedSessions` | `int` | yes |  |
+
+
 ### `InitializeParams`
 
 | Field | Go type | Omitempty | Embedded |

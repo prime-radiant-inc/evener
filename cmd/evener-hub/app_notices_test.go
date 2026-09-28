@@ -5,6 +5,8 @@ import (
 	"errors"
 	"path/filepath"
 	"reflect"
+	"runtime"
+	"sync"
 	"testing"
 	"time"
 
@@ -245,5 +247,72 @@ func TestHubRPCNoticesListRoundTrip(t *testing.T) {
 	want := []appwire.HubNotice{{ID: "hostOffline:paradise-park", Kind: appwire.NoticeKindHostOffline, Subject: "paradise-park"}}
 	if !ok || !reflect.DeepEqual(got.Notices, want) {
 		t.Fatalf("evener/notices/list = %#v, want %+v", response, want)
+	}
+}
+
+// read must hold its lock across the whole derive-and-merge sequence, not
+// just across the merge: a read that only locks to write n.last lets a
+// slower, staler derive land after a faster, newer one finishes, overwriting
+// it (RoboRev finding on PR 22). This pins the fix by proving a second read's
+// own derive cannot even start until an earlier read has fully finished.
+func TestHubNoticesReadHoldsItsLockAcrossDerive(t *testing.T) {
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	var mu sync.Mutex
+	var order []string
+	notices := &hubNotices{
+		auth: func() (appwire.AuthListResponse, error) {
+			mu.Lock()
+			first := len(order) == 0
+			order = append(order, "derive-start")
+			mu.Unlock()
+			if first {
+				close(entered)
+				<-release
+			}
+			mu.Lock()
+			order = append(order, "derive-done")
+			mu.Unlock()
+			return appwire.AuthListResponse{}, nil
+		},
+	}
+
+	aDone := make(chan struct{})
+	go func() {
+		notices.read(context.Background())
+		close(aDone)
+	}()
+	<-entered
+
+	bDone := make(chan struct{})
+	go func() {
+		notices.read(context.Background())
+		close(bDone)
+	}()
+	// The second read's own derive cannot start while the first read still
+	// holds the notices lock: poll long enough that a missing serialization
+	// would have let it through.
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		mu.Lock()
+		n := len(order)
+		mu.Unlock()
+		if n > 1 {
+			t.Fatal("a second read entered derive while an earlier read still held the notices lock")
+		}
+		if time.Now().After(deadline) {
+			break
+		}
+		runtime.Gosched()
+	}
+	close(release)
+	<-aDone
+	<-bDone
+
+	mu.Lock()
+	defer mu.Unlock()
+	want := []string{"derive-start", "derive-done", "derive-start", "derive-done"}
+	if !reflect.DeepEqual(order, want) {
+		t.Fatalf("derive order = %v, want %v: each read's derive must fully finish before the next one starts", order, want)
 	}
 }

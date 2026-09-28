@@ -39,10 +39,16 @@ type hubNotices struct {
 // for it: a failed read is no news, so neither a client that asks during a
 // transient failure nor the watcher is told a problem resolved when it was
 // only unreadable.
+//
+// The lock spans the whole derive-and-merge sequence, not just the merge: the
+// RPC handler and the watcher goroutine can call read concurrently, and
+// derive does real I/O (the auth and plugin reads), so a narrower lock would
+// let a slower, staler derive finish after a faster, newer one and overwrite
+// it in last.
 func (n *hubNotices) read(ctx context.Context) []appwire.HubNotice {
-	next, failed := n.derive(ctx)
 	n.mu.Lock()
 	defer n.mu.Unlock()
+	next, failed := n.derive(ctx)
 	n.last = keepFailedNotices(next, n.last, failed)
 	return n.last
 }
