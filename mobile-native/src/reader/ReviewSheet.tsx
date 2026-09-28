@@ -4,6 +4,7 @@
 // idle, queues while it works (never steering or interrupting it), and
 // resumes a shut-down session. The session then shows the review as your
 // message, or as a queued one with Steer now, so sending raises no toast.
+import { basename } from "@evener/appwire-client";
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
 import { useEffect, useState, useSyncExternalStore } from "react";
 import { Pressable, ScrollView, Text, TextInput, View } from "react-native";
@@ -94,7 +95,7 @@ export function ReviewSheet({ route, navigation }: NativeStackScreenProps<Routes
 			numberOfLines={1}
 			style={{ ...small, color: palette.inkMid, paddingHorizontal: 16, paddingBottom: 8, textAlign: "center" }}
 		>
-			{`To ${reviewTitle} · ${path.split("/").at(-1)}`}
+			{`To ${reviewTitle} · ${basename(path)}`}
 		</Text>
 	);
 	return (

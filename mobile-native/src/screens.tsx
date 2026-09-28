@@ -241,9 +241,13 @@ export type Routes = {
 		/** The words the comment is on: a selection, or its block's words. */
 		quote: string;
 	};
-	CommentsSheet: { hubId: string; sessionRef: string; path: string; reviewRef: string; reviewTitle: string };
-	ReviewSheet: { hubId: string; sessionRef: string; path: string; reviewRef: string; reviewTitle: string };
+	CommentsSheet: ReviewSheetParams;
+	ReviewSheet: ReviewSheetParams;
 };
+
+/** A document's comments and its review: the document, and the session the
+ * review goes to. */
+type ReviewSheetParams = { hubId: string; sessionRef: string; path: string; reviewRef: string; reviewTitle: string };
 
 export function HubsScreen({
 	navigation,
