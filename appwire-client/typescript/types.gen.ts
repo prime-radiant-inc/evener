@@ -2428,6 +2428,14 @@ export interface NavigationSessionSummary {
    * none.
    */
   last_message?: string;
+  /**
+   * ModelName is the display name of the model the session runs (S17), for
+   * the row's last line when a client shows models on rows: the name the
+   * hub's model/list gives the same model, so a row and the model picker
+   * agree. A live session's is its current model, which follows a switch;
+   * an ended one's is its meta's; subagent rows carry none.
+   */
+  model_name?: string;
   dormant?: boolean;
   /**
    * Offline marks a row folded into the merged list from a source that is
