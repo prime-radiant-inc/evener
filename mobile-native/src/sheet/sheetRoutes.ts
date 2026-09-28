@@ -50,6 +50,8 @@ export const SHEET_ROUTES = {
 	ReviewSheet: sheetOptions(["medium", "large"], "large"),
 	// The Session sheet opens at full height (spec 8.6).
 	SessionInfoSheet: sheetOptions(["medium", "large"], "large"),
+	// A picker, so it opens at half height (spec 8.5).
+	ModelSheet: sheetOptions(["medium", "large"], "medium"),
 } satisfies { [Name in keyof Routes]?: NativeStackNavigationOptions };
 
 export function isSheetRoute(name: string): boolean {

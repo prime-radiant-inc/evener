@@ -8,11 +8,13 @@ import {
 	ActionSheetIOS,
 	Alert,
 	Platform,
+	Pressable,
+	Text,
 	TextInput,
 	useWindowDimensions,
 	View,
 } from "react-native";
-import { useColors } from "../ui";
+import { allowFontScaling, useColors, useTextScale } from "../ui";
 import { ExpandedEditor } from "./ExpandedEditor";
 import { SendButton } from "./SendButton";
 import { SymbolButton } from "./SymbolButton";
@@ -32,8 +34,7 @@ export interface ComposerProps {
 	onSend(): void;
 	onPhotoLibrary(): void;
 	onCamera(): void;
-	/** The model and effort controls: today's ComposerSettings until
-	 * PR 6's chip replaces it. Null hides the slot. */
+	/** The model chip. Null hides the slot. */
 	settings: ReactNode;
 	/** What sits above the field: attachments, today's inline command
 	 * completion (until PR 10), and PR 2's ghosts. */
@@ -152,5 +153,40 @@ export function Composer({
 				onDone={() => setExpanded(false)}
 			/>
 		</View>
+	);
+}
+
+/** The model and its effort, "GLM 5.3 Vision · XHigh" (spec 8.5). It opens
+ * the model sheet; with nothing it could change, it only names the model. */
+export function ModelChip({ label, onPress }: { label: string; onPress?: () => void }) {
+	const { palette } = useColors();
+	const scale = useTextScale();
+	const text = (
+		<Text
+			allowFontScaling={allowFontScaling}
+			numberOfLines={1}
+			style={{ flexShrink: 1, color: palette.inkMid, fontSize: 15 * scale, lineHeight: 20 * scale }}
+		>
+			{label}
+		</Text>
+	);
+	if (!onPress)
+		return <View style={{ minHeight: 44, flexDirection: "row", alignItems: "center" }}>{text}</View>;
+	return (
+		<Pressable
+			accessibilityRole="button"
+			accessibilityLabel={`Model: ${label}. Change model or effort`}
+			onPress={onPress}
+			style={({ pressed }) => ({
+				minHeight: 44,
+				flexDirection: "row",
+				alignItems: "center",
+				gap: 4,
+				opacity: pressed ? 0.6 : 1,
+			})}
+		>
+			{text}
+			<SymbolView name="chevron.down" tintColor={palette.inkMid} size={11 * scale} />
+		</Pressable>
 	);
 }

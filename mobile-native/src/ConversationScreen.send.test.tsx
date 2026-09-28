@@ -16,6 +16,7 @@ import { NotesSheet } from "./session/NotesSheet";
 import { QuestionDock } from "./session/QuestionDock";
 import { sheetKey } from "./sheet/sheetHosts";
 import { holdQuote, takeQuote } from "./session/pendingQuote";
+import { modelHosts } from "./session/ModelSheet";
 
 const harness = vi.hoisted(() => ({
 	connection: {} as Record<string, unknown>,
@@ -287,6 +288,10 @@ function hubClient(served: Thread, failedReads = 0, readLatencyMs = 0, olderCurs
 				return { thread, ...(olderCursor ? { olderCursor } : {}) };
 			}
 			if (method === "thread/turns/list") return { data: [] };
+			if (method === "model/list")
+				return {
+					data: [{ provider: "anthropic", model: "claude-sonnet-5", displayName: "Claude Sonnet 5" }],
+				};
 			if (method === "notes/human/set")
 				return {
 					note: params.note,
@@ -898,6 +903,23 @@ it("resumes a paused session from its error", async () => {
 	expect(hub.requests.filter((request) => request.method === "resumeThread").map((request) => request.params.ref)).toEqual([
 		"ref-error-resume",
 	]);
+});
+
+it("names the model on the composer's chip, which opens the model sheet with the session's controls", async () => {
+	vi.mocked(navigation.navigate).mockClear();
+	const served = thread("ref-model", "idle");
+	(served as unknown as { modelProvider: string }).modelProvider = "anthropic/claude-sonnet-5";
+	(served as unknown as { evener: Record<string, unknown> }).evener.capabilities = { ...CAPABILITIES, changeModel: true };
+	const { tree, hub } = await mount(served);
+	// The screen loads the catalog once, so the chip can name the model.
+	expect(hub.requests.filter((request) => request.method === "model/list")).toHaveLength(1);
+	const chip = pressable(tree, "Model: Claude Sonnet 5. Change model or effort");
+	if (!chip) throw new Error("no model chip");
+	act(() => chip.props.onPress());
+	expect(navigation.navigate).toHaveBeenCalledWith("ModelSheet", { hubId: "hub-1", ref: "ref-model", setting: "model" });
+	const host = modelHosts.get(sheetKey("hub-1", "ref-model"));
+	expect(host?.session.modelProvider).toBe("anthropic/claude-sonnet-5");
+	expect(host?.controls.getSnapshot().catalog?.data).toHaveLength(1);
 });
 
 describe("a session that can't take a message yet (ruling 20)", () => {

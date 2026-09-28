@@ -1,6 +1,5 @@
 import type { CellRendererProps } from "@react-native/virtualized-lists";
 import { useHeaderHeight } from "@react-navigation/elements";
-import { useFocusEffect } from "@react-navigation/native";
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
 import * as Clipboard from "expo-clipboard";
 import { randomUUID } from "expo-crypto";
@@ -40,6 +39,7 @@ import {
 	formatQuoteBlock,
 	mergeDraftText,
 	parseSlashToken,
+	sessionEffortLevels,
 	spliceSlashCommand,
 	type TranscriptDisplayConfigV1,
 	translateAttachmentMarkers,
@@ -55,8 +55,6 @@ import { ActivitySheet } from "./ActivitySheet";
 import { ApprovalControls } from "./approvalControls";
 import { useMarkSeenInFront } from "./board/sessionSeen";
 import { CommandCompletion } from "./CommandCompletion";
-import { type ComposerSetting, ComposerSettings } from "./ComposerSettings";
-import { ComposerSettingsSheet } from "./ComposerSettingsSheet";
 import { useConnection } from "./ConnectionProvider";
 import {
 	CommandArgumentError,
@@ -148,7 +146,8 @@ import {
 } from "./session/transcriptRows";
 import { SessionControls } from "./sessionControls";
 import { useConnectionStatusText } from "./board/connectionStatus";
-import { Composer } from "./session/Composer";
+import { Composer, ModelChip } from "./session/Composer";
+import { type ModelHost, modelHosts } from "./session/ModelSheet";
 import {
 	configForLevel,
 	currentLevel,
@@ -718,16 +717,6 @@ export function ConversationScreen({
 		reconcile();
 		return store.subscribe(reconcile);
 	}, [store, questionBatches]);
-	const [composerSetting, setComposerSetting] =
-		useState<ComposerSetting | null>(null);
-	useFocusEffect(
-		useCallback(
-			() => () => {
-				setComposerSetting(null);
-			},
-			[],
-		),
-	);
 	const [actionError, setActionError] = useState<string | null>(null);
 	const [commandPending, setCommandPending] = useState(false);
 	const commandBusy = useRef(false);
@@ -2064,6 +2053,24 @@ export function ConversationScreen({
 		sheetKey(route.params.hubId, route.params.ref),
 		sessionInfoHost,
 	);
+	// The model sheet's host (ruling 37).
+	const modelHost = useMemo<ModelHost | undefined>(
+		() =>
+			conversation && controls
+				? { session: conversation, controls, ready, toast: toaster.show }
+				: undefined,
+		[conversation, controls, ready, toaster.show],
+	);
+	useProvideSheetHost(
+		modelHosts,
+		sheetKey(route.params.hubId, route.params.ref),
+		modelHost,
+	);
+	// The chip names the model the way the catalog does, so the screen loads
+	// the catalog once for each binding it opens connected.
+	useEffect(() => {
+		if (controls && hasConversation) void controls.loadModels();
+	}, [controls, hasConversation]);
 	// What takes the composer's place when the session can't take a message
 	// yet (ruling 20).
 	const notice =
@@ -2273,16 +2280,30 @@ export function ConversationScreen({
 		},
 		[controls, navigation, route.params.hubId, retryFailedTurn],
 	);
+	function openModelSheet(setting: "model" | "vision") {
+		Keyboard.dismiss();
+		navigation.navigate("ModelSheet", {
+			hubId: route.params.hubId,
+			ref: route.params.ref,
+			setting,
+		});
+	}
+	// The chip opens the model sheet when there is something there to change:
+	// the model, or its effort.
+	const modelChangeable =
+		!!conversation &&
+		(conversation.capabilities.changeModel ||
+			sessionEffortLevels(
+				conversation.reasoningEffortLevels,
+				conversation.supportsReasoning,
+			).length > 0);
 	const composerSettings =
 		conversation && canCompose ? (
-			<ComposerSettings
-				conversation={conversation}
-				disabled={!ready || !controls || draft.submitting}
-				pending={settingsPending}
-				open={(setting) => {
-					Keyboard.dismiss();
-					setComposerSetting(setting);
-				}}
+			<ModelChip
+				label={modelLabel}
+				onPress={
+					controls && modelChangeable ? () => openModelSheet("model") : undefined
+				}
 			/>
 		) : null;
 	// Everything waiting to reach the agent, as ghosts above the composer
@@ -2640,20 +2661,6 @@ export function ConversationScreen({
 					choose={openSessionDestination}
 				/>
 			) : null}
-			{composerSetting && conversation && controls ? (
-				<ComposerSettingsSheet
-					setting={composerSetting}
-					conversation={conversation}
-					controls={controls}
-					hubName={
-						activeProfile?.id === route.params.hubId
-							? activeProfile.name
-							: "Disconnected hub"
-					}
-					ready={ready}
-					close={() => setComposerSetting(null)}
-				/>
-			) : null}
 			{activeProfile?.id === route.params.hubId &&
 			activityContext?.hubId === route.params.hubId &&
 			activityContext.ref === route.params.ref ? (
@@ -2943,16 +2950,13 @@ export function ConversationScreen({
 									controlsState.lastAction === "setReasoningEffort") ? (
 									<Action
 										tone="quiet"
-										onPress={() => {
-											Keyboard.dismiss();
-											setComposerSetting(
-												controlsState.lastAction === "changeModel"
-													? "model"
-													: controlsState.lastAction === "setVisionModel"
-														? "vision"
-														: "reasoning",
-											);
-										}}
+										onPress={() =>
+											openModelSheet(
+												controlsState.lastAction === "setVisionModel"
+													? "vision"
+													: "model",
+											)
+										}
 									>
 										Review settings error
 									</Action>

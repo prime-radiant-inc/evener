@@ -40,6 +40,7 @@ import {
 	HubsScreen,
 	type Routes,
 } from "./src/screens";
+import { ModelSheet } from "./src/session/ModelSheet";
 import { NotesSheet } from "./src/session/NotesSheet";
 import { SessionInfoSheet } from "./src/session/SessionInfoSheet";
 import { SHEET_ROUTES } from "./src/sheet/sheetRoutes";
@@ -263,6 +264,11 @@ function Navigation() {
 							name="SessionInfoSheet"
 							component={SessionInfoSheet}
 							options={SHEET_ROUTES.SessionInfoSheet}
+						/>
+						<Stack.Screen
+							name="ModelSheet"
+							component={ModelSheet}
+							options={SHEET_ROUTES.ModelSheet}
 						/>
 					</Stack.Group>
 				</Stack.Navigator>

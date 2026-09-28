@@ -47,6 +47,9 @@ describe("a sheet's size (spec 6)", () => {
 		// The Session sheet opens at large (spec 8.6) and drags to half.
 		expect(isSheetRoute("SessionInfoSheet")).toBe(true);
 		expect(SHEET_ROUTES.SessionInfoSheet).toEqual(sheetOptions(["medium", "large"], "large"));
+		// The model sheet is a picker, so it opens at half height (spec 8.5).
+		expect(isSheetRoute("ModelSheet")).toBe(true);
+		expect(SHEET_ROUTES.ModelSheet).toEqual(sheetOptions(["medium", "large"], "medium"));
 	});
 });
 
