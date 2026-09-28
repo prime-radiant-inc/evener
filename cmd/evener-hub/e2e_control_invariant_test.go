@@ -56,7 +56,15 @@ func parkInPreTurnWork(t *testing.T, sentinel string) string {
 // than infer it from the wire's own timing.
 func parkInPreTurnWorkUntil(t *testing.T, sentinel, marker, release string) string {
 	t.Helper()
-	return parkInPreTurnWorkRunning(t, sentinel, fmt.Sprintf("touch %s; while [ ! -f %s ]; do sleep 0.1; done", marker, release))
+	span := fmt.Sprintf("touch %s; while [ ! -f %s ]; do sleep 0.1; done", shellQuotePath(marker), shellQuotePath(release))
+	return parkInPreTurnWorkRunning(t, sentinel, span)
+}
+
+// shellQuotePath quotes a path for the parked command's POSIX shell, so a
+// t.TempDir() containing spaces or metacharacters cannot break the park or its
+// open-window signal.
+func shellQuotePath(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
 
 // parkInPreTurnWorkRunning writes the plugin whose command body is span: the
@@ -173,6 +181,9 @@ func TestE2E_ControlInvariantDuringPreTurnWorkOnTheFirstTurn(t *testing.T) {
 	// than for a fixed span a loaded machine can outlast.
 	marker := filepath.Join(t.TempDir(), "parked")
 	release := filepath.Join(t.TempDir(), "release-park")
+	// Best-effort release at test end, so a failure before the explicit release
+	// below does not leave the parked command running until its 10s cap.
+	t.Cleanup(func() { _ = os.WriteFile(release, []byte("go"), 0o600) })
 	pluginDir := parkInPreTurnWorkUntil(t, openingSentinel, marker, release)
 
 	started, err := clientRequest[appwire.ThreadStartResponse](ctx, client, appwire.MethodThreadStart, appwire.ThreadStartParams{
