@@ -153,8 +153,8 @@ const (
 	// MethodEvenerDelegateStop ends one subagent's current run at the user's
 	// request (S6): that subagent alone, never the subagents it started. It
 	// targets the root session (ref/threadId) and names the delegate.
-	// ScopeDaemon (the root's daemon serves it). A UI-only request, never
-	// advertised to the model.
+	// ScopeBoth (the root's daemon serves it; the hub relays). A UI-only
+	// request, never advertised to the model.
 	MethodEvenerDelegateStop = "evener/delegate/stop"
 	// MethodEvenerHostRequest forwards one hub-scoped admin RPC to a named
 	// remote host's hub (component 07a). Host is the component-03 source ID;
@@ -1392,6 +1392,12 @@ type ThreadCapabilities struct {
 	// against the live daemon. ValidateSkillInputSupport keeps skill items
 	// rejected wherever this capability is false.
 	SkillInput bool `json:"skillInput,omitempty"`
+	// StopSubagent advertises evener/delegate/stop on a root session (S6):
+	// true while its daemon wires the stop and the session is open. Absent
+	// from an older daemon, from a session with no daemon running (it runs no
+	// subagents), and from a subagent's own thread: the stop targets the root
+	// that owns the tree.
+	StopSubagent bool `json:"stopSubagent,omitempty"`
 }
 
 // EvenerHookEventStatus describes a single hook event's registration state.

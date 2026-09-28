@@ -85,6 +85,14 @@ func (h HistoryIdentity) StampPage(response appwire.ThreadTurnsListResponse) app
 	return response
 }
 
+// DelegateStopSource is a source that can end one subagent's run at the
+// user's request (evener/delegate/stop, S6). The local daemon source and the
+// remote hub source implement it; a source without it answers Unavailable,
+// and a client keeps asking the coordinator instead.
+type DelegateStopSource interface {
+	StopDelegate(context.Context, appwire.DelegateStopParams) (appwire.DelegateStopResponse, error)
+}
+
 // ItemCandidateSource exposes positioned item candidates alongside the source
 // methods used by ordinary callers.
 type ItemCandidateSource interface {

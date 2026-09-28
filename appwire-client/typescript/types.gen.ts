@@ -3432,6 +3432,14 @@ export interface ThreadCapabilities {
    * rejected wherever this capability is false.
    */
   skillInput?: boolean;
+  /**
+   * StopSubagent advertises evener/delegate/stop on a root session (S6):
+   * true while its daemon wires the stop and the session is open. Absent
+   * from an older daemon, from a session with no daemon running (it runs no
+   * subagents), and from a subagent's own thread: the stop targets the root
+   * that owns the tree.
+   */
+  stopSubagent?: boolean;
 }
 
 export interface ThreadClearParams {

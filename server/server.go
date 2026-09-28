@@ -657,7 +657,7 @@ func (s *Server) SetSandboxEscalationResolveFunc(fn func(escalationID string, ap
 }
 
 // SetDelegateStopFunc sets the callback evener/delegate/stop hands a delegate
-// id to (S6).
+// id to (S6). Wiring it advertises the stopSubagent capability.
 func (s *Server) SetDelegateStopFunc(fn func(delegateID string) (appwire.DelegateStopOutcome, error)) {
 	s.mu.Lock()
 	s.delegateStopFunc = fn
