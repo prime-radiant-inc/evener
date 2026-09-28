@@ -9,7 +9,6 @@
 // canonical ref.
 import type { AskQuestionRef, AskResolution } from "@evener/appwire-client";
 import { SymbolView } from "expo-symbols";
-import { useMemo } from "react";
 import { Pressable, Text, View } from "react-native";
 import { fonts } from "../design/tokens";
 import { boundQuestion } from "../projectedRows";
@@ -54,14 +53,6 @@ export function QuestionDock({
 }: QuestionDockProps) {
 	const { palette } = useColors();
 	const scale = useTextScale();
-	const shown = useMemo(
-		() =>
-			questions.map((question) => ({
-				question,
-				display: boundQuestion(question, boundQuestionText),
-			})),
-		[questions],
-	);
 	const { selections, activeIndex } = draft;
 	const card = {
 		marginHorizontal: 16,
@@ -110,9 +101,9 @@ export function QuestionDock({
 			</Pressable>
 		);
 	}
-	const pair = shown[activeIndex] ?? shown[0];
-	if (!pair) return null;
-	const { question, display } = pair;
+	const question = questions[activeIndex] ?? questions[0];
+	if (!question) return null;
+	const display = boundQuestion(question, boundQuestionText);
 	const answer = selections[question.key];
 	const editable = ready && draft.loaded && !sending;
 	const advanceTarget = questionAdvanceTarget(questions, selections, activeIndex);
