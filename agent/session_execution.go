@@ -104,7 +104,9 @@ func (s *Session) completeExecution(status schema.TurnCompletionStatus) {
 			ended = status
 		}
 		// A turn's terminal status must never be lost.
-		if s.failClosedUnlessRecorded(rec, err, "a turn completion") != nil {
+		if retained := retainedUnsyncedError(err); retained != nil {
+			s.settleRetainedUnsynced(retained, "a turn completion")
+		} else if s.failClosedUnlessRecorded(rec, err, "a turn completion") != nil {
 			s.announceFailClosed()
 		}
 	}
@@ -428,8 +430,15 @@ func (s *Session) recordTranscriptOnlyThrough(turn schema.Turn, door transcript.
 }
 
 // recordNotice records a presentational notice, the history form of a live
-// notice a reader would otherwise lose on reload.
+// notice a reader would otherwise lose on reload. A notice whose payload does
+// not match schema.NoticeInfo.Validate()'s own contract is refused instead of
+// recorded: the read side (internal/apptranscript/notice.go) would otherwise
+// drop the mismatch silently.
 func (s *Session) recordNotice(notice schema.NoticeInfo) {
+	if err := notice.Validate(); err != nil {
+		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("invalid notice not recorded: %v", err)})
+		return
+	}
 	_ = s.recordTranscriptOnlyAt(schema.Turn{Kind: schema.TurnNotice, Notice: &notice}, transcript.PlaceSession)
 }
 
@@ -437,8 +446,7 @@ func (s *Session) recordNotice(notice schema.NoticeInfo) {
 // COMMUNICATE entry first, and announced only once the entry is recorded, so a
 // delivered message is never missing from history. A served session whose
 // transcript does not record it fails closed and delivers nothing, returning
-// the refusal; a session with no transcript, or one nobody serves, announces
-// it as it always has.
+// the refusal; a session nobody serves announces it as it always has.
 func (s *Session) deliverCommunicate(data events.CommunicateData) error {
 	// A session that already failed closed refuses immediately: its
 	// execution is being cancelled, but a tool call already in flight (this
@@ -469,7 +477,9 @@ func (s *Session) deliverCommunicate(data events.CommunicateData) error {
 			}
 		}
 	}
-	if refusal := s.failClosedUnlessRecorded(rec, err, "a communicate message"); refusal != nil {
+	if retained := retainedUnsyncedError(err); retained != nil {
+		s.settleRetainedUnsynced(retained, "a communicate message")
+	} else if refusal := s.failClosedUnlessRecorded(rec, err, "a communicate message"); refusal != nil {
 		s.announceFailClosed()
 		return refusal
 	}
