@@ -277,6 +277,11 @@ describe("what the sheet shows (spec 8.6)", () => {
 		const tree = sheet();
 		expect(texts(tree)).toEqual(expect.arrayContaining(["Access", "Sandbox", "Workspace write", "Network", "Off"]));
 		expect(pressable(tree, "Sandbox, Workspace write")).toBeUndefined();
+		// VoiceOver reads each fact row as one element.
+		const row = tree.root.find(
+			(node) => String(node.type) === "View" && node.props.accessibilityLabel === "Sandbox, Workspace write",
+		);
+		expect(row.props.accessible).toBe(true);
 		act(() => mounted.pop()?.unmount());
 		provide(conversation({ access: undefined }));
 		expect(texts(sheet())).not.toContain("Access");
@@ -306,6 +311,12 @@ describe("what the sheet shows (spec 8.6)", () => {
 		);
 		expect(styleOf(textNode(tree, "3 failed tool calls"))).toMatchObject({ color: palette.dangerInk });
 		expect(styleOf(textNode(tree, "50K of 200K"))).toMatchObject({ fontVariant: ["tabular-nums"] });
+		const labels = tree.root
+			.findAll((node) => String(node.type) === "View" && node.props.accessible === true)
+			.map((node) => node.props.accessibilityLabel);
+		expect(labels).toEqual(
+			expect.arrayContaining(["46M tokens, 12M in · 1.2M out · 33M cached", "Context, 50K of 200K"]),
+		);
 		const fill = tree.root.find((node) => node.props.testID === "context-fill");
 		expect(styleOf(fill)).toMatchObject({ width: "25%", backgroundColor: palette.inkMid });
 	});

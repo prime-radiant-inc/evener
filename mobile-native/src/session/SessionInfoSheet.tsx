@@ -165,7 +165,7 @@ function SessionInfoBody({
 			<Section title="Where">
 				<Row symbol="server.rack" text={where.host} />
 				{where.project ? <Row symbol="folder" text={where.project} /> : null}
-				<Row mono text={wrapAfterSlashes(where.directory)} />
+				<Row mono text={wrapAfterSlashes(where.directory)} accessibilityLabel={where.directory} />
 				{where.branch ? <Row symbol="arrow.triangle.branch" text={where.branch} /> : null}
 			</Section>
 
@@ -522,11 +522,18 @@ function Row({
 		paddingHorizontal: 16,
 		paddingVertical: 10,
 	};
-	if (!onPress) return <View style={layout}>{content}</View>;
+	const spoken = accessibilityLabel ?? [label, text, detail].filter(Boolean).join(", ");
+	// A fact row is one element to VoiceOver, read as one line.
+	if (!onPress)
+		return (
+			<View style={layout} accessible accessibilityLabel={spoken}>
+				{content}
+			</View>
+		);
 	return (
 		<Pressable
 			accessibilityRole="button"
-			accessibilityLabel={accessibilityLabel ?? (label ? `${label}, ${text}` : text)}
+			accessibilityLabel={spoken}
 			accessibilityState={{ disabled }}
 			disabled={disabled}
 			onPress={onPress}
@@ -547,7 +554,11 @@ function ContextGauge({ text, fraction }: { text: string; fraction: number }) {
 	const { palette } = useColors();
 	const scale = useTextScale();
 	return (
-		<View style={{ minHeight: 44, flexDirection: "row", alignItems: "center", gap: 12, paddingHorizontal: 16 }}>
+		<View
+			accessible
+			accessibilityLabel={`Context, ${text}`}
+			style={{ minHeight: 44, flexDirection: "row", alignItems: "center", gap: 12, paddingHorizontal: 16 }}
+		>
 			<Text
 				allowFontScaling={allowFontScaling}
 				style={{ color: palette.inkHi, fontSize: 17 * scale, lineHeight: 22 * scale }}
