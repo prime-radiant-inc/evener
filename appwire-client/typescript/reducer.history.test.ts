@@ -454,6 +454,28 @@ describe("request generations and incarnations", () => {
     expect(shorter.turns).toBe(olderPage.turns);
   });
 
+  // The held length never advances from a page (spec's "Backfill
+  // accumulation" follow-up): a page's snapshot length is the transcript
+  // length the index had at read time, not a promise everything through it
+  // was delivered -- Before only returns items older than the cursor, so a
+  // page can carry a longer length than held without carrying the live
+  // items created in between. Advancing held to it would make the next
+  // latest-window read's heldSnapshot claim completeness through a length
+  // whose in-between changes it never saw, and ChangedSince would then skip
+  // them silently. Only a latest-window read verifies completeness up to a
+  // length, so only that advances held; pageDisposition keeps comparing
+  // against that one true watermark, never one a page pushed forward.
+  test("the held length never advances from a backfill page, even a longer one", () => {
+    const model = hydrate([turn("t3", 5, [item("t3", 4)])], { length: 500 });
+    const grown = mergeOlderItemPage(model, page([turn("t2", 3, [item("t2", 2)])], { length: 600 }));
+    expect(grown.history?.length).toBe(500);
+    // A page between the original held length and the longer one above
+    // still merges: the comparison never moved.
+    const another = mergeOlderItemPage(grown, page([turn("t1", 1, [item("t1", 0)])], { length: 550 }));
+    expect(shown(another).map(([id]) => id)).toEqual(["t1", "t2", "t3"]);
+    expect(another.history?.length).toBe(500);
+  });
+
   test("pages of a newly seen incarnation wait for its latest window; others are discarded", () => {
     const model = hydrate([turn("t3", 5, [item("t3", 4)])], { incarnation: "inc_a" });
     const invalid = applyNotification(model, updated([item("t3", 6)], [], { incarnation: "inc_b" }), NOW);
