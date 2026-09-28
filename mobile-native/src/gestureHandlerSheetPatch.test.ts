@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { patchAddedLines } from "./packagePatch.testkit";
 
@@ -8,14 +10,27 @@ import { patchAddedLines } from "./packagePatch.testkit";
 // handler it finds where its root recognizer sits, and it looks for that spot
 // by walking up to an RCTSurfaceView. Inside a formSheet the walk finds none,
 // so no root recognizer is installed, and the Pressable's press survives the
-// swipe. On iOS, GestureHandlerRootView is a plain View and changes nothing.
+// swipe. Wrapping sheets in a GestureHandlerRootView doesn't help: on iOS it
+// renders a plain View.
 //
 // mobile-native ships upstream's fix (react-native-gesture-handler PR 4306,
 // released in 2.33.0, outside Expo SDK 57's ~2.32.0 pin) as a patch. The native
 // gate has no iOS toolchain to compile or run it, so this test guards the patch
 // itself: it reads the committed diff and checks the three parts of that fix.
+//
+// When react-native-gesture-handler moves to 2.33.0 or later, delete
+// patches/react-native-gesture-handler+2.32.0.patch and this test. The first
+// test below fails on that upgrade, since patch-package only warns when a
+// patch no longer matches the installed version.
 describe("react-native-gesture-handler sheet touch-cancellation patch", () => {
 	const manager = () => patchAddedLines("react-native-gesture-handler", "2.32.0", "apple/RNGestureHandlerManager.mm");
+
+	it("patches the version installed, so an upgrade to the fixed release retires it", () => {
+		const packageJson = fileURLToPath(
+			new URL("../node_modules/react-native-gesture-handler/package.json", import.meta.url),
+		);
+		expect(JSON.parse(readFileSync(packageJson, "utf8")).version).toBe("2.32.0");
+	});
 
 	it("installs the root recognizer on a modally presented screen", () => {
 		// The walk up from a handler's view stops at a modal RNSScreenView, the
