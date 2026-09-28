@@ -203,6 +203,12 @@ interface FindState {
 	exhausted: boolean;
 }
 
+/** A new query starts a new search: no current match yet, and older history
+ * is searched only when there is something to look for. */
+function newFind(query: string): FindState {
+	return { query, key: null, seeking: query.trim() !== "", exhausted: false };
+}
+
 export type Routes = {
 	SessionDeletion: { hubId: string; ref: string; title: string };
 	Fork: {
@@ -1237,7 +1243,7 @@ export function ConversationScreen({
 				toaster.show({ text: levelToast(action.level) });
 				return;
 			case "find":
-				setFind({ query: "", key: null, seeking: false, exhausted: false });
+				setFind(newFind(""));
 				return;
 			case "subagents":
 			case "tasks":
@@ -3049,14 +3055,7 @@ export function ConversationScreen({
 											}
 											searchingOlder={find.seeking && snapshot.loadingOlder}
 											settled={!find.seeking}
-											onQuery={(query) =>
-												setFind({
-													query,
-													key: null,
-													seeking: query.trim() !== "",
-													exhausted: false,
-												})
-											}
+											onQuery={(query) => setFind(newFind(query))}
 											onStep={stepFind}
 											onDone={() => {
 												Keyboard.dismiss();
