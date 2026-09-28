@@ -375,7 +375,6 @@ it("opens Notes & links from the header menu as the NotesSheet route, without fo
 	expect(navigation.navigate).toHaveBeenCalledWith("NotesSheet", {
 		hubId: "hub-1",
 		ref,
-		focusEditor: false,
 	});
 	tree.unmount();
 });

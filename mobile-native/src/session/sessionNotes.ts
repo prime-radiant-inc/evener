@@ -83,11 +83,7 @@ function writeDrafts(storage: SyncStringStorage, hubId: string, drafts: Record<s
 }
 
 export function forgetNoteDrafts(storage: SyncStringStorage, hubId: string): void {
-	try {
-		storage.removeItemSync(draftKey(hubId));
-	} catch {
-		// Nothing stored to forget.
-	}
+	writeDrafts(storage, hubId, {});
 }
 
 export interface NotesControllerOptions {
@@ -120,9 +116,14 @@ export class NotesController {
 	private timer: ReturnType<typeof setTimeout> | null = null;
 	private saving: Promise<SaveOutcome> | null = null;
 	private listeners = new Set<() => void>();
+	// Read once, then kept in memory: keep()/forget() mutate this in place, so
+	// every keystroke's durable write costs one JSON.stringify, not also a
+	// fresh read and parse of every draft this hub holds.
+	private drafts: Record<string, string>;
 
 	constructor(private readonly options: NotesControllerOptions) {
-		const kept = readDrafts(options.storage, options.hubId)[options.ref];
+		this.drafts = readDrafts(options.storage, options.hubId);
+		const kept = this.drafts[options.ref];
 		this.state = kept !== undefined ? { text: kept, phase: "failed" } : { text: options.savedNote(), phase: "clean" };
 	}
 
@@ -144,7 +145,7 @@ export class NotesController {
 	edit(text: string): void {
 		this.cancelTimer();
 		const clipped = text.slice(0, NOTE_LIMIT);
-		this.keep(clipped);
+		this.storeDraft(clipped);
 		this.publish({ text: clipped, phase: "editing" });
 	}
 
@@ -219,7 +220,7 @@ export class NotesController {
 				note: text,
 			});
 			if (this.state.text === text) {
-				this.forget();
+				this.storeDraft(undefined);
 				this.publish({ text: response.note, phase: "saved" });
 			} else {
 				// Typed on during the save: the newer text stays kept and unsaved.
@@ -234,16 +235,11 @@ export class NotesController {
 		}
 	}
 
-	private keep(text: string): void {
-		const drafts = readDrafts(this.options.storage, this.options.hubId);
-		drafts[this.options.ref] = text;
-		writeDrafts(this.options.storage, this.options.hubId, drafts);
-	}
-
-	private forget(): void {
-		const drafts = readDrafts(this.options.storage, this.options.hubId);
-		delete drafts[this.options.ref];
-		writeDrafts(this.options.storage, this.options.hubId, drafts);
+	/** Keep `text` on the phone, or forget it (`undefined`) once it's saved. */
+	private storeDraft(text: string | undefined): void {
+		if (text === undefined) delete this.drafts[this.options.ref];
+		else this.drafts[this.options.ref] = text;
+		writeDrafts(this.options.storage, this.options.hubId, this.drafts);
 	}
 
 	private cancelTimer(): void {

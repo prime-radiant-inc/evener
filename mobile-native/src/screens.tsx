@@ -1013,7 +1013,6 @@ export function ConversationScreen({
 				navigation.navigate("NotesSheet", {
 					hubId: route.params.hubId,
 					ref: route.params.ref,
-					focusEditor: false,
 				});
 				return;
 			}
@@ -1829,17 +1828,11 @@ export function ConversationScreen({
 		[store],
 	);
 	useEffect(() => () => notes.dispose(), [notes]);
-	// Follow the hub's note (evener/notes/updated) as it changes.
+	// Follow the hub's note (evener/notes/updated) as it changes: sync() itself
+	// is a no-op unless the text actually differs.
 	useEffect(() => {
-		let last = store.getState().conversation?.humanNote;
 		notes.sync();
-		return store.subscribe(() => {
-			const next = store.getState().conversation?.humanNote;
-			if (next === last) return;
-			last = next;
-			notes.sync();
-		});
-	}, [store, notes]);
+	}, [conversation?.humanNote, notes]);
 	// A note kept on this phone from before, because its save failed, sends
 	// once the session is open, connected and in front.
 	useEffect(() => {

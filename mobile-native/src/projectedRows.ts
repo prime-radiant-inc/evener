@@ -1220,7 +1220,6 @@ export function boundQuestion(
 export function truncateItem(item: MobileTimelineItem, bound: BoundText): MobileTimelineItem {
 	switch (item.kind) {
 		case "user":
-			return { ...item, text: bound(item.text) };
 		case "note":
 			return { ...item, text: bound(item.text) };
 		case "assistant":

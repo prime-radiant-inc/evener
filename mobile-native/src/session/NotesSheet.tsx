@@ -9,13 +9,13 @@ import * as Clipboard from "expo-clipboard";
 import { SymbolView } from "expo-symbols";
 import * as WebBrowser from "expo-web-browser";
 import { type ReactNode, useEffect, useRef, useState, useSyncExternalStore } from "react";
-import { ActionSheetIOS, AppState, Platform, Pressable, ScrollView, Text, TextInput, View } from "react-native";
+import { ActionSheetIOS, AppState, Pressable, ScrollView, Text, TextInput, View } from "react-native";
 import { typeRoles } from "../design/tokens";
 import type { Routes } from "../screens";
 import { Sheet, useSheet } from "../sheet/Sheet";
 import { sheetHosts, sheetKey, useSheetHost } from "../sheet/sheetHosts";
 import { Toast, type ToastController, useToast } from "../Toast";
-import { Copy, useColors, useTextScale } from "../ui";
+import { allowFontScaling, Copy, useColors, useTextScale } from "../ui";
 import { NOTE_LIMIT, type NotesController, noteStatusLine, type SaveOutcome } from "./sessionNotes";
 
 export interface NotesHost {
@@ -121,7 +121,7 @@ function Group({ title, children }: { title: string; children: ReactNode }) {
 		<View style={{ gap: 8 }}>
 			<Text
 				accessibilityRole="header"
-				allowFontScaling={Platform.OS !== "ios"}
+				allowFontScaling={allowFontScaling}
 				style={{
 					fontSize: 13 * scale,
 					lineHeight: 18 * scale,
@@ -143,7 +143,7 @@ function Quiet({ children, small = false }: { children: string; small?: boolean 
 	const scale = useTextScale();
 	return (
 		<Text
-			allowFontScaling={Platform.OS !== "ios"}
+			allowFontScaling={allowFontScaling}
 			style={{
 				fontSize: (small ? 13 : 15) * scale,
 				lineHeight: (small ? 18 : 20) * scale,
@@ -185,7 +185,7 @@ function NoteEditor({ notes, working, focus }: { notes: NotesController; working
 					setFocused(false);
 					notes.blur();
 				}}
-				allowFontScaling={Platform.OS !== "ios"}
+				allowFontScaling={allowFontScaling}
 				style={{
 					fontFamily: typeRoles.yourMessage.fontFamily,
 					fontSize: typeRoles.yourMessage.fontSize * scale,
@@ -202,7 +202,7 @@ function NoteEditor({ notes, working, focus }: { notes: NotesController; working
 				}}
 			/>
 			<Text
-				allowFontScaling={Platform.OS !== "ios"}
+				allowFontScaling={allowFontScaling}
 				accessibilityLiveRegion="polite"
 				style={{ fontSize: 13 * scale, lineHeight: 18 * scale, color: palette.inkLow }}
 			>
@@ -288,14 +288,14 @@ function LinkRow({
 			<View style={{ flex: 1, gap: 2 }}>
 				{label ? (
 					<Text
-						allowFontScaling={Platform.OS !== "ios"}
+						allowFontScaling={allowFontScaling}
 						style={{ fontSize: 15 * scale, lineHeight: 20 * scale, color: palette.inkHi }}
 					>
 						{label}
 					</Text>
 				) : null}
 				<Text
-					allowFontScaling={Platform.OS !== "ios"}
+					allowFontScaling={allowFontScaling}
 					style={{
 						fontFamily: typeRoles.machine.fontFamily,
 						fontSize: typeRoles.machine.fontSize * scale,

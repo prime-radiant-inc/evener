@@ -3,8 +3,8 @@
 // sliding row, so it hides with the chips; the whole bar opens the Notes &
 // links sheet.
 import { type SFSymbol, SymbolView } from "expo-symbols";
-import { Platform, Pressable, Text } from "react-native";
-import { useColors, useTextScale } from "../ui";
+import { Pressable, Text } from "react-native";
+import { allowFontScaling, useColors, useTextScale } from "../ui";
 import type { NotesBarPreview, NotesGlyph } from "./sessionNotes";
 
 const SYMBOLS: Record<NotesGlyph, SFSymbol> = {
@@ -35,7 +35,7 @@ export function NotesBar({ preview, onPress }: { preview: NotesBarPreview; onPre
 		>
 			<SymbolView name={SYMBOLS[preview.glyph]} size={13 * scale} tintColor={palette.inkMid} />
 			<Text
-				allowFontScaling={Platform.OS !== "ios"}
+				allowFontScaling={allowFontScaling}
 				numberOfLines={1}
 				ellipsizeMode="tail"
 				style={{ flex: 1, fontSize: 15 * scale, lineHeight: 20 * scale, color: palette.inkHi }}
@@ -44,7 +44,7 @@ export function NotesBar({ preview, onPress }: { preview: NotesBarPreview; onPre
 			</Text>
 			{preview.links ? (
 				<Text
-					allowFontScaling={Platform.OS !== "ios"}
+					allowFontScaling={allowFontScaling}
 					numberOfLines={1}
 					style={{ fontSize: 13 * scale, lineHeight: 18 * scale, color: palette.inkMid, fontVariant: ["tabular-nums"] }}
 				>
