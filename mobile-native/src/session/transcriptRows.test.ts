@@ -1,0 +1,325 @@
+import type { TurnModel } from "@evener/appwire-client";
+import { describe, expect, it } from "vitest";
+import { type MobileTimelineItem, projectedRow } from "../projectedRows";
+import type { RunStep, TimelineRow } from "../timeline";
+import {
+	emptyTranscriptText,
+	liveRunId,
+	runSummary,
+	runSummaryText,
+	sessionRows,
+	stepTarget,
+	timeMarkerText,
+} from "./transcriptRows";
+
+type Activity = Extract<MobileTimelineItem, { kind: "activity" }>;
+const step = (id: string, label: string, over: Partial<Activity> = {}): Activity => ({
+	kind: "activity",
+	id,
+	label,
+	family: "tool",
+	state: "completed",
+	detail: {},
+	transcriptKey: `key-${id}`,
+	turnId: "turn_1",
+	...over,
+});
+const user = (id: string, turnId = "turn_1"): TimelineRow => ({ kind: "user", id, text: id, turnId });
+const reply = (id: string, turnId = "turn_1"): TimelineRow => ({ kind: "assistant", id, markdown: id, streaming: false, turnId });
+const at = (hour: number, minute: number, day = 26) => new Date(Date.UTC(2026, 8, day, hour, minute)).toISOString();
+const turn = (id: string, startedAt?: string, completedAt?: string): Pick<TurnModel, "id" | "startedAt" | "completedAt"> => ({
+	id,
+	startedAt,
+	completedAt,
+});
+
+describe("runs of steps (spec 8.2)", () => {
+	it("folds consecutive steps into one run, failures included", () => {
+		const rows = sessionRows(
+			[user("u"), step("a", "read_file"), step("b", "shell", { state: "failed" }), reply("r")],
+			[turn("turn_1")],
+		);
+		expect(rows.map((row) => row.kind)).toEqual(["user", "run", "assistant"]);
+		const run = rows[1];
+		if (run?.kind !== "run") throw new Error("expected a run");
+		expect(run.steps.map((s) => s.id)).toEqual(["a", "b"]);
+		expect(run.transcriptKey).toBe("key-a");
+		expect(run.id).toBe("run:a");
+	});
+
+	it("keeps subagents, questions and thoughts out of runs", () => {
+		const rows = sessionRows(
+			[
+				step("a", "read_file"),
+				step("d", "delegate"),
+				step("b", "grep"),
+				step("t", "Reasoning", { family: "reasoning" }),
+				step("c", "shell"),
+			],
+			[turn("turn_1")],
+		);
+		expect(rows.map((row) => (row.kind === "run" ? `run:${row.steps.length}` : row.id))).toEqual([
+			"run:1",
+			"d",
+			"run:1",
+			"t",
+			"run:1",
+		]);
+	});
+
+	it("leaves the step in progress, and a live thought, to the tray (ruling 10)", () => {
+		const rows = sessionRows(
+			[
+				step("a", "read_file"),
+				step("live", "shell", { state: "running" }),
+				step("think", "Reasoning", { family: "reasoning", state: "running" }),
+			],
+			[turn("turn_1")],
+		);
+		expect(rows).toHaveLength(1);
+		expect(rows[0]?.kind === "run" && rows[0].steps.map((s) => s.id)).toEqual(["a"]);
+		expect(sessionRows([step("live", "shell", { state: "running" })], [turn("turn_1")])).toEqual([]);
+	});
+
+	it("rides a step's images with the step", () => {
+		const rows = sessionRows(
+			[
+				step("a", "screenshot"),
+				{ kind: "attachments", id: "a:attachments", items: [{ id: "a:out:0", src: "/doc/image?1" }], sourceTranscriptKey: "key-a", turnId: "turn_1" },
+				step("b", "read_file"),
+			],
+			[turn("turn_1")],
+		);
+		expect(rows).toHaveLength(1);
+		const run = rows[0];
+		expect(run?.kind === "run" && run.steps[0]?.images).toEqual([{ id: "a:out:0", src: "/doc/image?1" }]);
+	});
+});
+
+describe("time markers", () => {
+	const turns = [
+		turn("turn_1", at(12, 0), at(12, 5)),
+		turn("turn_2", at(12, 10), at(12, 12)),
+		turn("turn_3", at(12, 30), at(12, 31)),
+		turn("turn_4", at(9, 0, 27), at(9, 1, 27)),
+	];
+	it("marks the first turn, a turn after ten quiet minutes, and a new day", () => {
+		const rows = sessionRows(
+			[user("u1", "turn_1"), user("u2", "turn_2"), user("u3", "turn_3"), user("u4", "turn_4")],
+			turns,
+			"UTC",
+		);
+		expect(rows.map((row) => (row.kind === "time" ? `time:${row.turnId}` : row.id))).toEqual([
+			"time:turn_1",
+			"u1",
+			"u2",
+			"time:turn_3",
+			"u3",
+			"time:turn_4",
+			"u4",
+		]);
+	});
+
+	it("splits a run at a marked turn boundary (the first loaded turn is always marked)", () => {
+		const rows = sessionRows([step("a", "read_file", { turnId: "turn_2" }), step("b", "grep", { turnId: "turn_3" })], turns, "UTC");
+		expect(rows.map((row) => row.kind)).toEqual(["time", "run", "time", "run"]);
+	});
+
+	// A goal continuation turn can start well inside the ten-minute window, so
+	// no marker separates it from the turn before it. The run still has to end
+	// at the turn change, or its steps mix two turns' worth of work under one
+	// id and duration.
+	it("ends a run at a turn change even without a marker (a goal continuation)", () => {
+		const rows = sessionRows(
+			[step("a", "read_file", { turnId: "turn_1" }), step("b", "grep", { turnId: "turn_2" })],
+			[turn("turn_1", at(12, 0), at(12, 5)), turn("turn_2", at(12, 8))],
+			"UTC",
+		);
+		expect(rows.map((row) => row.kind)).toEqual(["time", "run", "run"]);
+		expect(rows[1]?.kind === "run" && rows[1].steps.map((s) => s.id)).toEqual(["a"]);
+		expect(rows[2]?.kind === "run" && rows[2].steps.map((s) => s.id)).toEqual(["b"]);
+	});
+
+	it("reads Today, Yesterday, a weekday, or a date", () => {
+		const now = Date.UTC(2026, 8, 26, 18, 0);
+		expect(timeMarkerText(Date.UTC(2026, 8, 26, 14, 14), now, "UTC")).toBe("Today 2:14 PM");
+		expect(timeMarkerText(Date.UTC(2026, 8, 25, 9, 3), now, "UTC")).toBe("Yesterday 9:03 AM");
+		expect(timeMarkerText(Date.UTC(2026, 8, 22, 9, 3), now, "UTC")).toBe("Tue 9:03 AM");
+		expect(timeMarkerText(Date.UTC(2026, 8, 12, 9, 3), now, "UTC")).toBe("Sep 12, 9:03 AM");
+	});
+
+	// "Yesterday" has to be the zone's previous calendar date, not "24 hours
+	// ago"; those disagree across a DST change.
+	it("counts calendar days, so Yesterday survives a DST change", () => {
+		// America/New_York's 2026 DST began 2026-03-08 at 2 AM local, so that
+		// day has only 23 wall-clock hours: subtracting a flat 24h from "now"
+		// (00:30 local on March 9) lands on March 7, not March 8.
+		expect(
+			timeMarkerText(Date.UTC(2026, 2, 8, 13, 3), Date.UTC(2026, 2, 9, 4, 30), "America/New_York"),
+		).toBe("Yesterday 9:03 AM");
+	});
+
+	it("keeps the weekday window to whole calendar days", () => {
+		const now = Date.UTC(2026, 8, 26, 18, 0);
+		expect(timeMarkerText(Date.UTC(2026, 8, 20, 17, 0), now, "UTC")).toBe("Sun 5:00 PM");
+		expect(timeMarkerText(Date.UTC(2026, 8, 19, 20, 0), now, "UTC")).toBe("Sep 19, 8:00 PM");
+	});
+});
+
+describe("the live run", () => {
+	it("finds the last run of the active turn among runs of two turns", () => {
+		const rows = sessionRows(
+			[
+				step("a", "read_file", { turnId: "turn_1" }),
+				step("b", "grep", { turnId: "turn_2" }),
+				reply("mid", "turn_2"),
+				step("c", "shell", { turnId: "turn_2" }),
+			],
+			[turn("turn_1"), turn("turn_2")],
+		);
+		expect(liveRunId(rows, "turn_2")).toBe("run:c");
+	});
+
+	it("finds nothing with no active turn", () => {
+		const rows = sessionRows([step("a", "read_file", { turnId: "turn_1" })], [turn("turn_1")]);
+		expect(liveRunId(rows, undefined)).toBeUndefined();
+	});
+
+	it("finds nothing when the active turn has no run yet", () => {
+		const rows = sessionRows([user("u", "turn_1")], [turn("turn_1")]);
+		expect(liveRunId(rows, "turn_1")).toBeUndefined();
+	});
+});
+
+describe("a run's one line", () => {
+	const shell = (id: string, command: string | undefined, over: Partial<Activity> = {}): RunStep =>
+		step(id, "shell", { detail: command === undefined ? {} : { arguments: JSON.stringify({ command }) }, ...over });
+
+	it("counts steps, says what they did, and how long the run took", () => {
+		const steps: RunStep[] = [
+			...Array.from({ length: 6 }, (_, n) => step(`r${n}`, "read_file", { detail: { startedAtMs: 1_000 * n, endedAtMs: 1_000 * n + 500 } })),
+			shell("s1", "go test ./agent/...", {
+				state: "failed",
+				detail: { arguments: JSON.stringify({ command: "go test ./agent/..." }), startedAtMs: 6_000, endedAtMs: 6_500 },
+			}),
+			shell("s2", "go test ./agent/... -run X", {
+				state: "failed",
+				detail: { arguments: JSON.stringify({ command: "go test ./agent/... -run X" }), startedAtMs: 6_500, endedAtMs: 7_000 },
+			}),
+			shell("s3", "go test ./agent/", { detail: { arguments: JSON.stringify({ command: "go test ./agent/" }), startedAtMs: 10_000, endedAtMs: 480_000 } }),
+			...Array.from({ length: 3 }, (_, n) =>
+				step(`e${n}`, "edit_file", { detail: { startedAtMs: 20_000 + n * 1_000, endedAtMs: 20_500 + n * 1_000 } }),
+			),
+		];
+		const summary = runSummary(steps);
+		expect(summary).toEqual({
+			steps: 12,
+			durationMs: 480_000,
+			parts: [
+				{ family: "read", text: "read 6 files", failed: 0 },
+				{ family: "shell", text: "ran go test", failed: 2 },
+				{ family: "edit", text: "edited 3 files", failed: 0 },
+			],
+			failed: 2,
+		});
+		expect(runSummaryText(summary)).toBe("12 steps · 8m · read 6 files, ran go test (2 failed), edited 3 files");
+	});
+
+	it("says one step, and names commands only when it knows them all", () => {
+		expect(runSummaryText(runSummary([step("a", "read_file")]))).toBe("1 step · read 1 file");
+		expect(runSummary([shell("a", "go test"), shell("b", "npm run check")]).parts).toEqual([{ family: "shell", text: "ran 2 commands", failed: 0 }]);
+		expect(runSummary([shell("a", undefined), shell("b", "go test")]).parts).toEqual([{ family: "shell", text: "ran 2 commands", failed: 0 }]);
+		expect(runSummary([shell("a", "ls -la")]).parts).toEqual([{ family: "shell", text: "ran ls", failed: 0 }]);
+	});
+
+	// A step whose times the hub didn't send, or that don't parse, carries no
+	// clock times, so a duration read from only some steps would understate
+	// the run. It is said only when every step in the run carries both.
+	it("says how long only when every step carries its clock times", () => {
+		expect(
+			runSummary([
+				step("a", "grep", { detail: { startedAtMs: 1_000, endedAtMs: 2_000 } }),
+				step("b", "glob", { detail: { startedAtMs: 4_000, endedAtMs: 6_000 } }),
+			]),
+		).toMatchObject({
+			durationMs: 5_000,
+			parts: [{ text: "searched 2 times", failed: 0 }],
+		});
+		expect(
+			runSummary([
+				step("a", "grep", { detail: { startedAtMs: 1_000, endedAtMs: 2_000 } }),
+				step("b", "glob", { detail: { durationMs: 3_000 } }),
+			]).durationMs,
+		).toBeUndefined();
+		expect(runSummary([step("a", "grep")]).durationMs).toBeUndefined();
+		expect(runSummaryText(runSummary([step("a", "grep")]))).toBe("1 step · searched once");
+	});
+
+	// At Intent, the phone's default level, every settled step shows only its
+	// summary. It still keeps its two clock times, so the run it folds into
+	// says how long it took, as spec 8.2's run line does (Jesse, 2026-09-27).
+	it("says how long a run of summary-only steps took, as at Intent", () => {
+		const summarized = (id: string, startedAt: string, completedAt: string) =>
+			projectedRow({
+				kind: "intent",
+				id: `intent:${id}`,
+				turnId: "turn_1",
+				sourceIndex: 0,
+				sourceItemId: id,
+				rationale: `Read ${id}`,
+				failed: false,
+				item: { id, turnId: "turn_1", type: "commandExecution", toolName: "read_file", text: "", startedAt, completedAt },
+			});
+		const steps = [summarized("a", at(12, 0), at(12, 1)), summarized("b", at(12, 2), at(12, 8))];
+		expect(steps.every((row) => row?.kind === "activity" && row.summaryOnly === true)).toBe(true);
+		const [run] = sessionRows(
+			steps.filter((row) => row !== null),
+			[turn("turn_1")],
+		);
+		expect(run?.kind === "run" && runSummaryText(runSummary(run.steps))).toBe("2 steps · 8m · read 2 files");
+	});
+
+	it("groups the rest by kind, in the order they first appear", () => {
+		expect(
+			runSummary([step("a", "web_fetch"), step("b", "task_list"), step("c", "web_search"), step("d", "use_skill")]).parts.map(
+				(part) => part.text,
+			),
+		).toEqual(["fetched 1 page", "2 other steps", "searched the web once"]);
+	});
+});
+
+describe("a step's target", () => {
+	it.each([
+		["shell", { command: "go test ./agent/..." }, "go test ./agent/..."],
+		["shell", { file_path: "agent/session.go" }, undefined],
+		["read_file", { file_path: "agent/session.go" }, "agent/session.go"],
+		["edit_file", { file_path: "agent/session.go", path: "agent" }, "agent/session.go"],
+		["grep", { path: "agent", pattern: "Turn" }, "agent"],
+		["web_search", { query: "evener" }, undefined],
+	])("a %s step with %j reads %s", (label, args, target) => {
+		expect(stepTarget(label, JSON.stringify(args))).toBe(target);
+	});
+
+	it("reads nothing from arguments that are missing or don't parse", () => {
+		expect(stepTarget("read_file", undefined)).toBeUndefined();
+		expect(stepTarget("read_file", '{"file_path": "agent/sess')).toBeUndefined();
+	});
+});
+
+describe("an empty transcript", () => {
+	it("is loading while the first read runs or the connection is away, and never asks you to reconnect", () => {
+		expect(emptyTranscriptText("opening", true, false)).toBe("Loading conversation…");
+		expect(emptyTranscriptText("idle", false, false)).toBe("Loading conversation…");
+		expect(emptyTranscriptText("closed", false, false)).toBe("Loading conversation…");
+		expect(emptyTranscriptText("error", false, false)).toBe("Loading conversation…");
+	});
+
+	it("has no messages once its conversation has loaded, connected or not", () => {
+		expect(emptyTranscriptText("open", true, true)).toBe("No messages yet.");
+		expect(emptyTranscriptText("open", false, true)).toBe("No messages yet.");
+	});
+
+	it("keeps the retry line for a read that failed while connected", () => {
+		expect(emptyTranscriptText("error", true, false)).toBe("Pull down to retry.");
+	});
+});
