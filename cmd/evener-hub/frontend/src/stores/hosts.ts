@@ -322,17 +322,22 @@ function hostRowEqual(a: HostRow, b: HostRow | undefined): boolean {
 // older in-flight response can never publish after it. When the currently
 // published rows are already exactly the ones this response carries, the
 // setState is skipped: the 2s poll would otherwise swap in a fresh array
-// every tick and force a re-render of an unchanged section.
-function publishReady(generation: number, client: AppwireClientLike, hosts: HostRow[]): void {
+// every tick and force a re-render of an unchanged section. It answers
+// whether THIS generation was accepted (true when it publishes or accepts the
+// equal snapshot, false on either discard) — forcedReRead reports that answer
+// to its caller, and the shared marker cannot stand in for it: a mutation's
+// re-read fence writes the marker ahead of its own response, so a discarded
+// response can still see `latestPublishedGeneration === generation`.
+function publishReady(generation: number, client: AppwireClientLike, hosts: HostRow[]): boolean {
   if (generation <= latestPublishedGeneration) {
-    return;
+    return false;
   }
   // The client fence (round 7, finding 2): a snapshot read through a connection
   // that has since been replaced describes the hub that was, so it must not
   // publish over the replacement's answer. The published marker is left where it
   // is - nothing published - so the client now connected still publishes its own.
   if (connectionStore.getState().client !== client) {
-    return;
+    return false;
   }
   latestPublishedGeneration = generation;
   const load = hostsStore.getState().load;
@@ -343,9 +348,10 @@ function publishReady(generation: number, client: AppwireClientLike, hosts: Host
   ) {
     // The same answer again: publish nothing and advance nothing, so nothing
     // derived from the registry re-reads on the poll cadence.
-    return;
+    return true;
   }
   hostsStore.setState({ load: { phase: "ready", hosts } });
+  return true;
 }
 
 /** selectableHostRows is the registry's non-removed rows, or none while it is
@@ -505,8 +511,7 @@ async function forcedReRead(): Promise<boolean> {
   beginListRequest();
   try {
     const read = await listHosts();
-    publishReady(generation, read.client, read.hosts);
-    return latestPublishedGeneration === generation;
+    return publishReady(generation, read.client, read.hosts);
   } catch {
     // A failed quiet read keeps the last snapshot: the mutation or poll that
     // issued it still stands, the rows stay rendered, and the next tick

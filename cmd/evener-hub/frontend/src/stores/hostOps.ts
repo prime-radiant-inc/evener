@@ -72,13 +72,29 @@ function withDetail(headline: string, detail: string): string {
   return trimmed === "" ? headline : `${headline} ${trimmed}`;
 }
 
+/** HostOpRequestContext names the call a refusal came from, for the copy that
+ * differs per call: only deploy/restart carry an operation ID. */
+export type HostOpRequestContext = "plan" | "operation" | "connect";
+
+function timeoutMessage(context: HostOpRequestContext): string {
+  switch (context) {
+    case "plan":
+      return "The hub did not answer before the plan request timed out; retry planning.";
+    case "connect":
+      return "The hub did not answer before the Connect request timed out; retry.";
+    case "operation":
+      return "The hub did not answer before the request timed out; retry — a retry repeats the same operation ID.";
+  }
+}
+
 /** hostOpRefusal classifies a rejection into the vocabulary the surfaces
  * render. Known discriminators get a stable, concrete headline with the hub's
  * own message appended as the detail; anything else is `unknown` — a hub
  * message when the hub composed one, otherwise the client's own sentence for
  * the unreachable family, and a timeout keeps the one instruction the lost-
- * response contract promises (the retry repeats the same operation ID). */
-export function hostOpRefusal(error: unknown): HostOpRefusal {
+ * response contract promises for THAT call (only an operation retry repeats
+ * the same operation ID; a plan has nothing to repeat but itself). */
+export function hostOpRefusal(error: unknown, context: HostOpRequestContext = "operation"): HostOpRefusal {
   const info = error instanceof WireError ? error.evenerErrorInfo : undefined;
   const detail = friendlyErrorMessage(error);
   switch (info) {
@@ -127,11 +143,7 @@ export function hostOpRefusal(error: unknown): HostOpRefusal {
       return { kind: info, message: withDetail("The host is busy right now.", detail) };
     default:
       if (error instanceof RequestTimeoutError) {
-        return {
-          kind: "unknown",
-          message:
-            "The hub did not answer before the request timed out; retry — a retry repeats the same operation ID.",
-        };
+        return { kind: "unknown", message: timeoutMessage(context) };
       }
       return { kind: "unknown", message: detail };
   }
@@ -371,7 +383,10 @@ export const hostOpsStore = create<HostOpsStoreState>((set, get) => ({
         const current = previous.plans[name];
         if (current?.phase === "planning") return previous;
         return {
-          plans: { ...previous.plans, [name]: { phase: "error", refusal: hostOpRefusal(error), recovery: "replan" } },
+          plans: {
+            ...previous.plans,
+            [name]: { phase: "error", refusal: hostOpRefusal(error, "plan"), recovery: "replan" },
+          },
         };
       });
       return;
@@ -422,7 +437,7 @@ export const hostOpsStore = create<HostOpsStoreState>((set, get) => ({
         set((previous) => ({ plans: { ...previous.plans, [name]: planConnectionChangedArm() } }));
         return;
       }
-      const refusal = hostOpRefusal(error);
+      const refusal = hostOpRefusal(error, "plan");
       set((previous) => ({
         plans: { ...previous.plans, [name]: { phase: "error", refusal, recovery: planRefusalAction(refusal.kind) } },
       }));
@@ -512,11 +527,15 @@ export const hostOpsStore = create<HostOpsStoreState>((set, get) => ({
       set((previous) => ({
         plans: {
           ...previous.plans,
-          [name]: { phase: "error", refusal: hostOpRefusal(error), recovery: "connect" },
+          [name]: { phase: "error", refusal: hostOpRefusal(error, "connect"), recovery: "connect" },
         },
       }));
       return;
     }
+    // Connect resolved, but a close-and-reopen may have superseded this
+    // recovery while it was in flight: the newer state owns the sequence, and
+    // the stale recovery must not mint a plan over it.
+    if (!planIsCurrent(name, sequence, client)) return;
     await get().plan(name);
   },
 
@@ -688,7 +707,7 @@ export const hostOpsStore = create<HostOpsStoreState>((set, get) => ({
       // A close-and-reopen (or a replaced connection) owns the state now; a
       // stale recovery never overwrites it.
       if (!restartIsCurrent(name, sequence, client)) return;
-      const refusal = hostOpRefusal(error);
+      const refusal = hostOpRefusal(error, "connect");
       set((previous) => {
         const current = previous.restarts[name];
         if (current === undefined || current.phase === "started") return previous;

@@ -118,6 +118,22 @@ describe("hostOpRefusal", () => {
     expect(refusal.message).toContain("repeats the same operation ID");
   });
 
+  test("a plan timeout never claims an operation ID", () => {
+    // plan mints a token and carries no operation ID: the timeout sentence is
+    // per call, so the plan arm says to retry planning instead.
+    const refusal = hostOpRefusal(new RequestTimeoutError("plan timed out"), "plan");
+    expect(refusal.kind).toBe("unknown");
+    expect(refusal.message).toContain("did not answer before the plan request timed out");
+    expect(refusal.message).toContain("retry planning");
+    expect(refusal.message).not.toContain("operation ID");
+  });
+
+  test("a Connect timeout names the Connect step", () => {
+    const refusal = hostOpRefusal(new RequestTimeoutError("connect timed out"), "connect");
+    expect(refusal.message).toContain("did not answer before the Connect request timed out");
+    expect(refusal.message).not.toContain("operation ID");
+  });
+
   test("a hub-unreachable rejection keeps the client's own sentence", () => {
     const refusal = hostOpRefusal(new Error('FakeClient: cannot call "evener/host/deploy" while state is "closed"'));
     expect(refusal.message).toBe("Can't reach the hub right now.");
@@ -763,6 +779,42 @@ describe("restart", () => {
     expect(fake.calls.filter((c) => c.method === "evener/host/restart")).toHaveLength(1);
   });
 
+  test("a forced read discarded by a mutation fence answers false, so the retry never replays the stale pair", async () => {
+    const fake = connectFakeClient();
+    fake.on("evener/host/list", () => ({ hosts: [row("beta")] }));
+    // A ready pre-move snapshot stands.
+    await hostsStore.getState().fetch();
+    const lists = gateSettlements(fake, "evener/host/list");
+
+    fake.on("evener/host/restart", () => {
+      throw new WireError('host "beta": registration moved; retry', -32013, { evenerErrorInfo: "stale-entry" });
+    });
+    fake.on("evener/host/attach", () => ({ attached: true, host: "beta" }));
+    hostOpsStore.getState().beginRestart("beta", { generation: 3, incarnationId: "inc-3" });
+    const restartPending = hostOpsStore.getState().restart("beta");
+    for (let i = 0; i < 20 && lists.length < 1; i += 1) await Promise.resolve();
+    expect(lists).toHaveLength(1);
+
+    // A mutation lands while the forced read is in flight: its re-read fence
+    // marks the forced read's generation as already published.
+    const mutation = hostsStore.getState().connect("beta");
+    for (let i = 0; i < 20 && lists.length < 2; i += 1) await Promise.resolve();
+    expect(lists).toHaveLength(2);
+
+    // The forced read's own response is discarded by that fence even though
+    // its generation is the marker's value...
+    lists[0]!.resolve({ hosts: [{ ...row("beta"), generation: 4, incarnationId: "inc-4" }] });
+    // ...and the mutation's re-read answers the pre-move snapshot.
+    lists[1]!.resolve({ hosts: [row("beta")] });
+    await mutation;
+    await restartPending;
+
+    const state = hostOpsStore.getState().restarts.beta;
+    expect(state?.phase).toBe("failed");
+    expect(state?.refusal?.message).toContain("answered no current pair");
+    expect(fake.calls.filter((c) => c.method === "evener/host/restart")).toHaveLength(1);
+  });
+
   test("a recovery completing after a close-and-reopen publishes nothing", async () => {
     const fake = connectFakeClient();
     fake.on("evener/host/list", () => ({ hosts: [{ ...row("beta"), generation: 4, incarnationId: "inc-4" }] }));
@@ -802,6 +854,25 @@ describe("restart", () => {
     // The newer plan owns the state; the stale Connect failure never overwrites it.
     const state = hostOpsStore.getState().plans.beta;
     expect(state?.phase).toBe("planned");
+  });
+
+  test("a connect recovery superseded before Connect resolves issues no plan", async () => {
+    const fake = connectFakeClient();
+    fake.on("evener/host/list", () => ({ hosts: [row("beta")] }));
+    fake.on("evener/host/plan", () => ({ outcome: "planned", plan: plan(), token: "tok-1" }));
+    const attaches = gateSettlements(fake, "evener/host/attach");
+    const pending = hostOpsStore.getState().connectAndPlan("beta");
+    await Promise.resolve();
+
+    // The operator closes and reopens the dialog while Connect is in flight:
+    // the reopened dialog's plan owns the state, and the stale recovery must
+    // not mint another plan over it.
+    hostOpsStore.getState().discardPlan("beta");
+    await hostOpsStore.getState().plan("beta");
+    attaches[0]!.resolve({ attached: true, host: "beta" });
+    await pending;
+
+    expect(fake.calls.filter((c) => c.method === "evener/host/plan")).toHaveLength(1);
   });
 
   test("host-busy-operation names the running operation and blocks a bare retry", async () => {
