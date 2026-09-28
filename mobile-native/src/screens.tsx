@@ -2774,6 +2774,8 @@ export function ConversationScreen({
 		composerBack,
 	});
 	const composerShown = canCompose && bottom.composer;
+	// "↓ 3 new": rows that arrived below while you read above the end.
+	const newCount = awayKeys ? newRowCount(timelineRows, awayKeys) : 0;
 	// Next shows while someone else needs you, unless this session asks you
 	// something or you are finding in it (spec 8.3).
 	const nextTarget =
@@ -3220,6 +3222,10 @@ export function ConversationScreen({
 								}
 							/>
 						</View>
+						{/* Next and "↓ 3 new" float 10pt above the transcript's
+						    end, which sits on the tray, the composer or the folded
+						    dock: Next at the trailing edge, stacked above the pill so
+						    neither covers the other. */}
 						<View
 							pointerEvents="box-none"
 							style={{
@@ -3227,13 +3233,33 @@ export function ConversationScreen({
 								left: 0,
 								right: 0,
 								bottom: 10,
-								alignItems: "center",
+								flexDirection: "column",
 							}}
 						>
-							<NewContentPill
-								count={awayKeys ? newRowCount(timelineRows, awayKeys) : 0}
-								onPress={jumpToLive}
-							/>
+							{nextTarget ? (
+								<View
+									pointerEvents="box-none"
+									style={{
+										alignItems: "flex-end",
+										paddingHorizontal: 16,
+										// The pill draws nothing while nothing is new, so
+										// Next keeps its 10pt then.
+										marginBottom: newCount > 0 ? 8 : 0,
+									}}
+								>
+									<NextCapsule
+										target={nextTarget}
+										onOpen={() => openNext(nextTarget)}
+										onHold={chooseNext}
+									/>
+								</View>
+							) : null}
+							<View pointerEvents="box-none" style={{ alignItems: "center" }}>
+								<NewContentPill
+									count={newCount}
+									onPress={jumpToLive}
+								/>
+							</View>
 						</View>
 					</View>
 					<View style={{ flexShrink: 1, maxHeight: "80%", marginTop: 8, gap: 4 }}>
@@ -3277,9 +3303,8 @@ export function ConversationScreen({
 							</View>
 						</ScrollView>
 						<View>
-							{/* The toast and Next float 10pt above the tray, or above
-							    the composer or the folded dock when there is no tray:
-							    the toast centered, Next at the trailing edge below it. */}
+							{/* The toast floats 10pt above the tray, or above the
+							    composer when there is no tray. */}
 							<View
 								pointerEvents="box-none"
 								style={{
@@ -3288,22 +3313,10 @@ export function ConversationScreen({
 									right: 0,
 									bottom: "100%",
 									paddingBottom: 10,
-									gap: 8,
+									alignItems: "center",
 								}}
 							>
 								<Toast toast={toaster.toast} dismiss={toaster.dismiss} />
-								{nextTarget ? (
-									<View
-										pointerEvents="box-none"
-										style={{ alignItems: "flex-end", paddingHorizontal: 16 }}
-									>
-										<NextCapsule
-											target={nextTarget}
-											onOpen={() => openNext(nextTarget)}
-											onHold={chooseNext}
-										/>
-									</View>
-								) : null}
 							</View>
 							{bottom.dock === "approval" && approval ? (
 								<ApprovalDock

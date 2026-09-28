@@ -4,7 +4,7 @@
 // ConversationScreen.recovery.test.tsx.
 import type { ComponentProps, ReactNode } from "react";
 import { createElement } from "react";
-import { act, type ReactTestRenderer } from "react-test-renderer";
+import { act, type ReactTestInstance, type ReactTestRenderer } from "react-test-renderer";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AnyNotification, Thread } from "@evener/appwire-client";
 import { nativeDrafts } from "./nativeDrafts";
@@ -35,6 +35,7 @@ import type {
 } from "@react-navigation/native-stack";
 import { paletteFor } from "./design/tokens";
 import { answerFleetRead, type FleetShape, fleetSession } from "./session/fleetTestUtils";
+import { NewContentPill } from "./session/NewContentPill";
 
 const harness = vi.hoisted(() => ({
 	connection: {} as Record<string, unknown>,
@@ -1952,6 +1953,26 @@ describe("moving between sessions (spec 8.3, 13.2)", () => {
 		});
 		act(() => choose(2));
 		expect(navigation.push).toHaveBeenCalledTimes(1);
+	});
+
+	it("stacks Next above the new-content pill, at the transcript's end, so neither covers the other", async () => {
+		const { tree } = await mount(thread("ref-stacked", "idle"));
+		const next = capsule(tree);
+		if (!next) throw new Error("no Next capsule");
+		const pill = tree.root.findByType(NewContentPill);
+		// The one floating column both sit in, 10pt above what's below the
+		// transcript.
+		const column = pill.parent?.parent;
+		expect(column?.props.style).toMatchObject({ position: "absolute", bottom: 10 });
+		expect(column?.props.style.flexDirection ?? "column").toBe("column");
+		const slots = column?.children as ReactTestInstance[];
+		const nextSlot = slots.findIndex((slot) => slot.findAll((node) => node === next).length > 0);
+		const pillSlot = slots.findIndex((slot) => slot.findAll((node) => node === pill).length > 0);
+		expect(nextSlot).toBeGreaterThanOrEqual(0);
+		expect(nextSlot).toBeLessThan(pillSlot);
+		// Nothing is new, so the pill draws nothing and Next keeps its 10pt.
+		expect(slots[nextSlot].props.style).toMatchObject({ alignItems: "flex-end", paddingHorizontal: 16, marginBottom: 0 });
+		expect(slots[pillSlot].props.style).toMatchObject({ alignItems: "center" });
 	});
 
 	it("shows no Next while this session asks you something", async () => {
