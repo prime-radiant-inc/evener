@@ -292,6 +292,8 @@ export type Routes = {
 	ReviewSheet: ReviewSheetParams;
 	/** A coordinator's subagents (spec 9). */
 	Subagents: { hubId: string; ref: string; threadId: string; title: string };
+	/** Ask a subagent's coordinator to stop it (spec 9, ruling 10). */
+	StopSubagentSheet: { hubId: string; coordinator: { ref: string; threadId: string; title: string }; ref: string };
 	/** A subagent's own session, over its coordinator's (ruling 30). */
 	Subagent: { hubId: string; ref: string; title: string; coordinator: { ref: string; threadId: string; title: string } };
 	/** The session's documents as they were when the sheet opened (ruling 26). */
@@ -2161,7 +2163,8 @@ export function ConversationScreen({
 	}
 	const frames = useFrameCounter(store);
 	const toaster = useToast();
-	const showSubagentToast = useCallback((text: string) => toaster.show({ text }), [toaster]);
+	const showToast = toaster.show;
+	const showSubagentToast = useCallback((text: string) => showToast({ text }), [showToast]);
 	// The session's shared notes (spec 8.8). The controller lives here, not in
 	// the sheet, so a save the sheet starts as it closes outlives it. store
 	// itself is already rebuilt exactly when route.params.hubId/ref change

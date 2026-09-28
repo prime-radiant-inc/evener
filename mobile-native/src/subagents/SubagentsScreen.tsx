@@ -3,7 +3,7 @@
 // the list shows failures first, then what's running, then what's done folded
 // away. It reads again on its own (on focus, on reconnect, on the tree's
 // notifications) and never offers Retry, Refresh or Reconnect.
-import { useFocusEffect } from "@react-navigation/native";
+import { useFocusEffect, useIsFocused } from "@react-navigation/native";
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
 import { SymbolView } from "expo-symbols";
 import { useCallback, useEffect, useMemo, useState, useSyncExternalStore } from "react";
@@ -12,6 +12,7 @@ import { BandHeader } from "../board/BoardRow";
 import { useConnection } from "../ConnectionProvider";
 import { HubModels } from "../hubModels";
 import type { Routes } from "../screens";
+import { Toast, useToast } from "../Toast";
 import { allowFontScaling, useColors, useTextScale } from "../ui";
 import { type SubagentFilter, type SubagentListItem, subagentListItems, subagentListKey } from "./subagentList";
 import {
@@ -25,6 +26,7 @@ import {
 	subagentStateWord,
 	tallySubagents,
 } from "./subagentModel";
+import { stopRequests } from "./nativeStopRequests";
 import { SubagentRowView } from "./SubagentRowView";
 import { SubagentStrip, stateColors } from "./SubagentStrip";
 import { useSubagentTree } from "./useSubagentTree";
@@ -61,6 +63,30 @@ export function SubagentsScreen({ route, navigation }: NativeStackScreenProps<Ro
 	const items = useMemo(
 		() => subagentListItems(rows, { filter, query, doneOpen, missing: snapshot.missing }),
 		[rows, filter, query, doneOpen, snapshot.missing],
+	);
+
+	// The stops you asked for, on their rows, and settled against each new
+	// tree while this list is in front, with a toast for each that stopped.
+	// A subagent's screen pushed over the list settles them instead, so the
+	// toast shows where you are, and once.
+	const requests = stopRequests(hubId);
+	const stopRevision = useSyncExternalStore(requests.subscribe, requests.getRevision);
+	const focused = useIsFocused();
+	const toast = useToast();
+	const showToast = toast.show;
+	useEffect(() => {
+		if (!focused || rows.length === 0) return;
+		for (const stopped of requests.reconcile(ref, rows)) showToast({ text: `“${stopped.title}” stopped` });
+	}, [focused, rows, requests, ref, showToast]);
+	const noteFor = useCallback(
+		(row: SubagentRow) => {
+			const view = requests.view(row);
+			if (view === "stopped") return "Stopped at your request";
+			if (view === "requested") return requests.direct(row) ? "Stop requested" : "Stop requested from the coordinator";
+			return undefined;
+		},
+		// biome-ignore lint/correctness/useExhaustiveDependencies: the revision says the requests changed
+		[requests, stopRevision],
 	);
 
 	const modelName = useModelNames(hubId);
@@ -103,12 +129,13 @@ export function SubagentsScreen({ route, navigation }: NativeStackScreenProps<Ro
 							now={now}
 							coordinatorModel={snapshot.coordinatorModel}
 							modelName={modelName}
+							note={noteFor(item.row)}
 							onOpen={openRow}
 						/>
 					);
 			}
 		},
-		[now, snapshot.coordinatorModel, modelName, openRow],
+		[now, snapshot.coordinatorModel, modelName, openRow, noteFor],
 	);
 
 	const header = (
@@ -153,6 +180,9 @@ export function SubagentsScreen({ route, navigation }: NativeStackScreenProps<Ro
 				windowSize={7}
 				contentContainerStyle={{ paddingBottom: 24 }}
 			/>
+			<View pointerEvents="box-none" style={{ position: "absolute", left: 0, right: 0, bottom: 16 }}>
+				<Toast toast={toast.toast} dismiss={toast.dismiss} />
+			</View>
 		</View>
 	);
 }

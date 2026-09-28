@@ -8,10 +8,13 @@ import type { ReactElement } from "react";
 import { act, type ReactTestRenderer } from "react-test-renderer";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { pressable, render, renderedText, screenConnection } from "../renderNative.testkit";
+import { Toast } from "../Toast";
+import { forgetStopRequestsForHub, stopRequests } from "./nativeStopRequests";
+import { flattenSubagents } from "./subagentModel";
 import { forgetSubagentTrees } from "./subagentTree";
 import { SubagentsScreen } from "./SubagentsScreen";
 
-const harness = vi.hoisted(() => ({ connection: {} as Record<string, unknown> }));
+const harness = vi.hoisted(() => ({ connection: {} as Record<string, unknown>, kv: new Map<string, string>() }));
 
 vi.mock("react-native", async () => ({
 	...(await import("../renderNative.testkit")).nativeModuleMock(),
@@ -21,9 +24,19 @@ vi.mock("react-native", async () => ({
 vi.mock("expo-symbols", () => ({ SymbolView: "SymbolView" }));
 vi.mock("@react-navigation/native", async () => {
 	const { useEffect } = await import("react");
-	return { useFocusEffect: (effect: () => void | (() => void)) => useEffect(effect, [effect]) };
+	return {
+		useFocusEffect: (effect: () => void | (() => void)) => useEffect(effect, [effect]),
+		useIsFocused: () => true,
+	};
 });
 vi.mock("../ConnectionProvider", () => ({ useConnection: () => harness.connection }));
+vi.mock("expo-sqlite/kv-store", () => ({
+	Storage: {
+		getItemSync: (key: string) => harness.kv.get(key) ?? null,
+		setItemSync: (key: string, value: string) => void harness.kv.set(key, value),
+		removeItemSync: (key: string) => void harness.kv.delete(key),
+	},
+}));
 
 const NOW = Date.now();
 const MIN = 60_000;
@@ -95,6 +108,7 @@ function hub(pages: (continuation: string | undefined) => unknown) {
 
 beforeEach(() => {
 	forgetSubagentTrees("hub-1");
+	forgetStopRequestsForHub("hub-1");
 	client = hub(() => specTree());
 	harness.connection = screenConnection(client, "ready");
 	const options: NativeStackNavigationOptions[] = [];
@@ -337,4 +351,43 @@ it("says why it can't list them when the read fails", async () => {
 	harness.connection = screenConnection(client, "ready");
 	const tree = await mount();
 	expect(text(tree)).toContain("The subagents couldn't be listed right now.");
+});
+
+it("says a stop you asked for is pending, then that it stopped, with the toast once", async () => {
+	let stopped = false;
+	client = hub(() => {
+		const whole = specTree();
+		if (stopped) {
+			const race = (whole.root.entries[0] as { delegate: Record<string, unknown> }).delegate;
+			Object.assign(race, { outcome: "cancelled", projectionRevision: 2, child: undefined });
+			whole.revision = 2;
+		}
+		return whole;
+	});
+	harness.connection = screenConnection(client, "ready");
+	const tree = await mount();
+	const rows = flattenSubagents(specTree() as never);
+	const race = rows.find((row) => row.ref === "local:race");
+	if (!race) throw new Error("no race row");
+	act(() => stopRequests("hub-1").request(COORDINATOR.ref, race, Date.now()));
+	await settle();
+	expect(text(tree)).toContain("Stop requested from the coordinator");
+	stopped = true;
+	client.emitNotification({ method: "evener/jobs/treeUpdated", params: { threadId: "coord", ref: "local:coord", revision: 2 } } as never);
+	await settle();
+	// A stopped subagent is done, under the fold.
+	act(() => pressable(tree, "Done · 22")?.props.onPress());
+	expect(text(tree)).toContain("Stopped at your request");
+	const toasts = () => tree.root.findAllByType(Toast).map((toast) => toast.props.toast?.text);
+	expect(toasts()).toEqual(["“Fix race in tree settle” stopped"]);
+});
+
+it("says a stop you sent directly is pending without naming the coordinator (S6)", async () => {
+	const tree = await mount();
+	const drain = flattenSubagents(specTree() as never).find((row) => row.ref === "local:run-0");
+	if (!drain) throw new Error("no running row");
+	act(() => stopRequests("hub-1").request(COORDINATOR.ref, drain, Date.now(), { direct: true }));
+	await settle();
+	expect(text(tree)).toContain("Stop requested");
+	expect(text(tree)).not.toContain("Stop requested from the coordinator");
 });
