@@ -2,6 +2,7 @@
 // end. It never moves what you read; tapping it scrolls to the end.
 import { Platform, Pressable, Text } from "react-native";
 import { useColors, useTextScale } from "../ui";
+import { floatingCapsule } from "./FloatingStack";
 
 export function NewContentPill({ count, onPress }: { count: number; onPress: () => void }) {
 	const { palette } = useColors();
@@ -12,20 +13,7 @@ export function NewContentPill({ count, onPress }: { count: number; onPress: () 
 			accessibilityRole="button"
 			accessibilityLabel={`${count} new below, scroll to the end`}
 			onPress={onPress}
-			style={{
-				minHeight: 44,
-				justifyContent: "center",
-				paddingHorizontal: 16,
-				borderRadius: 999,
-				borderWidth: 1,
-				borderColor: palette.edgeStrong,
-				backgroundColor: palette.surface,
-				shadowColor: "#000",
-				shadowOpacity: 0.12,
-				shadowRadius: 8,
-				shadowOffset: { width: 0, height: 2 },
-				elevation: 3,
-			}}
+			style={{ ...floatingCapsule(palette), justifyContent: "center" }}
 		>
 			<Text
 				allowFontScaling={Platform.OS !== "ios"}

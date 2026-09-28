@@ -5,6 +5,7 @@ import type { NavigationSessionSummary } from "@evener/appwire-client";
 import { SymbolView } from "expo-symbols";
 import { Platform, Pressable, Text, useWindowDimensions } from "react-native";
 import { useColors, useTextScale } from "../ui";
+import { floatingCapsule } from "./FloatingStack";
 
 export function NextCapsule({
 	target,
@@ -26,20 +27,10 @@ export function NextCapsule({
 			onPress={onOpen}
 			onLongPress={onHold}
 			style={({ pressed }) => ({
-				minHeight: 44,
+				...floatingCapsule(palette),
 				flexDirection: "row",
 				alignItems: "center",
 				gap: 6,
-				paddingHorizontal: 16,
-				borderRadius: 999,
-				borderWidth: 1,
-				borderColor: palette.edgeStrong,
-				backgroundColor: palette.surface,
-				shadowColor: "#000",
-				shadowOpacity: 0.12,
-				shadowRadius: 8,
-				shadowOffset: { width: 0, height: 2 },
-				elevation: 3,
 				opacity: pressed ? 0.6 : 1,
 			})}
 		>

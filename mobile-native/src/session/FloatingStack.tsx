@@ -4,6 +4,25 @@
 // left out while it has nothing to show, so what does show keeps its 10pt.
 import type { ReactNode } from "react";
 import { View } from "react-native";
+import type { Palette } from "../design/tokens";
+
+/** The capsule every floating control wears, so Next and "↓ 3 new" read as
+ * one family and restyle together. */
+export function floatingCapsule(palette: Palette) {
+	return {
+		minHeight: 44,
+		paddingHorizontal: 16,
+		borderRadius: 999,
+		borderWidth: 1,
+		borderColor: palette.edgeStrong,
+		backgroundColor: palette.surface,
+		shadowColor: "#000",
+		shadowOpacity: 0.12,
+		shadowRadius: 8,
+		shadowOffset: { width: 0, height: 2 },
+		elevation: 3,
+	} as const;
+}
 
 export function FloatingStack({ toast, next, pill }: { toast: ReactNode; next: ReactNode; pill: ReactNode }) {
 	return (
