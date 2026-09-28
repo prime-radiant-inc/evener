@@ -2414,17 +2414,34 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
               if (!beforeIdentities.has(id)) pageKeys.add(id);
             }
             const versionedMerge = mergeOlderItemPage(currentConv, result.turnsPage);
-            if (versionedMerge.turns === currentConv.turns) {
-              // mergeOlderItemPage's own versioned disposition (discard,
-              // defer, or invalidate — mergeVersionedPage's pageDisposition
-              // switch) merged nothing in: `turns` comes back by reference,
-              // unchanged. A discarded or deferred page is silently
-              // absorbed (a deferred one resolves itself once the held
-              // incarnation's own latest-window read lands, per
-              // applyReadModel/applyReadResponse's own deferredPages replay);
-              // an invalidated one means this page raced a resync mid-flight
-              // and only a fresh read can recover — the same gap the
-              // live-frame path already requests one for.
+            if (versionedMerge === currentConv) {
+              // A real discard (pageDisposition's "discard" branch, or a
+              // stale-model race) returns the model UNCHANGED — the exact
+              // object passed in. This is strictly narrower than comparing
+              // `.turns` by reference: mergeHistory and withDisplay's
+              // displayTurns also return the held turns array by reference
+              // on a genuine "merge" disposition whose page turns out to
+              // carry nothing newer than what is already held, so `.turns`
+              // equality alone cannot tell a no-op merge apart from a
+              // discard — see the no-op-merge test below.
+              set({ loadingOlder: false });
+              return { status: "ignored" };
+            }
+            const heldHistory = currentConv.history;
+            const mergedHistory = versionedMerge.history;
+            if (mergedHistory?.invalidatedAtGeneration !== undefined) {
+              // "defer" (the page waits on an already-invalid thread's
+              // pending incarnation) and "invalidate" (this page just
+              // announced the invalidation itself) both leave the merged
+              // history invalid — pageDisposition never reaches "merge"
+              // while held is already invalid, and "invalidate" always
+              // marks the fresh history invalid via `invalidated()` — so
+              // this test alone separates them from a real merge. Neither
+              // advances the cursor: a deferred page resolves itself once
+              // the held incarnation's own latest-window read lands (per
+              // applyReadModel/applyReadResponse's own deferredPages
+              // replay); an invalidated one means this page raced a resync
+              // mid-flight and only a fresh read can recover.
               set({ loadingOlder: false });
               // A newly-invalidated thread needs a rehydrate; re-arming an
               // ALREADY-invalid one (a second, newer signal arriving before
@@ -2438,19 +2455,21 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
               // misses a re-invalidation (the awaited signal moving from one
               // real epoch/incarnation to a newer one) entirely. Compare the
               // signal that actually changes instead.
-              const heldHistory = currentConv.history;
-              const mergedHistory = versionedMerge.history;
               const newlyInvalidated =
-                mergedHistory?.invalidatedAtGeneration !== undefined &&
-                (heldHistory?.invalidatedAtGeneration === undefined ||
-                  heldHistory.awaited?.bootGeneration !== mergedHistory.awaited?.bootGeneration ||
-                  heldHistory.awaited?.epoch !== mergedHistory.awaited?.epoch ||
-                  heldHistory.pendingIncarnation !== mergedHistory.pendingIncarnation);
+                heldHistory?.invalidatedAtGeneration === undefined ||
+                heldHistory.awaited?.bootGeneration !== mergedHistory.awaited?.bootGeneration ||
+                heldHistory.awaited?.epoch !== mergedHistory.awaited?.epoch ||
+                heldHistory.pendingIncarnation !== mergedHistory.pendingIncarnation;
               if (newlyInvalidated) {
                 requestRehydrate(currentConv.ref);
               }
               return { status: "ignored" };
             }
+            // A genuine merge — advance the cursor and take the normal
+            // "loaded" path below even when the page turned out to carry
+            // nothing newer than what is already held (mergeHistory then
+            // returns `turns` unchanged by reference; itemKeys ends up
+            // empty, which is the reader's own honest no-progress signal).
             // A page can re-serve an identity the window already holds under
             // a DIFFERENT turn id than before (the pagination boundary can
             // split a turn differently across pages) — the versioned merge

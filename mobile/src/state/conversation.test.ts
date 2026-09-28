@@ -10675,6 +10675,38 @@ describe("ConversationStore", () => {
       }
       expect(service.readProjectionCalls.length).toBeGreaterThan(readsBefore);
     });
+
+    // RoboRev round 4 (Medium): mergeHistory (and withDisplay/displayTurns,
+    // which returns held.turns by reference when there is no live overlay)
+    // return the held `turns` array BY REFERENCE not just on a real discard,
+    // but also on a genuine "merge" disposition whose page turns out to
+    // carry nothing newer than what is already held (every turn/item at an
+    // equal-or-higher version). `versionedMerge.turns === currentConv.turns`
+    // cannot tell that apart from discard/defer/invalidate, so it was
+    // misreporting this case as "ignored" without advancing the cursor -
+    // mobile-native's screens.tsx re-requests the same cursor forever.
+    it("a page whose items are all already held (a genuine no-op merge) still advances the cursor", async () => {
+      const { store, service } = await openVersioned([makeTurn({ id: "t0", items: [], version: 2 })]);
+      store.setState({ olderCursor: "cursor-1" });
+      service.olderItems = {
+        // No items and no version: this copy of t0 does not supersede the
+        // held version-2 turn, so mergeHistory's own `changed` flag stays
+        // false and it returns the held turns array unchanged by reference
+        // - a real merge, not a discard.
+        turnsPage: {
+          data: [wireTurn("t0", 5, 1)],
+          nextCursor: "cursor-2",
+          bootGeneration: "1",
+          epoch: 1,
+          snapshot: { incarnation: "inc-1", length: 1 },
+        },
+        nextCursor: "cursor-2",
+      };
+      const result = await store.getState().loadOlder(service);
+      expect(result.status).toBe("loaded");
+      expect(store.getState().olderCursor).toBe("cursor-2");
+      expect(store.getState().conversation?.olderCursor).toBe("cursor-2");
+    });
   });
 
   // RoboRev round 1 (Medium): a failed page turn projects its own row keyed
