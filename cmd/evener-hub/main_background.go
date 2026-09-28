@@ -116,6 +116,16 @@ func messageSearchSessions(entries []hubcore.PastEntry) []hubcore.MessageSearchS
 	return sessions
 }
 
+// watchHubNotices announces the hub's notice changes (S11) until ctx ends.
+func watchHubNotices(ctx context.Context, web *WebServer) {
+	if ctx.Err() != nil {
+		return
+	}
+	ticks, stop := hubTicker(noticeInterval)
+	defer stop()
+	runNoticeWatcher(ctx, ticks, web.notices.read, web.appRPC)
+}
+
 // seedHubMarketplaces runs before the hub ever calls ListenAndServe (main.go
 // binds hubListener but does not Serve it until well after this call), so no
 // client could be connected when it runs — but it runs on web.cfg.PluginManager

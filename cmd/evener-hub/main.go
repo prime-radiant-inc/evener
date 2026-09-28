@@ -794,6 +794,10 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 	// notifications from it). Ticks every 5s and on-demand via attentionPoke.
 	startBackground(func() { watchHubAttention(ctx, attentionPoke, archive, past, roster, web) })
 
+	// Notices watcher: re-derives the hub's notices every few seconds and
+	// broadcasts evener/notices/changed when they change (S11).
+	startBackground(func() { watchHubNotices(ctx, web) })
+
 	// Seed the bundled default marketplaces (best-effort, first-run-gated —
 	// see SeedDefaultMarketplaces). Every evener CLI path does this already
 	// (cmd/evener/run.go, serve.go, plugincmd.go); the hub was the one surface

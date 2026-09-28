@@ -280,3 +280,29 @@ func TestBuildIncludesHostCredentialPushResult(t *testing.T) {
 	}
 	t.Fatal("build() missing HostCredentialPushResult")
 }
+
+// TestBuildIncludesHubNotice guards the same gap RoboRev found on PR 22:
+// HubNotice is only ever the element type of NoticesListResponse.Notices (a
+// method result and a notification payload), never a method's own
+// Params/Result, so without an explicit registration the reference names
+// []appwire.HubNotice with no field table of its own while types.gen.ts
+// still emits the interface.
+func TestBuildIncludesHubNotice(t *testing.T) {
+	d := build()
+	for _, tv := range d.Types {
+		if tv.Name != "HubNotice" {
+			continue
+		}
+		fields := map[string]bool{}
+		for _, field := range tv.Fields {
+			fields[field.JSON] = true
+		}
+		for _, name := range []string{"id", "kind", "subject", "marketplace", "affectedSessions"} {
+			if !fields[name] {
+				t.Fatalf("HubNotice missing field %q: %+v", name, tv.Fields)
+			}
+		}
+		return
+	}
+	t.Fatal("build() missing HubNotice")
+}

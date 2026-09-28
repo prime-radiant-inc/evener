@@ -257,6 +257,7 @@ func FuzzHubcoreScenarios(f *testing.F) {
 		fuzzScenarioStatusProber_KeepsTheLastTurnEndedTime,
 		fuzzScenarioStatusProber_KeepsThePendingQuestion,
 		fuzzScenarioStatusProber_KeepsTheRestingFailure,
+		fuzzScenarioStatusProber_KeepsTheRootsProfile,
 		fuzzScenarioStatusProber_KeepsTheTreesActivity,
 		fuzzScenarioStatusProber_KeepsTheTreesSubagentTally,
 		fuzzScenarioStatusProber_NetworkFailure,

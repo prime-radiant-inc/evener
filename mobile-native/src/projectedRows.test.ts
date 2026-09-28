@@ -351,6 +351,42 @@ describe("projectedRow — item entries", () => {
 	});
 });
 
+describe("projectedRow: how long a thought took", () => {
+	// The wire never times reasoning; the phone's reducer stamps the times it
+	// saw the thought arrive and settle.
+	it("falls back to the times the phone saw when the wire has none", () => {
+		const row = projectedRow(
+			itemEntry(
+				item({
+					type: "reasoning",
+					text: "hmm",
+					status: "completed",
+					observedStartedAt: "2024-01-01T00:00:00.000Z",
+					observedCompletedAt: "2024-01-01T00:00:12.000Z",
+				}),
+			),
+		);
+		expect(row?.kind === "activity" && row.detail.durationMs).toBe(12_000);
+	});
+
+	it("keeps the wire's times when it has them", () => {
+		const row = projectedRow(
+			itemEntry(
+				item({
+					type: "reasoning",
+					text: "hmm",
+					status: "completed",
+					startedAt: "2024-01-01T00:00:00.000Z",
+					completedAt: "2024-01-01T00:00:03.000Z",
+					observedStartedAt: "2024-01-01T00:00:00.000Z",
+					observedCompletedAt: "2024-01-01T00:00:12.000Z",
+				}),
+			),
+		);
+		expect(row?.kind === "activity" && row.detail.durationMs).toBe(3_000);
+	});
+});
+
 describe("projectedRow — thinking entries", () => {
 	it("maps a thinking entry to a content-free live-thought placeholder activity", () => {
 		const row = projectedRow(thinkingEntry(item({ type: "reasoning", text: "secret thought" })));
@@ -535,6 +571,8 @@ describe("projectedRow — critical entries", () => {
 			id: "i1",
 			title: "Thought not shown",
 			detail: "",
+			// A thought's failure row, so the transcript can read it quietly.
+			thought: true,
 			turnId: "t1",
 		});
 		expect(JSON.stringify(row)).not.toContain("secret thought");
@@ -1298,6 +1336,7 @@ describe("the timeline projection delegates to the shared projector", () => {
 				id: "r3",
 				title: "Thought not shown",
 				detail: "",
+				thought: true,
 				turnId: "t3",
 			});
 

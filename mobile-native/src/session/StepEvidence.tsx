@@ -3,19 +3,18 @@
 // with the web's add and delete washes, the file a write wrote, an error, and
 // the images the step produced.
 import { type ReactNode, useMemo, useState } from "react";
-import { Platform, Pressable, ScrollView, Text, View } from "react-native";
+import { Pressable, ScrollView, Text, View } from "react-native";
 import { type AnsiLine, parseAnsiLines } from "../../../cmd/evener-hub/frontend/src/widgets/codeblock/ansi";
 import { AnsiOutputLine } from "../AnsiOutputLine";
 import { typeRoles } from "../design/tokens";
 import { TranscriptImages } from "../TranscriptImages";
 import type { RunStep } from "../timeline";
-import { useColors, useTextScale } from "../ui";
+import { allowFontScaling, useColors, useTextScale } from "../ui";
 import { EVIDENCE_PREVIEW_LINES, type Evidence } from "./evidence";
 import { LogViewer } from "./LogViewer";
 
 type Palette = ReturnType<typeof useColors>["palette"];
 
-const allowFontScaling = Platform.OS !== "ios";
 
 function machineText(scale: number) {
 	return {
