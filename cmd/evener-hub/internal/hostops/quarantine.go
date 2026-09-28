@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -108,10 +109,15 @@ func quarantineStamp(at time.Time) string {
 // durable epoch, the newest complete custody file (the operator-visible signal),
 // and every aside file the store was renamed to.
 type quarantineArtifacts struct {
-	epoch      uint64
-	signal     *QuarantineSignal
-	newestAsid string
-	asides     []string
+	epoch  uint64
+	signal *QuarantineSignal
+	// rebuildStamp is the custody/aside timestamp the vanished-replacement
+	// rebuild reads from: the pair with the highest validated quarantine epoch,
+	// with the filename timestamp only as a tie-breaker, so a backward-moving
+	// clock cannot make an older quarantine's pair win.
+	rebuildStamp string
+	rebuildEpoch uint64
+	asides       []string
 	// allocatorFloor is the highest controller-assigned id any existing custody
 	// file for this store handed out (its high-water mark or one of its imported
 	// ids). The replacement allocator and every later quarantine's ownership ids
@@ -171,6 +177,11 @@ func scanQuarantineArtifacts(fs afero.Fs, storePath string) (quarantineArtifacts
 				}
 			}
 			artifacts.custodyStamps[stamp] = true
+			if artifacts.rebuildStamp == "" || custody.QuarantineEpoch > artifacts.rebuildEpoch ||
+				(custody.QuarantineEpoch == artifacts.rebuildEpoch && stamp > artifacts.rebuildStamp) {
+				artifacts.rebuildStamp = stamp
+				artifacts.rebuildEpoch = custody.QuarantineEpoch
+			}
 			if custody.AllocatorHighWaterMark > artifacts.allocatorFloor {
 				artifacts.allocatorFloor = custody.AllocatorHighWaterMark
 			}
@@ -208,9 +219,6 @@ func scanQuarantineArtifacts(fs afero.Fs, storePath string) (quarantineArtifacts
 			}
 			artifacts.asideStamps[stamp] = true
 			artifacts.asides = append(artifacts.asides, asidePath)
-			if stamp > artifacts.newestAsid {
-				artifacts.newestAsid = stamp
-			}
 		}
 	}
 	return artifacts, nil
@@ -246,6 +254,10 @@ func readQuarantineEpochFile(fs afero.Fs, storePath string) (uint64, bool, error
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&sidecar); err != nil {
 		return 0, false, fmt.Errorf("decode epoch sidecar %s: %w", sidecarPath, err)
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
+		return 0, false, fmt.Errorf("epoch sidecar %s carries trailing data", sidecarPath)
 	}
 	return sidecar.QuarantineEpoch, true, nil
 }
@@ -378,11 +390,12 @@ func resolveStoreFS(fs afero.Fs, path string, faults storeFaults) (snapshot, uin
 		if err := clearQuarantineIntent(fs, path, faults); err != nil {
 			return snapshot{}, 0, nil, err
 		}
-	} else if _, err := lstat(fs, path); errors.Is(err, os.ErrNotExist) && artifacts.newestAsid != "" {
+	} else if _, err := lstat(fs, path); errors.Is(err, os.ErrNotExist) && artifacts.rebuildStamp != "" {
 		// The store file is gone but an aside and its complete custody remain: a
 		// completed quarantine whose replacement vanished. Rebuild the
-		// replacement from the custody the quarantine already took.
-		custodyPath := filepath.Join(filepath.Dir(path), filepath.Base(path)+quarantineCustodyInfix+artifacts.newestAsid+".json")
+		// replacement from the custody the newest quarantine took — the pair with
+		// the highest validated epoch, not the newest filename timestamp.
+		custodyPath := quarantineCustodyPath(path, artifacts.rebuildStamp)
 		custody, err := readCustodyFile(fs, custodyPath, path)
 		if err != nil {
 			return snapshot{}, 0, nil, quarantineFailed(err)
@@ -605,6 +618,10 @@ func readQuarantineIntent(fs afero.Fs, path string) (quarantineIntent, bool, err
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&intent); err != nil {
 		return quarantineIntent{}, false, quarantineFailed(fmt.Errorf("decode quarantine intent %s: %w", intentPath, err))
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
+		return quarantineIntent{}, false, quarantineFailed(fmt.Errorf("quarantine intent %s carries trailing data", intentPath))
 	}
 	switch {
 	case intent.CorruptFile != path:

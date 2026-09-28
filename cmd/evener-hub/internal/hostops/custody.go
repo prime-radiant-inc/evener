@@ -159,8 +159,17 @@ func custodyImports(custody custodyFile, custodyPath string) ([]Record, error) {
 // verified empty). It names the custody file it came from, which is the
 // `boundaryRef` an attestation must match.
 func boundaryUnavailableEntry(custodyPath string) json.RawMessage {
-	return json.RawMessage(fmt.Sprintf(
-		`[{"kind":"boundary-unavailable","reason":"corrupt-store-custody","custodyRef":%q}]`, custodyPath))
+	// The JSON encoder builds the sentinel, never fmt's %q: Go's quoted-string
+	// escaping is not JSON's (it emits \xNN, \a and \v), so a custody path
+	// carrying a control byte would otherwise produce a document no decoder
+	// reads — and the entry must stay decodable, because it is the operator's
+	// reference to the custody file the attestation matches.
+	entry, _ := json.Marshal([]struct {
+		Kind       string `json:"kind"`
+		Reason     string `json:"reason"`
+		CustodyRef string `json:"custodyRef"`
+	}{{Kind: "boundary-unavailable", Reason: "corrupt-store-custody", CustodyRef: custodyPath}})
+	return entry
 }
 
 // assembleCustody completes and validates one custody snapshot: the cross-entry
@@ -227,18 +236,32 @@ func assembleCustody(custody custodyFile) (custodyFile, error) {
 	if err != nil {
 		return custodyFile{}, fmt.Errorf("%w: %w", ErrQuarantineIncomplete, err)
 	}
-	if len(records) != len(custody.RecordIDs) {
-		return custodyFile{}, fmt.Errorf("%w: recordIds names %d records but the import set holds %d",
-			ErrQuarantineIncomplete, len(custody.RecordIDs), len(records))
-	}
+	// recordIds and the import set are one-to-one: every imported record appears
+	// exactly once as a row (same id and host), and every row names an import.
+	// Existence plus length equality is not enough — two rows for one import
+	// would leave another import unnamed while the counts agree.
 	imported := make(map[string]string, len(records))
 	for _, record := range records {
+		if _, duplicate := imported[record.ID]; duplicate {
+			return custodyFile{}, fmt.Errorf("%w: the import set names record id %q twice", ErrQuarantineIncomplete, record.ID)
+		}
 		imported[record.ID] = record.Host
 	}
+	rows := make(map[string]string, len(custody.RecordIDs))
 	for _, row := range custody.RecordIDs {
+		if _, duplicate := rows[row.RecordID]; duplicate {
+			return custodyFile{}, fmt.Errorf("%w: recordIds names %q twice", ErrQuarantineIncomplete, row.RecordID)
+		}
+		rows[row.RecordID] = row.Host
 		if host, ok := imported[row.RecordID]; !ok || host != row.Host {
 			return custodyFile{}, fmt.Errorf("%w: recordIds row %q/%q is not an imported record",
 				ErrQuarantineIncomplete, row.RecordID, row.Host)
+		}
+	}
+	for _, record := range records {
+		if _, ok := rows[record.ID]; !ok {
+			return custodyFile{}, fmt.Errorf("%w: imported record %q/%q is missing from recordIds",
+				ErrQuarantineIncomplete, record.ID, record.Host)
 		}
 	}
 	// The id split: fence imports keep their original ids, which the corrupt file
@@ -278,6 +301,8 @@ type custodyDocument struct {
 	Records                *[]recordFile              `json:"records"`
 	CompactSeq             uint64                     `json:"compactSeq"`
 	Tombstones             *[]tombstoneFile           `json:"tombstones"`
+	CompactionMarks        *[]CompactionMark          `json:"compactionMarks"`
+	CompactionFloor        uint64                     `json:"compactionFloor"`
 	Boundaries             map[string]json.RawMessage `json:"boundaries"`
 	RemovedHosts           map[string]json.RawMessage `json:"removedHosts"`
 	Tokens                 json.RawMessage            `json:"tokens"`
@@ -285,8 +310,6 @@ type custodyDocument struct {
 	ProbeEpochSeq          json.RawMessage            `json:"probeEpochSeq"`
 	GuardEpoch             json.RawMessage            `json:"guardEpoch"`
 	WallClockHighWaterMark json.RawMessage            `json:"wallClockHighWaterMark"`
-	CompactionMarks        json.RawMessage            `json:"compactionMarks"`
-	CompactionFloor        json.RawMessage            `json:"compactionFloor"`
 }
 
 // readStoreForCustody decodes a corrupt store file for the custody snapshot. It
@@ -364,6 +387,10 @@ func readStoreForCustody(fs afero.Fs, path string) (snapshot, error) {
 			state.Tombstones[i] = tombstone
 		}
 	}
+	if file.CompactionMarks != nil {
+		state.CompactionMarks = append([]CompactionMark(nil), (*file.CompactionMarks)...)
+	}
+	state.CompactionFloor = file.CompactionFloor
 	state.Boundaries = make(map[string]Boundary, len(file.Boundaries))
 	state.RemovedHosts = make(map[string]RemovedHost, len(file.RemovedHosts))
 	for name, value := range file.Boundaries {
@@ -459,16 +486,86 @@ func custodyFromStore(state snapshot, path string, epoch uint64, now time.Time, 
 		}
 		ids[allocated] = true
 	}
-	// Dense coverage. The ids are unique and each was just checked at or below
-	// the high-water mark, so the file accounts for its whole record set exactly
-	// when it carries as many ids as the mark claims. The comparison is O(1) on
-	// purpose: the mark is read verbatim from the corrupt file, and iterating it
-	// would let a single malformed number spin the boot (10^12) or wrap forever
-	// (`allocated++` at MaxUint64) before the refusal — a boot hang the
-	// quarantine must never be able to cause.
-	if uint64(len(ids)) != state.AllocatorHighWaterMark {
-		return custodyFile{}, fmt.Errorf("%w: the file accounts for %d ids, but its allocator high-water mark claims %d records",
-			ErrQuarantineIncomplete, len(ids), state.AllocatorHighWaterMark)
+	// Coverage, not density: retention and compaction legitimately leave gaps, so
+	// completeness is the weaker — and still bounded work — question of whether
+	// every id the file no longer carries is accounted for by its own removal
+	// evidence rather than lost. Nothing here iterates the file-controlled
+	// allocator high-water mark: the accounting is O(records+tombstones), so a
+	// file claiming 10^12 records refuses promptly instead of spinning the boot.
+	//
+	//   - A retained tombstone accounts for its compacted id directly.
+	//   - A retained compaction mark accounts for ids at or above the smallest id
+	//     its write removed, up to the highest id the file still shows: the marks
+	//     record each write's smallest removed id and compaction consumes
+	//     terminals oldest-first, so a missing id inside that span is removal
+	//     evidence, not loss.
+	//   - The dropped-marks floor accounts for ids below every retained minimum:
+	//     those are the oldest ids, which only the evicted writes ever removed.
+	//     With the ledger whole (floor zero) an id below every minimum was never
+	//     compacted, so a gap there is a lost record; and any id above the
+	//     highest visible id — where §4's "truncation that merely omits a record"
+	//     lands — has no evidence at all. Both refuse.
+	missing := state.AllocatorHighWaterMark - uint64(len(ids))
+	if missing > 0 {
+		smallest, haveSmallest := uint64(0), false
+		var maxVisible uint64
+		for allocated := range ids {
+			if allocated > maxVisible {
+				maxVisible = allocated
+			}
+		}
+		markSeqs := make(map[uint64]bool, len(state.CompactionMarks))
+		for _, mark := range state.CompactionMarks {
+			if err := validateCompactionMark(mark, state.CompactSeq); err != nil {
+				return custodyFile{}, fmt.Errorf("%w: %w", ErrQuarantineIncomplete, err)
+			}
+			if markSeqs[mark.Seq] {
+				return custodyFile{}, fmt.Errorf("%w: compaction seq %d is carried by more than one mark",
+					ErrQuarantineIncomplete, mark.Seq)
+			}
+			markSeqs[mark.Seq] = true
+			for _, removed := range mark.Hosts {
+				allocated, err := parseAllocatorID(removed)
+				if err != nil {
+					return custodyFile{}, fmt.Errorf("%w: compaction mark seq %d names removed id %q, which is not a controller-assigned id",
+						ErrQuarantineIncomplete, mark.Seq, removed)
+				}
+				if !haveSmallest || allocated < smallest {
+					smallest, haveSmallest = allocated, true
+				}
+			}
+		}
+		if state.CompactionFloor > state.CompactSeq {
+			return custodyFile{}, fmt.Errorf("%w: compaction floor %d is above the store's compactSeq %d",
+				ErrQuarantineIncomplete, state.CompactionFloor, state.CompactSeq)
+		}
+		if !haveSmallest {
+			return custodyFile{}, fmt.Errorf("%w: %d ids below the allocator high-water mark %d carry no removal evidence",
+				ErrQuarantineIncomplete, missing, state.AllocatorHighWaterMark)
+		}
+		var visibleBelow, visibleInSpan uint64
+		for allocated := range ids {
+			switch {
+			case allocated < smallest:
+				visibleBelow++
+			case allocated <= maxVisible:
+				visibleInSpan++
+			}
+		}
+		missingBelow := smallest - 1 - visibleBelow
+		missingInSpan := uint64(0)
+		if maxVisible >= smallest {
+			missingInSpan = maxVisible - smallest + 1 - visibleInSpan
+		}
+		missingAbove := missing - missingBelow - missingInSpan
+		if missingAbove > 0 {
+			return custodyFile{}, fmt.Errorf("%w: %d ids above the highest id the file still shows carry no removal evidence",
+				ErrQuarantineIncomplete, missingAbove)
+		}
+		if missingBelow > 0 && state.CompactionFloor == 0 {
+			return custodyFile{}, fmt.Errorf("%w: %d ids below the smallest id any retained compaction mark removed carry no removal evidence",
+				ErrQuarantineIncomplete, missingBelow)
+		}
 	}
 
 	fences := make([]custodyFence, 0, len(state.Records))
