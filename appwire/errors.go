@@ -107,6 +107,14 @@ const (
 	// (deploy pipeline 08b §11). It shares CodeConflict with genuine conflicts,
 	// so a client must match this discriminant and its Binding, never the code.
 	ErrorStaleEntry ErrorInfo = "stale-entry"
+	// ErrorCursorTooLarge marks deploy pipeline 08b's over-cap first-page
+	// refusal (§§8, 11): an operations read whose boundary map would exceed the
+	// 8 KiB encoded cursor cap, so no cursor was minted and the client re-lists
+	// with a narrower query. Its data is CursorTooLargeErrorData — never a
+	// compacting `compactSeq`, because there is no cursor to name one. Shares
+	// CodeConflict with the other refusals, so a client matches this
+	// discriminant, never the code.
+	ErrorCursorTooLarge ErrorInfo = "cursor-too-large"
 	// ErrorHostBusyOperation marks a deploy-pipeline refusal because the host's
 	// per-host gate is held by a deploy/restart operation — including an
 	// Ensure-triggered deploy, which holds its own operation-store record
@@ -218,6 +226,29 @@ func StaleEntry(binding StaleEntryBinding, message string) WireError {
 		Data: StaleEntryErrorData{
 			ErrorData: ErrorData{EvenerErrorInfo: ErrorStaleEntry},
 			Binding:   binding,
+		},
+	}
+}
+
+// CursorTooLargeErrorData is the over-cap first-page refusal's data (deploy
+// pipeline 08b §11): the standard ErrorData plus the encoded cursor cap the
+// boundary map exceeded. It never carries a compacting `compactSeq` — no
+// cursor was minted, so there is none to name (§8).
+type CursorTooLargeErrorData struct {
+	ErrorData
+	CapBytes int `json:"capBytes"`
+}
+
+// CursorTooLarge is deploy pipeline 08b's `cursor-too-large` refusal: a first
+// page whose boundary map would exceed the 8 KiB encoded cursor cap. The
+// client re-lists with a narrower query, never a truncated cursor.
+func CursorTooLarge(capBytes int, message string) WireError {
+	return WireError{
+		Code:    CodeConflict,
+		Message: message,
+		Data: CursorTooLargeErrorData{
+			ErrorData: ErrorData{EvenerErrorInfo: ErrorCursorTooLarge},
+			CapBytes:  capBytes,
 		},
 	}
 }
