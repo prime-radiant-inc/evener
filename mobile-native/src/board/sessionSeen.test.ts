@@ -2,13 +2,23 @@
 // the loaded snapshot's turn end, and through the fleet's row for it when a
 // turn ends while you watch (Jesse's ruling, 2026-09-29).
 import { type NavigationSessionSummary, type SessionSeenMark, WireError } from "@evener/appwire-client";
-import { useMemo, useSyncExternalStore } from "react";
-import { expect, it } from "vitest";
+import { expect, it, vi } from "vitest";
 import type { ConversationClientLike } from "../../../mobile/src/services/conversation";
 import { renderHook } from "../renderNative.testkit";
-import { SeenMarkers } from "./boardMemory";
-import { BoardSeen, hubSeenMarks } from "./hubSeen";
+import { fleetSession } from "../session/fleetTestUtils";
+import { hubSeenMarks } from "./hubSeen";
+import { seenMarkers, useBoardSeen } from "./nativeBoardMemory";
 import { useMarkSeenInFront } from "./sessionSeen";
+
+// The device's own markers, in memory.
+const kv = vi.hoisted(() => new Map<string, string>());
+vi.mock("expo-sqlite/kv-store", () => ({
+	Storage: {
+		getItemSync: (key: string) => kv.get(key) ?? null,
+		setItemSync: (key: string, value: string) => kv.set(key, value),
+		removeItemSync: (key: string) => kv.delete(key),
+	},
+}));
 
 const T = Date.UTC(2026, 8, 26, 12, 0);
 const iso = (ms: number) => new Date(ms).toISOString();
@@ -36,17 +46,8 @@ function setup({ refuse = false, fail = false } = {}) {
 		onNotification: () => () => {},
 	};
 	// The device's own markers, first run a minute before T.
-	const values = new Map<string, string>();
-	const markers = new SeenMarkers(
-		{
-			getItemSync: (key) => values.get(key) ?? null,
-			setItemSync: (key, value) => void values.set(key, value),
-			removeItemSync: (key) => void values.delete(key),
-		},
-		hubId,
-	);
+	const markers = seenMarkers(hubId);
 	markers.adoptEpoch([{ updated_at: iso(T - 60_000) }]);
-	const marks = hubSeenMarks(hubId);
 	const view = {
 		inFront: true,
 		client: client as ConversationClientLike | null,
@@ -54,30 +55,20 @@ function setup({ refuse = false, fail = false } = {}) {
 		/** The fleet's row for this session, once the fleet has read it. */
 		row: undefined as NavigationSessionSummary | undefined,
 	};
-	const hook = renderHook(() => {
-		// A new BoardSeen whenever either path changes, as useBoardSeen gives
-		// the screen.
-		const hubRevision = useSyncExternalStore(marks.subscribe, marks.getRevision);
-		const markersRevision = useSyncExternalStore(markers.subscribe, markers.getRevision);
-		// biome-ignore lint/correctness/useExhaustiveDependencies: The revisions are what make a new BoardSeen.
-		const seen = useMemo(() => new BoardSeen(markers, marks), [hubRevision, markersRevision]);
-		useMarkSeenInFront({ hubId, ref: "local:s" }, view.inFront, view.client, view.conversation, view.row, seen);
-	});
+	const hook = renderHook(() =>
+		useMarkSeenInFront(
+			{ hubId, ref: "local:s" },
+			view.inFront,
+			view.client,
+			view.conversation,
+			view.row,
+			useBoardSeen(hubId),
+		),
+	);
 	return { hubId, sent, view, hook, client, markers };
 }
 
-const fleetRow = (over: Partial<NavigationSessionSummary>): NavigationSessionSummary => ({
-	ref: "local:s",
-	host_id: "local",
-	session_id: "s",
-	title: "s",
-	project: "evener",
-	state: "idle",
-	kind: "session",
-	live: true,
-	children: [],
-	...over,
-});
+const fleetRow = (over: Partial<NavigationSessionSummary>) => fleetSession("local:s", over);
 
 it("marks the session seen through its turn end once it has loaded in front", () => {
 	const { sent, view, hook } = setup();
