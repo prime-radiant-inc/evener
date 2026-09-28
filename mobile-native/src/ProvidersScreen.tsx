@@ -83,7 +83,7 @@ export function ProvidersScreen(props: NativeStackScreenProps<Routes, "Providers
 }
 
 function ProvidersScreenBody({ route }: NativeStackScreenProps<Routes, "Providers">) {
-	const { activeProfile, client, state, retry, error, display, canUseConnection } = useRetainedScreenConnection(
+	const { activeProfile, client, state, error, display, canUseConnection } = useRetainedScreenConnection(
 		route.params.hubId,
 	);
 	const ready = isReady(state);
@@ -129,7 +129,7 @@ function ProvidersScreenBody({ route }: NativeStackScreenProps<Routes, "Provider
 	}, [signIn, activeProfile?.id, client, state, writesRefused, canUseConnection]);
 	if (activeProfile?.id !== route.params.hubId) return <Copy>{HUB_NO_LONGER_SELECTED}</Copy>;
 	if (display === "wall")
-		return <ConnectionWall hubName={activeProfile.name} purpose="manage providers" error={error} onReconnect={retry} />;
+		return <ConnectionWall hubName={activeProfile.name} purpose="manage providers" error={error} />;
 	return (
 		<>
 			{display === "banner" ? <ConnectionStatus /> : null}
@@ -287,9 +287,7 @@ function Providers({
 			// cannot confirm it, so it does not report success. The surface that
 			// issued the write owns the recovery read.
 			if (applied === false) {
-				setActionError(
-					"The operation could not be confirmed. Refresh and check the current state before trying again.",
-				);
+				setActionError("The operation could not be confirmed. Check the current state before trying again.");
 				return;
 			}
 			setEditingCredential(null);
@@ -340,7 +338,7 @@ function Providers({
 			setActionError(
 				secret
 					? "Could not confirm the credential save. Check the connection and credential status before trying again."
-					: "The operation could not be confirmed. Refresh and check the current state before trying again.",
+					: "The operation could not be confirmed. Check the current state before trying again.",
 			);
 		}
 	}
@@ -629,7 +627,7 @@ function Providers({
 															onSignIn(name);
 														}}
 													>
-														{instance.hasStoredOAuth ? "Refresh sign-in" : "Sign in"}
+														{instance.hasStoredOAuth ? "Sign in again" : "Sign in"}
 													</Action>
 												)}
 												{instance.authModes?.includes("apiKey") && (

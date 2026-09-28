@@ -530,7 +530,7 @@ func TestAppDiagnosticsFromDetailedStatus_Exhaustion(t *testing.T) {
 	}
 }
 
-func TestAppDiagnosticsFromDetailedStatus_DelegatesLossless(t *testing.T) {
+func TestAppDiagnosticsFromDetailedStatus_DelegateRosterKeepsClientFields(t *testing.T) {
 	valid := true
 	message := json.RawMessage("null")
 	input := DelegateStatusInfo{
@@ -546,7 +546,7 @@ func TestAppDiagnosticsFromDetailedStatus_DelegatesLossless(t *testing.T) {
 	}
 	delegate := got.Delegates[0]
 	if delegate.DelegateID != input.DelegateID || delegate.ParentDelegateID != input.ParentDelegateID || !delegate.NeedsAttention || delegate.ProjectionRevision != input.ProjectionRevision ||
-		!bytes.Equal(delegate.Message, message) || delegate.StructuredValid == nil || !*delegate.StructuredValid || delegate.Usage == nil || delegate.Worktree == nil ||
+		len(delegate.Message) != 0 || len(delegate.StructuredResult) != 0 || delegate.StructuredValid == nil || !*delegate.StructuredValid || delegate.Usage == nil || delegate.Worktree == nil ||
 		!reflect.DeepEqual(delegate.Warnings, input.Warnings) || !reflect.DeepEqual(delegate.Diagnostics, input.Diagnostics) {
 		t.Fatalf("app delegate diagnostics = %+v", delegate)
 	}

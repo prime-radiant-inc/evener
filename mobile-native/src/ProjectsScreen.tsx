@@ -268,7 +268,7 @@ export function PageList<T>({
 							refreshList();
 						}}
 					>
-						Refresh list
+						Try again
 					</Action>
 				</View>
 			) : null}
@@ -469,7 +469,7 @@ function OrganizationStatus({
 							void actions.reconcile();
 						}}
 					>
-						Refresh organization
+						Check again
 					</Action>
 					{observation && !observation.settled && review ? (
 						<>

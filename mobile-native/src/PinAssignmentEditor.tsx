@@ -60,12 +60,12 @@ export function PinAssignmentEditor({
 		(selection?.kind === "new" && validName(selection.name));
 	const reason = uncertain
 		? previousChange
-			? "Refresh to confirm the previous pin change before editing it."
-			: "Refresh to reload this session's pins before editing."
+			? "Check the previous pin change before editing it."
+			: "Check this session's pins before editing."
 		: pending
 			? "Checking the pin assignment…"
 			: !connected
-				? "Reconnect to change pin assignments."
+				? "You can change pin assignments once the hub is back."
 				: null;
 	return (
 		<View style={[styles.fill, { backgroundColor: colors.background }]}>
@@ -147,7 +147,7 @@ export function PinAssignmentEditor({
 				) : null}
 				{uncertain ? (
 					<Action tone="quiet" disabled={!connected || loading || pending} onPress={refresh}>
-						Refresh sections
+						Check again
 					</Action>
 				) : null}
 				<Action tone="quiet" onPress={close}>

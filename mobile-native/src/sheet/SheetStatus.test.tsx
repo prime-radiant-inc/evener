@@ -1,13 +1,12 @@
 import { expect, it, vi } from "vitest";
-import { UPDATE_NEEDED_HINT } from "../board/connectionStatus";
+import { INCOMPATIBLE_VERSIONS } from "../connectionRecovery";
 import { render, renderedText } from "../renderNative.testkit";
 import { Connecting, SheetStatus } from "./SheetStatus";
 
 const status = { line: null as string | null, state: "ready", fatal: false };
 vi.mock("../board/connectionStatus", async (importOriginal) => ({
 	...(await importOriginal<typeof import("../board/connectionStatus")>()),
-	useConnectionStatusText: (state: string, fatal: boolean) =>
-		state === status.state && fatal === status.fatal ? status.line : "not the connection's own state",
+	useConnectionStatusText: () => status.line,
 }));
 vi.mock("../ConnectionProvider", () => ({ useConnection: () => ({ state: status.state, fatal: status.fatal }) }));
 vi.mock("react-native", async () => ({
@@ -29,5 +28,5 @@ it("says a never-loaded page is connecting, or why it can't", () => {
 	status.fatal = false;
 	expect(renderedText(render(<Connecting hubName="magic-kingdom" />))).toBe("Connecting to magic-kingdom…");
 	status.fatal = true;
-	expect(renderedText(render(<Connecting hubName="magic-kingdom" />))).toBe(UPDATE_NEEDED_HINT);
+	expect(renderedText(render(<Connecting hubName="magic-kingdom" />))).toBe(INCOMPATIBLE_VERSIONS);
 });

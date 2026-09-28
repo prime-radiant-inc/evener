@@ -169,7 +169,7 @@ describe("hub upgrade", () => {
 		await controller.start();
 		expect(controller.getSnapshot()).toEqual({
 			kind: "uncertain",
-			message: "Upgrade outcome is uncertain. Refresh to verify before retrying.",
+			message: "Upgrade outcome is uncertain. Check the running version before trying again.",
 		});
 	});
 	it("blocks late readback publication after disposal", async () => {

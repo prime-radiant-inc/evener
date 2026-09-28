@@ -174,7 +174,7 @@ export class NavigationPages<T> {
 		this.mutationGeneration = receipt.generation_id;
 		this.mutationFloor = Math.max(this.mutationFloor, requiredRevision(this.resourceKey, receipt.targets));
 		if (!(await this.load(true, receipt)))
-			throw new Error("The change was accepted, but the updated list could not be loaded. Refresh the list.");
+			throw new Error("The change was accepted, but the updated list could not be loaded. Try again.");
 	}
 	private async load(
 		reset: boolean,
@@ -207,7 +207,7 @@ export class NavigationPages<T> {
 			} catch (cause) {
 				if (!recovered && cause instanceof Error && cause.message.includes("installed base"))
 					return this.load(true, receipt, { recovered: true, retried });
-				throw new Error("Could not read this navigation page. Refresh to try again.");
+				throw new Error("Could not read this navigation page. Try again.");
 			}
 			const receiptRevision = receipt ? requiredRevision(this.resourceKey, receipt.targets) : 0;
 			if (reset && epoch === this.notificationEpoch && decoded.version.generationId !== this.notifiedGeneration) {
@@ -277,7 +277,7 @@ export class NavigationPages<T> {
 					: this.normalized
 						? applyDelta(this.normalized, decoded.delta, decoded.version)
 						: null;
-			if (!incoming) throw new Error("Could not read this navigation page. Refresh to try again.");
+			if (!incoming) throw new Error("Could not read this navigation page. Try again.");
 			if (reset && offset === 0) this.normalized = incoming;
 			const data = materializeNavigationResource(incoming) as Record<string, unknown>,
 				raw = data[this.field];
@@ -287,7 +287,7 @@ export class NavigationPages<T> {
 				Number(data.remaining) < 0 ||
 				(!raw.length && Number(data.remaining) > 0)
 			)
-				throw new Error("The hub returned an invalid navigation page. Refresh to try again.");
+				throw new Error("The hub returned an invalid navigation page. Try again.");
 			if (
 				!reset &&
 				(this.version?.generationId !== decoded.version.generationId ||
@@ -300,7 +300,7 @@ export class NavigationPages<T> {
 			const unique = new Map((reset ? [] : this.state.rows).map((row) => [this.key(row), row]));
 			for (const row of raw) {
 				const identity = this.key(row as T);
-				if (!identity) throw new Error("The hub returned an invalid destination. Refresh to try again.");
+				if (!identity) throw new Error("The hub returned an invalid destination. Try again.");
 				unique.set(identity, row as T);
 			}
 			this.offset = offset + raw.length;
