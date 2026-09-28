@@ -1,5 +1,4 @@
 import {
-	humanizeState,
 	type NavigationPinSectionDescriptor,
 	type NavigationProjectSummary,
 	type NavigationSessionSummary,
@@ -138,7 +137,12 @@ function Board({
 	// Activity keeps polling while only a sheet covers the Board: the sheet
 	// is part of the screen under it.
 	const inFront = useScreenInFront(routeKey);
-	const { activityOf, msSinceRead, revision: activityRevision } = useActivityPoll(client, connected, inFront);
+	const {
+		activityOf,
+		msSinceRead,
+		revision: activityRevision,
+		tick: activityTick,
+	} = useActivityPoll(client, connected, inFront);
 	const [board] = useState(createBoardController);
 	useEffect(() => () => board.dispose(), [board]);
 	const snapshot = useSyncExternalStore(board.subscribe, board.getSnapshot);
@@ -191,11 +195,24 @@ function Board({
 		// The revisions re-run isSeen after a mark, a pruned mark or first run.
 		// activityRevision re-runs isStuck after each read, and activityOf
 		// changes when the connection drops or returns, or the read goes
-		// stale. msSinceRead is left out on purpose: it changes on every
-		// render, so it would re-sort Working every time, and a row's place
-		// only needs to be as fresh as the last read (its why line reads
-		// msSinceRead live).
-		[snapshot.live.rows, snapshot.needsYou.rows, seen, seenRevision, hubSeenRevision, activityOf, activityRevision],
+		// stale. Bare msSinceRead is left out on purpose: it changes on every
+		// render, which would re-sort Working every render. activityTick
+		// (useActivityPoll's own recheck, already ticking at ACTIVITY_POLL_MS
+		// while a fresh read is on screen) stands in for it instead, so a row
+		// that crosses into stuck purely from elapsed time - no new read
+		// landing, quiet time alone reaching STUCK_AFTER_MS - still floats to
+		// the top within one poll interval of its why-line saying so, instead
+		// of waiting for the next successful read.
+		[
+			snapshot.live.rows,
+			snapshot.needsYou.rows,
+			seen,
+			seenRevision,
+			hubSeenRevision,
+			activityOf,
+			activityRevision,
+			activityTick,
+		],
 	);
 	useFirstRun(board, markers, snapshot, focused);
 
@@ -948,7 +965,11 @@ const noRevision = () => 0;
  * the polling cadence, dropping the read within one interval of its going
  * stale, whatever becomes of the poll meanwhile. With no fresh read on screen
  * there is nothing to expire, so it doesn't run: not before the first read
- * lands, not while reads keep failing, and never on a hub that predates S5. */
+ * lands, not while reads keep failing, and never on a hub that predates S5.
+ * The returned `tick` is that same recheck's counter: `bands`' isStuck sort
+ * closes over `msSinceRead`, so it needs this to re-sort Working within one
+ * poll interval of a row crossing into stuck from elapsed time alone, in
+ * step with its why-line (which reads `msSinceRead` live on every render). */
 function useActivityPoll(client: ConversationClientLike | null, connected: boolean, inFront: boolean) {
 	const poll = useMemo(() => (client ? new ActivityPoll(client) : null), [client]);
 	const revision = useSyncExternalStore(poll?.subscribe ?? noSubscription, poll?.getRevision ?? noRevision);
@@ -959,14 +980,14 @@ function useActivityPoll(client: ConversationClientLike | null, connected: boole
 	}, [poll, connected, inFront]);
 	const msSinceRead = poll?.msSinceRead() ?? null;
 	const reading = connected && isFreshRead(msSinceRead) ? poll : null;
-	const [, recheck] = useReducer((n: number) => n + 1, 0);
+	const [tick, recheck] = useReducer((n: number) => n + 1, 0);
 	useEffect(() => {
 		if (!reading || !inFront) return;
 		const timer = setInterval(recheck, ACTIVITY_POLL_MS);
 		return () => clearInterval(timer);
 	}, [reading, inFront]);
 	const activityOf = useCallback((ref: string) => reading?.activity(ref), [reading]);
-	return { revision, activityOf, msSinceRead: reading ? msSinceRead : null };
+	return { revision, activityOf, msSinceRead: reading ? msSinceRead : null, tick };
 }
 
 /** The hub's seen marks (S4): marks go out whenever the connection is ready,

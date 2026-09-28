@@ -18,7 +18,7 @@ import type {
 	SessionSeenSetParams,
 	Thread,
 } from "@evener/appwire-client";
-import { WireError } from "@evener/appwire-client";
+import { STUCK_AFTER_MS, WireError } from "@evener/appwire-client";
 import { manifest, wireV2 } from "@evener/appwire-client/testing/navigation";
 import type { ReactTestInstance, ReactTestRenderer } from "react-test-renderer";
 import { act, create } from "react-test-renderer";
@@ -2134,6 +2134,32 @@ it("stays out of Working's stuck slot for as long as reads keep failing, not jus
 	// With no fresh read on screen there is nothing to recheck: only the
 	// row-age ticker, the plugin poll and the activity poll itself are left.
 	expect(vi.getTimerCount()).toBe(3);
+	act(() => tree.unmount());
+});
+
+it("keeps a row's Working order in step with its label when elapsed time alone crosses the stuck threshold", async () => {
+	const id = hubId();
+	adoptedAnHourAgo(id);
+	const shape: Fleet = {
+		...busyFleet,
+		activity: [{ ref: "local:migrate", minutes: [0, 0, 0], runningSubagents: 0, quietForMs: STUCK_AFTER_MS - ACTIVITY_POLL_MS }],
+	};
+	const fake = hub(shape);
+	connect(id, fake.client, "ready");
+	const tree = await mount(navigation());
+	expect(textsIn(rowTitled(tree, "Migrate schema"))).toContain("Quiet 9m");
+	expect(workingTitles(tree)).toEqual(["Build docs", "Tidy imports", "Migrate schema"]);
+
+	// The next poll times out, so nothing refreshes the read: the row crosses
+	// into stuck from elapsed time on the read already on screen, one poll
+	// interval later - still well under STALE_AFTER_MS, so it's trusted.
+	shape.activity = null;
+	await advance(ACTIVITY_POLL_MS);
+	expect(textsIn(rowTitled(tree, "Migrate schema"))).toContain("May be stuck · no updates for 10m");
+	// The label and the Working order must agree the moment the label turns,
+	// not up to a poll interval later (the label reads msSinceRead live; the
+	// sort order used to wait for the next successful read).
+	expect(workingTitles(tree)).toEqual(["Migrate schema", "Build docs", "Tidy imports"]);
 	act(() => tree.unmount());
 });
 
