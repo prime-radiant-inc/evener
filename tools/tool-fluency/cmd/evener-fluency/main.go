@@ -122,9 +122,8 @@ func catalogTools(modelRef string) ([]catalogTool, error) {
 	}()
 	client := llm.NewClient()
 	sess, err := runnerNewSession(client, profile, execenv.NewLocalExecutionEnvironment(tmp), agent.SessionConfig{
-		StateDir:         filepath.Join(tmp, "state"),
-		NoProjectPrompts: true,
-		NonInteractive:   true,
+		StateDir:       filepath.Join(tmp, "state"),
+		NonInteractive: true,
 	})
 	if err != nil {
 		return nil, err
@@ -805,7 +804,6 @@ func cliProbeArgs(cfg runConfig, probe probeFile, res probeResult) []string {
 		"--reasoning-effort", cfg.reasoningEffort,
 		"--context-strategy", "compact",
 		"--max-rounds", strconv.Itoa(cfg.maxRounds),
-		"--no-project-prompts",
 		"--verbose",
 		probe.Prompt,
 	)
@@ -913,7 +911,6 @@ func buildLiveSessionConfig(cfg runConfig, stateDir string) agent.SessionConfig 
 	return agent.SessionConfig{
 		MaxToolRoundsPerInput: cmdutil.MaxRoundsToConfig(cfg.maxRounds),
 		StateDir:              stateDir,
-		NoProjectPrompts:      true,
 		SystemPromptAppend:    cfg.systemPromptAppend,
 		NonInteractive:        true,
 		ContextStrategy:       "compact",

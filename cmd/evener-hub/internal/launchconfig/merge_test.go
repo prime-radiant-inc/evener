@@ -375,7 +375,6 @@ func checkMerge_CoversRemainingScalarAndListFields(t *testing.T) {
 		Agent:            "global-agent",
 		ContextStrategy:  "global-ctx",
 		MaxSubagentDepth: new(3),
-		NoProjectPrompts: new(false),
 		PluginDirs:       []string{"/g/plugin"},
 		MCPConfigs:       []string{"/g/mcp.json"},
 	}
@@ -383,7 +382,6 @@ func checkMerge_CoversRemainingScalarAndListFields(t *testing.T) {
 		Agent:            "launch-agent",
 		ContextStrategy:  "launch-ctx",
 		MaxSubagentDepth: new(5),
-		NoProjectPrompts: new(true),
 		PluginDirs:       []string{"/l/plugin"},
 		MCPConfigs:       []string{"/l/mcp.json"},
 	}
@@ -396,9 +394,6 @@ func checkMerge_CoversRemainingScalarAndListFields(t *testing.T) {
 	}
 	if got.Effective.MaxSubagentDepth == nil || *got.Effective.MaxSubagentDepth != 5 {
 		t.Errorf("MaxSubagentDepth = %v", got.Effective.MaxSubagentDepth)
-	}
-	if got.Effective.NoProjectPrompts == nil || *got.Effective.NoProjectPrompts != true {
-		t.Errorf("NoProjectPrompts = %v", got.Effective.NoProjectPrompts)
 	}
 	wantPlugins := []string{"/g/plugin", "/l/plugin"}
 	if !reflect.DeepEqual(got.Effective.PluginDirs, wantPlugins) {

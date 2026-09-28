@@ -219,6 +219,18 @@ export type Routes = {
 	TasksSheet: { hubId: string; ref: string; threadId: string; hasTasks: boolean };
 	QueueSheet: { hubId: string; ref: string };
 	RowMenuSheet: { hubId: string; ref: string; archived: boolean };
+	Reader: {
+		hubId: string;
+		/** The session whose folder holds the file. */
+		sessionRef: string;
+		path: string;
+		/** The session the Reader sits over, where Open session and reviews go. */
+		reviewRef: string;
+		reviewTitle: string;
+		/** When the file was last written, as its opener reported it. */
+		updatedAt?: string;
+	};
+	OutlineSheet: { hubId: string; sessionRef: string; path: string };
 };
 
 export function HubsScreen({

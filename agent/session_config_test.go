@@ -1437,7 +1437,6 @@ func TestSession_SubagentUserInstructionOverride_AppendedLastToSystemPrompt(t *t
 
 	override := "SUBAGENT OVERRIDE: highest priority"
 	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
-		NoProjectPrompts:        true,
 		UserInstructionOverride: override,
 		spawn: spawnConfig{
 			parentSessionID:      "01PARENT",

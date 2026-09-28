@@ -101,7 +101,7 @@ func TestDrainStallWatchdogFiresOnGenuineStall(t *testing.T) {
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			clk := agenttest.NewFakeClock()
-			sess := newSession(t, withConfig(SessionConfig{clock: clk, NoProjectPrompts: true}))
+			sess := newSession(t, withConfig(SessionConfig{clock: clk}))
 			seedOwnedDurablePending(t, sess.jobManager, tt.jobID, tt.typ)
 
 			if stalled, err := sess.drainSubtreeIsStalled(); err != nil || !stalled {
@@ -177,7 +177,7 @@ func TestDrainStallWatchdogSparesRunningDrainJob(t *testing.T) {
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			clk := agenttest.NewFakeClock()
-			sess := newSession(t, withConfig(SessionConfig{clock: clk, NoProjectPrompts: true}))
+			sess := newSession(t, withConfig(SessionConfig{clock: clk}))
 			jm := sess.jobManager
 			rec := &jobstore.JobRecord{JobID: "live-" + tt.name, Type: tt.typ, Status: jobstore.StatusRunning, OwnerSessionID: sess.ID()}
 			jm.mu.Lock()
@@ -202,8 +202,8 @@ func TestDrainStallWatchdogSparesRunningDrainJob(t *testing.T) {
 func TestDrainStallWatchdogSpareDrivingChild(t *testing.T) {
 	t.Parallel()
 	clk := agenttest.NewFakeClock()
-	root := newSession(t, withConfig(SessionConfig{clock: clk, NoProjectPrompts: true}))
-	child := newSession(t, withConfig(SessionConfig{NoProjectPrompts: true}))
+	root := newSession(t, withConfig(SessionConfig{clock: clk}))
+	child := newSession(t, withConfig(SessionConfig{}))
 	childID := child.ID()
 
 	// The root owes work (a durable-only pending) AND has a driving child: the
@@ -229,7 +229,7 @@ func TestDrainStallWatchdogSpareDrivingChild(t *testing.T) {
 func TestDrainStallWatchdogSparePendingWatchSend(t *testing.T) {
 	t.Parallel()
 	clk := agenttest.NewFakeClock()
-	sess := newSession(t, withConfig(SessionConfig{clock: clk, NoProjectPrompts: true}))
+	sess := newSession(t, withConfig(SessionConfig{clock: clk}))
 
 	jm := sess.jobManager
 	wk := watchKey{VisibleSessionID: jm.sessionID, Target: "t1"}
@@ -261,7 +261,7 @@ func TestDrainStallWatchdogSparePendingWatchSend(t *testing.T) {
 func TestDrainStallWatchdogSparePendingDelegateDelivery(t *testing.T) {
 	t.Parallel()
 	clk := agenttest.NewFakeClock()
-	sess := newSession(t, withConfig(SessionConfig{clock: clk, NoProjectPrompts: true}))
+	sess := newSession(t, withConfig(SessionConfig{clock: clk}))
 
 	// Seed the queue the way acceptDelegateDeliveryPlan does (append under
 	// delegateDeliveryMu), so the test pins the signal subtreeHasLiveComponent
@@ -328,7 +328,7 @@ func assertDrainNotCut(t *testing.T, sess *Session, clk *agenttest.FakeClock) {
 func TestDrainStallGiveUpRechecksTheWakeEdge(t *testing.T) {
 	t.Parallel()
 	clk := agenttest.NewFakeClock()
-	sess := newSession(t, withConfig(SessionConfig{clock: clk, NoProjectPrompts: true}))
+	sess := newSession(t, withConfig(SessionConfig{clock: clk}))
 	seedOwnedDurablePending(t, sess.jobManager, "shell-wedge", jobstore.JobShell)
 
 	// TRIPWIRE: the driver single-steps a frozen fake clock with

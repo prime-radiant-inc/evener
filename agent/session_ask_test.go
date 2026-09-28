@@ -171,7 +171,7 @@ func TestAskUser_InvisibleNonInteractive(t *testing.T) {
 // TestChildRegistryKeepsDelegateWithAllowance uses) never sees ask_user.
 func TestAskUser_InvisibleForSubagent(t *testing.T) {
 	t.Parallel()
-	cfg := SessionConfig{NoProjectPrompts: true}
+	cfg := SessionConfig{}
 	cfg.spawn.depth = 1
 	cfg.spawn.parentSessionID = "parent-session"
 	cfg.spawn.delegationAllowance = 1
@@ -201,7 +201,7 @@ func TestAskUser_RestoredSubagentStaysInvisible(t *testing.T) {
 		ProfileID:  "openai",
 		Model:      "gpt-5.2",
 		IsSubagent: true,
-		Config:     (SessionConfig{NoProjectPrompts: true}).toSnapshot(),
+		Config:     (SessionConfig{}).toSnapshot(),
 	}
 	// restoreCfg.spawn intentionally left zero: the empty-carrier case.
 	restored, err := RestoreSessionFromMetaWithConfig(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), meta, RestoreSessionConfig{})
@@ -844,7 +844,7 @@ func TestAskUser_ReplyDrainsRootDelegateAttentionRefusedAtEntryGate(t *testing.T
 	}
 	sess := newSession(t,
 		withDir(stateDir),
-		withConfig(SessionConfig{StateDir: stateDir, MaxSubagentDepth: 1, NoProjectPrompts: true}),
+		withConfig(SessionConfig{StateDir: stateDir, MaxSubagentDepth: 1}),
 		withAdapter(f),
 	)
 	wakes := make(chan struct{}, 2)
@@ -3369,7 +3369,7 @@ func TestAskUser_ForkedChildDoesNotApplyItsOwnJournalToAnInheritedAnsweringSteer
 		ID:        sessionID,
 		ProfileID: "openai",
 		Model:     "gpt-5.2",
-		Config:    (SessionConfig{NoProjectPrompts: true}).toSnapshot(),
+		Config:    (SessionConfig{}).toSnapshot(),
 		// Every turn in inheritedHistory came from the parent; the child has
 		// not added any of its own yet.
 		ParentSessionID: "01KPARENT0000000000000000",

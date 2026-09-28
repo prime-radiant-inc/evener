@@ -217,7 +217,6 @@ func TestDegradedDelegateSpawnFailureDisposesItsScratch(t *testing.T) {
 	s := newSession(t, withClient(client), withConfig(SessionConfig{
 		StateDir:         packageFixtureTempDir(t, "sbx-degrade-leak-*"),
 		MaxSubagentDepth: 1,
-		NoProjectPrompts: true,
 		testOnly: testConfig{
 			skipGitSnapshot:     true,
 			minimalSystemPrompt: true,
@@ -459,7 +458,6 @@ func newNoBackendDelegateSession(t *testing.T) *Session {
 	sess, err := NewSession(client, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(workspace), SessionConfig{
 		StateDir:         t.TempDir(),
 		MaxSubagentDepth: 2,
-		NoProjectPrompts: true,
 		ForceRealIO:      true,
 		testOnly: testConfig{
 			skipGitSnapshot:     true,

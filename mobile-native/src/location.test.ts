@@ -469,4 +469,44 @@ describe("last mobile location", () => {
 		expect(routeToSave({ index: 1, routes: [hubs, session] })).toBe(session);
 		expect(routeToSave({ index: 0, routes: [tasks] })).toBeUndefined();
 	});
+
+	it("reopens a document over its session after a relaunch", () => {
+		const disk = storage();
+		const repository = new LocationRepository(disk);
+		const params = {
+			hubId: "studio",
+			sessionRef: "local:fix",
+			path: "docs/superpowers/plans/settle.md",
+			reviewRef: "local:coord",
+			reviewTitle: "Get PR 2138 Test Clean",
+			updatedAt: "2026-09-26T11:39:00.000Z",
+		};
+		repository.save(locationForRoute({ name: "Reader", params }, "studio"));
+		const saved = new LocationRepository(disk).read(["studio"]);
+		expect(saved).toEqual({
+			hubId: "studio",
+			conversation: { ref: "local:coord", title: "Get PR 2138 Test Clean" },
+			reader: { sessionRef: "local:fix", path: "docs/superpowers/plans/settle.md", updatedAt: "2026-09-26T11:39:00.000Z" },
+		});
+		expect(restoredStack(saved).routes.slice(-3)).toEqual([
+			{ name: "Sessions" },
+			{ name: "Conversation", params: { hubId: "studio", ref: "local:coord", title: "Get PR 2138 Test Clean" } },
+			{ name: "Reader", params },
+		]);
+	});
+
+	it("refuses a document with no session, an empty path, or mixed with another destination", () => {
+		const disk = storage();
+		const repository = new LocationRepository(disk);
+		const conversation = { ref: "local:coord", title: "Coordinator" };
+		for (const value of [
+			{ hubId: "studio", reader: { sessionRef: "local:fix", path: "a.md" } },
+			{ hubId: "studio", conversation, reader: { sessionRef: "local:fix", path: "" } },
+			{ hubId: "studio", conversation, reader: { sessionRef: "local:fix", path: "a.md" }, pinAssignment: true },
+		]) {
+			disk.setItemSync("evener.last-location", JSON.stringify(value));
+			expect(repository.read(["studio"])).toBeNull();
+		}
+		expect(locationForRoute({ name: "Reader", params: { hubId: "studio", sessionRef: "local:fix", path: "a.md" } }, "studio")).toBeNull();
+	});
 });

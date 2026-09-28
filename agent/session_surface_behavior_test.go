@@ -187,9 +187,7 @@ func TestSystemPromptSurfaceFollowsTheVendorForANamedInstance(t *testing.T) {
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "work"})
 	renamedProfile := namedOpenAIInstanceProfile("work", "gpt-5.5")
-	sess, err := NewSession(c, renamedProfile, execenv.NewLocalExecutionEnvironment(t.TempDir()), SessionConfig{
-		NoProjectPrompts: true,
-	})
+	sess, err := NewSession(c, renamedProfile, execenv.NewLocalExecutionEnvironment(t.TempDir()), SessionConfig{})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
@@ -208,9 +206,7 @@ func TestSystemPromptSurfaceIsGenericForACompatInstance(t *testing.T) {
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai-compatible"})
 	compatProfile := testOpenAICompatProfile("openai-compatible", "gpt-4o", 128_000)
-	sess, err := NewSession(c, compatProfile, execenv.NewLocalExecutionEnvironment(t.TempDir()), SessionConfig{
-		NoProjectPrompts: true,
-	})
+	sess, err := NewSession(c, compatProfile, execenv.NewLocalExecutionEnvironment(t.TempDir()), SessionConfig{})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}

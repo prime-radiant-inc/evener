@@ -86,7 +86,6 @@ func newFailClosedSessionWithClock(t *testing.T, fault func(string) error, clk c
 	cfg := SessionConfig{
 		StateDir:         t.TempDir(),
 		MaxSubagentDepth: 1,
-		NoProjectPrompts: true,
 		LLMRetryPolicy:   &llm.RetryPolicy{MaxRetries: 2},
 		LLMSleep:         func(context.Context, time.Duration) error { return nil },
 		testOnly:         testConfig{skipGitSnapshot: true, minimalSystemPrompt: true, noSyncJobStore: true, sessionInitFault: fault},
