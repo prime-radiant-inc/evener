@@ -116,8 +116,8 @@ function lastResolutionIndex(items: readonly ItemModel[]): number {
 
 // refsForItem flattens one ask_user item's questions into refs, memoized on
 // the ITEM reference. The reducer hands an untouched turn back by reference
-// across a fold (reducer.ts's mapTurn/settleFirstMatchingTurn), but it rebuilds
-// the turns ARRAY with .map() every fold — so a memo keyed on model.turns never
+// across a fold (reducer.ts's mapTurn and mergeHistory), but it rebuilds the
+// turns ARRAY every fold — so a memo keyed on model.turns never
 // survives a notification, and liveAskQuestions used to re-parse every pending
 // ask_user's argumentsJson on each delta (#1580's residual, #1709). The item's
 // own fields never move once it exists (an update replaces the item), so the

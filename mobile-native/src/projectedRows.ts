@@ -569,7 +569,7 @@ function askQuestionsByCall(model: ThreadModel): Map<string, AskQuestionRef[]> {
 // argument below, and pendingQuestions (mobile-native/src/questionAnswers.ts),
 // which both run against the same conversation within one publish. It does not
 // make the scan itself incremental — the reducer (reducer.ts's
-// mapTurn/settleFirstMatchingTurn) returns a new turns array on every fold,
+// mapTurn and mergeHistory) returns a new turns array on every fold,
 // even when only the newest turn changed, so a delta still pays for one scan;
 // this removes paying for it twice or more within that one delta.
 //
@@ -814,7 +814,7 @@ function attachmentsFor(
 
 // Per-turn rows, keyed on the TurnModel reference. The reducer hands a turn back
 // UNTOUCHED — by reference — when a frame did not change it (reducer.ts's mapTurn
-// and settleFirstMatchingTurn), so a delta into the newest turn leaves every older
+// and mergeHistory), so a delta into the newest turn leaves every older
 // turn's rows exactly as they were. Re-deriving them per frame is the transcript's
 // whole width of work — the shared projector's classification scan for the turn
 // plus this module's row construction, which still pays a JSON parse per ask and

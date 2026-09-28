@@ -322,9 +322,9 @@ test("carries options/multiSelect/why/ifUnanswered through onto each question re
 // --- per-item parse memo (#1709) ------------------------------------------
 
 // The reducer hands an untouched turn back BY REFERENCE (reducer.ts's mapTurn
-// and settleFirstMatchingTurn return a fresh turns ARRAY via .map() every fold,
-// even when only the newest turn changed). So a memo keyed on model.turns can
-// never hit across two notifications, and every delta re-parsed each pending
+// and mergeHistory return a fresh turns ARRAY every fold, even when only the
+// newest turn changed). So a memo keyed on model.turns can never hit across two
+// notifications, and every delta re-parsed each pending
 // ask_user's argumentsJson on the UI thread. The derivation now memoizes per
 // ITEM reference, which survives a fold that leaves the item untouched, so a
 // delta that only appends/touches the newest turn never re-parses an older ask.
