@@ -1,6 +1,5 @@
 import type { CellRendererProps } from "@react-native/virtualized-lists";
 import { useHeaderHeight } from "@react-navigation/elements";
-import { useFocusEffect } from "@react-navigation/native";
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
 import * as Clipboard from "expo-clipboard";
 import { randomUUID } from "expo-crypto";
@@ -55,8 +54,6 @@ import { ActivitySheet } from "./ActivitySheet";
 import { ApprovalControls } from "./approvalControls";
 import { useMarkSeenInFront } from "./board/sessionSeen";
 import { CommandCompletion } from "./CommandCompletion";
-import { type ComposerSetting, ComposerSettings } from "./ComposerSettings";
-import { ComposerSettingsSheet } from "./ComposerSettingsSheet";
 import { useConnection } from "./ConnectionProvider";
 import {
 	CommandArgumentError,
@@ -125,7 +122,6 @@ import {
 	shouldApplyExactRestore,
 } from "./readerPosition";
 import { type SessionDestination, SessionMenu } from "./SessionMenu";
-import { SessionSheet } from "./SessionSheet";
 import { type ErrorAction, errorAction, RETRY_MESSAGE } from "./session/errorAction";
 import {
 	type Ghost,
@@ -147,9 +143,10 @@ import {
 	newRowCount,
 	sessionRows,
 } from "./session/transcriptRows";
-import { SessionControls } from "./sessionControls";
+import { SessionControls, useControlsState } from "./sessionControls";
 import { useConnectionStatusText } from "./board/connectionStatus";
-import { Composer } from "./session/Composer";
+import { Composer, ModelChip } from "./session/Composer";
+import { type ModelHost, modelHosts } from "./session/ModelSheet";
 import {
 	configForLevel,
 	currentLevel,
@@ -165,6 +162,10 @@ import { NotesBar } from "./session/NotesBar";
 import { canWriteHumanNote, type NotesHost, notesHosts } from "./session/NotesSheet";
 import { SessionHeader, useHeaderHiding } from "./session/SessionHeader";
 import { type SessionMenuAction, sessionMenu } from "./session/sessionMenu";
+import { confirmShutDown, type SessionInfoAction, type SessionInfoHost, sessionInfoHosts } from "./session/SessionInfoSheet";
+import { SessionNotice } from "./session/SessionNotice";
+import { useSessionRestart } from "./session/sessionRestart";
+import { canDeleteSavedSession, canOpenModelSheet, latestForkPoint, modelChipLabel } from "./session/sessionFacts";
 import {
 	type ChipKind,
 	contextChips,
@@ -178,7 +179,6 @@ import {
 } from "./session/sessionNotes";
 import { SessionTitle } from "./session/SessionTitle";
 import { LiveStatusTray, useFrameCounter } from "./session/StatusTray";
-import { localSessionId } from "./sessionDeletionResult";
 import { sheetKey, useProvideSheetHost } from "./sheet/sheetHosts";
 import { screenInFront, useScreenInFront } from "./sheet/useScreenInFront";
 import { takeQuote } from "./session/pendingQuote";
@@ -189,8 +189,6 @@ import { groupTimeline, type TimelineRow, timelineGap } from "./timeline";
 import { projectNativeTranscript } from "./transcriptPresentation";
 import { Action, Copy, ErrorMessage, styles, useColors } from "./ui";
 
-const noControls = () => null;
-const noControlSubscription = () => () => {};
 const NO_QUESTIONS: AskQuestionRef[] = [];
 const STEER_FAILED = { text: "Couldn't steer with this message now." };
 const STEER_ALL_FAILED = { text: "Couldn't steer with these messages now." };
@@ -234,6 +232,8 @@ export type Routes = {
 	TasksSheet: { hubId: string; ref: string; threadId: string; hasTasks: boolean };
 	NotesSheet: { hubId: string; ref: string; focusEditor?: boolean };
 	QueueSheet: { hubId: string; ref: string };
+	SessionInfoSheet: { hubId: string; ref: string };
+	ModelSheet: { hubId: string; ref: string; setting: "model" | "vision" };
 	RowMenuSheet: { hubId: string; ref: string; archived: boolean };
 	Reader: {
 		hubId: string;
@@ -694,7 +694,6 @@ export function ConversationScreen({
 	);
 	const focusAfterModal = useRef(false);
 	useFocusAfterModal(navigation, focusAfterModal, composerInput);
-	const [sessionOpen, setSessionOpen] = useState(false);
 	const [activityContext, setActivityContext] = useState<{
 		hubId: string;
 		ref: string;
@@ -716,17 +715,6 @@ export function ConversationScreen({
 		reconcile();
 		return store.subscribe(reconcile);
 	}, [store, questionBatches]);
-	const [composerSetting, setComposerSetting] =
-		useState<ComposerSetting | null>(null);
-	useFocusEffect(
-		useCallback(
-			() => () => {
-				setSessionOpen(false);
-				setComposerSetting(null);
-			},
-			[],
-		),
-	);
 	const [actionError, setActionError] = useState<string | null>(null);
 	const [commandPending, setCommandPending] = useState(false);
 	const commandBusy = useRef(false);
@@ -1017,8 +1005,7 @@ export function ConversationScreen({
 
 	const hasConversation = snapshot.conversation !== null;
 	const deletionAvailable =
-		!!localSessionId(route.params.ref) &&
-		snapshot.conversation?.status.type === "notLoaded";
+		snapshot.conversation !== null && canDeleteSavedSession(snapshot.conversation);
 	const openSessionDestination = useCallback(
 		(destination: SessionDestination) => {
 			setSessionMenuOpen(false);
@@ -1026,8 +1013,7 @@ export function ConversationScreen({
 			const current = store.getState().conversation;
 			if (!current) return;
 			if (destination === "delete") {
-				if (!localSessionId(route.params.ref) || current.status.type !== "notLoaded")
-					return;
+				if (!canDeleteSavedSession(current)) return;
 				navigation.navigate("SessionDeletion", {
 					hubId: route.params.hubId,
 					ref: route.params.ref,
@@ -1044,7 +1030,10 @@ export function ConversationScreen({
 				return;
 			}
 			if (destination === "session") {
-				setSessionOpen(true);
+				navigation.navigate("SessionInfoSheet", {
+					hubId: route.params.hubId,
+					ref: route.params.ref,
+				});
 				return;
 			}
 			// Shared notes read without a connection.
@@ -1162,6 +1151,70 @@ export function ConversationScreen({
 			archived,
 		});
 	}
+	// What each session action does, for the ⋯ menu and the Session sheet. It
+	// returns its toast rather than showing it: the menu shows it on the
+	// session, and the sheet shows it where the person is (ruling 37).
+	async function runSessionAction(
+		action: SessionInfoAction,
+	): Promise<ToastMessage | null> {
+		switch (action) {
+			case "aside":
+				if (!service) return null;
+				try {
+					const aside = await startAside(service);
+					if (screenInFront(navigation, route.key))
+						openAside(aside.ref, aside.title);
+					return null;
+				} catch {
+					return { text: "Couldn't start an aside." };
+				}
+			case "fork": {
+				const point = latestForkPoint(store.getState().conversation?.items ?? []);
+				if (point) forkMessage(point.entryIndex, point.preview);
+				return null;
+			}
+			case "compact":
+				// The hub can go away while the sheet asks; say so rather than
+				// do nothing.
+				if (!controls)
+					return { text: "Couldn't compact the context: the hub isn't connected." };
+				// A refusal shows as the controls' error line in the sheet.
+				return (await controls.compact()) ? { text: "Compacting context" } : null;
+			case "pin":
+			case "delete":
+				openSessionDestination(action);
+				return null;
+			case "archive":
+				try {
+					await archive(true);
+				} catch {
+					return { text: "Couldn't archive this session." };
+				}
+				return {
+					text: "Session archived",
+					action: {
+						label: "Undo",
+						run: () =>
+							void archive(false).catch(() =>
+								toaster.show({ text: "Couldn't undo the archive." }),
+							),
+					},
+				};
+			case "shutDown": {
+				if (!controls)
+					return {
+						text: "Couldn't shut down this session: the hub isn't connected.",
+					};
+				const stopped = await controls.shutdown();
+				return {
+					text: stopped ? "Session shut down" : "Couldn't shut down this session.",
+				};
+			}
+		}
+	}
+	const showSessionToast = (message: ToastMessage | null) => {
+		if (message) toaster.show(message);
+	};
 	function chooseSessionAction(action: SessionMenuAction) {
 		switch (action.kind) {
 			case "level":
@@ -1173,57 +1226,15 @@ export function ConversationScreen({
 			case "notes":
 			case "info":
 			case "pin":
-			case "delete":
 				openSessionDestination(SESSION_DESTINATIONS[action.kind]);
 				return;
 			case "aside":
-				if (!service) return;
-				startAside(service).then(
-					(aside) => {
-						if (screenInFront(navigation, route.key))
-							openAside(aside.ref, aside.title);
-					},
-					() => toaster.show({ text: "Couldn't start an aside." }),
-				);
-				return;
 			case "archive":
-				archive(true).then(
-					() =>
-						toaster.show({
-							text: "Session archived",
-							action: {
-								label: "Undo",
-								run: () =>
-									void archive(false).catch(() =>
-										toaster.show({ text: "Couldn't undo the archive." }),
-									),
-							},
-						}),
-					() => toaster.show({ text: "Couldn't archive this session." }),
-				);
+				void runSessionAction(action.kind).then(showSessionToast);
 				return;
 			case "shutDown":
 				if (!controls) return;
-				Alert.alert(
-					"Shut down this session?",
-					"It stops now and keeps its history. Sending a message resumes it.",
-					[
-						{ text: "Cancel", style: "cancel" },
-						{
-							text: "Shut down",
-							style: "destructive",
-							onPress: () => {
-								void controls.shutdown().then((stopped) => {
-									toaster.show({
-										text: stopped
-											? "Session shut down"
-											: "Couldn't shut down this session.",
-									});
-								});
-							},
-						},
-					],
-				);
+				confirmShutDown(() => void runSessionAction("shutDown").then(showSessionToast));
 				return;
 		}
 	}
@@ -1232,8 +1243,10 @@ export function ConversationScreen({
 	// written after commit, in its own effect with no deps, not during
 	// render, which React's own rules reserve for effects.
 	const chooseSessionActionRef = useRef(chooseSessionAction);
+	const runSessionActionRef = useRef(runSessionAction);
 	useEffect(() => {
 		chooseSessionActionRef.current = chooseSessionAction;
+		runSessionActionRef.current = runSessionAction;
 	});
 	useEffect(() => {
 		navigation.setOptions({
@@ -1260,7 +1273,6 @@ export function ConversationScreen({
 							sharedNotes: !!conversation?.capabilities.sharedNotes,
 							canAside,
 							canShutDown,
-							deletable: deletionAvailable,
 							choose: (action) => chooseSessionActionRef.current(action),
 						})
 					: [],
@@ -1598,10 +1610,7 @@ export function ConversationScreen({
 		});
 		return () => subscription.remove();
 	}, []);
-	const controlsState = useSyncExternalStore(
-		controls?.subscribe ?? noControlSubscription,
-		controls?.getSnapshot ?? noControls,
-	);
+	const controlsState = useControlsState(controls);
 	const settingsPending = controlsState?.pending != null || commandPending;
 	const pending = snapshot.pendingMutation?.status === "pending";
 	const ready =
@@ -1763,7 +1772,11 @@ export function ConversationScreen({
 								return;
 							}
 							Keyboard.dismiss();
-							if (id === "status") setSessionOpen((open) => !open);
+							if (id === "status")
+								navigation.navigate("SessionInfoSheet", {
+									hubId: route.params.hubId,
+									ref: route.params.ref,
+								});
 							else {
 								const current = store.getState().conversation;
 								if (!current || !client)
@@ -1812,7 +1825,6 @@ export function ConversationScreen({
 			);
 			// Android's dialog must release window focus before opening the keyboard.
 			focusAfterModal.current = Platform.OS === "android";
-			setSessionOpen(false);
 			if (Platform.OS === "ios")
 				requestAnimationFrame(() => composerInput.current?.focus());
 		};
@@ -2008,6 +2020,74 @@ export function ConversationScreen({
 		sheetKey(route.params.hubId, route.params.ref),
 		notesHost,
 	);
+	// The Session sheet's host (ruling 37). Its callbacks reach the latest
+	// render through refs, so the host changes only when what it shows does.
+	const goalActionsRef = useRef({ editGoal, clearGoal: () => void applyCommand(true) });
+	useEffect(() => {
+		goalActionsRef.current = { editGoal, clearGoal: () => void applyCommand(true) };
+	});
+	// Until PR 11 reads the manifest, the hub's own sessions are named for the
+	// connected hub, and any other host by its id.
+	const hubName =
+		activeProfile?.id === route.params.hubId ? activeProfile.name : null;
+	const hostLabel = useCallback(
+		(hostId: string) => (hostId === "local" && hubName ? hubName : hostId),
+		[hubName],
+	);
+	const modelLabel = conversation
+		? modelChipLabel(conversation, controlsState?.catalog?.data)
+		: "";
+	const sessionInfoHost = useMemo<SessionInfoHost | undefined>(
+		() =>
+			// Provided while the screen lives, with or without controls, so a
+			// connection blip never closes an open sheet or loses its input.
+			conversation
+				? {
+						session: conversation,
+						controls,
+						hostLabel,
+						modelLabel,
+						ready,
+						editGoal: () => goalActionsRef.current.editGoal(),
+						clearGoal: () => goalActionsRef.current.clearGoal(),
+						act: (action) => runSessionActionRef.current(action),
+						toast: toaster.show,
+					}
+				: undefined,
+		[conversation, controls, hostLabel, modelLabel, ready, toaster.show],
+	);
+	useProvideSheetHost(
+		sessionInfoHosts,
+		sheetKey(route.params.hubId, route.params.ref),
+		sessionInfoHost,
+	);
+	// The model sheet's host (ruling 37).
+	const modelHost = useMemo<ModelHost | undefined>(
+		() =>
+			conversation
+				? { session: conversation, controls, ready, toast: toaster.show }
+				: undefined,
+		[conversation, controls, ready, toaster.show],
+	);
+	useProvideSheetHost(
+		modelHosts,
+		sheetKey(route.params.hubId, route.params.ref),
+		modelHost,
+	);
+	// The chip names the model the way the catalog does, so the screen loads
+	// the catalog once for each binding it opens connected.
+	useEffect(() => {
+		if (controls && hasConversation) void controls.loadModels();
+	}, [controls, hasConversation]);
+	// What takes the composer's place when the session can't take a message
+	// yet (ruling 20).
+	const notice =
+		conversation?.status.type === "restartRequired"
+			? "restartNeeded"
+			: conversation?.resumeRequired
+				? "paused"
+				: null;
+	const restart = useSessionRestart(controls, snapshot.status);
 	const notesPreview = conversation ? notesBarPreview(conversation) : null;
 	const [stopping, setStopping] = useState(false);
 	const stopBusy = useRef(false);
@@ -2199,16 +2279,25 @@ export function ConversationScreen({
 		},
 		[controls, navigation, route.params.hubId, retryFailedTurn],
 	);
+	function openModelSheet(setting: "model" | "vision") {
+		Keyboard.dismiss();
+		navigation.navigate("ModelSheet", {
+			hubId: route.params.hubId,
+			ref: route.params.ref,
+			setting,
+		});
+	}
+	// The chip opens the model sheet when there is something there to change:
+	// the model, or its effort.
 	const composerSettings =
 		conversation && canCompose ? (
-			<ComposerSettings
-				conversation={conversation}
-				disabled={!ready || !controls || draft.submitting}
-				pending={settingsPending}
-				open={(setting) => {
-					Keyboard.dismiss();
-					setComposerSetting(setting);
-				}}
+			<ModelChip
+				label={modelLabel}
+				onPress={
+					controls && canOpenModelSheet(conversation)
+						? () => openModelSheet("model")
+						: undefined
+				}
 			/>
 		) : null;
 	// Everything waiting to reach the agent, as ghosts above the composer
@@ -2566,20 +2655,6 @@ export function ConversationScreen({
 					choose={openSessionDestination}
 				/>
 			) : null}
-			{composerSetting && conversation && controls ? (
-				<ComposerSettingsSheet
-					setting={composerSetting}
-					conversation={conversation}
-					controls={controls}
-					hubName={
-						activeProfile?.id === route.params.hubId
-							? activeProfile.name
-							: "Disconnected hub"
-					}
-					ready={ready}
-					close={() => setComposerSetting(null)}
-				/>
-			) : null}
 			{activeProfile?.id === route.params.hubId &&
 			activityContext?.hubId === route.params.hubId &&
 			activityContext.ref === route.params.ref ? (
@@ -2599,29 +2674,6 @@ export function ConversationScreen({
 							title,
 						});
 					}}
-				/>
-			) : null}
-			{sessionOpen && conversation && controls ? (
-				<SessionSheet
-					conversation={conversation}
-					controls={controls}
-					hubName={
-						activeProfile?.id === route.params.hubId
-							? activeProfile.name
-							: "Disconnected hub"
-					}
-					ready={ready}
-					close={() => setSessionOpen(false)}
-					editGoal={editGoal}
-					clearGoal={() => void applyCommand(true)}
-					goalError={actionError ?? draft.error}
-					goalDisabled={
-						!ready ||
-						draft.submitting ||
-						unconfirmedSend !== null ||
-						imageState.busy ||
-						questions.length > 0
-					}
 				/>
 			) : null}
 			<KeyboardAvoidingView
@@ -2879,10 +2931,7 @@ export function ConversationScreen({
 								>
 									<Action
 										tone="quiet"
-										onPress={() => {
-											Keyboard.dismiss();
-											setSessionOpen(true);
-										}}
+										onPress={() => openSessionDestination("session")}
 									>
 										{`Goal · ${conversation.goal.status}`}
 									</Action>
@@ -2895,16 +2944,13 @@ export function ConversationScreen({
 									controlsState.lastAction === "setReasoningEffort") ? (
 									<Action
 										tone="quiet"
-										onPress={() => {
-											Keyboard.dismiss();
-											setComposerSetting(
-												controlsState.lastAction === "changeModel"
-													? "model"
-													: controlsState.lastAction === "setVisionModel"
-														? "vision"
-														: "reasoning",
-											);
-										}}
+										onPress={() =>
+											openModelSheet(
+												controlsState.lastAction === "setVisionModel"
+													? "vision"
+													: "model",
+											)
+										}
 									>
 										Review settings error
 									</Action>
@@ -3056,6 +3102,21 @@ export function ConversationScreen({
 											<ErrorMessage message={imageState.error} />
 										</>
 									}
+								/>
+							) : notice ? (
+								<SessionNotice
+									kind={notice}
+									busy={
+										restart.busy ||
+										controlsState?.pending === "forceStop" ||
+										controlsState?.pending === "resume"
+									}
+									disabled={!controls}
+									error={notice === "restartNeeded" ? restart.error : null}
+									onPress={() => {
+										if (notice === "paused") void controls?.resume();
+										else void restart.restart();
+									}}
 								/>
 							) : null}
 						</View>

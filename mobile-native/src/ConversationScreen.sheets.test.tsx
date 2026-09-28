@@ -26,7 +26,8 @@ import { ConversationScreen } from "./screens";
 import { detailLevels, forgetDetailLevelsForHub } from "./session/nativeDetailLevels";
 import { SessionHeader } from "./session/SessionHeader";
 import { SessionTitle } from "./session/SessionTitle";
-import { SessionSheet } from "./SessionSheet";
+import { sessionInfoHosts } from "./session/SessionInfoSheet";
+import { sheetKey } from "./sheet/sheetHosts";
 import { ActivitySheet } from "./ActivitySheet";
 
 const harness = vi.hoisted(() => ({
@@ -415,10 +416,99 @@ it("titles the header with the session's state, and opens its info on a press", 
 	const element = title({ children: "Session" }) as ReactElement<ComponentProps<typeof SessionTitle>>;
 	expect(element.type).toBe(SessionTitle);
 	expect(element.props).toMatchObject({ title: "Session", line: { state: "idle", text: "Finished" } });
-	expect(tree.root.findAllByType(SessionSheet)).toEqual([]);
 	act(() => element.props.onPress());
 
-	expect(tree.root.findAllByType(SessionSheet)).toHaveLength(1);
+	expect(navigation.navigate).toHaveBeenCalledWith("SessionInfoSheet", { hubId: "hub-1", ref });
+	// The sheet reads the session through the host the screen provides.
+	expect(sessionInfoHosts.get(sheetKey("hub-1", ref))?.session).toMatchObject({ ref, threadId: "thread-1" });
+	tree.unmount();
+});
+
+it("opens Session info from the header menu as the SessionInfoSheet route", async () => {
+	const { tree } = mount();
+	await flush();
+
+	act(() => menuAction("Session info").onPress());
+	expect(navigation.navigate).toHaveBeenCalledWith("SessionInfoSheet", { hubId: "hub-1", ref });
+	tree.unmount();
+});
+
+/** The Session sheet's host, as the screen provides it now. */
+function sessionInfoHost() {
+	const host = sessionInfoHosts.get(sheetKey("hub-1", ref));
+	if (!host) throw new Error("the screen provides no Session sheet host");
+	return host;
+}
+
+it("runs the Session sheet's actions as the menu does, and hands back their toasts (ruling 37)", async () => {
+	const { tree, requests } = mount(withCapabilities({ compact: true, shutdown: true }), {
+		"evener/archive/set": {},
+		"thread/compact/start": {},
+		"thread/shutdown": {},
+	});
+	await flush();
+
+	let archived: unknown;
+	await act(async () => {
+		archived = await sessionInfoHost().act("archive");
+	});
+	expect(archived).toMatchObject({ text: "Session archived", action: { label: "Undo" } });
+	expect(requests.filter(({ method }) => method === "evener/archive/set").map(({ params }) => params)).toEqual([
+		{ kind: "session", id: ref, archived: true },
+	]);
+
+	let compacted: unknown;
+	await act(async () => {
+		compacted = await sessionInfoHost().act("compact");
+	});
+	expect(compacted).toEqual({ text: "Compacting context" });
+	expect(requests.map(({ method }) => method)).toContain("thread/compact/start");
+
+	let stopped: unknown;
+	await act(async () => {
+		stopped = await sessionInfoHost().act("shutDown");
+	});
+	expect(stopped).toEqual({ text: "Session shut down" });
+	expect(requests.filter(({ method }) => method === "thread/shutdown")).toEqual([
+		{ method: "thread/shutdown", params: { ref } },
+	]);
+	// No second question: the sheet asked before it handed Shut down over.
+	expect(alertRequests).toEqual([]);
+
+	// Its toast shows on the session, once the sheet has gone.
+	act(() => sessionInfoHost().toast({ text: "Session archived" }));
+	expect(renderedText(tree)).toContain("Session archived");
+	tree.unmount();
+});
+
+it("says so when the hub went away before a Session sheet action could run", async () => {
+	const { tree, requests } = mount(withCapabilities({ compact: true, shutdown: true }));
+	await flush();
+	// The confirmation was up when the connection dropped.
+	harness.connection = { ...harness.connection, state: "connecting" };
+	act(() => tree.update(screen()));
+	await flush();
+
+	let stopped: unknown;
+	let compacted: unknown;
+	await act(async () => {
+		stopped = await sessionInfoHost().act("shutDown");
+		compacted = await sessionInfoHost().act("compact");
+	});
+	expect(stopped).toEqual({ text: "Couldn't shut down this session: the hub isn't connected." });
+	expect(compacted).toEqual({ text: "Couldn't compact the context: the hub isn't connected." });
+	expect(requests.map(({ method }) => method)).not.toContain("thread/shutdown");
+	tree.unmount();
+});
+
+it("opens Pin to category… from the Session sheet as its screen", async () => {
+	const { tree } = mount();
+	await flush();
+
+	await act(async () => {
+		await sessionInfoHost().act("pin");
+	});
+	expect(navigation.navigate).toHaveBeenCalledWith("PinAssignment", { hubId: "hub-1", ref, title: "Session" });
 	tree.unmount();
 });
 
@@ -695,9 +785,8 @@ it("floats the context chips over the list, opens each one's sheet, and hides th
 		hasTasks: true,
 	});
 
-	expect(tree.root.findAllByType(SessionSheet)).toEqual([]);
 	act(() => chip("Goal, blocked").props.onPress());
-	expect(tree.root.findAllByType(SessionSheet)).toHaveLength(1);
+	expect(navigation.navigate).toHaveBeenCalledWith("SessionInfoSheet", { hubId: "hub-1", ref });
 
 	act(() => chip("2 queued messages").props.onPress());
 	expect(navigation.navigate).toHaveBeenCalledWith("QueueSheet", { hubId: "hub-1", ref });
