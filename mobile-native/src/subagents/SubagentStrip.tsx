@@ -26,7 +26,10 @@ export function SubagentStrip({ tally, width }: { tally: SubagentTally; width: n
 			style={{ width, height: HEIGHT, borderRadius: HEIGHT / 2, overflow: "hidden", flexDirection: "row", gap: GAP }}
 		>
 			{segments.map((segment) => (
-				<View key={segment.state} style={{ width: segment.width, height: HEIGHT, backgroundColor: color[segment.state] }} />
+				<View
+					key={segment.state}
+					style={{ width: segment.width, height: HEIGHT, backgroundColor: color[segment.state] }}
+				/>
 			))}
 		</View>
 	);

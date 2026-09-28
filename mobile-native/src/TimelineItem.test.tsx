@@ -39,9 +39,7 @@ function renderUserRow() {
 
 // The bubble is the node that fills with the bubble color.
 function userBubbleStyle() {
-	const [bubble] = renderUserRow().findAll(
-		(node) => node.props.style?.backgroundColor !== undefined,
-	);
+	const [bubble] = renderUserRow().findAll((node) => node.props.style?.backgroundColor !== undefined);
 	return bubble.props.style;
 }
 
@@ -157,9 +155,7 @@ describe("your message", () => {
 	it("offers Copy, Fork from here and Quote on touch and hold, and Quote quotes the text", () => {
 		const quote = vi.fn();
 		const fork = vi.fn();
-		const tree = render(
-			<TimelineItem item={user()} hubId="hub" sessionRef="s" fork={fork} quote={quote} />,
-		);
+		const tree = render(<TimelineItem item={user()} hubId="hub" sessionRef="s" fork={fork} quote={quote} />);
 		const menu = longPress(tree.root);
 		expect(menu.options).toEqual(["Copy", "Fork from here", "Quote", "Cancel"]);
 		expect(menu.cancelButtonIndex).toBe(3);
@@ -183,19 +179,22 @@ describe("your message", () => {
 		["a fork that can't run now", { forkDisabled: true }],
 		["the transcript's first entry", { entry: 0 }],
 		["no transcript entry", { entry: undefined }],
-	])("leaves Fork from here out of the menu with %s", (_name, over: { fork?: undefined; forkDisabled?: boolean; entry?: number }) => {
-		const tree = render(
-			<TimelineItem
-				item={user({ transcriptEntryIndex: "entry" in over ? over.entry : 4 })}
-				hubId="hub"
-				sessionRef="s"
-				fork={"fork" in over ? over.fork : () => {}}
-				forkDisabled={over.forkDisabled ?? false}
-				quote={() => {}}
-			/>,
-		);
-		expect(longPress(tree.root).options).toEqual(["Copy", "Quote", "Cancel"]);
-	});
+	])(
+		"leaves Fork from here out of the menu with %s",
+		(_name, over: { fork?: undefined; forkDisabled?: boolean; entry?: number }) => {
+			const tree = render(
+				<TimelineItem
+					item={user({ transcriptEntryIndex: "entry" in over ? over.entry : 4 })}
+					hubId="hub"
+					sessionRef="s"
+					fork={"fork" in over ? over.fork : () => {}}
+					forkDisabled={over.forkDisabled ?? false}
+					quote={() => {}}
+				/>,
+			);
+			expect(longPress(tree.root).options).toEqual(["Copy", "Quote", "Cancel"]);
+		},
+	);
 
 	it("leaves Quote out where nothing can take the quote", () => {
 		const tree = render(<TimelineItem item={user()} hubId="hub" sessionRef="s" />);
@@ -207,7 +206,13 @@ describe("your message", () => {
 		(Platform as { OS: string }).OS = "android";
 		try {
 			const tree = render(
-				<TimelineItem item={user({ text: "Ship   it\nnow" })} hubId="hub" sessionRef="s" fork={() => {}} quote={() => {}} />,
+				<TimelineItem
+					item={user({ text: "Ship   it\nnow" })}
+					hubId="hub"
+					sessionRef="s"
+					fork={() => {}}
+					quote={() => {}}
+				/>,
 			);
 			const [target] = tree.root.findAll((node) => typeof node.props.onLongPress === "function");
 			act(() => target.props.onLongPress());
@@ -273,7 +278,9 @@ describe("the agent's message", () => {
 		expect(text[0].props.selectable).toBe(true);
 		expect(text[0].props.style).toMatchObject({ fontFamily: "SourceSerif4-Regular", fontSize: 17, lineHeight: 26 });
 
-		const done = modal.findAll((node) => node.props.accessibilityLabel === "Done" && typeof node.props.onPress === "function");
+		const done = modal.findAll(
+			(node) => node.props.accessibilityLabel === "Done" && typeof node.props.onPress === "function",
+		);
 		act(() => done[0].props.onPress());
 		expect(tree.root.findAllByType("Modal" as never)).toEqual([]);
 	});
@@ -309,12 +316,21 @@ describe("the agent's message", () => {
 		const tree = render(
 			<TimelineItem item={reply({ streaming: true })} hubId="hub" sessionRef="s" documentChips={documentChips} />,
 		);
-		expect(documentChips).toHaveBeenCalledWith({ id: "a-1", markdown: "Done. **All** tests pass.\nNext: ship.", streaming: true });
+		expect(documentChips).toHaveBeenCalledWith({
+			id: "a-1",
+			markdown: "Done. **All** tests pass.\nNext: ship.",
+			streaming: true,
+		});
 		const text = renderedText(tree);
 		expect(text.indexOf("chip for plan.md")).toBeGreaterThan(text.indexOf("ship."));
 		documentChips.mockClear();
 		render(
-			<TimelineItem item={{ kind: "user", id: "u-1", text: "Read `docs/plan.md`" }} hubId="hub" sessionRef="s" documentChips={documentChips} />,
+			<TimelineItem
+				item={{ kind: "user", id: "u-1", text: "Read `docs/plan.md`" }}
+				hubId="hub"
+				sessionRef="s"
+				documentChips={documentChips}
+			/>,
 		);
 		expect(documentChips).not.toHaveBeenCalled();
 	});
@@ -332,9 +348,7 @@ describe("a saved note (spec 8.2, 8.8)", () => {
 	}
 
 	function caption(tree: ReturnType<typeof render>) {
-		return tree.root.findAll(
-			(node) => String(node.type) === "Text" && /your note/i.test(textOf(node)),
-		)[0];
+		return tree.root.findAll((node) => String(node.type) === "Text" && /your note/i.test(textOf(node)))[0];
 	}
 
 	it('reads "You updated your note" over the note, in the serif prose ink, behind a left rule', () => {
@@ -478,7 +492,9 @@ describe("a settled thought", () => {
 		const tree = render(<TimelineItem item={row} hubId="hub" sessionRef="thought-hidden" />);
 		expect(renderedText(tree)).toContain("Thought not shown");
 		expect(tree.root.findAll((node) => node.props.style?.borderLeftWidth !== undefined)).toEqual([]);
-		expect(texts(tree.root).find((node) => textOf(node) === "Thought not shown")?.props.style).toMatchObject({ color: INK_LOW });
+		expect(texts(tree.root).find((node) => textOf(node) === "Thought not shown")?.props.style).toMatchObject({
+			color: INK_LOW,
+		});
 	});
 });
 
@@ -515,7 +531,9 @@ describe("a subagent", () => {
 		root.findAll((node) => node.props.style?.borderLeftWidth === 2)[0]?.props.style.borderLeftColor;
 
 	it("rails its row in its state's hue", () => {
-		expect(rail(render(<TimelineItem item={row("running")} hubId="hub" sessionRef="s" delegates={[delegate]} />).root)).toBe(ALIVE);
+		expect(
+			rail(render(<TimelineItem item={row("running")} hubId="hub" sessionRef="s" delegates={[delegate]} />).root),
+		).toBe(ALIVE);
 		expect(rail(render(<TimelineItem item={row("failed")} hubId="hub" sessionRef="s" />).root)).toBe(DANGER);
 		expect(rail(render(<TimelineItem item={row("completed")} hubId="hub" sessionRef="s" />).root)).toBe(EDGE_STRONG);
 	});
@@ -525,13 +543,21 @@ describe("a subagent", () => {
 		const tree = render(
 			<TimelineItem item={row("completed")} hubId="hub" sessionRef="s" delegates={[done]} openSubagent={() => {}} />,
 		);
-		expect(tree.root.findAll((node) => node.props.accessibilityRole === "button")[0].props.style).toMatchObject({ minHeight: 44 });
+		expect(tree.root.findAll((node) => node.props.accessibilityRole === "button")[0].props.style).toMatchObject({
+			minHeight: 44,
+		});
 	});
 
 	it("opens the subagent's own transcript when pressed", () => {
 		const openSubagent = vi.fn();
 		const tree = render(
-			<TimelineItem item={row("running")} hubId="hub" sessionRef="s" delegates={[delegate]} openSubagent={openSubagent} />,
+			<TimelineItem
+				item={row("running")}
+				hubId="hub"
+				sessionRef="s"
+				delegates={[delegate]}
+				openSubagent={openSubagent}
+			/>,
 		);
 		expect(renderedText(tree)).toContain("running · 1m");
 		tree.root.findAll((node) => node.props.accessibilityRole === "button")[0].props.onPress();
@@ -548,7 +574,13 @@ describe("a question you answered", () => {
 		state: "completed",
 		detail: {
 			arguments: JSON.stringify({
-				questions: [{ header: "Choice", question: "Keep or drop the implied options?", options: [{ label: "Drop them", detail: "" }] }],
+				questions: [
+					{
+						header: "Choice",
+						question: "Keep or drop the implied options?",
+						options: [{ label: "Drop them", detail: "" }],
+					},
+				],
 			}),
 		},
 	};
@@ -581,7 +613,9 @@ describe("a system event", () => {
 		const tree = render(<TimelineItem item={notice()} hubId="hub" sessionRef="event" />);
 		const diamond = tree.root.findAllByType("SymbolView" as never)[0];
 		expect([diamond?.props.name, diamond?.props.tintColor]).toEqual(["diamond", INK_LOW]);
-		expect(texts(tree.root).find((node) => textOf(node) === "Context compacted · 412K → 38K tokens")?.props.style).toMatchObject({
+		expect(
+			texts(tree.root).find((node) => textOf(node) === "Context compacted · 412K → 38K tokens")?.props.style,
+		).toMatchObject({
 			fontSize: 13,
 			lineHeight: 18,
 			color: INK_LOW,
@@ -613,7 +647,10 @@ describe("an error", () => {
 		detail,
 		turnId,
 	});
-	const session = (resumeRequired = false) => ({ resumeRequired, turns: [{ id: "turn_1" }, { id: "turn_2" }] as never });
+	const session = (resumeRequired = false) => ({
+		resumeRequired,
+		turns: [{ id: "turn_1" }, { id: "turn_2" }] as never,
+	});
 	function show(row: TimelineRow, resumeRequired = false) {
 		const onErrorAction = vi.fn();
 		const tree = render(
@@ -625,14 +662,21 @@ describe("an error", () => {
 				onErrorAction={onErrorAction}
 			/>,
 		);
-		const buttons = tree.root.findAll((node) => node.props.accessibilityRole === "button" && typeof node.props.onPress === "function");
+		const buttons = tree.root.findAll(
+			(node) => node.props.accessibilityRole === "button" && typeof node.props.onPress === "function",
+		);
 		return { tree, onErrorAction, buttons };
 	}
 
 	it("draws a red rule, the title and the detail", () => {
 		const { tree } = show(failure("go test exited 1"));
-		expect(tree.root.findAll((node) => node.props.style?.borderLeftWidth === 2)[0]?.props.style.borderLeftColor).toBe(DANGER_INK);
-		expect(texts(tree.root).find((node) => textOf(node) === "The turn failed")?.props.style).toMatchObject({ fontWeight: "600", fontSize: 15 });
+		expect(tree.root.findAll((node) => node.props.style?.borderLeftWidth === 2)[0]?.props.style.borderLeftColor).toBe(
+			DANGER_INK,
+		);
+		expect(texts(tree.root).find((node) => textOf(node) === "The turn failed")?.props.style).toMatchObject({
+			fontWeight: "600",
+			fontSize: 15,
+		});
 		expect(renderedText(tree)).toContain("go test exited 1");
 	});
 
@@ -644,11 +688,15 @@ describe("an error", () => {
 	});
 
 	it("offers Resume on a paused session", () => {
-		expect(show(failure("go test exited 1"), true).buttons.map((button) => button.props.accessibilityLabel)).toEqual(["Resume"]);
+		expect(show(failure("go test exited 1"), true).buttons.map((button) => button.props.accessibilityLabel)).toEqual([
+			"Resume",
+		]);
 	});
 
 	it("offers Retry under the latest turn only", () => {
-		expect(show(failure("go test exited 1")).buttons.map((button) => button.props.accessibilityLabel)).toEqual(["Retry"]);
+		expect(show(failure("go test exited 1")).buttons.map((button) => button.props.accessibilityLabel)).toEqual([
+			"Retry",
+		]);
 		expect(show(failure("go test exited 1", "turn_1")).buttons).toEqual([]);
 	});
 });

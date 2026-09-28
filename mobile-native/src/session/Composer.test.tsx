@@ -41,9 +41,7 @@ function composer(overrides: Partial<Parameters<typeof Composer>[0]> = {}) {
 }
 
 function fields(tree: ReactTestRenderer): ReactTestInstance[] {
-	return tree.root.findAll(
-		(node) => String(node.type) === "TextInput" && node.props.accessibilityLabel === "Message",
-	);
+	return tree.root.findAll((node) => String(node.type) === "TextInput" && node.props.accessibilityLabel === "Message");
 }
 
 describe("Composer", () => {
@@ -127,7 +125,12 @@ describe("Composer", () => {
 			act(() => pressable(tree, "Add")?.props.onPress());
 			expect(actionSheet.show).not.toHaveBeenCalled();
 			const buttons = alertRequests[0]?.buttons ?? [];
-			expect(buttons.map((button) => button.text)).toEqual(["Photo library", "Camera", "Commands and skills", "Cancel"]);
+			expect(buttons.map((button) => button.text)).toEqual([
+				"Photo library",
+				"Camera",
+				"Commands and skills",
+				"Cancel",
+			]);
 			act(() => buttons[0]?.onPress?.());
 			act(() => buttons[1]?.onPress?.());
 			act(() => buttons[2]?.onPress?.());
@@ -146,9 +149,7 @@ describe("Composer", () => {
 
 		act(() => tree.update(<Composer {...props} value={`${six}\n7`} />));
 		const expand = pressable(tree, "Expand editor");
-		expect(expand?.findByType("SymbolView" as never).props.name).toBe(
-			"arrow.up.left.and.arrow.down.right",
-		);
+		expect(expand?.findByType("SymbolView" as never).props.name).toBe("arrow.up.left.and.arrow.down.right");
 		act(() => expand?.props.onPress());
 		expect(renderedText(tree)).toContain("Done");
 		const editor = fields(tree)[1];
@@ -176,8 +177,7 @@ describe("Composer", () => {
 			.findAll((node) => typeof node.props.accessibilityLabel === "string")
 			.map((node) => node.props.accessibilityLabel as string);
 		const words = [...labels, ...renderedText(tree).split(" ")];
-		for (const word of ["Stop", "Steer", "Queue", "Reconnect", "Refresh"])
-			expect(words).not.toContain(word);
+		for (const word of ["Stop", "Steer", "Queue", "Reconnect", "Refresh"]) expect(words).not.toContain(word);
 	});
 });
 

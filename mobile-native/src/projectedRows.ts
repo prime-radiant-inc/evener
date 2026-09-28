@@ -145,62 +145,63 @@ export type NoticeFamily =
 
 // The mobile timeline item union. A pure projection of one thread's turns
 // into the families the phone timeline renders. Discriminated by `kind`.
-export type MobileTimelineItem = (
+export type MobileTimelineItem =
 	// origin is set only when this row projects a user-sourced steering item
 	// (the message was steered into the transcript mid-turn); a userMessage
 	// row never carries it.
-	| { kind: "user"; id: string; text: string; transcriptEntryIndex?: number; origin?: "steered" }
-	// A shared-notes update, steered in by the app itself (spec 8.8). Kept
-	// apart from "user" rows so it never renders as a message bubble.
-	| { kind: "note"; id: string; text: string }
-	| { kind: "assistant"; id: string; markdown: string; streaming: boolean }
-	| {
-			kind: "activity";
-			id: string;
-			label: string;
-			// Durable activity-family discriminator, independent of `label`. The
-			// projection sets this from the item's type (commandExecution → "tool",
-			// reasoning → "reasoning", anything else → "unknown"), never from the
-			// label text. Required: every activity constructor MUST set it to a
-			// concrete ActivityFamily; consumers branch on `family`, never `label`.
-			family: ActivityFamily;
-			state: ActivityState;
-			detail: ActivityDetail;
-			// The operator's summary-only ruling: the row shows ONLY its
-			// summary line (detail.description) — nothing to expand. Set on the
-			// projector's intent entries; the presentation layer renders the line
-			// without an expansion affordance.
-			summaryOnly?: boolean;
-			members?: ActivityMember[];
-		}
-	| {
-			kind: "notice";
-			id: string;
-			origin: NoticeOrigin;
-			steeringKind?: string;
-			eventKind?: string;
-			exitCode?: number;
-			family: NoticeFamily;
-			tone: NoticeTone;
-			text: string;
-		}
-	// The pending ask_user questions of one call, each carrying that call's id
-	// (AskQuestionRef.callId); the composer renders them as interactive cards
-	// with a single "Send answers" action.
-	| { kind: "question"; id: string; questions: AskQuestionRef[] }
-	// thought: a thought the projector didn't show (its redacted critical
-	// reasoning), which the transcript reads as one quiet line.
-	| { kind: "failure"; id: string; title: string; detail: string; thought?: boolean }
-	| { kind: "attachments"; id: string; items: AttachmentRef[] }
-) & {
-	transcriptKey?: string;
-	sourceTranscriptKey?: string;
-	position?: { entry: number; item: number };
-	// The turn this row's item belongs to (ItemModel.turnId), or the failing
-	// turn's id on a turn-error failure row (failureItem). Absent when the
-	// source carried none.
-	turnId?: string;
-};
+	(
+		| { kind: "user"; id: string; text: string; transcriptEntryIndex?: number; origin?: "steered" }
+		// A shared-notes update, steered in by the app itself (spec 8.8). Kept
+		// apart from "user" rows so it never renders as a message bubble.
+		| { kind: "note"; id: string; text: string }
+		| { kind: "assistant"; id: string; markdown: string; streaming: boolean }
+		| {
+				kind: "activity";
+				id: string;
+				label: string;
+				// Durable activity-family discriminator, independent of `label`. The
+				// projection sets this from the item's type (commandExecution → "tool",
+				// reasoning → "reasoning", anything else → "unknown"), never from the
+				// label text. Required: every activity constructor MUST set it to a
+				// concrete ActivityFamily; consumers branch on `family`, never `label`.
+				family: ActivityFamily;
+				state: ActivityState;
+				detail: ActivityDetail;
+				// The operator's summary-only ruling: the row shows ONLY its
+				// summary line (detail.description) — nothing to expand. Set on the
+				// projector's intent entries; the presentation layer renders the line
+				// without an expansion affordance.
+				summaryOnly?: boolean;
+				members?: ActivityMember[];
+		  }
+		| {
+				kind: "notice";
+				id: string;
+				origin: NoticeOrigin;
+				steeringKind?: string;
+				eventKind?: string;
+				exitCode?: number;
+				family: NoticeFamily;
+				tone: NoticeTone;
+				text: string;
+		  }
+		// The pending ask_user questions of one call, each carrying that call's id
+		// (AskQuestionRef.callId); the composer renders them as interactive cards
+		// with a single "Send answers" action.
+		| { kind: "question"; id: string; questions: AskQuestionRef[] }
+		// thought: a thought the projector didn't show (its redacted critical
+		// reasoning), which the transcript reads as one quiet line.
+		| { kind: "failure"; id: string; title: string; detail: string; thought?: boolean }
+		| { kind: "attachments"; id: string; items: AttachmentRef[] }
+	) & {
+		transcriptKey?: string;
+		sourceTranscriptKey?: string;
+		position?: { entry: number; item: number };
+		// The turn this row's item belongs to (ItemModel.turnId), or the failing
+		// turn's id on a turn-error failure row (failureItem). Absent when the
+		// source carried none.
+		turnId?: string;
+	};
 
 // --- the entry mapping --------------------------------------------------------
 
@@ -221,10 +222,7 @@ export interface ProjectedRowContext {
 // show). Attachments emitted alongside a source row are the timeline fold's
 // concern (itemAttachments below), not this mapping's — the row kinds here
 // are the four the projector emits.
-export function projectedRow(
-	entry: ProjectedEntry,
-	context: ProjectedRowContext = {},
-): MobileTimelineItem | null {
+export function projectedRow(entry: ProjectedEntry, context: ProjectedRowContext = {}): MobileTimelineItem | null {
 	switch (entry.kind) {
 		case "item":
 			return rowForItem(entry.item, context);
@@ -386,9 +384,7 @@ function rowForItem(it: ItemModel, context: ProjectedRowContext): MobileTimeline
 
 // A content-free activity row for a live current thought whose text the config
 // hides: label and liveness only, no detail body.
-function reasoningPlaceholderRow(
-	it: ItemModel,
-): Extract<MobileTimelineItem, { kind: "activity" }> {
+function reasoningPlaceholderRow(it: ItemModel): Extract<MobileTimelineItem, { kind: "activity" }> {
 	return {
 		kind: "activity",
 		id: it.id,
@@ -402,9 +398,7 @@ function reasoningPlaceholderRow(
 // A critical reasoning item is always redacted when it reaches here (the
 // projector only routes a reasoning item to critical while the `reasoning`
 // flag is off). It shows a neutral summary, never the thought.
-function criticalReasoningRow(
-	entry: Extract<ProjectedEntry, { kind: "critical" }>,
-): MobileTimelineItem {
+function criticalReasoningRow(entry: Extract<ProjectedEntry, { kind: "critical" }>): MobileTimelineItem {
 	const it = entry.item;
 	const identity = itemIdentity(it);
 	if (entry.redacted) {
@@ -544,11 +538,7 @@ function questionRow(
 
 // Attachment rows keyed by their item and index; the package resolved each
 // image's src at hydrate (url, inline bytes, sha route, path, name).
-function attachmentRows(
-	itemId: string,
-	images: ItemImage[] | undefined,
-	prefix = "",
-): AttachmentRef[] | undefined {
+function attachmentRows(itemId: string, images: ItemImage[] | undefined, prefix = ""): AttachmentRef[] | undefined {
 	if (!images?.length) return undefined;
 	return images.map((img, i) => ({ id: `${itemId}:${prefix}${i}`, ...img }));
 }
@@ -604,9 +594,7 @@ const asksByTurns = new WeakMap<
 	{ askPending: boolean; asks: ReadonlyMap<string, AskQuestionRef[]> }
 >();
 
-export function liveAsksFor(
-	model: ThreadModel,
-): ReadonlyMap<string, AskQuestionRef[]> {
+export function liveAsksFor(model: ThreadModel): ReadonlyMap<string, AskQuestionRef[]> {
 	const cached = asksByTurns.get(model.turns);
 	if (cached !== undefined && cached.askPending === model.askPending) {
 		return cached.asks;
@@ -618,11 +606,7 @@ export function liveAsksFor(
 
 // --- notice rows ------------------------------------------------------------------
 
-const WARNING_STEERING_KINDS = new Set([
-	"loop-detected",
-	"turn-limit",
-	"provider-failure",
-]);
+const WARNING_STEERING_KINDS = new Set(["loop-detected", "turn-limit", "provider-failure"]);
 
 const WARNING_EVENT_KINDS = new Set(["loop_detection", "turn_limit", "error"]);
 const HIDDEN_EVENT_KINDS = new Set(["system_prompt", "prompt_loaded"]);
@@ -655,11 +639,8 @@ function systemFamily(eventKind: string | undefined): NoticeFamily {
 	return "unknown-system";
 }
 
-function steeringNotice(
-	it: ItemModel,
-): Extract<MobileTimelineItem, { kind: "notice" }> {
-	const tone: NoticeTone =
-		it.steeringKind && WARNING_STEERING_KINDS.has(it.steeringKind) ? "warning" : "info";
+function steeringNotice(it: ItemModel): Extract<MobileTimelineItem, { kind: "notice" }> {
+	const tone: NoticeTone = it.steeringKind && WARNING_STEERING_KINDS.has(it.steeringKind) ? "warning" : "info";
 	return {
 		kind: "notice",
 		id: it.id,
@@ -671,9 +652,7 @@ function steeringNotice(
 	};
 }
 
-function systemNotice(
-	it: ItemModel,
-): Extract<MobileTimelineItem, { kind: "notice" }> {
+function systemNotice(it: ItemModel): Extract<MobileTimelineItem, { kind: "notice" }> {
 	// A system family of "warning" IS the warning tone (systemFamily's own
 	// first branch), so the two are derived from one classification.
 	const family = systemFamily(it.eventKind);
@@ -692,9 +671,7 @@ function systemNotice(
 
 // A warning's attention row, or null when it carries nothing to show (the web
 // renders no row for exactly that case).
-function warningFailure(
-	it: ItemModel,
-): Extract<MobileTimelineItem, { kind: "failure" }> | null {
+function warningFailure(it: ItemModel): Extract<MobileTimelineItem, { kind: "failure" }> | null {
 	const rawTitle = it.warning?.title;
 	// The blank check is exactly "no titled part AND no body part": a warning
 	// with nothing to show produces no row (the web renders none either). The
@@ -725,15 +702,11 @@ interface PreActivity {
 // carried for the renderer that expands them. A run of one is that row itself.
 // The caller groups by family (projectTimeline's flushActivityRun), so this is
 // handed a homogeneous run and does no regrouping of its own.
-function clusterActivityRun(
-	run: PreActivity[],
-): Extract<MobileTimelineItem, { kind: "activity" }> | undefined {
+function clusterActivityRun(run: PreActivity[]): Extract<MobileTimelineItem, { kind: "activity" }> | undefined {
 	const first = run[0]?.item;
 	if (first === undefined) return undefined;
 	if (run.length === 1) return first;
-	const state: ActivityState = run.some((p) => p.item.state === "running")
-		? "running"
-		: "completed";
+	const state: ActivityState = run.some((p) => p.item.state === "running") ? "running" : "completed";
 	const members: ActivityMember[] = run.map(({ item }) => ({
 		id: item.id,
 		label: item.label,
@@ -792,10 +765,7 @@ interface TurnRows {
 // items never merge (each failed call is its own attention row, exactly the
 // pre-re-home family rules); reasoning rows — the live-thought placeholder
 // included — merge under one family; completed tools merge under "tool".
-function clusterFamilyFor(
-	entry: ProjectedEntry,
-	row: Extract<MobileTimelineItem, { kind: "activity" }>,
-): string {
+function clusterFamilyFor(entry: ProjectedEntry, row: Extract<MobileTimelineItem, { kind: "activity" }>): string {
 	if (row.state === "failed" && (row.family === "tool" || row.family === "unknown")) {
 		return `failed:${row.id}`;
 	}
@@ -807,10 +777,7 @@ function clusterFamilyFor(
 // The attachments emitted alongside an entry's row: the item mapping's own
 // rule (itemAttachments) for the kinds that carry them, none for the
 // content-free placeholder and the redacted critical failure.
-function attachmentsFor(
-	entry: ProjectedEntry,
-	turnStatus: string | undefined,
-): AttachmentRef[] | undefined {
+function attachmentsFor(entry: ProjectedEntry, turnStatus: string | undefined): AttachmentRef[] | undefined {
 	switch (entry.kind) {
 		case "item":
 		case "critical":
@@ -865,10 +832,7 @@ function rowsForProjectedTurn(
 	fingerprint: string,
 ): Ordered[] {
 	const cached = turnRowCache.get(turn)?.get(fingerprint);
-	if (
-		cached !== undefined &&
-		cached.askState.every(([callId, answerable]) => asks.has(callId) === answerable)
-	) {
+	if (cached !== undefined && cached.askState.every(([callId, answerable]) => asks.has(callId) === answerable)) {
 		return cached.entries;
 	}
 	// Project this turn alone. One turn in, one ProjectedTurn out, carrying the
@@ -1003,11 +967,7 @@ export function projectTimeline(
 			items.push(entry.item);
 		}
 		// Attachments follow the item that produced them.
-		if (
-			!(entry.type === "activity" && entry.pre) &&
-			entry.attachments &&
-			entry.attachments.length > 0
-		) {
+		if (!(entry.type === "activity" && entry.pre) && entry.attachments && entry.attachments.length > 0) {
 			items.push({ kind: "attachments", ...attachmentsRow(entry.item, entry.attachments) });
 		}
 	}
@@ -1073,9 +1033,7 @@ export function attachmentSourceId(item: MobileTimelineItem): string | null {
 }
 
 export function attachmentSourceIdentity(item: MobileTimelineItem): string | null {
-	return item.kind === "attachments"
-		? (item.sourceTranscriptKey ?? attachmentSourceId(item))
-		: null;
+	return item.kind === "attachments" ? (item.sourceTranscriptKey ?? attachmentSourceId(item)) : null;
 }
 
 export function timelineIdentity(item: MobileTimelineItem): string {
@@ -1191,18 +1149,13 @@ function truncateActivityDetail(detail: ActivityDetail, bound: BoundText): Activ
 // projected from — so a submitted answer always names exactly the label the
 // agent offered, never a cut remnant, and two options sharing a prefix
 // longer than the bound stay distinguishable to the answer composer.
-export function boundQuestion(
-	question: AskQuestionRef,
-	bound: BoundText,
-): AskQuestionRef {
+export function boundQuestion(question: AskQuestionRef, bound: BoundText): AskQuestionRef {
 	return {
 		...question,
 		header: bound(question.header),
 		question: bound(question.question),
 		...(question.why === undefined ? {} : { why: bound(question.why) }),
-		...(question.ifUnanswered === undefined
-			? {}
-			: { ifUnanswered: bound(question.ifUnanswered) }),
+		...(question.ifUnanswered === undefined ? {} : { ifUnanswered: bound(question.ifUnanswered) }),
 		options: question.options.map((option) => ({
 			...option,
 			label: bound(option.label),

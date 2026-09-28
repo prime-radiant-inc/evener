@@ -1,12 +1,6 @@
 import { expect, it } from "vitest";
 import type { MobileTimelineItem } from "./projectedRows";
-import {
-	groupTimeline,
-	isInterruptedNotice,
-	steeringNoticeLabel,
-	timelineGap,
-	type TimelineRow,
-} from "./timeline";
+import { groupTimeline, isInterruptedNotice, steeringNoticeLabel, timelineGap, type TimelineRow } from "./timeline";
 
 const setup: MobileTimelineItem = {
 	kind: "notice",
@@ -83,9 +77,7 @@ it("collapses only typed non-warning interruption notices", () => {
 	expect(isInterruptedNotice(interrupted)).toBe(true);
 	expect(isInterruptedNotice(interruptedSalvage)).toBe(true);
 	expect(isInterruptedNotice({ ...interrupted, tone: "warning" })).toBe(false);
-	expect(isInterruptedNotice({ ...interruptedSalvage, tone: "warning" })).toBe(
-		false,
-	);
+	expect(isInterruptedNotice({ ...interruptedSalvage, tone: "warning" })).toBe(false);
 	expect(isInterruptedNotice({ ...interrupted, origin: "system" })).toBe(false);
 	expect(
 		isInterruptedNotice({
@@ -94,9 +86,7 @@ it("collapses only typed non-warning interruption notices", () => {
 			text: "Interrupted",
 		}),
 	).toBe(false);
-	expect(
-		isInterruptedNotice({ ...interrupted, steeringKind: "notification" }),
-	).toBe(false);
+	expect(isInterruptedNotice({ ...interrupted, steeringKind: "notification" })).toBe(false);
 });
 
 it("groups consecutive internal entries without losing order or contents", () => {
@@ -108,9 +98,7 @@ it("groups consecutive internal entries without losing order or contents", () =>
 		entries: [setup, diagnostic],
 	});
 	expect(rows[1]).toBe(message);
-	expect(
-		rows.flatMap((row) => (row.kind === "details" ? row.entries : [row])),
-	).toEqual(input);
+	expect(rows.flatMap((row) => (row.kind === "details" ? row.entries : [row]))).toEqual(input);
 	expect(input).toHaveLength(4);
 });
 
@@ -120,9 +108,7 @@ it("keeps warnings visible even when classified as internal details", () => {
 		id: "internal-warning",
 		tone: "warning" as const,
 	};
-	expect(
-		groupTimeline([setup, warning, internalWarning, diagnostic]),
-	).toMatchObject([
+	expect(groupTimeline([setup, warning, internalWarning, diagnostic])).toMatchObject([
 		{ kind: "details", entries: [setup] },
 		warning,
 		internalWarning,
@@ -131,9 +117,7 @@ it("keeps warnings visible even when classified as internal details", () => {
 });
 
 it("retains a disclosure identity as adjacent details arrive", () => {
-	expect(groupTimeline([setup])[0]?.id).toBe(
-		groupTimeline([setup, diagnostic])[0]?.id,
-	);
+	expect(groupTimeline([setup])[0]?.id).toBe(groupTimeline([setup, diagnostic])[0]?.id);
 	expect(groupTimeline([])).toEqual([]);
 });
 
@@ -145,25 +129,18 @@ it.each([
 	"task-inactive",
 	"current-task",
 	"task-list",
-])(
-	"offers a compact disclosure only for noncritical typed %s steering",
-	(steeringKind) => {
-		const notice = {
-			...setup,
-			family: "informational" as const,
-			origin: "steering" as const,
-			steeringKind,
-		};
-		expect(steeringNoticeLabel(notice)).toEqual(expect.any(String));
-		expect(timelineGap(message, notice)).toBeLessThan(
-			timelineGap(message, message),
-		);
-		expect(
-			steeringNoticeLabel({ ...notice, origin: "system" }),
-		).toBeUndefined();
-		expect(steeringNoticeLabel({ ...notice, tone: "warning" })).toBeUndefined();
-	},
-);
+])("offers a compact disclosure only for noncritical typed %s steering", (steeringKind) => {
+	const notice = {
+		...setup,
+		family: "informational" as const,
+		origin: "steering" as const,
+		steeringKind,
+	};
+	expect(steeringNoticeLabel(notice)).toEqual(expect.any(String));
+	expect(timelineGap(message, notice)).toBeLessThan(timelineGap(message, message));
+	expect(steeringNoticeLabel({ ...notice, origin: "system" })).toBeUndefined();
+	expect(steeringNoticeLabel({ ...notice, tone: "warning" })).toBeUndefined();
+});
 
 it("labels interrupted salvage as a draft", () => {
 	const interruptedSalvage = {
@@ -173,9 +150,7 @@ it("labels interrupted salvage as a draft", () => {
 		steeringKind: "interrupted-salvage" as const,
 	};
 	expect(steeringNoticeLabel(interruptedSalvage)).toBe("Interrupted draft");
-	expect(timelineGap(message, interruptedSalvage)).toBeLessThan(
-		timelineGap(message, message),
-	);
+	expect(timelineGap(message, interruptedSalvage)).toBeLessThan(timelineGap(message, message));
 });
 
 it("keeps unknown steering, untyped notices, and critical diagnostics visible", () => {
@@ -202,13 +177,10 @@ it.each([
 	{ eventKind: "tool_repair" },
 	{ eventKind: "hook_completed", exitCode: 3 },
 	{ family: "warning" as const },
-])(
-	"keeps typed critical notices outside collapsed diagnostic groups: %j",
-	(metadata) => {
-		const critical = { ...diagnostic, ...metadata };
-		expect(groupTimeline([setup, critical])).toEqual([
-			{ kind: "details", id: "details:setup", entries: [setup] },
-			critical,
-		]);
-	},
-);
+])("keeps typed critical notices outside collapsed diagnostic groups: %j", (metadata) => {
+	const critical = { ...diagnostic, ...metadata };
+	expect(groupTimeline([setup, critical])).toEqual([
+		{ kind: "details", id: "details:setup", entries: [setup] },
+		critical,
+	]);
+});

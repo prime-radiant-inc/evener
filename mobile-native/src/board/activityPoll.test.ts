@@ -13,7 +13,9 @@ function client(): FakeClient {
 
 /** The recorded evener/activity/read calls' params, in call order. */
 function paramsSent(fake: FakeClient): ActivityReadParams[] {
-	return fake.calls.filter((call) => call.method === "evener/activity/read").map((call) => call.params as ActivityReadParams);
+	return fake.calls
+		.filter((call) => call.method === "evener/activity/read")
+		.map((call) => call.params as ActivityReadParams);
 }
 
 beforeEach(() => vi.useFakeTimers());

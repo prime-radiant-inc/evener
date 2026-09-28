@@ -16,8 +16,7 @@ import { Action, Copy, ErrorMessage } from "./ui";
  * active profile has moved off: the data behind the screen belongs to a hub
  * the connection no longer reports, so the screen offers the way back
  * instead of that data. */
-export const HUB_NO_LONGER_SELECTED =
-	"This hub is no longer selected. Return to Hubs to reconnect.";
+export const HUB_NO_LONGER_SELECTED = "This hub is no longer selected. Return to Hubs to reconnect.";
 
 /** The connection wiring every retained ready-only screen runs at the top of
  * its body - the block PluginsScreen, HubSettingsScreen and ProvidersScreen
@@ -80,9 +79,7 @@ export interface RetainedScreenConnection {
 
 /** Runs the retained ready-only screen wiring for the hub `routeHubId` the
  * route names; RetainedScreenConnection carries the contract. */
-export function useRetainedScreenConnection(
-	routeHubId: string,
-): RetainedScreenConnection {
+export function useRetainedScreenConnection(routeHubId: string): RetainedScreenConnection {
 	const { activeProfile, client, state, fatal, error, retry } = useConnection();
 	const display = useConnectionDisplay(activeProfile?.id, state, fatal, client);
 	const canUseConnection = useLiveReadiness(routeHubId, client, state);
@@ -138,10 +135,6 @@ export function ConnectionWall({
  * the status and the manual reconnect have to live inside it, or the user
  * would have to dismiss the modal to reach them. Renders nothing while the
  * connection is ready, exactly as the banner behind the modal would. */
-export function ModalConnectionStatus({
-	connectionState,
-}: {
-	connectionState: ConnectionState;
-}) {
+export function ModalConnectionStatus({ connectionState }: { connectionState: ConnectionState }) {
 	return connectionState !== "ready" ? <ConnectionStatus /> : null;
 }

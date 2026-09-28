@@ -39,7 +39,9 @@ export function ModelSheet({ route }: NativeStackScreenProps<Routes, "ModelSheet
 	const host = useSheetHost(modelHosts, sheetKey(hubId, ref), sheet);
 	const [query, setQuery] = useState("");
 	if (!host) return null;
-	return <ModelSheetBody host={host} vision={setting === "vision"} query={query} setQuery={setQuery} finish={sheet.finish} />;
+	return (
+		<ModelSheetBody host={host} vision={setting === "vision"} query={query} setQuery={setQuery} finish={sheet.finish} />
+	);
 }
 
 function ModelSheetBody({

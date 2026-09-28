@@ -219,9 +219,7 @@ it("gates the upgrade start while the connection is away, not the recovery reads
 		harness.connection = connection(hub, "ready");
 		const tree = render(<HubSettingsScreen {...props} />);
 		await act(async () => {});
-		const section = tree.root.find(
-			(node) => node.props.accessibilityLabel === "Hub update",
-		);
+		const section = tree.root.find((node) => node.props.accessibilityLabel === "Hub update");
 		act(() => {
 			section.props.onPress();
 		});
@@ -237,9 +235,7 @@ it("gates the upgrade start while the connection is away, not the recovery reads
 	// (hubUpgrade.ts's start): pressed while the connection is away, it
 	// strands a false "uncertain" upgrade in storage - the RPC never had a
 	// chance to reach the hub, and only a manual refresh recovers it.
-	const start = tree.root.find(
-		(node) => node.props.accessibilityLabel === "Upgrade hub",
-	);
+	const start = tree.root.find((node) => node.props.accessibilityLabel === "Upgrade hub");
 	expect(start.props.disabled).toBe(true);
 
 	// The reads stay pressable: they fail honestly while away, and the
@@ -250,9 +246,7 @@ it("gates the upgrade start while the connection is away, not the recovery reads
 	};
 	const remedies = await mountFlapping();
 	for (const label of ["Refresh running version", "Review another update"]) {
-		const control = remedies.root.find(
-			(node) => node.props.accessibilityLabel === label,
-		);
+		const control = remedies.root.find((node) => node.props.accessibilityLabel === label);
 		expect(control.props.disabled).toBe(false);
 	}
 	upgrade.snapshot = { kind: "idle" };
@@ -267,15 +261,11 @@ it("refuses an upgrade confirmation that outlives the connection it was opened o
 	harness.connection = connection(hub, "ready");
 	const tree = render(<HubSettingsScreen {...props} />);
 	await act(async () => {});
-	const section = tree.root.find(
-		(node) => node.props.accessibilityLabel === "Hub update",
-	);
+	const section = tree.root.find((node) => node.props.accessibilityLabel === "Hub update");
 	act(() => {
 		section.props.onPress();
 	});
-	const open = tree.root.find(
-		(node) => node.props.accessibilityLabel === "Upgrade hub",
-	);
+	const open = tree.root.find((node) => node.props.accessibilityLabel === "Upgrade hub");
 	act(() => {
 		open.props.onPress();
 	});

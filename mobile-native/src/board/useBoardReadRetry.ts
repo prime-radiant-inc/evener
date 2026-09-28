@@ -35,10 +35,13 @@ export function useBoardReadRetry(
 	}, [client, count, succeeded]);
 	useEffect(() => {
 		if (!failed || !client) return;
-		const timer = setTimeout(() => {
-			board.setClient(client);
-			setRetries({ client, count: count + 1 });
-		}, reconnectDelay(count + 1));
+		const timer = setTimeout(
+			() => {
+				board.setClient(client);
+				setRetries({ client, count: count + 1 });
+			},
+			reconnectDelay(count + 1),
+		);
 		return () => clearTimeout(timer);
 	}, [board, client, failed, count]);
 }

@@ -65,20 +65,11 @@ const session = (ref: string) => ({
 	children: [],
 });
 const sessions = (prefix: string, count: number, from = 0) =>
-	Array.from({ length: count }, (_, index) =>
-		session(`${prefix}${from + index}`),
-	);
+	Array.from({ length: count }, (_, index) => session(`${prefix}${from + index}`));
 const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
 
 /** Each category's reads are a reader of their own, named by its id. */
-type Reader =
-	| "live"
-	| "needs_you"
-	| "pin_catalog"
-	| "manifest"
-	| `pin_section:${string}`
-	| "auth"
-	| "plugins";
+type Reader = "live" | "needs_you" | "pin_catalog" | "manifest" | `pin_section:${string}` | "auth" | "plugins";
 const readerOf = ({ method, params }: Hub["requests"][number]): Reader =>
 	method === "evener/auth/list"
 		? "auth"
@@ -91,9 +82,7 @@ const readerOf = ({ method, params }: Hub["requests"][number]): Reader =>
 					: (params.resource as Reader);
 /** The oldest unanswered request for one reader. */
 function next(hub: Hub, reader: Reader) {
-	const request = hub.requests.find(
-		(candidate) => !candidate.answered && readerOf(candidate) === reader,
-	);
+	const request = hub.requests.find((candidate) => !candidate.answered && readerOf(candidate) === reader);
 	if (!request) throw new Error(`no pending ${reader} request`);
 	request.answered = true;
 	return request;
@@ -106,15 +95,9 @@ function answer(hub: Hub, reader: Reader, data: unknown, revision = 1) {
 function fail(hub: Hub, reader: Reader, message: string) {
 	next(hub, reader).reject(new Error(message));
 }
-const requestsFor = (hub: Hub, reader: Reader) =>
-	hub.requests.filter((request) => readerOf(request) === reader);
-const sources = [
-	{ id: "laptop", label: "Laptop", kind: "local", online: true },
-];
-async function answerAll(
-	hub: Hub,
-	{ live = sessions("live-", 2), needsYou = [session("ask-0")] } = {},
-) {
+const requestsFor = (hub: Hub, reader: Reader) => hub.requests.filter((request) => readerOf(request) === reader);
+const sources = [{ id: "laptop", label: "Laptop", kind: "local", online: true }];
+async function answerAll(hub: Hub, { live = sessions("live-", 2), needsYou = [session("ask-0")] } = {}) {
 	answer(hub, "live", { sessions: live, remaining: 0 });
 	answer(hub, "needs_you", { sessions: needsYou, remaining: 0 });
 	answer(hub, "pin_catalog", {
@@ -139,8 +122,7 @@ function invalidate(
 			params: { generationId, sequence, targets },
 		});
 }
-const refs = (page: { rows: Array<{ ref: string }> }) =>
-	page.rows.map((row) => row.ref);
+const refs = (page: { rows: Array<{ ref: string }> }) => page.rows.map((row) => row.ref);
 
 it("reads Live, Needs you, the pin catalog and the manifest when it gets a client", async () => {
 	const hub = boundary();
@@ -148,9 +130,12 @@ it("reads Live, Needs you, the pin catalog and the manifest when it gets a clien
 	board.setClient(hub.client);
 	await Promise.resolve();
 	const reads = hub.requests.filter((request) => request.method === "evener/navigation/read");
-	expect(reads.map((request) => request.params.resource).sort()).toEqual(
-		["manifest", "pin_catalog", "section", "section"],
-	);
+	expect(reads.map((request) => request.params.resource).sort()).toEqual([
+		"manifest",
+		"pin_catalog",
+		"section",
+		"section",
+	]);
 	expect(
 		reads
 			.filter((request) => request.params.resource === "section")
@@ -206,9 +191,7 @@ it("keeps showing its rows while disconnected and replaces them only when the ne
 	answer(second, "manifest", manifest({ sources }));
 	await tick();
 	expect(board.getSnapshot().retained).toBe(true);
-	expect(board.getSnapshot().pins.rows.map((row) => row.id)).toEqual([
-		"pins-1",
-	]);
+	expect(board.getSnapshot().pins.rows.map((row) => row.id)).toEqual(["pins-1"]);
 	answer(second, "pin_catalog", { pin_sections: [], remaining: 0 });
 	await tick();
 	expect(emitted.length).toBeGreaterThan(0);
@@ -295,7 +278,11 @@ it("reads every page of the pin catalog, so every category has its row", async (
 	const board = createBoardController();
 	board.setClient(hub.client);
 	const categories = (count: number, from = 0) =>
-		Array.from({ length: count }, (_, index) => ({ id: `pins-${from + index}`, name: `Pins ${from + index}`, count: 1 }));
+		Array.from({ length: count }, (_, index) => ({
+			id: `pins-${from + index}`,
+			name: `Pins ${from + index}`,
+			count: 1,
+		}));
 	answer(hub, "pin_catalog", { pin_sections: categories(100), remaining: 20 });
 	await tick();
 	const second = next(hub, "pin_catalog");
@@ -311,7 +298,11 @@ it("resumes paging the pin catalog where a pause interrupted it", async () => {
 	const board = createBoardController();
 	board.setClient(hub.client);
 	const categories = (count: number, from = 0) =>
-		Array.from({ length: count }, (_, index) => ({ id: `pins-${from + index}`, name: `Pins ${from + index}`, count: 1 }));
+		Array.from({ length: count }, (_, index) => ({
+			id: `pins-${from + index}`,
+			name: `Pins ${from + index}`,
+			count: 1,
+		}));
 	answer(hub, "pin_catalog", { pin_sections: categories(100), remaining: 20 });
 	await tick();
 	// The second page is out when the Board pauses, which cancels it.
@@ -481,9 +472,7 @@ it("a manifest read that never answers doesn't strand the Board after pause and 
 	answer(hub, "manifest", manifest({ sources }));
 	await tick();
 	expect(board.getSnapshot().manifest?.sources).toEqual(sources);
-	stranded.resolve(
-		response(stranded.params, manifest({ sources: [] })),
-	);
+	stranded.resolve(response(stranded.params, manifest({ sources: [] })));
 	await tick();
 	expect(board.getSnapshot().manifest?.sources).toEqual(sources);
 });
@@ -669,12 +658,14 @@ it("pause holds re-reads, resume catches up", async () => {
 	expect(hub.requests.length).toBe(before);
 	board.resume();
 	await Promise.resolve();
-	expect(
-		hub.requests
-			.slice(before)
-			.map(readerOf)
-			.sort(),
-	).toEqual(["auth", "live", "manifest", "needs_you", "pin_catalog", "plugins"]);
+	expect(hub.requests.slice(before).map(readerOf).sort()).toEqual([
+		"auth",
+		"live",
+		"manifest",
+		"needs_you",
+		"pin_catalog",
+		"plugins",
+	]);
 });
 
 it("resume reads what a pause interrupted before its first answer", async () => {
@@ -685,12 +676,14 @@ it("resume reads what a pause interrupted before its first answer", async () => 
 	const before = hub.requests.length;
 	board.resume();
 	await Promise.resolve();
-	expect(
-		hub.requests
-			.slice(before)
-			.map(readerOf)
-			.sort(),
-	).toEqual(["auth", "live", "manifest", "needs_you", "pin_catalog", "plugins"]);
+	expect(hub.requests.slice(before).map(readerOf).sort()).toEqual([
+		"auth",
+		"live",
+		"manifest",
+		"needs_you",
+		"pin_catalog",
+		"plugins",
+	]);
 	const interrupted = hub.requests.slice(0, before);
 	for (const request of interrupted) request.answered = true;
 	answer(hub, "live", { sessions: [session("live-0")], remaining: 0 });

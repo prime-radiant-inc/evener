@@ -5,10 +5,7 @@ import { KeyboardAvoidingView, Platform, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { pinDrafts } from "./nativeOrganization";
 import { PinAssignmentEditor } from "./PinAssignmentEditor";
-import type {
-	PinAssignmentDraft,
-	PinAssignmentSelection,
-} from "./pinAssignmentDrafts";
+import type { PinAssignmentDraft, PinAssignmentSelection } from "./pinAssignmentDrafts";
 import type { Routes } from "./screens";
 import { Action, Copy, ErrorMessage, styles, useColors } from "./ui";
 import { usePinNavigation } from "./usePinNavigation";
@@ -16,10 +13,7 @@ import { usePinNavigation } from "./usePinNavigation";
 const draftError =
 	"Your last saved pin proposal is kept. This edit could not be saved on this device; refresh to retry.";
 
-export function PinAssignmentScreen({
-	route,
-	navigation,
-}: NativeStackScreenProps<Routes, "PinAssignment">) {
+export function PinAssignmentScreen({ route, navigation }: NativeStackScreenProps<Routes, "PinAssignment">) {
 	const { hubId, ref, title } = route.params;
 	const {
 		activeProfile,
@@ -58,14 +52,8 @@ export function PinAssignmentScreen({
 			setProposal({ owner: repository, draft: null, error: draftError });
 		}
 	}, [repository, proposal.owner]);
-	const available =
-		ready && focused && confirmed && !!observed?.location?.top_level;
-	const currentAssignment =
-		ready &&
-		confirmed &&
-		!page?.stale &&
-		!action?.pending &&
-		!action?.uncertain;
+	const available = ready && focused && confirmed && !!observed?.location?.top_level;
+	const currentAssignment = ready && confirmed && !page?.stale && !action?.pending && !action?.uncertain;
 	const blocked =
 		!available ||
 		!page?.loaded ||
@@ -101,8 +89,7 @@ export function PinAssignmentScreen({
 		const selection = saved?.selection;
 		if (unpin) await actions.unpin({ sessionRef: ref });
 		else if (selection?.kind === "existing") {
-			if (!page?.rows.some((section) => section.id === selection.sectionId))
-				return;
+			if (!page?.rows.some((section) => section.id === selection.sectionId)) return;
 			await actions.assignPin({
 				sessionRef: ref,
 				sectionId: selection.sectionId,
@@ -113,12 +100,10 @@ export function PinAssignmentScreen({
 			await actions.assignPin({ sessionRef: ref, sectionName: name });
 		} else return;
 		const result = actions.getSnapshot();
-		if (!isCurrent() || result.pending || result.uncertain || result.error)
-			return;
+		if (!isCurrent() || result.pending || result.uncertain || result.error) return;
 		if (saved) {
 			try {
-				if (repository.removeIf(saved))
-					setProposal({ owner: repository, draft: null, error: null });
+				if (repository.removeIf(saved)) setProposal({ owner: repository, draft: null, error: null });
 			} catch {
 				setProposal((previous) => ({
 					...previous,
@@ -129,14 +114,9 @@ export function PinAssignmentScreen({
 		}
 	}
 	return (
-		<SafeAreaView
-			edges={["bottom", "left", "right"]}
-			style={[styles.fill, { backgroundColor: colors.background }]}
-		>
+		<SafeAreaView edges={["bottom", "left", "right"]} style={[styles.fill, { backgroundColor: colors.background }]}>
 			{!belongs ? (
-				<Copy>
-					This hub is no longer selected. Return to Hubs to reconnect.
-				</Copy>
+				<Copy>This hub is no longer selected. Return to Hubs to reconnect.</Copy>
 			) : (
 				<KeyboardAvoidingView
 					style={styles.fill}
@@ -148,9 +128,7 @@ export function PinAssignmentScreen({
 							<View style={{ gap: 8 }}>
 								{!ready ? <Action onPress={retry}>Reconnect</Action> : null}
 								<ErrorMessage message={selected?.error ?? null} />
-								{selected?.error ? (
-									<Action onPress={refresh}>Retry saved proposal</Action>
-								) : null}
+								{selected?.error ? <Action onPress={refresh}>Retry saved proposal</Action> : null}
 								{observed ? (
 									<Copy muted>
 										{!observed.location

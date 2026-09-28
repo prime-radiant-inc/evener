@@ -39,7 +39,12 @@ const run: Run = {
 	id: "run:a",
 	turnId: "t1",
 	steps: [
-		step("a", "read_file", { file_path: "agent/session.go" }, { detail: { arguments: '{"file_path":"agent/session.go"}', description: "Read the session loop" } }),
+		step(
+			"a",
+			"read_file",
+			{ file_path: "agent/session.go" },
+			{ detail: { arguments: '{"file_path":"agent/session.go"}', description: "Read the session loop" } },
+		),
 		step("b", "shell", { command: "go test ./agent/..." }, { state: "failed" }),
 		step("c", "shell", { command: "go test ./agent/..." }, { state: "failed" }),
 		step("d", "grep", { path: "agent", pattern: "Turn" }),
@@ -105,7 +110,11 @@ describe("a run expanded into its steps", () => {
 		// The description when there is one, else the label.
 		expect(all).toEqual(expect.arrayContaining(["Read the session loop", "shell", "grep"]));
 		const target = (value: string) => texts(tree.root).find((node) => textOf(node) === value);
-		expect(target("agent/session.go")?.props.style).toMatchObject({ fontFamily: "Menlo", fontSize: 13, lineHeight: 18 });
+		expect(target("agent/session.go")?.props.style).toMatchObject({
+			fontFamily: "Menlo",
+			fontSize: 13,
+			lineHeight: 18,
+		});
 		expect(target("go test ./agent/...")?.props.style).toMatchObject({ fontFamily: "Menlo" });
 		expect(target("agent")?.props.style).toMatchObject({ fontFamily: "Menlo" });
 		const marks = tree.root.findAllByType("SymbolView" as never);
@@ -115,8 +124,13 @@ describe("a run expanded into its steps", () => {
 			["xmark.octagon.fill", DANGER_INK],
 			["checkmark.circle.fill", INK_LOW],
 		]);
-		expect(tree.root.findAll((node) => node.props.accessibilityLabel === "Read the session loop, agent/session.go, done").length).toBeGreaterThan(0);
-		expect(tree.root.findAll((node) => node.props.accessibilityLabel === "shell, go test ./agent/..., failed").length).toBeGreaterThan(0);
+		expect(
+			tree.root.findAll((node) => node.props.accessibilityLabel === "Read the session loop, agent/session.go, done")
+				.length,
+		).toBeGreaterThan(0);
+		expect(
+			tree.root.findAll((node) => node.props.accessibilityLabel === "shell, go test ./agent/..., failed").length,
+		).toBeGreaterThan(0);
 	});
 
 	it("shows no target for a step whose arguments name none", () => {
@@ -141,10 +155,15 @@ describe("a step's evidence", () => {
 		root.findAll((node) => node.props.accessibilityLabel === label)[0];
 	const shown = (root: ReactTestInstance) => root.findAll((node) => String(node.type) === "StepEvidence");
 	const chevrons = (root: ReactTestInstance) =>
-		root.findAllByType("SymbolView" as never).map((mark) => mark.props.name).filter((name: string) => name.startsWith("chevron"));
+		root
+			.findAllByType("SymbolView" as never)
+			.map((mark) => mark.props.name)
+			.filter((name: string) => name.startsWith("chevron"));
 
 	it("opens under a step that has some, and closes again", () => {
-		const tree = render(<RunRow run={withOutput} live={false} expanded onToggle={() => {}} hubId="hub-1" sessionRef="ref-open" />);
+		const tree = render(
+			<RunRow run={withOutput} live={false} expanded onToggle={() => {}} hubId="hub-1" sessionRef="ref-open" />,
+		);
 		const shell = line(tree.root, "shell, go test, done");
 		expect(shell.props.accessibilityRole).toBe("button");
 		expect(shell.props.accessibilityState).toEqual({ expanded: false });
@@ -160,7 +179,9 @@ describe("a step's evidence", () => {
 	});
 
 	it("leaves a step with nothing to show unpressable, with no chevron", () => {
-		const tree = render(<RunRow run={withOutput} live={false} expanded onToggle={() => {}} hubId="hub-1" sessionRef="ref-none" />);
+		const tree = render(
+			<RunRow run={withOutput} live={false} expanded onToggle={() => {}} hubId="hub-1" sessionRef="ref-none" />,
+		);
 		const grep = line(tree.root, "grep, agent, done");
 		expect(grep.props.onPress).toBeUndefined();
 		expect(grep.props.accessibilityRole).toBeUndefined();
@@ -182,7 +203,15 @@ describe("a step's evidence", () => {
 
 	it("opens every step's evidence by default at the levels that open output as it arrives", () => {
 		const tree = render(
-			<RunRow run={withOutput} live={false} expanded onToggle={() => {}} hubId="hub-1" sessionRef="ref-default" evidenceOpenByDefault />,
+			<RunRow
+				run={withOutput}
+				live={false}
+				expanded
+				onToggle={() => {}}
+				hubId="hub-1"
+				sessionRef="ref-default"
+				evidenceOpenByDefault
+			/>,
 		);
 		expect(shown(tree.root)).toHaveLength(1);
 	});
@@ -194,7 +223,11 @@ describe("a live run", () => {
 		const tree = render(<RunRow run={run} live expanded={false} onToggle={onToggle} {...where} />);
 		expect(texts(tree.root).map(textOf)).toEqual(expect.arrayContaining(["Read the session loop", "agent/session.go"]));
 		expect(tree.root.findAll((node) => node.props.accessibilityRole === "button")).toEqual([]);
-		expect(tree.root.findAll((node) => typeof node.props.onPress === "function" && node.props.accessibilityLabel?.startsWith?.("4 steps"))).toEqual([]);
+		expect(
+			tree.root.findAll(
+				(node) => typeof node.props.onPress === "function" && node.props.accessibilityLabel?.startsWith?.("4 steps"),
+			),
+		).toEqual([]);
 		expect(texts(tree.root).some((node) => /[▸▾]/.test(textOf(node)))).toBe(false);
 		expect(texts(tree.root).map(textOf)).toContain(SUMMARY);
 	});

@@ -19,9 +19,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import ts from "typescript";
 import { describe, expect, it } from "vitest";
 
-const tsxCli = fileURLToPath(
-	new URL("../node_modules/tsx/dist/cli.mjs", import.meta.url),
-);
+const tsxCli = fileURLToPath(new URL("../node_modules/tsx/dist/cli.mjs", import.meta.url));
 // tsx reads this file (not tsconfig.check.json) for the package-name paths the
 // scripts/*.mts tools rely on, so the probe resolves the barrel the same way,
 // and its paths entry is also how this test finds the modules behind it.
@@ -41,27 +39,18 @@ const moduleNames = [
 ] as const;
 
 function navigationModuleDir(): string {
-	const { config, error } = ts.readConfigFile(tsConfig, (file) =>
-		readFileSync(file, "utf8"),
-	);
-	if (error)
-		throw new Error(ts.flattenDiagnosticMessageText(error.messageText, "\n"));
-	const mapped =
-		config?.compilerOptions?.paths?.[
-			"@evener/appwire-client/state/navigation"
-		]?.[0];
+	const { config, error } = ts.readConfigFile(tsConfig, (file) => readFileSync(file, "utf8"));
+	if (error) throw new Error(ts.flattenDiagnosticMessageText(error.messageText, "\n"));
+	const mapped = config?.compilerOptions?.paths?.["@evener/appwire-client/state/navigation"]?.[0];
 	if (typeof mapped !== "string") {
-		throw new Error(
-			"tsconfig.json no longer maps @evener/appwire-client/state/navigation",
-		);
+		throw new Error("tsconfig.json no longer maps @evener/appwire-client/state/navigation");
 	}
 	return path.dirname(path.resolve(path.dirname(tsConfig), mapped));
 }
 
 function probeSource(moduleDir: string): string {
 	const moduleImports = moduleNames.map(
-		(name) =>
-			`import * as ${name} from ${JSON.stringify(pathToFileURL(path.join(moduleDir, `${name}.ts`)).href)};`,
+		(name) => `import * as ${name} from ${JSON.stringify(pathToFileURL(path.join(moduleDir, `${name}.ts`)).href)};`,
 	);
 	return [
 		`import * as barrel from "@evener/appwire-client/state/navigation";`,
@@ -79,11 +68,7 @@ describe("state/navigation barrel under tsx", () => {
 		const probe = path.join(dir, "probe.mts");
 		writeFileSync(probe, probeSource(navigationModuleDir()));
 		try {
-			const stdout = execFileSync(
-				process.execPath,
-				[tsxCli, "--tsconfig", tsConfig, probe],
-				{ encoding: "utf8" },
-			);
+			const stdout = execFileSync(process.execPath, [tsxCli, "--tsconfig", tsConfig, probe], { encoding: "utf8" });
 			const { barrel, union } = JSON.parse(stdout) as {
 				barrel: string[];
 				union: string[];

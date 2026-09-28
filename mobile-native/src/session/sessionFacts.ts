@@ -161,9 +161,7 @@ export function notesSummary(session: Pick<ThreadModel, "humanNote" | "agentNote
 /** Where "Fork from latest" forks: your latest message with a transcript
  * entry a fork can start from, by the rule a message's own "Fork from here"
  * follows (TimelineItem's YourMessage, the screen's forkMessage). */
-export function latestForkPoint(
-	items: readonly MobileTimelineItem[],
-): { entryIndex: number; preview: string } | null {
+export function latestForkPoint(items: readonly MobileTimelineItem[]): { entryIndex: number; preview: string } | null {
 	for (let index = items.length - 1; index >= 0; index -= 1) {
 		const item = items[index];
 		if (

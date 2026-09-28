@@ -23,7 +23,12 @@ const broken: SyncStringStorage = {
 };
 
 it("reads JSON back, and reads missing, corrupt or unreadable records as null", () => {
-	const storage = memoryStorage(new Map([["good", '{"a":1}'], ["bad", "{not json"]]));
+	const storage = memoryStorage(
+		new Map([
+			["good", '{"a":1}'],
+			["bad", "{not json"],
+		]),
+	);
 	expect(readJson(storage, "good")).toEqual({ a: 1 });
 	expect(readJson(storage, "bad")).toBeNull();
 	expect(readJson(storage, "absent")).toBeNull();
@@ -38,7 +43,13 @@ it("writes JSON and keeps going when the store refuses", () => {
 });
 
 it("removes every key it names, without throwing", () => {
-	const storage = memoryStorage(new Map([["a", "1"], ["b", "2"], ["c", "3"]]));
+	const storage = memoryStorage(
+		new Map([
+			["a", "1"],
+			["b", "2"],
+			["c", "3"],
+		]),
+	);
 	expect(() => removeKeys(storage, ["a", "c"])).not.toThrow();
 	expect([...storage.values.keys()]).toEqual(["b"]);
 });

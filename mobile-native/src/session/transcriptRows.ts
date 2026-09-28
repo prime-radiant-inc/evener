@@ -40,7 +40,11 @@ function inTray(row: TimelineRow): boolean {
 	return row.kind === "activity" && row.state === "running" && !OWN_ROW_TOOLS.has(row.label);
 }
 
-export function sessionRows(rows: readonly TimelineRow[], turns: readonly TurnTimes[], timeZone?: string): TimelineRow[] {
+export function sessionRows(
+	rows: readonly TimelineRow[],
+	turns: readonly TurnTimes[],
+	timeZone?: string,
+): TimelineRow[] {
 	const byId = new Map(turns.map((turn) => [turn.id, turn]));
 	const out: TimelineRow[] = [];
 	let run: RunRow | null = null;
@@ -83,7 +87,9 @@ export function sessionRows(rows: readonly TimelineRow[], turns: readonly TurnTi
 			continue;
 		}
 		if (row.kind === "attachments" && run) {
-			const owner = run.steps.find((candidate) => (candidate.transcriptKey ?? candidate.id) === row.sourceTranscriptKey);
+			const owner = run.steps.find(
+				(candidate) => (candidate.transcriptKey ?? candidate.id) === row.sourceTranscriptKey,
+			);
 			if (owner) {
 				owner.images = [...(owner.images ?? []), ...row.items];
 				continue;
@@ -98,7 +104,9 @@ export function sessionRows(rows: readonly TimelineRow[], turns: readonly TurnTi
 /** The questions an earlier ask_user row shows (QuestionHistory), or
  * undefined when its arguments name none it can read. */
 export function askRowQuestions(row: Extract<TimelineRow, { kind: "activity" }>): AskUserQuestion[] | undefined {
-	return row.label === "ask_user" ? parseAskUserQuestions({ argumentsJSON: row.detail.arguments } as ItemModel) : undefined;
+	return row.label === "ask_user"
+		? parseAskUserQuestions({ argumentsJSON: row.detail.arguments } as ItemModel)
+		: undefined;
 }
 
 // A composed answer reply: "[answers]" and then numbered lines like
@@ -213,7 +221,8 @@ function dayKey(at: number, timeZone?: string): string {
 // "Yesterday".
 function dayNumber(at: number, timeZone: string | undefined): number {
 	const parts = formattersFor(timeZone).dayKey.formatToParts(at);
-	const value = (type: Intl.DateTimeFormatPartTypes) => Number(parts.find((candidate) => candidate.type === type)?.value);
+	const value = (type: Intl.DateTimeFormatPartTypes) =>
+		Number(parts.find((candidate) => candidate.type === type)?.value);
 	return Date.UTC(value("year"), value("month") - 1, value("day")) / 86_400_000;
 }
 
@@ -228,7 +237,9 @@ function timeMarker(
 	const previous = previousId === undefined ? undefined : byId.get(previousId);
 	const previousEnd = hubTime(previous?.completedAt) ?? hubTime(previous?.startedAt);
 	const show =
-		previousEnd === null || start - previousEnd >= TIME_GAP_MS || dayKey(start, timeZone) !== dayKey(previousEnd, timeZone);
+		previousEnd === null ||
+		start - previousEnd >= TIME_GAP_MS ||
+		dayKey(start, timeZone) !== dayKey(previousEnd, timeZone);
 	return show ? { kind: "time", id: `time:${turnId}`, turnId, at: start } : null;
 }
 

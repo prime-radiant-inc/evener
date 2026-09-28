@@ -7,7 +7,7 @@ import { ActionSheetIOS, Platform } from "react-native";
 import { act, type ReactTestInstance, type ReactTestRenderer } from "react-test-renderer";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { paletteFor } from "../design/tokens";
-import { alertRequests, pressable, render, renderedText, textOf } from "../renderNative.testkit";
+import { alertRequests, pressable, render, renderedText, swipeRowFully, textOf } from "../renderNative.testkit";
 import type { Routes } from "../screens";
 import { sheetKey } from "../sheet/sheetHosts";
 import type { SyncStringStorage } from "../syncStringStorage";
@@ -37,6 +37,9 @@ vi.mock("@react-navigation/native", () => ({
 vi.mock("expo-symbols", () => ({ SymbolView: "SymbolView" }));
 vi.mock("react-native-gesture-handler/ReanimatedSwipeable", async () =>
 	(await import("../renderNative.testkit")).gestureHandlerModuleMock(),
+);
+vi.mock("react-native-gesture-handler", async () =>
+	(await import("../renderNative.testkit")).gestureDetectorModuleMock(),
 );
 vi.mock("expo-web-browser", () => browser);
 vi.mock("expo-clipboard", () => clipboard);
@@ -121,7 +124,9 @@ function sheet(focusEditor?: boolean): ReactTestRenderer {
 }
 
 const editor = (tree: ReactTestRenderer) =>
-	tree.root.findAll((node) => String(node.type) === "TextInput").find((node) => node.props.accessibilityLabel === "Your note");
+	tree.root
+		.findAll((node) => String(node.type) === "TextInput")
+		.find((node) => node.props.accessibilityLabel === "Your note");
 
 function editorStyle(input: ReactTestInstance) {
 	return [input.props.style].flat().reduce((all, style) => ({ ...all, ...style }), {});
@@ -355,7 +360,9 @@ describe("links", () => {
 		expect(clipboard.setStringAsync).toHaveBeenCalledWith("https://example.com/pr/1");
 		act(() => choose?.(2));
 		await flush();
-		expect(requests.filter((request) => request.method === "urls/remove").map((request) => request.params.id)).toEqual(["u1"]);
+		expect(requests.filter((request) => request.method === "urls/remove").map((request) => request.params.id)).toEqual([
+			"u1",
+		]);
 		expect(renderedText(tree)).toContain("Link removed. Only the agent can add links.");
 		expect(navigation.goBack).not.toHaveBeenCalled();
 	});
@@ -391,11 +398,11 @@ describe("links", () => {
 		const swipeables = tree.root.findAllByType("ReanimatedSwipeable" as never);
 		expect(swipeables).toHaveLength(2);
 		expect(renderedText(render(swipeables[0]?.props.renderRightActions()))).toBe("Remove");
-		const [content] = tree.root.findAllByProps({ testID: "swipe-row-content" });
-		act(() => content?.props.onTouchStart({ nativeEvent: { pageX: 200 } }));
-		act(() => swipeables[0]?.props.onSwipeableOpen("left"));
+		swipeRowFully(swipeables[0], "left");
 		await flush();
-		expect(requests.filter((request) => request.method === "urls/remove").map((request) => request.params.id)).toEqual(["u1"]);
+		expect(requests.filter((request) => request.method === "urls/remove").map((request) => request.params.id)).toEqual([
+			"u1",
+		]);
 		expect(renderedText(tree)).toContain("Link removed. Only the agent can add links.");
 	});
 
@@ -414,16 +421,16 @@ describe("links", () => {
 		expect(row?.props.accessibilityActions).toEqual([{ name: "remove", label: "Remove link" }]);
 		act(() => row?.props.onAccessibilityAction({ nativeEvent: { actionName: "remove" } }));
 		await flush();
-		expect(requests.filter((request) => request.method === "urls/remove").map((request) => request.params.id)).toEqual(["u1"]);
+		expect(requests.filter((request) => request.method === "urls/remove").map((request) => request.params.id)).toEqual([
+			"u1",
+		]);
 		expect(renderedText(tree)).toContain("Link removed. Only the agent can add links.");
 	});
 
 	it("never removes a link from a swipe that began in the screen's left edge band", async () => {
 		const { requests } = provide(session({ sessionUrls: [web] }));
 		const tree = sheet();
-		const [swipeable] = tree.root.findAllByType("ReanimatedSwipeable" as never);
-		act(() => tree.root.findByProps({ testID: "swipe-row-content" }).props.onTouchStart({ nativeEvent: { pageX: 10 } }));
-		act(() => swipeable?.props.onSwipeableOpen("left"));
+		swipeRowFully(tree.root.findAllByType("ReanimatedSwipeable" as never)[0], "left", { pageX: 10 });
 		await flush();
 		expect(requests.filter((request) => request.method === "urls/remove")).toEqual([]);
 	});
@@ -456,9 +463,9 @@ describe("closing the sheet", () => {
 		act(() => tree.unmount());
 		mounted.splice(mounted.indexOf(tree), 1);
 		await flush();
-		expect(requests.filter((request) => request.method === "notes/human/set").map((request) => request.params.note)).toEqual([
-			"keep the tests",
-		]);
+		expect(
+			requests.filter((request) => request.method === "notes/human/set").map((request) => request.params.note),
+		).toEqual(["keep the tests"]);
 		expect(saved).toHaveBeenCalledWith({ saved: true, woke: true });
 	});
 
@@ -496,8 +503,8 @@ describe("closing the sheet", () => {
 		act(() => tree.unmount());
 		mounted.splice(mounted.indexOf(tree), 1);
 		await flush();
-		expect(requests.filter((request) => request.method === "notes/human/set").map((request) => request.params.note)).toEqual([
-			"keep the tests",
-		]);
+		expect(
+			requests.filter((request) => request.method === "notes/human/set").map((request) => request.params.note),
+		).toEqual(["keep the tests"]);
 	});
 });

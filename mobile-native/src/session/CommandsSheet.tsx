@@ -89,9 +89,12 @@ function commandSections(
 	const matches = (row: CommandRow) =>
 		!needle || row.name.toLowerCase().includes(needle) || row.line.toLowerCase().includes(needle);
 	const offered = new Set(builtinComposerItems(session).map((item) => item.key));
-	const commands: CommandRow[] = COMMANDS.filter((command) => offered.has(`builtin:${command.id}`)).map(
-		(command) => ({ key: command.id, name: command.name, line: command.line, invocation: `/${command.id}` }),
-	);
+	const commands: CommandRow[] = COMMANDS.filter((command) => offered.has(`builtin:${command.id}`)).map((command) => ({
+		key: command.id,
+		name: command.name,
+		line: command.line,
+		invocation: `/${command.id}`,
+	}));
 	const groups = new Map<string, CommandRow[]>();
 	for (const item of items) {
 		const plugin = pluginOf(item);

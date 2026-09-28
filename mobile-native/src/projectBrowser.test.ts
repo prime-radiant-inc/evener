@@ -7,10 +7,7 @@ import type {
 } from "@evener/appwire-client";
 import { wireV2 } from "@evener/appwire-client/testing/navigation";
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
-import {
-	createProjectBrowserController,
-	type ProjectSessionTier,
-} from "./projectBrowser";
+import { createProjectBrowserController, type ProjectSessionTier } from "./projectBrowser";
 
 function boundary() {
 	const requests: Array<{
@@ -134,9 +131,7 @@ describe("project browser", () => {
 		expect(listeners.size).toBe(0);
 		const loading = controller.initialLoad();
 		expect(listeners.size).toBe(1);
-		requests[0]?.resolve(
-			response(requests[0].params, { projects: [project("a"), project("b")], remaining: 0 }),
-		);
+		requests[0]?.resolve(response(requests[0].params, { projects: [project("a"), project("b")], remaining: 0 }));
 		await loading;
 		expect(requests).toHaveLength(1);
 		expect(controller.getSnapshot().groups).toEqual([]);
@@ -280,9 +275,7 @@ describe("project browser", () => {
 		await tick();
 		expect(requests).toHaveLength(6);
 		expect(requests[5]?.params).toMatchObject({ resource: "catalog", offset: 0 });
-		requests[5]?.resolve(
-			response(requests[5].params, { projects: [project("a"), project("b")], remaining: 0 }, 2),
-		);
+		requests[5]?.resolve(response(requests[5].params, { projects: [project("a"), project("b")], remaining: 0 }, 2));
 		await retry;
 		expect(controller.getSnapshot().projects).toMatchObject({ stale: false, error: null });
 		expect(controller.getSnapshot().projects.rows.map((row) => row.key)).toEqual(["a", "b"]);
