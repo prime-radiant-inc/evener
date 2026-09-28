@@ -63,15 +63,20 @@ export function subagentStateWord(state: SubagentState): string {
 	return STATE_WORDS[state];
 }
 
+// A command the job system stopped ends as stopped or cancelled
+// (agent/internal/jobstore/record.go).
+const STOPPED_JOB_STATUSES = new Set(["stopped", "cancelled"]);
+
 /** How many runs in the subagent's subtree, its own included, ended in a
- * stop. For PR 3's stop request ("Stopped at your request"); a row's own
- * "Stopped" is its own outcome (ruling 4). */
+ * stop: its subagents' runs and the commands they ran. For PR 3's stop
+ * request ("Stopped at your request"); a row's own "Stopped" is its own
+ * outcome (ruling 4). */
 export function subtreeStops(delegate: ActivityDelegate): number {
 	const own = delegate.terminal === true && STOPPED_OUTCOMES.has(delegate.outcome ?? "") ? 1 : 0;
-	return (delegate.child?.entries ?? []).reduce(
-		(count, entry) => count + (entry.kind === "delegate" ? subtreeStops(entry.delegate) : 0),
-		own,
-	);
+	return (delegate.child?.entries ?? []).reduce((count, entry) => {
+		if (entry.kind === "delegate") return count + subtreeStops(entry.delegate);
+		return count + (entry.job.terminal && STOPPED_JOB_STATUSES.has(entry.job.status) ? 1 : 0);
+	}, own);
 }
 
 /** The subagent ended in a stop: its own run, or a run somewhere under it. */

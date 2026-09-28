@@ -367,3 +367,10 @@ it("keeps an edited message open when the subagent leaves the tree, rather than 
 	await settle();
 	expect(sheetNavigation.goBack).not.toHaveBeenCalled();
 });
+
+it("says it waits for the connection while offline, not that the message will arrive", async () => {
+	harness.connection = screenConnection(client, "reconnecting");
+	const mounted = await mount();
+	expect(renderedText(mounted)).toContain("Send when you're back online.");
+	expect(renderedText(mounted)).not.toContain("Arrives at the coordinator's next step");
+});

@@ -140,6 +140,41 @@ describe("a request of the coordinator over work that was already stopped", () =
 	});
 });
 
+describe("a request of the coordinator over a failed subagent's running command", () => {
+	const shell = (status: string, terminal: boolean) => ({
+		kind: "shell" as const,
+		job: {
+			jobId: "job-1",
+			ownerSessionId: "fix",
+			ownerRef: "local:fix",
+			type: "shell",
+			status,
+			terminal,
+			background: true,
+			hasOutput: false,
+			description: "go test",
+			startedAt: "2026-09-28T10:00:00.000Z",
+			outputBytes: 0,
+		},
+	});
+	const failedOver = (entry: ReturnType<typeof shell>) =>
+		d("fix", { terminal: true, outcome: "failed", child: { ...session("local:fix", []), entries: [entry] } });
+
+	it("is stopped at your request once the command under it is stopped", () => {
+		const requests = new StopRequests(memoryStorage(), "hub-1");
+		requests.request("local:coord", row(failedOver(shell("running", false))), 1000);
+		expect(
+			requests.reconcile("local:coord", rows(failedOver(shell("stopped", true)))).map((stopped) => stopped.id),
+		).toEqual(["fix"]);
+	});
+
+	it("is forgotten when the command finishes on its own", () => {
+		const requests = new StopRequests(memoryStorage(), "hub-1");
+		requests.request("local:coord", row(failedOver(shell("running", false))), 1000);
+		expect(requests.reconcile("local:coord", rows(failedOver(shell("completed", true))))).toEqual([]);
+	});
+});
+
 // S6: a direct stop ends the subagent's own run and leaves its subagents
 // running (the S6 plan's ruling 1), so it settles on the subagent's own run.
 describe("a stop you sent directly (S6)", () => {

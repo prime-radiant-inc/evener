@@ -120,9 +120,11 @@ export function StopSubagentSheet({ route }: NativeStackScreenProps<Routes, "Sto
 					<SendButton label="Send stop request" disabled={!canSend} onPress={() => void submit()} />
 				</View>
 				<Text allowFontScaling={allowFontScaling} style={{ ...small, color: palette.inkMid }}>
-					{coordinatorRead === "unreadable" || (coordinatorState && kind === null)
-						? "The coordinator can't take a message right now."
-						: "Arrives at the coordinator's next step"}
+					{!online
+						? "Send when you're back online."
+						: coordinatorRead === "unreadable" || (coordinatorState && kind === null)
+							? "The coordinator can't take a message right now."
+							: "Arrives at the coordinator's next step"}
 				</Text>
 				{failure !== null ? (
 					<Text allowFontScaling={allowFontScaling} style={{ ...small, color: palette.dangerInk }}>
