@@ -344,6 +344,16 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 		_, _ = fmt.Fprintf(stderr, "[hub] auth token: %v\n", err)
 		return err
 	}
+	// The message search index (S14) lives in its own file beside index.db.
+	// A hub that cannot open it still serves; search then finds sessions by
+	// title and prompt only.
+	messageSearch, err := hubcore.OpenMessageSearch(filepath.Join(hubStateRoot, "search.db"))
+	if err != nil {
+		_, _ = fmt.Fprintf(stderr, "[hub] message search: %v\n", err)
+		messageSearch = nil
+	} else {
+		defer func() { _ = messageSearch.Close() }()
+	}
 	providersConfigPath, noUserLayer := cmdutil.ProvidersConfigPath()
 	credentialsPath := cmdutil.CredentialsPath()
 	credsStore, err := deps.loadCredentials(credentialsPath)
@@ -586,6 +596,7 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 		Favorite:                  favorite,
 		PinSections:               pinSections,
 		SessionSeen:               sessionSeen,
+		MessageSearch:             messageSearch,
 		Spawner:                   spawner,
 		APILogDefault:             cfg.APILog,
 		DeletionStore:             deletionStore,
@@ -772,6 +783,10 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 			}
 		}
 	})
+
+	// Message search refresher: re-reads the transcripts that changed on the
+	// past index's rebuild interval (S14).
+	startBackground(func() { refreshHubMessageSearch(ctx, messageSearch, past, cfg.PastIndexRebuild) })
 
 	// Attention watcher: derives each live session's attention level from the
 	// same roster/past-index/archive inputs the sidebar tree uses, and
