@@ -23,11 +23,14 @@ import { act, create } from "react-test-renderer";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type { ConversationClientLike } from "../../../mobile/src/services/conversation";
 import { alertRequests, render, renderedText, screenConnection, swipeableCalls } from "../renderNative.testkit";
+import { sheetKey } from "../sheet/sheetHosts";
 import { BoardScreen } from "./BoardScreen";
 import { PulseMeter } from "./PulseMeter";
 import { hubSeenMarks } from "./hubSeen";
 import { seenMarkers } from "./nativeBoardMemory";
 import { SESSION_ID } from "./organizationTestUtils";
+import { ROW_ACTION_LABELS } from "./rowActions";
+import { type RowMenuHost, rowMenuHosts } from "./RowMenu";
 
 const harness = vi.hoisted(() => ({
 	connection: {} as Record<string, unknown>,
@@ -219,7 +222,9 @@ const fleet: Fleet = {
  * one, and `holdChanges` keeps them unanswered until `release`. It accepts
  * every seen mark, and `seen` records each call's marks. It answers a
  * session's thread/read from its row's state and applies every
- * turn/interrupt, recording both in `threadCalls`. */
+ * turn/interrupt, recording both in `threadCalls`. It records every
+ * thread/shutdown and session rename in `mutations` too, and accepts each
+ * unless `refuse` says to reject it with the hub's "session not found". */
 function hub(
 	shape: Fleet,
 	hold: (params: NavigationReadParams) => boolean = () => false,
@@ -292,6 +297,12 @@ function hub(
 								projectionState: "pending",
 							},
 						} as never);
+					return;
+				}
+				if (method === "thread/shutdown" || method === "evener/thread/name/set") {
+					mutations.push({ method, params });
+					if (refuse) reject(new Error("session not found"));
+					else resolve({} as never);
 					return;
 				}
 				if (
@@ -2832,19 +2843,33 @@ async function mountSwipeFleet(fake: ReturnType<typeof hub>, nav = navigation())
 	const tree = await mount(nav);
 	return { id, tree, nav };
 }
+/** The row menu host the Board provides, read as the sheet reads it. */
+function menuHost(id: string): RowMenuHost {
+	const host = rowMenuHosts.get(sheetKey(id));
+	if (!host) throw new Error("the Board provides no row menu host");
+	return host;
+}
+function menuItem(host: RowMenuHost, ref: string) {
+	const item = host.item(ref);
+	if (!item) throw new Error(`the Board shows no ${ref}`);
+	return item;
+}
+const rowMenuLabels = (host: RowMenuHost, ref: string) =>
+	host.actions(menuItem(host, ref)).map((action) => ROW_ACTION_LABELS[action]);
 
-it("gives a working row Archive on the right swipe and Stop and Pin on the left, a finished row no Stop, and another host's row Archive too", async () => {
+it("gives a working row Archive on the right swipe and Stop, Pin and More on the left, a finished row no Stop, and another host's row Archive too", async () => {
 	const { tree } = await mountSwipeFleet(hub(swipeFleet()));
 	const working = swipeableOf(tree, "Refactor parser");
 	expect(revealedLabels(working, "left")).toEqual(["Archive"]);
-	expect(revealedLabels(working, "right")).toEqual(["Stop", "Pin"]);
-	expect(revealedLabels(swipeableOf(tree, "Write changelog"), "right")).toEqual(["Pin"]);
+	expect(revealedLabels(working, "right")).toEqual(["Stop", "Pin", "More"]);
+	expect(revealedLabels(swipeableOf(tree, "Write changelog"), "right")).toEqual(["Pin", "More"]);
 	expect(revealedLabels(swipeableOf(tree, "Park chore"), "left")).toEqual(["Archive"]);
 	// VoiceOver reaches the same actions on the row itself.
 	expect(rowTitled(tree, "Refactor parser").props.accessibilityActions).toEqual([
 		{ name: "archive", label: "Archive" },
 		{ name: "stop", label: "Stop" },
 		{ name: "pin", label: "Pin" },
+		{ name: "more", label: "More" },
 	]);
 });
 
@@ -2925,7 +2950,7 @@ it("opens Pin to category for a row's Pin", async () => {
 	});
 });
 
-it("offers no swipe action on any row while reconnecting", async () => {
+it("offers only More on any row while reconnecting, and a menu of only the read marks", async () => {
 	const fake = hub(swipeFleet());
 	const { id, tree, nav } = await mountSwipeFleet(fake);
 	connect(id, fake.client, "reconnecting");
@@ -2934,8 +2959,11 @@ it("offers no swipe action on any row while reconnecting", async () => {
 	expect(swipeables).toHaveLength(3);
 	for (const swipeable of swipeables) {
 		expect(swipeable.props.renderLeftActions).toBeUndefined();
-		expect(swipeable.props.renderRightActions).toBeUndefined();
+		expect(revealedLabels(swipeable, "right")).toEqual(["More"]);
 	}
+	const menu = menuHost(id);
+	expect(rowMenuLabels(menu, `local:${OTHER_SESSION_ID}`)).toEqual(["Mark as read"]);
+	expect(rowMenuLabels(menu, `local:${SESSION_ID}`)).toEqual([]);
 });
 
 it("puts swipes on pinned categories' rows and project sessions too", async () => {
@@ -2975,4 +3003,174 @@ it("puts swipes on pinned categories' rows and project sessions too", async () =
 	pressLabel(tree, "Archived, 1 session");
 	await settle();
 	expect(revealedLabels(swipeableOf(tree, "Old archived work"), "left")).toEqual(["Unarchive"]);
+});
+
+it("ends a row's trailing swipe with More, which opens the row menu sheet, as a long press does", async () => {
+	const shape = swipeFleet();
+	shape.live = [[{ ...swipeWorking, rename: true }, swipeFinished, swipePark]];
+	const { id, tree, nav } = await mountSwipeFleet(hub(shape));
+	pressRevealed(swipeableOf(tree, "Refactor parser"), "right", "More");
+	expect(nav.navigate).toHaveBeenCalledWith("RowMenuSheet", { hubId: id, ref: `local:${SESSION_ID}` });
+	expect(rowMenuLabels(menuHost(id), `local:${SESSION_ID}`)).toEqual([
+		"Pin to category…",
+		"Stop",
+		"Shut down",
+		"Archive",
+		"Rename",
+	]);
+	nav.navigate.mockClear();
+	const row = rowTitled(tree, "Refactor parser");
+	expect(row.props.delayLongPress).toBe(500);
+	act(() => row.props.onLongPress());
+	expect(nav.navigate).toHaveBeenCalledWith("RowMenuSheet", { hubId: id, ref: `local:${SESSION_ID}` });
+});
+
+it("offers Rename only on iOS, where Alert.prompt exists", async () => {
+	const { Platform } = (await import("react-native")) as unknown as { Platform: { OS: string } };
+	const shape = swipeFleet();
+	shape.live = [[{ ...swipeWorking, rename: true }, swipeFinished, swipePark]];
+	const { id } = await mountSwipeFleet(hub(shape));
+	Platform.OS = "android";
+	try {
+		expect(rowMenuLabels(menuHost(id), `local:${SESSION_ID}`)).not.toContain("Rename");
+	} finally {
+		Platform.OS = "ios";
+	}
+});
+
+it("asks before shutting a session down from the menu, then says it shut down", async () => {
+	const fake = hub(swipeFleet());
+	const { id, tree } = await mountSwipeFleet(fake);
+	const host = menuHost(id);
+	alertRequests.length = 0;
+	act(() => host.act(menuItem(host, `local:${SESSION_ID}`), "shutDown"));
+	expect(fake.mutations).toEqual([]);
+	const ask = alertRequests.at(-1);
+	expect(ask?.title).toBe("Shut down “Refactor parser”?");
+	expect(ask?.message).toBe("The agent stops. Send it a message to resume it.");
+	expect(ask?.buttons?.map((button) => [button.text, button.style])).toEqual([
+		["Cancel", "cancel"],
+		["Shut down", "destructive"],
+	]);
+	act(() => ask?.buttons?.[1]?.onPress?.());
+	await settle();
+	expect(fake.mutations).toEqual([{ method: "thread/shutdown", params: { ref: `local:${SESSION_ID}` } }]);
+	expect(texts(tree)).toContain("Session shut down");
+});
+
+it("says why a shut down failed, in the hub's words", async () => {
+	const fake = hub(swipeFleet(), undefined, undefined, { refuse: true });
+	const { id, tree } = await mountSwipeFleet(fake);
+	const host = menuHost(id);
+	alertRequests.length = 0;
+	act(() => host.act(menuItem(host, `local:${SESSION_ID}`), "shutDown"));
+	act(() => alertRequests.at(-1)?.buttons?.[1]?.onPress?.());
+	await settle();
+	expect(texts(tree)).toContain("Couldn't shut down “Refactor parser”: session not found");
+});
+
+it("renames a session from the menu with the prompt's text", async () => {
+	const fake = hub(swipeFleet());
+	const { id, tree } = await mountSwipeFleet(fake);
+	const host = menuHost(id);
+	harness.prompt.mockClear();
+	act(() => host.act(menuItem(host, `local:${SESSION_ID}`), "rename"));
+	expect(harness.prompt).toHaveBeenCalledOnce();
+	const [title, message, buttons, type, value] = harness.prompt.mock.calls[0] as [
+		string,
+		undefined,
+		{ text: string; style?: string; onPress?: (name?: string) => void }[],
+		string,
+		string,
+	];
+	expect([title, message, type, value]).toEqual(["Rename session", undefined, "plain-text", "Refactor parser"]);
+	expect(buttons.map((button) => [button.text, button.style])).toEqual([
+		["Cancel", "cancel"],
+		["Rename", undefined],
+	]);
+	act(() => buttons[1]?.onPress?.("  Parser rewrite "));
+	await settle();
+	expect(fake.mutations).toEqual([
+		{ method: "evener/thread/name/set", params: { ref: `local:${SESSION_ID}`, name: "Parser rewrite" } },
+	]);
+	expect(texts(tree)).toContain("Renamed");
+});
+
+it("says why a rename failed, in the hub's words", async () => {
+	const fake = hub(swipeFleet(), undefined, undefined, { refuse: true });
+	const { id, tree } = await mountSwipeFleet(fake);
+	const host = menuHost(id);
+	harness.prompt.mockClear();
+	act(() => host.act(menuItem(host, `local:${SESSION_ID}`), "rename"));
+	const buttons = harness.prompt.mock.calls[0]?.[2] as { onPress?: (name?: string) => void }[];
+	act(() => buttons[1]?.onPress?.("Parser rewrite"));
+	await settle();
+	expect(texts(tree)).toContain("Couldn't rename “Refactor parser”: session not found");
+});
+
+it("marks a finished row read from the menu, moving it to Idle, and unread again", async () => {
+	const { id, tree } = await mountSwipeFleet(hub(swipeFleet()));
+	const host = menuHost(id);
+	const ref = `local:${OTHER_SESSION_ID}`;
+	expect(bandHeaders(tree)).toEqual(["FINISHED · 2", "WORKING · 1"]);
+	act(() => host.act(menuItem(host, ref), "markRead"));
+	await settle();
+	expect(bandHeaders(tree)).toEqual(["FINISHED · 1", "WORKING · 1", "Idle · 1"]);
+	const read = menuHost(id);
+	expect(menuItem(read, ref).state).toBe("idle");
+	act(() => read.act(menuItem(read, ref), "markUnread"));
+	await settle();
+	expect(bandHeaders(tree)).toEqual(["FINISHED · 2", "WORKING · 1"]);
+});
+
+it("opens the session from the menu's card as a tap does", async () => {
+	const { id, nav } = await mountSwipeFleet(hub(swipeFleet()));
+	const host = menuHost(id);
+	act(() => host.openSession(menuItem(host, `local:${OTHER_SESSION_ID}`)));
+	expect(nav.navigate).toHaveBeenCalledWith("Conversation", {
+		hubId: id,
+		ref: `local:${OTHER_SESSION_ID}`,
+		title: "Write changelog",
+	});
+	expect(menuItem(menuHost(id), `local:${OTHER_SESSION_ID}`).state).toBe("idle");
+});
+
+it("stops, pins and archives from the menu as the swipes do", async () => {
+	const fake = hub(swipeFleet());
+	const { id, tree, nav } = await mountSwipeFleet(fake);
+	const host = menuHost(id);
+	act(() => host.act(menuItem(host, `local:${OTHER_SESSION_ID}`), "pin"));
+	expect(nav.navigate).toHaveBeenCalledWith("PinAssignment", {
+		hubId: id,
+		ref: `local:${OTHER_SESSION_ID}`,
+		title: "Write changelog",
+	});
+	act(() => host.act(menuItem(host, `local:${SESSION_ID}`), "stop"));
+	await settle();
+	await vi.waitFor(() => expect(fake.threadCalls.map((call) => call.method)).toEqual(["thread/read", "turn/interrupt"]));
+	expect(texts(tree)).toContain("Stopped");
+	act(() => host.act(menuItem(host, "paradise-park:pp"), "archive"));
+	await settle();
+	expect(fake.mutations).toEqual([
+		{ method: "evener/archive/set", params: { kind: "session", id: "paradise-park:pp", archived: true } },
+	]);
+});
+
+it("drops a row that left the Board from the menu's host", async () => {
+	const shape = swipeFleet();
+	const fake = hub(shape);
+	const { id } = await mountSwipeFleet(fake);
+	expect(menuHost(id).item("paradise-park:pp")).toBeDefined();
+	shape.live = [[swipeWorking, swipeFinished]];
+	act(() => fake.invalidate(1, [{ kind: "section", section: "live" }]));
+	await settle();
+	expect(menuHost(id).item("paradise-park:pp")).toBeUndefined();
+	expect(menuHost(id).item(`local:${SESSION_ID}`)).toBeDefined();
+});
+
+it("stops providing the menu's host when the Board goes away", async () => {
+	const { id, tree } = await mountSwipeFleet(hub(swipeFleet()));
+	expect(rowMenuHosts.get(sheetKey(id))).toBeDefined();
+	act(() => tree.unmount());
+	expect(rowMenuHosts.get(sheetKey(id))).toBeUndefined();
 });

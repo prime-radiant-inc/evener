@@ -190,7 +190,7 @@ export interface RowMenuProps {
 	onAction: (action: RowAction) => void;
 	/** A native menu's open and close; the sheet's are its route and its
 	 * host's `closed()`. */
-	onOpenChange: (open: boolean) => void;
+	onOpenChange?: (open: boolean) => void;
 	onOpenSheet: () => void;
 	/** The row, which takes the long press. */
 	children: ReactElement<{ onLongPress?: () => void; delayLongPress?: number }>;

@@ -28,7 +28,8 @@ import { reconnectDelay } from "../hubConnection";
 import { getNativeMutationRuntime } from "../nativeMutationRuntime";
 import { drafts } from "../nativeDrafts";
 import type { Routes } from "../screens";
-import { Toast, useToast } from "../Toast";
+import { sheetKey, useProvideSheetHost } from "../sheet/sheetHosts";
+import { Toast, type ToastController, useToast } from "../Toast";
 import { Action, useColors, useTextScale } from "../ui";
 import {
 	type Band,
@@ -68,7 +69,15 @@ import {
 } from "./projectTree";
 import { projectName, ProjectSectionHeader, ProjectTreeRow } from "./ProjectTreeRow";
 import { PulseMeter } from "./PulseMeter";
-import { archivingSessionId, type RowActionContext } from "./rowActions";
+import {
+	archivingSessionId,
+	type RowAction,
+	type RowActionContext,
+	renameSession,
+	rowMenuActions,
+	shutDownSession,
+} from "./rowActions";
+import { type RowMenuHost, rowMenuHosts } from "./RowMenu";
 import { archiveRow, rowSwipes, type SwipeRowAction } from "./rowSwipes";
 import { SearchResults } from "./SearchResults";
 import { type BoardOrganization, organizationOpen, useBoardOrganization } from "./useBoardOrganization";
@@ -158,6 +167,12 @@ function Board({ hubId, hubName, navigation }: { hubId: string; hubName: string;
 		() => rowClassifier(snapshot.needsYou.rows, (row) => seen.isSeen(row)),
 		[snapshot.needsYou.rows, seen, seenRevision, hubSeenRevision],
 	);
+	// A project section's session row: its approval comes from the row's own
+	// flag alone, not from the needs_you section's membership.
+	const projectRow = (row: NavigationSessionSummary): ClassifiedRow => ({
+		row,
+		state: boardState(row, false, seen.isSeen(row)),
+	});
 	const folds = useCategoryFolds(hubId);
 	const organization = useBoardOrganization(hubId);
 	const toast = useToast();
@@ -335,18 +350,40 @@ function Board({ hubId, hubName, navigation }: { hubId: string; hubName: string;
 
 	// What a row's actions may do now (rulings 16 and 21), by whether it sits
 	// in an archived tier.
+	const actionsConnected = connected && activeProfile?.id === hubId;
 	const rowContext = (archived: boolean): RowActionContext => ({
-		connected: connected && activeProfile?.id === hubId,
+		connected: actionsConnected,
 		organizationReady: organization.ready,
 		archived,
 	});
+	// The row menu, a sheet route that asks the Board's host below for the
+	// row and its actions.
+	const openRowMenu = (item: ClassifiedRow) => navigation.navigate("RowMenuSheet", { hubId, ref: item.row.ref });
+	// Rename asks through Alert.prompt, which only iOS has.
+	const menuActions = (item: ClassifiedRow, archived: boolean) => {
+		const actions = rowMenuActions(item, rowContext(archived));
+		return Platform.OS === "ios" ? actions : actions.filter((action) => action !== "rename");
+	};
 	const runRowAction = (item: ClassifiedRow, action: SwipeRowAction) => {
 		const { row } = item;
-		if (action === "pin") navigation.navigate("PinAssignment", { hubId, ref: row.ref, title: row.title });
+		if (action === "more") openRowMenu(item);
+		else if (action === "pin") navigation.navigate("PinAssignment", { hubId, ref: row.ref, title: row.title });
 		else if (action === "stop" && client)
 			void stops.stop(client, row.ref).then((outcome) => toast.show({ text: stopToast(outcome, row.title) }));
 		else if (action === "archive" || action === "unarchive")
 			void archiveRow(organization, row, action === "archive", toast);
+	};
+	/** The menu's actions: Pin, Stop, Archive and Unarchive as the swipes do
+	 * them, the read marks on this phone, and Shut down and Rename as the
+	 * Session sends them (rulings 18-21). */
+	const actOnRow = (item: ClassifiedRow, action: RowAction) => {
+		const { row } = item;
+		const markClient = connected ? client : null;
+		if (action === "markRead") seen.markRead(markClient, [row]);
+		else if (action === "markUnread") seen.markUnread(markClient, [row]);
+		else if (action === "shutDown") confirmShutDown(client, row, toast);
+		else if (action === "rename") promptRename(client, row, toast);
+		else runRowAction(item, action);
 	};
 	const archivingId = archivingSessionId(organization.state);
 	const listContext: RowContext = {
@@ -358,6 +395,12 @@ function Board({ hubId, hubName, navigation }: { hubId: string; hubName: string;
 		draftRefs,
 		swipes: (item, archived) =>
 			rowSwipes(item, rowContext(archived), archivingId, (action) => runRowAction(item, action)),
+		menu: (item, archived) => ({
+			actions: menuActions(item, archived),
+			onOpenSession: () => openSession(item.row),
+			onAction: (action) => actOnRow(item, action),
+			onOpenSheet: () => openRowMenu(item),
+		}),
 	};
 	const rows = (items: ClassifiedRow[], variant: "signal" | "quiet", moving: boolean, archived = false) => (
 		<BoardRows items={items} variant={variant} moving={moving} archived={archived} context={listContext} />
@@ -413,6 +456,36 @@ function Board({ hubId, hubName, navigation }: { hubId: string; hubName: string;
 				});
 		return { section, folded, items };
 	});
+	// The rows the row menu sheet can be about: Live's and the categories'
+	// (a fold hides them, but they stay loaded) and the project sessions in
+	// the shown tree.
+	const shownRows = useShownRows([
+		...[...bands.needsYou, ...bands.finished, ...bands.working, ...bands.idle].map((item) => ({ item, archived: false })),
+		...pins.flatMap((pin) => {
+			const page = snapshot.pinSections[pin.id];
+			return page?.loaded ? page.rows.map((row) => ({ item: classify(row), archived: false })) : [];
+		}),
+		...shownSections.flatMap(({ items }) =>
+			items.flatMap((item) => (item.kind === "session" ? [{ item: projectRow(item.row), archived: item.archived }] : [])),
+		),
+	]);
+	// The sheet reads the row live, so its actions follow the row while it's
+	// open, and hands each answer back to the Board's own handlers.
+	const menuHandlers = useRef({ actOnRow, openSession });
+	menuHandlers.current = { actOnRow, openSession };
+	const rowMenuHost = useMemo<RowMenuHost>(
+		() => ({
+			item: (ref) => shownRows.get(ref)?.item,
+			actions: (item) => menuActions(item, shownRows.get(item.row.ref)?.archived ?? false),
+			hostLabel,
+			act: (item, action) => menuHandlers.current.actOnRow(item, action),
+			openSession: (item) => menuHandlers.current.openSession(item.row),
+			// Nothing on the Board waits for the menu to close.
+			closed: () => {},
+		}),
+		[shownRows, actionsConnected, organization.ready, hostLabel],
+	);
+	useProvideSheetHost(rowMenuHosts, sheetKey(hubId), rowMenuHost);
 	const itemsOf = (section: ProjectSection) => shownSections.find((shown) => shown.section === section)?.items ?? [];
 	// A section's catalog is read when it's first shown unfolded, so a folded
 	// Test runs or Archived costs no read.
@@ -468,12 +541,7 @@ function Board({ hubId, hubName, navigation }: { hubId: string; hubName: string;
 		if (item.kind === "session")
 			return (
 				<View key={item.key} style={{ marginLeft: 16 * item.depth }}>
-					{rows(
-						[{ row: item.row, state: boardState(item.row, false, seen.isSeen(item.row)) }],
-						"quiet",
-						false,
-						item.archived,
-					)}
+					{rows([projectRow(item.row)], "quiet", false, item.archived)}
 				</View>
 			);
 		if (item.kind === "more" || item.kind === "moreProjects")
@@ -705,6 +773,57 @@ function pinnedCategoryMenu(organization: BoardOrganization, catalog: () => read
 	};
 }
 
+/** Shut down from the row menu: asked first, then the Session's own
+ * request, then a toast either way. */
+function confirmShutDown(
+	client: ConversationClientLike | null,
+	row: NavigationSessionSummary,
+	toast: Pick<ToastController, "show">,
+) {
+	Alert.alert(`Shut down “${row.title}”?`, "The agent stops. Send it a message to resume it.", [
+		{ text: "Cancel", style: "cancel" },
+		{
+			text: "Shut down",
+			style: "destructive",
+			onPress: () => {
+				if (!client) return;
+				shutDownSession(client, row.ref).then(
+					() => toast.show({ text: "Session shut down" }),
+					(error: unknown) => toast.show({ text: `Couldn't shut down “${row.title}”: ${hubMessage(error)}` }),
+				);
+			},
+		},
+	]);
+}
+
+/** Rename from the row menu (iOS only: Alert.prompt), starting from the
+ * row's title. An empty name sends nothing. */
+function promptRename(client: ConversationClientLike | null, row: NavigationSessionSummary, toast: Pick<ToastController, "show">) {
+	Alert.prompt(
+		"Rename session",
+		undefined,
+		[
+			{ text: "Cancel", style: "cancel" },
+			{
+				text: "Rename",
+				onPress: (name?: string) => {
+					if (!client) return;
+					renameSession(client, row.ref, name ?? "").then(
+						(renamed) => {
+							if (renamed) toast.show({ text: "Renamed" });
+						},
+						(error: unknown) => toast.show({ text: `Couldn't rename “${row.title}”: ${hubMessage(error)}` }),
+					);
+				},
+			},
+		],
+		"plain-text",
+		row.title,
+	);
+}
+
+const hubMessage = (error: unknown) => (error instanceof Error ? error.message : String(error));
+
 /** A project row's long-press menu (ruling 15): Pin to top or Unpin, and
  * Archive or Unarchive, as an action sheet, or an alert off iOS. */
 function openProjectMenu(
@@ -821,6 +940,30 @@ function SearchField({
 			) : null}
 		</View>
 	);
+}
+
+type ShownRow = { item: ClassifiedRow; archived: boolean };
+
+/** The Board's shown rows by ref; a session shown more than once answers
+ * with its first copy, in screen order. The map keeps its identity while no
+ * row, state or tier changes, so the row menu's host (and an open menu)
+ * changes only when one does. */
+function useShownRows(rows: readonly ShownRow[]): ReadonlyMap<string, ShownRow> {
+	const byRef = new Map<string, ShownRow>();
+	for (const shown of rows) if (!byRef.has(shown.item.row.ref)) byRef.set(shown.item.row.ref, shown);
+	const kept = useRef(byRef);
+	if (!sameShownRows(kept.current, byRef)) kept.current = byRef;
+	return kept.current;
+}
+
+function sameShownRows(before: ReadonlyMap<string, ShownRow>, after: ReadonlyMap<string, ShownRow>): boolean {
+	if (before.size !== after.size) return false;
+	for (const [ref, shown] of after) {
+		const was = before.get(ref);
+		if (!was || was.item.row !== shown.item.row || was.item.state !== shown.item.state || was.archived !== shown.archived)
+			return false;
+	}
+	return true;
 }
 
 /** Every session row a project section's view holds, across its projects'
