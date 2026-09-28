@@ -45,6 +45,9 @@ interface Form {
   source: string;
   /** What moved when the host did (ruling 17), for the Host row's footer. */
   hostNote: string | null;
+  /** A host change is still asking the new host whether it has the project,
+   * so the project may be the old host's: Start waits (Review Focus 1). */
+  movingHost: boolean;
   cwd: string;
   prompt: string;
   images: DraftImageData[];
@@ -98,12 +101,26 @@ export function createNewSessionStore(
   let creationRequested = false;
   let saving = false;
   let lastSaved = "";
-  // Bumped by every host change and every applied setup, so a host change
-  // whose answers arrive after a newer one drops them (Review Focus 2).
+  // Bumped whenever the form moves (movePlacement), so a host change whose
+  // answers arrive after the form moved again drops them (Review Focus 2).
   let placement = 0;
+  // Bumped by every host change and every move, so only the newest host
+  // change says when it has finished placing the project.
+  let hostMoves = 0;
   // A session's model named the way it reports it, waiting for the host's
-  // model list to find it (applySeed).
+  // model list to find it (applySeed). A move drops it, so it never lands in
+  // another project's or host's list.
   let pendingModelId: string | null = null;
+  /** The form moves: to another host or project, a recipe, a seed, or an
+   * empty form after a start. Answers for the old place are dropped, a
+   * session's model waiting for them goes, and a host change still answering
+   * stops placing the project. */
+  function movePlacement(): number {
+    hostMoves++;
+    pendingModelId = null;
+    store.setState({ movingHost: false });
+    return ++placement;
+  }
   const store = createStore<Form>((set, get) => ({
     storageLoaded: !storage,
     storageError: null,
@@ -117,6 +134,7 @@ export function createNewSessionStore(
     },
     source: LOCAL_HOST,
     hostNote: null,
+    movingHost: false,
     cwd: "",
     prompt: "",
     images: [],
@@ -170,7 +188,9 @@ export function createNewSessionStore(
       refreshingModels = false;
       loadedContext = null;
       catalog++;
+      hostMoves++;
       set({
+        movingHost: false,
         projects: [],
         harnesses: [],
         models: [],
@@ -190,6 +210,7 @@ export function createNewSessionStore(
         if (refresh) await get().loadModels();
         return;
       }
+      movePlacement();
       loadedContext = null;
       catalog++;
       refreshingModels = false;
@@ -204,6 +225,7 @@ export function createNewSessionStore(
     },
     async setHarness(harness) {
       if (get().submitting) return;
+      pendingModelId = null;
       set({
         ...(harness !== get().harness ? { model: null, reasoning: "" } : {}),
         harness,
@@ -253,14 +275,20 @@ export function createNewSessionStore(
     async loadMetadata() {
       const current = service;
       const generation = connection;
+      const host = get().source;
       if (!current) return;
       try {
         const [projects, harnesses] = await Promise.all([
-          current.recentProjects(get().source),
+          current.recentProjects(host),
           current.harnesses(),
         ]);
         if (generation === connection)
-          set({ projects, harnesses, metadataError: null });
+          set({
+            // Another host's recent projects never land in this one's list.
+            ...(get().source === host ? { projects } : {}),
+            harnesses,
+            metadataError: null,
+          });
       } catch {
         if (generation === connection)
           set({
@@ -342,6 +370,7 @@ export function createNewSessionStore(
       if (
         !current ||
         submitting ||
+        get().movingHost ||
         refreshingModels ||
         !cwd.trim() ||
         !get().storageLoaded ||
@@ -427,6 +456,7 @@ export function createNewSessionStore(
           saving = true;
           try {
             storage().clear(hubId);
+            movePlacement();
             set({
               source: LOCAL_HOST,
               hostNote: null,
@@ -468,13 +498,15 @@ export function createNewSessionStore(
       const state = get();
       if (state.submitting || host === state.source) return;
       const current = service;
-      const mine = ++placement;
+      const mine = movePlacement();
+      const move = hostMoves;
       loadedContext = null;
       catalog++;
       refreshingModels = false;
       set({
         source: host,
         hostNote: null,
+        movingHost: !!current,
         projects: [],
         models: [],
         loadingModels: false,
@@ -488,15 +520,22 @@ export function createNewSessionStore(
           : Promise.resolve(null),
         current.recentProjects(host).catch(() => [] as string[]),
       ]);
-      if (mine !== placement || service !== current) return;
-      const move = moveToHost(cwd, hostLabel, exists !== false, recent);
-      set({ projects: recent, cwd: move.cwd, hostNote: move.note });
+      if (service !== current) return;
+      set({
+        ...(move === hostMoves ? { movingHost: false } : {}),
+        ...(get().source === host ? { projects: recent } : {}),
+      });
+      // The form moved on while this host answered (a project chosen, a
+      // recipe, another host): its choice stands.
+      if (mine !== placement) return;
+      const moved = moveToHost(cwd, hostLabel, exists !== false, recent);
+      set({ cwd: moved.cwd, hostNote: moved.note });
       await get().loadModels();
     },
     applySetup(setup) {
-      if (get().submitting) return;
-      placement++;
-      pendingModelId = null;
+      const previous = get();
+      if (previous.submitting) return;
+      movePlacement();
       set({
         source: setup.host,
         cwd: setup.cwd,
@@ -506,15 +545,17 @@ export function createNewSessionStore(
           : null,
         reasoning: setup.effort,
         launchOverrides: withOwnedOverrides(
-          get().launchOverrides,
+          previous.launchOverrides,
           setup.overrides,
         ),
       });
+      if (setup.host !== previous.source) void get().loadMetadata();
       void get().loadModels(true);
     },
     applySeed(seed) {
-      if (get().submitting) return;
-      placement++;
+      const previous = get();
+      if (previous.submitting) return;
+      movePlacement();
       pendingModelId = seed.model ?? null;
       set({
         source: seed.host,
@@ -523,6 +564,7 @@ export function createNewSessionStore(
         model: null,
         reasoning: seed.effort ?? "",
       });
+      if (seed.host !== previous.source) void get().loadMetadata();
       void get().loadModels(true);
     },
   }));
