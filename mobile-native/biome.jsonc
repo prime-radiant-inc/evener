@@ -1,0 +1,47 @@
+{
+  "$schema": "https://biomejs.dev/schemas/2.5.12/schema.json",
+  // The native trees' formatter config (issue #1157): without one,
+  // mobile-native/src and mobile/src disagreed on indentation file by file and
+  // every change had to match the file it touched rather than a rule. Biome is
+  // already the repository's TypeScript formatter (the web frontend's config
+  // lives at cmd/evener-hub/frontend/biome.jsonc), and mobile-native already
+  // carries @biomejs/biome as a devDependency.
+  //
+  // This is the FORMATTER only: the linter and the assist actions are off, so
+  // the reformat that follows is formatting-only and not a lint sweep.
+  //
+  // Indentation is tabs. mobile-native/src is already predominantly tab-indented
+  // (382 of its 487 source files), which is also Biome's default, so adopting
+  // tabs reformats only the ~100 space-indented outliers while adopting spaces
+  // would rewrite the whole tree. The web frontend keeps its own spaces/2
+  // config; Biome resolves the nearest config, so this file governs only
+  // mobile-native/src and the shared mobile/src and leaves the frontend alone.
+  // The `lint` and `format` package scripts pass exactly those two trees, so
+  // the checked scope is the src trees; package-root files (index.ts, App.tsx,
+  // App.test.tsx, metro.config.js, vitest.config.mts, and the JSON configs) are
+  // deliberately not run through the formatter.
+  "vcs": {
+    "enabled": true,
+    "clientKind": "git",
+    "useIgnoreFile": true
+  },
+  "formatter": {
+    "enabled": true,
+    "indentStyle": "tab",
+    "lineWidth": 120
+  },
+  "javascript": {
+    "formatter": {
+      "quoteStyle": "double",
+      "jsxQuoteStyle": "double",
+      "semicolons": "always",
+      "trailingCommas": "all"
+    }
+  },
+  "linter": {
+    "enabled": false
+  },
+  "assist": {
+    "enabled": false
+  }
+}

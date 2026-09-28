@@ -60,7 +60,12 @@ export function QueuedMessages({
 				>
 					<Text
 						allowFontScaling={allowFontScaling}
-						style={{ fontSize: 13 * scale, lineHeight: 18 * scale, color: palette.inkLow, fontVariant: ["tabular-nums"] }}
+						style={{
+							fontSize: 13 * scale,
+							lineHeight: 18 * scale,
+							color: palette.inkLow,
+							fontVariant: ["tabular-nums"],
+						}}
 					>
 						{more}
 					</Text>

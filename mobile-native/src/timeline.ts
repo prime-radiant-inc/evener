@@ -31,17 +31,14 @@ export function isCriticalNotice(item: Notice): boolean {
 		item.family === "warning" ||
 		item.eventKind === "error" ||
 		item.eventKind === "tool_repair" ||
-		(item.eventKind === "hook_completed" &&
-			item.exitCode !== undefined &&
-			item.exitCode !== 0)
+		(item.eventKind === "hook_completed" && item.exitCode !== undefined && item.exitCode !== 0)
 	);
 }
 
 export function isInterruptedNotice(item: Notice): boolean {
 	return (
 		item.origin === "steering" &&
-		(item.steeringKind === "interrupted" ||
-			item.steeringKind === "interrupted-salvage") &&
+		(item.steeringKind === "interrupted" || item.steeringKind === "interrupted-salvage") &&
 		item.tone !== "warning"
 	);
 }
@@ -90,25 +87,20 @@ export function timelineGap(before: TimelineRow, after?: TimelineRow): number {
 }
 
 // Keep technical context available without putting it between the reader and the conversation.
-export function groupTimeline(
-	items: readonly MobileTimelineItem[],
-): TimelineRow[] {
+export function groupTimeline(items: readonly MobileTimelineItem[]): TimelineRow[] {
 	const rows: TimelineRow[] = [];
 	for (const item of items) {
 		const internal =
 			item.kind === "notice" &&
 			!isCriticalNotice(item) &&
-			(item.family === "hidden-instruction" ||
-				item.family === "system-prelude" ||
-				item.family === "diagnostic");
+			(item.family === "hidden-instruction" || item.family === "system-prelude" || item.family === "diagnostic");
 		if (!internal) {
 			rows.push(item);
 			continue;
 		}
 		const previous = rows.at(-1);
 		if (previous?.kind === "details") previous.entries.push(item);
-		else
-			rows.push({ kind: "details", id: `details:${item.id}`, entries: [item] });
+		else rows.push({ kind: "details", id: `details:${item.id}`, entries: [item] });
 	}
 	return rows;
 }

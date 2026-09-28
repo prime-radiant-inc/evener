@@ -33,9 +33,7 @@ describe("the Session's nav bar title (spec 8.1)", () => {
 	});
 
 	it("draws a still green dot for a working session", () => {
-		const tree = render(
-			<SessionTitle title="S" line={{ state: "working", text: "Working · 38m" }} {...base} />,
-		);
+		const tree = render(<SessionTitle title="S" line={{ state: "working", text: "Working · 38m" }} {...base} />);
 		const [mark] = tree.root.findAllByType("SymbolView" as never);
 		expect(mark?.props).toMatchObject({ name: "circle.fill", size: 12 });
 		expect(mark?.props.tintColor).toMatch(/^#/);
@@ -45,7 +43,12 @@ describe("the Session's nav bar title (spec 8.1)", () => {
 	it("is one button that opens session info, read title first", () => {
 		const onPress = vi.fn();
 		const tree = render(
-			<SessionTitle title="Fix the flaky test" line={{ state: "working", text: "Working · 38m" }} {...base} onPress={onPress} />,
+			<SessionTitle
+				title="Fix the flaky test"
+				line={{ state: "working", text: "Working · 38m" }}
+				{...base}
+				onPress={onPress}
+			/>,
 		);
 		const [button, ...others] = tree.root.findAll((node) => node.props.accessibilityRole === "button");
 		expect(others).toEqual([]);
@@ -68,7 +71,13 @@ describe("the Session's nav bar title (spec 8.1)", () => {
 		const onSwipe = vi.fn();
 		const onPress = vi.fn();
 		const tree = render(
-			<SessionTitle title="S" line={{ state: "idle", text: "Finished" }} onPress={onPress} onSwipe={onSwipe} neighbors={{ previous: true, next: true }} />,
+			<SessionTitle
+				title="S"
+				line={{ state: "idle", text: "Finished" }}
+				onPress={onPress}
+				onSwipe={onSwipe}
+				neighbors={{ previous: true, next: true }}
+			/>,
 		);
 		const pan = tree.root.findByType("GestureDetector" as never).props.gesture as PanGestureMock;
 		// It starts only once a drag has gone sideways, so a tap stays the

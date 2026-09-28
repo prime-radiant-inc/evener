@@ -33,37 +33,37 @@ import { createFrameworkFreeStore } from "@evener/appwire-client";
 export const PLUGIN_MUTATION_BUSY = "Another change is still running. Wait for it to finish.";
 
 export interface PluginMutationGate {
-  /** True while a mutation is running: what both surfaces disable on. */
-  isBusy(): boolean;
-  /** Runs `action` unless one is already running, resolving true if it ran
-   * and false if it was refused. A failure propagates to the caller, which
-   * owns the copy it shows; either way the gate opens again. */
-  run(action: () => Promise<void>): Promise<boolean>;
-  /** Fires on every transition of isBusy(); returns the unsubscribe. */
-  subscribe(listener: () => void): () => void;
+	/** True while a mutation is running: what both surfaces disable on. */
+	isBusy(): boolean;
+	/** Runs `action` unless one is already running, resolving true if it ran
+	 * and false if it was refused. A failure propagates to the caller, which
+	 * owns the copy it shows; either way the gate opens again. */
+	run(action: () => Promise<void>): Promise<boolean>;
+	/** Fires on every transition of isBusy(); returns the unsubscribe. */
+	subscribe(listener: () => void): () => void;
 }
 
 export function createPluginMutationGate(): PluginMutationGate {
-  // The package's own store: nothing here needs a listener set of its own, and
-  // its setState notifies every subscriber, which is what a screen binds to.
-  const store = createFrameworkFreeStore<{ busy: boolean }>(() => ({ busy: false }));
+	// The package's own store: nothing here needs a listener set of its own, and
+	// its setState notifies every subscriber, which is what a screen binds to.
+	const store = createFrameworkFreeStore<{ busy: boolean }>(() => ({ busy: false }));
 
-  return {
-    isBusy: () => store.getState().busy,
-    async run(action) {
-      if (store.getState().busy) return false;
-      store.setState({ busy: true });
-      try {
-        await action();
-        return true;
-      } finally {
-        store.setState({ busy: false });
-      }
-    },
-    subscribe(listener) {
-      return store.subscribe(() => listener());
-    },
-  };
+	return {
+		isBusy: () => store.getState().busy,
+		async run(action) {
+			if (store.getState().busy) return false;
+			store.setState({ busy: true });
+			try {
+				await action();
+				return true;
+			} finally {
+				store.setState({ busy: false });
+			}
+		},
+		subscribe(listener) {
+			return store.subscribe(() => listener());
+		},
+	};
 }
 
 /** What a gated mutation did, in the four shapes a caller's copy needs: it
@@ -82,14 +82,14 @@ export type GatedMutationOutcome = "ran" | "refused" | "not-ready" | "failed";
  * checked before the gate itself, so a request issued while disconnected
  * never reaches `action` and never takes the gate's lock. */
 export async function runGatedMutation(
-  gate: PluginMutationGate,
-  ready: () => boolean,
-  action: () => Promise<void>,
+	gate: PluginMutationGate,
+	ready: () => boolean,
+	action: () => Promise<void>,
 ): Promise<GatedMutationOutcome> {
-  if (!ready()) return "not-ready";
-  try {
-    return (await gate.run(action)) ? "ran" : "refused";
-  } catch {
-    return "failed";
-  }
+	if (!ready()) return "not-ready";
+	try {
+		return (await gate.run(action)) ? "ran" : "refused";
+	} catch {
+		return "failed";
+	}
 }

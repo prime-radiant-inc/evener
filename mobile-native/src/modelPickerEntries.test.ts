@@ -27,8 +27,14 @@ test("a descriptor without a display name titles with its model id", () => {
 
 describe("a row's context and price (spec 8.5)", () => {
 	test.each([
-		[{ contextWindow: 200_000, inputCostPerMillion: 3, outputCostPerMillion: 15 }, "200K context · $3 in · $15 out per M"],
-		[{ contextWindow: 1_000_000, inputCostPerMillion: 0.25, outputCostPerMillion: 1.5 }, "1M context · $0.25 in · $1.50 out per M"],
+		[
+			{ contextWindow: 200_000, inputCostPerMillion: 3, outputCostPerMillion: 15 },
+			"200K context · $3 in · $15 out per M",
+		],
+		[
+			{ contextWindow: 1_000_000, inputCostPerMillion: 0.25, outputCostPerMillion: 1.5 },
+			"1M context · $0.25 in · $1.50 out per M",
+		],
 		[{ contextWindow: 128_000 }, "128K context"],
 		[{ inputCostPerMillion: 2 }, "$2 in per M"],
 		[{}, ""],

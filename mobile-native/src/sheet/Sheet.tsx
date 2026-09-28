@@ -37,7 +37,11 @@ export interface SheetOptions {
 	onClosed?: () => void;
 }
 
-export function useSheet({ dirty = false, discardTitle = DISCARD_TITLE, onClosed }: SheetOptions = {}): SheetController {
+export function useSheet({
+	dirty = false,
+	discardTitle = DISCARD_TITLE,
+	onClosed,
+}: SheetOptions = {}): SheetController {
 	const navigation = useNavigation();
 	const finishing = useRef(false);
 	// A refused swipe down (native-stack's onNativeDismissCancelled), Cancel and
@@ -119,12 +123,7 @@ export function Sheet({ title, onCancel, done, accessory, children }: SheetProps
 					) : null}
 					<View style={{ flex: 1, alignItems: "flex-end" }}>
 						{done ? (
-							<HeaderButton
-								label={done.label ?? "Done"}
-								strong
-								disabled={done.disabled}
-								onPress={done.onPress}
-							/>
+							<HeaderButton label={done.label ?? "Done"} strong disabled={done.disabled} onPress={done.onPress} />
 						) : null}
 					</View>
 				</View>

@@ -75,7 +75,14 @@ describe("the settle machine (spec 7.3)", () => {
 	});
 
 	it("holds a fling from the first touch to the glide's end, even when the touch is cancelled before the drag begins", () => {
-		const events: SettleEvent[] = ["touchStart", "touchEnd", "scrollBeginDrag", "scrollEndDrag", "momentumBegin", "momentumEnd"];
+		const events: SettleEvent[] = [
+			"touchStart",
+			"touchEnd",
+			"scrollBeginDrag",
+			"scrollEndDrag",
+			"momentumBegin",
+			"momentumEnd",
+		];
 		const trail: SettleState[] = [];
 		let state: SettleState = "idle";
 		for (const event of events) {

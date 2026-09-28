@@ -51,7 +51,8 @@ export function useMarkSeenInFront(
 	// A row without a readable hub turn end is the device's to decide, by its
 	// updated_at, so that is what a new mark follows for such a row.
 	const rowEnd = fleetRow ? hubTime(fleetRow.turn_ended_at) : null;
-	const rowKey = fleetRow && (rowEnd !== null ? turnKey(rowEnd) : `${hubId}\u0000${ref}\u0000updated ${fleetRow.updated_at ?? ""}`);
+	const rowKey =
+		fleetRow && (rowEnd !== null ? turnKey(rowEnd) : `${hubId}\u0000${ref}\u0000updated ${fleetRow.updated_at ?? ""}`);
 	// Recorded even when the row already reads seen: an unread marked
 	// elsewhere at this same turn end later is left alone.
 	useEffect(() => {

@@ -4,7 +4,6 @@ import { Pressable, Text, View } from "react-native";
 import { allowFontScaling, useColors, useTextScale } from "../ui";
 import type { ErrorAction } from "./errorAction";
 
-
 const ACTION_LABELS: Record<ErrorAction, string> = { resume: "Resume", signIn: "Sign in", retry: "Retry" };
 
 export function ErrorRow({

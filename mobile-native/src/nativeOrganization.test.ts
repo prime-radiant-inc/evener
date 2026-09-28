@@ -47,10 +47,7 @@ describe("native organization persistence", () => {
 		expect(drafts.load()).toEqual(newDraft);
 		const first = organizationJournal("hub").begin(operation);
 		const journalKey = "evener.native.navigation-action.hub";
-		storage.set(
-			journalKey,
-			JSON.stringify({ id: "new", operation, receipt: null }),
-		);
+		storage.set(journalKey, JSON.stringify({ id: "new", operation, receipt: null }));
 		expect(organizationJournal("hub").finish(first)).toBe(false);
 		expect(storage.has(journalKey)).toBe(true);
 	});
@@ -105,9 +102,7 @@ describe("native organization persistence", () => {
 		expect(forkJournal("hub-b", "parent").load()).toEqual(savedFork);
 		expect(pinDrafts("hub-b", "s-b").load()).not.toBeNull();
 		expect(organizationJournal("hub-b").load()).not.toBeNull();
-		expect(
-			storage.get('evener.native.pin-assignment.["hub-a","malformed'),
-		).toBe("keep");
+		expect(storage.get('evener.native.pin-assignment.["hub-a","malformed')).toBe("keep");
 		expect(storage.get("unrelated")).toBe("keep");
 	});
 });

@@ -4,11 +4,7 @@
 // it scans its own conversation model for the live questions and owns the send
 // - so this adapter feeds the store's reconcile directly and never wires it;
 // the store's freeze/settle/exclude rules are the package's, not copied here.
-import {
-	type AskBatch,
-	type AskQuestionRef,
-	createAskDockStore,
-} from "@evener/appwire-client";
+import { type AskBatch, type AskQuestionRef, createAskDockStore } from "@evener/appwire-client";
 import { questionsIdentity } from "./questionAnswers";
 
 // One dock, one conversation: the store keys by ref, the dock does not.
@@ -18,8 +14,7 @@ const NO_BATCHES: AskBatch[] = [];
 /** Own submissions by question identity, using the shared reconciliation. */
 export class QuestionBatches {
 	private store = createAskDockStore();
-	getSnapshot = () =>
-		this.store.getState().byRef.get(REF)?.batches ?? NO_BATCHES;
+	getSnapshot = () => this.store.getState().byRef.get(REF)?.batches ?? NO_BATCHES;
 	subscribe = (listener: () => void) => this.store.subscribe(listener);
 	reconcile(questions: AskQuestionRef[]) {
 		this.store.reconcile(REF, questions);
@@ -27,13 +22,10 @@ export class QuestionBatches {
 	/** Freeze `expected` for sending. False when the batch is gone, already
 	 * sending, or no longer holds the questions the dock rendered. */
 	begin(expected: AskBatch): boolean {
-		const current = this.getSnapshot().find(
-			(batch) => batch.id === expected.id,
-		);
+		const current = this.getSnapshot().find((batch) => batch.id === expected.id);
 		return (
 			current !== undefined &&
-			questionsIdentity(current.questions) ===
-				questionsIdentity(expected.questions) &&
+			questionsIdentity(current.questions) === questionsIdentity(expected.questions) &&
 			this.store.beginSend(REF, expected.id)
 		);
 	}

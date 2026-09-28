@@ -79,10 +79,7 @@ export function useProjectSections(hubId: string): Record<ProjectSection, Projec
 /** What one section shows: its browser's reads where they have landed, and
  * the view shown before until they do. A new hub starts from nothing. */
 function useSectionView(hubId: string, controller: ProjectBrowserController | null): ProjectsView {
-	const snapshot = useSyncExternalStore(
-		controller?.subscribe ?? noSubscription,
-		controller?.getSnapshot ?? noSnapshot,
-	);
+	const snapshot = useSyncExternalStore(controller?.subscribe ?? noSubscription, controller?.getSnapshot ?? noSnapshot);
 	const shown = useRef<{ hubId: string; view: ProjectsView } | null>(null);
 	const retained = shown.current?.hubId === hubId ? shown.current.view : null;
 	// Recomputed only when the reads change: `retained` is the view this

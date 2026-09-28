@@ -1,13 +1,6 @@
 import { useIsFocused } from "@react-navigation/native";
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
-import {
-	useCallback,
-	useEffect,
-	useMemo,
-	useRef,
-	useState,
-	useSyncExternalStore,
-} from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { Alert } from "react-native";
 import { useConnection } from "./ConnectionProvider";
 import { locations } from "./nativeLocation";
@@ -22,24 +15,15 @@ const noSnapshot = () => null;
 const noSubscription = () => () => {};
 type Readback = Awaited<ReturnType<typeof readSessionDeletion>>;
 
-export function SessionDeletionScreen({
-	route,
-	navigation,
-}: NativeStackScreenProps<Routes, "SessionDeletion">) {
+export function SessionDeletionScreen({ route, navigation }: NativeStackScreenProps<Routes, "SessionDeletion">) {
 	const { hubId, ref, title } = route.params;
 	const { client, activeProfile, state, retry } = useConnection();
 	const focused = useIsFocused();
 	const ready = activeProfile?.id === hubId && !!client && state === "ready";
-	const binding = useMemo(
-		() => ({ client, hubId, ref, ready, focused }),
-		[client, hubId, ref, ready, focused],
-	);
+	const binding = useMemo(() => ({ client, hubId, ref, ready, focused }), [client, hubId, ref, ready, focused]);
 	const owner = useRef<typeof binding | null>(binding);
 	owner.current = binding;
-	const current = useCallback(
-		() => owner.current === binding && binding.ready && binding.focused,
-		[binding],
-	);
+	const current = useCallback(() => owner.current === binding && binding.ready && binding.focused, [binding]);
 	const journal = useMemo(() => organizationJournal(hubId), [hubId]);
 	const [readback, setReadback] = useState<{
 		owner: typeof binding;
@@ -54,35 +38,16 @@ export function SessionDeletionScreen({
 	const checkingRef = useRef<typeof binding | null>(null);
 	const actions = useMemo(() => {
 		if (!client || activeProfile?.id !== hubId) return null;
-		const read = async (
-			checkpoint?: NavigationActionCheckpoint,
-			confirmReceipt = false,
-		) => {
-			const value = await readSessionDeletion(
-				client,
-				ref,
-				checkpoint,
-				current,
-				confirmReceipt,
-			);
+		const read = async (checkpoint?: NavigationActionCheckpoint, confirmReceipt = false) => {
+			const value = await readSessionDeletion(client, ref, checkpoint, current, confirmReceipt);
 			if (!current()) throw Error("The session screen changed.");
 			latest.current = { owner: binding, value };
 			setReadback(latest.current);
-			if (!value.settled)
-				throw Error("The previous deletion is still unconfirmed.");
+			if (!value.settled) throw Error("The previous deletion is still unconfirmed.");
 		};
-		return new NavigationActions(
-			client,
-			(_receipt, checkpoint) => read(checkpoint, true),
-			current,
-			read,
-			journal,
-		);
+		return new NavigationActions(client, (_receipt, checkpoint) => read(checkpoint, true), current, read, journal);
 	}, [client, activeProfile?.id, hubId, ref, binding, current, journal]);
-	const action = useSyncExternalStore(
-		actions?.subscribe ?? noSubscription,
-		actions?.getSnapshot ?? noSnapshot,
-	);
+	const action = useSyncExternalStore(actions?.subscribe ?? noSubscription, actions?.getSnapshot ?? noSnapshot);
 	useEffect(() => {
 		if (ready && focused) void actions?.reconcile();
 		return () => {
@@ -90,27 +55,15 @@ export function SessionDeletionScreen({
 			actions?.dispose();
 		};
 	}, [actions, ready, focused, binding]);
-	const observed =
-		readback?.owner.hubId === hubId && readback.owner.ref === ref
-			? readback.value
-			: null;
+	const observed = readback?.owner.hubId === hubId && readback.owner.ref === ref ? readback.value : null;
 	const confirmed = readback?.owner === binding;
 	const busy = !!action?.pending || checking === binding;
-	const enabled =
-		ready &&
-		focused &&
-		confirmed &&
-		!busy &&
-		!action?.uncertain &&
-		!action?.storageUnavailable;
+	const enabled = ready && focused && confirmed && !busy && !action?.uncertain && !action?.storageUnavailable;
 	function fail(error: unknown) {
 		if (current())
 			setProblem({
 				owner: binding,
-				error:
-					error instanceof Error
-						? error.message
-						: "The session could not be checked.",
+				error: error instanceof Error ? error.message : "The session could not be checked.",
 			});
 	}
 	function refresh() {
@@ -119,22 +72,16 @@ export function SessionDeletionScreen({
 		else retry();
 	}
 	function openSessions() {
-		if (owner.current !== binding || !focused || activeProfile?.id !== hubId)
-			return;
+		if (owner.current !== binding || !focused || activeProfile?.id !== hubId) return;
 		try {
 			locations.save({ hubId });
 			navigation.popTo("Sessions");
 		} catch {
-			fail(
-				Error(
-					"The destination could not be saved. Try opening Sessions again.",
-				),
-			);
+			fail(Error("The destination could not be saved. Try opening Sessions again."));
 		}
 	}
 	async function remove(expected: Readback) {
-		if (!current() || !client || !actions || checkingRef.current === binding)
-			return;
+		if (!current() || !client || !actions || checkingRef.current === binding) return;
 		checkingRef.current = binding;
 		setChecking(binding);
 		setProblem(null);
@@ -149,9 +96,7 @@ export function SessionDeletionScreen({
 				value.generationId !== expected.generationId ||
 				value.title !== expected.title
 			)
-				throw Error(
-					"The session changed while confirmation was open. Review its current state before deleting.",
-				);
+				throw Error("The session changed while confirmation was open. Review its current state before deleting.");
 			await actions.deleteSession({ ref });
 			const result = actions.getSnapshot();
 			if (
@@ -216,9 +161,7 @@ export function SessionDeletionScreen({
 	return (
 		<SessionDeletionEditor
 			title={observed?.title || title}
-			hubName={
-				activeProfile?.id === hubId ? activeProfile.name : "Disconnected hub"
-			}
+			hubName={activeProfile?.id === hubId ? activeProfile.name : "Disconnected hub"}
 			ready={ready}
 			busy={busy}
 			eligible={!!observed?.eligible}
@@ -226,11 +169,7 @@ export function SessionDeletionScreen({
 			missing={!!observed?.missing}
 			lastKnown={!confirmed || !ready}
 			skippedReason={observed?.skippedReason ?? null}
-			error={
-				(problem?.owner === binding ? problem.error : null) ??
-				action?.error ??
-				null
-			}
+			error={(problem?.owner === binding ? problem.error : null) ?? action?.error ?? null}
 			uncertain={!!action?.uncertain}
 			retryAvailable={retryAvailable}
 			refresh={refresh}

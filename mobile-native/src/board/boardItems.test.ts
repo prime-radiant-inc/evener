@@ -27,7 +27,16 @@ const bands = (over: Partial<LiveBands> = {}): LiveBands => ({
 const shape = (items: readonly BoardItem[]) =>
 	items.map((item) => {
 		if (item.kind === "row")
-			return [item.key, item.group, item.variant, item.moving, item.needsYou, item.archived, item.depth, item.separated];
+			return [
+				item.key,
+				item.group,
+				item.variant,
+				item.moving,
+				item.needsYou,
+				item.archived,
+				item.depth,
+				item.separated,
+			];
 		return [item.key, item.group, item.kind];
 	});
 
@@ -56,7 +65,10 @@ it("lists Live as band headers and rows keyed by ref alone, marking which sit in
 });
 
 it("leaves out empty bands, and Idle's rows while it is folded", () => {
-	const items = liveItems(bands({ finished: [classified("local:done", "finished")], idle: [classified("local:old", "idle")] }), true);
+	const items = liveItems(
+		bands({ finished: [classified("local:done", "finished")], idle: [classified("local:old", "idle")] }),
+		true,
+	);
 	expect(shape(items)).toEqual([
 		["band:finished", "live", "band"],
 		["live:local:done", "live", "signal", false, false, false, 0, true],
@@ -120,7 +132,12 @@ it("lists each project section as its header and its tree, session rows keyed wi
 
 it("groups a list by section, in order", () => {
 	const live = liveItems(bands({ finished: [classified("local:done", "finished")] }), false);
-	const pinned = pinnedItems([{ id: "pins-1", name: "Mine", count: 0 }], {}, () => false, (summary) => ({ row: summary, state: "idle" }));
+	const pinned = pinnedItems(
+		[{ id: "pins-1", name: "Mine", count: 0 }],
+		{},
+		() => false,
+		(summary) => ({ row: summary, state: "idle" }),
+	);
 	const groups = groupItems([...live, ...pinned]);
 	expect([...groups.keys()]).toEqual(["live", "pin:pins-1"]);
 	expect(groups.get("live")?.map((item) => item.key)).toEqual(["band:finished", "live:local:done"]);

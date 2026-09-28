@@ -6,12 +6,6 @@ export type RetainedActivity = {
 	tree: ActivityTree;
 } | null;
 
-export function retainedActivityTree(
-	retained: RetainedActivity,
-	ref: string,
-	threadId: string,
-): ActivityTree | null {
-	return retained?.ref === ref && retained.threadId === threadId
-		? retained.tree
-		: null;
+export function retainedActivityTree(retained: RetainedActivity, ref: string, threadId: string): ActivityTree | null {
+	return retained?.ref === ref && retained.threadId === threadId ? retained.tree : null;
 }

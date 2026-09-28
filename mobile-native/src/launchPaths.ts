@@ -2,16 +2,16 @@ import { type LaunchOption, validatePathListAdd } from "@evener/appwire-client";
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
 
 export async function addLaunchPath(
-  client: ConversationClientLike,
-  option: LaunchOption,
-  items: string[],
-  raw: string,
+	client: ConversationClientLike,
+	option: LaunchOption,
+	items: string[],
+	raw: string,
 ) {
-  const path = raw.trim();
-  if (!path) throw Error("Enter a path.");
-  const result = await validatePathListAdd(option, items, path, (path, kind) =>
-    client.request("evener/path/validate", { path, kind }),
-  );
-  if (!result.ok) throw Error(result.error);
-  return [...items, result.value];
+	const path = raw.trim();
+	if (!path) throw Error("Enter a path.");
+	const result = await validatePathListAdd(option, items, path, (path, kind) =>
+		client.request("evener/path/validate", { path, kind }),
+	);
+	if (!result.ok) throw Error(result.error);
+	return [...items, result.value];
 }

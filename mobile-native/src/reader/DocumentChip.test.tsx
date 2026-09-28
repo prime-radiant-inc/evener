@@ -52,9 +52,12 @@ beforeEach(() => {
 	answers = [];
 	memory = new DocumentMemory(storage(), "studio");
 	harness.memory = memory;
-	fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(
-		async () => answers.shift()?.() ?? new Response(PLAN, { headers: { "Content-Type": "text/plain; charset=utf-8" } }),
-	);
+	fetchSpy = vi
+		.spyOn(globalThis, "fetch")
+		.mockImplementation(
+			async () =>
+				answers.shift()?.() ?? new Response(PLAN, { headers: { "Content-Type": "text/plain; charset=utf-8" } }),
+		);
 });
 afterEach(() => {
 	for (const tree of trees.splice(0)) act(() => tree.unmount());
@@ -131,9 +134,7 @@ it("waits for the hub's origin before it reads, then reads from it", async () =>
 	await settle();
 	expect(fetchSpy).not.toHaveBeenCalled();
 	harness.connection = { profiles: [{ id: "studio", name: "Studio", origin: "https://hub.test" }], state: "ready" };
-	act(() =>
-		first.update(<DocumentChip hubId="studio" sessionRef="local:fix" path={PATH} onOpen={() => {}} />),
-	);
+	act(() => first.update(<DocumentChip hubId="studio" sessionRef="local:fix" path={PATH} onOpen={() => {}} />));
 	await settle();
 	expect(fetchSpy).toHaveBeenCalledOnce();
 	expect(String(fetchSpy.mock.calls[0]?.[0])).toMatch(/^https:\/\/hub\.test\/doc\/file/);

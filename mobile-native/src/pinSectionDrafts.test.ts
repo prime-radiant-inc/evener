@@ -14,8 +14,7 @@ function backend() {
 			values.set(key, value);
 		},
 		deleteIf: (key: string, expected: unknown) => {
-			if (JSON.stringify(values.get(key)) !== JSON.stringify(expected))
-				return false;
+			if (JSON.stringify(values.get(key)) !== JSON.stringify(expected)) return false;
 			values.delete(key);
 			return true;
 		},

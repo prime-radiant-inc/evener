@@ -78,7 +78,9 @@ describe("a group", () => {
 describe("a switch row", () => {
 	it("names its switch, tints it with the accent, and reports a flip", () => {
 		const onChange = vi.fn();
-		const tree = render(<SwitchRow label="Network" sub="Lets the session's commands reach the internet" value onChange={onChange} />);
+		const tree = render(
+			<SwitchRow label="Network" sub="Lets the session's commands reach the internet" value onChange={onChange} />,
+		);
 		const toggle = tree.root.findByType("Switch" as never);
 		expect(toggle.props.accessibilityLabel).toBe("Network");
 		expect(toggle.props.trackColor.true).toBe(light.accent);
@@ -125,17 +127,15 @@ describe("labels, footers and tags", () => {
 	it("uppercases a section label and keeps a machine label as typed in Menlo", () => {
 		const section = merged(texts(render(<GroupLabel>Where</GroupLabel>))[0]?.props.style);
 		expect(section).toMatchObject({ textTransform: "uppercase", fontWeight: "600", letterSpacing: 0.72 });
-		const machine = merged(
-			texts(render(<GroupLabel machine>superpowers-marketplace</GroupLabel>))[0]?.props.style,
-		);
+		const machine = merged(texts(render(<GroupLabel machine>superpowers-marketplace</GroupLabel>))[0]?.props.style);
 		expect(machine.fontFamily).toBe("Menlo");
 		expect(machine.textTransform).toBeUndefined();
 	});
 
 	it("colors a footer by what it reports", () => {
-		expect(texts(render(<GroupFooter tone="danger">paradise-park is offline.</GroupFooter>))[0]?.props.style.color).toBe(
-			light.dangerInk,
-		);
+		expect(
+			texts(render(<GroupFooter tone="danger">paradise-park is offline.</GroupFooter>))[0]?.props.style.color,
+		).toBe(light.dangerInk);
 	});
 
 	it("draws version drift as a gray tag", () => {
