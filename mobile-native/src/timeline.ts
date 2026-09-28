@@ -1,4 +1,4 @@
-import type { MobileTimelineItem } from "./projectedRows";
+import type { AttachmentRef, MobileTimelineItem } from "./projectedRows";
 
 type Notice = Extract<MobileTimelineItem, { kind: "notice" }>;
 
@@ -45,13 +45,32 @@ export function isInterruptedNotice(item: Notice): boolean {
 		item.tone !== "warning"
 	);
 }
+/** One step of a run: an activity row, with any images it produced. */
+export type RunStep = Extract<MobileTimelineItem, { kind: "activity" }> & { images?: AttachmentRef[] };
+
 export type TimelineRow =
 	| MobileTimelineItem
 	| {
 			kind: "details";
 			id: string;
 			entries: Notice[];
-	  };
+	  }
+	// Consecutive steps, folded into one line (spec 8.2). It keeps its first
+	// step's identity, so a reading position saved on that step still resolves.
+	| {
+			kind: "run";
+			id: string;
+			steps: RunStep[];
+			turnId?: string;
+			transcriptKey?: string;
+			position?: { entry: number; item: number };
+	  }
+	// A time marker before a turn that starts after a gap or on a new day.
+	| { kind: "time"; id: string; turnId: string; at: number };
+
+export function rowTurnId(row: TimelineRow): string | undefined {
+	return row.kind === "details" ? row.entries[0]?.turnId : row.turnId;
+}
 
 // A question option row's React key (TimelineItem.tsx's "question" case): the
 // option's POSITION in the question, never its label. The store's publish
@@ -78,6 +97,8 @@ export function timelineGap(before: TimelineRow, after?: TimelineRow): number {
 	if (needsAttention(before) || needsAttention(after)) return 24;
 	const routine = (item: TimelineRow) =>
 		item.kind === "details" ||
+		item.kind === "run" ||
+		item.kind === "time" ||
 		(item.kind === "notice" && steeringNoticeLabel(item) !== undefined);
 	return routine(before) || routine(after) ? 8 : 24;
 }

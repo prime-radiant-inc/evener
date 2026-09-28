@@ -60,3 +60,17 @@ it("keeps tables in the system font and ink-hi, unlike the serif prose", () => {
 	mode.scheme = "dark";
 	expect(markdownStyle("| a |\n|---|\n| 1 |").table.color).toBe("#F2F1EB");
 });
+
+it("stays selectable with its Copy response item by default, for the task and subagent sheets", () => {
+	const tree = render(<MarkdownResponse markdown="Hello" />);
+	const text = tree.root.findByType("EnrichedMarkdownText" as never);
+	expect(text.props.selectable).toBe(true);
+	expect(text.props.contextMenuItems.map((item: { text: string }) => item.text)).toEqual(["Copy response"]);
+});
+
+it("drops native selection and its menu when the caller owns touch and hold", () => {
+	const tree = render(<MarkdownResponse markdown="Hello" selectable={false} />);
+	const text = tree.root.findByType("EnrichedMarkdownText" as never);
+	expect(text.props.selectable).toBe(false);
+	expect(text.props.contextMenuItems).toBeUndefined();
+});

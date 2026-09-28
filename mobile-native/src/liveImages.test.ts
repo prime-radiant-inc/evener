@@ -127,7 +127,7 @@ it("shows and replaces live input images without waiting for the turn to stop", 
   };
   publish(item);
   expect(store.getState().conversation?.items).toEqual([
-    { kind: "user", id: "user", text: "look" },
+    { kind: "user", id: "user", text: "look", turnId: "turn" },
     {
       kind: "attachments",
       id: "user:attachments",
@@ -138,6 +138,7 @@ it("shows and replaces live input images without waiting for the turn to stop", 
           name: "first.png",
         },
       ],
+      turnId: "turn",
     },
   ]);
   publish({

@@ -12,6 +12,7 @@ import {
 	questionOptionKey,
 	steeringNoticeLabel,
 	timelineGap,
+	type TimelineRow,
 } from "./timeline";
 
 const setup: MobileTimelineItem = {
@@ -57,6 +58,16 @@ it("uses tighter rhythm around routine details without compressing warnings or d
 		}),
 	).toBe(ordinary);
 	expect(timelineGap(details, undefined)).toBe(0);
+});
+
+it("treats a run and a time marker as routine, like details", () => {
+	const ordinary = timelineGap(message, message);
+	const run: TimelineRow = { kind: "run", id: "run:a", steps: [] };
+	const time: TimelineRow = { kind: "time", id: "time:turn_1", turnId: "turn_1", at: 0 };
+	expect(timelineGap(message, run)).toBeLessThan(ordinary);
+	expect(timelineGap(run, message)).toBeLessThan(ordinary);
+	expect(timelineGap(message, time)).toBeLessThan(ordinary);
+	expect(timelineGap(time, message)).toBeLessThan(ordinary);
 });
 
 it("collapses only typed non-warning interruption notices", () => {
