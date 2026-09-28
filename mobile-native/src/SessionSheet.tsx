@@ -12,6 +12,8 @@ import {
 import { SafeAreaView } from "react-native-safe-area-context";
 import type { MobileConversation } from "./projectedRows";
 import type { SessionControls } from "./sessionControls";
+import { SHUT_DOWN } from "./session/sessionState";
+import { Toast, useToast } from "./Toast";
 import { Action, Copy, ErrorMessage, styles, useColors } from "./ui";
 
 export function SessionSheet({
@@ -37,6 +39,7 @@ export function SessionSheet({
 }) {
 	const colors = useColors();
 	const state = useSyncExternalStore(controls.subscribe, controls.getSnapshot);
+	const toast = useToast();
 	const [name, setName] = useState(conversation.name);
 	const [editingName, setEditingName] = useState(false);
 	useEffect(() => {
@@ -47,7 +50,7 @@ export function SessionSheet({
 	const modelAction =
 		state.lastAction === "changeModel" ||
 		state.lastAction === "setReasoningEffort";
-	const runtimeStopped = conversation.status.type === "notLoaded";
+	const runtimeStopped = SHUT_DOWN.has(conversation.status.type);
 	const restartRequired = conversation.status.type === "restartRequired";
 	return (
 		<Modal
@@ -246,7 +249,14 @@ export function SessionSheet({
 													text: "Stop runtime",
 													style: "destructive",
 													onPress: () => {
-														void controls.shutdown();
+														// A shutdown narrates nothing through the
+														// shared controls: the sheet confirms it
+														// itself, as the ⋯ menu's toast does
+														// (ruling 19).
+														void controls.shutdown().then((stopped) => {
+															if (stopped)
+																toast.show({ text: "Session shut down" });
+														});
 													},
 												},
 											],
@@ -259,6 +269,12 @@ export function SessionSheet({
 						) : null}
 					</ScrollView>
 				</KeyboardAvoidingView>
+				<View
+					pointerEvents="box-none"
+					style={{ position: "absolute", left: 0, right: 0, bottom: 10, alignItems: "center" }}
+				>
+					<Toast toast={toast.toast} dismiss={toast.dismiss} />
+				</View>
 			</SafeAreaView>
 		</Modal>
 	);
