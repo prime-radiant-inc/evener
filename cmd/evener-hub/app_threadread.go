@@ -3,6 +3,7 @@ package hub
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"slices"
@@ -262,6 +263,9 @@ func pastEntryLatestItems(ctx context.Context, entry hubcore.PastEntry, limit in
 			return err
 		}
 		window, changes, err := index.LatestSince(limit, *held)
+		if errors.Is(err, transcriptindex.ErrUpdateLogTruncated) {
+			return appwire.TranscriptItemCursorStale()
+		}
 		page = pastItemPageFromWindow(entry, window)
 		page.Changes = changes
 		return err

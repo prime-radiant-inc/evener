@@ -30,13 +30,23 @@ export function StateMark({
 	state,
 	moving = false,
 	connected = true,
+	stuck = false,
+	perMinute,
 }: {
 	state: BoardState;
 	moving?: boolean;
 	connected?: boolean;
+	/** The row's why line reads "May be stuck" (spec 13.1, 16.4): the meter
+	 * goes flat and amber, same as the mark it echoes at row size. Offline
+	 * still wins over stuck - a dropped connection isn't the session stalling. */
+	stuck?: boolean;
+	/** The meter's per-minute counts (S5's activity read); absent, the meter
+	 * shows its still fallback. */
+	perMinute?: readonly number[];
 }) {
 	const { palette } = useColors();
 	const mark = markFor(state, moving);
+	const tone = !connected ? "gray" : stuck ? "attention" : "alive";
 	return (
 		<View
 			style={{ width: 28, alignItems: "center", justifyContent: "center" }}
@@ -44,7 +54,7 @@ export function StateMark({
 			accessibilityLabel={mark ? stateWord(state) : undefined}
 		>
 			{mark === "meter" ? (
-				<PulseMeter tone={connected ? "alive" : "gray"} />
+				<PulseMeter tone={tone} perMinute={perMinute} />
 			) : mark ? (
 				<SymbolView name={mark.name} tintColor={palette[mark.tint]} size={mark.size} />
 			) : null}

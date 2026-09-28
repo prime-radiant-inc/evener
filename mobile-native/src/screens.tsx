@@ -8,6 +8,7 @@ import {
 	type RefObject,
 	useCallback,
 	useEffect,
+	useLayoutEffect,
 	useMemo,
 	useRef,
 	useState,
@@ -34,6 +35,8 @@ import { SafeAreaView } from "react-native-safe-area-context";
 import {
 	type AskBatch,
 	buildComposerInput,
+	formatQuoteBlock,
+	mergeDraftText,
 	parseSlashToken,
 	spliceSlashCommand,
 	type TranscriptDisplayConfigV1,
@@ -59,6 +62,7 @@ import {
 	composerCommand,
 	composerCommandAvailable,
 	isLocalComposerCommand,
+	startAside,
 	submitComposerCommand,
 } from "./composerCommand";
 import { canComposeFor, conversationControls } from "./conversationControls";
@@ -104,10 +108,12 @@ import {
 	captureReaderAnchor,
 	furthestMeasuredRowBeforeTarget,
 	isReaderAnchorLoaded,
+	openingTarget,
 	type ReaderAnchor,
 	type ReaderMeasurement,
 	ReaderRestoreAttempts,
 	reachableReaderOffset,
+	readerAnchorAt,
 	readerKey,
 	resolveReaderAnchor,
 	restoreReaderCommand,
@@ -115,13 +121,41 @@ import {
 } from "./readerPosition";
 import { type SessionDestination, SessionMenu } from "./SessionMenu";
 import { SessionSheet } from "./SessionSheet";
+import { type ErrorAction, errorAction, RETRY_MESSAGE } from "./session/errorAction";
+import { NewContentPill } from "./session/NewContentPill";
+import { TranscriptSkeleton } from "./session/TranscriptSkeleton";
+import { useReadRetry } from "./session/useReadRetry";
+import {
+	answerTo,
+	hideAnswerMessages,
+	latestSettledTurn,
+	liveRunId,
+	newRowCount,
+	sessionRows,
+} from "./session/transcriptRows";
 import { SessionControls } from "./sessionControls";
+import { useConnectionStatusText } from "./board/connectionStatus";
 import { Composer } from "./session/Composer";
+import {
+	configForLevel,
+	currentLevel,
+	levelToast,
+} from "./session/detailLevels";
+import { detailLevels } from "./session/nativeDetailLevels";
 import {
 	composerPlaceholder,
 	sendAction,
 	sendLabel,
 } from "./session/sendAction";
+import { SessionHeader, useHeaderHiding } from "./session/SessionHeader";
+import { type SessionMenuAction, sessionMenu } from "./session/sessionMenu";
+import {
+	type ChipKind,
+	contextChips,
+	SHUT_DOWN,
+	sessionStateLine,
+} from "./session/sessionState";
+import { SessionTitle } from "./session/SessionTitle";
 import { LiveStatusTray, useFrameCounter } from "./session/StatusTray";
 import { localSessionId } from "./sessionDeletionResult";
 import { leaveScreen, screenInFront, useScreenInFront } from "./sheet/useScreenInFront";
@@ -463,6 +497,16 @@ export function useFocusAfterModal(
 	}, [navigation, focusAfterModal, composerInput]);
 }
 
+/** The sheet or screen each context chip and ⋯ menu item opens. */
+const SESSION_DESTINATIONS = {
+	subagents: "activity",
+	tasks: "tasks",
+	goal: "session",
+	info: "session",
+	pin: "pin",
+	delete: "delete",
+} as const satisfies Record<string, SessionDestination>;
+
 export function ConversationScreen({
 	route,
 	navigation,
@@ -471,6 +515,7 @@ export function ConversationScreen({
 		activeProfile,
 		client,
 		state: connectionState,
+		fatal,
 	} = useConnection();
 	const focused = useScreenInFront(route.key);
 	const colors = useColors();
@@ -500,8 +545,17 @@ export function ConversationScreen({
 	// so the ref (not the render value) is what it closes over — the store is
 	// not recreated per config change.
 	const preferences = useNativePreferences();
-	const displayConfig =
+	const hubDisplayConfig =
 		preferences.hubId === route.params.hubId ? preferences.config : null;
+	// The detail level chosen for this session on this device replaces the
+	// hub config's content (spec 8.7); nothing chosen leaves the hub's.
+	const levels = detailLevels(route.params.hubId);
+	useSyncExternalStore(levels.subscribe, levels.getRevision);
+	const chosenLevel = levels.get(route.params.ref);
+	const displayConfig = useMemo(
+		() => configForLevel(chosenLevel, hubDisplayConfig),
+		[chosenLevel, hubDisplayConfig],
+	);
 	const displayConfigRef = useRef<TranscriptDisplayConfigV1 | null>(displayConfig);
 	displayConfigRef.current = displayConfig;
 	const resolveDisplayConfig = useCallback(
@@ -560,6 +614,15 @@ export function ConversationScreen({
 	const readerPageAttempts = useRef(new Set<string>());
 	const readerHeader = useRef(false);
 	const readerLatest = useRef(false);
+	// The latest settled turn while the list sat at its end (ruling 31). Every
+	// anchor carries it, so opening the session later can tell a newer reply
+	// finished since.
+	const turnsSeen = useRef<string | undefined>(undefined);
+	// Where the session opened is decided once per route (spec 7.3).
+	const openedFor = useRef<string | null>(null);
+	// The reader keys the list held when you left its end; null at the end.
+	// Rows that arrive below it make "↓ 3 new".
+	const [awayKeys, setAwayKeys] = useState<ReadonlySet<string> | null>(null);
 	const captureSuppressed = useRef(false);
 	const readerDragging = useRef(false);
 	const readerMomentum = useRef(false);
@@ -715,6 +778,23 @@ export function ConversationScreen({
 			service.close();
 		};
 	}, [service, store, activitySink, connected, focused, route.params.ref]);
+	// A read that failed while connected tries again on its own (spec 14);
+	// from the third failure in a row the transcript says so.
+	const readStatus = useCallback(() => store.getState().status, [store]);
+	const retryRead = useCallback(
+		() =>
+			service
+				? store.getState().resumeProjected(service, activitySink, route.params.ref)
+				: Promise.resolve(),
+		[service, store, activitySink, route.params.ref],
+	);
+	const readFailures = useReadRetry({
+		status: snapshot.status,
+		active: Boolean(service) && connected && focused,
+		resetKey: `${route.params.hubId}\u0000${route.params.ref}`,
+		readStatus,
+		resume: retryRead,
+	});
 	// The durable pending-row seam. The store retires it on EVERY thread open,
 	// and `openProjected` runs from more than the resume effect: the /clear
 	// command's cleared callback, the refresh paths, and resumeProjected's own
@@ -792,67 +872,63 @@ export function ConversationScreen({
 			preview,
 		});
 	}
-	const controls = useMemo(
-		() =>
-			service && connected && focused
-				? new SessionControls(
-						service,
-						async () => {
-							if (store.getState().status === "open")
-								await store.getState().rehydrate(service, activitySink);
-							else
-								await store
-									.getState()
-									.resumeProjected(service, activitySink, route.params.ref);
-							const current = store.getState();
-							if (current.status !== "open" || current.error)
-								throw new Error("Session refresh failed");
-						},
-						() => {
-							store.getState().close();
-							service.close();
-							setSessionOpen(false);
-							if (screenInFront(navigation, route.key))
-								leaveScreen(navigation, route.key);
-						},
-						(scope) => {
-							const current = store.getState();
-							if (
-								currentDestination.current.store !== store ||
-								currentDestination.current.client !== client ||
-								!connectionReady.current ||
-								!screenInFront(navigation, route.key)
-							)
-								return false;
-							if (scope === "destination")
-								return current.ref === route.params.ref;
-							return (
-								current.status === "open" &&
-								current.conversationGeneration === bindingGeneration &&
-								current.conversation?.instanceId === bindingInstance
-							);
-						},
-						() => store.getState().conversation,
-						() =>
-							!commandBusy.current &&
-							!document.getSnapshot().submitting &&
-							store.getState().pendingMutation?.status !== "pending",
-					)
-				: null,
-		[
+	const controls = useMemo(() => {
+		if (!service || !connected || !focused) return null;
+		const refreshSession = async () => {
+			if (store.getState().status === "open")
+				await store.getState().rehydrate(service, activitySink);
+			else
+				await store
+					.getState()
+					.resumeProjected(service, activitySink, route.params.ref);
+			const current = store.getState();
+			if (current.status !== "open" || current.error)
+				throw new Error("Session refresh failed");
+		};
+		return new SessionControls(
 			service,
-			store,
-			client,
-			route.params.ref,
-			activitySink,
-			navigation,
-			connected,
-			focused,
-			bindingGeneration,
-			bindingInstance,
-			document,
-		],
-	);
+			refreshSession,
+			// A shut-down session stays open on its history (ruling 19); a
+			// failed read surfaces through the store's own error.
+			() => {
+				void refreshSession().catch(() => undefined);
+			},
+			(scope) => {
+				const current = store.getState();
+				if (
+					currentDestination.current.store !== store ||
+					currentDestination.current.client !== client ||
+					!connectionReady.current ||
+					!screenInFront(navigation, route.key)
+				)
+					return false;
+				if (scope === "destination")
+					return current.ref === route.params.ref;
+				return (
+					current.status === "open" &&
+					current.conversationGeneration === bindingGeneration &&
+					current.conversation?.instanceId === bindingInstance
+				);
+			},
+			() => store.getState().conversation,
+			() =>
+				!commandBusy.current &&
+				!document.getSnapshot().submitting &&
+				store.getState().pendingMutation?.status !== "pending",
+		);
+	}, [
+		service,
+		store,
+		client,
+		route.params.ref,
+		activitySink,
+		navigation,
+		connected,
+		focused,
+		bindingGeneration,
+		bindingInstance,
+		document,
+	]);
 	useEffect(() => () => controls?.dispose(), [controls]);
 	const approvalControls = useMemo(
 		() =>
@@ -949,52 +1025,177 @@ export function ConversationScreen({
 			route.params.title,
 		],
 	);
+	// The title's state line reads live ages ("Working · 38m", "Finished ·
+	// 1h ago"): re-render twice a minute while the session is in front.
+	const [, setClock] = useState(0);
+	useEffect(() => {
+		if (!focused) return;
+		const clock = setInterval(() => setClock((tick) => tick + 1), 30_000);
+		return () => clearInterval(clock);
+	}, [focused]);
+	const conversation = snapshot.conversation;
+	const stateLine = conversation
+		? sessionStateLine(conversation, Date.now())
+		: null;
+	const connectionText = useConnectionStatusText(connectionState, fatal);
+	const chips = conversation ? contextChips(conversation, connected) : [];
+	const headerHiding = useHeaderHiding();
+	// The header block floats over the list; the list reserves its height.
+	const [sessionHeaderHeight, setSessionHeaderHeight] = useState(0);
+	const listOffset = useRef(0);
+	const reservedHeaderHeight = useRef(0);
+	// When the block grows or shrinks (the connection bar comes or goes), the
+	// list's top padding moves by the same amount; scrolling the list by it
+	// too keeps every row where it was on screen. At the top the list stays
+	// at the top, and the rows make room for the block.
+	useLayoutEffect(() => {
+		const change = sessionHeaderHeight - reservedHeaderHeight.current;
+		reservedHeaderHeight.current = sessionHeaderHeight;
+		if (change === 0 || listOffset.current <= 0) return;
+		const target = Math.max(0, listOffset.current + change);
+		// Set optimistically: the list's own onScroll is throttled
+		// (scrollEventThrottle), so a second height change in the same window
+		// must compose with where this scroll is already taking the list, not
+		// with the last offset the list actually reported.
+		listOffset.current = target;
+		timeline.current?.scrollToOffset({ offset: target, animated: false });
+	}, [sessionHeaderHeight]);
+	function openChip(kind: ChipKind) {
+		if (kind !== "queue") {
+			openSessionDestination(SESSION_DESTINATIONS[kind]);
+			return;
+		}
+		// Today's QueueSheet modal, until the queue sheet route lands.
+		Keyboard.dismiss();
+		setQueueOpen(true);
+	}
+	const menuLevel = currentLevel(chosenLevel, hubDisplayConfig);
+	// The menu offers Subagents exactly when its chip shows.
+	const hasSubagents = chips.some((chip) => chip.kind === "subagents");
+	const canAside =
+		connected &&
+		service !== null &&
+		!!conversation?.capabilities.forkFromTurn;
+	const canShutDown =
+		controls !== null &&
+		!!conversation?.capabilities.shutdown &&
+		!SHUT_DOWN.has(conversation.status.type);
+	function openAside(ref: string, title: string) {
+		Keyboard.dismiss();
+		navigation.push("Conversation", {
+			hubId: route.params.hubId,
+			ref,
+			title,
+		});
+	}
+	function archive(archived: boolean) {
+		if (!client) return Promise.reject(new Error("Not connected"));
+		return client.request("evener/archive/set", {
+			kind: "session",
+			id: route.params.ref,
+			archived,
+		});
+	}
+	function chooseSessionAction(action: SessionMenuAction) {
+		switch (action.kind) {
+			case "level":
+				levels.set(route.params.ref, action.level);
+				toaster.show({ text: levelToast(action.level) });
+				return;
+			case "subagents":
+			case "tasks":
+			case "info":
+			case "pin":
+			case "delete":
+				openSessionDestination(SESSION_DESTINATIONS[action.kind]);
+				return;
+			case "aside":
+				if (!service) return;
+				startAside(service).then(
+					(aside) => {
+						if (screenInFront(navigation, route.key))
+							openAside(aside.ref, aside.title);
+					},
+					() => toaster.show({ text: "Couldn't start an aside." }),
+				);
+				return;
+			case "archive":
+				archive(true).then(
+					() =>
+						toaster.show({
+							text: "Session archived",
+							action: {
+								label: "Undo",
+								run: () =>
+									void archive(false).catch(() =>
+										toaster.show({ text: "Couldn't undo the archive." }),
+									),
+							},
+						}),
+					() => toaster.show({ text: "Couldn't archive this session." }),
+				);
+				return;
+			case "shutDown":
+				if (!controls) return;
+				Alert.alert(
+					"Shut down this session?",
+					"It stops now and keeps its history. Sending a message resumes it.",
+					[
+						{ text: "Cancel", style: "cancel" },
+						{
+							text: "Shut down",
+							style: "destructive",
+							onPress: () => {
+								void controls.shutdown().then((stopped) => {
+									toaster.show({
+										text: stopped
+											? "Session shut down"
+											: "Couldn't shut down this session.",
+									});
+								});
+							},
+						},
+					],
+				);
+				return;
+		}
+	}
+	// The header items outlive this render; they reach the latest choices
+	// through the ref, so the header is not reset on every render. The ref is
+	// written after commit, in its own effect with no deps, not during
+	// render, which React's own rules reserve for effects.
+	const chooseSessionActionRef = useRef(chooseSessionAction);
+	useEffect(() => {
+		chooseSessionActionRef.current = chooseSessionAction;
+	});
 	useEffect(() => {
 		navigation.setOptions({
-			unstable_headerRightItems: () => [
-				{
-					type: "menu",
-					label: "Session actions",
-					accessibilityLabel: "Session actions",
-					icon: { type: "sfSymbol", name: "ellipsis" },
-					disabled: !hasConversation,
-					menu: {
-						items: [
-							...(deletionAvailable
-								? [
-										{
-											type: "action" as const,
-											label: "Delete saved session",
-											onPress: () => openSessionDestination("delete"),
-										},
-									]
-								: []),
-							{
-								type: "action",
-								label: "Session details",
-								onPress: () => openSessionDestination("session"),
-							},
-							{
-								type: "action",
-								label: "Pin to section",
-								onPress: () => openSessionDestination("pin"),
-							},
-							{
-								type: "action",
-								label: "Tasks",
-								disabled: !connected,
-								onPress: () => openSessionDestination("tasks"),
-							},
-							{
-								type: "action",
-								label: "Activity",
-								disabled: !connected,
-								onPress: () => openSessionDestination("activity"),
-							},
-						],
-					},
-				},
-			],
+			// iPhone only: the pressable title with the session's state (spec
+			// 8.1). Android keeps the plain title.
+			headerTitle:
+				Platform.OS === "ios" && stateLine
+					? ({ children }) => (
+							<SessionTitle
+								title={children}
+								line={stateLine}
+								onPress={() => openSessionDestination("session")}
+							/>
+						)
+					: undefined,
+			// iOS draws these as a native menu and ignores headerRight; Android
+			// ignores them and keeps headerRight's SessionMenu.
+			unstable_headerRightItems: () =>
+				hasConversation
+					? sessionMenu({
+							current: menuLevel,
+							hasSubagents,
+							connected,
+							canAside,
+							canShutDown,
+							deletable: deletionAvailable,
+							choose: (action) => chooseSessionActionRef.current(action),
+						})
+					: [],
 			headerRight: () => (
 				<Pressable
 					accessibilityRole="button"
@@ -1029,13 +1230,18 @@ export function ConversationScreen({
 		connected,
 		openSessionDestination,
 		colors.text,
+		stateLine?.state,
+		stateLine?.text,
+		menuLevel,
+		hasSubagents,
+		canAside,
+		canShutDown,
 	]);
 	const currentName = snapshot.conversation?.name;
 	useEffect(() => {
 		if (currentName && currentName !== route.params.title)
 			navigation.setParams({ title: currentName });
 	}, [navigation, currentName, route.params.title]);
-	const conversation = snapshot.conversation;
 	// The conversation's rows are already level-correct: the store projected
 	// them at displayConfig (D24-6's seam routing), so the presentation layer
 	// only reshapes (member unrolling, attachment adjacency) and computes the
@@ -1045,8 +1251,42 @@ export function ConversationScreen({
 		[conversation, displayConfig],
 	);
 	const timelineRows = useMemo(
-		() => groupTimeline(presentation.items),
-		[presentation.items],
+		() =>
+			// Your answers to a question show beneath the question itself.
+			hideAnswerMessages(
+				sessionRows(groupTimeline(presentation.items), conversation?.turns ?? []),
+			),
+		[presentation.items, conversation?.turns],
+	);
+	const liveRun = liveRunId(timelineRows, conversation?.activeTurnId);
+	// A subagent row opens the subagent's own transcript, as the Activity
+	// sheet does, until phase 4's subagent screen.
+	const openSubagent = useCallback(
+		(ref: string, title: string) =>
+			navigation.push("Conversation", { hubId: route.params.hubId, ref, title }),
+		[navigation, route.params.hubId],
+	);
+	const answerFor = useCallback(
+		(itemId: string) => answerTo(conversation, itemId),
+		[conversation],
+	);
+	// Stable across renders, so a settled agent message keeps its memoized
+	// markdown view (TimelineItem's AgentMessage) while the list re-renders.
+	const quote = useCallback(
+		(text: string) => {
+			const quoted = formatQuoteBlock(text);
+			if (quoted === "") return;
+			const merged = mergeDraftText(document.getSnapshot().record.draft, quoted);
+			document.edit(merged);
+			setComposerSelection({ start: merged.length, end: merged.length });
+			requestAnimationFrame(() => {
+				composerInput.current?.setNativeProps({
+					selection: { start: merged.length, end: merged.length },
+				});
+				composerInput.current?.focus();
+			});
+		},
+		[document],
 	);
 	useEffect(() => {
 		appliedReaderRestore.current = null;
@@ -1063,7 +1303,92 @@ export function ConversationScreen({
 			route.params.ref,
 		);
 		readerLatest.current = readerAnchor.current === null;
+		turnsSeen.current = readerAnchor.current?.turnsSeen;
+		openedFor.current = null;
+		setAwayKeys(null);
 	}, [route.params.hubId, route.params.ref]);
+	// Where the session opens (spec 7.3, ruling 31), decided once per route on
+	// the first layout with rows: the live end while a question or approval
+	// waits, the start of a reply that finished since you last reached the
+	// end, or where you left off. It only sets the reading position; the
+	// restore effect below moves the list there.
+	useEffect(() => {
+		const routeKey = `${route.params.hubId}\u0000${route.params.ref}`;
+		if (
+			openedFor.current === routeKey ||
+			!conversation ||
+			snapshot.status !== "open" ||
+			timelineRows.length === 0 ||
+			!focused
+		)
+			return;
+		openedFor.current = routeKey;
+		const target = openingTarget(
+			readerAnchor.current,
+			timelineRows,
+			conversation.turns.map((turn) => turn.id),
+			pendingQuestions(conversation).length > 0 ||
+				conversation.pendingEscalations.length > 0,
+		);
+		if (target.kind === "live") {
+			readerAnchor.current = null;
+			readerLatest.current = true;
+			(
+				timeline.current?.getScrollResponder() as ScrollView | null
+			)?.scrollToEnd({ animated: false });
+		} else if (target.kind === "row") {
+			readerAnchor.current = readerAnchorAt(
+				route.params.hubId,
+				route.params.ref,
+				timelineRows[target.index],
+				0,
+				Date.now(),
+				bindingInstance,
+				turnsSeen.current,
+			);
+			readerLatest.current = false;
+			appliedReaderRestore.current = null;
+			readerRestoreAttempts.current.reset();
+		}
+	}, [
+		conversation,
+		snapshot.status,
+		timelineRows,
+		focused,
+		bindingInstance,
+		route.params.hubId,
+		route.params.ref,
+	]);
+	// Loads the page above the loaded history once per cursor: a page that
+	// failed, or brought nothing new, stays guarded until the binding or route
+	// resets, so a failing page never loops. Both a reading position restored
+	// above the loaded rows and a scroll near the top ask for it.
+	function loadOlderPage() {
+		const cursor = snapshot.olderCursor;
+		const pageAttempts = readerPageAttempts.current;
+		if (
+			!service ||
+			!connected ||
+			!cursor ||
+			snapshot.loadingOlder ||
+			pageAttempts.has(cursor)
+		)
+			return;
+		pageAttempts.add(cursor);
+		void store
+			.getState()
+			.loadOlder(service)
+			.then((result) => {
+				if (
+					result.status === "ignored" ||
+					(result.status === "loaded" && result.itemKeys.length > 0)
+				)
+					pageAttempts.delete(cursor);
+			})
+			.catch(() => {
+				// Keep failed page attempts guarded until a binding or route reset.
+			});
+	}
 	// biome-ignore lint/correctness/useExhaustiveDependencies: Cell layout revisions intentionally retrigger semantic restoration.
 	useEffect(() => {
 		const anchor = readerAnchor.current;
@@ -1093,30 +1418,7 @@ export function ConversationScreen({
 		}
 		if (resolveReaderAnchor(anchor, timelineRows) === null) {
 			if (isReaderAnchorLoaded(anchor, conversation?.items ?? [])) return;
-			const cursor = snapshot.olderCursor;
-			const pageAttempts = readerPageAttempts.current;
-			if (
-				service &&
-				connected &&
-				cursor &&
-				!snapshot.loadingOlder &&
-				!pageAttempts.has(cursor)
-			) {
-				pageAttempts.add(cursor);
-				void store
-					.getState()
-					.loadOlder(service)
-					.then((result) => {
-						if (
-							result.status === "ignored" ||
-							(result.status === "loaded" && result.itemKeys.length > 0)
-						)
-							pageAttempts.delete(cursor);
-					})
-					.catch(() => {
-						// Keep failed page attempts guarded until a binding or route reset.
-					});
-			}
+			loadOlderPage();
 			return;
 		}
 		const command = restoreReaderCommand(
@@ -1301,14 +1603,7 @@ export function ConversationScreen({
 									replacement,
 								);
 						},
-						openAside: (ref, title) => {
-							Keyboard.dismiss();
-							navigation.push("Conversation", {
-								hubId: route.params.hubId,
-								ref,
-								title,
-							});
-						},
+						openAside,
 						local: async (id) => {
 							if (!currentBinding())
 								throw new CommandArgumentError(
@@ -1513,6 +1808,7 @@ export function ConversationScreen({
 		readerAnchor.current = null;
 		readerLatest.current = true;
 		captureSuppressed.current = false;
+		setAwayKeys(null);
 		(
 			timeline.current?.getScrollResponder() as ScrollView | null
 		)?.scrollToEnd({ animated: true });
@@ -1553,43 +1849,80 @@ export function ConversationScreen({
 			void applyCommand();
 			return;
 		}
-		const live = store.getState();
 		if (
-			!service ||
-			!ready ||
-			controls?.getSnapshot().pending != null ||
 			imageSelection.getSnapshot().busy ||
-			unconfirmedSend !== null ||
-			pendingQuestions(live.conversation).length > 0 ||
-			live.pendingMutation?.status === "pending" ||
-			!live.conversation
+			pendingQuestions(store.getState().conversation).length > 0
 		)
 			return;
-		// Route on what is true at the press, the way the web composer
-		// re-derives at submit: a turn may have started or ended since render.
-		const liveAction = sendAction(
-			live.conversation,
-			live.pendingMutations,
-			connectionReady.current,
-		);
-		if (liveAction === "none") return;
-		const kind = liveAction === "queue" ? "queue" : "send";
+		const kind = liveSendKind();
+		if (!service || kind === null) return;
 		setActionError(null);
 		try {
 			await document.submit(async (text, images) => {
 				store.getState().setDraft(text);
-				const previous = store.getState().lastAcceptedMutation;
-				await store.getState()[kind](service, buildComposerInput(text, images));
-				const accepted = store.getState().lastAcceptedMutation;
-				return (
-					accepted != null && accepted !== previous && accepted.kind === kind
-				);
+				return deliver(service, kind, text, images);
 			});
 		} catch {
 			// A refused Send adds no text of its own: the draft stays, and the
 			// "Delivery unconfirmed" card document.submit leaves says what
 			// happened and what to do.
 		}
+	}
+	// Whether a message can go out right now, and whether it sends or queues:
+	// routed on what is true at the press, the way the web composer re-derives
+	// at submit, since a turn may have started or ended since render. Send and
+	// an error row's Retry both ask.
+	function liveSendKind(): "send" | "queue" | null {
+		const live = store.getState();
+		if (
+			!service ||
+			!ready ||
+			controls?.getSnapshot().pending != null ||
+			unconfirmedSend !== null ||
+			live.pendingMutation?.status === "pending" ||
+			!live.conversation
+		)
+			return null;
+		const liveAction = sendAction(
+			live.conversation,
+			live.pendingMutations,
+			connectionReady.current,
+		);
+		if (liveAction === "none") return null;
+		return liveAction === "queue" ? "queue" : "send";
+	}
+	// Sends or queues one message the way Send does, and says whether the hub
+	// took it.
+	async function deliver(
+		through: NonNullable<typeof service>,
+		kind: "send" | "queue",
+		text: string,
+		images: Parameters<typeof buildComposerInput>[1],
+	) {
+		const previous = store.getState().lastAcceptedMutation;
+		await store.getState()[kind](through, buildComposerInput(text, images));
+		const accepted = store.getState().lastAcceptedMutation;
+		return accepted != null && accepted !== previous && accepted.kind === kind;
+	}
+	// An error row's Retry sends Jesse's sentence as your message through
+	// Send's own path (ruling 26), leaving whatever you were typing alone.
+	async function retryFailedTurn() {
+		const kind = liveSendKind();
+		if (!service || kind === null) return;
+		setActionError(null);
+		try {
+			await document.submitText(RETRY_MESSAGE, (text, images) =>
+				deliver(service, kind, text, images),
+			);
+		} catch {
+			// As with Send, a refusal leaves the delivery card to say so.
+		}
+	}
+	function runErrorAction(errorAction: ErrorAction) {
+		if (errorAction === "resume") void controls?.resume();
+		else if (errorAction === "signIn")
+			navigation.navigate("Providers", { hubId: route.params.hubId });
+		else void retryFailedTurn();
 	}
 	const composerSettings =
 		conversation && canCompose ? (
@@ -1814,6 +2147,9 @@ export function ConversationScreen({
 								setLayoutRevision((revision) => revision + 1);
 							}}
 							data={timelineRows}
+							// The live run changes when a turn starts or ends, without the
+							// rows changing; its row must re-render to fold or unfold.
+							extraData={liveRun}
 							ListFooterComponent={
 								presentation.usage ? (
 									<TranscriptUsage {...presentation.usage} />
@@ -1844,10 +2180,28 @@ export function ConversationScreen({
 										forkDisabled={
 											!connected || !focused || snapshot.status !== "open"
 										}
+										quote={quote}
+										live={item.id === liveRun}
+										delegates={conversation?.delegates}
+										openSubagent={openSubagent}
+										answerFor={answerFor}
+										errorActionFor={(row) =>
+											conversation
+												? errorAction(row, conversation, action !== "none")
+												: null
+										}
+										onErrorAction={runErrorAction}
 									/>
 								</View>
 							)}
-							contentContainerStyle={{ padding: 16, paddingBottom: 72 }}
+							// Room at the end for the Next capsule (spec 8.3).
+							contentContainerStyle={{
+								padding: 16,
+								paddingTop: 16 + sessionHeaderHeight,
+								paddingBottom: 60,
+							}}
+							// Older history loading above never moves what you read.
+							maintainVisibleContentPosition={{ minIndexForVisible: 0 }}
 							onContentSizeChange={(_width, height) => {
 								readerContentHeight.current = height;
 								setLayoutRevision((revision) => revision + 1);
@@ -1858,10 +2212,24 @@ export function ConversationScreen({
 							}}
 							scrollEventThrottle={100}
 							onScroll={(event) => {
-								if (!focused || captureSuppressed.current) {
-									return;
+								const { contentOffset, contentSize, layoutMeasurement } =
+									event.nativeEvent;
+								const y = contentOffset.y;
+								listOffset.current = y;
+								headerHiding.onScroll(
+									y,
+									readerDragging.current || readerMomentum.current,
+								);
+								if (!focused) return;
+								if (y + layoutMeasurement.height >= contentSize.height - 48) {
+									if (awayKeys !== null) setAwayKeys(null);
+									turnsSeen.current = latestSettledTurn(conversation) ?? turnsSeen.current;
+								} else if (awayKeys === null) {
+									setAwayKeys(new Set(timelineRows.map(readerKey)));
 								}
-								const y = event.nativeEvent.contentOffset.y;
+								if (captureSuppressed.current) return;
+								// Older history loads as you near the top (spec 8.2).
+								if (y < 800) loadOlderPage();
 								const visible = timelineRows.find((item) => {
 									const measurement = readerMeasurements.current.get(
 										readerKey(item),
@@ -1877,6 +2245,7 @@ export function ConversationScreen({
 										[...readerMeasurements.current.values()],
 										Date.now(),
 										bindingInstance,
+										turnsSeen.current,
 									);
 									const anchor = readerAnchor.current;
 									const measurement = readerMeasurements.current.get(
@@ -1959,14 +2328,26 @@ export function ConversationScreen({
 								});
 							}}
 							keyboardShouldPersistTaps="handled"
-							refreshing={refreshing}
-							onRefresh={() => {
-								void refresh();
-							}}
 							ListHeaderComponent={
 								<View style={{ gap: 12, paddingBottom: 16 }}>
-									<ConnectionStatus />
-									<ErrorMessage message={snapshot.error || actionError} />
+									{readFailures >= 3 ? (
+										<Text
+											style={{
+												fontSize: 13,
+												lineHeight: 18,
+												color: colors.palette.inkLow,
+											}}
+										>
+											Couldn't load this session. Trying again on its own.
+										</Text>
+									) : null}
+									{/* A failed read says so above, once, and retries on its own. */}
+									<ErrorMessage
+										message={
+											(snapshot.status === "error" ? null : snapshot.error) ||
+											actionError
+										}
+									/>
 									<ErrorMessage message={draft.error} />
 									{unconfirmedDelivery()}
 									{connected &&
@@ -1976,85 +2357,42 @@ export function ConversationScreen({
 									!permitted.queue ? (
 										<Copy muted>Sending is unavailable for this session.</Copy>
 									) : null}
-									{snapshot.olderCursor ? (
-										<Action
-											disabled={!ready || snapshot.loadingOlder}
-											onPress={() => {
-												if (service) void store.getState().loadOlder(service);
-											}}
-										>
-											{snapshot.loadingOlder
-												? "Loading…"
-												: "Load older messages"}
-										</Action>
-									) : null}
 								</View>
 							}
-							ListEmptyComponent={
-								<Copy muted>
-									{snapshot.status === "opening"
-										? "Loading conversation…"
-										: !connected
-											? "Reconnect to load the conversation. Your draft is kept."
-											: snapshot.status === "error"
-												? "Pull down to retry."
-												: "No messages yet."}
-								</Copy>
-							}
+							// Until the conversation first loads, three quiet blocks stand
+							// in for it. A loaded conversation with no rows shows nothing:
+							// the composer's placeholder invites.
+							ListEmptyComponent={conversation ? null : <TranscriptSkeleton />}
 						/>
-						{focused && snapshot.status === "opening" && conversation ? (
-							<View
-								pointerEvents="none"
-								style={{
-									position: "absolute",
-									top: 8,
-									alignSelf: "center",
-									flexDirection: "row",
-									alignItems: "center",
-									gap: 8,
-									paddingHorizontal: 12,
-									paddingVertical: 8,
-									borderRadius: 12,
-									backgroundColor: colors.surface,
-								}}
-							>
-								<ActivityIndicator />
-								<Copy muted>Updating session…</Copy>
-							</View>
-						) : null}
-						{timelineRows.length > 0 ? (
-							<View
-								style={{
-									position: "absolute",
-									right: 16,
-									bottom: 8,
-									backgroundColor: colors.surface,
-									borderRadius: 24,
-									borderWidth: 1,
-									borderColor: colors.border,
-								}}
-							>
-								<Pressable
-									accessibilityRole="button"
-									accessibilityLabel="Latest"
-									onPress={jumpToLive}
-									style={({ pressed }) => ({
-										minWidth: Platform.OS === "ios" ? 44 : 48,
-										minHeight: Platform.OS === "ios" ? 44 : 48,
-										alignItems: "center",
-										justifyContent: "center",
-										opacity: pressed ? 0.6 : 1,
-									})}
-								>
-									<Text
-										allowFontScaling={false}
-										style={{ fontSize: 24, color: colors.secondary }}
-									>
-										↓
-									</Text>
-								</Pressable>
-							</View>
-						) : null}
+						<View
+							pointerEvents="box-none"
+							style={{ position: "absolute", top: 0, left: 0, right: 0 }}
+							onLayout={(event) =>
+								setSessionHeaderHeight(event.nativeEvent.layout.height)
+							}
+						>
+							<SessionHeader
+								status={connectionText}
+								chips={chips}
+								hidden={headerHiding.hidden}
+								onChip={openChip}
+							/>
+						</View>
+						<View
+							pointerEvents="box-none"
+							style={{
+								position: "absolute",
+								left: 0,
+								right: 0,
+								bottom: 10,
+								alignItems: "center",
+							}}
+						>
+							<NewContentPill
+								count={awayKeys ? newRowCount(timelineRows, awayKeys) : 0}
+								onPress={jumpToLive}
+							/>
+						</View>
 					</View>
 					<View style={{ flexShrink: 1, maxHeight: "80%", marginTop: 8, gap: 4 }}>
 						<ScrollView

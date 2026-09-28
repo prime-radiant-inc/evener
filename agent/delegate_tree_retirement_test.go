@@ -391,7 +391,7 @@ func TestRetirementDelegateIdleEntrypointsClaimFirst(t *testing.T) {
 			return err
 		},
 		"stop driver": func(root *Session, tree *delegateTreeController, d delegateResult) error {
-			_, _, _, err := tree.StopSubtreeAndDrive(rootDelegateActor(root.ID()), d.DelegateID)
+			_, _, _, err := tree.StopSubtreeAndDrive(context.Background(), rootDelegateActor(root.ID()), d.DelegateID)
 			return err
 		},
 		"close resumability": func(root *Session, tree *delegateTreeController, d delegateResult) error {
@@ -1613,7 +1613,7 @@ func TestRetirementDelegateStopDriverHandoff(t *testing.T) {
 			defer tree.AbortShellWork(work)
 			var stop *delegateStopState
 			var driver *delegateStopDriver
-			result, cancel, plans, err := tree.StopSubtreeAndDrive(rootDelegateActor(root.ID()), d.DelegateID)
+			result, cancel, plans, err := tree.StopSubtreeAndDrive(context.Background(), rootDelegateActor(root.ID()), d.DelegateID)
 			if err != nil {
 				t.Fatal(err)
 			}

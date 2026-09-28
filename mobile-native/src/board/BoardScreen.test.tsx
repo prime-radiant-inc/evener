@@ -4,6 +4,7 @@
 // kv-store.
 import type {
 	AnyNotification,
+	AppwireClientLike,
 	AuthStatusResponse,
 	ConnectionState,
 	NavigationInvalidationTarget,
@@ -12,28 +13,36 @@ import type {
 	NavigationSessionSummary,
 	PluginEntry,
 	SearchParams,
+	SessionActivity,
 	SessionSeenMark,
 	SessionSeenSetParams,
+	Thread,
 } from "@evener/appwire-client";
+import { WireError } from "@evener/appwire-client";
 import { manifest, wireV2 } from "@evener/appwire-client/testing/navigation";
 import type { ReactTestInstance, ReactTestRenderer } from "react-test-renderer";
 import { act, create } from "react-test-renderer";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type { ConversationClientLike } from "../../../mobile/src/services/conversation";
-import { alertRequests, render, renderedText, screenConnection } from "../renderNative.testkit";
+import { alertRequests, render, renderedText, screenConnection, swipeableCalls } from "../renderNative.testkit";
+import { ACTIVITY_POLL_MS, STALE_AFTER_MS } from "./activityPoll";
 import { BoardScreen } from "./BoardScreen";
 import { PulseMeter } from "./PulseMeter";
 import { hubSeenMarks } from "./hubSeen";
 import { seenMarkers } from "./nativeBoardMemory";
+import { SESSION_ID } from "./organizationTestUtils";
 
 const harness = vi.hoisted(() => ({
 	connection: {} as Record<string, unknown>,
 	kv: new Map<string, string>(),
 	drafts: new Map<string, Set<string>>(),
 	focused: true,
+	/** The navigator's stack, for whether only sheets cover the Board. */
+	stack: { index: 0, routes: [{ key: "Sessions", name: "Sessions" }] },
 	focusListeners: new Set<(focused: boolean) => void>(),
 	actionSheet: vi.fn(),
 	prompt: vi.fn(),
+	sqlite: new Map<string, unknown>(),
 	reduceMotion: false,
 }));
 
@@ -45,13 +54,34 @@ vi.mock("react-native", async () => {
 		ActionSheetIOS: { showActionSheetWithOptions: (...args: unknown[]) => harness.actionSheet(...args) },
 		Keyboard: { dismiss: () => {} },
 		AccessibilityInfo: {
+			announceForAccessibility: () => {},
 			isReduceMotionEnabled: () => Promise.resolve(harness.reduceMotion),
 			addEventListener: () => ({ remove: () => {} }),
 		},
 	};
 });
+vi.mock("react-native-gesture-handler/ReanimatedSwipeable", async () =>
+	(await import("../renderNative.testkit")).gestureHandlerModuleMock(),
+);
+// Stop goes through the process's real mutation runtime, over an in-memory
+// SQLite double (one per database name, as the device keeps one file). The
+// runtime and its double live for the whole file, so every test shares one
+// outbox: records are keyed by hub and session, and hubId() gives each test
+// its own hub. A test must never assert on the outbox as a whole.
+vi.mock("expo-sqlite", async () => {
+	const { openSqliteSyncDouble } = await import("../sqliteSync.testkit");
+	return {
+		openDatabaseSync: (name: string) => {
+			if (!harness.sqlite.has(name)) harness.sqlite.set(name, openSqliteSyncDouble().port);
+			return harness.sqlite.get(name);
+		},
+	};
+});
 // The organization journal names each change it records.
-vi.mock("expo-crypto", () => ({ randomUUID: () => `change-${Math.random()}` }));
+vi.mock("expo-crypto", () => ({
+	randomUUID: () => `change-${Math.random()}`,
+	getRandomValues: (array: Uint8Array) => array,
+}));
 vi.mock("expo-symbols", () => ({ SymbolView: "SymbolView" }));
 vi.mock("react-native-safe-area-context", () => ({
 	useSafeAreaInsets: () => ({ top: 47, bottom: 34, left: 0, right: 0 }),
@@ -76,6 +106,7 @@ vi.mock("@react-navigation/native", async () => {
 			useEffect(() => (focused ? effect() : undefined), [focused, effect]);
 		},
 		useIsFocused,
+		useNavigationState: <T,>(select: (state: typeof harness.stack) => T) => select(harness.stack),
 	};
 });
 vi.mock("expo-sqlite/kv-store", () => ({
@@ -95,12 +126,14 @@ vi.mock("../ConnectionProvider", () => ({
 const INCOMPATIBLE_TEXT =
 	"This app and the hub need compatible versions. Update the app from TestFlight, or update Evener on the hub.";
 const NOW = Date.UTC(2026, 8, 26, 12, 0);
+const MINUTE = 60_000;
 const minutesAgo = (minutes: number) => new Date(NOW - minutes * 60_000).toISOString();
 
 beforeEach(() => {
 	vi.useFakeTimers();
 	vi.setSystemTime(NOW);
 	harness.focused = true;
+	harness.stack = { index: 0, routes: [{ key: "Sessions", name: "Sessions" }] };
 });
 function setFocused(focused: boolean) {
 	harness.focused = focused;
@@ -117,7 +150,7 @@ afterEach(() => {
 });
 
 // Each test uses its own hub, because nativeBoardMemory keeps one SeenMarkers
-// per hub for the life of the module.
+// per hub, and the mutation runtime one outbox, for the life of the module.
 let hubCount = 0;
 function hubId() {
 	hubCount += 1;
@@ -158,6 +191,9 @@ interface Fleet {
 	manifest: ReturnType<typeof manifest>;
 	/** Sessions only search finds, as past results: the Board doesn't list them. */
 	searchOnly?: NavigationSessionSummary[];
+	/** What evener/activity/read answers (S5): absent, the hub predates S5
+	 * and answers method-not-found; null, the read fails as a timeout would. */
+	activity?: SessionActivity[] | null;
 	/** Whether evener/search fails. */
 	searchFails?: boolean;
 	/** What evener/auth/list and evener/plugin/list answer; none by default. */
@@ -193,11 +229,13 @@ const fleet: Fleet = {
 /** A hub that answers navigation reads by params, and search and the
  * sign-in and plugin lists from the fleet; `hold` keeps a navigation read
  * unanswered until the test releases it, and `fail` rejects it. It accepts
- * every category rename and delete and every project favorite and archive
- * (`mutations` records them, and a favorite shows in the catalog after),
- * unless `refuse` says to reject one, and `holdChanges` keeps them
- * unanswered until `release`. It accepts every seen mark, and `seen`
- * records each call's marks. */
+ * every category rename and delete and every project or session favorite and
+ * archive (`mutations` records them, and a favorite or archive shows in the
+ * catalog or the session's location after), unless `refuse` says to reject
+ * one, and `holdChanges` keeps them unanswered until `release`. It accepts
+ * every seen mark, and `seen` records each call's marks. It answers a
+ * session's thread/read from its row's state and applies every
+ * turn/interrupt, recording both in `threadCalls`. */
 function hub(
 	shape: Fleet,
 	hold: (params: NavigationReadParams) => boolean = () => false,
@@ -205,9 +243,14 @@ function hub(
 	{ holdChanges = false, refuse = false } = {},
 ) {
 	const requests: NavigationReadParams[] = [];
+	const activityReads: unknown[] = [];
 	const lists: string[] = [];
 	const searches: string[] = [];
 	const mutations: Array<{ method: string; params: unknown }> = [];
+	const threadCalls: Array<{ method: string; params: unknown }> = [];
+	// The sessions the hub has archived, by ref.
+	const archivedRefs = new Set<string>();
+	const sessionRows = () => [...shape.live.flat(), ...shape.needsYou, ...Object.values(shape.pinned).flat()];
 	const seen: SessionSeenMark[][] = [];
 	const listeners = new Set<(event: AnyNotification) => void>();
 	const held: Array<() => void> = [];
@@ -215,6 +258,10 @@ function hub(
 		const offset = params.offset ?? 0;
 		if (params.resource === "manifest") return shape.manifest;
 		if (params.resource === "pin_catalog") return { pin_sections: shape.pins, remaining: 0 };
+		if (params.resource === "location") {
+			const row = sessionRows().find((candidate) => candidate.ref === params.ref);
+			return row ? { session: row } : {};
+		}
 		if (params.resource === "pin_section") {
 			const rows = shape.pinned[params.sectionId ?? ""];
 			if (!rows) throw new Error(`no category ${params.sectionId}`);
@@ -242,9 +289,28 @@ function hub(
 		}
 		throw new Error(`no Live page at offset ${offset}`);
 	};
-	const client: ConversationClientLike = {
+	const client: ConversationClientLike & Pick<AppwireClientLike, "state" | "onStateChange"> = {
+		state: "ready",
+		onStateChange: () => () => {},
 		request: (method, params) =>
 			new Promise((resolve, reject) => {
+				if (method === "thread/read" || method === "turn/interrupt") {
+					threadCalls.push({ method, params });
+					const { ref } = params as { ref: string };
+					if (method === "thread/read") {
+						const row = sessionRows().find((candidate) => candidate.ref === ref);
+						resolve({ thread: threadOf(ref, row?.state === "active" ? "active" : "idle") } as never);
+					} else
+						resolve({
+							receipt: {
+								clientMutationId: (params as { clientMutationId: string }).clientMutationId,
+								disposition: "applied",
+								threadId: `thread:${ref}`,
+								projectionState: "pending",
+							},
+						} as never);
+					return;
+				}
 				if (
 					method === "evener/pin-section/rename" ||
 					method === "evener/pin-section/delete" ||
@@ -258,7 +324,13 @@ function hub(
 							return;
 						}
 						if (method === "evener/archive/set") {
-							const change = params as { id: string; archived: boolean };
+							const change = params as { kind: string; id: string; archived: boolean };
+							if (change.kind === "session") {
+								// This hub's session is named by its bare id, another host's by its ref.
+								const ref = change.id.includes(":") ? change.id : `local:${change.id}`;
+								if (change.archived) archivedRefs.add(ref);
+								else archivedRefs.delete(ref);
+							}
 							for (const catalog of Object.values(shape.catalogs ?? {}))
 								for (const project of catalog ?? []) if (project.key === change.id) project.is_archived = change.archived;
 						}
@@ -312,6 +384,13 @@ function hub(
 					else resolve({ plugins: shape.plugins ?? [] } as never);
 					return;
 				}
+				if (method === "evener/activity/read") {
+					activityReads.push(params);
+					if (shape.activity) resolve({ sessions: shape.activity } as never);
+					else if (shape.activity === null) reject(new Error("request timed out"));
+					else reject(new WireError("no such method", -32601));
+					return;
+				}
 				if (method !== "evener/navigation/read") throw new Error(`unexpected ${method}`);
 				const read = params as NavigationReadParams;
 				requests.push(read);
@@ -319,16 +398,20 @@ function hub(
 					reject(new Error("request timed out"));
 					return;
 				}
-				const respond = () =>
-					resolve(
-						wireV2(
-							{ ...read, representationVersion: 2, offset: read.offset ?? 0, limit: read.limit ?? 50 },
-							answer(read),
-							`etag-${read.resource}-${read.offset ?? 0}`,
-							1,
-							"generation-test",
-						),
+				const respond = () => {
+					const response = wireV2(
+						{ ...read, representationVersion: 2, offset: read.offset ?? 0, limit: read.limit ?? 50 },
+						answer(read),
+						`etag-${read.resource}-${read.offset ?? 0}`,
+						1,
+						"generation-test",
 					);
+					if (read.resource === "location")
+						(response.data as { metadata: Record<string, unknown> }).metadata.tier = archivedRefs.has(read.ref ?? "")
+							? "archived"
+							: "current";
+					resolve(response);
+				};
 				if (hold(read)) held.push(respond);
 				else respond();
 			}),
@@ -340,12 +423,14 @@ function hub(
 	return {
 		client,
 		requests,
+		activityReads,
 		lists,
 		searches,
 		authUpdated: () => {
 			for (const listener of listeners) listener({ method: "evener/auth/updated", params: {} } as AnyNotification);
 		},
 		mutations,
+		threadCalls,
 		seen,
 		invalidate: (sequence: number, targets: NavigationInvalidationTarget[]) => {
 			for (const listener of listeners)
@@ -1539,7 +1624,9 @@ it("stops retrying a failed first read when it unmounts", async () => {
 	connect(id, fake.client, "ready");
 	const tree = await mount(navigation());
 	expect(liveReads(fake)).toEqual([0]);
-	// The row-age ticker, the plugin poll and the retry.
+	// The row-age ticker, the plugin poll and the retry. This fleet's hub
+	// predates S5, so the activity poll has stopped and there is no read to
+	// recheck.
 	expect(vi.getTimerCount()).toBe(3);
 	act(() => tree.unmount());
 	expect(vi.getTimerCount()).toBe(0);
@@ -1556,6 +1643,7 @@ it("schedules no retry while the Board is out of view", async () => {
 	expect(liveReads(fake)).toEqual([0]);
 	setFocused(false);
 	await settle();
+	// This fleet's hub predates S5, so no activity timers run either.
 	expect(vi.getTimerCount()).toBe(0);
 	await advance(60_000);
 	expect(liveReads(fake)).toEqual([0]);
@@ -1845,6 +1933,284 @@ it("reads nothing while blurred, and on refocus catches up and re-reads drafts",
 	await settle();
 	expect(manifestReads()).toBe(2);
 	expect(draftTags(rowTitled(tree, "Build docs"))).toHaveLength(1);
+	act(() => tree.unmount());
+});
+
+const sheetOverBoard = {
+	index: 1,
+	routes: [
+		{ key: "Sessions", name: "Sessions" },
+		{ key: "tasks", name: "TasksSheet" },
+	],
+};
+const screenOverBoard = {
+	index: 1,
+	routes: [
+		{ key: "Sessions", name: "Sessions" },
+		{ key: "conversation", name: "Conversation" },
+	],
+};
+
+it("polls activity while the Board is in front and connected, a sheet over it included, and stops otherwise", async () => {
+	const id = hubId();
+	adoptedAnHourAgo(id);
+	const fake = hub({ ...fleet, activity: [] });
+	connect(id, fake.client, "ready");
+	const nav = navigation();
+	const tree = await mount(nav);
+	// The Board reads every live session: no refs.
+	expect(fake.activityReads).toEqual([{}]);
+	await advance(ACTIVITY_POLL_MS);
+	expect(fake.activityReads).toHaveLength(2);
+
+	harness.stack = sheetOverBoard;
+	setFocused(false);
+	await advance(ACTIVITY_POLL_MS);
+	expect(fake.activityReads).toHaveLength(3);
+
+	harness.stack = screenOverBoard;
+	rerender(tree, nav);
+	await advance(ACTIVITY_POLL_MS * 3);
+	expect(fake.activityReads).toHaveLength(3);
+
+	harness.stack = { index: 0, routes: [{ key: "Sessions", name: "Sessions" }] };
+	setFocused(true);
+	expect(fake.activityReads).toHaveLength(4);
+
+	connect(id, fake.client, "reconnecting");
+	rerender(tree, nav);
+	await advance(ACTIVITY_POLL_MS * 3);
+	expect(fake.activityReads).toHaveLength(4);
+	connect(id, fake.client, "ready");
+	rerender(tree, nav);
+	expect(fake.activityReads).toHaveLength(5);
+
+	act(() => tree.unmount());
+	await advance(ACTIVITY_POLL_MS * 3);
+	expect(fake.activityReads).toHaveLength(5);
+});
+
+const migrating = session("local:migrate", { title: "Migrate schema", state: "active", updated_at: minutesAgo(1) });
+const tidying = session("local:tidy", { title: "Tidy imports", state: "active", updated_at: minutesAgo(1) });
+const busyFleet: Fleet = {
+	...fleet,
+	live: [
+		[failing, { ...working, children: [session("local:child", { state: "active" })] }, tidying, migrating, finished],
+	],
+};
+const workingTitles = (tree: ReactTestRenderer) =>
+	tree.root
+		.findAll((node) => ["Build docs", "Tidy imports", "Migrate schema"].some((title) => isRowTitled(title)(node)))
+		.map((node) => node.props.accessibilityLabel.split(", ")[0]);
+const meterIn = (row: ReactTestInstance) => row.findByType(PulseMeter);
+/** Migrate schema's activity read, quiet for `quietMinutes` when it lands. */
+const migrateRead = (quietMinutes: number): SessionActivity => ({
+	ref: "local:migrate",
+	minutes: [0, 0, 0],
+	runningSubagents: 0,
+	quietForMs: quietMinutes * MINUTE,
+});
+
+it("shows each working row's activity read: its meter, the hub's subagent tally, Quiet, and May be stuck first", async () => {
+	const id = hubId();
+	adoptedAnHourAgo(id);
+	const shape: Fleet = {
+		...busyFleet,
+		activity: [
+			{ ref: "local:work", minutes: [2, 4, 8], runningSubagents: 3 },
+			{ ref: "local:tidy", minutes: [1, 0, 0], runningSubagents: 0, quietForMs: 4 * MINUTE },
+			{ ref: "local:migrate", minutes: [0, 0, 0], runningSubagents: 0, quietForMs: 11 * MINUTE },
+		],
+	};
+	const fake = hub(shape);
+	connect(id, fake.client, "ready");
+	const tree = await mount(navigation());
+	expect(workingTitles(tree)).toEqual(["Migrate schema", "Build docs", "Tidy imports"]);
+	const building = rowTitled(tree, "Build docs");
+	expect(meterIn(building).props.perMinute).toEqual([2, 4, 8]);
+	expect(textsIn(building)).toContain("Waiting on 3 subagents");
+	expect(textsIn(building)).not.toContain("Waiting on 1 subagent");
+	expect(textsIn(rowTitled(tree, "Tidy imports"))).toContain("Quiet 4m");
+	expect(textsIn(rowTitled(tree, "Migrate schema"))).toContain("May be stuck · no updates for 11m");
+
+	// A failed poll inside STALE_AFTER_MS keeps the last read (a longer run
+	// of failures has its own test).
+	shape.activity = null;
+	await advance(STALE_AFTER_MS - 1_000);
+	expect(textsIn(rowTitled(tree, "Tidy imports"))).toContain("Quiet 4m");
+	expect(meterIn(rowTitled(tree, "Build docs")).props.perMinute).toEqual([2, 4, 8]);
+	act(() => tree.unmount());
+});
+
+it("shows no stuck label or reordering from a stale read while offline (Jesse's ruling)", async () => {
+	const id = hubId();
+	adoptedAnHourAgo(id);
+	const shape: Fleet = { ...busyFleet, activity: [migrateRead(3)] };
+	const fake = hub(shape);
+	connect(id, fake.client, "ready");
+	const nav = navigation();
+	const tree = await mount(nav);
+	expect(textsIn(rowTitled(tree, "Migrate schema"))).toContain("Quiet 3m");
+	expect(workingTitles(tree)).toEqual(["Build docs", "Tidy imports", "Migrate schema"]);
+
+	// Offline: polling stops, but msSinceRead would otherwise keep counting
+	// from the last read - 3m (at read) plus 10m elapsed would cross the
+	// stuck threshold if it were trusted while disconnected, when really it's
+	// the connection that's quiet, not the session.
+	connect(id, fake.client, "reconnecting");
+	rerender(tree, nav);
+	await advance(10 * MINUTE);
+	expect(textsIn(rowTitled(tree, "Migrate schema"))).not.toContain("May be stuck · no updates for 13m");
+	expect(textsIn(rowTitled(tree, "Migrate schema"))).toContain("Working");
+	expect(meterIn(rowTitled(tree, "Migrate schema")).props.perMinute).toBeUndefined();
+	expect(workingTitles(tree)).toEqual(["Build docs", "Tidy imports", "Migrate schema"]);
+	act(() => tree.unmount());
+});
+
+it("falls back once the last successful read goes stale, even while the connection reports ready (Jesse's ruling)", async () => {
+	const id = hubId();
+	adoptedAnHourAgo(id);
+	const shape: Fleet = { ...busyFleet, activity: [migrateRead(4)] };
+	const fake = hub(shape);
+	connect(id, fake.client, "ready");
+	const tree = await mount(navigation());
+	expect(textsIn(rowTitled(tree, "Migrate schema"))).toContain("Quiet 4m");
+
+	// The connection reports "ready" throughout - reads simply stop landing,
+	// the failure mode a bare connected check can't catch (a hub that has
+	// gone quiet, not a client that knows it's disconnected).
+	shape.activity = null;
+	await advance(STALE_AFTER_MS + 1_000);
+	expect(textsIn(rowTitled(tree, "Migrate schema"))).not.toContain("Quiet 4m");
+	expect(textsIn(rowTitled(tree, "Migrate schema"))).toContain("Working");
+	expect(meterIn(rowTitled(tree, "Migrate schema")).props.perMinute).toBeUndefined();
+	expect(workingTitles(tree)).toEqual(["Build docs", "Tidy imports", "Migrate schema"]);
+	act(() => tree.unmount());
+});
+
+it("keeps the fallback after a reconnect until a new read actually lands", async () => {
+	const id = hubId();
+	adoptedAnHourAgo(id);
+	const shape: Fleet = { ...busyFleet, activity: [migrateRead(4)] };
+	const fake = hub(shape);
+	connect(id, fake.client, "ready");
+	const nav = navigation();
+	const tree = await mount(nav);
+	expect(textsIn(rowTitled(tree, "Migrate schema"))).toContain("Quiet 4m");
+
+	// Long enough offline that the cached read is provably stale by the time
+	// the connection returns.
+	connect(id, fake.client, "reconnecting");
+	rerender(tree, nav);
+	await advance(STALE_AFTER_MS * 2);
+
+	// The reconnect polls at once, and the fake answers from shape.activity
+	// as the request goes out, so the new read is set first. Until it lands,
+	// the stale read stays unused.
+	shape.activity = [migrateRead(3)];
+	connect(id, fake.client, "ready");
+	rerender(tree, nav);
+	expect(textsIn(rowTitled(tree, "Migrate schema"))).not.toContain("Quiet 4m");
+	expect(textsIn(rowTitled(tree, "Migrate schema"))).toContain("Working");
+
+	await settle();
+	expect(textsIn(rowTitled(tree, "Migrate schema"))).toContain("Quiet 3m");
+	act(() => tree.unmount());
+});
+
+it("stays out of Working's stuck slot for as long as reads keep failing, not just at the moment staleness is first crossed", async () => {
+	const id = hubId();
+	adoptedAnHourAgo(id);
+	const shape: Fleet = { ...busyFleet, activity: [migrateRead(11)] };
+	const fake = hub(shape);
+	connect(id, fake.client, "ready");
+	const tree = await mount(navigation());
+	expect(textsIn(rowTitled(tree, "Migrate schema"))).toContain("May be stuck · no updates for 11m");
+	expect(workingTitles(tree)).toEqual(["Migrate schema", "Build docs", "Tidy imports"]);
+
+	shape.activity = null;
+	await advance(STALE_AFTER_MS + 1_000);
+	expect(workingTitles(tree)).toEqual(["Build docs", "Tidy imports", "Migrate schema"]);
+	// Several more poll cycles of continued failure: still no stuck label,
+	// still in hub order - not just true for a moment right at the threshold.
+	await advance(ACTIVITY_POLL_MS * 5);
+	expect(textsIn(rowTitled(tree, "Migrate schema"))).toContain("Working");
+	expect(workingTitles(tree)).toEqual(["Build docs", "Tidy imports", "Migrate schema"]);
+	// With no fresh read on screen there is nothing to recheck: only the
+	// row-age ticker, the plugin poll and the activity poll itself are left.
+	expect(vi.getTimerCount()).toBe(3);
+	act(() => tree.unmount());
+});
+
+it("still lets a read on screen go stale once the hub stops answering activity reads", async () => {
+	const id = hubId();
+	adoptedAnHourAgo(id);
+	const shape: Fleet = { ...busyFleet, activity: [migrateRead(4)] };
+	const fake = hub(shape);
+	connect(id, fake.client, "ready");
+	const tree = await mount(navigation());
+
+	// A hub rolled back to before S5 answers method-not-found: the poll stops
+	// for good at its next attempt, with its last read still fresh on screen.
+	shape.activity = undefined;
+	await advance(ACTIVITY_POLL_MS);
+	expect(textsIn(rowTitled(tree, "Migrate schema"))).toContain("Quiet 4m");
+
+	await advance(ACTIVITY_POLL_MS + 1_000);
+	expect(fake.activityReads).toHaveLength(2);
+	expect(textsIn(rowTitled(tree, "Migrate schema"))).not.toContain("Quiet 4m");
+	expect(textsIn(rowTitled(tree, "Migrate schema"))).toContain("Working");
+	act(() => tree.unmount());
+});
+
+it("keeps every working row as it was before S5 on a hub that has no activity read, and stops asking", async () => {
+	const id = hubId();
+	adoptedAnHourAgo(id);
+	const fake = hub(busyFleet);
+	connect(id, fake.client, "ready");
+	const tree = await mount(navigation());
+	expect(workingTitles(tree)).toEqual(["Build docs", "Tidy imports", "Migrate schema"]);
+	const building = rowTitled(tree, "Build docs");
+	expect(meterIn(building).props.perMinute).toBeUndefined();
+	expect(textsIn(building)).toContain("Waiting on 1 subagent");
+	expect(textsIn(rowTitled(tree, "Tidy imports"))).toContain("Working");
+	// With no read to go stale, nothing rechecks one either: an old hub never
+	// gets the Board re-rendered every ACTIVITY_POLL_MS. Only the row-age
+	// ticker and the plugin poll are left.
+	expect(vi.getTimerCount()).toBe(2);
+	await advance(ACTIVITY_POLL_MS * 3);
+	expect(fake.activityReads).toHaveLength(1);
+	act(() => tree.unmount());
+});
+
+const fleetMeter = (tree: ReactTestRenderer) =>
+	tree.root.find((node) => node.props.testID === "live-summary").findByType(PulseMeter);
+
+it("sums the working sessions' activity into the summary's meter, bar by bar", async () => {
+	const id = hubId();
+	adoptedAnHourAgo(id);
+	const shape: Fleet = {
+		...busyFleet,
+		activity: [
+			{ ref: "local:work", minutes: [2, 4, 8], runningSubagents: 3 },
+			{ ref: "local:tidy", minutes: [1, 0, 0], runningSubagents: 0 },
+			// A session that isn't working adds nothing to the fleet meter.
+			{ ref: "local:done", minutes: [50, 50, 50], runningSubagents: 0 },
+		],
+	};
+	connect(id, hub(shape).client, "ready");
+	const tree = await mount(navigation());
+	// Migrate schema has no read yet: the meter sums the sessions that do.
+	expect(fleetMeter(tree).props.perMinute).toEqual([0, 0, 0, 0, 3, 4, 8]);
+	act(() => tree.unmount());
+});
+
+it("keeps the summary's meter still until a working session has an activity read", async () => {
+	const id = hubId();
+	adoptedAnHourAgo(id);
+	connect(id, hub(busyFleet).client, "ready");
+	const tree = await mount(navigation());
+	expect(fleetMeter(tree).props.perMinute).toBeUndefined();
 	act(() => tree.unmount());
 });
 
@@ -2775,4 +3141,250 @@ it("drops the Projects chip once the projects catalog loads empty, as the sectio
 	expect(sectionHeaders(tree)).toEqual([]);
 	expect(chipLabels(tree)).toEqual(["Live, 5 sessions, 2 need you", "Mine, 3 sessions"]);
 	act(() => tree.unmount());
+});
+
+/** A session's thread as thread/read answers it: `status` is its turn. */
+function threadOf(ref: string, status: string): Thread {
+	return {
+		id: `thread:${ref}`,
+		sessionId: ref,
+		preview: "",
+		ephemeral: false,
+		modelProvider: "anthropic",
+		createdAt: 1,
+		updatedAt: 1,
+		status: { type: status },
+		cwd: "/tmp",
+		cliVersion: "1.0.0",
+		source: "local",
+		turns: [],
+		evener: {
+			ref,
+			instanceId: `instance:${ref}`,
+			capabilities: {
+				send: true,
+				steer: true,
+				interrupt: true,
+				compact: true,
+				clear: true,
+				forkFromTurn: true,
+				shutdown: true,
+				changeModel: true,
+				changeVisionModel: true,
+				sharedNotes: true,
+				queue: true,
+				goal: true,
+				rename: true,
+			},
+			queue: { revision: 0, depth: 0, preview: [] },
+		},
+	};
+}
+
+// Rows the organization journal can archive: this hub's sessions carry real
+// session ids (archiveTarget checks their shape), and another host's goes by
+// its ref.
+const OTHER_SESSION_ID = "1bCdEfGhIjKlMnOpQrStUv";
+const swipeWorking = session(`local:${SESSION_ID}`, {
+	session_id: SESSION_ID,
+	title: "Refactor parser",
+	state: "active",
+	updated_at: minutesAgo(1),
+});
+const swipeFinished = session(`local:${OTHER_SESSION_ID}`, {
+	session_id: OTHER_SESSION_ID,
+	title: "Write changelog",
+	updated_at: minutesAgo(4),
+});
+const swipePark = session("paradise-park:pp", {
+	host_id: "paradise-park",
+	session_id: "pp",
+	title: "Park chore",
+	updated_at: minutesAgo(6),
+});
+const swipeFleet = (): Fleet => ({
+	live: [[swipeWorking, swipeFinished, swipePark]],
+	needsYou: [],
+	pins: [],
+	pinned: {},
+	manifest: manifest({
+		sources: [laptopSource, { ...parkSource, online: true }],
+		sections: { live: { count: 3 }, needs_you: { count: 0 }, pin_sections: { count: 0 } },
+		catalogs: catalogCounts(0, 0, 0),
+	}),
+});
+/** The swipeable around the Board row with this title. */
+function swipeableOf(tree: ReactTestRenderer, title: string) {
+	return tree.root
+		.findAll((node) => node.type === ("ReanimatedSwipeable" as never))
+		.filter((node) => node.findAll(isRowTitled(title)).length > 0)[0];
+}
+/** The buttons a swipe reveals on one side, rendered as the swipeable would. */
+function revealed(swipeable: ReactTestInstance, side: "left" | "right"): ReactTestInstance[] {
+	const panel = swipeable.props[side === "left" ? "renderLeftActions" : "renderRightActions"];
+	if (!panel) return [];
+	return render(panel()).root.findAll((node) => node.type === ("Pressable" as never));
+}
+const revealedLabels = (swipeable: ReactTestInstance, side: "left" | "right") =>
+	revealed(swipeable, side).map((button) => button.props.accessibilityLabel);
+function pressRevealed(swipeable: ReactTestInstance, side: "left" | "right", label: string) {
+	const button = revealed(swipeable, side).find((node) => node.props.accessibilityLabel === label);
+	if (!button) throw new Error(`no ${label} on the ${side}`);
+	act(() => button.props.onPress());
+}
+/** A full swipe right, begun well clear of the screen's left edge. */
+function swipeRight(swipeable: ReactTestInstance) {
+	act(() => swipeable.findByProps({ testID: "swipe-row-content" }).props.onTouchStart({ nativeEvent: { pageX: 200 } }));
+	act(() => swipeable.props.onSwipeableOpen("right"));
+}
+async function mountSwipeFleet(fake: ReturnType<typeof hub>, nav = navigation()) {
+	const id = hubId();
+	adoptedAnHourAgo(id);
+	connect(id, fake.client, "ready");
+	const tree = await mount(nav);
+	return { id, tree, nav };
+}
+
+it("gives a working row Archive on the right swipe and Stop and Pin on the left, a finished row no Stop, and another host's row Archive too", async () => {
+	const { tree } = await mountSwipeFleet(hub(swipeFleet()));
+	const working = swipeableOf(tree, "Refactor parser");
+	expect(revealedLabels(working, "left")).toEqual(["Archive"]);
+	expect(revealedLabels(working, "right")).toEqual(["Stop", "Pin"]);
+	expect(revealedLabels(swipeableOf(tree, "Write changelog"), "right")).toEqual(["Pin"]);
+	expect(revealedLabels(swipeableOf(tree, "Park chore"), "left")).toEqual(["Archive"]);
+	// VoiceOver reaches the same actions on the row itself.
+	expect(rowTitled(tree, "Refactor parser").props.accessibilityActions).toEqual([
+		{ name: "archive", label: "Archive" },
+		{ name: "stop", label: "Stop" },
+		{ name: "pin", label: "Pin" },
+	]);
+});
+
+it("archives a local row on a full swipe right, dims it until the hub confirms, and Undo unarchives it", async () => {
+	const fake = hub(swipeFleet(), undefined, undefined, { holdChanges: true });
+	const { tree } = await mountSwipeFleet(fake);
+	swipeableCalls.closes = 0;
+	swipeRight(swipeableOf(tree, "Refactor parser"));
+	expect(swipeableCalls.closes).toBe(1);
+	await settle();
+	expect(fake.mutations).toEqual([
+		{ method: "evener/archive/set", params: { kind: "session", id: SESSION_ID, archived: true } },
+	]);
+	const dimmed = rowTitled(tree, "Refactor parser");
+	expect(dimmed.props.style({ pressed: false }).opacity).toBe(0.5);
+	expect(dimmed.props.accessibilityState).toEqual({ busy: true });
+	act(() => fake.release());
+	await settle();
+	expect(rowTitled(tree, "Refactor parser").props.style({ pressed: false }).opacity).toBe(1);
+	expect(texts(tree)).toContain("Archived");
+	pressLabel(tree, "Undo");
+	await settle();
+	act(() => fake.release());
+	await settle();
+	expect(fake.mutations.at(-1)).toEqual({
+		method: "evener/archive/set",
+		params: { kind: "session", id: SESSION_ID, archived: false },
+	});
+	expect(texts(tree)).toContain("Unarchived");
+	expect(texts(tree)).not.toContain("Refresh");
+	expect(texts(tree)).not.toContain("Reconnect");
+});
+
+it("archives another host's row by its ref", async () => {
+	const fake = hub(swipeFleet());
+	const { tree } = await mountSwipeFleet(fake);
+	swipeRight(swipeableOf(tree, "Park chore"));
+	await settle();
+	expect(fake.mutations).toEqual([
+		{ method: "evener/archive/set", params: { kind: "session", id: "paradise-park:pp", archived: true } },
+	]);
+	expect(texts(tree)).toContain("Archived");
+});
+
+it("says nothing when an archive can't be confirmed, and settles the journal so the row can swipe again", async () => {
+	const fake = hub(swipeFleet(), undefined, undefined, { refuse: true });
+	const { tree } = await mountSwipeFleet(fake);
+	swipeRight(swipeableOf(tree, "Refactor parser"));
+	await settle();
+	expect(fake.mutations).toHaveLength(1);
+	expect(texts(tree)).not.toContain("Archived");
+	expect(renderedText(tree)).not.toMatch(/Refresh|Reconnect|confirm/);
+	// The Board read the session back, so its organization actions return.
+	expect(revealedLabels(swipeableOf(tree, "Refactor parser"), "left")).toEqual(["Archive"]);
+	expect(rowTitled(tree, "Refactor parser").props.style({ pressed: false }).opacity).toBe(1);
+});
+
+it("stops a working row through the durable runtime: a fresh read, then the interrupt, then Stopped", async () => {
+	const fake = hub(swipeFleet());
+	const { tree } = await mountSwipeFleet(fake);
+	pressRevealed(swipeableOf(tree, "Refactor parser"), "right", "Stop");
+	await settle();
+	await vi.waitFor(() => expect(fake.threadCalls.map((call) => call.method)).toEqual(["thread/read", "turn/interrupt"]));
+	expect(fake.threadCalls[1]?.params).toMatchObject({
+		ref: `local:${SESSION_ID}`,
+		expectedInstanceId: `instance:local:${SESSION_ID}`,
+	});
+	expect(texts(tree)).toContain("Stopped");
+});
+
+it("opens Pin to category for a row's Pin", async () => {
+	const { id, tree, nav } = await mountSwipeFleet(hub(swipeFleet()));
+	pressRevealed(swipeableOf(tree, "Write changelog"), "right", "Pin");
+	expect(nav.navigate).toHaveBeenCalledWith("PinAssignment", {
+		hubId: id,
+		ref: `local:${OTHER_SESSION_ID}`,
+		title: "Write changelog",
+	});
+});
+
+it("offers no swipe action on any row while reconnecting", async () => {
+	const fake = hub(swipeFleet());
+	const { id, tree, nav } = await mountSwipeFleet(fake);
+	connect(id, fake.client, "reconnecting");
+	rerender(tree, nav);
+	const swipeables = tree.root.findAll((node) => node.type === ("ReanimatedSwipeable" as never));
+	expect(swipeables).toHaveLength(3);
+	for (const swipeable of swipeables) {
+		expect(swipeable.props.renderLeftActions).toBeUndefined();
+		expect(swipeable.props.renderRightActions).toBeUndefined();
+	}
+});
+
+it("puts swipes on pinned categories' rows and project sessions too", async () => {
+	const id = hubId();
+	adoptedAnHourAgo(id);
+	const pinnedRow = session(`local:${OTHER_SESSION_ID}`, {
+		session_id: OTHER_SESSION_ID,
+		title: "Pinned note",
+		live: false,
+		updated_at: minutesAgo(600),
+	});
+	const archivedRow = session(`local:${SESSION_ID}`, {
+		session_id: SESSION_ID,
+		title: "Old archived work",
+		live: false,
+		updated_at: minutesAgo(3000),
+	});
+	const shape: Fleet = {
+		live: [[working]],
+		needsYou: [],
+		pins: [{ id: "pins-1", name: "Mine", count: 1 }],
+		pinned: { "pins-1": [pinnedRow] },
+		manifest: manifest({
+			sources: [laptopSource],
+			sections: { live: { count: 1 }, needs_you: { count: 0 }, pin_sections: { count: 1 } },
+			catalogs: catalogCounts(1, 0, 0),
+		}),
+		catalogs: { projects: [evenerProject()] },
+		projectPages: { "evener:archived": [archivedRow] },
+	};
+	connect(id, hub(shape).client, "ready");
+	const tree = await mount(navigation());
+	expect(revealedLabels(swipeableOf(tree, "Pinned note"), "left")).toEqual(["Archive"]);
+	// Unfold the project, then its Archived group.
+	pressLabel(tree, "evener");
+	await settle();
+	pressLabel(tree, "Archived, 1 session");
+	await settle();
+	expect(revealedLabels(swipeableOf(tree, "Old archived work"), "left")).toEqual(["Unarchive"]);
 });

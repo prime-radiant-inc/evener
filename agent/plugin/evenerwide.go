@@ -21,8 +21,8 @@ var evenerwideUserHomeDir = os.UserHomeDir
 var execSpanPattern = regexp.MustCompile("!`[^`]*`")
 
 // globalCommandsDir resolves the user-global commands directory:
-// $XDG_CONFIG_HOME/evener/commands, or ~/.config/evener/commands. Mirrors
-// promptpath.globalPromptsDir. Returns "" when no home is resolvable.
+// $XDG_CONFIG_HOME/evener/commands, or ~/.config/evener/commands. Returns ""
+// when no home is resolvable.
 func globalCommandsDir() string {
 	return userdirs.Subdir(userdirs.ConfigRoot(envvars.XDGConfigHome.Getenv(), evenerwideUserHomeDir), "commands")
 }

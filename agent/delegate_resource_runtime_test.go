@@ -1516,7 +1516,7 @@ func TestDelegateResourceRuntime_RootStoreCloseJoinsReconciliationDriver(t *test
 	if err := root.closeOwnedDelegateStore(); !errors.Is(err, driverErr) {
 		t.Fatalf("root store close ignored its reconciliation driver result: %v", err)
 	}
-	if _, _, _, err := root.delegateController.StopSubtreeAndDrive(rootDelegateActor(root.delegateRootSessionID), fixture.delegateID); !errors.Is(err, errDelegateTargetBusy) {
+	if _, _, _, err := root.delegateController.StopSubtreeAndDrive(context.Background(), rootDelegateActor(root.delegateRootSessionID), fixture.delegateID); !errors.Is(err, errDelegateTargetBusy) {
 		t.Fatalf("stable stop retry crossed the root store-close fence: %v", err)
 	}
 	root.delegateController.mu.Lock()

@@ -1368,7 +1368,7 @@ func TestSession_SystemPrompt_IncludesGitSnapshot_WhenInGitRepo(t *testing.T) {
 
 	sess := newSession(t, withDir(dir))
 
-	data := sess.buildPromptData(sess.env)
+	data, _ := sess.buildPromptData(sess.env)
 	if !data.IsGitRepo || data.GitBranch == "" {
 		t.Fatalf("IsGitRepo=%v GitBranch=%q, want a repo with a branch", data.IsGitRepo, data.GitBranch)
 	}

@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { render } from "../renderNative.testkit";
+import { PulseMeter } from "./PulseMeter";
 import { markFor, StateMark } from "./StateMark";
 
 vi.mock("react-native", async () => ({
@@ -28,6 +29,21 @@ describe("state marks pair shape with color (spec 13.1)", () => {
 	it("draws nothing for idle and shut-down rows", () => {
 		expect(markFor("idle", false)).toBeNull();
 		expect(markFor("shutDown", false)).toBeNull();
+	});
+
+	it("draws the meter from the per-minute counts it is given", () => {
+		const minutes = [0, 3, 9];
+		const tree = render(<StateMark state="working" moving perMinute={minutes} />);
+		expect(tree.root.findByType(PulseMeter).props.perMinute).toEqual(minutes);
+	});
+
+	it("turns the meter amber for a stuck row, but gray wins while disconnected (spec 13.1, 16.4)", () => {
+		const alive = render(<StateMark state="working" moving />);
+		expect(alive.root.findByType(PulseMeter).props.tone).toBe("alive");
+		const stuck = render(<StateMark state="working" moving stuck />);
+		expect(stuck.root.findByType(PulseMeter).props.tone).toBe("attention");
+		const offlineAndStuck = render(<StateMark state="working" moving stuck connected={false} />);
+		expect(offlineAndStuck.root.findByType(PulseMeter).props.tone).toBe("gray");
 	});
 
 	it("names the state for VoiceOver and tints from the palette", () => {

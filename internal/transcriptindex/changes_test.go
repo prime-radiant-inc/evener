@@ -2,6 +2,7 @@ package transcriptindex
 
 import (
 	"bytes"
+	"errors"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -173,9 +174,12 @@ func TestAnUnreadableEntryClosesTheLegacyGroup(t *testing.T) {
 }
 
 // TestLatestSinceReadsOneSnapshot requires LatestSince to answer as Latest and
-// ChangedSince do on the same snapshot, and to answer no changes when the held
-// snapshot names another incarnation or predates the kept update log: the
-// caller then sends a full latest-window replacement.
+// ChangedSince do on the same snapshot, to answer no changes (a full
+// latest-window replacement) when the held snapshot names another
+// incarnation, and to report ErrUpdateLogTruncated when the held snapshot
+// names the current incarnation but predates the kept update log: the window
+// alone cannot be trusted there, since held items outside it may have changed
+// with no way for the caller to tell.
 func TestLatestSinceReadsOneSnapshot(t *testing.T) {
 	previous := updateLogRecords
 	updateLogRecords = 4
@@ -204,16 +208,16 @@ func TestLatestSinceReadsOneSnapshot(t *testing.T) {
 	if !reflect.DeepEqual(window, wantWindow) || changes == nil || !reflect.DeepEqual(*changes, wantChanges) {
 		t.Fatalf("LatestSince = %s, %s\nwant %s, %s", dump(window), dump(changes), dump(wantWindow), dump(wantChanges))
 	}
-	for name, snapshot := range map[string]appwire.SnapshotIdentity{
-		"another incarnation": {Incarnation: "another", Length: recent.Length},
-		"before the kept log": held[0],
-	} {
-		window, changes, err := x.LatestSince(2, snapshot)
-		if err != nil {
-			t.Fatalf("%s: %v", name, err)
-		}
-		if !reflect.DeepEqual(window, wantWindow) || changes != nil {
-			t.Fatalf("%s: LatestSince = %s, %s, want the window and no changes", name, dump(window), dump(changes))
-		}
+
+	window, changes, err = x.LatestSince(2, appwire.SnapshotIdentity{Incarnation: "another", Length: recent.Length})
+	if err != nil {
+		t.Fatalf("another incarnation: %v", err)
+	}
+	if !reflect.DeepEqual(window, wantWindow) || changes != nil {
+		t.Fatalf("another incarnation: LatestSince = %s, %s, want the window and no changes", dump(window), dump(changes))
+	}
+
+	if _, _, err := x.LatestSince(2, held[0]); !errors.Is(err, ErrUpdateLogTruncated) {
+		t.Fatalf("before the kept log: LatestSince err = %v, want ErrUpdateLogTruncated", err)
 	}
 }

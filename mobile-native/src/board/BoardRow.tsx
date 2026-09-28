@@ -1,8 +1,8 @@
-import type { NavigationSessionSummary } from "@evener/appwire-client";
+import type { NavigationSessionSummary, SessionActivity } from "@evener/appwire-client";
 import { relativeAge } from "@evener/appwire-client/state/navigation";
 import { SymbolView } from "expo-symbols";
 import type { ReactElement } from "react";
-import { Platform, Pressable, Text, View } from "react-native";
+import { type AccessibilityActionEvent, type AccessibilityActionInfo, Platform, Pressable, Text, View } from "react-native";
 import type { Palette } from "../design/tokens";
 import { useColors, useTextScale } from "../ui";
 import { bandOf, type ClassifiedRow, lastLine, stateWord, type Usual, whyLine } from "./attention";
@@ -20,54 +20,28 @@ export interface BoardRowProps {
 	usual: Usual;
 	hostLabel: (hostId: string) => string;
 	hasDraft: boolean;
+	/** S5's latest activity read for this session; absent before the Board's
+	 * poll answers for it, on a hub that predates S5, or while disconnected. */
+	activity?: SessionActivity;
+	/** How long ago that read landed, which quiet time keeps counting from;
+	 * null without one. */
+	msSinceRead: number | null;
 	now: number;
 	onOpen: (row: NavigationSessionSummary) => void;
+	/** Half opacity and busy while a change to this row is on its way. */
+	dimmed?: boolean;
+	accessibilityActions?: readonly AccessibilityActionInfo[];
+	onAccessibilityAction?: (event: AccessibilityActionEvent) => void;
 }
 
 /** Where a row's title starts: its 16pt padding, the 28pt mark column and
  * the 10pt gap. */
 export const TITLE_INSET = 16 + 28 + 10;
 
-/** What every row in one of the Board's lists shares. */
-export type RowContext = Pick<BoardRowProps, "connected" | "usual" | "hostLabel" | "now" | "onOpen"> & {
-	draftRefs: ReadonlySet<string>;
-};
-
 /** The separator between rows, inset to the title by default. */
 export function Hairline({ inset = TITLE_INSET }: { inset?: number }) {
 	const { palette } = useColors();
 	return <View style={{ height: 0.5, marginLeft: inset, backgroundColor: palette.edge }} />;
-}
-
-/** A list of Board rows, separated by hairlines inset to the title. */
-export function BoardRows({
-	items,
-	variant,
-	moving,
-	context,
-}: {
-	items: readonly ClassifiedRow[];
-	variant: BoardRowProps["variant"];
-	moving: boolean;
-	context: RowContext;
-}): ReactElement {
-	const { draftRefs, ...shared } = context;
-	return (
-		<>
-			{items.map((item, index) => (
-				<View key={item.row.ref}>
-					{index > 0 ? <Hairline inset={TITLE_INSET} /> : null}
-					<BoardRow
-						item={item}
-						variant={variant}
-						moving={moving}
-						hasDraft={draftRefs.has(item.row.ref)}
-						{...shared}
-					/>
-				</View>
-			))}
-		</>
-	);
 }
 
 /** The type of the Board's section headers (spec 7.1): 13pt semibold,
@@ -132,15 +106,20 @@ export function BoardRow({
 	usual,
 	hostLabel,
 	hasDraft,
+	activity,
+	msSinceRead,
 	now,
 	onOpen,
+	dimmed = false,
+	accessibilityActions,
+	onAccessibilityAction,
 }: BoardRowProps): ReactElement {
 	const { palette } = useColors();
 	const scale = useTextScale();
 	const { row, state } = item;
 	const signal = variant === "signal";
 	const needsYou = signal && bandOf(state) === "needsYou";
-	const why = signal ? whyLine(item) : null;
+	const why = signal ? whyLine(item, activity, msSinceRead ?? 0) : null;
 	const last = signal ? lastLine(row, usual, hostLabel) : null;
 	const age = relativeAge(row.updated_at, now);
 	const word = stateWord(state);
@@ -152,6 +131,9 @@ export function BoardRow({
 		<Pressable
 			accessibilityRole="button"
 			accessibilityLabel={label}
+			accessibilityState={{ busy: dimmed }}
+			accessibilityActions={accessibilityActions}
+			onAccessibilityAction={onAccessibilityAction}
 			onPress={() => onOpen(row)}
 			style={({ pressed }) => ({
 				flexDirection: "row",
@@ -162,10 +144,17 @@ export function BoardRow({
 				paddingBottom: signal ? 12 : 0,
 				minHeight: signal ? 64 : 48,
 				backgroundColor: pressed ? palette.pressed : palette.page,
+				opacity: dimmed ? 0.5 : 1,
 			})}
 		>
 			<View style={{ height: lineOne, justifyContent: "center" }}>
-				<StateMark state={state} moving={moving} connected={connected} />
+				<StateMark
+					state={state}
+					moving={moving}
+					connected={connected}
+					stuck={why?.stuck}
+					perMinute={activity?.minutes}
+				/>
 			</View>
 			<View style={{ flex: 1, minWidth: 0 }}>
 				<View style={{ flexDirection: "row", alignItems: "flex-start", columnGap: 8 }}>
@@ -220,7 +209,7 @@ export function BoardRow({
 							marginTop: 2,
 							fontSize: 15 * scale,
 							lineHeight: 20 * scale,
-							color: why.word ? palette.inkHi : palette.inkMid,
+							color: why.word ? palette.inkHi : why.stuck ? palette.attentionInk : palette.inkMid,
 						}}
 					>
 						{why.word ? (

@@ -52,7 +52,6 @@ vi.mock("react-native", async () => {
 	const mock = (await import("./renderNative.testkit")).nativeModuleMock();
 	return {
 		...mock,
-		AccessibilityInfo: { announceForAccessibility: vi.fn() },
 		ActionSheetIOS: { showActionSheetWithOptions: vi.fn() },
 		AppState: {
 			currentState: "active",
@@ -76,11 +75,11 @@ vi.mock("react-native-safe-area-context", () => ({
 	SafeAreaProvider: (props: { children?: ReactNode }) => props.children ?? null,
 	useSafeAreaInsets: () => ({ top: 47, bottom: 34, left: 0, right: 0 }),
 }));
+vi.mock("expo-symbols", () => ({ SymbolView: "SymbolView" }));
 vi.mock("react-native-enriched-markdown", () => ({
 	EnrichedMarkdownText: "EnrichedMarkdownText",
 }));
 vi.mock("@react-navigation/elements", () => ({ useHeaderHeight: () => 64 }));
-vi.mock("expo-symbols", () => ({ SymbolView: "SymbolView" }));
 vi.mock("@react-navigation/native", async () => {
 	const { useEffect } = await import("react");
 	return {
@@ -90,6 +89,7 @@ vi.mock("@react-navigation/native", async () => {
 			select(navigationState.state),
 	};
 });
+vi.mock("expo-symbols", () => ({ SymbolView: "SymbolView" }));
 vi.mock("expo-clipboard", () => ({
 	setStringAsync: vi.fn(async () => {}),
 	getStringAsync: vi.fn(async () => ""),
@@ -230,7 +230,8 @@ it("renders the Recovery entry and mounts the recovery panel end to end, row-con
 			.findAll((node) => String(node.type) === "TextInput")
 			.some((node) => node.props.accessibilityLabel === "Message"),
 	).toBe(true);
-	expect(renderedText(tree)).toContain("Connected");
+	// A live connection says nothing about itself (spec 14).
+	expect(renderedText(tree)).not.toContain("Connected");
 	expect(
 		pressables(tree).find((n) => n.props.accessibilityLabel === "Reconnect"),
 	).toBeUndefined();
