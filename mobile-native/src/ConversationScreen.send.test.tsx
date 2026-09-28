@@ -287,14 +287,16 @@ const fleet: FleetShape = { live: [], needsYou: [] };
 const mountedScreens: ReactTestRenderer[] = [];
 // A coordinator's subagent tree (evener/jobs/list) and its direct stop
 // (evener/delegate/stop), for the subagent screen's tests.
-const coordinatorHub: { tree: unknown; stop: (params: Record<string, unknown>) => unknown } = {
+const coordinatorHub: { tree: unknown; stop: (params: Record<string, unknown>) => unknown; readFails: string | null } = {
 	tree: null,
 	stop: () => ({ outcome: "stopping" }),
+	readFails: null,
 };
 afterEach(() => {
 	for (const tree of mountedScreens.splice(0)) if (tree.toJSON() !== null) act(() => tree.unmount());
 	coordinatorHub.tree = null;
 	coordinatorHub.stop = () => ({ outcome: "stopping" });
+	coordinatorHub.readFails = null;
 	otherThreads.clear();
 	fleet.live = [];
 	fleet.needsYou = [];
@@ -334,6 +336,7 @@ function hubClient(
 					readsToFail -= 1;
 					throw new Error("read failed");
 				}
+				if (params.ref === coordinatorHub.readFails) throw new Error("read failed");
 				// A second session this client can also read, by its ref.
 				const thread = otherThreads.get(String(params.ref)) ?? served;
 				return { thread, ...(olderCursor ? { olderCursor } : {}) };
@@ -2233,6 +2236,24 @@ describe("a subagent's own session (spec 9, rulings 10 and 30)", () => {
 		await settle();
 		expect(jobReads(hub)).toBeGreaterThan(before);
 		expect(renderedText(tree)).not.toContain("Stop requested");
+	});
+
+	it("reads the tree again when the direct stop finds it already finishing", async () => {
+		coordinatorHub.stop = () => ({ outcome: "notRunning" });
+		const { tree, hub } = await mountSubagent(subagent(true), { stopSubagent: true });
+		const before = jobReads(hub);
+		act(() => pressable(tree, "Stop subagent")?.props.onPress());
+		await act(async () => alertRequests.at(-1)?.buttons?.find((button) => button.text === "Stop")?.onPress?.());
+		await settle();
+		expect(jobReads(hub)).toBeGreaterThan(before);
+		expect(renderedText(tree)).not.toContain("Stop requested");
+	});
+
+	it("asks the coordinator when its thread can't be read to learn whether a direct stop works", async () => {
+		coordinatorHub.readFails = COORDINATOR.ref;
+		const { tree } = await mountSubagent(subagent(true), { stopSubagent: true });
+		expect(pressable(tree, "Ask coordinator to stop it")).toBeDefined();
+		expect(pressable(tree, "Stop subagent")).toBeUndefined();
 	});
 
 	it("gives a finished subagent the composer back, which sends to it", async () => {

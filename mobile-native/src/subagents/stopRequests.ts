@@ -74,7 +74,10 @@ export class StopRequests {
 		for (const row of rows) {
 			const record = this.records[row.id];
 			if (!record || record.coordinatorRef !== coordinatorRef || record.stopped || stillWorking(record, row)) continue;
-			if (subtreeStopped(row.delegate)) {
+			// A direct stop ended the subagent's own run, so only its own
+			// outcome says it stopped; a request of the coordinator may have
+			// stopped anything under it.
+			if (record.direct ? row.stopped : subtreeStopped(row.delegate)) {
 				record.stopped = true;
 				stopped.push(row);
 			} else delete this.records[row.id];

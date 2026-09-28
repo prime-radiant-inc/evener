@@ -59,9 +59,9 @@ export function StopSubagentSheet({ route }: NativeStackScreenProps<Routes, "Sto
 		});
 		return () => link.dispose();
 	}, [online, client, coordinator.ref]);
-	// S6 turns this into "Stop subagent", with a confirmation and no message,
-	// stopping only that subagent: the subagent bar offers it instead of this
-	// sheet whenever the coordinator advertises stopSubagent.
+	// With S6 the subagent bar offers "Stop subagent", with a confirmation
+	// and no message, stopping only that subagent; it opens this sheet only
+	// for a coordinator that doesn't advertise stopSubagent.
 	const kind = coordinatorState ? stopRequestKind(coordinatorState) : null;
 
 	const canSend = online && !sending && words.trim() !== "" && kind !== null && row !== undefined && row !== null;

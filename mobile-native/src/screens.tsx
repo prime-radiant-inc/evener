@@ -293,9 +293,9 @@ export type Routes = {
 	/** A coordinator's subagents (spec 9). */
 	Subagents: { hubId: string; ref: string; threadId: string; title: string };
 	/** Ask a subagent's coordinator to stop it (spec 9, ruling 10). */
-	StopSubagentSheet: { hubId: string; coordinator: { ref: string; threadId: string; title: string }; ref: string };
+	StopSubagentSheet: { hubId: string; coordinator: Coordinator; ref: string };
 	/** A subagent's own session, over its coordinator's (ruling 30). */
-	Subagent: { hubId: string; ref: string; title: string; coordinator: { ref: string; threadId: string; title: string } };
+	Subagent: { hubId: string; ref: string; title: string; coordinator: Coordinator };
 	/** The session's documents as they were when the sheet opened (ruling 26). */
 	FilesSheet: { hubId: string; ref: string; title: string; documents: SessionDocument[] };
 };

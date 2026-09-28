@@ -148,6 +148,18 @@ describe("a stop you sent directly (S6)", () => {
 		expect(requests.view(row(cancelledWithChild))).toBe("stopped");
 	});
 
+	it("forgets a direct stop whose subagent finished on its own, though a child of it was stopped", () => {
+		const requests = new StopRequests(memoryStorage(), "hub-1");
+		requests.request("local:coord", row(runningWithChild), 1000, { direct: true });
+		const finishedOverStoppedChild = d("fix", {
+			terminal: true,
+			outcome: "completed",
+			child: session("local:fix", [d("child", { terminal: true, outcome: "cancelled" })]),
+		});
+		expect(requests.reconcile("local:coord", rows(finishedOverStoppedChild))).toEqual([]);
+		expect(requests.view(row(finishedOverStoppedChild))).toBeNull();
+	});
+
 	it("keeps that it was direct through a relaunch", () => {
 		const storage = memoryStorage();
 		new StopRequests(storage, "hub-1").request("local:coord", row(runningWithChild), 1000, { direct: true });

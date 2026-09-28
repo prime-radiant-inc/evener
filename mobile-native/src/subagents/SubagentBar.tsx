@@ -4,28 +4,29 @@
 import { SymbolView } from "expo-symbols";
 import { Pressable, Text, View } from "react-native";
 import { allowFontScaling, useColors, useTextScale } from "../ui";
+import type { StopOfferKind } from "./stopOffer";
 
-/** What the bar offers to stop the subagent: a direct stop when the
- * coordinator's hub can make one (S6), a request of the coordinator
- * otherwise, the words of a request already sent, or nothing. */
-export type StopOffer =
-	| { kind: "stop"; onPress(): void }
-	| { kind: "ask"; onPress(): void }
-	| { kind: "requested" }
-	| { kind: "none" };
-
-export function SubagentBar({ offer, onOpenCoordinator }: { offer: StopOffer; onOpenCoordinator(): void }) {
+export function SubagentBar({
+	offer,
+	onStop,
+	onOpenCoordinator,
+}: {
+	offer: StopOfferKind;
+	/** A direct stop (S6) or a request of the coordinator, as `offer` says. */
+	onStop(): void;
+	onOpenCoordinator(): void;
+}) {
 	const { palette } = useColors();
 	const scale = useTextScale();
 	const label = { fontSize: 15 * scale, lineHeight: 20 * scale };
 	return (
 		<View style={{ flexDirection: "row", gap: 8, padding: 12 }}>
-			{offer.kind === "stop" || offer.kind === "ask" ? (
+			{offer === "stop" || offer === "ask" ? (
 				<Pressable
 					accessibilityRole="button"
-					accessibilityLabel={offer.kind === "stop" ? "Stop subagent" : "Ask coordinator to stop it"}
+					accessibilityLabel={offer === "stop" ? "Stop subagent" : "Ask coordinator to stop it"}
 					accessibilityState={{ disabled: false }}
-					onPress={offer.onPress}
+					onPress={onStop}
 					style={({ pressed }) => ({
 						flex: 1,
 						minHeight: 44,
@@ -42,10 +43,10 @@ export function SubagentBar({ offer, onOpenCoordinator }: { offer: StopOffer; on
 				>
 					<SymbolView name="stop.fill" size={12} tintColor={palette.inkHi} />
 					<Text allowFontScaling={allowFontScaling} numberOfLines={1} style={{ ...label, color: palette.inkHi }}>
-						{offer.kind === "stop" ? "Stop subagent" : "Ask coordinator to stop it"}
+						{offer === "stop" ? "Stop subagent" : "Ask coordinator to stop it"}
 					</Text>
 				</Pressable>
-			) : offer.kind === "requested" ? (
+			) : offer === "requested" ? (
 				<View style={{ flex: 1, minHeight: 44, alignItems: "center", justifyContent: "center" }}>
 					<Text allowFontScaling={allowFontScaling} style={{ ...label, color: palette.inkMid }}>
 						Stop requested
