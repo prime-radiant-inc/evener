@@ -1208,6 +1208,36 @@ export function ConversationScreen({
 		route.params.hubId,
 		route.params.ref,
 	]);
+	// Loads the page above the loaded history once per cursor: a page that
+	// failed, or brought nothing new, stays guarded until the binding or route
+	// resets, so a failing page never loops. Both a reading position restored
+	// above the loaded rows and a scroll near the top ask for it.
+	function loadOlderPage() {
+		const cursor = snapshot.olderCursor;
+		const pageAttempts = readerPageAttempts.current;
+		if (
+			!service ||
+			!connected ||
+			!cursor ||
+			snapshot.loadingOlder ||
+			pageAttempts.has(cursor)
+		)
+			return;
+		pageAttempts.add(cursor);
+		void store
+			.getState()
+			.loadOlder(service)
+			.then((result) => {
+				if (
+					result.status === "ignored" ||
+					(result.status === "loaded" && result.itemKeys.length > 0)
+				)
+					pageAttempts.delete(cursor);
+			})
+			.catch(() => {
+				// Keep failed page attempts guarded until a binding or route reset.
+			});
+	}
 	// biome-ignore lint/correctness/useExhaustiveDependencies: Cell layout revisions intentionally retrigger semantic restoration.
 	useEffect(() => {
 		const anchor = readerAnchor.current;
@@ -1237,30 +1267,7 @@ export function ConversationScreen({
 		}
 		if (resolveReaderAnchor(anchor, timelineRows) === null) {
 			if (isReaderAnchorLoaded(anchor, conversation?.items ?? [])) return;
-			const cursor = snapshot.olderCursor;
-			const pageAttempts = readerPageAttempts.current;
-			if (
-				service &&
-				connected &&
-				cursor &&
-				!snapshot.loadingOlder &&
-				!pageAttempts.has(cursor)
-			) {
-				pageAttempts.add(cursor);
-				void store
-					.getState()
-					.loadOlder(service)
-					.then((result) => {
-						if (
-							result.status === "ignored" ||
-							(result.status === "loaded" && result.itemKeys.length > 0)
-						)
-							pageAttempts.delete(cursor);
-					})
-					.catch(() => {
-						// Keep failed page attempts guarded until a binding or route reset.
-					});
-			}
+			loadOlderPage();
 			return;
 		}
 		const command = restoreReaderCommand(
@@ -2022,30 +2029,8 @@ export function ConversationScreen({
 									setAwayKeys(new Set(timelineRows.map(readerKey)));
 								}
 								if (captureSuppressed.current) return;
-								const cursor = snapshot.olderCursor;
-								if (
-									y < 800 &&
-									service &&
-									cursor &&
-									!snapshot.loadingOlder &&
-									!readerPageAttempts.current.has(cursor)
-								) {
-									const pageAttempts = readerPageAttempts.current;
-									pageAttempts.add(cursor);
-									void store
-										.getState()
-										.loadOlder(service)
-										.then((result) => {
-											if (
-												result.status === "ignored" ||
-												(result.status === "loaded" && result.itemKeys.length > 0)
-											)
-												pageAttempts.delete(cursor);
-										})
-										.catch(() => {
-											// A failed page stays guarded until a binding or route reset.
-										});
-								}
+								// Older history loads as you near the top (spec 8.2).
+								if (y < 800) loadOlderPage();
 								const visible = timelineRows.find((item) => {
 									const measurement = readerMeasurements.current.get(
 										readerKey(item),

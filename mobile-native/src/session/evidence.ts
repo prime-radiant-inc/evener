@@ -2,6 +2,7 @@
 // diff, the file a write wrote, a command's output, and an error. Pure, so
 // the rules live apart from how StepEvidence draws them.
 import { diffStats, editDiffText, lineCount, parseArgs, str } from "@evener/appwire-client";
+import type { ActivityDetail } from "../projectedRows";
 import type { RunStep } from "../timeline";
 
 export type Evidence =
@@ -21,7 +22,12 @@ function diff(text: string): Evidence {
 	return { kind: "diff", text, ...diffStats(text) };
 }
 
-export function stepEvidence(step: RunStep): Evidence[] {
+/** The parts of a step its evidence comes from. */
+export type EvidenceSource = Pick<RunStep, "label" | "summaryOnly"> & {
+	detail: Pick<ActivityDetail, "arguments" | "output" | "error" | "exitCode">;
+};
+
+export function stepEvidence(step: EvidenceSource): Evidence[] {
 	// At Intent a settled step shows only its summary (the summary-only ruling).
 	if (step.summaryOnly) return [];
 	const { detail } = step;

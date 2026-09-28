@@ -2,6 +2,7 @@ import { act, type ReactTestInstance } from "react-test-renderer";
 import { describe, expect, it, vi } from "vitest";
 import { render, textOf } from "../renderNative.testkit";
 import type { RunStep, TimelineRow } from "../timeline";
+import { stepEvidence } from "./evidence";
 import { RunRow } from "./RunRow";
 
 vi.mock("react-native", async () => ({
@@ -9,6 +10,10 @@ vi.mock("react-native", async () => ({
 }));
 vi.mock("expo-symbols", () => ({ SymbolView: "SymbolView" }));
 vi.mock("./StepEvidence", () => ({ StepEvidence: "StepEvidence" }));
+vi.mock("./evidence", async (importOriginal) => {
+	const original = await importOriginal<typeof import("./evidence")>();
+	return { ...original, stepEvidence: vi.fn(original.stepEvidence) };
+});
 
 type Run = Extract<TimelineRow, { kind: "run" }>;
 
@@ -158,6 +163,19 @@ describe("a step's evidence", () => {
 		expect(grep.props.onPress).toBeUndefined();
 		expect(grep.props.accessibilityRole).toBeUndefined();
 		expect(chevrons(tree.root)).toHaveLength(1);
+	});
+
+	// sessionRows copies every step on every publish (each streaming frame), so
+	// a step's evidence is worked out from its data, never its object.
+	it("works out a step's evidence once while its data stays the same", () => {
+		const props = { live: false, expanded: true, onToggle: () => {}, hubId: "hub-1", sessionRef: "ref-memo" };
+		const tree = render(<RunRow run={withOutput} {...props} />);
+		const calls = vi.mocked(stepEvidence).mock.calls.length;
+		for (let frame = 0; frame < 3; frame += 1) {
+			const copied: Run = { ...withOutput, steps: withOutput.steps.map((copy) => ({ ...copy })) };
+			act(() => tree.update(<RunRow run={copied} {...props} />));
+		}
+		expect(vi.mocked(stepEvidence).mock.calls.length).toBe(calls);
 	});
 
 	it("opens every step's evidence by default at the levels that open output as it arrives", () => {

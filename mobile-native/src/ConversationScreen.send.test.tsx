@@ -230,7 +230,7 @@ function thread(ref: string, status: "idle" | "active", question = false): Threa
 /** The hub: it answers thread/read with `served` and acknowledges every
  * mutation, recording each request in order. It sends a frame only when a
  * test calls notify(). */
-function hubClient(served: Thread, failedReads = 0, readLatencyMs = 0) {
+function hubClient(served: Thread, failedReads = 0, readLatencyMs = 0, olderCursor?: string) {
 	let readsToFail = failedReads;
 	const requests: { method: string; params: Record<string, unknown> }[] = [];
 	const listeners = new Set<(notification: AnyNotification) => void>();
@@ -249,8 +249,9 @@ function hubClient(served: Thread, failedReads = 0, readLatencyMs = 0) {
 					readsToFail -= 1;
 					throw new Error("read failed");
 				}
-				return { thread: served };
+				return { thread: served, ...(olderCursor ? { olderCursor } : {}) };
 			}
+			if (method === "thread/turns/list") return { data: [] };
 			if (method.startsWith("turn/"))
 				return {
 					receipt: {
@@ -279,8 +280,11 @@ function hubClient(served: Thread, failedReads = 0, readLatencyMs = 0) {
 	};
 }
 
-async function mount(served: Thread, { failedReads = 0, readLatencyMs = 0, settled = true } = {}) {
-	const hub = hubClient(served, failedReads, readLatencyMs);
+async function mount(
+	served: Thread,
+	{ failedReads = 0, readLatencyMs = 0, settled = true, olderCursor = undefined as string | undefined } = {},
+) {
+	const hub = hubClient(served, failedReads, readLatencyMs, olderCursor);
 	harness.connection = {
 		...screenConnection(hub.client, "ready"),
 		error: null,
@@ -500,6 +504,8 @@ it("keeps trying quietly, and says so from the third failure in a row", async ()
 				});
 		};
 		await advance(50);
+		// Until the conversation first loads, quiet blocks stand in for it.
+		expect(tree.root.findAll((node) => node.props.accessibilityLabel === "Loading conversation").length).toBeGreaterThan(0);
 		const reads = () => hub.requests.filter((request) => request.method === "thread/read").length;
 		// The first failure retries at once, the second after a second.
 		expect(reads()).toBe(2);
@@ -528,5 +534,48 @@ it("has no Latest button, no pull to refresh, and no Load older button", async (
 	expect(list.props.onRefresh).toBeUndefined();
 	expect(list.props.refreshing).toBeUndefined();
 	expect(renderedText(tree)).not.toContain("Load older messages");
+});
+
+function transcriptList(tree: ReactTestRenderer) {
+	return tree.root.findAll(
+		(node) => typeof node.type === "function" && Array.isArray(node.props.data) && typeof node.props.renderItem === "function",
+	)[0];
+}
+
+function scrollTo(tree: ReactTestRenderer, y: number) {
+	act(() =>
+		transcriptList(tree).props.onScroll({
+			nativeEvent: { contentOffset: { y }, contentSize: { height: 4_000 }, layoutMeasurement: { height: 600 } },
+		}),
+	);
+}
+
+it("shows nothing for a loaded conversation with no rows: the composer invites", async () => {
+	const { tree } = await mount(thread("ref-empty", "idle"));
+	expect(tree.root.findAll((node) => node.props.accessibilityLabel === "Loading conversation")).toEqual([]);
+	for (const words of ["No messages", "Loading", "Pull down"]) expect(renderedText(tree)).not.toContain(words);
+});
+
+it("loads older history as you scroll near the top", async () => {
+	const { tree, hub } = await mount(twoTurns("ref-older"), { olderCursor: "cursor-1" });
+	scrollTo(tree, 2_000);
+	await settle();
+	expect(hub.requests.filter((request) => request.method === "thread/turns/list")).toEqual([]);
+	scrollTo(tree, 100);
+	await settle();
+	expect(hub.requests.filter((request) => request.method === "thread/turns/list").map((request) => request.params.cursor)).toEqual([
+		"cursor-1",
+	]);
+});
+
+it("doesn't page older history while the hub is away", async () => {
+	const { tree, hub } = await mount(twoTurns("ref-older-away"), { olderCursor: "cursor-1" });
+	harness.connection = { ...harness.connection, state: "connecting" };
+	const route = { key: "conversation-ref-older-away", name: "Conversation", params: { hubId: "hub-1", ref: "ref-older-away", title: "Session" } };
+	act(() => tree.update(<ConversationScreen route={route as unknown as ConversationScreenProps["route"]} navigation={navigation} />));
+	await settle();
+	scrollTo(tree, 100);
+	await settle();
+	expect(hub.requests.filter((request) => request.method === "thread/turns/list")).toEqual([]);
 });
 

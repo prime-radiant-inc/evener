@@ -10,7 +10,8 @@ import { typeRoles } from "../design/tokens";
 import { TranscriptImages } from "../TranscriptImages";
 import type { RunStep } from "../timeline";
 import { useColors, useTextScale } from "../ui";
-import { EVIDENCE_PREVIEW_LINES, type Evidence, stepEvidence } from "./evidence";
+import { EVIDENCE_PREVIEW_LINES, type Evidence } from "./evidence";
+import { useStepEvidence } from "./useStepEvidence";
 import { LogViewer } from "./LogViewer";
 
 type Palette = ReturnType<typeof useColors>["palette"];
@@ -136,7 +137,7 @@ function EvidenceView({ evidence, title }: { evidence: Evidence; title: string }
 }
 
 export function StepEvidence({ step, hubId }: { step: RunStep; hubId: string }) {
-	const evidence = useMemo(() => stepEvidence(step), [step]);
+	const evidence = useStepEvidence(step);
 	const title = step.detail.description || step.label;
 	return (
 		<View style={{ gap: 8 }}>

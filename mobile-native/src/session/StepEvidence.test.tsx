@@ -3,6 +3,7 @@ import { act } from "react-test-renderer";
 import { describe, expect, it, vi } from "vitest";
 import { render, textOf } from "../renderNative.testkit";
 import type { RunStep } from "../timeline";
+import { stepEvidence } from "./evidence";
 import { StepEvidence } from "./StepEvidence";
 
 vi.mock("react-native", async () => ({
@@ -10,6 +11,10 @@ vi.mock("react-native", async () => ({
 }));
 vi.mock("react-native-safe-area-context", () => ({ SafeAreaView: "SafeAreaView" }));
 vi.mock("../TranscriptImages", () => ({ TranscriptImages: "TranscriptImages" }));
+vi.mock("./evidence", async (importOriginal) => {
+	const original = await importOriginal<typeof import("./evidence")>();
+	return { ...original, stepEvidence: vi.fn(original.stepEvidence) };
+});
 
 const ALIVE_INK = "#12763B";
 const DANGER_INK = "#C51D23";
@@ -107,3 +112,14 @@ describe("a step's images", () => {
 		expect(thumbnails.map((node) => [node.props.images, node.props.hubId])).toEqual([[images, "hub-1"]]);
 	});
 });
+
+describe("a step whose object changes every frame", () => {
+	it("works out its evidence once while its data stays the same", () => {
+		const shell = step("shell", { output: "ok" });
+		const tree = render(<StepEvidence step={shell} hubId="hub-1" />);
+		const calls = vi.mocked(stepEvidence).mock.calls.length;
+		for (let frame = 0; frame < 3; frame += 1) act(() => tree.update(<StepEvidence step={{ ...shell }} hubId="hub-1" />));
+		expect(vi.mocked(stepEvidence).mock.calls.length).toBe(calls);
+	});
+});
+

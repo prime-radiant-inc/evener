@@ -11,7 +11,7 @@ import { typeRoles } from "../design/tokens";
 import { toggleDisclosure, useDisclosureOpen } from "../nativeDisclosure";
 import type { RunStep, TimelineRow } from "../timeline";
 import { useColors, useTextScale } from "../ui";
-import { stepEvidence } from "./evidence";
+import { useStepEvidence } from "./useStepEvidence";
 import { StepEvidence } from "./StepEvidence";
 import { runHeadText, runPartFailedText, runSummary, runSummaryText, stepTarget } from "./transcriptRows";
 
@@ -31,7 +31,7 @@ function StepLine({ step, hubId, sessionRef, evidenceOpenByDefault }: { step: Ru
 	// Rows re-render on every publish; keyed on the arguments text, a settled
 	// step parses its arguments (up to 64 KiB) once rather than every time.
 	const target = useMemo(() => stepTarget(step.label, step.detail.arguments), [step.label, step.detail.arguments]);
-	const hasEvidence = useMemo(() => stepEvidence(step).length > 0 || (step.images?.length ?? 0) > 0, [step]);
+	const hasEvidence = useStepEvidence(step).length > 0 || (step.images?.length ?? 0) > 0;
 	// The same key a standalone activity row uses, so a step keeps its open
 	// state when a level change unfolds it from its run.
 	const disclosureId = scopedDisclosureId(JSON.stringify([hubId, sessionRef]), JSON.stringify(["activity", step.id]));
