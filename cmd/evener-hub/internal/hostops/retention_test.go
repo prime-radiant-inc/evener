@@ -937,3 +937,56 @@ func TestMirrorDoesNotReproposeADroppedRemovedHostBoundary(t *testing.T) {
 		t.Fatalf("live mirror writes = %d, want 1", writes)
 	}
 }
+
+// TestByteBoundLeavesARecordSetThatAlreadyFits pins the baseline
+// short-circuit: a store already within StoreMaxBytes must not walk the victim
+// list at all. Without it, each host's first ledger entry charge can cross the
+// cap and, because the estimate only falls again when tombstones are smaller
+// than their records, the walk marks every terminal candidate and drops the
+// whole retained history on a write that never needed to compact.
+func TestByteBoundLeavesARecordSetThatAlreadyFits(t *testing.T) {
+	store, path := openRetentionStore(t, RetentionPolicy{TerminalPerHost: 50, TerminalStoreWide: 50, TombstonesPerHost: 50})
+	for i := range 3 {
+		record := createOp(t, store, "m4", fmt.Sprintf("op-%d", i))
+		finish(t, store, record.ID)
+	}
+	// A non-terminal transition changes the serialized size by ~nothing and
+	// leaves the three terminal candidates in place.
+	pending := createOp(t, store, "m4", "op-pending")
+	if _, err := store.Transition(pending.ID, StateRunning, nil); err != nil {
+		t.Fatalf("Transition(running): %v", err)
+	}
+	roomy := int64(len(mustReadFile(t, path)))
+	// The cap sits just above the current size: the fitting baseline must
+	// short-circuit before the first ledger charge (~len(host)+len(id)+overhead)
+	// could push the estimate over.
+	store.retention.StoreMaxBytes = roomy + 60
+	if _, err := store.Transition(pending.ID, StateComplete, func(r *Record) {
+		r.Result = &Result{OK: true, Message: "done"}
+	}); err != nil {
+		t.Fatalf("Transition(complete): %v", err)
+	}
+	if got := len(store.Records()); got != 4 {
+		t.Fatalf("records after the fitting write = %d, want all 4 retained", got)
+	}
+	if got := store.CursorEpoch().CompactSeq; got != 0 {
+		t.Fatalf("compactSeq = %d after a write that already fit, want 0", got)
+	}
+}
+
+// TestOpenRefusesACaseVariantRemovedHostKey pins the Low: the per-name removal
+// markers are objects this store decodes, so a key outside the canonical
+// spelling — including the case variants Go's decoder accepts — is refused on
+// load rather than silently rewritten on the next save.
+func TestOpenRefusesACaseVariantRemovedHostKey(t *testing.T) {
+	body := `{"version":1,"sequence":0,"allocatorHighWaterMark":0,"records":[],"removedHosts":{"m4":{"RemovedAt":"2026-09-26T00:00:00Z","generation":7,"incarnationId":"inc-1"}}}`
+	path := StorePath(t.TempDir())
+	writeRawStore(t, path, 0o600, body)
+	_, err := Open(path)
+	if !errors.Is(err, ErrStoreCorrupt) {
+		t.Fatalf("Open(case-variant removal marker key) = %v, want ErrStoreCorrupt", err)
+	}
+	if !strings.Contains(err.Error(), "removedHosts") && !strings.Contains(err.Error(), "RemovedAt") {
+		t.Fatalf("refusal = %v, want it to name the offending key", err)
+	}
+}

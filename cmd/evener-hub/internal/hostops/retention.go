@@ -824,7 +824,19 @@ func (s *Store) compactionVictimsForBytes(next *snapshot, candidates []compactio
 		return int64(len(raw))
 	}
 	measurements := 1
+	if len(candidates) == 0 {
+		// No terminal record can be a victim: skip the baseline measurement
+		// entirely (this runs on every commit that lands no terminal state).
+		return false
+	}
 	estimated := exactSize() // one exact baseline, then per-candidate deltas
+	if estimated <= policy.StoreMaxBytes {
+		// The store already fits: nothing to remove. Without this, the walk
+		// below would charge each host's first ledger entry, cross the cap and
+		// — because the estimate only falls again if tombstones are smaller
+		// than their records — mark every terminal candidate as a victim.
+		return false
+	}
 
 	changed := false
 	finalChecked := false

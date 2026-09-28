@@ -1106,7 +1106,11 @@ var ownedObjectKeys = map[string]map[string]struct{}{
 	"tombstones[].result":     keysOf("ok", "message"),
 	"tombstones[].progress[]": keysOf("ts", "message"),
 	"compactionMarks[]":       keysOf("seq", "hosts"),
-	"boundaries[]":            keysOf("generation", "incarnationId", "presenceEpoch"),
+	// The per-name removal markers are objects this store decodes, so their
+	// keys are canonical too: a case variant (Go matches JSON field names
+	// case-insensitively) would be silently rewritten on the next save.
+	"removedHosts[]": keysOf("removedAt", "generation", "incarnationId"),
+	"boundaries[]":   keysOf("generation", "incarnationId", "presenceEpoch"),
 	"tokens[]": keysOf("host", "value", "generation", "incarnationId", "entryHash",
 		"hubTomlFingerprint", "factsRevision", "factsCapturedAt", "targetPath",
 		"controllerRevision", "runningVersion", "runningHealthy", "processStartTime",
@@ -1322,15 +1326,19 @@ func validateKeys(raw []byte, owned map[string]map[string]struct{}) error {
 
 // ownedKeysFor resolves an object path to the canonical key set this store
 // decodes it with. A map's per-key object carries the key in its path —
-// "boundaries.<name>" — so the one map-valued record this store owns is matched
-// by its "boundaries[]" template; every other keyed object (the hand-written
-// file shapes a test or an operator might produce) is opaque to this rule.
+// "boundaries.<name>", "removedHosts.<name>" — so the store's map-valued
+// records are matched by their "<key>[]" template; every other keyed object
+// (the hand-written file shapes a test or an operator might produce) is opaque
+// to this rule.
 func ownedKeysFor(owned map[string]map[string]struct{}, path string) (map[string]struct{}, bool) {
 	if canonical, ok := owned[path]; ok {
 		return canonical, true
 	}
 	if key, ok := strings.CutPrefix(path, "boundaries."); ok && key != "" {
 		return owned["boundaries[]"], true
+	}
+	if key, ok := strings.CutPrefix(path, "removedHosts."); ok && key != "" {
+		return owned["removedHosts[]"], true
 	}
 	return nil, false
 }
