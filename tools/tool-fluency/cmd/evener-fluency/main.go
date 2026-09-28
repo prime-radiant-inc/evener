@@ -293,6 +293,11 @@ func runSuiteWithConfig(cfg runConfig) error {
 	if cfg.harness != "cli" && cfg.harness != "live" {
 		return errors.New("--harness must be cli or live")
 	}
+	// Validate the sandbox flags once, up front, so a typo fails before any
+	// probe launches instead of surfacing late from the spawned evener.
+	if _, _, err := parseSandboxFlags(cfg.sandbox, cfg.sandboxNet); err != nil {
+		return err
+	}
 	if cfg.outDir == "" {
 		cfg.outDir = filepath.Join("tools", "tool-fluency", "results", time.Now().UTC().Format("20060102T150405Z"))
 	}
@@ -806,12 +811,12 @@ func cliProbeArgs(cfg runConfig, probe probeFile, res probeResult) []string {
 	// A declared sandbox mode reaches the spawned evener too, so the CLI harness
 	// confines its worker exactly as the live harness does. Off forwards nothing,
 	// leaving today's CLI runs byte-identical.
-	if mode := strings.TrimSpace(cfg.sandbox); mode != "" && !sandbox.ModeIsOff(mode) {
-		net := strings.TrimSpace(cfg.sandboxNet)
-		if net == "" {
-			net = "on"
+	if mode, net, err := parseSandboxFlags(cfg.sandbox, cfg.sandboxNet); err == nil && mode != sandbox.ModeOff {
+		netName := "on"
+		if !net {
+			netName = "off"
 		}
-		args = append(args, "--sandbox", mode, "--sandbox-net", net)
+		args = append(args, "--sandbox", mode.String(), "--sandbox-net", netName)
 	}
 	args = append(args,
 		"--dir", res.WorkDir,
@@ -835,26 +840,43 @@ var runnerAttachAPILogger = cmdutil.AttachAPILogger
 var runnerMarshalEvent = json.Marshal
 var runnerProbeSandboxHost = func() sandbox.HostFacts { return sandbox.RealProber{}.Probe() }
 
-// configureLiveSandbox parses the live harness's --sandbox / --sandbox-net flags
-// onto the session config's carrier fields. Off (the flag default) leaves the
-// carrier zero, so a default live run is byte-identical to today. A non-off mode
-// records the mode + network decision so provisionLiveSandbox can enforce it. An
-// unknown mode or net value is a legible error rather than a silent native run.
-func configureLiveSandbox(cfg runConfig, sessCfg *agent.SessionConfig) error {
-	modeName := strings.TrimSpace(cfg.sandbox)
-	if modeName == "" {
-		modeName = sandbox.ModeOff.String()
+// parseSandboxFlags validates the runner's --sandbox / --sandbox-net values once,
+// for both harnesses, and returns the normalized wire mode and the resolved
+// network decision. Off (empty or "off") is mode off; for a non-off mode the net
+// value parses with empty defaulting to on. An unknown mode or net value is a
+// legible error rather than a silent native run.
+func parseSandboxFlags(modeName, netName string) (sandbox.Mode, bool, error) {
+	name := strings.TrimSpace(modeName)
+	if name == "" {
+		name = sandbox.ModeOff.String()
 	}
-	mode, err := sandbox.ParseMode(modeName)
+	mode, err := sandbox.ParseMode(name)
 	if err != nil {
-		return err
+		return sandbox.ModeOff, false, err
 	}
-	net, err := parseLiveSandboxNet(cfg.sandboxNet)
+	if mode == sandbox.ModeOff {
+		// Off: the net value does not apply, so it is not validated (matching
+		// the CLI-forwarding path, which ignores net when off).
+		return mode, true, nil
+	}
+	net, err := parseLiveSandboxNet(netName)
+	if err != nil {
+		return sandbox.ModeOff, false, err
+	}
+	return mode, net, nil
+}
+
+// configureLiveSandbox records the validated --sandbox / --sandbox-net decision
+// on the session config's carrier fields. Off (the flag default) leaves the
+// carrier zero, so a default live run is byte-identical to today; a non-off mode
+// records the mode + network so provisionLiveSandbox can enforce it.
+func configureLiveSandbox(cfg runConfig, sessCfg *agent.SessionConfig) error {
+	mode, net, err := parseSandboxFlags(cfg.sandbox, cfg.sandboxNet)
 	if err != nil {
 		return err
 	}
 	if mode == sandbox.ModeOff {
-		return nil // off: today's behavior; carrier stays zero
+		return nil
 	}
 	sessCfg.Sandbox = mode.String()
 	sessCfg.SandboxNet = &net
@@ -951,7 +973,11 @@ func runLiveProbe(ctx context.Context, cfg runConfig, probe probeFile, res *prob
 	}
 	sess, err := runnerNewSession(client, profile, env, sessCfg)
 	if err != nil {
-		env.DisposeUnadoptedScratch()
+		// The session that would have owned whatever this env provisioned was
+		// never built; settle its scratch against the root retention manifest
+		// the way the production launch path does, rather than removing a
+		// directory a durable manifest may still reference.
+		agent.DisposeRootScratchAfterFailure(sessCfg.StateDir, env)
 		return err
 	}
 	res.SessionID = sess.ID()

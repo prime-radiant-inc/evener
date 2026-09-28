@@ -16,14 +16,25 @@ import (
 	"primeradiant.com/evener/llm"
 )
 
-func boolPtr(b bool) *bool { return &b }
-
 // enforceableSandboxHost is a host that can serve the full mode matrix: bwrap
 // present and able to create its namespaces. Tests use it instead of probing
 // the live host so the assertion never depends on the machine.
 func enforceableSandboxHost(t *testing.T) sandbox.HostFacts {
 	t.Helper()
 	return sandbox.HostFacts{OS: "linux", Home: t.TempDir(), BwrapPath: "/bin/true", BwrapCapable: true}
+}
+
+// newSandboxTestEnv builds a local environment rooted at dir and registers its
+// teardown, so a provisioned scratch (lease and directory) never outlives the
+// test.
+func newSandboxTestEnv(t *testing.T, dir string) *execenv.LocalExecutionEnvironment {
+	t.Helper()
+	env := execenv.NewLocalExecutionEnvironment(dir)
+	t.Cleanup(func() {
+		env.Cleanup()
+		env.DisposeUnadoptedScratch()
+	})
+	return env
 }
 
 // TestConfigureLiveSandbox: the live harness's sandbox carrier is off unless a
@@ -62,6 +73,10 @@ func TestConfigureLiveSandbox(t *testing.T) {
 	if err := configureLiveSandbox(runConfig{sandbox: "read-only", sandboxNet: "yes"}, &cfg); err == nil {
 		t.Fatal("unknown sandbox-net value must error")
 	}
+	// With the sandbox off, --sandbox-net does not apply and is not validated.
+	if err := configureLiveSandbox(runConfig{sandbox: "off", sandboxNet: "yes"}, &agent.SessionConfig{}); err != nil {
+		t.Fatalf("off mode must not validate --sandbox-net: %v", err)
+	}
 }
 
 // TestProvisionLiveSandboxEnforcesAndFailsClosed: off is a no-op; a declared
@@ -71,7 +86,7 @@ func TestProvisionLiveSandboxEnforcesAndFailsClosed(t *testing.T) {
 	work := t.TempDir()
 
 	// Off: no host probe, env stays unsandboxed.
-	env := execenv.NewLocalExecutionEnvironment(work)
+	env := newSandboxTestEnv(t, work)
 	if err := provisionLiveSandbox(env, &agent.SessionConfig{}, work); err != nil {
 		t.Fatalf("off provisioning: %v", err)
 	}
@@ -80,8 +95,8 @@ func TestProvisionLiveSandboxEnforcesAndFailsClosed(t *testing.T) {
 	}
 
 	// Declared + enforceable host: the env's file tools and shell are confined.
-	env = execenv.NewLocalExecutionEnvironment(work)
-	cfg := agent.SessionConfig{Sandbox: "read-only", SandboxNet: boolPtr(true)}
+	env = newSandboxTestEnv(t, work)
+	cfg := agent.SessionConfig{Sandbox: "read-only", SandboxNet: new(true)}
 	if err := provisionLiveSandboxWithHost(env, &cfg, work, enforceableSandboxHost(t)); err != nil {
 		t.Fatalf("enforceable provisioning: %v", err)
 	}
@@ -91,14 +106,13 @@ func TestProvisionLiveSandboxEnforcesAndFailsClosed(t *testing.T) {
 
 	// Declared + a host that cannot enforce: fail closed (a typed refusal) and
 	// leave the env unsandboxed so nothing can run native by accident.
-	env = execenv.NewLocalExecutionEnvironment(work)
-	cfg = agent.SessionConfig{Sandbox: "read-only", SandboxNet: boolPtr(true)}
+	env = newSandboxTestEnv(t, work)
+	cfg = agent.SessionConfig{Sandbox: "read-only", SandboxNet: new(true)}
 	err := provisionLiveSandboxWithHost(env, &cfg, work, sandbox.HostFacts{OS: "linux"})
 	if err == nil {
 		t.Fatal("a missing sandbox backend must fail closed")
 	}
-	var refusal *sandbox.RefusalError
-	if !errors.As(err, &refusal) {
+	if _, ok := errors.AsType[*sandbox.RefusalError](err); !ok {
 		t.Fatalf("want *sandbox.RefusalError, got %T: %v", err, err)
 	}
 	if env.Sandbox != nil || env.Wrapper != nil {
@@ -111,6 +125,10 @@ func TestProvisionLiveSandboxEnforcesAndFailsClosed(t *testing.T) {
 func TestCLIProbeArgsForwardSandbox(t *testing.T) {
 	args := cliProbeArgs(runConfig{model: "openai/m", sandbox: "restricted", sandboxNet: "off"}, probeFile{Prompt: "p"}, probeResult{WorkDir: "/w", StateDir: "/s"})
 	assertSubsequence(t, args, []string{"--sandbox", "restricted", "--sandbox-net", "off"})
+
+	// The forwarded mode is normalized to the wire name the child expects.
+	normalized := cliProbeArgs(runConfig{model: "openai/m", sandbox: "READ-ONLY"}, probeFile{}, probeResult{})
+	assertSubsequence(t, normalized, []string{"--sandbox", "read-only"})
 
 	off := cliProbeArgs(runConfig{model: "openai/m"}, probeFile{}, probeResult{})
 	for _, a := range off {
@@ -155,8 +173,7 @@ func TestRunLiveProbeFailsClosedBeforeSession(t *testing.T) {
 	if err == nil {
 		t.Fatal("runLiveProbe must fail closed when the declared sandbox backend is unavailable")
 	}
-	var refusal *sandbox.RefusalError
-	if !errors.As(err, &refusal) {
+	if _, ok := errors.AsType[*sandbox.RefusalError](err); !ok {
 		t.Fatalf("want *sandbox.RefusalError, got %T: %v", err, err)
 	}
 	if sessionCalled {
