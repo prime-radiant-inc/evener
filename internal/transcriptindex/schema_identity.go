@@ -57,8 +57,7 @@ func schemaFieldFingerprint() string {
 				fields = append(fields, prefix+":time.Time")
 				return
 			}
-			for i := 0; i < t.NumField(); i++ {
-				f := t.Field(i)
+			for f := range t.Fields() {
 				if f.PkgPath != "" { // unexported: encoding/json ignores it
 					continue
 				}
@@ -80,7 +79,7 @@ func schemaFieldFingerprint() string {
 			fields = append(fields, prefix+":"+t.String())
 		}
 	}
-	walk("", reflect.TypeOf(transcript.Entry{}), 0)
+	walk("", reflect.TypeFor[transcript.Entry](), 0)
 	sort.Strings(fields)
 	sum := sha256.Sum256([]byte(strings.Join(fields, "\n")))
 	return hex.EncodeToString(sum[:8])
