@@ -23,17 +23,22 @@ export const SHUT_DOWN = new Set(["notLoaded", "closed", "ended"]);
 
 export function sessionStateLine(session: StateSource, now: number): SessionStateLine {
 	const type = session.status.type;
+	// This follows the Board's own attention order (board/attention.ts's
+	// boardState, which matches the hub's NeedsYouBand) exactly, so the two
+	// surfaces never disagree about the same session: failed, restart needed,
+	// warning and "already shut down" are checked before a pending question
+	// or approval, so a stale escalation on any of those never masks them.
 	if (type === "systemError") return { state: "failed", text: "Failed" };
 	if (type === "restartRequired") return { state: "restartNeeded", text: "Restart needed" };
+	if (type === "warning") return { state: "warning", text: "Warning" };
+	if (SHUT_DOWN.has(type)) return { state: "shutDown", text: "Shut down" };
 	// A question outranks an approval, as on the Board.
 	if (type === "awaiting" && session.askPending) return { state: "question", text: "Asks a question" };
 	if (session.pendingEscalations.length > 0) return { state: "approval", text: "Asks for approval" };
-	if (type === "warning") return { state: "warning", text: "Warning" };
 	if (type === "active") {
 		const started = hubTime(session.activeTurnStartedAt);
 		return { state: "working", text: started === null ? "Working" : `Working · ${compactDuration(now - started)}` };
 	}
-	if (SHUT_DOWN.has(type)) return { state: "shutDown", text: "Shut down" };
 	const finished = lastCompletion(session.turns);
 	return {
 		state: "idle",

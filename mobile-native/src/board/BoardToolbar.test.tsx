@@ -60,3 +60,17 @@ it("opens a new session from its trailing button, which is disabled when it can'
 	);
 	expect(disabled.props.disabled).toBe(true);
 });
+
+it("leads with Select while the Board shows a session, and not otherwise", () => {
+	const onSelect = vi.fn();
+	const select = (tree: ReturnType<typeof render>) =>
+		tree.root.findAll((node) => node.type === ("Pressable" as never) && node.props.accessibilityLabel === "Select");
+	const tree = render(
+		<BoardToolbar state="ready" fatal={false} newSessionDisabled={false} onNewSession={() => {}} onSelect={onSelect} />,
+	);
+	const [button] = select(tree);
+	expect(button.findByType("Text" as never).props.style).toMatchObject({ fontSize: 17, color: palette.accentInk });
+	act(() => button.props.onPress());
+	expect(onSelect).toHaveBeenCalledTimes(1);
+	expect(select(render(toolbar("ready")))).toHaveLength(0);
+});

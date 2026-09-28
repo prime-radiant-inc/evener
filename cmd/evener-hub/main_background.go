@@ -76,6 +76,46 @@ func watchHubAttention(ctx context.Context, poke <-chan struct{}, archive *hubco
 	}
 }
 
+// refreshHubMessageSearch keeps the message search index (S14) in step with
+// the transcripts the past index lists: once now, then every interval (the
+// past index's own rebuild interval). A refresh reads again only the
+// transcripts that changed.
+func refreshHubMessageSearch(ctx context.Context, index *hubcore.MessageSearch, past *hubcore.PastIndex, interval time.Duration) {
+	if index == nil || ctx.Err() != nil {
+		return
+	}
+	ticks, stop := hubTicker(interval)
+	defer stop()
+	refresh := func() {
+		failures, err := index.Refresh(ctx, messageSearchSessions(past.All()))
+		for _, failure := range failures {
+			fmt.Fprintf(os.Stderr, "[hub] message search: session %s: %v\n", failure.SessionID, failure.Err)
+		}
+		if err != nil && ctx.Err() == nil {
+			fmt.Fprintf(os.Stderr, "[hub] message search: %v\n", err)
+		}
+	}
+	refresh()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticks:
+			refresh()
+		}
+	}
+}
+
+// messageSearchSessions is every session the past index lists, with its
+// transcript.
+func messageSearchSessions(entries []hubcore.PastEntry) []hubcore.MessageSearchSession {
+	sessions := make([]hubcore.MessageSearchSession, 0, len(entries))
+	for _, entry := range entries {
+		sessions = append(sessions, hubcore.MessageSearchSession{ID: entry.Meta.ID, TranscriptPath: pastTranscriptPath(entry)})
+	}
+	return sessions
+}
+
 // watchHubNotices announces the hub's notice changes (S11) until ctx ends.
 func watchHubNotices(ctx context.Context, web *WebServer) {
 	if ctx.Err() != nil {
