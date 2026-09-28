@@ -53,7 +53,11 @@ export function canonicalJson(value: unknown): string {
       .map((key) => `${JSON.stringify(key)}:${canonicalJson(record[key])}`)
       .join(",")}}`;
   }
-  return JSON.stringify(value);
+  // JSON.stringify(undefined) returns the undefined VALUE, not a string,
+  // which would violate this function's declared return type; a bare
+  // canonicalJson(undefined) would then flow into a byte compare as the
+  // non-string it is. Name the case explicitly so the contract holds.
+  return value === undefined ? "undefined" : JSON.stringify(value);
 }
 
 /** What the port held is not a checkpoint this build can read. Distinct from
