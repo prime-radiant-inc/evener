@@ -1305,9 +1305,6 @@ func TestBootFinalizesTheMarkerWhenTheCompensationClearsWithoutRestoring(t *test
 	if _, err := fixture.store.PurgeCompensated("keep", []string{token.Value}); err != nil {
 		t.Fatalf("PurgeCompensated: %v", err)
 	}
-	t.Logf("DEBUG store staged after re-install: %+v", m.cfg.store.stagedSnapshot())
-	cfgDebug, _ := readPipelineConfig(t, fixture.configPath)
-	t.Logf("DEBUG file staged after re-install: %+v", cfgDebug.StagedReceipts)
 	// The boot loads the committed file's live set: the removed host is not
 	// registered, so the recorded teardown is a no-op that succeeds.
 	registry, err := hostreg.New(nil)

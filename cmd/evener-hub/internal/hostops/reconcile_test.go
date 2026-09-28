@@ -115,14 +115,14 @@ func TestReconcileMirrorRollsBackATornStoreMirror(t *testing.T) {
 		t.Fatalf("tombstones after the rollback = %+v, want only %s", tombstones, keptTombstone.ID)
 	}
 	// A second pass finds nothing left to do and writes nothing.
-	before := storeSnapshotForTest(t, path)
+	before := storeFileBytesForTest(t, path)
 	if result, err := store.ReconcileMirror(MirrorView{
 		Marks: map[string]Boundary{"m4": {Generation: 9, IncarnationID: "inc-7", PresenceEpoch: 4}},
 		Live:  map[string]struct{}{"m4": {}},
 	}); err != nil || len(result.RolledBack) != 0 {
 		t.Fatalf("second ReconcileMirror = %+v/%v, want no rollback", result, err)
 	}
-	if after := storeSnapshotForTest(t, path); after != before {
+	if after := storeFileBytesForTest(t, path); after != before {
 		t.Fatal("a converged mirror pass rewrote the store")
 	}
 }
@@ -156,14 +156,14 @@ func TestReconcileMirrorPushesAFileMarkForward(t *testing.T) {
 		t.Fatal("the missing mirror was not created from the file mark")
 	}
 	// Converged: a second pass is a no-op.
-	before := storeSnapshotForTest(t, path)
+	before := storeFileBytesForTest(t, path)
 	if _, err := reopened.ReconcileMirror(MirrorView{
 		Marks: map[string]Boundary{"m4": mark, "m7": {Generation: 3, IncarnationID: "inc-3", PresenceEpoch: 1}},
 		Live:  map[string]struct{}{"m4": {}, "m7": {}},
 	}); err != nil {
 		t.Fatalf("second ReconcileMirror: %v", err)
 	}
-	if after := storeSnapshotForTest(t, path); after != before {
+	if after := storeFileBytesForTest(t, path); after != before {
 		t.Fatal("a converged mirror pass rewrote the store")
 	}
 }
@@ -225,7 +225,7 @@ func TestReconcileMirrorKeepsAMarkerAuthorizedMirror(t *testing.T) {
 		t.Fatalf("mirror = %+v, want the authorized %+v", boundary, mirror)
 	}
 	// The pass wrote nothing.
-	before := storeSnapshotForTest(t, path)
+	before := storeFileBytesForTest(t, path)
 	if _, err := store.ReconcileMirror(MirrorView{
 		Marks:   map[string]Boundary{"m4": {Generation: 7, IncarnationID: "inc-7", PresenceEpoch: 4}},
 		Live:    map[string]struct{}{"m4": {}},
@@ -233,7 +233,7 @@ func TestReconcileMirrorKeepsAMarkerAuthorizedMirror(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("second ReconcileMirror: %v", err)
 	}
-	if after := storeSnapshotForTest(t, path); after != before {
+	if after := storeFileBytesForTest(t, path); after != before {
 		t.Fatal("an authorized mirror pass rewrote the store")
 	}
 }
@@ -247,7 +247,7 @@ func TestReconcileMirrorIsOneAtomicWrite(t *testing.T) {
 	}, nil); err != nil {
 		t.Fatalf("MirrorBoundaries: %v", err)
 	}
-	before := storeSnapshotForTest(t, path)
+	before := storeFileBytesForTest(t, path)
 	store.faults.beforeRename = func() error { return errors.New("injected crash before the rename") }
 	if _, err := store.ReconcileMirror(MirrorView{
 		Marks: map[string]Boundary{"m4": {Generation: 7, IncarnationID: "inc-7", PresenceEpoch: 4}},
@@ -255,7 +255,7 @@ func TestReconcileMirrorIsOneAtomicWrite(t *testing.T) {
 	}); err == nil {
 		t.Fatal("the failing pass reported success")
 	}
-	if after := storeSnapshotForTest(t, path); after != before {
+	if after := storeFileBytesForTest(t, path); after != before {
 		t.Fatal("a pre-rename failure changed the store file")
 	}
 	if boundary, ok := store.Boundary("m4"); !ok || boundary.IncarnationID != "inc-9" {
@@ -384,11 +384,11 @@ func TestClearHostRemovedMarksReversesOnlyTheRestoredPair(t *testing.T) {
 		t.Fatalf("another incarnation's record = %+v/%v, want its mark kept", still, ok)
 	}
 	// Idempotent: a second clear finds nothing and writes nothing.
-	before := storeSnapshotForTest(t, path)
+	before := storeFileBytesForTest(t, path)
 	if cleared, err := reopened.ClearHostRemovedMarks("m4", HostRemovedMark{Generation: 7, IncarnationID: "inc-7"}); err != nil || cleared != 0 {
 		t.Fatalf("second ClearHostRemovedMarks = %d/%v, want 0/nil", cleared, err)
 	}
-	if after := storeSnapshotForTest(t, path); after != before {
+	if after := storeFileBytesForTest(t, path); after != before {
 		t.Fatal("a no-op mark clear rewrote the store")
 	}
 }

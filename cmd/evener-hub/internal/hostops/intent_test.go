@@ -45,11 +45,11 @@ func TestApplyStoreSyncPurgesExactlyTheNamedRows(t *testing.T) {
 	_ = other
 	// The store-already-applied no-op: a re-applied intent finds nothing to
 	// delete and writes nothing.
-	before := storeSnapshotForTest(t, path)
+	before := storeFileBytesForTest(t, path)
 	if purged, err := store.ApplyStoreSync(intent); err != nil || purged != 0 {
 		t.Fatalf("second ApplyStoreSync = %d/%v, want 0/nil", purged, err)
 	}
-	if after := storeSnapshotForTest(t, path); after != before {
+	if after := storeFileBytesForTest(t, path); after != before {
 		t.Fatal("a re-applied intent that found nothing to delete rewrote the store")
 	}
 }
@@ -392,18 +392,18 @@ func TestApplyHostRemovedPassMarksOnlyTheMatchingPair(t *testing.T) {
 		t.Fatal("the removed host's token row survived the pass")
 	}
 	// Idempotent: a second pass marks nothing and writes nothing.
-	before := storeSnapshotForTest(t, path)
+	before := storeFileBytesForTest(t, path)
 	if marked, dropped, err := reopened.ApplyHostRemovedPass(map[string]HostRemovedMark{"m4": {Generation: 7, IncarnationID: "inc-7"}}); err != nil || marked != 0 || dropped != 0 {
 		t.Fatalf("second ApplyHostRemovedPass = %d/%d/%v, want 0/0/nil", marked, dropped, err)
 	}
-	if after := storeSnapshotForTest(t, path); after != before {
+	if after := storeFileBytesForTest(t, path); after != before {
 		t.Fatal("a no-op host-removed pass rewrote the store")
 	}
 }
 
-// storeSnapshotForTest returns the raw store file bytes, so a test can prove a
+// storeFileBytesForTest returns the raw store file bytes, so a test can prove a
 // no-op pass wrote nothing.
-func storeSnapshotForTest(t *testing.T, path string) string {
+func storeFileBytesForTest(t *testing.T, path string) string {
 	t.Helper()
 	raw, err := os.ReadFile(path)
 	if err != nil {
