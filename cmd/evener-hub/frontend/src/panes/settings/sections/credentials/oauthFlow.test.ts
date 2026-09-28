@@ -1,10 +1,43 @@
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import type { InstanceEntry } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { captureNewTabs, NEW_TAB_POLICY, openedNewTab } from "../../../../shell/openInNewTab.testSupport";
 import { connectionStore } from "../../../../stores/connection";
 import { resetCredentialsStoreForTests } from "../../../../stores/credentials";
-import { startOAuthFlow, supportsHostDeviceSignIn } from "./oauthFlow";
+import { CODEX_AUTH_SCHEME, startOAuthFlow, supportsHostDeviceSignIn } from "./oauthFlow";
+
+// The CROSS-LANGUAGE half of this contract. CODEX_AUTH_SCHEME above decides
+// which remote-host instances are offered "Sign in on host", and the hub's own
+// gate (cmd/evener-hub/app_auth.go's instanceIsCodex ->
+// registry.AuthOAuthOpenAICodex) decides which the host will accept. The two
+// live in different languages and were each pinned only to a literal of their
+// own, so renaming one left the other green. Both are pinned now to the
+// checked-in value at cmd/evener-hub/codex_auth_scheme.txt, read here and by
+// app_auth_scheme_pin_test.go. This test's job is to prove this end still IS
+// that value, so an edit to the shipped constant fails rather than silently
+// diverging from the host.
+const here = dirname(fileURLToPath(import.meta.url));
+const SHARED_SCHEME_PATH = join(here, "../../../../../../codex_auth_scheme.txt");
+
+function sharedCodexAuthScheme(): string[] {
+  return readFileSync(SHARED_SCHEME_PATH, "utf8")
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => line !== "" && !line.startsWith("#"));
+}
+
+describe("CODEX_AUTH_SCHEME cross-language pin", () => {
+  test("is exactly the scheme the shared pin names", () => {
+    const shared = sharedCodexAuthScheme();
+    // An empty or multi-value pin would make the assertion vacuous, so the
+    // pin's own shape is checked rather than assumed.
+    expect(shared).toHaveLength(1);
+    expect(CODEX_AUTH_SCHEME).toBe(shared[0]);
+  });
+});
 
 beforeEach(() => {
   connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });

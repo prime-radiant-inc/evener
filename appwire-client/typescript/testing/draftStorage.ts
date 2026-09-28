@@ -51,24 +51,29 @@ export function memoryDraftStorage<Checkpoint>(initial: unknown = null): MemoryD
     },
     insertIfAbsent: (checkpoint: Checkpoint) => {
       if (saveFails) throw new Error("disk unavailable");
-      if (stored !== null) return false;
+      // load() and every real consumer classify BOTH null and undefined as
+      // absent, so this must use the loose compare: a port holding the
+      // undefined sentinel is empty too, not a record to refuse a first
+      // insert over.
+      if (stored != null) return false;
       stored = structuredClone(checkpoint);
       return true;
     },
     removeIf: (identity: unknown) => {
       lastRemoveIf = structuredClone(identity);
       // Nothing stored is never a match, whatever identity is named - a null
-      // `stored` would otherwise collide with a null/undefined identity's
-      // own canonical encoding. Compared canonically (key order normalized),
-      // the same compare a byte-aware port runs, so a same-fields-different-
-      // key-order record behaves identically here and in production.
-      if (stored === null || canonicalJson(identity) !== canonicalJson(stored)) return false;
+      // or undefined `stored` would otherwise collide with a null/undefined
+      // identity's own canonical encoding. Compared canonically (key order
+      // normalized), the same compare a byte-aware port runs, so a
+      // same-fields-different-key-order record behaves identically here and
+      // in production.
+      if (stored == null || canonicalJson(identity) !== canonicalJson(stored)) return false;
       stored = null;
       return true;
     },
     replaceIf: (expected: unknown, next: Checkpoint) => {
       if (replaceFails) throw new Error("disk unavailable");
-      if (stored === null || canonicalJson(expected) !== canonicalJson(stored)) return false;
+      if (stored == null || canonicalJson(expected) !== canonicalJson(stored)) return false;
       stored = structuredClone(next);
       return true;
     },

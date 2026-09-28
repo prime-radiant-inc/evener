@@ -292,19 +292,19 @@ it("keeps every system-event row the seam produced and masks usage fields indepe
 			"routine",
 		"error",
 	]);
-	expect(result.usage).toEqual({ usage: null, cost: null });
+	expect(result.usage).toEqual({ derived: null, cumulative: null, cost: null });
 });
 
 // tokenCounts gates the token aggregate and estimatedCost gates the cost, each
 // on its own: a crossed gate or an always-null branch fails one of these rows.
 it.each([
-	{ tokenCounts: true, estimatedCost: true, usage: { inputTokens: 10, outputTokens: 20, scope: "session" }, cost: "$1" },
-	{ tokenCounts: true, estimatedCost: false, usage: { inputTokens: 10, outputTokens: 20, scope: "session" }, cost: null },
-	{ tokenCounts: false, estimatedCost: true, usage: null, cost: "$1" },
-	{ tokenCounts: false, estimatedCost: false, usage: null, cost: null },
+	{ tokenCounts: true, estimatedCost: true, derived: { inputTokens: 10, outputTokens: 20, scope: "session" }, cumulative: null, cost: "$1" },
+	{ tokenCounts: true, estimatedCost: false, derived: { inputTokens: 10, outputTokens: 20, scope: "session" }, cumulative: null, cost: null },
+	{ tokenCounts: false, estimatedCost: true, derived: null, cumulative: null, cost: "$1" },
+	{ tokenCounts: false, estimatedCost: false, derived: null, cumulative: null, cost: null },
 ])(
 	"passes usage through only under tokenCounts=$tokenCounts and cost only under estimatedCost=$estimatedCost",
-	({ tokenCounts, estimatedCost, usage, cost }) => {
+	({ tokenCounts, estimatedCost, derived, cumulative, cost }) => {
 		const result = projectNativeTranscript(
 			conversation([]),
 			makeTranscriptDisplayConfig(
@@ -312,7 +312,7 @@ it.each([
 				{ tokenCounts, estimatedCost },
 			),
 		);
-		expect(result.usage).toEqual({ usage, cost });
+		expect(result.usage).toEqual({ derived, cumulative, cost });
 	},
 );
 
@@ -325,7 +325,8 @@ it("reads an unknown cost as null even when estimatedCost is on", () => {
 		),
 	);
 	expect(result.usage).toEqual({
-		usage: { inputTokens: 10, outputTokens: 20, scope: "session" },
+		derived: { inputTokens: 10, outputTokens: 20, scope: "session" },
+		cumulative: null,
 		cost: null,
 	});
 });
@@ -340,7 +341,8 @@ it("falls back to summing the loaded turns when the thread has no cumulative tot
 		makeTranscriptDisplayConfig({ kind: "preset", level: "chat" }, { tokenCounts: true, estimatedCost: false }),
 	);
 	expect(result.usage).toEqual({
-		usage: { inputTokens: 8237, outputTokens: 120, scope: "session" },
+		derived: { inputTokens: 8237, outputTokens: 120, scope: "session" },
+		cumulative: null,
 		cost: null,
 	});
 });
@@ -354,7 +356,8 @@ it("labels a derived total over a truncated turn window as covering only the loa
 		makeTranscriptDisplayConfig({ kind: "preset", level: "chat" }, { tokenCounts: true, estimatedCost: false }),
 	);
 	expect(result.usage).toEqual({
-		usage: { inputTokens: 500, outputTokens: 20, scope: "loaded" },
+		derived: { inputTokens: 500, outputTokens: 20, scope: "loaded" },
+		cumulative: null,
 		cost: null,
 	});
 });
@@ -368,7 +371,7 @@ it("keeps a cache-only cumulative breakdown even when sessionTokens finds no inp
 		conversation([], { usage: { cacheReadTokens: 42 }, turns: [] }),
 		makeTranscriptDisplayConfig({ kind: "preset", level: "chat" }, { tokenCounts: true, estimatedCost: false }),
 	);
-	expect(result.usage).toEqual({ usage: { cacheReadTokens: 42 }, cost: null });
+	expect(result.usage).toEqual({ derived: null, cumulative: { cacheReadTokens: 42 }, cost: null });
 });
 
 it("keeps a total-only cumulative breakdown even when sessionTokens finds no input/output data", () => {
@@ -376,7 +379,7 @@ it("keeps a total-only cumulative breakdown even when sessionTokens finds no inp
 		conversation([], { usage: { totalTokens: 500 }, turns: [] }),
 		makeTranscriptDisplayConfig({ kind: "preset", level: "chat" }, { tokenCounts: true, estimatedCost: false }),
 	);
-	expect(result.usage).toEqual({ usage: { totalTokens: 500 }, cost: null });
+	expect(result.usage).toEqual({ derived: null, cumulative: { totalTokens: 500 }, cost: null });
 });
 
 // D18 B3 round 6 (Low): a cumulative field's Go zero value signals absence,
@@ -388,7 +391,7 @@ it("treats a zero cacheReadTokens/totalTokens the same as an absent one", () => 
 		conversation([], { usage: { cacheReadTokens: 0, totalTokens: 0 }, turns: [] }),
 		makeTranscriptDisplayConfig({ kind: "preset", level: "chat" }, { tokenCounts: true, estimatedCost: false }),
 	);
-	expect(result.usage).toEqual({ usage: null, cost: null });
+	expect(result.usage).toEqual({ derived: null, cumulative: null, cost: null });
 });
 
 // A sparse cumulative object (total-only, no input/output) alongside a
@@ -405,17 +408,38 @@ it("keeps the cumulative breakdown's scope independent of a turn-summed loaded r
 		makeTranscriptDisplayConfig({ kind: "preset", level: "chat" }, { tokenCounts: true, estimatedCost: false }),
 	);
 	expect(result.usage).toEqual({
-		usage: { inputTokens: 60, outputTokens: 40, scope: "loaded", totalTokens: 500 },
+		derived: { inputTokens: 60, outputTokens: 40, scope: "loaded" },
+		cumulative: { totalTokens: 500 },
 		cost: null,
 	});
 	// The data alone doesn't show which unit each field renders with - that's
 	// usageRows's job, and it must never stamp the whole-session Total row
 	// with the derived pair's "loaded" scope.
-	expect(usageRows(result.usage!.usage)).toEqual([
+	expect(usageRows(result.usage!)).toEqual([
 		{ label: "Input", value: 60, unit: "tokens (loaded turns)" },
 		{ label: "Output", value: 40, unit: "tokens (loaded turns)" },
 		{ label: "Total", value: 500, unit: "tokens" },
 	]);
+});
+
+// The derived input/output pair carries the scope it counts inside `derived`,
+// and the whole-session cumulative breakdown is its own field. Keeping them
+// apart is what stops a "loaded"-scoped derived pair from ever reading as the
+// scope of the cumulative Cached/Total figures.
+it("keeps the derived pair and its scope in their own field, apart from the cumulative breakdown", () => {
+	const result = projectNativeTranscript(
+		conversation([], {
+			usage: { totalTokens: 500 },
+			turns: [usageTurn("t1", 60, 40)],
+			olderCursor: "cursor_1",
+		}),
+		makeTranscriptDisplayConfig({ kind: "preset", level: "chat" }, { tokenCounts: true, estimatedCost: false }),
+	);
+	expect(result.usage).toEqual({
+		derived: { inputTokens: 60, outputTokens: 40, scope: "loaded" },
+		cumulative: { totalTokens: 500 },
+		cost: null,
+	});
 });
 
 it("does not mutate clustered members or source items while projecting", () => {
@@ -761,7 +785,10 @@ it.each([null, undefined])(
 // unit borrowed from a different row's scope.
 it("labels Input/Output with the derived pair's own scope and Cached/Total plainly, even when the derived pair is loaded-scoped", () => {
 	expect(
-		usageRows({ inputTokens: 60, outputTokens: 40, scope: "loaded", cacheReadTokens: 10, totalTokens: 500 }),
+		usageRows({
+			derived: { inputTokens: 60, outputTokens: 40, scope: "loaded" },
+			cumulative: { cacheReadTokens: 10, totalTokens: 500 },
+		}),
 	).toEqual([
 		{ label: "Input", value: 60, unit: "tokens (loaded turns)" },
 		{ label: "Output", value: 40, unit: "tokens (loaded turns)" },
@@ -771,7 +798,9 @@ it("labels Input/Output with the derived pair's own scope and Cached/Total plain
 });
 
 it("renders only the cumulative Total row when there is no derived input/output pair", () => {
-	expect(usageRows({ totalTokens: 500 })).toEqual([{ label: "Total", value: 500, unit: "tokens" }]);
+	expect(usageRows({ derived: null, cumulative: { totalTokens: 500 } })).toEqual([
+		{ label: "Total", value: 500, unit: "tokens" },
+	]);
 });
 
 it("renders no rows for null usage", () => {
