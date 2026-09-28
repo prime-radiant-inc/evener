@@ -189,7 +189,6 @@ func TestSessionPreToolUseUpdatedInputNormalizesRetainedDefaultsAtExecution(t *t
 	sess := newSession(t, withConfig(SessionConfig{
 		StateDir:         stateDir,
 		MaxSubagentDepth: 1,
-		NoProjectPrompts: true,
 		testOnly:         testConfig{skipGitSnapshot: true, minimalSystemPrompt: true, noSyncJobStore: true},
 	}))
 	jobID := identifier.MustNewJobID(sess.ID())
@@ -221,7 +220,6 @@ func TestSessionRetainedReadNormalizationTelemetrySurvivesFinalSchemaFailure(t *
 	sess := newSession(t, withConfig(SessionConfig{
 		StateDir:         stateDir,
 		MaxSubagentDepth: 1,
-		NoProjectPrompts: true,
 		testOnly:         testConfig{skipGitSnapshot: true, minimalSystemPrompt: true, noSyncJobStore: true},
 	}))
 	jobID := identifier.MustNewJobID(sess.ID())
@@ -281,7 +279,6 @@ func TestSessionSecondPassRetainedNormalizationTelemetryAppliesFinalArgs(t *test
 	sess := newSession(t, withConfig(SessionConfig{
 		StateDir:         stateDir,
 		MaxSubagentDepth: 1,
-		NoProjectPrompts: true,
 		testOnly:         testConfig{skipGitSnapshot: true, minimalSystemPrompt: true, noSyncJobStore: true},
 	}))
 	jobID := identifier.MustNewJobID(sess.ID())
@@ -375,7 +372,6 @@ func TestSessionExecToolRepairsMaterializedRetainedReadDefaults(t *testing.T) {
 		sess := newSession(t, withConfig(SessionConfig{
 			StateDir:         stateDir,
 			MaxSubagentDepth: 1,
-			NoProjectPrompts: true,
 			testOnly: testConfig{
 				skipGitSnapshot:     true,
 				minimalSystemPrompt: true,
@@ -466,7 +462,6 @@ func TestSessionExecToolNormalizesCoercedRetainedReadDefaults(t *testing.T) {
 		sess := newSession(t, withConfig(SessionConfig{
 			StateDir:         stateDir,
 			MaxSubagentDepth: 1,
-			NoProjectPrompts: true,
 			testOnly: testConfig{
 				skipGitSnapshot:     true,
 				minimalSystemPrompt: true,

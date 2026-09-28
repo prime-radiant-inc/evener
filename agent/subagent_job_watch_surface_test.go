@@ -70,7 +70,6 @@ func TestSubagentRegistryHasIntrinsicTools(t *testing.T) {
 			t.Parallel()
 			s := newSession(t, withConfig(SessionConfig{
 				MaxSubagentDepth: 3,
-				NoProjectPrompts: true,
 				testOnly: testConfig{
 					skipGitSnapshot:     true,
 					minimalSystemPrompt: true,
@@ -166,7 +165,6 @@ func TestTypedLeafCannotReachParentJobs(t *testing.T) {
 	t.Parallel()
 	s := newSession(t, withConfig(SessionConfig{
 		MaxSubagentDepth: 3,
-		NoProjectPrompts: true,
 		testOnly: testConfig{
 			skipGitSnapshot:     true,
 			minimalSystemPrompt: true,
@@ -196,7 +194,6 @@ func TestTypedLeafSupervisesItsOwnJobs(t *testing.T) {
 	t.Parallel()
 	s := newSession(t, withConfig(SessionConfig{
 		MaxSubagentDepth: 3,
-		NoProjectPrompts: true,
 		testOnly: testConfig{
 			skipGitSnapshot:     true,
 			minimalSystemPrompt: true,

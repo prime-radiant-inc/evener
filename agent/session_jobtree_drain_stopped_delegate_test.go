@@ -45,8 +45,8 @@ func newWedgedDelegateFixtureIn(t *testing.T, delegateID string, turnEndsProcess
 	shortenCloseCascadeBudget(t, 10*time.Millisecond)
 
 	clk := agenttest.NewFakeClock()
-	root := newSession(t, withConfig(SessionConfig{clock: clk, NoProjectPrompts: true, TurnEndsProcess: turnEndsProcess}))
-	child := newSession(t, withConfig(SessionConfig{clock: clk, NoProjectPrompts: true, TurnEndsProcess: turnEndsProcess}))
+	root := newSession(t, withConfig(SessionConfig{clock: clk, TurnEndsProcess: turnEndsProcess}))
+	child := newSession(t, withConfig(SessionConfig{clock: clk, TurnEndsProcess: turnEndsProcess}))
 
 	descriptor := stableToolDescriptor(root, delegateID, "")
 	descriptor.ChildSessionID = child.ID()

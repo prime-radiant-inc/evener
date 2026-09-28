@@ -528,7 +528,6 @@ func stmNewSession(t *testing.T, program []byte) (*Session, *agenttest.DenyEnv, 
 	client.Register(adapter)
 	cfg := SessionConfig{
 		MaxSubagentDepth: 1,
-		NoProjectPrompts: true,
 		StateDir:         root,
 		clock:            agenttest.NewFakeClock(),
 	}

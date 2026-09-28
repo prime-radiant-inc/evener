@@ -123,7 +123,7 @@ func TestRestoreSessionReusesSelectedModelsAndAdvertisesSnapshot(t *testing.T) {
 		ID:        ulid.Make().String(),
 		ProfileID: "openai",
 		Model:     "gpt-5.5",
-		Config:    (SessionConfig{MaxSubagentDepth: 1, NoProjectPrompts: true}).toSnapshot(),
+		Config:    (SessionConfig{MaxSubagentDepth: 1}).toSnapshot(),
 	}
 
 	sess, err := RestoreSessionFromMetaWithConfig(
@@ -199,7 +199,7 @@ func TestSessionsWithoutDelegateCapabilitySkipModelAvailabilityCapture(t *testin
 
 	t.Run("fresh", func(t *testing.T) {
 		client, selected, other := newClient()
-		cfg := SessionConfig{NoProjectPrompts: true}
+		cfg := SessionConfig{}
 		cfg.spawn.depth = 1
 		cfg.spawn.parentSessionID = "parent-session"
 		cfg.spawn.delegationAllowance = 0
@@ -219,7 +219,7 @@ func TestSessionsWithoutDelegateCapabilitySkipModelAvailabilityCapture(t *testin
 			ProfileID:  "openai",
 			Model:      "gpt-5.5",
 			IsSubagent: true,
-			Config:     (SessionConfig{MaxSubagentDepth: 1, NoProjectPrompts: true}).toSnapshot(),
+			Config:     (SessionConfig{MaxSubagentDepth: 1}).toSnapshot(),
 		}
 		restoreCfg := RestoreSessionConfig{
 			StateDir: t.TempDir(),
@@ -248,7 +248,7 @@ func TestSessionsWithoutDelegateCapabilitySkipModelAvailabilityCapture(t *testin
 
 	t.Run("fresh restricted by allowed tools", func(t *testing.T) {
 		client, selected, other := newClient()
-		cfg := SessionConfig{NoProjectPrompts: true}
+		cfg := SessionConfig{}
 		cfg.spawn.depth = 1
 		cfg.spawn.parentSessionID = "parent-session"
 		cfg.spawn.delegationAllowance = 1
@@ -269,7 +269,7 @@ func TestSessionsWithoutDelegateCapabilitySkipModelAvailabilityCapture(t *testin
 			ProfileID:  "openai",
 			Model:      "gpt-5.5",
 			IsSubagent: true,
-			Config:     (SessionConfig{MaxSubagentDepth: 1, NoProjectPrompts: true}).toSnapshot(),
+			Config:     (SessionConfig{MaxSubagentDepth: 1}).toSnapshot(),
 		}
 		restoreCfg := RestoreSessionConfig{
 			StateDir: t.TempDir(),

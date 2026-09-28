@@ -56,7 +56,6 @@ func newExecutionSession(t *testing.T) (*Session, *executionAdapter) {
 	s := newSession(t, withClient(client), withConfig(SessionConfig{
 		StateDir:         t.TempDir(),
 		MaxSubagentDepth: 1,
-		NoProjectPrompts: true,
 		LLMRetryPolicy:   &llm.RetryPolicy{MaxRetries: 2},
 		LLMSleep:         func(context.Context, time.Duration) error { return nil },
 		testOnly:         testConfig{skipGitSnapshot: true, minimalSystemPrompt: true, noSyncJobStore: true},
@@ -259,7 +258,6 @@ func TestProcessInputWithNoTranscriptDoesNotPanic(t *testing.T) {
 	client.Register(adapter)
 	s := newSession(t, withClient(client), withConfig(SessionConfig{
 		MaxSubagentDepth: 1,
-		NoProjectPrompts: true,
 		LLMRetryPolicy:   &llm.RetryPolicy{MaxRetries: 2},
 		LLMSleep:         func(context.Context, time.Duration) error { return nil },
 		testOnly:         testConfig{skipGitSnapshot: true, minimalSystemPrompt: true, noSyncJobStore: true},

@@ -1231,7 +1231,7 @@ func TestRetirementSafetyEscalation(t *testing.T) {
 			env.Sandbox = &policy
 			client := llm.NewClient()
 			client.Register(&fakeAdapter{name: "openai"})
-			root, err := NewSession(client, NewOpenAIProfile("gpt-5.2"), env, SessionConfig{StateDir: t.TempDir(), NoProjectPrompts: true, testOnly: testConfig{skipGitSnapshot: true, minimalSystemPrompt: true}})
+			root, err := NewSession(client, NewOpenAIProfile("gpt-5.2"), env, SessionConfig{StateDir: t.TempDir(), testOnly: testConfig{skipGitSnapshot: true, minimalSystemPrompt: true}})
 			if err != nil {
 				t.Fatal(err)
 			}

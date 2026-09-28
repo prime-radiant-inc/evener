@@ -73,7 +73,6 @@ func newFailClosedSession(t *testing.T, fault func(string) error) (*Session, *ex
 	s := newSession(t, withClient(client), withConfig(SessionConfig{
 		StateDir:         t.TempDir(),
 		MaxSubagentDepth: 1,
-		NoProjectPrompts: true,
 		LLMRetryPolicy:   &llm.RetryPolicy{MaxRetries: 2},
 		LLMSleep:         func(context.Context, time.Duration) error { return nil },
 		testOnly:         testConfig{skipGitSnapshot: true, minimalSystemPrompt: true, noSyncJobStore: true, sessionInitFault: fault},
