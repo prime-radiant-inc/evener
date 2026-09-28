@@ -41,8 +41,12 @@ func OpenRegularBeneathRoot(path, root string) (*os.File, error) {
 	if rel == "." {
 		return nil, fmt.Errorf("open %q: path is the root directory, not a file", path)
 	}
-	// Reject any ".." component — path must be beneath root.
-	if strings.HasPrefix(rel, "..") {
+	// Reject an escaping ".." component — path must be beneath root. Test the
+	// cleaned relative path's own first component, not a raw ".." prefix: a
+	// bucket directory named e.g. "..hidden" is a legitimate name (the local
+	// job sweep deliberately admits legacy- and foreign-named buckets), and
+	// only "..", or a leading ".." separated component, is an escape.
+	if rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
 		return nil, fmt.Errorf("open %q: path escapes root %q", path, root)
 	}
 

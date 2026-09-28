@@ -90,6 +90,56 @@ func TestOpenRegularBeneathRoot_RefusesSymlinkedRoot(t *testing.T) {
 	}
 }
 
+// TestOpenRegularBeneathRoot_AllowsDotDotPrefixedComponent asserts the escape
+// guard is component-aware: a path whose first component merely begins with
+// ".." (a legitimate bucket name such as "..hidden") is still beneath root and
+// must open, not be rejected as an escape. The local job sweep deliberately
+// admits legacy- and foreign-named buckets, so such a name must stay readable.
+func TestOpenRegularBeneathRoot_AllowsDotDotPrefixedComponent(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "..hidden"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(root, "..hidden", "transcript.jsonl")
+	if err := os.WriteFile(path, []byte("payload"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	f, err := OpenRegularBeneathRoot(path, root)
+	if err != nil {
+		t.Fatalf("OpenRegularBeneathRoot refused a ..-prefixed component: %v", err)
+	}
+	defer f.Close()
+	got := make([]byte, len("payload"))
+	if _, err := f.Read(got); err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if string(got) != "payload" {
+		t.Fatalf("read = %q, want payload", got)
+	}
+}
+
+// TestOpenRegularBeneathRoot_RefusesEscapingPath asserts the component-aware
+// guard still refuses a path that genuinely escapes root.
+func TestOpenRegularBeneathRoot_RefusesEscapingPath(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	outside := filepath.Join(t.TempDir(), "evil.jsonl")
+	if err := os.WriteFile(outside, []byte("payload"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	f, err := OpenRegularBeneathRoot(filepath.Join(root, "..", filepath.Base(outside)), root)
+	if f != nil {
+		_ = f.Close()
+		t.Fatal("OpenRegularBeneathRoot opened a path escaping root")
+	}
+	if err == nil || !strings.Contains(err.Error(), "escapes root") {
+		t.Fatalf("expected escapes-root refusal, got: %v", err)
+	}
+}
+
 // TestOpenRegularBeneathRoot_RefusesSymlinkedLeaf asserts the leaf-level
 // O_NOFOLLOW guarantee also holds when root is provided.
 func TestOpenRegularBeneathRoot_RefusesSymlinkedLeaf(t *testing.T) {
