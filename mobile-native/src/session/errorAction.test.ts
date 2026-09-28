@@ -19,6 +19,8 @@ describe("an error's one action (spec 8.2, ruling 26)", () => {
 		["an expired sign-in signs in", failure("Sign-in expired"), session(), true, "signIn"],
 		["a 401 signs in", failure("401 Unauthorized"), session(), true, "signIn"],
 		["expired credentials sign in", failure("Invalid credentials expired"), session(), true, "signIn"],
+		["invalid credentials sign in, either word order", failure("Invalid credentials"), session(), true, "signIn"],
+		["expired credentials sign in, either word order", failure("Expired credential"), session(), true, "signIn"],
 		["the latest turn's failure retries", failure("go test exited 1"), session(), true, "retry"],
 		["no retry while Send can't act", failure("go test exited 1"), session(), false, null],
 		["no retry under an earlier turn", failure("go test exited 1", "turn_1"), session(), true, null],
