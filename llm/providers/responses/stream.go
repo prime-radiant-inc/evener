@@ -115,10 +115,13 @@ func (acc *responsesOutputAccumulator) HandleOutputItemAdded(item map[string]any
 
 // HandleFunctionCallArgumentsDelta merges one
 // response.function_call_arguments.delta event's argument fragment into
-// tool state, resolving call_id via item_id when call_id is absent. ok is
-// false when the event can't be mapped to a tool call at all -- the caller
-// should pass the raw payload through unmodified in that case.
-func (acc *responsesOutputAccumulator) HandleFunctionCallArgumentsDelta(payload map[string]any) (state *responsesToolState, delta string, ok bool) {
+// tool state, resolving call_id via item_id when call_id is absent. eventData
+// preserves bytes the decoded payload string coerced; capture or unescape
+// failure falls back to that string. The returned delta is the effective
+// fragment written to state, for byte-identical live emission. ok is false
+// when the event can't be mapped to a tool call at all -- the caller should
+// pass the raw payload through unmodified in that case.
+func (acc *responsesOutputAccumulator) HandleFunctionCallArgumentsDelta(payload map[string]any, eventData []byte) (state *responsesToolState, delta string, ok bool) {
 	delta, _ = payload["delta"].(string)
 	if delta == "" {
 		delta, _ = payload["arguments"].(string)
@@ -143,7 +146,14 @@ func (acc *responsesOutputAccumulator) HandleFunctionCallArgumentsDelta(payload 
 		st.name = name
 	}
 	if delta != "" {
-		st.args.WriteString(delta)
+		fragment := []byte(delta)
+		if rawDelta, rawOK := captureResponsesDeltaRaw(eventData); rawOK && rawDelta != nil {
+			if content, err := protocolhttp.RawStringContent(rawDelta); err == nil && len(content) > 0 {
+				fragment = content
+			}
+		}
+		st.args.Write(fragment)
+		delta = string(fragment)
 	}
 	return st, delta, true
 }
@@ -457,29 +467,11 @@ func (p *Protocol) decodeStream(sctx context.Context, cancel context.CancelFunc,
 				}
 				reasoningStarted = true
 			case "response.function_call_arguments.delta":
-				st, delta, ok := acc.HandleFunctionCallArgumentsDelta(payload)
+				st, delta, ok := acc.HandleFunctionCallArgumentsDelta(payload, ev.Data)
 				if !ok {
 					// Can't map reliably; pass through.
 					s.Send(llm.StreamEvent{Type: llm.StreamEventProviderEvent, Raw: payload})
 					return nil
-				}
-				// Capture the delta fragment as raw bytes from ev.Data to
-				// preserve bytes that json.Unmarshal into string would coerce
-				// to U+FFFD. The accumulator already wrote the string-form
-				// delta; overwrite the tail with the raw bytes when capture
-				// succeeds.
-				// Degrade, never drop: fall back to the string-form delta.
-				if rawDelta, ok2 := captureResponsesDeltaRaw(ev.Data); ok2 && rawDelta != nil {
-					if content, cerr := protocolhttp.RawStringContent(rawDelta); cerr == nil && len(content) > 0 {
-						// Rewind the string delta the accumulator wrote and
-						// replace it with the raw bytes.
-						cur := st.args.String()
-						if strings.HasSuffix(cur, delta) {
-							st.args.Truncate(len(cur) - len(delta))
-						}
-						st.args.Write(content)
-						delta = string(content)
-					}
 				}
 				if !st.started {
 					st.started = true
@@ -572,17 +564,24 @@ func (p *Protocol) decodeStream(sctx context.Context, cancel context.CancelFunc,
 }
 
 // captureResponsesDeltaRaw decodes an SSE event's raw data with a focused
-// struct that captures the "delta" field as json.RawMessage (the string
-// token) rather than string, preserving bytes that json.Unmarshal into
-// string would coerce. Returns (nil, false) if the focused decode fails.
+// struct that captures the selected fragment as json.RawMessage (the string
+// token) rather than string, preserving bytes that json.Unmarshal into string
+// would coerce. It mirrors HandleFunctionCallArgumentsDelta's field order:
+// prefer a non-empty string delta, else use arguments. Returns (nil, false) if
+// the focused decode fails.
 func captureResponsesDeltaRaw(eventData []byte) (json.RawMessage, bool) {
 	var focused struct {
-		Delta json.RawMessage `json:"delta"`
+		Delta     json.RawMessage `json:"delta"`
+		Arguments json.RawMessage `json:"arguments"`
 	}
 	if err := json.Unmarshal(eventData, &focused); err != nil {
 		return nil, false
 	}
-	return focused.Delta, true
+	var delta string
+	if len(focused.Delta) > 0 && json.Unmarshal(focused.Delta, &delta) == nil && delta != "" {
+		return focused.Delta, true
+	}
+	return focused.Arguments, true
 }
 
 // captureResponsesArgumentsDoneRaw captures an arguments.done event's

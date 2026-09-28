@@ -229,6 +229,25 @@ func rawMultipleArgumentsDoneSSE(firstDone, secondDone string) []byte {
 		"event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_1\",\"status\":\"completed\",\"model\":\"gpt-5.5\",\"output\":[]}}\n\n")
 }
 
+// rawDeltaOnlySSE builds the gateway fallback shape where only argument
+// fragments carry the arguments: output_item.done omits them and terminal
+// output is empty. field selects the documented delta field or the gateway
+// arguments-field fallback accepted by HandleFunctionCallArgumentsDelta.
+func rawDeltaOnlySSE(field string, fragments ...string) []byte {
+	var b bytes.Buffer
+	b.WriteString("event: response.output_item.added\ndata: {\"type\":\"response.output_item.added\",\"item\":{\"id\":\"fc_1\",\"type\":\"function_call\",\"call_id\":\"call_1\",\"name\":\"write_file\"}}\n\n")
+	for _, fragment := range fragments {
+		b.WriteString("event: response.function_call_arguments.delta\ndata: {\"type\":\"response.function_call_arguments.delta\",\"item_id\":\"fc_1\",\"")
+		b.WriteString(field)
+		b.WriteString("\":")
+		b.Write(jsonStringToken(fragment))
+		b.WriteString("}\n\n")
+	}
+	b.WriteString("event: response.output_item.done\ndata: {\"type\":\"response.output_item.done\",\"item\":{\"id\":\"fc_1\",\"type\":\"function_call\",\"call_id\":\"call_1\",\"name\":\"write_file\"}}\n\n")
+	b.WriteString("event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_1\",\"status\":\"completed\",\"model\":\"gpt-5.5\",\"output\":[]}}\n\n")
+	return b.Bytes()
+}
+
 // decodeRawArgsStream runs the responses streaming decode with a scripted
 // SSE body and returns the tool-call Arguments from the final response.
 func decodeRawArgsStream(t *testing.T, sseBody string) []byte {
@@ -343,6 +362,47 @@ func TestRawArgs_Stream_MultipleArgumentsDonePreserveCallRouting(t *testing.T) {
 		}
 	}
 	assertRawArgsByIndex(t, settledArgs, want)
+}
+
+func TestRawArgs_Stream_ArgumentsFieldDeltaPreservesRawBytes(t *testing.T) {
+	fragments := []string{`{"path":"`, "\xfffile.txt\"}"}
+	want := append([]byte(fragments[0]), []byte(fragments[1])...)
+	srv, _ := server(t, http.StatusOK, string(rawDeltaOnlySSE("arguments", fragments...)))
+	res := liveRes(srv, nil)
+	s, err := (&Protocol{Client: srv.Client()}).Stream(context.Background(), llm.ShapeRequest(userReq("hi"), res), res)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var deltaArgs, endArgs, settledArgs []byte
+	for ev := range s.Events() {
+		switch ev.Type {
+		case llm.StreamEventError:
+			t.Fatalf("stream error: %v", ev.Err)
+		case llm.StreamEventToolCallDelta:
+			deltaArgs = append(deltaArgs, ev.ToolCall.Arguments...)
+		case llm.StreamEventToolCallEnd:
+			endArgs = append([]byte(nil), ev.ToolCall.Arguments...)
+		case llm.StreamEventFinish:
+			calls := ev.Response.ToolCalls()
+			if len(calls) != 1 {
+				t.Fatalf("settled ToolCalls() = %d, want 1", len(calls))
+			}
+			settledArgs = append([]byte(nil), calls[0].Arguments...)
+		}
+	}
+	for _, got := range []struct {
+		label string
+		args  []byte
+	}{
+		{label: "ToolCallDelta", args: deltaArgs},
+		{label: "ToolCallEnd", args: endArgs},
+		{label: "settled", args: settledArgs},
+	} {
+		if !bytes.Equal(got.args, want) {
+			t.Errorf("%s Arguments = %q (% x), want %q (% x)", got.label, got.args, got.args, want, want)
+		}
+	}
 }
 
 // TestRawArgs_Stream_NonCanonicalJSON asserts non-canonical valid JSON in
