@@ -2186,8 +2186,7 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
         boundService = service;
         boundSink = sink;
         try {
-          const { conversation, activity, olderCursor, hasEarlierItems, hasLaterItems } =
-            await service.readProjection(ref);
+          const { conversation, activity, hasEarlierItems, hasLaterItems } = await service.readProjection(ref);
           // I1: Suppress stale work — if the binding epoch changed, the store
           // switched to a different service/sink/ref. Do not commit.
           if (entryEpoch !== bindingEpoch) return;
