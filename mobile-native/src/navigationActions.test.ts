@@ -31,6 +31,7 @@ it("does not call an empty-journal reconciliation complete after another model s
 	expect(journal.load()).toBe(other);
 	expect(actions.getSnapshot()).toMatchObject({
 		uncertain: true,
+		recovery: other,
 		error:
 			"Could not confirm current navigation for the previous change. Refresh before trying again.",
 	});
@@ -650,6 +651,7 @@ describe("navigation organization actions", () => {
 		expect(actions.getSnapshot()).toMatchObject({
 			pending: false,
 			uncertain: true,
+			recovery: null,
 			error:
 				"Could not load the current navigation. Refresh before trying again.",
 		});
