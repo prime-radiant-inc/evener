@@ -243,6 +243,12 @@ func (m *Manager) AddMarketplace(ctx context.Context, name string, src Source) (
 		old, err := m.swapInClone(staging, installLoc)
 		if err != nil {
 			_ = marketplaceRemoveAll(staging)
+			// A swap that handed its aside clone back could not restore dest
+			// itself; this caller has no undo to retry it, so dest is empty and
+			// the only copy sits under .old - the state is left between names.
+			if old != "" {
+				err = errors.Join(err, errRenameRollbackIncomplete)
+			}
 			return MarketplaceRef{}, err
 		}
 		aside = old
@@ -298,8 +304,10 @@ func (m *Manager) saveFailed(name, fileName string, saveErr error) error {
 // the RPC caller. The one error a caller can still act on - cause wrapping
 // errStoreBetweenNames (saveRename's own between-names failure, whose
 // directory rollback then also failed) or errRenameRollbackIncomplete (a move
-// helper that left the store between the two names) - keeps that identity
-// through %w, because each sentinel's own text carries no path.
+// helper that left the store between the two names, or the swap's undo, which
+// marks its own failed retry) - keeps that identity through %w, because each
+// sentinel's own text carries no path. Either the cause or the rollback error
+// can carry it, so both are checked.
 func (m *Manager) storeChangeRollbackFailed(name string, cause, rollbackErr error) error {
 	if rollbackErr == nil {
 		_, _ = fmt.Fprintf(m.stderr(), "warning: marketplace %q: %v\n", name, cause)
@@ -307,7 +315,7 @@ func (m *Manager) storeChangeRollbackFailed(name string, cause, rollbackErr erro
 		_, _ = fmt.Fprintf(m.stderr(), "warning: marketplace %q: %v; rolling back failed too: %v\n", name, cause, rollbackErr)
 	}
 	for _, sentinel := range []error{errStoreBetweenNames, errRenameRollbackIncomplete} {
-		if errors.Is(cause, sentinel) {
+		if errors.Is(cause, sentinel) || errors.Is(rollbackErr, sentinel) {
 			return fmt.Errorf("marketplace %q's change could not be rolled back; see the hub's log for detail: %w", name, sentinel)
 		}
 	}
@@ -873,7 +881,10 @@ func (m *Manager) EditMarketplace(ctx context.Context, name, newName string, src
 		if swappedIn == "" {
 			return nil
 		}
-		return undoCloneSwap(swappedIn, asideClone)
+		if err := undoCloneSwap(swappedIn, asideClone); err != nil {
+			return errors.Join(err, errRenameRollbackIncomplete)
+		}
+		return nil
 	}
 	fail := func(err error) (MarketplaceRef, error) {
 		// Before undo, which moves the install location back under its old
@@ -885,10 +896,12 @@ func (m *Manager) EditMarketplace(ctx context.Context, name, newName string, src
 		// changed rather than back as it was found. That can be this call's
 		// own rollback (swapErr/undoErr) or the move helper's, which ran
 		// before it handed the error up and marked the state with
-		// errRenameRollbackIncomplete. Either way err and rollbackErr can
-		// carry this machine's absolute plugin-store path, so
-		// storeChangeRollbackFailed logs them and the caller learns only
-		// which marketplace was left half-edited.
+		// errRenameRollbackIncomplete. undoSwap marks its own retryable
+		// failure the same way, so the sentinel is present exactly when the
+		// store was left between names for real. Either way err and rollbackErr
+		// can carry this machine's absolute plugin-store path, so
+		// storeChangeRollbackFailed logs them and the caller learns only which
+		// marketplace was left half-edited.
 		if rollbackErr != nil || errors.Is(err, errRenameRollbackIncomplete) {
 			return MarketplaceRef{}, m.storeChangeRollbackFailed(name, err, rollbackErr)
 		}
@@ -950,10 +963,18 @@ func (m *Manager) EditMarketplace(ctx context.Context, name, newName string, src
 				return fail(fmt.Errorf("marketplace %q: the new install location %s holds a directory source another marketplace records", name, dest))
 			}
 			aside, err := m.swapInClone(staging, dest)
+			// A non-empty aside is the old clone the swap displaced: register
+			// it so the undo restores it - and, when the install failed and the
+			// swap's own restore failed too, retries that restore instead of
+			// stranding the only copy under .old. An empty aside with an error
+			// means dest was never touched; with no error it means dest held
+			// nothing, so a rollback just removes the fresh clone.
+			if err == nil || aside != "" {
+				swappedIn, asideClone = dest, aside
+			}
 			if err != nil {
 				return fail(err)
 			}
-			swappedIn, asideClone = dest, aside
 			if aside != "" {
 				afterSave = append(afterSave, func() { _ = marketplaceRemoveAll(aside) })
 			}
@@ -1128,8 +1149,9 @@ var errStoreBetweenNames = errors.New("the store is left between the two names")
 // every directory back where it found it. A move writes neither store file, so
 // a failure whose undo succeeded leaves the store at the old name with nothing
 // left to resume; only one that could not leaves it between the two names. A
-// rename that wrote a marker keeps it for this state alone
-// (migrateMarketplaceName).
+// swap hands its aside clone to the caller's undo, which marks this only when
+// its own retry fails; a rename that wrote a marker keeps it for this state
+// alone (migrateMarketplaceName).
 var errRenameRollbackIncomplete = errors.New("a failed move could not be put back completely")
 
 // saveRename records a rename in both store files, the registry first: a
@@ -1441,6 +1463,11 @@ func (m *Manager) recloneMarketplace(ctx context.Context, ref MarketplaceRef) er
 	}
 	old, err := m.swapInClone(staging, ref.InstallLocation)
 	if err != nil {
+		// As in AddMarketplace: no undo here retries the swap's own restore, so
+		// a returned aside clone leaves the store between names.
+		if old != "" {
+			err = errors.Join(err, errRenameRollbackIncomplete)
+		}
 		return err
 	}
 	if old != "" {
@@ -1457,7 +1484,10 @@ func (m *Manager) recloneMarketplace(ctx context.Context, ref MarketplaceRef) er
 // It returns the path the old clone was set aside under, or "" when dest held
 // nothing. That directory is the caller's: it is the only copy of what dest
 // held, so a caller whose work can still fail keeps it until the work is
-// committed and every other caller removes it at once.
+// committed and every other caller removes it at once. A failed install whose
+// aside move succeeded returns that path alongside the error: the old clone is
+// then still the only copy of dest's contents, and a caller that can roll back
+// has to restore it - the swap's own attempt has already been made.
 func (m *Manager) swapInClone(staging, dest string) (string, error) {
 	// The aside name is this swap's own scratch, so a directory already there
 	// is residue a caller's best-effort cleanup failed to remove. It has to go
@@ -1479,16 +1509,16 @@ func (m *Manager) swapInClone(staging, dest string) (string, error) {
 	if err := marketplaceRename(staging, dest); err != nil {
 		if movedAside {
 			// Put the old clone back so dest keeps pointing at a real
-			// directory. If even that fails, .old still holds the only
-			// local copy — deliberately NOT swept — and the error says so.
-			// errRenameRollbackIncomplete marks the state a caller that
-			// scrubs before the wire (EditMarketplace's fail closure) has to
-			// report apart from a clean, restored failure.
-			if restoreErr := marketplaceRename(old, dest); restoreErr != nil {
-				return "", errors.Join(
-					fmt.Errorf("installing fresh clone failed (%w); restoring old clone: %w", err, restoreErr),
-					errRenameRollbackIncomplete,
-				)
+			// directory. If even that fails, .old still holds the only local
+			// copy — deliberately NOT swept — so the aside path is returned
+			// alongside the error and the caller's own undo retries the
+			// restore (and marks the state with errRenameRollbackIncomplete
+			// when it cannot). The helper does not mark it here: the caller
+			// whose undo is about to run is the one that can still put dest
+			// back, so only its outcome says whether the store is left between
+			// names.
+			if restoreErr := restoreRename("old clone", old, dest); restoreErr != nil {
+				return old, fmt.Errorf("installing fresh clone failed (%w); %w", err, restoreErr)
 			}
 		}
 		return "", fmt.Errorf("installing fresh clone: %w", err)
