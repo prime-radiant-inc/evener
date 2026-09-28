@@ -313,6 +313,42 @@ describe("sending", () => {
 		expect(calls).toHaveLength(2);
 	});
 
+	it("keeps a call's marks when the hub fails for now, and sends them again on the next flush", async () => {
+		const { marks, client, calls } = setup();
+		marks.markSeen(client, [{ ref: "a", seenThrough: T }]);
+		// A store error (-32603) or an unavailable navigation service (-32014)
+		// says nothing about the mark itself.
+		calls[0].refuse(-32603);
+		await settle();
+		expect(marks.isSeenOnHub(ended("a", T, true))).toBe(true);
+		expect(calls).toHaveLength(1);
+		marks.flush(client);
+		calls[1].refuse(-32014);
+		await settle();
+		expect(marks.isSeenOnHub(ended("a", T, true))).toBe(true);
+		marks.flush(client);
+		expect(calls.map((call) => call.sessions)).toEqual([
+			[{ ref: "a", seenThrough: T }],
+			[{ ref: "a", seenThrough: T }],
+			[{ ref: "a", seenThrough: T }],
+		]);
+	});
+
+	it("sends over the new connection the marks a replaced connection's hub refused", async () => {
+		const { marks, client, calls } = setup();
+		marks.markSeen(client, [{ ref: "a", seenThrough: T }]);
+		// The connection is replaced while the call is out, and the old hub then
+		// answers that it has no seen/set: the new connection's hub may.
+		marks.flush(fakeClient("b", calls));
+		calls[0].refuse(-32601);
+		await settle();
+		expect(calls.map((call) => [call.client, call.sessions])).toEqual([
+			["a", [{ ref: "a", seenThrough: T }]],
+			["b", [{ ref: "a", seenThrough: T }]],
+		]);
+		expect(marks.isSeenOnHub(ended("a", T, true))).toBe(true);
+	});
+
 	it("keeps a mark whose call failed in transit, and sends it again on the next flush", async () => {
 		const { marks, client, calls } = setup();
 		marks.markSeen(client, [{ ref: "a", seenThrough: T }]);

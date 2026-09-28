@@ -15,7 +15,12 @@ import { perHub } from "./perHub";
 
 /** The hub caps one seen/set call at 500 marks. */
 const MAX_MARKS_PER_CALL = 500;
+// The hub's answers that mean a mark will never land there (appwire/errors.go):
+// an older hub without seen/set, and a mark it rejects as malformed or naming
+// an unknown host. Its other errors (a store error, an unavailable navigation
+// service) say nothing about the mark, which goes again on the next flush.
 const METHOD_NOT_FOUND = -32601;
+const INVALID_PARAMS = -32602;
 
 /** A mark as seen/set carries it, less its ref. */
 type PendingMark = { seenThrough: number } | { unread: true };
@@ -141,15 +146,17 @@ export class HubSeenMarks {
 					await client.request("evener/session/seen/set", { sessions });
 					for (const [, entry] of batch.filter(stillSent)) entry.acknowledged = true;
 				} catch (error) {
-					if (!(error instanceof WireError)) {
-						// Closed or timed out: the marks go again on the next flush, or
-						// now if a new connection arrived while this call was out.
+					const code = error instanceof WireError ? error.code : null;
+					if (code === METHOD_NOT_FOUND) withoutSeenSet.add(client);
+					if ((code !== METHOD_NOT_FOUND && code !== INVALID_PARAMS) || this.client !== client) {
+						// Closed, timed out, failed for now, or answered over a
+						// connection since replaced: the marks go again on the next
+						// flush, or now over the new connection.
 						if (this.client === client) return;
 						continue;
 					}
-					// The hub refused: resending is pointless, so the rows show the
-					// hub's own state again.
-					if (error.code === METHOD_NOT_FOUND) withoutSeenSet.add(client);
+					// The hub refused for good: resending is pointless, so the rows
+					// show the hub's own state again.
 					const refused = batch.filter(stillSent);
 					for (const [ref] of refused) this.pending.delete(ref);
 					if (refused.length) this.changed();
