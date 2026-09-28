@@ -49,6 +49,7 @@ func promptConfigs() []promptConfig {
 			checkPromptInput(t, "HasAskUser", d.HasAskUser, true)
 			checkPromptInput(t, "CanDelegate", d.CanDelegate, true)
 			checkPromptInput(t, "NonInteractive", d.NonInteractive, false)
+			checkPromptInput(t, "TurnEndsProcess", d.TurnEndsProcess, false)
 			checkPromptInput(t, "IsSubagent", d.IsSubagent, false)
 			checkPromptInput(t, "Surface is anthropic", d.Surface == "anthropic", true)
 			checkPromptInput(t, "Role empty for the default agent", d.Role == "", true)
@@ -87,6 +88,8 @@ func promptConfigs() []promptConfig {
 			checkPromptInput(t, "BaseInstructionsOverride", d.BaseInstructionsOverride, "")
 			checkPromptInput(t, "HasAskUser", d.HasAskUser, false)
 			checkPromptInput(t, "NonInteractive", d.NonInteractive, true)
+			checkPromptInput(t, "TurnEndsProcess", d.TurnEndsProcess, true)
+			checkPromptInput(t, "HasTool job_watch", d.HasTool("job_watch"), true)
 			checkPromptInput(t, "IsSubagent", d.IsSubagent, false)
 			checkPromptInput(t, "Surface is openai", d.Surface == "openai", true)
 			checkPromptInput(t, "Role is the coordinator plugin body",
@@ -131,6 +134,9 @@ func promptConfigs() []promptConfig {
 			checkPromptInput(t, "BaseInstructionsOverride", d.BaseInstructionsOverride, "")
 			checkPromptInput(t, "CanDelegate", d.CanDelegate, false)
 			checkPromptInput(t, "IsSubagent", d.IsSubagent, true)
+			checkPromptInput(t, "NonInteractive", d.NonInteractive, true)
+			checkPromptInput(t, "TurnEndsProcess", d.TurnEndsProcess, true)
+			checkPromptInput(t, "HasTool job_watch", d.HasTool("job_watch"), true)
 			checkPromptInput(t, "Role is the implementer plugin body",
 				d.Role == strings.TrimSpace(coordinatorWorkflowAgentForTest(t, "implementer").SystemPrompt), true)
 		}},
@@ -203,6 +209,7 @@ func buildRootHeadlessCoordinatorSession(t *testing.T) *Session {
 	return newSession(t, withDir(dir), withConfig(coordinatorWorkflowSessionConfig(t, SessionConfig{
 		AgentName:        "coordinator",
 		NonInteractive:   true,
+		TurnEndsProcess:  true,
 		MaxSubagentDepth: 2,
 		AgentsDocPath:    filepath.Join(t.TempDir(), "no-personal-AGENTS.md"),
 		testOnly:         testConfig{skipGitSnapshot: true},
@@ -235,14 +242,21 @@ func buildRootWithOverridesSession(t *testing.T) *Session {
 // without a bwrap binary on the host.
 func buildPromptDelegate(t *testing.T, allowance int, agentType string) *Session {
 	t.Helper()
-	parent := newSession(t, withDir(t.TempDir()), withConfig(SessionConfig{
+	cfg := SessionConfig{
 		MaxSubagentDepth: 2,
 		AgentsDocPath:    filepath.Join(t.TempDir(), "no-personal-AGENTS.md"),
 		testOnly: testConfig{
 			skipGitSnapshot: true,
 			sandboxProber:   bwrapCapableProber(t.TempDir()),
 		},
-	}))
+	}
+	if agentType == "implementer" {
+		// The implementer runs under a headless one-shot coordinator, the way
+		// `evener run` drives it, so its prompt takes the one-shot branches.
+		cfg.NonInteractive = true
+		cfg.TurnEndsProcess = true
+	}
+	parent := newSession(t, withDir(t.TempDir()), withConfig(cfg))
 	if agentType == "implementer" {
 		parent.pluginAgents[agentType] = coordinatorWorkflowAgentForTest(t, agentType)
 	}

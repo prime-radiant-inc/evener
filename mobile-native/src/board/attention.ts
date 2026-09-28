@@ -2,11 +2,15 @@
 // navigation rows the hub already sends. Where the spec wants a fact the rows
 // don't carry yet, the fallback from spec 18 lives here, and each server
 // addition replaces its fallback in this file: S1 (why text), S2 (approval
-// flag), S3 (subagent counts), S5 (activity). S4's seen marker lives in
-// hubSeen.ts, beside boardMemory.ts's fallback. Subagent failures never
-// appear on a Board row; they show only in the session's Subagents chip and
-// list.
-import type { NavigationSessionSummary } from "@evener/appwire-client";
+// flag), S3 (subagent counts). S4's seen marker lives in hubSeen.ts, beside
+// boardMemory.ts's fallback. S5 (activity) has landed: whyLine and liveBands
+// take the activity poll's own data (its caller polls evener/activity/read
+// and hands the read back in - this file has no client of its own), with no
+// fallback left when it's given. Subagent failures never appear on a Board
+// row; they show only in the session's Subagents chip and list.
+import type { NavigationSessionSummary, SessionActivity } from "@evener/appwire-client";
+import { quietState } from "@evener/appwire-client";
+import { relativeAge } from "@evener/appwire-client/state/navigation";
 
 export type BoardState =
 	| "failed"
@@ -175,15 +179,24 @@ function needsYouRank(item: ClassifiedRow): number {
 function needsYouOrder(a: ClassifiedRow, b: ClassifiedRow): number {
 	return needsYouRank(a) - needsYouRank(b) || oldestFirst(a, b);
 }
+// Stuck first, else keep relative order: Array.prototype.sort is stable, so a
+// comparator that only distinguishes stuck from not leaves the hub's own
+// order (ruling 10) untouched within each group (spec 7.1, S5).
+function workingOrder(isStuck: (row: NavigationSessionSummary) => boolean) {
+	return (a: ClassifiedRow, b: ClassifiedRow): number => Number(isStuck(b.row)) - Number(isStuck(a.row));
+}
 
 /** Splits Live into the spec's four bands. Rows from the needs_you section
  * join when Live's loaded pages don't hold them yet, so a session that needs
  * you is never hidden behind "load more"; a row in both keeps its Live copy,
- * which carries children. Working keeps the hub's Live order (ruling 10). */
+ * which carries children. Working keeps the hub's Live order (ruling 10),
+ * except a row isStuck marks (S5's quietState "stuck", from the activity
+ * poll), which floats to the top of the band (spec 7.1). */
 export function liveBands(
 	live: readonly NavigationSessionSummary[],
 	needsYouSection: readonly NavigationSessionSummary[],
 	isSeen: (row: NavigationSessionSummary) => boolean,
+	isStuck: (row: NavigationSessionSummary) => boolean = () => false,
 ): LiveBands {
 	const classify = rowClassifier(needsYouSection, isSeen);
 	const rows = new Map<string, NavigationSessionSummary>();
@@ -198,6 +211,7 @@ export function liveBands(
 	bands.needsYou.sort(needsYouOrder);
 	bands.finished.sort(newestEndedFirst);
 	bands.idle.sort(newestEndedFirst);
+	bands.working.sort(workingOrder(isStuck));
 	return bands;
 }
 
@@ -234,6 +248,10 @@ export type Hue = "danger" | "attention";
 export interface WhyLine {
 	word?: string;
 	hue?: Hue;
+	/** The line reads "May be stuck" (spec 7.1, 13.1): the whole text draws in
+	 * the attention ink, since there is no word to color apart from the rest,
+	 * and the row's meter echoes it. */
+	stuck?: boolean;
 	text: string;
 }
 
@@ -247,26 +265,65 @@ const REASONS: Partial<Record<BoardState, { hue: Hue; text: string }>> = {
 	restartNeeded: { hue: "attention", text: "restart this session to pick up the hub's update" },
 };
 
-export function whyLine(item: ClassifiedRow): WhyLine | null {
-	if (item.state === "working") return { text: workingActivity(item.row) };
+// relativeAge buckets m/h/d purely from the gap between two instants (now
+// minus a timestamp); anchoring both ends of that gap to the epoch reuses its
+// buckets for a duration quietState reports directly, instead of copying its
+// thresholds here.
+function durationLabel(forMs: number): string {
+	return relativeAge(new Date(0).toISOString(), forMs) ?? "0m";
+}
+
+function subagentsText(count: number): string {
+	return `Waiting on ${plural(count, "subagent")}`;
+}
+
+/** whyLine's working-row text once a real activity read exists (S5): the
+ * read's own subagent tally is authoritative and wins outright, never mixed
+ * with the row's children-based guess (a stale local count must not survive
+ * a fresh read of zero). Quiet and stuck read from quietState, which itself
+ * withholds both while a subagent runs. Absent either, this is the same
+ * command-or-Working text workingActivity falls back to, without its
+ * children-based guess: a real read already answered the subagent question,
+ * even when the answer is zero. */
+function workingWhyLine(
+	row: NavigationSessionSummary,
+	activity: SessionActivity,
+	msSinceReadMs: number,
+): WhyLine {
+	if (activity.runningSubagents > 0) return { text: subagentsText(activity.runningSubagents) };
+	const quiet = quietState(activity, msSinceReadMs);
+	if (quiet?.state === "stuck")
+		return { text: `May be stuck · no updates for ${durationLabel(quiet.forMs)}`, stuck: true };
+	if (quiet?.state === "quiet") return { text: `Quiet ${durationLabel(quiet.forMs)}` };
+	return { text: commandOrWorking(row) };
+}
+
+/** The row's why line. activity and msSinceReadMs are S5's live read (the
+ * Board polls evener/activity/read); omitting them keeps every state exactly
+ * as it read before S5, including a working row's pre-S5 fallback
+ * (workingActivity). */
+export function whyLine(item: ClassifiedRow, activity?: SessionActivity, msSinceReadMs = 0): WhyLine | null {
+	if (item.state === "working")
+		return activity ? workingWhyLine(item.row, activity, msSinceReadMs) : { text: workingActivity(item.row) };
 	const reason = REASONS[item.state];
 	return reason ? { word: WORDS[item.state], ...reason } : null;
 }
 
-/** What a working session is doing, from what its row carries (S5 adds the
- * current step and quiet spells). */
+function commandOrWorking(row: NavigationSessionSummary): string {
+	const command = row.running_jobs?.find((job) => job.command)?.command;
+	return command ? `Running ${command}` : "Working";
+}
+
+/** What a working session is doing when there is no activity read at all (an
+ * older hub, before the first poll, or while disconnected): the row's own
+ * children stand in for S5's subagent tally, and more_subagents says how many
+ * more there are past the hub's per-row cap (spec 18, S3's eventual
+ * replacement for this guess). */
 export function workingActivity(row: NavigationSessionSummary): string {
 	const subagents = row.children.filter((child) => child.state === "active").length;
-	// The hub caps a row's children; until S3 tallies the whole tree, the
-	// waiting line says how many more there are rather than undercounting
-	// (spec 18, S3's fallback). With no loaded child active, nothing says the
-	// session is waiting on subagents, so it falls through.
 	const more = row.more_subagents ?? 0;
-	if (subagents > 0)
-		return `Waiting on ${subagents} ${subagents === 1 ? "subagent" : "subagents"}${more > 0 ? ` (+${more} more)` : ""}`;
-	const command = row.running_jobs?.find((job) => job.command)?.command;
-	if (command) return `Running ${command}`;
-	return "Working";
+	if (subagents > 0) return `${subagentsText(subagents)}${more > 0 ? ` (+${more} more)` : ""}`;
+	return commandOrWorking(row);
 }
 
 export interface Usual {

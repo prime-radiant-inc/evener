@@ -135,6 +135,7 @@ func localDaemonEntriesFromRoster(live []hubcore.LiveEntry) []appsource.LocalDae
 			CapabilitiesKnown:  item.CapabilitiesKnown,
 			Subagents:          item.Subagents,
 			LastTurnEndedAt:    hubcore.UnixMilliseconds(item.LastTurnEndedAt),
+			LastMessage:        item.LastMessage,
 			Tasks:              item.Tasks,
 		}
 		entries = append(entries, entry)

@@ -173,6 +173,7 @@ func (p *StatusProber) Probe(entry rendezvous.Entry) ProbeResult {
 		Subagents:             subagents,
 		LastTurnEndedAt:       UnixMilliTime(root.Evener.LastTurnEndedAt),
 		Profile:               root.Evener.Profile,
+		LastMessage:           root.Evener.LastMessage,
 		OK:                    true,
 	}
 }

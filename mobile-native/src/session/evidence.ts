@@ -36,7 +36,11 @@ export function stepEvidence(step: EvidenceSource): Evidence[] {
 		const args = parseArgs(detail.arguments);
 		const path = str(args, "file_path") ?? str(args, "path");
 		if (step.label === "edit_file") {
-			evidence.push(diff(editDiffText(path ?? "", str(args, "old_string") ?? "", str(args, "new_string") ?? "")));
+			const oldString = str(args, "old_string");
+			const newString = str(args, "new_string");
+			// Arguments that carry neither side (a malformed call) have no diff.
+			if (oldString !== undefined || newString !== undefined)
+				evidence.push(diff(editDiffText(path ?? "", oldString ?? "", newString ?? "")));
 		} else if (step.label === "apply_patch") {
 			const patch = str(args, "patch");
 			if (patch) evidence.push(diff(patch));
