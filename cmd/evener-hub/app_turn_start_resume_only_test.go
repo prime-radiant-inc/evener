@@ -95,6 +95,84 @@ func TestTurnStartStillRefusedWhileStopInFlight(t *testing.T) {
 	}
 }
 
+// The wire bit the client keys Send on. applyThreadResumeRequirement overlays
+// ResumeRequired (and clears send) for FOUR different recovery causes, but the
+// hub's turn/start carve-out admits only the one whose resume a send can fold
+// into itself: ResumeRequired set, no Stop draining, the exit confirmed, and no
+// connection fence. ResumeOnlyFoldable is true exactly there and false for the
+// other three, which is what keeps a client from offering a Send the hub will
+// refuse.
+func TestApplyThreadResumeRequirementStampsResumeOnlyFoldable(t *testing.T) {
+	t.Run("a confirmed stopped exit with the requirement set is foldable", func(t *testing.T) {
+		cfg := resumeOnlyRecoveryConfig(t)
+		const id = "foldable-confirmed-exit"
+		stageResumeOnlyFenceConfirmedExit(t, cfg.ResumeLocks, id)
+		ctx := admitSessionConnection(t.Context(), cfg)
+
+		thread := applyThreadResumeRequirement(ctx, cfg, "local:"+id, "", appwire.Thread{})
+		if !thread.Evener.ResumeRequired || thread.Evener.Capabilities.Send {
+			t.Fatalf("overlay = %+v, want ResumeRequired set with send cleared", thread.Evener)
+		}
+		if !thread.Evener.ResumeOnlyFoldable {
+			t.Fatalf("ResumeOnlyFoldable = false, want true for a confirmed stopped exit with the requirement set")
+		}
+	})
+
+	t.Run("a Stop still draining is not foldable", func(t *testing.T) {
+		cfg := resumeOnlyRecoveryConfig(t)
+		const id = "foldable-stop-in-flight"
+		finish := cfg.ResumeLocks.BeginForceStop([]string{id})
+		t.Cleanup(func() { finish.Finish(false) })
+		if state := cfg.ResumeLocks.RecoveryState(id); state.Stopping == 0 {
+			t.Fatalf("fixture did not stage the in-flight Stop state: %+v", state)
+		}
+		ctx := admitSessionConnection(t.Context(), cfg)
+
+		thread := applyThreadResumeRequirement(ctx, cfg, "local:"+id, "", appwire.Thread{})
+		if !thread.Evener.ResumeRequired {
+			t.Fatalf("overlay = %+v, want ResumeRequired set while a Stop drains", thread.Evener)
+		}
+		if thread.Evener.ResumeOnlyFoldable {
+			t.Fatalf("ResumeOnlyFoldable = true while Stopping > 0, want false")
+		}
+	})
+
+	t.Run("an unconfirmed force-stop exit is not foldable", func(t *testing.T) {
+		cfg := resumeOnlyRecoveryConfig(t)
+		const id = "foldable-unconfirmed-exit"
+		stageResumeOnlyFence(t, cfg, id)
+		ctx := admitSessionConnection(t.Context(), cfg)
+
+		thread := applyThreadResumeRequirement(ctx, cfg, "local:"+id, "", appwire.Thread{})
+		if !thread.Evener.ResumeRequired {
+			t.Fatalf("overlay = %+v, want ResumeRequired set for the unconfirmed exit", thread.Evener)
+		}
+		if thread.Evener.ResumeOnlyFoldable {
+			t.Fatalf("ResumeOnlyFoldable = true while ExitConfirmed is false, want false")
+		}
+	})
+
+	t.Run("the connection-recovery fence is not foldable", func(t *testing.T) {
+		cfg := resumeOnlyRecoveryConfig(t)
+		const id = "foldable-stale-connection"
+		// A connection admitted before the recovery is stale once the recovery
+		// advances the sequence (sessionConnectionRecoveryError's freshness rule).
+		staleCtx := admitSessionConnection(t.Context(), cfg)
+		stageResumeOnlyFenceConfirmedExit(t, cfg.ResumeLocks, id)
+
+		if err := sessionConnectionRecoveryError(staleCtx, cfg, "local:"+id, ""); err == nil {
+			t.Fatalf("fixture did not stage the connection fence")
+		}
+		thread := applyThreadResumeRequirement(staleCtx, cfg, "local:"+id, "", appwire.Thread{})
+		if !thread.Evener.ResumeRequired {
+			t.Fatalf("overlay = %+v, want ResumeRequired set under the connection fence", thread.Evener)
+		}
+		if thread.Evener.ResumeOnlyFoldable {
+			t.Fatalf("ResumeOnlyFoldable = true under the connection-recovery fence, want false")
+		}
+	})
+}
+
 // TestTurnStartDispatchesThroughResumeOnlyFence proves the carve-out is not just
 // sessionActionRecoveryError's shape: the whole turn/start handler runs to the
 // relay with ResumeRequired still set, i.e. the send is admitted and proceeds.

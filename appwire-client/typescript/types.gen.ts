@@ -667,6 +667,17 @@ export interface EvenerThread {
    * must wait for an explicit thread/resume. Saved transcripts remain readable.
    */
   resumeRequired?: boolean;
+  /**
+   * ResumeOnlyFoldable means a turn/start sent on this connection right now
+   * would be admitted under the resume-only carve-out: the session merely needs
+   * its resume, which the send folds into itself. The hub stamps it only when
+   * that admission would actually succeed, so a client can offer Send from the
+   * hub's own answer instead of inferring the shape from ResumeRequired plus a
+   * missing send capability, which this same overlay also sets for a Stop drain,
+   * an unconfirmed force-stop exit, and the connection-recovery fence - three
+   * shapes whose turn/start the hub still refuses.
+   */
+  resumeOnlyFoldable?: boolean;
   ref: string;
   instanceId?: string;
   parentRef?: string;

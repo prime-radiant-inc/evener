@@ -32,7 +32,7 @@ import { workspaceStore } from "../../shell/workspace";
 import { connectionStore } from "../../stores/connection";
 import { controlsFor, recoveryFence } from "../../stores/liveControls";
 import { useNavigationStore } from "../../stores/navigation/store";
-import { resumeStopBaseline, threadsStore, useThreadsStore } from "../../stores/threads";
+import { hasQueuedNonSend, resumeStopBaseline, threadsStore, useThreadsStore } from "../../stores/threads";
 import { transcriptDisplayStore } from "../../stores/transcriptDisplay";
 import { Button, Cadence, EmptyState, PaneScaffold, type VirtualListHandle } from "../../widgets";
 import { VisuallyHidden } from "../../widgets/internal/VisuallyHidden";
@@ -527,6 +527,7 @@ export default function Session({ params, paneId, focused: paneFocused }: PanePr
   const resumeOnlyLocal = recoveryFence(ref, model, restartPending, {
     uncertainMessages: blockedMutations.length > 0,
     stopInFlight: stopping,
+    queuedNonSend: hasQueuedNonSend(ref),
   }).resumeOnly;
   const showRestartNotice =
     model.status.type === "restartRequired" ||

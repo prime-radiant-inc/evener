@@ -1,4 +1,4 @@
-import type { Thread, ThreadCapabilities } from "@evener/appwire-client";
+import type { Thread } from "@evener/appwire-client";
 import { NO_ACTIVE_TURN, STEER_UNAVAILABLE } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { afterEach, beforeEach, expect, test } from "vitest";
@@ -86,50 +86,35 @@ test("controlsFor is sessionControls over the model's status, capabilities and q
   expect(controls.drain).toBe(true);
 });
 
-// The resume-only carve-out as the predicate reads it: only the hub's exact
-// resume-fenced shape (local, notLoaded, resumeRequired, send exactly false) is
-// the foldable send. A snapshot that never advertised send is NOT that shape -
-// the trigger `send !== true` treated a missing capability as the fence, which
-// the reviewer's Low finding flagged.
-test("isResumeOnlyLocal requires send === false, not merely missing", () => {
-  const base = { resumeRequired: true, status: { type: "notLoaded" } } as const;
-  expect(recoveryFence("local:s", { ...base, capabilities: {} as ThreadCapabilities }, true).resumeOnly).toBe(false);
-  expect(
-    recoveryFence("local:s", { ...base, capabilities: { send: false } as ThreadCapabilities }, true).resumeOnly,
-  ).toBe(true);
+// The hub bit is the authority. The client offers Send from the hub's own
+// admission answer, never from the resumeRequired/send-false/cold-status shape
+// it used to infer: applyThreadResumeRequirement stamps that same shape for a
+// Stop drain, an unconfirmed force-stop exit, and the connection-recovery
+// fence, whose turn/start the hub still refuses.
+test("isResumeOnlyLocal follows the hub's foldable bit, never the inferred shape", () => {
+  const base = { status: { type: "notLoaded" } } as const;
+  // resumeRequired set (the hub's fence overlay) but the hub did not stamp the
+  // foldable bit: a Stop drain / unconfirmed exit / connection fence, not this.
+  const fencedButNotFoldable = { resumeRequired: true, status: { type: "notLoaded" } };
+  expect(recoveryFence("local:s", fencedButNotFoldable, true).resumeOnly).toBe(false);
+  expect(recoveryFence("local:s", { ...base, resumeOnlyFoldable: true }, true).resumeOnly).toBe(true);
+  // A non-local ref is never this shape even when the hub bit is set.
+  expect(recoveryFence("remote:s", { ...base, resumeOnlyFoldable: true }, true).resumeOnly).toBe(false);
 });
 
-// Certainty: the carve-out spans only the cold exited status and excludes a
-// stopped snapshot whose outbox still holds delivery-uncertain rows, which the
-// hub's explicit Resume reconciles. A closed/ended status is not this shape.
-test("isResumeOnlyLocal is the notLoaded shape with no uncertain messages", () => {
-  const capabilities = { send: false } as ThreadCapabilities;
-  expect(
-    recoveryFence("local:s", { resumeRequired: true, status: { type: "closed" }, capabilities }, true).resumeOnly,
-  ).toBe(false);
-  expect(
-    recoveryFence("local:s", { resumeRequired: true, status: { type: "notLoaded" }, capabilities }, true).resumeOnly,
-  ).toBe(true);
-  expect(
-    recoveryFence("local:s", { resumeRequired: true, status: { type: "notLoaded" }, capabilities }, true, {
-      uncertainMessages: true,
-    }).resumeOnly,
-  ).toBe(false);
-  // A Force stop this page started is still draining: the hub refuses even
-  // turn/start for the window, so the shape is not foldable either.
-  expect(
-    recoveryFence("local:s", { resumeRequired: true, status: { type: "notLoaded" }, capabilities }, true, {
-      stopInFlight: true,
-    }).resumeOnly,
-  ).toBe(false);
+// The client's own signals still narrow the carve-out: a delivery-uncertain row
+// the hub's explicit Resume reconciles, a queued non-send row that would starve
+// the folded send at the target's FIFO, and a Stop this page started all keep
+// the fence.
+test("isResumeOnlyLocal keeps the fence for uncertain, queued, and in-flight-Stop signals", () => {
+  const foldable = { resumeOnlyFoldable: true, status: { type: "notLoaded" } } as const;
+  expect(recoveryFence("local:s", foldable, true).resumeOnly).toBe(true);
+  expect(recoveryFence("local:s", foldable, true, { uncertainMessages: true }).resumeOnly).toBe(false);
+  expect(recoveryFence("local:s", foldable, true, { queuedNonSend: true }).resumeOnly).toBe(false);
+  expect(recoveryFence("local:s", foldable, true, { stopInFlight: true }).resumeOnly).toBe(false);
   // A fenced-but-not-resume-only shape is still fenced, and still reached by
   // the stopped-local card.
-  const uncertain = recoveryFence(
-    "local:s",
-    { resumeRequired: true, status: { type: "notLoaded" }, capabilities },
-    true,
-    { uncertainMessages: true },
-  );
+  const uncertain = recoveryFence("local:s", foldable, true, { uncertainMessages: true });
   expect(uncertain.stillFenced).toBe(true);
   expect(uncertain.fencedLocal).toBe(true);
 });
@@ -154,6 +139,7 @@ test("the press fence keeps a merely-resumable local session fenced", async () =
         ref,
         mutationStateAuthoritative: false,
         resumeRequired: true,
+        resumeOnlyFoldable: true,
         capabilities: { ...CAPABILITIES, send: false },
         queue: { revision: 0, depth: 0 },
       },

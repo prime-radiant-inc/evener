@@ -68,7 +68,13 @@ import {
 } from "../../../stores/liveControls";
 import type { MutationRecoveryRecord } from "../../../stores/mutationOutbox";
 import { prefsStore, usePrefsStore } from "../../../stores/prefs";
-import { type InputAttachment, type ResumeOnlySignals, threadsStore, useThreadsStore } from "../../../stores/threads";
+import {
+  hasQueuedNonSend,
+  type InputAttachment,
+  type ResumeOnlySignals,
+  threadsStore,
+  useThreadsStore,
+} from "../../../stores/threads";
 import {
   Button,
   ConfirmDialog,
@@ -819,6 +825,7 @@ export function Composer({ ref, focused }: ComposerProps) {
   const resumeOnlySignals: ResumeOnlySignals = {
     uncertainMessages: blockedMutations.length > 0,
     stopInFlight: stopping,
+    queuedNonSend: hasQueuedNonSend(ref),
   };
   const fence = recoveryFence(ref, model, recoveryRequired, resumeOnlySignals);
   const queueDepth = model.queue?.depth ?? 0;
@@ -868,7 +875,11 @@ export function Composer({ ref, focused }: ComposerProps) {
     // the resume into the send, so Send is offered while Queue is not.
     const targetFence = recoveryFence(target.ref, target, restartObligated, signals);
     if (targetFence.stillFenced) return { canSend: false, canQueue: false };
-    if (targetFence.resumeOnly) return { canSend: true, canQueue: false };
+    // A pending send is already on its way; offering a second one here would
+    // route it to turn/start during the resume window instead of waiting. This
+    // mirrors the ended-session substitution's `!tableAvailability.canSend`
+    // guard below, which never offers Send while the table already has one.
+    if (targetFence.resumeOnly) return { canSend: !pendingSend, canQueue: false };
     const tableAvailability = deriveSendQueueAvailability({
       statusType: target.status.type,
       capabilities: target.capabilities,
@@ -1327,6 +1338,7 @@ export function Composer({ ref, focused }: ComposerProps) {
         {
           uncertainMessages: blockedMutations.length > 0,
           stopInFlight: threadsStore.getState().stoppingRefs.has(ref),
+          queuedNonSend: hasQueuedNonSend(ref),
         },
       ),
     });

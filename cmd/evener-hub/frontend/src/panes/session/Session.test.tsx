@@ -2990,6 +2990,7 @@ test("a merely-resumable local session shows no standalone Resume notice", async
         capabilities: { ...CAPABILITIES, send: false },
         mutationStateAuthoritative: false,
         resumeRequired: true,
+        resumeOnlyFoldable: true,
         queue: { revision: 0 },
       },
     }),

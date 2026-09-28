@@ -56,11 +56,13 @@ import {
   ConflictError,
   FRAME_TIMES_MAX_ENTRIES,
   FRAME_TIMES_WINDOW_MS,
+  hasQueuedNonSend,
   installHydrationRetrySchedulerForTests,
   putThreadModel,
   readMutationPersistence,
   resendRecoveryMutation,
   resetThreadsStoreForTests,
+  resumeOnlyLocalModel,
   resumeStopBaseline,
   resumeStopFence,
   retryBlockedMutation,
@@ -10981,6 +10983,7 @@ test("a merely-resumable local session's send refuses while a blockedUnknown row
         capabilities: { ...CAPABILITIES, send: false },
         mutationStateAuthoritative: false,
         resumeRequired: true,
+        resumeOnlyFoldable: true,
         queue: { revision: 0 },
       },
     }),
@@ -11034,6 +11037,7 @@ test("a merely-resumable local session's queued non-send method stays parked", a
         capabilities: { ...CAPABILITIES, send: false },
         mutationStateAuthoritative: false,
         resumeRequired: true,
+        resumeOnlyFoldable: true,
         queue: { revision: 0 },
       },
     }),
@@ -11051,6 +11055,68 @@ test("a merely-resumable local session's queued non-send method stays parked", a
   expect(threadsStore.getState().restartBlockingObligations.has("local:stopped-queued")).toBe(true);
   expect(queued).toBe(0);
   expect(fake.calls.filter((call) => call.method === "turn/queue")).toEqual([]);
+});
+
+// Part 2's predicate: a queued, not-yet-attempted NON-turn/start row parks at
+// the target's FIFO ahead of a folded send (the dispatcher is strictly FIFO per
+// target and the hub's carve-out admits only turn/start), so the store-wide
+// predicate must not fold while one stands. The read answers from the durable
+// outbox, and a queued turn/start - the send itself - does not block it.
+test("the queued-non-send projection read blocks the foldable predicate", async () => {
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  // Not ready: no dispatch pass runs, so a "submitting" row stays queued and
+  // the read observes exactly the durable state under test.
+  connectFakeClient("connecting");
+
+  const ref = "local:queued-nonsend";
+  putThreadModel(
+    ref,
+    hydrateThread(
+      readResponse(ref, {
+        status: { type: "notLoaded" },
+        evener: {
+          ref,
+          capabilities: { ...CAPABILITIES, send: false },
+          mutationStateAuthoritative: false,
+          resumeRequired: true,
+          resumeOnlyFoldable: true,
+          queue: { revision: 0 },
+        },
+      }),
+      ref,
+      Date.now(),
+    ),
+  );
+  await refreshPendingTurnsProjection(ref);
+  expect(hasQueuedNonSend(ref)).toBe(false);
+  expect(resumeOnlyLocalModel(ref)).toBe(true);
+
+  // A queued turn/start is the send itself: it does not make the ref unfolable.
+  await storage.enqueueIntent({
+    targetRef: ref,
+    threadId: `thr_${ref}`,
+    method: "turn/start",
+    payload: { ref, input: [{ type: "text", text: "send" }] },
+    attachments: [],
+    optimisticDisplay: null,
+  });
+  await refreshPendingTurnsProjection(ref);
+  expect(hasQueuedNonSend(ref)).toBe(false);
+  expect(resumeOnlyLocalModel(ref)).toBe(true);
+
+  // A queued non-send row does: folding a send behind it would starve the send.
+  await storage.enqueueIntent({
+    targetRef: ref,
+    threadId: `thr_${ref}`,
+    method: "turn/queue",
+    payload: { ref, input: [{ type: "text", text: "queued" }] },
+    attachments: [],
+    optimisticDisplay: null,
+  });
+  await refreshPendingTurnsProjection(ref);
+  expect(hasQueuedNonSend(ref)).toBe(true);
+  expect(resumeOnlyLocalModel(ref)).toBe(false);
 });
 
 test("force stop uses the independent recovery API and fences uncertain outcomes", async () => {

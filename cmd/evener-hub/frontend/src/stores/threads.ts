@@ -1844,50 +1844,57 @@ export function isLocalRecoveryFenced(ref: string, restartObligated: boolean): b
   return ref.startsWith("local:") && restartObligated;
 }
 
-// A LOCAL session that only needs a resume. The hub expresses its resume
-// requirement as one wire fence: applyThreadResumeRequirement overlays
-// resumeRequired AND clears capabilities.send together (send === false) on a
-// snapshot, and no hub read path sets resumeRequired without also fencing send.
-// turn/start folds that resume into the send (cmd/evener-hub's
-// sessionActionRecoveryError turn/start carve-out), so the composer offers Send
-// and no standalone Resume action. Deliberately narrow - it is NOT the whole
-// recovery fence:
+// A LOCAL session the hub admits a folded send for. The authority is the hub's
+// OWN answer, not a shape this client infers: ResumeOnlyFoldable (whom
+// applyThreadResumeRequirement stamps) is true exactly when a turn/start on the
+// current connection would be admitted under the resume-only carve-out
+// (cmd/evener-hub's sessionAdmitsResumeRequired, read without a request: the
+// requirement is set, no Stop is draining, the exit is confirmed, and no
+// connection fence applies). The client no longer reads resumeRequired plus a
+// cleared send capability as this shape - that overlay (applyThreadResumeRequirement)
+// sets both for a Stop drain, an unconfirmed force-stop exit, and the
+// connection-recovery fence too, three shapes whose turn/start the hub still
+// refuses, so inferring from them offered Send where the hub would refuse it.
 //
-//   - status must be "notLoaded", the cold exited shape a past read returns
-//     (app_recovery_persistence_test pins it). "closed"/"ended" carry other
-//     states and reconciliation, and a live Stop still reads active/idle.
-//   - capabilities.send must be exactly false, not merely missing: an older or
-//     non-local snapshot that never advertised send is not this shape.
+// Deliberately narrow - it is NOT the whole recovery fence. Every clause below
+// excludes a shape the hub would refuse or one whose send would starve:
+//
+//   - the hub bit must be true; an older or non-local snapshot that never
+//     carried it is not this shape.
 //   - signals.uncertainMessages must be false: while delivery-uncertain rows
 //     exist the hub's explicit Resume still runs reconciliation, so the send is
 //     not the whole story and the Resume affordance stays.
-//   - signals.stopInFlight must be false: a Force stop this page started holds
-//     the hub's Stopping > 0, which refuses even turn/start, so a snapshot taken
-//     mid-drain is not the foldable shape.
+//   - signals.stopInFlight must be false: a snapshot taken before this page's
+//     Stop was answered can still carry the bit the hub stamped before the
+//     Stop's drain began, so the local in-flight Stop keeps the fence.
+//   - signals.queuedNonSend must be false: a queued, not-yet-attempted
+//     non-turn/start durable row parks at the target's FIFO ahead of a
+//     turn/start, so folding a send behind it would silently never deliver it.
 //
-// A Stop in flight / active drain arms the same obligation on a LIVE status and
-// still refuses turn/start, a restartRequired daemon needs the older daemon
-// stopped first, and a stale-connection snapshot is still refused by the
-// connection fence; all keep the fence.
+// A Stop in flight / active drain, a restartRequired daemon that needs the
+// older daemon stopped first, and a stale-connection snapshot all leave the hub
+// bit false; all keep the fence.
 export interface ResumeOnlySignals {
   // The store's delivery-uncertain rows (blockedUnknown).
   uncertainMessages?: boolean;
   // A Force stop this page started is still draining (stoppingRefs).
   stopInFlight?: boolean;
+  // A queued, not-yet-attempted non-turn/start durable row ahead of the send
+  // (the pending-turns projection's hasQueuedNonSend).
+  queuedNonSend?: boolean;
 }
 
 export function isResumeOnlyLocal(
   ref: string,
-  model: Pick<ThreadModel, "resumeRequired" | "status" | "capabilities">,
+  model: Pick<ThreadModel, "resumeOnlyFoldable">,
   signals: ResumeOnlySignals = {},
 ): boolean {
   return (
     ref.startsWith("local:") &&
-    model.resumeRequired === true &&
-    model.capabilities.send === false &&
-    model.status.type === "notLoaded" &&
+    model.resumeOnlyFoldable === true &&
     signals.uncertainMessages !== true &&
-    signals.stopInFlight !== true
+    signals.stopInFlight !== true &&
+    signals.queuedNonSend !== true
   );
 }
 
@@ -1905,6 +1912,9 @@ export function isResumeOnlyLocal(
 // import it), and every caller of the predicate acts on a loaded session.
 interface ResumeOnlyProjection {
   hasBlockedUnknown(ref: string): boolean;
+  // Queued, not-yet-attempted non-turn/start rows: a turn/start queued behind
+  // one starves at the target's FIFO, so a ref holding one is not foldable.
+  hasQueuedNonSend(ref: string): boolean;
 }
 let resumeOnlyProjection: ResumeOnlyProjection | null = null;
 
@@ -1920,14 +1930,24 @@ export function hasBlockedUnknown(ref: string): boolean {
   return resumeOnlyProjection === null || resumeOnlyProjection.hasBlockedUnknown(ref);
 }
 
+// Whether ref's durable outbox holds a queued, not-yet-attempted
+// non-turn/start row, as the pending-turns projection last published them. True
+// when no projection is installed (failing closed). Exported so a surface that
+// reasons about the fence can ask the same question the store-wide predicate
+// does.
+export function hasQueuedNonSend(ref: string): boolean {
+  return resumeOnlyProjection === null || resumeOnlyProjection.hasQueuedNonSend(ref);
+}
+
 // isResumeOnlyLocal over the store's current model for ref, the ONE synchronous
 // predicate the press (liveControls), enqueue (enqueueMutationIntent) and
 // dispatch (currentDispatchClient) paths share. Unlike isResumeOnlyLocal it
 // reads the delivery-uncertain signal itself, from the pending-turns projection
-// (hasBlockedUnknown), so a direct caller that bypassed the composer's own
-// blockedMutations read - the palette's slash fallthrough, the ask dock's batch
-// send, a failed turn's Retry - still keeps the fence while blockedUnknown rows
-// stand. It can also read the store's own in-flight Stop (stoppingRefs).
+// (hasBlockedUnknown), and the queued-non-send signal (hasQueuedNonSend), so a
+// direct caller that bypassed the composer's own reads - the palette's slash
+// fallthrough, the ask dock's batch send, a failed turn's Retry - still keeps
+// the fence while blockedUnknown rows or a queued non-send row stand. It can
+// also read the store's own in-flight Stop (stoppingRefs).
 export function resumeOnlyLocalModel(ref: string): boolean {
   const state = threadsStore.getState();
   const model = state.threads.get(ref);
@@ -1936,6 +1956,7 @@ export function resumeOnlyLocalModel(ref: string): boolean {
     isResumeOnlyLocal(ref, model, {
       stopInFlight: state.stoppingRefs.has(ref),
       uncertainMessages: hasBlockedUnknown(ref),
+      queuedNonSend: hasQueuedNonSend(ref),
     })
   );
 }

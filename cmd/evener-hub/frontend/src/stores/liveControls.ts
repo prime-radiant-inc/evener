@@ -76,7 +76,7 @@ export interface RecoveryFenceReading {
 
 export function recoveryFence(
   ref: string,
-  model: Pick<ThreadModel, "resumeRequired" | "status" | "capabilities">,
+  model: Pick<ThreadModel, "resumeOnlyFoldable" | "status">,
   restartObligated: boolean,
   signals: ResumeOnlySignals = {},
 ): RecoveryFenceReading {

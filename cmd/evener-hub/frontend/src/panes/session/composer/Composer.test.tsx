@@ -3327,6 +3327,7 @@ test("a merely-resumable stopped local session offers Send and sends turn/start"
       capabilities: { ...FULL_CAPABILITIES, send: false, queue: false, steer: false, interrupt: false },
       mutationStateAuthoritative: false,
       resumeRequired: true,
+      resumeOnlyFoldable: true,
       queue: { revision: 0 },
     },
   });
@@ -3376,6 +3377,7 @@ test("a merely-resumable local session with uncertain messages keeps Send disabl
       capabilities: { ...FULL_CAPABILITIES, send: false, queue: false, steer: false, interrupt: false },
       mutationStateAuthoritative: false,
       resumeRequired: true,
+      resumeOnlyFoldable: true,
       queue: { revision: 0 },
     },
   });
@@ -3400,6 +3402,55 @@ test("a merely-resumable local session with uncertain messages keeps Send disabl
   // The chord reaches the form by the same route the button does; it refuses too.
   await user.keyboard("{Meta>}{Enter}{/Meta}");
   await flushPendingTurnsProjectionForTests();
+  expect(fake.calls.filter((call) => call.method === "turn/start")).toEqual([]);
+});
+
+// Part 3: during the resume window a SECOND send must wait for the first, not
+// route its own turn/start. availabilityFor's resume-only branch returns
+// canSend: !pendingSend, matching the ended-session substitution's
+// !tableAvailability.canSend guard below it - the table never offers Send while
+// one is already in flight.
+test("a merely-resumable local session with a pending send refuses a second send", async () => {
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  const user = userEvent.setup();
+  const ref = "local:stopped-pending-send";
+  const fake = await mountComposer(ref, {
+    status: { type: "notLoaded" },
+    evener: {
+      ref,
+      capabilities: { ...FULL_CAPABILITIES, send: false, queue: false, steer: false, interrupt: false },
+      mutationStateAuthoritative: false,
+      resumeRequired: true,
+      resumeOnlyFoldable: true,
+      queue: { revision: 0 },
+    },
+  });
+  // This page's send stays in flight: the runtime dispatches it and the hub
+  // never answers, so it remains the one pending send.
+  const inFlight = deferred<never>();
+  fake.on("turn/start", () => inFlight.promise);
+  await act(async () => {
+    const input = [{ type: "text", text: "first" }];
+    await storage.enqueueIntent({
+      targetRef: ref,
+      threadId: `thr_${ref}`,
+      method: "turn/start",
+      payload: { ref, input },
+      attachments: [],
+      optimisticDisplay: { method: "turn/start", input },
+    });
+    await refreshPendingTurnsProjection(ref);
+  });
+  await waitFor(() => expect(threadsStore.getState().restartBlockingObligations.has(ref)).toBe(true));
+  const editor = textarea();
+  await user.click(editor);
+  await user.type(editor, "second");
+  await user.click(submitButton());
+  await flushPendingTurnsProjectionForTests();
+  // The pending send keeps Send unavailable during the resume window: the press
+  // mints no second turn/start, so the outbox still holds only the seeded send.
+  expect((await storage.listOutbox(ref)).map((record) => record.method)).toEqual(["turn/start"]);
   expect(fake.calls.filter((call) => call.method === "turn/start")).toEqual([]);
 });
 

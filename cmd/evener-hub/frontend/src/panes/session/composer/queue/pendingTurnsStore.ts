@@ -69,6 +69,15 @@ const pendingTurnsStore = createPendingTurnsStore<MutationAttachment>({
 installResumeOnlyProjection({
   hasBlockedUnknown: (ref) =>
     outboxEntriesByState(pendingTurnsStore.getState().outbox, ref, "blockedUnknown").length > 0,
+  // A queued, not-yet-attempted non-turn/start row (still "submitting", not yet
+  // handed to the wire) parks at the target's FIFO: a turn/start queued behind
+  // it never dispatches, so a ref holding one is not the foldable shape. A
+  // turn/start row is the send itself and does not block the carve-out, and a
+  // settled row (blockedUnknown/canceled, or attempted) is not "queued" here.
+  hasQueuedNonSend: (ref) =>
+    outboxEntriesByState(pendingTurnsStore.getState().outbox, ref, "submitting").some(
+      (record) => record.method !== "turn/start" && record.attempted !== true,
+    ),
 });
 
 // The durable-read fence a refresh's targets are decided through, and the

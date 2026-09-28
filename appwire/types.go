@@ -903,12 +903,21 @@ type TaskAggregate struct {
 type EvenerThread struct {
 	// ResumeRequired means recovery stopped this session and automatic actions
 	// must wait for an explicit thread/resume. Saved transcripts remain readable.
-	ResumeRequired bool   `json:"resumeRequired,omitempty"`
-	Ref            string `json:"ref"`
-	InstanceID     string `json:"instanceId,omitempty"`
-	ParentRef      string `json:"parentRef,omitempty"`
-	Kind           string `json:"kind,omitempty"`
-	Profile        string `json:"profile,omitempty"`
+	ResumeRequired bool `json:"resumeRequired,omitempty"`
+	// ResumeOnlyFoldable means a turn/start sent on this connection right now
+	// would be admitted under the resume-only carve-out: the session merely needs
+	// its resume, which the send folds into itself. The hub stamps it only when
+	// that admission would actually succeed, so a client can offer Send from the
+	// hub's own answer instead of inferring the shape from ResumeRequired plus a
+	// missing send capability, which this same overlay also sets for a Stop drain,
+	// an unconfirmed force-stop exit, and the connection-recovery fence - three
+	// shapes whose turn/start the hub still refuses.
+	ResumeOnlyFoldable bool   `json:"resumeOnlyFoldable,omitempty"`
+	Ref                string `json:"ref"`
+	InstanceID         string `json:"instanceId,omitempty"`
+	ParentRef          string `json:"parentRef,omitempty"`
+	Kind               string `json:"kind,omitempty"`
+	Profile            string `json:"profile,omitempty"`
 	// TurnCount is the daemon's total completed model-response count. It stays
 	// independent of Turns so a bounded metadata read never loads the transcript.
 	TurnCount        int                `json:"turnCount,omitempty"`
