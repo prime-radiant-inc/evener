@@ -57,7 +57,8 @@ export interface HubUpdateController {
   setChannel(channel: UpdateChannel): void;
   runCheck(): Promise<void>;
   apply(): Promise<void>;
-  /** Stops telling listeners; answers still in flight change nothing. */
+  /** Stops telling listeners and sends nothing more; answers still in
+   * flight change nothing. */
   dispose(): void;
 }
 
@@ -114,6 +115,8 @@ export function createHubUpdateController(
     },
 
     async runCheck() {
+      // A disposed controller's connection was replaced: it asks nothing.
+      if (disposed) return;
       // Invalidate the previous result first: a manual re-check must not
       // leave a stale positive in state while the new check is in flight
       // (apply would otherwise act on it).
@@ -128,7 +131,7 @@ export function createHubUpdateController(
     },
 
     async apply() {
-      if (get().applying || get().restarting) return;
+      if (disposed || get().applying || get().restarting) return;
       const check = get().check;
       if (!check) {
         set({ applyError: "Check for updates first" });

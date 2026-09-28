@@ -5,6 +5,7 @@
 // and it is done once that differs from the version the update replaced.
 // While the hub is away the sheet's connection line says so (spec 14).
 import { type AppwireClientLike, createHubUpdateController, type HubUpdateController } from "@evener/appwire-client";
+import { useEffect, useMemo, useState } from "react";
 
 /** Whether the sheet's connection is ready, and a signal each time it turns
  * ready. The sheet sets it from the connection it renders. */
@@ -82,4 +83,21 @@ export function createPhoneHubUpdates(
 			for (const end of [...endWaits]) end();
 		},
 	};
+}
+
+/** The Hub sheet's update controller: one per client, checked each time the
+ * connection is ready with a client to ask. That covers opening the sheet
+ * and every reconnect, which is also how a restarted hub is noticed. A ready
+ * render can come before the connection's client is adopted, so the check
+ * waits for both. */
+export function useHubUpdates(client: Pick<AppwireClientLike, "request"> | null, ready: boolean): HubUpdateController {
+	const [readiness] = useState(createReadiness);
+	const updates = useMemo(() => createPhoneHubUpdates(client, readiness), [client, readiness]);
+	useEffect(() => () => updates.dispose(), [updates]);
+	const reachable = ready && client !== null;
+	useEffect(() => {
+		readiness.set(reachable);
+		if (reachable) void updates.controller.runCheck();
+	}, [reachable, readiness, updates]);
+	return updates.controller;
 }

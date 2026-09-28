@@ -1,7 +1,7 @@
 // @vitest-environment node
 
 import { describe, expect, test } from "vitest";
-import { ConnectionClosedError, GENERIC_ERROR_MESSAGE, WireError } from "./errors";
+import { ConnectionClosedError, friendlyErrorMessage, GENERIC_ERROR_MESSAGE, WireError } from "./errors";
 import { createFrameworkFreeStore } from "./frameworkFreeStore";
 import {
   APPLY_TIMEOUT_MS,
@@ -209,21 +209,19 @@ describe("apply", () => {
   });
 
   test.each([
-    ["a refusal from the hub", new WireError("download failed", -32000), "download failed"],
-    ["a closed connection", new ConnectionClosedError("connection closed"), GENERIC_ERROR_MESSAGE],
-    [
-      "a request that never left",
-      new Error("cannot call evener/update/apply while state is closed"),
-      GENERIC_ERROR_MESSAGE,
-    ],
-  ])("keeps %s an error and waits for nothing", async (_name, error, message) => {
+    ["a refusal from the hub", new WireError("download failed", -32000)],
+    ["a closed connection", new ConnectionClosedError("connection closed")],
+    ["a request that never left", new Error("cannot call evener/update/apply while state is closed")],
+  ])("keeps %s an error, in the package's own words, and waits for nothing", async (_name, error) => {
     const hub = await checked(WAITING);
     const applying = hub.controller.apply();
     hub.take("evener/update/apply").reject(error);
     await applying;
-    expect(hub.controller.getState()).toMatchObject({ applying: false, restarting: false });
-    expect(hub.controller.getState().applyError).toBeTruthy();
-    if (error instanceof WireError) expect(hub.controller.getState().applyError).toBe(message);
+    expect(hub.controller.getState()).toMatchObject({
+      applying: false,
+      restarting: false,
+      applyError: friendlyErrorMessage(error),
+    });
     expect(hub.restarts).toHaveLength(0);
   });
 
@@ -303,10 +301,21 @@ describe("dispose", () => {
     });
     hub.controller.setChannel("release");
     expect(heard).toBe(1);
-    hub.controller.dispose();
     const running = hub.controller.runCheck();
-    hub.take("evener/update/check").resolve(UP_TO_DATE);
+    const request = hub.take("evener/update/check");
+    const beforeDispose = heard;
+    hub.controller.dispose();
+    hub.controller.setChannel("snapshot");
+    request.resolve(UP_TO_DATE);
     await running;
-    expect(heard).toBe(1);
+    expect(heard).toBe(beforeDispose);
+  });
+
+  test("sends nothing once disposed, so a late tap can't act on a replaced connection", async () => {
+    const hub = await checked(WAITING);
+    hub.controller.dispose();
+    await hub.controller.apply();
+    await hub.controller.runCheck();
+    expect(hub.pending).toHaveLength(0);
   });
 });

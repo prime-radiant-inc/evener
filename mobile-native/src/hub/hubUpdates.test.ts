@@ -1,6 +1,11 @@
 import type { UpdateCheckResponse } from "@evener/appwire-client";
-import { expect, it } from "vitest";
-import { createPhoneHubUpdates, createReadiness } from "./hubUpdates";
+import { expect, it, vi } from "vitest";
+import { renderHook } from "../renderNative.testkit";
+import { createPhoneHubUpdates, createReadiness, useHubUpdates } from "./hubUpdates";
+
+vi.mock("react-native", async () => ({
+	...(await import("../renderNative.testkit")).nativeModuleMock(),
+}));
 
 const check = (over: Partial<UpdateCheckResponse> = {}): UpdateCheckResponse => ({
 	channel: "release",
@@ -88,4 +93,33 @@ it("tells listeners only when readiness turns true", () => {
 	readiness.set(true);
 	expect(heard).toBe(2);
 	expect(readiness.isReady()).toBe(true);
+});
+
+it("checks only once the sheet has both a ready connection and its client", async () => {
+	const h = hub();
+	const current = { client: null as typeof h.client | null, ready: true };
+	const hook = renderHook(() => useHubUpdates(current.client, current.ready));
+	await settle();
+	expect(h.calls).toEqual([]);
+	expect(hook.result.current.getState().checkError).toBeNull();
+	current.client = h.client;
+	hook.rerender();
+	await settle();
+	expect(h.calls).toEqual(["evener/update/check"]);
+	expect(hook.result.current.getState().check?.currentVersion).toBe("0.9.412");
+	hook.unmount();
+});
+
+it("checks again after the connection comes back", async () => {
+	const h = hub();
+	const current = { client: h.client, ready: true };
+	const hook = renderHook(() => useHubUpdates(current.client, current.ready));
+	await settle();
+	current.ready = false;
+	hook.rerender();
+	current.ready = true;
+	hook.rerender();
+	await settle();
+	expect(h.calls).toEqual(["evener/update/check", "evener/update/check"]);
+	hook.unmount();
 });
