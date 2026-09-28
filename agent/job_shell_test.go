@@ -372,7 +372,7 @@ func TestRunShellStartFailureIncludesDiagnostic(t *testing.T) {
 		t.Fatalf("start failure output = %q, want diagnostic", res.Output)
 	}
 
-	formatted, err := marshalShellToolResult(res, shellToolResultDefaultMaxChars)
+	formatted, err := marshalShellToolResult(res, shellToolResultDefaultMaxChars, false)
 	if err != nil {
 		t.Fatalf("marshalShellToolResult: %v", err)
 	}
