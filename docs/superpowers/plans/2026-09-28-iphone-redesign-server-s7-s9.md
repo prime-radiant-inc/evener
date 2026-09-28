@@ -19,7 +19,7 @@ Everything below was read on main at `947c50235`.
 **How a document is read today.**
 - `/doc/file` (`cmd/evener-hub/doc_serve.go:40`) serves only `?format=raw`. It resolves the session's working directory with `sessionCWD` (`:149`), which refuses any id naming another source (`:150`, through `isLocalRouteID`, `cmd/evener-hub/web.go:363`), then confines the path with `fspaths.ResolveInRoot` (`:58`).
 - `ResolveInRoot` (`cmd/evener-hub/internal/fspaths/paths.go:81`) checks containment twice: the cleaned join must sit under the symlink-resolved root (`:99`), and so must the symlink-resolved target (`:109`). An absolute path is accepted only when it already lies inside the root (`:93`). An escape is `ErrPathEscapesRoot`, which the route answers 403 (`doc_serve.go:62`); anything else that does not resolve is 404.
-- `readDocFile` (`doc_serve.go:176`) stats first, so a FIFO is never opened, then reads the head with one `f.Read` into a 512 KiB buffer (`:189-194`). An empty file returns `(0, io.EOF)` from that read and is answered 404, as if it were missing.
+- The check and the read are separate: `ResolveInRoot` checks the path, then `readDocFile` (`doc_serve.go:176`) stats and opens it again by name (`:177`, `:184`). A symlink swapped in between the check and the open leads the open out of the folder. `/doc/image` and `evener/session/image`'s path branch have the same gap (filed as #2918). The stat comes first so a FIFO is never opened, then `readDocFile` reads the head with one `f.Read` into a 512 KiB buffer (`:189-194`). An empty file returns `(0, io.EOF)` from that read and is answered 404, as if it were missing.
 - `writeDocFileRaw` (`:225`) sends `text/plain` or `application/octet-stream` by a NUL-byte sniff, and `X-Doc-Truncated` / `X-Doc-Total-Size` past the cap. The total comes from a second stat, `docRawTotalSize` (`:244`), so it can describe a different version than the bytes.
 
 **What identity a document read carries today: none.**
@@ -67,7 +67,7 @@ Everything below was read on main at `947c50235`.
 - **Targeted tests only.** Run each task's tests and the gates it names; CI runs the full matrix. Some `cmd/evener-hub` tests fail on macOS only (#2497); CI (Linux) is the judge.
 - **Deterministic tests.** No network, no sleeps, no wall clock: files get fixed modification times with `os.Chtimes`, the host in the proxy tests is either a real hub served by `httptest` or a scripted AppWire peer (`newScriptedRemoteHub`), and the large-file case uses a sparse file. Every new test is shown failing before its code lands.
 - **Line numbers** are on main at `947c50235`. A merge from another lane moves them, so every step also names its anchor: find it by the name.
-- **Size,** measured on the dry run (production lines, tests and generated output excluded): PR 34 about 110 (Go 83 added and 30 removed, TypeScript 26), PR 35 about 230. Landing follows the handoff: a regular PR, CI green on the merged head, RoboRev's comment read, /simplify run and its fixes pushed, then an admin squash merge with `--match-head-commit <full sha>`.
+- **Size,** measured on the dry run (production lines, tests and generated output excluded): PR 34 about 210 (Go 146 added and 38 removed, TypeScript 28), PR 35 about 260. Landing follows the handoff: a regular PR, CI green on the merged head, RoboRev's comment read, /simplify run and its fixes pushed, then an admin squash merge with `--match-head-commit <full sha>`.
 
 ## Rulings
 
@@ -79,23 +79,23 @@ Decisions the spec and the server plan leave open, with the reason for each.
 2. **Files over 16 MiB (`docRevisionMaxBytes`) carry no revision.** A read hashes at most 16 MiB and one byte (about 7 ms), so a huge log costs no more than that on every foreground; past the limit the phone falls back to comparing what it was shown, as today. The limit is 5 times the largest markdown file measured.
 3. **Size and revision come from one pass.** The read hashes exactly the bytes it counted, and those bytes, never the stat's size, decide the revision, so the total and the revision describe one version even while the file is being written. A file that grows past 16 MiB after the stat gets no revision and a size of at least what the read found; one that shrinks below it is hashed and reports the size read (both found by review on the plan PR). This replaces `docRawTotalSize`'s second stat.
 4. **The time rides as `X-Doc-Modified-At` in Unix milliseconds,** and only when it is after the epoch (`docModifiedMillis`), so the server and the shared package agree that zero or less means no time. It is not `Last-Modified`: `Last-Modified` has one-second precision and an HTTP-date the phone would have to parse by hand (whether React Native's Hermes parses that date format was not checked, so the plan avoids it), and it would invite heuristic caching.
-5. **`Cache-Control: private, no-cache`, and `If-None-Match` answered by the rules of RFC 9110 13.1.2** (weak comparison, and `*` matches any current version, including one too large to have a revision). Every cache must revalidate before reuse, so a changed file is never shown from a cache; with the `ETag`, revalidation costs a 304 and no body. Browsers send `If-None-Match` for such a response on their own (RFC 9111). Whether iOS's `NSURLSession` under React Native's `fetch` does the same was not measured, and nothing here relies on it: the phone reads `revision` from the response either way.
+5. **The shared package trusts only the hub's own tag shape** (RoboRev on the plan PR): `etagRevision` accepts a strong, quoted, 64-character lowercase hex tag and nothing else, so a weak or rewritten tag from something between the phone and the hub falls back to comparing what was shown. **`Cache-Control: private, no-cache`, and `If-None-Match` answered by the rules of RFC 9110 13.1.2** (weak comparison, and `*` matches any current version, including one too large to have a revision). Every cache must revalidate before reuse, so a changed file is never shown from a cache; with the `ETag`, revalidation costs a 304 and no body. Browsers send `If-None-Match` for such a response on their own (RFC 9111). Whether iOS's `NSURLSession` under React Native's `fetch` does the same was not measured, and nothing here relies on it: the phone reads `revision` from the response either way.
 6. **An empty file is served empty, not 404.** The single `f.Read` treated it as missing. The rewrite reads with `io.ReadFull`, so the phone no longer says an empty file "isn't in this session's folder any more".
 
 **S7, remote documents**
 
 7. **Images need nothing.** They already proxy (What was measured). S7 is documents only.
 8. **The method is `evener/session/document`,** beside `evener/session/image`: params `{sessionId, path}`, response `{data, totalSize, revision?, modifiedAt?}`. `data` is bytes (base64 in JSON), because the head may end mid-rune or be binary. The controller re-derives text or binary from the bytes, as the image proxy re-derives the media type.
-9. **Confinement: the host resolves, by the local rule.** The host runs `sessionCWD` (which refuses an id naming another source, so a request cannot be chained to a third hub) and `fspaths.ResolveInRoot` (lexical and symlink containment) against its own session folder. An escape is a new typed refusal, `pathOutsideSession`, which the controller answers 403 as the local route does. An absolute path inside the folder is accepted, as on `/doc/file`. The controller forwards the path untouched and never resolves it; it holds no path of the host's disk to resolve against. The method opens nothing the HTTP route does not: any client of a hub that could call it could already fetch the same file from that hub's `/doc/file` with the same credentials.
+9. **Confinement: the host resolves, by the local rule.** The host runs `sessionCWD` (which refuses an id naming another source, so a request cannot be chained to a third hub) and `fspaths.ResolveInRoot` (lexical and symlink containment) against its own session folder. An escape is a new typed refusal, `pathOutsideSession`, which the controller answers 403 as the local route does. An absolute path inside the folder is accepted, as on `/doc/file`. The controller forwards the path untouched and never resolves it; it holds no path of the host's disk to resolve against. The method opens nothing the HTTP route does not: any client of a hub that could call it could already fetch the same file from that hub's `/doc/file` with the same credentials. **The read is confined too, not only the check** (RoboRev on the plan PR): `readDocFile` opens the checked path through an `os.Root` at the session folder (`openDocInRoot`), which refuses a path that resolves outside it at the moment of the open, so a symlink swapped in after `ResolveInRoot` cannot lead the read out. The open is non-blocking on Unix (`docOpenNonblock`), and the stat is of the open descriptor, so a FIFO swapped in is refused without waiting for a writer. PR 34 lands this, since it rewrites `readDocFile`, and the local `/doc/file` gets it too.
 10. **The controller re-checks the host's answer** (`proxyableSessionDocument`): at most 512 KiB, a total at least that long, a full head when truncated, a revision exactly when the total is 16 MiB or less (the host hashes every such file, so a missing one would silently turn S9 off), and a revision that is a sha256 and, when the bytes are the whole file, their own sha256. A violation is 502, never served. The check reuses `imageSha` and `imageShaRegexp`, the package's sha256-hex helpers; renaming them would touch the image code for no behavior change, so it is left out.
-11. **Status mapping** (`sessionDocumentProxyStatus`): `pathOutsideSession` 403, `resourceNotFound` 404, invalid params 400, MethodNotFound 501 (the host predates S7), anything else 503 (host detached, unknown or unreachable). The shared package reads 501 as `host-unsupported`, the phone's cue to keep "Open it on the host".
+11. **Status mapping** (`sessionDocumentProxyStatus`): `pathOutsideSession` 403, `resourceNotFound` 404, invalid params 400, MethodNotFound 501 (the host predates S7), anything else 503 (host detached, unknown or unreachable, or the host's own internal error or conflict; the mapping names every code rather than falling through to `statusForWireError`, which would answer 500 or 409). The shared package reads 501 as `host-unsupported`, the phone's cue to keep "Open it on the host".
 12. **The method is denied on the host admin proxy,** like `evener/session/image`.
 13. **One helper finds the owning source.** `sessionImageFetcher` becomes the generic `owningSourceAs[T]`, `hostQualifiedImageRef` becomes `hostQualifiedRouteRef` and `remoteSessionImageBudget` becomes `remoteSessionFileBudget`, since images and documents now share them. The rename is mechanical: three call sites.
 14. **A host-qualified request is checked for `format=raw` before the host is asked,** so the controller never forwards a request it would refuse.
 
 ## Questions for Jesse
 
-Each has a recommendation; the plan is written to the recommendation, and none blocks the server work. They are product questions for the phone lane's switch-over.
+Each has a recommendation, and the coordinator has directed that the plan be built to the recommendations (2026-09-28): the Phone lane handoff below carries each one. None blocks the server work; they are product questions for the phone lane's switch-over, which Jesse can still overturn there.
 
 1. **What does the Reader say when the revision changed but no paragraph you can see did?** It happens when the edit is past the 512 KB the Reader shows, or changes only markup the block hashes ignore. **Recommendation:** say nothing. The caption counts changes you can step to; "changed" with nothing to show would send you hunting. The alternative is "Changed past the part shown" when the document is truncated.
 2. **Which time does "updated 3m ago" show?** The opener knows when the session last wrote the file; S9 gives the file's own modification time, which also moves when you or another tool edit it. **Recommendation:** the file's own time whenever the hub sends it, since the caption describes the document you are reading. The opener's time stays the fallback for an older hub.
@@ -106,7 +106,8 @@ Each has a recommendation; the plan is written to the recommendation, and none b
 1. **A remote read that escapes the session's folder.**
    - A `..` path, an absolute path outside the folder, and a symlink inside it that leads out must be refused on the host, and answered 403 by the controller, never served.
    - A session id naming a third hub must not be followed.
-   - Pinned by `TestHubSessionDocumentStaysInsideTheSessionFolder` (Task 35.1) and the 403 cases of `TestDocFileRouteReadsARemoteSessionThroughItsHost` (Task 35.2), which run a real host hub over a real AppWire channel.
+   - A symlink swapped in after the check must not lead the open out, and a FIFO must not block the read.
+   - Pinned by `TestReadDocFile_OpenStaysInsideTheRootAfterASwap` and `TestReadDocFile_RefusesAFIFOWithoutBlocking` (Task 34.1), `TestHubSessionDocumentStaysInsideTheSessionFolder` (Task 35.1) and the 403 cases of `TestDocFileRouteReadsARemoteSessionThroughItsHost` (Task 35.2), which run a real host hub over a real AppWire channel.
 2. **A remote id read from the controller's own disk.**
    - A host-qualified id must never reach `sessionCWD` on the controller, even when the host is detached, unknown or refuses.
    - Pinned by `TestDocFile_Raw_UnknownHostSession503`, `TestDocFileRouteRefusesBeforeAskingTheHost` and `TestDocFileRouteMapsHostRefusals` (Task 35.2).
@@ -126,8 +127,8 @@ Each has a recommendation; the plan is written to the recommendation, and none b
 
 | PR | Item | Tasks | Production lines (dry run) | Depends on |
 |---|---|---|---|---|
-| 34 | S9: document revision identity | 34.1-34.2 | about 110 | none |
-| 35 | S7: documents in remote sessions | 35.1-35.3 | about 230 | PR 34 |
+| 34 | S9: document revision identity | 34.1-34.2 | about 210 | none |
+| 35 | S7: documents in remote sessions | 35.1-35.3 | about 260 | PR 34 |
 
 - **Merge order.** One lane: PR 34, then PR 35 branched from main once PR 34 has merged. PR 35's host method returns what PR 34's `readDocFile` reads, and its proxy writes through PR 34's `writeDocFileRaw`.
 - **Where this meets other lanes.** `appwire/types.go`, `appwire/protocol.go`, `appwire/errors.go` and the generated files (PR 35). When `types.gen.ts` or `docs/appwire-protocol.md` conflicts, take either side and run `make generate` again.
@@ -167,13 +168,17 @@ This lane changes `mobile-native/` only through the shared package. Once each PR
 
 **Files:**
 - Modify: `cmd/evener-hub/doc_serve.go` (imports; `docRevisionMaxBytes` after `docFileMaxBytes`; `handleDocFile`'s read and write; `readDocFile` replaced with `docFileRead` and the one-pass read; `writeDocFileRaw` takes the read and the request; `docRawTotalSize` replaced by `ifNoneMatchNames`)
+- Create: `cmd/evener-hub/doc_open_unix.go`, `cmd/evener-hub/doc_open_other.go` (`docOpenNonblock`)
 - Modify: `cmd/evener-hub/web_covtest_test.go` (delete the two `docRawTotalSize` tests and the imports only they used)
-- Create: `cmd/evener-hub/doc_serve_revision_test.go`
+- Modify: `cmd/evener-hub/cov_small_faults_pass5_fuzz_test.go`, `cmd/evener-hub/cov_threadread_images_fuzz_test.go` (the coverage seeds call `readDocFile` with its root, and stub `docStat` and `docOpen` by their new types)
+- Create: `cmd/evener-hub/doc_serve_revision_test.go`, `cmd/evener-hub/doc_serve_confinement_test.go`, `cmd/evener-hub/doc_serve_fifo_unix_test.go`
 
 **Interfaces:**
 - Produces (Task 35.1 and 35.2 use them):
   - `type docFileRead struct { Data []byte; TotalSize int64; Revision string; ModifiedAt time.Time }`
-  - `func readDocFile(abs string) (docFileRead, error)` (the same name and arity as today, so the fuzz seeds that call `_, _ = readDocFile(...)` compile unchanged)
+  - `func readDocFile(root, abs string) (docFileRead, error)`: `abs` is the path `fspaths.ResolveInRoot(root, rel)` returned
+  - `func openDocInRoot(root, abs string) (*os.File, error)`, with the seams `var docOpen = openDocInRoot` and `var docStat = (*os.File).Stat`
+  - Test helper `docTestRoot(t) string` (a temp folder by its real path)
   - `func writeDocFileRaw(w http.ResponseWriter, r *http.Request, doc docFileRead)`
   - `const docRevisionMaxBytes = 16 * 1024 * 1024`
   - Test helpers `docRevisionOf(content []byte) string` and `writeDocAt(t, path, content, modified)` (it creates parent directories; Task 35.1's tests write into `plans/`).
@@ -206,6 +211,18 @@ import (
 func docRevisionOf(content []byte) string {
 	sum := sha256.Sum256(content)
 	return hex.EncodeToString(sum[:])
+}
+
+// docTestRoot is a fresh session folder by its real path: readDocFile takes a
+// path fspaths.ResolveInRoot has already symlink-resolved, and on macOS
+// t.TempDir sits under /var, a symlink to /private/var.
+func docTestRoot(t *testing.T) string {
+	t.Helper()
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return root
 }
 
 func writeDocAt(t *testing.T, path string, content []byte, modified time.Time) {
@@ -383,7 +400,7 @@ func TestDocFile_Raw_RevisionAtTheHashLimit(t *testing.T) {
 // saw before the open. The stat is stubbed to report the file as it was a
 // moment earlier, which is the order a concurrent writer produces.
 func TestReadDocFile_GrowingPastTheHashLimitReportsWhatWasRead(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "growing.log")
+	path := filepath.Join(docTestRoot(t), "growing.log")
 	f, err := os.Create(path)
 	if err != nil {
 		t.Fatal(err)
@@ -398,9 +415,9 @@ func TestReadDocFile_GrowingPastTheHashLimitReportsWhatWasRead(t *testing.T) {
 	writeDocAt(t, small, []byte("short"), time.UnixMilli(1_790_000_000_000))
 	oldStat := docStat
 	t.Cleanup(func() { docStat = oldStat })
-	docStat = func(string) (os.FileInfo, error) { return os.Stat(small) }
+	docStat = func(*os.File) (os.FileInfo, error) { return os.Stat(small) }
 
-	read, err := readDocFile(path)
+	read, err := readDocFile(filepath.Dir(path), path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -417,7 +434,7 @@ func TestReadDocFile_GrowingPastTheHashLimitReportsWhatWasRead(t *testing.T) {
 // revision.
 func TestReadDocFile_ShrinkingBelowTheHashLimitIsHashed(t *testing.T) {
 	content := []byte("short now")
-	path := filepath.Join(t.TempDir(), "shrunk.log")
+	path := filepath.Join(docTestRoot(t), "shrunk.log")
 	writeDocAt(t, path, content, time.UnixMilli(1_790_000_000_000))
 	big := filepath.Join(t.TempDir(), "earlier.log")
 	f, err := os.Create(big)
@@ -432,9 +449,9 @@ func TestReadDocFile_ShrinkingBelowTheHashLimitIsHashed(t *testing.T) {
 	}
 	oldStat := docStat
 	t.Cleanup(func() { docStat = oldStat })
-	docStat = func(string) (os.FileInfo, error) { return os.Stat(big) }
+	docStat = func(*os.File) (os.FileInfo, error) { return os.Stat(big) }
 
-	read, err := readDocFile(path)
+	read, err := readDocFile(filepath.Dir(path), path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -458,10 +475,92 @@ func TestDocFile_Raw_EmptyFileIsServedEmpty(t *testing.T) {
 }
 ```
 
+`cmd/evener-hub/doc_serve_confinement_test.go`:
+
+```go
+package hub
+
+import (
+	"os"
+	"path/filepath"
+	"testing"
+	"time"
+
+	"primeradiant.com/evener/cmd/evener-hub/internal/fspaths"
+)
+
+// The read itself is confined to the session's folder, not only the check
+// before it: a path that passed fspaths.ResolveInRoot and was then swapped for
+// a symlink leading out must not be read. The test hands readDocFile the
+// swapped path directly, which is the state a swap between the check and the
+// open leaves behind.
+func TestReadDocFile_OpenStaysInsideTheRootAfterASwap(t *testing.T) {
+	root := docTestRoot(t)
+	outside := t.TempDir()
+	writeDocAt(t, filepath.Join(outside, "secret.txt"), []byte("secret"), time.UnixMilli(1_790_000_000_000))
+	if err := os.Symlink(filepath.Join(outside, "secret.txt"), filepath.Join(root, "notes.txt")); err != nil {
+		t.Fatal(err)
+	}
+
+	read, err := readDocFile(root, filepath.Join(root, "notes.txt"))
+	if err == nil {
+		t.Fatalf("read %q through a symlink leading out of the root, want a refusal", read.Data)
+	}
+}
+
+// A symlink that stays inside the folder is still followed: ResolveInRoot
+// resolves it, and the open reads the file it names.
+func TestReadDocFile_FollowsASymlinkInsideTheRoot(t *testing.T) {
+	root := docTestRoot(t)
+	writeDocAt(t, filepath.Join(root, "docs", "plan.md"), []byte("# Plan"), time.UnixMilli(1_790_000_000_000))
+	if err := os.Symlink(filepath.Join(root, "docs", "plan.md"), filepath.Join(root, "latest.md")); err != nil {
+		t.Fatal(err)
+	}
+	abs, err := fspaths.ResolveInRoot(root, "latest.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	read, err := readDocFile(root, abs)
+	if err != nil || string(read.Data) != "# Plan" {
+		t.Fatalf("readDocFile = %q, %v; want the linked file", read.Data, err)
+	}
+}
+```
+
+`cmd/evener-hub/doc_serve_fifo_unix_test.go`:
+
+```go
+//go:build unix
+
+package hub
+
+import (
+	"path/filepath"
+	"syscall"
+	"testing"
+)
+
+// A FIFO in the session's folder is refused without blocking: the open does
+// not wait for a writer, and the descriptor's own stat says it is not a
+// regular file. Were the open to block, this test would hang at its deadline.
+func TestReadDocFile_RefusesAFIFOWithoutBlocking(t *testing.T) {
+	root := docTestRoot(t)
+	fifo := filepath.Join(root, "pipe")
+	if err := syscall.Mkfifo(fifo, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if read, err := readDocFile(root, fifo); err == nil {
+		t.Fatalf("read %q from a FIFO, want a refusal", read.Data)
+	}
+}
+```
+
 - [ ] **Step 2: Run them to see them fail**
 
 Run: `go test ./cmd/evener-hub -run 'TestDocFile_Raw_(NamesThe|RevisionFollows|IfNoneMatch|NoRevision|RevisionAtThe|NoTimeAt|EmptyFile)|TestReadDocFile_' -count=1`
-Expected: build failure, `undefined: docRevisionMaxBytes`. Once the constant alone exists, the `/doc/file` tests fail on the missing `ETag` (and `TestDocFile_Raw_NoTimeAtOrBeforeTheEpoch` passes vacuously until the header exists; it goes red if the header is sent for a pre-epoch time), `TestDocFile_Raw_EmptyFileIsServedEmpty` fails with status 404, and the two `TestReadDocFile_` tests fail to build until `readDocFile` returns a `docFileRead`.
+Expected: build failure, `undefined: docRevisionMaxBytes`. Once the constant alone exists, the `/doc/file` tests fail on the missing `ETag` (and `TestDocFile_Raw_NoTimeAtOrBeforeTheEpoch` passes vacuously until the header exists; it goes red if the header is sent for a pre-epoch time), `TestDocFile_Raw_EmptyFileIsServedEmpty` fails with status 404, and the `TestReadDocFile_` tests fail to build until `readDocFile` takes its root and returns a `docFileRead`. Once they build against the new `readDocFile` with a plain `os.OpenFile(abs, ...)` in place of the `os.Root` open, `TestReadDocFile_OpenStaysInsideTheRootAfterASwap` fails with `read "secret" through a symlink leading out of the root`. `TestReadDocFile_RefusesAFIFOWithoutBlocking` pins behavior that must not change (today's stat-first read refuses a FIFO too): it would hang if the open blocked.
 
 - [ ] **Step 3: Read the file once, and write what the read found**
 
@@ -473,7 +572,7 @@ In `cmd/evener-hub/doc_serve.go`: the imports gain `crypto/sha256`, `encoding/he
 diff --git a/cmd/evener-hub/doc_serve.go b/cmd/evener-hub/doc_serve.go
 --- a/cmd/evener-hub/doc_serve.go
 +++ b/cmd/evener-hub/doc_serve.go
-@@ -2,12 +2,16 @@ package hub
+@@ -2,26 +2,39 @@ package hub
  
  import (
  	"bytes"
@@ -490,7 +589,19 @@ diff --git a/cmd/evener-hub/doc_serve.go b/cmd/evener-hub/doc_serve.go
  
  	"primeradiant.com/evener/appwire"
  	"primeradiant.com/evener/cmd/evener-hub/internal/fspaths"
-@@ -22,6 +26,12 @@ var docOpen = os.Open
+ 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
+ )
+ 
+-var docStat = os.Stat
+-var docOpen = os.Open
++// docOpen opens a document for reading, confined to its session folder, and
++// docStat stats the open file. Both are variables so coverage tests can fail
++// them.
++var docOpen = openDocInRoot
++var docStat = (*os.File).Stat
+ 
+ // docFileMaxBytes caps how much of a file we read into a document pane. A pane
+ // is a quick read-only reference, not a pager; large files are truncated with
  // a notice rather than streamed in full.
  const docFileMaxBytes = 512 * 1024
  
@@ -503,16 +614,16 @@ diff --git a/cmd/evener-hub/doc_serve.go b/cmd/evener-hub/doc_serve.go
  // handleDocFile serves a LOCAL session file's literal bytes for the React
  // doc-viewer pane, which renders the content itself. The route has a single
  // mode, ?format=raw; a request that omits format or sends any other value is a
-@@ -67,7 +77,7 @@ func (s *WebServer) handleDocFile(w http.ResponseWriter, r *http.Request) {
+@@ -67,7 +80,7 @@ func (s *WebServer) handleDocFile(w http.ResponseWriter, r *http.Request) {
  		return
  	}
  
 -	data, err := readDocFile(abs)
-+	doc, err := readDocFile(abs)
++	doc, err := readDocFile(cwd, abs)
  	if err != nil {
  		http.NotFound(w, r)
  		return
-@@ -77,7 +87,7 @@ func (s *WebServer) handleDocFile(w http.ResponseWriter, r *http.Request) {
+@@ -77,7 +90,7 @@ func (s *WebServer) handleDocFile(w http.ResponseWriter, r *http.Request) {
  		http.Error(w, "format=raw required", http.StatusBadRequest)
  		return
  	}
@@ -521,13 +632,14 @@ diff --git a/cmd/evener-hub/doc_serve.go b/cmd/evener-hub/doc_serve.go
  }
  
  // handleDocImage serves a validated image file inside a session's working
-@@ -171,27 +181,58 @@ func sessionCWD(cfg hubcore.WebConfig, session string) (string, bool) {
+@@ -171,27 +184,83 @@ func sessionCWD(cfg hubcore.WebConfig, session string) (string, bool) {
  	return "", false
  }
  
 -// readDocFile reads up to docFileMaxBytes from a regular file. Directories and
 -// other non-regular files are refused.
 -func readDocFile(abs string) ([]byte, error) {
+-	info, err := docStat(abs)
 +// docFileRead is one read of a document: the head a pane shows and what the
 +// whole file is. Revision is the lowercase hex sha256 of the whole file, empty
 +// when the file is larger than docRevisionMaxBytes. TotalSize and Revision come
@@ -540,21 +652,22 @@ diff --git a/cmd/evener-hub/doc_serve.go b/cmd/evener-hub/doc_serve.go
 +	ModifiedAt time.Time
 +}
 +
-+// readDocFile reads a regular file's first docFileMaxBytes, its size and its
-+// revision. Directories and other non-regular files are refused; the stat runs
-+// before the open, so a FIFO is never opened (opening one blocks).
-+func readDocFile(abs string) (docFileRead, error) {
- 	info, err := docStat(abs)
++// readDocFile reads the first docFileMaxBytes of abs, a path
++// fspaths.ResolveInRoot accepted for root, with the file's size and revision.
++// The open goes through root again (openDocInRoot), so a symlink swapped in
++// after the check cannot lead it out, and it does not wait on a FIFO. The
++// stat is of the open file, so directories and other non-regular files are
++// refused whatever the path names by then.
++func readDocFile(root, abs string) (docFileRead, error) {
++	f, err := docOpen(root, abs)
  	if err != nil {
 -		return nil, err
-+		return docFileRead{}, err
- 	}
- 	if !info.Mode().IsRegular() {
+-	}
+-	if !info.Mode().IsRegular() {
 -		return nil, os.ErrInvalid
-+		return docFileRead{}, os.ErrInvalid
- 	}
- 	f, err := docOpen(abs)
- 	if err != nil {
+-	}
+-	f, err := docOpen(abs)
+-	if err != nil {
 -		return nil, err
 +		return docFileRead{}, err
  	}
@@ -562,13 +675,18 @@ diff --git a/cmd/evener-hub/doc_serve.go b/cmd/evener-hub/doc_serve.go
 -	buf := make([]byte, docFileMaxBytes)
 -	n, err := f.Read(buf)
 -	if err != nil && n == 0 {
--		return nil, err
++	info, err := docStat(f)
++	if err != nil {
++		return docFileRead{}, err
++	}
++	if !info.Mode().IsRegular() {
++		return docFileRead{}, os.ErrInvalid
++	}
 +	head := make([]byte, docFileMaxBytes)
 +	n, err := io.ReadFull(f, head)
 +	if err != nil && !errors.Is(err, io.EOF) && !errors.Is(err, io.ErrUnexpectedEOF) {
 +		return docFileRead{}, err
- 	}
--	return buf[:n], nil
++	}
 +	read := docFileRead{Data: head[:n], TotalSize: info.Size(), ModifiedAt: info.ModTime()}
 +	// The bytes read, never the stat's size, decide the revision: the file
 +	// may have grown or shrunk since the stat. Reading stops one byte past the
@@ -588,10 +706,33 @@ diff --git a/cmd/evener-hub/doc_serve.go b/cmd/evener-hub/doc_serve.go
 +	}
 +	read.TotalSize, read.Revision = total, hex.EncodeToString(hash.Sum(nil))
 +	return read, nil
++}
++
++// openDocInRoot opens abs for reading through an os.Root at root, which
++// refuses any path, symlinks included, that resolves outside root at the
++// moment of the open. abs is the symlink-resolved path ResolveInRoot returned,
++// so it is expressed relative to the symlink-resolved root. docOpenNonblock
++// keeps the open from waiting on a FIFO; a regular file reads the same.
++func openDocInRoot(root, abs string) (*os.File, error) {
++	realRoot, err := filepath.EvalSymlinks(root)
++	if err != nil {
+ 		return nil, err
+ 	}
+-	return buf[:n], nil
++	rel, err := filepath.Rel(realRoot, abs)
++	if err != nil {
++		return nil, err
++	}
++	dir, err := os.OpenRoot(realRoot)
++	if err != nil {
++		return nil, err
++	}
++	defer dir.Close() //nolint:errcheck // a file opened through it stays open
++	return dir.OpenFile(rel, os.O_RDONLY|docOpenNonblock, 0)
  }
  
  // looksBinaryBytes reports whether a byte slice looks like binary content. A
-@@ -216,34 +257,59 @@ func looksBinaryBytes(data []byte) bool {
+@@ -216,34 +285,59 @@ func looksBinaryBytes(data []byte) bool {
  // application/octet-stream are both honest about the content and never
  // browser-executable.
  //
@@ -671,6 +812,90 @@ diff --git a/cmd/evener-hub/doc_serve.go b/cmd/evener-hub/doc_serve.go
  }
 ```
 
+`cmd/evener-hub/doc_open_unix.go`:
+
+```go
+//go:build unix
+
+package hub
+
+import "syscall"
+
+// docOpenNonblock keeps a document open from waiting for a FIFO's writer.
+const docOpenNonblock = syscall.O_NONBLOCK
+```
+
+`cmd/evener-hub/doc_open_other.go`:
+
+```go
+//go:build !unix
+
+package hub
+
+// docOpenNonblock is zero where there are no FIFOs to wait on.
+const docOpenNonblock = 0
+```
+
+The coverage seeds follow the new signatures:
+
+`cmd/evener-hub/cov_small_faults_pass5_fuzz_test.go`:
+
+```diff
+diff --git a/cmd/evener-hub/cov_small_faults_pass5_fuzz_test.go b/cmd/evener-hub/cov_small_faults_pass5_fuzz_test.go
+--- a/cmd/evener-hub/cov_small_faults_pass5_fuzz_test.go
++++ b/cmd/evener-hub/cov_small_faults_pass5_fuzz_test.go
+@@ -109,17 +109,17 @@ func FuzzSmallFaultsPass5(f *testing.F) {
+ 		call(web.handleDocImage, http.MethodGet, "/doc/image?session=01PASS5&path=.")
+ 		call(web.handleDocImage, http.MethodGet, "/doc/image?session=remote:x&path=out.png")
+ 		call(web.handleDocImage, http.MethodPost, "/doc/image")
+-		_, _ = readDocFile(cwd)
+-		_, _ = readDocFile(filepath.Join(cwd, "missing"))
++		_, _ = readDocFile(cwd, cwd)
++		_, _ = readDocFile(cwd, filepath.Join(cwd, "missing"))
+ 		_ = looksBinaryBytes(append(make([]byte, 9000), 0))
+-		docStat = func(string) (os.FileInfo, error) { return nil, errors.New("stat") }
+-		_, _ = readDocFile("x")
++		docStat = func(*os.File) (os.FileInfo, error) { return nil, errors.New("stat") }
++		_, _ = readDocFile(cwd, filepath.Join(cwd, "note.txt"))
+ 		docStat = oldStat
+-		docOpen = func(string) (*os.File, error) { return nil, errors.New("open") }
+-		_, _ = readDocFile(filepath.Join(cwd, "note.txt"))
++		docOpen = func(string, string) (*os.File, error) { return nil, errors.New("open") }
++		_, _ = readDocFile(cwd, filepath.Join(cwd, "note.txt"))
+ 		docOpen = oldOpen
+-		docOpen = func(string) (*os.File, error) { return os.Open(cwd) }
+-		_, _ = readDocFile(filepath.Join(cwd, "note.txt"))
++		docOpen = func(string, string) (*os.File, error) { return os.Open(cwd) }
++		_, _ = readDocFile(cwd, filepath.Join(cwd, "note.txt"))
+ 		docOpen = oldOpen
+ 		_, _ = web.localSessionCWD("remote:x")
+ 		_, _ = web.localSessionCWD("01MISSING")
+```
+
+`cmd/evener-hub/cov_threadread_images_fuzz_test.go`:
+
+```diff
+diff --git a/cmd/evener-hub/cov_threadread_images_fuzz_test.go b/cmd/evener-hub/cov_threadread_images_fuzz_test.go
+--- a/cmd/evener-hub/cov_threadread_images_fuzz_test.go
++++ b/cmd/evener-hub/cov_threadread_images_fuzz_test.go
+@@ -192,12 +192,12 @@ func covDocServeSeed(t *testing.T) {
+ 	liveWeb := NewWebServer(hubcore.WebConfig{Roster: roster})
+ 	_, _ = liveWeb.localSessionCWD("live")
+ 	_, _ = liveWeb.localSessionCWD("missing")
+-	_, _ = readDocFile(cwd)
+-	_, _ = readDocFile(filepath.Join(cwd, "missing"))
++	_, _ = readDocFile(cwd, cwd)
++	_, _ = readDocFile(cwd, filepath.Join(cwd, "missing"))
+ 	if err := os.WriteFile(filepath.Join(cwd, "empty"), nil, 0o644); err != nil {
+ 		t.Fatal(err)
+ 	}
+-	_, _ = readDocFile(filepath.Join(cwd, "empty"))
++	_, _ = readDocFile(cwd, filepath.Join(cwd, "empty"))
+ 	large := append(make([]byte, 8193), 0)
+ 	_ = looksBinaryBytes(large)
+ }
+```
+
 `docRawTotalSize` had two coverage tests. Delete them (from `// --- doc_serve.go: docRawTotalSize ---` down to `// --- web_api_tree.go: resolveTopLevelSessionRef ---`, keeping that line) and the `os` and `path/filepath` imports only they used. The new tests cover the total size through the route (`TestDocFile_Raw_NoRevisionPastTheHashLimit` and the existing truncation tests).
 
 `cmd/evener-hub/web_covtest_test.go`:
@@ -723,16 +948,18 @@ diff --git a/cmd/evener-hub/web_covtest_test.go b/cmd/evener-hub/web_covtest_tes
 
 - [ ] **Step 4: Run the tests, the old doc route tests and the coverage seeds**
 
-Run: `go test ./cmd/evener-hub -run 'TestDocFile|TestDocImage|TestCov' -count=1 && go test ./cmd/evener-hub -run '^(FuzzSmallFaultsPass5|FuzzCovThreadreadImagesSeed100)$' -count=1`
+Run: `go test ./cmd/evener-hub -run 'TestDocFile|TestDocImage|TestCov|TestReadDocFile' -count=1 && go test ./cmd/evener-hub -run '^(FuzzSmallFaultsPass5|FuzzCovThreadreadImagesSeed100)$' -count=1`
 Expected: PASS.
 
-Run: `go vet ./cmd/evener-hub/ && go vet -tags evenerfuzz ./cmd/evener-hub/ && GOOS=windows go vet -tags evenerfuzz ./cmd/evener-hub/ && golangci-lint run ./cmd/evener-hub/ && $(go env GOROOT)/bin/gofmt -l cmd/evener-hub`
+Run: `go vet ./cmd/evener-hub/ && go vet -tags evenerfuzz ./cmd/evener-hub/ && GOOS=windows go vet -tags evenerfuzz ./cmd/evener-hub/ && GOOS=linux go vet -tags evenerfuzz ./cmd/evener-hub/ && golangci-lint run ./cmd/evener-hub/ && $(go env GOROOT)/bin/gofmt -l cmd/evener-hub`
 Expected: no output from gofmt, `0 issues.` from the linter.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add cmd/evener-hub/doc_serve.go cmd/evener-hub/doc_serve_revision_test.go cmd/evener-hub/web_covtest_test.go
+git add cmd/evener-hub/doc_serve.go cmd/evener-hub/doc_open_unix.go cmd/evener-hub/doc_open_other.go \
+  cmd/evener-hub/doc_serve_revision_test.go cmd/evener-hub/doc_serve_confinement_test.go cmd/evener-hub/doc_serve_fifo_unix_test.go \
+  cmd/evener-hub/web_covtest_test.go cmd/evener-hub/cov_small_faults_pass5_fuzz_test.go cmd/evener-hub/cov_threadread_images_fuzz_test.go
 git commit -m "feat(hub): /doc/file names the revision it served (S9, phase 7 PR 34)"
 ```
 
@@ -746,7 +973,7 @@ git commit -m "feat(hub): /doc/file names the revision it served (S9, phase 7 PR
 
 **Interfaces:**
 - Consumes: the `ETag` and `X-Doc-Modified-At` headers from Task 34.1.
-- Produces: `DocFileContent.revision?: string` (the sha256 hex, without quotes) and `DocFileContent.modifiedAt?: number` (Unix milliseconds). Both keys are absent, not undefined, when the hub sends no header.
+- Produces: `DocFileContent.revision?: string` (the sha256 hex, without quotes; only a strong, quoted, 64-character lowercase hex `ETag` names one, so a weak or foreign tag can never make a changed file read as unchanged) and `DocFileContent.modifiedAt?: number` (Unix milliseconds). Both keys are absent, not undefined, when the hub sends no header.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -756,7 +983,7 @@ git commit -m "feat(hub): /doc/file names the revision it served (S9, phase 7 PR
 diff --git a/appwire-client/typescript/docContent.test.ts b/appwire-client/typescript/docContent.test.ts
 --- a/appwire-client/typescript/docContent.test.ts
 +++ b/appwire-client/typescript/docContent.test.ts
-@@ -158,6 +158,47 @@ describe("readDocFile", () => {
+@@ -158,6 +158,53 @@ describe("readDocFile", () => {
      expect(doc.sizeBytes).toBe(DOC_FILE_MAX_BYTES);
    });
  
@@ -775,11 +1002,17 @@ diff --git a/appwire-client/typescript/docContent.test.ts b/appwire-client/types
 +    expect(doc.modifiedAt).toBe(1790000000123);
 +  });
 +
-+  test("a weak ETag names the same revision", async () => {
-+    const port = respondWith(
-+      new Response("x", { headers: { "Content-Type": "text/plain; charset=utf-8", ETag: 'W/"abc123"' } }),
-+    );
-+    expect((await readDocFile("s1", "x.txt", port)).revision).toBe("abc123");
++  test("only a strong sha256 ETag names a revision; any other tag is no information", async () => {
++    // The hub sends the whole file's sha256 as a strong tag. A weak tag, or one
++    // that is not a sha256, could name a version the file does not have, so
++    // the caller falls back to comparing what it was shown.
++    const sha = "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08";
++    for (const etag of [`W/"${sha}"`, '"abc123"', sha, `"${sha.toUpperCase()}"`]) {
++      const port = respondWith(
++        new Response("x", { headers: { "Content-Type": "text/plain; charset=utf-8", ETag: etag } }),
++      );
++      expect("revision" in (await readDocFile("s1", "x.txt", port))).toBe(false);
++    }
 +  });
 +
 +  test("a hub without S9, or a file past the hash limit, names no revision and no time", async () => {
@@ -809,7 +1042,7 @@ diff --git a/appwire-client/typescript/docContent.test.ts b/appwire-client/types
 - [ ] **Step 2: Run them to see them fail**
 
 Run (from `cmd/evener-hub/frontend`): `npx vitest run ../../../appwire-client/typescript/docContent.test.ts`
-Expected: the first two new tests FAIL (`revision` is undefined); the two absence tests pass already and pin that the keys stay absent.
+Expected: the first new test FAILS (`revision` is undefined). The three absence tests (a tag that is not a strong sha256, no headers, malformed headers) pass already and pin that the keys stay absent.
 
 - [ ] **Step 3: Read the headers**
 
@@ -833,7 +1066,7 @@ diff --git a/appwire-client/typescript/docContent.ts b/appwire-client/typescript
  }
  
  // The server reads at most this many bytes into a doc pane and never streams
-@@ -125,7 +132,25 @@ export async function readDocFile(session: string, path: string, port: DocPort):
+@@ -125,7 +132,26 @@ export async function readDocFile(session: string, path: string, port: DocPort):
    const parsedTotal = totalHeader === null ? Number.NaN : Number.parseInt(totalHeader, 10);
    const totalBytes = Number.isFinite(parsedTotal) ? parsedTotal : undefined;
    const text = binary ? "" : new TextDecoder().decode(buf);
@@ -852,11 +1085,12 @@ diff --git a/appwire-client/typescript/docContent.ts b/appwire-client/typescript
 +  };
 +}
 +
-+// etagRevision reads the revision out of an ETag: the quoted tag, with a weak
-+// W/ prefix ignored. An empty or unquoted tag names no revision.
++// etagRevision reads the revision out of an ETag. The hub sends the whole
++// file's sha256 as a strong tag (cmd/evener-hub/doc_serve.go writeDocFileRaw),
++// so only a quoted 64-character lowercase hex tag names one; a weak tag, or any
++// other, is no information.
 +function etagRevision(etag: string | null): string | undefined {
-+  const match = /^(?:W\/)?"([^"]+)"$/.exec(etag?.trim() ?? "");
-+  return match?.[1];
++  return /^"([0-9a-f]{64})"$/.exec(etag?.trim() ?? "")?.[1];
  }
  
  // docImageURL builds the /doc/image href for a session-scoped, cwd-relative
@@ -1160,7 +1394,7 @@ diff --git a/appwire/protocol.go b/appwire/protocol.go
 diff --git a/cmd/evener-hub/doc_serve.go b/cmd/evener-hub/doc_serve.go
 --- a/cmd/evener-hub/doc_serve.go
 +++ b/cmd/evener-hub/doc_serve.go
-@@ -90,6 +90,39 @@ func (s *WebServer) handleDocFile(w http.ResponseWriter, r *http.Request) {
+@@ -93,6 +93,39 @@ func (s *WebServer) handleDocFile(w http.ResponseWriter, r *http.Request) {
  	writeDocFileRaw(w, r, doc)
  }
  
@@ -1185,7 +1419,7 @@ diff --git a/cmd/evener-hub/doc_serve.go b/cmd/evener-hub/doc_serve.go
 +	if err != nil {
 +		return appwire.SessionDocumentResponse{}, appwire.ResourceNotFound("document not found")
 +	}
-+	doc, err := readDocFile(abs)
++	doc, err := readDocFile(cwd, abs)
 +	if err != nil {
 +		return appwire.SessionDocumentResponse{}, appwire.ResourceNotFound("document not found")
 +	}
@@ -1484,6 +1718,8 @@ func TestDocFileRouteMapsHostRefusals(t *testing.T) {
 		{"invalid params", appwire.InvalidParams("sessionId and path are required"), http.StatusBadRequest},
 		{"host predates S7", appwire.WireError{Code: appwire.CodeMethodNotFound, Message: "method not found"}, http.StatusNotImplemented},
 		{"host unavailable", appwire.SessionUnavailable("host detached"), http.StatusServiceUnavailable},
+		{"host internal error", appwire.WireError{Code: appwire.CodeInternalError, Message: "boom"}, http.StatusServiceUnavailable},
+		{"host conflict", appwire.WireError{Code: appwire.CodeConflict, Message: "busy"}, http.StatusServiceUnavailable},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			srv, _ := controllerOverScriptedHost(t, tc.reply)
@@ -1780,8 +2016,9 @@ func (s *WebServer) serveRemoteSessionDocument(w http.ResponseWriter, r *http.Re
 // local route answers for the same case: a path outside the session is 403, a
 // missing session or file is 404, and a malformed request is 400. A host built
 // before S7 answers MethodNotFound, which is 501 so a client can tell "this
-// host can't serve documents yet" from "this file is gone". An unattached or
-// unknown host, and a transport failure, are 503.
+// host can't serve documents yet" from "this file is gone". Every other
+// failure (an unattached or unknown host, a transport failure, the host's own
+// internal error or conflict) is 503: the document is unavailable right now.
 func sessionDocumentProxyStatus(err error) int {
 	wire, ok := wireErrorFromError(err)
 	if !ok {
@@ -1793,10 +2030,14 @@ func sessionDocumentProxyStatus(err error) int {
 	case appwire.ErrorResourceNotFound:
 		return http.StatusNotFound
 	}
-	if wire.Code == appwire.CodeMethodNotFound {
+	switch wire.Code {
+	case appwire.CodeMethodNotFound:
 		return http.StatusNotImplemented
+	case appwire.CodeInvalidParams, appwire.CodeInvalidRequest:
+		return http.StatusBadRequest
+	default:
+		return http.StatusServiceUnavailable
 	}
-	return statusForWireError(wire, http.StatusServiceUnavailable)
 }
 
 // proxyableSessionDocument reports whether a host's answer is one the local
@@ -1831,7 +2072,7 @@ func proxyableSessionDocument(resp appwire.SessionDocumentResponse) bool {
 diff --git a/cmd/evener-hub/doc_serve.go b/cmd/evener-hub/doc_serve.go
 --- a/cmd/evener-hub/doc_serve.go
 +++ b/cmd/evener-hub/doc_serve.go
-@@ -32,10 +32,12 @@ const docFileMaxBytes = 512 * 1024
+@@ -35,10 +35,12 @@ const docFileMaxBytes = 512 * 1024
  // ~/git was 3.2 MB. A larger file is served without a revision.
  const docRevisionMaxBytes = 16 * 1024 * 1024
  
@@ -1846,7 +2087,7 @@ diff --git a/cmd/evener-hub/doc_serve.go b/cmd/evener-hub/doc_serve.go
  //
  // The guard chain below (session/path presence, cwd containment) runs before
  // the format check, so a raw and a non-raw request reject the same out-of-cwd
-@@ -58,6 +60,16 @@ func (s *WebServer) handleDocFile(w http.ResponseWriter, r *http.Request) {
+@@ -61,6 +63,16 @@ func (s *WebServer) handleDocFile(w http.ResponseWriter, r *http.Request) {
  		http.NotFound(w, r)
  		return
  	}
@@ -1863,7 +2104,7 @@ diff --git a/cmd/evener-hub/doc_serve.go b/cmd/evener-hub/doc_serve.go
  
  	cwd, ok := s.localSessionCWD(session)
  	if !ok {
-@@ -140,7 +152,7 @@ func (s *WebServer) handleDocImage(w http.ResponseWriter, r *http.Request) {
+@@ -143,7 +155,7 @@ func (s *WebServer) handleDocImage(w http.ResponseWriter, r *http.Request) {
  		http.NotFound(w, r)
  		return
  	}
@@ -1912,7 +2153,7 @@ git commit -m "feat(hub): /doc/file reads a remote session's document through it
 diff --git a/appwire-client/typescript/docContent.test.ts b/appwire-client/typescript/docContent.test.ts
 --- a/appwire-client/typescript/docContent.test.ts
 +++ b/appwire-client/typescript/docContent.test.ts
-@@ -212,6 +212,14 @@ describe("readDocFile", () => {
+@@ -218,6 +218,14 @@ describe("readDocFile", () => {
      await expect(readDocFile("s1", "gone.txt", port)).rejects.toMatchObject({ kind: "not-found", status: 404 });
    });
  
@@ -2050,6 +2291,7 @@ git commit -m "feat(web): a host that can't send documents yet says to open it t
   - These passed: `go build ./...`; `go vet` plain, with `evenerfuzz` and for Windows on `./cmd/evener-hub/...` and `./appwire/...`; `golangci-lint` 2.13.1 on `./cmd/evener-hub/`, `./appwire/` and `./cmd/evener-hub/internal/appsource/`; the whole `./cmd/evener-hub/...`, `./appwire/...` and `./internal/appwirets` suites; the two coverage fuzz seeds; `TestGeneratedFileCurrent`; the frontend typecheck and its `src` vitest suites; the package's vitest suite (2,676 tests); `mobile-native`'s `npm run check` and its Reader tests.
   - Each red step named above was run and failed as described.
   - The first dry run of Task 34.1 found the linter's `modernize` findings (`strings.SplitSeq`, `maps.Copy`); the code above carries the fix.
+  - RoboRev's third round found that the read opened the checked path again by name, so a symlink swapped in after the check could lead it out; that the client took any quoted tag as a revision; and that the proxy passed a host's internal error or conflict through as 500 or 409. `readDocFile` now opens through `os.Root`, non-blocking; `etagRevision` takes only a strong sha256 tag; the status mapping names every code. Each fix came with a red-first test.
   - RoboRev's second round found that a file shrinking below 16 MiB after the stat went unhashed, and that the proxy accepted a missing revision on a hashable file. Both are fixed above with tests.
   - RoboRev on the plan PR found that the proxy accepted a revision on a file too large to hash, that `If-None-Match: *` was ignored for a file with no revision, and that the server sent pre-epoch times the client drops. The code above carries the fixes and their tests.
   - The plan PR's review found `writeDocAt`'s directory creation in the wrong task, a stale size for a file growing past the hash limit mid-read, and no test at the limit itself or for `If-None-Match: *`. The dry run was rebuilt with the fixes and every check above re-run.
