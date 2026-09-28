@@ -2035,12 +2035,17 @@ describe("moving between sessions (spec 8.3, 13.2)", () => {
 			fleet.live = [failing, asking, working, quiet];
 		});
 
-		/** Pans the title the screen set last, as far and as fast as given. */
-		function panTitle(translationX: number, velocityX = 0, success = true) {
+		/** The title the screen set last, rendered as the header renders it. */
+		function headerTitle() {
 			const calls = vi.mocked(navigation.setOptions).mock.calls as [NativeStackNavigationOptions][];
 			const options = calls.map(([options]) => options).findLast((options) => options.headerTitle);
 			if (typeof options?.headerTitle !== "function") throw new Error("no headerTitle");
-			const title = render(<>{options.headerTitle({ children: "Session" })}</>);
+			return render(<>{options.headerTitle({ children: "Session" })}</>);
+		}
+
+		/** Pans the title the screen set last, as far and as fast as given. */
+		function panTitle(translationX: number, velocityX = 0, success = true) {
+			const title = headerTitle();
 			const pan = title.root.findByType("GestureDetector" as never).props.gesture as PanGestureMock;
 			act(() => pan.handlers.onEnd?.({ translationX, velocityX }, success));
 		}
@@ -2092,6 +2097,18 @@ describe("moving between sessions (spec 8.3, 13.2)", () => {
 			panTitle(-80);
 			panTitle(80);
 			expect(navigation.replace).not.toHaveBeenCalled();
+		});
+
+		it("offers VoiceOver the sessions on either side, and only those there are", async () => {
+			const actions = () =>
+				headerTitle()
+					.root.find((node) => node.props.accessibilityRole === "button")
+					.props.accessibilityActions.map((action: { label: string }) => action.label);
+			await mount(thread("ref-title", "active"));
+			expect(actions()).toEqual(["Previous session", "Next session"]);
+			fleet.live = [failing, asking, working];
+			await mount(thread("ref-title", "active"));
+			expect(actions()).toEqual(["Previous session"]);
 		});
 
 		it("goes nowhere on a pan the system cancelled", async () => {

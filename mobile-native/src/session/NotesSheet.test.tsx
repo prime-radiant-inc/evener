@@ -407,6 +407,17 @@ describe("links", () => {
 		});
 	});
 
+	it("offers VoiceOver Remove link, the swipe's own remove, on a session whose notes you can change", async () => {
+		const { requests } = provide(session({ sessionUrls: [web] }));
+		const tree = sheet();
+		const row = pressable(tree, "The PR, https://example.com/pr/1");
+		expect(row?.props.accessibilityActions).toEqual([{ name: "remove", label: "Remove link" }]);
+		act(() => row?.props.onAccessibilityAction({ nativeEvent: { actionName: "remove" } }));
+		await flush();
+		expect(requests.filter((request) => request.method === "urls/remove").map((request) => request.params.id)).toEqual(["u1"]);
+		expect(renderedText(tree)).toContain("Link removed. Only the agent can add links.");
+	});
+
 	it("never removes a link from a swipe that began in the screen's left edge band", async () => {
 		const { requests } = provide(session({ sessionUrls: [web] }));
 		const tree = sheet();
@@ -425,6 +436,7 @@ describe("links", () => {
 		expect(actionSheet.mock.calls[0]?.[0].destructiveButtonIndex).toBeUndefined();
 		expect(renderedText(tree)).not.toContain("Swipe left on one to remove it.");
 		expect(tree.root.findAllByType("ReanimatedSwipeable" as never)).toHaveLength(0);
+		expect(pressable(tree, "The plan, file:///Users/j/plan.md")?.props.accessibilityActions).toBeUndefined();
 	});
 });
 

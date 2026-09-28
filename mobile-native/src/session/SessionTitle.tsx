@@ -15,12 +15,16 @@ export function SessionTitle({
 	line,
 	onPress,
 	onSwipe,
+	neighbors,
 }: {
 	title: string;
 	line: SessionStateLine;
 	onPress: () => void;
 	/** 1 for the next session in Live order, -1 for the previous one. */
 	onSwipe: (direction: 1 | -1) => void;
+	/** Whether Live order has a session on either side, for VoiceOver's
+	 * stand-ins for the swipe. */
+	neighbors: { previous: boolean; next: boolean };
 }) {
 	const { palette } = useColors();
 	const scale = useTextScale();
@@ -57,6 +61,14 @@ export function SessionTitle({
 				accessibilityRole="button"
 				accessibilityLabel={`${title}, ${line.text}, session info`}
 				onPress={onPress}
+				accessibilityActions={[
+					...(neighbors.previous ? [{ name: "previous", label: "Previous session" }] : []),
+					...(neighbors.next ? [{ name: "next", label: "Next session" }] : []),
+				]}
+				onAccessibilityAction={(event) => {
+					if (event.nativeEvent.actionName === "previous") onSwipe(-1);
+					if (event.nativeEvent.actionName === "next") onSwipe(1);
+				}}
 				style={({ pressed }) => ({
 					minHeight: 44,
 					alignItems: "center",

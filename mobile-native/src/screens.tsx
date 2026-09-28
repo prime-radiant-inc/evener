@@ -837,8 +837,11 @@ export function ConversationScreen({
 	}
 	// A pan on the title replaces this session with its neighbor in Live
 	// order (spec 6), keeping Next's mark so Next from there still replaces.
+	const live = useMemo(() => liveOrder(fleet.bands), [fleet.bands]);
+	const hasPrevious = neighbor(live, route.params.ref, -1) !== null;
+	const hasNext = neighbor(live, route.params.ref, 1) !== null;
 	function swipeToSession(direction: 1 | -1) {
-		const target = neighbor(liveOrder(fleet.bands), route.params.ref, direction);
+		const target = neighbor(live, route.params.ref, direction);
 		if (!target) return;
 		leaveFor(target);
 		navigation.replace("Conversation", {
@@ -1393,6 +1396,7 @@ export function ConversationScreen({
 								line={stateLine}
 								onPress={() => openSessionDestination("session")}
 								onSwipe={(direction) => swipeToSessionRef.current(direction)}
+								neighbors={{ previous: hasPrevious, next: hasNext }}
 							/>
 						)
 					: undefined,
@@ -1447,6 +1451,8 @@ export function ConversationScreen({
 		colors.text,
 		stateLine?.state,
 		stateLine?.text,
+		hasPrevious,
+		hasNext,
 		menuLevel,
 		hasSubagents,
 		documents.length,

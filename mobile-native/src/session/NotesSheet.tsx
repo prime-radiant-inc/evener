@@ -335,6 +335,13 @@ function LinkRow({
 			accessibilityLabel={label ? `${label}, ${link.url}` : link.url}
 			onPress={press}
 			onLongPress={menu}
+			// VoiceOver's stand-in for the swipe.
+			{...(writable
+				? {
+						accessibilityActions: [{ name: "remove", label: "Remove link" }],
+						onAccessibilityAction: remove,
+					}
+				: {})}
 			style={({ pressed }) => ({
 				minHeight: 44,
 				flexDirection: "row",
