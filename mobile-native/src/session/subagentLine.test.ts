@@ -97,3 +97,12 @@ describe("a subagent's row (spec 8.2)", () => {
 		expect(subagentLine(row(), [delegate({ description: undefined })], NOW).title).toBe("Audit the store");
 	});
 });
+
+describe("a running subagent between updates", () => {
+	// The delegate snapshot's runningForMs and quietForMs were true when it
+	// last arrived; the row reads the clock against its timestamps instead.
+	it("keeps counting from when it started and when it last did anything", () => {
+		const stale = delegate({ runStartedAt: ago(300_000), runningForMs: 60_000, latestActivityAt: ago(240_000), quietForMs: 0 });
+		expect(subagentLine(row(), [stale], NOW)).toMatchObject({ stateText: "running · 5m", activity: "Quiet 4m" });
+	});
+});

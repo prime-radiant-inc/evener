@@ -23,6 +23,14 @@ export interface SubagentLine {
  * liveness threshold, ruling 10). */
 const QUIET_AFTER_MS = 20_000;
 
+// How long since `at`, read against the clock so a running subagent keeps
+// counting between updates. The snapshot's own measure (true when the
+// delegate last arrived) stands in when the hub sent no time.
+function elapsed(at: string | undefined, measured: number | undefined, now: number): number | undefined {
+	const since = hubTime(at);
+	return since === null ? measured : Math.max(0, now - since);
+}
+
 function stateOf(delegate: EvenerDelegateInfo): SubagentLine["state"] {
 	const { tone } = projectDelegateEntry(delegate);
 	return tone === "running" ? "running" : tone === "failed" ? "failed" : "done";
@@ -57,7 +65,7 @@ export function subagentLine(
 	const ended = hubTime(delegate.runEndedAt);
 	const since =
 		state === "running"
-			? delegate.runningForMs
+			? elapsed(delegate.runStartedAt, delegate.runningForMs, now)
 			: ended === null
 				? undefined
 				: now - ended;
@@ -69,12 +77,13 @@ export function subagentLine(
 		const waitingOn = all.filter(
 			(child) => child.parentDelegateId === delegate.delegateId && stateOf(child) === "running",
 		).length;
+		const quietFor = elapsed(delegate.latestActivityAt, delegate.quietForMs, now) ?? 0;
 		// An agent waiting on its own subagents is never stuck (ruling 10).
 		line.activity =
 			waitingOn > 0
 				? `Waiting on ${waitingOn} ${waitingOn === 1 ? "subagent" : "subagents"}`
-				: (delegate.quietForMs ?? 0) >= QUIET_AFTER_MS
-					? `Quiet ${compactDuration(delegate.quietForMs ?? 0)}`
+				: quietFor >= QUIET_AFTER_MS
+					? `Quiet ${compactDuration(quietFor)}`
 					: "Working";
 	}
 	return line;
