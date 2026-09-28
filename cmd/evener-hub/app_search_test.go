@@ -9,6 +9,7 @@ import (
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
+	"primeradiant.com/evener/identifier"
 )
 
 func TestHubSearchIncludesMatchingPastSession(t *testing.T) {
@@ -116,6 +117,61 @@ func TestHubSearchKeepsLiveSessionMatchingPastFieldsFindable(t *testing.T) {
 	}
 	if found != 1 {
 		t.Fatalf("live=%+v past=%+v: session matching on its working dir found %d times, want exactly 1", resp.Live, resp.Past, found)
+	}
+}
+
+// TestHubSearchFillsPastLimitAfterSuppressingLiveRow pins the over-fetch in
+// hubSearch: the suppressed live row sorts inside the first searchPastLimit
+// matches, so without fetching past searchPastLimit+suppressed rows and trimming,
+// past would come back one short of its limit and hide an ended session.
+func TestHubSearchFillsPastLimitAfterSuppressingLiveRow(t *testing.T) {
+	root := t.TempDir()
+	project := filepath.Join(root, "projects", "project-x-0123456789")
+	const liveID = "02wMz5TxvLgZ6BB3uYgqz5"
+	now := time.Now()
+	// The live session's meta is the newest, so its past row sorts first — inside
+	// the first searchPastLimit matches, where the suppression can cost a slot.
+	if err := schema.SaveSessionMeta(project, schema.SessionMeta{
+		ID:        liveID,
+		UpdatedAt: now,
+		Name:      "Frobnitz Live",
+		EnvInfo:   schema.EnvironmentInfo{WorkingDir: "/projects/alpha"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < searchPastLimit+1; i++ {
+		id, err := identifier.NewSessionID()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := schema.SaveSessionMeta(project, schema.SessionMeta{
+			ID:        id,
+			UpdatedAt: now.Add(-time.Duration(i+1) * time.Minute),
+			Name:      "Frobnitz Ended",
+			EnvInfo:   schema.EnvironmentInfo{WorkingDir: "/projects/alpha"},
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	idx := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
+	if _, err := idx.Rebuild(); err != nil {
+		t.Fatal(err)
+	}
+	roster := hubcore.NewRosterWithEntries(
+		hubcore.LiveEntry{PID: 1, WorkingDir: "/projects/alpha", SessionID: liveID, Status: appwire.ThreadStatusActive},
+	)
+
+	resp := hubSearch(hubcore.WebConfig{Roster: roster, Past: idx}, appwire.SearchParams{Query: "frobnitz"})
+	if len(resp.Live) != 1 || resp.Live[0].ID != liveID {
+		t.Fatalf("live=%+v, want the running session", resp.Live)
+	}
+	if len(resp.Past) != searchPastLimit {
+		t.Fatalf("past results=%d, want %d after suppressing the live row", len(resp.Past), searchPastLimit)
+	}
+	for _, r := range resp.Past {
+		if r.ID == liveID {
+			t.Fatalf("past includes live session %s: %+v", liveID, resp.Past)
+		}
 	}
 }
 
