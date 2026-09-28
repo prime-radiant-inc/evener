@@ -26,8 +26,11 @@ package hostfence
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
+	"strings"
 	"time"
 
 	"primeradiant.com/evener/agent/execenv"
@@ -49,6 +52,9 @@ type LocalBoundaryHandle interface {
 	Enforcing() bool
 	// Members enumerates current members with kernel start tokens.
 	Members() ([]execenv.BoundaryMember, error)
+	// Observe reads one process's kernel start token, so the pass can re-verify
+	// a recorded (pid, start token) pair that no longer appears in membership.
+	Observe(pid int) (string, error)
 	// SignalVerified signals one member only while its token still matches.
 	SignalVerified(pid int, startToken string) error
 	// Await is the bounded dead proof.
@@ -91,7 +97,7 @@ func ReapLocalOrphanBoundary(store *hostops.Store, opts ReapOptions) (int, error
 	dropped := 0
 	var failures []error
 	var diagnostics []error
-	for _, record := range store.SpawnIntentRecords() {
+	for _, record := range reapCandidates(store) {
 		if record.State == hostops.StateOrphanUnverified && boundaryHasForeignVariant(record.OrphanBoundary) {
 			// §4's fencing-quarantine boundary is remote and §5's
 			// boundary-unavailable entry resolves only on operator attestation;
@@ -101,13 +107,14 @@ func ReapLocalOrphanBoundary(store *hostops.Store, opts ReapOptions) (int, error
 			// exactly as they are.
 			continue
 		}
-		groups, err := groupSpawnIntents(record.PendingSpawns)
+		groups, err := groupsForRecord(record)
 		if err != nil {
 			failures = append(failures, fmt.Errorf("record %s: %w", record.ID, err))
 			continue
 		}
 		var cleanNonces []string
 		var failing []hostops.SpawnIntent
+		groupFailed := false
 		for _, group := range groups {
 			clean, diag := reapBoundaryGroup(group, open, wait)
 			if diag != nil {
@@ -117,14 +124,19 @@ func ReapLocalOrphanBoundary(store *hostops.Store, opts ReapOptions) (int, error
 				diagnostics = append(diagnostics, fmt.Errorf("record %s: %w", record.ID, diag))
 			}
 			if clean {
-				for _, intent := range group.intents {
-					cleanNonces = append(cleanNonces, intent.Nonce)
-				}
+				cleanNonces = append(cleanNonces, group.nonces...)
 				continue
 			}
+			groupFailed = true
 			failing = append(failing, group.intents...)
 		}
-		if len(failing) == 0 {
+		if !groupFailed {
+			converged := len(cleanNonces)
+			if len(record.PendingSpawns) == 0 {
+				// The boundary's nonces are entries, not intents to drop: the
+				// resolved record is one converged row.
+				converged = 1
+			}
 			if record.State == hostops.StateOrphanUnverified {
 				if err := resolveReapedRecord(store, record.ID, cleanNonces); err != nil {
 					failures = append(failures, fmt.Errorf("record %s: %w", record.ID, err))
@@ -134,7 +146,14 @@ func ReapLocalOrphanBoundary(store *hostops.Store, opts ReapOptions) (int, error
 				failures = append(failures, fmt.Errorf("record %s: %w", record.ID, err))
 				continue
 			}
-			dropped += len(cleanNonces)
+			dropped += converged
+			continue
+		}
+		if len(record.PendingSpawns) == 0 {
+			// The boundary came from a custody import or an intent-less write:
+			// there is nothing to narrow or drop, and the persisted entries'
+			// recorded pairs must not be lost by recomposing from an empty intent
+			// set. The record stays fenced exactly as it is, retried next boot.
 			continue
 		}
 		// Fail closed: mark the record `orphan-unverified` with the boundary the
@@ -176,12 +195,49 @@ func resolveReapedRecord(store *hostops.Store, recordID string, nonces []string)
 	return err
 }
 
-// boundaryGroup is one pre-created boundary's intents: the intents that share an
+// reapCandidates is every record the local reap owns: the records with an open
+// spawn intent, plus every local `orphan-unverified` record — a custody import
+// or an intent-cleared write leaves a marked record with no intent, and §3/§7
+// still require the boot enumeration to retry it rather than leave it fenced
+// forever. Records are deduplicated by id and returned in id order.
+func reapCandidates(store *hostops.Store) []hostops.Record {
+	seen := make(map[string]struct{})
+	var records []hostops.Record
+	add := func(candidates []hostops.Record) {
+		for _, record := range candidates {
+			if _, ok := seen[record.ID]; ok {
+				continue
+			}
+			seen[record.ID] = struct{}{}
+			records = append(records, record)
+		}
+	}
+	add(store.SpawnIntentRecords())
+	add(store.OrphanUnverified())
+	slices.SortFunc(records, func(a, b hostops.Record) int { return strings.Compare(a.ID, b.ID) })
+	return records
+}
+
+// groupsForRecord derives the boundary groups the reap must enumerate: from the
+// record's open intents when it has any, otherwise from the persisted boundary
+// a custody import or an earlier mark left behind (whose local entries carry
+// the recorded pid/start-time pairs the check needs).
+func groupsForRecord(record hostops.Record) ([]boundaryGroup, error) {
+	if len(record.PendingSpawns) > 0 {
+		return groupSpawnIntents(record.PendingSpawns)
+	}
+	return groupPersistedBoundary(record.OrphanBoundary)
+}
+
+// boundaryGroup is one pre-created boundary's members: the entries that share an
 // identity and whose members must therefore be matched together (§9's
-// "matched member-by-member at verify time").
+// "matched member-by-member at verify time"). intents is empty for a group read
+// from a persisted boundary with no surviving intent.
 type boundaryGroup struct {
 	identity execenv.BoundaryIdentity
 	intents  []hostops.SpawnIntent
+	pairs    []persistedPair
+	nonces   []string
 }
 
 // groupSpawnIntents gathers one record's intents by boundary identity, in
@@ -201,6 +257,67 @@ func groupSpawnIntents(intents []hostops.SpawnIntent) ([]boundaryGroup, error) {
 			groups = append(groups, boundaryGroup{identity: identity})
 		}
 		groups[at].intents = append(groups[at].intents, intent)
+		if intent.ValidMarker() && intent.PID != nil {
+			groups[at].pairs = append(groups[at].pairs, persistedPair{pid: *intent.PID, startToken: intent.StartTime})
+		}
+		groups[at].nonces = append(groups[at].nonces, intent.Nonce)
+	}
+	return groups, nil
+}
+
+// groupPersistedBoundary reads §9's local BoundaryEntry[] into groups, so a
+// record whose intent set is empty is still retried. Each entry's kind selects
+// its identity; a marked entry carries the recorded (pid, start-time) pair and
+// every entry carries its nonce.
+func groupPersistedBoundary(raw json.RawMessage) ([]boundaryGroup, error) {
+	var members []struct {
+		Kind      string `json:"kind"`
+		CgroupID  string `json:"cgroupId"`
+		Nonce     string `json:"nonce"`
+		PGID      *int   `json:"pgid"`
+		SessionID *int   `json:"sessionId"`
+		PID       *int   `json:"pid"`
+		StartTime string `json:"startTime"`
+	}
+	if err := json.Unmarshal(raw, &members); err != nil {
+		return nil, fmt.Errorf("read the persisted boundary: %w", err)
+	}
+	var groups []boundaryGroup
+	index := make(map[execenv.BoundaryIdentity]int)
+	for _, member := range members {
+		var identity execenv.BoundaryIdentity
+		switch member.Kind {
+		case "local-linux":
+			identity = execenv.BoundaryIdentity{Platform: execenv.BoundaryPlatformLinux, CgroupID: member.CgroupID}
+		case "local-darwin":
+			if member.PGID == nil || member.SessionID == nil {
+				return nil, errors.New("a persisted darwin boundary carries no (pgid, session id) pair")
+			}
+			identity = execenv.BoundaryIdentity{Platform: execenv.BoundaryPlatformDarwin, PGID: *member.PGID, SessionID: *member.SessionID}
+		case "local-markerless":
+			switch {
+			case member.CgroupID != "":
+				identity = execenv.BoundaryIdentity{Platform: execenv.BoundaryPlatformLinux, CgroupID: member.CgroupID}
+			case member.PGID != nil && member.SessionID != nil:
+				identity = execenv.BoundaryIdentity{Platform: execenv.BoundaryPlatformDarwin, PGID: *member.PGID, SessionID: *member.SessionID}
+			default:
+				return nil, errors.New("a persisted markerless boundary carries no local identity")
+			}
+		default:
+			return nil, fmt.Errorf("persisted boundary entry kind %q is not local", member.Kind)
+		}
+		at, seen := index[identity]
+		if !seen {
+			at = len(groups)
+			index[identity] = at
+			groups = append(groups, boundaryGroup{identity: identity})
+		}
+		if member.Nonce != "" {
+			groups[at].nonces = append(groups[at].nonces, member.Nonce)
+		}
+		if member.PID != nil && member.StartTime != "" {
+			groups[at].pairs = append(groups[at].pairs, persistedPair{pid: *member.PID, startToken: member.StartTime})
+		}
 	}
 	return groups, nil
 }
@@ -250,7 +367,7 @@ func reapBoundaryGroup(group boundaryGroup, open func(execenv.BoundaryIdentity) 
 		// cleared on a platform that cannot verify.
 		return false, errors.New("this platform's boundary cannot prove emptiness, so the record stays fenced")
 	}
-	pairs := persistedPairs(group.intents)
+	pairs := group.pairs
 	verified, unrecognized := partitionMembers(members, pairs)
 	if len(unrecognized) > 0 {
 		// §3: a member whose pid matches no persisted pair — a forked descendant
@@ -260,6 +377,14 @@ func reapBoundaryGroup(group boundaryGroup, open func(execenv.BoundaryIdentity) 
 	}
 	if len(verified) == 0 {
 		// Empty, or every member's start token differs: §3's already-clean arms.
+		// Before clearing, independently re-verify every recorded pair: membership
+		// is the design's proof, but an authorized actor can migrate the process
+		// out of the cgroup, and a pair still alive with its recorded start token
+		// must keep the record fenced rather than clear it. (A marker-less
+		// boundary has no pair to check; membership remains its only proof.)
+		if err := recordedPairsGone(handle, pairs); err != nil {
+			return false, err
+		}
 		// Teardown is part of the verdict: a boundary that will not come down is
 		// not proven dead, so it is unsettled, never clean.
 		if err := closeBoundary(handle, wait); err != nil {
@@ -286,10 +411,35 @@ func reapBoundaryGroup(group boundaryGroup, open func(execenv.BoundaryIdentity) 
 	}); err != nil {
 		return false, fmt.Errorf("the dead proof did not settle: %w", err)
 	}
+	if err := recordedPairsGone(handle, pairs); err != nil {
+		return false, err
+	}
 	if err := closeBoundary(handle, wait); err != nil {
 		return false, fmt.Errorf("the reaped boundary did not tear down: %w", err)
 	}
 	return true, nil
+}
+
+// recordedPairsGone proves every recorded (pid, start token) pair is no longer
+// alive: the pid is gone, or its current start token differs (a reused id
+// naming a different process). A pair whose recorded token is still current is
+// alive outside the boundary — the escape M3 names — and keeps the record
+// fenced. An observation that fails for any other reason is fail-closed too.
+func recordedPairsGone(handle LocalBoundaryHandle, pairs []persistedPair) error {
+	for _, pair := range pairs {
+		token, err := handle.Observe(pair.pid)
+		switch {
+		case err == nil && token == pair.startToken:
+			return fmt.Errorf("the recorded process %d is still alive outside the boundary", pair.pid)
+		case err == nil:
+			// A reused pid naming a different process: the recorded instance is gone.
+		case errors.Is(err, execenv.ErrBoundaryMemberGone):
+			// Gone.
+		default:
+			return fmt.Errorf("the recorded process %d could not be re-verified: %w", pair.pid, err)
+		}
+	}
+	return nil
 }
 
 // boundaryClosePollInterval is how often closeBoundary retries a teardown while
@@ -324,20 +474,6 @@ func closeBoundary(handle LocalBoundaryHandle, wait time.Duration) error {
 type persistedPair struct {
 	pid        int
 	startToken string
-}
-
-// persistedPairs collects the group's marker pairs. A markerless intent
-// contributes none, so every member reads as unrecognized and only a
-// demonstrably empty boundary clears it (§3).
-func persistedPairs(intents []hostops.SpawnIntent) []persistedPair {
-	var pairs []persistedPair
-	for _, intent := range intents {
-		if !intent.ValidMarker() || intent.PID == nil {
-			continue
-		}
-		pairs = append(pairs, persistedPair{pid: *intent.PID, startToken: intent.StartTime})
-	}
-	return pairs
 }
 
 // partitionMembers splits membership into the verified instances and the

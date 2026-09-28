@@ -51,11 +51,26 @@ type fakeBoundary struct {
 	closeErr   error
 	// notEnforcing models a platform whose empty enumeration is not proof.
 	notEnforcing bool
-	killed       []int
-	closed       bool
+	// alive models processes that are live but no longer boundary members (the
+	// migration escape), keyed by pid to their current start token.
+	alive  map[int]string
+	killed []int
+	closed bool
 }
 
 func (f *fakeBoundary) Enforcing() bool { return !f.notEnforcing }
+
+func (f *fakeBoundary) Observe(pid int) (string, error) {
+	for _, member := range f.members {
+		if member.PID == pid {
+			return member.StartToken, nil
+		}
+	}
+	if token, ok := f.alive[pid]; ok {
+		return token, nil
+	}
+	return "", execenv.ErrBoundaryMemberGone
+}
 
 func (f *fakeBoundary) Members() ([]execenv.BoundaryMember, error) {
 	if f.membersErr != nil {
@@ -140,7 +155,9 @@ func linuxIntent(nonce string) hostops.SpawnIntent {
 // records every identity it was asked for.
 func openOnce(handle LocalBoundaryHandle, opened *[]execenv.BoundaryIdentity) func(execenv.BoundaryIdentity) (LocalBoundaryHandle, error) {
 	return func(id execenv.BoundaryIdentity) (LocalBoundaryHandle, error) {
-		*opened = append(*opened, id)
+		if opened != nil {
+			*opened = append(*opened, id)
+		}
 		return handle, nil
 	}
 }
@@ -520,6 +537,96 @@ func TestReapUnverifiableBoundaryPathKeepsTheIntent(t *testing.T) {
 	}
 	if dropped != 0 {
 		t.Fatalf("reap dropped %d; want the intent kept", dropped)
+	}
+	stored, _ := store.Record(record.ID)
+	if stored.State != hostops.StateOrphanUnverified || len(stored.PendingSpawns) != 1 {
+		t.Fatalf("the record = %q/%+v, want orphan-unverified with the intent kept", stored.State, stored.PendingSpawns)
+	}
+}
+
+// TestReapResolvesACustodyImportedOrphanWithNoIntents pins M1: a local
+// `orphan-unverified` record whose intent set is gone (a custody import, or an
+// intent-cleared write) is still retried every boot. It must be resolved from
+// its persisted boundary entries, never left admission-fenced forever.
+func TestReapResolvesACustodyImportedOrphanWithNoIntents(t *testing.T) {
+	store, _ := newReapStore(t)
+	record := newReapRecord(t, store, "h1")
+	if _, err := store.ArmSpawnIntent(record.ID, linuxIntent("n1")); err != nil {
+		t.Fatalf("ArmSpawnIntent: %v", err)
+	}
+	// Clear the intent but keep the marked boundary with its recorded pair.
+	boundary := []byte(`[{"kind":"local-linux","cgroupId":"/cg/n1","nonce":"n1","pid":100,"startTime":"42"}]`)
+	if _, err := store.SetOrphanBoundary(record.ID, boundary, []string{"n1"}); err != nil {
+		t.Fatalf("SetOrphanBoundary: %v", err)
+	}
+	stored, _ := store.Record(record.ID)
+	if len(stored.PendingSpawns) != 0 || stored.State != hostops.StateOrphanUnverified {
+		t.Fatalf("the fixture is wrong: %q/%+v", stored.State, stored.PendingSpawns)
+	}
+
+	// The boundary enumerates empty and the recorded pair is gone: it resolves.
+	handle := &fakeBoundary{}
+	dropped, err := ReapLocalOrphanBoundary(store, ReapOptions{Open: openOnce(handle, nil)})
+	if err != nil {
+		t.Fatalf("ReapLocalOrphanBoundary: %v", err)
+	}
+	if dropped != 1 {
+		t.Fatalf("reap dropped %d; want the intent-less record counted as converged", dropped)
+	}
+	resolved, _ := store.Record(record.ID)
+	if resolved.State != hostops.StateInterrupted || len(resolved.OrphanBoundary) != 0 {
+		t.Fatalf("the record = %q/%s, want interrupted with its boundary cleared", resolved.State, resolved.OrphanBoundary)
+	}
+}
+
+// TestReapKeepsAnIntentlessOrphanFencedWhenItsPairIsAlive pins M3 for the
+// custody-import shape: the recorded pair is alive outside an empty boundary,
+// so the record stays fenced.
+func TestReapKeepsAnIntentlessOrphanFencedWhenItsPairIsAlive(t *testing.T) {
+	store, _ := newReapStore(t)
+	record := newReapRecord(t, store, "h1")
+	if _, err := store.ArmSpawnIntent(record.ID, linuxIntent("n1")); err != nil {
+		t.Fatalf("ArmSpawnIntent: %v", err)
+	}
+	boundary := []byte(`[{"kind":"local-linux","cgroupId":"/cg/n1","nonce":"n1","pid":100,"startTime":"42"}]`)
+	if _, err := store.SetOrphanBoundary(record.ID, boundary, []string{"n1"}); err != nil {
+		t.Fatalf("SetOrphanBoundary: %v", err)
+	}
+	handle := &fakeBoundary{alive: map[int]string{100: "42"}}
+	dropped, err := ReapLocalOrphanBoundary(store, ReapOptions{Open: openOnce(handle, nil)})
+	if err == nil {
+		t.Fatal("an alive recorded pair produced no diagnostic")
+	}
+	if dropped != 0 {
+		t.Fatalf("reap dropped %d; want the record kept fenced", dropped)
+	}
+	stored, _ := store.Record(record.ID)
+	if stored.State != hostops.StateOrphanUnverified || string(stored.OrphanBoundary) != string(boundary) {
+		t.Fatalf("the record = %q/%s, want it left fenced with its boundary", stored.State, stored.OrphanBoundary)
+	}
+}
+
+// TestReapKeepsFencedWhenARecordedPairIsAliveOutsideTheBoundary pins M3 for the
+// intent shape: a process that migrated out of the cgroup is not a member, so
+// membership enumerates empty, but its recorded (pid, start token) pair is
+// still alive — the pass must not clear the intent.
+func TestReapKeepsFencedWhenARecordedPairIsAliveOutsideTheBoundary(t *testing.T) {
+	store, _ := newReapStore(t)
+	record := newReapRecord(t, store, "h1")
+	if _, err := store.ArmSpawnIntent(record.ID, linuxIntent("n1")); err != nil {
+		t.Fatalf("ArmSpawnIntent: %v", err)
+	}
+	if _, err := store.MatchSpawnIntent(record.ID, "n1", 100, "42"); err != nil {
+		t.Fatalf("MatchSpawnIntent: %v", err)
+	}
+	handle := &fakeBoundary{alive: map[int]string{100: "42"}}
+	var opened []execenv.BoundaryIdentity
+	dropped, err := ReapLocalOrphanBoundary(store, ReapOptions{Open: openOnce(handle, &opened)})
+	if err == nil {
+		t.Fatal("an alive recorded pair produced no diagnostic")
+	}
+	if dropped != 0 || len(handle.killed) != 0 {
+		t.Fatalf("reap = %d dropped, killed %v; want the intent kept", dropped, handle.killed)
 	}
 	stored, _ := store.Record(record.ID)
 	if stored.State != hostops.StateOrphanUnverified || len(stored.PendingSpawns) != 1 {

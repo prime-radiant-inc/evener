@@ -115,32 +115,36 @@ func openBoundary(id BoundaryIdentity) (*Boundary, error) {
 	if id.Platform != BoundaryPlatformLinux {
 		return nil, fmt.Errorf("%w: platform %q is not the linux arm", ErrBoundaryUnavailable, id.Platform)
 	}
-	if err := verifyCgroup2Hierarchy(filepath.Dir(id.CgroupID)); err != nil {
+	if err := verifyCgroup2Parent(filepath.Dir(id.CgroupID)); err != nil {
 		return nil, err
 	}
 	return newLinuxCgroupBoundary(id.CgroupID)
 }
 
-// verifyCgroup2Hierarchy walks up from dir to the nearest existing ancestor and
-// requires it to be a cgroup2 directory. That proves dir's path lies inside a
-// reachable cgroup2 hierarchy, so a child missing under it is genuinely gone
-// rather than unverifiable. An ancestor that cannot be stat'd for any reason
-// other than absence, or a walk that reaches the filesystem root without
-// finding a cgroup2 directory, is ErrBoundaryUnavailable.
-func verifyCgroup2Hierarchy(dir string) error {
-	for current := dir; ; current = filepath.Dir(current) {
-		info, err := os.Stat(current)
-		switch {
-		case err == nil && info.IsDir():
-			return requireCgroup2(current)
-		case err != nil && !errors.Is(err, os.ErrNotExist):
-			return fmt.Errorf("%w: stat %s: %w", ErrBoundaryUnavailable, current, err)
-		}
-		if current == "/" || current == "." {
-			break
-		}
+// verifyCgroup2Parent requires the boundary's immediate parent to exist and be
+// a cgroup2 directory. The pre-created boundary is always a direct child of a
+// verifiable cgroup2 parent, so a missing parent means the path cannot be a
+// boundary this controller created, and the absence of the child under it
+// proves nothing: that is fail-closed (ErrBoundaryUnavailable), never a
+// vanished boundary.
+//
+// Residual: a persisted path that never named a cgroup, but whose immediate
+// parent is a reachable cgroup2 directory on this mount, is still
+// indistinguishable from a genuinely removed boundary without a persisted
+// hierarchy token (the mount's fsid/root). §9's BoundaryEntry carries no such
+// token, so closing that case is a follow-up that would extend the schema.
+func verifyCgroup2Parent(dir string) error {
+	info, err := os.Stat(dir)
+	if errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("%w: the parent %s of the persisted boundary does not exist", ErrBoundaryUnavailable, dir)
 	}
-	return fmt.Errorf("%w: %s is outside any cgroup2 hierarchy", ErrBoundaryUnavailable, dir)
+	if err != nil {
+		return fmt.Errorf("%w: stat %s: %w", ErrBoundaryUnavailable, dir, err)
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("%w: the parent %s of the persisted boundary is not a directory", ErrBoundaryUnavailable, dir)
+	}
+	return requireCgroup2(dir)
 }
 
 // newLinuxCgroupBoundary binds the operations to one cgroup directory. It

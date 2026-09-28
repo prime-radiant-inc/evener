@@ -224,10 +224,25 @@ func TestBoundaryOpenReportsAGoneBoundary(t *testing.T) {
 	if err := requireCgroup2(cgroup2Mount); err != nil {
 		t.Skipf("no cgroup2 mount: %v", err)
 	}
-	dir := filepath.Join(cgroup2Mount, fmt.Sprintf("evener-missing-%d", os.Getpid()), "child")
+	// A direct child of the verified mount: the parent exists and verifies, so
+	// the missing child is a genuinely removed boundary.
+	dir := filepath.Join(cgroup2Mount, fmt.Sprintf("evener-missing-%d", os.Getpid()))
 	_, err := OpenBoundary(BoundaryIdentity{Platform: BoundaryPlatformLinux, CgroupID: dir})
 	if !errors.Is(err, ErrBoundaryGone) {
 		t.Fatalf("OpenBoundary(missing dir) = %v, want ErrBoundaryGone", err)
+	}
+}
+
+// TestBoundaryOpenRefusesAMissingParent pins the stronger reading: a child whose
+// immediate parent does not exist cannot be a boundary this controller created,
+// so its absence proves nothing and the open fails closed.
+func TestBoundaryOpenRefusesAMissingParent(t *testing.T) {
+	if err := requireCgroup2(cgroup2Mount); err != nil {
+		t.Skipf("no cgroup2 mount: %v", err)
+	}
+	dir := filepath.Join(cgroup2Mount, fmt.Sprintf("evener-missing-%d", os.Getpid()), "child")
+	if _, err := OpenBoundary(BoundaryIdentity{Platform: BoundaryPlatformLinux, CgroupID: dir}); !errors.Is(err, ErrBoundaryUnavailable) {
+		t.Fatalf("OpenBoundary(child of a missing parent) = %v, want ErrBoundaryUnavailable", err)
 	}
 }
 
