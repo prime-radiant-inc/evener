@@ -96,7 +96,16 @@ describe("plugins", () => {
 			"prime-radiant-marketplace",
 			"simplify-code-dev",
 		]);
-		expect(demo.answer("evener/marketplace/browse", { name: "go-skills" }).plugins).toHaveLength(3);
+		expect(
+			demo.answer("evener/marketplace/browse", { name: "go-skills" }).plugins.map((plugin) => plugin.name),
+		).toEqual(["go", "go-release", "go-spec-reviewer", "fileflow-pathologize", "go-bench", "go-lint-fix", "go-docs"]);
+		expect(
+			demo
+				.answer("evener/marketplace/browse", { name: "claude-plugins-official" })
+				.plugins.map((plugin) => plugin.name),
+		).toEqual(["frontend-design"]);
+		// internal/plugins/errors.go's ErrMarketplaceNotFound.
+		expect(() => demo.answer("evener/marketplace/browse", { name: "nowhere" })).toThrow("marketplace not found");
 	});
 
 	it("previews the fourteen plugins with their counts, ten on by default", () => {
@@ -179,6 +188,10 @@ describe("launching", () => {
 		]);
 	});
 
+	it("completes a top-level prefix from the root", () => {
+		expect(setup().answer("evener/paths/complete", { prefix: "/ho" }).data).toEqual(["/home/"]);
+	});
+
 	it("lists the home folder for an empty prefix", () => {
 		expect(setup().answer("evener/paths/complete", { prefix: "" }).data).toEqual(["/home/jesse/git/"]);
 	});
@@ -226,7 +239,7 @@ describe("launching", () => {
 			}),
 		).toThrow('method "evener/instance/setModelDisabled" is not a permitted remote admin method');
 		expect(() => demo.answer("evener/host/request", { host: "elsewhere", method: "model/list", params: {} })).toThrow(
-			"unknown host elsewhere",
+			'unknown host "elsewhere"',
 		);
 	});
 
@@ -237,6 +250,23 @@ describe("launching", () => {
 			params: {},
 		}) as { instances: unknown[] };
 		expect(forwarded.instances).toHaveLength(11);
+	});
+
+	it("reaches paradise-park only while it's attached, as the hub does", () => {
+		const demo = setup(true);
+		const recent = () =>
+			demo.answer("evener/host/request", { host: "paradise-park", method: "evener/projects/recent", params: {} });
+		expect(recent).toThrow('host "paradise-park" is not attached');
+		demo.answer("evener/host/attach", { host: "paradise-park" });
+		expect(recent()).toEqual({ data: ["/Users/jesse/git/evener", "/Users/jesse/git/c-to-wasm"] });
+	});
+
+	it("answers paradise-park's harness list, and says so for a forwarded read the demo doesn't serve", () => {
+		const demo = setup();
+		const forward = (method: string) =>
+			demo.answer("evener/host/request", { host: "paradise-park", method, params: {} });
+		expect(forward("evener/harnesses/list")).toEqual({ data: [{ id: "evener", label: "Evener" }] });
+		expect(() => forward("evener/spawn/slashCatalog")).toThrow("Method not implemented by demonstration server");
 	});
 
 	it("leaves methods it doesn't serve to the rest of the demo hub", () => {

@@ -130,11 +130,15 @@ function parseCounts(text: string): Counts {
 	return counts;
 }
 
-const BROWSE_CATALOG = [
-	{ name: "go-bench", description: "Benchmarks and profiles for Go", category: "development" },
-	{ name: "go-lint-fix", description: "Fix what the linters report", category: "development" },
-	{ name: "go-docs", description: "Write package documentation", category: "writing" },
-];
+// Browse's catalogs: each marketplace offers its installed plugins, and
+// go-skills three more to install.
+const NOT_INSTALLED: Record<string, { name: string; description: string; category: string }[]> = {
+	"go-skills": [
+		{ name: "go-bench", description: "Benchmarks and profiles for Go", category: "development" },
+		{ name: "go-lint-fix", description: "Fix what the linters report", category: "development" },
+		{ name: "go-docs", description: "Write package documentation", category: "writing" },
+	],
+};
 
 const LAUNCH_DEFAULTS: LaunchConfigLayer = {
 	sandbox: "workspace-write",
@@ -159,7 +163,7 @@ interface Machine {
 function machine(home: string, projects: string[], repos: string[], lacksChrome: boolean): Machine {
 	const dirs = new Set<string>();
 	for (const project of projects)
-		for (let dir = project; dir.length >= home.length; dir = dir.slice(0, dir.lastIndexOf("/"))) dirs.add(dir);
+		for (let dir = project; dir !== ""; dir = dir.slice(0, dir.lastIndexOf("/"))) dirs.add(dir);
 	return { home, dirs, recent: projects, repos, lacksChrome };
 }
 
@@ -189,6 +193,7 @@ const SETUP_METHODS = [
 	"evener/plugin/preview",
 	"model/list",
 	"evener/projects/recent",
+	"evener/harnesses/list",
 	"evener/paths/complete",
 	"evener/path/validate",
 	"evener/dirs/create",
@@ -236,8 +241,11 @@ export function createDemoSetup(fleet: DemoFleet, options: { offlineHost?: boole
 		const within = (path: string, root: string) => path === root || path.startsWith(`${root}/`);
 		return {
 			"evener/projects/recent": () => ({ data: on.recent }),
+			// The hub offers one harness (launchHarnessDescriptors, app_models.go).
+			"evener/harnesses/list": () => ({ data: [{ id: "evener", label: "Evener" }] }),
 			"evener/paths/complete": ({ prefix }: MethodTypes["evener/paths/complete"]["params"]) => {
 				const full = prefix === "" ? `${on.home}/` : prefix;
+				// "/ho" completes from the root, whose children's parent is "".
 				const parent = full.slice(0, full.lastIndexOf("/"));
 				const data = [...on.dirs]
 					.filter((dir) => dir.slice(0, dir.lastIndexOf("/")) === parent && `${dir}/`.startsWith(full))
@@ -295,17 +303,22 @@ export function createDemoSetup(fleet: DemoFleet, options: { offlineHost?: boole
 		...localLaunch,
 		"evener/host/list": () => ({ hosts: [hostRow()] }),
 		"evener/host/attach": ({ host }) => {
-			if (host !== HOST) throw new Error(`unknown host ${host}`);
+			if (host !== HOST) throw new Error(`unknown host "${host}"`);
 			hostAttached = true;
 			return { attached: true, host, hubVersion: HOST_VERSION, os: "darwin", arch: "arm64" };
 		},
+		// The hub's own refusals (app_host_admin.go): an unknown host, a method
+		// off the list, a host it isn't attached to.
 		"evener/host/request": ({ host, method, params }) => {
-			if (host !== HOST) throw new Error(`unknown host ${host}`);
+			if (host !== HOST) throw new Error(`unknown host "${host}"`);
 			if (!FORWARDED.has(method)) throw new Error(`method "${method}" is not a permitted remote admin method`);
+			if (!hostAttached) throw new Error(`host "${host}" is not attached`);
 			const forward = paradiseForwards[method as keyof typeof paradiseForwards] as
 				| ((params: unknown) => unknown)
 				| undefined;
-			if (!forward) throw new Error(`demoSetup: ${method} isn't forwarded by the demo`);
+			// The rest of the list (the launch schema, the slash catalog) is
+			// answered by neither side of the demo.
+			if (!forward) throw new Error("Method not implemented by demonstration server");
 			return forward(params ?? {}) as MethodTypes["evener/host/request"]["result"];
 		},
 		"evener/update/check": () => ({
@@ -342,7 +355,15 @@ export function createDemoSetup(fleet: DemoFleet, options: { offlineHost?: boole
 				lastUpdated: 1_790_000_000,
 			})),
 		}),
-		"evener/marketplace/browse": ({ name }) => ({ name, plugins: BROWSE_CATALOG }),
+		"evener/marketplace/browse": ({ name }) => {
+			// internal/plugins/errors.go's ErrMarketplaceNotFound.
+			if (!MARKETPLACES.some((marketplace) => marketplace.id === name)) throw new Error("marketplace not found");
+			const installed = PLUGINS.filter((plugin) => plugin.mp === name).map((plugin) => ({
+				name: plugin.id,
+				description: PLUGIN_FACTS[plugin.id]?.description,
+			}));
+			return { name, plugins: [...installed, ...(NOT_INSTALLED[name] ?? [])] };
+		},
 	};
 
 	return {
