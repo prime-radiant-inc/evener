@@ -141,8 +141,10 @@ describe("the approval dock (spec 8.4)", () => {
 		const tree = render(<ApprovalDock request={approval} controls={first.asControls} onDecided={onDecided} />);
 		await press(tree, "Allow this file only");
 		expect(first.controls.resolve).toHaveBeenCalledTimes(1);
-		// The reconnect's new controls know nothing of that decision.
+		// The reconnect's new controls know nothing of that decision, and their
+		// read of the session is still on its way.
 		const second = fakeControls();
+		second.controls.refresh.mockImplementation(() => new Promise<void>(() => {}));
 		await act(async () => {
 			tree.update(<ApprovalDock request={approval} controls={second.asControls} onDecided={onDecided} />);
 		});
@@ -161,6 +163,30 @@ describe("the approval dock (spec 8.4)", () => {
 		expect(onDecided).not.toHaveBeenCalled();
 	});
 
+	it("lets you decide again when the fresh read after a reconnect still lists the approval", async () => {
+		const approval = request();
+		const first = fakeControls();
+		first.controls.resolve.mockImplementation(async (sent: SandboxEscalationRequested) => {
+			first.publish({ pending: sent.escalationId });
+			await new Promise<void>(() => {});
+		});
+		const tree = render(<ApprovalDock request={approval} controls={first.asControls} onDecided={vi.fn()} />);
+		await press(tree, "Allow this file only");
+		expect(pressable(tree, "Deny")?.props.accessibilityState).toMatchObject({ disabled: true });
+		// The new controls re-read the session; the approval is still listed
+		// (the screen still renders this dock for it), so the first decision
+		// can't be known to have landed.
+		const second = fakeControls();
+		await act(async () => {
+			tree.update(<ApprovalDock request={approval} controls={second.asControls} onDecided={vi.fn()} />);
+			await new Promise((resolve) => setTimeout(resolve, 0));
+		});
+		expect(second.controls.refresh).toHaveBeenCalledTimes(1);
+		await press(tree, "Deny");
+		expect(second.controls.resolve).toHaveBeenCalledWith(approval, false);
+		expect(first.controls.resolve).toHaveBeenCalledTimes(1);
+	});
+
 	it("lets you decide again once the new controls report an error for it", async () => {
 		const approval = request();
 		const first = fakeControls();
@@ -171,6 +197,7 @@ describe("the approval dock (spec 8.4)", () => {
 		const tree = render(<ApprovalDock request={approval} controls={first.asControls} onDecided={vi.fn()} />);
 		await press(tree, "Allow this file only");
 		const second = fakeControls({}, {}, {});
+		second.controls.refresh.mockImplementationOnce(() => new Promise<void>(() => {}));
 		await act(async () => {
 			tree.update(<ApprovalDock request={approval} controls={second.asControls} onDecided={vi.fn()} />);
 		});
@@ -179,8 +206,8 @@ describe("the approval dock (spec 8.4)", () => {
 			second.publish({ error: "Couldn't confirm your decision. It may already have been applied." });
 			await new Promise((resolve) => setTimeout(resolve, 0));
 		});
-		// The dock re-reads once; the read clears the error.
-		expect(second.controls.refresh).toHaveBeenCalledTimes(1);
+		// One read after the swap, and one for the error; the read clears it.
+		expect(second.controls.refresh).toHaveBeenCalledTimes(2);
 		await act(async () => {
 			second.publish({ error: null });
 		});

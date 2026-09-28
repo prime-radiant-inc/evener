@@ -45,6 +45,20 @@ export function ApprovalDock({ request, controls, onDecided }: ApprovalDockProps
 	// disposed ones settle silently, and the new ones know nothing of it, so
 	// without this a second press could resolve the same approval twice.
 	const [decisionSent, setDecisionSent] = useState(false);
+	const sentWith = useRef<ApprovalControls | null>(null);
+	// After a reconnect the hub's fresh state decides. The new controls
+	// re-read the session once; if the approval is still listed then (this
+	// dock is still mounted), the first decision can't be known to have
+	// landed, so you may decide again. The hub refuses a second resolve of an
+	// escalation it already settled (agent/session_escalation.go's
+	// ResolveSandboxEscalation), so deciding again never decides twice.
+	useEffect(() => {
+		if (!decisionSent || !controls || sentWith.current === null || controls === sentWith.current) return;
+		sentWith.current = controls;
+		void controls.refresh().then(() => {
+			if (controls.getSnapshot().error === null) setDecisionSent(false);
+		});
+	}, [decisionSent, controls]);
 	useEffect(() => {
 		if (state.error === null) {
 			refreshedFor.current = false;
@@ -64,6 +78,7 @@ export function ApprovalDock({ request, controls, onDecided }: ApprovalDockProps
 		const stop = controls.subscribe(() => {
 			if (controls.getSnapshot().pending !== request.escalationId) return;
 			sent = true;
+			sentWith.current = controls;
 			setDecisionSent(true);
 		});
 		try {
