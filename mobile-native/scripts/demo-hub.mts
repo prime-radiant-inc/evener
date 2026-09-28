@@ -14,6 +14,7 @@ import type {
 	Thread,
 	Turn,
 	TurnStartParams,
+	UrlsRemoveParams,
 } from "@evener/appwire-client";
 import {
 	ASKING_SESSION_ID,
@@ -52,7 +53,8 @@ const PLAYGROUND_MODEL_LIST = {
 const FLEET_SESSION_METHODS = {
 	"notes/human/set": (thread: Thread, params: NotesHumanSetParams) =>
 		setHumanNote(thread, params, Date.now()),
-	"urls/remove": removeLink,
+	"urls/remove": (thread: Thread, params: UrlsRemoveParams) =>
+		removeLink(thread, params, Date.now()),
 	"evener/sandbox/escalation/resolve": resolveEscalation,
 } as const;
 type FleetSessionMethod = keyof typeof FLEET_SESSION_METHODS;
@@ -246,7 +248,7 @@ export async function createDemoHub(
 	function setTurnRunning(thread: Thread, turn: Turn | undefined) {
 		if (fleetRefs.has(thread.evener.ref)) {
 			if (turn) startFleetTurn(thread, turn, Date.now());
-			else restFleetSession(thread, "idle");
+			else restFleetSession(thread, "idle", Date.now());
 			return;
 		}
 		const running = turn !== undefined;
@@ -397,7 +399,6 @@ export async function createDemoHub(
 						// ids stay in step with the entries, as the daemon keeps them.
 						const mutationIds = queue.clientMutationIds ?? [];
 						const method = request.method;
-						let removedText: string | undefined;
 						let removedTexts: string[] = [];
 						let consumedIds: string[] = [];
 						let entryIds: string[] | undefined;
@@ -431,7 +432,6 @@ export async function createDemoHub(
 										evenerErrorInfo: "conflict",
 									});
 								removedTexts = texts.splice(params.index, 1);
-								removedText = removedTexts[0];
 								entryIds = ids.splice(params.index, 1);
 								mutationIds.splice(params.index, 1);
 							}
@@ -489,7 +489,7 @@ export async function createDemoHub(
 						};
 						result =
 							method === "turn/cancelQueued"
-								? { removedText, receipt }
+								? { removedText: removedTexts[0], receipt }
 								: { receipt };
 						changed = selected;
 						break;

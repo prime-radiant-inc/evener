@@ -767,16 +767,16 @@ export function startFleetTurn(thread: Thread, turn: Turn, now: number): void {
 	thread.status = { type: "active" };
 	thread.evener.activeTurnId = turn.id;
 	thread.evener.activeTurnStartedAt = now;
-	thread.updatedAt += 1;
+	thread.updatedAt = Math.floor(now / 1000);
 	refreshCapabilities(thread);
 }
 
 // A fleet session stops running a turn and rests, idle or waiting on you.
-export function restFleetSession(thread: Thread, status: "idle" | "awaiting"): void {
+export function restFleetSession(thread: Thread, status: "idle" | "awaiting", now: number): void {
 	thread.status = { type: status };
 	delete thread.evener.activeTurnId;
 	delete thread.evener.activeTurnStartedAt;
-	thread.updatedAt += 1;
+	thread.updatedAt = Math.floor(now / 1000);
 	refreshCapabilities(thread);
 }
 
@@ -827,7 +827,8 @@ function askItem(
 	};
 }
 
-function sessionThread(session: FleetSession, now: number): Thread {
+// `parentRef` names the session a subagent's thread belongs to.
+function sessionThread(session: FleetSession, now: number, parentRef?: string): Thread {
 	const content = CONTENT[session.slug] ?? {};
 	const usage = content.usage ?? BASE_USAGE;
 	const status = THREAD_STATUS[session.state];
@@ -857,6 +858,7 @@ function sessionThread(session: FleetSession, now: number): Thread {
 		turns: [turn],
 		evener: {
 			ref: session.ref,
+			...(parentRef ? { parentRef } : {}),
 			instanceId: `demo-instance-${session.slug}`,
 			queue: queueOf(session.slug, content.queued),
 			capabilities: NO_CAPABILITIES,
@@ -925,10 +927,57 @@ export interface DemoSessionsOptions {
 	now?: number;
 }
 
-// A thread for every fleet session, in the fleet's order.
+// A thread for every fleet session, in the fleet's order, then one for every
+// subagent in their trees, so every transcript ref a delegate names reads.
 export function createDemoSessions(options: DemoSessionsOptions = {}): Thread[] {
 	const now = options.now ?? Date.now();
-	return fleetSessions().map((session) => sessionThread(session, now));
+	const sessions = fleetSessions();
+	return [
+		...sessions.map((session) => sessionThread(session, now)),
+		...sessions.flatMap((session) =>
+			flatten(session.subagents).map(({ subagent, parent }) =>
+				sessionThread(subagentSession(session, subagent), now, hostSessionRef(session.hostId, parent ?? session.slug)),
+			),
+		),
+	];
+}
+
+// A subagent as a session of its own on its parent's host and folder, in the
+// state its Board row shows, served with the generic transcript.
+function subagentSession(owner: FleetSession, subagent: RawSubagent): FleetSession {
+	return {
+		slug: subagent.id,
+		ref: hostSessionRef(owner.hostId, subagent.id),
+		hostId: owner.hostId,
+		title: subagent.title,
+		state: SUBAGENT_SESSION_STATE[subagent.state],
+		workingDir: owner.workingDir,
+		ago: subagent.ago,
+		subagents: subagent.children ?? [],
+	};
+}
+
+const SUBAGENT_SESSION_STATE = { running: "working", failed: "failed", done: "shutdown" } as const;
+
+// The pid the demo's refusal names for a session's out-of-date daemon.
+const DEMO_OUT_OF_DATE_DAEMON_PID = 48213;
+
+// A session that needs a restart refuses a write, as the hub's
+// daemonRestartRequiredError does (cmd/evener-hub/app_restart_required.go):
+// its resume never reaches an out-of-date daemon, and the refusal blocks a
+// retry of the same mutation.
+function restartRequiredError(clientMutationId: string): WireError {
+	return new WireError(
+		`Session restart required: daemon pid ${DEMO_OUT_OF_DATE_DAEMON_PID} uses an incompatible protocol; this hub requires evener-appwire-v6. Stop the daemon, then resume this session. Stopping interrupts active work.`,
+		-32013,
+		{
+			evenerErrorInfo: "conflict",
+			cause: "daemonRestartRequired",
+			clientMutationId,
+			mutationOutcome: "unknown",
+			retryDisposition: "blocked",
+		},
+	);
 }
 
 // A notes change must reach a session that takes shared notes, and name the
@@ -936,7 +985,7 @@ export function createDemoSessions(options: DemoSessionsOptions = {}): Thread[] 
 // (server/appwire_runtime.go, appwire.MutationNotAccepted). A shut-down
 // session is resumed to take it, as the hub's setNotesHumanWithResume and
 // removeURLWithResume do (cmd/evener-hub/app_session_resume.go).
-function requireSharedNotes(thread: Thread, expectedInstanceId: string, clientMutationId: string): void {
+function requireSharedNotes(thread: Thread, expectedInstanceId: string, clientMutationId: string, now: number): void {
 	if (!thread.evener.capabilities.sharedNotes) throw new Error("This session doesn't take shared notes");
 	if (expectedInstanceId !== thread.evener.instanceId)
 		throw new WireError("thread instance is stale", -32013, {
@@ -945,7 +994,8 @@ function requireSharedNotes(thread: Thread, expectedInstanceId: string, clientMu
 			mutationOutcome: "notAccepted",
 			retryDisposition: "none",
 		});
-	if (SHUT_DOWN_STATUSES.has(thread.status.type)) restFleetSession(thread, "idle");
+	if (thread.status.type === "restartRequired") throw restartRequiredError(clientMutationId);
+	if (SHUT_DOWN_STATUSES.has(thread.status.type)) restFleetSession(thread, "idle", now);
 }
 
 // The steering text a changed note opens with (agent/session_notes_rpc.go's
@@ -971,7 +1021,7 @@ function normalizeNote(text: string): string {
 // projects "removed" and wakes no one, as the daemon's does
 // (agent/session_notes_rpc.go).
 export function setHumanNote(thread: Thread, params: NotesHumanSetParams, now: number): NotesHumanSetResponse {
-	requireSharedNotes(thread, params.expectedInstanceId, params.clientMutationId);
+	requireSharedNotes(thread, params.expectedInstanceId, params.clientMutationId, now);
 	const note = normalizeNote(params.note ?? "");
 	const changed = note !== (thread.evener.humanNote ?? "");
 	thread.evener.humanNote = note;
@@ -1023,8 +1073,8 @@ export function setHumanNote(thread: Thread, params: NotesHumanSetParams, now: n
 
 // urls/remove: a link that isn't there is refused with the daemon's message,
 // which the phone reads as already removed (sessionNotes.ts's removeLink).
-export function removeLink(thread: Thread, params: UrlsRemoveParams): UrlsRemoveResponse {
-	requireSharedNotes(thread, params.expectedInstanceId, params.clientMutationId);
+export function removeLink(thread: Thread, params: UrlsRemoveParams, now: number): UrlsRemoveResponse {
+	requireSharedNotes(thread, params.expectedInstanceId, params.clientMutationId, now);
 	const links = thread.evener.sessionUrls ?? [];
 	if (!links.some((link) => link.id === params.id))
 		throw new Error(`no URL entry with id ${JSON.stringify(params.id)}`);
@@ -1068,5 +1118,5 @@ export function askWorkingSessionQuestion(thread: Thread, now: number): void {
 	endTurn(thread, turn, "completed", now);
 	thread.evener.askPending = true;
 	thread.evener.pendingQuestion = pendingQuestionOf(WORKING_SESSION_QUESTION);
-	restFleetSession(thread, "awaiting");
+	restFleetSession(thread, "awaiting", now);
 }

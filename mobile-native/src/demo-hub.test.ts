@@ -695,6 +695,51 @@ describe("native demonstration hub's fleet sessions", () => {
 		}
 	});
 
+	it("stamps a thread's updatedAt with the second a mutation changed it", async () => {
+		await withSession({}, async (service, client) => {
+			const ref = fleetSessionRef("s-gateway");
+			await service.open(ref);
+			const at = Date.parse("2026-09-28T22:00:00.000Z");
+			const now = vi.spyOn(Date, "now").mockReturnValue(at);
+			try {
+				await service.interrupt();
+			} finally {
+				now.mockRestore();
+			}
+			const { thread } = await client.request("thread/read", { ref, includeTurns: false });
+			expect(thread.updatedAt).toBe(Math.floor(at / 1000));
+		});
+	});
+
+	it("refuses notes writes on a session that needs a restart, as the hub does", async () => {
+		// cmd/evener-hub/app_restart_required.go's daemonRestartRequiredError:
+		// withSessionResume doesn't resume such a session.
+		await withHub({}, async (client) => {
+			const ref = fleetSessionRef("s-namer");
+			const { thread } = await client.request("thread/read", { ref, includeTurns: false });
+			const expectedInstanceId = thread.evener.instanceId ?? "";
+			const refused = {
+				code: -32013,
+				message: expect.stringMatching(/^Session restart required: daemon pid \d+ uses an incompatible protocol;/),
+				data: {
+					evenerErrorInfo: "conflict",
+					cause: "daemonRestartRequired",
+					mutationOutcome: "unknown",
+					retryDisposition: "blocked",
+				},
+			};
+			await expect(
+				client.request("notes/human/set", { ref, clientMutationId: "note-namer", expectedInstanceId, note: "x" }),
+			).rejects.toMatchObject({ ...refused, data: { ...refused.data, clientMutationId: "note-namer" } });
+			await expect(
+				client.request("urls/remove", { ref, clientMutationId: "link-namer", expectedInstanceId, id: "u-1" }),
+			).rejects.toMatchObject({ ...refused, data: { ...refused.data, clientMutationId: "link-namer" } });
+			expect((await client.request("thread/read", { ref, includeTurns: false })).thread.status.type).toBe(
+				"restartRequired",
+			);
+		});
+	});
+
 	it("clears frame 8's question once you answer it", async () => {
 		await withSession({}, async (service, client) => {
 			const ref = fleetSessionRef("s-audit");

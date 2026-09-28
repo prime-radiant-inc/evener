@@ -29,6 +29,8 @@ function threadOf(slug: string): Thread {
 	return thread;
 }
 
+const hostOf = (ref: string) => ref.slice(0, ref.indexOf(":"));
+
 // One session as the Session screen sees it at a detail level: the store's
 // projection, then the screen's presentation and transcript rows.
 function open(slug: string, level: ContentLevel = "intent") {
@@ -49,12 +51,9 @@ const subagentsOf = (rows: TimelineRow[]) =>
 describe("the demo sessions behind Appendix A's Session frames", () => {
 	it("serves a valid thread for every fleet session, so the title's swipe always lands on a real neighbor", () => {
 		const refs = fleetSessions().map((session) => session.ref);
-		expect(sessions.map((thread) => thread.evener.ref)).toEqual(refs);
-		// No two sessions, subagents included, share a hub id.
-		const ids = sessions.flatMap((thread) => [
-			thread.sessionId,
-			...(thread.evener.diagnostics?.delegates ?? []).map((delegate) => delegate.childSessionId),
-		]);
+		expect(sessions.slice(0, refs.length).map((thread) => thread.evener.ref)).toEqual(refs);
+		// No two threads, subagents included, share a hub id.
+		const ids = sessions.map((thread) => thread.sessionId);
 		expect(new Set(ids).size).toBe(ids.length);
 		for (const session of fleetSessions()) {
 			const { thread, conversation } = open(session.slug);
@@ -67,6 +66,31 @@ describe("the demo sessions behind Appendix A's Session frames", () => {
 				if (item.type === "userMessage") expect(item.status).toBe("completed");
 				if (item.type === "reasoning") expect(item).not.toHaveProperty("text");
 			}
+		}
+	});
+
+	it("serves a thread for every subagent a session's delegates name, so opening one reads it", () => {
+		const byRef = new Map(sessions.map((thread) => [thread.evener.ref, thread]));
+		const delegates = sessions.flatMap((thread) =>
+			(thread.evener.diagnostics?.delegates ?? []).map((delegate) => ({ parent: thread, delegate })),
+		);
+		expect(delegates.length).toBeGreaterThan(55);
+		for (const { parent, delegate } of delegates) {
+			const thread = byRef.get(delegate.transcriptRef);
+			if (!thread) throw new Error(`no thread for ${delegate.transcriptRef}`);
+			expect(thread.name).toBe(delegate.description);
+			expect(thread.sessionId).toBe(delegate.childSessionId);
+			// Its status matches its row: running works, failed failed, done ended.
+			expect(thread.status.type).toBe(
+				{ running: "active", failed: "systemError", completed: "notLoaded" }[delegate.status],
+			);
+			expect(thread.evener.parentRef).toBe(
+				delegate.parentDelegateId
+					? byRef.get(hostOf(parent.evener.ref) + ":" + demoSessionId(delegate.parentDelegateId))?.evener.ref
+					: parent.evener.ref,
+			);
+			const model = hydrateThread({ thread }, thread.evener.ref, NOW);
+			expect(projectConversation(model, liveAsksFor(model)).items.length).toBeGreaterThan(0);
 		}
 	});
 
