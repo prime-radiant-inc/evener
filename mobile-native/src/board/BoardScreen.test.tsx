@@ -1409,6 +1409,13 @@ const workingTitles = (tree: ReactTestRenderer) =>
 		.findAll((node) => ["Build docs", "Tidy imports", "Migrate schema"].some((title) => isRowTitled(title)(node)))
 		.map((node) => node.props.accessibilityLabel.split(", ")[0]);
 const meterIn = (row: ReactTestInstance) => row.findByType(PulseMeter);
+/** Migrate schema's activity read, quiet for `quietMinutes` when it lands. */
+const migrateRead = (quietMinutes: number): SessionActivity => ({
+	ref: "local:migrate",
+	minutes: [0, 0, 0],
+	runningSubagents: 0,
+	quietForMs: quietMinutes * MINUTE,
+});
 
 it("shows each working row's activity read: its meter, the hub's subagent tally, Quiet, and May be stuck first", async () => {
 	const id = hubId();
@@ -1432,9 +1439,8 @@ it("shows each working row's activity read: its meter, the hub's subagent tally,
 	expect(textsIn(rowTitled(tree, "Tidy imports"))).toContain("Quiet 4m");
 	expect(textsIn(rowTitled(tree, "Migrate schema"))).toContain("May be stuck · no updates for 11m");
 
-	// A run of failures well under the staleness bound doesn't blank a row -
-	// it gets a chance to self-heal on the very next tick before falling
-	// back (the sustained-failure case past that bound has its own test).
+	// A failed poll inside STALE_AFTER_MS keeps the last read (a longer run
+	// of failures has its own test).
 	shape.activity = null;
 	await advance(STALE_AFTER_MS - 1_000);
 	expect(textsIn(rowTitled(tree, "Tidy imports"))).toContain("Quiet 4m");
@@ -1445,10 +1451,7 @@ it("shows each working row's activity read: its meter, the hub's subagent tally,
 it("shows no stuck label or reordering from a stale read while offline (Jesse's ruling)", async () => {
 	const id = hubId();
 	adoptedAnHourAgo(id);
-	const shape: Fleet = {
-		...busyFleet,
-		activity: [{ ref: "local:migrate", minutes: [0, 0, 0], runningSubagents: 0, quietForMs: 3 * MINUTE }],
-	};
+	const shape: Fleet = { ...busyFleet, activity: [migrateRead(3)] };
 	const fake = hub(shape);
 	connect(id, fake.client, "ready");
 	const nav = navigation();
@@ -1473,10 +1476,7 @@ it("shows no stuck label or reordering from a stale read while offline (Jesse's 
 it("falls back once the last successful read goes stale, even while the connection reports ready (Jesse's ruling)", async () => {
 	const id = hubId();
 	adoptedAnHourAgo(id);
-	const shape: Fleet = {
-		...busyFleet,
-		activity: [{ ref: "local:migrate", minutes: [0, 0, 0], runningSubagents: 0, quietForMs: 4 * MINUTE }],
-	};
+	const shape: Fleet = { ...busyFleet, activity: [migrateRead(4)] };
 	const fake = hub(shape);
 	connect(id, fake.client, "ready");
 	const tree = await mount(navigation());
@@ -1497,10 +1497,7 @@ it("falls back once the last successful read goes stale, even while the connecti
 it("keeps the fallback after a reconnect until a new read actually lands", async () => {
 	const id = hubId();
 	adoptedAnHourAgo(id);
-	const shape: Fleet = {
-		...busyFleet,
-		activity: [{ ref: "local:migrate", minutes: [0, 0, 0], runningSubagents: 0, quietForMs: 4 * MINUTE }],
-	};
+	const shape: Fleet = { ...busyFleet, activity: [migrateRead(4)] };
 	const fake = hub(shape);
 	connect(id, fake.client, "ready");
 	const nav = navigation();
@@ -1512,21 +1509,17 @@ it("keeps the fallback after a reconnect until a new read actually lands", async
 	connect(id, fake.client, "reconnecting");
 	rerender(tree, nav);
 	await advance(STALE_AFTER_MS * 2);
-	const readsBeforeReconnect = fake.activityReads.length;
 
-	// The next poll attempt reads shape.activity synchronously the moment
-	// it's sent (the fake resolves from whatever the field holds right then,
-	// not when the promise later settles) - set the new read before the
-	// reconnect so it's what actually lands, and prove the OLD text is gone
-	// even before that new read has had a chance to resolve.
-	shape.activity = [{ ref: "local:migrate", minutes: [0, 0, 0], runningSubagents: 0, quietForMs: 3 * MINUTE }];
+	// The reconnect polls at once, and the fake answers from shape.activity
+	// as the request goes out, so the new read is set first. Until it lands,
+	// the stale read stays unused.
+	shape.activity = [migrateRead(3)];
 	connect(id, fake.client, "ready");
 	rerender(tree, nav);
-	expect(textsIn(rowTitled(tree, "Migrate schema"))).not.toContain("Quiet 3m");
+	expect(textsIn(rowTitled(tree, "Migrate schema"))).not.toContain("Quiet 4m");
 	expect(textsIn(rowTitled(tree, "Migrate schema"))).toContain("Working");
 
-	await advance(0);
-	expect(fake.activityReads.length).toBeGreaterThan(readsBeforeReconnect);
+	await settle();
 	expect(textsIn(rowTitled(tree, "Migrate schema"))).toContain("Quiet 3m");
 	act(() => tree.unmount());
 });
@@ -1534,10 +1527,7 @@ it("keeps the fallback after a reconnect until a new read actually lands", async
 it("stays out of Working's stuck slot for as long as reads keep failing, not just at the moment staleness is first crossed", async () => {
 	const id = hubId();
 	adoptedAnHourAgo(id);
-	const shape: Fleet = {
-		...busyFleet,
-		activity: [{ ref: "local:migrate", minutes: [0, 0, 0], runningSubagents: 0, quietForMs: 11 * MINUTE }],
-	};
+	const shape: Fleet = { ...busyFleet, activity: [migrateRead(11)] };
 	const fake = hub(shape);
 	connect(id, fake.client, "ready");
 	const tree = await mount(navigation());
