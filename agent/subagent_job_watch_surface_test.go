@@ -177,3 +177,59 @@ func TestTypedLeafCannotReachParentJobs(t *testing.T) {
 
 	assertCannotReachParentJobs(t, prepared.sub.sess, parentJobID)
 }
+
+// TestTypedLeafSupervisesItsOwnJobs is the positive half of #2645: a typed leaf
+// that starts a background job must be able to enumerate, inspect, await, and
+// stop it. Without this, an ownership check that also denied a leaf's own jobs
+// would keep the denial tests green while leaving #2645 unfixed.
+func TestTypedLeafSupervisesItsOwnJobs(t *testing.T) {
+	t.Parallel()
+	s := newSession(t, withConfig(SessionConfig{
+		MaxSubagentDepth: 3,
+		NoProjectPrompts: true,
+		testOnly: testConfig{
+			skipGitSnapshot:     true,
+			minimalSystemPrompt: true,
+			noSyncJobStore:      true,
+			sandboxProber:       bwrapCapableProber(t.TempDir()),
+		},
+	}))
+	ctx := context.Background()
+	s.delegationAllowance = 1 // child grant 0: a leaf
+	prepared, err := s.prepareSubagentRun(ctx, "task", "", "", 0, "explorer", "", nil, nil)
+	if err != nil {
+		t.Fatalf("prepareSubagentRun: %v", err)
+	}
+	defer releasePreparedTreeSlot(prepared)
+	defer prepared.sub.sess.Close()
+	child := prepared.sub.sess
+
+	jobID := startBackgroundJob(t, child)
+	list := child.reg.ExecuteCall(ctx, child.env, llm.ToolCallData{
+		ID: "list-own", Name: "job_list", Arguments: json.RawMessage(`{}`),
+	})
+	if list.IsError {
+		t.Fatalf("job_list on the leaf's own job: %s", list.Output)
+	}
+	if !strings.Contains(list.Output, jobID) {
+		t.Fatalf("job_list does not expose the leaf's own job %s:\n%s", jobID, list.Output)
+	}
+	if st := child.reg.ExecuteCall(ctx, child.env, llm.ToolCallData{
+		ID: "status-own", Name: "job_status",
+		Arguments: json.RawMessage(`{"target":"` + jobID + `"}`),
+	}); st.IsError {
+		t.Fatalf("job_status on the leaf's own job: %s", st.Output)
+	}
+	if w := child.reg.ExecuteCall(ctx, child.env, llm.ToolCallData{
+		ID: "watch-own", Name: "job_watch",
+		Arguments: json.RawMessage(`{"operation":"create","source":"` + jobID + `","progress_interval_ms":120000}`),
+	}); w.IsError {
+		t.Fatalf("job_watch on the leaf's own job: %s", w.Output)
+	}
+	if stop := child.reg.ExecuteCall(ctx, child.env, llm.ToolCallData{
+		ID: "stop-own", Name: "job_stop",
+		Arguments: json.RawMessage(`{"target":"` + jobID + `","max_wait_ms":5000}`),
+	}); stop.IsError {
+		t.Fatalf("job_stop on the leaf's own job: %s", stop.Output)
+	}
+}

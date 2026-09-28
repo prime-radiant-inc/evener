@@ -279,5 +279,5 @@ func delegateToolsForRegisteredAgent(t *testing.T, sess *Session, name string) [
 		t.Fatalf("agent registry missing %q", name)
 	}
 	allTools, allowed, denied := baseSubagentToolPolicy(&agent, false)
-	return stableDelegateToolNameCeiling(sess.reg, sess.resultToolName(), allTools, allowed, denied, false, false, "")
+	return stableDelegateToolNameCeiling(sess.reg, sess.resultToolName(), allTools, allowed, denied, false, "")
 }

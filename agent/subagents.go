@@ -499,7 +499,7 @@ func frozenSubagentToolNames(allTools bool, allowed, denied []string) []string {
 	}
 }
 
-func stableDelegateToolNameCeiling(reg *tool.Registry, resultToolName string, allTools bool, allowed, denied []string, canDelegate, watchParent bool, isolation string) []string {
+func stableDelegateToolNameCeiling(reg *tool.Registry, resultToolName string, allTools bool, allowed, denied []string, canDelegate bool, isolation string) []string {
 	if reg == nil {
 		return nil
 	}
@@ -520,9 +520,6 @@ func stableDelegateToolNameCeiling(reg *tool.Registry, resultToolName string, al
 		for _, name := range denied {
 			delete(selected, name)
 		}
-	}
-	if watchParent && registered["job_watch"] {
-		selected["job_watch"] = true
 	}
 	if registered[resultToolName] {
 		selected[resultToolName] = true
