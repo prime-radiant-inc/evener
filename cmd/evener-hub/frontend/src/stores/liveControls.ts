@@ -12,7 +12,13 @@
 // their own boundaries.
 
 import { NO_ACTIVE_TURN, type SessionControls, sessionControls, type ThreadModel } from "@evener/appwire-client";
-import { isLocalRecoveryFenced, isResumeOnlyLocal, type ResumeOnlySignals, threadsStore } from "./threads";
+import {
+  isLocalRecoveryFenced,
+  isResumeOnlyLocal,
+  type ResumeOnlySignals,
+  resumeOnlyLocalModel,
+  threadsStore,
+} from "./threads";
 
 export type SessionControl = keyof SessionControls["reason"];
 
@@ -36,7 +42,11 @@ export function liveThreadModel(ref: string): ThreadModel | undefined {
 export function pressRefusal(ref: string, control: SessionControl): string | undefined {
   const model = liveThreadModel(ref);
   if (!model) return NO_ACTIVE_TURN;
-  if (control === "send" && isResumeOnlyLocal(ref, model, { stopInFlight: stopInFlightLocal(ref) })) return undefined;
+  // The store-wide predicate, not isResumeOnlyLocal over this model: it reads
+  // the delivery-uncertain signal from the pending-turns projection too, so a
+  // press that lands with blockedUnknown rows fences exactly as the composer's
+  // blockedMutations selector would have.
+  if (control === "send" && resumeOnlyLocalModel(ref)) return undefined;
   return controlsFor(model).reason[control];
 }
 
@@ -75,13 +85,6 @@ export function recoveryFence(
   return { resumeOnly, stillFenced, fencedLocal: stillFenced && model.status.type === "notLoaded" };
 }
 
-// Whether a Force stop this page started is still draining for ref, read from
-// the store at the press. Delivery-uncertain rows live in the composer's own
-// projection, so they stay a caller-passed signal.
-function stopInFlightLocal(ref: string): boolean {
-  return threadsStore.getState().stoppingRefs.has(ref);
-}
-
 // The same fence as a press reads it: the obligation as the store holds it
 // NOW, not as the subscribing render saw it (this module's own render-vs-press
 // rule - a Stop can arm the fence between the render that offered a control
@@ -91,9 +94,6 @@ function stopInFlightLocal(ref: string): boolean {
 // gets the fence for every action and state.
 export function pressLocalRecoveryFenced(ref: string, method?: "turn/start"): boolean {
   if (!isLocalRecoveryFenced(ref, threadsStore.getState().restartBlockingObligations.has(ref))) return false;
-  if (method === "turn/start") {
-    const model = liveThreadModel(ref);
-    if (model && isResumeOnlyLocal(ref, model, { stopInFlight: stopInFlightLocal(ref) })) return false;
-  }
+  if (method === "turn/start" && resumeOnlyLocalModel(ref)) return false;
   return true;
 }

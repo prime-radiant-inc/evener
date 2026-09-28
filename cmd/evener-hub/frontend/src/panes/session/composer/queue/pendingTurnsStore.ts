@@ -23,6 +23,7 @@ import {
   type ComposerMutationRoute,
   discardRecoveryMutation,
   type InputAttachment,
+  installResumeOnlyProjection,
   readMutationPersistence,
   resendRecoveryMutation,
   retryBlockedMutation,
@@ -56,6 +57,18 @@ const pendingTurnsStore = createPendingTurnsStore<MutationAttachment>({
   threads: threadsPort,
   draft: draftPort,
   identity: { isOwnMutationRecord },
+});
+
+// Publish this projection's synchronous delivery-uncertain read into the
+// threads store's shared resume-only predicate (installResumeOnlyProjection):
+// the predicate the press, enqueue and dispatch paths share cannot import this
+// module (it imports threads.ts), so it reaches the blockedUnknown rows through
+// this registered read instead. Reading the live store state on every call
+// keeps the predicate current with the last durable read this projection
+// published, exactly as the composer's own useBlockedMutationEntries does.
+installResumeOnlyProjection({
+  hasBlockedUnknown: (ref) =>
+    outboxEntriesByState(pendingTurnsStore.getState().outbox, ref, "blockedUnknown").length > 0,
 });
 
 // The durable-read fence a refresh's targets are decided through, and the

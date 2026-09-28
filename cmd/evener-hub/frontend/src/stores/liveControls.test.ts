@@ -2,6 +2,7 @@ import type { Thread, ThreadCapabilities } from "@evener/appwire-client";
 import { NO_ACTIVE_TURN, STEER_UNAVAILABLE } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { afterEach, beforeEach, expect, test } from "vitest";
+import { resetPendingTurnsStoreForTests } from "../panes/session/composer/queue/pendingTurnsStore";
 import { connectionStore } from "./connection";
 import { controlsFor, pressLocalRecoveryFenced, pressRefusal, recoveryFence } from "./liveControls";
 import { resetThreadsStoreForTests, threadsStore } from "./threads";
@@ -33,6 +34,11 @@ function thread(status: string, steer = true): Thread {
 
 beforeEach(() => {
   resetThreadsStoreForTests();
+  // Installs (via this module's own load) the pending-turns projection the
+  // store-wide resume-only predicate reads, and clears any rows a prior test
+  // left, so the press reads a real, empty projection rather than the
+  // fail-closed default.
+  resetPendingTurnsStoreForTests();
 });
 afterEach(() => {
   resetThreadsStoreForTests();

@@ -52,7 +52,6 @@ import { acknowledgeHumanNote, canWriteHumanNote, resetHumanNoteDrafts } from ".
 import { MutationDispatcher, validConsumedClientMutationIds } from "./mutationDispatcher";
 import {
   type MutationAttachment,
-  type MutationClientLookup,
   type MutationCommit,
   type MutationIntent,
   type MutationOptimisticRecord,
@@ -820,7 +819,7 @@ async function applyClearResponse(targetRef: string, response: ThreadClearRespon
   });
 }
 
-function currentDispatchClient(targetRef?: string): AppwireClientLike | null {
+function currentDispatchClient(targetRef?: string, method?: string): AppwireClientLike | null {
   if (wiredClient !== dispatchReadyClient || readyEpoch !== dispatchReadyEpoch) return null;
   if (targetRef && !dispatchableMutationRefs.has(targetRef)) return null;
   if (
@@ -828,8 +827,15 @@ function currentDispatchClient(targetRef?: string): AppwireClientLike | null {
     (pendingMutationReconciliations.has(targetRef) ||
       // A merely-resumable session's send must dispatch: the hub folds its
       // resume into turn/start, so the obligation does not park the mutation.
-      // Every other obligation (Stop drain, restartRequired) still blocks it.
-      (threadsStore.getState().restartBlockingObligations.has(targetRef) && !resumeOnlyLocalModel(targetRef)) ||
+      // Only turn/start is carved out of the hub's recovery admission, though,
+      // so the exemption holds only for that method: the dispatcher names the
+      // record it is about to send (dispatcher.ts's method-aware lookup), and a
+      // queued turn/queue/turn/steer/turn/interrupt parks instead of meeting a
+      // refusal. The ref-less and pre-record calls pass no method, where the
+      // exemption is the readiness answer they always were. Every other
+      // obligation (Stop drain, restartRequired) still blocks it.
+      (threadsStore.getState().restartBlockingObligations.has(targetRef) &&
+        !(resumeOnlyLocalModel(targetRef) && (method === undefined || method === "turn/start"))) ||
       threadsStore.getState().mutationReconciliationFailures.has(targetRef))
   )
     return null;
@@ -987,11 +993,13 @@ function getMutationRuntime(): MutationRuntime | null {
     void refreshMutationPinAfterRemoval(runtime, targetRef).catch(() => {});
   });
   // One client lookup for both halves of the mutation runtime: the dispatcher
-  // asks it per target ref, and the outbox asks it ref-less for "is any client
-  // ready right now". Wiring them from one function is what keeps the
-  // dispatcher's readiness and the outbox's from drifting apart.
-  const getClient: MutationClientLookup = (targetRef) =>
-    isCurrentMutationRuntime(runtime) ? currentDispatchClient(targetRef) : null;
+  // asks it per target ref (with the record's method, for the resume-only
+  // carve-out), and the outbox asks it ref-less for "is any client ready right
+  // now". Wiring them from one function is what keeps the dispatcher's
+  // readiness and the outbox's from drifting apart; the method is optional so
+  // the same function satisfies the outbox's ref-only lookup too.
+  const getClient = (targetRef?: string, method?: string): AppwireClientLike | null =>
+    isCurrentMutationRuntime(runtime) ? currentDispatchClient(targetRef, method) : null;
   const dispatcher = new MutationDispatcher(storage, {
     getClient,
     onStorageChange: (targetRefs) => {
@@ -1883,14 +1891,53 @@ export function isResumeOnlyLocal(
   );
 }
 
-// isResumeOnlyLocal over the store's current model for ref, for the press-time
-// paths that hold a ref but not a model (enqueueMutationIntent). It can read the
-// store's own in-flight Stop; delivery-uncertain rows live in the composer's
-// projection, so the composer's disabled Send is what keeps that shape out.
-function resumeOnlyLocalModel(ref: string): boolean {
+// The pending-turns projection's synchronous view of a ref's durable outbox,
+// published by pendingTurnsStore.ts at its own module load. Deliberately NOT
+// read through the projection module: threads.ts cannot import it (it imports
+// this one), so the projection registers its read here instead. The composer's
+// blockedMutations selector and this read see the same durable rows; routing
+// the store-wide predicate through it is what gives the press, enqueue and
+// dispatch paths the delivery-uncertain signal the render already had.
+//
+// Failing closed: until a projection is installed the read answers "uncertain",
+// so the carve-out never folds a resume ahead of rows nobody has reconciled.
+// The projection is installed wherever a session pane is (Session/Composer
+// import it), and every caller of the predicate acts on a loaded session.
+interface ResumeOnlyProjection {
+  hasBlockedUnknown(ref: string): boolean;
+}
+let resumeOnlyProjection: ResumeOnlyProjection | null = null;
+
+export function installResumeOnlyProjection(projection: ResumeOnlyProjection): void {
+  resumeOnlyProjection = projection;
+}
+
+// Whether ref's durable outbox holds delivery-uncertain (blockedUnknown) rows,
+// as the pending-turns projection last published them. True when no projection
+// is installed (failing closed). Exported so a surface that reasons about the
+// fence can ask the same question the store-wide predicate does.
+export function hasBlockedUnknown(ref: string): boolean {
+  return resumeOnlyProjection === null || resumeOnlyProjection.hasBlockedUnknown(ref);
+}
+
+// isResumeOnlyLocal over the store's current model for ref, the ONE synchronous
+// predicate the press (liveControls), enqueue (enqueueMutationIntent) and
+// dispatch (currentDispatchClient) paths share. Unlike isResumeOnlyLocal it
+// reads the delivery-uncertain signal itself, from the pending-turns projection
+// (hasBlockedUnknown), so a direct caller that bypassed the composer's own
+// blockedMutations read - the palette's slash fallthrough, the ask dock's batch
+// send, a failed turn's Retry - still keeps the fence while blockedUnknown rows
+// stand. It can also read the store's own in-flight Stop (stoppingRefs).
+export function resumeOnlyLocalModel(ref: string): boolean {
   const state = threadsStore.getState();
   const model = state.threads.get(ref);
-  return model !== undefined && isResumeOnlyLocal(ref, model, { stopInFlight: state.stoppingRefs.has(ref) });
+  return (
+    model !== undefined &&
+    isResumeOnlyLocal(ref, model, {
+      stopInFlight: state.stoppingRefs.has(ref),
+      uncertainMessages: hasBlockedUnknown(ref),
+    })
+  );
 }
 
 // The verbs the shared admission fences, each mapped to the refusal its own

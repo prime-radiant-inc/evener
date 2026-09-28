@@ -32,6 +32,10 @@ import { mulberry32 } from "@evener/appwire-client/testing/tokenFlood";
 import { act, cleanup, renderHook, waitFor } from "@testing-library/react";
 import { IDBFactory } from "fake-indexeddb";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+import {
+  refreshPendingTurnsProjection,
+  resetPendingTurnsStoreForTests,
+} from "../panes/session/composer/queue/pendingTurnsStore";
 import { flushPendingTurnsProjectionForTests } from "../panes/session/composer/queue/testing/flushPendingTurnsProjection";
 import { recoveryComposerDraft } from "../panes/session/composer/recovery/recoveryDraft";
 import {
@@ -377,6 +381,10 @@ function runScheduledHydrationRetry(index = 0): void {
 beforeEach(async () => {
   connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
   resetThreadsStoreForTests();
+  // The store-wide resume-only predicate reads the pending-turns projection
+  // (threads.ts's installResumeOnlyProjection), so clear any blockedUnknown
+  // rows a prior test left before this one hydrates.
+  resetPendingTurnsStoreForTests();
   resetWorkspaceStoreForTests();
   resetSubagentModuleStoreForTests();
   scheduledHydrationRetries = [];
@@ -10871,6 +10879,98 @@ test("a recovery-fenced local session's non-send durable admissions refuse at th
   const outbox = await storage.listOutbox(ref);
   expect(outbox.map((record) => record.method)).toEqual(["turn/interrupt"]);
   expect(fake.calls.filter((call) => call.method === "turn/interrupt")).toEqual([]);
+});
+
+// RoboRev Medium (all three reviewers): the store-wide resume-only predicate
+// must read the delivery-uncertain rows the composer's blockedMutations
+// selector fences on, not merely stopInFlight. A direct caller that bypasses
+// the composer - the palette's slash fallthrough, the ask dock's batch send, a
+// failed turn's Retry - reaches enqueueMutationIntent with no such read, so a
+// blockedUnknown row must keep turn/start refused there exactly as the surfaces
+// render it (the fence-refusal test above).
+test("a merely-resumable local session's send refuses while a blockedUnknown row stands", async () => {
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  const fake = connectMutationClient();
+  const ref = "local:stopped-uncertain";
+  fake.on("thread/read", (params) =>
+    readResponse(params.ref ?? ref, {
+      status: { type: "notLoaded" },
+      evener: {
+        ref: params.ref ?? ref,
+        capabilities: { ...CAPABILITIES, send: false },
+        mutationStateAuthoritative: false,
+        resumeRequired: true,
+        queue: { revision: 0 },
+      },
+    }),
+  );
+  await threadsStore.getState().ensureThread(ref);
+  // The resume-only shape the hub admits turn/start for, obligation armed.
+  expect(threadsStore.getState().restartBlockingObligations.has(ref)).toBe(true);
+  // A delivery-uncertain row for the ref: exactly the shape the composer's
+  // useBlockedMutationEntries selector fences on. Without the store-level read
+  // the predicate would fold the resume into a send ahead of reconciling it.
+  const uncertain = await storage.enqueueIntent({
+    targetRef: ref,
+    threadId: `thr_${ref}`,
+    method: "turn/queue",
+    payload: { ref, input: [{ type: "text", text: "uncertain" }] },
+    attachments: [],
+    optimisticDisplay: null,
+  });
+  await storage.markUnknown(uncertain.clientMutationId, "blockedUnknown");
+  await refreshPendingTurnsProjection(ref);
+  await expect(threadsStore.getState().send(ref, "text")).rejects.toThrow(
+    "Send isn't available until this session is resumed",
+  );
+  expect(fake.calls.filter((call) => call.method === "turn/start")).toEqual([]);
+});
+
+// RoboRev Medium: the dispatch gate exempted EVERY queued mutation once the
+// session matched resumeOnlyLocalModel, but the hub's carve-out admits only
+// turn/start. A queued turn/queue/turn/steer/turn/interrupt from before the
+// fence would therefore dispatch into a refusal and be parked in recovery
+// instead of staying parked in the outbox. The dispatcher now names the
+// record's method (dispatcher.ts's method-aware lookup), and the gate exempts
+// only turn/start, so a queued non-send method never reaches the wire.
+test("a merely-resumable local session's queued non-send method stays parked", async () => {
+  const storage = new MutationOutboxIndexedDB({ createMutationId: () => "queued-method" });
+  await storage.enqueueIntent({
+    targetRef: "local:stopped-queued",
+    threadId: "thr_local:stopped-queued",
+    method: "turn/queue",
+    payload: { ref: "local:stopped-queued", input: [{ type: "text", text: "queued before recovery" }] },
+    attachments: [],
+    optimisticDisplay: { text: "queued before recovery" },
+  });
+  storage.close();
+  const fake = connectFakeClient("connecting");
+  fake.on("thread/read", () =>
+    readResponse("local:stopped-queued", {
+      status: { type: "notLoaded" },
+      evener: {
+        ref: "local:stopped-queued",
+        capabilities: { ...CAPABILITIES, send: false },
+        mutationStateAuthoritative: false,
+        resumeRequired: true,
+        queue: { revision: 0 },
+      },
+    }),
+  );
+  let queued = 0;
+  fake.on("turn/queue", (params) => {
+    queued += 1;
+    return { receipt: mutationReceipt(params.clientMutationId) };
+  });
+  fake.emitReady();
+  // Hydrate the pinned ref (arming the obligation), then let the recovery
+  // window's dispatch pass run: the turn/queue must never leave the outbox.
+  await flushIndexedDBUntil(() => fake.calls.some((call) => call.method === "thread/read"));
+  await flushIndexedDBUntil(() => false);
+  expect(threadsStore.getState().restartBlockingObligations.has("local:stopped-queued")).toBe(true);
+  expect(queued).toBe(0);
+  expect(fake.calls.filter((call) => call.method === "turn/queue")).toEqual([]);
 });
 
 test("force stop uses the independent recovery API and fences uncertain outcomes", async () => {
