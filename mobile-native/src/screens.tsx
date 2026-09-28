@@ -1176,8 +1176,12 @@ export function ConversationScreen({
 				return null;
 			}
 			case "compact":
+				// The hub can go away while the sheet asks; say so rather than
+				// do nothing.
+				if (!controls)
+					return { text: "Couldn't compact the context: the hub isn't connected." };
 				// A refusal shows as the controls' error line in the sheet.
-				return (await controls?.compact()) ? { text: "Compacting context" } : null;
+				return (await controls.compact()) ? { text: "Compacting context" } : null;
 			case "pin":
 			case "delete":
 				openSessionDestination(action);
@@ -1199,7 +1203,10 @@ export function ConversationScreen({
 					},
 				};
 			case "shutDown": {
-				if (!controls) return null;
+				if (!controls)
+					return {
+						text: "Couldn't shut down this session: the hub isn't connected.",
+					};
 				const stopped = await controls.shutdown();
 				return {
 					text: stopped ? "Session shut down" : "Couldn't shut down this session.",

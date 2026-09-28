@@ -481,6 +481,26 @@ it("runs the Session sheet's actions as the menu does, and hands back their toas
 	tree.unmount();
 });
 
+it("says so when the hub went away before a Session sheet action could run", async () => {
+	const { tree, requests } = mount(withCapabilities({ compact: true, shutdown: true }));
+	await flush();
+	// The confirmation was up when the connection dropped.
+	harness.connection = { ...harness.connection, state: "connecting" };
+	act(() => tree.update(screen()));
+	await flush();
+
+	let stopped: unknown;
+	let compacted: unknown;
+	await act(async () => {
+		stopped = await sessionInfoHost().act("shutDown");
+		compacted = await sessionInfoHost().act("compact");
+	});
+	expect(stopped).toEqual({ text: "Couldn't shut down this session: the hub isn't connected." });
+	expect(compacted).toEqual({ text: "Couldn't compact the context: the hub isn't connected." });
+	expect(requests.map(({ method }) => method)).not.toContain("thread/shutdown");
+	tree.unmount();
+});
+
 it("opens Pin to category… from the Session sheet as its screen", async () => {
 	const { tree } = mount();
 	await flush();
