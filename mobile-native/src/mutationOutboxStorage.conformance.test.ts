@@ -3,9 +3,8 @@
 // node:sqlite's real engine, the same contracts the web IndexedDB adapter runs
 // (cmd/evener-hub/frontend/src/stores/mutationOutboxIndexedDB.conformance.test.ts).
 // One set of contracts, two hosts.
+import { describeMutationOutboxStorage } from "@evener/appwire-client/testing/mutationOutboxStorageConformance";
 import { afterEach, vi } from "vitest";
-import type { MutationOutboxStorage } from "@evener/appwire-client/state/mutation";
-import { describeMutationOutboxStorage } from "@evener/appwire-client/state/mutation/testing";
 import { MutationOutboxSQLite } from "./mutationOutboxStorage";
 import { openSqliteSyncDouble, type SqliteDoubleDatabase } from "./sqliteSync.testkit";
 
@@ -31,6 +30,6 @@ describeMutationOutboxStorage({
 			createMutationId: options.createMutationId,
 			now: options.now,
 			getOwnClientId: options.getOwnClientId,
-		}) as unknown as MutationOutboxStorage;
+		});
 	},
 });

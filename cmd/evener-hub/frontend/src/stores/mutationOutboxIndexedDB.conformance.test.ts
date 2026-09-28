@@ -5,8 +5,7 @@
 // fake-indexeddb, the same contracts the native expo-sqlite adapter runs
 // (mobile-native/src/mutationOutboxStorage.conformance.test.ts). One set of
 // contracts, two hosts.
-import type { MutationOutboxStorage } from "@evener/appwire-client/state/mutation";
-import { describeMutationOutboxStorage } from "@evener/appwire-client/state/mutation/testing";
+import { describeMutationOutboxStorage } from "@evener/appwire-client/testing/mutationOutboxStorageConformance";
 import { IDBFactory } from "fake-indexeddb";
 import { setMutationClientIdentityForTests } from "./mutationClientIdentity";
 import { MutationOutboxIndexedDB } from "./mutationOutboxIndexedDB";
@@ -23,6 +22,6 @@ describeMutationOutboxStorage({
       databaseName: `mutation-outbox-conformance-${crypto.randomUUID()}`,
       createMutationId: options.createMutationId,
       now: options.now,
-    }) as unknown as MutationOutboxStorage;
+    });
   },
 });
