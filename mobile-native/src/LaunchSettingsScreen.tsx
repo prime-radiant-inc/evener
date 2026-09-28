@@ -10,13 +10,14 @@ import { useConnection } from "./ConnectionProvider";
 import { LaunchFieldEditor } from "./LaunchFieldEditor";
 import { scalarKinds } from "./launchScalar";
 import { RepositoryLaunchReview } from "./RepositoryLaunchReview";
+import { HUB_NO_LONGER_SELECTED } from "./retainedScreen";
 import type { Routes } from "./screens";
 import { Action, Copy, ErrorMessage, styles, useColors } from "./ui";
 
 type Props = NativeStackScreenProps<Routes, "LaunchSettings">;
 export function LaunchSettingsScreen({ route, navigation }: Props) {
 	const { activeProfile, client, state } = useConnection();
-	if (activeProfile?.id !== route.params.hubId) return <Copy>This hub is no longer selected.</Copy>;
+	if (activeProfile?.id !== route.params.hubId) return <Copy>{HUB_NO_LONGER_SELECTED}</Copy>;
 	const cwd = route.params.projectCwd ?? "/";
 	const layer = route.params.projectCwd === undefined ? "global" : "project";
 	return (

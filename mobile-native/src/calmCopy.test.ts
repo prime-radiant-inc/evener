@@ -16,8 +16,6 @@ import { expect, it } from "vitest";
 const REPO = fileURLToPath(new URL("../..", import.meta.url));
 const ROOTS = ["mobile-native/src", "mobile/src"].map((root) => path.join(REPO, root));
 const FORBIDDEN = /\breconnect\b|\brefresh\b|\bpull down to retry\b/i;
-// Task 14 deletes this refusal ("Reconnect and try again.") and this entry.
-const ALLOWED = new Set(["mobile-native/src/nativeMutationHost.ts"]);
 
 function productionFiles(dir: string): string[] {
 	return readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
@@ -88,10 +86,8 @@ it("reads the text a person sees, and nothing else", () => {
 });
 
 it("no text a person can read asks them to reconnect or refresh", () => {
-	const offenders = ROOTS.flatMap(productionFiles)
-		.filter((file) => !ALLOWED.has(path.relative(REPO, file)))
-		.flatMap((file) =>
-			asks(file, readFileSync(file, "utf8")).map((text) => `${path.relative(REPO, file)}: ${text.trim()}`),
-		);
+	const offenders = ROOTS.flatMap(productionFiles).flatMap((file) =>
+		asks(file, readFileSync(file, "utf8")).map((text) => `${path.relative(REPO, file)}: ${text.trim()}`),
+	);
 	expect(offenders).toEqual([]);
 });

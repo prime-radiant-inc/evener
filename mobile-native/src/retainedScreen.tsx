@@ -20,9 +20,10 @@ export const HUB_NO_LONGER_SELECTED = "This hub is no longer selected. Choose it
 
 /** The connection wiring every retained ready-only screen runs at the top of
  * its body - the block PluginsScreen, HubSettingsScreen and ProvidersScreen
- * each carried in their own copy (#1942): the active connection, the display the connection yields for the screen, the live
- * readiness a deferred write or manual refresh checks against, and the client
- * a manual retry's dialing gap keeps the previous content rendered through.
+ * each carried in their own copy (#1942): the active connection, the display
+ * the connection yields for the screen, the live readiness a deferred write
+ * or a re-read checks against, and the client a fresh attempt's dialing gap
+ * keeps the previous content rendered through.
  *
  * Every value is scoped to a hub, and the two scopes are deliberately
  * different. The display's banner history and the retained client follow the
@@ -46,7 +47,7 @@ export const HUB_NO_LONGER_SELECTED = "This hub is no longer selected. Choose it
  * credentialStore.ts) needs no retained client: it never reads
  * `renderClient`, and its wall waits on the display alone (ProvidersScreen).
  * A screen that renders through a client keeps the previous one across a
- * manual retry's gap - never the not-yet-ready replacement, which the
+ * fresh attempt's gap - never the not-yet-ready replacement, which the
  * connection layer reports while it is still dialing - rather than dropping
  * to the wall for a moment the banner covers just as well as a passive
  * reconnect does. See useRenderClient's own doc for that adoption contract,

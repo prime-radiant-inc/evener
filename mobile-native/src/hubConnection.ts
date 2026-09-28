@@ -183,10 +183,10 @@ export function useHubConnection(
 				? "connecting"
 				: "idle";
 	// A connection that closed for a reason a retry can fix tries again on its
-	// own while the app is in front (spec 14), so the Board needs no Reconnect
+	// own while the app is in front (spec 14), so no screen needs a Reconnect
 	// button. A protocol mismatch (fatal) is left alone: retrying can't fix it.
 	// `attempt` is a dependency though the body never reads it: a caller-driven
-	// manual retry must cancel a pending auto-retry timer at once, the same as
+	// attempt must cancel a pending auto-retry timer at once, the same as
 	// any other generation change, rather than wait for the reconnect it starts
 	// to itself move `state` off "closed".
 	useEffect(() => {
