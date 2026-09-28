@@ -1,8 +1,9 @@
 import { cleanup } from "@testing-library/react";
 import * as React from "react";
-import { afterAll, beforeAll, beforeEach } from "vitest";
+import { afterAll, aroundEach, beforeAll, beforeEach } from "vitest";
 import { reactActScopeGuardPorts, waitOutLeakedActScope } from "./testActScopeGuard";
 import { guardConsoleOutput } from "./testConsoleGuard";
+import { guardTestingLibraryAgainstEndedBodies, runAsTheCurrentTest, stopMarkingTests } from "./testEndedBodyGuard";
 import { unmountEveryTree } from "./testUnmount";
 
 // Every test file must get its own VM context: stores, pane registrations and
@@ -62,6 +63,20 @@ afterAll(() => {
   } else {
     reactEnvironment.IS_REACT_ACT_ENVIRONMENT = previousActEnvironment;
   }
+});
+
+// A body that outlives its test (vitest cannot stop one that timed out) is
+// stopped at its Testing Library waits, and its events are dropped, instead of
+// acting on the next test (testEndedBodyGuard.ts). The marking that tells the
+// guard which test is running stops once the file is done, so the file's
+// storage does not stay live in its worker. A wait a body stopped in had turned
+// the act environment off and never turns it back on, so every test starts
+// with it on.
+guardTestingLibraryAgainstEndedBodies();
+aroundEach((runTest, context) => runAsTheCurrentTest(runTest, context.signal));
+afterAll(stopMarkingTests);
+beforeEach(() => {
+  reactEnvironment.IS_REACT_ACT_ENVIRONMENT = true;
 });
 
 // React's development build captures an owner stack for every JSX element it

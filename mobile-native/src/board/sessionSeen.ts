@@ -9,9 +9,9 @@ import { hubSeenMarks } from "./hubSeen";
  * the front: when the screen is in front and its conversation has loaded
  * (conversation is null until then). The visit counts as marked once it has
  * loaded in front, turn end or not, so a turn that ends while the screen
- * stays in front is not "opened since" (the server plan's ruling 18). With
- * no ready client the mark waits in the hub's controller for the Board's
- * next flush. */
+ * stays in front is not "opened since" (the server plan's ruling 18). A mark
+ * made with no ready client waits in the hub's controller, and goes out when
+ * this screen next has one: the Board may not be mounted to flush it. */
 export function useMarkSeenInFront(
 	session: { hubId: string; ref: string },
 	inFront: boolean,
@@ -34,4 +34,7 @@ export function useMarkSeenInFront(
 		// The model's ISO string round-trips the hub's milliseconds exactly.
 		if (lastTurnEndedAt) hubSeenMarks(hubId).markSeen(client, [{ ref, seenThrough: Date.parse(lastTurnEndedAt) }]);
 	}, [hubId, ref, inFront, loaded, lastTurnEndedAt, client]);
+	useEffect(() => {
+		if (client) hubSeenMarks(hubId).flush(client);
+	}, [hubId, client]);
 }

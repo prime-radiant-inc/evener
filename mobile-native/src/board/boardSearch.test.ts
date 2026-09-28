@@ -192,6 +192,15 @@ describe("session results", () => {
 	it("lists only live results in Live", () => {
 		expect(sessionResults({ live, past }, "live").map((row) => row.id)).toEqual(["live-1", "live-2"]);
 	});
+
+	it("lists a live session once, when the past index has it too", () => {
+		// The hub's past index holds live sessions' records, and evener/search
+		// doesn't leave them out of its past results.
+		const livePast = result("live-2", { state: "ended", age: "5m" });
+		const rows = sessionResults({ live, past: [livePast, ...past] }, "all");
+		expect(rows.map((row) => row.id)).toEqual(["live-1", "live-2", "past-1"]);
+		expect(rows[1]).toBe(live[1]);
+	});
 });
 
 describe("a search result's mark", () => {

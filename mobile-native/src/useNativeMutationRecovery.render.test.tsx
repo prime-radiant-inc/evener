@@ -24,7 +24,6 @@ import {
 	type NativeMutationStorageListener,
 	nativeMutationTargetKey,
 } from "./nativeMutationRuntime";
-import { renderedText } from "./renderNative.testkit";
 import { ConversationScreen } from "./screens";
 import { openSqliteSyncDouble } from "./sqliteSync.testkit";
 import {
@@ -99,6 +98,7 @@ vi.mock("react-native-enriched-markdown", () => ({
 	EnrichedMarkdownText: "EnrichedMarkdownText",
 }));
 vi.mock("@react-navigation/elements", () => ({ useHeaderHeight: () => 64 }));
+vi.mock("expo-symbols", () => ({ SymbolView: "SymbolView" }));
 vi.mock("@react-navigation/native", async () => {
 	const { useEffect } = await import("react");
 	return {
@@ -382,8 +382,13 @@ it("renders the real ConversationScreen without constructing a runtime or regist
 	expect(
 		latestProjection?.snapshot?.recovery.map((row) => row.clientMutationId),
 	).toEqual(["render-1"]);
-	// The screen rendered its actual content, not a stub.
-	expect(renderedText(renderer)).toContain("Reconnect");
+	// The screen rendered its actual content, not a stub: the composer's
+	// message field, which the disconnected screen still shows.
+	expect(
+		renderer.root
+			.findAll((node) => String(node.type) === "TextInput")
+			.some((node) => node.props.accessibilityLabel === "Message"),
+	).toBe(true);
 
 	// A route change remounts the recovery surface (screen generation): the
 	// old generation's subscription is released and the new one reads the
