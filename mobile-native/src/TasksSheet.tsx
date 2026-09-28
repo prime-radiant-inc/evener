@@ -252,10 +252,7 @@ export function TaskList({
       ListHeaderComponent={
         <View style={{ gap: 8, paddingTop: 12 }}>
           {!connected ? (
-            <Copy muted>
-              Disconnected. The last loaded tasks are shown; reconnect to
-              update them.
-            </Copy>
+            <Copy muted>Disconnected. The last loaded tasks are shown.</Copy>
           ) : null}
           {state.loading ? (
             <ActivityIndicator

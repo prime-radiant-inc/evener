@@ -79,7 +79,7 @@ export function QueueSheet({
       await refresh();
     } catch {
       failure ??=
-        "The action was acknowledged, but the queue could not be refreshed. Reconnect and check the conversation.";
+        "The action was acknowledged, but the queue could not be refreshed.";
     }
     if (!mounted.current) return;
     setError(failure);
@@ -121,9 +121,7 @@ export function QueueSheet({
               onPress={() => {
                 void refresh()
                   .then(() => setError(null))
-                  .catch(() =>
-                    setError("Could not refresh. Reconnect and try again."),
-                  );
+                  .catch(() => setError("Could not refresh."));
               }}
             >
               Refresh queue
@@ -135,7 +133,9 @@ export function QueueSheet({
               color={colors.accent}
             />
           ) : null}
-          {!ready ? <Copy muted>Reconnect to change this queue.</Copy> : null}
+          {!ready ? (
+            <Copy muted>Disconnected. This queue can't change right now.</Copy>
+          ) : null}
           {depth === 0 ? <Copy muted>No queued messages.</Copy> : null}
           {Array.from({ length: depth }, (_, index) => {
             const id = queue?.ids?.[index];

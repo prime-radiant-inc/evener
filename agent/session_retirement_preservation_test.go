@@ -572,11 +572,11 @@ func pointScratchBasesAt(t *testing.T, temp, cache string) {
 
 // plantAmbientScratchDecoys stands in for the host's shared scratch bases as
 // another process left them: it points the temp and user cache dirs
-// (pointScratchBasesAt) at directories this test owns and plants a real
-// session scratch in both the temp dir and the user cache dir,
-// each retained and abandoned by some other session a day ago. That is exactly
-// what the startup sweep is built to reclaim, so a sweep that can see either
-// base will delete its decoy. The decoys' paths are returned for
+// (pointScratchBasesAt) and the world-temp candidates at directories this test
+// owns, then plants a real session scratch in each base, retained and abandoned
+// by some other session a day ago. That is exactly what the startup sweep is
+// built to reclaim, so a sweep that can see any base will delete its decoy. The
+// decoys' paths are returned for
 // requireAmbientScratchDecoysUntouched.
 func plantAmbientScratchDecoys(t *testing.T) []string {
 	t.Helper()
@@ -588,6 +588,12 @@ func plantAmbientScratchDecoys(t *testing.T) []string {
 	if cache, err := os.UserCacheDir(); err == nil && cache == ambientCache {
 		bases = append(bases, ambientCache)
 	}
+	ambientWorldTemp := t.TempDir()
+	if err := os.Chmod(ambientWorldTemp, 0o777|os.ModeSticky); err != nil {
+		t.Fatalf("make ambient world-temp base world-usable: %v", err)
+	}
+	t.Cleanup(sandbox.SetWorldTempBasesForTesting([]string{ambientWorldTemp}))
+	bases = append(bases, ambientWorldTemp)
 	var decoys []string
 	for _, base := range bases {
 		other, err := sandbox.NewSessionScratch(base, t.TempDir())

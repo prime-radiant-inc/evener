@@ -10,10 +10,19 @@
 import { isLocalHost, normalizeHost } from "../stores/hostRouting";
 import type { PaneTypeId } from "./paneRegistry";
 
-function refParam(params: unknown): string | null {
+/** A non-empty string field of a params bag, or null for anything else - the
+ * field reader refParam and the workspace store's pane readings share. */
+export function paramString(value: unknown): string | null {
+  return typeof value === "string" && value.length > 0 ? value : null;
+}
+
+/** The session ref a params bag names, or null when it names none: a non-empty
+ * string `ref`. Shared by this module, the workspace store's current-session
+ * read, and AppShell's pane/route judgements, so the one param shape has one
+ * reader. */
+export function refParam(params: unknown): string | null {
   if (typeof params !== "object" || params === null) return null;
-  const ref = (params as { ref?: unknown }).ref;
-  return typeof ref === "string" && ref.length > 0 ? ref : null;
+  return paramString((params as { ref?: unknown }).ref);
 }
 
 // A hub session ref is "<hostID>:<sessionID>", both halves non-empty - the
