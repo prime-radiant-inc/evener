@@ -64,10 +64,14 @@ func verifyDeployArtifactIdentity(subject string, info *buildinfo.BuildInfo) err
 // -no-deploy (whose way back is the leading clause) and a hub whose explicitly
 // named source refused (which can still fall back to its own executable).
 // sshconn's default ("set Options.BuildSource") names an internal field the
-// operator cannot act on. The unwired states and the defaulted-source state read
-// their own texts (below), each because one of this text's clauses would name an
-// action that state cannot take.
-const hubDeployHelp = "run this hub without -no-deploy so it deploys its own executable, or set -deploy-binary <path> (a pre-built evener for the host's target) or -build-source <path> (an evener checkout to cross-compile from)"
+// operator cannot act on. The leading clause names BOTH conditions the default
+// needs: -no-deploy gone AND no deploy flag left behind, because an explicit
+// -deploy-binary or -build-source wins over the default — "remove -no-deploy" on
+// its own would leave the operator deploying the named source and reading a
+// remedy that promised the hub's own executable. The unwired states and the
+// defaulted-source state read their own texts (below), each because one of this
+// text's clauses would name an action that state cannot take.
+const hubDeployHelp = "run this hub without -no-deploy and without a deploy flag so it deploys its own executable, or set -deploy-binary <path> (a pre-built evener for the host's target) or -build-source <path> (an evener checkout to cross-compile from)"
 
 // hubDeployHelpUnwired is hubDeployHelp for the one state whose first clause
 // names no action it can take: a hub whose own executable is not an evener build

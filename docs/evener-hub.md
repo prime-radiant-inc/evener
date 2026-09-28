@@ -387,7 +387,10 @@ A host that runs a build other than the hub's is upgraded on attach: the hub
 installs its own build over the host's `evener`, restarts the host's hub, and
 attaches only after the running build matches. **The default build it installs
 is its own executable**, so connecting to a bare host provisions it with the
-exact build the hub was started from and no flag is needed. A host whose
+exact build the hub was started from and no flag is needed. (The file is read
+when the deploy runs: a hub whose own executable is replaced while it runs
+deploys the replacement, which the code records as the default's accepted
+residual.) A host whose
 platform differs from the hub's cannot be served by that executable: the hub
 does not attempt the push and falls back to the installer path instead — the
 same `install.sh` provisioning a flagless controller used before the default

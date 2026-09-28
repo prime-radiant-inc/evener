@@ -466,6 +466,30 @@ func TestHubDeployHelpNamesBothFlags(t *testing.T) {
 	}
 }
 
+// TestDisabledRemedyNamesTheFlagsItMustAlsoDrop pins the shared remedy's leading
+// clause for a hub started with -no-deploy AND a deploy flag: an explicit
+// -deploy-binary or -build-source wins over the own-executable default, so
+// "remove -no-deploy" alone leaves the operator deploying the named source while
+// the remedy promised the hub's own executable. The clause has to say both must
+// go, and the remedy still has to name every flag it talks about.
+func TestDisabledRemedyNamesTheFlagsItMustAlsoDrop(t *testing.T) {
+	exe := evenerArtifact(t)
+	stubHubExecutable(t, exe, nil)
+	opts, err := parseHubOptions([]string{noDeployFlag, deployBinaryFlag, exe}, &bytes.Buffer{})
+	if err != nil {
+		t.Fatalf("parseHubOptions(%s %s): %v", noDeployFlag, deployBinaryFlag, err)
+	}
+	help := opts.deployWiring().help
+	if help != hubDeployHelp {
+		t.Fatalf("the opted-out state's remedy = %q, want the shared text %q", help, hubDeployHelp)
+	}
+	for _, want := range []string{"without " + noDeployFlag, "without a deploy flag", deployBinaryFlag, buildSourceFlag} {
+		if !strings.Contains(help, want) {
+			t.Fatalf("the opted-out remedy does not name %q: %q", want, help)
+		}
+	}
+}
+
 // TestDefaultedSourceRefusalLeadsWithTheFlags pins the remedy split the
 // cross-target refusal needs: a hub whose source is the defaulted own executable
 // is already running without -no-deploy and already deploying that executable,
