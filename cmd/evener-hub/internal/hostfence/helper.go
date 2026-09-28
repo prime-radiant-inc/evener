@@ -342,13 +342,18 @@ func (w Wrapper) Verify(ctx context.Context) error {
 	return VerifyHelper(w.Host, HelperVersion, probe)
 }
 
-// Verified is a helper that passed the read-only presence/version gate. It is
-// the only handle that exposes the mutating operations, so a caller cannot
-// mutate, advance, or kill through an absent, stale, or untrusted helper: the
-// gate runs once per fencing operation (§6's "before the kill/wait step"), and
-// the handle it returns is what S18's worker sequences takeover, bounded
-// kill/wait, advance, and perform from.
-type Verified struct{ Wrapper }
+// Verified is a helper that passed the read-only presence/version gate. Its
+// mutating operations exist only on this handle, and the wrapped Wrapper is
+// unexported, so the only way to construct one is Wrapper.Check: a caller
+// cannot mutate, advance, or kill through an absent, stale, or untrusted
+// helper even by accident. The gate runs once per fencing operation (§6's
+// "before the kill/wait step"), and the handle it returns is what S18's worker
+// sequences takeover, bounded kill/wait, advance, and perform from.
+type Verified struct{ wrapper Wrapper }
+
+// Wrapper returns the verified handle's underlying wrapper, for the read-only
+// operations and for tests that need its seams.
+func (v Verified) WrapperHandle() Wrapper { return v.wrapper }
 
 // Check runs §6's helper presence-and-version gate and returns the verified
 // handle its mutating operations require. A refusal is the typed
@@ -362,7 +367,7 @@ func (w Wrapper) Check(ctx context.Context) (Verified, error) {
 	if err := VerifyHelper(w.Host, HelperVersion, probe); err != nil {
 		return Verified{}, err
 	}
-	return Verified{w}, nil
+	return Verified{wrapper: w}, nil
 }
 
 // Status reads the guard and lease state.
@@ -374,8 +379,7 @@ func (w Wrapper) Status(ctx context.Context) (Status, error) {
 // It exists only on a Verified helper: no mutation runs behind an unverified
 // helper.
 func (v Verified) Takeover(ctx context.Context, e Epoch) (Status, error) {
-	w := v.Wrapper
-	return w.takeover(ctx, e)
+	return v.wrapper.takeover(ctx, e)
 }
 
 // takeover is Takeover's body, kept on Wrapper for the verified handle.
@@ -390,8 +394,7 @@ func (w Wrapper) takeover(ctx context.Context, e Epoch) (Status, error) {
 // Advance runs the compare-and-advance and returns the state it landed. It
 // exists only on a Verified helper.
 func (v Verified) Advance(ctx context.Context, e Epoch) (Status, error) {
-	w := v.Wrapper
-	return w.advance(ctx, e)
+	return v.wrapper.advance(ctx, e)
 }
 
 // advance is Advance's body, kept on Wrapper for the verified handle.
@@ -437,8 +440,7 @@ func (w Wrapper) Recheck(ctx context.Context, id string) (Recheck, error) {
 // typed error and means the command never ran (or was aborted before its
 // irreversible step). It exists only on a Verified helper.
 func (v Verified) Perform(ctx context.Context, e Epoch, command string) (PerformResult, error) {
-	w := v.Wrapper
-	return w.perform(ctx, e, command)
+	return v.wrapper.perform(ctx, e, command)
 }
 
 // perform is Perform's body, kept on Wrapper for the verified handle.

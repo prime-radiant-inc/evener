@@ -247,12 +247,15 @@ steal_stale_lock() {
 		rm -f "$stale" 2>/dev/null || true
 		return 0
 	fi
-	if [ ! -e "$LOCK_FILE" ] && mv "$stale" "$LOCK_FILE" 2>/dev/null; then
+	# Restore with a create-if-absent link: a check-then-mv pair is not atomic,
+	# and mv would silently overwrite a claim a newer claimant published in the
+	# window, letting two owners run the same critical section.
+	if ln "$stale" "$LOCK_FILE" 2>/dev/null; then
+		rm -f "$stale" 2>/dev/null || true
 		return 1
 	fi
-	# A live owner's claim whose path was taken by a newer claimant: never
-	# delete it. Park it under a unique name so the claim survives the race
-	# (the owner's release compares its own pid and leaves the new claim alone).
+	# The path is occupied: never overwrite or delete the live claim. Park the
+	# moved one under a unique name so nothing is lost to the race.
 	mv "$stale" "$STATE_DIR/.claim.abandoned.$$" 2>/dev/null || true
 	return 1
 }
@@ -989,14 +992,23 @@ do_recheck() { # <id>
 			# A recorded descendant counts only while it still carries this
 			# invocation's exact nonce AND the kernel-owned start token recorded
 			# beside it: a reused pid without both is not the wrapper's work and
-			# must never be treated — or signaled — as it.
+			# must never be treated — or signaled — as it. Every path that
+			# cannot disprove the identity reads live, never clean.
 			descendant_pid=${descendant%%:*}
 			descendant_start=${descendant#*:}
 			kill -0 "$descendant_pid" 2>/dev/null || continue
-			grep -alqs "EVENER_FENCE_NONCE=$id" "/proc/$descendant_pid/environ" 2>/dev/null || continue
+			if [ "$descendant_start" = unknown ] || [ ! -r "/proc/$descendant_pid/environ" ]; then
+				# No start token was recorded, or the environment cannot be
+				# read: the identity cannot be disproven.
+				live=true
+				break
+			fi
+			if [ -z "$(grep -al "EVENER_FENCE_NONCE=$id" "/proc/$descendant_pid/environ" 2>/dev/null || true)" ]; then
+				# The exact nonce is absent: this is not the wrapper's process.
+				continue
+			fi
 			current=$(current_start_token "$descendant_pid" || true)
 			if [ -z "$current" ] || [ "$current" = "$descendant_start" ]; then
-				# Identity proven, or unprovable: live, fail closed.
 				live=true
 				break
 			fi
@@ -1043,26 +1055,26 @@ entries)
 takeover)
 	[ $# -eq 2 ] || refuse_malformed "takeover needs an epoch"
 	parse_epoch "$1" "$2" || refuse_malformed "malformed fencing epoch"
-	acquire_lock || refuse busy "the remote lease is held" 75
 	trap 'release_lock' EXIT
 	trap 'release_lock; exit 1' HUP INT TERM
+	acquire_lock || refuse busy "the remote lease is held" 75
 	do_takeover
 	;;
 advance)
 	[ $# -eq 2 ] || refuse_malformed "advance needs an epoch"
 	parse_epoch "$1" "$2" || refuse_malformed "malformed fencing epoch"
-	acquire_lock || refuse busy "the remote lease is held" 75
 	trap 'release_lock' EXIT
 	trap 'release_lock; exit 1' HUP INT TERM
+	acquire_lock || refuse busy "the remote lease is held" 75
 	do_advance
 	;;
 perform)
 	[ $# -eq 3 ] || refuse_malformed "perform needs an epoch and a command"
 	parse_epoch "$1" "$2" || refuse_malformed "malformed fencing epoch"
 	[ -n "$3" ] || refuse_malformed "perform needs a command"
-	acquire_lock || refuse busy "the remote lease is held" 75
 	trap 'release_lock' EXIT
 	trap 'release_lock; exit 1' HUP INT TERM
+	acquire_lock || refuse busy "the remote lease is held" 75
 	do_perform "$1" "$2" "$3"
 	;;
 recheck)

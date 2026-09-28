@@ -1143,8 +1143,18 @@ func TestScriptSignalExitsAndReleasesLock(t *testing.T) {
 		_ = cmd.Process.Kill()
 		t.Fatal("the interrupted helper did not exit")
 	}
-	if _, err := os.Stat(filepath.Join(remote.state, "lock")); err == nil {
-		t.Fatal("the interrupted helper left the exclusive lease held")
+	// Poll briefly: the release runs on the process's exit path, so a loaded
+	// machine may reap the process a moment before the file is gone.
+	lockFile := filepath.Join(remote.state, "lock")
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if _, err := os.Stat(lockFile); err != nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the interrupted helper left the exclusive lease held")
+		}
+		time.Sleep(20 * time.Millisecond)
 	}
 	// The helper exited rather than continuing to its side effect: give the
 	// orphaned command time to finish and prove the helper never reached it.

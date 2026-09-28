@@ -338,7 +338,7 @@ func TestWrapperTakeoverAdvancesDecodesAndRefuses(t *testing.T) {
 	runner := &fakeRunner{stdout: `{"version":1,"guardEpoch":5,"epoch":{"bootId":"b1","opSeq":3},` +
 		`"fence":{"epoch":{"bootId":"b1","opSeq":4},"superseded":{"bootId":"b1","opSeq":3},"guardEpoch":5},` +
 		`"superseded":null,"holder":{"bootId":"b1","opSeq":4},"entries":1,"bootHighWater":{"b1":4}}`}
-	verified := Verified{Wrapper{Runner: runner, Host: "h1"}}
+	verified := Verified{wrapper: Wrapper{Runner: runner, Host: "h1"}}
 	status, err := verified.Takeover(context.Background(), Epoch{BootID: "b1", OpSeq: 4})
 	if err != nil {
 		t.Fatalf("Takeover = %v", err)
@@ -352,18 +352,18 @@ func TestWrapperTakeoverAdvancesDecodesAndRefuses(t *testing.T) {
 	// A refusal on stderr with a nonzero exit is the typed server-side refusal,
 	// never a decoded success.
 	refusing := &fakeRunner{stderr: RefusalPrefix + `{"version":1,"refused":true,"error":"stale-epoch","detail":"older"}`, exit: 75}
-	if _, err := (Verified{Wrapper{Runner: refusing, Host: "h1"}}).Takeover(context.Background(), Epoch{BootID: "b1", OpSeq: 4}); !errors.Is(err, ErrStaleEpoch) {
+	if _, err := (Verified{wrapper: Wrapper{Runner: refusing, Host: "h1"}}).Takeover(context.Background(), Epoch{BootID: "b1", OpSeq: 4}); !errors.Is(err, ErrStaleEpoch) {
 		t.Fatalf("Takeover(refusal) = %v, want ErrStaleEpoch", err)
 	}
 	// A success exit with unparsable output is refused, never treated as an
 	// empty state that authorizes a mutation.
 	garbled := &fakeRunner{stdout: `not json`}
-	if _, err := (Verified{Wrapper{Runner: garbled, Host: "h1"}}).Takeover(context.Background(), Epoch{BootID: "b1", OpSeq: 4}); err == nil {
+	if _, err := (Verified{wrapper: Wrapper{Runner: garbled, Host: "h1"}}).Takeover(context.Background(), Epoch{BootID: "b1", OpSeq: 4}); err == nil {
 		t.Fatal("Takeover(garbled) = nil error, want refusal")
 	}
 	// The wrapper refuses a zero epoch locally: it never presents an absent
 	// epoch to the remote.
-	if _, err := (Verified{Wrapper{Runner: runner, Host: "h1"}}).Takeover(context.Background(), Epoch{}); err == nil {
+	if _, err := (Verified{wrapper: Wrapper{Runner: runner, Host: "h1"}}).Takeover(context.Background(), Epoch{}); err == nil {
 		t.Fatal("Takeover(zero epoch) = nil error, want refusal")
 	}
 	if len(runner.commands) != 1 {
@@ -429,7 +429,7 @@ func TestWrapperPerformSeparatesChildFailuresFromRefusals(t *testing.T) {
 		t.Fatalf("PerformCommand = %q, want the invocation token presented (%q)", command, token)
 	}
 	spoofed := &fakeRunner{stderr: RefusalPrefix + `{"version":1,"refused":true,"error":"stale-epoch","token":"guess"}`, exit: 75}
-	result, err := (Verified{Wrapper{Runner: spoofed, Host: "h1"}}).Perform(context.Background(), epoch, "deploy")
+	result, err := (Verified{wrapper: Wrapper{Runner: spoofed, Host: "h1"}}).Perform(context.Background(), epoch, "deploy")
 	if err != nil {
 		t.Fatalf("Perform(spoofed refusal) = %v, want the child's own failure", err)
 	}
@@ -439,14 +439,14 @@ func TestWrapperPerformSeparatesChildFailuresFromRefusals(t *testing.T) {
 	// A child's own stderr before a genuine trailing refusal does not hide it.
 	// The genuine refusal carries the token Perform minted for this call, which
 	// the runner reads back out of the command it was handed.
-	if _, err := (Verified{Wrapper{Runner: &tokenEchoRunner{reason: "fenced", exit: 75, noise: true}, Host: "h1"}}).Perform(context.Background(), epoch, "deploy"); !errors.Is(err, ErrFenced) {
+	if _, err := (Verified{wrapper: Wrapper{Runner: &tokenEchoRunner{reason: "fenced", exit: 75, noise: true}, Host: "h1"}}).Perform(context.Background(), epoch, "deploy"); !errors.Is(err, ErrFenced) {
 		t.Fatalf("Perform(genuine refusal after noise) = %v, want ErrFenced", err)
 	}
-	if _, err := (Verified{Wrapper{Runner: &tokenEchoRunner{reason: "io-error", exit: 69}, Host: "h1"}}).Perform(context.Background(), epoch, "deploy"); !errors.Is(err, ErrHelperIO) {
+	if _, err := (Verified{wrapper: Wrapper{Runner: &tokenEchoRunner{reason: "io-error", exit: 69}, Host: "h1"}}).Perform(context.Background(), epoch, "deploy"); !errors.Is(err, ErrHelperIO) {
 		t.Fatalf("Perform(io-error) = %v, want ErrHelperIO", err)
 	}
 	// A helper refusal at a non-refusal exit code is still the child's status.
-	if _, err := (Verified{Wrapper{Runner: &tokenEchoRunner{reason: "stale-epoch", exit: 9}, Host: "h1"}}).Perform(context.Background(), epoch, "deploy"); err != nil {
+	if _, err := (Verified{wrapper: Wrapper{Runner: &tokenEchoRunner{reason: "stale-epoch", exit: 9}, Host: "h1"}}).Perform(context.Background(), epoch, "deploy"); err != nil {
 		t.Fatalf("Perform(refusal at child exit) = %v, want the child's own failure", err)
 	}
 }
