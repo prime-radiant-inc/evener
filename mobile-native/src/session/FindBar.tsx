@@ -3,7 +3,8 @@
 // step to the older and the newer match, and Done. The screen owns the search
 // (findInSession.ts) and moves the list.
 import { SymbolView } from "expo-symbols";
-import { Pressable, Text, TextInput, View } from "react-native";
+import { useEffect } from "react";
+import { AccessibilityInfo, Pressable, Text, TextInput, View } from "react-native";
 import { allowFontScaling, useColors, useTextScale } from "../ui";
 import { SymbolButton } from "./SymbolButton";
 
@@ -27,6 +28,12 @@ export function FindBar({
 	const { palette } = useColors();
 	const scale = useTextScale();
 	const canStep = query.trim() !== "" && !searchingOlder;
+	const shown = searchingOlder ? "Searching older messages…" : label;
+	// VoiceOver hears where you are after each step and search. An announcement,
+	// since iOS ignores accessibilityLiveRegion, which only Android reads.
+	useEffect(() => {
+		if (shown) AccessibilityInfo.announceForAccessibility(shown);
+	}, [shown]);
 	return (
 		<View
 			style={{
@@ -62,7 +69,6 @@ export function FindBar({
 				}}
 			/>
 			<Text
-				accessibilityLiveRegion="polite"
 				allowFontScaling={allowFontScaling}
 				numberOfLines={1}
 				style={{
@@ -73,7 +79,7 @@ export function FindBar({
 					fontVariant: ["tabular-nums"],
 				}}
 			>
-				{searchingOlder ? "Searching older messages…" : label}
+				{shown}
 			</Text>
 			<SymbolButton label="Older match" disabled={!canStep} onPress={() => onStep(-1)}>
 				<SymbolView name="chevron.up" tintColor={palette.accentInk} size={17 * scale} />

@@ -7,7 +7,12 @@ import { paletteFor } from "../design/tokens";
 import { pressable, render, textOf } from "../renderNative.testkit";
 import { FindBar } from "./FindBar";
 
-vi.mock("react-native", async () => (await import("../renderNative.testkit")).nativeModuleMock());
+const announce = vi.hoisted(() => vi.fn());
+
+vi.mock("react-native", async () => {
+	const mock = (await import("../renderNative.testkit")).nativeModuleMock();
+	return { ...mock, AccessibilityInfo: { ...mock.AccessibilityInfo, announceForAccessibility: announce } };
+});
 vi.mock("expo-symbols", () => ({ SymbolView: "SymbolView" }));
 
 const palette = paletteFor("light");
@@ -81,6 +86,17 @@ describe("the find bar", () => {
 		const { props, tree } = bar();
 		act(() => field(tree).props.onChangeText("flaky"));
 		expect(props.onQuery).toHaveBeenCalledWith("flaky");
+	});
+
+	it("tells VoiceOver where you are each time it changes", () => {
+		announce.mockClear();
+		const { props, tree } = bar({ query: "", label: "" });
+		expect(announce).not.toHaveBeenCalled();
+		act(() => tree.update(<FindBar {...props} query="settle" label="2 of 3" />));
+		act(() => tree.update(<FindBar {...props} query="settle" label="2 of 3" />));
+		act(() => tree.update(<FindBar {...props} query="settle" label="1 of 3" />));
+		act(() => tree.update(<FindBar {...props} query="settle" label="1 of 3" searchingOlder />));
+		expect(announce.mock.calls).toEqual([["2 of 3"], ["1 of 3"], ["Searching older messages…"]]);
 	});
 
 	it("closes with Done", () => {
