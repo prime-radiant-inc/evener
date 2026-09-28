@@ -664,11 +664,16 @@ later record with an earlier `createdAt` can never move it before the cursor, be
 Cursor envelope: the cursor is a versioned base64url JSON envelope `{v: 2, pos: id,
 compactSeq: number,
 bounds: {[host]: [generation, incarnationId, presenceEpoch] | "absent"},
+window: "host" | "all",
 quarantineEpoch: number}`. It encodes the last row's durable sequence position
 (`pos`, the controller-assigned `id`, which never rolls back — never a bare
 offset), plus the global compaction position (`compactSeq`, carried once in the
 envelope — never per-host, never part of any per-host boundary comparison), plus
-a snapshot and retention boundary per host (`bounds`), plus the
+a snapshot and retention boundary per host (`bounds`), plus the window the
+cursor was minted over (`window`: `"host"` for a host-pinned read, `"all"` for
+an unfiltered cross-host read — a pinned current pair and an unfiltered bounds
+entry are byte-identical, so a continuation whose request does not match the
+recorded window is a typed `stale-entry` re-list refusal), plus the
 quarantine epoch (`quarantineEpoch`, the §4 counter). A cursor whose envelope version is not 2 is a typed `stale-entry` re-list
 refusal, never a best-effort decode. A continuation whose pinned epoch no longer equals
 the live `quarantineEpoch` is a typed `stale-entry` re-list refusal before any boundary
@@ -1149,9 +1154,10 @@ spec). `interrupted` is a terminal record state (outcome unknown), not a thrown 
   concurrent terminal writes (`createdAt` display-only); a mid-pagination
   generation or presence advance rejects the continuation (`stale-entry`
   re-list); cursor carries the `v: 2` envelope `{v, pos, compactSeq, bounds,
-  quarantineEpoch}` per §8 (`pos` the last row's controller-assigned `id`;
+  window, quarantineEpoch}` per §8 (`pos` the last row's controller-assigned `id`;
   `compactSeq` once globally; `bounds` one `[generation, incarnationId,
-  presenceEpoch]` tuple per host in the query, or `"absent"`) with entry-mismatch
+  presenceEpoch]` tuple per host in the query, or `"absent"`; `window` the
+  minted window, `"host"` or `"all"`) with entry-mismatch
   (`stale-entry` re-list) and post-cursor compaction (`cursor-invalidated` naming
   the envelope-global compacting `compactSeq` plus the affected host's stored
   `bounds` entry) both surfaced as refusals;
