@@ -14,13 +14,14 @@ import { locations } from "./nativeLocation";
 import { forkJournal } from "./nativeOrganization";
 import type { Routes } from "./screens";
 import { Copy, styles, useColors } from "./ui";
+import { HUB_NO_LONGER_SELECTED } from "./retainedScreen";
 
 const noSnapshot = () => null;
 const noSubscription = () => () => {};
 
 export function ForkScreen({ route, navigation }: NativeStackScreenProps<Routes, "Fork">) {
 	const { hubId, ref, title, instanceId, entryIndex, preview } = route.params;
-	const { client, activeProfile, state, retry } = useConnection();
+	const { client, activeProfile, state } = useConnection();
 	const focused = useIsFocused();
 	const belongs = activeProfile?.id === hubId;
 	const ready = belongs && !!client && state === "ready";
@@ -142,7 +143,7 @@ export function ForkScreen({ route, navigation }: NativeStackScreenProps<Routes,
 	return (
 		<SafeAreaView edges={["bottom", "left", "right"]} style={[styles.fill, { backgroundColor: colors.background }]}>
 			{!belongs ? (
-				<Copy>This hub is no longer selected. Return to Hubs to reconnect.</Copy>
+				<Copy>{HUB_NO_LONGER_SELECTED}</Copy>
 			) : (
 				<ForkEditor
 					title={title || "Fork session"}
@@ -162,8 +163,7 @@ export function ForkScreen({ route, navigation }: NativeStackScreenProps<Routes,
 					}}
 					retry={() => {
 						actions?.retryStorage();
-						if (!ready) retry();
-						else void readSource();
+						if (ready) void readSource();
 					}}
 					browseSessions={() => navigation.popTo("Sessions")}
 					allowAnother={allowAnother}

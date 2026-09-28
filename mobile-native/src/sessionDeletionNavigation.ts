@@ -49,7 +49,7 @@ export async function readSessionDeletion(
 	check();
 	await navigation.finish();
 	if (!missing && (checkpoint?.deletion?.kind === "deleted" || checkpoint?.deletion?.kind === "missing"))
-		throw Error("The session is still present after the deletion acknowledgement. Refresh to check again.");
+		throw Error("The session is still present after the deletion acknowledgement. Check again.");
 	return {
 		generationId,
 		missing,

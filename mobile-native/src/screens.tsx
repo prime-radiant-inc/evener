@@ -550,7 +550,7 @@ export function ConversationScreen({
 	 * "Subagent" route): the coordinator whose tree it sits in. */
 	subagentOf?: Coordinator;
 }) {
-	const { activeProfile, client, state: connectionState, fatal } = useConnection();
+	const { activeProfile, client, state: connectionState } = useConnection();
 	const focused = useScreenInFront(route.key);
 	const colors = useColors();
 	const [sessionMenuOpen, setSessionMenuOpen] = useState(false);
@@ -696,7 +696,7 @@ export function ConversationScreen({
 	}, [focused, imageSelection]);
 	const unconfirmedSend = draft.submitting ? null : draft.record.unconfirmed;
 	const connected = connectionState === "ready" && activeProfile?.id === route.params.hubId;
-	const connectionText = useConnectionStatusText(connectionState, fatal);
+	const connectionText = useConnectionStatusText();
 	// The same debounced signal the connection bar itself waits on (spec 14:
 	// "a blip shorter than this reconnects without a word"), so the chips
 	// never flicker through a hide-and-show the bar stays silent for, and a
@@ -909,7 +909,7 @@ export function ConversationScreen({
 			if (store.getState().status === "open") await store.getState().rehydrate(service, activitySink);
 			else await store.getState().resumeProjected(service, activitySink, route.params.ref);
 			const current = store.getState();
-			if (current.status !== "open" || current.error) throw new Error("Session refresh failed");
+			if (current.status !== "open" || current.error) throw new Error("Could not read the session.");
 		};
 		return new SessionControls(
 			service,
@@ -970,7 +970,7 @@ export function ConversationScreen({
 							store.getState().conversation?.instanceId === bindingInstance,
 						async () => {
 							await store.getState().rehydrate(service, activitySink);
-							if (store.getState().error) throw new Error("Refresh failed");
+							if (store.getState().error) throw new Error("Could not read the session.");
 						},
 					)
 				: null,

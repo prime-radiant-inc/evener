@@ -47,20 +47,16 @@ export function PinCatalogList({
 					<Copy>{hubName}</Copy>
 					{loading || pending ? <ActivityIndicator accessibilityLabel="Checking pinned sections" /> : null}
 					{!connected ? (
-						<Copy muted>Reconnect to view pinned sections.</Copy>
+						<Copy muted>You can see pinned sections once the hub is back.</Copy>
 					) : uncertain ? (
-						<Copy muted>
-							{previousChange
-								? "Refresh to confirm the previous pin change."
-								: "Refresh to reload the pinned sections."}
-						</Copy>
+						<Copy muted>{previousChange ? "Check the previous pin change." : "Check the pinned sections again."}</Copy>
 					) : isUpdating ? (
 						<Copy muted>Updating…</Copy>
 					) : null}
 					<ErrorMessage message={error} />
-					{!connected || uncertain || error ? (
+					{connected && (uncertain || error) ? (
 						<Action disabled={loading || pending} onPress={refresh} tone="quiet">
-							{connected ? "Refresh sections" : "Reconnect"}
+							Check again
 						</Action>
 					) : null}
 					{showEmpty ? (

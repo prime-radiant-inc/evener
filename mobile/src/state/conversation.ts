@@ -1882,7 +1882,7 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 						suspendedService = service;
 						set({
 							status: "error",
-							error: current.error ?? "Could not refresh the session. Try again.",
+							error: current.error ?? "Could not load the session. Try again.",
 						});
 						return;
 					}
