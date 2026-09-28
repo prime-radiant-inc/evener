@@ -1399,26 +1399,23 @@ func (c *hubInstancesController) moveCredentials(oldName, newName string) error 
 		if err := c.auth.saveAuth(c.auth.stateDir, newName, record); err != nil {
 			problems = append(problems, fmt.Sprintf("OAuth record not copied: %v", err))
 		} else {
-			// The old record (and, if refused, its still-valid old marker)
-			// is deleted only once the new name genuinely carries everything
-			// it needs to: deleting it regardless would drop the marker on
-			// both names at once if copying it failed.
-			markerCarried := true
 			if refused {
 				// Without this, the renamed instance reports signed in and
 				// healthy until its next failed refresh re-notes the refusal:
 				// reported like the record copy above, so a caller who reads
 				// "renamed" only for the marker to have silently not followed
-				// it has a way to know.
+				// it has a way to know. Attempted regardless of what happens
+				// to the old record below, like every other layer here: this
+				// function reports each layer's own failure rather than
+				// gating one layer's attempt on another's success, which
+				// would otherwise leave the instance filed under both names
+				// at once.
 				if err := authopenai.RecordRefreshRejection(c.auth.stateDir, newName, record, c.auth.now()); err != nil {
-					markerCarried = false
 					problems = append(problems, fmt.Sprintf("refresh-refusal marker not copied: %v", err))
 				}
 			}
-			if markerCarried {
-				if _, err := c.auth.deleteAuth(c.auth.stateDir, oldName); err != nil {
-					problems = append(problems, fmt.Sprintf("OAuth record for %q left behind: %v", oldName, err))
-				}
+			if _, err := c.auth.deleteAuth(c.auth.stateDir, oldName); err != nil {
+				problems = append(problems, fmt.Sprintf("OAuth record for %q left behind: %v", oldName, err))
 			}
 		}
 	}
