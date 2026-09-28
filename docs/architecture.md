@@ -34,11 +34,32 @@ importing each other's Go code.
 | --- | --- | --- | --- | --- |
 | `evener` | `cmd/evener` | **engine** — runs an `agent.Session` | agent, llm | direct |
 | `evener hub` | `cmd/evener-hub` | **supervisor** — spawns `evener` subprocesses, serves clients | evener (spawn), agent (schema) | **AppWire** + schema |
-| `evener tui` | `cmd/evener-tui` | **client** — terminal dashboard | evener hub | **hubapi** (HTTP) |
+| `evener tui` | `cmd/evener-tui` | **client** — terminal dashboard | evener hub | **AppWire** (WebSocket) |
+
+The TUI's control and event connection to the hub is **AppWire**, not HTTP. It
+dials the hub's `/rpc` WebSocket, initializes an `appwire.Client`, and installs an
+ordered-frame observer (`dialHubRPC`, `cmd/evener-tui/internal/hubstart`). The hub
+is the AppWire **server** for the TUI and the browser, an AppWire **client** to
+each `evener serve` daemon it spawns, and — on a multi-host controller — an
+AppWire **relay** that carries frames to a remote host's hub over `ssh <dest>
+evener hub attach --stdio` (`appwire.StreamTransport`). `hubapi` is the hub's
+separate HTTP surface (health, navigation, refs, attention) for the browser's REST
+baseline and the mobile client; the TUI touches it only for the best-effort
+environment health probe (`checkHubEnvironment`).
+
+```
+browser ─┐
+         ├─ AppWire /rpc (WS) ──▶ evener hub ──┬─ AppWire (WS) ──▶ evener serve daemon
+evener   │                                     └─ hubapi HTTP ────▶ health / navigation / refs
+  tui ───┘
+
+remote host:  evener hub ── ssh ──▶ evener hub attach --stdio ── AppWire (stdio) ──▶ remote hub
+```
 
 The two shared **contracts** are ordinary top-level packages in the app module:
-`appwire/` (the engine↔hub↔tui wire protocol) and `hubapi/` (the hub's HTTP API).
-Each binary owns its private code under `cmd/<bin>/internal/`.
+`appwire/` (the JSON-RPC wire protocol over WebSocket or stdio, hop by hop between
+browser/`evener tui`, hub, and `evener serve` daemon) and `hubapi/` (the hub's HTTP
+API). Each binary owns its private code under `cmd/<bin>/internal/`.
 
 ## The placement rule — "what goes where"
 
