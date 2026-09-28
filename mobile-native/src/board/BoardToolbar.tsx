@@ -1,4 +1,3 @@
-import type { ConnectionState } from "@evener/appwire-client";
 import { SymbolView } from "expo-symbols";
 import type { ReactNode } from "react";
 import { Pressable, Text, View } from "react-native";
@@ -66,21 +65,17 @@ export function BarButton({
  * the Board shows a session (`onSelect`), the connection status in the
  * middle, and New session on the trailing side. */
 export function BoardToolbar({
-	state,
-	fatal,
 	newSessionDisabled,
 	onNewSession,
 	onSelect,
 }: {
-	state: ConnectionState;
-	fatal: boolean;
 	newSessionDisabled: boolean;
 	onNewSession: () => void;
 	onSelect?: () => void;
 }) {
 	const { palette } = useColors();
 	const scale = useTextScale();
-	const status = useConnectionStatusText(state, fatal);
+	const status = useConnectionStatusText();
 	return (
 		<ToolbarFrame>
 			<View style={{ flex: 1, alignItems: "flex-start" }}>

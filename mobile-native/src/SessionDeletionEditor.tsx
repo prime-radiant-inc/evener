@@ -78,7 +78,7 @@ export function SessionDeletionEditor({
 							</>
 						) : null}
 						{lastKnown ? (
-							<Copy muted>Refresh to check the current session before deleting.</Copy>
+							<Copy muted>Check the current session before deleting.</Copy>
 						) : !eligible ? (
 							<Copy muted>End the session runtime before deleting its saved history.</Copy>
 						) : null}
@@ -88,9 +88,11 @@ export function SessionDeletionEditor({
 					</>
 				)}
 				{busy ? <Copy muted>Checking the session…</Copy> : null}
-				<Action disabled={busy} onPress={refresh}>
-					{ready ? "Refresh session" : "Reconnect"}
-				</Action>
+				{ready ? (
+					<Action disabled={busy} onPress={refresh}>
+						Check again
+					</Action>
+				) : null}
 				<Action tone="quiet" disabled={busy} onPress={openSessions}>
 					{missing && !lastKnown ? "Return to Sessions" : "Open Sessions"}
 				</Action>

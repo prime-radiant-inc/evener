@@ -21,6 +21,7 @@ import { HubSettingsScreen } from "./HubSettingsScreen";
 import type { UpgradeState } from "./hubUpgrade";
 import {
 	alertRequests,
+	dropped,
 	nativeModuleMock,
 	render,
 	renderedText,
@@ -97,14 +98,14 @@ it("re-reads the overview once a flap the screen survived is ready again", async
 	expect(renderedText(tree)).toContain("Evener 1.2.3");
 	expect(reads).toBe(1);
 
-	harness.connection = connection(hub, "reconnecting");
+	harness.connection = dropped(connection(hub, "ready"));
 	await act(async () => {
 		tree.update(<HubSettingsScreen {...props} />);
 	});
 	// Stale-but-shown: the banner sits over the last successful load, not a
 	// wall; the hub may have moved on while this client was away.
 	expect(renderedText(tree)).toContain("Evener 1.2.3");
-	expect(renderedText(tree)).toContain("reconnecting");
+	expect(renderedText(tree)).toContain("Reconnecting…");
 
 	harness.connection = connection(hub, "ready");
 	await act(async () => {
@@ -180,7 +181,6 @@ it("treats a route re-keyed to another hub as a fresh screen", async () => {
 		client: null,
 		state: "connecting",
 		fatal: false,
-		retry: () => {},
 	};
 	await act(async () => {
 		tree.update(<HubSettingsScreen {...forHub("hub-2")} />);
@@ -197,7 +197,6 @@ it("treats a route re-keyed to another hub as a fresh screen", async () => {
 		client: fakeB as unknown as ConversationClientLike,
 		state: "ready",
 		fatal: false,
-		retry: () => {},
 	};
 	await act(async () => {
 		tree.update(<HubSettingsScreen {...forHub("hub-2")} />);
@@ -242,10 +241,10 @@ it("gates the upgrade start while the connection is away, not the recovery reads
 	// refresh is reconcileAfterReconnect - the remedy path itself.
 	upgrade.snapshot = {
 		kind: "uncertain",
-		message: "An upgrade may have been installed. Reconnect and verify.",
+		message: "An upgrade may have been installed. Check the running version.",
 	};
 	const remedies = await mountFlapping();
-	for (const label of ["Refresh running version", "Review another update"]) {
+	for (const label of ["Check running version", "Review another update"]) {
 		const control = remedies.root.find((node) => node.props.accessibilityLabel === label);
 		expect(control.props.disabled).toBe(false);
 	}
@@ -300,7 +299,7 @@ it("reads the overview and reconcile once on a mount that is already ready", asy
 	// read: two overview/reconcile reads where one was owed.
 	upgrade.snapshot = {
 		kind: "uncertain",
-		message: "An upgrade may have been installed. Reconnect and verify.",
+		message: "An upgrade may have been installed. Check the running version.",
 	};
 	reconciles.count = 0;
 	const hub = new FakeClient("ready");

@@ -10,13 +10,14 @@ import { useConnection } from "./ConnectionProvider";
 import { LaunchFieldEditor } from "./LaunchFieldEditor";
 import { scalarKinds } from "./launchScalar";
 import { RepositoryLaunchReview } from "./RepositoryLaunchReview";
+import { HUB_NO_LONGER_SELECTED } from "./retainedScreen";
 import type { Routes } from "./screens";
 import { Action, Copy, ErrorMessage, styles, useColors } from "./ui";
 
 type Props = NativeStackScreenProps<Routes, "LaunchSettings">;
 export function LaunchSettingsScreen({ route, navigation }: Props) {
-	const { activeProfile, client, state, retry } = useConnection();
-	if (activeProfile?.id !== route.params.hubId) return <Copy>This hub is no longer selected.</Copy>;
+	const { activeProfile, client, state } = useConnection();
+	if (activeProfile?.id !== route.params.hubId) return <Copy>{HUB_NO_LONGER_SELECTED}</Copy>;
 	const cwd = route.params.projectCwd ?? "/";
 	const layer = route.params.projectCwd === undefined ? "global" : "project";
 	return (
@@ -25,7 +26,6 @@ export function LaunchSettingsScreen({ route, navigation }: Props) {
 			cwd={cwd}
 			layer={layer}
 			client={state === "ready" ? client : null}
-			retry={retry}
 			hubName={activeProfile.name}
 			navigation={navigation}
 		/>
@@ -42,14 +42,12 @@ function LaunchDefaults({
 	cwd,
 	layer,
 	client,
-	retry,
 	hubName,
 	navigation,
 }: {
 	cwd: string;
 	layer: LaunchConfigLayerName;
 	client: ConversationClientLike | null;
-	retry(): void;
 	hubName: string;
 	navigation: Props["navigation"];
 }) {
@@ -96,12 +94,7 @@ function LaunchDefaults({
 		<SafeAreaView edges={["bottom", "left", "right"]} style={[styles.fill, { backgroundColor: colors.background }]}>
 			<ScrollView keyboardShouldPersistTaps="handled" contentContainerStyle={{ padding: 20, gap: 10 }}>
 				<Copy>{hubName}</Copy>
-				{!client && (
-					<View>
-						<Copy>Disconnected. Your unsaved changes are kept here.</Copy>
-						<Action onPress={retry}>Reconnect</Action>
-					</View>
-				)}
+				{!client && <Copy>Disconnected. Your unsaved changes are kept here.</Copy>}
 				<Copy muted>
 					{layer === "project"
 						? `Defaults for new Evener sessions in ${cwd}. These override hub and trusted repository settings; per-launch values can override them.`

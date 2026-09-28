@@ -53,7 +53,7 @@ export function LaunchScalarEditor({
 			const parsed = parseLaunchScalar(option, raw);
 			if (parsed !== undefined && option.kind === "path") {
 				if (!client) {
-					setError("Reconnect to validate this path on the hub.");
+					setError("This path can be checked on the hub once it's back.");
 					return;
 				}
 				const validation = await client.request("evener/path/validate", {

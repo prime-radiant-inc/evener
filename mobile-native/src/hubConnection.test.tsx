@@ -10,7 +10,13 @@ import { afterEach, expect, it, type Mock, vi } from "vitest";
 import type { ConnectionState, TerminalReason } from "@evener/appwire-client";
 import { connectionFailure } from "./connectionRecovery";
 import { clientServesHub } from "./connectionIdentity";
-import { type HubConnection, type HubTokenSource, reconnectDelay, useHubConnection } from "./hubConnection";
+import {
+	FATAL_RETRY_MS,
+	type HubConnection,
+	type HubTokenSource,
+	reconnectDelay,
+	useHubConnection,
+} from "./hubConnection";
 import { renderHook } from "./renderNative.testkit";
 
 const harness = vi.hoisted(() => ({ client: null as unknown }));
@@ -409,16 +415,55 @@ it("starts the backoff over once a connection reaches ready", async () => {
 	expect(third.state).toBe("connecting");
 });
 
-it("never retries a connection no retry can fix", async () => {
+it("tries a close no retry can fix again once a minute, saying Update needed throughout", async () => {
+	// No screen offers Reconnect (spec principle 2), so this is how the phone
+	// finds a hub that was updated while it waited: it never fails closed.
 	vi.useFakeTimers();
 	const first = new FakeHubClient();
 	harness.client = first;
-	const { hook } = mount();
+	const { hook, renders, setError } = mount();
 	await act(async () => {});
 	const second = await failInto(first, "protocol");
 	expect(hook.result.current.fatal).toBe(true);
-	await elapse(60_000);
+	await elapse(FATAL_RETRY_MS - 1);
 	expect(second.state).toBe("idle");
+	const from = renders.length;
+	setError.mockClear();
+	await elapse(1);
+	expect(second.state).toBe("connecting");
+	// The verdict and its sentence hold while it dials, so "Update needed"
+	// never flickers.
+	expect(renders.slice(from).every((render) => render.fatal)).toBe(true);
+	expect(setError).not.toHaveBeenCalledWith(null);
+	// Still incompatible: the next try is a minute on.
+	const third = await failInto(second, "protocol");
+	await elapse(FATAL_RETRY_MS - 1);
+	expect(third.state).toBe("idle");
+	await elapse(1);
+	expect(third.state).toBe("connecting");
+	// The hub was updated: it connects, and the verdict clears.
+	await act(async () => {
+		third.succeed();
+	});
+	expect(hook.result.current).toMatchObject({ state: "ready", fatal: false });
+});
+
+it("keeps fatal retries out of the transport backoff", async () => {
+	vi.useFakeTimers();
+	const first = new FakeHubClient();
+	harness.client = first;
+	mount();
+	await act(async () => {});
+	let current = first;
+	for (let tries = 0; tries < 3; tries++) {
+		current = await failInto(current, "protocol");
+		await elapse(FATAL_RETRY_MS);
+	}
+	// The hub now answers, but the network drops: that is a first transport
+	// failure, retried at once.
+	const next = await failInto(current);
+	await elapse(0);
+	expect(next.state).toBe("connecting");
 });
 
 it("leaves a backgrounded app alone and tries at once on returning", async () => {

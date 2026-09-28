@@ -1138,7 +1138,7 @@ it("keeps the guard and warning across a same-client connection flap", async () 
 	// own reconnect re-read fails, so no authoritative read has landed and
 	// the fence still guards the stale row in the retained detail.
 	expect(renderedText(tree)).toContain("All marketplaces");
-	expect(renderedText(tree)).toContain("Refresh source");
+	expect(renderedText(tree)).toContain("Update source");
 	const remove = tree.root.findByProps({ accessibilityLabel: "Remove marketplace" });
 	expect(remove.props.disabled).toBe(true);
 	expect(hub.methods.filter((method) => method === "evener/marketplace/remove")).toHaveLength(1);
@@ -2622,10 +2622,9 @@ it("MarketplaceBrowser re-reads its list once the connection returns to ready af
 	expect(hub.methods.filter((m) => m === "evener/marketplace/list")).toHaveLength(2);
 });
 
-it("keeps the marketplace draft and exposes reconnect inside its modal", async () => {
+it("keeps the marketplace draft through a flap, with no Reconnect anywhere", async () => {
 	const hub = pluginsClient([plugin]);
-	const retry = vi.fn();
-	harness.connection = { ...screenConnection(hub.client, "ready"), retry };
+	harness.connection = screenConnection(hub.client, "ready");
 	const props = {
 		route: { params: { hubId: "hub-1" } },
 	} as unknown as ComponentProps<typeof PluginsScreen>;
@@ -2650,15 +2649,8 @@ it("keeps the marketplace draft and exposes reconnect inside its modal", async (
 	});
 	const sourceInput = tree.root.findByProps({ accessibilityLabel: "Marketplace source" });
 	expect(sourceInput.props.value).toBe("https://example.test/plugins.git");
-	const reconnects = tree.root.findAllByProps({ accessibilityLabel: "Reconnect" });
-	expect(reconnects).toHaveLength(2);
-	const modalReconnect = reconnects[reconnects.length - 1];
-	if (!modalReconnect) throw new Error("modal reconnect action was not rendered");
-	await act(async () => {
-		modalReconnect.props.onPress();
-	});
-	expect(retry).toHaveBeenCalledOnce();
-	expect(sourceInput.props.value).toBe("https://example.test/plugins.git");
+	// The app reconnects on its own (spec principle 2).
+	expect(tree.root.findAllByProps({ accessibilityLabel: "Reconnect" })).toHaveLength(0);
 });
 
 it("keeps Add marketplace open when readiness is lost during submit", async () => {
@@ -2709,7 +2701,6 @@ it("never renders the previous hub's retained client once the route names a hub 
 		client: hubA.client,
 		state: "ready",
 		fatal: false,
-		retry: () => {},
 	};
 	const props = {
 		route: { params: { hubId: "hub-b" } },
@@ -2723,7 +2714,6 @@ it("never renders the previous hub's retained client once the route names a hub 
 		client: null,
 		state: "reconnecting",
 		fatal: false,
-		retry: () => {},
 	};
 	await act(async () => {
 		tree.update(<PluginsScreen {...props} />);

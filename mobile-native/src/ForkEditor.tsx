@@ -33,7 +33,6 @@ export function ForkEditor(props: ForkEditorProps) {
 			</View>
 			<ErrorMessage message={props.sourceError} />
 			<ErrorMessage message={props.error} />
-			{!props.connected ? <Action onPress={props.retry}>Reconnect</Action> : null}
 			<View style={{ gap: 8 }}>
 				<Copy>History before this message will be copied into a new session.</Copy>
 				<Copy muted>The message opens as an editable draft. You can change it before sending.</Copy>

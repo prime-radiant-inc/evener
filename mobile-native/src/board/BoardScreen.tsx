@@ -77,7 +77,7 @@ import { BoardToolbar } from "./BoardToolbar";
 import { type BoardController, type BoardSnapshot, createBoardController } from "./boardData";
 import { useBoardReadRetry } from "./useBoardReadRetry";
 import { BoardStops, stopToast } from "./boardStops";
-import { UPDATE_NEEDED_HINT } from "./connectionStatus";
+import { INCOMPATIBLE_VERSIONS } from "../connectionRecovery";
 import { type HubSeenMarks, hubSeenMarks } from "./hubSeen";
 import { foldedSections, organizeByPreference, recentSearches, seenMarkers, useBoardSeen } from "./nativeBoardMemory";
 import { notices } from "./notices";
@@ -973,7 +973,7 @@ function Board({
 						/>
 					) : (
 						<>
-							{fatal ? <NoticeRow text={UPDATE_NEEDED_HINT} /> : null}
+							{fatal ? <NoticeRow text={INCOMPATIBLE_VERSIONS} /> : null}
 							<BoardNotices hubId={hubId} notices={hubNotices} navigation={navigation} />
 							{continueReading ? (
 								<ContinueReadingRow
@@ -1029,8 +1029,6 @@ function Board({
 				/>
 			) : (
 				<BoardToolbar
-					state={state}
-					fatal={fatal}
 					newSessionDisabled={!connected}
 					onNewSession={newSession}
 					onSelect={shownRowItems.length && !searching ? () => setSelecting(true) : undefined}
