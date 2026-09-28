@@ -2721,10 +2721,21 @@ export function applyHistoryReadFailure<M extends ThreadModel>(
 
 type ReadDisposition = "discard" | "replace" | "merge";
 
+// The read identity fields readDisposition needs, structurally — satisfied by
+// a wire ThreadReadResponse and, for applyReadModel below (a caller whose own
+// service layer hydrates the wire response before the merge boundary), by a
+// HistoryState the caller already holds.
+interface ReadDispositionSignal {
+  requestGeneration?: number;
+  bootGeneration?: string;
+  epoch?: number;
+  snapshot?: { incarnation: string; length: number };
+}
+
 // What a latest-window response does to held history. Request generations
 // decide whether it applies at all; then the generation token, the epoch and
 // the incarnation decide between replacing the whole history and merging.
-function readDisposition(held: HistoryState, resp: ThreadReadResponse): ReadDisposition {
+function readDisposition(held: HistoryState, resp: ReadDispositionSignal): ReadDisposition {
   const generation = resp.requestGeneration ?? 0;
   if (generation < held.issuedGeneration) return "discard";
   const identity = readIdentity(resp);
@@ -2797,6 +2808,101 @@ export function applyReadResponse<M extends ThreadModel>(
     { ...base, ...fields, ...runningTurn(resp.thread), olderCursor },
     history,
     overlayRecord(resp.overlay),
+  );
+  for (const deferred of held.deferredPages) {
+    if (deferred.snapshot?.incarnation === history.incarnation) {
+      next = mergeVersionedPage(next, next.history, deferred, false);
+    }
+  }
+  return publicModel<M>(next);
+}
+
+// Splits turns already merged into TurnModel[] back into a HistoryFragment
+// (turn scalars, items) — the shape mergeHistory folds in applyReadModel
+// below, mirroring splitWireTurns for a caller whose input is an
+// already-hydrated model rather than a wire response.
+function turnModelsToFragment(turns: readonly TurnModel[]): HistoryFragment {
+  return {
+    turns: turns.map((turn) => ({ ...turn, items: [] })),
+    // mergeHistory joins each item to its turn by item.turnId alone (never by
+    // array nesting) — splitWireTurns backfills a blank one from the
+    // containing wire turn for exactly this reason. A model hydrated outside
+    // this package's own versioned path (a caller's pre-v6 display model, or
+    // a legacy hydrate with no snapshot) can carry items whose turnId was
+    // never stamped at all — nesting was the only membership signal there —
+    // so the same backfill runs here, or every such item joins the same
+    // synthetic turnId-"" turn instead of the one that actually holds it.
+    items: turns.flatMap((turn) => turn.items.map((item) => (item.turnId ? item : { ...item, turnId: turn.id }))),
+  };
+}
+
+/**
+ * applyReadResponse for a caller whose own service layer hydrates the wire
+ * ThreadReadResponse into a ThreadModel (hydrateThread) before the merge
+ * boundary reaches this package — mobile's ConversationService is exactly
+ * this shape, and its existing test suite scripts fixtures at the
+ * hydrated-model level throughout, so requiring the raw wire response here
+ * would force rewriting it wholesale. Same disposition rules as
+ * applyReadResponse, read from `fresh.history` (hydrateThread already stamps
+ * it) instead of a wire response's own fields: a fresh read that carries no
+ * snapshot identity at all (fresh.history undefined — a legacy hydrate, or a
+ * daemon that answered with no history support) always merges by identity
+ * (a version-less item, held or incoming, always yields — see `supersedes` —
+ * so this degrades to the same content-wins-on-reissue behavior an
+ * unversioned merge always had), never discarded or replaced outright: with
+ * no generation/epoch/incarnation of its own to compare, discarding or
+ * replacing would be a guess this entry point has no basis for. This entry
+ * point never sees `authoritative`/`changes` (wire-response-only fields with
+ * no analog on a hydrated model, and no caller of it needs either — a daemonless
+ * or partial-refresh read) — a caller needing either folds the wire response
+ * through applyReadResponse instead.
+ */
+export function applyReadModel<M extends ThreadModel>(model: M, fresh: ThreadModel): ThreadModel & ModelExtras<M> {
+  const held = model.history ?? EMPTY_HISTORY;
+  const freshHistory = fresh.history;
+  const signal: ReadDispositionSignal = freshHistory
+    ? {
+        requestGeneration: freshHistory.appliedGeneration,
+        bootGeneration: freshHistory.bootGeneration,
+        epoch: freshHistory.epoch,
+        snapshot: { incarnation: freshHistory.incarnation ?? "", length: freshHistory.length },
+      }
+    : {};
+  const disposition: ReadDisposition = freshHistory === undefined ? "merge" : readDisposition(held, signal);
+  if (disposition === "discard") return publicModel<M>(model);
+  const fragment = turnModelsToFragment(freshHistory?.turns ?? fresh.turns);
+  let turns: TurnModel[];
+  let olderCursor = fresh.olderCursor;
+  if (disposition === "replace") {
+    turns = mergeHistory([], fragment);
+  } else {
+    const window = fragmentRange(fragment.items);
+    turns = held.turns;
+    // Older pages the client holds keep their own cursor.
+    const oldest = earliestPosition(turns);
+    if (oldest && (!window || comparePositions(oldest, window[0]) < 0)) olderCursor = model.olderCursor;
+    turns = mergeHistory(turns, fragment);
+  }
+  const generation = freshHistory?.appliedGeneration ?? 0;
+  const history: HistoryState = {
+    ...readIdentity(signal),
+    appliedGeneration: generation,
+    issuedGeneration: Math.max(held.issuedGeneration, generation),
+    deferredPages: [],
+    turns,
+  };
+  const {
+    turns: _freshTurns,
+    history: _freshHistoryField,
+    overlay: freshOverlay,
+    runningTurnId: freshRunningTurnId,
+    ...fields
+  } = fresh;
+  const { runningTurnId: _previous, ...base } = model;
+  let next = withDisplay(
+    { ...base, ...fields, ...(freshRunningTurnId ? { runningTurnId: freshRunningTurnId } : {}), olderCursor },
+    history,
+    freshOverlay ?? {},
   );
   for (const deferred of held.deferredPages) {
     if (deferred.snapshot?.incarnation === history.incarnation) {
@@ -3535,7 +3641,14 @@ function applyNotificationToThread<M extends ThreadModel>(model: M, n: AnyNotifi
       // are derived, so a minted item would vanish at the next derivation. The
       // hub's own relay-attach warning (cmd/evener-hub/app_rpc.go) still comes
       // as this notification and needs a v6 home before Task 20 deletes it.
-      if (!activeTurnId || model.history) return { ...model, lastFrameAt: now };
+      // bootGeneration "" (EMPTY_HISTORY's own spelling) means no real read
+      // ever stamped one — applyReadModel's caller (a service layer that
+      // hydrates outside this package's own snapshot branch) can mint a
+      // `.history` of its own for merge continuity alone (applyReadModel's
+      // doc comment) without that model ever having gone through a real v6
+      // read, so a genuine bootGeneration is what actually distinguishes the
+      // two here, not `.history`'s mere presence.
+      if (!activeTurnId || model.history?.bootGeneration) return { ...model, lastFrameAt: now };
       const params = n.params;
       const folded = foldWarningParams(params);
       return {

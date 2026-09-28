@@ -11,6 +11,7 @@ import type { ThreadModel } from "./model";
 import {
   applyHistoryReadFailure,
   applyNotification,
+  applyReadModel,
   applyReadResponse,
   hydrateThread,
   invalidateHistory,
@@ -967,5 +968,59 @@ describe("display edges", () => {
     const model = hydrate([turn("t1", 1, [item("t1", 0)])]);
     const next = applyNotification(model, updated([item("", 4)]), NOW);
     expect(shown(next)).toEqual([["t1", [itemKey("t1", 0)]]]);
+  });
+});
+
+// applyReadModel: applyReadResponse for a caller (mobile) whose own service
+// layer hydrates the wire response into a ThreadModel before the merge
+// boundary — every case below hydrates "fresh" directly rather than calling
+// applyReadResponse with a raw response, and asserts the same outcomes the
+// wire-response tests above pin.
+describe("applyReadModel", () => {
+  test("a model with no held history adopts the fresh read wholesale", () => {
+    const { history: _held, ...bare } = hydrate([turn("t0", 1, [item("t0", 0)])]);
+    const fresh = hydrate([turn("t1", 4, [item("t1", 3)])]);
+    const next = applyReadModel(bare, fresh);
+    expect(shown(next)).toEqual([["t1", [itemKey("t1", 3)]]]);
+  });
+
+  test("a same-incarnation read merges by version, keeping held turns the fresh read omits", () => {
+    const held = hydrate([turn("t1", 1, [item("t1", 0)])]);
+    const fresh = hydrate([turn("t2", 3, [item("t2", 2)])], { length: 200 });
+    const next = applyReadModel(held, fresh);
+    expect(shown(next)).toEqual([
+      ["t1", [itemKey("t1", 0)]],
+      ["t2", [itemKey("t2", 2)]],
+    ]);
+  });
+
+  test("a shorter same-incarnation read is discarded", () => {
+    const held = hydrate([turn("t1", 1, [item("t1", 0)])], { length: 200 });
+    const fresh = hydrate([turn("t2", 3, [item("t2", 2)])], { length: 100 });
+    const next = applyReadModel(held, fresh);
+    expect(shown(next)).toEqual(shown(held));
+  });
+
+  test("another incarnation replaces the whole history", () => {
+    const held = hydrate([turn("t1", 1, [item("t1", 0)])], { incarnation: "inc_a" });
+    const fresh = hydrate([turn("t2", 3, [item("t2", 2)])], { incarnation: "inc_b" });
+    const next = applyReadModel(held, fresh);
+    expect(shown(next)).toEqual([["t2", [itemKey("t2", 2)]]]);
+  });
+
+  test("a merge keeps the held older cursor when the earliest held item is older than the fresh window", () => {
+    const paged = mergeOlderItemPage(
+      hydrate([turn("t0", 1), turn("t2", 3, [item("t2", 2)])], { olderCursor: "window" }),
+      { ...page([turn("t1", 2, [item("t1", 1)])]), nextCursor: "older" },
+    );
+    expect(paged.olderCursor).toBe("older");
+    const fresh = hydrate([turn("t2", 4, [item("t2", 2), item("t2", 3)])], { olderCursor: "window" });
+    const next = applyReadModel(paged, fresh);
+    expect(next.olderCursor).toBe("older");
+    expect(shown(next)).toEqual([
+      ["t0", []],
+      ["t1", [itemKey("t1", 1)]],
+      ["t2", [itemKey("t2", 2), itemKey("t2", 3)]],
+    ]);
   });
 });
