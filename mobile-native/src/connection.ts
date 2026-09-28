@@ -243,7 +243,7 @@ export function createHubClient(
 ): AppwireClient {
 	return new AppwireClient({
 		url: connectionTarget(origin),
-		clientInfo: { name: "evener-native", version: "0.1.0" },
+		clientInfo: { name: "evener-native", version: "0.2.0" },
 		socketFactory: (url) =>
 			socketFactory(url, {
 				headers: token ? { Authorization: `Bearer ${token}` } : {},
