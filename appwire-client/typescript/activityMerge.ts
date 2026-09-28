@@ -302,7 +302,11 @@ export function graftContinuationTree(current: ActivityTree, targetID: string, p
 // daemon's activity projection, and a turn container's state lives in its
 // turns. So the update is applied only when it leaves those alone and moves the
 // delegate's lifecycle and timing fields, which is all a running delegate's
-// once-a-second updates change. The same revision fence as a refetch decides
+// once-a-second updates change. The rest of the notification's snapshot is
+// descriptor data fixed at spawn (task, description, models, allowances) or
+// comes from the terminal packet and the last outcome (usage, worktree,
+// warnings, diagnostics, exhaustion), which change only together with
+// packetKind or outcome, so those cases refetch. The same revision fence as a refetch decides
 // which side speaks: an update older than the held delegate only moves its
 // latest activity forward. Returns the same tree object when nothing changed.
 export function applyDelegateUpdate(tree: ActivityTree, info: EvenerDelegateInfo): ActivityTree | null {
@@ -312,16 +316,19 @@ export function applyDelegateUpdate(tree: ActivityTree, info: EvenerDelegateInfo
   const entry = tree.root.entries[index];
   if (entry?.kind !== "delegate") return null;
   const held = entry.delegate;
+  const newer = info.projectionRevision > (held.projectionRevision ?? 0);
+  // An update older than what is held has nothing to say beyond how recently
+  // the delegate was active, whatever state it describes.
   if (
-    isTurnContainer(held) ||
-    isTurnContainer(info) ||
-    held.childSessionId !== info.childSessionId ||
-    (held.terminal === true) !== (info.terminal === true) ||
-    (held.outcome ?? "") !== (info.outcome ?? "") ||
-    (held.packetKind ?? "") !== (info.packetKind ?? "")
+    newer &&
+    (isTurnContainer(held) ||
+      isTurnContainer(info) ||
+      held.childSessionId !== info.childSessionId ||
+      (held.terminal === true) !== (info.terminal === true) ||
+      (held.outcome ?? "") !== (info.outcome ?? "") ||
+      (held.packetKind ?? "") !== (info.packetKind ?? ""))
   )
     return null;
-  const newer = info.projectionRevision > (held.projectionRevision ?? 0);
   const latestActivityAt = maxActivity(held.latestActivityAt, info.latestActivityAt);
   if (!newer && latestActivityAt === held.latestActivityAt) return tree;
   const base: ActivityDelegate = newer

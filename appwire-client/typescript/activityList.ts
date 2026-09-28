@@ -159,7 +159,8 @@ export class ActivityList {
     this.trailing = true;
     void delay(wait).then(() => {
       this.trailing = false;
-      void this.refresh();
+      // A fetch made while this waited may have moved the window.
+      this.requestRefresh();
     });
   }
   // Milliseconds until a whole-tree fetch may start again.

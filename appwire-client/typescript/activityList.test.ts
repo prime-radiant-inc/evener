@@ -582,7 +582,9 @@ test("a burst of updates for a delegate already in the tree applies in place wit
 test("an update older than the held delegate only moves its latest activity forward", async () => {
   vi.useFakeTimers();
   const held = activityTree([delegateEntry("delegate", undefined, 3)], 5);
-  (held.root.entries[0] as ReturnType<typeof delegateEntry>).delegate.status = "running";
+  const heldEntry = held.root.entries[0] as ReturnType<typeof delegateEntry>;
+  heldEntry.delegate.status = "running";
+  heldEntry.delegate.terminal = false;
   const t = timedClient(0, () => held);
   const list = await startedList(t, held);
   await vi.advanceTimersByTimeAsync(ACTIVITY_REFRESH_MIN_INTERVAL_MS);
@@ -688,4 +690,37 @@ test("continuous notifications during slow loads do not refetch back to back", a
   }
   // Loads that finish while notifications keep arriving still reach the screen.
   expect(sawFreshTree).toBe(true);
+});
+
+test("a root answer older than an in-place update does not undo it", async () => {
+  vi.useFakeTimers();
+  const held = activityTree([delegateEntry("delegate")], 5);
+  const t = timedClient(1000, () => held);
+  const list = new ActivityList(t.client, "local:session", "session", held);
+  list.start();
+  // The opening fetch is in flight when the update arrives.
+  await vi.advanceTimersByTimeAsync(500);
+  t.delegateUpdated({ phase: "newer", projectionRevision: 2, latestActivityAt: "2026-01-01T00:00:09Z" });
+  await vi.advanceTimersByTimeAsync(600);
+
+  expect(heldDelegate(list).phase).toBe("newer");
+  expect(heldDelegate(list).projectionRevision).toBe(2);
+});
+
+test("a trailing refresh does not start inside the interval of a fetch made while it waited", async () => {
+  vi.useFakeTimers();
+  const held = activityTree([delegateEntry("delegate")], 5);
+  const t = timedClient(0, () => held);
+  const list = await startedList(t, held);
+  const baseline = t.calls.length;
+
+  t.delegateUpdated({ delegateId: "brand-new", childSessionId: "brand-new-child" });
+  await vi.advanceTimersByTimeAsync(1500);
+  void list.refresh();
+  await vi.advanceTimersByTimeAsync(0);
+  expect(t.calls).toHaveLength(baseline + 1);
+  await vi.advanceTimersByTimeAsync(600);
+  expect(t.calls).toHaveLength(baseline + 1);
+  await vi.advanceTimersByTimeAsync(ACTIVITY_REFRESH_MIN_INTERVAL_MS);
+  expect(t.calls).toHaveLength(baseline + 2);
 });
