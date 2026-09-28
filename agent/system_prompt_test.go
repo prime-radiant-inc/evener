@@ -136,7 +136,7 @@ func promptConfigs() []promptConfig {
 			checkPromptInput(t, "IsSubagent", d.IsSubagent, true)
 			checkPromptInput(t, "NonInteractive", d.NonInteractive, true)
 			checkPromptInput(t, "TurnEndsProcess", d.TurnEndsProcess, true)
-			checkPromptInput(t, "HasTool job_watch", d.HasTool("job_watch"), false)
+			checkPromptInput(t, "HasTool job_watch", d.HasTool("job_watch"), true)
 			checkPromptInput(t, "Role is the implementer plugin body",
 				d.Role == strings.TrimSpace(coordinatorWorkflowAgentForTest(t, "implementer").SystemPrompt), true)
 		}},

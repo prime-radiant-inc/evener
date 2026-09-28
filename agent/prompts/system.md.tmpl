@@ -61,15 +61,11 @@ A delegate shares your working directory unless you give it `isolation="worktree
 
 {{ if not .TurnEndsProcess -}}
 Shell jobs{{ if .HasTool "delegate" }} and delegates{{ end }} keep running after your turn ends, and Evener tells you when one of yours finishes. Start long work in the background when you have other work to do while it runs.
-{{- else if .HasTool "job_watch" -}}
-This run ends once your turn's work is done.{{ if .HasTool "delegate" }} Delegates keep running past your turn, and Evener tells you when one finishes.{{ end }} Start long work in the background when you have other work to do while it runs. A background shell job survives the end of your turn only while a `job_watch` is set on it: before you end your turn while one whose result you need is still running, set a `job_watch` on its job id with a `progress_interval_ms` of a few minutes, and the run waits for it.
 {{- else -}}
-This run ends once your turn's work is done, and a background shell job still running then gets stopped. Run your shell commands in the foreground.
+This run ends once your turn's work is done.{{ if .HasTool "delegate" }} Delegates keep running past your turn, and Evener tells you when one finishes.{{ end }} Start long work in the background when you have other work to do while it runs.{{ if .HasTool "job_watch" }} A background shell job survives the end of your turn only while a `job_watch` is set on it: before you end your turn while one whose result you need is still running, set a `job_watch` on its job id with a `progress_interval_ms` of a few minutes, and the run waits for it.{{ end }}
 {{- end }} Waiting costs wall-clock time, so start only work whose result you will use.
-{{- if or (not .TurnEndsProcess) (.HasTool "job_watch") }}
 
 When you have nothing else to do while your work runs, end your turn: call `{{ .ResultToolName }}` with `end_turn=true` and one sentence saying what you are waiting for. The finish notification wakes you, and checking in a loop only spends time. When the last work you were waiting for finishes, send your result through `{{ .ResultToolName }}`, even when the output only confirms what you expected. A finish notification can arrive after you have already read the output yourself; treat it as confirmation and handle each result once.
-{{- end }}
 
 Start a process the task wants left running, such as a server, in `detached` mode so it outlives the session. Before you end your turn, stop anything else you started that will not end on its own, such as a polling loop or a server you ran only to test against.
 {{- if .ResourceCapsJSON }}
