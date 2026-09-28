@@ -28,7 +28,7 @@ export function useBoardSeen(hubId: string): BoardSeen {
 	const hub = hubSeenMarks(hubId);
 	const markersRevision = useSyncExternalStore(markers.subscribe, markers.getRevision);
 	const hubRevision = useSyncExternalStore(hub.subscribe, hub.getRevision);
-	return useMemo(() => new BoardSeen(markers, hub), [markers, hub, markersRevision, hubRevision]);
+	return useMemo(() => boardSeen(hubId), [hubId, markersRevision, hubRevision]);
 }
 
 export function foldedSections(hubId: string): FoldedSections {
