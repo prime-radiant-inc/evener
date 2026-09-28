@@ -26,9 +26,7 @@ export const STALE_AFTER_MS = 2 * ACTIVITY_POLL_MS;
 const CODE_METHOD_NOT_FOUND = -32601;
 
 /** Whether a read taken `msSinceRead` milliseconds ago (null: never landed)
- * is still trustworthy. The row's why line, its meter and the Working order
- * all gate through this one check, so they can't disagree about whether a
- * read is too old to use. */
+ * is still trustworthy. */
 export function isFreshRead(msSinceRead: number | null): boolean {
 	return msSinceRead !== null && msSinceRead < STALE_AFTER_MS;
 }
@@ -102,10 +100,6 @@ export class ActivityPoll {
 			if (error instanceof WireError && error.code === CODE_METHOD_NOT_FOUND) {
 				this.unsupported = true;
 				this.stop();
-				// A caller that keys off the revision to know when to stop
-				// asking (a force-rerender tick that should give up once
-				// .supported turns false) needs a notification here too:
-				// nothing else would ever tell it the poll gave up for good.
 				this.notify();
 			}
 			return;
@@ -122,6 +116,8 @@ export class ActivityPoll {
 		this.notify();
 	}
 
+	/** Every change to what this instance reports (a landed read, or
+	 * `supported` turning false) bumps the revision and tells subscribers. */
 	private notify(): void {
 		this.revision++;
 		for (const listener of [...this.listeners]) listener();

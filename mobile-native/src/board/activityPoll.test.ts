@@ -2,7 +2,7 @@ import type { ActivityReadParams, ActivityReadResponse } from "@evener/appwire-c
 import { WireError } from "@evener/appwire-client";
 import { FakeClient, gateSettlements } from "@evener/appwire-client/testing/fakeClient";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { ACTIVITY_POLL_MS, ActivityPoll, isFreshRead, STALE_AFTER_MS } from "./activityPoll";
+import { ACTIVITY_POLL_MS, ActivityPoll, isFreshRead } from "./activityPoll";
 
 const minutes = [0, 0, 1, 4, 9, 2, 0];
 const activityA = { ref: "local:a", minutes, runningSubagents: 0 };
@@ -133,10 +133,6 @@ describe("ActivityPoll (S5)", () => {
 		poll.subscribe(listener);
 		poll.start();
 		await vi.advanceTimersByTimeAsync(0);
-		// A caller relying on the revision to know when to stop asking (a
-		// force-rerender tick that should give up once .supported turns
-		// false, say) needs a notification here too, not only on a landed
-		// read: nothing else would ever tell it the poll gave up for good.
 		expect(listener).toHaveBeenCalledTimes(1);
 		expect(poll.getRevision()).toBe(1);
 	});
@@ -183,15 +179,11 @@ describe("ActivityPoll (S5)", () => {
 		expect(poll.msSinceRead()).toBe(5_000);
 	});
 
-	it("STALE_AFTER_MS is two poll intervals", () => {
-		expect(STALE_AFTER_MS).toBe(2 * ACTIVITY_POLL_MS);
-	});
-
 	it("isFreshRead trusts a read under two poll intervals old, and never one that's never landed", () => {
 		expect(isFreshRead(null)).toBe(false);
 		expect(isFreshRead(0)).toBe(true);
-		expect(isFreshRead(STALE_AFTER_MS - 1)).toBe(true);
-		expect(isFreshRead(STALE_AFTER_MS)).toBe(false);
-		expect(isFreshRead(STALE_AFTER_MS + 1)).toBe(false);
+		expect(isFreshRead(2 * ACTIVITY_POLL_MS - 1)).toBe(true);
+		expect(isFreshRead(2 * ACTIVITY_POLL_MS)).toBe(false);
+		expect(isFreshRead(2 * ACTIVITY_POLL_MS + 1)).toBe(false);
 	});
 });
