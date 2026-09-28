@@ -139,7 +139,12 @@ export class NotesController {
 
 	edit(text: string): void {
 		this.cancelTimer();
-		const clipped = text.slice(0, NOTE_LIMIT);
+		// By code point, not UTF-16 unit: the daemon clamps by runes
+		// (agent/session_notes.go:29), and text.slice(0, NOTE_LIMIT) counts
+		// UTF-16 units, which can split an astral character's surrogate pair
+		// or cut well short of 1,000 runes for one made entirely of them
+		// (RoboRev #2769 round 2).
+		const clipped = Array.from(text).slice(0, NOTE_LIMIT).join("");
 		// Typed back to exactly the hub's current text: nothing to keep or send,
 		// and going clean lets sync() resume following the hub. Otherwise a
 		// later hub update would sit unseen behind this stale "editing" text,
@@ -225,6 +230,11 @@ export class NotesController {
 		const text = this.state.text;
 		const instanceId = this.options.instanceId();
 		if (!instanceId) {
+			// "failed" always means a draft is on disk backing it, or a crash
+			// before the next flush would silently forget it on relaunch - even
+			// when, as here, edit() already went clean and back to "failed" in
+			// between (RoboRev #2769 round 2).
+			this.storeDraft(this.state.text);
 			this.publish({ ...this.state, phase: "failed" });
 			return { saved: false, woke: false };
 		}
@@ -248,6 +258,7 @@ export class NotesController {
 			// (agent/session_notes_rpc.go).
 			return { saved: true, woke: !working && response.receipt.projectionState === "pending" };
 		} catch {
+			this.storeDraft(this.state.text);
 			this.publish({ ...this.state, phase: "failed" });
 			return { saved: false, woke: false };
 		}

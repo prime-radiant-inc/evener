@@ -3,11 +3,11 @@
 // Only native edges are mocked.
 import type { NotesHumanSetResponse, SessionURL, ThreadCapabilities, ThreadModel } from "@evener/appwire-client";
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
-import { ActionSheetIOS } from "react-native";
+import { ActionSheetIOS, Platform } from "react-native";
 import { act, type ReactTestInstance, type ReactTestRenderer } from "react-test-renderer";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { paletteFor } from "../design/tokens";
-import { pressable, render, renderedText, textOf } from "../renderNative.testkit";
+import { alertRequests, pressable, render, renderedText, textOf } from "../renderNative.testkit";
 import type { Routes } from "../screens";
 import { sheetKey } from "../sheet/sheetHosts";
 import type { SyncStringStorage } from "../syncStringStorage";
@@ -311,6 +311,22 @@ describe("links", () => {
 		expect(requests.filter((request) => request.method === "urls/remove").map((request) => request.params.id)).toEqual(["u1"]);
 		expect(renderedText(tree)).toContain("Link removed. Only the agent can add links.");
 		expect(navigation.goBack).not.toHaveBeenCalled();
+	});
+
+	it("offers the same choices through Android's alert, since ActionSheetIOS doesn't exist there (RoboRev #2769 round 2)", () => {
+		const os = Platform.OS;
+		(Platform as { OS: string }).OS = "android";
+		try {
+			provide(session({ sessionUrls: [web] }));
+			const tree = sheet();
+			act(() => pressable(tree, "The PR, https://example.com/pr/1")?.props.onLongPress());
+			const request = alertRequests.at(-1);
+			expect(request?.title).toBe("The PR");
+			expect(request?.buttons?.map((button) => button.text)).toEqual(["Open", "Copy link", "Remove link"]);
+			expect(request?.options).toEqual({ cancelable: true });
+		} finally {
+			(Platform as { OS: string }).OS = os;
+		}
 	});
 
 	it("says so in the sheet when a link couldn't be removed", async () => {

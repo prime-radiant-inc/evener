@@ -9,7 +9,7 @@ import * as Clipboard from "expo-clipboard";
 import { SymbolView } from "expo-symbols";
 import * as WebBrowser from "expo-web-browser";
 import { type ReactNode, useEffect, useRef, useState, useSyncExternalStore } from "react";
-import { ActionSheetIOS, AppState, Pressable, ScrollView, Text, TextInput, View } from "react-native";
+import { ActionSheetIOS, Alert, AppState, Platform, Pressable, ScrollView, Text, TextInput, View } from "react-native";
 import { typeRoles } from "../design/tokens";
 import type { Routes } from "../screens";
 import { Sheet, useSheet } from "../sheet/Sheet";
@@ -52,8 +52,12 @@ export function NotesSheet({ route }: NativeStackScreenProps<Routes, "NotesSheet
 	const host = useSheetHost(notesHosts, sheetKey(hubId, ref), sheet);
 	// Keep the last real host once the screen's gone: its own release can
 	// land before this sheet's unmount does (a real goBack()'s ordering), and
-	// onClosed still needs something to flush through.
-	if (host) live.current = host;
+	// onClosed still needs something to flush through. An effect, not a
+	// render-time assignment, so a re-render React discards without
+	// committing never overwrites it with a host that was never actually shown.
+	useEffect(() => {
+		if (host) live.current = host;
+	}, [host]);
 	useEffect(() => {
 		const subscription = AppState.addEventListener("change", (state) => {
 			if (state === "background") void live.current?.notes.flush();
@@ -257,14 +261,25 @@ function LinkRow({
 			{ label: "Copy link", run: () => void Clipboard.setStringAsync(link.url) },
 			...(writable ? [{ label: "Remove link", run: remove }] : []),
 		];
-		ActionSheetIOS.showActionSheetWithOptions(
-			{
-				options: [...items.map((item) => item.label), "Cancel"],
-				cancelButtonIndex: items.length,
-				// Remove link, when offered, is the last item before Cancel.
-				...(writable ? { destructiveButtonIndex: items.length - 1 } : {}),
-			},
-			(index) => items[index]?.run(),
+		if (Platform.OS === "ios") {
+			ActionSheetIOS.showActionSheetWithOptions(
+				{
+					options: [...items.map((item) => item.label), "Cancel"],
+					cancelButtonIndex: items.length,
+					// Remove link, when offered, is the last item before Cancel.
+					...(writable ? { destructiveButtonIndex: items.length - 1 } : {}),
+				},
+				(index) => items[index]?.run(),
+			);
+			return;
+		}
+		// Android's alert dismisses by a tap outside rather than spending one
+		// of its buttons on Cancel (TimelineItem.tsx's showMenu).
+		Alert.alert(
+			label || link.url,
+			undefined,
+			items.map((item) => ({ text: item.label, onPress: item.run })),
+			{ cancelable: true },
 		);
 	};
 	return (

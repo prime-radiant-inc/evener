@@ -186,6 +186,13 @@ describe("saving your note (spec 8.8; Review Focus 5)", () => {
 		expect(notes.getSnapshot().text).toHaveLength(NOTE_LIMIT);
 	});
 
+	it("clips by whole code points, not UTF-16 units, so it keeps the hub's full 1,000-rune allowance for astral characters (RoboRev #2769 round 2)", () => {
+		const notes = harness().make();
+		const emoji = "😀"; // one code point, two UTF-16 units - the daemon clamps by runes, not UTF-16 units.
+		notes.edit(emoji.repeat(NOTE_LIMIT + 5));
+		expect(notes.getSnapshot().text).toBe(emoji.repeat(NOTE_LIMIT));
+	});
+
 	it("follows the hub's note unless you have unsaved text", () => {
 		const hub = harness();
 		const notes = hub.make();
@@ -212,6 +219,22 @@ describe("saving your note (spec 8.8; Review Focus 5)", () => {
 		hub.setSaved("C");
 		notes.sync();
 		expect(notes.getSnapshot()).toEqual({ text: "C", phase: "clean" });
+	});
+
+	it("still keeps a draft when a save fails after you'd already typed back to the hub's text mid-flight (RoboRev #2769 round 2)", async () => {
+		const hub = harness({ fail: new Error("offline") });
+		hub.setSaved("A");
+		const notes = hub.make();
+		notes.edit("B");
+		const flushing = notes.flush();
+		// Reverting to the hub's current text while "B" is still in flight
+		// goes clean and forgets the draft (the rule above) - but the failing
+		// save for "B" hasn't settled yet, and "failed" must still mean a
+		// draft is on disk, or a crash before the next flush would forget it.
+		notes.edit("A");
+		await flushing;
+		expect(notes.getSnapshot()).toEqual({ text: "A", phase: "failed" });
+		expect(hub.storage.values.get("evener.native.note-draft.hub-1")).toBe(JSON.stringify({ "local:s1": "A" }));
 	});
 
 	it("chains a second save for newer text typed while the first was in flight, rather than reporting it saved when it isn't (RoboRev #2769)", async () => {
