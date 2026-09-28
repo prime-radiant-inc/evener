@@ -68,7 +68,7 @@ Everything below was read on main at `274afd6ff`.
 - **Never add a `FeatureSet` key.** The TS `initialize` decoder refuses unknown feature keys.
 - **Casing.** `appwire` JSON is camelCase (`stopSubagent`, `delegateId`); `agent/schema` and `agent/events` JSON is snake_case (`approval_decision`, `sandbox_net`). The tagliatelle lint enforces both (`.golangci.yml`). A camelCase `raw` payload built in `internal/apptranscript` carries `//nolint:tagliatelle` per field, as `pluginLoadedRaw` does.
 - **Transcript schema.** `schema.Turn` fields stay in alphabetical JSON-key order (its doc comment). A new `NoticeInfo` payload is added to `NoticeInfo.Validate`'s map, or `recordNotice` refuses it (found on the dry run: the refusal is a warning and nothing else).
-- **Generated files.** After any `appwire` type or catalog change, doc comments included: `make generate`, then `go test ./internal/appwirets -run '^TestGeneratedFileCurrent$' -count=1`. Commit `appwire-client/typescript/types.gen.ts` and `docs/appwire-protocol.md`.
+- **Generated files.** After any `appwire` type or catalog change, doc comments included: `make generate`, then `go test ./internal/appwirets -run '^TestGeneratedFileCurrent$' -count=1`. Commit `appwire-client/typescript/types.gen.ts`, and `docs/appwire-protocol.md` when it changes. The protocol doc lists methods, so PRs 30 and 31 change it and PRs 32 and 33 do not (checked on the dry run: `make generate` leaves it unchanged there).
 - **The TUI rule.** No PR changes `internal/appprojector`. PR 33 changes what the transcript projection emits (a `queued` user message, a new system-message kind), so it adds a `cmd/evener-tui` case for each. No PR adds a notification.
 - **A new hub method** gets a catalog row (`appwire/protocol.go`), a decision in `TestHostAdminAllowListMatchesCatalog` (`cmd/evener-hub/app_host_admin_test.go`), and an entry in `TestHubRPCRegistersExpectedHandlerSet` (`cmd/evener-hub/app_rpc_test.go`). A new daemon method gets a row in `daemonRetirementAccessKinds` and in `TestRetirementAdmissionCatalogCoverage`.
 - **A new capability** is decided in every projection `TestCapabilityProjectionsMatchTheDaemonOracle` walks, wired in `hubtest.WireCapabilitySeams`, and named in `maskRemoteThreadCapabilities` and `TestRemoteHubCapabilitiesMatchForwardedMethods`.
@@ -92,7 +92,7 @@ Decisions the spec and the server plan leave open, with the reason for each.
    - The server plan's sketch named a non-cascading counterpart of `StopSubtreeAndDrive`. Measured, a target-only durable stop breaks the controller's whole-subtree invariant: the target's children would be refused every lease while it was pending (What was measured).
    - Cancelling the run is the existing user stop (`cancelRequested`), and every run's context is its own, so the children are untouched by construction.
    - Durability comes from the run's own settlement, which records `cancelled` like any run end. A daemon that crashes mid-stop resumes the run as interrupted, which is the same end.
-2. **Stopping is idempotent, so the method takes no `clientMutationId`.** A second stop finds the run ended or ending and answers `notRunning`. A run already past its final pre-settlement check (`settlementClaimed`) also answers `notRunning`: it is finishing on its own.
+2. **Stopping is idempotent, so the method takes no `clientMutationId`.** A second stop finds the run ended or ending and answers `notRunning`, including one that arrives while the first stop's cancellation is still unwinding the run (`cancelRequested` already set; found by RoboRev on the plan PR). A run already past its final pre-settlement check (`settlementClaimed`) also answers `notRunning`: it is finishing on its own.
 3. **The method targets the root.** Params are `{threadId, ref, delegateId}` with the root's ref, as every turn mutation's are. The phone has the root ref and the delegate id from the coordinator's tree. A subagent's own ref is refused by `requireRootMutationTarget`.
 4. **Any subagent in the tree can be stopped by the user.** `job_stop`'s authorization (a parent stops only its own children) governs the model, not the human who owns the whole tree.
 5. **The coordinator reads "Stopped by the user."** A cancelled run with nothing to report gets that sentence as its packet message instead of "context canceled", so the coordinator knows a person ended it rather than the run failing. Outcome and reason stay `cancelled`, which the tree and the tallies already count as done.
@@ -274,6 +274,17 @@ func TestUserStopRefusesARunThatIsNotRunning(t *testing.T) {
 	settling := &subagent{id: "settling", running: true, settlementClaimed: true}
 	if err := settling.requestUserStop(); !errors.Is(err, errSubagentSettling) {
 		t.Fatalf("settling requestUserStop = %v, want errSubagentSettling", err)
+	}
+	// A second stop while the first is still unwinding the run finds it
+	// already stopping, so a retry answers notRunning rather than stopping.
+	_, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	stopping := &subagent{id: "stopping", running: true, cancel: cancel}
+	if err := stopping.requestUserStop(); err != nil {
+		t.Fatalf("first requestUserStop = %v", err)
+	}
+	if err := stopping.requestUserStop(); !errors.Is(err, errSubagentSettling) {
+		t.Fatalf("repeated requestUserStop = %v, want errSubagentSettling", err)
 	}
 }
 
@@ -474,15 +485,16 @@ func (s *Session) subagentForChild(childSessionID string) *subagent {
 
 // requestUserStop cancels the subagent's current run and marks it stopped at
 // the user's request, so settlement maps the cancellation to a cancelled
-// outcome. It refuses a subagent that is not running, and one whose run has
-// passed its last pre-settlement check.
+// outcome. It refuses a subagent that is not running, one whose run has
+// passed its last pre-settlement check, and one already stopping, so a
+// repeated stop answers notRunning.
 func (a *subagent) requestUserStop() error {
 	a.mu.Lock()
 	if !a.running {
 		a.mu.Unlock()
 		return errSubagentNotRunning
 	}
-	if a.settlementClaimed {
+	if a.settlementClaimed || a.cancelRequested {
 		a.mu.Unlock()
 		return errSubagentSettling
 	}
@@ -1547,6 +1559,8 @@ diff --git a/cmd/evener-hub/internal/appsource/remote_hub_refs.go b/cmd/evener-h
  }
  
 ```
+
+The unprobed list-row fallback advertises the stop the way it advertises Interrupt: every daemon from PR 30 on wires it, and a row's probe, or the thread read the phone acts on, replaces the fallback with the daemon's own answer. A daemon from before PR 30 answers the stop with MethodNotFound, which the phone treats as the fallback.
 
 A remote root never advertises the stop yet: `remoteForwardedThreadCapabilities` still names Shutdown alone, and the stop turns on with the other thread actions when the host capability probe lands.
 
