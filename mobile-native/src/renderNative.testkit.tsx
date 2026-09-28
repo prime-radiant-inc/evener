@@ -176,6 +176,21 @@ export function gestureHandlerModuleMock() {
 	};
 }
 
+/** react-native-reanimated for vitest: Animated.ScrollView is a host
+ * "ScrollView" carrying every prop (the Board's scroller, found and driven
+ * as a plain one is), Animated.View a host element, and LinearTransition a
+ * builder chain that returns itself, so a test can compare a view's `layout`
+ * with the transition the app built. */
+export function reanimatedModuleMock() {
+	const transition: Record<string, () => unknown> = {};
+	for (const step of ["springify", "duration", "dampingRatio"]) transition[step] = () => transition;
+	return {
+		__esModule: true,
+		default: { ScrollView: "ScrollView", View: "Animated.View" },
+		LinearTransition: transition,
+	};
+}
+
 /** Every scroll a mounted FlatList was asked for, oldest first: the stub's
  * ref records scrollToIndex, scrollToOffset and scrollToEnd (directly or
  * through getScrollResponder) instead of moving anything. A test clears it

@@ -5,8 +5,9 @@
 // position in it, never move.
 import { type SFSymbol, SymbolView } from "expo-symbols";
 import { type ReactNode, useCallback, useEffect, useRef, useState } from "react";
-import { AccessibilityInfo, Animated, Platform, Pressable, ScrollView, Text, View } from "react-native";
+import { Animated, Platform, Pressable, ScrollView, Text, View } from "react-native";
 import { UPDATE_NEEDED, UPDATE_NEEDED_HINT } from "../board/connectionStatus";
+import { useReduceMotion } from "../reduceMotion";
 import { useColors, useTextScale } from "../ui";
 import type { ChipKind, ContextChip } from "./sessionState";
 
@@ -176,22 +177,6 @@ function useSlide(target: number): Animated.Value {
 		else Animated.timing(value, { toValue: target, duration: HIDE_DURATION_MS, useNativeDriver: true }).start();
 	}, [target, reduceMotion, value]);
 	return value;
-}
-
-function useReduceMotion(): boolean {
-	const [reduceMotion, setReduceMotion] = useState(false);
-	useEffect(() => {
-		let live = true;
-		void AccessibilityInfo.isReduceMotionEnabled().then((enabled) => {
-			if (live) setReduceMotion(enabled);
-		});
-		const subscription = AccessibilityInfo.addEventListener("reduceMotionChanged", setReduceMotion);
-		return () => {
-			live = false;
-			subscription.remove();
-		};
-	}, []);
-	return reduceMotion;
 }
 
 export interface HeaderHiding {

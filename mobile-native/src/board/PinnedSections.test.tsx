@@ -1,17 +1,13 @@
 // A pinned category's section (spec 7.1) mounted with only its native edges
 // mocked; the fold memory is the real FoldedSections over an in-memory
 // kv-store.
-import type { NavigationPinSectionDescriptor, NavigationSessionSummary } from "@evener/appwire-client";
+import type { NavigationPinSectionDescriptor } from "@evener/appwire-client";
 import type { ReactTestInstance, ReactTestRenderer } from "react-test-renderer";
 import { act } from "react-test-renderer";
 import { expect, it, vi } from "vitest";
 import { paletteFor } from "../design/tokens";
 import { render } from "../renderNative.testkit";
-import { boardState } from "./attention";
-import { BoardRow } from "./BoardRow";
-import type { RowContext } from "./BoardRows";
-import { PinnedSection, useCategoryFolds } from "./PinnedSections";
-import { StateMark } from "./StateMark";
+import { PinnedEmptyHint, PinnedSection, useCategoryFolds } from "./PinnedSections";
 
 const harness = vi.hoisted(() => ({ kv: new Map<string, string>() }));
 
@@ -19,11 +15,6 @@ vi.mock("react-native", async () => ({
 	...(await import("../renderNative.testkit")).nativeModuleMock(),
 }));
 vi.mock("expo-symbols", () => ({ SymbolView: "SymbolView" }));
-vi.mock("react-native-gesture-handler/ReanimatedSwipeable", async () =>
-	(await import("../renderNative.testkit")).gestureHandlerModuleMock(),
-);
-// Each row's long-press menu lives beside the row menu sheet, a route.
-vi.mock("@react-navigation/native", () => ({ useNavigation: () => ({}), usePreventRemove: () => {} }));
 vi.mock("expo-sqlite/kv-store", () => ({
 	Storage: {
 		getItemSync: (key: string) => harness.kv.get(key) ?? null,
@@ -33,23 +24,7 @@ vi.mock("expo-sqlite/kv-store", () => ({
 }));
 
 const palette = paletteFor("light");
-const NOW = Date.UTC(2026, 8, 26, 12, 0);
-const session = (ref: string, over: Partial<NavigationSessionSummary> = {}): NavigationSessionSummary => ({
-	ref,
-	host_id: "local",
-	session_id: ref,
-	title: ref,
-	project: "evener",
-	state: "idle",
-	kind: "session",
-	live: true,
-	children: [],
-	updated_at: new Date(NOW - 5 * 60_000).toISOString(),
-	...over,
-});
 const release: NavigationPinSectionDescriptor = { id: "release", name: "Release", count: 2 };
-const building = session("local:build", { title: "Build docs", state: "active" });
-const shipped = session("local:ship", { title: "Ship it" });
 
 let hubCount = 0;
 const hubId = () => `pinned-hub-${++hubCount}`;
@@ -57,32 +32,15 @@ const hubId = () => `pinned-hub-${++hubCount}`;
 interface Props {
 	hub: string;
 	section?: NavigationPinSectionDescriptor;
-	page?: { loaded: boolean; rows: NavigationSessionSummary[] };
 	onMenu?: (() => void) | null;
 	changing?: boolean;
-	onOpen?: (row: NavigationSessionSummary) => void;
 }
 /** One category as the Board draws it, its fold kept by useCategoryFolds. */
-function Category({ hub, section = release, page, onMenu = null, changing = false, onOpen = () => {} }: Props) {
+function Category({ hub, section = release, onMenu = null, changing = false }: Props) {
 	const folds = useCategoryFolds(hub);
-	const context: RowContext = {
-		connected: true,
-		usual: { project: "evener", host: "local" },
-		hostLabel: (id) => id,
-		now: NOW,
-		onOpen,
-		draftRefs: new Set(),
-		activityOf: () => undefined,
-		msSinceRead: null,
-		swipes: () => ({ trailing: [], dimmed: false }),
-		menu: () => ({ actions: [], onOpenSession: () => {}, onAction: () => {}, onOpenSheet: () => {} }),
-	};
 	return (
 		<PinnedSection
 			section={section}
-			page={page}
-			classify={(row) => ({ row, state: boardState(row, false, true) })}
-			context={context}
 			folded={folds.isFolded(section.id)}
 			onToggle={() => folds.setFolded(section.id, !folds.isFolded(section.id))}
 			onMenu={onMenu}
@@ -90,14 +48,12 @@ function Category({ hub, section = release, page, onMenu = null, changing = fals
 		/>
 	);
 }
-const loaded = (rows: NavigationSessionSummary[]) => ({ loaded: true, rows });
 
 const header = (tree: ReactTestRenderer) => tree.root.find((node) => node.props.testID === "pin-header");
 const menuButton = (tree: ReactTestRenderer) =>
 	tree.root.findAll(
 		(node) => node.type === ("Pressable" as never) && node.props.accessibilityLabel === "Release, category menu",
 	);
-const rows = (tree: ReactTestRenderer) => tree.root.findAllByType(BoardRow);
 const textsOf = (node: ReactTestInstance) =>
 	node
 		.findAll((child) => child.type === ("Text" as never))
@@ -111,7 +67,7 @@ const flatten = (style: unknown): Style =>
 
 it("draws the header as a band header: pin, the name in capitals, the hub's count and a fold chevron", () => {
 	// The count is the catalog's, the hub's number, whatever has loaded.
-	const tree = render(<Category hub={hubId()} page={loaded([building])} />);
+	const tree = render(<Category hub={hubId()} />);
 	const press = header(tree);
 	expect(press.type).toBe("Pressable");
 	expect(press.props.accessibilityRole).toBe("button");
@@ -146,7 +102,7 @@ it("draws the header as a band header: pin, the name in capitals, the hub's coun
 
 it("shows ⋯ as its own 44pt target when a change can go out", () => {
 	const onMenu = vi.fn();
-	const tree = render(<Category hub={hubId()} page={loaded([])} onMenu={onMenu} />);
+	const tree = render(<Category hub={hubId()} onMenu={onMenu} />);
 	const [menu] = menuButton(tree);
 	expect(menu.props.accessibilityRole).toBe("button");
 	const style = flatten(menu.props.style);
@@ -161,53 +117,29 @@ it("shows ⋯ as its own 44pt target when a change can go out", () => {
 
 it("starts unfolded, folds on a tap, and keeps the fold across a remount", () => {
 	const hub = hubId();
-	const tree = render(<Category hub={hub} page={loaded([building, shipped])} />);
-	expect(rows(tree)).toHaveLength(2);
+	const tree = render(<Category hub={hub} />);
+	expect(header(tree).props.accessibilityState).toEqual({ expanded: true });
 	act(() => header(tree).props.onPress());
-	expect(rows(tree)).toHaveLength(0);
 	expect(header(tree).props.accessibilityState).toEqual({ expanded: false });
 	expect(JSON.parse(harness.kv.get(`evener.native.board-sections.${hub}`) ?? "null")).toEqual({ "pin:release": true });
 	act(() => tree.unmount());
-	const again = render(<Category hub={hub} page={loaded([building, shipped])} />);
-	expect(rows(again)).toHaveLength(0);
+	const again = render(<Category hub={hub} />);
+	expect(header(again).props.accessibilityState).toEqual({ expanded: false });
 	act(() => header(again).props.onPress());
-	expect(rows(again)).toHaveLength(2);
+	expect(header(again).props.accessibilityState).toEqual({ expanded: true });
 });
 
-it("lists its sessions as quiet one-line rows with still marks, even a working one, and opens them", () => {
-	const onOpen = vi.fn();
-	const tree = render(<Category hub={hubId()} page={loaded([building, shipped])} onOpen={onOpen} />);
-	expect(rows(tree).map((row) => [row.props.variant, row.props.moving])).toEqual([
-		["quiet", false],
-		["quiet", false],
-	]);
-	expect(tree.root.findAllByType(StateMark).map((mark) => mark.props.moving)).toEqual([false, false]);
-	expect(rows(tree)[0].props.item.state).toBe("working");
-	act(() => rows(tree)[1].findByType("Pressable" as never).props.onPress());
-	expect(onOpen).toHaveBeenCalledWith(shipped);
-});
-
-it("says how to pin to an empty category only once its page has loaded", () => {
-	const hub = hubId();
-	const empty = { ...release, count: 0 };
-	const tree = render(<Category hub={hub} section={empty} />);
-	expect(textsOf(tree.root)).not.toContain(HINT);
-	expect(rows(tree)).toHaveLength(0);
-	act(() => tree.update(<Category hub={hub} section={empty} page={{ loaded: false, rows: [] }} />));
-	expect(textsOf(tree.root)).not.toContain(HINT);
-	act(() => tree.update(<Category hub={hub} section={empty} page={loaded([])} />));
-	const hint = tree.root.find((node) => node.type === ("Text" as never) && node.props.children === HINT);
+it("says how to pin to an empty category in the Board's secondary text", () => {
+	const hint = render(<PinnedEmptyHint />).root.find((node) => node.type === ("Text" as never));
+	expect(hint.props.children).toBe(HINT);
 	expect(flatten(hint.props.style)).toMatchObject({ fontSize: 15, color: palette.inkMid, marginHorizontal: 16 });
-	// Folded, it says nothing.
-	act(() => header(tree).props.onPress());
-	expect(textsOf(tree.root)).not.toContain(HINT);
 });
 
 it("dims while a change to it is on its way", () => {
 	const hub = hubId();
-	const tree = render(<Category hub={hub} page={loaded([shipped])} />);
+	const tree = render(<Category hub={hub} />);
 	const section = () => tree.root.find((node) => node.props.testID === "pin-section");
 	expect(flatten(section().props.style).opacity ?? 1).toBe(1);
-	act(() => tree.update(<Category hub={hub} page={loaded([shipped])} changing />));
+	act(() => tree.update(<Category hub={hub} changing />));
 	expect(flatten(section().props.style).opacity).toBe(0.5);
 });
