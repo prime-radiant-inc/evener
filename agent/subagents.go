@@ -100,7 +100,7 @@ type subagent struct {
 	runStructuredCaptured bool                      // runStructured was captured, including an authoritative nil result
 	nudgeEnabled          bool                      // true for default subagents that should be nudged to communicate
 	cancel                context.CancelFunc        // cancels the current run's context
-	cancelRequested       bool                      // set by parent stop so finalize maps a context.Canceled run to cancelled
+	cancelRequested       bool                      // set when the user stops this run (requestUserStop), so finalize maps a context.Canceled run to cancelled
 	settlementClaimed     bool                      // cancellation admission closes after the run's final pre-settlement check
 	agentType             string                    // plugin agent type name; empty for default subagents
 	createdAt             time.Time                 // set once at spawn; never reset on resume
@@ -1690,20 +1690,10 @@ func (s *Session) cancelAgent(agentID string) (any, error) {
 		return "", fmt.Errorf("unknown agent_id: %s", agentID)
 	}
 	sub.mu.Lock()
-	if !sub.running {
-		sub.mu.Unlock()
-		return "", fmt.Errorf("agent %s is not running", agentID)
-	}
-	if sub.settlementClaimed {
-		sub.mu.Unlock()
-		return "", fmt.Errorf("agent %s is completing its current run", agentID)
-	}
-	sub.cancelRequested = true
-	cancel := sub.cancel
 	done := sub.done
 	sub.mu.Unlock()
-	if cancel != nil {
-		cancel()
+	if err := sub.requestUserStop(); err != nil {
+		return "", fmt.Errorf("agent %s is %w", agentID, err)
 	}
 	select {
 	case <-done:
@@ -2139,6 +2129,7 @@ func (a *subagent) stableDelegateFinish(result string, runErr error) delegateFin
 	endedAt := a.sess.sclock().Now()
 	a.mu.Lock()
 	startedAt := a.startedAt
+	stoppedByUser := a.cancelRequested
 	var descriptor delegatestore.Descriptor
 	if a.stableDescriptor != nil {
 		descriptor = cloneDelegateStartDescriptor(*a.stableDescriptor)
@@ -2157,6 +2148,7 @@ func (a *subagent) stableDelegateFinish(result string, runErr error) delegateFin
 		endedAt:                 endedAt,
 		latestActivityAt:        endedAt,
 		usage:                   cumulativeUsageSnapshot(a.sess.CumulativeUsageSnapshot()),
+		stoppedByUser:           stoppedByUser,
 	}
 	reporter := a.sess
 	if controller := a.sess.delegateController; controller != nil {
@@ -2204,6 +2196,9 @@ type delegateTerminalRunInputs struct {
 	warnings                []string
 	worktree                *delegateWorktreeReport
 	scratchPath             string
+	// stoppedByUser: the user stopped this run (requestUserStop), so a
+	// cancelled run with nothing to report tells its coordinator so.
+	stoppedByUser bool
 }
 
 type delegateTerminalPacketMetadata struct {
@@ -2282,6 +2277,9 @@ func stableDelegateFinishFromRun(inputs delegateTerminalRunInputs) delegateFinis
 	} else if errors.Is(inputs.runErr, context.Canceled) {
 		finish.outcome = delegatestore.OutcomeCancelled
 		finish.reason = "cancelled"
+		if inputs.stoppedByUser && strings.TrimSpace(inputs.result) == "" {
+			packet.Message, _ = json.Marshal(delegateUserStopMessage)
+		}
 	}
 	metadata.Outcome = finish.outcome
 	metadata.Reason = finish.reason
