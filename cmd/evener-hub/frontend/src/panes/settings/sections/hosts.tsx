@@ -1,5 +1,13 @@
 import { friendlyErrorMessage, type HostEntry, type HostRow, hostFieldError } from "@evener/appwire-client";
 import { useEffect, useState } from "react";
+import {
+  deployRefusalAction,
+  type HostOpRecovery,
+  hostOpRefusalBlocksRetry,
+  hostOpsStore,
+  planNoTokenAction,
+  useHostOpsStore,
+} from "../../../stores/hostOps";
 import { hostsStore, useHostsStore } from "../../../stores/hosts";
 import {
   Button,
@@ -9,6 +17,7 @@ import {
   EmptyState,
   FormRow,
   Input,
+  Loader,
   Skeleton,
   Textarea,
   useToasts,
@@ -32,6 +41,11 @@ const CLASS = {
   rowActions: requireClass(styles.rowActions, "hosts.module.css", "rowActions"),
   form: requireClass(styles.form, "hosts.module.css", "form"),
   formError: requireClass(styles.formError, "hosts.module.css", "formError"),
+  planFields: requireClass(styles.planFields, "hosts.module.css", "planFields"),
+  planField: requireClass(styles.planField, "hosts.module.css", "planField"),
+  planLabel: requireClass(styles.planLabel, "hosts.module.css", "planLabel"),
+  planValue: requireClass(styles.planValue, "hosts.module.css", "planValue"),
+  planNotice: requireClass(styles.planNotice, "hosts.module.css", "planNotice"),
 };
 
 export interface HostsSectionProps {
@@ -89,6 +103,11 @@ export function HostsSection(_props: HostsSectionProps) {
   const [connecting, setConnecting] = useState<ReadonlySet<string>>(() => new Set());
   const [pendingRemove, setPendingRemove] = useState<HostRow | null>(null);
   const [removing, setRemoving] = useState(false);
+  // The row each deploy-pipeline dialog was opened for. Non-null mounts the
+  // dialog; the row is the snapshot the operator acted on, which is exactly
+  // the intended (generation, incarnation id) pair Restart carries.
+  const [deployTarget, setDeployTarget] = useState<HostRow | null>(null);
+  const [restartTarget, setRestartTarget] = useState<HostRow | null>(null);
 
   useConnectedEffect(() => hostsStore.getState().fetch(), []);
 
@@ -208,6 +227,17 @@ export function HostsSection(_props: HostsSectionProps) {
                       {isConnecting ? "Connecting…" : "Connect"}
                     </Button>
                   )}
+                  {/* Deploy and Restart render on every row: a detached live
+                      host is a legitimate target (plan answers `unattached`
+                      with a Connect-first affordance, and restart attach-firsts
+                      under its own gate), while a tombstone row disables both
+                      and never fires (registry spec 08 §13). */}
+                  <Button size="sm" variant="quiet" disabled={row.removed} onClick={() => setDeployTarget(row)}>
+                    Deploy
+                  </Button>
+                  <Button size="sm" variant="quiet" disabled={row.removed} onClick={() => setRestartTarget(row)}>
+                    Restart
+                  </Button>
                   {!row.removed && (
                     <Button
                       size="sm"
@@ -257,6 +287,28 @@ export function HostsSection(_props: HostsSectionProps) {
       >
         {`Remove "${pendingRemove?.name}"? Its channel drops and the entry is gone until re-added. Sessions on the remote host itself are untouched.`}
       </ConfirmDialog>
+      {deployTarget !== null && (
+        <DeployDialog
+          // Keyed per host, like the Add/Edit dialog: a dialog opened for a
+          // different host is a fresh mount that plans against its own row.
+          key={`deploy:${deployTarget.name}`}
+          row={deployTarget}
+          onClose={() => {
+            hostOpsStore.getState().discardPlan(deployTarget.name);
+            setDeployTarget(null);
+          }}
+        />
+      )}
+      {restartTarget !== null && (
+        <RestartDialog
+          key={`restart:${restartTarget.name}`}
+          row={restartTarget}
+          onClose={() => {
+            hostOpsStore.getState().discardRestart(restartTarget.name);
+            setRestartTarget(null);
+          }}
+        />
+      )}
     </div>
   );
 }
@@ -459,6 +511,226 @@ function HostEntryDialog({ mode, row, onClose, onSubmit }: HostEntryDialogProps)
           </p>
         )}
       </div>
+    </Dialog>
+  );
+}
+
+// --- the deploy-pipeline dialogs (S14) ---------------------------------------
+
+interface HostOpDialogProps {
+  row: HostRow;
+  onClose: () => void;
+}
+
+const RECOVERY_LABEL: Record<Exclude<HostOpRecovery, "none">, string> = {
+  replan: "Retry plan",
+  retry: "Retry deploy",
+  connect: "Connect and plan",
+};
+
+function PlanField({ label, value }: { label: string; value: string }) {
+  return (
+    <div className={CLASS.planField}>
+      <span className={CLASS.planLabel}>{label}</span>
+      <span className={CLASS.planValue}>{value}</span>
+    </div>
+  );
+}
+
+/**
+ * The Deploy confirmation (registry spec 08 §13): opening it calls
+ * `evener/host/plan` and renders the controller-minted, token-bound plan;
+ * confirming submits exactly that token with a client operation ID, never a
+ * plan the operator has not seen. A no-token response branches on its reason
+ * (`unattached` Connects first, the retry arms re-plan, `remnant-open` names
+ * the blocking remnant with neither affordance, the terminal arms disable the
+ * confirmation). A token/stale refusal re-plans in the store, so the dialog
+ * re-renders the fresh confirmation with the refusal's own sentence.
+ */
+function DeployDialog({ row, onClose }: HostOpDialogProps) {
+  const name = row.name;
+  const state = useHostOpsStore((s) => s.plans[name]);
+  const [busy, setBusy] = useState(false);
+  const toasts = useToasts();
+
+  useEffect(() => {
+    // Opening the dialog calls evener/host/plan (§13). The dialog is keyed per
+    // host, so one opening is exactly one plan mint.
+    void hostOpsStore.getState().plan(name);
+  }, [name]);
+
+  async function submit(action: "deploy" | HostOpRecovery): Promise<void> {
+    setBusy(true);
+    try {
+      if (action === "deploy" || action === "retry") {
+        await hostOpsStore.getState().deploy(name);
+        if (hostOpsStore.getState().plans[name]?.phase === "started") {
+          toasts.push("success", `Deploy started for ${name}`);
+          onClose();
+        }
+        return;
+      }
+      if (action === "replan") {
+        await hostOpsStore.getState().plan(name);
+        return;
+      }
+      if (action === "connect") {
+        await hostOpsStore.getState().connectAndPlan(name);
+      }
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const planned = state?.phase === "planned" ? state : null;
+  const noToken = state?.phase === "no-token" ? state : null;
+  const refusal = state?.phase === "error" ? state.refusal : (planned?.refusal ?? null);
+  let recovery: HostOpRecovery = "none";
+  if (state?.phase === "error") recovery = state.recovery;
+  else if (planned !== null && planned.refusal !== null) recovery = deployRefusalAction(planned.refusal.kind);
+  const noTokenRecovery = noToken !== null ? planNoTokenAction(noToken.staleFacts.reason, noToken.terminal) : "none";
+
+  return (
+    <Dialog
+      open
+      onClose={() => {
+        if (!busy) onClose();
+      }}
+      title={`Deploy ${name}`}
+      footer={
+        <>
+          <Button variant="quiet" disabled={busy} onClick={onClose}>
+            Cancel
+          </Button>
+          <Button
+            variant="primary"
+            disabled={busy || planned === null || planned.refusal !== null}
+            onClick={() => void submit("deploy")}
+          >
+            {busy ? "Deploying…" : "Deploy"}
+          </Button>
+        </>
+      }
+    >
+      {state === undefined || state.phase === "planning" ? (
+        <Loader label={`Planning deploy for ${name}…`} />
+      ) : noToken !== null ? (
+        <div className={CLASS.planFields}>
+          <p className={CLASS.formError} role="alert">
+            {noToken.staleFacts.message}
+          </p>
+          {noToken.remnantId !== null && (
+            <p className={CLASS.formError}>
+              {`Blocking remnant ${noToken.remnantId}: resolve it through teardown-retry before deploying.`}
+            </p>
+          )}
+          {noTokenRecovery !== "none" && (
+            <Button size="sm" variant="quiet" disabled={busy} onClick={() => void submit(noTokenRecovery)}>
+              {RECOVERY_LABEL[noTokenRecovery]}
+            </Button>
+          )}
+        </div>
+      ) : planned !== null ? (
+        <div className={CLASS.planFields}>
+          {planned.notice !== null && <p className={CLASS.planNotice}>{planned.notice}</p>}
+          <PlanField label="Target host" value={planned.plan.host} />
+          <PlanField label="Controller revision" value={planned.plan.controllerRevision} />
+          <PlanField label="Remote target path" value={planned.plan.targetPath} />
+          <PlanField label="Restart follows" value={planned.plan.restartFollows ? "yes" : "no"} />
+          <PlanField label="Running build" value={planned.plan.runningVersion} />
+          <PlanField
+            label="Facts captured"
+            value={`${planned.plan.factsCapturedAt} (${planned.plan.factsAgeSec}s ago)`}
+          />
+          {refusal !== null && (
+            <p className={CLASS.formError} role="alert">
+              {refusal.message}
+            </p>
+          )}
+          {recovery !== "none" && (
+            <Button size="sm" variant="quiet" disabled={busy} onClick={() => void submit(recovery)}>
+              {RECOVERY_LABEL[recovery]}
+            </Button>
+          )}
+        </div>
+      ) : state.phase === "error" ? (
+        <div className={CLASS.planFields}>
+          <p className={CLASS.formError} role="alert">
+            {state.refusal.message}
+          </p>
+          {state.recovery !== "none" && (
+            <Button size="sm" variant="quiet" disabled={busy} onClick={() => void submit(state.recovery)}>
+              {RECOVERY_LABEL[state.recovery]}
+            </Button>
+          )}
+        </div>
+      ) : (
+        <p className={CLASS.planNotice}>Deploy started.</p>
+      )}
+    </Dialog>
+  );
+}
+
+/**
+ * The Restart confirmation: opening it pins the intended (generation,
+ * incarnation id) pair to the row the operator acted on, and confirming opens
+ * the restart operation for exactly that pair (08b §6, §10). A stale-entry
+ * refusal re-reads the registry and retries once with the pair it answers; a
+ * held gate's operation or an open remnant renders its concrete message with
+ * the retry disabled (the open/wait and teardown-retry affordances are
+ * S15/S16's).
+ */
+function RestartDialog({ row, onClose }: HostOpDialogProps) {
+  const name = row.name;
+  const attempt = useHostOpsStore((s) => s.restarts[name]);
+  const [busy, setBusy] = useState(false);
+  const toasts = useToasts();
+
+  useEffect(() => {
+    hostOpsStore.getState().beginRestart(name, { generation: row.generation, incarnationId: row.incarnationId });
+  }, [name, row.generation, row.incarnationId]);
+
+  async function handleRestart(): Promise<void> {
+    setBusy(true);
+    try {
+      await hostOpsStore.getState().restart(name);
+      if (hostOpsStore.getState().restarts[name]?.phase === "started") {
+        toasts.push("success", `Restart started for ${name}`);
+        onClose();
+      }
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const refusal = attempt?.refusal ?? null;
+  const blocked = refusal !== null && hostOpRefusalBlocksRetry(refusal.kind);
+  return (
+    <Dialog
+      open
+      onClose={() => {
+        if (!busy) onClose();
+      }}
+      title={`Restart ${name}?`}
+      footer={
+        <>
+          <Button variant="quiet" disabled={busy} onClick={onClose}>
+            Cancel
+          </Button>
+          <Button variant="primary" disabled={busy || blocked} onClick={() => void handleRestart()}>
+            {busy ? "Restarting…" : "Restart"}
+          </Button>
+        </>
+      }
+    >
+      <p className={CLASS.help}>
+        {`Restarting "${name}" drops its channel while the hub restarts and reattaches; sessions on the remote host itself are untouched.`}
+      </p>
+      {refusal !== null && (
+        <p className={CLASS.formError} role="alert">
+          {refusal.message}
+        </p>
+      )}
     </Dialog>
   );
 }

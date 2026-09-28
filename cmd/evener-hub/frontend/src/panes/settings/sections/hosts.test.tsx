@@ -1,9 +1,10 @@
-import { type HostRow, WireError } from "@evener/appwire-client";
+import { type HostPlan, type HostRow, RequestTimeoutError, WireError } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { connectionStore } from "../../../stores/connection";
+import { hostOpsStore } from "../../../stores/hostOps";
 import { hostsStore } from "../../../stores/hosts";
 import { enterText } from "../../../textEntryTestUtils";
 import { HOST_POLL_MS, HostsSection } from "./hosts";
@@ -26,9 +27,29 @@ function connectFakeClient(): FakeClient {
   return fake;
 }
 
+// planFixture is the controller-minted plan a scripted `evener/host/plan`
+// answers with (deploy-pipeline spec 08b §10).
+function planFixture(overrides: Partial<HostPlan> = {}): HostPlan {
+  return {
+    host: "beta",
+    generation: 1,
+    targetPath: "/srv/evener/evener",
+    controllerRevision: "controller-rev-9",
+    restartFollows: true,
+    factsRevision: "facts-rev-1",
+    hubTomlFingerprint: "fp-1",
+    factsCapturedAt: "2026-09-28T07:59:00Z",
+    factsAgeSec: 42,
+    runningVersion: "1.4.2",
+    runningHealthy: true,
+    ...overrides,
+  };
+}
+
 beforeEach(() => {
   connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
   hostsStore.getState().resetForTests();
+  hostOpsStore.getState().resetForTests();
 });
 
 afterEach(cleanup);
@@ -371,4 +392,398 @@ test("a server-side mid-attach row settles via the poll: in-progress -> failed r
   } finally {
     vi.useRealTimers();
   }
+});
+
+// --- S14: the Deploy/Restart actions, plan confirmation, and refusals --------
+
+test("a live row offers Deploy and Restart; a tombstone row renders both disabled and they never fire", async () => {
+  const fake = connectFakeClient();
+  fake.on("evener/host/list", () => ({
+    hosts: [row({ name: "beta", address: "b.example" }), row({ name: "gamma", removed: true })],
+  }));
+  render(<HostsSection sectionId="hosts" />);
+  const betaRow = (await screen.findByText("beta")).closest("li")!;
+  const gammaRow = screen.getByText("gamma").closest("li")!;
+  expect(within(betaRow).getByRole("button", { name: "Deploy" })).toBeTruthy();
+  expect(within(betaRow).getByRole("button", { name: "Restart" })).toBeTruthy();
+  // Registry spec 08 §13: on tombstone rows Connect, Deploy, Restart, Edit and
+  // Remove render disabled and never fire.
+  const deploy = within(gammaRow).getByRole("button", { name: "Deploy" }) as HTMLButtonElement;
+  const restart = within(gammaRow).getByRole("button", { name: "Restart" }) as HTMLButtonElement;
+  expect(deploy.disabled).toBe(true);
+  expect(restart.disabled).toBe(true);
+  fireEvent.click(deploy);
+  fireEvent.click(restart);
+  expect(fake.calls.some((c) => c.method === "evener/host/plan" || c.method === "evener/host/restart")).toBe(false);
+});
+
+test("Deploy opens the plan confirmation and renders the controller-minted plan", async () => {
+  const user = userEvent.setup();
+  const fake = connectFakeClient();
+  fake.on("evener/host/list", () => ({ hosts: [row({ name: "beta", address: "b.example" })] }));
+  fake.on("evener/host/plan", () => ({ outcome: "planned", plan: planFixture(), token: "tok-1" }));
+  render(<HostsSection sectionId="hosts" />);
+  const betaRow = (await screen.findByText("beta")).closest("li")!;
+  await user.click(within(betaRow).getByRole("button", { name: "Deploy" }));
+
+  const dialog = await screen.findByRole("dialog", { name: "Deploy beta" });
+  await waitFor(() => expect(within(dialog).getByText("/srv/evener/evener")).toBeTruthy());
+  // Registry spec 08 §13: target host, controller revision, resolved remote
+  // target path, whether a restart follows, the running build, and facts
+  // freshness from the plan's factsCapturedAt/factsAgeSec.
+  expect(within(dialog).getByText("Target host")).toBeTruthy();
+  expect(within(dialog).getByText("beta")).toBeTruthy();
+  expect(within(dialog).getByText("controller-rev-9")).toBeTruthy();
+  expect(within(dialog).getByText("yes")).toBeTruthy();
+  expect(within(dialog).getByText("1.4.2")).toBeTruthy();
+  expect(within(dialog).getByText(/42s ago/)).toBeTruthy();
+  expect((within(dialog).getByRole("button", { name: "Deploy" }) as HTMLButtonElement).disabled).toBe(false);
+});
+
+test("the confirmation submits exactly the displayed plan's token and operation ID", async () => {
+  const user = userEvent.setup();
+  const fake = connectFakeClient();
+  fake.on("evener/host/list", () => ({ hosts: [row({ name: "beta", address: "b.example" })] }));
+  fake.on("evener/host/plan", () => ({ outcome: "planned", plan: planFixture(), token: "tok-1" }));
+  fake.on("evener/host/deploy", () => ({ id: "op-1", clientOperationId: "client-op-1", state: "pending" }));
+  render(<HostsSection sectionId="hosts" />);
+  const betaRow = (await screen.findByText("beta")).closest("li")!;
+  await user.click(within(betaRow).getByRole("button", { name: "Deploy" }));
+  const dialog = await screen.findByRole("dialog", { name: "Deploy beta" });
+  await waitFor(() => expect(within(dialog).getByText("/srv/evener/evener")).toBeTruthy());
+  await user.click(within(dialog).getByRole("button", { name: "Deploy" }));
+
+  await waitFor(() => expect(fake.calls.filter((c) => c.method === "evener/host/deploy")).toHaveLength(1));
+  const call = fake.calls.find((c) => c.method === "evener/host/deploy")!;
+  expect(call.params).toMatchObject({ name: "beta", token: "tok-1" });
+  expect((call.params as { operationId: string }).operationId).not.toBe("");
+  // The started operation closes the confirmation.
+  await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+});
+
+test("a stale token re-plans and re-renders the confirmation before any retry", async () => {
+  const user = userEvent.setup();
+  const fake = connectFakeClient();
+  fake.on("evener/host/list", () => ({ hosts: [row({ name: "beta", address: "b.example" })] }));
+  let plans = 0;
+  fake.on("evener/host/plan", () => {
+    plans += 1;
+    return { outcome: "planned", plan: planFixture({ targetPath: `/t${plans}` }), token: `tok-${plans}` };
+  });
+  let deploys = 0;
+  fake.on("evener/host/deploy", () => {
+    deploys += 1;
+    if (deploys === 1) {
+      throw new WireError('host "beta": the confirmation token expired', -32013, { evenerErrorInfo: "token-expired" });
+    }
+    return { id: "op-2", clientOperationId: "client-op-2", state: "pending" };
+  });
+  render(<HostsSection sectionId="hosts" />);
+  const betaRow = (await screen.findByText("beta")).closest("li")!;
+  await user.click(within(betaRow).getByRole("button", { name: "Deploy" }));
+  const dialog = await screen.findByRole("dialog", { name: "Deploy beta" });
+  await waitFor(() => expect(within(dialog).getByText("/t1")).toBeTruthy());
+
+  await user.click(within(dialog).getByRole("button", { name: "Deploy" }));
+
+  // §13: deploy rejected the token as stale, so the UI re-plans and re-renders
+  // the confirmation from the new response before any retry.
+  await waitFor(() => expect(plans).toBe(2));
+  await waitFor(() => expect(within(dialog).getByText("/t2")).toBeTruthy());
+  expect(within(dialog).getByText(/This plan expired before the deploy was submitted/)).toBeTruthy();
+  expect(within(dialog).getByText(/fresh plan is shown below/)).toBeTruthy();
+  expect(fake.calls.filter((c) => c.method === "evener/host/deploy")).toHaveLength(1);
+
+  // The re-rendered confirmation deploys under the fresh token.
+  await user.click(within(dialog).getByRole("button", { name: "Deploy" }));
+  await waitFor(() => expect(fake.calls.filter((c) => c.method === "evener/host/deploy")).toHaveLength(2));
+  expect(fake.calls.filter((c) => c.method === "evener/host/deploy")[1]!.params).toMatchObject({ token: "tok-2" });
+  await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+});
+
+test("the no-token unattached arm directs Connect first", async () => {
+  const user = userEvent.setup();
+  const fake = connectFakeClient();
+  fake.on("evener/host/list", () => ({ hosts: [row({ name: "beta", address: "b.example" })] }));
+  let plans = 0;
+  fake.on("evener/host/plan", () => {
+    plans += 1;
+    if (plans === 1) {
+      return {
+        outcome: "no-token",
+        staleFacts: {
+          message: 'host "beta" is not attached; connect it and plan again',
+          attached: false,
+          reason: "unattached",
+        },
+        terminal: false,
+      };
+    }
+    return { outcome: "planned", plan: planFixture(), token: "tok-2" };
+  });
+  fake.on("evener/host/attach", () => ({ attached: true, host: "beta" }));
+  render(<HostsSection sectionId="hosts" />);
+  const betaRow = (await screen.findByText("beta")).closest("li")!;
+  await user.click(within(betaRow).getByRole("button", { name: "Deploy" }));
+  const dialog = await screen.findByRole("dialog", { name: "Deploy beta" });
+  await waitFor(() => expect(within(dialog).getByText(/is not attached; connect it and plan again/)).toBeTruthy());
+  // No token was minted, so the confirmation cannot proceed.
+  expect((within(dialog).getByRole("button", { name: "Deploy" }) as HTMLButtonElement).disabled).toBe(true);
+
+  await user.click(within(dialog).getByRole("button", { name: "Connect and plan" }));
+  await waitFor(() => expect(fake.calls.filter((c) => c.method === "evener/host/attach")).toHaveLength(1));
+  await waitFor(() => expect(plans).toBe(2));
+  await waitFor(() => expect(within(dialog).getByText("/srv/evener/evener")).toBeTruthy());
+});
+
+test("refresh-failed retries the plan and never offers Connect", async () => {
+  const user = userEvent.setup();
+  const fake = connectFakeClient();
+  fake.on("evener/host/list", () => ({ hosts: [row({ name: "beta", address: "b.example" })] }));
+  let plans = 0;
+  fake.on("evener/host/plan", () => {
+    plans += 1;
+    if (plans === 1) {
+      return {
+        outcome: "no-token",
+        staleFacts: {
+          message: 'refreshing host "beta"\'s preflight facts failed: ssh timeout',
+          attached: true,
+          reason: "refresh-failed",
+        },
+        terminal: false,
+      };
+    }
+    return { outcome: "planned", plan: planFixture(), token: "tok-2" };
+  });
+  render(<HostsSection sectionId="hosts" />);
+  const betaRow = (await screen.findByText("beta")).closest("li")!;
+  await user.click(within(betaRow).getByRole("button", { name: "Deploy" }));
+  const dialog = await screen.findByRole("dialog", { name: "Deploy beta" });
+  await waitFor(() => expect(within(dialog).getByText(/preflight facts failed: ssh timeout/)).toBeTruthy());
+  expect(within(dialog).queryByRole("button", { name: /Connect/ })).toBeNull();
+
+  await user.click(within(dialog).getByRole("button", { name: "Retry plan" }));
+  await waitFor(() => expect(plans).toBe(2));
+  await waitFor(() => expect(within(dialog).getByText("/srv/evener/evener")).toBeTruthy());
+});
+
+test("handler-absent surfaces the one-time migration step, never Connect", async () => {
+  const user = userEvent.setup();
+  const fake = connectFakeClient();
+  fake.on("evener/host/list", () => ({ hosts: [row({ name: "beta", address: "b.example" })] }));
+  fake.on("evener/host/plan", () => ({
+    outcome: "no-token",
+    staleFacts: {
+      message:
+        "host \"beta\"'s hub does not serve the deploy pipeline's running probe yet, so nothing could be probed; upgrade the host's build before planning",
+      attached: true,
+      reason: "handler-absent",
+    },
+    terminal: false,
+  }));
+  render(<HostsSection sectionId="hosts" />);
+  const betaRow = (await screen.findByText("beta")).closest("li")!;
+  await user.click(within(betaRow).getByRole("button", { name: "Deploy" }));
+  const dialog = await screen.findByRole("dialog", { name: "Deploy beta" });
+  await waitFor(() => expect(within(dialog).getByText(/upgrade the host's build before planning/)).toBeTruthy());
+  expect(within(dialog).queryByRole("button", { name: /Connect/ })).toBeNull();
+  expect(within(dialog).getByRole("button", { name: "Retry plan" })).toBeTruthy();
+});
+
+test("remnant-open names the blocking remnant and offers neither Connect nor re-plan", async () => {
+  const user = userEvent.setup();
+  const fake = connectFakeClient();
+  fake.on("evener/host/list", () => ({ hosts: [row({ name: "beta", address: "b.example" })] }));
+  fake.on("evener/host/plan", () => ({
+    outcome: "no-token",
+    staleFacts: {
+      message: 'host "beta" is fenced by an open teardown remnant',
+      attached: true,
+      reason: "remnant-open",
+    },
+    terminal: false,
+    remnantId: "remnant-7",
+  }));
+  render(<HostsSection sectionId="hosts" />);
+  const betaRow = (await screen.findByText("beta")).closest("li")!;
+  await user.click(within(betaRow).getByRole("button", { name: "Deploy" }));
+  const dialog = await screen.findByRole("dialog", { name: "Deploy beta" });
+  // §13: surfaces the blocking remnantId; never Connect, never re-plan (a
+  // re-plan mints nothing while the remnant is open).
+  await waitFor(() => expect(within(dialog).getByText(/remnant-7/)).toBeTruthy());
+  expect(within(dialog).getByText(/fenced by an open teardown remnant/)).toBeTruthy();
+  expect(within(dialog).queryByRole("button", { name: /Connect/ })).toBeNull();
+  expect(within(dialog).queryByRole("button", { name: /Retry plan/ })).toBeNull();
+  expect((within(dialog).getByRole("button", { name: "Deploy" }) as HTMLButtonElement).disabled).toBe(true);
+});
+
+test("a terminal no-token reason disables the deploy button and offers no retry", async () => {
+  const user = userEvent.setup();
+  const fake = connectFakeClient();
+  fake.on("evener/host/list", () => ({ hosts: [row({ name: "beta", address: "b.example" })] }));
+  fake.on("evener/host/plan", () => ({
+    outcome: "no-token",
+    staleFacts: {
+      message: "the controller is dirty; rebuild from a clean tree before deploying",
+      attached: true,
+      reason: "controller-dirty",
+    },
+    terminal: true,
+  }));
+  render(<HostsSection sectionId="hosts" />);
+  const betaRow = (await screen.findByText("beta")).closest("li")!;
+  await user.click(within(betaRow).getByRole("button", { name: "Deploy" }));
+  const dialog = await screen.findByRole("dialog", { name: "Deploy beta" });
+  await waitFor(() => expect(within(dialog).getByText(/rebuild from a clean tree/)).toBeTruthy());
+  // Terminal refusals disable the confirmation; there is no retry affordance.
+  expect((within(dialog).getByRole("button", { name: "Deploy" }) as HTMLButtonElement).disabled).toBe(true);
+  expect(within(dialog).queryByRole("button", { name: /Retry plan/ })).toBeNull();
+  expect(within(dialog).queryByRole("button", { name: /Connect/ })).toBeNull();
+});
+
+test("host-busy-operation renders the running operation and offers no bare retry", async () => {
+  const user = userEvent.setup();
+  const fake = connectFakeClient();
+  fake.on("evener/host/list", () => ({ hosts: [row({ name: "beta", address: "b.example" })] }));
+  fake.on("evener/host/plan", () => ({ outcome: "planned", plan: planFixture(), token: "tok-1" }));
+  fake.on("evener/host/deploy", () => {
+    throw new WireError("busy", -32013, { evenerErrorInfo: "host-busy-operation", operationId: "op-42" });
+  });
+  render(<HostsSection sectionId="hosts" />);
+  const betaRow = (await screen.findByText("beta")).closest("li")!;
+  await user.click(within(betaRow).getByRole("button", { name: "Deploy" }));
+  const dialog = await screen.findByRole("dialog", { name: "Deploy beta" });
+  await waitFor(() => expect(within(dialog).getByText("/srv/evener/evener")).toBeTruthy());
+  await user.click(within(dialog).getByRole("button", { name: "Deploy" }));
+
+  await waitFor(() =>
+    expect(within(dialog).getByText(/Another operation is running on this host \(op-42\)\./)).toBeTruthy(),
+  );
+  // The open/wait affordance is S15's; this slice shows the concrete refusal
+  // and never a bare retry.
+  expect(within(dialog).queryByRole("button", { name: "Retry deploy" })).toBeNull();
+  expect((within(dialog).getByRole("button", { name: "Deploy" }) as HTMLButtonElement).disabled).toBe(true);
+});
+
+test("host-detached offers Connect and re-plan", async () => {
+  const user = userEvent.setup();
+  const fake = connectFakeClient();
+  fake.on("evener/host/list", () => ({ hosts: [row({ name: "beta", address: "b.example" })] }));
+  let plans = 0;
+  fake.on("evener/host/plan", () => {
+    plans += 1;
+    return { outcome: "planned", plan: planFixture(), token: `tok-${plans}` };
+  });
+  fake.on("evener/host/deploy", () => {
+    throw new WireError("no live attached channel", -32014, { evenerErrorInfo: "host-detached" });
+  });
+  fake.on("evener/host/attach", () => ({ attached: true, host: "beta" }));
+  render(<HostsSection sectionId="hosts" />);
+  const betaRow = (await screen.findByText("beta")).closest("li")!;
+  await user.click(within(betaRow).getByRole("button", { name: "Deploy" }));
+  const dialog = await screen.findByRole("dialog", { name: "Deploy beta" });
+  await waitFor(() => expect(within(dialog).getByText("/srv/evener/evener")).toBeTruthy());
+  await user.click(within(dialog).getByRole("button", { name: "Deploy" }));
+
+  await waitFor(() => expect(within(dialog).getByText(/The host has no live attached channel\./)).toBeTruthy());
+  await user.click(within(dialog).getByRole("button", { name: "Connect and plan" }));
+  await waitFor(() => expect(fake.calls.filter((c) => c.method === "evener/host/attach")).toHaveLength(1));
+  await waitFor(() => expect(plans).toBe(2));
+});
+
+test("a lost response can be retried under the same operation ID", async () => {
+  const user = userEvent.setup();
+  const fake = connectFakeClient();
+  fake.on("evener/host/list", () => ({ hosts: [row({ name: "beta", address: "b.example" })] }));
+  fake.on("evener/host/plan", () => ({ outcome: "planned", plan: planFixture(), token: "tok-1" }));
+  let deploys = 0;
+  fake.on("evener/host/deploy", () => {
+    deploys += 1;
+    if (deploys === 1) throw new RequestTimeoutError("no response");
+    return { id: "op-1", clientOperationId: "client-op-1", state: "pending" };
+  });
+  render(<HostsSection sectionId="hosts" />);
+  const betaRow = (await screen.findByText("beta")).closest("li")!;
+  await user.click(within(betaRow).getByRole("button", { name: "Deploy" }));
+  const dialog = await screen.findByRole("dialog", { name: "Deploy beta" });
+  await waitFor(() => expect(within(dialog).getByText("/srv/evener/evener")).toBeTruthy());
+  await user.click(within(dialog).getByRole("button", { name: "Deploy" }));
+
+  await waitFor(() => expect(within(dialog).getByText(/did not answer before the request timed out/)).toBeTruthy());
+  await user.click(within(dialog).getByRole("button", { name: "Retry deploy" }));
+  await waitFor(() => expect(fake.calls.filter((c) => c.method === "evener/host/deploy")).toHaveLength(2));
+  const calls = fake.calls.filter((c) => c.method === "evener/host/deploy");
+  // §13: a retry after a lost response reuses the same operation ID.
+  expect((calls[0]!.params as { operationId: string }).operationId).toBe(
+    (calls[1]!.params as { operationId: string }).operationId,
+  );
+  await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+});
+
+test("Restart confirms then submits the intended pair and a client operation ID", async () => {
+  const user = userEvent.setup();
+  const fake = connectFakeClient();
+  fake.on("evener/host/list", () => ({ hosts: [row({ name: "beta", address: "b.example" })] }));
+  fake.on("evener/host/restart", () => ({ id: "op-9", clientOperationId: "client-op-9", state: "pending" }));
+  render(<HostsSection sectionId="hosts" />);
+  const betaRow = (await screen.findByText("beta")).closest("li")!;
+  await user.click(within(betaRow).getByRole("button", { name: "Restart" }));
+  const dialog = await screen.findByRole("dialog", { name: "Restart beta?" });
+  await user.click(within(dialog).getByRole("button", { name: "Restart" }));
+
+  await waitFor(() => expect(fake.calls.filter((c) => c.method === "evener/host/restart")).toHaveLength(1));
+  const call = fake.calls.find((c) => c.method === "evener/host/restart")!;
+  const params = call.params as { operationId: string; generation: number; incarnationId: string };
+  expect(call.params).toMatchObject({ name: "beta", generation: 1, incarnationId: "inc-1" });
+  expect(params.operationId).not.toBe("");
+  await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+});
+
+test("a restart busy refusal renders concretely and disables its retry", async () => {
+  const user = userEvent.setup();
+  const fake = connectFakeClient();
+  fake.on("evener/host/list", () => ({ hosts: [row({ name: "beta", address: "b.example" })] }));
+  fake.on("evener/host/restart", () => {
+    throw new WireError("busy", -32013, { evenerErrorInfo: "host-busy-operation", operationId: "op-42" });
+  });
+  render(<HostsSection sectionId="hosts" />);
+  const betaRow = (await screen.findByText("beta")).closest("li")!;
+  await user.click(within(betaRow).getByRole("button", { name: "Restart" }));
+  const dialog = await screen.findByRole("dialog", { name: "Restart beta?" });
+  await user.click(within(dialog).getByRole("button", { name: "Restart" }));
+
+  await waitFor(() =>
+    expect(within(dialog).getByText(/Another operation is running on this host \(op-42\)\./)).toBeTruthy(),
+  );
+  expect((within(dialog).getByRole("button", { name: "Restart" }) as HTMLButtonElement).disabled).toBe(true);
+});
+
+test("a restart stale-entry re-reads and retries once with the fresh pair", async () => {
+  const user = userEvent.setup();
+  const fake = connectFakeClient();
+  fake.on("evener/host/list", () => ({
+    hosts: [row({ name: "beta", address: "b.example", generation: 4, incarnationId: "inc-4" })],
+  }));
+  let restarts = 0;
+  fake.on("evener/host/restart", () => {
+    restarts += 1;
+    if (restarts === 1) {
+      throw new WireError('host "beta": registration moved; retry', -32013, { evenerErrorInfo: "stale-entry" });
+    }
+    return { id: "op-10", clientOperationId: "client-op-10", state: "pending" };
+  });
+  render(<HostsSection sectionId="hosts" />);
+  const betaRow = (await screen.findByText("beta")).closest("li")!;
+  await user.click(within(betaRow).getByRole("button", { name: "Restart" }));
+  const dialog = await screen.findByRole("dialog", { name: "Restart beta?" });
+  await user.click(within(dialog).getByRole("button", { name: "Restart" }));
+
+  await waitFor(() => expect(fake.calls.filter((c) => c.method === "evener/host/restart")).toHaveLength(2));
+  const calls = fake.calls.filter((c) => c.method === "evener/host/restart");
+  expect(calls[1]!.params as { generation: number; incarnationId: string }).toMatchObject({
+    generation: 4,
+    incarnationId: "inc-4",
+  });
+  await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
 });
