@@ -460,6 +460,42 @@ func TestMessageSearchAFailedReadOnAnIndexedSessionKeepsItsMessages(t *testing.T
 	}
 }
 
+// appwire.TranscriptItemCursorStale carries RetryDispositionAutomatic: a
+// paging race between two reads of the same transcript index, not a broken
+// transcript. It must be retried next refresh even on a session that has
+// never been indexed, not recorded as permanently empty the way an
+// unsupported format is.
+func TestMessageSearchRetriesACursorStaleReadEvenOnAFirstAttempt(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "sessions", "s1.transcript.jsonl")
+	writeTestTranscript(t, path, "s1", settleTurns()...)
+	index := openTestMessageSearch(t)
+	next := index.read
+	failedOnce := false
+	index.read = func(path string, held *appwire.SnapshotIdentity) (transcriptItems, error) {
+		if !failedOnce {
+			failedOnce = true
+			return transcriptItems{}, appwire.TranscriptItemCursorStale()
+		}
+		return next(path, held)
+	}
+	failures, err := index.Refresh(context.Background(), []MessageSearchSession{{ID: "s1", TranscriptPath: path}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(failures) != 0 {
+		t.Fatalf("failures = %+v, want none: a cursor-stale race is not reported as a failure", failures)
+	}
+	if matches, _ := index.Match(context.Background(), "settle", 3); len(matches) != 0 {
+		t.Fatalf("matches = %+v, want none yet: the session was not indexed on the failed attempt", matches)
+	}
+	if _, err := index.Refresh(context.Background(), []MessageSearchSession{{ID: "s1", TranscriptPath: path}}); err != nil {
+		t.Fatal(err)
+	}
+	if matches, _ := index.Match(context.Background(), "settle", 3); matches["s1"].Count != 2 {
+		t.Fatalf("matches = %+v, want the session indexed once the retry succeeds", matches)
+	}
+}
+
 // A session the past index no longer lists, and one Forget names, leave the
 // index at once: their words are not found.
 func TestMessageSearchForgetsSessions(t *testing.T) {

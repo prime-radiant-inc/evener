@@ -277,12 +277,21 @@ func (x *MessageSearch) Refresh(ctx context.Context, sessions []MessageSearchSes
 		sinceGen := x.forgetGeneration(session.ID)
 		read, err := x.read(session.TranscriptPath, since)
 		if err != nil {
-			if errors.Is(err, transcript.ErrUnsupportedFormat) {
+			switch {
+			case errors.Is(err, transcript.ErrUnsupportedFormat):
 				// Not a failure: record it as read, with no messages, so a
 				// transcript no reader opens is not tried again until it
 				// changes.
 				read = transcriptItems{replace: true}
-			} else {
+			case transcriptItemCursorStale(err):
+				// A paging race between two reads of the same transcript
+				// index (RetryDispositionAutomatic), not a broken transcript.
+				// Recording it, known or not, would freeze the loss until the
+				// file itself next changes, when readEveryItem's own promise
+				// is that the very next refresh reads the new incarnation
+				// whole: retry then instead.
+				continue
+			default:
 				failures = append(failures, MessageSearchFailure{SessionID: session.ID, Err: err})
 				if !known {
 					// Never indexed, so there is nothing to lose: record it
@@ -422,6 +431,20 @@ func checkTranscriptHeader(transcriptPath string) error {
 	}
 	_, err = transcript.DecodeHeader(bytes.TrimSpace(line))
 	return err
+}
+
+// transcriptItemCursorStale reports whether err is
+// appwire.TranscriptItemCursorStale(): a rebuild of the transcript index
+// between two of this package's own reads, not a failure of the transcript
+// itself. Same check as appsource's localDaemonItemCursorStale, duplicated
+// because that one is unexported in another package.
+func transcriptItemCursorStale(err error) bool {
+	wire, ok := errors.AsType[appwire.WireError](err)
+	if !ok || wire.Code != appwire.CodeInvalidParams {
+		return false
+	}
+	data, ok := wire.Data.(appwire.ErrorData)
+	return ok && data.EvenerErrorInfo == appwire.ErrorTranscriptItemCursorStale
 }
 
 // searchableMessage reports whether the index keeps item: what the user typed
