@@ -510,8 +510,10 @@ func TestCorruptSidecarRebuilds(t *testing.T) {
 			// raw transcript bytes with the lenient DecodeValidatedEntry,
 			// which would silently drop a field this binary's schema doesn't
 			// declare instead of failing loudly (see the "Known gap" spec
-			// section, cross-version schema skew).
-			rewriteMetaField(t, dir, "schema_id", `"deadbeefdeadbeef"`)
+			// section, cross-version schema skew). currentProjection folds
+			// schemaID into the same "projection" field this case rewrites,
+			// so a schema-unaware binary rejects the mismatch too.
+			rewriteMetaField(t, dir, "projection", `"transcript-read-model-v5:deadbeefdeadbeef"`)
 		}},
 	}
 	for _, tc := range cases {

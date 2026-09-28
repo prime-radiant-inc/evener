@@ -3,7 +3,9 @@ package transcriptindex
 import (
 	"errors"
 	"fmt"
+	"maps"
 	"reflect"
+	"slices"
 	"strconv"
 	"testing"
 
@@ -90,11 +92,12 @@ func assertSampledWindows(t testing.TB, x *Index, path string) {
 		}
 		assertWindow(t, "latest", window, want, len(want), limit)
 	}
-	ends := map[int]bool{0: true, len(want) - 1: true, len(want) / 2: true}
+	endSet := map[int]bool{0: true, len(want) - 1: true, len(want) / 2: true}
 	if len(want) > 3 {
-		ends[1], ends[len(want)-2] = true, true
+		endSet[1], endSet[len(want)-2] = true, true
 	}
-	for end := range ends {
+	ends := slices.Sorted(maps.Keys(endSet))
+	for _, end := range ends {
 		for _, limit := range limits {
 			window, err := x.Before(want[end].Position, limit)
 			if err != nil {
