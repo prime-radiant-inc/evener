@@ -48,8 +48,10 @@ func TestCovRun_ParseErrorReturns2(t *testing.T) {
 	if code := Run([]string{"--bad"}, nil, io.Discard, &stderr); code != 2 {
 		t.Fatalf("Run with bad flag = %d, want 2", code)
 	}
-	if got, want := stderr.String(), "evener-tui: flag provided but not defined: -bad\n"; got != want {
-		t.Fatalf("parse error stderr = %q, want %q", got, want)
+	// Both the flag package's own diagnostic (which now honors the injected
+	// writer) and run's error line land in the supplied stderr.
+	if got := stderr.String(); !strings.HasPrefix(got, "flag provided but not defined: -bad\n") || !strings.Contains(got, "evener-tui: flag provided but not defined: -bad\n") {
+		t.Fatalf("parse error stderr = %q", got)
 	}
 }
 

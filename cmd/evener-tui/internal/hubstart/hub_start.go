@@ -68,7 +68,11 @@ type TUIStartupOptions struct {
 	Debug        bool
 }
 
-func ParseTUIStartupOptions(args []string, getenv func(string) string) (TUIStartupOptions, error) {
+// ParseTUIStartupOptions parses the evener-tui flags. output receives the
+// FlagSet's help and parse diagnostics so an embedding caller can route them
+// to its own stderr instead of the process's; a nil output falls back to
+// os.Stderr, matching the flag package's own default.
+func ParseTUIStartupOptions(args []string, getenv func(string) string, output io.Writer) (TUIStartupOptions, error) {
 	if getenv == nil {
 		getenv = os.Getenv
 	}
@@ -81,7 +85,7 @@ func ParseTUIStartupOptions(args []string, getenv func(string) string) (TUIStart
 		AutoStartHub: true,
 	}
 	fs := flag.NewFlagSet("evener-tui", flag.ContinueOnError)
-	fs.SetOutput(os.Stderr)
+	fs.SetOutput(output)
 	fs.StringVar(&opts.HubAddr, "hub-addr", opts.HubAddr, "evener hub address")
 	fs.StringVar(&opts.HubBin, "hub-bin", opts.HubBin, "path to evener binary (for the hub subcommand)")
 	noAutoStartHub := false
