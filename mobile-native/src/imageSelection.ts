@@ -18,8 +18,19 @@ interface SelectionSnapshot {
 }
 export interface ImagePicker {
   pick(limit: number): Promise<PickedImage[]>;
+  /** One photo from the camera; rejects with CameraAccessDenied when the
+   * person has turned camera access off. */
+  capture(): Promise<PickedImage[]>;
   encode(image: PickedImage): Promise<string>;
   id(): string;
+}
+
+/** The camera permission is off, so the picker could not open the camera. */
+export class CameraAccessDenied extends Error {
+  constructor() {
+    super("Camera access is off. Turn it on in Settings to take photos here.");
+    this.name = "CameraAccessDenied";
+  }
 }
 
 function base64ByteLength(data: string): number {
@@ -61,7 +72,7 @@ export class ImageSelection {
       pending: this.snapshot.pending.filter((image) => image.id !== id),
     });
   }
-  async choose() {
+  async choose(source: "library" | "camera" = "library") {
     const draft = this.document.getSnapshot();
     if (this.snapshot.busy || !draft.loaded || draft.error) return;
     const count = draft.record.images?.length ?? 0;
@@ -73,7 +84,10 @@ export class ImageSelection {
     this.update({ busy: true, error: null });
     const errors: string[] = [];
     try {
-      const picked = await this.picker.pick(MAX_ATTACHMENTS - count);
+      const picked =
+        source === "camera"
+          ? await this.picker.capture()
+          : await this.picker.pick(MAX_ATTACHMENTS - count);
       if (generation !== this.generation) return;
       const current = this.document.getSnapshot().record;
       this.nextMarker = Math.max(
@@ -138,8 +152,12 @@ export class ImageSelection {
         }
         if (generation === this.generation) this.remove(image.id);
       }
-    } catch {
-      errors.push("Could not open or read the image selection.");
+    } catch (error) {
+      errors.push(
+        error instanceof CameraAccessDenied
+          ? error.message
+          : "Could not open or read the image selection.",
+      );
     } finally {
       if (generation === this.generation)
         this.update({

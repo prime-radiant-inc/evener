@@ -96,7 +96,7 @@ printf '%s\n' "$*" >> "$SWAP_TEST_LOG"
 
 func TestSwapEnvAndRefresh_TestConfigSkipsGitDiscovery(t *testing.T) {
 	sess := newSession(t,
-		withConfig(SessionConfig{MaxSubagentDepth: 1, NoProjectPrompts: true}),
+		withConfig(SessionConfig{MaxSubagentDepth: 1}),
 		withoutGitSnapshot(),
 	)
 
@@ -139,7 +139,7 @@ func TestSwapEnvAndRefresh_TestConfigSkipsGitDiscovery(t *testing.T) {
 		t.Error("envInfo.IsGitRepo = true, want false when git snapshot is skipped")
 	}
 	if data, err := os.ReadFile(logPath); err == nil && strings.TrimSpace(string(data)) != "" {
-		t.Fatalf("swapEnvAndRefresh called git despite skipGitSnapshot+NoProjectPrompts; commands:\n%s", data)
+		t.Fatalf("swapEnvAndRefresh called git despite skipGitSnapshot; commands:\n%s", data)
 	} else if err != nil && !os.IsNotExist(err) {
 		t.Fatalf("read git log: %v", err)
 	}

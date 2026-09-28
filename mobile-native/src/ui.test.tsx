@@ -66,3 +66,17 @@ it("scales the yourMessage variant's text size with Dynamic Type", () => {
 		lineHeight: 37.5,
 	});
 });
+
+it("sets the agentProse variant in the serif at 17/26 in the prose ink, scaled with Dynamic Type", () => {
+	mode.scheme = "dark";
+	mode.fontScale = 1.5;
+	const tree = render(<Copy variant="agentProse">Done.</Copy>);
+	const text = tree.root.findByType("Text" as never);
+	expect(text.props.selectable).toBe(true);
+	expect(text.props.style).toEqual({
+		fontFamily: "SourceSerif4-Regular",
+		fontSize: 25.5,
+		lineHeight: 39,
+		color: "#E0DED6",
+	});
+});

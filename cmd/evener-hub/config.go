@@ -93,6 +93,34 @@ type Config struct {
 	// 08 §6), keyed by the full five-part scoped receipt key. Each marker is
 	// the bounded proof that a superseded receipt was compacted away.
 	PrunedReceipts map[string]PrunedReceiptMarker `toml:"pruned_receipts"`
+	// StagedReceipts is hub.toml's durable staged-receipt marker section
+	// (registry spec 08 §5), keyed by host name: the transient marker one
+	// commit's step-(2) write carries until its post-commit write replaces it
+	// with the finalized receipt. At most one marker per host.
+	StagedReceipts map[string]HostStagedReceipt `toml:"staged_receipts"`
+	// TeardownRemnants is hub.toml's durable teardown-remnant section (registry
+	// spec 08 §6), keyed by the server-generated remnantId: the open remnants a
+	// committed-with-teardown-failure left behind and the typed resolved records
+	// their clearances wrote.
+	TeardownRemnants map[string]HostTeardownRemnant `toml:"teardown_remnants"`
+	// TeardownAttempts is hub.toml's durable teardown-attempt section (registry
+	// spec 08 §6), keyed by the server-generated attempt id: the claim a retry
+	// or recover writes beside the remnant it claims.
+	TeardownAttempts map[string]HostTeardownAttempt `toml:"teardown_attempts"`
+	// PendingStoreSync is hub.toml's cross-file commit intent section
+	// (deploy-pipeline spec 08b §9), keyed by host name: the exact store rows a
+	// commit's swap is deleting or invalidating, plus the hub.toml generation
+	// the intent belongs to. The mutation's atomic write carries it, the store's
+	// purge applies it after the swap, and a follow-up atomic write clears it.
+	// At most one intent per host.
+	PendingStoreSync map[string]HostStoreSyncIntent `toml:"pending_store_sync"`
+	// MirrorCommits is hub.toml's generation-mirror commit-marker section
+	// (deploy-pipeline spec 08b §4), keyed by host name: the (hub.toml
+	// generation, store-mirror generation) pair every hub.toml commit that also
+	// advances a mirrored store-side generation writes. Boot reconciles the
+	// store mirror against the file's marks with these as the authorization
+	// evidence.
+	MirrorCommits map[string]HostMirrorCommit `toml:"mirror_commits"`
 
 	// PluginAutoUpgrade is the global on/off switch for the background plugin
 	// auto-upgrade daemon (design doc §9.1). Defaults to on: the meaningful
@@ -156,6 +184,21 @@ type Config struct {
 	// implementing PR)"). A non-positive value is floored to the default.
 	HostTombstoneMaxCount int   `toml:"host_tombstone_max_count"`
 	HostTombstoneMaxBytes int64 `toml:"host_tombstone_max_bytes"`
+	// HostOperationTerminalPerHost, HostOperationTerminalStoreWide,
+	// HostOperationStoreMaxBytes, HostOperationTerminalMaxAge and
+	// HostOperationTombstonesPerHost are the operation store's retention knobs
+	// (deploy pipeline 08b §4: "at most 50 terminal records per host (tunable
+	// owner knob ...) ... at most 500 terminal records store-wide, at most
+	// 64 MiB of serialized store bytes, and at most 30 days of terminal-record
+	// age ... At most 50 tombstones per host (same owner-knob family)"). A
+	// non-positive value is floored to the default at load. The removed-host
+	// horizon is HostTombstoneRetention itself: §4's "past the
+	// `tombstoneRetention` horizon — 7-day default".
+	HostOperationTerminalPerHost   int           `toml:"host_operation_terminal_per_host"`
+	HostOperationTerminalStoreWide int           `toml:"host_operation_terminal_store_wide"`
+	HostOperationStoreMaxBytes     int64         `toml:"host_operation_store_max_bytes"`
+	HostOperationTerminalMaxAge    time.Duration `toml:"host_operation_terminal_max_age"`
+	HostOperationTombstonesPerHost int           `toml:"host_operation_tombstones_per_host"`
 	// HostSupersededReceiptMaxCount and HostSupersededReceiptTTL bound a live
 	// name's superseded-generation receipts (spec §6: "at most 8 newest
 	// same-key superseded receipts per name (owner-adjustable count bound; a
@@ -180,6 +223,16 @@ type Config struct {
 	// A non-positive value is floored to the default at load.
 	HostKeylessAuditMaxCount int           `toml:"host_keyless_audit_max_count"`
 	HostKeylessAuditTTL      time.Duration `toml:"host_keyless_audit_ttl"`
+	// The teardown-repair bounds (registry spec 08 §6): the cleared-remnant
+	// marker bounds, the recovery-marker bounds, and the attempt-history bound
+	// per remnant. Non-positive values take the documented defaults.
+	HostRemnantClearedMaxCount  int           `toml:"host_remnant_cleared_max_count"`
+	HostRemnantClearedTTL       time.Duration `toml:"host_remnant_cleared_ttl"`
+	HostRemnantRecoveryMaxCount int           `toml:"host_remnant_recovery_max_count"`
+	HostRemnantRecoveryTTL      time.Duration `toml:"host_remnant_recovery_ttl"`
+	HostRemnantAttemptMaxCount  int           `toml:"host_remnant_attempt_max_count"`
+	HostRemnantTeardownTimeout  time.Duration `toml:"host_remnant_teardown_timeout"`
+	HostRemnantEscalationAge    time.Duration `toml:"host_remnant_escalation_age"`
 }
 
 const (
@@ -208,6 +261,17 @@ const (
 	// tombstone bytes.
 	DefaultHostTombstoneMaxCount       = 64
 	DefaultHostTombstoneMaxBytes int64 = 16 << 20
+	// DefaultHostOperationTerminalPerHost, DefaultHostOperationTerminalStoreWide,
+	// DefaultHostOperationStoreMaxBytes, DefaultHostOperationTerminalMaxAge and
+	// DefaultHostOperationTombstonesPerHost are deploy pipeline 08b §4's
+	// shipped operation-store retention defaults: 50 terminal records per host,
+	// 500 store-wide, 64 MiB of serialized store bytes, 30 days of terminal
+	// age, and 50 dedup tombstones per host.
+	DefaultHostOperationTerminalPerHost         = 50
+	DefaultHostOperationTerminalStoreWide       = 500
+	DefaultHostOperationStoreMaxBytes     int64 = 64 << 20
+	DefaultHostOperationTerminalMaxAge          = 30 * 24 * time.Hour
+	DefaultHostOperationTombstonesPerHost       = 50
 	// DefaultHostSupersededReceiptMaxCount and DefaultHostSupersededReceiptTTL
 	// are the superseded-receipt bounds spec §6 describes. The TTL matches the
 	// tombstone retention: a superseded receipt's post-remove recovery window
@@ -226,35 +290,77 @@ const (
 	// rather than outcome recovery.
 	DefaultHostKeylessAuditMaxCount = 64
 	DefaultHostKeylessAuditTTL      = 30 * 24 * time.Hour
+	// DefaultHostRemnantClearedMaxCount and DefaultHostRemnantClearedTTL are the
+	// cleared-remnant marker bounds spec §6 names: "owner-set cleared-marker TTL
+	// plus an at-most-64-newest-per-name count bound in the same owner-knob
+	// family". The TTL matches the tombstone retention so a lost-response retry
+	// keeps its `already-cleared` replay for the window the tombstone lives, and
+	// past it reads `teardown-unknown-key` exactly as the spec requires.
+	DefaultHostRemnantClearedMaxCount = 64
+	DefaultHostRemnantClearedTTL      = 7 * 24 * time.Hour
+	// DefaultHostRemnantRecoveryMaxCount and DefaultHostRemnantRecoveryTTL are
+	// the recovery-marker bounds spec §11 names: "at most 64 newest recovery
+	// records per name plus a recovery-marker TTL in the same owner-knob family
+	// as the cleared-marker TTL".
+	DefaultHostRemnantRecoveryMaxCount = 64
+	DefaultHostRemnantRecoveryTTL      = 7 * 24 * time.Hour
+	// DefaultHostRemnantAttemptMaxCount bounds the attempt history one remnant
+	// keeps: the newest attempts survive so a timed-out attempt's record stays
+	// readable while a churn of retries cannot grow hub.toml without limit.
+	DefaultHostRemnantAttemptMaxCount = 8
+	// DefaultHostRemnantTeardownTimeout is the retry's bounded execution
+	// deadline (spec §6: "the retry's own teardown run carries a bounded
+	// execution deadline of the same owner-set family"). Two minutes is long
+	// enough for a local supervisor/channel teardown to drain and short enough
+	// that a stuck remote surfaces the terminal outcome with a live retry handle
+	// instead of holding the host gate.
+	DefaultHostRemnantTeardownTimeout = 2 * time.Minute
+	// DefaultHostRemnantEscalationAge is the bound past which an open remnant's
+	// row reports `escalationAgeSec` (spec §11): an hour is long enough that a
+	// transient teardown failure resolves itself through one retry and short
+	// enough that an operator hears about a remnant that is not going away.
+	DefaultHostRemnantEscalationAge = time.Hour
 )
 
 // DefaultConfig returns a Config populated with sensible defaults.
 func DefaultConfig() Config {
 	return Config{
-		Addr:                          "127.0.0.1:9180",
-		HubStateRoot:                  DefaultHubStateRoot(),
-		StateGlob:                     "",
-		RunDir:                        "",
-		StatusPollInterval:            2 * time.Second,
-		PastIndexRebuild:              60 * time.Second,
-		SpawnTimeout:                  30 * time.Second,
-		PastResultsPerPage:            50,
-		PluginAutoUpgrade:             true,
-		PluginAutoUpgradeInterval:     12 * time.Hour,
-		DaemonIdleTimeout:             time.Hour,
-		HostProbeTimeout:              DefaultHostProbeTimeout,
-		HostMinFreeSpaceBytes:         DefaultHostMinFreeSpaceBytes,
-		HostTombstoneRetention:        DefaultHostTombstoneRetention,
-		HostTombstoneMaxRows:          DefaultHostTombstoneMaxRows,
-		HostTombstoneMaxRowBytes:      DefaultHostTombstoneMaxRowBytes,
-		HostTombstoneMaxCount:         DefaultHostTombstoneMaxCount,
-		HostTombstoneMaxBytes:         DefaultHostTombstoneMaxBytes,
-		HostSupersededReceiptMaxCount: DefaultHostSupersededReceiptMaxCount,
-		HostSupersededReceiptTTL:      DefaultHostSupersededReceiptTTL,
-		HostPrunedReceiptMaxCount:     DefaultHostPrunedReceiptMaxCount,
-		HostPrunedReceiptTTL:          DefaultHostPrunedReceiptTTL,
-		HostKeylessAuditMaxCount:      DefaultHostKeylessAuditMaxCount,
-		HostKeylessAuditTTL:           DefaultHostKeylessAuditTTL,
+		Addr:                           "127.0.0.1:9180",
+		HubStateRoot:                   DefaultHubStateRoot(),
+		StateGlob:                      "",
+		RunDir:                         "",
+		StatusPollInterval:             2 * time.Second,
+		PastIndexRebuild:               60 * time.Second,
+		SpawnTimeout:                   30 * time.Second,
+		PastResultsPerPage:             50,
+		PluginAutoUpgrade:              true,
+		PluginAutoUpgradeInterval:      12 * time.Hour,
+		DaemonIdleTimeout:              time.Hour,
+		HostProbeTimeout:               DefaultHostProbeTimeout,
+		HostMinFreeSpaceBytes:          DefaultHostMinFreeSpaceBytes,
+		HostTombstoneRetention:         DefaultHostTombstoneRetention,
+		HostTombstoneMaxRows:           DefaultHostTombstoneMaxRows,
+		HostTombstoneMaxRowBytes:       DefaultHostTombstoneMaxRowBytes,
+		HostTombstoneMaxCount:          DefaultHostTombstoneMaxCount,
+		HostTombstoneMaxBytes:          DefaultHostTombstoneMaxBytes,
+		HostOperationTerminalPerHost:   DefaultHostOperationTerminalPerHost,
+		HostOperationTerminalStoreWide: DefaultHostOperationTerminalStoreWide,
+		HostOperationStoreMaxBytes:     DefaultHostOperationStoreMaxBytes,
+		HostOperationTerminalMaxAge:    DefaultHostOperationTerminalMaxAge,
+		HostOperationTombstonesPerHost: DefaultHostOperationTombstonesPerHost,
+		HostSupersededReceiptMaxCount:  DefaultHostSupersededReceiptMaxCount,
+		HostSupersededReceiptTTL:       DefaultHostSupersededReceiptTTL,
+		HostPrunedReceiptMaxCount:      DefaultHostPrunedReceiptMaxCount,
+		HostPrunedReceiptTTL:           DefaultHostPrunedReceiptTTL,
+		HostKeylessAuditMaxCount:       DefaultHostKeylessAuditMaxCount,
+		HostKeylessAuditTTL:            DefaultHostKeylessAuditTTL,
+		HostRemnantClearedMaxCount:     DefaultHostRemnantClearedMaxCount,
+		HostRemnantClearedTTL:          DefaultHostRemnantClearedTTL,
+		HostRemnantRecoveryMaxCount:    DefaultHostRemnantRecoveryMaxCount,
+		HostRemnantRecoveryTTL:         DefaultHostRemnantRecoveryTTL,
+		HostRemnantAttemptMaxCount:     DefaultHostRemnantAttemptMaxCount,
+		HostRemnantTeardownTimeout:     DefaultHostRemnantTeardownTimeout,
+		HostRemnantEscalationAge:       DefaultHostRemnantEscalationAge,
 	}
 }
 
@@ -373,6 +479,7 @@ func decodeConfig(name, data string) (Config, error) {
 		value time.Duration
 	}{
 		{"host_tombstone_retention", cfg.HostTombstoneRetention},
+		{"host_operation_terminal_max_age", cfg.HostOperationTerminalMaxAge},
 		{"host_superseded_receipt_ttl", cfg.HostSupersededReceiptTTL},
 		{"host_pruned_receipt_ttl", cfg.HostPrunedReceiptTTL},
 		{"host_keyless_audit_ttl", cfg.HostKeylessAuditTTL},
@@ -415,6 +522,33 @@ func decodeConfig(name, data string) (Config, error) {
 	if err := validatePrunedReceipts(cfg.PrunedReceipts); err != nil {
 		return cfg, fmt.Errorf("validate pruned receipts: %w", err)
 	}
+	// The teardown-repair records (registry spec 08 §5/§6) are the sections this
+	// slice adds: the staged-receipt markers a commit's step-(2) write carries,
+	// the open remnants and typed resolved records their clearances leave, and
+	// the attempt records a retry claims. Each is refused loudly when its shape
+	// is one this build cannot decode, so a marker or remnant that reached the
+	// file from a newer build is a hard startup error rather than a silently
+	// reinterpreted (or dropped) record.
+	if err := validateHostStagedReceipts(cfg.StagedReceipts); err != nil {
+		return cfg, fmt.Errorf("validate staged receipts: %w", err)
+	}
+	if err := validateHostTeardownRemnants(cfg.TeardownRemnants); err != nil {
+		return cfg, fmt.Errorf("validate teardown remnants: %w", err)
+	}
+	if err := validateHostTeardownAttempts(cfg.TeardownAttempts, cfg.TeardownRemnants); err != nil {
+		return cfg, fmt.Errorf("validate teardown attempts: %w", err)
+	}
+	// The cross-file commit intent and the generation-mirror markers are the
+	// deploy pipeline's machine-managed sections (08b §4/§9): a record whose
+	// shape this build cannot decode — an intent without rows or a generation,
+	// a marker without a generation — is refused loudly before any rewrite, the
+	// same reserved-namespace posture the sections above take.
+	if err := validateHostStoreSync(cfg.PendingStoreSync); err != nil {
+		return cfg, fmt.Errorf("validate pending store sync: %w", err)
+	}
+	if err := validateHostMirrorCommits(cfg.MirrorCommits); err != nil {
+		return cfg, fmt.Errorf("validate mirror commits: %w", err)
+	}
 	// Every field of a reserved record must decode: the two tables are decoded
 	// into typed structs and rebuilt on every rewrite, so a field this build does
 	// not know would be silently dropped by the next write. Spec 08 §6 is
@@ -425,7 +559,9 @@ func decodeConfig(name, data string) (Config, error) {
 	// operator's data and are not this check's business.
 	for _, key := range metadata.Undecoded() {
 		if len(key) > 1 && (key[0] == "host_records" || key[0] == "generations" || key[0] == "mutation_receipts" ||
-			key[0] == "tombstones" || key[0] == "pruned_receipts") {
+			key[0] == "tombstones" || key[0] == "pruned_receipts" || key[0] == "staged_receipts" ||
+			key[0] == "teardown_remnants" || key[0] == "teardown_attempts" ||
+			key[0] == "pending_store_sync" || key[0] == "mirror_commits") {
 			return cfg, fmt.Errorf("config %s: reserved record %s carries a field this build does not decode; refusing rather than dropping it on the next rewrite", name, key.String())
 		}
 	}
@@ -618,6 +754,21 @@ func applyConfigDefaults(cfg *Config) {
 	}
 	if cfg.HostTombstoneMaxBytes <= 0 {
 		cfg.HostTombstoneMaxBytes = DefaultHostTombstoneMaxBytes
+	}
+	if cfg.HostOperationTerminalPerHost <= 0 {
+		cfg.HostOperationTerminalPerHost = DefaultHostOperationTerminalPerHost
+	}
+	if cfg.HostOperationTerminalStoreWide <= 0 {
+		cfg.HostOperationTerminalStoreWide = DefaultHostOperationTerminalStoreWide
+	}
+	if cfg.HostOperationStoreMaxBytes <= 0 {
+		cfg.HostOperationStoreMaxBytes = DefaultHostOperationStoreMaxBytes
+	}
+	if cfg.HostOperationTerminalMaxAge <= 0 {
+		cfg.HostOperationTerminalMaxAge = DefaultHostOperationTerminalMaxAge
+	}
+	if cfg.HostOperationTombstonesPerHost <= 0 {
+		cfg.HostOperationTombstonesPerHost = DefaultHostOperationTombstonesPerHost
 	}
 	if cfg.HostSupersededReceiptMaxCount <= 0 {
 		cfg.HostSupersededReceiptMaxCount = DefaultHostSupersededReceiptMaxCount

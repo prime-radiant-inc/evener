@@ -1,5 +1,10 @@
 # Agent Instructions
 
+## Worktree preference
+
+Always create an isolated worktree for feature, bug-fix, and PR work. You have permission.
+Keep unrelated changes in the current checkout out of the worktree and PR.
+
 ## Testing
 
 Before adding or changing tests, read `docs/developing-evener/testing.md`.
@@ -82,8 +87,12 @@ follows symlinks, so a shared install newer than this worktree's lockfile would
 otherwise skip the comparison entirely). If you do run `npm ci` by hand, still
 check `[ -L node_modules ]` yourself first; don't rely on the script to catch
 it for you. The same
-symlink risk applies to `appwire-client/typescript` (no preflight script owns its
-install; `make test-api-package` runs `npm run qualification` directly) and
+symlink risk applies to `appwire-client/typescript`, whose install
+`api-package-preflight.sh` now owns for `make test-api-package`: like
+`web-preflight.sh` it `npm ci`s a real, non-symlinked install that is missing
+or older than the lockfile, and for a symlinked shared install it compares
+lockfiles and refuses when they differ before the `-nt` shortcut, so it never
+runs `npm ci` through one. It applies too
 to `mobile-native` (`native-preflight.sh` refuses a symlinked install
 outright — the bundler resolves no module through one, whatever the lockfiles
 say — and never runs `npm ci` itself; it fails loudly and names the command
@@ -119,3 +128,49 @@ named one by one.
 run load app modules that import the package by name. `npm run check:scripts`
 (part of `make test-native`) resolves those scripts' module graphs without
 loading them, since each opens a socket the moment its body runs.
+
+## Shepherding a PR through RoboRev
+
+- **Simplify-code*
+  Before submitting a PR, you should always use the /simplify-code skill to
+  improve the code quality.
+
+- **Shepherd-PR**
+  You should use the /shepherd-pr skill if it is installed.
+- **One push, one CI run, one review, one wait.** Make the whole round's edits
+  (fixes for every finding), then push once, then wait once with the
+  shepherd-pr settle detector. The detector exits when the head stops moving,
+  no check is outstanding, and roborev's combined review names your exact
+  head. Run it as its own background job: a `&` inside a job orphans it, and
+  an orphaned job once killed both the comment post and the detector silently.
+- **Green is not clean.** `roborev_check=SUCCESS` says the review *ran*, not
+  that it found nothing — the combined comment's body carries the findings.
+  Read it every round, plus the per-commit surface: `roborev list --open` in
+  the checkout; findings against your own commits can sit there unseen. Close
+  a per-commit review only when its findings are genuinely resolved; never
+  blanket-close, and leave other lanes' reviews alone.
+- **Triage each finding by evidence, not reflex.** Fix at the root
+  red-test-first: watch the reviewer's scenario fail, then pass, and post both
+  runs in a PR comment — the repo's convention is one evidence comment per
+  round covering every finding. When the finding is wrong, refute it with the
+  code's own construction (e.g. Summarize counts every non-done/cancelled
+  status as remaining, so the aggregate cannot claim completion) or the
+  pinned toolchain (tsc 6.0.3 types `Element.textContent` as non-null,
+  matching the DOM spec — verify a claimed typecheck failure against
+  `make test-web` before "fixing" it). When two reviewers conflict, the
+  reconciliation usually is that both are right about different cases; pin
+  both cases.
+- **Merge the base before asking for approval.** If the repo dismisses stale
+  reviews, a post-approval base merge voids the approval and demands another;
+  merge `origin/main` first so the review and the approval land on the same
+  final head.
+- **Merge approval**
+  If every CI check is green and RoboRev notes only 'low' findings or findings 
+  you have conclusively refuted, you are authorized to admin squash merge to main.
+
+- **Gates run from the repo root.** `make test-web`'s target lives in the root
+  Makefile; running it from `cmd/evener-hub/frontend` dies with "No rule to
+  make target". Run Biome's autofix on every touched file before the gate —
+  including `appwire-client/typescript`, which the gate checks too; two gate
+  runs in one loop died to comment rewraps alone. Biome must run from the
+  frontend directory (see above), just not with a `cwd` that strands `make`.

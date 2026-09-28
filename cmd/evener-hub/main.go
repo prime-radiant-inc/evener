@@ -48,11 +48,26 @@ import (
 
 const Version = "0.1.0"
 
+// Hub HTTP listener deadlines: ReadHeaderTimeout bounds the pre-auth window
+// before a peer finishes its request headers (before AuthGuard middleware
+// runs); IdleTimeout bounds an idle keep-alive socket. Neither governs a
+// hijacked AppWire connection, so long-lived streams are unaffected.
+const (
+	hubHTTPReadHeaderTimeout = 10 * time.Second
+	hubHTTPIdleTimeout       = 120 * time.Second
+)
+
 var (
 	hubExecutable  = os.Executable
 	hubProcessArgs = func() []string { return os.Args }
 	hubHostname    = os.Hostname
 	hubRunMain     = runMain
+	// hubBuildDirty reports whether this hub was built from a dirty tree, by the
+	// same rule sshconn refuses deploy sources under (a "<sha>-dirty" controller
+	// version, isDirtyVersion). It is a seam so a test can put the hub in either
+	// state without stamping the binary it runs in; deploy_flags.go reads it to
+	// pick the remedy that matches what sshconn will actually do with the source.
+	hubBuildDirty = func() bool { return strings.HasSuffix(strings.TrimSpace(buildinfo.Version()), "-dirty") }
 	// hubProcessStart is this hub process's own start instant, captured when
 	// the package initializes. It is what evener/host/running reports as its
 	// processStartTime (deploy pipeline 08b §10: "present exactly when the
@@ -134,10 +149,29 @@ type hubOptions struct {
 	evenerBinary   string
 	appwireTrace   string
 	// deployBinary and buildSource describe how a missed host gets the
-	// controller's build pushed to it. They are empty for a local-only
-	// controller, which needs no deploy path at all.
+	// controller's build pushed to it. With neither set, deployBinary defaults to
+	// this hub's own executable (deployDefault records that), so a host that
+	// needs the controller's build is provisioned by default; -no-deploy disables
+	// the default and both flags, leaving a local-only controller with no deploy
+	// path at all.
 	deployBinary string
 	buildSource  string
+	// noDeploy is the explicit opt-out: the hub wires no deploy source (not even
+	// the own-executable default) and a host that needs one is refused with the
+	// remedy named. deployWiring applies it before the flags, so -no-deploy wins
+	// over both of them.
+	noDeploy bool
+	// deployDefault records that deployBinary was not named by the operator: it
+	// is this hub's own executable, adopted by validateDeployFlags. Only the
+	// startup log and the deploy wiring read it: the log says the source was
+	// defaulted rather than given, and the wiring marks the source as the own
+	// executable (the one source a dirty controller may install).
+	deployDefault bool
+	// defaultFailure records why the own-executable default was not adopted, so
+	// the unwired state's refusal names the actual cause: an executable that read
+	// fine but is not evener is a different problem from one that could not be
+	// located or read at all. See deploy_flags.go's deployDefaultFailure.
+	defaultFailure deployDefaultFailure
 }
 
 type mainDeps struct {
@@ -335,6 +369,15 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 		_, _ = fmt.Fprintf(stderr, "[hub] auth token: %v\n", err)
 		return err
 	}
+	// The message search index (S14) lives in its own file beside index.db.
+	// A hub that cannot open it still serves; search then finds sessions by
+	// title and prompt only.
+	messageSearch, err := hubcore.OpenMessageSearch(filepath.Join(hubStateRoot, "search.db"))
+	if err != nil {
+		_, _ = fmt.Fprintf(stderr, "[hub] message search: %v\n", err)
+	} else {
+		defer func() { _ = messageSearch.Close() }()
+	}
 	providersConfigPath, noUserLayer := cmdutil.ProvidersConfigPath()
 	credentialsPath := cmdutil.CredentialsPath()
 	credsStore, err := deps.loadCredentials(credentialsPath)
@@ -484,26 +527,25 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 	// background loops start attaching hosts.
 	var hostManageEvents func(sshconn.Event)
 	// The deploy wiring is a pure function of the flags: -deploy-binary wins over
-	// -build-source, matching the manager's own BuildBinary-first dispatch. When
-	// both are set, say which one is used rather than silently ignoring the other.
+	// -build-source, matching the manager's own BuildBinary-first dispatch, and
+	// with neither set the default is this hub's own executable — unless
+	// -no-deploy disables deploying. Startup says which source is effective, so
+	// the default and an opt-out are visible rather than inferred.
 	deploy := opts.deployWiring()
-	switch {
-	case opts.deployBinary != "" && opts.buildSource != "":
-		_, _ = fmt.Fprintf(stderr, "[hub] deploy path: -deploy-binary %s takes precedence over -build-source %s\n", opts.deployBinary, opts.buildSource)
-	case opts.deployBinary != "":
-		_, _ = fmt.Fprintf(stderr, "[hub] deploy path: -deploy-binary %s\n", opts.deployBinary)
-	case opts.buildSource != "":
-		_, _ = fmt.Fprintf(stderr, "[hub] deploy path: -build-source %s\n", opts.buildSource)
+	if line := opts.deployPathLogLine(); line != "" {
+		_, _ = fmt.Fprintln(stderr, line)
 	}
 	newSSHManager := deps.newSSHManager
 	if newSSHManager == nil {
 		newSSHManager = sshconn.New
 	}
 	sshManager := newSSHManager(hostRegistry, sshconn.Options{
-		Logger:      func(format string, args ...any) { _, _ = fmt.Fprintf(stderr, "[hub] "+format+"\n", args...) },
-		BuildBinary: deploy.buildBinary,
-		BuildSource: deploy.buildSource,
-		DeployHelp:  deploy.help,
+		Logger:         func(format string, args ...any) { _, _ = fmt.Fprintf(stderr, "[hub] "+format+"\n", args...) },
+		BuildBinary:    deploy.buildBinary,
+		BuildSource:    deploy.buildSource,
+		OwnExecutable:  deploy.ownExecutable,
+		DeployDisabled: deploy.disabled,
+		DeployHelp:     deploy.help,
 		OnEvent: func(ev sshconn.Event) {
 			hubSSHStateInvalidation(
 				func() {
@@ -557,6 +599,24 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 			_, _ = fmt.Fprintf(stderr, "[hub] pruned %d orphaned host-running probe file(s) under %s\n", pruned, root)
 		}
 	}
+	// The operation store opens before the hub serves anything. A corrupt store
+	// file takes §4's custody-first quarantine; a corrupt file whose custody
+	// snapshot is incomplete refuses the boot outright — the hub must never serve
+	// hosts past a fence the quarantine cannot prove.
+	opsStore, err := openHostOpsStore(hubStateRoot, stderr, hostOperationRetention(cfg))
+	if err != nil {
+		_, _ = fmt.Fprintf(stderr, "[hub] %v\n", err)
+		return err
+	}
+	// The operation store loads before the web server is built; a loaded
+	// compensation record whose stash reference is not this hub.toml family's
+	// own must never become a read, restore, or remove target, so a foreign
+	// path refuses startup (the machine-managed-file posture: a record this
+	// build cannot account for is refused loudly, never served).
+	if err := validateHostOpsStashReferences(opsStore, opts.configPath); err != nil {
+		_, _ = fmt.Fprintf(stderr, "[hub] %v\n", err)
+		return err
+	}
 	web := newWebServer(hubcore.WebConfig{
 		HubAddr:                   cfg.Addr,
 		AuthToken:                 authToken,
@@ -577,6 +637,7 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 		Favorite:                  favorite,
 		PinSections:               pinSections,
 		SessionSeen:               sessionSeen,
+		MessageSearch:             messageSearch,
 		Spawner:                   spawner,
 		APILogDefault:             cfg.APILog,
 		DeletionStore:             deletionStore,
@@ -598,7 +659,7 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 		RemoteHostRegistry:   hostRegistry,
 		RemoteHostSSHManager: sshManager,
 		RemoteHostConfigPath: opts.configPath,
-		RemoteHostOpsStore:   openHostOpsStore(hubStateRoot, stderr),
+		RemoteHostOpsStore:   opsStore,
 		// This hub's own running identity and the two owner-adjustable
 		// deploy-pipeline knobs: the probe deadline the plan's gated probe
 		// uses, and the minimum free space evener/host/running's health
@@ -764,12 +825,20 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 		}
 	})
 
+	// Message search refresher: re-reads the transcripts that changed on the
+	// past index's rebuild interval (S14).
+	startBackground(func() { refreshHubMessageSearch(ctx, messageSearch, past, cfg.PastIndexRebuild) })
+
 	// Attention watcher: derives each live session's attention level from the
 	// same roster/past-index/archive inputs the sidebar tree uses, and
 	// broadcasts evener/attention/changed whenever a session's level actually
 	// transitions (notifications.js drives the tab title/favicon badge and OS
 	// notifications from it). Ticks every 5s and on-demand via attentionPoke.
 	startBackground(func() { watchHubAttention(ctx, attentionPoke, archive, past, roster, web) })
+
+	// Notices watcher: re-derives the hub's notices every few seconds and
+	// broadcasts evener/notices/changed when they change (S11).
+	startBackground(func() { watchHubNotices(ctx, web) })
 
 	// Seed the bundled default marketplaces (best-effort, first-run-gated —
 	// see SeedDefaultMarketplaces). Every evener CLI path does this already
@@ -812,8 +881,10 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 
 	srv := &listenerHTTPServer{
 		Server: &http.Server{
-			Addr:    cfg.Addr,
-			Handler: web.Handler(),
+			Addr:              cfg.Addr,
+			Handler:           web.Handler(),
+			ReadHeaderTimeout: hubHTTPReadHeaderTimeout,
+			IdleTimeout:       hubHTTPIdleTimeout,
 		},
 		ln: hubListener,
 	}
@@ -833,12 +904,20 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 
 // openHostOpsStore opens the hub's operation store — the file the
 // host-management surface mirrors per-host boundary records into — beside the
-// hub's other durable stores. A store that cannot be opened (a corrupt file,
-// an unreadable one) is logged and left unwired rather than refusing startup:
-// the mirror is a copy of hub.toml's machine records and never their authority,
-// and the custody-first quarantine a corrupt store file earns belongs to the
-// crash-fencing slice. Until then this is the interim posture: the hub serves,
-// and host mutations commit without mirroring.
+// hub's other durable stores. A corrupt store file takes §4's custody-first
+// quarantine: the corrupt file is renamed aside with its custody file, the
+// replacement store serves empty, and a crash between the custody write and the
+// rename, or between the rename and the replacement open, is completed on the
+// next boot. The quarantine's operator-visible health signal names the
+// quarantined file and its custody, and stays visible for as long as the
+// custody file keeps the names it closed closed.
+//
+// A corrupt file whose custody snapshot is incomplete — anything that would
+// leave a fence unprovable — fails startup here, never serves: the error aborts
+// the boot rather than leaving host operations unwired. Every other open failure
+// keeps the pre-quarantine disposition: the failure is logged and the hub
+// serves with host operations unwired, because a transient permission or I/O
+// problem is not a fence the hub cannot prove.
 //
 // The opened store also runs §3's boot reap: expired confirmation tokens are
 // dropped at startup, so a restart never leaves an unexpired-looking row behind
@@ -852,11 +931,35 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 // state-root write probe's crash orphans: an epoch with no mint behind it is
 // inert, and a crashed probe's temp/target file is a stray nothing else will
 // remove.
-func openHostOpsStore(stateRoot string, stderr io.Writer) *hostops.Store {
-	store, err := hostops.Open(hostops.StorePath(stateRoot))
+func openHostOpsStore(stateRoot string, stderr io.Writer, retention hostops.RetentionPolicy) (*hostops.Store, error) {
+	store, err := hostops.OpenWithRetention(hostops.StorePath(stateRoot), retention)
 	if err != nil {
+		if errors.Is(err, hostops.ErrStoreCorrupt) {
+			return nil, fmt.Errorf("host operation store: %w", err)
+		}
 		_, _ = fmt.Fprintf(stderr, "[hub] host operation store not opened, host boundary records will not be mirrored: %v\n", err)
-		return nil
+		return nil, nil
+	}
+	if signal := store.Quarantine(); signal != nil {
+		_, _ = fmt.Fprintf(stderr,
+			"[hub] host operation store quarantined %s (custody %s, quarantine epoch %d); the replacement store serves the custody's orphan-unverified records only, and every name that custody closed stays closed until orphan-resolve\n",
+			signal.QuarantinedFile, signal.CustodyFile, signal.QuarantineEpoch)
+	}
+	// §7's boot order starts here: the store load plus the safety-critical local
+	// reap of its local orphan boundary FIRST, before hub.toml loads, before the
+	// interrupted transition, and before anything serves. Crash-fencing §3
+	// (slice S19) owns that reap; this is the named seam it fills, and nothing
+	// here does its work — no host is touched, no epoch is advanced. Its failure
+	// contract is fail-closed and durable, never a startup refusal: an
+	// unverifiable boundary keeps its `pending-spawn` intent open and marks the
+	// affected records `orphan-unverified` with the host admission-fenced,
+	// retried on every boot (crash-fencing §3's local-reap rule and §7's boot
+	// reaping order). The error below is what that implementation reports; the
+	// hub serves either way, exactly as it does when this seam is a no-op.
+	if reaped, err := reapLocalOrphanBoundary(store); err != nil {
+		_, _ = fmt.Fprintf(stderr, "[hub] host operation store opened, but its local orphan boundary was not reaped: %v\n", err)
+	} else if reaped > 0 {
+		_, _ = fmt.Fprintf(stderr, "[hub] host operation store reaped %d local orphan boundary row(s)\n", reaped)
 	}
 	if reaped, err := store.ReapExpiredTokens(); err != nil {
 		_, _ = fmt.Fprintf(stderr, "[hub] host operation store opened, but its expired confirmation tokens were not reaped: %v\n", err)
@@ -876,7 +979,43 @@ func openHostOpsStore(stateRoot string, stderr io.Writer) *hostops.Store {
 	} else if interrupted > 0 {
 		_, _ = fmt.Fprintf(stderr, "[hub] host operation store moved %d in-flight operation(s) to interrupted\n", interrupted)
 	}
-	return store
+	return store, nil
+}
+
+// reapLocalOrphanBoundary is the named seam for crash-fencing §3's
+// safety-critical local reap: the FIRST step of §7's boot order, run
+// immediately after the operation store loads and before hub.toml loads, the
+// interrupted transition, or any request is served. Slice S19 owns the reap —
+// it resolves the store's local orphan boundary so a crashed epoch's remote
+// fence is never crossed locally — and this slice deliberately builds none of
+// it (no remote call, no guard advance, no kill/wait); the seam exists so the
+// order and the call site are real today.
+//
+// The reap's failure contract, per crash-fencing §3, is fail-closed and
+// durable, never a startup refusal: enumeration that cannot verify an orphan
+// keeps the boundary's `pending-spawn` intent open and marks the affected
+// records `orphan-unverified` with the host admission-fenced, and every
+// subsequent boot retries it (§7). The returned error is that implementation's
+// to report; this call site logs it and serves, because a failed reap fences
+// affected hosts through the record, not through the hub's startup.
+func reapLocalOrphanBoundary(store *hostops.Store) (int, error) {
+	_ = store
+	return 0, nil
+}
+
+// hostOperationRetention maps the hub's owner knobs onto the operation store's
+// §4 retention policy: the five terminal/tombstone/store-byte/age bounds, with
+// the removed-host horizon being the tombstoneRetention knob §4 cites
+// (registry spec §15). Every zero value floors to the store's shipped default.
+func hostOperationRetention(cfg Config) hostops.RetentionPolicy {
+	return hostops.RetentionPolicy{
+		TerminalPerHost:    cfg.HostOperationTerminalPerHost,
+		TerminalStoreWide:  cfg.HostOperationTerminalStoreWide,
+		StoreMaxBytes:      cfg.HostOperationStoreMaxBytes,
+		TerminalMaxAge:     cfg.HostOperationTerminalMaxAge,
+		TombstonesPerHost:  cfg.HostOperationTombstonesPerHost,
+		RemovedHostHorizon: cfg.HostTombstoneRetention,
+	}
 }
 
 // hostRegistryEntries maps the validated [[hosts]] entries onto the host
@@ -956,6 +1095,7 @@ func parseHubOptions(args []string, stderr io.Writer) (hubOptions, error) {
 	fs.StringVar(&opts.appwireTrace, "appwire-trace", "", "write raw per-connection browser AppWire frames to a new JSONL file")
 	fs.StringVar(&opts.deployBinary, "deploy-binary", "", "path to a pre-built evener for the host's target, pushed as-is (no build source or Go toolchain needed)")
 	fs.StringVar(&opts.buildSource, "build-source", "", "path to an evener checkout's module root to cross-compile the host's target from")
+	fs.BoolVar(&opts.noDeploy, "no-deploy", false, "never deploy to hosts: disable the own-executable default and ignore -deploy-binary/-build-source")
 	fs.Usage = func() {
 		_, _ = fmt.Fprintf(stderr, "Usage: evener-hub [flags]\n\nMulti-session web orchestrator for evener serve daemons.\n\n")
 		fs.PrintDefaults()
@@ -980,8 +1120,9 @@ func parseHubOptions(args []string, stderr io.Writer) (hubOptions, error) {
 	}
 	// Validate the deploy flags where they are read: a bad path fails startup
 	// naming the flag rather than surfacing at the first attach as a deploy
-	// failure. A flag left unset needs no validation, so a local-only controller
-	// still starts.
+	// failure. A flag left unset needs no validation — and with both unset the
+	// deploy default (this hub's own executable) is adopted only if it passes the
+	// same checks, so an embedder or test binary still starts with no deploy path.
 	if err == nil {
 		err = opts.validateDeployFlags()
 	}

@@ -67,7 +67,7 @@ import { closePanesForDeletedSessions } from "../deletedSessionPanes";
 import { navigate } from "../routing";
 import { openSessionByRef } from "../sessionPlacement";
 import { useIsMobile } from "../useIsMobile";
-import { workspaceStore } from "../workspace";
+import { currentSessionRef, useWorkspaceStore, workspaceStore } from "../workspace";
 import {
   assignSessionPin,
   deletePinSection,
@@ -169,6 +169,7 @@ interface RailSectionProps {
   onToggle: (node: RailNode) => void;
   onActivate: (node: RailNode) => void;
   actions: RailRowActions;
+  isRowSelected: (node: RailNode) => boolean | undefined;
   projectRetryCallback: (key: string) => () => void;
 }
 
@@ -367,6 +368,7 @@ function RailSection({
   onToggle,
   onActivate,
   actions,
+  isRowSelected,
   projectRetryCallback,
 }: RailSectionProps) {
   const renderRow = useMemo(() => renderRailRow(actions, projectRetryCallback), [actions, projectRetryCallback]);
@@ -374,7 +376,15 @@ function RailSection({
   return (
     <section className={CLASS.section}>
       <SectionHeading label={title} open={open} onToggleOpen={onToggleOpen} staticLabel />
-      {open && <RailTree nodes={nodes} onToggle={onToggle} onActivate={onActivate} renderRow={renderRow} />}
+      {open && (
+        <RailTree
+          nodes={nodes}
+          onToggle={onToggle}
+          onActivate={onActivate}
+          renderRow={renderRow}
+          isSelected={isRowSelected}
+        />
+      )}
     </section>
   );
 }
@@ -395,6 +405,7 @@ function PinnedRailSection({
   onToggle,
   onActivate,
   actions,
+  isRowSelected,
   projectRetryCallback,
 }: PinnedRailSectionProps) {
   const renderRow = useMemo(() => renderRailRow(actions, projectRetryCallback), [actions, projectRetryCallback]);
@@ -436,6 +447,7 @@ function PinnedRailSection({
           onToggle={onToggle}
           onActivate={onActivate}
           renderRow={renderRow}
+          isSelected={isRowSelected}
         />
       )}
     </section>
@@ -453,6 +465,7 @@ function ArchivedSection({
   onToggle,
   onActivate,
   actions,
+  isRowSelected,
   projectRetryCallback,
 }: ArchivedSectionProps) {
   const renderRow = useMemo(() => renderRailRow(actions, projectRetryCallback), [actions, projectRetryCallback]);
@@ -460,7 +473,15 @@ function ArchivedSection({
   return (
     <section className={CLASS.section}>
       <SectionHeading label={label} open={open} onToggleOpen={onToggleOpen} staticLabel />
-      {open && <RailTree nodes={nodes} onToggle={onToggle} onActivate={onActivate} renderRow={renderRow} />}
+      {open && (
+        <RailTree
+          nodes={nodes}
+          onToggle={onToggle}
+          onActivate={onActivate}
+          renderRow={renderRow}
+          isSelected={isRowSelected}
+        />
+      )}
     </section>
   );
 }
@@ -1008,6 +1029,15 @@ function NavigationRail({
   const groupingMode: RailGroupingMode = hostGrouping ? grouping : "flat";
   const serverInfo = useConnectionStore((state) => state.serverInfo);
   const toasts = useToasts();
+  // The session the workspace is showing, if any, marks its row as the selected
+  // item. One subscription here, not one inside every section's Tree: a rail
+  // renders several Trees, and each would re-render its whole subtree on every
+  // pane open/focus/close. Only session rows are selectable - a project or
+  // host row returns undefined, leaving it without a selected state rather
+  // than asserting it is a non-selection.
+  const selectedSessionRef = useWorkspaceStore(currentSessionRef);
+  const isRowSelected = (node: RailNode): boolean | undefined =>
+    node.kind === "session" ? node.session.ref === selectedSessionRef : undefined;
   const [expandedOverrides, setExpandedOverrides] = useState<ReadonlyMap<string, boolean>>(loadExpansion);
   const [sectionRenameTarget, setSectionRenameTarget] = useState<RailPinSection | null>(null);
   const [sectionRenameValue, setSectionRenameValue] = useState("");
@@ -1886,6 +1916,7 @@ function NavigationRail({
                 onToggle={handleToggle}
                 onActivate={handleActivate}
                 actions={rowActions}
+                isRowSelected={isRowSelected}
                 projectRetryCallback={projectRetryCallback}
               />
               {pinSections.map((section) => (
@@ -1900,6 +1931,7 @@ function NavigationRail({
                   onToggle={handleToggle}
                   onActivate={handleActivate}
                   actions={rowActions}
+                  isRowSelected={isRowSelected}
                   projectRetryCallback={projectRetryCallback}
                 />
               ))}
@@ -1916,6 +1948,7 @@ function NavigationRail({
                 onToggle={handleToggle}
                 onActivate={handleActivate}
                 actions={rowActions}
+                isRowSelected={isRowSelected}
                 projectRetryCallback={projectRetryCallback}
               />
               <RailSection
@@ -1931,6 +1964,7 @@ function NavigationRail({
                 onToggle={handleToggle}
                 onActivate={handleActivate}
                 actions={rowActions}
+                isRowSelected={isRowSelected}
                 projectRetryCallback={projectRetryCallback}
               />
               {archivedNodes.length > 0 && (
@@ -1942,6 +1976,7 @@ function NavigationRail({
                   onToggle={handleToggle}
                   onActivate={handleActivate}
                   actions={rowActions}
+                  isRowSelected={isRowSelected}
                   projectRetryCallback={projectRetryCallback}
                 />
               )}

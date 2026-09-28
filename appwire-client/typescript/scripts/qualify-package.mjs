@@ -549,7 +549,8 @@ const navigationStoreState: client.NavigationStoreState = client.createNavigatio
       // reads its expansion at creation, writes a toggle back through the
       // port, and re-reads the port on reset - with no client wired, so
       // nothing opens a socket), selectors (an unloaded store names no launch
-      // sources and no needs-you rows, and the row age formatter is pure).
+      // sources and no needs-you rows, and the row age formatter is pure),
+      // hostGrouping (a cluster sits under its newest member's host).
       smoke: `assert.equal(client.keyID({ kind: "section", section: "live", offset: 0, limit: 50 }), '{"kind":"section","limit":50,"offset":0,"section":"live"}');
 assert.equal(client.nextNavigationOffset(50, 25), 75);
 assert.equal(client.isNavigationUnavailable(new Error("boom")), false);
@@ -583,6 +584,7 @@ assert.equal(navigationStore.getState().expanded.get("projectnode:p"), false);
 assert.deepEqual(client.selectSources(navigationStore.getState()), []);
 assert.equal(client.selectNeedsYouCount(navigationStore.getState()), 0);
 assert.equal(client.relativeAge(new Date().toISOString()), "now");
+assert.equal(client.sessionGroupHostId({ kind: "cluster", host_id: "cluster", children: [{ host_id: "devbox" }] }), "devbox");
 `,
     },
     // The credentials state layer: the listing core each app's Providers &
@@ -1028,6 +1030,19 @@ ${presenceLoop}${surface.smoke ?? ""}`,
   for (const consumer of runtimeConsumers) run(process.execPath, [join(consumerDir, consumer)], consumerDir);
   runConsumerResolveCheck();
   const listing = run("tar", ["-tzf", tarball], consumerDir);
+  // The files list decides what tsc compiles, but tsc also emits every module a
+  // listed module imports. So a module reachable only through a barrel is built,
+  // packed and shipped even when it is missing from files, and the shippedModules
+  // loops above - the one place every shipped module is reachability-checked -
+  // never see it (#1639). Read the shipped module set back off the packed tarball
+  // and require files to name all of it, so an omitted module cannot ship
+  // unqualified and unnoticed.
+  const shippedFromTarball = listing
+    .split("\n")
+    .filter((entry) => entry.startsWith("package/dist/") && entry.endsWith(".js"))
+    .map((entry) => entry.slice("package/dist/".length, -".js".length));
+  for (const module of shippedFromTarball)
+    assert(shippedModules.includes(module), `tsconfig.build.json files does not list the shipped module ${module}`);
   for (const expected of [
     ...shippedModules.flatMap((module) => [`package/dist/${module}.js`, `package/dist/${module}.d.ts`]),
     "package/README.md",
@@ -1056,7 +1071,7 @@ ${presenceLoop}${surface.smoke ?? ""}`,
   }
   // Run the shipped program from the installed tarball. Only the remote server
   // is scripted; imports, sockets, handshake, client requests and output are real.
-  const serverProtocolVersion = "evener-appwire-v5";
+  const serverProtocolVersion = "evener-appwire-v6";
   const fixtureCwd = "/fixture/project";
   const responses = new Map([
     ["model/list", { params: { cwd: fixtureCwd }, result: { data: [] } }],

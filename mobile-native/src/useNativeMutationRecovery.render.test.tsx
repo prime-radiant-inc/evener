@@ -24,7 +24,6 @@ import {
 	type NativeMutationStorageListener,
 	nativeMutationTargetKey,
 } from "./nativeMutationRuntime";
-import { renderedText } from "./renderNative.testkit";
 import { ConversationScreen } from "./screens";
 import { openSqliteSyncDouble } from "./sqliteSync.testkit";
 import {
@@ -32,6 +31,13 @@ import {
 	useNativeMutationRecovery,
 } from "./useNativeMutationRecovery";
 
+// The root stack the screen sits in, read by useScreenInFront and
+// screenInFront (screens.tsx). Kept at the screen's own route on top, so the
+// screen is in front the way a real mounted conversation is; updated when the
+// route change below swaps targetRef, so the new route reads as in front too.
+const navigationState = vi.hoisted(() => ({
+	state: { index: 0, routes: [] as { key: string; name: string }[] },
+}));
 const recorder = vi.hoisted(() => ({
 	inRenderPass: true,
 	opens: [] as { database: string; phase: "render" | "effect" }[],
@@ -68,7 +74,6 @@ const harness = vi.hoisted(() => ({
 
 vi.mock("react-native", async () => ({
 	...(await import("./renderNative.testkit")).nativeModuleMock(),
-	AccessibilityInfo: { announceForAccessibility: vi.fn() },
 	ActionSheetIOS: { showActionSheetWithOptions: vi.fn() },
 	AppState: {
 		currentState: "active",
@@ -85,6 +90,7 @@ vi.mock("react-native-safe-area-context", () => ({
 	SafeAreaProvider: (props: { children?: ReactNode }) => props.children ?? null,
 	useSafeAreaInsets: () => ({ top: 47, bottom: 34, left: 0, right: 0 }),
 }));
+vi.mock("expo-symbols", () => ({ SymbolView: "SymbolView" }));
 // The enriched-markdown native component cannot load outside a device; as a
 // host string its children render as passed, which is all the screen's
 // timeline items need from it under this harness.
@@ -97,10 +103,11 @@ vi.mock("@react-navigation/native", async () => {
 	return {
 		useFocusEffect: (effect: () => void | (() => void)) =>
 			useEffect(effect, []),
-		useIsFocused: () => true,
-		useNavigationState: () => false,
+		useNavigationState: <T,>(select: (state: typeof navigationState.state) => T) =>
+			select(navigationState.state),
 	};
 });
+vi.mock("expo-symbols", () => ({ SymbolView: "SymbolView" }));
 vi.mock("expo-clipboard", () => ({
 	setStringAsync: vi.fn(async () => {}),
 	getStringAsync: vi.fn(async () => ""),
@@ -129,12 +136,7 @@ vi.mock("expo-file-system", () => ({
 		constructor(public uri: string) {}
 	},
 }));
-vi.mock("expo-image-manipulator", () => ({
-	ImageManipulator: {
-		manipulateAsync: vi.fn(async () => ({ uri: "manipulated" })),
-	},
-	SaveFormat: { JPEG: "jpeg" },
-}));
+vi.mock("expo-image-manipulator", () => ({}));
 vi.mock("expo-image-picker", () => ({
 	launchImageLibraryAsync: vi.fn(async () => ({ canceled: true, assets: [] })),
 	UIImagePickerPreferredAssetRepresentationMode: { Current: "current" },
@@ -242,6 +244,7 @@ function conversationRoute(ref: string): ConversationScreenProps["route"] {
 
 const navigation = {
 	isFocused: () => true,
+	getState: () => navigationState.state,
 	navigate: vi.fn(),
 	push: vi.fn(),
 	goBack: vi.fn(),
@@ -311,6 +314,7 @@ it("renders the real ConversationScreen without constructing a runtime or regist
 
 	const hubId = "hub-1";
 	let targetRef = "ref-1";
+	navigationState.state = { index: 0, routes: [conversationRoute(targetRef)] };
 	function tree(): ReactElement {
 		return (
 			<PhaseMarker>
@@ -378,13 +382,19 @@ it("renders the real ConversationScreen without constructing a runtime or regist
 	expect(
 		latestProjection?.snapshot?.recovery.map((row) => row.clientMutationId),
 	).toEqual(["render-1"]);
-	// The screen rendered its actual content, not a stub.
-	expect(renderedText(renderer)).toContain("Reconnect");
+	// The screen rendered its actual content, not a stub: the composer's
+	// message field, which the disconnected screen still shows.
+	expect(
+		renderer.root
+			.findAll((node) => String(node.type) === "TextInput")
+			.some((node) => node.props.accessibilityLabel === "Message"),
+	).toBe(true);
 
 	// A route change remounts the recovery surface (screen generation): the
 	// old generation's subscription is released and the new one reads the
 	// new route's composite key only.
 	targetRef = "ref-2";
+	navigationState.state = { index: 0, routes: [conversationRoute(targetRef)] };
 	act(() => {
 		renderer.update(tree());
 	});

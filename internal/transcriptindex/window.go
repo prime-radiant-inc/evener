@@ -49,6 +49,57 @@ func (x *Index) Latest(limit int) (Window, error) {
 	})
 }
 
+// LatestSince is Latest together with what changed since held, read under one
+// lock so both describe the same snapshot: a reader that took them apart could
+// miss a change another handle extended over between the two. The changes
+// are nil when held names another incarnation; the caller then sends the
+// window as a full replacement. When held names the current incarnation but
+// predates the kept update log, LatestSince returns ErrUpdateLogTruncated:
+// the window alone cannot be trusted, since held items outside it may have
+// changed and the caller has no way to tell.
+func (x *Index) LatestSince(limit int, held appwire.SnapshotIdentity) (Window, *Changes, error) {
+	limit, err := appwire.NormalizeTranscriptItemLimit(limit)
+	if err != nil {
+		return Window{}, nil, err
+	}
+	x.mu.Lock()
+	defer x.mu.Unlock()
+	var window Window
+	var changes *Changes
+	window, err = x.readWindow(func(r *reader) (Window, error) {
+		flush, ferr := x.pendingFlush(r)
+		if ferr != nil {
+			return Window{}, ferr
+		}
+		return x.window(r, x.preludeCount()+x.items.n+uint64(len(flush)), limit, flush)
+	})
+	if err != nil || held.Incarnation != x.meta.Incarnation {
+		return window, nil, err
+	}
+	err = x.locked(false, func() error {
+		since, sinceErr := x.changedSince(held.Length)
+		if sinceErr != nil {
+			return sinceErr
+		}
+		changes = &since
+		return nil
+	})
+	return window, changes, err
+}
+
+// Incarnation is the index's current incarnation, as the sidecar holds it:
+// a backfill cursor naming any other is stale.
+func (x *Index) Incarnation() (string, error) {
+	x.mu.Lock()
+	defer x.mu.Unlock()
+	var incarnation string
+	err := x.locked(false, func() error {
+		incarnation = x.meta.Incarnation
+		return nil
+	})
+	return incarnation, err
+}
+
 // Before returns up to limit items immediately before the exclusive position.
 // A position that names no item is appwire.TranscriptItemCursorStale().
 func (x *Index) Before(before appwire.ThreadItemPosition, limit int) (Window, error) {
@@ -110,8 +161,8 @@ func (x *Index) preludeCount() uint64 {
 }
 
 // rank is the position's index among all items: prelude items first, then
-// item records (sorted by position), then flush's pending-communicate items,
-// if any, at the very end.
+// item records, then flush's pending-communicate items, if any, at the very
+// end (see window).
 func (x *Index) rank(position appwire.ThreadItemPosition, flush []appitempaging.TranscriptItemCandidate) (uint64, error) {
 	prelude := x.preludeCount()
 	// Checked before the Entry==0 prelude case below: a flushed item can
@@ -128,23 +179,31 @@ func (x *Index) rank(position appwire.ThreadItemPosition, flush []appitempaging.
 		}
 		return 0, appwire.TranscriptItemCursorStale()
 	}
+	slot, found, err := x.findItem(position)
+	if err != nil {
+		return 0, x.fail(err)
+	}
+	if !found {
+		return 0, appwire.TranscriptItemCursorStale()
+	}
+	return prelude + slot, nil
+}
+
+// findItem binary-searches the item records for the item at position.
+func (x *Index) findItem(position appwire.ThreadItemPosition) (uint64, bool, error) {
 	slot, err := x.items.search(func(buf []byte) bool {
 		record := decodeItem(buf)
 		return record.Entry < position.Entry || (record.Entry == position.Entry && record.Part < position.Item)
 	})
+	if err != nil || slot >= x.items.n {
+		return 0, false, err
+	}
+	buf, err := x.items.read(slot, 1)
 	if err != nil {
-		return 0, x.fail(err)
+		return 0, false, err
 	}
-	if slot < x.items.n {
-		buf, err := x.items.read(slot, 1)
-		if err != nil {
-			return 0, x.fail(err)
-		}
-		if record := decodeItem(buf); record.Entry == position.Entry && record.Part == position.Item {
-			return prelude + slot, nil
-		}
-	}
-	return 0, appwire.TranscriptItemCursorStale()
+	record := decodeItem(buf)
+	return slot, record.Entry == position.Entry && record.Part == position.Item, nil
 }
 
 // window reads the items ranked [end-limit, end): prelude items, then item
@@ -199,14 +258,16 @@ func (x *Index) span(r *reader, lo, hi uint64) ([]appitempaging.TranscriptItemCa
 	candidates := make([]appitempaging.TranscriptItemCandidate, 0, hi-lo)
 	for slot := lo; slot < hi; slot++ {
 		record := records[slot-first]
-		turn, err := r.turn(record.Turn)
+		stamped, err := r.turn(record.Turn)
 		if err != nil {
 			return nil, x.fail(err)
 		}
+		turn := stamped.turn
 		item, err := r.item(record, turn.ID)
 		if err != nil {
 			return nil, x.fail(err)
 		}
+		item.Version = record.Version
 		candidates = append(candidates, appitempaging.TranscriptItemCandidate{
 			TurnID:          turn.ID,
 			Turn:            turn,
@@ -214,13 +275,15 @@ func (x *Index) span(r *reader, lo, hi uint64) ([]appitempaging.TranscriptItemCa
 			Position:        *item.Position,
 			HasEarlierItems: slot > 0 && records[slot-1-first].Turn == record.Turn,
 			HasLaterItems:   slot+1 < x.items.n && records[slot+1-first].Turn == record.Turn,
+			Model:           stamped.model,
 		})
 	}
 	return candidates, nil
 }
 
-// Changes is what in-place updates changed after a snapshot: the current form
-// of each item and turn they touched, in record order, each once.
+// Changes is what changed after a snapshot: the current form of every item
+// and turn a later entry created or updated in place, in record order, each
+// once.
 type Changes struct {
 	Items       []appitempaging.TranscriptItemCandidate
 	Turns       []appwire.Turn
@@ -228,57 +291,103 @@ type Changes struct {
 	Length      int64
 }
 
-// ChangedSince returns the items and turns that entries at or past length
-// updated in place: a tool call a later TOOL_RESULTS completed, a turn a later
-// entry restamped. A reader holding a snapshot at length learns of changes to
-// what it holds without re-reading it.
+// ChangedSince returns the items and turns whose record an entry at or past
+// length created or touched: an item a later entry opened or a call a later
+// TOOL_RESULTS completed, a turn a later entry opened or restamped. A reader
+// holding a snapshot at length learns everything past it changed, without
+// re-reading what it already holds. Items are in position order, turns in
+// slot order (the order their first entry created them), each once.
 func (x *Index) ChangedSince(length int64) (Changes, error) {
 	x.mu.Lock()
 	defer x.mu.Unlock()
 	var changes Changes
-	err := x.locked(false, func() error {
-		changes = Changes{Incarnation: x.meta.Incarnation, Length: x.meta.Length}
-		first, err := x.firstUpdateAt(length)
-		if err != nil {
-			return err
-		}
-		items, turns := map[uint64]bool{}, map[uint64]bool{}
-		buf, err := x.updates.read(first, int(x.updates.n-first))
-		if err != nil {
-			return x.fail(err)
-		}
-		for at := 0; at < len(buf); at += updateRecordSize {
-			switch update := decodeUpdate(buf[at:]); update.Kind {
-			case updatedItem:
-				items[update.Slot] = true
-			case updatedTurn:
-				turns[update.Slot] = true
-			}
-		}
-		r := newReader(x)
-		for _, slot := range slices.Sorted(maps.Keys(items)) {
-			candidates, err := x.span(r, slot, slot+1)
-			if err != nil {
-				return err
-			}
-			changes.Items = append(changes.Items, candidates...)
-		}
-		for _, slot := range slices.Sorted(maps.Keys(turns)) {
-			turn, err := r.turn(uint32(slot))
-			if err != nil {
-				return x.fail(err)
-			}
-			changes.Turns = append(changes.Turns, turn)
-		}
-		return nil
+	err := x.locked(false, func() (err error) {
+		changes, err = x.changedSince(length)
+		return err
 	})
 	return changes, err
+}
+
+func (x *Index) changedSince(length int64) (Changes, error) {
+	if length < x.meta.UpdatesFrom {
+		return Changes{}, ErrUpdateLogTruncated
+	}
+	first, err := x.firstUpdateAt(length)
+	if err != nil {
+		return Changes{}, err
+	}
+	items, turns := map[uint64]bool{}, map[uint64]bool{}
+	buf, err := x.updates.read(first, int(x.updates.n-first))
+	if err != nil {
+		return Changes{}, x.fail(err)
+	}
+	for at := 0; at < len(buf); at += updateRecordSize {
+		switch update := decodeUpdate(buf[at:]); update.Kind {
+		case updatedItem:
+			items[update.Slot] = true
+		case updatedTurn:
+			turns[update.Slot] = true
+		}
+	}
+	firstItem, err := x.firstItemCreatedAt(length)
+	if err != nil {
+		return Changes{}, err
+	}
+	for slot := firstItem; slot < x.items.n; slot++ {
+		items[slot] = true
+	}
+	firstTurn, err := x.firstTurnCreatedAt(length)
+	if err != nil {
+		return Changes{}, err
+	}
+	for slot := firstTurn; slot < x.turns.n; slot++ {
+		turns[slot] = true
+	}
+	changes := Changes{Incarnation: x.meta.Incarnation, Length: x.meta.Length}
+	r := newReader(x)
+	for _, slot := range slices.Sorted(maps.Keys(items)) {
+		candidates, err := x.span(r, slot, slot+1)
+		if err != nil {
+			return Changes{}, err
+		}
+		changes.Items = append(changes.Items, candidates...)
+	}
+	for _, slot := range slices.Sorted(maps.Keys(turns)) {
+		stamped, err := r.turn(uint32(slot))
+		if err != nil {
+			return Changes{}, x.fail(err)
+		}
+		changes.Turns = append(changes.Turns, stamped.turn)
+	}
+	return changes, nil
 }
 
 // firstUpdateAt binary-searches the update log for the first update an entry
 // at or past offset caused.
 func (x *Index) firstUpdateAt(offset int64) (uint64, error) {
 	slot, err := x.updates.search(func(buf []byte) bool { return decodeUpdate(buf).Offset < offset })
+	if err != nil {
+		return 0, x.fail(err)
+	}
+	return slot, nil
+}
+
+// firstItemCreatedAt binary-searches the item records, sorted by position and
+// so by their opener's offset, for the first one an entry at or past offset
+// opened.
+func (x *Index) firstItemCreatedAt(offset int64) (uint64, error) {
+	slot, err := x.items.search(func(buf []byte) bool { return decodeItem(buf).Opener.Offset < offset })
+	if err != nil {
+		return 0, x.fail(err)
+	}
+	return slot, nil
+}
+
+// firstTurnCreatedAt binary-searches the turn summaries, appended in the file
+// order their first entry created them, for the first one an entry at or past
+// offset opened.
+func (x *Index) firstTurnCreatedAt(offset int64) (uint64, error) {
+	slot, err := x.turns.search(func(buf []byte) bool { return decodeTurn(buf).FirstOffset < offset })
 	if err != nil {
 		return 0, x.fail(err)
 	}
@@ -378,16 +487,16 @@ func remapFlushPositions(turnID string, flushed []appwire.ThreadItem) {
 // ends on (no result yet) contributes: the same rendering
 // apptranscript.FlushUnpairedCommunicates gives the whole-file projection,
 // reproduced here so Latest/Before can include it — matching every production
-// reader (server/appwire_turns.go, cmd/evener-hub/app_threadread.go,
-// internal/apptranscript/turn_index.go), which all flush a read that reaches
-// the transcript's tail. Returns nil when nothing is pending. Not persisted:
-// recomputed from the builder's live commCalls/lastAssistant* state, which a
-// pending call forces Extend to keep accurate (see meta.PendingCommunicate).
+// reader (server/appwire_turns.go, cmd/evener-hub/app_threadread.go), which
+// all flush a read that reaches the transcript's tail. Returns nil when
+// nothing is pending. Not persisted: recomputed from the builder's live
+// commCalls/lastAssistant* state, which a pending call forces extend to keep
+// accurate (see meta.PendingCommunicate).
 func (x *Index) pendingFlush(r *reader) ([]appitempaging.TranscriptItemCandidate, error) {
 	if len(x.builder.commCalls) == 0 {
 		return nil, nil
 	}
-	var turnID string
+	var turnID, model string
 	var stub appwire.Turn
 	var items []appwire.ThreadItem
 	if x.items.n == 0 {
@@ -420,6 +529,7 @@ func (x *Index) pendingFlush(r *reader) ([]appitempaging.TranscriptItemCandidate
 		}
 		turnID = last.TurnID
 		stub = last.Turn
+		model = last.Model
 		items = make([]appwire.ThreadItem, itemCount)
 		items[itemCount-1] = last.Item
 	}
@@ -443,6 +553,7 @@ func (x *Index) pendingFlush(r *reader) ([]appitempaging.TranscriptItemCandidate
 			Position:        *flushed[i].Position,
 			HasEarlierItems: true,
 			HasLaterItems:   i+1 < len(flushed),
+			Model:           model,
 		}
 	}
 	return candidates, nil
@@ -497,7 +608,7 @@ func (x *Index) pendingRegistry(r *reader) (*apptranscript.ToolCallRegistry, err
 }
 
 func newReader(x *Index) *reader {
-	return &reader{x: x, entries: map[int64]*schema.Turn{}, projections: map[projectionKey]projection{}, turns: map[uint32]appwire.Turn{}}
+	return &reader{x: x, entries: map[int64]*schema.Turn{}, projections: map[projectionKey]projection{}, turns: map[uint32]stampedTurn{}}
 }
 
 // reader projects one read's items, decoding each entry, projecting each
@@ -506,7 +617,13 @@ type reader struct {
 	x           *Index
 	entries     map[int64]*schema.Turn
 	projections map[projectionKey]projection
-	turns       map[uint32]appwire.Turn
+	turns       map[uint32]stampedTurn
+}
+
+// stampedTurn is a turn stamped from its summary, and the turn's model.
+type stampedTurn struct {
+	turn  appwire.Turn
+	model string
 }
 
 // projectionKey is one projection of an entry: its seed is the tool name of
@@ -526,8 +643,18 @@ func (r *reader) entry(offset int64, length uint32) (*schema.Turn, error) {
 	if entry, ok := r.entries[offset]; ok {
 		return entry, nil
 	}
+	entry, err := r.x.readEntry(offset, length)
+	if err != nil {
+		return nil, err
+	}
+	r.entries[offset] = entry
+	return entry, nil
+}
+
+// readEntry reads and decodes the entry line of length bytes at offset.
+func (x *Index) readEntry(offset int64, length uint32) (*schema.Turn, error) {
 	line := make([]byte, length)
-	if _, err := r.x.transcript.ReadAt(line, offset); err != nil {
+	if _, err := x.transcript.ReadAt(line, offset); err != nil {
 		return nil, fmt.Errorf("%w: read transcript entry: %w", errCorrupt, err)
 	}
 	// The index strictly decoded this line when it indexed it, and
@@ -536,35 +663,52 @@ func (r *reader) entry(offset int64, length uint32) (*schema.Turn, error) {
 	if err != nil {
 		return nil, fmt.Errorf("%w: decode transcript entry at %d: %w", errCorrupt, offset, err)
 	}
-	r.entries[offset] = &entry.Turn
 	return &entry.Turn, nil
 }
 
-// turn stamps a turn from its summary, as apptranscript.StampGroupedTurn
-// stamps it from its entries.
-func (r *reader) turn(slot uint32) (appwire.Turn, error) {
-	if turn, ok := r.turns[slot]; ok {
-		return turn, nil
+// turn stamps a turn from its summary: a legacy turn as
+// apptranscript.StampGroupedTurn stamps it from its entries, a new-format
+// turn by the read model's status rules.
+func (r *reader) turn(slot uint32) (stampedTurn, error) {
+	if stamped, ok := r.turns[slot]; ok {
+		return stamped, nil
 	}
 	buf, err := r.x.turns.read(uint64(slot), 1)
 	if err != nil {
-		return appwire.Turn{}, err
+		return stampedTurn{}, err
 	}
 	record := decodeTurn(buf)
 	id, err := r.x.strings.get(record.ID)
 	if err != nil {
-		return appwire.Turn{}, err
+		return stampedTurn{}, err
 	}
-	turn := appwire.Turn{ID: string(id), ItemsView: appwire.TurnItemsViewFull, Status: appwire.TurnStatusCompleted}
+	model, err := r.x.strings.get(record.Model)
+	if err != nil {
+		return stampedTurn{}, err
+	}
+	turn := appwire.Turn{ID: string(id), ItemsView: appwire.TurnItemsViewFull, Status: appwire.TurnStatusCompleted, Version: record.Version}
 	switch record.Status {
 	case statusFailed:
-		failure, err := r.entry(record.LifecycleOffset, record.LifecycleLength)
-		if err != nil {
-			return appwire.Turn{}, err
+		turn.Status = appwire.TurnStatusFailed
+		if record.FailureLength > 0 {
+			failure, err := r.entry(record.FailureOffset, record.FailureLength)
+			if err != nil {
+				return stampedTurn{}, err
+			}
+			apptranscript.StampTurnFailure(&turn, *failure)
 		}
-		apptranscript.StampTurnFailure(&turn, *failure)
 	case statusInterrupted:
 		turn.Status = appwire.TurnStatusInterrupted
+	case statusOpen:
+		turn.Status = appwire.TurnStatusInProgress
+	}
+	if record.HasCompletion {
+		duration := record.DurationMS
+		turn.DurationMS = &duration
+		if record.CompletedAt != 0 {
+			completedAt := record.CompletedAt
+			turn.CompletedAt = &completedAt
+		}
 	}
 	if record.Started {
 		startedAt := record.StartedAt
@@ -577,13 +721,17 @@ func (r *reader) turn(slot uint32) (appwire.Turn, error) {
 		CacheReadTokens: &cacheRead,
 		TotalTokens:     int(record.Usage[3]),
 	})
-	r.turns[slot] = turn
-	return turn, nil
+	stamped := stampedTurn{turn: turn, model: string(model)}
+	r.turns[slot] = stamped
+	return stamped, nil
 }
 
 // item projects one item from its contributor entries: the opener's item at
 // the record's part, folded with every later item of the same call.
 func (r *reader) item(record itemRecord, turnID string) (appwire.ThreadItem, error) {
+	if record.Flags&itemUnreadable != 0 {
+		return r.unreadable(record, turnID)
+	}
 	callID := ""
 	if record.Call.Len > 0 {
 		call, err := r.x.strings.get(record.Call)
@@ -614,7 +762,16 @@ func (r *reader) item(record itemRecord, turnID string) (appwire.ThreadItem, err
 	}
 	item := items[at]
 	if callID != "" {
-		item = foldCall(item, items[at+1:], callID)
+		opener, err := r.entry(record.Opener.Offset, record.Opener.Length)
+		if err != nil {
+			return appwire.ThreadItem{}, err
+		}
+		// A legacy entry's later items of the same call merge into its
+		// first; each new-format item is its own part's.
+		identity := opener.Format == schema.TurnFormatIdentity
+		if !identity {
+			item = foldCall(item, items[at+1:], callID)
+		}
 		later, err := r.x.strings.get(record.Middle)
 		if err != nil {
 			return appwire.ThreadItem{}, err
@@ -626,12 +783,31 @@ func (r *reader) item(record itemRecord, turnID string) (appwire.ThreadItem, err
 		if record.Completer.Length > 0 {
 			contributors = append(contributors, record.Completer)
 		}
+		var completedAtEntry uint64
 		for _, c := range contributors {
+			entry, err := r.entry(c.Offset, c.Length)
+			if err != nil {
+				return appwire.ThreadItem{}, err
+			}
+			switch entry.Kind {
+			case schema.TurnCompletion:
+				// The execution completed with no results for the call:
+				// the call was interrupted (builder.interruptAwaitedCalls).
+				item.Status = appwire.TurnStatusInterrupted
+				continue
+			case schema.TurnTool, schema.TurnToolResults:
+				completedAtEntry = c.Ordinal + 1
+			}
 			items, _, err := r.project(c, callID, turnID)
 			if err != nil {
 				return appwire.ThreadItem{}, err
 			}
 			item = foldCall(item, items, callID)
+		}
+		item.CompletedAtEntry = completedAtEntry
+		// A new-format item that spans entries keeps its opener's identity.
+		if identity {
+			item.ID, item.RoundID = items[at].ID, items[at].RoundID
 		}
 	}
 	item.TurnID = turnID
@@ -639,6 +815,33 @@ func (r *reader) item(record itemRecord, turnID string) (appwire.ThreadItem, err
 	item.Position = &position
 	item.TranscriptKey = ItemKey(turnID, position)
 	return item, nil
+}
+
+// unreadable projects a quarantined entry: one error notice naming its
+// ordinal and why it does not decode, which decoding the line again tells.
+func (r *reader) unreadable(record itemRecord, turnID string) (appwire.ThreadItem, error) {
+	ordinal := record.Opener.Ordinal
+	line := make([]byte, record.Opener.Length)
+	if _, err := r.x.transcript.ReadAt(line, record.Opener.Offset); err != nil {
+		return appwire.ThreadItem{}, fmt.Errorf("%w: read transcript entry: %w", errCorrupt, err)
+	}
+	reason := "it does not decode"
+	if _, err := transcript.DecodeEntry(bytes.TrimSpace(line)); err != nil {
+		reason = err.Error()
+	}
+	position := appwire.ThreadItemPosition{Entry: record.Entry, Item: record.Part}
+	return appwire.ThreadItem{
+		Type:          "systemMessage",
+		ID:            fmt.Sprintf("item_unreadable_%d", ordinal),
+		TranscriptKey: ItemKey(turnID, position),
+		Position:      &position,
+		TurnID:        turnID,
+		Description:   "Unreadable transcript entry",
+		Text:          fmt.Sprintf("transcript entry %d could not be read: %s", ordinal, reason),
+		Status:        appwire.TurnStatusCompleted,
+		EventKind:     appwire.ThreadItemEventKindError,
+		Version:       record.Version,
+	}, nil
 }
 
 // project projects a contributor entry with the tool name the whole-file
@@ -660,7 +863,7 @@ func (r *reader) project(c contributor, callID, turnID string) ([]appwire.Thread
 		}
 		seed[callID] = string(name)
 	}
-	items, parts := apptranscript.ProjectTurnParts(turnID, int(c.Ordinal)+1, *entry, &apptranscript.ToolCallRegistry{Names: seed, CommRawArgs: map[string]string{}}, nil, apptranscript.ToolResultOutputImages)
+	items, parts := apptranscript.ProjectEntryParts(turnID, int(c.Ordinal)+1, *entry, &apptranscript.ToolCallRegistry{Names: seed}, apptranscript.AddressedImageProjector, apptranscript.ToolResultOutputImages)
 	r.projections[key] = projection{items: items, parts: parts}
 	return items, parts, nil
 }
@@ -673,7 +876,8 @@ func (r *reader) project(c contributor, callID, turnID string) ([]appwire.Thread
 // file order, exactly as the whole-file projection's single threaded
 // registry would have processed them — discarding their own items, then
 // projects Opener with the registry those replays built. Not cached: these
-// items are a small, rare subset of a read.
+// items are a small, rare subset of a read. Only ever called for a legacy
+// (non-identity-format) opener: applyLegacy is the only writer of Context.
 func (r *reader) projectWithContext(record itemRecord, turnID string) ([]appwire.ThreadItem, []int, error) {
 	buf, err := r.x.strings.get(record.Context)
 	if err != nil {

@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strconv"
 	"testing"
 
 	"primeradiant.com/evener/agent/schema"
@@ -65,9 +66,13 @@ func catchUp(t testing.TB, x *Index) {
 	}
 }
 
-// hasNamelessResult reports whether the entry holds a tool result with no name
-// of its own: the one entry an extending index may have to rebuild for.
+// hasNamelessResult reports whether the entry is a legacy entry holding a tool
+// result with no name of its own: the one entry an extending index may have to
+// rebuild for. A new-format result is named from its turn's awaiting call.
 func hasNamelessResult(turn schema.Turn) bool {
+	if turn.Format == schema.TurnFormatIdentity {
+		return false
+	}
 	for _, part := range turn.Message.Content {
 		if part.Kind == llm.ContentToolResult && part.ToolResult != nil && part.ToolResult.Name == "" {
 			return true
@@ -201,6 +206,7 @@ func TestAppendEntryByEntryMatchesTheReference(t *testing.T) {
 				t.Fatalf("line %d: extending rebuilt the index", i)
 			}
 		}
+		assertAllCandidates(t, x, path)
 		assertAllWindows(t, x, path)
 	}
 }
@@ -289,7 +295,12 @@ func TestReplacedTruncatedOrRewrittenTranscriptRebuilds(t *testing.T) {
 			if x.rebuilds != 2 {
 				t.Fatalf("builds = %d, want a rebuild after the change", x.rebuilds)
 			}
-			assertAllWindows(t, x, path)
+			// assertSampledWindows, not assertAllWindows: the point of this
+			// test is that the rebuilt index reads back correctly, not a
+			// full boundary sweep at every limit over the whole "everything"
+			// fixture four times (see its doc comment for the CI cost that
+			// bought).
+			assertSampledWindows(t, x, path)
 		})
 	}
 }
@@ -305,16 +316,36 @@ func joinLines(lines [][]byte) []byte {
 func TestReplayAfterCrashIsIdempotent(t *testing.T) {
 	// The replayed entries continue the open turn: they add usage to its
 	// summary and complete a call item, both in-place updates.
-	fx := namedResults()
-	fx.lines = append(fx.lines,
-		entryLine(withUsage(at(user("replay"), 50), 1, 1, 0, 2)),
-		entryLine(withUsage(assistant(call("rp1", "read_file", `{}`)), 10, 20, 5, 30)),
-		entryLine(results(result("rp1", "read_file", "replayed result"))),
-		entryLine(withUsage(assistant(text("replayed answer")), 3, 4, 0, 7)),
-	)
+	// pastCrash counts the entries past the crash: the result and what
+	// follows it.
+	for name, tc := range map[string]struct {
+		tail      []fixtureLine
+		pastCrash int
+	}{
+		"legacy": {tail: []fixtureLine{
+			entryLine(withUsage(at(user("replay"), 50), 1, 1, 0, 2)),
+			entryLine(withUsage(assistant(call("rp1", "read_file", `{}`)), 10, 20, 5, 30)),
+			entryLine(results(result("rp1", "read_file", "replayed result"))),
+			entryLine(withUsage(assistant(text("replayed answer")), 3, 4, 0, 7)),
+		}, pastCrash: 2},
+		"new format": {tail: []fixtureLine{
+			entryLine(opens("turn_m40", schema.TurnSpanExecution, withUsage(at(user("replay"), 50), 1, 1, 0, 2))),
+			entryLine(inTurn("turn_m40", withUsage(assistant(call("rp1", "read_file", `{}`)), 10, 20, 5, 30))),
+			entryLine(inTurn("turn_m40", results(result("rp1", "", "replayed result")))),
+			entryLine(inTurn("turn_m40", withUsage(assistant(text("replayed answer")), 3, 4, 0, 7))),
+			entryLine(completion("turn_m40", schema.TurnCompleted, 55, 5000)),
+		}, pastCrash: 3},
+	} {
+		t.Run(name, func(t *testing.T) { replayAfterCrash(t, tc.tail, tc.pastCrash) })
+	}
+}
+
+func replayAfterCrash(t *testing.T, tail []fixtureLine, pastCrash int) {
+	fx := everything()
+	fx.lines = append(fx.lines, tail...)
 	path, lines := writeHeaderOnly(t, fx)
 	dir := t.TempDir()
-	cut := len(lines) - 2
+	cut := len(lines) - pastCrash
 	appendBytes(t, path, joinLines(lines[:cut]))
 	x := openIndex(t, path, dir)
 	held, err := x.Latest(1)
@@ -347,6 +378,17 @@ func TestReplayAfterCrashIsIdempotent(t *testing.T) {
 	replayed := openIndex(t, path, dir)
 	if replayed.rebuilds != 0 {
 		t.Fatal("replaying after a crash rebuilt the index")
+	}
+	// The covered entry count (the next ordinal) is part of the one meta
+	// write that covers the length: the replay counts every entry once.
+	entries := 0
+	for _, line := range fx.lines {
+		if !line.blank {
+			entries++
+		}
+	}
+	if replayed.meta.Entries != uint64(entries) {
+		t.Fatalf("replayed index counts %d entries, want %d", replayed.meta.Entries, entries)
 	}
 	assertAllWindows(t, replayed, path)
 	// The replay redoes the update log, so a reader holding the old snapshot
@@ -463,6 +505,25 @@ func TestCorruptSidecarRebuilds(t *testing.T) {
 		{"fabricated last-assistant position", func(t *testing.T, dir string) {
 			rewriteMetaField(t, dir, "last_assistant_pos", `{"offset":0,"ordinal":0,"length":4294967295}`)
 		}},
+		{"other schema identity", func(t *testing.T, dir string) {
+			// A sidecar built by a binary whose schema.Turn/llm.Message shape
+			// differs must not be adopted: window.go's readEntry re-decodes
+			// raw transcript bytes with the lenient DecodeValidatedEntry,
+			// which would silently drop a field this binary's schema doesn't
+			// declare instead of failing loudly (see the "Known gap" spec
+			// section, cross-version schema skew). currentProjection folds
+			// schemaID into the same "projection" field this case rewrites.
+			// The rewritten value is the bare projectionID with no schemaID
+			// suffix at all — what a pre-schema-fold build would have
+			// written and what the old bare "Projection != projectionID"
+			// check alone would have accepted — so this pins that the
+			// schema fold is actually load-bearing here, not merely that
+			// some mismatched string rebuilds. Quoting the constant, not a
+			// literal copy of today's value, so a future projectionID bump
+			// keeps this pinned to "the bare projection, no schema suffix"
+			// rather than silently going stale.
+			rewriteMetaField(t, dir, "projection", strconv.Quote(projectionID))
+		}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -482,17 +543,20 @@ func TestCorruptSidecarRebuilds(t *testing.T) {
 	}
 }
 
-// TestFailedRebuildsLeaveNoBuildBehind: a transcript with a line that does
-// not decode fails every catch-up, and each failure rebuilds; the failed
-// builds must not pile up on disk.
+// TestFailedRebuildsLeaveNoBuildBehind: a transcript rewritten with a header
+// that does not decode fails every catch-up, and each failure rebuilds; the
+// failed builds must not pile up on disk. (An entry that does not decode is
+// quarantined instead: TestAnUnreadableEntryIsQuarantined.)
 func TestFailedRebuildsLeaveNoBuildBehind(t *testing.T) {
 	path := writeFixture(t, everything())
 	dir := t.TempDir()
 	x := openIndex(t, path, dir)
-	appendBytes(t, path, []byte("{not json\n"))
+	if err := os.WriteFile(path, []byte("{not a header\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	for range 5 {
 		if err := x.CatchUp(); err == nil {
-			t.Fatal("catching up over a line that does not decode succeeded")
+			t.Fatal("catching up over a header that does not decode succeeded")
 		}
 	}
 	entries, err := os.ReadDir(dir)

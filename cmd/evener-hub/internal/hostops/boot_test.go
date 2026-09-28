@@ -38,11 +38,11 @@ func seedBootStore(t *testing.T) (*Store, string, [4]string, map[string]Record) 
 		t.Fatalf("Transition(running): %v", err)
 	}
 	done := createTestRecord(t, store, "h3")
-	if _, err := store.Transition(done.ID, StateComplete, nil); err != nil {
+	if _, err := store.Transition(done.ID, StateComplete, terminalChange(true)); err != nil {
 		t.Fatalf("Transition(complete): %v", err)
 	}
 	failed := createTestRecord(t, store, "h4")
-	if _, err := store.Transition(failed.ID, StateFailed, nil); err != nil {
+	if _, err := store.Transition(failed.ID, StateFailed, terminalChange(false)); err != nil {
 		t.Fatalf("Transition(failed): %v", err)
 	}
 	return store, path, [4]string{pending.ID, running.ID, done.ID, failed.ID}, recordsByID(store.Records())

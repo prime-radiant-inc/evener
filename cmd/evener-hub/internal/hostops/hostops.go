@@ -6,11 +6,12 @@
 // (§7).
 //
 // What this package deliberately does not own, because the spec hands each to a
-// later slice: dedup and the create-from-consume write (§6), the per-host gate
-// (§5), operations pagination (§8), retention and compaction (§4), cross-file
-// commit intents (§9), and the custody-first quarantine of a corrupt store file
-// (§4, crash-fencing spec). Its record schema, states, one atomic write
-// discipline, one store mutex, and load are the substrate those paths stand on.
+// later slice: the per-host gate (§5), the custody-first quarantine of a corrupt
+// store file (§4, crash-fencing spec), and the live `quarantineEpoch` (S8). Its
+// record schema, states, one atomic write discipline, one store mutex, and load
+// are the substrate those paths stand on; dedup and the create-from-consume
+// write (§6), operations pagination (§8), and retention and compaction with
+// the dedup tombstones (§4) have landed on top of it.
 //
 // The confirmation token's durable half (§3) lives in token.go: the row schema,
 // the mint write's supersede rule, the validate/consume pass, the lazy and boot
@@ -45,6 +46,18 @@ import (
 // MaxClientOperationIDBytes is spec §1's bound on a client operation ID: an
 // opaque, non-empty value of at most 128 bytes with no required structure.
 const MaxClientOperationIDBytes = 128
+
+// MaxHostNameBytes bounds a host name this store persists. 255 is the
+// conventional host-name ceiling and is far above any operator-chosen name,
+// while an unbounded name would let a malformed record or tombstone inflate
+// the store file past its byte bound.
+const MaxHostNameBytes = 255
+
+// MaxOperationMessageBytes bounds one progress entry's message and a terminal
+// result's message. 64 KiB is far above any progress line or outcome summary
+// the worker paths emit, while an unbounded message would let a single record
+// or tombstone dominate the store file.
+const MaxOperationMessageBytes = 64 << 10
 
 // Kind is the operation kind a record describes: spec §4's `deploy`/`restart`
 // pair. The kind is part of a record's dedup scope and never changes after
@@ -153,6 +166,12 @@ type Record struct {
 	// Sequence is the store's state-transition sequence value the record was
 	// stamped with when it entered a terminal state; 0 until then.
 	Sequence uint64 `json:"sequence,omitempty"`
+	// Compacted marks a read-only replay record rebuilt from a dedup tombstone
+	// (§4's "`compacted: true`"): the operation completed and its terminal
+	// record was compacted, and this value is the retained replay. It is never
+	// a stored record — the file's schema carries no such field — so it is
+	// excluded from every marshal.
+	Compacted bool `json:"-"`
 }
 
 // NewRecord is the caller-supplied half of a record: everything the store
@@ -218,6 +237,10 @@ func validateRecord(record Record) error {
 	}
 	if record.Host == "" {
 		return fmt.Errorf("%w: record %q names no host", ErrInvalidRecord, record.ID)
+	}
+	if len(record.Host) > MaxHostNameBytes {
+		return fmt.Errorf("%w: record %q carries a %d-byte host name, over the %d-byte bound",
+			ErrInvalidRecord, record.ID, len(record.Host), MaxHostNameBytes)
 	}
 	// Every string this store persists must be valid UTF-8: encoding/json
 	// replaces invalid bytes with U+FFFD on the way out, so a value the store
@@ -296,13 +319,27 @@ func validateRecord(record Record) error {
 		if entry.TS.IsZero() || entry.Message == "" {
 			return fmt.Errorf("%w: record %q carries an empty progress entry", ErrInvalidRecord, record.ID)
 		}
+		if len(entry.Message) > MaxOperationMessageBytes {
+			return fmt.Errorf("%w: record %q carries a %d-byte progress message, over the %d-byte bound",
+				ErrInvalidRecord, record.ID, len(entry.Message), MaxOperationMessageBytes)
+		}
 		if !utf8.ValidString(entry.Message) {
 			return fmt.Errorf("%w: record %q carries a progress entry that is not valid UTF-8", ErrInvalidRecord, record.ID)
 		}
 	}
-	// A result is terminal data: it belongs to a record that has finished. A
-	// running or pending record carrying one would render a finished outcome for
-	// an operation still in flight.
+	if len(record.Progress) > MaxProgressEntries {
+		return fmt.Errorf("%w: record %q carries %d progress entries, over the %d-entry bound",
+			ErrInvalidRecord, record.ID, len(record.Progress), MaxProgressEntries)
+	}
+	// A result is terminal data: it belongs to a record that has finished — and
+	// every terminal record carries one (spec §10: "`result` is present exactly
+	// on terminal records"), so a terminal record without its outcome is not a
+	// value this store writes and never enters the file. A running or pending
+	// record carrying one would render a finished outcome for an operation
+	// still in flight.
+	if record.State.Terminal() && record.Result == nil {
+		return fmt.Errorf("%w: terminal record %q carries no terminal result", ErrInvalidRecord, record.ID)
+	}
 	if record.Result != nil {
 		if !record.State.Terminal() {
 			return fmt.Errorf("%w: record %q carries a terminal result in state %q",
@@ -310,6 +347,10 @@ func validateRecord(record Record) error {
 		}
 		if record.Result.Message == "" {
 			return fmt.Errorf("%w: record %q carries an empty terminal result", ErrInvalidRecord, record.ID)
+		}
+		if len(record.Result.Message) > MaxOperationMessageBytes {
+			return fmt.Errorf("%w: record %q carries a %d-byte terminal result message, over the %d-byte bound",
+				ErrInvalidRecord, record.ID, len(record.Result.Message), MaxOperationMessageBytes)
 		}
 		if !utf8.ValidString(record.Result.Message) {
 			return fmt.Errorf("%w: record %q carries a terminal result that is not valid UTF-8", ErrInvalidRecord, record.ID)

@@ -1036,6 +1036,14 @@ func (s *Session) scheduleRootAttentionRetryLocked() {
 			s.rootAttentionRetry.delay = jobNotificationRetryInitialDelay
 		}
 		s.attentionMu.Unlock()
+		// The seam fires for a callback that passed every early return above --
+		// live generation, rail not parked -- whether or not it then notifies. It
+		// is the ownership lease, not the notify, that projects the notification
+		// blocker, so a stale or parked timer must never reach it and a test's
+		// pause can only belong to the live retry.
+		if observe := s.cfg.testOnly.rootAttentionRetryCallback; observe != nil {
+			observe()
+		}
 		if shouldWake {
 			s.notify()
 		}
@@ -1555,7 +1563,7 @@ func (s *Session) reopenAttentionTranscriptDurably(writer *transcript.Writer, pa
 		s.mu.Unlock()
 		return nil, delegateAttentionFold{}, errors.New("attention transcript changed during durability recovery")
 	}
-	s.transcript = reopened
+	s.setTranscriptLocked(reopened)
 	s.mu.Unlock()
 	adopted = true
 	if err := writer.Close(); err != nil {
@@ -1630,7 +1638,7 @@ func (s *Session) stabilizeAttentionForStop(attentionID string) error {
 		s.mu.Unlock()
 		return errors.New("attention stabilization transcript changed")
 	}
-	s.transcript = reopened
+	s.setTranscriptLocked(reopened)
 	s.mu.Unlock()
 	adopted = true
 	return writer.Close()

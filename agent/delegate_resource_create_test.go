@@ -909,7 +909,6 @@ func TestDelegateResourceCreate_RestoredRootStartsNewChildWithStartupHooks(t *te
 		StateDir:         stateDir,
 		MaxSubagentDepth: 2,
 		PluginDirs:       []string{pluginDir},
-		NoProjectPrompts: true,
 		ForceRealIO:      true,
 		testOnly: testConfig{
 			skipGitSnapshot:     true,
@@ -1391,7 +1390,6 @@ func TestDelegateResourceCreate_ChildTranscriptIsPreseededBeforeRun(t *testing.T
 	root, err := NewSession(client, profile, execenv.NewLocalExecutionEnvironment(workspace), SessionConfig{
 		StateDir:         stateDir,
 		MaxSubagentDepth: 2,
-		NoProjectPrompts: true,
 		ForceRealIO:      true,
 		testOnly: testConfig{
 			skipGitSnapshot:     true,

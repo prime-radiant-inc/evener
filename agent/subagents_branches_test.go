@@ -669,7 +669,7 @@ func TestRootOnlyWorktreeTools(t *testing.T) {
 
 func TestStableDelegateToolNameCeilingNilRegistry(t *testing.T) {
 	t.Parallel()
-	if stableDelegateToolNameCeiling(nil, "communicate", false, nil, nil, false, false, "") != nil {
+	if stableDelegateToolNameCeiling(nil, "communicate", false, nil, nil, false, "") != nil {
 		t.Fatalf("expected nil for nil registry")
 	}
 }

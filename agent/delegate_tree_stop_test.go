@@ -920,7 +920,7 @@ func TestDelegateControllerCloseWakesParkedStopReconcileDriver(t *testing.T) {
 	hook := func() { parkedOnce.Do(func() { close(parked) }) }
 	observeDelegateStopWait.Store(&hook)
 	t.Cleanup(func() { observeDelegateStopWait.Store(savedWait) })
-	_, cancelPlan, _, err := c.StopSubtreeAndDrive(rootDelegateActor("root-session"), "dlg_target")
+	_, cancelPlan, _, err := c.StopSubtreeAndDrive(context.Background(), rootDelegateActor("root-session"), "dlg_target")
 	if err != nil {
 		t.Fatalf("StopSubtreeAndDrive: %v", err)
 	}
@@ -1013,6 +1013,123 @@ func requireDrainStopsUnderCancellation(t *testing.T, c *delegateTreeController,
 		}
 	case <-time.After(5 * time.Second): // TRIPWIRE: the drain is in-process and immediate; only a spin reaches this
 		t.Fatal("drainStop spun on a busy boundary after its context was cancelled")
+	}
+}
+
+// TestDelegateStopAdmissionObservesCallerCancellation pins LIFE-02 (#2341): a
+// public stop request parked on a retained attention-start reservation's done
+// channel before durable admission used a bare receive, so cancelling the
+// caller could not release it and the stop tool call hung behind the blocked or
+// retrying attention transaction. The repair threads the caller context into
+// the pre-admission wait only, returning an explicit not-admitted error without
+// writing a stop fence or abandoning the retained reservation.
+func TestDelegateStopAdmissionObservesCallerCancellation(t *testing.T) {
+	t.Parallel()
+	const attentionID = "delegate:delivery-attention-stop-admission"
+	c, runtime, _ := newDelegateAttentionAcceptanceHarness(t, "child-dlg_target", nil, attentionID)
+	root := &Session{id: "root-session", delegateRootSessionID: "root-session", delegateController: c}
+	c.rootRuntime = root
+	reservation, err := c.ReserveAttention(runtime, attentionID)
+	if err != nil {
+		t.Fatalf("ReserveAttention: %v", err)
+	}
+
+	ctx := newDelegateStopWaitBarrierContext()
+	done := make(chan stableJobStopInvocation, 1)
+	go func() {
+		value, stopErr := jobStopTool(ctx, root, map[string]any{"target": "dlg_target"}, jobToolResultDefaultMaxChar)
+		done <- stableJobStopInvocation{value: value, err: stopErr}
+	}()
+	// Done() fires only once the pre-admission wait starts observing the caller
+	// context. Before the repair nothing during admission consults it, so this
+	// barrier never opens and the stop hangs on the bare receive.
+	select {
+	case <-ctx.entered:
+	case <-time.After(5 * time.Second): // TRIPWIRE: in-process barrier; only an ignored context reaches this
+		t.Fatal("stop admission never began observing the caller cancellation signal")
+	}
+	select {
+	case got := <-done:
+		t.Fatalf("stop admission returned before its cancellation: %#v", got)
+	default:
+	}
+	ctx.cancel()
+	select {
+	case got := <-done:
+		if got.err == nil {
+			t.Fatalf("cancelled stop admission returned no error: %#v", got.value)
+		}
+		if !errors.Is(got.err, errDelegateStopNotAdmitted) {
+			t.Fatalf("cancelled stop admission error = %v, want the not-admitted sentinel", got.err)
+		}
+		if !errors.Is(got.err, context.Canceled) {
+			t.Fatalf("cancelled stop admission error = %v, want context.Canceled", got.err)
+		}
+	case <-time.After(5 * time.Second): // TRIPWIRE: in-process return; only an ignored cancellation reaches this
+		t.Fatal("stop admission ignored caller cancellation")
+	}
+
+	// Cancellation must leave the reservation owned and open: the durable stop
+	// request was never admitted, so no fence exists and no target cancelled.
+	c.mu.Lock()
+	record, recordErr := c.reservationRecordLocked(reservation)
+	c.mu.Unlock()
+	if recordErr != nil || record == nil {
+		t.Fatal("cancelled stop admission abandoned the attention reservation")
+	}
+	if record.done == nil {
+		t.Fatal("cancelled stop admission closed the attention reservation blocker")
+	}
+	select {
+	case <-record.done:
+		t.Fatal("cancelled stop admission closed the attention reservation blocker")
+	default:
+	}
+	events, err := c.store.Load()
+	if err != nil {
+		t.Fatalf("load journal after cancelled admission: %v", err)
+	}
+	for _, event := range events {
+		if event.SubtreeStopRequested != nil {
+			t.Fatalf("cancelled stop admission wrote a stop request: %#v", event)
+		}
+	}
+
+	// Releasing the retained reservation lets a retry admit the durable stop,
+	// which must persist exactly one fence and drain under process ownership.
+	if err := c.AbortStart(reservation); err != nil {
+		t.Fatalf("AbortStart: %v", err)
+	}
+	value, err := jobStopTool(context.Background(), root, map[string]any{"target": "dlg_target"}, jobToolResultDefaultMaxChar)
+	if err != nil {
+		t.Fatalf("retried stop after release: %v", err)
+	}
+	if value == nil {
+		t.Fatal("retried stop returned no result")
+	}
+	events, err = c.store.Load()
+	if err != nil {
+		t.Fatalf("load journal after retried admission: %v", err)
+	}
+	requested := 0
+	for _, event := range events {
+		if event.SubtreeStopRequested != nil {
+			requested++
+		}
+	}
+	if requested != 1 {
+		t.Fatalf("stop request events after retry = %d, want 1", requested)
+	}
+	c.mu.Lock()
+	driver := c.stopDriver
+	c.mu.Unlock()
+	if driver == nil {
+		t.Fatal("retried stop started no process-owned reconcile driver")
+	}
+	select {
+	case <-driver.done:
+	case <-time.After(5 * time.Second): // TRIPWIRE: an idle target reconciles immediately; only a stuck drain reaches this
+		t.Fatal("retried stop's reconcile driver did not drain")
 	}
 }
 

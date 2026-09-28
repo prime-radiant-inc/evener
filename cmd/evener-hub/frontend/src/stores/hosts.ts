@@ -1,4 +1,4 @@
-import type { AppwireClientLike, HostEntry, HostRow } from "@evener/appwire-client";
+import type { AppwireClientLike, HostEntry, HostRow, MethodTypes, RemovedRow } from "@evener/appwire-client";
 import { errorText, WireError } from "@evener/appwire-client";
 import { create, useStore } from "zustand";
 import { connectedClientPort, connectionStore } from "./connection";
@@ -65,6 +65,18 @@ interface HostsStoreState {
    * converges instead of sitting on "connecting" forever.
    */
   refresh: () => Promise<void>;
+  /**
+   * Forced quiet re-read: issues a NEW list request even while a background
+   * refresh is in flight, and answers whether THIS read's response became the
+   * current snapshot (false when the read failed or another response already
+   * owned the publish). `refresh` coalesces on the in-flight promise, and that
+   * response was captured before the caller's refusal proved the snapshot
+   * stale - a retry that waited on it would echo the same stale answer (the
+   * deploy/restart stale-entry retry is the caller; guardedMutation reads
+   * quietReRead directly for the same reason). Still a quiet read: no loading
+   * flip, and a failure keeps the last snapshot.
+   */
+  reReadForced: () => Promise<boolean>;
   add: (entry: HostEntry) => Promise<HostRow>;
   update: (params: { name: string; entry: HostEntry }) => Promise<HostRow>;
   connect: (name: string) => Promise<void>;
@@ -183,6 +195,61 @@ async function pairForMutation(name: string): Promise<HostMutationPair> {
   return reread;
 }
 
+/**
+ * The mutation-result union the registry's add/update/remove methods return
+ * (registry spec 08 §11). The generated client types each method's result as the
+ * union of its arm interfaces but publishes no alias for it, so the store names
+ * the union off the catalog every arm registration rides: the three methods
+ * share one registration, and naming the first of them keeps the alias in step
+ * with the generated schema instead of restating the arm list by hand.
+ */
+type HostMutationResult = MethodTypes["evener/host/add"]["result"];
+
+/** committedMutationRow narrows the mutation-result union to the row a
+ * successful mutation committed. The union's other arms are NOT success and
+ * must never read as one (registry spec 08 §11): a
+ * `committed-with-teardown-failure` arm names a committed mutation whose rebind
+ * needs forward repair through `evener/host/teardown-retry` with the
+ * `remnantId` it carries; a `collision-dropped` arm names a foreign hub.toml
+ * edit that won the race, so nothing the caller asked for landed; and a
+ * keyless add's `ambiguous` arm claims no commit at all. Each throws, naming
+ * what happened, so the caller's failure path runs instead of its success path.
+ * The retry/recover affordances themselves are slice 16's. */
+function committedMutationRow(result: HostMutationResult, method: string): HostRow {
+  // The generated interfaces carry `outcome: string` rather than a literal
+  // union, so the arms are narrowed by the fields only one of them declares —
+  // the same discriminator the union's registration pins, read structurally.
+  if ("observedRow" in result) {
+    throw new Error(
+      `${method}: the row already exists and this keyless retry cannot tell whether it committed it; re-read the host list`,
+    );
+  }
+  if ("droppedEntry" in result) {
+    throw new Error(
+      `${method}: a concurrent hub.toml edit won the race, so nothing the caller asked for landed; re-read the host list`,
+    );
+  }
+  if ("seam" in result) {
+    throw new Error(
+      `${method}: the mutation committed but its ${result.seam} teardown failed; the entry is committed and its repair handle is remnantId ${result.remnantId}`,
+    );
+  }
+  if (!("host" in result)) {
+    throw new Error(`${method}: the response carries no arm this client knows`);
+  }
+  return result.host as HostRow;
+}
+
+/** committedRemovedRow is committedMutationRow for `remove`, whose committed arm
+ * carries the dedicated removed-row shape. */
+function committedRemovedRow(result: HostMutationResult, method: string): RemovedRow {
+  committedMutationRow(result, method);
+  if (!("host" in result)) {
+    throw new Error("evener/host/remove: the response carries no committed row");
+  }
+  return result.host as RemovedRow;
+}
+
 /** guardedMutation sends a guarded update/remove and implements the UI retry
  * path the spec's `stale-entry` refusal promises: the row the caller held moved
  * under it, so the store re-reads the current pair and retries ONCE with a
@@ -245,7 +312,18 @@ function hostRowEqual(a: HostRow, b: HostRow | undefined): boolean {
     a.arch === b.arch &&
     a.lastAttachError === b.lastAttachError &&
     a.midAttach === b.midAttach &&
-    a.removed === b.removed
+    a.removed === b.removed &&
+    // The remnant fence's own fields are part of the row's contract too
+    // (registry spec 08 §11): a remnant that opens, escalates, or clears with
+    // no other row change must publish, or the repair affordance appears late
+    // or never clears (S16).
+    a.openRemnantId === b.openRemnantId &&
+    // Presence only: the age is the whole-second age of the remnant's commit
+    // instant, recomputed on every read, so comparing the integer would make
+    // every poll publish (and advance the revision its caches key on). The
+    // affordance keys off presence, and the undefined <-> defined transition
+    // still publishes.
+    (a.escalationAgeSec === undefined) === (b.escalationAgeSec === undefined)
   );
 }
 
@@ -255,17 +333,22 @@ function hostRowEqual(a: HostRow, b: HostRow | undefined): boolean {
 // older in-flight response can never publish after it. When the currently
 // published rows are already exactly the ones this response carries, the
 // setState is skipped: the 2s poll would otherwise swap in a fresh array
-// every tick and force a re-render of an unchanged section.
-function publishReady(generation: number, client: AppwireClientLike, hosts: HostRow[]): void {
+// every tick and force a re-render of an unchanged section. It answers
+// whether THIS generation was accepted (true when it publishes or accepts the
+// equal snapshot, false on either discard) — forcedReRead reports that answer
+// to its caller, and the shared marker cannot stand in for it: a mutation's
+// re-read fence writes the marker ahead of its own response, so a discarded
+// response can still see `latestPublishedGeneration === generation`.
+function publishReady(generation: number, client: AppwireClientLike, hosts: HostRow[]): boolean {
   if (generation <= latestPublishedGeneration) {
-    return;
+    return false;
   }
   // The client fence (round 7, finding 2): a snapshot read through a connection
   // that has since been replaced describes the hub that was, so it must not
   // publish over the replacement's answer. The published marker is left where it
   // is - nothing published - so the client now connected still publishes its own.
   if (connectionStore.getState().client !== client) {
-    return;
+    return false;
   }
   latestPublishedGeneration = generation;
   const load = hostsStore.getState().load;
@@ -276,9 +359,10 @@ function publishReady(generation: number, client: AppwireClientLike, hosts: Host
   ) {
     // The same answer again: publish nothing and advance nothing, so nothing
     // derived from the registry re-reads on the poll cadence.
-    return;
+    return true;
   }
   hostsStore.setState({ load: { phase: "ready", hosts } });
+  return true;
 }
 
 /** selectableHostRows is the registry's non-removed rows, or none while it is
@@ -428,26 +512,37 @@ export function hostInstanceIdentity(host: string): number {
   return token;
 }
 
-// quietReRead is the shared quiet list read: publishReady's generation-guarded
-// publish with neither fetch's loading skeleton nor its error state. refresh
-// runs it behind the in-flight gate for the background poll, and the mutation
-// paths run it through reReadAfterMutation once their mutation has landed —
-// the mutation's own response already proved the change landed, so a failed
-// re-read must not flip the section to the error state and hide the rows that
-// were rendering; the rows stay, and the next poll or fetch converges them.
-async function quietReRead(): Promise<void> {
+// forcedReRead is the quiet read that reports whether its OWN response became
+// the current snapshot. reReadForced's caller (the deploy/restart stale-entry
+// retry) must never read a pair off a snapshot older than the refusal it is
+// recovering from: a failed read keeps the last snapshot, and a publish that
+// another response already owns changes nothing, so both answer false.
+async function forcedReRead(): Promise<boolean> {
   const generation = ++latestGeneration;
   beginListRequest();
   try {
     const read = await listHosts();
-    publishReady(generation, read.client, read.hosts);
+    return publishReady(generation, read.client, read.hosts);
   } catch {
     // A failed quiet read keeps the last snapshot: the mutation or poll that
     // issued it still stands, the rows stay rendered, and the next tick
     // retries anyway.
+    return false;
   } finally {
     endListRequest();
   }
+}
+
+// quietReRead is the shared quiet list read (forcedReRead, its answer
+// discarded): publishReady's generation-guarded publish with neither fetch's
+// loading skeleton nor its error state. refresh runs it behind the in-flight
+// gate for the background poll, and the mutation paths run it through
+// reReadAfterMutation once their mutation has landed — the mutation's own
+// response already proved the change landed, so a failed re-read must not flip
+// the section to the error state and hide the rows that were rendering; the
+// rows stay, and the next poll or fetch converges them.
+async function quietReRead(): Promise<void> {
+  await forcedReRead();
 }
 
 // reReadAfterMutation is the quiet list read behind a landed add, Connect, or
@@ -527,13 +622,19 @@ export const hostsStore = create<HostsStoreState>((set) => ({
     });
   },
 
+  reReadForced: () => forcedReRead(),
+
   add: async (entry) => {
     // The wire carries one entry object (component 08 slice 2's shape, the
     // design record's own), so the store passes what the dialog collected
     // straight through rather than picking three fields out of it. The
     // mutationId is the add's client idempotency key (registry spec 08 §4):
     // a keyed add is dedup-safe, so a transport-level retry cannot double-add.
-    const row = await requireClient().request("evener/host/add", { entry, mutationId: createSecureUUID() });
+    const result = await requireClient().request("evener/host/add", { entry, mutationId: createSecureUUID() });
+    // The result is the mutation-result union (registry spec 08 §11), so the
+    // store narrows it explicitly: only the committed arm is a success, and the
+    // teardown-failure, collision-dropped, and ambiguous arms throw.
+    const row = committedMutationRow(result, "evener/host/add");
     // Re-read quietly rather than appending: the server owns ordering and
     // the row's attached state, and the list read is cheap and never dials.
     await reReadAfterMutation();
@@ -547,7 +648,7 @@ export const hostsStore = create<HostsStoreState>((set) => ({
     // user saw, and a refusal means that row moved (guardedMutation retries
     // once with the re-read pair).
     const row = await guardedMutation(params.name, async (pair, mutationId) => {
-      const { host } = await requireClient().request(
+      const result = await requireClient().request(
         "evener/host/update",
         {
           name: params.name,
@@ -558,7 +659,7 @@ export const hostsStore = create<HostsStoreState>((set) => ({
         },
         { timeoutMs: HOST_GATE_TIMEOUT_MS },
       );
-      return host;
+      return committedMutationRow(result, "evener/host/update");
     });
     await reReadAfterMutation();
     return row;
@@ -573,8 +674,8 @@ export const hostsStore = create<HostsStoreState>((set) => ({
   },
 
   remove: async (name) => {
-    await guardedMutation(name, (pair, mutationId) =>
-      requireClient().request(
+    await guardedMutation(name, async (pair, mutationId) => {
+      const result = await requireClient().request(
         "evener/host/remove",
         {
           name,
@@ -583,8 +684,9 @@ export const hostsStore = create<HostsStoreState>((set) => ({
           expectedIncarnationId: pair.incarnationId,
         },
         { timeoutMs: HOST_GATE_TIMEOUT_MS },
-      ),
-    );
+      );
+      return committedRemovedRow(result, "evener/host/remove");
+    });
     await reReadAfterMutation();
   },
 

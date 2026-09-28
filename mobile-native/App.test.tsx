@@ -13,6 +13,10 @@ vi.mock("react-native", async () => (await import("./src/renderNative.testkit"))
 vi.mock("react-native-gesture-handler", () => ({
 	GestureHandlerRootView: "GestureHandlerRootView",
 }));
+vi.mock("react-native-gesture-handler/ReanimatedSwipeable", async () =>
+	(await import("./src/renderNative.testkit")).gestureHandlerModuleMock(),
+);
+vi.mock("react-native-reanimated", async () => (await import("./src/renderNative.testkit")).reanimatedModuleMock());
 vi.mock("react-native-safe-area-context", () => ({
 	SafeAreaProvider: (props: { children?: ReactNode }) => props.children ?? null,
 }));
@@ -44,5 +48,14 @@ vi.mock("./src/NativePreferencesProvider", () => ({
 
 it("roots the whole app in a full-screen GestureHandlerRootView", () => {
 	const root = render(<App />).toJSON();
-	expect(root).toMatchObject({ type: "GestureHandlerRootView", props: { style: { flex: 1 } } });
+	expect(root).toMatchObject({
+		type: "GestureHandlerRootView",
+		props: { style: { flex: 1 } },
+		children: [
+			{
+				type: "View",
+				children: [{ type: "ActivityIndicator", props: { accessibilityLabel: "Loading saved hubs" } }],
+			},
+		],
+	});
 });

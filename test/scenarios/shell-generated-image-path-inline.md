@@ -99,12 +99,10 @@ and `rm -rf` `$WORK` plus your own run dir. Leave any real hub untouched.
 ## Sharp edges
 
 - **A tool row starts COLLAPSED, and the gallery only exists while it is
-  expanded** (`ToolCallItem.tsx:270-286`; nothing about carrying images
-  auto-expands, `:163-170`). A *failed* shell call is the exception — `shell`
-  auto-expands on a nonzero exit (`tools/shellTool.tsx:133`) — so a command
-  that succeeds is collapsed and a command that fails is open. Do not read
-  "thumb visible" off a run whose command exited nonzero and conclude the
-  collapsed case works.
+  expanded.** Nothing about a shell result carrying images auto-expands its row. A failed shell
+  call is no exception: no tool auto-opens on failure, so a command that exits
+  nonzero is collapsed exactly like one that succeeds. Expand the row before
+  reading a thumb off it.
 - **The shell row has no open-beside control**, unlike `read_file` /
   `write_file` / `edit_file`. `openBesidePath` is defined only on those three
   (`tools/fsTools.tsx:64-67`, `tools/editTools.tsx:78,96`), and `apply_patch`

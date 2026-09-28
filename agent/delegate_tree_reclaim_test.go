@@ -406,7 +406,6 @@ func TestDelegateIdleRelease_ReleasesWholeSubtreeLeafFirst(t *testing.T) {
 	sess, err := NewSession(client, profile, execenv.NewLocalExecutionEnvironment(workspace), SessionConfig{
 		StateDir:         t.TempDir(),
 		MaxSubagentDepth: 2,
-		NoProjectPrompts: true,
 		ForceRealIO:      true,
 		testOnly: testConfig{
 			skipGitSnapshot:            true,
@@ -675,7 +674,6 @@ func driveWideSubtreeIdleRelease(t *testing.T, wideChildren, limit int, parkDead
 	sess, err := NewSession(client, profile, execenv.NewLocalExecutionEnvironment(workspace), SessionConfig{
 		StateDir:         t.TempDir(),
 		MaxSubagentDepth: 5,
-		NoProjectPrompts: true,
 		ForceRealIO:      true,
 		testOnly: testConfig{
 			skipGitSnapshot:            true,
@@ -1045,7 +1043,6 @@ func TestDelegateIdleRelease_RetriesAfterPregateRefusal(t *testing.T) {
 	sess, err := NewSession(client, profile, execenv.NewLocalExecutionEnvironment(workspace), SessionConfig{
 		StateDir:         t.TempDir(),
 		MaxSubagentDepth: 1,
-		NoProjectPrompts: true,
 		ForceRealIO:      true,
 		clock:            fake,
 		testOnly: testConfig{
@@ -1135,7 +1132,6 @@ func TestDelegateIdleRelease_RefusalsKeepSingleGraceTimer(t *testing.T) {
 	sess, err := NewSession(client, profile, execenv.NewLocalExecutionEnvironment(workspace), SessionConfig{
 		StateDir:         t.TempDir(),
 		MaxSubagentDepth: 1,
-		NoProjectPrompts: true,
 		ForceRealIO:      true,
 		clock:            fake,
 		testOnly: testConfig{
@@ -1444,7 +1440,6 @@ func TestDelegateIdleRelease_ColdRestoreResumesRetainedScratch(t *testing.T) {
 	s := newSession(t, withClient(client), withConfig(SessionConfig{
 		StateDir:         packageFixtureTempDir(t, "scratch-continuity-*"),
 		MaxSubagentDepth: 1,
-		NoProjectPrompts: true,
 		testOnly: testConfig{
 			skipGitSnapshot:          true,
 			minimalSystemPrompt:      true,
@@ -1570,7 +1565,6 @@ func TestDelegateIdleRelease_PregateRefusesLocalRetirementResidue(t *testing.T) 
 	sess, err := NewSession(client, profile, execenv.NewLocalExecutionEnvironment(workspace), SessionConfig{
 		StateDir:         t.TempDir(),
 		MaxSubagentDepth: 1,
-		NoProjectPrompts: true,
 		ForceRealIO:      true,
 		clock:            fake,
 		testOnly: testConfig{
@@ -1688,7 +1682,6 @@ func TestDelegateAttentionRestore_HoldsOffIdleReleaseMidWake(t *testing.T) {
 	sess, err := NewSession(client, profile, execenv.NewLocalExecutionEnvironment(workspace), SessionConfig{
 		StateDir:         t.TempDir(),
 		MaxSubagentDepth: 1,
-		NoProjectPrompts: true,
 		ForceRealIO:      true,
 		clock:            fake,
 		testOnly: testConfig{

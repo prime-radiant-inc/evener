@@ -11,9 +11,11 @@ import {
   HEARTBEAT_TIMEOUT_MS,
   RECONNECT_BASE_MS,
   RESUME_REQUEST_TIMEOUT_MS,
+  type SubscriberErrorInfo,
+  type SubscriberErrorPhase,
 } from "./client";
 import type { AppwireClientLike } from "./clientLike";
-import { ConnectionClosedError, RequestTimeoutError, WireError } from "./errors";
+import { ConnectionClosedError, errorText, RequestTimeoutError, WireError } from "./errors";
 import { FAKE_INITIALIZE_RESULT, FakeSocket } from "./testing/fakeSocket";
 import { rpcURLFromLocation } from "./transport";
 import type { InitializeResponse } from "./types.gen";
@@ -197,24 +199,24 @@ describe("AppwireClient", () => {
     expect(frames[1]).toEqual({ method: "initialized", params: {} });
   });
 
-  test("connect advertises v4 and rejects a v3 daemon", async () => {
+  test("connect advertises v6 and rejects a v5 daemon", async () => {
     // Keep this assertion first so the pre-cutover client fails immediately,
     // rather than waiting on a handshake that it still considers compatible.
-    expect(APPWIRE_PROTOCOL_VERSION).toBe("evener-appwire-v5");
+    expect(APPWIRE_PROTOCOL_VERSION).toBe("evener-appwire-v6");
 
     const fake = new FakeSocket();
     const client = new AppwireClient({ url: "ws://x/rpc", socketFactory: () => fake });
     const connecting = connectReady(fake, client);
     await flushUntil(() => fake.sent.length > 0);
     const frame = lastSentFrame(fake);
-    expect(frame.params).toMatchObject({ protocolVersion: "evener-appwire-v5" });
+    expect(frame.params).toMatchObject({ protocolVersion: "evener-appwire-v6" });
     fake.receive({
       id: frame.id,
-      result: { ...FAKE_INITIALIZE_RESULT, protocolVersion: "evener-appwire-v3" },
+      result: { ...FAKE_INITIALIZE_RESULT, protocolVersion: "evener-appwire-v5" },
     });
 
     await expect(connecting).rejects.toThrow(
-      "AppwireClient: expected protocol evener-appwire-v5, received evener-appwire-v3",
+      "AppwireClient: expected protocol evener-appwire-v6, received evener-appwire-v5",
     );
     expect(client.terminalReason).toBe("protocol");
   });
@@ -591,7 +593,68 @@ describe("AppwireClient", () => {
     expect(received).toHaveLength(1);
   });
 
-  test("requests before ready are rejected except initialize/ping", async () => {
+  // The socket hands handleMessage the raw data of every message event. The
+  // transport boundary accepts only a JSON object as a WireMessage envelope: a
+  // frame that parses to null, a scalar, or an array carries no id/method/error
+  // to read, and reading one off JSON null throws a TypeError straight out of
+  // the socket callback. Every such non-envelope is ignored like the non-string
+  // and unparseable frames the boundary already drops, and the socket keeps
+  // working afterward.
+  test("ignores a frame that parses to null instead of throwing", async () => {
+    const fake = new FakeSocket({ autoInitialize: true });
+    const client = new AppwireClient({ url: "ws://x/rpc", socketFactory: () => fake });
+    await connectReady(fake, client);
+    const received: AnyNotification[] = [];
+    client.onNotification((n) => received.push(n));
+
+    expect(() => fake.receive(null)).not.toThrow();
+    expect(received).toHaveLength(0);
+  });
+
+  test("ignores a frame that parses to a scalar or an array", async () => {
+    const fake = new FakeSocket({ autoInitialize: true });
+    const client = new AppwireClient({ url: "ws://x/rpc", socketFactory: () => fake });
+    await connectReady(fake, client);
+    const received: AnyNotification[] = [];
+    client.onNotification((n) => received.push(n));
+
+    expect(() => fake.receive(42)).not.toThrow();
+    expect(() => fake.receive("thread/started")).not.toThrow();
+    expect(() => fake.receive([1, 2])).not.toThrow();
+    expect(received).toHaveLength(0);
+  });
+
+  test("a malformed error payload rejects the pending request without throwing", async () => {
+    const fake = new FakeSocket({ autoInitialize: true });
+    const client = new AppwireClient({ url: "ws://x/rpc", socketFactory: () => fake });
+    await connectReady(fake, client);
+
+    const reqPromise = client.request("thread/list", { limit: 10 });
+    const frame = lastSentFrame(fake);
+    const rejection = expect(reqPromise).rejects.toBeInstanceOf(WireError);
+
+    expect(() => fake.receive({ id: frame.id, error: "not-an-object" })).not.toThrow();
+
+    await rejection;
+  });
+
+  test("a valid response still resolves and a valid notification still dispatches", async () => {
+    const fake = new FakeSocket({ autoInitialize: true });
+    const client = new AppwireClient({ url: "ws://x/rpc", socketFactory: () => fake });
+    await connectReady(fake, client);
+
+    const reqPromise = client.request("thread/list", { limit: 10 });
+    const frame = lastSentFrame(fake);
+    fake.receive({ id: frame.id, result: { data: [], nextCursor: "" } });
+    await expect(reqPromise).resolves.toEqual({ data: [], nextCursor: "" });
+
+    const received: AnyNotification[] = [];
+    client.onNotification((n) => received.push(n));
+    fake.receive({ method: "thread/started", params: {} });
+    expect(received).toEqual([{ method: "thread/started", params: {} }]);
+  });
+
+  test("requests before ready are rejected, including the heartbeat's ping", async () => {
     const fake = new FakeSocket({ autoInitialize: false });
     const client = new AppwireClient({ url: "ws://x/rpc", socketFactory: () => fake });
 
@@ -600,9 +663,8 @@ describe("AppwireClient", () => {
     expect(client.state).toBe("connecting");
 
     await expect(client.request("thread/list", { limit: 1 })).rejects.toThrow(/thread\/list/);
-
-    void client.request("ping", {});
-    expect(sentFrames(fake).some((f) => f.method === "ping")).toBe(true);
+    await expect(client.request("ping", {})).rejects.toThrow(/ping/);
+    expect(sentFrames(fake).some((f) => f.method === "ping")).toBe(false);
   });
 
   test("close() transitions to closed and rejects pending requests", async () => {
@@ -813,6 +875,106 @@ describe("AppwireClient", () => {
     expect(result).toEqual(FAKE_INITIALIZE_RESULT);
     expect(states).toEqual(["connecting", "ready"]);
     expect(readyCount).toBe(1);
+  });
+});
+
+describe("subscriber error diagnostics", () => {
+  // Regression test: every isolated subscriber catch discarded its exception
+  // outright, so a consumer that threw missed an update while the client went
+  // on reporting a healthy transport, with no diagnostic naming the failure.
+  // The optional seam reports the phase and exception; fan-out isolation and
+  // the successful handshake are preserved.
+  test("reports each isolated subscriber failure with its phase, and later listeners still run", async () => {
+    const fake = new FakeSocket({ autoInitialize: true });
+    const diagnostics: SubscriberErrorInfo[] = [];
+    const client = new AppwireClient({
+      url: "ws://x/rpc",
+      socketFactory: () => fake,
+      onSubscriberError: (info) => diagnostics.push(info),
+    });
+
+    const states: ConnectionState[] = [];
+    let readyCount = 0;
+    let handshakeCount = 0;
+    let notificationCount = 0;
+    client.onStateChange(() => {
+      throw new Error("state boom");
+    });
+    client.onStateChange((s) => states.push(s));
+    client.onReady(() => {
+      throw new Error("ready boom");
+    });
+    client.onReady(() => {
+      readyCount += 1;
+    });
+    client.onHandshakeResult(() => {
+      throw new Error("handshake boom");
+    });
+    client.onHandshakeResult(() => {
+      handshakeCount += 1;
+    });
+    client.onNotification(() => {
+      throw new Error("notification boom");
+    });
+    client.onNotification(() => {
+      notificationCount += 1;
+    });
+
+    const result = await connectReady(fake, client);
+    fake.receive({ method: "thread/started", params: { secret: "payload" } });
+
+    // The failure is isolated: the connection still reaches ready, the
+    // handshake result is unchanged, and every later listener still ran.
+    expect(client.state).toBe("ready");
+    expect(result).toEqual(FAKE_INITIALIZE_RESULT);
+    expect(states).toEqual(["connecting", "ready"]);
+    expect(readyCount).toBe(1);
+    expect(handshakeCount).toBe(1);
+    expect(notificationCount).toBe(1);
+
+    // ...and now it is visible: one diagnostic per subscriber throw, naming
+    // the exception. State dispatches on both "connecting" and "ready", so two
+    // state diagnostics are expected — asserting the multiset (not a Set, which
+    // would collapse them) pins that a reporter missing a throw still fails.
+    const phases: SubscriberErrorPhase[] = diagnostics.map((d) => d.phase);
+    expect(phases).toHaveLength(5);
+    expect([...phases].sort()).toEqual(["handshakeResult", "notification", "ready", "state", "state"]);
+    const messages = diagnostics.map((d) => errorText(d.error));
+    expect(messages).toContain("state boom");
+    expect(messages).toContain("ready boom");
+    expect(messages).toContain("handshake boom");
+    expect(messages).toContain("notification boom");
+
+    // Payload-redacted: the diagnostic carries the phase and exception only,
+    // never the notification payload that happened to be in flight.
+    for (const info of diagnostics) {
+      expect(Object.keys(info).sort()).toEqual(["error", "phase"]);
+    }
+  });
+
+  test("a throwing diagnostic handler cannot corrupt dispatch", async () => {
+    const fake = new FakeSocket({ autoInitialize: true });
+    const client = new AppwireClient({
+      url: "ws://x/rpc",
+      socketFactory: () => fake,
+      onSubscriberError: () => {
+        throw new Error("diagnostic handler boom");
+      },
+    });
+
+    let notifications = 0;
+    client.onNotification(() => {
+      throw new Error("notification boom");
+    });
+    client.onNotification(() => {
+      notifications += 1;
+    });
+
+    await connectReady(fake, client);
+    fake.receive({ method: "thread/started", params: {} });
+
+    expect(client.state).toBe("ready");
+    expect(notifications).toBe(1);
   });
 });
 

@@ -16,10 +16,11 @@ import (
 // the hub's list rows render from, and the approval flags must survive the
 // same hand-off — the fallback folds them out of Clear, so a roster entry
 // with pending approval work must reach the row builder flagged, or prod
-// rows overstate Clear. In-process children inherit the capabilities through
-// the same copy; threadFromEntry's alias branch zeroes the rendered set, so
-// inheritance is harmless there, but this hand-off must not be where the state
-// goes missing. The approval flags are the root's alone, never inherited
+// rows overstate Clear. In-process children inherit the capabilities as one
+// of the alias literal's own fields; threadFromEntry's alias branch zeroes
+// the rendered set, so carrying it is harmless there, but this hand-off must
+// not be where the state goes missing. The approval flags are the root's
+// alone, never inherited
 // (TestLocalDaemonEntriesFromRosterAliasesInheritNoAskOrApproval).
 func TestLocalDaemonEntriesFromRosterCarriesProbeCapabilitiesAndApprovalFlags(t *testing.T) {
 	caps := appwire.ThreadCapabilities{Send: true, ChangeVisionModel: true}
@@ -48,8 +49,8 @@ func TestLocalDaemonEntriesFromRosterCarriesProbeCapabilitiesAndApprovalFlags(t 
 	if !root.PendingAsk || !root.PendingEscalation {
 		t.Fatalf("root entry = %+v, want the roster's ask and escalation flags carried", root)
 	}
-	// The child inherits the capabilities through the same struct copy that
-	// carries its other root fields; threadFromEntry's alias branch zeroes the
+	// The child inherits the capabilities as one of the fields the alias
+	// literal carries from the root; threadFromEntry's alias branch zeroes the
 	// rendered set (pinned in appsource), so this hand-off must not be where
 	// the set goes missing even though the child's own row never renders it.
 	if !child.CapabilitiesKnown || child.Capabilities != caps {
@@ -60,8 +61,8 @@ func TestLocalDaemonEntriesFromRosterCarriesProbeCapabilitiesAndApprovalFlags(t 
 // TestLocalDaemonEntriesFromRosterAliasesInheritNoAskOrApproval pins who owns
 // a pending question and a pending approval: the root session. ask_user and
 // sandbox escalation are both root-only (agent/session_escalation.go's
-// escalationAllowed mirrors ask_user's gate), yet an in-process child's entry is
-// a copy of its root's. A copied flag would put the root's question on the
+// escalationAllowed mirrors ask_user's gate), so an in-process child's entry
+// must never carry them: a copied flag would put the root's question on the
 // child's row, and a controller hub reading this hub's list would show it, and
 // the approval, on the remote subagent too. The root's row carries the cards
 // themselves.

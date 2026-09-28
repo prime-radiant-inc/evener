@@ -60,10 +60,9 @@ func TestRootSessionStartSeedsPostTemplateCurrentTask(t *testing.T) {
 	session := newSession(t,
 		withDir(dir),
 		withConfig(coordinatorWorkflowSessionConfig(t, SessionConfig{
-			AgentName:        "coordinator",
-			NonInteractive:   true,
-			StateDir:         dir,
-			NoProjectPrompts: true,
+			AgentName:      "coordinator",
+			NonInteractive: true,
+			StateDir:       dir,
 			testOnly: testConfig{
 				skipGitSnapshot:     true,
 				minimalSystemPrompt: true,
@@ -95,7 +94,6 @@ func TestFreshChildStartThenTemplatePopulationEmitsTaskCorrection(t *testing.T) 
 	dir := t.TempDir()
 	root := newSession(t, withDir(dir), withConfig(SessionConfig{
 		MaxSubagentDepth: 1,
-		NoProjectPrompts: true,
 		StateDir:         dir,
 		testOnly: testConfig{
 			skipGitSnapshot:     true,
@@ -156,7 +154,6 @@ func TestSharedChildStartAndTaskUpdateNameRootOwner(t *testing.T) {
 	root := newSession(t, withDir(dir), withConfig(SessionConfig{
 		MaxSubagentDepth:       1,
 		ShareTasksWithChildren: true,
-		NoProjectPrompts:       true,
 		StateDir:               dir,
 		testOnly: testConfig{
 			skipGitSnapshot:     true,
@@ -242,7 +239,7 @@ func TestSessionStartGoalSeedUsesStructuredMetaAndExplicitClear(t *testing.T) {
 		ID:        identifier.MustNewSessionID(),
 		ProfileID: "openai",
 		Model:     "gpt-5.2",
-		Config:    (SessionConfig{NoProjectPrompts: true}).toSnapshot(),
+		Config:    (SessionConfig{}).toSnapshot(),
 		Goal: &schema.GoalSnapshot{
 			Objective:  "Ship structured focus state",
 			Status:     "active",

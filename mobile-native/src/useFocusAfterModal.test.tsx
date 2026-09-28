@@ -22,7 +22,6 @@ vi.mock("react-native", async () => {
 	return {
 		...mock,
 		Platform: native.platform,
-		AccessibilityInfo: { announceForAccessibility: vi.fn() },
 		ActionSheetIOS: { showActionSheetWithOptions: vi.fn() },
 		AppState: {
 			currentState: "active",
@@ -40,6 +39,7 @@ vi.mock("react-native-safe-area-context", () => ({
 	SafeAreaProvider: (props: { children?: unknown }) => props.children ?? null,
 	useSafeAreaInsets: () => ({ top: 47, bottom: 34, left: 0, right: 0 }),
 }));
+vi.mock("expo-symbols", () => ({ SymbolView: "SymbolView" }));
 vi.mock("react-native-enriched-markdown", () => ({
 	EnrichedMarkdownText: "EnrichedMarkdownText",
 }));
@@ -52,6 +52,7 @@ vi.mock("@react-navigation/native", async () => {
 		useIsFocused: () => true,
 	};
 });
+vi.mock("expo-symbols", () => ({ SymbolView: "SymbolView" }));
 vi.mock("expo-clipboard", () => ({
 	setStringAsync: vi.fn(async () => {}),
 	getStringAsync: vi.fn(async () => ""),
@@ -72,12 +73,7 @@ vi.mock("expo-file-system", () => ({
 		constructor(public uri: string) {}
 	},
 }));
-vi.mock("expo-image-manipulator", () => ({
-	ImageManipulator: {
-		manipulateAsync: vi.fn(async () => ({ uri: "manipulated" })),
-	},
-	SaveFormat: { JPEG: "jpeg" },
-}));
+vi.mock("expo-image-manipulator", () => ({}));
 vi.mock("expo-image-picker", () => ({
 	launchImageLibraryAsync: vi.fn(async () => ({ canceled: true, assets: [] })),
 	UIImagePickerPreferredAssetRepresentationMode: { Current: "current" },

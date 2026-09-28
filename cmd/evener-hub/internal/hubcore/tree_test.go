@@ -102,6 +102,42 @@ func TestBuildTreeClearReplacementUsesStableWorkspaceRef(t *testing.T) {
 	}
 }
 
+// A replaced daemon's NeedsYou row must carry the same stable workspace ref as
+// its Live and project rows. The NeedsYou node literal omitted Ref, so
+// navigationNodeRef fell back to the new instance ID; a client that matches
+// Needs-you membership to rows by ref then missed the session.
+func TestBuildTreeClearReplacementNeedsYouUsesStableWorkspaceRef(t *testing.T) {
+	now := time.Date(2026, 8, 28, 12, 0, 0, 0, time.UTC)
+	metas := []schema.SessionMeta{{
+		ID:             "old-instance",
+		CreatedAt:      now,
+		UpdatedAt:      now,
+		OriginalPrompt: "old prompt",
+		EnvInfo:        schema.EnvironmentInfo{WorkingDir: "/workspace"},
+	}}
+	live := []LiveEntry{{
+		Entry: rendezvous.Entry{
+			SourceID:     "local",
+			SessionID:    "new-instance",
+			WorkspaceRef: "local:old-instance",
+			WorkingDir:   "/workspace",
+		},
+		SessionID: "new-instance",
+		Status:    appwire.ThreadStatusAwaiting,
+	}}
+	projects := map[string]identifier.Project{
+		"/workspace": {ID: "project", CanonicalPath: "/workspace"},
+	}
+
+	tree := BuildTreeAtWithProjects(metas, live, nil, now, projects)
+	if len(tree.NeedsYou) != 1 || tree.NeedsYou[0].ID != "new-instance" || tree.NeedsYou[0].Ref != "local:old-instance" {
+		t.Fatalf("needs-you replacement = %#v, want new instance with stable ref", tree.NeedsYou)
+	}
+	if len(tree.Live) != 1 || tree.Live[0].Ref != "local:old-instance" {
+		t.Fatalf("live replacement ref = %#v, want local:old-instance", tree.Live)
+	}
+}
+
 func TestBuildTreeDoesNotUseCrossSourceWorkspaceRef(t *testing.T) {
 	now := time.Date(2026, 8, 28, 12, 0, 0, 0, time.UTC)
 	metas := []schema.SessionMeta{{

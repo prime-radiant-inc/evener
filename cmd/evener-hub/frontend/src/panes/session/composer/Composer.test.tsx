@@ -6,7 +6,7 @@ import { WireError } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { IDBDatabase, IDBFactory } from "fake-indexeddb";
+import { IDBFactory } from "fake-indexeddb";
 import { useLayoutEffect } from "react";
 import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
 import { ClientProvider } from "../../../shell/clientContext";
@@ -20,7 +20,7 @@ import { connectionStore } from "../../../stores/connection";
 import type { MutationOutboxRecord } from "../../../stores/mutationOutbox";
 import { MutationOutboxIndexedDB } from "../../../stores/mutationOutboxIndexedDB";
 import { prefsStore, resetPrefsStoreForTests } from "../../../stores/prefs";
-import { holdIndexedDBEvent, holdNextWriteTransaction } from "../../../stores/testing/stalledIndexedDB";
+import { holdNextWriteTransaction } from "../../../stores/testing/stalledIndexedDB";
 import {
   readMutationPersistence,
   resetThreadsStoreForTests,
@@ -1360,9 +1360,7 @@ test("idle session: submit button reads Send and posts turn/start with the compo
   expect(submitButton().textContent).toMatch(/send/i);
   await user.click(submitButton());
 
-  await waitFor(() => {
-    expect(fake.calls.some((c) => c.method === "turn/start")).toBe(true);
-  });
+  await flushPendingTurnsProjectionForTests();
   const call = fake.calls.find((c) => c.method === "turn/start");
   expect(call?.params).toMatchObject({ ref: "ref_a", input: [{ type: "text", text: "ha" }] });
 });
@@ -1396,7 +1394,8 @@ test("text edited while the local outbox commit is pending survives that commit"
   expect(readComposerDraft("ref_a")).toEqual({ text: "ab plus more", skillNames: [] });
 
   storage.release();
-  await waitFor(() => expect(fake.calls.some((call) => call.method === "turn/start")).toBe(true));
+  await flushPendingTurnsProjectionForTests();
+  expect(fake.calls.some((call) => call.method === "turn/start")).toBe(true);
 
   expect(editor.textContent).toBe("ab plus more");
   expect(readComposerDraft("ref_a")).toEqual({ text: "ab plus more", skillNames: [] });
@@ -1431,7 +1430,8 @@ test("a lost response never restores submitted content over a newer composer dra
   await waitFor(() => expect(editor.textContent).toBe(""));
   await user.type(editor, "nd");
 
-  await waitFor(() => expect(fake.calls.some((call) => call.method === "turn/start")).toBe(true));
+  await flushPendingTurnsProjectionForTests();
+  expect(fake.calls.some((call) => call.method === "turn/start")).toBe(true);
   expect(editor.textContent).toBe("nd");
   expect(screen.queryByText(/reload before retrying/i)).toBeNull();
 });
@@ -1454,7 +1454,8 @@ test("active session with queue capability: Send routes to turn/queue", async ()
   await user.type(textarea(), "qm");
   await user.click(submitButton());
 
-  await waitFor(() => expect(fake.calls.some((c) => c.method === "turn/queue")).toBe(true));
+  await flushPendingTurnsProjectionForTests();
+  expect(fake.calls.some((c) => c.method === "turn/queue")).toBe(true);
 });
 
 // kata 8c65. Two messages sent quickly: the first turn/start is ACCEPTED (the
@@ -1500,7 +1501,8 @@ test("a second message composed before the first turn's status frame arrives que
 
   await user.type(textarea(), "m1");
   await user.click(submitButton());
-  await waitFor(() => expect(fake.calls.some((c) => c.method === "turn/start")).toBe(true));
+  await flushPendingTurnsProjectionForTests();
+  expect(fake.calls.some((c) => c.method === "turn/start")).toBe(true);
 
   await user.type(textarea(), "m2");
   // Still composable: an idle snapshot on a queue-capable harness carries
@@ -1509,10 +1511,9 @@ test("a second message composed before the first turn's status frame arrives que
   await waitFor(() => expect(submitButton().disabled).toBe(false));
   await user.click(submitButton());
 
-  await waitFor(() => {
-    const queued = fake.calls.find((c) => c.method === "turn/queue");
-    expect(queued?.params).toMatchObject({ ref: "ref_a", input: [{ type: "text", text: "m2" }] });
-  });
+  await flushPendingTurnsProjectionForTests();
+  const queued = fake.calls.find((c) => c.method === "turn/queue");
+  expect(queued?.params).toMatchObject({ ref: "ref_a", input: [{ type: "text", text: "m2" }] });
   // turn/queue carries no expectedTurnId to be wrong about: appwire v3 dropped
   // the field from the method outright (appwire/types.go's ProtocolVersion
   // note), which is what lets the queue land before any turn id exists.
@@ -1586,7 +1587,8 @@ test("a cold auto-resumed session queues the second message rather than bouncing
   await user.click(editor);
   await user.type(editor, "m1");
   await user.click(submitButton());
-  await waitFor(() => expect(fake.calls.some((c) => c.method === "turn/start")).toBe(true));
+  await flushPendingTurnsProjectionForTests();
+  expect(fake.calls.some((c) => c.method === "turn/start")).toBe(true);
 
   await user.type(editor, "m2");
   await user.click(submitButton());
@@ -1606,7 +1608,8 @@ test("a closed session that a first message resumed queues the second message to
   await user.click(editor);
   await user.type(editor, "m1");
   await user.click(submitButton());
-  await waitFor(() => expect(fake.calls.some((c) => c.method === "turn/start")).toBe(true));
+  await flushPendingTurnsProjectionForTests();
+  expect(fake.calls.some((c) => c.method === "turn/start")).toBe(true);
 
   await user.type(editor, "m2");
   await user.click(submitButton());
@@ -1628,7 +1631,8 @@ test("the submit tooltip names the route the submit actually takes on a cold ses
   await user.click(editor);
   await user.type(editor, "m1");
   await user.click(submitButton());
-  await waitFor(() => expect(fake.calls.some((c) => c.method === "turn/start")).toBe(true));
+  await flushPendingTurnsProjectionForTests();
+  expect(fake.calls.some((c) => c.method === "turn/start")).toBe(true);
 
   await user.type(editor, "m2");
   const promisedQueue = /queue until the agent stops/i.test(hoverForTooltip(submitButton()).textContent ?? "");
@@ -1767,8 +1771,8 @@ test("a hydrate that reports this client's own in-flight send still routes the n
   // merely re-described from the authoritative projection, but with the durable
   // record it re-described GONE. (The transient first state, where the record
   // still exists and only `source` has flipped, is pendingReconcile.test.ts's.)
-  await waitFor(async () => expect((await readMutationPersistence("ref_a")).optimistic).toHaveLength(0));
   await flushPendingTurnsProjectionForTests();
+  expect((await readMutationPersistence("ref_a")).optimistic).toHaveLength(0);
 
   await user.type(editor, "m2");
   await user.click(submitButton());
@@ -1814,7 +1818,8 @@ test("Cmd+Enter always submits, regardless of the enterToSend preference", async
   await user.type(textarea(), "qs");
   await user.keyboard("{Meta>}{Enter}{/Meta}");
 
-  await waitFor(() => expect(fake.calls.some((c) => c.method === "turn/start")).toBe(true));
+  await flushPendingTurnsProjectionForTests();
+  expect(fake.calls.some((c) => c.method === "turn/start")).toBe(true);
 });
 
 test("bare Enter does not submit when enterToSend is off (default)", async () => {
@@ -1869,7 +1874,8 @@ test("bare Enter with enterToSend dispatches the message and leaves nothing behi
   await user.type(textarea(), "go");
   await user.keyboard("{Enter}");
 
-  await waitFor(() => expect(fake.calls.some((c) => c.method === "turn/start")).toBe(true));
+  await flushPendingTurnsProjectionForTests();
+  expect(fake.calls.some((c) => c.method === "turn/start")).toBe(true);
   // The keystroke sent the message; it must not also reach the editor as a
   // literal newline, which would leave the sent text behind in the composer.
   await waitFor(() => expect(textarea().textContent).toBe(""));
@@ -1943,7 +1949,7 @@ test("Shift+Enter with an empty queue steers the draft and leaves nothing behind
   await user.type(editor, "hi");
   await user.keyboard("{Shift>}{Enter}{/Shift}");
 
-  await waitFor(() => expect(fake.calls.some((c) => c.method === "turn/steer")).toBe(true));
+  await flushPendingTurnsProjectionForTests();
   expect(fake.calls.find((c) => c.method === "turn/steer")?.params).toMatchObject({ ref: "ref_a" });
   await waitFor(() => expect(editor.textContent).toBe(""));
   expect(readComposerDraft("ref_a")).toEqual({ text: "", skillNames: [] });
@@ -2071,7 +2077,7 @@ test("clicking steer with a non-empty queue routes to drain-as-steer, carrying t
   await user.type(textarea(), "dm");
   await user.click(steerButton());
 
-  await waitFor(() => expect(fake.calls.some((c) => c.method === "turn/drainAsSteer")).toBe(true));
+  await flushPendingTurnsProjectionForTests();
   const call = fake.calls.find((c) => c.method === "turn/drainAsSteer");
   expect(call?.params).toMatchObject({ ref: "ref_a", input: [{ type: "text", text: "dm" }] });
 });
@@ -2109,7 +2115,8 @@ test("stop and steer both render and both work during the window after status fl
   expect(screen.queryByTestId("composer-stop")).not.toBeNull();
 
   await user.click(screen.getByTestId("composer-steer"));
-  await waitFor(() => expect(fake.calls.filter((c) => c.method === "turn/steer")).toHaveLength(1));
+  await flushPendingTurnsProjectionForTests();
+  expect(fake.calls.filter((c) => c.method === "turn/steer")).toHaveLength(1);
   expect(screen.queryByText(/no active turn/i)).toBeNull();
 
   // And it is a working button, not a decoration: the request it sends names
@@ -2123,7 +2130,8 @@ test("stop and steer both render and both work during the window after status fl
     },
   }));
   await user.click(screen.getByTestId("composer-stop"));
-  await waitFor(() => expect(fake.calls.some((c) => c.method === "turn/interrupt")).toBe(true));
+  await flushPendingTurnsProjectionForTests();
+  expect(fake.calls.some((c) => c.method === "turn/interrupt")).toBe(true);
 });
 
 // A press is judged on the session's controls at the moment it lands, not on
@@ -2209,7 +2217,8 @@ test("submit after an active frame folded in the same task routes to queue on th
     foldStatusFrame(fake, "active");
     fireEvent.click(submit);
   });
-  await waitFor(() => expect(fake.calls.some((c) => c.method === "turn/queue")).toBe(true));
+  await flushPendingTurnsProjectionForTests();
+  expect(fake.calls.some((c) => c.method === "turn/queue")).toBe(true);
   expect(fake.calls.filter((c) => c.method === "turn/start")).toHaveLength(0);
 });
 
@@ -2266,7 +2275,8 @@ test("submit after the pending send cleared in the same task routes to send on t
   const editor = textarea();
   await user.type(editor, "second");
   await user.click(submitButton());
-  await waitFor(async () => expect(await routeOf("second")).toBe("turn/queue"));
+  await flushPendingTurnsProjectionForTests();
+  expect(await routeOf("second")).toBe("turn/queue");
   await waitFor(() => expect(editor.textContent).toBe(""));
   // The next message renders in the same queue mode; its pending send clears
   // in the same task as the press, so the press has to read the store.
@@ -2276,7 +2286,8 @@ test("submit after the pending send cleared in the same task routes to send on t
     resetPendingTurnsStoreForTests();
     fireEvent.click(submit);
   });
-  await waitFor(async () => expect(await routeOf("third")).toBe("turn/start"));
+  await flushPendingTurnsProjectionForTests();
+  expect(await routeOf("third")).toBe("turn/start");
 });
 
 // Regression for the review finding on the reduced branch: ownPendingSend used
@@ -2324,13 +2335,12 @@ test("an uncertain own send still routes the next message to queue", async () =>
   });
   await user.type(textarea(), "second");
   await user.click(submitButton());
-  await waitFor(async () => {
-    const records = await storage.listOutbox("ref_a");
-    const second = records.find(
-      (record) => (record.payload.input as { text?: string }[] | undefined)?.[0]?.text === "second",
-    );
-    expect(second?.method).toBe("turn/queue");
-  });
+  await flushPendingTurnsProjectionForTests();
+  const records = await storage.listOutbox("ref_a");
+  const second = records.find(
+    (record) => (record.payload.input as { text?: string }[] | undefined)?.[0]?.text === "second",
+  );
+  expect(second?.method).toBe("turn/queue");
   expect(fake.calls.filter((call) => call.method === "turn/start")).toEqual([]);
 });
 
@@ -2416,7 +2426,8 @@ test("Shift+Enter while active with no active turn id sends the steer", async ()
   await user.type(textarea(), "hi");
   await user.keyboard("{Shift>}{Enter}{/Shift}");
 
-  await waitFor(() => expect(fake.calls.filter((c) => c.method === "turn/steer")).toHaveLength(1));
+  await flushPendingTurnsProjectionForTests();
+  expect(fake.calls.filter((c) => c.method === "turn/steer")).toHaveLength(1);
   expect(screen.queryByText(/no active turn/i)).toBeNull();
 });
 
@@ -2452,7 +2463,8 @@ test("Shift+Enter routing to drain while active with no active turn id sends the
   await user.type(textarea(), "hi");
   await user.keyboard("{Shift>}{Enter}{/Shift}");
 
-  await waitFor(() => expect(fake.calls.filter((c) => c.method === "turn/drainAsSteer")).toHaveLength(1));
+  await flushPendingTurnsProjectionForTests();
+  expect(fake.calls.filter((c) => c.method === "turn/drainAsSteer")).toHaveLength(1);
   expect(screen.queryByText(/no active turn/i)).toBeNull();
 });
 
@@ -2524,7 +2536,8 @@ test("an indefinitely pending steer never emits a timeout warning or reload inst
 
   await user.type(textarea(), "ps");
   await user.click(steerButton());
-  await waitFor(() => expect(fake.calls.some((call) => call.method === "turn/steer")).toBe(true));
+  await flushPendingTurnsProjectionForTests();
+  expect(fake.calls.some((call) => call.method === "turn/steer")).toBe(true);
 
   vi.useFakeTimers();
   await act(() => vi.advanceTimersByTimeAsync(60_000));
@@ -2633,10 +2646,9 @@ test("sending recovered text uses current Composer routing and consumes the reco
   await flushPendingTurnsProjectionForTests();
 
   expect(await storage.getRecovery(recovered.clientMutationId)).toBeUndefined();
-  // The wire call itself stays a waitFor: dispatch is deliberately
-  // fire-and-forget off the durable resend (threads.ts's own
-  // handleDiscoveredMutations call), so it is not projection work to await.
-  await waitFor(() => expect(fake.calls.some((call) => call.method === "turn/queue")).toBe(true));
+  // The dispatch is fire-and-forget off the durable resend (threads.ts's own
+  // handleDiscoveredMutations call), and every storage step it takes is
+  // projection work, so the flush above has seen the wire call out.
   expect(fake.calls.find((call) => call.method === "turn/queue")?.params).toMatchObject({
     input: [{ type: "text", text: "retry me" }],
   });
@@ -2741,7 +2753,6 @@ test.each(["automatic", "Edit message"] as const)(
 
       await user.click(submitButton());
       await flushPendingTurnsProjectionForTests();
-      await waitFor(() => expect(fake.calls.some((call) => call.method === "turn/start")).toBe(true));
       expect(fake.calls.find((call) => call.method === "turn/start")?.params).toMatchObject({
         input: expectedSubmittedInput,
       });
@@ -2886,25 +2897,8 @@ test.each([
   const submittedText = image ? "edit me [image 1]" : "retry me";
   expect(textarea().textContent).toBe(submittedText);
 
-  const transact = IDBDatabase.prototype.transaction;
-  let hold: ReturnType<typeof holdIndexedDBEvent> | undefined;
-  let announceWrite: (() => void) | undefined;
-  const written = new Promise<void>((resolve) => {
-    announceWrite = resolve;
-  });
-  vi.spyOn(IDBDatabase.prototype, "transaction").mockImplementation(function (this: IDBDatabase, ...args) {
-    const transaction = transact.apply(this, args);
-    if (
-      !hold &&
-      transaction.mode === "readwrite" &&
-      transaction.objectStoreNames.length === 1 &&
-      transaction.objectStoreNames.contains("recovery")
-    ) {
-      hold = holdIndexedDBEvent(transaction, "complete");
-      void hold.reached.then(() => announceWrite?.());
-    }
-    return transaction;
-  });
+  const hold = holdNextWriteTransaction(["recovery"]);
+  const written = hold.reached;
   try {
     fireEvent.click(submitButton());
     await written;
@@ -2929,7 +2923,7 @@ test.each([
       if (edit === "same text") replaceEditorText(textarea(), submittedText);
     }
   } finally {
-    await act(async () => hold?.release());
+    await act(async () => hold.release());
     await flushPendingTurnsProjectionForTests();
   }
   const expected = edit === "unchanged" ? "" : edit === "edited" ? "new draft" : image ? "edit me " : "retry me";
@@ -2983,28 +2977,19 @@ test("draining an active recovery consumes its owner before the next submission"
   await flushPendingTurnsProjectionForTests();
   const editor = textarea();
   expect(editor.textContent).toBe("retry me");
-  const transact = IDBDatabase.prototype.transaction;
-  let hold: ReturnType<typeof holdIndexedDBEvent> | undefined;
-  const committed = deferred<void>();
-  vi.spyOn(IDBDatabase.prototype, "transaction").mockImplementation(function (this: IDBDatabase, ...args) {
-    const transaction = transact.apply(this, args);
-    if (!hold && transaction.mode === "readwrite" && transaction.objectStoreNames.contains("sequences")) {
-      hold = holdIndexedDBEvent(transaction, "complete");
-      void hold.reached.then(() => committed.resolve());
-    }
-    return transaction;
-  });
+  const hold = holdNextWriteTransaction(["outbox", "optimistic", "recovery", "sequences"]);
+  const committed = hold.reached;
   try {
     await act(async () => {
       fireEvent.click(screen.getByRole("button", { name: "Steer queue now" }));
-      await committed.promise;
+      await committed;
     });
     // Recovery ownership must be consumed by the same durable write, before
     // the mounted composer's success callback can clear or autosave its draft.
     expect(await storage.getRecovery(recovery.clientMutationId)).toBeUndefined();
   } finally {
     await act(async () => {
-      hold?.release();
+      hold.release();
       await dispatched.promise;
     });
     await flushPendingTurnsProjectionForTests();
@@ -3037,23 +3022,14 @@ test.each([false, true])(
     const second = render(<Composer ref="ref_a" focused={false} />);
     const secondInput = within(second.container).getByRole<HTMLDivElement>("textbox");
     await flushPendingTurnsProjectionForTests();
-    const transact = IDBDatabase.prototype.transaction;
-    let hold: ReturnType<typeof holdIndexedDBEvent> | undefined;
-    const committed = deferred<void>();
-    vi.spyOn(IDBDatabase.prototype, "transaction").mockImplementation(function (this: IDBDatabase, ...args) {
-      const transaction = transact.apply(this, args);
-      if (!hold && transaction.mode === "readwrite" && transaction.objectStoreNames.contains("sequences")) {
-        hold = holdIndexedDBEvent(transaction, "complete");
-        void hold.reached.then(() => committed.resolve());
-      }
-      return transaction;
-    });
+    const hold = holdNextWriteTransaction(["outbox", "optimistic", "recovery", "sequences"]);
+    const committed = hold.reached;
     try {
       fireEvent.click(firstButton);
-      await committed.promise;
+      await committed;
       replaceEditorText(secondInput, "newer shared draft");
     } finally {
-      await act(async () => hold?.release());
+      await act(async () => hold.release());
       await flushPendingTurnsProjectionForTests();
     }
     expect(firstInput.textContent).toBe("");
@@ -3219,7 +3195,8 @@ test.each(ENDED_STATUSES)("a %s session's card rests bare, then grows a Send tha
   await user.type(editor, "go");
   expect(submitButton().disabled).toBe(false);
   await user.click(submitButton());
-  await waitFor(() => expect(fake.calls.some((c) => c.method === "turn/start")).toBe(true));
+  await flushPendingTurnsProjectionForTests();
+  expect(fake.calls.some((c) => c.method === "turn/start")).toBe(true);
   expect(screen.queryByText(/Send is not available/)).toBeNull();
 });
 
@@ -3319,7 +3296,8 @@ test("an ended session can still be typed into and submitted with the Mod+Enter 
   await user.type(textarea(), "omt");
   await user.keyboard("{Meta>}{Enter}{/Meta}");
 
-  await waitFor(() => expect(fake.calls.some((c) => c.method === "turn/start")).toBe(true));
+  await flushPendingTurnsProjectionForTests();
+  expect(fake.calls.some((c) => c.method === "turn/start")).toBe(true);
 });
 
 // The other half of the rule: when the source really cannot take input, there
@@ -3786,7 +3764,8 @@ test("clicking Stop calls turn/interrupt", async () => {
 
   await user.click(stopButton());
 
-  await waitFor(() => expect(fake.calls.some((c) => c.method === "turn/interrupt")).toBe(true));
+  await flushPendingTurnsProjectionForTests();
+  expect(fake.calls.some((c) => c.method === "turn/interrupt")).toBe(true);
 });
 
 // --- attachments (paste -> tile -> submit) ----------------------------------
@@ -3983,20 +3962,8 @@ test.each([
     const submittedText = textarea().textContent;
     const originalAttachment = recovery ? "proof.png" : "original.png";
 
-    const transact = IDBDatabase.prototype.transaction;
-    let hold: ReturnType<typeof holdIndexedDBEvent> | undefined;
-    let announceCommit: (() => void) | undefined;
-    const committed = new Promise<void>((resolve) => {
-      announceCommit = resolve;
-    });
-    vi.spyOn(IDBDatabase.prototype, "transaction").mockImplementation(function (this: IDBDatabase, ...args) {
-      const transaction = transact.apply(this, args);
-      if (!hold && transaction.mode === "readwrite" && transaction.objectStoreNames.contains("sequences")) {
-        hold = holdIndexedDBEvent(transaction, "complete");
-        void hold.reached.then(() => announceCommit?.());
-      }
-      return transaction;
-    });
+    const hold = holdNextWriteTransaction(["outbox", "optimistic", "recovery", "sequences"]);
+    const committed = hold.reached;
     try {
       await user.click(actionButton());
       // The commit's store publications re-render the queue strip; they land
@@ -4016,7 +3983,7 @@ test.each([
       }
       expect(textarea().textContent).toBe(submittedText);
     } finally {
-      await act(async () => hold?.release());
+      await act(async () => hold.release());
       await flushPendingTurnsProjectionForTests();
     }
     const remainingText = remount ? submittedText : edited && recovery ? "edit me " : "";
@@ -4024,7 +3991,8 @@ test.each([
     expect(readDraft("ref_a")).toBe(remainingText);
     const retainedAttachment = remount ? "replacement.png" : originalAttachment;
     expect(screen.queryByRole("button", { name: `Remove ${retainedAttachment}` }) !== null).toBe(remount);
-    await waitFor(() => expect(fake.calls.filter((call) => call.method === method)).toHaveLength(1));
+    // The flush after the release has seen the dispatch out.
+    expect(fake.calls.filter((call) => call.method === method)).toHaveLength(1);
   },
 );
 
@@ -4039,20 +4007,8 @@ test.each(["keep marker", "delete marker", "add attachment", "replace attachment
     pastePngInto(textarea(), "original.png");
     await screen.findByRole("button", { name: "View original.png" });
 
-    const transact = IDBDatabase.prototype.transaction;
-    let hold: ReturnType<typeof holdIndexedDBEvent> | undefined;
-    let announceCommit: (() => void) | undefined;
-    const committed = new Promise<void>((resolve) => {
-      announceCommit = resolve;
-    });
-    vi.spyOn(IDBDatabase.prototype, "transaction").mockImplementation(function (this: IDBDatabase, ...args) {
-      const transaction = transact.apply(this, args);
-      if (!hold && transaction.mode === "readwrite" && transaction.objectStoreNames.contains("sequences")) {
-        hold = holdIndexedDBEvent(transaction, "complete");
-        void hold.reached.then(() => announceCommit?.());
-      }
-      return transaction;
-    });
+    const hold = holdNextWriteTransaction(["outbox", "optimistic", "recovery", "sequences"]);
+    const committed = hold.reached;
     try {
       await act(async () => {
         fireEvent.click(submitButton());
@@ -4078,7 +4034,7 @@ test.each(["keep marker", "delete marker", "add attachment", "replace attachment
         fireEvent.click(within(row).getByRole("button", { name: "Edit message" }));
       }
     } finally {
-      await act(async () => hold?.release());
+      await act(async () => hold.release());
       await flushPendingTurnsProjectionForTests();
     }
     expect(screen.queryByRole("button", { name: "Remove original.png" }) !== null).toBe(edit === "replace attachment");
@@ -4130,7 +4086,8 @@ test("a successful submit includes the pasted image as a base64 InputAttachment"
   await waitFor(() => expect(screen.queryByRole("button", { name: /remove/i })).toBeTruthy());
 
   await user.click(submitButton());
-  await waitFor(() => expect(fake.calls.some((c) => c.method === "turn/start")).toBe(true));
+  await flushPendingTurnsProjectionForTests();
+  expect(fake.calls.some((c) => c.method === "turn/start")).toBe(true);
   const call = fake.calls.find((c) => c.method === "turn/start");
   const params = call?.params as { input: Array<{ type: string; mediaType?: string; data?: string }> };
   const imageEntry = params.input.find((i) => i.type === "image");
@@ -4762,7 +4719,7 @@ test("skill completions keep indivisible chips in the sentence and submit both r
   });
   await user.click(submitButton());
 
-  await waitFor(() => expect(fake.calls.some((call) => call.method === "turn/start")).toBe(true));
+  await flushPendingTurnsProjectionForTests();
   const call = fake.calls.find((candidate) => candidate.method === "turn/start");
   expect(call?.params).toMatchObject({
     ref: "ref_slash_skill",
@@ -4904,7 +4861,7 @@ test.each([
       .map((chip) => chip.textContent),
   ).toEqual(fixture.chips);
   await user.click(submitButton());
-  await waitFor(() => expect(fake.calls.some((call) => call.method === "turn/start")).toBe(true));
+  await flushPendingTurnsProjectionForTests();
   expect(fake.calls.find((call) => call.method === "turn/start")?.params).toMatchObject({ input: fixture.input });
 });
 
@@ -4973,7 +4930,7 @@ test("a leading skill that shares a builtin name remains message input", async (
     turn: { id: "turn_1", status: "inProgress", itemsView: "" },
   }));
   await user.click(submitButton());
-  await waitFor(() => expect(fake.calls.some((call) => call.method === "turn/start")).toBe(true));
+  await flushPendingTurnsProjectionForTests();
   expect(fake.calls.find((call) => call.method === "turn/start")?.params).toMatchObject({
     input: [
       { type: "text", text: "/clear keep this reference" },
@@ -5350,7 +5307,8 @@ test("an unknown /foo sends as a plain message - the escape hatch", async () => 
   await user.type(editor, "/foo bar");
   await user.click(submitButton());
 
-  await waitFor(() => expect(fake.calls.some((call) => call.method === "turn/start")).toBe(true));
+  await flushPendingTurnsProjectionForTests();
+  expect(fake.calls.some((call) => call.method === "turn/start")).toBe(true);
   expect(editor.textContent).toBe("");
 });
 
@@ -5374,7 +5332,8 @@ test("a plugin catalog command still sends as text - only BUILT-INS are intercep
   await user.type(editor, "/review please");
   await user.click(submitButton());
 
-  await waitFor(() => expect(fake.calls.some((call) => call.method === "turn/start")).toBe(true));
+  await flushPendingTurnsProjectionForTests();
+  expect(fake.calls.some((call) => call.method === "turn/start")).toBe(true);
   expect(editor.textContent).toBe("");
   expect(fake.calls.some((call) => call.method === "goal/set")).toBe(false);
 });
@@ -5400,7 +5359,8 @@ test("a message carrying an attachment is never read as a command invocation, ev
 
   await user.click(submitButton());
 
-  await waitFor(() => expect(fake.calls.some((call) => call.method === "turn/start")).toBe(true));
+  await flushPendingTurnsProjectionForTests();
+  expect(fake.calls.some((call) => call.method === "turn/start")).toBe(true);
   expect(fake.calls.some((call) => call.method === "goal/set")).toBe(false);
 });
 

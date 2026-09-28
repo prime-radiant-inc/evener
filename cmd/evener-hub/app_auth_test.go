@@ -170,6 +170,9 @@ func TestHubRPCAuthStatusReportsOAuthRefreshAndLoginStates(t *testing.T) {
 		wantSignedIn bool
 		wantRefresh  bool
 		wantLogin    bool
+		// refused notes the issuer's permanent refusal of the stored refresh
+		// token, as a daemon's failed refresh does (#2479).
+		refused bool
 	}{
 		{
 			name:         "refreshable",
@@ -201,6 +204,17 @@ func TestHubRPCAuthStatusReportsOAuthRefreshAndLoginStates(t *testing.T) {
 			refreshToken: "   ",
 			wantLogin:    true,
 		},
+		{
+			// The access token is still good, but the issuer refused the
+			// refresh token for good the last time a daemon tried it: the
+			// session fails at its next refresh, so signing in again is
+			// needed now (#2479).
+			name:         "refresh token refused by the issuer",
+			expiry:       now.Add(time.Hour),
+			refreshToken: "stored-refresh-token",
+			refused:      true,
+			wantLogin:    true,
+		},
 	}
 
 	for _, tc := range tests {
@@ -209,7 +223,7 @@ func TestHubRPCAuthStatusReportsOAuthRefreshAndLoginStates(t *testing.T) {
 			ctrl.stateDir = t.TempDir()
 			attachTestRegistry(t, ctrl)
 			ctrl.now = func() time.Time { return now }
-			if err := authopenai.SaveAuth(ctrl.stateDir, "openai-codex", authopenai.AuthRecord{
+			record := authopenai.AuthRecord{
 				Version:      1,
 				Provider:     "openai",
 				Source:       authopenai.AuthSourceOAuth,
@@ -220,8 +234,14 @@ func TestHubRPCAuthStatusReportsOAuthRefreshAndLoginStates(t *testing.T) {
 				RefreshToken: tc.refreshToken,
 				Expiry:       tc.expiry,
 				Email:        "stored@example.com",
-			}); err != nil {
+			}
+			if err := authopenai.SaveAuth(ctrl.stateDir, "openai-codex", record); err != nil {
 				t.Fatal(err)
+			}
+			if tc.refused {
+				if err := authopenai.RecordRefreshRejection(ctrl.stateDir, "openai-codex", record, now); err != nil {
+					t.Fatal(err)
+				}
 			}
 
 			status, err := ctrl.Status(appwire.AuthStatusParams{Provider: "openai-codex"})

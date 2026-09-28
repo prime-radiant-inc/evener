@@ -42,9 +42,8 @@ func TestSetModel_UnknownInstance_ReturnsErrorAndLeavesProfileUnchanged(t *testi
 		withProfile(NewOpenAIProfile("gpt-5.4")),
 		withAdapter(&fakeAdapter{name: "openai"}),
 		withConfig(SessionConfig{
-			NoProjectPrompts: true,
-			ResolveProfile:   unknownInstanceResolver,
-			testOnly:         testConfig{skipGitSnapshot: true},
+			ResolveProfile: unknownInstanceResolver,
+			testOnly:       testConfig{skipGitSnapshot: true},
 		}),
 	)
 
@@ -73,8 +72,7 @@ func TestSetModel_SameProvider_ReturnsNilAndChangesModel(t *testing.T) {
 		withProfile(NewOpenAIProfile("gpt-5.4")),
 		withAdapter(&fakeAdapter{name: "openai"}),
 		withConfig(SessionConfig{
-			NoProjectPrompts: true,
-			testOnly:         testConfig{skipGitSnapshot: true},
+			testOnly: testConfig{skipGitSnapshot: true},
 		}),
 	)
 
@@ -97,9 +95,8 @@ func TestSetModel_CrossProvider_ReturnsNilAndSwapsProfileID(t *testing.T) {
 		withAdapter(&fakeAdapter{name: "openai"}),
 		withAdapter(&fakeAdapter{name: "anthropic"}),
 		withConfig(SessionConfig{
-			NoProjectPrompts: true,
-			ResolveProfile:   testResolver,
-			testOnly:         testConfig{skipGitSnapshot: true},
+			ResolveProfile: testResolver,
+			testOnly:       testConfig{skipGitSnapshot: true},
 		}),
 	)
 
@@ -123,9 +120,8 @@ func TestSetModel_CrashRestore_SwitchedModelSurvives(t *testing.T) {
 	c.Register(&fakeAdapter{name: "openai"})
 
 	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.4"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
-		NoProjectPrompts: true,
-		StateDir:         dir,
-		testOnly:         testConfig{skipGitSnapshot: true},
+		StateDir: dir,
+		testOnly: testConfig{skipGitSnapshot: true},
 	})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
@@ -201,9 +197,8 @@ func TestSetModel_UnknownModelOnEnumerableInstance_Rejected(t *testing.T) {
 		withAdapter(&fakeAdapter{name: "openai"}),
 		withAdapter(newFakeEnumerableAdapter("anthropic", "claude-opus-4-6")),
 		withConfig(SessionConfig{
-			NoProjectPrompts: true,
-			ResolveProfile:   testResolver,
-			testOnly:         testConfig{skipGitSnapshot: true},
+			ResolveProfile: testResolver,
+			testOnly:       testConfig{skipGitSnapshot: true},
 		}),
 	)
 
@@ -229,9 +224,8 @@ func TestSetModel_NonEnumerableInstance_AcceptsUnlistedModel(t *testing.T) {
 		withAdapter(&fakeAdapter{name: "openai"}),
 		withAdapter(&fakeAdapter{name: "anthropic"}), // no scripted listing: non-enumerable
 		withConfig(SessionConfig{
-			NoProjectPrompts: true,
-			ResolveProfile:   testResolver,
-			testOnly:         testConfig{skipGitSnapshot: true},
+			ResolveProfile: testResolver,
+			testOnly:       testConfig{skipGitSnapshot: true},
 		}),
 	)
 
@@ -256,9 +250,8 @@ func TestSetModel_EnumerationFailure_FailsOpenUnconditionally(t *testing.T) {
 			err:  errors.New("401 unauthorized: invalid api key"), // not on launchcheck's allowlist
 		}),
 		withConfig(SessionConfig{
-			NoProjectPrompts: true,
-			ResolveProfile:   testResolver,
-			testOnly:         testConfig{skipGitSnapshot: true},
+			ResolveProfile: testResolver,
+			testOnly:       testConfig{skipGitSnapshot: true},
 		}),
 	)
 
@@ -372,9 +365,8 @@ func TestSetModel_DocumentInHistory_RejectedForHardErrorAndCompatTargets(t *test
 				withAdapter(&fakeAdapter{name: "google"}),
 				withAdapter(&fakeAdapter{name: "kimi"}),
 				withConfig(SessionConfig{
-					NoProjectPrompts: true,
-					ResolveProfile:   testResolver,
-					testOnly:         testConfig{skipGitSnapshot: true},
+					ResolveProfile: testResolver,
+					testOnly:       testConfig{skipGitSnapshot: true},
 				}),
 			)
 			sess.appendTurn(schema.TurnUserInput, documentTurn().Message)
@@ -399,8 +391,7 @@ func TestSetModel_DocumentInHistory_AcceptedForResponsesTarget(t *testing.T) {
 		withProfile(NewOpenAIProfile("gpt-5.4")),
 		withAdapter(&fakeAdapter{name: "openai"}),
 		withConfig(SessionConfig{
-			NoProjectPrompts: true,
-			testOnly:         testConfig{skipGitSnapshot: true},
+			testOnly: testConfig{skipGitSnapshot: true},
 		}),
 	)
 	sess.appendTurn(schema.TurnUserInput, documentTurn().Message)
@@ -435,9 +426,8 @@ func TestSetModel_AudioInHistory_RejectedForAllTargetsIncludingResponses(t *test
 				withAdapter(&fakeAdapter{name: "google"}),
 				withAdapter(&fakeAdapter{name: "kimi"}),
 				withConfig(SessionConfig{
-					NoProjectPrompts: true,
-					ResolveProfile:   testResolver,
-					testOnly:         testConfig{skipGitSnapshot: true},
+					ResolveProfile: testResolver,
+					testOnly:       testConfig{skipGitSnapshot: true},
 				}),
 			)
 			sess.appendTurn(schema.TurnUserInput, audioTurn().Message)
@@ -529,9 +519,8 @@ func TestSetModel_DocumentInHistory_RejectedForNewlyClassifiedTargets(t *testing
 				withProfile(NewOpenAIProfile("gpt-5.4")),
 				withAdapter(&fakeAdapter{name: "openai"}),
 				withConfig(SessionConfig{
-					NoProjectPrompts: true,
-					ResolveProfile:   unrepresentableTargetResolver,
-					testOnly:         testConfig{skipGitSnapshot: true},
+					ResolveProfile: unrepresentableTargetResolver,
+					testOnly:       testConfig{skipGitSnapshot: true},
 				}),
 			)
 			sess.appendTurn(schema.TurnUserInput, documentTurn().Message)
@@ -561,9 +550,8 @@ func TestSetModel_AudioInHistory_RejectedForAnthropicBuilderTargets(t *testing.T
 				withProfile(NewOpenAIProfile("gpt-5.4")),
 				withAdapter(&fakeAdapter{name: "openai"}),
 				withConfig(SessionConfig{
-					NoProjectPrompts: true,
-					ResolveProfile:   unrepresentableTargetResolver,
-					testOnly:         testConfig{skipGitSnapshot: true},
+					ResolveProfile: unrepresentableTargetResolver,
+					testOnly:       testConfig{skipGitSnapshot: true},
 				}),
 			)
 			sess.appendTurn(schema.TurnUserInput, audioTurn().Message)
@@ -611,10 +599,9 @@ func TestSetModel_RejectionLeavesProfileMetaAndHistoryUnchanged(t *testing.T) {
 		c.Register(&fakeAdapter{name: "anthropic"})
 		c.Register(newFakeEnumerableAdapter("google", "gemini-3-pro"))
 		sess, err := NewSession(c, NewOpenAIProfile("gpt-5.4"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
-			NoProjectPrompts: true,
-			StateDir:         dir,
-			ResolveProfile:   rejectionTestResolver,
-			testOnly:         testConfig{skipGitSnapshot: true},
+			StateDir:       dir,
+			ResolveProfile: rejectionTestResolver,
+			testOnly:       testConfig{skipGitSnapshot: true},
 		})
 		if err != nil {
 			t.Fatalf("NewSession: %v", err)
@@ -703,8 +690,7 @@ func TestSetModel_CrossTagSwitch_DropsInvalidatedFallbacksAndSurfacesNames(t *te
 		withAdapter(&fakeAdapter{name: "openai"}),
 		withAdapter(&fakeAdapter{name: "anthropic"}),
 		withConfig(SessionConfig{
-			NoProjectPrompts: true,
-			ResolveProfile:   testResolver,
+			ResolveProfile: testResolver,
 			// "openai/gpt-4.1-mini" self-prefix-validates fine against the
 			// launch openai profile; after switching to anthropic below, the
 			// same qualified entry names a different provider than the
@@ -735,9 +721,8 @@ func TestSetModel_SameTagSwitch_KeepsValidFallbacks(t *testing.T) {
 		withProfile(NewOpenAIProfile("gpt-5.4")),
 		withAdapter(&fakeAdapter{name: "openai"}),
 		withConfig(SessionConfig{
-			NoProjectPrompts: true,
-			ModelFallbacks:   []string{"openai/gpt-4.1"},
-			testOnly:         testConfig{skipGitSnapshot: true},
+			ModelFallbacks: []string{"openai/gpt-4.1"},
+			testOnly:       testConfig{skipGitSnapshot: true},
 		}),
 	)
 

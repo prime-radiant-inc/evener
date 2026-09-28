@@ -503,14 +503,14 @@ test("the exit code stops being the headline and no longer rides the row's hover
       live={false}
     />,
   );
-  // A failed shell row auto-expands, and an expanded shell row drops its
-  // summary (the body's pretty-printed block is the single copy of the
-  // command) - so assert the intent directly: the exit code is nowhere in
-  // the row's TEXT, and the row carries no native title at all - the exit
-  // code's one home is the raw output's own trailing footer in the expanded
-  // body (see the test below), and a row-level title would fire an
-  // OS-styled tooltip over any hover of a row whose summary can embed
-  // entity hover cards.
+  // At activity level the body opens through the config default, and an
+  // expanded shell row drops its summary (the body's pretty-printed block is
+  // the single copy of the command) - so assert the intent directly: the exit
+  // code is nowhere in the row's TEXT, and the row carries no native title at
+  // all - the exit code's one home is the raw output's own trailing footer in
+  // the expanded body (see the test below), and a row-level title would fire
+  // an OS-styled tooltip over any hover of a row whose summary can embed entity
+  // hover cards.
   expect(screen.getByTestId("tool-row").textContent).not.toContain("exit 1");
   expect(screen.getByTestId("tool-row").getAttribute("title")).toBe(null);
 });
@@ -536,8 +536,8 @@ test("the exit code is reachable WITHOUT a mouse - via the raw output's own trai
       live={false}
     />,
   );
-  // A nonzero exit auto-expands, so the body (and the footer inside it) is
-  // already on screen.
+  // At activity level the body opens through the config default, so the body
+  // (and the footer inside it) is already on screen.
   expect(screen.getByTestId("tool-call-body").textContent).toContain("exit 1");
   // No second, client-synthesized copy of the same fact (kata wksf).
   expect(screen.queryByTestId("tool-call-detail")).toBe(null);

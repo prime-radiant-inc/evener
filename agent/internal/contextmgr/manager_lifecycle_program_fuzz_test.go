@@ -393,8 +393,9 @@ func cmgpCheckSummarizerBehavior(t *testing.T, ctx context.Context, token string
 
 // FuzzStrategyContractProgram exercises strategy constructors, contracts, and
 // best-effort lifecycle boundaries. It deliberately includes both successful
-// and failed scripted LLM calls so strategies keep their non-fatal guarantees
-// while preserving their injected context markers.
+// and failed scripted LLM calls: a strategy surfaces a failed auxiliary call
+// as an error for the caller to warn about (the session keeps the turn alive),
+// banking no partial state while preserving its injected context markers.
 func FuzzStrategyContractProgram(f *testing.F) {
 	f.Add([]byte("strategy contract seed"))
 	f.Add([]byte{0x1, 0x2, 0x3, 0x4})
@@ -506,7 +507,11 @@ func cmgpCheckMemoryStrategies(t *testing.T, ctx context.Context, token string, 
 		return llm.Response{}, errors.New("crystal failure")
 	}}, nil)
 	badMem := NewMemoryCrystalsStrategy(NewManager(profile, badClient, cheapmodel.New(badClient)))
-	if err := badMem.AfterAction(ctx, history[:3], badClient); err != nil || len(badMem.crystals) != 0 {
+	// A failed crystallization is surfaced to the caller as a strategy error
+	// (the session reports it as a warning and keeps the turn alive) and banks
+	// no crystal. Surfacing it is the CORE-10 contract: swallowing the failure
+	// as a silent nil is the defect this oracle used to pin.
+	if err := badMem.AfterAction(ctx, history[:3], badClient); err == nil || !strings.Contains(err.Error(), "crystal failure") || len(badMem.crystals) != 0 {
 		t.Fatalf("failed crystal action = crystals:%d err:%v", len(badMem.crystals), err)
 	}
 
@@ -598,7 +603,9 @@ func cmgpCheckSessionLogAndOODAStrategies(t *testing.T, ctx context.Context, tok
 	if err != nil {
 		t.Fatalf("NewSessionLogStrategy bad response: %v", err)
 	}
-	if err := badSLS.AfterAction(ctx, cmgpLongHistory(token, 12), badForkClient); err != nil || badHost.sideFx != 0 || badSLS.log.Len() != 0 {
+	// A failed fork is surfaced to the caller as a strategy error (the session
+	// warns and keeps the turn alive) and appends nothing, as CORE-10 requires.
+	if err := badSLS.AfterAction(ctx, cmgpLongHistory(token, 12), badForkClient); err == nil || badHost.sideFx != 0 || badSLS.log.Len() != 0 {
 		t.Fatalf("failed fork result = sidefx:%d log:%d err:%v", badHost.sideFx, badSLS.log.Len(), err)
 	}
 	if err := sls.AfterAction(ctx, cmgpLongHistory(token, 12), client); err != nil || host.sideFx != 1 || sls.log.Len() != 2 {

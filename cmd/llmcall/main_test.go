@@ -230,6 +230,7 @@ func TestRunLLMCall_Schema_ValidatesAndPrints(t *testing.T) {
 		prompt:   "Return JSON matching schema",
 		provider: "fake",
 		model:    "m1",
+		format:   "text",
 		schema:   schemaPath,
 		stdout:   &stdout,
 		stderr:   &stderr,

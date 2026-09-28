@@ -148,8 +148,13 @@ func TestDefShellHasJobParams(t *testing.T) {
 			t.Errorf("DefShell must not have the %q param", banned)
 		}
 	}
-	if got := DefShell().Description; got != "Run a shell command and report stdout, stderr, and exit status." {
-		t.Fatalf("DefShell description mismatch:\n%q", got)
+	// The shell runtime cap is hidden from models, so the description must not
+	// name it.
+	desc := DefShell().Description
+	for _, capWord := range []string{"max_runtime", "runtime cap", "timeout"} {
+		if strings.Contains(desc, capWord) {
+			t.Errorf("DefShell description names the runtime cap (%q):\n%q", capWord, desc)
+		}
 	}
 }
 

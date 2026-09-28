@@ -194,18 +194,18 @@ func TestRelayedStatusFramesOtherThanCloseAreLeftToTheDaemon(t *testing.T) {
 // relay's stream — every item, every turn — passes through byte for byte.
 func TestNonStatusNotificationsPassTheCloseStampUntouched(t *testing.T) {
 	original := appwire.Notification{
-		Method: appwire.NotifyTurnCompleted,
+		Method: appwire.NotifyHistoryUpdated,
 		Params: testRawJSON(t, map[string]any{
 			"threadId": "thread-turn",
 			"ref":      "local:thread-turn",
-			"turn":     appwire.Turn{ID: "turn_5", Status: appwire.TurnStatusCompleted},
+			"turns":    []appwire.Turn{{ID: "turn_5", Status: appwire.TurnStatusCompleted}},
 		}),
 	}
 
 	got := stampClosedThreadCapabilities(original, true)
 
 	if string(got.Params) != string(original.Params) {
-		t.Fatalf("turn/completed was rewritten to %s, want it untouched (%s)", got.Params, original.Params)
+		t.Fatalf("history/updated was rewritten to %s, want it untouched (%s)", got.Params, original.Params)
 	}
 }
 
@@ -316,22 +316,14 @@ func TestHubRelayRelayKeyImageMetadata(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			started := appwire.NotificationMessage(appwire.NotifyItemStarted, map[string]any{
-				"ref": tc.ref, "threadId": tc.threadID, "turnId": "turn-image",
-				"item": appwire.ThreadItem{
-					Type: "commandExecution", ID: tc.itemID, ToolName: "write_file", CallID: tc.callID,
-					ArgumentsJSON: `{"file_path":"` + tc.path + `"}`, Status: appwire.TurnStatusInProgress,
-				},
-			}).Notification
-			pool.emit(t, *started)
-			completed := appwire.NotificationMessage(appwire.NotifyItemCompleted, map[string]any{
-				"ref": tc.ref, "threadId": tc.threadID, "turnId": "turn-image",
-				"item": appwire.ThreadItem{
-					Type: "commandExecution", ID: tc.itemID, ToolName: "write_file", CallID: tc.callID,
-					Output: "wrote", Status: appwire.TurnStatusCompleted,
-				},
-			}).Notification
-			pool.emit(t, *completed)
+			pool.emit(t, overlayToolNotification(map[string]any{"ref": tc.ref, "threadId": tc.threadID}, appwire.ThreadItem{
+				Type: "commandExecution", ID: tc.itemID, ToolName: "write_file", CallID: tc.callID,
+				ArgumentsJSON: `{"file_path":"` + tc.path + `"}`, Status: appwire.TurnStatusInProgress,
+			}))
+			pool.emit(t, overlayToolNotification(map[string]any{"ref": tc.ref, "threadId": tc.threadID}, appwire.ThreadItem{
+				Type: "commandExecution", ID: tc.itemID, ToolName: "write_file", CallID: tc.callID,
+				Output: "wrote", Status: appwire.TurnStatusCompleted,
+			}))
 			appServer.BroadcastAll("test/alias-barrier", map[string]any{})
 			items := aliasCompletedItemsUntilBarrier(t, client, tc.itemID)
 			if len(items) != 1 {

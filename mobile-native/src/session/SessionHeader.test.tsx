@@ -1,0 +1,276 @@
+import { AccessibilityInfo, Animated } from "react-native";
+import { act, type ReactTestInstance, type ReactTestRenderer } from "react-test-renderer";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { paletteFor } from "../design/tokens";
+import { render, renderedText, renderHook } from "../renderNative.testkit";
+import { type HeaderHiding, nextHeaderHiding, SessionHeader, useHeaderHiding } from "./SessionHeader";
+import type { ChipKind, ContextChip } from "./sessionState";
+
+vi.mock("react-native", async () => ({
+	...(await import("../renderNative.testkit")).nativeModuleMock(),
+}));
+vi.mock("expo-symbols", () => ({ SymbolView: "SymbolView" }));
+
+const palette = paletteFor("light");
+
+afterEach(() => {
+	vi.restoreAllMocks();
+});
+
+const subagents: ContextChip = {
+	kind: "subagents",
+	label: "Subagents 3",
+	failed: "1 failed",
+	attention: false,
+	accessibilityLabel: "Subagents, 3, 1 failed",
+};
+const tasks: ContextChip = {
+	kind: "tasks",
+	label: "Tasks 2/5",
+	attention: false,
+	accessibilityLabel: "Tasks, 2 of 5 done",
+};
+const goal: ContextChip = { kind: "goal", label: "Goal", attention: false, accessibilityLabel: "Goal" };
+const blockedGoal: ContextChip = { ...goal, attention: true, accessibilityLabel: "Goal, blocked" };
+const queue: ContextChip = {
+	kind: "queue",
+	label: "Queue 2",
+	attention: false,
+	accessibilityLabel: "2 queued messages",
+};
+
+function header(
+	over: { status?: string | null; chips?: readonly ContextChip[]; hidden?: boolean; onChip?: (kind: ChipKind) => void } = {},
+) {
+	return (
+		<SessionHeader
+			status={over.status ?? null}
+			chips={over.chips ?? []}
+			hidden={over.hidden ?? false}
+			onChip={over.onChip ?? (() => {})}
+		/>
+	);
+}
+
+const chipButtons = (tree: ReactTestRenderer) =>
+	tree.root.findAll((node) => node.type === ("Pressable" as never));
+const textNode = (tree: ReactTestRenderer, text: string) =>
+	tree.root.find((node) => node.type === ("Text" as never) && [node.props.children].flat()[0] === text);
+/** The chips row: the element whose transform hides it. */
+const chipsRow = (tree: ReactTestRenderer) =>
+	tree.root.find((node) => node.type === ("Animated.View" as never));
+const translateY = (row: ReactTestInstance) =>
+	(row.props.style.transform[0].translateY as { value: number }).value;
+
+async function flushReduceMotion() {
+	await act(async () => {
+		await Promise.resolve();
+	});
+}
+
+describe("the connection bar (spec 8.1, 14)", () => {
+	it("shows each status text, and nothing when null", () => {
+		for (const status of ["Reconnecting…", "Offline · updated 3m ago", "Update needed"]) {
+			expect(renderedText(render(header({ status, chips: [goal] })))).toContain(status);
+		}
+		expect(renderedText(render(header({ chips: [goal] })))).toBe("Goal");
+	});
+
+	it("is 13/18 low ink, centered, in tabular figures, 24pt tall and never hides", () => {
+		const tree = render(header({ status: "Reconnecting…", chips: [goal], hidden: true }));
+		const text = textNode(tree, "Reconnecting…");
+		expect(text.props.style).toMatchObject({
+			fontSize: 13,
+			lineHeight: 18,
+			color: palette.inkLow,
+			textAlign: "center",
+			fontVariant: ["tabular-nums"],
+		});
+		const bar = text.parent;
+		expect(bar?.props.style).toMatchObject({ minHeight: 24, backgroundColor: palette.page });
+		// The bar sits outside the chips row, so hiding the row leaves it alone.
+		expect(chipsRow(tree).findAll((node) => node === text)).toEqual([]);
+	});
+
+	it("offers nothing to press", () => {
+		const tree = render(header({ status: "Offline · updated 3m ago" }));
+		expect(chipButtons(tree)).toEqual([]);
+		expect(tree.root.findAll((node) => node.props.accessibilityRole === "button")).toEqual([]);
+	});
+
+	it("explains Update needed with a hint", () => {
+		const tree = render(header({ status: "Update needed" }));
+		expect(textNode(tree, "Update needed").props.accessibilityHint).toBe(
+			"This app and the hub need compatible versions. Update the app from TestFlight, or update Evener on the hub.",
+		);
+		expect(textNode(render(header({ status: "Reconnecting…" })), "Reconnecting…").props.accessibilityHint).toBeUndefined();
+	});
+});
+
+describe("the chips row (spec 8.1)", () => {
+	it("renders each chip's label with its symbol, and a failure count in danger ink", () => {
+		const tree = render(header({ chips: [subagents, tasks, goal, queue] }));
+		expect(renderedText(tree)).toBe("Subagents 3  ·  1 failed Tasks 2/5 Goal Queue 2");
+		expect(tree.root.findAllByType("SymbolView" as never).map((node) => node.props.name)).toEqual([
+			"person.2",
+			"checklist",
+			"target",
+			"tray",
+		]);
+		expect(textNode(tree, "1 failed").props.style).toMatchObject({ color: palette.dangerInk });
+		expect(textNode(tree, "Tasks 2/5").props.style).toMatchObject({
+			fontSize: 15,
+			lineHeight: 20,
+			color: palette.inkHi,
+			fontVariant: ["tabular-nums"],
+		});
+	});
+
+	it("draws each chip as a 32pt capsule with a 44pt hit area, inset fill and an edge border", () => {
+		const [chip] = chipButtons(render(header({ chips: [tasks] })));
+		expect(chip?.props.style({ pressed: false })).toMatchObject({
+			height: 32,
+			borderRadius: 16,
+			borderWidth: 1,
+			borderColor: palette.edge,
+			backgroundColor: palette.inset,
+		});
+		expect(chip?.props.hitSlop).toEqual({ top: 6, bottom: 6 });
+		expect(chip?.findByType("SymbolView" as never).props).toMatchObject({ size: 13, tintColor: palette.inkMid });
+	});
+
+	it("draws a blocked goal in attention ink over the attention fill", () => {
+		const tree = render(header({ chips: [blockedGoal] }));
+		const [chip] = chipButtons(tree);
+		expect(chip?.props.style({ pressed: false })).toMatchObject({ backgroundColor: palette.attentionBg });
+		expect(textNode(tree, "Goal").props.style).toMatchObject({ color: palette.attentionInk });
+		expect(chip?.findByType("SymbolView" as never).props.tintColor).toBe(palette.attentionInk);
+	});
+
+	it("labels each chip for VoiceOver and calls onChip with its kind", () => {
+		const onChip = vi.fn();
+		const tree = render(header({ chips: [subagents, tasks, goal, queue], onChip }));
+		const chips = chipButtons(tree);
+		expect(chips.map((chip) => chip.props.accessibilityLabel)).toEqual([
+			"Subagents, 3, 1 failed",
+			"Tasks, 2 of 5 done",
+			"Goal",
+			"2 queued messages",
+		]);
+		expect(chips.map((chip) => chip.props.accessibilityRole)).toEqual(["button", "button", "button", "button"]);
+		for (const chip of chips) act(() => chip.props.onPress());
+		expect(onChip.mock.calls.map(([kind]) => kind)).toEqual(["subagents", "tasks", "goal", "queue"]);
+	});
+
+	it("scrolls sideways with 16pt sides and an 8pt gap, fading its trailing edge only when it overflows", () => {
+		const tree = render(header({ chips: [subagents, tasks, goal, queue] }));
+		const scroll = tree.root.findByType("ScrollView" as never);
+		expect(scroll.props.horizontal).toBe(true);
+		expect(scroll.props.contentContainerStyle).toMatchObject({ paddingHorizontal: 16, gap: 8 });
+		const fade = () => tree.root.findAll((node) => node.props.testID === "chips-fade");
+		expect(fade()).toEqual([]);
+		act(() => {
+			scroll.props.onLayout({ nativeEvent: { layout: { width: 390, height: 48 } } });
+			scroll.props.onContentSizeChange(300, 48);
+		});
+		expect(fade()).toEqual([]);
+		act(() => scroll.props.onContentSizeChange(520, 48));
+		expect(fade()).toHaveLength(1);
+		expect(fade()[0]?.props.pointerEvents).toBe("none");
+		expect(fade()[0]?.props.style.experimental_backgroundImage).toBe(
+			`linear-gradient(to right, ${palette.page}00, ${palette.page})`,
+		);
+	});
+});
+
+describe("hiding on scroll (spec 8.1)", () => {
+	function measured(tree: ReactTestRenderer) {
+		act(() => chipsRow(tree).props.onLayout({ nativeEvent: { layout: { width: 390, height: 48, x: 0, y: 24 } } }));
+	}
+
+	it("slides the chips row up by its height over 200ms, and back", async () => {
+		const timing = vi.spyOn(Animated, "timing");
+		const tree = render(header({ status: "Reconnecting…", chips: [goal] }));
+		await flushReduceMotion();
+		measured(tree);
+		expect(translateY(chipsRow(tree))).toBe(0);
+		act(() => tree.update(header({ status: "Reconnecting…", chips: [goal], hidden: true })));
+		expect(timing).toHaveBeenLastCalledWith(expect.anything(), expect.objectContaining({ toValue: -48, duration: 200 }));
+		expect(translateY(chipsRow(tree))).toBe(-48);
+		act(() => tree.update(header({ status: "Reconnecting…", chips: [goal] })));
+		expect(timing).toHaveBeenLastCalledWith(expect.anything(), expect.objectContaining({ toValue: 0, duration: 200 }));
+		expect(translateY(chipsRow(tree))).toBe(0);
+	});
+
+	it("jumps with no animation under Reduce Motion", async () => {
+		vi.spyOn(AccessibilityInfo, "isReduceMotionEnabled").mockResolvedValue(true);
+		const timing = vi.spyOn(Animated, "timing");
+		const tree = render(header({ chips: [goal] }));
+		await flushReduceMotion();
+		measured(tree);
+		act(() => tree.update(header({ chips: [goal], hidden: true })));
+		expect(timing).not.toHaveBeenCalled();
+		expect(translateY(chipsRow(tree))).toBe(-48);
+	});
+
+	/** A scroll offset from the person's drag (a number) or from the app
+	 * moving the list itself (reading-position restore, scroll to latest). */
+	type Step = number | { programmatic: number };
+	const programmatic = (y: number): Step => ({ programmatic: y });
+	const apply = (state: HeaderHiding, step: Step) =>
+		typeof step === "number"
+			? nextHeaderHiding(state, step, true)
+			: nextHeaderHiding(state, step.programmatic, false);
+
+	it("hides after more than 8pt dragged down, and shows on any upward scroll or at the top", () => {
+		const cases: Array<{ name: string; from: Step[]; to: Step; hidden: boolean }> = [
+			{ name: "8pt down stays", from: [0], to: 8, hidden: false },
+			{ name: "9pt down hides", from: [0], to: 9, hidden: true },
+			{ name: "a step under 8pt after a turn stays", from: [0, 50, 45], to: 49, hidden: false },
+			{ name: "small steps add up", from: [0, 50, 45, 49], to: 54, hidden: true },
+			{ name: "any upward scroll shows", from: [0, 200], to: 199, hidden: false },
+			{ name: "down again after an upward scroll counts from the turn", from: [0, 200, 150], to: 158, hidden: false },
+			{ name: "and hides past 8pt from the turn", from: [0, 200, 150], to: 159, hidden: true },
+			{ name: "the top shows", from: [0, 200], to: 0, hidden: false },
+			{ name: "the bounce above the top shows", from: [0, 200], to: -30, hidden: false },
+			{ name: "a programmatic jump down leaves the chips shown", from: [], to: programmatic(5000), hidden: false },
+			{ name: "a programmatic jump leaves hidden chips hidden", from: [0, 200], to: programmatic(5000), hidden: true },
+			{ name: "a drag after a programmatic jump counts from where it landed", from: [programmatic(5000)], to: 5008, hidden: false },
+			{ name: "and hides past 8pt from there", from: [programmatic(5000)], to: 5009, hidden: true },
+			{ name: "a programmatic move up leaves hidden chips hidden", from: [0, 200], to: programmatic(100), hidden: true },
+			{ name: "a programmatic move to the top shows", from: [0, 200], to: programmatic(0), hidden: false },
+		];
+		for (const { name, from, to, hidden } of cases) {
+			let state: HeaderHiding = { hidden: false, lastY: 0, turnY: 0 };
+			for (const step of from) state = apply(state, step);
+			expect(apply(state, to).hidden, name).toBe(hidden);
+		}
+	});
+
+	it("useHeaderHiding follows the list's scroll offsets", () => {
+		const hook = renderHook(() => useHeaderHiding());
+		expect(hook.result.current.hidden).toBe(false);
+		act(() => hook.result.current.onScroll(40, false));
+		expect(hook.result.current.hidden).toBe(false);
+		act(() => hook.result.current.onScroll(50, true));
+		expect(hook.result.current.hidden).toBe(true);
+		act(() => hook.result.current.onScroll(30, true));
+		expect(hook.result.current.hidden).toBe(false);
+	});
+});
+
+it("renders nothing with no chips and no status", () => {
+	expect(render(header()).toJSON()).toBeNull();
+});
+
+it("never says Reconnect, Connected or Refresh", () => {
+	for (const status of ["Reconnecting…", "Offline · updated 3m ago", "Offline", "Update needed", null]) {
+		const tree = render(header({ status, chips: [subagents, tasks, blockedGoal, queue] }));
+		const labels = tree.root
+			.findAll((node) => typeof node.props.accessibilityLabel === "string")
+			.map((node) => node.props.accessibilityLabel as string);
+		for (const said of [renderedText(tree), ...labels]) {
+			expect(said).not.toMatch(/Reconnect\b|Connected|Refresh/);
+		}
+	}
+});

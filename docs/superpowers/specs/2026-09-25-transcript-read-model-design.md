@@ -1210,20 +1210,68 @@ previous phase has landed.
 
 ## Follow-ups from the final spec review (phase 4)
 
-The last roborev round on this spec raised these. They are tracked for phase 4
-rather than resolved in prose here:
+The last roborev round on this spec raised these. All five are resolved
+below (phase 4):
 
-- **COMMUNICATE and completion durability when fsync fails.** A
-  recorded-but-unsynced entry is adopted and announced. Decide whether to
-  retry the fsync or fail closed, and pin the decision with a test.
-- **Below-floor update-log requests.** Give the client an explicit
-  whole-history replacement signal, or answer with `TranscriptItemCursorStale`.
-- **Backfill accumulation.** Require the same snapshot identity for pages that
-  accumulate, and define how the held length advances on backfill.
-- **`RetainedUnsyncedError` boundary tests.** Test adoption, later durability,
-  and a crash between adoption and fsync.
-- **Minting delivery turn IDs.** Name which component mints them: the registry
-  entry, under the append lock.
+- ~~**COMMUNICATE and completion durability when fsync fails.**~~ Resolved:
+  RETRY. A recorded-but-unsynced entry (`*RetainedUnsyncedError`) is adopted
+  and announced immediately, as before; the session then retries the
+  durability barrier in its own goroutine, with backoff on the session's
+  clock, no session lock held across a sleep, so the session keeps running
+  while it retries (`Session.settleRetainedUnsynced`,
+  `agent/session_fail_closed.go`). A retry that establishes durability settles
+  the debt silently. When the retry budget (5 attempts) is exhausted, a served
+  session fails closed — a COMMUNICATE or completion's durability must not be
+  left permanently owed; an unserved session keeps warn-and-continue, since
+  the fail-closed rule applies only to served sessions. Pinned by
+  `TestRetainedCompletionSettlesAfterRetryingTheBarrier`,
+  `TestRetainedCompletionFailsAServedSessionClosedAfterExhaustingRetries`, and
+  `TestRetainedCompletionOnAnUnservedSessionKeepsRunningAfterExhaustingRetries`
+  (`agent/session_fail_closed_test.go`), driven deterministically with a fake
+  clock (no real sleeps).
+- ~~**Below-floor update-log requests.**~~ Resolved: a same-incarnation
+  `LatestSince` whose held length predates the kept update log answers
+  `TranscriptItemCursorStale` (`internal/transcriptindex.LatestSince`
+  propagates `ErrUpdateLogTruncated` instead of swallowing it into a bare
+  window; `pastEntryLatestItems` in `cmd/evener-hub/app_threadread.go` maps
+  the error to `appwire.TranscriptItemCursorStale()`). The window alone
+  cannot be trusted there: held items outside it may have changed since,
+  with no way for the caller to tell, so silently merging it would risk
+  serving stale content. The daemon's own `ChangedSince` call (`project`,
+  `server/thread_history.go`) already treated the same error as a failure
+  and rebuilt; this only changes the hub's non-daemon (daemonless) read path.
+- ~~**Backfill accumulation.**~~ Resolved: pages accumulate under the held
+  incarnation, and the held length never advances from a page. A page's
+  snapshot length is the transcript length the index had when it answered
+  `Before`, not a promise that everything through that length was
+  delivered: `Before` only returns items older than the cursor, so a page
+  can carry a longer length than held without carrying the live items
+  created in between. Advancing held to it would make the next
+  latest-window read's `heldSnapshot` claim completeness through a length
+  whose in-between changes it never saw, and `LatestSince`'s
+  `ChangedSince(held.length)` would then skip them silently were more than
+  one window's worth of items to land before the next latest-window read —
+  the reading that risks silently holding (missing, in this case) live
+  data. Only a latest-window read (and its accompanying `changes`) verifies
+  completeness up to a length, so only that advances held; `pageDisposition`
+  keeps comparing a page's length against that one true watermark, never one
+  a page pushed forward, which is what "the same snapshot identity" holds
+  pages to.
+- ~~**`RetainedUnsyncedError` boundary tests.**~~ Resolved: adoption was
+  already covered
+  (`TestAppendSyncedReportsRetainedUnsyncedForAdoptionWithoutDuplication`).
+  Added: later durability
+  (`TestRetainedUnsyncedRecordIsSettledByALaterSuccessfulFsync` — a retained
+  record's debt clears on a subsequent successful `EstablishDurability`, with
+  no duplication) and a crash between adoption and the next fsync
+  (`TestRetainedUnsyncedRecordSurvivesACrashBeforeTheNextFsync` — reopening
+  the file finds the retained entry exactly once, and the next append lands
+  after it, not over it), both in `agent/transcript/durability_test.go`.
+- ~~**Minting delivery turn IDs.**~~ Resolved: already implemented and named.
+  `stampDelivery` mints inside `turnPlacement.place`
+  (`agent/transcript/placement.go`), under the append tail's `mu`
+  (`agent/transcript/append_tail.go`), matching the "Lock order" and
+  "Asynchronous writes" description above (~lines 328-361 of this spec).
 
 ## Known gap in the phase 1 index (PR #2303 roborev)
 
@@ -1235,45 +1283,71 @@ rather than resolved in prose here:
   limit-aware truncation across the real/flushed boundary, a later pairing
   entry superseding it). `referenceTurns`/`referenceCandidates` and the
   `TestReferenceEqualsTodaysFileProjectionApartFromPositions` oracle now
-  flush too, so a wrong index can't pass. `meta.PendingCommunicate` forces a
-  full rebuild instead of an incremental extend while a call is pending,
-  since `restoreBuilder` cannot reconstruct `commCalls` (matching the
-  `errRebuild` policy used elsewhere). `ChangedSince` still does not surface
-  a flushed item — it has no itemRecord or update-log entry to begin with —
-  which is out of this fix's scope (Latest/Before only) and not currently a
-  problem (nothing reads from this index in production yet).
-- **`CatchUpTo`'s truncate-first extension can leak in-place updates past
-  the requested length.** `extend`'s truncate loop assumes the following
+  flush too, so a wrong index can't pass. `meta.PendingCommunicate` no
+  longer forces a rebuild on its own (stale after #2545): `restoreBuilder`
+  reconstructs `commCalls`/`lastAssistant*` from `meta.CommCalls`/
+  `meta.LastAssistant*` instead, and `extend` rebuilds only as a defensive
+  fallback for the case those fields predate a build that persists them
+  (`!lastAssistantKnown` with a pending call — see `extend` in
+  `internal/transcriptindex/index.go`). `ChangedSince` still does not
+  surface a flushed item — it has no itemRecord or update-log entry to
+  begin with — which is out of this fix's scope (Latest/Before only) and
+  is bounded harm rather than "not currently a problem": this index has
+  read production traffic since phase 3 (cmd/evener-hub's read path).
+- ~~**`CatchUpTo`'s truncate-first extension can leak in-place updates past
+  the requested length.**~~ Fixed, and now live rather than latent: daemon
+  callers pass a recorded length (`server/thread_history.go`,
+  `server/history_read.go`) while the hub's `CatchUp` goes to the transcript's
+  current file size on the same sidecar, so a shorter `CatchUpTo` after a
+  longer one really happens. `extend`'s truncate loop assumed the following
   scan re-applies every entry whose in-place update it just truncated away;
-  a `CatchUpTo(length)` call for a `length` that stops before re-scanning
-  such an entry loses that update-log record without redoing it, so
-  `Latest`/`Before` can return content beyond `Window.Length` and
-  `ChangedSince` can omit the change. Latent in phase 1: every current
-  caller only calls it (via `CatchUp`) with the transcript's current full
-  size, never a smaller recorded length, so the truncated records are
-  always re-scanned. Needs either a rebuild fallback when the requested
-  length would not reach the highest version already written, or
-  re-deriving the update log from surviving record versions, before a
-  caller passes it a client-recorded (not-necessarily-current) length.
-- **Cross-version schema skew on a shared sidecar.** `readMeta` accepts a
-  build whose `format`/`projection` match, but nothing records which
-  binary's `schema.Turn`/`llm.Message` shape built it. Reads decode
-  contributor entries with `agent/transcript.DecodeValidatedEntry`, which
-  skips the strict unknown-field check `DecodeEntry` applies everywhere
-  else (deliberately, since the index re-decodes only bytes it already
-  validated once, at build time, in the same process). An index one binary
-  built and a different (older or newer) binary later reads would silently
-  drop fields the reader's schema doesn't declare, instead of failing the
-  whole transcript the way every other reader does. Needs either the
-  reader to re-run the strict decode when the build might predate it, or a
-  schema/decoder identity folded into `projectionID` so a mismatched build
-  fails closed into a rebuild.
-- **`ChangedSince` over-reports turns.** `stampTurn` logs `updatedTurn` for
-  every entry after a turn's first, regardless of whether the wire-visible
-  summary (status/lifecycle/started/usage) actually changed, so
-  `ChangedSince` returns every turn present after the snapshot length, not
-  only the ones an entry "completed or restamped" as Task 4c's acceptance
-  criteria describe. Bounded harm today (clients upsert idempotently), but
-  it no longer bounds the resend set as intended. Needs `stampTurn` to log
-  `updatedTurn` only on an actual summary change, and a test asserting the
-  unchanged turns `ChangedSince` must NOT return.
+  that held only when the scan reached at least as far as an extension
+  interrupted after writing its records but before committing meta had
+  gotten, never for a shorter `length`: an update-log row past the committed
+  count can log an in-place update to an already-committed record (a slot
+  truncate never touches, since it precedes the committed counts), and
+  discarding that row without the shorter scan ever revisiting its entry
+  left `Latest`/`Before` free to return content beyond `Window.Length` while
+  `ChangedSince` omitted the change. `extend` (`internal/transcriptindex/
+  index.go`) now inspects the update log's leftover rows
+  (`unsafeLeftoverUpdate`) before truncating: a leftover row logging an
+  in-place update to an already-committed item or turn whose causing entry
+  this call's length would not completely re-scan forces a rebuild (keeping
+  the incarnation, since the transcript still extends the covered prefix)
+  instead of the truncate-and-rescan path. Pinned by
+  `TestCatchUpToShorterThanAKilledExtensionsReachRedoesTheLeftoverUpdate`
+  (`internal/transcriptindex/catchup_leak_test.go`), using the existing
+  `testKillAfterRecordWrites` seam.
+- ~~**Cross-version schema skew on a shared sidecar.**~~ Fixed: `meta`'s
+  `Projection` now carries `schemaID` folded in (`currentProjection` in
+  `internal/transcriptindex/schema_identity.go`), a hash of every JSON
+  field reachable from `transcript.Entry` (`schemaFields`, walked by
+  `schemaFieldFingerprint`), rather than a separate field. `readMeta`'s
+  existing `Projection != projectionID`-shaped check (now
+  `Projection != currentProjection()`) catches a mismatch the same way a
+  bare `projection` string change always did, which the existing
+  `x.build == ""` fallback in `extend` turns into a rebuild. Folding the
+  hash into the field every reader has always compared — instead of a new
+  field only a schema-aware reader would look at — means a binary that
+  predates this check entirely still rejects a schema-mismatched sidecar
+  written by a schema-aware build (the downgrade direction), not only the
+  reverse. `TestCorruptSidecarRebuilds`'s "other schema identity" case pins
+  it, and `schemaFields` has its own direct tests
+  (`internal/transcriptindex/schema_identity_test.go`) against synthetic
+  structs differing by exactly one shape change each.
+- ~~**`ChangedSince` over-reports turns.**~~ Resolved by decision, not by
+  code: `stampTurn` logging `updatedTurn` for every entry after a turn's
+  first is correct, not a bug. `Version` is itself a field of the
+  wire-visible `appwire.Turn` (`json:"version,omitempty"`, see
+  `appwire/types.go`), and every contributing entry advances it
+  (`stampTurn` sets `r.Version = version` unconditionally); a turn whose
+  other summary fields hold steady but whose `Version` moved has still
+  changed on the wire, so reporting it is exactly what "completed or
+  restamped" should mean once `Version` is counted as part of the summary.
+  A prior version of this fix made `stampTurn` log only on a change to the
+  other fields (status/lifecycle/started/usage), which left a live client's
+  held `Version` for such a turn behind the file's — a live-vs-file
+  divergence phase 3 had at zero — until some other change resent it; the
+  parity harness needed a timing-dependent escape hatch to tolerate that,
+  which was itself a symptom of the regression rather than a legitimate
+  accommodation. No code change.

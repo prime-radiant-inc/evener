@@ -105,7 +105,9 @@ completion affordance and ships its MIT attribution at
 Besides the root, `package.json` `exports` publishes these subpaths:
 
 - `@evener/appwire-client/docContent` - the doc-pane data layer, where
-  `readDocFile` takes the host's `DocPort`.
+  `readDocFile` takes the host's `DocPort`, and the path helpers both apps'
+  document surfaces share (`filenameOf`, `isMarkdownPath`, `isImagePath`,
+  `fileURLToPath`, `cwdRelative`).
 - `@evener/appwire-client/state/connection` - the connection state layer:
   `createConnectionStore()` is a framework-free store holding one host's wired
   `AppwireClientLike`, the `ConnectionState` mirror that follows it, and plain
@@ -136,8 +138,11 @@ Besides the root, `package.json` `exports` publishes these subpaths:
   through (`selectors`): launch sources, section rows with their remaining
   count and next offset, pin-section summaries, the project catalog and a
   session summary found by ref, each pure over `NavigationStoreState` and
-  adoptable by native if it ever gains a store. The subpath
-  resolves to `state/navigation/index.ts`, a barrel that re-exports the eight
+  adoptable by native if it ever gains a store, and host grouping
+  (`hostGrouping`): where a row, and a project whose rows live on several
+  hosts, sit when a client organizes sessions by host (the web rail's
+  Organize by and the phone Board's Hosts section). The subpath
+  resolves to `state/navigation/index.ts`, a barrel that re-exports the nine
   modules whole.
 - `@evener/appwire-client/state/extensions` - the extensions state layer both
   apps' plugin settings surfaces are built on: the marketplaces store
@@ -246,13 +251,20 @@ handshake, read-only requests, structured readback, and private output file.
 The qualification command is run with the repository's configured Node 22
 runtime.
 
-Applications own credentials, caches, transcript storage, subscriptions, and
-mutation reconciliation. Connection loss during a mutation leaves its outcome
-uncertain; callers must follow the protocol mutation identity rules before
-retrying. The examples use Node 22's platform WebSocket and therefore require
-Node 22 or newer. For a hub requiring an Authorization header, provide an
-authenticated `socketFactory` from the host application's WebSocket
-implementation.
+The package carries the reusable mutation policy: the durable record shapes,
+the outbox's discovery half, the pure reconciliation, and the
+`MutationDispatcher` that serializes one attempt per target ref, reconciles a
+receipt into storage before the next attempt, and leaves an outcome nobody can
+vouch for `blockedUnknown` rather than replaying it. Applications own
+credentials, caches, transcript storage, subscriptions, the transport (the
+WebSocket and any authenticated `socketFactory`), the platform's own durable
+storage adapter, and the per-platform authoritative-read and lifecycle
+orchestration that drives the dispatcher. Connection loss during a mutation
+leaves its outcome uncertain; callers must follow the protocol mutation
+identity rules before retrying. The examples use Node 22's platform WebSocket
+and therefore require Node 22 or newer. For a hub requiring an Authorization
+header, provide an authenticated `socketFactory` from the host application's
+WebSocket implementation.
 
 
 ## Read-only discovery

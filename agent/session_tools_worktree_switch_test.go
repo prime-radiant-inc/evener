@@ -122,7 +122,6 @@ func TestWorktreeSwitch_BetweenTwoManagedWorktrees(t *testing.T) {
 	t.Parallel()
 	r := newWorktreeRepoWithConfig(t, SessionConfig{
 		MaxSubagentDepth: 1,
-		NoProjectPrompts: true,
 		testOnly: testConfig{
 			minimalSystemPrompt:         true,
 			minimalWorktreeToolRegistry: true,

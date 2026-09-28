@@ -5,6 +5,7 @@ import type { NavigationActionCheckpoint } from "./navigationActionRepository";
 import { readOrganizationNavigation } from "./organizationNavigation";
 
 const id = "034Kc9793pXlhHyCRXdeAk";
+const remote = "paradise-park:x";
 const receipt = {
 	generation_id: "g",
 	targets: [{ kind: "project" as const, projectKey: "p", revision: 40 }],
@@ -51,7 +52,10 @@ function fixture() {
 			}
 			if (params.resource === "location")
 				body = {
-					session: { ref: `local:${id}`, session_id: id },
+					session:
+						params.ref === remote
+							? { ref: remote, session_id: "x", host_id: "paradise-park" }
+							: { ref: `local:${id}`, session_id: id },
 					tier: archived ? "archived" : "recent",
 					project_key: "p",
 				};
@@ -233,13 +237,13 @@ it("requires an explicit fresh read after restart and rejects a restart during t
 		),
 	).rejects.toThrow();
 });
-it("rejects unrelated recovery, nonlocal archive identity and obsolete scope", async () => {
+it("rejects unrelated recovery, an archive id that names no session, and obsolete scope", async () => {
 	const f = fixture();
 	for (const operation of [
 		{ kind: "unpin", params: { sessionRef: `local:${id}` } },
 		{
 			kind: "archive",
-			params: { kind: "session", id: `remote:${id}`, archived: true },
+			params: { kind: "session", id: "not-a-session", archived: true },
 		},
 	] as const)
 		await expect(
@@ -258,4 +262,27 @@ it("rejects unrelated recovery, nonlocal archive identity and obsolete scope", a
 	);
 	current = false;
 	await expect(pending).rejects.toThrow();
+});
+
+it("checks another host's session archive by reading that row's location by its ref (ruling 20)", async () => {
+	const f = fixture();
+	const archive = (sessionId: string): NavigationActionCheckpoint => ({
+		id: "session",
+		operation: {
+			kind: "archive",
+			params: { kind: "session", id: sessionId, archived: true },
+		},
+		receipt: null,
+	});
+	expect(
+		await readOrganizationNavigation(f.client, archive(remote), () => true),
+	).toMatchObject({ state: "archived", settled: false });
+	expect(
+		f.calls.some(
+			(c) => c.params.resource === "location" && c.params.ref === remote,
+		),
+	).toBe(true);
+	await expect(
+		readOrganizationNavigation(f.client, archive("elsewhere:y"), () => true),
+	).rejects.toThrow("This session's current organization could not be confirmed.");
 });

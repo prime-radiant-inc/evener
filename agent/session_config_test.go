@@ -1368,7 +1368,7 @@ func TestSession_SystemPrompt_IncludesGitSnapshot_WhenInGitRepo(t *testing.T) {
 
 	sess := newSession(t, withDir(dir))
 
-	data := sess.buildPromptData(sess.env)
+	data, _ := sess.buildPromptData(sess.env)
 	if !data.IsGitRepo || data.GitBranch == "" {
 		t.Fatalf("IsGitRepo=%v GitBranch=%q, want a repo with a branch", data.IsGitRepo, data.GitBranch)
 	}
@@ -1437,7 +1437,6 @@ func TestSession_SubagentUserInstructionOverride_AppendedLastToSystemPrompt(t *t
 
 	override := "SUBAGENT OVERRIDE: highest priority"
 	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
-		NoProjectPrompts:        true,
 		UserInstructionOverride: override,
 		spawn: spawnConfig{
 			parentSessionID:      "01PARENT",

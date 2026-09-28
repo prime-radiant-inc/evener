@@ -6,6 +6,7 @@ import { render } from "../renderNative.testkit";
 import type { BoardState, ClassifiedRow } from "./attention";
 import { BoardRow, type BoardRowProps } from "./BoardRow";
 import { PulseMeter } from "./PulseMeter";
+import { StateMark } from "./StateMark";
 
 vi.mock("react-native", async () => ({
 	...(await import("../renderNative.testkit")).nativeModuleMock(),
@@ -43,6 +44,7 @@ function mount(over: Partial<BoardRowProps> = {}): ReactTestRenderer {
 		usual: { project: "evener", host: "local" },
 		hostLabel: (hostId) => (hostId === "studio" ? "Studio Mac" : hostId),
 		hasDraft: false,
+		msSinceRead: null,
 		now: NOW,
 		onOpen: () => {},
 		...over,
@@ -140,11 +142,54 @@ describe("a Board row (spec 7.2)", () => {
 		const host = mount({ item: item("failed", { host_id: "studio" }) });
 		const label = textWith(host, "Studio Mac")[0];
 		expect(label.props.numberOfLines).toBe(1);
-		expect(styleOf(label)).toMatchObject({ fontSize: 13, lineHeight: 18, color: palette.inkLow });
+		expect(styleOf(label)).toMatchObject({ fontSize: 13, lineHeight: 18, color: palette.inkLow, flexShrink: 0 });
 		expect(symbols(host)).toContain("server.rack");
 		expect(symbols(host)).not.toContain("folder");
 		const glyph = host.root.findAll((node) => node.props.name === "server.rack")[0];
 		expect(glyph.props).toMatchObject({ size: 13, tintColor: palette.inkLow });
+	});
+
+	it("shows task progress on the last line with a checklist glyph", () => {
+		const tree = mount({
+			item: item("failed", {
+				tasks: { total: 7, done: 3, current: "Fix the settle/drain race" },
+			}),
+		});
+		const line = textWith(tree, "Task 4 of 7 · Fix the settle/drain race")[0];
+		expect(line.props).toMatchObject({ numberOfLines: 1, ellipsizeMode: "tail" });
+		expect(styleOf(line)).toMatchObject({ fontSize: 13, lineHeight: 18, color: palette.inkLow, flexShrink: 1 });
+		expect(symbols(tree)).toContain("checklist");
+	});
+
+	it("never shrinks project or host, so a long task title is what gives way under pressure", () => {
+		const tree = mount({
+			item: item("failed", {
+				project: "magic-kingdom",
+				host_id: "studio",
+				tasks: { total: 7, done: 3, current: "Fix the settle/drain race" },
+			}),
+		});
+		expect(styleOf(textWith(tree, "magic-kingdom")[0])).toMatchObject({ flexShrink: 0 });
+		expect(styleOf(textWith(tree, "Studio Mac")[0])).toMatchObject({ flexShrink: 0 });
+		expect(styleOf(textWith(tree, "Task 4 of 7 · Fix the settle/drain race")[0])).toMatchObject({ flexShrink: 1 });
+	});
+
+	it("shows no task progress once the list is finished or when there is none", () => {
+		const finished = mount({ item: item("failed", { tasks: { total: 2, done: 2 } }) });
+		expect(symbols(finished)).not.toContain("checklist");
+		const none = mount();
+		expect(symbols(none)).not.toContain("checklist");
+	});
+
+	it("puts task progress ahead of project and host on the last line", () => {
+		const tree = mount({
+			item: item("failed", {
+				project: "magic-kingdom",
+				host_id: "studio",
+				tasks: { total: 7, done: 3, current: "Fix the settle/drain race" },
+			}),
+		});
+		expect(symbols(tree).slice(-3)).toEqual(["checklist", "folder", "server.rack"]);
 	});
 
 	it("moves a working row in Live with the pulse meter, and shows a still dot elsewhere", () => {
@@ -155,9 +200,75 @@ describe("a Board row (spec 7.2)", () => {
 		expect(symbols(pinned)).toContain("circle.fill");
 	});
 
+	it("draws a working row's meter from its activity read, and flat without one", () => {
+		const minutes = [0, 0, 1, 4, 9, 2, 5];
+		const read = mount({
+			item: item("working", { state: "active" }),
+			moving: true,
+			activity: { ref: "local:fix", minutes, runningSubagents: 0 },
+		});
+		expect(read.root.findByType(PulseMeter).props.perMinute).toEqual(minutes);
+		const unread = mount({ item: item("working", { state: "active" }), moving: true });
+		expect(unread.root.findByType(PulseMeter).props.perMinute).toBeUndefined();
+	});
+
+	it("says what a working row's activity read says in place of the children guess", () => {
+		const busy = item("working", {
+			state: "active",
+			children: [row({ ref: "local:child", state: "active" })],
+			more_subagents: 4,
+		});
+		const guessed = mount({ item: busy });
+		expect(textWith(guessed, "Waiting on 1 subagent (+4 more)")).toHaveLength(1);
+		const read = mount({ item: busy, activity: { ref: "local:fix", minutes: [1], runningSubagents: 3 } });
+		expect(textWith(read, "Waiting on 3 subagents")).toHaveLength(1);
+		expect(textWith(read, "Waiting on 1 subagent (+4 more)")).toEqual([]);
+	});
+
+	it("counts a working row's quiet time from its read, plus the time since that read landed", () => {
+		const tree = mount({
+			item: item("working", { state: "active" }),
+			activity: { ref: "local:fix", minutes: [0], runningSubagents: 0, quietForMs: 3 * 60_000 },
+			msSinceRead: 60_000,
+		});
+		const quiet = textWith(tree, "Quiet 4m")[0];
+		expect(styleOf(quiet)).toMatchObject({ color: palette.inkMid });
+	});
+
+	it("colors the whole May be stuck line in the attention ink", () => {
+		const tree = mount({
+			item: item("working", { state: "active" }),
+			activity: { ref: "local:fix", minutes: [0], runningSubagents: 0, quietForMs: 12 * 60_000 },
+			msSinceRead: 0,
+		});
+		const stuck = textWith(tree, "May be stuck · no updates for 12m")[0];
+		expect(styleOf(stuck)).toMatchObject({ fontSize: 15, color: palette.attentionInk });
+		expect(pressable(tree).props.accessibilityLabel).toContain("May be stuck · no updates for 12m");
+	});
+
 	it("grays the meter while disconnected", () => {
 		const tree = mount({ item: item("working", { state: "active" }), moving: true, connected: false });
 		expect(tree.root.findByType(PulseMeter).props.tone).toBe("gray");
+	});
+
+	it("turns a stuck row's meter amber, unless the connection itself is down (spec 13.1, 16.4)", () => {
+		const stuckActivity = { ref: "local:fix", minutes: [0], runningSubagents: 0, quietForMs: 12 * 60_000 };
+		const stuck = mount({
+			item: item("working", { state: "active" }),
+			moving: true,
+			activity: stuckActivity,
+			msSinceRead: 0,
+		});
+		expect(stuck.root.findByType(PulseMeter).props.tone).toBe("attention");
+
+		const offlineButStuck = mount({
+			item: item("working", { state: "active" }),
+			moving: true,
+			connected: false,
+			activity: stuckActivity,
+			msSinceRead: 0,
+		});
+		expect(offlineButStuck.root.findByType(PulseMeter).props.tone).toBe("gray");
 	});
 
 	it("reads one label in order: title, state, reason, age", () => {
@@ -194,6 +305,60 @@ describe("a Board row (spec 7.2)", () => {
 		expect(pressedStyle(tree, false).backgroundColor).not.toBe(palette.pressed);
 		expect(pressedStyle(tree, false)).toMatchObject({ paddingHorizontal: 16 });
 		expect(pressedStyle(tree, false).minHeight).toBeGreaterThanOrEqual(44);
+	});
+
+	it("dims to half opacity and reads busy while its change is on its way", () => {
+		const tree = mount({ dimmed: true });
+		expect(pressedStyle(tree, false).opacity).toBe(0.5);
+		expect(pressable(tree).props.accessibilityState).toEqual({ busy: true });
+		const plain = mount();
+		expect(pressedStyle(plain, false).opacity).toBe(1);
+		expect(pressable(plain).props.accessibilityState).toEqual({ busy: false });
+	});
+
+	it("gives VoiceOver the row's actions on its one button", () => {
+		const onAccessibilityAction = vi.fn();
+		const tree = mount({
+			accessibilityActions: [{ name: "archive", label: "Archive" }],
+			onAccessibilityAction,
+		});
+		const button = pressable(tree);
+		expect(button.props.accessibilityActions).toEqual([{ name: "archive", label: "Archive" }]);
+		button.props.onAccessibilityAction({ nativeEvent: { actionName: "archive" } });
+		expect(onAccessibilityAction).toHaveBeenCalledWith({ nativeEvent: { actionName: "archive" } });
+	});
+
+	it("shows select mode's checkbox in place of its state mark, and reads selected", () => {
+		const marks = (tree: ReactTestRenderer) =>
+			tree.root.findAllByType("SymbolView" as never).map((node) => [node.props.name, node.props.tintColor]);
+		const chosen = mount({ selected: true });
+		expect(marks(chosen)[0]).toEqual(["checkmark.circle.fill", palette.accent]);
+		expect(chosen.root.findAllByType(StateMark)).toHaveLength(0);
+		expect(pressable(chosen).props.accessibilityRole).toBe("button");
+		expect(pressable(chosen).props.accessibilityState).toEqual({ busy: false, selected: true });
+		const open = mount({ selected: false });
+		expect(marks(open)[0]).toEqual(["circle", palette.inkLow]);
+		expect(pressable(open).props.accessibilityState).toEqual({ busy: false, selected: false });
+		// Out of select mode it shows its state.
+		expect(mount().root.findAllByType(StateMark)).toHaveLength(1);
+	});
+
+	it("washes amber behind its content, fading out, when it has just entered Needs you", () => {
+		const washes = (tree: ReactTestRenderer) => tree.root.findAll((node) => node.type === ("Animated.View" as never));
+		const tree = mount({ wash: 2 });
+		const [wash] = washes(tree);
+		expect(washes(tree)).toHaveLength(1);
+		expect(wash.props.pointerEvents).toBe("none");
+		const style = styleOf(wash);
+		expect(style).toMatchObject({ position: "absolute", top: 0, right: 0, bottom: 0, left: 0 });
+		expect(style.backgroundColor).toBe(palette.attentionBg);
+		// The mocked timing lands on its target at once: faded out.
+		expect((style.opacity as { value: number }).value).toBe(0);
+		// It sits behind the row's content: the button's first child.
+		const [first] = pressable(tree).children as ReactTestInstance[];
+		expect(washes({ root: first } as ReactTestRenderer)).toEqual([wash]);
+		expect(washes(mount({ wash: 0 }))).toHaveLength(0);
+		expect(washes(mount())).toHaveLength(0);
 	});
 });
 

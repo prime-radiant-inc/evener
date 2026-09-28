@@ -233,3 +233,35 @@ func TestCloneThreadOwnsActivity(t *testing.T) {
 		t.Fatal("a nil sample cloned to a non-nil one")
 	}
 }
+
+func TestCloneThreadOwnsThePendingQuestion(t *testing.T) {
+	original := Thread{Evener: EvenerThread{PendingQuestion: &PendingQuestion{Question: "Which datastore?", Options: []string{"Postgres", "SQLite"}, Count: 2}}}
+	clone := CloneThread(original)
+	if !reflect.DeepEqual(clone, original) {
+		t.Fatal("clone changed values while copying")
+	}
+	clone.Evener.PendingQuestion.Options[0] = "changed"
+	clone.Evener.PendingQuestion.Count = 9
+	if original.Evener.PendingQuestion.Options[0] != "Postgres" || original.Evener.PendingQuestion.Count != 2 {
+		t.Fatalf("the pending question was changed through its clone: %+v", original.Evener.PendingQuestion)
+	}
+	if ClonePendingQuestion(nil) != nil {
+		t.Fatal("a nil question cloned to a non-nil one")
+	}
+}
+
+func TestCloneThreadOwnsTheFailure(t *testing.T) {
+	original := Thread{Evener: EvenerThread{Failure: &ThreadFailure{Title: "Provider error", Cause: &DiagnosticCause{Kind: "provider", Status: 401}}}}
+	clone := CloneThread(original)
+	if !reflect.DeepEqual(clone, original) {
+		t.Fatal("clone changed values while copying")
+	}
+	clone.Evener.Failure.Title = "changed"
+	clone.Evener.Failure.Cause.Status = 500
+	if original.Evener.Failure.Title != "Provider error" || original.Evener.Failure.Cause.Status != 401 {
+		t.Fatalf("the failure was changed through its clone: %+v", original.Evener.Failure)
+	}
+	if CloneThreadFailure(nil) != nil {
+		t.Fatal("a nil failure cloned to a non-nil one")
+	}
+}

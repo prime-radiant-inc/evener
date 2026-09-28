@@ -186,7 +186,7 @@ func TestNotificationTurnOwnsDurableReminderAndPendingClientSteering(t *testing.
 	client := llm.NewClient()
 	client.Register(adapter)
 	dir := t.TempDir()
-	sess = newSession(t, withClient(client), withDir(dir), withConfig(SessionConfig{MaxSubagentDepth: 1, NoProjectPrompts: true, StateDir: dir}))
+	sess = newSession(t, withClient(client), withDir(dir), withConfig(SessionConfig{MaxSubagentDepth: 1, StateDir: dir}))
 	if _, err := sess.ProcessInput(context.Background(), "warm up", nil); err != nil {
 		t.Fatalf("warmup ProcessInput: %v", err)
 	}
@@ -243,7 +243,7 @@ func TestNotificationTurnOwnsDaemonSteeringAfterCompletedUserTurn(t *testing.T) 
 			func(req llm.Request) llm.Response { return finalResponse("notification handled") },
 		},
 	}
-	sess := newSession(t, withAdapter(adapter), withDir(dir), withConfig(SessionConfig{NoProjectPrompts: true, StateDir: dir}))
+	sess := newSession(t, withAdapter(adapter), withDir(dir), withConfig(SessionConfig{StateDir: dir}))
 	if _, err := sess.ProcessInput(context.Background(), "completed user turn", nil); err != nil {
 		t.Fatalf("warmup ProcessInput: %v", err)
 	}
@@ -282,7 +282,7 @@ func TestNotificationTurnOwnsDirectRetrySteering(t *testing.T) {
 			func(req llm.Request) llm.Response { return finalResponse("notification handled") },
 		},
 	}
-	sess := newSession(t, withAdapter(adapter), withDir(dir), withConfig(SessionConfig{NoProjectPrompts: true, StateDir: dir}))
+	sess := newSession(t, withAdapter(adapter), withDir(dir), withConfig(SessionConfig{StateDir: dir}))
 	defer sess.Close()
 	if _, err := sess.ProcessInput(context.Background(), "completed user turn", nil); err != nil {
 		t.Fatalf("warmup ProcessInput: %v", err)
@@ -372,7 +372,7 @@ func TestNotificationPendingAfterToolRunsBeforeAnotherNormalRound(t *testing.T) 
 			func(llm.Request) llm.Response { return finalResponse("late ordinary round") },
 		},
 	}
-	sess := newSession(t, withAdapter(adapter), withConfig(SessionConfig{NoProjectPrompts: true}))
+	sess := newSession(t, withAdapter(adapter), withConfig(SessionConfig{}))
 	sess.RegisterTool(
 		"enqueue_test_notification",
 		"test-only: finish a managed job while another tool round is running",

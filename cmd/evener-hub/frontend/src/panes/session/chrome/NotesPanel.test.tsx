@@ -24,7 +24,8 @@ import {
 } from "../../../stores/threads";
 import { Toast } from "../../../widgets";
 import { resetToastStoreForTests } from "../../../widgets/toast/store";
-import { fileURLToPath, NotesPanelBody } from "./NotesPanel";
+import { flushPendingTurnsProjectionForTests } from "../composer/queue/testing/flushPendingTurnsProjection";
+import { NotesPanelBody } from "./NotesPanel";
 
 const FULL_CAPABILITIES: ThreadCapabilities = {
   send: true,
@@ -498,17 +499,6 @@ test("a flushed blur save does not resubmit when its original deadline passes", 
   expect(seen).toHaveLength(1);
   expect(setHumanNote).toHaveBeenCalledTimes(1);
   setHumanNote.mockRestore();
-});
-
-test("a malformed file URL never becomes an open-beside target", () => {
-  expect(fileURLToPath("file:///tmp/with%20space.md")).toBe("/tmp/with space.md");
-  // A malformed escape yields no path either: the URL names something we cannot
-  // interpret, and guessing the literal bytes risks opening a different file than
-  // the entry means. Canonical file URLs always encode "%", so this only rejects
-  // input this system never produced.
-  expect(fileURLToPath("file:///tmp/bad%zz.md")).toBe("");
-  // A string that is not a URL yields no path at all.
-  expect(fileURLToPath("not a url")).toBe("");
 });
 
 // --- rule 1: capability unset hides the panel body entirely -------------------
@@ -1120,7 +1110,8 @@ test("older B success followed by C rejection keeps C visible and recoverable", 
   await user.type(editor(), "B");
   await user.tab();
   await advance(10_000);
-  await waitFor(() => expect(fake.calls.filter((call) => call.method === "notes/human/set")).toHaveLength(1));
+  await flushPendingTurnsProjectionForTests();
+  expect(fake.calls.filter((call) => call.method === "notes/human/set")).toHaveLength(1);
   await user.clear(editor());
   await user.type(editor(), "C");
   await user.tab();
@@ -1200,7 +1191,8 @@ test("a second blur while a save is in flight replays the latest draft instead o
   await waitFor(() => expect(seen).toHaveLength(2));
   expect(seen[1]).toMatchObject({ ref: model.ref, note: "second draft" });
   expect(threadsStore.getState().threads.get(model.ref)?.humanNote).toBe("second draft");
-  await waitFor(async () => expect((await readMutationPersistence(model.ref)).recovery).toEqual([]));
+  await flushPendingTurnsProjectionForTests();
+  expect((await readMutationPersistence(model.ref)).recovery).toEqual([]);
 });
 
 test("a B-save parking behind an in-flight A-save persists instead of overwriting A", async () => {
@@ -1309,7 +1301,8 @@ test("a failed save retries on the next blur with the latest draft", async () =>
   await waitFor(() => expect(seen).toHaveLength(2));
   expect(seen[1]).toMatchObject({ ref: model.ref, note: "second draft" });
   expect(threadsStore.getState().threads.get(model.ref)?.humanNote).toBe("second draft");
-  await waitFor(async () => expect((await readMutationPersistence(model.ref)).recovery).toEqual([]));
+  await flushPendingTurnsProjectionForTests();
+  expect((await readMutationPersistence(model.ref)).recovery).toEqual([]);
 });
 
 test("a persistently failing save does not hot-loop the same drain", async () => {

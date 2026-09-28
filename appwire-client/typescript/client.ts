@@ -1,9 +1,7 @@
 // AppwireClient owns the websocket connection to the hub's /rpc endpoint: the
 // initialize/initialized handshake, typed request/response correlation,
 // notification fan-out, an application-level heartbeat, and automatic
-// reconnect with backoff. It mirrors the message-handling, heartbeat, and
-// reconnect semantics of the legacy cmd/evener-hub/assets/appwire.js
-// (sendHeartbeat / ensureHeartbeat), but — unlike that fixed-250ms retry —
+// reconnect with backoff. Unlike the legacy client's fixed 250ms retry, it
 // backs off exponentially up to a cap.
 
 import { ConnectionClosedError, RequestTimeoutError, WireError } from "./errors";
@@ -15,11 +13,28 @@ export type { AnyNotification };
 
 export type ConnectionState = "idle" | "connecting" | "ready" | "reconnecting" | "closed";
 
+// SubscriberErrorPhase names the fan-out boundary a subscriber threw from.
+export type SubscriberErrorPhase = "state" | "ready" | "handshakeResult" | "notification";
+
+// SubscriberErrorInfo is the bounded, payload-redacted diagnostic a subscriber
+// failure produces: the phase it threw from and the exception itself, never
+// the notification payload that happened to be in flight.
+export interface SubscriberErrorInfo {
+  phase: SubscriberErrorPhase;
+  error: unknown;
+}
+
 export interface AppwireClientOptions {
   url: string;
   socketFactory?: (url: string) => WebSocketLike; // default: real WebSocket
   now?: () => number; // default Date.now, tests inject
+  random?: () => number; // default Math.random; tests inject for a deterministic backoff
   clientInfo?: { name: string; version: string };
+  // onSubscriberError observes an isolated subscriber failure (see
+  // reportSubscriberError). Optional: applications wire platform logging or
+  // telemetry here; the client itself stays silent, and a throwing reporter is
+  // contained exactly like a throwing subscriber.
+  onSubscriberError?: (info: SubscriberErrorInfo) => void;
 }
 
 const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
@@ -31,7 +46,7 @@ const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
 // far beyond any real restore, but finite, so the pane recovers without a
 // reload.
 export const RESUME_REQUEST_TIMEOUT_MS = 10 * 60_000;
-export const APPWIRE_PROTOCOL_VERSION = "evener-appwire-v5";
+export const APPWIRE_PROTOCOL_VERSION = "evener-appwire-v6";
 const DEFAULT_CLIENT_INFO = { name: "evener-web", version: "0.1.0" };
 const DEFAULT_CAPABILITIES = { experimentalApi: false };
 
@@ -73,28 +88,31 @@ export type TerminalReason = "protocol" | null;
 // Same values as legacy appwire.js. Browsers can't send WebSocket ping
 // frames from JS, so a silently-dropped connection leaves readyState OPEN
 // forever with no notifications flowing; the heartbeat sends a cheap app-level
-// `ping` on an interval and force-closes the socket if it goes unanswered.
+// `ping` once nothing has arrived for HEARTBEAT_INTERVAL_MS and force-closes
+// the socket if it goes unanswered.
 export const HEARTBEAT_INTERVAL_MS = 20_000;
 export const HEARTBEAT_TIMEOUT_MS = 10_000;
 
 // Reconnect backoff: doubles from the base up to the cap, then holds there
 // until a successful re-handshake. Unlike legacy appwire.js's fixed 250ms
 // retry (renderer.js scheduleAppwireReconnect), this backs off so a
-// prolonged outage doesn't hammer the hub with reconnect attempts.
+// prolonged outage doesn't hammer the hub with reconnect attempts. Each delay
+// also carries bounded jitter (see scheduleReconnect) so clients dropped by
+// the same outage spread their retries instead of reconnecting in lockstep.
 export const RECONNECT_BASE_MS = 250;
 export const RECONNECT_MAX_MS = 5_000;
 
-// Methods allowed before the client reaches "ready": initialize is how it
-// gets there, and ping is an app-level liveness probe the heartbeat needs to
-// send even while connecting/reconnecting.
-const READY_EXEMPT_METHODS: ReadonlySet<MethodName> = new Set<MethodName>(["initialize", "ping"]);
+// The only method allowed before the client reaches "ready". initialize is how
+// it gets there (dialAndHandshake sends it while the state is still
+// "connecting"), so it cannot wait for ready. Everything else, including the
+// heartbeat's own ping, waits: the heartbeat is armed only on entering "ready"
+// and disarmed on every path out of it, so a ping is never sent while
+// connecting or reconnecting.
+const READY_EXEMPT_METHODS: ReadonlySet<MethodName> = new Set<MethodName>(["initialize"]);
 
 // Methods whose response is owned by the operation the request starts, not by
 // an ordinary transport deadline: a pending call carries its own (longer)
-// budget, and its presence must not suppress silent-drop detection for that
-// lifetime. The request timeout and the heartbeat's ordinary-request scan both
-// consult this one set so a method cannot gain one exemption without the
-// other.
+// budget.
 const COMPLETION_OWNED_METHODS: ReadonlySet<MethodName> = new Set<MethodName>(["thread/resume"]);
 
 function defaultSocketFactory(url: string): WebSocketLike {
@@ -120,7 +138,6 @@ interface WireMessage {
 }
 
 interface PendingRequest {
-  method: MethodName;
   resolve: (result: unknown) => void;
   reject: (err: Error) => void;
   timer: ReturnType<typeof setTimeout>;
@@ -224,12 +241,14 @@ export function decodeInitializeResponse(value: unknown): InitializeResponse {
 export class AppwireClient {
   private readonly url: string;
   private readonly socketFactory: (url: string) => WebSocketLike;
-  // Heartbeat/reconnect scheduling here is interval-based (setInterval /
-  // setTimeout), not timestamp-based, so `now` is unused; kept for callers
-  // that want a controllable clock for other purposes (e.g. future
-  // timestamp-stamped telemetry) without changing this constructor's shape.
+  // Heartbeat/reconnect scheduling here is timer-based (setTimeout), not
+  // timestamp-based, so `now` is unused; kept for callers that want a
+  // controllable clock for other purposes (e.g. future timestamp-stamped
+  // telemetry) without changing this constructor's shape.
   private readonly now: () => number;
+  private readonly random: () => number;
   private readonly clientInfo: { name: string; version: string };
+  private readonly onSubscriberError?: (info: SubscriberErrorInfo) => void;
 
   private socket: WebSocketLike | null = null;
   private recoveryClient: AppwireClient | null = null;
@@ -250,11 +269,13 @@ export class AppwireClient {
   private connectPromise: Promise<InitializeResponse> | null = null;
   private latestInitialize: InitializeResponse | null = null;
 
-  // Heartbeat: one interval timer, armed on entering "ready" and disarmed on
-  // leaving it (drop or close()). Its ping rides the same request()/pending
+  // Heartbeat: one timer that fires once the connection has been quiet (no
+  // frame received) for HEARTBEAT_INTERVAL_MS. Armed on entering "ready",
+  // restarted by every frame handleMessage receives, and disarmed on leaving
+  // "ready" (drop or close()). Its ping rides the same request()/pending
   // machinery as any other call, so the ping's own timeout self-cleans; no
   // separate "pong wait" timer is needed.
-  private heartbeatIntervalTimer: ReturnType<typeof setInterval> | null = null;
+  private heartbeatTimer: ReturnType<typeof setTimeout> | null = null;
 
   // Reconnect: one backoff timer at a time, armed by scheduleReconnect() and
   // disarmed the moment it fires (or by close()). reconnectAttempts counts
@@ -283,7 +304,9 @@ export class AppwireClient {
     this.url = opts.url;
     this.socketFactory = opts.socketFactory ?? defaultSocketFactory;
     this.now = opts.now ?? Date.now;
+    this.random = opts.random ?? Math.random;
     this.clientInfo = opts.clientInfo ?? DEFAULT_CLIENT_INFO;
+    this.onSubscriberError = opts.onSubscriberError;
   }
 
   get state(): ConnectionState {
@@ -452,7 +475,7 @@ export class AppwireClient {
         }
         reject(new RequestTimeoutError(`AppwireClient: "${method}" timed out after ${timeoutMs}ms`));
       }, timeoutMs);
-      this.pending.set(id, { method, resolve: resolve as (result: unknown) => void, reject, timer });
+      this.pending.set(id, { resolve: resolve as (result: unknown) => void, reject, timer });
       try {
         socket.send(JSON.stringify({ id, method, params }));
       } catch (err) {
@@ -558,7 +581,7 @@ export class AppwireClient {
   // setState() call. The two isClosed() checks below are load-bearing, not
   // defensive: without the first, the caller (performHandshake, on the very
   // first connect) would still dial a socket that close() can never clean up
-  // again; without the second, "ready" would still arm a heartbeat interval
+  // again; without the second, "ready" would still arm a heartbeat timer
   // on a client that just closed.
   private async dialAndHandshake(): Promise<InitializeResponse> {
     if (this.isClosed()) {
@@ -602,10 +625,24 @@ export class AppwireClient {
     for (const cb of Array.from(this.handshakeResultHandlers)) {
       try {
         cb(result);
-      } catch {
+      } catch (error) {
         // A subscriber cannot turn a successful protocol handshake into a
         // connection failure.
+        this.reportSubscriberError("handshakeResult", error);
       }
+    }
+  }
+
+  // reportSubscriberError surfaces an isolated subscriber failure through the
+  // optional diagnostic seam. The report itself is guarded, so a throwing
+  // reporter cannot corrupt dispatch to the remaining handlers, and it carries
+  // the phase and exception only — never the in-flight notification payload.
+  private reportSubscriberError(phase: SubscriberErrorPhase, error: unknown): void {
+    try {
+      this.onSubscriberError?.({ phase, error });
+    } catch {
+      // A misbehaving diagnostic handler is contained exactly like a
+      // misbehaving subscriber.
     }
   }
 
@@ -631,10 +668,16 @@ export class AppwireClient {
   // "reconnecting". Called once when a ready connection drops (from
   // handleSocketClose) and again after each failed attempt (from
   // attemptReconnect), so the delay it computes doubles attempt over
-  // attempt, capped at RECONNECT_MAX_MS, until one finally succeeds.
+  // attempt, capped at RECONNECT_MAX_MS, until one finally succeeds. Each
+  // delay is jittered (equal jitter) so clients dropped by the same outage do
+  // not retry in lockstep: the exponential value is halved and a random
+  // fraction of that half is added back, landing the delay in
+  // [deterministic/2, deterministic] and so still under the same cap.
   private scheduleReconnect(): void {
     if (this.isClosed()) return;
-    const delay = Math.min(RECONNECT_BASE_MS * 2 ** this.reconnectAttempts, RECONNECT_MAX_MS);
+    const deterministic = Math.min(RECONNECT_BASE_MS * 2 ** this.reconnectAttempts, RECONNECT_MAX_MS);
+    const half = deterministic / 2;
+    const delay = half + this.random() * half;
     this.reconnectAttempts += 1;
     this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = null;
@@ -700,13 +743,16 @@ export class AppwireClient {
 
   private armHeartbeat(): void {
     this.disarmHeartbeat();
-    this.heartbeatIntervalTimer = setInterval(() => this.sendHeartbeat(), HEARTBEAT_INTERVAL_MS);
+    this.heartbeatTimer = setTimeout(() => {
+      this.heartbeatTimer = null;
+      this.sendHeartbeat();
+    }, HEARTBEAT_INTERVAL_MS);
   }
 
   private disarmHeartbeat(): void {
-    if (this.heartbeatIntervalTimer == null) return;
-    clearInterval(this.heartbeatIntervalTimer);
-    this.heartbeatIntervalTimer = null;
+    if (this.heartbeatTimer == null) return;
+    clearTimeout(this.heartbeatTimer);
+    this.heartbeatTimer = null;
   }
 
   private disarmReconnect(): void {
@@ -715,24 +761,21 @@ export class AppwireClient {
     this.reconnectTimer = null;
   }
 
-  private hasPendingOrdinaryRequest(): boolean {
-    for (const slot of this.pending.values()) {
-      // The hub answers ping outside its serial queue. A pending Resume must
-      // not suppress silent-drop detection for its completion-owned lifetime.
-      if (slot.method !== "ping" && !COMPLETION_OWNED_METHODS.has(slot.method)) return true;
-    }
-    return false;
-  }
-
   // sendHeartbeat sends one app-level ping with an explicit HEARTBEAT_TIMEOUT_MS
   // deadline (reusing request()'s own timeout machinery rather than a second,
   // separately-tracked timer). An open-but-unresponsive socket never recovers
   // on its own, so any failure to answer in time retires it immediately and
   // starts the same reconnect lifecycle as a server-initiated drop. close()
   // remains best-effort cleanup: a half-open transport may never emit onclose.
+  //
+  // It pings even while requests are pending: a pending request proves
+  // nothing about a socket that has gone silent, and the hub answers ping
+  // outside its request queue, so a slow request cannot hold the pong back.
+  // Request timeouts are not a liveness signal either: they measure a
+  // handler's latency, and a silent drop is already caught within
+  // HEARTBEAT_INTERVAL_MS + HEARTBEAT_TIMEOUT_MS of the last frame received.
   private sendHeartbeat(): void {
     if (this.connectionState !== "ready") return;
-    if (this.hasPendingOrdinaryRequest()) return;
     const socket = this.socket;
     if (!socket) return;
     this.request("ping", {}, { timeoutMs: HEARTBEAT_TIMEOUT_MS }).catch(() => {
@@ -805,13 +848,25 @@ export class AppwireClient {
   }
 
   private handleMessage(data: unknown): void {
+    // Any frame proves the hub is still reachable, whatever it carries, so it
+    // restarts the heartbeat's quiet countdown. It comes first because the
+    // branches below return early for non-text and unparseable frames and for
+    // every response, including a late reply nothing is waiting for.
+    if (this.connectionState === "ready") this.armHeartbeat();
     if (typeof data !== "string") return;
-    let msg: WireMessage;
+    let parsed: unknown;
     try {
-      msg = JSON.parse(data) as WireMessage;
+      parsed = JSON.parse(data);
     } catch {
       return;
     }
+    // Only a JSON object is a WireMessage envelope. A syntactically valid frame
+    // that parses to null, a scalar, or an array has no id/method/error to read,
+    // and dereferencing it would throw a TypeError out of the socket callback
+    // (JSON null is the sharp case). Treat it like the other non-envelopes this
+    // boundary already ignores: non-string data and unparseable JSON.
+    if (!isPlainObject(parsed)) return;
+    const msg = parsed as WireMessage;
     if (msg.id != null) {
       const slot = this.pending.get(msg.id);
       if (!slot) return;
@@ -832,8 +887,9 @@ export class AppwireClient {
       for (const handler of Array.from(this.notificationHandlers)) {
         try {
           handler(notification);
-        } catch {
+        } catch (error) {
           // A misbehaving subscriber must not stop dispatch to the rest.
+          this.reportSubscriberError("notification", error);
         }
       }
     }
@@ -863,20 +919,25 @@ export class AppwireClient {
     for (const cb of Array.from(this.stateChangeHandlers)) {
       try {
         cb(next);
-      } catch {
+      } catch (error) {
         // A misbehaving subscriber must not corrupt the state machine or
         // abort whatever operation (e.g. a successful handshake, since
         // setState runs inside performHandshake's try) triggered this
         // transition.
+        this.reportSubscriberError("state", error);
       }
     }
     if (next === "ready") {
+      const initialize = this.latestInitialize;
       for (const cb of Array.from(this.readyHandlers)) {
         try {
-          if (!this.latestInitialize) throw new Error("AppwireClient: ready without initialize result");
-          cb(this.latestInitialize);
-        } catch {
-          // See above.
+          if (!initialize) throw new Error("AppwireClient: ready without initialize result");
+          cb(initialize);
+        } catch (error) {
+          // See above. The missing-initialize invariant is a client fault, not
+          // a subscriber's, so it is swallowed without reaching the seam — only
+          // a subscriber's own throw is reported.
+          if (initialize) this.reportSubscriberError("ready", error);
         }
       }
     }

@@ -11,8 +11,9 @@ import (
 	"primeradiant.com/evener/agent/internal/runetrim"
 )
 
-// ErrOutputChangedDuringRead is returned when both immediate attempts to read
-// a consistent output snapshot race with an append or retention prune.
+// ErrOutputChangedDuringRead is returned when an append or retention prune
+// prevents a consistent output snapshot. Path readers retry once internally;
+// descriptor readers return it after one attempt so their caller can reopen.
 var ErrOutputChangedDuringRead = errors.New("jobstore: output changed during read")
 
 var errOutputChanged = errors.New("jobstore: output snapshot changed")
@@ -115,6 +116,11 @@ func readOutputWindowSnapshotWithRetry(read func() (OutputWindowSnapshot, error)
 	return snapshot, err
 }
 
+// KEEP IN SYNC with the descriptor-backed attempt protocol in
+// output_snapshot_fd.go. These implementations intentionally remain separate:
+// frozen path-reader seams require afero path access, while descriptor reads
+// additionally fence path/file generations and give observation errors
+// precedence over a partially observed change.
 func readOutputWindowSnapshotOnce(fs afero.Fs, path string, offset int64, maxBytes int) (OutputWindowSnapshot, error) {
 	before, err := observeOutputSnapshot(fs, path)
 	if err != nil {
@@ -129,11 +135,11 @@ func readOutputWindowSnapshotOnce(fs afero.Fs, path string, offset int64, maxByt
 	if errors.Is(readErr, errOutputChanged) {
 		return OutputWindowSnapshot{}, errOutputChanged
 	}
-	if after.changedFrom(before) {
-		return OutputWindowSnapshot{}, errOutputChanged
-	}
 	if observeErr != nil {
 		return OutputWindowSnapshot{}, observeErr
+	}
+	if after.changedFrom(before) {
+		return OutputWindowSnapshot{}, errOutputChanged
 	}
 	if readErr != nil {
 		return snapshot, readErr
@@ -218,6 +224,9 @@ func readOutputRawSnapshotWindow(fs afero.Fs, path string, fileOffset int64, siz
 	return content, nil
 }
 
+// KEEP IN SYNC with the descriptor-backed attempt protocol in
+// output_snapshot_fd.go. See the window-reader cross-reference above for why
+// the frozen path and descriptor implementations cannot share an accessor.
 func readOutputSnapshotOnce(fs afero.Fs, path string, maxBytes int, fromHead bool) (OutputSnapshot, error) {
 	before, err := observeOutputSnapshot(fs, path)
 	if err != nil {
@@ -232,11 +241,11 @@ func readOutputSnapshotOnce(fs afero.Fs, path string, maxBytes int, fromHead boo
 	if errors.Is(readErr, errOutputChanged) {
 		return OutputSnapshot{}, errOutputChanged
 	}
-	if after.changedFrom(before) {
-		return OutputSnapshot{}, errOutputChanged
-	}
 	if observeErr != nil {
 		return OutputSnapshot{}, observeErr
+	}
+	if after.changedFrom(before) {
+		return OutputSnapshot{}, errOutputChanged
 	}
 	if readErr != nil {
 		return OutputSnapshot{}, readErr

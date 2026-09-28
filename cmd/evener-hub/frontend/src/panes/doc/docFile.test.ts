@@ -2,31 +2,7 @@
 
 import { DOC_FILE_MAX_BYTES } from "@evener/appwire-client";
 import { describe, expect, test } from "vitest";
-import { filenameOf, formatDocBytes, isMarkdownPath } from "./docFile";
-
-describe("filenameOf", () => {
-  test("returns the last path segment", () => {
-    expect(filenameOf("src/panes/doc/DocPane.tsx")).toBe("DocPane.tsx");
-  });
-
-  test("returns the whole name for a top-level file", () => {
-    expect(filenameOf("README.md")).toBe("README.md");
-  });
-
-  test("falls back to the raw path when there is no usable segment", () => {
-    expect(filenameOf("")).toBe("");
-  });
-});
-
-describe("isMarkdownPath", () => {
-  test.each(["README.md", "notes.MARKDOWN", "a/b/Guide.Md", "x.markdown"])("treats %s as markdown", (path) => {
-    expect(isMarkdownPath(path)).toBe(true);
-  });
-
-  test.each(["notes.txt", "script.ts", "a.md.txt", "mdfile", "Makefile"])("does not treat %s as markdown", (path) => {
-    expect(isMarkdownPath(path)).toBe(false);
-  });
-});
+import { formatDocBytes } from "./docFile";
 
 describe("formatDocBytes", () => {
   test("renders small sizes in bytes", () => {

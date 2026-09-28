@@ -8,6 +8,11 @@
 // is a browser script (it assigns to `window.EV_DATA`), so its content is
 // transcribed here rather than imported; the mapping choices are recorded
 // inline as each raw session is turned into a NavigationSessionSummary row.
+import {
+	NAVIGATION_CATALOG_LIMIT,
+	NAVIGATION_SECTION_LIMIT,
+	relativeAge,
+} from "@evener/appwire-client/state/navigation";
 import { capability, wireV2 } from "@evener/appwire-client/testing/navigation";
 import type {
 	AuthListResponse,
@@ -22,23 +27,6 @@ import type {
 	SearchResponse,
 	Source,
 } from "@evener/appwire-client";
-
-// Mirrors @evener/appwire-client/state/navigation's NAVIGATION_SECTION_LIMIT
-// and NAVIGATION_CATALOG_LIMIT (in turn cmd/evener-hub/navigation_projection.
-// go's maxNavigationSectionRows/maxNavigationCatalogRows) rather than
-// importing them: that module's index.ts re-exports everything with
-// `export * from "./x"`, and demo-hub.mts (which reaches this file through
-// its own import graph) is .mts, always real ESM to Node -- the CommonJS
-// compile a re-export barrel gets there turns `export *` into a dynamic
-// spread Node's real ESM loader can't statically find named exports in, so
-// `import { X } from "@evener/appwire-client/state/navigation"` fails to
-// load from anywhere that graph reaches, even though the identical
-// specifier shape works from testing/navigation (a plain file with direct
-// declarations, not a re-export barrel). Vitest's own resolver doesn't hit
-// this, which is why the test file next to this one can import the real
-// constants directly.
-const SECTION_LIMIT = 50;
-const CATALOG_LIMIT = 100;
 
 // The generation id demo-hub.mts advertises in the initialize handshake's
 // navigation capability. Every wireV2 response must carry the exact same
@@ -60,19 +48,6 @@ const respond = (params: NavigationReadParams, data: unknown): NavigationReadRes
 // analogous fixture (cmd/evener-hub/frontend/src/dev/editorial-preview/) does.
 export function navigationCapability(): NavigationCapability {
 	return capability(DEMO_FLEET_GENERATION);
-}
-
-// A local copy of that same module's relativeAge (now/m/h/d), for the same
-// reason: SearchResult.age needs it and importing it hits the barrel above.
-// The format is a spec contract (redesign design.md 7.2: "2m", "1h", "3d"),
-// not an implementation detail likely to drift out from under this copy.
-function relativeAge(updatedAt: string | undefined, now: number): string {
-	if (!updatedAt) return "now";
-	const seconds = Math.max(0, Math.floor((now - Date.parse(updatedAt)) / 1000));
-	if (seconds < 60) return "now";
-	if (seconds < 3600) return `${Math.floor(seconds / 60)}m`;
-	if (seconds < 86400) return `${Math.floor(seconds / 3600)}h`;
-	return `${Math.floor(seconds / 86400)}d`;
 }
 
 const M = 60;
@@ -411,12 +386,12 @@ function hostId(host: ProtoHost | undefined): string {
 }
 
 // The prototype's states on the wire. An approval stays "active" (the phone
-// infers approval from the row's presence in needs_you), and "yourmove" is a
-// turn that ended without asking.
-const WIRE_STATE: Record<ProtoState, { state: string; askPending?: true }> = {
+// infers approval from the row's presence in needs_you, plus approvalPending
+// saying why), and "yourmove" is a turn that ended without asking.
+const WIRE_STATE: Record<ProtoState, { state: string; askPending?: true; approvalPending?: true }> = {
 	failed: { state: "errored" },
 	question: { state: "awaiting", askPending: true },
-	approval: { state: "active" },
+	approval: { state: "active", approvalPending: true },
 	restart: { state: "restartRequired" },
 	yourmove: { state: "awaiting" },
 	working: { state: "active" },
@@ -490,7 +465,7 @@ function runningJobs(raw: RawSession): NavigationJobSummary[] | undefined {
 function toRow(raw: RawSession, startupMs: number, offlineHost: boolean): NavigationSessionSummary {
 	const owner = hostId(raw.host);
 	const project = raw.project ?? "evener";
-	const { state, askPending } = WIRE_STATE[raw.state];
+	const { state, askPending, approvalPending } = WIRE_STATE[raw.state];
 	const live = raw.state !== "shutdown";
 	const offline = owner === "paradise-park" && offlineHost;
 	const { capped, omitted } = capChildren(rawChildren(raw));
@@ -505,6 +480,7 @@ function toRow(raw: RawSession, startupMs: number, offlineHost: boolean): Naviga
 		kind: "session",
 		live,
 		...(askPending ? { ask_pending: true as const } : {}),
+		...(approvalPending ? { approval_pending: true as const } : {}),
 		...(offline ? { offline: true as const } : {}),
 		updated_at: new Date(startupMs - raw.ago * 1000).toISOString(),
 		...(omitted > 0 ? { omitted_descendants: omitted } : {}),
@@ -523,10 +499,20 @@ function projectSessionsRaw(projectKey: string): RawSession[] {
 	return SESSIONS.filter((raw) => underProjects(raw) && (raw.project ?? "evener") === projectKey);
 }
 
+// The hosts that own a project's sessions, in the hub's own shape
+// (NavigationProjectSummary.sources): "local" for this hub's sessions and a
+// host's name for its own, omitted when this hub owns every one.
+function projectSources(projectKey: string): string[] | undefined {
+	const owners = new Set(SESSIONS.filter((raw) => (raw.project ?? "evener") === projectKey).map((raw) => hostId(raw.host)));
+	if ([...owners].every((owner) => owner === "local")) return undefined;
+	return ["local", "paradise-park"].filter((owner) => owners.has(owner));
+}
+
 function projectSummary(key: string, sessionCount: number): NavigationProjectSummary {
 	const meta = PROJECT_META.find((project) => project.key === key);
 	if (!meta) throw new Error(`Unknown demonstration project: ${key}`);
-	return { key, name: key, working_dir: meta.workingDir, session_count: sessionCount };
+	const sources = projectSources(key);
+	return { key, name: key, working_dir: meta.workingDir, session_count: sessionCount, ...(sources ? { sources } : {}) };
 }
 
 export interface DemoFleetOptions {
@@ -667,17 +653,17 @@ export function createDemoFleet(options: DemoFleetOptions = {}): DemoFleet {
 				if (params.section !== "live" && params.section !== "needs_you")
 					throw new Error(`Unknown demonstration section: ${params.section}`);
 				const source = params.section === "needs_you" ? needsYouSessions : liveSessions;
-				const { page: sessions, remaining } = page(source, params, SECTION_LIMIT);
+				const { page: sessions, remaining } = page(source, params, NAVIGATION_SECTION_LIMIT);
 				return respond(params, { sessions, remaining, truncated: anyTruncated(sessions) });
 			}
 			case "pin_catalog": {
-				const { page: sections, remaining } = page(pinSections, params, CATALOG_LIMIT);
+				const { page: sections, remaining } = page(pinSections, params, NAVIGATION_CATALOG_LIMIT);
 				return respond(params, { pin_sections: sections, remaining });
 			}
 			case "pin_section": {
 				const id = pinCategoryIds.find((candidate) => candidate === params.sectionId);
 				if (!id) throw new Error(`Unknown demonstration pin section: ${params.sectionId}`);
-				const { page: sessions, remaining } = page(pinSessions(id), params, SECTION_LIMIT);
+				const { page: sessions, remaining } = page(pinSessions(id), params, NAVIGATION_SECTION_LIMIT);
 				return respond(params, { sessions, remaining, truncated: anyTruncated(sessions) });
 			}
 			case "catalog": {
@@ -686,7 +672,7 @@ export function createDemoFleet(options: DemoFleetOptions = {}): DemoFleet {
 				if (params.catalog !== "projects" && params.catalog !== "archived_projects" && params.catalog !== "test_runs")
 					throw new Error(`Unknown demonstration catalog: ${params.catalog}`);
 				const source = params.catalog === "archived_projects" ? archivedProjects : params.catalog === "test_runs" ? testRunProjects : projects;
-				const { page: rows, remaining } = page(source, params, CATALOG_LIMIT);
+				const { page: rows, remaining } = page(source, params, NAVIGATION_CATALOG_LIMIT);
 				return respond(params, { projects: rows, remaining });
 			}
 			case "project": {
@@ -716,7 +702,7 @@ export function createDemoFleet(options: DemoFleetOptions = {}): DemoFleet {
 				if (params.tier !== "current" && params.tier !== "recent" && params.tier !== "archived")
 					throw new Error(`Unknown demonstration tier: ${params.tier}`);
 				const tier = params.tier;
-				const { page: sessions, remaining } = page(tierRows(projectKey, tier), params, SECTION_LIMIT);
+				const { page: sessions, remaining } = page(tierRows(projectKey, tier), params, NAVIGATION_SECTION_LIMIT);
 				return respond(params, { key: projectKey, tier, sessions, remaining, truncated: anyTruncated(sessions) });
 			}
 			default:
@@ -732,8 +718,22 @@ export function createDemoFleet(options: DemoFleetOptions = {}): DemoFleet {
 		const now = clock();
 		const toHit = (raw: RawSession) => {
 			const row = rowOf(raw);
-			const age = relativeAge(row.updated_at, now);
-			return { id: row.session_id, title: row.title, project: row.project, state: row.state, age, ref: row.ref };
+			// relativeAge answers undefined for a row with no timestamp; a
+			// SearchResult's age is a required string, so a missing one reads
+			// "now", the way this file's own copy used to.
+			const age = relativeAge(row.updated_at, now) ?? "now";
+			return {
+				id: row.session_id,
+				title: row.title,
+				project: row.project,
+				state: row.state,
+				age,
+				ref: row.ref,
+				// The same flags a navigation row carries (#2583): a past (ended)
+				// row never has either set, so this needs no shutdown special case.
+				...(row.ask_pending ? { askPending: true as const } : {}),
+				...(row.approval_pending ? { approvalPending: true as const } : {}),
+			};
 		};
 		return {
 			live: matches.filter((raw) => raw.state !== "shutdown").map(toHit),

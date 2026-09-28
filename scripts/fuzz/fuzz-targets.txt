@@ -148,7 +148,6 @@ native:agent:./internal/artifactstore:FuzzArtifactStoreRefBoundary
 native:agent:./internal/goal:FuzzGoalStoreTerminalPersistence
 native:agent:./internal/goal:FuzzGoalLifecycleProgram
 native:agent:./internal/installid:FuzzLoadOrCreateInstallationIDWithFS
-native:agent:./internal/promptpath:FuzzPromptPaths
 native:agent:./internal/globpattern:FuzzExpand
 native:agent:./internal/runetrim:FuzzRuneTrim
 native:agent:./internal/liveeval:FuzzLiveEvalPaths
@@ -186,8 +185,8 @@ native:agent:./internal/worktree:FuzzValidateName
 native:.:./frontmatter:FuzzParse
 native:.:./hubapi:FuzzParseRef
 native:.:./rendezvous:FuzzList
-native:.:./server:FuzzAppTurnsFromNotifications
 native:.:./internal/appserver:FuzzHandleMessage
+native:.:./server:FuzzDecodeSubscriptionAdmissionParams
 native:.:./internal/appprojector:FuzzProject
 native:.:./internal/apptranscript:FuzzProjectTurn
 native:.:./internal/apptranscript:FuzzDerivedTotalsMatchesIndividualScans
@@ -365,6 +364,8 @@ test:.:./appwire:TestStructuredFrameReachesDecoder
 test:agent:.:TestTranscriptGenReachesDeeper
 test:llm:./providers/anthropic:TestStructuredAnthropicReachesDeeper
 test:llm:./providers/google:TestStructuredGeminiReachesDeeper
+test:.:./cmd/evener-fuzzregistry:TestRegistryProgramScenarios
+test:.:./cmd/evener-fuzz-harvest:TestHarvestProgramScenarios
 rapid:agent:.:TestToolArgsSchemaFuzz
 rapid:agent:.:TestLifecycleSeqFuzz
 rapid:agent:.:TestWatchSeqFuzz
@@ -443,6 +444,7 @@ native:.:./cmd/evener-hub/internal/fspaths:FuzzResolveInRoot
 native:.:./cmd/evener-hub/internal/fspaths:FuzzSanitizeDirPrefix
 native:.:./cmd/evener-hub/internal/fspaths:FuzzFSPathsBehaviorProgram
 native:.:./cmd/evener-hub/internal/fspaths:FuzzAppPathsBehaviorProgram
+native:.:./cmd/evener-hub/internal/hostfence:FuzzHostfenceDecode
 native:.:./cmd/evener-hub/internal/hostlock:FuzzAcquireLock
 native:.:./cmd/evener-hub/internal/hostlock:FuzzHostLockBehaviorProgram
 native:.:./cmd/evener-hub/internal/hostops:FuzzLoadStore

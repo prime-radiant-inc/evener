@@ -109,7 +109,6 @@ func (r *wtRepo) restoreWorktreeSession(t *testing.T, meta schema.SessionMeta, l
 	if meta.Model == "" {
 		meta.Model = "gpt-5.2"
 	}
-	meta.Config.NoProjectPrompts = true
 	sess, err := RestoreSessionFromMetaWithConfig(
 		w3init_restoreClient(), NewOpenAIProfile("gpt-5.2"),
 		execenv.NewLocalExecutionEnvironment(launchDir), meta,

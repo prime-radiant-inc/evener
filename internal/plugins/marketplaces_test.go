@@ -623,6 +623,71 @@ func TestEditMarketplace_ResourceClearsAStaleAsideDirectory(t *testing.T) {
 	}
 }
 
+// A re-source's swap renames the old clone aside before it installs the fresh
+// one. When the install rename fails and the swap's own attempt to put the old
+// clone back fails too, the swap hands the aside path back with its error so
+// the edit's undo can try the restore again. Here that first restore is
+// refused and the retry succeeds, so the old clone must end up back at the
+// install location rather than stranded under .old with nothing recording it.
+func TestEditMarketplace_RetriesTheAsideRestoreAfterADoubleFault(t *testing.T) {
+	if !gitAvailable() {
+		t.Skip("git not available")
+	}
+	repoA := makeMarketplaceRepoWithPlugin(t, "acme", "widget")
+	repoB := makeMarketplaceRepoWithPlugin(t, "acme", "gadget")
+	m := NewManager(t.TempDir())
+	ctx := context.Background()
+	if _, err := m.AddMarketplace(ctx, "", Source{Kind: SourceURL, URL: repoA}); err != nil {
+		t.Fatalf("AddMarketplace: %v", err)
+	}
+	before := readStoreFile(t, m.marketplacesFile())
+
+	dest := m.marketplaceDir("acme")
+	aside := m.marketplaceDir(asideCloneName)
+	orig := marketplaceRename
+	t.Cleanup(func() { marketplaceRename = orig })
+	restores := 0
+	marketplaceRename = func(from, to string) error {
+		switch {
+		case to == dest && from != aside:
+			// Installing the freshly-fetched clone fails after the aside move.
+			return errors.New("permission denied")
+		case from == aside:
+			// The swap's own restore is refused; the caller's retry succeeds.
+			restores++
+			if restores == 1 {
+				return errors.New("permission denied")
+			}
+		}
+		return orig(from, to)
+	}
+
+	_, err := m.EditMarketplace(ctx, "acme", "", &Source{Kind: SourceURL, URL: repoB})
+	marketplaceRename = orig
+	if err == nil {
+		t.Fatal("expected the re-source's swap to fail")
+	}
+	// The undo put the old clone back, so the store is not left between names:
+	// the failure must read as a plain edit failure, not a failed rollback.
+	if errors.Is(err, errRenameRollbackIncomplete) {
+		t.Fatalf("err = %v, want no rollback-incomplete marker once the undo restored the clone", err)
+	}
+	if strings.Contains(err.Error(), dest) || strings.Contains(err.Error(), aside) {
+		t.Fatalf("err = %v, want no absolute path in the client-facing error", err)
+	}
+	// The failed swap must not strand the old clone: the undo retried the
+	// restore, so the recorded source's clone is back and .old is gone.
+	if _, statErr := os.Stat(filepath.Join(dest, "plugins", "widget")); statErr != nil {
+		t.Fatalf("the old clone was not restored to %s: %v", dest, statErr)
+	}
+	if _, statErr := os.Stat(aside); !os.IsNotExist(statErr) {
+		t.Fatalf("%s survived the failed swap: %v", aside, statErr)
+	}
+	if after := readStoreFile(t, m.marketplacesFile()); after != before {
+		t.Fatalf("known_marketplaces.json changed after a failed re-source:\n%s", after)
+	}
+}
+
 func TestEditMarketplace_RenameAndResourceTogether(t *testing.T) {
 	if !gitAvailable() {
 		t.Skip("git not available")

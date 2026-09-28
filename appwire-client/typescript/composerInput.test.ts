@@ -1,7 +1,7 @@
 // @vitest-environment node
 
 import { expect, test } from "vitest";
-import { buildInput } from "./composerInput";
+import { buildInput, formatQuoteBlock, mergeDraftText } from "./composerInput";
 
 // Skill names reach buildInput from drafts, recovery records and queue
 // projections. Any of those can carry a stray space, an empty string or a
@@ -21,4 +21,40 @@ test("buildInput emits no skill items when every name is empty", () => {
   const input = buildInput("hello", undefined, ["", "   "]);
 
   expect(input.filter((item) => item.type === "skill")).toEqual([]);
+});
+
+test("mergeDraftText appends after exactly one blank line, or replaces a blank draft", () => {
+  expect(mergeDraftText("", "queued text")).toBe("queued text");
+  expect(mergeDraftText("  \n", "queued text")).toBe("queued text");
+  expect(mergeDraftText("my draft  \n\n", "queued text")).toBe("my draft\n\nqueued text");
+  expect(mergeDraftText("my draft", "  spaced")).toBe("my draft\n\n  spaced");
+});
+
+test("mergeDraftText can put the addition in front with no separator", () => {
+  expect(mergeDraftText("rest", "> quote\n\n", "prefix")).toBe("> quote\n\nrest");
+});
+
+test("formatQuoteBlock turns a single line into one '> ' line plus a trailing blank line", () => {
+  expect(formatQuoteBlock("hello world")).toBe("> hello world\n\n");
+});
+
+test("formatQuoteBlock gives each line of a multi-line selection its own '> ' prefix", () => {
+  expect(formatQuoteBlock("first line\nsecond line\nthird line")).toBe("> first line\n> second line\n> third line\n\n");
+});
+
+test("formatQuoteBlock trims leading/trailing whitespace-only lines before quoting", () => {
+  expect(formatQuoteBlock("\n\n  middle  \n\n")).toBe("> middle\n\n");
+});
+
+test("formatQuoteBlock normalizes CRLF line endings to a single '> ' prefix per line", () => {
+  expect(formatQuoteBlock("a\r\nb")).toBe("> a\n> b\n\n");
+});
+
+test("formatQuoteBlock preserves a blank line in the middle of the selection as an empty '>' line", () => {
+  expect(formatQuoteBlock("first\n\nsecond")).toBe("> first\n> \n> second\n\n");
+});
+
+test("formatQuoteBlock formats an empty or whitespace-only selection to an empty string", () => {
+  expect(formatQuoteBlock("")).toBe("");
+  expect(formatQuoteBlock("   \n  ")).toBe("");
 });

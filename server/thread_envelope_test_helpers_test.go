@@ -21,17 +21,14 @@ type stubThreadEnvelopeSource struct {
 	tasks            *appwire.TaskAggregate
 	taskCalls        int
 	metaCalls        int
-	// Retained only for older fuzz fixtures that mutate the historical fields.
-	// Goal projection reads meta.Goal exclusively.
-	goalStatus       string
-	goalIterations   int
-	goalSet          bool
 	workMillis       int64
 	usage            *appwire.EvenerUsage
 	turnStartedAt    int64
 	failedToolCalls  int
 	failuresMeasured bool
 	askPending       bool
+	question         *appwire.PendingQuestion
+	failure          *appwire.ThreadFailure
 	escalations      []appwire.SandboxEscalationRequested
 	reasoningEffort  string
 	reasoningLevels  []string
@@ -53,7 +50,19 @@ func (s *stubThreadEnvelopeSource) TaskAggregate() *appwire.TaskAggregate {
 	s.taskCalls++
 	return s.tasks
 }
-func (s *stubThreadEnvelopeSource) AskPending() bool { return s.askPending }
+
+// PendingQuestion reports question when a test set one. A test that sets only
+// askPending gets a question with no text, which is still a pending ask: the
+// thread's AskPending is the question's presence.
+func (s *stubThreadEnvelopeSource) PendingQuestion() *appwire.PendingQuestion {
+	if s.question != nil {
+		return s.question
+	}
+	if s.askPending {
+		return &appwire.PendingQuestion{Count: 1}
+	}
+	return nil
+}
 
 func (s *stubThreadEnvelopeSource) SessionMeta() schema.SessionMeta {
 	s.metaCalls++
@@ -78,6 +87,8 @@ func (s *stubThreadEnvelopeSource) WorkMetrics() (int64, *appwire.EvenerUsage, i
 func (s *stubThreadEnvelopeSource) FailedToolCalls() (int, bool) {
 	return s.failedToolCalls, s.failuresMeasured
 }
+
+func (s *stubThreadEnvelopeSource) RestingFailure() *appwire.ThreadFailure { return s.failure }
 
 func (s *stubThreadEnvelopeSource) PendingEscalations() []appwire.SandboxEscalationRequested {
 	return append([]appwire.SandboxEscalationRequested(nil), s.escalations...)

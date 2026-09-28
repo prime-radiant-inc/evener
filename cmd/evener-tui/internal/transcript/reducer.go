@@ -240,6 +240,7 @@ func (r *TranscriptReducer) ApplyThreadItem(item appwire.ThreadItem, turnIndex i
 				r.messages[idx].TurnID = item.TurnID
 				r.messages[idx].TurnIndex = turnIndex
 				r.messages[idx].TranscriptEntryIndex = item.TranscriptEntryIndex
+				r.messages[idx].TranscriptKey = item.TranscriptKey
 				return
 			}
 			if idx, ok := r.pendingUserEchoIndex(text); ok {
@@ -247,10 +248,11 @@ func (r *TranscriptReducer) ApplyThreadItem(item appwire.ThreadItem, turnIndex i
 				r.messages[idx].TurnID = item.TurnID
 				r.messages[idx].TurnIndex = turnIndex
 				r.messages[idx].TranscriptEntryIndex = item.TranscriptEntryIndex
+				r.messages[idx].TranscriptKey = item.TranscriptKey
 				r.messages[idx].ItemID = item.ID
 				return
 			}
-			r.messages = append(r.messages, ChatMessage{Kind: MsgUser, Text: text, TurnID: item.TurnID, TurnIndex: turnIndex, TranscriptEntryIndex: item.TranscriptEntryIndex, ItemID: item.ID})
+			r.messages = append(r.messages, ChatMessage{Kind: MsgUser, Text: text, TurnID: item.TurnID, TurnIndex: turnIndex, TranscriptEntryIndex: item.TranscriptEntryIndex, TranscriptKey: item.TranscriptKey, ItemID: item.ID})
 		}
 	case "reasoning":
 		if idx, ok := r.activeReasoningIndex(item.ID); ok {
@@ -328,6 +330,222 @@ func (r *TranscriptReducer) ApplyThreadItem(item appwire.ThreadItem, turnIndex i
 		if !done {
 			r.rememberActiveTool(item, idx)
 		}
+	case "steering":
+		// The read model's replacement for the live evener/steering/injected
+		// notification: both a human's Ctrl+S message and a daemon-injected
+		// job/delegate result notification arrive this way (turn.SteeringSource
+		// distinguishes them for StartedAt stamping only, never for rendering —
+		// the live path rendered both uniformly as MsgSteering). A payload
+		// naming several jobs ties every one of them (issue #49), not just the
+		// first.
+		if strings.TrimSpace(item.Text) == "" {
+			return
+		}
+		r.messages = append(r.messages, ChatMessage{Kind: MsgSteering, Text: item.Text, TurnID: item.TurnID, TurnIndex: turnIndex, ItemID: item.ID})
+		for _, tie := range ParseJobNotificationHeadlines(item.Text) {
+			if tie.JobID != "" {
+				r.ApplyTieHeadline(tie.JobID, tie.Headline, tie.IsError)
+			}
+		}
+	}
+}
+
+// ApplyHistoryItem folds one item from history/updated (or a v6 hydrate) into
+// the transcript. A history item is always the final, recorded form of an
+// entry — its not-yet-final form, if any, lives in the overlay instead — so
+// this always applies it as complete.
+//
+// Merge by version: an item whose Version is at or below the version already
+// held for its id is a stale replay (a resync or backfill overlap can send
+// one) and is dropped.
+//
+// An item that carries a RoundID also drops any still-live overlay stream row
+// for that round: the round's ASSISTANT/salvage entry just recorded, so the
+// overlay's copy of the same text is superseded. Waiting for overlay/end to
+// do that would show both at once.
+func (r *TranscriptReducer) ApplyHistoryItem(item appwire.ThreadItem, turnIndex int) {
+	existing, found := r.rowIndexForItem(item)
+	if found && item.Version != 0 && item.Version <= r.messages[existing].Version {
+		return
+	}
+	r.ApplyThreadItem(item, turnIndex, true)
+	if idx, ok := r.rowIndexForItem(item); ok {
+		r.messages[idx].Version = item.Version
+		// A history item's row is never an overlay row, even when it just
+		// reused one's slot (ApplyThreadItem's own append-to-last-message
+		// reuse, for an agentMessage row adjacent to no other message): clear
+		// the tag so the coverage drop below does not remove the row it was
+		// just written into.
+		r.messages[idx].OverlayKind = ""
+	}
+	if item.RoundID != "" {
+		r.dropOverlayRows(func(msg ChatMessage) bool {
+			return msg.OverlayKind == appwire.OverlayStream && msg.RoundID == item.RoundID
+		})
+	}
+}
+
+// rowIndexForItem finds the row a history item already occupies, by item id
+// or (for a tool row that started life as an overlay row, whose ItemID is
+// still the overlay key) by call id. Used only to read back the row's held
+// version; it does not need the precision ApplyThreadItem's own per-type
+// lookups have.
+func (r *TranscriptReducer) rowIndexForItem(item appwire.ThreadItem) (int, bool) {
+	for i := range r.messages {
+		if item.ID != "" && r.messages[i].ItemID == item.ID {
+			return i, true
+		}
+		if item.CallID != "" && r.messages[i].ToolCallID == item.CallID {
+			return i, true
+		}
+	}
+	return 0, false
+}
+
+// ApplyOverlayItem folds one overlay/upserted item into the transcript.
+//
+// A notice displays as a finished system message. A tool item merges onto
+// the same row a recorded commandExecution item uses (both are matched by
+// call id through ApplyThreadItem's existing tool lookup), so its running
+// state simply appears laid over the history row once one exists, and never
+// creates a second row. A stream or preview item gets its own row, keyed by
+// its own overlay key (stable for the slot's lifetime) rather than an item
+// id, since nothing else will ever share that id.
+func (r *TranscriptReducer) ApplyOverlayItem(item appwire.OverlayItem) {
+	turnIndex := TurnIndexFromID(item.TurnID)
+	switch item.Kind {
+	case appwire.OverlayNotice:
+		r.ApplyThreadItem(item.Item, turnIndex, true)
+	case appwire.OverlayTool:
+		r.ApplyThreadItem(item.Item, turnIndex, false)
+	case appwire.OverlayStream, appwire.OverlayPreview:
+		r.applyOverlayTextItem(item, turnIndex)
+	}
+}
+
+// applyOverlayTextItem upserts a stream or preview overlay item's current
+// text into its live row. Both display as the assistant speaking: a stream
+// is the model's own agentMessage/reasoning output, a preview is the
+// communicate tool call's in-progress text.
+func (r *TranscriptReducer) applyOverlayTextItem(item appwire.OverlayItem, turnIndex int) {
+	kind := MsgAssistant
+	if item.Item.Type == "reasoning" {
+		kind = MsgReasoning
+	}
+	if idx, ok := r.overlayRowIndex(item.Key); ok {
+		r.messages[idx].Text = item.Item.Text
+		r.messages[idx].TurnID = item.TurnID
+		r.messages[idx].TurnIndex = turnIndex
+		return
+	}
+	if kind == MsgAssistant {
+		r.finalizeLiveReasoning()
+	}
+	idx := len(r.messages)
+	r.messages = append(r.messages, ChatMessage{
+		Kind: kind, Text: item.Item.Text, TurnID: item.TurnID, TurnIndex: turnIndex, ItemID: item.Key,
+		OverlayKind: item.Kind, RoundID: item.RoundID, StreamID: item.StreamID,
+	})
+	r.rememberActiveMessage(appwire.ThreadItem{ID: item.Key}, idx)
+}
+
+// ApplyOverlayDelta folds an overlay/delta chunk into the live row its key
+// names: appended text for a stream/preview row, appended output for a tool
+// row (found the same way a tool history update finds its row: by call id,
+// through ApplyToolOutputDelta's existing lookup — key here IS the call id
+// for a tool row, since the server names OverlayDeltaParams.Key from the
+// slot's own key, "tool:<historyKey>", not the call id; a tool row is
+// therefore found by scanning for that overlay key instead, then appending
+// directly).
+func (r *TranscriptReducer) ApplyOverlayDelta(key string, field appwire.OverlayDeltaField, delta string) {
+	if delta == "" || key == "" {
+		return
+	}
+	switch field {
+	case appwire.OverlayDeltaText:
+		if idx, ok := r.overlayRowIndex(key); ok {
+			r.messages[idx].Text += delta
+		}
+	case appwire.OverlayDeltaOutput:
+		if idx, ok := r.toolRowIndexByOverlayKey(key); ok {
+			if info := r.messages[idx].Tool; info != nil {
+				info.Output += delta
+			}
+		}
+	}
+}
+
+// ApplyOverlayReset discards the stream and preview rows of one attempt (a
+// retried model call): the next attempt gets a new stream id, so its output
+// is never mistaken for the discarded one.
+func (r *TranscriptReducer) ApplyOverlayReset(streamID string) {
+	if streamID == "" {
+		return
+	}
+	r.dropOverlayRows(func(msg ChatMessage) bool {
+		return msg.StreamID == streamID && (msg.OverlayKind == appwire.OverlayStream || msg.OverlayKind == appwire.OverlayPreview)
+	})
+}
+
+// ApplyOverlayEnd drops any stream/preview row still left for a round once
+// it ends: either a recorded item already superseded it (ApplyHistoryItem's
+// proactive drop normally beats this), or the round was interrupted, in
+// which case the server already sent the interrupted notice ahead of this
+// call. A tool row is never overlay-tagged (it merges onto the history row
+// instead of getting one of its own), so it is untouched either way.
+func (r *TranscriptReducer) ApplyOverlayEnd(roundID string) {
+	r.finalizeLiveReasoning()
+	if roundID == "" {
+		return
+	}
+	r.dropOverlayRows(func(msg ChatMessage) bool {
+		return msg.RoundID == roundID && (msg.OverlayKind == appwire.OverlayStream || msg.OverlayKind == appwire.OverlayPreview)
+	})
+}
+
+// overlayRowIndex finds a stream/preview row by its own overlay key, reusing
+// the activeMessages id->index map (shared with agentMessage/reasoning
+// history rows; overlay keys and history item ids never collide).
+func (r *TranscriptReducer) overlayRowIndex(key string) (int, bool) {
+	if key == "" {
+		return 0, false
+	}
+	idx, ok := r.activeMessages[key]
+	if !ok || idx < 0 || idx >= len(r.messages) {
+		return 0, false
+	}
+	return idx, true
+}
+
+// toolRowIndexByOverlayKey finds a tool row by the overlay key its slot was
+// created under. ApplyOverlayItem passes the overlay item's Item.ID == its
+// own Key to ApplyThreadItem's commandExecution branch, which remembers that
+// row in activeTools under both the item id and the call id
+// (rememberActiveTool) — since the overlay key IS the item id here, activeTools
+// already indexes it in O(1); this is a lookup, not a second scan. A later
+// history update replaces ItemID with the real item id and clears the entry
+// (clearActiveTool), at which point this key no longer resolves — harmless,
+// because by then TOOL_RESULTS is recorded and no further overlay delta for
+// that call is expected.
+func (r *TranscriptReducer) toolRowIndexByOverlayKey(key string) (int, bool) {
+	idx, ok := r.activeTools[key]
+	if !ok || idx < 0 || idx >= len(r.messages) || r.messages[idx].Kind != MsgTool {
+		return 0, false
+	}
+	return idx, true
+}
+
+// dropOverlayRows removes every message matched by keep and shifts the
+// active-item indices past each removal, like RemovePending does for a
+// pending placeholder.
+func (r *TranscriptReducer) dropOverlayRows(match func(ChatMessage) bool) {
+	for i := range slices.Backward(r.messages) {
+		if !match(r.messages[i]) {
+			continue
+		}
+		r.clearActiveMessage(appwire.ThreadItem{ID: r.messages[i].ItemID})
+		r.messages = append(r.messages[:i], r.messages[i+1:]...)
+		r.shiftActiveIndicesAfterRemoval(i)
 	}
 }
 

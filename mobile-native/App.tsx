@@ -11,6 +11,7 @@ import { ActivityIndicator, useColorScheme, View } from "react-native";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
 import { SafeAreaProvider } from "react-native-safe-area-context";
 import { BoardScreen } from "./src/board/BoardScreen";
+import { RowMenuSheet } from "./src/board/RowMenu";
 import { ConnectionProvider, useConnection } from "./src/ConnectionProvider";
 import { ForkScreen } from "./src/ForkScreen";
 import { HubSettingsScreen } from "./src/HubSettingsScreen";
@@ -40,6 +41,9 @@ import {
 	type Routes,
 } from "./src/screens";
 import { SHEET_ROUTES } from "./src/sheet/sheetRoutes";
+import { QueueSheet } from "./src/QueueSheet";
+import { OutlineSheet } from "./src/reader/OutlineSheet";
+import { ReaderScreen } from "./src/reader/ReaderScreen";
 import { TasksSheet } from "./src/TasksSheet";
 import { TranscriptPreferencesScreen } from "./src/TranscriptPreferencesScreen";
 import { ErrorMessage, useColors } from "./src/ui";
@@ -200,6 +204,11 @@ function Navigation() {
 							title: route.params.title || "Conversation",
 						})}
 					/>
+					<Stack.Screen
+						name="Reader"
+						component={ReaderScreen}
+						options={{ title: "" }}
+					/>
 					<Stack.Group
 						screenOptions={{
 							contentStyle: { backgroundColor: colors.palette.canvas },
@@ -209,6 +218,21 @@ function Navigation() {
 							name="TasksSheet"
 							component={TasksSheet}
 							options={SHEET_ROUTES.TasksSheet}
+						/>
+						<Stack.Screen
+							name="RowMenuSheet"
+							component={RowMenuSheet}
+							options={SHEET_ROUTES.RowMenuSheet}
+						/>
+						<Stack.Screen
+							name="QueueSheet"
+							component={QueueSheet}
+							options={SHEET_ROUTES.QueueSheet}
+						/>
+						<Stack.Screen
+							name="OutlineSheet"
+							component={OutlineSheet}
+							options={SHEET_ROUTES.OutlineSheet}
 						/>
 					</Stack.Group>
 				</Stack.Navigator>

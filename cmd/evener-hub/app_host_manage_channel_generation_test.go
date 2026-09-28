@@ -32,6 +32,11 @@ func wireAttachedManager(t *testing.T, f *updateFixture, runner sshconn.Runner) 
 	manager := sshconn.New(f.hosts, sshconn.Options{Runner: runner})
 	t.Cleanup(func() { _ = manager.Close() })
 	f.m.cfg.manager = manager
+	// The manager is the per-host gate wherever it owns the channels (the same
+	// wiring newHubHostManager performs with hostGateFor): a mutation's held
+	// reservation must be the very lock the manager's gate-inheriting teardown
+	// entries check.
+	f.m.cfg.gate = manager
 	f.m.cfg.online = manager.Attached
 	f.m.cfg.clientIfAttached = manager.ClientIfAttached
 	f.m.cfg.handshake = func(host string, client *appwire.Client) (appwire.InitializeResponse, bool) {
@@ -157,7 +162,7 @@ func (*resolvingUpdateRunner) Run(_ context.Context, argv []string, _ io.Reader)
 	joined := strings.Join(argv, " ")
 	switch {
 	case strings.Contains(joined, "/home/dev/.local/bin/evener launch-check"):
-		return []byte(`{"protocol":"evener-appwire-v5","version":"dev","launch_flags":["api-log"]}`), nil
+		return []byte(`{"protocol":"evener-appwire-v6","version":"dev","launch_flags":["api-log"]}`), nil
 	case strings.Contains(joined, " evener launch-check"):
 		// The host's non-interactive PATH does not carry the binary.
 		return []byte("sh: 1: evener: not found\n"), evenerMissingExitStatus()

@@ -1,5 +1,7 @@
 package appwire
 
+import "fmt"
+
 const (
 	CodeParseError     = -32700
 	CodeInvalidRequest = -32600
@@ -31,6 +33,18 @@ const (
 	ErrorMutationOutcomeUnknown    ErrorInfo = "mutationOutcomeUnknown"
 	ErrorTranscriptItemCursorStale ErrorInfo = "transcriptItemCursorStale"
 	ErrorInternal                  ErrorInfo = "internal"
+	// ErrorTranscriptHistoryFailed marks a read of a thread whose history
+	// entered its failed state: its projection or rebuild failed for a reason
+	// outside the entries (I/O, a corrupt index) three times in a row, and a
+	// rebuild the read attempted failed too. The message names the last entry
+	// the history had recorded when it failed. An entry that does not decode
+	// is not a failure: the index shows it as one unreadable-entry item. Its
+	// data is HistoryReadErrorData.
+	ErrorTranscriptHistoryFailed ErrorInfo = "transcriptHistoryFailed"
+	// ErrorUpgradeRequired marks initialize refusing a client that announced
+	// an older AppWire protocol than the server speaks; the message names both
+	// versions.
+	ErrorUpgradeRequired ErrorInfo = "upgradeRequired"
 	// ErrorKeybindingsPostRename marks a keybindings patch that APPLIED (the
 	// rename published the new revision) before a follow-up durable step
 	// failed; the error's data carries the applied canonical state.
@@ -93,6 +107,25 @@ const (
 	// (deploy pipeline 08b §11). It shares CodeConflict with genuine conflicts,
 	// so a client must match this discriminant and its Binding, never the code.
 	ErrorStaleEntry ErrorInfo = "stale-entry"
+	// ErrorCursorTooLarge marks deploy pipeline 08b's over-cap first-page
+	// refusal (§§8, 11): an operations read whose boundary map would exceed the
+	// 8 KiB encoded cursor cap, so no cursor was minted and the client re-lists
+	// with a narrower query. Its data is CursorTooLargeErrorData — never a
+	// compacting `compactSeq`, because there is no cursor to name one. Shares
+	// CodeConflict with the other refusals, so a client matches this
+	// discriminant, never the code.
+	ErrorCursorTooLarge ErrorInfo = "cursor-too-large"
+	// ErrorCursorInvalidated marks deploy pipeline 08b's mid-pagination
+	// compaction refusal (§§8, 11): a compaction removed rows at or before the
+	// cursor's `pos` since the cursor was minted, so the continuation cannot
+	// describe the record set it resumes into and the client restarts from the
+	// first page. Its data is CursorInvalidatedErrorData — the compacting
+	// `compactSeq` (the envelope-global value, never the live one when a later
+	// compaction advanced it) plus the affected host's bounds entry as stored at
+	// mint. Distinct from stale-entry's generation-mismatch re-list refusal;
+	// shares CodeConflict with the other refusals, so a client matches this
+	// discriminant, never the code.
+	ErrorCursorInvalidated ErrorInfo = "cursor-invalidated"
 	// ErrorHostBusyOperation marks a deploy-pipeline refusal because the host's
 	// per-host gate is held by a deploy/restart operation — including an
 	// Ensure-triggered deploy, which holds its own operation-store record
@@ -156,6 +189,19 @@ const (
 	// the data: the operator resolves a remnant through teardown-retry first,
 	// then retries the removal.
 	ErrorTombstoneCapacity ErrorInfo = "tombstone-capacity"
+	// ErrorTeardownUnknownKey marks `evener/host/teardown-retry` naming a
+	// remnant id the store does not carry — never minted, or purged by the
+	// cleared/recovery marker retention (registry spec 08 §6/§11). Not-found
+	// class, with the unknown id in the data. A cleared remnant whose resolved
+	// record still survives is NOT this arm: it returns `already-cleared`.
+	ErrorTeardownUnknownKey ErrorInfo = "teardown-unknown-key"
+	// ErrorConcurrentEdit marks a hub.toml commit whose final fingerprint check
+	// found the file moved between the validation read and the check, after
+	// bounded retries (registry spec 08 §6/§11): no window's edit is erased and
+	// nothing committed. Conflict class, with both fingerprints in the data.
+	// The live-external reconcile validation (§15) rides the same discriminator
+	// with `{source, hostCount}` data on its own path.
+	ErrorConcurrentEdit ErrorInfo = "concurrent-edit"
 )
 
 // StaleEntryBinding names which binding a stale-entry refusal fired on, exactly
@@ -191,6 +237,59 @@ func StaleEntry(binding StaleEntryBinding, message string) WireError {
 		Data: StaleEntryErrorData{
 			ErrorData: ErrorData{EvenerErrorInfo: ErrorStaleEntry},
 			Binding:   binding,
+		},
+	}
+}
+
+// CursorTooLargeErrorData is the over-cap first-page refusal's data (deploy
+// pipeline 08b §11): the standard ErrorData plus the encoded cursor cap the
+// boundary map exceeded. It never carries a compacting `compactSeq` — no
+// cursor was minted, so there is none to name (§8).
+type CursorTooLargeErrorData struct {
+	ErrorData
+	CapBytes int `json:"capBytes"`
+}
+
+// CursorTooLarge is deploy pipeline 08b's `cursor-too-large` refusal: a first
+// page whose boundary map would exceed the 8 KiB encoded cursor cap. The
+// client re-lists with a narrower query, never a truncated cursor.
+func CursorTooLarge(capBytes int, message string) WireError {
+	return WireError{
+		Code:    CodeConflict,
+		Message: message,
+		Data: CursorTooLargeErrorData{
+			ErrorData: ErrorData{EvenerErrorInfo: ErrorCursorTooLarge},
+			CapBytes:  capBytes,
+		},
+	}
+}
+
+// CursorInvalidatedErrorData is the mid-pagination compaction refusal's data
+// (deploy pipeline 08b §11): the standard ErrorData plus the compacting
+// `compactSeq` (the envelope-global value), the affected host, and that host's
+// `bounds` entry as stored at the cursor's mint — the {generation,
+// incarnationId, presenceEpoch} object, or the literal "absent"
+// (HostBoundaryAbsent), the same value union hostBoundaries carries.
+type CursorInvalidatedErrorData struct {
+	ErrorData
+	CompactSeq uint64 `json:"compactSeq"`
+	Host       string `json:"host"`
+	Bounds     any    `json:"bounds"`
+}
+
+// CursorInvalidated is deploy pipeline 08b's `cursor-invalidated` refusal: a
+// mid-pagination compaction removed rows at or before the cursor's position,
+// so the client restarts from the first page. bounds carries the affected
+// host's stored bounds entry — a HostBoundary, or HostBoundaryAbsent.
+func CursorInvalidated(compactSeq uint64, host string, bounds any, message string) WireError {
+	return WireError{
+		Code:    CodeConflict,
+		Message: message,
+		Data: CursorInvalidatedErrorData{
+			ErrorData:  ErrorData{EvenerErrorInfo: ErrorCursorInvalidated},
+			CompactSeq: compactSeq,
+			Host:       host,
+			Bounds:     bounds,
 		},
 	}
 }
@@ -485,6 +584,60 @@ func InternalError(message string) WireError {
 	}
 }
 
+// TranscriptHistoryFailed reports a read of a thread whose history failed,
+// naming ordinal, the last entry it had recorded (see
+// ErrorTranscriptHistoryFailed). The history read stamps it with
+// WithHistoryReadIdentity.
+func TranscriptHistoryFailed(ordinal uint64) WireError {
+	return WireError{
+		Code:    CodeInternalError,
+		Message: fmt.Sprintf("thread history failed at entry %d", ordinal),
+		Data:    ErrorData{EvenerErrorInfo: ErrorTranscriptHistoryFailed},
+	}
+}
+
+// HistoryReadErrorData is the data of a thread/read or thread/turns/list
+// error: the error's own data plus the boot generation the read ran under,
+// and its resync epoch when the read had reached the thread's history. It
+// carries no snapshot identity and no items, so a client never adopts a
+// generation or epoch from it, and never replaces anything with it.
+type HistoryReadErrorData struct {
+	ErrorData
+	BootGeneration string  `json:"bootGeneration"`
+	Epoch          *uint64 `json:"epoch,omitempty"`
+}
+
+// WithHistoryReadIdentity stamps a history read's error with the boot
+// generation and epoch it ran under. An error whose data is not ErrorData
+// keeps its own data unchanged.
+func WithHistoryReadIdentity(err WireError, bootGeneration string, epoch uint64) WireError {
+	return withReadIdentity(err, bootGeneration, &epoch)
+}
+
+// WithReadBootGeneration stamps a read's error raised before the read reached
+// a thread's history (invalid params, an unknown thread, an unavailable
+// subscription) with the boot generation alone.
+func WithReadBootGeneration(err WireError, bootGeneration string) WireError {
+	return withReadIdentity(err, bootGeneration, nil)
+}
+
+func withReadIdentity(err WireError, bootGeneration string, epoch *uint64) WireError {
+	if data, ok := err.Data.(ErrorData); ok {
+		err.Data = HistoryReadErrorData{ErrorData: data, BootGeneration: bootGeneration, Epoch: epoch}
+	}
+	return err
+}
+
+// UpgradeRequired refuses a client that announced clientVersion, an AppWire
+// protocol older than serverVersion.
+func UpgradeRequired(clientVersion, serverVersion string) WireError {
+	return WireError{
+		Code:    CodeInvalidRequest,
+		Message: fmt.Sprintf("protocol version %q is older than this server's %q: upgrade required", clientVersion, serverVersion),
+		Data:    ErrorData{EvenerErrorInfo: ErrorUpgradeRequired},
+	}
+}
+
 func Conflict(message string) WireError {
 	return WireError{
 		Code:    CodeConflict,
@@ -586,5 +739,54 @@ func EndpointConflict(message string) WireError {
 		Code:    CodeConflict,
 		Message: message,
 		Data:    ErrorData{EvenerErrorInfo: ErrorEndpointConflict},
+	}
+}
+
+// TeardownUnknownKeyErrorData is §11's `teardown-unknown-key` data: the id the
+// call named, so a client can render which handle went stale.
+type TeardownUnknownKeyErrorData struct {
+	ErrorData
+	RemnantID string `json:"remnantId"`
+}
+
+// TeardownUnknownKey is §11's `teardown-unknown-key` refusal (not-found class):
+// the named remnant id is unknown or purged. It fires exactly when the named
+// remnant id is unknown or purged — "a cleared-remnant marker still present
+// returns the `already-cleared` arm instead". The not-found class rides
+// CodeInvalidParams, the code every other not-found refusal in this envelope
+// carries (ResourceNotFound's), because the wire defines no separate code for
+// it: a client matches the discriminant, never the code.
+func TeardownUnknownKey(remnantID, message string) WireError {
+	return WireError{
+		Code:    CodeInvalidParams,
+		Message: message,
+		Data: TeardownUnknownKeyErrorData{
+			ErrorData: ErrorData{EvenerErrorInfo: ErrorTeardownUnknownKey},
+			RemnantID: remnantID,
+		},
+	}
+}
+
+// ConcurrentEditErrorData is §11's `concurrent-edit` data on the commit path:
+// the fingerprint the commit staged against and the fingerprint it observed at
+// the final check.
+type ConcurrentEditErrorData struct {
+	ErrorData
+	StagedFingerprint   string `json:"stagedFingerprint"`
+	ObservedFingerprint string `json:"observedFingerprint"`
+}
+
+// ConcurrentEdit is §11's `concurrent-edit` refusal (conflict class): the
+// commit's final check found the hub.toml fingerprint moved after bounded
+// retries. The mutation commits nothing, and no window's edit is erased.
+func ConcurrentEdit(stagedFingerprint, observedFingerprint, message string) WireError {
+	return WireError{
+		Code:    CodeConflict,
+		Message: message,
+		Data: ConcurrentEditErrorData{
+			ErrorData:           ErrorData{EvenerErrorInfo: ErrorConcurrentEdit},
+			StagedFingerprint:   stagedFingerprint,
+			ObservedFingerprint: observedFingerprint,
+		},
 	}
 }

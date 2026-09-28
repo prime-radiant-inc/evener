@@ -151,8 +151,12 @@ func (s *retirementBrowserRelaySource) retire() {
 		}
 		s.gen1Deliveries <- appsource.RelayDelivery{
 			Notification: appwire.Notification{
-				Method: appwire.NotifyTurnStarted,
-				Params: mustMarshalJSON(map[string]any{"threadId": s.threadID, "ref": s.ref, "turn": staleTurn}),
+				Method: appwire.NotifyHistoryUpdated,
+				Params: mustMarshalJSON(appwire.HistoryUpdatedParams{
+					ThreadID: s.threadID, Ref: s.ref,
+					Items: staleTurn.Items,
+					Turns: []appwire.Turn{staleTurn},
+				}),
 			},
 			Acknowledge: func() { s.staleForwardOnce.Do(func() { close(s.staleForwarded) }) },
 			Proceed:     func() {},
@@ -276,10 +280,15 @@ func (s *retirementBrowserRelaySource) receipt(params appwire.TurnStartParams, t
 	}
 }
 
-// emitTurn pushes turn/started + turn/completed through gen2Deliveries so the
-// relay broadcasts them to the browser client.
+// emitTurn pushes a history/updated notification (turn/started +
+// turn/completed's read-model replacement) through gen2Deliveries so the
+// relay broadcasts it to the browser client.
 func (s *retirementBrowserRelaySource) emitTurn(newTurn appwire.Turn) {
-	params := mustMarshalJSON(map[string]any{"threadId": s.threadID, "ref": s.ref, "turn": newTurn})
+	params := mustMarshalJSON(appwire.HistoryUpdatedParams{
+		ThreadID: s.threadID, Ref: s.ref,
+		Items: newTurn.Items,
+		Turns: []appwire.Turn{newTurn},
+	})
 	ack := func() {}
 	deliver := func(method string) {
 		s.mu.Lock()
@@ -291,8 +300,7 @@ func (s *retirementBrowserRelaySource) emitTurn(newTurn appwire.Turn) {
 		}
 	}
 	go func() {
-		deliver(appwire.NotifyTurnStarted)
-		deliver(appwire.NotifyTurnCompleted)
+		deliver(appwire.NotifyHistoryUpdated)
 	}()
 }
 

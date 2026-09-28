@@ -51,12 +51,24 @@ const (
 	hostMutationRemove hostMutationKind = "remove"
 )
 
-// hostReceiptOutcomeCommitted is the only outcome this slice can construct: the
-// commit landed. §5/§6's other receipt outcomes (committed-with-teardown-failure,
-// collision-dropped, bootRecovered) describe post-commit paths that do not
-// exist in this build (teardowns are best-effort and un-commit on failure), so
-// no speculative field or value is written for them.
-const hostReceiptOutcomeCommitted = "committed"
+// The three outcomes a finalized receipt carries (spec §5/§6/§11):
+//
+//   - committed: the commit landed and every planned teardown completed;
+//   - committed-with-teardown-failure: the commit landed but a post-commit
+//     teardown failed — "a failure at or after the commit point is reported as
+//     a committed-with-teardown-failure with the seam named, and recovery is
+//     forward (retry the teardown / re-apply), never a restore of the prior
+//     bytes" — with the durable remnant the response's `remnantId` names;
+//   - collision-dropped: the post-rename reconcile observed a foreign write
+//     that replaced the just-committed staged entry, so the file's bytes won
+//     ("a hand edit the post-rename re-read observes is adopted (the file's
+//     bytes win, the receipt says `collision-dropped`)") and the receipt
+//     carries the dropped entry plus the winning fingerprint.
+const (
+	hostReceiptOutcomeCommitted        = "committed"
+	hostReceiptOutcomeTeardownFailure  = "committed-with-teardown-failure"
+	hostReceiptOutcomeCollisionDropped = "collision-dropped"
+)
 
 // MaxHostMutationIDBytes is spec 08 §1's bound on a mutationId: "opaque,
 // non-empty, at most 128 bytes, no required structure". A client-supplied id
@@ -82,12 +94,17 @@ type HostMutationReceiptRow struct {
 }
 
 // HostMutationReceipt is one [mutation_receipts."<scoped-key>"] record (spec 08
-// §6): the finalized outcome of one committed host mutation. Only the fields
-// this build can construct are carried; §6's optional receipt fields
-// (droppedEntry, winningFingerprint, removed, remnantId, remnantResolvedAt,
-// recoveryAttestation, bootRecovered) belong to post-commit paths later slices
-// own, and forward preservation for a record this build cannot decode is
-// explicitly not offered — validateHostMutationReceipts refuses it loudly.
+// §6): the finalized outcome of one committed host mutation. Its optional
+// fields are present exactly on the outcomes that carry them — `droppedEntry`
+// and `winningFingerprint` exactly on `collision-dropped`, `removed` exactly on
+// a `collision-dropped` receipt whose winning arm is the hand-edit deletion,
+// `remnantId` exactly when the commit staged a remnant, `remnantResolvedAt`
+// exactly after `teardown-retry` or `teardown-recover` resolves it,
+// `recoveryAttestation` exactly on receipts resolved through `teardown-recover`,
+// and `bootRecovered` (as true) exactly when boot finalized a crash-window
+// staged-receipt marker. Forward preservation for a record this build cannot
+// decode is explicitly not offered — validateHostMutationReceipts refuses it
+// loudly.
 type HostMutationReceipt struct {
 	// Outcome is the finalized outcome; "committed" is the only constructible
 	// value in this slice.
@@ -110,6 +127,35 @@ type HostMutationReceipt struct {
 	// bound (at most 64 newest per name under the owner-set audit TTL, §11)
 	// instead of the keyed receipts' superseded/current rules.
 	Audit bool `toml:"audit,omitempty"`
+	// DroppedEntry is the staged entry the post-rename reconcile dropped,
+	// persisted "in the same lowerCamel effective-config shape as `HostRow`'s
+	// config fields" (spec §6). Present exactly on `collision-dropped` receipts.
+	DroppedEntry *HostMutationReceiptRow `toml:"dropped_entry,omitempty"`
+	// WinningFingerprint is the winning hub.toml fingerprint the post-rename
+	// reconcile observed. Present exactly on `collision-dropped` receipts, so "a
+	// lost-response retry, even after restart, reconstructs both what was
+	// dropped and which fingerprint won".
+	WinningFingerprint string `toml:"winning_fingerprint,omitempty"`
+	// Removed is the hand-edit-deletion marker: "the arm carries no `host` and
+	// sets `removed: true` — the winning arm is the deletion, with the marker
+	// tombstone rows use". Present exactly on a `collision-dropped` receipt
+	// whose winning arm is the deletion.
+	Removed bool `toml:"removed,omitempty"`
+	// RemnantID is the pre-minted remnant id the commit staged. Present exactly
+	// when the commit staged a remnant, and it is what the
+	// committed-with-teardown-failure response names beside the seam.
+	RemnantID string `toml:"remnant_id,omitempty"`
+	// RemnantResolvedAt is present exactly after `teardown-retry` or
+	// `teardown-recover` resolves the remnant.
+	RemnantResolvedAt string `toml:"remnant_resolved_at,omitempty"`
+	// RecoveryAttestation is "the `{operator, statement, observedAt}`
+	// attestation the recovery call validated — the audited recovery contract's
+	// durable record". Present exactly on receipts resolved through
+	// `teardown-recover`.
+	RecoveryAttestation *HostRecoveryAttestation `toml:"recovery_attestation,omitempty"`
+	// BootRecovered is true exactly when boot finalized a crash-window
+	// staged-receipt marker (spec §5: "the receipt records `bootRecovered: true`").
+	BootRecovered bool `toml:"boot_recovered,omitempty"`
 }
 
 // hostReceiptScope is a scoped receipt key's five parts (spec §6: "mutation-id
@@ -403,8 +449,43 @@ func validateHostMutationReceipts(receipts map[string]HostMutationReceipt) error
 			return fmt.Errorf("mutation_receipts[%q] carries a mutation id of %d bytes, over the %d-byte bound (or empty)",
 				key, len(scope.MutationID), MaxHostMutationIDBytes)
 		}
-		if receipt.Outcome != hostReceiptOutcomeCommitted {
+		switch receipt.Outcome {
+		case hostReceiptOutcomeCommitted, hostReceiptOutcomeTeardownFailure:
+			if receipt.DroppedEntry != nil || receipt.WinningFingerprint != "" || receipt.Removed {
+				return fmt.Errorf("mutation_receipts[%q] carries a collision-dropped field on outcome %q", key, receipt.Outcome)
+			}
+		case hostReceiptOutcomeCollisionDropped:
+			if receipt.DroppedEntry == nil {
+				return fmt.Errorf("mutation_receipts[%q] carries outcome %q with no dropped_entry", key, receipt.Outcome)
+			}
+			if strings.TrimSpace(receipt.WinningFingerprint) == "" {
+				return fmt.Errorf("mutation_receipts[%q] carries outcome %q with no winning_fingerprint", key, receipt.Outcome)
+			}
+			if receipt.Removed && receipt.Row.Name != "" {
+				return fmt.Errorf("mutation_receipts[%q] carries the hand-edit-deletion arm with a row", key)
+			}
+		default:
 			return fmt.Errorf("mutation_receipts[%q] carries outcome %q, which this build cannot produce or decode", key, receipt.Outcome)
+		}
+		if receipt.RemnantID != "" && !validRemnantID(receipt.RemnantID) {
+			return fmt.Errorf("mutation_receipts[%q] carries a remnant id of %d bytes, over the %d-byte bound (or not valid UTF-8)",
+				key, len(receipt.RemnantID), MaxRemnantIDBytes)
+		}
+		if receipt.RemnantResolvedAt != "" {
+			if _, err := time.Parse(time.RFC3339, receipt.RemnantResolvedAt); err != nil {
+				return fmt.Errorf("mutation_receipts[%q] carries remnant_resolved_at %q, not an RFC3339 instant: %w", key, receipt.RemnantResolvedAt, err)
+			}
+			if receipt.RemnantID == "" {
+				return fmt.Errorf("mutation_receipts[%q] records a resolved remnant with no remnant_id", key)
+			}
+		}
+		if receipt.RecoveryAttestation != nil {
+			if err := validateRecoveryAttestationShape(*receipt.RecoveryAttestation); err != nil {
+				return fmt.Errorf("mutation_receipts[%q]: %w", key, err)
+			}
+			if receipt.RemnantResolvedAt == "" {
+				return fmt.Errorf("mutation_receipts[%q] carries a recovery attestation with no remnant_resolved_at", key)
+			}
 		}
 		if receipt.Generation != scope.Generation {
 			return fmt.Errorf("mutation_receipts[%q] pins generation %d while the record carries %d", key, scope.Generation, receipt.Generation)
@@ -417,10 +498,14 @@ func validateHostMutationReceipts(receipts map[string]HostMutationReceipt) error
 				key, len(receipt.IncarnationID), hostops.MaxIncarnationIDBytes)
 		}
 		if receipt.Row.Name == "" {
-			return fmt.Errorf("mutation_receipts[%q] carries no row name", key)
-		}
-		if receipt.Row.Name != scope.Name {
+			if receipt.Outcome != hostReceiptOutcomeCollisionDropped || !receipt.Removed {
+				return fmt.Errorf("mutation_receipts[%q] carries no row name", key)
+			}
+		} else if receipt.Row.Name != scope.Name {
 			return fmt.Errorf("mutation_receipts[%q] names host %q in its key and %q in its row", key, scope.Name, receipt.Row.Name)
+		}
+		if dropped := receipt.DroppedEntry; dropped != nil && dropped.Name != scope.Name {
+			return fmt.Errorf("mutation_receipts[%q] names host %q in its key and drops an entry for %q", key, scope.Name, dropped.Name)
 		}
 		if _, err := time.Parse(time.RFC3339, receipt.CommittedAt); err != nil {
 			return fmt.Errorf("mutation_receipts[%q] carries committed_at %q, not an RFC3339 instant: %w", key, receipt.CommittedAt, err)
