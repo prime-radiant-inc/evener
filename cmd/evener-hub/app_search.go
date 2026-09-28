@@ -50,23 +50,26 @@ func hubSearch(ctx context.Context, cfg hubcore.WebConfig, params appwire.Search
 			pastMatched[e.Meta.ID] = true
 		}
 	}
-	var live []hubcore.LiveEntry
+	// Every live session's result, in the Live order, built once for both
+	// the Live group and the In sessions group.
+	var live []appwire.SearchResult
 	isLive := map[string]bool{}
 	if cfg.Roster != nil {
-		live = cfg.Roster.List()
-		sortLiveForSearch(live, cfg.Past)
-		for _, le := range live {
+		entries := cfg.Roster.List()
+		sortLiveForSearch(entries, cfg.Past)
+		for _, le := range entries {
 			if le.SessionID == "" {
 				continue
 			}
 			isLive[le.SessionID] = true
-			title := liveTitle(le.SessionID, le, cfg.Past)
+			result := liveSearchResult(cfg, le, decisions, now)
+			live = append(live, result)
 			// A live session's meta is in the past index too, so a prompt or
 			// working-directory match there lists it here, live.
-			if q != "" && !strings.Contains(strings.ToLower(le.SessionID), q) && !strings.Contains(strings.ToLower(title), q) && !pastMatched[le.SessionID] {
+			if q != "" && !strings.Contains(strings.ToLower(le.SessionID), q) && !strings.Contains(strings.ToLower(result.Title), q) && !pastMatched[le.SessionID] {
 				continue
 			}
-			if result := liveSearchResult(cfg, le, title, decisions, now); searchScopeAdmits(scope, result, true) {
+			if searchScopeAdmits(scope, result, true) {
 				resp.Live = append(resp.Live, result)
 			}
 		}
@@ -108,7 +111,7 @@ func searchScopeAdmits(scope string, result appwire.SearchResult, live bool) boo
 	}
 }
 
-func liveSearchResult(cfg hubcore.WebConfig, le hubcore.LiveEntry, title string, decisions map[hubcore.ArchiveKey]bool, now time.Time) appwire.SearchResult {
+func liveSearchResult(cfg hubcore.WebConfig, le hubcore.LiveEntry, decisions map[hubcore.ArchiveKey]bool, now time.Time) appwire.SearchResult {
 	// A live session with no meta yet has no last activity to age.
 	lastActivity := now
 	if cfg.Past != nil {
@@ -118,7 +121,7 @@ func liveSearchResult(cfg hubcore.WebConfig, le hubcore.LiveEntry, title string,
 	}
 	return appwire.SearchResult{
 		ID:              le.SessionID,
-		Title:           title,
+		Title:           liveTitle(le.SessionID, le, cfg.Past),
 		State:           hubcore.NormalizeState(le.Status),
 		Project:         filepath.Base(le.WorkingDir),
 		Age:             "now",
@@ -146,7 +149,7 @@ func pastSearchResult(e hubcore.PastEntry, decisions map[hubcore.ArchiveKey]bool
 // match query and scope admits, live ones first in the Live order, then ended
 // ones newest first, at most searchInSessionsLimit, each with its newest hits
 // and their snippets. Without a message index there is no group.
-func searchInSessions(ctx context.Context, cfg hubcore.WebConfig, query, scope string, live []hubcore.LiveEntry, decisions map[hubcore.ArchiveKey]bool, now time.Time) ([]appwire.SearchResult, error) {
+func searchInSessions(ctx context.Context, cfg hubcore.WebConfig, query, scope string, live []appwire.SearchResult, decisions map[hubcore.ArchiveKey]bool, now time.Time) ([]appwire.SearchResult, error) {
 	if cfg.MessageSearch == nil {
 		return nil, nil
 	}
@@ -157,20 +160,26 @@ func searchInSessions(ctx context.Context, cfg hubcore.WebConfig, query, scope s
 	var chosen []appwire.SearchResult
 	seen := map[string]bool{}
 	take := func(result appwire.SearchResult, isLive bool) {
-		if len(chosen) < searchInSessionsLimit && searchScopeAdmits(scope, result, isLive) {
+		if searchScopeAdmits(scope, result, isLive) {
 			result.HitCount = matches[result.ID].Count
 			chosen = append(chosen, result)
 		}
 	}
-	for _, le := range live {
-		if _, ok := matches[le.SessionID]; !ok || le.SessionID == "" {
+	for _, result := range live {
+		if len(chosen) == searchInSessionsLimit {
+			break
+		}
+		if _, ok := matches[result.ID]; !ok {
 			continue
 		}
-		seen[le.SessionID] = true
-		take(liveSearchResult(cfg, le, liveTitle(le.SessionID, le, cfg.Past), decisions, now), true)
+		seen[result.ID] = true
+		take(result, true)
 	}
 	if cfg.Past != nil {
 		for _, e := range cfg.Past.All() {
+			if len(chosen) == searchInSessionsLimit {
+				break
+			}
 			if _, ok := matches[e.Meta.ID]; !ok || seen[e.Meta.ID] {
 				continue
 			}

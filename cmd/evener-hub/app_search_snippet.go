@@ -31,23 +31,12 @@ type searchWord struct {
 func searchSnippet(text string, tokens []string) []appwire.SearchSnippetPart {
 	line := []rune(appwire.Excerpt(text, len(text)))
 	words := searchWords(line, tokens)
-	first := -1
-	for i, word := range words {
-		if word.match {
-			first = i
-			break
-		}
-	}
+	first := slices.IndexFunc(words, func(word searchWord) bool { return word.match })
 	start := 0
 	if first >= 0 && words[first].start > searchSnippetLead {
 		// Back up searchSnippetLead runes, then forward to a word's start.
-		start = words[first].start - searchSnippetLead
-		for _, word := range words {
-			if word.start >= start {
-				start = word.start
-				break
-			}
-		}
+		lead := words[first].start - searchSnippetLead
+		start = words[slices.IndexFunc(words, func(word searchWord) bool { return word.start >= lead })].start
 	}
 	end := min(len(line), start+searchSnippetRunes)
 	if end < len(line) {
