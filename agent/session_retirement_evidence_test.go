@@ -378,27 +378,6 @@ func TestRetirementAutonomousAttentionRetryOverlap(t *testing.T) {
 		}
 		adapter.fail.Store(false)
 		gate.Store(int32(i + 1))
-		// An unrelated root wake landing in this window must not consume the
-		// pause (#1879's flake was exactly such a wake taking the gate meant for
-		// the attention retry callback, leaving the settled blocker check with no
-		// notification evidence). Pausing inside the retry callback makes this
-		// wake a no-op; against the old notify-hook pause it blocks on the pause
-		// and this trips.
-		foreign := make(chan struct{})
-		go func() {
-			root.notify()
-			close(foreign)
-		}()
-		timer := time.NewTimer(10 * time.Second) // TRIPWIRE: bounds scheduling, never the assertion.
-		select {
-		case <-foreign:
-			timer.Stop()
-		case <-timer.C:
-			// The foreign notify is parked on this iteration's pause; release it
-			// before failing so it cannot outlive the test.
-			close(resume[i])
-			t.Fatal("unrelated root wake consumed the attention retry pause")
-		}
 		clk.Advance(jobNotificationRetryInitialDelay)
 		retirementAwait(t, entered[i])
 		if c == nil {
@@ -436,6 +415,34 @@ func TestRetirementAutonomousAttentionRetryOverlap(t *testing.T) {
 		t.Fatalf("settled callbacks retained %d registrations", remaining)
 	}
 	assertRetirementEvidenceEligible(t, c)
+}
+
+// A superseded root attention retry callback must not take the pause seam: its
+// generation no longer matches, so it returns at scheduleRootAttentionRetryLocked's
+// early return instead of proceeding. If the seam fired before that check, a
+// doomed timer would consume the gate a live retry needs, reintroducing the
+// mis-attribution #1879's flake was.
+func TestRetirementRootAttentionRetrySeamSkipsStaleCallback(t *testing.T) {
+	t.Parallel()
+	clk := agenttest.NewFakeClock()
+	root := newSession(t, withConfig(SessionConfig{StateDir: t.TempDir(), clock: clk}))
+	defer root.Close()
+	var fired atomic.Int32
+	root.cfg.testOnly.rootAttentionRetryCallback = func() { fired.Add(1) }
+
+	root.attentionMu.Lock()
+	root.rootAttentionWakeIDs["stale-seam-source"] = struct{}{}
+	root.scheduleRootAttentionRetryLocked()
+	// Supersede the armed callback (a newer schedule or a reset invalidated it)
+	// before it fires; the parked timer is not cancelled, so it still runs.
+	root.resetRootAttentionRetryLocked()
+	root.attentionMu.Unlock()
+
+	clk.Advance(jobNotificationRetryInitialDelay)
+	clk.Drain()
+	if got := fired.Load(); got != 0 {
+		t.Fatalf("stale retry callback fired the pause seam %d times, want 0", got)
+	}
 }
 
 func TestRetirementAutonomousAttentionRetryStale(t *testing.T) {

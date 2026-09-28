@@ -1015,9 +1015,6 @@ func (s *Session) scheduleRootAttentionRetryLocked() {
 			return
 		}
 		defer release()
-		if observe := s.cfg.testOnly.rootAttentionRetryCallback; observe != nil {
-			observe()
-		}
 		s.attentionMu.Lock()
 		if s.rootAttentionRetry.generation != generation {
 			s.attentionMu.Unlock()
@@ -1039,6 +1036,13 @@ func (s *Session) scheduleRootAttentionRetryLocked() {
 			s.rootAttentionRetry.delay = jobNotificationRetryInitialDelay
 		}
 		s.attentionMu.Unlock()
+		// The seam fires only for a callback that will proceed into the wake: a
+		// superseded generation or a parked rail already returned above, so a
+		// stale or parked timer cannot take a test's pause. The pause then belongs
+		// to the live retry the retirement blocker describes.
+		if observe := s.cfg.testOnly.rootAttentionRetryCallback; observe != nil {
+			observe()
+		}
 		if shouldWake {
 			s.notify()
 		}
