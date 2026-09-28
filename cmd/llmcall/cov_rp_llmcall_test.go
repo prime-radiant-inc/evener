@@ -179,6 +179,26 @@ func TestRunLLMCall_InvalidFormat(t *testing.T) {
 	}
 }
 
+func TestRunLLMCall_SchemaRejectsInvalidFormat(t *testing.T) {
+	schema := filepath.Join(t.TempDir(), "s.json")
+	if err := os.WriteFile(schema, []byte(`{"type":"object"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	called := false
+	c := llm.NewClient()
+	c.Register(&fakeAdapter{name: "fake", check: func(llm.Request) { called = true }})
+	err := runLLMCall(context.Background(), llmCallConfig{
+		prompt: "hi", provider: "fake", model: "m1", schema: schema, format: "bogus",
+		stdout: &bytes.Buffer{}, stderr: &bytes.Buffer{}, client: c,
+	})
+	if err == nil || !strings.Contains(err.Error(), "invalid --format") {
+		t.Fatalf("expected invalid format error in schema mode, got %v", err)
+	}
+	if called {
+		t.Fatal("provider was called despite an invalid --format")
+	}
+}
+
 func TestRunLLMCall_BadMetadata(t *testing.T) {
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "fake"})
@@ -196,7 +216,7 @@ func TestRunLLMCall_SchemaReadError(t *testing.T) {
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "fake"})
 	err := runLLMCall(context.Background(), llmCallConfig{
-		prompt: "hi", provider: "fake", model: "m1",
+		prompt: "hi", provider: "fake", model: "m1", format: "json",
 		schema: filepath.Join(t.TempDir(), "missing.json"),
 		stdout: &bytes.Buffer{}, stderr: &bytes.Buffer{}, client: c,
 	})
@@ -313,7 +333,7 @@ func TestRunLLMCall_SchemaVerbosePretty(t *testing.T) {
 	})
 	var stdout, stderr bytes.Buffer
 	err := runLLMCall(context.Background(), llmCallConfig{
-		prompt: "hi", provider: "fake", model: "m1", schema: schema, verbose: true, pretty: true,
+		prompt: "hi", provider: "fake", model: "m1", schema: schema, format: "json", verbose: true, pretty: true,
 		stdout: &stdout, stderr: &stderr, client: c,
 	})
 	if err != nil {
