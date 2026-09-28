@@ -27,6 +27,18 @@ func writeRendezvous(t *testing.T, dir string, e rendezvous.Entry) {
 	}
 }
 
+// newSpawnedRoster returns an empty roster and the rendezvous entry a caller
+// hands to ReadSpawnedThread as a freshly spawned daemon's direct read. Every
+// ReadSpawnedThread test shares this setup, so the entry's identity is the same
+// in each of them.
+func newSpawnedRoster(t *testing.T) (*Roster, rendezvous.Entry) {
+	t.Helper()
+	return NewRoster(t.TempDir(), nil), rendezvous.Entry{
+		PID: 1001, SourceID: "local", Protocol: appwire.ProtocolVersion,
+		Endpoint: "ws://127.0.0.1:50001/rpc", ThreadID: "01SPAWNED", SessionID: "01SPAWNED",
+	}
+}
+
 func fuzzScenarioRoster_LoadFromDir(t *testing.T) {
 	dir := t.TempDir()
 	writeRendezvous(t, dir, rendezvous.Entry{
@@ -773,11 +785,7 @@ func TestCloneLiveEntryOwnsPendingEscalations(t *testing.T) {
 // ReadSpawnedThread publishes a fresh daemon from the caller's own read, not
 // the prober, so the cards on that read must reach the roster by this path too.
 func TestRosterReadSpawnedThreadPublishesEscalationCards(t *testing.T) {
-	r := NewRoster(t.TempDir(), nil)
-	entry := rendezvous.Entry{
-		PID: 1001, SourceID: "local", Protocol: appwire.ProtocolVersion,
-		Endpoint: "ws://127.0.0.1:50001/rpc", ThreadID: "01SPAWNED", SessionID: "01SPAWNED",
-	}
+	r, entry := newSpawnedRoster(t)
 	card := appwire.SandboxEscalationRequested{EscalationID: "esc_1", Tool: "write_file", DeniedPath: "/srv/docs/a.md"}
 	if _, err := r.ReadSpawnedThread(t.Context(), entry, func(context.Context) (appwire.ThreadReadResponse, error) {
 		return appwire.ThreadReadResponse{Thread: appwire.Thread{
@@ -1941,11 +1949,7 @@ func TestRosterOwnershipErrorRequiresNewerCompleteScan(t *testing.T) {
 // them would advertise fork for a daemon reporting resumeRequired until the
 // next full scan.
 func TestRosterReadSpawnedThreadPublishesStatusFlags(t *testing.T) {
-	r := NewRoster(t.TempDir(), nil)
-	entry := rendezvous.Entry{
-		PID: 1001, SourceID: "local", Protocol: appwire.ProtocolVersion,
-		Endpoint: "ws://127.0.0.1:50001/rpc", ThreadID: "01SPAWNED", SessionID: "01SPAWNED",
-	}
+	r, entry := newSpawnedRoster(t)
 	if _, err := r.ReadSpawnedThread(t.Context(), entry, func(context.Context) (appwire.ThreadReadResponse, error) {
 		return appwire.ThreadReadResponse{Thread: appwire.Thread{
 			ID: "01SPAWNED", SessionID: "01SPAWNED",
@@ -1974,11 +1978,7 @@ func TestRosterReadSpawnedThreadPublishesStatusFlags(t *testing.T) {
 // too, so a resumed session that keeps a task list shows its task line from
 // its first publication rather than from the next scan.
 func TestRosterReadSpawnedThreadPublishesTaskProgress(t *testing.T) {
-	r := NewRoster(t.TempDir(), nil)
-	entry := rendezvous.Entry{
-		PID: 1001, SourceID: "local", Protocol: appwire.ProtocolVersion,
-		Endpoint: "ws://127.0.0.1:50001/rpc", ThreadID: "01SPAWNED", SessionID: "01SPAWNED",
-	}
+	r, entry := newSpawnedRoster(t)
 	tasks := taskProgress(3, 1, 0, &appwire.TaskSummary{ID: 2, Description: "Resume the migration"})
 	if _, err := r.ReadSpawnedThread(t.Context(), entry, func(context.Context) (appwire.ThreadReadResponse, error) {
 		return appwire.ThreadReadResponse{Thread: appwire.Thread{
