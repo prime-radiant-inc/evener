@@ -2,7 +2,14 @@ import { Text } from "react-native";
 import { act, type ReactTestRenderer } from "react-test-renderer";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { palettes } from "../design/tokens";
-import { type PanGestureMock, releaseSwipeRow, render, renderedText, swipeableCalls } from "../renderNative.testkit";
+import {
+	openSwipeRow,
+	type PanGestureMock,
+	releaseSwipeRow,
+	render,
+	renderedText,
+	swipeableCalls,
+} from "../renderNative.testkit";
 import { type SwipeAction, SwipeRow, swipeAccessibility } from "./SwipeRow";
 
 vi.mock("react-native", async () => ({
@@ -31,8 +38,10 @@ function driver(tree: ReactTestRenderer) {
 	const tracker = tree.root.findAllByType("GestureDetector" as never)[0]?.props.gesture as PanGestureMock | undefined;
 	const touchStart = (pageX: number) =>
 		act(() => tree.root.findByProps({ testID: "swipe-row-content" }).props.onTouchStart({ nativeEvent: { pageX } }));
-	const release = (translationX: number, velocityX = 0) => releaseSwipeRow(swipeable, translationX, velocityX);
-	return { swipeable, tracker, touchStart, release };
+	const release = (translationX: number, velocityX = 0, via: readonly number[] = []) =>
+		releaseSwipeRow(swipeable, translationX, { velocityX, via });
+	const open = (direction: "left" | "right") => openSwipeRow(swipeable, direction);
+	return { swipeable, tracker, touchStart, release, open };
 }
 function mount(options: { leading?: SwipeAction | null } = {}) {
 	const leading = action("archive", "Archive");
@@ -54,57 +63,74 @@ beforeEach(() => {
 });
 
 it("a full swipe right does the leading action once and closes the row", () => {
-	const { swipeable, leading, touchStart, release } = mount();
+	const { swipeable, leading, touchStart, release, open } = mount();
 	expect(swipeable.props.leftThreshold).toBe(195);
 	touchStart(200);
 	release(250, 400);
-	act(() => swipeable.props.onSwipeableOpen("right"));
+	open("right");
 	expect(leading.run).toHaveBeenCalledOnce();
 	expect(swipeableCalls.closes).toBe(1);
 });
 
 it("a short fast flick right that the swipeable opens by its velocity closes without acting", () => {
-	const { swipeable, leading, touchStart, release } = mount();
+	const { leading, touchStart, release, open } = mount();
 	touchStart(200);
 	release(60, 2700);
-	act(() => swipeable.props.onSwipeableOpen("right"));
+	open("right");
 	expect(leading.run).not.toHaveBeenCalled();
 	expect(swipeableCalls.closes).toBe(1);
 });
 
 it("a drag right past half the row that came back short before release closes without acting", () => {
-	const { swipeable, leading, touchStart, release } = mount();
+	const { leading, touchStart, release, open } = mount();
 	touchStart(200);
-	release(150, 1500);
-	act(() => swipeable.props.onSwipeableOpen("right"));
+	release(150, 1500, [250]);
+	open("right");
 	expect(leading.run).not.toHaveBeenCalled();
 	expect(swipeableCalls.closes).toBe(1);
 });
 
-it("tracks the finger with a pan that recognizes with the row's own and never takes a vertical scroll", () => {
+it("tracks the finger with a pan that activates as the row's own does and recognizes alongside it", () => {
 	const { swipeable, tracker } = mount();
-	expect(tracker?.config).toMatchObject({ runOnJS: true, activeOffsetX: [-10, 10] });
+	expect(tracker?.config).toMatchObject({
+		runOnJS: true,
+		activeOffsetX: [-10, 10],
+		hitSlop: { left: -24 },
+		enabled: true,
+	});
 	expect(tracker?.config).not.toHaveProperty("activeOffsetY");
 	expect(swipeable.props.simultaneousWithExternalGesture).toBe(tracker);
 });
 
-it("a new touch forgets the last release, so a later open with no drag never acts", () => {
+it("keeps a full swipe decided at release when a new touch lands while the row springs open", () => {
 	const { swipeable, leading, tracker, touchStart, release } = mount();
 	touchStart(200);
-	release(250);
+	release(250, 400);
+	act(() => swipeable.props.onSwipeableWillOpen("right"));
 	act(() => tracker?.handlers.onBegin?.());
 	act(() => swipeable.props.onSwipeableOpen("right"));
-	expect(leading.run).not.toHaveBeenCalled();
-	expect(swipeableCalls.closes).toBe(1);
+	expect(leading.run).toHaveBeenCalledOnce();
+	act(() => swipeable.props.onSwipeableOpen("right"));
+	expect(leading.run).toHaveBeenCalledOnce();
+	expect(swipeableCalls.closes).toBe(2);
+});
+
+it("holds its tracker still while the row is switched off", () => {
+	const tree = render(
+		<SwipeRow destructive={{ key: "cancel", label: "Cancel", run: vi.fn() }} enabled={false}>
+			<Text>ghost</Text>
+		</SwipeRow>,
+	);
+	expect(driver(tree).tracker?.config.enabled).toBe(false);
 });
 
 it("a swipe that began in the left edge band closes without acting, whichever way it opened", () => {
-	const { swipeable, leading, pin, touchStart } = mount();
+	const { leading, pin, touchStart, release, open } = mount();
 	touchStart(10);
-	act(() => swipeable.props.onSwipeableWillOpen("right"));
-	act(() => swipeable.props.onSwipeableOpen("right"));
-	act(() => swipeable.props.onSwipeableWillOpen("left"));
-	act(() => swipeable.props.onSwipeableOpen("left"));
+	release(250);
+	open("right");
+	release(-250);
+	open("left");
 	expect(leading.run).not.toHaveBeenCalled();
 	expect(pin.run).not.toHaveBeenCalled();
 	expect(swipeableCalls.closes).toBe(4);
@@ -172,29 +198,29 @@ describe("a destructive swipe (spec 8.5, 8.8)", () => {
 	});
 
 	it("acts once on a full swipe left, past half the row at release, and closes the row", () => {
-		const { swipeable, cancel, touchStart, release } = mountDestructive();
+		const { swipeable, cancel, touchStart, release, open } = mountDestructive();
 		expect(swipeable.props.rightThreshold).toBe(195);
 		touchStart(200);
 		release(-250, -400);
-		act(() => swipeable.props.onSwipeableOpen("left"));
+		open("left");
 		expect(cancel.run).toHaveBeenCalledOnce();
 		expect(swipeableCalls.closes).toBe(1);
 	});
 
 	it("never acts on a short fast flick left that the swipeable opens by its velocity", () => {
-		const { swipeable, cancel, touchStart, release } = mountDestructive();
+		const { cancel, touchStart, release, open } = mountDestructive();
 		touchStart(200);
 		release(-60, -2700);
-		act(() => swipeable.props.onSwipeableOpen("left"));
+		open("left");
 		expect(cancel.run).not.toHaveBeenCalled();
 		expect(swipeableCalls.closes).toBe(1);
 	});
 
 	it("never acts on a drag left past half the row that came back short before release", () => {
-		const { swipeable, cancel, touchStart, release } = mountDestructive();
+		const { cancel, touchStart, release, open } = mountDestructive();
 		touchStart(200);
-		release(-150, -1500);
-		act(() => swipeable.props.onSwipeableOpen("left"));
+		release(-150, -1500, [-250]);
+		open("left");
 		expect(cancel.run).not.toHaveBeenCalled();
 		expect(swipeableCalls.closes).toBe(1);
 	});
@@ -206,10 +232,10 @@ describe("a destructive swipe (spec 8.5, 8.8)", () => {
 	});
 
 	it("never acts on a swipe that began in the left edge band", () => {
-		const { swipeable, cancel, touchStart } = mountDestructive();
+		const { cancel, touchStart, release, open } = mountDestructive();
 		touchStart(10);
-		act(() => swipeable.props.onSwipeableWillOpen("left"));
-		act(() => swipeable.props.onSwipeableOpen("left"));
+		release(-250);
+		open("left");
 		expect(cancel.run).not.toHaveBeenCalled();
 		expect(swipeableCalls.closes).toBe(2);
 	});

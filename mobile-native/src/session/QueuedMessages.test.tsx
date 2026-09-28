@@ -6,7 +6,7 @@ import type { ReactTestRenderer } from "react-test-renderer";
 import { act } from "react-test-renderer";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { paletteFor } from "../design/tokens";
-import { pressable, releaseSwipeRow, render, renderedText, swipeableCalls } from "../renderNative.testkit";
+import { openSwipeRow, pressable, releaseSwipeRow, render, renderedText, swipeableCalls } from "../renderNative.testkit";
 import { GhostBubble } from "./GhostBubble";
 import type { Ghost, GhostAction } from "./ghosts";
 import { QueuedMessages } from "./QueuedMessages";
@@ -320,7 +320,7 @@ describe("swiping a ghost left (spec 8.5)", () => {
 		if (!swipeable) throw new Error("no swipeable ghost");
 		act(() => tree.root.findByProps({ testID: "swipe-row-content" }).props.onTouchStart({ nativeEvent: { pageX } }));
 		releaseSwipeRow(swipeable, -250);
-		act(() => swipeable.props.onSwipeableOpen("left"));
+		openSwipeRow(swipeable, "left");
 	}
 
 	it.each([

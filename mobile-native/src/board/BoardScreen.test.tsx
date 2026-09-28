@@ -26,6 +26,7 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type { ConversationClientLike } from "../../../mobile/src/services/conversation";
 import {
 	alertRequests,
+	openSwipeRow,
 	releaseSwipeRow,
 	render,
 	renderedText,
@@ -3340,7 +3341,7 @@ function pressRevealed(swipeable: ReactTestInstance, side: "left" | "right", lab
 function swipeRight(swipeable: ReactTestInstance) {
 	act(() => swipeable.findByProps({ testID: "swipe-row-content" }).props.onTouchStart({ nativeEvent: { pageX: 200 } }));
 	releaseSwipeRow(swipeable, 250);
-	act(() => swipeable.props.onSwipeableOpen("right"));
+	openSwipeRow(swipeable, "right");
 }
 async function mountSwipeFleet(fake: ReturnType<typeof hub>, nav = navigation()) {
 	const id = hubId();

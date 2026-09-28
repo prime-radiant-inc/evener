@@ -217,6 +217,7 @@ export interface PanGestureMock {
 	config: Record<string, unknown>;
 	handlers: {
 		onBegin?(): void;
+		onUpdate?(event: { translationX: number }): void;
 		onEnd?(event: { translationX: number; velocityX: number }, success: boolean): void;
 	};
 }
@@ -236,8 +237,13 @@ export function gestureDetectorModuleMock() {
 			failOffsetY: setting("failOffsetY"),
 			runOnJS: setting("runOnJS"),
 			hitSlop: setting("hitSlop"),
+			enabled: setting("enabled"),
 			onBegin: (handler: PanGestureMock["handlers"]["onBegin"]) => {
 				gesture.handlers.onBegin = handler;
+				return builder;
+			},
+			onUpdate: (handler: PanGestureMock["handlers"]["onUpdate"]) => {
+				gesture.handlers.onUpdate = handler;
 				return builder;
 			},
 			onEnd: (handler: PanGestureMock["handlers"]["onEnd"]) => {
@@ -255,17 +261,31 @@ export function gestureDetectorModuleMock() {
 	};
 }
 
-/** The finger letting go of a SwipeRow after dragging it translationX
- * points (positive to the right) at velocityX, as the row's release tracker
- * sees it: the tracker is the pan the row hands its swipeable to recognize
+/** A finger's drag on a SwipeRow, as the row's release tracker sees it: it
+ * touches down, drags through each of `via` in turn, and lets go
+ * translationX points from where it began (positive to the right) at
+ * velocityX. The tracker is the pan the row hands its swipeable to recognize
  * alongside. */
-export function releaseSwipeRow(swipeable: ReactTestInstance, translationX: number, velocityX = 0) {
+export function releaseSwipeRow(
+	swipeable: ReactTestInstance,
+	translationX: number,
+	{ velocityX = 0, via = [] }: { velocityX?: number; via?: readonly number[] } = {},
+) {
 	const tracker = swipeable.props.simultaneousWithExternalGesture as PanGestureMock | undefined;
 	if (!tracker) throw new Error("the swipeable has no release tracker");
 	act(() => {
 		tracker.handlers.onBegin?.();
+		for (const point of [...via, translationX]) tracker.handlers.onUpdate?.({ translationX: point });
 		tracker.handlers.onEnd?.({ translationX, velocityX }, true);
 	});
+}
+
+/** The swipeable opening a row the way it does after a release: it says it
+ * will open as the finger lets go, and that it has opened once the row
+ * settles. */
+export function openSwipeRow(swipeable: ReactTestInstance, direction: "left" | "right") {
+	act(() => swipeable.props.onSwipeableWillOpen(direction));
+	act(() => swipeable.props.onSwipeableOpen(direction));
 }
 
 /** react-native-reanimated for vitest: Animated.ScrollView is a host
