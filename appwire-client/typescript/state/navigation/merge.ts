@@ -3,6 +3,7 @@
 // identity so a view re-renders only what the hub changed.
 import type { NavigationDelta, NavigationReadBase, NavigationSnapshot } from "../../types.gen";
 import {
+  isDecodedSnapshotResource,
   type NavigationGraph,
   type NavigationGraphContainer,
   type NavigationGraphEntity,
@@ -131,11 +132,12 @@ export function reconcileSnapshot(
     complete: true,
     prepared: true,
   });
-  // incoming is a decoded snapshot (snapshotResource(decoded)), which
-  // decodeNavigationResponse already validated with validateGraphForResource.
-  // Re-running it here made a snapshot read validate every value a third time
-  // (#2478); a complete reconcile installs exactly the incoming entities and
-  // containers, so the validated graph passes straight through.
+  // A resource from snapshotResource is decoded: decodeNavigationResponse
+  // already validated its graph with validateGraphForResource, and a complete
+  // reconcile installs exactly the incoming entities and containers, so it
+  // passes straight through (#2478). A resource a caller built by hand is
+  // still validated here.
+  if (!isDecodedSnapshotResource(incoming)) validateGraphForResource(incoming.key, incoming.version, graph);
   return Object.freeze({
     ...incoming,
     graph,

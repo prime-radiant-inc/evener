@@ -931,8 +931,21 @@ const materializedContainerCache = new WeakMap<object, MaterializedContainerCach
 const materializedResourceCache = new WeakMap<object, MaterializedResourceCacheEntry>();
 const emptyMaterializedChildren = Object.freeze([]) as readonly MaterializedValue[];
 
+// snapshotResource is the decode path's bridge from a validated snapshot to a
+// NormalizedResource: decodeNavigationResponse already ran
+// validateGraphForResource on that snapshot. merge's reconcileSnapshot reads
+// this set to skip re-validating a resource that came from decode, while a
+// resource a caller built by hand is still validated (#2478).
+const decodedSnapshotResources = new WeakSet<object>();
+
 function sameIdentities(left: readonly unknown[], right: readonly unknown[]): boolean {
   return left.length === right.length && left.every((item, index) => item === right[index]);
+}
+
+/** Whether a resource was produced by snapshotResource from a decoded
+ * snapshot, so its graph was already validated by decodeNavigationResponse. */
+export function isDecodedSnapshotResource(resource: NormalizedResource): boolean {
+  return decodedSnapshotResources.has(resource);
 }
 
 /** The normalized resource a decoded snapshot stands for, built by hand at
@@ -941,12 +954,14 @@ export function snapshotResource(
   key: ResourceKey,
   decoded: Extract<DecodedNavigationResponse, { status: "snapshot" }>,
 ): NormalizedResource {
-  return {
+  const resource: NormalizedResource = {
     key,
     graph: normalizedGraphFromSnapshot(decoded.snapshot),
     version: decoded.version,
     presence: "present",
   };
+  decodedSnapshotResources.add(resource);
+  return resource;
 }
 
 /** The rows a decoded snapshot renders as, for a one-shot reader with no

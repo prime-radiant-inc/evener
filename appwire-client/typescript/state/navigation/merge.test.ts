@@ -344,3 +344,28 @@ test("invalid staged delta preserves the complete prior graph identity", () => {
   expect(before.graph.containers).toBe(containers);
   expect(before.graph.entities.has(orphanKey)).toBe(false);
 });
+
+// #2478: reconcileSnapshot skips re-validation only for a resource that
+// snapshotResource produced from a decoded snapshot. A resource a caller
+// built by hand is still validated, so a dangling child is rejected here just
+// as decode rejects it.
+test("reconcileSnapshot validates a resource built outside decode", () => {
+  const entityKey = scopedKey("1");
+  const handBuilt: NormalizedResource = {
+    key,
+    graph: normalizedGraphFromSnapshot({
+      metadata: { generation_id: "g", revision: 1, offset: 0, limit: 50, remaining: 0, truncated: false },
+      entities: [{ key: entityKey, kind: "session", value: value("local:s1") }],
+      containers: [
+        {
+          key: navigationRootContainerKey(key, "sessions"),
+          owner: { kind: "resource_root", slot: "sessions" },
+          children: ["missing"],
+        },
+      ],
+    }),
+    version: version1,
+    presence: "present",
+  };
+  expect(() => reconcileSnapshot(null, handBuilt)).toThrow("navigation protocol");
+});
