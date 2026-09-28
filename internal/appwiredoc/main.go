@@ -158,6 +158,11 @@ func build() docData {
 	// for a field table of its own — the operator/statement/observedAt triple is
 	// the audited recovery contract a reader has to see.
 	register(appwire.HostTeardownAttestation{})
+	// HubNotice is only ever the element type of NoticesListResponse.Notices
+	// (evener/notices/list's result and evener/notices/changed's payload),
+	// never a method's own Params/Result, so it needs the same explicit
+	// registration for a field table of its own (RoboRev review of PR 22).
+	register(appwire.HubNotice{})
 
 	for _, m := range appwire.Methods {
 		d.Methods = append(d.Methods, methodView{

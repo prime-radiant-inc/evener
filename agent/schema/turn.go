@@ -170,6 +170,39 @@ type NoticeInfo struct {
 	SkillActivated *SkillActivatedNotice `json:"skill_activated,omitempty"`
 }
 
+// Validate enforces NoticeInfo's own doc contract: exactly one of the payload
+// fields is set, and it matches Kind. Nothing else enforces this; the read
+// side (internal/apptranscript/notice.go's noticeAnnouncement) drops a
+// mismatch silently rather than erroring, so the write side must refuse to
+// record one in the first place.
+func (n NoticeInfo) Validate() error {
+	matched := false
+	count := 0
+	for kind, present := range map[NoticeKind]bool{
+		NoticeToolRepair:     n.ToolRepair != nil,
+		NoticeGoalEnded:      n.GoalEnded != nil,
+		NoticeTurnLimit:      n.TurnLimit != nil,
+		NoticeSkillActivated: n.SkillActivated != nil,
+	} {
+		if !present {
+			continue
+		}
+		count++
+		if kind == n.Kind {
+			matched = true
+		}
+	}
+	switch {
+	case count == 0:
+		return fmt.Errorf("notice kind %q has no payload", n.Kind)
+	case count > 1:
+		return fmt.Errorf("notice kind %q has %d payloads, want exactly one", n.Kind, count)
+	case !matched:
+		return fmt.Errorf("notice kind %q does not match its payload", n.Kind)
+	}
+	return nil
+}
+
 // ToolRepairNotice mirrors events.ToolCallRepairedData.
 type ToolRepairNotice struct {
 	ToolName string   `json:"tool_name"`

@@ -311,7 +311,14 @@ type NavigationSessionSummary struct {
 	// Failed row whose daemon summarized the failure, or whose daemon
 	// crashed.
 	Failure *NavigationFailure `json:"failure,omitempty"`
-	Dormant bool               `json:"dormant,omitempty"`
+	// LastMessage is the opening of the session's last agent message (S1d):
+	// a Finished row's why line and the long-press preview's excerpt, one
+	// line of at most appwire.MaxMessageExcerptRunes. It is the agent's own
+	// words, never its reasoning or a tool's output. A live session's comes
+	// from its daemon and an ended one's from its meta; subagent rows carry
+	// none.
+	LastMessage string `json:"last_message,omitempty"`
+	Dormant     bool   `json:"dormant,omitempty"`
 	// Offline marks a row folded into the merged list from a source that is
 	// currently unreachable: its last-known rows stay visible, but they are not
 	// live and cannot serve host-targeted actions until the source reattaches.

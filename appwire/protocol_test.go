@@ -498,6 +498,9 @@ func TestThreadNotificationsRequireAuthoritativeRoutingIdentity(t *testing.T) {
 		// remote host's config notification to its browser clients, tagged by
 		// host, with no thread routing identity of its own (component 07a).
 		NotifyEvenerHostNotification: true,
+		// evener/notices/changed is hub-wide: the hub's own notices (S11),
+		// about providers, hosts and plugins rather than any one thread.
+		NotifyEvenerNoticesChanged: true,
 	}
 	for _, notification := range Notifications {
 		if global[notification.Name] {

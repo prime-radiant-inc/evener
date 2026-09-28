@@ -580,9 +580,10 @@ func TestSessionFallbackContextWarningNamesTheWindowThatHandledTheRequest(t *tes
 	// registry, which has no row for it.
 	sess.cfg.ModelFallbacks = []string{"ctxwarn-fallback/fallback-model"}
 	sess.resolveProfile = func(string) (*provider.Profile, error) { return fallback, nil }
-	// ~100k estimated input tokens with the standing prompt: over the fallback's
-	// 80% threshold (96k of 120k) and far under the primary's 2M.
-	sess.history = []schema.Turn{schema.NewTurn(schema.TurnUserInput, llm.User(strings.Repeat("x", 300_000)))}
+	// ~106k estimated input tokens with the standing prompt: over the fallback's
+	// 80% threshold (96k of 120k), under its window, and far under the
+	// primary's 2M.
+	sess.history = []schema.Turn{schema.NewTurn(schema.TurnUserInput, llm.User(strings.Repeat("x", 340_000)))}
 	if _, err := sess.ProcessInput(context.Background(), "task", nil); err != nil {
 		t.Fatalf("ProcessInput: %v", err)
 	}

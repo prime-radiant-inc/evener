@@ -176,6 +176,7 @@ const SESSION_KEYS = valueRecordKeys(
     "approval_target",
     "question",
     "failure",
+    "last_message",
     "dormant",
     "offline",
     "updated_at",
@@ -360,6 +361,7 @@ function sessionValue(value: unknown): value is Record<string, unknown> {
     optional(value.approval_target, (item) => boundedString(item, 512)) &&
     optional(value.question, questionValue) &&
     optional(value.failure, failureValue) &&
+    optional(value.last_message, (item) => boundedString(item, 200) && item !== "") &&
     optional(value.dormant, bool) &&
     optional(value.offline, bool) &&
     optional(value.updated_at, rfc3339Timestamp) &&

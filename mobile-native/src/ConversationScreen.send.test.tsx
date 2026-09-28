@@ -5,7 +5,7 @@
 import type { ComponentProps, ReactNode } from "react";
 import { createElement } from "react";
 import { act, type ReactTestRenderer } from "react-test-renderer";
-import { expect, it, vi } from "vitest";
+import { afterEach, expect, it, vi } from "vitest";
 import type { AnyNotification, Thread } from "@evener/appwire-client";
 import { flatListCalls, pressable, render, renderedText, screenConnection } from "./renderNative.testkit";
 import { ConversationScreen } from "./screens";
@@ -229,6 +229,9 @@ function thread(ref: string, status: "idle" | "active", question = false): Threa
 /** The hub: it answers thread/read with `served` and acknowledges every
  * mutation, recording each request in order. It sends a frame only when a
  * test calls notify(). */
+const otherThreads = new Map<string, Thread>();
+afterEach(() => otherThreads.clear());
+
 function hubClient(served: Thread, failedReads = 0, readLatencyMs = 0, olderCursor?: string) {
 	let readsToFail = failedReads;
 	const requests: { method: string; params: Record<string, unknown> }[] = [];
@@ -240,6 +243,9 @@ function hubClient(served: Thread, failedReads = 0, readLatencyMs = 0, olderCurs
 			listeners.add(listener);
 			return () => listeners.delete(listener);
 		},
+		resumeThread: async (ref: string) => {
+			requests.push({ method: "resumeThread", params: { ref } });
+		},
 		request: async (method: string, params: Record<string, unknown>) => {
 			requests.push({ method, params });
 			if (method === "thread/read") {
@@ -248,7 +254,9 @@ function hubClient(served: Thread, failedReads = 0, readLatencyMs = 0, olderCurs
 					readsToFail -= 1;
 					throw new Error("read failed");
 				}
-				return { thread: served, ...(olderCursor ? { olderCursor } : {}) };
+				// A second session this client can also read, by its ref.
+				const thread = otherThreads.get(String(params.ref)) ?? served;
+				return { thread, ...(olderCursor ? { olderCursor } : {}) };
 			}
 			if (method === "thread/turns/list") return { data: [] };
 			if (method.startsWith("turn/"))
@@ -576,5 +584,94 @@ it("doesn't page older history while the hub is away", async () => {
 	scrollTo(tree, 100);
 	await settle();
 	expect(hub.requests.filter((request) => request.method === "thread/turns/list")).toEqual([]);
+});
+
+it("retries a failed turn with Jesse's sentence, and leaves your draft alone", async () => {
+	const served = thread("ref-retry-turn", "idle");
+	(served as unknown as { turns: unknown[] }).turns = [
+		{
+			id: "turn_1",
+			status: "failed",
+			itemsView: "default",
+			error: { message: "go test exited 1" },
+			items: [{ id: "u-1", turnId: "turn_1", type: "userMessage", status: "completed", text: "run the tests" }],
+		},
+	];
+	const { tree, hub } = await mount(served);
+	await type(tree, "keep this");
+	await press(tree, "Retry");
+	expect(hub.mutations()).toEqual(["turn/start"]);
+	const start = hub.requests.find((request) => request.method === "turn/start");
+	expect(start?.params.input).toEqual([{ type: "text", text: "Something went wrong. Please try again." }]);
+	expect(field(tree)?.props.value).toBe("keep this");
+});
+
+it("opens a session switched to in place at its own newer reply, never the last session's rows", async () => {
+	const other = twoTurns("ref-switched-to");
+	// B's rows have their own ids, so an anchor worked out from A's rows can't
+	// land on them.
+	(other as unknown as { turns: { items: { id: string }[] }[] }).turns.forEach((turn) =>
+		turn.items.forEach((item) => {
+			item.id = `b-${item.id}`;
+		}),
+	);
+	otherThreads.set("ref-switched-to", other);
+	harness.kv.set(
+		"evener.reader-positions",
+		JSON.stringify({
+			"hub-1\u0000ref-switched-to": {
+				hubId: "hub-1",
+				sessionRef: "ref-switched-to",
+				itemKey: "b-u-turn_1",
+				withinItemOffset: 0,
+				touchedAt: 1,
+				turnsSeen: "turn_1",
+			},
+		}),
+	);
+	const { tree } = await mount(twoTurns("ref-switched-from"));
+	flatListCalls.length = 0;
+	const route = {
+		key: "conversation-ref-switched-from",
+		name: "Conversation",
+		params: { hubId: "hub-1", ref: "ref-switched-to", title: "Session" },
+	};
+	navigationState.state = { index: 0, routes: [route as unknown as { key: string; name: string }] };
+	act(() => tree.update(<ConversationScreen route={route as unknown as ConversationScreenProps["route"]} navigation={navigation} />));
+	await settle();
+	expect(renderedText(tree)).toContain("ask turn_2");
+	const indexes = flatListCalls.filter((call) => call.method === "scrollToIndex").map((call) => (call.args as { index: number }).index);
+	expect(indexes).toContain(3);
+});
+
+// A session whose last turn failed, as the hub reads it.
+function failedTurn(ref: string, message: string, resumeRequired = false): Thread {
+	const served = thread(ref, "idle");
+	(served as unknown as { turns: unknown[] }).turns = [
+		{
+			id: "turn_1",
+			status: "failed",
+			itemsView: "default",
+			error: { message },
+			items: [{ id: "u-1", turnId: "turn_1", type: "userMessage", status: "completed", text: "run the tests" }],
+		},
+	];
+	if (resumeRequired) (served as unknown as { evener: Record<string, unknown> }).evener.resumeRequired = true;
+	return served;
+}
+
+it("resumes a paused session from its error", async () => {
+	const { tree, hub } = await mount(failedTurn("ref-error-resume", "go test exited 1", true));
+	await press(tree, "Resume");
+	expect(hub.requests.filter((request) => request.method === "resumeThread").map((request) => request.params.ref)).toEqual([
+		"ref-error-resume",
+	]);
+});
+
+it("opens sign-in from an error that says a sign-in failed", async () => {
+	vi.mocked(navigation.navigate).mockClear();
+	const { tree } = await mount(failedTurn("ref-error-sign-in", "401 Unauthorized"));
+	await press(tree, "Sign in");
+	expect(navigation.navigate).toHaveBeenCalledWith("Providers", { hubId: "hub-1" });
 });
 

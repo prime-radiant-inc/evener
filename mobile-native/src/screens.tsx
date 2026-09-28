@@ -57,7 +57,6 @@ import { type ComposerSetting, ComposerSettings } from "./ComposerSettings";
 import { ComposerSettingsSheet } from "./ComposerSettingsSheet";
 import { useConnection } from "./ConnectionProvider";
 import { ConnectionStatus } from "./ConnectionStatus";
-import { reconnectDelay } from "./hubConnection";
 import {
 	CommandArgumentError,
 	composerCommand,
@@ -122,9 +121,13 @@ import {
 } from "./readerPosition";
 import { type SessionDestination, SessionMenu } from "./SessionMenu";
 import { SessionSheet } from "./SessionSheet";
+import { type ErrorAction, errorAction, RETRY_MESSAGE } from "./session/errorAction";
 import { NewContentPill } from "./session/NewContentPill";
 import { TranscriptSkeleton } from "./session/TranscriptSkeleton";
+import { useReadRetry } from "./session/useReadRetry";
 import {
+	answerTo,
+	hideAnswerMessages,
 	latestSettledTurn,
 	liveRunId,
 	newRowCount,
@@ -620,9 +623,6 @@ export function ConversationScreen({
 	// The reader keys the list held when you left its end; null at the end.
 	// Rows that arrive below it make "↓ 3 new".
 	const [awayKeys, setAwayKeys] = useState<ReadonlySet<string> | null>(null);
-	// Thread reads that failed in a row while connected: each one retries on
-	// its own after reconnectDelay, and from the third the transcript says so.
-	const [readFailures, setReadFailures] = useState(0);
 	const captureSuppressed = useRef(false);
 	const readerDragging = useRef(false);
 	const readerMomentum = useRef(false);
@@ -786,49 +786,23 @@ export function ConversationScreen({
 			service.close();
 		};
 	}, [service, store, activitySink, connected, focused, route.params.ref]);
-	// A read that failed while connected tries again on its own (spec 14): at
-	// once, then after 1, 2 and 4 seconds, and on up to every 30 seconds. There
-	// is no button to press; from the third failure in a row one quiet line
-	// says the session is still trying.
-	useEffect(() => {
-		// A failed read starts the count; after that each retry counts its own
-		// outcome, since a retry that fails fast can go from "error" to "error"
-		// without the screen ever rendering the "opening" between them.
-		if (snapshot.status === "error")
-			setReadFailures((count) => (count === 0 ? 1 : count));
-		else if (snapshot.status === "open") setReadFailures(0);
-	}, [snapshot.status]);
-	// Keyed on the count, never the status: a retry passing through "opening"
-	// must not cancel itself.
-	useEffect(() => {
-		if (readFailures === 0 || !service || !connected || !focused) return;
-		let cancelled = false;
-		const retry = setTimeout(() => {
-			if (store.getState().status !== "error") return;
-			void store
-				.getState()
-				.resumeProjected(service, activitySink, route.params.ref)
-				.then(() => {
-					if (!cancelled && store.getState().status === "error")
-						setReadFailures((count) => count + 1);
-				})
-				.catch((error) => {
-					console.error("ConversationScreen: retried read failed", error);
-				});
-		}, reconnectDelay(readFailures - 1));
-		return () => {
-			cancelled = true;
-			clearTimeout(retry);
-		};
-	}, [
-		readFailures,
-		service,
-		store,
-		activitySink,
-		connected,
-		focused,
-		route.params.ref,
-	]);
+	// A read that failed while connected tries again on its own (spec 14);
+	// from the third failure in a row the transcript says so.
+	const readStatus = useCallback(() => store.getState().status, [store]);
+	const retryRead = useCallback(
+		() =>
+			service
+				? store.getState().resumeProjected(service, activitySink, route.params.ref)
+				: Promise.resolve(),
+		[service, store, activitySink, route.params.ref],
+	);
+	const readFailures = useReadRetry({
+		status: snapshot.status,
+		active: Boolean(service) && connected && focused,
+		resetKey: `${route.params.hubId}\u0000${route.params.ref}`,
+		readStatus,
+		resume: retryRead,
+	});
 	// The durable pending-row seam. The store retires it on EVERY thread open,
 	// and `openProjected` runs from more than the resume effect: the /clear
 	// command's cleared callback, the refresh paths, and resumeProjected's own
@@ -1288,10 +1262,24 @@ export function ConversationScreen({
 	);
 	const timelineRows = useMemo(
 		() =>
-			sessionRows(groupTimeline(presentation.items), conversation?.turns ?? []),
+			// Your answers to a question show beneath the question itself.
+			hideAnswerMessages(
+				sessionRows(groupTimeline(presentation.items), conversation?.turns ?? []),
+			),
 		[presentation.items, conversation?.turns],
 	);
 	const liveRun = liveRunId(timelineRows, conversation?.activeTurnId);
+	// A subagent row opens the subagent's own transcript, as the Activity
+	// sheet does, until phase 4's subagent screen.
+	const openSubagent = useCallback(
+		(ref: string, title: string) =>
+			navigation.push("Conversation", { hubId: route.params.hubId, ref, title }),
+		[navigation, route.params.hubId],
+	);
+	const answerFor = useCallback(
+		(itemId: string) => answerTo(conversation, itemId),
+		[conversation],
+	);
 	// Stable across renders, so a settled agent message keeps its memoized
 	// markdown view (TimelineItem's AgentMessage) while the list re-renders.
 	const quote = useCallback(
@@ -1328,7 +1316,6 @@ export function ConversationScreen({
 		turnsSeen.current = readerAnchor.current?.turnsSeen;
 		openedFor.current = null;
 		setAwayKeys(null);
-		setReadFailures(0);
 	}, [route.params.hubId, route.params.ref]);
 	// Where the session opens (spec 7.3, ruling 31), decided once per route on
 	// the first layout with rows: the live end while a question or approval
@@ -1872,43 +1859,80 @@ export function ConversationScreen({
 			void applyCommand();
 			return;
 		}
-		const live = store.getState();
 		if (
-			!service ||
-			!ready ||
-			controls?.getSnapshot().pending != null ||
 			imageSelection.getSnapshot().busy ||
-			unconfirmedSend !== null ||
-			pendingQuestions(live.conversation).length > 0 ||
-			live.pendingMutation?.status === "pending" ||
-			!live.conversation
+			pendingQuestions(store.getState().conversation).length > 0
 		)
 			return;
-		// Route on what is true at the press, the way the web composer
-		// re-derives at submit: a turn may have started or ended since render.
-		const liveAction = sendAction(
-			live.conversation,
-			live.pendingMutations,
-			connectionReady.current,
-		);
-		if (liveAction === "none") return;
-		const kind = liveAction === "queue" ? "queue" : "send";
+		const kind = liveSendKind();
+		if (!service || kind === null) return;
 		setActionError(null);
 		try {
 			await document.submit(async (text, images) => {
 				store.getState().setDraft(text);
-				const previous = store.getState().lastAcceptedMutation;
-				await store.getState()[kind](service, buildComposerInput(text, images));
-				const accepted = store.getState().lastAcceptedMutation;
-				return (
-					accepted != null && accepted !== previous && accepted.kind === kind
-				);
+				return deliver(service, kind, text, images);
 			});
 		} catch {
 			// A refused Send adds no text of its own: the draft stays, and the
 			// "Delivery unconfirmed" card document.submit leaves says what
 			// happened and what to do.
 		}
+	}
+	// Whether a message can go out right now, and whether it sends or queues:
+	// routed on what is true at the press, the way the web composer re-derives
+	// at submit, since a turn may have started or ended since render. Send and
+	// an error row's Retry both ask.
+	function liveSendKind(): "send" | "queue" | null {
+		const live = store.getState();
+		if (
+			!service ||
+			!ready ||
+			controls?.getSnapshot().pending != null ||
+			unconfirmedSend !== null ||
+			live.pendingMutation?.status === "pending" ||
+			!live.conversation
+		)
+			return null;
+		const liveAction = sendAction(
+			live.conversation,
+			live.pendingMutations,
+			connectionReady.current,
+		);
+		if (liveAction === "none") return null;
+		return liveAction === "queue" ? "queue" : "send";
+	}
+	// Sends or queues one message the way Send does, and says whether the hub
+	// took it.
+	async function deliver(
+		through: NonNullable<typeof service>,
+		kind: "send" | "queue",
+		text: string,
+		images: Parameters<typeof buildComposerInput>[1],
+	) {
+		const previous = store.getState().lastAcceptedMutation;
+		await store.getState()[kind](through, buildComposerInput(text, images));
+		const accepted = store.getState().lastAcceptedMutation;
+		return accepted != null && accepted !== previous && accepted.kind === kind;
+	}
+	// An error row's Retry sends Jesse's sentence as your message through
+	// Send's own path (ruling 26), leaving whatever you were typing alone.
+	async function retryFailedTurn() {
+		const kind = liveSendKind();
+		if (!service || kind === null) return;
+		setActionError(null);
+		try {
+			await document.submitText(RETRY_MESSAGE, (text, images) =>
+				deliver(service, kind, text, images),
+			);
+		} catch {
+			// As with Send, a refusal leaves the delivery card to say so.
+		}
+	}
+	function runErrorAction(errorAction: ErrorAction) {
+		if (errorAction === "resume") void controls?.resume();
+		else if (errorAction === "signIn")
+			navigation.navigate("Providers", { hubId: route.params.hubId });
+		else void retryFailedTurn();
 	}
 	const composerSettings =
 		conversation && canCompose ? (
@@ -2168,6 +2192,15 @@ export function ConversationScreen({
 										}
 										quote={quote}
 										live={item.id === liveRun}
+										delegates={conversation?.delegates}
+										openSubagent={openSubagent}
+										answerFor={answerFor}
+										errorActionFor={(row) =>
+											conversation
+												? errorAction(row, conversation, action !== "none")
+												: null
+										}
+										onErrorAction={runErrorAction}
 									/>
 								</View>
 							)}

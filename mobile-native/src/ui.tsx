@@ -40,6 +40,10 @@ export function useTextScale(): number {
 	return Platform.OS === "ios" ? fontScale : 1;
 }
 
+/** Pairs with useTextScale: on iOS the text is sized by the scale itself, so
+ * the platform must not scale it a second time. */
+export const allowFontScaling = Platform.OS !== "ios";
+
 export function Action({
 	children,
 	onPress,

@@ -135,6 +135,7 @@ func localDaemonEntriesFromRoster(live []hubcore.LiveEntry) []appsource.LocalDae
 			CapabilitiesKnown:  item.CapabilitiesKnown,
 			Subagents:          item.Subagents,
 			LastTurnEndedAt:    hubcore.UnixMilliseconds(item.LastTurnEndedAt),
+			LastMessage:        item.LastMessage,
 			Tasks:              item.Tasks,
 		}
 		entries = append(entries, entry)
@@ -995,7 +996,7 @@ func newHubAppServer(cfg hubcore.WebConfig, sources *appsource.Registry) *appser
 }
 
 func newHubAppServerWithNavigation(cfg hubcore.WebConfig, sources *appsource.Registry, navigation *NavigationService, resolve topLevelSessionResolver) *appserver.Server {
-	server, _, _ := newHubAppServerWithNavigationAndTrace(cfg, sources, navigation, resolve, nil)
+	server, _, _, _ := newHubAppServerWithNavigationAndTrace(cfg, sources, navigation, resolve, nil)
 	return server
 }
 
@@ -1007,7 +1008,7 @@ func newHubAppServerWithNavigation(cfg hubcore.WebConfig, sources *appsource.Reg
 // server directly, for a caller that never builds through newWebServer
 // (most tests, and any embedder calling this constructor's exported
 // wrappers directly).
-func newHubAppServerWithNavigationAndTrace(cfg hubcore.WebConfig, sources *appsource.Registry, navigation *NavigationService, resolve topLevelSessionResolver, appwireTrace *appserver.WebSocketTrace) (*appserver.Server, *hubHostAdminController, *hubHostManager) {
+func newHubAppServerWithNavigationAndTrace(cfg hubcore.WebConfig, sources *appsource.Registry, navigation *NavigationService, resolve topLevelSessionResolver, appwireTrace *appserver.WebSocketTrace) (*appserver.Server, *hubHostAdminController, *hubHostManager, *hubNotices) {
 	// One fallback registry when cfg carries no live one, built once here so
 	// every host surface below — attach, management, and the admin proxy —
 	// validates against the same instance: a host added at runtime must be
@@ -1185,6 +1186,16 @@ func newHubAppServerWithNavigationAndTrace(cfg hubcore.WebConfig, sources *appso
 	registerNavigationReadHandler(server, navigation)
 	registerFavoriteHandler(server, cfg, navigation)
 	registerActivityReadHandler(server, cfg, sources)
+	// The notices read the same answers evener/auth/list and evener/plugin/list
+	// give, through the controllers those methods use (S11).
+	notices := &hubNotices{
+		auth:    func() (appwire.AuthListResponse, error) { return authController.List(appwire.EmptyParams{}) },
+		plugins: pluginsController.ListPlugins,
+		sources: sources,
+		roster:  cfg.Roster,
+		remote:  cfg.RemoteThreadCache,
+	}
+	registerNoticesHandler(server, notices)
 	registerArchiveHandler(server, cfg, sources, func() *NavigationService { return navigation })
 	registerDaemonHandlers(server, cfg, sources)
 	registerSessionDeleteHandler(server, nil)
@@ -1248,7 +1259,7 @@ func newHubAppServerWithNavigationAndTrace(cfg hubcore.WebConfig, sources *appso
 	// push) instead of a nil store one of them dereferences.
 	credsStore, credsErr := authController.credentialStore()
 	hostAdmin := registerHostAdminHandlers(server.Lifetime(), server, cfg.RemoteHostRegistry, sources, credsStore, credsErr)
-	return server, hostAdmin, hostManage
+	return server, hostAdmin, hostManage, notices
 }
 
 func normalizedAdmissionRef(params appwire.ThreadReadParams) string {

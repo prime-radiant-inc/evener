@@ -44,9 +44,23 @@ const (
 // thousand entries or so. A variable only so tests can shrink it.
 var updateLogRecords = 10_000
 
+// SetUpdateLogRecordsForTest shrinks the kept update log for the duration of
+// a test, so a caller in another package can force ErrUpdateLogTruncated
+// without writing thousands of entries. Restore undoes it.
+func SetUpdateLogRecordsForTest(n int) (restore func()) {
+	previous := updateLogRecords
+	updateLogRecords = n
+	return func() { updateLogRecords = previous }
+}
+
 // ErrUpdateLogTruncated reports a ChangedSince for a length older than the
-// kept update log: the changes since then are not all known any more, and
-// the caller sends a full latest-window replacement with no deltas.
+// kept update log: the changes since then are not all known any more.
+// LatestSince propagates it rather than answering with the window alone,
+// since held items outside the window may have changed with no way for the
+// caller to tell; the hub maps it to appwire.TranscriptItemCursorStale() so
+// the client re-reads without its held snapshot. A daemon's own ChangedSince
+// call (project, in server/thread_history.go) treats it as a failure and
+// rebuilds.
 var ErrUpdateLogTruncated = errors.New("transcript index update log no longer reaches that length")
 
 // testKillAfterRecordWrites, when set, runs right after an extension's or a
@@ -56,6 +70,14 @@ var ErrUpdateLogTruncated = errors.New("transcript index update log no longer re
 // returns propagates as scan's own would, so writeMeta never runs. Test seam
 // only; nil in production.
 var testKillAfterRecordWrites func() error
+
+// testKillAfterItemUpdateLog, when set, runs in addContributor right after
+// its update-log row is written and before the item record's own in-place
+// overwrite: it stands for the process being killed at exactly that point,
+// leaving the log row on disk (uncommitted, past the committed count) with
+// the item slot it names still unmodified. Test seam only; nil in
+// production.
+var testKillAfterItemUpdateLog func() error
 
 // The sidecar directory holds a lock file, a pointer to the live build, and one
 // directory per build. A rebuild writes a new build and renames the pointer
@@ -429,6 +451,22 @@ func (x *Index) extend(length int64) error {
 	if length <= x.meta.Length {
 		return nil
 	}
+	// An extension interrupted after writing its records but before
+	// committing meta can leave update-log rows past the committed count:
+	// truncating them away and re-scanning only up to this call's length
+	// assumes the scan will re-derive everything they held. That holds for
+	// a row logging a new record's own update (the scan recreates the
+	// record itself, so its later update comes back too, or the record
+	// stays new and uncommitted either way), but not for a row logging an
+	// in-place update to an already-committed record: its slot precedes the
+	// committed counts, so truncate never touches it, and the update may
+	// already be on disk from an entry this scan does not reach. Collect
+	// such rows' offsets before truncating them away, so they can be
+	// checked against where the scan below actually lands.
+	unsafeOffsets, err := x.leftoverUpdatesToCommittedSlots()
+	if err != nil {
+		return err
+	}
 	// Whatever an extension that did not finish left past the counts goes
 	// before this one appends.
 	for _, t := range []*table{&x.items, &x.turns, &x.updates} {
@@ -445,6 +483,22 @@ func (x *Index) extend(length int64) error {
 			incarnation = x.meta.Incarnation
 		}
 		return x.rebuild(length, incarnation)
+	}
+	// A scan only advances x.meta.Length past a line once that whole line is
+	// read and applied, in order, so x.meta.Length landing past one of the
+	// offsets collected above proves the entry there was a complete line
+	// within this scan's bound and so was fully redone; landing at or before
+	// it proves the scan stopped no later than the entry's own start,
+	// meaning it never reprocessed it, leaving whatever the truncated row
+	// announced already on disk from before this call with nothing left to
+	// say so. Rebuild instead of trusting that: it recomputes every record
+	// from scratch up to length, so it cannot leave such a leftover behind.
+	// The transcript still extends the covered prefix, so the incarnation
+	// is kept, as errRebuild's rebuild above does.
+	for _, offset := range unsafeOffsets {
+		if x.meta.Length <= offset {
+			return x.rebuild(length, x.meta.Incarnation)
+		}
 	}
 	x.meta.PendingCommunicate = len(x.builder.commCalls) > 0
 	if x.meta.PendingCommunicate && !x.builder.lastAssistantKnown {
@@ -484,6 +538,43 @@ func (x *Index) repairBuilder(length int64) error {
 		return x.rebuild(length, "")
 	}
 	return nil
+}
+
+// leftoverUpdatesToCommittedSlots returns the causing Offset of every
+// leftover update-log row (past its committed count, the signature of an
+// extension that wrote its records but was interrupted before the meta
+// commit that would count them) that logs an in-place update to an
+// already-committed item or turn record: one whose slot precedes
+// items.n/turns.n. Only rows of a kind real code appends (updatedItem,
+// updatedTurn) count: garbage bytes written straight to the file (as a test
+// fault-injects to simulate leftovers, bypassing logUpdate) decode to
+// neither and name no slot at all.
+func (x *Index) leftoverUpdatesToCommittedSlots() ([]int64, error) {
+	available, err := x.updates.available()
+	if err != nil {
+		return nil, err
+	}
+	var offsets []int64
+	for slot := x.updates.n; slot < available; slot++ {
+		buf := make([]byte, x.updates.size)
+		if _, err := x.updates.file.ReadAt(buf, int64(slot)*x.updates.size); err != nil {
+			return nil, fmt.Errorf("%w: read leftover update record: %w", errCorrupt, err)
+		}
+		row := decodeUpdate(buf)
+		var committed uint64
+		switch row.Kind {
+		case updatedItem:
+			committed = x.items.n
+		case updatedTurn:
+			committed = x.turns.n
+		default:
+			continue
+		}
+		if row.Slot < committed {
+			offsets = append(offsets, row.Offset)
+		}
+	}
+	return offsets, nil
 }
 
 // grownByAppends reports whether the transcript at path is still the file the

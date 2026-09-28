@@ -1388,6 +1388,34 @@ export interface HostUpdateParams {
   expectedIncarnationId: string;
 }
 
+export interface HubNotice {
+  /**
+   * ID is the notice's identity, stable while the problem lasts:
+   * "<kind>:<subject>", and "<kind>:<plugin>@<marketplace>" for a plugin.
+   */
+  id: string;
+  kind: string;
+  /**
+   * Subject is what the notice names and what its action routes by: the
+   * provider instance (an evener/auth/list row's provider), the host's source
+   * ID (a manifest source's id), or the plugin's name.
+   */
+  subject: string;
+  /**
+   * Marketplace is a plugin notice's marketplace: two marketplaces can each
+   * ship a plugin of the same name.
+   */
+  marketplace?: string;
+  /**
+   * AffectedSessions counts the live top-level sessions the problem blocks:
+   * for a sign-in, this hub's live sessions whose current model runs on the
+   * provider instance; for a host, the host's sessions that were live when it
+   * was last reached. Absent when there are none, and on a plugin notice,
+   * since no row says which plugins a session runs.
+   */
+  affectedSessions?: number;
+}
+
 export interface InitializeParams {
   protocolVersion: string;
   clientInfo: ClientInfo;
@@ -2355,6 +2383,15 @@ export interface NavigationSessionSummary {
    * crashed.
    */
   failure?: NavigationFailure;
+  /**
+   * LastMessage is the opening of the session's last agent message (S1d):
+   * a Finished row's why line and the long-press preview's excerpt, one
+   * line of at most appwire.MaxMessageExcerptRunes. It is the agent's own
+   * words, never its reasoning or a tool's output. A live session's comes
+   * from its daemon and an ended one's from its meta; subagent rows carry
+   * none.
+   */
+  last_message?: string;
   dormant?: boolean;
   /**
    * Offline marks a row folded into the merged list from a source that is
@@ -2516,6 +2553,10 @@ export interface NotesUpdatedParams {
   ref: string;
   humanNote?: string;
   agentNote?: string;
+}
+
+export interface NoticesListResponse {
+  notices: HubNotice[];
 }
 
 export interface OutputImage {
@@ -4145,6 +4186,7 @@ export const METHOD_NAMES = [
   "evener/session/seen/set",
   "evener/search",
   "evener/activity/read",
+  "evener/notices/list",
   "evener/harnesses/list",
   "evener/upgrade",
   "evener/update/check",
@@ -4239,6 +4281,7 @@ export const NOTIFICATION_NAMES = [
   "evener/navigation/invalidated",
   "evener/marketplace/updated",
   "evener/plugin/updated",
+  "evener/notices/changed",
   "evener/thread/resync",
   "evener/task/updated",
   "evener/goal/updated",
@@ -4364,6 +4407,7 @@ export interface MethodTypes {
   "evener/session/seen/set": { params: SessionSeenSetParams; result: SessionSeenSetResponse };
   "evener/search": { params: SearchParams; result: SearchResponse };
   "evener/activity/read": { params: ActivityReadParams; result: ActivityReadResponse };
+  "evener/notices/list": { params: EmptyParams; result: NoticesListResponse };
   "evener/harnesses/list": { params: HarnessListParams; result: HarnessListResponse };
   "evener/upgrade": { params: UpgradeParams; result: UpgradeResponse };
   "evener/update/check": { params: UpdateCheckParams; result: UpdateCheckResponse };
@@ -4456,6 +4500,7 @@ export interface NotificationTypes {
   "evener/navigation/invalidated": NavigationInvalidatedPayload;
   "evener/marketplace/updated": EmptyParams;
   "evener/plugin/updated": EmptyParams;
+  "evener/notices/changed": NoticesListResponse;
   "evener/thread/resync": ThreadResyncParams;
   "evener/task/updated": TaskUpdatedParams;
   "evener/goal/updated": GoalUpdatedParams;

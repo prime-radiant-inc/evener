@@ -116,6 +116,16 @@ type LiveEntry struct {
 	// the hub's seen marker, so rosterFingerprint hashes it: a turn that starts
 	// and ends between two probes leaves Status unchanged and moves only this.
 	LastTurnEndedAt time.Time
+	// Profile is the provider instance the session's current model runs on,
+	// from its probe; the embedded Entry's Provider is the one it started on,
+	// and a model switch leaves that behind. A sign-in notice counts the
+	// sessions it blocks by it (S11). No row shows it, so rosterFingerprint
+	// leaves it out.
+	Profile string
+	// LastMessage is the opening of the session's last agent message, from its
+	// probe (S1d): a Finished row's why line. rosterFingerprint hashes it: a
+	// message can land while the status and the turn end hold still.
+	LastMessage string
 }
 
 // ProbeResult is the dynamic session state returned by a daemon liveness probe.
@@ -164,6 +174,12 @@ type ProbeResult struct {
 	// LastTurnEndedAt is when the listed root's last turn ended (S4); zero from
 	// a daemon that predates it, or before any turn has ended.
 	LastTurnEndedAt time.Time
+	// Profile mirrors LiveEntry.Profile: the provider instance of the root's
+	// current model.
+	Profile string
+	// LastMessage mirrors LiveEntry.LastMessage: the opening of the listed
+	// root's last agent message (S1d), empty from a daemon that predates it.
+	LastMessage string
 	// ProtocolMismatch: the endpoint answered, but as a daemon this hub cannot
 	// talk to (restart required). Such an answer names no session of its own,
 	// so it does not vouch for the entry's PID the way a bound answer does.
@@ -629,6 +645,10 @@ func rosterFingerprint(bySess map[string]LiveEntry) uint64 {
 		// A turn that starts and ends between two probes leaves Status where it
 		// was and moves only this, and it turns the row Finished (S4).
 		_, _ = h.Write([]byte(strconv.FormatInt(UnixMilliseconds(bySess[id].LastTurnEndedAt), 10)))
+		_, _ = h.Write([]byte{0})
+		// A Finished row shows its last message, which can land while the
+		// status and the turn end hold still (S1d).
+		_, _ = h.Write([]byte(bySess[id].LastMessage))
 	}
 	return h.Sum64()
 }
@@ -1430,6 +1450,10 @@ func (r *Roster) ResidentEntries() []ResidentEntry {
 // with the prober's result, and a field added to both types is copied in one
 // place.
 func liveEntryFromProbe(e rendezvous.Entry, result ProbeResult) LiveEntry {
+	// CloneLiveEntry deep-copies the whole literal below before it returns, so
+	// a field assigned straight from result (PendingEscalations, Watches, and
+	// so on) is not aliasing the probe's copy: RoboRev has twice flagged this
+	// function on that mistaken reading.
 	return CloneLiveEntry(LiveEntry{
 		Entry:                 e,
 		SessionID:             result.SessionID,
@@ -1454,6 +1478,8 @@ func liveEntryFromProbe(e rendezvous.Entry, result ProbeResult) LiveEntry {
 		Activity:              result.Activity,
 		Subagents:             result.Subagents,
 		LastTurnEndedAt:       result.LastTurnEndedAt,
+		Profile:               result.Profile,
+		LastMessage:           result.LastMessage,
 	})
 }
 
@@ -1519,6 +1545,7 @@ func (r *Roster) ReadSpawnedThread(ctx context.Context, entry rendezvous.Entry, 
 		PendingEscalations: root.Evener.PendingEscalations,
 		PendingQuestion:    root.Evener.PendingQuestion,
 		Failure:            root.Evener.Failure,
+		LastMessage:        root.Evener.LastMessage,
 		RunningJobs:        runningJobs, CompletedJobs: completedJobs,
 		Watches: diagnosticsWatches(root.Evener.Diagnostics),
 		Tasks:   root.Evener.Tasks,
@@ -1526,7 +1553,8 @@ func (r *Roster) ReadSpawnedThread(ctx context.Context, entry rendezvous.Entry, 
 		// and every current daemon stamps its capability set on the thread
 		// projection this read answered from, so the caps beside the status
 		// are the daemon's own answer — not an approximation.
-		Capabilities: root.Evener.Capabilities, CapabilitiesKnown: true}
+		Capabilities: root.Evener.Capabilities, CapabilitiesKnown: true,
+		Profile: root.Evener.Profile}
 	if root.Evener.Diagnostics != nil {
 		result.RunningSubagentStates = make(map[string]string)
 		for _, delegate := range root.Evener.Diagnostics.Delegates {

@@ -52,8 +52,11 @@ func (x *Index) Latest(limit int) (Window, error) {
 // LatestSince is Latest together with what changed since held, read under one
 // lock so both describe the same snapshot: a reader that took them apart could
 // miss a change another handle extended over between the two. The changes
-// are nil when held names another incarnation or predates the kept update
-// log; the caller then sends the window as a full replacement.
+// are nil when held names another incarnation; the caller then sends the
+// window as a full replacement. When held names the current incarnation but
+// predates the kept update log, LatestSince returns ErrUpdateLogTruncated:
+// the window alone cannot be trusted, since held items outside it may have
+// changed and the caller has no way to tell.
 func (x *Index) LatestSince(limit int, held appwire.SnapshotIdentity) (Window, *Changes, error) {
 	limit, err := appwire.NormalizeTranscriptItemLimit(limit)
 	if err != nil {
@@ -75,11 +78,11 @@ func (x *Index) LatestSince(limit int, held appwire.SnapshotIdentity) (Window, *
 	}
 	err = x.locked(false, func() error {
 		since, sinceErr := x.changedSince(held.Length)
-		if errors.Is(sinceErr, ErrUpdateLogTruncated) {
-			return nil
+		if sinceErr != nil {
+			return sinceErr
 		}
 		changes = &since
-		return sinceErr
+		return nil
 	})
 	return window, changes, err
 }
