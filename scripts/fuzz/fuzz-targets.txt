@@ -364,6 +364,8 @@ test:.:./appwire:TestStructuredFrameReachesDecoder
 test:agent:.:TestTranscriptGenReachesDeeper
 test:llm:./providers/anthropic:TestStructuredAnthropicReachesDeeper
 test:llm:./providers/google:TestStructuredGeminiReachesDeeper
+test:.:./cmd/evener-fuzzregistry:TestRegistryProgramScenarios
+test:.:./cmd/evener-fuzz-harvest:TestHarvestProgramScenarios
 rapid:agent:.:TestToolArgsSchemaFuzz
 rapid:agent:.:TestLifecycleSeqFuzz
 rapid:agent:.:TestWatchSeqFuzz
