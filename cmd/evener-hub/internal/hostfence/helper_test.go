@@ -1,0 +1,301 @@
+package hostfence
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"strings"
+	"testing"
+)
+
+// The helper-gate tests pin crash-fencing spec §6 and §10: the pinned helper
+// version, the read-only presence/version verification that refuses
+// fail-closed before any remote mutation, and the wrapper command/response
+// protocol the fencing worker drives.
+
+func TestVerifyHelperPinsPresenceAndVersion(t *testing.T) {
+	err := VerifyHelper("h1", HelperVersion, HelperProbe{Present: true, Reported: true, Version: HelperVersion})
+	if err != nil {
+		t.Fatalf("VerifyHelper(trusted) = %v, want nil", err)
+	}
+	for name, probe := range map[string]HelperProbe{
+		"absent":     {Present: false},
+		"no version": {Present: true},
+	} {
+		err := VerifyHelper("h1", HelperVersion, probe)
+		var refusal *HelperGateError
+		if !errors.As(err, &refusal) {
+			t.Fatalf("%s: VerifyHelper = %v, want *HelperGateError", name, err)
+		}
+		if refusal.Discriminator != DiscriminatorHelperAbsent {
+			t.Errorf("%s: discriminator = %q, want %q", name, refusal.Discriminator, DiscriminatorHelperAbsent)
+		}
+		if refusal.Host != "h1" || refusal.PinnedVersion != HelperVersion {
+			t.Errorf("%s: refusal data = %+v, want host h1 and pinned version %d", name, refusal, HelperVersion)
+		}
+	}
+	for name, probe := range map[string]HelperProbe{
+		"older version":     {Present: true, Reported: true, Version: 0},
+		"newer version":     {Present: true, Reported: true, Version: 2},
+		"explicit distrust": {Present: true, Reported: true, Version: 1, Untrusted: true},
+	} {
+		err := VerifyHelper("h1", HelperVersion, probe)
+		var refusal *HelperGateError
+		if !errors.As(err, &refusal) || refusal.Discriminator != DiscriminatorHelperUntrusted {
+			t.Fatalf("%s: VerifyHelper = %v, want a %s refusal", name, err, DiscriminatorHelperUntrusted)
+		}
+		if refusal.ObservedVersion != probe.Version && !probe.Untrusted {
+			t.Errorf("%s: refusal observed version = %d, want %d", name, refusal.ObservedVersion, probe.Version)
+		}
+	}
+	// The two refusals ride the conflict class: data names the host plus the
+	// pinned helper version the operator must install out-of-band (§8).
+	var refusal *HelperGateError
+	if err := VerifyHelper("h1", HelperVersion, HelperProbe{Present: false}); !errors.As(err, &refusal) {
+		t.Fatal("absent helper did not produce a HelperGateError")
+	}
+	if !strings.Contains(refusal.Error(), "h1") || !strings.Contains(refusal.Error(), "1") {
+		t.Errorf("refusal message %q does not name the host and pinned version", refusal.Error())
+	}
+}
+
+func TestParseHelperVersion(t *testing.T) {
+	for _, tc := range []struct {
+		raw     string
+		version int
+		ok      bool
+	}{
+		{"1\n", 1, true},
+		{"1", 1, true},
+		{" 2 \n", 2, true},
+		{"", 0, false},
+		{"evener-fence 1", 0, false},
+		{"one", 0, false},
+	} {
+		version, ok := ParseHelperVersion(tc.raw)
+		if ok != tc.ok || version != tc.version {
+			t.Errorf("ParseHelperVersion(%q) = (%d, %v), want (%d, %v)", tc.raw, version, ok, tc.version, tc.ok)
+		}
+	}
+}
+
+func TestShellQuote(t *testing.T) {
+	for _, tc := range []struct{ in, want string }{
+		{"plain", `'plain'`},
+		{"two words", `'two words'`},
+		{"it's", `'it'\''s'`},
+		{"a;rm -rf /", `'a;rm -rf /'`},
+		{"", `''`},
+	} {
+		if got := shellQuote(tc.in); got != tc.want {
+			t.Errorf("shellQuote(%q) = %s, want %s", tc.in, got, tc.want)
+		}
+	}
+}
+
+func TestWrapperCommandsCarryThePresentedEpoch(t *testing.T) {
+	epoch := Epoch{BootID: "boot-1", OpSeq: 7}
+	takeover, err := Wrapper{}.TakeoverCommand(epoch)
+	if err != nil {
+		t.Fatalf("TakeoverCommand = %v", err)
+	}
+	if !strings.HasSuffix(takeover, "takeover 'boot-1' 7") {
+		t.Errorf("TakeoverCommand = %q, want the epoch presented and quoted", takeover)
+	}
+	advance, err := Wrapper{}.AdvanceCommand(epoch)
+	if err != nil {
+		t.Fatalf("AdvanceCommand = %v", err)
+	}
+	if !strings.HasSuffix(advance, "advance 'boot-1' 7") {
+		t.Errorf("AdvanceCommand = %q, want the epoch presented and quoted", advance)
+	}
+	if _, err := (Wrapper{}).TakeoverCommand(Epoch{}); err == nil {
+		t.Error("TakeoverCommand(zero epoch) = nil error, want refusal")
+	}
+	// A boot id outside the shell-token-safe set never reaches a command line:
+	// the epoch schema refuses it first, so no hostile value depends on quoting.
+	if _, err := (Wrapper{}).TakeoverCommand(Epoch{BootID: "boot 1; rm -rf /", OpSeq: 1}); err == nil {
+		t.Error("TakeoverCommand(hostile boot id) = nil error, want refusal")
+	}
+	hostile := `deploy "now"; rm -rf / #`
+	perform, err := (Wrapper{}).PerformCommand(epoch, hostile)
+	if err != nil {
+		t.Fatalf("PerformCommand = %v", err)
+	}
+	if !strings.HasSuffix(perform, `perform 'boot-1' 7 'deploy "now"; rm -rf / #'`) {
+		t.Errorf("PerformCommand = %q, want the command text single-quoted whole", perform)
+	}
+	if !strings.Contains(perform, HelperRemotePath) {
+		t.Errorf("PerformCommand = %q, want the pinned helper path", perform)
+	}
+}
+
+// TestDecodersValidateHelperJSON pins the decode-validation posture: helper
+// responses are a trust boundary, so an object outside the schema this package
+// emits is refused, never half-understood.
+func TestDecodersValidateHelperJSON(t *testing.T) {
+	statusJSON := `{"version":1,"guardEpoch":4,"epoch":{"bootId":"b1","opSeq":3},` +
+		`"fence":null,"superseded":{"bootId":"b0","opSeq":9},"holder":{"bootId":"b1","opSeq":3},"entries":2}`
+	status, err := DecodeStatus([]byte(statusJSON))
+	if err != nil {
+		t.Fatalf("DecodeStatus = %v", err)
+	}
+	if status.GuardEpoch != 4 || status.Epoch == nil || status.Epoch.BootID != "b1" || status.Entries != 2 {
+		t.Fatalf("DecodeStatus = %+v, want the emitted values", status)
+	}
+	refused := map[string]string{
+		"unknown field":  `{"version":1,"guardEpoch":4,"epoch":null,"fence":null,"superseded":null,"holder":null,"entries":2,"extra":true}`,
+		"duplicate key":  `{"version":1,"guardEpoch":4,"guardEpoch":5,"epoch":null,"fence":null,"superseded":null,"holder":null,"entries":0}`,
+		"wrong version":  `{"version":2,"guardEpoch":4,"epoch":null,"fence":null,"superseded":null,"holder":null,"entries":0}`,
+		"zero boot id":   `{"version":1,"guardEpoch":4,"epoch":{"bootId":"","opSeq":3},"fence":null,"superseded":null,"holder":null,"entries":0}`,
+		"fence no epoch": `{"version":1,"guardEpoch":4,"epoch":null,"fence":{"epoch":null,"superseded":null,"guardEpoch":0},"superseded":null,"holder":null,"entries":0}`,
+		"trailing bytes": `{"version":1,"guardEpoch":4,"epoch":null,"fence":null,"superseded":null,"holder":null,"entries":0} junk`,
+	}
+	for name, raw := range refused {
+		if _, err := DecodeStatus([]byte(raw)); err == nil {
+			t.Errorf("%s: DecodeStatus = nil error, want refusal", name)
+		}
+	}
+}
+
+func TestDecodeRefusalMapsTypedErrors(t *testing.T) {
+	for reason, want := range map[string]error{
+		"stale-epoch":   ErrStaleEpoch,
+		"fenced":        ErrFenced,
+		"busy":          ErrHelperBusy,
+		"state-corrupt": ErrStateCorrupt,
+		"malformed":     ErrMalformed,
+	} {
+		raw := `{"version":1,"refused":true,"error":"` + reason + `","detail":"detail text"}`
+		err := DecodeRefusal([]byte(raw))
+		if !errors.Is(err, want) {
+			t.Errorf("DecodeRefusal(%s) = %v, want %v", reason, err, want)
+		}
+		var refusal *HelperRefusalError
+		if !errors.As(err, &refusal) || refusal.Detail != "detail text" {
+			t.Errorf("DecodeRefusal(%s) detail lost: %+v", reason, err)
+		}
+	}
+	if err := DecodeRefusal([]byte(`{"version":1,"refused":true,"error":"stale-epoch-typo"}`)); err == nil {
+		t.Error("DecodeRefusal(unknown reason) = nil error, want refusal")
+	}
+	if err := DecodeRefusal([]byte(`{"version":1,"error":"stale-epoch"}`)); err == nil {
+		t.Error("DecodeRefusal(unmarked refusal) = nil error, want refusal")
+	}
+}
+
+func TestDecodeEntriesAndRecheck(t *testing.T) {
+	raw := `{"version":1,"entries":[{"id":"n1","command":"deploy --now","registeredAt":"2026-09-28T10:00:00Z",` +
+		`"ownership":{"pid":41,"pidStartTime":"777"},"state":"running"},` +
+		`{"id":"n2","command":"restart","registeredAt":"2026-09-28T09:00:00Z",` +
+		`"ownership":{"nonce":"n2"},"state":"exited","exit":0,"exitedAt":"2026-09-28T09:00:05Z"}]}`
+	entries, err := DecodeEntries([]byte(raw))
+	if err != nil {
+		t.Fatalf("DecodeEntries = %v", err)
+	}
+	if len(entries) != 2 || entries[0].Ownership.Kind() != OwnershipPID || entries[1].Ownership.Kind() != OwnershipNonce {
+		t.Fatalf("DecodeEntries = %+v, want one pid-owned and one nonce-owned entry", entries)
+	}
+	if entries[1].Exit == nil || *entries[1].Exit != 0 {
+		t.Fatalf("DecodeEntries exit = %+v, want 0", entries[1].Exit)
+	}
+	// §9's remote-fencing boundary carries {command, registeredAt, ownership}.
+	ref := entries[0].BoundaryRef()
+	projected, err := json.Marshal(ref)
+	if err != nil {
+		t.Fatalf("marshal boundary ref: %v", err)
+	}
+	if string(projected) != `{"command":"deploy --now","registeredAt":"2026-09-28T10:00:00Z","ownership":{"pid":41,"pidStartTime":"777"}}` {
+		t.Fatalf("BoundaryRef = %s, want the three-field §9 projection", projected)
+	}
+	recheck, err := DecodeRecheck([]byte(`{"version":1,"id":"n1","live":true,"state":"running","ownership":{"pid":41,"pidStartTime":"777"}}`))
+	if err != nil {
+		t.Fatalf("DecodeRecheck = %v", err)
+	}
+	if !recheck.Live || recheck.ID != "n1" || recheck.Ownership.Kind() != OwnershipPID {
+		t.Fatalf("DecodeRecheck = %+v", recheck)
+	}
+
+	bad := map[string]string{
+		"ownership both variants": `{"version":1,"entries":[{"id":"n","command":"c","registeredAt":"t","ownership":{"pid":1,"pidStartTime":"s","nonce":"n"},"state":"running"}]}`,
+		"ownership none":          `{"version":1,"entries":[{"id":"n","command":"c","registeredAt":"t","ownership":{},"state":"running"}]}`,
+		"unknown state":           `{"version":1,"entries":[{"id":"n","command":"c","registeredAt":"t","ownership":{"nonce":"n"},"state":"gone"}]}`,
+		"empty command":           `{"version":1,"entries":[{"id":"n","command":"","registeredAt":"t","ownership":{"nonce":"n"},"state":"running"}]}`,
+		"unknown field":           `{"version":1,"entries":[{"id":"n","command":"c","registeredAt":"t","ownership":{"nonce":"n"},"state":"running","extra":1}]}`,
+	}
+	for name, raw := range bad {
+		if _, err := DecodeEntries([]byte(raw)); err == nil {
+			t.Errorf("%s: DecodeEntries = nil error, want refusal", name)
+		}
+	}
+	if _, err := DecodeRecheck([]byte(`{"version":1,"id":"n1","live":"yes"}`)); err == nil {
+		t.Error("DecodeRecheck(bad live) = nil error, want refusal")
+	}
+}
+
+// fakeRunner is the scripted-remote seam the Wrapper drives: it records the
+// commands and answers canned stdout/stderr/exit, so no test ever opens a
+// connection.
+type fakeRunner struct {
+	commands []string
+	stdout   string
+	stderr   string
+	exit     int
+}
+
+func (f *fakeRunner) Run(ctx context.Context, command string) (string, string, int, error) {
+	f.commands = append(f.commands, command)
+	return f.stdout, f.stderr, f.exit, nil
+}
+
+func TestWrapperTakeoverAdvancesDecodesAndRefuses(t *testing.T) {
+	runner := &fakeRunner{stdout: `{"version":1,"guardEpoch":5,"epoch":{"bootId":"b1","opSeq":3},` +
+		`"fence":{"epoch":{"bootId":"b1","opSeq":4},"superseded":{"bootId":"b1","opSeq":3},"guardEpoch":5},` +
+		`"superseded":null,"holder":{"bootId":"b1","opSeq":4},"entries":1}`}
+	wrapper := Wrapper{Runner: runner, Host: "h1"}
+	status, err := wrapper.Takeover(context.Background(), Epoch{BootID: "b1", OpSeq: 4})
+	if err != nil {
+		t.Fatalf("Takeover = %v", err)
+	}
+	if status.Fence == nil || status.Fence.Epoch.OpSeq != 4 || status.Holder == nil || status.Holder.OpSeq != 4 {
+		t.Fatalf("Takeover status = %+v, want the decoded fence and holder", status)
+	}
+	if len(runner.commands) != 1 || !strings.Contains(runner.commands[0], "takeover 'b1' 4") {
+		t.Fatalf("Takeover commands = %q, want one takeover command", runner.commands)
+	}
+	// A refusal on stderr with a nonzero exit is the typed server-side refusal,
+	// never a decoded success.
+	refusing := &fakeRunner{stderr: `{"version":1,"refused":true,"error":"stale-epoch","detail":"older"}`, exit: 75}
+	if _, err := (Wrapper{Runner: refusing, Host: "h1"}).Takeover(context.Background(), Epoch{BootID: "b1", OpSeq: 4}); !errors.Is(err, ErrStaleEpoch) {
+		t.Fatalf("Takeover(refusal) = %v, want ErrStaleEpoch", err)
+	}
+	// A success exit with unparsable output is refused, never treated as an
+	// empty state that authorizes a mutation.
+	garbled := &fakeRunner{stdout: `not json`}
+	if _, err := (Wrapper{Runner: garbled, Host: "h1"}).Takeover(context.Background(), Epoch{BootID: "b1", OpSeq: 4}); err == nil {
+		t.Fatal("Takeover(garbled) = nil error, want refusal")
+	}
+	// The wrapper refuses a zero epoch locally: it never presents an absent
+	// epoch to the remote.
+	if _, err := (Wrapper{Runner: runner, Host: "h1"}).Takeover(context.Background(), Epoch{}); err == nil {
+		t.Fatal("Takeover(zero epoch) = nil error, want refusal")
+	}
+	if len(runner.commands) != 1 {
+		t.Fatalf("zero epoch produced a remote command: %q", runner.commands)
+	}
+}
+
+func TestWrapperPerformReturnsChildStatus(t *testing.T) {
+	runner := &fakeRunner{stdout: "deployed\n", exit: 3}
+	wrapper := Wrapper{Runner: runner, Host: "h1"}
+	result, err := wrapper.Perform(context.Background(), Epoch{BootID: "b1", OpSeq: 4}, "deploy --now")
+	if err != nil {
+		t.Fatalf("Perform = %v", err)
+	}
+	if result.ExitCode != 3 || result.Stdout != "deployed\n" {
+		t.Fatalf("Perform = %+v, want the child's status and output", result)
+	}
+	if len(runner.commands) != 1 || !strings.Contains(runner.commands[0], `'deploy --now'`) {
+		t.Fatalf("Perform commands = %q", runner.commands)
+	}
+}
