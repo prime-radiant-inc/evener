@@ -194,6 +194,7 @@ import { LiveStatusTray, useFrameCounter } from "./session/StatusTray";
 import { sheetKey, useProvideSheetHost } from "./sheet/sheetHosts";
 import { screenInFront, useScreenInFront } from "./sheet/useScreenInFront";
 import { takeQuote } from "./session/pendingQuote";
+import { type Coordinator, SubagentPanel } from "./subagents/SubagentPanel";
 import { TimelineItem } from "./TimelineItem";
 import { Toast, type ToastMessage, useToast } from "./Toast";
 import { TranscriptUsage } from "./TranscriptUsage";
@@ -604,7 +605,12 @@ const SESSION_DESTINATIONS = {
 export function ConversationScreen({
 	route,
 	navigation,
-}: NativeStackScreenProps<Routes, "Conversation">) {
+	subagentOf,
+}: NativeStackScreenProps<Routes, "Conversation"> & {
+	/** This session is a subagent's, opened from its coordinator (the
+	 * "Subagent" route): the coordinator whose tree it sits in. */
+	subagentOf?: Coordinator;
+}) {
 	const {
 		activeProfile,
 		client,
@@ -1154,13 +1160,19 @@ export function ConversationScreen({
 				});
 				return;
 			}
-			// The Subagents list (spec 9), in place of the Activity sheet.
-			navigation.navigate("Subagents", {
-				hubId: route.params.hubId,
-				ref: route.params.ref,
-				threadId: current.threadId,
-				title: route.params.title,
-			});
+			// The Subagents list (spec 9), in place of the Activity sheet. A
+			// subagent's screen opens its coordinator's, which lists every depth.
+			navigation.navigate(
+				"Subagents",
+				subagentOf
+					? { hubId: route.params.hubId, ...subagentOf }
+					: {
+							hubId: route.params.hubId,
+							ref: route.params.ref,
+							threadId: current.threadId,
+							title: route.params.title,
+						},
+			);
 		},
 		[
 			store,
@@ -1464,12 +1476,18 @@ export function ConversationScreen({
 		[presentation.items, conversation?.turns],
 	);
 	const liveRun = liveRunId(timelineRows, conversation?.activeTurnId);
-	// A subagent row opens the subagent's own transcript, as the Activity
-	// sheet does, until phase 4's subagent screen.
+	// A subagent row opens the subagent's own session, under this session as
+	// its coordinator, or on a subagent's screen, under the same coordinator.
 	const openSubagent = useCallback(
-		(ref: string, title: string) =>
-			navigation.push("Conversation", { hubId: route.params.hubId, ref, title }),
-		[navigation, route.params.hubId],
+		(ref: string, title: string) => {
+			const coordinator = subagentOf ?? {
+				ref: route.params.ref,
+				threadId: store.getState().conversation?.threadId ?? "",
+				title: route.params.title,
+			};
+			navigation.push("Subagent", { hubId: route.params.hubId, ref, title, coordinator });
+		},
+		[navigation, route.params.hubId, route.params.ref, route.params.title, subagentOf, store],
 	);
 	const answerFor = useCallback(
 		(itemId: string) => answerTo(conversation, itemId),
@@ -2143,6 +2161,7 @@ export function ConversationScreen({
 	}
 	const frames = useFrameCounter(store);
 	const toaster = useToast();
+	const showSubagentToast = useCallback((text: string) => toaster.show({ text }), [toaster]);
 	// The session's shared notes (spec 8.8). The controller lives here, not in
 	// the sheet, so a save the sheet starts as it closes outlives it. store
 	// itself is already rebuilt exactly when route.params.hubId/ref change
@@ -2785,7 +2804,15 @@ export function ConversationScreen({
 		folded: questionFolded,
 		composerBack,
 	});
-	const composerShown = canCompose && bottom.composer;
+	// A subagent the hub takes no message for (a running one, ruling 30) holds
+	// its bar where the composer would be.
+	const subagentBar =
+		subagentOf !== undefined &&
+		conversation !== null &&
+		conversation !== undefined &&
+		!conversation.capabilities.send &&
+		!conversation.capabilities.queue;
+	const composerShown = canCompose && bottom.composer && !subagentBar;
 	// "↓ 3 new": rows that arrived below while you read above the end.
 	const newCount = awayKeys ? newRowCount(timelineRows, awayKeys) : 0;
 	// Next shows while someone else needs you, unless this session asks you
@@ -3170,8 +3197,10 @@ export function ConversationScreen({
 									<ErrorMessage
 										message={snapshot.status === "error" ? null : snapshot.error}
 									/>
+									{/* A subagent's bar already says what you can do instead. */}
 									{connected &&
 									permitted &&
+									!subagentBar &&
 									!permitted.send &&
 									!permitted.steer &&
 									!permitted.queue ? (
@@ -3350,6 +3379,17 @@ export function ConversationScreen({
 										void stop();
 									}}
 									onJumpToLive={jumpToLive}
+								/>
+							) : null}
+							{subagentOf ? (
+								<SubagentPanel
+									hubId={route.params.hubId}
+									ref={route.params.ref}
+									coordinator={subagentOf}
+									inFront={focused}
+									barShown={subagentBar}
+									showToast={showSubagentToast}
+									navigation={navigation as never}
 								/>
 							) : null}
 							{composerShown ? (

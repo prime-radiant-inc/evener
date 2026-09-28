@@ -51,6 +51,7 @@ import { CommentsSheet } from "./src/reader/CommentsSheet";
 import { FilesSheet } from "./src/reader/FilesSheet";
 import { OutlineSheet } from "./src/reader/OutlineSheet";
 import { ReviewSheet } from "./src/reader/ReviewSheet";
+import { SubagentScreen } from "./src/subagents/SubagentScreen";
 import { SubagentsScreen } from "./src/subagents/SubagentsScreen";
 import { ReaderScreen } from "./src/reader/ReaderScreen";
 import { TasksSheet } from "./src/TasksSheet";
@@ -222,6 +223,11 @@ function Navigation() {
 						name="Subagents"
 						component={SubagentsScreen}
 						options={{ title: "" }}
+					/>
+					<Stack.Screen
+						name="Subagent"
+						component={SubagentScreen}
+						options={({ route }) => ({ title: route.params.title || "Subagent" })}
 					/>
 					<Stack.Group
 						screenOptions={{

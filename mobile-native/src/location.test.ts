@@ -520,6 +520,19 @@ describe("last mobile location", () => {
 		]);
 	});
 
+	it("reopens a subagent's session as its coordinator's after a relaunch (ruling 21)", () => {
+		const params = {
+			hubId: "studio",
+			ref: "local:fix",
+			title: "Fix race in tree settle",
+			coordinator: { ref: "local:coord", threadId: "coord", title: "Coordinator" },
+		};
+		expect(locationForRoute({ name: "Subagent", params }, "studio")).toEqual({
+			hubId: "studio",
+			conversation: { ref: "local:coord", title: "Coordinator" },
+		});
+	});
+
 	it("refuses a document with no session, an empty path, or mixed with another destination", () => {
 		const disk = storage();
 		const repository = new LocationRepository(disk);

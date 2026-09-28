@@ -64,12 +64,11 @@ export function SubagentsScreen({ route, navigation }: NativeStackScreenProps<Ro
 	);
 
 	const modelName = useModelNames(hubId);
-	// A subagent's screen is its session (ruling 30): pushed on the session
-	// route over this list until PR 3's "Subagent" screen, which adds the
-	// coordinator's stop controls.
+	// A subagent's screen is its own session (ruling 30), over this list.
 	const openRow = useCallback(
-		(row: SubagentRow) => navigation.push("Conversation", { hubId, ref: row.ref, title: row.title }),
-		[navigation, hubId],
+		(row: SubagentRow) =>
+			navigation.push("Subagent", { hubId, ref: row.ref, title: row.title, coordinator: { ref, threadId, title } }),
+		[navigation, hubId, ref, threadId, title],
 	);
 
 	const count = countLabel(tally.total, snapshot.partial);

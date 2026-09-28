@@ -1,0 +1,143 @@
+// What a subagent's own session adds to the Session (spec 9, rulings 10 and
+// 30): its row in the coordinator's shared tree, read again while this screen
+// is in front; the stop requests you sent, settled against that tree with a
+// toast; and, while the hub takes no message for the subagent, the bar where
+// its composer would be. A stop goes to the hub directly when the
+// coordinator's hub can make one (S6), and is asked of the coordinator
+// otherwise.
+import { type ThreadCapabilities, WireError } from "@evener/appwire-client";
+import { useCallback, useEffect, useMemo, useState, useSyncExternalStore } from "react";
+import { Alert } from "react-native";
+import { useConnection } from "../ConnectionProvider";
+import { returnToSession, type SessionNavigation } from "../session/returnToSession";
+import { SessionLink } from "../session/sessionMessage";
+import { stopRequests } from "./nativeStopRequests";
+import { type StopOffer, SubagentBar } from "./SubagentBar";
+import { flattenSubagents, type SubagentRow } from "./subagentModel";
+import { useSubagentTree } from "./useSubagentTree";
+
+export interface Coordinator {
+	ref: string;
+	threadId: string;
+	title: string;
+}
+
+export interface SubagentPanelProps {
+	hubId: string;
+	/** The subagent's own session ref. */
+	ref: string;
+	coordinator: Coordinator;
+	/** This screen is the one in front (useScreenInFront, ruling 26). */
+	inFront: boolean;
+	/** The hub takes no message for the subagent: the bar takes the composer's place. */
+	barShown: boolean;
+	showToast(text: string): void;
+	navigation: SessionNavigation & { navigate(name: "StopSubagentSheet", params: object): void };
+}
+
+// An older hub or daemon without evener/delegate/stop answers MethodNotFound.
+const isMethodNotFound = (error: unknown) =>
+	error instanceof WireError && (error.code === -32601 || error.evenerErrorInfo === "methodNotFound");
+const isResourceNotFound = (error: unknown) => error instanceof WireError && error.evenerErrorInfo === "resourceNotFound";
+
+export function SubagentPanel({ hubId, ref, coordinator, inFront, barShown, showToast, navigation }: SubagentPanelProps) {
+	const { client, state, activeProfile } = useConnection();
+	const connected = state === "ready" && activeProfile?.id === hubId && client !== null;
+	const { tree, snapshot } = useSubagentTree(hubId, coordinator.ref, coordinator.threadId);
+	const rows = useMemo(() => (snapshot.tree ? flattenSubagents(snapshot.tree) : []), [snapshot.tree]);
+	const row = rows.find((candidate) => candidate.ref === ref) ?? null;
+	const requests = stopRequests(hubId);
+	useSyncExternalStore(requests.subscribe, requests.getRevision);
+
+	// The tree reads again when this screen comes to the front, and while it's
+	// in front, whenever this subagent's status changes (a turn ending is one),
+	// so a stop shows up here (rulings 9 and 26).
+	useEffect(() => {
+		if (!inFront || !client) return;
+		void tree.reload();
+		return client.onNotification((notification) => {
+			if (notification.method === "thread/status/changed" && notification.params.ref === ref) void tree.reload();
+		});
+	}, [inFront, client, tree, ref]);
+
+	// The stops you asked for, settled against each new tree, with a toast for
+	// each that just stopped. Only the screen in front settles them, so the
+	// toast shows where you are, and once.
+	useEffect(() => {
+		if (!inFront || rows.length === 0) return;
+		for (const stopped of requests.reconcile(coordinator.ref, rows)) showToast(`“${stopped.title}” stopped`);
+	}, [inFront, rows, requests, coordinator.ref, showToast]);
+
+	// Whether the coordinator's hub can stop a subagent directly (S6), read
+	// without taking the connection's subscription, which follows this
+	// subagent's transcript.
+	const [capabilities, setCapabilities] = useState<ThreadCapabilities | null>(null);
+	const [directUnsupported, setDirectUnsupported] = useState(false);
+	useEffect(() => {
+		if (!inFront || !connected || !client) return;
+		const link = new SessionLink(client, coordinator.ref);
+		link.read({ follow: false }).then(
+			(session) => setCapabilities(session.capabilities),
+			() => {
+				// Unknown: the bar offers no stop until a read answers.
+			},
+		);
+		return () => link.dispose();
+	}, [inFront, connected, client, coordinator.ref]);
+	const direct = capabilities?.stopSubagent === true && !directUnsupported;
+
+	const stopDirectly = useCallback(
+		(target: SubagentRow) => {
+			Alert.alert(`Stop “${target.title}”?`, "Anything it started keeps running.", [
+				{ text: "Cancel", style: "cancel" },
+				{
+					text: "Stop",
+					style: "destructive",
+					onPress: async () => {
+						if (!client) return;
+						try {
+							const response = await client.request("evener/delegate/stop", {
+								ref: coordinator.ref,
+								threadId: coordinator.threadId,
+								delegateId: target.id,
+							});
+							// notRunning: it was already finishing, so there is nothing to wait for.
+							if (response.outcome === "stopping")
+								requests.request(coordinator.ref, target, Date.now(), { direct: true });
+						} catch (error) {
+							if (isMethodNotFound(error)) setDirectUnsupported(true);
+							else if (isResourceNotFound(error)) void tree.reload();
+							else showToast(`Couldn't stop it: ${error instanceof Error ? error.message : String(error)}`);
+						}
+					},
+				},
+			]);
+		},
+		[client, coordinator.ref, coordinator.threadId, requests, tree, showToast],
+	);
+
+	if (!barShown) return null;
+	const offer: StopOffer = !row
+		? { kind: "none" }
+		: requests.view(row) === "requested"
+			? { kind: "requested" }
+			: capabilities === null
+				? { kind: "none" }
+				: direct
+					? // A direct stop ends the subagent's own run, so it needs one running.
+						row.state === "running"
+						? { kind: "stop", onPress: () => stopDirectly(row) }
+						: { kind: "none" }
+					: row.active
+						? {
+								kind: "ask",
+								onPress: () => navigation.navigate("StopSubagentSheet", { hubId, coordinator, ref: row.ref }),
+							}
+						: { kind: "none" };
+	return (
+		<SubagentBar
+			offer={offer}
+			onOpenCoordinator={() => returnToSession(navigation, { hubId, ref: coordinator.ref, title: coordinator.title })}
+		/>
+	);
+}
