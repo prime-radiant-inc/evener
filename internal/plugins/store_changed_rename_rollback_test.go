@@ -101,14 +101,16 @@ func TestAnIncompleteCacheRenameRollbackReportsTheStoreChanged(t *testing.T) {
 	plantLegacyMarketplace(t, m, "market-a", "widget")
 	reports := recordStoreChanges(m)
 
-	originalWrite := marketplaceAtomicWriteFile
+	originalSave := installSaveRegistry
 	originalRename := marketplaceRename
 	t.Cleanup(func() {
-		marketplaceAtomicWriteFile = originalWrite
+		installSaveRegistry = originalSave
 		marketplaceRename = originalRename
 	})
-	marketplaceAtomicWriteFile = func(string, []byte, os.FileMode) error {
-		return errors.New("the store file could not be written")
+	// The rename's first save fails, so nothing has written installed_plugins.json
+	// and the only source of a Plugins mark is the cache's own undo below.
+	installSaveRegistry = func(string, Registry) error {
+		return errors.New("the registry file could not be written")
 	}
 	// The cache's own undo restores newCache back to the old name; refuse only
 	// that, so the clone's undo still succeeds and the failure is the cache's.
@@ -121,7 +123,7 @@ func TestAnIncompleteCacheRenameRollbackReportsTheStoreChanged(t *testing.T) {
 	}
 
 	if _, err := m.EditMarketplace(context.Background(), "market-a", "market-b", nil); err == nil {
-		t.Fatal("EditMarketplace = nil, want the failed write reported")
+		t.Fatal("EditMarketplace = nil, want the failed save reported")
 	}
 	if len(*reports) != 1 {
 		t.Fatalf("OnStoreChanged fired %d times, want 1: %+v", len(*reports), *reports)
@@ -157,12 +159,18 @@ func TestMovePluginCachesToNewNameRollbackFailureReportsPlugins(t *testing.T) {
 
 	orig := marketplaceRename
 	t.Cleanup(func() { marketplaceRename = orig })
+	// pluginCacheMoves sorts the two caches, but drive the failure from call
+	// order rather than a plugin's name so the test cannot depend on it: the
+	// first move succeeds, the second fails, and the first's own undo then
+	// cannot put it back.
+	calls := 0
 	marketplaceRename = func(from, to string) error {
-		switch {
-		case from == filepath.Join(oldCache, "beta"):
+		calls++
+		switch calls {
+		case 2:
 			// The second cache move fails, so the helper rolls the first back.
 			return errors.New("renaming plugin cache: boom")
-		case from == filepath.Join(m.cacheDir(), newName, "alpha"):
+		case 3:
 			// The first cache's own undo then cannot put it back either.
 			return errors.New("restoring plugin cache: boom")
 		}
