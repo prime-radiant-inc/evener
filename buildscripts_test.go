@@ -116,6 +116,155 @@ func TestWebPreflightRefusesAnInstallWithNoRealTsc(t *testing.T) {
 	}
 }
 
+// runAPIPackagePreflight runs the real scripts/sdk/api-package-preflight.sh
+// against packageDir, a throwaway appwire-client/typescript directory
+// (EVENER_API_PACKAGE_DIR), never the real shared install. Every case here is
+// decided before the script would reach npm ci.
+func runAPIPackagePreflight(t *testing.T, packageDir string) (string, error) {
+	t.Helper()
+	command := exec.Command("scripts/sdk/api-package-preflight.sh")
+	command.Env = append(os.Environ(), "EVENER_API_PACKAGE_DIR="+packageDir)
+	output, err := command.CombinedOutput()
+	return string(output), err
+}
+
+// apiPackageFixture lays out a throwaway appwire-client/typescript directory
+// with a lockfile dated into the past, so a node_modules the case adds is newer
+// than it and the -nt freshness shortcut skips npm ci.
+func apiPackageFixture(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	writeTestFile(t, filepath.Join(dir, "package-lock.json"), []byte("{}\n"), 0o644)
+	backdated := time.Now().Add(-time.Hour)
+	if err := os.Chtimes(filepath.Join(dir, "package-lock.json"), backdated, backdated); err != nil {
+		t.Fatalf("date the lockfile: %v", err)
+	}
+	return dir
+}
+
+// freshNodeModules adds a node_modules to dir dated into the future, so the
+// -nt check skips npm ci and the health check is what decides the verdict.
+func freshNodeModules(t *testing.T, dir string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Join(dir, "node_modules"), 0o755); err != nil {
+		t.Fatalf("mkdir node_modules: %v", err)
+	}
+	future := time.Now().Add(time.Hour)
+	if err := os.Chtimes(filepath.Join(dir, "node_modules"), future, future); err != nil {
+		t.Fatalf("date node_modules: %v", err)
+	}
+}
+
+// A fresh checkout has no appwire-client/typescript/node_modules, and the
+// qualification runner then fails inside npm pack's build with a missing tsc,
+// reading as a broken package rather than a missing install. Preflight owns
+// that check now, the way web-preflight does for the frontend; the cases here
+// pin what each unready state refuses, all without running npm.
+func TestAPIPackagePreflightRefusesUnreadyInstalls(t *testing.T) {
+	t.Run("missing package-lock.json", func(t *testing.T) {
+		dir := t.TempDir()
+		freshNodeModules(t, dir)
+
+		output, err := runAPIPackagePreflight(t, dir)
+		if err == nil {
+			t.Fatalf("preflight accepted an install with no package-lock.json; output = %s", output)
+		}
+		if !strings.Contains(output, "package-lock.json") {
+			t.Fatalf("refusal does not name the missing lockfile; output = %s", output)
+		}
+	})
+
+	t.Run("symlinked install with a different lockfile", func(t *testing.T) {
+		root := t.TempDir()
+		work := filepath.Join(root, "appwire-client")
+		shared := filepath.Join(root, "shared")
+		writeTestFile(t, filepath.Join(work, "package-lock.json"), []byte("{}\n"), 0o644)
+		writeTestFile(t, filepath.Join(shared, "package-lock.json"), []byte("{\"different\":true}\n"), 0o644)
+		if err := os.MkdirAll(filepath.Join(shared, "node_modules"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(filepath.Join(shared, "node_modules"), filepath.Join(work, "node_modules")); err != nil {
+			t.Fatalf("symlink node_modules: %v", err)
+		}
+		future := time.Now().Add(time.Hour)
+		if err := os.Chtimes(filepath.Join(shared, "node_modules"), future, future); err != nil {
+			t.Fatal(err)
+		}
+
+		output, err := runAPIPackagePreflight(t, work)
+		if err == nil {
+			t.Fatalf("preflight accepted a mismatched symlinked node_modules; output = %s", output)
+		}
+		if !strings.Contains(output, "does not match") {
+			t.Fatalf("refusal does not say the shared lockfile differs; output = %s", output)
+		}
+		if !strings.Contains(output, "never npm ci through the symlink") {
+			t.Fatalf("refusal does not warn that npm ci through the symlink deletes the shared install; output = %s", output)
+		}
+		if _, err := os.Stat(filepath.Join(shared, "node_modules")); err != nil {
+			t.Fatalf("the shared install was touched despite the refusal: %v", err)
+		}
+	})
+
+	t.Run("empty install newer than the lockfile", func(t *testing.T) {
+		dir := apiPackageFixture(t)
+		freshNodeModules(t, dir)
+
+		output, err := runAPIPackagePreflight(t, dir)
+		if err == nil {
+			t.Fatalf("preflight accepted an empty node_modules; output = %s", output)
+		}
+		if !strings.Contains(output, "tsc") {
+			t.Fatalf("refusal does not name the toolchain check that failed; output = %s", output)
+		}
+	})
+
+	t.Run("install missing ws", func(t *testing.T) {
+		dir := apiPackageFixture(t)
+		freshNodeModules(t, dir)
+		writeTestFile(t, filepath.Join(dir, "node_modules", ".bin", "tsc"), []byte("#!/bin/sh\necho 'Version 5.0.0'\n"), 0o755)
+
+		output, err := runAPIPackagePreflight(t, dir)
+		if err == nil {
+			t.Fatalf("preflight accepted an install with no ws; output = %s", output)
+		}
+		if !strings.Contains(output, "ws") {
+			t.Fatalf("refusal does not name the missing ws devDependency; output = %s", output)
+		}
+	})
+
+	t.Run("healthy install", func(t *testing.T) {
+		dir := apiPackageFixture(t)
+		freshNodeModules(t, dir)
+		writeTestFile(t, filepath.Join(dir, "node_modules", ".bin", "tsc"), []byte("#!/bin/sh\necho 'Version 5.0.0'\n"), 0o755)
+		writeTestFile(t, filepath.Join(dir, "node_modules", "ws", "package.json"), []byte("{}\n"), 0o644)
+
+		output, err := runAPIPackagePreflight(t, dir)
+		if err != nil {
+			t.Fatalf("preflight refused a healthy install: %v\n%s", err, output)
+		}
+		if strings.Contains(output, "ERROR") {
+			t.Fatalf("healthy install produced a refusal; output = %s", output)
+		}
+	})
+}
+
+// make test-api-package must run the preflight before the qualification runner,
+// so a fresh checkout gets the install named (or the symlink refused) rather
+// than a tsc-not-found error inside npm pack. make -n prints the plan; the
+// preflight target has no recipe that re-enters make.
+func TestMakeTestAPIPackageRunsThePreflight(t *testing.T) {
+	output := makeDryRun(t, "test-api-package")
+	preflight := strings.Index(output, "api-package-preflight.sh")
+	qualify := strings.Index(output, "npm run qualification")
+	if preflight == -1 || qualify == -1 {
+		t.Fatalf("make -n test-api-package does not run the preflight (index %d) and the qualification runner (index %d); output = %s", preflight, qualify, output)
+	}
+	if preflight > qualify {
+		t.Fatalf("make -n test-api-package runs the qualification runner before the preflight; output = %s", output)
+	}
+}
+
 // makeDryRun prints make's plan for target without running it. The parent's
 // make control variables are dropped, so a test run under make (its jobserver,
 // -s, -j) cannot reorder or silence the plan.

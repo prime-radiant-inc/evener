@@ -1,4 +1,4 @@
-.PHONY: test-web test-web-browser test-native test-native-bundle native-preflight test-api-package test test-short test-race merge-approval-gate vet test-timing-budget test-rebaseline
+.PHONY: test-web test-web-browser test-native test-native-bundle native-preflight api-package-preflight test-api-package test test-short test-race merge-approval-gate vet test-timing-budget test-rebaseline
 
 # test-web is the frontend's single gate entry point: typecheck, unit tests,
 # then lint. The three checks are independent readers of the same sources, so
@@ -113,16 +113,33 @@ native-preflight:
 test-native-bundle: native-preflight
 	@scripts/native/test-native-bundle.sh
 
+# api-package-preflight turns the misleading failure a fresh checkout gets into
+# a message naming the missing install and the command to run (or repairs a
+# real, non-symlinked install), the way web-preflight does for the frontend. A
+# symlinked shared install whose lockfile differs is refused rather than deleted.
+## Ensure the appwire-client/typescript dependency install is present and
+## healthy before the qualification runner starts.
+## proves: node_modules carries the pinned tsc and the ws the qualification
+##   runner imports, or is repaired with npm ci.
+## trigger: Setup prerequisite for test-api-package.
+## requires: Node 22+; never runs npm ci through a symlinked node_modules.
+## fails-when: node_modules is missing and npm ci fails, is a mismatched
+##   symlink, or lacks a working tsc / ws; the message names
+##   `cd appwire-client/typescript && npm ci`.
+api-package-preflight:
+	@scripts/sdk/api-package-preflight.sh
+
 ## The independently consumable AppWire package qualification gate.
 ## proves: A packed package installs outside the checkout, exposes ESM and
 ##   CommonJS runtime/type entry points, and executes its shipped read-only
 ##   example against a scripted local WebSocket server.
 ## trigger: Package CI; local pre-merge when protocol sources change.
 ## requires: Node 22+ and the protocol package's installed development
-##   dependencies; qualification makes no external network requests.
+##   dependencies (installed by api-package-preflight); qualification makes no
+##   external network requests.
 ## fails-when: Build, pack, outside-checkout install, runtime import/require,
 ##   declaration checking, example protocol exchange or output validation fails.
-test-api-package:
+test-api-package: api-package-preflight
 	@cd appwire-client/typescript && NODE_DISABLE_COMPILE_CACHE=1 npm run qualification
 
 # The module sets a scope selects, shared by `make test` (TEST_SCOPE) and
