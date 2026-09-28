@@ -1515,7 +1515,15 @@ func concurrentDispatchMethod(method string) bool {
 		// attached host, and a phone polls it every ten seconds on the
 		// connection its sends ride. It writes nothing, and each answer
 		// replaces the last, so order does not matter to the poller.
-		appwire.MethodEvenerActivityRead:
+		appwire.MethodEvenerActivityRead,
+		// evener/jobs/list builds the whole activity tree: seconds and
+		// megabytes for a delegate-heavy session, and the web UI refetches
+		// it on every delegate update on the socket its navigation rides.
+		// It writes nothing (the shared fold caches are mutex-guarded and
+		// already serve every connection at once), and the client asks for
+		// one tree at a time and discards a response that is stale or from
+		// another revision, so answer order does not matter.
+		appwire.MethodEvenerJobsList:
 		return true
 	}
 	return false

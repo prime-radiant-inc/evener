@@ -6,12 +6,13 @@ import type { ComponentProps, ReactNode } from "react";
 import { createElement } from "react";
 import { act, type ReactTestRenderer } from "react-test-renderer";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { AnyNotification, Thread } from "@evener/appwire-client";
+import { type AnyNotification, type Thread, WireError } from "@evener/appwire-client";
 import { nativeDrafts } from "./nativeDrafts";
 import { getNativeMutationRuntime, nativeMutationTargetKey } from "./nativeMutationRuntime";
 import {
 	flatListCalls,
 	flatListScrollFailures,
+	alertRequests,
 	type PanGestureMock,
 	pressable,
 	render,
@@ -38,6 +39,9 @@ import { paletteFor } from "./design/tokens";
 import { answerFleetRead, type FleetShape, fleetSession } from "./session/fleetTestUtils";
 import { FloatingStack } from "./session/FloatingStack";
 import { Toast } from "./Toast";
+import { forgetStopRequestsForHub, stopRequests } from "./subagents/nativeStopRequests";
+import { SubagentScreen } from "./subagents/SubagentScreen";
+import { flattenSubagents } from "./subagents/subagentModel";
 
 const harness = vi.hoisted(() => ({
 	connection: {} as Record<string, unknown>,
@@ -287,8 +291,19 @@ const fleet: FleetShape = { live: [], needsYou: [] };
 // shared navigation mock, so a later test reading the last header options
 // could act on it instead of its own screen.
 const mountedScreens: ReactTestRenderer[] = [];
+// A coordinator's subagent tree (evener/jobs/list) and its direct stop
+// (evener/delegate/stop), for the subagent screen's tests.
+const coordinatorHub: { tree: unknown; stop: (params: Record<string, unknown>) => unknown; readFails: string | null } =
+	{
+		tree: null,
+		stop: () => ({ outcome: "stopping" }),
+		readFails: null,
+	};
 afterEach(() => {
 	for (const tree of mountedScreens.splice(0)) if (tree.toJSON() !== null) act(() => tree.unmount());
+	coordinatorHub.tree = null;
+	coordinatorHub.stop = () => ({ outcome: "stopping" });
+	coordinatorHub.readFails = null;
 	otherThreads.clear();
 	fleet.live = [];
 	fleet.needsYou = [];
@@ -328,6 +343,7 @@ function hubClient(
 					readsToFail -= 1;
 					throw new Error("read failed");
 				}
+				if (params.ref === coordinatorHub.readFails) throw new Error("read failed");
 				// A second session this client can also read, by its ref.
 				const thread = otherThreads.get(String(params.ref)) ?? served;
 				return { thread, ...(olderCursor ? { olderCursor } : {}) };
@@ -362,6 +378,8 @@ function hubClient(
 						...(params.expectedEntryId ? { queueEntryIds: [params.expectedEntryId] } : {}),
 					},
 				};
+			if (method === "evener/jobs/list" && coordinatorHub.tree) return { data: coordinatorHub.tree };
+			if (method === "evener/delegate/stop") return coordinatorHub.stop(params);
 			if (method === "evener/session/seen/set")
 				return { ok: true, changed: true, navigation: { generation_id: "generation-test", targets: [] } };
 			return answerFleetRead(fleet, method, params) ?? {};
@@ -2237,5 +2255,440 @@ describe("moving between sessions (spec 8.3, 13.2)", () => {
 		);
 		expect(renderedText(sheet)).toContain("Laptop");
 		expect(renderedText(sheet)).not.toContain("Work hub");
+	});
+});
+
+describe("a subagent's own session (spec 9, rulings 10 and 30)", () => {
+	const COORDINATOR = { ref: "local:coord", threadId: "thread-local:coord", title: "Get PR 2138 Test Clean" };
+	const RUNNING_SINCE = new Date(Date.now() - 4 * 60_000).toISOString();
+
+	function subagentTree(over: Record<string, unknown> = {}, revision = 1) {
+		return {
+			revision,
+			root: {
+				kind: "session",
+				// ActivityList checks the root is the coordinator's thread.
+				sessionId: COORDINATOR.threadId,
+				ref: COORDINATOR.ref,
+				label: COORDINATOR.title,
+				aggregate: "working",
+				counts: { active: 1, failed: 0, completed: 0, complete: true },
+				branch: {},
+				entries: [
+					{
+						kind: "delegate",
+						delegate: {
+							delegateId: "d-fix",
+							childSessionId: "fix",
+							childRef: "local:fix",
+							type: "delegate",
+							description: "Fix race in tree settle",
+							branch: {},
+							runStartedAt: RUNNING_SINCE,
+							// A delegate's update lands only with a newer projection revision.
+							projectionRevision: revision,
+							...over,
+						},
+					},
+				],
+			},
+		};
+	}
+
+	/** The coordinator's thread, as the phone reads it without following it. */
+	function coordinator(stopSubagent: boolean) {
+		const served = thread(COORDINATOR.ref, "active");
+		(served as unknown as { evener: { capabilities: Record<string, boolean> } }).evener.capabilities = {
+			...CAPABILITIES,
+			...(stopSubagent ? { stopSubagent: true } : {}),
+		};
+		return served;
+	}
+
+	/** The subagent's own thread: a running one is the hub's read-only alias,
+	 * every capability false (the Go encoder writes each key); a finished one
+	 * reads as a past session. */
+	function subagent(running: boolean) {
+		const served = thread("local:fix", running ? "active" : "idle");
+		const evener = (served as unknown as { evener: Record<string, unknown> }).evener;
+		evener.capabilities = running
+			? Object.fromEntries(Object.keys(CAPABILITIES).map((key) => [key, false]))
+			: { ...CAPABILITIES, steer: false, interrupt: false };
+		return served;
+	}
+
+	async function mountSubagent(served: Thread, { stopSubagent = false, jobs = subagentTree() } = {}) {
+		coordinatorHub.tree = jobs;
+		otherThreads.set(COORDINATOR.ref, coordinator(stopSubagent));
+		const hub = hubClient(served);
+		harness.connection = {
+			...screenConnection(hub.client, "ready"),
+			profiles: [{ id: "hub-1", name: "Work hub", origin: "https://hub.test" }],
+			error: null,
+			disconnect: () => {},
+		};
+		const route = {
+			key: "subagent-local:fix",
+			name: "Subagent",
+			params: { hubId: "hub-1", ref: "local:fix", title: "Fix race in tree settle", coordinator: COORDINATOR },
+		};
+		navigationState.state = {
+			index: 2,
+			routes: [
+				{ key: "board", name: "Sessions" },
+				{
+					key: "coord",
+					name: "Conversation",
+					params: { hubId: "hub-1", ref: COORDINATOR.ref, title: COORDINATOR.title },
+				},
+				route,
+			] as never,
+		};
+		const tree = render(<SubagentScreen route={route as never} navigation={navigation as never} />);
+		mountedScreens.push(tree);
+		await settle();
+		return { tree, hub };
+	}
+
+	const jobReads = (hub: ReturnType<typeof hubClient>) =>
+		hub.requests.filter((request) => request.method === "evener/jobs/list").length;
+
+	beforeEach(() => {
+		vi.mocked(navigation.navigate).mockClear();
+		vi.mocked(navigation.pop).mockClear();
+		vi.mocked(navigation.push).mockClear();
+		// The per-hub stop requests are one instance for the app's life.
+		forgetStopRequestsForHub("hub-1");
+	});
+
+	it("holds Ask coordinator to stop it where a running subagent's composer would be", async () => {
+		const { tree } = await mountSubagent(subagent(true));
+		expect(field(tree)).toBeUndefined();
+		expect(pressable(tree, "Ask coordinator to stop it")).toBeDefined();
+		expect(pressable(tree, "Open coordinator")).toBeDefined();
+		expect(pressable(tree, "Stop")).toBeUndefined();
+		// The bar says what you can do; the footer adds nothing.
+		expect(renderedText(tree)).not.toContain("Sending is unavailable");
+		for (const words of ["Retry", "Refresh", "Reconnect", "From the coordinator", "Talk to it through its coordinator"])
+			expect(renderedText(tree)).not.toContain(words);
+		act(() => pressable(tree, "Ask coordinator to stop it")?.props.onPress());
+		expect(navigation.navigate).toHaveBeenCalledWith("StopSubagentSheet", {
+			hubId: "hub-1",
+			coordinator: COORDINATOR,
+			ref: "local:fix",
+		});
+	});
+
+	it("says Stop requested while a request you sent is pending", async () => {
+		const { tree } = await mountSubagent(subagent(true));
+		const [row] = flattenSubagents(subagentTree() as never);
+		if (!row) throw new Error("no row");
+		act(() => stopRequests("hub-1").request(COORDINATOR.ref, row, Date.now()));
+		await settle();
+		expect(renderedText(tree)).toContain("Stop requested");
+		expect(pressable(tree, "Ask coordinator to stop it")).toBeUndefined();
+		expect(pressable(tree, "Open coordinator")).toBeDefined();
+	});
+
+	it("offers Stop subagent itself when the coordinator can stop one directly (S6), after you confirm", async () => {
+		const { tree, hub } = await mountSubagent(subagent(true), { stopSubagent: true });
+		expect(pressable(tree, "Ask coordinator to stop it")).toBeUndefined();
+		act(() => pressable(tree, "Stop subagent")?.props.onPress());
+		const confirm = alertRequests.at(-1);
+		expect(confirm?.title).toBe("Stop “Fix race in tree settle”?");
+		expect(hub.requests.filter((request) => request.method === "evener/delegate/stop")).toEqual([]);
+		await act(async () => confirm?.buttons?.find((button) => button.text === "Stop")?.onPress?.());
+		await settle();
+		expect(
+			hub.requests.filter((request) => request.method === "evener/delegate/stop").map((request) => request.params),
+		).toEqual([{ ref: COORDINATOR.ref, threadId: COORDINATOR.threadId, delegateId: "d-fix" }]);
+		expect(renderedText(tree)).toContain("Stop requested");
+		expect(stopRequests("hub-1").direct({ id: "d-fix" } as never)).toBe(true);
+	});
+
+	it("stops through the coordinator's thread as it reads now, after a restart gave it a new one", async () => {
+		const { tree, hub } = await mountSubagent(subagent(true), { stopSubagent: true });
+		// The coordinator restarts under a new thread while this screen is open.
+		const restarted = coordinator(true);
+		(restarted as unknown as { id: string }).id = "thread-restarted";
+		otherThreads.set(COORDINATOR.ref, restarted);
+		act(() => pressable(tree, "Stop subagent")?.props.onPress());
+		await act(async () =>
+			alertRequests
+				.at(-1)
+				?.buttons?.find((button) => button.text === "Stop")
+				?.onPress?.(),
+		);
+		await settle();
+		expect(
+			hub.requests.filter((request) => request.method === "evener/delegate/stop").map((request) => request.params),
+		).toEqual([{ ref: COORDINATOR.ref, threadId: "thread-restarted", delegateId: "d-fix" }]);
+	});
+
+	it("falls back to asking the coordinator when the hub doesn't know the direct stop", async () => {
+		coordinatorHub.stop = () => {
+			throw new WireError("method not found", -32601);
+		};
+		const { tree } = await mountSubagent(subagent(true), { stopSubagent: true });
+		act(() => pressable(tree, "Stop subagent")?.props.onPress());
+		await act(async () =>
+			alertRequests
+				.at(-1)
+				?.buttons?.find((button) => button.text === "Stop")
+				?.onPress?.(),
+		);
+		await settle();
+		expect(pressable(tree, "Ask coordinator to stop it")).toBeDefined();
+	});
+
+	it("reads the tree again when the direct stop names a subagent the hub no longer has", async () => {
+		coordinatorHub.stop = () => {
+			throw new WireError("delegate not found", -32603, { evenerErrorInfo: "resourceNotFound" });
+		};
+		const { tree, hub } = await mountSubagent(subagent(true), { stopSubagent: true });
+		const before = jobReads(hub);
+		act(() => pressable(tree, "Stop subagent")?.props.onPress());
+		await act(async () =>
+			alertRequests
+				.at(-1)
+				?.buttons?.find((button) => button.text === "Stop")
+				?.onPress?.(),
+		);
+		await settle();
+		expect(jobReads(hub)).toBeGreaterThan(before);
+		expect(renderedText(tree)).not.toContain("Stop requested");
+	});
+
+	it("reads the tree again when the direct stop finds it already finishing", async () => {
+		coordinatorHub.stop = () => ({ outcome: "notRunning" });
+		const { tree, hub } = await mountSubagent(subagent(true), { stopSubagent: true });
+		const before = jobReads(hub);
+		act(() => pressable(tree, "Stop subagent")?.props.onPress());
+		await act(async () =>
+			alertRequests
+				.at(-1)
+				?.buttons?.find((button) => button.text === "Stop")
+				?.onPress?.(),
+		);
+		await settle();
+		expect(jobReads(hub)).toBeGreaterThan(before);
+		expect(renderedText(tree)).not.toContain("Stop requested");
+	});
+
+	it("offers no direct stop from a connection that has gone", async () => {
+		const { tree } = await mountSubagent(subagent(true), { stopSubagent: true });
+		expect(pressable(tree, "Stop subagent")).toBeDefined();
+		harness.connection = { ...harness.connection, state: "reconnecting" };
+		const route = {
+			key: "subagent-local:fix",
+			name: "Subagent",
+			params: { hubId: "hub-1", ref: "local:fix", title: "Fix race in tree settle", coordinator: COORDINATOR },
+		};
+		act(() => tree.update(<SubagentScreen route={route as never} navigation={navigation as never} />));
+		await settle();
+		expect(pressable(tree, "Stop subagent")).toBeUndefined();
+	});
+
+	it("tries the direct stop again on a new connection after one hub didn't know it", async () => {
+		coordinatorHub.stop = () => {
+			throw new WireError("method not found", -32601);
+		};
+		const { tree } = await mountSubagent(subagent(true), { stopSubagent: true });
+		act(() => pressable(tree, "Stop subagent")?.props.onPress());
+		await act(async () =>
+			alertRequests
+				.at(-1)
+				?.buttons?.find((button) => button.text === "Stop")
+				?.onPress?.(),
+		);
+		await settle();
+		expect(pressable(tree, "Stop subagent")).toBeUndefined();
+		const route = {
+			key: "subagent-local:fix",
+			name: "Subagent",
+			params: { hubId: "hub-1", ref: "local:fix", title: "Fix race in tree settle", coordinator: COORDINATOR },
+		};
+		const upgraded = hubClient(subagent(true));
+		harness.connection = { ...harness.connection, client: upgraded.client };
+		act(() => tree.update(<SubagentScreen route={route as never} navigation={navigation as never} />));
+		await settle();
+		expect(pressable(tree, "Stop subagent")).toBeDefined();
+	});
+
+	it("asks the coordinator when its thread can't be read to learn whether a direct stop works", async () => {
+		coordinatorHub.readFails = COORDINATOR.ref;
+		const { tree } = await mountSubagent(subagent(true), { stopSubagent: true });
+		expect(pressable(tree, "Ask coordinator to stop it")).toBeDefined();
+		expect(pressable(tree, "Stop subagent")).toBeUndefined();
+	});
+
+	it("gives a finished subagent the composer back, which sends to it", async () => {
+		const { tree, hub } = await mountSubagent(subagent(false), {
+			jobs: subagentTree({ terminal: true, outcome: "completed", runEndedAt: new Date().toISOString() }),
+		});
+		expect(pressable(tree, "Open coordinator")).toBeUndefined();
+		await type(tree, "Try the other lock order");
+		await press(tree, "Send");
+		const sent = hub.requests.find((request) => request.method === "turn/start");
+		expect(sent?.params).toMatchObject({
+			ref: "local:fix",
+			input: [{ type: "text", text: "Try the other lock order" }],
+		});
+	});
+
+	it("goes back to the coordinator from Open coordinator", async () => {
+		const { tree } = await mountSubagent(subagent(true));
+		act(() => pressable(tree, "Open coordinator")?.props.onPress());
+		expect(navigation.pop).toHaveBeenCalledWith(1);
+	});
+
+	it("reads the coordinator's tree again when this subagent's status changes", async () => {
+		const { hub } = await mountSubagent(subagent(true));
+		const before = jobReads(hub);
+		act(() =>
+			hub.notify({
+				method: "thread/status/changed",
+				params: { threadId: "thread-local:fix", ref: "local:fix", status: { type: "idle" } },
+			} as AnyNotification),
+		);
+		await settle();
+		expect(jobReads(hub)).toBeGreaterThan(before);
+	});
+
+	it("opens its coordinator's Subagents list from its own Subagents chip", async () => {
+		const served = subagent(true);
+		(served as unknown as { evener: Record<string, unknown> }).evener.diagnostics = {
+			delegates: [
+				{
+					delegateId: "d-child",
+					ownerSessionId: "fix",
+					rootSessionId: "coord",
+					childSessionId: "child",
+					transcriptRef: "local:child",
+					type: "subagent",
+					lifecycle: "running",
+					phase: "running",
+					status: "running",
+					resumable: false,
+					needsAttention: false,
+					projectionRevision: 1,
+				},
+			],
+		};
+		const { tree } = await mountSubagent(served);
+		act(() => pressable(tree, "Subagents, 1")?.props.onPress());
+		expect(navigation.navigate).toHaveBeenCalledWith("Subagents", { hubId: "hub-1", ...COORDINATOR });
+	});
+
+	it("opens a document it names in the Reader on its own ref, where its review goes (ruling 16)", async () => {
+		vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response("# Fix the settle race\n"));
+		const served = subagent(false);
+		(served as unknown as { cwd: string }).cwd = "/home/jesse/git/evener";
+		(served as unknown as { turns: unknown[] }).turns = [
+			{
+				id: "t1",
+				status: "completed",
+				itemsView: "default",
+				items: [
+					{
+						id: "said-1",
+						turnId: "t1",
+						type: "agentMessage",
+						status: "completed",
+						text: "The plan is in `docs/superpowers/plans/settle-race.md`.",
+					},
+				],
+			},
+		];
+		const { tree } = await mountSubagent(served, {
+			jobs: subagentTree({ terminal: true, outcome: "completed", runEndedAt: new Date().toISOString() }),
+		});
+		const chip = tree.root.findAll(
+			(node) => String(node.type) === "Pressable" && String(node.props.accessibilityLabel).startsWith("Plan, "),
+		)[0];
+		if (!chip) throw new Error("no document chip");
+		act(() => chip.props.onPress());
+		expect(navigation.navigate).toHaveBeenCalledWith("Reader", {
+			hubId: "hub-1",
+			sessionRef: "local:fix",
+			path: "docs/superpowers/plans/settle-race.md",
+			reviewRef: "local:fix",
+			reviewTitle: "Fix race in tree settle",
+		});
+	});
+
+	it("opens a subagent row in a coordinator's transcript as that subagent's own session, under this one", async () => {
+		const served = thread(COORDINATOR.ref, "active");
+		(served as unknown as { turns: unknown[] }).turns = [
+			{
+				id: "t1",
+				status: "inProgress",
+				itemsView: "default",
+				items: [
+					{
+						id: "call-d",
+						turnId: "t1",
+						type: "commandExecution",
+						toolName: "delegate",
+						status: "inProgress",
+						argumentsJson: JSON.stringify({ description: "Fix race in tree settle" }),
+					},
+				],
+			},
+		];
+		(served as unknown as { evener: Record<string, unknown> }).evener.diagnostics = {
+			delegates: [
+				{
+					delegateId: "d-fix",
+					ownerSessionId: "coord",
+					rootSessionId: "coord",
+					childSessionId: "fix",
+					transcriptRef: "local:fix",
+					originItemId: "call-d",
+					description: "Fix race in tree settle",
+					type: "subagent",
+					lifecycle: "running",
+					phase: "running",
+					status: "running",
+					resumable: false,
+					needsAttention: false,
+					projectionRevision: 1,
+				},
+			],
+		};
+		const { tree } = await mount(served);
+		const row = tree.root.findAll(
+			(node) =>
+				String(node.type) === "Pressable" &&
+				String(node.props.accessibilityLabel).startsWith("Fix race in tree settle, "),
+		)[0];
+		if (!row) throw new Error("no subagent row");
+		act(() => row.props.onPress());
+		expect(navigation.push).toHaveBeenCalledWith("Subagent", {
+			hubId: "hub-1",
+			ref: "local:fix",
+			title: "Fix race in tree settle",
+			coordinator: { ref: COORDINATOR.ref, threadId: COORDINATOR.threadId, title: "Session" },
+		});
+	});
+
+	it("shows the toast once when the subagent stops at your request", async () => {
+		const { tree, hub } = await mountSubagent(subagent(true));
+		const [row] = flattenSubagents(subagentTree() as never);
+		if (!row) throw new Error("no row");
+		act(() => stopRequests("hub-1").request(COORDINATOR.ref, row, Date.now()));
+		coordinatorHub.tree = subagentTree(
+			{ terminal: true, outcome: "cancelled", runEndedAt: new Date().toISOString() },
+			2,
+		);
+		act(() =>
+			hub.notify({
+				method: "thread/status/changed",
+				params: { threadId: "thread-local:fix", ref: "local:fix", status: { type: "idle" } },
+			} as AnyNotification),
+		);
+		await settle();
+		const toasts = () => tree.root.findAllByType(Toast).map((toast) => toast.props.toast?.text);
+		expect(toasts()).toContain("“Fix race in tree settle” stopped");
 	});
 });
