@@ -1,7 +1,14 @@
 import type { QueueState, ThreadCapabilities } from "@evener/appwire-client";
 import type { PendingTurnEntry } from "@evener/appwire-client/state/mutation";
 import { describe, expect, it } from "vitest";
-import { type GhostSource, ghostActionTarget, ghosts, type RecoveryGhostRow, shownGhosts } from "./ghosts";
+import {
+	type GhostSource,
+	ghostActionTarget,
+	ghosts,
+	type RecoveryGhostRow,
+	shownGhosts,
+	whatCanActNow,
+} from "./ghosts";
 
 const caps = (over: Partial<ThreadCapabilities> = {}): ThreadCapabilities => ({
 	send: true,
@@ -282,4 +289,24 @@ it("shows at most three queued messages and counts the rest, never hiding the ot
 	const { shown, moreQueued } = shownGhosts(all);
 	expect(shown.map((ghost) => ghost.text)).toEqual(["1", "2", "3", "draft"]);
 	expect(moreQueued).toBe(2);
+});
+
+describe("what can act right now", () => {
+	const list = () => ghosts(session("idle", ["queued"]), [], unsent("maybe sent"), [row()]);
+
+	it("leaves everything when the hub is there and the composer has loaded", () => {
+		expect(whatCanActNow(list(), { connected: true, composerLoaded: true })).toEqual(list());
+	});
+
+	it("takes a queued message's actions away while the hub is away, and nothing else's", () => {
+		const [queued, draft, refused] = whatCanActNow(list(), { connected: false, composerLoaded: true });
+		expect(queued).toMatchObject({ text: "queued", buttons: [], menu: [] });
+		expect(draft?.buttons).toEqual(["check", "discard"]);
+		expect(refused?.buttons).toEqual(["edit", "discard"]);
+	});
+
+	it("hides a queued message's Edit until the composer can take it", () => {
+		const [queued] = whatCanActNow(list(), { connected: true, composerLoaded: false });
+		expect(queued).toMatchObject({ buttons: ["sendNow", "cancel"], menu: ["cancel"] });
+	});
 });

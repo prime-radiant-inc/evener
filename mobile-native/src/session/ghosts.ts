@@ -181,6 +181,23 @@ function recoveryGhost(row: RecoveryGhostRow): Ghost {
 	};
 }
 
+/** The ghosts with only the actions that can act right now. A queued
+ * message's actions go to the hub, so none show while it's away; the message
+ * still does. Its Edit writes into the composer, so it waits for the composer
+ * to load. Everything else acts on this phone. */
+export function whatCanActNow(
+	all: readonly Ghost[],
+	{ connected, composerLoaded }: { connected: boolean; composerLoaded: boolean },
+): Ghost[] {
+	return all.map((ghost) => {
+		if (ghost.origin.kind !== "queue") return ghost;
+		if (!connected) return { ...ghost, buttons: [], menu: [] };
+		if (composerLoaded) return ghost;
+		const available = (action: GhostAction) => action !== "edit";
+		return { ...ghost, buttons: ghost.buttons.filter(available), menu: ghost.menu.filter(available) };
+	});
+}
+
 /** The queue entry a ghost's button acts on, re-checked against the live queue
  * at the press: the same message at its current place, or null once it has
  * left the queue. A press never acts on whatever now sits at the index the

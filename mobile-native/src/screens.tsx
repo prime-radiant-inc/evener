@@ -121,7 +121,14 @@ import {
 import { type SessionDestination, SessionMenu } from "./SessionMenu";
 import { SessionSheet } from "./SessionSheet";
 import { type ErrorAction, errorAction, RETRY_MESSAGE } from "./session/errorAction";
-import { type Ghost, type GhostAction, ghostActionTarget, ghosts, type QueueEntryRef } from "./session/ghosts";
+import {
+	type Ghost,
+	type GhostAction,
+	ghostActionTarget,
+	ghosts,
+	type QueueEntryRef,
+	whatCanActNow,
+} from "./session/ghosts";
 import { NewContentPill } from "./session/NewContentPill";
 import { QueuedMessages } from "./session/QueuedMessages";
 import { TranscriptSkeleton } from "./session/TranscriptSkeleton";
@@ -1930,25 +1937,22 @@ export function ConversationScreen({
 		recovery.snapshot,
 		() => true,
 	);
-	// A queued message's actions go to the hub, so while it's away they
-	// aren't offered; the message still shows. The rest act on this phone.
-	const allGhosts = ghosts(
-		conversation,
-		snapshot.pendingMutations,
-		unconfirmedSend === null
-			? null
-			: {
-					text: unconfirmedSend,
-					sentText: translateAttachmentMarkers(
-						unconfirmedSend,
-						draft.record.unconfirmedImages,
-					),
-				},
-		recoveryRows,
-	).map((ghost) =>
-		connected || ghost.origin.kind !== "queue"
-			? ghost
-			: { ...ghost, buttons: [], menu: [] },
+	const allGhosts = whatCanActNow(
+		ghosts(
+			conversation,
+			snapshot.pendingMutations,
+			unconfirmedSend === null
+				? null
+				: {
+						text: unconfirmedSend,
+						sentText: translateAttachmentMarkers(
+							unconfirmedSend,
+							draft.record.unconfirmedImages,
+						),
+					},
+			recoveryRows,
+		),
+		{ connected, composerLoaded: draft.loaded },
 	);
 	const canEditGhost = document.canRestoreRecoveredDraft();
 	const ghostEditHint = document.recoveredRestoreHint();
