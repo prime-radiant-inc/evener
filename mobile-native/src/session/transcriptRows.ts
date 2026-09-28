@@ -45,12 +45,22 @@ export function sessionRows(rows: readonly TimelineRow[], turns: readonly TurnTi
 	const out: TimelineRow[] = [];
 	let run: RunRow | null = null;
 	let lastTurn: string | undefined;
+	const marked = new Set<string>();
 	for (const row of rows) {
 		if (inTray(row) || row.kind === "question") continue;
 		const turnId = rowTurnId(row);
 		if (turnId !== undefined && turnId !== lastTurn) {
-			const marker = timeMarker(byId, turnId, lastTurn, timeZone);
-			if (marker) out.push(marker);
+			// One turn can own rows another turn's row sits between: the reducer
+			// seats an overlay notice in the display turn that holds its recorded
+			// item, and the notice keeps its own turn id. When the outer turn
+			// resumes, its start would be compared against the notice's turn (no
+			// times, read as a gap) and a second marker for a turn already marked
+			// would appear. A turn is marked at most once.
+			if (!marked.has(turnId)) {
+				marked.add(turnId);
+				const marker = timeMarker(byId, turnId, lastTurn, timeZone);
+				if (marker) out.push(marker);
+			}
 			// A run never spans a turn change, marked or not: an idle gap too
 			// short for a marker (a goal continuation) still ends the run, or its
 			// duration would cover the gap and it could not be found by turn.
