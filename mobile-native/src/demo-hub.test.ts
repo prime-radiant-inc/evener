@@ -641,14 +641,14 @@ describe("native demonstration hub's fleet sessions", () => {
 			// Steer now, while the turn runs.
 			const [first, second] = queued.queue?.ids ?? [];
 			if (!first || !second) throw new Error("Missing queue ids");
-			expect(ghosts(queued, [], null, []).map((ghost) => ghost.buttons)).toEqual([["steerNow"], ["steerNow"]]);
+			expect(ghosts(queued, [], null, [], true).map((ghost) => ghost.buttons)).toEqual([["steerNow"], ["steerNow"]]);
 			await service.promoteQueuedAsSteer(0, first, instanceId);
 			// Stop with a message queued holds it, and Send now releases it.
 			await service.interrupt();
 			const stopped = await service.open(fleetSessionRef("s-pr2138"));
 			expect(stopped.status.type).toBe("idle");
 			expect(stopped.queue?.texts).toEqual(["One more thing"]);
-			expect(ghosts(stopped, [], null, [])).toEqual([
+			expect(ghosts(stopped, [], null, [], true)).toEqual([
 				expect.objectContaining({ state: "held", buttons: ["sendNow", "cancel"] }),
 			]);
 			await service.promoteQueuedAsSteer(0, second, instanceId);
@@ -685,6 +685,7 @@ describe("native demonstration hub's fleet sessions", () => {
 					reconcilePendingEntries(ref, records, model, new Map(), () => true),
 					null,
 					[],
+					true,
 				);
 			};
 			const opened = await service.open(ref);

@@ -2299,6 +2299,7 @@ export function ConversationScreen({
 						sentText: translateAttachmentMarkers(unconfirmedSend, draft.record.unconfirmedImages),
 					},
 			recoveryRows,
+			connected,
 		),
 		{ connected, composerLoaded: draft.loaded },
 	);
@@ -2328,6 +2329,17 @@ export function ConversationScreen({
 		if (origin.kind === "queue") return queuedGhostAction(origin.entry, action);
 		if (action === "check") {
 			await checkDelivery();
+			return null;
+		}
+		if (origin.kind === "pending") {
+			// The phone's own message: Discard or Cancel drops it from the
+			// outbox, Send now releases one a Stop held. A press that finds the
+			// row already changed does nothing; the ghosts re-render from storage.
+			const runtime = getNativeMutationRuntime();
+			const targetKey = nativeMutationTargetKey(route.params.hubId, route.params.ref);
+			if (action === "discard" || action === "cancel")
+				await runtime.discardUndelivered(origin.clientMutationId, targetKey);
+			else if (action === "sendNow") await runtime.releaseCanceled(origin.clientMutationId, targetKey);
 			return null;
 		}
 		if (origin.kind === "draft") {

@@ -738,6 +738,52 @@ it("does nothing when a Stop lands after the turn already ended", async () => {
 	expect(renderedText(tree)).toBe(before);
 });
 
+it("brings back messages a Stop held before they left the phone: Cancel drops one, Send now sends one (phase 6)", async () => {
+	const ref = "ref-held";
+	const { tree, hub } = await mount(thread(ref, "idle"));
+	const runtime = getNativeMutationRuntime();
+	const targetKey = nativeMutationTargetKey("hub-1", ref);
+	const yours = (text: string) =>
+		runtime.storage.enqueueIntent({
+			targetRef: targetKey,
+			method: "turn/queue",
+			payload: { ref, input: [{ type: "text", text }] },
+			attachments: [],
+			optimisticDisplay: { text },
+		});
+	const dropped = await yours("drop this one");
+	const kept = await yours("send this one");
+	// A Stop commits before either left the phone, and holds them both.
+	await runtime.storage.enqueueInterruptAndCancel({
+		targetRef: targetKey,
+		method: "turn/interrupt",
+		payload: { ref },
+		attachments: [],
+		optimisticDisplay: { method: "turn/interrupt" },
+	});
+	await act(async () => {
+		await runtime.discardRecovery("no-such-row", targetKey);
+	});
+	await settle();
+	const text = renderedText(tree);
+	expect(text).toContain("drop this one");
+	expect(text).toContain("send this one");
+	expect(text).toContain("Held · you stopped this turn");
+
+	// Cancel drops the first from the phone's outbox; it never reaches the hub.
+	await press(tree, "Cancel");
+	await settle();
+	expect(await runtime.storage.getOutbox(dropped.clientMutationId)).toBeUndefined();
+	expect(renderedText(tree)).not.toContain("drop this one");
+
+	// Send now releases the second behind the Stop that held it.
+	await press(tree, "Send now");
+	await settle();
+	await vi.waitFor(() => expect(hub.mutations()).toEqual(["turn/interrupt", "turn/queue"]));
+	const sent = hub.requests.find((request) => request.method === "turn/queue");
+	expect(sent?.params).toMatchObject({ clientMutationId: kept.clientMutationId });
+});
+
 it("holds Stop while a queued message is handed to the outbox", async () => {
 	const { tree, hub } = await mount(thread("ref-stop-wait", "active"));
 	await type(tree, "later");
