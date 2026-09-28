@@ -178,7 +178,10 @@ describe("approval decisions", () => {
     );
     await controls.resolve(pending, false);
     expect(calls).toBe(1);
-    expect(controls.getSnapshot().error).not.toBeNull();
+    // Calm: it says what may have happened, and names no refresh to press.
+    expect(controls.getSnapshot().error).toBe(
+      "Couldn't confirm your decision. It may already have been applied.",
+    );
     await controls.resolve(pending, true);
     expect(calls).toBe(1);
   });
@@ -230,7 +233,9 @@ describe("approval decisions", () => {
       },
     );
     await controls.resolve(pending, true);
-    expect(controls.getSnapshot().error).not.toBeNull();
+    expect(controls.getSnapshot().error).toBe(
+      "Couldn't confirm your decision. It may already have been applied.",
+    );
     await controls.resolve(pending, false);
     expect(calls).toBe(1);
     await controls.refresh();

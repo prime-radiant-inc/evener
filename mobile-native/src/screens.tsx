@@ -50,7 +50,6 @@ import {
 	type ConversationMutationSubmitter,
 } from "../../mobile/src/state/conversationMutation";
 import { ActivitySheet } from "./ActivitySheet";
-import { ApprovalSheet } from "./ApprovalSheet";
 import { ApprovalControls } from "./approvalControls";
 import { useMarkSeenInFront } from "./board/sessionSeen";
 import { CommandCompletion } from "./CommandCompletion";
@@ -102,8 +101,11 @@ import {
 	type QuestionSelections,
 	questionsIdentity,
 } from "./questionAnswers";
+import { ApprovalDock } from "./session/ApprovalDock";
 import { answerWithText } from "./session/askDockCopy";
+import { bottomStack } from "./session/bottomStack";
 import { QuestionDock } from "./session/QuestionDock";
+import { trayLine } from "./session/trayLine";
 import { useQuestionDraft } from "./session/useQuestionDraft";
 import { QuestionBatches } from "./questionBatches";
 import {
@@ -662,7 +664,6 @@ export function ConversationScreen({
 		hubName: string;
 		client: NonNullable<typeof client>;
 	} | null>(null);
-	const [approvalsOpen, setApprovalsOpen] = useState(false);
 	// biome-ignore lint/correctness/useExhaustiveDependencies: Question ownership follows the destination store.
 	const questionBatches = useMemo(() => new QuestionBatches(), [store]);
 	const batches = useSyncExternalStore(
@@ -683,7 +684,6 @@ export function ConversationScreen({
 		useCallback(
 			() => () => {
 				setSessionOpen(false);
-				setApprovalsOpen(false);
 				setComposerSetting(null);
 			},
 			[],
@@ -2209,10 +2209,16 @@ export function ConversationScreen({
 		sheetKey(route.params.hubId, route.params.ref),
 		queueHost,
 	);
-	// While a question waits the dock is the input: the composer comes back
-	// when the dock folds or after "Other answer…".
-	const composerShown =
-		canCompose && (!questionBatch || questionFolded || composerBack);
+	// The docks, the tray and the composer, by one rule (bottomStack.ts).
+	const approval = conversation?.pendingEscalations[0] ?? null;
+	const bottom = bottomStack({
+		approvalPending: approval !== null,
+		questionPending: questionBatch !== null,
+		folded: questionFolded,
+		composerBack,
+		trayShowing: !!conversation && trayLine(conversation, Date.now()) !== null,
+	});
+	const composerShown = canCompose && bottom.composer;
 	// What sits above the composer: failures only you can act on, then
 	// everything waiting to reach the agent. While the composer is hidden
 	// (the dock is open) it sits in the composer's place, so a queued
@@ -2296,14 +2302,6 @@ export function ConversationScreen({
 					deletionAvailable={deletionAvailable}
 					close={() => setSessionMenuOpen(false)}
 					choose={openSessionDestination}
-				/>
-			) : null}
-			{approvalsOpen && conversation && approvalControls ? (
-				<ApprovalSheet
-					approvals={conversation.pendingEscalations}
-					controls={approvalControls}
-					hubName={activeProfile?.name ?? "Hub"}
-					close={() => setApprovalsOpen(false)}
 				/>
 			) : null}
 			{composerSetting && conversation && controls ? (
@@ -2633,16 +2631,6 @@ export function ConversationScreen({
 							keyboardShouldPersistTaps="handled"
 							nestedScrollEnabled
 						>
-							{conversation?.pendingEscalations.length ? (
-								<Action
-									disabled={!ready || !approvalControls}
-									expanded={approvalsOpen}
-									onPress={() => {
-										Keyboard.dismiss();
-										setApprovalsOpen(true);
-									}}
-								>{`${conversation.pendingEscalations.length} ${conversation.pendingEscalations.length === 1 ? "approval" : "approvals"} needed`}</Action>
-							) : null}
 							{composerShown ? null : waitingForAgent}
 							{conversation?.goal ? (
 								<View
@@ -2698,7 +2686,20 @@ export function ConversationScreen({
 							>
 								<Toast toast={toaster.toast} dismiss={toaster.dismiss} />
 							</View>
-							{questionBatch ? (
+							{bottom.dock === "approval" && approval && approvalControls ? (
+								<ApprovalDock
+									// A new approval starts with nothing decided.
+									key={approval.escalationId}
+									request={approval}
+									controls={approvalControls}
+									onDecided={(allowed) =>
+										toaster.show({ text: allowed ? "Allowed once" : "Denied" })
+									}
+								/>
+							) : null}
+							{(bottom.dock === "question" ||
+								bottom.dock === "foldedQuestion") &&
+							questionBatch ? (
 								<QuestionDock
 									questions={questionBatch.questions}
 									draft={questionDraft}
@@ -2710,7 +2711,7 @@ export function ConversationScreen({
 										unconfirmedSend === null
 									}
 									sending={draft.submitting || questionBatch.sending}
-									folded={questionFolded}
+									folded={bottom.dock === "foldedQuestion"}
 									onFold={setQuestionFolded}
 									onOtherAnswer={() => {
 										setComposerBack(true);
@@ -2721,7 +2722,8 @@ export function ConversationScreen({
 									}}
 									error={actionError}
 								/>
-							) : (
+							) : null}
+							{bottom.tray ? (
 								<LiveStatusTray
 									session={conversation}
 									frames={frames}
@@ -2733,7 +2735,7 @@ export function ConversationScreen({
 									}}
 									onJumpToLive={jumpToLive}
 								/>
-							)}
+							) : null}
 							{composerShown ? (
 								<Composer
 									value={draft.record.draft}
@@ -2755,8 +2757,7 @@ export function ConversationScreen({
 										Keyboard.dismiss();
 										void imageSelection.choose("camera");
 									}}
-									// While the dock is open above it, the model chip steps aside.
-									settings={answering && !questionFolded ? null : composerSettings}
+									settings={bottom.modelChip ? composerSettings : null}
 									above={
 										<>
 											{waitingForAgent}

@@ -847,6 +847,42 @@ describe("queued messages above the composer (spec 8.5)", () => {
 	});
 });
 
+describe("an approval waiting for a decision (spec 8.4, ruling 38)", () => {
+	function withApproval(ref: string): Thread {
+		const served = thread(ref, "active");
+		(served as unknown as { evener: Record<string, unknown> }).evener.pendingEscalations = [
+			{
+				threadId: served.id,
+				ref,
+				escalationId: "esc-1",
+				mode: "workspace-write",
+				tool: "write_file",
+				kind: "file_tool",
+				deniedPath: "/Users/jesse/sites/docs/index.html",
+			},
+		];
+		return served;
+	}
+
+	it("shows the dock in the tray's place, and never the composer", async () => {
+		const { tree } = await mount(withApproval("ref-approval"));
+		expect(renderedText(tree)).toContain("Wants to write outside the workspace");
+		expect(pressable(tree, "Stop")).toBeUndefined();
+		expect(field(tree)).toBeUndefined();
+		expect(renderedText(tree)).not.toContain("approval needed");
+	});
+
+	it("allows the one file, and says so", async () => {
+		const { tree, hub } = await mount(withApproval("ref-approval-allow"));
+		await press(tree, "Allow this file only");
+		const resolves = hub.requests.filter((request) => request.method === "evener/sandbox/escalation/resolve");
+		expect(resolves.map((request) => request.params)).toEqual([
+			{ ref: "ref-approval-allow", escalationId: "esc-1", approve: true },
+		]);
+		expect(renderedText(tree)).toContain("Allowed once");
+	});
+});
+
 it("offers no Retry that couldn't send: a question still waits on the failed turn", async () => {
 	const served = thread("ref-retry-question", "idle", true);
 	const turn = (served as unknown as { turns: { status: string; error?: unknown }[] }).turns[0];

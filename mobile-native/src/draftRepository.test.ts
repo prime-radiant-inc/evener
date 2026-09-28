@@ -278,7 +278,7 @@ test("question selections survive reopening only for the exact destination and q
 	).toEqual({});
 });
 // questionsIdentity (questionAnswers.ts) is the SIGNATURE writeQuestions/
-// readQuestions actually receive from useQuestionDraft.ts in production — not
+// readQuestions actually receive from useQuestionDraft.ts in production, not
 // the hand-built JSON-array literals the other cases in this file use.
 // questionDefinitions (draftRepository.ts) parses that signature expecting
 // an array it can index per key; an identity that returns anything else
