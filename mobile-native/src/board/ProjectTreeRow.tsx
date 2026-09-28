@@ -4,9 +4,9 @@
 // Sessions draw as quiet BoardRows instead.
 import { SymbolView } from "expo-symbols";
 import type { ReactElement, ReactNode } from "react";
-import { Platform, Pressable, Text, View } from "react-native";
+import { Pressable, Text, View } from "react-native";
 import { projectName } from "../organizationNavigation";
-import { useColors, useTextScale } from "../ui";
+import { allowFontScaling, useColors, useTextScale } from "../ui";
 import { plural } from "./attention";
 import type { OrganizeBy } from "./boardMemory";
 import { bandHeaderText, FoldChevron } from "./BoardRow";
@@ -35,7 +35,7 @@ export function ProjectTreeRow({ item, onPress, onLongPress, changing = false }:
 	const scale = useTextScale();
 	const text = (content: string, style: Record<string, unknown>, flex = false) => (
 		<Text
-			allowFontScaling={Platform.OS !== "ios"}
+			allowFontScaling={allowFontScaling}
 			numberOfLines={1}
 			style={{ ...(flex ? { flex: 1, minWidth: 0 } : {}), ...style }}
 		>
@@ -231,7 +231,7 @@ export function ProjectSectionHeader({
 			>
 				<Text
 					testID="project-section-header"
-					allowFontScaling={Platform.OS !== "ios"}
+					allowFontScaling={allowFontScaling}
 					numberOfLines={1}
 					style={{ ...bandHeaderText(palette, scale), flexShrink: 1 }}
 				>
@@ -257,7 +257,7 @@ export function ProjectSectionHeader({
 					})}
 				>
 					<SymbolView name="arrow.left.arrow.right" size={13 * scale} tintColor={palette.accentInk} />
-					<Text allowFontScaling={Platform.OS !== "ios"} style={{ fontSize: 13 * scale, color: palette.accentInk }}>
+					<Text allowFontScaling={allowFontScaling} style={{ fontSize: 13 * scale, color: palette.accentInk }}>
 						{ORGANIZE_BY_LABELS[organize.by]}
 					</Text>
 				</Pressable>

@@ -13,7 +13,7 @@ import {
 import { SafeAreaView } from "react-native-safe-area-context";
 import type { LaunchConfigLayer, ModelDescriptor } from "@evener/appwire-client";
 import { creationModel } from "./newSession";
-import { Action, Choice, Copy, styles, useColors } from "./ui";
+import { Action, allowFontScaling, Choice, Copy, styles, useColors } from "./ui";
 
 export function CreationComposerSettings({
 	models,
@@ -65,7 +65,7 @@ export function CreationComposerSettings({
 			>
 				<Text
 					numberOfLines={1}
-					allowFontScaling={Platform.OS !== "ios"}
+					allowFontScaling={allowFontScaling}
 					style={{
 						color: colors.secondary,
 						fontSize: 13 * scale,

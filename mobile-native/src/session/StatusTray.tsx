@@ -5,7 +5,7 @@ import { SymbolView } from "expo-symbols";
 import { useEffect, useMemo, useReducer } from "react";
 import { Platform, Pressable, Text, useWindowDimensions, View } from "react-native";
 import { PulseMeter } from "../board/PulseMeter";
-import { useColors } from "../ui";
+import { allowFontScaling, useColors } from "../ui";
 import { SymbolButton } from "./SymbolButton";
 import { FrameCounter, type TrayLine, type TraySource, trayLine } from "./trayLine";
 
@@ -40,7 +40,7 @@ export function StatusTray({ line, perMinute, connected, canStop, stopping, onSt
 			>
 				<PulseMeter perMinute={perMinute} tone={!connected ? "gray" : line.attention ? "attention" : "alive"} />
 				<Text
-					allowFontScaling={Platform.OS !== "ios"}
+					allowFontScaling={allowFontScaling}
 					numberOfLines={1}
 					ellipsizeMode="tail"
 					style={{
