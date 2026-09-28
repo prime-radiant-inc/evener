@@ -982,12 +982,16 @@ func TestHostRemovalMirrorsTheRemovalMarker(t *testing.T) {
 	}
 	tombstone := tombstoneFor(t, f.m, "side")
 	markers := store.RemovedHosts()
-	got, ok := markers["side"]
+	marker, ok := markers["side"]
 	if !ok {
 		t.Fatalf("removal markers = %+v, want the removed host dated", markers)
 	}
-	if got.Format(time.RFC3339) != tombstone.RemovedAt {
-		t.Fatalf("mirrored removal = %s, want the tombstone's own removed_at %s", got.Format(time.RFC3339), tombstone.RemovedAt)
+	if marker.RemovedAt.Format(time.RFC3339) != tombstone.RemovedAt {
+		t.Fatalf("mirrored removal = %s, want the tombstone's own removed_at %s", marker.RemovedAt.Format(time.RFC3339), tombstone.RemovedAt)
+	}
+	if marker.Generation != tombstone.Generation || marker.IncarnationID != tombstone.IncarnationID {
+		t.Fatalf("mirrored removed pair = %d/%s, want the tombstone's own %d/%s",
+			marker.Generation, marker.IncarnationID, tombstone.Generation, tombstone.IncarnationID)
 	}
 	if _, ok := store.Boundary("side"); !ok {
 		t.Fatal("the removed host's boundary was not mirrored")

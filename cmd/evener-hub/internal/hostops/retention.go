@@ -231,10 +231,79 @@ func validateTombstone(tombstone Tombstone, compactSeq uint64) error {
 			return fmt.Errorf("%w: tombstone %q carries an invalid progress entry", ErrInvalidRecord, tombstone.ID)
 		}
 	}
-	if tombstone.Result != nil {
-		if tombstone.Result.Message == "" || !utf8.ValidString(tombstone.Result.Message) {
-			return fmt.Errorf("%w: tombstone %q carries an invalid terminal result", ErrInvalidRecord, tombstone.ID)
-		}
+	if tombstone.Result == nil {
+		// §10: "`result` is present exactly on terminal records" — and a
+		// tombstone is terminal by construction, so a replay can never lose the
+		// outcome it retained.
+		return fmt.Errorf("%w: terminal tombstone %q carries no terminal result", ErrInvalidRecord, tombstone.ID)
+	}
+	if tombstone.Result.Message == "" || !utf8.ValidString(tombstone.Result.Message) {
+		return fmt.Errorf("%w: tombstone %q carries an invalid terminal result", ErrInvalidRecord, tombstone.ID)
+	}
+	return nil
+}
+
+// MaxCompactionMarks bounds the compaction ledger: one mark per compacting
+// write, oldest dropped first. The ledger is deliberately independent of the
+// dedup tombstones' own bound, because §8's refusal must not lose its evidence
+// when a tombstone is evicted; beyond this many later compacting writes a
+// cursor older than the whole ledger reads as the stale re-list instead, which
+// still restarts the client from the first page.
+const MaxCompactionMarks = 500
+
+// CompactionMark records, for one compacting write, the smallest row id it
+// removed and that row's host. A cursor pinned at `pos` was invalidated by
+// this write exactly when mark.Seq is above the cursor's pinned compactSeq and
+// mark.ID is at or before `pos`: some removed row sat at or before the
+// cursor's position, which is §8's condition. The host names the affected host
+// whose stored bounds entry the refusal carries.
+type CompactionMark struct {
+	Seq  uint64 `json:"seq"`
+	ID   string `json:"id"`
+	Host string `json:"host"`
+}
+
+// validateCompactionMark checks one compaction ledger entry.
+func validateCompactionMark(mark CompactionMark, compactSeq uint64) error {
+	if mark.Seq == 0 || mark.Seq > compactSeq {
+		return fmt.Errorf("%w: compaction mark carries seq %d outside the store's %d", ErrInvalidRecord, mark.Seq, compactSeq)
+	}
+	if _, err := parseAllocatorID(mark.ID); err != nil {
+		return fmt.Errorf("%w: compaction mark id %q is not a controller-assigned id", ErrInvalidRecord, mark.ID)
+	}
+	if err := validateBoundaryName(mark.Host); err != nil {
+		return err
+	}
+	return nil
+}
+
+// RemovedHost is §4's removal marker for one name: when the registry reported
+// the removal, and the (generation, incarnation id) pair the removal tombstoned.
+// The pair is the comparison pair a tombstone replay uses for a removed host —
+// "the tombstone's own removed pair for a removed host (which has no live
+// current pair)" — so a tombstone pinned to an older removal never replays
+// after a re-add/remove cycle.
+type RemovedHost struct {
+	RemovedAt     time.Time `json:"removedAt"`
+	Generation    uint64    `json:"generation"`
+	IncarnationID string    `json:"incarnationId"`
+}
+
+// validateRemovedHost checks one removal marker against the schema the mirror
+// write emits.
+func validateRemovedHost(name string, removed RemovedHost) error {
+	if removed.RemovedAt.IsZero() {
+		return fmt.Errorf("%w: removed host %q carries a zero removal instant", ErrInvalidBoundary, name)
+	}
+	if removed.Generation == 0 || removed.IncarnationID == "" {
+		return fmt.Errorf("%w: removed host %q carries no removed (generation, incarnation id) pair", ErrInvalidBoundary, name)
+	}
+	if len(removed.IncarnationID) > MaxIncarnationIDBytes {
+		return fmt.Errorf("%w: removed host %q carries a %d-byte incarnation id, over the %d-byte bound",
+			ErrInvalidBoundary, name, len(removed.IncarnationID), MaxIncarnationIDBytes)
+	}
+	if !utf8.ValidString(removed.IncarnationID) {
+		return fmt.Errorf("%w: removed host %q carries an incarnation id that is not valid UTF-8", ErrInvalidBoundary, name)
 	}
 	return nil
 }
@@ -242,8 +311,7 @@ func validateTombstone(tombstone Tombstone, compactSeq uint64) error {
 // HostMirror is one store mirror write's inputs: the boundary triples to
 // upsert, the names whose boundary records to drop (a compensated add, a name
 // the registry dropped mid-write), the live names whose removal markers are
-// cleared, and the removed names currently carrying a removal tombstone,
-// mapped to their removal instants.
+// cleared, and the removed names currently carrying a removal tombstone.
 //
 // A name the caller cannot classify — a removed name whose tombstone the
 // registry already expired — belongs to neither Live nor Removed: its existing
@@ -253,7 +321,7 @@ type HostMirror struct {
 	Boundaries map[string]Boundary
 	Remove     []string
 	Live       []string
-	Removed    map[string]time.Time
+	Removed    map[string]RemovedHost
 }
 
 // Tombstones returns copies of every retained dedup tombstone, in stored
@@ -283,10 +351,10 @@ func (s *Store) CompactSeq() uint64 {
 }
 
 // RemovedHosts returns copies of the store's removal markers: the names the
-// registry has reported removed, mapped to their removal instants. §4's
-// removed-host ordering and the tombstone replay's removed-pair comparison
-// read them; the hub test surface reads them too.
-func (s *Store) RemovedHosts() map[string]time.Time {
+// registry has reported removed, with their removal instants and the removed
+// pair the replay comparison uses. §4's removed-host ordering reads them; the
+// hub test surface reads them too.
+func (s *Store) RemovedHosts() map[string]RemovedHost {
 	if s == nil {
 		return nil
 	}
@@ -327,12 +395,12 @@ func (s *Store) MirrorHostState(mirror HostMirror) error {
 			return err
 		}
 	}
-	for name, removedAt := range mirror.Removed {
+	for name, removed := range mirror.Removed {
 		if err := validateBoundaryName(name); err != nil {
 			return err
 		}
-		if removedAt.IsZero() {
-			return fmt.Errorf("%w: host %q carries a zero removal instant", ErrInvalidBoundary, name)
+		if err := validateRemovedHost(name, removed); err != nil {
+			return err
 		}
 		if _, live := mirrorLiveSet(mirror.Live)[name]; live {
 			return fmt.Errorf("%w: host %q is both live and removed in one mirror write", ErrInvalidBoundary, name)
@@ -360,15 +428,15 @@ func (s *Store) MirrorHostState(mirror HostMirror) error {
 			changed = true
 		}
 	}
-	for name, removedAt := range mirror.Removed {
-		removedAt = removedAt.UTC()
-		if existing, ok := next.RemovedHosts[name]; ok && existing.Equal(removedAt) {
+	for name, removed := range mirror.Removed {
+		removed.RemovedAt = removed.RemovedAt.UTC()
+		if existing, ok := next.RemovedHosts[name]; ok && existing == removed {
 			continue
 		}
 		if next.RemovedHosts == nil {
-			next.RemovedHosts = map[string]time.Time{}
+			next.RemovedHosts = map[string]RemovedHost{}
 		}
-		next.RemovedHosts[name] = removedAt
+		next.RemovedHosts[name] = removed
 		changed = true
 	}
 	for _, name := range mirror.Live {
@@ -433,8 +501,8 @@ func (s *Store) compactLocked(next *snapshot) {
 	now := s.now()
 
 	pastHorizon := make(map[string]bool)
-	for host, removedAt := range next.RemovedHosts {
-		if !removedAt.IsZero() && !now.Before(removedAt.Add(policy.RemovedHostHorizon)) {
+	for host, removed := range next.RemovedHosts {
+		if !removed.RemovedAt.IsZero() && !now.Before(removed.RemovedAt.Add(policy.RemovedHostHorizon)) {
 			pastHorizon[host] = true
 		}
 	}
@@ -506,16 +574,32 @@ func (s *Store) compactLocked(next *snapshot) {
 	next.CompactSeq++
 	compactedSeq := next.CompactSeq
 
+	// The compaction ledger: one bounded mark per compacting write, carrying
+	// the smallest row id it removed and that row's host. A cursor is
+	// invalidated exactly when some compacting write after its pin removed a
+	// row at or before its position — minID <= pos — so the mark survives the
+	// dedup tombstones' own bound, which must not erase the evidence §8's
+	// refusal needs (retention.go's own CompactSeq advances independently).
+	smallestID, smallestHost := "", ""
 	remaining := make([]Record, 0, len(next.Records))
 	for i := range next.Records {
 		record := next.Records[i]
 		if victim[record.ID] {
 			next.Tombstones = append(next.Tombstones, tombstoneOf(record, now, compactedSeq))
+			if smallestID == "" || record.ID < smallestID {
+				smallestID, smallestHost = record.ID, record.Host
+			}
 			continue
 		}
 		remaining = append(remaining, record)
 	}
 	next.Records = remaining
+	if smallestID != "" {
+		next.CompactionMarks = append(next.CompactionMarks, CompactionMark{Seq: compactedSeq, ID: smallestID, Host: smallestHost})
+	}
+	if len(next.CompactionMarks) > MaxCompactionMarks {
+		next.CompactionMarks = next.CompactionMarks[len(next.CompactionMarks)-MaxCompactionMarks:]
+	}
 
 	// Tombstone bound: "At most 50 tombstones per host ... oldest-first past
 	// the bound", with removed hosts inside their replay horizon exempt — only
@@ -613,7 +697,7 @@ func (s *Store) compactionVictimsForBytes(next *snapshot, candidates []compactio
 // returns the surviving set in its original order. A removed host inside its
 // replay horizon keeps every tombstone it has; every other host (and a removed
 // host past the horizon) drops oldest-first past the bound.
-func boundedTombstones(tombstones []Tombstone, removedHosts map[string]time.Time, pastHorizon map[string]bool, policy RetentionPolicy) []Tombstone {
+func boundedTombstones(tombstones []Tombstone, removedHosts map[string]RemovedHost, pastHorizon map[string]bool, policy RetentionPolicy) []Tombstone {
 	byHost := map[string][]int{}
 	for i, tombstone := range tombstones {
 		byHost[tombstone.Host] = append(byHost[tombstone.Host], i)

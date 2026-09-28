@@ -26,15 +26,28 @@ func openRetentionStore(t *testing.T, policy RetentionPolicy) (*Store, string) {
 	return store, path
 }
 
+// terminalChange is the change callback every terminal transition in these
+// tests carries: spec §10 requires a terminal record's result, so a nil
+// callback is no longer a legal terminal move.
+func terminalChange(ok bool) func(*Record) {
+	return func(r *Record) { r.Result = &Result{OK: ok, Message: "test outcome"} }
+}
+
 // createOp persists one pending deploy record and returns it.
 func createOp(t *testing.T, store *Store, host, clientOperationID string) Record {
+	t.Helper()
+	return createOpPair(t, store, host, clientOperationID, 7, "inc-"+host)
+}
+
+// createOpPair persists one pending deploy record pinned to an explicit pair.
+func createOpPair(t *testing.T, store *Store, host, clientOperationID string, generation uint64, incarnationID string) Record {
 	t.Helper()
 	record, err := store.Create(NewRecord{
 		ClientOperationID: clientOperationID,
 		Host:              host,
 		Kind:              KindDeploy,
-		Generation:        7,
-		IncarnationID:     "inc-" + host,
+		Generation:        generation,
+		IncarnationID:     incarnationID,
 	})
 	if err != nil {
 		t.Fatalf("Create(%s/%s): %v", host, clientOperationID, err)
@@ -45,7 +58,9 @@ func createOp(t *testing.T, store *Store, host, clientOperationID string) Record
 // finish moves a record to complete, landing its terminal state.
 func finish(t *testing.T, store *Store, id string) Record {
 	t.Helper()
-	record, err := store.Transition(id, StateComplete, nil)
+	record, err := store.Transition(id, StateComplete, func(r *Record) {
+		r.Result = &Result{OK: true, Message: "done"}
+	})
 	if err != nil {
 		t.Fatalf("Transition(%s): %v", id, err)
 	}
@@ -161,13 +176,13 @@ func TestCompactionNeverTouchesHostRemovedMarksOfRetainedRecords(t *testing.T) {
 	// The mark write path the store owns: a transition's change callback
 	// carries the host-removed mark, exactly as the boot pass applies it.
 	compactedMarked := createOp(t, store, "m4", "op-compacted")
-	if _, err := store.Transition(compactedMarked.ID, StateComplete, func(r *Record) { r.HostRemoved = true }); err != nil {
+	if _, err := store.Transition(compactedMarked.ID, StateComplete, func(r *Record) { r.HostRemoved = true; r.Result = &Result{OK: true, Message: "done"} }); err != nil {
 		t.Fatalf("Transition(compactedMarked): %v", err)
 	}
 	newest := createOp(t, store, "m4", "op-newest")
 	finish(t, store, newest.ID)
 	retainedMarked := createOp(t, store, "m4", "op-retained")
-	if _, err := store.Transition(retainedMarked.ID, StateComplete, func(r *Record) { r.HostRemoved = true }); err != nil {
+	if _, err := store.Transition(retainedMarked.ID, StateComplete, func(r *Record) { r.HostRemoved = true; r.Result = &Result{OK: true, Message: "done"} }); err != nil {
 		t.Fatalf("Transition(retainedMarked): %v", err)
 	}
 	// The fourth terminal land exceeds the per-host bound: the oldest terminal
@@ -223,7 +238,7 @@ func TestRemovedHostHistoryCompactsOnlyPastTheHorizon(t *testing.T) {
 			"gone": {Generation: 7, IncarnationID: "inc-gone", PresenceEpoch: 2},
 		},
 		Live:    []string{"live"},
-		Removed: map[string]time.Time{"gone": base.Add(-48 * time.Hour)},
+		Removed: map[string]RemovedHost{"gone": {RemovedAt: base.Add(-48 * time.Hour), Generation: 7, IncarnationID: "inc-gone"}},
 	}); err != nil {
 		t.Fatalf("MirrorHostState: %v", err)
 	}
@@ -304,7 +319,7 @@ func TestRemovedHostTombstonesSurviveInsideTheHorizon(t *testing.T) {
 	store.clock = func() time.Time { return base }
 	if err := store.MirrorHostState(HostMirror{
 		Boundaries: map[string]Boundary{"gone": {Generation: 7, IncarnationID: "inc-gone", PresenceEpoch: 2}},
-		Removed:    map[string]time.Time{"gone": base.Add(-24 * time.Hour)},
+		Removed:    map[string]RemovedHost{"gone": {RemovedAt: base.Add(-24 * time.Hour), Generation: 7, IncarnationID: "inc-gone"}},
 	}); err != nil {
 		t.Fatalf("MirrorHostState: %v", err)
 	}
@@ -339,17 +354,23 @@ func TestCompactionDropsTheBoundaryWithTheLastRecord(t *testing.T) {
 
 	record := createOp(t, store, "gone", "gone-1")
 	finish(t, store, record.ID)
+	// The removal is inside its horizon when the mirror lands: the boundary and
+	// the record both stay.
 	if err := store.MirrorHostState(HostMirror{
 		Boundaries: map[string]Boundary{"gone": {Generation: 7, IncarnationID: "inc-gone", PresenceEpoch: 2}},
-		Removed:    map[string]time.Time{"gone": base.Add(-2 * time.Hour)},
+		Removed:    map[string]RemovedHost{"gone": {RemovedAt: base.Add(-30 * time.Minute), Generation: 7, IncarnationID: "inc-gone"}},
 	}); err != nil {
 		t.Fatalf("MirrorHostState: %v", err)
 	}
 	if _, ok := store.Boundary("gone"); !ok {
 		t.Fatal("the mirror did not persist the boundary")
 	}
-	// A later write runs the pass: the host is past its horizon, its last
-	// record compacts, and the boundary goes with it.
+	if _, ok := store.Record(record.ID); !ok {
+		t.Fatal("an inside-horizon removed host's record compacted before its horizon")
+	}
+	// Past the horizon a later write runs the pass: the host's last record
+	// compacts, and the boundary goes with it.
+	store.clock = func() time.Time { return base.Add(2 * time.Hour) }
 	other := createOp(t, store, "live", "live-1")
 	finish(t, store, other.ID)
 	if _, ok := store.Record(record.ID); ok {
@@ -482,7 +503,7 @@ func TestCompactionLandsAtomicallyWithTheTerminalState(t *testing.T) {
 	finish(t, store, first.ID)
 	second := createOp(t, store, "m4", "op-atomic-2")
 	store.faults.beforeRename = func() error { return errors.New("injected: before rename") }
-	if _, err := store.Transition(second.ID, StateComplete, nil); err == nil {
+	if _, err := store.Transition(second.ID, StateComplete, terminalChange(true)); err == nil {
 		t.Fatal("the injected write failure was not reported")
 	}
 	if _, ok := store.Record(first.ID); !ok {
@@ -493,5 +514,139 @@ func TestCompactionLandsAtomicallyWithTheTerminalState(t *testing.T) {
 	}
 	if got := store.CursorEpoch().CompactSeq; got != 0 {
 		t.Fatalf("compactSeq = %d after the refused write, want 0", got)
+	}
+}
+
+// TestTerminalRecordsAndTombstonesRequireTheirResult pins spec §10's "`result`
+// is present exactly on terminal records": a terminal transition without an
+// outcome is refused, and a tombstone can never replay a terminal record
+// missing the result it retained.
+func TestTerminalRecordsAndTombstonesRequireTheirResult(t *testing.T) {
+	store, _ := openTestStore(t)
+	record := createOp(t, store, "m4", "op-1")
+	if _, err := store.Transition(record.ID, StateComplete, nil); !errors.Is(err, ErrInvalidRecord) {
+		t.Fatalf("terminal transition without a result = %v, want ErrInvalidRecord", err)
+	}
+	if got, _ := store.Record(record.ID); got.State != StatePending {
+		t.Fatalf("record after the refused transition = %q, want pending", got.State)
+	}
+
+	now := time.Now().UTC()
+	tombstone := Tombstone{
+		ID: formatAllocatorID(1), ClientOperationID: "op-1", Host: "m4", Kind: KindDeploy,
+		Generation: 7, IncarnationID: "inc-m4", State: StateComplete,
+		CreatedAt: now, UpdatedAt: now, CompactedAt: now, CompactedSeq: 1,
+	}
+	if err := validateTombstone(tombstone, 1); !errors.Is(err, ErrInvalidRecord) {
+		t.Fatalf("terminal tombstone without a result = %v, want ErrInvalidRecord", err)
+	}
+	tombstone.Result = &Result{OK: true, Message: "done"}
+	if err := validateTombstone(tombstone, 1); err != nil {
+		t.Fatalf("terminal tombstone with a result: %v", err)
+	}
+}
+
+// TestRemovedHostReplayMatchesTheActiveRemovedPair pins §4's comparison pair
+// for a removed host: the store's retained historical boundary for the name —
+// the removal marker mirroring the registry tombstone — so after remove →
+// re-add → remove again a tombstone pinned to the older removal never replays,
+// and the newer incarnation's replay still does.
+func TestRemovedHostReplayMatchesTheActiveRemovedPair(t *testing.T) {
+	store, _ := openRetentionStore(t, RetentionPolicy{TerminalPerHost: 1})
+	base := time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC)
+	store.clock = func() time.Time { return base }
+
+	// First incarnation (7/inc-m4): op-old is compacted into a tombstone.
+	old := createOp(t, store, "m4", "op-old")
+	finish(t, store, old.ID)
+	other := createOp(t, store, "m4", "op-other")
+	finish(t, store, other.ID)
+	if _, ok := store.Record(old.ID); ok {
+		t.Fatal("the per-host bound did not compact the first incarnation's record")
+	}
+
+	// Remove at pair 7/inc-m4, re-add at 8/inc-new, then remove again.
+	if err := store.MirrorHostState(HostMirror{
+		Boundaries: map[string]Boundary{"m4": {Generation: 7, IncarnationID: "inc-m4", PresenceEpoch: 2}},
+		Removed:    map[string]RemovedHost{"m4": {RemovedAt: base, Generation: 7, IncarnationID: "inc-m4"}},
+	}); err != nil {
+		t.Fatalf("MirrorHostState(remove 7): %v", err)
+	}
+	if err := store.MirrorHostState(HostMirror{
+		Boundaries: map[string]Boundary{"m4": {Generation: 8, IncarnationID: "inc-new", PresenceEpoch: 3}},
+		Live:       []string{"m4"},
+	}); err != nil {
+		t.Fatalf("MirrorHostState(re-add): %v", err)
+	}
+
+	// Second incarnation (8/inc-new): op-new is compacted into its own
+	// tombstone.
+	newer := createOpPair(t, store, "m4", "op-new", 8, "inc-new")
+	finish(t, store, newer.ID)
+	next := createOpPair(t, store, "m4", "op-next", 8, "inc-new")
+	finish(t, store, next.ID)
+	if _, ok := store.Record(newer.ID); ok {
+		t.Fatal("the per-host bound did not compact the second incarnation's record")
+	}
+	if err := store.MirrorHostState(HostMirror{
+		Boundaries: map[string]Boundary{"m4": {Generation: 8, IncarnationID: "inc-new", PresenceEpoch: 4}},
+		Removed:    map[string]RemovedHost{"m4": {RemovedAt: base, Generation: 8, IncarnationID: "inc-new"}},
+	}); err != nil {
+		t.Fatalf("MirrorHostState(remove 8): %v", err)
+	}
+
+	// The older incarnation's tombstone never replays: its pair is not the
+	// active removed pair.
+	_, hit, err := store.LookupOperation(OperationDedupQuery{
+		ClientOperationID: "op-old", Host: "m4", Kind: KindDeploy,
+		Current: OperationPair{Generation: 8, IncarnationID: "inc-new"},
+	})
+	if err != nil {
+		t.Fatalf("LookupOperation(op-old): %v", err)
+	}
+	if hit {
+		t.Fatal("a tombstone pinned to a superseded removal replayed after re-add/remove again")
+	}
+	// The active incarnation's replay still answers with compacted: true.
+	replayed, hit, err := store.LookupOperation(OperationDedupQuery{
+		ClientOperationID: "op-new", Host: "m4", Kind: KindDeploy,
+		Current: OperationPair{Generation: 8, IncarnationID: "inc-new"},
+	})
+	if err != nil || !hit || !replayed.Compacted {
+		t.Fatalf("active removed-pair replay = hit %v compacted %v err %v; want a compacted replay",
+			hit, replayed.Compacted, err)
+	}
+}
+
+// TestMirrorWriteMeetsTheByteBound pins §4's bound on every mutating commit
+// path: a boundary/removal-marker mirror write that would leave the store over
+// the serialized bound compacts in that same atomic write.
+func TestMirrorWriteMeetsTheByteBound(t *testing.T) {
+	roomy, storePath := openRetentionStore(t, RetentionPolicy{TerminalPerHost: 50, TerminalStoreWide: 50})
+	first := createOp(t, roomy, "m4", "op-1")
+	finish(t, roomy, first.ID)
+	second := createOp(t, roomy, "m4", "op-2")
+	finish(t, roomy, second.ID)
+	if got := len(roomy.Records()); got != 2 {
+		t.Fatalf("records before the mirror write = %d, want 2", got)
+	}
+	before := roomy.CursorEpoch().CompactSeq
+
+	// An unfittable cap: the mirror write itself must compact every removable
+	// terminal record, not defer the bound to a later record write.
+	roomy.retention.StoreMaxBytes = 1
+	if err := roomy.MirrorHostState(HostMirror{
+		Boundaries: map[string]Boundary{"m4": {Generation: 7, IncarnationID: "inc-m4", PresenceEpoch: 9}},
+	}); err != nil {
+		t.Fatalf("MirrorHostState: %v", err)
+	}
+	if got := len(roomy.Records()); got != 0 {
+		t.Fatalf("records after the over-cap mirror write = %d, want the mirror write itself to compact", got)
+	}
+	if roomy.CursorEpoch().CompactSeq <= before {
+		t.Fatalf("compactSeq = %d after the over-cap mirror write, want above %d", roomy.CursorEpoch().CompactSeq, before)
+	}
+	if len(mustReadFile(t, storePath)) == 0 {
+		t.Fatal("the mirror write left no store file")
 	}
 }

@@ -286,7 +286,9 @@ func TestHostOperationsCursorInvalidatedEnvelope(t *testing.T) {
 	}
 	finishSeed := func(record hostops.Record) {
 		t.Helper()
-		if _, err := store.Transition(record.ID, hostops.StateComplete, nil); err != nil {
+		if _, err := store.Transition(record.ID, hostops.StateComplete, func(r *hostops.Record) {
+			r.Result = &hostops.Result{OK: true, Message: "done"}
+		}); err != nil {
 			t.Fatalf("Transition(%s): %v", record.ID, err)
 		}
 	}
@@ -328,6 +330,63 @@ func TestHostOperationsCursorInvalidatedEnvelope(t *testing.T) {
 	if bound, ok := data.Bounds.(appwire.HostBoundary); !ok ||
 		bound.Generation != 2 || bound.IncarnationID != "inc-m4" || bound.PresenceEpoch != 3 {
 		t.Fatalf("bounds = %T %+v, want the minted triple", data.Bounds, data.Bounds)
+	}
+}
+
+// TestHostOperationsDetailCarriesTheCompactedMarker pins §12's "`compacted:
+// true` exactly on tombstone replays" through the handler: the `id` detail
+// filter resolves a compacted record out of its tombstone, with its retained
+// terminal result, while a listed page never carries the marker.
+func TestHostOperationsDetailCarriesTheCompactedMarker(t *testing.T) {
+	entry := planTestHost()
+	entry.Generation = 2
+	entry.IncarnationID = "inc-m4"
+	entry.PresenceEpoch = 3
+	store, err := hostops.OpenWithRetention(hostops.StorePath(t.TempDir()), hostops.RetentionPolicy{TerminalPerHost: 1})
+	if err != nil {
+		t.Fatalf("OpenWithRetention: %v", err)
+	}
+	if err := store.MirrorBoundaries(map[string]hostops.Boundary{
+		"m4": {Generation: 2, IncarnationID: "inc-m4", PresenceEpoch: 3},
+	}, nil); err != nil {
+		t.Fatalf("MirrorBoundaries: %v", err)
+	}
+	finishSeedOperation(t, store, seedOperationRecord(t, store, "m4", "op-compacted", 2, "inc-m4"))
+	finishSeedOperation(t, store, seedOperationRecord(t, store, "m4", "op-kept", 2, "inc-m4"))
+
+	m, _, _ := planTestManager(t, "", []hostreg.Host{entry}, planSeams{})
+	m.cfg.ops = store
+	compactedID := "00000000000000000001"
+	detail, err := m.Operations(context.Background(), appwire.HostOperationsParams{Name: "m4", ID: compactedID})
+	if err != nil {
+		t.Fatalf("Operations(id detail): %v", err)
+	}
+	if len(detail.Operations) != 1 || !detail.Operations[0].Compacted {
+		t.Fatalf("detail page = %+v, want the compacted replay", detail.Operations)
+	}
+	if detail.Operations[0].ID != compactedID || detail.Operations[0].Result == nil || !detail.Operations[0].Result.OK {
+		t.Fatalf("detail replay = %+v, want the retained outcome", detail.Operations[0])
+	}
+	// The listing page carries no compacted marker: the replay is a detail
+	// resolution, not a listed row.
+	list, err := m.Operations(context.Background(), appwire.HostOperationsParams{Name: "m4"})
+	if err != nil {
+		t.Fatalf("Operations(list): %v", err)
+	}
+	for _, record := range list.Operations {
+		if record.Compacted {
+			t.Fatalf("list page carried a compacted record: %+v", record)
+		}
+	}
+}
+
+// finishSeedOperation lands one seeded record as a complete operation.
+func finishSeedOperation(t *testing.T, store *hostops.Store, record hostops.Record) {
+	t.Helper()
+	if _, err := store.Transition(record.ID, hostops.StateComplete, func(r *hostops.Record) {
+		r.Result = &hostops.Result{OK: true, Message: "done"}
+	}); err != nil {
+		t.Fatalf("Transition(%s): %v", record.ID, err)
 	}
 }
 

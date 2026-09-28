@@ -307,9 +307,15 @@ func validateRecord(record Record) error {
 			return fmt.Errorf("%w: record %q carries a progress entry that is not valid UTF-8", ErrInvalidRecord, record.ID)
 		}
 	}
-	// A result is terminal data: it belongs to a record that has finished. A
-	// running or pending record carrying one would render a finished outcome for
-	// an operation still in flight.
+	// A result is terminal data: it belongs to a record that has finished — and
+	// every terminal record carries one (spec §10: "`result` is present exactly
+	// on terminal records"), so a terminal record without its outcome is not a
+	// value this store writes and never enters the file. A running or pending
+	// record carrying one would render a finished outcome for an operation
+	// still in flight.
+	if record.State.Terminal() && record.Result == nil {
+		return fmt.Errorf("%w: terminal record %q carries no terminal result", ErrInvalidRecord, record.ID)
+	}
 	if record.Result != nil {
 		if !record.State.Terminal() {
 			return fmt.Errorf("%w: record %q carries a terminal result in state %q",

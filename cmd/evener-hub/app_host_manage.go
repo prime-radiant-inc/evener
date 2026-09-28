@@ -2472,9 +2472,13 @@ func (m *hubHostManager) mirrorBoundaries(entries, known []hostreg.Host, records
 			continue
 		}
 		if mirror.Removed == nil {
-			mirror.Removed = map[string]time.Time{}
+			mirror.Removed = map[string]hostops.RemovedHost{}
 		}
-		mirror.Removed[name] = removedAt
+		mirror.Removed[name] = hostops.RemovedHost{
+			RemovedAt:     removedAt,
+			Generation:    tombstone.Generation,
+			IncarnationID: tombstone.IncarnationID,
+		}
 	}
 	if len(mirror.Boundaries) == 0 && len(mirror.Remove) == 0 && len(mirror.Live) == 0 && len(mirror.Removed) == 0 {
 		return

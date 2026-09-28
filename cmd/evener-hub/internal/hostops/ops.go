@@ -157,19 +157,35 @@ func lookupOperationLocked(state *snapshot, q OperationDedupQuery) (Record, bool
 	// opening a fresh operation, but only while the tombstone's pinned pair
 	// still equals the comparison pair for the name: the registry's current
 	// pair for a live host, the tombstone's own removed pair for a removed host
-	// (which has no live current pair)."
-	for _, tombstone := range state.Tombstones {
+	// (which has no live current pair)." No deploy/restart caller ever runs for
+	// a detached name, so for a removed host the store's own retained
+	// historical boundary — the removal marker's pair, which mirrors the
+	// registry tombstone the mirror write carried — IS the comparison pair: a
+	// tombstone pinned to an older removal (a re-add followed by a second
+	// remove) never equals it and never replays. The newest matching tombstone
+	// wins.
+	best := -1
+	for i := range state.Tombstones {
+		tombstone := state.Tombstones[i]
 		if tombstone.Host != q.Host || tombstone.Kind != q.Kind || tombstone.ClientOperationID != q.ClientOperationID {
 			continue
 		}
-		if _, removed := state.RemovedHosts[tombstone.Host]; !removed {
+		comparison := q.Current
+		if removed, ok := state.RemovedHosts[tombstone.Host]; ok {
+			comparison = OperationPair{Generation: removed.Generation, IncarnationID: removed.IncarnationID}
+		}
+		if !comparison.equal(OperationPair{Generation: tombstone.Generation, IncarnationID: tombstone.IncarnationID}) {
 			// "A tombstone pinned to a superseded pair on a live host never
 			// replays; the clean-slate re-add rule wins over the tombstone."
-			if !q.Current.equal(OperationPair{Generation: tombstone.Generation, IncarnationID: tombstone.IncarnationID}) {
-				continue
-			}
+			continue
 		}
-		return tombstone.record(), true, nil
+		if best < 0 || state.Tombstones[best].CompactedSeq < tombstone.CompactedSeq ||
+			(state.Tombstones[best].CompactedSeq == tombstone.CompactedSeq && state.Tombstones[best].ID < tombstone.ID) {
+			best = i
+		}
+	}
+	if best >= 0 {
+		return state.Tombstones[best].record(), true, nil
 	}
 	// Collisions: any current-generation record with this ID that is not the
 	// same-key record above. A record of this name is judged against the
@@ -385,10 +401,6 @@ func (s *Store) ConsumeTokenAndCreateOperation(req OperationCreateRequest) (Oper
 	if err != nil {
 		return OperationCreateOutcome{}, err
 	}
-	// §4's retention rides the write that lands the record: a new record that
-	// would push the store over a bound compacts first, in this same atomic
-	// write.
-	s.compactLocked(&next)
 	landed, err := s.commitLocked(next)
 	if err != nil && !landed {
 		// Nothing was written: the refusal reports no record and leaves the
@@ -447,7 +459,6 @@ func (s *Store) CreateOperation(req OperationCreateRequest) (OperationCreateOutc
 	if err != nil {
 		return OperationCreateOutcome{}, err
 	}
-	s.compactLocked(&next)
 	landed, err := s.commitLocked(next)
 	if err != nil && !landed {
 		return OperationCreateOutcome{}, err
@@ -663,7 +674,6 @@ func (s *Store) interruptInFlight(note string) (int, error) {
 	if moved == 0 {
 		return 0, nil
 	}
-	s.compactLocked(&next)
 	landed, err := s.commitLocked(next)
 	if err != nil {
 		if landed {

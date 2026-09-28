@@ -176,7 +176,7 @@ func TestCursorSurvivesCompactionPastItsPosition(t *testing.T) {
 	// records, all of which sit after the cursor's pos.
 	if err := store.MirrorHostState(HostMirror{
 		Boundaries: map[string]Boundary{"gone": {Generation: 7, IncarnationID: "inc-gone", PresenceEpoch: 2}},
-		Removed:    map[string]time.Time{"gone": base.Add(-2 * time.Hour)},
+		Removed:    map[string]RemovedHost{"gone": {RemovedAt: base.Add(-2 * time.Hour), Generation: 7, IncarnationID: "inc-gone"}},
 	}); err != nil {
 		t.Fatalf("MirrorHostState: %v", err)
 	}
@@ -256,5 +256,102 @@ func TestCursorInvalidatedRefusalNamesTheCompactedHostsMintedEntry(t *testing.T)
 	if invalidated.Host != "a" || invalidated.Bound.Absent || invalidated.Bound.Boundary != want {
 		t.Fatalf("refusal = host %q bound %+v; want host a with its minted triple %+v",
 			invalidated.Host, invalidated.Bound, want)
+	}
+}
+
+// TestCursorInvalidationSurvivesTombstoneEviction pins the fix for the
+// reviewer's evicted-evidence finding: the refusal's evidence is the
+// compaction ledger, independent of the bounded dedup tombstones, so evicting
+// the tombstone that recorded the cursor row's compaction does not downgrade
+// the continuation to a stale re-list.
+func TestCursorInvalidationSurvivesTombstoneEviction(t *testing.T) {
+	store, _ := openRetentionStore(t, RetentionPolicy{TerminalPerHost: 1, TombstonesPerHost: 1})
+	cursorBoundary(t, store, "m4", 7, "inc-m4", 3)
+	r1 := createOp(t, store, "m4", "op-1")
+	finish(t, store, r1.ID)
+	r2 := createOp(t, store, "m4", "op-2")
+	finish(t, store, r2.ID) // compacts r1, compactSeq 1.
+
+	page, err := store.ReadOperations(OperationsQuery{Host: "m4", Limit: 1})
+	if err != nil {
+		t.Fatalf("ReadOperations(page 1): %v", err)
+	}
+	if len(page.Records) != 1 || page.Records[0].ID != r2.ID {
+		t.Fatalf("page 1 listed %v, want %s", page.Records, r2.ID)
+	}
+	r3 := createOp(t, store, "m4", "op-3")
+	finish(t, store, r3.ID) // compacts r2 (the cursor's row), compactSeq 2.
+	r4 := createOp(t, store, "m4", "op-4")
+	finish(t, store, r4.ID) // compactSeq 3; the one-per-host tombstone bound evicts r2's evidence.
+	for _, tombstone := range store.Tombstones() {
+		if tombstone.ID == r2.ID {
+			t.Fatal("test setup: the cursor row's tombstone survived the bound")
+		}
+	}
+
+	_, err = store.ReadOperations(OperationsQuery{Host: "m4", Cursor: page.NextCursor})
+	invalidated, ok := errors.AsType[*CursorInvalidatedError](err)
+	if !ok {
+		t.Fatalf("continuation after evidence eviction = %v (%T), want *CursorInvalidatedError", err, err)
+	}
+	if invalidated.CompactSeq != 2 {
+		t.Fatalf("refusal compactSeq = %d, want the compacting write's 2", invalidated.CompactSeq)
+	}
+	if invalidated.Host != "m4" {
+		t.Fatalf("refusal host = %q, want m4", invalidated.Host)
+	}
+}
+
+// TestOperationsDetailResolvesACompactedRecord pins §4's retrieval path: the
+// `id` detail filter (and the operationId filter) resolves a compacted record
+// out of its dedup tombstone with `compacted: true`, while listing pages stay
+// record-only.
+func TestOperationsDetailResolvesACompactedRecord(t *testing.T) {
+	store, _ := openRetentionStore(t, RetentionPolicy{TerminalPerHost: 1})
+	cursorBoundary(t, store, "m4", 7, "inc-m4", 3)
+	compacted := createOp(t, store, "m4", "op-compacted")
+	finish(t, store, compacted.ID)
+	kept := createOp(t, store, "m4", "op-kept")
+	finish(t, store, kept.ID) // compacts the first record.
+
+	page, err := store.ReadOperations(OperationsQuery{Host: "m4", ID: compacted.ID})
+	if err != nil {
+		t.Fatalf("ReadOperations(id detail): %v", err)
+	}
+	if len(page.Records) != 1 {
+		t.Fatalf("id detail listed %d records, want the compacted replay", len(page.Records))
+	}
+	replay := page.Records[0]
+	if replay.ID != compacted.ID || !replay.Compacted || replay.State != StateComplete {
+		t.Fatalf("id detail replay = %+v, want the compacted complete record %s", replay, compacted.ID)
+	}
+	if replay.Result == nil || !replay.Result.OK || replay.Result.Message == "" {
+		t.Fatalf("id detail replay result = %+v, want the retained outcome", replay.Result)
+	}
+
+	page, err = store.ReadOperations(OperationsQuery{Host: "m4", ClientOperationID: "op-compacted"})
+	if err != nil {
+		t.Fatalf("ReadOperations(operationId filter): %v", err)
+	}
+	found := false
+	for _, record := range page.Records {
+		if record.ID == compacted.ID && record.Compacted {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("operationId filter listed %+v, want the compacted replay", page.Records)
+	}
+
+	// Listing pages never surface tombstones: the replay is a detail
+	// resolution, not a listed row.
+	page, err = store.ReadOperations(OperationsQuery{Host: "m4"})
+	if err != nil {
+		t.Fatalf("ReadOperations(list): %v", err)
+	}
+	for _, record := range page.Records {
+		if record.ID == compacted.ID {
+			t.Fatalf("list page surfaced the compacted record %s", compacted.ID)
+		}
 	}
 }

@@ -102,11 +102,16 @@ type snapshot struct {
 	// terminal record, the replay source that answers a lost-response retry
 	// with `compacted: true`. Optional on read for the same reason.
 	Tombstones []Tombstone `json:"tombstones"`
+	// CompactionMarks is the bounded compaction ledger §8's refusal reads
+	// independently of the dedup tombstones' own bound (see
+	// MaxCompactionMarks). Optional on read for the same reason.
+	CompactionMarks []CompactionMark `json:"compactionMarks"`
 	// RemovedHosts records, per name, when the registry's removal tombstone
-	// was seen: §4 compacts a removed host's history first once its removal is
-	// past the `tombstoneRetention` horizon. Optional on read for the same
-	// reason.
-	RemovedHosts map[string]time.Time `json:"removedHosts"`
+	// was seen and the pair it tombstoned: §4 compacts a removed host's history
+	// first once its removal is past the `tombstoneRetention` horizon, and a
+	// tombstone replays for a removed host only while its pinned pair equals
+	// this active removed pair. Optional on read for the same reason.
+	RemovedHosts map[string]RemovedHost `json:"removedHosts"`
 	// Boundaries is the per-host boundary record the registry mirrors (spec 08
 	// §7): the {generation, incarnationId, presenceEpoch} triple per host name.
 	// Unlike every other field it is optional on read: this key arrived after
@@ -413,7 +418,6 @@ func (s *Store) Create(newRecord NewRecord) (Record, error) {
 		return Record{}, err
 	}
 	next.Records = append(next.Records, record)
-	s.compactLocked(&next)
 	adopted, err := s.commitLocked(next)
 	if err != nil && !adopted {
 		// Nothing was written: the refusal reports no record.
@@ -500,7 +504,6 @@ func (s *Store) Transition(id string, to State, change func(*Record)) (Record, e
 	// copied, so progress slices, results and raw messages the callback assigned
 	// (or still holds) cannot alias into store state.
 	next.Records[index] = cloneRecord(record)
-	s.compactLocked(&next)
 	adopted, err := s.commitLocked(next)
 	if err != nil && !adopted {
 		return Record{}, err
@@ -549,6 +552,11 @@ func identityOf(record Record) recordIdentity {
 // reconcile with the state it passed in rather than report the operation absent
 // (see RenameLanded).
 func (s *Store) commitLocked(next snapshot) (landed bool, err error) {
+	// Every mutating path meets §4's retention in this same atomic write: no
+	// commit — record, token, probe epoch, boundary or removal-marker mirror —
+	// may leave the store over a bound that a later record write would then have
+	// to repair. A pass that removes nothing changes nothing.
+	s.compactLocked(&next)
 	landed, err = saveFS(s.fs, s.path, next, s.faults)
 	if landed {
 		s.cell.state = next
@@ -579,9 +587,10 @@ type storeFile struct {
 	// CompactSeq, Tombstones and RemovedHosts are optional on read (see
 	// snapshot's comments): absent and null both decode to the pre-S6 state,
 	// which is "no compacting write yet".
-	CompactSeq   uint64               `json:"compactSeq"`
-	Tombstones   *[]tombstoneFile     `json:"tombstones"`
-	RemovedHosts map[string]time.Time `json:"removedHosts"`
+	CompactSeq      uint64                 `json:"compactSeq"`
+	Tombstones      *[]tombstoneFile       `json:"tombstones"`
+	CompactionMarks *[]CompactionMark      `json:"compactionMarks"`
+	RemovedHosts    map[string]RemovedHost `json:"removedHosts"`
 	// Boundaries is optional on read (see snapshot.Boundaries): absent and null
 	// both decode to nil, which is "no boundary mirrored yet".
 	Boundaries map[string]Boundary `json:"boundaries"`
@@ -804,8 +813,12 @@ func loadFS(fs afero.Fs, path string) (snapshot, error) {
 			state.Tombstones[i] = tombstone
 		}
 	}
-	for name, removedAt := range state.RemovedHosts {
-		state.RemovedHosts[name] = removedAt.UTC()
+	if file.CompactionMarks != nil {
+		state.CompactionMarks = append([]CompactionMark(nil), (*file.CompactionMarks)...)
+	}
+	for name, removed := range state.RemovedHosts {
+		removed.RemovedAt = removed.RemovedAt.UTC()
+		state.RemovedHosts[name] = removed
 	}
 	if file.ProbeEpochs != nil {
 		state.ProbeEpochs = make([]ProbeEpoch, len(*file.ProbeEpochs))
@@ -861,10 +874,14 @@ func saveFS(fs afero.Fs, path string, state snapshot, faults storeFaults) (renam
 		// writes an empty array, never null.
 		state.Tombstones = []Tombstone{}
 	}
+	if state.CompactionMarks == nil {
+		// Same rule for the compaction ledger.
+		state.CompactionMarks = []CompactionMark{}
+	}
 	if state.RemovedHosts == nil {
 		// Same rule for the removal markers: a store that has seen no removal
 		// writes an empty object, never null.
-		state.RemovedHosts = map[string]time.Time{}
+		state.RemovedHosts = map[string]RemovedHost{}
 	}
 	data, err := json.Marshal(state)
 	if err != nil {
@@ -1070,7 +1087,7 @@ func preservedMode(fs afero.Fs, path string) (os.FileMode, bool) {
 var ownedObjectKeys = map[string]map[string]struct{}{
 	"": keysOf("version", "sequence", "allocatorHighWaterMark", "records", "boundaries",
 		"tokens", "probeEpochs", "probeEpochSeq", "guardEpoch", "wallClockHighWaterMark",
-		"compactSeq", "tombstones", "removedHosts"),
+		"compactSeq", "tombstones", "compactionMarks", "removedHosts"),
 	"records[]": keysOf("id", "clientOperationId", "host", "kind", "state", "generation",
 		"incarnationId", "fencingEpoch", "orphanBoundary", "progress", "result",
 		"createdAt", "updatedAt", "hostRemoved", "sequence"),
@@ -1081,6 +1098,7 @@ var ownedObjectKeys = map[string]map[string]struct{}{
 		"compactedAt", "compactedSeq"),
 	"tombstones[].result":     keysOf("ok", "message"),
 	"tombstones[].progress[]": keysOf("ts", "message"),
+	"compactionMarks[]":       keysOf("seq", "id", "host"),
 	"boundaries[]":            keysOf("generation", "incarnationId", "presenceEpoch"),
 	"tokens[]": keysOf("host", "value", "generation", "incarnationId", "entryHash",
 		"hubTomlFingerprint", "factsRevision", "factsCapturedAt", "targetPath",
@@ -1441,16 +1459,30 @@ func validateSnapshot(state snapshot) error {
 			return fmt.Errorf("%w: tombstone %q collides with a retained record", ErrInvalidRecord, tombstone.ID)
 		}
 	}
-	// Removed hosts date §4's horizon check; a zero instant would make every
-	// pass read the host as freshly removed (or as infinitely old), so no
-	// writer emits one.
-	for name, removedAt := range state.RemovedHosts {
+	// Removed hosts date §4's horizon check and pin the active removed pair a
+	// tombstone replay compares against; a zero instant or an incomplete pair
+	// would make every pass read the host as freshly removed (or as infinitely
+	// old) or match the wrong incarnation, so no writer emits one.
+	for name, removed := range state.RemovedHosts {
 		if err := validateBoundaryName(name); err != nil {
 			return err
 		}
-		if removedAt.IsZero() {
-			return fmt.Errorf("%w: removed host %q carries a zero removal instant", ErrInvalidRecord, name)
+		if err := validateRemovedHost(name, removed); err != nil {
+			return err
 		}
+	}
+	// The compaction ledger is the evidence §8's refusal reads when a tombstone
+	// has been evicted: one mark per compacting write, in write order, each at
+	// or below the store's compactSeq.
+	markSeqs := make(map[uint64]struct{}, len(state.CompactionMarks))
+	for _, mark := range state.CompactionMarks {
+		if err := validateCompactionMark(mark, state.CompactSeq); err != nil {
+			return err
+		}
+		if _, duplicate := markSeqs[mark.Seq]; duplicate {
+			return fmt.Errorf("%w: compaction seq %d is carried by more than one mark", ErrInvalidRecord, mark.Seq)
+		}
+		markSeqs[mark.Seq] = struct{}{}
 	}
 	// Token rows carry the same refuse-always rule: a row outside the schema a
 	// mint writes is never served, and the set-level rules (one row per host
@@ -1508,6 +1540,7 @@ func cloneSnapshot(state snapshot) snapshot {
 	for i, tombstone := range state.Tombstones {
 		out.Tombstones[i] = cloneTombstone(tombstone)
 	}
+	out.CompactionMarks = append([]CompactionMark(nil), state.CompactionMarks...)
 	out.RemovedHosts = maps.Clone(state.RemovedHosts)
 	out.Tokens = cloneTokens(state.Tokens)
 	out.ProbeEpochs = slices.Clone(state.ProbeEpochs)
