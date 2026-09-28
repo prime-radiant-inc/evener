@@ -842,9 +842,13 @@ var runnerProbeSandboxHost = func() sandbox.HostFacts { return sandbox.RealProbe
 
 // parseSandboxFlags validates the runner's --sandbox / --sandbox-net values once,
 // for both harnesses, and returns the normalized wire mode and the resolved
-// network decision. Off (empty or "off") is mode off; for a non-off mode the net
-// value parses with empty defaulting to on. An unknown mode or net value is a
-// legible error rather than a silent native run.
+// network decision. Off (empty or "off") is mode off; the net value parses with
+// empty defaulting to on. An unknown mode or net value is a legible error rather
+// than a silent native run.
+//
+// --sandbox-net is validated even when the mode is off, matching the production
+// CLI (cmd/evener configureSandbox parses the net flag before its off
+// short-circuit); the net decision is only APPLIED when the mode is non-off.
 func parseSandboxFlags(modeName, netName string) (sandbox.Mode, bool, error) {
 	name := strings.TrimSpace(modeName)
 	if name == "" {
@@ -853,11 +857,6 @@ func parseSandboxFlags(modeName, netName string) (sandbox.Mode, bool, error) {
 	mode, err := sandbox.ParseMode(name)
 	if err != nil {
 		return sandbox.ModeOff, false, err
-	}
-	if mode == sandbox.ModeOff {
-		// Off: the net value does not apply, so it is not validated (matching
-		// the CLI-forwarding path, which ignores net when off).
-		return mode, true, nil
 	}
 	net, err := parseLiveSandboxNet(netName)
 	if err != nil {

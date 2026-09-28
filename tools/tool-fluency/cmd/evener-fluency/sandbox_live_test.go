@@ -73,9 +73,10 @@ func TestConfigureLiveSandbox(t *testing.T) {
 	if err := configureLiveSandbox(runConfig{sandbox: "read-only", sandboxNet: "yes"}, &cfg); err == nil {
 		t.Fatal("unknown sandbox-net value must error")
 	}
-	// With the sandbox off, --sandbox-net does not apply and is not validated.
-	if err := configureLiveSandbox(runConfig{sandbox: "off", sandboxNet: "yes"}, &agent.SessionConfig{}); err != nil {
-		t.Fatalf("off mode must not validate --sandbox-net: %v", err)
+	// --sandbox-net is validated even when the mode is off, matching the
+	// production CLI's configureSandbox.
+	if err := configureLiveSandbox(runConfig{sandbox: "off", sandboxNet: "yes"}, &agent.SessionConfig{}); err == nil {
+		t.Fatal("off mode must still validate --sandbox-net")
 	}
 }
 
@@ -117,6 +118,24 @@ func TestProvisionLiveSandboxEnforcesAndFailsClosed(t *testing.T) {
 	}
 	if env.Sandbox != nil || env.Wrapper != nil {
 		t.Fatalf("failed provisioning must leave the env unsandboxed, got Sandbox=%v Wrapper=%v", env.Sandbox, env.Wrapper)
+	}
+
+	// Declared + a host that resolves but has no backend binary: EnableSandbox
+	// mints the session scratch and then refuses. It must dispose that mint on
+	// the way out, so a failed probe leaves no scratch directory or lease behind
+	// (the same invariant cmd/evener's TestLaunchProvisioningFailureLeavesNoScratch
+	// pins for the production launch path).
+	env = newSandboxTestEnv(t, work)
+	cfg = agent.SessionConfig{Sandbox: "read-only", SandboxNet: new(true)}
+	err = provisionLiveSandboxWithHost(env, &cfg, work, sandbox.HostFacts{OS: "linux", Home: t.TempDir(), BwrapCapable: true})
+	if err == nil {
+		t.Fatal("a host with no backend binary must fail closed")
+	}
+	if _, ok := errors.AsType[*sandbox.RefusalError](err); !ok {
+		t.Fatalf("want *sandbox.RefusalError, got %T: %v", err, err)
+	}
+	if scratch := env.SessionScratchDir(); scratch != "" {
+		t.Fatalf("failed provisioning leaked scratch %q", scratch)
 	}
 }
 
