@@ -2995,12 +2995,19 @@ test("a merely-resumable local session shows no standalone Resume notice", async
       },
     }),
   );
-  render(
+  const tree = () => (
     <ClientProvider client={fake}>
       <Session params={{ ref }} paneId="p1" focused={true} />
-    </ClientProvider>,
+    </ClientProvider>
   );
+  const { rerender } = render(tree());
   await waitFor(() => expect(threadsStore.getState().restartBlockingObligations.has(ref)).toBe(true));
+  // The resume-only predicate now fails closed until the ref's durable outbox
+  // has loaded (hasQueuedNonSend / hasBlockedUnknown). Session reads that at
+  // render, so load the outbox and re-render - the pane's own liveness tick
+  // does the same within a tick - before asserting the notice is dropped.
+  await refreshPendingTurnsProjection(ref);
+  rerender(tree());
   expect(screen.queryByRole("button", { name: "Resume session" })).toBeNull();
   expect(screen.queryByRole("alert")).toBeNull();
 });

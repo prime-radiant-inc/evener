@@ -3450,10 +3450,14 @@ test("a blockedUnknown row published after the render routes the press to the re
   });
   await storage.markUnknown(record.clientMutationId, "blockedUnknown");
   const blocked = await storage.getOutbox(record.clientMutationId);
+  // Narrow the durable read explicitly (the repo's frontend style avoids a
+  // non-null assertion); the assertion below is unchanged.
+  expect(blocked).toBeDefined();
+  if (!blocked) throw new Error("expected the blocked row to be durable");
   const submit = submitButton();
   expect(submit.disabled).toBe(false);
   act(() => {
-    publishOutboxRecordForTests(blocked!);
+    publishOutboxRecordForTests(blocked);
     fireEvent.click(submit);
   });
   await flushPendingTurnsProjectionForTests();

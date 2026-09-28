@@ -822,9 +822,16 @@ async function applyClearResponse(targetRef: string, response: ThreadClearRespon
 function currentDispatchClient(targetRef?: string, method?: string): AppwireClientLike | null {
   if (wiredClient !== dispatchReadyClient || readyEpoch !== dispatchReadyEpoch) return null;
   if (targetRef && !dispatchableMutationRefs.has(targetRef)) return null;
+  const state = threadsStore.getState();
   if (
     targetRef &&
     (pendingMutationReconciliations.has(targetRef) ||
+      // A Force stop this page started is its own fence for its whole drain
+      // window: the hub holds Stopping > 0 and refuses EVERY method there,
+      // turn/start included (cmd/evener-hub's sessionActionRecoveryError). Read
+      // independently of restartBlockingObligations, which a stale thread
+      // refresh can clear while the RPC is still in flight.
+      state.stoppingRefs.has(targetRef) ||
       // A merely-resumable session's send must dispatch: the hub folds its
       // resume into turn/start, so the obligation does not park the mutation.
       // Only turn/start is carved out of the hub's recovery admission, though,
@@ -845,12 +852,12 @@ function currentDispatchClient(targetRef?: string, method?: string): AppwireClie
       // method-aware recheck could name it, so a ref holding [turn/start,
       // turn/queue] could neither resume nor drain its outbox. The method check
       // below still parks the tail non-send row.
-      (threadsStore.getState().restartBlockingObligations.has(targetRef) &&
+      (state.restartBlockingObligations.has(targetRef) &&
         !(resumeOnlyLocalDispatchable(targetRef) && (method === undefined || method === "turn/start"))) ||
-      threadsStore.getState().mutationReconciliationFailures.has(targetRef))
+      state.mutationReconciliationFailures.has(targetRef))
   )
     return null;
-  if (targetRef && threadsStore.getState().threads.get(targetRef)?.status.type === "restartRequired") return null;
+  if (targetRef && state.threads.get(targetRef)?.status.type === "restartRequired") return null;
   return wiredClient?.state === "ready" ? wiredClient : null;
 }
 
@@ -1879,9 +1886,10 @@ export function isLocalRecoveryFenced(ref: string, restartObligated: boolean): b
 //   - signals.stopInFlight must be false: a snapshot taken before this page's
 //     Stop was answered can still carry the bit the hub stamped before the
 //     Stop's drain began, so the local in-flight Stop keeps the fence.
-//   - signals.queuedNonSend must be false: a queued, not-yet-attempted
-//     non-turn/start durable row parks at the target's FIFO ahead of a
-//     turn/start, so folding a send behind it would silently never deliver it.
+//   - signals.queuedNonSend must be false: a queued non-turn/start durable row
+//     (still "submitting", attempted or not) parks at the target's FIFO ahead
+//     of a turn/start, so folding a send behind it would silently never
+//     deliver it.
 //
 // A Stop in flight / active drain, a restartRequired daemon that needs the
 // older daemon stopped first, and a stale-connection snapshot all leave the hub
@@ -1891,8 +1899,8 @@ export interface ResumeOnlySignals {
   uncertainMessages?: boolean;
   // A Force stop this page started is still draining (stoppingRefs).
   stopInFlight?: boolean;
-  // A queued, not-yet-attempted non-turn/start durable row ahead of the send
-  // (the pending-turns projection's hasQueuedNonSend).
+  // A queued non-turn/start durable row (still "submitting", attempted or not)
+  // ahead of the send (the pending-turns projection's hasQueuedNonSend).
   queuedNonSend?: boolean;
 }
 
@@ -1923,9 +1931,19 @@ export function isResumeOnlyLocal(
 // The projection is installed wherever a session pane is (Session/Composer
 // import it), and every caller of the predicate acts on a loaded session.
 interface ResumeOnlyProjection {
+  // Whether `ref`'s durable outbox has been read and published into the
+  // projection. An installed projection whose first durable read for the ref
+  // has not resolved yet still holds an EMPTY outbox for it - the same map a
+  // ref with no rows holds - so a predicate that read only hasBlockedUnknown/
+  // hasQueuedNonSend would report "no uncertainty" through exactly the window
+  // between hydration and the refresh completing, where an unreconciled
+  // blockedUnknown row can sit. Both reads below therefore fail closed until
+  // this is true, per ref.
+  isLoaded(ref: string): boolean;
   hasBlockedUnknown(ref: string): boolean;
-  // Queued, not-yet-attempted non-turn/start rows: a turn/start queued behind
-  // one starves at the target's FIFO, so a ref holding one is not foldable.
+  // Queued non-turn/start rows (still "submitting", attempted or not): a
+  // turn/start queued behind one starves at the target's FIFO, so a ref holding
+  // one is not foldable.
   hasQueuedNonSend(ref: string): boolean;
 }
 let resumeOnlyProjection: ResumeOnlyProjection | null = null;
@@ -1936,19 +1954,26 @@ export function installResumeOnlyProjection(projection: ResumeOnlyProjection): v
 
 // Whether ref's durable outbox holds delivery-uncertain (blockedUnknown) rows,
 // as the pending-turns projection last published them. True when no projection
-// is installed (failing closed). Exported so a surface that reasons about the
-// fence can ask the same question the store-wide predicate does.
+// is installed OR the ref's own durable outbox has not loaded yet (failing
+// closed - an installed-but-unrefreshed projection holds an empty outbox for
+// every ref). Exported so a surface that reasons about the fence can ask the
+// same question the store-wide predicate does.
 export function hasBlockedUnknown(ref: string): boolean {
-  return resumeOnlyProjection === null || resumeOnlyProjection.hasBlockedUnknown(ref);
+  return (
+    resumeOnlyProjection === null || !resumeOnlyProjection.isLoaded(ref) || resumeOnlyProjection.hasBlockedUnknown(ref)
+  );
 }
 
-// Whether ref's durable outbox holds a queued, not-yet-attempted
-// non-turn/start row, as the pending-turns projection last published them. True
-// when no projection is installed (failing closed). Exported so a surface that
-// reasons about the fence can ask the same question the store-wide predicate
-// does.
+// Whether ref's durable outbox holds a queued non-turn/start row (still
+// "submitting", attempted or not), as the pending-turns projection last
+// published them. True when no projection is installed OR the ref's own
+// durable outbox has not loaded yet (failing closed). Exported so a surface
+// that reasons about the fence can ask the same question the store-wide
+// predicate does.
 export function hasQueuedNonSend(ref: string): boolean {
-  return resumeOnlyProjection === null || resumeOnlyProjection.hasQueuedNonSend(ref);
+  return (
+    resumeOnlyProjection === null || !resumeOnlyProjection.isLoaded(ref) || resumeOnlyProjection.hasQueuedNonSend(ref)
+  );
 }
 
 // isResumeOnlyLocal over the store's current model for ref: the ADMISSION
@@ -2043,9 +2068,18 @@ async function enqueueMutationIntent(
   // is refused here - before any durable write, so every caller shape hears
   // the same admission refusal.
   const fenceRefusal = RECOVERY_FENCE_REFUSALS[intent.method];
+  const admissionState = threadsStore.getState();
   if (
     fenceRefusal !== undefined &&
-    isLocalRecoveryFenced(ref, threadsStore.getState().restartBlockingObligations.has(ref)) &&
+    // The obligation, OR an in-flight Stop of our own: a stale thread refresh
+    // can clear restartBlockingObligations while the forceStop RPC still
+    // drains, and the hub holds Stopping > 0 (refusing even turn/start) for
+    // that whole window - so stopInFlight is an independent fence here, not
+    // only a blocker of the resume-only carve-out below.
+    isLocalRecoveryFenced(
+      ref,
+      admissionState.restartBlockingObligations.has(ref) || admissionState.stoppingRefs.has(ref),
+    ) &&
     // A merely-resumable session folds its resume into turn/start - the hub
     // admits it (cmd/evener-hub's sessionActionRecoveryError turn/start
     // carve-out) - so its send must not be refused here. turn/start on a live

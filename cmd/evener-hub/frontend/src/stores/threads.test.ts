@@ -56,6 +56,7 @@ import {
   ConflictError,
   FRAME_TIMES_MAX_ENTRIES,
   FRAME_TIMES_WINDOW_MS,
+  hasBlockedUnknown,
   hasQueuedNonSend,
   installHydrationRetrySchedulerForTests,
   putThreadModel,
@@ -10975,6 +10976,28 @@ test("a Stop in flight arms the recovery fence for the drain window", async () =
     );
     expect(await storage.listOutbox(ref)).toEqual([]);
     expect(fake.calls.filter((call) => call.method === "turn/start")).toEqual([]);
+    // The obligation a stale thread refresh could clear mid-drain must not
+    // re-open the fence: the in-flight Stop is its own fence. Clear it exactly
+    // as a superseded hydration would, then press Send again.
+    threadsStore.setState((state) => {
+      const restartBlockingObligations = new Map(state.restartBlockingObligations);
+      restartBlockingObligations.delete(ref);
+      return { restartBlockingObligations };
+    });
+    expect(threadsStore.getState().stoppingRefs.has(ref)).toBe(true);
+    expect(threadsStore.getState().restartBlockingObligations.has(ref)).toBe(false);
+    // Admission still refuses the send with only stopInFlight standing.
+    await expect(threadsStore.getState().send(ref, "text")).rejects.toThrow(
+      "Send isn't available until this session is resumed",
+    );
+    expect(await storage.listOutbox(ref)).toEqual([]);
+    expect(fake.calls.filter((call) => call.method === "turn/start")).toEqual([]);
+    // Dispatch is fenced for every method while Stopping > 0: turn/interrupt is
+    // exempt at admission but must still never reach the wire here.
+    await threadsStore.getState().interrupt(ref);
+    await flushIndexedDBUntil(() => fake.calls.some((call) => call.method === "turn/interrupt"));
+    expect(fake.calls.filter((call) => call.method === "turn/interrupt")).toEqual([]);
+    expect((await storage.listOutbox(ref)).map((record) => record.method)).toEqual(["turn/interrupt"]);
     stop.resolve();
     await pending;
   } finally {
@@ -11213,6 +11236,99 @@ test("the queued-non-send projection read blocks the foldable predicate", async 
   await refreshPendingTurnsProjection(ref);
   expect(hasQueuedNonSend(ref)).toBe(true);
   expect(resumeOnlyLocalModel(ref)).toBe(false);
+});
+
+// RoboRev Medium (round 8): an ATTEMPTED non-send row survives a force stop
+// (cancelUnattemptedMutations keeps attempted rows) and still parks at the
+// target's FIFO. The method-aware dispatcher parks any non-turn/start head of a
+// resume-only ref BEFORE markAttempted, so such a row is both attempted and
+// still "submitting". The queued-non-send read must count it as blocking: a new
+// send is otherwise admitted, enqueued behind the parked head, and never
+// dispatched - while the Resume notice/button is already removed for a
+// resume-only session, leaving no UI path out.
+test("an attempted non-send row blocks the foldable predicate", async () => {
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  connectFakeClient("connecting");
+  const ref = "local:attempted-nonsend";
+  putThreadModel(
+    ref,
+    hydrateThread(
+      readResponse(ref, {
+        status: { type: "notLoaded" },
+        evener: {
+          ref,
+          capabilities: { ...CAPABILITIES, send: false },
+          mutationStateAuthoritative: false,
+          resumeRequired: true,
+          resumeOnlyFoldable: true,
+          queue: { revision: 0 },
+        },
+      }),
+      ref,
+      Date.now(),
+    ),
+  );
+  const row = await storage.enqueueIntent({
+    targetRef: ref,
+    threadId: `thr_${ref}`,
+    method: "turn/queue",
+    payload: { ref, input: [{ type: "text", text: "parked non-send" }] },
+    attachments: [],
+    optimisticDisplay: null,
+  });
+  // Dispatched once, then parked by the resume-only fence: attempted, still
+  // "submitting", never settled.
+  expect(await storage.markAttempted(row.clientMutationId)).toBe(true);
+  await refreshPendingTurnsProjection(ref);
+  expect(hasQueuedNonSend(ref)).toBe(true);
+  expect(resumeOnlyLocalModel(ref)).toBe(false);
+});
+
+// RoboRev Medium (round 8): the projection answers from an empty outbox until
+// its first durable read resolves. Failing closed only on a never-installed
+// projection left an installed-but-not-yet-refreshed one reporting "no
+// uncertainty", so a resume could fold ahead of an unreconciled blockedUnknown
+// row in the window between hydration and the refresh completing. Readiness is
+// per ref: an unloaded ref is not foldable, and folds only once its own durable
+// outbox has loaded.
+test("a foldable ref whose outbox has not loaded is not foldable", async () => {
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  connectFakeClient("connecting");
+  const ref = "local:not-yet-loaded";
+  putThreadModel(
+    ref,
+    hydrateThread(
+      readResponse(ref, {
+        status: { type: "notLoaded" },
+        evener: {
+          ref,
+          capabilities: { ...CAPABILITIES, send: false },
+          mutationStateAuthoritative: false,
+          resumeRequired: true,
+          resumeOnlyFoldable: true,
+          queue: { revision: 0 },
+        },
+      }),
+      ref,
+      Date.now(),
+    ),
+  );
+  // The module's own subscription started a refresh for this ref, but it has
+  // not resolved: the projection holds no durable rows for it yet, so the
+  // predicate must fail closed rather than fold a resume ahead of a row it has
+  // not read.
+  // The two direct reads the store-wide predicate folds in fail closed too
+  // (the readiness seam), before any durable read has loaded.
+  expect(hasBlockedUnknown(ref)).toBe(true);
+  expect(hasQueuedNonSend(ref)).toBe(true);
+  expect(resumeOnlyLocalModel(ref)).toBe(false);
+  // Only once the durable outbox has loaded is the ref foldable.
+  await refreshPendingTurnsProjection(ref);
+  expect(hasBlockedUnknown(ref)).toBe(false);
+  expect(hasQueuedNonSend(ref)).toBe(false);
+  expect(resumeOnlyLocalModel(ref)).toBe(true);
 });
 
 test("force stop uses the independent recovery API and fences uncertain outcomes", async () => {

@@ -81,7 +81,14 @@ export function recoveryFence(
   signals: ResumeOnlySignals = {},
 ): RecoveryFenceReading {
   const resumeOnly = isResumeOnlyLocal(ref, model, signals);
-  const stillFenced = isLocalRecoveryFenced(ref, restartObligated) && !resumeOnly;
+  // A Stop this page started is its OWN fence while it drains, independent of
+  // the restart obligation: a stale thread refresh can clear
+  // restartBlockingObligations while the forceStop RPC is still in flight, and
+  // the hub holds Stopping > 0 (refusing even turn/start) for that whole
+  // window. So stillFenced reads stopInFlight as its own clause rather than
+  // only as a blocker of the resume-only carve-out (which isResumeOnlyLocal
+  // already applies, making the two mutually exclusive).
+  const stillFenced = isLocalRecoveryFenced(ref, restartObligated || signals.stopInFlight === true) && !resumeOnly;
   return { resumeOnly, stillFenced, fencedLocal: stillFenced && model.status.type === "notLoaded" };
 }
 

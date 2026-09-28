@@ -119,6 +119,22 @@ test("isResumeOnlyLocal keeps the fence for uncertain, queued, and in-flight-Sto
   expect(uncertain.fencedLocal).toBe(true);
 });
 
+// RoboRev Medium (round 8): a Stop this page started is its OWN fence, not only
+// a blocker of the resume-only carve-out. A stale thread refresh can clear
+// restartBlockingObligations while the forceStop RPC is still draining (the hub
+// holds Stopping > 0 and refuses even turn/start there), so stillFenced must
+// hold on stopInFlight alone, independent of restartObligated. The stopped-local
+// follow-up card must stay reachable for the drain's whole window.
+test("an in-flight Stop keeps the fence without the restart obligation", () => {
+  const foldable = { resumeOnlyFoldable: true, status: { type: "notLoaded" } } as const;
+  const reading = recoveryFence("local:s", foldable, false, { stopInFlight: true });
+  expect(reading.resumeOnly).toBe(false);
+  expect(reading.stillFenced).toBe(true);
+  expect(reading.fencedLocal).toBe(true);
+  // The local-prefix rule is unchanged: a non-local ref is never this fence.
+  expect(recoveryFence("remote:s", foldable, false, { stopInFlight: true }).stillFenced).toBe(false);
+});
+
 // The press fence is method-agnostic, and deliberately so: none of its callers
 // presses the send (the composer's submit runs decideSubmitRoute over
 // availabilityFor, which is where the resume-only carve-out lives - asserted
