@@ -5,14 +5,17 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 )
 
 // manifestFixtureRepo creates a git repository with two commits on main, each
 // building a distinguishable "./cmd/fake" binary, and a branch "other" at the
-// first commit. It returns the repo path and the commit shas in order. Tests
-// build "./cmd/fake" rather than the real evener binary, so they stay fast and
-// offline.
+// first commit. It also carries a second package, "./cmd/fake2", at both
+// commits, so tests can prove that building the same commit for two different
+// packages does not share a cache entry. It returns the repo path and the
+// commit shas in order. Tests build these tiny packages rather than the real
+// evener binary, so they stay fast and offline.
 func manifestFixtureRepo(t *testing.T) (repo string, firstSHA, secondSHA string) {
 	t.Helper()
 	repo = t.TempDir()
@@ -31,6 +34,7 @@ func manifestFixtureRepo(t *testing.T) (repo string, firstSHA, secondSHA string)
 	run("config", "commit.gpgsign", "false")
 	mustWrite(t, filepath.Join(repo, "go.mod"), "module example.com/fixture\n\ngo 1.22\n")
 	mustWrite(t, filepath.Join(repo, "cmd", "fake", "main.go"), "package main\n\nfunc main() { println(\"one\") }\n")
+	mustWrite(t, filepath.Join(repo, "cmd", "fake2", "main.go"), "package main\n\nfunc main() { println(\"other-package\") }\n")
 	run("add", "-A")
 	run("commit", "-q", "-m", "one")
 	firstSHA = run("rev-parse", "HEAD")
@@ -138,6 +142,81 @@ func TestBuildVersionFromManifestBuildsAndCachesByCommit(t *testing.T) {
 	// The build leaves no worktree registered against the repo.
 	cmd := exec.Command("git", "-C", repo, "worktree", "list")
 	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git worktree list: %v: %s", err, out)
+	}
+	if strings.Count(strings.TrimSpace(string(out)), "\n") != 0 {
+		t.Errorf("worktree list = %s, want only the repo's own primary worktree", out)
+	}
+}
+
+// TestBuildVersionFromManifestCachesSeparatelyPerPackage: the cache is keyed
+// on the commit AND the package. Two different packages built at the same
+// commit must land at different paths and produce different binaries, or a
+// later run with a different --build-package would silently reuse whatever
+// an earlier run built for a different one.
+func TestBuildVersionFromManifestCachesSeparatelyPerPackage(t *testing.T) {
+	t.Parallel()
+	repo, _, secondSHA := manifestFixtureRepo(t)
+	cache := t.TempDir()
+	binFake, err := buildVersionFromManifest(repo, cache, secondSHA, "./cmd/fake")
+	if err != nil {
+		t.Fatalf("buildVersionFromManifest(./cmd/fake): %v", err)
+	}
+	binFake2, err := buildVersionFromManifest(repo, cache, secondSHA, "./cmd/fake2")
+	if err != nil {
+		t.Fatalf("buildVersionFromManifest(./cmd/fake2): %v", err)
+	}
+	if binFake == binFake2 {
+		t.Fatalf("two different packages at the same commit shared a cached binary at %s", binFake)
+	}
+	outFake, err := exec.Command(binFake).CombinedOutput()
+	if err != nil {
+		t.Fatalf("run %s: %v: %s", binFake, err, outFake)
+	}
+	outFake2, err := exec.Command(binFake2).CombinedOutput()
+	if err != nil {
+		t.Fatalf("run %s: %v: %s", binFake2, err, outFake2)
+	}
+	if strings.TrimSpace(string(outFake)) == strings.TrimSpace(string(outFake2)) {
+		t.Errorf("./cmd/fake and ./cmd/fake2 produced the same output %q, want each package's own binary", outFake)
+	}
+}
+
+// TestBuildVersionFromManifestConcurrentBuildsOfSameCommitBothSucceed: two
+// concurrent builds of the same commit must not race over a shared worktree
+// path (one's cleanup deleting the other's in-flight checkout) or over a
+// shared final binary path (one seeing the other's half-written file as a
+// cache hit). Both builds should succeed, the cached binary should run, and
+// the repository should be left with no leaked worktree.
+func TestBuildVersionFromManifestConcurrentBuildsOfSameCommitBothSucceed(t *testing.T) {
+	t.Parallel()
+	repo, _, secondSHA := manifestFixtureRepo(t)
+	cache := t.TempDir()
+	const n = 2
+	bins := make([]string, n)
+	errs := make([]error, n)
+	var wg sync.WaitGroup
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			bins[i], errs[i] = buildVersionFromManifest(repo, cache, secondSHA, "./cmd/fake")
+		}(i)
+	}
+	wg.Wait()
+	for i, err := range errs {
+		if err != nil {
+			t.Fatalf("build %d: %v", i, err)
+		}
+	}
+	if bins[0] != bins[1] {
+		t.Fatalf("concurrent builds of the same commit = %v, want the same cached path", bins)
+	}
+	if out, err := exec.Command(bins[0]).CombinedOutput(); err != nil {
+		t.Fatalf("run %s: %v: %s", bins[0], err, out)
+	}
+	out, err := exec.Command("git", "-C", repo, "worktree", "list").CombinedOutput()
 	if err != nil {
 		t.Fatalf("git worktree list: %v: %s", err, out)
 	}

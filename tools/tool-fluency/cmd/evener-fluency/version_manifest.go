@@ -87,33 +87,71 @@ func checkRepoClean(repo string) error {
 }
 
 // buildVersionFromManifest builds pkg at commit sha in repo and returns the
-// binary's path, reusing an earlier build for the same sha instead of
-// rebuilding. It never touches repo's own working tree: it builds in a
+// binary's path, reusing an earlier build for the same (sha, pkg) pair
+// instead of rebuilding. The cache is keyed on both: a run with a different
+// --build-package against the same --version-cache must never see the
+// binary an earlier run built for a different package.
+//
+// It never touches repo's own working tree: it builds in a uniquely named
 // temporary detached worktree, which it removes when the build finishes.
+// Concurrent calls for the same (sha, pkg) never share that worktree path
+// (one's cleanup could otherwise delete another's in-flight checkout), and
+// each writes its build to its own temp file before renaming it into the
+// shared cache path, so a half-written build can never look like a cache
+// hit; if two calls race, they simply both build and the later rename wins.
 func buildVersionFromManifest(repo, cacheDir, sha, pkg string) (string, error) {
-	bin := filepath.Join(cacheDir, sha, "evener")
+	destDir := filepath.Join(cacheDir, sha, safeName(pkg))
+	bin := filepath.Join(destDir, "evener")
 	if info, err := os.Stat(bin); err == nil && !info.IsDir() {
 		return bin, nil
 	}
-	wt := filepath.Join(cacheDir, "wt-"+sha)
-	if err := os.RemoveAll(wt); err != nil {
+	if err := os.MkdirAll(destDir, 0o755); err != nil {
 		return "", err
 	}
+
+	holder, err := os.MkdirTemp(cacheDir, "wt-"+sha+"-")
+	if err != nil {
+		return "", err
+	}
+	defer func() { _ = os.RemoveAll(holder) }()
+	wt := filepath.Join(holder, "worktree")
 	if _, err := runGit(repo, "worktree", "add", "--detach", "--force", wt, sha); err != nil {
 		return "", err
 	}
 	defer func() {
 		_, _ = runGit(repo, "worktree", "remove", "--force", wt)
 	}()
-	if err := os.MkdirAll(filepath.Dir(bin), 0o755); err != nil {
+
+	// os.CreateTemp allocates a unique name atomically, so two concurrent
+	// builds can never collide on it; the file itself is then removed so
+	// `go build` creates it fresh, with the executable permissions a build
+	// output needs. Reusing the file os.CreateTemp made (mode 0600) would
+	// leave the binary non-executable: opening an existing file for write
+	// does not change its mode.
+	tmpFile, err := os.CreateTemp(destDir, "evener-*.tmp")
+	if err != nil {
 		return "", err
 	}
-	cmd := exec.Command("go", "build", "-o", bin, pkg)
+	tmpPath := tmpFile.Name()
+	closeErr := tmpFile.Close()
+	removeErr := os.Remove(tmpPath)
+	if closeErr != nil {
+		return "", closeErr
+	}
+	if removeErr != nil {
+		return "", removeErr
+	}
+	defer func() { _ = os.Remove(tmpPath) }() // no-op once renamed into bin
+
+	cmd := exec.Command("go", "build", "-o", tmpPath, pkg)
 	cmd.Dir = wt
 	cmd.Stdout = os.Stderr
 	cmd.Stderr = os.Stderr
 	if err := cmd.Run(); err != nil {
 		return "", fmt.Errorf("build %s at %s: %w", pkg, sha, err)
+	}
+	if err := os.Rename(tmpPath, bin); err != nil {
+		return "", err
 	}
 	return bin, nil
 }

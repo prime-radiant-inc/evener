@@ -79,7 +79,7 @@ Use `--probe <id>` for a single probe; `--probe all` (the default) selects
 every probe manifest under `--probes-dir`. Before launching any live request,
 the runner prints the exact selected count and probe ids to stderr (e.g.
 `selected=7` plus the list), so a scoped run never silently expands to a
-larger set without you seeing it named — check that line if a run looks
+larger set without you seeing it named. Check that line if a run looks
 bigger or smaller than you expected. The runner writes per-repetition
 `result.json`, `stdout.txt`, `stderr.ndjson`, plus run-level `results.jsonl` and
 `summary.json`.
