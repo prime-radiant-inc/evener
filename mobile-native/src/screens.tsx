@@ -174,7 +174,7 @@ import { Toast, type ToastMessage, useToast } from "./Toast";
 import { TranscriptUsage } from "./TranscriptUsage";
 import { groupTimeline, type TimelineRow, timelineGap } from "./timeline";
 import { projectNativeTranscript } from "./transcriptPresentation";
-import { Action, Copy, ErrorMessage, styles, useColors } from "./ui";
+import { Action, allowFontScaling, Copy, ErrorMessage, styles, useColors } from "./ui";
 
 const NO_QUESTIONS: AskQuestionRef[] = [];
 const STEER_FAILED = { text: "Couldn't steer with this message now." };
@@ -368,7 +368,7 @@ export function HubsScreen({ navigation }: NativeStackScreenProps<Routes, "Hubs"
 				<ScrollView keyboardShouldPersistTaps="handled" contentContainerStyle={styles.padded}>
 					<Text
 						accessibilityRole="header"
-						allowFontScaling={Platform.OS !== "ios"}
+						allowFontScaling={allowFontScaling}
 						style={[
 							styles.title,
 							{
@@ -417,7 +417,7 @@ export function HubsScreen({ navigation }: NativeStackScreenProps<Routes, "Hubs"
 					))}
 					<Text
 						accessibilityRole="header"
-						allowFontScaling={Platform.OS !== "ios"}
+						allowFontScaling={allowFontScaling}
 						style={[
 							styles.title,
 							{

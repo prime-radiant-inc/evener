@@ -20,7 +20,7 @@ import {
 import { checkedKeybindingChange, keybindingPreview } from "./keybindingRules";
 import { useNativePreferences } from "./NativePreferencesProvider";
 import type { Routes } from "./screens";
-import { Action, Copy, ErrorMessage, styles, useColors } from "./ui";
+import { Action, allowFontScaling, Copy, ErrorMessage, styles, useColors } from "./ui";
 import { HUB_NO_LONGER_SELECTED } from "./retainedScreen";
 
 function shortcutLabel(chord: string): string {
@@ -217,7 +217,7 @@ export function KeybindingPreferencesScreen({
 									color: colors.text,
 									fontSize: 17 * (Platform.OS === "ios" ? fontScale : 1),
 								}}
-								allowFontScaling={Platform.OS !== "ios"}
+								allowFontScaling={allowFontScaling}
 							/>
 							<Copy muted>
 								Use + between keys. Meta means Command, Alt means Option, and $mod uses Command on Apple or Control
