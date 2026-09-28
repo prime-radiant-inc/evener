@@ -71,6 +71,16 @@ export function Group({ children }: { children: ReactNode }) {
 	);
 }
 
+/** A row's leading slot: a bare symbol, or the empty space an unchecked
+ * picker row keeps so its label lines up with the checked one. */
+function Glyph({ name, color }: { name: SFSymbol | undefined; color: string }) {
+	return (
+		<View style={{ width: 22, alignItems: "center" }}>
+			{name ? <SymbolView name={name} tintColor={color} size={17} /> : null}
+		</View>
+	);
+}
+
 export interface RowProps {
 	label: string;
 	/** A second line in ink-low. */
@@ -115,13 +125,9 @@ export function Row({
 	const body = (
 		<>
 			{checked !== undefined ? (
-				<View style={{ width: 22, alignItems: "center" }}>
-					{checked ? <SymbolView name="checkmark" tintColor={palette.accentInk} size={17} /> : null}
-				</View>
+				<Glyph name={checked ? "checkmark" : undefined} color={palette.accentInk} />
 			) : icon ? (
-				<View style={{ width: 22, alignItems: "center" }}>
-					<SymbolView name={icon} tintColor={palette.inkMid} size={17} />
-				</View>
+				<Glyph name={icon} color={palette.inkMid} />
 			) : null}
 			<View style={{ flex: 1, gap: 2 }}>
 				<Text
@@ -216,11 +222,7 @@ export function SwitchRow({
 				opacity: disabled ? 0.4 : 1,
 			}}
 		>
-			{icon ? (
-				<View style={{ width: 22, alignItems: "center" }}>
-					<SymbolView name={icon} tintColor={palette.inkMid} size={17} />
-				</View>
-			) : null}
+			{icon ? <Glyph name={icon} color={palette.inkMid} /> : null}
 			<View style={{ flex: 1, gap: 2 }} accessibilityElementsHidden importantForAccessibility="no-hide-descendants">
 				<Text allowFontScaling={allowFontScaling} style={{ color: palette.inkHi, fontSize: 17 * scale, lineHeight: 22 * scale }}>
 					{label}
