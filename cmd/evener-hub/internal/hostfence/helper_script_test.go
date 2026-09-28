@@ -765,10 +765,33 @@ func TestScriptDescendantsStayLive(t *testing.T) {
 	epoch := Epoch{BootID: "boot-1", OpSeq: 1}
 	remote.settle(epoch)
 	work := t.TempDir()
-	command := fmt.Sprintf("sleep 30 & echo $! > %s/descendant; echo done", work)
-	if combined, _, code := remote.runFile(nil, "perform", epoch.BootID, "1", command); code != 0 {
-		t.Fatalf("perform exited %d: %s", code, combined)
+	goFile := filepath.Join(work, "go")
+	// The command spawns its survivor and then waits for the test to release it,
+	// so the wrapper records pid ownership while the command is unmistakably
+	// alive; releasing it leaves the survivor behind. The test drives that
+	// ordering instead of racing the command's exit against the wrapper's
+	// ownership read, which can fall back to the nonce identity and then read
+	// live forever, whatever the survivor does.
+	command := fmt.Sprintf("sleep 30 & echo $! > %s/descendant; touch %s/started; i=0; while [ ! -f %s ]; do i=$((i+1)); [ \"$i\" -gt 200 ] && exit 9; sleep 0.05; done", work, work, goFile)
+	performDone := make(chan struct{})
+	go func() {
+		defer close(performDone)
+		// runFile, not run: the surviving descendant would otherwise hold the
+		// command's pipe open and keep the wait blocked until it exits.
+		if combined, _, code := remote.runFile(nil, "perform", epoch.BootID, "1", command); code != 0 {
+			t.Errorf("perform exited %d: %s", code, combined)
+		}
+	}()
+	waitForFile(t, filepath.Join(work, "started"))
+	if entry := waitForRunningEntry(t, remote); entry.Ownership.PID == nil {
+		t.Fatalf("entry = %+v, want pid ownership", entry)
 	}
+	// Release the command: it exits leaving its background survivor, and the
+	// wrapper records the survivor and keeps the entry running.
+	if err := os.WriteFile(goFile, []byte("go"), 0o600); err != nil {
+		t.Fatalf("release the command: %v", err)
+	}
+	<-performDone
 	stdout, stderr, code := remote.run(nil, "entries")
 	if code != 0 {
 		t.Fatalf("entries exited %d: %s", code, stderr)
@@ -911,16 +934,299 @@ func TestScriptPostSpawnFailureKillsDescendants(t *testing.T) {
 	}
 }
 
-// processAlive reports whether pid names a live process, through kill -0 so the
-// test needs no platform-specific syscalls.
+// processAlive reports whether pid names live work, through kill -0 so the test
+// needs no platform-specific syscalls. A zombie — exited and awaiting its
+// parent's reap — can execute nothing but still answers kill -0, so its state
+// is checked first; the reaping parent, not this test, decides when it leaves.
 func processAlive(t *testing.T, pid int) bool {
 	t.Helper()
+	if procState(t, pid) == "Z" {
+		return false
+	}
 	return exec.Command("sh", "-c", fmt.Sprintf("kill -0 %d 2>/dev/null", pid)).Run() == nil
 }
 
 // killProcess signals a pid the test started, for cleanup.
 func killProcess(pid int) {
 	_ = exec.Command("sh", "-c", fmt.Sprintf("kill -9 %d 2>/dev/null", pid)).Run()
+}
+
+// procStatFields parses one /proc/<pid>/stat line into the fields after the
+// parenthesized comm: the kernel writes comm raw inside the parentheses and it
+// may contain ')' and spaces, so only the LAST ')' closes it. Splitting at the
+// first ") " would read comm's own bytes as the state. It returns nil when
+// /proc is unreadable.
+func procStatFields(pid int) []string {
+	raw, err := os.ReadFile(fmt.Sprintf("/proc/%d/stat", pid))
+	if err != nil {
+		return nil
+	}
+	s := string(raw)
+	i := strings.LastIndex(s, ")")
+	if i < 0 {
+		return nil
+	}
+	return strings.Fields(s[i+1:])
+}
+
+// procState is the process state letter (the first field after comm): "R" for
+// running, "Z" for a zombie, and so on.
+func procState(t *testing.T, pid int) string {
+	t.Helper()
+	fields := procStatFields(pid)
+	if len(fields) == 0 {
+		return ""
+	}
+	return fields[0]
+}
+
+// procStartToken is the kernel-owned start-time token (field 20 after comm),
+// empty when /proc is unreadable.
+func procStartToken(t *testing.T, pid int) string {
+	t.Helper()
+	fields := procStatFields(pid)
+	if len(fields) < 20 {
+		return ""
+	}
+	return fields[19]
+}
+
+// waitForZombie polls until pid reports the zombie state, so a test can
+// reference a process that is provably exited but deliberately unreaped.
+func waitForZombie(t *testing.T, pid int) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if procState(t, pid) == "Z" {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("pid %d never reached the zombie state", pid)
+}
+
+// zombieEnvironReadable reports whether the kernel exposes a zombie's
+// environment. It is unreadable on the common case and readable on some
+// kernels; the fail-closed descendant arm depends on the answer, so the tests
+// read it rather than assume it.
+func zombieEnvironReadable(pid int) bool {
+	_, err := os.ReadFile(fmt.Sprintf("/proc/%d/environ", pid))
+	return err == nil
+}
+
+// writeLeaseEntryWithDescendants writes one running, pid-owned lease entry
+// directly, with the given recorded owner pid and start token and a raw
+// descendants value ("" for none). It is the schema the wrapper writes, so
+// recheck reads a real record. The registration is now, as a running entry's
+// registration is its own spawn second and the nonce scan's
+// uninspectable-process bound reads it.
+func writeLeaseEntryWithDescendants(t *testing.T, remote *fenceRemote, id string, pid int, startToken, descendants string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Join(remote.state, "leases"), 0o700); err != nil {
+		t.Fatalf("create lease dir: %v", err)
+	}
+	entry := strings.Join([]string{
+		"id\t" + id,
+		"command\tsleep 300",
+		"registeredAt\t" + time.Now().UTC().Format(time.RFC3339),
+		"state\trunning",
+		"ownershipKind\tpid",
+		fmt.Sprintf("pid\t%d", pid),
+		"pidStartTime\t" + startToken,
+		"nonce\t",
+		"cgroupId\t",
+		"exit\t",
+		"exitedAt\t",
+		"descendants\t" + descendants,
+	}, "\n") + "\n"
+	if err := os.WriteFile(filepath.Join(remote.state, "leases", id), []byte(entry), 0o600); err != nil {
+		t.Fatalf("write entry: %v", err)
+	}
+}
+
+// TestScriptZombieDescendantReadsClean pins that a recorded descendant which
+// has exited but not yet been reaped — a zombie still carrying its recorded
+// start token — never keeps an entry live: it can run nothing, so it is not
+// surviving work. The test holds the zombie open itself, so the observation
+// needs no reap race.
+func TestScriptZombieDescendantReadsClean(t *testing.T) {
+	if _, err := os.Stat("/proc/self/stat"); err != nil {
+		t.Skip("zombie detection needs /proc (Linux)")
+	}
+	remote := newFenceRemote(t)
+	zombie := exec.Command("sleep", "300")
+	if err := zombie.Start(); err != nil {
+		t.Fatalf("start zombie: %v", err)
+	}
+	defer func() {
+		_ = zombie.Process.Kill()
+		_, _ = zombie.Process.Wait()
+	}()
+	zpid := zombie.Process.Pid
+	zstart := procStartToken(t, zpid)
+	if zstart == "" {
+		t.Fatalf("read start token for pid %d", zpid)
+	}
+	if err := zombie.Process.Kill(); err != nil {
+		t.Fatalf("kill zombie: %v", err)
+	}
+	waitForZombie(t, zpid)
+	dead := exec.Command("true")
+	if err := dead.Run(); err != nil {
+		t.Fatalf("run dead owner: %v", err)
+	}
+	writeLeaseEntryWithDescendants(t, remote, "a1b2c3d4", dead.ProcessState.Pid(), "1", fmt.Sprintf("%d:%s ", zpid, zstart))
+	if recheck := recheckID(t, remote, "a1b2c3d4"); recheck.Live {
+		t.Fatalf("recheck(zombie descendant) = %+v, want clean: a zombie runs nothing", recheck)
+	}
+}
+
+// TestScriptZombieHolderReadsClean pins the holder arm: an entry whose OWN
+// recorded pid is a zombie — exited and not yet reaped, with no descendant
+// recorded — reads clean, because a pid that can run nothing is not a live
+// holder.
+func TestScriptZombieHolderReadsClean(t *testing.T) {
+	if _, err := os.Stat("/proc/self/stat"); err != nil {
+		t.Skip("zombie detection needs /proc (Linux)")
+	}
+	remote := newFenceRemote(t)
+	zombie := exec.Command("sleep", "300")
+	if err := zombie.Start(); err != nil {
+		t.Fatalf("start zombie: %v", err)
+	}
+	defer func() {
+		_ = zombie.Process.Kill()
+		_, _ = zombie.Process.Wait()
+	}()
+	zpid := zombie.Process.Pid
+	zstart := procStartToken(t, zpid)
+	if zstart == "" {
+		t.Fatalf("read start token for pid %d", zpid)
+	}
+	if err := zombie.Process.Kill(); err != nil {
+		t.Fatalf("kill zombie: %v", err)
+	}
+	waitForZombie(t, zpid)
+	writeLeaseEntryWithDescendants(t, remote, "holder1", zpid, zstart, "")
+	if recheck := recheckID(t, remote, "holder1"); recheck.Live {
+		t.Fatalf("recheck(zombie holder) = %+v, want clean: a zombie runs nothing", recheck)
+	}
+}
+
+// TestScriptZombieDescendantWithMismatchedTokenIsNotSkipped pins the equality half
+// of the zombie skip: a zombie descendant whose recorded start token does not
+// match the pid's is not provably this invocation's work, so the zombie path
+// must not skip it. Whether that leaves the entry live or clean follows the
+// fail-closed environ arm, which the kernel decides: a zombie whose
+// /proc/<pid>/environ is unreadable stays live, and one whose environ is
+// readable has the nonce rejected and reads clean. The test asserts the branch
+// the host actually takes rather than assuming ambient environ readability.
+func TestScriptZombieDescendantWithMismatchedTokenIsNotSkipped(t *testing.T) {
+	if _, err := os.Stat("/proc/self/stat"); err != nil {
+		t.Skip("zombie detection needs /proc (Linux)")
+	}
+	remote := newFenceRemote(t)
+	zombie := exec.Command("sleep", "300")
+	if err := zombie.Start(); err != nil {
+		t.Fatalf("start zombie: %v", err)
+	}
+	defer func() {
+		_ = zombie.Process.Kill()
+		_, _ = zombie.Process.Wait()
+	}()
+	zpid := zombie.Process.Pid
+	zstart := procStartToken(t, zpid)
+	if zstart == "" {
+		t.Fatalf("read start token for pid %d", zpid)
+	}
+	if err := zombie.Process.Kill(); err != nil {
+		t.Fatalf("kill zombie: %v", err)
+	}
+	waitForZombie(t, zpid)
+	dead := exec.Command("true")
+	if err := dead.Run(); err != nil {
+		t.Fatalf("run dead owner: %v", err)
+	}
+	// Recorded start token deliberately different from the zombie's: a reused
+	// pid, not the instance this entry recorded.
+	writeLeaseEntryWithDescendants(t, remote, "m1", dead.ProcessState.Pid(), "1", fmt.Sprintf("%d:999999 ", zpid))
+	wantLive := !zombieEnvironReadable(zpid)
+	if recheck := recheckID(t, remote, "m1"); recheck.Live != wantLive {
+		t.Fatalf("recheck(zombie descendant, mismatched token, environ readable=%v) = %+v, want live=%v",
+			!wantLive, recheck, wantLive)
+	}
+}
+
+// TestScriptParenCommHolderClassified pins the /proc/<pid>/stat parse against a
+// comm the kernel writes raw: one containing ')' and a space. A first-')' strip
+// reads comm's own bytes as the state, reporting a LIVE process as a zombie — a
+// fail-open in a check built to stay fail-closed, reachable by a side-effect
+// command that renames itself. The holder arm is used so classification alone
+// decides.
+func TestScriptParenCommHolderClassified(t *testing.T) {
+	if _, err := os.Stat("/proc/self/stat"); err != nil {
+		t.Skip("zombie detection needs /proc (Linux)")
+	}
+	remote := newFenceRemote(t)
+	proc := startParenCommProcess(t)
+	defer func() {
+		_ = proc.Process.Kill()
+		_, _ = proc.Process.Wait()
+	}()
+	pid := proc.Process.Pid
+	start := procStartToken(t, pid)
+	if start == "" {
+		t.Fatalf("read start token for pid %d", pid)
+	}
+	writeLeaseEntryWithDescendants(t, remote, "paren1", pid, start, "")
+	// A live process with a paren'd comm must never be read as a zombie.
+	if recheck := recheckID(t, remote, "paren1"); !recheck.Live {
+		t.Fatalf("recheck(live paren-comm holder) = %+v, want live", recheck)
+	}
+	// Killed and deliberately unreaped, the same pid is a zombie: it reads clean.
+	if err := proc.Process.Kill(); err != nil {
+		t.Fatalf("kill paren-comm process: %v", err)
+	}
+	waitForZombie(t, pid)
+	if recheck := recheckID(t, remote, "paren1"); recheck.Live {
+		t.Fatalf("recheck(zombie paren-comm holder) = %+v, want clean", recheck)
+	}
+}
+
+// startParenCommProcess starts a long-lived process whose kernel comm contains a
+// ')' and a space, by copying the sleep binary to that name: the kernel adopts
+// the executable's basename as comm. The exact comm bytes are checked, so the
+// fixture cannot silently stop exercising the shape.
+func startParenCommProcess(t *testing.T) *exec.Cmd {
+	t.Helper()
+	src, err := exec.LookPath("sleep")
+	if err != nil {
+		t.Skipf("no sleep binary: %v", err)
+	}
+	dir := t.TempDir()
+	dst := filepath.Join(dir, ") Z ")
+	data, err := os.ReadFile(src)
+	if err != nil {
+		t.Fatalf("read %s: %v", src, err)
+	}
+	if err := os.WriteFile(dst, data, 0o700); err != nil {
+		t.Fatalf("write paren-comm binary: %v", err)
+	}
+	cmd := exec.Command(dst, "300")
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("start paren-comm process: %v", err)
+	}
+	// The trailing space is the whole point: with comm ") Z " a first-')' parse
+	// of /proc/<pid>/stat yields "Z" and misreports a LIVE process as a zombie,
+	// while a trimmed ") Z" yields "Z)" and exercises nothing. Assert the exact
+	// bytes (comm is ") Z " plus the trailing newline /proc appends).
+	raw, err := os.ReadFile(fmt.Sprintf("/proc/%d/comm", cmd.Process.Pid))
+	if err != nil || string(raw) != ") Z \n" {
+		_ = cmd.Process.Kill()
+		_, _ = cmd.Process.Wait()
+		t.Skipf("the kernel did not adopt exactly comm %q (got %q, err %v); this host cannot exercise the first-')' misparse", ") Z ", raw, err)
+	}
+	return cmd
 }
 
 // TestScriptDescendantIdentityRevalidated pins that a recorded descendant is
@@ -1067,23 +1373,26 @@ func TestScriptDualIdentityEntryRefuses(t *testing.T) {
 	remote := newFenceRemote(t)
 	epoch := Epoch{BootID: "boot-1", OpSeq: 1}
 	remote.settle(epoch)
-	if _, stderr, code := remote.run(nil, "perform", epoch.BootID, "1", "true"); code != 0 {
-		t.Fatalf("perform exited %d: %s", code, stderr)
-	}
-	entriesDir := filepath.Join(remote.state, "leases")
-	names, err := os.ReadDir(entriesDir)
-	if err != nil {
-		t.Fatalf("read leases: %v", err)
-	}
-	var entryPath string
-	for _, name := range names {
-		if name.Name() != "holder" {
-			entryPath = filepath.Join(entriesDir, name.Name())
+	work := t.TempDir()
+	goFile := filepath.Join(work, "go")
+	// Hold the command alive until the test has rewritten its entry, so the
+	// entry's pid ownership is recorded while the command is unmistakably
+	// running: the test pins the ownership validator, not a spawn-versus-exit
+	// race that can leave the entry nonce-owned.
+	command := fmt.Sprintf(`touch %s/started; i=0; while [ ! -f %s ]; do i=$((i+1)); [ "$i" -gt 200 ] && exit 9; sleep 0.05; done`, work, goFile)
+	performDone := make(chan struct{})
+	go func() {
+		defer close(performDone)
+		if _, stderr, code := remote.run(nil, "perform", epoch.BootID, "1", command); code != 0 {
+			t.Errorf("perform exited %d: %s", code, stderr)
 		}
+	}()
+	waitForFile(t, filepath.Join(work, "started"))
+	entry := waitForRunningEntry(t, remote)
+	if entry.Ownership.PID == nil {
+		t.Fatalf("entry = %+v, want pid ownership", entry)
 	}
-	if entryPath == "" {
-		t.Fatal("no lease entry")
-	}
+	entryPath := filepath.Join(remote.state, "leases", entry.ID)
 	raw, err := os.ReadFile(entryPath)
 	if err != nil {
 		t.Fatalf("read entry: %v", err)
@@ -1097,7 +1406,14 @@ func TestScriptDualIdentityEntryRefuses(t *testing.T) {
 	if err := os.WriteFile(entryPath, []byte(broken), 0o600); err != nil {
 		t.Fatalf("write entry: %v", err)
 	}
-	if _, stderr, code := remote.run(nil, "entries"); code == 0 {
+	_, stderr, code := remote.run(nil, "entries")
+	// Release the held command before asserting, so no failure leaves it
+	// running past the test.
+	if err := os.WriteFile(goFile, []byte("go"), 0o600); err != nil {
+		t.Fatalf("release the command: %v", err)
+	}
+	<-performDone
+	if code == 0 {
 		t.Fatal("entries with a dual-identity entry succeeded, want refusal")
 	} else if err := DecodeRefusal([]byte(stderr)); !errors.Is(err, ErrStateCorrupt) {
 		t.Fatalf("entries = %v, want ErrStateCorrupt", err)
