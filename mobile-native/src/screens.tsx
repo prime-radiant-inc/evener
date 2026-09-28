@@ -1461,8 +1461,10 @@ export function ConversationScreen({
 	]);
 	// Loads the page above the loaded history once per cursor: a page that
 	// failed, or brought nothing new, stays guarded until the binding or route
-	// resets, so a failing page never loops. Both a reading position restored
-	// above the loaded rows and a scroll near the top ask for it.
+	// resets, so a failing page never loops. A reading position restored
+	// above the loaded rows, a scroll near the top and find's search of older
+	// history all ask for it. Without a conversation the store ignores the
+	// request and changes nothing, so it waits here for the conversation.
 	function loadOlderPage() {
 		const cursor = snapshot.olderCursor;
 		const pageAttempts = readerPageAttempts.current;
@@ -1470,6 +1472,7 @@ export function ConversationScreen({
 			!service ||
 			!connected ||
 			!cursor ||
+			snapshot.conversation === null ||
 			snapshot.loadingOlder ||
 			pageAttempts.has(cursor)
 		)
