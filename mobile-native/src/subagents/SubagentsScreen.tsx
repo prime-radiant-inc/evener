@@ -37,14 +37,16 @@ export function SubagentsScreen({ route, navigation }: NativeStackScreenProps<Ro
 	const { tree, snapshot } = useSubagentTree(hubId, ref, threadId);
 
 	// Following the coordinator each time this screen comes into focus keeps
-	// its tree notifications coming (ruling 9). A reconnect loses the
-	// connection's subscription, so the screen in front follows again then too.
-	const { state } = useConnection();
-	const ready = state === "ready";
+	// its tree notifications coming (ruling 9). A new client (a reconnect, or
+	// a hub switch that never leaves ready) has no subscription, so the screen
+	// in front follows again on each one. useSubagentTree's effect, declared
+	// above, has already handed the tree that client.
+	const { state, client, activeProfile } = useConnection();
+	const followed = state === "ready" && activeProfile?.id === hubId ? client : null;
 	useFocusEffect(
 		useCallback(() => {
-			if (ready) void tree.follow();
-		}, [tree, ready]),
+			if (followed) void tree.follow();
+		}, [tree, followed]),
 	);
 
 	const rows = useMemo(() => (snapshot.tree ? flattenSubagents(snapshot.tree) : []), [snapshot.tree]);

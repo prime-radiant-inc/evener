@@ -242,6 +242,24 @@ it("follows the coordinator again when the connection comes back while it's in f
 	expect(follows()).toBe(2);
 });
 
+it("follows the coordinator on a new client when the connection changes under it without leaving ready", async () => {
+	const tree = await mount();
+	const follows = (on: FakeClient) =>
+		on.calls.filter((call) => call.method === "thread/read" && (call.params as { subscribe?: boolean }).subscribe === true).length;
+	const next = hub(() => specTree());
+	harness.connection = screenConnection(next, "ready");
+	act(() =>
+		tree.update(
+			<SubagentsScreen
+				route={{ key: "subagents", name: "Subagents", params: { hubId: "hub-1", ...COORDINATOR } } as never}
+				navigation={navigation as never}
+			/>,
+		),
+	);
+	await settle();
+	expect(follows(next)).toBe(1);
+});
+
 it("shows three quiet rows until the first read answers, and never offers Retry, Refresh or Reconnect", async () => {
 	let answer: (value: unknown) => void = () => {};
 	client = new FakeClient("ready");
