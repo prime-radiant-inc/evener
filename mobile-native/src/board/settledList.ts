@@ -67,7 +67,7 @@ export class SettledList<T extends HoldableItem> {
 		}
 		// A hold that began before the first list loaded had nothing on screen
 		// to keep still: that list shows at once, and is what it holds from here.
-		if (!this.#order.held) this.#order.hold(items);
+		this.#order.hold(items);
 		this.#publish({ display: this.#order.order(items) });
 	}
 
