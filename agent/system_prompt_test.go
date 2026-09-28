@@ -4,9 +4,11 @@ import (
 	"context"
 	"io/fs"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
+	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/clock"
 	"primeradiant.com/evener/agent/internal/frontmatter"
@@ -316,7 +318,8 @@ func TestPromptDataTypedInputs(t *testing.T) {
 		t.Run(cfg.name, func(t *testing.T) {
 			t.Parallel()
 			s := cfg.build(t)
-			cfg.check(t, s.buildPromptData(s.env))
+			data, _ := s.buildPromptData(s.env)
+			cfg.check(t, data)
 		})
 	}
 }
@@ -440,7 +443,8 @@ func TestSystemPromptRendersTheSessionData(t *testing.T) {
 			if warning != "" {
 				t.Fatalf("render failed: %s", warning)
 			}
-			for _, v := range tc.values(s.buildPromptData(s.env)) {
+			data, _ := s.buildPromptData(s.env)
+			for _, v := range tc.values(data) {
 				if v.value != "" && !strings.Contains(prompt, v.value) {
 					t.Errorf("%s %q is missing from the rendered prompt", v.name, v.value)
 				}
@@ -466,4 +470,66 @@ func environmentPromptValues(d promptData) []promptValue {
 		values = append(values, promptValue{"capability line", line})
 	}
 	return values
+}
+
+// TestSystemPromptLoadedSources checks the PROMPT_LOADED sources: one per
+// input to the prompt, in order, with the template's size equal to the
+// rendered prompt's.
+func TestSystemPromptLoadedSources(t *testing.T) {
+	t.Parallel()
+	overrides := buildRootWithOverridesSession(t)
+	cases := []struct {
+		name string
+		s    *Session
+		want []string
+	}{
+		{"root with overrides", overrides, []string{
+			"cli:" + overrides.cfg.SystemPromptFile,
+			systemPromptTemplateLabel,
+			"agent:default",
+			"append:" + overrides.cfg.SystemPromptAppend[0],
+		}},
+		{"root headless openai coordinator", buildRootHeadlessCoordinatorSession(t), []string{
+			systemPromptTemplateLabel,
+			"config:role_prompt_override",
+		}},
+		{"explorer delegate", buildPromptDelegate(t, 0, "explorer"), []string{
+			systemPromptTemplateLabel,
+			"agent:explorer",
+		}},
+	}
+	for _, tc := range cases {
+		var got []string
+		for _, src := range tc.s.promptSourceLog {
+			got = append(got, src.Label)
+			if src.Label == systemPromptTemplateLabel && src.Size != len(tc.s.cachedSystemPrompt) {
+				t.Errorf("%s: template source size %d, want the rendered prompt's %d", tc.name, src.Size, len(tc.s.cachedSystemPrompt))
+			}
+		}
+		if !slices.Equal(got, tc.want) {
+			t.Errorf("%s: sources = %q, want %q", tc.name, got, tc.want)
+		}
+	}
+	if got := drainPromptLoadedLabels(overrides); !slices.Equal(got, cases[0].want) {
+		t.Errorf("PROMPT_LOADED events = %q, want %q", got, cases[0].want)
+	}
+}
+
+// drainPromptLoadedLabels reads the buffered startup events without
+// blocking and returns the PROMPT_LOADED labels in emission order.
+func drainPromptLoadedLabels(s *Session) []string {
+	var labels []string
+	for {
+		select {
+		case ev, ok := <-s.Events():
+			if !ok {
+				return labels
+			}
+			if d, isPromptLoaded := ev.Data.(events.PromptLoadedData); isPromptLoaded {
+				labels = append(labels, d.Label)
+			}
+		default:
+			return labels
+		}
+	}
 }

@@ -211,7 +211,7 @@ func TestDelegateSurfaceUsesAgentRegistryCapabilities(t *testing.T) {
 		t.Fatal("sandbox_net property should not exist in the combined-enum schema")
 	}
 
-	data := sess.buildPromptData(sess.currentEnv())
+	data, _ := sess.buildPromptData(sess.currentEnv())
 	entryNames := make([]string, 0, len(data.AvailableAgents))
 	for _, entry := range data.AvailableAgents {
 		entryNames = append(entryNames, entry.Name)
@@ -219,13 +219,6 @@ func TestDelegateSurfaceUsesAgentRegistryCapabilities(t *testing.T) {
 	if !slices.Equal(entryNames, enum) {
 		t.Fatalf("available-agents typed input = %v, want schema enum %v", entryNames, enum)
 	}
-	const availableAgentsSection = "embedded:prompts/sections/available-agents.md.tmpl"
-	if !slices.ContainsFunc(sess.promptSourceLog, func(source promptSource) bool {
-		return source.Label == availableAgentsSection
-	}) {
-		t.Fatalf("prompt sources = %#v, want %q section", sess.promptSourceLog, availableAgentsSection)
-	}
-
 	explorerTools := delegateToolsForRegisteredAgent(t, sess, "explorer")
 	defaultTools := delegateToolsForRegisteredAgent(t, sess, "default")
 	if !slices.Contains(explorerTools, "shell") || slices.Contains(explorerTools, "write_file") {

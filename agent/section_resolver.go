@@ -13,12 +13,6 @@ import (
 	"primeradiant.com/evener/agent/internal/frontmatter"
 )
 
-// promptSource describes one component of the composed system prompt.
-type promptSource struct {
-	Label string
-	Size  int
-}
-
 // sectionSource provides read access to a directory of section files.
 type sectionSource interface {
 	ReadFile(name string) ([]byte, bool)
@@ -253,15 +247,6 @@ func (r *sectionResolver) renderFromContent(name string, content []byte, data pr
 	}
 	result := collapseBlankLines(buf.String())
 	return strings.TrimSpace(result), r.tracked, nil
-}
-
-// collapseBlankLines reduces runs of 3+ consecutive newlines to 2
-// (one blank line between sections).
-func collapseBlankLines(s string) string {
-	for strings.Contains(s, "\n\n\n") {
-		s = strings.ReplaceAll(s, "\n\n\n", "\n\n")
-	}
-	return s
 }
 
 // Sources returns the tracked prompt sources from all resolved sections.

@@ -365,7 +365,7 @@ func wppPromptDataAndRender(t *testing.T, token string) {
 	sess.systemPromptOverride = " override " + token + " "
 	sess.cfg.SystemPromptFile = "override.md"
 	sess.delegationAllowance = 1
-	data := sess.buildPromptData(env)
+	data, _ := sess.buildPromptData(env)
 	if len(data.CLIAppends) != 1 || !strings.Contains(data.CLIAppends[0], token) {
 		t.Fatalf("CLI appends = %#v", data.CLIAppends)
 	}
