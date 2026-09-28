@@ -133,7 +133,6 @@ function Board({ hubId, hubName, navigation }: { hubId: string; hubName: string;
 	// The retry rests while the Board is out of view: the controller is
 	// paused then, and a paused read is cancelled, not answered.
 	useReadRetry(board, connected && focused ? client : null, snapshot);
-	useHubSeenMarks(hubMarks, connected ? client : null, snapshot);
 
 	const bands = useMemo(
 		() => liveBands(snapshot.live.rows, snapshot.needsYou.rows, (row) => seen.isSeen(row)),
@@ -172,6 +171,7 @@ function Board({ hubId, hubName, navigation }: { hubId: string; hubName: string;
 		],
 		[snapshot.live.rows, snapshot.needsYou.rows, snapshot.pinSections, ...projectViews],
 	);
+	useHubSeenMarks(hubMarks, connected ? client : null, loadedRows);
 	const hubNotices = useMemo(
 		() => notices({ auth: snapshot.auth, sources: sources ?? [], plugins: snapshot.plugins, loadedRows }),
 		[snapshot.auth, sources, snapshot.plugins, loadedRows],
@@ -815,20 +815,19 @@ function useFirstRun(board: BoardController, markers: SeenMarkers, snapshot: Boa
 
 /** The hub's seen marks (S4): marks go out whenever the connection is ready,
  * which resends any a dropped connection lost and sends those made while
- * offline, and each pending mark is pruned once the Board's rows show it
- * landed. */
+ * offline, and each pending mark is pruned once a row the Board has loaded,
+ * from any section, shows it landed. */
 function useHubSeenMarks(
 	hubMarks: HubSeenMarks,
 	client: ConversationClientLike | null,
-	snapshot: Pick<BoardSnapshot, "live" | "needsYou" | "pinSections">,
+	loadedRows: readonly NavigationSessionSummary[],
 ) {
 	useEffect(() => {
 		hubMarks.flush(client);
 	}, [hubMarks, client]);
-	const { live, needsYou, pinSections } = snapshot;
 	useEffect(() => {
-		hubMarks.prune([live.rows, needsYou.rows, ...Object.values(pinSections).map((page) => page.rows)].flat());
-	}, [hubMarks, live.rows, needsYou.rows, pinSections]);
+		hubMarks.prune(loadedRows);
+	}, [hubMarks, loadedRows]);
 }
 
 /** While any of the Board's reads has failed on a ready connection (Live,
