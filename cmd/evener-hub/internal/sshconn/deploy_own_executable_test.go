@@ -145,11 +145,15 @@ func installRunner(t *testing.T) *fakeRunner {
 // fallback, exactly as a flagless controller did before the default existed. The
 // push seam never runs, and no artifact-mismatch refusal is produced.
 func TestDefaultSourceCrossTargetFallsBackToTheInstaller(t *testing.T) {
-	origChannel, origTag := buildinfo.Channel, buildinfo.ReleaseTag
-	t.Cleanup(func() { buildinfo.Channel, buildinfo.ReleaseTag = origChannel, origTag })
-	// A snapshot controller: the installer fallback has an artifact to pin, so the
-	// fallback is the path that works — the Medium this pins.
-	buildinfo.Channel, buildinfo.ReleaseTag = "snapshot", ""
+	origChannel, origDirty, origTag := buildinfo.Channel, buildinfo.GitDirty, buildinfo.ReleaseTag
+	t.Cleanup(func() { buildinfo.Channel, buildinfo.GitDirty, buildinfo.ReleaseTag = origChannel, origDirty, origTag })
+	// A snapshot controller on a clean tree: the installer fallback has an
+	// artifact to pin, so the fallback is the path that works — the Medium this
+	// pins. GitDirty is cleared with the rest of the stamp: a dirty controller's
+	// installer fallback has no published artifact to pin (installerRefFor
+	// refuses), which would make this test assert the terminal cross-target
+	// refusal instead of the fallback.
+	buildinfo.Channel, buildinfo.GitDirty, buildinfo.ReleaseTag = "snapshot", "", ""
 
 	host := hostreg.Host{Name: "alpha", SSH: "alpha.example", EvenerPath: "/opt/evener/bin/evener"}
 	goos, goarch := crossTarget()
@@ -243,10 +247,12 @@ func TestDefaultSourceCrossTargetUnpinnableRefusesTerminally(t *testing.T) {
 // refuses it terminally naming the flag to fix. That distinction is why the
 // marker is OwnExecutable and not "any binary artifact".
 func TestNamedArtifactCrossTargetKeepsThePushRefusal(t *testing.T) {
-	origChannel, origTag := buildinfo.Channel, buildinfo.ReleaseTag
-	t.Cleanup(func() { buildinfo.Channel, buildinfo.ReleaseTag = origChannel, origTag })
-	// The installer fallback IS available for this build; it must not be taken.
-	buildinfo.Channel, buildinfo.ReleaseTag = "snapshot", ""
+	origChannel, origDirty, origTag := buildinfo.Channel, buildinfo.GitDirty, buildinfo.ReleaseTag
+	t.Cleanup(func() { buildinfo.Channel, buildinfo.GitDirty, buildinfo.ReleaseTag = origChannel, origDirty, origTag })
+	// The installer fallback IS available for this build — a snapshot controller
+	// on a clean tree; GitDirty is cleared with the rest of the stamp so a dirty
+	// tree cannot make the premise vacuous — and it must not be taken.
+	buildinfo.Channel, buildinfo.GitDirty, buildinfo.ReleaseTag = "snapshot", "", ""
 
 	host := hostreg.Host{Name: "alpha", SSH: "alpha.example", EvenerPath: "/opt/evener/bin/evener"}
 	goos, goarch := crossTarget()
