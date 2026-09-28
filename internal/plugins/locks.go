@@ -83,7 +83,7 @@ func (m *Manager) acquireStoreLock(ctx context.Context, acquire lockAcquirer, lo
 func (m *Manager) lockStore(ctx context.Context, acquire lockAcquirer, timeout time.Duration) (func(), error) {
 	release, err := m.acquireStoreLock(ctx, acquire, m.lockPath(), timeout)
 	if err != nil {
-		return nil, err
+		return nil, m.lockFailed(err)
 	}
 	release = m.reportingRelease(release)
 	if err := m.migrateMarketplaceNames(); err != nil {
@@ -91,6 +91,28 @@ func (m *Manager) lockStore(ctx context.Context, acquire lockAcquirer, timeout t
 		return nil, m.migrationFailedErr(err)
 	}
 	return release, nil
+}
+
+// lockFailed scrubs a failed store-lock acquisition's absolute lock-file path -
+// acquireLock and flockUntil build their errors around the lock path directly -
+// before it reaches an RPC caller, logging the raw error server-side first, the
+// way saveFailed scrubs a failed write. lockStore is where every writer takes
+// the lock first, so this is the one place that text is turned into wire text.
+// The reasons a caller still acts on survive as sentinels, path-free: lock
+// contention (errLockContention, retry shortly), an unusable store root
+// (errStoreRootUnset/errStoreRootNotAbsolute), and a cancellation or deadline.
+//
+// acquireStoreLock is also reached by Doctor's read-only walk and by the
+// bundled-cache lock, which do not come through here: Doctor reports locally,
+// so naming the lock file it could not take is the point for its admin, and the
+// bundled lock is not an RPC verb.
+func (m *Manager) lockFailed(err error) error {
+	_, _ = fmt.Fprintf(m.stderr(), "warning: taking the plugin store lock: %v\n", err)
+	base := "the plugin store lock could not be taken; see the hub's log for detail"
+	if cause := editFailureIdentity(err); cause != nil {
+		return &pathFreeError{fmt.Errorf("%s: %w", base, cause)}
+	}
+	return &pathFreeError{errors.New(base)}
 }
 
 // reportingRelease wraps release so that, in order: this session's
