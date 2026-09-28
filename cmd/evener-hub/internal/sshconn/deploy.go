@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 
@@ -358,14 +359,73 @@ func (m *Manager) deploy(ctx context.Context, host hostreg.Host, facts Preflight
 	// terminally, naming the cause: retrying is what turned this refusal into an
 	// endless cross-compile, because every attempt failed as a retryable ErrDeploy
 	// and markDevDeployed was never reached.
-	if version := m.opts.controllerVersion(); isDirtyVersion(version) && !m.opts.OwnExecutable {
+	if version := m.opts.controllerVersion(); isDirtyVersion(version) && !m.ownExecutableIsStagingPath() {
 		return "", fmt.Errorf("%w: host %q: this controller was built from a dirty tree (version %q), so it cannot install this build: a checkout cannot be proven to reproduce the dirty tree, the installer fallback has no published artifact to pin, and a named artifact cannot be told apart from a foreign dirty build (a %q version names a commit plus uncommitted changes, not the code); rebuild the controller from a clean checkout, or deploy the controller's own executable — the one source a dirty controller can install",
 			errControllerDirty, host.Name, version, version)
 	}
-	if m.canBuild() {
+	// The defaulted own executable is this process's build, so it can serve only
+	// hosts on this process's own target (runtime.GOOS/GOARCH). For a host on any
+	// other target the push cannot work, and before the default existed a
+	// flagless controller had no push path at all: it reached the installer
+	// fallback here, which is the working path for a differently-architected host
+	// with a published artifact to pin. Keep that fallback reachable for exactly
+	// this source, so the default does not shadow it; every other source keeps
+	// the push — -build-source cross-compiles, and an explicitly named artifact
+	// keeps its own terminal mismatch refusal, which names the flag to fix.
+	if m.canBuild() && !m.ownExecutableCannotServe(facts) {
 		return m.deployPush(ctx, host, facts)
 	}
+	if m.ownExecutableCannotServe(facts) {
+		// The only source is the own executable, the host runs another target, and
+		// the installer fallback is the one remaining path. If it has no published
+		// artifact to pin (a dev, dirty, or tag-less release controller), this
+		// controller can never provision this host, and the state is permanent: the
+		// same host, target, and build re-refuse identically. Refuse terminally
+		// with that cause rather than falling into installerRefFor's retryable
+		// ErrDeploy — in this position the reconnect loop would retry it forever
+		// while the host was never attached (round thirteen).
+		if _, err := installerRefFor(buildinfo.BuildChannel(), buildinfo.ReleaseTag, buildinfo.GitDirty, m.installerRemedy()); err != nil {
+			return "", fmt.Errorf("%w: host %q: this controller's own executable targets %s/%s but the host runs %s/%s, and the installer fallback has no published artifact to pin for this controller's build (a dev or dirty controller has none, and a release needs a stamped tag); %s",
+				errOwnExecutableCannotServe, host.Name, runtime.GOOS, runtime.GOARCH, facts.OS, facts.Arch, m.deployHelp())
+		}
+		return m.deployInstaller(ctx, host, facts)
+	}
 	return m.deployInstaller(ctx, host, facts)
+}
+
+// TargetMatches reports whether a build for buildOS/buildArch can serve a host
+// running hostOS/hostArch. It is the one expression of the target rule: the
+// dispatch that chooses between the push and the installer fallback
+// (ownExecutableCannotServe) and the hub's staging refusal for an artifact
+// (copyDeployBinary) both read it, so the two cannot disagree about what "the
+// host's target" means.
+func TargetMatches(buildOS, buildArch, hostOS, hostArch string) bool {
+	return buildOS == hostOS && buildArch == hostArch
+}
+
+// ownExecutableIsStagingPath reports whether this Manager would actually stage
+// this controller's own executable: the OwnExecutable marker AND a BuildBinary to
+// stage it through. The marker is a claim about BuildBinary, so a Manager that
+// would build from BuildSource is judged by that path instead — which is what
+// keeps the dirty-controller refusal intact for it.
+func (m *Manager) ownExecutableIsStagingPath() bool {
+	return m.opts.OwnExecutable && m.opts.BuildBinary != nil
+}
+
+// ownExecutableCannotServe reports whether the source this Manager would deploy
+// from is the defaulted own executable and the host's target differs from this
+// process's own. The defaulted artifact's target is this process's target by
+// construction, so this is the one configuration whose push can never serve the
+// host. It is deliberately narrow: an explicit artifact is not covered (its
+// mismatch is the operator's to fix and the hub refuses it terminally), and
+// neither is a build source (it cross-compiles). OwnExecutable is read together
+// with BuildBinary because the claim is about the staging path: a Manager that
+// would stage through BuildSource is judged by that path, not by this marker.
+func (m *Manager) ownExecutableCannotServe(facts Preflight) bool {
+	if !m.ownExecutableIsStagingPath() {
+		return false
+	}
+	return !TargetMatches(runtime.GOOS, runtime.GOARCH, facts.OS, facts.Arch)
 }
 
 // deployPush cross-compiles this tree for the host target and atomically
@@ -444,6 +504,20 @@ var errRunTargetUnservable = errors.New("sshconn: run target cannot serve a hub"
 // also keeps this sentinel out of the retryable ErrDeploy wrap, so terminal is the
 // class that reaches both the reconnect loop and the hub's attach handler.
 var errDeployArtifactUnusable = errors.New("sshconn: deploy artifact cannot serve the host")
+
+// errOwnExecutableCannotServe marks a deploy refused because the controller's
+// only deploy source is its own executable, the host runs a different target,
+// and the installer fallback cannot pin a published artifact for this build (a
+// dev, dirty, or tag-less release controller has none). Such a controller can
+// never provision this host, and the state is permanent — the same host, target,
+// and build re-refuse identically — so the refusal is terminal rather than the
+// retryable ErrDeploy installerRefFor's own refusal carries: in this position
+// the reconnect loop would retry it forever while the host was never attached
+// (the pattern round thirteen records). It arrives only from the defaulted
+// source: an explicitly named artifact keeps its own terminal mismatch refusal
+// (errDeployArtifactUnusable, which names the flag to fix), and a build source
+// cross-compiles.
+var errOwnExecutableCannotServe = errors.New("sshconn: this controller's own executable cannot serve the host's target")
 
 // errDeployDisabled marks a deploy refused because deploying is turned off for
 // this Manager (Options.DeployDisabled, the hub's -no-deploy). It is terminal

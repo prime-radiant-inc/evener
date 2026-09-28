@@ -388,12 +388,18 @@ installs its own build over the host's `evener`, restarts the host's hub, and
 attaches only after the running build matches. **The default build it installs
 is its own executable**, so connecting to a bare host provisions it with the
 exact build the hub was started from and no flag is needed. A host whose
-platform differs from the hub's cannot be served by that executable, so the push
-is refused with `-build-source` named as the remedy — there is no
-cross-compilation in the default. With no build to install at all the host keeps
-its own build and attaches anyway, because the appwire protocol — not the build
-label — decides compatibility, and the hub logs the difference. Two startup
-flags name a different build to push, and a third disables deploying:
+platform differs from the hub's cannot be served by that executable: the hub
+does not attempt the push and falls back to the installer path instead — the
+same `install.sh` provisioning a flagless controller used before the default
+existed — so a release or snapshot controller installs the published artifact
+for the host's platform, while a controller whose build has no published
+artifact to pin (dev, dirty, or a release with no stamped tag) is refused
+terminally with both targets and the remedy named. A controller with no deploy
+path at all — `-no-deploy`, or a hub whose executable is not an evener build and
+whose channel has no published artifact — leaves the host on its own build and
+attaches anyway, because the appwire protocol — not the build label — decides
+compatibility, and the hub logs the difference. Two startup flags name a
+different build to push, and a third disables deploying:
 
 - `-deploy-binary <path>` — a pre-built `evener` for the host's target. The hub
   reads the artifact's own `GOOS`/`GOARCH` and refuses a mismatch before

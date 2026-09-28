@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -108,6 +109,248 @@ func TestCleanControllerDeploysANamedBuildBinary(t *testing.T) {
 	}
 	if target != "/opt/evener/bin/evener" || builds != 1 || string(pushed) != "named-artifact-bytes" {
 		t.Fatalf("deploy: target=%q builds=%d pushed=%q, want the named artifact pushed to /opt/evener/bin/evener", target, builds, pushed)
+	}
+}
+
+// crossTarget returns a GOOS/GOARCH pair that differs from this process's, so a
+// test can ask for a host the defaulted own executable cannot serve. Only the
+// arch changes, so the pair is valid on every host.
+func crossTarget() (string, string) {
+	if runtime.GOARCH == "arm64" {
+		return runtime.GOOS, "amd64"
+	}
+	return runtime.GOOS, "arm64"
+}
+
+// installRunner records every remote command and fails the installer invocation,
+// so a test can prove the installer fallback was the path taken — and which ref
+// it was pinned to — without scripting a whole install. Commands other than the
+// installer fail as unexpected.
+func installRunner(t *testing.T) *fakeRunner {
+	t.Helper()
+	return &fakeRunner{runFn: func(_ context.Context, argv []string, _ io.Reader) ([]byte, error) {
+		joined := strings.Join(argv, " ")
+		if strings.Contains(joined, "EVENER_INSTALL_VERSION=") {
+			return nil, errors.New("installer refused by the test's runner")
+		}
+		t.Errorf("an unexpected remote command ran before the installer: %v", argv)
+		return nil, fmt.Errorf("unexpected remote command: %v", argv)
+	}}
+}
+
+// TestDefaultSourceCrossTargetFallsBackToTheInstaller pins the dispatch the
+// default must not shadow: the own executable is this process's build, so a host
+// on another target cannot be served by pushing it — and a controller whose
+// channel has a published artifact provisions that host through the installer
+// fallback, exactly as a flagless controller did before the default existed. The
+// push seam never runs, and no artifact-mismatch refusal is produced.
+func TestDefaultSourceCrossTargetFallsBackToTheInstaller(t *testing.T) {
+	origChannel, origTag := buildinfo.Channel, buildinfo.ReleaseTag
+	t.Cleanup(func() { buildinfo.Channel, buildinfo.ReleaseTag = origChannel, origTag })
+	// A snapshot controller: the installer fallback has an artifact to pin, so the
+	// fallback is the path that works — the Medium this pins.
+	buildinfo.Channel, buildinfo.ReleaseTag = "snapshot", ""
+
+	host := hostreg.Host{Name: "alpha", SSH: "alpha.example", EvenerPath: "/opt/evener/bin/evener"}
+	goos, goarch := crossTarget()
+	builds := 0
+	fr := installRunner(t)
+	m := newTestManager(t, testRegistry(t, host), fr, Options{
+		OwnExecutable: true,
+		BuildBinary: func(context.Context, string, string, string) error {
+			builds++
+			return nil
+		},
+	})
+
+	_, err := m.deploy(context.Background(), host, Preflight{OS: goos, Arch: goarch, Home: "/home/dev"})
+	if err == nil {
+		t.Fatal("the cross-target deploy reported success")
+	}
+	if errors.Is(err, ErrDeployArtifactUnusable) {
+		t.Fatalf("the cross-target default produced the push's artifact-mismatch refusal instead of reaching the installer fallback: %v", err)
+	}
+	if !errors.Is(err, ErrDeploy) {
+		t.Fatalf("installer-path err = %v, want the installer's own refusal (the retryable ErrDeploy class)", err)
+	}
+	if builds != 0 {
+		t.Fatalf("the push seam ran for a host the default cannot serve cross-target (builds = %d)", builds)
+	}
+	var pinned bool
+	for _, run := range fr.recordedRuns() {
+		if strings.Contains(strings.Join(run, " "), "EVENER_INSTALL_VERSION=snapshot") {
+			pinned = true
+		}
+	}
+	if !pinned {
+		t.Fatalf("the installer fallback never ran with the controller's pinned ref (runs: %v)", fr.recordedRuns())
+	}
+}
+
+// TestDefaultSourceCrossTargetUnpinnableRefusesTerminally pins the consequence
+// the fallback cannot avoid: with no published artifact to pin (a dev, dirty, or
+// tag-less release controller), a controller whose only source is its own
+// executable can never provision a host on another target. The refusal is
+// terminal and names both targets, so the reconnect loop stops instead of
+// retrying the installer's retryable refusal forever (round thirteen), and the
+// remedy arrives through DeployHelp.
+func TestDefaultSourceCrossTargetUnpinnableRefusesTerminally(t *testing.T) {
+	origChannel, origDirty, origTag := buildinfo.Channel, buildinfo.GitDirty, buildinfo.ReleaseTag
+	t.Cleanup(func() { buildinfo.Channel, buildinfo.GitDirty, buildinfo.ReleaseTag = origChannel, origDirty, origTag })
+	// A dev controller: no channel, so no published artifact to pin.
+	buildinfo.Channel, buildinfo.GitDirty, buildinfo.ReleaseTag = "", "", ""
+
+	const help = "set Options.BuildSource to the evener checkout"
+	host := hostreg.Host{Name: "alpha", SSH: "alpha.example", EvenerPath: "/opt/evener/bin/evener"}
+	goos, goarch := crossTarget()
+	builds := 0
+	fr := refusingRunner(t)
+	m := newTestManager(t, testRegistry(t, host), fr, Options{
+		OwnExecutable: true,
+		DeployHelp:    help,
+		BuildBinary: func(context.Context, string, string, string) error {
+			builds++
+			return nil
+		},
+	})
+
+	_, err := m.deploy(context.Background(), host, Preflight{OS: goos, Arch: goarch, Home: "/home/dev"})
+	if !errors.Is(err, errOwnExecutableCannotServe) {
+		t.Fatalf("err = %v, want errOwnExecutableCannotServe", err)
+	}
+	if !isTerminal(err) {
+		t.Fatalf("err = %v, want a terminal refusal (the same host, target, and build re-refuse identically)", err)
+	}
+	if errors.Is(err, ErrDeploy) {
+		t.Fatalf("err = %v still wraps the retryable ErrDeploy, so the reconnect loop would retry it forever", err)
+	}
+	for _, want := range []string{runtime.GOOS + "/" + runtime.GOARCH, goos + "/" + goarch, help} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("refusal does not name %q: %v", want, err)
+		}
+	}
+	if builds != 0 {
+		t.Fatalf("the push seam ran for an unservable host (builds = %d)", builds)
+	}
+	if runs := fr.recordedRuns(); len(runs) != 0 {
+		t.Fatalf("an unpinnable fallback reached the host: %v", runs)
+	}
+}
+
+// TestNamedArtifactCrossTargetKeepsThePushRefusal pins the other half of the
+// dispatch: the fallback is keyed on the defaulted source, so an operator's
+// -deploy-binary built for another platform still goes to the push, whose seam
+// refuses it terminally naming the flag to fix. That distinction is why the
+// marker is OwnExecutable and not "any binary artifact".
+func TestNamedArtifactCrossTargetKeepsThePushRefusal(t *testing.T) {
+	origChannel, origTag := buildinfo.Channel, buildinfo.ReleaseTag
+	t.Cleanup(func() { buildinfo.Channel, buildinfo.ReleaseTag = origChannel, origTag })
+	// The installer fallback IS available for this build; it must not be taken.
+	buildinfo.Channel, buildinfo.ReleaseTag = "snapshot", ""
+
+	host := hostreg.Host{Name: "alpha", SSH: "alpha.example", EvenerPath: "/opt/evener/bin/evener"}
+	goos, goarch := crossTarget()
+	builds := 0
+	fr := &fakeRunner{runFn: func(_ context.Context, argv []string, _ io.Reader) ([]byte, error) {
+		joined := strings.Join(argv, " ")
+		switch {
+		case strings.Contains(joined, "test -d /opt/evener/bin"):
+			return nil, nil
+		case strings.Contains(joined, "evener_resolve /opt/evener/bin/evener"):
+			return []byte("/opt/evener/bin/evener\n"), nil
+		default:
+			return nil, fmt.Errorf("unexpected remote command: %v", argv)
+		}
+	}}
+	m := newTestManager(t, testRegistry(t, host), fr, Options{
+		BuildBinary: func(context.Context, string, string, string) error {
+			builds++
+			return fmt.Errorf("%w: -deploy-binary %q targets %s/%s, but the host needs %s/%s",
+				ErrDeployArtifactUnusable, "/tmp/evener", runtime.GOOS, runtime.GOARCH, goos, goarch)
+		},
+	})
+
+	_, err := m.deploy(context.Background(), host, Preflight{OS: goos, Arch: goarch, Home: "/home/dev"})
+	if !errors.Is(err, ErrDeployArtifactUnusable) {
+		t.Fatalf("err = %v, want the terminal artifact-mismatch refusal", err)
+	}
+	if !isTerminal(err) {
+		t.Fatalf("err = %v, want a terminal refusal", err)
+	}
+	if builds != 1 {
+		t.Fatalf("the push seam ran %d times, want exactly 1", builds)
+	}
+	for _, run := range fr.recordedRuns() {
+		if joined := strings.Join(run, " "); strings.Contains(joined, "EVENER_INSTALL_VERSION=") {
+			t.Fatalf("an explicit artifact reached the installer fallback: %s", joined)
+		}
+	}
+}
+
+// TestDefaultSourceSameTargetStillPushes pins the dispatch's other side: a host
+// on this process's own target is served by pushing the own executable exactly
+// as before — the fallback belongs to the cross-target pair alone.
+func TestDefaultSourceSameTargetStillPushes(t *testing.T) {
+	host := hostreg.Host{Name: "alpha", SSH: "alpha.example", EvenerPath: "/opt/evener/bin/evener"}
+	var pushed []byte
+	builds := 0
+	fr := &fakeRunner{runFn: func(_ context.Context, argv []string, stdin io.Reader) ([]byte, error) {
+		joined := strings.Join(argv, " ")
+		switch {
+		case strings.Contains(joined, "test -d /opt/evener/bin"):
+			return nil, nil
+		case strings.Contains(joined, "evener_resolve /opt/evener/bin/evener"):
+			return []byte("/opt/evener/bin/evener\n"), nil
+		case strings.Contains(joined, "cat >"):
+			if stdin != nil {
+				pushed, _ = io.ReadAll(stdin)
+			}
+			return nil, nil
+		default:
+			return nil, fmt.Errorf("unexpected remote command: %v", argv)
+		}
+	}}
+	m := newTestManager(t, testRegistry(t, host), fr, Options{
+		OwnExecutable: true,
+		BuildBinary: func(_ context.Context, _, _, out string) error {
+			builds++
+			return os.WriteFile(out, []byte("own-build-bytes"), 0o755)
+		},
+	})
+
+	target, err := m.deploy(context.Background(), host, Preflight{OS: runtime.GOOS, Arch: runtime.GOARCH})
+	if err != nil {
+		t.Fatalf("same-target deploy of the own executable: %v", err)
+	}
+	if target != "/opt/evener/bin/evener" || builds != 1 || string(pushed) != "own-build-bytes" {
+		t.Fatalf("deploy: target=%q builds=%d pushed=%q, want the own executable pushed to /opt/evener/bin/evener", target, builds, pushed)
+	}
+}
+
+// TestDirtyControllerRefusesWhenTheStagingPathIsNotTheOwnExecutable pins the
+// staging-path keying: Options.OwnExecutable claims BuildBinary serves this
+// controller's own executable, so a Manager that would actually stage through
+// BuildSource (BuildBinary nil) is judged by that path. A dirty controller with
+// the marker set and a build source still refuses terminally, and nothing
+// reaches the host.
+func TestDirtyControllerRefusesWhenTheStagingPathIsNotTheOwnExecutable(t *testing.T) {
+	host := hostreg.Host{Name: "alpha", SSH: "alpha.example", EvenerPath: "/opt/evener/bin/evener"}
+	fr := refusingRunner(t)
+	m := newTestManager(t, testRegistry(t, host), fr, Options{
+		controllerVersionOverride: dirtyControllerVersion,
+		OwnExecutable:             true,
+		BuildSource:               "/some/evener/checkout",
+	})
+
+	_, err := m.deploy(context.Background(), host, Preflight{OS: runtime.GOOS, Arch: runtime.GOARCH, Home: "/home/dev"})
+	if !errors.Is(err, errControllerDirty) {
+		t.Fatalf("err = %v, want errControllerDirty (a build source cannot reproduce a dirty controller)", err)
+	}
+	if !isTerminal(err) {
+		t.Fatalf("err = %v, want a terminal refusal", err)
+	}
+	if runs := fr.recordedRuns(); len(runs) != 0 {
+		t.Fatalf("a refused dirty source reached the host: %v", runs)
 	}
 }
 

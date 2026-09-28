@@ -264,7 +264,18 @@ pins the channel source, the wait, the restart wiring, and the start wiring.
   may deploy only its own executable (see criterion 6): both a `-build-source`
   compile and a named artifact stay refused, because neither can be proven to
   be the controller's build — a `<sha>-dirty` label is shared by every dirty
-  tree at that commit.
+  tree at that commit. **Amended 2026-09-27 (cross-target).** The defaulted own
+  executable is this process's build, so it can serve only hosts on this
+  process's target: a host on another target does not get a push (and therefore
+  no artifact-mismatch refusal) — the hub falls back to the installer path,
+  which is what a flagless controller used before the default existed, so a
+  release or snapshot controller provisions the host from its published
+  artifact. A controller with no published artifact to pin (dev, dirty, or a
+  release with no stamped tag) is refused terminally with both targets named
+  (`errOwnExecutableCannotServe`), rather than retrying the installer's
+  retryable refusal forever; an explicitly named artifact keeps the push and its
+  own terminal mismatch refusal, which is why the fallback is keyed on
+  `Options.OwnExecutable`.
 - **When a deploy happens** is unchanged from `04:1006-1016`: on an **on-disk**
   version difference **and only when a deploy path is configured** — with none,
   the host keeps its build and attaches — not on every reconnect, and a restart

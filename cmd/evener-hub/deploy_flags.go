@@ -384,12 +384,14 @@ func copyDeployBinary(ctx context.Context, art deployArtifact, goos, goarch, out
 		return fmt.Errorf("%w: %w", sshconn.ErrDeployArtifactUnusable, err)
 	}
 	gotOS, gotArch := buildSetting(info, "GOOS"), buildSetting(info, "GOARCH")
-	if gotOS != goos || gotArch != goarch {
+	if !sshconn.TargetMatches(gotOS, gotArch, goos, goarch) {
 		// Terminal, not the retryable ErrDeploy the other push failures use: the
 		// artifact is the operator's, so the mismatch is a permanent mistake that
-		// retrying only re-reads. The message names the flag to fix and both
-		// targets, so the remedy (rebuild for the host, or use -build-source) is
-		// visible without tracing the seam.
+		// retrying only re-reads. The predicate is sshconn's own (TargetMatches),
+		// which the manager's fallback dispatch reads too, so the two cannot
+		// disagree about what the host's target is. The message names the flag to
+		// fix and both targets, so the remedy (rebuild for the host, or use
+		// -build-source) is visible without tracing the seam.
 		return fmt.Errorf("%w: %s targets %s/%s, but the host needs %s/%s; supply an evener built for %s/%s, or set %s instead%s",
 			sshconn.ErrDeployArtifactUnusable, art.subject(), gotOS, gotArch, goos, goarch, goos, goarch, buildSourceFlag, art.remedy())
 	}

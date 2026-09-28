@@ -2422,6 +2422,7 @@ func isTerminal(err error) bool {
 		errors.Is(err, errControllerDirty),
 		errors.Is(err, errRunTargetUnservable),
 		errors.Is(err, errDeployArtifactUnusable),
+		errors.Is(err, errOwnExecutableCannotServe),
 		errors.Is(err, errDeployUnstamped),
 		errors.Is(err, errDeployDisabled),
 		errors.Is(err, ErrManagerClosed):
@@ -2894,7 +2895,9 @@ func (m *Manager) canBuild() bool {
 // code equality the dirty version cannot prove. A dirty controller deploying its
 // own executable (Options.OwnExecutable) is accepted by deploy: those bytes are
 // the controller's build by construction, so there is no reproduction proof to
-// make. And a
+// make (though for a host on another target that source hands over to the
+// installer fallback, or refuses terminally when the fallback has nothing to
+// pin: errOwnExecutableCannotServe). And a
 // controller with deploying turned off (Options.DeployDisabled) has no deploy
 // path at all, so it is false before even the installer fallback is considered:
 // -no-deploy must not let a release or snapshot controller quietly install a
