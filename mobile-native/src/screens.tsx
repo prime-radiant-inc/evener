@@ -2120,14 +2120,12 @@ export function ConversationScreen({
 		() => ({
 			ghosts: queuedGhosts,
 			disabled: ghostBusy,
-			canEdit: canEditGhost,
-			editHint: ghostEditHint,
 			act: (ghost, action) => ghostActions.current.act(ghost, action),
 			...(canSteerAll
 				? { steerAll: () => ghostActions.current.steerAll() }
 				: {}),
 		}),
-		[queuedKey, ghostBusy, canEditGhost, ghostEditHint, canSteerAll],
+		[queuedKey, ghostBusy, canSteerAll],
 	);
 	useProvideSheetHost(
 		queueHosts,

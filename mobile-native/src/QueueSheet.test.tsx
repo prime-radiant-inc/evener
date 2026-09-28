@@ -53,8 +53,6 @@ function host(over: Partial<QueueHost> = {}): QueueHost {
 	return {
 		ghosts: [heldGhost(1), heldGhost(2), heldGhost(3), heldGhost(4)],
 		disabled: false,
-		canEdit: true,
-		editHint: null,
 		act: vi.fn(async () => null),
 		...over,
 	};

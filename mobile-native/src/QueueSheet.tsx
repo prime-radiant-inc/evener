@@ -18,8 +18,6 @@ export interface QueueHost {
 	/** The session's queued messages, every one of them. */
 	ghosts: readonly Ghost[];
 	disabled: boolean;
-	canEdit: boolean;
-	editHint: string | null;
 	/** Runs one ghost's action on the live queue, and says what to tell you. */
 	act(ghost: Ghost, action: GhostAction): Promise<ToastMessage | null>;
 	/** Steers with the whole queue, when the session can. */
@@ -61,13 +59,15 @@ export function QueueSheet({ route }: NativeStackScreenProps<Routes, "QueueSheet
 			accessory={<Toast toast={toast.toast} dismiss={toast.dismiss} />}
 		>
 			<ScrollView contentContainerStyle={{ padding: 16, gap: 12 }}>
+				{/* Every ghost here is queued, and a queued message's Edit merges
+				into whatever is typed, so the composer never blocks it. */}
 				{host?.ghosts.map((ghost) => (
 					<GhostBubble
 						key={ghost.key}
 						ghost={ghost}
 						disabled={host.disabled}
-						canEdit={host.canEdit}
-						editHint={host.editHint}
+						canEdit
+						editHint={null}
 						onAction={(action) => run(ghost, action)}
 					/>
 				))}
