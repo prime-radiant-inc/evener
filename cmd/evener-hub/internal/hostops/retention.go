@@ -765,6 +765,9 @@ func normalizeSnapshotCollections(state *snapshot) {
 	if state.RemovedHosts == nil {
 		state.RemovedHosts = map[string]RemovedHost{}
 	}
+	if state.FencingQuarantines == nil {
+		state.FencingQuarantines = map[string]FencingQuarantine{}
+	}
 }
 
 // sortCompactionCandidates orders candidates removed-host-first (§4: "removed
