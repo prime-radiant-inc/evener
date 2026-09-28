@@ -6,11 +6,27 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/llm"
 )
+
+// TestLastBytesNeverSplitsARune: lastBytes cuts at a byte offset, which can
+// land inside a multi-byte UTF-8 rune. It must back off to a rune boundary
+// instead of returning invalid UTF-8, for every cut point through the
+// string, the way agent/doctor.Truncate does when it cuts from the front.
+func TestLastBytesNeverSplitsARune(t *testing.T) {
+	t.Parallel()
+	const s = "prefix-日本語-suffix"
+	for n := 0; n <= len(s)+2; n++ {
+		got := lastBytes(s, n)
+		if !utf8.ValidString(got) {
+			t.Fatalf("lastBytes(%q, %d) = %q, not valid UTF-8", s, n, got)
+		}
+	}
+}
 
 func TestRunSuiteRejectsUnknownHarness(t *testing.T) {
 	err := runSuite([]string{"--harness", "bogus"})

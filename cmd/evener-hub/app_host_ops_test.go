@@ -505,7 +505,9 @@ func TestHostPlanRefusesDriftAndConcurrentTerminalOp(t *testing.T) {
 			if err != nil {
 				return hubcore.HostPlanFacts{}, err
 			}
-			if _, err := store.Transition(record.ID, hostops.StateComplete, nil); err != nil {
+			if _, err := store.Transition(record.ID, hostops.StateComplete, func(r *hostops.Record) {
+				r.Result = &hostops.Result{OK: true, Message: "probe-time completion"}
+			}); err != nil {
 				return hubcore.HostPlanFacts{}, err
 			}
 			return planTestFacts(host), nil
@@ -673,9 +675,9 @@ func TestOpenHostOpsStoreReapsExpiredTokens(t *testing.T) {
 		t.Fatalf("write store: %v", err)
 	}
 	var logged strings.Builder
-	store := openHostOpsStore(stateRoot, &logged)
-	if store == nil {
-		t.Fatalf("openHostOpsStore returned no store: %s", logged.String())
+	store, err := openHostOpsStore(stateRoot, &logged, hostops.RetentionPolicy{})
+	if err != nil || store == nil {
+		t.Fatalf("openHostOpsStore: store=%v err=%v (log: %s)", store, err, logged.String())
 	}
 	if _, ok := store.OutstandingToken("m4"); ok {
 		t.Fatal("the boot reap left an expired token row behind")
@@ -800,9 +802,9 @@ func TestOpenHostOpsStoreReapsProbeEpochs(t *testing.T) {
 		t.Fatalf("write store: %v", err)
 	}
 	var logged strings.Builder
-	store := openHostOpsStore(stateRoot, &logged)
-	if store == nil {
-		t.Fatalf("openHostOpsStore returned no store: %s", logged.String())
+	store, err := openHostOpsStore(stateRoot, &logged, hostops.RetentionPolicy{})
+	if err != nil || store == nil {
+		t.Fatalf("openHostOpsStore: store=%v err=%v (log: %s)", store, err, logged.String())
 	}
 	if _, ok := store.ProbeEpoch("m4"); ok {
 		t.Fatal("the boot pass left a probe-epoch row behind")

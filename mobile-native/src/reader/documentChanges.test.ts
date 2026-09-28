@@ -3,7 +3,9 @@ import { documentBlocks } from "./documentBlocks";
 import { anchorBlock, changedBlocks, changesCaption, restoreBlock, whenYouRead } from "./documentChanges";
 
 const v1 = documentBlocks("# Plan\n\nFirst paragraph.\n\nSecond paragraph.\n\nThird paragraph.");
-const v2 = documentBlocks("# Plan\n\nA new opening.\n\nFirst paragraph.\n\nSecond paragraph, edited.\n\nThird paragraph.");
+const v2 = documentBlocks(
+	"# Plan\n\nA new opening.\n\nFirst paragraph.\n\nSecond paragraph, edited.\n\nThird paragraph.",
+);
 const hashes = (blocks: typeof v1) => blocks.map((block) => block.hash);
 
 describe("changes since you last read (spec 10.2, ruling 13)", () => {
@@ -29,7 +31,9 @@ describe("changes since you last read (spec 10.2, ruling 13)", () => {
 		expect(whenYouRead(new Date(2026, 8, 23, 12, 0).getTime(), now)).toBe("on Wednesday");
 		expect(whenYouRead(new Date(2026, 8, 18, 12, 0).getTime(), now)).toBe("on Sep 18");
 		expect(whenYouRead(new Date(2026, 8, 26, 11, 0).getTime(), now)).toBe("earlier today");
-		expect(changesCaption(3, new Date(2026, 8, 25, 18, 0).getTime(), now)).toBe("3 changes since you read it yesterday");
+		expect(changesCaption(3, new Date(2026, 8, 25, 18, 0).getTime(), now)).toBe(
+			"3 changes since you read it yesterday",
+		);
 		expect(changesCaption(1, new Date(2026, 8, 25, 18, 0).getTime(), now)).toBe("1 change since you read it yesterday");
 		expect(changesCaption(0, new Date(2026, 8, 25, 18, 0).getTime(), now)).toBeNull();
 	});

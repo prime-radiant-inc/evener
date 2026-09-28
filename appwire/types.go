@@ -150,6 +150,12 @@ const (
 	// (daemon serves it; hub relays). It is a UI-only request, never advertised to
 	// the model.
 	MethodEvenerSandboxEscalationResolve = "evener/sandbox/escalation/resolve"
+	// MethodEvenerDelegateStop ends one subagent's current run at the user's
+	// request (S6): that subagent alone, never the subagents it started. It
+	// targets the root session (ref/threadId) and names the delegate.
+	// ScopeBoth (the root's daemon serves it; the hub relays). A UI-only
+	// request, never advertised to the model.
+	MethodEvenerDelegateStop = "evener/delegate/stop"
 	// MethodEvenerHostRequest forwards one hub-scoped admin RPC to a named
 	// remote host's hub (component 07a). Host is the component-03 source ID;
 	// Method must be in the proxy's exact allow-list. See HostRequestParams.
@@ -245,6 +251,11 @@ const (
 	// another source, so bytes stamped by a remote hub never resolve against
 	// the controller's filesystem. See SessionImageParams.
 	MethodEvenerSessionImage = "evener/session/image"
+	// MethodEvenerSessionDocument reads one document out of the recipient hub's
+	// own local session state (S7): the controller's /doc/file proxies through
+	// it when the session id names another source, as the image routes do
+	// through MethodEvenerSessionImage. See SessionDocumentParams.
+	MethodEvenerSessionDocument = "evener/session/document"
 )
 
 const (
@@ -663,7 +674,24 @@ type SessionSeenSetResponse struct {
 // sessions, matching the palette's initial result set.
 type SearchParams struct {
 	Query string `json:"query,omitempty"`
+	// Scope narrows every group of the answer (S14, spec 7.4): SearchScopeAll
+	// (the default when absent), SearchScopeLive or SearchScopeArchived. An
+	// older hub ignores it and answers as for all; SearchResponse.Scope says
+	// whether it was applied.
+	Scope string `json:"scope,omitempty"`
 }
+
+// The search scopes (S14, spec 7.4).
+const (
+	// SearchScopeAll is every session.
+	SearchScopeAll = "all"
+	// SearchScopeLive is the sessions the Board's Live section holds: live and
+	// not archived.
+	SearchScopeLive = "live"
+	// SearchScopeArchived is the sessions the rail files as archived, live or
+	// ended.
+	SearchScopeArchived = "archived"
+)
 
 // SearchResult is one session hit from the hub's live or past search index.
 // Ref is the qualified session reference that clients use to open the hit.
@@ -682,6 +710,32 @@ type SearchResult struct {
 	// neither. Additive: an older hub omits both, decoding as false.
 	AskPending      bool `json:"askPending,omitempty"`
 	ApprovalPending bool `json:"approvalPending,omitempty"`
+	// Archived says the rail files the session as archived: its own archive
+	// decision, its project's, or two weeks without activity (S14). Absent
+	// when it is not, and from an older hub.
+	Archived bool `json:"archived,omitempty"`
+	// Hits are the session's newest messages that match the search, newest
+	// first, and HitCount how many match in all. Only an InSessions result
+	// carries them (S14).
+	Hits     []SearchHit `json:"hits,omitempty"`
+	HitCount int         `json:"hitCount,omitempty"`
+}
+
+// SearchHit is one message that matches a search (S14).
+type SearchHit struct {
+	// TranscriptKey and Position name the transcript item the message is, as
+	// a thread read's items carry them, so a client opens the session at it.
+	TranscriptKey string             `json:"transcriptKey"`
+	Position      ThreadItemPosition `json:"position"`
+	// Snippet is the message around its first match, one line, in parts: a
+	// part with match set is text the search matched.
+	Snippet []SearchSnippetPart `json:"snippet"`
+}
+
+// SearchSnippetPart is one run of a snippet's text.
+type SearchSnippetPart struct {
+	Text  string `json:"text"`
+	Match bool   `json:"match,omitempty"`
 }
 
 // SearchResponse groups matching live sessions separately from persisted
@@ -689,6 +743,13 @@ type SearchResult struct {
 type SearchResponse struct {
 	Live []SearchResult `json:"live"`
 	Past []SearchResult `json:"past"`
+	// InSessions lists the sessions whose messages match, each with its hits
+	// (S14), newest session first: live sessions, then ended ones. Absent when
+	// none match, and from an older hub.
+	InSessions []SearchResult `json:"inSessions,omitempty"`
+	// Scope is the scope the answer applied. An older hub leaves it out, so a
+	// client knows it offers no Archived scope and no message hits.
+	Scope string `json:"scope,omitempty"`
 }
 
 // ActivityReadParams selects the sessions evener/activity/read reports. Refs
@@ -1010,6 +1071,22 @@ type EvenerThread struct {
 	// thread/list root rows only, when the tree has at least one subagent, and
 	// never a thread/read snapshot: no notification announces its changes.
 	Subagents *SubagentTally `json:"subagents,omitempty"`
+	// Access is what the session's sandbox lets it reach (S15): the sandbox
+	// mode it started under and whether that sandbox allows the network. Every
+	// current producer sets it; it is absent from an older daemon or hub, which
+	// a client reads as "not known". Snapshot-only: a session's sandbox is
+	// fixed when it starts, so no notification carries it.
+	Access *ThreadAccess `json:"access,omitempty"`
+}
+
+// ThreadAccess is a session's sandbox mode and network setting (spec 8.6,
+// S15). Sandbox is the mode name a session starts with ("off", "read-only",
+// "workspace-write" or "restricted"). Network is true when the session may use
+// the network: always for "off", and for a sandboxed session unless it started
+// with the network turned off.
+type ThreadAccess struct {
+	Sandbox string `json:"sandbox"`
+	Network bool   `json:"network"`
 }
 
 // ThreadActivity is one pulse meter sample. Minutes holds seven one-minute
@@ -1242,6 +1319,32 @@ type SandboxEscalationResolved struct {
 	EscalationID string `json:"escalationId"`
 }
 
+// DelegateStopParams is the request shape for evener/delegate/stop: the root
+// session that owns the delegate tree (ThreadID/Ref, as every turn mutation
+// names it) and the delegate to stop (EvenerDelegateInfo.DelegateID).
+type DelegateStopParams struct {
+	ThreadID   string `json:"threadId,omitempty"`
+	Ref        string `json:"ref,omitempty"`
+	DelegateID string `json:"delegateId"`
+}
+
+// DelegateStopOutcome is what evener/delegate/stop did.
+type DelegateStopOutcome string
+
+const (
+	// DelegateStopStopping: the subagent's run was cancelled. It ends as
+	// cancelled, which evener/delegate/updated reports.
+	DelegateStopStopping DelegateStopOutcome = "stopping"
+	// DelegateStopNotRunning: the subagent had no run to stop, because it was
+	// idle, finished, or already finishing. A repeated stop answers this.
+	DelegateStopNotRunning DelegateStopOutcome = "notRunning"
+)
+
+// DelegateStopResponse is the result of evener/delegate/stop.
+type DelegateStopResponse struct {
+	Outcome DelegateStopOutcome `json:"outcome"`
+}
+
 // SandboxEscalationResolveParams is the request shape for
 // evener/sandbox/escalation/resolve (M7): the human's approve/deny decision for a
 // pending escalation. Approve re-runs the single denied invocation with the one
@@ -1294,6 +1397,12 @@ type ThreadCapabilities struct {
 	// against the live daemon. ValidateSkillInputSupport keeps skill items
 	// rejected wherever this capability is false.
 	SkillInput bool `json:"skillInput,omitempty"`
+	// StopSubagent advertises evener/delegate/stop on a root session (S6):
+	// true while its daemon wires the stop and the session is open. Absent
+	// from an older daemon, from a session with no daemon running (it runs no
+	// subagents), and from a subagent's own thread: the stop targets the root
+	// that owns the tree.
+	StopSubagent bool `json:"stopSubagent,omitempty"`
 }
 
 // EvenerHookEventStatus describes a single hook event's registration state.
@@ -2092,6 +2201,28 @@ type SessionImageResponse struct {
 	Size      int64  `json:"size"`
 	SHA       string `json:"sha,omitempty"`
 	Data      []byte `json:"data"`
+}
+
+// SessionDocumentParams names one file in a session's working directory on the
+// recipient hub. SessionID names the session in the recipient's own namespace
+// and is never a routing field for another source. Path is resolved exactly as
+// the local /doc/file route resolves it: relative to the session's working
+// directory, or absolute inside it, and refused when it or a symlink along it
+// leads outside.
+type SessionDocumentParams struct {
+	SessionID string `json:"sessionId"`
+	Path      string `json:"path"`
+}
+
+// SessionDocumentResponse is one read of a session document: at most the first
+// 512 KiB of the file (base64 inside the JSON frame), the file's true size, the
+// lowercase hex sha256 of the whole file (absent for a file too large to hash),
+// and its modification time in Unix milliseconds.
+type SessionDocumentResponse struct {
+	Data       []byte `json:"data"`
+	TotalSize  int64  `json:"totalSize"`
+	Revision   string `json:"revision,omitempty"`
+	ModifiedAt int64  `json:"modifiedAt,omitempty"`
 }
 
 type ThreadTranscriptListParams struct {
@@ -4903,6 +5034,9 @@ type OperationResult struct {
 // (deploy pipeline 08b §4, §10). `incarnationId` is the pinned incarnation the
 // record ran against; `result` is present exactly on terminal records;
 // `hostRemoved` marks a record whose pinned incarnation a removal tombstoned.
+// `compacted: true` is present exactly on a replay the operation store
+// answered from a dedup tombstone — the terminal record itself was compacted
+// (§4) — and absent on every retained record.
 // The fencing-epoch and orphan-boundary details a later slice's wire carries
 // (the crash-fencing spec's shapes) stay off this shape until that slice
 // registers its filters.
@@ -4919,6 +5053,7 @@ type OperationRecord struct {
 	CreatedAt         string                   `json:"createdAt"`
 	UpdatedAt         string                   `json:"updatedAt"`
 	HostRemoved       bool                     `json:"hostRemoved"`
+	Compacted         bool                     `json:"compacted,omitempty"`
 }
 
 // HostRunningParams is the evener/host/running payload (deploy pipeline 08b

@@ -22,7 +22,7 @@ func TestNavigationRemoteRowsCarryTheirQuestionAndApproval(t *testing.T) {
 		{ID: "asking", Source: "devbox", Status: appwire.ThreadStatus{Type: appwire.ThreadStatusAwaiting}, Evener: appwire.EvenerThread{AskPending: true}},
 		{ID: "approving", Source: "devbox", Status: appwire.ThreadStatus{Type: appwire.ThreadStatusActive}, Evener: appwire.EvenerThread{
 			PendingEscalations: []appwire.SandboxEscalationRequested{
-				{ThreadID: "approving", Ref: "devbox:approving", EscalationID: "esc_1", Tool: "write_file", Kind: "file", DeniedPath: "/home/me/sites/docs/index.md"},
+				{ThreadID: "approving", Ref: "devbox:approving", EscalationID: "esc_1", Tool: "write_file", Kind: "file_tool", DeniedPath: "/home/me/sites/docs/index.md"},
 			},
 		}},
 		{ID: "working", Source: "devbox", Status: appwire.ThreadStatus{Type: appwire.ThreadStatusActive}},

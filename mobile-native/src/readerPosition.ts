@@ -31,8 +31,7 @@ function mergeStored(...maps: readonly Stored[]): Stored {
 	for (const map of maps)
 		for (const [entryKey, candidate] of Object.entries(map)) {
 			const prior = merged[entryKey];
-			if (!prior || candidate.touchedAt >= prior.touchedAt)
-				merged[entryKey] = candidate;
+			if (!prior || candidate.touchedAt >= prior.touchedAt) merged[entryKey] = candidate;
 		}
 	return merged;
 }
@@ -51,16 +50,14 @@ function position(value: unknown): value is { entry: number; item: number } {
 	);
 }
 function valid(value: unknown): value is ReaderAnchor {
-	if (typeof value !== "object" || value === null || Array.isArray(value))
-		return false;
+	if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
 	const v = value as Partial<ReaderAnchor>;
 	return (
 		typeof v.hubId === "string" &&
 		typeof v.sessionRef === "string" &&
 		typeof v.itemKey === "string" &&
 		v.itemKey.length > 0 &&
-		(v.conversationInstance === undefined ||
-			typeof v.conversationInstance === "string") &&
+		(v.conversationInstance === undefined || typeof v.conversationInstance === "string") &&
 		(v.itemPosition === undefined || position(v.itemPosition)) &&
 		typeof v.withinItemOffset === "number" &&
 		Number.isFinite(v.withinItemOffset) &&
@@ -79,10 +76,7 @@ export function readerPosition(row: TimelineRow) {
 	if (row.kind === "time") return undefined;
 	return row.position;
 }
-export function comparePosition(
-	a?: { entry: number; item: number },
-	b?: { entry: number; item: number },
-) {
+export function comparePosition(a?: { entry: number; item: number }, b?: { entry: number; item: number }) {
 	if (!a && !b) return 0;
 	if (!a) return 1;
 	if (!b) return -1;
@@ -106,10 +100,7 @@ function matchesAnchor(
 	);
 }
 
-export function resolveReaderAnchor(
-	anchor: ReaderAnchor,
-	rows: readonly TimelineRow[],
-): number | null {
+export function resolveReaderAnchor(anchor: ReaderAnchor, rows: readonly TimelineRow[]): number | null {
 	const exact = rows.findIndex((row) => readerKey(row) === anchor.itemKey);
 	if (exact >= 0) return exact;
 	if (anchor.itemPosition) {
@@ -122,9 +113,7 @@ export function resolveReaderAnchor(
 	}
 	// A position saved on a step that now sits inside a folded run resolves to
 	// the run (Review Focus 4).
-	const inRun = rows.findIndex(
-		(row) => row.kind === "run" && row.steps.some((step) => matchesAnchor(step, anchor)),
-	);
+	const inRun = rows.findIndex((row) => row.kind === "run" && row.steps.some((step) => matchesAnchor(step, anchor)));
 	return inRun >= 0 ? inRun : null;
 }
 
@@ -149,11 +138,7 @@ export function openingTarget(
 		const newer = seen === -1 ? undefined : turnIds[seen + 1];
 		if (newer !== undefined) {
 			const index = rows.findIndex(
-				(row) =>
-					rowTurnId(row) === newer &&
-					row.kind !== "user" &&
-					row.kind !== "time" &&
-					row.kind !== "attachments",
+				(row) => rowTurnId(row) === newer && row.kind !== "user" && row.kind !== "time" && row.kind !== "attachments",
 			);
 			if (index !== -1) return { kind: "row", index };
 		}
@@ -166,13 +151,8 @@ export function isReaderAnchorLoaded(
 ): boolean {
 	for (const item of items) {
 		if (resolveReaderAnchor(anchor, [item]) !== null) return true;
-		if (item.kind === "notice" && anchor.itemKey === `details:${item.id}`)
-			return true;
-		if (
-			item.kind === "activity" &&
-			item.members?.some((member) => matchesAnchor(member, anchor))
-		)
-			return true;
+		if (item.kind === "notice" && anchor.itemKey === `details:${item.id}`) return true;
+		if (item.kind === "activity" && item.members?.some((member) => matchesAnchor(member, anchor))) return true;
 	}
 	return false;
 }
@@ -211,9 +191,7 @@ export function captureReaderAnchor(
 	conversationInstance?: string,
 	turnsSeen?: string,
 ): ReaderAnchor | null {
-	const measurement = measurements.find(
-		(candidate) => candidate.key === readerKey(row),
-	);
+	const measurement = measurements.find((candidate) => candidate.key === readerKey(row));
 	if (!measurement) return null;
 	return readerAnchorAt(
 		hubId,
@@ -247,10 +225,7 @@ export class ReaderRestoreAttempts {
 			this.reset();
 			return true;
 		}
-		if (
-			this.approximateOffset === command.offset &&
-			(this.approximateMeasurementProgress ?? -1) >= measurementProgress
-		)
+		if (this.approximateOffset === command.offset && (this.approximateMeasurementProgress ?? -1) >= measurementProgress)
 			return false;
 		if (measurementProgress > this.highWaterMeasurementProgress) {
 			this.highWaterMeasurementProgress = measurementProgress;
@@ -280,8 +255,7 @@ export function furthestMeasuredRowBeforeTarget(
 ) {
 	const measured = new Set(measurements.map((measurement) => measurement.key));
 	let furthest = -1;
-	for (let index = 0; index < targetIndex; index += 1)
-		if (measured.has(readerKey(rows[index]))) furthest = index;
+	for (let index = 0; index < targetIndex; index += 1) if (measured.has(readerKey(rows[index]))) furthest = index;
 	return furthest;
 }
 
@@ -299,15 +273,8 @@ export function shouldApplyExactRestore(
 	);
 }
 // A virtualized list may not yet extend far enough to reach the saved position.
-export function reachableReaderOffset(
-	desiredOffset: number,
-	contentHeight: number,
-	viewportHeight: number,
-): number {
-	return Math.min(
-		Math.max(0, desiredOffset),
-		Math.max(0, contentHeight - viewportHeight),
-	);
+export function reachableReaderOffset(desiredOffset: number, contentHeight: number, viewportHeight: number): number {
+	return Math.min(Math.max(0, desiredOffset), Math.max(0, contentHeight - viewportHeight));
 }
 export function restoreReaderCommand(
 	anchor: ReaderAnchor,
@@ -320,9 +287,7 @@ export function restoreReaderCommand(
 	const index = resolveReaderAnchor(anchor, rows);
 	if (index === null) return null;
 	const currentKey = readerKey(rows[index]);
-	const measurement = measurements.find(
-		(candidate) => candidate.key === currentKey,
-	);
+	const measurement = measurements.find((candidate) => candidate.key === currentKey);
 	if (measurement)
 		return {
 			kind: "exact",
@@ -331,10 +296,7 @@ export function restoreReaderCommand(
 		};
 	return {
 		kind: "approximate",
-		offset: Math.max(
-			0,
-			index * Math.max(1, averageItemHeight) + anchor.withinItemOffset,
-		),
+		offset: Math.max(0, index * Math.max(1, averageItemHeight) + anchor.withinItemOffset),
 	};
 }
 export function storageKey(hubId: string, sessionRef: string) {
@@ -350,27 +312,19 @@ export class ReaderPositionRepository {
 			const cached = memory.get(this.storage)?.[storageKey(hubId, sessionRef)];
 			return cached ?? null;
 		}
-		if (!raw)
-			return memory.get(this.storage)?.[storageKey(hubId, sessionRef)] ?? null;
+		if (!raw) return memory.get(this.storage)?.[storageKey(hubId, sessionRef)] ?? null;
 		let value: unknown;
 		try {
 			value = JSON.parse(raw);
 		} catch {
 			return null;
 		}
-		if (typeof value !== "object" || value === null || Array.isArray(value))
-			return null;
-		const disk = Object.fromEntries(
-			Object.entries(value).filter(([, candidate]) => valid(candidate)),
-		) as Stored;
+		if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
+		const disk = Object.fromEntries(Object.entries(value).filter(([, candidate]) => valid(candidate))) as Stored;
 		const stored = mergeStored(disk, memory.get(this.storage) ?? {});
 		memory.set(this.storage, stored);
 		const candidate = stored[storageKey(hubId, sessionRef)];
-		return valid(candidate) &&
-			candidate.hubId === hubId &&
-			candidate.sessionRef === sessionRef
-			? candidate
-			: null;
+		return valid(candidate) && candidate.hubId === hubId && candidate.sessionRef === sessionRef ? candidate : null;
 	}
 	save(anchor: ReaderAnchor | null) {
 		if (!anchor) return;
@@ -387,14 +341,8 @@ export class ReaderPositionRepository {
 		if (raw) {
 			try {
 				const value: unknown = JSON.parse(raw);
-				if (
-					typeof value === "object" &&
-					value !== null &&
-					!Array.isArray(value)
-				)
-					disk = Object.fromEntries(
-						Object.entries(value).filter(([, candidate]) => valid(candidate)),
-					);
+				if (typeof value === "object" && value !== null && !Array.isArray(value))
+					disk = Object.fromEntries(Object.entries(value).filter(([, candidate]) => valid(candidate)));
 			} catch {
 				disk = {};
 			}
@@ -406,10 +354,7 @@ export class ReaderPositionRepository {
 			.slice(0, limit);
 		memory.set(this.storage, Object.fromEntries(entries));
 		try {
-			this.storage.setItemSync(
-				key,
-				JSON.stringify(Object.fromEntries(entries)),
-			);
+			this.storage.setItemSync(key, JSON.stringify(Object.fromEntries(entries)));
 		} catch {
 			// Keep the caller's in-memory anchor when persistence is unavailable.
 		}
@@ -418,36 +363,26 @@ export class ReaderPositionRepository {
 		const raw = this.storage.getItemSync(key);
 		const cached = memory.get(this.storage) ?? {};
 		const remainingCached = Object.fromEntries(
-			Object.entries(cached).filter(
-				([entryKey]) => !entryKey.startsWith(`${hubId}\u0000`),
-			),
+			Object.entries(cached).filter(([entryKey]) => !entryKey.startsWith(`${hubId}\u0000`)),
 		);
 		const disk: Stored = {};
 		if (raw) {
 			try {
 				const value: unknown = JSON.parse(raw);
-				if (
-					typeof value === "object" &&
-					value !== null &&
-					!Array.isArray(value)
-				)
-					for (const [entryKey, candidate] of Object.entries(value))
-						if (valid(candidate)) disk[entryKey] = candidate;
+				if (typeof value === "object" && value !== null && !Array.isArray(value))
+					for (const [entryKey, candidate] of Object.entries(value)) if (valid(candidate)) disk[entryKey] = candidate;
 			} catch {
 				// Invalid persisted data is discarded as it is during save.
 			}
 		}
 		const remaining = Object.fromEntries(
-			Object.entries(disk).filter(
-				([entryKey]) => !entryKey.startsWith(`${hubId}\u0000`),
-			),
+			Object.entries(disk).filter(([entryKey]) => !entryKey.startsWith(`${hubId}\u0000`)),
 		);
 		if (Object.keys(remaining).length === Object.keys(disk).length) {
 			memory.set(this.storage, remainingCached);
 			return;
 		}
-		if (Object.keys(remaining).length > 0)
-			this.storage.setItemSync(key, JSON.stringify(remaining));
+		if (Object.keys(remaining).length > 0) this.storage.setItemSync(key, JSON.stringify(remaining));
 		else this.storage.removeItemSync(key);
 		memory.set(this.storage, remainingCached);
 	}

@@ -13,10 +13,7 @@ export function useScreenInFront(routeKey: string): boolean {
 }
 
 /** The same answer at the moment of a call, for a guard inside a callback. */
-export function screenInFront(
-	navigation: { getState(): StackState },
-	routeKey: string,
-): boolean {
+export function screenInFront(navigation: { getState(): StackState }, routeKey: string): boolean {
 	return inFront(navigation.getState(), routeKey);
 }
 
@@ -25,10 +22,7 @@ export function screenInFront(
  * stack's index, not from the screen that asked), so a session under its
  * sheet would pop the sheet and stay. Does nothing once the screen is no
  * longer in the stack at or below its index. */
-export function leaveScreen(
-	navigation: { getState(): StackState; pop(count: number): void },
-	routeKey: string,
-): void {
+export function leaveScreen(navigation: { getState(): StackState; pop(count: number): void }, routeKey: string): void {
 	const state = navigation.getState();
 	const position = state.routes.findIndex((route) => route.key === routeKey);
 	if (position === -1 || position > state.index) return;

@@ -37,7 +37,7 @@ func FuzzLoadStore(f *testing.F) {
 		// A pending record and a complete one: the pass must move only the first.
 		`{"version":1,"sequence":1,"allocatorHighWaterMark":2,"records":[` +
 			`{"id":"00000000000000000001","clientOperationId":"client-h1","host":"h1","kind":"deploy","state":"pending","generation":7,"incarnationId":"inc-1","createdAt":"2026-09-26T00:00:00Z","updatedAt":"2026-09-26T00:00:00Z","hostRemoved":false},` +
-			`{"id":"00000000000000000002","clientOperationId":"client-h2","host":"h2","kind":"restart","state":"complete","generation":7,"incarnationId":"inc-2","createdAt":"2026-09-26T00:00:00Z","updatedAt":"2026-09-26T00:00:01Z","hostRemoved":false,"sequence":1}]}`,
+			`{"id":"00000000000000000002","clientOperationId":"client-h2","host":"h2","kind":"restart","state":"complete","generation":7,"incarnationId":"inc-2","createdAt":"2026-09-26T00:00:00Z","updatedAt":"2026-09-26T00:00:01Z","hostRemoved":false,"result":{"ok":true,"message":"done"},"sequence":1}]}`,
 		// A running record carrying its fencing epoch and an orphan-unverified
 		// record carrying its boundary: the pass moves the first and must leave
 		// the second alone (spec §7's one exception).
@@ -49,7 +49,7 @@ func FuzzLoadStore(f *testing.F) {
 		`{"version":1,"sequence":0,"allocatorHighWaterMark":1,"records":[` +
 			`{"id":"00000000000000000001","clientOperationId":"client-h1","host":"h1","kind":"deploy","state":"pending","generation":0,"incarnationId":"inc-1","createdAt":"2026-09-26T00:00:00Z","updatedAt":"2026-09-26T00:00:00Z","hostRemoved":false}]}`,
 		`{"version":1,"sequence":0,"allocatorHighWaterMark":1,"records":[` +
-			`{"id":"00000000000000000001","clientOperationId":"client-h1","host":"h1","kind":"deploy","state":"failed","generation":7,"incarnationId":"inc-1","createdAt":"2026-09-26T00:00:00Z","updatedAt":"2026-09-26T00:00:00Z","hostRemoved":false,"sequence":9}]}`,
+			`{"id":"00000000000000000001","clientOperationId":"client-h1","host":"h1","kind":"deploy","state":"failed","generation":7,"incarnationId":"inc-1","createdAt":"2026-09-26T00:00:00Z","updatedAt":"2026-09-26T00:00:00Z","hostRemoved":false,"result":{"ok":false,"message":"failed"},"sequence":9}]}`,
 		// A file missing a required top-level field, a file with a null record
 		// list, and a file whose record set is not in the allocator's canonical
 		// ascending id order: all schema-invalid, never an empty or reordered
@@ -73,6 +73,16 @@ func FuzzLoadStore(f *testing.F) {
 			`{"id":"00000000000000000001","clientOperationId":"client-h1","host":"h1","kind":"deploy","state":"pending","generation":7,"incarnationId":"inc-1","createdAt":"2026-09-26T02:00:00+02:00","updatedAt":"2026-09-26T03:00:00+02:00","hostRemoved":false}]}`,
 		`{"version":1,"sequence":0,"allocatorHighWaterMark":1,"records":[` +
 			`{"id":"00000000000000000001","clientOperationId":"client-h1","host":"h1","kind":"deploy","state":"orphan-unverified","generation":7,"incarnationId":"inc-1","createdAt":"2026-09-26T00:00:00Z","updatedAt":"2026-09-26T00:00:00Z","hostRemoved":false,"orphanBoundary":[]}]}`,
+		// A fencing-quarantine marker naming the orphan-unverified record its
+		// host carries (the accepted shape), and two markers this writer never
+		// produces: one naming a record that is not orphan-unverified, and one
+		// carrying a key the marker schema does not define.
+		`{"version":1,"sequence":0,"allocatorHighWaterMark":1,"records":[` +
+			`{"id":"00000000000000000001","clientOperationId":"client-h1","host":"h1","kind":"deploy","state":"orphan-unverified","generation":7,"incarnationId":"inc-1","createdAt":"2026-09-26T00:00:00Z","updatedAt":"2026-09-26T00:00:00Z","hostRemoved":false,"orphanBoundary":[{"kind":"remote-fencing","fencingEpoch":{"bootId":"boot-1","opSeq":2},"guardEpoch":3,"leaseEntries":[]}]}],"fencingQuarantines":{"h1":{"recordId":"00000000000000000001","quarantinedAt":"2026-09-26T00:00:00Z"}}}`,
+		`{"version":1,"sequence":0,"allocatorHighWaterMark":1,"records":[` +
+			`{"id":"00000000000000000001","clientOperationId":"client-h1","host":"h1","kind":"deploy","state":"running","generation":7,"incarnationId":"inc-1","createdAt":"2026-09-26T00:00:00Z","updatedAt":"2026-09-26T00:00:00Z","hostRemoved":false}],"fencingQuarantines":{"h1":{"recordId":"00000000000000000001","quarantinedAt":"2026-09-26T00:00:00Z"}}}`,
+		`{"version":1,"sequence":0,"allocatorHighWaterMark":1,"records":[` +
+			`{"id":"00000000000000000001","clientOperationId":"client-h1","host":"h1","kind":"deploy","state":"orphan-unverified","generation":7,"incarnationId":"inc-1","createdAt":"2026-09-26T00:00:00Z","updatedAt":"2026-09-26T00:00:00Z","hostRemoved":false,"orphanBoundary":[]}],"fencingQuarantines":{"h1":{"recordId":"00000000000000000001","quarantinedAt":"2026-09-26T00:00:00Z","host":"h1"}}}`,
 		// A file naming a key twice and one whose raw field carries invalid
 		// UTF-8: the decoder would collapse the first and the encoder would
 		// replace the second, so neither is a file this store wrote.
@@ -86,8 +96,8 @@ func FuzzLoadStore(f *testing.F) {
 		`{"version":1,"sequence":1,"allocatorHighWaterMark":1,"records":[` +
 			`{"id":"00000000000000000001","clientOperationId":"client-h1","host":"h1","kind":"deploy","state":"complete","generation":7,"incarnationId":"inc-1","createdAt":"2026-09-26T00:00:00Z","updatedAt":"2026-09-26T00:00:00Z","hostRemoved":false,"result":{"message":"failed"},"sequence":1}]}`,
 		`{"version":1,"sequence":1,"allocatorHighWaterMark":2,"records":[` +
-			`{"id":"00000000000000000001","clientOperationId":"client-h1","host":"h1","kind":"deploy","state":"complete","generation":7,"incarnationId":"inc-1","createdAt":"2026-09-26T00:00:00Z","updatedAt":"2026-09-26T00:00:00Z","hostRemoved":false,"sequence":1},` +
-			`{"id":"00000000000000000002","clientOperationId":"client-h2","host":"h1","kind":"deploy","state":"failed","generation":7,"incarnationId":"inc-1","createdAt":"2026-09-26T00:00:00Z","updatedAt":"2026-09-26T00:00:00Z","hostRemoved":false,"sequence":1}]}`,
+			`{"id":"00000000000000000001","clientOperationId":"client-h1","host":"h1","kind":"deploy","state":"complete","generation":7,"incarnationId":"inc-1","createdAt":"2026-09-26T00:00:00Z","updatedAt":"2026-09-26T00:00:00Z","hostRemoved":false,"result":{"ok":true,"message":"done"},"sequence":1},` +
+			`{"id":"00000000000000000002","clientOperationId":"client-h2","host":"h1","kind":"deploy","state":"failed","generation":7,"incarnationId":"inc-1","createdAt":"2026-09-26T00:00:00Z","updatedAt":"2026-09-26T00:00:00Z","hostRemoved":false,"result":{"ok":false,"message":"failed"},"sequence":1}]}`,
 	}
 	for _, seed := range seeds {
 		f.Add(seed)
@@ -223,4 +233,56 @@ func marshalRecords(t *testing.T, records []Record) []byte {
 		t.Fatalf("marshal records: %v", err)
 	}
 	return data
+}
+
+// TestRepairedFuzzSeedsReachTheirIntendedArms pins the Low review finding's
+// fix: the terminal fuzz seeds now carry the result field the writer always
+// emits, so the pending/complete seed still exercises the boot pass and the
+// stamp-ahead and shared-stamp seeds still reach their sequence refusals
+// instead of short-circuiting on the missing-result rule.
+func TestRepairedFuzzSeedsReachTheirIntendedArms(t *testing.T) {
+	pendingComplete := `{"version":1,"sequence":1,"allocatorHighWaterMark":2,"records":[` +
+		`{"id":"00000000000000000001","clientOperationId":"client-h1","host":"h1","kind":"deploy","state":"pending","generation":7,"incarnationId":"inc-1","createdAt":"2026-09-26T00:00:00Z","updatedAt":"2026-09-26T00:00:00Z","hostRemoved":false},` +
+		`{"id":"00000000000000000002","clientOperationId":"client-h2","host":"h2","kind":"restart","state":"complete","generation":7,"incarnationId":"inc-2","createdAt":"2026-09-26T00:00:00Z","updatedAt":"2026-09-26T00:00:01Z","hostRemoved":false,"result":{"ok":true,"message":"done"},"sequence":1}]}`
+	stampAhead := `{"version":1,"sequence":0,"allocatorHighWaterMark":1,"records":[` +
+		`{"id":"00000000000000000001","clientOperationId":"client-h1","host":"h1","kind":"deploy","state":"failed","generation":7,"incarnationId":"inc-1","createdAt":"2026-09-26T00:00:00Z","updatedAt":"2026-09-26T00:00:00Z","hostRemoved":false,"result":{"ok":false,"message":"failed"},"sequence":9}]}`
+	sharedStamp := `{"version":1,"sequence":1,"allocatorHighWaterMark":2,"records":[` +
+		`{"id":"00000000000000000001","clientOperationId":"client-h1","host":"h1","kind":"deploy","state":"complete","generation":7,"incarnationId":"inc-1","createdAt":"2026-09-26T00:00:00Z","updatedAt":"2026-09-26T00:00:00Z","hostRemoved":false,"result":{"ok":true,"message":"done"},"sequence":1},` +
+		`{"id":"00000000000000000002","clientOperationId":"client-h2","host":"h1","kind":"deploy","state":"failed","generation":7,"incarnationId":"inc-1","createdAt":"2026-09-26T00:00:00Z","updatedAt":"2026-09-26T00:00:00Z","hostRemoved":false,"result":{"ok":false,"message":"failed"},"sequence":1}]}`
+
+	// The boot-pass seed loads and moves only the pending record.
+	path := StorePath(t.TempDir())
+	writeRawStore(t, path, 0o600, pendingComplete)
+	store, err := Open(path)
+	if err != nil {
+		t.Fatalf("Open(pending/complete): %v", err)
+	}
+	moved, err := store.RecoverInterrupted()
+	if err != nil || moved != 1 {
+		t.Fatalf("RecoverInterrupted = %d, %v; want 1 moved", moved, err)
+	}
+	if record, ok := store.Record("00000000000000000001"); !ok || record.State != StateInterrupted {
+		t.Fatalf("pending record after the pass = %+v (present %v), want interrupted", record, ok)
+	}
+	if record, ok := store.Record("00000000000000000002"); !ok || record.State != StateComplete {
+		t.Fatalf("complete record after the pass = %+v (present %v), want untouched", record, ok)
+	}
+
+	// The stamp-ahead and shared-stamp seeds reach §4's custody-first quarantine
+	// for their sequence shape — the corrupt file is quarantined, never served as
+	// its own state — and never for a missing result. A seed that short-circuited
+	// on the result rule would be a record-level parse failure whose custody is
+	// incomplete, and the open would refuse instead.
+	for name, body := range map[string]string{"stamp ahead": stampAhead, "shared stamp": sharedStamp} {
+		path := StorePath(t.TempDir())
+		writeRawStore(t, path, 0o600, body)
+		store, err := Open(path)
+		if err != nil {
+			t.Fatalf("%s: Open = %v, want the custody-first quarantine", name, err)
+		}
+		wantQuarantined(t, store, path, body)
+		if got := store.Sequence(); got != 0 {
+			t.Fatalf("%s: the replacement sequence = %d, want the fresh store's 0", name, got)
+		}
+	}
 }

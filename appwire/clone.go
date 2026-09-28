@@ -113,6 +113,7 @@ func cloneEvenerThread(e EvenerThread) EvenerThread {
 	e.Subagents = clonePointer(e.Subagents)
 	e.PendingQuestion = ClonePendingQuestion(e.PendingQuestion)
 	e.Failure = CloneThreadFailure(e.Failure)
+	e.Access = clonePointer(e.Access)
 	// Capabilities is all bools (value type) — no copy needed.
 	return e
 }

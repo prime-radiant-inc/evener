@@ -1,10 +1,5 @@
 import { describe, expect, it } from "vitest";
-import {
-	LocationRepository,
-	locationForRoute,
-	restoredStack,
-	routeToSave,
-} from "./location";
+import { LocationRepository, locationForRoute, restoredStack, routeToSave } from "./location";
 
 function storage() {
 	const values = new Map<string, string>();
@@ -23,12 +18,7 @@ describe("last mobile location", () => {
 		const disk = storage();
 		const repository = new LocationRepository(disk);
 		const editor = { actionId: "composer.focus", chord: "Meta+Shift+" };
-		repository.save(
-			locationForRoute(
-				{ name: "KeybindingPreferences", params: { hubId: "studio", editor } },
-				"studio",
-			),
-		);
+		repository.save(locationForRoute({ name: "KeybindingPreferences", params: { hubId: "studio", editor } }, "studio"));
 		const saved = new LocationRepository(disk).read(["studio"]);
 		expect(saved).toEqual({ hubId: "studio", keybindings: { editor } });
 		expect(restoredStack(saved).routes.slice(-2)).toEqual([
@@ -45,10 +35,7 @@ describe("last mobile location", () => {
 			{ editor: { actionId: "a", chord: null } },
 			true,
 		]) {
-			disk.setItemSync(
-				"evener.last-location",
-				JSON.stringify({ hubId: "studio", keybindings }),
-			);
+			disk.setItemSync("evener.last-location", JSON.stringify({ hubId: "studio", keybindings }));
 			expect(repository.read(["studio"])).toBeNull();
 		}
 		disk.setItemSync(
@@ -73,9 +60,7 @@ describe("last mobile location", () => {
 					archived,
 					tier,
 				};
-				repository.save(
-					locationForRoute({ name: "Project", params }, "studio"),
-				);
+				repository.save(locationForRoute({ name: "Project", params }, "studio"));
 				const saved = new LocationRepository(disk).read(["studio"]);
 				expect(restoredStack(saved).routes).toEqual([
 					{ name: "Hubs" },
@@ -86,12 +71,7 @@ describe("last mobile location", () => {
 			}
 		const disk = storage(),
 			repository = new LocationRepository(disk);
-		repository.save(
-			locationForRoute(
-				{ name: "Projects", params: { hubId: "studio", archived: true } },
-				"studio",
-			),
-		);
+		repository.save(locationForRoute({ name: "Projects", params: { hubId: "studio", archived: true } }, "studio"));
 		expect(restoredStack(repository.read(["studio"])).routes.at(-1)).toEqual({
 			name: "Projects",
 			params: { hubId: "studio", archived: true },
@@ -128,11 +108,7 @@ describe("last mobile location", () => {
 			);
 			expect(repository.read(["studio"])).toBeNull();
 		}
-		for (const extra of [
-			{ archived: "yes" },
-			{ tier: "other" },
-			{ projectKey: "" },
-		]) {
+		for (const extra of [{ archived: "yes" }, { tier: "other" }, { projectKey: "" }]) {
 			expect(
 				locationForRoute(
 					{
@@ -148,12 +124,7 @@ describe("last mobile location", () => {
 				),
 			).toBeNull();
 		}
-		expect(
-			locationForRoute(
-				{ name: "Projects", params: { hubId: "other" } },
-				"studio",
-			),
-		).toBeNull();
+		expect(locationForRoute({ name: "Projects", params: { hubId: "other" } }, "studio")).toBeNull();
 	});
 	it("restores deletion review without confirming or sending it", () => {
 		const disk = storage(),
@@ -163,9 +134,7 @@ describe("last mobile location", () => {
 			ref: "local:034Kc9793pXlhHyCRXdeAk",
 			title: "Saved session",
 		};
-		repository.save(
-			locationForRoute({ name: "SessionDeletion", params }, "studio"),
-		);
+		repository.save(locationForRoute({ name: "SessionDeletion", params }, "studio"));
 		const saved = new LocationRepository(disk).read(["studio"]);
 		expect(saved).toMatchObject({
 			hubId: "studio",
@@ -176,9 +145,7 @@ describe("last mobile location", () => {
 			name: "SessionDeletion",
 			params,
 		});
-		expect(
-			locationForRoute({ name: "SessionDeletion", params }, "other"),
-		).toBeNull();
+		expect(locationForRoute({ name: "SessionDeletion", params }, "other")).toBeNull();
 		for (const extra of [
 			{ pinned: {} },
 			{ pinAssignment: true },
@@ -186,10 +153,7 @@ describe("last mobile location", () => {
 			{ conversation: undefined },
 			{ deleteSession: false },
 		]) {
-			disk.setItemSync(
-				"evener.last-location",
-				JSON.stringify({ ...saved, ...extra }),
-			);
+			disk.setItemSync("evener.last-location", JSON.stringify({ ...saved, ...extra }));
 			expect(repository.read(["studio"])).toBeNull();
 		}
 	});
@@ -203,9 +167,7 @@ describe("last mobile location", () => {
 			entryIndex: 3,
 			preview: "Selected input",
 		};
-		new LocationRepository(disk).save(
-			locationForRoute({ name: "Fork", params }, "studio"),
-		);
+		new LocationRepository(disk).save(locationForRoute({ name: "Fork", params }, "studio"));
 		const saved = new LocationRepository(disk).read(["studio"]);
 		expect(saved).toEqual({
 			hubId: "studio",
@@ -218,12 +180,7 @@ describe("last mobile location", () => {
 		});
 		const stack = restoredStack(saved);
 		expect(stack.index).toBe(3);
-		expect(stack.routes.map((route) => route.name)).toEqual([
-			"Hubs",
-			"Sessions",
-			"Conversation",
-			"Fork",
-		]);
+		expect(stack.routes.map((route) => route.name)).toEqual(["Hubs", "Sessions", "Conversation", "Fork"]);
 		expect(stack.routes.at(-1)?.params).toEqual(params);
 		expect(new LocationRepository(disk).read(["other"])).toBeNull();
 		expect(locationForRoute({ name: "Fork", params }, "other")).toBeNull();
@@ -267,10 +224,7 @@ describe("last mobile location", () => {
 			{ conversation: { ref: "r", title: "Build" }, pinned: {} },
 			{ conversation: { ref: "r", title: "Build" }, pinAssignment: true },
 		]) {
-			disk.setItemSync(
-				"evener.last-location",
-				JSON.stringify({ hubId: "studio", fork: valid, ...extra }),
-			);
+			disk.setItemSync("evener.last-location", JSON.stringify({ hubId: "studio", fork: valid, ...extra }));
 			expect(repository.read(["studio"])).toBeNull();
 		}
 	});
@@ -279,12 +233,8 @@ describe("last mobile location", () => {
 		(name) => {
 			const disk = storage();
 			const params =
-				name === "PinSections"
-					? { hubId: "studio" }
-					: { hubId: "studio", sectionId: "section/a", title: "Focus" };
-			new LocationRepository(disk).save(
-				locationForRoute({ name, params }, "studio"),
-			);
+				name === "PinSections" ? { hubId: "studio" } : { hubId: "studio", sectionId: "section/a", title: "Focus" };
+			new LocationRepository(disk).save(locationForRoute({ name, params }, "studio"));
 			const saved = new LocationRepository(disk).read(["studio"]);
 			const expected = ["Hubs", "Sessions", "PinSections"];
 			if (name !== "PinSections") expected.push("PinnedSection");
@@ -294,12 +244,7 @@ describe("last mobile location", () => {
 			expect(stack.routes.map((route) => route.name)).toEqual(expected);
 			expect(stack.routes.at(-1)?.params).toEqual(params);
 			expect(new LocationRepository(disk).read(["other"])).toBeNull();
-			expect(
-				locationForRoute(
-					{ name, params: { ...params, hubId: "other" } },
-					"studio",
-				),
-			).toBeNull();
+			expect(locationForRoute({ name, params: { ...params, hubId: "other" } }, "studio")).toBeNull();
 		},
 	);
 	it("rejects malformed, mixed, and incomplete pinned destinations", () => {
@@ -312,10 +257,7 @@ describe("last mobile location", () => {
 			{ manage: false },
 		]) {
 			const disk = storage();
-			disk.setItemSync(
-				"evener.last-location",
-				JSON.stringify({ hubId: "studio", pinned }),
-			);
+			disk.setItemSync("evener.last-location", JSON.stringify({ hubId: "studio", pinned }));
 			expect(new LocationRepository(disk).read(["studio"])).toBeNull();
 		}
 		const disk = storage();
@@ -350,12 +292,7 @@ describe("last mobile location", () => {
 		new LocationRepository(disk).save(saved);
 		const restored = new LocationRepository(disk).read(["studio"]);
 		const stack = restoredStack(restored);
-		expect(stack.routes.map((route) => route.name)).toEqual([
-			"Hubs",
-			"Sessions",
-			"Conversation",
-			"PinAssignment",
-		]);
+		expect(stack.routes.map((route) => route.name)).toEqual(["Hubs", "Sessions", "Conversation", "PinAssignment"]);
 		expect(stack.routes[3]?.params).toEqual({
 			hubId: "studio",
 			ref: "same/ref",
@@ -378,22 +315,38 @@ describe("last mobile location", () => {
 			conversation: { ref: "same/ref", title: "Build 🛠" },
 		};
 		new LocationRepository(disk).save(location);
-		expect(new LocationRepository(disk).read(["studio", "other"])).toEqual(
-			location,
-		);
+		expect(new LocationRepository(disk).read(["studio", "other"])).toEqual(location);
 		expect(new LocationRepository(disk).read(["other"])).toBeNull();
 		const stack = restoredStack(location);
 		expect(stack.index).toBe(2);
-		expect(stack.routes.map((route) => route.name)).toEqual([
-			"Hubs",
-			"Sessions",
-			"Conversation",
-		]);
+		expect(stack.routes.map((route) => route.name)).toEqual(["Hubs", "Sessions", "Conversation"]);
 		expect(stack.routes[2]?.params).toEqual({
 			hubId: "studio",
 			ref: "same/ref",
 			title: "Build 🛠",
 		});
+	});
+	it("saves a session Next opened as any other, so a relaunch restores it plainly (ruling 2)", () => {
+		expect(
+			locationForRoute(
+				{
+					name: "Conversation",
+					params: { hubId: "studio", ref: "same/ref", title: "Build", openedBy: "next" },
+				},
+				"studio",
+			),
+		).toEqual({ hubId: "studio", conversation: { ref: "same/ref", title: "Build" } });
+	});
+	it("saves a session the title's swipe opened as any other, so a relaunch doesn't slide it in (spec 6)", () => {
+		expect(
+			locationForRoute(
+				{
+					name: "Conversation",
+					params: { hubId: "studio", ref: "same/ref", title: "Build", slideFrom: "left" },
+				},
+				"studio",
+			),
+		).toEqual({ hubId: "studio", conversation: { ref: "same/ref", title: "Build" } });
 	});
 	it("returning to Hubs clears the saved destination", () => {
 		const repo = new LocationRepository(storage());
@@ -406,12 +359,9 @@ describe("last mobile location", () => {
 		});
 	});
 	it("does not restore a new-session form or a conversation from another selected hub", () => {
-		expect(
-			locationForRoute(
-				{ name: "NewSession", params: { hubId: "studio" } },
-				"studio",
-			),
-		).toEqual({ hubId: "studio" });
+		expect(locationForRoute({ name: "NewSession", params: { hubId: "studio" } }, "studio")).toEqual({
+			hubId: "studio",
+		});
 		expect(
 			locationForRoute(
 				{
@@ -423,14 +373,18 @@ describe("last mobile location", () => {
 		).toBeNull();
 		expect(locationForRoute({ name: "Sessions" }, null)).toBeNull();
 	});
+	it("reopens the Board, not the Hub sheet, after a relaunch (ruling 27)", () => {
+		const board = { key: "board", name: "Sessions" };
+		const sheet = {
+			key: "hub",
+			name: "Hub",
+			params: { screen: "HubHome", params: { hubId: "studio" } },
+		};
+		const saved = routeToSave({ index: 1, routes: [board, sheet] });
+		expect(saved && locationForRoute(saved, "studio")).toEqual({ hubId: "studio" });
+	});
 	it("rejects malformed or unsupported persisted values", () => {
-		for (const raw of [
-			"{",
-			"null",
-			"[]",
-			'{"hubId":4}',
-			'{"hubId":"studio","conversation":{"ref":42}}',
-		]) {
+		for (const raw of ["{", "null", "[]", '{"hubId":4}', '{"hubId":"studio","conversation":{"ref":42}}']) {
 			const repo = new LocationRepository({
 				...storage(),
 				getItemSync: () => raw,
@@ -486,13 +440,44 @@ describe("last mobile location", () => {
 		expect(saved).toEqual({
 			hubId: "studio",
 			conversation: { ref: "local:coord", title: "Get PR 2138 Test Clean" },
-			reader: { sessionRef: "local:fix", path: "docs/superpowers/plans/settle.md", updatedAt: "2026-09-26T11:39:00.000Z" },
+			reader: {
+				sessionRef: "local:fix",
+				path: "docs/superpowers/plans/settle.md",
+				updatedAt: "2026-09-26T11:39:00.000Z",
+			},
 		});
 		expect(restoredStack(saved).routes.slice(-3)).toEqual([
 			{ name: "Sessions" },
 			{ name: "Conversation", params: { hubId: "studio", ref: "local:coord", title: "Get PR 2138 Test Clean" } },
 			{ name: "Reader", params },
 		]);
+	});
+
+	it("reopens a coordinator's Subagents list as its session after a relaunch (ruling 21)", () => {
+		const disk = storage();
+		const repository = new LocationRepository(disk);
+		const params = { hubId: "studio", ref: "local:coord", threadId: "coord", title: "Coordinator" };
+		const location = locationForRoute({ name: "Subagents", params }, "studio");
+		expect(location).toEqual({ hubId: "studio", conversation: { ref: "local:coord", title: "Coordinator" } });
+		repository.save(location);
+		const saved = new LocationRepository(disk).read(["studio"]);
+		expect(restoredStack(saved).routes.slice(-2)).toEqual([
+			{ name: "Sessions" },
+			{ name: "Conversation", params: { hubId: "studio", ref: "local:coord", title: "Coordinator" } },
+		]);
+	});
+
+	it("reopens a subagent's session as its coordinator's after a relaunch (ruling 21)", () => {
+		const params = {
+			hubId: "studio",
+			ref: "local:fix",
+			title: "Fix race in tree settle",
+			coordinator: { ref: "local:coord", threadId: "coord", title: "Coordinator" },
+		};
+		expect(locationForRoute({ name: "Subagent", params }, "studio")).toEqual({
+			hubId: "studio",
+			conversation: { ref: "local:coord", title: "Coordinator" },
+		});
 	});
 
 	it("refuses a document with no session, an empty path, or mixed with another destination", () => {
@@ -507,6 +492,11 @@ describe("last mobile location", () => {
 			disk.setItemSync("evener.last-location", JSON.stringify(value));
 			expect(repository.read(["studio"])).toBeNull();
 		}
-		expect(locationForRoute({ name: "Reader", params: { hubId: "studio", sessionRef: "local:fix", path: "a.md" } }, "studio")).toBeNull();
+		expect(
+			locationForRoute(
+				{ name: "Reader", params: { hubId: "studio", sessionRef: "local:fix", path: "a.md" } },
+				"studio",
+			),
+		).toBeNull();
 	});
 });

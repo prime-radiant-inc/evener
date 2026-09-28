@@ -174,6 +174,7 @@ func (p *StatusProber) Probe(entry rendezvous.Entry) ProbeResult {
 		LastTurnEndedAt:       UnixMilliTime(root.Evener.LastTurnEndedAt),
 		Profile:               root.Evener.Profile,
 		LastMessage:           root.Evener.LastMessage,
+		CurrentModel:          root.ModelProvider,
 		OK:                    true,
 	}
 }

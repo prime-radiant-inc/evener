@@ -79,7 +79,7 @@ Use `--probe <id>` for a single probe; `--probe all` (the default) selects
 every probe manifest under `--probes-dir`. Before launching any live request,
 the runner prints the exact selected count and probe ids to stderr (e.g.
 `selected=7` plus the list), so a scoped run never silently expands to a
-larger set without you seeing it named — check that line if a run looks
+larger set without you seeing it named. Check that line if a run looks
 bigger or smaller than you expected. The runner writes per-repetition
 `result.json`, `stdout.txt`, `stderr.ndjson`, plus run-level `results.jsonl` and
 `summary.json`.
@@ -118,6 +118,16 @@ go run ./tools/tool-fluency/cmd/evener-fluency run \
 The live harness wires the same session notification and continuation callbacks
 that `evener serve` wires, waits on runtime kicks, and then closes the session
 after the bounded post-turn window. It is not a polling harness.
+
+To compare system prompt versions, `matrix` runs every version's `evener`
+binary against every model (building each one itself from a version manifest,
+or from hand-built binaries passed with `--version`), `prose-stats` counts the
+writing tics and bare identifiers in what the agents wrote, `review-pack`
+makes blind transcripts for a human read, and `rank-sets`/`rank-score` turn
+those transcripts into a blind side-by-side ranking and score it.
+`tools/prompt-eval/README.md` walks through all of them with the prompt
+evaluation tasks. `prose-count FILE...` counts the same tics in any file, such
+as a prompt section.
 
 ## Data model
 

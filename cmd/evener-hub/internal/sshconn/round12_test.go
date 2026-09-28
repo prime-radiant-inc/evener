@@ -244,6 +244,8 @@ func TestRound12PendingRestartSurvivesAnUnknownIdentity(t *testing.T) {
 		controllerVersionOverride: "dev",
 		BuildBinary:               writeStageBinary,
 	})
+	testDeployRecorder(t, m)
+	testRestartRecorder(t, m)
 
 	if _, err := m.Ensure(context.Background(), "alpha"); !errors.Is(err, ErrRestart) {
 		t.Fatalf("Ensure 1 err = %v, want ErrRestart (the restart command failed)", err)

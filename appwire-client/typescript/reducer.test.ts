@@ -4725,6 +4725,303 @@ test("mergeOlderItemPage lets newer defined identity replace older identity", ()
   });
 });
 
+// A keyless alias matches a keyed item by id, so a live keyless fragment
+// sharing an item id with two historical fragments whose supplied transcript
+// keys differ would match BOTH — and the coalescing group merge would bridge
+// the two recorded turns into one, combining their items and turn payloads,
+// even though the two keyed turns do not match each other. The ambiguous
+// keyless alias must not bridge them: the conflicting turns stay separate,
+// and the alias folds into the first (earliest) group it matched, keeping
+// its fresh text under that group's key.
+test("mergeOlderItemPage keeps conflicting transcript keys apart when a keyless alias bridges them", () => {
+  const thread = testThread({
+    turns: [
+      {
+        id: "turn-U",
+        status: "completed",
+        itemsView: "fragment",
+        items: [
+          {
+            id: "shared-id",
+            turnId: "turn-U",
+            type: "agentMessage",
+            text: "fresh text",
+            status: "completed",
+          },
+        ],
+      },
+    ],
+  });
+  const model = hydrateThread({ thread, olderCursor: "cursor_1" }, thread.evener.ref, 1000);
+  const result = mergeOlderItemPage(model, {
+    data: [
+      {
+        id: "turn-A",
+        status: "completed",
+        usage: { inputTokens: 10 },
+        itemsView: "fragment",
+        items: [
+          {
+            id: "shared-id",
+            transcriptKey: "key-a",
+            turnId: "turn-A",
+            type: "agentMessage",
+            text: "older A",
+            status: "completed",
+          },
+        ],
+      },
+      {
+        id: "turn-B",
+        status: "completed",
+        usage: { inputTokens: 20 },
+        itemsView: "fragment",
+        items: [
+          {
+            id: "shared-id",
+            transcriptKey: "key-b",
+            turnId: "turn-B",
+            type: "agentMessage",
+            text: "older B",
+            status: "completed",
+          },
+        ],
+      },
+    ],
+    nextCursor: "cursor_0",
+  });
+
+  // Two turns, one key each: key-a and key-b never share a turn.
+  expect(
+    result.turns.map((turn) => ({
+      usage: turn.usage,
+      keys: turn.items.map((item) => item.transcriptKey),
+    })),
+  ).toEqual([
+    { usage: { inputTokens: 10 }, keys: ["key-a"] },
+    { usage: { inputTokens: 20 }, keys: ["key-b"] },
+  ]);
+  // The keyless alias still folds into the turn it matched: its fresh text
+  // wins under that turn's key rather than surviving as a third turn.
+  expect(result.turns[0]?.items[0]).toMatchObject({ id: "shared-id", text: "fresh text" });
+});
+
+// The bridge need not be the group a keyless alias lands in first. Here the
+// target turn carries one keyed identity (`w`/`key-w`), a keyless alias also
+// shares the id of two OTHER turns that conflict with each other (`z` under
+// `key-a` and `key-b`). Neither conflicting turn disagrees with the target, so
+// a guard that only compares each candidate with the target absorbs both and
+// re-introduces the bridge; the guard must check each candidate against the
+// group as it grows, so `key-a` and `key-b` still never share a turn.
+test("mergeOlderItemPage keeps two mutually conflicting keys apart when a keyless alias touches a neutral third turn", () => {
+  const thread = testThread({
+    turns: [
+      {
+        id: "turn-F",
+        status: "completed",
+        itemsView: "fragment",
+        items: [
+          {
+            id: "w",
+            transcriptKey: "key-w",
+            turnId: "turn-F",
+            type: "agentMessage",
+            text: "fresh w",
+            status: "completed",
+          },
+          {
+            id: "z",
+            turnId: "turn-F",
+            type: "agentMessage",
+            text: "fresh z",
+            status: "completed",
+          },
+        ],
+      },
+    ],
+  });
+  const model = hydrateThread({ thread, olderCursor: "cursor_1" }, thread.evener.ref, 1000);
+  const result = mergeOlderItemPage(model, {
+    data: [
+      {
+        id: "turn-T",
+        status: "completed",
+        itemsView: "fragment",
+        items: [
+          {
+            id: "w",
+            transcriptKey: "key-w",
+            turnId: "turn-T",
+            type: "agentMessage",
+            text: "older w",
+            status: "completed",
+          },
+        ],
+      },
+      {
+        id: "turn-A",
+        status: "completed",
+        itemsView: "fragment",
+        items: [
+          {
+            id: "z",
+            transcriptKey: "key-a",
+            turnId: "turn-A",
+            type: "agentMessage",
+            text: "older A",
+            status: "completed",
+          },
+        ],
+      },
+      {
+        id: "turn-B",
+        status: "completed",
+        itemsView: "fragment",
+        items: [
+          {
+            id: "z",
+            transcriptKey: "key-b",
+            turnId: "turn-B",
+            type: "agentMessage",
+            text: "older B",
+            status: "completed",
+          },
+        ],
+      },
+    ],
+    nextCursor: "cursor_0",
+  });
+
+  expect(result.turns.map((turn) => turn.items.map((item) => item.transcriptKey))).toEqual([
+    ["key-w", "key-a"],
+    ["key-b"],
+  ]);
+});
+
+// The alias can also arrive FIRST. With an older page ordered alias, key-a,
+// key-b, the alias forms its own group and each later keyed fragment matches
+// ONLY that group (the two keyed fragments do not match each other), so a
+// guard applied only to the absorbed candidates never runs. The incoming
+// fragment must be checked against the group it is about to join, so the two
+// keys still never share a turn.
+test("mergeOlderItemPage keeps conflicting keys apart when the keyless alias arrives before them", () => {
+  const model = hydrateThread({ thread: testThread({ turns: [] }), olderCursor: "cursor_1" }, "ref_t", 1000);
+  const result = mergeOlderItemPage(model, {
+    data: [
+      {
+        id: "turn-K",
+        status: "completed",
+        itemsView: "fragment",
+        items: [
+          {
+            id: "shared-id",
+            turnId: "turn-K",
+            type: "agentMessage",
+            text: "older keyless",
+            status: "completed",
+          },
+        ],
+      },
+      {
+        id: "turn-A",
+        status: "completed",
+        itemsView: "fragment",
+        items: [
+          {
+            id: "shared-id",
+            transcriptKey: "key-a",
+            turnId: "turn-A",
+            type: "agentMessage",
+            text: "older A",
+            status: "completed",
+          },
+        ],
+      },
+      {
+        id: "turn-B",
+        status: "completed",
+        itemsView: "fragment",
+        items: [
+          {
+            id: "shared-id",
+            transcriptKey: "key-b",
+            turnId: "turn-B",
+            type: "agentMessage",
+            text: "older B",
+            status: "completed",
+          },
+        ],
+      },
+    ],
+    nextCursor: "cursor_0",
+  });
+
+  expect(result.turns.map((turn) => turn.items.map((item) => item.transcriptKey))).toEqual([["key-a"], ["key-b"]]);
+});
+
+// A fragment that conflicts with the FIRST matching group may still fold into
+// a later compatible one. Refusing outright leaves a shared keyless item
+// standing twice — the exact duplication coalescing exists to remove — and
+// makes the result depend on group insertion order.
+test("mergeOlderItemPage folds an alias into a later compatible turn instead of leaving a duplicate", () => {
+  const model = testHydrate({
+    turns: [
+      {
+        id: "turn-F",
+        status: "completed",
+        itemsView: "fragment",
+        items: [
+          { id: "a", turnId: "turn-F", type: "agentMessage", text: "fresh a", status: "completed" },
+          { id: "b", turnId: "turn-F", type: "agentMessage", text: "fresh b", status: "completed" },
+          {
+            id: "p",
+            transcriptKey: "key-f",
+            turnId: "turn-F",
+            type: "agentMessage",
+            text: "fresh p",
+            status: "completed",
+          },
+        ],
+      },
+    ],
+  });
+  const result = mergeOlderItemPage(model, {
+    data: [
+      {
+        id: "turn-G0",
+        status: "completed",
+        itemsView: "fragment",
+        items: [
+          { id: "a", turnId: "turn-G0", type: "agentMessage", text: "older a", status: "completed" },
+          {
+            id: "p",
+            transcriptKey: "key-g",
+            turnId: "turn-G0",
+            type: "agentMessage",
+            text: "older p",
+            status: "completed",
+          },
+        ],
+      },
+      {
+        id: "turn-G1",
+        status: "completed",
+        itemsView: "fragment",
+        items: [{ id: "b", turnId: "turn-G1", type: "agentMessage", text: "older b", status: "completed" }],
+      },
+    ],
+    nextCursor: "cursor_0",
+  });
+
+  // F conflicts with G0 (p: key-f vs key-g) but not G1, so it folds into G1:
+  // `a` and `b` are not each left standing in their own separate turn.
+  expect(result.turns).toHaveLength(2);
+  const folded = result.turns.find((turn) => turn.items.some((item) => item.transcriptKey === "key-f"));
+  expect(folded?.items.map((item) => item.id).sort()).toEqual(["a", "b", "p"]);
+  const kept = result.turns.find((turn) => turn.items.some((item) => item.transcriptKey === "key-g"));
+  expect(kept?.items.map((item) => item.id).sort()).toEqual(["a", "p"]);
+});
+
 test("mergeOlderItemPage position-orders the final items when pages arrive out of chronology", () => {
   const thread = testThread({
     turns: [
@@ -5463,6 +5760,23 @@ test("hydrateThread carries visionModel and defaults an absent wire value", () =
       },
     }).visionModel,
   ).toBe("anthropic/claude-haiku-4-5");
+});
+
+// S15: the session's sandbox mode and network setting ride the read, for the
+// Session sheet's Access section. Absent (an older daemon or hub) stays
+// absent: the phone leaves the section out rather than guess.
+test("hydrateThread carries the session's access and leaves an absent one out", () => {
+  expect(testHydrate().access).toBeUndefined();
+  expect(
+    testHydrate({
+      evener: {
+        ref: "ref_t",
+        capabilities: CAPABILITIES,
+        queue: { revision: 0 },
+        access: { sandbox: "workspace-write", network: false },
+      },
+    }).access,
+  ).toEqual({ sandbox: "workspace-write", network: false });
 });
 
 test("thread/vision-model/changed updates visionModel", () => {

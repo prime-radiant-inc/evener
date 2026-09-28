@@ -344,6 +344,8 @@ func TestRound11FreshHostWithoutLsofIsProvisioned(t *testing.T) {
 		sleep:                     func(context.Context, time.Duration) error { return nil },
 		BuildBinary:               writeStageBinary,
 	})
+	testDeployRecorder(t, m)
+	testRestartRecorder(t, m)
 
 	ch, err := m.Ensure(context.Background(), "alpha")
 	if err != nil {

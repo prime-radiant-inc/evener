@@ -6,35 +6,35 @@ import {
 	type SessionTokens,
 	type TranscriptDisplayConfigV1,
 } from "@evener/appwire-client";
-import type {
-	ActivityMember,
-	MobileConversation,
-	MobileTimelineItem,
-} from "./projectedRows";
+import type { ActivityMember, MobileConversation, MobileTimelineItem } from "./projectedRows";
 
 export type ActivityPresentation = {
 	mode: "full" | "intent" | "critical";
 	summary?: string;
 };
 
+// The cumulative breakdown the wire reports beside the derived pair: the
+// thread's own cache-read and total figures. EvenerThread.Usage is not
+// windowed the way turns are, so both are whole-session and carry no scope of
+// their own.
+type CumulativeTokens = Pick<EvenerUsage, "cacheReadTokens" | "totalTokens">;
+
 // The session accounting the transcript footer shows: the conversation's
 // token total (the package's turn-summed sessionTokens derivation, shared
-// with the web details panel), the thread's own cumulative cache/total
-// breakdown, and cost - each undefined/null when the display config hides it
-// or the daemon reported none.
+// with the web details panel, carrying its own scope), the thread's own
+// cumulative cache/total breakdown, and cost - each null when the display
+// config hides it or the daemon reported none.
 //
-// cacheReadTokens/totalTokens are read independently of inputTokens/
-// outputTokens/scope: the wire's EvenerUsage permits a sparse cumulative
+// The derived pair and its scope stay together in `derived`, never flattened
+// into `cumulative`: the wire's EvenerUsage permits a sparse cumulative
 // object (cache or total alone, with no input/output pair at all), and
 // sessionTokens has no per-turn equivalent for them, so they must survive
 // even when sessionTokens falls back to summing turns or returns null
-// outright. They are always whole-session figures (EvenerThread.Usage is not
-// windowed the way turns are), so they carry no scope of their own and must
-// never inherit whatever scope the derived input/output pair got.
+// outright. cacheReadTokens/totalTokens are always whole-session figures, so
+// they must never inherit whatever scope the derived pair got.
 export interface SessionAccounting {
-	usage:
-		| (Partial<SessionTokens> & Pick<EvenerUsage, "cacheReadTokens" | "totalTokens">)
-		| null;
+	derived: SessionTokens | null;
+	cumulative: CumulativeTokens | null;
 	cost: string | null;
 }
 
@@ -47,21 +47,22 @@ export interface UsageRow {
 // usageRows picks the footer's visible rows and labels each with what it
 // actually counts. Input/Output take the derived pair's own scope (a
 // truncated turn window says so); Cached/Total are always the thread's whole
-// -session cumulative figures, so they always read plainly, independent of
-// whatever scope the derived pair got.
-export function usageRows(usage: SessionAccounting["usage"]): UsageRow[] {
-	if (!usage) return [];
-	const derivedUnit = tokenUnitLabel(usage.scope);
-	const cumulativeUnit = tokenUnitLabel(undefined);
-	const candidates: [UsageRow["label"], number | undefined, string][] = [
-		["Input", usage.inputTokens, derivedUnit],
-		["Output", usage.outputTokens, derivedUnit],
-		["Cached", usage.cacheReadTokens, cumulativeUnit],
-		["Total", usage.totalTokens, cumulativeUnit],
-	];
-	return candidates
-		.filter((row): row is [UsageRow["label"], number, string] => row[1] !== undefined)
-		.map(([label, value, unit]) => ({ label, value, unit }));
+// -session cumulative figures, so they are labelled with the explicit session
+// scope, never whatever scope the derived pair got.
+export function usageRows(accounting: Pick<SessionAccounting, "derived" | "cumulative"> | null): UsageRow[] {
+	if (!accounting) return [];
+	const { derived, cumulative } = accounting;
+	const derivedUnit = tokenUnitLabel(derived?.scope);
+	const cumulativeUnit = tokenUnitLabel("session");
+	const rows: UsageRow[] = [];
+	const add = (label: UsageRow["label"], value: number | undefined, unit: string): void => {
+		if (value !== undefined) rows.push({ label, value, unit });
+	};
+	add("Input", derived?.inputTokens, derivedUnit);
+	add("Output", derived?.outputTokens, derivedUnit);
+	add("Cached", cumulative?.cacheReadTokens, cumulativeUnit);
+	add("Total", cumulative?.totalTokens, cumulativeUnit);
+	return rows;
 }
 
 export interface NativeTranscriptPresentation {
@@ -75,43 +76,30 @@ export interface NativeTranscriptPresentation {
 const ACTION_SUMMARY_UNAVAILABLE = "Action summary unavailable";
 const MAX_ACTION_DETAIL_LENGTH = 256;
 
-function writeFileActionSummary(
-	item: Extract<MobileTimelineItem, { kind: "activity" }>,
-): string | undefined {
+function writeFileActionSummary(item: Extract<MobileTimelineItem, { kind: "activity" }>): string | undefined {
 	if (item.family !== "tool" || item.label !== "write_file") return undefined;
 	if (!item.detail.arguments) return undefined;
 	try {
 		const args: unknown = JSON.parse(item.detail.arguments);
 		if (typeof args !== "object" || args === null) return undefined;
 		const record = args as Record<string, unknown>;
-		const path =
-			typeof record.file_path === "string" ? record.file_path.trim() : "";
+		const path = typeof record.file_path === "string" ? record.file_path.trim() : "";
 		if (!path) return undefined;
 		const boundedPath =
-			path.length > MAX_ACTION_DETAIL_LENGTH
-				? `${path.slice(0, MAX_ACTION_DETAIL_LENGTH - 3)}...`
-				: path;
+			path.length > MAX_ACTION_DETAIL_LENGTH ? `${path.slice(0, MAX_ACTION_DETAIL_LENGTH - 3)}...` : path;
 		return `Write ${boundedPath}`;
 	} catch {
 		return undefined;
 	}
 }
 
-function actionSummary(
-	item: Extract<MobileTimelineItem, { kind: "activity" }>,
-): string {
-	return (
-		item.detail.description?.trim() ||
-		writeFileActionSummary(item) ||
-		ACTION_SUMMARY_UNAVAILABLE
-	);
+function actionSummary(item: Extract<MobileTimelineItem, { kind: "activity" }>): string {
+	return item.detail.description?.trim() || writeFileActionSummary(item) || ACTION_SUMMARY_UNAVAILABLE;
 }
 
 // An activity that is running or failed is attention-worthy. Notice criticality
 // is timeline.ts's isCriticalNotice, not a rule of this layer.
-function activityIsCritical(
-	item: Extract<MobileTimelineItem, { kind: "activity" }>,
-): boolean {
+function activityIsCritical(item: Extract<MobileTimelineItem, { kind: "activity" }>): boolean {
 	return item.state === "failed" || item.state === "running";
 }
 
@@ -127,9 +115,7 @@ function activityIsCritical(
 //   - a summary-only row (the projector's intent entry; the operator's
 //     summary-only ruling) renders its summary line, nothing to expand;
 //   - everything else renders in full.
-function presentationFor(
-	item: Extract<MobileTimelineItem, { kind: "activity" }>,
-): ActivityPresentation {
+function presentationFor(item: Extract<MobileTimelineItem, { kind: "activity" }>): ActivityPresentation {
 	if (activityIsCritical(item)) {
 		return {
 			mode: "critical",
@@ -153,9 +139,7 @@ function presentationFor(
 // nothing may edit one row's presentation and move the rest with it.
 const FULL_PRESENTATION = { mode: "full" } as const;
 
-function memberItem(
-	member: ActivityMember,
-): Extract<MobileTimelineItem, { kind: "activity" }> {
+function memberItem(member: ActivityMember): Extract<MobileTimelineItem, { kind: "activity" }> {
 	return {
 		kind: "activity",
 		id: member.id,
@@ -184,20 +168,14 @@ function accountingFor(
 	config: TranscriptDisplayConfigV1,
 ): SessionAccounting | null {
 	if (!conversation) return null;
-	const tokens = config.advanced.tokenCounts ? sessionTokens(conversation) : null;
-	const cacheReadTokens = config.advanced.tokenCounts ? noZero(conversation.usage?.cacheReadTokens) : undefined;
-	const totalTokens = config.advanced.tokenCounts ? noZero(conversation.usage?.totalTokens) : undefined;
-	return {
-		usage:
-			tokens || cacheReadTokens !== undefined || totalTokens !== undefined
-				? {
-						...(tokens ?? {}),
-						...(cacheReadTokens !== undefined ? { cacheReadTokens } : {}),
-						...(totalTokens !== undefined ? { totalTokens } : {}),
-					}
-				: null,
-		cost: config.advanced.estimatedCost ? (conversation.cost ?? null) : null,
-	};
+	const cost = config.advanced.estimatedCost ? (conversation.cost ?? null) : null;
+	if (!config.advanced.tokenCounts) return { derived: null, cumulative: null, cost };
+	const derived = sessionTokens(conversation);
+	const cacheReadTokens = noZero(conversation.usage?.cacheReadTokens);
+	const totalTokens = noZero(conversation.usage?.totalTokens);
+	const cumulative =
+		cacheReadTokens !== undefined || totalTokens !== undefined ? { cacheReadTokens, totalTokens } : null;
+	return { derived, cumulative, cost };
 }
 
 export function projectNativeTranscript(
@@ -217,10 +195,8 @@ export function projectNativeTranscript(
 	return {
 		items,
 		activityPresentation,
-		expandByDefault: (config.content.kind === "preset"
-			? presetContent(config.content.level)
-			: config.content
-		).expandByDefault,
+		expandByDefault: (config.content.kind === "preset" ? presetContent(config.content.level) : config.content)
+			.expandByDefault,
 		usage: accountingFor(conversation, config),
 		showDuration: config.advanced.roundTimings,
 	};
@@ -248,15 +224,10 @@ function projectTimeline(
 	const membersByKey = new Set<string>();
 	for (const item of source)
 		if (item.kind === "activity")
-			for (const member of item.members ?? [])
-				membersByKey.add(member.transcriptKey ?? member.id);
+			for (const member of item.members ?? []) membersByKey.add(member.transcriptKey ?? member.id);
 	const attachmentsByKey = new Map<string, MobileTimelineItem[]>();
 	for (const item of source) {
-		if (
-			item.kind !== "attachments" ||
-			!item.sourceTranscriptKey ||
-			!membersByKey.has(item.sourceTranscriptKey)
-		)
+		if (item.kind !== "attachments" || !item.sourceTranscriptKey || !membersByKey.has(item.sourceTranscriptKey))
 			continue;
 		const attachments = attachmentsByKey.get(item.sourceTranscriptKey) ?? [];
 		attachments.push(item);
@@ -267,21 +238,13 @@ function projectTimeline(
 		if (item.kind === "activity" && item.members?.length) {
 			for (const member of item.members) {
 				const projected = memberItem(member);
-				activityPresentation.set(
-					projected.id,
-					config ? presentationFor(projected) : FULL_PRESENTATION,
-				);
+				activityPresentation.set(projected.id, config ? presentationFor(projected) : FULL_PRESENTATION);
 				projectedItems.push(projected);
 				// Attachments keep their source position even when that activity is hidden.
-				projectedItems.push(
-					...(attachmentsByKey.get(member.transcriptKey ?? member.id) ?? []),
-				);
+				projectedItems.push(...(attachmentsByKey.get(member.transcriptKey ?? member.id) ?? []));
 			}
 		} else if (item.kind === "activity") {
-			activityPresentation.set(
-				item.id,
-				config ? presentationFor(item) : FULL_PRESENTATION,
-			);
+			activityPresentation.set(item.id, config ? presentationFor(item) : FULL_PRESENTATION);
 			projectedItems.push(item);
 		} else if (
 			item.kind === "attachments" &&

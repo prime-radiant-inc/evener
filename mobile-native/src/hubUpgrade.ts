@@ -1,12 +1,6 @@
-import type {
-	SettingsOverviewResponse,
-	UpgradeResponse,
-} from "@evener/appwire-client";
+import type { SettingsOverviewResponse, UpgradeResponse } from "@evener/appwire-client";
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
-import {
-	isValidRunningOverview,
-	isValidUpgradeResponse,
-} from "./hubUpgradeValidation";
+import { isValidRunningOverview, isValidUpgradeResponse } from "./hubUpgradeValidation";
 
 export type UpgradeState =
 	| { kind: "idle" }
@@ -67,8 +61,7 @@ export function createHubUpgradeController(
 			: checkpoint
 				? {
 						kind: "uncertain",
-						message:
-							"An upgrade may have been installed. Reconnect and verify.",
+						message: "An upgrade may have been installed. Reconnect and verify.",
 					}
 				: { kind: "idle" };
 	} catch {
@@ -132,8 +125,7 @@ export function createHubUpgradeController(
 				const rawResponse = await client.request("evener/upgrade", {
 					requested: "",
 				});
-				if (!isValidUpgradeResponse(rawResponse))
-					throw new Error("invalid response");
+				if (!isValidUpgradeResponse(rawResponse)) throw new Error("invalid response");
 				const response = clone(rawResponse);
 				try {
 					if (!readAttempt(attemptId)) {
@@ -163,8 +155,7 @@ export function createHubUpgradeController(
 				if (disposed || current !== generation) return;
 				try {
 					const overview = await readOverview();
-					if (!disposed && current === generation)
-						publish({ kind: "installed", response: clone(response), overview });
+					if (!disposed && current === generation) publish({ kind: "installed", response: clone(response), overview });
 				} catch {
 					if (!disposed && current === generation)
 						publish({
@@ -177,34 +168,23 @@ export function createHubUpgradeController(
 				if (!disposed && current === generation)
 					publish({
 						kind: "uncertain",
-						message:
-							"Upgrade outcome is uncertain. Refresh to verify before retrying.",
+						message: "Upgrade outcome is uncertain. Refresh to verify before retrying.",
 					});
 			}
 		},
 		reconcileAfterReconnect: async () => {
-			if (
-				disposed ||
-				(state.kind !== "uncertain" && state.kind !== "installed")
-			)
-				return;
+			if (disposed || (state.kind !== "uncertain" && state.kind !== "installed")) return;
 			activeReview = undefined;
 			const current = ++generation;
 			try {
 				const overview = await readOverview();
-				if (!disposed && current === generation)
-					publish({ ...state, overview });
+				if (!disposed && current === generation) publish({ ...state, overview });
 			} catch {
-				if (!disposed && current === generation)
-					publish({ ...state, message: readbackMessage } as UpgradeState);
+				if (!disposed && current === generation) publish({ ...state, message: readbackMessage } as UpgradeState);
 			}
 		},
 		reviewAnotherUpdate: async () => {
-			if (
-				disposed ||
-				(state.kind !== "uncertain" && state.kind !== "installed")
-			)
-				return null;
+			if (disposed || (state.kind !== "uncertain" && state.kind !== "installed")) return null;
 			activeReview = undefined;
 			const current = ++generation;
 			let checkpoint: UpgradeCheckpoint;
@@ -231,8 +211,7 @@ export function createHubUpgradeController(
 				publish({ ...state, overview });
 				return activeReview;
 			} catch {
-				if (!disposed && current === generation)
-					publish({ ...state, message: readbackMessage } as UpgradeState);
+				if (!disposed && current === generation) publish({ ...state, message: readbackMessage } as UpgradeState);
 				return null;
 			}
 		},

@@ -399,6 +399,26 @@ func (p TreeProject) TierRows(tier string) ([]TreeNode, bool) {
 	}
 }
 
+// SessionArchived reports whether the rail files a session as archived: the
+// source that owns it archived its project, or its own decision archives it,
+// or, with no decision, it has gone archiveWindow without activity. The Live
+// band leaves such a session out, and search's archived flag reports it
+// (S14). source is the project decision's owning source ("" for this hub's
+// own); lastActivity is the session's last-activity time, now for a session
+// with no meta, which age never archives.
+func SessionArchived(decisions map[ArchiveKey]bool, sessionID, projectID, source string, lastActivity, now time.Time) bool {
+	return projectArchivedDecision(decisions, projectID, []string{source}) ||
+		classifySession(decisionFor(decisions, sessionID), lastActivity, now) == "archived"
+}
+
+// LiveSessionArchived is SessionArchived for a live entry, consulting only the
+// project decision of the source that owns it: a project can merge the same
+// ID/path across hosts, so a different host archiving the shared project ID
+// does not archive this host's still-live session.
+func LiveSessionArchived(decisions map[ArchiveKey]bool, entry LiveEntry, lastActivity, now time.Time) bool {
+	return SessionArchived(decisions, entry.SessionID, entry.Project.ID, liveEntrySource(entry), lastActivity, now)
+}
+
 // classifySession returns a session's sidebar tier from its last activity and
 // archive decision. A user decision (archive/unarchive) overrides the auto rule;
 // otherwise inactivity older than archiveWindow auto-archives.
@@ -490,6 +510,10 @@ type TreeNode struct {
 	// live session's from its probe, an ended one's from its meta. Every
 	// builder sets it from one closure; subagent rows have none.
 	LastMessage string
+	// Model is the id of the model the session runs (S17): a live session's
+	// current model from its probe, an ended one's from its meta. Every
+	// builder sets it from one closure; subagent rows have none.
+	Model string
 	// Tasks is this session's own task-list progress, carried from its live
 	// entry; nil for a session with no live entry, which includes every
 	// in-process child.
@@ -1148,6 +1172,27 @@ func buildTreeAtWithProjects(metas []schema.SessionMeta, live []LiveEntry, decis
 		return metaMap[id].LastMessage
 	}
 
+	// modelFor resolves the model a session's rows name (S17): a live
+	// session's current model from its daemon's probe, which follows a model
+	// switch and outranks the meta the past index may still hold, then the
+	// model its daemon started on (an entry no probe has reached yet), and an
+	// ended one's from its meta, so every row of one session agrees. A
+	// subagent row names none: the Board lists top-level sessions, and a tree
+	// of 500 subagents would spend the response's byte budget on names no row
+	// shows.
+	modelFor := func(id, kind string) string {
+		if kind == "subagent" {
+			return ""
+		}
+		if entry, live := liveMap[id]; live {
+			if entry.CurrentModel != "" {
+				return entry.CurrentModel
+			}
+			return entry.Model // the model its daemon started on
+		}
+		return metaMap[id].Model
+	}
+
 	// turnEndedAtFor resolves a live session's last turn end from the same live
 	// map stateFor reads, so its Live, project and NeedsYou rows agree (S4).
 	turnEndedAtFor := func(id string) time.Time {
@@ -1363,6 +1408,7 @@ func buildTreeAtWithProjects(metas []schema.SessionMeta, live []LiveEntry, decis
 			Subagents:       subagentTally,
 			TurnEndedAt:     turnEndedAt,
 			LastMessage:     lastMessageFor(m.ID, kind),
+			Model:           modelFor(m.ID, kind),
 		}
 
 		childMetas := childrenByParent[m.ID]
@@ -1617,6 +1663,7 @@ func buildTreeAtWithProjects(metas []schema.SessionMeta, live []LiveEntry, decis
 				Subagents:       subagentsFor(le.SessionID),
 				TurnEndedAt:     turnEndedAtFor(le.SessionID),
 				LastMessage:     lastMessageFor(le.SessionID, "session"),
+				Model:           modelFor(le.SessionID, "session"),
 			}
 			liveNodes = append(liveNodes, node)
 			continue
@@ -1647,19 +1694,12 @@ func buildTreeAtWithProjects(metas []schema.SessionMeta, live []LiveEntry, decis
 	unarchivedLive := make([]TreeNode, 0, len(liveNodes))
 	for _, node := range liveNodes {
 		entry := liveMap[node.ID]
-		if entry.Project.ID != "" {
-			// A project can merge the same ID/path across hosts, but an archive
-			// decision is source-qualified: consult only the source that owns
-			// this entry, so a different host archiving the shared project ID
-			// does not hide this host's still-live session.
-			if projectArchivedDecision(decisions, entry.Project.ID, []string{liveEntrySource(entry)}) {
-				continue
-			}
+		// A live session with no meta has no last activity to age: now.
+		lastActivity := now
+		if _, hasMeta := metaMap[node.ID]; hasMeta {
+			lastActivity = node.UpdatedAt
 		}
-		if decision := decisionFor(decisions, node.ID); decision != nil && *decision {
-			continue
-		}
-		if _, hasMeta := metaMap[node.ID]; hasMeta && classifySession(decisionFor(decisions, node.ID), node.UpdatedAt, now) == "archived" {
+		if LiveSessionArchived(decisions, entry, lastActivity, now) {
 			continue
 		}
 		unarchivedLive = append(unarchivedLive, node)
@@ -1727,6 +1767,7 @@ func buildTreeAtWithProjects(metas []schema.SessionMeta, live []LiveEntry, decis
 			Subagents:       subagentsFor(le.SessionID),
 			TurnEndedAt:     turnEndedAtFor(le.SessionID),
 			LastMessage:     lastMessageFor(le.SessionID, "session"),
+			Model:           modelFor(le.SessionID, "session"),
 		}
 		if meta != nil {
 			node.Title = nodeTitle(*meta, nodeKind(*meta))

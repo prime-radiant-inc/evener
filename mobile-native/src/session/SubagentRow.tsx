@@ -5,7 +5,6 @@ import { Pressable, Text, View } from "react-native";
 import { allowFontScaling, useColors, useTextScale } from "../ui";
 import type { SubagentLine } from "./subagentLine";
 
-
 export function SubagentRow({ line, onOpen }: { line: SubagentLine; onOpen?: (ref: string, title: string) => void }) {
 	const { palette } = useColors();
 	const scale = useTextScale();
@@ -33,14 +32,22 @@ export function SubagentRow({ line, onOpen }: { line: SubagentLine; onOpen?: (re
 				</Text>
 			</View>
 			{line.activity ? (
-				<Text allowFontScaling={allowFontScaling} style={{ fontSize: 14 * scale, lineHeight: 19 * scale, color: palette.inkMid }}>
+				<Text
+					allowFontScaling={allowFontScaling}
+					style={{ fontSize: 14 * scale, lineHeight: 19 * scale, color: palette.inkMid }}
+				>
 					{line.activity}
 				</Text>
 			) : null}
 		</View>
 	);
 	const { ref } = line;
-	if (!ref || !onOpen) return <View accessible accessibilityLabel={`${line.title}, ${line.stateText}`}>{body}</View>;
+	if (!ref || !onOpen)
+		return (
+			<View accessible accessibilityLabel={`${line.title}, ${line.stateText}`}>
+				{body}
+			</View>
+		);
 	return (
 		<Pressable
 			accessibilityRole="button"

@@ -389,16 +389,17 @@ func TestHostAdminAllowListMatchesCatalog(t *testing.T) {
 	// refused with appwire.InvalidParams without reaching the remote. The denied
 	// families are controller-local state or UI (navigation, jobs, tasks,
 	// thread/turn, keybindings, overview, transcript display), local-process
-	// control (upgrade, update, mobile pairing, sandbox escalation), other
-	// mutating local surfaces (archive, pin, favorite, project delete, URLs,
-	// search, subagent preview), and the proxy method itself (no chaining).
+	// control (upgrade, update, mobile pairing, sandbox escalation, subagent
+	// stop), other mutating local surfaces (archive, pin, favorite, project
+	// delete, URLs, search, subagent preview), and the proxy method itself (no
+	// chaining).
 	// Rows are added one method at a time: a catalog method with no row fails the
 	// coverage check below, so a future addition still forces a decision.
 	//
-	// The session image fetch is denied for the same reason as the proxy method:
-	// it is the controller's own image-route call, resolving against the
-	// recipient's local session state, so a peer hub must not be able to drive
-	// it by forwarding the request.
+	// The session image and document fetches are denied for the same reason as
+	// the proxy method: each is the controller's own route call, resolving
+	// against the recipient's local session state, so a peer hub must not be
+	// able to drive it by forwarding the request.
 	policy := map[string]bool{
 		// The pulse meter read is not an admin RPC: the controller's own
 		// evener/activity/read already asks each attached host for its
@@ -428,6 +429,7 @@ func TestHostAdminAllowListMatchesCatalog(t *testing.T) {
 		// and never forwarded.
 		"evener/daemon/list":    false,
 		"evener/daemon/retire":  false,
+		"evener/delegate/stop":  false,
 		"evener/dirs/create":    true, // discovery: create the host directory the spawn form asked for
 		"evener/favorite/set":   false,
 		"evener/git/head":       true, // discovery: read-only branch metadata for a remote path
@@ -529,6 +531,7 @@ func TestHostAdminAllowListMatchesCatalog(t *testing.T) {
 		"evener/session-pin/assign":               false,
 		"evener/session-pin/unpin":                false,
 		"evener/session/delete":                   false,
+		"evener/session/document":                 false,
 		"evener/session/image":                    false,
 		"evener/session/seen/set":                 false, // controller-owned: every source's seen marks live in the controller's own store
 		"evener/settings/agentsDoc/get":           true,

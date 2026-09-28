@@ -190,7 +190,9 @@ func TestReapProbeEpochsDeletesSilently(t *testing.T) {
 
 // TestProbeEpochRowsAreSchemaChecked pins the row family against the store's
 // refuse-always rule: a hand-written file carrying a malformed epoch row is
-// schema-invalid, never served as an empty row set.
+// schema-invalid and takes §4's custody-first quarantine, so the malformed row
+// is never served — the replacement store carries no probe-epoch rows, and the
+// original bytes are renamed aside.
 func TestProbeEpochRowsAreSchemaChecked(t *testing.T) {
 	fs := afero.NewMemMapFs()
 	path := StorePath("/state-schema")
@@ -202,8 +204,21 @@ func TestProbeEpochRowsAreSchemaChecked(t *testing.T) {
 	if err := afero.WriteFile(fs, path, []byte(raw), 0o600); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
-	if _, err := openFS(fs, path, storeFaults{}); err == nil {
-		t.Fatal("a store with a malformed probe-epoch row loaded")
+	if err := forgetStore(path); err != nil {
+		t.Fatalf("forgetStore: %v", err)
+	}
+	store, err := openFS(fs, path, storeFaults{})
+	if err != nil {
+		t.Fatalf("openFS: %v, want the custody-first quarantine", err)
+	}
+	if store.Quarantine() == nil {
+		t.Fatal("a quarantined store booted without its operator-visible signal")
+	}
+	if rows := storeSnapshotForTest(store).ProbeEpochs; len(rows) != 0 {
+		t.Fatalf("the replacement store serves %d probe-epoch rows, want none", len(rows))
+	}
+	if _, aside := fsQuarantineArtifact(t, fs, filepath.Dir(path), ".quarantined-"); string(aside) != raw {
+		t.Fatalf("the aside file does not hold the malformed file's bytes verbatim:\n%s", aside)
 	}
 }
 

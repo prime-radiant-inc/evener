@@ -1,11 +1,7 @@
 // What a Board row can do (spec 7.3), and how each change reaches the hub:
 // the path the Session or the Projects screen already takes for it (this
 // plan's "How the Board's actions reach the hub"). Stop is BoardStops.
-import type {
-	ArchiveParams,
-	NavigationSessionSummary,
-	SessionPinAssignParams,
-} from "@evener/appwire-client";
+import type { ArchiveParams, NavigationSessionSummary, SessionPinAssignParams } from "@evener/appwire-client";
 import type { ConversationClientLike } from "../../../mobile/src/services/conversation";
 import type { NavigationActionCheckpoint } from "../navigationActionRepository";
 import type { NavigationActions } from "../navigationActions";
@@ -13,15 +9,7 @@ import { localSessionId } from "../sessionDeletionResult";
 import type { ClassifiedRow } from "./attention";
 import { organizationFree } from "./organizationCheck";
 
-export type RowAction =
-	| "pin"
-	| "markRead"
-	| "markUnread"
-	| "stop"
-	| "shutDown"
-	| "archive"
-	| "unarchive"
-	| "rename";
+export type RowAction = "pin" | "markRead" | "markUnread" | "stop" | "shutDown" | "archive" | "unarchive" | "rename";
 
 export const ROW_ACTION_LABELS: Record<RowAction, string> = {
 	pin: "Pin to category…",
@@ -72,7 +60,8 @@ export function rowMenuActions({ row, state }: ClassifiedRow, context: RowAction
 	if (state === "idle") actions.push("markUnread");
 	if (connected && state === "working") actions.push("stop");
 	if (connected && row.live && !row.offline && row.state !== "restartRequired") actions.push("shutDown");
-	if (connected && context.organizationReady && archiveTarget(row)) actions.push(context.archived ? "unarchive" : "archive");
+	if (connected && context.organizationReady && archiveTarget(row))
+		actions.push(context.archived ? "unarchive" : "archive");
 	if (connected && row.rename === true) actions.push("rename");
 	return actions;
 }
@@ -134,7 +123,12 @@ export function archivingSessionId(
 	state: { pending: boolean; uncertain: boolean; recovery: NavigationActionCheckpoint | null } | null,
 ): string | null {
 	const operation = state?.recovery?.operation;
-	if (!state || (!state.pending && !state.uncertain) || operation?.kind !== "archive" || operation.params.kind !== "session")
+	if (
+		!state ||
+		(!state.pending && !state.uncertain) ||
+		operation?.kind !== "archive" ||
+		operation.params.kind !== "session"
+	)
 		return null;
 	return operation.params.id;
 }

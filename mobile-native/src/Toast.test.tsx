@@ -29,9 +29,7 @@ it("shows a toast, announces it once, and clears it after four seconds", () => {
 
 it("keeps a toast that offers an action for eight seconds", () => {
 	const hook = renderHook(() => useToast());
-	act(() =>
-		hook.result.current.show({ text: "Session archived", action: { label: "Undo", run: () => {} } }),
-	);
+	act(() => hook.result.current.show({ text: "Session archived", action: { label: "Undo", run: () => {} } }));
 	act(() => {
 		vi.advanceTimersByTime(TOAST_MS);
 	});
@@ -69,6 +67,12 @@ it("runs the action and dismisses when its button is pressed", () => {
 
 it("renders nothing without a toast", () => {
 	expect(render(<Toast toast={null} dismiss={() => {}} />).toJSON()).toBeNull();
+});
+
+it("lets taps and scrolls pass through its empty area to the content behind it", () => {
+	const tree = render(<Toast toast={{ id: 1, text: "Stopped" }} dismiss={() => {}} />);
+	const [root] = tree.root.findAllByType("View" as never);
+	expect(root?.props.pointerEvents).toBe("box-none");
 });
 
 it("dismisses before running the action, so a follow-up toast the action shows survives the same batch", () => {

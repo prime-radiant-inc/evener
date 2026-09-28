@@ -10,10 +10,19 @@ import { navigationReadback } from "./navigationReadback";
 // invalidation kinds must send no limit at all and let the hub (and
 // navigationParamsToResourceKey locally) apply the right default.
 test.each([
-	[{ kind: "section", section: "live" }, { resource: "section", section: "live" }],
+	[
+		{ kind: "section", section: "live" },
+		{ resource: "section", section: "live" },
+	],
 	[{ kind: "pin_catalog" }, { resource: "pin_catalog" }],
-	[{ kind: "pin_section", sectionId: "pins" }, { resource: "pin_section", sectionId: "pins" }],
-	[{ kind: "catalog", catalog: "projects" }, { resource: "catalog", catalog: "projects" }],
+	[
+		{ kind: "pin_section", sectionId: "pins" },
+		{ resource: "pin_section", sectionId: "pins" },
+	],
+	[
+		{ kind: "catalog", catalog: "projects" },
+		{ resource: "catalog", catalog: "projects" },
+	],
 ] as const)("a %j readback omits limit", async (target, expectedParams) => {
 	const generation_id = "g1";
 	const calls: NavigationReadParams[] = [];

@@ -14,10 +14,11 @@ function menu(over: Partial<SessionMenuInput> = {}) {
 	const items = sessionMenu({
 		current: "intent",
 		hasSubagents: true,
+		hasDocuments: true,
 		connected: true,
+		sharedNotes: true,
 		canAside: true,
 		canShutDown: true,
-		deletable: true,
 		choose: (action) => chosen.push(action),
 		...over,
 	});
@@ -58,15 +59,21 @@ describe("the Session's ⋯ menu (spec 8.1)", () => {
 	it("lists every item in order when every condition holds", () => {
 		expect(labels(only(menu().items).menu.items)).toEqual([
 			"Detail level · Intent",
+			"Find in session",
+			"Files & artifacts",
 			"Subagents",
 			"Tasks",
+			"Notes & links",
 			"Session info",
 			"Ask aside…",
 			"Pin to category…",
 			"Archive",
 			"Shut down",
-			"Delete saved session",
 		]);
+	});
+
+	it("leaves Delete to the Session sheet", () => {
+		expect(labels(only(menu().items).menu.items)).not.toContain("Delete saved session");
 	});
 
 	it.each([
@@ -111,15 +118,26 @@ describe("the Session's ⋯ menu (spec 8.1)", () => {
 	});
 
 	it.each([
+		["hasDocuments", "Files & artifacts"],
 		["hasSubagents", "Subagents"],
 		["connected", "Tasks"],
+		["sharedNotes", "Notes & links"],
 		["canAside", "Ask aside…"],
 		["canShutDown", "Shut down"],
-		["deletable", "Delete saved session"],
 	] as const)("shows nothing for %s when it is false", (condition, label) => {
 		const entries = only(menu({ [condition]: false }).items).menu.items;
 		expect(labels(entries)).not.toContain(label);
-		expect(entries).toHaveLength(8);
+		expect(entries).toHaveLength(10);
+	});
+
+	it("opens Files & artifacts", () => {
+		const { items, chosen } = menu();
+		action(only(items).menu.items, "Files & artifacts").onPress();
+		expect(chosen).toEqual([{ kind: "files" }]);
+	});
+
+	it("offers Notes & links without a connection: the notes are readable offline", () => {
+		expect(labels(only(menu({ connected: false }).items).menu.items)).toContain("Notes & links");
 	});
 
 	it("describes Ask aside", () => {
@@ -129,14 +147,15 @@ describe("the Session's ⋯ menu (spec 8.1)", () => {
 	});
 
 	it.each([
+		["Find in session", { kind: "find" }],
 		["Subagents", { kind: "subagents" }],
 		["Tasks", { kind: "tasks" }],
+		["Notes & links", { kind: "notes" }],
 		["Session info", { kind: "info" }],
 		["Ask aside…", { kind: "aside" }],
 		["Pin to category…", { kind: "pin" }],
 		["Archive", { kind: "archive" }],
 		["Shut down", { kind: "shutDown" }],
-		["Delete saved session", { kind: "delete" }],
 	] as const)("%s chooses its action", (label, expected) => {
 		const { items, chosen } = menu();
 		action(only(items).menu.items, label).onPress();
@@ -145,13 +164,12 @@ describe("the Session's ⋯ menu (spec 8.1)", () => {
 
 	it("each level chooses that level", () => {
 		const { items, chosen } = menu();
-		for (const entry of levelSection(only(items).menu.items).items)
-			if (entry.type === "action") entry.onPress();
+		for (const entry of levelSection(only(items).menu.items).items) if (entry.type === "action") entry.onPress();
 		expect(chosen).toEqual(DETAIL_LEVELS.map(({ level }) => ({ kind: "level", level })));
 	});
 
-	it("draws Shut down and Delete saved session as destructive, and nothing else", () => {
+	it("draws Shut down as destructive, and nothing else", () => {
 		const entries = only(menu().items).menu.items;
-		expect(labels(entries.filter((entry) => entry.destructive))).toEqual(["Shut down", "Delete saved session"]);
+		expect(labels(entries.filter((entry) => entry.destructive))).toEqual(["Shut down"]);
 	});
 });

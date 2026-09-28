@@ -49,6 +49,16 @@ type storeFaults struct {
 	// the one failure point at which the write has already replaced the store
 	// file, so a test can drive the post-rename path deterministically.
 	syncDir func(afero.Fs, string) error
+	// The quarantine seams below mark the crash windows of §4's custody-first
+	// order, each firing after the named write has landed: afterIntentWrite
+	// between the intent and the custody write, afterCustodyWrite between the
+	// custody write and the corrupt-file rename, afterRename between the rename
+	// and the replacement-store open, and beforeIntentClear between the
+	// replacement write and the intent's removal.
+	afterIntentWrite  func() error
+	afterCustodyWrite func() error
+	afterRename       func() error
+	beforeIntentClear func() error
 }
 
 // postRenameError marks a write failure that followed the rename replacing the
@@ -93,6 +103,30 @@ type snapshot struct {
 	Sequence               uint64   `json:"sequence"`
 	AllocatorHighWaterMark uint64   `json:"allocatorHighWaterMark"`
 	Records                []Record `json:"records"`
+	// CompactSeq is §4's durable compaction sequence: advanced by every
+	// compacting write, pinned by every minted cursor (§8). Optional on read
+	// for the same reason as Boundaries: the key arrived after the store
+	// shipped, so a file without it is a store no write has compacted.
+	CompactSeq uint64 `json:"compactSeq"`
+	// Tombstones is §4's bounded dedup-tombstone set: one per compacted
+	// terminal record, the replay source that answers a lost-response retry
+	// with `compacted: true`. Optional on read for the same reason.
+	Tombstones []Tombstone `json:"tombstones"`
+	// CompactionMarks is the bounded compaction ledger §8's refusal reads
+	// independently of the dedup tombstones' own bound (see
+	// MaxCompactionMarks). Optional on read for the same reason.
+	CompactionMarks []CompactionMark `json:"compactionMarks"`
+	// CompactionFloor is the highest compacting-write sequence whose ledger
+	// marks were evicted by the bound: evidence for a cursor pinned below it is
+	// incomplete, and §8's check refuses coarsely rather than skipping. Zero
+	// means no mark has ever been dropped.
+	CompactionFloor uint64 `json:"compactionFloor"`
+	// RemovedHosts records, per name, when the registry's removal tombstone
+	// was seen and the pair it tombstoned: §4 compacts a removed host's history
+	// first once its removal is past the `tombstoneRetention` horizon, and a
+	// tombstone replays for a removed host only while its pinned pair equals
+	// this active removed pair. Optional on read for the same reason.
+	RemovedHosts map[string]RemovedHost `json:"removedHosts"`
 	// Boundaries is the per-host boundary record the registry mirrors (spec 08
 	// §7): the {generation, incarnationId, presenceEpoch} triple per host name.
 	// Unlike every other field it is optional on read: this key arrived after
@@ -100,6 +134,13 @@ type snapshot struct {
 	// that has mirrored no boundary yet, not a schema-invalid file. Every write
 	// emits it as an object.
 	Boundaries map[string]Boundary `json:"boundaries"`
+	// FencingQuarantines is §4's durable per-host fencing-quarantine marker set
+	// (crash-fencing spec), keyed by host name: the marker lands in the same
+	// atomic write as the fencing-timeout record it names. Like Boundaries it is
+	// optional on read — the key arrived after the store shipped, so a file
+	// without it is a store no fencing timeout has closed — and every write
+	// emits it as an object.
+	FencingQuarantines map[string]FencingQuarantine `json:"fencingQuarantines"`
 	// Tokens is the outstanding confirmation-token row set (deploy-pipeline §3):
 	// at most one row per host name, because minting supersedes. Like Boundaries
 	// it is optional on read — the key arrived after the store shipped, so a
@@ -118,6 +159,15 @@ type snapshot struct {
 	// GuardEpoch is the fencing epoch the serving hub last admitted from its
 	// caller (§10). Optional on read: absent means no epoch was ever presented.
 	GuardEpoch *GuardEpoch `json:"guardEpoch"`
+	// Compensations is §9's `pendingCompensation` record set: the token-row
+	// preimages a removal's commit captured before its purge, keyed by host
+	// name, each carrying the phase machine and the stash reference the
+	// hub.toml restore applies. A record still open at boot means a swap
+	// compensation has not converged, and the boot pass re-runs it by phase.
+	// Optional on read for the same reason as Tokens: the key arrived after the
+	// store shipped, so a file without it — or with it null — is a store that
+	// has armed no compensation.
+	Compensations map[string]Compensation `json:"pendingCompensation"`
 	// WallClockHighWaterMark is the durable high-water wall clock (§3's rollback
 	// guard): the greatest wall-clock value any token pass has observed. It
 	// never moves backward, and the zero Time means no pass has observed a clock
@@ -144,6 +194,12 @@ type storeCell struct {
 	// lets a cached open tell a store that was never written from one whose file
 	// has since disappeared.
 	hasFile atomic.Bool
+	// quarantineEpoch is the durable §4 counter this path's store was opened at:
+	// or validates (§8 compares it before any boundary comparison).
+	quarantineEpoch uint64
+	// quarantine is the operator-visible health signal §4 requires a quarantined
+	// store to boot with, nil when no custody file exists for this path.
+	quarantine *QuarantineSignal
 }
 
 // storeCells holds the process's one cell per store file path. The key is the
@@ -151,6 +207,18 @@ type storeCell struct {
 // filesystem in a process. The afero seam beneath Open serves tests, which drop
 // the cell to model the process restart a fresh load belongs to.
 var storeCells sync.Map
+
+// storeOpenLocks serializes the first open of each canonical store path. The
+// load a first open runs can perform §4's quarantine, so two racing openers of
+// one corrupt file must resolve it once: the loser adopts the winner's cell
+// instead of writing a second set of artifacts and racing the rename.
+var storeOpenLocks sync.Map
+
+// storeOpenLock returns the per-path open lock, creating it on first use.
+func storeOpenLock(key string) *sync.Mutex {
+	lock, _ := storeOpenLocks.LoadOrStore(key, &sync.Mutex{})
+	return lock.(*sync.Mutex)
+}
 
 // Store is a handle on the operation store: one file, one shared cell, one
 // atomic write discipline.
@@ -165,6 +233,10 @@ type Store struct {
 	// The record paths keep reading nowUTC directly: their timestamps are
 	// display-only and never decide a race.
 	clock func() time.Time
+	// retention is the §4 owner-knob family this handle's compacting writes
+	// apply. The zero value is every shipped default (RetentionPolicy's
+	// withDefaults), so a plain Open gets the spec's numbers.
+	retention RetentionPolicy
 }
 
 // StorePath is the operation store's file under stateRoot, beside the hub's
@@ -183,17 +255,36 @@ func StorePath(stateRoot string) string {
 // that is corrupt or schema-invalid (ErrStoreCorrupt) rather than serving a
 // half-understood store.
 func Open(path string) (*Store, error) {
-	return openFS(afero.NewOsFs(), path, storeFaults{})
+	return openFSWithRetention(afero.NewOsFs(), path, storeFaults{}, RetentionPolicy{})
+}
+
+// OpenWithRetention opens the operation store at path under one §4
+// owner-knob set. Every knob's zero value takes its documented default; a
+// store opened with the zero policy behaves exactly like Open.
+func OpenWithRetention(path string, policy RetentionPolicy) (*Store, error) {
+	return openFSWithRetention(afero.NewOsFs(), path, storeFaults{}, policy)
 }
 
 // openFS is the construction seam beneath Open: it builds a Store over an
 // injected afero.Fs so tests can drive persistence and the write's failure
 // paths.
 func openFS(fs afero.Fs, path string, faults storeFaults) (*Store, error) {
+	return openFSWithRetention(fs, path, faults, RetentionPolicy{})
+}
+
+// openFSWithRetention is openFS with §4's owner knobs threaded through.
+func openFSWithRetention(fs afero.Fs, path string, faults storeFaults, policy RetentionPolicy) (*Store, error) {
 	key, err := canonicalStorePath(path)
 	if err != nil {
 		return nil, err
 	}
+	// One first open per path at a time, across the cell lookup and the whole
+	// load: the load can perform §4's quarantine (intent, custody, epoch, rename
+	// and replacement writes), and a racing opener that arrives second must find
+	// the winner's cell rather than resolve the same corrupt file again.
+	openLock := storeOpenLock(key)
+	openLock.Lock()
+	defer openLock.Unlock()
 	if existing, held := storeCells.Load(key); held {
 		cell := existing.(*storeCell)
 		// A cached cell makes no load, but Open still enforces the path rules a
@@ -209,9 +300,12 @@ func openFS(fs afero.Fs, path string, faults storeFaults) (*Store, error) {
 				// aside by a quarantine. Serving the records it once held would
 				// answer from a store that no longer exists, and the next write
 				// would put them back; the durable store is what the file says,
-				// and there is no file, so this path starts over.
+				// and there is no file, so this path starts over. The per-path
+				// open lock is not reentrant, so the fresh load runs inline below
+				// rather than in a recursive call.
 				storeCells.Delete(key)
-				return openFS(fs, path, faults)
+			} else {
+				return &Store{path: path, fs: fs, faults: faults, cell: cell, retention: policy}, nil
 			}
 		case err != nil:
 			return nil, fmt.Errorf("hostops: stat store %s: %w", path, err)
@@ -222,24 +316,35 @@ func openFS(fs afero.Fs, path string, faults storeFaults) (*Store, error) {
 			if perm := info.Mode().Perm(); !ownerOnly(perm) {
 				return nil, fmt.Errorf("%w: %s has mode %04o", ErrStoreReadableBeyondOwner, path, perm)
 			}
+			return &Store{path: path, fs: fs, faults: faults, cell: cell, retention: policy}, nil
 		}
-		return &Store{path: path, fs: fs, faults: faults, cell: cell}, nil
 	}
 	fileExists := true
 	if _, err := lstat(fs, path); errors.Is(err, os.ErrNotExist) {
 		fileExists = false
 	}
-	state, err := loadFS(fs, path)
+	state, epoch, signal, err := resolveStoreFS(fs, path, faults)
 	if err != nil {
 		return nil, err
 	}
-	cell := &storeCell{state: state}
+	if _, err := lstat(fs, path); err == nil {
+		// The quarantine paths write a replacement store at the path, so a file
+		// that was absent before the load can exist after it.
+		fileExists = true
+	}
+	cell := &storeCell{state: state, quarantineEpoch: epoch, quarantine: signal}
 	cell.hasFile.Store(fileExists)
 	// Two racing first opens of one path must adopt one cell, never two.
 	if existing, loaded := storeCells.LoadOrStore(key, cell); loaded {
 		cell = existing.(*storeCell)
 	}
-	return &Store{path: path, fs: fs, faults: faults, cell: cell}, nil
+	return &Store{path: path, fs: fs, faults: faults, cell: cell, retention: policy}, nil
+}
+
+// retentionPolicy is the handle's §4 knob set with every unset value floored
+// to its shipped default.
+func (s *Store) retentionPolicy() RetentionPolicy {
+	return s.retention.withDefaults()
 }
 
 // canonicalStorePath is the key two handles for one store file collide on: two
@@ -430,6 +535,23 @@ func (s *Store) Transition(id string, to State, change func(*Record)) (Record, e
 	if record.State.Terminal() {
 		return Record{}, fmt.Errorf("%w: record %q is already %q", ErrRecordTerminal, id, record.State)
 	}
+	// A record its host's fencing marker names is a fencing quarantine, and §5
+	// clears a quarantine through one dedicated fencing resolve, which clears
+	// the marker, the boundary, the open intents and the state in ONE atomic
+	// write (slice S20). This edge cannot promise that: the boundary is the
+	// caller's callback to clear and the intents are a separate store
+	// operation, so a marker-only clear here would commit a half-resolved
+	// quarantine and invite resolutions that skip the boundary cleanup. A
+	// quarantined exit is therefore refused deliberately, by type, instead of
+	// committing a record that has left the state and failing afterwards in
+	// validateSnapshot with a schema error that leaves the marker naming a
+	// resolved record.
+	if record.State == StateOrphanUnverified && to != StateOrphanUnverified {
+		if marker, marked := next.FencingQuarantines[record.Host]; marked && marker.RecordID == record.ID {
+			return Record{}, fmt.Errorf("%w: record %q is a fencing-quarantined record (host %q's marker names it); its quarantine clears only through the dedicated fencing resolve — marker, boundary, intents and state in one atomic write (slice S20) — never through Transition",
+				ErrInvalidTransition, id, record.Host)
+		}
+	}
 	// Spec §4 and §7 name exactly one exit from the fencing state: "the
 	// `orphan-unverified`→`interrupted` resolution" — a record whose boundary has
 	// not been verified must never become a success. The rest of the graph
@@ -450,6 +572,20 @@ func (s *Store) Transition(id string, to State, change func(*Record)) (Record, e
 		// that changes host, kind, pinned pair or id would corrupt the dedup
 		// scope §4 keys on, and the sequence stamp is what race scans compare.
 		return Record{}, fmt.Errorf("%w: the change rewrote record %q's immutable fields", ErrInvalidRecord, id)
+	}
+	// §3 keeps a record whose spawn intent is still open fenced: its boundary
+	// may still hold the orphan, and "never clean, never `interrupted`" is the
+	// rule for a record the reap has not verified. A worker that wants to
+	// finish must drop each intent first — its own clean reap once the child
+	// exited — so a completion can never be recorded before the boundary it
+	// owns is accounted for. ResolveReapedSpawn clears the intents in the same
+	// write as the resolve, which is why it does not come through here. The
+	// check runs on the POST-change record: a callback that appends an intent
+	// must be caught too, or a terminal record could carry one and become
+	// invisible to the fence.
+	if to.Terminal() && len(record.PendingSpawns) > 0 {
+		return Record{}, fmt.Errorf("%w: record %q carries %d open pending-spawn intent(s) and cannot become %q; drop them (Store.ClearSpawnIntents) or resolve the record (Store.ResolveReapedSpawn) first",
+			ErrInvalidTransition, id, len(record.PendingSpawns), to)
 	}
 	record.State = to
 	record.UpdatedAt = nowUTC()
@@ -511,6 +647,11 @@ func identityOf(record Record) recordIdentity {
 // reconcile with the state it passed in rather than report the operation absent
 // (see RenameLanded).
 func (s *Store) commitLocked(next snapshot) (landed bool, err error) {
+	// Every mutating path meets §4's retention in this same atomic write: no
+	// commit — record, token, probe epoch, boundary or removal-marker mirror —
+	// may leave the store over a bound that a later record write would then have
+	// to repair. A pass that removes nothing changes nothing.
+	s.compactLocked(&next)
 	landed, err = saveFS(s.fs, s.path, next, s.faults)
 	if landed {
 		s.cell.state = next
@@ -538,9 +679,21 @@ type storeFile struct {
 	Sequence               *uint64       `json:"sequence"`
 	AllocatorHighWaterMark *uint64       `json:"allocatorHighWaterMark"`
 	Records                *[]recordFile `json:"records"`
+	// CompactSeq, Tombstones and RemovedHosts are optional on read (see
+	// snapshot's comments): absent and null both decode to the pre-S6 state,
+	// which is "no compacting write yet".
+	CompactSeq      uint64                 `json:"compactSeq"`
+	Tombstones      *[]tombstoneFile       `json:"tombstones"`
+	CompactionMarks *[]CompactionMark      `json:"compactionMarks"`
+	CompactionFloor uint64                 `json:"compactionFloor"`
+	RemovedHosts    map[string]RemovedHost `json:"removedHosts"`
 	// Boundaries is optional on read (see snapshot.Boundaries): absent and null
 	// both decode to nil, which is "no boundary mirrored yet".
 	Boundaries map[string]Boundary `json:"boundaries"`
+	// FencingQuarantines is optional on read (see
+	// snapshot.FencingQuarantines): absent and null both decode to nil, which
+	// is "no fencing timeout has closed a host yet".
+	FencingQuarantines map[string]FencingQuarantine `json:"fencingQuarantines"`
 	// Tokens is optional on read (see snapshot.Tokens): absent and null both
 	// decode to nil, which is "no token minted yet".
 	Tokens *[]tokenFile `json:"tokens"`
@@ -550,9 +703,108 @@ type storeFile struct {
 	ProbeEpochSeq map[string]uint64 `json:"probeEpochSeq"`
 	// GuardEpoch is optional on read (see snapshot.GuardEpoch).
 	GuardEpoch *GuardEpoch `json:"guardEpoch"`
+	// Compensations is optional on read (see snapshot.Compensations): absent and
+	// null both decode to nil, which is "no compensation armed yet".
+	Compensations map[string]compensationFile `json:"pendingCompensation"`
 	// WallClockHighWaterMark is optional on read: absent, null and the zero
 	// instant all mean no pass has observed a clock yet.
 	WallClockHighWaterMark time.Time `json:"wallClockHighWaterMark"`
+}
+
+// compensationFile is the decode shape of one pendingCompensation record. Every
+// field is a pointer so a record that omits one — or carries null — is refused
+// rather than decoded as a zero-valued record, exactly as the token shape does
+// it; rows decode through tokenFile so a preimage row carries the whole token
+// schema.
+type compensationFile struct {
+	Host       *string      `json:"host"`
+	Phase      *string      `json:"phase"`
+	Rows       *[]tokenFile `json:"rows"`
+	Stash      *string      `json:"stashReference"`
+	Generation *uint64      `json:"generation"`
+}
+
+// compensation maps the decode shape to a record, refusing every omitted field
+// and normalizing the retired `compensating-sidecar` spelling to its live
+// alias.
+func (f compensationFile) compensation() (Compensation, error) {
+	for _, required := range []struct {
+		present bool
+		what    string
+	}{
+		{f.Host != nil, "host"},
+		{f.Phase != nil, "phase"},
+		{f.Rows != nil, "rows"},
+		{f.Stash != nil, "stash reference"},
+		{f.Generation != nil, "generation"},
+	} {
+		if !required.present {
+			return Compensation{}, fmt.Errorf("a compensation record carries no %s", required.what)
+		}
+	}
+	rows := make([]Token, len(*f.Rows))
+	for i, encoded := range *f.Rows {
+		mapped, err := encoded.token()
+		if err != nil {
+			return Compensation{}, err
+		}
+		rows[i] = mapped
+	}
+	record := Compensation{
+		Host:       *f.Host,
+		Phase:      CompensationPhase(*f.Phase),
+		Rows:       rows,
+		Stash:      *f.Stash,
+		Generation: *f.Generation,
+	}
+	if err := validateCompensation(record); err != nil {
+		return Compensation{}, err
+	}
+	return record.normalized(), nil
+}
+
+// tombstoneFile is the decode shape of one dedup tombstone. It carries the
+// same fields as Tombstone, with a present result decoded through resultFile so
+// a tombstone whose result lacks its outcome — a shape the writer never
+// produces — is refused rather than read as a failed outcome.
+type tombstoneFile struct {
+	Tombstone
+	Result   json.RawMessage `json:"result"`
+	Progress json.RawMessage `json:"progress"`
+}
+
+// tombstone maps the decode shape to a tombstone, applying the same
+// omitted-field rules records carry.
+func (f tombstoneFile) tombstone() (Tombstone, error) {
+	tombstone := f.Tombstone
+	if len(f.Progress) > 0 {
+		if jsonFieldIsNull(f.Progress) {
+			return Tombstone{}, fmt.Errorf("tombstone %q carries a null progress list", f.ID)
+		}
+		var progress []ProgressEntry
+		decoder := json.NewDecoder(bytes.NewReader(f.Progress))
+		decoder.DisallowUnknownFields()
+		if err := decoder.Decode(&progress); err != nil {
+			return Tombstone{}, fmt.Errorf("tombstone %q carries an unparseable progress list", f.ID)
+		}
+		tombstone.Progress = progress
+	}
+	if len(f.Result) > 0 {
+		if jsonFieldIsNull(f.Result) {
+			return Tombstone{}, fmt.Errorf("tombstone %q carries a null terminal result", f.ID)
+		}
+		var result resultFile
+		decoder := json.NewDecoder(bytes.NewReader(f.Result))
+		decoder.DisallowUnknownFields()
+		if err := decoder.Decode(&result); err != nil {
+			return Tombstone{}, fmt.Errorf("tombstone %q carries an unparseable terminal result", f.ID)
+		}
+		if result.OK == nil {
+			return Tombstone{}, fmt.Errorf("tombstone %q carries a terminal result with no outcome", f.ID)
+		}
+		tombstone.Result = &Result{OK: *result.OK, Message: result.Message}
+	}
+	return tombstone, nil
 }
 
 // recordFile is the decode shape of one record. It carries the same fields as
@@ -617,8 +869,25 @@ func (f recordFile) record() (Record, error) {
 }
 
 // loadFS reads and validates the store file. A missing file is an empty store;
-// every other failure is reported, never papered over.
+// every other failure is reported, never papered over. The whole-file checks
+// live in readStoreFS; this adds the store-level invariants.
 func loadFS(fs afero.Fs, path string) (snapshot, error) {
+	state, err := readStoreFS(fs, path)
+	if err != nil {
+		return snapshot{}, err
+	}
+	if err := validateSnapshot(state); err != nil {
+		return snapshot{}, fmt.Errorf("%w: validate %s: %w", ErrStoreCorrupt, path, err)
+	}
+	return state, nil
+}
+
+// readStoreFS reads and decodes the store file with every whole-file rule this
+// store applies — the byte-level checks, the strict decode, and the per-record
+// mapping — without the store-level validation. The quarantine path reads the
+// same decode: a corrupt file whose bytes this function refuses cannot yield a
+// custody snapshot, because a region of it was left unparsed or discarded.
+func readStoreFS(fs afero.Fs, path string) (snapshot, error) {
 	empty := snapshot{Version: storeVersion}
 	// The kind check runs on the path itself (never following a final link) and
 	// before the missing-file case: a dangling symlink reports "missing" to a
@@ -686,13 +955,31 @@ func loadFS(fs afero.Fs, path string) (snapshot, error) {
 			tokens[i] = mapped
 		}
 	}
+	var compensations map[string]Compensation
+	if file.Compensations != nil {
+		compensations = make(map[string]Compensation, len(file.Compensations))
+		for host, encoded := range file.Compensations {
+			record, err := encoded.compensation()
+			if err != nil {
+				return snapshot{}, fmt.Errorf("%w: %s: %w", ErrStoreCorrupt, path, err)
+			}
+			if record.Host != host {
+				return snapshot{}, fmt.Errorf("%w: compensation[%q] names %q in its record", ErrStoreCorrupt, host, record.Host)
+			}
+			compensations[host] = record
+		}
+	}
 	state := snapshot{
 		Version:                *file.Version,
 		Sequence:               *file.Sequence,
 		AllocatorHighWaterMark: *file.AllocatorHighWaterMark,
 		Records:                records,
+		CompactSeq:             file.CompactSeq,
 		Boundaries:             file.Boundaries,
+		FencingQuarantines:     file.FencingQuarantines,
+		RemovedHosts:           file.RemovedHosts,
 		Tokens:                 tokens,
+		Compensations:          compensations,
 		ProbeEpochSeq:          file.ProbeEpochSeq,
 		GuardEpoch:             file.GuardEpoch,
 		// The mark is normalized like every stored timestamp: an offset form
@@ -700,6 +987,27 @@ func loadFS(fs afero.Fs, path string) (snapshot, error) {
 		// year-one string a zero mark marshals to — reads as "no mark yet"
 		// (wallClockMark).
 		WallClockHighWaterMark: wallClockMark(file.WallClockHighWaterMark),
+	}
+	if file.Tombstones != nil {
+		state.Tombstones = make([]Tombstone, len(*file.Tombstones))
+		for i, encoded := range *file.Tombstones {
+			tombstone, err := encoded.tombstone()
+			if err != nil {
+				return snapshot{}, fmt.Errorf("%w: %s: %w", ErrStoreCorrupt, path, err)
+			}
+			tombstone.CreatedAt = tombstone.CreatedAt.UTC()
+			tombstone.UpdatedAt = tombstone.UpdatedAt.UTC()
+			tombstone.CompactedAt = tombstone.CompactedAt.UTC()
+			state.Tombstones[i] = tombstone
+		}
+	}
+	if file.CompactionMarks != nil {
+		state.CompactionMarks = append([]CompactionMark(nil), (*file.CompactionMarks)...)
+	}
+	state.CompactionFloor = file.CompactionFloor
+	for name, removed := range state.RemovedHosts {
+		removed.RemovedAt = removed.RemovedAt.UTC()
+		state.RemovedHosts[name] = removed
 	}
 	if file.ProbeEpochs != nil {
 		state.ProbeEpochs = make([]ProbeEpoch, len(*file.ProbeEpochs))
@@ -719,8 +1027,11 @@ func loadFS(fs afero.Fs, path string) (snapshot, error) {
 		state.Records[i].CreatedAt = state.Records[i].CreatedAt.UTC()
 		state.Records[i].UpdatedAt = state.Records[i].UpdatedAt.UTC()
 	}
-	if err := validateSnapshot(state); err != nil {
-		return snapshot{}, fmt.Errorf("%w: validate %s: %w", ErrStoreCorrupt, path, err)
+	// The fencing-quarantine markers' timestamps take the same normalization, so
+	// a hand-edited or imported offset form never survives a rewrite either.
+	for host, marker := range state.FencingQuarantines {
+		marker.QuarantinedAt = marker.QuarantinedAt.UTC()
+		state.FencingQuarantines[host] = marker
 	}
 	return state, nil
 }
@@ -745,10 +1056,44 @@ func saveFS(fs afero.Fs, path string, state snapshot, faults storeFaults) (renam
 		// stays what it is — the pre-boundary file shape.
 		state.Boundaries = map[string]Boundary{}
 	}
+	if state.FencingQuarantines == nil {
+		// Same rule for the fencing-quarantine markers: a store that has closed
+		// no host writes an empty object, never null.
+		state.FencingQuarantines = map[string]FencingQuarantine{}
+	}
 	if state.Tokens == nil {
 		// Same rule for the token rows: a store that has minted nothing writes an
 		// empty array, never null.
 		state.Tokens = []Token{}
+	}
+	if state.Tombstones == nil {
+		// Same rule for the dedup tombstones: a store that has compacted nothing
+		// writes an empty array, never null.
+		state.Tombstones = []Tombstone{}
+	}
+	if state.CompactionMarks == nil {
+		// Same rule for the compaction ledger.
+		state.CompactionMarks = []CompactionMark{}
+	}
+	if state.RemovedHosts == nil {
+		// Same rule for the removal markers: a store that has seen no removal
+		// writes an empty object, never null.
+		state.RemovedHosts = map[string]RemovedHost{}
+	}
+	if state.Compensations == nil {
+		// Same rule for the armed compensation records: a store that has armed
+		// none writes an empty object, never null.
+		state.Compensations = map[string]Compensation{}
+	} else {
+		// A record's preimage is a list: an empty one writes an empty array,
+		// never null, so the key's shape never depends on whether the purge had
+		// rows to carry.
+		for host, record := range state.Compensations {
+			if record.Rows == nil {
+				record.Rows = []Token{}
+				state.Compensations[host] = record
+			}
+		}
 	}
 	data, err := json.Marshal(state)
 	if err != nil {
@@ -953,19 +1298,44 @@ func preservedMode(fs afero.Fs, path string) (os.FileMode, bool) {
 // its keys are not this store's to judge.
 var ownedObjectKeys = map[string]map[string]struct{}{
 	"": keysOf("version", "sequence", "allocatorHighWaterMark", "records", "boundaries",
-		"tokens", "probeEpochs", "probeEpochSeq", "guardEpoch", "wallClockHighWaterMark"),
+		"tokens", "probeEpochs", "probeEpochSeq", "guardEpoch", "wallClockHighWaterMark",
+		"compactSeq", "tombstones", "compactionMarks", "compactionFloor", "removedHosts",
+		"pendingCompensation", "fencingQuarantines"),
 	"records[]": keysOf("id", "clientOperationId", "host", "kind", "state", "generation",
 		"incarnationId", "fencingEpoch", "orphanBoundary", "progress", "result",
-		"createdAt", "updatedAt", "hostRemoved", "sequence"),
-	"records[].result":     keysOf("ok", "message"),
-	"records[].progress[]": keysOf("ts", "message"),
+		"pendingSpawns", "createdAt", "updatedAt", "hostRemoved", "sequence"),
+	// §3's pending-spawn intents are objects this store decodes, so their keys
+	// are canonical too — never left opaque, or a case variant would be silently
+	// rewritten on the next save.
+	"records[].pendingSpawns[]": keysOf("nonce", "platform", "cgroupId", "pgid", "sessionId", "pid", "startTime"),
+	"records[].result":          keysOf("ok", "message"),
+	"records[].progress[]":      keysOf("ts", "message"),
+	"tombstones[]": keysOf("id", "clientOperationId", "host", "kind", "state", "generation",
+		"incarnationId", "progress", "result", "createdAt", "updatedAt", "hostRemoved",
+		"compactedAt", "compactedSeq"),
+	"tombstones[].result":     keysOf("ok", "message"),
+	"tombstones[].progress[]": keysOf("ts", "message"),
+	"compactionMarks[]":       keysOf("seq", "hosts"),
+	// The per-name removal markers are objects this store decodes, so their
+	// keys are canonical too: a case variant (Go matches JSON field names
+	// case-insensitively) would be silently rewritten on the next save.
+	"removedHosts[]":       keysOf("removedAt", "generation", "incarnationId"),
 	"boundaries[]":         keysOf("generation", "incarnationId", "presenceEpoch"),
+	"fencingQuarantines[]": keysOf("recordId", "quarantinedAt"),
 	"tokens[]": keysOf("host", "value", "generation", "incarnationId", "entryHash",
 		"hubTomlFingerprint", "factsRevision", "factsCapturedAt", "targetPath",
 		"controllerRevision", "runningVersion", "runningHealthy", "processStartTime",
 		"freshnessBoundSec", "mintedAt", "expiresAt"),
 	"probeEpochs[]": keysOf("host", "bootId", "opSeq", "generation", "incarnationId", "createdAt"),
 	"guardEpoch":    keysOf("bootId", "opSeq"),
+	// The armed compensation records are objects this store decodes, and their
+	// preimage rows carry the whole token schema, so both key sets are
+	// canonical too.
+	"pendingCompensation[]": keysOf("host", "phase", "rows", "stashReference", "generation"),
+	"pendingCompensation[].rows[]": keysOf("host", "value", "generation", "incarnationId", "entryHash",
+		"hubTomlFingerprint", "factsRevision", "factsCapturedAt", "targetPath",
+		"controllerRevision", "runningVersion", "runningHealthy", "processStartTime",
+		"freshnessBoundSec", "mintedAt", "expiresAt"),
 }
 
 // keysOf builds one canonical key set.
@@ -1175,15 +1545,33 @@ func validateKeys(raw []byte, owned map[string]map[string]struct{}) error {
 
 // ownedKeysFor resolves an object path to the canonical key set this store
 // decodes it with. A map's per-key object carries the key in its path —
-// "boundaries.<name>" — so the one map-valued record this store owns is matched
-// by its "boundaries[]" template; every other keyed object (the hand-written
-// file shapes a test or an operator might produce) is opaque to this rule.
+// "boundaries.<name>", "removedHosts.<name>" — so the store's map-valued
+// records are matched by their "<key>[]" template; every other keyed object
+// (the hand-written file shapes a test or an operator might produce) is opaque
+// to this rule.
 func ownedKeysFor(owned map[string]map[string]struct{}, path string) (map[string]struct{}, bool) {
 	if canonical, ok := owned[path]; ok {
 		return canonical, true
 	}
 	if key, ok := strings.CutPrefix(path, "boundaries."); ok && key != "" {
-		return owned["boundaries[]"], true
+		canonical, ok := owned["boundaries[]"]
+		return canonical, ok
+	}
+	if key, ok := strings.CutPrefix(path, "removedHosts."); ok && key != "" {
+		canonical, ok := owned["removedHosts[]"]
+		return canonical, ok
+	}
+	if key, ok := strings.CutPrefix(path, "pendingCompensation."); ok && key != "" {
+		// The record's preimage rows are objects this store decodes too, and the
+		// walk reaches them as "<map>.<name>.rows[]" (the array itself carries
+		// no keys).
+		if strings.HasSuffix(key, ".rows[]") {
+			return owned["pendingCompensation[].rows[]"], true
+		}
+		if strings.HasSuffix(key, ".rows") {
+			return nil, false
+		}
+		return owned["pendingCompensation[]"], true
 	}
 	return nil, false
 }
@@ -1302,6 +1690,52 @@ func validateSnapshot(state snapshot) error {
 			return err
 		}
 	}
+	// Tombstones are the replay source §4 promises a lost-response retry: a
+	// value outside the compacting writers' schema is refused like every other
+	// persisted value, and a tombstone's id can never collide with a retained
+	// record's (a compacted record is gone).
+	tombstones := make(map[string]struct{}, len(state.Tombstones))
+	for _, tombstone := range state.Tombstones {
+		if err := validateTombstone(tombstone, state.CompactSeq); err != nil {
+			return err
+		}
+		if _, duplicate := tombstones[tombstone.ID]; duplicate {
+			return fmt.Errorf("%w: duplicate tombstone id %q", ErrInvalidRecord, tombstone.ID)
+		}
+		tombstones[tombstone.ID] = struct{}{}
+		if _, collides := seen[tombstone.ID]; collides {
+			return fmt.Errorf("%w: tombstone %q collides with a retained record", ErrInvalidRecord, tombstone.ID)
+		}
+	}
+	// Removed hosts date §4's horizon check and pin the active removed pair a
+	// tombstone replay compares against; a zero instant or an incomplete pair
+	// would make every pass read the host as freshly removed (or as infinitely
+	// old) or match the wrong incarnation, so no writer emits one.
+	for name, removed := range state.RemovedHosts {
+		if err := validateBoundaryName(name); err != nil {
+			return err
+		}
+		if err := validateRemovedHost(name, removed); err != nil {
+			return err
+		}
+	}
+	// The compaction ledger is the evidence §8's refusal reads when a tombstone
+	// has been evicted: one mark per compacting write, in write order, each at
+	// or below the store's compactSeq.
+	markSeqs := make(map[uint64]struct{}, len(state.CompactionMarks))
+	for _, mark := range state.CompactionMarks {
+		if err := validateCompactionMark(mark, state.CompactSeq); err != nil {
+			return err
+		}
+		if _, duplicate := markSeqs[mark.Seq]; duplicate {
+			return fmt.Errorf("%w: compaction seq %d is carried by more than one mark", ErrInvalidRecord, mark.Seq)
+		}
+		markSeqs[mark.Seq] = struct{}{}
+	}
+	if state.CompactionFloor > state.CompactSeq {
+		return fmt.Errorf("%w: compaction floor %d is above the store's compactSeq %d",
+			ErrInvalidRecord, state.CompactionFloor, state.CompactSeq)
+	}
 	// Token rows carry the same refuse-always rule: a row outside the schema a
 	// mint writes is never served, and the set-level rules (one row per host
 	// name, one row per value) hold for hand-edited files too. Where a row's
@@ -1310,6 +1744,58 @@ func validateSnapshot(state snapshot) error {
 	// expired instead of corrupt.
 	if err := validateTokenRows(state.Tokens); err != nil {
 		return err
+	}
+	// Armed compensation records carry the same refuse-always rule: a record
+	// outside the phase machine or carrying a row outside the token schema is
+	// never served, and its key must be the host it names.
+	for host, record := range state.Compensations {
+		if record.Host != host {
+			return fmt.Errorf("%w: compensation[%q] names %q in its record", ErrInvalidRecord, host, record.Host)
+		}
+		if err := validateCompensation(record); err != nil {
+			return err
+		}
+	}
+	// Fencing-quarantine markers carry the same refuse-always rule: a marker
+	// names the host's open orphan-unverified record — the `orphan-resolve` way
+	// out that clears it in the same atomic write — so a marker whose record is
+	// missing, resolved or another host's is not a state this store's writer
+	// produces.
+	for host, marker := range state.FencingQuarantines {
+		if err := validateBoundaryName(host); err != nil {
+			return err
+		}
+		if _, err := parseAllocatorID(marker.RecordID); err != nil {
+			return fmt.Errorf("%w: fencing quarantine for %q names %q, not a controller-assigned record id",
+				ErrInvalidRecord, host, marker.RecordID)
+		}
+		if marker.QuarantinedAt.IsZero() {
+			return fmt.Errorf("%w: fencing quarantine for %q carries no timestamp", ErrInvalidRecord, host)
+		}
+		index := slices.IndexFunc(state.Records, func(record Record) bool { return record.ID == marker.RecordID })
+		if index < 0 {
+			return fmt.Errorf("%w: fencing quarantine for %q names missing record %s", ErrInvalidRecord, host, marker.RecordID)
+		}
+		if record := state.Records[index]; record.State != StateOrphanUnverified || record.Host != host {
+			return fmt.Errorf("%w: fencing quarantine for %q names record %s in state %q for host %q",
+				ErrInvalidRecord, host, marker.RecordID, record.State, record.Host)
+		} else if !boundaryHasRemoteFencing(record.OrphanBoundary) {
+			return fmt.Errorf("%w: fencing quarantine for %q names record %s whose boundary is not remote-fencing",
+				ErrInvalidRecord, host, marker.RecordID)
+		}
+	}
+	// The equivalence runs both ways: a record whose boundary is the
+	// remote-fencing variant is a fencing quarantine, so its host's marker must
+	// name it. A store carrying one half but not the other would disagree with
+	// what custody recovery and the admission fence read.
+	for _, record := range state.Records {
+		if record.State != StateOrphanUnverified || !boundaryHasRemoteFencing(record.OrphanBoundary) {
+			continue
+		}
+		if marker, ok := state.FencingQuarantines[record.Host]; !ok || marker.RecordID != record.ID {
+			return fmt.Errorf("%w: record %s carries a remote-fencing boundary but host %q carries no matching quarantine marker",
+				ErrInvalidRecord, record.ID, record.Host)
+		}
 	}
 	// Probe epochs and the guard epoch carry the same refuse-always rule: a row
 	// outside the schema a persist writes never enters the file, and the
@@ -1354,7 +1840,15 @@ func cloneSnapshot(state snapshot) snapshot {
 		out.Records[i] = cloneRecord(record)
 	}
 	out.Boundaries = maps.Clone(state.Boundaries)
+	out.FencingQuarantines = maps.Clone(state.FencingQuarantines)
+	out.Tombstones = make([]Tombstone, len(state.Tombstones))
+	for i, tombstone := range state.Tombstones {
+		out.Tombstones[i] = cloneTombstone(tombstone)
+	}
+	out.CompactionMarks = append([]CompactionMark(nil), state.CompactionMarks...)
+	out.RemovedHosts = maps.Clone(state.RemovedHosts)
 	out.Tokens = cloneTokens(state.Tokens)
+	out.Compensations = cloneCompensations(state.Compensations)
 	out.ProbeEpochs = slices.Clone(state.ProbeEpochs)
 	out.ProbeEpochSeq = maps.Clone(state.ProbeEpochSeq)
 	out.GuardEpoch = cloneGuardEpoch(state.GuardEpoch)

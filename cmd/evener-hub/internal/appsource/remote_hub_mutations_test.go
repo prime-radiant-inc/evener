@@ -133,6 +133,10 @@ func TestRemoteHubMutationWireMethodsAndRefs(t *testing.T) {
 		{"ResolveSandboxEscalation", appwire.MethodEvenerSandboxEscalationResolve, true, true, "", func(ctx context.Context, s *RemoteHubSource) error {
 			return s.ResolveSandboxEscalation(ctx, appwire.SandboxEscalationResolveParams{Ref: testControllerRef, ThreadID: testThreadID})
 		}},
+		{"StopDelegate", appwire.MethodEvenerDelegateStop, true, true, "", func(ctx context.Context, s *RemoteHubSource) error {
+			_, err := s.StopDelegate(ctx, appwire.DelegateStopParams{Ref: testControllerRef, ThreadID: testThreadID, DelegateID: "dlg_1"})
+			return err
+		}},
 
 		// Read-only forwards.
 		{"ListTasks", appwire.MethodEvenerTasksList, true, false, "", func(ctx context.Context, s *RemoteHubSource) error {

@@ -2,10 +2,7 @@
  * flight, or while `idle()` says the owner is busy, coalesce into a single
  * trailing run; `drain()` lets the owner retry once its state settles, and
  * `settle()` drops a pending request the owner has satisfied another way. */
-export function singleFlight(
-	run: () => Promise<unknown>,
-	idle: () => boolean = () => true,
-) {
+export function singleFlight(run: () => Promise<unknown>, idle: () => boolean = () => true) {
 	let requested = false,
 		running = false;
 	const drain = () => {

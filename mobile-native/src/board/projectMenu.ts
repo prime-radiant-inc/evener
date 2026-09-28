@@ -26,8 +26,7 @@ export function projectMenuActions(
 	)
 		return [];
 	const actions: ProjectMenuAction[] = [project.favorite ? "unpin" : "pin"];
-	if (project.working_dir)
-		actions.push(context.archived || project.is_archived ? "unarchive" : "archive");
+	if (project.working_dir) actions.push(context.archived || project.is_archived ? "unarchive" : "archive");
 	return actions;
 }
 

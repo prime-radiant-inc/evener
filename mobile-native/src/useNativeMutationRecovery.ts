@@ -16,27 +16,17 @@
 // effect's own runtime/target generation so a client replacement can never
 // repopulate the new generation's state with the old one's completions.
 
-import type {
-	MutationAttachmentRef,
-	MutationPersistenceSnapshot,
-} from "@evener/appwire-client/state/mutation";
+import type { MutationAttachmentRef, MutationPersistenceSnapshot } from "@evener/appwire-client/state/mutation";
 import { useCallback, useEffect, useRef, useState } from "react";
-import type {
-	NativeMutationPersistenceRead,
-	NativeMutationStorageListener,
-} from "./nativeMutationRuntime";
+import type { NativeMutationPersistenceRead, NativeMutationStorageListener } from "./nativeMutationRuntime";
 
 // The runtime surface the recovery projection needs: the landed scoped
 // persistence read plus the storage-change subscription and the one recovery
 // write. NativeMutationRuntime satisfies this structurally; the narrower
 // interface is what lets tests prove the contract without a full runtime.
-export interface NativeMutationRecoveryRuntime
-	extends NativeMutationPersistenceRead {
+export interface NativeMutationRecoveryRuntime extends NativeMutationPersistenceRead {
 	subscribeStorage(listener: NativeMutationStorageListener): () => void;
-	discardRecovery(
-		clientMutationId: string,
-		targetRef: string,
-	): Promise<boolean>;
+	discardRecovery(clientMutationId: string, targetRef: string): Promise<boolean>;
 }
 
 export interface NativeMutationRecoveryProjection {
@@ -65,11 +55,7 @@ interface RecoveryState {
 	error: unknown;
 }
 
-function emptyState(
-	targetKey: string,
-	loading: boolean,
-	owner: NativeMutationRecoveryRuntime | null,
-): RecoveryState {
+function emptyState(targetKey: string, loading: boolean, owner: NativeMutationRecoveryRuntime | null): RecoveryState {
 	return { owner, targetKey, snapshot: null, loading, error: null };
 }
 
@@ -77,9 +63,7 @@ export function useNativeMutationRecovery(
 	runtime: NativeMutationRecoveryRuntime | null,
 	targetKey: string,
 ): NativeMutationRecoveryProjection {
-	const [state, setState] = useState(() =>
-		emptyState(targetKey, runtime !== null, runtime),
-	);
+	const [state, setState] = useState(() => emptyState(targetKey, runtime !== null, runtime));
 	const generation = useRef(0);
 
 	useEffect(() => {
@@ -91,9 +75,7 @@ export function useNativeMutationRecovery(
 		let disposed = false;
 		let latestRequest = 0;
 		const current = (request: number) =>
-			!disposed &&
-			generation.current === currentGeneration &&
-			request === latestRequest;
+			!disposed && generation.current === currentGeneration && request === latestRequest;
 
 		setState(emptyState(targetKey, runtime !== null, runtime));
 		if (runtime === null) {
@@ -165,11 +147,7 @@ export function useNativeMutationRecovery(
 	// the old pairing and must never leak into the new one's first render -
 	// neither across a target-key change nor across a runtime replacement
 	// that keeps the key.
-	if (
-		runtime === null ||
-		state.targetKey !== targetKey ||
-		state.owner !== runtime
-	)
+	if (runtime === null || state.targetKey !== targetKey || state.owner !== runtime)
 		return { ...emptyState(targetKey, runtime !== null, runtime), discard };
 	return { ...state, discard };
 }

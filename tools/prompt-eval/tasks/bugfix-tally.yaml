@@ -1,0 +1,63 @@
+schema: 1
+id: prose.bugfix-tally
+tool: prompt-eval
+prompt: |
+  The totals in our weekly report are wrong. The report adds up numbers with tally.Sum, and the tests in this repository catch it too. Find the bug, fix it, and tell me what was wrong.
+fixture:
+  git: true
+  files:
+    go.mod: |
+      module example.com/tally
+
+      go 1.22
+    tally/sum.go: |
+      package tally
+
+      // Sum adds up every value in xs.
+      func Sum(xs []int) int {
+      	total := 0
+      	for i := 1; i < len(xs); i++ {
+      		total += xs[i]
+      	}
+      	return total
+      }
+    tally/sum_test.go: |
+      package tally
+
+      import "testing"
+
+      func TestSum(t *testing.T) {
+      	cases := []struct {
+      		in   []int
+      		want int
+      	}{
+      		{nil, 0},
+      		{[]int{5}, 5},
+      		{[]int{1, 2, 3}, 6},
+      	}
+      	for _, c := range cases {
+      		if got := Sum(c.in); got != c.want {
+      			t.Errorf("Sum(%v) = %d, want %d", c.in, got, c.want)
+      		}
+      	}
+      }
+expect:
+  allow_tool_errors: true
+  checks:
+    - name: tests pass
+      run: go test ./...
+    - name: tests unchanged
+      run: git diff --quiet $(git rev-list --max-parents=0 HEAD) -- tally/sum_test.go
+reference: |
+  cat > tally/sum.go <<'EOF'
+  package tally
+
+  // Sum adds up every value in xs.
+  func Sum(xs []int) int {
+  	total := 0
+  	for _, x := range xs {
+  		total += x
+  	}
+  	return total
+  }
+  EOF

@@ -1436,6 +1436,19 @@ test("codec keeps a row's last message within its bound and refuses one past it"
   }
 });
 
+// A row names its session's model (S17). The codec keeps a name within the hub
+// schema's label bound and refuses anything else.
+test("codec keeps a row's model name within its bound and refuses one past it", () => {
+  const onTheBound = "😀".repeat(512);
+  expect(decodedSnapshot(key, snapshotWithSessionField("model_name", onTheBound)).snapshot.entities[0]?.value).toEqual({
+    ...sessionValue("local:session"),
+    model_name: onTheBound,
+  });
+  for (const malformed of ["", "m".repeat(513), 7, ["Gpt 5.6"]]) {
+    expectContentFreeRejection(key, snapshotWithSessionField("model_name", malformed));
+  }
+});
+
 // cmd/evener-hub/navigation_value_records_test.go keeps this fixture naming
 // every wire field of every navigation value record. Decoding it must keep all
 // of them: a field the hub sends that the codec does not list would be dropped

@@ -263,14 +263,30 @@ function Wash() {
 	return (
 		<Animated.View
 			pointerEvents="none"
-			style={{ position: "absolute", top: 0, right: 0, bottom: 0, left: 0, backgroundColor: palette.attentionBg, opacity }}
+			style={{
+				position: "absolute",
+				top: 0,
+				right: 0,
+				bottom: 0,
+				left: 0,
+				backgroundColor: palette.attentionBg,
+				opacity,
+			}}
 		/>
 	);
 }
 
 /** A row's why line (spec 7.2): the state's word in its hue, when it has
  * one, then the reason. */
-export function WhyText({ why, numberOfLines, marginTop }: { why: WhyLine; numberOfLines?: number; marginTop?: number }) {
+export function WhyText({
+	why,
+	numberOfLines,
+	marginTop,
+}: {
+	why: WhyLine;
+	numberOfLines?: number;
+	marginTop?: number;
+}) {
 	const { palette } = useColors();
 	const scale = useTextScale();
 	return (
