@@ -4373,3 +4373,64 @@ it("keeps only Mark as read in the select bar while offline", async () => {
 		false,
 	]);
 });
+
+// The Board's Continue reading row (spec 7.1, ruling 20).
+/** A document left partway through, the trail DocumentMemory keeps for
+ * the Board, written straight to its kv-store key with the time it was left. */
+function leaveDocument(id: string, leftMinutesAgo: number) {
+	harness.kv.set(
+		`evener.native.continue-reading.${id}`,
+		JSON.stringify({
+			sessionRef: "local:fix",
+			path: "docs/superpowers/plans/settle-race.md",
+			title: "Fix the settle/drain race",
+			reviewRef: "local:fix",
+			reviewTitle: "Fix race",
+			progress: 0.62,
+			leftAt: Date.now() - leftMinutesAgo * 60_000,
+		}),
+	);
+}
+
+it("offers to continue a document you left in the last two hours, under the notices", async () => {
+	const id = hubId();
+	adoptedAnHourAgo(id);
+	leaveDocument(id, 90);
+	connect(id, hub(fleet).client, "ready");
+	const nav = { ...navigation(), push: vi.fn() };
+	const tree = await mount(nav);
+	const row = tree.root.findAll(
+		(node) => node.props.accessibilityLabel === "Continue reading, 62 percent, Fix the settle/drain race",
+	)[0];
+	if (!row) throw new Error("no Continue reading row");
+	const live = tree.root.find((node) => node.props.testID === "live-block");
+	const order = tree.root.findAll((node) => node === row || node === live);
+	expect(order[0]).toBe(row);
+	act(() => row.props.onPress());
+	expect(nav.push.mock.calls).toEqual([
+		["Conversation", { hubId: id, ref: "local:fix", title: "Fix race" }],
+		[
+			"Reader",
+			{
+				hubId: id,
+				sessionRef: "local:fix",
+				path: "docs/superpowers/plans/settle-race.md",
+				reviewRef: "local:fix",
+				reviewTitle: "Fix race",
+			},
+		],
+	]);
+});
+
+it("offers nothing for a document left two hours ago, or with none left", async () => {
+	const id = hubId();
+	adoptedAnHourAgo(id);
+	leaveDocument(id, 120);
+	connect(id, hub(fleet).client, "ready");
+	const tree = await mount(navigation());
+	expect(renderedText(tree)).not.toContain("Continue reading");
+	const other = hubId();
+	adoptedAnHourAgo(other);
+	connect(other, hub(fleet).client, "ready");
+	expect(renderedText(await mount(navigation()))).not.toContain("Continue reading");
+});
