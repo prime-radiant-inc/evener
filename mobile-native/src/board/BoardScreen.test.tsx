@@ -53,6 +53,7 @@ const harness = vi.hoisted(() => ({
 	reduceMotion: false,
 	/** AppState's change listeners. */
 	appState: new Set<(state: string) => void>(),
+	announce: vi.fn(),
 }));
 
 vi.mock("react-native", async () => {
@@ -63,7 +64,7 @@ vi.mock("react-native", async () => {
 		ActionSheetIOS: { showActionSheetWithOptions: (...args: unknown[]) => harness.actionSheet(...args) },
 		Keyboard: { dismiss: () => {} },
 		AccessibilityInfo: {
-			announceForAccessibility: () => {},
+			announceForAccessibility: (...args: unknown[]) => harness.announce(...args),
 			isReduceMotionEnabled: () => Promise.resolve(harness.reduceMotion),
 			addEventListener: () => ({ remove: () => {} }),
 		},
@@ -269,6 +270,8 @@ function hub(
 	const threadCalls: Array<{ method: string; params: unknown }> = [];
 	// The sessions the hub has archived, by ref.
 	const archivedRefs = new Set<string>();
+	// The category each session the hub has pinned sits in, by ref.
+	const pinnedRefs = new Map<string, string>();
 	const sessionRows = () => [...shape.live.flat(), ...shape.needsYou, ...Object.values(shape.pinned).flat()];
 	const seen: SessionSeenMark[][] = [];
 	const listeners = new Set<(event: AnyNotification) => void>();
@@ -279,7 +282,9 @@ function hub(
 		if (params.resource === "pin_catalog") return { pin_sections: shape.pins, remaining: 0 };
 		if (params.resource === "location") {
 			const row = sessionRows().find((candidate) => candidate.ref === params.ref);
-			return row ? { session: row } : {};
+			if (!row) return {};
+			const pinSection = pinnedRefs.get(row.ref);
+			return pinSection ? { session: row, pin_section_id: pinSection } : { session: row };
 		}
 		if (params.resource === "pin_section") {
 			const rows = shape.pinned[params.sectionId ?? ""];
@@ -340,7 +345,8 @@ function hub(
 					method === "evener/pin-section/rename" ||
 					method === "evener/pin-section/delete" ||
 					method === "evener/favorite/set" ||
-					method === "evener/archive/set"
+					method === "evener/archive/set" ||
+					method === "evener/session-pin/assign"
 				) {
 					mutations.push({ method, params });
 					const respond = () => {
@@ -358,6 +364,18 @@ function hub(
 							}
 							for (const catalog of Object.values(shape.catalogs ?? {}))
 								for (const project of catalog ?? []) if (project.key === change.id) project.is_archived = change.archived;
+						}
+						if (method === "evener/session-pin/assign") {
+							// A new category's name makes it, or reuses one that has it.
+							const pin = params as { sessionRef: string; sectionId?: string; sectionName?: string };
+							let sectionId = pin.sectionId;
+							if (!sectionId) {
+								const name = pin.sectionName ?? "";
+								const existing = shape.pins.find((section) => section.name === name);
+								sectionId = existing?.id ?? `made-${name.toLowerCase()}`;
+								if (!existing) shape.pins = [...shape.pins, { id: sectionId, name, count: 0 }];
+							}
+							pinnedRefs.set(pin.sessionRef, sectionId);
 						}
 						if (method === "evener/favorite/set") {
 							const change = params as { id: string; favorited: boolean };
@@ -3885,4 +3903,213 @@ it("moves rows with the spring, and without it under Reduce Motion, when app scr
 	expect(calm.scrollTo).toHaveBeenLastCalledWith({ y: 0, animated: false });
 	await calm.ask();
 	movedToNeedsYou(calm.tree);
+});
+
+// Select mode (spec 7.1; rulings 18, 21, 22, 26).
+
+const selectFleet = (): Fleet => ({
+	...swipeFleet(),
+	pins: [{ id: "release", name: "Release", count: 0 }],
+	pinned: { release: [] },
+	manifest: manifest({
+		sources: [laptopSource, { ...parkSource, online: true }],
+		sections: { live: { count: 3 }, needs_you: { count: 0 }, pin_sections: { count: 1 } },
+		catalogs: catalogCounts(0, 0, 0),
+	}),
+});
+const pressables = (tree: ReactTestRenderer, label: string) =>
+	tree.root.findAll((node) => node.type === ("Pressable" as never) && node.props.accessibilityLabel === label);
+/** Turns select mode on and chooses these rows. */
+function select(tree: ReactTestRenderer, ...titles: string[]) {
+	pressLabel(tree, "Select");
+	for (const title of titles) act(() => rowTitled(tree, title).props.onPress());
+}
+const inSelectMode = (tree: ReactTestRenderer) => pressables(tree, "Done").length > 0;
+
+it("leads the toolbar with Select, which puts a checkbox on every session row and the select bar in the toolbar's place", async () => {
+	const nav = navigation();
+	const { tree } = await mountSwipeFleet(hub(selectFleet()), nav);
+	expect(pressables(tree, "New session")).toHaveLength(1);
+	pressLabel(tree, "Select");
+	expect(pressables(tree, "New session")).toHaveLength(0);
+	expect(["Done", "Archive", "Pin", "Mark as read"].map((label) => pressables(tree, label).length)).toEqual([1, 1, 1, 1]);
+	const rows = tree.root.findAllByType(BoardRow);
+	expect(rows.map((row) => row.props.selected)).toEqual([false, false, false]);
+	// Select mode's rows neither swipe nor open a menu.
+	expect(tree.root.findAll((node) => node.type === ("ReanimatedSwipeable" as never))).toHaveLength(0);
+	expect(rowTitled(tree, "Write changelog").props.onLongPress).toBeUndefined();
+	// Nothing chosen: nothing to act on.
+	expect(pressables(tree, "Archive")[0].props.disabled).toBe(true);
+});
+
+it("shows no Select while the Board has no session row", async () => {
+	const id = hubId();
+	adoptedAnHourAgo(id);
+	const empty: Fleet = { ...fleet, live: [[]], needsYou: [], pins: [], pinned: {} };
+	connect(id, hub(empty).client, "ready");
+	const tree = await mount(navigation());
+	expect(pressables(tree, "Select")).toHaveLength(0);
+});
+
+it("toggles a row's checkbox on a tap, says how many are chosen, and opens nothing", async () => {
+	const nav = navigation();
+	const { tree } = await mountSwipeFleet(hub(selectFleet()), nav);
+	harness.announce.mockClear();
+	select(tree, "Write changelog");
+	expect(rowTitled(tree, "Write changelog").props.accessibilityState).toEqual({ busy: false, selected: true });
+	expect(harness.announce).toHaveBeenLastCalledWith("1 selected");
+	act(() => rowTitled(tree, "Park chore").props.onPress());
+	expect(harness.announce).toHaveBeenLastCalledWith("2 selected");
+	act(() => rowTitled(tree, "Write changelog").props.onPress());
+	expect(rowTitled(tree, "Write changelog").props.accessibilityState).toEqual({ busy: false, selected: false });
+	expect(harness.announce).toHaveBeenLastCalledWith("1 selected");
+	expect(nav.navigate).not.toHaveBeenCalledWith("Conversation", expect.anything());
+});
+
+it("holds the list while selecting, and Done applies what changed", async () => {
+	const { tree, ask } = await mountAskingFleet();
+	pressLabel(tree, "Select");
+	await ask();
+	await advance(1000);
+	heldInWorking(tree);
+	pressLabel(tree, "Done");
+	movedToNeedsYou(tree);
+	expect(inSelectMode(tree)).toBe(false);
+	// The rows swipe again.
+	expect(swipeableOf(tree, "Ship it")).toBeDefined();
+});
+
+it("archives the chosen sessions one by one, leaves select mode, and Undo unarchives them", async () => {
+	const fake = hub(selectFleet());
+	const { tree } = await mountSwipeFleet(fake);
+	select(tree, "Refactor parser", "Write changelog");
+	pressLabel(tree, "Archive");
+	await settle();
+	// In the order the Board shows them: Finished, then Working.
+	expect(fake.mutations).toEqual([
+		{ method: "evener/archive/set", params: { kind: "session", id: OTHER_SESSION_ID, archived: true } },
+		{ method: "evener/archive/set", params: { kind: "session", id: SESSION_ID, archived: true } },
+	]);
+	expect(inSelectMode(tree)).toBe(false);
+	expect(texts(tree)).toContain("Archived 2 sessions");
+	pressLabel(tree, "Undo");
+	await settle();
+	expect(fake.mutations.slice(2)).toEqual([
+		{ method: "evener/archive/set", params: { kind: "session", id: OTHER_SESSION_ID, archived: false } },
+		{ method: "evener/archive/set", params: { kind: "session", id: SESSION_ID, archived: false } },
+	]);
+	expect(texts(tree)).toContain("Unarchived 2 sessions");
+});
+
+it("says how many it archived when the hub refuses one, and archives nothing after it", async () => {
+	const fake = hub(selectFleet(), undefined, undefined, { refuse: true });
+	const { tree } = await mountSwipeFleet(fake);
+	select(tree, "Refactor parser", "Write changelog");
+	pressLabel(tree, "Archive");
+	await settle();
+	expect(fake.mutations).toHaveLength(1);
+	expect(inSelectMode(tree)).toBe(false);
+	expect(texts(tree).filter((text) => text.startsWith("Archived"))).toEqual([]);
+});
+
+it("pins the chosen sessions to a category picked from the sheet", async () => {
+	const fake = hub(selectFleet());
+	const { tree } = await mountSwipeFleet(fake);
+	select(tree, "Refactor parser", "Park chore");
+	harness.actionSheet.mockClear();
+	pressLabel(tree, "Pin");
+	const [options, choose] = harness.actionSheet.mock.calls[0] as [
+		{ title: string; options: string[]; cancelButtonIndex: number },
+		(index: number) => void,
+	];
+	expect(options).toMatchObject({ title: "Pin to category", options: ["Release", "New category…", "Cancel"], cancelButtonIndex: 2 });
+	act(() => choose(0));
+	await settle();
+	expect(fake.mutations).toEqual([
+		{ method: "evener/session-pin/assign", params: { sessionRef: "paradise-park:pp", sectionId: "release" } },
+		{ method: "evener/session-pin/assign", params: { sessionRef: `local:${SESSION_ID}`, sectionId: "release" } },
+	]);
+	expect(inSelectMode(tree)).toBe(false);
+	expect(texts(tree)).toContain("Pinned 2 sessions to Release");
+});
+
+it("stays in select mode when the category sheet is cancelled", async () => {
+	const fake = hub(selectFleet());
+	const { tree } = await mountSwipeFleet(fake);
+	select(tree, "Refactor parser");
+	harness.actionSheet.mockClear();
+	pressLabel(tree, "Pin");
+	const choose = harness.actionSheet.mock.calls[0]?.[1] as (index: number) => void;
+	act(() => choose(2));
+	await settle();
+	expect(fake.mutations).toEqual([]);
+	expect(inSelectMode(tree)).toBe(true);
+});
+
+it("pins the chosen sessions to a new category named in the prompt", async () => {
+	const fake = hub(selectFleet());
+	const { tree } = await mountSwipeFleet(fake);
+	select(tree, "Refactor parser", "Write changelog");
+	harness.actionSheet.mockClear();
+	harness.prompt.mockClear();
+	pressLabel(tree, "Pin");
+	act(() => (harness.actionSheet.mock.calls[0]?.[1] as (index: number) => void)(1));
+	const [title, message, buttons, type] = harness.prompt.mock.calls[0] as [
+		string,
+		undefined,
+		{ text: string; style?: string; onPress?: (name?: string) => void }[],
+		string,
+	];
+	expect([title, message, type]).toEqual(["New category", undefined, "plain-text"]);
+	expect(buttons.map((button) => [button.text, button.style])).toEqual([
+		["Cancel", "cancel"],
+		["Create", undefined],
+	]);
+	act(() => buttons[1]?.onPress?.("  Ideas "));
+	await settle();
+	expect(fake.mutations).toEqual([
+		{ method: "evener/session-pin/assign", params: { sessionRef: `local:${OTHER_SESSION_ID}`, sectionName: "Ideas" } },
+		{ method: "evener/session-pin/assign", params: { sessionRef: `local:${SESSION_ID}`, sectionName: "Ideas" } },
+	]);
+	expect(texts(tree)).toContain("Pinned 2 sessions to Ideas");
+});
+
+it("pins nothing to a new category whose name is too long, and says why", async () => {
+	const fake = hub(selectFleet());
+	const { tree } = await mountSwipeFleet(fake);
+	select(tree, "Refactor parser");
+	harness.actionSheet.mockClear();
+	harness.prompt.mockClear();
+	pressLabel(tree, "Pin");
+	act(() => (harness.actionSheet.mock.calls[0]?.[1] as (index: number) => void)(1));
+	const buttons = harness.prompt.mock.calls[0]?.[2] as { onPress?: (name?: string) => void }[];
+	act(() => buttons[1]?.onPress?.("x".repeat(81)));
+	await settle();
+	expect(fake.mutations).toEqual([]);
+	expect(texts(tree)).toContain("Category names can be up to 80 characters.");
+});
+
+it("marks the chosen finished sessions read and leaves select mode", async () => {
+	const { id, tree } = await mountSwipeFleet(hub(selectFleet()));
+	expect(bandHeaders(tree)).toEqual(["FINISHED · 2", "WORKING · 1"]);
+	select(tree, "Write changelog", "Refactor parser");
+	expect(pressables(tree, "Archive")[0].props.disabled).toBe(false);
+	pressLabel(tree, "Mark as read");
+	await settle();
+	expect(inSelectMode(tree)).toBe(false);
+	expect(bandHeaders(tree)).toEqual(["FINISHED · 1", "WORKING · 1", "Idle · 1"]);
+	expect(menuItem(menuHost(id), `local:${OTHER_SESSION_ID}`).state).toBe("idle");
+});
+
+it("keeps only Mark as read in the select bar while offline", async () => {
+	const fake = hub(selectFleet());
+	const { id, tree } = await mountSwipeFleet(fake);
+	connect(id, fake.client, "reconnecting");
+	rerender(tree, navigation());
+	select(tree, "Write changelog");
+	expect(["Archive", "Pin", "Mark as read"].map((label) => pressables(tree, label)[0].props.disabled)).toEqual([
+		true,
+		true,
+		false,
+	]);
 });

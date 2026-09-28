@@ -21,6 +21,7 @@ import {
 	useSyncExternalStore,
 } from "react";
 import {
+	AccessibilityInfo,
 	ActionSheetIOS,
 	Alert,
 	AppState,
@@ -39,6 +40,7 @@ import Animated from "react-native-reanimated";
 import type { ConversationClientLike } from "../../../mobile/src/services/conversation";
 import { useConnection } from "../ConnectionProvider";
 import { reconnectDelay } from "../hubConnection";
+import type { NavigationActions } from "../navigationActions";
 import { getNativeMutationRuntime } from "../nativeMutationRuntime";
 import { drafts } from "../nativeDrafts";
 import { useReduceMotion } from "../reduceMotion";
@@ -67,7 +69,7 @@ import { ROW_MOVE } from "./boardMotion";
 import { createSearchController, type SearchScope } from "./boardSearch";
 import { BoardNotices, NoticeRow } from "./BoardNotices";
 import { BandHeader, FoldChevron, Hairline, TITLE_INSET } from "./BoardRow";
-import { type RowContext, SwipeableBoardRow } from "./BoardRows";
+import { BoardListRow, type RowContext } from "./BoardRows";
 import { BoardToolbar } from "./BoardToolbar";
 import { type BoardController, type BoardSnapshot, createBoardController } from "./boardData";
 import { BoardStops, stopToast } from "./boardStops";
@@ -90,7 +92,10 @@ import { projectName, ProjectSectionHeader, ProjectTreeRow } from "./ProjectTree
 import { fleetMinutes } from "./pulse";
 import { PulseMeter } from "./PulseMeter";
 import {
+	archiveSession,
+	archiveTarget,
 	archivingSessionId,
+	pinSession,
 	type RowAction,
 	type RowActionContext,
 	renameSession,
@@ -100,6 +105,8 @@ import {
 import { type RowMenuHost, rowMenuHosts } from "./RowMenu";
 import { archiveRow, rowSwipes, type SwipeRowAction } from "./rowSwipes";
 import { SearchResults } from "./SearchResults";
+import { SelectBar } from "./SelectBar";
+import { selectionActions, toggleSelected } from "./selection";
 import { listScrollHandlers } from "./settledList";
 import { type BoardOrganization, organizationOpen, useBoardOrganization } from "./useBoardOrganization";
 import { PROJECT_SECTIONS, showExpanded, useProjectSections } from "./useProjectSections";
@@ -167,6 +174,19 @@ function Board({
 	const seen = useMemo(() => new BoardSeen(markers, hubMarks), [markers, hubMarks]);
 	const [now, setNow] = useState(Date.now);
 	const [draftRefs, setDraftRefs] = useState<Set<string>>(() => new Set());
+	// Select mode (spec 7.1): on from Select until Done or one of its
+	// actions completes (ruling 26), with the refs chosen so far.
+	const [selecting, setSelecting] = useState(false);
+	const [chosen, setChosen] = useState<ReadonlySet<string>>(() => new Set());
+	const leaveSelect = () => {
+		setSelecting(false);
+		setChosen(new Set());
+	};
+	const choose = (row: NavigationSessionSummary) => {
+		const next = toggleSelected(chosen, row.ref);
+		setChosen(next);
+		AccessibilityInfo.announceForAccessibility(`${next.size} selected`);
+	};
 
 	// Declared before the client binding so a first focus resumes an unbound
 	// controller rather than one whose reads just went out.
@@ -446,7 +466,8 @@ function Board({
 		usual,
 		hostLabel,
 		now,
-		onOpen: openSession,
+		// In select mode a press chooses the row instead of opening it.
+		onOpen: selecting ? choose : openSession,
 		draftRefs,
 		activityOf,
 		msSinceRead,
@@ -559,6 +580,8 @@ function Board({
 		});
 		return () => subscription.remove();
 	}, [list]);
+	// Select mode holds the list while the Board is in front (ruling 22).
+	useEffect(() => list.setInteraction("select", selecting && inFront), [list, selecting, inFront]);
 	// The rows the row menu sheet can be about: Live's and the categories'
 	// (a fold hides them, but they stay loaded) and the project sessions in
 	// the shown tree.
@@ -678,11 +701,12 @@ function Board({
 			content = (
 				<View style={{ marginLeft: 16 * item.depth }}>
 					{item.separated && previous?.kind === "row" ? <Hairline inset={TITLE_INSET} /> : null}
-					<SwipeableBoardRow
+					<BoardListRow
 						item={item.item}
 						variant={item.variant}
 						moving={item.moving}
 						archived={item.archived}
+						selected={selecting ? chosen.has(item.item.row.ref) : undefined}
 						wash={settled.washed.has(item.key) ? settled.washToken : 0}
 						context={listContext}
 						onSwipeActive={(active) => list.setInteraction(`swipe:${item.key}`, active)}
@@ -743,6 +767,42 @@ function Board({
 		);
 	};
 	const liveShown = shownGroups.get("live");
+	const shownRowItems = settled.display.flatMap((item) =>
+		item.kind === "row" ? [{ item: item.item, archived: item.archived }] : [],
+	);
+	const selection = selectionActions(
+		shownRowItems.filter(({ item }) => chosen.has(item.row.ref)),
+		{ connected: actionsConnected, organizationReady: organization.ready },
+	);
+	const archiveChosen = async (rows: readonly NavigationSessionSummary[]) => {
+		const archived = await confirmEach(organization, rows, (actions, row) => archiveOne(actions, row, true));
+		leaveSelect();
+		if (archived.length)
+			toast.show({
+				text: sessionCount("Archived", archived.length, rows.length),
+				action: {
+					label: "Undo",
+					run: () =>
+						void confirmEach(organization, archived, (actions, row) => archiveOne(actions, row, false)).then(
+							(unarchived) => {
+								if (unarchived.length)
+									toast.show({ text: sessionCount("Unarchived", unarchived.length, archived.length) });
+							},
+						),
+				},
+			});
+	};
+	const pinChosen = async (rows: readonly NavigationSessionSummary[], section: PinTarget, name: string) => {
+		const pinned = await confirmEach(organization, rows, (actions, row) =>
+			pinSession(actions, { sessionRef: row.ref, ...section }),
+		);
+		leaveSelect();
+		if (pinned.length) toast.show({ text: `${sessionCount("Pinned", pinned.length, rows.length)} to ${name}` });
+	};
+	const markChosenRead = () => {
+		seen.markRead(actionsConnected ? client : null, selection.markRead);
+		leaveSelect();
+	};
 
 	let live: ReactNode;
 	// Update needed says everything there is to say until something loads.
@@ -832,7 +892,32 @@ function Board({
 					<Toast toast={toast.toast} dismiss={toast.dismiss} />
 				</View>
 			</View>
-			<BoardToolbar state={state} fatal={fatal} newSessionDisabled={!connected} onNewSession={newSession} />
+			{selecting ? (
+				<SelectBar
+					counts={{
+						archive: selection.archive.length,
+						// Pin's sheet asks through ActionSheetIOS and Alert.prompt.
+						pin: Platform.OS === "ios" ? selection.pin.length : 0,
+						markRead: selection.markRead.length,
+					}}
+					onDone={leaveSelect}
+					onArchive={() => void archiveChosen(selection.archive)}
+					onPin={() =>
+						chooseCategory(organization, board.getSnapshot().pins.rows, toast, (section, name) =>
+							pinChosen(selection.pin, section, name),
+						)
+					}
+					onMarkRead={markChosenRead}
+				/>
+			) : (
+				<BoardToolbar
+					state={state}
+					fatal={fatal}
+					newSessionDisabled={!connected}
+					onNewSession={newSession}
+					onSelect={shownRowItems.length && !searching ? () => setSelecting(true) : undefined}
+				/>
+			)}
 		</View>
 	);
 }
@@ -903,6 +988,87 @@ function pinnedCategoryMenu(organization: BoardOrganization, catalog: () => read
 			(operation?.kind === "renamePinSection" || operation?.kind === "deletePinSection") &&
 			operation.params.sectionId === sectionId,
 	};
+}
+
+/** Where select mode pins: a category the catalog lists, or a new one by
+ * name (the hub makes it for the first session and reuses it after). */
+type PinTarget = { sectionId: string } | { sectionName: string };
+
+/** "Archived 2 sessions", or "Archived 2 of 3 sessions" when some weren't. */
+function sessionCount(verb: string, done: number, of: number): string {
+	return done === of ? `${verb} ${plural(done, "session")}` : `${verb} ${done} of ${plural(of, "session")}`;
+}
+
+/** Makes one journaled change per session, in order, through the Board's
+ * organization journal, stopping at the first the hub doesn't confirm (the
+ * journal is then settled once). Resolves the sessions it confirmed. Does
+ * nothing while a change can't go out. */
+async function confirmEach(
+	organization: BoardOrganization,
+	rows: readonly NavigationSessionSummary[],
+	change: (actions: NavigationActions, row: NavigationSessionSummary) => Promise<boolean>,
+): Promise<NavigationSessionSummary[]> {
+	const actions = organization.actions;
+	if (!actions || !organizationOpen(organization)) return [];
+	const confirmed: NavigationSessionSummary[] = [];
+	for (const row of rows) {
+		if (!(await change(actions, row))) {
+			void actions.reconcile();
+			break;
+		}
+		confirmed.push(row);
+	}
+	return confirmed;
+}
+
+function archiveOne(actions: NavigationActions, row: NavigationSessionSummary, archived: boolean): Promise<boolean> {
+	const target = archiveTarget(row);
+	return target ? archiveSession(actions, target, archived) : Promise.resolve(false);
+}
+
+/** Select mode's Pin (ruling 18): the pin catalog's categories, then a new
+ * one, as an action sheet. A new category's name is 1-80 characters, the
+ * journal's own bound. */
+function chooseCategory(
+	organization: BoardOrganization,
+	categories: readonly NavigationPinSectionDescriptor[],
+	toast: Pick<ToastController, "show">,
+	pin: (section: PinTarget, name: string) => void,
+) {
+	if (!organizationOpen(organization)) return;
+	const createCategory = () =>
+		Alert.prompt(
+			"New category",
+			undefined,
+			[
+				{ text: "Cancel", style: "cancel" },
+				{
+					text: "Create",
+					onPress: (value?: string) => {
+						const name = (value ?? "").trim();
+						if (!name) return;
+						if (Array.from(name).length > 80) {
+							toast.show({ text: "Category names can be up to 80 characters." });
+							return;
+						}
+						pin({ sectionName: name }, name);
+					},
+				},
+			],
+			"plain-text",
+		);
+	ActionSheetIOS.showActionSheetWithOptions(
+		{
+			title: "Pin to category",
+			options: [...categories.map((category) => category.name), "New category…", "Cancel"],
+			cancelButtonIndex: categories.length + 1,
+		},
+		(index) => {
+			const category = categories[index];
+			if (category) pin({ sectionId: category.id }, category.name);
+			else if (index === categories.length) createCategory();
+		},
+	);
 }
 
 /** A row's menu actions on this phone: Rename asks through Alert.prompt,
