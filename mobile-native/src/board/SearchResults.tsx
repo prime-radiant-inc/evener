@@ -180,6 +180,35 @@ function Scopes({ scope, onScope }: { scope: SearchScope; onScope: (scope: Searc
 	);
 }
 
+/** The row every search result sits in, session or project. */
+function resultRowStyle(palette: ReturnType<typeof useColors>["palette"]) {
+	return ({ pressed }: { pressed: boolean }) => ({
+		minHeight: 56,
+		paddingHorizontal: 16,
+		paddingVertical: 8,
+		flexDirection: "row" as const,
+		alignItems: "center" as const,
+		columnGap: 10,
+		backgroundColor: pressed ? palette.pressed : palette.page,
+	});
+}
+
+/** A result's second line: the session's project or the project's folder. */
+function ResultDetail({ text }: { text: string }) {
+	const { palette } = useColors();
+	const scale = useTextScale();
+	return (
+		<Text
+			allowFontScaling={Platform.OS !== "ios"}
+			numberOfLines={1}
+			ellipsizeMode="middle"
+			style={{ marginTop: 2, fontSize: 13 * scale, lineHeight: 18 * scale, color: palette.inkLow }}
+		>
+			{text}
+		</Text>
+	);
+}
+
 function ResultRow({
 	result,
 	connected,
@@ -202,15 +231,7 @@ function ResultRow({
 			accessibilityRole="button"
 			accessibilityLabel={label}
 			onPress={() => onOpen(result)}
-			style={({ pressed }) => ({
-				minHeight: 56,
-				paddingHorizontal: 16,
-				paddingVertical: 8,
-				flexDirection: "row",
-				alignItems: "center",
-				columnGap: 10,
-				backgroundColor: pressed ? palette.pressed : palette.page,
-			})}
+			style={resultRowStyle(palette)}
 		>
 			<StateMark state={state} connected={connected} />
 			<View style={{ flex: 1, minWidth: 0 }}>
@@ -231,16 +252,7 @@ function ResultRow({
 						</Text>
 					) : null}
 				</View>
-				{result.project ? (
-					<Text
-						allowFontScaling={Platform.OS !== "ios"}
-						numberOfLines={1}
-						ellipsizeMode="middle"
-						style={{ marginTop: 2, fontSize: 13 * scale, lineHeight: 18 * scale, color: palette.inkLow }}
-					>
-						{result.project}
-					</Text>
-				) : null}
+				{result.project ? <ResultDetail text={result.project} /> : null}
 			</View>
 		</Pressable>
 	);
@@ -263,15 +275,7 @@ function ProjectResultRow({
 			accessibilityRole="button"
 			accessibilityLabel={[name, "project", folder].filter(Boolean).join(", ")}
 			onPress={() => onOpen(project)}
-			style={({ pressed }) => ({
-				minHeight: 56,
-				paddingHorizontal: 16,
-				paddingVertical: 8,
-				flexDirection: "row",
-				alignItems: "center",
-				columnGap: 10,
-				backgroundColor: pressed ? palette.pressed : palette.page,
-			})}
+			style={resultRowStyle(palette)}
 		>
 			<View style={{ width: 28, alignItems: "center" }}>
 				<SymbolView name="folder" size={17 * scale} tintColor={palette.inkMid} />
@@ -284,16 +288,7 @@ function ProjectResultRow({
 				>
 					{name}
 				</Text>
-				{folder ? (
-					<Text
-						allowFontScaling={Platform.OS !== "ios"}
-						numberOfLines={1}
-						ellipsizeMode="middle"
-						style={{ marginTop: 2, fontSize: 13 * scale, lineHeight: 18 * scale, color: palette.inkLow }}
-					>
-						{folder}
-					</Text>
-				) : null}
+				{folder ? <ResultDetail text={folder} /> : null}
 			</View>
 		</Pressable>
 	);
