@@ -4,6 +4,7 @@
 // controller and provides it here through notesHosts, so a save the sheet
 // starts as it closes finishes after the sheet has gone.
 import type { ThreadModel } from "@evener/appwire-client";
+import { cwdRelative, fileURLToPath } from "@evener/appwire-client/docContent";
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
 import * as Clipboard from "expo-clipboard";
 import { SymbolView } from "expo-symbols";
@@ -23,6 +24,10 @@ export interface NotesHost {
 	notes: NotesController;
 	/** The sheet closed and its save settled: the screen confirms it. */
 	saved(outcome: SaveOutcome): void;
+	/** The session's folder, which a file link must be inside to open. */
+	cwd: string;
+	/** The session's title as its screen shows it, where a review goes. */
+	title: string;
 }
 
 export const notesHosts = sheetHosts<NotesHost>();
@@ -37,7 +42,7 @@ export function canWriteHumanNote(session: NotesHost["session"]): boolean {
 	);
 }
 
-export function NotesSheet({ route }: NativeStackScreenProps<Routes, "NotesSheet">) {
+export function NotesSheet({ route, navigation }: NativeStackScreenProps<Routes, "NotesSheet">) {
 	const { hubId, ref, focusEditor = false } = route.params;
 	const toast = useToast();
 	const live = useRef<NotesHost | undefined>(undefined);
@@ -79,13 +84,35 @@ export function NotesSheet({ route }: NativeStackScreenProps<Routes, "NotesSheet
 				keyboardShouldPersistTaps="handled"
 				contentContainerStyle={{ paddingHorizontal: 20, paddingTop: 8, paddingBottom: 24, gap: 24 }}
 			>
-				<NotesBody host={host} focusEditor={focusEditor} toast={toast} />
+				<NotesBody
+					host={host}
+					focusEditor={focusEditor}
+					toast={toast}
+					// A document opens in the Reader over the session, once the
+					// sheet has gone (ruling 26); closing saves the note as usual.
+					openDocument={(path) =>
+						sheet.finish(() => {
+							navigation.goBack();
+							navigation.navigate("Reader", { hubId, sessionRef: ref, path, reviewRef: ref, reviewTitle: host.title });
+						})
+					}
+				/>
 			</ScrollView>
 		</Sheet>
 	);
 }
 
-function NotesBody({ host, focusEditor, toast }: { host: NotesHost; focusEditor: boolean; toast: ToastController }) {
+function NotesBody({
+	host,
+	focusEditor,
+	toast,
+	openDocument,
+}: {
+	host: NotesHost;
+	focusEditor: boolean;
+	toast: ToastController;
+	openDocument(path: string): void;
+}) {
 	const { session } = host;
 	const writable = canWriteHumanNote(session);
 	const human = session.humanNote.trim();
@@ -112,7 +139,15 @@ function NotesBody({ host, focusEditor, toast }: { host: NotesHost; focusEditor:
 			<Group title="Links">
 				{session.sessionUrls.length === 0 ? <Quiet>No links yet</Quiet> : null}
 				{session.sessionUrls.map((link) => (
-					<LinkRow key={link.id} link={link} writable={writable} notes={host.notes} toast={toast} />
+					<LinkRow
+						key={link.id}
+						link={link}
+						writable={writable}
+						notes={host.notes}
+						toast={toast}
+						cwd={host.cwd}
+						openDocument={openDocument}
+					/>
 				))}
 				{writable && session.sessionUrls.length > 0 ? (
 					// Swipe to remove arrives in PR 12, which changes this to the
@@ -240,22 +275,31 @@ function LinkRow({
 	writable,
 	notes,
 	toast,
+	cwd,
+	openDocument,
 }: {
 	link: ThreadModel["sessionUrls"][number];
 	writable: boolean;
 	notes: NotesController;
 	toast: ToastController;
+	cwd: string;
+	openDocument(path: string): void;
 }) {
 	const { palette } = useColors();
 	const scale = useTextScale();
 	const kind = linkKind(link.url);
 	const label = link.label?.trim();
-	// A file link waits for phase 4's Reader (ruling 6); other schemes don't open.
+	// A file link opens in the Reader only when it names a file inside the
+	// session's folder, the only place the hub serves documents from. Another
+	// machine, a malformed escape or a file elsewhere keeps its text, as on
+	// the web. Other schemes don't open.
+	const document = kind === "file" ? cwdRelative(fileURLToPath(link.url), cwd) : undefined;
 	const open = () =>
 		void WebBrowser.openBrowserAsync(link.url, {
 			dismissButtonStyle: "done",
 			controlsColor: palette.accentInk,
 		}).catch(() => toast.show({ text: "Couldn't open that link." }));
+	const press = kind === "web" ? open : document !== undefined ? () => openDocument(document) : undefined;
 	const remove = () =>
 		void notes.removeLink(link.id).then((removed) =>
 			toast.show({ text: removed ? "Link removed. Only the agent can add links." : "Couldn't remove that link." }),
@@ -289,9 +333,9 @@ function LinkRow({
 	};
 	return (
 		<Pressable
-			accessibilityRole={kind === "web" ? "link" : "text"}
+			accessibilityRole={press ? "link" : "text"}
 			accessibilityLabel={label ? `${label}, ${link.url}` : link.url}
-			onPress={kind === "web" ? open : undefined}
+			onPress={press}
 			onLongPress={menu}
 			style={({ pressed }) => ({
 				minHeight: 44,
