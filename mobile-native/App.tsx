@@ -39,6 +39,7 @@ import {
 	HubsScreen,
 	type Routes,
 } from "./src/screens";
+import { NotesSheet } from "./src/session/NotesSheet";
 import { SHEET_ROUTES } from "./src/sheet/sheetRoutes";
 import { TasksSheet } from "./src/TasksSheet";
 import { TranscriptPreferencesScreen } from "./src/TranscriptPreferencesScreen";
@@ -209,6 +210,11 @@ function Navigation() {
 							name="TasksSheet"
 							component={TasksSheet}
 							options={SHEET_ROUTES.TasksSheet}
+						/>
+						<Stack.Screen
+							name="NotesSheet"
+							component={NotesSheet}
+							options={SHEET_ROUTES.NotesSheet}
 						/>
 					</Stack.Group>
 				</Stack.Navigator>

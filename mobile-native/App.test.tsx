@@ -37,6 +37,7 @@ vi.mock("expo-image-manipulator", () => ({}));
 vi.mock("expo-image-picker", () => ({}));
 vi.mock("expo-secure-store", () => ({}));
 vi.mock("expo-symbols", () => ({ SymbolView: "SymbolView" }));
+vi.mock("expo-web-browser", () => ({}));
 vi.mock("./src/ConnectionProvider", () => ({
 	ConnectionProvider: (props: { children?: ReactNode }) => props.children ?? null,
 	useConnection: () => ({ loading: true }),

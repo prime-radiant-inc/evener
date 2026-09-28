@@ -37,6 +37,9 @@ describe("a sheet's size (spec 6)", () => {
 		expect(isSheetRoute("Conversation")).toBe(false);
 		expect(isSheetRoute("toString")).toBe(false);
 		expect(SHEET_ROUTES.TasksSheet).toEqual(sheetOptions(["medium", "large"], "medium"));
+		expect(isSheetRoute("NotesSheet")).toBe(true);
+		// Notes & links opens at large (spec 8.8) and drags to half.
+		expect(SHEET_ROUTES.NotesSheet).toEqual(sheetOptions(["medium", "large"], "large"));
 	});
 });
 

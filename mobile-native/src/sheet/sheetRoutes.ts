@@ -36,6 +36,7 @@ export function sheetOptions(detents: readonly Detent[], initial: Detent): Nativ
  * here and its `Stack.Screen`, with these options, in App.tsx's sheet group. */
 export const SHEET_ROUTES = {
 	TasksSheet: sheetOptions(["medium", "large"], "medium"),
+	NotesSheet: sheetOptions(["medium", "large"], "large"),
 } satisfies { [Name in keyof Routes]?: NativeStackNavigationOptions };
 
 export function isSheetRoute(name: string): boolean {
