@@ -177,6 +177,7 @@ const SESSION_KEYS = valueRecordKeys(
     "question",
     "failure",
     "last_message",
+    "model_name",
     "dormant",
     "offline",
     "updated_at",
@@ -362,6 +363,7 @@ function sessionValue(value: unknown): value is Record<string, unknown> {
     optional(value.question, questionValue) &&
     optional(value.failure, failureValue) &&
     optional(value.last_message, (item) => boundedString(item, 200) && item !== "") &&
+    optional(value.model_name, (item) => boundedString(item, 512) && item !== "") &&
     optional(value.dormant, bool) &&
     optional(value.offline, bool) &&
     optional(value.updated_at, rfc3339Timestamp) &&

@@ -126,6 +126,11 @@ type LiveEntry struct {
 	// probe (S1d): a Finished row's why line. rosterFingerprint hashes it: a
 	// message can land while the status and the turn end hold still.
 	LastMessage string
+	// CurrentModel is the model the session runs now, from its probe (S17);
+	// the embedded Entry's Model is the one it started on, and a model switch
+	// leaves that behind. A row names it, so rosterFingerprint hashes it: a
+	// switch moves nothing else a row shows.
+	CurrentModel string
 }
 
 // ProbeResult is the dynamic session state returned by a daemon liveness probe.
@@ -180,6 +185,9 @@ type ProbeResult struct {
 	// LastMessage mirrors LiveEntry.LastMessage: the opening of the listed
 	// root's last agent message (S1d), empty from a daemon that predates it.
 	LastMessage string
+	// CurrentModel mirrors LiveEntry.CurrentModel: the listed root's model as
+	// its daemon reports it now (S17).
+	CurrentModel string
 	// ProtocolMismatch: the endpoint answered, but as a daemon this hub cannot
 	// talk to (restart required). Such an answer names no session of its own,
 	// so it does not vouch for the entry's PID the way a bound answer does.
@@ -649,6 +657,10 @@ func rosterFingerprint(bySess map[string]LiveEntry) uint64 {
 		// A Finished row shows its last message, which can land while the
 		// status and the turn end hold still (S1d).
 		_, _ = h.Write([]byte(bySess[id].LastMessage))
+		_, _ = h.Write([]byte{0})
+		// A row names its session's model, which a switch moves while
+		// everything else a row shows holds still (S17).
+		_, _ = h.Write([]byte(bySess[id].CurrentModel))
 	}
 	return h.Sum64()
 }
@@ -1480,6 +1492,7 @@ func liveEntryFromProbe(e rendezvous.Entry, result ProbeResult) LiveEntry {
 		LastTurnEndedAt:       result.LastTurnEndedAt,
 		Profile:               result.Profile,
 		LastMessage:           result.LastMessage,
+		CurrentModel:          result.CurrentModel,
 	})
 }
 
@@ -1554,7 +1567,7 @@ func (r *Roster) ReadSpawnedThread(ctx context.Context, entry rendezvous.Entry, 
 		// projection this read answered from, so the caps beside the status
 		// are the daemon's own answer — not an approximation.
 		Capabilities: root.Evener.Capabilities, CapabilitiesKnown: true,
-		Profile: root.Evener.Profile}
+		Profile: root.Evener.Profile, CurrentModel: root.ModelProvider}
 	if root.Evener.Diagnostics != nil {
 		result.RunningSubagentStates = make(map[string]string)
 		for _, delegate := range root.Evener.Diagnostics.Delegates {
