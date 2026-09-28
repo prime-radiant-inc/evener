@@ -414,7 +414,6 @@ func TestClientMutation_BudgetSerializesConcurrentFinalSlot(t *testing.T) {
 	sess := newSession(t, withConfig(SessionConfig{
 		MaxTurns:         1,
 		MaxSubagentDepth: 1,
-		NoProjectPrompts: true,
 		testOnly:         testConfig{skipGitSnapshot: true, minimalSystemPrompt: true, noSyncJobStore: true},
 	}))
 	setTestClientMutationActiveTurn(t, sess, "turn-1")
@@ -478,7 +477,6 @@ func TestClientMutation_BudgetSerializesDirectTurnAgainstQueuedFinalSlot(t *test
 	sess := newSession(t, withConfig(SessionConfig{
 		MaxTurns:         1,
 		MaxSubagentDepth: 1,
-		NoProjectPrompts: true,
 		testOnly:         testConfig{skipGitSnapshot: true, minimalSystemPrompt: true, noSyncJobStore: true},
 	}))
 	setTestClientMutationActiveTurn(t, sess, "turn-1")

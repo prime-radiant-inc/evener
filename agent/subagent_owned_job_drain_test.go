@@ -149,7 +149,6 @@ func newOwnedJobDrainFixture(t *testing.T) *ownedJobDrainFixture {
 	parent, err := NewSession(client, withTestSessionNamer(client, NewOpenAIProfile("gpt-5.2")), env, SessionConfig{
 		StateDir:         t.TempDir(),
 		MaxSubagentDepth: 1,
-		NoProjectPrompts: true,
 		clock:            drainClock,
 		testOnly: testConfig{
 			skipGitSnapshot:     true,
@@ -504,7 +503,6 @@ func TestSubagentRunPreservesStructuredResultAcrossLateNotification(t *testing.T
 	parent, err := NewSession(client, withTestSessionNamer(client, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(t.TempDir()), SessionConfig{
 		StateDir:         t.TempDir(),
 		MaxSubagentDepth: 1,
-		NoProjectPrompts: true,
 		testOnly: testConfig{
 			skipGitSnapshot:     true,
 			minimalSystemPrompt: true,
@@ -702,7 +700,6 @@ func TestSubagentFatalRunStopsOwnedShellAndGatesNotificationDrive(t *testing.T) 
 	parent, err := NewSession(client, withTestSessionNamer(client, NewOpenAIProfile("gpt-5.2")), env, SessionConfig{
 		StateDir:         t.TempDir(),
 		MaxSubagentDepth: 1,
-		NoProjectPrompts: true,
 		testOnly: testConfig{
 			skipGitSnapshot:     true,
 			minimalSystemPrompt: true,
@@ -838,7 +835,6 @@ func TestIdleFatalGatedWatchSendDropsAndDoesNotPinDrain(t *testing.T) {
 	parent, err := NewSession(client, withTestSessionNamer(client, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(t.TempDir()), SessionConfig{
 		StateDir:         t.TempDir(),
 		MaxSubagentDepth: 1,
-		NoProjectPrompts: true,
 		testOnly: testConfig{
 			skipGitSnapshot:     true,
 			minimalSystemPrompt: true,
@@ -1000,7 +996,6 @@ func TestSubagentFatalDriveTurnStopsOwnedShellAndSuppressesRedrive(t *testing.T)
 	parent, err := NewSession(client, withTestSessionNamer(client, NewOpenAIProfile("gpt-5.2")), env, SessionConfig{
 		StateDir:         t.TempDir(),
 		MaxSubagentDepth: 1,
-		NoProjectPrompts: true,
 		testOnly: testConfig{
 			skipGitSnapshot:     true,
 			minimalSystemPrompt: true,
@@ -1234,7 +1229,7 @@ func TestRetentionDoesNotReclaimSubagentDrainingOwnedWork(t *testing.T) {
 	t.Parallel()
 	fixture := newOwnedJobDrainFixture(t)
 
-	terminalSession := newSession(t, withConfig(SessionConfig{NoProjectPrompts: true}))
+	terminalSession := newSession(t, withConfig(SessionConfig{}))
 	endedAt := time.Unix(1, 0).UTC()
 	terminalDone := make(chan struct{})
 	close(terminalDone)

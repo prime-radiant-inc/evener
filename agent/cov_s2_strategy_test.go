@@ -19,7 +19,6 @@ func TestS2Cov_SelectStrategy_AllNamedStrategies(t *testing.T) {
 			sess := newSession(t, withConfig(SessionConfig{
 				MaxSubagentDepth: 1,
 				ContextStrategy:  name,
-				NoProjectPrompts: true,
 				testOnly:         testConfig{skipGitSnapshot: true},
 			}))
 			if sess == nil {
@@ -36,7 +35,6 @@ func TestS2Cov_SelectStrategy_UnknownStrategyFails(t *testing.T) {
 	_, err := NewSession(client, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(t.TempDir()), SessionConfig{
 		MaxSubagentDepth: 1,
 		ContextStrategy:  "no-such-strategy",
-		NoProjectPrompts: true,
 		testOnly:         testConfig{skipGitSnapshot: true},
 	})
 	if err == nil || !strings.Contains(err.Error(), "unknown context strategy") {

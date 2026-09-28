@@ -704,7 +704,7 @@ func TestCovLayerRowsWithNilPointers(t *testing.T) {
 	for _, row := range rows {
 		byField[row.field] = row
 	}
-	for _, field := range []string{"max_rounds", "max_subagent_depth", "max_concurrent_delegate_turns", "max_retained_terminal", "no_project_prompts"} {
+	for _, field := range []string{"max_rounds", "max_subagent_depth", "max_concurrent_delegate_turns", "max_retained_terminal"} {
 		row, ok := byField[field]
 		if !ok {
 			t.Errorf("layerRows omitted %q", field)
@@ -718,13 +718,12 @@ func TestCovLayerRowsWithNilPointers(t *testing.T) {
 
 func TestCovLayerRowsWithSetPointers(t *testing.T) {
 	n := 5
-	b := true
-	rows := layerRows(appwire.LaunchConfigLayer{MaxRounds: &n, NoProjectPrompts: &b}, appwire.LaunchConfigLayer{})
+	rows := layerRows(appwire.LaunchConfigLayer{MaxRounds: &n}, appwire.LaunchConfigLayer{})
 	byField := make(map[string]layerRow, len(rows))
 	for _, row := range rows {
 		byField[row.field] = row
 	}
-	for field, want := range map[string]string{"max_rounds": "5", "no_project_prompts": "true"} {
+	for field, want := range map[string]string{"max_rounds": "5"} {
 		row, ok := byField[field]
 		if !ok {
 			t.Errorf("layerRows omitted %q", field)

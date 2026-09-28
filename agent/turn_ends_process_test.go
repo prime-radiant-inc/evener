@@ -47,7 +47,7 @@ func TestRestoreTakesTurnEndsProcessFromTheRestoringProcess(t *testing.T) {
 				ID:        "01KTURNENDSPROCESS000000000",
 				ProfileID: "openai",
 				Model:     "gpt-5.2",
-				Config:    schema.ConfigSnapshot{TurnEndsProcess: tt.persisted, NoProjectPrompts: true},
+				Config:    schema.ConfigSnapshot{TurnEndsProcess: tt.persisted, NonInteractive: true},
 			}
 			sess, err := RestoreSessionFromMetaWithConfig(
 				client,
@@ -84,13 +84,13 @@ func TestFrozenDescriptorTakesTurnEndsProcessFromTheLiveParent(t *testing.T) {
 		{name: "serve descriptor restarted under one-shot", frozen: false, parent: true},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			frozenConfig := SessionConfig{TurnEndsProcess: tt.frozen, NoProjectPrompts: true}.toSnapshot()
+			frozenConfig := SessionConfig{TurnEndsProcess: tt.frozen, NonInteractive: true}.toSnapshot()
 			parentCfg := SessionConfig{TurnEndsProcess: tt.parent}
 			got := subagentConfigFromFrozenDescriptor(frozenConfig, parentCfg)
 			if got.TurnEndsProcess != tt.parent {
 				t.Fatalf("frozen-descriptor TurnEndsProcess = %v, want the live parent's %v (frozen was %v)", got.TurnEndsProcess, tt.parent, tt.frozen)
 			}
-			if !got.NoProjectPrompts {
+			if !got.NonInteractive {
 				t.Fatal("frozen-descriptor merge dropped a descriptor-scoped field; the helper must still start from the snapshot")
 			}
 		})
@@ -101,7 +101,7 @@ func TestFrozenDescriptorTakesLifetimeContextFromLiveParent(t *testing.T) {
 	t.Parallel()
 	owner, cancelOwner := context.WithCancel(context.Background())
 	got := subagentConfigFromFrozenDescriptor(
-		SessionConfig{NoProjectPrompts: true}.toSnapshot(),
+		SessionConfig{NonInteractive: true}.toSnapshot(),
 		SessionConfig{LifetimeContext: owner},
 	)
 	if got.LifetimeContext == nil {

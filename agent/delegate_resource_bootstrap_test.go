@@ -487,7 +487,6 @@ func newDelegateResourceBootstrapSession(t *testing.T) (*Session, *llm.Client, *
 	sess, err := NewSession(client, profile, execenv.NewLocalExecutionEnvironment(workspace), SessionConfig{
 		StateDir:         stateDir,
 		MaxSubagentDepth: 2,
-		NoProjectPrompts: true,
 		ForceRealIO:      true,
 		testOnly: testConfig{
 			skipGitSnapshot:     true,
@@ -513,7 +512,6 @@ func closedDelegateResourceBootstrapFixture(t *testing.T) (schema.SessionMeta, *
 	sess, err := NewSession(client, profile, execenv.NewLocalExecutionEnvironment(workspace), SessionConfig{
 		StateDir:         stateDir,
 		MaxSubagentDepth: 2,
-		NoProjectPrompts: true,
 		ForceRealIO:      true,
 		testOnly: testConfig{
 			skipGitSnapshot:     true,

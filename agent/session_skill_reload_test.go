@@ -54,7 +54,7 @@ func newReloadSession(t *testing.T, root string, window int, main, cheap func(ll
 		withProfile(profile),
 		withDir(root),
 		withoutGitSnapshot(),
-		withConfig(SessionConfig{MaxSubagentDepth: 1, NoProjectPrompts: true, StateDir: t.TempDir()}),
+		withConfig(SessionConfig{MaxSubagentDepth: 1, StateDir: t.TempDir()}),
 	}, opts...)
 	s := newSession(t, o...)
 	disableSessionNaming(s)
@@ -2164,7 +2164,7 @@ func TestSkillReload_FailedAdmissionSaveRestoresTheReceiptAheadOfLaterHandoffs(t
 	s, _, _ := newReloadSession(t, root, 0, func(llm.Request) llm.Response {
 		return llm.Response{Message: llm.Assistant("unused")}
 	}, reloadSummaryResponder("SUMMARY_order", nil),
-		withConfig(SessionConfig{MaxSubagentDepth: 1, NoProjectPrompts: true, StateDir: t.TempDir(), testOnly: testConfig{metaFS: metaFS}}),
+		withConfig(SessionConfig{MaxSubagentDepth: 1, StateDir: t.TempDir(), testOnly: testConfig{metaFS: metaFS}}),
 	)
 	drainSessionEvents(s)
 	plantOrdinaryRecord(t, s, root, "older", true)

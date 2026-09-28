@@ -227,8 +227,7 @@ func sclNewSession(t *testing.T, p sclProgram) (*Session, *agenttest.ScriptedAda
 	client.Register(adapter)
 	clk := agenttest.NewFakeClock()
 	cfg := SessionConfig{
-		NoProjectPrompts: true,
-		clock:            clk,
+		clock: clk,
 		testOnly: testConfig{
 			skipGitSnapshot:     true,
 			minimalSystemPrompt: true,

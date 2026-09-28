@@ -27,7 +27,6 @@ func newIdentitySession(t *testing.T) *Session {
 		withConfig(SessionConfig{
 			StateDir:         t.TempDir(),
 			MaxSubagentDepth: 1,
-			NoProjectPrompts: true,
 			testOnly:         testConfig{skipGitSnapshot: true, minimalSystemPrompt: true, noSyncJobStore: true},
 		}))
 }

@@ -88,7 +88,6 @@ func newArtifactTestRoot(t *testing.T) *Session {
 		withSteps(func(llm.Request) llm.Response { return finalResponse("child done") }),
 		withConfig(SessionConfig{
 			MaxSubagentDepth: 1,
-			NoProjectPrompts: true,
 			testOnly: testConfig{
 				skipGitSnapshot:     true,
 				minimalSystemPrompt: true,
@@ -396,7 +395,6 @@ func TestSessionArtifactStoreOwnedFreshConstructorFailureClosesStore(t *testing.
 	want := errors.New("new job manager fault")
 	_, err := NewSession(newArtifactTestClient(), NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(t.TempDir()), SessionConfig{
 		MaxSubagentDepth: 1,
-		NoProjectPrompts: true,
 		testOnly: testConfig{
 			skipGitSnapshot:     true,
 			minimalSystemPrompt: true,
