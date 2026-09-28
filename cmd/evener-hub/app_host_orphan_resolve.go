@@ -322,15 +322,23 @@ func orphanAttestationStore(wire *appwire.HostOrphanResolveAttestation) *hostops
 // (orphanFenceRefusal), and the read-only calls (list/status/operations) and
 // orphan-resolve itself bypass the fence.
 func (m *hubHostManager) orphanAdmissionRefusal(name string) error {
-	if m.cfg.ops == nil || strings.TrimSpace(name) == "" {
+	return orphanAdmissionRefusalFor(m.cfg.ops, name)
+}
+
+// orphanAdmissionRefusalFor is orphanAdmissionRefusal over an operation store,
+// for callers that hold the store but not the manager — notably the WebConfig
+// seam the dial paths capture by value (cfg.HostOrphanFence). A nil store
+// fences nothing.
+func orphanAdmissionRefusalFor(ops *hostops.Store, name string) error {
+	if ops == nil || strings.TrimSpace(name) == "" {
 		return nil
 	}
-	if _, marked := m.cfg.ops.FencingQuarantine(name); marked {
+	if _, marked := ops.FencingQuarantine(name); marked {
 		return appwire.FencingFailure(name, fmt.Sprintf(
 			"host %q is fencing-quarantined by its open orphan-unverified record; confirm the old remote command dead, then resolve the record through evener/host/orphan-resolve",
 			name))
 	}
-	for _, record := range m.cfg.ops.OrphanUnverified() {
+	for _, record := range ops.OrphanUnverified() {
 		if record.Host == name {
 			return appwire.HostBusyTransient(fmt.Sprintf(
 				"host %q holds an open orphan-unverified record (%s); resolve it through evener/host/orphan-resolve before starting new work",

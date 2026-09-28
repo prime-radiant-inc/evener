@@ -401,3 +401,52 @@ func TestCompactionRetainsTheResolvedReplay(t *testing.T) {
 		t.Fatalf("ResolveOrphan(unmarked compacted) = %v, want ErrInvalidTransition", err)
 	}
 }
+
+// TestCloneTombstoneClonesTheOrphanAttestation pins the aliasing guard for the
+// persisted attestation: a mutation through a returned tombstone's attestation
+// must not reach the store, the same rule cloneResult already keeps for the
+// terminal result.
+func TestCloneTombstoneClonesTheOrphanAttestation(t *testing.T) {
+	path := StorePath(t.TempDir())
+	store, err := OpenWithRetention(path, RetentionPolicy{TerminalPerHost: 1, TerminalStoreWide: 10})
+	if err != nil {
+		t.Fatalf("OpenWithRetention: %v", err)
+	}
+	quarantined := quarantinedTestRecord(t, store, "h1", "client-h1")
+	attestation := orphanResolveTestAttestation(quarantined.ID)
+	if _, err := store.ResolveOrphan(quarantined.ID, attestation); err != nil {
+		t.Fatalf("ResolveOrphan: %v", err)
+	}
+	sibling := runningTestRecord(t, store, "h1", "client-h1-b")
+	if _, err := store.Transition(sibling.ID, StateComplete, func(r *Record) {
+		r.Result = &Result{OK: true, Message: "done"}
+	}); err != nil {
+		t.Fatalf("Transition(complete): %v", err)
+	}
+	tombstones := store.Tombstones()
+	mutated := false
+	for _, tombstone := range tombstones {
+		if tombstone.ID != quarantined.ID {
+			continue
+		}
+		if tombstone.OrphanAttestation == nil {
+			t.Fatal("the tombstone carries no attestation")
+		}
+		tombstone.OrphanAttestation.Operator = "mutated-through-the-returned-copy"
+		mutated = true
+	}
+	if !mutated {
+		t.Fatal("no tombstone for the resolved record")
+	}
+	// The store's own value is unchanged, through both reads.
+	for _, tombstone := range store.Tombstones() {
+		if tombstone.ID == quarantined.ID && tombstone.OrphanAttestation != nil &&
+			tombstone.OrphanAttestation.Operator != attestation.Operator {
+			t.Fatalf("a mutation through the returned tombstone reached the store: %q", tombstone.OrphanAttestation.Operator)
+		}
+	}
+	replay, ok := store.RecordOrReplay(quarantined.ID)
+	if !ok || replay.OrphanAttestation == nil || replay.OrphanAttestation.Operator != attestation.Operator {
+		t.Fatalf("RecordOrReplay attestation = %+v (ok %v), want the store's value", replay.OrphanAttestation, ok)
+	}
+}

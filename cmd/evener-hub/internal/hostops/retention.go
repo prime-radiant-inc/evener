@@ -429,6 +429,7 @@ func cloneTombstone(tombstone Tombstone) Tombstone {
 	out := tombstone
 	out.Progress = slices.Clone(tombstone.Progress)
 	out.Result = cloneResult(tombstone.Result)
+	out.OrphanAttestation = cloneOrphanAttestation(tombstone.OrphanAttestation)
 	return out
 }
 

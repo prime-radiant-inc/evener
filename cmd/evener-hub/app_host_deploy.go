@@ -1237,6 +1237,11 @@ func (m *hubHostManager) recordProgress(id, message string) {
 // fencing §3). A nil hook (no operation store wired) refuses, never running the
 // deploy unrecorded.
 func (m *hubHostManager) EnsureDeploy(host hostreg.Host) (*sshconn.SpawnScope, func(error), error) {
+	// §8's fence, before the record is minted: an Ensure-triggered deploy for a
+	// quarantined or orphan-unverified name must never reach a remote step.
+	if err := m.orphanAdmissionRefusal(host.Name); err != nil {
+		return nil, nil, err
+	}
 	ops := m.cfg.ops
 	if ops == nil {
 		return nil, nil, errors.New("the host operation store is not configured, so an Ensure-triggered deploy cannot be recorded; nothing was launched")
@@ -1281,6 +1286,10 @@ func (m *hubHostManager) EnsureDeploy(host hostreg.Host) (*sshconn.SpawnScope, f
 // operation store wired) leaves the attempt unrecorded and unarmed, which
 // production never does.
 func (m *hubHostManager) EnsureRestart(host hostreg.Host) (*sshconn.SpawnScope, func(error), error) {
+	// §8's fence, the EnsureDeploy twin: no restart attempt for a fenced name.
+	if err := m.orphanAdmissionRefusal(host.Name); err != nil {
+		return nil, nil, err
+	}
 	ops := m.cfg.ops
 	if ops == nil {
 		return nil, nil, errors.New("the host operation store is not configured, so a restart-only Ensure attempt cannot be recorded; nothing was launched")

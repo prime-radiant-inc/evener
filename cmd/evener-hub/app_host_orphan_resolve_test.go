@@ -924,3 +924,123 @@ func TestAdmissionFenceBlocksPlanDeployRestartRemoveAndAttach(t *testing.T) {
 	// A different name is untouched by the fence.
 	assertWireCode(t, errOf(m.Plan(context.Background(), appwire.HostPlanParams{Name: "other"})), appwire.CodeInvalidParams)
 }
+
+// TestExplicitSourceIDsAttachIsFenced pins the second attach trigger: an
+// explicit host-targeted thread/list dials through dialRemoteHost with its own
+// cfg copy, and §8's fence refuses there — quarantined hosts with the
+// fencing-failure form, orphan-unverified hosts with the transient form —
+// before any remote command runs and before any operation record is minted.
+func TestExplicitSourceIDsAttachIsFenced(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "hub.toml")
+	if err := writeHubTOMLHosts(configPath, []hostreg.Host{{Name: "side", SSH: "side.example"}}); err != nil {
+		t.Fatalf("seed hub.toml: %v", err)
+	}
+	cfg, err := LoadConfig(configPath)
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	hosts, err := hostreg.New(hostRegistryEntries(cfg))
+	if err != nil {
+		t.Fatalf("hostreg.New: %v", err)
+	}
+	store, err := hostops.Open(hostops.StorePath(dir))
+	if err != nil {
+		t.Fatalf("hostops.Open: %v", err)
+	}
+	dials := 0
+	webCfg := hubcore.WebConfig{
+		RemoteHostRegistry: hosts,
+		RemoteHostOpsStore: store,
+		RemoteHostClient: func(context.Context, string) (*appwire.Client, error) {
+			dials++
+			return nil, errors.New("the fenced dial must not run")
+		},
+		HostOrphanFence: func(name string) error { return orphanAdmissionRefusalFor(store, name) },
+	}
+	sources := appsource.NewRegistry()
+	sources.Add(appsource.NewRemoteHubSource("side", nil, func(context.Context, string) (*appwire.Client, error) {
+		dials++
+		return nil, errors.New("the fenced dial must not run")
+	}))
+	assertFenced := func(t *testing.T, want appwire.ErrorInfo) {
+		t.Helper()
+		_, err := hubThreadList(context.Background(), webCfg, sources, appwire.ThreadListParams{SourceIDs: []string{"side"}})
+		var wire appwire.WireError
+		if !errors.As(err, &wire) {
+			t.Fatalf("explicit thread/list attach = %#v, want the fenced refusal", err)
+		}
+		switch want {
+		case appwire.ErrorHostBusyTransient:
+			if data, ok := wire.Data.(appwire.ErrorData); !ok || data.EvenerErrorInfo != want {
+				t.Fatalf("attach refusal data = %#v, want %q", wire.Data, want)
+			}
+		default:
+			if data, ok := wire.Data.(appwire.FencingFailureErrorData); !ok || data.EvenerErrorInfo != want {
+				t.Fatalf("attach refusal data = %#v, want %q", wire.Data, want)
+			}
+		}
+	}
+
+	// A local-reap orphan record refuses the transient form.
+	orphanLocalHubRecord(t, store, "side", `[{"kind":"local-linux","cgroupId":"/cg/side","nonce":"n1","pid":41,"startTime":"777"}]`)
+	assertFenced(t, appwire.ErrorHostBusyTransient)
+	// The quarantine marker's form wins where it is present.
+	quarantined, err := store.Create(hostops.NewRecord{
+		ClientOperationID: "client-side-q2", Host: "side", Kind: hostops.KindDeploy,
+		Generation: 7, IncarnationID: "inc-side-q2",
+	})
+	if err != nil {
+		t.Fatalf("Create(quarantined): %v", err)
+	}
+	if _, err := store.Transition(quarantined.ID, hostops.StateRunning, nil); err != nil {
+		t.Fatalf("Transition: %v", err)
+	}
+	if _, err := store.QuarantineFencing(quarantined.ID, json.RawMessage(orphanResolveBoundaryJSON)); err != nil {
+		t.Fatalf("QuarantineFencing: %v", err)
+	}
+	assertFenced(t, appwire.ErrorFencingFailure)
+
+	if dials != 0 {
+		t.Fatalf("the fenced explicit attach dialed %d time(s), want zero", dials)
+	}
+	for _, record := range store.Records() {
+		if record.Kind == hostops.KindDeploy && record.ClientOperationID != "client-side" && record.ClientOperationID != "client-side-q2" {
+			t.Fatalf("a fenced attach minted operation record %+v", record)
+		}
+	}
+	if len(store.Records()) != 2 {
+		t.Fatalf("records = %d, want only the two fencing fixtures (no Ensure-minted record)", len(store.Records()))
+	}
+}
+
+// TestEnsureHooksRefuseWhileFenced pins the reviewer's second half: the
+// Ensure-triggered deploy/restart hooks refuse before minting a record, so any
+// Ensure path (the reconnect ladder included) is fenced at the hook.
+func TestEnsureHooksRefuseWhileFenced(t *testing.T) {
+	store, err := hostops.Open(hostops.StorePath(t.TempDir()))
+	if err != nil {
+		t.Fatalf("hostops.Open: %v", err)
+	}
+	m := newHubHostManager(nil, nil, hubcore.WebConfig{RemoteHostOpsStore: store}, "", nil, nil)
+	host := hostreg.Host{Name: "side", SSH: "side.example", Generation: 3, IncarnationID: "inc-side"}
+	orphanLocalHubRecord(t, store, "side", `[{"kind":"local-linux","cgroupId":"/cg/side","nonce":"n1","pid":41,"startTime":"777"}]`)
+	before := len(store.Records())
+	if _, _, err := m.EnsureDeploy(host); err == nil {
+		t.Fatal("EnsureDeploy(fenced) succeeded, want the fence refusal")
+	} else {
+		var wire appwire.WireError
+		if !errors.As(err, &wire) {
+			t.Fatalf("EnsureDeploy refusal = %#v, want a wire error", err)
+		}
+		if data, ok := wire.Data.(appwire.ErrorData); !ok || data.EvenerErrorInfo != appwire.ErrorHostBusyTransient {
+			t.Fatalf("EnsureDeploy refusal data = %#v, want %q", wire.Data, appwire.ErrorHostBusyTransient)
+		}
+	}
+	if _, _, err := m.EnsureRestart(host); err == nil {
+		t.Fatal("EnsureRestart(fenced) succeeded, want the fence refusal")
+	}
+	if got := len(store.Records()); got != before {
+		t.Fatalf("a fenced Ensure minted %d record(s)", got-before)
+	}
+}
