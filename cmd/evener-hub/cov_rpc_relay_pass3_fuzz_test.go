@@ -96,7 +96,7 @@ func FuzzRPCRelayPass3(f *testing.F) {
 		_ = launchSourceID(appwire.ThreadStartParams{Harness: "evener"})
 		_ = launchSourceID(appwire.ThreadStartParams{Harness: "remote"})
 		for _, raw := range []string{"", "turn_0", "turn_bad", "turn_2", " 3 "} {
-			_, _ = parseSourceTurnID(raw)
+			_, _ = parseSourceItemKey(raw)
 		}
 		_ = threadForkRequiresTurnCapability(appwire.ThreadForkParams{})
 		_ = threadForkRequiresTurnCapability(appwire.ThreadForkParams{Label: "x"})

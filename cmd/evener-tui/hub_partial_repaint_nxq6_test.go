@@ -66,11 +66,11 @@ func nxq6NewSessionModel(t *testing.T) hubModel {
 	// that had been on screen before and had not changed": the invariant
 	// below must hold even when there is real content behind the composer.
 	seed := []appwire.Notification{
-		nxq6Notify(t, appwire.NotifyItemStarted, appwire.ItemLifecycleParams{
-			Item: appwire.ThreadItem{Type: "userMessage", ID: "seed-user-1", TurnID: "turn_1", Text: "seed question before the burst"},
-		}),
-		nxq6Notify(t, appwire.NotifyItemCompleted, appwire.ItemLifecycleParams{
-			Item: appwire.ThreadItem{Type: "agentMessage", ID: "seed-agent-1", TurnID: "turn_1", Text: "seed answer before the burst", Status: "completed"},
+		nxq6Notify(t, appwire.NotifyHistoryUpdated, appwire.HistoryUpdatedParams{
+			Items: []appwire.ThreadItem{
+				{Type: "userMessage", ID: "seed-user-1", TurnID: "turn_1", Text: "seed question before the burst"},
+				{Type: "agentMessage", ID: "seed-agent-1", TurnID: "turn_1", Text: "seed answer before the burst", Status: "completed"},
+			},
 		}),
 	}
 	for _, n := range seed {
@@ -152,14 +152,14 @@ func TestSessionViewNeverBlankAboveComposer_RealisticBurst(t *testing.T) {
 	}
 
 	apply("resize-200x50", tea.WindowSizeMsg{Width: 200, Height: 50})
-	apply("turn-started", hubNotificationMsg{ok: true, notification: nxq6Notify(t, appwire.NotifyTurnStarted, appwire.TurnStartedParams{
-		Ref: nxq6SessionRef, Turn: appwire.Turn{ID: "turn_2", Status: appwire.TurnStatusInProgress},
-	})})
 	apply("status-active", hubNotificationMsg{ok: true, notification: nxq6Notify(t, appwire.NotifyThreadStatusChanged, appwire.ThreadStatusChangedParams{
-		Ref: nxq6SessionRef, Status: appwire.ThreadStatus{Type: appwire.ThreadStatusActive},
+		Ref: nxq6SessionRef, Status: appwire.ThreadStatus{Type: appwire.ThreadStatusActive}, ActiveTurnID: "turn_2",
 	})})
-	apply("item-started-agent", hubNotificationMsg{ok: true, notification: nxq6Notify(t, appwire.NotifyItemStarted, appwire.ItemLifecycleParams{
-		Ref: nxq6SessionRef, TurnID: "turn_2", Item: appwire.ThreadItem{Type: "agentMessage", ID: "agent-2", TurnID: "turn_2"},
+	apply("item-started-agent", hubNotificationMsg{ok: true, notification: nxq6Notify(t, appwire.NotifyOverlayUpserted, appwire.OverlayUpsertedParams{
+		Ref: nxq6SessionRef, Item: appwire.OverlayItem{
+			Key: "stream:turn_2/0:agentMessage", Kind: appwire.OverlayStream, TurnID: "turn_2", RoundID: "turn_2_r1", StreamID: "turn_2/0",
+			Item: appwire.ThreadItem{Type: "agentMessage", ID: "stream:turn_2/0:agentMessage"},
+		},
 	})})
 
 	// Streaming deltas: the exact condition the kata calls out ("shortly
@@ -171,8 +171,8 @@ func TestSessionViewNeverBlankAboveComposer_RealisticBurst(t *testing.T) {
 	for i, w := range words {
 		built.WriteString(w)
 		built.WriteString(" ")
-		apply("agent-delta", hubNotificationMsg{ok: true, notification: nxq6Notify(t, appwire.NotifyAgentMessageDelta, appwire.AgentMessageDeltaParams{
-			Ref: nxq6SessionRef, TurnID: "turn_2", ItemID: "agent-2", Delta: w + " ",
+		apply("agent-delta", hubNotificationMsg{ok: true, notification: nxq6Notify(t, appwire.NotifyOverlayDelta, appwire.OverlayDeltaParams{
+			Ref: nxq6SessionRef, Key: "stream:turn_2/0:agentMessage", Field: appwire.OverlayDeltaText, Delta: w + " ",
 		})})
 		// A resize partway through the burst: tmux resize-window mid-stream
 		// is exactly when a stale-geometry race would show up, if one exists.
@@ -182,16 +182,21 @@ func TestSessionViewNeverBlankAboveComposer_RealisticBurst(t *testing.T) {
 		}
 	}
 
-	apply("tool-started", hubNotificationMsg{ok: true, notification: nxq6Notify(t, appwire.NotifyItemStarted, appwire.ItemLifecycleParams{
-		Ref: nxq6SessionRef, TurnID: "turn_2", Item: appwire.ThreadItem{Type: "commandExecution", ID: "tool-2", CallID: "call-2", TurnID: "turn_2", ToolName: "read_file", ArgumentsJSON: `{"file_path":"/tmp/x.txt"}`, Status: appwire.TurnStatusInProgress},
+	apply("tool-started", hubNotificationMsg{ok: true, notification: nxq6Notify(t, appwire.NotifyOverlayUpserted, appwire.OverlayUpsertedParams{
+		Ref: nxq6SessionRef, Item: appwire.OverlayItem{
+			Key: "tool:call-2", Kind: appwire.OverlayTool, TurnID: "turn_2", RoundID: "turn_2_r1", CallID: "call-2",
+			Item: appwire.ThreadItem{Type: "commandExecution", ID: "tool:call-2", CallID: "call-2", TurnID: "turn_2", ToolName: "read_file", ArgumentsJSON: `{"file_path":"/tmp/x.txt"}`, Status: appwire.TurnStatusInProgress},
+		},
 	})})
 	for range 10 {
-		apply("tool-output-delta", hubNotificationMsg{ok: true, notification: nxq6Notify(t, appwire.NotifyToolOutputDelta, appwire.ToolOutputDeltaParams{
-			Ref: nxq6SessionRef, TurnID: "turn_2", ItemID: "tool-2", CallID: "call-2", Delta: "line of tool output\n",
+		apply("tool-output-delta", hubNotificationMsg{ok: true, notification: nxq6Notify(t, appwire.NotifyOverlayDelta, appwire.OverlayDeltaParams{
+			Ref: nxq6SessionRef, Key: "tool:call-2", Field: appwire.OverlayDeltaOutput, Delta: "line of tool output\n",
 		})})
 	}
-	apply("tool-completed", hubNotificationMsg{ok: true, notification: nxq6Notify(t, appwire.NotifyItemCompleted, appwire.ItemLifecycleParams{
-		Ref: nxq6SessionRef, TurnID: "turn_2", Item: appwire.ThreadItem{Type: "commandExecution", ID: "tool-2", CallID: "call-2", TurnID: "turn_2", ToolName: "read_file", Output: "line of tool output\n", Status: "completed"},
+	apply("tool-completed", hubNotificationMsg{ok: true, notification: nxq6Notify(t, appwire.NotifyHistoryUpdated, appwire.HistoryUpdatedParams{
+		Ref: nxq6SessionRef, Items: []appwire.ThreadItem{
+			{Type: "commandExecution", ID: "item_tool_2", CallID: "call-2", TurnID: "turn_2", RoundID: "turn_2_r1", ToolName: "read_file", Output: "line of tool output\n", Status: "completed", Version: 1},
+		},
 	})})
 
 	// Queue depth growing, as it would while the composer sits in queue
@@ -213,11 +218,12 @@ func TestSessionViewNeverBlankAboveComposer_RealisticBurst(t *testing.T) {
 		Ref: nxq6SessionRef, Job: appwire.EvenerJobInfo{JobID: "job-1", JobType: "delegate", Status: "completed"},
 	})})
 
-	apply("item-completed-agent", hubNotificationMsg{ok: true, notification: nxq6Notify(t, appwire.NotifyItemCompleted, appwire.ItemLifecycleParams{
-		Ref: nxq6SessionRef, TurnID: "turn_2", Item: appwire.ThreadItem{Type: "agentMessage", ID: "agent-2", TurnID: "turn_2", Text: built.String(), Status: "completed"},
-	})})
-	apply("turn-completed", hubNotificationMsg{ok: true, notification: nxq6Notify(t, appwire.NotifyTurnCompleted, appwire.TurnCompletedParams{
-		Ref: nxq6SessionRef, Turn: appwire.Turn{ID: "turn_2", Status: appwire.TurnStatusCompleted},
+	apply("history-updated-turn-completed", hubNotificationMsg{ok: true, notification: nxq6Notify(t, appwire.NotifyHistoryUpdated, appwire.HistoryUpdatedParams{
+		Ref: nxq6SessionRef,
+		Items: []appwire.ThreadItem{
+			{Type: "agentMessage", ID: "item_agent_2", TurnID: "turn_2", RoundID: "turn_2_r1", Text: built.String(), Status: "completed", Version: 1},
+		},
+		Turns: []appwire.Turn{{ID: "turn_2", Status: appwire.TurnStatusCompleted}},
 	})})
 	apply("status-idle", hubNotificationMsg{ok: true, notification: nxq6Notify(t, appwire.NotifyThreadStatusChanged, appwire.ThreadStatusChangedParams{
 		Ref: nxq6SessionRef, Status: appwire.ThreadStatus{Type: appwire.ThreadStatusIdle},
@@ -237,8 +243,8 @@ func nxq6FuzzSteps(t *testing.T) []tea.Msg {
 		tea.WindowSizeMsg{Width: 80, Height: 24},
 		tea.WindowSizeMsg{Width: 40, Height: 12},
 		tea.WindowSizeMsg{Width: 200, Height: 6},
-		hubNotificationMsg{ok: true, notification: nxq6Notify(t, appwire.NotifyTurnStarted, appwire.TurnStartedParams{
-			Ref: nxq6SessionRef, Turn: appwire.Turn{ID: "turn_f", Status: appwire.TurnStatusInProgress},
+		hubNotificationMsg{ok: true, notification: nxq6Notify(t, appwire.NotifyThreadStatusChanged, appwire.ThreadStatusChangedParams{
+			Ref: nxq6SessionRef, Status: appwire.ThreadStatus{Type: appwire.ThreadStatusActive}, ActiveTurnID: "turn_f",
 		})},
 		hubNotificationMsg{ok: true, notification: nxq6Notify(t, appwire.NotifyThreadStatusChanged, appwire.ThreadStatusChangedParams{
 			Ref: nxq6SessionRef, Status: appwire.ThreadStatus{Type: appwire.ThreadStatusActive},
@@ -246,20 +252,28 @@ func nxq6FuzzSteps(t *testing.T) []tea.Msg {
 		hubNotificationMsg{ok: true, notification: nxq6Notify(t, appwire.NotifyThreadStatusChanged, appwire.ThreadStatusChangedParams{
 			Ref: nxq6SessionRef, Status: appwire.ThreadStatus{Type: appwire.ThreadStatusAwaiting},
 		})},
-		hubNotificationMsg{ok: true, notification: nxq6Notify(t, appwire.NotifyItemStarted, appwire.ItemLifecycleParams{
-			Ref: nxq6SessionRef, TurnID: "turn_f", Item: appwire.ThreadItem{Type: "agentMessage", ID: "agent-f", TurnID: "turn_f"},
+		hubNotificationMsg{ok: true, notification: nxq6Notify(t, appwire.NotifyOverlayUpserted, appwire.OverlayUpsertedParams{
+			Ref: nxq6SessionRef, Item: appwire.OverlayItem{
+				Key: "stream:turn_f/0:agentMessage", Kind: appwire.OverlayStream, TurnID: "turn_f", RoundID: "turn_f_r1", StreamID: "turn_f/0",
+				Item: appwire.ThreadItem{Type: "agentMessage", ID: "stream:turn_f/0:agentMessage"},
+			},
 		})},
-		hubNotificationMsg{ok: true, notification: nxq6Notify(t, appwire.NotifyAgentMessageDelta, appwire.AgentMessageDeltaParams{
-			Ref: nxq6SessionRef, TurnID: "turn_f", ItemID: "agent-f", Delta: "streamed chunk of text arriving now ",
+		hubNotificationMsg{ok: true, notification: nxq6Notify(t, appwire.NotifyOverlayDelta, appwire.OverlayDeltaParams{
+			Ref: nxq6SessionRef, Key: "stream:turn_f/0:agentMessage", Field: appwire.OverlayDeltaText, Delta: "streamed chunk of text arriving now ",
 		})},
-		hubNotificationMsg{ok: true, notification: nxq6Notify(t, appwire.NotifyItemStarted, appwire.ItemLifecycleParams{
-			Ref: nxq6SessionRef, TurnID: "turn_f", Item: appwire.ThreadItem{Type: "commandExecution", ID: "tool-f", CallID: "call-f", TurnID: "turn_f", ToolName: "exec", Status: appwire.TurnStatusInProgress},
+		hubNotificationMsg{ok: true, notification: nxq6Notify(t, appwire.NotifyOverlayUpserted, appwire.OverlayUpsertedParams{
+			Ref: nxq6SessionRef, Item: appwire.OverlayItem{
+				Key: "tool:call-f", Kind: appwire.OverlayTool, TurnID: "turn_f", RoundID: "turn_f_r1", CallID: "call-f",
+				Item: appwire.ThreadItem{Type: "commandExecution", ID: "tool:call-f", CallID: "call-f", TurnID: "turn_f", ToolName: "exec", Status: appwire.TurnStatusInProgress},
+			},
 		})},
-		hubNotificationMsg{ok: true, notification: nxq6Notify(t, appwire.NotifyToolOutputDelta, appwire.ToolOutputDeltaParams{
-			Ref: nxq6SessionRef, TurnID: "turn_f", ItemID: "tool-f", CallID: "call-f", Delta: "tool output line\n",
+		hubNotificationMsg{ok: true, notification: nxq6Notify(t, appwire.NotifyOverlayDelta, appwire.OverlayDeltaParams{
+			Ref: nxq6SessionRef, Key: "tool:call-f", Field: appwire.OverlayDeltaOutput, Delta: "tool output line\n",
 		})},
-		hubNotificationMsg{ok: true, notification: nxq6Notify(t, appwire.NotifyItemCompleted, appwire.ItemLifecycleParams{
-			Ref: nxq6SessionRef, TurnID: "turn_f", Item: appwire.ThreadItem{Type: "commandExecution", ID: "tool-f", CallID: "call-f", TurnID: "turn_f", ToolName: "exec", Output: "tool output line\n", Status: "completed"},
+		hubNotificationMsg{ok: true, notification: nxq6Notify(t, appwire.NotifyHistoryUpdated, appwire.HistoryUpdatedParams{
+			Ref: nxq6SessionRef, Items: []appwire.ThreadItem{
+				{Type: "commandExecution", ID: "item_tool_f", CallID: "call-f", TurnID: "turn_f", RoundID: "turn_f_r1", ToolName: "exec", Output: "tool output line\n", Status: "completed", Version: 1},
+			},
 		})},
 		hubNotificationMsg{ok: true, notification: nxq6Notify(t, appwire.NotifyThreadQueueChanged, appwire.ThreadQueueChangedParams{
 			Ref: nxq6SessionRef, Queue: appwire.QueueState{Depth: 2, Preview: []string{"queued one", "queued two"}},
@@ -267,11 +281,13 @@ func nxq6FuzzSteps(t *testing.T) []tea.Msg {
 		hubNotificationMsg{ok: true, notification: nxq6Notify(t, appwire.NotifyThreadQueueChanged, appwire.ThreadQueueChangedParams{
 			Ref: nxq6SessionRef, Queue: appwire.QueueState{},
 		})},
-		hubNotificationMsg{ok: true, notification: nxq6Notify(t, appwire.NotifyItemCompleted, appwire.ItemLifecycleParams{
-			Ref: nxq6SessionRef, TurnID: "turn_f", Item: appwire.ThreadItem{Type: "agentMessage", ID: "agent-f", TurnID: "turn_f", Text: "final streamed text", Status: "completed"},
+		hubNotificationMsg{ok: true, notification: nxq6Notify(t, appwire.NotifyHistoryUpdated, appwire.HistoryUpdatedParams{
+			Ref: nxq6SessionRef, Items: []appwire.ThreadItem{
+				{Type: "agentMessage", ID: "item_agent_f", TurnID: "turn_f", RoundID: "turn_f_r1", Text: "final streamed text", Status: "completed", Version: 1},
+			},
 		})},
-		hubNotificationMsg{ok: true, notification: nxq6Notify(t, appwire.NotifyTurnCompleted, appwire.TurnCompletedParams{
-			Ref: nxq6SessionRef, Turn: appwire.Turn{ID: "turn_f", Status: appwire.TurnStatusCompleted},
+		hubNotificationMsg{ok: true, notification: nxq6Notify(t, appwire.NotifyHistoryUpdated, appwire.HistoryUpdatedParams{
+			Ref: nxq6SessionRef, Turns: []appwire.Turn{{ID: "turn_f", Status: appwire.TurnStatusCompleted}},
 		})},
 		hubNotificationMsg{ok: true, notification: nxq6Notify(t, appwire.NotifyThreadStatusChanged, appwire.ThreadStatusChangedParams{
 			Ref: nxq6SessionRef, Status: appwire.ThreadStatus{Type: appwire.ThreadStatusIdle},
