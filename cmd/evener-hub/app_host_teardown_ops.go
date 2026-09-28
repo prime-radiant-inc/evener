@@ -646,17 +646,21 @@ func (m *hubHostManager) runPinnedTeardown(ctx context.Context, remnantID string
 		// same values" — and an already-applied rebind is a no-op: where the live
 		// entry already carries the file's effective fields and the pinned pair,
 		// re-applying would only re-bump the generation an edit already advanced.
+		// The entry is passed to the registry EXACTLY as the file holds it: its
+		// persisted (generation, incarnationId, presenceEpoch) are the commit's
+		// identity, and the registry's Update applies a generation only when its
+		// pending stamp matches the entry (hostreg's peekStampLocked). Overwriting
+		// the identity with the live host's would break that match and mint a
+		// fresh generation that no durable record ever carries — the live row
+		// would then report a generation the file, the store, and the receipt do
+		// not hold, and the original mutationId could no longer replay its
+		// recorded outcome.
 		entry, ok := m.hubTOMLFileEntry(remnant.Host)
 		if !ok {
 			entry = host
 		}
-		if entry.Generation != 0 && entry.IncarnationID != "" {
-			entry = stampedEntry(entry, hostreg.Identity{
-				Generation:    host.Generation,
-				IncarnationID: host.IncarnationID,
-				PresenceEpoch: host.PresenceEpoch,
-			})
-		}
+		// "Already applied": the live entry carries the file's effective fields
+		// AND the committed generation, so the rebind has nothing left to do.
 		if sameEffectiveHostEntryFields(host, entry) && host.Generation == entry.Generation {
 			return teardownRunResult{}, nil
 		}

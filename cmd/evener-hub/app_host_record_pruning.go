@@ -341,6 +341,13 @@ func (m *hubHostManager) deriveHostTOMLRecords(entries, known []hostreg.Host, ch
 	if change.receipt != nil {
 		protectedKey = change.receipt.Key
 	}
+	// protectedMarker is the staged-receipt marker this very write carries: the
+	// purge rules below must no more delete it than they may drop the receipt
+	// this write finalizes.
+	protectedMarker := ""
+	if change.marker != nil {
+		protectedMarker = change.marker.Name
+	}
 
 	// Re-add purge: the write carries the name live, so the tombstone is
 	// consumed by the live entry (§6: "a tombstone whose name matches a live
@@ -361,7 +368,7 @@ func (m *hubHostManager) deriveHostTOMLRecords(entries, known []hostreg.Host, ch
 		// generation". The fence refuses a re-add while one is open, so in
 		// practice only resolved records are here; an open one is kept either
 		// way, because dropping it would strand a live teardown handle.
-		m.purgeNameTeardownRecords(records, name)
+		m.purgeNameTeardownRecords(records, name, protectedMarker)
 	}
 
 	// Expiry prune: past the retention period the tombstone is dropped in this
@@ -387,7 +394,7 @@ func (m *hubHostManager) deriveHostTOMLRecords(entries, known []hostreg.Host, ch
 		delete(records.tombstones, name)
 		records.droppedTombstones[name] = struct{}{}
 		m.purgeNameReceipts(records, name, purgeDropAll, protectedKey, now)
-		m.purgeNameTeardownRecords(records, name)
+		m.purgeNameTeardownRecords(records, name, protectedMarker)
 	}
 
 	// Receipt compaction for every name the write's receipt set carries — the
@@ -435,7 +442,7 @@ func (m *hubHostManager) deriveHostTOMLRecords(entries, known []hostreg.Host, ch
 // repair handle, and dropping it would lose the only way to finish the
 // teardown (spec §6: "a remnant never depends on the live registry to execute"
 // — but only the record itself can name it).
-func (m *hubHostManager) purgeNameTeardownRecords(records hostTOMLRecords, name string) {
+func (m *hubHostManager) purgeNameTeardownRecords(records hostTOMLRecords, name, protectedMarker string) {
 	for id, remnant := range records.remnants {
 		if remnant.Host != name || remnant.open() {
 			continue
@@ -445,6 +452,15 @@ func (m *hubHostManager) purgeNameTeardownRecords(records hostTOMLRecords, name 
 	}
 	for hostName := range records.stagedReceipts {
 		if hostName != name {
+			continue
+		}
+		if hostName == protectedMarker {
+			// The marker THIS write stages: a re-add's own step-(2) write both
+			// stages a marker and runs the re-add purge, and the purge must not
+			// delete the record the same write exists to persist — without it a
+			// crash before the finalizing receipt leaves a re-add with no durable
+			// marker, and a later keyed replay finds no receipt at all. The
+			// receipt's `protectedKey` is the same rule.
 			continue
 		}
 		delete(records.stagedReceipts, hostName)
@@ -905,7 +921,7 @@ func (m *hubHostManager) enforceTombstoneCaps(records hostTOMLRecords, change ho
 		delete(records.tombstones, candidate.name)
 		records.droppedTombstones[candidate.name] = struct{}{}
 		m.purgeNameReceipts(records, candidate.name, purgeDropAll, protectedKey, now)
-		m.purgeNameTeardownRecords(records, candidate.name)
+		m.purgeNameTeardownRecords(records, candidate.name, "")
 	}
 	if fits() {
 		return nil

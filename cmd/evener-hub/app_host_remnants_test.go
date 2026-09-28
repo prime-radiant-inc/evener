@@ -2092,3 +2092,148 @@ func (m *hubHostManager) receiptArmForTest(remnantID string) (appwire.HostMutati
 	}
 	return m.receiptArm(hit, scope.Kind), nil
 }
+
+// TestHostReAddStagedMarkerSurvivesItsOwnWrite pins roborev's Medium on the
+// re-add: the step-(2) write stages its marker and then runs the re-add purge,
+// which used to delete that very marker before the write landed — so a crash
+// between the stage and the finalizing receipt left a re-add with no durable
+// marker, and a later keyed replay found no receipt (failing the live-name
+// duplicate check) instead of returning the recorded row.
+func TestHostReAddStagedMarkerSurvivesItsOwnWrite(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "hub.toml")
+	if err := writeHubTOMLHosts(configPath, []hostreg.Host{{Name: "side", SSH: "side.example"}}); err != nil {
+		t.Fatalf("seed hub.toml: %v", err)
+	}
+	m := bootHostManager(t, configPath)
+	// Tombstone the name, so the re-add's write takes the purge path.
+	if _, err := m.Remove(context.Background(), removeRequest(t, m, "side")); err != nil {
+		t.Fatalf("Remove(side): %v", err)
+	}
+	if _, ok := m.cfg.store.tombstoneSnapshot()["side"]; !ok {
+		t.Fatal("the removal left no tombstone for the re-add to purge")
+	}
+	// Capture the marker the step-(2) write stages, by parking at the stage seam.
+	var staged HostStagedReceipt
+	parked := false
+	m.testOnlyAfterStage = func(name string) {
+		if name != "side" {
+			return
+		}
+		parked = true
+		for _, marker := range m.cfg.store.stagedSnapshot() {
+			staged = marker
+		}
+	}
+	if _, err := m.AddResult(context.Background(), appwire.HostAddParams{
+		Entry:      appwire.HostEntry{Name: "side", Address: "fresh.example"},
+		MutationID: "re-add-key",
+	}); err != nil {
+		t.Fatalf("re-add = %v", err)
+	}
+	if !parked {
+		t.Fatal("the re-add never staged a marker")
+	}
+	if staged.Key == "" {
+		t.Fatal("the staged marker was absent from the store at the stage seam")
+	}
+	// The recorded receipt survives the commit, so the keyed replay returns the
+	// recorded row instead of failing the duplicate check.
+	replay, err := m.AddResult(context.Background(), appwire.HostAddParams{
+		Entry:      appwire.HostEntry{Name: "side", Address: "fresh.example"},
+		MutationID: "re-add-key",
+	})
+	if err != nil {
+		t.Fatalf("replay = %v", err)
+	}
+	if replay.HostMutationCommitted == nil {
+		t.Fatalf("replay = %+v, want the recorded committed arm", replay)
+	}
+	if _, ok := m.cfg.store.receiptsSnapshot()[staged.Key]; !ok {
+		t.Fatalf("the staged marker's receipt %q is not in the store", staged.Key)
+	}
+	// The crash arm: a file captured mid-commit (the marker staged, the
+	// finalizing receipt lost) must be repaired at boot — the marker is what
+	// makes that possible, so booting over it finalizes the receipt.
+	crashPath := filepath.Join(t.TempDir(), "hub.toml")
+	if err := writeHubTOMLHosts(crashPath, []hostreg.Host{{Name: "side", SSH: "fresh.example"}}); err != nil {
+		t.Fatalf("seed the crash file: %v", err)
+	}
+	crashManager := bootHostManager(t, crashPath)
+	entries := crashManager.cfg.store.snapshot()
+	if err := crashManager.persistHosts(entries, entries, hostPersistChange{
+		marker: &pendingHostMarker{Name: "side", Marker: staged},
+	}); err != nil {
+		t.Fatalf("stage the crash marker: %v", err)
+	}
+	if _, ok := crashManager.cfg.store.stagedSnapshot()["side"]; !ok {
+		t.Fatal("the crash file carries no marker to repair")
+	}
+	recovered := bootHostManager(t, crashPath)
+	if _, ok := recovered.cfg.store.stagedSnapshot()["side"]; ok {
+		t.Fatal("boot left the staged marker unfinalized")
+	}
+	receipt, ok := recovered.cfg.store.receiptsSnapshot()[staged.Key]
+	if !ok {
+		t.Fatalf("boot wrote no receipt under %q", staged.Key)
+	}
+	if !receipt.BootRecovered {
+		t.Fatalf("booted receipt = %+v, want bootRecovered true", receipt)
+	}
+}
+
+// TestHostUpdateRepairKeepsTheCommittedGeneration pins roborev's Medium on the
+// update repair path: re-stamping the file entry with the live host's identity
+// made hostreg's pending-stamp match fail, so Registry.Update minted a fresh
+// generation that no durable record ever carried. After a successful repair the
+// live entry must carry the generation the store row and the file record.
+func TestHostUpdateRepairKeepsTheCommittedGeneration(t *testing.T) {
+	m, _, _ := newRemnantFixture(t)
+	m.testOnlyTeardown = func(context.Context, string) error { return errors.New("injected rebind failure") }
+	result, err := m.UpdateResult(context.Background(), updateRequest(t, m, "side", appwire.HostEntry{Address: "edited.example"}))
+	if err != nil {
+		t.Fatalf("Update = %v", err)
+	}
+	arm := result.HostMutationTeardownFailure
+	if arm == nil {
+		t.Fatalf("Update = %+v, want the teardown-failure arm", result)
+	}
+	m.testOnlyTeardown = nil
+	var committed hostreg.Host
+	for _, entry := range m.cfg.store.snapshot() {
+		if entry.Name == "side" {
+			committed = entry
+		}
+	}
+	if committed.Name == "" {
+		t.Fatal("the committed edit left no store row")
+	}
+
+	retry, err := m.TeardownRetry(context.Background(), appwire.HostTeardownRetryParams{RemnantID: arm.RemnantID})
+	if err != nil {
+		t.Fatalf("TeardownRetry = %v", err)
+	}
+	if retry.HostTeardownRetryCompleteLive == nil {
+		t.Fatalf("retry = %+v, want the teardown-complete live arm", retry)
+	}
+	live, ok := m.cfg.hosts.Get("side")
+	if !ok {
+		t.Fatal("the repaired host is not live")
+	}
+	if live.Generation != committed.Generation {
+		t.Fatalf("live generation = %d, want the committed %d the store and file record (a freshly minted generation is persisted nowhere)",
+			live.Generation, committed.Generation)
+	}
+	if live.IncarnationID != committed.IncarnationID {
+		t.Fatalf("live incarnation = %q, want the committed %q", live.IncarnationID, committed.IncarnationID)
+	}
+	// The original mutationId replays its recorded outcome rather than refusing
+	// stale against a generation no record holds.
+	replay, err := m.UpdateResult(context.Background(), updateRequestFor("side", committed.Generation, committed.IncarnationID, appwire.HostEntry{Address: "edited.example"}))
+	if err != nil {
+		t.Fatalf("replay = %v", err)
+	}
+	if replay.HostMutationCommitted == nil && replay.HostMutationTeardownFailure == nil {
+		t.Fatalf("replay = %+v, want the recorded outcome", replay)
+	}
+}
