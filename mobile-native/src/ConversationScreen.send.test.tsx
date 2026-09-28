@@ -270,7 +270,12 @@ function queueState(texts: string[], revision = 0) {
  * mutation, recording each request in order. It sends a frame only when a
  * test calls notify(). */
 const otherThreads = new Map<string, Thread>();
+// Every screen mount() made. A screen left mounted keeps reading and keeps
+// setting its header, so a later test's chooseMenu (the newest setOptions
+// call) could reach an earlier test's screen instead of its own.
+const mountedScreens: ReactTestRenderer[] = [];
 afterEach(() => {
+	for (const tree of mountedScreens.splice(0)) act(() => tree.unmount());
 	otherThreads.clear();
 	vi.unstubAllGlobals();
 });
@@ -382,6 +387,7 @@ async function mount(
 	} as unknown as ConversationScreenProps["route"];
 	navigationState.state = { index: 0, routes: [route] };
 	const tree = render(<ConversationScreen route={route} navigation={navigation} />);
+	mountedScreens.push(tree);
 	if (settled) await settle();
 	return { tree, hub };
 }
