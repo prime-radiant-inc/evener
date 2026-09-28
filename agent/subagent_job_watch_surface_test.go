@@ -9,8 +9,18 @@ import (
 	"testing"
 
 	"primeradiant.com/evener/agent/plugin"
+	"primeradiant.com/evener/agent/sandbox"
 	"primeradiant.com/evener/llm"
 )
+
+// unsandboxedProber reports a host without a usable bwrap, so a child that runs
+// a shell in these tests does not depend on the runner having a sandbox wrapper
+// (the CI runners have none). home must be absolute: the credential denylist
+// anchor needs a resolvable home. BwrapPath points nowhere so an accidental
+// wrapper exec fails here too, not only in CI.
+func unsandboxedProber(home string) sandbox.Prober {
+	return sandbox.FakeProber{Facts: sandbox.HostFacts{OS: "linux", Home: home, BwrapPath: "/nonexistent/bwrap", BwrapCapable: false}}
+}
 
 // TestTypedSubagentPolicyKeepsIntrinsicTools pins the policy half of #2645: a
 // typed role's tools: frontmatter is an allowlist handed to
@@ -191,7 +201,7 @@ func TestTypedLeafSupervisesItsOwnJobs(t *testing.T) {
 			skipGitSnapshot:     true,
 			minimalSystemPrompt: true,
 			noSyncJobStore:      true,
-			sandboxProber:       bwrapCapableProber(t.TempDir()),
+			sandboxProber:       unsandboxedProber(t.TempDir()),
 		},
 	}))
 	ctx := context.Background()
