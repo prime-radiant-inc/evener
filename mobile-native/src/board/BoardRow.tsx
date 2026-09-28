@@ -2,11 +2,13 @@ import type { NavigationSessionSummary } from "@evener/appwire-client";
 import { relativeAge } from "@evener/appwire-client/state/navigation";
 import { SymbolView } from "expo-symbols";
 import type { ReactElement } from "react";
-import { Platform, Pressable, Text, View } from "react-native";
+import { type AccessibilityActionEvent, type AccessibilityActionInfo, Platform, Pressable, Text, View } from "react-native";
 import type { Palette } from "../design/tokens";
 import { useColors, useTextScale } from "../ui";
 import { bandOf, type ClassifiedRow, lastLine, stateWord, type Usual, whyLine } from "./attention";
+import type { RowSwipes } from "./rowSwipes";
 import { StateMark } from "./StateMark";
+import { SwipeRow, swipeAccessibility } from "./SwipeRow";
 
 export interface BoardRowProps {
 	item: ClassifiedRow;
@@ -22,6 +24,10 @@ export interface BoardRowProps {
 	hasDraft: boolean;
 	now: number;
 	onOpen: (row: NavigationSessionSummary) => void;
+	/** Half opacity and busy while a change to this row is on its way. */
+	dimmed?: boolean;
+	accessibilityActions?: readonly AccessibilityActionInfo[];
+	onAccessibilityAction?: (event: AccessibilityActionEvent) => void;
 }
 
 /** Where a row's title starts: its 16pt padding, the 28pt mark column and
@@ -31,6 +37,8 @@ export const TITLE_INSET = 16 + 28 + 10;
 /** What every row in one of the Board's lists shares. */
 export type RowContext = Pick<BoardRowProps, "connected" | "usual" | "hostLabel" | "now" | "onOpen"> & {
 	draftRefs: ReadonlySet<string>;
+	/** A row's swipes, by whether it sits in an archived tier. */
+	swipes: (item: ClassifiedRow, archived: boolean) => RowSwipes;
 };
 
 function Hairline({ inset = 0 }: { inset?: number }) {
@@ -38,33 +46,43 @@ function Hairline({ inset = 0 }: { inset?: number }) {
 	return <View style={{ height: 0.5, marginLeft: inset, backgroundColor: palette.edge }} />;
 }
 
-/** A list of Board rows, separated by hairlines inset to the title. */
+/** A list of Board rows, each one swipeable, separated by hairlines inset
+ * to the title. `archived` rows sit in an archived tier. */
 export function BoardRows({
 	items,
 	variant,
 	moving,
+	archived = false,
 	context,
 }: {
 	items: readonly ClassifiedRow[];
 	variant: BoardRowProps["variant"];
 	moving: boolean;
+	archived?: boolean;
 	context: RowContext;
 }): ReactElement {
-	const { draftRefs, ...shared } = context;
+	const { draftRefs, swipes, ...shared } = context;
 	return (
 		<>
-			{items.map((item, index) => (
-				<View key={item.row.ref}>
-					{index > 0 ? <Hairline inset={TITLE_INSET} /> : null}
-					<BoardRow
-						item={item}
-						variant={variant}
-						moving={moving}
-						hasDraft={draftRefs.has(item.row.ref)}
-						{...shared}
-					/>
-				</View>
-			))}
+			{items.map((item, index) => {
+				const { leading, trailing, dimmed } = swipes(item, archived);
+				return (
+					<View key={item.row.ref}>
+						{index > 0 ? <Hairline inset={TITLE_INSET} /> : null}
+						<SwipeRow leading={leading} trailing={trailing}>
+							<BoardRow
+								item={item}
+								variant={variant}
+								moving={moving}
+								hasDraft={draftRefs.has(item.row.ref)}
+								dimmed={dimmed}
+								{...swipeAccessibility(leading, trailing)}
+								{...shared}
+							/>
+						</SwipeRow>
+					</View>
+				);
+			})}
 		</>
 	);
 }
@@ -112,6 +130,9 @@ export function BoardRow({
 	hasDraft,
 	now,
 	onOpen,
+	dimmed = false,
+	accessibilityActions,
+	onAccessibilityAction,
 }: BoardRowProps): ReactElement {
 	const { palette } = useColors();
 	const scale = useTextScale();
@@ -130,6 +151,9 @@ export function BoardRow({
 		<Pressable
 			accessibilityRole="button"
 			accessibilityLabel={label}
+			accessibilityState={{ busy: dimmed }}
+			accessibilityActions={accessibilityActions}
+			onAccessibilityAction={onAccessibilityAction}
 			onPress={() => onOpen(row)}
 			style={({ pressed }) => ({
 				flexDirection: "row",
@@ -140,6 +164,7 @@ export function BoardRow({
 				paddingBottom: signal ? 12 : 0,
 				minHeight: signal ? 64 : 48,
 				backgroundColor: pressed ? palette.pressed : palette.page,
+				opacity: dimmed ? 0.5 : 1,
 			})}
 		>
 			<View style={{ height: lineOne, justifyContent: "center" }}>

@@ -24,6 +24,13 @@ import {
  * sent. "unavailable": the session couldn't be read or opened for mutations. */
 export type StopOutcome = "stopped" | "notWorking" | "unavailable";
 
+/** What the Board's toast says after a Stop (spec 8.3 for "Stopped"). */
+export function stopToast(outcome: StopOutcome, title: string): string {
+	if (outcome === "stopped") return "Stopped";
+	if (outcome === "notWorking") return "Nothing to stop: its turn had already ended.";
+	return `Couldn't stop “${title}”. Open it to stop it there.`;
+}
+
 export class BoardStops {
 	readonly #runtime: () => NativeMutationRuntime;
 	readonly #hubId: string;

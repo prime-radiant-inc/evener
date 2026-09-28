@@ -5,7 +5,7 @@ import type { Thread, ThreadCapabilities, ThreadReadResponse } from "@evener/app
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { NativeMutationRuntime, nativeMutationTargetKey } from "../nativeMutationRuntime";
 import { openSqliteSyncDouble, type SqliteDoubleDatabase } from "../sqliteSync.testkit";
-import { BoardStops } from "./boardStops";
+import { BoardStops, stopToast } from "./boardStops";
 
 vi.mock("expo-sqlite", () => ({ openDatabaseSync: vi.fn() }));
 vi.mock("expo-crypto", () => ({
@@ -198,4 +198,10 @@ it("dispose lets go of every Stop still being delivered and refuses new ones", a
 	expect(unregistered(runtime, client)).toBe(true);
 	expect(await stops.stop(client, "ref-1")).toBe("unavailable");
 	await runtime.stop();
+});
+
+it("says in the toast what a Stop from the Board did", () => {
+	expect(stopToast("stopped", "Build docs")).toBe("Stopped");
+	expect(stopToast("notWorking", "Build docs")).toBe("Nothing to stop: its turn had already ended.");
+	expect(stopToast("unavailable", "Build docs")).toBe("Couldn't stop “Build docs”. Open it to stop it there.");
 });

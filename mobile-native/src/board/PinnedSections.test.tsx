@@ -18,6 +18,9 @@ vi.mock("react-native", async () => ({
 	...(await import("../renderNative.testkit")).nativeModuleMock(),
 }));
 vi.mock("expo-symbols", () => ({ SymbolView: "SymbolView" }));
+vi.mock("react-native-gesture-handler/ReanimatedSwipeable", async () =>
+	(await import("../renderNative.testkit")).gestureHandlerModuleMock(),
+);
 vi.mock("expo-sqlite/kv-store", () => ({
 	Storage: {
 		getItemSync: (key: string) => harness.kv.get(key) ?? null,
@@ -66,6 +69,7 @@ function Category({ hub, section = release, page, onMenu = null, changing = fals
 		now: NOW,
 		onOpen,
 		draftRefs: new Set(),
+		swipes: () => ({ trailing: [], dimmed: false }),
 	};
 	return (
 		<PinnedSection
