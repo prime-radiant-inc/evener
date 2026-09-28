@@ -892,22 +892,48 @@ func TestReapCloseFailureIsUnsettled(t *testing.T) {
 // entry are never enumerated or rewritten by the local reap, so its intent
 // data can never clobber the proof orphan-resolve needs.
 func TestReapLeavesRemoteAndUnavailableBoundariesAlone(t *testing.T) {
-	cases := map[string]string{
-		"remote fencing":       `[{"kind":"remote-fencing","fencingEpoch":{"bootId":"b1","opSeq":3},"guardEpoch":7,"leaseEntries":[]}]`,
-		"boundary unavailable": `[{"kind":"boundary-unavailable","reason":"corrupt-store-custody","custodyRef":"/custody"}]`,
+	cases := []struct {
+		name     string
+		boundary string
+		install  func(*testing.T, *hostops.Store, string, string)
+	}{
+		{
+			name:     "remote fencing",
+			boundary: `[{"kind":"remote-fencing","fencingEpoch":{"bootId":"b1","opSeq":3},"guardEpoch":7,"leaseEntries":[]}]`,
+			// The paired write production's fencing takes: the record becomes
+			// orphan-unverified with its boundary and its host's marker in one
+			// atomic write, and the armed intent is kept. S18's store invariant
+			// reads that pair, so the fixture that stands in for a fencing
+			// quarantine is built through this API, not through the raw
+			// transition (which cannot carry the marker).
+			install: func(t *testing.T, store *hostops.Store, id, boundary string) {
+				t.Helper()
+				if _, err := store.QuarantineFencing(id, []byte(boundary)); err != nil {
+					t.Fatalf("QuarantineFencing: %v", err)
+				}
+			},
+		},
+		{
+			name:     "boundary unavailable",
+			boundary: `[{"kind":"boundary-unavailable","reason":"corrupt-store-custody","custodyRef":"/custody"}]`,
+			install: func(t *testing.T, store *hostops.Store, id, boundary string) {
+				t.Helper()
+				if _, err := store.Transition(id, hostops.StateOrphanUnverified, func(r *hostops.Record) {
+					r.OrphanBoundary = []byte(boundary)
+				}); err != nil {
+					t.Fatalf("Transition: %v", err)
+				}
+			},
+		},
 	}
-	for name, boundary := range cases {
-		t.Run(name, func(t *testing.T) {
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
 			store, _ := newReapStore(t)
 			record := newReapRecord(t, store, "h1")
 			if _, err := store.ArmSpawnIntent(record.ID, linuxIntent("n1")); err != nil {
 				t.Fatalf("ArmSpawnIntent: %v", err)
 			}
-			if _, err := store.Transition(record.ID, hostops.StateOrphanUnverified, func(r *hostops.Record) {
-				r.OrphanBoundary = []byte(boundary)
-			}); err != nil {
-				t.Fatalf("Transition: %v", err)
-			}
+			testCase.install(t, store, record.ID, testCase.boundary)
 			handle := &fakeBoundary{}
 			var opened []execenv.BoundaryIdentity
 			dropped, err := ReapLocalOrphanBoundary(store, ReapOptions{Open: openOnce(handle, &opened)})
@@ -915,10 +941,10 @@ func TestReapLeavesRemoteAndUnavailableBoundariesAlone(t *testing.T) {
 				t.Fatalf("ReapLocalOrphanBoundary: %v", err)
 			}
 			if dropped != 0 || len(opened) != 0 {
-				t.Fatalf("the reap enumerated a %s boundary (dropped %d, opened %d)", name, dropped, len(opened))
+				t.Fatalf("the reap enumerated a %s boundary (dropped %d, opened %d)", testCase.name, dropped, len(opened))
 			}
 			stored, _ := store.Record(record.ID)
-			if string(stored.OrphanBoundary) != boundary || len(stored.PendingSpawns) != 1 {
+			if string(stored.OrphanBoundary) != testCase.boundary || len(stored.PendingSpawns) != 1 {
 				t.Fatalf("the record = %s/%+v, want it untouched", stored.OrphanBoundary, stored.PendingSpawns)
 			}
 		})
