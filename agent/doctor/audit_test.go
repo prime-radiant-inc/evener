@@ -2407,3 +2407,59 @@ func TestRunAudit_SessionLocationsForNonReproducible(t *testing.T) {
 		t.Errorf("JSON sessionLocations[0] = %v, want bucket=%q sessionId=%q (camelCase wire contract)", first, "has space-a", sid)
 	}
 }
+
+// TestRunAudit_SessionLocationsShareNonReproBudget verifies roborev's finding
+// that SessionLocations must carry the same capped non-reproducible set the
+// Description prose discloses, bounded by the shared evidenceSessionRefCap
+// budget (reproducible refs first, then non-reproducible). Before the fix it
+// applied its own independent cap, so it listed non-reproducible sessions the
+// shared disclosure budget had already omitted.
+func TestRunAudit_SessionLocationsShareNonReproBudget(t *testing.T) {
+	base := t.TempDir()
+	// 150 reproducible sessions fill most of the shared 200-slot budget.
+	reproBucket := stateHomeBucket(base, hash1)
+	const reproCount = 150
+	for range reproCount {
+		s := newSessionsTestSID(t)
+		writeAuditSession(t, reproBucket, s, oneCleanReadFileTurns(), fiveRunTimeoutJobsFor(s))
+	}
+	// 100 non-reproducible sessions (50 sids across two shell-unsafe buckets).
+	const nonReproPairs = 50
+	bucketA := stateHomeBucket(base, "has space-a")
+	bucketB := stateHomeBucket(base, "has space-b")
+	for range nonReproPairs {
+		s := newSessionsTestSID(t)
+		writeAuditSession(t, bucketA, s, oneCleanReadFileTurns(), fiveRunTimeoutJobsFor(s))
+		writeAuditSession(t, bucketB, s, oneCleanReadFileTurns(), fiveRunTimeoutJobsFor(s))
+	}
+
+	rb := mustParseFixtureRunbook(t)
+	res, err := RunAudit(base, rb, AuditOpts{Since: 24 * time.Hour})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var runTimeout *Finding
+	for i := range res.Findings {
+		if strings.Contains(res.Findings[i].Title, "Run-timeout") {
+			runTimeout = &res.Findings[i]
+		}
+	}
+	if runTimeout == nil {
+		t.Fatalf("no run-timeout finding")
+	}
+	// The shared budget leaves evidenceSessionRefCap - reproCount slots for
+	// non-reproducible sessions; SessionLocations must list exactly those.
+	wantNonReproListed := evidenceSessionRefCap - reproCount
+	if got := len(runTimeout.Evidence.SessionLocations); got != wantNonReproListed {
+		t.Errorf("SessionLocations = %d entries, want %d (the shared budget's remaining slots after %d reproducible refs)", got, wantNonReproListed, reproCount)
+	}
+	// SessionLocations and the Description must disclose the same capped set:
+	// no session omitted from the prose may appear as structured evidence.
+	descNonRepro := 0
+	if idx := strings.Index(runTimeout.Description, "not reproducible"); idx >= 0 {
+		descNonRepro = strings.Count(runTimeout.Description[idx:], " in bucket \"")
+	}
+	if len(runTimeout.Evidence.SessionLocations) != descNonRepro {
+		t.Errorf("SessionLocations has %d entries but Description names %d non-reproducible sessions — the structured and prose channels must disclose the same capped set", len(runTimeout.Evidence.SessionLocations), descNonRepro)
+	}
+}

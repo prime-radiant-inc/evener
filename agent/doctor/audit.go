@@ -46,11 +46,16 @@ type FindingEvidence struct {
 	// no dedup discrepancy.
 	TotalSessionRefs int `json:"totalSessionRefs,omitempty"` //nolint:tagliatelle // doctor Finding wire contract is camelCase (finding-contract.md)
 	// SessionLocations carries the lossless (bucket, sessionId) identity of
-	// every non-reproducible session — one whose bare sid is ambiguous across
-	// shell-unsafe buckets, so it cannot enter SessionRefs and DoctorCommand
-	// cannot reproduce it. Both values are tracked internally (nonReproSession);
-	// this field is the machine-readable form of what would otherwise be
-	// Description prose only.
+	// the non-reproducible sessions named in Description prose — sessions
+	// whose bare sid is ambiguous across shell-unsafe buckets, so they cannot
+	// enter SessionRefs and DoctorCommand cannot reproduce them. Both values
+	// are tracked internally (nonReproSession); this field is the
+	// machine-readable form of what would otherwise be Description prose only.
+	// It draws on the same shared evidenceSessionRefCap budget as the prose
+	// (reproducible refs first), so it lists exactly the sessions the prose
+	// names and never a session the prose omitted. Any omitted non-reproducible
+	// sessions are counted in Description prose and in TotalSessionRefs (the
+	// overall distinct-session count, reproducible plus non-reproducible).
 	SessionLocations []SessionLocation `json:"sessionLocations,omitempty"` //nolint:tagliatelle // doctor Finding wire contract is camelCase (finding-contract.md)
 	WatchIDs         []string          `json:"watchIds,omitempty"`         //nolint:tagliatelle // doctor Finding wire contract is camelCase (finding-contract.md)
 	DeliveryIDs      []string          `json:"deliveryIds,omitempty"`      //nolint:tagliatelle // doctor Finding wire contract is camelCase (finding-contract.md)
@@ -614,31 +619,35 @@ type nonReproSession struct {
 // remaining slot count in the shared evidenceSessionRefCap budget after
 // reproducible refs are accounted for (round 10 finding 3: Description has
 // one 200-entry budget across all session references, not independent caps).
-// Returns the formatted disclosure and the number of non-reproducible
-// sessions omitted past the remaining budget.
-func formatNonReproSessions(sessions map[string]nonReproSession, budget int) (desc string, omitted int) {
+// Returns the formatted disclosure, the capped sessions it named (in output
+// order, so the caller can emit the identical set as structured evidence),
+// and the number of non-reproducible sessions omitted past the remaining
+// budget.
+func formatNonReproSessions(sessions map[string]nonReproSession, budget int) (desc string, listed []nonReproSession, omitted int) {
 	keys := sortedNonReproKeys(sessions)
 	capped := keys
 	if len(capped) > budget {
 		omitted = len(capped) - budget
 		capped = capped[:budget]
 	}
+	listed = make([]nonReproSession, 0, len(capped))
 	parts := make([]string, 0, len(capped))
 	for _, k := range capped {
 		s := sessions[k]
+		listed = append(listed, s)
 		parts = append(parts, fmt.Sprintf("%s in bucket %q", s.sid, s.bucket))
 	}
 	if len(parts) == 0 {
-		return "", omitted
+		return "", nil, omitted
 	}
 	desc = strings.Join(parts, ", ") + " (bucket name shell-unsafe, bare id ambiguous across buckets)"
-	return desc, omitted
+	return desc, listed, omitted
 }
 
 // sortedNonReproKeys returns the dedup keys of a non-reproducible session set
 // (projectID+"\x00"+sessionID) in deterministic bucket-then-sid order. Shared
-// by formatNonReproSessions (prose) and sessionLocations (structured) so both
-// order the same sessions identically.
+// by formatNonReproSessions (prose) and the SessionLocations construction in
+// RunAudit so both order the same sessions identically.
 func sortedNonReproKeys(sessions map[string]nonReproSession) []string {
 	keys := make([]string, 0, len(sessions))
 	for k := range sessions {
@@ -646,26 +655,6 @@ func sortedNonReproKeys(sessions map[string]nonReproSession) []string {
 	}
 	sort.Strings(keys)
 	return keys
-}
-
-// sessionLocations returns the lossless (bucket, sessionId) identity of every
-// non-reproducible session — the structured form of the bucket+session
-// context formatNonReproSessions renders as Description prose. Sorted by
-// bucket then sid (the same key order formatNonReproSessions uses) for
-// deterministic output. Capped at evidenceSessionRefCap like SessionRefs so a
-// fleet-wide all-non-reproducible finding cannot overflow the envelope; the
-// true count is disclosed by TotalSessionRefs.
-func sessionLocations(sessions map[string]nonReproSession) []SessionLocation {
-	keys := sortedNonReproKeys(sessions)
-	if len(keys) > evidenceSessionRefCap {
-		keys = keys[:evidenceSessionRefCap]
-	}
-	locs := make([]SessionLocation, 0, len(keys))
-	for _, k := range keys {
-		s := sessions[k]
-		locs = append(locs, SessionLocation{Bucket: s.bucket, SessionID: s.sid})
-	}
-	return locs
 }
 
 // followSelector returns the emission selector for DoctorCommand — the
@@ -1035,11 +1024,6 @@ func RunAudit(stateBase string, runbook Runbook, opts AuditOpts) (AuditResult, e
 		}
 		reproRefs := doctorRefsBySig[sig]
 		nonRepro := nonReproBySig[sig]
-		// SessionLocations carries the lossless identity of every
-		// non-reproducible session, machine-readable rather than prose-only.
-		if len(nonRepro) > 0 {
-			f.Evidence.SessionLocations = sessionLocations(nonRepro)
-		}
 		// Description prose (round 10 findings 3+4, round 11 finding 1, round 14
 		// finding 2): one shared evidenceSessionRefCap budget covers all session
 		// references — reproducible refs first, then non-reproducible disclosures
@@ -1070,7 +1054,19 @@ func RunAudit(stateBase string, runbook Runbook, opts AuditOpts) (AuditResult, e
 		// actually named in the Description (round 13 finding 4: the omission
 		// wording says "more" only when a preceding list exists).
 		if len(nonRepro) > 0 {
-			nonReproDesc, nonReproOmitted := formatNonReproSessions(nonRepro, nonReproBudget)
+			nonReproDesc, nonReproListedSet, nonReproOmitted := formatNonReproSessions(nonRepro, nonReproBudget)
+			// SessionLocations carries the lossless identity of exactly the
+			// non-reproducible sessions the prose just named — the same shared
+			// budget, so the structured and prose channels never disagree about
+			// which sessions are disclosed. The overall distinct-session count
+			// (including any omitted here) stays in TotalSessionRefs.
+			if len(nonReproListedSet) > 0 {
+				locs := make([]SessionLocation, 0, len(nonReproListedSet))
+				for _, s := range nonReproListedSet {
+					locs = append(locs, SessionLocation{Bucket: s.bucket, SessionID: s.sid})
+				}
+				f.Evidence.SessionLocations = locs
+			}
 			if nonReproDesc != "" {
 				nonReproListed = true
 				if reproDesc != "" {
