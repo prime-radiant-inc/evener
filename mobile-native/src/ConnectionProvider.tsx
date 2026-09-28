@@ -18,6 +18,7 @@ import {
 	HubProfiles,
 	type HubUpdate,
 } from "./connection";
+import { runHubCleanups } from "./hubCleanups";
 import { useHubConnection } from "./hubConnection";
 import { HubSelection } from "./hubSelection";
 import type { SavedLocation } from "./location";
@@ -134,11 +135,13 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
 		(id: string) =>
 			selection.remove(id, {
 				removeHub(hubId: string) {
-					drafts.removeHub(hubId);
-					readerPositions.removeHub(hubId);
-					removeOrganizationData(hubId);
-					forgetBoardForHub(hubId);
-					forgetDetailLevelsForHub(hubId);
+					runHubCleanups(hubId, [
+						(id) => drafts.removeHub(id),
+						(id) => readerPositions.removeHub(id),
+						removeOrganizationData,
+						forgetBoardForHub,
+						forgetDetailLevelsForHub,
+					]);
 				},
 			}),
 		[selection],
