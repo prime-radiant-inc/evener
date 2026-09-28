@@ -42,6 +42,8 @@ import {
 } from "./src/screens";
 import { SHEET_ROUTES } from "./src/sheet/sheetRoutes";
 import { QueueSheet } from "./src/QueueSheet";
+import { CommentSheet } from "./src/reader/CommentSheet";
+import { CommentsSheet } from "./src/reader/CommentsSheet";
 import { OutlineSheet } from "./src/reader/OutlineSheet";
 import { ReaderScreen } from "./src/reader/ReaderScreen";
 import { TasksSheet } from "./src/TasksSheet";
@@ -233,6 +235,16 @@ function Navigation() {
 							name="OutlineSheet"
 							component={OutlineSheet}
 							options={SHEET_ROUTES.OutlineSheet}
+						/>
+						<Stack.Screen
+							name="CommentSheet"
+							component={CommentSheet}
+							options={SHEET_ROUTES.CommentSheet}
+						/>
+						<Stack.Screen
+							name="CommentsSheet"
+							component={CommentsSheet}
+							options={SHEET_ROUTES.CommentsSheet}
 						/>
 					</Stack.Group>
 				</Stack.Navigator>

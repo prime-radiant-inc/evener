@@ -3,16 +3,19 @@
 import type { NativeStackHeaderItem, NativeStackNavigationOptions } from "@react-navigation/native-stack";
 import type { ThreadReadResponse } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
-import { cloneElement } from "react";
+import { cloneElement, type ReactElement } from "react";
 import { FlatList } from "react-native";
 import type { ReactTestInstance, ReactTestRenderer } from "react-test-renderer";
 import { act } from "react-test-renderer";
-import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import { flatListCalls, pressable, render, renderedText } from "../renderNative.testkit";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { alertRequests, flatListCalls, pressable, render, renderedText } from "../renderNative.testkit";
+import { takeQuote } from "../session/pendingQuote";
 import { sheetKey } from "../sheet/sheetHosts";
 import type { SyncStringStorage } from "../syncStringStorage";
 import { documentBlocks } from "./documentBlocks";
 import { DocumentMemory } from "./documentMemory";
+import { CommentSheet } from "./CommentSheet";
+import { CommentsSheet } from "./CommentsSheet";
 import { ReaderScreen } from "./ReaderScreen";
 import { readerHosts } from "./readerHosts";
 
@@ -22,6 +25,18 @@ const harness = vi.hoisted(() => ({
 	clipboard: [] as string[],
 	appState: [] as ((state: string) => void)[],
 }));
+// The action sheets the Reader's blocks opened, newest last, with the
+// callback that picks from one; and the sheet routes' navigation.
+const menus = vi.hoisted(() => ({
+	shown: [] as { options: { options: string[]; cancelButtonIndex: number }; pick: (index: number) => void }[],
+}));
+const sheetNavigation = vi.hoisted(() => ({
+	goBack: vi.fn(),
+	dispatch: vi.fn(),
+	navigate: vi.fn(),
+	prevented: [] as boolean[],
+	onPrevent: null as null | ((event: { data: { action: unknown } }) => void),
+}));
 const stack = vi.hoisted(() => ({
 	state: { index: 2, routes: [] as { key: string; name: string; params?: object }[] },
 }));
@@ -29,6 +44,15 @@ const stack = vi.hoisted(() => ({
 vi.mock("react-native", async () => ({
 	...(await import("../renderNative.testkit")).nativeModuleMock(),
 	Image: "Image",
+	TextInput: "TextInput",
+	ActionSheetIOS: {
+		showActionSheetWithOptions: (
+			options: { options: string[]; cancelButtonIndex: number },
+			pick: (index: number) => void,
+		) => {
+			menus.shown.push({ options, pick });
+		},
+	},
 	AppState: {
 		currentState: "active",
 		addEventListener: (_event: string, listener: (state: string) => void) => {
@@ -49,6 +73,11 @@ vi.mock("expo-clipboard", () => ({
 }));
 vi.mock("@react-navigation/native", () => ({
 	useNavigationState: <T,>(select: (state: typeof stack.state) => T) => select(stack.state),
+	useNavigation: () => sheetNavigation,
+	usePreventRemove: (prevent: boolean, onPrevent: (event: { data: { action: unknown } }) => void) => {
+		sheetNavigation.prevented.push(prevent);
+		sheetNavigation.onPrevent = onPrevent;
+	},
 }));
 vi.mock("expo-secure-store", () => ({
 	getItemAsync: vi.fn(async (key: string) =>
@@ -101,6 +130,12 @@ const threadRead = (status: string): ThreadReadResponse =>
 
 beforeEach(() => {
 	flatListCalls.length = 0;
+	menus.shown = [];
+	alertRequests.length = 0;
+	sheetNavigation.goBack.mockReset();
+	sheetNavigation.navigate.mockReset();
+	sheetNavigation.prevented = [];
+	sheetNavigation.onPrevent = null;
 	harness.clipboard = [];
 	harness.appState = [];
 	served = { [PATH]: { body: PLAN } };
@@ -194,7 +229,9 @@ function documentList(tree: ReactTestRenderer): ReactTestInstance {
 
 function ruled(tree: ReactTestRenderer): ReactTestInstance[] {
 	return tree.root.findAll(
-		(node) => String(node.type) === "View" && (node.props.style as { borderLeftWidth?: number } | undefined)?.borderLeftWidth === 3,
+		(node) =>
+			typeof node.type === "string" &&
+			(node.props.style as { borderLeftWidth?: number } | undefined)?.borderLeftWidth === 3,
 	);
 }
 
@@ -551,4 +588,188 @@ it("never offers Retry, Refresh, Reconnect or a Next capsule", async () => {
 	const text = renderedText(tree);
 	for (const word of ["Retry", "Refresh", "Reconnect", "Next"]) expect(text).not.toContain(word);
 	expect(text).toContain("settle.md couldn't be loaded right now.");
+});
+
+describe("comments (Task 16)", () => {
+	const blocks = documentBlocks(PLAN);
+	const goal = blocks[1];
+	const secondItem = blocks[4];
+	if (!goal || !secondItem) throw new Error("the plan's blocks moved");
+
+	function block(tree: ReactTestRenderer, index: number): ReactTestInstance {
+		return tree.root.find((node) => String(node.type) === "Pressable" && node.props.testID === `block-${index}`);
+	}
+
+	function openMenu(tree: ReactTestRenderer, index: number) {
+		act(() => block(tree, index).props.onLongPress());
+		const menu = menus.shown.at(-1);
+		if (!menu) throw new Error("no menu");
+		return menu;
+	}
+
+	function choose(menu: (typeof menus.shown)[number], label: string) {
+		act(() => menu.pick(menu.options.options.indexOf(label)));
+	}
+
+	function marker(tree: ReactTestRenderer, index: number): string | null {
+		const pills = block(tree, index).findAll(
+			(node) => String(node.type) === "Pressable" && /^\d+ comments?$/.test(String(node.props.accessibilityLabel)),
+		);
+		return pills[0] ? String(pills[0].props.accessibilityLabel) : null;
+	}
+
+	const commentParams = (over: Record<string, unknown> = {}) => ({
+		hubId: "studio",
+		sessionRef: "local:fix",
+		path: PATH,
+		blockIndex: 1,
+		blockHash: goal.hash,
+		quote: goal.text,
+		...over,
+	});
+
+	function mountSheet(element: ReactElement) {
+		const tree = render(element);
+		trees.push(tree);
+		return tree;
+	}
+
+	function commentSheet(params = commentParams()) {
+		return mountSheet(<CommentSheet route={{ key: "comment", name: "CommentSheet", params } as never} navigation={sheetNavigation as never} />);
+	}
+
+	function commentsSheet() {
+		const params = { hubId: "studio", sessionRef: "local:fix", path: PATH, reviewRef: "local:coord", reviewTitle: "Coordinator" };
+		return mountSheet(
+			<CommentsSheet route={{ key: "comments", name: "CommentsSheet", params } as never} navigation={sheetNavigation as never} />,
+		);
+	}
+
+	function typeComment(tree: ReactTestRenderer, text: string) {
+		const field = tree.root.find((node) => String(node.type) === "TextInput");
+		act(() => field.props.onChangeText(text));
+	}
+
+	it("opens the block's four actions on a long press, and highlights that block while it's open", async () => {
+		const { tree } = await mount();
+		const menu = openMenu(tree, 1);
+		expect(menu.options.options).toEqual(["Comment", "Quote in reply", "Copy", "Select text", "Cancel"]);
+		const highlighted = () => (block(tree, 1).props.style as { backgroundColor?: string }).backgroundColor;
+		expect(highlighted()).toBeTruthy();
+		expect((block(tree, 0).props.style as { backgroundColor?: string }).backgroundColor).toBeUndefined();
+		act(() => menu.pick(menu.options.cancelButtonIndex));
+		expect(highlighted()).toBeUndefined();
+	});
+
+	it("adds a comment through the comment sheet, and marks its block", async () => {
+		const { tree, navigation, rerender } = await mount();
+		choose(openMenu(tree, 1), "Comment");
+		expect(navigation.navigate).toHaveBeenCalledWith("CommentSheet", commentParams());
+		const sheet = commentSheet();
+		expect(renderedText(sheet)).toContain(goal.text);
+		expect(renderedText(sheet)).toContain("Comments stay with this document until you send your review.");
+		expect(pressable(sheet, "Add")?.props.accessibilityState).toMatchObject({ disabled: true });
+		typeComment(sheet, "Say which run.");
+		act(() => pressable(sheet, "Add")?.props.onPress());
+		expect(memory.comments(KEY)).toMatchObject([{ blockIndex: 1, blockHash: goal.hash, quote: goal.text, text: "Say which run." }]);
+		expect(sheetNavigation.goBack).toHaveBeenCalled();
+		await rerender();
+		expect(marker(tree, 1)).toBe("1 comment");
+	});
+
+	it("asks before losing a typed comment", async () => {
+		const sheet = commentSheet();
+		expect(sheetNavigation.prevented.at(-1)).toBe(false);
+		typeComment(sheet, "Half a thought");
+		expect(sheetNavigation.prevented.at(-1)).toBe(true);
+		act(() => sheetNavigation.onPrevent?.({ data: { action: { type: "GO_BACK" } } }));
+		expect(alertRequests.at(-1)?.title).toBe("Discard this comment?");
+	});
+
+	it("puts a list item's comments on that item alone", async () => {
+		for (const text of ["one", "two"])
+			memory.addComment(KEY, { blockIndex: 4, blockHash: secondItem.hash, quote: secondItem.text, text });
+		const { tree } = await mount();
+		expect(marker(tree, 4)).toBe("2 comments");
+		expect(marker(tree, 3)).toBeNull();
+	});
+
+	it("shows the tip until the first comment, then the Comments button", async () => {
+		const { tree, navigation, rerender } = await mount();
+		expect(renderedText(tree)).toContain("Touch and hold a paragraph to comment on it");
+		expect(pressable(tree, "Comments")).toBeUndefined();
+		act(() => {
+			memory.addComment(KEY, { blockIndex: 1, blockHash: goal.hash, quote: goal.text, text: "x" });
+		});
+		await rerender();
+		expect(renderedText(tree)).not.toContain("Touch and hold a paragraph to comment on it");
+		act(() => pressable(tree, "Comments")?.props.onPress());
+		expect(navigation.navigate).toHaveBeenCalledWith("CommentsSheet", {
+			hubId: "studio",
+			sessionRef: "local:fix",
+			path: PATH,
+			reviewRef: "local:coord",
+			reviewTitle: "Coordinator",
+		});
+	});
+
+	it("lists the comments, shows one in the Reader, and deletes one", async () => {
+		memory.addComment(KEY, { blockIndex: 4, blockHash: secondItem.hash, quote: secondItem.text, text: "Name the fix." });
+		await mount();
+		const sheet = commentsSheet();
+		expect(renderedText(sheet)).toContain("Comments · 1");
+		expect(renderedText(sheet)).toContain("Fix it.");
+		expect(renderedText(sheet)).toContain("Name the fix.");
+		flatListCalls.length = 0;
+		sheetNavigation.goBack.mockImplementation(() => flatListCalls.push({ method: "goBack" }));
+		act(() => pressable(sheet, "Show")?.props.onPress());
+		expect(flatListCalls).toEqual([{ method: "goBack" }, { method: "scrollToIndex", args: { index: 4, animated: true } }]);
+		act(() => pressable(sheet, "Delete")?.props.onPress());
+		expect(memory.comments(KEY)).toEqual([]);
+		expect(renderedText(sheet)).toContain("No comments yet");
+	});
+
+	it("comments on the words you selected", async () => {
+		const { tree, navigation } = await mount();
+		choose(openMenu(tree, 1), "Select text");
+		const text = block(tree, 1).find((node) => String(node.type) === "EnrichedMarkdownText");
+		expect(text.props.selectable).toBe(true);
+		const comment = (text.props.contextMenuItems as { text: string; onPress: (event: object) => void }[]).find(
+			(item) => item.text === "Comment",
+		);
+		act(() => comment?.onPress({ text: "a clean run", selection: { start: 12, end: 23 } }));
+		expect(navigation.navigate).toHaveBeenCalledWith("CommentSheet", commentParams({ quote: "a clean run" }));
+		// Choosing Comment ends the selection; so does pressing another block.
+		const selectable = (index: number) =>
+			block(tree, index).find((node) => String(node.type) === "EnrichedMarkdownText").props.selectable;
+		expect(selectable(1)).toBe(false);
+		choose(openMenu(tree, 1), "Select text");
+		expect(selectable(1)).toBe(true);
+		openMenu(tree, 3);
+		expect(selectable(1)).toBe(false);
+	});
+
+	it("keeps a comment whose paragraph changed, without a marker or a Show", async () => {
+		const older = documentBlocks(OLDER)[1];
+		if (!older) throw new Error("no block");
+		memory.addComment(KEY, { blockIndex: 1, blockHash: older.hash, quote: older.text, text: "Too vague." });
+		const { tree } = await mount();
+		expect(marker(tree, 1)).toBeNull();
+		const sheet = commentsSheet();
+		expect(renderedText(sheet)).toContain("Too vague.");
+		expect(pressable(sheet, "Show")).toBeUndefined();
+	});
+
+	it("quotes a block in a reply to its review session", async () => {
+		const { tree, navigation } = await mount();
+		choose(openMenu(tree, 1), "Quote in reply");
+		expect(takeQuote("studio", "local:coord")).toBe(goal.text);
+		expect(navigation.pop).toHaveBeenCalledWith(1);
+	});
+
+	it("copies a block's words", async () => {
+		const { tree } = await mount();
+		await act(async () => choose(openMenu(tree, 4), "Copy"));
+		expect(harness.clipboard).toEqual(["Fix it."]);
+	});
 });

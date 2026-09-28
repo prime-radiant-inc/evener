@@ -42,6 +42,9 @@ export const SHEET_ROUTES = {
 	QueueSheet: sheetOptions(["medium", "large"], "medium"),
 	// The Reader's headings, to jump to one (ruling 26).
 	OutlineSheet: sheetOptions(["medium", "large"], "medium"),
+	// You type in it, so it opens at full height (ruling 26).
+	CommentSheet: sheetOptions(["medium", "large"], "large"),
+	CommentsSheet: sheetOptions(["medium", "large"], "medium"),
 } satisfies { [Name in keyof Routes]?: NativeStackNavigationOptions };
 
 export function isSheetRoute(name: string): boolean {
