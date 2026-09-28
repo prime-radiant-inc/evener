@@ -7,10 +7,16 @@ export function useReduceMotion(): boolean {
 	const [reduce, setReduce] = useState(false);
 	useEffect(() => {
 		let live = true;
+		// A change that arrives before the mount-time read answers is newer
+		// than that read, so the read must not overwrite it.
+		let changed = false;
 		void AccessibilityInfo.isReduceMotionEnabled().then((value) => {
-			if (live) setReduce(value);
+			if (live && !changed) setReduce(value);
 		});
-		const subscription = AccessibilityInfo.addEventListener("reduceMotionChanged", setReduce);
+		const subscription = AccessibilityInfo.addEventListener("reduceMotionChanged", (value) => {
+			changed = true;
+			setReduce(value);
+		});
 		return () => {
 			live = false;
 			subscription.remove();
