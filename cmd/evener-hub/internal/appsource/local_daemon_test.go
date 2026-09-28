@@ -662,6 +662,41 @@ func TestLocalDaemonSourceListAdvertisesSharedNotes(t *testing.T) {
 	}
 }
 
+// TestLocalDaemonSourceListAdvertisesStopSubagent guards the roster path for
+// S6's direct subagent stop, gated the same way SharedNotes is
+// (!ReadOnlyAlias && !closed): a live local session's daemon wires the stop
+// from PR 30 on, so ListThreads must advertise it instead of making
+// list-derived models wait for a read to hydrate it. A read-only alias never
+// gets it (the stop targets the root that owns the tree, never a subagent's
+// own thread), and a closed session withholds every mutation.
+func TestLocalDaemonSourceListAdvertisesStopSubagent(t *testing.T) {
+	source := NewLocalDaemonSourceWithEntries("local", func() []LocalDaemonEntry {
+		return []LocalDaemonEntry{
+			{Entry: rendezvous.Entry{Protocol: appwire.ProtocolVersion, Endpoint: "ws://127.0.0.1/live", ThreadID: "th_live", SessionID: "sess_live"}, Status: "idle"},
+			{Entry: rendezvous.Entry{Protocol: appwire.ProtocolVersion, Endpoint: "ws://127.0.0.1/alias", ThreadID: "th_alias"}, SessionID: "sess_alias", OwnerSessionID: "sess_live", Status: "idle", ReadOnlyAlias: true},
+			{Entry: rendezvous.Entry{Protocol: appwire.ProtocolVersion, Endpoint: "ws://127.0.0.1/closed", ThreadID: "th_closed", SessionID: "sess_closed"}, Status: appwire.ThreadStatusClosed},
+		}
+	}, nil)
+
+	resp, err := source.ListThreads(context.Background(), appwire.ThreadListParams{})
+	if err != nil {
+		t.Fatalf("ListThreads: %v", err)
+	}
+	capsBySession := map[string]appwire.ThreadCapabilities{}
+	for _, thread := range resp.Data {
+		capsBySession[thread.SessionID] = thread.Evener.Capabilities
+	}
+	if live, ok := capsBySession["sess_live"]; !ok || !live.StopSubagent {
+		t.Fatalf("live local session did not advertise the subagent stop: %+v (all: %+v)", live, capsBySession)
+	}
+	if alias, ok := capsBySession["sess_alias"]; !ok || alias.StopSubagent {
+		t.Fatalf("read-only alias advertised the subagent stop: %+v (all: %+v)", alias, capsBySession)
+	}
+	if closed, ok := capsBySession["sess_closed"]; !ok || closed.StopSubagent {
+		t.Fatalf("closed session advertised the subagent stop: %+v (all: %+v)", closed, capsBySession)
+	}
+}
+
 // TestLocalDaemonSourceListAdvertisesSkillInput guards the roster path the
 // same way the shared-notes pin does: a live local session's harness supports
 // skill selections, so ListThreads must advertise the capability instead of

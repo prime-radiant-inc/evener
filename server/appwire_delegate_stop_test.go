@@ -82,6 +82,10 @@ func TestRootCapabilitiesAdvertiseStopSubagent(t *testing.T) {
 	if !s.appThread().Evener.Capabilities.StopSubagent {
 		t.Fatal("a daemon with the stop wired does not advertise it")
 	}
+	// Closed still withholds it, like Interrupt.
+	if closed := s.appCapabilities(appwire.ThreadStatusClosed, false); closed.StopSubagent {
+		t.Fatalf("a closed session advertised the subagent stop: %+v", closed)
+	}
 }
 
 // wireErrorInfo is the evener error kind a handler's error carries, "" when
