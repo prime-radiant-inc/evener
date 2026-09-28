@@ -418,13 +418,13 @@ describe("native demonstration hub's fleet sessions", () => {
 	// client, closed after `body` runs.
 	async function withHub(
 		fleetOptions: DemoFleetOptions | undefined,
-		body: (client: ReturnType<typeof createHubClient>) => Promise<void>,
+		body: (client: ReturnType<typeof createHubClient>, hub: Awaited<ReturnType<typeof createDemoHub>>) => Promise<void>,
 	) {
 		const hub = await createDemoHub(0, undefined, fleetOptions);
 		const client = createHubClient(hub.origin, "", (url) => new WebSocket(url) as unknown as WebSocketLike);
 		try {
 			await client.connect();
-			await body(client);
+			await body(client, hub);
 		} finally {
 			client.close();
 			await hub.close();
@@ -624,6 +624,39 @@ describe("native demonstration hub's fleet sessions", () => {
 			} finally {
 				service.close();
 			}
+		});
+	});
+
+	it("clears frame 8's question once you answer it", async () => {
+		await withHub({}, async (client) => {
+			const service = createConversationService(client);
+			const ref = refOf("s-audit");
+			try {
+				await service.open(ref);
+				await service.send([{ type: "text", text: "[answers]\n1. [Implied options] → Drop them" }]);
+				const { thread } = await client.request("thread/read", { ref, includeTurns: false });
+				expect(thread.evener.askPending).toBeFalsy();
+				expect(thread.evener).not.toHaveProperty("pendingQuestion");
+			} finally {
+				service.close();
+			}
+		});
+	});
+
+	it("asks the working session's question in its thread too, when the fleet asks it", async () => {
+		await withHub({}, async (client, hub) => {
+			const ref = refOf("s-gateway");
+			hub.askQuestion();
+			const { thread } = await client.request("thread/read", { ref, includeTurns: true });
+			expect(thread.status.type).toBe("awaiting");
+			expect(thread.evener.askPending).toBe(true);
+			expect(thread.evener.pendingQuestion).toMatchObject({
+				question: "Where should the gateway token command store tokens?",
+				count: 1,
+			});
+			const turn = thread.turns?.at(-1);
+			expect(turn?.status).toBe("completed");
+			expect(turn?.items?.at(-1)).toMatchObject({ toolName: "ask_user", status: "completed" });
 		});
 	});
 

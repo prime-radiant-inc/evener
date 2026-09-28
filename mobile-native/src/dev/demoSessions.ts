@@ -637,16 +637,7 @@ function turnOf(session: FleetSession, entries: Entry[], error: TurnError | unde
 		if ("agent" in entry) return { ...item, type: "agentMessage", text: entry.agent, status: "completed" };
 		// A thought with no text yet: the encoder leaves the empty text out.
 		if ("thinking" in entry) return { ...item, type: "reasoning", status: "inProgress" };
-		if ("ask" in entry)
-			return {
-				...item,
-				type: "commandExecution",
-				toolName: "ask_user",
-				callId: `${id}-ask`,
-				argumentsJson: JSON.stringify({ questions: entry.ask }),
-				status: "completed",
-				completedAt: at,
-			};
+		if ("ask" in entry) return askItem(item.id, `${id}-ask`, entry.ask, item.startedAt, at);
 		if ("subagent" in entry) {
 			const subagent = subagents.get(entry.subagent);
 			if (!subagent) throw new Error(`${session.slug} has no subagent ${entry.subagent}`);
@@ -769,11 +760,31 @@ export function clearAvailable(thread: Thread): boolean {
 
 // The first question of the session's pending ask, as the daemon summarizes
 // it for the Board's row (appwire/types.go's PendingQuestion).
-function pendingQuestionOf(entries: Entry[]): PendingQuestion {
-	const ask = entries.find((entry): entry is { ask: Question[] } => "ask" in entry)?.ask ?? [];
+function pendingQuestionOf(ask: Question[]): PendingQuestion {
 	const [first] = ask;
 	if (!first) throw new Error("a pending question needs an ask");
 	return { question: first.question, options: first.options.map((option) => option.label), count: ask.length };
+}
+
+// An ask_user call, acknowledged: the question the phone's dock shows while
+// the session waits on you.
+function askItem(
+	id: string,
+	callId: string,
+	questions: Question[],
+	startedAt: number,
+	completedAt: number,
+): ThreadItem {
+	return {
+		id,
+		type: "commandExecution",
+		toolName: "ask_user",
+		callId,
+		argumentsJson: JSON.stringify({ questions }),
+		status: "completed",
+		startedAt,
+		completedAt,
+	};
 }
 
 function sessionThread(session: FleetSession, now: number): Thread {
@@ -813,7 +824,12 @@ function sessionThread(session: FleetSession, now: number): Thread {
 			reasoningEffort: content.effort ?? DEFAULT_EFFORT,
 			reasoningEffortLevels: ALL_EFFORTS,
 			supportsReasoning: true,
-			...(session.state === "question" ? { askPending: true, pendingQuestion: pendingQuestionOf(entries) } : {}),
+			...(session.state === "question"
+				? {
+						askPending: true,
+						pendingQuestion: pendingQuestionOf(entries.flatMap((entry) => ("ask" in entry ? entry.ask : []))),
+					}
+				: {}),
 			...(status === "systemError" && content.error
 				? {
 						failure: {
@@ -929,4 +945,45 @@ export function resolveEscalation(thread: Thread, params: SandboxEscalationResol
 		throw new Error(`No pending escalation ${params.escalationId}`);
 	thread.evener.pendingEscalations = pending.filter((escalation) => escalation.escalationId !== params.escalationId);
 	return {};
+}
+
+// data.js's q-gateway: the question the working session asks when the demo
+// fleet's EVENER_DEMO_FLEET_ASK_AFTER timer fires (demoFleet.ts's
+// ASKING_SESSION_ID).
+const WORKING_SESSION_QUESTION: Question[] = [
+	{
+		header: "Token storage",
+		question: "Where should the gateway token command store tokens?",
+		why: "Both work on Linux and macOS; the keychain is safer but needs a helper on headless hosts.",
+		multi_select: false,
+		options: [
+			{ label: "System keychain", detail: "Safer; falls back to a file on headless hosts", recommended: true },
+			{ label: "A file under ~/.config/evener", detail: "Simplest; mode 0600" },
+			{ label: "Both, configurable", detail: "More code and more tests" },
+		],
+	},
+];
+
+// The working session asks its question: its turn ends on the ask, as a
+// daemon's does, and the session waits on you, matching its Board row.
+export function askWorkingSessionQuestion(thread: Thread, now: number): void {
+	const turn = thread.turns?.find((candidate) => candidate.id === thread.evener.activeTurnId);
+	if (!turn) throw new Error(`${thread.name} has no running turn to ask from`);
+	for (const item of turn.items ?? [])
+		if (item.status === "inProgress") {
+			item.status = "completed";
+			item.completedAt = now;
+		}
+	turn.items?.push(askItem(`${turn.id}-ask`, `${turn.id}-ask`, WORKING_SESSION_QUESTION, now, now));
+	turn.status = "completed";
+	turn.completedAt = now;
+	if (turn.startedAt !== undefined) turn.durationMs = now - turn.startedAt;
+	thread.status = { type: "awaiting" };
+	thread.evener.askPending = true;
+	thread.evener.pendingQuestion = pendingQuestionOf(WORKING_SESSION_QUESTION);
+	thread.evener.lastTurnEndedAt = now;
+	delete thread.evener.activeTurnId;
+	delete thread.evener.activeTurnStartedAt;
+	thread.evener.capabilities.send = true;
+	thread.evener.capabilities.clear = clearAvailable(thread);
 }

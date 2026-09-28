@@ -13,8 +13,14 @@ import type {
 	Turn,
 	TurnStartParams,
 } from "@evener/appwire-client";
-import { createDemoFleet, type DemoFleetOptions } from "../src/dev/demoFleet.js";
 import {
+	ASKING_SESSION_ID,
+	createDemoFleet,
+	type DemoFleetOptions,
+	fleetSessionRef,
+} from "../src/dev/demoFleet.js";
+import {
+	askWorkingSessionQuestion,
 	clearAvailable,
 	createDemoSessions,
 	DEMO_MODEL_LIST,
@@ -133,6 +139,12 @@ export async function createDemoHub(
 	// fire on demand.
 	function askQuestion() {
 		broadcastNavigation(requireFleet().askQuestion());
+		const asking = threads.get(fleetSessionRef(ASKING_SESSION_ID));
+		// Asked once: a second ask finds the session already waiting.
+		if (asking?.status.type === "active") {
+			askWorkingSessionQuestion(asking, Date.now());
+			resync(asking);
+		}
 	}
 	// EVENER_DEMO_FLEET_ASK_AFTER: counted from the hub's start, not from any
 	// one client's connection.
@@ -183,6 +195,10 @@ export async function createDemoHub(
 			],
 		} satisfies Turn;
 		thread.turns?.push(turn);
+		// Your message answers any question the session was waiting on, as
+		// the daemon clears its pending ask on user input.
+		delete thread.evener.askPending;
+		delete thread.evener.pendingQuestion;
 		setTurnRunning(thread, turn);
 		return turn;
 	}

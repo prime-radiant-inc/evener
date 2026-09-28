@@ -614,6 +614,13 @@ export interface FleetSession {
 	subagents: RawSubagent[];
 }
 
+// The ref the fleet names a session by, from its fixture slug.
+export function fleetSessionRef(slug: string): string {
+	const raw = SESSIONS.find((candidate) => candidate.id === slug);
+	if (!raw) throw new Error(`Unknown demonstration session: ${slug}`);
+	return sessionRef(raw);
+}
+
 // Every session the fleet holds, in the fleet's own order.
 export function fleetSessions(): FleetSession[] {
 	return SESSIONS.map((raw) => {
@@ -754,7 +761,7 @@ export interface DemoFleet extends FleetAnswers {
 // The working row EVENER_DEMO_FLEET_ASK_AFTER turns into a question: a plain
 // local "evener" session with no pin category, subagents or running job, so
 // the only thing that changes on the Board is its band.
-const ASKING_SESSION_ID = "s-gateway";
+export const ASKING_SESSION_ID = "s-gateway";
 const ASKING_PROJECT = projectKeyOf(SESSIONS.find((raw) => raw.id === ASKING_SESSION_ID) ?? {});
 
 export function createDemoFleet(options: DemoFleetOptions = {}): DemoFleet {
