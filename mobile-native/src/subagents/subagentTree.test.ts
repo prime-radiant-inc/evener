@@ -104,6 +104,20 @@ describe("one coordinator's subagent tree", () => {
 		expect(tree.getSnapshot()).toMatchObject({ partial: true, missing: ["Get PR 2138 Test Clean"] });
 	});
 
+	it("keeps what a settled read couldn't list when a new client drops before its first page", async () => {
+		const client = hub((continuation) => {
+			if (continuation === "page-2") throw new Error("offline");
+			return firstPage;
+		});
+		const stuck = new FakeClient("ready");
+		stuck.on("evener/jobs/list", () => new Promise(() => {}));
+		const tree = new SubagentTree("local:coord", "coord");
+		await tree.setClient(client);
+		void tree.setClient(stuck);
+		await tree.setClient(null);
+		expect(tree.getSnapshot()).toMatchObject({ partial: true, missing: ["Get PR 2138 Test Clean"] });
+	});
+
 	it("keeps saying what it couldn't list while it's disconnected", async () => {
 		const client = hub((continuation) => {
 			if (continuation === "page-2") throw new Error("offline");

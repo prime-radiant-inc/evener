@@ -82,7 +82,10 @@ export class SubagentTree {
 		if (client === this.client) return this.reloading ?? Promise.resolve();
 		// A read cut off mid-way leaves the pages it hadn't reached unlisted:
 		// say so until a new read settles.
-		if (this.list && this.reloading) this.settledMissing = this.list.branches().map((branch) => branch.label);
+		// A read that hadn't reached its first page knows nothing new, so what
+		// the last settled read said stands.
+		const unread = this.list?.branches().map((branch) => branch.label) ?? [];
+		if (this.reloading && unread.length > 0) this.settledMissing = unread;
 		this.detachList?.();
 		this.detachList = null;
 		this.list = null;
