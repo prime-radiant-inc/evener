@@ -965,14 +965,8 @@ describe("demo fleet subagents", () => {
 		});
 	});
 
-	it("gives a session with no subagents an empty tree, and a subagent its own session", () => {
+	it("gives a session with no subagents an empty tree", () => {
 		const other = parseActivityTree(fleet.answerJobsList({ ref: `local:${demoSessionId("s-gateway")}` }).data);
 		expect(other?.root.entries).toEqual([]);
-		const tree = parseActivityTree(fleet.answerJobsList({ ref: pr2138 }).data);
-		const child = flattenSubagents(tree as never).find((row) => row.title === "Check drain ordering in tests");
-		if (!child) throw new Error("no nested subagent");
-		const thread = fleet.answerSubagentThread(child.ref);
-		expect(thread?.evener.ref).toBe(child.ref);
-		expect(fleet.answerSubagentThread("local:nope")).toBeNull();
 	});
 });

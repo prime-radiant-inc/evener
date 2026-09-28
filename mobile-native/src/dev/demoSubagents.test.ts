@@ -5,7 +5,6 @@ import {
 	createDemoDocuments,
 	type DemoCoordinator,
 	demoActivityTree,
-	demoSubagentThread,
 	demoTokens,
 	SETTLE_RACE_PLAN,
 	SETTLE_RACE_PLAN_REVISED,
@@ -89,41 +88,22 @@ describe("the demo fleet's subagents", () => {
 		});
 	});
 
-	it("serves each subagent's own session, naming its coordinator, read-only while it runs", () => {
-		const settle = coordinator.subagents[0];
-		const thread = demoSubagentThread(coordinator, settle as NonNullable<typeof settle>, NOW);
-		expect(thread.evener).toMatchObject({
-			ref: "local:g-settle",
-			parentRef: "local:s-pr2138",
-			capabilities: { send: true, queue: true, interrupt: false },
-		});
-		expect(thread.turns?.[0]?.items?.map((item) => item.type)).toEqual([
-			"userMessage",
-			"agentMessage",
-			"commandExecution",
-			"commandExecution",
-			"agentMessage",
-		]);
-		const running = settle?.children?.[0];
-		expect(demoSubagentThread(coordinator, running as NonNullable<typeof running>, NOW).evener).toMatchObject({
-			ref: "local:g-settle-1",
-			capabilities: { send: false, queue: false },
-		});
-	});
-
 	it("reads data.js's token labels", () => {
 		expect(["1.2M", "210K", "95K", "7", "", undefined].map(demoTokens)).toEqual([1_200_000, 210_000, 95_000, 7, 0, 0]);
 	});
 });
 
 describe("the demo fleet's documents", () => {
-	const documents = createDemoDocuments([
-		{
-			sessionRef: "local:s-pr2138",
-			path: "docs/superpowers/plans/2026-09-25-settle-race.md",
-			versions: [SETTLE_RACE_PLAN, SETTLE_RACE_PLAN_REVISED],
-		},
-	]);
+	const documents = createDemoDocuments(
+		[
+			{
+				sessionRef: "local:s-pr2138",
+				path: "docs/superpowers/plans/2026-09-25-settle-race.md",
+				versions: [SETTLE_RACE_PLAN, SETTLE_RACE_PLAN_REVISED],
+			},
+		],
+		"/home/jesse/git/evener",
+	);
 	const read = (session: string, path: string, format = "raw") =>
 		documents.answerDocFile(
 			new URL(

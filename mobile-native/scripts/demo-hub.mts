@@ -22,6 +22,7 @@ import {
 	createDemoFleet,
 	type DemoFleetOptions,
 	fleetSessionRef,
+	fleetSessions,
 } from "../src/dev/demoFleet.js";
 import { createDemoDocuments, SETTLE_RACE_PLAN, SETTLE_RACE_PLAN_REVISED } from "../src/dev/demoSubagents.js";
 import {
@@ -77,16 +78,22 @@ export async function createDemoHub(
 	// providers, plugins, models and folders (demoSetup.ts).
 	const demoSetup = demoFleet ? createDemoSetup(demoFleet, fleetOptions) : null;
 	// With the demo fleet, the Reader's /doc/file reaches the same port as
-	// /rpc, as on a real hub: one HTTP server carries both.
-	const documents = demoFleet
-		? createDemoDocuments([
-				{
-					sessionRef: fleetSessionRef("s-pr2138"),
-					path: "docs/superpowers/plans/2026-09-25-settle-race.md",
-					versions: [SETTLE_RACE_PLAN, SETTLE_RACE_PLAN_REVISED],
-				},
-			])
-		: null;
+	// /rpc, as on a real hub: one HTTP server carries both. The plan lives in
+	// Get PR 2138 Test Clean's folder, where its transcript's link names it.
+	const planSession = fleetSessions().find((session) => session.slug === "s-pr2138");
+	const documents =
+		demoFleet && planSession
+			? createDemoDocuments(
+					[
+						{
+							sessionRef: planSession.ref,
+							path: "docs/superpowers/plans/2026-09-25-settle-race.md",
+							versions: [SETTLE_RACE_PLAN, SETTLE_RACE_PLAN_REVISED],
+						},
+					],
+					planSession.workingDir,
+				)
+			: null;
 	const http = createServer((request, response) => {
 		const url = new URL(request.url ?? "/", "http://demo");
 		if (!documents || request.method !== "GET" || url.pathname !== "/doc/file") {
@@ -387,19 +394,20 @@ export async function createDemoHub(
 						result = { thread: created, turn };
 						break;
 					}
-					case "thread/read": {
-						// A playground thread, or a fleet subagent's own session
-						// (demoSubagents.ts, read-only).
-						const read = selected ?? demoFleet?.answerSubagentThread(params.ref) ?? null;
-						if (!read) throw new Error("Unknown demonstration session");
+					case "thread/read":
+						if (!selected) throw new Error("Unknown demonstration session");
 						if (params.subscribe) {
 							const refs = subscribers.get(socket) ?? new Set<string>();
-							refs.add(read.evener.ref);
+							refs.add(selected.evener.ref);
 							subscribers.set(socket, refs);
 						}
-						result = { thread: { ...read, turns: params.includeTurns ? read.turns : undefined } };
+						result = {
+							thread: {
+								...selected,
+								turns: params.includeTurns ? selected.turns : undefined,
+							},
+						};
 						break;
-					}
 					case "thread/unsubscribe":
 						subscribers.get(socket)?.delete(params.ref);
 						result = {};

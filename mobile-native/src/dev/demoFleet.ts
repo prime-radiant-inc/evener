@@ -27,11 +27,10 @@ import type {
 	NavigationSessionSummary,
 	PluginListResponse,
 	SearchParams,
-	Thread,
 	SearchResponse,
 	Source,
 } from "@evener/appwire-client";
-import { type DemoCoordinator, type DemoSubagent, demoActivityTree, demoSubagentThread } from "./demoSubagents.js";
+import { type DemoCoordinator, demoActivityTree } from "./demoSubagents.js";
 
 // The generation id the fleet's navigationCapability advertises in demo-hub.mts's
 // initialize handshake. Every wireV2 response must carry the exact same id:
@@ -956,9 +955,6 @@ export interface DemoFleet extends FleetAnswers {
 	// Answers evener/jobs/list: a coordinator's subagent tree, and an empty
 	// root for any other fleet session (demoSubagents.ts).
 	answerJobsList(params: { ref?: string; continuation?: string }): { data: unknown };
-	// Answers thread/read for a subagent's own session, or null for a ref
-	// that names no subagent.
-	answerSubagentThread(ref: string): Thread | null;
 }
 
 // The working row EVENER_DEMO_FLEET_ASK_AFTER turns into a question: a plain
@@ -1061,31 +1057,20 @@ export function createDemoFleet(options: DemoFleetOptions = {}): DemoFleet {
 				startupMs,
 			);
 		},
-		answerSubagentThread: (ref) => {
-			for (const raw of sessionsList) {
-				const coordinator = coordinatorOf(raw);
-				const sub = findSubagent(coordinator.subagents, ref, hostId(raw.host));
-				if (sub) return demoSubagentThread(coordinator, sub, startupMs);
-			}
-			return null;
-		},
 	};
 }
 
 // A fleet session as the coordinator of its subagents (demoSubagents.ts).
 function coordinatorOf(raw: RawSession): DemoCoordinator {
-	return { ref: sessionRef(raw), title: raw.title, model: raw.model ?? "", subagents: rawChildren(raw) };
-}
-
-// The subagent a ref names, at any depth: its ref is its coordinator's host
-// and its own id (demoSubagentThread).
-function findSubagent(subagents: readonly DemoSubagent[], ref: string, host: string): DemoSubagent | null {
-	for (const sub of subagents) {
-		if (`${host}:${sub.id}` === ref) return sub;
-		const nested = findSubagent(sub.children ?? [], ref, host);
-		if (nested) return nested;
-	}
-	return null;
+	const host = hostId(raw.host);
+	return {
+		ref: sessionRef(raw),
+		title: raw.title,
+		model: raw.model ?? "",
+		subagents: rawChildren(raw),
+		// The same refs the Board's child rows and the sessions' delegates use.
+		subagentRef: (id) => hostSessionRef(host, id),
+	};
 }
 
 // Every answer the fleet gives, for one fixed list of sessions at one

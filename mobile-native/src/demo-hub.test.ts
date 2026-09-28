@@ -62,6 +62,33 @@ describe("the demo fleet's subagents and documents (phase 4, PR 9)", () => {
 		});
 	});
 
+	it("gives Get PR 2138 Test Clean's transcript the same subagent refs as its Subagents list", async () => {
+		await withFleetHub(async (_hub, client) => {
+			const listed = flattenSubagents(
+				parseActivityTree(
+					((await client.request("evener/jobs/list", { ref: PR2138 })) as { data: unknown }).data,
+				) as never,
+			).map((row) => row.ref);
+			const read = await client.request("thread/read", { ref: PR2138, includeTurns: false });
+			const transcript = (read.thread.evener.diagnostics?.delegates ?? []).map((delegate) => delegate.transcriptRef);
+			expect(transcript.length).toBeGreaterThan(0);
+			for (const ref of transcript) expect(listed).toContain(ref);
+			expect(read.thread.id).toBe(PR2138.slice(PR2138.indexOf(":") + 1));
+		});
+	});
+
+	it("serves the plan its link names, by the session's own folder", async () => {
+		await withFleetHub(async (hub, client) => {
+			const read = await client.request("thread/read", { ref: PR2138, includeTurns: false });
+			const link = (read.thread.evener.sessionUrls ?? []).find((url) => url.url.endsWith("settle-race.md"));
+			if (!link) throw new Error("no plan link");
+			const absolute = decodeURIComponent(new URL(link.url).pathname);
+			expect(absolute.startsWith(`${read.thread.cwd}/`)).toBe(true);
+			const text = await readDocFile(PR2138, absolute, nativeDocPort(hub.origin, ""));
+			expect(text.text).toBe(SETTLE_RACE_PLAN);
+		});
+	});
+
 	it("serves the plan on the same port, then its revision", async () => {
 		await withFleetHub(async (hub) => {
 			const port = nativeDocPort(hub.origin, "");

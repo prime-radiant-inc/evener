@@ -1,11 +1,9 @@
 // The demo fleet's subagents and documents, as the hub serves them: the
-// activity tree behind the Subagents list (evener/jobs/list), a subagent's
-// own session (thread/read), and the documents the Reader opens
-// (/doc/file). Built from the same raw swarm the Board's navigation rows come
+// activity tree behind the Subagents list (evener/jobs/list) and the
+// documents the Reader opens (/doc/file); each subagent's own session
+// (thread/read) is demoSessions.ts's. Built from the same raw swarm the Board's navigation rows come
 // from (demoFleet.ts, after the prototype's data.js), so the Board, the list
 // and the transcript agree (spec Appendix B).
-import type { Thread, ThreadItem, Turn } from "@evener/appwire-client";
-
 export interface DemoSubagent {
 	id: string;
 	title: string;
@@ -30,6 +28,14 @@ export interface DemoCoordinator {
 	title: string;
 	model: string;
 	subagents: readonly DemoSubagent[];
+	/** How the fleet names a subagent's own session; its host and its id
+	 * unless the fleet derives real-shaped ids (demoFleet.ts hostSessionRef). */
+	subagentRef?: (id: string) => string;
+}
+
+// A subagent's own session ref, and the session id inside it.
+function subagentRefOf(coordinator: DemoCoordinator, id: string): string {
+	return coordinator.subagentRef?.(id) ?? `${hostOf(coordinator.ref)}:${id}`;
 }
 
 export function demoTokens(label: string | undefined): number {
@@ -67,9 +73,9 @@ function session(sessionId: string, ref: string, label: string, entries: unknown
 
 /** evener/jobs/list's answer for a coordinator: its subagents, nested as they were started. */
 export function demoActivityTree(coordinator: DemoCoordinator, startupMs: number): { data: unknown } {
-	const host = hostOf(coordinator.ref);
 	const toEntry = (sub: DemoSubagent, ownerSessionId: string): { entry: unknown; counts: Counts } => {
-		const ref = `${host}:${sub.id}`;
+		const ref = subagentRefOf(coordinator, sub.id);
+		const sessionId = idOf(ref);
 		const running = sub.state === "running";
 		const elapsed = (sub.elapsed ?? DEFAULT_ELAPSED_SECONDS) * 1000;
 		const lastEvent = startupMs - sub.ago * 1000;
@@ -86,7 +92,7 @@ export function demoActivityTree(coordinator: DemoCoordinator, startupMs: number
 				kind: "shell",
 				job: {
 					jobId: `job-${sub.id}`,
-					ownerSessionId: sub.id,
+					ownerSessionId: sessionId,
 					ownerRef: ref,
 					type: "shell",
 					status: "running",
@@ -102,7 +108,7 @@ export function demoActivityTree(coordinator: DemoCoordinator, startupMs: number
 			childCounts.active += 1;
 		}
 		for (const child of sub.children ?? []) {
-			const nested = toEntry(child, sub.id);
+			const nested = toEntry(child, sessionId);
 			childEntries.push(nested.entry);
 			addCounts(childCounts, nested.counts);
 		}
@@ -112,7 +118,7 @@ export function demoActivityTree(coordinator: DemoCoordinator, startupMs: number
 		const delegate = {
 			delegateId: `d-${sub.id}`,
 			ownerSessionId,
-			childSessionId: sub.id,
+			childSessionId: sessionId,
 			childRef: ref,
 			type: "delegate",
 			description: sub.title,
@@ -142,7 +148,7 @@ export function demoActivityTree(coordinator: DemoCoordinator, startupMs: number
 					}
 				: {}),
 			branch: {},
-			...(childEntries.length > 0 ? { child: session(sub.id, ref, sub.title, childEntries, childCounts) } : {}),
+			...(childEntries.length > 0 ? { child: session(sessionId, ref, sub.title, childEntries, childCounts) } : {}),
 		};
 		return { entry: { kind: "delegate", delegate }, counts };
 	};
@@ -154,124 +160,6 @@ export function demoActivityTree(coordinator: DemoCoordinator, startupMs: number
 	});
 	return {
 		data: { revision: 1, root: session(idOf(coordinator.ref), coordinator.ref, coordinator.title, entries, counts) },
-	};
-}
-
-const READ_ONLY = {
-	send: false,
-	steer: false,
-	interrupt: false,
-	compact: false,
-	clear: false,
-	forkFromTurn: false,
-	shutdown: false,
-	changeModel: false,
-	changeVisionModel: false,
-	queue: false,
-	goal: false,
-	sharedNotes: false,
-	rename: false,
-};
-
-/** A subagent whose run ended reads as a past session, which takes a message
- * and resumes on it (`pastThreadCapabilities`, cmd/evener-hub/app_threadread.go);
- * a running one is READ_ONLY, as the hub serves it (ruling 30). */
-const RUN_ENDED = {
-	...READ_ONLY,
-	send: true,
-	compact: true,
-	clear: true,
-	forkFromTurn: true,
-	shutdown: true,
-	changeModel: true,
-	changeVisionModel: true,
-	queue: true,
-	goal: true,
-	sharedNotes: true,
-	rename: true,
-};
-
-/** thread/read's answer for one subagent: a short transcript in its state
- * (after the prototype's subTranscript, panels.js:84-101). */
-export function demoSubagentThread(coordinator: DemoCoordinator, sub: DemoSubagent, startupMs: number): Thread {
-	const running = sub.state === "running";
-	const items: ThreadItem[] = [
-		{ id: `${sub.id}-mandate`, type: "userMessage", text: MANDATE(sub.title) },
-		{
-			id: `${sub.id}-start`,
-			type: "agentMessage",
-			status: "completed",
-			text: "Starting. I'll read the relevant code first.",
-		},
-		{
-			id: `${sub.id}-read`,
-			type: "commandExecution",
-			toolName: "read_file",
-			status: "completed",
-			description: "Read the retirement code",
-			argumentsJson: JSON.stringify({ file_path: "agent/retirement.go" }),
-			output: "412 lines",
-		},
-	];
-	if (sub.state === "failed")
-		items.push(
-			{
-				id: `${sub.id}-test`,
-				type: "commandExecution",
-				toolName: "shell",
-				status: "failed",
-				description: "Ran the tests",
-				argumentsJson: JSON.stringify({ command: "go test ./agent/... -run Retirement -count=3" }),
-				output:
-					"--- FAIL: TestRetirementTreeSettleDrainsPendingRootAttention (0.44s)\n    retirement_test.go:212: settle finished before drain\nFAIL (attempt 3 of 3)",
-				exitCode: 1,
-			},
-			{
-				id: `${sub.id}-report`,
-				type: "agentMessage",
-				status: "completed",
-				text: "The fix I tried moves the lock, but the test still fails on the third run. I think the drain signal is lost when settle holds the lock. I'm out of attempts.",
-			},
-		);
-	else if (running)
-		items.push({
-			id: `${sub.id}-now`,
-			type: "commandExecution",
-			toolName: "shell",
-			status: "inProgress",
-			description: sub.line ?? "Working",
-			argumentsJson: JSON.stringify({ command: "go test ./agent/..." }),
-		});
-	else
-		items.push({
-			id: `${sub.id}-report`,
-			type: "agentMessage",
-			status: "completed",
-			text: `**Report:** ${sub.line ?? "Finished"}.`,
-		});
-	const turn: Turn = { id: `${sub.id}-turn`, status: running ? "inProgress" : "completed", itemsView: "full", items };
-	const updatedAt = Math.floor((startupMs - sub.ago * 1000) / 1000);
-	return {
-		id: sub.id,
-		sessionId: sub.id,
-		name: sub.title,
-		preview: sub.title,
-		ephemeral: false,
-		modelProvider: sub.model ?? coordinator.model,
-		createdAt: updatedAt,
-		updatedAt,
-		status: { type: running ? "active" : "idle" },
-		cwd: "/home/jesse/git/evener",
-		cliVersion: "demo",
-		source: "demo",
-		turns: [turn],
-		evener: {
-			ref: `${hostOf(coordinator.ref)}:${sub.id}`,
-			parentRef: coordinator.ref,
-			instanceId: `${sub.id}-instance`,
-			queue: { revision: 0 },
-			capabilities: running ? READ_ONLY : RUN_ENDED,
-		},
 	};
 }
 
@@ -321,25 +209,24 @@ export const SETTLE_RACE_PLAN_REVISED = SETTLE_RACE_PLAN.replace(
 
 export interface DemoDocument {
 	sessionRef: string;
-	/** Relative to the demo sessions' folder, /home/jesse/git/evener. */
+	/** Relative to the demo sessions' folder (createDemoDocuments' `folder`). */
 	path: string;
 	versions: readonly string[];
 }
-
-const DEMO_ROOT = "/home/jesse/git/evener/";
 
 /** /doc/file for the demo hub, as the hub answers it (doc_serve.go): a known
  * document's text by session and path (relative, or absolute under the demo
  * folder, as a file link names it), 404 for anything else, 400 without
  * format=raw. A document's first read after startup gets its first version;
  * later reads get its last. */
-export function createDemoDocuments(documents: readonly DemoDocument[]) {
+export function createDemoDocuments(documents: readonly DemoDocument[], folder: string) {
+	const root = `${folder}/`;
 	const reads = new Map<string, number>();
 	return {
 		answerDocFile(url: URL): { status: number; body: string } {
 			const session = url.searchParams.get("session") ?? "";
 			const raw = url.searchParams.get("path") ?? "";
-			const path = raw.startsWith(DEMO_ROOT) ? raw.slice(DEMO_ROOT.length) : raw;
+			const path = raw.startsWith(root) ? raw.slice(root.length) : raw;
 			const document = documents.find((candidate) => candidate.sessionRef === session && candidate.path === path);
 			if (!document) return { status: 404, body: "not found" };
 			if (url.searchParams.get("format") !== "raw") return { status: 400, body: "format=raw required" };
