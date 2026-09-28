@@ -260,7 +260,7 @@ plus `agent/` expansion tests.
 ### Task 7: Web — header chip picker, live updates, run-state disable
 
 **Files:** `cmd/evener-hub/templates/partials/workspace.html:71-78`,
-`cmd/evener-hub/assets/appwire.js` (notification map + `setModel`),
+`cmd/serf-hub/assets/appwire.js` (notification map + `setModel`),
 `assets/search.js:337` (palette source stays), a picker module (reuse the
 pattern of `assets/settings-pickers.js:250`), `assets/model-display.js`,
 `cmd/evener-hub/jstest/` (new `test-model-switch.js`)
