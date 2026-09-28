@@ -16,6 +16,8 @@ export function launchMemory(hubId: string): LaunchMemory {
 }
 
 export function forgetLaunchMemoryForHub(hubId: string): void {
-	forgetLaunchMemory(Storage, hubId);
+	// The cached copy goes first, so a storage failure can't leave it to write
+	// the removed hub's recipes back.
 	memories.delete(hubId);
+	forgetLaunchMemory(Storage, hubId);
 }

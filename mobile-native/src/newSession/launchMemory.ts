@@ -3,18 +3,14 @@
 // sessions were started with, for "Same as last time". Both are per hub,
 // because a setup names that hub's hosts and folders.
 import type { LaunchConfigLayer } from "@evener/appwire-client";
+import { readJson, removeKeys } from "../deviceStorage";
+import type { SyncStringStorage } from "../syncStringStorage";
 import { type LaunchSetup, ownedOverrides, type RememberedSetup } from "./launchSetup";
 
 export interface Recipe {
 	id: string;
 	name: string;
 	setup: LaunchSetup;
-}
-
-export interface LaunchMemoryStorage {
-	getItemSync(key: string): string | null;
-	setItemSync(key: string, value: string): void;
-	removeItemSync(key: string): void;
 }
 
 export const recipesKey = (hubId: string) => `evener.native.recipes.${hubId}`;
@@ -82,14 +78,9 @@ function toRemembered(value: unknown): RememberedSetup | null {
 	return entry && setup && typeof entry.at === "number" ? { setup, at: entry.at } : null;
 }
 
-function parseList<T>(raw: string | null, item: (value: unknown) => T | null): T[] {
-	if (!raw) return [];
-	let value: unknown;
-	try {
-		value = JSON.parse(raw);
-	} catch {
-		return [];
-	}
+/** A stored list's readable entries. A list the phone can't read, or that
+ * doesn't parse, reads as empty (deviceStorage's readJson). */
+function parseList<T>(value: unknown, item: (value: unknown) => T | null): T[] {
 	if (!Array.isArray(value)) return [];
 	return value.flatMap((entry) => {
 		const parsed = item(entry);
@@ -104,12 +95,12 @@ export class LaunchMemory {
 	private readonly listeners = new Set<() => void>();
 
 	constructor(
-		private readonly storage: LaunchMemoryStorage,
+		private readonly storage: SyncStringStorage,
 		private readonly hubId: string,
 		private readonly createId: () => string,
 	) {
-		this.recipeList = parseList(storage.getItemSync(recipesKey(hubId)), toRecipe);
-		this.historyList = parseList(storage.getItemSync(historyKey(hubId)), toRemembered);
+		this.recipeList = parseList(readJson(storage, recipesKey(hubId)), toRecipe);
+		this.historyList = parseList(readJson(storage, historyKey(hubId)), toRemembered);
 	}
 
 	recipes(): readonly Recipe[] {
@@ -195,7 +186,8 @@ export function recipeNameIssue(name: string): string | null {
 	return null;
 }
 
-export function forgetLaunchMemory(storage: LaunchMemoryStorage, hubId: string): void {
-	storage.removeItemSync(recipesKey(hubId));
-	storage.removeItemSync(historyKey(hubId));
+/** Removes a hub's recipes and starts, trying both keys before it reports a
+ * failure (deviceStorage's removeKeys). */
+export function forgetLaunchMemory(storage: SyncStringStorage, hubId: string): void {
+	removeKeys(storage, [recipesKey(hubId), historyKey(hubId)]);
 }

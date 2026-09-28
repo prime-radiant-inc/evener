@@ -151,3 +151,28 @@ describe("stored values", () => {
 		expect(new LaunchMemory(storage, "hub-b", ids()).recipes().map((recipe) => recipe.name)).toEqual(["B"]);
 	});
 });
+
+describe("a storage that fails", () => {
+	it("opens with empty lists when the phone can't read them", () => {
+		const storage = memory();
+		storage.getItemSync = () => {
+			throw new Error("kv-store unavailable");
+		};
+		const loaded = new LaunchMemory(storage, "hub-a", ids());
+		expect(loaded.recipes()).toEqual([]);
+		expect(loaded.history()).toEqual([]);
+	});
+
+	it("still tries the history key when the recipes key won't go, then says so", () => {
+		const storage = memory();
+		new LaunchMemory(storage, "hub-a", ids()).saveRecipe("A", setup());
+		new LaunchMemory(storage, "hub-a", ids()).recordStart(setup(), 1);
+		const remove = storage.removeItemSync;
+		storage.removeItemSync = (key: string) => {
+			if (key === recipesKey("hub-a")) throw new Error("disk busy");
+			remove(key);
+		};
+		expect(() => forgetLaunchMemory(storage, "hub-a")).toThrow();
+		expect(storage.values.has(historyKey("hub-a"))).toBe(false);
+	});
+});

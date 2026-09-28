@@ -711,3 +711,17 @@ it("reads the recent projects of the host a recipe names, dropping the old host'
 	await flush();
 	expect(store.getState().projects).toEqual(["/Users/jesse/git/evener"]);
 });
+
+it("drops a model list for the place the form left when a setup is applied", async () => {
+	const { store, calls } = setup();
+	const stale = store.getState().setCwd("/one");
+	const staleModels = calls.find((c) => c.method === "model/list");
+	store.getState().applySetup({ host: "local", cwd: "/two", model: null, effort: "", overrides: {} });
+	if (staleModels) calls.splice(calls.indexOf(staleModels), 1);
+	staleModels?.response.resolve({ data: [{ provider: "stale", model: "old" }] });
+	await stale;
+	expect(store.getState().models).toEqual([]);
+	answer(calls, "model/list", null, { data: [model] });
+	await flush();
+	expect(store.getState().models).toEqual([model]);
+});
