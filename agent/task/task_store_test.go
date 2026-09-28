@@ -870,6 +870,34 @@ func TestAppend_ClonesInputDependencies(t *testing.T) {
 	}
 }
 
+// TestAppend_ReturnedTasksDoNotAliasStore pins Append's return boundary: the
+// tasks it returns are cloneTasks(added), so mutating nested state on a
+// returned task must not reach the stored task. (Append never sets Notes, so
+// that field has nothing to alias here; DependsOn and the minted timestamp do.)
+func TestAppend_ReturnedTasksDoNotAliasStore(t *testing.T) {
+	t.Parallel()
+	s := newTestStore(t)
+	first, err := s.Append([]TaskInput{{Description: "a"}})
+	if err != nil {
+		t.Fatalf("append a: %v", err)
+	}
+	second, err := s.Append([]TaskInput{{Description: "b", DependsOn: []int{first[0].ID}}})
+	if err != nil {
+		t.Fatalf("append b: %v", err)
+	}
+
+	second[0].DependsOn[0] = 999
+	*second[0].CreatedAt = time.Unix(9999, 0)
+
+	got := s.View()[1]
+	if got.DependsOn[0] != first[0].ID {
+		t.Errorf("Append returned a task aliasing store DependsOn: store now has %v", got.DependsOn)
+	}
+	if got.CreatedAt.Equal(time.Unix(9999, 0)) {
+		t.Errorf("Append returned a task aliasing the store timestamp pointer: store now has %v", got.CreatedAt)
+	}
+}
+
 // TestUpdate_ClonesInputDependencies pins that an update stores its own copy of
 // the caller's dependency slice rather than aliasing it.
 func TestUpdate_ClonesInputDependencies(t *testing.T) {
