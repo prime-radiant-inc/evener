@@ -11,7 +11,8 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { expect, test } from "vitest";
 
-const SRC = dirname(fileURLToPath(import.meta.url));
+const SELF = fileURLToPath(import.meta.url);
+const SRC = dirname(SELF);
 
 function testFilesUnder(dir: string): string[] {
   const files: string[] = [];
@@ -26,15 +27,17 @@ function testFilesUnder(dir: string): string[] {
   return files.sort();
 }
 
-// A file-level registration of Testing Library's cleanup, in either spelling the
-// suite used. Anchored to a whole line, with same-line spacing only, so prose
-// mentioning cleanup() is not matched and a call split across lines is not read
-// as a file-level hook.
-const FILE_LEVEL_CLEANUP = /^[ \t]*afterEach\((?:cleanup|\(\)[ \t]*=>[ \t]*cleanup\(\))\);[ \t]*$/m;
+// A file-level registration of Testing Library's cleanup: `afterEach(cleanup)`
+// or the arrow spelling, with the whitespace, trailing comma, and optional
+// semicolon a formatter may leave. It matches only an afterEach whose whole
+// callback is the cleanup call, so a hook that does other work first — like
+// testSetup.teardown.test.tsx's simulated throwing cleanup — is not an
+// offender. This file itself is skipped: it names the forbidden pattern.
+const PER_FILE_CLEANUP = /afterEach\(\s*(?:cleanup|\(\s*\)\s*=>\s*cleanup\(\)\s*,?)\s*\)\s*;?/;
 
 test("no test file registers its own afterEach(cleanup)", () => {
   const offenders = testFilesUnder(SRC)
-    .filter((path) => FILE_LEVEL_CLEANUP.test(readFileSync(path, "utf8")))
+    .filter((path) => path !== SELF && PER_FILE_CLEANUP.test(readFileSync(path, "utf8")))
     .map((path) => path.slice(SRC.length + 1));
   expect(offenders).toEqual([]);
 });
