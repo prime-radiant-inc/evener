@@ -1310,7 +1310,7 @@ below (phase 4):
   left `Latest`/`Before` free to return content beyond `Window.Length` while
   `ChangedSince` omitted the change. `extend` (`internal/transcriptindex/
   index.go`) now inspects the update log's leftover rows
-  (`unsafeLeftoverUpdate`) before truncating: a leftover row logging an
+  (`leftoverUpdatesToCommittedSlots`) before truncating: a leftover row logging an
   in-place update to an already-committed item or turn whose causing entry
   this call's length would not completely re-scan forces a rebuild (keeping
   the incarnation, since the transcript still extends the covered prefix)
