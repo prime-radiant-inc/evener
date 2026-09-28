@@ -237,6 +237,14 @@ describe("your note (spec 8.8)", () => {
 		expect(renderedText(tree)).toContain("No shared notes");
 		for (const words of ["Agent", "No agent note yet", "No links yet"]) expect(renderedText(tree)).not.toContain(words);
 	});
+
+	it("omits the empty Your note group for a read-only session, when it has an agent note or links instead", () => {
+		provide(session({ status: { type: "ended" } as ThreadModel["status"], agentNote: "on it" }));
+		const tree = sheet();
+		expect(editor(tree)).toBeUndefined();
+		expect(renderedText(tree)).not.toContain("Your note");
+		expect(renderedText(tree)).toContain("on it");
+	});
 });
 
 describe("the agent's note", () => {

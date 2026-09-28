@@ -386,7 +386,7 @@ describe("a saved note (spec 8.2, 8.8)", () => {
 		)[0];
 	}
 
-	it("reads \"You updated your note\" over the note, in the serif prose ink, behind a left rule", () => {
+	it('reads "You updated your note" over the note, in the serif prose ink, behind a left rule', () => {
 		mode.scheme = "light";
 		const tree = render_("Fix causes");
 		expect(textOf(caption(tree))).toBe("You updated your note");
@@ -403,7 +403,7 @@ describe("a saved note (spec 8.2, 8.8)", () => {
 		act(() => tree.unmount());
 	});
 
-	it("reads \"You cleared your note\" with no text beneath, for an emptied note", () => {
+	it('reads "You cleared your note" with no text beneath, for an emptied note', () => {
 		const tree = render_("");
 		expect(textOf(caption(tree))).toBe("You cleared your note");
 		expect(tree.root.findAll((node) => String(node.type) === "Text").length).toBe(1);
