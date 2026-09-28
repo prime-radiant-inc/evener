@@ -142,6 +142,13 @@ func (s *Session) ConsumeEventsLossless(consume func(events.SessionEvent), onDra
 // buffering them here means they now fire it, for the first time, once
 // hookRunner exists.
 func (s *Session) emitSessionStartEnvelope(start events.SessionStartData, promptSources []promptSource) {
+	// The sandbox request is fixed for the session's life; SessionStart
+	// carries it so a subagent's thread reports its own access (S15).
+	start.Sandbox = s.cfg.Sandbox
+	if s.cfg.SandboxNet != nil {
+		network := *s.cfg.SandboxNet
+		start.SandboxNet = &network
+	}
 	store := s.getOrCreateTaskStore()
 	_ = store.MutateAndPublish(func(epoch, revision uint64) error {
 		// Sample current work only after entering the shared store's publication
