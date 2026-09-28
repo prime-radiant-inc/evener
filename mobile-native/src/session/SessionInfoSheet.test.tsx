@@ -8,7 +8,7 @@ import { act, type ReactTestInstance, type ReactTestRenderer } from "react-test-
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { paletteFor } from "../design/tokens";
 import type { MobileConversation } from "../projectedRows";
-import { alertRequests, pressable, render, renderedText, textOf } from "../renderNative.testkit";
+import { alertRequests, playedHaptics, pressable, render, renderedText, textOf } from "../renderNative.testkit";
 import type { Routes } from "../screens";
 import type { SessionControls } from "../sessionControls";
 import { sheetKey } from "../sheet/sheetHosts";
@@ -21,6 +21,11 @@ const guard = vi.hoisted(() => ({
 	onPrevent: null as null | ((options: { data: { action: unknown } }) => void),
 }));
 
+// The Haptics switch (Hub > In-app alerts) is read from the device store.
+vi.mock("expo-sqlite/kv-store", () => ({
+	Storage: { getItemSync: () => null, setItemSync: () => {}, removeItemSync: () => {} },
+}));
+vi.mock("expo-haptics", async () => (await import("../renderNative.testkit")).expoHapticsMock());
 vi.mock("react-native", async () => (await import("../renderNative.testkit")).nativeModuleMock());
 vi.mock("@react-navigation/native", () => ({
 	useNavigation: () => navigation,
@@ -543,7 +548,10 @@ describe("actions", () => {
 			message: "It stops now and keeps its history. Sending a message resumes it.",
 		});
 		expect(calls).toEqual([]);
+		playedHaptics.length = 0;
 		act(() => confirm?.buttons?.[1]?.onPress?.());
+		// Spec 16.6: rigid on a destructive confirmation.
+		expect(playedHaptics).toEqual(["impact:rigid"]);
 		await flush();
 		expect(calls).toEqual(["goBack", "act:shutDown", "toast:shutDown done"]);
 	});

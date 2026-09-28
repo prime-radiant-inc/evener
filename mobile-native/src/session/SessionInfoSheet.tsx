@@ -31,6 +31,7 @@ import {
 	whereFacts,
 } from "./sessionFacts";
 import { SHUT_DOWN, sessionStateLine } from "./sessionState";
+import { haptic } from "../haptics";
 
 export type SessionInfoAction = "aside" | "fork" | "compact" | "pin" | "archive" | "shutDown" | "delete";
 
@@ -58,7 +59,14 @@ export const sessionInfoHosts = sheetHosts<SessionInfoHost>();
 export function confirmShutDown(shutDown: () => void): void {
 	Alert.alert("Shut down this session?", "It stops now and keeps its history. Sending a message resumes it.", [
 		{ text: "Cancel", style: "cancel" },
-		{ text: "Shut down", style: "destructive", onPress: shutDown },
+		{
+			text: "Shut down",
+			style: "destructive",
+			onPress: () => {
+				haptic("rigid");
+				shutDown();
+			},
+		},
 	]);
 }
 

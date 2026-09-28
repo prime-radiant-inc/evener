@@ -14,6 +14,7 @@ import {
 	flatListScrollFailures,
 	alertRequests,
 	type PanGestureMock,
+	playedHaptics,
 	pressable,
 	render,
 	renderedText,
@@ -61,6 +62,7 @@ const navigationState = vi.hoisted(() => ({
 
 const sqlite = vi.hoisted(() => ({ ports: new Map<string, unknown>() }));
 
+vi.mock("expo-haptics", async () => (await import("./renderNative.testkit")).expoHapticsMock());
 vi.mock("react-native", async () => {
 	const mock = (await import("./renderNative.testkit")).nativeModuleMock();
 	return {
@@ -464,8 +466,11 @@ it("sends a message when the agent is at rest", async () => {
 	await type(tree, "first");
 	const send = pressable(tree, "Send");
 	expect(send?.findByType("SymbolView" as never).props.name).toBe("paperplane.fill");
+	playedHaptics.length = 0;
 	await press(tree, "Send");
 	expect(hub.mutations()).toEqual(["turn/start"]);
+	// Spec 16.6: a light impact on send, once the hub took it.
+	expect(playedHaptics).toEqual(["impact:light"]);
 });
 
 it("stops the running turn from the tray and says so", async () => {
@@ -545,7 +550,10 @@ describe("a question waiting for an answer (spec 8.4)", () => {
 	it("sends the option chosen in the dock, and says so", async () => {
 		const { tree, hub } = await mount(thread("ref-question-option", "awaiting", true));
 		await press(tree, "Drop them");
+		playedHaptics.length = 0;
 		await press(tree, "Send answer");
+		// Spec 16.6: success on answer sent.
+		expect(playedHaptics).toEqual(["notification:success"]);
 		const starts = hub.requests.filter((request) => request.method === "turn/start");
 		expect(starts.map((request) => request.params.input)).toEqual([
 			[{ type: "text", text: '[answers]\n1. [Choice] \u2192 "Drop them"' }],

@@ -17,6 +17,7 @@ const native = vi.hoisted(() => ({
 	addEventListener: vi.fn(() => ({ remove: vi.fn() })),
 }));
 
+vi.mock("expo-haptics", async () => (await import("./renderNative.testkit")).expoHapticsMock());
 vi.mock("react-native", async () => {
 	const mock = (await import("./renderNative.testkit")).nativeModuleMock();
 	return {

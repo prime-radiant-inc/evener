@@ -10,6 +10,7 @@ import { NavigationActions } from "./navigationActions";
 import { SessionDeletionEditor } from "./SessionDeletionEditor";
 import type { Routes } from "./screens";
 import { readSessionDeletion } from "./sessionDeletionNavigation";
+import { haptic } from "./haptics";
 
 const noSnapshot = () => null;
 const noSubscription = () => () => {};
@@ -127,6 +128,7 @@ export function SessionDeletionScreen({ route, navigation }: NativeStackScreenPr
 					text: "Delete saved session",
 					style: "destructive",
 					onPress: () => {
+						haptic("rigid");
 						void remove(expected);
 					},
 				},

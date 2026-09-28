@@ -117,6 +117,7 @@ import { listScrollHandlers } from "./settledList";
 import { type BoardOrganization, organizationOpen, useBoardOrganization } from "./useBoardOrganization";
 import { PROJECT_SECTIONS, showExpanded, useProjectSections } from "./useProjectSections";
 import { useSettledList } from "./useSettledList";
+import { haptic } from "../haptics";
 
 type Props = NativeStackScreenProps<Routes, "Sessions">;
 type Navigation = Props["navigation"];
@@ -1081,6 +1082,7 @@ function pinnedCategoryMenu(organization: BoardOrganization, catalog: () => read
 				text: "Delete",
 				style: "destructive",
 				onPress: () => {
+					haptic("rigid");
 					if (!organizationOpen(organization) || !listed(section.id)) return;
 					void organization.actions?.deletePinSection({ sectionId: section.id });
 				},
@@ -1219,6 +1221,7 @@ function confirmShutDown(
 			text: "Shut down",
 			style: "destructive",
 			onPress: () => {
+				haptic("rigid");
 				if (!client) return;
 				shutDownSession(client, row.ref).then(
 					() => toast.show({ text: "Session shut down" }),
@@ -1624,7 +1627,10 @@ function Chips({ chips }: { chips: ChipProps[] }) {
 						testID="chip"
 						accessibilityRole="button"
 						accessibilityLabel={chip.label}
-						onPress={chip.onPress}
+						onPress={() => {
+							haptic("selection");
+							chip.onPress();
+						}}
 						// The chip draws 32pt tall; hit slop into the row's 8pt padding makes a 44pt target.
 						hitSlop={{ top: 6, bottom: 6 }}
 						style={({ pressed }) => ({
@@ -1736,7 +1742,10 @@ function SummaryLine({
 					) : null}
 					<Pressable
 						accessibilityRole="button"
-						onPress={() => onJump(band)}
+						onPress={() => {
+							haptic("selection");
+							onJump(band);
+						}}
 						// Each count draws 30pt tall; the slop makes a 44pt target.
 						hitSlop={{ top: 7, bottom: 7 }}
 						style={({ pressed }) => ({

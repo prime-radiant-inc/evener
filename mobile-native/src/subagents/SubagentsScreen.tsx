@@ -30,6 +30,7 @@ import { stopRequests } from "./nativeStopRequests";
 import { SubagentRowView } from "./SubagentRowView";
 import { SubagentStrip, stateColors } from "./SubagentStrip";
 import { useSubagentTree } from "./useSubagentTree";
+import { haptic } from "../haptics";
 
 export function SubagentsScreen({ route, navigation }: NativeStackScreenProps<Routes, "Subagents">) {
 	const { hubId, ref, threadId, title } = route.params;
@@ -256,7 +257,10 @@ function FilterChip({
 			accessibilityRole="button"
 			accessibilityLabel={`${label}, ${count}`}
 			accessibilityState={{ selected }}
-			onPress={onPress}
+			onPress={() => {
+				haptic("selection");
+				onPress();
+			}}
 			hitSlop={{ top: 6, bottom: 6 }}
 			style={{
 				height: 32,

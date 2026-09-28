@@ -8,7 +8,7 @@ import { act, type ReactTestInstance, type ReactTestRenderer } from "react-test-
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { paletteFor } from "../design/tokens";
 import type { MobileConversation } from "../projectedRows";
-import { pressable, render, renderedText, textOf } from "../renderNative.testkit";
+import { playedHaptics, pressable, render, renderedText, textOf } from "../renderNative.testkit";
 import type { Routes } from "../screens";
 import type { SessionControls } from "../sessionControls";
 import { sheetKey } from "../sheet/sheetHosts";
@@ -16,6 +16,11 @@ import { type ModelHost, ModelSheet, modelHosts } from "./ModelSheet";
 
 const navigation = vi.hoisted(() => ({ goBack: vi.fn(), navigate: vi.fn(), dispatch: vi.fn() }));
 
+// The Haptics switch (Hub > In-app alerts) is read from the device store.
+vi.mock("expo-sqlite/kv-store", () => ({
+	Storage: { getItemSync: () => null, setItemSync: () => {}, removeItemSync: () => {} },
+}));
+vi.mock("expo-haptics", async () => (await import("../renderNative.testkit")).expoHapticsMock());
 vi.mock("react-native", async () => (await import("../renderNative.testkit")).nativeModuleMock());
 vi.mock("@react-navigation/native", () => ({
 	useNavigation: () => navigation,
@@ -281,8 +286,11 @@ describe("effort", () => {
 	it("sets the effort", () => {
 		const { calls } = provide(conversation());
 		const tree = sheet();
+		playedHaptics.length = 0;
 		act(() => pressable(tree, "Low")?.props.onPress());
 		expect(calls).toEqual(["setReasoningEffort:low"]);
+		// Spec 16.6: a selection tick on a segment.
+		expect(playedHaptics).toEqual(["selection"]);
 	});
 
 	it("is hidden for a model with no levels", () => {

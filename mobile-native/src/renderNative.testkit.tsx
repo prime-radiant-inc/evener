@@ -387,6 +387,25 @@ export function scriptedClient(
 	return { client, methods, requests, unsubscribes: () => unsubscribes };
 }
 
+/** What expo-haptics played, in order, as spec 16.6's kinds would read
+ * them ("selection", "impact:light", "notification:warning"...). A suite that
+ * renders a screen with a haptic mocks the native module with
+ * expoHapticsMock, so haptics.ts runs for real, and may assert on this list;
+ * clear it (`playedHaptics.length = 0`) where the order matters. */
+export const playedHaptics: string[] = [];
+
+/** expo-haptics without its native module, recording into playedHaptics:
+ * vi.mock("expo-haptics", async () => (await import("./renderNative.testkit")).expoHapticsMock()). */
+export function expoHapticsMock() {
+	return {
+		ImpactFeedbackStyle: { Light: "light", Rigid: "rigid" },
+		NotificationFeedbackType: { Success: "success", Warning: "warning" },
+		selectionAsync: async () => void playedHaptics.push("selection"),
+		impactAsync: async (style: string) => void playedHaptics.push(`impact:${style}`),
+		notificationAsync: async (type: string) => void playedHaptics.push(`notification:${type}`),
+	};
+}
+
 /** The connection value the retained-screen suites report through their
  * mocked ConnectionProvider: the Work hub's profile, its client, the state
  * the test drives, and the fatal flag and manual retry the retained-screen
