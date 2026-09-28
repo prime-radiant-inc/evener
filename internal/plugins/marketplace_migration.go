@@ -1111,7 +1111,7 @@ func (m *Manager) movePluginCachesToNewName(reg Registry, name, newName string, 
 		if err := marketplaceRename(move.from, move.to); err != nil {
 			return fail(fmt.Errorf("renaming plugin cache: %w", err))
 		}
-		undo = append(undo, func() error { return restoreRename("plugin cache", move.to, move.from) })
+		undo = append(undo, m.renameUndo("plugin cache", move.to, move.from, StoreChanged{Plugins: true}))
 	}
 	reg = rekeyRegistry(reg, owners, name, newName, "", "")
 	for _, move := range moves {

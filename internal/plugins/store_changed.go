@@ -3,11 +3,12 @@ package plugins
 // StoreChanged reports what a lockStore session left the plugin store's two
 // persisted files representing: installed_plugins.json (Plugins) and
 // known_marketplaces.json (Marketplaces). A flag is set when that file's write
-// lands, and Marketplaces is also set when a rename's rollback could not put a
-// moved directory back (#1800) — the store is then left between the two names
-// even though no file was written, so the marketplaces a client reads is stale.
-// The zero value means neither file was written and no rename was left half
-// done.
+// lands, and the flag of the file that records a directory is also set when a
+// rename's rollback could not put that directory back (#1800) — the clone's
+// location is in known_marketplaces.json (Marketplaces), a plugin cache's
+// installs in installed_plugins.json (Plugins) — so the store is left between
+// the two names even though no file was written. The zero value means neither
+// file was written and no rename was left half done.
 type StoreChanged struct {
 	Plugins      bool
 	Marketplaces bool
@@ -37,10 +38,11 @@ func (m *Manager) OnStoreChanged(fn func(StoreChanged)) {
 // markStoreChanged accumulates changed onto the Manager's current lock
 // session. The two write primitives (saveRegistry, saveMarketplaces) call it
 // right after each one's own write succeeds, and a rename's own undo calls it
-// (renameUndo) when it cannot put a moved directory back, which leaves the
-// store between the two names with no file written. moveMarketplace and
-// swapInClone do not mark a move that succeeds, since a directory neither List
-// nor ListMarketplaces reads has not observably changed.
+// (renameUndo) when it cannot put a moved directory back, marking that
+// directory's file — Marketplaces for the clone, Plugins for the cache — since
+// the store is then left between the two names with no file written.
+// moveMarketplace and swapInClone do not mark a move that succeeds, since a
+// directory neither List nor ListMarketplaces reads has not observably changed.
 func (m *Manager) markStoreChanged(changed StoreChanged) {
 	m.storeChangedMu.Lock()
 	defer m.storeChangedMu.Unlock()

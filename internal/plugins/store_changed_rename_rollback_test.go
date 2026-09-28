@@ -92,9 +92,9 @@ func TestEditWhoseUndoFailedReportsTheStoreChanged(t *testing.T) {
 
 // The rename moves the plugin cache as well as the clone, and each has its own
 // undo step. This pins the cache's step on its own: the clone is put back
-// cleanly, but the cache cannot be, so the store is still left between the
-// names and the hook must report it. Without this, only the clone's call site
-// would be covered.
+// cleanly, but the cache cannot be, so the installs installed_plugins.json
+// records are left under the new name and the hook must report Plugins — not
+// Marketplaces, whose file the cache move never touched.
 func TestAnIncompleteCacheRenameRollbackReportsTheStoreChanged(t *testing.T) {
 	m := NewManager(t.TempDir())
 	m.Stderr = io.Discard
@@ -126,7 +126,56 @@ func TestAnIncompleteCacheRenameRollbackReportsTheStoreChanged(t *testing.T) {
 	if len(*reports) != 1 {
 		t.Fatalf("OnStoreChanged fired %d times, want 1: %+v", len(*reports), *reports)
 	}
-	if got := (*reports)[0]; !got.Marketplaces {
-		t.Errorf("reported %+v, want Marketplaces true: the cache could not be put back, so the store is left between the names", got)
+	if got := (*reports)[0]; !got.Plugins || got.Marketplaces {
+		t.Errorf("reported %+v, want {Plugins:true Marketplaces:false}: a failed cache restore leaves installed_plugins.json stale, not known_marketplaces.json", got)
+	}
+}
+
+// movePluginCachesToNewName is the migration barrier's own cache-move helper,
+// for a rename whose clone and cache another marketplace owns. Its undo steps
+// carry the same contract as the rename site's: a cache restore that fails
+// leaves installed_plugins.json's install paths under the new name, so the hook
+// must report Plugins even though this helper writes no store file and returns
+// before saveRename (#1800).
+func TestMovePluginCachesToNewNameRollbackFailureReportsPlugins(t *testing.T) {
+	m := NewManager(t.TempDir())
+	m.Stderr = io.Discard
+	const oldName, newName = "old", "new"
+	oldCache := filepath.Join(m.cacheDir(), oldName)
+	plugins := []string{"alpha", "beta"}
+	reg := Registry{Version: 2, Plugins: map[string][]InstallEntry{}}
+	owners := map[string]string{}
+	for _, plugin := range plugins {
+		install := filepath.Join(oldCache, plugin, "sha")
+		if err := os.MkdirAll(install, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		key := plugin + "@" + oldName
+		reg.Plugins[key] = []InstallEntry{{InstallPath: install}}
+		owners[key] = oldName
+	}
+
+	orig := marketplaceRename
+	t.Cleanup(func() { marketplaceRename = orig })
+	marketplaceRename = func(from, to string) error {
+		switch {
+		case from == filepath.Join(oldCache, "beta"):
+			// The second cache move fails, so the helper rolls the first back.
+			return errors.New("renaming plugin cache: boom")
+		case from == filepath.Join(m.cacheDir(), newName, "alpha"):
+			// The first cache's own undo then cannot put it back either.
+			return errors.New("restoring plugin cache: boom")
+		}
+		return orig(from, to)
+	}
+
+	if _, _, err := m.movePluginCachesToNewName(reg, oldName, newName, owners); err == nil {
+		t.Fatal("movePluginCachesToNewName = nil, want the failed cache move reported")
+	}
+	if !m.pendingStoreChanged.Plugins {
+		t.Errorf("pendingStoreChanged = %+v, want Plugins true: a cache the registry names could not be put back", m.pendingStoreChanged)
+	}
+	if m.pendingStoreChanged.Marketplaces {
+		t.Errorf("pendingStoreChanged = %+v, want Marketplaces false: this helper writes no known_marketplaces.json", m.pendingStoreChanged)
 	}
 }
