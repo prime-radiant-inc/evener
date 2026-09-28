@@ -675,6 +675,40 @@ describe("native demonstration hub's fleet sessions", () => {
 		});
 	});
 
+	it("resolves a fleet session's approval", async () => {
+		await withHub({}, async (client) => {
+			const ref = refOf("s-mirror");
+			const { thread } = await client.request("thread/read", { ref, includeTurns: false });
+			const [escalation] = thread.evener.pendingEscalations ?? [];
+			if (!escalation) throw new Error("frame 9 needs an escalation");
+			expect(
+				await client.request("evener/sandbox/escalation/resolve", {
+					ref,
+					escalationId: escalation.escalationId,
+					approve: true,
+				}),
+			).toEqual({});
+			const after = await client.request("thread/read", { ref, includeTurns: false });
+			expect(after.thread.evener.pendingEscalations ?? []).toEqual([]);
+			await expect(
+				client.request("evener/sandbox/escalation/resolve", {
+					ref,
+					escalationId: escalation.escalationId,
+					approve: true,
+				}),
+			).rejects.toThrow(`No pending escalation ${escalation.escalationId}`);
+		});
+		await withHub(undefined, async (client) => {
+			await expect(
+				client.request("evener/sandbox/escalation/resolve", {
+					ref: "demo:playground",
+					escalationId: "x",
+					approve: false,
+				}),
+			).rejects.toThrow("Method not implemented by demonstration server");
+		});
+	});
+
 	it("answers no notes or links method without EVENER_DEMO_FLEET", async () => {
 		await withHub(undefined, async (client) => {
 			await expect(

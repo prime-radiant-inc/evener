@@ -22,6 +22,7 @@
 // s-stumble queues five messages, more than the Session shows inline, so its
 // "2 more queued" opens the Queue sheet.
 import type {
+	EmptyResponse,
 	EvenerDelegateInfo,
 	GoalState,
 	ModelListResponse,
@@ -30,6 +31,7 @@ import type {
 	NotesHumanSetResponse,
 	QueueState,
 	SandboxEscalationRequested,
+	SandboxEscalationResolveParams,
 	SessionURL,
 	TaskAggregate,
 	Thread,
@@ -748,5 +750,15 @@ export function removeLink(thread: Thread, params: UrlsRemoveParams): UrlsRemove
 	const links = thread.evener.sessionUrls ?? [];
 	if (!links.some((link) => link.id === params.id)) throw new Error(`no URL entry with id ${params.id}`);
 	thread.evener.sessionUrls = links.filter((link) => link.id !== params.id);
+	return {};
+}
+
+// evener/sandbox/escalation/resolve: the approval leaves the session, which
+// works on either way (the script shows neither the write nor the refusal).
+export function resolveEscalation(thread: Thread, params: SandboxEscalationResolveParams): EmptyResponse {
+	const pending = thread.evener.pendingEscalations ?? [];
+	if (!pending.some((escalation) => escalation.escalationId === params.escalationId))
+		throw new Error(`No pending escalation ${params.escalationId}`);
+	thread.evener.pendingEscalations = pending.filter((escalation) => escalation.escalationId !== params.escalationId);
 	return {};
 }

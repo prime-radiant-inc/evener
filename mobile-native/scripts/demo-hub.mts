@@ -16,6 +16,7 @@ import { createDemoFleet, type DemoFleetOptions } from "../src/dev/demoFleet.js"
 import {
 	createDemoSessions,
 	removeLink,
+	resolveEscalation,
 	setHumanNote,
 } from "../src/dev/demoSessions.js";
 
@@ -473,6 +474,12 @@ export async function createDemoHub(
 						requireFleet();
 						if (!selected) throw new Error("Unknown demonstration session");
 						result = removeLink(selected, params);
+						changed = selected;
+						break;
+					case "evener/sandbox/escalation/resolve":
+						requireFleet();
+						if (!selected) throw new Error("Unknown demonstration session");
+						result = resolveEscalation(selected, params);
 						changed = selected;
 						break;
 					case "evener/navigation/read":
