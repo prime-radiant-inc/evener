@@ -157,8 +157,12 @@ describe("your note (spec 8.8)", () => {
 			multiline: true,
 			value: "keep the tests",
 			placeholder: "Make a note…",
-			maxLength: NOTE_LIMIT,
 		});
+		// No native maxLength: it counts UTF-16 units, not the daemon's runes,
+		// which would cap an emoji-heavy note at roughly half its real
+		// allowance. NotesController.edit() enforces NOTE_LIMIT by code point
+		// on every change instead (RoboRev #2769 round 3).
+		expect(input.props.maxLength).toBeUndefined();
 		expect(NOTE_LIMIT).toBe(1000);
 		expect(editorStyle(input)).toMatchObject({
 			fontFamily: "SourceSerif4-Regular",

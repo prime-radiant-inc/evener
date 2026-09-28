@@ -16,7 +16,7 @@ import { Sheet, useSheet } from "../sheet/Sheet";
 import { sheetHosts, sheetKey, useSheetHost } from "../sheet/sheetHosts";
 import { Toast, type ToastController, useToast } from "../Toast";
 import { allowFontScaling, Copy, useColors, useTextScale } from "../ui";
-import { NOTE_LIMIT, type NotesController, noteStatusLine, type SaveOutcome } from "./sessionNotes";
+import { type NotesController, noteStatusLine, type SaveOutcome } from "./sessionNotes";
 
 export interface NotesHost {
 	session: Pick<ThreadModel, "humanNote" | "agentNote" | "sessionUrls" | "status" | "resumeRequired" | "capabilities">;
@@ -177,7 +177,9 @@ function NoteEditor({ notes, working, focus }: { notes: NotesController; working
 				accessibilityLabel="Your note"
 				multiline
 				value={note.text}
-				maxLength={NOTE_LIMIT}
+				// No native maxLength: it counts UTF-16 units, not the daemon's
+				// runes. notes.edit() enforces NOTE_LIMIT by code point on every
+				// change instead (RoboRev #2769 round 3).
 				placeholder="Make a note…"
 				placeholderTextColor={palette.inkLow}
 				autoFocus={focus}

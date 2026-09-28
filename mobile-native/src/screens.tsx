@@ -1804,7 +1804,12 @@ export function ConversationScreen({
 	const frames = useFrameCounter(store);
 	const toaster = useToast();
 	// The session's shared notes (spec 8.8). The controller lives here, not in
-	// the sheet, so a save the sheet starts as it closes outlives it.
+	// the sheet, so a save the sheet starts as it closes outlives it. store
+	// itself is already rebuilt exactly when route.params.hubId/ref change
+	// (its own useMemo above), so this would rebuild on a session switch
+	// through [store] alone - hubId/ref are listed too anyway, so the
+	// rebuild condition doesn't rest on that indirection (RoboRev #2769
+	// round 3).
 	// biome-ignore lint/correctness/useExhaustiveDependencies: One controller per conversation binding.
 	const notes = useMemo(
 		() =>
@@ -1828,7 +1833,7 @@ export function ConversationScreen({
 				storage: Storage,
 				uuid: randomUUID,
 			}),
-		[store],
+		[store, route.params.hubId, route.params.ref],
 	);
 	useEffect(() => () => notes.dispose(), [notes]);
 	// Follow the hub's note (evener/notes/updated) as it changes: sync() itself

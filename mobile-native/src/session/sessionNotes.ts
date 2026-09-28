@@ -223,7 +223,14 @@ export class NotesController {
 	}
 
 	private unsaved(): boolean {
-		return this.state.phase === "failed" || this.state.text !== this.options.savedNote();
+		if (this.state.phase === "failed") return true;
+		// A locally confirmed save is trusted on its own: savedNote() only
+		// catches up once the hub's own evener/notes/updated notification
+		// arrives, which can lag well behind our own "saved" publish, and
+		// comparing against it here would resend the same note again in that
+		// window (RoboRev #2769 round 3).
+		if (this.state.phase === "clean" || this.state.phase === "saved") return false;
+		return this.state.text !== this.options.savedNote();
 	}
 
 	private async save(): Promise<SaveOutcome> {

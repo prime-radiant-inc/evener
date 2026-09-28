@@ -134,6 +134,18 @@ describe("saving your note (spec 8.8; Review Focus 5)", () => {
 		expect(notes.getSnapshot()).toEqual({ text: "Fix causes", phase: "saved" });
 	});
 
+	it("doesn't resend a note it just saved before the hub's own echo catches savedNote() up (RoboRev #2769 round 3)", async () => {
+		const hub = harness();
+		const notes = hub.make();
+		notes.edit("Wake up");
+		expect(await notes.flush()).toEqual({ saved: true, woke: true });
+		// The hub hasn't pushed evener/notes/updated back yet, so savedNote()
+		// (hub.setSaved was never called) still lags what was just saved -
+		// flush() must trust "saved" itself, not re-derive unsaved from that.
+		expect(await notes.flush()).toEqual({ saved: false, woke: false });
+		expect(hub.requests).toHaveLength(1);
+	});
+
 	it("saves at once on flush and says whether it woke the agent", async () => {
 		const idle = harness();
 		const first = idle.make();
