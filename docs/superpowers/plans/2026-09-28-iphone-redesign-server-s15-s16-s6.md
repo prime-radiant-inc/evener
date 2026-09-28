@@ -360,8 +360,8 @@ diff --git a/appwire/types.go b/appwire/types.go
  	MethodEvenerSandboxEscalationResolve = "evener/sandbox/escalation/resolve"
 +	// MethodEvenerDelegateStop ends one subagent's current run at the user's
 +	// request (S6): that subagent alone, never the subagents it started. It
-+	// targets the root session (ref/threadId) and names the delegate. ScopeBoth
-+	// (the root's daemon serves it; the hub relays). A UI-only request, never
++	// targets the root session (ref/threadId) and names the delegate.
++	// ScopeDaemon (the root's daemon serves it). A UI-only request, never
 +	// advertised to the model.
 +	MethodEvenerDelegateStop = "evener/delegate/stop"
  	// MethodEvenerHostRequest forwards one hub-scoped admin RPC to a named
@@ -1458,6 +1458,17 @@ Expected: FAIL to compile (`StopSubagent` is not a field of `appwire.ThreadCapab
 diff --git a/appwire/types.go b/appwire/types.go
 --- a/appwire/types.go
 +++ b/appwire/types.go
+@@ -153,8 +153,8 @@ const (
+ 	// MethodEvenerDelegateStop ends one subagent's current run at the user's
+ 	// request (S6): that subagent alone, never the subagents it started. It
+ 	// targets the root session (ref/threadId) and names the delegate.
+-	// ScopeDaemon (the root's daemon serves it). A UI-only request, never
+-	// advertised to the model.
++	// ScopeBoth (the root's daemon serves it; the hub relays). A UI-only
++	// request, never advertised to the model.
+ 	MethodEvenerDelegateStop = "evener/delegate/stop"
+ 	// MethodEvenerHostRequest forwards one hub-scoped admin RPC to a named
+ 	// remote host's hub (component 07a). Host is the component-03 source ID;
 @@ -1334,6 +1334,12 @@ type ThreadCapabilities struct {
  	// against the live daemon. ValidateSkillInputSupport keeps skill items
  	// rejected wherever this capability is false.
@@ -3018,6 +3029,8 @@ diff --git a/internal/apptranscript/notice.go b/internal/apptranscript/notice.go
 +	return NoticeAnnouncement{EventKind: appwire.ThreadItemEventKindApprovalDecision, Description: "Approval", Text: text, Raw: raw}
 +}
 ```
+
+The conversion `struct{...}(notice)` compiles although the tags differ: Go ignores struct tags when converting between struct types with identical field names and types (since Go 1.8). It keeps the wire's field list tied to `ApprovalDecisionNotice`'s.
 
 - [ ] **Step 4: Run them to verify they pass**
 
