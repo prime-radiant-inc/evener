@@ -877,24 +877,33 @@ export class MutationOutboxIndexedDB {
     try {
       database = await this.#open();
     } catch (error) {
-      // Only a timeout is the wedged-coordinator signature (open() never
-      // fired); VersionError/blocked/InvalidStateError are real faults this
-      // path must not reset the database for. At most one reset+retry.
+      // VersionError/blocked/InvalidStateError are real faults this path must
+      // not treat as a wedge. Only a timeout can be the coordinator stalling.
       if (!(error instanceof MutationStorageTimeoutError)) throw error;
-      if (!(await this.#resetWedgedDatabase())) {
-        this.#wedge();
-        throw new MutationStorageWedgedError();
-      }
+      // One timeout is not proof of a wedge: a tab frozen mid-open can trip the
+      // watchdog and answer on the very next request. Retry once BEFORE
+      // touching durable state, because the reset below deletes the database
+      // and would lose queued intents a transient timeout preserved.
       try {
-        // The reset deleted the wedged database, so this open is a fresh one.
         database = await this.#open();
-        this.#unwedge();
       } catch (retryError) {
-        if (retryError instanceof MutationStorageTimeoutError) {
+        if (!(retryError instanceof MutationStorageTimeoutError)) throw retryError;
+        // Two timeouts in a row: the wedged-coordinator signature. Probe,
+        // delete, and reopen at most once, and latch wedged if that fails.
+        if (!(await this.#resetWedgedDatabase())) {
           this.#wedge();
           throw new MutationStorageWedgedError();
         }
-        throw retryError;
+        try {
+          database = await this.#open();
+          this.#unwedge();
+        } catch (finalError) {
+          if (finalError instanceof MutationStorageTimeoutError) {
+            this.#wedge();
+            throw new MutationStorageWedgedError();
+          }
+          throw finalError;
+        }
       }
     }
     const transaction = database.transaction(stores, mode);
