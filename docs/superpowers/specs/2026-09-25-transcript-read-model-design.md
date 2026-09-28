@@ -1216,10 +1216,26 @@ rather than resolved in prose here:
 - **COMMUNICATE and completion durability when fsync fails.** A
   recorded-but-unsynced entry is adopted and announced. Decide whether to
   retry the fsync or fail closed, and pin the decision with a test.
-- **Below-floor update-log requests.** Give the client an explicit
-  whole-history replacement signal, or answer with `TranscriptItemCursorStale`.
-- **Backfill accumulation.** Require the same snapshot identity for pages that
-  accumulate, and define how the held length advances on backfill.
+- ~~**Below-floor update-log requests.**~~ Resolved: a same-incarnation
+  `LatestSince` whose held length predates the kept update log answers
+  `TranscriptItemCursorStale` (`internal/transcriptindex.LatestSince`
+  propagates `ErrUpdateLogTruncated` instead of swallowing it into a bare
+  window; `pastEntryLatestItems` in `cmd/evener-hub/app_threadread.go` maps
+  the error to `appwire.TranscriptItemCursorStale()`). The window alone
+  cannot be trusted there: held items outside it may have changed since,
+  with no way for the caller to tell, so silently merging it would risk
+  serving stale content. The daemon's own `ChangedSince` call (`project`,
+  `server/thread_history.go`) already treated the same error as a failure
+  and rebuilt; this only changes the hub's non-daemon (daemonless) read path.
+- ~~**Backfill accumulation.**~~ Resolved: pages accumulate under one snapshot
+  identity, and the held length ratchets forward. `pageDisposition` already
+  requires a page's length to be at least the held length to merge (a
+  shorter one is discarded); `mergeVersionedPage`'s merge case now advances
+  the held length to the merged page's length. This is the reading that
+  cannot silently hold stale data: the alternative (require an exact length
+  match, discarding a longer page too) would freeze the held length at
+  whatever the first page happened to report and quietly reject every
+  correct, more-complete page after it.
 - **`RetainedUnsyncedError` boundary tests.** Test adoption, later durability,
   and a crash between adoption and fsync.
 - **Minting delivery turn IDs.** Name which component mints them: the registry
@@ -1242,19 +1258,30 @@ rather than resolved in prose here:
   a flushed item — it has no itemRecord or update-log entry to begin with —
   which is out of this fix's scope (Latest/Before only) and not currently a
   problem (nothing reads from this index in production yet).
-- **`CatchUpTo`'s truncate-first extension can leak in-place updates past
-  the requested length.** `extend`'s truncate loop assumes the following
+- ~~**`CatchUpTo`'s truncate-first extension can leak in-place updates past
+  the requested length.**~~ Fixed, and now live rather than latent: daemon
+  callers pass a recorded length (`server/thread_history.go`,
+  `server/history_read.go`) while the hub's `CatchUp` goes to the transcript's
+  current file size on the same sidecar, so a shorter `CatchUpTo` after a
+  longer one really happens. `extend`'s truncate loop assumed the following
   scan re-applies every entry whose in-place update it just truncated away;
-  a `CatchUpTo(length)` call for a `length` that stops before re-scanning
-  such an entry loses that update-log record without redoing it, so
-  `Latest`/`Before` can return content beyond `Window.Length` and
-  `ChangedSince` can omit the change. Latent in phase 1: every current
-  caller only calls it (via `CatchUp`) with the transcript's current full
-  size, never a smaller recorded length, so the truncated records are
-  always re-scanned. Needs either a rebuild fallback when the requested
-  length would not reach the highest version already written, or
-  re-deriving the update log from surviving record versions, before a
-  caller passes it a client-recorded (not-necessarily-current) length.
+  that held only when the scan reached at least as far as an extension
+  interrupted after writing its records but before committing meta had
+  gotten, never for a shorter `length`: an update-log row past the committed
+  count can log an in-place update to an already-committed record (a slot
+  truncate never touches, since it precedes the committed counts), and
+  discarding that row without the shorter scan ever revisiting its entry
+  left `Latest`/`Before` free to return content beyond `Window.Length` while
+  `ChangedSince` omitted the change. `extend` (`internal/transcriptindex/
+  index.go`) now inspects the update log's leftover rows
+  (`unsafeLeftoverUpdate`) before truncating: a leftover row logging an
+  in-place update to an already-committed item or turn whose causing entry
+  this call's length would not completely re-scan forces a rebuild (keeping
+  the incarnation, since the transcript still extends the covered prefix)
+  instead of the truncate-and-rescan path. Pinned by
+  `TestCatchUpToShorterThanAKilledExtensionsReachRedoesTheLeftoverUpdate`
+  (`internal/transcriptindex/catchup_leak_test.go`), using the existing
+  `testKillAfterRecordWrites` seam.
 - **Cross-version schema skew on a shared sidecar.** `readMeta` accepts a
   build whose `format`/`projection` match, but nothing records which
   binary's `schema.Turn`/`llm.Message` shape built it. Reads decode

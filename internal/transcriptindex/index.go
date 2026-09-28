@@ -44,9 +44,23 @@ const (
 // thousand entries or so. A variable only so tests can shrink it.
 var updateLogRecords = 10_000
 
+// SetUpdateLogRecordsForTest shrinks the kept update log for the duration of
+// a test, so a caller in another package can force ErrUpdateLogTruncated
+// without writing thousands of entries. Restore undoes it.
+func SetUpdateLogRecordsForTest(n int) (restore func()) {
+	previous := updateLogRecords
+	updateLogRecords = n
+	return func() { updateLogRecords = previous }
+}
+
 // ErrUpdateLogTruncated reports a ChangedSince for a length older than the
-// kept update log: the changes since then are not all known any more, and
-// the caller sends a full latest-window replacement with no deltas.
+// kept update log: the changes since then are not all known any more.
+// LatestSince propagates it rather than answering with the window alone,
+// since held items outside the window may have changed with no way for the
+// caller to tell; the hub maps it to appwire.TranscriptItemCursorStale() so
+// the client re-reads without its held snapshot. A daemon's own ChangedSince
+// call (project, in server/thread_history.go) treats it as a failure and
+// rebuilds.
 var ErrUpdateLogTruncated = errors.New("transcript index update log no longer reaches that length")
 
 // testKillAfterRecordWrites, when set, runs right after an extension's or a
@@ -429,6 +443,27 @@ func (x *Index) extend(length int64) error {
 	if length <= x.meta.Length {
 		return nil
 	}
+	// An extension interrupted after writing its records but before
+	// committing meta can leave update-log rows past the committed count:
+	// truncating them away and re-scanning only up to this call's length
+	// assumes the scan will re-derive everything they held. That holds for
+	// a row logging a new record's own update (the scan recreates the
+	// record itself, so its later update comes back too, or the record
+	// stays new and uncommitted either way), but not for a row logging an
+	// in-place update to an already-committed record: its slot precedes the
+	// committed counts, so truncate never touches it, and the update can
+	// already be on disk from an entry this call's length does not reach.
+	// Rebuild instead: it recomputes every record from scratch up to
+	// length, so it cannot leave such a leftover behind. The transcript
+	// still extends the covered prefix, so the incarnation is kept, as
+	// errRebuild's rebuild below does.
+	unsafe, err := x.unsafeLeftoverUpdate(length)
+	if err != nil {
+		return err
+	}
+	if unsafe {
+		return x.rebuild(length, x.meta.Incarnation)
+	}
 	// Whatever an extension that did not finish left past the counts goes
 	// before this one appends.
 	for _, t := range []*table{&x.items, &x.turns, &x.updates} {
@@ -484,6 +519,35 @@ func (x *Index) repairBuilder(length int64) error {
 		return x.rebuild(length, "")
 	}
 	return nil
+}
+
+// unsafeLeftoverUpdate reports whether the update log holds a leftover row
+// (past its committed count, the signature of an extension that wrote its
+// records but was interrupted before the meta commit that would count them)
+// logging an in-place update to an already-committed item or turn record
+// (one whose slot precedes items.n/turns.n) whose causing entry ends at or
+// after length: a scan bounded at length cannot reach a complete line there,
+// so it would not redo that update, yet the update may already sit on disk.
+func (x *Index) unsafeLeftoverUpdate(length int64) (bool, error) {
+	available, err := x.updates.available()
+	if err != nil {
+		return false, err
+	}
+	for slot := x.updates.n; slot < available; slot++ {
+		buf := make([]byte, x.updates.size)
+		if _, err := x.updates.file.ReadAt(buf, int64(slot)*x.updates.size); err != nil {
+			return false, fmt.Errorf("%w: read leftover update record: %w", errCorrupt, err)
+		}
+		row := decodeUpdate(buf)
+		committed := x.items.n
+		if row.Kind == updatedTurn {
+			committed = x.turns.n
+		}
+		if row.Slot < committed && length <= row.Offset {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 // grownByAppends reports whether the transcript at path is still the file the

@@ -273,6 +273,51 @@ func TestDaemonlessClientHoldingPageWhenToolResultsLands(t *testing.T) {
 	}
 }
 
+// TestDaemonlessClientHoldingBelowFloorSnapshotGetsCursorStale pins the
+// below-floor decision from the spec's phase 4 follow-ups: a held snapshot
+// naming the current incarnation but predating the kept update log cannot be
+// answered with the window alone (held items outside it may have changed
+// with no way to tell), so the hub answers TranscriptItemCursorStale instead
+// of silently merging a bare window.
+func TestDaemonlessClientHoldingBelowFloorSnapshotGetsCursorStale(t *testing.T) {
+	restore := transcriptindex.SetUpdateLogRecordsForTest(1)
+	defer restore()
+	cfg, entry, path := seedIndexedPastSession(t,
+		execution("turn_m1", schema.NewTurn(schema.TurnUserInput, llm.User("first question"))),
+		execution("turn_m1", schema.NewTurn(schema.TurnAssistant, llm.Assistant("first answer"))),
+		completedExecution("turn_m1"),
+	)
+	ref := "local:" + entry.Meta.ID
+	held, err := dispatchDaemonlessThreadRead(t, cfg, appwire.ThreadReadParams{Ref: ref, IncludeTurns: true, ItemLimit: 10, RequestGeneration: 1})
+	if err != nil {
+		t.Fatalf("first read: %v", err)
+	}
+	if held.Snapshot == nil {
+		t.Fatal("first read carries no snapshot")
+	}
+
+	// Push the update log's kept window past the held snapshot's length: with
+	// the log capped to 1 record, a second turn's entries cut the log back
+	// past held's length.
+	appendTranscriptEntries(t, path,
+		execution("turn_m2", schema.NewTurn(schema.TurnUserInput, llm.User("second question"))),
+		execution("turn_m2", schema.NewTurn(schema.TurnAssistant, llm.Assistant("second answer"))),
+		completedExecution("turn_m2"),
+	)
+
+	_, err = dispatchDaemonlessThreadRead(t, cfg, appwire.ThreadReadParams{
+		Ref: ref, IncludeTurns: true, ItemLimit: 10, RequestGeneration: 2, HeldSnapshot: held.Snapshot,
+	})
+	var wireErr appwire.WireError
+	if !errors.As(err, &wireErr) {
+		t.Fatalf("below-floor read err = %v, want a WireError", err)
+	}
+	data, ok := wireErr.Data.(appwire.HistoryReadErrorData)
+	if !ok || data.EvenerErrorInfo != appwire.ErrorTranscriptItemCursorStale {
+		t.Fatalf("below-floor read error data = %#v, want transcriptItemCursorStale", wireErr.Data)
+	}
+}
+
 // TestDaemonlessOpenExecutionReadsInProgressWithNoRunningTurn pins the read of
 // a turn whose daemon died mid-execution: the turn has no completion, so it is
 // still inProgress, but nothing runs it, so the thread names no running turn.
