@@ -3,6 +3,7 @@ package hub
 import (
 	"context"
 	"errors"
+	"fmt"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -48,16 +49,31 @@ func newBootstrapFixture(t *testing.T) *bootstrapFixture {
 	return &bootstrapFixture{t: t, path: path, m: m}
 }
 
+// hubClaim is a held claim that records its release.
+type hubClaim struct{ released int }
+
+func (c *hubClaim) Release(context.Context) error {
+	c.released++
+	return nil
+}
+
 // hubClaimQuiesce is a scripted claim-plus-quiesce primitive.
 type hubClaimQuiesce struct {
 	report hostfence.QuiesceReport
 	err    error
 	calls  int
+	claim  *hubClaim
 }
 
-func (q *hubClaimQuiesce) ClaimAndQuiesce(context.Context, hostfence.Epoch) (hostfence.QuiesceReport, error) {
+func (q *hubClaimQuiesce) ClaimAndQuiesce(context.Context, hostfence.Epoch) (hostfence.QuiesceReport, hostfence.BootstrapClaim, error) {
 	q.calls++
-	return q.report, q.err
+	if q.err != nil {
+		return hostfence.QuiesceReport{}, nil, q.err
+	}
+	if q.claim == nil {
+		q.claim = &hubClaim{}
+	}
+	return q.report, q.claim, nil
 }
 
 // hubRunner is a scripted remote runner that answers the helper version
@@ -118,7 +134,7 @@ func TestHostBootstrapFlagsPersistAndSurviveRewrites(t *testing.T) {
 		t.Fatalf("initial provisioning = %+v, want the zero record", initial)
 	}
 
-	fenced, err := store.PersistAttemptFence("alpha")
+	fenced, err := store.PersistAttemptFence("alpha", bootstrapEpoch())
 	if err != nil {
 		t.Fatalf("PersistAttemptFence: %v", err)
 	}
@@ -129,9 +145,16 @@ func TestHostBootstrapFlagsPersistAndSurviveRewrites(t *testing.T) {
 	if !record.BootstrapAttempted || record.HelperInstalled || record.HelperVersion != 0 {
 		t.Fatalf("host_records[alpha] = %+v, want only the attempt fence", record)
 	}
+	if record.BootstrapEpochBoot != bootstrapEpoch().BootID || record.BootstrapEpochOpSeq != bootstrapEpoch().OpSeq {
+		t.Fatalf("host_records[alpha] epoch = (%q, %d), want the attempt's epoch (%q, %d)",
+			record.BootstrapEpochBoot, record.BootstrapEpochOpSeq, bootstrapEpoch().BootID, bootstrapEpoch().OpSeq)
+	}
 	raw := string(readHostFileBytes(t, f.path))
 	if !strings.Contains(raw, "bootstrap_attempted = true") {
 		t.Fatalf("the attempt fence is not durable in hub.toml:\n%s", raw)
+	}
+	if !strings.Contains(raw, `bootstrap_epoch_boot = "boot-1"`) || !strings.Contains(raw, "bootstrap_epoch_op_seq = 1") {
+		t.Fatalf("the attempt's fencing epoch is not durable in hub.toml:\n%s", raw)
 	}
 	if strings.Contains(raw, "helper_installed") {
 		t.Fatalf("the attempt-fence write converged helperInstalled:\n%s", raw)
@@ -277,10 +300,13 @@ func TestHostRecordProvisioningValidation(t *testing.T) {
 		record  HostRecord
 		wantErr string
 	}{
-		{name: "attempt fence alone", record: HostRecord{IncarnationID: identity.IncarnationID, PresenceEpoch: 1, BootstrapAttempted: true}},
+		{name: "attempt fence with its epoch", record: HostRecord{IncarnationID: identity.IncarnationID, PresenceEpoch: 1, BootstrapAttempted: true, BootstrapEpochBoot: "boot-1", BootstrapEpochOpSeq: 1}},
 		{name: "version without installed", record: HostRecord{IncarnationID: identity.IncarnationID, PresenceEpoch: 1, BootstrapAttempted: true, HelperVersion: 1}, wantErr: "without helper_installed"},
 		{name: "installed without version", record: HostRecord{IncarnationID: identity.IncarnationID, PresenceEpoch: 1, BootstrapAttempted: true, HelperInstalled: true}, wantErr: "without a helper_version record"},
 		{name: "installed without the attempt fence", record: HostRecord{IncarnationID: identity.IncarnationID, PresenceEpoch: 1, HelperInstalled: true, HelperVersion: 1}, wantErr: "without the bootstrap-attempt fence"},
+		{name: "fence without its epoch", record: HostRecord{IncarnationID: identity.IncarnationID, PresenceEpoch: 1, BootstrapAttempted: true}, wantErr: "without the attempt's fencing epoch"},
+		{name: "epoch without the fence", record: HostRecord{IncarnationID: identity.IncarnationID, PresenceEpoch: 1, BootstrapEpochBoot: "boot-1", BootstrapEpochOpSeq: 1}, wantErr: "without the attempt fence"},
+		{name: "invalid epoch", record: HostRecord{IncarnationID: identity.IncarnationID, PresenceEpoch: 1, BootstrapAttempted: true, BootstrapEpochBoot: "-", BootstrapEpochOpSeq: 1}, wantErr: "invalid bootstrap-attempt epoch"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -325,6 +351,18 @@ func TestHelperGateRefusalsRideTheConflictClass(t *testing.T) {
 		t.Fatalf("absent data = %+v, want the host and pinned version", data)
 	}
 
+	// The wire message carries the refusal's own detail — helperAbsentRefusal
+	// wraps the gate with the reason (a lost claim race, a live foreign
+	// process) — not just the gate's generic text.
+	wrapped := fmt.Errorf("%w (a lost claim race)", &hostfence.HelperGateError{
+		Host: "alpha", Discriminator: hostfence.DiscriminatorHelperAbsent, PinnedVersion: hostfence.HelperVersion,
+	})
+	err = m.operationProbeRefusal("alpha", wrapped)
+	wire, ok = errors.AsType[appwire.WireError](err)
+	if !ok || !strings.Contains(wire.Message, "a lost claim race") {
+		t.Fatalf("absent wire message = %q, want the wrapped refusal detail", wire.Message)
+	}
+
 	untrusted := hostfence.VerifyHelper("alpha", hostfence.HelperVersion, hostfence.HelperProbe{Present: true, Reported: true, Version: 99})
 	err = m.operationProbeRefusal("alpha", untrusted)
 	wire, ok = errors.AsType[appwire.WireError](err)
@@ -366,7 +404,7 @@ func TestHelperGateRefusalsRideTheConflictClass(t *testing.T) {
 func TestHostBootstrapProvisioningDoesNotSurviveRemoval(t *testing.T) {
 	f := newBootstrapFixture(t)
 	store := f.m.bootstrapStore()
-	if _, err := store.PersistAttemptFence("alpha"); err != nil {
+	if _, err := store.PersistAttemptFence("alpha", bootstrapEpoch()); err != nil {
 		t.Fatalf("PersistAttemptFence: %v", err)
 	}
 	if _, err := store.FinalizeBootstrap("alpha", hostfence.HelperVersion); err != nil {
@@ -436,5 +474,43 @@ func TestHostBootstrapFinalizeRequiresTheAttemptFence(t *testing.T) {
 		t.Fatal("FinalizeBootstrap with version 0 = nil error, want a refusal")
 	} else if !strings.Contains(err.Error(), "needs the delivered helper version") {
 		t.Fatalf("FinalizeBootstrap(version 0) error = %v, want the explicit version refusal", err)
+	}
+}
+
+// TestHostBootstrapPersistsTheAttemptEpoch pins §6:139's identity at the record
+// layer: the fence's own atomic write carries the attempt's fencing epoch, a
+// read-back returns it (so recovery can name the crashed attempt after a
+// restart), and an unrelated rewrite preserves it with the flags.
+func TestHostBootstrapPersistsTheAttemptEpoch(t *testing.T) {
+	f := newBootstrapFixture(t)
+	store := f.m.bootstrapStore()
+	epoch := hostfence.Epoch{BootID: "boot-9", OpSeq: 42}
+	if _, err := store.PersistAttemptFence("alpha", epoch); err != nil {
+		t.Fatalf("PersistAttemptFence: %v", err)
+	}
+	record := liveRecord(t, f.path, "alpha")
+	if record.BootstrapEpochBoot != epoch.BootID || record.BootstrapEpochOpSeq != epoch.OpSeq {
+		t.Fatalf("host_records[alpha] epoch = (%q, %d), want (%q, %d)",
+			record.BootstrapEpochBoot, record.BootstrapEpochOpSeq, epoch.BootID, epoch.OpSeq)
+	}
+	readBack, err := store.Provisioning("alpha")
+	if err != nil {
+		t.Fatalf("Provisioning: %v", err)
+	}
+	if readBack.AttemptEpoch != epoch {
+		t.Fatalf("read-back epoch = %+v, want %+v", readBack.AttemptEpoch, epoch)
+	}
+
+	entries := f.m.cfg.store.snapshot()
+	f.m.cfg.mu.Lock()
+	err = f.m.persistHosts(entries, entries, hostPersistChange{})
+	f.m.cfg.mu.Unlock()
+	if err != nil {
+		t.Fatalf("unrelated rewrite: %v", err)
+	}
+	record = liveRecord(t, f.path, "alpha")
+	if record.BootstrapEpochBoot != epoch.BootID || record.BootstrapEpochOpSeq != epoch.OpSeq {
+		t.Fatalf("the epoch after an unrelated rewrite = (%q, %d), want (%q, %d)",
+			record.BootstrapEpochBoot, record.BootstrapEpochOpSeq, epoch.BootID, epoch.OpSeq)
 	}
 }

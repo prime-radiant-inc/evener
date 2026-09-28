@@ -31,12 +31,13 @@ type scriptedStore struct {
 
 func (s *scriptedStore) Provisioning(string) (Provisioning, error) { return s.record, nil }
 
-func (s *scriptedStore) PersistAttemptFence(string) (Provisioning, error) {
+func (s *scriptedStore) PersistAttemptFence(_ string, epoch Epoch) (Provisioning, error) {
 	if s.persistErr != nil {
 		return Provisioning{}, s.persistErr
 	}
 	s.writes = append(s.writes, "attempt")
 	s.record.AttemptFenced = true
+	s.record.AttemptEpoch = epoch
 	if s.racingFinalize {
 		s.record.HelperInstalled = true
 		s.record.HelperVersion = HelperVersion
@@ -57,16 +58,39 @@ func (s *scriptedStore) FinalizeBootstrap(_ string, version uint64) (Provisionin
 	return s.record, nil
 }
 
-// scriptedQuiesce is the claim-plus-quiesce primitive's scripted answer.
-type scriptedQuiesce struct {
-	report QuiesceReport
-	err    error
-	calls  int
+// scriptedClaim is a held claim that records its release.
+type scriptedClaim struct{ released int }
+
+func (c *scriptedClaim) Release(context.Context) error {
+	c.released++
+	return nil
 }
 
-func (q *scriptedQuiesce) ClaimAndQuiesce(context.Context, Epoch) (QuiesceReport, error) {
+// scriptedQuiesce is the claim-plus-quiesce primitive's scripted answer. claim,
+// when set, is the held claim returned; noClaim forces a nil claim (the
+// primitive that can only report a point in time).
+type scriptedQuiesce struct {
+	report  QuiesceReport
+	err     error
+	claim   BootstrapClaim
+	noClaim bool
+	calls   int
+	epoch   Epoch
+}
+
+func (q *scriptedQuiesce) ClaimAndQuiesce(_ context.Context, epoch Epoch) (QuiesceReport, BootstrapClaim, error) {
 	q.calls++
-	return q.report, q.err
+	q.epoch = epoch
+	if q.err != nil {
+		return QuiesceReport{}, nil, q.err
+	}
+	if q.noClaim {
+		return q.report, nil, nil
+	}
+	if q.claim != nil {
+		return q.report, q.claim, nil
+	}
+	return q.report, &scriptedClaim{}, nil
 }
 
 // bareClaim is the winning claim with no foreign presence.
@@ -77,10 +101,12 @@ type scriptedProbe struct {
 	live  bool
 	err   error
 	calls int
+	seen  Epoch
 }
 
-func (p *scriptedProbe) BootstrappedProcessLive(context.Context, Epoch) (bool, error) {
+func (p *scriptedProbe) BootstrappedProcessLive(_ context.Context, epoch Epoch) (bool, error) {
 	p.calls++
+	p.seen = epoch
 	return p.live, p.err
 }
 
@@ -130,6 +156,7 @@ func TestExemptDeliveryPermitted(t *testing.T) {
 		{name: "never provisioned", rec: Provisioning{}, ev: BootstrapEvidence{}, want: true},
 		{name: "attempt fenced", rec: Provisioning{AttemptFenced: true}, want: false},
 		{name: "helper installed", rec: Provisioning{HelperInstalled: true, HelperVersion: 1}, want: false},
+		{name: "installed without a version record", rec: Provisioning{HelperInstalled: true}, want: false},
 		{name: "prior helper version record", rec: Provisioning{HelperVersion: 1}, want: false},
 		{name: "prior fenced epoch", ev: BootstrapEvidence{FencedEpoch: true}, want: false},
 		{name: "interrupted record", ev: BootstrapEvidence{Interrupted: true}, want: false},
@@ -151,6 +178,9 @@ func TestProvisioningPostures(t *testing.T) {
 	}
 	if (Provisioning{AttemptFenced: true}).Provisioned() {
 		t.Error("an attempt-fenced record reads as provisioned")
+	}
+	if (Provisioning{HelperInstalled: true}).Provisioned() {
+		t.Error("an installed-without-version record reads as provisioned")
 	}
 	fenced := Provisioning{AttemptFenced: true}
 	if !fenced.FencedWithoutHelper() {
@@ -239,7 +269,8 @@ func TestBootstrapRefusesLostClaimRaceAndForeignPresence(t *testing.T) {
 // helperInstalled with the pinned version.
 func TestBootstrapDeliverySequence(t *testing.T) {
 	store := &scriptedStore{}
-	quiesce := &scriptedQuiesce{report: bareClaim()}
+	claim := &scriptedClaim{}
+	quiesce := &scriptedQuiesce{report: bareClaim(), claim: claim}
 	runner := versionRunner()
 	var order []string
 	outcome, err := Bootstrap(context.Background(), BootstrapRequest{
@@ -256,9 +287,14 @@ func TestBootstrapDeliverySequence(t *testing.T) {
 	if !outcome.Provisioning.HelperInstalled || outcome.Provisioning.HelperVersion != HelperVersion {
 		t.Fatalf("outcome provisioning = %+v, want the converged record", outcome.Provisioning)
 	}
-	want := []string{"attempt", "claim", "deliver", "verify", "finalize"}
+	// The claim is held across the whole delivery and released only after the
+	// finalize: §6:135 requires the quiesce to hold for the entire delivery.
+	want := []string{"attempt", "claim", "deliver", "verify", "finalize", "release"}
 	if strings.Join(order, ",") != strings.Join(want, ",") {
 		t.Fatalf("step order = %v, want %v", order, want)
+	}
+	if claim.released != 1 {
+		t.Fatalf("the claim was released %d times, want exactly 1", claim.released)
 	}
 	// The delivery command ships the embedded helper bytes and the self-test
 	// runs the pinned version command.
@@ -537,5 +573,96 @@ func TestDeliveryCommandInstallsTheEmbeddedHelper(t *testing.T) {
 	}
 	if got := strings.TrimSpace(string(versionOut)); got != "1" {
 		t.Fatalf("installed helper reports version %q, want 1", got)
+	}
+}
+
+// TestBootstrapRefusesAnUnheldClaim pins §6:135's hold: a primitive that wins
+// the claim but returns no held claim has only answered a point in time, so the
+// flow refuses before any delivery.
+func TestBootstrapRefusesAnUnheldClaim(t *testing.T) {
+	store := &scriptedStore{}
+	runner := &scriptedRunner{}
+	_, err := Bootstrap(context.Background(), BootstrapRequest{
+		Host: "h1", Epoch: bootstrapEpoch(), Evidence: eligibleFacts(),
+		Store: store, Runner: runner, Quiesce: &scriptedQuiesce{report: bareClaim(), noClaim: true},
+	})
+	if _, ok := errors.AsType[*HelperGateError](err); !ok {
+		t.Fatalf("err = %v, want a typed fencing-helper-absent refusal for the unheld claim", err)
+	}
+	if len(runner.calls) != 0 {
+		t.Fatalf("remote calls = %v, want none without a held claim", runner.calls)
+	}
+	if !store.record.AttemptFenced {
+		t.Fatal("the attempt fence is not durable after the refused claim")
+	}
+}
+
+// unlandedFenceStore answers PersistAttemptFence without landing the fence: the
+// store the flow must refuse before any delivery.
+type unlandedFenceStore struct{ scriptedStore }
+
+func (s *unlandedFenceStore) PersistAttemptFence(string, Epoch) (Provisioning, error) {
+	return Provisioning{}, nil
+}
+
+// TestBootstrapRefusesAFenceThatDidNotLand pins §6:133's ordering: a store that
+// answers without the fence cannot be delivered behind, because the delivery
+// would then run unfenced.
+func TestBootstrapRefusesAFenceThatDidNotLand(t *testing.T) {
+	store := &unlandedFenceStore{}
+	runner := &scriptedRunner{}
+	_, err := Bootstrap(context.Background(), BootstrapRequest{
+		Host: "h1", Epoch: bootstrapEpoch(), Evidence: eligibleFacts(),
+		Store: store, Runner: runner, Quiesce: &scriptedQuiesce{report: bareClaim()},
+	})
+	if err == nil || !strings.Contains(err.Error(), "returned without the fence") {
+		t.Fatalf("err = %v, want the fence-did-not-land refusal", err)
+	}
+	if len(runner.calls) != 0 {
+		t.Fatalf("remote calls = %v, want none behind an unlanded fence", runner.calls)
+	}
+}
+
+// TestBootstrapRecoveryProbesThePersistedAttemptEpoch pins §6:139's identity:
+// after a crash and a restart the recovery probe names the epoch the attempt
+// fence persisted — the crashed attempt's own epoch — never the new attempt's.
+func TestBootstrapRecoveryProbesThePersistedAttemptEpoch(t *testing.T) {
+	store := &scriptedStore{}
+	crashed := Epoch{BootID: "boot-old", OpSeq: 7}
+	if _, err := Bootstrap(context.Background(), BootstrapRequest{
+		Host: "h1", Epoch: crashed, Evidence: eligibleFacts(),
+		Store: store, Runner: &scriptedRunner{}, Quiesce: &scriptedQuiesce{err: errors.New("crash")},
+	}); err == nil {
+		t.Fatal("Bootstrap = nil error, want the crashed claim")
+	}
+	// A later restart mints a different epoch; recovery must still name the
+	// crashed attempt.
+	probe := &scriptedProbe{}
+	outcome, err := Bootstrap(context.Background(), BootstrapRequest{
+		Host: "h1", Epoch: Epoch{BootID: "boot-new", OpSeq: 3},
+		Store: store, Runner: &scriptedRunner{}, Probe: probe,
+	})
+	if err != nil || outcome.Kind != BootstrapFenced {
+		t.Fatalf("recovery = (%v, %v), want the fenced path", outcome.Kind, err)
+	}
+	if probe.seen != crashed {
+		t.Fatalf("recovery probe saw epoch %+v, want the persisted crashed attempt %+v", probe.seen, crashed)
+	}
+}
+
+// TestBootstrapRecoveryRefusesAnUnidentifiableAttempt pins the fail-closed arm:
+// an attempt fence with no epoch cannot name the crashed attempt, so recovery
+// refuses with the typed fencing-helper-absent and probes nothing.
+func TestBootstrapRecoveryRefusesAnUnidentifiableAttempt(t *testing.T) {
+	store := &scriptedStore{record: Provisioning{AttemptFenced: true}}
+	probe := &scriptedProbe{}
+	_, err := Bootstrap(context.Background(), BootstrapRequest{
+		Host: "h1", Epoch: bootstrapEpoch(), Store: store, Runner: &scriptedRunner{}, Probe: probe,
+	})
+	if _, ok := errors.AsType[*HelperGateError](err); !ok {
+		t.Fatalf("err = %v, want a typed fencing-helper-absent refusal for the unidentifiable attempt", err)
+	}
+	if probe.calls != 0 {
+		t.Fatalf("recovery probes = %d, want 0 for an unidentifiable attempt", probe.calls)
 	}
 }

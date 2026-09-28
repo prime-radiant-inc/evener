@@ -55,6 +55,13 @@ type HostRecord struct {
 	// version the finalize recorded. Zero means no version record. It is present
 	// exactly with HelperInstalled.
 	HelperVersion uint64 `toml:"helper_version,omitempty"`
+	// BootstrapEpochBoot and BootstrapEpochOpSeq are the fencing epoch the
+	// attempt fence was minted under (crash-fencing §6:131, "under the worker's
+	// persisted epoch"), stored in the same shape the teardown attempts use.
+	// §6:139's recovery re-probe names the crashed attempt by this epoch after
+	// any restart; a fence without it cannot identify the crashed attempt.
+	BootstrapEpochBoot  string `toml:"bootstrap_epoch_boot,omitempty"`
+	BootstrapEpochOpSeq uint64 `toml:"bootstrap_epoch_op_seq,omitempty"`
 }
 
 // provisioning projects the record's bootstrap half (crash-fencing §6) into the
@@ -63,6 +70,7 @@ type HostRecord struct {
 func (r HostRecord) provisioning() hostfence.Provisioning {
 	return hostfence.Provisioning{
 		AttemptFenced:   r.BootstrapAttempted,
+		AttemptEpoch:    hostfence.Epoch{BootID: r.BootstrapEpochBoot, OpSeq: r.BootstrapEpochOpSeq},
 		HelperInstalled: r.HelperInstalled,
 		HelperVersion:   r.HelperVersion,
 	}
@@ -73,6 +81,8 @@ func (r HostRecord) provisioning() hostfence.Provisioning {
 // the flags.
 func (r HostRecord) withProvisioning(p hostfence.Provisioning) HostRecord {
 	r.BootstrapAttempted = p.AttemptFenced
+	r.BootstrapEpochBoot = p.AttemptEpoch.BootID
+	r.BootstrapEpochOpSeq = p.AttemptEpoch.OpSeq
 	r.HelperInstalled = p.HelperInstalled
 	r.HelperVersion = p.HelperVersion
 	return r
@@ -383,6 +393,7 @@ func validateHostRecords(records map[string]HostRecord, generations map[string]H
 // of this build emits — a reserved value whose shape cannot be decoded, refused
 // loudly rather than silently reinterpreted on the next rewrite.
 func validateHostProvisioning(record HostRecord) error {
+	epoch := hostfence.Epoch{BootID: record.BootstrapEpochBoot, OpSeq: record.BootstrapEpochOpSeq}
 	switch {
 	case record.HelperVersion != 0 && !record.HelperInstalled:
 		return fmt.Errorf("carries a helper_version record (%d) without helper_installed", record.HelperVersion)
@@ -390,6 +401,14 @@ func validateHostProvisioning(record HostRecord) error {
 		return errors.New("carries helper_installed without a helper_version record")
 	case record.HelperInstalled && !record.BootstrapAttempted:
 		return errors.New("carries helper_installed without the bootstrap-attempt fence")
+	case record.BootstrapAttempted && epoch.IsZero():
+		return errors.New("carries the bootstrap-attempt fence without the attempt's fencing epoch")
+	case !record.BootstrapAttempted && !epoch.IsZero():
+		return errors.New("carries a bootstrap-attempt epoch without the attempt fence")
+	case !epoch.IsZero():
+		if err := epoch.Validate(); err != nil {
+			return fmt.Errorf("carries an invalid bootstrap-attempt epoch: %w", err)
+		}
 	}
 	return nil
 }
@@ -573,10 +592,15 @@ func (s hostBootstrapStore) Provisioning(host string) (hostfence.Provisioning, e
 }
 
 // PersistAttemptFence writes §6:133's durable bootstrap-attempt fence in its
-// own atomic hub.toml write.
-func (s hostBootstrapStore) PersistAttemptFence(host string) (hostfence.Provisioning, error) {
+// own atomic hub.toml write, with the attempt's fencing epoch §6:139's recovery
+// names the crashed attempt by.
+func (s hostBootstrapStore) PersistAttemptFence(host string, epoch hostfence.Epoch) (hostfence.Provisioning, error) {
+	if err := epoch.Validate(); err != nil {
+		return hostfence.Provisioning{}, err
+	}
 	return s.m.persistProvisioning(host, func(p hostfence.Provisioning) (hostfence.Provisioning, error) {
 		p.AttemptFenced = true
+		p.AttemptEpoch = epoch
 		return p, nil
 	})
 }

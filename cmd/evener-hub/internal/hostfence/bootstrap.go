@@ -34,6 +34,13 @@ type Provisioning struct {
 	// attempt's first remote side effect. It is never cleared — a host carrying
 	// it takes the fenced path on every later attempt (§6:137).
 	AttemptFenced bool
+	// AttemptEpoch is the fencing epoch the attempt fence was minted under
+	// (§6:131: the exemption "runs under the worker's persisted epoch"). It is
+	// what §6:139's recovery re-probe names after any restart: the crashed
+	// attempt's process belongs to that epoch, not to whatever epoch the next
+	// attempt mints. A fence without it cannot identify the crashed attempt and
+	// recovery fails closed.
+	AttemptEpoch Epoch
 	// HelperInstalled is §6:137's converged flag: the delivery finalized and the
 	// pinned helper lives on the host.
 	HelperInstalled bool
@@ -42,9 +49,12 @@ type Provisioning struct {
 	HelperVersion uint64
 }
 
-// Provisioned reports whether the host carries the converged helperInstalled
-// flag: the ordinary fenced path, with no bootstrap step at all.
-func (p Provisioning) Provisioned() bool { return p.HelperInstalled }
+// Provisioned reports whether the host carries the whole converged record: the
+// installed flag with the version record its finalize wrote. An
+// installed-without-version record is not provisioned — it is a shape no writer
+// emits (the record loader refuses it), and reading it as provisioned would
+// hide that.
+func (p Provisioning) Provisioned() bool { return p.HelperInstalled && p.HelperVersion != 0 }
 
 // FencedWithoutHelper reports §6:137's crash posture: the attempt fence landed
 // but helperInstalled did not, so every later attempt takes the fenced recovery
@@ -83,9 +93,11 @@ func ExemptDeliveryPermitted(p Provisioning, ev BootstrapEvidence) bool {
 type BootstrapStore interface {
 	// Provisioning reads the host's current record.
 	Provisioning(host string) (Provisioning, error)
-	// PersistAttemptFence writes the durable bootstrap-attempt fence in its own
-	// atomic hub.toml write, before the attempt's first remote side effect.
-	PersistAttemptFence(host string) (Provisioning, error)
+	// PersistAttemptFence writes the durable bootstrap-attempt fence with the
+	// attempt's epoch in its own atomic hub.toml write, before the attempt's
+	// first remote side effect. A record returned without the fence is refused
+	// by the caller, never delivered behind.
+	PersistAttemptFence(host string, epoch Epoch) (Provisioning, error)
 	// FinalizeBootstrap converges helperInstalled with the delivered version in
 	// the same atomic hub.toml write that finalizes bootstrap (§6:137). A
 	// failure refuses finalize: the attempt fence stays and helperInstalled is
@@ -114,17 +126,34 @@ func (r QuiesceReport) Bare() bool {
 	return r.Claimed && len(r.ForeignProcesses) == 0 && len(r.ForeignGuardHolders) == 0
 }
 
+// BootstrapClaim is one won claim-plus-quiesce lease, held for the caller's
+// whole delivery: §6:135 requires the quiesce to "hold for the entire delivery
+// so no process or controller starting after the claim can overlap it". A
+// primitive that can only report a point in time has not quiesced anything;
+// releasing the claim is how the hold ends, and a crash drops it with the
+// process.
+type BootstrapClaim interface {
+	// Release ends the hold. It is called once, after the delivery finished (or
+	// failed), and its error is the caller's to log.
+	Release(ctx context.Context) error
+}
+
 // ClaimQuiesce is §6:135's "pre-existing trusted host-side primitive": one
-// atomic claim-plus-quiesce naming this controller's fencing epoch. Where no
-// such primitive exists delivery is unavailable — nil is that "unavailable",
-// never a fallback to an ordinary-SSH claim-then-check, whose check cannot
-// cover processes starting mid-delivery.
+// atomic claim-plus-quiesce naming this controller's fencing epoch, returning
+// the held claim the delivery runs under. Where no such primitive exists
+// delivery is unavailable — nil is that "unavailable", never a fallback to an
+// ordinary-SSH claim-then-check, whose check cannot cover processes starting
+// mid-delivery.
 type ClaimQuiesce interface {
-	ClaimAndQuiesce(ctx context.Context, epoch Epoch) (QuiesceReport, error)
+	// ClaimAndQuiesce atomically claims the host and quiesces it for epoch. A
+	// non-bare report refuses; a nil claim from a winning primitive is treated
+	// as "cannot hold the claim" and refused before any delivery.
+	ClaimAndQuiesce(ctx context.Context, epoch Epoch) (QuiesceReport, BootstrapClaim, error)
 }
 
 // AttemptProbe is §6:139's read-only recovery re-probe: it answers whether any
-// process the crashed bootstrap attempt start is still live. It is read-only;
+// process the crashed bootstrap attempt started is still live, named by the
+// epoch the attempt fence persisted. It is read-only;
 // no step of recovery mutates before it answers.
 type AttemptProbe interface {
 	BootstrappedProcessLive(ctx context.Context, epoch Epoch) (bool, error)
@@ -226,13 +255,15 @@ func (e *AttemptOrphanError) Error() string {
 // decides from the store's record (re-read at entry, so a retry racing the
 // finalize replays under dedup rather than delivering again, §6:139); on an
 // eligible never-provisioned host it persists the attempt fence in its own
-// write before the first remote side effect (§6:133), delivers only through the
-// atomic claim-plus-quiesce (§6:135), self-tests the delivered helper through
-// §6's verified-handle gate, and converges helperInstalled with the pinned
-// version in the finalizing write (§6:137) — or refuses finalize on any failure.
-// A host carrying the attempt fence without helperInstalled takes the recovery
-// path (§6:139): a read-only re-probe first, and the typed `fencing-helper-absent`
-// when that verification is unavailable.
+// write before the first remote side effect (§6:133), refuses a fence write
+// that did not land, delivers only while holding the atomic claim-plus-quiesce
+// lease (§6:135: the hold spans the delivery, the self-test, and the finalize),
+// self-tests the delivered helper through §6's verified-handle gate, and
+// converges helperInstalled with the pinned version in the finalizing write
+// (§6:137) — or refuses finalize on any failure. A host carrying the attempt
+// fence without helperInstalled takes the recovery path (§6:139): a read-only
+// re-probe naming the fence's persisted attempt epoch first, and the typed
+// `fencing-helper-absent` when the attempt cannot be identified or verified.
 //
 // Nothing here auto-installs out of band, migrates in band, or degrades the
 // exemption to an overwrite. Every refusal the helper gate owns is typed; the
@@ -277,9 +308,15 @@ func Bootstrap(ctx context.Context, req BootstrapRequest) (BootstrapOutcome, err
 	// remote side effect, so a crash before helperInstalled leaves the host
 	// attempt-fenced, never never-provisioned again.
 	step("attempt")
-	fenced, err := req.Store.PersistAttemptFence(req.Host)
+	fenced, err := req.Store.PersistAttemptFence(req.Host, req.Epoch)
 	if err != nil {
 		return BootstrapOutcome{}, err
+	}
+	if !fenced.AttemptFenced {
+		// A store that answered without the fence did not land §6:133's write:
+		// delivering behind it would be the unfenced delivery the fence exists to
+		// forbid.
+		return BootstrapOutcome{}, fmt.Errorf("hostfence: the attempt-fence write for host %q returned without the fence; no delivery was attempted", req.Host)
 	}
 	if fenced.Provisioned() {
 		// A concurrent finalize converged the record between the read and the
@@ -293,7 +330,7 @@ func Bootstrap(ctx context.Context, req BootstrapRequest) (BootstrapOutcome, err
 			"the host carries no pre-existing trusted atomic claim-plus-quiesce primitive; provision the helper out-of-band through the one-time migration path")
 	}
 	step("claim")
-	report, err := req.Quiesce.ClaimAndQuiesce(ctx, req.Epoch)
+	report, claim, err := req.Quiesce.ClaimAndQuiesce(ctx, req.Epoch)
 	if err != nil {
 		if ctx.Err() != nil {
 			// The caller's own context ended: that is not the claim's refusal and
@@ -305,6 +342,21 @@ func Bootstrap(ctx context.Context, req BootstrapRequest) (BootstrapOutcome, err
 	if !report.Bare() {
 		return BootstrapOutcome{}, helperAbsentRefusal(req.Host, describeClaim(report))
 	}
+	if claim == nil {
+		// A winning report with no held claim is a point-in-time answer, not the
+		// quiesce §6:135 requires to hold for the entire delivery: refuse before
+		// any delivery rather than deliver outside a hold.
+		return BootstrapOutcome{}, helperAbsentRefusal(req.Host,
+			"the host's claim-plus-quiesce primitive returned no held claim, so the delivery could not run under one")
+	}
+	// The claim is held across the delivery, the self-test, and the finalize, and
+	// released on every exit (including a crash, which drops it with the process).
+	defer func() {
+		if releaseErr := claim.Release(context.WithoutCancel(ctx)); releaseErr != nil && req.Order != nil {
+			req.Order("release-failed")
+		}
+		step("release")
+	}()
 
 	// The one exempt delivery step: ship the deployed payload with the helper
 	// bytes inside (§6:131), unfenced but under the won claim.
@@ -338,16 +390,24 @@ func Bootstrap(ctx context.Context, req BootstrapRequest) (BootstrapOutcome, err
 // recoverFencedAttempt runs §6:139's recovery for a host carrying the attempt
 // fence without helperInstalled: it re-probes the remote read-only and verifies
 // no bootstrapped process from the crashed attempt is live before the next
-// mutation. A live process refuses with AttemptOrphanError; an unavailable
-// verification refuses fail-closed with the typed fencing-helper-absent, the
-// class §8:162 gives the unverifiable bootstrap-guard claim. Only a verified-
-// gone attempt opens the fenced path.
+// mutation. The probe names the epoch the fence persisted — the crashed
+// attempt's own epoch, not the next attempt's — so a restart cannot make the
+// probe miss the crashed attempt's process. A live process refuses with
+// AttemptOrphanError; an unidentifiable attempt (a fence with no epoch) or an
+// unavailable verification refuses fail-closed with the typed
+// fencing-helper-absent, the class §8:162 gives the unverifiable
+// bootstrap-guard claim. Only a verified-gone attempt opens the fenced path.
 func recoverFencedAttempt(ctx context.Context, req BootstrapRequest, record Provisioning) (BootstrapOutcome, error) {
 	if req.Probe == nil {
 		return BootstrapOutcome{}, helperAbsentRefusal(req.Host,
 			"the crashed bootstrap attempt's process cannot be verified: the host carries no read-only attempt probe; provision the helper out-of-band and repair the host through the one-time migration path")
 	}
-	live, err := req.Probe.BootstrappedProcessLive(ctx, req.Epoch)
+	attempt := record.AttemptEpoch
+	if attempt.IsZero() {
+		return BootstrapOutcome{}, helperAbsentRefusal(req.Host,
+			"the attempt fence records no epoch, so the crashed attempt cannot be identified; repair the host out-of-band through the one-time migration path")
+	}
+	live, err := req.Probe.BootstrappedProcessLive(ctx, attempt)
 	if err != nil {
 		if ctx.Err() != nil {
 			return BootstrapOutcome{}, err

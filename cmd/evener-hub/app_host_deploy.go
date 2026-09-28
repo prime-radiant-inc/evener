@@ -492,7 +492,11 @@ func helperGateWireRefusal(err error) (appwire.WireError, bool) {
 	if !ok {
 		return appwire.WireError{}, false
 	}
-	message := gate.Error()
+	// The wire message is the error's own text: helperAbsentRefusal wraps the
+	// gate with the reason the claim/delivery was refused (a lost claim race, a
+	// live foreign process, a failed probe), and that detail must reach the
+	// caller. gate.Host and gate.PinnedVersion carry the data half.
+	message := err.Error()
 	switch gate.Discriminator {
 	case hostfence.DiscriminatorHelperAbsent:
 		return appwire.FencingHelperAbsent(gate.Host, gate.PinnedVersion, message), true
