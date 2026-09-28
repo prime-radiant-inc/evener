@@ -95,7 +95,9 @@ function commandSections(
 	const groups = new Map<string, CommandRow[]>();
 	for (const item of items) {
 		const plugin = pluginOf(item);
-		groups.set(plugin, [...(groups.get(plugin) ?? []), catalogRow(item, plugin)]);
+		const group = groups.get(plugin) ?? [];
+		groups.set(plugin, group);
+		group.push(catalogRow(item, plugin));
 	}
 	// Plugins in name order so a plugin is where you look for it; your own last.
 	const plugins = [...groups.keys()].filter((plugin) => plugin !== "").sort();
