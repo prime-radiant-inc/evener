@@ -44,7 +44,6 @@ import type {
 	UrlsRemoveResponse,
 } from "@evener/appwire-client";
 import { SHUT_DOWN_STATUSES, WireError } from "@evener/appwire-client";
-import { canWriteHumanNote } from "../session/sessionNotes";
 import {
 	demoSessionId,
 	enabledPluginNames,
@@ -932,17 +931,13 @@ export function createDemoSessions(options: DemoSessionsOptions = {}): Thread[] 
 	return fleetSessions().map((session) => sessionThread(session, now));
 }
 
-// A notes change must reach a session that can take notes now, by the rule
-// the phone's Notes sheet follows (canWriteHumanNote), and name the instance
-// it read. A stale instance is refused as the daemon refuses it
-// (server/appwire_runtime.go, appwire.MutationNotAccepted).
+// A notes change must reach a session that takes shared notes, and name the
+// instance it read. A stale instance is refused as the daemon refuses it
+// (server/appwire_runtime.go, appwire.MutationNotAccepted). A shut-down
+// session is resumed to take it, as the hub's setNotesHumanWithResume and
+// removeURLWithResume do (cmd/evener-hub/app_session_resume.go).
 function requireSharedNotes(thread: Thread, expectedInstanceId: string, clientMutationId: string): void {
-	const writable = canWriteHumanNote({
-		status: thread.status,
-		resumeRequired: thread.evener.resumeRequired ?? false,
-		capabilities: thread.evener.capabilities,
-	});
-	if (!writable) throw new Error("This session can't take notes now");
+	if (!thread.evener.capabilities.sharedNotes) throw new Error("This session doesn't take shared notes");
 	if (expectedInstanceId !== thread.evener.instanceId)
 		throw new WireError("thread instance is stale", -32013, {
 			evenerErrorInfo: "conflict",
@@ -950,6 +945,7 @@ function requireSharedNotes(thread: Thread, expectedInstanceId: string, clientMu
 			mutationOutcome: "notAccepted",
 			retryDisposition: "none",
 		});
+	if (SHUT_DOWN_STATUSES.has(thread.status.type)) restFleetSession(thread, "idle");
 }
 
 // The steering text a changed note opens with (agent/session_notes_rpc.go's

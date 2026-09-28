@@ -803,19 +803,26 @@ describe("native demonstration hub's fleet sessions", () => {
 		});
 	});
 
-	it("refuses notes writes on a session that can't take notes, as the phone does", async () => {
+	it("resumes a shut-down session to take a notes write, as the hub does", async () => {
+		// cmd/evener-hub/app_session_resume.go: setNotesHumanWithResume and
+		// removeURLWithResume resume an exited session, then apply the write.
 		await withHub({}, async (client) => {
-			for (const slug of ["s-roster", "s-namer"]) {
-				const ref = fleetSessionRef(slug);
-				const { thread } = await client.request("thread/read", { ref, includeTurns: false });
-				const expectedInstanceId = thread.evener.instanceId ?? "";
-				await expect(
-					client.request("notes/human/set", { ref, clientMutationId: `note-${slug}`, expectedInstanceId, note: "x" }),
-				).rejects.toMatchObject({ code: -32602, message: "This session can't take notes now" });
-				await expect(
-					client.request("urls/remove", { ref, clientMutationId: `link-${slug}`, expectedInstanceId, id: "u-2290" }),
-				).rejects.toMatchObject({ code: -32602, message: "This session can't take notes now" });
-			}
+			const ref = fleetSessionRef("s-roster");
+			const read = async () => (await client.request("thread/read", { ref, includeTurns: false })).thread;
+			const expectedInstanceId = (await read()).evener.instanceId ?? "";
+			await client.request("urls/remove", { ref, clientMutationId: "link-roster", expectedInstanceId, id: "u-2290" });
+			const resumed = await read();
+			expect(resumed.status.type).toBe("idle");
+			expect(resumed.evener.sessionUrls ?? []).toEqual([]);
+			await client.request("notes/human/set", {
+				ref,
+				clientMutationId: "note-roster",
+				expectedInstanceId,
+				note: "Measure it again on magic-kingdom.",
+			});
+			const woken = await read();
+			expect(woken.status.type).toBe("active");
+			expect(woken.evener.humanNote).toBe("Measure it again on magic-kingdom.");
 		});
 	});
 
@@ -888,7 +895,7 @@ describe("native demonstration hub's fleet sessions", () => {
 					expectedInstanceId: "demo-instance",
 					note: "x",
 				}),
-			).rejects.toThrow("This session can't take notes now");
+			).rejects.toThrow("This session doesn't take shared notes");
 		});
 	});
 
