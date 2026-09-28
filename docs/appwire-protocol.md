@@ -1061,6 +1061,36 @@ _(no fields)_
 | `state` | `appwire.OperationState` |  |  |
 
 
+### `HostRow`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `name` | `string` |  |  |
+| `address` | `string` | yes |  |
+| `user` | `string` | yes |  |
+| `keyPath` | `string` | yes |  |
+| `evenerPath` | `string` | yes |  |
+| `configPath` | `string` | yes |  |
+| `addr` | `string` | yes |  |
+| `roots` | `[]string` | yes |  |
+| `origin` | `string` |  |  |
+| `generation` | `uint64` |  |  |
+| `incarnationId` | `string` |  |  |
+| `attached` | `bool` |  |  |
+| `serverName` | `string` | yes |  |
+| `serverVersion` | `string` | yes |  |
+| `hubVersion` | `string` | yes |  |
+| `os` | `string` | yes |  |
+| `arch` | `string` | yes |  |
+| `lastAttachError` | `string` | yes |  |
+| `midAttach` | `bool` |  |  |
+| `removed` | `bool` |  |  |
+| `retainedRows` | `*int` | yes |  |
+| `rowsTruncated` | `bool` | yes |  |
+| `openRemnantId` | `string` | yes |  |
+| `escalationAgeSec` | `*int64` | yes |  |
+
+
 ### `HostRunningParams`
 
 | Field | Go type | Omitempty | Embedded |
@@ -1950,6 +1980,30 @@ _(no fields)_
 | `itemId` | `string` |  |  |
 | `summaryIndex` | `int` |  |  |
 | `delta` | `string` |  |  |
+
+
+### `RemovedRow`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `name` | `string` |  |  |
+| `address` | `string` | yes |  |
+| `user` | `string` | yes |  |
+| `keyPath` | `string` | yes |  |
+| `evenerPath` | `string` | yes |  |
+| `configPath` | `string` | yes |  |
+| `addr` | `string` | yes |  |
+| `roots` | `[]string` | yes |  |
+| `origin` | `string` |  |  |
+| `generation` | `uint64` |  |  |
+| `incarnationId` | `string` |  |  |
+| `removed` | `bool` |  |  |
+| `attached` | `bool` |  |  |
+| `midEnsure` | `bool` |  |  |
+| `retainedRows` | `*int` | yes |  |
+| `rowsTruncated` | `bool` | yes |  |
+| `escalationAgeSec` | `*int64` | yes |  |
+| `openRemnantId` | `string` | yes |  |
 
 
 ### `SandboxEscalationRequested`

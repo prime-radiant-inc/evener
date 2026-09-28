@@ -143,6 +143,16 @@ func build() docData {
 	// while the TypeScript output emits them.
 	register(appwire.HostPlan{})
 	register(appwire.HostPlanStaleFacts{})
+	// HostRow and RemovedRow are the row shapes the registry mutations' union
+	// arms carry — HostMutationCommitted.Host, the teardown-failure arms' Host,
+	// HostMutationAmbiguous.ObservedRow, HostMutationCollisionDropped.Host and
+	// .DroppedEntry — and they are also the shapes evener/host/list and
+	// evener/host/status return, so the reference needs both field tables:
+	// without them the row's own fields (`openRemnantId`, `escalationAgeSec`,
+	// `retainedRows`, …) are named but never documented (roborev review of the
+	// S12 union conversion).
+	register(appwire.HostRow{})
+	register(appwire.RemovedRow{})
 
 	for _, m := range appwire.Methods {
 		d.Methods = append(d.Methods, methodView{
