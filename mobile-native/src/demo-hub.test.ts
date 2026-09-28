@@ -365,4 +365,52 @@ describe("native demonstration hub's redesign fleet", () => {
 			await hub.close();
 		}
 	});
+
+	it("tells a connected client navigation changed when a working row asks its question", async () => {
+		// Long enough for a local connect to finish first: the question is
+		// timed from the hub's start and told only to sockets open by then.
+		const hub = await createDemoHub(0, undefined, { askAfterSeconds: 0.2 });
+		const client = createHubClient(
+			hub.origin,
+			"",
+			(url) => new WebSocket(url) as unknown as WebSocketLike,
+		);
+		const invalidated = new Promise<unknown>((resolve) => {
+			client.onNotification((notification) => {
+				if (notification.method === "evener/navigation/invalidated")
+					resolve(notification.params);
+			});
+		});
+		try {
+			const handshake = await client.connect();
+			const payload = (await invalidated) as {
+				generationId: string;
+				sequence: number;
+				targets: { kind: string; section?: string; revision?: number }[];
+			};
+			expect(payload.generationId).toBe(handshake.navigation?.generationId);
+			expect(payload.sequence).toBe(1);
+			expect(payload.targets).toEqual(
+				expect.arrayContaining([
+					expect.objectContaining({ kind: "section", section: "live" }),
+					expect.objectContaining({ kind: "section", section: "needs_you" }),
+				]),
+			);
+			const needsYou = await client.request("evener/navigation/read", {
+				representationVersion: 2,
+				resource: "section",
+				section: "needs_you",
+			});
+			expect(needsYou.revision).toBe(payload.targets[0]?.revision);
+			const entities = (
+				needsYou.data as { entities: { value: { session_id?: string } }[] }
+			).entities;
+			expect(entities.map((entity) => entity.value.session_id)).toContain(
+				"s-gateway",
+			);
+		} finally {
+			client.close();
+			await hub.close();
+		}
+	});
 });

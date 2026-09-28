@@ -563,6 +563,59 @@ describe("demo fleet empty option", () => {
 	});
 });
 
+describe("demo fleet question after a delay", () => {
+	const askedAt = STARTUP + 30 * 1000;
+	const fleet = () => createDemoFleet({ now: STARTUP, clock: () => askedAt });
+	const needsYouRows = (demo: ReturnType<typeof createDemoFleet>) =>
+		sessionsOf(read(demo, params({ resource: "section", section: "needs_you" })));
+
+	it("keeps s-gateway working until the question is asked", () => {
+		const demo = fleet();
+		const gateway = findRow(liveRows(demo), "s-gateway");
+		expect(gateway.state).toBe("active");
+		expect(gateway.ask_pending).toBeUndefined();
+		expect(needsYouRows(demo).map((row) => row.session_id)).not.toContain("s-gateway");
+		const manifest = read(demo, params({ resource: "manifest" }));
+		expect(manifest.attentionSummary).toEqual({ needsYou: 4, error: 1, working: 9 });
+		expect(manifest.sections).toMatchObject({ live: { count: 20 }, needs_you: { count: 4 } });
+	});
+
+	it("moves s-gateway into Needs you, shaped like the fleet's own question row, once asked", () => {
+		const demo = fleet();
+		demo.askQuestion();
+		const gateway = findRow(liveRows(demo), "s-gateway");
+		const audit = findRow(liveRows(demo), "s-audit");
+		expect(gateway.state).toBe(audit.state);
+		expect(gateway.ask_pending).toBe(true);
+		expect(gateway.updated_at).toBe(new Date(askedAt).toISOString());
+		expect(findRow(needsYouRows(demo), "s-gateway")).toEqual(gateway);
+		const manifest = read(demo, params({ resource: "manifest" }));
+		expect(manifest.attentionSummary).toEqual({ needsYou: 5, error: 1, working: 8 });
+		expect(manifest.sections).toMatchObject({ live: { count: 20 }, needs_you: { count: 5 } });
+		const hit = demo.answerSearch({ query: "gateway" }).live[0];
+		expect(hit).toMatchObject({ id: "s-gateway", state: "awaiting", askPending: true });
+	});
+
+	it("answers at a higher revision after the question, so an invalidated read is not below target", () => {
+		const demo = fleet();
+		const before = demo.answerNavigationRead(params({ resource: "section", section: "needs_you" }));
+		const payload = demo.askQuestion();
+		const after = demo.answerNavigationRead(params({ resource: "section", section: "needs_you" }));
+		expect(after.revision).toBeGreaterThan(before.revision);
+		expect(after.etag).not.toBe(before.etag);
+		expect(payload).toEqual({
+			generationId: DEMO_FLEET_GENERATION,
+			sequence: 1,
+			targets: [
+				{ kind: "manifest", revision: after.revision },
+				{ kind: "section", section: "live", revision: after.revision },
+				{ kind: "section", section: "needs_you", revision: after.revision },
+				{ kind: "project", projectKey: "evener", revision: after.revision },
+			],
+		});
+	});
+});
+
 describe("demo fleet offline propagation", () => {
 	it("marks an offline-host session's own children offline too, not just the parent row", () => {
 		const fleet = createDemoFleet({ now: STARTUP, offlineHost: true });

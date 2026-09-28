@@ -12,6 +12,7 @@ import { capability, wireV2 } from "@evener/appwire-client/testing/navigation";
 import type {
 	AuthListResponse,
 	NavigationCapability,
+	NavigationInvalidatedPayload,
 	NavigationJobSummary,
 	NavigationProjectSummary,
 	NavigationReadParams,
@@ -47,10 +48,12 @@ const CATALOG_LIMIT = 100;
 // `validate`, "generation mismatch"), so this is exported and imported by
 // demo-hub.mts rather than each file keeping its own string.
 export const DEMO_FLEET_GENERATION = "demo-fleet";
-const DEMO_ETAG = '"demo-fleet-1"';
-const DEMO_REVISION = 1;
-const respond = (params: NavigationReadParams, data: unknown): NavigationReadResponse =>
-	wireV2(params, data, DEMO_ETAG, DEMO_REVISION, DEMO_FLEET_GENERATION);
+// Every resource shares one revision, bumped when the fleet changes (the
+// question askQuestion below poses), so an invalidation's target revision is
+// one the next read actually reaches: the navigation store refuses a
+// response below the revision it was told to expect.
+const respond = (revision: number, params: NavigationReadParams, data: unknown): NavigationReadResponse =>
+	wireV2(params, data, `"demo-fleet-${revision}"`, revision, DEMO_FLEET_GENERATION);
 
 // demo-hub.mts's handshake capability, built here so it is the one file in
 // mobile-native that touches @evener/appwire-client/testing/ at all: that
@@ -554,6 +557,14 @@ export interface DemoFleetOptions {
 	// hub is still a hub), so only offlineHost touches them. For the Board's
 	// EmptyBoard state.
 	empty?: boolean;
+	// Mirrors EVENER_DEMO_FLEET_ASK_AFTER: that many seconds after the demo
+	// hub starts, the working row s-gateway ("Design Gateway Token Command
+	// MVP") asks a question, moving from Working into Needs you, so the
+	// Board's spring and amber wash can be watched on a still list. The fleet
+	// itself only knows how to make the change (askQuestion); demo-hub.mts
+	// owns the timer and sends the resulting invalidation, so a test fires the
+	// change by calling askQuestion directly instead of sleeping.
+	askAfterSeconds?: number;
 	// The clock evener/search's `age` reads, sampled fresh on every call --
 	// unlike `now` above, which freezes each row's updated_at once at
 	// startup. Defaults to Date.now; a test injects a fixed function so the
@@ -561,12 +572,24 @@ export interface DemoFleetOptions {
 	clock?: () => number;
 }
 
-export interface DemoFleet {
+interface FleetAnswers {
 	answerNavigationRead(params: NavigationReadParams): NavigationReadResponse;
 	answerSearch(params: SearchParams): SearchResponse;
 	answerAuthList(): AuthListResponse;
 	answerPluginList(): PluginListResponse;
 }
+
+export interface DemoFleet extends FleetAnswers {
+	// Turns ASKING_SESSION_ID's working row into a pending question and
+	// returns the evener/navigation/invalidated payload a real hub would send
+	// for that change.
+	askQuestion(): NavigationInvalidatedPayload;
+}
+
+// The working row EVENER_DEMO_FLEET_ASK_AFTER turns into a question: a plain
+// local "evener" session with no pin category, subagents or running job, so
+// the only thing that changes on the Board is its band.
+const ASKING_SESSION_ID = "s-gateway";
 
 export function createDemoFleet(options: DemoFleetOptions = {}): DemoFleet {
 	const startupMs = options.now ?? Date.now();
@@ -576,6 +599,54 @@ export function createDemoFleet(options: DemoFleetOptions = {}): DemoFleet {
 	// answer, keeps every count, section and catalog below in step for free:
 	// a hub with nothing live just has nothing to filter, page or search over.
 	const sessionsList = options.empty ? [] : SESSIONS;
+	let revision = 1;
+	let sequence = 0;
+	let answers = fleetAnswers(sessionsList, revision, startupMs, offlineHost, clock);
+
+	function askQuestion(): NavigationInvalidatedPayload {
+		// A negative `ago` puts updated_at at the moment of asking, after
+		// startup, the way a real hub stamps a row when its state changes.
+		const askedAgo = (startupMs - clock()) / 1000;
+		const asked = sessionsList.map((raw) =>
+			raw.id === ASKING_SESSION_ID ? { ...raw, state: "question" as const, ago: askedAgo } : raw,
+		);
+		revision += 1;
+		sequence += 1;
+		answers = fleetAnswers(asked, revision, startupMs, offlineHost, clock);
+		// The resources a real hub invalidates for one row's state change
+		// (cmd/evener-hub/navigation_service.go): the manifest's counts, both
+		// Board sections, and the row's project. Search has no invalidation
+		// target; the next search simply answers from the changed fleet.
+		return {
+			generationId: DEMO_FLEET_GENERATION,
+			sequence,
+			targets: [
+				{ kind: "manifest", revision },
+				{ kind: "section", section: "live", revision },
+				{ kind: "section", section: "needs_you", revision },
+				{ kind: "project", projectKey: "evener", revision },
+			],
+		};
+	}
+
+	return {
+		answerNavigationRead: (params) => answers.answerNavigationRead(params),
+		answerSearch: (params) => answers.answerSearch(params),
+		answerAuthList: () => answers.answerAuthList(),
+		answerPluginList: () => answers.answerPluginList(),
+		askQuestion,
+	};
+}
+
+// Every answer the fleet gives, for one fixed list of sessions at one
+// revision; askQuestion swaps in a new one rather than mutating this.
+function fleetAnswers(
+	sessionsList: RawSession[],
+	revision: number,
+	startupMs: number,
+	offlineHost: boolean,
+	clock: () => number,
+): FleetAnswers {
 	const rowById = new Map(sessionsList.map((raw) => [raw.id, toRow(raw, startupMs, offlineHost)]));
 	const rowOf = (raw: RawSession) => rowById.get(raw.id) as NavigationSessionSummary;
 
@@ -675,7 +746,7 @@ export function createDemoFleet(options: DemoFleetOptions = {}): DemoFleet {
 	function answerNavigationRead(params: NavigationReadParams): NavigationReadResponse {
 		switch (params.resource) {
 			case "manifest":
-				return respond(params, {
+				return respond(revision, params, {
 					sources,
 					attentionSummary: { needsYou: needsYouSessions.length, error: erroredCount, working: workingCount },
 					sections: {
@@ -696,17 +767,17 @@ export function createDemoFleet(options: DemoFleetOptions = {}): DemoFleet {
 					throw new Error(`Unknown demonstration section: ${params.section}`);
 				const source = params.section === "needs_you" ? needsYouSessions : liveSessions;
 				const { page: sessions, remaining } = page(source, params, SECTION_LIMIT);
-				return respond(params, { sessions, remaining, truncated: anyTruncated(sessions) });
+				return respond(revision, params, { sessions, remaining, truncated: anyTruncated(sessions) });
 			}
 			case "pin_catalog": {
 				const { page: sections, remaining } = page(pinSections, params, CATALOG_LIMIT);
-				return respond(params, { pin_sections: sections, remaining });
+				return respond(revision, params, { pin_sections: sections, remaining });
 			}
 			case "pin_section": {
 				const id = pinCategoryIds.find((candidate) => candidate === params.sectionId);
 				if (!id) throw new Error(`Unknown demonstration pin section: ${params.sectionId}`);
 				const { page: sessions, remaining } = page(pinSessions(id), params, SECTION_LIMIT);
-				return respond(params, { sessions, remaining, truncated: anyTruncated(sessions) });
+				return respond(revision, params, { sessions, remaining, truncated: anyTruncated(sessions) });
 			}
 			case "catalog": {
 				// Same as "section": an unrecognized catalog is a hard error, never
@@ -715,7 +786,7 @@ export function createDemoFleet(options: DemoFleetOptions = {}): DemoFleet {
 					throw new Error(`Unknown demonstration catalog: ${params.catalog}`);
 				const source = params.catalog === "archived_projects" ? archivedProjects : params.catalog === "test_runs" ? testRunProjects : projects;
 				const { page: rows, remaining } = page(source, params, CATALOG_LIMIT);
-				return respond(params, { projects: rows, remaining });
+				return respond(revision, params, { projects: rows, remaining });
 			}
 			case "project": {
 				const projectKey = knownProjectKey(params);
@@ -729,7 +800,7 @@ export function createDemoFleet(options: DemoFleetOptions = {}): DemoFleet {
 				// same 5 rows this call showed before archived became fully
 				// pageable; "See all" is what project_page is for.
 				const archived = tierRows(projectKey, "archived").slice(0, PROJECT_OVERVIEW_ARCHIVED_PREVIEW);
-				return respond(params, {
+				return respond(revision, params, {
 					key: projectKey,
 					current: { sessions: current, remaining: 0 },
 					recent: { sessions: recent, remaining: 0 },
@@ -745,7 +816,7 @@ export function createDemoFleet(options: DemoFleetOptions = {}): DemoFleet {
 					throw new Error(`Unknown demonstration tier: ${params.tier}`);
 				const tier = params.tier;
 				const { page: sessions, remaining } = page(tierRows(projectKey, tier), params, SECTION_LIMIT);
-				return respond(params, { key: projectKey, tier, sessions, remaining, truncated: anyTruncated(sessions) });
+				return respond(revision, params, { key: projectKey, tier, sessions, remaining, truncated: anyTruncated(sessions) });
 			}
 			default:
 				throw new Error(`Navigation resource not served by the demo fleet: ${params.resource}`);

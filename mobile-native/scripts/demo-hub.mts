@@ -100,6 +100,22 @@ export async function createDemoHub(
 		...(demoFleet ? { navigation: navigationCapability() } : {}),
 	};
 	let turnNumber = 0;
+	// EVENER_DEMO_FLEET_ASK_AFTER: counted from the hub's start, not from any
+	// one client's connection, and told to every socket connected by then --
+	// a real hub broadcasts navigation changes to every navigation client.
+	const askTimer =
+		demoFleet && fleetOptions?.askAfterSeconds !== undefined
+			? setTimeout(() => {
+					const payload = demoFleet.askQuestion();
+					const notification = JSON.stringify({
+						jsonrpc: "2.0",
+						method: "evener/navigation/invalidated",
+						params: payload,
+					});
+					for (const socket of server.clients)
+						if (socket.readyState === WebSocket.OPEN) socket.send(notification);
+				}, fleetOptions.askAfterSeconds * 1000)
+			: undefined;
 	function resync(thread: Thread) {
 		for (const [socket, refs] of subscribers)
 			if (refs.has(thread.evener.ref) && socket.readyState === WebSocket.OPEN)
@@ -419,10 +435,23 @@ export async function createDemoHub(
 		origin: `http://127.0.0.1:${address.port}`,
 		close: () =>
 			new Promise<void>((resolve, reject) => {
+				clearTimeout(askTimer);
 				for (const socket of server.clients) socket.terminate();
 				server.close((error) => (error ? reject(error) : resolve()));
 			}),
 	};
+}
+
+// EVENER_DEMO_FLEET_ASK_AFTER is a number of seconds; anything else is a
+// typo worth stopping on rather than a demo that silently never changes.
+function askAfterSeconds(value: string | undefined): number | undefined {
+	if (value === undefined || value === "") return undefined;
+	const seconds = Number(value);
+	if (!Number.isFinite(seconds) || seconds < 0)
+		throw new Error(
+			`EVENER_DEMO_FLEET_ASK_AFTER must be a number of seconds, got ${JSON.stringify(value)}`,
+		);
+	return seconds;
 }
 
 if (
@@ -438,6 +467,7 @@ if (
 			? {
 					offlineHost: process.env.EVENER_DEMO_FLEET_OFFLINE_HOST === "1",
 					empty: process.env.EVENER_DEMO_FLEET_EMPTY === "1",
+					askAfterSeconds: askAfterSeconds(process.env.EVENER_DEMO_FLEET_ASK_AFTER),
 				}
 			: undefined,
 	);
