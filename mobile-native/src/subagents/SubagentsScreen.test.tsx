@@ -391,3 +391,19 @@ it("says a stop you sent directly is pending without naming the coordinator (S6)
 	expect(text(tree)).toContain("Stop requested");
 	expect(text(tree)).not.toContain("Stop requested from the coordinator");
 });
+
+it("toasts a stop recorded after the tree already shows it", async () => {
+	client = hub(() => {
+		const whole = specTree();
+		const race = (whole.root.entries[0] as { delegate: Record<string, unknown> }).delegate;
+		Object.assign(race, { outcome: "cancelled", child: undefined });
+		return whole;
+	});
+	harness.connection = screenConnection(client, "ready");
+	const tree = await mount();
+	const race = flattenSubagents(specTree() as never).find((row) => row.ref === "local:race");
+	if (!race) throw new Error("no race row");
+	act(() => stopRequests("hub-1").request(COORDINATOR.ref, race, Date.now()));
+	await settle();
+	expect(tree.root.findAllByType(Toast).map((toast) => toast.props.toast?.text)).toEqual(["“Fix race in tree settle” stopped"]);
+});

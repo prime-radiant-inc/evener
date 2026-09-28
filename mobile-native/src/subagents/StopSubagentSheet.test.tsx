@@ -298,3 +298,28 @@ it("keeps the sheet and the words when the send fails, and says why", async () =
 	expect(field(mounted).props.value).toBe("Stop subagent “Fix race in tree settle”: it's no longer needed.");
 	expect(sheetNavigation.goBack).not.toHaveBeenCalled();
 });
+
+it("waits for a fresh read of the coordinator after the connection comes back", async () => {
+	const mounted = await mount();
+	expect(sendDisabled(mounted)).toBe(false);
+	let answer: (value: ThreadReadResponse) => void = () => {};
+	client.on("thread/read", () => new Promise<ThreadReadResponse>((resolve) => (answer = resolve)));
+	const again = () =>
+		act(() =>
+			mounted.update(
+				<StopSubagentSheet
+					route={{ key: "stop", name: "StopSubagentSheet", params: PARAMS } as never}
+					navigation={sheetNavigation as never}
+				/>,
+			),
+		);
+	harness.connection = screenConnection(client, "reconnecting");
+	again();
+	harness.connection = screenConnection(client, "ready");
+	again();
+	await settle();
+	expect(sendDisabled(mounted)).toBe(true);
+	await act(async () => answer(read()));
+	await settle();
+	expect(sendDisabled(mounted)).toBe(false);
+});

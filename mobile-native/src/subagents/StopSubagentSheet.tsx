@@ -52,6 +52,8 @@ export function StopSubagentSheet({ route }: NativeStackScreenProps<Routes, "Sto
 	// subscription, which the transcript under this sheet follows.
 	const [coordinatorState, setCoordinatorState] = useState<SessionState | null>(null);
 	useEffect(() => {
+		// A read from another connection names that connection's instance.
+		setCoordinatorState(null);
 		if (!online || !client) return;
 		const link = new SessionLink(client, coordinator.ref);
 		link.read({ follow: false }).then(setCoordinatorState, () => {

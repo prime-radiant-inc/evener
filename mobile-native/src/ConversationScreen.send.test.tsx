@@ -2367,6 +2367,20 @@ describe("a subagent's own session (spec 9, rulings 10 and 30)", () => {
 		expect(renderedText(tree)).not.toContain("Stop requested");
 	});
 
+	it("offers no direct stop from a connection that has gone", async () => {
+		const { tree } = await mountSubagent(subagent(true), { stopSubagent: true });
+		expect(pressable(tree, "Stop subagent")).toBeDefined();
+		harness.connection = { ...harness.connection, state: "reconnecting" };
+		const route = {
+			key: "subagent-local:fix",
+			name: "Subagent",
+			params: { hubId: "hub-1", ref: "local:fix", title: "Fix race in tree settle", coordinator: COORDINATOR },
+		};
+		act(() => tree.update(<SubagentScreen route={route as never} navigation={navigation as never} />));
+		await settle();
+		expect(pressable(tree, "Stop subagent")).toBeUndefined();
+	});
+
 	it("asks the coordinator when its thread can't be read to learn whether a direct stop works", async () => {
 		coordinatorHub.readFails = COORDINATOR.ref;
 		const { tree } = await mountSubagent(subagent(true), { stopSubagent: true });

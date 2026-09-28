@@ -77,7 +77,8 @@ export function SubagentsScreen({ route, navigation }: NativeStackScreenProps<Ro
 	useEffect(() => {
 		if (!focused || rows.length === 0) return;
 		for (const stopped of requests.reconcile(ref, rows)) showToast({ text: `“${stopped.title}” stopped` });
-	}, [focused, rows, requests, ref, showToast]);
+		// A request recorded after the tree already shows the stop settles too.
+	}, [focused, rows, requests, ref, showToast, stopRevision]);
 	const noteFor = useCallback(
 		(row: SubagentRow) => {
 			const view = requests.view(row);

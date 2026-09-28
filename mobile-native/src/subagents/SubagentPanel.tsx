@@ -46,7 +46,7 @@ export function SubagentPanel({ hubId, ref, coordinator, inFront, barShown, show
 	const rows = useMemo(() => (snapshot.tree ? flattenSubagents(snapshot.tree) : []), [snapshot.tree]);
 	const row = rows.find((candidate) => candidate.ref === ref) ?? null;
 	const requests = stopRequests(hubId);
-	useSyncExternalStore(requests.subscribe, requests.getRevision);
+	const stopRevision = useSyncExternalStore(requests.subscribe, requests.getRevision);
 
 	// The tree reads again when this screen comes to the front, and while it's
 	// in front, whenever this subagent's status changes (a turn ending is one),
@@ -65,7 +65,8 @@ export function SubagentPanel({ hubId, ref, coordinator, inFront, barShown, show
 	useEffect(() => {
 		if (!inFront || rows.length === 0) return;
 		for (const stopped of requests.reconcile(coordinator.ref, rows)) showToast(`“${stopped.title}” stopped`);
-	}, [inFront, rows, requests, coordinator.ref, showToast]);
+		// A request recorded after the tree already shows the stop settles too.
+	}, [inFront, rows, requests, coordinator.ref, showToast, stopRevision]);
 
 	// Whether the coordinator's hub can stop a subagent directly (S6), read
 	// without taking the connection's subscription, which follows this
@@ -75,6 +76,8 @@ export function SubagentPanel({ hubId, ref, coordinator, inFront, barShown, show
 	const [capabilities, setCapabilities] = useState<ThreadCapabilities | "unreadable" | null>(null);
 	const [directUnsupported, setDirectUnsupported] = useState(false);
 	useEffect(() => {
+		// What another connection said doesn't hold on this one.
+		setCapabilities(null);
 		if (!inFront || !connected || !client) return;
 		const link = new SessionLink(client, coordinator.ref);
 		link.read({ follow: false }).then(
