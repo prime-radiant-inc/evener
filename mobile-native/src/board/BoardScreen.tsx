@@ -350,31 +350,26 @@ function Board({ hubId, hubName, navigation }: { hubId: string; hubName: string;
 		});
 
 	// What a row's actions may do now (rulings 16 and 21), by whether it sits
-	// in an archived tier.
+	// in an archived tier. It keeps its identity while those facts hold, so
+	// the row menu's host below changes when a row's actions can.
 	const actionsConnected = connected && activeProfile?.id === hubId;
-	const rowContext = (archived: boolean): RowActionContext => ({
-		connected: actionsConnected,
-		organizationReady: organization.ready,
-		archived,
-	});
+	const rowContext = useCallback(
+		(archived: boolean): RowActionContext => ({
+			connected: actionsConnected,
+			organizationReady: organization.ready,
+			archived,
+		}),
+		[actionsConnected, organization.ready],
+	);
 	// The row menu, a sheet route that asks the Board's host below for the
 	// row and its actions. It carries the tier it opened from, since a
 	// session can show twice (Live and a project's Archived tier) and the two
 	// copies offer different actions (Archive vs. Unarchive).
 	const openRowMenu = (item: ClassifiedRow, archived: boolean) =>
 		navigation.navigate("RowMenuSheet", { hubId, ref: item.row.ref, archived });
-	// Rename asks through Alert.prompt, which only iOS has.
-	const menuActions = (item: ClassifiedRow, archived: boolean) => {
-		const actions = rowMenuActions(item, rowContext(archived));
-		return Platform.OS === "ios" ? actions : actions.filter((action) => action !== "rename");
-	};
-	// `archived` only matters for "more" (it opens the sheet on the tier the
-	// swipe came from); actOnRow's call never sends "more", so it's fine left
-	// at its default there.
-	const runRowAction = (item: ClassifiedRow, action: SwipeRowAction, archived = false) => {
+	const runRowAction = (item: ClassifiedRow, action: Exclude<SwipeRowAction, "more">) => {
 		const { row } = item;
-		if (action === "more") openRowMenu(item, archived);
-		else if (action === "pin") navigation.navigate("PinAssignment", { hubId, ref: row.ref, title: row.title });
+		if (action === "pin") navigation.navigate("PinAssignment", { hubId, ref: row.ref, title: row.title });
 		else if (action === "stop" && client)
 			void stops.stop(client, row.ref).then((outcome) => toast.show({ text: stopToast(outcome, row.title) }));
 		else if (action === "archive" || action === "unarchive")
@@ -401,9 +396,11 @@ function Board({ hubId, hubName, navigation }: { hubId: string; hubName: string;
 		onOpen: openSession,
 		draftRefs,
 		swipes: (item, archived) =>
-			rowSwipes(item, rowContext(archived), archivingId, (action) => runRowAction(item, action, archived)),
+			rowSwipes(item, rowContext(archived), archivingId, (action) =>
+				action === "more" ? openRowMenu(item, archived) : runRowAction(item, action),
+			),
 		menu: (item, archived) => ({
-			actions: menuActions(item, archived),
+			actions: menuActionsHere(item, rowContext(archived)),
 			onOpenSession: () => openSession(item.row),
 			onAction: (action) => actOnRow(item, action),
 			onOpenSheet: () => openRowMenu(item, archived),
@@ -483,14 +480,14 @@ function Board({ hubId, hubName, navigation }: { hubId: string; hubName: string;
 	const rowMenuHost = useMemo<RowMenuHost>(
 		() => ({
 			item: (ref, archived) => shownRows.get(shownRowKey(ref, archived))?.item,
-			actions: (item, archived) => menuActions(item, archived),
+			actions: (item, archived) => menuActionsHere(item, rowContext(archived)),
 			hostLabel,
 			act: (item, action) => menuHandlers.current.actOnRow(item, action),
 			openSession: (item) => menuHandlers.current.openSession(item.row),
 			// Nothing on the Board waits for the menu to close.
 			closed: () => {},
 		}),
-		[shownRows, actionsConnected, organization.ready, hostLabel],
+		[shownRows, rowContext, hostLabel],
 	);
 	useProvideSheetHost(rowMenuHosts, sheetKey(hubId), rowMenuHost);
 	const itemsOf = (section: ProjectSection) => shownSections.find((shown) => shown.section === section)?.items ?? [];
@@ -778,6 +775,13 @@ function pinnedCategoryMenu(organization: BoardOrganization, catalog: () => read
 			(operation?.kind === "renamePinSection" || operation?.kind === "deletePinSection") &&
 			operation.params.sectionId === sectionId,
 	};
+}
+
+/** A row's menu actions on this phone: Rename asks through Alert.prompt,
+ * which only iOS has. */
+function menuActionsHere(item: ClassifiedRow, context: RowActionContext): RowAction[] {
+	const actions = rowMenuActions(item, context);
+	return Platform.OS === "ios" ? actions : actions.filter((action) => action !== "rename");
 }
 
 /** Shut down from the row menu: asked first, then the Session's own
