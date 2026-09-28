@@ -132,11 +132,8 @@ func durabilityRetryBackoff(attempt int) time.Duration {
 // retainedUnsyncedError extracts a *transcript.RetainedUnsyncedError from a
 // synced write's error, or nil when err is anything else (including nil).
 func retainedUnsyncedError(err error) *transcript.RetainedUnsyncedError {
-	var retained *transcript.RetainedUnsyncedError
-	if errors.As(err, &retained) {
-		return retained
-	}
-	return nil
+	retained, _ := errors.AsType[*transcript.RetainedUnsyncedError](err)
+	return retained
 }
 
 // settleRetainedUnsynced chases durability for a COMMUNICATE or completion
@@ -178,11 +175,11 @@ func (s *Session) retryDurabilityUntilSettledOrExhausted(retained *transcript.Re
 		if writer == nil || writer.Closed() {
 			return // the session is shutting down, not a genuine durability failure
 		}
-		if err := writer.EstablishDurability(); err == nil {
+		err := writer.EstablishDurability()
+		if err == nil {
 			return // settled
-		} else {
-			lastErr = err
 		}
+		lastErr = err
 	}
 	if !s.servedByDaemon() {
 		return
