@@ -91,8 +91,7 @@ func TestTreeCounterSharedAcrossTree(t *testing.T) {
 
 	// Build a root session — parentSessionID == "" triggers minting.
 	rootCfg := SessionConfig{
-		StateDir:         stateDir,
-		NoProjectPrompts: true,
+		StateDir: stateDir,
 	}
 	root, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), env, rootCfg)
 	if err != nil {
@@ -108,8 +107,7 @@ func TestTreeCounterSharedAcrossTree(t *testing.T) {
 	// Build a child session carrying the root's counter pointer.
 	childStateDir := t.TempDir()
 	childCfg := SessionConfig{
-		StateDir:         childStateDir,
-		NoProjectPrompts: true,
+		StateDir: childStateDir,
 	}
 	childCfg.spawn.parentSessionID = "root-session-id"
 	childCfg.spawn.depth = 1
@@ -152,7 +150,7 @@ func TestDriveAtCapacityDoesNotLaunchOrSettle(t *testing.T) {
 			func(_ llm.Request) llm.Response { return finalResponse("must not run") },
 		},
 	})
-	sess := newSession(t, withClient(c), withConfig(SessionConfig{MaxSubagentDepth: 2, NoProjectPrompts: true, StateDir: t.TempDir()}), withoutGitSnapshot())
+	sess := newSession(t, withClient(c), withConfig(SessionConfig{MaxSubagentDepth: 2, StateDir: t.TempDir()}), withoutGitSnapshot())
 
 	coord := sess.createDelegate(context.Background(), delegateArgs{
 		Task: "coordinate",
@@ -223,7 +221,7 @@ func TestRestoredRootMintsTreeCounter(t *testing.T) {
 		ID:        "01TESTRESTORECOUNTER",
 		ProfileID: "openai",
 		Model:     "gpt-5.2",
-		Config:    (SessionConfig{NoProjectPrompts: true}).toSnapshot(),
+		Config:    (SessionConfig{}).toSnapshot(),
 	}
 	restored, err := RestoreSessionFromMetaWithConfig(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(t.TempDir()), meta, RestoreSessionConfig{StateDir: t.TempDir()})
 	if err != nil {
@@ -387,7 +385,7 @@ func TestDriveTurnReservesFromDriveCounter(t *testing.T) {
 		},
 	})
 	t.Cleanup(func() { releaseOnce.Do(func() { close(release) }) })
-	sess := newSession(t, withClient(c), withConfig(SessionConfig{MaxSubagentDepth: 2, NoProjectPrompts: true, StateDir: t.TempDir()}), withoutGitSnapshot())
+	sess := newSession(t, withClient(c), withConfig(SessionConfig{MaxSubagentDepth: 2, StateDir: t.TempDir()}), withoutGitSnapshot())
 
 	coord := sess.createDelegate(context.Background(), delegateArgs{
 		Task: "coordinate",
@@ -463,7 +461,7 @@ func TestDriveTurnTimeoutFreesSlot(t *testing.T) {
 
 	c := llm.NewClient()
 	c.Register(&firstCompleteThenBlockAdapter{})
-	sess := newSession(t, withClient(c), withConfig(SessionConfig{MaxSubagentDepth: 2, NoProjectPrompts: true, StateDir: t.TempDir()}), withoutGitSnapshot())
+	sess := newSession(t, withClient(c), withConfig(SessionConfig{MaxSubagentDepth: 2, StateDir: t.TempDir()}), withoutGitSnapshot())
 
 	coord := sess.createDelegate(context.Background(), delegateArgs{
 		Task: "coordinate",
@@ -505,7 +503,7 @@ func TestDriveRedriveIsPaced(t *testing.T) {
 			func(_ llm.Request) llm.Response { return finalResponse("drive done") },
 		},
 	})
-	sess := newSession(t, withClient(c), withConfig(SessionConfig{MaxSubagentDepth: 2, NoProjectPrompts: true, StateDir: t.TempDir()}), withoutGitSnapshot())
+	sess := newSession(t, withClient(c), withConfig(SessionConfig{MaxSubagentDepth: 2, StateDir: t.TempDir()}), withoutGitSnapshot())
 
 	coord := sess.createDelegate(context.Background(), delegateArgs{
 		Task: "coordinate",

@@ -70,9 +70,8 @@ func TestSetModel_AppendsMarkerTurnOnSuccess(t *testing.T) {
 		withAdapter(&fakeAdapter{name: "openai"}),
 		withAdapter(&fakeAdapter{name: "anthropic"}),
 		withConfig(SessionConfig{
-			NoProjectPrompts: true,
-			ResolveProfile:   testResolver,
-			testOnly:         testConfig{skipGitSnapshot: true},
+			ResolveProfile: testResolver,
+			testOnly:       testConfig{skipGitSnapshot: true},
 		}),
 	)
 
@@ -95,8 +94,7 @@ func TestSetModel_PersistsModelSwitchIdentity(t *testing.T) {
 		withProfile(NewOpenAIProfile("gpt-5.4")),
 		withAdapter(&fakeAdapter{name: "openai"}),
 		withAdapter(&fakeAdapter{name: "anthropic"}),
-		withConfig(SessionConfig{StateDir: t.TempDir(), NoProjectPrompts: true,
-			ResolveProfile: testResolver, testOnly: testConfig{skipGitSnapshot: true}}),
+		withConfig(SessionConfig{StateDir: t.TempDir(), ResolveProfile: testResolver, testOnly: testConfig{skipGitSnapshot: true}}),
 	)
 	for _, model := range []string{"openai/gpt-5.2", "anthropic/claude-opus-4-6"} {
 		if err := sess.SetModel(model); err != nil {
@@ -137,9 +135,8 @@ func TestSetModel_FailedSwitchAppendsNoMarker(t *testing.T) {
 		withProfile(NewOpenAIProfile("gpt-5.4")),
 		withAdapter(&fakeAdapter{name: "openai"}),
 		withConfig(SessionConfig{
-			NoProjectPrompts: true,
-			ResolveProfile:   unknownInstanceResolver,
-			testOnly:         testConfig{skipGitSnapshot: true},
+			ResolveProfile: unknownInstanceResolver,
+			testOnly:       testConfig{skipGitSnapshot: true},
 		}),
 	)
 
@@ -186,9 +183,8 @@ func TestSetModel_MarkerWarnsOnContextWindowShrink(t *testing.T) {
 		withAdapter(&fakeAdapter{name: "openai"}),
 		withAdapter(&fakeAdapter{name: "tiny"}), // non-enumerable: fails open
 		withConfig(SessionConfig{
-			NoProjectPrompts: true,
-			ResolveProfile:   tinyWindowResolver,
-			testOnly:         testConfig{skipGitSnapshot: true},
+			ResolveProfile: tinyWindowResolver,
+			testOnly:       testConfig{skipGitSnapshot: true},
 		}),
 	)
 
@@ -216,10 +212,9 @@ func TestSetModel_MarkerWarnsOnDroppedFallbacks(t *testing.T) {
 		withAdapter(&fakeAdapter{name: "openai"}),
 		withAdapter(&fakeAdapter{name: "anthropic"}),
 		withConfig(SessionConfig{
-			NoProjectPrompts: true,
-			ResolveProfile:   testResolver,
-			ModelFallbacks:   []string{"openai/gpt-4.1-mini"},
-			testOnly:         testConfig{skipGitSnapshot: true},
+			ResolveProfile: testResolver,
+			ModelFallbacks: []string{"openai/gpt-4.1-mini"},
+			testOnly:       testConfig{skipGitSnapshot: true},
 		}),
 	)
 
@@ -255,9 +250,8 @@ func TestSetModel_RecomputesKnowledgeCutoffBeforePromptRefresh(t *testing.T) {
 		withAdapter(&fakeAdapter{name: "openai"}),
 		withAdapter(&fakeAdapter{name: "anthropic"}),
 		withConfig(SessionConfig{
-			NoProjectPrompts: true,
-			ResolveProfile:   testResolver,
-			testOnly:         testConfig{skipGitSnapshot: true},
+			ResolveProfile: testResolver,
+			testOnly:       testConfig{skipGitSnapshot: true},
 		}),
 	)
 

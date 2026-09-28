@@ -25,7 +25,6 @@ func newTestSession(t *testing.T) *Session {
 	t.Helper()
 	return newSession(t, withConfig(SessionConfig{
 		MaxSubagentDepth: 1,
-		NoProjectPrompts: true,
 		testOnly: testConfig{
 			skipGitSnapshot:     true,
 			minimalSystemPrompt: true,
@@ -40,7 +39,6 @@ func TestSubagentInheritsSelectedPluginDirs(t *testing.T) {
 	want := []string{"/plugins/selected-alpha", "/plugins/selected-beta"}
 	parent := newSession(t, withConfig(SessionConfig{
 		MaxSubagentDepth: 1,
-		NoProjectPrompts: true,
 		PluginDirs:       want,
 		testOnly:         testConfig{skipGitSnapshot: true, minimalSystemPrompt: true, noSyncJobStore: true},
 	}))
@@ -106,9 +104,8 @@ func TestEnsureRecoveryReaderPreservesPolicyShape(t *testing.T) {
 func TestExplicitAllowedToolsInjectRecoveryReaderOnly(t *testing.T) {
 	t.Parallel()
 	s := newSession(t, withConfig(SessionConfig{
-		NoProjectPrompts: true,
-		spawn:            spawnConfig{allowedToolNames: []string{"grep"}},
-		testOnly:         testConfig{skipGitSnapshot: true, minimalSystemPrompt: true, noSyncJobStore: true},
+		spawn:    spawnConfig{allowedToolNames: []string{"grep"}},
+		testOnly: testConfig{skipGitSnapshot: true, minimalSystemPrompt: true, noSyncJobStore: true},
 	}))
 	registered := s.reg.RegisteredNames()
 	for _, want := range []string{"grep", "read_transcript", "communicate"} {
@@ -898,7 +895,6 @@ func TestPrepareSubagentRunAllowsRecursionWithAllowance(t *testing.T) {
 	// mirroring a real recursion-capable child handed down from a root.
 	cfg := SessionConfig{
 		MaxSubagentDepth: 1,
-		NoProjectPrompts: true,
 	}
 	cfg.spawn.depth = 1
 	cfg.spawn.parentSessionID = "parent-session"
@@ -936,7 +932,6 @@ func TestPrepareSubagentRunRejectsZeroAllowance(t *testing.T) {
 	// directly after construction (the zero value — no delegation permitted).
 	cfg := SessionConfig{
 		MaxSubagentDepth: 1,
-		NoProjectPrompts: true,
 	}
 	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), cfg)
 	if err != nil {

@@ -111,6 +111,39 @@ type Options struct {
 	// BuildBinary is set.
 	BuildSource string
 
+	// OwnExecutable, when set, records that BuildBinary serves this controller's
+	// own executable — the hub's default deploy source, adopted without a flag —
+	// rather than an operator-named artifact or a compile of a checkout. It
+	// changes exactly one decision: a dirty controller (a "<sha>-dirty" build)
+	// refuses every other deploy source terminally (errControllerDirty), because
+	// none of them can be proven to be this controller's build — a checkout
+	// cannot be reproduced, and a "<sha>-dirty" label is not an identity (another
+	// dirty tree at the same commit reports it too, so neither the pre-push
+	// checks nor the post-deploy version comparison could tell an
+	// operator-supplied artifact apart from a foreign one). The controller's own
+	// executable is exempt because the caller — the hub's default-adoption path —
+	// declares those bytes ARE this controller's build. That declaration is the
+	// whole of the guarantee: the file is read at deploy time, so a hub whose
+	// executable was replaced under it deploys the replacement — a cross-commit
+	// one is caught after the push (errDeployUnstamped; the host reports a
+	// version this controller did not stamp), and a same-commit dirty variant is
+	// the documented, accepted residual (see the hub's ownExecutableBuild). The
+	// artifact's identity is still judged where it can be: the push re-reads
+	// it (evener identity and host target) before staging, and the on-host launch
+	// contract re-read after the deploy is compared against this controller
+	// (errDeployUnstamped).
+	OwnExecutable bool
+
+	// DeployDisabled, when set, turns deploying off for this whole Manager: no
+	// push and no installer fallback, so a release or snapshot controller cannot
+	// quietly install a published artifact on a host either. canDeploy reports
+	// false (the decision ladder never deploys, and a host that needs a build is
+	// left on its own exactly as with no deploy source), and every deploy that
+	// still reaches deploy — the explicit host-deploy operation — is refused
+	// terminally (errDeployDisabled) with DeployHelp's remedy. It is the hub's
+	// -no-deploy.
+	DeployDisabled bool
+
 	// DeployHelp is the remedy clause the refusals that have nothing to install
 	// append: the missing-executable preflight refusal and the installer fallbacks.
 	// An embedder with its own CLI fills in the flags an operator must set; sshconn
@@ -1298,11 +1331,14 @@ func (m *Manager) DetachHost(name string) error {
 // Attached a consumer saw with a Detached under the same lock that ordered
 // them, and makes the pairing a no-op for a channel whose Detached was
 // already emitted — so a Close racing the teardown cannot pair it twice. The
-// returned channel is the one that was mapped, for the caller to reap after
-// releasing the host lock: Channel.Close blocks on the ssh child's exit and
-// must never run under the host lock, while the lock spans the map mutation
-// so no Ensure can interleave between the clear and the reap. Callers hold
-// the host lock.
+// returned channel is the one that was mapped, for the caller to reap at the
+// position its own discipline fixes: the self-acquiring entries (RemoveHost,
+// UpdateHost, DetachHost) reap after releasing the host lock, while the
+// under-gate entries reap inside the caller's own reservation, which the caller
+// releases last (registry spec 08 §4's "gate released last"; the AttachUnderGate
+// precedent reaps the same way). The lock spans the map mutation so no Ensure
+// can interleave between the clear and the reap; Channel.Close's wait on the
+// ssh child's exit needs no lock either way. Callers hold the host lock.
 //
 // captured is the identity the caller resolved before the gate, and
 // hadCaptured says whether it resolved one at all. It scopes the teardown to
@@ -1424,17 +1460,37 @@ func (m *Manager) RemoveHost(name string) error {
 	defer m.releaseHostLock(name)
 	lock.Lock()
 	lock.holdAs(hostops.Holder{Kind: hostops.HolderManager, Activity: "remove"})
+	ch, err := m.removeHostUnderLock(name, host, ok)
+	lock.Unlock()
+	if err != nil {
+		return err
+	}
+	// The reap runs after the lock is released, exactly as DetachHost's does:
+	// Channel.Close blocks on the ssh child's exit, and nothing references the
+	// channel once the map entry is gone.
+	if ch != nil {
+		_ = ch.Close()
+	}
+	return nil
+}
+
+// removeHostUnderLock is RemoveHost's registry-and-channel teardown body with
+// no lock operation of its own: the caller holds the host gate (RemoveHost by
+// acquiring it, RemoveHostUnderGate under the caller's own reservation) and
+// calls this inside that hold. It returns the channel the teardown unmapped,
+// for the caller to reap at the position its own discipline fixes.
+func (m *Manager) removeHostUnderLock(name string, host hostreg.Host, hadHost bool) (*Channel, error) {
 	// Under the gate the name can hold a registration this call never captured
 	// — an add that landed the name while this call waited, the mirror of the
 	// remove/re-add below — so the unknown-name half is re-checked here rather
 	// than trusted from the lookup above: a host whose add is about to answer
 	// success is not this call's to remove, and sweeping its channel would kill
 	// the attach that add's caller is about to use. A name that still holds
-	// nothing keeps the no-op the doc promises.
-	if !ok {
+	// nothing keeps the no-op the doc promises. (Under an under-gate caller
+	// there is no wait to cover, and the re-check is the same no-op.)
+	if !hadHost {
 		if _, exists := m.reg.Get(name); exists {
-			lock.Unlock()
-			return nil
+			return nil, nil
 		}
 	}
 	// A remove/re-add can swap the name's entry in the window this call spent
@@ -1444,25 +1500,63 @@ func (m *Manager) RemoveHost(name string) error {
 	// taking the replacement's would deregister the host its caller re-added,
 	// behind that add's own success. The channel half below still runs, scoped
 	// by the captured identity.
-	if !ok || m.reg.SameRegistration(name, host) {
+	if !hadHost || m.reg.SameRegistration(name, host) {
 		// Registry entry first, under the same lock the rechecks in Ensure and
 		// reconnectOnce consult: once it is gone no attach path can publish. An
 		// unknown name is the no-op the doc promises — the entry is already gone,
 		// but a channel an older attach published for it still comes down.
 		if err := m.reg.Remove(name); err != nil && !errors.Is(err, hostreg.ErrUnknownHost) {
-			lock.Unlock()
-			return err
+			return nil, err
 		}
 	}
-	ch := m.teardownHostChannel(name, host, ok)
-	lock.Unlock()
-	// The reap runs after the lock is released, exactly as DetachHost's does:
-	// Channel.Close blocks on the ssh child's exit, and nothing references the
-	// channel once the map entry is gone.
+	return m.teardownHostChannel(name, host, hadHost), nil
+}
+
+// RemoveHostUnderGate runs RemoveHost's teardown under the caller's
+// already-held per-host gate: §4's "gate released last" for a removal (registry
+// spec 08 §4; deploy pipeline 08b §5's mutation rebind ordering, "the gate
+// releases last. No gate waiter can acquire a half-rebound host"). The caller —
+// the hub's `remove` mutation — reserves the gate before its staged commit and
+// keeps it through the commit and this teardown, presenting the holder its
+// reservation registered (hostGateEntryFor's exact comparison). This method
+// never acquires the gate: it is the same non-reentrant per-host lock, so
+// re-acquiring it would deadlock, and re-acquiring after an early release would
+// be a second exclusion with a gap the caller's reservation is supposed to
+// close. A free gate, or one held by a different holder, refuses with
+// hostops.ErrGateNotHeld before anything live moves.
+//
+// Everything this call does runs inside the caller's hold — the registry drop,
+// the supervisor stop, the channel unmap, and the reap of the unmapped channel
+// — because the caller releases the reservation last (08 §4: "commit first,
+// then rebind/teardown, gate released last"). Reaping under the hold is safe:
+// Channel.Close waits on the ssh child's exit, which needs no lock, exactly as
+// AttachUnderGate reaps a restart's dropped predecessor under its caller's
+// hold.
+//
+// The removal targets the identity resolved under the caller's hold, not
+// whatever holds the name later: this call's span cannot overlap another
+// remove/re-add of the name, because the name's gate is held throughout.
+func (m *Manager) RemoveHostUnderGate(name string, holder hostops.Holder) error {
+	if m.reg == nil {
+		return errors.New("sshconn: RemoveHostUnderGate with no registry")
+	}
+	// Trimmed for the gate key exactly as TryAcquire trims the acquisition the
+	// caller made, so a padded spelling still presents its own hold.
+	name = strings.TrimSpace(name)
+	if !m.hostGateHeldBy(name, holder) {
+		return fmt.Errorf("%w: host %q; RemoveHostUnderGate runs under the caller's hold and never acquires the gate", hostops.ErrGateNotHeld, name)
+	}
+	host, ok := m.reg.Get(name)
+	if ok {
+		// The registry is the authority on the name's spelling, exactly as in
+		// RemoveHost.
+		name = host.Name
+	}
+	ch, err := m.removeHostUnderLock(name, host, ok)
 	if ch != nil {
 		_ = ch.Close()
 	}
-	return nil
+	return err
 }
 
 // AddHost registers entry in the manager's own registry under the same
@@ -1582,6 +1676,24 @@ func (m *Manager) UpdateHost(entry hostreg.Host, onRetire func(retired hostreg.H
 	defer m.releaseHostLock(name)
 	lock.Lock()
 	lock.holdAs(hostops.Holder{Kind: hostops.HolderManager, Activity: "update"})
+	ch, err := m.updateHostUnderLock(entry, onRetire)
+	lock.Unlock()
+	// The reap runs after the lock is released, exactly as DetachHost's and
+	// RemoveHost's do: Channel.Close blocks on the ssh child's exit.
+	if ch != nil {
+		_ = ch.Close()
+	}
+	return err
+}
+
+// updateHostUnderLock is UpdateHost's rebind body with no lock operation of its
+// own: the caller holds the host gate (UpdateHost by acquiring it,
+// UpdateHostUnderGate under the caller's own reservation) and calls this inside
+// that hold. It returns the channel the rebind unmapped — on the registry
+// refusal too, since the teardown has already run by then — for the caller to
+// reap at the position its own discipline fixes.
+func (m *Manager) updateHostUnderLock(entry hostreg.Host, onRetire func(retired hostreg.Host)) (*Channel, error) {
+	name := strings.TrimSpace(entry.Name)
 	// The identity this call retires is resolved under the gate, and so is the
 	// swap: a remove/re-add that took the name while this call waited is not
 	// this call's to tear down, and the teardown below is scoped to the entry
@@ -1601,8 +1713,7 @@ func (m *Manager) UpdateHost(entry hostreg.Host, onRetire func(retired hostreg.H
 	// ErrUnknownHost, name) — so callers' errors.Is keeps working across the
 	// moved check.
 	if !hadCaptured {
-		lock.Unlock()
-		return fmt.Errorf("%w: %q", hostreg.ErrUnknownHost, name)
+		return nil, fmt.Errorf("%w: %q", hostreg.ErrUnknownHost, name)
 	}
 	// Validate before anything live moves. The caller's contract is that an
 	// error from this method means nothing live changed, so a refused update
@@ -1612,8 +1723,7 @@ func (m *Manager) UpdateHost(entry hostreg.Host, onRetire func(retired hostreg.H
 	// lets the teardown stay unconditional — the swap below can then refuse only
 	// for a reason independent of the entry's shape.
 	if err := hostreg.ValidateEntry(entry); err != nil {
-		lock.Unlock()
-		return err
+		return nil, err
 	}
 	// The teardown targets the captured entry's own spelling. The capture is
 	// guaranteed present — an absent name was refused above — so before.Name is
@@ -1637,13 +1747,9 @@ func (m *Manager) UpdateHost(entry hostreg.Host, onRetire func(retired hostreg.H
 		// retired channel is already gone; the host reattaches on the next
 		// Ensure, which finds no channel under the name and dials fresh. Reap
 		// the channel this call did retire — the close blocks on the ssh child's
-		// exit, so it happens after the gate is released, as everywhere else —
-		// and report the refusal.
-		lock.Unlock()
-		if ch != nil {
-			_ = ch.Close()
-		}
-		return err
+		// exit, so it happens at the caller's reap position, as everywhere else
+		// — and report the refusal.
+		return ch, err
 	}
 	// The caller's retirement runs under the gate, in the same hold as the swap,
 	// so no new-identity lifecycle event can interleave before it: an attach
@@ -1663,13 +1769,44 @@ func (m *Manager) UpdateHost(entry hostreg.Host, onRetire func(retired hostreg.H
 	if m.opts.AfterUpdateHostSwap != nil {
 		m.opts.AfterUpdateHostSwap(name)
 	}
-	lock.Unlock()
-	// The reap runs after the lock is released, exactly as DetachHost's and
-	// RemoveHost's do: Channel.Close blocks on the ssh child's exit.
+	return ch, nil
+}
+
+// UpdateHostUnderGate runs UpdateHost's rebind under the caller's already-held
+// per-host gate: §4's "gate released last" for an edit (registry spec 08 §4;
+// deploy pipeline 08b §5's mutation rebind ordering, "the gate releases last.
+// No gate waiter can acquire a half-rebound host"). The caller — the hub's
+// `update` mutation — reserves the gate before its staged commit and keeps it
+// through the commit and this rebind, presenting the holder its reservation
+// registered (hostGateEntryFor's exact comparison). This method never acquires
+// the gate: it is the same non-reentrant per-host lock, so re-acquiring it
+// would deadlock, and re-acquiring after an early release would be a second
+// exclusion with a gap the caller's reservation is supposed to close. A free
+// gate, or one held by a different holder, refuses with hostops.ErrGateNotHeld
+// before anything live moves.
+//
+// Everything this call does runs inside the caller's hold — the retired
+// channel's teardown, the registry swap, the caller's retirement hook, and the
+// reap of the unmapped channel — because the caller releases the reservation
+// last (08 §4: "commit first, then rebind/teardown, gate released last").
+// Reaping under the hold is safe: Channel.Close waits on the ssh child's exit,
+// which needs no lock, exactly as AttachUnderGate reaps a restart's dropped
+// predecessor under its caller's hold.
+func (m *Manager) UpdateHostUnderGate(entry hostreg.Host, holder hostops.Holder, onRetire func(retired hostreg.Host)) error {
+	if m.reg == nil {
+		return errors.New("sshconn: UpdateHostUnderGate with no registry")
+	}
+	// Trimmed for the gate key exactly as TryAcquire trims the acquisition the
+	// caller made, so a padded spelling still presents its own hold.
+	name := strings.TrimSpace(entry.Name)
+	if !m.hostGateHeldBy(name, holder) {
+		return fmt.Errorf("%w: host %q; UpdateHostUnderGate runs under the caller's hold and never acquires the gate", hostops.ErrGateNotHeld, name)
+	}
+	ch, err := m.updateHostUnderLock(entry, onRetire)
 	if ch != nil {
 		_ = ch.Close()
 	}
-	return nil
+	return err
 }
 
 // clearHostCaches drops every per-host record that must not survive a detach or
@@ -2032,11 +2169,14 @@ func (m *Manager) deployRequired(name string, facts Preflight, expected string) 
 	// deploy is configured the controller installs its own build once per Manager
 	// and then trusts the host for this process's lifetime; with no deploy
 	// configured there is nothing to install and the literal comparison stands.
-	// A DIRTY controller with a deploy configured cannot install anything (deploy
-	// refuses it terminally: see errControllerDirty), so the force below is what
-	// keeps it from attaching to a host whose code equality cannot prove; the
-	// refusal is terminal rather than a retryable ErrDeploy, so the same forced
-	// deploy cannot become an endless cross-compile.
+	// A DIRTY controller whose deploy source is anything but its own executable
+	// cannot install anything (deploy refuses it terminally: see errControllerDirty),
+	// so the force below is what keeps it from attaching to a host whose code
+	// equality cannot prove; that refusal is terminal rather than a retryable
+	// ErrDeploy, so the same forced deploy cannot become an endless cross-compile.
+	// The controller's own executable (Options.OwnExecutable) is installable, and
+	// once installed it settles the question for this Manager's lifetime like any
+	// other deploy.
 	deployPossible := m.canDeploy()
 	devUnverified := UnverifiableVersion(expected) && deployPossible && !m.isDevDeployed(name)
 
@@ -2658,7 +2798,9 @@ func isTerminal(err error) bool {
 		errors.Is(err, errControllerDirty),
 		errors.Is(err, errRunTargetUnservable),
 		errors.Is(err, errDeployArtifactUnusable),
+		errors.Is(err, errOwnExecutableCannotServe),
 		errors.Is(err, errDeployUnstamped),
+		errors.Is(err, errDeployDisabled),
 		errors.Is(err, ErrManagerClosed):
 		return true
 	default:
@@ -2710,6 +2852,26 @@ var ErrDeployArtifactUnusable = errDeployArtifactUnusable
 // surface it as a typed deploy failure (appwire.HubLaunchError) rather than a
 // generic internal error, the same reason ErrControllerDirty is.
 var ErrDeployUnstamped = errDeployUnstamped
+
+// ErrOwnExecutableCannotServe is the exported alias for the terminal
+// cross-target deploy refusal (errOwnExecutableCannotServe, deploy.go): the
+// controller's only deploy source is its own executable, the host runs another
+// target, and the installer fallback has no published artifact to pin for this
+// build, so this controller can never provision this host — the same host,
+// target, and build re-refuse identically. It is exported so a caller — the
+// hub's attach handler — can match the refusal with errors.Is and surface it as
+// a typed deploy failure (appwire.HubLaunchError) rather than a generic internal
+// error, the same reason ErrDeployUnstamped is.
+var ErrOwnExecutableCannotServe = errOwnExecutableCannotServe
+
+// ErrDeployDisabled is the exported alias for the terminal deploy-disabled
+// refusal (errDeployDisabled, deploy.go): the controller was started with
+// deploying turned off (the hub's -no-deploy), so it will not install a build on
+// any host, and the refusal names the remedy through DeployHelp. It is exported
+// so a caller — the hub's attach handler — can match the refusal with errors.Is
+// and surface it as a typed deploy failure (appwire.HubLaunchError) rather than a
+// generic internal error, the same reason ErrOwnExecutableCannotServe is.
+var ErrDeployDisabled = errDeployDisabled
 
 // hostLockEntry is one per-host gate together with its live-user count.
 // refs counts the hostLock acquisitions that have not been released yet —
@@ -3134,8 +3296,20 @@ func (m *Manager) canBuild() bool {
 // accept this build": a dirty controller with a build source reaches deploy,
 // which refuses it terminally (errControllerDirty) instead of returning false
 // here — returning false would let the decision ladder attach to a host whose
-// code equality the dirty version cannot prove.
+// code equality the dirty version cannot prove. A dirty controller deploying its
+// own executable (Options.OwnExecutable) is accepted by deploy: those bytes are
+// the controller's build by construction, so there is no reproduction proof to
+// make (though for a host on another target that source hands over to the
+// installer fallback, or refuses terminally when the fallback has nothing to
+// pin: errOwnExecutableCannotServe). And a
+// controller with deploying turned off (Options.DeployDisabled) has no deploy
+// path at all, so it is false before even the installer fallback is considered:
+// -no-deploy must not let a release or snapshot controller quietly install a
+// published artifact.
 func (m *Manager) canDeploy() bool {
+	if m.opts.DeployDisabled {
+		return false
+	}
 	if m.canBuild() {
 		return true
 	}

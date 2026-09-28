@@ -123,7 +123,7 @@ func TestDetachedShellRetirementClaimDoesNotSignal(t *testing.T) {
 		return llm.Response{Message: llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{{Kind: llm.ContentToolCall, ToolCall: &call}}}}
 	}}
 	client.Register(adapter)
-	root, err := agent.NewSession(client, provider.NewOpenAIProfile("gpt-5.2"), env, agent.SessionConfig{StateDir: t.TempDir(), AgentsDocPath: filepath.Join(t.TempDir(), "absent-AGENTS.md"), NoProjectPrompts: true})
+	root, err := agent.NewSession(client, provider.NewOpenAIProfile("gpt-5.2"), env, agent.SessionConfig{StateDir: t.TempDir(), AgentsDocPath: filepath.Join(t.TempDir(), "absent-AGENTS.md")})
 	if err != nil {
 		t.Fatal(err)
 	}

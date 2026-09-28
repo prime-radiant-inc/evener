@@ -1,12 +1,10 @@
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { cleanup, render, screen } from "@testing-library/react";
-import { afterEach, beforeEach, expect, test } from "vitest";
+import { render, screen } from "@testing-library/react";
+import { beforeEach, expect, test } from "vitest";
 import { requestPaneFocus, resetWorkspaceStoreForTests } from "../../shell/workspace";
 import { PaneScaffold } from "./index";
-
-afterEach(cleanup);
 
 beforeEach(resetWorkspaceStoreForTests);
 

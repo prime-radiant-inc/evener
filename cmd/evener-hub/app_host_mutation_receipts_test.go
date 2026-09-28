@@ -748,6 +748,11 @@ func TestHostMutationReceiptKeptWhenTheLivePhaseFails(t *testing.T) {
 	manager := sshconn.New(otherReg, sshconn.Options{})
 	t.Cleanup(func() { _ = manager.Close() })
 	f.m.cfg.manager = manager
+	// The manager is the per-host gate wherever it owns the channels (the same
+	// wiring newHubHostManager performs with hostGateFor): the failing live
+	// seam must be reached under the hub's own reservation, not refused at the
+	// gate precondition.
+	f.m.cfg.gate = manager
 
 	params := updateRequest(t, f.m, "side", appwire.HostEntry{Address: "edited.example"})
 	if _, err := f.m.Update(context.Background(), params); err == nil {

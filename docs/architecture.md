@@ -34,11 +34,32 @@ importing each other's Go code.
 | --- | --- | --- | --- | --- |
 | `evener` | `cmd/evener` | **engine** — runs an `agent.Session` | agent, llm | direct |
 | `evener hub` | `cmd/evener-hub` | **supervisor** — spawns `evener` subprocesses, serves clients | evener (spawn), agent (schema) | **AppWire** + schema |
-| `evener tui` | `cmd/evener-tui` | **client** — terminal dashboard | evener hub | **hubapi** (HTTP) |
+| `evener tui` | `cmd/evener-tui` | **client** — terminal dashboard | evener hub | **AppWire** (WebSocket) |
+
+The TUI's control and event connection to the hub is **AppWire**, not HTTP. It
+dials the hub's `/rpc` WebSocket, initializes an `appwire.Client`, and installs an
+ordered-frame observer (`dialHubRPC`, `cmd/evener-tui/internal/hubstart`). The hub
+is the AppWire **server** for the TUI and the browser, an AppWire **client** to
+each `evener serve` daemon it spawns, and — on a multi-host controller — an
+AppWire **relay** that carries frames to a remote host's hub over `ssh <dest>
+evener hub attach --stdio` (`appwire.StreamTransport`). `hubapi` is the hub's
+separate HTTP surface (health, navigation, refs, attention) for the browser's REST
+baseline and the mobile client; the TUI touches it only for the best-effort
+environment health probe (`checkHubEnvironment`).
+
+```
+browser ─┐
+         ├─ AppWire /rpc (WS) ──▶ evener hub ──┬─ AppWire (WS) ──▶ evener serve daemon
+evener   │                                     └─ hubapi HTTP ────▶ health / navigation / refs
+  tui ───┘
+
+remote host:  evener hub ── ssh ──▶ evener hub attach --stdio ── AppWire (stdio) ──▶ remote hub
+```
 
 The two shared **contracts** are ordinary top-level packages in the app module:
-`appwire/` (the engine↔hub↔tui wire protocol) and `hubapi/` (the hub's HTTP API).
-Each binary owns its private code under `cmd/<bin>/internal/`.
+`appwire/` (the JSON-RPC wire protocol over WebSocket or stdio, hop by hop between
+browser/`evener tui`, hub, and `evener serve` daemon) and `hubapi/` (the hub's HTTP
+API). Each binary owns its private code under `cmd/<bin>/internal/`.
 
 ## The placement rule — "what goes where"
 
@@ -207,12 +228,18 @@ the window failed, today's tiered escalation otherwise. Underneath it,
 (`agent/internal/tool/breaker.go`) that every *dispatched* tool call passes through,
 native and MCP alike — a call refused before dispatch — by pre-validation, an unknown tool
 name, unparseable arguments, a schema violation, blocking middleware, or the
-argument-size guard — never reaches the ledger. The ledger carries **two triggers, both keyed on tool name + a hash of the raw
-argument bytes**. The **failure trigger** counts consecutive failures sharing an error
-class: the second appends a nudge to the result, and the third is **not executed at
+argument-size guard — never reaches the ledger. The ledger carries **two triggers,
+keyed differently**. The **failure trigger** counts consecutive failures sharing an
+error class, keyed on tool name + a hash of a **normalized** view of the arguments:
+the top-level `intent` free text and the shell tool's presentation-only `description`
+are dropped, and JSON key order, whitespace, and number spellings are canonicalized,
+so a call that changes only those is the same failing operation — while arguments
+that are not a single well-formed JSON value fall back to the raw bytes. Its second
+failure appends a nudge to the result, and the third is **not executed at
 all** — the call is refused before the tool is looked up. The **repetition trigger**
-counts consecutive byte-identical result bodies regardless of error status, and only
-ever nudges, from the second onward; a tool observing mutable state may yet return
+counts consecutive byte-identical result bodies regardless of error status, keyed on
+tool name + a hash of the raw argument bytes, and only ever nudges, from the second
+onward; a tool observing mutable state may yet return
 something new, and refusing `communicate` would take away the session's only exit
 door. Repetition catches what error flags miss: a plugin that reports its failures with
 `is_error: false` and the failure as plain body text still trips it, so evener needs no

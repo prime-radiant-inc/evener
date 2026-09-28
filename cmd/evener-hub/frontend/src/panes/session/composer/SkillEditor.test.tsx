@@ -1,10 +1,8 @@
-import { act, cleanup, fireEvent, render, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, waitFor } from "@testing-library/react";
 import { createRef, useState } from "react";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import "../testing/editorGeometry";
 import { SkillEditor, type SkillEditorHandle, type SkillEditorProps, type SkillEditorValue } from "./SkillEditor";
-
-afterEach(cleanup);
 
 function mount(initial: SkillEditorValue, extra: Partial<SkillEditorProps> = {}) {
   const ref = createRef<SkillEditorHandle>();

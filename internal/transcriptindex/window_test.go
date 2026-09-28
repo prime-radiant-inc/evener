@@ -3,7 +3,9 @@ package transcriptindex
 import (
 	"errors"
 	"fmt"
+	"maps"
 	"reflect"
+	"slices"
 	"strconv"
 	"testing"
 
@@ -56,6 +58,47 @@ func assertAllWindows(t testing.TB, x *Index, path string) {
 	}
 	for _, limit := range []int{1, 2, 3, 7, appwire.TranscriptItemPageLimit} {
 		for end := range len(want) {
+			window, err := x.Before(want[end].Position, limit)
+			if err != nil {
+				t.Fatalf("before %v: %v", want[end].Position, err)
+			}
+			assertWindow(t, fmt.Sprintf("before %v", want[end].Position), window, want, end, limit)
+		}
+	}
+}
+
+// assertSampledWindows is assertAllWindows's cheaper sibling: it proves the
+// same thing a caller of assertAllWindows wants — a rebuilt index reads back
+// correctly — without the O(items x limits) walk of every Before boundary at
+// every limit, a walk that runs to about ten minutes under -race on CI for
+// TestReplacedTruncatedOrRewrittenTranscriptRebuilds's four subtests over the
+// "everything" fixture. assertAllCandidates already proves every item, full
+// stop, by paging the whole transcript once; this adds only the specific
+// boundaries a pagination bug is likeliest to break: the first and last
+// items, a couple next to them, and the midpoint, each at a small and a
+// full-page limit.
+func assertSampledWindows(t testing.TB, x *Index, path string) {
+	t.Helper()
+	assertAllCandidates(t, x, path)
+	want := referenceCandidates(t, path)
+	if len(want) == 0 {
+		return
+	}
+	limits := []int{1, appwire.TranscriptItemPageLimit}
+	for _, limit := range limits {
+		window, err := x.Latest(limit)
+		if err != nil {
+			t.Fatal(err)
+		}
+		assertWindow(t, "latest", window, want, len(want), limit)
+	}
+	endSet := map[int]bool{0: true, len(want) - 1: true, len(want) / 2: true}
+	if len(want) > 3 {
+		endSet[1], endSet[len(want)-2] = true, true
+	}
+	ends := slices.Sorted(maps.Keys(endSet))
+	for _, end := range ends {
+		for _, limit := range limits {
 			window, err := x.Before(want[end].Position, limit)
 			if err != nil {
 				t.Fatalf("before %v: %v", want[end].Position, err)

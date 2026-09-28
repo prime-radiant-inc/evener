@@ -139,6 +139,14 @@ download-by-URL path in this slice: the parent spec's own analysis is that a
 snapshot controller has no immutable reference to fetch by, and inventing one
 here would relitigate §4.
 
+**Superseded 2026-09-27 (Jesse: "the deploy thing should be on by default").**
+With neither flag set the hub now adopts its own running executable as the
+deploy artifact, validated exactly as `-deploy-binary` is, so a host that needs
+the controller's build is provisioned with no flags; the no-source refusal
+survives only for a hub whose executable is not an evener build (an embedder or
+test binary), and a new `-no-deploy` restores the opt-in behavior by disabling
+every deploy path. See the Contract's amendment note.
+
 ### D2 — what consents to a write on a host (decided: controller-level only)
 
 Jesse ruled: this slice lands **controller-level behavior only**. Configuring a
@@ -245,6 +253,29 @@ pins the channel source, the wait, the restart wiring, and the start wiring.
     checkout).
 - **Precedence** when more than one is available: `-deploy-binary`, then
   `-build-source`, then the installer fallback (D4/D5 permitting).
+
+  **Amended 2026-09-27 (default on).** With neither flag set, the hub adopts
+  its own running executable (`os.Executable()`, run through the same
+  `-deploy-binary` validation) as the deploy artifact, so the push path is
+  available with no flags; `-deploy-binary` and `-build-source` still win over
+  it, and the new `-no-deploy` wins over all three, disabling the push path and
+  the installer fallback so nothing is written to a host. The unwired case is
+  now only a hub whose executable is not an evener build. A dirty controller
+  may deploy only its own executable (see criterion 6): both a `-build-source`
+  compile and a named artifact stay refused, because neither can be proven to
+  be the controller's build — a `<sha>-dirty` label is shared by every dirty
+  tree at that commit. **Amended 2026-09-27 (cross-target).** The defaulted own
+  executable is this process's build, so it can serve only hosts on this
+  process's target: a host on another target does not get a push (and therefore
+  no artifact-mismatch refusal) — the hub falls back to the installer path,
+  which is what a flagless controller used before the default existed, so a
+  release or snapshot controller provisions the host from its published
+  artifact. A controller with no published artifact to pin (dev, dirty, or a
+  release with no stamped tag) is refused terminally with both targets named
+  (`errOwnExecutableCannotServe`), rather than retrying the installer's
+  retryable refusal forever; an explicitly named artifact keeps the push and its
+  own terminal mismatch refusal, which is why the fallback is keyed on
+  `Options.OwnExecutable`.
 - **When a deploy happens** is unchanged from `04:1006-1016`: on an **on-disk**
   version difference **and only when a deploy path is configured** — with none,
   the host keeps its build and attaches — not on every reconnect, and a restart
@@ -362,7 +393,10 @@ default case (no `evener_path`) always resolves to the installer's own
 3. With both set, the binary path is used — asserted on the argv the fake runner
    records, not inferred.
 4. With neither set, behavior is today's, except the refusal names
-   `-deploy-binary` and `-build-source`.
+   `-deploy-binary` and `-build-source`. **Superseded 2026-09-27:** with neither
+   set the hub now deploys its own executable (when its executable is an evener
+   build); `-no-deploy` is what restores this criterion's behavior, still
+   refusing with the remedy named.
 5. A dev controller with no deploy path attaches: the host answers the
    controller's `launch-check`, so the protocol matches, and a build version is
    not an attach gate (`04` §5). A dev controller **with** a deploy path forces
@@ -373,7 +407,20 @@ default case (no `evener_path`) always resolves to the installer's own
    protocol-compatible hosts and named a remedy the operator did not need; the
    difference is reported instead (Evidence, criterion 5).
 6. A dirty controller refuses the push path and the installer fallback, each
-   message naming the remedy.
+   message naming the remedy. **Amended 2026-09-27:** it refuses a SOURCE push
+   (a `-build-source` compile, or an undeclared cross-compile seam) **and** a
+   named artifact (`-deploy-binary`), because neither can be proven to
+   reproduce or match a `<sha>-dirty` build (the label is shared by every dirty
+   tree at that commit). Only the own-executable default is exempt — those bytes
+   ARE the controller's build — declared to sshconn as `Options.OwnExecutable`
+   and pinned by `TestDirtyControllerDeploysItsOwnExecutable`,
+   `TestDirtyControllerRefusesANamedBuildBinary`,
+   `TestDirtyControllerRefusesABuildSource` and
+   `TestCleanControllerDeploysANamedBuildBinary` (a clean controller still
+   deploys a named artifact). The residual the exemption accepts — the
+   executable file replaced under a running hub — is documented at the
+   exemption (`sshconn/deploy.go`) and at the hub's default seam
+   (`deploy_flags.go`).
 7. Per D4: the amended snapshot rule is the asserted one — the installer path is
    admitted for a snapshot controller, the post-install identity check is what
    confirms the build, and a controller whose commit the tag has moved past is
@@ -393,6 +440,11 @@ default case (no `evener_path`) always resolves to the installer's own
     set. That line is the whole deploy-leg log — no host, no target, no file's
     contents, no credential. Nothing else about a deploy leg is logged, and the
     hub's unrelated startup lines are unchanged.
+
+    **Amended 2026-09-27:** the line also says when the own-executable default
+    was adopted and when `-no-deploy` disabled deploys (naming any flags it
+    overrode); a non-evener hub with no flags still logs nothing, exactly as
+    before.
 
 ## Evidence
 
@@ -420,6 +472,25 @@ coverage.
    passes the former as `Options.DeployHelp` (`main.go`) —
    `TestRunMainPassesDeployHelpToTheSSHManager` captures the `sshconn.Options` the
    hub hands the manager through the deps seam, so removing that wiring fails.
+   **Superseded 2026-09-27:** the no-flag case now wires the own executable
+   when the hub binary is an evener build, pinned by
+   `TestParseHubOptionsDefaultsDeployBinaryToOwnExecutable`,
+   `TestRunMainWiresAndLogsTheOwnExecutableDeploy`,
+   `TestParseHubOptionsNoDeployKeepsTheDeployUnwired`,
+   `TestRunMainNoDeployWiresAndLogsNone` and
+   `TestParseHubOptionsDefaultNeverFiresForANonEvenerExecutable`; the
+   refusal-side pins above remain for the non-evener and `-no-deploy` cases.
+   **Amended 2026-09-27 (review):** the remedy is per-state — the unwired text
+   leads with the flags that state can act on (`hubDeployHelpUnwired`), and
+   `TestRunMainPassesDeployHelpToTheSSHManager` pins both texts through the
+   seam; a defaulted source's refusals name the hub's own executable and its
+   own exits rather than `-deploy-binary`
+   (`TestOwnExecutableSeamRefusalNamesTheDefaultNotAFlag`). The default's
+   identity is pinned from three sides: the seam at its default against this
+   package's test binary (`TestDefaultDeploySourceHonestyWithThisTestBinarysIdentity`),
+   the packaging fact that the hub has no executable of its own
+   (`TestTheHubBinaryIsTheEvenerRuntime`), and a booted real hub
+   (`TestDefaultDeploySourceIsTheHubExecutableE2E`).
 5. **Pinned.** The attach: `TestDevControllerWithoutADeployPathAttaches` (a dev
    controller with no deploy path attaches to a host running another build),
    with `TestEnsureAttachesToAnotherBuildWhenProtocolMatches` (a stamped
@@ -433,6 +504,13 @@ coverage.
 6. **Pinned** — `TestDirtyControllerRefusalsNameTheRemedy` (both refusals and
    each remedy clause), with `TestRound13DirtyControllerDeployRefusalIsTerminal`
    pinning the push refusal's type and terminality.
+   **Amended 2026-09-27:** the refusals are every source that is not this
+   controller's own executable (`-build-source`, or any `BuildBinary` without
+   `Options.OwnExecutable`); `TestDirtyControllerDeploysItsOwnExecutable` and
+   `TestDirtyControllerOwnExecutableDeployConvergesThroughTheOperation` pin the
+   own-executable path that now proceeds, and
+   `TestDirtyControllerRefusesANamedBuildBinary` pins the named artifact's
+   refusal.
 7. **Pinned** — `TestRound8InstallerVersionMismatchIsTerminal` (a moved tag is
    refused terminally, not retried) and
    `TestInstallerMovedTagRefusalNamesThePushPath` (that refusal names the

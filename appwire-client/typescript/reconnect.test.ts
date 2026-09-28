@@ -57,6 +57,20 @@ function latestSocket(sockets: FakeSocket[]): FakeSocket {
   return socketAt(sockets, sockets.length - 1);
 }
 
+// driveFailedAttempts advances through each jittered delay in order and fails
+// the dialed socket before it opens, so the next backoff timer arms. It leaves
+// the client "reconnecting" with the next timer armed, the state the cap
+// assertions below start from.
+async function driveFailedAttempts(sockets: FakeSocket[], delays: number[]): Promise<void> {
+  for (const delay of delays) {
+    const before = sockets.length;
+    await vi.advanceTimersByTimeAsync(delay);
+    expect(sockets.length).toBe(before + 1); // exactly one new dial, at this delay
+    latestSocket(sockets).closeFromServer(1006);
+    await flushUntil(() => vi.getTimerCount() > 0); // let the next backoff timer arm
+  }
+}
+
 interface NavigationHandshake {
   version: number;
   generationId: string;
@@ -88,7 +102,7 @@ function reconnectHarness(): {
     sockets.push(socket);
     return socket;
   };
-  const client = new AppwireClient({ url: "ws://x/rpc", socketFactory: factory });
+  const client = new AppwireClient({ url: "ws://x/rpc", socketFactory: factory, random: () => 1 });
 
   return {
     client,
@@ -377,7 +391,7 @@ describe("AppwireClient reconnect", () => {
 
   test("backs off 250ms, 500ms, 1000ms, 2000ms, 4000ms, then caps at 5000ms, re-dialing every attempt", async () => {
     const { factory, sockets } = dialer();
-    const client = new AppwireClient({ url: "ws://x/rpc", socketFactory: factory });
+    const client = new AppwireClient({ url: "ws://x/rpc", socketFactory: factory, random: () => 1 });
     await connectReady(sockets, client);
 
     socketAt(sockets, 0).closeFromServer(1006);
@@ -515,6 +529,145 @@ describe("AppwireClient reconnect", () => {
   });
 });
 
+// Bounded jitter spreads reconnects across clients dropped by the same
+// outage. scheduleReconnect computes half + random() * half over the
+// deterministic exponential value, so random: () => 0 selects the low bound
+// and random: () => 1 the high one. These tests inject the source so the
+// spread is deterministic under fake timers.
+describe("AppwireClient reconnect jitter", () => {
+  test("the injected random source places the first delay inside [base/2, base]", async () => {
+    const { factory, sockets } = dialer();
+    const client = new AppwireClient({ url: "ws://x/rpc", socketFactory: factory, random: () => 0 });
+    await connectReady(sockets, client);
+
+    socketAt(sockets, 0).closeFromServer(1006);
+    expect(client.state).toBe("reconnecting");
+
+    // random() === 0 selects the low bound: half the deterministic delay.
+    await vi.advanceTimersByTimeAsync(RECONNECT_BASE_MS / 2 - 1);
+    expect(sockets).toHaveLength(1); // not yet
+    await vi.advanceTimersByTimeAsync(1);
+    expect(sockets).toHaveLength(2); // dialed at exactly base/2
+    client.close();
+  });
+
+  test("random() === 1 selects the deterministic upper bound, never exceeding the cap", async () => {
+    const { factory, sockets } = dialer();
+    const client = new AppwireClient({ url: "ws://x/rpc", socketFactory: factory, random: () => 1 });
+    await connectReady(sockets, client);
+
+    socketAt(sockets, 0).closeFromServer(1006);
+
+    await vi.advanceTimersByTimeAsync(RECONNECT_BASE_MS - 1);
+    expect(sockets).toHaveLength(1);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(sockets).toHaveLength(2);
+    client.close();
+  });
+
+  test("at the cap, random() === 1 holds the delay at exactly the cap", async () => {
+    const { factory, sockets } = dialer();
+    const client = new AppwireClient({ url: "ws://x/rpc", socketFactory: factory, random: () => 1 });
+    await connectReady(sockets, client);
+
+    socketAt(sockets, 0).closeFromServer(1006);
+    // Fail the doubling attempts up to and including the first capped one, so
+    // the next armed delay is the cap itself.
+    await driveFailedAttempts(sockets, [
+      RECONNECT_BASE_MS,
+      RECONNECT_BASE_MS * 2,
+      RECONNECT_BASE_MS * 4,
+      RECONNECT_BASE_MS * 8,
+      RECONNECT_BASE_MS * 16,
+      RECONNECT_MAX_MS,
+    ]);
+
+    const before = sockets.length;
+    await vi.advanceTimersByTimeAsync(RECONNECT_MAX_MS - 1);
+    expect(sockets).toHaveLength(before); // not early: the cap is the upper bound
+    await vi.advanceTimersByTimeAsync(1);
+    expect(sockets).toHaveLength(before + 1); // dialed at exactly the cap
+    client.close();
+  });
+
+  test("at the cap, random() === 0 halves the delay and never exceeds the cap", async () => {
+    const { factory, sockets } = dialer();
+    const client = new AppwireClient({ url: "ws://x/rpc", socketFactory: factory, random: () => 0 });
+    await connectReady(sockets, client);
+
+    socketAt(sockets, 0).closeFromServer(1006);
+    // The low jitter bound halves every delay, so the first capped attempt
+    // waits RECONNECT_MAX_MS / 2.
+    await driveFailedAttempts(sockets, [
+      RECONNECT_BASE_MS / 2,
+      RECONNECT_BASE_MS,
+      RECONNECT_BASE_MS * 2,
+      RECONNECT_BASE_MS * 4,
+      RECONNECT_BASE_MS * 8,
+      RECONNECT_MAX_MS / 2,
+    ]);
+
+    const before = sockets.length;
+    await vi.advanceTimersByTimeAsync(RECONNECT_MAX_MS / 2 - 1);
+    expect(sockets).toHaveLength(before); // not before the low bound
+    await vi.advanceTimersByTimeAsync(1);
+    expect(sockets).toHaveLength(before + 1); // dialed at half the cap, still under it
+    client.close();
+  });
+
+  test("two clients dropped together reconnect at different times", async () => {
+    const low = dialer();
+    const lowClient = new AppwireClient({
+      url: "ws://x/rpc",
+      socketFactory: low.factory,
+      random: () => 0,
+    });
+    const high = dialer();
+    const highClient = new AppwireClient({
+      url: "ws://x/rpc",
+      socketFactory: high.factory,
+      random: () => 1,
+    });
+    await connectReady(low.sockets, lowClient);
+    await connectReady(high.sockets, highClient);
+
+    // The same outage drops both clients at the same instant.
+    socketAt(low.sockets, 0).closeFromServer(1006);
+    socketAt(high.sockets, 0).closeFromServer(1006);
+
+    await vi.advanceTimersByTimeAsync(RECONNECT_BASE_MS / 2 - 1);
+    expect(low.sockets).toHaveLength(1);
+    expect(high.sockets).toHaveLength(1);
+
+    await vi.advanceTimersByTimeAsync(1);
+    expect(low.sockets).toHaveLength(2); // low jitter retried first
+    expect(high.sockets).toHaveLength(1); // high jitter is still waiting
+
+    await vi.advanceTimersByTimeAsync(RECONNECT_BASE_MS / 2);
+    expect(high.sockets).toHaveLength(2); // high jitter retried later
+
+    lowClient.close();
+    highClient.close();
+  });
+
+  test("close() cancels a jittered backoff without dialing", async () => {
+    const { factory, sockets } = dialer();
+    const client = new AppwireClient({ url: "ws://x/rpc", socketFactory: factory, random: () => 0 });
+    await connectReady(sockets, client);
+
+    socketAt(sockets, 0).closeFromServer(1006);
+    expect(client.state).toBe("reconnecting");
+
+    client.close();
+    expect(client.state).toBe("closed");
+    expect(vi.getTimerCount()).toBe(0);
+
+    await vi.advanceTimersByTimeAsync(RECONNECT_MAX_MS * 2);
+    expect(sockets).toHaveLength(1);
+    expect(client.state).toBe("closed");
+  });
+});
+
 // retryNow is the manual counterpart to the automatic backoff above (wired
 // to ConnectionBanner's "Retry now" affordance, shown only while
 // "reconnecting" - the client is already retrying on its own, so this just
@@ -638,7 +791,7 @@ describe("AppwireClient retryNow", () => {
 
   test("a failed reentrant manual retry waits for doubled backoff and leaves close terminal", async () => {
     const { factory, sockets } = dialer();
-    const client = new AppwireClient({ url: "ws://x/rpc", socketFactory: factory });
+    const client = new AppwireClient({ url: "ws://x/rpc", socketFactory: factory, random: () => 1 });
     await connectReady(sockets, client);
 
     client.onStateChange((state) => {
@@ -668,7 +821,7 @@ describe("AppwireClient retryNow", () => {
 
   test("a failed retryNow attempt falls back to the ordinary backoff sequence, continuing from where it left off", async () => {
     const { factory, sockets } = dialer();
-    const client = new AppwireClient({ url: "ws://x/rpc", socketFactory: factory });
+    const client = new AppwireClient({ url: "ws://x/rpc", socketFactory: factory, random: () => 1 });
     await connectReady(sockets, client);
 
     socketAt(sockets, 0).closeFromServer(1006);

@@ -35,30 +35,51 @@ func TestRenderToolCall_RejectedCallBoundedRawFallback(t *testing.T) {
 	}
 }
 
-// TestParsesAsJSONObject_NullAndArray verifies that null and valid non-object
-// JSON (arrays) are NOT classified as JSON objects, so the tool-card raw
-// fallback fires for them — matching the hub's parseArgs (returns nil for
-// null). A bare null decodes with a nil map, which must be treated as
-// non-object.
-func TestParsesAsJSONObject_NullAndArray(t *testing.T) {
+// TestToolArgsFromJSONObject verifies the single-pass decode reports
+// object-ness: false for empty input, invalid JSON, null, and valid non-object
+// JSON (arrays, strings, numbers), true for a JSON object. RenderToolCall uses
+// this boolean to pick the bounded raw fallback without a second unmarshal, so
+// null and arrays must report false (matching the hub's parseArgs, which
+// returns nil for null). A bare null decodes with a nil map, which must be
+// treated as non-object.
+func TestToolArgsFromJSONObject(t *testing.T) {
 	t.Parallel()
-	if parsesAsJSONObject("null") {
-		t.Errorf("parsesAsJSONObject(\"null\") = true, want false (null is not an object)")
+	cases := []struct {
+		name string
+		json string
+		want bool
+	}{
+		{"empty", "", false},
+		{"invalid", "not json", false},
+		{"null", "null", false},
+		{"array", `["a","b"]`, false},
+		{"string", `"x"`, false},
+		{"number", "1", false},
+		{"object", `{"key":"val"}`, true},
+		{"empty object", `{}`, true},
 	}
-	if parsesAsJSONObject(`["a","b"]`) {
-		t.Errorf(`parsesAsJSONObject(["a","b"]) = true, want false (array is not an object)`)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			args, ok := toolArgsFromJSONObject(tc.json)
+			if ok != tc.want {
+				t.Errorf("toolArgsFromJSONObject(%q) object=%v, want %v", tc.json, ok, tc.want)
+			}
+			if args == nil {
+				t.Errorf("toolArgsFromJSONObject(%q) returned a nil map", tc.json)
+			}
+		})
 	}
-	if parsesAsJSONObject(`{"key":"val"}`) {
-		// This is correct — a valid object IS an object. Just confirming
-		// the positive case still works after the null fix.
-	} else {
-		t.Errorf(`parsesAsJSONObject({"key":"val"}) = false, want true`)
-	}
-	if parsesAsJSONObject("") {
-		t.Errorf(`parsesAsJSONObject("") = true, want false`)
-	}
-	if parsesAsJSONObject("not json") {
-		t.Errorf(`parsesAsJSONObject("not json") = true, want false`)
+}
+
+// TestToolArgsFromJSONNeverNil pins the fuzz contract that the raw decode seam
+// never returns a nil map, including for a bare JSON null (which decodes to a
+// nil map).
+func TestToolArgsFromJSONNeverNil(t *testing.T) {
+	t.Parallel()
+	for _, in := range []string{"", "not json", "null", `[1,2]`, `{"a":1}`} {
+		if got := toolArgsFromJSON(in); got == nil {
+			t.Errorf("toolArgsFromJSON(%q) returned a nil map", in)
+		}
 	}
 }
 

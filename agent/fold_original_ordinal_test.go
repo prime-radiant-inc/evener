@@ -22,7 +22,7 @@ func TestFoldCopiesRecordTheOrdinalOfTheirOriginal(t *testing.T) {
 			<-proceed
 		}
 		return llm.Response{Message: llm.Assistant("[CONTEXT SUMMARY]\nsummary\n[END SUMMARY]")}
-	}, withConfig(SessionConfig{MaxSubagentDepth: 1, NoProjectPrompts: true, StateDir: t.TempDir()}))
+	}, withConfig(SessionConfig{MaxSubagentDepth: 1, StateDir: t.TempDir()}))
 	seedNumberedSessionHistory(t, s, 12)
 
 	compactErr := make(chan error, 1)

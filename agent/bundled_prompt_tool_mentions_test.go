@@ -98,7 +98,6 @@ func promptSweepParentSession(t *testing.T) *Session {
 	t.Helper()
 	s := newSession(t, withConfig(SessionConfig{
 		MaxSubagentDepth: 3,
-		NoProjectPrompts: true,
 		// A state dir registers find_session_transcripts, which puts that name in
 		// the sweep's vocabulary and so checks its gate.
 		StateDir: t.TempDir(),

@@ -147,7 +147,9 @@ export function ReaderScreen({ route, navigation }: NativeStackScreenProps<Route
 	// The nav bar takes the title once the first heading (or the first row)
 	// has scrolled out of view and a later row is on screen.
 	const anchor = useRef(0);
-	anchor.current = headings[0]?.index ?? 0;
+	useEffect(() => {
+		anchor.current = headings[0]?.index ?? 0;
+	}, [headings]);
 	const [titleShown, setTitleShown] = useState(false);
 	const viewabilityChanged = useRef(({ viewableItems }: { viewableItems: Pick<ViewToken, "index">[] }) => {
 		viewable.current = viewableItems.flatMap((token) => (token.index === null ? [] : [token.index]));
@@ -303,14 +305,16 @@ export function ReaderScreen({ route, navigation }: NativeStackScreenProps<Route
 		[rowTops],
 	);
 
-	// The change you stepped to, in the list of changes it belongs to: a
-	// re-read that changes what changed starts the steps over.
-	const [stepped, setStepped] = useState<{ changed: number[]; step: number } | null>(null);
-	const step = stepped?.changed === changed ? stepped.step : null;
+	// The change you stepped to, in the set of changes it belongs to: a
+	// re-read that changes what changed starts the steps over. Every re-read
+	// builds new arrays, so the set is compared by its blocks.
+	const changeSet = changed.join(",");
+	const [stepped, setStepped] = useState<{ changeSet: string; step: number } | null>(null);
+	const step = stepped?.changeSet === changeSet ? stepped.step : null;
 	const stepBy = (delta: 1 | -1) => {
 		const count = changed.length;
 		const next = step === null ? (delta === 1 ? 0 : count - 1) : (step + delta + count) % count;
-		setStepped({ changed, step: next });
+		setStepped({ changeSet, step: next });
 		const index = changed[next];
 		if (index !== undefined) scrollTo({ index, animated: true });
 	};

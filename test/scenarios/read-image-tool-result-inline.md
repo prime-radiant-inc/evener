@@ -46,9 +46,9 @@ used to name died with the vanilla frontend (`660376f78`); the gallery is now
 
 4. **Browser (qualitative).** Navigate
    `$HUB/auth/$TOKEN?next=/s/local:$SID`. Find the tool row
-   (`[data-testid="tool-call-item"][data-tool-name="read_file"]`), **expand
-   it** — see Sharp edges, the gallery is not in the DOM while collapsed —
-   then read:
+   (`[data-testid="tool-call-item"][data-tool-name="read_file"]`) and make sure
+   it is **expanded** — an image `read_file` auto-expands (see Sharp edges), so
+   it is usually already open; expand only if collapsed — then read:
    ```javascript
    ({
      port: location.port,                       // page-identity check, always
@@ -77,7 +77,7 @@ used to name died with the vanilla frontend (`660376f78`); the gallery is now
   (`image_serve.go:104-127`). Falsify: 404 (descriptor points at bytes the hub
   cannot serve, i.e. a thumbnail that will silently vanish in the browser —
   see Sharp edges), or 400 (`sha` is not 64 hex, `image_serve.go:20,32-35`).
-- **Step 4 (browser)**: expanding the `read_file` row shows a thumbnail whose
+- **Step 4 (browser)**: the (auto-expanded) `read_file` row shows a thumbnail whose
   `src` is exactly one of the URLs asserted in step 2 — the component does no
   URL construction of its own (`ImageGallery.tsx:1-16`). A `read_file` image
   captions as its filename (`captionFor`, `ImageGallery.tsx:56-58`, `name ??
@@ -101,13 +101,15 @@ captured and `rm -rf` your own run dir. Leave any real hub untouched.
 
 ## Sharp edges
 
-- **A tool row starts COLLAPSED, and the gallery only exists while it is
-  expanded.** `<ImageGallery images={item.outputImages} />` is inside
-  `{expanded && …}` (`ToolCallItem.tsx:270-286`), and nothing about carrying
-  images auto-expands a row — only `descriptor.autoExpand` or a failure does
-  (`:163-170`). A `read_file` that succeeded is collapsed, so a DOM query run
-  straight after page load finds zero thumbs and looks exactly like a
-  regression. Expand the row first.
+- **The gallery only exists while its row is expanded, and an image
+  `read_file` is expanded on load.** `<ImageGallery images={item.outputImages}
+  />` is inside `{expanded && …}`. The row's own `descriptor.autoExpand`
+  (`isImageRead`, `tools/fsTools.tsx:82`) opens it — a failure no longer does,
+  and a text or PDF `read_file` keeps the usual collapsed default. So for
+  *this* scenario's image read the row is usually already open: **verify it is
+  expanded rather than clicking it** (a click would collapse it, and then a DOM
+  query finds zero thumbs and looks exactly like a regression), and expand it
+  only if it is closed.
 - **The gallery silently drops any `src` the browser refuses to load**
   (`onError` → `markUnloadable`, `ImageGallery.tsx:73-77,140`), leaving the row
   looking as if no descriptor ever arrived. That is why step 3 fetches the URL

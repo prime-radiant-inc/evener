@@ -17,6 +17,7 @@ import styles from "./docpane.module.css";
 import type { DocParams } from "./openDoc";
 
 const CLASS = {
+  markdown: requireClass(styles.markdown, "docpane.module.css", "markdown"),
   pre: requireClass(styles.pre, "docpane.module.css", "pre"),
   imageButton: requireClass(styles.imageButton, "docpane.module.css", "imageButton"),
   image: requireClass(styles.image, "docpane.module.css", "image"),
@@ -84,7 +85,13 @@ function DocFileView({ session, path }: { session: string; path: string }) {
           </span>
         </div>
       )}
-      {isMarkdownPath(path) ? <Markdown source={content.text} /> : <pre className={CLASS.pre}>{content.text}</pre>}
+      {isMarkdownPath(path) ? (
+        <div className={CLASS.markdown}>
+          <Markdown source={content.text} />
+        </div>
+      ) : (
+        <pre className={CLASS.pre}>{content.text}</pre>
+      )}
     </>
   );
 }

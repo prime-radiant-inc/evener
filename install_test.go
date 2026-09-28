@@ -1094,7 +1094,6 @@ api_key = "sk-install-test"
 		"--dir", workDir,
 		"--run-dir", runDir,
 		"--state-dir", stateDir,
-		"--no-project-prompts",
 	)
 	cmd.Dir = repoRoot
 	cmd.Env = env

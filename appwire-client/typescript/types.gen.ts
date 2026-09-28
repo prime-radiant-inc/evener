@@ -1160,6 +1160,25 @@ export interface HostNotificationParams {
   params?: unknown;
 }
 
+export interface HostOperationsParams {
+  name?: string;
+  operationId?: string;
+  state?: string;
+  generation?: number;
+  incarnationId?: string;
+  id?: string;
+  limit?: number;
+  cursor?: string;
+}
+
+export interface HostOperationsResponse {
+  operations: OperationRecord[];
+  generation?: number;
+  incarnationId?: string;
+  hostBoundaries?: Record<string, unknown>;
+  nextCursor?: string;
+}
+
 export interface HostPlan {
   host: string;
   generation: number;
@@ -1878,7 +1897,6 @@ export interface LaunchConfigLayer {
   maxSubagentDepth?: number;
   maxConcurrentDelegateTurns?: number;
   maxRetainedTerminal?: number;
-  noProjectPrompts?: boolean;
   nonInteractive?: boolean;
   appReplaySize?: number;
   skillsDirs?: string[];
@@ -2557,6 +2575,32 @@ export interface NotesUpdatedParams {
 
 export interface NoticesListResponse {
   notices: HubNotice[];
+}
+
+export interface OperationProgressEntry {
+  ts: string;
+  message: string;
+}
+
+export interface OperationRecord {
+  id: string;
+  clientOperationId: string;
+  host: string;
+  generation: number;
+  incarnationId: string;
+  kind: string;
+  state: string;
+  progress?: OperationProgressEntry[];
+  result?: OperationResult;
+  createdAt: string;
+  updatedAt: string;
+  hostRemoved: boolean;
+  compacted?: boolean;
+}
+
+export interface OperationResult {
+  ok: boolean;
+  message: string;
 }
 
 export interface OutputImage {
@@ -4253,6 +4297,7 @@ export const METHOD_NAMES = [
   "evener/host/plan",
   "evener/host/deploy",
   "evener/host/restart",
+  "evener/host/operations",
   "evener/host/running",
   "evener/host/pushCredentials",
   "evener/session/image",
@@ -4474,6 +4519,7 @@ export interface MethodTypes {
   "evener/host/plan": { params: HostPlanParams; result: HostPlanPlanned | HostPlanNoToken };
   "evener/host/deploy": { params: HostDeployParams; result: HostDeployResponse };
   "evener/host/restart": { params: HostRestartParams; result: HostRestartResponse };
+  "evener/host/operations": { params: HostOperationsParams; result: HostOperationsResponse };
   "evener/host/running": { params: HostRunningParams; result: HostRunningResponse };
   "evener/host/pushCredentials": { params: HostPushCredentialsParams; result: HostPushCredentialsResponse };
   "evener/session/image": { params: SessionImageParams; result: SessionImageResponse };

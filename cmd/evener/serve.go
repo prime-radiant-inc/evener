@@ -399,7 +399,6 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 	outputSchema := fs.String("output-schema", "", "inline JSON Schema applied to the communicate tool's output field")
 	verbose := fs.Bool("verbose", false, "emit NDJSON events to stderr")
 	appReplaySize := fs.Int("app-replay-size", 0, "AppWire notification replay ring size (default 1000)")
-	noProjectPrompts := fs.Bool("no-project-prompts", false, "suppress .evener/prompts/ loading")
 	nonInteractive := fs.Bool("non-interactive", false, "mark this daemon session as headless/non-interactive")
 	agentName := fs.String("agent", "", "agent persona name (default: default)")
 	var skillsDirs cmdutil.StringSliceFlag
@@ -639,7 +638,6 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 		Project:                     project,
 		SystemPromptFile:            *systemPrompt,
 		SystemPromptAppend:          []string(systemPromptAppend),
-		NoProjectPrompts:            *noProjectPrompts,
 		AgentsDocPath:               *agentsDoc,
 		AgentName:                   *agentName,
 		SkillsDirs:                  []string(skillsDirs),
@@ -1863,6 +1861,10 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 		StartedAt:    time.Now().UTC(),
 		SpawnedBy:    spawnedBy,
 	}
+	// retirementLoopDone is closed when the idle-retirement goroutine (started
+	// only after a successful rendezvous registration) returns. Nil means no
+	// loop was started, so the shutdown path has nothing to join.
+	var retirementLoopDone chan struct{}
 	if err := deps.register(rvRegistration, runDir, rvEntry); err != nil {
 		serveLogf(os.Stderr, getSession().ID(), "rendezvous write failed: %v", err)
 	} else {
@@ -1879,7 +1881,11 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 		// daemon that could not publish itself never silently enables automatic
 		// retirement. Manual retirement is unaffected: requestRetirement
 		// requires the very entry this guards, so it cannot run before it either.
-		go func() { _ = retirement.Run(ctx, consumeRetirementClaim) }()
+		retirementLoopDone = make(chan struct{})
+		go func() {
+			defer close(retirementLoopDone)
+			_ = retirement.Run(ctx, consumeRetirementClaim)
+		}()
 	}
 
 	httpSrv := &http.Server{
@@ -1893,6 +1899,13 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 		<-ctx.Done()
 		_ = httpSrv.Close()
 		<-inputLoopDone
+		// The idle-retirement loop is not part of the HTTP server or the input
+		// loop, so nothing above waits for it. Join it here: a serve that
+		// returned with Run still live would leave the loop racing whatever the
+		// caller does next, such as a test's TempDir removal or leak check.
+		if retirementLoopDone != nil {
+			<-retirementLoopDone
+		}
 		closeLiveSession()
 	}()
 

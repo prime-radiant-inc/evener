@@ -1,7 +1,7 @@
 import type { Thread, ThreadCapabilities, ThreadReadResponse } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
-import { act, cleanup, render, screen } from "@testing-library/react";
-import { afterEach, beforeEach, expect, test } from "vitest";
+import { act, render, screen } from "@testing-library/react";
+import { beforeEach, expect, test } from "vitest";
 import { TasksPanel } from "../panes/session/chrome/TasksPanel";
 import { connectionStore } from "./connection";
 import { resetThreadsStoreForTests, threadsStore, useThreadsStore } from "./threads";
@@ -52,10 +52,6 @@ async function flushUntil(done: () => boolean, maxTurns = 20): Promise<void> {
 beforeEach(() => {
   connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
   resetThreadsStoreForTests();
-});
-
-afterEach(() => {
-  cleanup();
 });
 
 test("store reconnect preserves task aggregate and Tasks badge across notification and fresh thread/read", async () => {

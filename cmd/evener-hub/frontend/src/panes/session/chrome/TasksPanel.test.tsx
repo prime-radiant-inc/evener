@@ -4,11 +4,12 @@ import { fileURLToPath } from "node:url";
 import type { ThreadCapabilities, ThreadModel } from "@evener/appwire-client";
 import { absoluteTime, WireError } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
-import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { afterEach, beforeEach, expect, test } from "vitest";
+import { beforeEach, expect, test } from "vitest";
 import { connectionStore } from "../../../stores/connection";
 import { resetThreadsStoreForTests } from "../../../stores/threads";
+import { readModuleCss, topRuleBlock } from "../../../styles/cssBlock";
 import { Toast } from "../../../widgets";
 import { resetDisclosureStoreForTests } from "../../../widgets/disclosure/disclosureStore";
 import { resetToastStoreForTests } from "../../../widgets/toast/store";
@@ -139,10 +140,6 @@ beforeEach(() => {
   // disclosure test performs, so an earlier test's expanded row can't leak
   // into a later test that expects to start collapsed.
   resetDisclosureStoreForTests();
-});
-
-afterEach(() => {
-  cleanup();
 });
 
 // --- trigger badge: unchanged, still driven by the live-pushed aggregate ---
@@ -486,6 +483,24 @@ test("the prompt disclosure summary reaches the tap floor on a coarse pointer", 
   const rule = coarse![1]!.match(/\.promptSummary\s*\{([^}]*)\}/);
   expect(rule, "the coarse-pointer block must override .promptSummary").not.toBeNull();
   expect(rule![1]).toContain("min-height: var(--tap-min)");
+});
+
+// jsdom computes no cascade, so the caption step is asserted against the
+// stylesheet's own source - readModuleCss/topRuleBlock from styles/cssBlock,
+// the technique the tap-floor test above uses - comments stripped once up
+// front so an in-rule comment can never satisfy or defeat an assertion. The
+// sizing rationale lives in the .promptDetails rule comment in
+// taskspanel.module.css; this pins BODY text - headings and tables keep the
+// widget's fixed ramp (see widgets/markdown).
+test("the prompt disclosure renders its markdown body text at the caption step, not prose size", () => {
+  const uncommented = readModuleCss(import.meta.url, "taskspanel.module.css").replace(/\/\*[\s\S]*?\*\//g, "");
+  expect(uncommented).not.toContain("--prose-font-size");
+  const details = topRuleBlock(uncommented, ".promptDetails");
+  expect(details).toContain("font-size: var(--font-size-caption)");
+  const body = topRuleBlock(uncommented, ".promptBody");
+  expect(body, "the caption step comes from .promptDetails; the body wrapper re-declares nothing").not.toMatch(
+    /(^|[;{\s])font-size\s*:/m,
+  );
 });
 
 test("the prompt disclosure shows a one-line markdown preview collapsed and the full markdown body open", async () => {

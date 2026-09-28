@@ -121,10 +121,6 @@ type SessionConfig struct {
 	// Always applied, even when SystemPromptFile is set (CLI --system-prompt-append flag).
 	SystemPromptAppend []string `json:"system_prompt_append,omitempty"`
 
-	// NoProjectPrompts suppresses loading .evener/prompts/ from the project directory.
-	// Useful for A/B testing to match Docker container behavior (no project prompts).
-	NoProjectPrompts bool `json:"no_project_prompts,omitempty"`
-
 	// AgentsDocPath is the personal AGENTS.md loaded ahead of the project's own
 	// instruction docs. Empty resolves <userdirs.DefaultConfigRoot()>/AGENTS.md
 	// from the process environment; a hub passes its own concrete path so
@@ -376,6 +372,15 @@ type testConfig struct {
 	// delegateAttentionOpenWriter replaces only transcript resume for attention
 	// repair. Nil preserves the production transcript opener.
 	delegateAttentionOpenWriter delegateAttentionWriterOpener
+	// rootAttentionRetryCallback observes a root attention retry callback that
+	// has passed scheduleRootAttentionRetryLocked's early returns: it took
+	// ownership (beginAttentionCallback succeeded), its generation is still
+	// current, and the rail is not parked. It fires whether or not that callback
+	// then notifies -- the notification blocker is projected by the ownership
+	// lease, not by the notify -- so a test that pauses here holds exactly the
+	// live retry, and a stale or parked timer never reaches it. A notify hook
+	// cannot identify the caller. Nil in production.
+	rootAttentionRetryCallback func()
 	// delegateRuntimeReclaimClose replaces only the external Session close
 	// boundary used by admission-triggered stable-runtime reclamation.
 	delegateRuntimeReclaimClose func(*Session)
@@ -1024,7 +1029,6 @@ func (c SessionConfig) toSnapshot() schema.ConfigSnapshot {
 		PluginDirs:                  c.PluginDirs,
 		SystemPromptFile:            c.SystemPromptFile,
 		SystemPromptAppend:          c.SystemPromptAppend,
-		NoProjectPrompts:            c.NoProjectPrompts,
 		AgentsDocPath:               c.AgentsDocPath,
 		NonInteractive:              c.NonInteractive,
 		TurnEndsProcess:             c.TurnEndsProcess,
@@ -1067,7 +1071,6 @@ func configFromSnapshot(s schema.ConfigSnapshot) SessionConfig {
 		PluginDirs:                  s.PluginDirs,
 		SystemPromptFile:            s.SystemPromptFile,
 		SystemPromptAppend:          s.SystemPromptAppend,
-		NoProjectPrompts:            s.NoProjectPrompts,
 		AgentsDocPath:               s.AgentsDocPath,
 		NonInteractive:              s.NonInteractive,
 		TurnEndsProcess:             s.TurnEndsProcess,

@@ -165,12 +165,6 @@ func ApplyRuntimeDefaults(resolved Resolved, getenv func(string) string, schema 
 				out.Effective.MaxRetainedTerminal = &v
 				set(opt.Field)
 			}
-		case "noProjectPrompts":
-			if out.Effective.NoProjectPrompts == nil && opt.BuiltinDefaultBool != nil {
-				v := *opt.BuiltinDefaultBool
-				out.Effective.NoProjectPrompts = &v
-				set(opt.Field)
-			}
 		case "appReplaySize":
 			if out.Effective.AppReplaySize == nil && opt.BuiltinDefaultInt != nil {
 				v := *opt.BuiltinDefaultInt
