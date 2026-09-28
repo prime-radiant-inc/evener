@@ -1549,9 +1549,9 @@ export function ConversationScreen({
 	const findJumping = useRef(false);
 	const findAttempts = useRef(new ReaderRestoreAttempts());
 	const findRetryFrame = useRef<number | null>(null);
-	const findTarget = useRef({ key: findKey, rows: timelineRows });
+	const findCurrentNow = useRef(findCurrent);
 	useEffect(() => {
-		findTarget.current = { key: findKey, rows: timelineRows };
+		findCurrentNow.current = findCurrent;
 	});
 	function cancelFindRetry() {
 		if (findRetryFrame.current !== null)
@@ -1560,10 +1560,8 @@ export function ConversationScreen({
 	}
 	function retryFindMatch() {
 		findRetryFrame.current = null;
-		const { key, rows } = findTarget.current;
-		if (key === null) return;
-		const index = rows.findIndex((row) => readerKey(row) === key);
-		if (index >= 0) scrollToFindMatch(index);
+		if (findCurrentNow.current !== null)
+			scrollToFindMatch(findCurrentNow.current);
 	}
 	function scrollToFindMatch(index: number) {
 		readerLatest.current = false;
