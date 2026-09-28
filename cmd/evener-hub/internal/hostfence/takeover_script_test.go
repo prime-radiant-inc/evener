@@ -45,12 +45,15 @@ func crashPerformLeavingCommand(t *testing.T, remote *fenceRemote, epoch Epoch, 
 
 // writeLeaseEntry writes one lease entry file by hand, in the exact field set
 // the wrapper's writer emits, so a test can place an identity the wrapper never
-// observed.
+// observed. The entry is registered now: a running entry's registration is its
+// own spawn second, and the nonce scan's uninspectable-process bound reads it,
+// so a fixed past date would let unrelated host processes stand in for possible
+// descendants of the command under test.
 func writeLeaseEntry(t *testing.T, remote *fenceRemote, id, state, kind, pid, start, nonce, cgroup string) {
 	t.Helper()
 	body := "id\t" + id + "\n" +
 		"command\tsleep 30\n" +
-		"registeredAt\t2026-09-28T00:00:00Z\n" +
+		"registeredAt\t" + time.Now().UTC().Format(time.RFC3339) + "\n" +
 		"state\t" + state + "\n" +
 		"ownershipKind\t" + kind + "\n" +
 		"pid\t" + pid + "\n" +
@@ -551,6 +554,93 @@ func TestScriptUninspectableCandidateStaysLive(t *testing.T) {
 	}
 	if !recheck.Live {
 		t.Fatalf("recheck with an uninspectable candidate = %+v, want live", recheck)
+	}
+}
+
+// startUninspectableSleeper starts a same-uid child whose environment carries
+// nonce and whose dumpable flag is cleared, so the scan cannot read its
+// environment even though the process is alive. It returns only once the
+// environment actually reads unreadable: the fixture's premise, not an
+// assumption. A host with neither python3 nor a C compiler skips the test.
+func startUninspectableSleeper(t *testing.T, nonce string) *exec.Cmd {
+	t.Helper()
+	env := append(os.Environ(), "EVENER_FENCE_NONCE="+nonce)
+	var cmd *exec.Cmd
+	if _, err := exec.LookPath("python3"); err == nil {
+		const pyScript = "import ctypes, time\nctypes.CDLL(None).prctl(4, 0, 0, 0, 0)\ntime.sleep(120)\n"
+		cmd = exec.Command("python3", "-c", pyScript)
+	} else {
+		dir := t.TempDir()
+		src := filepath.Join(dir, "uninspectable.c")
+		const cSrc = "#include <sys/prctl.h>\n#include <unistd.h>\n" +
+			"int main(void) { prctl(PR_SET_DUMPABLE, 0); sleep(120); return 0; }\n"
+		if err := os.WriteFile(src, []byte(cSrc), 0o600); err != nil {
+			t.Fatalf("write the uninspectable fixture source: %v", err)
+		}
+		bin := filepath.Join(dir, "uninspectable")
+		if out, err := exec.Command("cc", "-o", bin, src).CombinedOutput(); err != nil {
+			t.Skipf("neither python3 nor a C compiler can build the uninspectable fixture: %v: %s", err, out)
+		}
+		cmd = exec.Command(bin)
+	}
+	cmd.Env = env
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("start the uninspectable fixture: %v", err)
+	}
+	environ := fmt.Sprintf("/proc/%d/environ", cmd.Process.Pid)
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if !processAlive(t, cmd.Process.Pid) {
+			t.Fatalf("the uninspectable fixture at pid %d died before it could be read", cmd.Process.Pid)
+		}
+		if _, err := os.ReadFile(environ); err != nil {
+			return cmd
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	_ = cmd.Process.Kill()
+	_, _ = cmd.Process.Wait()
+	t.Fatalf("the fixture at pid %d still exposes its environment; the test needs an uninspectable process", cmd.Process.Pid)
+	return nil
+}
+
+// TestScriptUnreadableSameOwnerProcessStaysLive pins the fail-closed arm of the
+// nonce scan's error handling on a real uninspectable process, with no injected
+// fault: a same-uid process that clears its dumpable flag has an environment the
+// scan cannot read, so the scan can never disprove it as a carrier, and a
+// running entry must read live rather than clean. The recorded pid is a reused
+// identity, so the entry's own recorded identity alone reads clean.
+func TestScriptUnreadableSameOwnerProcessStaysLive(t *testing.T) {
+	if _, err := os.Stat("/proc/self/environ"); err != nil {
+		t.Skip("nonce enumeration needs /proc (Linux)")
+	}
+	remote := newFenceRemote(t)
+	remote.settle(Epoch{BootID: "boot-1", OpSeq: 1})
+	victim := exec.Command("sleep", "30")
+	if err := victim.Start(); err != nil {
+		t.Fatalf("start the recorded-instance stand-in: %v", err)
+	}
+	defer func() { _ = victim.Process.Kill(); _, _ = victim.Process.Wait() }()
+	// The recorded start token is deliberately not the live process's: the
+	// recorded identity reads clean, and only the uninspectable process keeps
+	// the entry live.
+	writeLeaseEntry(t, remote, "n1", LeaseRunning, "pid", strconv.Itoa(victim.Process.Pid), "999999999999", "", "")
+	sleeper := startUninspectableSleeper(t, "n1")
+	defer func() { _ = sleeper.Process.Kill(); _, _ = sleeper.Process.Wait() }()
+	takeover(t, remote, Epoch{BootID: "boot-1", OpSeq: 2})
+	stdout, stderr, code := remote.run(nil, "kill", "boot-1", "2", "n1")
+	if code != 0 {
+		t.Fatalf("kill exited %d: %s", code, stderr)
+	}
+	report, err := DecodeKillReport([]byte(stdout))
+	if err != nil {
+		t.Fatalf("DecodeKillReport(%q) = %v", stdout, err)
+	}
+	if report.Signaled || !report.Live {
+		t.Fatalf("kill report = %+v, want no signal and live (the uninspectable process cannot be disproven)", report)
+	}
+	if recheck := recheckID(t, remote, "n1"); !recheck.Live {
+		t.Fatalf("recheck with an uninspectable process = %+v, want live", recheck)
 	}
 }
 

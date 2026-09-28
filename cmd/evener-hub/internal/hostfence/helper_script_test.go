@@ -964,7 +964,10 @@ func TestScriptDescendantIdentityRevalidated(t *testing.T) {
 	entryPath := filepath.Join(remote.state, "leases", entry.ID)
 	body := "id\t" + entry.ID + "\n" +
 		"command\tsleep 30\n" +
-		"registeredAt\t2026-09-28T00:00:00Z\n" +
+		// A running entry's registration is its own spawn second, and the nonce
+		// scan's uninspectable-process bound reads it: a fixed past date would
+		// let unrelated host processes stand in for possible descendants.
+		"registeredAt\t" + time.Now().UTC().Format(time.RFC3339) + "\n" +
 		"state\trunning\n" +
 		"ownershipKind\tpid\n" +
 		fmt.Sprintf("pid\t%d\n", unrelated.Process.Pid) +

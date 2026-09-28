@@ -965,6 +965,55 @@ nonce_holds() { # <environ path> <nonce>
 	[ "$value" = "$2" ]
 }
 
+# process_uid prints pid's real uid from /proc/<pid>/status, or nothing when it
+# cannot be read. The status file is world-readable, unlike a process's
+# environment, so this answers for an uninspectable process too.
+process_uid() { # <pid>
+	awk '/^Uid:/ { print $2; exit }' "/proc/$1/status" 2>/dev/null || true
+}
+
+# process_state prints pid's state letter (from /proc/<pid>/stat field 3). The
+# strip is greedy to the last ") " because comm may itself contain parentheses
+# (the kernel shows "(sd-pam)" as "((sd-pam))").
+process_state() { # <pid>
+	awk '{ sub(/.*\) /, ""); print $1 }' "/proc/$1/stat" 2>/dev/null || true
+}
+
+# registered_epoch converts the entry's RFC3339 registration time to epoch
+# seconds, or prints nothing when the conversion is unavailable.
+registered_epoch() { # <rfc3339>
+	[ -n "$1" ] || return 0
+	date -d "$1" +%s 2>/dev/null || true
+}
+
+# started_after reports whether pid started at or after the epoch second in $2.
+# It reads the kernel-owned start tick beside the current uptime and clock tick,
+# so it needs no wall-clock arithmetic on the process side. A pid whose start
+# cannot be determined answers yes: the caller must then fail closed.
+started_after() { # <pid> <epoch>
+	now=$(date +%s 2>/dev/null || true)
+	uptime=$(awk '{ print int($1) }' /proc/uptime 2>/dev/null || true)
+	hz=$(getconf CLK_TCK 2>/dev/null || true)
+	ticks=$(awk '{ sub(/.*\) /, ""); print $20 }' "/proc/$1/stat" 2>/dev/null || true)
+	if [ -z "$now" ] || [ -z "$uptime" ] || [ -z "$hz" ]; then
+		return 0
+	fi
+	is_uint64 "$ticks" || return 0
+	start_epoch=$((now - uptime + ticks / hz))
+	[ "$start_epoch" -ge "$2" ]
+}
+
+# process_present reports whether pid names a process this helper can observe.
+# /proc answers for an existing process even when it cannot be signaled, so a
+# permission failure is never read as "gone"; a platform without /proc falls
+# back to kill -0.
+process_present() { # <pid>
+	if [ -d "/proc/$1" ]; then
+		return 0
+	fi
+	kill -0 "$1" 2>/dev/null
+}
+
 # descendants_of prints the PIDs still carrying the command's per-spawn nonce.
 # A command's children inherit the nonce in their environment, so a survivor —
 # however it detached — is found and the entry never reads settled while it
@@ -973,18 +1022,76 @@ nonce_holds() { # <environ path> <nonce>
 # nonzero, and callers must read that as "cannot disprove", never as "no
 # survivors". On a platform where it cannot run, a running command records no
 # descendants, and the fencing worker's nonce arms read the member live.
-descendants_of() { # <nonce>
+descendants_of() { # <nonce> [<since-epoch>]
+	# $2, when present, is the epoch second the entry was registered: a process
+	# that started before it cannot be this command's descendant.
+	since=${2:-}
 	nonce_scan_available || return 1
 	# One substring grep decides whether any candidate exists at all; only then
 	# is the per-pid pass worth its forks. A substring hit is a candidate, never
 	# an answer: the extracted value is compared exactly, so a process whose
-	# nonce merely starts with the searched one is not ours. The pass reads
-	# grep's candidate list, never its exit status: unreadable environ files
-	# make grep exit 2 even after a match, and a nonzero status must never read
-	# as "no survivors". A candidate that can no longer be inspected returns
-	# nonzero — the caller must read that as "cannot disprove", never as empty.
-	candidates=$(grep -als "EVENER_FENCE_NONCE=$1" /proc/[0-9]*/environ 2>/dev/null || true)
-	[ -n "$candidates" ] || return 0
+	# nonce merely starts with the searched one is not ours. grep's exit status
+	# is inspected: an empty candidate list from a scan that reported an error
+	# proves nothing, while an empty list from a clean scan proves no carrier.
+	# A candidate that can no longer be inspected also returns nonzero — the
+	# caller must read both as "cannot disprove", never as empty.
+	grep_status=0
+	candidates=$(grep -als "EVENER_FENCE_NONCE=$1" /proc/[0-9]*/environ 2>/dev/null) || grep_status=$?
+	if [ -z "$candidates" ]; then
+		if [ "$grep_status" -le 1 ]; then
+			# A clean, empty scan: nothing carries the nonce.
+			return 0
+		fi
+		# The scan reported an error and found no candidate. An unreadable
+		# environment hides the nonce, so only a same-uid, live process that
+		# started at or after the entry's registration could still be this
+		# command's descendant; that proof skips every other uninspectable
+		# process, and a possible one leaves the enumeration unverified.
+		# Without a registration second to bound them, nothing can be disproved.
+		case $since in '' | *[!0-9]*) return 2 ;; esac
+		# The registration second is the command's own spawn: the slack keeps a
+		# process started within that same second inside the bound.
+		probe_since=$((since - 2))
+		my_uid=$(process_uid "$$")
+		[ -n "$my_uid" ] || return 2
+		for probe in /proc/[0-9]*/environ; do
+			if [ -r "$probe" ]; then
+				continue
+			fi
+			probe_pid=${probe#/proc/}
+			probe_pid=${probe_pid%/environ}
+			case $probe_pid in '' | *[!0-9]*) continue ;; esac
+			[ "$probe_pid" = "$$" ] && continue
+			# A zombie can never carry the nonce: its task is dead. /proc/<pid>/stat
+			# is kernel-owned and world-readable, even for a process whose
+			# environment cannot be read, so an empty read means the task has
+			# already vanished — never that a live task is opaque.
+			probe_state=$(process_state "$probe_pid")
+			if [ -z "$probe_state" ]; then
+				continue
+			fi
+			if [ "$probe_state" = Z ]; then
+				continue
+			fi
+			# The same holds for /proc/<pid>/status: an empty uid reads as a task
+			# that is gone, not as an identity that is hidden.
+			probe_uid=$(process_uid "$probe_pid")
+			if [ -z "$probe_uid" ]; then
+				continue
+			fi
+			# A foreign-uid process can never carry this wrapper's nonce.
+			if [ "$probe_uid" != "$my_uid" ]; then
+				continue
+			fi
+			# A same-uid live process whose environment cannot be read could
+			# carry the nonce only if it started at or after the registration;
+			# without that proof the scan cannot disprove it.
+			if started_after "$probe_pid" "$probe_since"; then
+				return 2
+			fi
+		done
+		return 0
+	fi
 	for envfile in $candidates; do
 		if [ "${EVENER_FENCE_FAULT_UNREADABLE_CANDIDATE:-0}" = 1 ]; then
 			# Test-only fault injection: models a candidate that cannot be
@@ -1055,7 +1162,7 @@ do_perform() { # <bootId> <opSeq> <command>
 	# entry stays running rather than recording an exit that would exclude
 	# surviving work from every later fencing's live-entry set. The command's
 	# own exit status still rides this helper's exit code.
-	if survivors=$(descendants_of "$nonce"); then
+	if survivors=$(descendants_of "$nonce" "$(registered_epoch "$registered")"); then
 		if [ -n "$survivors" ]; then
 			# The command's own children outlive it: the entry stays running with
 			# them recorded, so a verifier reads it live and a fencing takeover
@@ -1087,7 +1194,7 @@ post_spawn_failure() {
 	kill "$child" 2>/dev/null || true
 	attempt=0
 	while [ "$attempt" -lt 20 ]; do
-		if remaining=$(descendants_of "${child_nonce:-}"); then
+		if remaining=$(descendants_of "${child_nonce:-}" "$(registered_epoch "$registered")"); then
 			[ -z "$remaining" ] && break
 		else
 			# The enumeration could not run: nothing is proven gone, so this
@@ -1100,7 +1207,7 @@ post_spawn_failure() {
 			descendant_start=${descendant#*:}
 			# Signal only an instance we can still identify: the nonce matched
 			# at collection, and the start token must still match here.
-			kill -0 "$descendant_pid" 2>/dev/null || continue
+			process_present "$descendant_pid" || continue
 			current=$(current_start_token "$descendant_pid" || true)
 			if [ -z "$current" ] || [ "$current" = "$descendant_start" ]; then
 				kill "$descendant_pid" 2>/dev/null || true
@@ -1176,7 +1283,7 @@ do_recheck() { # <id>
 			# cannot disprove the identity reads live, never clean.
 			descendant_pid=${descendant%%:*}
 			descendant_start=${descendant#*:}
-			kill -0 "$descendant_pid" 2>/dev/null || continue
+			process_present "$descendant_pid" || continue
 			if [ "$descendant_start" = unknown ]; then
 				# No start token was recorded: the identity cannot be disproven.
 				live=true
@@ -1248,12 +1355,13 @@ nonce_scan_available() {
 # (an unreadable environment file is not this work; see its comment and
 # TestScriptNonceMatchIsExact).
 entry_nonce_scan() {
-	status=0
+	scan_status=0
+	since=$(registered_epoch "$ENTRY_REGISTERED")
 	for nonce in "$ENTRY_ID" "$ENTRY_NONCE"; do
 		[ -n "$nonce" ] || continue
-		descendants_of "$nonce" || status=1
+		descendants_of "$nonce" "$since" || scan_status=1
 	done
-	return "$status"
+	return "$scan_status"
 }
 
 # emit_target prints one live target once. The identity is the (pid, token)
@@ -1332,7 +1440,7 @@ entry_live_targets() { # (uses ENTRY_*)
 	for descendant in $ENTRY_DESCENDANTS; do
 		descendant_pid=${descendant%%:*}
 		descendant_start=${descendant#*:}
-		kill -0 "$descendant_pid" 2>/dev/null || continue
+		process_present "$descendant_pid" || continue
 		if [ "$descendant_start" = unknown ]; then
 			# No start token was recorded: the identity cannot be disproven.
 			emit_target "$descendant_pid" unknown
