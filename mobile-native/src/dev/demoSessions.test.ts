@@ -13,7 +13,7 @@ import { configForLevel } from "../session/detailLevels.js";
 import { EVIDENCE_PREVIEW_LINES, stepEvidence } from "../session/evidence.js";
 import { ghosts, shownGhosts } from "../session/ghosts.js";
 import { modelChipLabel, notesSummary } from "../session/sessionFacts.js";
-import { notesBarPreview } from "../session/sessionNotes.js";
+import { canWriteHumanNote, notesBarPreview } from "../session/sessionNotes.js";
 import { contextChips, sessionStateLine } from "../session/sessionState.js";
 import { subagentLine } from "../session/subagentLine.js";
 import { runSummary, runSummaryText, sessionRows } from "../session/transcriptRows.js";
@@ -263,6 +263,10 @@ describe("the demo sessions behind Appendix A's Session frames", () => {
 		const { model } = open("s-roster");
 		expect(sessionStateLine(model, NOW).text).toBe("Shut down");
 		expect(model.capabilities.sharedNotes).toBe(true);
+		// Readable, and read-only: the Notes sheet offers no editing here, as it
+		// does on frame 7's working session.
+		expect(canWriteHumanNote(model)).toBe(false);
+		expect(canWriteHumanNote(open("s-pr2138").model)).toBe(true);
 		expect(notesBarPreview(model)).toEqual({
 			glyph: "person",
 			text: "Your note: Measure on magic-kingdom, not a laptop.",
