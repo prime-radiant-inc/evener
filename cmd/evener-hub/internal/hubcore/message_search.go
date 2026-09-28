@@ -13,7 +13,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
-	"unicode/utf8"
+	"unicode"
 
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/transcript"
@@ -113,9 +113,12 @@ type MessageSearchSession struct {
 }
 
 // MessageSearchFailure is a transcript the index could not read, for a reason
-// other than its format. The index records it as it records an unreadable
-// format, so it is not read again until it changes, and the caller reports it
-// once.
+// other than its format or a paging race (transcriptItemCursorStale), which
+// are not failures. A session never indexed before is recorded the way an
+// unreadable format is, so it is not tried again until the transcript
+// changes, and the failure is reported once. A session already indexed keeps
+// its existing rows instead: recording it would freeze that loss, so it is
+// retried and re-reported every refresh until it succeeds.
 type MessageSearchFailure struct {
 	SessionID string
 	Err       error
@@ -577,13 +580,29 @@ WHERE messages_fts MATCH ?`, ftsQuery(query))
 	return matches, rows.Err()
 }
 
+// hasMessageSearchWord reports whether any token holds at least
+// minMessageSearchTokenRunes letters or digits. Only those count: the index's
+// unicode61 tokenizer treats an underscore as a separator, so counting it
+// toward a token's length would let "_a" or "__" (each two runes) reach FTS5
+// as the broad single-letter prefix search the minimum exists to reject.
 func hasMessageSearchWord(tokens []string) bool {
 	for _, token := range tokens {
-		if utf8.RuneCountInString(token) >= minMessageSearchTokenRunes {
+		if wordRuneCount(token) >= minMessageSearchTokenRunes {
 			return true
 		}
 	}
 	return false
+}
+
+// wordRuneCount is how many of s's runes are letters or digits.
+func wordRuneCount(s string) int {
+	n := 0
+	for _, r := range s {
+		if unicode.IsLetter(r) || unicode.IsDigit(r) {
+			n++
+		}
+	}
+	return n
 }
 
 // keepNewestHits adds hit to hits, which is newest first, and keeps at most

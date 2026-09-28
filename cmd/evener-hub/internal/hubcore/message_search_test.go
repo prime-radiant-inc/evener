@@ -619,3 +619,25 @@ func TestSearchTokensSplitsOnEverythingButWordCharacters(t *testing.T) {
 		t.Fatalf("SearchTokens(punctuation) = %q, want none", got)
 	}
 }
+
+// A search word must hold two letters or digits, not merely two runes: the
+// index's unicode61 tokenizer treats an underscore as a separator, so a query
+// like "_t" or "__" would otherwise reach FTS5 as the broad single-letter
+// prefix "t*" (or no term at all) rather than being rejected as too short.
+func TestMessageSearchIgnoresUnderscoresWhenCountingAWordsLength(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "sessions", "s1.transcript.jsonl")
+	writeTestTranscript(t, path, "s1", settleTurns()...)
+	index := openTestMessageSearch(t)
+	if _, err := index.Refresh(context.Background(), []MessageSearchSession{{ID: "s1", TranscriptPath: path}}); err != nil {
+		t.Fatal(err)
+	}
+	for _, query := range []string{"_t", "__", "_"} {
+		matches, err := index.Match(context.Background(), query, 10)
+		if err != nil {
+			t.Fatalf("Match(%q): %v", query, err)
+		}
+		if len(matches) != 0 {
+			t.Errorf("Match(%q) = %+v, want none: it has fewer than two real letters or digits", query, matches)
+		}
+	}
+}
