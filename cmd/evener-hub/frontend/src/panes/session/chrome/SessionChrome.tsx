@@ -1,10 +1,9 @@
 // SessionChrome: the session pane's chrome surface. Its default footer
 // presentation is ONE quiet status-bar row (cadence where needed, model ·
-// effort, context, live work, queue depth, and the goal chip when a goal is
-// set) with the session "⋯" menu pinned to the trailing edge. Its composer
-// presentation keeps the same StatusRow and menu owner but omits the
-// footer-only cadence and goal controls. Every real value (the ThreadModel,
-// capabilities, ...) is read from the threads store internally via
+// effort, context, live work, queue depth) with the session "⋯" menu pinned
+// to the trailing edge. Its composer presentation keeps the same StatusRow
+// and menu owner but omits the footer-only cadence. Every real value (the
+// ThreadModel, capabilities, ...) is read from the threads store internally via
 // useThreadsStore, same as every other pane-level component in this app
 // (mirrors Session.tsx's own model lookup).
 //
@@ -21,8 +20,13 @@
 // Slash-command actions (goal/aside/compact/clear) are deliberately NOT in
 // the menu - the session's own composer owns those now (2026-08-14, "the
 // composer is where you act on this session"; the command palette only
-// hands off to it - design-system.md §9) - so GoalControl below is the
-// goal chip + clear popover only.
+// hands off to it - design-system.md §9). The former goal chip + clear
+// popover (GoalControl) is deleted entirely: Jesse's 2026-09-28 ruling on
+// the #1339 composer row dropped it from the composer placement, and the
+// footer mount that remained was production-dead (only the composer and
+// menu placements ever mount), so the component went rather than staying
+// dead code - goal state stays visible and editable through the composer's
+// own CurrentWork goal row and its inline /goal built-in.
 
 import type { NavigationSessionLocation } from "@evener/appwire-client";
 import { canReadSharedNotes, sessionActionError } from "@evener/appwire-client";
@@ -48,7 +52,6 @@ import { navigationSummaryFor } from "../threadTitle";
 import { TranscriptDetailControl } from "../transcript/TranscriptDetailControl";
 import { ActivityPanel, type ActivityPanelHandle } from "./ActivityPanel";
 import { DetailsPanel, type DetailsPanelHandle } from "./DetailsPanel";
-import { GoalControl } from "./GoalControl";
 import { StatusRow } from "./StatusRow";
 import styles from "./sessionchrome.module.css";
 import { TasksPanel, type TasksPanelHandle } from "./TasksPanel";
@@ -319,11 +322,11 @@ export function SessionChrome({
         {placement === "composer" ? (
           <div className={CLASS.body} data-testid="session-chrome-inline-status">
             <StatusRow sessionRef={sessionRef} model={model} now={now} />
-            {/* No GoalControl here (Jesse's 2026-09-28 ruling, "drop goal
-                inline in the composer"): the composer row is status and menu
-                alone. Goal state stays visible and editable through the
-                composer's own CurrentWork goal row and its inline /goal
-                built-in, so nothing the chip did is unreachable. */}
+            {/* The goal chip is gone entirely (Jesse's 2026-09-28 ruling,
+                "drop goal inline in the composer"): the composer row is
+                status and menu alone, and goal state stays visible and
+                editable through the composer's own CurrentWork goal row and
+                its inline /goal built-in. */}
           </div>
         ) : placement === "menu" ? null : (
           /* .body owns compression (sessionchrome.module.css says why): its
@@ -334,7 +337,6 @@ export function SessionChrome({
               <Cadence state={cadenceStateForStatus(model.status.type)} frameTimes={frameTimes} now={now} />
             </span>
             <StatusRow sessionRef={sessionRef} model={model} now={now} />
-            <GoalControl sessionRef={sessionRef} model={model} />
           </div>
         )}
         <div className={CLASS.right}>

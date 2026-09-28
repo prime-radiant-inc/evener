@@ -18,7 +18,6 @@
 // two DOM owners for one control - the inline-controls design's own rule is
 // one DOM location, one tab order (2026-08-10-composer-controls-inline-design.md).
 
-import type { RefObject } from "react";
 import { useLayoutEffect, useState } from "react";
 
 /** The composer content width at and below which the narrow layout answers:
@@ -28,15 +27,20 @@ import { useLayoutEffect, useState } from "react";
  * VERB_WRAP_WIDTHS brackets it at 399/400). */
 export const COMPOSER_PHONE_MAX_WIDTH = 399;
 
-/** True while the element the ref points at is as narrow as a phone. Wide is
- * the default in every environment without a live ResizeObserver - jsdom
- * ships none and lays out no cascade, so its boxes read zero-width and the
- * seed below skips too; the whole jsdom suite keeps the wide layout unless
- * a test drives the narrow side through its own stub. */
-export function useNarrowComposer(ref: RefObject<HTMLElement | null>): boolean {
+/** True while the element the returned callback ref attaches to is as
+ * narrow as a phone; the tuple's second member is that ref. The gate
+ * follows the element through mounts and unmounts - a state-backed ref,
+ * not a ref object's identity - so a host whose element first appears
+ * after the initial render (Composer renders null until its model
+ * hydrates) is observed from the moment it exists. Wide is the default in
+ * every environment without a live ResizeObserver - jsdom ships none and
+ * lays out no cascade, so its boxes read zero-width and the seed below
+ * skips too; the whole jsdom suite keeps the wide layout unless a test
+ * drives the narrow side through its own stub. */
+export function useNarrowComposer(): [boolean, (element: HTMLElement | null) => void] {
   const [narrow, setNarrow] = useState(false);
+  const [element, setElement] = useState<HTMLElement | null>(null);
   useLayoutEffect(() => {
-    const element = ref.current;
     if (element === null || typeof ResizeObserver === "undefined") return;
     // Seed from the live box before the first paint so a phone-width mount
     // never flashes the wide row - the wrap CSS is retired, so wide genuinely
@@ -50,6 +54,6 @@ export function useNarrowComposer(ref: RefObject<HTMLElement | null>): boolean {
     });
     observer.observe(element);
     return () => observer.disconnect();
-  }, [ref]);
-  return narrow;
+  }, [element]);
+  return [narrow, setElement];
 }

@@ -1904,8 +1904,10 @@ async function measureMenuVerbs(): Promise<{ open: boolean; stop: boolean; steer
   trigger.click();
   await twoPaintedFrames();
   const items = [...document.querySelectorAll<HTMLElement>('[role="menuitem"]')];
+  // open is read from the items, not assumed: a menu that failed to open
+  // must fail the guard as "could not be opened", not as missing verbs.
   return {
-    open: true,
+    open: items.length > 0,
     stop: items.some((item) => item.textContent === "Stop"),
     steer: items.some((item) => item.textContent === "Steer"),
   };

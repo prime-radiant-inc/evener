@@ -178,19 +178,14 @@ test("renders nothing for a ref with no tracked model yet (defensive - Session.t
   expect(container.firstChild).toBeNull();
 });
 
-test("composes the status row, the session menu, and the goal control once the ref's thread is tracked", async () => {
+test("composes the status row and the session menu once the ref's thread is tracked", async () => {
   const fake = connectFakeClient();
-  // Seed a goal so GoalControl has something to render: with no goal it
-  // renders nothing at all (setting a goal lives in the command palette's
-  // /goal builtin), so a goal is what proves GoalControl is actually
-  // composed here.
   fake.on("thread/read", () =>
     readResponse("ref_a", {
       evener: {
         ref: "ref_a",
         capabilities: CAPABILITIES,
         queue: { revision: 0 },
-        goal: { status: "active", iterations: 2 },
       },
     }),
   );
@@ -202,11 +197,6 @@ test("composes the status row, the session menu, and the goal control once the r
   expect(screen.getByTestId("model-switch-value").textContent).toBe("anthropic/claude-sonnet-4-5");
   // Session menu trigger.
   expect(screen.getByRole("button", { name: /session actions/i })).toBeTruthy();
-  // Goal control: the goal chip, once a goal is set. Two triggers share this
-  // accessible name now (the full chip and the compact glyph trigger that
-  // takes over below 560px - GoalControl.tsx), so a role/name query alone is
-  // ambiguous; the testid picks the chip specifically.
-  expect(screen.getByTestId("goal-chip-trigger")).toBeTruthy();
 });
 
 test("composer placement renders one ordered inline status and actions cluster without footer-only controls", async () => {
@@ -252,11 +242,11 @@ test("composer placement renders one ordered inline status and actions cluster w
   expect(screen.getAllByRole("button", { name: "Session actions" })).toHaveLength(1);
   expect(screen.queryByTestId("session-chrome")).toBeNull();
   expect(within(cluster).queryByTestId("session-chrome-cadence")).toBeNull();
-  // The goal chip is gone from the composer row (Jesse's 2026-09-28 design
-  // ruling: "drop goal inline in the composer"): the fixture's goal is set,
-  // so this asserts the absence is a placement decision, not a fixture gap.
-  // Goal state stays visible and editable through the composer's own
-  // CurrentWork goal row and its inline /goal built-in.
+  // The goal chip is gone entirely (Jesse's 2026-09-28 design ruling, "drop
+  // goal inline in the composer", taken to its conclusion by deleting the
+  // production-dead GoalControl): goal state stays visible and editable
+  // through the composer's own CurrentWork goal row and its inline /goal
+  // built-in.
   expect(screen.queryByTestId("goal-chip-trigger")).toBeNull();
   expect(screen.queryByTestId("goal-compact-trigger")).toBeNull();
 });

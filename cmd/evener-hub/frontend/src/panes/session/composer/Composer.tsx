@@ -202,7 +202,7 @@ type BusyAction = "submit" | "steer" | "interrupt" | "drain" | null;
 // The wide layout's turnVerbs offering: one frozen object, because a fresh
 // {} on every recompute would defeat MemoizedSessionChrome's
 // shallow-equality bailout for a value that carries no information.
-const NO_TURN_VERBS: SessionMenuTurnVerbs = {};
+const NO_TURN_VERBS: SessionMenuTurnVerbs = Object.freeze({});
 
 export function Composer({ ref, focused }: ComposerProps) {
   const model = useThreadsStore((s) => s.threads.get(ref));
@@ -293,23 +293,23 @@ export function Composer({ ref, focused }: ComposerProps) {
   // phone-width boundary the verb cluster leaves this row for the session
   // menu instead of wrapping below the status row. narrowComposer.ts says
   // why the gate reads a ResizeObserver rather than the viewport or CSS.
-  const composerRootRef = useRef<HTMLDivElement>(null);
-  const narrow = useNarrowComposer(composerRootRef);
+  const [narrow, composerRootRef] = useNarrowComposer();
 
   // The session menu's turn-verb items press the same handlers the row
   // buttons press. Those handlers are recreated every render (they close
   // over per-render press-time state), and this component's SessionChrome
   // mount is memoized against exactly that (#2490), so the menu's onSelect
   // closures are identity-stable and read whichever handler is current at
-  // the press through these refs. The sync effect sits ahead of the
-  // null-model guard because hooks cannot go behind a conditional return;
-  // the function declarations it reads are hoisted to this function's top.
+  // the press through these refs. The refs are assigned during render -
+  // widgets/tree's own latest-ref pattern (its handlersRef) - so a press
+  // can never read the previous render's handlers. The assignments sit
+  // ahead of the null-model guard because hooks cannot go behind a
+  // conditional return, and the function declarations they read are
+  // hoisted to this function's top.
   const interruptClickRef = useRef<() => Promise<void>>(async () => {});
   const steerClickRef = useRef<() => void>(() => {});
-  useEffect(() => {
-    interruptClickRef.current = handleInterruptClick;
-    steerClickRef.current = handleSteerClick;
-  });
+  interruptClickRef.current = handleInterruptClick;
+  steerClickRef.current = handleSteerClick;
 
   // The narrow layout's turn-verb offerings. Identity-stable across draft
   // keystrokes - the deps are the model, the gate, and our own in-flight
@@ -1636,8 +1636,8 @@ export function Composer({ ref, focused }: ComposerProps) {
         // the FOCUSED pane's composer when several are mounted.
         <div className={CLASS.formAnchor} data-composer={ref}>
           {/* Anchored above the control row inside the card below, opening
-              upward the same way GoalControl's own popover does - see
-              slashcompletionmenu.module.css's header comment. Mounted only
+              upward - see slashcompletionmenu.module.css's header comment
+              for the anchored-float recipe. Mounted only
               while a token has real catalog matches (slashOpen), never for
               an empty/no-match filter. */}
           {slashOpen && (

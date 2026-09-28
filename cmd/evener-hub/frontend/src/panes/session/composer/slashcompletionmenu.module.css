@@ -1,11 +1,11 @@
 /* Anchored-float popup for inline slash-command completion, adapted from
  * Beautiful UI's prompt-bar menu (beautifului.dev, MIT © 2026 Shane Levine)
- * - see LICENSES/beautiful-ui.txt. Same recipe as
- * panes/session/chrome/goalcontrol.module.css's own .popover: opens
+ * - see LICENSES/beautiful-ui.txt. Same anchored-float recipe the former
+ * goal chip's popover used: opens
  * UPWARD off the bottom edge of its positioned ancestor (Composer.tsx's
  * .formAnchor), since the composer sits at the pane's own bottom edge and
- * a downward popup would clip off the viewport. No border, unlike the
- * goal popover - the shadow alone separates it from the card underneath. */
+ * a downward popup would clip off the viewport. No border - the shadow
+ * alone separates it from the card underneath. */
 .menu {
   position: absolute;
   bottom: calc(100% + var(--space-1));

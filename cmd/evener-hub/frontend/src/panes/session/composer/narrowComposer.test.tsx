@@ -17,7 +17,6 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { act, cleanup, render, screen } from "@testing-library/react";
-import { useRef } from "react";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { COMPOSER_PHONE_MAX_WIDTH, useNarrowComposer } from "./narrowComposer";
 
@@ -25,10 +24,9 @@ const here = dirname(fileURLToPath(import.meta.url));
 
 // The hook's real host is Composer's root div; the probe is the same shape
 // (a div the ref points at) without the rest of the composer.
-function Probe() {
-  const ref = useRef<HTMLDivElement>(null);
-  const narrow = useNarrowComposer(ref);
-  return <div ref={ref} data-testid="probe" data-narrow={narrow ? "1" : "0"} />;
+function Probe({ mounted = true }: { mounted?: boolean }) {
+  const [narrow, setElement] = useNarrowComposer();
+  return mounted ? <div ref={setElement} data-testid="probe" data-narrow={narrow ? "1" : "0"} /> : null;
 }
 
 let fire: (width: number) => void;
@@ -99,6 +97,14 @@ test("a measurable box seeds the gate before the observer's first delivery", () 
   render(<Probe />);
   expect(screen.getByTestId("probe").dataset.narrow).toBe("1");
   rect.mockRestore();
+});
+
+test("engages when the element first appears after the initial render", () => {
+  const view = render(<Probe mounted={false} />);
+  expect(screen.queryByTestId("probe")).toBeNull();
+  view.rerender(<Probe mounted={true} />);
+  act(() => fire(320));
+  expect(screen.getByTestId("probe").dataset.narrow).toBe("1");
 });
 
 test("the gate's boundary is the status row's own phone container query", () => {
