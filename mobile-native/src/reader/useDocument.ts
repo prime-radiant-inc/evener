@@ -2,7 +2,7 @@
 // this hub's origin and token, as TranscriptImages reads images. It reads on
 // mount, on reload(), when the connection comes back, and when the app
 // returns to the front. A re-read keeps the shown document until the new one
-// lands, and a failed one keeps it for good: a failure is transient, while a
+// lands, and a re-read that fails keeps it: a failure is transient, while a
 // missing or forbidden file really changed.
 import { filenameOf } from "@evener/appwire-client/docContent";
 import * as SecureStore from "expo-secure-store";

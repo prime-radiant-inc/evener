@@ -317,13 +317,12 @@ export function ReaderScreen({ route, navigation }: NativeStackScreenProps<Route
 
 	const lines = document?.kind === "code" ? rows.length : 0;
 	const notice = document ? documentNotice(document) : null;
+	// The caption and the truncation note: 13/18 in ink-low.
+	const caption = { color: palette.inkLow, fontSize: 13 * scale, lineHeight: 18 * scale };
 	const header = (
 		<View style={{ paddingTop: 8, paddingBottom: 14, gap: 4 }}>
 			{document ? (
-				<Text
-					allowFontScaling={allowFontScaling}
-					style={{ color: palette.inkLow, fontSize: 13 * scale, lineHeight: 18 * scale }}
-				>
+				<Text allowFontScaling={allowFontScaling} style={caption}>
 					{about}
 					{changeNote ? (
 						<>
@@ -336,10 +335,7 @@ export function ReaderScreen({ route, navigation }: NativeStackScreenProps<Route
 				<DocumentSkeleton />
 			)}
 			{document && "truncated" in document && document.truncated ? (
-				<Text
-					allowFontScaling={allowFontScaling}
-					style={{ color: palette.inkLow, fontSize: 13 * scale, lineHeight: 18 * scale }}
-				>
+				<Text allowFontScaling={allowFontScaling} style={caption}>
 					{truncationNote(document.truncated)}
 				</Text>
 			) : null}

@@ -23,6 +23,9 @@ const READER_ROLES: MarkdownRoles = {
 	headings: [serifHeading(24, 30), serifHeading(20, 26), serifHeading(18, 24)],
 };
 
+/** The styles a block draws with that carry margins of their own. */
+const FLUSH = ["paragraph", "h1", "h2", "h3", "h4", "h5", "h6", "list", "blockquote", "table"] as const;
+
 // One style per palette, shared by every block: a document can have hundreds.
 const styles = new WeakMap<object, MarkdownStyle>();
 function readerStyle(colors: ReturnType<typeof useColors>): MarkdownStyle {
@@ -31,17 +34,8 @@ function readerStyle(colors: ReturnType<typeof useColors>): MarkdownStyle {
 		// A block is drawn on its own, so the 14pt gap between blocks is the
 		// list's, not the markdown's margins.
 		const built = markdownStyle(colors, READER_ROLES);
-		style = {
-			...built,
-			paragraph: { ...built.paragraph, marginBottom: 0 },
-			h1: { ...built.h1, marginTop: 0, marginBottom: 0 },
-			h2: { ...built.h2, marginTop: 0, marginBottom: 0 },
-			h3: { ...built.h3, marginTop: 0, marginBottom: 0 },
-			h4: { ...built.h4, marginTop: 0, marginBottom: 0 },
-			h5: { ...built.h5, marginTop: 0, marginBottom: 0 },
-			h6: { ...built.h6, marginTop: 0, marginBottom: 0 },
-			table: { ...built.table, marginBottom: 0 },
-		};
+		style = { ...built };
+		for (const name of FLUSH) style[name] = { ...built[name], marginTop: 0, marginBottom: 0 };
 		styles.set(colors.palette, style);
 	}
 	return style;

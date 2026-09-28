@@ -136,6 +136,13 @@ afterEach(() => {
 	vi.restoreAllMocks();
 });
 
+/** Lets the reads land on microtasks alone, for a test that fakes setTimeout. */
+async function settleMicrotasks() {
+	await act(async () => {
+		for (let turn = 0; turn < 50; turn += 1) await Promise.resolve();
+	});
+}
+
 async function settle() {
 	await act(async () => {
 		for (let turn = 0; turn < 10; turn += 1) await Promise.resolve();
@@ -156,7 +163,7 @@ function navigationDouble() {
 	};
 }
 
-async function mount(path = PATH, extra: Record<string, unknown> = {}) {
+async function mount(path = PATH, extra: Record<string, unknown> = {}, flush = settle) {
 	const navigation = navigationDouble();
 	const params = {
 		hubId: "studio",
@@ -171,7 +178,7 @@ async function mount(path = PATH, extra: Record<string, unknown> = {}) {
 	);
 	const tree = render(element);
 	trees.push(tree);
-	await settle();
+	await flush();
 	// Renders again, as a change in the navigation state would.
 	const rerender = async () => {
 		// A fresh element: React skips an update given the identical one.
@@ -179,18 +186,6 @@ async function mount(path = PATH, extra: Record<string, unknown> = {}) {
 		await settle();
 	};
 	return { tree, navigation, rerender };
-}
-
-/** mount, settling on microtasks alone, for a test that fakes setTimeout. */
-async function mountWithFakeTimers() {
-	const navigation = navigationDouble();
-	const params = { hubId: "studio", sessionRef: "local:fix", path: PATH, reviewRef: "local:coord", reviewTitle: "Coordinator" };
-	const tree = render(<ReaderScreen route={{ key: "reader-1", name: "Reader", params } as never} navigation={navigation as never} />);
-	trees.push(tree);
-	await act(async () => {
-		for (let turn = 0; turn < 50; turn += 1) await Promise.resolve();
-	});
-	return { tree, navigation };
 }
 
 function documentList(tree: ReactTestRenderer): ReactTestInstance {
@@ -247,6 +242,17 @@ it("keeps its update time current while it's open", async () => {
 	} finally {
 		vi.useRealTimers();
 	}
+});
+
+it("draws blocks in the document role with serif headings, spaced by the list alone", async () => {
+	const { tree } = await mount();
+	const style = tree.root.findAll((node) => String(node.type) === "EnrichedMarkdownText")[0]?.props.markdownStyle;
+	expect(style.paragraph).toMatchObject({ fontFamily: "SourceSerif4-Regular", fontSize: 18, lineHeight: 28 });
+	expect(style.h1).toMatchObject({ fontFamily: "SourceSerif4-SemiBold", fontSize: 24, fontWeight: "600" });
+	expect(style.h2).toMatchObject({ fontSize: 20 });
+	expect(style.h3).toMatchObject({ fontSize: 18 });
+	for (const name of ["paragraph", "h1", "h2", "h3", "list", "blockquote", "table"])
+		expect(style[name]).toMatchObject({ marginTop: 0, marginBottom: 0 });
 });
 
 it("leaves out an update time that doesn't parse", async () => {
@@ -322,7 +328,7 @@ it("reopens at the remembered block", async () => {
 it("tries a scroll again once the list has measured its row, unless you've jumped elsewhere since", async () => {
 	vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
 	try {
-		const { tree } = await mountWithFakeTimers();
+		const { tree } = await mount(PATH, {}, settleMicrotasks);
 		const list = documentList(tree);
 		const host = readerHosts.get(sheetKey("studio", "local:fix", PATH));
 		flatListCalls.length = 0;
