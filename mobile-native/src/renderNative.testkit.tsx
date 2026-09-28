@@ -9,6 +9,7 @@
 // Production code never imports this module: it is a .testkit, and vitest's
 // default include collects only *.test.* files as suites.
 import {
+	type ComponentType,
 	createElement,
 	type ForwardedRef,
 	forwardRef,
@@ -78,7 +79,8 @@ export function nativeModuleMock() {
 		ref?: Ref<unknown>;
 		data?: unknown[];
 		keyExtractor?: (item: unknown, index: number) => string;
-		renderItem?: (info: { item: unknown }) => ReactNode;
+		renderItem?: (info: { item: unknown; index: number }) => ReactNode;
+		CellRendererComponent?: ComponentType<{ item: unknown; index: number; children?: ReactNode }>;
 		ListHeaderComponent?: ReactNode;
 		ListFooterComponent?: ReactNode;
 		ListEmptyComponent?: ReactNode;
@@ -113,13 +115,17 @@ export function nativeModuleMock() {
 			"FlatList",
 			null,
 			props.ListHeaderComponent ?? null,
-			...(props.data ?? []).map((item, index) =>
-				createElement(
+			...(props.data ?? []).map((item, index) => {
+				const row = props.renderItem?.({ item, index }) ?? null;
+				// A list's own cell wraps each row, as the real list does, so a
+				// test can lay a cell out (its onLayout) and measure the row.
+				const Cell = props.CellRendererComponent;
+				return createElement(
 					"Item",
 					{ key: props.keyExtractor?.(item, index) ?? index },
-					props.renderItem?.({ item }) ?? null,
-				),
-			),
+					Cell ? createElement(Cell, { item, index }, row) : row,
+				);
+			}),
 			(props.data ?? []).length === 0 ? (props.ListEmptyComponent ?? null) : null,
 			props.ListFooterComponent ?? null,
 		);

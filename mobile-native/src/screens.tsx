@@ -1543,9 +1543,28 @@ export function ConversationScreen({
 	// hasn't measured fails the jump (onScrollToIndexFailed, while
 	// findJumping holds); the list then moves near it and tries again, for as
 	// long as each try measures rows closer to it, as the reader's restore
-	// does (ReaderRestoreAttempts.retryUnmeasured).
+	// does (ReaderRestoreAttempts.retryUnmeasured). A retry belongs to the
+	// match it started for: a new match or closing find cancels it, and it
+	// finds its row again when it runs, since older pages may have prepended.
 	const findJumping = useRef(false);
 	const findAttempts = useRef(new ReaderRestoreAttempts());
+	const findRetryFrame = useRef<number | null>(null);
+	const findTarget = useRef({ key: findKey, rows: timelineRows });
+	useEffect(() => {
+		findTarget.current = { key: findKey, rows: timelineRows };
+	});
+	function cancelFindRetry() {
+		if (findRetryFrame.current !== null)
+			cancelAnimationFrame(findRetryFrame.current);
+		findRetryFrame.current = null;
+	}
+	function retryFindMatch() {
+		findRetryFrame.current = null;
+		const { key, rows } = findTarget.current;
+		if (key === null) return;
+		const index = rows.findIndex((row) => readerKey(row) === key);
+		if (index >= 0) scrollToFindMatch(index);
+	}
 	function scrollToFindMatch(index: number) {
 		readerLatest.current = false;
 		readerHeader.current = false;
@@ -1557,8 +1576,10 @@ export function ConversationScreen({
 	}
 	// biome-ignore lint/correctness/useExhaustiveDependencies: only a new current match scrolls; rows prepending above it keep it in view.
 	useEffect(() => {
+		cancelFindRetry();
 		findAttempts.current.reset();
 		if (findCurrent !== null) scrollToFindMatch(findCurrent);
+		return cancelFindRetry;
 	}, [findKey]);
 	// Leaving the screen closes find.
 	useEffect(() => {
@@ -2925,7 +2946,8 @@ export function ConversationScreen({
 										offset: index * Math.max(1, averageItemLength),
 										animated: false,
 									});
-									requestAnimationFrame(() => scrollToFindMatch(index));
+									findRetryFrame.current =
+										requestAnimationFrame(retryFindMatch);
 									return;
 								}
 								const anchor = readerAnchor.current;

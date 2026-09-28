@@ -1617,17 +1617,43 @@ describe("Find in session (spec 8.7, ruling 29)", () => {
 	});
 
 	describe("a match the list hasn't rendered yet", () => {
-		// Each retry waits a frame; these tests run it at once.
+		// Each retry waits a frame. The frames queue here and run when a test
+		// says, so a test can act between one try and the next.
+		let frames = new Map<number, (time: number) => void>();
+		let nextFrame = 0;
 		beforeEach(() => {
+			frames = new Map();
 			vi.stubGlobal("requestAnimationFrame", (frame: (time: number) => void) => {
-				frame(0);
-				return 0;
+				nextFrame += 1;
+				frames.set(nextFrame, frame);
+				return nextFrame;
 			});
+			vi.stubGlobal("cancelAnimationFrame", (id: number) => void frames.delete(id));
 		});
 		afterEach(() => {
 			flatListScrollFailures.remaining = 0;
 			vi.unstubAllGlobals();
 		});
+
+		/** Runs the waiting frames, and any they ask for, until none wait. */
+		async function runFrames() {
+			while (frames.size > 0) {
+				const waiting = [...frames.values()];
+				frames.clear();
+				act(() => {
+					for (const frame of waiting) frame(0);
+				});
+				await settle();
+			}
+		}
+
+		/** Lays out the transcript cell at `index`, so the list has measured it. */
+		function measureRow(tree: ReactTestRenderer, index: number) {
+			const item = transcriptList(tree).findAll((node) => String(node.type) === "Item")[index];
+			const cell = item?.findAll((node) => String(node.type) === "View" && node.props.onLayout)[0];
+			if (!cell) throw new Error(`no cell at ${index}`);
+			act(() => cell.props.onLayout({ nativeEvent: { layout: { x: 0, y: index * 80, width: 390, height: 80 } } }));
+		}
 
 		it("keeps moving toward it until the list reaches it", async () => {
 			const { tree } = await mount(findTurns("ref-find-far"));
@@ -1635,6 +1661,7 @@ describe("Find in session (spec 8.7, ruling 29)", () => {
 			flatListCalls.length = 0;
 			flatListScrollFailures.remaining = 2;
 			await search(tree, "race");
+			await runFrames();
 			// Two misses, each followed by a move near the row, then the jump lands.
 			expect(findScrolls()).toEqual([1, 1, 1]);
 			expect(flatListCalls.filter((call) => call.method === "scrollToOffset")).toHaveLength(2);
@@ -1647,7 +1674,54 @@ describe("Find in session (spec 8.7, ruling 29)", () => {
 			flatListCalls.length = 0;
 			flatListScrollFailures.remaining = 10;
 			await search(tree, "race");
+			await runFrames();
 			expect(findScrolls()).toEqual([1, 1, 1, 1]);
+		});
+
+		it("tries again for as long as each try measures rows closer to it", async () => {
+			const { tree } = await mount(findTurns("ref-find-closer"));
+			chooseMenu("Find in session");
+			flatListCalls.length = 0;
+			flatListScrollFailures.remaining = 10;
+			// "Nothing else." is the last row, index 3.
+			await search(tree, "nothing");
+			const oneFrame = async () => {
+				const waiting = [...frames.values()];
+				frames.clear();
+				act(() => {
+					for (const frame of waiting) frame(0);
+				});
+				await settle();
+			};
+			await oneFrame();
+			// A row before the match renders on the way: the budget starts over.
+			measureRow(tree, 0);
+			await runFrames();
+			expect(findScrolls()).toEqual([3, 3, 3, 3, 3, 3]);
+		});
+
+		it("scrolls no further once Done closes find", async () => {
+			const { tree } = await mount(findTurns("ref-find-done"));
+			chooseMenu("Find in session");
+			flatListCalls.length = 0;
+			flatListScrollFailures.remaining = 1;
+			await search(tree, "race");
+			act(() => pressable(tree, "Done")?.props.onPress());
+			await settle();
+			await runFrames();
+			expect(findScrolls()).toEqual([1]);
+		});
+
+		it("leaves a new search its own tries when the words change mid-way", async () => {
+			const { tree } = await mount(findTurns("ref-find-requery"));
+			chooseMenu("Find in session");
+			flatListCalls.length = 0;
+			flatListScrollFailures.remaining = 10;
+			await search(tree, "race");
+			// "Fix the flaky Settle test" is row 0.
+			await search(tree, "flaky");
+			await runFrames();
+			expect(findScrolls()).toEqual([1, 0, 0, 0, 0]);
 		});
 	});
 
