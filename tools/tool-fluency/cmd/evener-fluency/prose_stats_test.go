@@ -344,6 +344,37 @@ func TestRenderProseTableShowsTheChosenChannel(t *testing.T) {
 	}
 }
 
+// TestRenderProseTableDividesMessagesByDecidedRunsNotAllRuns: a blocked run
+// produced no message at all (it says nothing about the prompt), so it must
+// not dilute MSGS/RUN. Two versions with the same messages per DECIDED run
+// must show the same MSGS/RUN even when one carries extra blocked runs.
+func TestRenderProseTableDividesMessagesByDecidedRunsNotAllRuns(t *testing.T) {
+	t.Parallel()
+	stats := []proseStats{
+		{Label: "v0", Model: "m", Runs: 2, Blocked: 0, Messages: 4},
+		{Label: "v1", Model: "m", Runs: 3, Blocked: 1, Messages: 4},
+	}
+	var buf bytes.Buffer
+	if err := renderProseTable(&buf, stats, "to_user"); err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(strings.TrimSpace(buf.String()), "\n")
+	if len(lines) != 3 {
+		t.Fatalf("output = %q, want a header and 2 rows", buf.String())
+	}
+	var msgsPerRun []string
+	for _, line := range lines[1:] {
+		fields := strings.Fields(line)
+		if len(fields) < 7 {
+			t.Fatalf("row %q has too few fields", line)
+		}
+		msgsPerRun = append(msgsPerRun, fields[6])
+	}
+	if msgsPerRun[0] != "2.0" || msgsPerRun[1] != "2.0" {
+		t.Errorf("MSGS/RUN = %v, want [2.0 2.0]: both have 4 messages over 2 DECIDED runs", msgsPerRun)
+	}
+}
+
 // writeFluencyResult writes res where a run under dir writes it:
 // dir/<model>/<probe>/rep-NN/result.json.
 func writeFluencyResult(t *testing.T, dir string, res probeResult) {

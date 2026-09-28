@@ -327,9 +327,12 @@ func renderProseTable(w io.Writer, stats []proseStats, channel string) error {
 		if channel == "all" {
 			c = s.All
 		}
+		// A blocked run produced no message at all and says nothing about
+		// the prompt, so it must not dilute this rate: divide by decided
+		// runs (Runs - Blocked), not every attempt.
 		msgsPerRun := 0.0
-		if s.Runs > 0 {
-			msgsPerRun = float64(s.Messages) / float64(s.Runs)
+		if decided := s.Runs - s.Blocked; decided > 0 {
+			msgsPerRun = float64(s.Messages) / float64(decided)
 		}
 		_, _ = fmt.Fprintf(tw, "%s\t%s\t%d\t%d\t%d\t%d/%d\t%.1f\t%d\t%d\t%.1f\t%.1f\t%.1f\t%.1f\t%.1f\t%.1f\t%.1f\t%d\n",
 			s.Label, s.Model, s.Runs, s.Passed, s.Blocked, s.TasksAllPassed, s.Tasks, msgsPerRun, s.MedianMessageWords, c.Words,
