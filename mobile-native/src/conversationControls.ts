@@ -28,21 +28,20 @@ export function canComposeFor(conversation: ControlsSource): boolean {
   return controls.send || controls.steer || controls.queue || conversation.capabilities.goal === true;
 }
 
-/** The presses on queued messages. Promote and drain-all steer the running
- * turn with queued text; cancel only takes a message out of the queue. */
-export type QueueAction = "cancel" | "promote" | "drainAll";
+/** The presses on queued messages that steer the running turn with queued
+ * text. Cancel only takes a message out of the queue, so it is never refused
+ * here. */
+export type QueueAction = "promote" | "drainAll";
 
 /**
- * Why a queue-sheet press must be refused right now, or null when it may
+ * Why a queued-message press must be refused right now, or null when it may
  * proceed. Read at press time against the live conversation, not the one the
- * sheet rendered with: a status that flipped in between (awaiting, idle with
- * the queue gone) is caught here with the control's own reason. Cancel neither
- * steers nor drains, so the steering controls never refuse it. Drain-all sends
+ * ghost rendered with: a status that flipped in between (awaiting, idle with
+ * the queue gone) is caught here with the control's own reason. Drain-all sends
  * the queue and nothing else, so its control is drainQueue (the drain rule
  * plus a queue to drain); a promote names one row and keeps the drain's.
  */
 export function queueActionRefusal(conversation: ControlsSource, action: QueueAction): string | null {
-  if (action === "cancel") return null;
   const controls = conversationControls(conversation);
   const control = action === "drainAll" ? "drainQueue" : "drain";
   return controls[control] ? null : (controls.reason[control] ?? "Steer is not available for this session");

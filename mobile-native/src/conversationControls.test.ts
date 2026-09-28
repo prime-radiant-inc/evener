@@ -60,10 +60,3 @@ it("refuses a drain-all on an emptied queue with the queue reason", () => {
   // A promote names one row; its rule stays the drain's.
   expect(queueActionRefusal(conversation("active", 0), "promote")).toBeNull();
 });
-
-// Cancel takes a message out of the queue; it neither steers nor drains, so
-// the steering controls have nothing to say about it.
-it("never refuses a cancel on the drain control", () => {
-  expect(queueActionRefusal(conversation("awaiting", 1), "cancel")).toBeNull();
-  expect(queueActionRefusal(conversation("idle", 1, { ...STEERING, steer: false }), "cancel")).toBeNull();
-});
