@@ -6,7 +6,6 @@
 /.evener/sessions/
 /.evener/tasks/
 /.evener/web_cache/
-/.evener/prompts/
 /.evener/launch.local.toml
 # Raw, unscrubbed fuzz-corpus recordings (EVENER_FUZZ_RECORD); only scrubbed seeds are committed.
 /.evener/appwire-frames.jsonl

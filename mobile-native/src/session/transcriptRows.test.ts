@@ -3,8 +3,9 @@ import { describe, expect, it } from "vitest";
 import { type MobileTimelineItem, projectedRow } from "../projectedRows";
 import type { RunStep, TimelineRow } from "../timeline";
 import {
-	emptyTranscriptText,
+	latestSettledTurn,
 	liveRunId,
+	newRowCount,
 	runSummary,
 	runSummaryText,
 	sessionRows,
@@ -306,20 +307,37 @@ describe("a step's target", () => {
 	});
 });
 
-describe("an empty transcript", () => {
-	it("is loading while the first read runs or the connection is away, and never asks you to reconnect", () => {
-		expect(emptyTranscriptText("opening", true, false)).toBe("Loading conversation…");
-		expect(emptyTranscriptText("idle", false, false)).toBe("Loading conversation…");
-		expect(emptyTranscriptText("closed", false, false)).toBe("Loading conversation…");
-		expect(emptyTranscriptText("error", false, false)).toBe("Loading conversation…");
+describe("rows that arrived while you read above the end", () => {
+	const rows: TimelineRow[] = [user("u1"), reply("a1"), user("u2"), reply("a2")];
+	const seen = new Set(["u1", "a1"]);
+
+	it("counts the rows after the last one you had", () => {
+		expect(newRowCount(rows, seen)).toBe(2);
 	});
 
-	it("has no messages once its conversation has loaded, connected or not", () => {
-		expect(emptyTranscriptText("open", true, true)).toBe("No messages yet.");
-		expect(emptyTranscriptText("open", false, true)).toBe("No messages yet.");
+	it("never counts older history that loaded above", () => {
+		expect(newRowCount([user("u0"), reply("a0"), ...rows], seen)).toBe(2);
 	});
 
-	it("keeps the retry line for a read that failed while connected", () => {
-		expect(emptyTranscriptText("error", true, false)).toBe("Pull down to retry.");
+	it("leaves time markers out of the count", () => {
+		const marked: TimelineRow[] = [...rows.slice(0, 2), { kind: "time", id: "time:turn_2", turnId: "turn_2", at: 0 }, ...rows.slice(2)];
+		expect(newRowCount(marked, seen)).toBe(2);
+	});
+
+	it("is zero when nothing new arrived", () => {
+		expect(newRowCount(rows, new Set(["u1", "a1", "u2", "a2"]))).toBe(0);
 	});
 });
+
+describe("the turn you have seen at the end (ruling 31)", () => {
+	it("is the latest turn that is not still in progress", () => {
+		const turns = [{ id: "turn_1", status: "completed" }, { id: "turn_2", status: "failed" }, { id: "turn_3", status: "inProgress" }];
+		expect(latestSettledTurn({ turns })).toBe("turn_2");
+	});
+
+	it("is nothing without a conversation or a settled turn", () => {
+		expect(latestSettledTurn(null)).toBeUndefined();
+		expect(latestSettledTurn({ turns: [{ id: "turn_1", status: "inProgress" }] })).toBeUndefined();
+	});
+});
+

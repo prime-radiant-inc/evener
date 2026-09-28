@@ -137,7 +137,7 @@ func TestFrozenSubagentToolNamesIncludeRecoveryReader(t *testing.T) {
 	releasePreparedTreeSlot(prepared)
 	defer prepared.sub.sess.Close()
 	got := prepared.frozenToolNames
-	if !slices.Equal(got, []string{"read_file", "task_list", "compact_context", "use_skill", "read_transcript"}) {
+	if !slices.Equal(got, []string{"read_file", "task_list", "compact_context", "use_skill", "job_list", "job_status", "job_stop", "job_watch", "read_transcript"}) {
 		t.Fatalf("frozen names = %v", got)
 	}
 }
@@ -853,15 +853,23 @@ func TestWatchParentGrantIsNotInheritedByGrandchild(t *testing.T) {
 	if grandchild.cfg.spawn.parentWatchGranted {
 		t.Fatal("grandchild must not inherit parentWatchGranted without watch_parent")
 	}
-	if grandchild.reg.Get("job_watch") != nil {
-		t.Fatal("grandchild without watch_parent must not have job_watch registered")
+	// job_watch is not the parent-watch grant: a typed leaf keeps it to wait on
+	// its OWN jobs. What closes `parent` is the grant flag below (and the watch
+	// source's own authorization), never tool absence — the old absence pin
+	// would re-break #2645 for any typed leaf.
+	if grandchild.reg.Get("job_watch") == nil {
+		t.Fatal("grandchild must keep job_watch to watch its own jobs")
 	}
-	if hasCachedCallableToolDefinition(grandchild, "job_watch") {
-		t.Fatal("grandchild without watch_parent must not advertise job_watch")
+	if !hasCachedCallableToolDefinition(grandchild, "job_watch") {
+		t.Fatal("grandchild must advertise the job_watch it can call")
 	}
 	if grandchild.reg.Get("delegate") != nil {
 		t.Fatal("grandchild with delegation_allowance 0 must not have delegate registered")
 	}
+	// Presence is not isolation: the grandchild holds the job tools for its own
+	// jobs but must not reach its parent's, so the non-inheritance claim stays
+	// behavioral rather than a tool-presence check.
+	assertCannotReachParentJobs(t, grandchild, startBackgroundJob(t, child))
 }
 
 func hasCachedCallableToolDefinition(s *Session, name string) bool {
@@ -957,9 +965,10 @@ func TestPrepareSubagentRunRejectsZeroAllowance(t *testing.T) {
 //
 // Positive case (canDelegate=true): the default child gets NO deny-list, so
 // delegate and job_watch are NOT denied.
-// Negative case (canDelegate=false): today's behavior preserved — default child
-// denies delegate and job_watch.
-// Typed cases: allowance NEVER injects tools into a typed agent's surface.
+// Negative case (canDelegate=false): the default child denies delegate but
+// keeps job_watch — a session that runs jobs watches its own jobs.
+// Typed cases: allowance NEVER injects delegate into a typed agent's
+// allow-list; job_watch is intrinsic to every typed surface regardless of it.
 func TestBaseSubagentPolicyAllowsDelegateWithAllowance(t *testing.T) {
 	t.Parallel()
 	t.Run("default child with canDelegate=true: delegate and job_watch not denied", func(t *testing.T) {
@@ -1010,15 +1019,13 @@ func TestBaseSubagentPolicyAllowsDelegateWithAllowance(t *testing.T) {
 		if len(denied) != 0 {
 			t.Fatalf("explicit-Tools agent must have no deny-list, got %v", denied)
 		}
-		for _, tool := range []string{"delegate", "job_watch"} {
-			for _, a := range allowed {
-				if a == tool {
-					t.Errorf("canDelegate=true must NOT inject %q into a typed agent's allow-list (got %v)", tool, allowed)
-				}
-			}
+		if slices.Contains(allowed, "delegate") {
+			t.Errorf("canDelegate=true must NOT inject delegate into a typed agent's allow-list (got %v)", allowed)
 		}
-		// Must contain read_file and task_list
-		for _, want := range []string{"read_file", "task_list"} {
+		// The job-supervision tools are intrinsic, not injected for delegation:
+		// every allow-list carries them so a leaf can enumerate, await, inspect,
+		// and stop its own promoted background job (#2645).
+		for _, want := range []string{"read_file", "task_list", "job_list", "job_status", "job_stop", "job_watch"} {
 			if !slices.Contains(allowed, want) {
 				t.Errorf("explicit-Tools agent must contain %q in allow-list (got %v)", want, allowed)
 			}

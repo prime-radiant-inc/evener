@@ -89,3 +89,36 @@ func TestExplainSchemaError_BranchEnumReadsBranchSchema(t *testing.T) {
 		})
 	}
 }
+
+// A branch-narrowed `required` list is resolved from the branch's own schema,
+// so the missing-property message names the branch's property. The example
+// must not then be built from the container's top-level property — that shape
+// need not satisfy the branch, so copying it and re-sending still fails the
+// same arm (issue #622 review).
+const branchRequiredSchema = `{
+	"type": "object",
+	"properties": {"opts": {"type": "object", "properties": {"a": {"type": "string"}}}},
+	"required": ["opts"],
+	"allOf": [
+		{"properties": {"opts": {"required": ["b"], "properties": {"b": {"type": "string"}}}}}
+	]
+}`
+
+func TestExplainSchemaError_BranchRequiredOmitsUncheckedExample(t *testing.T) {
+	t.Parallel()
+	args := map[string]any{"opts": map[string]any{}}
+	params, field, loc := branchEnumValidate(t, branchRequiredSchema, args)
+	if field != "opts" {
+		t.Fatalf("offendingField = %q, want %q", field, "opts")
+	}
+	if loc != "/allOf/0/properties/opts/required" {
+		t.Fatalf("offendingKeywordLocation = %q, want the branch's required list", loc)
+	}
+	msg := ExplainSchemaError("probe_tool", params, args, field, loc)
+	if !strings.Contains(msg, "missing required properties: opts.b") {
+		t.Fatalf("message must name the branch's missing property: %q", msg)
+	}
+	if strings.Contains(msg, "Example:") {
+		t.Fatalf("message showed a top-level example that omits the property it just named missing: %q", msg)
+	}
+}
