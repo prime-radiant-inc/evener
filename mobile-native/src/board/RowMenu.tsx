@@ -31,9 +31,11 @@ export const ROW_ACTION_SYMBOLS: Record<RowAction, SFSymbol> = {
 
 /** What the row menu sheet reads from the Board, and hands its answers to. */
 export interface RowMenuHost {
-	/** The row as the Board shows it now, or undefined once it left. */
-	item(ref: string): ClassifiedRow | undefined;
-	actions(item: ClassifiedRow): RowAction[];
+	/** The row as the Board shows it now, or undefined once it left. A session
+	 * can show twice (Live and a project's Archived tier), so the sheet asks
+	 * by the tier it was opened from, not just the ref. */
+	item(ref: string, archived: boolean): ClassifiedRow | undefined;
+	actions(item: ClassifiedRow, archived: boolean): RowAction[];
 	hostLabel(hostId: string): string;
 	act(item: ClassifiedRow, action: RowAction): void;
 	openSession(item: ClassifiedRow): void;
@@ -127,14 +129,14 @@ export function RowPreviewCard({
 
 /** The row menu as a sheet route (ruling 28), opening at half height. */
 export function RowMenuSheet({ route }: NativeStackScreenProps<Routes, "RowMenuSheet">) {
-	const { hubId, ref } = route.params;
+	const { hubId, ref, archived } = route.params;
 	const navigation = useNavigation();
 	const { palette } = useColors();
 	const scale = useTextScale();
 	// `host` is read when the sheet goes away, by then from its last render.
 	const sheet = useSheet({ onClosed: () => host?.closed() });
 	const host = useSheetHost(rowMenuHosts, sheetKey(hubId), sheet);
-	const item = host?.item(ref);
+	const item = host?.item(ref, archived);
 	// A row that left the Board leaves nothing to act on. (A Board that went
 	// away is useSheetHost's to close.)
 	const rowLeft = host !== undefined && item === undefined;
@@ -153,7 +155,7 @@ export function RowMenuSheet({ route }: NativeStackScreenProps<Routes, "RowMenuS
 		<Sheet done={{ label: "Close", onPress: () => sheet.finish() }}>
 			<ScrollView contentInsetAdjustmentBehavior="automatic">
 				<RowPreviewCard item={item} hostLabel={host.hostLabel} onPress={() => leaveThen(() => host.openSession(item))} />
-				{host.actions(item).map((action) => (
+				{host.actions(item, archived).map((action) => (
 					<Pressable
 						key={action}
 						accessibilityRole="button"

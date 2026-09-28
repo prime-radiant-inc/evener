@@ -179,7 +179,7 @@ export type Routes = {
 	NewSession: { hubId: string; hubName: string };
 	Conversation: { hubId: string; ref: string; title: string };
 	TasksSheet: { hubId: string; ref: string; threadId: string; hasTasks: boolean };
-	RowMenuSheet: { hubId: string; ref: string };
+	RowMenuSheet: { hubId: string; ref: string; archived: boolean };
 };
 
 export function HubsScreen({

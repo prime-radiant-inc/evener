@@ -357,16 +357,22 @@ function Board({ hubId, hubName, navigation }: { hubId: string; hubName: string;
 		archived,
 	});
 	// The row menu, a sheet route that asks the Board's host below for the
-	// row and its actions.
-	const openRowMenu = (item: ClassifiedRow) => navigation.navigate("RowMenuSheet", { hubId, ref: item.row.ref });
+	// row and its actions. It carries the tier it opened from, since a
+	// session can show twice (Live and a project's Archived tier) and the two
+	// copies offer different actions (Archive vs. Unarchive).
+	const openRowMenu = (item: ClassifiedRow, archived: boolean) =>
+		navigation.navigate("RowMenuSheet", { hubId, ref: item.row.ref, archived });
 	// Rename asks through Alert.prompt, which only iOS has.
 	const menuActions = (item: ClassifiedRow, archived: boolean) => {
 		const actions = rowMenuActions(item, rowContext(archived));
 		return Platform.OS === "ios" ? actions : actions.filter((action) => action !== "rename");
 	};
-	const runRowAction = (item: ClassifiedRow, action: SwipeRowAction) => {
+	// `archived` only matters for "more" (it opens the sheet on the tier the
+	// swipe came from); actOnRow's call never sends "more", so it's fine left
+	// at its default there.
+	const runRowAction = (item: ClassifiedRow, action: SwipeRowAction, archived = false) => {
 		const { row } = item;
-		if (action === "more") openRowMenu(item);
+		if (action === "more") openRowMenu(item, archived);
 		else if (action === "pin") navigation.navigate("PinAssignment", { hubId, ref: row.ref, title: row.title });
 		else if (action === "stop" && client)
 			void stops.stop(client, row.ref).then((outcome) => toast.show({ text: stopToast(outcome, row.title) }));
@@ -394,12 +400,12 @@ function Board({ hubId, hubName, navigation }: { hubId: string; hubName: string;
 		onOpen: openSession,
 		draftRefs,
 		swipes: (item, archived) =>
-			rowSwipes(item, rowContext(archived), archivingId, (action) => runRowAction(item, action)),
+			rowSwipes(item, rowContext(archived), archivingId, (action) => runRowAction(item, action, archived)),
 		menu: (item, archived) => ({
 			actions: menuActions(item, archived),
 			onOpenSession: () => openSession(item.row),
 			onAction: (action) => actOnRow(item, action),
-			onOpenSheet: () => openRowMenu(item),
+			onOpenSheet: () => openRowMenu(item, archived),
 		}),
 	};
 	const rows = (items: ClassifiedRow[], variant: "signal" | "quiet", moving: boolean, archived = false) => (
@@ -475,8 +481,8 @@ function Board({ hubId, hubName, navigation }: { hubId: string; hubName: string;
 	menuHandlers.current = { actOnRow, openSession };
 	const rowMenuHost = useMemo<RowMenuHost>(
 		() => ({
-			item: (ref) => shownRows.get(ref)?.item,
-			actions: (item) => menuActions(item, shownRows.get(item.row.ref)?.archived ?? false),
+			item: (ref, archived) => shownRows.get(shownRowKey(ref, archived))?.item,
+			actions: (item, archived) => menuActions(item, archived),
 			hostLabel,
 			act: (item, action) => menuHandlers.current.actOnRow(item, action),
 			openSession: (item) => menuHandlers.current.openSession(item.row),
@@ -944,24 +950,34 @@ function SearchField({
 
 type ShownRow = { item: ClassifiedRow; archived: boolean };
 
-/** The Board's shown rows by ref; a session shown more than once answers
- * with its first copy, in screen order. The map keeps its identity while no
- * row, state or tier changes, so the row menu's host (and an open menu)
- * changes only when one does. */
+/** A shown row's identity: its ref and the tier it sits in. A session shown
+ * in both Live and a project's Archived tier is two different shown rows, so
+ * the row menu opened from each reads its own copy and offers the right
+ * action (Archive or Unarchive) instead of always the Live copy's. */
+function shownRowKey(ref: string, archived: boolean): string {
+	return `${ref}:${archived}`;
+}
+
+/** The Board's shown rows by ref and tier: each ref keeps its first
+ * unarchived copy and its first archived copy, in screen order. The map
+ * keeps its identity while no row, state or tier changes, so the row menu's
+ * host (and an open menu) changes only when one does. */
 function useShownRows(rows: readonly ShownRow[]): ReadonlyMap<string, ShownRow> {
-	const byRef = new Map<string, ShownRow>();
-	for (const shown of rows) if (!byRef.has(shown.item.row.ref)) byRef.set(shown.item.row.ref, shown);
-	const kept = useRef(byRef);
-	if (!sameShownRows(kept.current, byRef)) kept.current = byRef;
+	const byKey = new Map<string, ShownRow>();
+	for (const shown of rows) {
+		const key = shownRowKey(shown.item.row.ref, shown.archived);
+		if (!byKey.has(key)) byKey.set(key, shown);
+	}
+	const kept = useRef(byKey);
+	if (!sameShownRows(kept.current, byKey)) kept.current = byKey;
 	return kept.current;
 }
 
 function sameShownRows(before: ReadonlyMap<string, ShownRow>, after: ReadonlyMap<string, ShownRow>): boolean {
 	if (before.size !== after.size) return false;
-	for (const [ref, shown] of after) {
-		const was = before.get(ref);
-		if (!was || was.item.row !== shown.item.row || was.item.state !== shown.item.state || was.archived !== shown.archived)
-			return false;
+	for (const [key, shown] of after) {
+		const was = before.get(key);
+		if (!was || was.item.row !== shown.item.row || was.item.state !== shown.item.state) return false;
 	}
 	return true;
 }

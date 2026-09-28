@@ -113,9 +113,14 @@ describe("the row menu sheet (ruling 28)", () => {
 		for (const tree of sheets.splice(0)) act(() => tree.unmount());
 		rowMenuHosts.release(sheetKey("hub-1"), owner);
 	});
-	function mountSheet(provided: RowMenuHost | undefined, ref = "studio:fix") {
+	function mountSheet(provided: RowMenuHost | undefined, ref = "studio:fix", archived = false) {
 		if (provided) rowMenuHosts.provide(sheetKey("hub-1"), owner, provided);
-		const tree = render(<RowMenuSheet route={{ key: "menu", name: "RowMenuSheet", params: { hubId: "hub-1", ref } } as never} navigation={navigation as never} />);
+		const tree = render(
+			<RowMenuSheet
+				route={{ key: "menu", name: "RowMenuSheet", params: { hubId: "hub-1", ref, archived } } as never}
+				navigation={navigation as never}
+			/>,
+		);
 		sheets.push(tree);
 		return tree;
 	}

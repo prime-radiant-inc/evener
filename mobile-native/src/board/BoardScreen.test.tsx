@@ -2849,13 +2849,13 @@ function menuHost(id: string): RowMenuHost {
 	if (!host) throw new Error("the Board provides no row menu host");
 	return host;
 }
-function menuItem(host: RowMenuHost, ref: string) {
-	const item = host.item(ref);
+function menuItem(host: RowMenuHost, ref: string, archived = false) {
+	const item = host.item(ref, archived);
 	if (!item) throw new Error(`the Board shows no ${ref}`);
 	return item;
 }
-const rowMenuLabels = (host: RowMenuHost, ref: string) =>
-	host.actions(menuItem(host, ref)).map((action) => ROW_ACTION_LABELS[action]);
+const rowMenuLabels = (host: RowMenuHost, ref: string, archived = false) =>
+	host.actions(menuItem(host, ref, archived), archived).map((action) => ROW_ACTION_LABELS[action]);
 
 it("gives a working row Archive on the right swipe and Stop, Pin and More on the left, a finished row no Stop, and another host's row Archive too", async () => {
 	const { tree } = await mountSwipeFleet(hub(swipeFleet()));
@@ -3010,7 +3010,7 @@ it("ends a row's trailing swipe with More, which opens the row menu sheet, as a 
 	shape.live = [[{ ...swipeWorking, rename: true }, swipeFinished, swipePark]];
 	const { id, tree, nav } = await mountSwipeFleet(hub(shape));
 	pressRevealed(swipeableOf(tree, "Refactor parser"), "right", "More");
-	expect(nav.navigate).toHaveBeenCalledWith("RowMenuSheet", { hubId: id, ref: `local:${SESSION_ID}` });
+	expect(nav.navigate).toHaveBeenCalledWith("RowMenuSheet", { hubId: id, ref: `local:${SESSION_ID}`, archived: false });
 	expect(rowMenuLabels(menuHost(id), `local:${SESSION_ID}`)).toEqual([
 		"Pin to category…",
 		"Stop",
@@ -3022,7 +3022,44 @@ it("ends a row's trailing swipe with More, which opens the row menu sheet, as a 
 	const row = rowTitled(tree, "Refactor parser");
 	expect(row.props.delayLongPress).toBe(500);
 	act(() => row.props.onLongPress());
-	expect(nav.navigate).toHaveBeenCalledWith("RowMenuSheet", { hubId: id, ref: `local:${SESSION_ID}` });
+	expect(nav.navigate).toHaveBeenCalledWith("RowMenuSheet", { hubId: id, ref: `local:${SESSION_ID}`, archived: false });
+});
+
+it("gives the row menu the copy it opened from, when a session shows in both Live and a project's Archived tier", async () => {
+	const ref = `local:${SESSION_ID}`;
+	const shape = swipeFleet();
+	shape.catalogs = { projects: [evenerProject()] };
+	shape.projectPages = {
+		"evener:archived": [
+			session(ref, {
+				session_id: SESSION_ID,
+				title: "Refactor parser (archived tier)",
+				live: false,
+				updated_at: minutesAgo(3000),
+			}),
+		],
+	};
+	shape.manifest = manifest({
+		sources: [laptopSource, { ...parkSource, online: true }],
+		sections: { live: { count: 3 }, needs_you: { count: 0 }, pin_sections: { count: 0 } },
+		catalogs: catalogCounts(1, 0, 0),
+	});
+	const { id, tree, nav } = await mountSwipeFleet(hub(shape));
+	// Unfold the project, then its Archived group, so both copies are on screen.
+	pressLabel(tree, "evener");
+	await settle();
+	pressLabel(tree, "Archived, 1 session");
+	await settle();
+	const host = menuHost(id);
+	expect(rowMenuLabels(host, ref, true)).toContain("Unarchive");
+	expect(rowMenuLabels(host, ref, true)).not.toContain("Archive");
+	expect(rowMenuLabels(host, ref, false)).toContain("Archive");
+	expect(rowMenuLabels(host, ref, false)).not.toContain("Unarchive");
+	pressRevealed(swipeableOf(tree, "Refactor parser (archived tier)"), "right", "More");
+	expect(nav.navigate).toHaveBeenCalledWith("RowMenuSheet", { hubId: id, ref, archived: true });
+	nav.navigate.mockClear();
+	act(() => rowTitled(tree, "Refactor parser (archived tier)").props.onLongPress());
+	expect(nav.navigate).toHaveBeenCalledWith("RowMenuSheet", { hubId: id, ref, archived: true });
 });
 
 it("offers Rename only on iOS, where Alert.prompt exists", async () => {
@@ -3160,12 +3197,12 @@ it("drops a row that left the Board from the menu's host", async () => {
 	const shape = swipeFleet();
 	const fake = hub(shape);
 	const { id } = await mountSwipeFleet(fake);
-	expect(menuHost(id).item("paradise-park:pp")).toBeDefined();
+	expect(menuHost(id).item("paradise-park:pp", false)).toBeDefined();
 	shape.live = [[swipeWorking, swipeFinished]];
 	act(() => fake.invalidate(1, [{ kind: "section", section: "live" }]));
 	await settle();
-	expect(menuHost(id).item("paradise-park:pp")).toBeUndefined();
-	expect(menuHost(id).item(`local:${SESSION_ID}`)).toBeDefined();
+	expect(menuHost(id).item("paradise-park:pp", false)).toBeUndefined();
+	expect(menuHost(id).item(`local:${SESSION_ID}`, false)).toBeDefined();
 });
 
 it("stops providing the menu's host when the Board goes away", async () => {
