@@ -825,7 +825,7 @@ func projectTurn(turnID string, turnIndex int, turn schema.Turn, reg *ToolCallRe
 								Type:   "agentMessage",
 								ID:     fmt.Sprintf("item_assistant_%d_%d", turnIndex, i),
 								TurnID: turnID,
-								Text:   oneLineTruncRunes(string(rawArgs), communicateRawFallbackMaxRunes),
+								Text:   oneLineTruncRunes(rawArgs, communicateRawFallbackMaxRunes),
 								Status: appwire.TurnStatusCompleted,
 							})
 							recordPart(parts, i)
