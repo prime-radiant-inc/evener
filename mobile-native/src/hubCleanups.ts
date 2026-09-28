@@ -6,13 +6,21 @@
  * cleanup already surfaces its own storage failure the way
  * `board/boardMemory.ts`'s `forgetBoard` documents). */
 export function runHubCleanups(hubId: string, cleanups: readonly ((hubId: string) => void)[]): void {
+	// A flag, not an "is firstError still undefined" check: a cleanup is free
+	// to throw undefined or null (both legal), and either would look
+	// identical to "nothing failed yet" if the sentinel were the error value
+	// itself.
+	let failed = false;
 	let firstError: unknown;
 	for (const cleanup of cleanups) {
 		try {
 			cleanup(hubId);
 		} catch (error) {
-			if (firstError === undefined) firstError = error;
+			if (!failed) {
+				failed = true;
+				firstError = error;
+			}
 		}
 	}
-	if (firstError !== undefined) throw firstError;
+	if (failed) throw firstError;
 }

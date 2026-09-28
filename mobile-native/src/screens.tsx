@@ -1116,9 +1116,13 @@ export function ConversationScreen({
 		}
 	}
 	// The header items outlive this render; they reach the latest choices
-	// through the ref, so the header is not reset on every render.
+	// through the ref, so the header is not reset on every render. The ref is
+	// written after commit, in its own effect with no deps, not during
+	// render, which React's own rules reserve for effects.
 	const chooseSessionActionRef = useRef(chooseSessionAction);
-	chooseSessionActionRef.current = chooseSessionAction;
+	useEffect(() => {
+		chooseSessionActionRef.current = chooseSessionAction;
+	});
 	useEffect(() => {
 		navigation.setOptions({
 			// iPhone only: the pressable title with the session's state (spec
