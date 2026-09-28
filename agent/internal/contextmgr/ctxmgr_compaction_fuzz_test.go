@@ -302,7 +302,7 @@ func FuzzCtxmgrCheckpointData(f *testing.F) {
 			t.Fatalf("checkpoint missing closing frame: %q", cp[max(0, len(cp)-40):])
 		}
 		// Never-shed metadata survives verbatim into the rendered checkpoint.
-		for fpath := range got.modifiedFiles {
+		for fpath := range got.fileWrites {
 			if !strings.Contains(cp, fpath) {
 				t.Fatalf("modified file %q missing from checkpoint", fpath)
 			}

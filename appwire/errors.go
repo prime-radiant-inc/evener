@@ -1,5 +1,7 @@
 package appwire
 
+import "fmt"
+
 const (
 	CodeParseError     = -32700
 	CodeInvalidRequest = -32600
@@ -31,6 +33,18 @@ const (
 	ErrorMutationOutcomeUnknown    ErrorInfo = "mutationOutcomeUnknown"
 	ErrorTranscriptItemCursorStale ErrorInfo = "transcriptItemCursorStale"
 	ErrorInternal                  ErrorInfo = "internal"
+	// ErrorTranscriptHistoryFailed marks a read of a thread whose history
+	// entered its failed state: its projection or rebuild failed for a reason
+	// outside the entries (I/O, a corrupt index) three times in a row, and a
+	// rebuild the read attempted failed too. The message names the last entry
+	// the history had recorded when it failed. An entry that does not decode
+	// is not a failure: the index shows it as one unreadable-entry item. Its
+	// data is HistoryReadErrorData.
+	ErrorTranscriptHistoryFailed ErrorInfo = "transcriptHistoryFailed"
+	// ErrorUpgradeRequired marks initialize refusing a client that announced
+	// an older AppWire protocol than the server speaks; the message names both
+	// versions.
+	ErrorUpgradeRequired ErrorInfo = "upgradeRequired"
 	// ErrorKeybindingsPostRename marks a keybindings patch that APPLIED (the
 	// rename published the new revision) before a follow-up durable step
 	// failed; the error's data carries the applied canonical state.
@@ -156,6 +170,19 @@ const (
 	// the data: the operator resolves a remnant through teardown-retry first,
 	// then retries the removal.
 	ErrorTombstoneCapacity ErrorInfo = "tombstone-capacity"
+	// ErrorTeardownUnknownKey marks `evener/host/teardown-retry` naming a
+	// remnant id the store does not carry — never minted, or purged by the
+	// cleared/recovery marker retention (registry spec 08 §6/§11). Not-found
+	// class, with the unknown id in the data. A cleared remnant whose resolved
+	// record still survives is NOT this arm: it returns `already-cleared`.
+	ErrorTeardownUnknownKey ErrorInfo = "teardown-unknown-key"
+	// ErrorConcurrentEdit marks a hub.toml commit whose final fingerprint check
+	// found the file moved between the validation read and the check, after
+	// bounded retries (registry spec 08 §6/§11): no window's edit is erased and
+	// nothing committed. Conflict class, with both fingerprints in the data.
+	// The live-external reconcile validation (§15) rides the same discriminator
+	// with `{source, hostCount}` data on its own path.
+	ErrorConcurrentEdit ErrorInfo = "concurrent-edit"
 )
 
 // StaleEntryBinding names which binding a stale-entry refusal fired on, exactly
@@ -485,6 +512,60 @@ func InternalError(message string) WireError {
 	}
 }
 
+// TranscriptHistoryFailed reports a read of a thread whose history failed,
+// naming ordinal, the last entry it had recorded (see
+// ErrorTranscriptHistoryFailed). The history read stamps it with
+// WithHistoryReadIdentity.
+func TranscriptHistoryFailed(ordinal uint64) WireError {
+	return WireError{
+		Code:    CodeInternalError,
+		Message: fmt.Sprintf("thread history failed at entry %d", ordinal),
+		Data:    ErrorData{EvenerErrorInfo: ErrorTranscriptHistoryFailed},
+	}
+}
+
+// HistoryReadErrorData is the data of a thread/read or thread/turns/list
+// error: the error's own data plus the boot generation the read ran under,
+// and its resync epoch when the read had reached the thread's history. It
+// carries no snapshot identity and no items, so a client never adopts a
+// generation or epoch from it, and never replaces anything with it.
+type HistoryReadErrorData struct {
+	ErrorData
+	BootGeneration string  `json:"bootGeneration"`
+	Epoch          *uint64 `json:"epoch,omitempty"`
+}
+
+// WithHistoryReadIdentity stamps a history read's error with the boot
+// generation and epoch it ran under. An error whose data is not ErrorData
+// keeps its own data unchanged.
+func WithHistoryReadIdentity(err WireError, bootGeneration string, epoch uint64) WireError {
+	return withReadIdentity(err, bootGeneration, &epoch)
+}
+
+// WithReadBootGeneration stamps a read's error raised before the read reached
+// a thread's history (invalid params, an unknown thread, an unavailable
+// subscription) with the boot generation alone.
+func WithReadBootGeneration(err WireError, bootGeneration string) WireError {
+	return withReadIdentity(err, bootGeneration, nil)
+}
+
+func withReadIdentity(err WireError, bootGeneration string, epoch *uint64) WireError {
+	if data, ok := err.Data.(ErrorData); ok {
+		err.Data = HistoryReadErrorData{ErrorData: data, BootGeneration: bootGeneration, Epoch: epoch}
+	}
+	return err
+}
+
+// UpgradeRequired refuses a client that announced clientVersion, an AppWire
+// protocol older than serverVersion.
+func UpgradeRequired(clientVersion, serverVersion string) WireError {
+	return WireError{
+		Code:    CodeInvalidRequest,
+		Message: fmt.Sprintf("protocol version %q is older than this server's %q: upgrade required", clientVersion, serverVersion),
+		Data:    ErrorData{EvenerErrorInfo: ErrorUpgradeRequired},
+	}
+}
+
 func Conflict(message string) WireError {
 	return WireError{
 		Code:    CodeConflict,
@@ -586,5 +667,54 @@ func EndpointConflict(message string) WireError {
 		Code:    CodeConflict,
 		Message: message,
 		Data:    ErrorData{EvenerErrorInfo: ErrorEndpointConflict},
+	}
+}
+
+// TeardownUnknownKeyErrorData is §11's `teardown-unknown-key` data: the id the
+// call named, so a client can render which handle went stale.
+type TeardownUnknownKeyErrorData struct {
+	ErrorData
+	RemnantID string `json:"remnantId"`
+}
+
+// TeardownUnknownKey is §11's `teardown-unknown-key` refusal (not-found class):
+// the named remnant id is unknown or purged. It fires exactly when the named
+// remnant id is unknown or purged — "a cleared-remnant marker still present
+// returns the `already-cleared` arm instead". The not-found class rides
+// CodeInvalidParams, the code every other not-found refusal in this envelope
+// carries (ResourceNotFound's), because the wire defines no separate code for
+// it: a client matches the discriminant, never the code.
+func TeardownUnknownKey(remnantID, message string) WireError {
+	return WireError{
+		Code:    CodeInvalidParams,
+		Message: message,
+		Data: TeardownUnknownKeyErrorData{
+			ErrorData: ErrorData{EvenerErrorInfo: ErrorTeardownUnknownKey},
+			RemnantID: remnantID,
+		},
+	}
+}
+
+// ConcurrentEditErrorData is §11's `concurrent-edit` data on the commit path:
+// the fingerprint the commit staged against and the fingerprint it observed at
+// the final check.
+type ConcurrentEditErrorData struct {
+	ErrorData
+	StagedFingerprint   string `json:"stagedFingerprint"`
+	ObservedFingerprint string `json:"observedFingerprint"`
+}
+
+// ConcurrentEdit is §11's `concurrent-edit` refusal (conflict class): the
+// commit's final check found the hub.toml fingerprint moved after bounded
+// retries. The mutation commits nothing, and no window's edit is erased.
+func ConcurrentEdit(stagedFingerprint, observedFingerprint, message string) WireError {
+	return WireError{
+		Code:    CodeConflict,
+		Message: message,
+		Data: ConcurrentEditErrorData{
+			ErrorData:           ErrorData{EvenerErrorInfo: ErrorConcurrentEdit},
+			StagedFingerprint:   stagedFingerprint,
+			ObservedFingerprint: observedFingerprint,
+		},
 	}
 }

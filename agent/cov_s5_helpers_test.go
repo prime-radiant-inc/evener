@@ -36,10 +36,6 @@ func TestS5Cov_ToolDefinitionHelpers(t *testing.T) {
 		{Name: "a"}, // duplicate
 		{Name: ""},  // empty
 	}
-	entries := toolEntriesFromDefinitions(defs)
-	if len(entries) != 4 || entries[1].Description != "(no description)" {
-		t.Errorf("toolEntriesFromDefinitions = %+v", entries)
-	}
 	names := toolNamesFromDefinitions(defs)
 	if len(names) != 2 || names[0] != "a" || names[1] != "b" {
 		t.Errorf("toolNamesFromDefinitions = %v, want [a b] (deduped, empty dropped)", names)

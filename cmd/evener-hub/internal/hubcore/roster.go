@@ -39,6 +39,17 @@ type LiveEntry struct {
 	// A card carries the full literal denied path for informed consent, so it
 	// reaches human clients only, as thread/read's cards already do.
 	PendingEscalations []appwire.SandboxEscalationRequested
+	// PendingQuestion is the first question of the daemon's pending ask
+	// (S1b), from the same root row as PendingAsk; nil while none waits and
+	// from a daemon that predates it. A row names it only while PendingAsk is
+	// set, and rosterFingerprint hashes it: a question answered and another
+	// asked between two probes leaves PendingAsk and Status where they were.
+	PendingQuestion *appwire.PendingQuestion
+	// Failure summarizes the failed turn the session rests on (S1c), from the
+	// same root row as Status; the daemon sends it only while that status is
+	// systemError. rosterFingerprint hashes it: a turn retried and failed
+	// again between two probes leaves Status where it was.
+	Failure *appwire.ThreadFailure
 	// Capabilities mirrors the daemon's own Evener capability set from the
 	// probe that produced this entry, so list projections can advertise the
 	// daemon's answer instead of a hand approximation (#1840's one-answer
@@ -105,6 +116,16 @@ type LiveEntry struct {
 	// the hub's seen marker, so rosterFingerprint hashes it: a turn that starts
 	// and ends between two probes leaves Status unchanged and moves only this.
 	LastTurnEndedAt time.Time
+	// Profile is the provider instance the session's current model runs on,
+	// from its probe; the embedded Entry's Provider is the one it started on,
+	// and a model switch leaves that behind. A sign-in notice counts the
+	// sessions it blocks by it (S11). No row shows it, so rosterFingerprint
+	// leaves it out.
+	Profile string
+	// LastMessage is the opening of the session's last agent message, from its
+	// probe (S1d): a Finished row's why line. rosterFingerprint hashes it: a
+	// message can land while the status and the turn end hold still.
+	LastMessage string
 }
 
 // ProbeResult is the dynamic session state returned by a daemon liveness probe.
@@ -117,6 +138,12 @@ type ProbeResult struct {
 	// PendingEscalations mirrors LiveEntry.PendingEscalations: the blocked
 	// cards from the same root row, in raise order.
 	PendingEscalations []appwire.SandboxEscalationRequested
+	// PendingQuestion mirrors LiveEntry.PendingQuestion: the first pending
+	// question from the same root row as PendingAsk (S1b).
+	PendingQuestion *appwire.PendingQuestion
+	// Failure mirrors LiveEntry.Failure: the failure summary from the same
+	// root row as Status (S1c).
+	Failure *appwire.ThreadFailure
 	// Capabilities is the daemon's own Evener capability set from the same
 	// projection cut as Status. CapabilitiesKnown reports whether this probe
 	// read one: a failed, protocol-mismatched, or legacy probe leaves the set
@@ -147,6 +174,12 @@ type ProbeResult struct {
 	// LastTurnEndedAt is when the listed root's last turn ended (S4); zero from
 	// a daemon that predates it, or before any turn has ended.
 	LastTurnEndedAt time.Time
+	// Profile mirrors LiveEntry.Profile: the provider instance of the root's
+	// current model.
+	Profile string
+	// LastMessage mirrors LiveEntry.LastMessage: the opening of the listed
+	// root's last agent message (S1d), empty from a daemon that predates it.
+	LastMessage string
 	// ProtocolMismatch: the endpoint answered, but as a daemon this hub cannot
 	// talk to (restart required). Such an answer names no session of its own,
 	// so it does not vouch for the entry's PID the way a bound answer does.
@@ -199,6 +232,8 @@ func CloneLiveEntry(in LiveEntry) LiveEntry {
 	out := in
 	out.ActiveFlags = append([]string(nil), in.ActiveFlags...)
 	out.PendingEscalations = append([]appwire.SandboxEscalationRequested(nil), in.PendingEscalations...)
+	out.PendingQuestion = appwire.ClonePendingQuestion(in.PendingQuestion)
+	out.Failure = appwire.CloneThreadFailure(in.Failure)
 	out.RunningSubagentIDs = append([]string(nil), in.RunningSubagentIDs...)
 	out.RunningSubagentStates = cloneSubagentStates(in.RunningSubagentStates)
 	out.RunningJobs = cloneRunningJobs(in.RunningJobs)
@@ -467,6 +502,32 @@ func rosterFingerprint(bySess map[string]LiveEntry) uint64 {
 			_, _ = h.Write([]byte{0})
 		}
 		_, _ = h.Write([]byte{0})
+		// A row names the first pending question, and a question answered and
+		// another asked between two probes holds the ask flag and the status
+		// still (S1b).
+		if question := bySess[id].PendingQuestion; question != nil {
+			_, _ = h.Write([]byte(question.Question))
+			_, _ = h.Write([]byte{0})
+			for _, label := range question.Options {
+				_, _ = h.Write([]byte(label))
+				_, _ = h.Write([]byte{0})
+			}
+			_, _ = h.Write([]byte(strconv.Itoa(question.Count)))
+		}
+		_, _ = h.Write([]byte{0})
+		// A Failed row says why, and a turn retried and failed again between
+		// two probes holds the status still (S1c).
+		if failure := bySess[id].Failure; failure != nil {
+			_, _ = h.Write([]byte(failure.Title))
+			_, _ = h.Write([]byte{0})
+			if cause := failure.Cause; cause != nil {
+				for _, field := range []string{cause.Kind, cause.Provider, cause.Model, strconv.Itoa(cause.Status)} {
+					_, _ = h.Write([]byte(field))
+					_, _ = h.Write([]byte{0})
+				}
+			}
+		}
+		_, _ = h.Write([]byte{0})
 		// The daemon's capability answer is per-session observable state in
 		// the same sense the status is: bits fold daemon state the status
 		// string itself does not (Clear folds the clear-blocked reason, Send
@@ -584,6 +645,10 @@ func rosterFingerprint(bySess map[string]LiveEntry) uint64 {
 		// A turn that starts and ends between two probes leaves Status where it
 		// was and moves only this, and it turns the row Finished (S4).
 		_, _ = h.Write([]byte(strconv.FormatInt(UnixMilliseconds(bySess[id].LastTurnEndedAt), 10)))
+		_, _ = h.Write([]byte{0})
+		// A Finished row shows its last message, which can land while the
+		// status and the turn end hold still (S1d).
+		_, _ = h.Write([]byte(bySess[id].LastMessage))
 	}
 	return h.Sum64()
 }
@@ -1385,6 +1450,10 @@ func (r *Roster) ResidentEntries() []ResidentEntry {
 // with the prober's result, and a field added to both types is copied in one
 // place.
 func liveEntryFromProbe(e rendezvous.Entry, result ProbeResult) LiveEntry {
+	// CloneLiveEntry deep-copies the whole literal below before it returns, so
+	// a field assigned straight from result (PendingEscalations, Watches, and
+	// so on) is not aliasing the probe's copy: RoboRev has twice flagged this
+	// function on that mistaken reading.
 	return CloneLiveEntry(LiveEntry{
 		Entry:                 e,
 		SessionID:             result.SessionID,
@@ -1393,6 +1462,8 @@ func liveEntryFromProbe(e rendezvous.Entry, result ProbeResult) LiveEntry {
 		PendingAsk:            result.PendingAsk,
 		PendingEscalation:     result.PendingEscalation,
 		PendingEscalations:    result.PendingEscalations,
+		PendingQuestion:       result.PendingQuestion,
+		Failure:               result.Failure,
 		Capabilities:          result.Capabilities,
 		CapabilitiesKnown:     result.CapabilitiesKnown,
 		RunningSubagentIDs:    result.RunningSubagentIDs,
@@ -1407,6 +1478,8 @@ func liveEntryFromProbe(e rendezvous.Entry, result ProbeResult) LiveEntry {
 		Activity:              result.Activity,
 		Subagents:             result.Subagents,
 		LastTurnEndedAt:       result.LastTurnEndedAt,
+		Profile:               result.Profile,
+		LastMessage:           result.LastMessage,
 	})
 }
 
@@ -1470,6 +1543,9 @@ func (r *Roster) ReadSpawnedThread(ctx context.Context, entry rendezvous.Entry, 
 		ActiveFlags: append([]string(nil), root.Status.ActiveFlags...),
 		PendingAsk:  root.Evener.AskPending, PendingEscalation: len(root.Evener.PendingEscalations) > 0,
 		PendingEscalations: root.Evener.PendingEscalations,
+		PendingQuestion:    root.Evener.PendingQuestion,
+		Failure:            root.Evener.Failure,
+		LastMessage:        root.Evener.LastMessage,
 		RunningJobs:        runningJobs, CompletedJobs: completedJobs,
 		Watches: diagnosticsWatches(root.Evener.Diagnostics),
 		Tasks:   root.Evener.Tasks,
@@ -1477,7 +1553,8 @@ func (r *Roster) ReadSpawnedThread(ctx context.Context, entry rendezvous.Entry, 
 		// and every current daemon stamps its capability set on the thread
 		// projection this read answered from, so the caps beside the status
 		// are the daemon's own answer — not an approximation.
-		Capabilities: root.Evener.Capabilities, CapabilitiesKnown: true}
+		Capabilities: root.Evener.Capabilities, CapabilitiesKnown: true,
+		Profile: root.Evener.Profile}
 	if root.Evener.Diagnostics != nil {
 		result.RunningSubagentStates = make(map[string]string)
 		for _, delegate := range root.Evener.Diagnostics.Delegates {

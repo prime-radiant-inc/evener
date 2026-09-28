@@ -105,7 +105,9 @@ completion affordance and ships its MIT attribution at
 Besides the root, `package.json` `exports` publishes these subpaths:
 
 - `@evener/appwire-client/docContent` - the doc-pane data layer, where
-  `readDocFile` takes the host's `DocPort`.
+  `readDocFile` takes the host's `DocPort`, and the path helpers both apps'
+  document surfaces share (`filenameOf`, `isMarkdownPath`, `isImagePath`,
+  `fileURLToPath`, `cwdRelative`).
 - `@evener/appwire-client/state/connection` - the connection state layer:
   `createConnectionStore()` is a framework-free store holding one host's wired
   `AppwireClientLike`, the `ConnectionState` mirror that follows it, and plain

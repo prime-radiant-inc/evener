@@ -9,6 +9,7 @@ import (
 	"bufio"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -16,6 +17,16 @@ import (
 
 	"github.com/spf13/afero"
 )
+
+// maxRecordBytes is the largest single JSONL record Append will write, and the
+// reader ceiling that guarantees every record it writes can be read back. It is
+// the writer/reader contract for this package: Append refuses a marshaled
+// record above this bound, and loadFromDisk's scanner admits anything up to and
+// including it. The bound keeps the log's established ability to carry a large
+// summary (the OODA truncation path appends one at ~85 KB) while staying far
+// above any realistic one-line record and far below a raw transcript, so a
+// corrupt or hostile record cannot force an unbounded allocation.
+const maxRecordBytes = 1 << 20 // 1 MiB
 
 // SessionLogEntry is a structured summary of one action.
 type SessionLogEntry struct {
@@ -35,6 +46,12 @@ type SessionLog struct {
 	marshal func(any) ([]byte, error)
 	mu      sync.RWMutex
 	entries []SessionLogEntry
+	// tornTail records that the file ended in an unterminated final line when
+	// it was loaded — the residue of an interrupted append. The bytes are left
+	// on disk (malformed lines are tolerated), but the next append must first
+	// terminate that line so the new record is not concatenated onto it and
+	// silently lost by the following load.
+	tornTail bool
 }
 
 // NewSessionLog creates a new SessionLog that persists to the given path.
@@ -66,7 +83,9 @@ func newSessionLogFS(path string, fs afero.Fs) (*SessionLog, error) {
 	return log, nil
 }
 
-// loadFromDisk reads entries from the log file.
+// loadFromDisk reads entries from the log file. Malformed lines are skipped to
+// tolerate partial writes; an unterminated final line (a torn write) is
+// recorded so the next append can separate itself from it.
 func (l *SessionLog) loadFromDisk() error {
 	f, err := l.fs.Open(l.path)
 	if err != nil {
@@ -74,7 +93,12 @@ func (l *SessionLog) loadFromDisk() error {
 	}
 	defer func() { _ = f.Close() }() // read-only handle; close error is immaterial
 
-	scanner := bufio.NewScanner(f)
+	tail := &tailReader{r: f}
+	scanner := bufio.NewScanner(tail)
+	// bufio rejects a token of exactly the configured maximum, so the ceiling
+	// sits one byte above the writer's bound: a record of exactly maxRecordBytes
+	// scans back, and the framing newline is not part of the token.
+	scanner.Buffer(make([]byte, 0, 64*1024), maxRecordBytes+1)
 	for scanner.Scan() {
 		line := scanner.Text()
 		if line == "" {
@@ -91,7 +115,33 @@ func (l *SessionLog) loadFromDisk() error {
 		l.entries = append(l.entries, entry)
 	}
 
-	return scanner.Err()
+	if err := scanner.Err(); err != nil {
+		return err
+	}
+
+	// A file that does not end in a newline ends in an unterminated final
+	// line: an interrupted append whose bytes the scanner skipped as
+	// malformed. Record it so the next append terminates that line first,
+	// rather than concatenating onto it and losing the new record on reload.
+	l.tornTail = tail.n > 0 && tail.last != '\n'
+	return nil
+}
+
+// tailReader records the last byte it read, so loadFromDisk can tell whether
+// the log ended in an unterminated line without a second pass over the file.
+type tailReader struct {
+	r    io.Reader
+	last byte
+	n    int
+}
+
+func (t *tailReader) Read(p []byte) (int, error) {
+	n, err := t.r.Read(p)
+	if n > 0 {
+		t.last = p[n-1]
+		t.n += n
+	}
+	return n, err
 }
 
 // Append appends an entry to the in-memory list and persists to disk.
@@ -99,15 +149,23 @@ func (l *SessionLog) Append(entry SessionLogEntry) error {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
+	data, err := l.marshal(entry)
+	if err != nil {
+		return err
+	}
+	if len(data) > maxRecordBytes {
+		return fmt.Errorf("session log record too large: %d bytes exceeds %d-byte limit", len(data), maxRecordBytes)
+	}
+
 	// Append to in-memory list
 	l.entries = append(l.entries, entry)
 
 	// Persist to disk (append-only)
-	return l.appendToDisk(entry)
+	return l.appendToDisk(data)
 }
 
-// appendToDisk writes a single entry to the log file.
-func (l *SessionLog) appendToDisk(entry SessionLogEntry) error {
+// appendToDisk writes one marshaled entry to the log file.
+func (l *SessionLog) appendToDisk(data []byte) error {
 	if err := l.fs.MkdirAll(filepath.Dir(l.path), 0o755); err != nil {
 		return fmt.Errorf("create log directory: %w", err)
 	}
@@ -117,13 +175,25 @@ func (l *SessionLog) appendToDisk(entry SessionLogEntry) error {
 	}
 	defer func() { _ = f.Close() }() // best-effort observability log; the write error below is what matters
 
-	data, err := l.marshal(entry)
-	if err != nil {
+	record := make([]byte, 0, len(data)+2)
+	if l.tornTail {
+		// Terminate the torn tail so the new record starts on its own line.
+		// The torn bytes stay on disk as a malformed line, which load tolerates
+		// — consistent with the existing skip-malformed behavior.
+		record = append(record, '\n')
+	}
+	record = append(record, data...)
+	record = append(record, '\n')
+	// A failed write may leave a partial record on disk, so assume a torn tail
+	// until this write succeeds: the next append then separates itself from the
+	// residue instead of concatenating onto it. A spurious separator when no
+	// bytes were written is a blank line the loader skips.
+	l.tornTail = true
+	if _, err := f.Write(record); err != nil {
 		return err
 	}
-
-	_, err = f.Write(append(data, '\n'))
-	return err
+	l.tornTail = false
+	return nil
 }
 
 // Entries returns a copy of all entries.

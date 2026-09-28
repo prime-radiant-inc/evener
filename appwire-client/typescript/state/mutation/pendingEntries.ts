@@ -99,6 +99,22 @@ export function pendingEntryPreview(entry: {
     .join(" ");
 }
 
+// Whether THIS client has a turn/start of its own that the session has not
+// reflected yet: deriveSendQueueAvailability's tier 6 input. A fast second
+// message is composed while the thread still reads idle; routed to
+// turn/start it is refused with Conflict("turn is already active").
+//
+// Someone else's pending send never counts: a routing decision must not
+// follow another tab's or the TUI's send. It is fromThisClient, not
+// entry.source, because a hydrate landing mid-send re-describes this client's
+// own unsettled send as "authoritative". blockedUnknown counts: the send's
+// response was lost, so its turn may already be running. A canceled row does
+// not count: Stop wrote its cancellation before dispatch, so no turn can be
+// running because of it.
+export function ownPendingSend(entries: readonly PendingTurnEntry[] | null | undefined): boolean {
+  return (entries ?? []).some((entry) => entry.method === "send" && entry.fromThisClient && entry.state !== "canceled");
+}
+
 const DEFAULT_MAX_DISPLAY_LENGTH = 140;
 
 // The client-side visual cap layered on top of the daemon's own first-line

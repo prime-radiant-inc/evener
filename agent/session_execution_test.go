@@ -8,6 +8,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/spf13/afero"
+
+	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/llm"
@@ -269,5 +272,44 @@ func TestProcessInputWithNoTranscriptDoesNotPanic(t *testing.T) {
 	}
 	if _, err := s.ProcessInput(context.Background(), "hello", nil); err != nil {
 		t.Fatalf("ProcessInput: %v", err)
+	}
+}
+
+// recordNotice refuses to record a notice whose payload does not match
+// schema.NoticeInfo.Validate()'s own contract: the read side drops a
+// mismatch silently, so the write side must never persist one in the first
+// place. A valid notice still records as a NOTICE entry.
+func TestRecordNoticeRefusesAMismatchedPayload(t *testing.T) {
+	s, _ := newExecutionSession(t)
+	evs := drainEvents(s)
+	s.recordNotice(schema.NoticeInfo{Kind: schema.NoticeGoalEnded}) // no payload
+	// NOTICE entries are transcript-only (never enter s.history), so read the
+	// file directly to confirm the invalid one was never written.
+	for _, entry := range decodeTranscriptEntries(t, afero.NewOsFs(), s.TranscriptPath()) {
+		if entry.Turn.Kind == schema.TurnNotice {
+			t.Fatal("an invalid notice was recorded")
+		}
+	}
+	s.recordNotice(schema.NoticeInfo{Kind: schema.NoticeGoalEnded, GoalEnded: &schema.GoalEndedNotice{Status: "complete"}})
+	found := false
+	for _, entry := range decodeTranscriptEntries(t, afero.NewOsFs(), s.TranscriptPath()) {
+		if entry.Turn.Kind == schema.TurnNotice {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("a valid notice was not recorded")
+	}
+	s.Close()
+	warned := false
+	for _, ev := range evs() {
+		if ev.Kind == events.EventWarning {
+			if data, ok := ev.Data.(events.WarningData); ok && strings.Contains(data.Message, "invalid notice") {
+				warned = true
+			}
+		}
+	}
+	if !warned {
+		t.Fatal("no warning was emitted for the invalid notice")
 	}
 }

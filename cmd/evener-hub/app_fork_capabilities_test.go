@@ -60,9 +60,7 @@ func TestHubForkCapabilityReadAndStatusMatchHubOwnership(t *testing.T) {
 			t.Errorf("includeTurns=%v: hub read did not advertise its fork operation", turns)
 		}
 	}
-	daemon.RecordAppEvent(events.SessionEvent{
-		Kind: events.EventUserInput, SessionID: sessionID, Data: events.UserInputData{Text: "fork status fixture"},
-	})
+	daemon.SetProcessingTurn("t_fork_status_fixture")
 	deadline := time.After(2 * time.Second)
 	for {
 		select {
@@ -120,7 +118,7 @@ func TestHubForkAdmissionLoadsOwnershipWhenPastIndexIsUnavailable(t *testing.T) 
 			}
 			cfg := hubcore.WebConfig{StateDir: stateDir, Past: tc.past}
 			_, err := hubThreadFork(t.Context(), cfg, nil, appwire.ThreadForkParams{
-				Ref: "local:" + targetID, SourceTurnID: "turn_1", EditedInput: "forked input",
+				Ref: "local:" + targetID, SourceItemKey: "apptranscript-item-v2:t_1:0:0", EditedInput: "forked input",
 			})
 			if tc.wantOK {
 				if err != nil {
@@ -199,7 +197,7 @@ func TestHubForkAdmissionRejectsLiveSubagentAliasFromRoster(t *testing.T) {
 			}
 
 			_, err = hubThreadFork(t.Context(), cfg, nil, appwire.ThreadForkParams{
-				Ref: "local:" + childID, SourceTurnID: "turn_1", EditedInput: "forked input",
+				Ref: "local:" + childID, SourceItemKey: "apptranscript-item-v2:t_1:0:0", EditedInput: "forked input",
 			})
 			if err == nil {
 				t.Fatal("live subagent alias fork succeeded")
@@ -311,7 +309,7 @@ func TestHubRPCPersistedSubagentCanForkAfterStop(t *testing.T) {
 		t.Fatalf("persisted subagent read did not advertise fork: %+v", read.Thread.Evener.Capabilities)
 	}
 	before := len(past.Search("", 100, 0))
-	_, err = client.ThreadFork(t.Context(), appwire.ThreadForkParams{Ref: "local:" + sessionID, SourceTurnID: "turn_1", EditedInput: "fork"})
+	_, err = client.ThreadFork(t.Context(), appwire.ThreadForkParams{Ref: "local:" + sessionID, SourceItemKey: "apptranscript-item-v2:t_1:0:0", EditedInput: "fork"})
 	if err != nil {
 		t.Fatalf("persisted subagent fork: %v", err)
 	}
@@ -393,7 +391,7 @@ func TestHubForkBranchesInAdmittedEntryStateDir(t *testing.T) {
 		params appwire.ThreadForkParams
 	}{
 		{name: "aside", params: appwire.ThreadForkParams{Aside: true}},
-		{name: "fork from turn", params: appwire.ThreadForkParams{SourceTurnID: "turn_1", EditedInput: "forked input"}},
+		{name: "fork from turn", params: appwire.ThreadForkParams{SourceItemKey: "apptranscript-item-v2:t_1:0:0", EditedInput: "forked input"}},
 	} {
 		for _, index := range []struct {
 			name string
@@ -534,7 +532,7 @@ func TestHubForkFencesLiveDelegateFromOneSignal(t *testing.T) {
 					t.Error("live delegate was advertised as forkable")
 				}
 				_, err = hubThreadFork(t.Context(), cfg, nil, appwire.ThreadForkParams{
-					Ref: "local:" + childID, SourceTurnID: "turn_1", EditedInput: "forked input",
+					Ref: "local:" + childID, SourceItemKey: "apptranscript-item-v2:t_1:0:0", EditedInput: "forked input",
 				})
 				if err == nil {
 					t.Fatal("live delegate fork succeeded")
@@ -657,7 +655,7 @@ func TestHubForkAdmissionRefusesEveryProjectedRecoveryFence(t *testing.T) {
 				t.Errorf("projected forkFromTurn=%v, want %v", got, tc.fence == nil)
 			}
 			_, err := hubThreadFork(t.Context(), cfg, nil, appwire.ThreadForkParams{
-				Ref: "local:" + sessionID, SourceTurnID: "turn_1", EditedInput: "forked input",
+				Ref: "local:" + sessionID, SourceItemKey: "apptranscript-item-v2:t_1:0:0", EditedInput: "forked input",
 			})
 			wantMetas := 1
 			if tc.fence == nil {
@@ -700,7 +698,7 @@ func TestHubForkCapabilityAdvertisesAheadOfOwnershipResolution(t *testing.T) {
 		t.Fatal("projection resolved ownership; update the note on applyHubForkCapability")
 	}
 	_, err = hubThreadFork(t.Context(), cfg, nil, appwire.ThreadForkParams{
-		Ref: "local:" + sessionID, SourceTurnID: "turn_1", EditedInput: "forked input",
+		Ref: "local:" + sessionID, SourceItemKey: "apptranscript-item-v2:t_1:0:0", EditedInput: "forked input",
 	})
 	wire, ok := errors.AsType[appwire.WireError](err)
 	if !ok || wire.Code != appwire.CodeUnavailable {
@@ -769,9 +767,7 @@ func TestHubRelayedForkCapabilityFollowsLiveRecovery(t *testing.T) {
 	}
 	relayedForkStamp := func(text string) bool {
 		t.Helper()
-		daemon.RecordAppEvent(events.SessionEvent{
-			Kind: events.EventUserInput, SessionID: sessionID, Data: events.UserInputData{Text: text},
-		})
+		daemon.SetProcessingTurn("t_" + text)
 		deadline := time.After(2 * time.Second)
 		for {
 			select {
@@ -877,7 +873,7 @@ func TestHubForkAdmitsPersistedDelegateOfCrashedParent(t *testing.T) {
 		t.Error("stopped delegate of a crashed parent was not advertised as forkable")
 	}
 	resp, err := hubThreadFork(t.Context(), cfg, nil, appwire.ThreadForkParams{
-		Ref: "local:" + childID, SourceTurnID: "turn_1", EditedInput: "forked input",
+		Ref: "local:" + childID, SourceItemKey: "apptranscript-item-v2:t_1:0:0", EditedInput: "forked input",
 	})
 	if err != nil {
 		t.Fatalf("stopped delegate of a crashed parent could not be forked: %v", err)
@@ -1002,7 +998,7 @@ func TestHubForkRefusesDelegateThatWentLiveBeforeAdmission(t *testing.T) {
 	}
 	cfg := hubcore.WebConfig{StateDir: stateDir, Roster: roster}
 	_, err = hubThreadFork(t.Context(), cfg, nil, appwire.ThreadForkParams{
-		Ref: "local:" + childID, SourceTurnID: "turn_1", EditedInput: "forked input",
+		Ref: "local:" + childID, SourceItemKey: "apptranscript-item-v2:t_1:0:0", EditedInput: "forked input",
 	})
 	if err == nil {
 		t.Fatal("fork of a delegate that went live before admission succeeded")
@@ -1073,7 +1069,7 @@ func TestHubForkByStableRefBranchesTheCurrentSession(t *testing.T) {
 				t.Fatal("the stable ref was not advertised as forkable; this fixture cannot reach the handler")
 			}
 			resp, err := hubThreadFork(t.Context(), cfg, nil, appwire.ThreadForkParams{
-				Ref: "local:" + retiredID, SourceTurnID: "turn_1", EditedInput: "forked input",
+				Ref: "local:" + retiredID, SourceItemKey: "apptranscript-item-v2:t_1:0:0", EditedInput: "forked input",
 			})
 			if err != nil {
 				t.Fatalf("fork by the daemon's stable workspace ref: %v", err)
@@ -1101,14 +1097,14 @@ func TestHubForkValidatesParamsBeforeFencingOrDiscovery(t *testing.T) {
 		name   string
 		params appwire.ThreadForkParams
 	}{
-		{name: "aside with a source turn", params: appwire.ThreadForkParams{Aside: true, SourceTurnID: "turn_1"}},
+		{name: "aside with a source turn", params: appwire.ThreadForkParams{Aside: true, SourceItemKey: "apptranscript-item-v2:t_1:0:0"}},
 		{name: "aside with edited input", params: appwire.ThreadForkParams{Aside: true, EditedInput: "forked input"}},
 		{name: "aside with a label", params: appwire.ThreadForkParams{Aside: true, Label: "side"}},
 		{name: "aside deferring input", params: appwire.ThreadForkParams{Aside: true, DeferInput: true}},
 		{name: "no source turn", params: appwire.ThreadForkParams{EditedInput: "forked input"}},
-		{name: "unparseable source turn", params: appwire.ThreadForkParams{SourceTurnID: "turn_zero", EditedInput: "forked input"}},
-		{name: "no edited input", params: appwire.ThreadForkParams{SourceTurnID: "turn_1"}},
-		{name: "edited input with deferred input", params: appwire.ThreadForkParams{SourceTurnID: "turn_1", EditedInput: "forked input", DeferInput: true}},
+		{name: "unparseable source turn", params: appwire.ThreadForkParams{SourceItemKey: "turn_zero", EditedInput: "forked input"}},
+		{name: "no edited input", params: appwire.ThreadForkParams{SourceItemKey: "apptranscript-item-v2:t_1:0:0"}},
+		{name: "edited input with deferred input", params: appwire.ThreadForkParams{SourceItemKey: "apptranscript-item-v2:t_1:0:0", EditedInput: "forked input", DeferInput: true}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			const sessionID = "02fencedForkTarget0000"
@@ -1295,7 +1291,7 @@ func TestHubForkFencesBothTheRequestedAliasAndTheResolvedSession(t *testing.T) {
 					t.Fatal(listErr)
 				}
 				_, err = hubThreadFork(t.Context(), cfg, nil, appwire.ThreadForkParams{
-					Ref: "local:" + retiredID, SourceTurnID: "turn_1", EditedInput: "forked input",
+					Ref: "local:" + retiredID, SourceItemKey: "apptranscript-item-v2:t_1:0:0", EditedInput: "forked input",
 				})
 				if err == nil {
 					t.Fatalf("fork by the stable ref succeeded while %s was fenced", fencedID)
@@ -1388,7 +1384,7 @@ func TestHubForkReportsDeletionBeforeRecoveryWhicheverIdentitySortsFirst(t *test
 			}
 
 			_, err = hubThreadFork(t.Context(), cfg, nil, appwire.ThreadForkParams{
-				Ref: "local:" + tc.aliasID, SourceTurnID: "turn_1", EditedInput: "forked input",
+				Ref: "local:" + tc.aliasID, SourceItemKey: "apptranscript-item-v2:t_1:0:0", EditedInput: "forked input",
 			})
 			if !isTargetDeletedError(err) {
 				t.Fatalf("fork error=%v, want the deleted target reported ahead of the recovery fence", err)
@@ -1478,7 +1474,7 @@ func TestHubForkRefusesWhenItsTargetMovesUnderTheLocks(t *testing.T) {
 				t.Fatal(listErr)
 			}
 			_, err = hubThreadFork(t.Context(), cfg, nil, appwire.ThreadForkParams{
-				Ref: "local:" + retiredID, SourceTurnID: "turn_1", EditedInput: "forked input",
+				Ref: "local:" + retiredID, SourceItemKey: "apptranscript-item-v2:t_1:0:0", EditedInput: "forked input",
 			})
 			after, listErr := schema.ListSessionMetas(stateDir)
 			if listErr != nil {
@@ -1581,7 +1577,7 @@ func TestHubForkRechecksItsTargetAgainstTheRendezvousNotTheRoster(t *testing.T) 
 				t.Fatal(listErr)
 			}
 			_, err = hubThreadFork(t.Context(), cfg, nil, appwire.ThreadForkParams{
-				Ref: "local:" + retiredID, SourceTurnID: "turn_1", EditedInput: "forked input",
+				Ref: "local:" + retiredID, SourceItemKey: "apptranscript-item-v2:t_1:0:0", EditedInput: "forked input",
 			})
 			after, listErr := schema.ListSessionMetas(stateDir)
 			if listErr != nil {
@@ -1698,7 +1694,7 @@ func TestHubForkRefusesAnAliasTwoDaemonsClaim(t *testing.T) {
 				t.Fatal(listErr)
 			}
 			resp, err := hubThreadFork(t.Context(), cfg, nil, appwire.ThreadForkParams{
-				Ref: "local:" + retiredID, SourceTurnID: "turn_1", EditedInput: "forked input",
+				Ref: "local:" + retiredID, SourceItemKey: "apptranscript-item-v2:t_1:0:0", EditedInput: "forked input",
 			})
 			after, listErr := schema.ListSessionMetas(stateDir)
 			if listErr != nil {
@@ -1785,7 +1781,7 @@ func TestHubForkFollowsTheRecoveryRedirectForAStoppedAlias(t *testing.T) {
 		Roster: hubcore.NewRosterWithEntries(), ResumeLocks: locks,
 	}
 	resp, err := hubThreadFork(t.Context(), cfg, nil, appwire.ThreadForkParams{
-		Ref: "local:" + aliasID, SourceTurnID: "turn_1", EditedInput: "forked input",
+		Ref: "local:" + aliasID, SourceItemKey: "apptranscript-item-v2:t_1:0:0", EditedInput: "forked input",
 	})
 	if err != nil {
 		t.Fatalf("fork through a resumed alias whose daemon has stopped: %v", err)
@@ -1839,7 +1835,7 @@ func TestHubForkReportsDeletionEvenWhenTheRefreshFails(t *testing.T) {
 				t.Fatal(listErr)
 			}
 			_, err = hubThreadFork(t.Context(), cfg, nil, appwire.ThreadForkParams{
-				Ref: "local:" + sessionID, SourceTurnID: "turn_1", EditedInput: "forked input",
+				Ref: "local:" + sessionID, SourceItemKey: "apptranscript-item-v2:t_1:0:0", EditedInput: "forked input",
 			})
 			if err == nil {
 				t.Fatal("fork proceeded while daemon discovery was failing")
@@ -1925,7 +1921,7 @@ func TestHubForkCapabilityHidesADeletionFencedThread(t *testing.T) {
 			}
 			// What the projection advertises and what the RPC does must agree.
 			_, err = hubThreadFork(t.Context(), cfg, nil, appwire.ThreadForkParams{
-				Ref: "local:" + requestedID, SourceTurnID: "turn_1", EditedInput: "forked input",
+				Ref: "local:" + requestedID, SourceItemKey: "apptranscript-item-v2:t_1:0:0", EditedInput: "forked input",
 			})
 			if wantFork {
 				if err != nil {
@@ -1978,7 +1974,7 @@ func TestHubForkIgnoresACrashRetainedClaimOnTheAlias(t *testing.T) {
 		}),
 	}
 	resp, err := hubThreadFork(t.Context(), cfg, nil, appwire.ThreadForkParams{
-		Ref: "local:" + aliasID, SourceTurnID: "turn_1", EditedInput: "forked input",
+		Ref: "local:" + aliasID, SourceItemKey: "apptranscript-item-v2:t_1:0:0", EditedInput: "forked input",
 	})
 	if err != nil {
 		t.Fatalf("fork through an alias whose only claim is a crash marker: %v", err)
@@ -2095,7 +2091,7 @@ func TestHubForkCapabilityFencesTheSessionAStableRefResolvesTo(t *testing.T) {
 			}
 
 			_, err = hubThreadFork(t.Context(), cfg, nil, appwire.ThreadForkParams{
-				Ref: ref, SourceTurnID: "turn_1", EditedInput: "forked input",
+				Ref: ref, SourceItemKey: "apptranscript-item-v2:t_1:0:0", EditedInput: "forked input",
 			})
 			if wantFork {
 				if err != nil {
@@ -2160,7 +2156,7 @@ func TestHubForkLiveStatusFenceAgreesOnBothIdentities(t *testing.T) {
 			}
 
 			_, err = hubThreadFork(t.Context(), cfg, nil, appwire.ThreadForkParams{
-				Ref: "local:" + aliasID, SourceTurnID: "turn_1", EditedInput: "forked input",
+				Ref: "local:" + aliasID, SourceItemKey: "apptranscript-item-v2:t_1:0:0", EditedInput: "forked input",
 			})
 			if flags == nil {
 				if err != nil {
@@ -2238,7 +2234,7 @@ func TestHubForkReportsAResolvedSessionsDeletionEvenWhenTheRefreshFails(t *testi
 				t.Fatal(listErr)
 			}
 			_, err = hubThreadFork(t.Context(), cfg, nil, appwire.ThreadForkParams{
-				Ref: "local:" + aliasID, SourceTurnID: "turn_1", EditedInput: "forked input",
+				Ref: "local:" + aliasID, SourceItemKey: "apptranscript-item-v2:t_1:0:0", EditedInput: "forked input",
 			})
 			if err == nil {
 				t.Fatal("fork proceeded while daemon discovery was failing")
@@ -2319,7 +2315,7 @@ func TestHubForkRefusesAClaimItCannotVerify(t *testing.T) {
 				t.Fatal(listErr)
 			}
 			resp, err := hubThreadFork(t.Context(), cfg, nil, appwire.ThreadForkParams{
-				Ref: "local:" + aliasID, SourceTurnID: "turn_1", EditedInput: "forked input",
+				Ref: "local:" + aliasID, SourceItemKey: "apptranscript-item-v2:t_1:0:0", EditedInput: "forked input",
 			})
 			after, listErr := schema.ListSessionMetas(stateDir)
 			if listErr != nil {
@@ -2427,7 +2423,7 @@ func TestHubForkResolvesAnAliasFromWhicheverSourceIsConfigured(t *testing.T) {
 			}
 
 			resp, err := hubThreadFork(t.Context(), cfg, nil, appwire.ThreadForkParams{
-				Ref: "local:" + aliasID, SourceTurnID: "turn_1", EditedInput: "forked input",
+				Ref: "local:" + aliasID, SourceItemKey: "apptranscript-item-v2:t_1:0:0", EditedInput: "forked input",
 			})
 			if tc.verifyFails {
 				wire, ok := errors.AsType[appwire.WireError](err)
@@ -2594,26 +2590,24 @@ func TestHubRelayProjectsForkOnlyForStatusNotifications(t *testing.T) {
 		}
 	}
 	// One status transition, which the relay does stamp: the projection runs.
-	daemon.RecordAppEvent(events.SessionEvent{
-		Kind: events.EventUserInput, SessionID: sessionID, Data: events.UserInputData{Text: "open a turn"},
-	})
+	daemon.SetProcessingTurn("t_open")
 	awaitMethod(appwire.NotifyThreadStatusChanged)
 	if listCalls.Load() == 0 {
 		t.Fatal("a relayed status notification did not project the fork capability; this test cannot detect the hot path")
 	}
 
-	// Now frames the stampers ignore. A tool call inside an open turn emits
-	// item/started and no status change.
+	// Now frames the stampers ignore: thread notifications that are not a
+	// status change.
 	settled := listCalls.Load()
 	for i := range 5 {
 		daemon.RecordAppEvent(events.SessionEvent{
-			Kind: events.EventToolCallStart, SessionID: sessionID,
-			Data: events.ToolCallStartData{ToolName: "bash", CallID: "call_" + strconv.Itoa(i)},
+			Kind: events.EventNotesUpdated, SessionID: sessionID,
+			Data: events.NotesUpdatedData{AgentNote: "note " + strconv.Itoa(i)},
 		})
-		awaitMethod(appwire.NotifyItemStarted)
+		awaitMethod(appwire.NotifyEvenerNotesUpdated)
 	}
 	if got := listCalls.Load(); got != settled {
-		t.Fatalf("relaying 5 item notifications projected the fork capability %d more times, want 0", got-settled)
+		t.Fatalf("relaying 5 notes notifications projected the fork capability %d more times, want 0", got-settled)
 	}
 }
 

@@ -24,7 +24,6 @@ import {
 	type NativeMutationStorageListener,
 	nativeMutationTargetKey,
 } from "./nativeMutationRuntime";
-import { renderedText } from "./renderNative.testkit";
 import { ConversationScreen } from "./screens";
 import { openSqliteSyncDouble } from "./sqliteSync.testkit";
 import {
@@ -75,7 +74,6 @@ const harness = vi.hoisted(() => ({
 
 vi.mock("react-native", async () => ({
 	...(await import("./renderNative.testkit")).nativeModuleMock(),
-	AccessibilityInfo: { announceForAccessibility: vi.fn() },
 	ActionSheetIOS: { showActionSheetWithOptions: vi.fn() },
 	AppState: {
 		currentState: "active",
@@ -92,6 +90,7 @@ vi.mock("react-native-safe-area-context", () => ({
 	SafeAreaProvider: (props: { children?: ReactNode }) => props.children ?? null,
 	useSafeAreaInsets: () => ({ top: 47, bottom: 34, left: 0, right: 0 }),
 }));
+vi.mock("expo-symbols", () => ({ SymbolView: "SymbolView" }));
 // The enriched-markdown native component cannot load outside a device; as a
 // host string its children render as passed, which is all the screen's
 // timeline items need from it under this harness.
@@ -108,6 +107,7 @@ vi.mock("@react-navigation/native", async () => {
 			select(navigationState.state),
 	};
 });
+vi.mock("expo-symbols", () => ({ SymbolView: "SymbolView" }));
 vi.mock("expo-clipboard", () => ({
 	setStringAsync: vi.fn(async () => {}),
 	getStringAsync: vi.fn(async () => ""),
@@ -382,8 +382,13 @@ it("renders the real ConversationScreen without constructing a runtime or regist
 	expect(
 		latestProjection?.snapshot?.recovery.map((row) => row.clientMutationId),
 	).toEqual(["render-1"]);
-	// The screen rendered its actual content, not a stub.
-	expect(renderedText(renderer)).toContain("Reconnect");
+	// The screen rendered its actual content, not a stub: the composer's
+	// message field, which the disconnected screen still shows.
+	expect(
+		renderer.root
+			.findAll((node) => String(node.type) === "TextInput")
+			.some((node) => node.props.accessibilityLabel === "Message"),
+	).toBe(true);
 
 	// A route change remounts the recovery surface (screen generation): the
 	// old generation's subscription is released and the new one reads the

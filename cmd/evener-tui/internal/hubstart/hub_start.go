@@ -316,6 +316,7 @@ func StartHubClient(ctx context.Context, cfg HubStartConfig) (HubRuntime, error)
 	client, err := waitForHubHealth(ctx, addr, httpClient, initialHealthTimeout, cfg.DialHub)
 	if err == nil {
 		if err := cfg.CheckHubEnvironment(ctx, addr, httpClient, cfg.StateDir); err != nil {
+			_ = client.Close()
 			return fail(err)
 		}
 		return HubRuntime{Address: addr, Client: client}, nil
@@ -360,6 +361,7 @@ func StartHubClient(ctx context.Context, cfg HubStartConfig) (HubRuntime, error)
 		return fail(StartupError{Kind: StartupErrorUnhealthyHub, Addr: addr.BaseURL, Err: err})
 	}
 	if err := cfg.CheckHubEnvironment(ctx, addr, httpClient, cfg.StateDir); err != nil {
+		_ = client.Close()
 		return fail(err)
 	}
 	return HubRuntime{Address: addr, Client: client}, nil

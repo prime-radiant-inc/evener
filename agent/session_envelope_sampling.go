@@ -68,6 +68,7 @@ type EnvelopeSampling interface {
 	ActiveTurnStartedAtMillis() int64
 	FailedToolCallsSnapshot() (count int, measured bool)
 	PendingQuestion() *appwire.PendingQuestion
+	RestingFailure() *appwire.ThreadFailure
 	PendingEscalations() []events.SandboxEscalationRequestedData
 	ReasoningEffort() string
 	VisionModel() string

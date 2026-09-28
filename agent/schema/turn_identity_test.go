@@ -74,6 +74,36 @@ func TestNoticePayloadsRoundTrip(t *testing.T) {
 	}
 }
 
+// Validate enforces NoticeInfo's own doc contract: exactly one payload,
+// matching Kind. The read side (internal/apptranscript/notice.go) drops any
+// mismatch silently, so the write side must refuse to record one.
+func TestNoticeInfoValidate(t *testing.T) {
+	valid := []NoticeInfo{
+		{Kind: NoticeToolRepair, ToolRepair: &ToolRepairNotice{ToolName: "read_file"}},
+		{Kind: NoticeGoalEnded, GoalEnded: &GoalEndedNotice{Status: "complete"}},
+		{Kind: NoticeTurnLimit, TurnLimit: &TurnLimitNotice{MaxTurns: 4}},
+		{Kind: NoticeSkillActivated, SkillActivated: &SkillActivatedNotice{Name: "tdd"}},
+	}
+	for _, notice := range valid {
+		if err := notice.Validate(); err != nil {
+			t.Errorf("Validate(%+v) = %v, want nil", notice, err)
+		}
+	}
+	invalid := []struct {
+		name   string
+		notice NoticeInfo
+	}{
+		{"zero payloads", NoticeInfo{Kind: NoticeGoalEnded}},
+		{"two payloads", NoticeInfo{Kind: NoticeGoalEnded, GoalEnded: &GoalEndedNotice{Status: "complete"}, TurnLimit: &TurnLimitNotice{MaxTurns: 4}}},
+		{"mismatched kind", NoticeInfo{Kind: NoticeGoalEnded, TurnLimit: &TurnLimitNotice{MaxTurns: 4}}},
+	}
+	for _, tc := range invalid {
+		if err := tc.notice.Validate(); err == nil {
+			t.Errorf("%s: Validate(%+v) = nil, want an error", tc.name, tc.notice)
+		}
+	}
+}
+
 func TestLegacyTurnCarriesNoIdentity(t *testing.T) {
 	data, err := json.Marshal(NewTurn(TurnUserInput, llm.User("hi")))
 	if err != nil {

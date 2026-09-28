@@ -8,7 +8,7 @@
 // get tool calls rendered correctly.
 
 import type { ItemModel, ProjectedEntry, ProjectedTurn, ThreadModel, TurnModel } from "@evener/appwire-client";
-import { scopedDisclosureId } from "@evener/appwire-client";
+import { displayTurnStatus, scopedDisclosureId } from "@evener/appwire-client";
 import type { ReactNode } from "react";
 import {
   disclosureScopeForSession,
@@ -224,6 +224,12 @@ export function TurnBlock({
   // turn); its presence is the signal to close the turn with a diagnostic
   // end-cap, corroborated by the honest status "failed" the wire stamps.
   const failure = asTurnError(sourceTurn.error);
+  // Spec "Turn status": running state lives in the overlay, never the wire's
+  // own status - an open turn the thread does not name as its running turn
+  // displays as interrupted (a crash-left-open turn, or one whose execution
+  // stood down), not as running forever. A display rule only; sourceTurn's
+  // own status is untouched.
+  const displayStatus = displayTurnStatus(sourceTurn, thread ?? {});
   const visibleItems = projectedTurn.visibleItems;
   const allItemsVisible =
     visibleItems.length === sourceTurn.items.length &&
@@ -321,7 +327,12 @@ export function TurnBlock({
   return (
     <>
       {showSeenDivider && <SeenDivider />}
-      <div className={CLASS.turn} data-testid="turn-block" data-turn-id={sourceTurn.id}>
+      <div
+        className={CLASS.turn}
+        data-testid="turn-block"
+        data-turn-id={sourceTurn.id}
+        data-turn-status={displayStatus}
+      >
         {renderedEntries}
         {failure && <TurnFailureEndCap error={failure} turn={sourceTurn} sessionRef={sessionRef} />}
         {showTurnSeparator && <TurnSeparator turn={sourceTurn} />}

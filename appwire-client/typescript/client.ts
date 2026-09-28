@@ -14,11 +14,27 @@ export type { AnyNotification };
 
 export type ConnectionState = "idle" | "connecting" | "ready" | "reconnecting" | "closed";
 
+// SubscriberErrorPhase names the fan-out boundary a subscriber threw from.
+export type SubscriberErrorPhase = "state" | "ready" | "handshakeResult" | "notification";
+
+// SubscriberErrorInfo is the bounded, payload-redacted diagnostic a subscriber
+// failure produces: the phase it threw from and the exception itself, never
+// the notification payload that happened to be in flight.
+export interface SubscriberErrorInfo {
+  phase: SubscriberErrorPhase;
+  error: unknown;
+}
+
 export interface AppwireClientOptions {
   url: string;
   socketFactory?: (url: string) => WebSocketLike; // default: real WebSocket
   now?: () => number; // default Date.now, tests inject
   clientInfo?: { name: string; version: string };
+  // onSubscriberError observes an isolated subscriber failure (see
+  // reportSubscriberError). Optional: applications wire platform logging or
+  // telemetry here; the client itself stays silent, and a throwing reporter is
+  // contained exactly like a throwing subscriber.
+  onSubscriberError?: (info: SubscriberErrorInfo) => void;
 }
 
 const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
@@ -30,7 +46,7 @@ const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
 // far beyond any real restore, but finite, so the pane recovers without a
 // reload.
 export const RESUME_REQUEST_TIMEOUT_MS = 10 * 60_000;
-export const APPWIRE_PROTOCOL_VERSION = "evener-appwire-v5";
+export const APPWIRE_PROTOCOL_VERSION = "evener-appwire-v6";
 const DEFAULT_CLIENT_INFO = { name: "evener-web", version: "0.1.0" };
 const DEFAULT_CAPABILITIES = { experimentalApi: false };
 
@@ -226,6 +242,7 @@ export class AppwireClient {
   // telemetry) without changing this constructor's shape.
   private readonly now: () => number;
   private readonly clientInfo: { name: string; version: string };
+  private readonly onSubscriberError?: (info: SubscriberErrorInfo) => void;
 
   private socket: WebSocketLike | null = null;
   private recoveryClient: AppwireClient | null = null;
@@ -282,6 +299,7 @@ export class AppwireClient {
     this.socketFactory = opts.socketFactory ?? defaultSocketFactory;
     this.now = opts.now ?? Date.now;
     this.clientInfo = opts.clientInfo ?? DEFAULT_CLIENT_INFO;
+    this.onSubscriberError = opts.onSubscriberError;
   }
 
   get state(): ConnectionState {
@@ -600,10 +618,24 @@ export class AppwireClient {
     for (const cb of Array.from(this.handshakeResultHandlers)) {
       try {
         cb(result);
-      } catch {
+      } catch (error) {
         // A subscriber cannot turn a successful protocol handshake into a
         // connection failure.
+        this.reportSubscriberError("handshakeResult", error);
       }
+    }
+  }
+
+  // reportSubscriberError surfaces an isolated subscriber failure through the
+  // optional diagnostic seam. The report itself is guarded, so a throwing
+  // reporter cannot corrupt dispatch to the remaining handlers, and it carries
+  // the phase and exception only — never the in-flight notification payload.
+  private reportSubscriberError(phase: SubscriberErrorPhase, error: unknown): void {
+    try {
+      this.onSubscriberError?.({ phase, error });
+    } catch {
+      // A misbehaving diagnostic handler is contained exactly like a
+      // misbehaving subscriber.
     }
   }
 
@@ -835,8 +867,9 @@ export class AppwireClient {
       for (const handler of Array.from(this.notificationHandlers)) {
         try {
           handler(notification);
-        } catch {
+        } catch (error) {
           // A misbehaving subscriber must not stop dispatch to the rest.
+          this.reportSubscriberError("notification", error);
         }
       }
     }
@@ -866,20 +899,25 @@ export class AppwireClient {
     for (const cb of Array.from(this.stateChangeHandlers)) {
       try {
         cb(next);
-      } catch {
+      } catch (error) {
         // A misbehaving subscriber must not corrupt the state machine or
         // abort whatever operation (e.g. a successful handshake, since
         // setState runs inside performHandshake's try) triggered this
         // transition.
+        this.reportSubscriberError("state", error);
       }
     }
     if (next === "ready") {
+      const initialize = this.latestInitialize;
       for (const cb of Array.from(this.readyHandlers)) {
         try {
-          if (!this.latestInitialize) throw new Error("AppwireClient: ready without initialize result");
-          cb(this.latestInitialize);
-        } catch {
-          // See above.
+          if (!initialize) throw new Error("AppwireClient: ready without initialize result");
+          cb(initialize);
+        } catch (error) {
+          // See above. The missing-initialize invariant is a client fault, not
+          // a subscriber's, so it is swallowed without reaching the seam — only
+          // a subscriber's own throw is reported.
+          if (initialize) this.reportSubscriberError("ready", error);
         }
       }
     }

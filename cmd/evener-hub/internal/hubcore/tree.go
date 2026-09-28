@@ -125,6 +125,8 @@ func cloneTreeNodesContext(ctx context.Context, nodes []TreeNode) ([]TreeNode, e
 		out[index].CompletedJobs = appwire.CloneEvenerJobs(node.CompletedJobs)
 		out[index].Watches = appwire.CloneEvenerWatches(node.Watches)
 		out[index].Tasks = appwire.CloneTaskAggregate(node.Tasks)
+		out[index].Question = appwire.ClonePendingQuestion(node.Question)
+		out[index].Failure = appwire.CloneThreadFailure(node.Failure)
 		children, err := cloneTreeNodesContext(ctx, node.Children)
 		if err != nil {
 			return nil, err
@@ -444,6 +446,17 @@ type TreeNode struct {
 	// reaches human clients only, as thread/read's cards already do.
 	ApprovalTool   string
 	ApprovalTarget string
+	// Question is the first question of the session's pending ask
+	// (LiveEntry.PendingQuestion, S1b). Like the approval detail, every
+	// builder sets it from one closure and only while AskPending is set, so a
+	// row always names the question it says is pending.
+	Question *appwire.PendingQuestion
+	// Failure says why a Failed row failed (LiveEntry.Failure, S1c): its
+	// daemon's summary, or the hub's own crashed cause for a crash-retained
+	// entry. Every builder sets it from one closure, and only on a row whose
+	// session is failed itself: a coordinator's row never names a subagent's
+	// failure.
+	Failure *appwire.ThreadFailure
 	// Dormant is true for a session that has never run: no model response and
 	// no accepted user input. An empty-prompt spawn creates one, and it reports
 	// State "idle" — the same word a session that ran and finished reports — so
@@ -473,6 +486,10 @@ type TreeNode struct {
 	// LastTurnEndedAt, S4). Every builder sets it from one closure so a
 	// session's rows agree; an ended session has none.
 	TurnEndedAt time.Time
+	// LastMessage is the opening of the session's last agent message (S1d): a
+	// live session's from its probe, an ended one's from its meta. Every
+	// builder sets it from one closure; subagent rows have none.
+	LastMessage string
 	// Tasks is this session's own task-list progress, carried from its live
 	// entry; nil for a session with no live entry, which includes every
 	// in-process child.
@@ -1068,6 +1085,33 @@ func buildTreeAtWithProjects(metas []schema.SessionMeta, live []LiveEntry, decis
 		return appwire.SandboxEscalationRequested{}
 	}
 
+	// pendingQuestionFor resolves the first pending question for a session ID
+	// from the same live map, for the reason firstApprovalFor does: every
+	// builder names the same question, and only while the entry's ask flag is
+	// set. Each row gets its own copy.
+	pendingQuestionFor := func(id string) *appwire.PendingQuestion {
+		if entry := liveMap[id]; entry.PendingAsk {
+			return appwire.ClonePendingQuestion(entry.PendingQuestion)
+		}
+		return nil
+	}
+
+	// failureFor resolves why a session failed from the same live map, so its
+	// rows agree (S1c). A crash-retained entry's daemon is gone, so its rows
+	// say it crashed whatever it last reported; an errored entry names the
+	// summary its daemon reported; any other session names none, whatever its
+	// entry still carries. Each row gets its own copy.
+	failureFor := func(id string) *appwire.ThreadFailure {
+		entry := liveMap[id]
+		if entry.Crashed {
+			return &appwire.ThreadFailure{Cause: &appwire.DiagnosticCause{Kind: hubapi.NavigationFailureCrashed}}
+		}
+		if NormalizeState(entry.Status) != "errored" {
+			return nil
+		}
+		return appwire.CloneThreadFailure(entry.Failure)
+	}
+
 	// tasksFor resolves a session's task-list progress from its own live
 	// entry, the same live map stateFor reads, so every builder below puts the
 	// same progress on every row of one session and a child row never borrows
@@ -1085,6 +1129,23 @@ func buildTreeAtWithProjects(metas []schema.SessionMeta, live []LiveEntry, decis
 			return entry.Subagents
 		}
 		return appwire.SubagentTally{}
+	}
+
+	// lastMessageFor resolves the opening of a session's last agent message
+	// (S1d): a live session's from its daemon's probe, which outranks the meta
+	// the past index may still hold, and an ended one's from that meta, so
+	// every row of one session agrees. A subagent row carries none: a
+	// coordinator's row says what the coordinator said, and a tree of 500
+	// subagents would spend the response's byte budget on excerpts no row
+	// shows.
+	lastMessageFor := func(id, kind string) string {
+		if kind == "subagent" {
+			return ""
+		}
+		if entry, live := liveMap[id]; live {
+			return entry.LastMessage
+		}
+		return metaMap[id].LastMessage
 	}
 
 	// turnEndedAtFor resolves a live session's last turn end from the same live
@@ -1256,6 +1317,8 @@ func buildTreeAtWithProjects(metas []schema.SessionMeta, live []LiveEntry, decis
 		askPending := askPendingFor(m.ID)
 		approvalPending := approvalPendingFor(m.ID)
 		approval := firstApprovalFor(m.ID)
+		question := pendingQuestionFor(m.ID)
+		failure := failureFor(m.ID)
 		subagentTally := subagentsFor(m.ID)
 		turnEndedAt := turnEndedAtFor(m.ID)
 		if parentDead {
@@ -1263,6 +1326,8 @@ func buildTreeAtWithProjects(metas []schema.SessionMeta, live []LiveEntry, decis
 			askPending = false
 			approvalPending = false
 			approval = appwire.SandboxEscalationRequested{}
+			question = nil
+			failure = nil
 			subagentTally = appwire.SubagentTally{}
 			turnEndedAt = time.Time{}
 		}
@@ -1284,6 +1349,8 @@ func buildTreeAtWithProjects(metas []schema.SessionMeta, live []LiveEntry, decis
 			ApprovalPending: approvalPending,
 			ApprovalTool:    approval.Tool,
 			ApprovalTarget:  approval.DeniedPath,
+			Question:        question,
+			Failure:         failure,
 			Dormant:         dormantFor(m.ID),
 			Kind:            kind,
 			CreatedAt:       OrderCreatedAt(m.CreatedAt, m.UpdatedAt),
@@ -1295,6 +1362,7 @@ func buildTreeAtWithProjects(metas []schema.SessionMeta, live []LiveEntry, decis
 			Tasks:           tasksFor(m.ID),
 			Subagents:       subagentTally,
 			TurnEndedAt:     turnEndedAt,
+			LastMessage:     lastMessageFor(m.ID, kind),
 		}
 
 		childMetas := childrenByParent[m.ID]
@@ -1534,6 +1602,8 @@ func buildTreeAtWithProjects(metas []schema.SessionMeta, live []LiveEntry, decis
 				ApprovalPending: approvalPendingFor(le.SessionID),
 				ApprovalTool:    approval.Tool,
 				ApprovalTarget:  approval.DeniedPath,
+				Question:        pendingQuestionFor(le.SessionID),
+				Failure:         failureFor(le.SessionID),
 				Dormant:         dormantFor(le.SessionID),
 				Kind:            "session",
 				Title:           ShortID(le.SessionID),
@@ -1546,6 +1616,7 @@ func buildTreeAtWithProjects(metas []schema.SessionMeta, live []LiveEntry, decis
 				Tasks:           tasksFor(le.SessionID),
 				Subagents:       subagentsFor(le.SessionID),
 				TurnEndedAt:     turnEndedAtFor(le.SessionID),
+				LastMessage:     lastMessageFor(le.SessionID, "session"),
 			}
 			liveNodes = append(liveNodes, node)
 			continue
@@ -1645,6 +1716,8 @@ func buildTreeAtWithProjects(metas []schema.SessionMeta, live []LiveEntry, decis
 			ApprovalPending: le.PendingEscalation,
 			ApprovalTool:    approval.Tool,
 			ApprovalTarget:  approval.DeniedPath,
+			Question:        pendingQuestionFor(le.SessionID),
+			Failure:         failureFor(le.SessionID),
 			Dormant:         dormantFor(le.SessionID),
 			RunningJobs:     appwire.CloneEvenerJobs(le.RunningJobs),
 			CompletedJobs:   appwire.CloneEvenerJobs(le.CompletedJobs),
@@ -1652,6 +1725,7 @@ func buildTreeAtWithProjects(metas []schema.SessionMeta, live []LiveEntry, decis
 			Tasks:           tasksFor(le.SessionID),
 			Subagents:       subagentsFor(le.SessionID),
 			TurnEndedAt:     turnEndedAtFor(le.SessionID),
+			LastMessage:     lastMessageFor(le.SessionID, "session"),
 		}
 		if meta != nil {
 			node.Title = nodeTitle(*meta, nodeKind(*meta))

@@ -692,6 +692,203 @@ func TestView_ReturnsCopy(t *testing.T) {
 	}
 }
 
+// seedDependentStore appends task "a" and task "b" that depends on it, and
+// returns the store plus a's ID. It is the common setup for the copy-boundary
+// tests below.
+func seedDependentStore(t *testing.T) (*TaskStore, int) {
+	t.Helper()
+	s := newTestStore(t)
+	added, err := s.Append([]TaskInput{{Description: "a"}})
+	if err != nil {
+		t.Fatalf("append a: %v", err)
+	}
+	if _, err := s.Append([]TaskInput{{Description: "b", DependsOn: []int{added[0].ID}}}); err != nil {
+		t.Fatalf("append b: %v", err)
+	}
+	return s, added[0].ID
+}
+
+// TestView_EmptyStoreReturnsNonNilSlice pins the documented read shape: an
+// empty store's snapshot is an empty non-nil slice, so the hub's absent-task-
+// file path still marshals `[]` rather than `null`
+// (TestHubTasksList_AbsentTaskFileIsEmptySuccess).
+func TestView_EmptyStoreReturnsNonNilSlice(t *testing.T) {
+	t.Parallel()
+	s := newTestStore(t)
+	if v := s.View(); v == nil || len(v) != 0 {
+		t.Fatalf("View() on empty store = %#v, want non-nil empty slice", v)
+	}
+	if v, err := s.ViewWithError(); err != nil || v == nil || len(v) != 0 {
+		t.Fatalf("ViewWithError() on empty store = %#v, %v, want non-nil empty slice", v, err)
+	}
+}
+
+// TestView_DeepCopiesNestedState pins the copy boundary for the mutable
+// references a Task carries: DependsOn, Notes, and the timestamp pointers.
+// TestView_ReturnsCopy only mutates a scalar, so an implementation that copied
+// the outer slice but aliased the nested state would still pass it.
+func TestView_DeepCopiesNestedState(t *testing.T) {
+	t.Parallel()
+	s, aID := seedDependentStore(t)
+	if err := s.Update([]TaskUpdate{{ID: aID, Notes: "note"}}); err != nil {
+		t.Fatalf("update notes: %v", err)
+	}
+
+	v := s.View()
+	v[1].DependsOn[0] = 999
+	v[0].Notes[0] = "mutated"
+	*v[0].CreatedAt = time.Unix(9999, 0)
+
+	got := s.View()
+	if got[1].DependsOn[0] != aID {
+		t.Errorf("View leaked a DependsOn alias: store now has %v", got[1].DependsOn)
+	}
+	if got[0].Notes[0] != "note" {
+		t.Errorf("View leaked a Notes alias: store now has %v", got[0].Notes)
+	}
+	if got[0].CreatedAt.Equal(time.Unix(9999, 0)) {
+		t.Errorf("View leaked a timestamp pointer alias: store now has %v", got[0].CreatedAt)
+	}
+}
+
+// TestViewWithError_DeepCopiesNestedState applies the same nested-alias
+// boundary to the locked ViewWithError snapshot.
+func TestViewWithError_DeepCopiesNestedState(t *testing.T) {
+	t.Parallel()
+	s, aID := seedDependentStore(t)
+	if err := s.Update([]TaskUpdate{{ID: aID, Notes: "note"}}); err != nil {
+		t.Fatalf("update notes: %v", err)
+	}
+
+	v, err := s.ViewWithError()
+	if err != nil {
+		t.Fatalf("view with error: %v", err)
+	}
+	v[1].DependsOn[0] = 999
+	v[0].Notes[0] = "mutated"
+	*v[0].UpdatedAt = time.Unix(9999, 0)
+
+	got, err := s.ViewWithError()
+	if err != nil {
+		t.Fatalf("view with error: %v", err)
+	}
+	if got[1].DependsOn[0] != aID {
+		t.Errorf("ViewWithError leaked a DependsOn alias: store now has %v", got[1].DependsOn)
+	}
+	if got[0].Notes[0] != "note" {
+		t.Errorf("ViewWithError leaked a Notes alias: store now has %v", got[0].Notes)
+	}
+	if got[0].UpdatedAt.Equal(time.Unix(9999, 0)) {
+		t.Errorf("ViewWithError leaked a timestamp pointer alias: store now has %v", got[0].UpdatedAt)
+	}
+}
+
+// TestNextEligible_DeepCopiesNestedState pins that an eligible-task snapshot
+// owns its nested state rather than aliasing the store's task values.
+func TestNextEligible_DeepCopiesNestedState(t *testing.T) {
+	t.Parallel()
+	s, aID := seedDependentStore(t)
+	if err := s.Update([]TaskUpdate{{ID: aID, Status: TaskDone}}); err != nil {
+		t.Fatalf("complete a: %v", err)
+	}
+
+	eligible := s.NextEligible()
+	if len(eligible) != 1 {
+		t.Fatalf("NextEligible returned %d tasks, want 1", len(eligible))
+	}
+	eligible[0].DependsOn[0] = 999
+	*eligible[0].UpdatedAt = time.Unix(9999, 0)
+
+	got := s.View()
+	if got[1].DependsOn[0] != aID {
+		t.Errorf("NextEligible leaked a DependsOn alias: store now has %v", got[1].DependsOn)
+	}
+	if got[1].UpdatedAt.Equal(time.Unix(9999, 0)) {
+		t.Errorf("NextEligible leaked a timestamp pointer alias: store now has %v", got[1].UpdatedAt)
+	}
+}
+
+// TestCurrentInProgress_DeepCopiesNestedState pins that the current-task
+// snapshot is deep-copied. currentInProgressLocked returns *Summarize(...).Current,
+// and Summarize clones the task with cloneTasks, so mutating nested fields of
+// the returned task must not reach store-owned state.
+func TestCurrentInProgress_DeepCopiesNestedState(t *testing.T) {
+	t.Parallel()
+	s, aID := seedDependentStore(t)
+	bID := s.View()[1].ID
+	if err := s.Update([]TaskUpdate{{ID: bID, Status: TaskInProgress, Notes: "note"}}); err != nil {
+		t.Fatalf("start b: %v", err)
+	}
+
+	current, ok := s.CurrentInProgress()
+	if !ok {
+		t.Fatal("CurrentInProgress found no task, want b")
+	}
+	current.DependsOn[0] = 999
+	current.Notes[0] = "mutated"
+	*current.CreatedAt = time.Unix(9999, 0)
+
+	got := s.View()[1]
+	if got.DependsOn[0] != aID {
+		t.Errorf("CurrentInProgress leaked a DependsOn alias: store now has %v", got.DependsOn)
+	}
+	if got.Notes[0] != "note" {
+		t.Errorf("CurrentInProgress leaked a Notes alias: store now has %v", got.Notes)
+	}
+	if got.CreatedAt.Equal(time.Unix(9999, 0)) {
+		t.Errorf("CurrentInProgress leaked a timestamp pointer alias: store now has %v", got.CreatedAt)
+	}
+}
+
+// TestAppend_ClonesInputDependencies pins the input side of the copy boundary:
+// once Append retains a dependency list, mutating the caller's slice must not
+// change the store or its persisted state.
+func TestAppend_ClonesInputDependencies(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	s := NewTaskStore(dir, "s")
+	added, err := s.Append([]TaskInput{{Description: "a"}})
+	if err != nil {
+		t.Fatalf("append a: %v", err)
+	}
+	deps := []int{added[0].ID}
+	if _, err := s.Append([]TaskInput{{Description: "b", DependsOn: deps}}); err != nil {
+		t.Fatalf("append b: %v", err)
+	}
+	deps[0] = 999
+
+	if got := s.View()[1].DependsOn[0]; got != added[0].ID {
+		t.Errorf("Append retained the caller's DependsOn slice: store now has %v", got)
+	}
+
+	reloaded := NewTaskStore(dir, "s")
+	if err := reloaded.Load(); err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	if got := reloaded.View()[1].DependsOn[0]; got != added[0].ID {
+		t.Errorf("Append persisted a dependency that changed with the caller's slice: reloaded store has %v", got)
+	}
+}
+
+// TestUpdate_ClonesInputDependencies pins that an update stores its own copy of
+// the caller's dependency slice rather than aliasing it.
+func TestUpdate_ClonesInputDependencies(t *testing.T) {
+	t.Parallel()
+	s := newTestStore(t)
+	added, err := s.Append([]TaskInput{{Description: "a"}, {Description: "b"}})
+	if err != nil {
+		t.Fatalf("append: %v", err)
+	}
+	deps := []int{added[0].ID}
+	if err := s.Update([]TaskUpdate{{ID: added[1].ID, DependsOn: &deps}}); err != nil {
+		t.Fatalf("update deps: %v", err)
+	}
+	deps[0] = 999
+	if got := s.View()[1].DependsOn[0]; got != added[0].ID {
+		t.Errorf("Update retained the caller's DependsOn slice: store now has %v", got)
+	}
+}
+
 // TestTaskUpdate_EmptyStatusMeansNoChange pins the combined-tool contract:
 // an update entry with an empty status leaves the task's status unchanged
 // while still applying notes, deps, and effort — the tool schema has always

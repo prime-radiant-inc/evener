@@ -1207,7 +1207,7 @@ func stopStableDelegate(ctx context.Context, s *Session, delegateID string, maxW
 	if err != nil {
 		return "", err
 	}
-	result, cancelPlan, plans, err := s.delegateController.StopSubtreeAndDrive(actor, delegateID)
+	result, cancelPlan, plans, err := s.delegateController.StopSubtreeAndDrive(ctx, actor, delegateID)
 	if err != nil {
 		return "", err
 	}

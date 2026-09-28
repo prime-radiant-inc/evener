@@ -1072,7 +1072,7 @@ func checkpoint(history []schema.Turn, preserveRecent int, meta *CompactionMeta,
 // the last few shell results, the conversation (user/agent turns), and the
 // assistant's working notes.
 type checkpointData struct {
-	modifiedFiles    map[string]bool
+	fileWrites       map[string]checkpointWriteStatus
 	activatedSkills  map[string]bool
 	toolCounts       map[string]int
 	lastShellResults []string
@@ -1080,12 +1080,37 @@ type checkpointData struct {
 	workingNotes     []string
 }
 
+// checkpointWriteStatus classifies a write tool call by the outcome of its
+// paired tool result. The checkpoint may only report a file as modified when a
+// result confirmed the write; an attempted write that failed or whose result is
+// absent from the compacted prefix is kept distinct and never inferred as
+// completed work.
+type checkpointWriteStatus int
+
+const (
+	// writeUnconfirmed is the zero value, so a missing fileWrites entry — or any
+	// unrecognized state — is never mistaken for confirmed completed work.
+	writeUnconfirmed checkpointWriteStatus = iota // no result in the compacted prefix
+	writeConfirmed                                // result present and not an error
+	writeFailed                                   // result present and IsError
+)
+
+// recordWrite keeps a confirmed write from being downgraded by a later attempt
+// of the same path, because the file was in fact modified. Otherwise the latest
+// outcome wins.
+func (d *checkpointData) recordWrite(path string, status checkpointWriteStatus) {
+	if prev, ok := d.fileWrites[path]; ok && prev == writeConfirmed {
+		return
+	}
+	d.fileWrites[path] = status
+}
+
 // collectCheckpointData walks history[:cutoff] and distills it into a
 // checkpointData: modified files, tool counts, shell results, user messages,
 // final agent responses, working notes, and activated skills.
 func collectCheckpointData(history []schema.Turn, cutoff int, resultToolName string) checkpointData {
 	data := checkpointData{
-		modifiedFiles:   map[string]bool{},
+		fileWrites:      map[string]checkpointWriteStatus{},
 		activatedSkills: map[string]bool{},
 		toolCounts:      map[string]int{},
 	}
@@ -1114,13 +1139,15 @@ func collectCheckpointData(history []schema.Turn, cutoff int, resultToolName str
 
 		case schema.TurnTool, schema.TurnToolResults:
 			// Extract terminal communicate results (agent responses to the user).
+			// Only an accepted result is a completed reply; a rejected result
+			// (IsError) stays out of the conversation.
 			for _, p := range t.Message.Content {
 				if p.Kind != llm.ContentToolResult || p.ToolResult == nil {
 					continue
 				}
 				if p.ToolResult.Name == resultToolName {
 					endTurn, msg := communicateArgsFromHistory(history[:i+1], p.ToolResult.ToolCallID)
-					if endTurn && msg != "" {
+					if endTurn && msg != "" && !p.ToolResult.IsError {
 						data.conversation = append(data.conversation, checkpointConversationEntry{Role: "agent", Text: msg})
 					}
 					continue
@@ -1155,15 +1182,16 @@ func collectCheckpointData(history []schema.Turn, cutoff int, resultToolName str
 				switch name {
 				case "edit_file", "write_file":
 					if path, ok := args["file_path"]; ok {
-						data.modifiedFiles[fmt.Sprint(path)] = true
+						data.recordWrite(fmt.Sprint(path), writeOutcome(history, i, cutoff, p.ToolCall.ID))
 					}
 				case "apply_patch":
 					if patch, ok := args["patch"]; ok {
+						status := writeOutcome(history, i, cutoff, p.ToolCall.ID)
 						for line := range strings.SplitSeq(fmt.Sprint(patch), "\n") {
 							line = strings.TrimSpace(line)
 							for _, prefix := range []string{"*** Update File: ", "*** Add File: ", "*** Delete File: "} {
 								if rest, ok := strings.CutPrefix(line, prefix); ok {
-									data.modifiedFiles[rest] = true
+									data.recordWrite(rest, status)
 								}
 							}
 						}
@@ -1203,7 +1231,9 @@ func collectCheckpointData(history []schema.Turn, cutoff int, resultToolName str
 // … [END CHECKPOINT] block: the fixed metadata sections (transcript pointer,
 // modified files, tool counts, recent shell results, activated skills), then the
 // conversation and working notes fit into maxChars by shedding the oldest working
-// notes first and then the oldest conversation entries.
+// notes first and then the oldest conversation entries after the original task
+// (the earliest user entry), which is pinned so budget pressure never drops what
+// the user asked for.
 func formatCheckpoint(data checkpointData, meta *CompactionMeta, maxChars int) string {
 	// Build the fixed-size sections first (metadata), then fill remaining
 	// budget with user messages and agent responses.
@@ -1214,14 +1244,28 @@ func formatCheckpoint(data checkpointData, meta *CompactionMeta, maxChars int) s
 		fmt.Fprintf(&fixed, "Earlier history was compacted into this checkpoint to free context-window headroom. This session's id is %s.%s\n", meta.SessionID, meta.TranscriptRecoverySentence())
 	}
 
-	// Files modified.
-	if len(data.modifiedFiles) > 0 {
-		files := make([]string, 0, len(data.modifiedFiles))
-		for f := range data.modifiedFiles {
-			files = append(files, f)
+	// Files modified: only writes whose paired result confirmed success. Failed
+	// and result-missing attempts render distinctly, so the checkpoint never
+	// reports an attempted write as completed work.
+	modified := make([]string, 0, len(data.fileWrites))
+	attempted := make([]string, 0, len(data.fileWrites))
+	for f, status := range data.fileWrites {
+		switch status {
+		case writeConfirmed:
+			modified = append(modified, f)
+		case writeFailed:
+			attempted = append(attempted, f+" (failed)")
+		default:
+			attempted = append(attempted, f+" (no result)")
 		}
-		sort.Strings(files)
-		fmt.Fprintf(&fixed, "Files modified: %s\n", strings.Join(files, ", "))
+	}
+	sort.Strings(modified)
+	sort.Strings(attempted)
+	if len(modified) > 0 {
+		fmt.Fprintf(&fixed, "Files modified: %s\n", strings.Join(modified, ", "))
+	}
+	if len(attempted) > 0 {
+		fmt.Fprintf(&fixed, "Files attempted but not applied: %s\n", strings.Join(attempted, ", "))
 	}
 
 	// Tool call counts.
@@ -1282,24 +1326,64 @@ func formatCheckpoint(data checkpointData, meta *CompactionMeta, maxChars int) s
 	variableBudget := max(maxChars-overhead, 1000)
 
 	// Encode conversation and working notes as Markdown. Shed oldest notes
-	// first, then oldest user or agent messages if needed to fit budget.
-	conversation := data.conversation
+	// first — they may be shed entirely — then the oldest messages after the
+	// pinned original task, which itself is never shed.
+	// Clean once so the pin index and the rendered slice refer to the same
+	// entries; renderCheckpointConversation would otherwise drop whitespace-only
+	// entries after the pin was chosen, letting the pin land on a vanishing one.
+	conversation := cleanCheckpointConversation(data.conversation)
 	workingNotes := data.workingNotes
 	conversationMarkdown := renderCheckpointConversation(conversation)
 	notesMarkdown := renderCheckpointWorkingNotes(workingNotes)
 
+	// Pin the original task — the earliest user entry — so the checkpoint keeps
+	// what the user asked for instead of shedding it under budget pressure. With
+	// no user entry (-1) the pin is inactive and shedding keeps its oldest-first
+	// order.
+	pinnedOriginal := -1
+	for i, entry := range conversation {
+		if entry.Role == "user" {
+			pinnedOriginal = i
+			break
+		}
+	}
+
 	for len(conversationMarkdown)+len(notesMarkdown) > variableBudget {
-		if len(workingNotes) > 1 {
+		if len(workingNotes) > 0 {
 			workingNotes = workingNotes[1:] // drop oldest note first
 			notesMarkdown = renderCheckpointWorkingNotes(workingNotes)
 			continue
 		}
 		if len(conversation) > 1 {
-			conversation = conversation[1:] // then drop oldest conversation entry
+			// Drop the oldest entry that is not the pinned original task.
+			drop := 0
+			if drop == pinnedOriginal {
+				drop = 1
+			}
+			conversation = slices.Concat(conversation[:drop], conversation[drop+1:])
+			if drop < pinnedOriginal {
+				pinnedOriginal--
+			}
 			conversationMarkdown = renderCheckpointConversation(conversation)
 			continue
 		}
 		break
+	}
+
+	// Notes are exhaustible, so a lone over-budget conversation entry is all the
+	// loop can leave behind: it never sheds the pinned original task. Trim that
+	// entry — by its exact rendered length — so the checkpoint still honors its
+	// size cap instead of keeping an oversized task or dropping it.
+	if len(conversation) == 1 && len(conversationMarkdown) > variableBudget {
+		role := conversation[0].Role
+		render := func(text string) int {
+			return len(renderCheckpointConversation([]checkpointConversationEntry{{Role: role, Text: text}}))
+		}
+		conversation = []checkpointConversationEntry{{
+			Role: role,
+			Text: truncateRendered(conversation[0].Text, variableBudget, render),
+		}}
+		conversationMarkdown = renderCheckpointConversation(conversation)
 	}
 
 	// Assemble final checkpoint.
@@ -1318,6 +1402,25 @@ func formatCheckpoint(data checkpointData, meta *CompactionMeta, maxChars int) s
 	return b.String()
 }
 
+// truncateRendered shortens text (via truncate, which appends an ellipsis) until
+// its rendered form fits in available bytes. Truncating never increases the
+// rendered length, so the largest fitting prefix is found by binary search.
+func truncateRendered(text string, available int, render func(string) int) string {
+	if render(text) <= available {
+		return text
+	}
+	lo, hi := 0, len(text)
+	for lo < hi {
+		mid := (lo + hi + 1) / 2
+		if render(truncate(text, mid)) <= available {
+			lo = mid
+		} else {
+			hi = mid - 1
+		}
+	}
+	return truncate(text, lo)
+}
+
 // findToolResultByCallID finds a tool result in a TurnTool by its ToolCallID
 // and returns the string content, or "" if not found.
 func findToolResultByCallID(t schema.Turn, toolCallID string) string {
@@ -1329,6 +1432,37 @@ func findToolResultByCallID(t schema.Turn, toolCallID string) string {
 		}
 	}
 	return ""
+}
+
+// writeOutcome classifies the write tool call at history[callIndex] by its
+// paired result. A result shed from the compacted prefix leaves the outcome
+// unconfirmed rather than inferring success.
+func writeOutcome(history []schema.Turn, callIndex, cutoff int, toolCallID string) checkpointWriteStatus {
+	result := findToolResultData(history, callIndex+1, cutoff, toolCallID)
+	switch {
+	case result == nil:
+		return writeUnconfirmed
+	case result.IsError:
+		return writeFailed
+	default:
+		return writeConfirmed
+	}
+}
+
+// findToolResultData scans history[from:cutoff] for the tool result part that
+// answers toolCallID and returns it, or nil when the prefix holds no result.
+func findToolResultData(history []schema.Turn, from, cutoff int, toolCallID string) *llm.ToolResultData {
+	for j := from; j < cutoff; j++ {
+		if history[j].Kind != schema.TurnTool && history[j].Kind != schema.TurnToolResults {
+			continue
+		}
+		for _, p := range history[j].Message.Content {
+			if p.Kind == llm.ContentToolResult && p.ToolResult != nil && p.ToolResult.ToolCallID == toolCallID {
+				return p.ToolResult
+			}
+		}
+	}
+	return nil
 }
 
 func sumCounts(m map[string]int) int {

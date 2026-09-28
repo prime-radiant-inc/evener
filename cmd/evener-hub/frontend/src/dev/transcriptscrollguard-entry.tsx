@@ -176,7 +176,23 @@ const THREAD: Thread = {
 };
 
 const fake = new FakeClient("ready");
-fake.on("thread/read", () => ({ thread: THREAD }) satisfies ThreadReadResponse);
+// The read's identity must match the history/updated notifications
+// appendLargeTurns emits below (same bootGeneration/epoch/incarnation): a
+// mismatch reads as a newer generation and invalidates the thread, so the
+// appended turns would never merge (kata read this the hard way once).
+const BOOT_GENERATION = "1";
+const EPOCH = 1;
+const INCARNATION = "inc-1";
+fake.on(
+  "thread/read",
+  () =>
+    ({
+      thread: THREAD,
+      bootGeneration: BOOT_GENERATION,
+      epoch: EPOCH,
+      snapshot: { incarnation: INCARNATION, length: INITIAL_TURN_COUNT },
+    }) satisfies ThreadReadResponse,
+);
 // SessionChrome/Composer idle-time reads; scripted so nothing rejects into an
 // unhandledrejection and pollutes the page-error probe.
 fake.on("evener/tasks/list", () => ({ data: [] }));
@@ -359,9 +375,9 @@ async function scrollAwayAndWaitForPill(): Promise<TranscriptScrollMetrics> {
 }
 
 // Appends APPEND_TURN_COUNT large turns through the REAL notification path
-// (turn/started + turn/completed, the same frames the live wire sends) while
-// the reader is scrolled away. Resolves once the model and the DOM both
-// carry the appends.
+// (history/updated, the same frame the live wire sends now) while the reader
+// is scrolled away. Resolves once the model and the DOM both carry the
+// appends.
 async function appendLargeTurns(): Promise<TranscriptScrollMetrics> {
   const before = modelTurnCount;
   const beforeScrollHeight = scrollElement().scrollHeight;
@@ -373,12 +389,16 @@ async function appendLargeTurns(): Promise<TranscriptScrollMetrics> {
       paragraphs(APPEND_PARAGRAPHS, `appended turn ${k + 1}`),
     );
     fake.emitNotification({
-      method: "turn/started",
-      params: { threadId: THREAD_ID, ref: REF, turn },
-    } as AnyNotification);
-    fake.emitNotification({
-      method: "turn/completed",
-      params: { threadId: THREAD_ID, ref: REF, turn: { id, itemsView: "", status: "completed" } },
+      method: "history/updated",
+      params: {
+        threadId: THREAD_ID,
+        ref: REF,
+        bootGeneration: BOOT_GENERATION,
+        epoch: EPOCH,
+        snapshot: { incarnation: INCARNATION, length: INITIAL_TURN_COUNT + k + 1 },
+        turns: [{ id, itemsView: "full", status: "completed" }],
+        items: turn.items?.map((item) => ({ ...item, turnId: id })) ?? [],
+      },
     } as AnyNotification);
   }
   const deadline = performance.now() + 8_000;

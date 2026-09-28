@@ -1015,10 +1015,19 @@ func (i *PastIndex) searchFTS(q string) ([]PastEntry, bool) {
 	return out, true
 }
 
-func ftsQuery(q string) string {
-	tokens := strings.FieldsFunc(strings.ToLower(q), func(r rune) bool {
+// SearchTokens splits a search into the lowercased words it looks for: the
+// runs of letters, digits and underscores. Everything else, FTS5's own query
+// syntax included, separates words, so no search can be read as an FTS5
+// operator.
+func SearchTokens(q string) []string {
+	return strings.FieldsFunc(strings.ToLower(q), func(r rune) bool {
 		return !unicode.IsLetter(r) && !unicode.IsDigit(r) && r != '_'
 	})
+}
+
+// ftsQuery is q as an FTS5 match: every word of it as a prefix, all required.
+func ftsQuery(q string) string {
+	tokens := SearchTokens(q)
 	if len(tokens) == 0 {
 		return ""
 	}

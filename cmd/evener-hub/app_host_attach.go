@@ -83,6 +83,18 @@ func hubHostAttach(ctx context.Context, cfg hubcore.WebConfig, sources *appsourc
 	if _, ok := hosts.Get(name); !ok {
 		return appwire.HostAttachResponse{}, appwire.InvalidParams(fmt.Sprintf("unknown host %q", name))
 	}
+	// The remnant fence, before any dial: an open teardown remnant fences the
+	// name host-wide, so attach refuses with the same typed `remnant-open`
+	// refusal every other lifecycle path emits — "the operator first resumes the
+	// named teardown through `evener/host/teardown-retry` ... and only then does
+	// any fenced path proceed" (registry spec 08 §6).
+	if cfg.HostRemnantFence != nil {
+		if remnantID, open := cfg.HostRemnantFence(name); open {
+			return appwire.HostAttachResponse{}, appwire.RemnantOpen(remnantID, fmt.Sprintf(
+				"host %q: an open teardown remnant (%s) fences this name; resume it through evener/host/teardown-retry first",
+				name, remnantID))
+		}
+	}
 	// The dialing seam is wired by main.go for every production hub. A hub with
 	// no seam (an embedder or a hermetic test) cannot attach anything.
 	if cfg.RemoteHostClient == nil {

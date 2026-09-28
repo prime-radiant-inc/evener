@@ -171,7 +171,7 @@ describe("mutations", () => {
 
       // The held update now succeeds, then its quiet list re-read succeeds too:
       // the store promise must resolve rather than merely avoiding the 30s error.
-      socket.receive({ id: updateRequest.id, result: { host: updatedRow } });
+      socket.receive({ id: updateRequest.id, result: { outcome: "committed", host: updatedRow } });
       await vi.advanceTimersByTimeAsync(0);
       const rereadFrames = listFrames().filter((frame) => frame.id !== pairRequest.id);
       const listRequest = rereadFrames[rereadFrames.length - 1];
@@ -233,7 +233,10 @@ describe("mutations", () => {
 
       // The held removal now succeeds, then its quiet list re-read succeeds too:
       // the store promise must resolve rather than merely avoiding the 30s error.
-      socket.receive({ id: removeRequest.id, result: { host: { ...row("side"), removed: true } } });
+      socket.receive({
+        id: removeRequest.id,
+        result: { outcome: "committed", host: { ...row("side"), removed: true, attached: false, midEnsure: false } },
+      });
       await vi.advanceTimersByTimeAsync(0);
       const rereadFrames = listFrames().filter((frame) => frame.id !== pairRequest.id);
       const listRequest = rereadFrames[rereadFrames.length - 1];
@@ -253,7 +256,7 @@ describe("mutations", () => {
     fake.on("evener/host/list", () => ({ hosts: [row("alpha")] }));
     await hostsStore.getState().fetch();
 
-    fake.on("evener/host/update", () => ({ host: { ...row("alpha"), address: "a2.example" } }));
+    fake.on("evener/host/update", () => ({ outcome: "committed", host: { ...row("alpha"), address: "a2.example" } }));
     fake.on("evener/host/list", () => ({ hosts: [{ ...row("alpha"), address: "a2.example" }] }));
     const updated = await hostsStore.getState().update({
       name: "alpha",
@@ -301,7 +304,7 @@ describe("mutations", () => {
   test("add sends a minted mutationId so a retried add cannot double-add", async () => {
     const fake = connectFakeClient();
     fake.on("evener/host/list", () => ({ hosts: [] }));
-    fake.on("evener/host/add", () => row("beta"));
+    fake.on("evener/host/add", () => ({ outcome: "committed", host: row("beta") }));
     await hostsStore.getState().add({ name: "beta", address: "b.example" });
 
     const addParams = fake.calls.find((c) => c.method === "evener/host/add")?.params as {
@@ -317,7 +320,7 @@ describe("mutations", () => {
     const fake = connectFakeClient();
     fake.on("evener/host/list", () => ({ hosts: [{ ...row("alpha"), generation: 7, incarnationId: "inc-7" }] }));
     await hostsStore.getState().fetch();
-    fake.on("evener/host/remove", () => ({ host: { ...row("alpha"), removed: true } }));
+    fake.on("evener/host/remove", () => ({ outcome: "committed", host: { ...row("alpha"), removed: true } }));
     fake.on("evener/host/list", () => ({ hosts: [] }));
     await hostsStore.getState().remove("alpha");
 
@@ -338,7 +341,7 @@ describe("mutations", () => {
     // The store never fetched, so no row is held; the first list read answers
     // the pair, and the update echoes that — never a defaulted pair.
     fake.on("evener/host/list", () => ({ hosts: [{ ...row("alpha"), generation: 3, incarnationId: "inc-3" }] }));
-    fake.on("evener/host/update", () => ({ host: { ...row("alpha"), address: "a2.example" } }));
+    fake.on("evener/host/update", () => ({ outcome: "committed", host: { ...row("alpha"), address: "a2.example" } }));
     await hostsStore.getState().update({ name: "alpha", entry: { address: "a2.example" } });
 
     const updateParams = fake.calls.find((c) => c.method === "evener/host/update")?.params as {
@@ -375,7 +378,10 @@ describe("mutations", () => {
             binding: "generation",
           });
         }
-        return { host: { ...row("alpha"), address: "a2.example", generation: 2, incarnationId: "inc-1" } };
+        return {
+          outcome: "committed",
+          host: { ...row("alpha"), address: "a2.example", generation: 2, incarnationId: "inc-1" },
+        };
       },
     );
     fake.on("evener/host/list", () => ({
@@ -471,7 +477,7 @@ describe("mutations", () => {
     fake.on("evener/host/list", () => ({ hosts: [row("alpha")] }));
     await hostsStore.getState().fetch();
 
-    fake.on("evener/host/add", () => row("beta"));
+    fake.on("evener/host/add", () => ({ outcome: "committed", host: row("beta") }));
     fake.on("evener/host/list", () => Promise.reject(new Error("list failed")));
     const added = await hostsStore.getState().add({ name: "beta", address: "b.example" });
     expect(added.name).toBe("beta");
@@ -487,7 +493,7 @@ describe("mutations", () => {
     fake.on("evener/host/list", () => ({ hosts: [row("alpha"), row("beta")] }));
     await hostsStore.getState().fetch();
 
-    fake.on("evener/host/remove", () => ({ host: row("alpha") }));
+    fake.on("evener/host/remove", () => ({ outcome: "committed", host: row("alpha") }));
     fake.on("evener/host/list", () => Promise.reject(new Error("list failed")));
     await hostsStore.getState().remove("alpha");
 
@@ -516,7 +522,7 @@ describe("mutations", () => {
     fake.on("evener/host/list", () => new Promise<HostListResponse>((resolve) => (resolvePoll = resolve)));
     const poll = hostsStore.getState().refresh();
 
-    fake.on("evener/host/add", () => row("beta"));
+    fake.on("evener/host/add", () => ({ outcome: "committed", host: row("beta") }));
     fake.on("evener/host/list", () => Promise.reject(new Error("list failed")));
     await hostsStore.getState().add({ name: "beta", address: "b.example" });
 
@@ -540,7 +546,7 @@ describe("mutations", () => {
     fake.on("evener/host/list", () => new Promise<HostListResponse>((resolve) => (resolvePoll = resolve)));
     const poll = hostsStore.getState().refresh();
 
-    fake.on("evener/host/remove", () => ({ host: row("beta") }));
+    fake.on("evener/host/remove", () => ({ outcome: "committed", host: row("beta") }));
     fake.on("evener/host/list", () => Promise.reject(new Error("list failed")));
     await hostsStore.getState().remove("beta");
 
@@ -569,7 +575,7 @@ describe("mutations", () => {
     const fetched = hostsStore.getState().fetch();
     expect(hostsStore.getState().load.phase).toBe("loading");
 
-    fake.on("evener/host/add", () => row("beta"));
+    fake.on("evener/host/add", () => ({ outcome: "committed", host: row("beta") }));
     fake.on("evener/host/list", () => Promise.reject(new Error("list failed")));
     await hostsStore.getState().add({ name: "beta", address: "b.example" });
 

@@ -760,6 +760,11 @@ func (c *countingThreadEnvelopeSource) PendingQuestion() *appwire.PendingQuestio
 	c.hit()
 	return nil
 }
+
+func (c *countingThreadEnvelopeSource) RestingFailure() *appwire.ThreadFailure {
+	c.hit()
+	return nil
+}
 func (c *countingThreadEnvelopeSource) SessionMeta() schema.SessionMeta {
 	c.hit()
 	return schema.SessionMeta{}

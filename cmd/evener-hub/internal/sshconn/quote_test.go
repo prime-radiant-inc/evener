@@ -24,7 +24,7 @@ func TestRemoteShellWordRendering(t *testing.T) {
 		{"127.0.0.1:9180", "127.0.0.1:9180"},
 		{"4242", "4242"},
 		{"--stdio", "--stdio"},
-		{"evener-appwire-v5", "evener-appwire-v5"},
+		{"evener-appwire-v6", "evener-appwire-v6"},
 		{"~/bin/evener", "~/bin/evener"},
 		{"`id`", "'`id`'"},
 		{"/home/dev/my hub.log", "'/home/dev/my hub.log'"},
