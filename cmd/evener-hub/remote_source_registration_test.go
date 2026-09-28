@@ -176,11 +176,21 @@ func TestHostRegistryEntriesCarryEveryHostField(t *testing.T) {
 	if !ok {
 		t.Fatal("alpha missing from the registry built from the config")
 	}
-	// The one difference from the configured literal is the field the registry
-	// owns: Add assigns the entry its per-name generation on insert, so a
-	// byte-identical re-add of the name is a different entry (the round-3
-	// identity rule). Everything else must round-trip unchanged.
+	// The differences from the configured literal are exactly the fields the
+	// registry owns: Add stamps the insert generation, and (registry spec 08 §1)
+	// mints the incarnation id and the first presence epoch beside it, so a
+	// byte-identical re-add of the name is a different identity. Everything else
+	// must round-trip unchanged, and the minted pair itself must have the
+	// shape the spec pins.
+	if len(registered.IncarnationID) != 36 {
+		t.Fatalf("registry.Get(alpha).IncarnationID = %q, want a minted 36-byte incarnation id", registered.IncarnationID)
+	}
+	if registered.PresenceEpoch != 1 {
+		t.Fatalf("registry.Get(alpha).PresenceEpoch = %d, want the first presence value 1", registered.PresenceEpoch)
+	}
 	want.Generation = 1
+	want.IncarnationID = registered.IncarnationID
+	want.PresenceEpoch = registered.PresenceEpoch
 	if !reflect.DeepEqual(registered, want) {
 		t.Fatalf("registry.Get(%q) = %+v, want %+v", "alpha", registered, want)
 	}

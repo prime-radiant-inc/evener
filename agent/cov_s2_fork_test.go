@@ -2,6 +2,7 @@ package agent
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -144,6 +145,9 @@ func TestS2Cov_ForkSession_DivergenceNotUserInput(t *testing.T) {
 	_, err := ForkSession(stateDir, id, 2, "x", "")
 	if err == nil || !strings.Contains(err.Error(), "not a USER_INPUT turn") {
 		t.Fatalf("err = %v, want non-USER_INPUT error", err)
+	}
+	if !errors.Is(err, ErrDivergencePositionNotUserInput) {
+		t.Fatalf("err = %v, want it to wrap ErrDivergencePositionNotUserInput", err)
 	}
 }
 

@@ -175,7 +175,7 @@ Select                                                      ✎
 - **Continue reading (only when present).** Leaving a plan or document before its end leaves one row under the notices for two hours: "Continue reading · 62%" and the document's title. Tapping it reopens the document at the same position, inside its session. This is the way back after an interruption.
 - **Live summary.** One line counts the Live bands: "4 need you · 4 finished · ▂▅▇ 9 working · 3 idle", with the Needs you count in amber ink and the fleet pulse meter (the whole fleet's activity, section 16.4; gray while the connection is down) before "working", where its label says what it measures. Each count jumps to its band (Idle unfolds). It shows when at least two bands have sessions, so the first screen always says what's working even when Needs you fills it (a first-glance participant found no sign of working sessions without it).
 - **Live** holds every live, unarchived top-level session, in four bands:
-  - Needs you: failed first (oldest failure first), then questions, approvals, warnings and restart-needed, oldest waiting first.
+  - Needs you: failed first, then questions and approvals, then warnings and restart-needed; oldest waiting first within each band (Jesse, 2026-09-27).
   - Finished: sessions whose turn ended, newest first. A blue dot marks the ones you haven't opened since.
   - Working: stable order by start time, newest first. Sessions that "may be stuck" float to the top of this band.
   - Idle: finished sessions you have already seen, collapsed by default, most recent first.
@@ -210,7 +210,7 @@ Row heights: signal rows about 64 to 88pt; quiet rows 48pt. Horizontal padding 1
 - **Tap** opens the session at the right spot: the pending question or approval, the start of the unread result, or the live end of the transcript.
 - **Swipe right** (leading): Archive (blue-gray action). Full swipe archives. An "Archived · Undo" toast appears at the bottom for 8 seconds. Swipes that begin in the 24pt screen-edge zone never act on a row, so the system back gesture can't archive anything (in round 1 it did, on the root screen, where there is nothing to go back to).
 - **Swipe left** (trailing): Stop (only when working; ends the current turn), Pin, More (the long-press menu).
-- **Long-press** opens a context menu with a preview card (title, state, why line, task progress, subagent count with failures, project, host, model and effort, last message excerpt; tapping the card opens the session, so there is no "Open" item, whose chevron read as a submenu) and actions: Pin to category… (category list plus "New category…"), Mark as read / Mark as unread, Stop, Shut down, Archive, Copy link, Rename.
+- **Long-press** opens a context menu with a preview card (title, state, why line, task progress, subagent count, project, host, model and effort, last message excerpt; tapping the card opens the session, so there is no "Open" item, whose chevron read as a submenu) and actions: Pin to category… (category list plus "New category…"), Mark as read / Mark as unread, Stop, Shut down, Archive, Copy link, Rename.
 - **Pull down** at the top reveals Search.
 - The list never reorders while a finger is on it or it is scrolling. Changes apply when the list settles, rows move with a 250ms spring, and a row entering Needs you gets a brief amber wash (1.2s fade).
 
@@ -317,7 +317,7 @@ Next pushes the session, so Back returns to the one you were in; from a session 
 
 ### 8.4 Ask dock
 
-When the session has a pending question or approval, an amber-edged dock replaces the status tray. While it's open, the dock is the input: the composer steps aside so every option fits, and comes back with "Other answer…" (question), "Tell the agent something else…" (approval), or when you fold the dock away.
+When the session has a pending question or approval, an amber-edged dock replaces the status tray. While it's open, the dock is the input: the composer steps aside so every option fits. For a question it comes back with "Other answer…" or when you fold the dock away; for an approval it never comes back.
 
 **Question** (the agent's `ask_user`; top-level sessions only; 1 to 4 questions per ask, 2 to 5 options each):
 
@@ -361,7 +361,6 @@ When the session has a pending question or approval, an amber-edged dock replace
 │ │      For the rest of this session       │ │
 │ └─────────────────────────────────────────┘ │
 │                    Deny                     │
-│        Tell the agent something else…       │
 └─────────────────────────────────────────────┘
 ```
 
@@ -386,7 +385,8 @@ Controls row, left to right:
 |---|---|
 | Idle / finished | Sends; the agent starts on it |
 | Working | Queues the message: it waits until this turn ends, and its **Steer now** (below) delivers it sooner |
-| Question or approval pending | The composer is hidden while the dock is open (section 8.4). After "Other answer…", Send sends your text as the answer, and the dock updates |
+| Question pending | The composer is hidden while the dock is open (section 8.4). After "Other answer…", Send sends your text as the answer, and the dock updates |
+| Approval pending | The composer is hidden while the dock is open (section 8.4) and never comes back; Send and the composer return once the approval is decided |
 | Shut down | Sends and resumes the session |
 | Offline | Holds the message in the outbox and sends it when the connection returns (section 14) |
 
@@ -456,7 +456,7 @@ Done · 21                                          ›
 - One flat list by state: failed first, then running (newest first), then done (folded as "Done · 21"). Every section's count matches its chip. A subagent started by another subagent says so in its last line ("from Fix race in tree settle"); nesting it under its parent had put a running row inside the Failed section.
 - Rows: a still mark (a green dot for running, ✕ failed, ✓ done; one pulse meter per view, and on this screen that's none), the mandate as title, the latest activity or outcome as the why line, and a last line with the model's display name (only when it differs from the coordinator's), a branch glyph and the branch name when the subagent works in its own worktree, and tokens. The trailing time is bare time in the current state, as the Board's ages are: how long a running subagent has run, how long since one failed or finished.
 - The list virtualizes; trees of 500 must scroll smoothly. A search field filters by title.
-- **A subagent's screen is its own session:** the same transcript, tray and composer as any session, and the composer's Send goes to the subagent. You talk to whichever session you have open, a coordinator or one of its subagents (Jesse, 2026-09-26), as on the web, whose rail opens a subagent as its own session with the normal composer. The hub takes a message for a subagent once its run has ended, and sending resumes it. While a subagent runs inside its coordinator, the hub serves it read-only and takes no message for it (server addition S6). Until then a running subagent's screen holds **Ask coordinator to stop it** and **Open coordinator** where the composer would be, and the composer returns when the subagent's run ends.
+- **A subagent's screen is its own session:** the same transcript, tray and composer as any session, and the composer's Send goes to the subagent. You talk to whichever session you have open, a coordinator or one of its subagents (Jesse, 2026-09-26), as on the web, whose rail opens a subagent as its own session with the normal composer. The hub takes a message for a subagent once its run has ended, and sending resumes it. While a subagent runs inside its coordinator, the hub serves it read-only and takes no message for it. Messaging a running subagent is tabled (Jesse, 2026-09-27: "let's table 'become able to message subagents' for now"). A running subagent's screen holds **Ask coordinator to stop it** and **Open coordinator** where the composer would be, and the composer returns when the subagent's run ends.
 - **Ask coordinator to stop it** is offered only while the subagent, or work it started, is still running: a failed subagent with nothing running has nothing left to stop (Jesse, 2026-09-26). It opens a sheet with a prefilled, editable message to the coordinator ("Stop subagent 'Fix race in tree settle': it has failed three times."), the line "Arrives at the coordinator's next step" under it, and one Send. This Send steers instead of queueing, because the request is about the turn that is running. The row then says "Stop requested from the coordinator" until the subagent's state changes, and when it stops the row reads "Stopped at your request" with a toast naming it; a round-4 participant didn't trust a request that never visibly completed. When the hub gains a direct stop call (server addition S6), this becomes **Stop subagent** with a confirmation and no message.
 
 ## 10. Review: plans, documents and artifacts
@@ -582,6 +582,8 @@ Opened from the hub button. A large-detent sheet with a grouped list.
 | shut down / not loaded | Shut down | none | Projects only | age only |
 
 Marks always pair shape with color so they read without color.
+
+The table lists the Needs you states in priority order (7.1): Failed leads, then Question and Approval, then Warning and Restart needed; age breaks ties within a band.
 
 A session waiting on its subagents is never Quiet or May be stuck, however long it has been silent: its line reads "Waiting on 8 subagents", on the Board and in the tray (Jesse, 2026-09-26). The web's liveness line still reports a stall there; the phone doesn't.
 
@@ -731,7 +733,7 @@ Each has a fallback so the phone works before it lands.
 | S3 | Subagent tallies per top-level session: running, failed, done (the hub's job counts are active, failed, completed), including omitted descendants | The Subagents chip's strip and counts on 500-node trees | Tally loaded children; show "+N more" |
 | S4 | A per-user "seen through" marker per session, with a method to set it, included in summaries | Finished-and-unseen vs Idle agrees across phone and web | Phone-local marker |
 | S5 | Activity buckets per live session (events per minute, last 7 to 10 minutes) and last activity time | The pulse meter and "may be stuck" | Use `updated_at`; show a single bar |
-| S6 | Direct subagent stop, and a message to a running subagent | Stop a runaway subagent without asking the coordinator, and talk to a running one from its screen (section 9): today the hub serves a running subagent read-only and takes messages only once its run has ended | Steer the coordinator; a running subagent's screen holds Ask coordinator to stop it where its composer would be |
+| S6 | Direct subagent stop | Stop a runaway subagent without asking the coordinator (section 9) | Steer the coordinator; a running subagent's screen holds Ask coordinator to stop it where its composer would be |
 | S7 | Image and document proxying for sessions on other hosts | Images and plans in remote sessions render | Show "Open on the host" notice |
 | S8 | Launch recipes stored on the hub (shared with the web) | Recipes follow you across devices | Phone-local recipes |
 | S9 | Document revision identity in doc reads | "Changes since you last read" | Diff against the phone's cached copy |

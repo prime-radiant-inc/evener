@@ -18,6 +18,33 @@ import (
 	"primeradiant.com/evener/llm"
 )
 
+// ErrDivergencePositionOutOfRange indicates a divergenceTurn that names no
+// entry in the parent transcript: less than 1, or beyond the entry count.
+// The hub maps it to appwire.InvalidParams rather than an internal error, so
+// a client can tell "you named a bad item" apart from a hub failure.
+var ErrDivergencePositionOutOfRange = errors.New("divergence position is out of range")
+
+// ErrDivergencePositionNotUserInput indicates the entry at divergenceTurn is
+// not a USER_INPUT entry, so no fork can diverge there. Mapped to
+// appwire.InvalidParams for the same reason as ErrDivergencePositionOutOfRange.
+var ErrDivergencePositionNotUserInput = errors.New("divergence position is not a USER_INPUT entry")
+
+// divergenceEntryAt returns the entry divergenceTurn names in allEntries, or
+// a wrapped ErrDivergencePositionOutOfRange / ErrDivergencePositionNotUserInput
+// if it names none, or names one that is not USER_INPUT. Both ForkSession and
+// ForkSessionAtUserTurn share this validation, so the two refusals are worded
+// and classified identically regardless of which entry point a caller used.
+func divergenceEntryAt(allEntries []transcript.Entry, divergenceTurn int) (transcript.Entry, error) {
+	if divergenceTurn < 1 || divergenceTurn > len(allEntries) {
+		return transcript.Entry{}, fmt.Errorf("%w: divergenceTurn %d, parent has %d entries", ErrDivergencePositionOutOfRange, divergenceTurn, len(allEntries))
+	}
+	entry := allEntries[divergenceTurn-1]
+	if entry.Turn.Kind != schema.TurnUserInput {
+		return transcript.Entry{}, fmt.Errorf("%w: entry at divergenceTurn %d is not a USER_INPUT turn (got %s)", ErrDivergencePositionNotUserInput, divergenceTurn, entry.Turn.Kind)
+	}
+	return entry, nil
+}
+
 // ForkSession creates a new session branched from a parent session at a given divergence turn.
 //
 // divergenceTurn is a 1-based index into the parent's full entry list (all turns, not
@@ -49,7 +76,7 @@ func ForkSessionAtUserTurn(stateDir, parentID string, divergenceTurn int, parent
 
 func forkSessionAtUserTurnFS(fs afero.Fs, stateDir, parentID string, divergenceTurn int, parentForkLabel string) (string, string, error) {
 	if divergenceTurn < 1 {
-		return "", "", fmt.Errorf("divergenceTurn must be >= 1, got %d", divergenceTurn)
+		return "", "", fmt.Errorf("%w: divergenceTurn must be >= 1, got %d", ErrDivergencePositionOutOfRange, divergenceTurn)
 	}
 
 	parentHeader, allEntries, err := readForkParent(fs, stateDir, parentID, 10*1024*1024)
@@ -57,16 +84,11 @@ func forkSessionAtUserTurnFS(fs afero.Fs, stateDir, parentID string, divergenceT
 		return "", "", err
 	}
 
-	// Validate that divergenceTurn points to a valid entry in the parent transcript.
-	if divergenceTurn > len(allEntries) {
-		return "", "", fmt.Errorf("divergenceTurn %d exceeds parent turn count %d", divergenceTurn, len(allEntries))
-	}
-
 	// The entry at the divergence position must be a USER_INPUT turn; its text
 	// goes back to the caller instead of being written into the child.
-	divergenceEntry := allEntries[divergenceTurn-1]
-	if divergenceEntry.Turn.Kind != schema.TurnUserInput {
-		return "", "", fmt.Errorf("entry at divergenceTurn %d is not a USER_INPUT turn (got %s)", divergenceTurn, divergenceEntry.Turn.Kind)
+	divergenceEntry, err := divergenceEntryAt(allEntries, divergenceTurn)
+	if err != nil {
+		return "", "", err
 	}
 
 	// Load parent meta — required for copying fields to the child.
@@ -125,7 +147,7 @@ type forkSessionDeps struct {
 
 func forkSessionWithDeps(fs afero.Fs, stateDir, parentID string, divergenceTurn int, editedMessage, parentForkLabel string, deps forkSessionDeps) (string, error) {
 	if divergenceTurn < 1 {
-		return "", fmt.Errorf("divergenceTurn must be >= 1, got %d", divergenceTurn)
+		return "", fmt.Errorf("%w: divergenceTurn must be >= 1, got %d", ErrDivergencePositionOutOfRange, divergenceTurn)
 	}
 
 	parentHeader, allEntries, err := readForkParent(fs, stateDir, parentID, deps.maxScanToken)
@@ -133,15 +155,9 @@ func forkSessionWithDeps(fs afero.Fs, stateDir, parentID string, divergenceTurn 
 		return "", err
 	}
 
-	// Validate that divergenceTurn points to a valid entry in the parent transcript.
-	if divergenceTurn > len(allEntries) {
-		return "", fmt.Errorf("divergenceTurn %d exceeds parent turn count %d", divergenceTurn, len(allEntries))
-	}
-
 	// The entry at the divergence position must be a USER_INPUT turn.
-	divergenceEntry := allEntries[divergenceTurn-1]
-	if divergenceEntry.Turn.Kind != schema.TurnUserInput {
-		return "", fmt.Errorf("entry at divergenceTurn %d is not a USER_INPUT turn (got %s)", divergenceTurn, divergenceEntry.Turn.Kind)
+	if _, err := divergenceEntryAt(allEntries, divergenceTurn); err != nil {
+		return "", err
 	}
 
 	// Prefix is all entries before the divergence position.

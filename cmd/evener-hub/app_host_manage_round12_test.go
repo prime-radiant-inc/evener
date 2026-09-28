@@ -96,7 +96,7 @@ func TestHostManageRemoveReAddDuringInFlightListSkipsLastGoodStoreWithoutCache(t
 	// drops the name's source registration and forgets the retained rows, and
 	// the re-add registers the name under a fresh source — the same identity
 	// rules the cached path enforces through the cache's generations.
-	if err := client.Request(context.Background(), appwire.MethodEvenerHostRemove, appwire.HostRemoveParams{Name: "web-side"}, nil); err != nil {
+	if err := client.Request(context.Background(), appwire.MethodEvenerHostRemove, wireRemoveRequest(t, client, "web-side"), nil); err != nil {
 		t.Fatalf("evener/host/remove: %v", err)
 	}
 	if threads := web.lastGoodThreadsForSource("web-side"); len(threads) != 0 {
@@ -218,7 +218,7 @@ func TestHostManageRowAfterRemoveReAddDoesNotRecordStaleFacts(t *testing.T) {
 	// drops the attach record with every other piece of the name's state, and
 	// the re-add's commit starts the name clean under a fresh generation.
 	serveOldHostFacts.Store(false)
-	if _, err := m.Remove(context.Background(), appwire.HostRemoveParams{Name: "side"}); err != nil {
+	if _, err := m.Remove(context.Background(), removeRequest(t, m, "side")); err != nil {
 		t.Fatalf("Remove = %v", err)
 	}
 	if _, err := m.Add(context.Background(), appwire.HostAddParams{Entry: appwire.HostEntry{Name: "side", Address: "fresh.example"}}); err != nil {

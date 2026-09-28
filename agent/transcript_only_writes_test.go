@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"sync"
 	"testing"
 
@@ -115,8 +116,11 @@ func TestCommunicateWithoutATranscriptStillDelivers(t *testing.T) {
 // its own write rather than an earlier one in the turn's admission.
 func TestCommunicateNotRecordedByAPoisonedWriterStillAnnouncesWhenUnserved(t *testing.T) {
 	s, _ := newExecutionSession(t)
-	fs := attachEnvironmentFailureFS(t, s)
-	armEnvironmentPartialWrite(fs)
+	// COMMUNICATE goes through the synced door, which attempts a rollback on a
+	// partial write; only a rollback that also fails leaves the writer
+	// poisoned (attachEnvironmentPoisoningWrite), unlike the buffered door's
+	// plain partial write (armEnvironmentPartialWrite).
+	attachEnvironmentPoisoningWrite(t, s, errors.New("injected transcript write failure"), errors.New("injected rollback failure"))
 	collectEvents := drainEvents(s)
 	if err := s.deliverCommunicate(events.CommunicateData{CallID: "comm-poisoned", EndTurn: true, Message: "lost"}); err != nil {
 		t.Fatalf("deliverCommunicate on an unserved session: %v", err)
@@ -139,8 +143,7 @@ func TestCommunicateNotRecordedByAPoisonedWriterStillAnnouncesWhenUnserved(t *te
 // warn-and-continue, so the model is told what a client was actually shown.
 func TestCommunicateToolSucceedsWhenNotRecordedAndUnserved(t *testing.T) {
 	s, _ := newExecutionSession(t)
-	fs := attachEnvironmentFailureFS(t, s)
-	armEnvironmentPartialWrite(fs)
+	attachEnvironmentPoisoningWrite(t, s, errors.New("injected transcript write failure"), errors.New("injected rollback failure"))
 	res := s.reg.ExecuteCall(context.Background(), s.env, communicateCallArgs("comm-poisoned", map[string]any{"message": "lost", "end_turn": true}))
 	if res.IsError {
 		t.Fatalf("communicate call failed on an unserved session despite warn-and-continue: %+v", res)

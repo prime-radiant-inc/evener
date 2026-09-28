@@ -8,7 +8,9 @@ import { createNativeStackNavigator } from "@react-navigation/native-stack";
 import { StatusBar } from "expo-status-bar";
 import { useEffect, useState } from "react";
 import { ActivityIndicator, useColorScheme, View } from "react-native";
+import { GestureHandlerRootView } from "react-native-gesture-handler";
 import { SafeAreaProvider } from "react-native-safe-area-context";
+import { BoardScreen } from "./src/board/BoardScreen";
 import { ConnectionProvider, useConnection } from "./src/ConnectionProvider";
 import { ForkScreen } from "./src/ForkScreen";
 import { HubSettingsScreen } from "./src/HubSettingsScreen";
@@ -36,7 +38,6 @@ import {
 	ConversationScreen,
 	HubsScreen,
 	type Routes,
-	SessionsScreen,
 } from "./src/screens";
 import { SHEET_ROUTES } from "./src/sheet/sheetRoutes";
 import { TasksSheet } from "./src/TasksSheet";
@@ -46,14 +47,18 @@ import { ErrorMessage, useColors } from "./src/ui";
 const Stack = createNativeStackNavigator<Routes>();
 
 export default function App() {
+	// Gesture handlers recognize touches only inside this view, so it wraps
+	// everything, and it fills the screen.
 	return (
-		<SafeAreaProvider>
-			<ConnectionProvider>
-				<NativePreferencesProvider>
-					<Navigation />
-				</NativePreferencesProvider>
-			</ConnectionProvider>
-		</SafeAreaProvider>
+		<GestureHandlerRootView style={{ flex: 1 }}>
+			<SafeAreaProvider>
+				<ConnectionProvider>
+					<NativePreferencesProvider>
+						<Navigation />
+					</NativePreferencesProvider>
+				</ConnectionProvider>
+			</SafeAreaProvider>
+		</GestureHandlerRootView>
 	);
 }
 function Navigation() {
@@ -112,7 +117,7 @@ function Navigation() {
 						component={HubsScreen}
 						options={{ title: "Evener · Hubs" }}
 					/>
-					<Stack.Screen name="Sessions" component={SessionsScreen} />
+					<Stack.Screen name="Sessions" component={BoardScreen} />
 					<Stack.Screen
 						name="SessionDeletion"
 						component={SessionDeletionScreen}

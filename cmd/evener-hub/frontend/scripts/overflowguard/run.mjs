@@ -570,7 +570,11 @@ async function verifyShortSessionMenu(cdpEndpoint, url) {
   }
 }
 
-async function verifyChatFocus(cdpEndpoint, url) {
+// One CDP leg shared by every settled-page inspection (chat focus, intent
+// column, held steer column): connect, hold the guard's 1024x900 viewport,
+// boot the fixture, wait out the harness's own settled promise and fonts,
+// then run the inspection expression and return its result.
+async function inspectOnSettledPage(cdpEndpoint, url, expression) {
   const page = await connectPage(cdpEndpoint);
   const { send } = page;
   try {
@@ -581,11 +585,15 @@ async function verifyChatFocus(cdpEndpoint, url) {
     // Keep the async inspection reachable from the page global while CDP
     // awaits it. Linux Chrome may otherwise collect the bare returned Promise
     // between animation frames and reject Runtime.evaluate with -32000.
-    return await evaluate(send, "window.__overflowGuardChatFocus = window.inspectChatFocus()");
+    return await evaluate(send, expression);
   } finally {
     await clearViewportOverride(send);
     page.close();
   }
+}
+
+async function verifyChatFocus(cdpEndpoint, url) {
+  return inspectOnSettledPage(cdpEndpoint, url, "window.__overflowGuardChatFocus = window.inspectChatFocus()");
 }
 
 // The reload-shaped column regression: a settled transcript whose final turn
@@ -596,18 +604,21 @@ async function verifyChatFocus(cdpEndpoint, url) {
 // this compares the two boxes directly. 1024px: wide enough that the 44rem
 // measure leaves visible margins on both sides.
 async function verifyIntentColumn(cdpEndpoint, url) {
-  const page = await connectPage(cdpEndpoint);
-  const { send } = page;
-  try {
-    await applyViewport(send, { width: 1024, height: 900, mobile: false });
-    await navigateTo(page, url, BOOT);
-    await evaluate(send, "window.settled");
-    await waitForFonts(send);
-    return await evaluate(send, "window.__overflowGuardIntentColumn = window.inspectIntentColumn()");
-  } finally {
-    await clearViewportOverride(send);
-    page.close();
-  }
+  return inspectOnSettledPage(cdpEndpoint, url, "window.__overflowGuardIntentColumn = window.inspectIntentColumn()");
+}
+
+// The trailing held-steer ghost stack's column: Session renders HeldSteerStack
+// as the transcript's trailing virtual-list row, outside TurnBlock's .turn
+// column, so like the top-level intent group it must read the reading measure
+// itself or it spans the full pane while every turn above stays clamped and
+// centered. Same 1024px leg as the intent column check: wide enough that the
+// 44rem measure leaves visible margins on both sides.
+async function verifyHeldSteerColumn(cdpEndpoint, url) {
+  return inspectOnSettledPage(
+    cdpEndpoint,
+    url,
+    "window.__overflowGuardHeldSteerColumn = window.inspectHeldSteerColumn()",
+  );
 }
 
 function assertFieldsets(detail, label) {
@@ -852,6 +863,18 @@ function assertDetail(result, width) {
 
 function nearlyEqual(actual, expected, tolerance = GEOMETRY_TOLERANCE) {
   return Math.abs(actual - expected) <= tolerance;
+}
+
+// The column-alignment contract the intent-group and held-steer-stack checks
+// share: the row was found, both turn edges were measured, and both of its
+// edges sit within GEOMETRY_TOLERANCE of the turn's. Positional
+// (found, left, right, turnLeft, turnRight); the per-check JSON field names
+// stay at the call sites because MUTATIONS.md quotes the FAIL JSON verbatim
+// as red-first evidence.
+function columnMisaligned(found, left, right, turnLeft, turnRight) {
+  return (
+    !found || turnLeft === null || turnRight === null || !nearlyEqual(left, turnLeft) || !nearlyEqual(right, turnRight)
+  );
 }
 
 function assertEditors(result, width, surface) {
@@ -1219,16 +1242,37 @@ async function main() {
       `http://127.0.0.1:${vitePort}/overflowharness.html?intenttail=1&w=1024`,
     );
     if (
-      !intentColumn.groupFound ||
-      intentColumn.turnLeft === null ||
-      intentColumn.turnRight === null ||
-      Math.abs(intentColumn.groupLeft - intentColumn.turnLeft) > GEOMETRY_TOLERANCE ||
-      Math.abs(intentColumn.groupRight - intentColumn.turnRight) > GEOMETRY_TOLERANCE
+      columnMisaligned(
+        intentColumn.groupFound,
+        intentColumn.groupLeft,
+        intentColumn.groupRight,
+        intentColumn.turnLeft,
+        intentColumn.turnRight,
+      )
     ) {
       failed++;
       console.log(`intent group column ... FAIL - ${JSON.stringify(intentColumn)}`);
     } else {
       console.log("intent group column ... PASS - top-level intent group shares the turn content column");
+    }
+
+    const heldSteerColumn = await verifyHeldSteerColumn(
+      cdpEndpoint,
+      `http://127.0.0.1:${vitePort}/overflowharness.html?heldtail=1&w=1024`,
+    );
+    if (
+      columnMisaligned(
+        heldSteerColumn.stackFound,
+        heldSteerColumn.stackLeft,
+        heldSteerColumn.stackRight,
+        heldSteerColumn.turnLeft,
+        heldSteerColumn.turnRight,
+      )
+    ) {
+      failed++;
+      console.log(`held steer column ... FAIL - ${JSON.stringify(heldSteerColumn)}`);
+    } else {
+      console.log("held steer column ... PASS - trailing held-steer stack shares the turn content column");
     }
 
     const panelCollapse = await verifyPanelCollapse(

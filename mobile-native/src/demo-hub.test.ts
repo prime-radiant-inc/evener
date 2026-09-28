@@ -244,6 +244,36 @@ describe("native demonstration hub", () => {
 			await hub.close();
 		}
 	});
+
+	it("stamps clientMutationId on the user message it creates for turn/start, like the real projector", async () => {
+		const hub = await createDemoHub(0);
+		const client = createHubClient(
+			hub.origin,
+			"",
+			(url) => new WebSocket(url) as unknown as WebSocketLike,
+		);
+		const service = createConversationService(client);
+		try {
+			await client.connect();
+			const opened = await service.open("demo:playground");
+			if (!opened.instanceId) throw new Error("Missing instance id");
+			const clientMutationId = "demo-hub-turn-start-mutation-id";
+			const started = await client.request("turn/start", {
+				ref: "demo:playground",
+				expectedInstanceId: opened.instanceId,
+				clientMutationId,
+				input: [{ type: "text", text: "Hello" }],
+			});
+			const userItem = started.turn.items?.find(
+				(item) => item.type === "userMessage",
+			);
+			expect(userItem?.clientMutationId).toBe(clientMutationId);
+		} finally {
+			service.close();
+			client.close();
+			await hub.close();
+		}
+	});
 });
 
 describe("native demonstration hub's redesign fleet", () => {

@@ -469,7 +469,7 @@ describe("approvals inferred from the needs_you section (until S2)", () => {
 });
 
 describe("Live bands (spec 7.1)", () => {
-	it("puts failures first, oldest first, then the rest of Needs you oldest waiting first", () => {
+	it("puts failures first, oldest first, then questions and approvals, then warnings and restart-needed", () => {
 		const live = [
 			row("q-new", { state: "awaiting", ask_pending: true, updated_at: at(30) }),
 			row("f-new", { state: "errored", updated_at: at(20) }),
@@ -477,7 +477,7 @@ describe("Live bands (spec 7.1)", () => {
 			row("f-old", { state: "errored", updated_at: at(10) }),
 		];
 		const bands = liveBands(live, [], never);
-		expect(bands.needsYou.map((item) => item.row.ref)).toEqual(["f-old", "f-new", "w-old", "q-new"]);
+		expect(bands.needsYou.map((item) => item.row.ref)).toEqual(["f-old", "f-new", "q-new", "w-old"]);
 	});
 
 	it("orders Finished and Idle newest first and keeps the hub's order for Working", () => {
@@ -722,9 +722,21 @@ function oldestFirst(a: ClassifiedRow, b: ClassifiedRow): number {
 function newestFirst(a: ClassifiedRow, b: ClassifiedRow): number {
 	return time(b.row) - time(a.row) || byRef(a, b);
 }
+// Failed leads, then a question or approval, then a warning or
+// restart-needed, regardless of age; age breaks ties within a band.
+function needsYouRank(state: BoardState): number {
+	switch (state) {
+		case "failed":
+			return 0;
+		case "question":
+		case "approval":
+			return 1;
+		default:
+			return 2;
+	}
+}
 function needsYouOrder(a: ClassifiedRow, b: ClassifiedRow): number {
-	const rank = (item: ClassifiedRow) => (item.state === "failed" ? 0 : 1);
-	return rank(a) - rank(b) || oldestFirst(a, b);
+	return needsYouRank(a.state) - needsYouRank(b.state) || oldestFirst(a, b);
 }
 
 /** Splits Live into the spec's four bands. Rows from the needs_you section

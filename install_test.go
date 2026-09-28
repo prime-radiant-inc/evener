@@ -421,6 +421,51 @@ func TestInstallHomeGeneratedHome(t *testing.T) {
 	}
 }
 
+// TestInstallFailsWhenABinaryCopyFails pins install's failure propagation
+// (SAFE-09): a copy failure into the managed share dir must make the install
+// target exit nonzero. The defect was the loop reporting its last command's
+// status, so a failed `install` followed by a succeeding `ln` — and a later
+// iteration that did install cleanly — returned zero while the first managed
+// binary was absent.
+//
+// The fixture's first bin, evener-missing, names a source the build stage
+// never produces, so its copy fails; the real evener then installs and links
+// successfully. That is exactly the sequence that used to mask the first
+// failure. Asserting the output names evener-missing keeps the failure pinned
+// to the copy rather than to an unrelated build-stage error.
+func TestInstallFailsWhenABinaryCopyFails(t *testing.T) {
+	if testing.Short() {
+		t.Skip("install integration test")
+	}
+	if runtime.GOOS == "windows" {
+		t.Skip("the install loop requires a Unix shell")
+	}
+
+	repoRoot, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+
+	fixtureRoot := copyTrackedWorkingTree(t, repoRoot)
+	home := t.TempDir()
+	env := installTestEnv(t, home, map[string]string{
+		"XDG_CONFIG_HOME": filepath.Join(home, ".config"),
+		"XDG_STATE_HOME":  filepath.Join(home, ".local", "state"),
+		"XDG_CACHE_HOME":  filepath.Join(home, ".cache"),
+	})
+
+	// -o build-web is left off for the reason TestInstallHomeGeneratedHome
+	// gives: this is about install's own error propagation, not the SPA.
+	out, err := combinedOutputRetryingETXTBSY(fixtureRoot, env,
+		"make", "-o", "build-web", "install", "EVENER_INSTALL_BINS=evener-missing evener")
+	if err == nil {
+		t.Fatalf("install exited zero after a binary copy failed:\n%s", out)
+	}
+	if !strings.Contains(string(out), "evener-missing") {
+		t.Fatalf("install failed, but not on the failed copy; output:\n%s", out)
+	}
+}
+
 // The node_modules guard above must not fire on vite's own cache churn:
 // vite/vitest rewrite node_modules/.vite and .vite-temp on every run, and
 // with several worktrees symlinking one real install, a concurrent vitest

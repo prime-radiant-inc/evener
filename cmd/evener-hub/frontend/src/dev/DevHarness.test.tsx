@@ -133,7 +133,7 @@ describe("DevHarness", () => {
     expect(fake.calls.some((c) => c.method === "thread/read")).toBe(true);
   });
 
-  test("an injected item/agentMessage/delta updates the live-updating JSON view", async () => {
+  test("an injected history/updated updates the live-updating JSON view", async () => {
     connectFakeClient();
     const fake = connectionStore.getState().client as FakeClient;
     fake.on("thread/list", () => ({ data: [testThread("ref_a")] }));
@@ -152,6 +152,9 @@ describe("DevHarness", () => {
             ],
             evener: { ref: "ref_a", capabilities: CAPABILITIES, queue: { revision: 0 }, activeTurnId: "turn_1" },
           }),
+          bootGeneration: "1",
+          epoch: 0,
+          snapshot: { incarnation: "inc_a", length: 1 },
         }) satisfies ThreadReadResponse,
     );
 
@@ -163,12 +166,20 @@ describe("DevHarness", () => {
 
     act(() => {
       fake.emitNotification({
-        method: "item/agentMessage/delta",
-        params: { threadId: "thr_ref_a", ref: "ref_a", turnId: "turn_1", itemId: "item_1", delta: "hello websockets" },
+        method: "history/updated",
+        params: {
+          threadId: "thr_ref_a",
+          ref: "ref_a",
+          bootGeneration: "1",
+          epoch: 0,
+          snapshot: { incarnation: "inc_a", length: 2 },
+          items: [
+            { type: "agentMessage", id: "item_1", turnId: "turn_1", status: "inProgress", text: "hello websockets" },
+          ],
+        },
       });
     });
 
-    expect(screen.getByText(/"pendingText"/)).toBeTruthy();
     expect(screen.getByText(/hello websockets/)).toBeTruthy();
   });
 
@@ -176,7 +187,7 @@ describe("DevHarness", () => {
     const fake = new FakeClient("ready");
     const scripted: InitializeResponse = {
       serverInfo: { name: "dev-harness-hub", version: "2.0.0" },
-      protocolVersion: "evener-appwire-v5",
+      protocolVersion: "evener-appwire-v6",
       sourceId: "dev-harness-test",
       features: {
         threadList: false,

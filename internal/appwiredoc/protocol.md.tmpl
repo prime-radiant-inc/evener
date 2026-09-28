@@ -86,7 +86,7 @@ no router (reserved).
 | Method | Scope | Params | Result | Summary |
 |--------|-------|--------|--------|---------|
 {{- range .Methods}}
-| `{{.Name}}` | {{.Scope}} | `{{.ParamsType}}` | `{{.ResultType}}` | {{.Summary}} |
+| `{{.Name}}` | {{.Scope}} | `{{.ParamsType}}` | `{{.ResultType | tableCell}}` | {{.Summary | tableCell}} |
 {{- end}}
 
 ## Notifications (server → client)
