@@ -1995,6 +1995,13 @@ export interface NavigationEntityRecord {
   value: unknown;
 }
 
+export interface NavigationFailure {
+  title?: string;
+  cause_kind?: string;
+  provider?: string;
+  status?: number;
+}
+
 export interface NavigationInvalidatedPayload {
   generationId: string;
   sequence: number;
@@ -2227,6 +2234,12 @@ export interface NavigationSessionSummary {
    * the question.
    */
   question?: NavigationQuestion;
+  /**
+   * Failure says why the session failed (S1c). It is present only on a
+   * Failed row whose daemon summarized the failure, or whose daemon
+   * crashed.
+   */
+  failure?: NavigationFailure;
   dormant?: boolean;
   /**
    * Offline marks a row folded into the merged list from a source that is
