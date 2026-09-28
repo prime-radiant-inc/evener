@@ -398,16 +398,49 @@ func TestQuarantineRefusesArtifactMismatches(t *testing.T) {
 		}
 	})
 
-	t.Run("custody with neither aside nor intent", func(t *testing.T) {
-		path, asidePath, _ := newQuarantinedDir(t)
+	t.Run("orphan custody beside a cleanly serving store is cleared", func(t *testing.T) {
+		path, asidePath, custodyPath := newQuarantinedDir(t)
 		if err := os.Remove(asidePath); err != nil {
 			t.Fatalf("Remove(aside): %v", err)
 		}
 		if err := forgetStore(path); err != nil {
 			t.Fatalf("forgetStore: %v", err)
 		}
+		// The replacement store still serves: the custody is orphaned evidence
+		// (no aside, no pending intent) that no name the store carries can be
+		// held closed by, so it is cleared rather than refusing every boot.
+		store, err := Open(path)
+		if err != nil {
+			t.Fatalf("Open with an orphan custody beside a cleanly serving store: %v", err)
+		}
+		if store == nil {
+			t.Fatalf("Open returned no store")
+		}
+		if _, err := os.Stat(custodyPath); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("the orphan custody was not cleared (stat err = %v)", err)
+		}
+		if err := forgetStore(path); err != nil {
+			t.Fatalf("forgetStore: %v", err)
+		}
+		if _, err := Open(path); err != nil {
+			t.Fatalf("the second fresh open after the orphan was cleared: %v", err)
+		}
+	})
+	t.Run("custody with neither aside nor intent beside no loadable store refuses", func(t *testing.T) {
+		path, asidePath, _ := newQuarantinedDir(t)
+		if err := os.Remove(asidePath); err != nil {
+			t.Fatalf("Remove(aside): %v", err)
+		}
+		if err := os.Remove(path); err != nil {
+			t.Fatalf("Remove(store): %v", err)
+		}
+		if err := forgetStore(path); err != nil {
+			t.Fatalf("forgetStore: %v", err)
+		}
 		if store, err := Open(path); err == nil {
-			t.Fatalf("Open with a custody file neither aside-backed nor intent-backed returned %v, want a refusal", store)
+			t.Fatalf("Open with an orphan custody and no store returned %v, want a refusal", store)
+		} else if !errors.Is(err, ErrStoreCorrupt) || !errors.Is(err, ErrQuarantineIncomplete) {
+			t.Fatalf("Open = %v, want an incomplete-custody refusal", err)
 		}
 	})
 }

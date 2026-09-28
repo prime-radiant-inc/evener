@@ -258,6 +258,24 @@ func TestQuarantineNeverRenamesACleanStoreUnderAStaleIntent(t *testing.T) {
 		if _, err := os.Stat(quarantineIntentPath(path)); !errors.Is(err, os.ErrNotExist) {
 			t.Fatalf("the stale intent was not cleared (stat err = %v)", err)
 		}
+		// The cleared intent must not leave an unreferenced custody file behind:
+		// the one-to-one artifact rule would refuse the next boot over it.
+		if _, err := os.Stat(quarantineCustodyPath(path, stamp)); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("the cleared intent left its unreferenced custody file behind (stat err = %v)", err)
+		}
+		if err := forgetStore(path); err != nil {
+			t.Fatalf("forgetStore: %v", err)
+		}
+		again, err := Open(path)
+		if err != nil {
+			t.Fatalf("the second fresh open after the stale intent was cleared: %v", err)
+		}
+		if _, ok := again.Record(created.ID); !ok {
+			t.Fatalf("the second fresh open lost the clean store's record: %+v", again.Records())
+		}
+		if got := again.CursorEpoch().QuarantineEpoch; got != 1 {
+			t.Fatalf("the epoch after the clear = %d, want the persisted 1", got)
+		}
 	})
 	t.Run("a different corrupt file is quarantined under a new intent", func(t *testing.T) {
 		dir := t.TempDir()

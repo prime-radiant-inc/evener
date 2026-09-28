@@ -341,19 +341,37 @@ func resolveStoreFS(fs afero.Fs, path string, faults storeFaults) (snapshot, uin
 	// on disk or is the one a pending intent names. A custody file with neither
 	// is a quarantine that lost its rename and its intent — the corrupt bytes it
 	// custodied cannot be shown to exist, so the boot refuses rather than
-	// serving beside an unproven snapshot.
+	// serving beside an unproven snapshot. The one exception is a store that
+	// demonstrably serves: when the path loads cleanly, the corrupted bytes are
+	// gone for good and the custody cannot keep any name closed that the served
+	// store does not carry, so it is not evidence of anything — it is removed on
+	// the clean path below (its durable epoch was persisted to the sidecar just
+	// above), because leaving it would refuse every later boot over this rule.
 	pendingStamp := ""
 	if haveIntent {
 		if stamp, ok := strings.CutPrefix(intent.AsideFile, path+quarantineAsideInfix); ok {
 			pendingStamp = stamp
 		}
 	}
+	var orphans []string
+	storeLoads := false
 	for stamp := range artifacts.custodyStamps {
 		if artifacts.asideStamps[stamp] || stamp == pendingStamp {
 			continue
 		}
-		return snapshot{}, 0, nil, quarantineFailed(fmt.Errorf(
-			"custody file %s has neither its aside file nor a pending intent", quarantineCustodyPath(path, stamp)))
+		if !storeLoads {
+			if _, err := lstat(fs, path); err == nil {
+				if _, err := loadFS(fs, path); err == nil {
+					storeLoads = true
+				}
+			}
+		}
+		if !storeLoads {
+			return snapshot{}, 0, nil, quarantineFailed(fmt.Errorf(
+				"%w: custody file %s has neither its aside file nor a pending intent",
+				ErrQuarantineIncomplete, quarantineCustodyPath(path, stamp)))
+		}
+		orphans = append(orphans, quarantineCustodyPath(path, stamp))
 	}
 	if haveIntent {
 		custody, err := readCustodyFile(fs, intent.CustodyFile, path)
@@ -395,6 +413,11 @@ func resolveStoreFS(fs afero.Fs, path string, faults storeFaults) (snapshot, uin
 				// and the counter persisted.
 				if err := clearQuarantineIntent(fs, path, faults); err != nil {
 					return snapshot{}, 0, nil, err
+				}
+				if !asideExists {
+					if err := removeQuarantineArtifact(fs, intent.CustodyFile, faults); err != nil {
+						return snapshot{}, 0, nil, err
+					}
 				}
 				if err := writeQuarantineEpoch(fs, path, epoch, faults); err != nil {
 					return snapshot{}, 0, nil, err
@@ -448,6 +471,11 @@ func resolveStoreFS(fs afero.Fs, path string, faults storeFaults) (snapshot, uin
 
 	state, loadErr := loadFS(fs, path)
 	if loadErr == nil {
+		for _, orphan := range orphans {
+			if err := removeQuarantineArtifact(fs, orphan, faults); err != nil {
+				return snapshot{}, 0, nil, err
+			}
+		}
 		return state, epoch, signal, nil
 	}
 	if !errors.Is(loadErr, ErrStoreCorrupt) {
@@ -625,6 +653,29 @@ func clearQuarantineIntent(fs afero.Fs, path string, faults storeFaults) error {
 		sync = faults.syncDir
 	}
 	if err := sync(fs, filepath.Dir(intentPath)); err != nil {
+		return err
+	}
+	return nil
+}
+
+// removeQuarantineArtifact removes one quarantine file whose referent is gone —
+// an orphaned custody file beside a cleanly serving store — and syncs the
+// directory entry, so no later boot can be refused over it. A missing file is
+// not an error: the caller may race an operator's own cleanup.
+func removeQuarantineArtifact(fs afero.Fs, artifactPath string, faults storeFaults) error {
+	if _, err := lstat(fs, artifactPath); errors.Is(err, os.ErrNotExist) {
+		return nil
+	} else if err != nil {
+		return fmt.Errorf("hostops: stat quarantine artifact %s: %w", artifactPath, err)
+	}
+	if err := fs.Remove(artifactPath); err != nil {
+		return fmt.Errorf("hostops: remove quarantine artifact %s: %w", artifactPath, err)
+	}
+	sync := syncDirFS
+	if faults.syncDir != nil {
+		sync = faults.syncDir
+	}
+	if err := sync(fs, filepath.Dir(artifactPath)); err != nil {
 		return err
 	}
 	return nil

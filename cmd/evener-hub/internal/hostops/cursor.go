@@ -898,10 +898,13 @@ func readOperationsLocked(state *snapshot, q OperationsQuery, live CursorEpoch) 
 			mintBounds = window.Bounds
 		} else if entry, ok := current[q.Host]; ok {
 			mintBounds = map[string]CursorBound{q.Host: entry}
-			if !havePinnedPair && entry.Unmirrored {
+			if !havePinnedPair && !detailOnly && entry.Unmirrored {
 				// A mirror-less host (the custody import) has one ground truth:
 				// its own record set's pair. Listing under it keeps a host-pinned
-				// read of a closed name from being a silently empty page.
+				// read of a closed name from being a silently empty page. A detail
+				// lookup resolves no window pair — the row it names is the pair
+				// that page lists under — so it is left to address its own row,
+				// exactly as a mirrored host's detail lookup is.
 				windowPairs[q.Host] = OperationPair{
 					Generation:    entry.Boundary.Generation,
 					IncarnationID: entry.Boundary.IncarnationID,
