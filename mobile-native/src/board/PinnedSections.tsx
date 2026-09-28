@@ -1,6 +1,6 @@
 import type { NavigationPinSectionDescriptor } from "@evener/appwire-client";
 import { SymbolView } from "expo-symbols";
-import { type ReactNode, useReducer } from "react";
+import { type ReactNode, useCallback, useReducer } from "react";
 import { type LayoutChangeEvent, Platform, Pressable, Text, View } from "react-native";
 import { useColors, useTextScale } from "../ui";
 import { sectionLabel } from "./attention";
@@ -11,13 +11,17 @@ const EMPTY_HINT = "Touch and hold a session and choose Pin to category.";
 
 /** The Board's folds, per device and hub. FoldedSections has no
  * subscribers, so setting a fold redraws the component this hook is in;
- * `revision` moves on with each fold set here, for a memo that reads them. */
+ * `isFolded` changes identity with each fold set here, so a memo can list it. */
 export function useBoardFolds(hubId: string) {
 	const sections = foldedSections(hubId);
 	const [revision, redraw] = useReducer((count: number) => count + 1, 0);
+	// revision stands for a fold set here, which sections can't signal.
+	const isFolded = useCallback(
+		(fold: string, byDefault: boolean) => sections.isFolded(fold, byDefault),
+		[sections, revision],
+	);
 	return {
-		revision,
-		isFolded: (fold: string, byDefault: boolean) => sections.isFolded(fold, byDefault),
+		isFolded,
 		setFolded: (fold: string, folded: boolean) => {
 			sections.setFolded(fold, folded);
 			redraw();
@@ -29,9 +33,9 @@ export function useBoardFolds(hubId: string) {
  * category starts unfolded. */
 export function useCategoryFolds(hubId: string) {
 	const folds = useBoardFolds(hubId);
+	const isFolded = useCallback((id: string) => folds.isFolded(`pin:${id}`, false), [folds.isFolded]);
 	return {
-		revision: folds.revision,
-		isFolded: (id: string) => folds.isFolded(`pin:${id}`, false),
+		isFolded,
 		setFolded: (id: string, folded: boolean) => folds.setFolded(`pin:${id}`, folded),
 	};
 }

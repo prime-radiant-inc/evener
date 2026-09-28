@@ -286,7 +286,7 @@ function Board({
 	const projectSections = useProjectSections(hubId);
 	const [organizeBy, setOrganizeBy] = useState(() => organizeByPreference(hubId).get());
 	// Every fold inside the project sections, by its ProjectTreeItem fold.
-	const { isFolded, setFolded, revision: foldsRevision } = useBoardFolds(hubId);
+	const { isFolded, setFolded } = useBoardFolds(hubId);
 	// Every session row the Board has loaded so far, from any section. A
 	// project section's view keeps its identity until its reads change.
 	const projectViews = PROJECT_SECTIONS.map((section) => projectSections[section].view);
@@ -541,7 +541,7 @@ function Board({
 	const shownProjectSections = PROJECT_SECTIONS.filter((section) => projectHeaders[section].shown);
 	const { live: livePage, needsYou: needsYouPage } = snapshot;
 	// Memoized, with the Board's list below: a new list each render would
-	// apply again each render. The folds' revision stands for isFolded.
+	// apply again each render.
 	const shownSections = useMemo(() => {
 		// A host's live count needs every Live and Needs you row (ruling 12).
 		const hostLiveCount = liveCountsByHost(
@@ -565,7 +565,7 @@ function Board({
 					});
 			return { section, folded, items };
 		});
-	}, [shownProjectSections.join(" "), foldsRevision, ...projectViews, sources, organizeBy, livePage, needsYouPage]);
+	}, [shownProjectSections.join(" "), isFolded, ...projectViews, sources, organizeBy, livePage, needsYouPage]);
 
 	// The Board's list (spec 7.3, ruling 22): held still while touched, moving
 	// or covered by an interaction, and applied at once when it settles.
@@ -575,7 +575,7 @@ function Board({
 			...pinnedItems(pins, snapshot.pinSections, folds.isFolded, classify),
 			...projectItems(shownSections, projectRow),
 		],
-		[bands, idleFolded, pins, snapshot.pinSections, folds.revision, classify, shownSections, projectRow],
+		[bands, idleFolded, pins, snapshot.pinSections, folds.isFolded, classify, shownSections, projectRow],
 	);
 	const { list, snapshot: settled } = useSettledList(boardItems);
 	const shownGroups = groupItems(settled.display);
