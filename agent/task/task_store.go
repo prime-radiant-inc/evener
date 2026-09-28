@@ -182,6 +182,15 @@ func cloneTime(value *time.Time) *time.Time {
 	return &cloned
 }
 
+// cloneInts copies an int slice. Both a nil input and an empty input yield
+// nil, so an empty non-nil caller slice is normalized to nil (which the
+// omitempty JSON tag and len-based checks treat identically to empty). It is
+// the shared clone the task store uses for DependsOn, both when copying
+// store-owned state out and when retaining a caller's input.
+func cloneInts(values []int) []int {
+	return append([]int(nil), values...)
+}
+
 func cloneTasks(tasks []Task) []Task {
 	if tasks == nil {
 		return nil
@@ -190,7 +199,7 @@ func cloneTasks(tasks []Task) []Task {
 	copy(cloned, tasks)
 	for i := range cloned {
 		if tasks[i].DependsOn != nil {
-			cloned[i].DependsOn = append([]int(nil), tasks[i].DependsOn...)
+			cloned[i].DependsOn = cloneInts(tasks[i].DependsOn)
 		}
 		if tasks[i].Notes != nil {
 			cloned[i].Notes = append([]string(nil), tasks[i].Notes...)
@@ -377,11 +386,23 @@ func (s *TaskStore) saveTasks(tasks []Task) error {
 	return nil
 }
 
+// cloneTasksForReturn returns a deep, non-nil copy of a store-owned task list.
+// View and ViewWithError have always returned an empty (never nil) slice for an
+// empty store — the hub's absent-task-file path depends on it marshaling `[]`
+// rather than `null` — while cloneTasks returns nil for a nil slice, so
+// normalize the two read paths here.
+func cloneTasksForReturn(tasks []Task) []Task {
+	if cloned := cloneTasks(tasks); cloned != nil {
+		return cloned
+	}
+	return []Task{}
+}
+
 // View returns a copy of all tasks.
 func (s *TaskStore) View() []Task {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return append([]Task{}, s.tasks...)
+	return cloneTasksForReturn(s.tasks)
 }
 
 // ViewWithError returns one coherent copy of the tasks and their availability
@@ -390,7 +411,7 @@ func (s *TaskStore) View() []Task {
 func (s *TaskStore) ViewWithError() ([]Task, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return append([]Task{}, s.tasks...), s.loadErrorLocked()
+	return cloneTasksForReturn(s.tasks), s.loadErrorLocked()
 }
 
 // validateDependencies checks that all IDs in deps exist (in s.tasks or pending)
@@ -521,7 +542,7 @@ func (s *TaskStore) appendLocked(items []TaskInput) ([]Task, error) {
 			Description:     item.Description,
 			Prompt:          item.Prompt,
 			Status:          TaskOpen,
-			DependsOn:       item.DependsOn,
+			DependsOn:       cloneInts(item.DependsOn),
 			ReasoningEffort: item.ReasoningEffort,
 			Insert:          item.Insert,
 			CreatedAt:       ts,
@@ -599,7 +620,7 @@ func (s *TaskStore) NextEligible() []Task {
 			result = append(result, t)
 		}
 	}
-	return result
+	return cloneTasks(result)
 }
 
 // CurrentInProgress returns the first task with status in_progress, if any.
@@ -838,7 +859,7 @@ func (s *TaskStore) updateLocked(updates []TaskUpdate) (map[int]bool, error) {
 					s.tasks[i].Notes = append(s.tasks[i].Notes, u.Notes)
 				}
 				if u.DependsOn != nil {
-					s.tasks[i].DependsOn = *u.DependsOn
+					s.tasks[i].DependsOn = cloneInts(*u.DependsOn)
 				}
 				if u.ReasoningEffort != "" {
 					s.tasks[i].ReasoningEffort = u.ReasoningEffort

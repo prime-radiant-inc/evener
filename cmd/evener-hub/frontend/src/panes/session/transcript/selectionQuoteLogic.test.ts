@@ -1,32 +1,5 @@
 import { expect, test } from "vitest";
-import { clampToBounds, formatQuoteBlock, messageContentElement } from "./selectionQuoteLogic";
-
-// --- formatQuoteBlock ----------------------------------------------------
-
-test("formatQuoteBlock: a single line becomes one '> ' line plus a trailing blank line", () => {
-  expect(formatQuoteBlock("hello world")).toBe("> hello world\n\n");
-});
-
-test("formatQuoteBlock: each line of a multi-line selection gets its own '> ' prefix", () => {
-  expect(formatQuoteBlock("first line\nsecond line\nthird line")).toBe("> first line\n> second line\n> third line\n\n");
-});
-
-test("formatQuoteBlock: trims leading/trailing whitespace-only lines before quoting", () => {
-  expect(formatQuoteBlock("\n\n  middle  \n\n")).toBe("> middle\n\n");
-});
-
-test("formatQuoteBlock: normalizes CRLF line endings to a single '> ' prefix per line", () => {
-  expect(formatQuoteBlock("a\r\nb")).toBe("> a\n> b\n\n");
-});
-
-test("formatQuoteBlock: preserves a blank line in the middle of the selection as an empty '>' line", () => {
-  expect(formatQuoteBlock("first\n\nsecond")).toBe("> first\n> \n> second\n\n");
-});
-
-test("formatQuoteBlock: an empty or whitespace-only selection formats to an empty string", () => {
-  expect(formatQuoteBlock("")).toBe("");
-  expect(formatQuoteBlock("   \n  ")).toBe("");
-});
+import { clampToBounds, messageContentElement } from "./selectionQuoteLogic";
 
 // --- messageContentElement ------------------------------------------------
 

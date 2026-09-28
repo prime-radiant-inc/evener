@@ -170,6 +170,19 @@ const (
 	// the data: the operator resolves a remnant through teardown-retry first,
 	// then retries the removal.
 	ErrorTombstoneCapacity ErrorInfo = "tombstone-capacity"
+	// ErrorTeardownUnknownKey marks `evener/host/teardown-retry` naming a
+	// remnant id the store does not carry — never minted, or purged by the
+	// cleared/recovery marker retention (registry spec 08 §6/§11). Not-found
+	// class, with the unknown id in the data. A cleared remnant whose resolved
+	// record still survives is NOT this arm: it returns `already-cleared`.
+	ErrorTeardownUnknownKey ErrorInfo = "teardown-unknown-key"
+	// ErrorConcurrentEdit marks a hub.toml commit whose final fingerprint check
+	// found the file moved between the validation read and the check, after
+	// bounded retries (registry spec 08 §6/§11): no window's edit is erased and
+	// nothing committed. Conflict class, with both fingerprints in the data.
+	// The live-external reconcile validation (§15) rides the same discriminator
+	// with `{source, hostCount}` data on its own path.
+	ErrorConcurrentEdit ErrorInfo = "concurrent-edit"
 )
 
 // StaleEntryBinding names which binding a stale-entry refusal fired on, exactly
@@ -654,5 +667,54 @@ func EndpointConflict(message string) WireError {
 		Code:    CodeConflict,
 		Message: message,
 		Data:    ErrorData{EvenerErrorInfo: ErrorEndpointConflict},
+	}
+}
+
+// TeardownUnknownKeyErrorData is §11's `teardown-unknown-key` data: the id the
+// call named, so a client can render which handle went stale.
+type TeardownUnknownKeyErrorData struct {
+	ErrorData
+	RemnantID string `json:"remnantId"`
+}
+
+// TeardownUnknownKey is §11's `teardown-unknown-key` refusal (not-found class):
+// the named remnant id is unknown or purged. It fires exactly when the named
+// remnant id is unknown or purged — "a cleared-remnant marker still present
+// returns the `already-cleared` arm instead". The not-found class rides
+// CodeInvalidParams, the code every other not-found refusal in this envelope
+// carries (ResourceNotFound's), because the wire defines no separate code for
+// it: a client matches the discriminant, never the code.
+func TeardownUnknownKey(remnantID, message string) WireError {
+	return WireError{
+		Code:    CodeInvalidParams,
+		Message: message,
+		Data: TeardownUnknownKeyErrorData{
+			ErrorData: ErrorData{EvenerErrorInfo: ErrorTeardownUnknownKey},
+			RemnantID: remnantID,
+		},
+	}
+}
+
+// ConcurrentEditErrorData is §11's `concurrent-edit` data on the commit path:
+// the fingerprint the commit staged against and the fingerprint it observed at
+// the final check.
+type ConcurrentEditErrorData struct {
+	ErrorData
+	StagedFingerprint   string `json:"stagedFingerprint"`
+	ObservedFingerprint string `json:"observedFingerprint"`
+}
+
+// ConcurrentEdit is §11's `concurrent-edit` refusal (conflict class): the
+// commit's final check found the hub.toml fingerprint moved after bounded
+// retries. The mutation commits nothing, and no window's edit is erased.
+func ConcurrentEdit(stagedFingerprint, observedFingerprint, message string) WireError {
+	return WireError{
+		Code:    CodeConflict,
+		Message: message,
+		Data: ConcurrentEditErrorData{
+			ErrorData:           ErrorData{EvenerErrorInfo: ErrorConcurrentEdit},
+			StagedFingerprint:   stagedFingerprint,
+			ObservedFingerprint: observedFingerprint,
+		},
 	}
 }

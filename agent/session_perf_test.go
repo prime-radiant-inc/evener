@@ -478,7 +478,8 @@ func TestCachedSystemPromptComponents_SkillList(t *testing.T) {
 	}
 	defer sess.Close()
 
-	if got := len(sess.buildPromptData(sess.currentEnv()).Skills); got != len(sess.skills.Entries) {
+	data, _ := sess.buildPromptData(sess.currentEnv())
+	if got := len(data.Skills); got != len(sess.skills.Entries) {
 		t.Errorf("buildPromptData skills length %d != discovered %d", got, len(sess.skills.Entries))
 	}
 }
@@ -542,7 +543,7 @@ func TestCachedSystemPromptComponents_UsesProviderVisibleToolNames(t *testing.T)
 	}
 	defer sess.Close()
 
-	data := sess.buildPromptData(sess.currentEnv())
+	data, _ := sess.buildPromptData(sess.currentEnv())
 	if !slices.Contains(data.CallableToolNames, "exec_command") {
 		t.Fatalf("CallableToolNames = %q, want the provider-visible exec_command", data.CallableToolNames)
 	}
