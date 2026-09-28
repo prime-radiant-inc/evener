@@ -59,6 +59,7 @@ func TestDecodeEntryRejectsAMismatchedNoticePayload(t *testing.T) {
 		name string
 		turn string
 	}{
+		{name: "no notice at all", turn: `{"kind":"NOTICE"}`},
 		{name: "zero payloads", turn: `{"kind":"NOTICE","notice":{"kind":"goal_ended"}}`},
 		{name: "two payloads", turn: `{"kind":"NOTICE","notice":{"kind":"goal_ended","goal_ended":{"status":"complete"},"turn_limit":{"max_turns":4}}}`},
 		{name: "mismatched kind", turn: `{"kind":"NOTICE","notice":{"kind":"goal_ended","turn_limit":{"max_turns":4}}}`},

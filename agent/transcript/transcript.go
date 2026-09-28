@@ -216,7 +216,10 @@ func DecodeEntry(line []byte) (Entry, error) {
 	if err := decodeStrictJSON(line, &entry); err != nil {
 		return Entry{}, fmt.Errorf("decode transcript entry: %w", err)
 	}
-	if entry.Turn.Kind == schema.TurnNotice && entry.Turn.Notice != nil {
+	if entry.Turn.Kind == schema.TurnNotice {
+		if entry.Turn.Notice == nil {
+			return Entry{}, fmt.Errorf("decode transcript entry: a %s entry has no notice", schema.TurnNotice)
+		}
 		if err := entry.Turn.Notice.Validate(); err != nil {
 			return Entry{}, fmt.Errorf("decode transcript entry: invalid notice: %w", err)
 		}
