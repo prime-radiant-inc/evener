@@ -67,26 +67,40 @@ else
 fi
 
 # Prove the install is real: the qualification runner shells out to the local
-# tsc and imports ws at load time, so both must come from this install. Asking
-# the local tsc for its version proves it is the pinned TypeScript rather than a
-# leftover empty tree; a bare or npx tsc would resolve the unrelated tsc@2.0.4
-# package.
+# tsc (and imports ws at load time), so both must come from this install. The
+# installed tsc must report the version package-lock.json pins, not merely
+# print a line starting with "Version": a stale or fabricated binary that exits
+# zero would otherwise pass and the runner would build against the wrong
+# toolchain.
+if [ ! -x node_modules/.bin/tsc ]; then
+	echo "ERROR: $package/node_modules is unhealthy: node_modules/.bin/tsc is not" >&2
+	echo "  a regular executable file (an empty or half-installed tree)." >&2
+	echo "  Reinstall appwire-client/typescript's dependencies:" >&2
+	echo "    cd $package && npm ci" >&2
+	exit 1
+fi
+
+pinned=$(node -e 'const lock=require("./package-lock.json"); const entry=lock.packages && lock.packages["node_modules/typescript"]; if (!entry || !entry.version) process.exit(3); process.stdout.write(entry.version)') || {
+	echo "ERROR: $package/package-lock.json pins no typescript version." >&2
+	echo "  The install can only be checked against the committed lockfile;" >&2
+	echo "  restore it from git before running test-api-package." >&2
+	exit 1
+}
+
 v=$(./node_modules/.bin/tsc --version 2>&1) || {
 	echo "ERROR: $package/node_modules/.bin/tsc failed: $v" >&2
 	echo "  Reinstall appwire-client/typescript's dependencies:" >&2
 	echo "    cd $package && npm ci" >&2
 	exit 1
 }
-case "$v" in
-"Version "*) ;;
-*)
-	echo "ERROR: $package/node_modules is unhealthy ($(ls node_modules | wc -l | tr -d ' ') entries)." >&2
-	echo "  ./node_modules/.bin/tsc printed: $v" >&2
+got=${v#Version }
+if [ "$got" != "$pinned" ]; then
+	echo "ERROR: $package/node_modules is unhealthy: ./node_modules/.bin/tsc" >&2
+	echo "  reports \"$v\", but package-lock.json pins typescript $pinned." >&2
 	echo "  Reinstall appwire-client/typescript's dependencies:" >&2
 	echo "    cd $package && npm ci" >&2
 	exit 1
-	;;
-esac
+fi
 
 if [ ! -e node_modules/ws ]; then
 	echo "ERROR: $package/node_modules is unhealthy: the ws devDependency is missing." >&2

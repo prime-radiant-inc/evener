@@ -1,6 +1,7 @@
 package evener_test
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -128,13 +129,23 @@ func runAPIPackagePreflight(t *testing.T, packageDir string) (string, error) {
 	return string(output), err
 }
 
+// apiPackageTypescriptVersion is the TypeScript version the fixtures' lockfiles
+// pin, so a fake tsc can report it and the health check can match it.
+const apiPackageTypescriptVersion = "6.0.3"
+
+// apiPackageLockfile is a package-lock.json pinning one TypeScript version, the
+// field the preflight's health check reads.
+func apiPackageLockfile(typescriptVersion string) string {
+	return fmt.Sprintf("{\"lockfileVersion\":3,\"packages\":{\"node_modules/typescript\":{\"version\":%q}}}\n", typescriptVersion)
+}
+
 // apiPackageFixture lays out a throwaway appwire-client/typescript directory
-// with a lockfile dated into the past, so a node_modules the case adds is newer
-// than it and the -nt freshness shortcut skips npm ci.
-func apiPackageFixture(t *testing.T) string {
+// with lockfile as its package-lock.json, dated into the past so a node_modules
+// the case adds is newer than it and the -nt freshness shortcut skips npm ci.
+func apiPackageFixture(t *testing.T, lockfile string) string {
 	t.Helper()
 	dir := t.TempDir()
-	writeTestFile(t, filepath.Join(dir, "package-lock.json"), []byte("{}\n"), 0o644)
+	writeTestFile(t, filepath.Join(dir, "package-lock.json"), []byte(lockfile), 0o644)
 	backdated := time.Now().Add(-time.Hour)
 	if err := os.Chtimes(filepath.Join(dir, "package-lock.json"), backdated, backdated); err != nil {
 		t.Fatalf("date the lockfile: %v", err)
@@ -153,6 +164,17 @@ func freshNodeModules(t *testing.T, dir string) {
 	if err := os.Chtimes(filepath.Join(dir, "node_modules"), future, future); err != nil {
 		t.Fatalf("date node_modules: %v", err)
 	}
+}
+
+// healthyNodeModules fills dir/node_modules with what the preflight's health
+// check wants: a tsc that reports tscVersion and the ws the qualification
+// runner imports. It is written after freshNodeModules, so dir/node_modules
+// stays newer than dir/package-lock.json.
+func healthyNodeModules(t *testing.T, dir, tscVersion string) {
+	t.Helper()
+	freshNodeModules(t, dir)
+	writeTestFile(t, filepath.Join(dir, "node_modules", ".bin", "tsc"), []byte("#!/bin/sh\necho 'Version "+tscVersion+"'\n"), 0o755)
+	writeTestFile(t, filepath.Join(dir, "node_modules", "ws", "package.json"), []byte("{}\n"), 0o644)
 }
 
 // A fresh checkout has no appwire-client/typescript/node_modules, and the
@@ -178,17 +200,11 @@ func TestAPIPackagePreflightRefusesUnreadyInstalls(t *testing.T) {
 		root := t.TempDir()
 		work := filepath.Join(root, "appwire-client")
 		shared := filepath.Join(root, "shared")
-		writeTestFile(t, filepath.Join(work, "package-lock.json"), []byte("{}\n"), 0o644)
+		writeTestFile(t, filepath.Join(work, "package-lock.json"), []byte(apiPackageLockfile(apiPackageTypescriptVersion)), 0o644)
 		writeTestFile(t, filepath.Join(shared, "package-lock.json"), []byte("{\"different\":true}\n"), 0o644)
-		if err := os.MkdirAll(filepath.Join(shared, "node_modules"), 0o755); err != nil {
-			t.Fatal(err)
-		}
+		healthyNodeModules(t, shared, apiPackageTypescriptVersion)
 		if err := os.Symlink(filepath.Join(shared, "node_modules"), filepath.Join(work, "node_modules")); err != nil {
 			t.Fatalf("symlink node_modules: %v", err)
-		}
-		future := time.Now().Add(time.Hour)
-		if err := os.Chtimes(filepath.Join(shared, "node_modules"), future, future); err != nil {
-			t.Fatal(err)
 		}
 
 		output, err := runAPIPackagePreflight(t, work)
@@ -201,13 +217,13 @@ func TestAPIPackagePreflightRefusesUnreadyInstalls(t *testing.T) {
 		if !strings.Contains(output, "never npm ci through the symlink") {
 			t.Fatalf("refusal does not warn that npm ci through the symlink deletes the shared install; output = %s", output)
 		}
-		if _, err := os.Stat(filepath.Join(shared, "node_modules")); err != nil {
+		if _, err := os.Stat(filepath.Join(shared, "node_modules", ".bin", "tsc")); err != nil {
 			t.Fatalf("the shared install was touched despite the refusal: %v", err)
 		}
 	})
 
 	t.Run("empty install newer than the lockfile", func(t *testing.T) {
-		dir := apiPackageFixture(t)
+		dir := apiPackageFixture(t, apiPackageLockfile(apiPackageTypescriptVersion))
 		freshNodeModules(t, dir)
 
 		output, err := runAPIPackagePreflight(t, dir)
@@ -219,10 +235,23 @@ func TestAPIPackagePreflightRefusesUnreadyInstalls(t *testing.T) {
 		}
 	})
 
+	t.Run("stale tsc version", func(t *testing.T) {
+		dir := apiPackageFixture(t, apiPackageLockfile(apiPackageTypescriptVersion))
+		healthyNodeModules(t, dir, "5.0.0")
+
+		output, err := runAPIPackagePreflight(t, dir)
+		if err == nil {
+			t.Fatalf("preflight accepted a tsc that reports the wrong version; output = %s", output)
+		}
+		if !strings.Contains(output, apiPackageTypescriptVersion) {
+			t.Fatalf("refusal does not name the pinned version %s; output = %s", apiPackageTypescriptVersion, output)
+		}
+	})
+
 	t.Run("install missing ws", func(t *testing.T) {
-		dir := apiPackageFixture(t)
+		dir := apiPackageFixture(t, apiPackageLockfile(apiPackageTypescriptVersion))
 		freshNodeModules(t, dir)
-		writeTestFile(t, filepath.Join(dir, "node_modules", ".bin", "tsc"), []byte("#!/bin/sh\necho 'Version 5.0.0'\n"), 0o755)
+		writeTestFile(t, filepath.Join(dir, "node_modules", ".bin", "tsc"), []byte("#!/bin/sh\necho 'Version "+apiPackageTypescriptVersion+"'\n"), 0o755)
 
 		output, err := runAPIPackagePreflight(t, dir)
 		if err == nil {
@@ -234,10 +263,8 @@ func TestAPIPackagePreflightRefusesUnreadyInstalls(t *testing.T) {
 	})
 
 	t.Run("healthy install", func(t *testing.T) {
-		dir := apiPackageFixture(t)
-		freshNodeModules(t, dir)
-		writeTestFile(t, filepath.Join(dir, "node_modules", ".bin", "tsc"), []byte("#!/bin/sh\necho 'Version 5.0.0'\n"), 0o755)
-		writeTestFile(t, filepath.Join(dir, "node_modules", "ws", "package.json"), []byte("{}\n"), 0o644)
+		dir := apiPackageFixture(t, apiPackageLockfile(apiPackageTypescriptVersion))
+		healthyNodeModules(t, dir, apiPackageTypescriptVersion)
 
 		output, err := runAPIPackagePreflight(t, dir)
 		if err != nil {
@@ -247,6 +274,41 @@ func TestAPIPackagePreflightRefusesUnreadyInstalls(t *testing.T) {
 			t.Fatalf("healthy install produced a refusal; output = %s", output)
 		}
 	})
+}
+
+// A symlinked shared install built from this worktree's own lockfile is the
+// install it wants, so preflight takes it without npm ci: every agent worktree
+// builds this way. The shared node_modules is deliberately OLDER than the
+// worktree's lockfile: if the -nt branch were checked before the -L branch, the
+// freshness shortcut would send preflight into npm ci (there is no package.json
+// here, so it fails) and could delete the shared install.
+func TestAPIPackagePreflightAcceptsASharedInstallWithTheSameLockfile(t *testing.T) {
+	root := t.TempDir()
+	work := filepath.Join(root, "appwire-client")
+	shared := filepath.Join(root, "shared")
+	lock := apiPackageLockfile(apiPackageTypescriptVersion)
+	writeTestFile(t, filepath.Join(work, "package-lock.json"), []byte(lock), 0o644)
+	writeTestFile(t, filepath.Join(shared, "package-lock.json"), []byte(lock), 0o644)
+	healthyNodeModules(t, shared, apiPackageTypescriptVersion)
+	// Older than work's lockfile, so only the -L lockfile comparison can accept it.
+	backdated := time.Now().Add(-time.Hour)
+	if err := os.Chtimes(filepath.Join(shared, "node_modules"), backdated, backdated); err != nil {
+		t.Fatalf("date the shared install: %v", err)
+	}
+	if err := os.Symlink(filepath.Join(shared, "node_modules"), filepath.Join(work, "node_modules")); err != nil {
+		t.Fatalf("symlink node_modules: %v", err)
+	}
+
+	output, err := runAPIPackagePreflight(t, work)
+	if err != nil {
+		t.Fatalf("preflight refused a shared install built from the same lockfile: %v\n%s", err, output)
+	}
+	if strings.Contains(output, "ERROR") {
+		t.Fatalf("a matching shared install produced a refusal; output = %s", output)
+	}
+	if _, err := os.Stat(filepath.Join(shared, "node_modules", ".bin", "tsc")); err != nil {
+		t.Fatalf("the shared install was removed: %v", err)
+	}
 }
 
 // make test-api-package must run the preflight before the qualification runner,
