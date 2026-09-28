@@ -108,8 +108,9 @@ export class HubSeenMarks {
 		let changed = false;
 		for (const row of rows) {
 			const entry = this.pending.get(row.ref);
+			if (!entry) continue;
 			const ended = hubTurnEnd(row);
-			if (!entry || ended === null) continue;
+			if (ended === null) continue;
 			const done =
 				"unread" in entry.mark ? row.unseen === true : row.unseen !== true || ended > entry.mark.seenThrough;
 			if (done) {
