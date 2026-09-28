@@ -32,6 +32,7 @@ import { mulberry32 } from "@evener/appwire-client/testing/tokenFlood";
 import { act, cleanup, renderHook, waitFor } from "@testing-library/react";
 import { IDBFactory } from "fake-indexeddb";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+import { flushPendingTurnsProjectionForTests } from "../panes/session/composer/queue/testing/flushPendingTurnsProjection";
 import { recoveryComposerDraft } from "../panes/session/composer/recovery/recoveryDraft";
 import {
   resetSubagentModuleStoreForTests,
@@ -155,6 +156,25 @@ function readResponse(ref: string, overrides: TestThreadOverrides = {}): ThreadR
   return { thread: testThread(ref, overrides) };
 }
 
+// Like readResponse, but stamped with the same live-history identity
+// ("1"/epoch 1/"inc-1") this file's history/updated fixtures carry, so a
+// thread/read a test pairs with a live history/updated notification hydrates
+// straight into the versioned-history path instead of getting invalidated by
+// a boot-generation mismatch (EMPTY_HISTORY's "" vs the frame's "1") the
+// instant the first live frame lands.
+function versionedReadResponse(
+  ref: string,
+  overrides: TestThreadOverrides = {},
+  snapshotLength = 0,
+): ThreadReadResponse {
+  return {
+    ...readResponse(ref, overrides),
+    bootGeneration: "1",
+    epoch: 1,
+    snapshot: { incarnation: "inc-1", length: snapshotLength },
+  };
+}
+
 // readResponse derives the wire thread id as thr_<ref>. The routing-index
 // tests need models with known and sometimes SHARED thread ids (a lean watch
 // of a ref that is also pane-owned resolves to the same thread id), so this
@@ -234,28 +254,38 @@ function sameEpochReconnectFixture() {
     evener: { ref: "ref_a", capabilities: CAPABILITIES, queue: { revision: 0 } },
   });
   const completion = {
-    method: "item/completed" as const,
+    method: "history/updated",
     params: {
       threadId: "thr_ref_a",
       ref: "ref_a",
-      turnId: "turn_1",
-      item: {
-        type: "commandExecution" as const,
-        id: "item_1",
-        turnId: "turn_1",
-        output: "done",
-        status: "completed" as const,
-      },
+      bootGeneration: "1",
+      epoch: 1,
+      snapshot: { incarnation: "inc-1", length: 1 },
+      items: [
+        {
+          ...{
+            type: "commandExecution" as const,
+            id: "item_1",
+            turnId: "turn_1",
+            output: "done",
+            status: "completed" as const,
+          },
+          turnId: "turn_1",
+        },
+      ],
     },
-  };
+  } as AnyNotification;
   const turnCompleted = {
-    method: "turn/completed" as const,
+    method: "history/updated",
     params: {
       threadId: "thr_ref_a",
       ref: "ref_a",
-      turn: { id: "turn_1", status: "completed", itemsView: "" },
+      bootGeneration: "1",
+      epoch: 1,
+      snapshot: { incarnation: "inc-1", length: 1 },
+      turns: [{ id: "turn_1", status: "completed", itemsView: "" }],
     },
-  };
+  } as AnyNotification;
   return { authoritativeSnapshot, completion, turnCompleted };
 }
 
@@ -597,20 +627,30 @@ describe("useThreadsStore.ensureThread", () => {
     expect(resolveRead).not.toBeNull();
 
     fake.emitNotification({
-      method: "item/completed",
+      method: "history/updated",
       params: {
         threadId: "thr_ref_a",
         ref: "ref_a",
-        turnId: "turn_1",
-        item: { type: "commandExecution", id: "item_1", turnId: "turn_1", output: "done", status: "completed" },
+        bootGeneration: "1",
+        epoch: 1,
+        snapshot: { incarnation: "inc-1", length: 1 },
+        items: [
+          {
+            ...{ type: "commandExecution", id: "item_1", turnId: "turn_1", output: "done", status: "completed" },
+            turnId: "turn_1",
+          },
+        ],
       },
     });
     fake.emitNotification({
-      method: "turn/completed",
+      method: "history/updated",
       params: {
         threadId: "thr_ref_a",
         ref: "ref_a",
-        turn: { id: "turn_1", status: "completed", itemsView: "" },
+        bootGeneration: "1",
+        epoch: 1,
+        snapshot: { incarnation: "inc-1", length: 1 },
+        turns: [{ id: "turn_1", status: "completed", itemsView: "" }],
       },
     });
 
@@ -657,19 +697,30 @@ describe("useThreadsStore.ensureThread", () => {
     // (ItemLifecycleParams) - the strongest form of the scenario, and still no
     // trace.
     fake.emitNotification({
-      method: "turn/started",
+      method: "history/updated",
       params: {
         threadId: "thr_ref_a",
         ref: "ref_a",
-        turn: { id: "turn_9", status: "inProgress", itemsView: "", startedAt: 1000 },
+        bootGeneration: "1",
+        epoch: 1,
+        snapshot: { incarnation: "inc-1", length: 1 },
+        turns: [{ id: "turn_9", status: "inProgress", itemsView: "", startedAt: 1000 }],
       },
     });
     fake.emitNotification({
-      method: "item/started",
+      method: "history/updated",
       params: {
         threadId: "thr_ref_a",
-        turnId: "turn_9",
-        item: { type: "commandExecution", id: "item_pre_cut_1", turnId: "turn_9", status: "inProgress" },
+        ref: "ref-1",
+        bootGeneration: "1",
+        epoch: 1,
+        snapshot: { incarnation: "inc-1", length: 1 },
+        items: [
+          {
+            ...{ type: "commandExecution", id: "item_pre_cut_1", turnId: "turn_9", status: "inProgress" },
+            turnId: "turn_9",
+          },
+        ],
       },
     } as AnyNotification);
     expect(threadsStore.getState().threads.has("ref_a")).toBe(false);
@@ -712,7 +763,7 @@ describe("useThreadsStore.ensureThread", () => {
     const finishRead = resolveRead as unknown as (response: ThreadReadResponse) => void;
     finishRead(
       markResponseCut(
-        readResponse("ref_a", {
+        versionedReadResponse("ref_a", {
           status: { type: "active" },
           turns: [{ id: "turn_1", status: "inProgress", itemsView: "full", items: [] }],
           evener: { ref: "ref_a", capabilities: CAPABILITIES, queue: { revision: 0 }, activeTurnId: "turn_1" },
@@ -722,26 +773,32 @@ describe("useThreadsStore.ensureThread", () => {
     );
     await emitAtResponseCut(cut, "ref_a", () =>
       fake.emitNotification({
-        method: "turn/completed",
+        method: "history/updated",
         params: {
           threadId: "thr_ref_a",
           ref: "ref_a",
-          turn: {
-            id: "turn_system",
-            status: "completed",
-            itemsView: "full",
-            items: [
-              {
-                type: "systemMessage",
-                id: "item_plugin_loaded_1",
-                turnId: "turn_system",
-                description: "Plugin loaded: superpowers",
-                text: "",
-                eventKind: "plugin_loaded",
-                status: "completed",
-              },
-            ],
-          },
+          bootGeneration: "1",
+          epoch: 1,
+          snapshot: { incarnation: "inc-1", length: 1 },
+          turns: [
+            {
+              id: "turn_system",
+              status: "completed",
+              itemsView: "full",
+            },
+          ],
+          items: [
+            {
+              type: "systemMessage",
+              id: "item_plugin_loaded_1",
+              turnId: "turn_system",
+              position: { entry: 0, item: 0 },
+              description: "Plugin loaded: superpowers",
+              text: "",
+              eventKind: "plugin_loaded",
+              status: "completed",
+            },
+          ].map((it) => ({ ...it, turnId: it.turnId ?? "turn_system" })),
         },
       } as AnyNotification),
     );
@@ -771,7 +828,7 @@ describe("useThreadsStore.ensureThread", () => {
     const finishRead = resolveRead as unknown as (response: ThreadReadResponse) => void;
     finishRead(
       markResponseCut(
-        readResponse("ref_a", {
+        versionedReadResponse("ref_a", {
           status: { type: "active" },
           turns: [{ id: "turn_1", status: "inProgress", itemsView: "full", items: [] }],
           evener: { ref: "ref_a", capabilities: CAPABILITIES, queue: { revision: 0 }, activeTurnId: "turn_1" },
@@ -783,25 +840,31 @@ describe("useThreadsStore.ensureThread", () => {
     // is the whole identity check it gets.
     await emitAtResponseCut(cut, "ref_a", () =>
       fake.emitNotification({
-        method: "turn/completed",
+        method: "history/updated",
         params: {
           threadId: "thr_ref_a",
-          turn: {
-            id: "turn_system",
-            status: "completed",
-            itemsView: "full",
-            items: [
-              {
-                type: "systemMessage",
-                id: "item_hook_completed_1",
-                turnId: "turn_system",
-                description: "Hook completed",
-                text: "exit 0",
-                eventKind: "hook_completed",
-                status: "completed",
-              },
-            ],
-          },
+          bootGeneration: "1",
+          epoch: 1,
+          snapshot: { incarnation: "inc-1", length: 1 },
+          turns: [
+            {
+              id: "turn_system",
+              status: "completed",
+              itemsView: "full",
+            },
+          ],
+          items: [
+            {
+              type: "systemMessage",
+              id: "item_hook_completed_1",
+              turnId: "turn_system",
+              position: { entry: 0, item: 0 },
+              description: "Hook completed",
+              text: "exit 0",
+              eventKind: "hook_completed",
+              status: "completed",
+            },
+          ].map((it) => ({ ...it, turnId: it.turnId ?? "turn_system" })),
         },
       } as AnyNotification),
     );
@@ -834,7 +897,7 @@ describe("useThreadsStore.ensureThread", () => {
     const finishRead = resolveRead as unknown as (response: ThreadReadResponse) => void;
     finishRead(
       markResponseCut(
-        readResponse("ref_a", {
+        versionedReadResponse("ref_a", {
           status: { type: "active" },
           evener: { ref: "ref_a", capabilities: CAPABILITIES, queue: { revision: 0 } },
         }),
@@ -843,28 +906,41 @@ describe("useThreadsStore.ensureThread", () => {
     );
     await emitAtResponseCut(cut, "ref_a", () => {
       fake.emitNotification({
-        method: "turn/started",
+        method: "history/updated",
         params: {
           threadId: "thr_ref_a",
           ref: "ref_a",
-          turn: { id: "turn_7", status: "inProgress", itemsView: "", startedAt: 1000 },
+          bootGeneration: "1",
+          epoch: 1,
+          snapshot: { incarnation: "inc-1", length: 1 },
+          turns: [{ id: "turn_7", status: "inProgress", itemsView: "", startedAt: 1000 }],
         },
       });
       fake.emitNotification({
-        method: "item/started",
+        method: "history/updated",
         params: {
           threadId: "thr_ref_a",
           ref: "ref_a",
-          turnId: "turn_7",
-          item: { type: "commandExecution", id: "item_tool_1", turnId: "turn_7", status: "inProgress" },
+          bootGeneration: "1",
+          epoch: 1,
+          snapshot: { incarnation: "inc-1", length: 1 },
+          items: [
+            {
+              ...{ type: "commandExecution", id: "item_tool_1", turnId: "turn_7", status: "inProgress" },
+              turnId: "turn_7",
+            },
+          ],
         },
       });
       fake.emitNotification({
-        method: "turn/completed",
+        method: "history/updated",
         params: {
           threadId: "thr_ref_a",
           ref: "ref_a",
-          turn: { id: "turn_7", status: "failed", itemsView: "", error: { message: "boom" } },
+          bootGeneration: "1",
+          epoch: 1,
+          snapshot: { incarnation: "inc-1", length: 1 },
+          turns: [{ id: "turn_7", status: "failed", itemsView: "", error: { message: "boom" } }],
         },
       } as AnyNotification);
     });
@@ -934,15 +1010,17 @@ describe("useThreadsStore.ensureThread", () => {
     let readCount = 0;
     const cut = { reached: false };
     let resolveRefresh: ((response: ThreadReadResponse) => void) | null = null;
-    fake.on("thread/read", () => {
+    let refreshRequestGeneration: number | undefined;
+    fake.on("thread/read", (params) => {
       readCount += 1;
       if (readCount === 1) {
-        return readResponse("ref_a", {
+        return versionedReadResponse("ref_a", {
           status: { type: "active" },
           turns: [{ id: "turn_m5", status: "completed", itemsView: "full", items: [] }],
           evener: { ref: "ref_a", capabilities: CAPABILITIES, queue: { revision: 0 } },
         });
       }
+      refreshRequestGeneration = (params as { requestGeneration?: number } | undefined)?.requestGeneration;
       return new Promise<ThreadReadResponse>((resolve) => {
         resolveRefresh = resolve;
       });
@@ -950,11 +1028,14 @@ describe("useThreadsStore.ensureThread", () => {
 
     await threadsStore.getState().ensureThread("ref_a");
     fake.emitNotification({
-      method: "turn/started",
+      method: "history/updated",
       params: {
         threadId: "thr_ref_a",
         ref: "ref_a",
-        turn: { id: "turn_m6", status: "inProgress", itemsView: "", startedAt: 1000 },
+        bootGeneration: "1",
+        epoch: 1,
+        snapshot: { incarnation: "inc-1", length: 1 },
+        turns: [{ id: "turn_m6", status: "inProgress", itemsView: "", startedAt: 1000 }],
       },
     });
     expect(
@@ -970,16 +1051,22 @@ describe("useThreadsStore.ensureThread", () => {
     const finishRefresh = resolveRefresh as unknown as (response: ThreadReadResponse) => void;
     finishRefresh(
       markResponseCut(
-        readResponse("ref_a", {
-          status: { type: "active" },
-          turns: [{ id: "turn_m5", status: "completed", itemsView: "full", items: [] }],
-          evener: {
-            ref: "ref_a",
-            capabilities: CAPABILITIES,
-            queue: { revision: 0 },
-            activeTurnId: "turn_m6",
-          },
-        }),
+        {
+          ...versionedReadResponse(
+            "ref_a",
+            {
+              status: { type: "active" },
+              turns: [{ id: "turn_m5", status: "completed", itemsView: "full", items: [] }],
+              evener: {
+                ref: "ref_a",
+                capabilities: CAPABILITIES,
+                queue: { revision: 0 },
+              },
+            },
+            1,
+          ),
+          ...(refreshRequestGeneration !== undefined ? { requestGeneration: refreshRequestGeneration } : {}),
+        },
         cut,
       ),
     );
@@ -988,26 +1075,36 @@ describe("useThreadsStore.ensureThread", () => {
       "ref_a",
       () => {
         fake.emitNotification({
-          method: "item/completed",
+          method: "history/updated",
           params: {
             threadId: "thr_ref_a",
             ref: "ref_a",
-            turnId: "turn_m6",
-            item: {
-              type: "agentMessage",
-              id: "item_assistant_m6",
-              turnId: "turn_m6",
-              text: "skillguard turn complete",
-              status: "completed",
-            },
+            bootGeneration: "1",
+            epoch: 1,
+            snapshot: { incarnation: "inc-1", length: 1 },
+            items: [
+              {
+                ...{
+                  type: "agentMessage",
+                  id: "item_assistant_m6",
+                  turnId: "turn_m6",
+                  text: "skillguard turn complete",
+                  status: "completed",
+                },
+                turnId: "turn_m6",
+              },
+            ],
           },
         });
         fake.emitNotification({
-          method: "turn/completed",
+          method: "history/updated",
           params: {
             threadId: "thr_ref_a",
             ref: "ref_a",
-            turn: { id: "turn_m6", status: "completed", itemsView: "" },
+            bootGeneration: "1",
+            epoch: 1,
+            snapshot: { incarnation: "inc-1", length: 1 },
+            turns: [{ id: "turn_m6", status: "completed", itemsView: "" }],
           },
         });
       },
@@ -1047,11 +1144,14 @@ describe("useThreadsStore.ensureThread", () => {
 
     await threadsStore.getState().ensureThread("ref_a");
     fake.emitNotification({
-      method: "turn/started",
+      method: "history/updated",
       params: {
         threadId: "thr_ref_a",
         ref: "ref_a",
-        turn: { id: "turn_m6", status: "inProgress", itemsView: "", startedAt: 1000 },
+        bootGeneration: "1",
+        epoch: 1,
+        snapshot: { incarnation: "inc-1", length: 1 },
+        turns: [{ id: "turn_m6", status: "inProgress", itemsView: "", startedAt: 1000 }],
       },
     });
     await threadsStore.getState().refreshThread("ref_a");
@@ -1086,7 +1186,7 @@ describe("useThreadsStore.ensureThread", () => {
 
   test("a targeted resync preserves identical ordered streaming deltas and their frame times", async () => {
     const fake = connectFakeClient();
-    const snapshot = readResponse("ref_a", {
+    const snapshot = versionedReadResponse("ref_a", {
       status: { type: "active", activeFlags: ["streaming"] },
       turns: [
         {
@@ -1100,9 +1200,11 @@ describe("useThreadsStore.ensureThread", () => {
     });
     const replacementRead: { resolve: ((response: ThreadReadResponse) => void) | null } = { resolve: null };
     let readCount = 0;
-    fake.on("thread/read", () => {
+    let replacementRequestGeneration: number | undefined;
+    fake.on("thread/read", (params) => {
       readCount += 1;
       if (readCount === 1) return snapshot;
+      replacementRequestGeneration = (params as { requestGeneration?: number } | undefined)?.requestGeneration;
       return new Promise<ThreadReadResponse>((resolve) => {
         replacementRead.resolve = resolve;
       });
@@ -1116,17 +1218,41 @@ describe("useThreadsStore.ensureThread", () => {
     await flushUntil(() => replacementRead.resolve !== null);
 
     const delta = {
-      method: "item/agentMessage/delta" as const,
-      params: { threadId: "thr_ref_a", ref: "ref_a", turnId: "turn_1", itemId: "item_1", delta: "ha" },
+      method: "history/updated" as const,
+      params: {
+        threadId: "thr_ref_a",
+        ref: "ref_a",
+        bootGeneration: "1",
+        epoch: 1,
+        snapshot: { incarnation: "inc-1", length: 1 },
+        items: [{ type: "agentMessage", id: "item_1", turnId: "turn_1", text: "ha", status: "inProgress" }],
+      },
     };
-    replacementRead.resolve?.({ thread: { ...snapshot.thread, name: "replacement" } });
+    const delta2 = {
+      method: "history/updated" as const,
+      params: {
+        threadId: "thr_ref_a",
+        ref: "ref_a",
+        bootGeneration: "1",
+        epoch: 1,
+        snapshot: { incarnation: "inc-1", length: 2 },
+        items: [{ type: "agentMessage", id: "item_1", turnId: "turn_1", text: "haha", status: "inProgress" }],
+      },
+    };
+    replacementRead.resolve?.({
+      thread: { ...snapshot.thread, name: "replacement" },
+      bootGeneration: "1",
+      epoch: 1,
+      snapshot: { incarnation: "inc-1", length: 0 },
+      ...(replacementRequestGeneration !== undefined ? { requestGeneration: replacementRequestGeneration } : {}),
+    });
     await flushUntil(() => threadsStore.getState().threads.get("ref_a")?.name === "replacement");
     fake.emitNotification(delta);
-    fake.emitNotification(delta);
-    await flushUntil(() => threadsStore.getState().threads.get("ref_a")?.turns[0]?.items[0]?.pendingText !== undefined);
+    fake.emitNotification(delta2);
+    await flushUntil(() => threadsStore.getState().threads.get("ref_a")?.turns[0]?.items[0]?.text === "haha");
 
     const model = threadsStore.getState().threads.get("ref_a");
-    expect(model?.turns[0]?.items[0]?.pendingText?.join("")).toBe("haha");
+    expect(model?.turns[0]?.items[0]?.text).toBe("haha");
     expect(threadsStore.getState().frameTimes.get("ref_a")).toHaveLength(2);
   });
 
@@ -1173,13 +1299,14 @@ describe("useThreadsStore.ensureThread", () => {
     });
     await flushUntil(() => resolveReplacement !== undefined);
     fake.emitNotification({
-      method: "item/agentMessage/delta",
+      method: "history/updated",
       params: {
         threadId: "thr_ref_a",
         ref: "ref_a",
-        turnId: "turn_1",
-        itemId: "item_1",
-        delta: "included",
+        bootGeneration: "1",
+        epoch: 1,
+        snapshot: { incarnation: "inc-1", length: 1 },
+        items: [{ type: "agentMessage", id: "item_1", turnId: "turn_1", text: "included", status: "inProgress" }],
       },
     });
     resolveReplacement?.(replacement);
@@ -1214,12 +1341,16 @@ describe("useThreadsStore.ensureThread", () => {
     });
     await flushUntil(() => replacementRead.resolve !== null);
     fake.emitNotification({
-      method: "item/started",
+      method: "history/updated",
       params: {
         threadId: "thr_ref_a",
         ref: "ref_a",
-        turnId: "turn_1",
-        item: { type: "agentMessage", id: "item_1", turnId: "turn_1", status: "inProgress" },
+        bootGeneration: "1",
+        epoch: 1,
+        snapshot: { incarnation: "inc-1", length: 1 },
+        items: [
+          { ...{ type: "agentMessage", id: "item_1", turnId: "turn_1", status: "inProgress" }, turnId: "turn_1" },
+        ],
       },
     });
     replacementRead.resolve?.(
@@ -1270,11 +1401,15 @@ describe("useThreadsStore.ensureThread", () => {
     });
     await flushUntil(() => replacementRead.resolve !== null);
     fake.emitNotification({
-      method: "turn/started",
+      method: "history/updated",
       params: {
         threadId: "thr_ref_a",
         ref: "ref_a",
-        turn: { id: "turn_1", status: "inProgress", itemsView: "full", items: [] },
+        bootGeneration: "1",
+        epoch: 1,
+        snapshot: { incarnation: "inc-1", length: 1 },
+        turns: [{ id: "turn_1", status: "inProgress", itemsView: "full" }],
+        items: [],
       },
     });
     replacementRead.resolve?.(
@@ -1596,20 +1731,30 @@ describe("useThreadsStore.ensureThread", () => {
     expect(box.resolveRead).not.toBeNull();
 
     fake.emitNotification({
-      method: "turn/started",
+      method: "history/updated",
       params: {
         threadId: "thr_ref_a",
         ref: "ref_a",
-        turn: { id: "turn_live", status: "inProgress", itemsView: "" },
+        bootGeneration: "1",
+        epoch: 1,
+        snapshot: { incarnation: "inc-1", length: 1 },
+        turns: [{ id: "turn_live", status: "inProgress", itemsView: "" }],
       },
     });
     fake.emitNotification({
-      method: "item/completed",
+      method: "history/updated",
       params: {
         threadId: "thr_ref_a",
         ref: "ref_a",
-        turnId: "turn_live",
-        item: { type: "agentMessage", id: "item_live", turnId: "turn_live", text: "answer", status: "completed" },
+        bootGeneration: "1",
+        epoch: 1,
+        snapshot: { incarnation: "inc-1", length: 1 },
+        items: [
+          {
+            ...{ type: "agentMessage", id: "item_live", turnId: "turn_live", text: "answer", status: "completed" },
+            turnId: "turn_live",
+          },
+        ],
       },
     });
 
@@ -1666,12 +1811,19 @@ describe("useThreadsStore.ensureThread", () => {
       params: { threadId: "thr_ref_a", ref: "ref_a", status: { type: "active", activeFlags: ["streaming"] } },
     });
     fake.emitNotification({
-      method: "item/completed",
+      method: "history/updated",
       params: {
         threadId: "thr_ref_a",
         ref: "ref_a",
-        turnId: "turn_1",
-        item: { type: "commandExecution", id: "item_1", turnId: "turn_1", output: "done", status: "completed" },
+        bootGeneration: "1",
+        epoch: 1,
+        snapshot: { incarnation: "inc-1", length: 1 },
+        items: [
+          {
+            ...{ type: "commandExecution", id: "item_1", turnId: "turn_1", output: "done", status: "completed" },
+            turnId: "turn_1",
+          },
+        ],
       },
     });
 
@@ -2919,12 +3071,12 @@ describe("notification routing", () => {
     fake.on("thread/read", (params) => {
       const ref = (params as { ref: string }).ref;
       if (ref === "ref_a") {
-        return readResponse("ref_a", {
+        return versionedReadResponse("ref_a", {
           turns: [{ id: "turn_1", status: "inProgress", itemsView: "" }],
           evener: { ref: "ref_a", capabilities: CAPABILITIES, queue: { revision: 0 }, activeTurnId: "turn_1" },
         });
       }
-      return readResponse("ref_b", {
+      return versionedReadResponse("ref_b", {
         turns: [{ id: "turn_1", status: "inProgress", itemsView: "", items: [] }],
         evener: { ref: "ref_b", capabilities: CAPABILITIES, queue: { revision: 0 }, activeTurnId: "turn_1" },
       });
@@ -2945,36 +3097,54 @@ describe("notification routing", () => {
     // be in the model via item/started + item/completed, not smuggled in
     // through the settle payload.
     fake.emitNotification({
-      method: "item/started",
+      method: "history/updated",
       params: {
         threadId: "thr_ref_a",
         ref: "ref_a",
-        turnId: "turn_1",
-        item: { type: "agentMessage", id: "item_a1", turnId: "turn_1", status: "inProgress" },
+        bootGeneration: "1",
+        epoch: 1,
+        snapshot: { incarnation: "inc-1", length: 1 },
+        items: [
+          { ...{ type: "agentMessage", id: "item_a1", turnId: "turn_1", status: "inProgress" }, turnId: "turn_1" },
+        ],
       },
     });
     fake.emitNotification({
-      method: "item/completed",
+      method: "history/updated",
       params: {
         threadId: "thr_ref_a",
         ref: "ref_a",
-        turnId: "turn_1",
-        item: { type: "agentMessage", id: "item_a1", turnId: "turn_1", text: "A's answer", status: "completed" },
+        bootGeneration: "1",
+        epoch: 1,
+        snapshot: { incarnation: "inc-1", length: 1 },
+        items: [
+          {
+            ...{ type: "agentMessage", id: "item_a1", turnId: "turn_1", text: "A's answer", status: "completed" },
+            turnId: "turn_1",
+          },
+        ],
       },
     });
 
     fake.emitNotification({
-      method: "turn/completed",
+      method: "history/updated",
       params: {
         threadId: "thr_ref_a",
         ref: "ref_a",
-        turn: { id: "turn_1", status: "completed", itemsView: "" },
+        bootGeneration: "1",
+        epoch: 1,
+        snapshot: { incarnation: "inc-1", length: 1 },
+        turns: [{ id: "turn_1", status: "completed", itemsView: "" }],
       },
     });
 
     // The rightful owner (A, whose activeTurnId matched) settles...
+    // activeTurnId is the read-only snapshot field (reducer.ts's model
+    // comment) - a history/updated settling the turn does not clear it, only
+    // a later thread/status/changed would - so the settled turn's own
+    // persisted status is what a v6 model tracks "no longer running" through.
     const modelA = threadsStore.getState().threads.get("ref_a");
-    expect(modelA?.activeTurnId).toBeUndefined();
+    expect(modelA?.turns[0]?.status).toBe("completed");
     expect(modelA?.turns[0]?.items[0]?.text).toBe("A's answer");
 
     // ...while B, simultaneously active on the same numbered turn_1, is a
@@ -2993,7 +3163,7 @@ describe("notification routing", () => {
     // reducer's call.
     const fake = connectFakeClient();
     fake.on("thread/read", () =>
-      readResponse("ref_a", {
+      versionedReadResponse("ref_a", {
         turns: [{ id: "turn_1", status: "inProgress", itemsView: "", items: [] }],
         evener: { ref: "ref_a", capabilities: CAPABILITIES, queue: { revision: 0 }, activeTurnId: "turn_1" },
       }),
@@ -3002,28 +3172,28 @@ describe("notification routing", () => {
     expect(threadsStore.getState().threads.get("ref_a")?.activeTurnId).toBe("turn_1");
 
     fake.emitNotification({
-      method: "turn/completed",
+      method: "history/updated",
       params: {
         threadId: "thr_ref_a",
         ref: "ref_a",
-        turn: {
-          id: "turn_system",
-          status: "completed",
-          itemsView: "full",
-          items: [
-            {
-              type: "systemMessage",
-              id: "item_plugin_loaded_1",
-              turnId: "turn_system",
-              description: "Plugin loaded: superpowers",
-              text: "",
-              eventKind: "plugin_loaded",
-              status: "completed",
-            },
-          ],
-        },
+        bootGeneration: "1",
+        epoch: 1,
+        snapshot: { incarnation: "inc-1", length: 1 },
+        turns: [{ id: "turn_system", status: "completed", itemsView: "full" }],
+        items: [
+          {
+            type: "systemMessage",
+            id: "item_plugin_loaded_1",
+            turnId: "turn_system",
+            position: { entry: 0, item: 0 },
+            description: "Plugin loaded: superpowers",
+            text: "",
+            eventKind: "plugin_loaded",
+            status: "completed",
+          },
+        ],
       },
-    });
+    } as AnyNotification);
 
     const model = threadsStore.getState().threads.get("ref_a");
     expect(model?.turns.map((turn) => turn.id)).toEqual(["turn_system", "turn_1"]);
@@ -3120,8 +3290,15 @@ describe("notification routing index (ref / threadId fast path)", () => {
     const beforeWatched = threadsStore.getState().watchedThreads;
 
     fake.emitNotification({
-      method: "item/agentMessage/delta",
-      params: { threadId: "thr_nowhere", ref: "ref_nowhere", turnId: "turn_1", itemId: "item_1", delta: "x" },
+      method: "history/updated",
+      params: {
+        threadId: "thr_nowhere",
+        ref: "ref_nowhere",
+        bootGeneration: "1",
+        epoch: 1,
+        snapshot: { incarnation: "inc-1", length: 1 },
+        items: [{ type: "agentMessage", id: "item_1", turnId: "turn_1", text: "x", status: "inProgress" }],
+      },
     });
     // threadId-only frame for an unknown id, too.
     fake.emitNotification({
@@ -3390,7 +3567,16 @@ describe("notification routing differential (randomized: index vs scan reference
       const ref = (params as { ref: string }).ref;
       const threadId = threadIds[ref];
       if (!threadId) throw new Error(`unexpected thread/read ref ${ref}`);
-      return readResponseWithId(ref, threadId);
+      // Versioned: the generators below fire history/updated at bootGeneration
+      // "1" throughout, so an unversioned hydrate (EMPTY_HISTORY's
+      // bootGeneration "") would invalidate on the very first one and never
+      // apply another.
+      return {
+        ...readResponseWithId(ref, threadId),
+        bootGeneration: "1",
+        epoch: 1,
+        snapshot: { incarnation: "inc-1", length: 0 },
+      };
     });
     for (const ref of refs) await threadsStore.getState().ensureThread(ref);
     await threadsStore.getState().watchThread("ref_a");
@@ -3434,47 +3620,68 @@ describe("notification routing differential (randomized: index vs scan reference
       () => ({ method: "evener/auth/updated", params: { provider: "p" } }),
       () => ({ method: "evener/marketplace/updated", params: {} }),
       () => ({
-        method: "turn/started",
+        method: "history/updated",
         params: {
           threadId: pick(Object.values(threadIds)),
           ref: pick(refs),
-          turn: { id: pick(turnIds), status: "inProgress", itemsView: "" },
+          bootGeneration: "1",
+          epoch: 1,
+          snapshot: { incarnation: "inc-1", length: 1 },
+          turns: [{ id: pick(turnIds), status: "inProgress", itemsView: "" }],
         },
       }),
       () => ({
-        method: "item/started",
+        method: "history/updated",
         params: {
           threadId: pick(Object.values(threadIds)),
           ref: pick(refs),
-          turnId: pick(turnIds),
-          item: { type: "agentMessage", id: pick(itemIds), turnId: pick(turnIds), status: "inProgress" },
+          bootGeneration: "1",
+          epoch: 1,
+          snapshot: { incarnation: "inc-1", length: 1 },
+          items: [
+            {
+              ...{ type: "agentMessage", id: pick(itemIds), turnId: pick(turnIds), status: "inProgress" },
+              turnId: pick(turnIds),
+            },
+          ],
         },
       }),
       () => ({
-        method: "item/agentMessage/delta",
+        method: "history/updated",
         params: {
           threadId: pick(Object.values(threadIds)),
           ref: pick(refs),
-          turnId: pick(turnIds),
-          itemId: pick(itemIds),
-          delta: "x",
+          bootGeneration: "1",
+          epoch: 1,
+          snapshot: { incarnation: "inc-1", length: 1 },
+          items: [{ type: "agentMessage", id: pick(itemIds), turnId: pick(turnIds), text: "x", status: "inProgress" }],
         },
       }),
       () => ({
-        method: "item/completed",
+        method: "history/updated",
         params: {
           threadId: pick(Object.values(threadIds)),
           ref: pick(refs),
-          turnId: pick(turnIds),
-          item: { type: "agentMessage", id: pick(itemIds), turnId: pick(turnIds), text: "done", status: "completed" },
+          bootGeneration: "1",
+          epoch: 1,
+          snapshot: { incarnation: "inc-1", length: 1 },
+          items: [
+            {
+              ...{ type: "agentMessage", id: pick(itemIds), turnId: pick(turnIds), text: "done", status: "completed" },
+              turnId: pick(turnIds),
+            },
+          ],
         },
       }),
       () => ({
-        method: "turn/completed",
+        method: "history/updated",
         params: {
           threadId: pick(Object.values(threadIds)),
           ref: pick(refs),
-          turn: { id: pick(turnIds), status: "completed", itemsView: "" },
+          bootGeneration: "1",
+          epoch: 1,
+          snapshot: { incarnation: "inc-1", length: 1 },
+          turns: [{ id: pick(turnIds), status: "completed", itemsView: "" }],
         },
       }),
       () => ({
@@ -3485,42 +3692,32 @@ describe("notification routing differential (randomized: index vs scan reference
 
     let clock = 10_000;
     const history: AnyNotification[] = [];
-    let duplicateStarts = 0;
     for (let i = 0; i < 200; i += 1) {
       const n = pick(generators)();
       history.push(n);
       clock += 7;
-      // The small, deliberately shared turn-id space generates repeated
-      // starts. Derive the expected diagnostics from the independent scan
-      // state BEFORE either fold, never from what the indexed store logs.
-      const expectedDiagnostics =
-        n.method === "turn/started"
-          ? [...reference.threads.values(), ...reference.watchedThreads.values()]
-              .filter(
-                (model) =>
-                  notificationTargetsThread(n, model) && model.turns.some((turn) => turn.id === n.params.turn.id),
-              )
-              .map(() => [
-                `applyNotification: turn/started turnId ${n.params.turn.id} already exists in model.turns — replacing it in place instead of appending a duplicate row (turn-id-uniqueness invariant violated)`,
-              ])
-          : [];
-      duplicateStarts += expectedDiagnostics.length;
-      const checkDiagnostics = (fold: () => void): void => {
+      // turn/started's duplicate-turn-id diagnostic (a console.error the old
+      // reducer logged when a turn/started frame named an id already in
+      // model.turns) has no read-model replacement — reducer.ts logs nothing
+      // any more (history/updated's mergeHistory merges by identity, so a
+      // repeated id is an ordinary update, never a duplicate-row hazard).
+      // This still asserts the fold never logs unexpectedly.
+      const checkNoDiagnostics = (fold: () => void): void => {
         const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
         try {
           fold();
-          expect(errorSpy.mock.calls, `diagnostics for notification ${i}: ${n.method}`).toEqual(expectedDiagnostics);
+          expect(errorSpy.mock.calls, `diagnostics for notification ${i}: ${n.method}`).toEqual([]);
         } finally {
           errorSpy.mockRestore();
         }
       };
       const dateNowSpy = vi.spyOn(Date, "now").mockReturnValue(clock);
       try {
-        checkDiagnostics(() => fake.emitNotification(n));
+        checkNoDiagnostics(() => fake.emitNotification(n));
       } finally {
         dateNowSpy.mockRestore();
       }
-      checkDiagnostics(() => scanFold(reference, n, clock, new Set()));
+      checkNoDiagnostics(() => scanFold(reference, n, clock, new Set()));
       for (const map of [
         threadsStore.getState().threads,
         threadsStore.getState().watchedThreads,
@@ -3538,7 +3735,6 @@ describe("notification routing differential (randomized: index vs scan reference
       // skipped it, not only if a later random frame observes the staleness.
       assertIndexesConsistent();
     }
-    expect(duplicateStarts).toBeGreaterThan(0);
 
     const actual = snapshotFor({
       threads: threadsStore.getState().threads,
@@ -3628,20 +3824,30 @@ describe("reconnect resubscribe", () => {
     // These notifications precede the response cut. The old model remains
     // visible until the authoritative replacement is published.
     fake.emitNotification({
-      method: "item/completed",
+      method: "history/updated",
       params: {
         threadId: "thr_ref_a",
         ref: "ref_a",
-        turnId: "turn_1",
-        item: { type: "commandExecution", id: "item_1", turnId: "turn_1", output: "done", status: "completed" },
+        bootGeneration: "1",
+        epoch: 1,
+        snapshot: { incarnation: "inc-1", length: 1 },
+        items: [
+          {
+            ...{ type: "commandExecution", id: "item_1", turnId: "turn_1", output: "done", status: "completed" },
+            turnId: "turn_1",
+          },
+        ],
       },
     });
     fake.emitNotification({
-      method: "turn/completed",
+      method: "history/updated",
       params: {
         threadId: "thr_ref_a",
         ref: "ref_a",
-        turn: { id: "turn_1", status: "completed", itemsView: "" },
+        bootGeneration: "1",
+        epoch: 1,
+        snapshot: { incarnation: "inc-1", length: 1 },
+        turns: [{ id: "turn_1", status: "completed", itemsView: "" }],
       },
     });
 
@@ -3682,19 +3888,25 @@ describe("reconnect resubscribe", () => {
     expect(reconnectRead.resolve).not.toBeNull();
 
     fake.emitNotification({
-      method: "turn/started",
+      method: "history/updated",
       params: {
         threadId: "thr_ref_a",
         ref: "ref_a",
-        turn: { id: "turn_live", status: "inProgress", itemsView: "" },
+        bootGeneration: "1",
+        epoch: 1,
+        snapshot: { incarnation: "inc-1", length: 1 },
+        turns: [{ id: "turn_live", status: "inProgress", itemsView: "" }],
       },
     });
     fake.emitNotification({
-      method: "turn/completed",
+      method: "history/updated",
       params: {
         threadId: "thr_ref_a",
         ref: "ref_a",
-        turn: { id: "turn_live", status: "completed", itemsView: "" },
+        bootGeneration: "1",
+        epoch: 1,
+        snapshot: { incarnation: "inc-1", length: 1 },
+        turns: [{ id: "turn_live", status: "completed", itemsView: "" }],
       },
     });
 
@@ -3809,20 +4021,30 @@ describe("reconnect resubscribe", () => {
     await flushUntil(() => resolveB !== null);
 
     b.emitNotification({
-      method: "item/completed",
+      method: "history/updated",
       params: {
         threadId: "thr_ref_a",
         ref: "ref_a",
-        turnId: "turn_1",
-        item: { type: "commandExecution", id: "item_1", turnId: "turn_1", output: "done", status: "completed" },
+        bootGeneration: "1",
+        epoch: 1,
+        snapshot: { incarnation: "inc-1", length: 1 },
+        items: [
+          {
+            ...{ type: "commandExecution", id: "item_1", turnId: "turn_1", output: "done", status: "completed" },
+            turnId: "turn_1",
+          },
+        ],
       },
     });
     b.emitNotification({
-      method: "turn/completed",
+      method: "history/updated",
       params: {
         threadId: "thr_ref_a",
         ref: "ref_a",
-        turn: { id: "turn_1", status: "completed", itemsView: "" },
+        bootGeneration: "1",
+        epoch: 1,
+        snapshot: { incarnation: "inc-1", length: 1 },
+        turns: [{ id: "turn_1", status: "completed", itemsView: "" }],
       },
     });
 
@@ -4850,7 +5072,8 @@ describe("useThreadsStore session actions (setModel/setReasoningEffort/setGoal/r
       },
     });
     await pending;
-    await waitFor(async () => expect((await readMutationPersistence("ref_a")).outbox).toEqual([]));
+    await flushPendingTurnsProjectionForTests();
+    expect((await readMutationPersistence("ref_a")).outbox).toEqual([]);
 
     expect(threadsStore.getState().threads.get("ref_a")?.humanNote).toBe("authoritative note");
     expect(threadsStore.getState().watchedThreads.get("ref_a")?.humanNote).toBe("authoritative note");
@@ -4888,7 +5111,8 @@ describe("useThreadsStore session actions (setModel/setReasoningEffort/setGoal/r
       await threadsStore.getState().ensureThread("ref_a");
       // Response-only control proves this same runtime can acknowledge an ordinary write.
       await threadsStore.getState().setHumanNote("ref_a", "smoke");
-      await waitFor(async () => expect((await readMutationPersistence("ref_a")).outbox).toEqual([]));
+      await flushPendingTurnsProjectionForTests();
+      expect((await readMutationPersistence("ref_a")).outbox).toEqual([]);
       expect(threadsStore.getState().threads.get("ref_a")?.humanNote).toBe("smoke");
       syncHumanNote("ref_a", "smoke");
       const { result } = renderHook(() => useHumanNoteDraft("ref_a"));
@@ -4947,7 +5171,8 @@ describe("useThreadsStore session actions (setModel/setReasoningEffort/setGoal/r
           },
         }),
       );
-      await waitFor(async () => expect((await readMutationPersistence("ref_a")).outbox).toEqual([]));
+      await flushPendingTurnsProjectionForTests();
+      expect((await readMutationPersistence("ref_a")).outbox).toEqual([]);
       const authoritative = boundary === "push" || boundary === "hydration" ? "new authority" : "B";
       expect(threadsStore.getState().threads.get("ref_a")?.humanNote).toBe(authoritative);
       expect(result.current).toMatchObject(
@@ -5002,7 +5227,8 @@ describe("useThreadsStore session actions (setModel/setReasoningEffort/setGoal/r
       fake.emitReady();
     });
     await waitFor(() => expect(result.current).toMatchObject({ text: canonical, dirty: false, saved: true }));
-    await waitFor(async () => expect((await readMutationPersistence("ref_a")).outbox).toEqual([]));
+    await flushPendingTurnsProjectionForTests();
+    expect((await readMutationPersistence("ref_a")).outbox).toEqual([]);
     expect((await readMutationPersistence("ref_a")).optimistic).toEqual([]);
     expect(threadsStore.getState().threads.get("ref_a")?.turns).toEqual([]);
   });
@@ -5032,7 +5258,8 @@ describe("useThreadsStore session actions (setModel/setReasoningEffort/setGoal/r
     fake.emitStateChange("reconnecting");
     fake.emitReady();
     expect(await retried).toEqual(first);
-    await waitFor(async () => expect(await independent.getOutbox(record.clientMutationId)).toBeUndefined());
+    await flushPendingTurnsProjectionForTests();
+    expect(await independent.getOutbox(record.clientMutationId)).toBeUndefined();
     expect(await independent.listOptimistic()).toEqual([]);
     independent.close();
   });
@@ -5106,7 +5333,8 @@ describe("useThreadsStore session actions (setModel/setReasoningEffort/setGoal/r
       },
     });
     await pending;
-    await waitFor(async () => expect((await readMutationPersistence("ref_a")).outbox).toEqual([]));
+    await flushPendingTurnsProjectionForTests();
+    expect((await readMutationPersistence("ref_a")).outbox).toEqual([]);
 
     expect(threadsStore.getState().threads.get("ref_a")?.humanNote).toBe("local note");
     expect(threadsStore.getState().watchedThreads.get("ref_a")?.humanNote).toBe("local note");
@@ -5148,10 +5376,14 @@ describe("useThreadsStore session actions (setModel/setReasoningEffort/setGoal/r
 
     const result = await threadsStore
       .getState()
-      .forkFromTurn("ref_a", { sourceTurnId: "turn_1", editedInput: "edited text" });
+      .forkFromTurn("ref_a", { sourceItemKey: "apptranscript-item-v2:turn_1:0:0", editedInput: "edited text" });
 
     const call = fake.calls.find((c) => c.method === "thread/fork");
-    expect(call?.params).toEqual({ ref: "ref_a", sourceTurnId: "turn_1", editedInput: "edited text" });
+    expect(call?.params).toEqual({
+      ref: "ref_a",
+      sourceItemKey: "apptranscript-item-v2:turn_1:0:0",
+      editedInput: "edited text",
+    });
     expect(result.thread.evener.ref).toBe("ref_child");
   });
 
@@ -5162,11 +5394,10 @@ describe("useThreadsStore session actions (setModel/setReasoningEffort/setGoal/r
     await threadsStore.getState().forkFromTurn("ref_a", { aside: true });
 
     const call = fake.calls.find((c) => c.method === "thread/fork");
-    // sourceTurnId has no `omitempty` on the wire (appwire/types.go:694) -
-    // it is required JSON even when meaningless (aside is mutually
-    // exclusive with it), so the store defaults it to "" rather than
-    // omitting the field.
-    expect(call?.params).toEqual({ ref: "ref_a", aside: true, sourceTurnId: "" });
+    // sourceItemKey carries `omitempty` on the wire (appwire/types.go), so
+    // an aside-mode caller that never set it (aside is mutually exclusive
+    // with it) sends no field at all.
+    expect(call?.params).toEqual({ ref: "ref_a", aside: true });
   });
 
   // The durable clear response is the authoritative replacement snapshot; the
@@ -5277,9 +5508,8 @@ describe("useThreadsStore session actions (setModel/setReasoningEffort/setGoal/r
     fake.on("thread/clear", (params) => clearResponse(params, testThread("ref_a", { turns: [] })));
     await threadsStore.getState().clearThread("ref_a");
 
-    await waitFor(async () => {
-      expect(await storage.getOutbox(canceled.clientMutationId)).toBeUndefined();
-    });
+    await flushPendingTurnsProjectionForTests();
+    expect(await storage.getOutbox(canceled.clientMutationId)).toBeUndefined();
   });
 
   // RoboRev's detached-promise finding: discardCanceledMutations fires the pin
@@ -5324,9 +5554,8 @@ describe("useThreadsStore session actions (setModel/setReasoningEffort/setGoal/r
     fake.on("thread/clear", (params) => clearResponse(params, testThread("ref_a", { turns: [] })));
     await threadsStore.getState().clearThread("ref_a");
 
-    await waitFor(async () => {
-      expect(await storage.getOutbox(canceled.clientMutationId)).toBeUndefined();
-    });
+    await flushPendingTurnsProjectionForTests();
+    expect(await storage.getOutbox(canceled.clientMutationId)).toBeUndefined();
     // Let a would-be unhandled rejection surface: a few real event-loop turns,
     // each a real storage read the same runtime serves.
     const probe = new MutationOutboxIndexedDB();
@@ -5366,9 +5595,8 @@ describe("useThreadsStore session actions (setModel/setReasoningEffort/setGoal/r
     await waitFor(() => {
       expect(threadsStore.getState().deletedRefs.has("ref_gone")).toBe(true);
     });
-    await waitFor(async () => {
-      expect(await storage.getOutbox(canceled.clientMutationId)).toBeUndefined();
-    });
+    await flushPendingTurnsProjectionForTests();
+    expect(await storage.getOutbox(canceled.clientMutationId)).toBeUndefined();
   });
 
   // One representative Conflict-mapping test standing in for every
@@ -5938,19 +6166,26 @@ test("reset retires an in-flight pin refresh before it can repin the next runtim
   const oldClient = connectFakeClient("connecting");
   holdRefresh = true;
   oldClient.emitNotification({
-    method: "item/completed",
+    method: "history/updated",
     params: {
       threadId: "thr_stale_ref",
       ref: "stale_ref",
-      turnId: "turn_1",
-      item: {
-        type: "commandExecution",
-        id: "item_1",
-        turnId: "turn_1",
-        clientMutationId: "old-mutation",
-        output: "done",
-        status: "completed",
-      },
+      bootGeneration: "1",
+      epoch: 1,
+      snapshot: { incarnation: "inc-1", length: 1 },
+      items: [
+        {
+          ...{
+            type: "commandExecution",
+            id: "item_1",
+            turnId: "turn_1",
+            clientMutationId: "old-mutation",
+            output: "done",
+            status: "completed",
+          },
+          turnId: "turn_1",
+        },
+      ],
     },
   });
   await refreshStarted;
@@ -6640,7 +6875,7 @@ describe("useThreadsStore.watchThread", () => {
   test("a watched refresh preserves a live active turn omitted by the snapshot cut", async () => {
     const a = connectFakeClient();
     a.on("thread/read", () =>
-      readResponse("ref_a", {
+      versionedReadResponse("ref_a", {
         turns: [{ id: "turn_m5", status: "completed", itemsView: "full", items: [] }],
         evener: { ref: "ref_a", capabilities: CAPABILITIES, queue: { revision: 0 } },
       }),
@@ -6648,11 +6883,14 @@ describe("useThreadsStore.watchThread", () => {
 
     await threadsStore.getState().watchThread("ref_a", { includeTurns: true });
     a.emitNotification({
-      method: "turn/started",
+      method: "history/updated",
       params: {
         threadId: "thr_ref_a",
         ref: "ref_a",
-        turn: { id: "turn_m6", status: "inProgress", itemsView: "", startedAt: 1000 },
+        bootGeneration: "1",
+        epoch: 1,
+        snapshot: { incarnation: "inc-1", length: 1 },
+        turns: [{ id: "turn_m6", status: "inProgress", itemsView: "", startedAt: 1000 }],
       },
     });
     const liveWatched = threadsStore.getState().watchedThreads.get("ref_a");
@@ -6661,16 +6899,27 @@ describe("useThreadsStore.watchThread", () => {
     const b = new FakeClient("ready");
     const cut = { reached: false };
     let resolveRefresh: ((response: ThreadReadResponse) => void) | null = null;
-    b.on("thread/read", () => new Promise<ThreadReadResponse>((resolve) => (resolveRefresh = resolve)));
+    let refreshRequestGeneration: number | undefined;
+    b.on("thread/read", (params) => {
+      refreshRequestGeneration = (params as { requestGeneration?: number } | undefined)?.requestGeneration;
+      return new Promise<ThreadReadResponse>((resolve) => (resolveRefresh = resolve));
+    });
     connectionStore.getState().connect(b);
     await flushUntil(() => resolveRefresh !== null);
     const finishRefresh = resolveRefresh as unknown as (response: ThreadReadResponse) => void;
     finishRefresh(
       markResponseCut(
-        readResponse("ref_a", {
-          turns: [{ id: "turn_m5", status: "completed", itemsView: "full", items: [] }],
-          evener: { ref: "ref_a", capabilities: CAPABILITIES, queue: { revision: 0 }, activeTurnId: "turn_m6" },
-        }),
+        {
+          ...versionedReadResponse(
+            "ref_a",
+            {
+              turns: [{ id: "turn_m5", status: "completed", itemsView: "full", items: [] }],
+              evener: { ref: "ref_a", capabilities: CAPABILITIES, queue: { revision: 0 } },
+            },
+            1,
+          ),
+          ...(refreshRequestGeneration !== undefined ? { requestGeneration: refreshRequestGeneration } : {}),
+        },
         cut,
       ),
     );
@@ -6679,30 +6928,47 @@ describe("useThreadsStore.watchThread", () => {
       "ref_a",
       () => {
         b.emitNotification({
-          method: "item/completed",
+          method: "history/updated",
           params: {
             threadId: "thr_ref_a",
             ref: "ref_a",
-            turnId: "turn_m6",
-            item: {
-              type: "agentMessage",
-              id: "item_assistant_m6",
-              turnId: "turn_m6",
-              text: "skillguard watched turn complete",
-              status: "completed",
-            },
+            bootGeneration: "1",
+            epoch: 1,
+            snapshot: { incarnation: "inc-1", length: 1 },
+            items: [
+              {
+                ...{
+                  type: "agentMessage",
+                  id: "item_assistant_m6",
+                  turnId: "turn_m6",
+                  text: "skillguard watched turn complete",
+                  status: "completed",
+                },
+                turnId: "turn_m6",
+              },
+            ],
           },
         });
         b.emitNotification({
-          method: "turn/completed",
+          method: "history/updated",
           params: {
             threadId: "thr_ref_a",
             ref: "ref_a",
-            turn: { id: "turn_m6", status: "completed", itemsView: "" },
+            bootGeneration: "1",
+            epoch: 1,
+            snapshot: { incarnation: "inc-1", length: 1 },
+            turns: [{ id: "turn_m6", status: "completed", itemsView: "" }],
           },
         });
       },
-      () => threadsStore.getState().watchedThreads.get("ref_a") !== liveWatched,
+      // A versioned refresh's own beginWatchedHydration bumps and republishes
+      // the model's issuedGeneration bookkeeping the instant the refresh
+      // starts (issuedGenerationFor), before the network round trip even
+      // begins - a legitimate content-preserving republish (a new model
+      // object, the SAME turns array), not the race this checks for. Compare
+      // turns, not the whole model, so this still detects the real content
+      // update the response cut race is about.
+      () => threadsStore.getState().watchedThreads.get("ref_a")?.turns !== liveWatched?.turns,
     );
 
     const model = threadsStore.getState().watchedThreads.get("ref_a");
@@ -6723,11 +6989,14 @@ describe("useThreadsStore.watchThread", () => {
 
     await threadsStore.getState().watchThread("ref_a", { includeTurns: true });
     a.emitNotification({
-      method: "turn/started",
+      method: "history/updated",
       params: {
         threadId: "thr_ref_a",
         ref: "ref_a",
-        turn: { id: "turn_m6", status: "inProgress", itemsView: "", startedAt: 1000 },
+        bootGeneration: "1",
+        epoch: 1,
+        snapshot: { incarnation: "inc-1", length: 1 },
+        turns: [{ id: "turn_m6", status: "inProgress", itemsView: "", startedAt: 1000 }],
       },
     });
     const liveWatched = threadsStore.getState().watchedThreads.get("ref_a");
@@ -7940,7 +8209,13 @@ describe("useThreadsStore.loadOlderTurns", () => {
 
   test("a live notification arriving while an older page is in flight survives the merge", async () => {
     const fake = connectFakeClient();
-    fake.on("thread/read", () => ({ thread: testThread("ref_a"), olderCursor: "cursor_1" }));
+    fake.on("thread/read", () => ({
+      thread: testThread("ref_a"),
+      olderCursor: "cursor_1",
+      bootGeneration: "1",
+      epoch: 1,
+      snapshot: { incarnation: "inc-1", length: 0 },
+    }));
     let resolvePage!: (response: ThreadTurnsListResponse) => void;
     fake.on("thread/turns/list", () => new Promise<ThreadTurnsListResponse>((resolve) => (resolvePage = resolve)));
     await threadsStore.getState().ensureThread("ref_a");
@@ -7948,16 +8223,22 @@ describe("useThreadsStore.loadOlderTurns", () => {
     const loading = threadsStore.getState().loadOlderTurns("ref_a");
     await flushUntil(() => resolvePage !== undefined);
     fake.emitNotification({
-      method: "turn/started",
+      method: "history/updated",
       params: {
         threadId: "thr_ref_a",
         ref: "ref_a",
-        turn: { id: "live-turn", status: "inProgress", itemsView: "" },
+        bootGeneration: "1",
+        epoch: 1,
+        snapshot: { incarnation: "inc-1", length: 2 },
+        turns: [{ id: "live-turn", status: "inProgress", itemsView: "", version: 2 }],
       },
     });
     resolvePage({
-      data: [{ id: "older-turn", status: "completed", itemsView: "full", items: [] }],
+      data: [{ id: "older-turn", status: "completed", itemsView: "full", items: [], version: 1 }],
       nextCursor: "cursor_0",
+      bootGeneration: "1",
+      epoch: 1,
+      snapshot: { incarnation: "inc-1", length: 1 },
     });
     await loading;
 
@@ -8464,21 +8745,28 @@ describe("retry-safe mutation outbox integration", () => {
   // successful authoritative read.
   function appliedItemNotification(ref: string, clientMutationId: string) {
     return {
-      method: "item/completed" as const,
+      method: "history/updated",
       params: {
         threadId: `thr_${ref}`,
         ref,
-        turnId: "turn_1",
-        item: {
-          type: "commandExecution" as const,
-          id: "item_1",
-          turnId: "turn_1",
-          clientMutationId,
-          output: "queued",
-          status: "completed" as const,
-        },
+        bootGeneration: "1",
+        epoch: 1,
+        snapshot: { incarnation: "inc-1", length: 1 },
+        items: [
+          {
+            ...{
+              type: "commandExecution" as const,
+              id: "item_1",
+              turnId: "turn_1",
+              clientMutationId,
+              output: "queued",
+              status: "completed" as const,
+            },
+            turnId: "turn_1",
+          },
+        ],
       },
-    };
+    } as AnyNotification;
   }
 
   // Retirement is total only if every way a ref can lose its last owner runs
@@ -10646,11 +10934,10 @@ test("clear permits explicit fresh recovery without replaying old-instance input
   const reads = fake.calls.filter((call) => call.method === "thread/read").length;
   expect(await retryBlockedMutation(record.clientMutationId)).toBe(true);
   expect(fake.calls.filter((call) => call.method === "thread/read").length).toBeGreaterThan(reads);
-  await vi.waitFor(async () => {
-    expect(await storage.getRecovery(record.clientMutationId)).toMatchObject({
-      recoveryKind: "rejected",
-      payload: { expectedInstanceId: "thr_ref_a" },
-    });
+  await flushPendingTurnsProjectionForTests();
+  expect(await storage.getRecovery(record.clientMutationId)).toMatchObject({
+    recoveryKind: "rejected",
+    payload: { expectedInstanceId: "thr_ref_a" },
   });
   expect(fake.calls.filter((call) => call.method === "turn/queue")).toHaveLength(1);
 });

@@ -9,17 +9,27 @@ import { foldedSections } from "./nativeBoardMemory";
 
 const EMPTY_HINT = "Touch and hold a session and choose Pin to category.";
 
-/** Each pinned category's fold, per device and hub, under `pin:<id>`: a
- * category starts unfolded. */
-export function useCategoryFolds(hubId: string) {
+/** The Board's folds, per device and hub. FoldedSections has no
+ * subscribers, so setting a fold redraws the component this hook is in. */
+export function useBoardFolds(hubId: string) {
 	const sections = foldedSections(hubId);
 	const [, redraw] = useReducer((revision: number) => revision + 1, 0);
 	return {
-		isFolded: (id: string) => sections.isFolded(`pin:${id}`, false),
-		setFolded: (id: string, folded: boolean) => {
-			sections.setFolded(`pin:${id}`, folded);
+		isFolded: (fold: string, byDefault: boolean) => sections.isFolded(fold, byDefault),
+		setFolded: (fold: string, folded: boolean) => {
+			sections.setFolded(fold, folded);
 			redraw();
 		},
+	};
+}
+
+/** Each pinned category's fold, per device and hub, under `pin:<id>`: a
+ * category starts unfolded. */
+export function useCategoryFolds(hubId: string) {
+	const folds = useBoardFolds(hubId);
+	return {
+		isFolded: (id: string) => folds.isFolded(`pin:${id}`, false),
+		setFolded: (id: string, folded: boolean) => folds.setFolded(`pin:${id}`, folded),
 	};
 }
 

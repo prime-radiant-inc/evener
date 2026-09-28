@@ -17,42 +17,41 @@ func TestHubModelLiveAgentCompletionUpdatesDeltaWithoutDuplicate(t *testing.T) {
 
 	updated, _ := m.Update(hubNotificationMsg{
 		ok: true,
-		notification: *appwire.NotificationMessage(appwire.NotifyAgentMessageDelta, appwire.AgentMessageDeltaParams{
-			ThreadID: "th_1",
-			Ref:      "local:th_1",
-			TurnID:   "turn_1",
-			ItemID:   "agent_1",
-			Delta:    "partial **markdown",
-		}).Notification,
-	})
-	updated, _ = updated.(hubModel).Update(hubNotificationMsg{
-		ok: true,
-		notification: *appwire.NotificationMessage(appwire.NotifyItemStarted, map[string]any{
-			"threadId": "th_1",
-			"turnId":   "turn_1",
-			"item": appwire.ThreadItem{
-				Type:          "commandExecution",
-				ID:            "tool_1",
-				CallID:        "call_1",
-				TurnID:        "turn_1",
-				ToolName:      "shell",
-				ArgumentsJSON: `{"command":"pwd"}`,
-				Status:        appwire.TurnStatusInProgress,
+		notification: *appwire.NotificationMessage(appwire.NotifyOverlayUpserted, appwire.OverlayUpsertedParams{
+			ThreadID: "th_1", Ref: "local:th_1",
+			Item: appwire.OverlayItem{
+				Key: "stream:round_1/0:agentMessage", Kind: appwire.OverlayStream,
+				TurnID: "turn_1", RoundID: "round_1", StreamID: "round_1/0",
+				Item: appwire.ThreadItem{Type: "agentMessage", ID: "stream:round_1/0:agentMessage", Text: "partial **markdown"},
 			},
 		}).Notification,
 	})
 	updated, _ = updated.(hubModel).Update(hubNotificationMsg{
 		ok: true,
-		notification: *appwire.NotificationMessage(appwire.NotifyItemCompleted, map[string]any{
-			"threadId": "th_1",
-			"turnId":   "turn_1",
-			"item": appwire.ThreadItem{
-				Type:   "agentMessage",
-				ID:     "agent_1",
-				TurnID: "turn_1",
-				Text:   "partial **markdown** final",
-				Status: "completed",
+		notification: *appwire.NotificationMessage(appwire.NotifyOverlayUpserted, appwire.OverlayUpsertedParams{
+			ThreadID: "th_1", Ref: "local:th_1",
+			Item: appwire.OverlayItem{
+				Key: "tool:call_1", Kind: appwire.OverlayTool, RoundID: "round_1", CallID: "call_1",
+				Item: appwire.ThreadItem{
+					Type:          "commandExecution",
+					ID:            "tool_1",
+					CallID:        "call_1",
+					TurnID:        "turn_1",
+					ToolName:      "shell",
+					ArgumentsJSON: `{"command":"pwd"}`,
+					Status:        appwire.TurnStatusInProgress,
+				},
 			},
+		}).Notification,
+	})
+	updated, _ = updated.(hubModel).Update(hubNotificationMsg{
+		ok: true,
+		notification: *appwire.NotificationMessage(appwire.NotifyHistoryUpdated, appwire.HistoryUpdatedParams{
+			ThreadID: "th_1", Ref: "local:th_1",
+			Items: []appwire.ThreadItem{{
+				Type: "agentMessage", ID: "agent_1", TurnID: "turn_1", RoundID: "round_1",
+				Text: "partial **markdown** final", Status: "completed", Version: 1,
+			}},
 		}).Notification,
 	})
 

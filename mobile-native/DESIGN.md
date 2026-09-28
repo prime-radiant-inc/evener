@@ -116,7 +116,7 @@ Dimensions below describe React Native logical units (points on iOS). The `px` v
 ### Hierarchy
 - **Title** (SF Pro semibold, 17px, 22px line-height): Row title, one line (two for Needs you).
 - **Why line** (SF Pro, 15px, 20px line-height): The state word and reason for Needs you, or the current activity for Working. Finished rows carry no why line yet: the spec's last-message excerpt (Source Serif 15/21) waits for a server addition (S1).
-- **Last line** (SF Pro, 13px, 18px line-height, ink-low): The project (with a folder glyph) and the host (with a server glyph), each only when it differs from the fleet's usual one. Task progress and subagent failures join this line once the hub sends them (S13 and S3); until then the row has no last line when its project and host are the usual ones.
+- **Last line** (SF Pro, 13px, 18px line-height, ink-low): Task progress (with a checklist glyph) while a task is in progress, then the project (with a folder glyph) and the host (with a server glyph), each only when it differs from the fleet's usual one. With none of these, the row has no last line.
 - **Age** (SF Pro, 13px, tabular figures, ink-low): Trailing on line 1: "2m", "1h", "3d".
 - **Band header** (SF Pro semibold, 13px, uppercase, +0.4pt tracking, ink-mid): "NEEDS YOU · 4", "FINISHED · 4", "WORKING · 9".
 

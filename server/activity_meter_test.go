@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/agent/events"
 )
 
 // activityTestClock is a hand-advanced clock for the meter.
@@ -24,24 +24,29 @@ func startedMeter() (*activityMeter, *activityTestClock) {
 	return meter, clock
 }
 
-// An item finishing and each tool output event count toward the newest bar;
-// streaming and bookkeeping notifications do not (spec 16.4: "transcript items
+// An item finishing (a user message, an assistant message, a tool call, a
+// delivered communicate) and each tool output delta count toward the newest
+// bar; streaming and bookkeeping events do not (spec 16.4: "transcript items
 // and tool output events").
-func TestActivityMeterCountsItemsAndToolOutputInTheNewestMinute(t *testing.T) {
+func TestActivityMeterCountsFinishedItemsAndToolOutputInTheNewestMinute(t *testing.T) {
 	meter, _ := startedMeter()
-	for _, method := range []string{
-		appwire.NotifyItemCompleted,
-		appwire.NotifyToolOutputDelta,
-		appwire.NotifyToolOutputDelta,
-		appwire.NotifyAgentMessageDelta,
-		appwire.NotifyItemStarted,
-		appwire.NotifyThreadStatusChanged,
-		appwire.NotifyEvenerTaskUpdated,
-		appwire.NotifyEvenerThreadModelRetry,
+	for _, kind := range []events.EventKind{
+		events.EventUserInput,
+		events.EventAssistantTextEnd,
+		events.EventToolCallEnd,
+		events.EventCommunicate,
+		events.EventToolCallOutputDelta,
+		events.EventToolCallOutputDelta,
+		events.EventAssistantTextDelta,
+		events.EventToolCallStart,
+		events.EventExecutionStarted,
+		events.EventReasoningSummaryDelta,
+		events.EventTaskUpdated,
+		events.EventModelRetry,
 	} {
-		meter.observe(method)
+		meter.observe(kind)
 	}
-	if got, want := meter.snapshot().Minutes, []int{0, 0, 0, 0, 0, 0, 3}; !reflect.DeepEqual(got, want) {
+	if got, want := meter.snapshot().Minutes, []int{0, 0, 0, 0, 0, 0, 6}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("minutes = %v, want %v", got, want)
 	}
 }
@@ -51,7 +56,7 @@ func TestActivityMeterCountsItemsAndToolOutputInTheNewestMinute(t *testing.T) {
 // minutes. A quiet minute is zero.
 func TestActivityMeterSlidesAnEventThroughOlderBarsAndDropsItAfterSevenMinutes(t *testing.T) {
 	meter, clock := startedMeter()
-	meter.observe(appwire.NotifyItemCompleted)
+	meter.observe(events.EventUserInput)
 	for _, step := range []struct {
 		after time.Duration
 		want  []int
@@ -72,10 +77,10 @@ func TestActivityMeterSlidesAnEventThroughOlderBarsAndDropsItAfterSevenMinutes(t
 // A slot reused on a later lap of the ring counts only its own events.
 func TestActivityMeterReusedSlotForgetsItsEarlierLap(t *testing.T) {
 	meter, clock := startedMeter()
-	meter.observe(appwire.NotifyItemCompleted)
-	meter.observe(appwire.NotifyItemCompleted)
+	meter.observe(events.EventUserInput)
+	meter.observe(events.EventUserInput)
 	clock.now = activityTestStart.Add(7 * time.Minute) // the same ring position, one lap later
-	meter.observe(appwire.NotifyToolOutputDelta)
+	meter.observe(events.EventToolCallOutputDelta)
 	if got, want := meter.snapshot().Minutes, []int{0, 0, 0, 0, 0, 0, 1}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("minutes = %v, want %v", got, want)
 	}
@@ -89,11 +94,11 @@ func TestActivityMeterQuietClockMovesOnTranscriptMotionOnly(t *testing.T) {
 		t.Fatalf("a meter nothing has moved reports %d, want its start %d", got, want)
 	}
 	clock.now = activityTestStart.Add(90 * time.Second)
-	meter.observe(appwire.NotifyThreadStatusChanged)
+	meter.observe(events.EventTaskUpdated)
 	if got, want := meter.snapshot().LastActivityAt, activityTestStart.UnixMilli(); got != want {
 		t.Fatalf("a status change moved the quiet clock to %d, want %d", got, want)
 	}
-	meter.observe(appwire.NotifyReasoningSummaryDelta)
+	meter.observe(events.EventReasoningSummaryDelta)
 	if got, want := meter.snapshot().LastActivityAt, clock.now.UnixMilli(); got != want {
 		t.Fatalf("a model thinking left the quiet clock at %d, want %d", got, want)
 	}
@@ -107,10 +112,10 @@ func TestActivityMeterQuietClockMovesOnTranscriptMotionOnly(t *testing.T) {
 func TestActivityMeterQuietClockNeverMovesBackward(t *testing.T) {
 	meter, clock := startedMeter()
 	clock.now = activityTestStart.Add(90 * time.Second)
-	meter.observe(appwire.NotifyItemCompleted)
+	meter.observe(events.EventUserInput)
 	later := clock.now
 	clock.now = activityTestStart.Add(30 * time.Second) // a step backward
-	meter.observe(appwire.NotifyItemCompleted)
+	meter.observe(events.EventUserInput)
 	if got, want := meter.snapshot().LastActivityAt, later.UnixMilli(); got != want {
 		t.Fatalf("a clock step backward moved the quiet clock to %d, want it to stay at %d", got, want)
 	}

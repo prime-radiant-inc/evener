@@ -30,10 +30,10 @@ func TestFuzzCoverageUnion(t *testing.T) {
 		{"communicate", `{}`},
 		{"unknown", `{"long":"abcdefghijklmnopqrstuvwxyzabcdefghijklmno","nested":{},"items":[]}`},
 		{"task_list", `{"action":"view"}`},
-		{"task_list", `{"action":"append","tasks":[]}`},
-		{"task_list", `{"action":"append","tasks":[null,{"description":"d","prompt":"abcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyz"}]}`},
-		{"task_list", `{"action":"update","updates":[]}`},
-		{"task_list", `{"action":"update","updates":[null,{"id":1,"status":"unknown"}]}`},
+		{"task_list", `{"add":[]}`},
+		{"task_list", `{"add":[null,{"description":"d","prompt":"abcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyz"}]}`},
+		{"task_list", `{"update":[]}`},
+		{"task_list", `{"update":[null,{"id":1,"status":"unknown"}]}`},
 	}
 	for _, tc := range cases {
 		SummarizeTool(tc.tool, tc.args)

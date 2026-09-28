@@ -45,6 +45,9 @@ export function useSheet({ dirty = false, discardTitle = DISCARD_TITLE, onClosed
 	usePreventRemove(dirty, ({ data }) => {
 		const leave = () => navigation.dispatch(data.action);
 		if (sheetLeave(dirty, finishing.current) === "leave") {
+			// Consumed: a bypass is good for the one removal it was set for, not
+			// every later dismissal of this same mounted sheet.
+			finishing.current = false;
 			leave();
 			return;
 		}

@@ -9,7 +9,6 @@ import { boardState } from "./attention";
 import {
 	expandedProjectKeys,
 	liveCountsByHost,
-	morePagesToLoad,
 	type ProjectPages,
 	type ProjectTreeInput,
 	type ProjectTreeItem,
@@ -79,6 +78,7 @@ function items(over: Partial<ProjectTreeInput>): ProjectTreeItem[] {
 		organizeBy: "host-project",
 		isFolded: unfolded,
 		hostLiveCount: () => null,
+		remainingProjects: 0,
 		...over,
 	});
 }
@@ -88,11 +88,11 @@ function outline(list: readonly ProjectTreeItem[]): string[] {
 	return list.map((item) => {
 		switch (item.kind) {
 			case "host":
-				return `host ${item.host.label}${item.host.online ? "" : " (offline)"}${item.liveCount ? ` · ${item.liveCount} live` : ""}`;
+				return `${indent(item.depth)}host ${item.host.label}${item.host.online ? "" : " (offline)"}${item.liveCount ? ` · ${item.liveCount} live` : ""}`;
 			case "project":
 				return `${indent(item.depth)}project ${item.project.key}${item.liveCount ? ` · ${item.liveCount} live` : ""}`;
 			case "branch":
-				return `  branch ${item.host.label}`;
+				return `${indent(item.depth)}branch ${item.host.label}`;
 			case "tier":
 				return `${indent(item.depth)}${item.label}`;
 			case "archivedGroup":
@@ -101,6 +101,8 @@ function outline(list: readonly ProjectTreeItem[]): string[] {
 				return `${indent(item.depth)}${item.row.ref}`;
 			case "more":
 				return `${indent(item.depth)}${item.remaining} more ${item.tier}`;
+			case "moreProjects":
+				return `${indent(item.depth)}${item.remaining} more projects`;
 			case "loading":
 			case "failed":
 				return `${indent(item.depth)}${item.kind}`;
@@ -407,20 +409,6 @@ describe("what the Board reads", () => {
 		expect([...expandedProjectKeys(items({ projects: [evener], isFolded: () => true }))]).toEqual([]);
 	});
 
-	it("loads each visible more row's page once", () => {
-		expect(
-			morePagesToLoad([
-				{ kind: "more", projectKey: "a", tier: "current" },
-				{ kind: "more", projectKey: "a", tier: "current" },
-				{ kind: "session" },
-				{ kind: "more", projectKey: "a", tier: "archived" },
-			]),
-		).toEqual([
-			{ projectKey: "a", tier: "current" },
-			{ projectKey: "a", tier: "archived" },
-		]);
-	});
-
 	it("counts a host's live rows once each, only when every Live page is loaded", () => {
 		const rows = [session("local:a"), session("paradise-park:b", "paradise-park"), session("paradise-park:c", "paradise-park"), session("paradise-park:c", "paradise-park")];
 		const counts = liveCountsByHost(rows, true);
@@ -448,6 +436,7 @@ describe("keeping rows through a reconnect (part 1 Review Focus 1)", () => {
 	const retained: ProjectsView = {
 		projects: [project("a")],
 		loaded: true,
+		remaining: 0,
 		pages: new Map([["a", pages([session("local:old")], [session("local:older")])]]),
 	};
 
@@ -471,7 +460,60 @@ describe("keeping rows through a reconnect (part 1 Review Focus 1)", () => {
 		expect(view.pages.get("a")?.recent.rows.map((row) => row.ref)).toEqual(["local:older"]);
 	});
 
+	it("keeps the catalog's remaining count with its projects", () => {
+		const shownMore = { ...retained, remaining: 70 };
+		expect(projectsView(snapshot(false), shownMore).remaining).toBe(70);
+		const fresh = snapshot(true);
+		expect(projectsView({ ...fresh, projects: { ...fresh.projects, remaining: 20 } }, shownMore).remaining).toBe(20);
+	});
+
 	it("shows a first read as it is when nothing was shown before", () => {
-		expect(projectsView(snapshot(false), null)).toEqual({ projects: [], loaded: false, pages: new Map() });
+		expect(projectsView(snapshot(false), null)).toEqual({ projects: [], loaded: false, remaining: 0, pages: new Map() });
+	});
+
+	it("never keeps a failed first read, so a retry in flight reads as loading", () => {
+		const failed = { rows: [], remaining: 0, loaded: false, error: "offline" };
+		const shownFailed: ProjectsView = {
+			projects: [project("a")],
+			loaded: true,
+			remaining: 0,
+			pages: new Map([["a", { current: failed, recent: failed, archived: failed }]]),
+		};
+		const retrying = projectsView(
+			snapshot(true, [
+				{
+					project: project("a"),
+					expanded: true,
+					current: pageState([], false),
+					recent: pageState([], false),
+					archived: pageState([], false),
+					sessions: [],
+				},
+			]),
+			shownFailed,
+		);
+		expect(retrying.pages.get("a")?.current).toMatchObject({ loaded: false, error: null });
+		expect(outline(items({ organizeBy: "project-host", projects: [project("a")], pages: retrying.pages }))).toEqual([
+			"project a",
+			"  loading",
+		]);
+	});
+});
+
+describe("a catalog with more projects than its first pages", () => {
+	it("ends the section with one row that reads more, at depth 0, after everything else", () => {
+		const loaded = new Map([["evener", pages([session("local:a"), session("paradise-park:b", "paradise-park")])]]);
+		const hostFirst = items({ projects: [evener], pages: loaded, remainingProjects: 70 });
+		expect(hostFirst.at(-1)).toEqual({ kind: "moreProjects", key: "projects/more-projects", depth: 0, remaining: 70 });
+		expect(hostFirst.filter((item) => item.kind === "moreProjects")).toHaveLength(1);
+		const flat = items({ section: "archived", projects: [project("old")], isFolded: defaults, remainingProjects: 3 });
+		expect(outline(flat)).toEqual(["project old", "3 more projects"]);
+		expect(flat.at(-1)?.key).toBe("archived/more-projects");
+	});
+
+	it("draws no such row once every project is loaded", () => {
+		expect(outline(items({ organizeBy: "project-host", projects: [project("a")], isFolded: defaults }))).toEqual([
+			"project a",
+		]);
 	});
 });

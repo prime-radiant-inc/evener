@@ -324,14 +324,20 @@ function patchLive(
       return "applied";
     }
 
-    case "turn/completed": {
-      // turn/completed carries per-turn usage (Turn.usage), NOT the cumulative
-      // Thread.evener.usage aggregate. The current protocol provides no
-      // authoritative cumulative projection in this notification, so the
-      // store must NOT overwrite the activity usage aggregate with per-turn
-      // values. Return "rehydrate" so the caller performs the one
-      // authoritative reread.
-      return "rehydrate";
+    case "history/updated": {
+      // history/updated is the read model's single transcript frame — it
+      // fires for every item change too, not only a turn settling the way
+      // its predecessor turn/completed did — so only a frame naming a turn
+      // that just settled (status moved off "inProgress") is this rule's
+      // concern. A settled turn's scalars carry per-turn usage (Turn.usage),
+      // NOT the cumulative Thread.evener.usage aggregate, and the current
+      // protocol provides no authoritative cumulative projection in this
+      // notification, so the store must NOT overwrite the activity usage
+      // aggregate with per-turn values. Return "rehydrate" so the caller
+      // performs the one authoritative reread.
+      const params = n.params as ParamsOf<"history/updated">;
+      const settled = (params.turns ?? []).some((turn) => turn.status !== "inProgress");
+      return settled ? "rehydrate" : "applied";
     }
 
     case "evener/jobs/treeUpdated": {

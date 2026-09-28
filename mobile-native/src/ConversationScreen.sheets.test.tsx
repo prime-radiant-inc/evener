@@ -60,7 +60,6 @@ vi.mock("@react-navigation/native", async () => {
 	return {
 		useFocusEffect: (effect: () => void | (() => void)) =>
 			useEffect(effect, []),
-		useIsFocused: () => stack.focused,
 		useNavigationState: <T,>(select: (state: typeof stack.state) => T) =>
 			select(stack.state),
 	};
@@ -94,12 +93,7 @@ vi.mock("expo-file-system", () => ({
 		constructor(public uri: string) {}
 	},
 }));
-vi.mock("expo-image-manipulator", () => ({
-	ImageManipulator: {
-		manipulateAsync: vi.fn(async () => ({ uri: "manipulated" })),
-	},
-	SaveFormat: { JPEG: "jpeg" },
-}));
+vi.mock("expo-image-manipulator", () => ({}));
 vi.mock("expo-image-picker", () => ({
 	launchImageLibraryAsync: vi.fn(async () => ({ canceled: true, assets: [] })),
 	UIImagePickerPreferredAssetRepresentationMode: { Current: "current" },
@@ -183,16 +177,16 @@ const thread: Thread = {
 	},
 };
 
-/** A hub that answers the session's read with `thread` and records every
+/** A hub that answers the session's read with `read` and records every
  * request the screen makes. */
-function sessionClient() {
+function sessionClient(read: Thread) {
 	const requests: { method: string; params: unknown }[] = [];
 	const client = {
 		state: "ready",
 		onStateChange: () => () => {},
 		request: async (method: string, params?: unknown) => {
 			requests.push({ method, params });
-			if (method === "thread/read") return { thread };
+			if (method === "thread/read") return { thread: read };
 			return new Promise<never>(() => {});
 		},
 		onNotification: () => () => {},
@@ -206,8 +200,8 @@ async function flush() {
 	});
 }
 
-function mount() {
-	const { client, requests } = sessionClient();
+function mount(read: Thread = thread) {
+	const { client, requests } = sessionClient(read);
 	harness.connection = {
 		...screenConnection(client, "ready"),
 		error: null,
@@ -286,5 +280,16 @@ it("follows no session while a screen is pushed over it", async () => {
 	expect(requests.filter((request) => request.method === "thread/read")).toEqual(
 		[],
 	);
+	tree.unmount();
+});
+
+it("marks its session seen through the read's turn end once it has loaded in front (S4)", async () => {
+	const endedAt = Date.UTC(2026, 8, 26, 12, 0, 0, 123);
+	const { tree, requests } = mount({ ...thread, evener: { ...thread.evener, lastTurnEndedAt: endedAt } });
+	await flush();
+
+	expect(requests.filter((request) => request.method === "evener/session/seen/set")).toEqual([
+		{ method: "evener/session/seen/set", params: { sessions: [{ ref, seenThrough: endedAt }] } },
+	]);
 	tree.unmount();
 });
