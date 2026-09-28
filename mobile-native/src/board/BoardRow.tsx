@@ -1,11 +1,20 @@
 import type { NavigationSessionSummary, SessionActivity } from "@evener/appwire-client";
 import { relativeAge } from "@evener/appwire-client/state/navigation";
 import { SymbolView } from "expo-symbols";
-import type { ReactElement } from "react";
-import { type AccessibilityActionEvent, type AccessibilityActionInfo, Platform, Pressable, Text, View } from "react-native";
+import { type ReactElement, useEffect, useState } from "react";
+import {
+	type AccessibilityActionEvent,
+	type AccessibilityActionInfo,
+	Animated,
+	Platform,
+	Pressable,
+	Text,
+	View,
+} from "react-native";
 import type { Palette } from "../design/tokens";
 import { useColors, useTextScale } from "../ui";
 import { bandOf, type ClassifiedRow, lastLine, stateWord, type Usual, type WhyLine, whyLine } from "./attention";
+import { WASH_MS } from "./settledList";
 import { StateMark } from "./StateMark";
 
 export interface BoardRowProps {
@@ -36,6 +45,12 @@ export interface BoardRowProps {
 	 * pressable a touch reaches, so the menu's press has to live on it. */
 	onLongPress?: () => void;
 	delayLongPress?: number;
+	/** Non-zero while the row has just entered Needs you: each new value
+	 * washes it amber again (spec 7.3). */
+	wash?: number;
+	/** In select mode, whether the row is chosen: its mark column shows a
+	 * checkbox instead of its state. Undefined outside select mode. */
+	selected?: boolean;
 }
 
 /** Where a row's title starts: its 16pt padding, the 28pt mark column and
@@ -119,6 +134,8 @@ export function BoardRow({
 	onAccessibilityAction,
 	onLongPress,
 	delayLongPress,
+	wash = 0,
+	selected,
 }: BoardRowProps): ReactElement {
 	const { palette } = useColors();
 	const scale = useTextScale();
@@ -137,7 +154,7 @@ export function BoardRow({
 		<Pressable
 			accessibilityRole="button"
 			accessibilityLabel={label}
-			accessibilityState={{ busy: dimmed }}
+			accessibilityState={selected === undefined ? { busy: dimmed } : { busy: dimmed, selected }}
 			accessibilityActions={accessibilityActions}
 			onAccessibilityAction={onAccessibilityAction}
 			onPress={() => onOpen(row)}
@@ -155,14 +172,26 @@ export function BoardRow({
 				opacity: dimmed ? 0.5 : 1,
 			})}
 		>
+			{wash ? <Wash key={wash} /> : null}
 			<View style={{ height: lineOne, justifyContent: "center" }}>
-				<StateMark
-					state={state}
-					moving={moving}
-					connected={connected}
-					stuck={why?.stuck}
-					perMinute={activity?.minutes}
-				/>
+				{selected === undefined ? (
+					<StateMark
+						state={state}
+						moving={moving}
+						connected={connected}
+						stuck={why?.stuck}
+						perMinute={activity?.minutes}
+					/>
+				) : (
+					// The mark column's 28pt, as StateMark's, so titles stay put.
+					<View style={{ width: 28, alignItems: "center" }}>
+						<SymbolView
+							name={selected ? "checkmark.circle.fill" : "circle"}
+							size={22}
+							tintColor={selected ? palette.accent : palette.inkLow}
+						/>
+					</View>
+				)}
 			</View>
 			<View style={{ flex: 1, minWidth: 0 }}>
 				<View style={{ flexDirection: "row", alignItems: "flex-start", columnGap: 8 }}>
@@ -218,6 +247,24 @@ export function BoardRow({
 				) : null}
 			</View>
 		</Pressable>
+	);
+}
+
+/** The amber wash behind a row that just entered Needs you (spec 7.3): full
+ * at once, then fading out over WASH_MS. Reduce Motion keeps it (ruling 23):
+ * it is a fade, and with rows jumping it is the only cue to where one landed.
+ * Remounted by its key for each new wash. */
+function Wash() {
+	const { palette } = useColors();
+	const [opacity] = useState(() => new Animated.Value(1));
+	useEffect(() => {
+		Animated.timing(opacity, { toValue: 0, duration: WASH_MS, useNativeDriver: true }).start();
+	}, [opacity]);
+	return (
+		<Animated.View
+			pointerEvents="none"
+			style={{ position: "absolute", top: 0, right: 0, bottom: 0, left: 0, backgroundColor: palette.attentionBg, opacity }}
+		/>
 	);
 }
 

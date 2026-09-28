@@ -6,6 +6,7 @@ import { render } from "../renderNative.testkit";
 import type { BoardState, ClassifiedRow } from "./attention";
 import { BoardRow, type BoardRowProps } from "./BoardRow";
 import { PulseMeter } from "./PulseMeter";
+import { StateMark } from "./StateMark";
 
 vi.mock("react-native", async () => ({
 	...(await import("../renderNative.testkit")).nativeModuleMock(),
@@ -325,6 +326,39 @@ describe("a Board row (spec 7.2)", () => {
 		expect(button.props.accessibilityActions).toEqual([{ name: "archive", label: "Archive" }]);
 		button.props.onAccessibilityAction({ nativeEvent: { actionName: "archive" } });
 		expect(onAccessibilityAction).toHaveBeenCalledWith({ nativeEvent: { actionName: "archive" } });
+	});
+
+	it("shows select mode's checkbox in place of its state mark, and reads selected", () => {
+		const marks = (tree: ReactTestRenderer) =>
+			tree.root.findAllByType("SymbolView" as never).map((node) => [node.props.name, node.props.tintColor]);
+		const chosen = mount({ selected: true });
+		expect(marks(chosen)[0]).toEqual(["checkmark.circle.fill", palette.accent]);
+		expect(chosen.root.findAllByType(StateMark)).toHaveLength(0);
+		expect(pressable(chosen).props.accessibilityRole).toBe("button");
+		expect(pressable(chosen).props.accessibilityState).toEqual({ busy: false, selected: true });
+		const open = mount({ selected: false });
+		expect(marks(open)[0]).toEqual(["circle", palette.inkLow]);
+		expect(pressable(open).props.accessibilityState).toEqual({ busy: false, selected: false });
+		// Out of select mode it shows its state.
+		expect(mount().root.findAllByType(StateMark)).toHaveLength(1);
+	});
+
+	it("washes amber behind its content, fading out, when it has just entered Needs you", () => {
+		const washes = (tree: ReactTestRenderer) => tree.root.findAll((node) => node.type === ("Animated.View" as never));
+		const tree = mount({ wash: 2 });
+		const [wash] = washes(tree);
+		expect(washes(tree)).toHaveLength(1);
+		expect(wash.props.pointerEvents).toBe("none");
+		const style = styleOf(wash);
+		expect(style).toMatchObject({ position: "absolute", top: 0, right: 0, bottom: 0, left: 0 });
+		expect(style.backgroundColor).toBe(palette.attentionBg);
+		// The mocked timing lands on its target at once: faded out.
+		expect((style.opacity as { value: number }).value).toBe(0);
+		// It sits behind the row's content: the button's first child.
+		const [first] = pressable(tree).children as ReactTestInstance[];
+		expect(washes({ root: first } as ReactTestRenderer)).toEqual([wash]);
+		expect(washes(mount({ wash: 0 }))).toHaveLength(0);
+		expect(washes(mount())).toHaveLength(0);
 	});
 });
 
