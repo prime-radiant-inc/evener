@@ -15,6 +15,7 @@ import { ConversationScreen } from "./screens";
 import { NotesSheet, notesHosts } from "./session/NotesSheet";
 import { QuestionDock } from "./session/QuestionDock";
 import { sheetKey } from "./sheet/sheetHosts";
+import { holdQuote, takeQuote } from "./session/pendingQuote";
 
 const harness = vi.hoisted(() => ({
 	connection: {} as Record<string, unknown>,
@@ -251,7 +252,10 @@ function queueState(texts: string[], revision = 0) {
  * mutation, recording each request in order. It sends a frame only when a
  * test calls notify(). */
 const otherThreads = new Map<string, Thread>();
-afterEach(() => otherThreads.clear());
+afterEach(() => {
+	otherThreads.clear();
+	vi.unstubAllGlobals();
+});
 
 function hubClient(served: Thread, failedReads = 0, readLatencyMs = 0, olderCursor?: string) {
 	let readsToFail = failedReads;
@@ -1243,6 +1247,37 @@ it("offers no Retry that couldn't send: a question still waits on the failed tur
 	const { tree } = await mount(served);
 	expect(renderedText(tree)).toContain("go test exited 1");
 	expect(pressable(tree, "Retry")).toBeUndefined();
+});
+
+it("puts a quote held for this session into the draft when it comes back to the front, once", async () => {
+	// Quoting focuses the field on the next frame.
+	vi.stubGlobal("requestAnimationFrame", (frame: () => void) => {
+		frame();
+		return 0;
+	});
+	const { tree } = await mount(thread("ref-quote", "idle"));
+	await type(tree, "keep this");
+	const [route] = navigationState.state.routes;
+	if (!route) throw new Error("no route");
+	const rerender = async () => {
+		act(() => tree.update(<ConversationScreen route={route as never} navigation={navigation} />));
+		await settle();
+	};
+	// The Reader over this session holds a quote, and another session's.
+	navigationState.state = { index: 1, routes: [route, { key: "reader", name: "Reader" }] };
+	await rerender();
+	holdQuote("hub-1", "ref-other", "not for this session");
+	holdQuote("hub-1", "ref-quote", "The goal is green.\nThen ship it.");
+	navigationState.state = { index: 0, routes: [route] };
+	await rerender();
+	const quoted = "keep this\n\n> The goal is green.\n> Then ship it.\n\n";
+	expect(field(tree)?.props.value).toBe(quoted);
+	navigationState.state = { index: 1, routes: [route, { key: "reader", name: "Reader" }] };
+	await rerender();
+	navigationState.state = { index: 0, routes: [route] };
+	await rerender();
+	expect(field(tree)?.props.value).toBe(quoted);
+	expect(takeQuote("hub-1", "ref-other")).toBe("not for this session");
 });
 
 it("leaves the shared question fixture as the other question tests expect it", () => {
