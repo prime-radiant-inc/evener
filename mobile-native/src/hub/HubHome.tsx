@@ -9,6 +9,7 @@ import { nativeApplicationVersion, nativeBuildVersion } from "expo-application";
 import { useSyncExternalStore } from "react";
 import { Alert, Text } from "react-native";
 import { useConnectionStatusText } from "../board/connectionStatus";
+import { whenReady } from "../connectionDisplay";
 import { Group, GroupedPage, GroupFooter, GroupLabel, Row } from "../sheet/Grouped";
 import { allowFontScaling, useColors, useTextScale } from "../ui";
 import { appVersionText, hubStatusLine } from "./hubHeader";
@@ -23,7 +24,7 @@ type InterimScreen =
 	| "HubSettings";
 
 export function HubHome({ navigation }: NativeStackScreenProps<HubRoutes, "HubHome">) {
-	const { hubId, hubName, ready, updates } = useHubSheet();
+	const { hubId, hubName, ready, canUseConnection, updates } = useHubSheet();
 	const update = useSyncExternalStore(updates.subscribe, updates.getState);
 	const { palette } = useColors();
 	const scale = useTextScale();
@@ -40,7 +41,8 @@ export function HubHome({ navigation }: NativeStackScreenProps<HubRoutes, "HubHo
 			`Install evener ${check?.latestTag ?? "the latest release"} on ${hubName}. The hub restarts, and the app reconnects on its own.`,
 			[
 				{ text: "Cancel", style: "cancel" },
-				{ text: "Update", onPress: () => void updates.apply() },
+				// The alert can outlive the connection it opened on.
+				{ text: "Update", onPress: whenReady(canUseConnection, () => void updates.apply()) },
 			],
 		);
 	const updateProblem = update.applyError ?? update.checkError;
@@ -93,6 +95,9 @@ export function HubHome({ navigation }: NativeStackScreenProps<HubRoutes, "HubHo
 			</Group>
 			{update.restarting ? (
 				<GroupFooter>{`Restarting into ${check?.latestTag ?? "the new release"}…`}</GroupFooter>
+			) : null}
+			{update.restartTimedOut ? (
+				<GroupFooter tone="danger">The hub restarted without the update. Check its logs.</GroupFooter>
 			) : null}
 			{updateProblem ? <GroupFooter tone="danger">{updateProblem}</GroupFooter> : null}
 		</GroupedPage>

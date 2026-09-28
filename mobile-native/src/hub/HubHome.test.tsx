@@ -56,13 +56,14 @@ async function mount(options: { check?: UpdateCheckResponse | Error; ready?: boo
 	const fake = hub(options.check ?? UP_TO_DATE);
 	const readiness = createReadiness();
 	readiness.set(true);
+	const live = { usable: options.ready ?? true };
 	updates = createPhoneHubUpdates(fake.client, readiness);
 	context = {
 		hubId: "hub-1",
 		hubName: "Work hub",
 		client: null,
 		ready: options.ready ?? true,
-		canUseConnection: () => options.ready ?? true,
+		canUseConnection: () => live.usable,
 		updates: updates.controller,
 	};
 	if (options.check) await updates.controller.runCheck();
@@ -80,7 +81,7 @@ async function mount(options: { check?: UpdateCheckResponse | Error; ready?: boo
 		act(() => {
 			find(label)?.props.onPress();
 		});
-	return { tree, root, find, press, calls: fake.calls };
+	return { tree, root, find, press, calls: fake.calls, readiness, live };
 }
 
 const ROWS = ["Providers", "Plugins", "Display", "Hubs", "Keyboard shortcuts", "Launch defaults", "Hub settings"];
@@ -176,4 +177,29 @@ it("shows a failed check as a line, with nothing to press", async () => {
 	expect(renderedText(tree)).not.toMatch(/\bReconnect\b/);
 	expect(updates.controller.getState().checkError).not.toBeNull();
 	expect(renderedText(tree)).toContain(updates.controller.getState().checkError ?? "");
+});
+
+it("sends no update confirmed after the connection went away", async () => {
+	const { press, calls, live } = await mount({ check: WAITING });
+	press("Update hub");
+	live.usable = false;
+	await act(async () => {
+		alertRequests[0]?.buttons?.find((button) => button.text === "Update")?.onPress?.();
+	});
+	expect(calls).not.toContain("evener/update/apply");
+});
+
+it("says so when the hub restarts without the update", async () => {
+	const { tree, press, readiness } = await mount({ check: WAITING });
+	press("Update hub");
+	await act(async () => {
+		alertRequests[0]?.buttons?.find((button) => button.text === "Update")?.onPress?.();
+	});
+	// The hub comes back on the version it had.
+	await act(async () => {
+		readiness.set(false);
+		readiness.set(true);
+		await new Promise((resolve) => setTimeout(resolve, 0));
+	});
+	expect(renderedText(tree)).toContain("The hub restarted without the update. Check its logs.");
 });
