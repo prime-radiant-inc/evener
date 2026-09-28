@@ -45,6 +45,7 @@ const pending = (over: Partial<PendingTurnEntry> = {}): PendingTurnEntry => ({
 	fromThisClient: true,
 	...over,
 });
+const unsent = (text: string, sentText = text) => ({ text, sentText });
 const row = (over: Partial<RecoveryGhostRow> = {}): RecoveryGhostRow => ({
 	clientMutationId: "cmid-9",
 	status: "rejected",
@@ -139,7 +140,7 @@ describe("messages on their way", () => {
 
 describe("messages that didn't make it (spec 14)", () => {
 	it("keeps an unconfirmed send with Check and Discard, and Edit on tap", () => {
-		const [ghost] = ghosts(session("idle"), [], "maybe sent", []);
+		const [ghost] = ghosts(session("idle"), [], unsent("maybe sent"), []);
 		expect(ghost).toMatchObject({
 			state: "unconfirmed",
 			text: "maybe sent",
@@ -147,6 +148,37 @@ describe("messages that didn't make it (spec 14)", () => {
 			menu: ["edit"],
 			origin: { kind: "draft" },
 		});
+	});
+
+	it("shows one ghost for a send both the draft and the outbox hold, with the outbox's state", () => {
+		// The draft keeps a send uncertain until the store confirms it, and the
+		// outbox holds the same send once it is admitted: a binding change
+		// between the two, or a crash, leaves both.
+		const draft = unsent("look at [image 1]", "look at (attached image 1: a.png)");
+		for (const [state, shown] of [
+			["submitting", "sending"],
+			["blockedUnknown", "unconfirmed"],
+		] as const) {
+			const list = ghosts(
+				session("idle"),
+				[pending({ id: "a", text: "look at  (attached image 1: a.png)", imageCount: 1, state })],
+				draft,
+				[],
+			);
+			expect(list).toHaveLength(1);
+			expect(list[0]).toMatchObject({
+				state: shown,
+				text: "look at [image 1]",
+				buttons: ["check", "discard"],
+				menu: ["edit"],
+				origin: { kind: "draft" },
+			});
+		}
+	});
+
+	it("keeps a different message from the outbox as its own ghost", () => {
+		const list = ghosts(session("idle"), [pending({ id: "a", text: "something else" })], unsent("maybe sent"), []);
+		expect(list.map((ghost) => ghost.text)).toEqual(["something else", "maybe sent"]);
 	});
 
 	it("says why the hub refused a message, and offers Edit only when it can come back", () => {
@@ -186,7 +218,7 @@ describe("messages that didn't make it (spec 14)", () => {
 				pending({ id: "s", method: "steer", state: "accepted", text: "steer" }),
 				pending({ id: "q", method: "queue", state: "submitting", text: "sending" }),
 			],
-			"draft",
+			unsent("draft"),
 			[row()],
 		);
 		expect(list.map((ghost) => ghost.state)).toEqual([
@@ -201,7 +233,7 @@ describe("messages that didn't make it (spec 14)", () => {
 });
 
 it("shows what the phone knows before the session has loaded", () => {
-	expect(ghosts(null, [], "maybe sent", [row()]).map((ghost) => ghost.state)).toEqual(["unconfirmed", "refused"]);
+	expect(ghosts(null, [], unsent("maybe sent"), [row()]).map((ghost) => ghost.state)).toEqual(["unconfirmed", "refused"]);
 });
 
 describe("acting on the message you saw (Review Focus 2)", () => {
@@ -221,7 +253,7 @@ describe("acting on the message you saw (Review Focus 2)", () => {
 });
 
 it("shows at most three queued messages and counts the rest, never hiding the others", () => {
-	const all = ghosts(session("active", ["1", "2", "3", "4", "5"]), [], "draft", []);
+	const all = ghosts(session("active", ["1", "2", "3", "4", "5"]), [], unsent("draft"), []);
 	const { shown, moreQueued } = shownGhosts(all);
 	expect(shown.map((ghost) => ghost.text)).toEqual(["1", "2", "3", "draft"]);
 	expect(moreQueued).toBe(2);

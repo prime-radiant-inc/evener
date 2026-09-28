@@ -39,6 +39,7 @@ import {
 	parseSlashToken,
 	spliceSlashCommand,
 	type TranscriptDisplayConfigV1,
+	translateAttachmentMarkers,
 } from "@evener/appwire-client";
 import { createConversationService } from "../../mobile/src/services/conversation";
 import { createActivityStore } from "../../mobile/src/state/activity";
@@ -1936,7 +1937,15 @@ export function ConversationScreen({
 	const allGhosts = ghosts(
 		conversation,
 		snapshot.pendingMutations,
-		unconfirmedSend,
+		unconfirmedSend === null
+			? null
+			: {
+					text: unconfirmedSend,
+					sentText: translateAttachmentMarkers(
+						unconfirmedSend,
+						draft.record.unconfirmedImages,
+					),
+				},
 		recoveryRows,
 	).map((ghost) =>
 		connected || ghost.origin.kind !== "queue"

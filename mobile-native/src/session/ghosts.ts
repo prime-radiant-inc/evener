@@ -5,7 +5,7 @@
 // - your messages not yet reflected;
 // - anything the phone couldn't confirm, or the hub refused.
 import { isQueueParked, sessionControls, type ThreadModel } from "@evener/appwire-client";
-import { type PendingTurnEntry, pendingEntryPreview } from "@evener/appwire-client/state/mutation";
+import { normalizeText, type PendingTurnEntry, pendingEntryPreview } from "@evener/appwire-client/state/mutation";
 import type { NativeMutationRecoveryRow } from "../MutationRecoveryPanel";
 
 export type GhostState = "steering" | "queued" | "held" | "sending" | "unconfirmed" | "refused";
@@ -45,6 +45,13 @@ export interface Ghost {
 
 export type GhostSource = Pick<ThreadModel, "status" | "capabilities" | "queue">;
 
+/** A send the draft holds as uncertain: its text as you wrote it, and as it
+ * went out, with image markers translated the way the outbox records it. */
+export interface UnconfirmedSend {
+	text: string;
+	sentText: string;
+}
+
 const CAPTIONS: Record<GhostState, string> = {
 	steering: "Steering · arrives at the next step",
 	queued: "Queued · sends when this turn ends",
@@ -61,7 +68,7 @@ const STEERS = new Set(["steer", "drain", "promote"]);
 export function ghosts(
 	session: GhostSource | null,
 	pending: readonly PendingTurnEntry[] | null | undefined,
-	unconfirmedDraft: string | null,
+	unconfirmedDraft: UnconfirmedSend | null,
 	recovery: readonly RecoveryGhostRow[],
 ): Ghost[] {
 	// Another client's rows aren't yours to watch. A row Stop canceled before
@@ -71,24 +78,39 @@ export function ghosts(
 		STEERS.has(entry.method) && (entry.state === "accepted" || entry.state === "claimed");
 	const out: Ghost[] = own.filter(steering).map((entry) => pendingGhost(entry, "steering", []));
 	if (session) out.push(...queueGhosts(session));
+	// The draft keeps a send uncertain until the store confirms it, and the
+	// outbox admits the same send first, so a binding change in between or a
+	// crash leaves both holding it. One ghost shows: the outbox knows how far
+	// the send got, and the draft keeps what you can do about it.
+	const sameSend =
+		unconfirmedDraft === null
+			? undefined
+			: own.find(
+					(entry) =>
+						!steering(entry) &&
+						(entry.method === "send" || entry.method === "queue") &&
+						normalizeText(entry.text) === normalizeText(unconfirmedDraft.sentText),
+				);
 	for (const entry of own) {
-		if (steering(entry)) continue;
+		if (steering(entry) || entry === sameSend) continue;
 		out.push(
 			entry.state === "blockedUnknown"
 				? pendingGhost(entry, "unconfirmed", ["check"])
 				: pendingGhost(entry, "sending", []),
 		);
 	}
-	if (unconfirmedDraft !== null)
+	if (unconfirmedDraft !== null) {
+		const state: GhostState = sameSend && sameSend.state !== "blockedUnknown" ? "sending" : "unconfirmed";
 		out.push({
 			key: "draft:unconfirmed",
-			state: "unconfirmed",
-			text: unconfirmedDraft,
-			caption: CAPTIONS.unconfirmed,
+			state,
+			text: unconfirmedDraft.text,
+			caption: CAPTIONS[state],
 			buttons: ["check", "discard"],
 			menu: ["edit"],
 			origin: { kind: "draft" },
 		});
+	}
 	for (const row of recovery) out.push(recoveryGhost(row));
 	return out;
 }
