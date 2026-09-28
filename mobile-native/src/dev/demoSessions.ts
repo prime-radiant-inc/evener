@@ -686,33 +686,40 @@ function queueOf(slug: string, texts: string[] = []): QueueState {
 	};
 }
 
-// A session's capabilities as the hub advertises them for its state:
+// The statuses of a session whose daemon has gone: the hub serves it from
+// its saved transcript (SHUT_DOWN in session/sessionState.ts).
+const PAST_STATUSES = new Set(["notLoaded", "ended", "closed"]);
+
+const NO_CAPABILITIES: ThreadCapabilities = {
+	send: false,
+	steer: false,
+	interrupt: false,
+	compact: false,
+	clear: false,
+	forkFromTurn: false,
+	shutdown: false,
+	changeModel: false,
+	changeVisionModel: false,
+	queue: false,
+	goal: false,
+	sharedNotes: false,
+	rename: false,
+};
+
+// A session's capabilities as the hub advertises them for its status:
 // - live, a daemon's set (server/appwire_runtime.go's appCapabilitiesLocked),
 //   with Send only while it rests and Clear as clearAvailable says;
 // - shut down, the hub's past-session set (cmd/evener-hub/app_threadread.go's
 //   pastThreadCapabilities), since sending resumes it;
 // - needing a restart, readable notes alone
 //   (cmd/evener-hub/internal/appsource/local_daemon.go).
-function capabilitiesOf(state: ProtoState): ThreadCapabilities {
-	const none: ThreadCapabilities = {
-		send: false,
-		steer: false,
-		interrupt: false,
-		compact: false,
-		clear: false,
-		forkFromTurn: false,
-		shutdown: false,
-		changeModel: false,
-		changeVisionModel: false,
-		queue: false,
-		goal: false,
-		sharedNotes: true,
-		rename: false,
-	};
-	if (state === "restart") return none;
-	if (state === "shutdown")
-		return {
-			...none,
+// Called whenever a session changes, so what it offers follows its state.
+export function refreshCapabilities(thread: Thread): void {
+	const status = thread.status.type;
+	if (status === "restartRequired") thread.evener.capabilities = { ...NO_CAPABILITIES, sharedNotes: true };
+	else if (PAST_STATUSES.has(status))
+		thread.evener.capabilities = {
+			...NO_CAPABILITIES,
 			send: true,
 			compact: true,
 			clear: true,
@@ -722,33 +729,58 @@ function capabilitiesOf(state: ProtoState): ThreadCapabilities {
 			changeVisionModel: true,
 			queue: true,
 			goal: true,
+			sharedNotes: true,
 			rename: true,
 			skillInput: true,
 		};
-	const resting = THREAD_STATUS[state] !== "active";
-	return {
-		...none,
-		send: resting,
-		steer: true,
-		interrupt: true,
-		compact: true,
-		shutdown: true,
-		changeModel: true,
-		changeVisionModel: true,
-		queue: true,
-		goal: true,
-		rename: true,
-	};
+	else
+		thread.evener.capabilities = {
+			...NO_CAPABILITIES,
+			send: status !== "active",
+			steer: true,
+			interrupt: true,
+			compact: true,
+			clear: clearAvailable(thread),
+			shutdown: true,
+			changeModel: true,
+			changeVisionModel: true,
+			queue: true,
+			goal: true,
+			sharedNotes: true,
+			rename: true,
+			skillInput: true,
+		};
 }
 
-// Whether a live session can Clear: only at rest, and not while a question or
-// an approval waits on you, as the daemon's clearBlockedReasonLocked says.
-export function clearAvailable(thread: Thread): boolean {
+// Whether a live session can Clear: only at rest, with nothing queued or
+// pending, and no question or approval waiting on you, as the daemon's
+// clearBlockedReasonLocked says.
+function clearAvailable(thread: Thread): boolean {
 	return (
 		thread.status.type !== "active" &&
+		(thread.evener.queue.depth ?? 0) === 0 &&
+		(thread.evener.pendingMutations ?? []).length === 0 &&
 		!thread.evener.askPending &&
 		(thread.evener.pendingEscalations ?? []).length === 0
 	);
+}
+
+// A turn ends: its open items settle as a daemon records them (a tool call
+// cut off by Stop reads "interrupted"), and the session's clocks take the
+// turn's time.
+export function endTurn(thread: Thread, turn: Turn, status: "completed" | "interrupted", now: number): void {
+	for (const item of turn.items ?? [])
+		if (item.status === "inProgress") {
+			item.status = item.type === "commandExecution" ? status : "completed";
+			item.completedAt = now;
+		}
+	turn.status = status;
+	turn.completedAt = now;
+	if (turn.startedAt !== undefined) {
+		turn.durationMs = now - turn.startedAt;
+		thread.evener.workMillis = (thread.evener.workMillis ?? 0) + turn.durationMs;
+	}
+	thread.evener.lastTurnEndedAt = now;
 }
 
 // The first question of the session's pending ask, as the daemon summarizes
@@ -785,7 +817,6 @@ function sessionThread(session: FleetSession, now: number): Thread {
 	const usage = content.usage ?? BASE_USAGE;
 	const status = THREAD_STATUS[session.state];
 	const active = status === "active";
-	const live = session.state !== "shutdown";
 	const entries = content.entries ?? genericEntries(session);
 	const turn = turnOf(session, entries, content.error, now);
 	const sessionId = demoSessionId(session.slug);
@@ -811,7 +842,7 @@ function sessionThread(session: FleetSession, now: number): Thread {
 			ref: session.ref,
 			instanceId: `demo-instance-${session.slug}`,
 			queue: queueOf(session.slug, content.queued),
-			capabilities: capabilitiesOf(session.state),
+			capabilities: NO_CAPABILITIES,
 			...(active ? { activeTurnId: turn.id, activeTurnStartedAt: turn.startedAt } : {}),
 			...(turn.completedAt === undefined ? {} : { lastTurnEndedAt: turn.completedAt }),
 			reasoningEffort: content.effort ?? DEFAULT_EFFORT,
@@ -868,7 +899,7 @@ function sessionThread(session: FleetSession, now: number): Thread {
 			access: { sandbox: "workspace-write", network: true },
 		},
 	};
-	if (live && session.state !== "restart") thread.evener.capabilities.clear = clearAvailable(thread);
+	refreshCapabilities(thread);
 	return thread;
 }
 
@@ -897,15 +928,45 @@ function requireSharedNotes(thread: Thread, expectedInstanceId: string, clientMu
 		});
 }
 
+// The steering text a changed note opens with (agent/session_notes_rpc.go's
+// humanNoteSteerPrefix).
+const HUMAN_NOTE_STEER_PREFIX = "human updated their whiteboard:";
+// The daemon's cap on a stored note, in runes (agent/session_notes.go).
+const NOTE_MAX_RUNES = 1000;
+
+// A note as the daemon stores it (agent/session_notes.go's normalizeNote):
+// control characters other than whitespace dropped, whitespace runs collapsed
+// to one space, and the whole cut to NOTE_MAX_RUNES.
+function normalizeNote(text: string): string {
+	const collapsed = text
+		.replace(/[^\P{Cc}\s]/gu, "")
+		.split(/\s+/)
+		.filter(Boolean)
+		.join(" ");
+	return [...collapsed].slice(0, NOTE_MAX_RUNES).join("");
+}
+
 // notes/human/set: your note replaces the session's. A changed note steers
 // the agent in a turn of its own, which the receipt names; an unchanged one
 // projects "removed" and wakes no one, as the daemon's does
 // (agent/session_notes_rpc.go).
 export function setHumanNote(thread: Thread, params: NotesHumanSetParams): NotesHumanSetResponse {
 	requireSharedNotes(thread, params.expectedInstanceId, params.clientMutationId);
-	const note = params.note ?? "";
+	const note = normalizeNote(params.note ?? "");
 	const changed = note !== (thread.evener.humanNote ?? "");
 	thread.evener.humanNote = note;
+	if (changed)
+		// The note steers the agent, recorded as the daemon records it
+		// (agent/session_notes_rpc.go); the phone shows it as your note's row.
+		thread.turns?.at(-1)?.items?.push({
+			id: `demo-note-${params.clientMutationId}`,
+			type: "steering",
+			source: "user",
+			steeringKind: "human-note",
+			text: `${HUMAN_NOTE_STEER_PREFIX} ${note || "(whiteboard cleared)"}`,
+			clientMutationId: params.clientMutationId,
+			status: "completed",
+		});
 	return {
 		note,
 		receipt: {
@@ -962,21 +1023,12 @@ const WORKING_SESSION_QUESTION: Question[] = [
 export function askWorkingSessionQuestion(thread: Thread, now: number): void {
 	const turn = thread.turns?.find((candidate) => candidate.id === thread.evener.activeTurnId);
 	if (!turn) throw new Error(`${thread.name} has no running turn to ask from`);
-	for (const item of turn.items ?? [])
-		if (item.status === "inProgress") {
-			item.status = "completed";
-			item.completedAt = now;
-		}
 	turn.items?.push(askItem(`${turn.id}-ask`, `${turn.id}-ask`, WORKING_SESSION_QUESTION, now, now));
-	turn.status = "completed";
-	turn.completedAt = now;
-	if (turn.startedAt !== undefined) turn.durationMs = now - turn.startedAt;
+	endTurn(thread, turn, "completed", now);
 	thread.status = { type: "awaiting" };
 	thread.evener.askPending = true;
 	thread.evener.pendingQuestion = pendingQuestionOf(WORKING_SESSION_QUESTION);
-	thread.evener.lastTurnEndedAt = now;
 	delete thread.evener.activeTurnId;
 	delete thread.evener.activeTurnStartedAt;
-	thread.evener.capabilities.send = true;
-	thread.evener.capabilities.clear = clearAvailable(thread);
+	refreshCapabilities(thread);
 }

@@ -207,6 +207,7 @@ describe("the demo sessions behind Appendix A's Session frames", () => {
 			goal: true,
 			sharedNotes: true,
 			rename: true,
+			skillInput: true,
 		};
 		expect(threadOf("s-pr2138").evener.capabilities).toEqual({ ...daemon, send: false, clear: false });
 		expect(threadOf("s-diff").evener.capabilities).toEqual({ ...daemon, send: true, clear: true });

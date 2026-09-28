@@ -21,9 +21,10 @@ import {
 } from "../src/dev/demoFleet.js";
 import {
 	askWorkingSessionQuestion,
-	clearAvailable,
 	createDemoSessions,
 	DEMO_MODEL_LIST,
+	endTurn,
+	refreshCapabilities,
 	removeLink,
 	resolveEscalation,
 	setHumanNote,
@@ -207,25 +208,9 @@ export async function createDemoHub(
 		setTurnRunning(thread, turn);
 		return turn;
 	}
-	// Stop: the turn ends interrupted, its open items settle as a daemon
-	// records them (a tool call cut off reads "interrupted"), and the session's
-	// clocks take the turn's time.
+	// Stop: the turn ends interrupted (demoSessions.ts's endTurn).
 	function stopTurn(thread: Thread, turn: Turn) {
-		const now = Date.now();
-		for (const item of turn.items ?? [])
-			if (item.status === "inProgress") {
-				item.status =
-					item.type === "commandExecution" ? "interrupted" : "completed";
-				item.completedAt = now;
-			}
-		turn.status = "interrupted";
-		turn.completedAt = now;
-		if (turn.startedAt !== undefined) {
-			turn.durationMs = now - turn.startedAt;
-			thread.evener.workMillis =
-				(thread.evener.workMillis ?? 0) + turn.durationMs;
-		}
-		thread.evener.lastTurnEndedAt = now;
+		endTurn(thread, turn, "interrupted", Date.now());
 		setTurnRunning(thread, undefined);
 	}
 	// Moves the thread to `turn` running, or with no turn, to resting.
@@ -235,11 +220,11 @@ export async function createDemoHub(
 		thread.evener.capabilities.send = !running;
 		if (fleetRefs.has(thread.evener.ref)) {
 			// A fleet session keeps Stop and steering as a daemon does,
-			// whatever the turn (demoSessions.ts's capabilities), so a queue
-			// held by Stop can still be sent; the working state line counts
-			// from the turn's start.
+			// whatever the turn: its capabilities follow its state
+			// (refreshCapabilities, after every change), so a queue held by
+			// Stop can still be sent. The working state line counts from the
+			// turn's start.
 			thread.evener.activeTurnStartedAt = running ? Date.now() : undefined;
-			thread.evener.capabilities.clear = clearAvailable(thread);
 		} else {
 			thread.evener.capabilities.interrupt = running;
 			thread.evener.capabilities.steer = running;
@@ -578,6 +563,9 @@ export async function createDemoHub(
 					default:
 						throw new Error("Method not implemented by demonstration server");
 				}
+				// What a fleet session offers follows every change to it.
+				if (changed && fleetRefs.has(changed.evener.ref))
+					refreshCapabilities(changed);
 				socket.send(JSON.stringify({ jsonrpc: "2.0", id, result }));
 				if (changed) resync(changed);
 				if (navigationChange) broadcastNavigation(navigationChange);

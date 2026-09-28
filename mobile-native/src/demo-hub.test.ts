@@ -672,8 +672,13 @@ describe("native demonstration hub's fleet sessions", () => {
 	it("asks the working session's question in its thread too, when the fleet asks it", async () => {
 		await withHub({}, async (client, hub) => {
 			const ref = fleetSessionRef("s-gateway");
+			const before = (await client.request("thread/read", { ref, includeTurns: false })).thread;
 			hub.askQuestion();
 			const { thread } = await client.request("thread/read", { ref, includeTurns: true });
+			// The ended turn's time joins the session's work, as a Stop's does.
+			const ended = thread.turns?.at(-1);
+			expect(thread.evener.workMillis).toBe((before.evener.workMillis ?? 0) + (ended?.durationMs ?? Number.NaN));
+			expect(thread.evener.lastTurnEndedAt).toBe(ended?.completedAt);
 			expect(thread.status.type).toBe("awaiting");
 			expect(thread.evener.askPending).toBe(true);
 			expect(thread.evener.pendingQuestion).toMatchObject({
@@ -683,6 +688,49 @@ describe("native demonstration hub's fleet sessions", () => {
 			const turn = thread.turns?.at(-1);
 			expect(turn?.status).toBe("completed");
 			expect(turn?.items?.at(-1)).toMatchObject({ toolName: "ask_user", status: "completed" });
+		});
+	});
+
+	it("keeps Clear off while a held queue waits, and offers it once the queue empties", async () => {
+		await withHub({}, async (client) => {
+			const service = createConversationService(client);
+			const ref = fleetSessionRef("s-pr2138");
+			try {
+				await service.open(ref);
+				await service.interrupt();
+				const held = await service.open(ref);
+				expect(held.capabilities.clear).toBe(false);
+				const [entry] = held.queue?.ids ?? [];
+				if (!entry || !held.instanceId) throw new Error("Missing queue guards");
+				await service.cancelQueued(0, entry, held.instanceId);
+				expect((await service.open(ref)).capabilities.clear).toBe(true);
+			} finally {
+				service.close();
+			}
+		});
+	});
+
+	it("gives a shut-down session a live daemon's capabilities once you send to it", async () => {
+		await withHub({}, async (client) => {
+			const service = createConversationService(client);
+			const ref = fleetSessionRef("s-roster");
+			try {
+				await service.open(ref);
+				await service.send([{ type: "text", text: "Measure it again" }]);
+				const working = await service.open(ref);
+				expect(working.status.type).toBe("active");
+				expect(working.capabilities).toMatchObject({
+					send: false,
+					steer: true,
+					interrupt: true,
+					clear: false,
+					forkFromTurn: false,
+				});
+				await service.interrupt();
+				expect((await service.open(ref)).status.type).toBe("idle");
+			} finally {
+				service.close();
+			}
 		});
 	});
 
@@ -720,7 +768,8 @@ describe("native demonstration hub's fleet sessions", () => {
 				ref,
 				clientMutationId: "note-1",
 				expectedInstanceId,
-				note: "Fix causes, and say which.",
+				// Saved as the daemon stores it: whitespace runs collapsed.
+				note: "  Fix causes,\n and   say which. ",
 			});
 			expect(saved).toMatchObject({
 				note: "Fix causes, and say which.",
@@ -741,8 +790,18 @@ describe("native demonstration hub's fleet sessions", () => {
 			expect(unchanged.receipt.projectionState).toBe("removed");
 			expect(unchanged.receipt).not.toHaveProperty("turnId");
 			await client.request("urls/remove", { ref, clientMutationId: "link-1", expectedInstanceId, id: "u-checks" });
-			const after = await client.request("thread/read", { ref, includeTurns: false });
+			const after = await client.request("thread/read", { ref, includeTurns: true });
 			expect(after.thread.evener.humanNote).toBe("Fix causes, and say which.");
+			// The changed note steers the agent, as the daemon records it.
+			expect(after.thread.turns?.at(-1)?.items).toContainEqual(
+				expect.objectContaining({
+					type: "steering",
+					source: "user",
+					steeringKind: "human-note",
+					text: "human updated their whiteboard: Fix causes, and say which.",
+					clientMutationId: "note-1",
+				}),
+			);
 			expect(after.thread.evener.sessionUrls?.map((link) => link.id)).toEqual(["u-2138", "u-splan"]);
 			// The phone reads this message as "already gone" (sessionNotes.ts).
 			await expect(
