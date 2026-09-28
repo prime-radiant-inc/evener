@@ -49,6 +49,7 @@ import type { OrganizeBy, SeenMarkers } from "./boardMemory";
 import { bandHeaderText, BoardRows, FoldChevron, type RowContext } from "./BoardRow";
 import { BoardToolbar } from "./BoardToolbar";
 import { type BoardController, type BoardSnapshot, createBoardController } from "./boardData";
+import { BoardSeen, type HubSeenMarks, hubSeenMarks } from "./hubSeen";
 import { foldedSections, organizeByPreference, seenMarkers } from "./nativeBoardMemory";
 import { PinnedSection, useBoardFolds, useCategoryFolds } from "./PinnedSections";
 import { journalHoldsProject, PROJECT_MENU_LABELS, type ProjectMenuAction, projectMenuActions } from "./projectMenu";
@@ -100,6 +101,9 @@ function Board({ hubId, hubName, navigation }: { hubId: string; hubName: string;
 	const snapshot = useSyncExternalStore(board.subscribe, board.getSnapshot);
 	const markers = seenMarkers(hubId);
 	const seenRevision = useSyncExternalStore(markers.subscribe, markers.getRevision);
+	const hubMarks = hubSeenMarks(hubId);
+	const hubSeenRevision = useSyncExternalStore(hubMarks.subscribe, hubMarks.getRevision);
+	const seen = useMemo(() => new BoardSeen(markers, hubMarks), [markers, hubMarks]);
 	const [now, setNow] = useState(Date.now);
 	const [draftRefs, setDraftRefs] = useState<Set<string>>(() => new Set());
 
@@ -129,11 +133,12 @@ function Board({ hubId, hubName, navigation }: { hubId: string; hubName: string;
 	// The retry rests while the Board is out of view: the controller is
 	// paused then, and a paused read is cancelled, not answered.
 	useReadRetry(board, connected && focused ? client : null, snapshot);
+	useHubSeenMarks(hubMarks, connected ? client : null, snapshot);
 
 	const bands = useMemo(
-		() => liveBands(snapshot.live.rows, snapshot.needsYou.rows, (row) => markers.isSeen(row)),
-		// seenRevision re-runs isSeen after a mark or first run.
-		[snapshot.live.rows, snapshot.needsYou.rows, markers, seenRevision],
+		() => liveBands(snapshot.live.rows, snapshot.needsYou.rows, (row) => seen.isSeen(row)),
+		// The revisions re-run isSeen after a mark, a pruned mark or first run.
+		[snapshot.live.rows, snapshot.needsYou.rows, seen, seenRevision, hubSeenRevision],
 	);
 	useFirstRun(board, markers, snapshot, focused);
 
@@ -145,8 +150,8 @@ function Board({ hubId, hubName, navigation }: { hubId: string; hubName: string;
 	}, [sources]);
 
 	const classify = useMemo(
-		() => rowClassifier(snapshot.needsYou.rows, (row) => markers.isSeen(row)),
-		[snapshot.needsYou.rows, markers],
+		() => rowClassifier(snapshot.needsYou.rows, (row) => seen.isSeen(row)),
+		[snapshot.needsYou.rows, seen, seenRevision, hubSeenRevision],
 	);
 	const folds = useCategoryFolds(hubId);
 	const organization = useBoardOrganization(hubId);
@@ -173,7 +178,7 @@ function Board({ hubId, hubName, navigation }: { hubId: string; hubName: string;
 
 	const newSession = () => navigation.navigate("NewSession", { hubId, hubName });
 	const openSession = (row: NavigationSessionSummary) => {
-		markers.markSeen(row);
+		seen.markRead(connected ? client : null, [row]);
 		navigation.navigate("Conversation", { hubId, ref: row.ref, title: row.title });
 	};
 	// A search result opens like its Board row when the Board lists it, so
@@ -381,7 +386,7 @@ function Board({ hubId, hubName, navigation }: { hubId: string; hubName: string;
 		if (item.kind === "session")
 			return (
 				<View key={item.key} style={{ marginLeft: 16 * item.depth }}>
-					{rows([{ row: item.row, state: boardState(item.row, false, markers.isSeen(item.row)) }], "quiet", false)}
+					{rows([{ row: item.row, state: boardState(item.row, false, seen.isSeen(item.row)) }], "quiet", false)}
 				</View>
 			);
 		if (item.kind === "more" || item.kind === "moreProjects")
@@ -644,6 +649,24 @@ function useFirstRun(board: BoardController, markers: SeenMarkers, snapshot: Boa
 		if (!needsYou.loaded || needsYou.loading || needsYou.stale || needsYou.remaining > 0) return;
 		markers.adoptEpoch([...live.rows, ...needsYou.rows]);
 	}, [board, markers, snapshot, focused]);
+}
+
+/** The hub's seen marks (S4): marks go out whenever the connection is ready,
+ * which resends any a dropped connection lost and sends those made while
+ * offline, and each pending mark is pruned once the Board's rows show it
+ * landed. */
+function useHubSeenMarks(
+	hubMarks: HubSeenMarks,
+	client: ConversationClientLike | null,
+	snapshot: Pick<BoardSnapshot, "live" | "needsYou" | "pinSections">,
+) {
+	useEffect(() => {
+		hubMarks.flush(client);
+	}, [hubMarks, client]);
+	const { live, needsYou, pinSections } = snapshot;
+	useEffect(() => {
+		hubMarks.prune([live.rows, needsYou.rows, ...Object.values(pinSections).map((page) => page.rows)].flat());
+	}, [hubMarks, live.rows, needsYou.rows, pinSections]);
 }
 
 /** While any of the Board's reads has failed on a ready connection (Live,
