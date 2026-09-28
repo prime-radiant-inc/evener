@@ -124,8 +124,9 @@ test-native-bundle: native-preflight
 ## trigger: Setup prerequisite for test-api-package.
 ## requires: Node 22+; never runs npm ci through a symlinked node_modules.
 ## fails-when: node_modules is missing and npm ci fails, is a mismatched
-##   symlink, or lacks a working tsc / ws; the message names
-##   `cd appwire-client/typescript && npm ci`.
+##   symlink, or lacks a working tsc / ws; on a real install the message names
+##   `cd appwire-client/typescript && npm ci`, and on a symlinked one it names
+##   the shared install instead.
 api-package-preflight:
 	@scripts/sdk/api-package-preflight.sh
 
