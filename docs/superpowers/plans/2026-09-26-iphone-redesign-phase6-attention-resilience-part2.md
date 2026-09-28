@@ -14,11 +14,15 @@ Part 1's review (#2511) left three findings against the alert center, and Jesse'
 4. **Sheets are native `formSheet` routes** (Jesse's answer 11), built on phase 2 part 3's sheet foundation (`src/sheet/sheetRoutes.ts`: `sheetOptions()`, `SHEET_ROUTES`, `isSheetRoute`, its Task 18.1). Hub and New session stay `"modal"` routes; only full-screen viewers and the Hub's inner detail sheets stay React Native `Modal`s. Task 8's `coversBanners` reads `isSheetRoute` plus the two modals, and the screen under a sheet stays in front, as `inFront` has it; Task 10's `HoldingModal` covers the `Modal`s that remain. No sheet of this part's own is a `Modal`: the Alerts page is a page inside the Hub sheet.
 5. **Board rows show no subagent failures** (Jesse's answer 12). A banner's second line is phase 2's `whyLine`, which never names them, and the detectors alert on the coordinator's own state only.
 
-Main also moved: Task 5's store takes the app's `SyncStringStorage` (`src/syncStringStorage.ts`, #2536).
+Main also moved, and the tasks follow it (checked on main at `480fa3c27`): Task 5's store takes the app's `SyncStringStorage` (`src/syncStringStorage.ts`, #2536); Task 8 classifies with `boardSeen`, the Board's seen state since phase 2's PR 7 (#2625), and binds its controller as the Board binds its own; and PR H's turn guard reads the turn-end stamp S4 put on rows and thread reads (#2566, #2584), where it had waited on a server item of its own.
 
 Jesse has answered part 1's two questions (2026-09-26), and both of its rulings stand as written:
 - Question 1, banners about what changed while disconnected: "sure". Ruling 2: a drop that recovers while you're in the app is diffed and alerts; a return from the background starts a new baseline and alerts nothing.
 - Question 2, banners over a sheet: "don't show over a sheet". Ruling 7: banners wait while a sheet is up and show when it closes, with no full-window overlay.
+
+This part's review raised a third, which is open:
+
+3. **Should a session that already needs you alert again when it asks for something new?** Spec 13.3 alerts when a session "becomes" Failed, Question, Approval, Warning or Restart needed, and Task 4 builds that reading until you answer: a new question or approval while the session stays in Question or Approval says nothing more. But the hub probes a session every five seconds, and a question answered with the next one asked between two probes never shows the phone the gap (the S1b plan's ruling 10, `2026-09-27-iphone-redesign-server-s1-s13b.md`), so a session you just answered can ask again without a banner. My recommendation: alert again when the row names a new question (S1b) or a new approval target (S1a, `approval_tool` and `approval_target`), so the banner follows what the row says. The cost is a second banner when a session has several questions or approvals waiting and you answer one elsewhere.
 
 ---
 
@@ -39,7 +43,7 @@ PR B's first three tasks are pure; Task 6 adds the haptics every later task play
   - `interface SessionAlert { kind: NeedsYouKind | "finished"; ref: string; title: string; why: WhyLine | null }`
   - `interface NoticeAlert { kind: "notice"; key: string; title: string }`
   - `type Alert = SessionAlert | NoticeAlert`
-  - `interface AlertPreferences { failures; questions; finished; hold; haptics }` (all `boolean`) and `DEFAULT_ALERT_PREFERENCES`
+  - `interface AlertPreferences { failures; questions; finished; hold; haptics }` (all `readonly boolean`, so the shared defaults and snapshots can't be changed in place) and `DEFAULT_ALERT_PREFERENCES`
   - `interface Banner { id: number; alerts: readonly Alert[] }`
   - `interface AlertSnapshot { banner: Banner | null; held: number; recent: readonly string[] }`
   - `type AlertScreen = { kind: "board" } | { kind: "session"; ref: string } | { kind: "other" }`
@@ -371,6 +375,18 @@ describe("what holds, and what the Hold switch governs (ruling 7)", () => {
 		expect(alerts.getSnapshot()).toMatchObject({ banner: null, held: 1 });
 	});
 
+	it("lets a release go when a quiet hold starts with the Hold switch off", () => {
+		const { alerts } = center();
+		alerts.hold("quiet");
+		alerts.offer(session("a"));
+		alerts.setPreferences({ ...DEFAULT_ALERT_PREFERENCES, hold: false });
+		const typing = alerts.hold("quiet");
+		vi.advanceTimersByTime(RELEASE_MS);
+		// With Hold off, typing holds nothing, so it can't keep "a" back.
+		expect(shown(alerts)).toEqual(["a"]);
+		typing();
+	});
+
 	it("holds under a sheet whatever the Hold switch says, since nothing shows above one", () => {
 		const { alerts } = center();
 		alerts.setPreferences({ ...DEFAULT_ALERT_PREFERENCES, hold: false });
@@ -488,15 +504,17 @@ export interface NoticeAlert {
 
 export type Alert = SessionAlert | NoticeAlert;
 
-/** Hub > In-app alerts (spec 12). */
+/** Hub > In-app alerts (spec 12). Read-only, since the defaults and each
+ * snapshot are shared by reference: the store, the center and the page all
+ * hold the same object. */
 export interface AlertPreferences {
-	failures: boolean;
+	readonly failures: boolean;
 	/** Questions and approvals. */
-	questions: boolean;
-	finished: boolean;
+	readonly questions: boolean;
+	readonly finished: boolean;
 	/** Hold alerts while reading or typing. */
-	hold: boolean;
-	haptics: boolean;
+	readonly hold: boolean;
+	readonly haptics: boolean;
 }
 
 export const DEFAULT_ALERT_PREFERENCES: AlertPreferences = {
@@ -634,11 +652,13 @@ export class AlertCenter {
 	}
 
 	/** Holds banners until the returned function runs: the Reader and typing
-	 * each hold a "quiet" one, and a sheet a "covered" one (ruling 7). */
+	 * each hold a "quiet" one, and a sheet a "covered" one (ruling 7). A
+	 * release already on its way is left alone: release() checks again when
+	 * it fires, so only a hold that holds keeps it back, and a "quiet" one
+	 * with the Hold switch off doesn't. */
 	hold(kind: HoldKind): () => void {
 		const token = Symbol("hold");
 		this.holds.set(token, kind);
-		this.cancelRelease();
 		return () => {
 			if (this.holds.delete(token) && !this.holding()) this.scheduleRelease();
 		};
@@ -836,7 +856,7 @@ git commit -m "feat(native): the in-app alert center: banners, coalescing, holds
 - Test: `mobile-native/src/alerts/alertEvents.test.ts`
 
 **Interfaces:**
-- Consumes: `BoardState`, `LiveBands`, `liveBands` and `whyLine` from `src/board/attention.ts` (phase 2 Task 2); `Notice` from `src/board/notices.ts` (phase 2 Task 14: `{ kind: "signIn" | "host" | "plugin"; key: string; text: string; action: … }`); `AlertCenter`, `NeedsYouKind`, `NoticeAlert` and `SessionAlert` (Task 3).
+- Consumes: `BoardState`, `LiveBands`, `liveBands` and `whyLine` from `src/board/attention.ts` (phase 2 Task 2, on main); `Notice` from `src/board/notices.ts` (phase 2 Task 14, in its PR 5, #2634, still open at `480fa3c27`: `{ key: string; text: string }` with a `kind` of `"signIn"`, `"host"` or `"plugin"`, each with its `action` and subject id); `AlertCenter`, `NeedsYouKind`, `NoticeAlert` and `SessionAlert` (Task 3).
 - Produces:
   - `type SessionStates = ReadonlyMap<string, BoardState>`
   - `detectSessionAlerts(previous: SessionStates | null, bands: LiveBands, offlineRefs: ReadonlySet<string>): { alerts: SessionAlert[]; states: Map<string, BoardState> }`
@@ -878,7 +898,7 @@ describe("session alerts (spec 13.3)", () => {
 		expect(first.states.get("a")).toBe("failed");
 	});
 
-	it("alerts when a session starts needing you, and again when the reason changes", () => {
+	it("alerts when a session starts needing you, and again when it moves to another needs-you state", () => {
 		const start = detectSessionAlerts(null, bands([row("a", { state: "active" })]), none).states;
 		const asking = row("a", { state: "awaiting", ask_pending: true });
 		const asked = detectSessionAlerts(start, bands([asking]), none);
@@ -888,6 +908,13 @@ describe("session alerts (spec 13.3)", () => {
 		const failed = detectSessionAlerts(asked.states, bands([row("a", { state: "errored" })]), none);
 		expect(failed.alerts.map((alert) => alert.kind)).toEqual(["failed"]);
 		expect(detectSessionAlerts(failed.states, bands([row("a", { state: "errored" })]), none).alerts).toEqual([]);
+	});
+
+	it("says nothing more while a session stays in one needs-you state, whatever it now asks (question 3)", () => {
+		const first = row("a", { state: "active", approval_pending: true, approval_tool: "write_file", approval_target: "~/a" });
+		const start = detectSessionAlerts(null, bands([first]), none).states;
+		const next = { ...first, approval_target: "~/b" };
+		expect(detectSessionAlerts(start, bands([next]), none).alerts).toEqual([]);
 	});
 
 	it("alerts for a session that shows up already needing you", () => {
@@ -990,11 +1017,14 @@ Expected: FAIL: `Cannot find module './alertEvents'`.
 
 ```ts
 // mobile-native/src/alerts/alertEvents.ts
-// Turns what the hub says into alerts (spec 13.3): a session that starts
-// needing you or needs you for a new reason, a working session that finishes
-// its turn, and a hub notice that appears. Each source's first read on a
-// connection is its baseline and alerts nothing (ruling 2), so opening the
-// app never drops a pile of banners on what the Board already shows.
+// Turns what the hub says into alerts (spec 13.3): a session that becomes
+// Failed, Question, Approval, Warning or Restart needed (from any other
+// state, another needs-you state included), a working session that finishes
+// its turn, and a hub notice that appears. A session that stays in one
+// needs-you state says nothing more, whatever it now asks (question 3). Each
+// source's first read on a connection is its baseline and alerts nothing
+// (ruling 2), so opening the app never drops a pile of banners on what the
+// Board already shows.
 import { type BoardState, type LiveBands, whyLine } from "../board/attention";
 import type { Notice } from "../board/notices";
 import type { AlertCenter, NeedsYouKind, NoticeAlert, SessionAlert } from "./alertCenter";
@@ -1216,7 +1246,7 @@ function read(storage: SyncStringStorage): AlertPreferences {
 		return DEFAULT_ALERT_PREFERENCES;
 	}
 	if (typeof stored !== "object" || stored === null || Array.isArray(stored)) return DEFAULT_ALERT_PREFERENCES;
-	const preferences = { ...DEFAULT_ALERT_PREFERENCES };
+	const preferences: Record<keyof AlertPreferences, boolean> = { ...DEFAULT_ALERT_PREFERENCES };
 	for (const key of Object.keys(DEFAULT_ALERT_PREFERENCES) as (keyof AlertPreferences)[]) {
 		const value = (stored as Record<string, unknown>)[key];
 		if (typeof value === "boolean") preferences[key] = value;
@@ -1278,7 +1308,7 @@ Expected: PASS.
 - [ ] **Step 5: Commit**
 
 ```bash
-git add mobile-native/src/alerts/alertPreferences.ts mobile-native/src/alerts/nativeAlertPreferences.ts mobile-native/src/alerts/alertPreferences.test.ts <phase 5's alerts section file>
+git add mobile-native/src/alerts/alertPreferences.ts mobile-native/src/alerts/nativeAlertPreferences.ts mobile-native/src/alerts/alertPreferences.test.ts
 git commit -m "feat(native): In-app alerts preferences, kept per device"
 ```
 
@@ -1436,7 +1466,7 @@ PR C puts the alert center on screen: the banner, and the provider that feeds it
 4. **Touch.** Press-in calls `onTouch(true)` and press-out `onTouch(false)`, so a finger keeps the banner (the center re-arms its timer). A tap calls `onTap`. An upward drag follows the finger (never downward) and, on release, `swipeDismisses(dy, vy)` decides between `onDismiss` and a spring back. Use React Native's `PanResponder` claiming only upward moves, so `Pressable` keeps taps; no new gesture dependency.
 5. **Motion.** A new banner (a new `id`) drops in from 24pt above with a spring that settles in about 300ms, fading from 0 to 1. The same banner updating in place (a session joining it) doesn't move. With Reduce Motion (`AccessibilityInfo.isReduceMotionEnabled()` and its `reduceMotionChanged` event), it only fades in, over 200ms.
 6. **VoiceOver.** The card is one button whose label is `bannerLabel`: the title, then the why line's word and reason ("Fix Endless Provider Retry Loop, Failed, open the session to see what went wrong"). It carries `accessibilityActions` `activate` (tap) and `escape` (Dismiss). When a banner drops in or its label changes, `AccessibilityInfo.announceForAccessibility(label)` runs once.
-7. **The Board jump.** `boardJump.ts` below. `BoardScreen` subscribes with `onBoardJump` while mounted and scrolls to the Needs you band with the same scroll its Live summary's "need you" count uses.
+7. **The Board jump.** `boardJump.ts` below. `BoardScreen` subscribes with `onBoardJump` while mounted and calls `jumpToBand("needsYou")`, the scroll its Live summary's "need you" count uses (`BoardScreen.tsx:207` on main at `480fa3c27`).
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -1554,11 +1584,12 @@ git commit -m "feat(native): the in-app alert banner"
 **Files:**
 - Create: `mobile-native/src/alerts/alertScreen.ts` (pure), `mobile-native/src/alerts/AlertsProvider.tsx` and `mobile-native/src/alerts/AlertBannerHost.tsx`
 - Modify: `mobile-native/App.tsx` (the provider around `Navigation`, a navigation container ref, the host inside `NavigationContainer`, and the screen it reports)
-- Modify: phase 2's `src/board/Notices.tsx` if the way a notice opens its destination is inline there: export it as `openNotice(navigation, notice)` so a tapped notice banner opens the same place
-- Test: `mobile-native/src/alerts/alertScreen.test.ts`, `mobile-native/src/alerts/AlertsProvider.test.tsx` and `mobile-native/src/alerts/AlertBannerHost.test.tsx`
+- Modify: `mobile-native/src/board/boardData.ts` (an option that leaves the plugin reads out, and a flag for the controller's first auth read; requirement 3)
+- Modify: phase 2's `src/board/BoardNotices.tsx` (its PR 5, #2634), where a notice's `open` is inline: export it as `openNotice(navigation, hubId, notice)` so a tapped notice banner opens the same place
+- Test: `mobile-native/src/alerts/alertScreen.test.ts`, `mobile-native/src/alerts/AlertsProvider.test.tsx`, `mobile-native/src/alerts/AlertBannerHost.test.tsx` and `mobile-native/src/board/boardData.test.ts`
 
 **Interfaces:**
-- Consumes: `AlertCenter` and its types (Task 3); `AlertFeed` (Task 4); `alertPreferences()` (Task 5); `haptic` (Task 6); `AlertBanner` and `requestBoardJump` (Task 7); phase 2's `createBoardController`, `liveBands`, `seenMarkers`, `notices` and `Notice`, and `openNotice` (extracted below); `isSheetRoute` from `src/sheet/sheetRoutes.ts` (phase 2 part 3's Task 18.1, the sheet foundation); `getDefaultHeaderHeight` from `@react-navigation/elements` (2.9.40: `(layout, modalPresentation, topInset) => number`); `createNavigationContainerRef` and `StackActions` from `@react-navigation/native`.
+- Consumes: `AlertCenter` and its types (Task 3); `AlertFeed` (Task 4); `alertPreferences()` (Task 5); `haptic` (Task 6); `AlertBanner` and `requestBoardJump` (Task 7); phase 2's `createBoardController` and `liveBands`, `boardSeen` (its PR 7, #2625: `nativeBoardMemory.ts:18-20`), `notices` and `Notice` (its PR 5, #2634), and `openNotice` (extracted below); `isSheetRoute` from `src/sheet/sheetRoutes.ts` (phase 2 part 3's Task 18.1, the sheet foundation); `getDefaultHeaderHeight` from `@react-navigation/elements` (2.9.40: `(layout, modalPresentation, topInset) => number`); `createNavigationContainerRef` and `StackActions` from `@react-navigation/native`. Line numbers below are on main at `480fa3c27`.
 - Produces:
   - From `alertScreen.ts`: `coversBanners(route: { name: string; params?: object } | undefined): boolean` (a sheet route, or phase 5's `"Hub"` and `"NewSession"` modals) and `alertScreenFor(routes: readonly { name: string; params?: object }[], hubId: string | null): AlertScreen`.
   - From `AlertsProvider.tsx`: `<AlertsProvider>`, `useAlertCenter(): AlertCenter`, `useAlertSnapshot(): AlertSnapshot`, `useHoldAlerts(active: boolean, kind: HoldKind): void`, `useHeldAlertCount(): number`, `useReportRoutes(): (routes: readonly { name: string; params?: object }[]) => void` and `useNoticeFor(): (key: string) => Notice | undefined` (the notice the provider last read under that key).
@@ -1566,17 +1597,17 @@ git commit -m "feat(native): the in-app alert banner"
 
 **Requirements (spec 13.3; rulings 1-3, 5, 7):**
 1. **One center, one feed.** `AlertsProvider` (inside `ConnectionProvider`) owns one `AlertCenter` on the real clock, whose haptic callback is `haptic(kind)`, and one `AlertFeed` over it. It follows `alertPreferences()` with `center.setPreferences` on mount and on every change.
-2. **Its own reads.** It creates one `createBoardController()` per hub and calls `setClient(client)` whenever `useConnection().client` changes, as the Board does. It never pauses it: the Board and the Session pause theirs on blur (phase 3 ruling 33), and alerts must hear about sessions while you're anywhere. This costs a second set of navigation reads while the Board or a Session is in front; say so in the PR description.
-3. **Feeding the center.**
-   - Sessions: on each controller snapshot that is `loaded`, not `retained`, with the Needs you section complete (`needsYou.remaining === 0`, so the first observation is never a partial baseline whose later pages alert old news) and Live's first page loaded, call `feed.observeSessions(liveBands(live.rows, needsYou.rows, (row) => seen.isSeen(row)), offlineRefs)`, with `const seen = seenMarkers(hubId)`, where `offlineRefs` holds the refs of rows in either list with `offline: true`. `isSeen` is a `SeenMarkers` method that reads `this` (phase 2's `boardMemory.ts`), so it goes in a closure, never as `seenMarkers(hubId).isSeen`.
-   - Notices: this controller reads auth as the Board's does (phase 2 Task 14), and never plugins, since a plugin notice never alerts (ruling 5). If phase 2's controller polls `evener/plugin/list` whenever it isn't paused, give `createBoardController` an option that turns those reads off, and use it here. Once the auth read has landed, call `feed.observeNotices(notices({ auth, sources, plugins: [], loadedRows }))` with the manifest's sources and the rows this controller has loaded (Live's first page and Needs you). Its host counts can be lower than the Board's, which loads more pages; phase 2 already calls that count a floor.
-4. **Baselines.** A new client (a different non-null object: the app came back to the foreground, or a closed connection was replaced) calls `feed.rebaseline()`. Another hub calls `center.reset()` and `feed.rebaseline()`, and replaces the controller.
+2. **Its own reads.** It reads the fleet with a `createBoardController()` of its own and never pauses it: the Board and the Session pause theirs on blur (phase 3 ruling 33), and alerts must hear about sessions while you're anywhere. This costs a second set of navigation reads while the Board or a Session is in front; say so in the PR description. It binds the controller as the Board binds its own (`BoardScreen.tsx:126-131`): `setClient(state === "ready" ? client : null)` whenever `useConnection()`'s `client` or `state` changes, since a client refuses requests until it is ready, and a client ready again after a drop gets fresh readers that catch up on what it missed.
+3. **Feeding the center.** The provider hears the controller through `subscribe` and reads `getSnapshot()` in the callback, never through a render: a snapshot a render took before the client changed could otherwise reach the feed after the rebaseline (requirement 4).
+   - Sessions: on each snapshot whose Live first page has loaded (`live.loaded`) and whose Needs you section is complete (`needsYou.loaded` and `needsYou.remaining === 0`, so the first observation is never a partial baseline whose later pages alert old news), call `feed.observeSessions(liveBands(live.rows, needsYou.rows, (row) => seen.isSeen(row)), offlineRefs)`, with `const seen = boardSeen(hubId)`, the seen state the Board classifies with, and `offlineRefs` the refs of rows in either list with `offline: true`. `isSeen` is a `BoardSeen` method that reads `this` (`hubSeen.ts:184-186`), so it goes in a closure, never as `boardSeen(hubId).isSeen`. The snapshot's `retained` flag needs no check: a new client gets a new controller (requirement 4), so any retained rows are this client's own, kept across a drop and already observed.
+   - Notices: phase 2's PR 5 (#2634, still open at `480fa3c27`) reads them in the Board's controller: `BoardSnapshot` gains `auth` and `plugins`, each read when a client binds, auth again on `evener/auth/updated`, and plugins every five minutes. The alerts read auth that way and never plugins, since a plugin notice never alerts (ruling 5): give `createBoardController` an option that leaves the plugin reads and their poll out, and use it here. A notice baseline needs this controller's own auth read, but PR 5 keeps a list until a read replaces it and publishes nothing when a read finds the same list, so give the snapshot a flag that turns true when this controller's first auth read succeeds. From then on, with the manifest loaded, call `feed.observeNotices(notices({ auth, sources, plugins: [], loadedRows }))` with the manifest's sources and the rows this controller has loaded (Live's first page and Needs you). Its host counts can be lower than the Board's, which loads more pages; phase 2 already calls that count a floor. If PR 5 lands in another shape, meet these two needs on the shape it has.
+4. **Baselines.** Each client object gets a controller of its own. When `client` changes, to another client or to none, the provider disposes the old controller, calls `feed.rebaseline()`, and makes a controller for the new client if there is one, all in one synchronous step before anything binds. Disposing drops every read the old controller started, since `dispose()` stops each reader's subscription and cancels its reads (`boardData.ts:480-489` and `:551-556`), so a late answer never reaches the feed. A new client means the app came back to the foreground, the hub changed, or a connection that closed was dialed again: `useHubConnection` builds a client per generation (`hubConnection.ts:85`) and starts a new one after `"closed"` (`:199-206`), which a client reports only when its first handshake fails, when a reconnect is refused for its protocol, or when it is closed (`appwire-client/typescript/client.ts:513-528`, `:656-676` and `:770-795`). A drop the same client recovers from keeps the controller and the baseline: a ready connection that drops re-dials on its own and reports `"reconnecting"` until it is ready again (`handleSocketLoss` and `scheduleReconnect`, `client.ts:770-795` and `:633-645`), so the controller binds `null` and then the same client, and its fresh reads are diffed (ruling 2). Another hub also calls `center.reset()`.
 5. **What's on screen.** `App.tsx` gives `NavigationContainer` a ref from `createNavigationContainerRef<Routes>()` and passes the root state's routes up to the focused one (`routes.slice(0, index + 1)`) to `useReportRoutes()`'s function from `onReady` and from `onStateChange`. That function calls `center.setScreen(alertScreenFor(routes, hubId))` with the active hub's id, and holds one `"covered"` hold while `coversBanners` is true of the top route (ruling 7). After `center.reset()` it reports the current routes again, since the reset forgets the screen.
 6. **The host.** `AlertBannerHost` renders inside `NavigationContainer`, after the navigator, as an absolutely positioned container with `pointerEvents="box-none"`, `left` and `right` 0, and `top = getDefaultHeaderHeight(frame, false, insets.top) + 4` from `useSafeAreaFrame()` and `useSafeAreaInsets()`: just below the nav bar, never over it (spec 13.3; round 1 problem 3). It renders `AlertBanner` keyed by the banner's `id`, or nothing.
 7. **A tap.** `center.tap()`, then:
    - a session: `navigation.dispatch(StackActions.push("Conversation", { hubId, ref, title }))`, with the target's `ref` and `title` and the active hub's id from `useConnection()` (the center is reset for every hub), so Back returns to where you were (spec 6);
    - a coalesced banner: `navigation.dispatch(StackActions.popTo("Sessions"))`, then `requestBoardJump("needsYou")`;
-   - a notice: the Board's own `openNotice(navigation, notice)` for `useNoticeFor()(key)`. A notice that resolved since the banner dropped in opens nothing.
+   - a notice: the Board's own `openNotice(navigation, hubId, notice)` for `useNoticeFor()(key)`. A notice that resolved since the banner dropped in opens nothing.
 8. **Swipe and touch** go to `center.dismiss()` and `center.touch(down)`.
 
 - [ ] **Step 1: Write the failing tests**
@@ -1618,13 +1649,15 @@ it("counts a sheet route and phase 5's modals as covering banners, and nothing e
 });
 ```
 
-`AlertsProvider.test.tsx` drives the provider through a scripted hub, the `boundary()` fake of `src/projectBrowser.test.ts` answering `evener/navigation/read` with `wireV2` as phase 2's `boardData.test.ts` does. Mock `../ConnectionProvider` (a `useConnection` whose `client` the test swaps), `./nativeAlertPreferences` (a store over memory), `../haptics` and `../board/nativeBoardMemory`, whose `seenMarkers` returns a real `SeenMarkers` over a memory store, never an object literal, so a call that loses its receiver fails every case below. A probe component reads `useAlertSnapshot()`. Cover:
+`AlertsProvider.test.tsx` drives the provider through a scripted hub, the `boundary()` fake of `src/projectBrowser.test.ts` answering `evener/navigation/read` with `wireV2` as phase 2's `boardData.test.ts` does. Mock `../ConnectionProvider` (a `useConnection` whose `client` and `state` the test changes), `./nativeAlertPreferences` (a store over memory), `../haptics` and `../board/nativeBoardMemory`, whose `boardSeen` returns a real `BoardSeen` over a real `SeenMarkers` on a memory store and a real `HubSeenMarks`, never an object literal, so a call that loses its receiver fails every case below. A probe component reads `useAlertSnapshot()`. Cover:
 - the first reads (a session already failed) show no banner;
 - an invalidation that re-reads Needs you with a new question shows that session's banner;
 - a Needs you section with `remaining > 0` is not observed until its last page lands, so its second page alerts nothing;
 - swapping in a new client whose first reads carry another new failure shows no banner (ruling 2);
+- a read the replaced client started that answers after the swap, carrying a new failure, reaches nothing: no banner, and the new client's first reads are still the baseline;
+- a drop the same client recovers from (`state` goes to `"reconnecting"`, then back to `"ready"` with the same `client`) is diffed: a question asked meanwhile shows its banner (ruling 2);
 - a row that goes `offline: true` and comes back alerts nothing (ruling 3);
-- a provider sign-in that expires after the first auth read (an `evener/auth/updated` notification, then a read with `needsLogin`) alerts once, and the scripted hub never sees `evener/plugin/list` (ruling 5);
+- a provider sign-in already expired on the first auth read alerts nothing, even when Live and the manifest land before auth; one that expires later (an `evener/auth/updated` notification, then a read with `needsLogin`) alerts once; and the scripted hub never sees `evener/plugin/list` (ruling 5);
 - `useHoldAlerts(true, "quiet")` in the probe holds the question's banner, and `useHeldAlertCount()` reads 1;
 - reporting the routes `[Sessions, Hub]` holds a new question's banner, even with the Hold switch off, and reporting `[Sessions]` shows it 200ms later;
 - a hub change resets the center and reports the routes again: a session screen of the old hub still on the stack doesn't quiet the new hub's session with the same ref.
@@ -1633,11 +1666,13 @@ it("counts a sheet route and phase 5's modals as covering banners, and nothing e
 - the container's `top` is 95 (47 + 44 + 4) and it renders nothing without a banner;
 - tapping a session banner dispatches a push of `"Conversation"` with that ref and title;
 - tapping a coalesced banner dispatches `popTo("Sessions")` and a `requestBoardJump("needsYou")` reaches a listener;
-- tapping a notice banner calls `openNotice` (mock `../board/Notices`) with the notice `useNoticeFor` holds under its key, and calls nothing once that notice is gone.
+- tapping a notice banner calls `openNotice` (mock `../board/BoardNotices`) with the hub's id and the notice `useNoticeFor` holds under its key, and calls nothing once that notice is gone.
+
+`boardData.test.ts` gains, over its scripted hub: with the option, the controller never requests `evener/plugin/list` and starts no poll; the auth flag stays false until the controller's first auth read succeeds, stays false after one that fails, and turns true on the first success even when that read finds the same list.
 
 - [ ] **Step 2: Run them and watch them fail**
 
-Run: `cd mobile-native && npx vitest run src/alerts/alertScreen.test.ts src/alerts/AlertsProvider.test.tsx src/alerts/AlertBannerHost.test.tsx`
+Run: `cd mobile-native && npx vitest run src/alerts/alertScreen.test.ts src/alerts/AlertsProvider.test.tsx src/alerts/AlertBannerHost.test.tsx src/board/boardData.test.ts`
 Expected: FAIL: the modules don't exist.
 
 - [ ] **Step 3: Implement**
@@ -1685,7 +1720,7 @@ Expected: PASS. Build Release in the simulator against the demo fleet (Task 17's
 - [ ] **Step 5: Commit**
 
 ```bash
-git add mobile-native/src/alerts/alertScreen.ts mobile-native/src/alerts/alertScreen.test.ts mobile-native/src/alerts/AlertsProvider.tsx mobile-native/src/alerts/AlertsProvider.test.tsx mobile-native/src/alerts/AlertBannerHost.tsx mobile-native/src/alerts/AlertBannerHost.test.tsx mobile-native/App.tsx <src/board/Notices.tsx if changed>
+git add mobile-native/src/alerts/alertScreen.ts mobile-native/src/alerts/alertScreen.test.ts mobile-native/src/alerts/AlertsProvider.tsx mobile-native/src/alerts/AlertsProvider.test.tsx mobile-native/src/alerts/AlertBannerHost.tsx mobile-native/src/alerts/AlertBannerHost.test.tsx mobile-native/App.tsx mobile-native/src/board/boardData.ts mobile-native/src/board/boardData.test.ts mobile-native/src/board/BoardNotices.tsx
 git commit -m "feat(native): in-app alerts on every screen"
 ```
 
@@ -1819,8 +1854,8 @@ Phase 4's Reader test: focused, it holds, and with one held alert Back's label r
 
 - [ ] **Step 2: Run them and watch them fail**
 
-Run: `cd mobile-native && npx vitest run src/alerts/holdingModal.test.ts <the Reader and Composer tests>`
-Expected: FAIL. The self-check passes, and the guard lists every file that imports `Modal` from `react-native` (on main at `d0c0211be`, 22 files; phases 2 to 5 move most sheets to routes, so the list shrinks), and nothing holds yet.
+Run: `cd mobile-native && npx vitest run src/alerts/holdingModal.test.ts src/reader/ReaderScreen.test.tsx src/session/BackButton.test.tsx src/session/Composer.test.tsx`
+Expected: FAIL. The self-check passes, and the guard lists every file that imports `Modal` from `react-native` (on main at `480fa3c27`, 21 files; phases 2 to 5 move most sheets to routes, so the list shrinks), and nothing holds yet.
 
 - [ ] **Step 3: Implement**
 
@@ -1843,13 +1878,14 @@ Then swap each production `Modal` for `HoldingModal`, and add the Reader's and t
 
 - [ ] **Step 4: Run the tests and watch them pass**
 
-Run: `cd mobile-native && npx vitest run src/alerts <the Reader, Composer and touched sheets' tests> && npm run check`
+Run: `cd mobile-native && npx vitest run src/alerts src/reader/ReaderScreen.test.tsx src/session/BackButton.test.tsx src/session/Composer.test.tsx`, then the tests beside each file whose `Modal` became a `HoldingModal`, then `npm run check`
 Expected: PASS. In the simulator: open a plan in the Reader, have two sessions ask questions, see Back's amber 2 and no banner, go Back, and see "2 sessions need you".
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add mobile-native/src/alerts/HoldingModal.tsx mobile-native/src/alerts/holdingModal.test.ts <the Reader, Composer and sheet files>
+git add mobile-native/src/alerts/HoldingModal.tsx mobile-native/src/alerts/holdingModal.test.ts mobile-native/src/reader/ReaderScreen.tsx mobile-native/src/reader/ReaderScreen.test.tsx mobile-native/src/session/BackButton.tsx mobile-native/src/session/BackButton.test.tsx mobile-native/src/session/Composer.tsx mobile-native/src/session/Composer.test.tsx
+# Then add each file on the guard's worklist, whose Modal is now a HoldingModal.
 git commit -m "feat(native): banners wait while you read, type or use a sheet"
 ```
 
@@ -1943,7 +1979,7 @@ Then pass `useAlertSnapshot().recent` where the screen calls `nextSession`, sort
 
 ## PR H: Board actions held offline
 
-Jesse, 2026-09-26: "board actions while offline: hold em" (part 1's ruling 18). Spec 7.5 sends a Board action taken offline "to the outbox". Phase 2 part 3 hides those actions while offline (its ruling 21); this PR replaces the hiding with a hold. It builds on part 3's pieces and adds no second copy of them: the Board's one organization journal (`useBoardOrganization`, its Task 10.5), `BoardStops` (its Task 12.2), and `rowMenuActions`, `swipeActions`, `archiveSession`, `pinSession`, `shutDownSession` and `renameSession` (its Task 12.3), plus the project actions (its ruling 15).
+Jesse, 2026-09-26: "board actions while offline: hold em" (part 1's ruling 18). Spec 7.5 sends a Board action taken offline "to the outbox". Phase 2 part 3 hides those actions while offline (its ruling 21); this PR replaces the hiding with a hold. It builds on part 3's pieces and adds no second copy of them. On main at `480fa3c27`: the Board's one organization journal (`useBoardOrganization`, `useBoardOrganization.ts:36`, its Task 10.5; `organizationFree` and `checkOrganizationChange`, `organizationCheck.ts:40` and `:17`) and the project menu (`projectMenuActions` and `ProjectMenuAction`, `projectMenu.ts:8-33`, and `openProjectMenu`, `BoardScreen.tsx:589-603`, its ruling 15). Still to land with part 3's PRs 4a to 4c: `BoardStops` (its Task 12.2), `rowMenuActions`, `swipeActions`, `archiveSession`, `pinSession`, `shutDownSession` and `renameSession` (its Task 12.3), and select mode's bar (its Task 13.4).
 
 It adds a second kv-store key, `evener.native.board-hold.${hubId}` (per hub), beside part 1's per-device `evener.native.alert-preferences`: part 1's Global Constraints counted one new key before Jesse's answer added the hold.
 
@@ -1952,70 +1988,75 @@ Why a hold of its own, and not the mutation outbox: the outbox carries the four 
 ### Task 19: The hold
 
 **Files:**
-- Create: `mobile-native/src/board/boardHold.ts` (the policy and the store) and `mobile-native/src/board/nativeBoardHold.ts` (one store per hub over `expo-sqlite/kv-store`)
-- Modify: `mobile-native/src/board/boardMemory.ts` (`forgetBoard` also removes the hold's key)
-- Test: `mobile-native/src/board/boardHold.test.ts`
+- Create: `mobile-native/src/board/boardHold.ts` (the policy and the store)
+- Modify: `mobile-native/src/board/boardMemory.ts` (`forgetBoard` also removes the hold's key) and `mobile-native/src/board/nativeBoardMemory.ts` (one hold per hub beside the Board's other memories, forgotten with them)
+- Test: `mobile-native/src/board/boardHold.test.ts`, `mobile-native/src/board/boardMemory.test.ts` and `mobile-native/src/board/nativeBoardMemory.test.ts`
 
 **Interfaces:**
-- Consumes: `SyncStringStorage` (`src/syncStringStorage.ts`); `ArchiveParams` and `SessionPinAssignParams` from `@evener/appwire-client`; part 3's project action parameters (its ruling 15); `EvenerThread` (`activeTurnId`, `activeTurnStartedAt`).
+- Consumes: `SyncStringStorage` (`src/syncStringStorage.ts`); `perHub` (`src/board/perHub.ts`); `ArchiveParams` and `SessionPinAssignParams` from `@evener/appwire-client`; `ProjectMenuAction` (`projectMenu.ts:8`); `EvenerThread` (`activeTurnId`, `lastTurnEndedAt`).
 - Produces:
   - `type HeldAction =`
     - `| { kind: "archive"; target: Omit<ArchiveParams, "archived">; archived: boolean }`
     - `| { kind: "pin"; target: SessionPinAssignParams }`
-    - `| { kind: "project"; key: string; change: ProjectChange }`, where `ProjectChange` is part 3's project action and its parameters
+    - `| { kind: "project"; project: { key: string; workingDir?: string }; action: ProjectMenuAction }`: what the project menu sends online (`openProjectMenu`'s `act`, `BoardScreen.tsx:595-603`)
     - `| { kind: "rename"; ref: string; name: string }`
     - `| { kind: "stop" | "shutDown"; ref: string; seen: TurnSeen }`
-  - `interface TurnSeen { turnId?: string; updatedAt?: string }`: the running turn's id when the phone knows it, and the row's `updated_at` when the person pressed.
+  - `interface TurnSeen { turnEndedAt: string | null }`: the row's `turn_ended_at` when the person pressed, which is when the session's previous turn ended, or null while none has.
   - `interface HeldRecord { id: string; heldAt: number; action: HeldAction }`
-  - `class BoardHold`: constructor `(storage: SyncStringStorage, hubId: string)`; `getSnapshot(): readonly HeldRecord[]` (in the order held), `subscribe(listener)`, `hold(action: HeldAction, now: number): HeldRecord`, `cancel(id: string): void`, `settled(id: string): void`
+  - `class BoardHold`: constructor `(storage: SyncStringStorage, hubId: string)`; `getSnapshot(): readonly HeldRecord[]` (in the order held), `subscribe(listener)`, `hold(action: HeldAction, now: number): HeldRecord`, `cancel(id: string): void`, `settled(id: string): void`, `forget(): void`
+  - `boardHoldKey(hubId: string): string`, which is `evener.native.board-hold.${hubId}`
   - `heldFor(records: readonly HeldRecord[], ref: string): HeldRecord[]`
   - `turnStillSeen(seen: TurnSeen, thread: EvenerThread): boolean`
-  - `boardHold(hubId: string): BoardHold` from `nativeBoardHold.ts`
-  - Key: `evener.native.board-hold.${hubId}`
+  - From `nativeBoardMemory.ts`: `boardHold(hubId: string): BoardHold`, one per hub over `expo-sqlite/kv-store`
 
 **Requirements:**
 1. **Durable and per hub.** Every change writes the whole list to the hub's key, so a relaunch finds it. A list that won't parse reads as empty; a write that fails keeps the list for this launch, as `SeenMarkers` does.
-2. **One per subject, last wins.** Holding an action replaces a held one on the same subject: archive or unarchive of the same session, a pin of the same session, a rename of the same session, a project change of the same project and kind, a Stop of the same session, a Shut down of the same session. An unarchive that replaces a held archive of the same session just drops it: the pair means "as it was". The replacement keeps the replaced record's place in the order, so replay order is the order of first intent.
-3. **The turn guard.** `turnStillSeen(seen, thread)` is true only while `thread.activeTurnId` is set (a turn is running) and that turn is the one the person saw: `activeTurnId === seen.turnId` when the id is known, else `activeTurnStartedAt <= Date.parse(seen.updatedAt)`. Both times are the hub's clock, never the phone's. With neither the id nor a time, it is false. The exact check waits on a server item, S19: navigation rows carry the active turn id. Until S19 lands, `turnId` is known only when this launch has read the session's thread, and the time comparison decides; once it lands, the Board records the row's turn id at the press and the ids decide. If S19 is on main before this PR starts, use the row's turn id from the start. A Stop needs it true. A Shut down is dropped only when a turn is running and the guard is false: with no turn running, shutting down stops nothing the person didn't see.
+2. **One per subject, last wins.** Holding an action replaces a held one on the same subject: archive or unarchive of the same session, a pin of the same session, a rename of the same session, a project's Pin to top or Unpin, a project's Archive or Unarchive, a Stop of the same session, a Shut down of the same session. An action that undoes the one it replaces (an unarchive after a held archive, an Unpin after a held Pin to top) just drops it: the pair means "as it was". The replacement keeps the replaced record's place in the order, so replay order is the order of first intent.
+3. **Forgetting a hub.** `forget()` drops every record and leaves the store inert: later changes write nothing and tell no one. `nativeBoardMemory.ts` keeps the holds with `perHub`, as it keeps the hub's other memories, and `forgetBoardForHub` (`nativeBoardMemory.ts:30-34`) calls `boardHold(hubId).forget()` before it forgets the instance and `forgetBoard` removes the key. `ConnectionProvider.removeHub` runs that cleanup as soon as the saved hubs reload (`removeHub.ts:20-35`), and the removed hub's connection closes only on a later render, so a replay may still be answering then: with the store inert, its next send finds nothing held and its late `settled` never writes the key back.
+4. **The turn guard** (spec 7.5: a held Stop "names the turn it stops, and is dropped rather than sent if that turn ended before the connection returned"). `turnStillSeen(seen, thread)` is true only while a turn is running (`thread.activeTurnId` is set) and no turn has ended since the press: the thread's `lastTurnEndedAt` (Unix milliseconds) equals `Date.parse(seen.turnEndedAt)`, or both are absent, when the running turn is the session's first. The two are one stamp: the session's daemon stamps each turn's end (S4a, #2566), and the row's `turn_ended_at` is that stamp as the hub last probed it (S4b, #2584; `hubcore/prober.go:172`), kept to the millisecond (`hubcore/session_order.go:123-128`), so the check is exact and never reads the phone's clock. An absent stamp means no turn has ended yet, since every daemon the hub attaches speaks its protocol version (v6 since #2475), which has S4a. A Stop needs it true. A Shut down is dropped only when a turn is running and the guard is false: with no turn running, shutting down stops nothing the person didn't see.
 
-**Test cases** (`boardHold.test.ts`, over a memory `SyncStringStorage`):
+**Test cases** (`boardHold.test.ts`, over a memory `SyncStringStorage`, unless named):
 - the order held survives a new store over the same storage, and another hub's store sees none of it;
-- a second archive of a session replaces the first in its place; an unarchive after a held archive leaves nothing held; two renames keep the last name;
+- a second archive of a session replaces the first in its place; an unarchive after a held archive leaves nothing held, as does an Unpin after a held Pin to top; two renames keep the last name;
 - `cancel` and `settled` remove a record and notify once;
 - unparseable storage reads as empty, and a failing write keeps the list for this launch;
-- `turnStillSeen`, as a table: the same id, true; another id, false; no id, a turn started before `updatedAt`, true; started after, false; no turn running, false; neither id nor time, false;
-- `forgetBoard` removes `evener.native.board-hold.${hubId}` with the other two keys.
+- `forget` empties the store and notifies once, and afterwards `hold`, `cancel` and `settled` write nothing to storage and notify no one;
+- `turnStillSeen`, as a table: a turn running and the thread's `lastTurnEndedAt` equal to the seen `turnEndedAt`, true; a turn running and a later `lastTurnEndedAt`, false; a turn running, no turn ended at the press and none since, true; none at the press but one since, false; no turn running, false;
+- `forgetBoard` removes `evener.native.board-hold.${hubId}` with the hub's other keys (`boardMemory.test.ts`);
+- `forgetBoardForHub` leaves the hub's cached hold empty and inert, removes its key, and `boardHold(hubId)` is then a new, empty store (`nativeBoardMemory.test.ts`, in its "forgets a hub's memories" case).
 
-- [ ] Steps: write the failing tests, watch them fail (`cd mobile-native && npx vitest run src/board/boardHold.test.ts src/board/boardMemory.test.ts`), implement, watch them pass with `npm run check`, then commit (`feat(native): a durable hold for Board actions taken offline`).
+- [ ] Steps: write the failing tests, watch them fail (`cd mobile-native && npx vitest run src/board/boardHold.test.ts src/board/boardMemory.test.ts src/board/nativeBoardMemory.test.ts`), implement, watch them pass with `npm run check`, then commit (`feat(native): a durable hold for Board actions taken offline`).
 
 ### Task 20: The Board holds its actions offline, and sends them when the connection returns
 
 **Files:**
-- Modify: `mobile-native/src/board/rowActions.ts` (the offline menus), `mobile-native/src/board/boardStops.ts` (a guard), `mobile-native/src/board/BoardScreen.tsx`, `BoardRow.tsx`, `SelectBar.tsx` and the project menu (the hold and its replay)
-- Test: `mobile-native/src/board/rowActions.test.ts`, `mobile-native/src/board/boardStops.test.ts` and `mobile-native/src/board/BoardScreen.test.tsx`
+- Modify: `mobile-native/src/board/rowActions.ts` and `mobile-native/src/board/projectMenu.ts` (the offline menus), `mobile-native/src/board/boardStops.ts` (a guard), `mobile-native/src/board/BoardScreen.tsx`, `BoardRow.tsx` and `SelectBar.tsx` (the hold and its replay)
+- Test: `mobile-native/src/board/rowActions.test.ts`, `mobile-native/src/board/projectMenu.test.ts`, `mobile-native/src/board/boardStops.test.ts` and `mobile-native/src/board/BoardScreen.test.tsx`
 
 **Interfaces:**
-- Consumes: Task 19; part 3's `useBoardOrganization`, `organizationFree`, `BoardStops`, `archiveSession`, `pinSession`, `shutDownSession`, `renameSession` and the project actions; phase 3's `Toast`.
+- Consumes: Task 19; part 3's `useBoardOrganization`, `organizationFree`, `checkOrganizationChange` and `projectMenuActions` (on main), and `BoardStops`, `rowMenuActions`, `swipeActions`, `archiveSession`, `pinSession`, `shutDownSession` and `renameSession` (its PRs 4a to 4c); phase 3's `Toast`.
 - Produces: `BoardStops.stop(client, ref, guard?: (thread: EvenerThread) => boolean): Promise<StopOutcome | "dropped">`: with a guard, it reads the thread as it does today and sends the interrupt only if the guard passes.
 
 **Requirements:**
-1. **Offline, the actions stay.** `rowMenuActions` and `swipeActions` offer the same actions offline as online, so part 3's ruling 21 is gone; select mode's actions and the project menu stay too. Offline, choosing one holds it (`boardHold(hubId).hold`) instead of sending it, after the same confirmation Shut down asks for online. A Pin opens part 3's category picker over the Board's loaded catalog, and a Rename its name field; both hold what you choose. A Stop or Shut down records `seen`: the running turn's id (the row's own once S19 lands, else from a thread read this launch made), and the row's `updated_at`.
+1. **Offline, the actions stay.** `rowMenuActions` and `swipeActions` offer the same actions offline as online, so part 3's ruling 21 is gone; select mode's actions stay too. `projectMenuActions` (`projectMenu.ts:17-33`) offers a project's actions offline whatever its `connected` and `organizationReady` context says, since a held change touches the journal only when it replays; online, both still gate it. Offline, choosing an action holds it (`boardHold(hubId).hold`) instead of sending it, after the same confirmation Shut down asks for online. A Pin opens part 3's category picker over the Board's loaded catalog, and a Rename its name field; both hold what you choose. A Stop or Shut down records `seen`: the row's `turn_ended_at` as the person saw it (Task 19's requirement 4).
 2. **Held rows say so, where they are** (spec 14): a row with something held is dimmed, as an unconfirmed archive is today, and its second line reads what waits: "Archive waits for the connection", "Stop waits for the connection", and so on, one line for the latest. A held archive leaves the row in place until the hub confirms it. The row's menu adds "Cancel <action>" for each held action, which cancels it.
 3. **Replay.** On each ready connection, and on relaunch once the connection is ready, the Board sends the active hub's held actions in two streams, each in the order held and one at a time. Stop, Shut down and Rename go at once; the organization changes wait for the Board. A Stop never waits behind an archive, so the two streams may interleave:
-   - Stop and Shut down go at once, wherever you are: `BoardStops.stop(client, ref, (thread) => turnStillSeen(seen, thread))`, and for Shut down a thread read first with the same guard's rule (requirement 3 of Task 19), then `shutDownSession`. A dropped Stop shows the toast "The turn you stopped ended before you were back online"; a dropped Shut down, "A newer turn started, so the session wasn't shut down".
+   - Each stream reads the hold again before each send, so a hold forgotten with its hub (Task 19's requirement 3) ends the replay.
+   - Stop and Shut down go at once, wherever you are: `BoardStops.stop(client, ref, (thread) => turnStillSeen(seen, thread))`, and for Shut down a thread read first with the same guard's rule (Task 19's requirement 4), then `shutDownSession`. A dropped Stop shows the toast "The turn you stopped ended before you were back online"; a dropped Shut down, "A newer turn started, so the session wasn't shut down".
    - Rename goes at once through `renameSession`.
    - Archive, pin and the project changes go through the Board's own journal once the Board is focused and `organizationFree` holds, one change at a time, each confirmed by the journal's check before the next. The journal holds one change per hub, and a second writer would break it (part 3's ruling 16).
    - A record is removed (`settled`) once its request is answered or its check confirms it. A request the hub refuses is removed with the toast the online action shows for it. A request the connection loses stays held for the next ready connection.
 4. **Nothing else changes online.** With the connection ready, every action behaves as part 3 built it.
 
 **Test cases:**
-- `rowActions.test.ts`: offline, `rowMenuActions` and `swipeActions` return the online actions for each state (part 3's offline rows change from "hidden" to these).
+- `rowActions.test.ts`: offline, `rowMenuActions` and `swipeActions` return the online actions for each state (part 3's offline rows change from "hidden" to these). `projectMenu.test.ts`: offline, a project the phone can organize offers Pin to top or Unpin, and Archive or Unarchive, whatever the journal's state.
 - `boardStops.test.ts`, over the real runtime as part 3's tests run it: a guard that passes sends `turn/interrupt` once; a guard that fails sends nothing, returns `"dropped"`, and releases the target.
 - `BoardScreen.test.tsx`, through a scripted hub and the mocked connection:
   - offline, archiving a row holds it: the row dims and reads "Archive waits for the connection", and nothing reaches the hub; back online with the Board focused, `evener/archive/set` goes once, the journal's check confirms it, and the hold is empty;
   - a held Stop whose turn is still the one seen sends `turn/interrupt` once on reconnect, even with the Board blurred;
-  - a held Stop for a session now running a newer turn (`activeTurnStartedAt` after the held `updatedAt`) sends no interrupt and shows the toast;
+  - a held Stop for a session now running a newer turn (the thread's `lastTurnEndedAt` later than the held `turnEndedAt`) sends no interrupt and shows the toast;
   - actions held before a relaunch (a new store over the same storage) go out on the first ready connection, in the order held;
+  - with two Shut downs held, removing the hub while the first `thread/shutdown` is unanswered: once `forgetBoardForHub` has run and that request answers, the second never reaches the hub, and storage holds no `evener.native.board-hold.${hubId}`;
   - "Cancel Archive" removes the held archive, and the row is itself again.
 
 - [ ] Steps: write the failing tests, watch them fail (`cd mobile-native && npx vitest run src/board`), implement, watch them pass with `npm run check`, then in a Release simulator build against the demo hub: turn the network off, archive and stop rows, turn it on, and watch them go. Commit (`feat(native): Board actions taken offline wait and go when the connection returns`). Open PR H: "feat(native): Board actions held offline (phase 6, PR H)".
@@ -2041,7 +2082,7 @@ The demo fleet (phase 2's PR B, #2471: `src/dev/demoFleet.ts` and `scripts/demo-
    - `failure`: `s-readintent` goes `errored`;
    - `approval`: `s-landing` joins the `needs_you` section while staying `active`, the way the hub promotes an escalation;
    - `finish`: `s-resume` goes `awaiting` without a question;
-   - `host-offline` and `host-online`: paradise-park's source and every one of its rows go offline and back.
+   - `host-offline` and `host-online`: paradise-park's source and every one of its rows go offline and back. That is what `EVENER_DEMO_FLEET_OFFLINE_HOST=1` sets at startup (the `offlineHost` option, `demoFleet.ts:548-550` on main at `480fa3c27`), so the steps change that one flag rather than add a second way to take the host down.
    Each step bumps the fleet's revision, so every read after it carries the new revision and a new etag, and returns the targets it changed: `{ kind: "section", section: "live" }`, `{ kind: "section", section: "needs_you" }` and `{ kind: "manifest" }`, each with the new revision.
 2. **The broadcast.** With `EVENER_DEMO_FLEET=1`, the demo hub reads commands from stdin, one per line: a step's name, or `burst` (question, failure and approval within one second, for the coalesced banner). After each step it sends every connected socket `evener/navigation/invalidated` with the fleet's generation id, a sequence that rises by one per broadcast, and the step's targets. An unknown command prints the list of commands.
 3. **`EVENER_DEMO_UNCONFIRMED=1`:** `turn/start` and `turn/queue` answer with the error a daemon gives when it can't record the outcome: code -32603 with `data: { clientMutationId, mutationOutcome: "unknown", retryDisposition: "blocked", cause: "persistenceUnavailable" }` (`MutationUnknown`, `appwire/errors.go`). A send then shows "Couldn't confirm this was sent".
