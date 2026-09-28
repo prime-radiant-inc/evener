@@ -1121,6 +1121,15 @@ _(no fields)_
 | `host` | `appwire.HostRow` |  |  |
 
 
+### `HostTeardownAttestation`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `operator` | `string` |  |  |
+| `statement` | `string` |  |  |
+| `observedAt` | `string` |  |  |
+
+
 ### `HostTeardownRecoverParams`
 
 | Field | Go type | Omitempty | Embedded |

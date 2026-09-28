@@ -153,6 +153,11 @@ func build() docData {
 	// S12 union conversion).
 	register(appwire.HostRow{})
 	register(appwire.RemovedRow{})
+	// HostTeardownAttestation only nests inside HostTeardownRecoverParams and
+	// the recovery receipt record, so it needs the same explicit registration
+	// for a field table of its own — the operator/statement/observedAt triple is
+	// the audited recovery contract a reader has to see.
+	register(appwire.HostTeardownAttestation{})
 
 	for _, m := range appwire.Methods {
 		d.Methods = append(d.Methods, methodView{
