@@ -87,8 +87,12 @@ follows symlinks, so a shared install newer than this worktree's lockfile would
 otherwise skip the comparison entirely). If you do run `npm ci` by hand, still
 check `[ -L node_modules ]` yourself first; don't rely on the script to catch
 it for you. The same
-symlink risk applies to `appwire-client/typescript` (no preflight script owns its
-install; `make test-api-package` runs `npm run qualification` directly) and
+symlink risk applies to `appwire-client/typescript`, whose install
+`api-package-preflight.sh` now owns for `make test-api-package`: like
+`web-preflight.sh` it `npm ci`s a real, non-symlinked install that is missing
+or older than the lockfile, and for a symlinked shared install it compares
+lockfiles and refuses when they differ before the `-nt` shortcut, so it never
+runs `npm ci` through one. It applies too
 to `mobile-native` (`native-preflight.sh` refuses a symlinked install
 outright — the bundler resolves no module through one, whatever the lockfiles
 say — and never runs `npm ci` itself; it fails loudly and names the command
