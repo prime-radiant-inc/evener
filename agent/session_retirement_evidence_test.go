@@ -337,8 +337,24 @@ func TestRetirementAutonomousAttentionRetryOverlap(t *testing.T) {
 		clk.Drain()
 		root.SetNotifyFunc(nil)
 	}()
-	var gate atomic.Int32
+	// expected is the number of root attention retry callbacks this test has
+	// already paused. The hook must fire for exactly the callback that raises
+	// root.attentionCallbacks to expected+1: that counter is incremented only by
+	// scheduleRootAttentionRetryLocked's callback (session_attention.go:973)
+	// immediately before it calls notify, so it is the one signal that tells the
+	// attention retry apart from the other wakes that reach this session (delegate
+	// delivery and arming, turn-name retries, ...). Without that check a foreign
+	// wake landing in the arm window consumes the gate meant for the retry
+	// callback, the callback returns unpaused, and the later blocker check has no
+	// notification evidence (#1879: "missing notification evidence" at line 399).
+	var expected, gate atomic.Int32
 	root.SetNotifyFunc(func() {
+		root.attentionMu.Lock()
+		ac := root.attentionCallbacks
+		root.attentionMu.Unlock()
+		if ac != int(expected.Load())+1 {
+			return
+		}
 		if selected := gate.Swap(0); selected != 0 {
 			close(entered[selected-1])
 			<-resume[selected-1]
@@ -368,7 +384,25 @@ func TestRetirementAutonomousAttentionRetryOverlap(t *testing.T) {
 			t.Fatalf("provider failure = %v", err)
 		}
 		adapter.fail.Store(false)
+		expected.Store(int32(i))
 		gate.Store(int32(i + 1))
+		// An unrelated root wake landing in this window must not consume the
+		// pause. The documented flake is exactly such a wake stealing the gate
+		// meant for the attention retry callback: the callback then returns
+		// unpaused and the settled blocker check has no notification evidence.
+		// The hook ignores this wake (it is not the callback that raised
+		// root.attentionCallbacks), so notify returns here immediately; under the
+		// old gate-swap-only hook it blocks on the pause and this trips.
+		foreign := make(chan struct{})
+		go func() {
+			root.notify()
+			close(foreign)
+		}()
+		select {
+		case <-foreign:
+		case <-time.After(10 * time.Second): // TRIPWIRE: bounds scheduling, never the assertion.
+			t.Fatal("unrelated root wake consumed the attention retry pause")
+		}
 		clk.Advance(jobNotificationRetryInitialDelay)
 		retirementAwait(t, entered[i])
 		if c == nil {
