@@ -73,6 +73,32 @@ func (f *fenceRemote) run(extraEnv []string, args ...string) (stdout, stderr str
 // wrapper mid-command and observe the crash posture. The streams are left to
 // the test process: a pipe here would keep Wait blocked until the orphaned
 // command also closed it, defeating the mid-command kill.
+// runFile executes one helper invocation with its streams on a file rather than
+// a pipe: a surviving descendant would otherwise hold the pipe open and keep
+// the wait blocked until it exits, which is exactly what the descendant tests
+// must observe before it does.
+func (f *fenceRemote) runFile(extraEnv []string, args ...string) (stdout, stderr string, code int) {
+	f.t.Helper()
+	log, err := os.CreateTemp("", "evener-fence-run-")
+	if err != nil {
+		f.t.Fatalf("create run log: %v", err)
+	}
+	defer func() { _ = os.Remove(log.Name()) }()
+	cmd := f.helperCommand(extraEnv, args...)
+	cmd.Stdout, cmd.Stderr = log, log
+	runErr := cmd.Run()
+	_ = log.Close()
+	raw, _ := os.ReadFile(log.Name())
+	if runErr != nil {
+		var exit *exec.ExitError
+		if !errors.As(runErr, &exit) {
+			f.t.Fatalf("run helper %v: %v", args, runErr)
+		}
+		code = exit.ExitCode()
+	}
+	return string(raw), "", code
+}
+
 func (f *fenceRemote) start(extraEnv []string, args ...string) (*exec.Cmd, error) {
 	f.t.Helper()
 	cmd := f.helperCommand(extraEnv, args...)
@@ -589,6 +615,257 @@ func TestScriptEmptyBootIDRefuses(t *testing.T) {
 		} else if err := DecodeRefusal([]byte(stderr)); !errors.Is(err, ErrStateCorrupt) {
 			t.Fatalf("%v = %v, want ErrStateCorrupt", op, err)
 		}
+	}
+}
+
+// TestScriptStaleLockRecovery pins the lock's crash recovery: a lock left by a
+// dead owner (or one whose file carries no claim) is stolen exactly once and
+// does not wedge the host, while a live owner's lock is never taken.
+func TestScriptStaleLockRecovery(t *testing.T) {
+	remote := newFenceRemote(t)
+	epoch := Epoch{BootID: "boot-1", OpSeq: 1}
+	lockFile := filepath.Join(remote.state, "lock")
+	// A dead PID with a matching start token: the classic crash leftover.
+	dead := 999999
+	deadStart := "0"
+	if err := os.WriteFile(lockFile, []byte(fmt.Sprintf("%d %s\n", dead, deadStart)), 0o600); err != nil {
+		t.Fatalf("seed stale lock: %v", err)
+	}
+	if _, stderr, code := remote.run(nil, "takeover", epoch.BootID, "1"); code != 0 {
+		t.Fatalf("takeover behind a stale lock exited %d: %s", code, stderr)
+	}
+	if _, stderr, code := remote.run(nil, "advance", epoch.BootID, "1"); code != 0 {
+		t.Fatalf("advance exited %d: %s", code, stderr)
+	}
+	// A contentless lock is a crash artifact too: nothing claims it.
+	if err := os.WriteFile(lockFile, []byte(""), 0o600); err != nil {
+		t.Fatalf("seed empty lock: %v", err)
+	}
+	if _, stderr, code := remote.run(nil, "takeover", epoch.BootID, "2"); code != 0 {
+		t.Fatalf("takeover behind an empty lock exited %d: %s", code, stderr)
+	}
+	// A live owner's lock is held, not stolen: the operation refuses busy.
+	holder := &scriptedLockHolder{}
+	holder.start(t, remote.state, lockFile)
+	defer holder.stop()
+	_, stderr, code := remote.run([]string{"EVENER_FENCE_LOCK_ATTEMPTS=3"}, "takeover", epoch.BootID, "3")
+	if code == 0 {
+		t.Fatal("takeover stole a live lock, want busy")
+	}
+	if err := DecodeRefusal([]byte(stderr)); !errors.Is(err, ErrHelperBusy) {
+		t.Fatalf("takeover behind a live lock = %v, want ErrHelperBusy", err)
+	}
+	// And the live owner's lock is still intact after the refusal.
+	raw, err := os.ReadFile(lockFile)
+	if err != nil || len(strings.TrimSpace(string(raw))) == 0 {
+		t.Fatalf("live lock file = %q (err %v), want the owner's claim kept", raw, err)
+	}
+}
+
+// scriptedLockHolder writes a live-pid lock file and keeps its process alive,
+// so the helper sees a holder that cannot be stolen.
+type scriptedLockHolder struct{ cmd *exec.Cmd }
+
+func (h *scriptedLockHolder) start(t *testing.T, _ string, lockFile string) {
+	t.Helper()
+	h.cmd = exec.Command("sh", "-c", "sleep 30")
+	if err := h.cmd.Start(); err != nil {
+		t.Fatalf("start lock holder: %v", err)
+	}
+	start := "unknown"
+	if raw, err := os.ReadFile(fmt.Sprintf("/proc/%d/stat", h.cmd.Process.Pid)); err == nil {
+		// Field 22 of /proc/<pid>/stat is the start time: index 21 after the
+		// pid and the parenthesized comm.
+		fields := strings.Fields(string(raw))
+		if len(fields) > 21 {
+			start = fields[21]
+		}
+	}
+	if err := os.WriteFile(lockFile, []byte(fmt.Sprintf("%d %s\n", h.cmd.Process.Pid, start)), 0o600); err != nil {
+		t.Fatalf("write live lock: %v", err)
+	}
+}
+
+func (h *scriptedLockHolder) stop() {
+	if h.cmd != nil && h.cmd.Process != nil {
+		_ = h.cmd.Process.Kill()
+		_, _ = h.cmd.Process.Wait()
+	}
+}
+
+// TestScriptFenceGuardBoundRefuses pins validator parity: a fence whose guard
+// sequence is outside the guard's own sequence is corrupt, exactly as the Go
+// validator decides.
+func TestScriptFenceGuardBoundRefuses(t *testing.T) {
+	remote := newFenceRemote(t)
+	epoch := Epoch{BootID: "boot-1", OpSeq: 1}
+	if _, stderr, code := remote.run(nil, "takeover", epoch.BootID, "1"); code != 0 {
+		t.Fatalf("takeover exited %d: %s", code, stderr)
+	}
+	guard := filepath.Join(remote.state, "guard")
+	raw, err := os.ReadFile(guard)
+	if err != nil {
+		t.Fatalf("read guard: %v", err)
+	}
+	broken := strings.Replace(string(raw), "fenceGuardEpoch\t2\n", "fenceGuardEpoch\t9\n", 1)
+	if broken == string(raw) {
+		broken = strings.Replace(string(raw), "fenceGuardEpoch\t1\n", "fenceGuardEpoch\t9\n", 1)
+	}
+	if broken == string(raw) {
+		t.Fatalf("guard carried no fenceGuardEpoch to break: %q", raw)
+	}
+	if err := os.WriteFile(guard, []byte(broken), 0o600); err != nil {
+		t.Fatalf("write guard: %v", err)
+	}
+	if _, stderr, code := remote.run(nil, "status"); code == 0 {
+		t.Fatal("status with an out-of-range fence guard succeeded, want refusal")
+	} else if err := DecodeRefusal([]byte(stderr)); !errors.Is(err, ErrStateCorrupt) {
+		t.Fatalf("status = %v, want ErrStateCorrupt", err)
+	}
+}
+
+// TestScriptUnprovableIdentityStaysLive pins the fail-closed recheck: when the
+// live process's start token cannot be read, the entry reads live, never clean.
+func TestScriptUnprovableIdentityStaysLive(t *testing.T) {
+	remote := newFenceRemote(t)
+	epoch := Epoch{BootID: "boot-1", OpSeq: 1}
+	remote.settle(epoch)
+	work := t.TempDir()
+	goFile := filepath.Join(work, "go")
+	command := fmt.Sprintf(`touch %s/started; i=0; while [ ! -f %s ]; do i=$((i+1)); [ "$i" -gt 200 ] && exit 9; sleep 0.05; done`, work, goFile)
+	performDone := make(chan struct{})
+	go func() {
+		defer close(performDone)
+		if _, stderr, code := remote.run([]string{"EVENER_FENCE_FAULT_UNREADABLE_START=1"}, "perform", epoch.BootID, "1", command); code != 0 {
+			t.Errorf("perform exited %d: %s", code, stderr)
+		}
+	}()
+	waitForFile(t, filepath.Join(work, "started"))
+	entry := waitForRunningEntry(t, remote)
+	if recheck := recheckID(t, remote, entry.ID); !recheck.Live {
+		t.Fatalf("recheck(unreadable start token) = %+v, want live (fail closed)", recheck)
+	}
+	if err := os.WriteFile(goFile, []byte("go"), 0o600); err != nil {
+		t.Fatalf("release the command: %v", err)
+	}
+	<-performDone
+}
+
+// TestScriptDescendantsStayLive pins the descendant-tracking rule: a command
+// whose own children outlive it never leaves a clean entry, so a later takeover
+// cannot proceed as though no work survived.
+func TestScriptDescendantsStayLive(t *testing.T) {
+	if _, err := os.Stat("/proc/self/environ"); err != nil {
+		t.Skip("descendant tracking needs /proc (Linux)")
+	}
+	remote := newFenceRemote(t)
+	epoch := Epoch{BootID: "boot-1", OpSeq: 1}
+	remote.settle(epoch)
+	work := t.TempDir()
+	command := fmt.Sprintf("sleep 30 & echo $! > %s/descendant; echo done", work)
+	if combined, _, code := remote.runFile(nil, "perform", epoch.BootID, "1", command); code != 0 {
+		t.Fatalf("perform exited %d: %s", code, combined)
+	}
+	stdout, stderr, code := remote.run(nil, "entries")
+	if code != 0 {
+		t.Fatalf("entries exited %d: %s", code, stderr)
+	}
+	entries, err := DecodeEntries([]byte(stdout))
+	if err != nil || len(entries) != 1 {
+		t.Fatalf("entries = %+v (err %v), want one entry", entries, err)
+	}
+	entry := entries[0]
+	if entry.State != LeaseRunning || len(entry.Descendants) == 0 {
+		t.Fatalf("entry = %+v, want running with descendants recorded", entry)
+	}
+	if recheck := recheckID(t, remote, entry.ID); !recheck.Live {
+		t.Fatalf("recheck(entry with descendants) = %+v, want live (fail closed)", recheck)
+	}
+	// Once the survivor is gone, the entry reads clean.
+	raw, err := os.ReadFile(filepath.Join(work, "descendant"))
+	if err != nil {
+		t.Fatalf("read descendant pid: %v", err)
+	}
+	pid, err := strconv.Atoi(strings.TrimSpace(string(raw)))
+	if err != nil {
+		t.Fatalf("parse descendant pid %q: %v", raw, err)
+	}
+	proc, err := os.FindProcess(pid)
+	if err != nil {
+		t.Fatalf("find descendant: %v", err)
+	}
+	if err := proc.Kill(); err != nil {
+		t.Fatalf("kill descendant: %v", err)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		recheck := recheckID(t, remote, entry.ID)
+		if !recheck.Live {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("entry %s still reads live after its descendant died: %+v", entry.ID, recheck)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+// TestScriptHighWaterIsFreshAfterTakeover pins that a takeover's own report
+// carries the high-water record it just wrote, not the pre-write snapshot.
+func TestScriptHighWaterIsFreshAfterTakeover(t *testing.T) {
+	remote := newFenceRemote(t)
+	epoch := Epoch{BootID: "boot-fresh", OpSeq: 3}
+	stdout, stderr, code := remote.run(nil, "takeover", epoch.BootID, "3")
+	if code != 0 {
+		t.Fatalf("takeover exited %d: %s", code, stderr)
+	}
+	status, err := DecodeStatus([]byte(stdout))
+	if err != nil {
+		t.Fatalf("DecodeStatus = %v", err)
+	}
+	if got := status.BootHighWater[epoch.BootID]; got != 3 {
+		t.Fatalf("takeover report high-water[%s] = %d, want 3", epoch.BootID, got)
+	}
+}
+
+// TestScriptNonNumericExitRefuses pins the entry validator: an exit status that
+// is not a number is corrupt, never emitted raw into the JSON.
+func TestScriptNonNumericExitRefuses(t *testing.T) {
+	remote := newFenceRemote(t)
+	epoch := Epoch{BootID: "boot-1", OpSeq: 1}
+	remote.settle(epoch)
+	if _, stderr, code := remote.run(nil, "perform", epoch.BootID, "1", "true"); code != 0 {
+		t.Fatalf("perform exited %d: %s", code, stderr)
+	}
+	entriesDir := filepath.Join(remote.state, "leases")
+	names, err := os.ReadDir(entriesDir)
+	if err != nil {
+		t.Fatalf("read leases: %v", err)
+	}
+	var entryPath string
+	for _, name := range names {
+		if name.Name() != "holder" {
+			entryPath = filepath.Join(entriesDir, name.Name())
+		}
+	}
+	if entryPath == "" {
+		t.Fatal("no lease entry to corrupt")
+	}
+	raw, err := os.ReadFile(entryPath)
+	if err != nil {
+		t.Fatalf("read entry: %v", err)
+	}
+	broken := strings.Replace(string(raw), "\nexit\t0\n", "\nexit\tnot-a-number\n", 1)
+	if broken == string(raw) {
+		t.Fatalf("entry carried no numeric exit to break: %q", raw)
+	}
+	if err := os.WriteFile(entryPath, []byte(broken), 0o600); err != nil {
+		t.Fatalf("write entry: %v", err)
+	}
+	if _, stderr, code := remote.run(nil, "entries"); code == 0 {
+		t.Fatal("entries with a non-numeric exit succeeded, want refusal")
+	} else if err := DecodeRefusal([]byte(stderr)); !errors.Is(err, ErrStateCorrupt) {
+		t.Fatalf("entries = %v, want ErrStateCorrupt", err)
 	}
 }
 

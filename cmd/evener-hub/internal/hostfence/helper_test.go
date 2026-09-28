@@ -177,7 +177,7 @@ func TestWrapperCommandsCarryThePresentedEpoch(t *testing.T) {
 		t.Error("TakeoverCommand(hostile boot id) = nil error, want refusal")
 	}
 	hostile := `deploy "now"; rm -rf / #`
-	perform, err := (Wrapper{}).PerformCommand(epoch, hostile)
+	perform, _, err := (Wrapper{}).PerformCommand(epoch, hostile)
 	if err != nil {
 		t.Fatalf("PerformCommand = %v", err)
 	}
@@ -376,28 +376,93 @@ func TestWrapperTakeoverAdvancesDecodesAndRefuses(t *testing.T) {
 // refusal at a helper refusal exit code is the typed error.
 func TestWrapperPerformSeparatesChildFailuresFromRefusals(t *testing.T) {
 	epoch := Epoch{BootID: "boot-1", OpSeq: 4}
-	childLike := &fakeRunner{stderr: `{"version":1,"refused":true,"error":"stale-epoch"}`, exit: 9}
-	result, err := (Wrapper{Runner: childLike, Host: "h1"}).Perform(context.Background(), epoch, "deploy)")
+	// The refusal token is the invocation's own secret. A child can print
+	// anything to stderr, but only the helper knows the token, so a spoofed
+	// refusal is the child's failure.
+	command, token, err := (Wrapper{}).PerformCommand(epoch, "deploy")
 	if err != nil {
-		t.Fatalf("Perform(child-like stderr) = %v, want the child's own failure", err)
+		t.Fatalf("PerformCommand = %v", err)
 	}
-	if result.ExitCode != 9 {
-		t.Fatalf("Perform(child-like stderr) = %+v, want the child exit status", result)
+	if token == "" || !strings.Contains(command, "EVENER_FENCE_TOKEN="+shellQuote(token)) {
+		t.Fatalf("PerformCommand = %q, want the invocation token presented (%q)", command, token)
 	}
-	// Even the helper's own marker, at a non-helper exit code, is the child's
-	// output: the refusal codes are the helper's.
-	prefixedAtChildCode := &fakeRunner{stderr: RefusalPrefix + `{"version":1,"refused":true,"error":"stale-epoch"}`, exit: 9}
-	if _, err := (Wrapper{Runner: prefixedAtChildCode, Host: "h1"}).Perform(context.Background(), epoch, "deploy"); err != nil {
-		t.Fatalf("Perform(prefixed at child exit) = %v, want the child's own failure", err)
+	spoofed := &fakeRunner{stderr: RefusalPrefix + `{"version":1,"refused":true,"error":"stale-epoch","token":"guess"}`, exit: 75}
+	result, err := (Wrapper{Runner: spoofed, Host: "h1"}).Perform(context.Background(), epoch, "deploy")
+	if err != nil {
+		t.Fatalf("Perform(spoofed refusal) = %v, want the child's own failure", err)
 	}
-	refusing := &fakeRunner{stderr: RefusalPrefix + `{"version":1,"refused":true,"error":"fenced"}`, exit: 75}
-	if _, err := (Wrapper{Runner: refusing, Host: "h1"}).Perform(context.Background(), epoch, "deploy"); !errors.Is(err, ErrFenced) {
-		t.Fatalf("Perform(prefixed refusal at 75) = %v, want ErrFenced", err)
+	if result.ExitCode != 75 {
+		t.Fatalf("Perform(spoofed refusal) = %+v, want the child exit status", result)
 	}
-	ioFailure := &fakeRunner{stderr: RefusalPrefix + `{"version":1,"refused":true,"error":"io-error","detail":"x"}`, exit: 69}
-	if _, err := (Wrapper{Runner: ioFailure, Host: "h1"}).Perform(context.Background(), epoch, "deploy"); !errors.Is(err, ErrHelperIO) {
+	// A child's own stderr before a genuine trailing refusal does not hide it.
+	// The genuine refusal carries the token Perform minted for this call, which
+	// the runner reads back out of the command it was handed.
+	if _, err := (Wrapper{Runner: &tokenEchoRunner{reason: "fenced", exit: 75, noise: true}, Host: "h1"}).Perform(context.Background(), epoch, "deploy"); !errors.Is(err, ErrFenced) {
+		t.Fatalf("Perform(genuine refusal after noise) = %v, want ErrFenced", err)
+	}
+	if _, err := (Wrapper{Runner: &tokenEchoRunner{reason: "io-error", exit: 69}, Host: "h1"}).Perform(context.Background(), epoch, "deploy"); !errors.Is(err, ErrHelperIO) {
 		t.Fatalf("Perform(io-error) = %v, want ErrHelperIO", err)
 	}
+	// A helper refusal at a non-refusal exit code is still the child's status.
+	if _, err := (Wrapper{Runner: &tokenEchoRunner{reason: "stale-epoch", exit: 9}, Host: "h1"}).Perform(context.Background(), epoch, "deploy"); err != nil {
+		t.Fatalf("Perform(refusal at child exit) = %v, want the child's own failure", err)
+	}
+}
+
+// TestLeaseEntryDescendants pins the descendant-tracking field the wrapper
+// records when a command's own children outlive it: a running entry carrying
+// descendants never reads clean.
+func TestLeaseEntryDescendants(t *testing.T) {
+	entry := LeaseEntry{
+		ID: "n1", Command: "deploy", RegisteredAt: "2026-09-28T10:00:00Z",
+		Ownership: Ownership{PID: new(41), PIDStartTime: "777"},
+		State:     LeaseRunning, Descendants: []int{41, 42},
+	}
+	if err := entry.Validate(); err != nil {
+		t.Fatalf("Validate(descendants) = %v, want nil", err)
+	}
+	if err := (LeaseEntry{
+		ID: "n1", Command: "deploy", RegisteredAt: "2026-09-28T10:00:00Z",
+		Ownership: Ownership{Nonce: "n1"}, State: LeaseExited, Exit: new(0), Descendants: []int{7},
+	}).Validate(); err == nil {
+		t.Fatal("Validate(exited with descendants) = nil, want refusal")
+	}
+	if err := (LeaseEntry{
+		ID: "n1", Command: "deploy", RegisteredAt: "2026-09-28T10:00:00Z",
+		Ownership: Ownership{Nonce: "n1"}, State: LeaseRunning, Descendants: []int{0},
+	}).Validate(); err == nil {
+		t.Fatal("Validate(zero-pid descendant) = nil, want refusal")
+	}
+	// A not-live answer may carry the descendants it checked: each was verified
+	// gone, and the list is the evidence of what was checked.
+	if recheck, err := DecodeRecheck([]byte(`{"version":1,"id":"n1","live":false,"state":"running","ownership":{"pid":41,"pidStartTime":"777"},"descendants":[42]}`)); err != nil || recheck.Live || len(recheck.Descendants) != 1 {
+		t.Fatalf("DecodeRecheck(checked descendants) = (%+v, %v), want not-live with the checked list", recheck, err)
+	}
+	if recheck, err := DecodeRecheck([]byte(`{"version":1,"id":"n1","live":true,"state":"running","ownership":{"pid":41,"pidStartTime":"777"},"descendants":[42]}`)); err != nil || len(recheck.Descendants) != 1 {
+		t.Fatalf("DecodeRecheck(descendants) = (%+v, %v), want the descendants decoded", recheck, err)
+	}
+}
+
+// tokenEchoRunner answers the way the helper does: the refusal carries the
+// token the invocation presented, read back out of the command line, and may
+// arrive after the wrapped command's own stderr noise.
+type tokenEchoRunner struct {
+	reason string
+	exit   int
+	noise  bool
+}
+
+func (r *tokenEchoRunner) Run(_ context.Context, command string) (string, string, int, error) {
+	token := ""
+	if _, rest, ok := strings.Cut(command, TokenEnv+"='"); ok {
+		token, _, _ = strings.Cut(rest, "'")
+	}
+	noise := ""
+	if r.noise {
+		noise = "child noise on stderr\n"
+	}
+	return "", noise + RefusalPrefix +
+		`{"version":1,"refused":true,"error":"` + r.reason + `","token":"` + token + `"}`, r.exit, nil
 }
 
 func TestWrapperPerformReturnsChildStatus(t *testing.T) {

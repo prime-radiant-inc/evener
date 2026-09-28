@@ -54,11 +54,14 @@
 #   leases/     one file per lease entry, named by the entry id (the per-spawn
 #               nonce). Fields: id, command (stored JSON-escaped), registeredAt,
 #               state, ownershipKind, pid, pidStartTime, nonce, cgroupId, exit,
-#               exitedAt.
+#               exitedAt, descendants (the pids still carrying the nonce after
+#               the command exited; while any live the entry stays running).
 #   leases/holder  "<bootId> <opSeq>" of the epoch holding the exclusive lease.
-#   lock/       the exclusive-lease mutex directory (mkdir-atomic; a stale lock
-#               left by a dead holder is taken over only when its recorded PID
-#               is gone).
+#   lock        the exclusive-lease claim file: "<pid> <startToken>", published
+#               with one atomic link so it always carries a provable owner. A
+#               stale claim is moved aside and discarded only when it still
+#               names the observed dead owner (a reused pid never authorizes
+#               taking a live replacement's lock).
 #
 # Refusals: "evener-fence: " then one JSON object on stderr, {"version":1,
 # "refused":true,"error":"<reason>","detail":"..."}, with reason one of
@@ -71,12 +74,18 @@
 # marker belong to the fencing worker (S18), which verifies entries through
 # `entries` and `recheck` before signaling.
 #
-# Two environment seams exist for the tests' fault injection, mirroring the Go
+# Three environment seams exist for the tests' fault injection, mirroring the Go
 # stores' fault seams: EVENER_FENCE_FAULT_AFTER_GUARD=1 exits right after a
 # takeover's guard write (before the holder write, the crash window the replay
-# reconciliation repairs), and EVENER_FENCE_FAULT_AFTER_SPAWN=1 fails the
-# post-spawn entry write so the kill-on-tracking-failure path is exercised.
-# Neither is set in production.
+# reconciliation repairs), EVENER_FENCE_FAULT_AFTER_SPAWN=1 fails the post-spawn
+# entry write so the kill-on-tracking-failure path is exercised, and
+# EVENER_FENCE_FAULT_UNREADABLE_START=1 hides a live process's start token so
+# the fail-closed recheck arm is exercised. None is set in production.
+#
+# EVENER_FENCE_TOKEN, when set, is echoed in every refusal: the caller mints it
+# per invocation and clears it for the wrapped command, so a command's own
+# stderr can never pass for a wrapper refusal. EVENER_FENCE_LOCK_ATTEMPTS bounds
+# a waiter's 0.1s retries against a live holder (default 100).
 
 set -eu
 umask 077
@@ -88,16 +97,15 @@ STATE_DIR=${EVENER_FENCE_STATE:-${XDG_STATE_HOME:-${HOME:-.}/.local/state}/evene
 GUARD_FILE=$STATE_DIR/guard
 LEASE_DIR=$STATE_DIR/leases
 HOLDER_FILE=$LEASE_DIR/holder
-LOCK_DIR=$STATE_DIR/lock
-LOCK_HOLDER=$LOCK_DIR/holder
+LOCK_FILE=$STATE_DIR/lock
 
 TAB=$(printf '\t')
 
 refuse() { # refuse <reason> <detail> <exit>
 	# Refusals wear the helper's own marker so a wrapped command's stderr can
 	# never masquerade as one; the Go side strips and requires it.
-	printf 'evener-fence: {"version":%d,"refused":true,"error":"%s","detail":"%s"}\n' \
-		"$PROTOCOL" "$1" "$(json_escape "$2")" >&2
+	printf 'evener-fence: {"version":%d,"refused":true,"error":"%s","detail":"%s","token":"%s"}\n' \
+		"$PROTOCOL" "$1" "$(json_escape "$2")" "$(json_escape "${EVENER_FENCE_TOKEN:-}")" >&2
 	exit "$3"
 }
 
@@ -153,61 +161,94 @@ ensure_state() {
 
 # --- lock --------------------------------------------------------------------
 
+# The lock is a regular file claimed by an atomic hard link: the claim file is
+# written with the owner's identity (pid plus its kernel-owned start token)
+# before the link exists, so a visible lock always carries a provable owner. A
+# stale claim is moved aside with an atomic rename — exactly one waiter wins —
+# and discarded only when it still names the observed dead owner; a claim that
+# was replaced in the window is put back.
 acquire_lock() {
 	ensure_state
 	attempt=0
+	limit=${EVENER_FENCE_LOCK_ATTEMPTS:-100}
 	while :; do
-		if mkdir "$LOCK_DIR" 2>/dev/null; then
-			printf '%s\n' "$$" >"$LOCK_HOLDER" 2>/dev/null || true
+		if claim_lock; then
 			return 0
 		fi
-		holder=$(cat "$LOCK_HOLDER" 2>/dev/null || true)
-		case $holder in
-		'' | *[!0-9]*) ;;
+		observed=$(cat "$LOCK_FILE" 2>/dev/null || true)
+		pid=${observed%% *}
+		case $pid in
+		'' | *[!0-9]*)
+			# An empty or contentless claim is a crash artifact: nothing
+			# provable holds it.
+			steal_stale_lock "$observed"
+			;;
 		*)
-			if ! kill -0 "$holder" 2>/dev/null; then
-				# The holder is gone: a crashed wrapper cannot release a mkdir
-				# lock, and failing closed forever would fence the host on a
-				# crash. The takeover is atomic and identity-checked so only
-				# one waiter discards only the lock it observed dead.
-				steal_stale_lock "$holder"
+			if ! kill -0 "$pid" 2>/dev/null; then
+				steal_stale_lock "$observed"
 			fi
 			;;
 		esac
 		attempt=$((attempt + 1))
-		[ "$attempt" -gt 100 ] && return 1
+		[ "$attempt" -gt "$limit" ] && return 1
 		sleep 0.1
 	done
 }
 
-# steal_stale_lock moves the lock directory aside atomically — exactly one
-# waiter wins the rename — and discards the moved lock only when its recorded
-# holder is the dead PID the caller observed. A moved lock naming a different,
-# live holder was replaced between the observation and the rename; it is put
-# back, never discarded.
-steal_stale_lock() { # <observed-holder-pid>
-	stale=$STATE_DIR/.tmp.lock.$$
-	mv "$LOCK_DIR" "$stale" 2>/dev/null || return 1
-	moved=$(cat "$stale/holder" 2>/dev/null || true)
-	if [ "$moved" = "$1" ]; then
-		rm -rf "$stale" 2>/dev/null || true
+# claim_lock writes this invocation's claim and publishes it with one atomic
+# link, so the identity is durable before the lock is visible.
+claim_lock() {
+	start=$(pid_start_time "$$" || printf unknown)
+	claim=$STATE_DIR/.tmp.lock.$$
+	printf '%s %s\n' "$$" "$start" >"$claim" 2>/dev/null || {
+		rm -f "$claim"
+		return 1
+	}
+	chmod 600 "$claim" 2>/dev/null || true
+	if ln "$claim" "$LOCK_FILE" 2>/dev/null; then
+		rm -f "$claim" 2>/dev/null || true
 		return 0
 	fi
-	if mv "$stale" "$LOCK_DIR" 2>/dev/null; then
+	rm -f "$claim" 2>/dev/null || true
+	return 1
+}
+
+# steal_stale_lock takes <observed claim content>. It re-verifies the moved
+# claim: the content must equal what the caller observed AND its owner must be
+# dead (or unprovable). Anything else was replaced in the window and is
+# restored when the path is free, never discarded.
+steal_stale_lock() {
+	stale=$STATE_DIR/.tmp.stale.$$
+	mv "$LOCK_FILE" "$stale" 2>/dev/null || return 1
+	moved=$(cat "$stale" 2>/dev/null || true)
+	moved_pid=${moved%% *}
+	provably_dead=true
+	case $moved_pid in
+	'' | *[!0-9]*) ;;
+	*)
+		if kill -0 "$moved_pid" 2>/dev/null; then
+			provably_dead=false
+		fi
+		;;
+	esac
+	if [ "$moved" = "$1" ] && [ "$provably_dead" = true ]; then
+		rm -f "$stale" 2>/dev/null || true
+		return 0
+	fi
+	if [ ! -e "$LOCK_FILE" ] && mv "$stale" "$LOCK_FILE" 2>/dev/null; then
 		return 1
 	fi
-	# The path is occupied again by a fresh owner, so the moved lock's holder
-	# can no longer be holding it; discard it and let the loop retry.
-	rm -rf "$stale" 2>/dev/null || true
+	rm -f "$stale" 2>/dev/null || true
 	return 1
 }
 
 release_lock() {
 	# Never remove a lock this invocation does not own: an unconditional rm
 	# could delete a lock a later owner acquired after ours was stolen.
-	holder=$(cat "$LOCK_HOLDER" 2>/dev/null || true)
-	[ "$holder" = "$$" ] || return 0
-	rm -rf "$LOCK_DIR" 2>/dev/null || true
+	observed=$(cat "$LOCK_FILE" 2>/dev/null || true)
+	pid=${observed%% *}
+	[ "$pid" = "$$" ] || return 0
+	rm -f "$LOCK_FILE" 2>/dev/null || true
 }
 
 # --- guard file --------------------------------------------------------------
@@ -279,7 +320,9 @@ read_guard() {
 	if [ "$FENCE_BOOT" = "-" ]; then
 		[ "$FENCE_GUARD" = 0 ] || return 1
 	else
-		[ "$FENCE_GUARD" -ge 1 ] || return 1
+		# The fence's sequence sits inside the guard's own, exactly as the Go
+		# validator decides: a fence ahead of the guard is corrupt.
+		[ "$FENCE_GUARD" -ge 1 ] && [ "$FENCE_GUARD" -le "$GUARD_EPOCH" ] || return 1
 	fi
 	return 0
 }
@@ -321,6 +364,9 @@ write_guard() { # [<bootId> <opSeq>] — records this boot's admitted high-water
 		refuse io-error "cannot replace the guard file" 69
 	}
 	sync_path "$STATE_DIR"
+	# Refresh the in-memory snapshot: a caller's own report (a takeover's
+	# status) must carry the record this write just landed.
+	GUARD_SNAPSHOT=$(cat "$GUARD_FILE" 2>/dev/null || true)
 }
 
 # boot_records re-emits every durable per-boot high-water record, replacing the
@@ -396,7 +442,7 @@ entry_field() { # <snapshot> <key>
 entry_file_valid() { # <snapshot>
 	printf '%s\n' "$1" | awk -F"$TAB" '
 		BEGIN {
-			split("id command registeredAt state ownershipKind pid pidStartTime nonce cgroupId exit exitedAt", keys, " ")
+			split("id command registeredAt state ownershipKind pid pidStartTime nonce cgroupId exit exitedAt descendants", keys, " ")
 			for (i in keys) { allowed[keys[i]] = 1 }
 		}
 		NF != 2 { bad = 1 }
@@ -413,7 +459,7 @@ entry_file_valid() { # <snapshot>
 
 # write_entry persists one entry atomically. The signature is the field set the
 # entry schema requires; empty values are written as empty fields.
-write_entry() { # id command registeredAt state kind pid start nonce cgroupId exit exitedAt
+write_entry() { # id command registeredAt state kind pid start nonce cgroupId exit exitedAt descendants
 	ensure_state
 	id=$1
 	# The temp lives outside the enumerated lease directory so no reader can
@@ -431,6 +477,7 @@ write_entry() { # id command registeredAt state kind pid start nonce cgroupId ex
 		printf 'cgroupId\t%s\n' "$9"
 		printf 'exit\t%s\n' "${10}"
 		printf 'exitedAt\t%s\n' "${11}"
+		printf 'descendants\t%s\n' "${12}"
 	} >"$tmp" 2>/dev/null || {
 		rm -f "$tmp"
 		return 1
@@ -470,6 +517,7 @@ load_entry() {
 	ENTRY_CGROUP=$(entry_field "$ENTRY_SNAPSHOT" cgroupId)
 	ENTRY_EXIT=$(entry_field "$ENTRY_SNAPSHOT" exit)
 	ENTRY_EXITED=$(entry_field "$ENTRY_SNAPSHOT" exitedAt)
+	ENTRY_DESCENDANTS=$(entry_field "$ENTRY_SNAPSHOT" descendants)
 	case $ENTRY_ID in '' | *[!A-Za-z0-9]*) return 1 ;; esac
 	[ "$ENTRY_ID" = "$(basename "$path")" ] || return 1
 	case $ENTRY_COMMAND in '') return 1 ;; *) ;; esac
@@ -479,10 +527,16 @@ load_entry() {
 		[ -z "$ENTRY_EXIT" ] && [ -z "$ENTRY_EXITED" ] || return 1
 		;;
 	exited | killed)
-		[ -n "$ENTRY_EXIT" ] || return 1
+		# A terminal entry carries its numeric exit and no descendants: the
+		# command's own children must be gone before the entry reads settled.
+		is_uint "$ENTRY_EXIT" || return 1
+		[ -z "$ENTRY_DESCENDANTS" ] || return 1
 		;;
 	*) return 1 ;;
 	esac
+	for descendant in $ENTRY_DESCENDANTS; do
+		is_uint "$descendant" && [ "$descendant" -ge 1 ] || return 1
+	done
 	case $ENTRY_KIND in
 	pid)
 		is_uint "$ENTRY_PID" || return 1
@@ -536,6 +590,16 @@ emit_entries() {
 			;;
 		*) ;;
 		esac
+		if [ -n "$ENTRY_DESCENDANTS" ]; then
+			printf ',"descendants":['
+			first_descendant=1
+			for descendant in $ENTRY_DESCENDANTS; do
+				[ "$first_descendant" -eq 1 ] || printf ','
+				first_descendant=0
+				printf '%s' "$descendant"
+			done
+			printf ']'
+		fi
 		printf '}'
 	done
 	printf ']}\n'
@@ -715,6 +779,42 @@ pid_start_time() { # <pid>
 	esac
 }
 
+# current_start_token reads a live process's kernel-owned start token for
+# verification. EVENER_FENCE_FAULT_UNREADABLE_START models a platform that cannot
+# read it, so the fail-closed arm is exercised.
+current_start_token() { # <pid>
+	if [ "${EVENER_FENCE_FAULT_UNREADABLE_START:-0}" = 1 ]; then
+		return 1
+	fi
+	pid_start_time "$1"
+}
+
+# descendants_of prints the PIDs still carrying the command's per-spawn nonce.
+# A command's children inherit the nonce in their environment, so a survivor —
+# however it detached — is found and the entry never reads settled while it
+# lives. A platform without /proc cannot enumerate; the entry then records no
+# descendants and the pid/start-time identity remains the whole proof.
+descendants_of() { # <nonce>
+	[ -d /proc/self ] || return 0
+	# One grep pass decides whether any survivor exists at all; only then is the
+	# per-pid pass worth its forks. The environ file is NUL-separated, so the
+	# pattern needs no trailing NUL to match. The pass reads grep's output, never
+	# its exit status: unreadable environ files make grep exit 2 even after a
+	# match, and a nonzero status must never read as "no survivors".
+	candidates=$(grep -als "EVENER_FENCE_NONCE=$1" /proc/[0-9]*/environ 2>/dev/null || true)
+	[ -n "$candidates" ] || return 0
+	for envfile in /proc/[0-9]*/environ; do
+		[ -r "$envfile" ] || continue
+		pid=${envfile#/proc/}
+		pid=${pid%/environ}
+		case $pid in '' | *[!0-9]*) continue ;; esac
+		[ "$pid" = "$$" ] && continue
+		if [ -n "$(grep -al "EVENER_FENCE_NONCE=$1" "$envfile" 2>/dev/null || true)" ]; then
+			printf '%s ' "$pid"
+		fi
+	done
+}
+
 do_perform() { # <bootId> <opSeq> <command>
 	load_guard_or_refuse
 	if [ "$FENCE_BOOT" != "-" ]; then
@@ -729,9 +829,11 @@ do_perform() { # <bootId> <opSeq> <command>
 	# Register before the side effects start: the entry exists while the command
 	# runs, and a crash between registration and spawn leaves it registered (fail
 	# closed) rather than invisible.
-	write_entry "$nonce" "$(json_escape "$command")" "$registered" registering nonce '' '' "$nonce" '' '' '' ||
+	write_entry "$nonce" "$(json_escape "$command")" "$registered" registering nonce '' '' "$nonce" '' '' '' '' ||
 		refuse io-error "cannot register the lease entry" 69
-	EVENER_FENCE_NONCE=$nonce EVENER_FENCE_STATE=$STATE_DIR sh -c "$command" &
+	# The child sees the nonce (so its descendants can be found) but never the
+	# invocation's refusal token.
+	EVENER_FENCE_NONCE=$nonce EVENER_FENCE_STATE=$STATE_DIR EVENER_FENCE_TOKEN= sh -c "$command" &
 	child=$!
 	start=$(pid_start_time "$child" || true)
 	ownership=${EVENER_FENCE_OWNERSHIP:-pid}
@@ -744,21 +846,30 @@ do_perform() { # <bootId> <opSeq> <command>
 	if [ "$ownership" = pid ] && [ -n "$start" ]; then
 		own_kind=pid
 		own_pid=$child
-		own_start=$(json_escape "$start")
+		own_start=$start
 		own_nonce=''
 	fi
 	if [ "${EVENER_FENCE_FAULT_AFTER_SPAWN:-0}" = 1 ]; then
 		post_spawn_failure "cannot record the lease entry (injected fault)"
 	fi
-	write_entry "$nonce" "$(json_escape "$command")" "$registered" running "$own_kind" "$own_pid" "$own_start" "$own_nonce" '' '' '' ||
+	write_entry "$nonce" "$(json_escape "$command")" "$registered" running "$own_kind" "$own_pid" "$own_start" "$own_nonce" '' '' '' '' ||
 		post_spawn_failure "cannot record the lease entry"
 	status=0
 	wait "$child" || status=$?
 	exited=$(date -u '+%Y-%m-%dT%H:%M:%SZ' 2>/dev/null || printf 0)
+	survivors=$(descendants_of "$nonce")
+	if [ -n "$survivors" ]; then
+		# The command's own children outlive it: the entry stays running with
+		# them recorded, so a verifier reads it live and a fencing takeover
+		# treats the surviving work as the superseded epoch's, never as clean.
+		write_entry "$nonce" "$(json_escape "$command")" "$registered" running "$own_kind" "$own_pid" "$own_start" "$own_nonce" '' '' '' "$survivors" ||
+			refuse io-error "cannot record the lease descendants" 69
+		exit "$status"
+	fi
 	# A command that exited, however it exited, is recorded exited: the lease
 	# file's exit state is what a verifier enumerates. A killed orphan is marked
 	# by the fencing worker's kill path (S18) through the same entry file.
-	write_entry "$nonce" "$(json_escape "$command")" "$registered" exited "$own_kind" "$own_pid" "$own_start" "$own_nonce" '' "$status" "$exited" ||
+	write_entry "$nonce" "$(json_escape "$command")" "$registered" exited "$own_kind" "$own_pid" "$own_start" "$own_nonce" '' "$status" "$exited" '' ||
 		refuse io-error "cannot record the lease exit" 69
 	exit "$status"
 }
@@ -790,13 +901,20 @@ do_recheck() { # <id>
 		case $ENTRY_KIND in
 		pid)
 			if kill -0 "$ENTRY_PID" 2>/dev/null; then
-				current=$(pid_start_time "$ENTRY_PID" || true)
-				if [ "$current" = "$ENTRY_START" ]; then
+				current=$(current_start_token "$ENTRY_PID" || true)
+				if [ -z "$current" ]; then
+					# The process is there but its identity cannot be read: live,
+					# never clean.
+					live=true
+				elif [ "$current" = "$ENTRY_START" ]; then
 					# The kernel-owned start time proves this instance, mirroring
 					# the local boundary-plus-nonce rule: a reused pid names a
 					# different process and reads as already clean.
 					live=true
 				fi
+			elif ps -p "$ENTRY_PID" >/dev/null 2>&1; then
+				# Present but not signalable: the identity cannot be proven.
+				live=true
 			fi
 			;;
 		nonce)
@@ -808,12 +926,31 @@ do_recheck() { # <id>
 			live=true
 			;;
 		esac
+		for descendant in $ENTRY_DESCENDANTS; do
+			# A recorded descendant that is still signalable keeps the entry
+			# live; one demonstrably gone no longer does.
+			if kill -0 "$descendant" 2>/dev/null; then
+				live=true
+				break
+			fi
+		done
 		;;
 	exited | killed) live=false ;;
 	esac
-	printf '{"version":%s,"id":"%s","live":%s,"state":"%s","ownership":%s}\n' \
+	printf '{"version":%s,"id":"%s","live":%s,"state":"%s","ownership":%s' \
 		"$PROTOCOL" "$id" "$live" "$ENTRY_STATE" \
 		"$(entry_ownership_json "$ENTRY_KIND" "$ENTRY_PID" "$ENTRY_START" "$ENTRY_NONCE" "$ENTRY_CGROUP")"
+	if [ -n "$ENTRY_DESCENDANTS" ]; then
+		printf ',"descendants":['
+		first_descendant=1
+		for descendant in $ENTRY_DESCENDANTS; do
+			[ "$first_descendant" -eq 1 ] || printf ','
+			first_descendant=0
+			printf '%s' "$descendant"
+		done
+		printf ']'
+	fi
+	printf '}\n'
 }
 
 # --- dispatch ----------------------------------------------------------------

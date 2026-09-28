@@ -521,6 +521,12 @@ type LeaseEntry struct {
 	Exit *int `json:"exit,omitempty"`
 	// ExitedAt is the RFC3339 exit time, present once it exited or was killed.
 	ExitedAt string `json:"exitedAt,omitempty"`
+	// Descendants are the PIDs still carrying the command's per-spawn nonce
+	// after the command itself exited: work the wrapper's own child left
+	// behind. While any survive the entry stays in a live state — a command's
+	// unobserved children are never clean (§9's mirror of §3) — and a fencing
+	// kill can address them.
+	Descendants []int `json:"descendants,omitempty"`
 }
 
 // Lease entry states.
@@ -558,8 +564,16 @@ func (e LeaseEntry) Validate() error {
 		if e.Exit == nil {
 			return fmt.Errorf("%w: lease entry %q carries no exit status in state %q", ErrInvalidGuard, e.ID, e.State)
 		}
+		if len(e.Descendants) > 0 {
+			return fmt.Errorf("%w: settled lease entry %q carries live descendants", ErrInvalidGuard, e.ID)
+		}
 	default:
 		return fmt.Errorf("%w: lease entry %q carries state %q", ErrInvalidGuard, e.ID, e.State)
+	}
+	for _, pid := range e.Descendants {
+		if pid < 1 {
+			return fmt.Errorf("%w: lease entry %q records descendant pid %d", ErrInvalidGuard, e.ID, pid)
+		}
 	}
 	return nil
 }
@@ -621,6 +635,10 @@ type Recheck struct {
 	State string `json:"state"`
 	// Ownership is the stored identity the answer was checked against.
 	Ownership Ownership `json:"ownership"`
+	// Descendants are the command's surviving children the answer was checked
+	// against: an answer claiming no live holder while its entry still carries
+	// descendants would read work clean that is not.
+	Descendants []int `json:"descendants,omitempty"`
 }
 
 // DecodeStatus decodes the helper's guard/lease report. The helper's output is
@@ -716,6 +734,15 @@ func DecodeRecheck(raw []byte) (Recheck, error) {
 	if recheck.Live && recheck.State == "" {
 		return Recheck{}, fmt.Errorf("%w: a recheck answer reports no entry live", ErrInvalidGuard)
 	}
+	for _, pid := range recheck.Descendants {
+		if pid < 1 {
+			return Recheck{}, fmt.Errorf("%w: a recheck answer records descendant pid %d", ErrInvalidGuard, pid)
+		}
+	}
+	// A not-live answer may still carry the descendants it checked: each was
+	// verified gone, and the record is the evidence of what was checked. What
+	// must never happen is a *settled* entry carrying live descendants, which
+	// LeaseEntry.Validate refuses.
 	if err := recheck.Ownership.Validate(); err != nil {
 		return Recheck{}, err
 	}

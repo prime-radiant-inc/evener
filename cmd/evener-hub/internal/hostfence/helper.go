@@ -3,9 +3,12 @@ package hostfence
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	_ "embed"
+	"encoding/hex"
 	"errors"
 	"fmt"
+	"slices"
 	"strconv"
 	"strings"
 )
@@ -35,6 +38,10 @@ const (
 	HelperStateDir = "~/.local/state/evener/fence"
 	// HelperStateEnv is the environment variable overriding HelperStateDir.
 	HelperStateEnv = "EVENER_FENCE_STATE"
+	// TokenEnv carries the per-invocation refusal token to the helper; the
+	// helper clears it for the wrapped command, so only the helper can present
+	// it back.
+	TokenEnv = "EVENER_FENCE_TOKEN"
 	// RefusalPrefix is the marker the helper's refusal reports carry on stderr.
 	// A wrapped command's own stderr can therefore never masquerade as a
 	// wrapper refusal: the decoder requires the marker and the helper's own
@@ -250,14 +257,33 @@ func (w Wrapper) AdvanceCommand(e Epoch) (string, error) {
 // its side effects start, holds the exclusive lease across the guard re-check
 // and the command, and refuses server-side when the epoch no longer equals the
 // guard.
-func (w Wrapper) PerformCommand(e Epoch, command string) (string, error) {
+//
+// The returned token is the invocation's refusal token: it is presented to the
+// helper's own environment, cleared for the wrapped command, and echoed in any
+// refusal the helper writes. A command's stderr can therefore never be mistaken
+// for a wrapper refusal — it cannot know the token.
+func (w Wrapper) PerformCommand(e Epoch, command string) (string, string, error) {
 	if err := e.Validate(); err != nil {
-		return "", err
+		return "", "", err
 	}
 	if command == "" {
-		return "", errors.New("hostfence: a wrapped command carries no command text")
+		return "", "", errors.New("hostfence: a wrapped command carries no command text")
 	}
-	return fmt.Sprintf("%s perform %s %d %s", w.remotePath(), shellQuote(e.BootID), e.OpSeq, shellQuote(command)), nil
+	token, err := newRefusalToken()
+	if err != nil {
+		return "", "", err
+	}
+	return fmt.Sprintf("%s=%s %s perform %s %d %s",
+		TokenEnv, shellQuote(token), w.remotePath(), shellQuote(e.BootID), e.OpSeq, shellQuote(command)), token, nil
+}
+
+// newRefusalToken mints the per-invocation refusal token.
+func newRefusalToken() (string, error) {
+	var raw [16]byte
+	if _, err := rand.Read(raw[:]); err != nil {
+		return "", fmt.Errorf("hostfence: mint a refusal token: %w", err)
+	}
+	return hex.EncodeToString(raw[:]), nil
 }
 
 // RecheckCommand builds a nonce re-presentation (§9): the verifier hands the
@@ -368,7 +394,7 @@ func (w Wrapper) Recheck(ctx context.Context, id string) (Recheck, error) {
 // typed error and means the command never ran (or was aborted before its
 // irreversible step).
 func (w Wrapper) Perform(ctx context.Context, e Epoch, command string) (PerformResult, error) {
-	full, err := w.PerformCommand(e, command)
+	full, token, err := w.PerformCommand(e, command)
 	if err != nil {
 		return PerformResult{}, err
 	}
@@ -384,7 +410,7 @@ func (w Wrapper) Perform(ctx context.Context, e Epoch, command string) (PerformR
 	// codes. Anything else — however refusal-shaped — is the wrapped command's
 	// own output and failure.
 	if exit == HelperExitMalformed || exit == HelperExitIO || exit == HelperExitRefusal {
-		if refusal := decodeRefusalBytes([]byte(stderr)); refusal != nil {
+		if refusal := decodeRefusalBytes([]byte(stderr), token); refusal != nil {
 			return PerformResult{}, refusal
 		}
 	}
@@ -408,7 +434,9 @@ func (w Wrapper) guardCall(ctx context.Context, command string) (Status, error) 
 // failure without a decodable refusal is a transport-level error, never a
 // silent success.
 func (w Wrapper) refusal(stderr string, exit int) error {
-	if refusal := decodeRefusalBytes([]byte(stderr)); refusal != nil {
+	// The non-perform operations run no child, so no invocation token is in
+	// play: any well-formed prefixed refusal at a helper exit code is theirs.
+	if refusal := decodeRefusalBytes([]byte(stderr), ""); refusal != nil {
 		return refusal
 	}
 	return fmt.Errorf("hostfence: helper on host %q exited %d: %s", w.Host, exit, strings.TrimSpace(stderr))
@@ -441,14 +469,17 @@ var ErrStateCorrupt = errors.New("hostfence: the helper state is corrupt")
 // unknown operation, a missing epoch, an undecodable refusal.
 var ErrMalformed = errors.New("hostfence: malformed helper request or response")
 
-// Refusal is the helper's one-object refusal report. Refused is the marker that
-// distinguishes a wrapper refusal from a wrapped command's own stderr, and
-// Error is the closed reason set this layer maps to typed errors.
+// HelperRefusalError is the helper's one-object refusal report. Refused is the
+// marker that distinguishes a wrapper refusal from a wrapped command's own
+// stderr, Error is the closed reason set this layer maps to typed errors, and
+// Token is the invocation's refusal token — a value only the helper and the
+// invoking caller know, so a wrapped command can never forge one.
 type HelperRefusalError struct {
 	Version int    `json:"version"`
 	Refused bool   `json:"refused"`
 	Reason  string `json:"error"`
 	Detail  string `json:"detail"`
+	Token   string `json:"token"`
 }
 
 // Error renders the refusal with its reason.
@@ -484,24 +515,34 @@ func (r *HelperRefusalError) Unwrap() error {
 // closed set — decodes to ErrMalformed, never to a zero refusal a caller might
 // read as success.
 func DecodeRefusal(raw []byte) error {
-	if refusal := decodeRefusalBytes(raw); refusal != nil {
+	if refusal := decodeRefusalBytes(raw, ""); refusal != nil {
 		return refusal
 	}
 	return fmt.Errorf("%w: not a helper refusal: %s", ErrMalformed, strings.TrimSpace(string(raw)))
 }
 
 // decodeRefusalBytes decodes a refusal, returning nil when the bytes are not
-// one. The helper's marker is required and stripped first: an unprefixed object
-// is a wrapped command's stderr, never a wrapper report.
-func decodeRefusalBytes(raw []byte) *HelperRefusalError {
-	text := strings.TrimSpace(string(raw))
-	body, marked := strings.CutPrefix(text, RefusalPrefix)
-	if !marked {
-		return nil
-	}
-	var refusal HelperRefusalError
-	decodeErr := decodeStrict([]byte(strings.TrimSpace(body)), &refusal)
-	if decodeErr == nil && refusal.Refused && refusal.Version == ProtocolVersion && refusal.Unwrap() != nil {
+// one. The helper's marker is required and stripped first, and the stream is
+// searched from its end: a wrapped command's own output before a genuine
+// trailing refusal must not hide it. token, when non-empty, is the invocation's
+// refusal token the report must carry exactly.
+func decodeRefusalBytes(raw []byte, token string) *HelperRefusalError {
+	lines := strings.Split(string(raw), "\n")
+	for _, line := range slices.Backward(lines) {
+		body, marked := strings.CutPrefix(strings.TrimSpace(line), RefusalPrefix)
+		if !marked {
+			continue
+		}
+		var refusal HelperRefusalError
+		if err := decodeStrict([]byte(strings.TrimSpace(body)), &refusal); err != nil {
+			continue
+		}
+		if !refusal.Refused || refusal.Version != ProtocolVersion || refusal.Unwrap() == nil {
+			continue
+		}
+		if token != "" && refusal.Token != token {
+			continue
+		}
 		return &refusal
 	}
 	return nil
