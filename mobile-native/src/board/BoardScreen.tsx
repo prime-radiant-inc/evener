@@ -67,6 +67,7 @@ import { type BoardItem, groupItems, liveItems, pinnedItems, projectItems } from
 import type { OrganizeBy, SeenMarkers } from "./boardMemory";
 import { ROW_MOVE } from "./boardMotion";
 import { createSearchController, projectResults, type SearchScope } from "./boardSearch";
+import { CONTINUE_READING_MS } from "../reader/documentMemory";
 import { documentMemory } from "../reader/nativeDocumentMemory";
 import { openDocumentInSession } from "../reader/openDocument";
 import { BoardNotices, NoticeRow } from "./BoardNotices";
@@ -296,6 +297,15 @@ function Board({
 	const documents = documentMemory(hubId);
 	useSyncExternalStore(documents.subscribe, documents.getRevision);
 	const continueReading = documents.continueReading();
+	// One timer at the trail's expiry, so an idle Board lets the row go on
+	// time; the Board still runs no clock.
+	const [, expire] = useState(0);
+	useEffect(() => {
+		if (!continueReading) return;
+		const remaining = continueReading.leftAt + CONTINUE_READING_MS - Date.now();
+		const timer = setTimeout(() => expire((tick) => tick + 1), Math.max(0, remaining) + 1);
+		return () => clearTimeout(timer);
+	}, [continueReading]);
 	const hubNotices = useMemo(
 		() => notices({ auth: snapshot.auth, sources: sources ?? [], plugins: snapshot.plugins, loadedRows }),
 		[snapshot.auth, sources, snapshot.plugins, loadedRows],
