@@ -2,12 +2,12 @@
 // navigation rows the hub already sends. Where the spec wants a fact the rows
 // don't carry yet, the fallback from spec 18 lives here, and each server
 // addition replaces its fallback in this file: S1 (why text), S2 (approval
-// flag), S3 (subagent counts). S4 replaces the seen marker, which lives in
-// boardMemory.ts. S5 (activity) has landed: whyLine and liveBands take the
-// activity poll's own data (its caller polls evener/activity/read and hands
-// the read back in - this file has no client of its own), with no fallback
-// left when it's given. Subagent failures never appear on a Board row; they
-// show only in the session's Subagents chip and list.
+// flag), S3 (subagent counts). S4's seen marker lives in hubSeen.ts, beside
+// boardMemory.ts's fallback. S5 (activity) has landed: whyLine and liveBands
+// take the activity poll's own data (its caller polls evener/activity/read
+// and hands the read back in - this file has no client of its own), with no
+// fallback left when it's given. Subagent failures never appear on a Board
+// row; they show only in the session's Subagents chip and list.
 import type { NavigationSessionSummary, SessionActivity } from "@evener/appwire-client";
 import { quietState } from "@evener/appwire-client";
 import { relativeAge } from "@evener/appwire-client/state/navigation";
@@ -69,15 +69,11 @@ export function approvalRefs(needsYouSection: readonly NavigationSessionSummary[
 	return refs;
 }
 
-export function boardState(
-	row: NavigationSessionSummary,
-	approval: boolean,
-	seen: boolean,
-): BoardState {
-	// A row from an offline source can't be reached, whatever state it last
-	// reported: it is never Working, Finished or Needs you.
-	if (row.offline) return "shutDown";
-	switch (row.state) {
+/** The Board state a hub state decides on its own, whatever flags ride
+ * along, or null for one that leaves it to the row's other facts. A Board
+ * row and a search result both start here. */
+export function decisiveState(state: string): BoardState | null {
+	switch (state) {
 		case "errored":
 			return "failed";
 		case "restartRequired":
@@ -88,6 +84,19 @@ export function boardState(
 		case "notLoaded":
 			return "shutDown";
 	}
+	return null;
+}
+
+export function boardState(
+	row: NavigationSessionSummary,
+	approval: boolean,
+	seen: boolean,
+): BoardState {
+	// A row from an offline source can't be reached, whatever state it last
+	// reported: it is never Working, Finished or Needs you.
+	if (row.offline) return "shutDown";
+	const decisive = decisiveState(row.state);
+	if (decisive) return decisive;
 	if (row.state === "awaiting" && row.ask_pending) return "question";
 	if (approval || row.approval_pending === true) return "approval";
 	if (row.state === "active") return "working";
@@ -140,12 +149,35 @@ function byRef(a: ClassifiedRow, b: ClassifiedRow): number {
 function oldestFirst(a: ClassifiedRow, b: ClassifiedRow): number {
 	return time(a.row) - time(b.row) || byRef(a, b);
 }
-function newestFirst(a: ClassifiedRow, b: ClassifiedRow): number {
-	return time(b.row) - time(a.row) || byRef(a, b);
+// Finished and Idle order by when the turn ended (S4): updated_at moves on
+// renames and model rounds too, so it stands in only for a row without a
+// readable turn_ended_at.
+function endedTime(row: NavigationSessionSummary): number {
+	return hubTime(row.turn_ended_at) ?? time(row);
+}
+function newestEndedFirst(a: ClassifiedRow, b: ClassifiedRow): number {
+	return endedTime(b.row) - endedTime(a.row) || byRef(a, b);
+}
+// Spec 7.1's order: failed leads, then a question or approval, then a
+// warning or restart-needed, regardless of age; age breaks ties within a
+// band. The hub sorts its needs_you section into the same bands
+// (hubapi.NeedsYouBand: failed first, then any row with a pending question or
+// approval whatever its own state, then everything else). boardState's mark
+// precedence returns "warning"/"restartNeeded" for a row before ever
+// consulting ask_pending/approval_pending, so a warning or restart-needed row
+// that also carries one of those flags must still read it here directly - the
+// mark stays "warning"/"restartNeeded", but the row is blocked on you either
+// way. The approval mark is also checked directly, since a hub older than
+// S2a carries no raw approval_pending and the mark's own fallback
+// (approvalRefs, inferred from needs_you section membership) is the only
+// signal such a row has.
+function needsYouRank(item: ClassifiedRow): number {
+	if (item.state === "failed") return 0;
+	if (item.row.ask_pending || item.row.approval_pending || item.state === "approval") return 1;
+	return 2;
 }
 function needsYouOrder(a: ClassifiedRow, b: ClassifiedRow): number {
-	const rank = (item: ClassifiedRow) => (item.state === "failed" ? 0 : 1);
-	return rank(a) - rank(b) || oldestFirst(a, b);
+	return needsYouRank(a) - needsYouRank(b) || oldestFirst(a, b);
 }
 // Stuck first, else keep relative order: Array.prototype.sort is stable, so a
 // comparator that only distinguishes stuck from not leaves the hub's own
@@ -177,8 +209,8 @@ export function liveBands(
 		if (band) bands[band].push(item);
 	}
 	bands.needsYou.sort(needsYouOrder);
-	bands.finished.sort(newestFirst);
-	bands.idle.sort(newestFirst);
+	bands.finished.sort(newestEndedFirst);
+	bands.idle.sort(newestEndedFirst);
 	bands.working.sort(workingOrder(isStuck));
 	return bands;
 }

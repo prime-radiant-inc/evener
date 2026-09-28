@@ -1,14 +1,17 @@
 import {
 	humanizeState,
 	type NavigationPinSectionDescriptor,
+	type NavigationProjectSummary,
 	type NavigationSessionSummary,
 	quietState,
+	type SearchResult,
 } from "@evener/appwire-client";
 import { useFocusEffect, useIsFocused } from "@react-navigation/native";
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
 import { SymbolView } from "expo-symbols";
 import {
 	type ReactNode,
+	type RefObject,
 	useCallback,
 	useEffect,
 	useMemo,
@@ -20,8 +23,6 @@ import {
 import {
 	ActionSheetIOS,
 	Alert,
-	FlatList,
-	Keyboard,
 	type LayoutChangeEvent,
 	type NativeScrollEvent,
 	type NativeSyntheticEvent,
@@ -33,18 +34,16 @@ import {
 	useWindowDimensions,
 	View,
 } from "react-native";
-import { createRosterService } from "../../../mobile/src/services/roster";
 import type { ConversationClientLike } from "../../../mobile/src/services/conversation";
 import { useConnection } from "../ConnectionProvider";
 import { reconnectDelay } from "../hubConnection";
 import { drafts } from "../nativeDrafts";
-import { RosterSearch } from "../rosterSearch";
 import type { Routes } from "../screens";
 import { useScreenInFront } from "../sheet/useScreenInFront";
-import { Action, Copy, styles, useColors, useTextScale } from "../ui";
-import { usePinNavigation } from "../usePinNavigation";
+import { Action, useColors, useTextScale } from "../ui";
 import {
 	type Band,
+	boardState,
 	type ClassifiedRow,
 	type LiveSummary,
 	liveBands,
@@ -56,19 +55,37 @@ import {
 	usualPlace,
 } from "./attention";
 import { ACTIVITY_POLL_MS, ActivityPoll, isFreshRead } from "./activityPoll";
-import type { SeenMarkers } from "./boardMemory";
-import { bandHeaderText, BoardRows, FoldChevron, type RowContext } from "./BoardRow";
+import type { OrganizeBy, SeenMarkers } from "./boardMemory";
+import { createSearchController, type SearchScope } from "./boardSearch";
+import { BoardNotices, NoticeRow } from "./BoardNotices";
+import { BandHeader, BoardRows, FoldChevron, type RowContext } from "./BoardRow";
 import { BoardToolbar } from "./BoardToolbar";
 import { type BoardController, type BoardSnapshot, createBoardController } from "./boardData";
-import { foldedSections, seenMarkers } from "./nativeBoardMemory";
-import { PinnedSection, useCategoryFolds } from "./PinnedSections";
+import { BoardSeen, type HubSeenMarks, hubSeenMarks } from "./hubSeen";
+import { foldedSections, organizeByPreference, recentSearches, seenMarkers } from "./nativeBoardMemory";
+import { notices } from "./notices";
+import { PinnedSection, useBoardFolds, useCategoryFolds } from "./PinnedSections";
+import { journalHoldsProject, PROJECT_MENU_LABELS, type ProjectMenuAction, projectMenuActions } from "./projectMenu";
+import {
+	expandedProjectKeys,
+	grouping,
+	liveCountsByHost,
+	type ProjectSection,
+	type ProjectsView,
+	type ProjectTreeItem,
+	projectTreeItems,
+	SECTION_FOLDS,
+} from "./projectTree";
+import { projectName, ProjectSectionHeader, ProjectTreeRow } from "./ProjectTreeRow";
 import { fleetMinutes } from "./pulse";
 import { PulseMeter } from "./PulseMeter";
+import { SearchResults } from "./SearchResults";
+import { type BoardOrganization, organizationOpen, useBoardOrganization } from "./useBoardOrganization";
+import { PROJECT_SECTIONS, showExpanded, useProjectSections } from "./useProjectSections";
 
 type Props = NativeStackScreenProps<Routes, "Sessions">;
 type Navigation = Props["navigation"];
 
-const SEARCH_PAGE_SIZE = 50;
 const MINUTE = 60_000;
 const INCOMPATIBLE =
 	"This app and the hub need compatible versions. Update the app from TestFlight, or update Evener on the hub.";
@@ -77,6 +94,8 @@ const BAND_HEADERS: Record<Exclude<Band, "idle">, string> = {
 	finished: "FINISHED",
 	working: "WORKING",
 };
+/** A row that reads a section's next page: a tier's sessions or the catalog's projects. */
+type MoreItem = Extract<ProjectTreeItem, { kind: "more" | "moreProjects" }>;
 
 /** Home (spec 7.1): every live session ordered by who needs you, then the
  * user's pinned categories, projects and archive. */
@@ -119,6 +138,9 @@ function Board({
 	const snapshot = useSyncExternalStore(board.subscribe, board.getSnapshot);
 	const markers = seenMarkers(hubId);
 	const seenRevision = useSyncExternalStore(markers.subscribe, markers.getRevision);
+	const hubMarks = hubSeenMarks(hubId);
+	const hubSeenRevision = useSyncExternalStore(hubMarks.subscribe, hubMarks.getRevision);
+	const seen = useMemo(() => new BoardSeen(markers, hubMarks), [markers, hubMarks]);
 	const [now, setNow] = useState(Date.now);
 	const [draftRefs, setDraftRefs] = useState<Set<string>>(() => new Set());
 
@@ -148,25 +170,27 @@ function Board({
 	// The retry rests while the Board is out of view: the controller is
 	// paused then, and a paused read is cancelled, not answered.
 	useReadRetry(board, connected && focused ? client : null, snapshot);
+	useHubSeenMarks(hubMarks, connected ? client : null, snapshot);
 
 	const bands = useMemo(
 		() =>
 			liveBands(
 				snapshot.live.rows,
 				snapshot.needsYou.rows,
-				(row) => markers.isSeen(row),
+				(row) => seen.isSeen(row),
 				(row) => {
 					const activity = activityOf(row.ref);
 					return activity ? quietState(activity, msSinceRead ?? 0)?.state === "stuck" : false;
 				},
 			),
-		// seenRevision re-runs isSeen after a mark or first run. activityRevision
-		// re-runs isStuck after each read, and activityOf changes when the
-		// connection drops or returns, or the read goes stale. msSinceRead is
-		// left out on purpose: it changes on every render, so it would re-sort
-		// Working every time, and a row's place only needs to be as fresh as the
-		// last read (its why line reads msSinceRead live).
-		[snapshot.live.rows, snapshot.needsYou.rows, markers, seenRevision, activityOf, activityRevision],
+		// The revisions re-run isSeen after a mark, a pruned mark or first run.
+		// activityRevision re-runs isStuck after each read, and activityOf
+		// changes when the connection drops or returns, or the read goes
+		// stale. msSinceRead is left out on purpose: it changes on every
+		// render, so it would re-sort Working every time, and a row's place
+		// only needs to be as fresh as the last read (its why line reads
+		// msSinceRead live).
+		[snapshot.live.rows, snapshot.needsYou.rows, seen, seenRevision, hubSeenRevision, activityOf, activityRevision],
 	);
 	useFirstRun(board, markers, snapshot, focused);
 
@@ -178,11 +202,32 @@ function Board({
 	}, [sources]);
 
 	const classify = useMemo(
-		() => rowClassifier(snapshot.needsYou.rows, (row) => markers.isSeen(row)),
-		[snapshot.needsYou.rows, markers],
+		() => rowClassifier(snapshot.needsYou.rows, (row) => seen.isSeen(row)),
+		[snapshot.needsYou.rows, seen, seenRevision, hubSeenRevision],
 	);
 	const folds = useCategoryFolds(hubId);
-	const categoryMenu = useCategoryMenu(hubId, () => board.getSnapshot().pins.rows);
+	const organization = useBoardOrganization(hubId);
+	const categoryMenu = pinnedCategoryMenu(organization, () => board.getSnapshot().pins.rows);
+	const projectSections = useProjectSections(hubId);
+	const [organizeBy, setOrganizeBy] = useState(() => organizeByPreference(hubId).get());
+	// Every fold inside the project sections, by its ProjectTreeItem fold.
+	const { isFolded, setFolded } = useBoardFolds(hubId);
+	// Every session row the Board has loaded so far, from any section. A
+	// project section's view keeps its identity until its reads change.
+	const projectViews = PROJECT_SECTIONS.map((section) => projectSections[section].view);
+	const loadedRows = useMemo(
+		() => [
+			...snapshot.live.rows,
+			...snapshot.needsYou.rows,
+			...Object.values(snapshot.pinSections).flatMap((page) => page.rows),
+			...projectViews.flatMap(projectSessionRows),
+		],
+		[snapshot.live.rows, snapshot.needsYou.rows, snapshot.pinSections, ...projectViews],
+	);
+	const hubNotices = useMemo(
+		() => notices({ auth: snapshot.auth, sources: sources ?? [], plugins: snapshot.plugins, loadedRows }),
+		[snapshot.auth, sources, snapshot.plugins, loadedRows],
+	);
 
 	const [idleFolded, setIdleFolded] = useState(() => foldedSections(hubId).isFolded("idle", true));
 	const foldIdle = (folded: boolean) => {
@@ -190,33 +235,58 @@ function Board({
 		setIdleFolded(folded);
 	};
 
-	const [searchOpen, setSearchOpen] = useState(false);
-	const search = useBoardSearch(client, connected);
-	const closeSearch = search.clear;
-	const toggleSearch = useCallback(() => {
-		if (searchOpen) closeSearch();
-		setSearchOpen(!searchOpen);
-	}, [searchOpen, closeSearch]);
-	useHeader(navigation, hubId, hubName, connected, toggleSearch);
+	const scroller = useRef<ScrollView>(null);
+	const search = useSearch(connected ? client : null);
+	const searchInput = useRef<TextInput>(null);
+	const [searchText, setSearchText] = useState("");
+	// Searching from the moment the field takes focus until Cancel.
+	const [searching, setSearching] = useState(false);
+	const [scope, setScope] = useState<SearchScope>("all");
+	const searchFieldHeight = searchFieldHeightAt(useTextScale());
+	const { height: windowHeight } = useWindowDimensions();
+	const recent = recentSearches(hubId);
+	const [recentList, setRecentList] = useState(() => recent.list());
+	const typeSearch = (text: string) => {
+		setSearchText(text);
+		search.controller.setQuery(text);
+	};
+	const cancelSearch = () => {
+		typeSearch("");
+		setSearching(false);
+		searchInput.current?.blur?.();
+		// Tuck the field back out of view, where the Board keeps it.
+		scroller.current?.scrollTo?.({ y: searchFieldHeight, animated: true });
+	};
+	// The field sits above the Board, scrolled out of view, so Search brings
+	// it down (spec 7.4). A test renderer's host views have no instances.
+	const revealSearch = useCallback(() => {
+		scroller.current?.scrollTo?.({ y: 0, animated: true });
+		searchInput.current?.focus?.();
+	}, []);
+	useHeader(navigation, hubId, hubName, connected, revealSearch);
 
 	const newSession = () => navigation.navigate("NewSession", { hubId, hubName });
 	const openSession = (row: NavigationSessionSummary) => {
-		markers.markSeen(row);
+		seen.markRead(connected ? client : null, [row]);
 		navigation.navigate("Conversation", { hubId, ref: row.ref, title: row.title });
 	};
-	// A search result opens like its Board row when the Board lists it, so
-	// it's marked seen with the row's own hub timestamp. A session the Board
-	// doesn't list has no Finished state to clear.
-	const openResult = (result: { ref: string; title: string }) => {
-		const listed = (row: NavigationSessionSummary) => row.ref === result.ref;
-		const row = snapshot.live.rows.find(listed) ?? snapshot.needsYou.rows.find(listed);
+	// A search result the Board has loaded opens like its row, so it's
+	// marked seen the same way. Any other session marks itself seen when its
+	// screen loads (useMarkSeenInFront).
+	const openSearchResult = (result: SearchResult) => {
+		recent.add(search.snapshot.query);
+		setRecentList(recent.list());
+		const row = loadedRows.find((loaded) => loaded.ref === result.ref);
 		if (row) openSession(row);
 		else navigation.navigate("Conversation", { hubId, ref: result.ref, title: result.title });
+	};
+	const clearRecent = () => {
+		recent.clear();
+		setRecentList(recent.list());
 	};
 
 	// Where each section starts in the scroller, for the chips and the
 	// summary line to jump to. Bands measure inside the Live block.
-	const scroller = useRef<ScrollView>(null);
 	const offsets = useRef<Record<string, number>>({});
 	const liveEnd = useRef<number | null>(null);
 	const measure = (key: string) => (event: LayoutChangeEvent) => {
@@ -234,9 +304,13 @@ function Board({
 	// Within about a screen of the end of Live, read its next page. Layout
 	// checks too, so a first page too short to scroll keeps reading.
 	const viewport = useRef({ offset: 0, height: 0 });
+	// Where each of the project sections' "more" rows (a tier's sessions, or
+	// the catalog's projects) was last laid out inside its section.
+	const moreFrames = useRef(new Map<string, { y: number; height: number }>());
 	const readMoreLiveIfNear = () => {
 		const page = board.getSnapshot().live;
-		if (liveEnd.current === null || page.remaining === 0 || page.loading || page.stale || page.error) return;
+		// Search results fill the scroller in Live's place.
+		if (searching || liveEnd.current === null || page.remaining === 0 || page.loading || page.stale || page.error) return;
 		const { offset, height } = viewport.current;
 		if (offset + 2 * height >= liveEnd.current) void board.loadMoreLive();
 	};
@@ -244,6 +318,7 @@ function Board({
 		const { contentOffset, layoutMeasurement } = event.nativeEvent;
 		viewport.current = { offset: contentOffset.y, height: layoutMeasurement.height };
 		readMoreLiveIfNear();
+		readVisibleMore();
 	};
 
 	const manifest = snapshot.manifest;
@@ -251,6 +326,10 @@ function Board({
 	// Every category keeps its section; only the chips hide empty ones.
 	const pins = snapshot.pins.rows;
 	const projects = manifest?.catalogs.projects.count ?? 0;
+	// Projects shows while the manifest counts projects, until its catalog
+	// loads empty; the chip follows the section.
+	const projectsShown =
+		projects > 0 && !(projectSections.projects.view.loaded && projectSections.projects.view.projects.length === 0);
 	const archived = manifest?.catalogs.archived_projects.count ?? 0;
 	const chips: ChipProps[] = [];
 	const liveChipCount = manifest?.sections.live.count ?? liveTotal;
@@ -276,7 +355,7 @@ function Board({
 				scrollTo(`pin:${pin.id}`);
 			},
 		});
-	if (projects > 0)
+	if (projectsShown)
 		chips.push({
 			key: "projects",
 			name: "Projects",
@@ -321,6 +400,132 @@ function Board({
 		.filter((minutes): minutes is number[] => minutes !== undefined);
 	const fleetPerMinute = workingMinutes.length ? fleetMinutes(workingMinutes) : undefined;
 
+	// Projects (or Hosts), Test runs and Archived, after the pinned categories.
+	const hostSources = sources ?? [];
+	const projectGrouping = grouping(hostSources, organizeBy);
+	const chooseOrganizeBy = (next: OrganizeBy) => {
+		organizeByPreference(hubId).set(next);
+		setOrganizeBy(next);
+	};
+	// A host's live count needs every Live and Needs you row (ruling 12).
+	const hostLiveCount = liveCountsByHost(
+		[...snapshot.live.rows, ...snapshot.needsYou.rows],
+		snapshot.live.loaded &&
+			snapshot.needsYou.loaded &&
+			snapshot.live.remaining === 0 &&
+			snapshot.needsYou.remaining === 0,
+	);
+	const testRuns = manifest?.catalogs.test_runs.count ?? 0;
+	const projectHeaders: Record<ProjectSection, { title: string; label: string; shown: boolean }> = {
+		projects: {
+			title: projectGrouping === "host-project" ? "HOSTS" : "PROJECTS",
+			label: projectGrouping === "host-project" ? "Hosts" : "Projects",
+			shown: projectsShown,
+		},
+		"test-runs": { title: `Test runs · ${testRuns}`, label: sectionLabel("Test runs", testRuns, "project"), shown: testRuns > 0 },
+		archived: { title: `ARCHIVED · ${archived}`, label: sectionLabel("Archived", archived, "project"), shown: archived > 0 },
+	};
+	const shownSections = PROJECT_SECTIONS.filter((section) => projectHeaders[section].shown).map((section) => {
+		const folded = isFolded(SECTION_FOLDS[section].fold, SECTION_FOLDS[section].foldedByDefault);
+		const { view } = projectSections[section];
+		const items = folded
+			? []
+			: projectTreeItems({
+					section,
+					projects: view.projects,
+					pages: view.pages,
+					sources: hostSources,
+					organizeBy,
+					isFolded,
+					hostLiveCount,
+					remainingProjects: view.remaining,
+				});
+		return { section, folded, items };
+	});
+	const itemsOf = (section: ProjectSection) => shownSections.find((shown) => shown.section === section)?.items ?? [];
+	// A section's catalog is read when it's first shown unfolded, so a folded
+	// Test runs or Archived costs no read.
+	const opening = focused ? shownSections.filter((shown) => !shown.folded).map((shown) => shown.section) : [];
+	const openingKey = opening.join(" ");
+	// The sections' controllers change together, with the connection.
+	const projectsController = projectSections.projects.controller;
+	useEffect(() => {
+		for (const section of opening) projectSections[section].open();
+	}, [openingKey, projectsController]);
+	// After each render, the browsers read exactly the projects on screen.
+	useEffect(() => {
+		if (!focused) return;
+		for (const section of PROJECT_SECTIONS) {
+			const controller = projectSections[section].controller;
+			if (controller) showExpanded(controller, expandedProjectKeys(itemsOf(section)));
+		}
+	});
+	// A "more" row reads its next page when pressed, and once at least half of
+	// it is on screen (checked on scroll and on layout, as Live's paging is).
+	const readMore = (section: ProjectSection, item: MoreItem) => {
+		const controller = projectSections[section].controller;
+		if (item.kind === "moreProjects") void controller?.loadMoreProjects();
+		else void controller?.loadMoreSessions(item.projectKey, item.tier);
+	};
+	const readVisibleMore = () => {
+		const { offset, height } = viewport.current;
+		// Search results fill the scroller in the sections' place, so the rows'
+		// last frames say nothing about what's on screen.
+		if (searching || height === 0) return;
+		for (const { section, items } of shownSections) {
+			const top = offsets.current[section];
+			if (top === undefined) continue;
+			for (const item of items) {
+				if (item.kind !== "more" && item.kind !== "moreProjects") continue;
+				const frame = moreFrames.current.get(item.key);
+				if (!frame) continue;
+				const start = top + frame.y;
+				const shown = Math.min(start + frame.height, offset + height) - Math.max(start, offset);
+				if (shown >= frame.height / 2) readMore(section, item);
+			}
+		}
+	};
+	const projectMenu = (section: ProjectSection, project: NavigationProjectSummary) => {
+		const actions = projectMenuActions(project, {
+			connected,
+			organizationReady: organization.ready,
+			archived: section === "archived",
+		});
+		return actions.length ? () => openProjectMenu(organization, project, actions) : undefined;
+	};
+	const projectItem = (section: ProjectSection, item: ProjectTreeItem) => {
+		if (item.kind === "session")
+			return (
+				<View key={item.key} style={{ marginLeft: 16 * item.depth }}>
+					{rows([{ row: item.row, state: boardState(item.row, false, seen.isSeen(item.row)) }], "quiet", false)}
+				</View>
+			);
+		if (item.kind === "more" || item.kind === "moreProjects")
+			return (
+				<View
+					key={item.key}
+					testID={item.kind === "more" ? "project-more" : "project-more-projects"}
+					onLayout={(event) => {
+						moreFrames.current.set(item.key, event.nativeEvent.layout);
+						readVisibleMore();
+					}}
+				>
+					<ProjectTreeRow item={item} onPress={() => readMore(section, item)} />
+				</View>
+			);
+		return (
+			<ProjectTreeRow
+				key={item.key}
+				item={item}
+				onPress={() => {
+					if ("fold" in item) setFolded(item.fold, !item.folded);
+				}}
+				onLongPress={item.kind === "project" ? projectMenu(section, item.project) : undefined}
+				changing={item.kind === "project" && journalHoldsProject(organization, item.project.key)}
+			/>
+		);
+	};
+
 	let live: ReactNode;
 	// Update needed says everything there is to say until something loads.
 	if (!snapshot.loaded && fatal) live = null;
@@ -347,25 +552,54 @@ function Board({
 
 	return (
 		<View style={{ flex: 1, backgroundColor: palette.page }}>
-			{searchOpen ? <SearchField search={search} connected={connected} /> : null}
-			{search.active ? (
-				<SearchResults search={search} connected={connected} onOpen={openResult} />
-			) : (
-				<>
-					{chips.length ? <Chips chips={chips} /> : null}
-					<ScrollView
-						ref={scroller}
-						style={{ flex: 1 }}
-						contentContainerStyle={{ paddingBottom: 24 }}
-						onScroll={onScroll}
-						onLayout={(event) => {
-							viewport.current = { ...viewport.current, height: event.nativeEvent.layout.height };
-							readMoreLiveIfNear();
-						}}
-						onContentSizeChange={readMoreLiveIfNear}
-						scrollEventThrottle={100}
-					>
-						{fatal ? <Notice text={INCOMPATIBLE} /> : null}
+			{/* Fixed under the header; their sections aren't there while
+			    search results are. */}
+			{chips.length && !searching ? <Chips chips={chips} /> : null}
+			<ScrollView
+				ref={scroller}
+				style={{ flex: 1 }}
+				// Starts just past the search field: pulling down reveals it
+				// (spec 7.3). iOS applies this once, when the scroller mounts.
+				contentOffset={{ x: 0, y: searchFieldHeight }}
+				keyboardShouldPersistTaps="handled"
+				keyboardDismissMode="on-drag"
+				// iOS keeps that offset only while the content is taller than the
+				// viewport, so even a short Board (skeleton, empty, a few rows)
+				// is tall enough to keep the field hidden.
+				contentContainerStyle={{ paddingBottom: 24, minHeight: windowHeight + searchFieldHeight }}
+				onScroll={onScroll}
+				onLayout={(event) => {
+					viewport.current = { ...viewport.current, height: event.nativeEvent.layout.height };
+					readMoreLiveIfNear();
+					readVisibleMore();
+				}}
+				onContentSizeChange={readMoreLiveIfNear}
+				scrollEventThrottle={100}
+			>
+				<SearchField
+					inputRef={searchInput}
+					height={searchFieldHeight}
+					text={searchText}
+					searching={searching}
+					onFocus={() => setSearching(true)}
+					onChangeText={typeSearch}
+					onCancel={cancelSearch}
+				/>
+				{searching ? (
+					<SearchResults
+						search={search.snapshot}
+						scope={scope}
+						onScope={setScope}
+						connected={connected}
+						recent={recentList}
+						onOpen={openSearchResult}
+						onRecent={typeSearch}
+						onClearRecent={clearRecent}
+					/>
+				) : (
+					<>
+						{fatal ? <NoticeRow text={INCOMPATIBLE} /> : null}
+						<BoardNotices hubId={hubId} notices={hubNotices} navigation={navigation} />
 						<View
 							testID="live-block"
 							onLayout={(event) => {
@@ -391,45 +625,43 @@ function Board({
 								onLayout={measure(`pin:${pin.id}`)}
 							/>
 						))}
-						{projects > 0 ? (
-							<View onLayout={measure("projects")}>
-								<SectionRow
-									text={`Projects · ${projects}`}
-									label={sectionLabel("Projects", projects, "project")}
-									onPress={() => navigation.navigate("Projects", { hubId, archived: false })}
+						{shownSections.map(({ section, folded, items }) => (
+							<View
+								key={section}
+								testID={`project-section:${section}`}
+								onLayout={(event) => {
+									measure(section)(event);
+									readVisibleMore();
+								}}
+								style={{ paddingTop: 10 }}
+							>
+								<ProjectSectionHeader
+									title={projectHeaders[section].title}
+									label={projectHeaders[section].label}
+									folded={folded}
+									onToggle={() => setFolded(SECTION_FOLDS[section].fold, !folded)}
+									organize={
+										section === "projects" && projectGrouping !== "flat"
+											? { by: organizeBy, onChange: chooseOrganizeBy }
+											: null
+									}
 								/>
+								{items.map((item) => projectItem(section, item))}
 							</View>
-						) : null}
-						{archived > 0 ? (
-							<View onLayout={measure("archived")}>
-								<SectionRow
-									text={`Archived · ${archived}`}
-									label={sectionLabel("Archived", archived, "project")}
-									onPress={() => navigation.navigate("Projects", { hubId, archived: true })}
-								/>
-							</View>
-						) : null}
-					</ScrollView>
-				</>
-			)}
+						))}
+					</>
+				)}
+			</ScrollView>
 			<BoardToolbar state={state} fatal={fatal} newSessionDisabled={!connected} onNewSession={newSession} />
 		</View>
 	);
 }
 
-/** Rename and Delete for the pinned categories (spec 7.1), through one
- * organization journal for the whole Board. ⋯ shows only while a change can
- * go out: connected, the journal confirmed against the hub, and no change
- * pending or unresolved. The journal's own error text is never shown; a
- * change on its way dims its category. */
-function useCategoryMenu(hubId: string, catalog: () => readonly NavigationPinSectionDescriptor[]) {
-	const pin = usePinNavigation(hubId);
-	const free = (action: { pending: boolean; uncertain: boolean; storageUnavailable: boolean } | null) =>
-		!!action && !action.pending && !action.uncertain && !action.storageUnavailable;
-	const canChange = pin.ready && pin.confirmed && !!pin.actions && free(pin.action);
-	// Checked again at every press: the connection or the journal may have
-	// moved while the sheet or an alert was up.
-	const canChangeNow = () => pin.isCurrent() && !!pin.actions && free(pin.actions.getSnapshot());
+/** Rename and Delete for the pinned categories (spec 7.1), through the
+ * Board's one organization journal. ⋯ shows only while a change can go out:
+ * connected, and no change pending or unresolved. The journal's own error
+ * text is never shown; a change on its way dims its category. */
+function pinnedCategoryMenu(organization: BoardOrganization, catalog: () => readonly NavigationPinSectionDescriptor[]) {
 	const listed = (sectionId: string) => catalog().some((section) => section.id === sectionId);
 	const rename = (section: NavigationPinSectionDescriptor) =>
 		Alert.prompt(
@@ -446,8 +678,8 @@ function useCategoryMenu(hubId: string, catalog: () => readonly NavigationPinSec
 							Alert.alert("Category names can be up to 80 characters.");
 							return;
 						}
-						if (!canChangeNow() || !listed(section.id)) return;
-						void pin.actions?.renamePinSection({ sectionId: section.id, name });
+						if (!organizationOpen(organization) || !listed(section.id)) return;
+						void organization.actions?.renamePinSection({ sectionId: section.id, name });
 					},
 				},
 			],
@@ -461,13 +693,13 @@ function useCategoryMenu(hubId: string, catalog: () => readonly NavigationPinSec
 				text: "Delete",
 				style: "destructive",
 				onPress: () => {
-					if (!canChangeNow() || !listed(section.id)) return;
-					void pin.actions?.deletePinSection({ sectionId: section.id });
+					if (!organizationOpen(organization) || !listed(section.id)) return;
+					void organization.actions?.deletePinSection({ sectionId: section.id });
 				},
 			},
 		]);
 	const open = (section: NavigationPinSectionDescriptor) => {
-		if (!canChangeNow()) return;
+		if (!organizationOpen(organization)) return;
 		if (Platform.OS === "ios") {
 			ActionSheetIOS.showActionSheetWithOptions(
 				{ title: section.name, options: ["Rename", "Delete", "Cancel"], destructiveButtonIndex: 1, cancelButtonIndex: 2 },
@@ -484,13 +716,137 @@ function useCategoryMenu(hubId: string, catalog: () => readonly NavigationPinSec
 			{ text: "Cancel", style: "cancel" },
 		]);
 	};
-	const operation = pin.action?.pending ? pin.action.recovery?.operation : undefined;
+	const operation = organization.state?.pending ? organization.state.recovery?.operation : undefined;
 	return {
-		menuFor: (section: NavigationPinSectionDescriptor) => (canChange ? () => open(section) : null),
+		menuFor: (section: NavigationPinSectionDescriptor) => (organization.ready ? () => open(section) : null),
 		changing: (sectionId: string) =>
 			(operation?.kind === "renamePinSection" || operation?.kind === "deletePinSection") &&
 			operation.params.sectionId === sectionId,
 	};
+}
+
+/** A project row's long-press menu (ruling 15): Pin to top or Unpin, and
+ * Archive or Unarchive, as an action sheet, or an alert off iOS. */
+function openProjectMenu(
+	organization: BoardOrganization,
+	project: NavigationProjectSummary,
+	actions: readonly ProjectMenuAction[],
+) {
+	if (!organizationOpen(organization)) return;
+	const act = (action: ProjectMenuAction) => {
+		if (!organizationOpen(organization)) return;
+		if (action === "pin" || action === "unpin") void organization.actions?.favorite(project.key, action === "pin");
+		else
+			void organization.actions?.archive(
+				{ kind: "project", id: project.key, workingDir: project.working_dir },
+				action === "archive",
+			);
+	};
+	const title = projectName(project);
+	if (Platform.OS === "ios") {
+		ActionSheetIOS.showActionSheetWithOptions(
+			{ title, options: [...actions.map((action) => PROJECT_MENU_LABELS[action]), "Cancel"], cancelButtonIndex: actions.length },
+			(index) => {
+				const action = actions[index];
+				if (action) act(action);
+			},
+		);
+		return;
+	}
+	Alert.alert(title, undefined, [
+		...actions.map((action) => ({ text: PROJECT_MENU_LABELS[action], onPress: () => act(action) })),
+		{ text: "Cancel", style: "cancel" },
+	]);
+}
+
+/** The Board's search controller, bound to the ready client or none. */
+function useSearch(client: ConversationClientLike | null) {
+	const [controller] = useState(createSearchController);
+	useEffect(() => () => controller.dispose(), [controller]);
+	useEffect(() => controller.setClient(client), [controller, client]);
+	const snapshot = useSyncExternalStore(controller.subscribe, controller.getSnapshot);
+	return { controller, snapshot };
+}
+
+/** The search field's row: an 8pt margin around a field that grows with
+ * the text size. */
+const searchFieldHeightAt = (scale: number) => 16 + Math.round(36 * scale);
+
+/** Board search's field (spec 7.4), first in the Board's scroller. Cancel
+ * shows while you search. */
+function SearchField({
+	inputRef,
+	height,
+	text,
+	searching,
+	onFocus,
+	onChangeText,
+	onCancel,
+}: {
+	inputRef: RefObject<TextInput | null>;
+	height: number;
+	text: string;
+	searching: boolean;
+	onFocus: () => void;
+	onChangeText: (text: string) => void;
+	onCancel: () => void;
+}) {
+	const { palette } = useColors();
+	const scale = useTextScale();
+	return (
+		<View
+			testID="search-field"
+			style={{ height, paddingHorizontal: 16, paddingVertical: 8, flexDirection: "row", alignItems: "center", columnGap: 12 }}
+		>
+			<View
+				style={{
+					flex: 1,
+					alignSelf: "stretch",
+					flexDirection: "row",
+					alignItems: "center",
+					columnGap: 6,
+					paddingHorizontal: 8,
+					borderRadius: 10,
+					backgroundColor: palette.inset,
+				}}
+			>
+				<SymbolView name="magnifyingglass" size={15 * scale} tintColor={palette.inkLow} />
+				<TextInput
+					ref={inputRef}
+					accessibilityLabel="Search sessions"
+					placeholder="Search sessions"
+					placeholderTextColor={palette.inkLow}
+					value={text}
+					onFocus={onFocus}
+					onChangeText={onChangeText}
+					returnKeyType="search"
+					autoCapitalize="none"
+					autoCorrect={false}
+					clearButtonMode="while-editing"
+					allowFontScaling={Platform.OS !== "ios"}
+					style={{ flex: 1, alignSelf: "stretch", fontSize: 17 * scale, color: palette.inkHi }}
+				/>
+			</View>
+			{searching ? (
+				<Pressable
+					accessibilityRole="button"
+					accessibilityLabel="Cancel search"
+					onPress={onCancel}
+					style={({ pressed }) => ({ minHeight: 44, justifyContent: "center", opacity: pressed ? 0.6 : 1 })}
+				>
+					<Text allowFontScaling={Platform.OS !== "ios"} style={{ fontSize: 17 * scale, color: palette.accentInk }}>
+						Cancel
+					</Text>
+				</Pressable>
+			) : null}
+		</View>
+	);
+}
+
+/** Every session row a project section's view holds, across its projects'
+ * tiers. */
+function projectSessionRows(view: ProjectsView): NavigationSessionSummary[] {
+	return [...view.pages.values()].flatMap((pages) => Object.values(pages).flatMap((page) => page.rows));
 }
 
 /** The drafts saved on this device for a hub's sessions, or none when the
@@ -571,6 +927,24 @@ function useActivityPoll(client: ConversationClientLike | null, connected: boole
 	return { revision, activityOf, msSinceRead: reading ? msSinceRead : null };
 }
 
+/** The hub's seen marks (S4): marks go out whenever the connection is ready,
+ * which resends any a dropped connection lost and sends those made while
+ * offline, and each pending mark is pruned once the Board's rows show it
+ * landed. */
+function useHubSeenMarks(
+	hubMarks: HubSeenMarks,
+	client: ConversationClientLike | null,
+	snapshot: Pick<BoardSnapshot, "live" | "needsYou" | "pinSections">,
+) {
+	useEffect(() => {
+		hubMarks.flush(client);
+	}, [hubMarks, client]);
+	const { live, needsYou, pinSections } = snapshot;
+	useEffect(() => {
+		hubMarks.prune([live.rows, needsYou.rows, ...Object.values(pinSections).map((page) => page.rows)].flat());
+	}, [hubMarks, live.rows, needsYou.rows, pinSections]);
+}
+
 /** While any of the Board's reads has failed on a ready connection (Live,
  * Needs you, the pin catalog, a category or the manifest; first read or
  * later), rebind the client after a backoff that grows with each failed
@@ -609,7 +983,7 @@ function useReadRetry(
 	}, [board, client, failed, count]);
 }
 
-function useHeader(navigation: Navigation, hubId: string, hubName: string, connected: boolean, toggleSearch: () => void) {
+function useHeader(navigation: Navigation, hubId: string, hubName: string, connected: boolean, revealSearch: () => void) {
 	const { fontScale } = useWindowDimensions();
 	useEffect(() => {
 		const hubButton = (
@@ -629,17 +1003,17 @@ function useHeader(navigation: Navigation, hubId: string, hubName: string, conne
 					label: "Search",
 					accessibilityLabel: "Search sessions",
 					icon: { type: "sfSymbol", name: "magnifyingglass" },
-					onPress: toggleSearch,
+					onPress: revealSearch,
 				},
 			],
 			headerLeft: () => hubButton,
 			headerRight: () => (
-				<Action label="Search sessions" onPress={toggleSearch}>
+				<Action label="Search sessions" onPress={revealSearch}>
 					{fontScale > 1.4 ? "Find" : "Search"}
 				</Action>
 			),
 		});
-	}, [navigation, hubId, hubName, connected, toggleSearch, fontScale]);
+	}, [navigation, hubId, hubName, connected, revealSearch, fontScale]);
 }
 
 /** The hub button (spec 7.1): the hub's name and a chevron as one control,
@@ -729,7 +1103,7 @@ function Chips({ chips }: { chips: ChipProps[] }) {
 	const { palette } = useColors();
 	const scale = useTextScale();
 	return (
-		<View style={{ backgroundColor: palette.page }}>
+		<View testID="chips" style={{ backgroundColor: palette.page }}>
 			<ScrollView
 				horizontal
 				showsHorizontalScrollIndicator={false}
@@ -880,26 +1254,6 @@ function SummaryLine({
 	);
 }
 
-function BandHeader({ text }: { text: string }) {
-	const { palette } = useColors();
-	const scale = useTextScale();
-	return (
-		<Text
-			testID="band-header"
-			accessibilityRole="header"
-			allowFontScaling={Platform.OS !== "ios"}
-			style={{
-				paddingTop: 22,
-				paddingBottom: 6,
-				paddingHorizontal: 16,
-				...bandHeaderText(palette, scale),
-			}}
-		>
-			{text}
-		</Text>
-	);
-}
-
 /** Idle's header, folded by default; its state persists per device. */
 function IdleFold({ count, folded, onToggle }: { count: number; folded: boolean; onToggle: () => void }) {
 	const { palette } = useColors();
@@ -923,35 +1277,6 @@ function IdleFold({ count, folded, onToggle }: { count: number; folded: boolean;
 				{`Idle · ${count}`}
 			</Text>
 			<FoldChevron folded={folded} />
-		</Pressable>
-	);
-}
-
-/** Projects or Archived, after the pinned categories: a row that opens its
- * own screen until PR 3b brings it inline. */
-function SectionRow({ text, label, onPress }: { text: string; label: string; onPress: () => void }) {
-	const { palette } = useColors();
-	const scale = useTextScale();
-	return (
-		<Pressable
-			accessibilityRole="button"
-			accessibilityLabel={label}
-			onPress={onPress}
-			style={({ pressed }) => ({
-				minHeight: 48,
-				paddingHorizontal: 16,
-				flexDirection: "row",
-				alignItems: "center",
-				columnGap: 8,
-				borderTopWidth: 0.5,
-				borderColor: palette.edge,
-				backgroundColor: pressed ? palette.pressed : palette.page,
-			})}
-		>
-			<Text allowFontScaling={Platform.OS !== "ios"} style={{ flex: 1, fontSize: 17 * scale, color: palette.inkHi }}>
-				{text}
-			</Text>
-			<SymbolView name="chevron.right" size={13 * scale} tintColor={palette.inkLow} />
 		</Pressable>
 	);
 }
@@ -998,221 +1323,5 @@ function EmptyBoard({ disabled, onNewSession }: { disabled: boolean; onNewSessio
 				New session
 			</Action>
 		</View>
-	);
-}
-
-/** A hub-level notice on the page, like a row: the mark says it needs you. */
-function Notice({ text }: { text: string }) {
-	const { palette } = useColors();
-	const scale = useTextScale();
-	return (
-		<View
-			style={{
-				marginTop: 4,
-				marginHorizontal: 16,
-				paddingTop: 8,
-				paddingBottom: 10,
-				flexDirection: "row",
-				alignItems: "center",
-				columnGap: 10,
-				borderBottomWidth: 0.5,
-				borderColor: palette.edge,
-			}}
-		>
-			<View style={{ width: 22, alignItems: "center" }}>
-				<SymbolView name="exclamationmark.triangle.fill" size={17 * scale} tintColor={palette.attention} />
-			</View>
-			<Text
-				allowFontScaling={Platform.OS !== "ios"}
-				style={{ flex: 1, fontSize: 15 * scale, lineHeight: 20 * scale, color: palette.inkHi }}
-			>
-				{text}
-			</Text>
-		</View>
-	);
-}
-
-type BoardSearch = ReturnType<typeof useBoardSearch>;
-
-/** Today's roster search until PR 5 replaces it: thread/list matched on the
- * hub, results in place of the Board. */
-function useBoardSearch(client: ConversationClientLike | null, connected: boolean) {
-	const [text, setText] = useState("");
-	const [active, setActive] = useState(false);
-	const roster = useMemo(
-		() => new RosterSearch(client ? createRosterService(client, SEARCH_PAGE_SIZE) : null),
-		[client],
-	);
-	const results = useSyncExternalStore(roster.subscribe, roster.getSnapshot);
-	useEffect(() => {
-		setText("");
-		setActive(false);
-		return () => roster.cancel();
-	}, [roster]);
-	useFocusEffect(
-		useCallback(
-			() => (client && connected && active ? roster.watch(client) : () => {}),
-			[roster, client, connected, active],
-		),
-	);
-	const search = useCallback(
-		(value: string) => {
-			if (!connected) return;
-			Keyboard.dismiss();
-			if (!value.trim()) {
-				setActive(false);
-				roster.cancel();
-				return;
-			}
-			setActive(true);
-			void roster.load(value);
-		},
-		[connected, roster],
-	);
-	const clear = useCallback(() => {
-		setText("");
-		setActive(false);
-		roster.cancel();
-	}, [roster]);
-	return { ...results, text, setText, active, search, clear };
-}
-
-function SearchField({ search, connected }: { search: BoardSearch; connected: boolean }) {
-	const colors = useColors();
-	const { fontScale } = useWindowDimensions();
-	return (
-		<View style={{ paddingHorizontal: 16, paddingVertical: 8, gap: 4 }}>
-			<View style={[styles.row, { flexWrap: "wrap" }]}>
-				<TextInput
-					accessibilityLabel="Search sessions"
-					placeholder="Search sessions"
-					placeholderTextColor={colors.secondary}
-					value={search.text}
-					onChangeText={search.setText}
-					onSubmitEditing={() => search.search(search.text)}
-					returnKeyType="search"
-					autoCapitalize="none"
-					autoCorrect={false}
-					autoFocus
-					style={[
-						styles.input,
-						styles.fill,
-						{
-							minWidth: fontScale > 1.4 ? "100%" : "50%",
-							color: colors.text,
-							borderColor: colors.border,
-							backgroundColor: colors.surface,
-						},
-					]}
-				/>
-				<Action disabled={!connected} onPress={() => search.search(search.text)}>
-					Search
-				</Action>
-				{search.text || search.active ? <Action onPress={search.clear}>Clear</Action> : null}
-			</View>
-			{search.active && search.query ? <Copy muted>{`Results for “${search.query}”`}</Copy> : null}
-		</View>
-	);
-}
-
-function SearchResults({
-	search,
-	connected,
-	onOpen,
-}: {
-	search: BoardSearch;
-	connected: boolean;
-	onOpen: (result: { ref: string; title: string }) => void;
-}) {
-	const colors = useColors();
-	const { fontScale } = useWindowDimensions();
-	return (
-		<FlatList
-			style={{ flex: 1 }}
-			keyboardShouldPersistTaps="handled"
-			data={search.rows}
-			keyExtractor={(item) => item.ref}
-			contentContainerStyle={{ paddingBottom: 16, gap: 12 }}
-			ListEmptyComponent={
-				<View style={{ paddingHorizontal: 16 }}>
-					<Copy muted>
-						{search.loading
-							? "Loading sessions…"
-							: search.error
-								? "Could not search this hub's sessions."
-								: search.query
-									? "No sessions match your search."
-									: ""}
-					</Copy>
-				</View>
-			}
-			ListFooterComponent={
-				search.hasMore ? (
-					<View style={{ paddingHorizontal: 16 }}>
-						<Copy muted>
-							Showing up to {SEARCH_PAGE_SIZE} sessions. Narrow your search to find others.
-						</Copy>
-					</View>
-				) : null
-			}
-			renderItem={({ item }) => {
-				const stateLabel = humanizeState(item.status, item.askPending === true);
-				const signals = [
-					["active", "awaiting", "warning", "errored"].includes(item.status) ? stateLabel : "",
-					item.askPending && item.status !== "awaiting" ? humanizeState("awaiting", true) : "",
-				].filter(Boolean);
-				const metadataStyle = {
-					fontSize: 13 * (Platform.OS === "ios" ? fontScale : 1),
-					lineHeight: 19 * (Platform.OS === "ios" ? fontScale : 1),
-				};
-				return (
-					<Pressable
-						accessibilityRole="button"
-						accessibilityLabel={`Open ${item.title || "Untitled session"}`}
-						accessibilityHint={[...(signals.length ? signals : [stateLabel]), item.project].filter(Boolean).join(". ")}
-						disabled={!connected}
-						onPress={() => onOpen(item)}
-						style={{
-							marginHorizontal: 16,
-							paddingVertical: 13,
-							minHeight: Platform.OS === "android" ? 72 : 68,
-							borderBottomWidth: 0.5,
-							borderColor: colors.border,
-							gap: 4,
-						}}
-					>
-						<Text
-							allowFontScaling={Platform.OS !== "ios"}
-							numberOfLines={2}
-							style={{
-								color: colors.text,
-								fontSize: 17 * (Platform.OS === "ios" ? fontScale : 1),
-								fontWeight: "500",
-							}}
-						>
-							{item.title || "Untitled session"}
-						</Text>
-						{signals.length ? (
-							<Text
-								allowFontScaling={Platform.OS !== "ios"}
-								style={[metadataStyle, { color: item.attention === "needsYou" ? colors.accent : colors.secondary }]}
-							>
-								{signals.join(" · ")}
-							</Text>
-						) : null}
-						{item.project ? (
-							<Text
-								allowFontScaling={Platform.OS !== "ios"}
-								numberOfLines={fontScale > 1.4 ? 2 : 1}
-								ellipsizeMode={fontScale > 1.4 ? "tail" : "middle"}
-								style={[metadataStyle, { color: colors.secondary }]}
-							>
-								{item.projectLabel}
-							</Text>
-						) : null}
-					</Pressable>
-				);
-			}}
-		/>
 	);
 }

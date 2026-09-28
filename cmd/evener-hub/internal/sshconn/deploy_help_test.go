@@ -120,7 +120,7 @@ func TestInstallerMovedTagRefusalNamesThePushPath(t *testing.T) {
 		case strings.Contains(joined, "launch-check"):
 			// The installer succeeded but fetched a newer snapshot than this
 			// controller's commit: a moved channel tag.
-			return []byte(`{"protocol":"evener-appwire-v5","version":"oldersha","launch_flags":["api-log"]}`), nil
+			return []byte(`{"protocol":"evener-appwire-v6","version":"oldersha","launch_flags":["api-log"]}`), nil
 		default:
 			return nil, fmt.Errorf("unexpected remote command: %v", argv)
 		}
@@ -147,10 +147,10 @@ func unstampedRefusal(t *testing.T, opts Options) error {
 		func(call int) ([]byte, error) {
 			if call == 0 {
 				// The on-disk binary before the deploy.
-				return []byte(`{"protocol":"evener-appwire-v5","version":"oldsha","launch_flags":["api-log"]}`), nil
+				return []byte(`{"protocol":"evener-appwire-v6","version":"oldsha","launch_flags":["api-log"]}`), nil
 			}
 			// The artifact the deploy wrote: right platform, foreign identity.
-			return []byte(`{"protocol":"evener-appwire-v5","version":"othersha","launch_flags":["api-log"]}`), nil
+			return []byte(`{"protocol":"evener-appwire-v6","version":"othersha","launch_flags":["api-log"]}`), nil
 		},
 		func(int) ([]byte, error) {
 			return []byte(`{"version":"othersha","mobile_api_version":1,"hub_addr":"127.0.0.1:9180"}`), nil

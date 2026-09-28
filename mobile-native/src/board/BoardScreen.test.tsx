@@ -4,22 +4,29 @@
 // kv-store.
 import type {
 	AnyNotification,
+	AuthStatusResponse,
 	ConnectionState,
 	NavigationInvalidationTarget,
+	NavigationProjectSummary,
 	NavigationReadParams,
 	NavigationSessionSummary,
+	PluginEntry,
+	SearchParams,
 	SessionActivity,
+	SessionSeenMark,
+	SessionSeenSetParams,
 } from "@evener/appwire-client";
 import { WireError } from "@evener/appwire-client";
 import { manifest, wireV2 } from "@evener/appwire-client/testing/navigation";
 import type { ReactTestInstance, ReactTestRenderer } from "react-test-renderer";
-import { act } from "react-test-renderer";
+import { act, create } from "react-test-renderer";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type { ConversationClientLike } from "../../../mobile/src/services/conversation";
 import { alertRequests, render, renderedText, screenConnection } from "../renderNative.testkit";
 import { ACTIVITY_POLL_MS, STALE_AFTER_MS } from "./activityPoll";
 import { BoardScreen } from "./BoardScreen";
 import { PulseMeter } from "./PulseMeter";
+import { hubSeenMarks } from "./hubSeen";
 import { seenMarkers } from "./nativeBoardMemory";
 
 const harness = vi.hoisted(() => ({
@@ -152,12 +159,24 @@ interface Fleet {
 	/** Each category's sessions, by id. */
 	pinned: Record<string, NavigationSessionSummary[]>;
 	manifest: ReturnType<typeof manifest>;
-	/** Sessions only search finds: the Board doesn't list them. */
+	/** Sessions only search finds, as past results: the Board doesn't list them. */
 	searchOnly?: NavigationSessionSummary[];
 	/** What evener/activity/read answers (S5): absent, the hub predates S5
 	 * and answers method-not-found; null, the read fails as a timeout would. */
 	activity?: SessionActivity[] | null;
+	/** Whether evener/search fails. */
+	searchFails?: boolean;
+	/** What evener/auth/list and evener/plugin/list answer; none by default. */
+	auth?: AuthStatusResponse[];
+	plugins?: PluginEntry[];
+	/** Whether evener/auth/list and evener/plugin/list fail. */
+	listsFail?: boolean;
+	/** Each project catalog's projects; a catalog left out is empty. */
+	catalogs?: Partial<Record<ProjectCatalogName, NavigationProjectSummary[]>>;
+	/** Each project tier's sessions, keyed `${projectKey}:${tier}`, paged by the read's limit. */
+	projectPages?: Record<string, NavigationSessionSummary[]>;
 }
+type ProjectCatalogName = "projects" | "archived_projects" | "test_runs";
 const keptNote = session("local:kept", { title: "Kept note", live: false, updated_at: minutesAgo(600) });
 const oldPlan = session("local:plan", { title: "Old plan", live: false, updated_at: minutesAgo(900) });
 const releaseNotes = session("local:notes", { title: "Release notes", live: false, updated_at: minutesAgo(1200) });
@@ -177,11 +196,14 @@ const fleet: Fleet = {
 	}),
 };
 
-/** A hub that answers navigation reads by params; `hold` keeps a read
+/** A hub that answers navigation reads by params, and search and the
+ * sign-in and plugin lists from the fleet; `hold` keeps a navigation read
  * unanswered until the test releases it, and `fail` rejects it. It accepts
- * every category rename and delete (`mutations` records them), unless
- * `refuse` says to reject one, and `holdChanges` keeps them unanswered
- * until `release`. */
+ * every category rename and delete and every project favorite and archive
+ * (`mutations` records them, and a favorite shows in the catalog after),
+ * unless `refuse` says to reject one, and `holdChanges` keeps them
+ * unanswered until `release`. It accepts every seen mark, and `seen`
+ * records each call's marks. */
 function hub(
 	shape: Fleet,
 	hold: (params: NavigationReadParams) => boolean = () => false,
@@ -190,7 +212,10 @@ function hub(
 ) {
 	const requests: NavigationReadParams[] = [];
 	const activityReads: unknown[] = [];
+	const lists: string[] = [];
+	const searches: string[] = [];
 	const mutations: Array<{ method: string; params: unknown }> = [];
+	const seen: SessionSeenMark[][] = [];
 	const listeners = new Set<(event: AnyNotification) => void>();
 	const held: Array<() => void> = [];
 	const answer = (params: NavigationReadParams) => {
@@ -201,6 +226,16 @@ function hub(
 			const rows = shape.pinned[params.sectionId ?? ""];
 			if (!rows) throw new Error(`no category ${params.sectionId}`);
 			return { sessions: rows, remaining: 0 };
+		}
+		if (params.resource === "catalog") {
+			const projects = shape.catalogs?.[params.catalog as ProjectCatalogName] ?? [];
+			const page = projects.slice(offset, offset + (params.limit ?? 50));
+			return { projects: page, remaining: projects.length - offset - page.length };
+		}
+		if (params.resource === "project_page") {
+			const rows = shape.projectPages?.[`${params.projectKey}:${params.tier}`] ?? [];
+			const page = rows.slice(offset, offset + (params.limit ?? 50));
+			return { sessions: page, remaining: rows.length - offset - page.length };
 		}
 		if (params.section === "needs_you") return { sessions: shape.needsYou, remaining: 0 };
 		// Live pages are consecutive: each page's offset is the rows before it.
@@ -217,30 +252,71 @@ function hub(
 	const client: ConversationClientLike = {
 		request: (method, params) =>
 			new Promise((resolve, reject) => {
-				if (method === "evener/pin-section/rename" || method === "evener/pin-section/delete") {
+				if (
+					method === "evener/pin-section/rename" ||
+					method === "evener/pin-section/delete" ||
+					method === "evener/favorite/set" ||
+					method === "evener/archive/set"
+				) {
 					mutations.push({ method, params });
-					const respond = () =>
-						refuse
-							? reject(new Error("request timed out"))
-							: resolve({ ok: true, navigation: { generation_id: "generation-test", targets: [] } } as never);
+					const respond = () => {
+						if (refuse) {
+							reject(new Error("request timed out"));
+							return;
+						}
+						if (method === "evener/archive/set") {
+							const change = params as { id: string; archived: boolean };
+							for (const catalog of Object.values(shape.catalogs ?? {}))
+								for (const project of catalog ?? []) if (project.key === change.id) project.is_archived = change.archived;
+						}
+						if (method === "evener/favorite/set") {
+							const change = params as { id: string; favorited: boolean };
+							for (const catalog of Object.values(shape.catalogs ?? {}))
+								for (const project of catalog ?? []) if (project.key === change.id) project.favorite = change.favorited;
+						}
+						resolve({ ok: true, navigation: { generation_id: "generation-test", targets: [] } } as never);
+					};
 					if (holdChanges) held.push(respond);
 					else respond();
 					return;
 				}
-				if (method === "thread/list") {
-					// Search answers with every session the hub has, as wire threads.
-					const sessions = [...shape.live.flat(), ...shape.needsYou, ...(shape.searchOnly ?? [])].filter(
+				if (method === "evener/session/seen/set") {
+					seen.push((params as SessionSeenSetParams).sessions);
+					resolve({ ok: true, changed: true, navigation: { generation_id: "generation-test", targets: [] } } as never);
+					return;
+				}
+				if (method === "evener/search") {
+					// Search matches titles: the Board's sessions are live, and
+					// sessions only search finds are past.
+					const query = ((params as SearchParams).query ?? "").toLowerCase();
+					searches.push(query);
+					if (shape.searchFails) {
+						reject(new Error("request timed out"));
+						return;
+					}
+					const board = [...shape.live.flat(), ...shape.needsYou].filter(
 						(row, index, all) => all.findIndex((other) => other.ref === row.ref) === index,
 					);
-					resolve({
-						data: sessions.map((row) => ({
-							id: row.session_id,
-							name: row.title,
-							status: { type: "idle" },
-							updatedAt: 0,
-							evener: { ref: row.ref },
-						})),
-					} as never);
+					const found = (rows: NavigationSessionSummary[], state?: string) =>
+						rows
+							.filter((row) => row.title.toLowerCase().includes(query))
+							.map((row) => ({
+								id: row.session_id,
+								title: row.title,
+								project: row.project,
+								state: state ?? row.state,
+								age: "5m",
+								ref: row.ref,
+								...(row.ask_pending ? { askPending: true } : {}),
+							}));
+					resolve({ live: found(board), past: found(shape.searchOnly ?? [], "ended") } as never);
+					return;
+				}
+				if (method === "evener/auth/list" || method === "evener/plugin/list") {
+					lists.push(method);
+					if (shape.listsFail) reject(new Error("request timed out"));
+					else if (method === "evener/auth/list") resolve({ providers: shape.auth ?? [] } as never);
+					else resolve({ plugins: shape.plugins ?? [] } as never);
 					return;
 				}
 				if (method === "evener/activity/read") {
@@ -279,7 +355,13 @@ function hub(
 		client,
 		requests,
 		activityReads,
+		lists,
+		searches,
+		authUpdated: () => {
+			for (const listener of listeners) listener({ method: "evener/auth/updated", params: {} } as AnyNotification);
+		},
 		mutations,
+		seen,
 		invalidate: (sequence: number, targets: NavigationInvalidationTarget[]) => {
 			for (const listener of listeners)
 				listener({
@@ -364,6 +446,10 @@ function pressLabel(tree: ReactTestRenderer, label: string) {
 	);
 	act(() => target.props.onPress());
 }
+function pressChip(tree: ReactTestRenderer, label: string) {
+	const chip = tree.root.find((node) => node.props.testID === "chip" && node.props.accessibilityLabel === label);
+	act(() => chip.props.onPress());
+}
 const chipLabels = (tree: ReactTestRenderer) =>
 	tree.root
 		.findAll((node) => node.type === ("Pressable" as never) && node.props.testID === "chip")
@@ -397,6 +483,51 @@ it("renders the fleet's bands in order with their counts, and Idle starts folded
 	act(() => tree.unmount());
 });
 
+/** Mounts the Board with instances for its scroller and search field, the
+ * way the chip jumps and the Search item reach them. */
+async function mountWithInstances(nav: Navigation) {
+	const scrollTo = vi.fn();
+	const focus = vi.fn();
+	const blur = vi.fn();
+	let tree!: ReactTestRenderer;
+	act(() => {
+		tree = create(screen(nav), {
+			createNodeMock: (element) => (element.type === ("TextInput" as never) ? { focus, blur } : { scrollTo }),
+		});
+	});
+	mounted.push(tree);
+	await settle();
+	return { tree, scrollTo, focus, blur };
+}
+/** The Board's scroller, not the chips' horizontal one. */
+const boardScroller = (tree: ReactTestRenderer) =>
+	tree.root.find((node) => node.type === ("ScrollView" as never) && !node.props.horizontal);
+
+it("keeps the chips fixed above the Board's scroller, and jumps a chip's section to the top", async () => {
+	const id = hubId();
+	adoptedAnHourAgo(id);
+	connect(id, hub({ ...fleet, catalogs: { projects: [evenerProject()] } }).client, "ready");
+	const { tree, scrollTo } = await mountWithInstances(navigation());
+	const scroller = boardScroller(tree);
+	// The chips sit outside the scroller, so they never scroll away.
+	expect(scroller.findAll((node) => node.props.testID === "chips")).toHaveLength(0);
+	expect(tree.root.findAll((node) => node.props.testID === "chips")).toHaveLength(1);
+	expect(scroller.props.stickyHeaderIndices).toBeUndefined();
+	const layout = (testID: string, y: number, height: number) =>
+		tree.root
+			.find((node) => node.props.testID === testID && node.props.onLayout)
+			.props.onLayout({ nativeEvent: { layout: { x: 0, y, width: 390, height } } });
+	act(() => {
+		layout("live-block", 52, 400);
+		layout("project-section:projects", 752, 48);
+	});
+	pressChip(tree, "Live, 5 sessions, 2 need you");
+	expect(scrollTo).toHaveBeenLastCalledWith({ y: 52, animated: true });
+	pressChip(tree, "Projects, 4 projects");
+	expect(scrollTo).toHaveBeenLastCalledWith({ y: 752, animated: true });
+	act(() => tree.unmount());
+});
+
 const EMPTY_CATEGORY = "Touch and hold a session and choose Pin to category.";
 const pinHeaders = (tree: ReactTestRenderer) =>
 	tree.root.findAll((node) => node.props.testID === "pin-header").map((node) => node.props.accessibilityLabel);
@@ -427,7 +558,7 @@ function confirmDelete(tree: ReactTestRenderer, name: string) {
 it("shows chips for the sections that have sessions, and each pinned category inline with its sessions", async () => {
 	const id = hubId();
 	adoptedAnHourAgo(id);
-	connect(id, hub(fleet).client, "ready");
+	connect(id, hub({ ...fleet, catalogs: { projects: [evenerProject()] } }).client, "ready");
 	const nav = navigation();
 	const tree = await mount(nav);
 	expect(chipLabels(tree)).toEqual(["Live, 5 sessions, 2 need you", "Mine, 3 sessions", "Projects, 4 projects"]);
@@ -447,8 +578,12 @@ it("shows chips for the sections that have sessions, and each pinned category in
 	pressLabel(tree, "Mine, 3 sessions");
 	expect(hasRow(tree, "Kept note")).toBe(false);
 	expect(nav.navigate.mock.calls.map(([route]) => route)).not.toContain("PinnedSection");
-	pressLabel(tree, "Projects, 4 projects");
-	expect(nav.navigate).toHaveBeenLastCalledWith("Projects", { hubId: id, archived: false });
+	// The Projects chip scrolls to the section on the Board; nothing opens another screen.
+	const projectsChip = tree.root.find(
+		(node) => node.props.testID === "chip" && node.props.accessibilityLabel === "Projects, 4 projects",
+	);
+	act(() => projectsChip.props.onPress());
+	expect(nav.navigate.mock.calls.map(([route]) => route)).not.toContain("Projects");
 	act(() => tree.unmount());
 });
 
@@ -732,30 +867,263 @@ it("offers the hub menu as an alert off iOS, without Hub settings while the hub 
 	act(() => tree.unmount());
 });
 
-it("opens a search result the way the Board opens its row, marking it seen", async () => {
+/** The search field at the top of the Board's scroller, driven the way a
+ * person drives it. */
+function searchField(tree: ReactTestRenderer) {
+	const input = () =>
+		tree.root.find((node) => node.type === ("TextInput" as never) && node.props.accessibilityLabel === "Search sessions");
+	return {
+		input,
+		focus: () => act(() => input().props.onFocus()),
+		type: async (text: string) => {
+			act(() => input().props.onChangeText(text));
+			await advance(250);
+		},
+		cancel: () => pressLabel(tree, "Cancel search"),
+	};
+}
+/** A search result, found by its accessibility label's start. */
+function resultTitled(tree: ReactTestRenderer, title: string) {
+	return tree.root.find(
+		(node) =>
+			node.props.testID === "search-result" &&
+			typeof node.props.accessibilityLabel === "string" &&
+			node.props.accessibilityLabel.startsWith(`${title}, `),
+	);
+}
+const resultTitles = (tree: ReactTestRenderer) =>
+	tree.root
+		.findAll((node) => node.props.testID === "search-result")
+		.map((node) => node.props.accessibilityLabel.split(", ")[0]);
+const hasCancel = (tree: ReactTestRenderer) =>
+	tree.root.findAll((node) => node.type === ("Pressable" as never) && node.props.accessibilityLabel === "Cancel search")
+		.length > 0;
+
+it("puts the search field first in the Board's scroller, which starts scrolled just past it", async () => {
+	const id = hubId();
+	adoptedAnHourAgo(id);
+	connect(id, hub(fleet).client, "ready");
+	const nav = navigation();
+	const tree = await mount(nav);
+	// No header search bar: it neither hid on scroll nor kept the chips pinned.
+	expect(headerOptions(nav).headerSearchBarOptions).toBeUndefined();
+	const scroller = boardScroller(tree);
+	const [first] = scroller.findAll((node) => node.props.testID === "search-field" || node.props.testID === "notice" || node.props.testID === "live-block");
+	expect(first.props.testID).toBe("search-field");
+	// Pulling down reveals the field (spec 7.3).
+	const height = first.props.style.height;
+	expect(height).toBeGreaterThan(0);
+	expect(scroller.props.contentOffset).toEqual({ x: 0, y: height });
+	// iOS keeps that offset only while the content is taller than the
+	// viewport, so even a short Board is tall enough to hide the field (the
+	// window here is 844pt).
+	expect(scroller.props.contentContainerStyle.minHeight).toBeGreaterThanOrEqual(844 + height);
+	expect(searchField(tree).input().props).toMatchObject({ placeholder: "Search sessions", autoCapitalize: "none" });
+	// Cancel shows only while searching.
+	expect(hasCancel(tree)).toBe(false);
+	act(() => tree.unmount());
+});
+
+it("scrolls to the top and focuses the field when you tap Search", async () => {
+	const id = hubId();
+	adoptedAnHourAgo(id);
+	connect(id, hub(fleet).client, "ready");
+	const nav = navigation();
+	const { tree, scrollTo, focus } = await mountWithInstances(nav);
+	const [search] = headerOptions(nav).unstable_headerRightItems({});
+	expect(search).toMatchObject({
+		type: "button",
+		label: "Search",
+		accessibilityLabel: "Search sessions",
+		icon: { type: "sfSymbol", name: "magnifyingglass" },
+	});
+	act(() => search.onPress());
+	expect(scrollTo).toHaveBeenLastCalledWith({ y: 0, animated: true });
+	expect(focus).toHaveBeenCalledTimes(1);
+	// Cancelling tucks the field back out of view.
+	searchField(tree).focus();
+	searchField(tree).cancel();
+	const height = tree.root.find((node) => node.props.testID === "search-field").props.style.height;
+	expect(scrollTo).toHaveBeenLastCalledWith({ y: height, animated: true });
+	// Off iOS the header draws its own Search button.
+	const fallback = render(headerOptions(nav).headerRight());
+	act(() => fallback.root.findByType("Pressable" as never).props.onPress());
+	expect(focus).toHaveBeenCalledTimes(2);
+	act(() => fallback.unmount());
+	act(() => tree.unmount());
+});
+
+it("searches the hub as you type, and a result opens the way the Board opens its row, marking it seen", async () => {
 	const id = hubId();
 	adoptedAnHourAgo(id);
 	const gone = session("local:gone", { title: "Old report" });
-	connect(id, hub({ ...fleet, searchOnly: [gone] }).client, "ready");
+	const fake = hub({ ...fleet, searchOnly: [gone] });
+	connect(id, fake.client, "ready");
 	const nav = navigation();
 	const tree = await mount(nav);
 	expect(bandHeaders(tree)).toContain("FINISHED · 1");
-	act(() => headerOptions(nav).unstable_headerRightItems({})[0].onPress());
-	const field = tree.root.findByType("TextInput" as never);
-	act(() => field.props.onChangeText("report"));
-	act(() => field.props.onSubmitEditing());
-	await settle();
-	pressLabel(tree, "Open Ship it");
+	const bar = searchField(tree);
+	bar.focus();
+	// Search takes the Board's place under the field, in the Board's scroller.
+	expect(hasRow(tree, "Ship it")).toBe(false);
+	expect(tree.root.findAll((node) => node.props.testID === "chips")).toHaveLength(0);
+	expect(tree.root.findAll((node) => node.props.testID === "live-block")).toHaveLength(0);
+	expect(boardScroller(tree).props.keyboardShouldPersistTaps).toBe("handled");
+	expect(hasCancel(tree)).toBe(true);
+	await bar.type("i");
+	expect(fake.searches).toEqual(["i"]);
+	expect(resultTitles(tree)).toEqual(["Fix retry loop", "Build docs", "Ship it", "Pick a name"]);
+	expect(resultTitled(tree, "Pick a name").props.accessibilityLabel).toBe("Pick a name, Question, evener, 5 minutes");
+	act(() => resultTitled(tree, "Ship it").props.onPress());
 	expect(nav.navigate).toHaveBeenLastCalledWith("Conversation", { hubId: id, ref: "local:done", title: "Ship it" });
 	expect(seenMarkers(id).isSeen(finished)).toBe(true);
 	// A session only in Needs you (past Live's loaded pages) is found too.
 	expect(seenMarkers(id).isSeen(asking)).toBe(false);
-	pressLabel(tree, "Open Pick a name");
+	act(() => resultTitled(tree, "Pick a name").props.onPress());
 	expect(nav.navigate).toHaveBeenLastCalledWith("Conversation", { hubId: id, ref: "local:ask", title: "Pick a name" });
 	expect(seenMarkers(id).isSeen(asking)).toBe(true);
+	// Live results come first, then past ones.
+	await bar.type("re");
+	expect(resultTitles(tree)).toEqual(["Fix retry loop", "Old chore", "Older chore", "Old report"]);
+	expect(resultTitled(tree, "Old report").props.accessibilityLabel).toBe("Old report, evener, 5 minutes");
 	// A session the Board doesn't list has no Finished state to clear.
-	pressLabel(tree, "Open Old report");
+	act(() => resultTitled(tree, "Old report").props.onPress());
 	expect(nav.navigate).toHaveBeenLastCalledWith("Conversation", { hubId: id, ref: "local:gone", title: "Old report" });
+	// Cancel empties the field and brings the Board back.
+	bar.cancel();
+	expect(hasRow(tree, "Build docs")).toBe(true);
+	expect(tree.root.findAll((node) => node.props.testID === "chips")).toHaveLength(1);
+	expect(tree.root.findAll((node) => node.props.testID === "search-result")).toHaveLength(0);
+	expect(bar.input().props.value).toBe("");
+	expect(hasCancel(tree)).toBe(false);
+	act(() => tree.unmount());
+});
+
+it("narrows results to live sessions in the Live scope", async () => {
+	const id = hubId();
+	adoptedAnHourAgo(id);
+	connect(id, hub({ ...fleet, searchOnly: [session("local:gone", { title: "Old report" })] }).client, "ready");
+	const nav = navigation();
+	const tree = await mount(nav);
+	const bar = searchField(tree);
+	bar.focus();
+	await bar.type("report");
+	expect(resultTitles(tree)).toEqual(["Old report"]);
+	pressLabel(tree, "Live");
+	expect(resultTitles(tree)).toEqual([]);
+	expect(texts(tree)).toContain("No sessions match.");
+	pressLabel(tree, "All");
+	expect(resultTitles(tree)).toEqual(["Old report"]);
+	act(() => tree.unmount());
+});
+
+it("holds a scope picked before you type", async () => {
+	const id = hubId();
+	adoptedAnHourAgo(id);
+	connect(id, hub({ ...fleet, searchOnly: [session("local:gone", { title: "Old report" })] }).client, "ready");
+	const nav = navigation();
+	const tree = await mount(nav);
+	const bar = searchField(tree);
+	bar.focus();
+	pressLabel(tree, "Live");
+	await bar.type("report");
+	expect(resultTitles(tree)).toEqual([]);
+	expect(texts(tree)).toContain("No sessions match.");
+	act(() => tree.unmount());
+});
+
+it("opens a result only a pinned category lists the way the Board opens its row, marking it seen", async () => {
+	const id = hubId();
+	adoptedAnHourAgo(id);
+	// Not live, so search finds it among past sessions.
+	const pinnedOnly = session("local:pinned", { title: "Pinned draft", live: false, updated_at: minutesAgo(10) });
+	const shape = { ...fleet, pinned: { ...fleet.pinned, "pins-1": [pinnedOnly] }, searchOnly: [pinnedOnly] };
+	connect(id, hub(shape).client, "ready");
+	const nav = navigation();
+	const tree = await mount(nav);
+	expect(seenMarkers(id).isSeen(pinnedOnly)).toBe(false);
+	const bar = searchField(tree);
+	bar.focus();
+	await bar.type("pinned");
+	act(() => resultTitled(tree, "Pinned draft").props.onPress());
+	expect(nav.navigate).toHaveBeenLastCalledWith("Conversation", { hubId: id, ref: "local:pinned", title: "Pinned draft" });
+	expect(seenMarkers(id).isSeen(pinnedOnly)).toBe(true);
+	act(() => tree.unmount());
+});
+
+it("says a failed search failed, and never asks you to retry", async () => {
+	const id = hubId();
+	adoptedAnHourAgo(id);
+	const fake = hub({ ...fleet, searchFails: true });
+	connect(id, fake.client, "ready");
+	const nav = navigation();
+	const tree = await mount(nav);
+	const bar = searchField(tree);
+	bar.focus();
+	await bar.type("fix");
+	expect(texts(tree)).toContain("Couldn't search this hub's sessions.");
+	expect(renderedText(tree)).not.toMatch(/retry|try again|refresh/i);
+	// A new query tries again.
+	await bar.type("fixes");
+	expect(fake.searches).toEqual(["fix", "fixes"]);
+	act(() => tree.unmount());
+});
+
+it("searches nothing while connecting, and asks for the typed query once the connection is ready", async () => {
+	const id = hubId();
+	adoptedAnHourAgo(id);
+	const fake = hub(fleet);
+	connect(id, fake.client, "connecting");
+	const nav = navigation();
+	const tree = await mount(nav);
+	const bar = searchField(tree);
+	bar.focus();
+	await bar.type("ship");
+	expect(fake.searches).toEqual([]);
+	expect(texts(tree)).toContain("Search works when the hub is connected.");
+	connect(id, fake.client, "ready");
+	rerender(tree, nav);
+	await settle();
+	expect(fake.searches).toEqual(["ship"]);
+	expect(resultTitles(tree)).toEqual(["Ship it"]);
+	act(() => tree.unmount());
+});
+
+it("remembers the queries you opened a result from, per hub, and clears them", async () => {
+	const id = hubId();
+	adoptedAnHourAgo(id);
+	const fake = hub(fleet);
+	connect(id, fake.client, "ready");
+	const nav = navigation();
+	const tree = await mount(nav);
+	const bar = searchField(tree);
+	bar.focus();
+	// Nothing searched yet, so an empty field shows nothing.
+	expect(texts(tree)).not.toContain("RECENT");
+	await bar.type("ship");
+	act(() => resultTitled(tree, "Ship it").props.onPress());
+	await bar.type("build");
+	act(() => resultTitled(tree, "Build docs").props.onPress());
+	// A query you didn't open anything from isn't remembered.
+	await bar.type("chore");
+	await bar.type("");
+	expect(texts(tree)).toContain("RECENT");
+	expect(
+		tree.root
+			.findAll((node) => node.type === ("Pressable" as never) && node.props.accessibilityLabel?.startsWith("Search for "))
+			.map((node) => node.props.accessibilityLabel),
+	).toEqual(["Search for build", "Search for ship"]);
+	expect(JSON.parse(harness.kv.get(`evener.native.recent-searches.${id}`) ?? "null")).toEqual(["build", "ship"]);
+	// Tapping one searches for it again, and fills the search field.
+	pressLabel(tree, "Search for ship");
+	expect(bar.input().props.value).toBe("ship");
+	await advance(250);
+	expect(fake.searches.at(-1)).toBe("ship");
+	expect(resultTitles(tree)).toEqual(["Ship it"]);
+	await bar.type("");
+	pressLabel(tree, "Clear recent searches");
+	expect(texts(tree)).not.toContain("RECENT");
+	expect(JSON.parse(harness.kv.get(`evener.native.recent-searches.${id}`) ?? "null")).toEqual([]);
 	act(() => tree.unmount());
 });
 
@@ -773,6 +1141,131 @@ it("opens a session after marking it seen", async () => {
 	act(() => tree.unmount());
 });
 
+// Rows the hub decides (S4): each carries its turn end, and the hub says
+// whether it is unseen. The device's markers say the opposite of the hub for
+// both: its epoch covers the first, and it holds an unread mark for the second.
+const hubUnseen = session("local:hub-unseen", {
+	title: "Hub unseen",
+	updated_at: minutesAgo(90),
+	turn_ended_at: minutesAgo(90),
+	unseen: true,
+});
+const hubSeen = session("local:hub-seen", {
+	title: "Hub seen",
+	updated_at: minutesAgo(6),
+	turn_ended_at: minutesAgo(6),
+	unseen: false,
+});
+const pinnedUnseen = session("local:pinned-unseen", {
+	title: "Pinned unseen",
+	live: true,
+	updated_at: minutesAgo(80),
+	turn_ended_at: minutesAgo(80),
+	unseen: true,
+});
+const hubFleet: Fleet = {
+	...fleet,
+	live: [[failing, working, hubUnseen, hubSeen, finished]],
+	pinned: { ...fleet.pinned, "pins-1": [pinnedUnseen, keptNote] },
+};
+/** A device an hour past first run that marked Hub seen unread itself. */
+function deviceDisagrees(hub: string) {
+	adoptedAnHourAgo(hub);
+	seenMarkers(hub).markUnread("local:hub-seen");
+}
+const stateOf = (tree: ReactTestRenderer, title: string) => rowTitled(tree, title).props.accessibilityLabel.split(", ")[1];
+
+it("takes Finished or Idle from the hub for a row that carries its turn end, whatever the device's markers say", async () => {
+	const id = hubId();
+	deviceDisagrees(id);
+	const fake = hub(hubFleet);
+	connect(id, fake.client, "ready");
+	const tree = await mount(navigation());
+	pressLabel(tree, "Idle, 1 session");
+	expect(stateOf(tree, "Hub unseen")).toBe("Finished");
+	expect(stateOf(tree, "Hub seen")).toBe("Idle");
+	// A row without a turn end still follows the device: updated since its epoch.
+	expect(stateOf(tree, "Ship it")).toBe("Finished");
+	// The categories classify the same way.
+	expect(stateOf(tree, "Pinned unseen")).toBe("Finished");
+	expect(bandHeaders(tree)).toEqual(["NEEDS YOU · 2", "FINISHED · 2", "WORKING · 1", "Idle · 1"]);
+	expect(fake.seen).toEqual([]);
+	act(() => tree.unmount());
+});
+
+it("marks a hub row seen through its turn end when you open it, and clears its dot at once", async () => {
+	const id = hubId();
+	deviceDisagrees(id);
+	const shape = { ...hubFleet };
+	const fake = hub(shape);
+	connect(id, fake.client, "ready");
+	const nav = navigation();
+	const tree = await mount(nav);
+	act(() => rowTitled(tree, "Hub unseen").props.onPress());
+	expect(nav.navigate).toHaveBeenLastCalledWith("Conversation", { hubId: id, ref: "local:hub-unseen", title: "Hub unseen" });
+	// The hub's rows still say unseen; the pending mark wins until they catch up.
+	expect(bandHeaders(tree)).toEqual(["NEEDS YOU · 2", "FINISHED · 1", "WORKING · 1", "Idle · 2"]);
+	await settle();
+	expect(fake.seen).toEqual([[{ ref: "local:hub-unseen", seenThrough: Date.parse(minutesAgo(90)) }]]);
+	// The device's own markers are not touched for a hub row.
+	expect(JSON.parse(harness.kv.get(`evener.native.seen.${id}`) ?? "{}").sessions).toEqual({
+		"local:hub-seen": { unread: true },
+	});
+	// Opening it again, now from Idle, costs no request.
+	pressLabel(tree, "Idle, 2 sessions");
+	expect(stateOf(tree, "Hub unseen")).toBe("Idle");
+	act(() => rowTitled(tree, "Hub unseen").props.onPress());
+	await settle();
+	expect(fake.seen).toHaveLength(1);
+	// Opening a pinned hub row marks it the same way.
+	act(() => rowTitled(tree, "Pinned unseen").props.onPress());
+	await settle();
+	expect(stateOf(tree, "Pinned unseen")).toBe("Idle");
+	expect(fake.seen.at(-1)).toEqual([{ ref: "local:pinned-unseen", seenThrough: Date.parse(minutesAgo(80)) }]);
+	// The hub's rows catch up, and the pending mark goes: a later unseen for
+	// the same turn would show again.
+	shape.live = [[failing, working, { ...hubUnseen, unseen: false }, hubSeen, finished]];
+	// This fake hub answers every read at revision 1, so the change names none.
+	act(() => fake.invalidate(1, [{ kind: "section", section: "live" }]));
+	await settle();
+	expect(hubSeenMarks(id).isSeenOnHub(hubUnseen)).toBe(false);
+	expect(hubSeenMarks(id).isSeenOnHub(pinnedUnseen)).toBe(true);
+	act(() => tree.unmount());
+});
+
+it("marks a row without a turn end on the device, and sends the hub nothing", async () => {
+	const id = hubId();
+	deviceDisagrees(id);
+	const fake = hub(hubFleet);
+	connect(id, fake.client, "ready");
+	const tree = await mount(navigation());
+	act(() => rowTitled(tree, "Ship it").props.onPress());
+	await settle();
+	expect(seenMarkers(id).isSeen(finished)).toBe(true);
+	expect(fake.seen).toEqual([]);
+	act(() => tree.unmount());
+});
+
+it("sends a mark made while the connection was down once it's ready again", async () => {
+	const id = hubId();
+	deviceDisagrees(id);
+	const fake = hub(hubFleet);
+	connect(id, fake.client, "ready");
+	const nav = navigation();
+	const tree = await mount(nav);
+	connect(id, null, "reconnecting");
+	rerender(tree, nav);
+	act(() => rowTitled(tree, "Hub unseen").props.onPress());
+	await settle();
+	expect(bandHeaders(tree)).toContain("FINISHED · 1");
+	expect(fake.seen).toEqual([]);
+	connect(id, fake.client, "ready");
+	rerender(tree, nav);
+	await settle();
+	expect(fake.seen).toEqual([[{ ref: "local:hub-unseen", seenThrough: Date.parse(minutesAgo(90)) }]]);
+	act(() => tree.unmount());
+});
+
 it("reads nothing while connecting, and reads the Board once the connection is ready", async () => {
 	const id = hubId();
 	adoptedAnHourAgo(id);
@@ -784,13 +1277,13 @@ it("reads nothing while connecting, and reads the Board once the connection is r
 	connect(id, fake.client, "ready");
 	rerender(tree, nav);
 	await settle();
-	// The Board's reads, its categories', and the catalog read that
-	// confirms the organization journal before ⋯ shows.
+	// The Board's reads, its categories', and the Projects section's catalog.
+	// An empty organization journal needs no read before ⋯ shows.
 	expect(fake.requests.map((read) => read.section ?? read.resource).sort()).toEqual([
+		"catalog",
 		"live",
 		"manifest",
 		"needs_you",
-		"pin_catalog",
 		"pin_catalog",
 		"pin_section",
 		"pin_section",
@@ -996,11 +1489,7 @@ it("puts the hub's name and menu on the left and search on the right", async () 
 	act(() => offline.root.findByType("Pressable" as never).props.onPress());
 	expect(harness.actionSheet.mock.calls.at(-1)?.[0].disabledButtonIndices).toEqual([0]);
 	act(() => offline.unmount());
-	const [search] = options.unstable_headerRightItems({});
-	expect(search).toMatchObject({ type: "button", icon: { type: "sfSymbol", name: "magnifyingglass" } });
-	expect(tree.root.findAll((node) => node.type === ("TextInput" as never))).toHaveLength(0);
-	act(() => search.onPress());
-	expect(tree.root.findAll((node) => node.type === ("TextInput" as never))).toHaveLength(1);
+	expect(options.unstable_headerRightItems({})).toEqual([expect.objectContaining({ label: "Search" })]);
 	act(() => tree.unmount());
 });
 
@@ -1051,9 +1540,10 @@ it("stops retrying a failed first read when it unmounts", async () => {
 	connect(id, fake.client, "ready");
 	const tree = await mount(navigation());
 	expect(liveReads(fake)).toEqual([0]);
-	// The row-age ticker and the retry. This fleet's hub predates S5, so the
-	// activity poll has stopped and there is no read to recheck.
-	expect(vi.getTimerCount()).toBe(2);
+	// The row-age ticker, the plugin poll and the retry. This fleet's hub
+	// predates S5, so the activity poll has stopped and there is no read to
+	// recheck.
+	expect(vi.getTimerCount()).toBe(3);
 	act(() => tree.unmount());
 	expect(vi.getTimerCount()).toBe(0);
 	await advance(60_000);
@@ -1317,6 +1807,30 @@ it("keeps reading Live's pages while they don't fill the screen, without any scr
 	act(() => tree.unmount());
 });
 
+it("reads no more of Live while search results fill the scroller", async () => {
+	const id = hubId();
+	adoptedAnHourAgo(id);
+	const fake = hub({ ...fleet, live: [[failing, working], [finished]] });
+	connect(id, fake.client, "ready");
+	const tree = await mount(navigation());
+	act(() =>
+		tree.root
+			.find((node) => node.props.testID === "live-block")
+			.props.onLayout({ nativeEvent: { layout: { x: 0, y: 52, width: 390, height: 300 } } }),
+	);
+	await settle();
+	expect(liveReads(fake)).toEqual([0]);
+	searchField(tree).focus();
+	act(() =>
+		boardScroller(tree).props.onScroll({
+			nativeEvent: { contentOffset: { x: 0, y: 900 }, layoutMeasurement: { width: 390, height: 700 } },
+		}),
+	);
+	await settle();
+	expect(liveReads(fake)).toEqual([0]);
+	act(() => tree.unmount());
+});
+
 it("reads nothing while blurred, and on refocus catches up and re-reads drafts", async () => {
 	const id = hubId();
 	adoptedAnHourAgo(id);
@@ -1539,8 +2053,8 @@ it("stays out of Working's stuck slot for as long as reads keep failing, not jus
 	expect(textsIn(rowTitled(tree, "Migrate schema"))).toContain("Working");
 	expect(workingTitles(tree)).toEqual(["Build docs", "Tidy imports", "Migrate schema"]);
 	// With no fresh read on screen there is nothing to recheck: only the
-	// row-age ticker and the poll itself are left.
-	expect(vi.getTimerCount()).toBe(2);
+	// row-age ticker, the plugin poll and the activity poll itself are left.
+	expect(vi.getTimerCount()).toBe(3);
 	act(() => tree.unmount());
 });
 
@@ -1578,8 +2092,8 @@ it("keeps every working row as it was before S5 on a hub that has no activity re
 	expect(textsIn(rowTitled(tree, "Tidy imports"))).toContain("Working");
 	// With no read to go stale, nothing rechecks one either: an old hub never
 	// gets the Board re-rendered every ACTIVITY_POLL_MS. Only the row-age
-	// ticker is left.
-	expect(vi.getTimerCount()).toBe(1);
+	// ticker and the plugin poll are left.
+	expect(vi.getTimerCount()).toBe(2);
 	await advance(ACTIVITY_POLL_MS * 3);
 	expect(fake.activityReads).toHaveLength(1);
 	act(() => tree.unmount());
@@ -1613,5 +2127,793 @@ it("keeps the summary's meter still until a working session has an activity read
 	connect(id, hub(busyFleet).client, "ready");
 	const tree = await mount(navigation());
 	expect(fleetMeter(tree).props.perMinute).toBeUndefined();
+	act(() => tree.unmount());
+});
+
+const signIn = (provider: string, needsLogin: boolean): AuthStatusResponse => ({
+	provider,
+	supported: true,
+	signedIn: !needsLogin,
+	activeSource: "oauth",
+	hasStoredOAuth: true,
+	needsLogin,
+});
+const plugin = (name: string, broken: boolean): PluginEntry => ({
+	plugin: name,
+	marketplace: "evener",
+	version: "1.0.0",
+	enabled: true,
+	autoUpgrade: false,
+	broken,
+	installPath: `/plugins/${name}`,
+	installedAt: 0,
+	lastUpdated: 0,
+});
+const noticeTexts = (tree: ReactTestRenderer) =>
+	tree.root.findAll((node) => node.props.testID === "notice").map(joinedText);
+/** A fleet with a host offline: one of its sessions is in Live and Needs you
+ * both, and one only in Live. */
+const troubledFleet = (): Fleet => {
+	const stuck = session("studio:stuck", { host_id: "studio", title: "Stuck", state: "errored" });
+	const quiet = session("studio:quiet", { host_id: "studio", title: "Quiet" });
+	return {
+		...fleet,
+		live: [[failing, working, stuck, quiet]],
+		needsYou: [failing, stuck],
+		manifest: manifest({
+			sources: [
+				{ id: "local", label: "Laptop", kind: "local", online: true },
+				{ id: "studio", label: "Studio Mac", kind: "ssh", online: false },
+			],
+			sections: { live: { count: 4 }, needs_you: { count: 2 }, pin_sections: { count: 2 } },
+			catalogs: { projects: { count: 4 }, archived_projects: { count: 0 }, test_runs: { count: 0 } },
+		}),
+		auth: [signIn("anthropic", false), signIn("openai", true)],
+		plugins: [plugin("superpowers", true), plugin("elements-of-style", false)],
+	};
+};
+
+it("shows the hub's notices under the chips, above Live, after Update needed, and opens each one's screen", async () => {
+	const id = hubId();
+	adoptedAnHourAgo(id);
+	connect(id, hub(troubledFleet()).client, "ready");
+	const nav = navigation();
+	const tree = await mount(nav);
+	expect(noticeTexts(tree)).toEqual([
+		"openai sign-in expiredSign in",
+		"Studio Mac is offline · 2 sessionsDetails",
+		"superpowers is brokenPlugins",
+	]);
+	// The notices sit in the scroller, before the Live block.
+	const order = boardScroller(tree).findAll((node) => node.props.testID === "notice" || node.props.testID === "live-block");
+	expect(order.map((node) => node.props.testID)).toEqual(["notice", "notice", "notice", "live-block"]);
+	pressLabel(tree, "Sign in, openai sign-in expired");
+	expect(nav.navigate).toHaveBeenLastCalledWith("Providers", { hubId: id });
+	pressLabel(tree, "Details, Studio Mac is offline · 2 sessions");
+	expect(nav.navigate).toHaveBeenLastCalledWith("HubSettings", { hubId: id });
+	pressLabel(tree, "Plugins, superpowers is broken");
+	expect(nav.navigate).toHaveBeenLastCalledWith("Plugins", { hubId: id });
+	// Update needed comes first.
+	connect(id, null, "closed", { fatal: true });
+	rerender(tree, nav);
+	expect(noticeTexts(tree)[0]).toBe(INCOMPATIBLE_TEXT);
+	expect(noticeTexts(tree)).toHaveLength(4);
+	act(() => tree.unmount());
+});
+
+it("drops a sign-in notice once an auth update says it's resolved", async () => {
+	const id = hubId();
+	adoptedAnHourAgo(id);
+	const shape = troubledFleet();
+	const fake = hub(shape);
+	connect(id, fake.client, "ready");
+	const tree = await mount(navigation());
+	expect(noticeTexts(tree)).toContain("openai sign-in expiredSign in");
+	shape.auth = [signIn("anthropic", false), signIn("openai", false)];
+	fake.authUpdated();
+	await settle();
+	expect(noticeTexts(tree)).not.toContain("openai sign-in expiredSign in");
+	expect(noticeTexts(tree)).toHaveLength(2);
+	act(() => tree.unmount());
+});
+
+it("reads the plugins again every 5 minutes while in view, and not while blurred", async () => {
+	const id = hubId();
+	adoptedAnHourAgo(id);
+	const shape = troubledFleet();
+	const fake = hub(shape);
+	connect(id, fake.client, "ready");
+	const tree = await mount(navigation());
+	const pluginReads = () => fake.lists.filter((method) => method === "evener/plugin/list").length;
+	expect(pluginReads()).toBe(1);
+	shape.plugins = [plugin("superpowers", false)];
+	await advance(5 * 60_000);
+	expect(pluginReads()).toBe(2);
+	expect(noticeTexts(tree)).not.toContain("superpowers is brokenPlugins");
+	setFocused(false);
+	await advance(15 * 60_000);
+	expect(pluginReads()).toBe(2);
+	setFocused(true);
+	await settle();
+	expect(pluginReads()).toBe(3);
+	act(() => tree.unmount());
+});
+
+it("says nothing when the sign-in and plugin reads fail, and doesn't retry the Board over them", async () => {
+	const id = hubId();
+	adoptedAnHourAgo(id);
+	const fake = hub({ ...troubledFleet(), listsFail: true });
+	connect(id, fake.client, "ready");
+	const tree = await mount(navigation());
+	expect(noticeTexts(tree)).toEqual(["Studio Mac is offline · 2 sessionsDetails"]);
+	expect(texts(tree)).not.toContain(FIRST_READ_FAILED);
+	const reads = fake.requests.length;
+	await advance(60_000);
+	expect(fake.requests).toHaveLength(reads);
+	act(() => tree.unmount());
+});
+
+it("counts an offline host's sessions from every section the Board loaded, each once", async () => {
+	const id = hubId();
+	adoptedAnHourAgo(id);
+	const shape = troubledFleet();
+	const stuck = shape.needsYou.find((row) => row.ref === "studio:stuck");
+	const kept = session("studio:kept", { host_id: "studio", title: "Kept on the studio", live: false });
+	// A category loads one of the host's sessions no other section has, and
+	// one Live and Needs you already count.
+	shape.pinned = { ...shape.pinned, "pins-1": [kept, ...(stuck ? [stuck] : [])] };
+	connect(id, hub(shape).client, "ready");
+	const tree = await mount(navigation());
+	expect(noticeTexts(tree)).toContain("Studio Mac is offline · 3 sessionsDetails");
+	act(() => tree.unmount());
+});
+
+// Projects, Test runs and Archived (spec 7.1).
+const laptopSource = { id: "local", label: "Laptop", kind: "local", online: true };
+const parkSource = { id: "paradise-park", label: "paradise-park", kind: "appwire", online: false };
+const catalogCounts = (projects: number, archived: number, testRuns: number) => ({
+	projects: { count: projects },
+	archived_projects: { count: archived },
+	test_runs: { count: testRuns },
+});
+const fleetSections = { live: { count: 5 }, needs_you: { count: 2 }, pin_sections: { count: 2 } };
+const twoHosts = (counts = catalogCounts(1, 0, 0)) =>
+	manifest({ sources: [laptopSource, parkSource], sections: fleetSections, catalogs: counts });
+const evenerProject = (over: Partial<NavigationProjectSummary> = {}): NavigationProjectSummary => ({
+	key: "evener",
+	name: "evener",
+	working_dir: "/home/jesse/git/evener",
+	session_count: 2,
+	...over,
+});
+const localWork = session("local:lw", { title: "Local work", live: false, updated_at: minutesAgo(30) });
+const parkWork = session("paradise-park:pw", {
+	title: "Park work",
+	host_id: "paradise-park",
+	live: false,
+	updated_at: minutesAgo(40),
+});
+/** The Projects, Test runs and Archived headers, in screen order. */
+const sectionHeaders = (tree: ReactTestRenderer) =>
+	tree.root.findAll((node) => node.props.testID === "project-section-header").map(joinedText);
+const organizeControls = (tree: ReactTestRenderer) =>
+	tree.root.findAll(
+		(node) =>
+			node.type === ("Pressable" as never) &&
+			typeof node.props.accessibilityLabel === "string" &&
+			node.props.accessibilityLabel.startsWith("Organize by: "),
+	);
+const projectSection = (tree: ReactTestRenderer, section: string) =>
+	tree.root.find((node) => node.type === ("View" as never) && node.props.testID === `project-section:${section}`);
+/** The project row with this accessibility label, its first copy when hosts come first. */
+const projectRows = (tree: ReactTestRenderer, label: string) =>
+	tree.root.findAll(
+		(node) =>
+			node.type === ("Pressable" as never) &&
+			node.props.testID === "project-row" &&
+			node.props.accessibilityLabel === label,
+	);
+const catalogReads = (fake: ReturnType<typeof hub>) =>
+	fake.requests.filter((read) => read.resource === "catalog").map((read) => read.catalog);
+const pageReads = (fake: ReturnType<typeof hub>) =>
+	fake.requests.filter((read) => read.resource === "project_page").map((read) => `${read.tier}@${read.offset ?? 0}`);
+const rowOpacity = (node: ReactTestInstance) =>
+	(typeof node.props.style === "function" ? node.props.style({ pressed: false }) : node.props.style).opacity ?? 1;
+
+it("offers Organize by only once the hub names a second host, and saves the choice", async () => {
+	const single = hubId();
+	adoptedAnHourAgo(single);
+	connect(single, hub({ ...fleet, catalogs: { projects: [evenerProject()] } }).client, "ready");
+	const alone = await mount(navigation());
+	expect(sectionHeaders(alone)).toEqual(["PROJECTS"]);
+	expect(organizeControls(alone)).toEqual([]);
+	act(() => alone.unmount());
+
+	const id = hubId();
+	adoptedAnHourAgo(id);
+	connect(id, hub({ ...fleet, manifest: twoHosts(), catalogs: { projects: [evenerProject()] } }).client, "ready");
+	const tree = await mount(navigation());
+	expect(sectionHeaders(tree)).toEqual(["PROJECTS"]);
+	const [control] = organizeControls(tree);
+	expect(control.props.accessibilityLabel).toBe("Organize by: Project, then host");
+	expect(control.props.accessibilityHint).toBe("Changes to Host, then project");
+	expect(textsIn(control)).toEqual(["Project, then host"]);
+	expect(control.findAll((node) => node.type === ("SymbolView" as never)).map((node) => node.props.name)).toEqual([
+		"arrow.left.arrow.right",
+	]);
+	act(() => control.props.onPress());
+	expect(sectionHeaders(tree)).toEqual(["HOSTS"]);
+	expect(harness.kv.get(`evener.native.board-organize.${id}`)).toBe(JSON.stringify("host-project"));
+	const [flipped] = organizeControls(tree);
+	expect(flipped.props.accessibilityLabel).toBe("Organize by: Host, then project");
+	expect(flipped.props.accessibilityHint).toBe("Changes to Project, then host");
+	act(() => tree.unmount());
+});
+
+it("organized by host, shows each session of a shared project once, under its own host", async () => {
+	const id = hubId();
+	adoptedAnHourAgo(id);
+	harness.kv.set(`evener.native.board-organize.${id}`, JSON.stringify("host-project"));
+	const shared = evenerProject({ sources: ["local", "paradise-park"], default_expanded: true });
+	connect(
+		id,
+		hub({
+			...fleet,
+			manifest: twoHosts(),
+			catalogs: { projects: [shared] },
+			projectPages: { "evener:current": [localWork, parkWork] },
+		}).client,
+		"ready",
+	);
+	const tree = await mount(navigation());
+	expect(tree.root.findAll(isRowTitled("Local work"))).toHaveLength(1);
+	expect(tree.root.findAll(isRowTitled("Park work"))).toHaveLength(1);
+	// Laptop counts its sessions in Live and Needs you, once each; the offline host says so.
+	expect(textsIn(projectSection(tree, "projects"))).toEqual([
+		"HOSTS",
+		"Host, then project",
+		"Laptop",
+		"6 live",
+		"evener",
+		"Today",
+		"Local work",
+		"30m",
+		"paradise-park",
+		"Offline",
+		"evener",
+		"Today",
+		"Park work",
+		"40m",
+	]);
+	act(() => tree.unmount());
+});
+
+it("reads an unfolded project's pages once, reads nothing to fold it, and remembers the fold", async () => {
+	const id = hubId();
+	adoptedAnHourAgo(id);
+	const fake = hub({
+		...fleet,
+		catalogs: { projects: [evenerProject()] },
+		projectPages: { "evener:current": [localWork] },
+	});
+	connect(id, fake.client, "ready");
+	const nav = navigation();
+	const tree = await mount(nav);
+	expect(pageReads(fake)).toEqual([]);
+	expect(projectRows(tree, "evener")[0].props.accessibilityState).toEqual({ expanded: false });
+	pressLabel(tree, "evener");
+	await settle();
+	expect(pageReads(fake).sort()).toEqual(["archived@0", "current@0", "recent@0"]);
+	expect(hasRow(tree, "Local work")).toBe(true);
+	pressLabel(tree, "evener");
+	await settle();
+	expect(hasRow(tree, "Local work")).toBe(false);
+	pressLabel(tree, "evener");
+	await settle();
+	expect(pageReads(fake)).toHaveLength(3);
+	expect(hasRow(tree, "Local work")).toBe(true);
+	act(() => tree.unmount());
+	expect(JSON.parse(harness.kv.get(`evener.native.board-sections.${id}`) ?? "null")).toMatchObject({
+		"project:evener": false,
+	});
+	const again = await mount(nav);
+	expect(projectRows(again, "evener")[0].props.accessibilityState).toEqual({ expanded: true });
+	expect(hasRow(again, "Local work")).toBe(true);
+	act(() => again.unmount());
+});
+
+it("classifies a project's session rows by the hub's seen marker too (S4)", async () => {
+	const id = hubId();
+	deviceDisagrees(id);
+	const fake = hub({
+		...hubFleet,
+		catalogs: { projects: [evenerProject()] },
+		projectPages: {
+			"evener:current": [
+				// The device holds an unread mark for this ref; the hub says seen.
+				session("local:hub-seen", {
+					title: "Project hub seen",
+					live: false,
+					updated_at: minutesAgo(6),
+					turn_ended_at: minutesAgo(6),
+					unseen: false,
+				}),
+				// The device's epoch covers this one; the hub says unseen.
+				session("local:project-unseen", {
+					title: "Project hub unseen",
+					live: false,
+					updated_at: minutesAgo(90),
+					turn_ended_at: minutesAgo(90),
+					unseen: true,
+				}),
+			],
+		},
+	});
+	connect(id, fake.client, "ready");
+	const tree = await mount(navigation());
+	pressLabel(tree, "evener");
+	await settle();
+	expect(stateOf(tree, "Project hub seen")).toBe("Idle");
+	expect(stateOf(tree, "Project hub unseen")).toBe("Finished");
+	act(() => tree.unmount());
+});
+
+it("starts Test runs and Archived folded, reading neither catalog until it is unfolded", async () => {
+	const id = hubId();
+	adoptedAnHourAgo(id);
+	const fake = hub({
+		...fleet,
+		manifest: manifest({ sources: [laptopSource], sections: fleetSections, catalogs: catalogCounts(1, 271, 3) }),
+		catalogs: {
+			projects: [evenerProject()],
+			test_runs: [{ key: "hub-test-env", name: "hub-test-env", session_count: 3 }],
+			archived_projects: [evenerProject({ key: "old-site", name: "old-site", is_archived: true })],
+		},
+	});
+	connect(id, fake.client, "ready");
+	const tree = await mount(navigation());
+	expect(sectionHeaders(tree)).toEqual(["PROJECTS", "Test runs · 3", "ARCHIVED · 271"]);
+	expect(catalogReads(fake)).toEqual(["projects"]);
+	expect(projectRows(tree, "hub-test-env")).toHaveLength(0);
+	pressLabel(tree, "Test runs, 3 projects");
+	await settle();
+	expect(catalogReads(fake)).toEqual(["projects", "test_runs"]);
+	expect(projectRows(tree, "hub-test-env")).toHaveLength(1);
+	pressLabel(tree, "Archived, 271 projects");
+	await settle();
+	expect(catalogReads(fake)).toEqual(["projects", "test_runs", "archived_projects"]);
+	expect(projectRows(tree, "old-site")).toHaveLength(1);
+	// Folded again and reopened, a section reads nothing more.
+	pressLabel(tree, "Test runs, 3 projects");
+	pressLabel(tree, "Test runs, 3 projects");
+	await settle();
+	expect(catalogReads(fake)).toEqual(["projects", "test_runs", "archived_projects"]);
+	act(() => tree.unmount());
+});
+
+it("shows no section while the manifest counts none, reading no catalog", async () => {
+	const id = hubId();
+	adoptedAnHourAgo(id);
+	const fake = hub({ ...fleet, manifest: manifest({ sources: [laptopSource], catalogs: catalogCounts(0, 0, 0) }) });
+	connect(id, fake.client, "ready");
+	const tree = await mount(navigation());
+	expect(catalogReads(fake)).toEqual([]);
+	expect(sectionHeaders(tree)).toEqual([]);
+	act(() => tree.unmount());
+});
+
+it("shows no PROJECTS header before the manifest lands, and hides it once its catalog loads empty", async () => {
+	const id = hubId();
+	adoptedAnHourAgo(id);
+	let holding = true;
+	const fake = hub(fleet, (read) => holding && (read.resource === "manifest" || read.section === "live"));
+	connect(id, fake.client, "ready");
+	const tree = await mount(navigation());
+	expect(skeletonRows(tree)).toHaveLength(3);
+	expect(sectionHeaders(tree)).toEqual([]);
+	expect(catalogReads(fake)).toEqual([]);
+	holding = false;
+	fake.release();
+	await settle();
+	// The manifest counts 4 projects, but the catalog comes back empty.
+	expect(catalogReads(fake)).toEqual(["projects"]);
+	expect(sectionHeaders(tree)).toEqual([]);
+	act(() => tree.unmount());
+});
+
+it("keeps every project row on screen from a dropped client until the new client's reads land", async () => {
+	const id = hubId();
+	adoptedAnHourAgo(id);
+	const shape = {
+		...fleet,
+		catalogs: { projects: [evenerProject({ default_expanded: true })] },
+		projectPages: { "evener:current": [localWork] },
+	};
+	connect(id, hub(shape).client, "ready");
+	const nav = navigation();
+	const tree = await mount(nav);
+	expect(hasRow(tree, "Local work")).toBe(true);
+	connect(id, null, "reconnecting");
+	rerender(tree, nav);
+	await settle();
+	expect(projectRows(tree, "evener")).toHaveLength(1);
+	expect(hasRow(tree, "Local work")).toBe(true);
+	let holding = true;
+	const next = hub(shape, () => holding);
+	connect(id, next.client, "ready");
+	rerender(tree, nav);
+	await settle();
+	expect(catalogReads(next)).toEqual(["projects"]);
+	expect(projectRows(tree, "evener")).toHaveLength(1);
+	expect(hasRow(tree, "Local work")).toBe(true);
+	holding = false;
+	next.release();
+	await settle();
+	expect(pageReads(next).sort()).toEqual(["archived@0", "current@0", "recent@0"]);
+	expect(hasRow(tree, "Local work")).toBe(true);
+	act(() => tree.unmount());
+});
+
+it("pins a project to the top from its long-press menu, dimming it until the hub confirms", async () => {
+	const id = hubId();
+	adoptedAnHourAgo(id);
+	const fake = hub({ ...fleet, catalogs: { projects: [evenerProject()] } }, undefined, undefined, { holdChanges: true });
+	connect(id, fake.client, "ready");
+	const tree = await mount(navigation());
+	const [row] = projectRows(tree, "evener");
+	expect(rowOpacity(row)).toBe(1);
+	act(() => row.props.onLongPress());
+	const [sheet, choose] = harness.actionSheet.mock.calls.at(-1) ?? [];
+	expect(sheet).toEqual({ title: "evener", options: ["Pin to top", "Archive project", "Cancel"], cancelButtonIndex: 2 });
+	act(() => choose(0));
+	await settle();
+	expect(fake.mutations).toEqual([
+		{ method: "evener/favorite/set", params: { kind: "project", id: "evener", favorited: true } },
+	]);
+	// While the change is out, the project dims and every organization action hides.
+	expect(rowOpacity(projectRows(tree, "evener")[0])).toBe(0.5);
+	expect(menuLabels(tree)).toEqual([]);
+	fake.release();
+	await settle();
+	expect(rowOpacity(projectRows(tree, "evener")[0])).toBe(1);
+	expect(menuLabels(tree)).toEqual(["Mine, category menu", "Empty, category menu"]);
+	expect(fake.mutations).toHaveLength(1);
+	act(() => tree.unmount());
+});
+
+it("offers no menu for a project another host shares", async () => {
+	const id = hubId();
+	adoptedAnHourAgo(id);
+	connect(
+		id,
+		hub({
+			...fleet,
+			manifest: twoHosts(),
+			catalogs: { projects: [evenerProject({ sources: ["local", "paradise-park"] })] },
+		}).client,
+		"ready",
+	);
+	const tree = await mount(navigation());
+	const [row] = projectRows(tree, "evener");
+	expect(row.props.onLongPress).toBeUndefined();
+	act(() => tree.unmount());
+});
+
+const recentRows = Array.from({ length: 32 }, (_, index) =>
+	session(`local:r${index}`, { title: `Recent ${index}`, live: false, updated_at: minutesAgo(2000 + index) }),
+);
+const longProject = {
+	...fleet,
+	catalogs: { projects: [evenerProject({ default_expanded: true })] },
+	projectPages: { "evener:recent": recentRows },
+};
+
+it("reads a tier's next page when its more row is pressed", async () => {
+	const id = hubId();
+	adoptedAnHourAgo(id);
+	const fake = hub(longProject);
+	connect(id, fake.client, "ready");
+	const tree = await mount(navigation());
+	expect(texts(tree)).toContain("12 more");
+	pressLabel(tree, "12 more");
+	await settle();
+	expect(pageReads(fake)).toContain("recent@20");
+	expect(hasRow(tree, "Recent 31")).toBe(true);
+	expect(texts(tree)).not.toContain("12 more");
+	act(() => tree.unmount());
+});
+
+it("reads a tier's next page once its more row is at least half on screen", async () => {
+	const id = hubId();
+	adoptedAnHourAgo(id);
+	const fake = hub(longProject);
+	connect(id, fake.client, "ready");
+	const tree = await mount(navigation());
+	const scroller = tree.root.find((node) => node.type === ("ScrollView" as never) && !node.props.horizontal);
+	const more = tree.root.find((node) => node.props.testID === "project-more");
+	act(() => {
+		scroller.props.onLayout?.({ nativeEvent: { layout: { x: 0, y: 0, width: 390, height: 700 } } });
+		projectSection(tree, "projects").props.onLayout({ nativeEvent: { layout: { x: 0, y: 600, width: 390, height: 1400 } } });
+		// 600 + 1000 is well past the 700pt viewport.
+		more.props.onLayout({ nativeEvent: { layout: { x: 0, y: 1000, width: 390, height: 44 } } });
+	});
+	await settle();
+	expect(pageReads(fake)).not.toContain("recent@20");
+	// Scrolled so only a quarter of the row shows: still nothing.
+	act(() =>
+		scroller.props.onScroll({ nativeEvent: { contentOffset: { x: 0, y: 1611 - 700 }, layoutMeasurement: { width: 390, height: 700 } } }),
+	);
+	await settle();
+	expect(pageReads(fake)).not.toContain("recent@20");
+	// Half of it on screen.
+	act(() =>
+		scroller.props.onScroll({ nativeEvent: { contentOffset: { x: 0, y: 1622 - 700 }, layoutMeasurement: { width: 390, height: 700 } } }),
+	);
+	await settle();
+	expect(pageReads(fake).filter((read) => read === "recent@20")).toHaveLength(1);
+	act(() => tree.unmount());
+});
+
+it("counts an offline host's sessions a project section loaded, and opens one from search marking it seen", async () => {
+	const id = hubId();
+	adoptedAnHourAgo(id);
+	// Only the evener project's current tier lists this session.
+	const projectOnly = session("studio:project-only", {
+		host_id: "studio",
+		title: "Studio report",
+		live: false,
+		updated_at: minutesAgo(10),
+	});
+	const shape = {
+		...troubledFleet(),
+		catalogs: { projects: [evenerProject({ default_expanded: true })] },
+		projectPages: { "evener:current": [projectOnly] },
+		searchOnly: [projectOnly],
+	};
+	connect(id, hub(shape).client, "ready");
+	const nav = navigation();
+	const tree = await mount(nav);
+	expect(hasRow(tree, "Studio report")).toBe(true);
+	expect(noticeTexts(tree)).toContain("Studio Mac is offline · 3 sessionsDetails");
+	expect(seenMarkers(id).isSeen(projectOnly)).toBe(false);
+	const bar = searchField(tree);
+	bar.focus();
+	await bar.type("studio report");
+	act(() => resultTitled(tree, "Studio report").props.onPress());
+	expect(nav.navigate).toHaveBeenLastCalledWith("Conversation", {
+		hubId: id,
+		ref: "studio:project-only",
+		title: "Studio report",
+	});
+	expect(seenMarkers(id).isSeen(projectOnly)).toBe(true);
+	act(() => tree.unmount());
+});
+
+it("reads no more of a project section while search results fill the scroller", async () => {
+	const id = hubId();
+	adoptedAnHourAgo(id);
+	const fake = hub(longProject);
+	connect(id, fake.client, "ready");
+	const tree = await mount(navigation());
+	const more = tree.root.find((node) => node.props.testID === "project-more");
+	act(() => {
+		boardScroller(tree).props.onLayout?.({ nativeEvent: { layout: { x: 0, y: 0, width: 390, height: 700 } } });
+		projectSection(tree, "projects").props.onLayout({ nativeEvent: { layout: { x: 0, y: 600, width: 390, height: 1400 } } });
+		more.props.onLayout({ nativeEvent: { layout: { x: 0, y: 1000, width: 390, height: 44 } } });
+	});
+	await settle();
+	searchField(tree).focus();
+	// Search results now cover where the more row last sat.
+	act(() =>
+		boardScroller(tree).props.onScroll({
+			nativeEvent: { contentOffset: { x: 0, y: 1622 - 700 }, layoutMeasurement: { width: 390, height: 700 } },
+		}),
+	);
+	await settle();
+	expect(pageReads(fake)).not.toContain("recent@20");
+	act(() => tree.unmount());
+});
+
+it("replaces the links to other screens with the sections themselves", async () => {
+	const id = hubId();
+	adoptedAnHourAgo(id);
+	connect(
+		id,
+		hub({
+			...fleet,
+			manifest: manifest({ sources: [laptopSource], sections: fleetSections, catalogs: catalogCounts(1, 2, 0) }),
+			catalogs: { projects: [evenerProject()] },
+		}).client,
+		"ready",
+	);
+	const tree = await mount(navigation());
+	for (const gone of ["Projects ›", "Archived ›", "Projects · 1", "Archived · 2", "Reconnect", "Refresh"])
+		expect(texts(tree)).not.toContain(gone);
+	expect(sectionHeaders(tree)).toEqual(["PROJECTS", "ARCHIVED · 2"]);
+	act(() => tree.unmount());
+});
+
+const COULDNT_LOAD = "Couldn't load these sessions.";
+
+it("reads a project's failed tier again on its own: when the Board comes back into view, and when the project unfolds", async () => {
+	const id = hubId();
+	adoptedAnHourAgo(id);
+	let recentFails = true;
+	const fake = hub(
+		{
+			...fleet,
+			catalogs: { projects: [evenerProject({ default_expanded: true })] },
+			projectPages: { "evener:current": [localWork] },
+		},
+		undefined,
+		(read) => recentFails && read.resource === "project_page" && read.tier === "recent",
+	);
+	connect(id, fake.client, "ready");
+	const tree = await mount(navigation());
+	const recentReads = () => pageReads(fake).filter((read) => read === "recent@0").length;
+	expect(texts(tree)).toContain(COULDNT_LOAD);
+	expect(recentReads()).toBe(1);
+	// Staying in view, nothing reads it again on a timer.
+	await advance(60_000);
+	expect(recentReads()).toBe(1);
+	setFocused(false);
+	await settle();
+	setFocused(true);
+	await settle();
+	expect(recentReads()).toBe(2);
+	expect(texts(tree)).toContain(COULDNT_LOAD);
+	recentFails = false;
+	pressLabel(tree, "evener");
+	await settle();
+	pressLabel(tree, "evener");
+	await settle();
+	expect(recentReads()).toBe(3);
+	expect(texts(tree)).not.toContain(COULDNT_LOAD);
+	expect(hasRow(tree, "Local work")).toBe(true);
+	act(() => tree.unmount());
+});
+
+it("reads a failed catalog again when the Board comes back into view", async () => {
+	const id = hubId();
+	adoptedAnHourAgo(id);
+	let catalogFails = true;
+	const fake = hub(
+		{ ...fleet, catalogs: { projects: [evenerProject()] } },
+		undefined,
+		(read) => catalogFails && read.resource === "catalog",
+	);
+	connect(id, fake.client, "ready");
+	const tree = await mount(navigation());
+	expect(catalogReads(fake)).toEqual(["projects"]);
+	expect(sectionHeaders(tree)).toEqual(["PROJECTS"]);
+	expect(projectRows(tree, "evener")).toHaveLength(0);
+	catalogFails = false;
+	setFocused(false);
+	await settle();
+	setFocused(true);
+	await settle();
+	expect(catalogReads(fake)).toEqual(["projects", "projects"]);
+	expect(projectRows(tree, "evener")).toHaveLength(1);
+	act(() => tree.unmount());
+});
+
+it("offers the project menu as an alert off iOS, archiving the project", async () => {
+	const { Platform } = (await import("react-native")) as unknown as { Platform: { OS: string } };
+	const id = hubId();
+	adoptedAnHourAgo(id);
+	const fake = hub({ ...fleet, catalogs: { projects: [evenerProject()] } }, undefined, undefined, { holdChanges: true });
+	connect(id, fake.client, "ready");
+	const tree = await mount(navigation());
+	Platform.OS = "android";
+	try {
+		act(() => projectRows(tree, "evener")[0].props.onLongPress());
+		const menu = alertRequests.at(-1);
+		expect(menu?.title).toBe("evener");
+		expect(menu?.buttons?.map((button) => [button.text, button.style])).toEqual([
+			["Pin to top", undefined],
+			["Archive project", undefined],
+			["Cancel", "cancel"],
+		]);
+		act(() => menu?.buttons?.[1].onPress?.());
+		await settle();
+	} finally {
+		Platform.OS = "ios";
+	}
+	expect(fake.mutations).toEqual([
+		{
+			method: "evener/archive/set",
+			params: { kind: "project", id: "evener", workingDir: "/home/jesse/git/evener", archived: true },
+		},
+	]);
+	act(() => tree.unmount());
+});
+
+const manyProjects = Array.from({ length: 70 }, (_, index) =>
+	evenerProject({ key: `project-${index}`, name: `project-${index}`, working_dir: `/home/jesse/git/project-${index}` }),
+);
+const manyProjectsFleet = {
+	...fleet,
+	manifest: manifest({ sources: [laptopSource], sections: fleetSections, catalogs: catalogCounts(70, 0, 0) }),
+	catalogs: { projects: manyProjects },
+};
+const projectCatalogPages = (fake: ReturnType<typeof hub>) =>
+	fake.requests.filter((read) => read.resource === "catalog").map((read) => read.offset ?? 0);
+
+it("reads the catalog's next page when its more projects row is pressed", async () => {
+	const id = hubId();
+	adoptedAnHourAgo(id);
+	const fake = hub(manyProjectsFleet);
+	connect(id, fake.client, "ready");
+	const tree = await mount(navigation());
+	expect(projectRows(tree, "project-49")).toHaveLength(1);
+	expect(projectRows(tree, "project-50")).toHaveLength(0);
+	pressLabel(tree, "20 more projects");
+	await settle();
+	expect(projectCatalogPages(fake)).toEqual([0, 50]);
+	expect(projectRows(tree, "project-69")).toHaveLength(1);
+	expect(texts(tree)).not.toContain("20 more projects");
+	act(() => tree.unmount());
+});
+
+it("reads the catalog's next page once its more projects row is at least half on screen", async () => {
+	const id = hubId();
+	adoptedAnHourAgo(id);
+	const fake = hub(manyProjectsFleet);
+	connect(id, fake.client, "ready");
+	const tree = await mount(navigation());
+	const scroller = tree.root.find((node) => node.type === ("ScrollView" as never) && !node.props.horizontal);
+	const more = tree.root.find((node) => node.props.testID === "project-more-projects");
+	act(() => {
+		scroller.props.onLayout?.({ nativeEvent: { layout: { x: 0, y: 0, width: 390, height: 700 } } });
+		projectSection(tree, "projects").props.onLayout({ nativeEvent: { layout: { x: 0, y: 600, width: 390, height: 2500 } } });
+		more.props.onLayout({ nativeEvent: { layout: { x: 0, y: 2400, width: 390, height: 44 } } });
+	});
+	await settle();
+	expect(projectCatalogPages(fake)).toEqual([0]);
+	// The row's top half is on screen.
+	act(() =>
+		scroller.props.onScroll({ nativeEvent: { contentOffset: { x: 0, y: 3022 - 700 }, layoutMeasurement: { width: 390, height: 700 } } }),
+	);
+	await settle();
+	expect(projectCatalogPages(fake)).toEqual([0, 50]);
+	expect(projectRows(tree, "project-69")).toHaveLength(1);
+	act(() => tree.unmount());
+});
+
+it("archives a project from its long-press menu, dimming it until the hub confirms", async () => {
+	const id = hubId();
+	adoptedAnHourAgo(id);
+	const fake = hub({ ...fleet, catalogs: { projects: [evenerProject()] } }, undefined, undefined, { holdChanges: true });
+	connect(id, fake.client, "ready");
+	const tree = await mount(navigation());
+	act(() => projectRows(tree, "evener")[0].props.onLongPress());
+	const [sheet, choose] = harness.actionSheet.mock.calls.at(-1) ?? [];
+	expect(sheet.options).toEqual(["Pin to top", "Archive project", "Cancel"]);
+	act(() => choose(1));
+	await settle();
+	expect(fake.mutations).toEqual([
+		{
+			method: "evener/archive/set",
+			params: { kind: "project", id: "evener", workingDir: "/home/jesse/git/evener", archived: true },
+		},
+	]);
+	expect(rowOpacity(projectRows(tree, "evener")[0])).toBe(0.5);
+	expect(menuLabels(tree)).toEqual([]);
+	fake.release();
+	await settle();
+	expect(rowOpacity(projectRows(tree, "evener")[0])).toBe(1);
+	expect(menuLabels(tree)).toEqual(["Mine, category menu", "Empty, category menu"]);
+	expect(fake.mutations).toHaveLength(1);
+	act(() => tree.unmount());
+});
+
+it("drops the Projects chip once the projects catalog loads empty, as the section goes", async () => {
+	const id = hubId();
+	adoptedAnHourAgo(id);
+	// The manifest counts 4 projects, but the catalog comes back empty.
+	connect(id, hub(fleet).client, "ready");
+	const tree = await mount(navigation());
+	expect(sectionHeaders(tree)).toEqual([]);
+	expect(chipLabels(tree)).toEqual(["Live, 5 sessions, 2 need you", "Mine, 3 sessions"]);
 	act(() => tree.unmount());
 });

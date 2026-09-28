@@ -118,9 +118,13 @@ it("keeps its last list through a dropped connection", async () => {
 
   // The connection dropped, but the store's last loaded rows are untouched:
   // the list is still there, alongside the note explaining why it may be
-  // stale.
+  // stale. Calm copy (spec principle 2): it says what happened and stops,
+  // never asking the person to reconnect - the app does that on its own -
+  // so the exact sentence is pinned, and the absence of any reconnect
+  // directive is checked directly.
   expect(renderedText(tree)).toContain("Done · settled · 2");
-  expect(renderedText(tree)).toContain("Disconnected");
+  expect(renderedText(tree)).toContain("Disconnected. The last loaded tasks are shown.");
+  expect(renderedText(tree).toLowerCase()).not.toContain("reconnect");
 });
 
 type TasksSheetProps = ComponentProps<typeof TasksSheet>;
