@@ -46,7 +46,9 @@ export function NotesSheet({ route }: NativeStackScreenProps<Routes, "NotesSheet
 	const sheet = useSheet({
 		onClosed: () => {
 			const host = live.current;
-			if (host) void host.notes.flush().then(host.saved);
+			// A session that can't take notes keeps anything unsaved on this
+			// phone rather than sending it.
+			if (host && canWriteHumanNote(host.session)) void host.notes.flush().then(host.saved);
 		},
 	});
 	const host = useSheetHost(notesHosts, sheetKey(hubId, ref), sheet);
@@ -60,7 +62,8 @@ export function NotesSheet({ route }: NativeStackScreenProps<Routes, "NotesSheet
 	}, [host]);
 	useEffect(() => {
 		const subscription = AppState.addEventListener("change", (state) => {
-			if (state === "background") void live.current?.notes.flush();
+			const current = live.current;
+			if (state === "background" && current && canWriteHumanNote(current.session)) void current.notes.flush();
 		});
 		return () => subscription.remove();
 	}, []);

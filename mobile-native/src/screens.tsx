@@ -162,7 +162,7 @@ import {
 	sendLabel,
 } from "./session/sendAction";
 import { NotesBar } from "./session/NotesBar";
-import { type NotesHost, notesHosts } from "./session/NotesSheet";
+import { canWriteHumanNote, type NotesHost, notesHosts } from "./session/NotesSheet";
 import { SessionHeader, useHeaderHiding } from "./session/SessionHeader";
 import { type SessionMenuAction, sessionMenu } from "./session/sessionMenu";
 import {
@@ -1893,8 +1893,10 @@ export function ConversationScreen({
 	useEffect(() => {
 		notes.sync();
 	}, [conversation?.humanNote, notes]);
+	const writable = conversation ? canWriteHumanNote(conversation) : false;
 	// A note kept on this phone because its save failed sends once the
-	// session is open, connected and in front. The controller is watched, not
+	// session is open, connected, in front and still takes notes; otherwise
+	// it stays on this phone. The controller is watched, not
 	// only the deps, so a save that fails while already connected is tried
 	// again without waiting for a reconnect. One retry per failure: the
 	// retry's own "failed" publish must not start another.
@@ -1902,7 +1904,7 @@ export function ConversationScreen({
 		let retrying = false;
 		let timer: ReturnType<typeof setTimeout> | null = null;
 		function retryIfNeeded() {
-			if (retrying || !connected || !focused || !bindingInstance) return;
+			if (retrying || !connected || !focused || !bindingInstance || !writable) return;
 			if (notes.getSnapshot().phase !== "failed") return;
 			retrying = true;
 			// Next tick: the "failed" publish can come from inside a flush whose
@@ -1921,7 +1923,7 @@ export function ConversationScreen({
 			unsubscribe();
 			if (timer !== null) clearTimeout(timer);
 		};
-	}, [connected, focused, bindingInstance, notes]);
+	}, [connected, focused, bindingInstance, notes, writable]);
 	const notesSaved = useCallback(
 		(outcome: SaveOutcome) => {
 			if (outcome.saved)

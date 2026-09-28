@@ -973,6 +973,16 @@ it("sends a note kept on this phone from a failed save once the session opens co
 	expect(harness.kv.has("evener.native.note-draft.hub-1")).toBe(false);
 });
 
+it("keeps a note from a failed save on this phone while the session can't take notes", async () => {
+	harness.kv.set("evener.native.note-draft.hub-1", JSON.stringify({ "ref-kept-ended": "kept from before" }));
+	const served = thread("ref-kept-ended", "idle");
+	(served as unknown as { status: { type: string } }).status = { type: "ended" };
+	(served as unknown as { evener: Record<string, unknown> }).evener.capabilities = { ...CAPABILITIES, sharedNotes: true };
+	const { hub } = await mount(served);
+	expect(hub.requests.filter((request) => request.method === "notes/human/set")).toEqual([]);
+	expect(harness.kv.has("evener.native.note-draft.hub-1")).toBe(true);
+});
+
 it("follows the hub's note in the bar and the open sheet when it changes", async () => {
 	const served = thread("ref-notes-follow", "idle");
 	const evener = (served as unknown as { evener: Record<string, unknown> }).evener;
