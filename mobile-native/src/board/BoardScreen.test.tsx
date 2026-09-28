@@ -2157,6 +2157,41 @@ it("classifies a project's session rows by the hub's seen marker too (S4)", asyn
 	act(() => tree.unmount());
 });
 
+it("drops a project row's pending mark once the project's page shows it landed (S4)", async () => {
+	const id = hubId();
+	adoptedAnHourAgo(id);
+	const projectUnseen = session("local:project-unseen", {
+		title: "Project hub unseen",
+		live: false,
+		updated_at: minutesAgo(90),
+		turn_ended_at: minutesAgo(90),
+		unseen: true,
+	});
+	const shape: Fleet = {
+		...hubFleet,
+		catalogs: { projects: [evenerProject()] },
+		projectPages: { "evener:current": [projectUnseen] },
+	};
+	const fake = hub(shape);
+	connect(id, fake.client, "ready");
+	const tree = await mount(navigation());
+	pressLabel(tree, "evener");
+	await settle();
+	act(() => rowTitled(tree, "Project hub unseen").props.onPress());
+	await settle();
+	expect(fake.seen).toEqual([[{ ref: "local:project-unseen", seenThrough: Date.parse(minutesAgo(90)) }]]);
+	expect(stateOf(tree, "Project hub unseen")).toBe("Idle");
+	// The project's page catches up, and the pending mark goes: a later
+	// unseen for the same turn would show again. This fake hub answers every
+	// read at revision 1, so the change names none.
+	shape.projectPages = { "evener:current": [{ ...projectUnseen, unseen: false }] };
+	act(() => fake.invalidate(1, [{ kind: "project", projectKey: "evener" }]));
+	await settle();
+	expect(fake.requests.filter((read) => read.resource === "project_page" && read.tier === "current")).toHaveLength(2);
+	expect(hubSeenMarks(id).isSeenOnHub(projectUnseen)).toBe(false);
+	act(() => tree.unmount());
+});
+
 it("starts Test runs and Archived folded, reading neither catalog until it is unfolded", async () => {
 	const id = hubId();
 	adoptedAnHourAgo(id);
