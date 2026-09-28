@@ -534,6 +534,36 @@ func TestScriptStateCorruptFailsClosed(t *testing.T) {
 	assertNoTempFiles(t, remote.state)
 }
 
+// TestScriptCorruptHolderFailsClosed pins that a malformed holder file — the
+// lease holder record is written by hand in this test, so a one-token or
+// truncated form is exactly what corruption looks like — refuses cleanly
+// instead of tripping the shell's unset-variable handling.
+func TestScriptCorruptHolderFailsClosed(t *testing.T) {
+	remote := newFenceRemote(t)
+	remote.settle(Epoch{BootID: "boot-1", OpSeq: 1})
+	holder := filepath.Join(remote.state, "leases", "holder")
+	for name, content := range map[string]string{
+		"one token":   "boot-1\n",
+		"bad boot id": "boot/1 3\n",
+		"zero op seq": "boot-1 0\n",
+		"extra token": "boot-1 3 extra\n",
+		"garbage":     "not a holder\n",
+	} {
+		if err := os.WriteFile(holder, []byte(content), 0o600); err != nil {
+			t.Fatalf("%s: write holder: %v", name, err)
+		}
+		for _, op := range [][]string{{"status"}, {"takeover", "boot-1", "2"}} {
+			_, stderr, code := remote.run(nil, op...)
+			if code == 0 {
+				t.Fatalf("%s: %v on a corrupt holder succeeded, want refusal", name, op)
+			}
+			if err := DecodeRefusal([]byte(stderr)); !errors.Is(err, ErrStateCorrupt) {
+				t.Fatalf("%s: %v = %v, want ErrStateCorrupt", name, op, err)
+			}
+		}
+	}
+}
+
 func TestScriptStateFilesAreOwnerOnly(t *testing.T) {
 	remote := newFenceRemote(t)
 	remote.settle(Epoch{BootID: "boot-1", OpSeq: 1})

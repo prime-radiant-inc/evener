@@ -36,6 +36,11 @@
 #                                 lease entry carrying that identity still
 #                                 names a live holder (read-only, lock-free)
 #
+# status, entries, and recheck are read-only and take no lock: a verifier must
+# be able to enumerate and re-present identities while a command holds the
+# exclusive lease, so they read one cat snapshot of each file and never block
+# behind a running command. Only takeover, advance, and perform take the lock.
+#
 # Files, all mode 0600 (umask 077) and written temp+fsync+rename+dir-fsync:
 #
 #   guard       flat, one "key<TAB>value" line per field. Keys: version,
@@ -252,15 +257,22 @@ read_holder() { # sets HOLDER_BOOT and HOLDER_SEQ
 	HOLDER_BOOT=-
 	HOLDER_SEQ=0
 	[ -f "$HOLDER_FILE" ] || return 0
-	read -r HOLDER_BOOT HOLDER_SEQ <"$HOLDER_FILE" 2>/dev/null || {
-		HOLDER_BOOT=-
-		HOLDER_SEQ=0
-		return 1
-	}
+	# One snapshot, split on the single space the writer emits: a file with no
+	# space, more than one space-separated token, or a trailing space is not a
+	# holder the writer produced and refuses as corrupt rather than tripping
+	# the shell's unset-variable handling.
+	line=$(cat "$HOLDER_FILE" 2>/dev/null) || return 1
+	case $line in
+	'') return 1 ;;
+	*" "*) ;;
+	*) return 1 ;;
+	esac
+	HOLDER_BOOT=${line%% *}
+	HOLDER_SEQ=${line#* }
 	case $HOLDER_BOOT in
 	-) HOLDER_SEQ=0 ;;
 	*[!A-Za-z0-9._-]*) return 1 ;;
-	*) is_uint "$HOLDER_SEQ" || return 1 ;;
+	*) is_uint "$HOLDER_SEQ" && [ "$HOLDER_SEQ" -ge 1 ] || return 1 ;;
 	esac
 	return 0
 }

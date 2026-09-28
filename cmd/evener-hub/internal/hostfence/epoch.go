@@ -639,22 +639,21 @@ func DecodeRecheck(raw []byte) (Recheck, error) {
 	if recheck.ID == "" {
 		return Recheck{}, fmt.Errorf("%w: a recheck answer carries no id", ErrInvalidGuard)
 	}
-	if recheck.State != "" {
-		if err := (LeaseEntry{ID: recheck.ID, Command: "x", RegisteredAt: "t", Ownership: recheck.Ownership, State: recheck.State, Exit: exitForState(recheck.State)}).Validate(); err != nil {
-			return Recheck{}, err
+	switch recheck.State {
+	case "":
+		// No entry matched the presented identity: the answer is the not-live
+		// one, and there is no stored state to validate.
+	default:
+		switch recheck.State {
+		case LeaseRegistering, LeaseRunning, LeaseExited, LeaseKilled:
+		default:
+			return Recheck{}, fmt.Errorf("%w: a recheck answer carries state %q", ErrInvalidGuard, recheck.State)
 		}
 	}
-	return recheck, nil
-}
-
-// exitForState supplies the exit field Validate requires for the terminal
-// lease states when validating a recheck answer's state.
-func exitForState(state string) *int {
-	if state == LeaseExited || state == LeaseKilled {
-		zero := 0
-		return &zero
+	if err := recheck.Ownership.Validate(); err != nil {
+		return Recheck{}, err
 	}
-	return nil
+	return recheck, nil
 }
 
 // decodeStrict decodes one JSON value with the store's decode discipline: no
