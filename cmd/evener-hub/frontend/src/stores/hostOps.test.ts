@@ -163,6 +163,10 @@ describe("refusal recovery actions", () => {
     expect(planNoTokenAction("target-unwritable", true)).toBe("none");
     expect(planNoTokenAction("target-missing-prereq", true)).toBe("none");
     expect(planNoTokenAction("target-unit-findings", true)).toBe("none");
+    // An unknown non-terminal reason is never a dead end: it re-plans, the
+    // safe recovery planRefusalAction's own default uses. Only remnant-open is
+    // explicitly affordance-free.
+    expect(planNoTokenAction("some-future-reason", false)).toBe("replan");
   });
 });
 
@@ -247,6 +251,43 @@ describe("plan", () => {
     expect(state.token).toBe("tok-2");
     expect(state.plan.targetPath).toBe("/new");
   });
+
+  test("a response landing after a client replacement publishes the connection-changed arm", async () => {
+    const fake = connectFakeClient();
+    const settlements = gateSettlements(fake, "evener/host/plan");
+    const pending = hostOpsStore.getState().plan("beta");
+    await Promise.resolve();
+    // The connection is replaced while the plan is out: the response describes
+    // the hub that was, so no writer for the old client remains - the planning
+    // state must not be left spinning forever.
+    connectionStore.getState().connect(new FakeClient("ready"));
+    settlements[0]!.resolve({ outcome: "planned", plan: plan(), token: "tok-1" });
+    await pending;
+
+    const state = hostOpsStore.getState().plans.beta;
+    expect(state?.phase).toBe("error");
+    if (state?.phase !== "error") throw new Error("unreachable");
+    expect(state.refusal.message).toContain("connection changed while this plan was being built");
+    expect(state.recovery).toBe("replan");
+  });
+
+  test("a failure landing after a client replacement publishes the same arm", async () => {
+    const fake = connectFakeClient();
+    const settlements = gateSettlements(fake, "evener/host/plan");
+    const pending = hostOpsStore.getState().plan("beta");
+    await Promise.resolve();
+    connectionStore.getState().connect(new FakeClient("ready"));
+    settlements[0]!.reject(new WireError("probe died", -32014, { evenerErrorInfo: "probe-failed" }));
+    await pending;
+
+    const state = hostOpsStore.getState().plans.beta;
+    expect(state?.phase).toBe("error");
+    if (state?.phase !== "error") throw new Error("unreachable");
+    // The replacement is the honest answer, not the dead request's own
+    // classification: re-planning against the new connection is the way out.
+    expect(state.refusal.message).toContain("connection changed while this plan was being built");
+    expect(state.recovery).toBe("replan");
+  });
 });
 
 describe("deploy", () => {
@@ -270,6 +311,65 @@ describe("deploy", () => {
     expect(hostOpsStore.getState().operations.beta).toEqual({
       id: "op-1",
       clientOperationId: "client-op-1",
+      state: "pending",
+    });
+  });
+
+  test("a missing client attaches the refusal to the current confirmation, never a stale snapshot", async () => {
+    const fake = connectFakeClient();
+    fake.on("evener/host/plan", () => ({ outcome: "planned", plan: plan(), token: "tok-1" }));
+    await hostOpsStore.getState().plan("beta");
+    const planned = hostOpsStore.getState().plans.beta;
+    if (planned?.phase !== "planned") throw new Error("unreachable");
+
+    connectionStore.setState({ client: null });
+    await hostOpsStore.getState().deploy("beta");
+
+    const state = hostOpsStore.getState().plans.beta;
+    if (state?.phase !== "planned") throw new Error("unreachable");
+    // The refusal lands on the confirmed plan itself, whose token and
+    // operation ID survive for the retry.
+    expect(state.token).toBe("tok-1");
+    expect(state.operationId).toBe(planned.operationId);
+    expect(state.refusal).not.toBeNull();
+    expect(fake.calls.filter((c) => c.method === "evener/host/deploy")).toHaveLength(0);
+  });
+
+  test("an operation record is not published when the connection was replaced mid-request", async () => {
+    const fake = connectFakeClient();
+    fake.on("evener/host/plan", () => ({ outcome: "planned", plan: plan(), token: "tok-1" }));
+    const settlements = gateSettlements(fake, "evener/host/deploy");
+    await hostOpsStore.getState().plan("beta");
+    const pending = hostOpsStore.getState().deploy("beta");
+    await Promise.resolve();
+    // The record came back through a connection that has since been replaced:
+    // it describes the previous hub, so it must not seed S15's polling for
+    // this host name.
+    connectionStore.getState().connect(new FakeClient("ready"));
+    settlements[0]!.resolve({ id: "op-old", clientOperationId: "client-op-old", state: "pending" });
+    await pending;
+
+    expect(hostOpsStore.getState().operations.beta).toBeUndefined();
+  });
+
+  test("a superseded confirmation still publishes its record under the same client", async () => {
+    const fake = connectFakeClient();
+    fake.on("evener/host/plan", () => ({ outcome: "planned", plan: plan(), token: "tok-1" }));
+    const settlements = gateSettlements(fake, "evener/host/deploy");
+    await hostOpsStore.getState().plan("beta");
+    const pending = hostOpsStore.getState().deploy("beta");
+    await Promise.resolve();
+    // The dialog closed while the request was out (a superseded sequence), but
+    // the connection is the same one: the started record is real and S15 needs
+    // its id.
+    hostOpsStore.getState().discardPlan("beta");
+    settlements[0]!.resolve({ id: "op-keep", clientOperationId: "client-op-keep", state: "pending" });
+    await pending;
+
+    expect(hostOpsStore.getState().plans.beta).toBeUndefined();
+    expect(hostOpsStore.getState().operations.beta).toEqual({
+      id: "op-keep",
+      clientOperationId: "client-op-keep",
       state: "pending",
     });
   });
@@ -477,6 +577,47 @@ describe("restart", () => {
     const state = hostOpsStore.getState().restarts.beta;
     expect(state?.phase).toBe("failed");
     expect(state?.refusal?.kind).toBe("stale-entry");
+  });
+
+  test("a failed stale-entry retry persists the fresh pair and operation ID", async () => {
+    const fake = connectFakeClient();
+    fake.on("evener/host/list", () => ({ hosts: [{ ...row("beta"), generation: 4, incarnationId: "inc-4" }] }));
+    let restarts = 0;
+    fake.on("evener/host/restart", () => {
+      restarts += 1;
+      if (restarts === 1) {
+        throw new WireError('host "beta": registration moved; retry', -32013, { evenerErrorInfo: "stale-entry" });
+      }
+      if (restarts === 2) {
+        throw new WireError("busy", -32013, { evenerErrorInfo: "host-busy-transient" });
+      }
+      return { id: "op-11", clientOperationId: "client-op-11", state: "pending" };
+    });
+    hostOpsStore.getState().beginRestart("beta", { generation: 3, incarnationId: "inc-3" });
+
+    // First attempt: stale-entry re-reads and retries once; that retry fails,
+    // leaving the attempt failed.
+    await hostOpsStore.getState().restart("beta");
+    expect(hostOpsStore.getState().restarts.beta?.phase).toBe("failed");
+
+    // The operator retries: the attempt must resubmit the pair the re-read
+    // answered and the operation ID the retry used - never the stale
+    // coordinates and retired key the first attempt carried.
+    await hostOpsStore.getState().restart("beta");
+    const calls = fake.calls.filter((c) => c.method === "evener/host/restart");
+    expect(calls).toHaveLength(3);
+    expect(calls[1]!.params as { generation: number; incarnationId: string }).toMatchObject({
+      generation: 4,
+      incarnationId: "inc-4",
+    });
+    expect(calls[2]!.params as { generation: number; incarnationId: string }).toMatchObject({
+      generation: 4,
+      incarnationId: "inc-4",
+    });
+    expect((calls[2]!.params as { operationId: string }).operationId).toBe(
+      (calls[1]!.params as { operationId: string }).operationId,
+    );
+    expect(hostOpsStore.getState().restarts.beta?.phase).toBe("started");
   });
 
   test("host-busy-operation names the running operation and blocks a bare retry", async () => {

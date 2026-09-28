@@ -194,8 +194,15 @@ export function planNoTokenAction(reason: string, terminal: boolean): HostOpReco
     case "probe-failed":
     case "handler-absent":
       return "replan";
-    default:
+    case "remnant-open":
+      // Explicitly affordance-free: it never re-plans and never Connects (a
+      // re-plan mints nothing while the remnant is open; its teardown-retry
+      // affordance is S16's).
       return "none";
+    default:
+      // An unrecognized non-terminal reason is never a dead end: re-planning
+      // is the safe recovery, matching planRefusalAction's own default.
+      return "replan";
   }
 }
 
@@ -282,6 +289,21 @@ function restartSequence(name: string): number {
 function planIsCurrent(name: string, sequence: number, client: AppwireClientLike): boolean {
   return planSequence(name) === sequence && connectionStore.getState().client === client;
 }
+/** planSequenceSuperseded answers whether a newer plan call (or a discard)
+ * owns name's state, so the older request must publish nothing. */
+function planSequenceSuperseded(name: string, sequence: number): boolean {
+  return planSequence(name) !== sequence;
+}
+
+/** The terminal arm a plan publishes when its connection was replaced while
+ * the request was out. The response describes the hub that was and no writer
+ * for the old client remains, so leaving the planning state up would spin
+ * forever; re-planning against the new connection is the way out. */
+const PLAN_CONNECTION_CHANGED_MESSAGE = "The hub connection changed while this plan was being built; plan again.";
+
+function planConnectionChangedArm(): HostPlanPhase {
+  return { phase: "error", refusal: { kind: "unknown", message: PLAN_CONNECTION_CHANGED_MESSAGE }, recovery: "replan" };
+}
 function restartIsCurrent(name: string, sequence: number, client: AppwireClientLike): boolean {
   return restartSequence(name) === sequence && connectionStore.getState().client === client;
 }
@@ -311,9 +333,16 @@ export const hostOpsStore = create<HostOpsStoreState>((set, get) => ({
     try {
       client = requireClient();
     } catch (error) {
-      set((previous) => ({
-        plans: { ...previous.plans, [name]: { phase: "error", refusal: hostOpRefusal(error), recovery: "replan" } },
-      }));
+      // Attach the refusal to the CURRENT entry: a plan already in flight owns
+      // the planning state and must not be clobbered by this pre-request
+      // failure, while any settled state is the honest target.
+      set((previous) => {
+        const current = previous.plans[name];
+        if (current?.phase === "planning") return previous;
+        return {
+          plans: { ...previous.plans, [name]: { phase: "error", refusal: hostOpRefusal(error), recovery: "replan" } },
+        };
+      });
       return;
     }
     const sequence = planSequence(name) + 1;
@@ -321,7 +350,11 @@ export const hostOpsStore = create<HostOpsStoreState>((set, get) => ({
     set((previous) => ({ plans: { ...previous.plans, [name]: { phase: "planning" } } }));
     try {
       const result = await client.request("evener/host/plan", { name }, { timeoutMs: HOST_GATE_TIMEOUT_MS });
-      if (!planIsCurrent(name, sequence, client)) return;
+      if (planSequenceSuperseded(name, sequence)) return;
+      if (connectionStore.getState().client !== client) {
+        set((previous) => ({ plans: { ...previous.plans, [name]: planConnectionChangedArm() } }));
+        return;
+      }
       // The generated union carries `outcome` as `string`, so the arms are
       // narrowed by the fields only one of them declares - the same structural
       // discriminator stores/hosts.ts reads for the mutation-result union.
@@ -353,7 +386,11 @@ export const hostOpsStore = create<HostOpsStoreState>((set, get) => ({
         }));
       }
     } catch (error) {
-      if (!planIsCurrent(name, sequence, client)) return;
+      if (planSequenceSuperseded(name, sequence)) return;
+      if (connectionStore.getState().client !== client) {
+        set((previous) => ({ plans: { ...previous.plans, [name]: planConnectionChangedArm() } }));
+        return;
+      }
       const refusal = hostOpRefusal(error);
       set((previous) => ({
         plans: { ...previous.plans, [name]: { phase: "error", refusal, recovery: planRefusalAction(refusal.kind) } },
@@ -368,12 +405,15 @@ export const hostOpsStore = create<HostOpsStoreState>((set, get) => ({
     try {
       client = requireClient();
     } catch (error) {
-      set((previous) => ({
-        plans: {
-          ...previous.plans,
-          [name]: { ...state, refusal: hostOpRefusal(error) },
-        },
-      }));
+      // Read the entry inside the setter and attach the refusal only while the
+      // confirmation this call intended is still the one displayed - a newer
+      // plan/token/ID minted meanwhile is never overwritten by a stale
+      // snapshot.
+      set((previous) => {
+        const current = previous.plans[name];
+        if (current === undefined || current.phase !== "planned") return previous;
+        return { plans: { ...previous.plans, [name]: { ...current, refusal: hostOpRefusal(error) } } };
+      });
       return;
     }
     const sequence = planSequence(name);
@@ -396,9 +436,13 @@ export const hostOpsStore = create<HostOpsStoreState>((set, get) => ({
         { timeoutMs: HOST_GATE_TIMEOUT_MS },
       );
       // The record is published even if the confirmation was superseded while
-      // the request was out: the operation exists server-side and S15's polling
-      // needs its id.
-      set((previous) => ({ operations: { ...previous.operations, [name]: operationRef(result) } }));
+      // the request was out (the operation exists server-side and S15's polling
+      // needs its id), but only while the connection that sent it is still
+      // current: a record from a replaced connection describes the hub that
+      // was and must not seed this name's polling.
+      if (connectionStore.getState().client === client) {
+        set((previous) => ({ operations: { ...previous.operations, [name]: operationRef(result) } }));
+      }
       if (!planIsCurrent(name, sequence, client)) return;
       set((previous) => {
         const current = previous.plans[name];
@@ -468,9 +512,15 @@ export const hostOpsStore = create<HostOpsStoreState>((set, get) => ({
     try {
       client = requireClient();
     } catch (error) {
-      set((previous) => ({
-        restarts: { ...previous.restarts, [name]: { ...attempt, phase: "failed", refusal: hostOpRefusal(error) } },
-      }));
+      // Read the entry inside the setter: only the attempt still displayed is
+      // failed, never a newer pair/ID a concurrent action minted.
+      set((previous) => {
+        const current = previous.restarts[name];
+        if (current === undefined || current.phase === "started") return previous;
+        return {
+          restarts: { ...previous.restarts, [name]: { ...current, phase: "failed", refusal: hostOpRefusal(error) } },
+        };
+      });
       return;
     }
     const sequence = restartSequence(name);
@@ -491,7 +541,9 @@ export const hostOpsStore = create<HostOpsStoreState>((set, get) => ({
       );
     try {
       const result = await send(attempt.pair, operationId);
-      set((previous) => ({ operations: { ...previous.operations, [name]: operationRef(result) } }));
+      if (connectionStore.getState().client === client) {
+        set((previous) => ({ operations: { ...previous.operations, [name]: operationRef(result) } }));
+      }
       if (!restartIsCurrent(name, sequence, client)) return;
       set((previous) => {
         const current = previous.restarts[name];
@@ -531,9 +583,21 @@ export const hostOpsStore = create<HostOpsStoreState>((set, get) => ({
         return;
       }
       const retryId = createSecureUUID();
+      // Persist the refreshed coordinates BEFORE the retry: if it fails, the
+      // attempt must name the pair and operation ID it actually used, so the
+      // operator's next attempt never resubmits the stale pair under the
+      // retired key - the same discipline the conflicting-operation-id path
+      // uses above.
+      set((previous) => {
+        const held = previous.restarts[name];
+        if (held === undefined || held.phase === "started") return previous;
+        return { restarts: { ...previous.restarts, [name]: { ...held, pair: current, operationId: retryId } } };
+      });
       try {
         const result = await send(current, retryId);
-        set((previous) => ({ operations: { ...previous.operations, [name]: operationRef(result) } }));
+        if (connectionStore.getState().client === client) {
+          set((previous) => ({ operations: { ...previous.operations, [name]: operationRef(result) } }));
+        }
         if (!restartIsCurrent(name, sequence, client)) return;
         set((previous) => {
           const held = previous.restarts[name];
