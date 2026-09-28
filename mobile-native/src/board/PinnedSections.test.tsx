@@ -22,6 +22,8 @@ vi.mock("expo-symbols", () => ({ SymbolView: "SymbolView" }));
 vi.mock("react-native-gesture-handler/ReanimatedSwipeable", async () =>
 	(await import("../renderNative.testkit")).gestureHandlerModuleMock(),
 );
+// Each row's long-press menu lives beside the row menu sheet, a route.
+vi.mock("@react-navigation/native", () => ({ useNavigation: () => ({}), usePreventRemove: () => {} }));
 vi.mock("expo-sqlite/kv-store", () => ({
 	Storage: {
 		getItemSync: (key: string) => harness.kv.get(key) ?? null,
@@ -73,6 +75,7 @@ function Category({ hub, section = release, page, onMenu = null, changing = fals
 		activityOf: () => undefined,
 		msSinceRead: null,
 		swipes: () => ({ trailing: [], dimmed: false }),
+		menu: () => ({ actions: [], onOpenSession: () => {}, onAction: () => {}, onOpenSheet: () => {} }),
 	};
 	return (
 		<PinnedSection

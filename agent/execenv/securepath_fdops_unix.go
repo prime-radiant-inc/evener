@@ -4,6 +4,7 @@ package execenv
 
 import (
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -24,6 +25,7 @@ var (
 	secureWrite          = unix.Write
 	secureClose          = unix.Close
 	secureRenameat       = unix.Renameat
+	secureUnlinkat       = unix.Unlinkat
 	secureReadDirEntries = readDirEntries
 )
 
@@ -344,7 +346,9 @@ func (s *sandboxFS) writeFile(tool, abs string, data []byte, perm os.FileMode) e
 // remove deletes abs if it is beneath a writable root. A path outside the
 // writable set (or under a masked/protected surface) is a typed denial; an
 // in-root unlink that fails because the target is absent is not an error
-// (matching apply_patch's best-effort delete).
+// (matching apply_patch's best-effort delete). Every other unlink failure —
+// permission, a read-only filesystem, a nonempty directory — is returned, so a
+// delete that did not happen is never reported as success (issue #2376).
 func (s *sandboxFS) remove(tool, abs string) error {
 	parentFd, leaf, err := s.openWriteParent(tool, abs, false)
 	if err != nil {
@@ -354,18 +358,39 @@ func (s *sandboxFS) remove(tool, abs string) error {
 		// than a failed apply_patch. Genuine policy denials (outside a writable root,
 		// masked, git-protected, a refused symlink component) still propagate.
 		var denied *sandbox.DeniedError
-		if !errors.As(err, &denied) && (errors.Is(err, unix.ENOENT) || errors.Is(err, unix.ENOTDIR)) {
+		if !errors.As(err, &denied) && isAbsentRemove(err) {
 			return nil
 		}
 		return err
 	}
 	defer func() { _ = unix.Close(parentFd) }()
-	if uerr := unix.Unlinkat(parentFd, leaf, 0); uerr != nil {
-		if errors.Is(uerr, unix.EISDIR) {
-			_ = unix.Unlinkat(parentFd, leaf, unix.AT_REMOVEDIR)
-		}
+	uerr := secureUnlinkat(parentFd, leaf, 0)
+	if uerr == nil {
+		return nil
 	}
-	return nil
+	// The target vanished between opening its parent and unlinking it: already
+	// gone, so a best-effort delete stays a no-op success.
+	if isAbsentRemove(uerr) {
+		return nil
+	}
+	// The leaf is not a plain file — try removing it as a directory. Linux and
+	// Darwin differ on unlink(dir)'s errno (EISDIR vs EPERM), so the fallback
+	// cannot key on EISDIR alone; instead mirror os.Remove: attempt the directory
+	// removal unconditionally, and when both fail report the rmdir error unless it
+	// is ENOTDIR (rmdir(file) is ENOTDIR on both), in which case the unlink error
+	// is the real one.
+	derr := secureUnlinkat(parentFd, leaf, unix.AT_REMOVEDIR)
+	if derr == nil {
+		return nil
+	}
+	if !errors.Is(derr, unix.ENOTDIR) {
+		uerr = derr
+	}
+	// A target that raced away between the two calls is still already gone.
+	if isAbsentRemove(uerr) {
+		return nil
+	}
+	return fmt.Errorf("remove %s: %w", abs, uerr)
 }
 
 // rename moves oldAbs to newAbs. Both endpoints must resolve beneath a writable
