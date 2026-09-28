@@ -737,3 +737,43 @@ it("drops a model list for the place the form left when a setup is applied", asy
 	await flush();
 	expect(store.getState().models).toEqual([model]);
 });
+
+it("keeps the new host's harnesses when the old host's list answers late, and drops them on a move", async () => {
+	const { store, calls } = setup();
+	const metadata = store.getState().loadMetadata();
+	answer(calls, "evener/projects/recent", null, { data: [] });
+	const staleHarnesses = calls.find((c) => c.method === "evener/harnesses/list");
+	const moving = store.getState().changeHost("paradise-park", "paradise-park");
+	expect(store.getState().harnesses).toEqual([]);
+	answer(calls, "evener/host/request", "evener/projects/recent", { data: [] });
+	await flush();
+	answer(calls, "evener/host/request", "model/list", { data: [model] });
+	await moving;
+	if (staleHarnesses) calls.splice(calls.indexOf(staleHarnesses), 1);
+	staleHarnesses?.response.resolve({ data: [{ id: "local-only", label: "Local only" }] });
+	await metadata;
+	expect(store.getState().harnesses).toEqual([]);
+});
+
+it("restores a draft with an empty host as the hub's own machine", () => {
+	const saved = new Map<string, CreationDraft>();
+	const storage = () => ({
+		read: (hubId: string) => saved.get(hubId) ?? null,
+		write: (hubId: string, draft: CreationDraft) => {
+			saved.set(hubId, structuredClone(draft));
+		},
+		clear: (hubId: string) => saved.delete(hubId),
+	});
+	saved.set("hub", {
+		source: "",
+		cwd: "/project",
+		prompt: "",
+		harness: "",
+		model: null,
+		reasoning: "",
+		launchOverrides: {},
+		images: [],
+		unconfirmed: false,
+	});
+	expect(createNewSessionStore("hub", storage).getState().source).toBe("local");
+});

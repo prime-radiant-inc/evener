@@ -253,15 +253,10 @@ export function createNewSessionStore(
 			if (!current) return;
 			try {
 				const [projects, harnesses] = await Promise.all([current.recentProjects(host), current.harnesses(host)]);
-				if (generation === connection)
-					set({
-						// Another host's recent projects never land in this one's list.
-						...(get().source === host ? { projects } : {}),
-						harnesses,
-						metadataError: null,
-					});
+				// Another host's projects and harnesses never land in this one's form.
+				if (generation === connection && get().source === host) set({ projects, harnesses, metadataError: null });
 			} catch {
-				if (generation === connection)
+				if (generation === connection && get().source === host)
 					set({
 						metadataError: "Could not load projects and harnesses. Retry options or use hub defaults.",
 					});
@@ -449,6 +444,7 @@ export function createNewSessionStore(
 				hostNote: null,
 				movingHost: !!current,
 				projects: [],
+				harnesses: [],
 				models: [],
 				loadingModels: false,
 			});
@@ -478,7 +474,7 @@ export function createNewSessionStore(
 			set({
 				source: setup.host,
 				// Another host's recent projects are read below; the old host's go.
-				...(setup.host !== previous.source ? { projects: [] } : {}),
+				...(setup.host !== previous.source ? { projects: [], harnesses: [] } : {}),
 				cwd: setup.cwd,
 				hostNote: null,
 				model: setup.model ? { provider: setup.model.provider, model: setup.model.model } : null,
@@ -495,7 +491,7 @@ export function createNewSessionStore(
 			pendingModelId = seed.model ?? null;
 			set({
 				source: seed.host,
-				...(seed.host !== previous.source ? { projects: [] } : {}),
+				...(seed.host !== previous.source ? { projects: [], harnesses: [] } : {}),
 				cwd: seed.cwd,
 				hostNote: null,
 				model: null,
@@ -552,7 +548,7 @@ export function createNewSessionStore(
 					...fields,
 					// A draft saved before hosts has none: the hub's own machine
 					// (ruling 28).
-					source: source ?? LOCAL_HOST,
+					source: source || LOCAL_HOST,
 					unconfirmedCreation: unconfirmed,
 					error: unconfirmed
 						? "An earlier creation could not be confirmed. Check the session list before trying again; the session may exist."
