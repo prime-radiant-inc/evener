@@ -76,6 +76,8 @@ export type { RejectableFile } from "./attachmentLimits";
 export { MAX_ATTACHMENT_BYTES, MAX_ATTACHMENTS, rejectionReason } from "./attachmentLimits";
 export type { MarkerAttachment } from "./attachmentMarkers";
 export { translateAttachmentMarkers } from "./attachmentMarkers";
+export type { BootGenerationAction } from "./bootGeneration";
+export { compareBootGeneration, DAEMONLESS_BOOT_GENERATION } from "./bootGeneration";
 export type { BuiltinMatch } from "./builtinInvocation";
 export { findBuiltinArgument, matchBuiltinInvocation } from "./builtinInvocation";
 export { slashCommandInvocation, visibleCatalogCommands } from "./catalogCommands";
@@ -104,7 +106,7 @@ export type {
 } from "./commandCatalog";
 export { createCommandCatalog, createSessionCommandCatalog, sessionPluginNames } from "./commandCatalog";
 export type { InputAttachment } from "./composerInput";
-export { buildComposerInput, buildInput, canonicalSkillNames } from "./composerInput";
+export { buildComposerInput, buildInput, canonicalSkillNames, formatQuoteBlock, mergeDraftText } from "./composerInput";
 export type { CredentialLayerView, InstanceProviderGroup } from "./credentialLabels";
 export {
   activeSourceLabel,
@@ -148,6 +150,7 @@ export type { DocFileContent, DocFileErrorKind } from "./docContent";
 export { DOC_FILE_MAX_BYTES, DocFileError, docFileRawURL, docImageURL } from "./docContent";
 export type { DiscardStoredDraftResult } from "./draftCheckpointPort";
 export { canonicalJson } from "./draftCheckpointPort";
+export { diffStats, editDiffText } from "./editDiff";
 export type { EntityIdMatch, EntityKind } from "./entityIds";
 export { entityKindOf, findEntityIds, jobOwnerSessionId } from "./entityIds";
 export type { DelegateEntityView, EntityView, JobEntityView, OpenTarget, WatchEntityView } from "./entityView";
@@ -160,6 +163,8 @@ export {
   ErrorInstanceRenamePersisted,
   ErrorInvalidHostField,
   ErrorMarketplaceRemoveApplied,
+  ErrorTranscriptHistoryFailed,
+  ErrorUpgradeRequired,
   errorKind,
   errorText,
   friendlyErrorMessage,
@@ -171,6 +176,8 @@ export {
   isInstanceRemoveApplied,
   isInstanceRenamePersisted,
   isStaleCursorError,
+  isTranscriptHistoryFailedError,
+  isUpgradeRequiredError,
   mutationErrorData,
   RequestTimeoutError,
   sessionActionError,
@@ -184,6 +191,7 @@ export type { HubOverviewClient, HubOverviewListener, HubOverviewState, HubOverv
 export { createHubOverviewStore } from "./hubOverview";
 export type { ItemFailureSignals } from "./itemFailure";
 export {
+  displayTurnStatus,
   hasErrorText,
   hasFailureStatus,
   hasItemFailure,
@@ -297,6 +305,7 @@ export {
 export { marketplaceSourceLabel } from "./marketplaceSourceLabel";
 export type {
   CapabilitySource,
+  HistoryState,
   ItemImage,
   ItemModel,
   ModelRetryState,
@@ -333,13 +342,18 @@ export type {
   TurnHistoryMergeResult,
 } from "./reducer";
 export {
+  applyHistoryReadFailure,
   applyNotification,
+  applyReadResponse,
   collectAuthoritativeMutationIds,
+  comparePositions,
   copyItemTextPresence,
   foldWarningParams,
   hasWarningText,
   hydrateThread,
   imageSessionRouteForSession,
+  invalidateHistory,
+  issueLatestWindowRead,
   isToolCallItemId,
   isToolResultItemId,
   itemIdentityMatches,
@@ -409,6 +423,7 @@ export {
   SEND_UNAVAILABLE,
   type SessionControlName,
   type SessionControls,
+  SHUT_DOWN_STATUSES,
   STEER_UNAVAILABLE,
   STOP_UNAVAILABLE,
   sessionControls,

@@ -1,34 +1,20 @@
 package agent
 
 import (
-	"embed"
 	"encoding/json"
 	"fmt"
 	"math"
 	"os"
-	"path/filepath"
 	"strings"
 
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/execenv"
-	"primeradiant.com/evener/agent/internal/promptpath"
 	"primeradiant.com/evener/agent/sandbox"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/envvars"
 	"primeradiant.com/evener/internal/bundled"
 	"primeradiant.com/evener/llm"
 )
-
-var renderEmbeddedSystemPrompt = func(resolver *sectionResolver, fs embed.FS, prefix, name string, data promptData) (string, []promptSource, error) {
-	return resolver.RenderEmbedded(fs, prefix, name, data)
-}
-
-var projectPromptDir = func(env execenv.ExecutionEnvironment, workingDir string) string {
-	gitRoot := execenv.GitRootOrEmpty(env, workingDir)
-	return promptpath.ProjectPromptsDir(gitRoot)
-}
-
-var globalPromptDir = promptpath.GlobalPromptsDir
 
 func renderResourceCapsJSON(cpus float64, memoryMB int64) string {
 	if cpus <= 0 || math.IsNaN(cpus) || math.IsInf(cpus, 0) {
@@ -108,19 +94,13 @@ func (s *Session) reportPromptRenderFailure(warning string) {
 	s.emit(events.EventWarning, events.WarningData{Message: warning})
 }
 
-func promptSectionDirExists(dir string) bool {
-	if dir == "" {
-		return false
-	}
-	info, err := os.Stat(dir)
-	return err == nil && info.IsDir()
-}
-
-// buildPromptData assembles a promptData from session state for template rendering.
-// env is the ALREADY-RESOLVED execution environment (passed by renderSystemPrompt,
-// which runs under a held s.mu): it must not be re-fetched via s.currentEnv(), which
-// would re-lock the non-reentrant s.mu and deadlock.
-func (s *Session) buildPromptData(env execenv.ExecutionEnvironment) promptData {
+// buildPromptData assembles a promptData from session state for template
+// rendering, plus the PROMPT_LOADED sources for the inputs it read: the role
+// and each append file. env is the ALREADY-RESOLVED execution environment
+// (passed by renderSystemPrompt, which runs under a held s.mu): it must not be
+// re-fetched via s.currentEnv(), which would re-lock the non-reentrant s.mu
+// and deadlock.
+func (s *Session) buildPromptData(env execenv.ExecutionEnvironment) (promptData, []promptSource) {
 	agentName := s.cfg.AgentName
 	if agentName == "" {
 		agentName = defaultAgentName
@@ -132,10 +112,9 @@ func (s *Session) buildPromptData(env execenv.ExecutionEnvironment) promptData {
 
 	data := promptData{
 		NonInteractive:           s.cfg.NonInteractive,
-		Provider:                 s.profile.ID(),
-		Agent:                    agentName,
 		BaseInstructionsOverride: strings.TrimSpace(s.systemPromptOverride),
-		RolePromptOverride:       strings.TrimSpace(s.cfg.spawn.rolePromptOverride),
+		IsSubagent:               s.depth > 0,
+		Surface:                  s.profile.Surface(),
 		WorkingDir:               s.envInfo.WorkingDir,
 		IsGitRepo:                s.envInfo.IsGitRepo,
 		GitBranch:                s.envInfo.GitBranch,
@@ -157,6 +136,12 @@ func (s *Session) buildPromptData(env execenv.ExecutionEnvironment) promptData {
 		ProjectDocs:              s.projectDocs,
 		ActivatedSkillBodies:     append([]string(nil), s.cfg.spawn.activatedSkillBodies...),
 	}
+	var sources []promptSource
+	var roleSource *promptSource
+	data.Role, roleSource = resolveRolePrompt(s.cfg.spawn.rolePromptOverride, agentName, bundled.Agents())
+	if roleSource != nil {
+		sources = append(sources, *roleSource)
+	}
 
 	// Skills
 	for _, descriptor := range s.skills.ModelEntries() {
@@ -169,7 +154,6 @@ func (s *Session) buildPromptData(env execenv.ExecutionEnvironment) promptData {
 
 	// Profile tools (provider-visible wire form, matching what the API receives)
 	profileDefs := s.profileWireToolDefs()
-	data.ProfileTools = toolEntriesFromDefinitions(profileDefs)
 	// Use the same provider-visible tool definitions that are sent to the model.
 	// Prompting with canonical names while the API receives mapped names such as
 	// exec_command/grep_files/find_files is contradictory and confuses tool use.
@@ -177,23 +161,6 @@ func (s *Session) buildPromptData(env execenv.ExecutionEnvironment) promptData {
 	data.HasUseSkill = toolNameSetFromDefinitions(actualDefs)["use_skill"]
 	data.CallableToolNames = toolNamesFromDefinitions(actualDefs)
 	data.UnavailableProfileToolNames = unavailableToolNames(profileDefs, actualDefs)
-
-	// MCP tools
-	data.MCPTools = toolEntriesFromDefinitions(s.mcpTools)
-
-	// Custom tools (not core, not MCP)
-	mcpNames := make(map[string]bool, len(s.mcpTools))
-	for _, td := range s.mcpTools {
-		mcpNames[td.Name] = true
-	}
-	var customToolDefs []llm.ToolDefinition
-	for _, td := range s.reg.Definitions() {
-		if s.coreToolNames[td.Name] || mcpNames[td.Name] {
-			continue
-		}
-		customToolDefs = append(customToolDefs, td)
-	}
-	data.CustomTools = toolEntriesFromDefinitions(customToolDefs)
 
 	// Delegation capability: a grantable allowance (> 0) unlocks the delegation
 	// and background-jobs prompt surface only when those tools are callable.
@@ -212,16 +179,18 @@ func (s *Session) buildPromptData(env execenv.ExecutionEnvironment) promptData {
 	// Available subagent types
 	data.AvailableAgents = s.availableAgentEntries()
 
-	// CLI appends: read file paths into contents
+	// CLI appends: each file is read once, and that read supplies both the
+	// prompt text and its PROMPT_LOADED source. An unreadable file is skipped.
 	for _, p := range s.cfg.SystemPromptAppend {
 		b, err := os.ReadFile(p)
 		if err != nil {
 			continue
 		}
 		data.CLIAppends = append(data.CLIAppends, string(b))
+		sources = append(sources, promptSource{Label: "append:" + p, Size: len(strings.TrimRight(string(b), "\n"))})
 	}
 
-	return data
+	return data, sources
 }
 
 func (s *Session) canPromptDelegation() bool {
@@ -290,76 +259,25 @@ func sandboxPromptBoundary(rp *sandbox.ResolvedPolicy) string {
 	return fmt.Sprintf("%s (network %s) — fixed for this session", rp.Mode, netStr)
 }
 
-// renderSystemPrompt renders the system prompt using the template resolver. It
+// renderSystemPrompt renders the system prompt from the embedded template. It
 // returns the prompt and, when the render failed, the diagnostic its caller
 // must report; see refreshSystemPromptCache for why that is returned rather
 // than emitted here, and for the env-locking contract.
 func (s *Session) renderSystemPrompt(env execenv.ExecutionEnvironment) (string, string) {
-	projDir := ""
-	if !s.cfg.NoProjectPrompts {
-		projDir = projectPromptDir(env, s.envInfo.WorkingDir)
-	}
-
-	projSections := ""
-	globalSections := ""
-	if projDir != "" {
-		projSections = filepath.Join(projDir, "sections")
-	}
-	if gd := globalPromptDir(); gd != "" {
-		globalSections = filepath.Join(gd, "sections")
-	}
-
-	sectionSources := make([]sectionSource, 0, 3)
-	if promptSectionDirExists(projSections) {
-		sectionSources = append(sectionSources, diskSource{dir: projSections})
-	}
-	if promptSectionDirExists(globalSections) {
-		sectionSources = append(sectionSources, diskSource{dir: globalSections})
-	}
-	sectionSources = append(sectionSources, embedSource{fs: embeddedPrompts, prefix: "prompts/sections/"})
-
-	resolver := &sectionResolver{
-		surface: s.profile.Surface(),
-		agent:   s.cfg.AgentName,
-		agentFS: bundled.Agents(),
-		sources: sectionSources,
-	}
-	if resolver.agent == "" {
-		resolver.agent = defaultAgentName
-	}
-
-	data := s.buildPromptData(env)
-
-	templateName := "system"
-	if s.depth > 0 {
-		templateName = "subagent"
-	}
-
-	result, sources, err := renderEmbeddedSystemPrompt(resolver,
-		embeddedPrompts, "prompts/templates/", templateName, data,
-	)
+	data, inputSources := s.buildPromptData(env)
+	result, err := executeSystemPromptTemplate(data)
 	if err != nil {
-		// Template rendering should not fail — embedded templates are compiled into the binary.
-		// Report the error and return a minimal prompt rather than silently degrading to legacy.
+		// The template parsed at package initialization, so an execution error
+		// is a bug. Report it and hand the model a minimal prompt that says so.
 		return fmt.Sprintf("Template rendering failed: %v. Please report this bug.", err),
 			fmt.Sprintf("template render failed: %v", err)
 	}
-	if trimmed := strings.TrimSpace(s.systemPromptOverride); trimmed != "" {
-		sources = append([]promptSource{{
-			Label: "cli:" + s.cfg.SystemPromptFile,
-			Size:  len(trimmed),
-		}}, sources...)
+	sources := make([]promptSource, 0, len(inputSources)+2)
+	if data.BaseInstructionsOverride != "" {
+		sources = append(sources, promptSource{Label: "cli:" + s.cfg.SystemPromptFile, Size: len(data.BaseInstructionsOverride)})
 	}
-	for _, p := range s.cfg.SystemPromptAppend {
-		b, readErr := os.ReadFile(p)
-		if readErr != nil {
-			continue
-		}
-		sources = append(sources, promptSource{
-			Label: "append:" + p,
-			Size:  len(strings.TrimRight(string(b), "\n")),
-		})
-	}
+	sources = append(sources, promptSource{Label: systemPromptTemplateLabel, Size: len(result)})
+	sources = append(sources, inputSources...)
 	s.promptSourceLog = sources
 	return result, ""
 }

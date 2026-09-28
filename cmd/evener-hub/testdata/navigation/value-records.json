@@ -16,6 +16,8 @@
     "approval_pending": true,
     "approval_tool": "write_file",
     "approval_target": "/home/me/sites/docs/index.md",
+    "question": { "text": "Keep or drop the implied options?", "options": ["Drop them", "Keep them"], "count": 2 },
+    "failure": { "title": "Provider error", "cause_kind": "provider", "provider": "codex-jesse-fsck.com", "status": 401 },
     "dormant": true,
     "offline": true,
     "updated_at": "2026-09-26T12:00:00Z",

@@ -28,9 +28,11 @@ import {
   deriveSendQueueAvailability,
   filterSlashMenuItems,
   matchBuiltinInvocation,
+  mergeDraftText,
   mergeSlashCommands,
   NO_ACTIVE_TURN,
   parseSlashToken,
+  SHUT_DOWN_STATUSES,
   type SlashMenuItem,
   type SlashToken,
   sessionActionError,
@@ -38,6 +40,7 @@ import {
   spliceSlashCommand,
   type ThreadModel,
 } from "@evener/appwire-client";
+import { ownPendingSend } from "@evener/appwire-client/state/mutation";
 import {
   type FormEvent,
   memo,
@@ -97,13 +100,7 @@ import {
   readDraftRevision,
   writeComposerDraft,
 } from "./draft";
-import {
-  type PendingTurnEntry,
-  pendingTurnEntries,
-  QueueStrip,
-  submitWithPendingTracking,
-  usePendingTurnEntries,
-} from "./queue";
+import { pendingTurnEntries, QueueStrip, submitWithPendingTracking, usePendingTurnEntries } from "./queue";
 import {
   discardRecoveryPendingTurn,
   refreshPendingTurnsProjection,
@@ -113,7 +110,7 @@ import {
   useComposerSubmitting,
   useRecoveryEntries,
 } from "./queue/pendingTurnsStore";
-import { consumeQuoteInsert, type QuoteInsertPlacement, useQuoteInsertRequest } from "./quoteInsert";
+import { consumeQuoteInsert, useQuoteInsertRequest } from "./quoteInsert";
 import { RepoLocation } from "./RepoLocation";
 import { mergeRecoveryComposerDraft, recoveryComposerDraft } from "./recovery/recoveryDraft";
 import { SkillEditor, type SkillEditorHandle } from "./SkillEditor";
@@ -154,31 +151,6 @@ const MemoizedSessionChrome = memo(function MemoizedSessionChrome(props: Session
   return <SessionChrome {...props} />;
 });
 
-// Shared by restoreTextToComposer (QueueStrip's "edit a queued entry" path)
-// and the quote-insert effect below (SelectionQuote's "Quote in reply" path,
-// and the command palette's slash-command insert, via requestQuoteInsert's
-// own placement param - quoteInsert.ts's own header comment). placement
-// "append" (the default, and every existing caller's behavior, byte-
-// identical to before this param existed): existing text is right-trimmed
-// then kept, the incoming text is appended after a blank line - "put text
-// into the composer without clobbering what's already typed there", byte-
-// ported from renderer.js's own restoreTextToComposer (see
-// restoreTextToComposer's own doc comment for the fuller history).
-// placement "prefix" (the palette's own slash-command insert): the addition
-// goes FIRST, with no separator inserted - a slash command only parses at
-// the very start of the draft, and the addition already carries its own
-// trailing space (CommandPalette.tsx's activateCommand), so simple
-// concatenation is exactly right. A module-level function, not a closure,
-// so it can be called from the quote-insert effect below, which (like every
-// hook in this component) must run unconditionally ahead of the `if
-// (!model) return null` narrowing - restoreTextToComposer itself is
-// declared after that point and closes over already-narrowed locals it
-// doesn't need here.
-function mergeDraftText(existing: string, addition: string, placement: QuoteInsertPlacement = "append"): string {
-  if (placement === "prefix") return `${addition}${existing}`;
-  return existing.trim() === "" ? addition : `${existing.replace(/\s+$/, "")}\n\n${addition}`;
-}
-
 // Selections compare by exact ordered content: same names, same order, no
 // extra. A changed chip list is a changed draft even when the text is
 // byte-identical, so both halves of a submitted snapshot must still match
@@ -209,16 +181,6 @@ function settledInputAttachments(items: PendingAttachment[]): InputAttachment[] 
 // closing the race where both could otherwise fire drainAsSteer at once
 // (w5-integration-wiring-report.md's "two Steer buttons" concern).
 type BusyAction = "submit" | "steer" | "interrupt" | "drain" | null;
-
-// The wire statuses that mean this session's story is over. "notLoaded" is the
-// shape a cold exited evener session actually arrives in (cmd/evener-hub/
-// app_threadread.go's pastEntryThread stamps it) and "closed" is a live session
-// that shut down in front of us; both are appwire's own vocabulary
-// (appwire/types.go's ThreadStatus* constants). "ended" is not one of them -
-// it never crosses the wire - but deriveSendQueueAvailability already treats it
-// as terminal, so it is matched here too rather than leaving the two modules
-// disagreeing about the same word.
-const ENDED_STATUSES: ReadonlySet<string> = new Set(["ended", "closed", "notLoaded"]);
 
 // The local recovery fence lives in stores/liveControls.ts (one predicate for
 // every surface that owes it - this module's availability/card/Steer gates and
@@ -833,7 +795,7 @@ export function Composer({ ref, focused }: ComposerProps) {
   // instead of `model.<field>` directly.
   const renderedModel: ThreadModel = model;
   const activeTurnId = model.activeTurnId;
-  const ended = ENDED_STATUSES.has(model.status.type);
+  const ended = SHUT_DOWN_STATUSES.has(model.status.type);
   // A stopped local session is recovery-fenced. It keeps its follow-up card so
   // the retained draft and the recovery notice's explicit Resume action stay
   // reachable, but Send and Queue are NOT offered: turn/start no longer carries
@@ -852,40 +814,7 @@ export function Composer({ ref, focused }: ComposerProps) {
   // refused client-side (before any durable write) when a selection is staged
   // and the target never advertised that it consumes skill items.
   const skillInputSupported = model.capabilities.skillInput === true;
-  // A turn/start THIS COMPOSER already submitted, before any status frame for
-  // it has come back. Without it a fast second message is composed while the
-  // thread still reads idle, routed to turn/start, and refused by the daemon
-  // with Conflict("turn is already active") - see tier 6 in
-  // deriveSendQueueAvailability.
-  //
-  // Someone else's pending send is excluded deliberately, and tier 6 does not
-  // work without that. usePendingTurnEntries also surfaces
-  // model.pendingMutations, which is the DAEMON's session-wide mutation
-  // projection: it covers every client on the session, reducer.ts writes it only
-  // at hydrate, and no notification ever refreshes it. Feeding it to a routing
-  // decision would reroute this composer on another tab's or the TUI's in-flight
-  // send, from a snapshot that may be arbitrarily old - exactly the "daemon's
-  // state arriving late" that tier 6's own justification rests on not being.
-  //
-  // The question is whose send it is, which is what fromThisClient answers. It
-  // is deliberately not entry.source: that names the projection describing the
-  // row, and a hydrate landing mid-send re-describes THIS client's own
-  // unsettled send as "authoritative" (pendingReconcile's own doc comment).
-  // Reading routing off the presentation source therefore lost tier 6 for the
-  // sender at exactly the moment the daemon confirmed it had the send - the
-  // next message went to turn/start and bounced.
-  //
-  // blockedUnknown counts too: it is this client's own send whose response was
-  // lost, so the turn may already be running. Dropping it dropped tier 6 for
-  // exactly the uncertain window, and the next message bounced on the turn
-  // that send had applied.
-  //
-  // A canceled row does not count: Stop wrote its cancellation before dispatch
-  // (stop-cancellation-outbox §4), so it is provably not in flight and no turn
-  // can be running because of it. Counting it parked the next message in queue
-  // mode behind a turn that never started.
-  const ownPendingSend = (entries: readonly PendingTurnEntry[]) =>
-    entries.some((entry) => entry.fromThisClient && entry.state !== "canceled");
+  // Tier 6: see ownPendingSend in @evener/appwire-client/state/mutation.
   const hasPendingSend = ownPendingSend(pendingSendEntries);
   // The Send/Queue availability of a model and this client's pending send: read
   // at render for the button and its tooltip, and again at submit from the
@@ -937,7 +866,7 @@ export function Composer({ ref, focused }: ComposerProps) {
     // status' SECOND message back into the turn/start that bounces - the table
     // answers queue-mode there, for the whole time the resume takes to produce a
     // status frame, which for a session that has to spawn a daemon is seconds.
-    return ENDED_STATUSES.has(target.status.type) &&
+    return SHUT_DOWN_STATUSES.has(target.status.type) &&
       controlsFor(target).send &&
       !tableAvailability.canSend &&
       !tableAvailability.canQueue

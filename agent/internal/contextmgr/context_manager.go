@@ -1203,7 +1203,9 @@ func collectCheckpointData(history []schema.Turn, cutoff int, resultToolName str
 // … [END CHECKPOINT] block: the fixed metadata sections (transcript pointer,
 // modified files, tool counts, recent shell results, activated skills), then the
 // conversation and working notes fit into maxChars by shedding the oldest working
-// notes first and then the oldest conversation entries.
+// notes first and then the oldest conversation entries after the original task
+// (the earliest user entry), which is pinned so budget pressure never drops what
+// the user asked for.
 func formatCheckpoint(data checkpointData, meta *CompactionMeta, maxChars int) string {
 	// Build the fixed-size sections first (metadata), then fill remaining
 	// budget with user messages and agent responses.
@@ -1282,24 +1284,64 @@ func formatCheckpoint(data checkpointData, meta *CompactionMeta, maxChars int) s
 	variableBudget := max(maxChars-overhead, 1000)
 
 	// Encode conversation and working notes as Markdown. Shed oldest notes
-	// first, then oldest user or agent messages if needed to fit budget.
-	conversation := data.conversation
+	// first — they may be shed entirely — then the oldest messages after the
+	// pinned original task, which itself is never shed.
+	// Clean once so the pin index and the rendered slice refer to the same
+	// entries; renderCheckpointConversation would otherwise drop whitespace-only
+	// entries after the pin was chosen, letting the pin land on a vanishing one.
+	conversation := cleanCheckpointConversation(data.conversation)
 	workingNotes := data.workingNotes
 	conversationMarkdown := renderCheckpointConversation(conversation)
 	notesMarkdown := renderCheckpointWorkingNotes(workingNotes)
 
+	// Pin the original task — the earliest user entry — so the checkpoint keeps
+	// what the user asked for instead of shedding it under budget pressure. With
+	// no user entry (-1) the pin is inactive and shedding keeps its oldest-first
+	// order.
+	pinnedOriginal := -1
+	for i, entry := range conversation {
+		if entry.Role == "user" {
+			pinnedOriginal = i
+			break
+		}
+	}
+
 	for len(conversationMarkdown)+len(notesMarkdown) > variableBudget {
-		if len(workingNotes) > 1 {
+		if len(workingNotes) > 0 {
 			workingNotes = workingNotes[1:] // drop oldest note first
 			notesMarkdown = renderCheckpointWorkingNotes(workingNotes)
 			continue
 		}
 		if len(conversation) > 1 {
-			conversation = conversation[1:] // then drop oldest conversation entry
+			// Drop the oldest entry that is not the pinned original task.
+			drop := 0
+			if drop == pinnedOriginal {
+				drop = 1
+			}
+			conversation = slices.Concat(conversation[:drop], conversation[drop+1:])
+			if drop < pinnedOriginal {
+				pinnedOriginal--
+			}
 			conversationMarkdown = renderCheckpointConversation(conversation)
 			continue
 		}
 		break
+	}
+
+	// Notes are exhaustible, so a lone over-budget conversation entry is all the
+	// loop can leave behind: it never sheds the pinned original task. Trim that
+	// entry — by its exact rendered length — so the checkpoint still honors its
+	// size cap instead of keeping an oversized task or dropping it.
+	if len(conversation) == 1 && len(conversationMarkdown) > variableBudget {
+		role := conversation[0].Role
+		render := func(text string) int {
+			return len(renderCheckpointConversation([]checkpointConversationEntry{{Role: role, Text: text}}))
+		}
+		conversation = []checkpointConversationEntry{{
+			Role: role,
+			Text: truncateRendered(conversation[0].Text, variableBudget, render),
+		}}
+		conversationMarkdown = renderCheckpointConversation(conversation)
 	}
 
 	// Assemble final checkpoint.
@@ -1316,6 +1358,25 @@ func formatCheckpoint(data checkpointData, meta *CompactionMeta, maxChars int) s
 	}
 	b.WriteString("[END CHECKPOINT]\n")
 	return b.String()
+}
+
+// truncateRendered shortens text (via truncate, which appends an ellipsis) until
+// its rendered form fits in available bytes. Truncating never increases the
+// rendered length, so the largest fitting prefix is found by binary search.
+func truncateRendered(text string, available int, render func(string) int) string {
+	if render(text) <= available {
+		return text
+	}
+	lo, hi := 0, len(text)
+	for lo < hi {
+		mid := (lo + hi + 1) / 2
+		if render(truncate(text, mid)) <= available {
+			lo = mid
+		} else {
+			hi = mid - 1
+		}
+	}
+	return truncate(text, lo)
 }
 
 // findToolResultByCallID finds a tool result in a TurnTool by its ToolCallID

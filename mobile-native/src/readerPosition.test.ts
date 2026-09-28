@@ -4,6 +4,8 @@ import {
 	comparePosition,
 	furthestMeasuredRowBeforeTarget,
 	isReaderAnchorLoaded,
+	openingTarget,
+	type ReaderAnchor,
 	ReaderPositionRepository,
 	ReaderRestoreAttempts,
 	reachableReaderOffset,
@@ -35,6 +37,14 @@ const row = (
 	markdown: id,
 	streaming: false,
 	position,
+});
+const anchor = (over: Partial<ReaderAnchor> = {}): ReaderAnchor => ({
+	hubId: "hub-1",
+	sessionRef: "ref-1",
+	itemKey: "none",
+	withinItemOffset: 0,
+	touchedAt: 1,
+	...over,
 });
 describe("reader positions", () => {
 	it("retries a clamped restore when the saved position becomes reachable", () => {
@@ -97,6 +107,21 @@ describe("reader positions", () => {
 	it("does not capture an unmeasured row", () => {
 		const item = row("a", { entry: 1, item: 1 });
 		expect(captureReaderAnchor("hub", "session", item, 12, [], 1)).toBeNull();
+	});
+	it("captures turnsSeen when the caller supplies it", () => {
+		const item = row("a", { entry: 1, item: 1 });
+		const measurement = { key: readerKey(item), y: 0, height: 40 };
+		const captured = captureReaderAnchor(
+			"hub",
+			"session",
+			item,
+			12,
+			[measurement],
+			1,
+			undefined,
+			"turn_5",
+		);
+		expect(captured?.turnsSeen).toBe("turn_5");
 	});
 	it("restores position-matched rows using current geometry after their key changes", () => {
 		const position = { entry: 2, item: 1 };
@@ -601,4 +626,94 @@ it("recognizes filtered source members and grouped notices without paging or mut
 			{ ...activity, ...activity.members[0], kind: "activity" },
 		]),
 	).toBe(0);
+});
+
+describe("a reading position inside a folded run (Review Focus 4)", () => {
+	const run: TimelineRow = {
+		kind: "run",
+		id: "run:a",
+		transcriptKey: "key-a",
+		position: { entry: 4, item: 0 },
+		steps: [
+			{ kind: "activity", id: "a", label: "read_file", family: "tool", state: "completed", detail: {}, transcriptKey: "key-a", position: { entry: 4, item: 0 } },
+			{ kind: "activity", id: "b", label: "grep", family: "tool", state: "completed", detail: {}, transcriptKey: "key-b", position: { entry: 4, item: 1 } },
+		],
+	};
+	const rows: TimelineRow[] = [{ kind: "user", id: "u", text: "hi" }, run];
+
+	it("finds the run by a later step's key or position", () => {
+		expect(resolveReaderAnchor(anchor({ itemKey: "key-b" }), rows)).toBe(1);
+		expect(resolveReaderAnchor(anchor({ itemKey: "gone", itemPosition: { entry: 4, item: 1 } }), rows)).toBe(1);
+		expect(resolveReaderAnchor(anchor({ itemKey: "gone" }), rows)).toBeNull();
+	});
+
+	it("keys a run by its first step, so an older anchor on it still resolves", () => {
+		expect(readerKey(run)).toBe("key-a");
+		expect(resolveReaderAnchor(anchor({ itemKey: "key-a" }), rows)).toBe(1);
+	});
+});
+
+describe("where a session opens (spec 7.3, ruling 31)", () => {
+	const rows: TimelineRow[] = [
+		{ kind: "user", id: "u1", text: "one", turnId: "turn_1" },
+		{ kind: "assistant", id: "a1", markdown: "one", streaming: false, turnId: "turn_1" },
+		{ kind: "time", id: "time:turn_2", turnId: "turn_2", at: 0 },
+		{ kind: "user", id: "u2", text: "two", turnId: "turn_2" },
+		{ kind: "assistant", id: "a2", markdown: "two", streaming: false, turnId: "turn_2" },
+	];
+	const turnIds = ["turn_1", "turn_2"];
+
+	it("opens at the live end while a question or approval waits", () => {
+		expect(openingTarget(anchor({ turnsSeen: "turn_1" }), rows, turnIds, true)).toEqual({ kind: "live" });
+	});
+	it("opens at the start of a reply that finished since you last reached the end", () => {
+		expect(openingTarget(anchor({ turnsSeen: "turn_1" }), rows, turnIds, false)).toEqual({ kind: "row", index: 4 });
+	});
+	// The "unread result" (spec 7.3) starts with the agent's first row, runs
+	// included, so a newer turn whose agent side opens with a run opens there,
+	// not at the assistant reply that follows it.
+	it("opens at a run when a newer turn's agent side starts with one", () => {
+		const rowsWithRun: TimelineRow[] = [
+			{ kind: "user", id: "u1", text: "one", turnId: "turn_1" },
+			{ kind: "assistant", id: "a1", markdown: "one", streaming: false, turnId: "turn_1" },
+			{ kind: "time", id: "time:turn_2", turnId: "turn_2", at: 0 },
+			{ kind: "user", id: "u2", text: "two", turnId: "turn_2" },
+			{ kind: "run", id: "run:a", steps: [], turnId: "turn_2" },
+			{ kind: "assistant", id: "a2", markdown: "two", streaming: false, turnId: "turn_2" },
+		];
+		expect(openingTarget(anchor({ turnsSeen: "turn_1" }), rowsWithRun, turnIds, false)).toEqual({ kind: "row", index: 4 });
+	});
+	// Your own images follow your message as an attachments row. They are not
+	// the reply, and neither is any other attachments row: a step's images
+	// ride inside its run, and any other attachments row follows the row that
+	// produced it, so skipping them never skips the start of the reply.
+	it("opens past the images you sent, at the reply itself", () => {
+		const rowsWithImages: TimelineRow[] = [
+			...rows.slice(0, 4),
+			{
+				kind: "attachments",
+				id: "u2:attachments",
+				items: [{ id: "u2:0", src: "/doc/image?1" }],
+				sourceTranscriptKey: "u2",
+				turnId: "turn_2",
+			},
+			{ kind: "run", id: "run:a", steps: [], turnId: "turn_2" },
+		];
+		expect(openingTarget(anchor({ turnsSeen: "turn_1" }), rowsWithImages, turnIds, false)).toEqual({ kind: "row", index: 5 });
+	});
+	it("opens where you left off when nothing is newer, or the seen turn isn't loaded", () => {
+		expect(openingTarget(anchor({ turnsSeen: "turn_2" }), rows, turnIds, false)).toEqual({ kind: "anchor" });
+		expect(openingTarget(anchor({ turnsSeen: "turn_0" }), rows, turnIds, false)).toEqual({ kind: "anchor" });
+		expect(openingTarget(anchor({}), rows, turnIds, false)).toEqual({ kind: "anchor" });
+	});
+	it("opens at the live end with no saved position", () => {
+		expect(openingTarget(null, rows, turnIds, false)).toEqual({ kind: "live" });
+	});
+	it("stores turnsSeen, and still reads an anchor saved before it existed", () => {
+		const disk = storage();
+		new ReaderPositionRepository(disk).save(anchor({ turnsSeen: "turn_2" }));
+		expect(new ReaderPositionRepository(disk).read("hub-1", "ref-1")?.turnsSeen).toBe("turn_2");
+		new ReaderPositionRepository(disk).save(anchor({ sessionRef: "ref-old" }));
+		expect(new ReaderPositionRepository(disk).read("hub-1", "ref-old")?.itemKey).toBe("none");
+	});
 });

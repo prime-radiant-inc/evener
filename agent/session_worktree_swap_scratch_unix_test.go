@@ -262,7 +262,7 @@ func retainedScratchDirsIn(t *testing.T, base string) []string {
 	return retained
 }
 
-// The swap's git snapshot and prompt pre-warm run commands on the entered
+// The swap's git snapshot runs commands on the entered
 // clone before it is installed, and a command is what mints a scratch on an
 // environment that owns none. The clone has to adopt the session's scratch
 // before any of that runs, or the snapshot mints a fresh one, the adoption

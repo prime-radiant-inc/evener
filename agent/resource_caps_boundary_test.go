@@ -22,7 +22,7 @@ type renderedResourceCaps struct {
 // hands none.
 func promptResourceCaps(t *testing.T, s *Session) (renderedResourceCaps, bool) {
 	t.Helper()
-	data := s.buildPromptData(s.env)
+	data, _ := s.buildPromptData(s.env)
 	if data.ResourceCapsJSON == "" {
 		return renderedResourceCaps{}, false
 	}
@@ -79,7 +79,8 @@ func TestRenderedEnvironmentUsesTrustedStructuredResourcesWhenModelShellMasked(t
 	}
 	// The payload is Go-generated JSON, so the rendered prompt must carry it
 	// verbatim, once.
-	if payload := sess.buildPromptData(sess.env).ResourceCapsJSON; strings.Count(prompt, payload) != 1 {
+	data, _ := sess.buildPromptData(sess.env)
+	if payload := data.ResourceCapsJSON; strings.Count(prompt, payload) != 1 {
 		t.Fatalf("rendered prompt carries resource payload %s %d times, want once", payload, strings.Count(prompt, payload))
 	}
 }

@@ -8,7 +8,6 @@ import (
 
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/sandbox"
-	"primeradiant.com/evener/internal/bundled"
 )
 
 // probedFacts is the toolchain probe result the snapshots below render: both
@@ -380,18 +379,12 @@ func TestProbeCapabilitiesGitTimeoutIsIndependent(t *testing.T) {
 // TestCapabilityPreambleRendersInEnvironmentSection: the preamble lines reach
 // the rendered prompt's <environment> block, each on its own line.
 func TestCapabilityPreambleRendersInEnvironmentSection(t *testing.T) {
-	resolver := &sectionResolver{
-		surface: "anthropic",
-		agent:   defaultAgentName,
-		agentFS: bundled.Agents(),
-		sources: []sectionSource{embedSource{fs: embeddedPrompts, prefix: "prompts/sections/"}},
-	}
 	data := promptData{
 		WorkingDir:   "/w",
 		Sandbox:      "restricted (network off) — fixed for this session",
 		Capabilities: capabilityPreambleLines(capabilityFacts{scratchDir: "/scratch/s1", probe: probedFacts()}),
 	}
-	out, _, err := resolver.RenderEmbedded(embeddedPrompts, "prompts/templates/", "system", data)
+	out, err := executeSystemPromptTemplate(data)
 	if err != nil {
 		t.Fatalf("render error: %v", err)
 	}

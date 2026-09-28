@@ -1835,6 +1835,8 @@ func (p navigationProjector) projectShallow(node hubcore.TreeNode) hubapi.Naviga
 		ApprovalPending:     node.ApprovalPending,
 		ApprovalTool:        truncateNavigationBytes(node.ApprovalTool, maxNavigationIdentityBytes),
 		ApprovalTarget:      truncateNavigationRunes(node.ApprovalTarget, maxNavigationLabelRunes),
+		Question:            navigationQuestion(node.Question),
+		Failure:             navigationFailure(node.Failure),
 		Dormant:             node.Dormant,
 		Offline:             p.projection.sourceOffline(ref.HostID),
 		UpdatedAt:           optionalTime(node.UpdatedAt),
@@ -1880,6 +1882,44 @@ func navigationTaskProgress(tasks *appwire.TaskAggregate) *hubapi.NavigationTask
 		return nil
 	}
 	return progress
+}
+
+// navigationQuestion is a row's pending question on the wire: re-cut to the
+// wire's bounds (appwire.BoundedPendingQuestion), so a remote host or an older
+// daemon cannot widen a row, and dropped when the schema would refuse it (no
+// text left, or no question counted), the way navigationTaskProgress drops bad
+// progress rather than fail the resource.
+func navigationQuestion(question *appwire.PendingQuestion) *hubapi.NavigationQuestion {
+	if question == nil {
+		return nil
+	}
+	bounded := appwire.BoundedPendingQuestion(question.Question, question.Options, question.Count)
+	wire := hubapi.NavigationQuestion{Text: bounded.Question, Options: bounded.Options, Count: bounded.Count}
+	if !navigationQuestionValid(wire) {
+		return nil
+	}
+	return &wire
+}
+
+// navigationFailure is a Failed row's why on the wire (S1c): the failure's
+// headline re-cut to the wire's bound, and its cause's kind, provider and HTTP
+// status, identities cut to the identity bound. It is dropped when the schema
+// would refuse it (nothing left to say), the way navigationTaskProgress drops
+// bad progress rather than fail the resource.
+func navigationFailure(failure *appwire.ThreadFailure) *hubapi.NavigationFailure {
+	if failure == nil {
+		return nil
+	}
+	wire := hubapi.NavigationFailure{Title: appwire.Excerpt(failure.Title, appwire.MaxFailureTitleRunes)}
+	if cause := failure.Cause; cause != nil {
+		wire.CauseKind = truncateNavigationBytes(cause.Kind, maxNavigationIdentityBytes)
+		wire.Provider = truncateNavigationBytes(cause.Provider, maxNavigationIdentityBytes)
+		wire.Status = cause.Status
+	}
+	if !navigationFailureValid(wire) {
+		return nil
+	}
+	return &wire
 }
 
 // navigationSubagentTally is a root row's tally on the wire: absent when the
@@ -2180,6 +2220,12 @@ func cloneNavigationSummary(summary hubapi.NavigationSessionSummary) hubapi.Navi
 	}
 	clone.Tasks = clonePointer(summary.Tasks)
 	clone.Subagents = clonePointer(summary.Subagents)
+	clone.Failure = clonePointer(summary.Failure)
+	if summary.Question != nil {
+		question := *summary.Question
+		question.Options = append([]string(nil), summary.Question.Options...)
+		clone.Question = &question
+	}
 	clone.Children = make(hubapi.NavigationArray[hubapi.NavigationSessionSummary], len(summary.Children))
 	for index, child := range summary.Children {
 		clone.Children[index] = cloneNavigationSummary(child)
@@ -2188,8 +2234,8 @@ func cloneNavigationSummary(summary hubapi.NavigationSessionSummary) hubapi.Navi
 }
 
 // clonePointer returns a pointer to a shallow copy of *value; nil stays nil.
-// The summaries point only at values (a time, the task progress, the subagent
-// tally), so the copy shares nothing that can change.
+// It is for the summaries' pointers to values (a time, the task progress, the
+// subagent tally, the failure), so the copy shares nothing that can change.
 func clonePointer[T any](value *T) *T {
 	if value == nil {
 		return nil

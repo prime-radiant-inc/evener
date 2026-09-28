@@ -11,8 +11,8 @@
 // close, one macrotask at a time, and reports it on that test. The wait is
 // condition-watching because React offers nothing to await; the bound turns a
 // scope that never closes into a named failure. Work that only the test's own
-// `finally` or an onTestFinished hook releases cannot settle during the wait,
-// so such a scope always takes the whole bound.
+// `finally` releases cannot settle during the wait, so such a scope always
+// takes the whole bound.
 
 export interface ActScopeGuardPorts {
   // Whether a React act() scope is open right now.

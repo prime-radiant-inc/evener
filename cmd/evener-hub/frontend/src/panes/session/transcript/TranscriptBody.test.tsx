@@ -1,4 +1,5 @@
 import type { ThreadModel } from "@evener/appwire-client";
+import * as appwireClient from "@evener/appwire-client";
 import { makeTranscriptDisplayConfig } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
@@ -13,7 +14,7 @@ import {
   transitionTranscriptViews,
 } from "./flow/transcriptViewRegistry";
 import * as flowModule from "./flow/useTranscriptScroll";
-import { TranscriptBody } from "./TranscriptBody";
+import { TranscriptBody, transcriptAnchorEntriesForRows, transcriptRowsForProjection } from "./TranscriptBody";
 import { threadFingerprintForItem } from "./types";
 
 function preset(level: "chat" | "intent" | "tools" | "activity" | "full") {
@@ -1147,5 +1148,39 @@ describe("trailingRow scroll coordination", () => {
     } finally {
       spy.mockRestore();
     }
+  });
+});
+
+describe("prepared view", () => {
+  test("consumes a prepared view without re-deriving it", () => {
+    const project = vi.spyOn(appwireClient, "projectThread");
+    const projection = appwireClient.projectThread(fixture, preset("tools"));
+    const rows = transcriptRowsForProjection(projection);
+    const anchorEntries = transcriptAnchorEntriesForRows(rows);
+    project.mockClear();
+
+    render(
+      <TranscriptBody
+        model={fixture}
+        config={preset("tools")}
+        preparedView={{ projection, rows, anchorEntries }}
+        surface="live"
+        disclosureScope="live:prepared"
+      />,
+    );
+
+    expect(project).not.toHaveBeenCalled();
+    expect(screen.getByTestId("tool-row-intent").textContent).toBe("Inspect the tree");
+  });
+
+  test("a caller without a prepared view still derives its own (preview/read-only unchanged)", () => {
+    const project = vi.spyOn(appwireClient, "projectThread");
+
+    render(
+      <TranscriptBody model={fixture} config={preset("tools")} surface="preview" disclosureScope="preview:own-view" />,
+    );
+
+    expect(project).toHaveBeenCalledTimes(1);
+    expect(screen.getByTestId("tool-row-intent").textContent).toBe("Inspect the tree");
   });
 });
