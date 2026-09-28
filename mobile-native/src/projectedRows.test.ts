@@ -1526,6 +1526,7 @@ describe("truncateItem keeps a row's identity when the bound cuts nothing", () =
 		const row: MobileTimelineItem = { kind: "user", id: "u1", text: big };
 		const bounded = truncateItem(row, bound);
 		expect(bounded).not.toBe(row);
+		expect(bounded.kind).toBe("user");
 		if (bounded.kind === "user") expect(bounded.text.length).toBeLessThan(big.length);
 	});
 
@@ -1554,6 +1555,7 @@ describe("truncateItem keeps a row's identity when the bound cuts nothing", () =
 		};
 		const out = truncateItem(row, bound);
 		expect(out).not.toBe(row);
+		expect(out.kind).toBe("activity");
 		if (out.kind === "activity") {
 			expect(out.members?.[0]).toBe(row.members?.[0]);
 			expect(out.members?.[1]).not.toBe(row.members?.[1]);
