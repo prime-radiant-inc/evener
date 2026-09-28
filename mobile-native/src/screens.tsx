@@ -1539,20 +1539,26 @@ export function ConversationScreen({
 		}
 		loadOlderPage();
 	});
-	// The current match comes into view, 30% down the list.
-	const findScroll = useRef<"jump" | "retry" | null>(null);
-	function scrollToFindMatch(index: number, attempt: "jump" | "retry") {
+	// The current match comes into view, 30% down the list. A row the list
+	// hasn't measured fails the jump (onScrollToIndexFailed, while
+	// findJumping holds); the list then moves near it and tries again, for as
+	// long as each try measures rows closer to it, as the reader's restore
+	// does (ReaderRestoreAttempts.retryUnmeasured).
+	const findJumping = useRef(false);
+	const findAttempts = useRef(new ReaderRestoreAttempts());
+	function scrollToFindMatch(index: number) {
 		readerLatest.current = false;
 		readerHeader.current = false;
 		// The reading position follows the jump, so nothing pulls the list back.
 		captureSuppressed.current = false;
-		findScroll.current = attempt;
+		findJumping.current = true;
 		timeline.current?.scrollToIndex({ index, viewPosition: 0.3, animated: true });
-		findScroll.current = null;
+		findJumping.current = false;
 	}
 	// biome-ignore lint/correctness/useExhaustiveDependencies: only a new current match scrolls; rows prepending above it keep it in view.
 	useEffect(() => {
-		if (findCurrent !== null) scrollToFindMatch(findCurrent, "jump");
+		findAttempts.current.reset();
+		if (findCurrent !== null) scrollToFindMatch(findCurrent);
 	}, [findKey]);
 	// Leaving the screen closes find.
 	useEffect(() => {
@@ -2906,19 +2912,22 @@ export function ConversationScreen({
 								setLayoutRevision((revision) => revision + 1);
 							}}
 							onScrollToIndexFailed={({ index, averageItemLength }) => {
-								// A match beyond the rendered rows: move near it, so it
-								// renders, then try once more.
-								if (findScroll.current === "jump") {
+								// A match beyond the measured rows: move near it, so the
+								// rows on the way render, then try again.
+								if (findJumping.current) {
+									const progress = furthestMeasuredRowBeforeTarget(
+										timelineRows,
+										index,
+										[...readerMeasurements.current.values()],
+									);
+									if (!findAttempts.current.retryUnmeasured(progress)) return;
 									timeline.current?.scrollToOffset({
 										offset: index * Math.max(1, averageItemLength),
 										animated: false,
 									});
-									requestAnimationFrame(() =>
-										scrollToFindMatch(index, "retry"),
-									);
+									requestAnimationFrame(() => scrollToFindMatch(index));
 									return;
 								}
-								if (findScroll.current === "retry") return;
 								const anchor = readerAnchor.current;
 								const targetIndex = anchor
 									? resolveReaderAnchor(anchor, timelineRows)

@@ -9,7 +9,15 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AnyNotification, Thread } from "@evener/appwire-client";
 import { nativeDrafts } from "./nativeDrafts";
 import { getNativeMutationRuntime, nativeMutationTargetKey } from "./nativeMutationRuntime";
-import { flatListCalls, pressable, render, renderedText, screenConnection, textOf } from "./renderNative.testkit";
+import {
+	flatListCalls,
+	flatListScrollFailures,
+	pressable,
+	render,
+	renderedText,
+	screenConnection,
+	textOf,
+} from "./renderNative.testkit";
 import { queueHosts } from "./QueueSheet";
 import { ConversationScreen } from "./screens";
 import { NotesSheet, notesHosts } from "./session/NotesSheet";
@@ -1606,6 +1614,41 @@ describe("Find in session (spec 8.7, ruling 29)", () => {
 		act(() => pressable(tree, "Done")?.props.onPress());
 		await settle();
 		expect(washed(tree)).toEqual([]);
+	});
+
+	describe("a match the list hasn't rendered yet", () => {
+		// Each retry waits a frame; these tests run it at once.
+		beforeEach(() => {
+			vi.stubGlobal("requestAnimationFrame", (frame: (time: number) => void) => {
+				frame(0);
+				return 0;
+			});
+		});
+		afterEach(() => {
+			flatListScrollFailures.remaining = 0;
+			vi.unstubAllGlobals();
+		});
+
+		it("keeps moving toward it until the list reaches it", async () => {
+			const { tree } = await mount(findTurns("ref-find-far"));
+			chooseMenu("Find in session");
+			flatListCalls.length = 0;
+			flatListScrollFailures.remaining = 2;
+			await search(tree, "race");
+			// Two misses, each followed by a move near the row, then the jump lands.
+			expect(findScrolls()).toEqual([1, 1, 1]);
+			expect(flatListCalls.filter((call) => call.method === "scrollToOffset")).toHaveLength(2);
+			expect(flatListScrollFailures.remaining).toBe(0);
+		});
+
+		it("stops after a few tries when the list never gets closer", async () => {
+			const { tree } = await mount(findTurns("ref-find-stuck"));
+			chooseMenu("Find in session");
+			flatListCalls.length = 0;
+			flatListScrollFailures.remaining = 10;
+			await search(tree, "race");
+			expect(findScrolls()).toEqual([1, 1, 1, 1]);
+		});
 	});
 
 	it("says so when nothing matches", async () => {

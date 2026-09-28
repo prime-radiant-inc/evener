@@ -16,6 +16,7 @@ import {
 	type ReactNode,
 	type Ref,
 	useImperativeHandle,
+	useRef,
 } from "react";
 import {
 	act,
@@ -81,8 +82,33 @@ export function nativeModuleMock() {
 		ListHeaderComponent?: ReactNode;
 		ListFooterComponent?: ReactNode;
 		ListEmptyComponent?: ReactNode;
+		onScrollToIndexFailed?: (info: {
+			index: number;
+			highestMeasuredFrameIndex: number;
+			averageItemLength: number;
+		}) => void;
 	}) => {
-		useImperativeHandle(props.ref, () => flatListHandle, []);
+		const latest = useRef(props);
+		latest.current = props;
+		useImperativeHandle(
+			props.ref,
+			() => ({
+				...flatListHandle,
+				// A row the real list hasn't measured makes scrollToIndex report
+				// failure synchronously; flatListScrollFailures scripts how many.
+				scrollToIndex: (args: { index: number }) => {
+					flatListHandle.scrollToIndex(args);
+					if (flatListScrollFailures.remaining <= 0) return;
+					flatListScrollFailures.remaining -= 1;
+					latest.current.onScrollToIndexFailed?.({
+						index: args.index,
+						highestMeasuredFrameIndex: -1,
+						averageItemLength: 100,
+					});
+				},
+			}),
+			[],
+		);
 		return createElement(
 			"FlatList",
 			null,
@@ -198,6 +224,11 @@ export function reanimatedModuleMock() {
  * through getScrollResponder) instead of moving anything. A test clears it
  * before the mount it cares about. */
 export const flatListCalls: { method: string; args?: unknown }[] = [];
+
+/** How many of the next scrollToIndex calls fail, as they do for a row the
+ * list hasn't measured: each calls the list's onScrollToIndexFailed. A test
+ * sets it before the scroll it cares about and resets it after. */
+export const flatListScrollFailures = { remaining: 0 };
 
 const flatListHandle = {
 	scrollToIndex: (args: unknown) => void flatListCalls.push({ method: "scrollToIndex", args }),
