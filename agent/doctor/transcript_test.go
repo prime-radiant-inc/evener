@@ -421,7 +421,7 @@ func TestTranscript_TextMaxHonoursAnExplicitCap(t *testing.T) {
 // version of them: trimming edge whitespace made --full-text (which promises
 // the result whole) lie about leading/trailing newlines, and made a
 // whitespace-only result vanish entirely (omitempty). Turn text keeps its
-// trim — that happens at summarizeTurn's call site, not inside truncate.
+// trim — that happens at summarizeTurn's call site, not inside Truncate.
 func TestTranscript_ToolResultPreviewKeepsEdgeWhitespace(t *testing.T) {
 	base := t.TempDir()
 	bucket := stateHomeBucket(base, hash1)
@@ -461,7 +461,7 @@ func TestTranscript_ToolResultPreviewKeepsEdgeWhitespace(t *testing.T) {
 	}
 }
 
-// truncate's cap is a byte budget, but the cut must land on a rune boundary:
+// Truncate's cap is a byte budget, but the cut must land on a rune boundary:
 // slicing mid-rune emits invalid UTF-8, which --json then rewrites to U+FFFD.
 func TestTruncate_NeverCutsMidRune(t *testing.T) {
 	cases := []struct {
@@ -479,15 +479,15 @@ func TestTruncate_NeverCutsMidRune(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := truncate(tc.in, tc.max)
+			got := Truncate(tc.in, tc.max)
 			if got != tc.want {
-				t.Errorf("truncate(%q, %d) = %q, want %q", tc.in, tc.max, got, tc.want)
+				t.Errorf("Truncate(%q, %d) = %q, want %q", tc.in, tc.max, got, tc.want)
 			}
 			if !utf8.ValidString(got) {
-				t.Errorf("truncate(%q, %d) = %q is not valid UTF-8", tc.in, tc.max, got)
+				t.Errorf("Truncate(%q, %d) = %q is not valid UTF-8", tc.in, tc.max, got)
 			}
 			if kept := strings.TrimSuffix(got, "…"); len(kept) > tc.max {
-				t.Errorf("truncate(%q, %d) kept %d bytes before the ellipsis, over the byte budget", tc.in, tc.max, len(kept))
+				t.Errorf("Truncate(%q, %d) kept %d bytes before the ellipsis, over the byte budget", tc.in, tc.max, len(kept))
 			}
 		})
 	}

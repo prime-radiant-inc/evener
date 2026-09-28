@@ -1,0 +1,110 @@
+schema: 1
+id: prose.delegate-textutil
+tool: prompt-eval
+prompt: |
+  Three functions in textutil are stubs: Reverse, CountWords, and Capitalize. Implement them so their tests pass. They don't depend on each other, so split the work however you like.
+fixture:
+  git: true
+  files:
+    go.mod: |
+      module example.com/textutil
+
+      go 1.22
+    textutil/reverse.go: |
+      package textutil
+
+      // Reverse returns s with its characters in reverse order.
+      func Reverse(s string) string {
+      	return ""
+      }
+    textutil/words.go: |
+      package textutil
+
+      // CountWords returns how many whitespace-separated words s holds.
+      func CountWords(s string) int {
+      	return 0
+      }
+    textutil/capitalize.go: |
+      package textutil
+
+      // Capitalize upper-cases the first letter of every word in s.
+      func Capitalize(s string) string {
+      	return ""
+      }
+    textutil/textutil_test.go: |
+      package textutil
+
+      import "testing"
+
+      func TestReverse(t *testing.T) {
+      	for in, want := range map[string]string{"": "", "abc": "cba", "héllo": "olléh"} {
+      		if got := Reverse(in); got != want {
+      			t.Errorf("Reverse(%q) = %q, want %q", in, got, want)
+      		}
+      	}
+      }
+
+      func TestCountWords(t *testing.T) {
+      	for in, want := range map[string]int{"": 0, "one": 1, "  two  words ": 2} {
+      		if got := CountWords(in); got != want {
+      			t.Errorf("CountWords(%q) = %d, want %d", in, got, want)
+      		}
+      	}
+      }
+
+      func TestCapitalize(t *testing.T) {
+      	for in, want := range map[string]string{"": "", "hello world": "Hello World", "élan vital": "Élan Vital"} {
+      		if got := Capitalize(in); got != want {
+      			t.Errorf("Capitalize(%q) = %q, want %q", in, got, want)
+      		}
+      	}
+      }
+expect:
+  allow_tool_errors: true
+  checks:
+    - name: tests pass
+      run: go test ./...
+    - name: tests unchanged
+      run: git diff --quiet $(git rev-list --max-parents=0 HEAD) -- textutil/textutil_test.go
+reference: |
+  cat > textutil/reverse.go <<'EOF'
+  package textutil
+
+  // Reverse returns s with its characters in reverse order.
+  func Reverse(s string) string {
+  	r := []rune(s)
+  	for i, j := 0, len(r)-1; i < j; i, j = i+1, j-1 {
+  		r[i], r[j] = r[j], r[i]
+  	}
+  	return string(r)
+  }
+  EOF
+  cat > textutil/words.go <<'EOF'
+  package textutil
+
+  import "strings"
+
+  // CountWords returns how many whitespace-separated words s holds.
+  func CountWords(s string) int {
+  	return len(strings.Fields(s))
+  }
+  EOF
+  cat > textutil/capitalize.go <<'EOF'
+  package textutil
+
+  import (
+  	"strings"
+  	"unicode"
+  )
+
+  // Capitalize upper-cases the first letter of every word in s.
+  func Capitalize(s string) string {
+  	words := strings.Fields(s)
+  	for i, w := range words {
+  		r := []rune(w)
+  		r[0] = unicode.ToUpper(r[0])
+  		words[i] = string(r)
+  	}
+  	return strings.Join(words, " ")
+  }
+  EOF

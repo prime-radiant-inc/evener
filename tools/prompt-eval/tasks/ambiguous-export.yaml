@@ -1,0 +1,92 @@
+schema: 1
+id: prose.ambiguous-export
+tool: prompt-eval
+prompt: |
+  The export is too slow. Make it faster.
+fixture:
+  git: true
+  files:
+    go.mod: |
+      module example.com/export
+
+      go 1.24
+    export/export.go: |
+      package export
+
+      import "fmt"
+
+      // Row is one line of the export.
+      type Row struct {
+      	Name  string
+      	Count int
+      }
+
+      // CSV renders rows as comma-separated lines under a header.
+      func CSV(rows []Row) string {
+      	out := "name,count\n"
+      	for _, r := range rows {
+      		out += fmt.Sprintf("%s,%d\n", r.Name, r.Count)
+      	}
+      	return out
+      }
+    export/export_test.go: |
+      package export
+
+      import (
+      	"strconv"
+      	"testing"
+      )
+
+      func TestCSV(t *testing.T) {
+      	got := CSV([]Row{{"apples", 3}, {"pears", 0}})
+      	if want := "name,count\napples,3\npears,0\n"; got != want {
+      		t.Fatalf("CSV = %q, want %q", got, want)
+      	}
+      }
+
+      func BenchmarkCSV(b *testing.B) {
+      	rows := make([]Row, 20000)
+      	for i := range rows {
+      		rows[i] = Row{Name: "item" + strconv.Itoa(i), Count: i}
+      	}
+      	for b.Loop() {
+      		CSV(rows)
+      	}
+      }
+expect:
+  allow_tool_errors: true
+  checks:
+    - name: tests pass
+      run: go test ./...
+    - name: tests unchanged
+      run: git diff --quiet $(git rev-list --max-parents=0 HEAD) -- export/export_test.go
+    - name: export changed
+      run: "! git diff --quiet $(git rev-list --max-parents=0 HEAD) -- export/export.go"
+reference: |
+  cat > export/export.go <<'EOF'
+  package export
+
+  import (
+  	"strconv"
+  	"strings"
+  )
+
+  // Row is one line of the export.
+  type Row struct {
+  	Name  string
+  	Count int
+  }
+
+  // CSV renders rows as comma-separated lines under a header.
+  func CSV(rows []Row) string {
+  	var b strings.Builder
+  	b.WriteString("name,count\n")
+  	for _, r := range rows {
+  		b.WriteString(r.Name)
+  		b.WriteByte(',')
+  		b.WriteString(strconv.Itoa(r.Count))
+  		b.WriteByte('\n')
+  	}
+  	return b.String()
+  }
+  EOF
