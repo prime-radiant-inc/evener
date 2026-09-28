@@ -1,6 +1,6 @@
 // @vitest-environment node
 
-import { expect, test } from "vitest";
+import { afterEach, expect, test, vi } from "vitest";
 import type { ActivityTree } from "./activityData";
 import { type ActivityClient, ActivityList } from "./activityList";
 import { WireError } from "./errors";
@@ -466,4 +466,220 @@ test("a page requested from the completion notification is loaded", async () => 
   if (entry?.kind !== "delegate") throw new Error("missing delegate");
   expect(entry.delegate.projectionRevision).toBe(2);
   expect(list.branches()).toEqual([]);
+});
+
+// Notification-driven refresh behavior. A session with hundreds of delegates
+// makes every evener/jobs/list response slow and large, while
+// evener/delegate/updated arrives about once a second; these tests pin that the
+// notifications no longer keep the list refetching back to back.
+
+const REFRESH_INTERVAL_MS = 2000;
+
+afterEach(() => {
+  vi.useRealTimers();
+});
+
+type Notification = Parameters<Parameters<ActivityClient["onNotification"]>[0]>[0];
+
+function delegateInfo(overrides: Record<string, unknown> = {}) {
+  return {
+    delegateId: "delegate",
+    ownerSessionId: "session",
+    rootSessionId: "session",
+    childSessionId: "delegate-child",
+    transcriptRef: "local:delegate-child",
+    type: "delegate",
+    lifecycle: "running",
+    phase: "running",
+    status: "running",
+    terminal: false,
+    resumable: false,
+    needsAttention: false,
+    projectionRevision: 1,
+    ...overrides,
+  };
+}
+
+// A client whose jobs/list answers after latencyMs of fake time. Each request
+// records when it started and when it answered.
+function timedClient(latencyMs: number, respond: (call: number) => ActivityTree) {
+  const calls: Array<{ startedAt: number; answeredAt?: number }> = [];
+  let handler: ((n: Notification) => void) | undefined;
+  const client: ActivityClient = {
+    onNotification(callback) {
+      handler = callback as (n: Notification) => void;
+      return () => undefined;
+    },
+    request() {
+      const call: { startedAt: number; answeredAt?: number } = { startedAt: Date.now() };
+      calls.push(call);
+      const data = respond(calls.length);
+      return new Promise((resolve) =>
+        setTimeout(() => {
+          call.answeredAt = Date.now();
+          resolve({ data });
+        }, latencyMs),
+      ) as Promise<{ data: ActivityTree }>;
+    },
+  };
+  const params = { ref: "local:session", threadId: "session" };
+  return {
+    client,
+    calls,
+    delegateUpdated: (overrides: Record<string, unknown> = {}) =>
+      handler?.({
+        method: "evener/delegate/updated",
+        params: { ...params, delegate: delegateInfo(overrides) },
+      } as unknown as Notification),
+    treeUpdated: (revision: number) =>
+      handler?.({ method: "evener/jobs/treeUpdated", params: { ...params, revision } } as Notification),
+  };
+}
+
+function heldDelegate(list: ActivityList) {
+  const entry = list.getSnapshot().tree?.root.entries[0];
+  if (entry?.kind !== "delegate") throw new Error("missing delegate");
+  return entry.delegate;
+}
+
+async function startedList(t: ReturnType<typeof timedClient>, held: ActivityTree) {
+  const list = new ActivityList(t.client, "local:session", "session", held);
+  list.start();
+  await vi.advanceTimersByTimeAsync(0);
+  return list;
+}
+
+test("a burst of updates for a delegate already in the tree applies in place without refetching", async () => {
+  vi.useFakeTimers();
+  const held = activityTree([delegateEntry("delegate")], 5);
+  const t = timedClient(0, () => held);
+  const list = await startedList(t, held);
+  await vi.advanceTimersByTimeAsync(REFRESH_INTERVAL_MS);
+  const baseline = t.calls.length;
+
+  for (let revision = 2; revision <= 51; revision++) {
+    t.delegateUpdated({
+      phase: `step-${revision}`,
+      projectionRevision: revision,
+      latestActivityAt: `2026-01-01T00:00:${String(revision).padStart(2, "0")}Z`,
+    });
+  }
+  await vi.advanceTimersByTimeAsync(10 * REFRESH_INTERVAL_MS);
+
+  expect(t.calls).toHaveLength(baseline);
+  expect(heldDelegate(list).phase).toBe("step-51");
+  expect(heldDelegate(list).projectionRevision).toBe(51);
+  expect(heldDelegate(list).latestActivityAt).toBe("2026-01-01T00:00:51Z");
+  expect(list.getSnapshot().tree?.revision).toBe(5);
+});
+
+test("an update older than the held delegate only moves its latest activity forward", async () => {
+  vi.useFakeTimers();
+  const held = activityTree([delegateEntry("delegate", undefined, 3)], 5);
+  (held.root.entries[0] as ReturnType<typeof delegateEntry>).delegate.status = "running";
+  const t = timedClient(0, () => held);
+  const list = await startedList(t, held);
+  await vi.advanceTimersByTimeAsync(REFRESH_INTERVAL_MS);
+  const baseline = t.calls.length;
+
+  t.delegateUpdated({
+    phase: "stale",
+    projectionRevision: 2,
+    terminal: true,
+    latestActivityAt: "2026-01-01T00:00:09Z",
+  });
+  await vi.advanceTimersByTimeAsync(10 * REFRESH_INTERVAL_MS);
+
+  expect(t.calls).toHaveLength(baseline);
+  expect(heldDelegate(list).phase).toBeUndefined();
+  expect(heldDelegate(list).projectionRevision).toBe(3);
+  expect(heldDelegate(list).latestActivityAt).toBe("2026-01-01T00:00:09Z");
+});
+
+test("an update that changes what the tree counts or shows of a finished delegate refreshes instead", async () => {
+  vi.useFakeTimers();
+  const held = activityTree([delegateEntry("delegate")], 5);
+  const t = timedClient(0, () => held);
+  await startedList(t, held);
+  await vi.advanceTimersByTimeAsync(REFRESH_INTERVAL_MS);
+  const baseline = t.calls.length;
+
+  t.delegateUpdated({
+    terminal: true,
+    outcome: "completed",
+    status: "completed",
+    projectionRevision: 2,
+    packetKind: "final",
+  });
+  await vi.advanceTimersByTimeAsync(REFRESH_INTERVAL_MS);
+
+  expect(t.calls).toHaveLength(baseline + 1);
+});
+
+test("an update for a delegate the tree does not hold refreshes once, after the minimum interval", async () => {
+  vi.useFakeTimers();
+  const held = activityTree([delegateEntry("delegate")], 5);
+  const t = timedClient(0, () => held);
+  await startedList(t, held);
+  const baseline = t.calls.length;
+
+  for (let i = 0; i < 5; i++) t.delegateUpdated({ delegateId: "brand-new", childSessionId: "brand-new-child" });
+  await vi.advanceTimersByTimeAsync(REFRESH_INTERVAL_MS - 1);
+  expect(t.calls).toHaveLength(baseline);
+  await vi.advanceTimersByTimeAsync(1);
+  expect(t.calls).toHaveLength(baseline + 1);
+  await vi.advanceTimersByTimeAsync(10 * REFRESH_INTERVAL_MS);
+  expect(t.calls).toHaveLength(baseline + 1);
+});
+
+test("an update before any tree is held refreshes", async () => {
+  vi.useFakeTimers();
+  const t = timedClient(1000, () => activityTree([delegateEntry("delegate")], 5));
+  const list = new ActivityList(t.client, "local:session", "session");
+  list.start();
+  await vi.advanceTimersByTimeAsync(0);
+  t.delegateUpdated();
+  await vi.advanceTimersByTimeAsync(1000 + REFRESH_INTERVAL_MS);
+  expect(t.calls).toHaveLength(2);
+});
+
+test("tree revisions at or below the held one do not refetch; a newer one does", async () => {
+  vi.useFakeTimers();
+  const held = activityTree([delegateEntry("delegate")], 5);
+  const t = timedClient(0, () => held);
+  await startedList(t, held);
+  await vi.advanceTimersByTimeAsync(REFRESH_INTERVAL_MS);
+  const baseline = t.calls.length;
+
+  t.treeUpdated(4);
+  t.treeUpdated(5);
+  await vi.advanceTimersByTimeAsync(10 * REFRESH_INTERVAL_MS);
+  expect(t.calls).toHaveLength(baseline);
+
+  t.treeUpdated(6);
+  await vi.advanceTimersByTimeAsync(REFRESH_INTERVAL_MS);
+  expect(t.calls).toHaveLength(baseline + 1);
+});
+
+test("continuous notifications during slow loads do not refetch back to back", async () => {
+  vi.useFakeTimers();
+  const latency = 3000;
+  const elapsed = 60_000;
+  const t = timedClient(latency, (call) => activityTree([delegateEntry("delegate")], call));
+  const list = new ActivityList(t.client, "local:session", "session");
+  list.start();
+  let sawFreshTree = false;
+  for (let at = 0; at < elapsed; at += 500) {
+    t.delegateUpdated({ delegateId: "brand-new", childSessionId: "brand-new-child" });
+    await vi.advanceTimersByTimeAsync(500);
+    if ((list.getSnapshot().tree?.revision ?? 0) >= 2) sawFreshTree = true;
+  }
+
+  expect(t.calls.length).toBeLessThanOrEqual(Math.ceil(elapsed / REFRESH_INTERVAL_MS) + 1);
+  for (let i = 1; i < t.calls.length; i++) {
+    const previousAnswer = t.calls[i - 1]?.answeredAt ?? Number.POSITIVE_INFINITY;
+    expect((t.calls[i]?.startedAt ?? 0) - previousAnswer).toBeGreaterThanOrEqual(REFRESH_INTERVAL_MS);
+  }
+  // Loads that finish while notifications keep arriving still reach the screen.
+  expect(sawFreshTree).toBe(true);
 });
