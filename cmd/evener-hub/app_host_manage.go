@@ -3,6 +3,7 @@ package hub
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -2744,12 +2745,22 @@ func hubTOMLMirrorCommitTables(cfg Config, entries, known []hostreg.Host, genera
 	return out
 }
 
-// hubTOMLStashPath is the durable stash one commit captures beside hub.toml
+// hubTOMLStashPath names one commit's stash: a per-commit file beside hub.toml
 // (registry spec 08 §6: "stashing a durable copy of the prior `hub.toml`
-// bytes"): the compensation record's stash reference names it, and only a
-// record naming it keeps it from the boot prune.
-func hubTOMLStashPath(configPath string) string {
-	return configPath + ".stash"
+// bytes"), keyed by the commit's scoped receipt key. A shared name would let a
+// later removal of another host overwrite the restore source an open
+// compensation still names, so the next boot would restore the wrong bytes as
+// that record's pre-mutation state. The compensation record carries the exact
+// path; only a record naming it keeps it from the boot prune.
+//
+// Compatibility: the pre-rename shared name (`<hub.toml>.stash`) never shipped
+// — this branch introduced it — so there is no persisted record to migrate. A
+// record that names it anyway (a file written by an earlier build of this
+// branch) keeps it and restores it unchanged; the boot prune removes it only
+// when no open record names it.
+func hubTOMLStashPath(configPath, receiptKey string) string {
+	sum := sha256.Sum256([]byte(receiptKey))
+	return fmt.Sprintf("%s.stash.%x", configPath, sum[:8])
 }
 
 // writeHubTOMLStash captures the selected hub.toml's current bytes into the
@@ -2757,7 +2768,7 @@ func hubTOMLStashPath(configPath string) string {
 // compensable. It returns the stash reference the compensation record must
 // carry. A hub with no config file has no cross-file commit to compensate and
 // stashes nothing.
-func (m *hubHostManager) writeHubTOMLStash() (string, error) {
+func (m *hubHostManager) writeHubTOMLStash(receiptKey string) (string, error) {
 	path := strings.TrimSpace(m.cfg.configPath)
 	if path == "" {
 		return "", nil
@@ -2771,7 +2782,7 @@ func (m *hubHostManager) writeHubTOMLStash() (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("stash hub.toml %s: %w", path, err)
 	}
-	stash := hubTOMLStashPath(path)
+	stash := hubTOMLStashPath(path, receiptKey)
 	if err := hubTOMLReplaceWithBytes(stash, prior, hubTOMLStashSyncDir); err != nil {
 		return "", fmt.Errorf("stash hub.toml %s: %w", path, err)
 	}
@@ -2912,16 +2923,54 @@ func (m *hubHostManager) pruneOrphanHubTOMLStash() {
 	if path == "" {
 		return
 	}
-	stash := hubTOMLStashPath(path)
-	if _, err := os.Stat(stash); err != nil {
+	dir := filepath.Dir(path)
+	prefix := filepath.Base(path) + ".stash"
+	entries, err := os.ReadDir(dir)
+	if err != nil {
 		return
 	}
+	named := make(map[string]struct{})
 	for _, record := range m.cfg.ops.Compensations() {
-		if record.Stash == stash {
-			return
-		}
+		named[record.Stash] = struct{}{}
 	}
-	m.pruneHubTOMLStash(stash)
+	for _, entry := range entries {
+		if !strings.HasPrefix(entry.Name(), prefix) {
+			continue
+		}
+		stash := filepath.Join(dir, entry.Name())
+		if _, keep := named[stash]; keep {
+			continue
+		}
+		m.pruneHubTOMLStash(stash)
+	}
+}
+
+// installRestoredRecords converges the store's machine-record model to the
+// restored hub.toml's bytes: the live entries, the high-water marks, the
+// tombstones and pruned markers, the receipts, the teardown-repair records, and
+// the cross-file intents. Without it the model keeps the compensated commit's
+// records (the intent, the staged marker, the tombstone, the provisional
+// receipt) and the next write re-emits them over the restored bytes — the
+// cleared intent would come back and the boot after that would purge the very
+// row the compensation restored, and a stale tombstone beside a live entry
+// refuses the write outright.
+func (m *hubHostManager) installRestoredRecords(cfg Config) {
+	m.cfg.store.set(hostRegistryEntries(cfg))
+	m.cfg.store.setHighWaterMap(nonNilMap(cfg.Generations))
+	m.cfg.store.setReceipts(nonNilMap(cfg.MutationReceipts))
+	m.cfg.store.setRecordMaps(nonNilMap(cfg.Tombstones), nonNilMap(cfg.PrunedReceipts))
+	m.cfg.store.setRemnantMaps(nonNilMap(cfg.StagedReceipts), nonNilMap(cfg.TeardownRemnants), nonNilMap(cfg.TeardownAttempts))
+	m.cfg.store.setStoreSync(nonNilMap(cfg.PendingStoreSync))
+	m.cfg.hosts.SeedHighWater(hostHighWaterMarks(cfg))
+}
+
+// nonNilMap returns m, or an empty map of its type when m is nil: a machine
+// record set this store installs is always writable.
+func nonNilMap[K comparable, V any](m map[K]V) map[K]V {
+	if m == nil {
+		return map[K]V{}
+	}
+	return m
 }
 
 // reconcileHostRemovedPass applies every loaded tombstone to the store (§4's
@@ -3251,6 +3300,14 @@ func (m *hubHostManager) resumeCompensation(record hostops.Compensation) {
 			m.logf("boot compensation for %q: hub.toml not restored: %v", record.Host, err)
 			return
 		}
+		// The restored bytes are the authority for every machine record they
+		// carry: the store's model converges to them here, so the rest of this
+		// boot and every later write derive from the restored file rather than
+		// re-emitting the compensated commit's records (the intent, the staged
+		// marker, the tombstone, the provisional receipt).
+		if restored, ok := m.hostFileRecords(); ok {
+			m.installRestoredRecords(restored)
+		}
 		if err := m.cfg.ops.AdvanceCompensation(record.Host, hostops.CompensationRows); err != nil {
 			m.logf("boot compensation for %q not advanced past the restore: %v", record.Host, err)
 			return
@@ -3352,8 +3409,7 @@ func (m *hubHostManager) reapplyRestoredRuntime(host string) error {
 	entries := hostRegistryEntries(restored)
 	entry, present := hostEntryNamed(entries, host)
 	if !present {
-		m.cfg.store.set(entries)
-		m.cfg.hosts.SeedHighWater(hostHighWaterMarks(restored))
+		m.installRestoredRecords(restored)
 		m.cfg.mu.Lock()
 		defer m.cfg.mu.Unlock()
 		m.dropHostDerivedState(host)
@@ -3377,8 +3433,24 @@ func (m *hubHostManager) reapplyRestoredRuntime(host string) error {
 		return fmt.Errorf("host %q carries a different identity in the restored %s than the live registry; leaving the compensation open",
 			host, m.cfg.configPath)
 	}
-	m.cfg.store.set(entries)
-	m.cfg.hosts.SeedHighWater(hostHighWaterMarks(restored))
+	m.installRestoredRecords(restored)
+	// §4's host-removed pass may have marked the restored incarnation's records
+	// (the boot ran it against the compensated commit's tombstone) and dropped
+	// its token rows. The restored file carries the incarnation live again, so
+	// the marks the removed pair left are reversed: a marked record would make a
+	// same-key retry read as a current-generation `host-removed` record
+	// (conflicting-operation-id) instead of replaying the interrupted record,
+	// and the row would render removed.
+	if entry.Generation != 0 && entry.IncarnationID != "" {
+		if cleared, err := m.cfg.ops.ClearHostRemovedMarks(host, hostops.HostRemovedMark{
+			Generation:    entry.Generation,
+			IncarnationID: entry.IncarnationID,
+		}); err != nil {
+			m.logf("boot compensation for %q: restored incarnation's host-removed marks not cleared: %v", host, err)
+		} else if cleared > 0 {
+			m.logf("boot compensation for %q cleared %d host-removed mark(s) on the restored incarnation", host, cleared)
+		}
+	}
 	return nil
 }
 

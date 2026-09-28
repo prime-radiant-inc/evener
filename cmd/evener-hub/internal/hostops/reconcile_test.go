@@ -344,6 +344,55 @@ func TestReconcileMirrorRequiresBothMarkerGenerationsToMatch(t *testing.T) {
 	}
 }
 
+// TestClearHostRemovedMarksReversesOnlyTheRestoredPair pins §4's reversal for a
+// compensation: only the restored incarnation's records are unmarked, another
+// incarnation's mark stands, and a pass with nothing to clear writes nothing.
+func TestClearHostRemovedMarksReversesOnlyTheRestoredPair(t *testing.T) {
+	store, path := openTestStore(t)
+	restored, err := store.Create(NewRecord{ClientOperationID: "op-restored", Host: "m4", Kind: KindDeploy, Generation: 7, IncarnationID: "inc-7"})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	other, err := store.Create(NewRecord{ClientOperationID: "op-other", Host: "m4", Kind: KindRestart, Generation: 9, IncarnationID: "inc-9"})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if _, _, err := store.ApplyHostRemovedPass(map[string]HostRemovedMark{
+		"m4": {Generation: 7, IncarnationID: "inc-7"},
+	}); err != nil {
+		t.Fatalf("ApplyHostRemovedPass(7): %v", err)
+	}
+	if _, _, err := store.ApplyHostRemovedPass(map[string]HostRemovedMark{
+		"m4": {Generation: 9, IncarnationID: "inc-9"},
+	}); err != nil {
+		t.Fatalf("ApplyHostRemovedPass(9): %v", err)
+	}
+	cleared, err := store.ClearHostRemovedMarks("m4", HostRemovedMark{Generation: 7, IncarnationID: "inc-7"})
+	if err != nil {
+		t.Fatalf("ClearHostRemovedMarks: %v", err)
+	}
+	if cleared != 1 {
+		t.Fatalf("ClearHostRemovedMarks cleared %d, want 1", cleared)
+	}
+	reopened := reopenFresh(t, path)
+	back, ok := reopened.Record(restored.ID)
+	if !ok || back.HostRemoved {
+		t.Fatalf("the restored incarnation's record = %+v/%v, want its mark cleared", back, ok)
+	}
+	still, ok := reopened.Record(other.ID)
+	if !ok || !still.HostRemoved {
+		t.Fatalf("another incarnation's record = %+v/%v, want its mark kept", still, ok)
+	}
+	// Idempotent: a second clear finds nothing and writes nothing.
+	before := storeSnapshotForTest(t, path)
+	if cleared, err := reopened.ClearHostRemovedMarks("m4", HostRemovedMark{Generation: 7, IncarnationID: "inc-7"}); err != nil || cleared != 0 {
+		t.Fatalf("second ClearHostRemovedMarks = %d/%v, want 0/nil", cleared, err)
+	}
+	if after := storeSnapshotForTest(t, path); after != before {
+		t.Fatal("a no-op mark clear rewrote the store")
+	}
+}
+
 // TestLoadRefusesNonCanonicalPendingCompensationKeys pins the store's key rule
 // for the new section: the compensation record's own keys and its preimage
 // rows' keys are canonical, so a case variant (which the decoder matches

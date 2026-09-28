@@ -134,6 +134,50 @@ func (s *Store) ApplyHostRemovedPass(marks map[string]HostRemovedMark) (marked, 
 }
 
 // TokenRowReconcile is the reverse-direction pass's view of hub.toml (§9's
+// ClearHostRemovedMarks reverses §4's host-removed pass for one incarnation:
+// every record whose pinned pair matches the mark is unmarked, in one atomic
+// write. A compensation that restores a removed incarnation's records calls it,
+// because a mark that survived would make a same-key retry read as a
+// current-generation `host-removed` record (spec §11's
+// `conflicting-operation-id`) instead of replaying the interrupted record, and
+// the row would render removed. It returns how many records it unmarked; a pass
+// that finds nothing to change writes nothing.
+func (s *Store) ClearHostRemovedMarks(name string, mark HostRemovedMark) (int, error) {
+	if s == nil {
+		return 0, errors.New("hostops: store is not configured")
+	}
+	if err := validateHostRemovedMark(name, mark); err != nil {
+		return 0, err
+	}
+	s.cell.mu.Lock()
+	defer s.cell.mu.Unlock()
+	next := cloneSnapshot(s.cell.state)
+	cleared := 0
+	for i := range next.Records {
+		record := &next.Records[i]
+		if record.Host != name || record.Generation != mark.Generation || record.IncarnationID != mark.IncarnationID {
+			continue
+		}
+		if !record.HostRemoved {
+			continue
+		}
+		record.HostRemoved = false
+		cleared++
+	}
+	if cleared == 0 {
+		return 0, nil
+	}
+	landed, err := s.commitLocked(next)
+	if err != nil {
+		if landed {
+			return cleared, err
+		}
+		return 0, err
+	}
+	return cleared, nil
+}
+
+// TokenRowReconcile is the reverse-direction pass's view of hub.toml (§9's
 // closing paragraph): the generation hub.toml currently records for each live
 // name, the names that resolve to a tombstone, and the values a live
 // pendingStoreSync intent already covers.

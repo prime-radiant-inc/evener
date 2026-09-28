@@ -983,7 +983,7 @@ func (m *hubHostManager) RemoveResult(ctx context.Context, params appwire.HostRe
 	// replaces them, so the swap is compensable.
 	stash := ""
 	if len(purgeValues) > 0 {
-		stash, err = m.writeHubTOMLStash()
+		stash, err = m.writeHubTOMLStash(receiptKey)
 		if err != nil {
 			m.cfg.mu.Unlock()
 			return appwire.HostMutationResult{}, err
