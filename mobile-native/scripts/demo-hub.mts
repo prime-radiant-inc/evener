@@ -13,7 +13,11 @@ import type {
 	TurnStartParams,
 } from "@evener/appwire-client";
 import { createDemoFleet, type DemoFleetOptions } from "../src/dev/demoFleet.js";
-import { createDemoSessions } from "../src/dev/demoSessions.js";
+import {
+	createDemoSessions,
+	removeLink,
+	setHumanNote,
+} from "../src/dev/demoSessions.js";
 
 export async function createDemoHub(
 	port = 9196,
@@ -459,6 +463,18 @@ export async function createDemoHub(
 						changed = thread;
 						break;
 					}
+					case "notes/human/set":
+						requireFleet();
+						if (!selected) throw new Error("Unknown demonstration session");
+						result = setHumanNote(selected, params);
+						changed = selected;
+						break;
+					case "urls/remove":
+						requireFleet();
+						if (!selected) throw new Error("Unknown demonstration session");
+						result = removeLink(selected, params);
+						changed = selected;
+						break;
 					case "evener/navigation/read":
 						result = requireFleet().answerNavigationRead(params);
 						break;

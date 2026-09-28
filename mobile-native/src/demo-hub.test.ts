@@ -637,6 +637,65 @@ describe("native demonstration hub's fleet sessions", () => {
 		});
 	});
 
+	it("saves your note and removes a link on a fleet session", async () => {
+		await withHub({}, async (client) => {
+			const ref = refOf("s-pr2138");
+			const { thread } = await client.request("thread/read", { ref, includeTurns: false });
+			const expectedInstanceId = thread.evener.instanceId ?? "";
+			const saved = await client.request("notes/human/set", {
+				ref,
+				clientMutationId: "note-1",
+				expectedInstanceId,
+				note: "Fix causes, and say which.",
+			});
+			expect(saved).toMatchObject({
+				note: "Fix causes, and say which.",
+				receipt: { clientMutationId: "note-1", disposition: "applied", projectionState: "pending" },
+			});
+			await client.request("urls/remove", { ref, clientMutationId: "link-1", expectedInstanceId, id: "u-checks" });
+			const after = await client.request("thread/read", { ref, includeTurns: false });
+			expect(after.thread.evener.humanNote).toBe("Fix causes, and say which.");
+			expect(after.thread.evener.sessionUrls?.map((link) => link.id)).toEqual(["u-2138", "u-splan"]);
+			// The phone reads this message as "already gone" (sessionNotes.ts).
+			await expect(
+				client.request("urls/remove", { ref, clientMutationId: "link-2", expectedInstanceId, id: "u-checks" }),
+			).rejects.toThrow("no URL entry with id u-checks");
+			await expect(
+				client.request("notes/human/set", { ref, clientMutationId: "note-2", expectedInstanceId: "stale", note: "x" }),
+			).rejects.toThrow("Session identity changed");
+			// The playground has no shared notes, as its capabilities say.
+			await expect(
+				client.request("notes/human/set", {
+					ref: "demo:playground",
+					clientMutationId: "note-3",
+					expectedInstanceId: "demo-instance",
+					note: "x",
+				}),
+			).rejects.toThrow("This session doesn't take shared notes");
+		});
+	});
+
+	it("answers no notes or links method without EVENER_DEMO_FLEET", async () => {
+		await withHub(undefined, async (client) => {
+			await expect(
+				client.request("notes/human/set", {
+					ref: "demo:playground",
+					clientMutationId: "note-1",
+					expectedInstanceId: "demo-instance",
+					note: "x",
+				}),
+			).rejects.toThrow("Method not implemented by demonstration server");
+			await expect(
+				client.request("urls/remove", {
+					ref: "demo:playground",
+					clientMutationId: "link-1",
+					expectedInstanceId: "demo-instance",
+					id: "u-1",
+				}),
+			).rejects.toThrow("Method not implemented by demonstration server");
+		});
+	});
+
 	it("serves no fleet session without EVENER_DEMO_FLEET", async () => {
 		await withHub(undefined, async (client) => {
 			await expect(

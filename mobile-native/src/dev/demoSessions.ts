@@ -25,6 +25,9 @@ import type {
 	EvenerDelegateInfo,
 	GoalState,
 	ModelListResponse,
+	MutationReceipt,
+	NotesHumanSetParams,
+	NotesHumanSetResponse,
 	QueueState,
 	SandboxEscalationRequested,
 	SessionURL,
@@ -33,6 +36,8 @@ import type {
 	ThreadItem,
 	Turn,
 	TurnError,
+	UrlsRemoveParams,
+	UrlsRemoveResponse,
 } from "@evener/appwire-client";
 import {
 	demoSessionId,
@@ -706,4 +711,42 @@ export interface DemoSessionsOptions {
 export function createDemoSessions(options: DemoSessionsOptions = {}): Thread[] {
 	const now = options.now ?? Date.now();
 	return fleetSessions().map((session) => sessionThread(session, now));
+}
+
+// A notes change must reach a session that takes shared notes, and name the
+// instance it read, as a daemon checks.
+function requireSharedNotes(thread: Thread, expectedInstanceId: string): void {
+	if (!thread.evener.capabilities.sharedNotes) throw new Error("This session doesn't take shared notes");
+	if (expectedInstanceId !== thread.evener.instanceId) throw new Error("Session identity changed");
+}
+
+function appliedReceipt(thread: Thread, clientMutationId: string, projectionState: string): MutationReceipt {
+	return {
+		clientMutationId,
+		disposition: "applied",
+		threadId: thread.id,
+		...(thread.evener.instanceId ? { instanceId: thread.evener.instanceId } : {}),
+		projectionState,
+	};
+}
+
+// notes/human/set: your note replaces the session's. An unchanged note
+// projects "removed" and wakes no one, as the daemon's does
+// (agent/session_notes_rpc.go).
+export function setHumanNote(thread: Thread, params: NotesHumanSetParams): NotesHumanSetResponse {
+	requireSharedNotes(thread, params.expectedInstanceId);
+	const note = params.note ?? "";
+	const unchanged = note === (thread.evener.humanNote ?? "");
+	thread.evener.humanNote = note;
+	return { note, receipt: appliedReceipt(thread, params.clientMutationId, unchanged ? "removed" : "pending") };
+}
+
+// urls/remove: a link that isn't there is refused with the daemon's message,
+// which the phone reads as already removed (sessionNotes.ts's removeLink).
+export function removeLink(thread: Thread, params: UrlsRemoveParams): UrlsRemoveResponse {
+	requireSharedNotes(thread, params.expectedInstanceId);
+	const links = thread.evener.sessionUrls ?? [];
+	if (!links.some((link) => link.id === params.id)) throw new Error(`no URL entry with id ${params.id}`);
+	thread.evener.sessionUrls = links.filter((link) => link.id !== params.id);
+	return {};
 }
