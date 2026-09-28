@@ -30,8 +30,8 @@ func TestUserStopCancelsOnlyTheTargetsRun(t *testing.T) {
 	if found := root.subagentForChild("child-session-b"); found != child {
 		t.Fatalf("subagentForChild found %p, want the nested subagent %p", found, child)
 	}
-	if got := root.subagentForChild("child-session-a").requestUserStop(); got != nil {
-		t.Fatalf("requestUserStop = %v, want the run stopping", got)
+	if got := root.subagentForChild("child-session-a").requestRunCancel(); got != nil {
+		t.Fatalf("requestRunCancel = %v, want the run stopping", got)
 	}
 	if parentCtx.Err() == nil {
 		t.Fatal("the target's run context is still live")
@@ -53,23 +53,23 @@ func TestUserStopCancelsOnlyTheTargetsRun(t *testing.T) {
 // A run that is not running, or is already settling, has nothing to stop.
 func TestUserStopRefusesARunThatIsNotRunning(t *testing.T) {
 	idle := &subagent{id: "idle"}
-	if err := idle.requestUserStop(); !errors.Is(err, errSubagentNotRunning) {
-		t.Fatalf("idle requestUserStop = %v, want errSubagentNotRunning", err)
+	if err := idle.requestRunCancel(); !errors.Is(err, errSubagentNotRunning) {
+		t.Fatalf("idle requestRunCancel = %v, want errSubagentNotRunning", err)
 	}
 	settling := &subagent{id: "settling", running: true, settlementClaimed: true}
-	if err := settling.requestUserStop(); !errors.Is(err, errSubagentSettling) {
-		t.Fatalf("settling requestUserStop = %v, want errSubagentSettling", err)
+	if err := settling.requestRunCancel(); !errors.Is(err, errSubagentSettling) {
+		t.Fatalf("settling requestRunCancel = %v, want errSubagentSettling", err)
 	}
 	// A second stop while the first is still unwinding the run finds it
 	// already stopping, so a retry answers notRunning rather than stopping.
 	_, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	stopping := &subagent{id: "stopping", running: true, cancel: cancel}
-	if err := stopping.requestUserStop(); err != nil {
-		t.Fatalf("first requestUserStop = %v", err)
+	if err := stopping.requestRunCancel(); err != nil {
+		t.Fatalf("first requestRunCancel = %v", err)
 	}
-	if err := stopping.requestUserStop(); !errors.Is(err, errSubagentSettling) {
-		t.Fatalf("repeated requestUserStop = %v, want errSubagentSettling", err)
+	if err := stopping.requestRunCancel(); !errors.Is(err, errSubagentSettling) {
+		t.Fatalf("repeated requestRunCancel = %v, want errSubagentSettling", err)
 	}
 }
 

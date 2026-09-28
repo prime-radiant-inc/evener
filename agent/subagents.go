@@ -100,7 +100,7 @@ type subagent struct {
 	runStructuredCaptured bool                      // runStructured was captured, including an authoritative nil result
 	nudgeEnabled          bool                      // true for default subagents that should be nudged to communicate
 	cancel                context.CancelFunc        // cancels the current run's context
-	cancelRequested       bool                      // set when the user stops this run (requestUserStop), so finalize maps a context.Canceled run to cancelled
+	cancelRequested       bool                      // set by requestRunCancel (the user's stop, or cancelAgent), so finalize maps a context.Canceled run to cancelled
 	settlementClaimed     bool                      // cancellation admission closes after the run's final pre-settlement check
 	agentType             string                    // plugin agent type name; empty for default subagents
 	createdAt             time.Time                 // set once at spawn; never reset on resume
@@ -1692,7 +1692,7 @@ func (s *Session) cancelAgent(agentID string) (any, error) {
 	sub.mu.Lock()
 	done := sub.done
 	sub.mu.Unlock()
-	if err := sub.requestUserStop(); err != nil {
+	if err := sub.requestRunCancel(); err != nil {
 		return "", fmt.Errorf("agent %s is %w", agentID, err)
 	}
 	select {
@@ -2196,7 +2196,7 @@ type delegateTerminalRunInputs struct {
 	warnings                []string
 	worktree                *delegateWorktreeReport
 	scratchPath             string
-	// stoppedByUser: the user stopped this run (requestUserStop), so a
+	// stoppedByUser: the run was cancelled on request (requestRunCancel), so a
 	// cancelled run with nothing to report tells its coordinator so.
 	stoppedByUser bool
 }

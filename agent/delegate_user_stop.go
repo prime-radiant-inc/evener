@@ -3,7 +3,6 @@ package agent
 import (
 	"errors"
 	"fmt"
-	"strings"
 
 	"primeradiant.com/evener/appwire"
 )
@@ -33,7 +32,7 @@ func (s *Session) StopDelegateRun(delegateID string) (appwire.DelegateStopOutcom
 	if controller == nil || s.isSubagentSession() {
 		return "", errors.New("this session has no delegate tree to stop")
 	}
-	childSessionID, ok := controller.childSessionIDFor(strings.TrimSpace(delegateID))
+	childSessionID, ok := controller.childSessionIDFor(delegateID)
 	if !ok {
 		return "", fmt.Errorf("%w %q", ErrUnknownDelegate, delegateID)
 	}
@@ -41,7 +40,7 @@ func (s *Session) StopDelegateRun(delegateID string) (appwire.DelegateStopOutcom
 	if sub == nil {
 		return appwire.DelegateStopNotRunning, nil
 	}
-	switch err := sub.requestUserStop(); {
+	switch err := sub.requestRunCancel(); {
 	case errors.Is(err, errSubagentNotRunning), errors.Is(err, errSubagentSettling):
 		return appwire.DelegateStopNotRunning, nil
 	case err != nil:
@@ -76,12 +75,12 @@ func (s *Session) subagentForChild(childSessionID string) *subagent {
 	return nil
 }
 
-// requestUserStop cancels the subagent's current run and marks it stopped at
-// the user's request, so settlement maps the cancellation to a cancelled
-// outcome. It refuses a subagent that is not running, one whose run has
-// passed its last pre-settlement check, and one already stopping, so a
-// repeated stop answers notRunning.
-func (a *subagent) requestUserStop() error {
+// requestRunCancel cancels the subagent's current run and marks the
+// cancellation as requested, so settlement maps it to a cancelled outcome.
+// It refuses a subagent that is not running, one whose run has passed its
+// last pre-settlement check, and one already stopping, so a repeated stop
+// answers notRunning.
+func (a *subagent) requestRunCancel() error {
 	a.mu.Lock()
 	if !a.running {
 		a.mu.Unlock()
