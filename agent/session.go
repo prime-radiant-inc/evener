@@ -744,6 +744,11 @@ type Session struct {
 	// context management
 	contextMgr *contextmgr.Manager
 	strategy   contextmgr.Strategy
+	// strategyDegraded reports that the strategy's last AfterAction returned
+	// an error. While true, a repeat is suppressed so a persistently failing
+	// opt-in memory strategy cannot flood the warning channel; a successful
+	// AfterAction clears it so a later failure warns again. Guarded by mu.
+	strategyDegraded bool
 
 	// skills discovered at session startup
 	skills skill.Catalog
