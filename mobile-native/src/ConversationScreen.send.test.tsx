@@ -277,7 +277,13 @@ const otherThreads = new Map<string, Thread>();
 // The fleet the hub answers the screen's navigation reads with: nobody else
 // needs you unless a test says so.
 const fleet: FleetShape = { live: [], needsYou: [] };
+// Every screen a test mounts. Each is unmounted after its test: a screen
+// left mounted keeps answering late reads and setting header options on the
+// shared navigation mock, so a later test reading the last header options
+// could act on it instead of its own screen.
+const mountedScreens: ReactTestRenderer[] = [];
 afterEach(() => {
+	for (const tree of mountedScreens.splice(0)) if (tree.toJSON() !== null) act(() => tree.unmount());
 	otherThreads.clear();
 	fleet.live = [];
 	fleet.needsYou = [];
@@ -395,6 +401,7 @@ async function mount(
 	} as unknown as ConversationScreenProps["route"];
 	navigationState.state = { index: 0, routes: [route] };
 	const tree = render(<ConversationScreen route={route} navigation={navigation} />);
+	mountedScreens.push(tree);
 	if (settled) await settle();
 	return { tree, hub };
 }
