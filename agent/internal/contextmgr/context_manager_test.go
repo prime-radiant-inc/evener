@@ -644,6 +644,111 @@ func TestCheckpoint_TracksModifiedFiles(t *testing.T) {
 	}
 }
 
+// A write is only a completed-work fact when its paired result confirmed
+// success. This asserts the extracted status before rendering.
+func TestCheckpoint_WriteStatus_PairsCallsWithResults(t *testing.T) {
+	t.Parallel()
+	history := []schema.Turn{
+		{Kind: schema.TurnUserInput, Message: llm.User("prompt")},
+		{Kind: schema.TurnAssistant, Message: assistantWithToolCall("w1", "write_file", `{"file_path":"confirmed.go"}`)},
+		{Kind: schema.TurnTool, Message: llm.ToolResultNamed("w1", "write_file", "OK", false)},
+		{Kind: schema.TurnAssistant, Message: assistantWithToolCall("w2", "edit_file", `{"file_path":"failed.go"}`)},
+		{Kind: schema.TurnTool, Message: llm.ToolResultNamed("w2", "edit_file", "permission denied", true)},
+		{Kind: schema.TurnAssistant, Message: assistantWithToolCall("w3", "apply_patch", `{"patch":"*** Begin Patch\n*** Update File: pending.go\n*** End Patch"}`)},
+		// No result for w3: the attempt stays unconfirmed, never completed.
+		{Kind: schema.TurnAssistant, Message: llm.Assistant("done")},
+	}
+
+	data := collectCheckpointData(history, len(history), "communicate")
+
+	wants := map[string]checkpointWriteStatus{
+		"confirmed.go": writeConfirmed,
+		"failed.go":    writeFailed,
+		"pending.go":   writeUnconfirmed,
+	}
+	for path, want := range wants {
+		if got := data.fileWrites[path]; got != want {
+			t.Fatalf("fileWrites[%q] = %v, want %v", path, got, want)
+		}
+	}
+}
+
+// A rejected or unanswered terminal communicate is not a completed agent
+// reply; only an accepted result belongs in the extracted conversation.
+func TestCheckpoint_CommunicateOnlyRecordsAcceptedReplies(t *testing.T) {
+	t.Parallel()
+	history := []schema.Turn{
+		{Kind: schema.TurnUserInput, Message: llm.User("prompt")},
+		{Kind: schema.TurnAssistant, Message: assistantWithToolCall("c1", "communicate", `{"message":"rejected reply","end_turn":true}`)},
+		{Kind: schema.TurnTool, Message: llm.ToolResultNamed("c1", "communicate", "dispatch failed", true)},
+		{Kind: schema.TurnAssistant, Message: assistantWithToolCall("c2", "communicate", `{"message":"accepted reply","end_turn":true}`)},
+		{Kind: schema.TurnTool, Message: llm.ToolResultNamed("c2", "communicate", "delivered", false)},
+		{Kind: schema.TurnAssistant, Message: assistantWithToolCall("c3", "communicate", `{"message":"unanswered reply","end_turn":true}`)},
+		{Kind: schema.TurnAssistant, Message: llm.Assistant("still working")},
+	}
+
+	data := collectCheckpointData(history, len(history), "communicate")
+
+	var agents []string
+	for _, e := range data.conversation {
+		if e.Role == "agent" {
+			agents = append(agents, e.Text)
+		}
+	}
+	if len(agents) != 1 || agents[0] != "accepted reply" {
+		t.Fatalf("agent conversation = %v, want only the accepted reply", agents)
+	}
+}
+
+// A failed or result-missing write must never render on the "Files modified:"
+// line, and re-compacting a checkpoint must not upgrade it to completed work.
+// This pins the rendered completion contract the audit finding faulted.
+func TestCheckpoint_AttemptedWritesNeverUpgradeAcrossCompactions(t *testing.T) {
+	t.Parallel()
+	history := []schema.Turn{
+		{Kind: schema.TurnUserInput, Message: llm.User("prompt")},
+		{Kind: schema.TurnAssistant, Message: assistantWithToolCall("w1", "write_file", `{"file_path":"good.go"}`)},
+		{Kind: schema.TurnTool, Message: llm.ToolResultNamed("w1", "write_file", "OK", false)},
+		{Kind: schema.TurnAssistant, Message: assistantWithToolCall("w2", "write_file", `{"file_path":"failed.go"}`)},
+		{Kind: schema.TurnTool, Message: llm.ToolResultNamed("w2", "write_file", "denied", true)},
+		{Kind: schema.TurnAssistant, Message: assistantWithToolCall("w3", "write_file", `{"file_path":"pending.go"}`)},
+		{Kind: schema.TurnAssistant, Message: llm.Assistant("done")},
+	}
+
+	attempted := []string{"failed.go", "pending.go"}
+
+	first := checkpoint(history, 1, nil, "communicate")
+	firstLine := checkpointModifiedFilesLine(first[0].Message.Text())
+	if !strings.Contains(firstLine, "good.go") {
+		t.Fatalf("first checkpoint should report the confirmed write: %q", firstLine)
+	}
+	for _, path := range attempted {
+		if strings.Contains(firstLine, path) {
+			t.Fatalf("attempted write %q reported as modified in first checkpoint: %q", path, firstLine)
+		}
+	}
+
+	// Re-compacting the checkpoint must not upgrade an attempted write either.
+	second := checkpoint(first, 0, nil, "communicate")
+	secondLine := checkpointModifiedFilesLine(second[0].Message.Text())
+	for _, path := range attempted {
+		if strings.Contains(secondLine, path) {
+			t.Fatalf("attempted write %q upgraded to modified after re-compaction: %q", path, secondLine)
+		}
+	}
+}
+
+// checkpointModifiedFilesLine returns the rendered "Files modified:" line, or
+// "" when the checkpoint reports no confirmed writes.
+func checkpointModifiedFilesLine(text string) string {
+	for line := range strings.SplitSeq(text, "\n") {
+		if rest, ok := strings.CutPrefix(line, "Files modified:"); ok {
+			return rest
+		}
+	}
+	return ""
+}
+
 func TestCheckpoint_SummarizesActions(t *testing.T) {
 	history := []schema.Turn{
 		{Kind: schema.TurnUserInput, Message: llm.User("task")},

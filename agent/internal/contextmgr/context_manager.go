@@ -1072,7 +1072,7 @@ func checkpoint(history []schema.Turn, preserveRecent int, meta *CompactionMeta,
 // the last few shell results, the conversation (user/agent turns), and the
 // assistant's working notes.
 type checkpointData struct {
-	modifiedFiles    map[string]bool
+	fileWrites       map[string]checkpointWriteStatus
 	activatedSkills  map[string]bool
 	toolCounts       map[string]int
 	lastShellResults []string
@@ -1080,12 +1080,35 @@ type checkpointData struct {
 	workingNotes     []string
 }
 
+// checkpointWriteStatus classifies a write tool call by the outcome of its
+// paired tool result. The checkpoint may only report a file as modified when a
+// result confirmed the write; an attempted write that failed or whose result is
+// absent from the compacted prefix is kept distinct and never inferred as
+// completed work.
+type checkpointWriteStatus int
+
+const (
+	writeConfirmed   checkpointWriteStatus = iota // result present and not an error
+	writeFailed                                   // result present and IsError
+	writeUnconfirmed                              // no result in the compacted prefix
+)
+
+// recordWrite keeps a confirmed write from being downgraded by a later attempt
+// of the same path, because the file was in fact modified. Otherwise the latest
+// outcome wins.
+func (d *checkpointData) recordWrite(path string, status checkpointWriteStatus) {
+	if prev, ok := d.fileWrites[path]; ok && prev == writeConfirmed {
+		return
+	}
+	d.fileWrites[path] = status
+}
+
 // collectCheckpointData walks history[:cutoff] and distills it into a
 // checkpointData: modified files, tool counts, shell results, user messages,
 // final agent responses, working notes, and activated skills.
 func collectCheckpointData(history []schema.Turn, cutoff int, resultToolName string) checkpointData {
 	data := checkpointData{
-		modifiedFiles:   map[string]bool{},
+		fileWrites:      map[string]checkpointWriteStatus{},
 		activatedSkills: map[string]bool{},
 		toolCounts:      map[string]int{},
 	}
@@ -1114,13 +1137,15 @@ func collectCheckpointData(history []schema.Turn, cutoff int, resultToolName str
 
 		case schema.TurnTool, schema.TurnToolResults:
 			// Extract terminal communicate results (agent responses to the user).
+			// Only an accepted result is a completed reply; a rejected result
+			// (IsError) stays out of the conversation.
 			for _, p := range t.Message.Content {
 				if p.Kind != llm.ContentToolResult || p.ToolResult == nil {
 					continue
 				}
 				if p.ToolResult.Name == resultToolName {
 					endTurn, msg := communicateArgsFromHistory(history[:i+1], p.ToolResult.ToolCallID)
-					if endTurn && msg != "" {
+					if endTurn && msg != "" && !p.ToolResult.IsError {
 						data.conversation = append(data.conversation, checkpointConversationEntry{Role: "agent", Text: msg})
 					}
 					continue
@@ -1155,15 +1180,16 @@ func collectCheckpointData(history []schema.Turn, cutoff int, resultToolName str
 				switch name {
 				case "edit_file", "write_file":
 					if path, ok := args["file_path"]; ok {
-						data.modifiedFiles[fmt.Sprint(path)] = true
+						data.recordWrite(fmt.Sprint(path), writeOutcome(history, i, cutoff, p.ToolCall.ID))
 					}
 				case "apply_patch":
 					if patch, ok := args["patch"]; ok {
+						status := writeOutcome(history, i, cutoff, p.ToolCall.ID)
 						for line := range strings.SplitSeq(fmt.Sprint(patch), "\n") {
 							line = strings.TrimSpace(line)
 							for _, prefix := range []string{"*** Update File: ", "*** Add File: ", "*** Delete File: "} {
 								if rest, ok := strings.CutPrefix(line, prefix); ok {
-									data.modifiedFiles[rest] = true
+									data.recordWrite(rest, status)
 								}
 							}
 						}
@@ -1214,14 +1240,28 @@ func formatCheckpoint(data checkpointData, meta *CompactionMeta, maxChars int) s
 		fmt.Fprintf(&fixed, "Earlier history was compacted into this checkpoint to free context-window headroom. This session's id is %s.%s\n", meta.SessionID, meta.TranscriptRecoverySentence())
 	}
 
-	// Files modified.
-	if len(data.modifiedFiles) > 0 {
-		files := make([]string, 0, len(data.modifiedFiles))
-		for f := range data.modifiedFiles {
-			files = append(files, f)
+	// Files modified: only writes whose paired result confirmed success. Failed
+	// and result-missing attempts render distinctly, so the checkpoint never
+	// reports an attempted write as completed work.
+	modified := make([]string, 0, len(data.fileWrites))
+	attempted := make([]string, 0, len(data.fileWrites))
+	for f, status := range data.fileWrites {
+		switch status {
+		case writeConfirmed:
+			modified = append(modified, f)
+		case writeFailed:
+			attempted = append(attempted, f+" (failed)")
+		default:
+			attempted = append(attempted, f+" (no result)")
 		}
-		sort.Strings(files)
-		fmt.Fprintf(&fixed, "Files modified: %s\n", strings.Join(files, ", "))
+	}
+	sort.Strings(modified)
+	sort.Strings(attempted)
+	if len(modified) > 0 {
+		fmt.Fprintf(&fixed, "Files modified: %s\n", strings.Join(modified, ", "))
+	}
+	if len(attempted) > 0 {
+		fmt.Fprintf(&fixed, "Files attempted but not applied: %s\n", strings.Join(attempted, ", "))
 	}
 
 	// Tool call counts.
@@ -1329,6 +1369,37 @@ func findToolResultByCallID(t schema.Turn, toolCallID string) string {
 		}
 	}
 	return ""
+}
+
+// writeOutcome classifies the write tool call at history[callIndex] by its
+// paired result. A result shed from the compacted prefix leaves the outcome
+// unconfirmed rather than inferring success.
+func writeOutcome(history []schema.Turn, callIndex, cutoff int, toolCallID string) checkpointWriteStatus {
+	result := findToolResultData(history, callIndex+1, cutoff, toolCallID)
+	switch {
+	case result == nil:
+		return writeUnconfirmed
+	case result.IsError:
+		return writeFailed
+	default:
+		return writeConfirmed
+	}
+}
+
+// findToolResultData scans history[from:cutoff] for the tool result part that
+// answers toolCallID and returns it, or nil when the prefix holds no result.
+func findToolResultData(history []schema.Turn, from, cutoff int, toolCallID string) *llm.ToolResultData {
+	for j := from; j < cutoff; j++ {
+		if history[j].Kind != schema.TurnTool && history[j].Kind != schema.TurnToolResults {
+			continue
+		}
+		for _, p := range history[j].Message.Content {
+			if p.Kind == llm.ContentToolResult && p.ToolResult != nil && p.ToolResult.ToolCallID == toolCallID {
+				return p.ToolResult
+			}
+		}
+	}
+	return nil
 }
 
 func sumCounts(m map[string]int) int {
