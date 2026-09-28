@@ -57,6 +57,20 @@ function latestSocket(sockets: FakeSocket[]): FakeSocket {
   return socketAt(sockets, sockets.length - 1);
 }
 
+// driveFailedAttempts advances through each jittered delay in order and fails
+// the dialed socket before it opens, so the next backoff timer arms. It leaves
+// the client "reconnecting" with the next timer armed, the state the cap
+// assertions below start from.
+async function driveFailedAttempts(sockets: FakeSocket[], delays: number[]): Promise<void> {
+  for (const delay of delays) {
+    const before = sockets.length;
+    await vi.advanceTimersByTimeAsync(delay);
+    expect(sockets.length).toBe(before + 1); // exactly one new dial, at this delay
+    latestSocket(sockets).closeFromServer(1006);
+    await flushUntil(() => vi.getTimerCount() > 0); // let the next backoff timer arm
+  }
+}
+
 interface NavigationHandshake {
   version: number;
   generationId: string;
@@ -548,6 +562,56 @@ describe("AppwireClient reconnect jitter", () => {
     expect(sockets).toHaveLength(1);
     await vi.advanceTimersByTimeAsync(1);
     expect(sockets).toHaveLength(2);
+    client.close();
+  });
+
+  test("at the cap, random() === 1 holds the delay at exactly the cap", async () => {
+    const { factory, sockets } = dialer();
+    const client = new AppwireClient({ url: "ws://x/rpc", socketFactory: factory, random: () => 1 });
+    await connectReady(sockets, client);
+
+    socketAt(sockets, 0).closeFromServer(1006);
+    // Fail the doubling attempts up to and including the first capped one, so
+    // the next armed delay is the cap itself.
+    await driveFailedAttempts(sockets, [
+      RECONNECT_BASE_MS,
+      RECONNECT_BASE_MS * 2,
+      RECONNECT_BASE_MS * 4,
+      RECONNECT_BASE_MS * 8,
+      RECONNECT_BASE_MS * 16,
+      RECONNECT_MAX_MS,
+    ]);
+
+    const before = sockets.length;
+    await vi.advanceTimersByTimeAsync(RECONNECT_MAX_MS - 1);
+    expect(sockets).toHaveLength(before); // not early: the cap is the upper bound
+    await vi.advanceTimersByTimeAsync(1);
+    expect(sockets).toHaveLength(before + 1); // dialed at exactly the cap
+    client.close();
+  });
+
+  test("at the cap, random() === 0 halves the delay and never exceeds the cap", async () => {
+    const { factory, sockets } = dialer();
+    const client = new AppwireClient({ url: "ws://x/rpc", socketFactory: factory, random: () => 0 });
+    await connectReady(sockets, client);
+
+    socketAt(sockets, 0).closeFromServer(1006);
+    // The low jitter bound halves every delay, so the first capped attempt
+    // waits RECONNECT_MAX_MS / 2.
+    await driveFailedAttempts(sockets, [
+      RECONNECT_BASE_MS / 2,
+      RECONNECT_BASE_MS,
+      RECONNECT_BASE_MS * 2,
+      RECONNECT_BASE_MS * 4,
+      RECONNECT_BASE_MS * 8,
+      RECONNECT_MAX_MS / 2,
+    ]);
+
+    const before = sockets.length;
+    await vi.advanceTimersByTimeAsync(RECONNECT_MAX_MS / 2 - 1);
+    expect(sockets).toHaveLength(before); // not before the low bound
+    await vi.advanceTimersByTimeAsync(1);
+    expect(sockets).toHaveLength(before + 1); // dialed at half the cap, still under it
     client.close();
   });
 
