@@ -58,13 +58,19 @@ function visit(tokens: readonly Token[], found: (text: string) => void): void {
 
 // Every publish hands the screen new turns, so a transcript's settled
 // messages are read again and again. Lexing is the costly part, so the file
-// names each markdown text holds are remembered, for the most recent texts.
+// names each markdown text holds are remembered, for the most recently used
+// texts.
 const NAMES_REMEMBERED = 500;
 const namesByMarkdown = new Map<string, readonly string[]>();
 
 function namedFiles(markdown: string): readonly string[] {
 	const known = namesByMarkdown.get(markdown);
-	if (known) return known;
+	if (known) {
+		// Used again: it moves to the newest end, so the oldest unused go first.
+		namesByMarkdown.delete(markdown);
+		namesByMarkdown.set(markdown, known);
+		return known;
+	}
 	const names: string[] = [];
 	visit(lexer(markdown), (text) => {
 		const file = namedFile(text);
@@ -145,6 +151,7 @@ export function fileWrites(turns: readonly TurnModel[], cwd: string): Map<string
 	const writes = new Map<string, string>();
 	for (const turn of turns)
 		for (const item of turn.items) {
+			// ISO strings: the reducer converts the wire's epoch milliseconds.
 			const at = item.completedAt ?? turn.completedAt;
 			if (at === undefined || !Number.isFinite(Date.parse(at))) continue;
 			for (const path of writtenFiles(item, cwd)) writes.set(path, later(writes.get(path), at) ?? at);

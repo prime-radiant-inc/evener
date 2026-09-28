@@ -1469,7 +1469,8 @@ describe("document chips under the agent's messages (spec 8.2)", () => {
 						type: "commandExecution",
 						toolName: "write_file",
 						status: "completed",
-						// The wire's times are epoch milliseconds.
+						// A wire Thread's times are epoch milliseconds; the reducer's
+						// epochMsToISO hands documentReferences the ISO string.
 						completedAt: Date.parse(WROTE_AT),
 						argumentsJson: JSON.stringify({ file_path: `/home/jesse/git/evener/${PLAN_PATH}`, content: "# Plan" }),
 					},
