@@ -422,6 +422,7 @@ export {
   SEND_UNAVAILABLE,
   type SessionControlName,
   type SessionControls,
+  SHUT_DOWN_STATUSES,
   STEER_UNAVAILABLE,
   STOP_UNAVAILABLE,
   sessionControls,

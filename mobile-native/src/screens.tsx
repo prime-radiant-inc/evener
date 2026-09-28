@@ -64,7 +64,6 @@ import {
 	submitComposerCommand,
 } from "./composerCommand";
 import { canComposeFor, conversationControls } from "./conversationControls";
-import { steerComposer } from "./composerSteering";
 import type { HubProfile } from "./connection";
 import { goalObjective, submitGoalCommand } from "./goalCommand";
 import { HubEditor } from "./HubEditor";
@@ -124,9 +123,17 @@ import {
 	sessionRows,
 } from "./session/transcriptRows";
 import { SessionControls } from "./sessionControls";
+import { Composer } from "./session/Composer";
+import {
+	composerPlaceholder,
+	sendAction,
+	sendLabel,
+} from "./session/sendAction";
+import { LiveStatusTray, useFrameCounter } from "./session/StatusTray";
 import { localSessionId } from "./sessionDeletionResult";
 import { leaveScreen, screenInFront, useScreenInFront } from "./sheet/useScreenInFront";
 import { TimelineItem } from "./TimelineItem";
+import { Toast, useToast } from "./Toast";
 import { TranscriptUsage } from "./TranscriptUsage";
 import { groupTimeline, type TimelineRow, timelineGap } from "./timeline";
 import { projectNativeTranscript } from "./transcriptPresentation";
@@ -470,12 +477,11 @@ export function ConversationScreen({
 	const {
 		activeProfile,
 		client,
-		retry,
 		state: connectionState,
 	} = useConnection();
 	const focused = useScreenInFront(route.key);
 	const colors = useColors();
-	const { fontScale, height: windowHeight } = useWindowDimensions();
+	const { height: windowHeight } = useWindowDimensions();
 	const [viewportHeight, setViewportHeight] = useState(windowHeight);
 	const [sessionMenuOpen, setSessionMenuOpen] = useState(false);
 	const headerHeight = useHeaderHeight();
@@ -1501,96 +1507,123 @@ export function ConversationScreen({
 			questionBatches.finish(batch.id, false);
 		}
 	}
-	async function mutate(kind: "send" | "steer" | "queue" | "interrupt") {
+	const frames = useFrameCounter(store);
+	const toaster = useToast();
+	const [stopping, setStopping] = useState(false);
+	const stopBusy = useRef(false);
+	async function stop() {
+		if (
+			!service ||
+			!connectionReady.current ||
+			stopBusy.current ||
+			store.getState().pendingMutation?.status === "pending"
+		)
+			return;
+		stopBusy.current = true;
+		setStopping(true);
+		try {
+			const previous = store.getState().lastAcceptedMutation;
+			await store.getState().interrupt(service);
+			const accepted = store.getState().lastAcceptedMutation;
+			if (accepted && accepted !== previous && accepted.kind === "interrupt")
+				toaster.show({ text: "Stopped" });
+		} catch {
+			// Stop only acts while a turn runs; a turn that ended first has
+			// nothing left to stop, so a refusal says nothing.
+		} finally {
+			stopBusy.current = false;
+			setStopping(false);
+		}
+	}
+	function jumpToLive() {
+		readerHeader.current = false;
+		readerAnchor.current = null;
+		readerLatest.current = true;
+		captureSuppressed.current = false;
+		(
+			timeline.current?.getScrollResponder() as ScrollView | null
+		)?.scrollToEnd({ animated: true });
+	}
+	// The render-time action drives the placeholder, the label and whether
+	// Send is enabled; a press routes on the live state instead.
+	const action = conversation
+		? sendAction(conversation, snapshot.pendingMutations, connected)
+		: "none";
+	const composerReady =
+		ready &&
+		draft.loaded &&
+		!draft.error &&
+		!draft.submitting &&
+		unconfirmedSend === null &&
+		!imageState.busy;
+	const sendEnabled =
+		command !== null
+			? composerReady &&
+				!(command.command.id === "goal" && !goalCommand && !conversation?.goal) &&
+				!!conversation &&
+				composerCommandAvailable(command.command, conversation)
+			: composerReady &&
+				(!!draft.record.draft.trim() || !!draft.record.images?.length) &&
+				action !== "none";
+	const composerSendLabel =
+		command === null
+			? sendLabel(action, false)
+			: command.command.id === "compact"
+				? "Compact transcript"
+				: command.command.id === "goal"
+					? goalCommand || !conversation?.goal
+						? "Set goal"
+						: "Clear goal"
+					: command.command.label;
+	async function send() {
+		if (command !== null) {
+			void applyCommand();
+			return;
+		}
+		const live = store.getState();
 		if (
 			!service ||
 			!ready ||
 			controls?.getSnapshot().pending != null ||
-			(kind !== "interrupt" &&
-				(imageSelection.getSnapshot().busy ||
-					unconfirmedSend !== null ||
-					pendingQuestions(store.getState().conversation).length > 0)) ||
-			store.getState().pendingMutation?.status === "pending"
+			imageSelection.getSnapshot().busy ||
+			unconfirmedSend !== null ||
+			pendingQuestions(live.conversation).length > 0 ||
+			live.pendingMutation?.status === "pending" ||
+			!live.conversation
 		)
 			return;
+		// Route on what is true at the press, the way the web composer
+		// re-derives at submit: a turn may have started or ended since render.
+		const liveAction = sendAction(
+			live.conversation,
+			live.pendingMutations,
+			connectionReady.current,
+		);
+		if (liveAction === "none") return;
+		const kind = liveAction === "queue" ? "queue" : "send";
 		setActionError(null);
 		try {
-			if (kind !== "interrupt") {
-				const submit = (
-					kind === "steer" &&
-					(store.getState().conversation?.queue?.depth ?? 0) > 0
-						? document.submitWithQueue
-						: document.submit
-				).bind(document);
-				await submit(async (text, images) => {
-					store.getState().setDraft(text);
-					const previous = store.getState().lastAcceptedMutation;
-					const input = buildComposerInput(text, images);
-					if (kind === "steer") await steerComposer(store, service, input);
-					else await store.getState()[kind](service, input);
-					const accepted = store.getState().lastAcceptedMutation;
-					return (
-						accepted != null && accepted !== previous && accepted.kind === kind
-					);
-				});
-			} else await store.getState().interrupt(service);
+			await document.submit(async (text, images) => {
+				store.getState().setDraft(text);
+				const previous = store.getState().lastAcceptedMutation;
+				await store.getState()[kind](service, buildComposerInput(text, images));
+				const accepted = store.getState().lastAcceptedMutation;
+				return (
+					accepted != null && accepted !== previous && accepted.kind === kind
+				);
+			});
 		} catch {
-			setActionError(
-				"This action is unavailable. Refresh the conversation and try again.",
-			);
+			// A refused Send adds no text of its own: the draft stays, and the
+			// "Delivery unconfirmed" card document.submit leaves says what
+			// happened and what to do.
 		}
 	}
-	const submissionActions = (kinds: readonly ("send" | "steer" | "queue")[]) =>
-		command === null &&
-		kinds.map((kind) =>
-			canCompose &&
-			questions.length === 0 &&
-			conversation &&
-			permitted?.[kind] ? (
-				<Action
-					key={kind}
-					tone={
-						kind === "send" || (kind === "steer" && !permitted.send)
-							? "primary"
-							: "quiet"
-					}
-					disabled={
-						!ready ||
-						!draft.loaded ||
-						!!draft.error ||
-						draft.submitting ||
-						unconfirmedSend !== null ||
-						imageState.busy ||
-						(!draft.record.draft.trim() &&
-							!draft.record.images?.length &&
-							!(kind === "steer" && (conversation.queue?.depth ?? 0) > 0))
-					}
-					onPress={() => {
-						void mutate(kind);
-					}}
-				>
-					{kind === "send" ? "Send" : kind === "steer" ? "Steer" : "Queue"}
-				</Action>
-			) : null,
-		);
-
-	const settingsOwnRow =
-		fontScale > 1.4 ||
-		conversation?.status.type === "active" ||
-		draft.submitting ||
-		commandPending ||
-		!connected ||
-		!!snapshot.error ||
-		!!actionError ||
-		unconfirmedSend !== null ||
-		!!draft.error;
 	const composerSettings =
 		conversation && canCompose ? (
 			<ComposerSettings
 				conversation={conversation}
 				disabled={!ready || !controls || draft.submitting}
 				pending={settingsPending}
-				fullWidth={settingsOwnRow}
 				open={(setting) => {
 					Keyboard.dismiss();
 					setComposerSetting(setting);
@@ -2034,15 +2067,7 @@ export function ConversationScreen({
 								<Pressable
 									accessibilityRole="button"
 									accessibilityLabel="Latest"
-									onPress={() => {
-										readerHeader.current = false;
-										readerAnchor.current = null;
-										readerLatest.current = true;
-										captureSuppressed.current = false;
-										(
-											timeline.current?.getScrollResponder() as ScrollView | null
-										)?.scrollToEnd({ animated: true });
-									}}
+									onPress={jumpToLive}
 									style={({ pressed }) => ({
 										minWidth: Platform.OS === "ios" ? 44 : 48,
 										minHeight: Platform.OS === "ios" ? 44 : 48,
@@ -2061,67 +2086,10 @@ export function ConversationScreen({
 							</View>
 						) : null}
 					</View>
-					<View
-						style={[
-							{
-								flexShrink: 1,
-								maxHeight: "80%",
-								marginHorizontal: 12,
-								marginTop: 8,
-								marginBottom: 8,
-								padding: 8,
-								gap: 4,
-								borderWidth: canCompose ? 1 : 0,
-								borderRadius: canCompose ? 22 : 0,
-								borderColor: colors.border,
-								backgroundColor: canCompose
-									? colors.surface
-									: colors.background,
-							},
-						]}
-					>
-						{canCompose &&
-						questions.length === 0 &&
-						connected &&
-						client &&
-						conversation &&
-						slashToken ? (
-							<CommandCompletion
-								// Suggestions use at most 40% of the composer's 80% viewport cap.
-								maxHeight={Math.min(160, viewportHeight * 0.32)}
-								client={client}
-								sessionRef={route.params.ref}
-								session={conversation}
-								query={slashToken.query}
-								close={() => setCompletionClosedAt(draft.record.draft)}
-								choose={(item) => {
-									if (
-										document.getSnapshot().record.draft !== draft.record.draft
-									)
-										return;
-									const inserted = spliceSlashCommand(
-										draft.record.draft,
-										slashToken,
-										item.invocation,
-									);
-									document.edit(inserted.text);
-									setCompletionClosedAt(inserted.text);
-									setComposerSelection({
-										start: inserted.caret,
-										end: inserted.caret,
-									});
-									requestAnimationFrame(() => {
-										composerInput.current?.setNativeProps({
-											selection: { start: inserted.caret, end: inserted.caret },
-										});
-										composerInput.current?.focus();
-									});
-								}}
-							/>
-						) : null}
+					<View style={{ flexShrink: 1, maxHeight: "80%", marginTop: 8, gap: 4 }}>
 						<ScrollView
 							style={{ flexGrow: 0, flexShrink: 1 }}
-							contentContainerStyle={{ gap: 4 }}
+							contentContainerStyle={{ gap: 4, paddingHorizontal: 12 }}
 							keyboardShouldPersistTaps="handled"
 							nestedScrollEnabled
 						>
@@ -2176,108 +2144,7 @@ export function ConversationScreen({
 									) : null}
 								</View>
 							) : null}
-							{canCompose && questions.length === 0 ? (
-								<ImageAttachments
-									document={document}
-									selection={imageSelection}
-								/>
-							) : null}
-							<ErrorMessage message={imageState.error} />
-							<View
-								style={{
-									flexDirection: "row",
-									alignItems: "flex-end",
-									flexWrap: "wrap",
-									gap: 8,
-								}}
-							>
-								{canCompose && questions.length === 0 ? (
-									<TextInput
-										ref={composerInput}
-										accessibilityLabel="Message"
-										multiline
-										value={draft.record.draft}
-										onChangeText={(text) => document.edit(text)}
-										onSelectionChange={(event) =>
-											setComposerSelection(event.nativeEvent.selection)
-										}
-										editable={draft.loaded}
-										placeholder="Message"
-										placeholderTextColor={colors.secondary}
-										style={[
-											styles.input,
-											{
-												color: colors.text,
-												backgroundColor: colors.surface,
-												borderWidth: 0,
-												padding: 2,
-												flex: 1,
-												minWidth: "100%",
-												minHeight: Platform.OS === "android" ? 48 : 44,
-												maxHeight: fontScale > 1.6 ? 96 : 160,
-												textAlignVertical: "top",
-											},
-										]}
-									/>
-								) : null}
-							</View>
-							{settingsOwnRow ? composerSettings : null}
-							<View
-								style={[
-									styles.row,
-									{
-										flexWrap: "wrap",
-										justifyContent:
-											fontScale > 1.4 ? "space-between" : "flex-end",
-										gap: 4,
-									},
-								]}
-							>
-								{canCompose && questions.length === 0 ? (
-									<Action
-										tone="quiet"
-										label="Attach images"
-										disabled={!draft.loaded || !!draft.error || imageState.busy}
-										onPress={() => {
-											Keyboard.dismiss();
-											void imageSelection.choose();
-										}}
-									>
-										{imageState.busy ? "Processing…" : "+"}
-									</Action>
-								) : null}
-								{settingsOwnRow ? null : composerSettings}
-								{canCompose && questions.length === 0 && command !== null ? (
-									<Action
-										tone="primary"
-										label={
-											command.command.id === "compact"
-												? "Compact transcript"
-												: undefined
-										}
-										disabled={
-											!ready ||
-											!draft.loaded ||
-											!!draft.error ||
-											draft.submitting ||
-											unconfirmedSend !== null ||
-											imageState.busy ||
-											(command.command.id === "goal" &&
-												!goalCommand &&
-												!conversation?.goal) ||
-											!conversation ||
-											!composerCommandAvailable(command.command, conversation)
-										}
-										onPress={() => void applyCommand()}
-									>
-										{command.command.id === "goal"
-											? goalCommand || !conversation?.goal
-												? "Set goal"
-												: "Clear goal"
-											: command.command.label}
-									</Action>
-								) : null}
-								{submissionActions(["send", "steer"])}
+							<View style={{ flexDirection: "row", flexWrap: "wrap", gap: 4 }}>
 								{controlsState?.error &&
 								(controlsState.lastAction === "changeModel" ||
 									controlsState.lastAction === "setVisionModel" ||
@@ -2303,23 +2170,17 @@ export function ConversationScreen({
 										{draft.loaded ? "Retry saving" : "Retry loading draft"}
 									</Action>
 								) : null}
-								{!connected || deliveryConcern ? (
+								{deliveryConcern ? (
 									<Action
 										tone="quiet"
 										onPress={() => {
 											Keyboard.dismiss();
-											if (unconfirmedSend !== null || connected) {
-												setRecoveryOpen(true);
-											} else {
-												retry();
-											}
+											setRecoveryOpen(true);
 										}}
 									>
 										{unconfirmedSend !== null
 											? "Check delivery"
-											: !connected
-												? "Reconnect"
-												: "Review error"}
+											: "Review error"}
 									</Action>
 								) : null}
 								{shouldOfferRecoveryEntry({
@@ -2338,20 +2199,107 @@ export function ConversationScreen({
 										Recovery
 									</Action>
 								) : null}
-								{permitted?.stop ? (
-									<Action
-										tone="quiet"
-										disabled={!ready}
-										onPress={() => {
-											void mutate("interrupt");
-										}}
-									>
-										Stop
-									</Action>
-								) : null}
-								{submissionActions(["queue"])}
 							</View>
 						</ScrollView>
+						<View>
+							{/* The toast floats 10pt above the tray, or above the
+							    composer when there is no tray. */}
+							<View
+								pointerEvents="box-none"
+								style={{
+									position: "absolute",
+									left: 0,
+									right: 0,
+									bottom: "100%",
+									paddingBottom: 10,
+									alignItems: "center",
+								}}
+							>
+								<Toast toast={toaster.toast} dismiss={toaster.dismiss} />
+							</View>
+							<LiveStatusTray
+								session={conversation}
+								frames={frames}
+								connected={connected}
+								canStop={!!permitted?.stop}
+								stopping={stopping || pending}
+								onStop={() => {
+									void stop();
+								}}
+								onJumpToLive={jumpToLive}
+							/>
+							{canCompose && questions.length === 0 ? (
+								<Composer
+									value={draft.record.draft}
+									editable={draft.loaded}
+									onChangeText={(text) => document.edit(text)}
+									onSelectionChange={setComposerSelection}
+									inputRef={composerInput}
+									placeholder={composerPlaceholder(action, false)}
+									sendLabel={composerSendLabel}
+									sendEnabled={sendEnabled}
+									onSend={() => {
+										void send();
+									}}
+									onPhotoLibrary={() => {
+										Keyboard.dismiss();
+										void imageSelection.choose();
+									}}
+									onCamera={() => {
+										Keyboard.dismiss();
+										void imageSelection.choose("camera");
+									}}
+									settings={composerSettings}
+									above={
+										<>
+											{connected && client && conversation && slashToken ? (
+												<CommandCompletion
+													// Suggestions use at most 40% of the composer's 80% viewport cap.
+													maxHeight={Math.min(160, viewportHeight * 0.32)}
+													client={client}
+													sessionRef={route.params.ref}
+													session={conversation}
+													query={slashToken.query}
+													close={() => setCompletionClosedAt(draft.record.draft)}
+													choose={(item) => {
+														if (
+															document.getSnapshot().record.draft !==
+															draft.record.draft
+														)
+															return;
+														const inserted = spliceSlashCommand(
+															draft.record.draft,
+															slashToken,
+															item.invocation,
+														);
+														document.edit(inserted.text);
+														setCompletionClosedAt(inserted.text);
+														setComposerSelection({
+															start: inserted.caret,
+															end: inserted.caret,
+														});
+														requestAnimationFrame(() => {
+															composerInput.current?.setNativeProps({
+																selection: {
+																	start: inserted.caret,
+																	end: inserted.caret,
+																},
+															});
+															composerInput.current?.focus();
+														});
+													}}
+												/>
+											) : null}
+											<ImageAttachments
+												document={document}
+												selection={imageSelection}
+											/>
+											<ErrorMessage message={imageState.error} />
+										</>
+									}
+								/>
+							) : null}
+						</View>
 						<Modal
 							visible={recoveryOpen}
 							animationType="slide"

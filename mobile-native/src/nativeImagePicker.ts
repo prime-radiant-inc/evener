@@ -2,7 +2,24 @@ import { randomUUID } from "expo-crypto";
 import { File } from "expo-file-system";
 import { ImageManipulator, SaveFormat } from "expo-image-manipulator";
 import * as Picker from "expo-image-picker";
-import type { ImagePicker } from "./imageSelection";
+import {
+  CameraAccessDenied,
+  type ImagePicker,
+  type PickedImage,
+} from "./imageSelection";
+
+function pickedImages(result: Picker.ImagePickerResult): PickedImage[] {
+  if (result.canceled) return [];
+  return result.assets.map((asset) => {
+    const file = new File(asset.uri);
+    return {
+      uri: asset.uri,
+      name: asset.fileName ?? file.name,
+      type: asset.mimeType || file.type || "image/unknown",
+      size: asset.fileSize ?? file.size,
+    };
+  });
+}
 
 export const nativeImagePicker: ImagePicker = {
   id: randomUUID,
@@ -16,16 +33,18 @@ export const nativeImagePicker: ImagePicker = {
       preferredAssetRepresentationMode:
         Picker.UIImagePickerPreferredAssetRepresentationMode.Current,
     });
-    if (result.canceled) return [];
-    return result.assets.map((asset) => {
-      const file = new File(asset.uri);
-      return {
-        uri: asset.uri,
-        name: asset.fileName ?? file.name,
-        type: asset.mimeType || file.type || "image/unknown",
-        size: asset.fileSize ?? file.size,
-      };
-    });
+    return pickedImages(result);
+  },
+  async capture() {
+    const permission = await Picker.requestCameraPermissionsAsync();
+    if (!permission.granted) throw new CameraAccessDenied();
+    return pickedImages(
+      await Picker.launchCameraAsync({
+        mediaTypes: ["images"],
+        quality: 1,
+        allowsEditing: false,
+      }),
+    );
   },
   async encode(image) {
     const context = ImageManipulator.manipulate(image.uri);

@@ -466,6 +466,7 @@ it("uses the shared picker pipeline without attaching late results to an abandon
   const started = deferred();
   const selection = new ImageSelection(document, {
     id: () => "photo",
+    capture: async () => [],
     pick: async () => [
       {
         uri: "file:///photo.jpg",

@@ -245,3 +245,16 @@ export function renderedText(tree: ReactTestRenderer): string {
 export function textOf(node: ReactTestInstance): string {
 	return node.children.map((child) => (typeof child === "string" ? child : textOf(child))).join("");
 }
+
+/** The first mounted Pressable whose accessibility label is `label`, found
+ * the way VoiceOver finds a button; undefined when there is none. */
+export function pressable(
+	tree: ReactTestRenderer,
+	label: string,
+): ReactTestInstance | undefined {
+	return tree.root.findAll(
+		(node) =>
+			String(node.type) === "Pressable" &&
+			node.props.accessibilityLabel === label,
+	)[0];
+}
