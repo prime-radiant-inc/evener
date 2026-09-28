@@ -1,7 +1,7 @@
 import type { InstanceEntry } from "@evener/appwire-client";
-import { cleanup, render, screen } from "@testing-library/react";
+import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { afterEach, describe, expect, test, vi } from "vitest";
+import { describe, expect, test, vi } from "vitest";
 import { requireClass } from "../../../../widgets/internal/requireClass";
 import { InstanceRow } from "./InstanceRow";
 import rawStyles from "./InstanceRow.module.css";
@@ -15,8 +15,6 @@ const CLASS = {
   row: requireClass(rawStyles.row, "InstanceRow.module.css", "row"),
   rowButton: requireClass(rawStyles.rowButton, "InstanceRow.module.css", "rowButton"),
 };
-
-afterEach(cleanup);
 
 function instance(overrides: Partial<InstanceEntry> & Pick<InstanceEntry, "name" | "providerId">): InstanceEntry {
   return {

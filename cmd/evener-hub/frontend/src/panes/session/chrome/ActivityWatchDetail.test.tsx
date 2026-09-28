@@ -3,8 +3,8 @@
 
 import type { NavigationWatchSummary } from "@evener/appwire-client";
 import { type ActivityWatchRow, formatClockTime, watchRowID } from "@evener/appwire-client";
-import { cleanup, render, screen } from "@testing-library/react";
-import { afterEach, describe, expect, test, vi } from "vitest";
+import { render, screen } from "@testing-library/react";
+import { describe, expect, test, vi } from "vitest";
 import { ActivityWatchDetail, WATCH_NO_SCHEDULE_LINE } from "./ActivityRowDetail";
 
 const NOW = Date.parse("2026-08-05T15:00:12.000Z");
@@ -26,10 +26,6 @@ function leftOf(element: HTMLElement): number {
   const value = element.style.left;
   return Number.parseFloat(value);
 }
-
-afterEach(() => {
-  cleanup();
-});
 
 describe("ActivityWatchDetail timeline", () => {
   const INSTANTS = ["2026-08-05T13:00:00Z", "2026-08-05T14:00:00Z", "2026-08-05T15:00:00Z"];

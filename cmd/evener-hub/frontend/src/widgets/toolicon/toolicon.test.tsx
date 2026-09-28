@@ -1,8 +1,6 @@
-import { cleanup, render } from "@testing-library/react";
-import { afterEach, expect, test } from "vitest";
+import { render } from "@testing-library/react";
+import { expect, test } from "vitest";
 import { PATHS, ToolIcon, type ToolIconKind } from ".";
-
-afterEach(cleanup);
 
 // Derived from the widget's exported PATHS, not hand-maintained: the Record's
 // type keeps the union and the paths exhaustive against each other, so this

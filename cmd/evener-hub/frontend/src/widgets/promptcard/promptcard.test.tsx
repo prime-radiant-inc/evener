@@ -1,15 +1,13 @@
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { cleanup, render, screen } from "@testing-library/react";
+import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { useState } from "react";
-import { afterEach, expect, test } from "vitest";
+import { expect, test } from "vitest";
 import { Textarea } from "../textarea";
 import { PromptCard } from "./index";
 import promptCardStyles from "./promptcard.module.css";
-
-afterEach(cleanup);
 
 function moduleCss(): string {
   return readFileSync(join(dirname(fileURLToPath(import.meta.url)), "promptcard.module.css"), "utf8");

@@ -469,16 +469,18 @@ test("failed intent proxy renders the accessible FailureGlyph and neutral missin
 
   expect(screen.getByTestId("intent-group")).toBeTruthy();
   expect(screen.getByRole("img", { name: "Failed" })).toBeTruthy();
-  // ToolCallItem renders eagerly inside the intent group. The failed row
-  // auto-expands its body (failure earns the eye). While expanded, shell's
-  // summaryWhenExpanded placeholder is the summary line — "Action summary
-  // unavailable" is not shown either way, since the descriptor's own
-  // summary outranks the projected fallback — and the body's error output
-  // is the single representation of the command.
+  // ToolCallItem renders eagerly inside the intent group. A failed row no
+  // longer force-expands: it settles collapsed, and the body opens on the
+  // reader's own toggle. "Action summary unavailable" is still never shown,
+  // since the descriptor's own summary outranks the projected fallback.
   expect(screen.getByTestId("tool-call-item")).toBeTruthy();
-  expect(screen.getByText("command failed")).toBeTruthy();
+  expect(screen.queryByTestId("tool-call-body")).toBeNull();
+  expect(screen.queryByText("command failed")).toBeNull();
   expect(screen.queryByText("Action summary unavailable")).toBeNull();
-  expect(screen.getByTestId("tool-row-summary").textContent).toBe("Ran a shell command");
+  // The row stays an expandable disclosure: opening it surfaces the body's
+  // error output as the single representation of the command.
+  fireEvent.click(screen.getByTestId("tool-row-trigger"));
+  expect(screen.getByText("command failed")).toBeTruthy();
 });
 
 test("intent row drills down through 3 levels: intent button -> summary, body chevron -> body", () => {

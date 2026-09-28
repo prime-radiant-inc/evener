@@ -135,11 +135,11 @@ func readOutputWindowSnapshotOnce(fs afero.Fs, path string, offset int64, maxByt
 	if errors.Is(readErr, errOutputChanged) {
 		return OutputWindowSnapshot{}, errOutputChanged
 	}
-	if after.changedFrom(before) {
-		return OutputWindowSnapshot{}, errOutputChanged
-	}
 	if observeErr != nil {
 		return OutputWindowSnapshot{}, observeErr
+	}
+	if after.changedFrom(before) {
+		return OutputWindowSnapshot{}, errOutputChanged
 	}
 	if readErr != nil {
 		return snapshot, readErr
@@ -241,11 +241,11 @@ func readOutputSnapshotOnce(fs afero.Fs, path string, maxBytes int, fromHead boo
 	if errors.Is(readErr, errOutputChanged) {
 		return OutputSnapshot{}, errOutputChanged
 	}
-	if after.changedFrom(before) {
-		return OutputSnapshot{}, errOutputChanged
-	}
 	if observeErr != nil {
 		return OutputSnapshot{}, observeErr
+	}
+	if after.changedFrom(before) {
+		return OutputSnapshot{}, errOutputChanged
 	}
 	if readErr != nil {
 		return OutputSnapshot{}, readErr

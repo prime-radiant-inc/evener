@@ -1,8 +1,8 @@
 import type { Thread, ThreadCapabilities, ThreadTurnsListResponse } from "@evener/appwire-client";
 import { WireError } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
-import { act, cleanup, renderHook } from "@testing-library/react";
-import { afterEach, beforeEach, expect, test } from "vitest";
+import { act, renderHook } from "@testing-library/react";
+import { beforeEach, expect, test } from "vitest";
 import { connectionStore } from "../../../stores/connection";
 import { resetThreadsStoreForTests, threadsStore } from "../../../stores/threads";
 import { useTranscript } from "./useTranscript";
@@ -57,10 +57,6 @@ function connectFakeClient(): FakeClient {
 beforeEach(() => {
   connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
   resetThreadsStoreForTests();
-});
-
-afterEach(() => {
-  cleanup();
 });
 
 test("model is undefined before the ref is tracked", () => {

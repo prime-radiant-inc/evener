@@ -1,7 +1,7 @@
 import type { TurnModel } from "@evener/appwire-client";
 import { makeTranscriptDisplayConfig } from "@evener/appwire-client";
-import { act, cleanup, render, screen } from "@testing-library/react";
-import { afterEach, beforeAll, beforeEach, expect, test } from "vitest";
+import { act, render, screen } from "@testing-library/react";
+import { beforeAll, beforeEach, expect, test } from "vitest";
 import { installLocalStorage, MemoryStorage } from "../../../../storageTestUtils";
 import { prefsStore, resetPrefsStoreForTests, usePrefsStore } from "../../../../stores/prefs";
 import { TranscriptRenderProvider } from "../../../../transcriptDisplay/renderContext";
@@ -21,8 +21,6 @@ beforeEach(() => {
   // in its own test, which does not use this.
   prefsStore.getState().setTranscriptStatus("roundTimings", false);
 });
-
-afterEach(cleanup);
 
 function turn(overrides: Partial<TurnModel> = {}): TurnModel {
   return { id: "turn_1", status: "completed", items: [], ...overrides };

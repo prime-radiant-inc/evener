@@ -839,20 +839,24 @@ Two paths, chosen per host (open question: which wins when both are viable):
     deploy reports failure while the host holds a snapshot build from an
     unknown — possibly **newer** — commit. What makes it acceptable is the path
     that does carry a provable identity, and that it is now actually reachable:
-    the atomic push path (§4, "Cross-compile + push") cross-compiles the
-    controller's own tree and stamps the build in-process, it is wired from a
-    production hub by `-deploy-binary` / `-build-source`, and the terminal
-    refusal names it as the remedy in the terms the embedder supplied
-    (`Options.DeployHelp`): a hub names its own `-deploy-binary` /
-    `-build-source` flags, while an embedder with no flags to name keeps the
-    library's sentence ("use the atomic push path or `Options.BuildBinary`").
+    the atomic push path (§4, "Cross-compile + push") installs the controller's
+    own build — by default its own running executable, or a `-deploy-binary`
+    artifact, or a `-build-source` cross-compile that stamps the build in
+    process — so it is reachable from a production hub with no flags at all, and
+    the terminal refusal names it as the remedy in the terms the embedder
+    supplied (`Options.DeployHelp`): a hub names its own state and flags, while
+    an embedder with no flags to name keeps the library's sentence ("use the
+    atomic push path or `Options.BuildBinary`").
     The `snapshot` tag is not an immutability to lean on; it is a movable
     default whose cost the operator is told how to avoid.
   - **dev / dirty** (`Channel == ""`/"dev", or `GitDirty == "true"`): there is
     no publishable identity to pin, so the installer fallback is **refused**
     (`ErrDeploy`, the same rule as §"Dev builds must not auto-match"); the
-    operator must use the atomic push path (§"Push target resolution") or an
-    explicit `Options.BuildBinary`.
+    operator must use the atomic push path (§"Push target resolution") — wired
+    by default to the hub's own executable, whose bytes are the build, and
+    otherwise an explicit `Options.BuildBinary` — while a `-build-source`
+    cross-compile from a dirty controller stays refused, since no checkout can
+    be proven to reproduce that build.
 
   `latest` is never passed. After the installer runs, the same on-host
   `/api/health` probe and identity check below must confirm the *pinned* build —

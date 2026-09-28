@@ -3,6 +3,8 @@
 //   ran go test (2 failed), edited 3 files"), and a step's images ride with it;
 // - the step in progress, and a live thought, are left to the status tray
 //   (ruling 10);
+// - a question still waiting is left to the ask dock, which is the question
+//   while it is open;
 // - a time marker introduces the first turn, a turn that starts after ten
 //   quiet minutes, and a new day.
 import {
@@ -44,7 +46,7 @@ export function sessionRows(rows: readonly TimelineRow[], turns: readonly TurnTi
 	let run: RunRow | null = null;
 	let lastTurn: string | undefined;
 	for (const row of rows) {
-		if (inTray(row)) continue;
+		if (inTray(row) || row.kind === "question") continue;
 		const turnId = rowTurnId(row);
 		if (turnId !== undefined && turnId !== lastTurn) {
 			const marker = timeMarker(byId, turnId, lastTurn, timeZone);

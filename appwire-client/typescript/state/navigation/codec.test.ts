@@ -1,4 +1,4 @@
-import { expect, test } from "vitest";
+import { expect, test, vi } from "vitest";
 // Loaded through Vite's `?raw` import, which resolves against this file: a
 // filesystem read would resolve against whichever working directory the
 // consumer's test runner uses, and package-test-files.mjs refuses one.
@@ -13,7 +13,7 @@ import {
   normalizedGraphFromSnapshot,
   snapshotResource,
 } from "./codec";
-import { applyDelta } from "./merge";
+import { applyDelta, reconcileSnapshot } from "./merge";
 import {
   NavigationBaseInvalidError,
   navigationOwnedContainerKey,
@@ -1472,4 +1472,38 @@ test("codec keeps every field the hub's value records carry", () => {
     ],
   });
   expect(locationDecoded.snapshot.metadata).toEqual(valueRecords.location);
+});
+
+// A snapshot read used to run each session value's full validator five times:
+// once in validateSnapshotForResource's entity loop, twice inside the
+// validateGraphForResource it then called, and twice more when merge's
+// reconcileSnapshot re-validated the graph decode had already validated
+// (#2478). Decode now leaves the entity pass to validateGraphForResource, but
+// reconcileSnapshot still validates the graph it installs because it is an
+// exported entry a caller can hand a resource built outside decode. That
+// leaves two passes. The rfc3339 check runs once per session value and never
+// on the copies decode and merge take, so counting its regex counts the
+// validator itself.
+test("a snapshot read runs each session value's validator twice, not five times", () => {
+  const snapshot = liveSnapshot();
+  const first = snapshot.entities[0];
+  if (!first) throw new Error("missing entity");
+  first.value = { ...(first.value as object), updated_at: "2026-01-02T03:04:05Z" };
+
+  const timestampChecks: number[] = [];
+  const originalExec = RegExp.prototype.exec;
+  const spy = vi.spyOn(RegExp.prototype, "exec").mockImplementation(function (this: RegExp, value: string) {
+    if (this.source.startsWith("^(\\d{4})-")) timestampChecks.push(1);
+    return originalExec.call(this, value);
+  });
+
+  try {
+    const decoded = decodeNavigationResponse(key, undefined, snapshotResponse(key, snapshot));
+    if (decoded.status !== "snapshot") throw new Error(`expected a snapshot, got ${decoded.status}`);
+    reconcileSnapshot(null, snapshotResource(key, decoded));
+  } finally {
+    spy.mockRestore();
+  }
+
+  expect(timestampChecks).toHaveLength(2);
 });

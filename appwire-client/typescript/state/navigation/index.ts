@@ -14,12 +14,103 @@
 // Everything a host owns is a port: the client the store reads through and
 // where it persists rail expansion. Nothing here touches a framework, the
 // DOM or a storage API.
-export * from "./codec";
-export * from "./hostGrouping";
-export * from "./immutable";
-export * from "./invalidation";
-export * from "./merge";
-export * from "./revalidator";
-export * from "./selectors";
-export * from "./store";
-export * from "./types";
+//
+// Every re-export is explicit, never `export *`: a `.mts` script run by tsx
+// loads this barrel as CommonJS (the package is `"type": "commonjs"`), and
+// Node's static named-export analysis cannot see the names through a star
+// re-export, so `import { relativeAge } from .../state/navigation` fails at
+// load time under tsx while every Vite/Metro consumer stays green.
+export type {
+  DecodedNavigationResponse,
+  NavigationGraph,
+  NavigationGraphContainer,
+  NavigationGraphEntity,
+  NavigationPresence,
+  NormalizedResource,
+} from "./codec";
+export {
+  decodeNavigationResponse,
+  materializeNavigationResource,
+  materializeSnapshot,
+  normalizedGraphFromSnapshot,
+  snapshotResource,
+  validateGraphForResource,
+  validateSnapshotForResource,
+} from "./codec";
+export type { HostFacts, HostPlacedRow } from "./hostGrouping";
+export {
+  CONTROLLER_SOURCE_ID,
+  canonicalHostId,
+  orderedHosts,
+  projectHostIds,
+  sessionGroupHostId,
+} from "./hostGrouping";
+export { cloneAndDeepFreezeJSON, equalJSON } from "./immutable";
+export { isSequenceGap, matchesTarget, matchingTargets, requiredRevision } from "./invalidation";
+export { applyDelta, normalizeSnapshot, reconcileSnapshot } from "./merge";
+export type { NavigationInvalidationWaiter } from "./revalidator";
+export {
+  applyNavigationInvalidation,
+  isGenerationMismatch,
+  isRevalidatorDisposed,
+  NavigationRevalidator,
+} from "./revalidator";
+export type { NavigationPinSectionSummary } from "./selectors";
+export {
+  findSessionNode,
+  relativeAge,
+  selectAttentionSummary,
+  selectDisplaySources,
+  selectExpanded,
+  selectGlobalRows,
+  selectLiveRows,
+  selectLocation,
+  selectNeedsYouCount,
+  selectNeedsYouRows,
+  selectNextSectionOffset,
+  selectPinSectionSummaries,
+  selectPinSections,
+  selectProjectPage,
+  selectProjectResource,
+  selectProjectSummaries,
+  selectSectionRemaining,
+  selectSessionOmittedArmedWatches,
+  selectSessionOmittedWatches,
+  selectSessionSummary,
+  selectSources,
+} from "./selectors";
+export type {
+  NavigationClient,
+  NavigationPersistence,
+  NavigationStore,
+  NavigationStoreDeps,
+  NavigationStoreState,
+} from "./store";
+export {
+  createNavigationStore,
+  NAVIGATION_INVALIDATION_TIMEOUT_MS,
+  projectNodeExpansionKey,
+} from "./store";
+export type {
+  NavigationRequest,
+  NavigationResponse,
+  ResourceKey,
+  ResourceListener,
+  ResourceState,
+} from "./types";
+export {
+  canonicalResourceKey,
+  isNavigationUnavailable,
+  isProjectResource,
+  isSettledGone,
+  keyID,
+  NAVIGATION_CATALOG_LIMIT,
+  NAVIGATION_SECTION_LIMIT,
+  NavigationBaseInvalidError,
+  navigationOwnedContainerKey,
+  navigationParamsToResourceKey,
+  navigationRootContainerKey,
+  navigationViewScope,
+  nextNavigationOffset,
+  settledPresence,
+} from "./types";

@@ -326,13 +326,25 @@ func TestSubagentOwnedJobDrainAcceptsStableSteeringWithoutBlockingNotifications(
 
 	fixture.releaseAndWait(t)
 	requests := fixture.adapter.Requests()
-	shellSeen := len(requests) == 4 && requestsContain(requests[2:3], "child shell complete")
-	plainSeen := len(requests) == 4 && requestsContain(requests[2:3], "plain send during owned-job drain")
-	secondSeen := len(requests) == 4 && requestsContain(requests[2:3], "second send during owned-job drain")
-	if !shellSeen || !plainSeen || !secondSeen {
-		t.Fatalf("stable drain/steering requests = count %d shell %t plain %t second %t, want the shell notification and both accepted steers at the next model boundary", len(requests), shellSeen, plainSeen, secondSeen)
+	// Both accepted steers and the owned shell's completion notification must be
+	// consumed. Their exact order and turn count are NOT pinned (#2796): when no
+	// notification is already queued the parked run consumes the steering in its
+	// own continuation turn; when the completion has already been queued it
+	// rides that same acceptance turn. Either way nothing is lost and the
+	// completion is not blocked behind the steering.
+	for _, want := range []string{"child shell complete", "plain send during owned-job drain", "second send during owned-job drain"} {
+		if !requestsContain(requests[2:], want) {
+			t.Fatalf("stable drain/steering requests = count %d, missing %q", len(requests), want)
+		}
 	}
-	fixture.requireHandledResult(t, 4, "fresh notification handled")
+	rec := loadShellRecord(t, fixture.child.sess.jobManager, fixture.shellJobID)
+	if rec.Status != jobstore.StatusCompleted {
+		t.Fatalf("child-owned shell record = status %s reason %q, want completed", rec.Status, rec.Reason)
+	}
+	aggregate := delegateAggregateSnapshot(t, fixture.parent.delegateController, fixture.result.DelegateID)
+	if aggregate.LatestOutcome == nil || aggregate.LatestOutcome.Status != delegatestore.OutcomeCompleted {
+		t.Fatalf("stable delegate aggregate = %#v, want completed outcome", aggregate)
+	}
 	fixture.child.mu.Lock()
 	finalizing = fixture.child.finalizing
 	fixture.child.mu.Unlock()

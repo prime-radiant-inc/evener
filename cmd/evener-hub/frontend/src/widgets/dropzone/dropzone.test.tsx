@@ -1,8 +1,6 @@
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
-import { afterEach, expect, test, vi } from "vitest";
+import { fireEvent, render, screen } from "@testing-library/react";
+import { expect, test, vi } from "vitest";
 import { Dropzone } from "./index";
-
-afterEach(cleanup);
 
 function makeFile(name: string): File {
   return new File(["x"], name, { type: "image/png" });

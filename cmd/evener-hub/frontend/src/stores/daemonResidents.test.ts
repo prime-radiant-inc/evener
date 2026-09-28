@@ -7,8 +7,8 @@
 
 import type { DaemonIdentity, DaemonListResponse, DaemonRetireResponse } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
-import { act, cleanup, renderHook } from "@testing-library/react";
-import { afterEach, beforeEach, describe, expect, test } from "vitest";
+import { act, renderHook } from "@testing-library/react";
+import { beforeEach, describe, expect, test } from "vitest";
 import { connectionStore } from "./connection";
 import {
   _clearDaemonResidentsInflightForTests,
@@ -39,10 +39,6 @@ const IDENTITY_A: DaemonIdentity = {
 beforeEach(() => {
   connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
   resetDaemonResidentsStoreForTests();
-});
-
-afterEach(() => {
-  cleanup();
 });
 
 describe("initial state", () => {
