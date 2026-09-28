@@ -16,8 +16,8 @@ export interface DocumentReference {
 }
 
 /** The tools that write a whole file or edit one in place, by their
- * `file_path` argument. apply_patch names its files inside the patch text, so
- * its writes give no age. */
+ * `file_path` argument. apply_patch, the editing tool OpenAI sessions use,
+ * names its files inside its `patch` text instead (patchedFiles). */
 const WRITING_TOOLS = new Set(["write_file", "edit_file"]);
 
 // A file name ends in a dot and a short extension: "plan.md", "retirement.go".
@@ -93,15 +93,42 @@ export function messageDocuments(markdown: string, cwd: string, written: Readonl
 	return paths;
 }
 
-function filePathArgument(argumentsJSON: string | undefined): string | undefined {
+function argument(argumentsJSON: string | undefined, name: string): string | undefined {
 	if (!argumentsJSON) return undefined;
 	try {
 		const args: unknown = JSON.parse(argumentsJSON);
-		const path = typeof args === "object" && args !== null ? (args as Record<string, unknown>).file_path : undefined;
-		return typeof path === "string" ? path : undefined;
+		const value = typeof args === "object" && args !== null ? (args as Record<string, unknown>)[name] : undefined;
+		return typeof value === "string" ? value : undefined;
 	} catch {
 		return undefined;
 	}
+}
+
+// The files a v4a patch leaves behind (agent/internal/tool/apply_patch.go):
+// each file it adds or updates, under its new name when "*** Move to:"
+// follows. A deleted file is gone, so it isn't one.
+function patchedFiles(patch: string): string[] {
+	const files: string[] = [];
+	const lines = patch.split("\n");
+	for (const [index, line] of lines.entries()) {
+		const added = /^\*\*\* Add File: (.+)$/.exec(line);
+		const updated = /^\*\*\* Update File: (.+)$/.exec(line);
+		const moved = updated ? /^\*\*\* Move to: (.+)$/.exec(lines[index + 1] ?? "") : null;
+		const file = (moved ?? added ?? updated)?.[1]?.trim();
+		if (file) files.push(file);
+	}
+	return files;
+}
+
+/** The files one successful tool call wrote, inside the session's folder. */
+function writtenFiles(item: TurnModel["items"][number], cwd: string): string[] {
+	if (!item.toolName || item.error !== undefined) return [];
+	let named: string[] = [];
+	if (WRITING_TOOLS.has(item.toolName)) {
+		const file = argument(item.argumentsJSON, "file_path");
+		named = file === undefined ? [] : [file];
+	} else if (item.toolName === "apply_patch") named = patchedFiles(argument(item.argumentsJSON, "patch") ?? "");
+	return named.flatMap((file) => documentPath(file, cwd) ?? []);
 }
 
 function later(a: string | undefined, b: string | undefined): string | undefined {
@@ -111,18 +138,16 @@ function later(a: string | undefined, b: string | undefined): string | undefined
 }
 
 /** When the session last wrote each file inside its folder: the newest
- * successful write_file or edit_file, by the call's completion time (or its
- * turn's, for a call that carries none). */
+ * successful write_file, edit_file or apply_patch, by the call's completion
+ * time (or its turn's, for a call that carries none). A write with no time
+ * that parses gives no age. */
 export function fileWrites(turns: readonly TurnModel[], cwd: string): Map<string, string> {
 	const writes = new Map<string, string>();
 	for (const turn of turns)
 		for (const item of turn.items) {
-			if (!item.toolName || !WRITING_TOOLS.has(item.toolName) || item.error !== undefined) continue;
-			const file = filePathArgument(item.argumentsJSON);
-			const path = file === undefined ? undefined : documentPath(file, cwd);
 			const at = item.completedAt ?? turn.completedAt;
-			if (path === undefined || at === undefined || !Number.isFinite(Date.parse(at))) continue;
-			writes.set(path, later(writes.get(path), at) ?? at);
+			if (at === undefined || !Number.isFinite(Date.parse(at))) continue;
+			for (const path of writtenFiles(item, cwd)) writes.set(path, later(writes.get(path), at) ?? at);
 		}
 	return writes;
 }
@@ -138,11 +163,7 @@ export function documentReferences(turns: readonly TurnModel[], cwd: string): Do
 	for (const turn of turns)
 		for (const item of turn.items) {
 			if (item.type === "agentMessage") for (const path of messageDocuments(item.text, cwd, writes)) add(path);
-			else if (item.toolName && WRITING_TOOLS.has(item.toolName) && item.error === undefined) {
-				const file = filePathArgument(item.argumentsJSON);
-				const path = file === undefined ? undefined : documentPath(file, cwd);
-				if (path !== undefined && writes.has(path)) add(path);
-			}
+			else for (const path of writtenFiles(item, cwd)) add(path);
 		}
 	return order.map((path) => {
 		const updatedAt = writes.get(path);

@@ -98,7 +98,63 @@ describe("when the session wrote each file", () => {
 	});
 });
 
+describe("files changed through apply_patch", () => {
+	const patched = (id: string, patch: string, completedAt?: string, error?: string): ItemModel => ({
+		id,
+		turnId: "t",
+		type: "commandExecution",
+		text: "",
+		toolName: "apply_patch",
+		argumentsJSON: JSON.stringify({ patch }),
+		...(completedAt ? { completedAt } : {}),
+		...(error ? { error } : {}),
+	});
+	const PATCH = [
+		"*** Begin Patch",
+		"*** Add File: docs/new.md",
+		"+# New",
+		"*** Update File: docs/plan.md",
+		"@@",
+		"-old",
+		"+new",
+		"*** Update File: docs/draft.md",
+		"*** Move to: docs/final.md",
+		"@@",
+		"-a",
+		"+b",
+		"*** Delete File: docs/gone.md",
+		"*** Update File: /etc/hosts",
+		"@@",
+		"-x",
+		"+y",
+		"*** End Patch",
+	].join("\n");
+
+	it("counts each file a patch adds or updates inside the folder, under its new name when it moves", () => {
+		const at = "2026-09-26T11:50:00.000Z";
+		expect(fileWrites([turn("t1", [patched("p", PATCH, at)])], cwd)).toEqual(
+			new Map([
+				["docs/new.md", at],
+				["docs/plan.md", at],
+				["docs/final.md", at],
+			]),
+		);
+	});
+
+	it("counts nothing from a patch that failed", () => {
+		expect(fileWrites([turn("t1", [patched("p", PATCH, "2026-09-26T11:50:00.000Z", "hunk failed")])], cwd)).toEqual(
+			new Map(),
+		);
+	});
+});
+
 describe("every document the session named or wrote (spec 10.1)", () => {
+	it("lists a file the session wrote with no time it can read, without an age", () => {
+		expect(documentReferences([turn("t1", [wrote("w", "write_file", "docs/undated.md")])], cwd)).toEqual([
+			{ path: "docs/undated.md" },
+		]);
+	});
+
 	it("lists each once, in the order it first appeared, with its newest write", () => {
 		const turns = [
 			turn("turn-1", [
