@@ -136,6 +136,29 @@ describe("saving your note (spec 8.8; Review Focus 5)", () => {
 		expect(notes.getSnapshot().phase).toBe("editing");
 	});
 
+	it("sends no newer text typed during a save once the session stops taking notes", async () => {
+		const hub = harness();
+		const notes = hub.make();
+		notes.edit("first");
+		const saving = notes.flush();
+		notes.edit("second");
+		hub.setWritable(false);
+		await saving;
+		expect(hub.requests.map((request) => request.params.note)).toEqual(["first"]);
+		expect(notes.getSnapshot()).toMatchObject({ text: "second", phase: "editing" });
+	});
+
+	it("stops promising a save when the hub's note catches up to the scheduled text", async () => {
+		const hub = harness();
+		const notes = hub.make();
+		notes.edit("same");
+		notes.blur();
+		hub.setSaved("same");
+		expect(await notes.flush()).toEqual({ saved: false, woke: false });
+		expect(notes.getSnapshot().phase).toBe("clean");
+		expect([...hub.storage.values.keys()].some((key) => key.includes("note-draft"))).toBe(false);
+	});
+
 	it("goes back to clean without saving again when you edit back to the hub's note during a save", async () => {
 		const hub = harness();
 		hub.setSaved("A");

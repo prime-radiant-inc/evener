@@ -185,12 +185,20 @@ export class NotesController {
 	 * app and opening the session connected all call this. */
 	flush(): Promise<SaveOutcome> {
 		this.cancelTimer();
-		if (!this.unsaved()) return Promise.resolve({ saved: false, woke: false });
+		const nothing: SaveOutcome = { saved: false, woke: false };
+		if (!this.unsaved()) {
+			// The hub caught up with the scheduled text: nothing to save.
+			if (this.state.phase === "scheduled") {
+				this.storeDraft(undefined);
+				this.publish({ ...this.state, phase: "clean" });
+			}
+			return Promise.resolve(nothing);
+		}
 		if (!this.options.writable()) {
 			// The note stays on this phone; with the timer gone, no save is
 			// scheduled any more, so the status line must stop promising one.
 			if (this.state.phase === "scheduled") this.publish({ ...this.state, phase: "editing" });
-			return Promise.resolve({ saved: false, woke: false });
+			return Promise.resolve(nothing);
 		}
 		this.saving ??= this.saveUntilClean().finally(() => {
 			this.saving = null;
@@ -208,7 +216,9 @@ export class NotesController {
 		// by the phase it publishes (see below); unsaved() can't: savedNote()
 		// only catches up once the hub's own notes/updated notification
 		// arrives, which would make this loop forever on a settled save.
-		while (outcome.saved && this.state.phase === "editing") outcome = await this.save();
+		// Each chained save checks again that the session still takes notes;
+		// otherwise the newer text stays on this phone, kept as a draft.
+		while (outcome.saved && this.state.phase === "editing" && this.options.writable()) outcome = await this.save();
 		return outcome;
 	}
 
