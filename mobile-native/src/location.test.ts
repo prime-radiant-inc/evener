@@ -495,6 +495,20 @@ describe("last mobile location", () => {
 		]);
 	});
 
+	it("reopens a coordinator's Subagents list as its session after a relaunch (ruling 21)", () => {
+		const disk = storage();
+		const repository = new LocationRepository(disk);
+		const params = { hubId: "studio", ref: "local:coord", threadId: "coord", title: "Coordinator" };
+		const location = locationForRoute({ name: "Subagents", params }, "studio");
+		expect(location).toEqual({ hubId: "studio", conversation: { ref: "local:coord", title: "Coordinator" } });
+		repository.save(location);
+		const saved = new LocationRepository(disk).read(["studio"]);
+		expect(restoredStack(saved).routes.slice(-2)).toEqual([
+			{ name: "Sessions" },
+			{ name: "Conversation", params: { hubId: "studio", ref: "local:coord", title: "Coordinator" } },
+		]);
+	});
+
 	it("refuses a document with no session, an empty path, or mixed with another destination", () => {
 		const disk = storage();
 		const repository = new LocationRepository(disk);

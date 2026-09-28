@@ -50,6 +50,7 @@ import { CommentsSheet } from "./src/reader/CommentsSheet";
 import { FilesSheet } from "./src/reader/FilesSheet";
 import { OutlineSheet } from "./src/reader/OutlineSheet";
 import { ReviewSheet } from "./src/reader/ReviewSheet";
+import { SubagentsScreen } from "./src/subagents/SubagentsScreen";
 import { ReaderScreen } from "./src/reader/ReaderScreen";
 import { TasksSheet } from "./src/TasksSheet";
 import { TranscriptPreferencesScreen } from "./src/TranscriptPreferencesScreen";
@@ -214,6 +215,11 @@ function Navigation() {
 					<Stack.Screen
 						name="Reader"
 						component={ReaderScreen}
+						options={{ title: "" }}
+					/>
+					<Stack.Screen
+						name="Subagents"
+						component={SubagentsScreen}
 						options={{ title: "" }}
 					/>
 					<Stack.Group
