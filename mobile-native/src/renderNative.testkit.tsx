@@ -215,7 +215,10 @@ export function gestureHandlerModuleMock() {
  * end by hand. */
 export interface PanGestureMock {
 	config: Record<string, unknown>;
-	handlers: { onEnd?(event: { translationX: number; velocityX: number }, success: boolean): void };
+	handlers: {
+		onBegin?(): void;
+		onEnd?(event: { translationX: number; velocityX: number }, success: boolean): void;
+	};
 }
 
 /** react-native-gesture-handler's GestureDetector and Gesture.Pan for
@@ -232,6 +235,12 @@ export function gestureDetectorModuleMock() {
 			activeOffsetX: setting("activeOffsetX"),
 			failOffsetY: setting("failOffsetY"),
 			runOnJS: setting("runOnJS"),
+			hitSlop: setting("hitSlop"),
+			enabled: setting("enabled"),
+			onBegin: (handler: PanGestureMock["handlers"]["onBegin"]) => {
+				gesture.handlers.onBegin = handler;
+				return builder;
+			},
 			onEnd: (handler: PanGestureMock["handlers"]["onEnd"]) => {
 				gesture.handlers.onEnd = handler;
 				return builder;
@@ -245,6 +254,19 @@ export function gestureDetectorModuleMock() {
 			createElement("GestureDetector", props, props.children),
 		Gesture: { Pan: pan },
 	};
+}
+
+/** The finger letting go of a SwipeRow after dragging it translationX
+ * points (positive to the right) at velocityX, as the row's release tracker
+ * sees it: the tracker is the pan the row hands its swipeable to recognize
+ * alongside. */
+export function releaseSwipeRow(swipeable: ReactTestInstance, translationX: number, velocityX = 0) {
+	const tracker = swipeable.props.simultaneousWithExternalGesture as PanGestureMock | undefined;
+	if (!tracker) throw new Error("the swipeable has no release tracker");
+	act(() => {
+		tracker.handlers.onBegin?.();
+		tracker.handlers.onEnd?.({ translationX, velocityX }, true);
+	});
 }
 
 /** react-native-reanimated for vitest: Animated.ScrollView is a host

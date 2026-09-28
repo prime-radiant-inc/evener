@@ -2,6 +2,12 @@
 // (Archive on the Board), and a swipe left reveals its trailing actions
 // (Stop, Pin, More). A row with one destructive action instead does it on a
 // full swipe left (spec 8.5, 8.8: cancel a queued message, remove a link).
+// A full swipe acts only when the finger has dragged the row past half its
+// width at release, as on iOS. Velocity doesn't count: ReanimatedSwipeable
+// opens a row whose drag plus a share of its velocity passes the threshold,
+// so a short fast flick opens it, and the row closes without acting. The
+// release is read from a pan of the row's own that recognizes alongside the
+// swipeable's, since the swipeable never reports where the finger let go.
 // It takes any children and actions, so the Session's ghosts and links
 // reuse it. A swipe that begins in the screen's left 24 points never
 // acts, by two guards. hitSlop takes the band out of the row's pan gesture
@@ -12,7 +18,7 @@
 // edge, so a row that doesn't start at the screen's edge still has the
 // start-x guard, which reads window points.
 import { type SFSymbol, SymbolView } from "expo-symbols";
-import { type ReactNode, useRef } from "react";
+import { type ReactNode, useMemo, useRef } from "react";
 import {
 	type AccessibilityActionEvent,
 	Pressable,
@@ -20,6 +26,7 @@ import {
 	useWindowDimensions,
 	View,
 } from "react-native";
+import { Gesture, GestureDetector } from "react-native-gesture-handler";
 import ReanimatedSwipeable, {
 	SwipeDirection,
 	type SwipeableMethods,
@@ -40,7 +47,8 @@ export interface SwipeAction {
 export type DestructiveSwipeAction = Pick<SwipeAction, "key" | "label" | "run">;
 
 export type SwipeRowProps = {
-	/** Done by a full swipe right: past half the row. */
+	/** Done by a full swipe right: dragged past half the row at release.
+	 * A fast flick short of half never does it. */
 	leading?: SwipeAction;
 	/** True from a swipe's first drag until the row is closed again. */
 	onActiveChange?(active: boolean): void;
@@ -60,7 +68,8 @@ export type SwipeRowProps = {
 	| {
 			trailing?: never;
 			/** Revealed as the row drags left, and done by a full swipe left:
-			 * past half the row. */
+			 * dragged past half the row at release. A fast flick short of half
+			 * never does it. */
 			destructive: DestructiveSwipeAction;
 	  }
 );
@@ -107,6 +116,27 @@ export function SwipeRow({
 	const swipeable = useRef<SwipeableMethods>(null);
 	// Where the touch that may become a swipe began, in window points.
 	const startX = useRef(Number.POSITIVE_INFINITY);
+	// How far the finger dragged the row when it let go, in points; positive
+	// to the right.
+	const releaseX = useRef(0);
+	const releaseTracker = useMemo(
+		() =>
+			Gesture.Pan()
+				// Plain JS callbacks: it only records a number.
+				.runOnJS(true)
+				// The swipeable's own pan activation and edge band, so it never
+				// takes a vertical scroll from the list or a drag from the
+				// system's back gesture.
+				.activeOffsetX([-10, 10])
+				.hitSlop({ left: -EDGE_ZONE_PT })
+				.onBegin(() => {
+					releaseX.current = 0;
+				})
+				.onEnd((event) => {
+					releaseX.current = event.translationX;
+				}),
+		[],
+	);
 	const close = () => swipeable.current?.close();
 	const button = (action: SwipeAction) => (
 		<Pressable
@@ -134,44 +164,54 @@ export function SwipeRow({
 		</View>
 	);
 	return (
-		<ReanimatedSwipeable
-			ref={swipeable}
-			enabled={enabled}
-			// Takes the left edge band out of the row's pan, so the system's back
-			// gesture keeps drags that begin there (spec 7.3).
-			hitSlop={{ left: -EDGE_ZONE_PT }}
-			leftThreshold={width / 2}
-			rightThreshold={destructive ? width / 2 : undefined}
-			renderLeftActions={leading ? panel([leading]) : undefined}
-			renderRightActions={
-				destructive ? destructivePanel(destructive) : trailing.length > 0 ? panel(trailing) : undefined
-			}
-			onSwipeableOpenStartDrag={() => onActiveChange?.(true)}
-			onSwipeableWillOpen={() => {
-				if (startsInEdgeZone(startX.current)) close();
-			}}
-			onSwipeableOpen={(direction) => {
-				if (startsInEdgeZone(startX.current)) {
-					close();
-					return;
-				}
-				const action = direction === LEADING_OPENED ? leading : direction === TRAILING_OPENED ? destructive : undefined;
-				if (action) {
-					close();
-					action.run();
-				}
-			}}
-			onSwipeableClose={() => onActiveChange?.(false)}
-		>
-			<View
-				testID="swipe-row-content"
-				style={backdrop ? { backgroundColor: backdrop } : undefined}
-				onTouchStart={(event) => {
-					startX.current = event.nativeEvent.pageX;
-				}}
-			>
-				{children}
+		<GestureDetector gesture={releaseTracker}>
+			{/* The detector attaches to a native view of its own, apart from the
+			 * one the swipeable's detector holds. */}
+			<View collapsable={false}>
+				<ReanimatedSwipeable
+					ref={swipeable}
+					enabled={enabled}
+					simultaneousWithExternalGesture={releaseTracker}
+					// Takes the left edge band out of the row's pan, so the system's back
+					// gesture keeps drags that begin there (spec 7.3).
+					hitSlop={{ left: -EDGE_ZONE_PT }}
+					leftThreshold={width / 2}
+					rightThreshold={destructive ? width / 2 : undefined}
+					renderLeftActions={leading ? panel([leading]) : undefined}
+					renderRightActions={
+						destructive ? destructivePanel(destructive) : trailing.length > 0 ? panel(trailing) : undefined
+					}
+					onSwipeableOpenStartDrag={() => onActiveChange?.(true)}
+					onSwipeableWillOpen={() => {
+						if (startsInEdgeZone(startX.current)) close();
+					}}
+					onSwipeableOpen={(direction) => {
+						if (startsInEdgeZone(startX.current)) {
+							close();
+							return;
+						}
+						const action = direction === LEADING_OPENED ? leading : direction === TRAILING_OPENED ? destructive : undefined;
+						if (!action) return;
+						close();
+						// The swipeable reports the open only once its spring settles, so the
+						// tracker has recorded this swipe's release by now. A flick that
+						// opened the panel short of half closes it without acting.
+						const dragged = direction === LEADING_OPENED ? releaseX.current : -releaseX.current;
+						if (dragged > width / 2) action.run();
+					}}
+					onSwipeableClose={() => onActiveChange?.(false)}
+				>
+					<View
+						testID="swipe-row-content"
+						style={backdrop ? { backgroundColor: backdrop } : undefined}
+						onTouchStart={(event) => {
+							startX.current = event.nativeEvent.pageX;
+						}}
+					>
+						{children}
+					</View>
+				</ReanimatedSwipeable>
 			</View>
-		</ReanimatedSwipeable>
+		</GestureDetector>
 	);
 }

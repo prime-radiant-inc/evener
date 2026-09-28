@@ -6,7 +6,7 @@ import type { ReactTestRenderer } from "react-test-renderer";
 import { act } from "react-test-renderer";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { paletteFor } from "../design/tokens";
-import { pressable, render, renderedText, swipeableCalls } from "../renderNative.testkit";
+import { pressable, releaseSwipeRow, render, renderedText, swipeableCalls } from "../renderNative.testkit";
 import { GhostBubble } from "./GhostBubble";
 import type { Ghost, GhostAction } from "./ghosts";
 import { QueuedMessages } from "./QueuedMessages";
@@ -19,6 +19,9 @@ vi.mock("react-native", async () => ({
 vi.mock("expo-symbols", () => ({ SymbolView: "SymbolView" }));
 vi.mock("react-native-gesture-handler/ReanimatedSwipeable", async () =>
 	(await import("../renderNative.testkit")).gestureHandlerModuleMock(),
+);
+vi.mock("react-native-gesture-handler", async () =>
+	(await import("../renderNative.testkit")).gestureDetectorModuleMock(),
 );
 
 beforeEach(() => {
@@ -316,6 +319,7 @@ describe("swiping a ghost left (spec 8.5)", () => {
 		const [swipeable] = swipeables(tree);
 		if (!swipeable) throw new Error("no swipeable ghost");
 		act(() => tree.root.findByProps({ testID: "swipe-row-content" }).props.onTouchStart({ nativeEvent: { pageX } }));
+		releaseSwipeRow(swipeable, -250);
 		act(() => swipeable.props.onSwipeableOpen("left"));
 	}
 

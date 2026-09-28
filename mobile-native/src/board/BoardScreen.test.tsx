@@ -24,7 +24,14 @@ import type { ReactTestInstance, ReactTestRenderer } from "react-test-renderer";
 import { act, create } from "react-test-renderer";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type { ConversationClientLike } from "../../../mobile/src/services/conversation";
-import { alertRequests, render, renderedText, screenConnection, swipeableCalls } from "../renderNative.testkit";
+import {
+	alertRequests,
+	releaseSwipeRow,
+	render,
+	renderedText,
+	screenConnection,
+	swipeableCalls,
+} from "../renderNative.testkit";
 import { sheetKey } from "../sheet/sheetHosts";
 import { ACTIVITY_POLL_MS, STALE_AFTER_MS } from "./activityPoll";
 import { ROW_MOVE } from "./boardMotion";
@@ -79,6 +86,9 @@ vi.mock("react-native", async () => {
 vi.mock("react-native-reanimated", async () => (await import("../renderNative.testkit")).reanimatedModuleMock());
 vi.mock("react-native-gesture-handler/ReanimatedSwipeable", async () =>
 	(await import("../renderNative.testkit")).gestureHandlerModuleMock(),
+);
+vi.mock("react-native-gesture-handler", async () =>
+	(await import("../renderNative.testkit")).gestureDetectorModuleMock(),
 );
 // Stop goes through the process's real mutation runtime, over an in-memory
 // SQLite double (one per database name, as the device keeps one file). The
@@ -3325,9 +3335,11 @@ function pressRevealed(swipeable: ReactTestInstance, side: "left" | "right", lab
 	if (!button) throw new Error(`no ${label} on the ${side}`);
 	act(() => button.props.onPress());
 }
-/** A full swipe right, begun well clear of the screen's left edge. */
+/** A full swipe right, begun well clear of the screen's left edge and let
+ * go past half the row. */
 function swipeRight(swipeable: ReactTestInstance) {
 	act(() => swipeable.findByProps({ testID: "swipe-row-content" }).props.onTouchStart({ nativeEvent: { pageX: 200 } }));
+	releaseSwipeRow(swipeable, 250);
 	act(() => swipeable.props.onSwipeableOpen("right"));
 }
 async function mountSwipeFleet(fake: ReturnType<typeof hub>, nav = navigation()) {
