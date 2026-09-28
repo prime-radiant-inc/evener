@@ -236,7 +236,6 @@ export function gestureDetectorModuleMock() {
 			failOffsetY: setting("failOffsetY"),
 			runOnJS: setting("runOnJS"),
 			hitSlop: setting("hitSlop"),
-			enabled: setting("enabled"),
 			onBegin: (handler: PanGestureMock["handlers"]["onBegin"]) => {
 				gesture.handlers.onBegin = handler;
 				return builder;
