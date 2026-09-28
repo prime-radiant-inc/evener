@@ -115,3 +115,23 @@ test("holdNextWriteTransaction holds only the first readwrite transaction over e
   expect(target.isDone()).toBe(true);
   await later.done;
 });
+
+// The composer's commit tests hold the enqueue write, whose scope is the four
+// mutation stores. The sites these replaced matched "a readwrite transaction
+// whose scope contains sequences"; naming the enqueue scope exactly must hold
+// that write and not a narrower one that merely shares the sequence store (a
+// cancel or release). This pins the exact scope the converted sites depend on.
+test("holdNextWriteTransaction holds the exact scope, not an earlier narrower write sharing a store", async () => {
+  const database = await openStore();
+  const held = holdNextWriteTransaction(["rows", "other"]);
+
+  const narrower = writeRow(database, "rows", "narrower");
+  const target = writeRow(database, ["rows", "other"], "target");
+
+  await held.reached;
+  expect(narrower.isDone()).toBe(true);
+  expect(target.isDone()).toBe(false);
+
+  held.release();
+  expect(target.isDone()).toBe(true);
+});
