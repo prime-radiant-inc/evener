@@ -3422,39 +3422,33 @@ func (m *hubHostManager) resumeCompensation(record hostops.Compensation) {
 			m.resumeFromRows(record)
 			return
 		}
-		// The intent is cleared. Two windows land here, and they converge
-		// differently:
+		// The intent is cleared. Two windows land here:
 		//
 		//   - the commit path passed its commit point: the purge stands and the
-		//     file is the committed bytes — nothing is restored, nothing owed.
-		//   - a previous boot's hubtoml arm restored the file and then failed or
-		//     crashed before advancing to the rows arm: the purge landed, so the
+		//     file carries the committed state — nothing is restored, nothing
+		//     owed;
+		//   - a previous boot's hubtoml arm restored the file and then failed (or
+		//     crashed) before advancing to the rows arm: the purge landed, so the
 		//     preimage rows are missing and the restored generation revalidates
 		//     them — the re-insertion is still owed. Clearing here would drop the
 		//     record and its stash with the rows missing, diverged forever.
 		//
-		// The stash bytes tell the two apart: the file equals the stash only
-		// after that restore landed.
-		restoredAlready, stashKnown := m.stashMatchesFile(record.Stash)
-		switch {
-		case stashKnown && restoredAlready:
-			// The restore already ran: finish the compensation from the rows arm
-			// instead of clearing over the owed rows.
-			if !m.advanceCompensationTo(record, hostops.CompensationRows, "advance-rows") {
-				return
-			}
-			m.resumeFromRows(record)
-		case stashKnown:
-			// The commit stands: the purge did land and the file is not the
-			// pre-mutation bytes.
-			m.clearCompensation(record, "the intent is already cleared")
-		default:
-			// The stash is unreadable or gone: the two windows cannot be told
-			// apart, and clearing could drop rows the restored generation still
-			// revalidates. Leave the record open; the next boot retries.
-			m.logf("boot compensation for %q: the intent is cleared and the stash %s cannot be read; leaving the record open rather than clearing over possibly-owed rows",
-				record.Host, record.Stash)
+		// No whole-file comparison can tell these apart: any later write to
+		// hub.toml — another host's mutation, another boot's reconcile — breaks
+		// the restored file's byte equality with the stash, and the owed-rows
+		// window would then read as "the commit stands". So the arm decides
+		// per name instead: it advances to the rows arm and resumes, where the
+		// rows pass re-inserts exactly the preimage rows the CURRENT file
+		// revalidates (the name live, at the preimage generation and
+		// incarnation) and re-applies the current file's runtime. For the
+		// commit-passed removal the name is not live (or its live pair differs),
+		// so the rows pass re-inserts nothing, the runtime pass converges the
+		// store model to the current file, and the record clears — the same
+		// outcome, decided per name rather than per file.
+		if !m.advanceCompensationTo(record, hostops.CompensationRows, "advance-rows") {
+			return
 		}
+		m.resumeFromRows(record)
 	case hostops.CompensationRows:
 		m.resumeFromRows(record)
 	case hostops.CompensationRuntime:
@@ -3531,25 +3525,6 @@ func (m *hubHostManager) compensationStepAllowed(host, step string) bool {
 		return false
 	}
 	return true
-}
-
-// stashMatchesFile reports whether the selected hub.toml currently holds the
-// stash's bytes, and whether the stash was readable at all. It is how the
-// hubtoml arm tells "a previous boot already restored this record" from "the
-// commit path passed its commit point".
-func (m *hubHostManager) stashMatchesFile(stash string) (matches bool, known bool) {
-	if !m.ownsStashPath(stash) {
-		return false, false
-	}
-	want, err := os.ReadFile(stash)
-	if err != nil {
-		return false, false
-	}
-	got, err := configReadFile(strings.TrimSpace(m.cfg.configPath))
-	if err != nil {
-		return false, false
-	}
-	return bytes.Equal(want, got), true
 }
 
 // clearCompensation drops one record and its stash: the compensation

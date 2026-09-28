@@ -374,8 +374,14 @@ func TestBootCompensationResumesTheOwedRowsAfterAFailedAdvance(t *testing.T) {
 	if _, ok := m.cfg.ops.OutstandingToken("keep"); ok {
 		t.Fatal("the purged row came back before the rows arm")
 	}
-	// The next boot: the file is the restored bytes and the intent is gone; the
-	// hubtoml arm must finish the owed rows re-insertion, not clear.
+	// The hub keeps serving: a sibling host's mutation rewrites hub.toml through
+	// the real write path, so the restored file no longer equals the stash and
+	// no whole-file comparison can tell this window from "the commit stands".
+	if _, err := m.Add(context.Background(), appwire.HostAddParams{Entry: appwire.HostEntry{Name: "sibling", Address: "sibling.example"}}); err != nil {
+		t.Fatalf("Add(sibling): %v", err)
+	}
+	// The next boot: the file carries the sibling's write and the intent is
+	// gone; the hubtoml arm must still finish the owed rows re-insertion.
 	m.testOnlyFailCompensationStep = nil
 	m.reconcileCompensations()
 	if _, open := m.cfg.ops.Compensation("keep"); open {
