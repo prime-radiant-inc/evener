@@ -30,7 +30,11 @@ export class ConnectionClock {
 		this.last = next;
 		const liveInFront = next.live && next.foreground;
 		let { downSince, lastLiveAt } = this.times;
-		if (last === null || last.hubId !== next.hubId) {
+		if (next.hubId === null) {
+			// No hub chosen: there is no connection to be down.
+			downSince = null;
+			lastLiveAt = null;
+		} else if (last === null || last.hubId !== next.hubId) {
 			// A new hub, or the first observation: nothing of it was live yet.
 			lastLiveAt = null;
 			downSince = next.live || !next.foreground ? null : now;

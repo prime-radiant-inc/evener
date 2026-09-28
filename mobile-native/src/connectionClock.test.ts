@@ -38,6 +38,14 @@ describe("the connection clock (spec 14)", () => {
 		expect(clock.observe(hub(false, true), at(3600))).toEqual({ downSince: at(3600), lastLiveAt: at(5) });
 	});
 
+	it("is never down with no hub chosen, and starts fresh once one is", () => {
+		const clock = new ConnectionClock();
+		clock.observe(hub(true), at(0));
+		expect(clock.observe(hub(false, true, null), at(10))).toEqual({ downSince: null, lastLiveAt: null });
+		expect(clock.observe(hub(false, true, null), at(50))).toEqual({ downSince: null, lastLiveAt: null });
+		expect(clock.observe(hub(false, true, "hub-b"), at(60))).toEqual({ downSince: at(60), lastLiveAt: null });
+	});
+
 	it("starts over for a different hub", () => {
 		const clock = new ConnectionClock();
 		clock.observe(hub(true), at(0));

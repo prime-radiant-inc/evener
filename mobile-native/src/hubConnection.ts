@@ -204,7 +204,9 @@ export function useHubConnection(
 		if (state !== "closed" || !activeId || !activeOrigin || !foreground) return;
 		const timer = setTimeout(
 			() => {
-				failures.current += 1;
+				// Only transport failures back off; a fatal close keeps its own
+				// once-a-minute cadence and never lengthens the next backoff.
+				if (!fatal) failures.current += 1;
 				setRetry((value) => value + 1);
 			},
 			fatal ? FATAL_RETRY_MS : reconnectDelay(failures.current),

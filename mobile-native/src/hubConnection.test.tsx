@@ -448,6 +448,24 @@ it("tries a close no retry can fix again once a minute, saying Update needed thr
 	expect(hook.result.current).toMatchObject({ state: "ready", fatal: false });
 });
 
+it("keeps fatal retries out of the transport backoff", async () => {
+	vi.useFakeTimers();
+	const first = new FakeHubClient();
+	harness.client = first;
+	mount();
+	await act(async () => {});
+	let current = first;
+	for (let tries = 0; tries < 3; tries++) {
+		current = await failInto(current, "protocol");
+		await elapse(FATAL_RETRY_MS);
+	}
+	// The hub now answers, but the network drops: that is a first transport
+	// failure, retried at once.
+	const next = await failInto(current);
+	await elapse(0);
+	expect(next.state).toBe("connecting");
+});
+
 it("leaves a backgrounded app alone and tries at once on returning", async () => {
 	vi.useFakeTimers();
 	const first = new FakeHubClient();
