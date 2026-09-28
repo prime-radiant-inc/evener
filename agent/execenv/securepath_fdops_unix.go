@@ -4,6 +4,7 @@ package execenv
 
 import (
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -344,7 +345,9 @@ func (s *sandboxFS) writeFile(tool, abs string, data []byte, perm os.FileMode) e
 // remove deletes abs if it is beneath a writable root. A path outside the
 // writable set (or under a masked/protected surface) is a typed denial; an
 // in-root unlink that fails because the target is absent is not an error
-// (matching apply_patch's best-effort delete).
+// (matching apply_patch's best-effort delete). Every other unlink failure —
+// permission, a read-only filesystem, a nonempty directory — is returned, so a
+// delete that did not happen is never reported as success (issue #2376).
 func (s *sandboxFS) remove(tool, abs string) error {
 	parentFd, leaf, err := s.openWriteParent(tool, abs, false)
 	if err != nil {
@@ -354,16 +357,25 @@ func (s *sandboxFS) remove(tool, abs string) error {
 		// than a failed apply_patch. Genuine policy denials (outside a writable root,
 		// masked, git-protected, a refused symlink component) still propagate.
 		var denied *sandbox.DeniedError
-		if !errors.As(err, &denied) && (errors.Is(err, unix.ENOENT) || errors.Is(err, unix.ENOTDIR)) {
+		if !errors.As(err, &denied) && isAbsentRemove(err) {
 			return nil
 		}
 		return err
 	}
 	defer func() { _ = unix.Close(parentFd) }()
 	if uerr := unix.Unlinkat(parentFd, leaf, 0); uerr != nil {
-		if errors.Is(uerr, unix.EISDIR) {
-			_ = unix.Unlinkat(parentFd, leaf, unix.AT_REMOVEDIR)
+		// The target vanished between opening its parent and unlinking it: already
+		// gone, so a best-effort delete stays a no-op success.
+		if isAbsentRemove(uerr) {
+			return nil
 		}
+		if errors.Is(uerr, unix.EISDIR) {
+			if derr := unix.Unlinkat(parentFd, leaf, unix.AT_REMOVEDIR); derr != nil && !errors.Is(derr, unix.ENOENT) {
+				return fmt.Errorf("remove %s: %w", abs, derr)
+			}
+			return nil
+		}
+		return fmt.Errorf("remove %s: %w", abs, uerr)
 	}
 	return nil
 }
