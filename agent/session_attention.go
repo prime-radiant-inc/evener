@@ -1015,6 +1015,9 @@ func (s *Session) scheduleRootAttentionRetryLocked() {
 			return
 		}
 		defer release()
+		if observe := s.cfg.testOnly.rootAttentionRetryCallback; observe != nil {
+			observe()
+		}
 		s.attentionMu.Lock()
 		if s.rootAttentionRetry.generation != generation {
 			s.attentionMu.Unlock()
