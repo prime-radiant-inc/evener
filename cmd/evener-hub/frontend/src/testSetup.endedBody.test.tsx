@@ -117,6 +117,21 @@ function Late({ updated }: { updated: Deferred<void> }) {
   return <p>{text}</p>;
 }
 
+// Renders Late and says whether React warned that its update was not wrapped
+// in act, which React does only while the act environment is on. The spy goes
+// back even when this throws, so it cannot hide a later test's console output.
+async function hearsAboutAnUpdateOutsideAct(): Promise<boolean> {
+  const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+  try {
+    const updated = deferred<void>();
+    render(<Late updated={updated} />);
+    await updated.promise;
+    return errors.mock.calls.some(([message]) => String(message).includes("not wrapped in act"));
+  } finally {
+    errors.mockRestore();
+  }
+}
+
 // Every wait turns the act environment off while it runs, and this one never
 // gets to turn it back on.
 test.fails("a test that times out while it waits for more text that never comes", async () => {
@@ -124,12 +139,7 @@ test.fails("a test that times out while it waits for more text that never comes"
 }, 100);
 
 test("the test after it still hears about an update outside act", async () => {
-  const errors = vi.spyOn(console, "error").mockImplementation(() => {});
-  const updated = deferred<void>();
-  render(<Late updated={updated} />);
-  await updated.promise;
-  expect(errors.mock.calls.some(([message]) => String(message).includes("not wrapped in act"))).toBe(true);
-  errors.mockRestore();
+  expect(await hearsAboutAnUpdateOutsideAct()).toBe(true);
 });
 
 const resumeBeforeItsNextWait = deferred<void>();
@@ -141,15 +151,10 @@ test.fails("a test that times out while it awaits something before its next wait
 }, 100);
 
 test("a wait its body begins once it resumes leaves this test's act environment alone", async () => {
-  const errors = vi.spyOn(console, "error").mockImplementation(() => {});
-  const updated = deferred<void>();
   const stopped = whenAnEndedBodyStopsForTests();
   resumeBeforeItsNextWait.resolve();
   await stopped;
-  render(<Late updated={updated} />);
-  await updated.promise;
-  expect(errors.mock.calls.some(([message]) => String(message).includes("not wrapped in act"))).toBe(true);
-  errors.mockRestore();
+  expect(await hearsAboutAnUpdateOutsideAct()).toBe(true);
 });
 
 const testWhoseHooksEndItsWait = "a test that times out while its own hooks will end its wait";
