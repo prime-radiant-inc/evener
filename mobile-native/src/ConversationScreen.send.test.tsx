@@ -34,6 +34,9 @@ import type {
 	NativeStackNavigationOptions,
 } from "@react-navigation/native-stack";
 import { paletteFor } from "./design/tokens";
+import { answerFleetRead, type FleetShape, fleetSession } from "./session/fleetTestUtils";
+import { FloatingStack } from "./session/FloatingStack";
+import { Toast } from "./Toast";
 
 const harness = vi.hoisted(() => ({
 	connection: {} as Record<string, unknown>,
@@ -171,6 +174,7 @@ const navigation = {
 	getState: () => navigationState.state,
 	navigate: vi.fn(),
 	push: vi.fn(),
+	replace: vi.fn(),
 	pop: vi.fn(),
 	goBack: vi.fn(),
 	setParams: vi.fn(),
@@ -270,13 +274,20 @@ function queueState(texts: string[], revision = 0) {
  * mutation, recording each request in order. It sends a frame only when a
  * test calls notify(). */
 const otherThreads = new Map<string, Thread>();
-// Every screen mount() made. A screen left mounted keeps reading and keeps
-// setting its header, so a later test's chooseMenu (the newest setOptions
-// call) could reach an earlier test's screen instead of its own.
+// The fleet the hub answers the screen's navigation reads with: nobody else
+// needs you unless a test says so.
+const fleet: FleetShape = { live: [], needsYou: [] };
+// Every screen a test mounts. Each is unmounted after its test: a screen
+// left mounted keeps answering late reads and setting header options on the
+// shared navigation mock, so a later test reading the last header options
+// could act on it instead of its own screen.
 const mountedScreens: ReactTestRenderer[] = [];
 afterEach(() => {
-	for (const tree of mountedScreens.splice(0)) act(() => tree.unmount());
+	for (const tree of mountedScreens.splice(0)) if (tree.toJSON() !== null) act(() => tree.unmount());
 	otherThreads.clear();
+	fleet.live = [];
+	fleet.needsYou = [];
+	fleet.sources = undefined;
 	vi.unstubAllGlobals();
 });
 
@@ -345,7 +356,9 @@ function hubClient(
 						...(params.expectedEntryId ? { queueEntryIds: [params.expectedEntryId] } : {}),
 					},
 				};
-			return {};
+			if (method === "evener/session/seen/set")
+				return { ok: true, changed: true, navigation: { generation_id: "generation-test", targets: [] } };
+			return answerFleetRead(fleet, method, params) ?? {};
 		},
 	};
 	return {
@@ -370,6 +383,7 @@ async function mount(
 		settled = true,
 		olderCursor = undefined as string | undefined,
 		olderTurns = [] as unknown[],
+		openedBy = undefined as "next" | undefined,
 	} = {},
 ) {
 	const hub = hubClient(served, failedReads, readLatencyMs, olderCursor, olderTurns);
@@ -383,7 +397,7 @@ async function mount(
 	const route = {
 		key: `conversation-${ref}`,
 		name: "Conversation",
-		params: { hubId: "hub-1", ref, title: "Session" },
+		params: { hubId: "hub-1", ref, title: "Session", ...(openedBy ? { openedBy } : {}) },
 	} as unknown as ConversationScreenProps["route"];
 	navigationState.state = { index: 0, routes: [route] };
 	const tree = render(<ConversationScreen route={route} navigation={navigation} />);
@@ -1538,6 +1552,16 @@ describe("Commands and skills (spec 8.5, ruling 15)", () => {
 	});
 });
 
+/** Chooses an item in the ⋯ menu the screen set last. */
+function chooseMenu(label: string) {
+	const calls = vi.mocked(navigation.setOptions).mock.calls as [NativeStackNavigationOptions][];
+	const options = calls.map(([options]) => options).findLast((options) => options.unstable_headerRightItems);
+	const [menu] = (options?.unstable_headerRightItems?.({ canGoBack: true }) ?? []) as NativeStackHeaderItemMenu[];
+	const found = menu?.menu.items.find((item) => item.label === label) as NativeStackHeaderItemMenuAction | undefined;
+	if (!found) throw new Error(`no ${label} in the header menu`);
+	act(() => found.onPress());
+}
+
 describe("Find in session (spec 8.7, ruling 29)", () => {
 	const palette = paletteFor("light");
 
@@ -1548,16 +1572,6 @@ describe("Find in session (spec 8.7, ruling 29)", () => {
 			askReplyTurn("turn_2", "Anything else?", "Nothing else."),
 		];
 		return served;
-	}
-
-	/** Chooses an item in the ⋯ menu the screen set last. */
-	function chooseMenu(label: string) {
-		const calls = vi.mocked(navigation.setOptions).mock.calls as [NativeStackNavigationOptions][];
-		const options = calls.map(([options]) => options).findLast((options) => options.unstable_headerRightItems);
-		const [menu] = (options?.unstable_headerRightItems?.({ canGoBack: true }) ?? []) as NativeStackHeaderItemMenu[];
-		const found = menu?.menu.items.find((item) => item.label === label) as NativeStackHeaderItemMenuAction | undefined;
-		if (!found) throw new Error(`no ${label} in the header menu`);
-		act(() => found.onPress());
 	}
 
 	function findField(tree: ReactTestRenderer) {
@@ -1591,6 +1605,15 @@ describe("Find in session (spec 8.7, ruling 29)", () => {
 					.map((child) => (String(child.type) === "Text" ? textOf(child) : String(child.props.markdown)))
 					.join(" "),
 			);
+
+	it("opens only the find bar, and no sheet over it", async () => {
+		const { tree } = await mount(findTurns("ref-find-only"));
+		vi.mocked(navigation.navigate).mockClear();
+		chooseMenu("Find in session");
+		await settle();
+		expect(findField(tree)).toBeDefined();
+		expect(navigation.navigate).not.toHaveBeenCalled();
+	});
 
 	it("puts the find bar where the chips were, and Done brings them back", async () => {
 		const { tree } = await mount(findTurns("ref-find-open"));
@@ -1847,5 +1870,154 @@ describe("document chips under the agent's messages (spec 8.2)", () => {
 			title: "Session",
 			documents: [{ path: PLAN_PATH, kind: "Plan", updatedAt: WROTE_AT }],
 		});
+	});
+});
+
+describe("moving between sessions (spec 8.3, 13.2)", () => {
+	const at = (minute: number) => new Date(Date.UTC(2026, 8, 26, 12, minute)).toISOString();
+	const failing = fleetSession("local:fail", {
+		title: "Fix retry loop",
+		state: "errored",
+		updated_at: at(5),
+		turn_ended_at: at(5),
+	});
+	const asking = fleetSession("local:ask", {
+		title: "Pick a name",
+		state: "awaiting",
+		ask_pending: true,
+		updated_at: at(3),
+	});
+	beforeEach(() => {
+		fleet.live = [failing];
+		fleet.needsYou = [failing, asking];
+		vi.mocked(navigation.push).mockClear();
+		vi.mocked(navigation.replace).mockClear();
+		vi.mocked(navigation.goBack).mockClear();
+		vi.mocked(ActionSheetIOS.showActionSheetWithOptions).mockClear();
+	});
+
+	/** The Back the screen set last, rendered as the header renders it. */
+	function back() {
+		const calls = vi.mocked(navigation.setOptions).mock.calls as [NativeStackNavigationOptions][];
+		const options = calls.map(([options]) => options).findLast((options) => options.headerLeft);
+		if (!options?.headerLeft) throw new Error("no headerLeft");
+		const header = render(<>{options.headerLeft({ canGoBack: true })}</>);
+		return header.root.findAll((node) => String(node.type) === "Pressable")[0];
+	}
+
+	const capsule = (tree: ReactTestRenderer) => pressable(tree, "Next, Fix retry loop");
+
+	it("counts the others that need you on Back, which goes back", async () => {
+		await mount(thread("ref-back", "idle"));
+		const button = back();
+		expect(button.props.accessibilityLabel).toBe("Back, 2 others need you");
+		act(() => button.props.onPress());
+		expect(navigation.goBack).toHaveBeenCalledTimes(1);
+	});
+
+	it("never counts this session, and shows no Next when nobody else needs you", async () => {
+		fleet.live = [];
+		fleet.needsYou = [fleetSession("ref-alone", { state: "errored", updated_at: at(1) })];
+		const { tree } = await mount(thread("ref-alone", "idle"));
+		expect(back().props.accessibilityLabel).toBe("Back");
+		expect(renderedText(tree)).not.toContain("Next");
+	});
+
+	it("opens the first session that needs you from Next, marked seen", async () => {
+		const { tree, hub } = await mount(thread("ref-next", "idle"));
+		const next = capsule(tree);
+		if (!next) throw new Error("no Next capsule");
+		await act(async () => next.props.onPress());
+		await settle();
+		expect(navigation.push).toHaveBeenCalledWith("Conversation", {
+			hubId: "hub-1",
+			ref: "local:fail",
+			title: "Fix retry loop",
+			openedBy: "next",
+		});
+		expect(navigation.replace).not.toHaveBeenCalled();
+		expect(
+			hub.requests.filter((request) => request.method === "evener/session/seen/set").map((request) => request.params),
+		).toEqual([{ sessions: [{ ref: "local:fail", seenThrough: Date.parse(at(5)) }] }]);
+	});
+
+	it("replaces a session Next opened, so Back still lands where you started", async () => {
+		const { tree } = await mount(thread("ref-next-again", "idle"), { openedBy: "next" });
+		act(() => capsule(tree)?.props.onPress());
+		expect(navigation.replace).toHaveBeenCalledWith("Conversation", {
+			hubId: "hub-1",
+			ref: "local:fail",
+			title: "Fix retry loop",
+			openedBy: "next",
+		});
+		expect(navigation.push).not.toHaveBeenCalled();
+	});
+
+	it("lists everyone who needs you on a hold, and opens the one you choose", async () => {
+		const { tree } = await mount(thread("ref-hold", "idle"));
+		act(() => capsule(tree)?.props.onLongPress());
+		const [options, choose] = vi.mocked(ActionSheetIOS.showActionSheetWithOptions).mock.calls[0] as [
+			{ options: string[]; cancelButtonIndex: number },
+			(index: number) => void,
+		];
+		expect(options).toMatchObject({ options: ["Fix retry loop", "Pick a name", "Cancel"], cancelButtonIndex: 2 });
+		act(() => choose(1));
+		expect(navigation.push).toHaveBeenCalledWith("Conversation", {
+			hubId: "hub-1",
+			ref: "local:ask",
+			title: "Pick a name",
+			openedBy: "next",
+		});
+		act(() => choose(2));
+		expect(navigation.push).toHaveBeenCalledTimes(1);
+	});
+
+	it("stacks a toast above Next, in the one column over the transcript's end, so neither covers the other", async () => {
+		const { tree } = await mount(thread("ref-stacked", "active"));
+		await press(tree, "Stop");
+		expect(renderedText(tree)).toContain("Stopped");
+		const next = capsule(tree);
+		if (!next) throw new Error("no Next capsule");
+		const stack = tree.root.findByType(FloatingStack);
+		const toast = stack.findByType(Toast);
+		expect(toast.props.toast).toMatchObject({ text: "Stopped" });
+		expect(stack.props.next).toBeTruthy();
+		// Nothing new arrived below, so there is no pill to stack.
+		expect(stack.props.pill).toBeNull();
+		expect(stack.findAll((node) => node === next)).toHaveLength(1);
+		// The toast has no other place on the screen.
+		expect(tree.root.findAllByType(Toast)).toHaveLength(1);
+	});
+
+	it("shows no Next while this session asks you something", async () => {
+		const { tree } = await mount(thread("ref-asks", "awaiting", true));
+		expect(capsule(tree)).toBeUndefined();
+		expect(back().props.accessibilityLabel).toBe("Back, 2 others need you");
+	});
+
+	it("shows no Next while the find bar is open", async () => {
+		const { tree } = await mount(thread("ref-finding", "idle"));
+		expect(capsule(tree)).toBeDefined();
+		chooseMenu("Find in session");
+		expect(capsule(tree)).toBeUndefined();
+	});
+
+	it("names the session's host from the manifest in the Session sheet", async () => {
+		fleet.sources = [{ id: "local", label: "Laptop" }];
+		await mount(thread("ref-host", "idle"));
+		const sheet = render(
+			<SessionInfoSheet
+				route={
+					{
+						key: "session-info",
+						name: "SessionInfoSheet",
+						params: { hubId: "hub-1", ref: "ref-host" },
+					} as unknown as ComponentProps<typeof SessionInfoSheet>["route"]
+				}
+				navigation={navigation as unknown as ComponentProps<typeof SessionInfoSheet>["navigation"]}
+			/>,
+		);
+		expect(renderedText(sheet)).toContain("Laptop");
+		expect(renderedText(sheet)).not.toContain("Work hub");
 	});
 });

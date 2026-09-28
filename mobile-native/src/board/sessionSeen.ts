@@ -1,6 +1,6 @@
 // The session screen marks itself seen (S4), so a session opened from a
 // search hit no loaded Board page lists, from a link or from Next loses its
-// blue dot too. Imports nothing that reaches expo-sqlite/kv-store.
+// blue dot too.
 import { useEffect, useRef } from "react";
 import type { ConversationClientLike } from "../../../mobile/src/services/conversation";
 import { hubSeenMarks } from "./hubSeen";
