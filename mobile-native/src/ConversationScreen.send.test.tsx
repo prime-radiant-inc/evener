@@ -718,6 +718,30 @@ describe("queued messages above the composer (spec 8.5)", () => {
 		expect(hub.requests.filter((request) => request.method.startsWith("turn/"))).toEqual([]);
 	});
 
+	it("clears a cancelled message on the hub's own queue frame, even when the read after it fails", async () => {
+		const served = thread("ref-cancel-frame", "idle", false, ["drop this"]);
+		const { tree, hub } = await mount(served);
+		// The read after the cancel fails; the hub still reports its queue.
+		const request = hub.client.request;
+		hub.client.request = async (method: string, params: Record<string, unknown>) => {
+			if (method === "thread/read") throw new Error("read failed");
+			const answer = await request(method, params);
+			if (method !== "turn/cancelQueued") return answer;
+			hub.notify({
+				method: "thread/queueChanged",
+				params: { threadId: served.id, ref: "ref-cancel-frame", queue: queueState([], 1) },
+			} as AnyNotification);
+			// A cancel's receipt names no turn and says the entry is removed,
+			// and its answer echoes what it took out of the queue.
+			const { turnId: _turnId, ...receipt } = (answer as { receipt: Record<string, unknown> }).receipt;
+			return { receipt: { ...receipt, projectionState: "removed" }, removedText: "drop this" };
+		};
+		await press(tree, "Cancel");
+		expect(hub.requests.map((entry) => entry.method)).toContain("turn/cancelQueued");
+		expect(renderedText(tree)).not.toContain("drop this");
+		expect(renderedText(tree)).not.toContain("Couldn't take this message out of the queue.");
+	});
+
 	it("holds a queue a Stop parked, and Send now releases it (Review Focus 3)", async () => {
 		const { tree, hub } = await mount(thread("ref-held", "idle", false, ["after the stop"]));
 		expect(renderedText(tree)).toContain("Held · you stopped this turn");
