@@ -8,114 +8,67 @@ import (
 	"testing"
 )
 
-// timingBudgetScript is the runner under test. It derives its repository root
-// from its own path, so these tests copy it (and the two libraries it sources)
-// into a synthetic tree and drive it there rather than against the real
-// checkout.
+// timingBudgetScript is the runner under test.
 const timingBudgetScript = "scripts/gate/test-timing-budget.sh"
 
-// timingBudgetRun drives the runner against a synthetic one-package tree whose
-// `go` is a stub: `go list ./...` answers with example.com/mod and
-// `go test -json` replays stream verbatim, so the test controls the measurement
-// with no real test run and no timing. extraArgs are appended after the flags
-// the harness sets. It returns the runner's combined output and exit status.
-func timingBudgetRun(t *testing.T, stream string, extraArgs ...string) (string, error) {
+// runTimingBudgetCompare drives the runner's comparison half through the
+// --measured fixture seam: the fixture IS the measurement the comparator reads,
+// so no go test or vitest run is involved and no toolchain is faked
+// (docs/developing-evener/testing.md's ban on PATH stubs).
+func runTimingBudgetCompare(t *testing.T, measured, budget string) (string, error) {
 	t.Helper()
-	root := t.TempDir()
-
-	// The runner sources these two libraries relative to its own path and
-	// derives its repo root two levels up, so the copy has to keep the shape.
-	for _, rel := range []string{
-		timingBudgetScript,
-		"scripts/lib/gate-surface-lib.sh",
-		"scripts/lib/scratch-lib.sh",
-	} {
-		body, err := os.ReadFile(rel)
-		if err != nil {
-			t.Fatalf("read %s: %v", rel, err)
-		}
-		writeAuditScriptFixture(t, filepath.Join(root, rel), string(body))
-	}
-
-	writeAuditScriptFixture(t, filepath.Join(root, "mod", "go.mod"), "module example.com/mod\n")
-	streamPath := filepath.Join(root, "stream.jsonl")
-	writeAuditScriptFixture(t, streamPath, stream)
-
-	stubDir := filepath.Join(root, "stubbin")
-	stub := "#!/bin/sh\ncase \"$1\" in\n" +
-		" list) printf 'example.com/mod\\n' ;;\n" +
-		" test) cat \"$TIMING_FAKE_GO_JSON\" ;;\n" +
-		" *) exit 1 ;;\nesac\n"
-	stubPath := filepath.Join(stubDir, "go")
-	writeAuditScriptFixture(t, stubPath, stub)
-	if err := os.Chmod(stubPath, 0o755); err != nil {
-		t.Fatalf("chmod stub go: %v", err)
-	}
-
-	budget := filepath.Join(root, "budget.json")
-	writeAuditScriptFixture(t, budget, `{"perTestCeilingSeconds":3,"packages":{"example.com/mod":100}}`)
-
-	// scratch_dir requires a usable TMPDIR, so the runner's scratch root is a
-	// real directory under the tree rather than the test process's own.
-	tmpDir := filepath.Join(root, "tmp")
+	dir := t.TempDir()
+	measuredPath := filepath.Join(dir, "measured.tsv")
+	writeAuditScriptFixture(t, measuredPath, measured)
+	budgetPath := filepath.Join(dir, "budget.json")
+	writeAuditScriptFixture(t, budgetPath, budget)
+	tmpDir := filepath.Join(dir, "tmp")
 	if err := os.MkdirAll(tmpDir, 0o755); err != nil {
 		t.Fatalf("mkdir %s: %v", tmpDir, err)
 	}
-
-	args := append([]string{
-		"--modules", "mod", "--no-web", "--budget", budget,
-	}, extraArgs...)
-	cmd := exec.Command("bash", append([]string{filepath.Join(root, timingBudgetScript)}, args...)...)
-	cmd.Env = []string{
-		"PATH=" + stubDir + ":" + os.Getenv("PATH"),
-		"LC_ALL=C",
-		"TMPDIR=" + tmpDir,
-		"TIMING_FAKE_GO_JSON=" + streamPath,
-	}
+	cmd := exec.Command("bash", timingBudgetScript,
+		"--measured", measuredPath, "--budget", budgetPath, "--no-web", "--check", "--strict")
+	cmd.Env = []string{"PATH=" + os.Getenv("PATH"), "LC_ALL=C", "TMPDIR=" + tmpDir}
 	out, err := cmd.CombinedOutput()
 	return string(out), err
 }
 
-// TestTimingBudgetMeasuresPackageWallTimeNotSummedTests pins issue #172's last
-// live defect: the per-package number must be the package's own wall time, read
-// from the package-level terminal event, not the sum of top-level test Elapsed.
-// Under t.Parallel those tests overlap, so summing their Elapsed counts the same
-// wall-clock second more than once and tracks contention rather than work. Two
-// 0.3s parallel tests plus a 0.05s test sum to 0.65s while the package terminal
-// event reports 0.45s; the runner must report 0.45s.
-func TestTimingBudgetMeasuresPackageWallTimeNotSummedTests(t *testing.T) {
-	stream := strings.Join([]string{
-		`{"Action":"pass","Package":"example.com/mod","Test":"TestParallelA","Elapsed":0.3}`,
-		`{"Action":"pass","Package":"example.com/mod","Test":"TestParallelB","Elapsed":0.3}`,
-		`{"Action":"pass","Package":"example.com/mod","Test":"TestChild","Elapsed":0.05}`,
-		`{"Action":"pass","Package":"example.com/mod","Test":"TestChild/child","Elapsed":0.05}`,
-		`{"Action":"pass","Package":"example.com/mod","Elapsed":0.45}`,
-	}, "\n") + "\n"
+// TestTimingBudgetWarnsOnBudgetsInThePreWallTimeUnits pins issue #172 review
+// finding 1. The checked-in testing-budget.json numbers were blessed under the
+// old sum-of-test-Elapsed metric, so comparing them to the package wall time
+// measured now is not meaningful. Until #141 regenerates the baseline, a budget
+// in the old units must be warned about, never enforced: the ratio is reported
+// as a WARN naming #141, and --check --strict still exits zero.
+func TestTimingBudgetWarnsOnBudgetsInThePreWallTimeUnits(t *testing.T) {
+	measured := "SUM\texample.com/mod\t10.00\n"
+	budget := `{"perTestCeilingSeconds":3,"packages":{"example.com/mod":1}}`
 
-	out, err := timingBudgetRun(t, stream)
+	out, err := runTimingBudgetCompare(t, measured, budget)
 	if err != nil {
-		t.Fatalf("runner failed on a complete measurement: %v\n%s", err, out)
+		t.Fatalf("a budget blessed under the old metric must not fail the run: %v\n%s", err, out)
 	}
-	if !strings.Contains(out, "example.com/mod: 0.45s") {
-		t.Fatalf("runner did not report the package's own wall time (0.45s); it summed top-level test Elapsed instead:\n%s", out)
+	if !strings.Contains(out, "STALE UNITS") || !strings.Contains(out, "#141") {
+		t.Fatalf("no explicit stale-units warning naming #141:\n%s", out)
 	}
-	if strings.Contains(out, "0.65s") {
-		t.Fatalf("runner counted overlapping parallel tests additively (0.65s); the per-package number must come from the package terminal event:\n%s", out)
+	if !strings.Contains(out, "WARN  example.com/mod") {
+		t.Fatalf("a stale number over 1.5x must be reported as a warning:\n%s", out)
+	}
+	if strings.Contains(out, "FAIL") {
+		t.Fatalf("a stale number was enforced as a failure:\n%s", out)
 	}
 }
 
-// TestTimingBudgetRefusesAStreamMissingAPackageTerminalEvent pins the
-// completeness oracle the parser already carries, so a later change cannot
-// quietly drop it: a package `go list` reported that never produces a terminal
-// event is a silent drop, and the run must fail rather than bless around it.
-func TestTimingBudgetRefusesAStreamMissingAPackageTerminalEvent(t *testing.T) {
-	stream := `{"Action":"pass","Package":"example.com/mod","Test":"TestParallelA","Elapsed":0.3}` + "\n"
+// TestTimingBudgetFailsOnWallTimeBudgets is the other half: once a rebaseline
+// records the wall-time metric marker, the same excess is enforced again.
+func TestTimingBudgetFailsOnWallTimeBudgets(t *testing.T) {
+	measured := "SUM\texample.com/mod\t10.00\n"
+	budget := `{"metric":"package-wall-seconds","perTestCeilingSeconds":3,"packages":{"example.com/mod":1}}`
 
-	out, err := timingBudgetRun(t, stream)
+	out, err := runTimingBudgetCompare(t, measured, budget)
 	if err == nil {
-		t.Fatalf("a stream missing the package's terminal event must fail the run:\n%s", out)
+		t.Fatalf("a wall-time budget over 1.5x must fail under --strict:\n%s", out)
 	}
-	if !strings.Contains(out, "produced no terminal event") {
-		t.Fatalf("refusal does not name the missing package terminal event:\n%s", out)
+	if !strings.Contains(out, "FAIL  example.com/mod") {
+		t.Fatalf("no FAIL for a wall-time budget over 1.5x:\n%s", out)
 	}
 }

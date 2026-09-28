@@ -951,9 +951,12 @@ Enforcement of the ratios is conditional. A local run only warns. A package over
 budget, or any per-test ceiling breach, is nonzero only under `CHECK=1` in a
 CI-shaped environment (`$CI` set, or `--strict`). A missing or empty
 `testing-budget.json` is an explicit warn state, so `CHECK=1` exits zero until
-`make test-rebaseline` lands a measured baseline. A clean-host baseline is
-checked in, so the ratios are enforced under `CHECK=1` in a CI-shaped
-environment today.
+`make test-rebaseline` lands a measured baseline. The checked-in baseline
+predates issue #172's switch to package wall time, so the ratios stay warn-only
+even under `CHECK=1` until `make test-rebaseline` rewrites them under the new
+metric (#141): a budget whose numbers were blessed under a different metric is
+never enforced, and a rebaseline records the metric marker that re-enables
+enforcement.
 
 A broken measurement is not conditional. `go list` or `go test` exiting
 nonzero, or a package `go list` reported that the `go test -json` stream never

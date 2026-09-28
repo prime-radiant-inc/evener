@@ -12,9 +12,9 @@
 # skip. A Go package's duration is its own wall time, read from the package-level
 # terminal event `go test -json` emits for it (the Elapsed field); the per-test
 # and per-subtest Elapsed values feed only the per-test ceiling below, never the
-# per-package number (issue #172). The frontend has no per-package shape, so its
-# whole vitest run rolls up under the single key "web", read from the vitest
-# JSON reporter.
+# per-package number (issue #172). `evener-dev timing-parse` reads the stream.
+# The frontend has no per-package shape, so its whole vitest run rolls up under
+# the single key "web", read from the vitest JSON reporter.
 #
 # Two independent things are checked, both from the same measurement:
 #
@@ -135,69 +135,29 @@ scratch_dir work evener-testbudget
 measured="$work/measured.tsv"
 : >"$measured"
 
-# go_test_json_to_tsv PACKAGE_JSON_LOG EXPECTED_PACKAGES_FILE >> measured.tsv
-# — appends one "SUM\t<package>\t<seconds>" line per package, the package's own
-# wall time read from its package-level terminal event's Elapsed field, and one
-# "TEST\t<package>\t<name>\t<seconds>" line per test AND subtest result, which is
-# what the ceiling check needs to catch a slow subtest a top-level-only view
-# would hide. (The SUM used to be the sum of top-level Test/Example Elapsed;
-# under t.Parallel that counts overlapping tests additively, so it measured
-# contention as much as work — issue #172.)
+# go_test_json_to_tsv PACKAGE_JSON_LOG EXPECTED_PACKAGES_FILE
+# — prints the ratchet's rows for one module: one "PKG\t<package>" line per
+# package-level terminal event, one "TEST\t<package>\t<name>\t<seconds>" line per
+# test AND subtest result (what the ceiling check needs to catch a slow subtest a
+# top-level-only view would hide), and one "SUM\t<package>\t<seconds>" line per
+# package, the package's own wall time read from its terminal event's Elapsed
+# field. (The SUM used to be the sum of top-level Test/Example Elapsed; under
+# t.Parallel that counts overlapping tests additively, so it measured contention
+# as much as work — issue #172.)
 #
-# It also emits one "PKG\t<package>" line per package-level terminal event
-# (pass/fail/skip with no Test field). go test -json emits exactly one such
-# event for EVERY package it was asked to test — including a package with no
-# test files (skip) and a package that fails to build (fail). The expected-
-# packages file lists what `go list ./...` reported, one import path per line;
-# any of those the stream never mentions is the silent-drop shape issue #172
-# filed (a build-failed package contributing no rows, so --bless quietly wrote
-# a budget without it) and fails the whole run. The check is a set difference
-# in the parser, not a per-package grep, so a 74-package root module costs one
-# comparison pass, not 74 subprocesses.
+# go test -json emits exactly one terminal event for EVERY package it was asked
+# to test — including a package with no test files (skip) and a package that
+# fails to build (fail). $2 lists what `go list ./...` reported, one import path
+# per line; any of those the stream never ends is the silent-drop shape issue
+# #172 filed (a build-failed package contributing no rows, so --bless quietly
+# wrote a budget without it) and fails the whole run.
+#
+# The parsing is `evener-dev timing-parse`, unit-tested in Go against JSON stream
+# strings rather than through a faked toolchain (issue #172 review;
+# docs/developing-evener/testing.md's port-on-touch rule). GOFLAGS= keeps an
+# inherited GOFLAGS from changing how the helper itself builds.
 go_test_json_to_tsv() {
-	python3 - "$1" "$2" <<'PY'
-import json, sys
-
-pkg_seconds = {}
-seen = set()
-with open(sys.argv[1]) as fh:
-	for line in fh:
-		line = line.strip()
-		if not line:
-			continue
-		try:
-			ev = json.loads(line)
-		except ValueError:
-			continue
-		if ev.get("Action") not in ("pass", "fail", "skip"):
-			continue
-		pkg = ev.get("Package", "")
-		test = ev.get("Test")
-		if not test:
-			# Package-level terminal event. Its Elapsed is the package's own
-			# wall time — the metric the budget compares (issue #172). A
-			# package with no test files (skip) carries no Elapsed, so it is
-			# seeded at 0 by the PKG row below instead.
-			seen.add(pkg)
-			print(f"PKG\t{pkg}")
-			elapsed = ev.get("Elapsed")
-			if elapsed is not None:
-				pkg_seconds[pkg] = elapsed
-			continue
-		elapsed = ev.get("Elapsed", 0.0)
-		print(f"TEST\t{pkg}\t{test}\t{elapsed}")
-for pkg, total in pkg_seconds.items():
-	print(f"SUM\t{pkg}\t{total}")
-
-with open(sys.argv[2]) as fh:
-	expected = {line.strip() for line in fh if line.strip()}
-missing = expected - seen
-if missing:
-	for pkg in sorted(missing):
-		print(f"test-timing-budget: package {pkg} listed by go list produced no "
-			"terminal event in the go test -json stream", file=sys.stderr)
-	sys.exit(1)
-PY
+	( cd "$repo_root" && GOFLAGS= go run ./cmd/evener-dev/bin dev timing-parse --json "$1" --packages "$2" )
 }
 
 # vitest_json_to_tsv REPORT_JSON >> measured.tsv — rolls the whole frontend
@@ -344,6 +304,15 @@ DEFAULT_CEILING = 2.0
 FAIL_RATIO = 1.5
 WARN_RATIO = 1.1
 
+# The metric the recorded numbers were blessed under. A budget whose "metric"
+# is not this was measured under the pre-#172 sum-of-test-Elapsed metric, whose
+# numbers are not comparable to the package wall time measured now: comparing
+# them can read high (setup/TestMain overhead) or low (parallel overlap). Until
+# a rebaseline rewrites them, a would-be ratio FAIL is a WARNING, never fatal —
+# enforcing numbers in the wrong units would be worse than not enforcing them
+# (issue #172 review).
+WALL_METRIC = "package-wall-seconds"
+
 sums = {}
 tests = []  # (package, name, seconds)
 with open(measured_path) as fh:
@@ -373,6 +342,7 @@ except (FileNotFoundError, ValueError):
 packages = budget.get("packages") or {}
 ceiling = budget.get("perTestCeilingSeconds", DEFAULT_CEILING)
 no_baseline = len(packages) == 0
+stale_units = not no_baseline and budget.get("metric") != WALL_METRIC
 
 lines = []
 worst = "ok"  # ok < warn < fail
@@ -386,6 +356,11 @@ if no_baseline:
 	lines.append("NO BASELINE: testing-budget.json has no packages recorded yet; every "
 		"result below is informational only and --check always exits 0 until "
 		"`make test-rebaseline` lands a measured baseline (kata b6rv).")
+elif stale_units:
+	lines.append("STALE UNITS: testing-budget.json was blessed under the pre-#172 "
+		"sum-of-test-Elapsed metric; its numbers are not comparable to the package "
+		"wall time measured now, so ratio failures are warnings until #141 regenerates "
+		f"the baseline (a rebaseline records \"metric\": \"{WALL_METRIC}\").")
 
 for pkg in sorted(sums):
 	m = sums[pkg]
@@ -396,8 +371,13 @@ for pkg in sorted(sums):
 		continue
 	ratio = (m / b) if b > 0 else (float("inf") if m > 0 else 0.0)
 	if ratio > FAIL_RATIO:
-		lines.append(f"FAIL  {pkg}: {m:.2f}s over budget {b:.2f}s ({ratio:.2f}x > {FAIL_RATIO}x)")
-		raise_worst("fail")
+		if stale_units:
+			lines.append(f"WARN  {pkg}: {m:.2f}s over stale budget {b:.2f}s "
+				f"({ratio:.2f}x > {FAIL_RATIO}x; not enforced until the #141 rebaseline)")
+			raise_worst("warn")
+		else:
+			lines.append(f"FAIL  {pkg}: {m:.2f}s over budget {b:.2f}s ({ratio:.2f}x > {FAIL_RATIO}x)")
+			raise_worst("fail")
 	elif ratio > WARN_RATIO:
 		lines.append(f"WARN  {pkg}: {m:.2f}s over budget {b:.2f}s ({ratio:.2f}x > {WARN_RATIO}x)")
 		raise_worst("warn")
@@ -431,6 +411,9 @@ if bless:
 		pkg: (round(sums[pkg], 2) if pkg in sums else packages[pkg]) for pkg in order
 	}
 	budget.setdefault("perTestCeilingSeconds", DEFAULT_CEILING)
+	# A rebaseline measures the wall-time metric, so it records that this file's
+	# numbers are comparable to what the gate now reports and enforcement resumes.
+	budget["metric"] = WALL_METRIC
 	with open(budget_path, "w") as fh:
 		# indent=1 (spaces) is the checked-in file's format, so a rebaseline
 		# does not reformat all ~130 lines and bury the real change in
