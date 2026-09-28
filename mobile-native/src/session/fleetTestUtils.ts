@@ -7,6 +7,9 @@ export interface FleetShape {
 	live: NavigationSessionSummary[];
 	needsYou: NavigationSessionSummary[];
 	sources?: { id: string; label: string }[];
+	/** The revision every read answers at; 1 unless a test moves the fleet
+	 * on and invalidates it. */
+	revision?: number;
 }
 
 export const fleetSession = (
@@ -49,8 +52,8 @@ export function answerFleetRead(fleet: FleetShape, method: string, params: unkno
 	return wireV2(
 		{ ...read, representationVersion: 2, offset: read.offset ?? 0, limit: read.limit ?? 50 },
 		body,
-		`etag-${read.resource}`,
-		1,
+		`etag-${read.resource}-${fleet.revision ?? 1}`,
+		fleet.revision ?? 1,
 		"generation-test",
 	);
 }

@@ -1,7 +1,8 @@
 // The Session's own read of the fleet (ruling 33), against the real Board
 // controller and the real seen markers.
+import type { AnyNotification } from "@evener/appwire-client";
 import { act } from "react-test-renderer";
-import { expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { ConversationClientLike } from "../../../mobile/src/services/conversation";
 import { seenMarkers } from "../board/nativeBoardMemory";
 import { renderHook } from "../renderNative.testkit";
@@ -28,21 +29,37 @@ const fleet: FleetShape = {
 	sources: [{ id: "local", label: "Laptop" }],
 };
 
-/** A hub that answers from `fleet`, failing the first read of each
- * section `failOnce` names. */
-function hub({ failOnce = [] as string[] } = {}) {
+/** A hub that answers from `shape` (the shared fleet unless a test hands
+ * in its own), failing the first read of each section `failOnce` names. */
+function hub({ failOnce = [] as string[], shape = fleet } = {}) {
 	const methods: string[] = [];
 	const toFail = new Set(failOnce);
+	const listeners = new Set<(event: AnyNotification) => void>();
 	const client: ConversationClientLike = {
 		request: (method, params) => {
 			methods.push(method);
 			const section = (params as { section?: string }).section;
 			if (section && toFail.delete(section)) return Promise.reject(new Error("request timed out"));
-			return Promise.resolve(answerFleetRead(fleet, method, params) as never);
+			return Promise.resolve(answerFleetRead(shape, method, params) as never);
 		},
-		onNotification: () => () => {},
+		onNotification: (listener) => {
+			listeners.add(listener);
+			return () => listeners.delete(listener);
+		},
 	};
-	return { client, methods };
+	/** The hub says Needs you changed, at the shape's revision. */
+	const invalidateNeedsYou = (sequence: number) => {
+		for (const listener of [...listeners])
+			listener({
+				method: "evener/navigation/invalidated",
+				params: {
+					generationId: "generation-test",
+					sequence,
+					targets: [{ kind: "section", section: "needs_you", revision: shape.revision ?? 1 }],
+				},
+			} as AnyNotification);
+	};
+	return { client, methods, invalidateNeedsYou, listening: () => listeners.size };
 }
 
 async function settle() {
@@ -113,4 +130,61 @@ it("retries a failed read on its own, so Back's count appears", async () => {
 	} finally {
 		vi.useRealTimers();
 	}
+});
+
+describe("the fleet's lifecycle", () => {
+	const here = "local:here";
+	const count = (hook: ReturnType<typeof mount>["hook"]) => othersNeedingYou(hook.result.current.bands, here).length;
+
+	it("updates Back's count when the hub says Needs you changed", async () => {
+		const shape: FleetShape = { live: [], needsYou: [failing] };
+		const { client, invalidateNeedsYou } = hub({ shape });
+		const { hook } = mount(client);
+		await act(settle);
+		expect(count(hook)).toBe(1);
+		const asking = fleetSession("local:ask", { state: "awaiting", ask_pending: true, updated_at: at(3) });
+		shape.needsYou = [failing, asking];
+		shape.revision = 2;
+		act(() => invalidateNeedsYou(1));
+		await act(settle);
+		expect(count(hook)).toBe(2);
+		hook.unmount();
+	});
+
+	it("stops reading once another screen is in front", async () => {
+		const shape: FleetShape = { live: [], needsYou: [failing] };
+		const { client, methods, invalidateNeedsYou } = hub({ shape });
+		const { hook, view } = mount(client);
+		await act(settle);
+		view.inFront = false;
+		hook.rerender();
+		const before = methods.length;
+		shape.needsYou = [];
+		shape.revision = 2;
+		act(() => invalidateNeedsYou(1));
+		await act(settle);
+		expect(methods.length).toBe(before);
+		expect(count(hook)).toBe(1);
+		hook.unmount();
+	});
+
+	it("lets go of the hub when the Session goes away", async () => {
+		vi.useFakeTimers();
+		try {
+			const { client, methods, invalidateNeedsYou, listening } = hub();
+			const { hook } = mount(client);
+			await act(settle);
+			expect(listening()).toBeGreaterThan(0);
+			hook.unmount();
+			expect(listening()).toBe(0);
+			// No plugin poll or retry is left behind.
+			expect(vi.getTimerCount()).toBe(0);
+			const before = methods.length;
+			invalidateNeedsYou(1);
+			await vi.advanceTimersByTimeAsync(60_000);
+			expect(methods.length).toBe(before);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
 });
