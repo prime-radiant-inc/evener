@@ -1424,6 +1424,18 @@ test.each([
   expectContentFreeRejection(key, snapshotWithSessionField("failure", failure));
 });
 
+// A row carries the opening of its session's last agent message (S1d). The
+// codec keeps one within the hub schema's bound and refuses anything else.
+test("codec keeps a row's last message within its bound and refuses one past it", () => {
+  const onTheBound = "😀".repeat(200);
+  expect(
+    decodedSnapshot(key, snapshotWithSessionField("last_message", onTheBound)).snapshot.entities[0]?.value,
+  ).toEqual({ ...sessionValue("local:session"), last_message: onTheBound });
+  for (const malformed of ["", "t".repeat(201), 7, ["Three layouts are ready."]]) {
+    expectContentFreeRejection(key, snapshotWithSessionField("last_message", malformed));
+  }
+});
+
 // cmd/evener-hub/navigation_value_records_test.go keeps this fixture naming
 // every wire field of every navigation value record. Decoding it must keep all
 // of them: a field the hub sends that the codec does not list would be dropped
