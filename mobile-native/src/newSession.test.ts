@@ -489,3 +489,291 @@ it("uses the shared picker pipeline without attaching late results to an abandon
 	expect(document.imagePreviews()).toEqual([]);
 	expect(store.getState().prompt).toBe("");
 });
+
+const answer = (calls: ReturnType<typeof setup>["calls"], method: string, forwarded: string | null, value: unknown) => {
+	const call = calls.find(
+		(c) => c.method === method && (forwarded === null || (c.params as { method?: string }).method === forwarded),
+	);
+	if (!call) throw new Error(`no ${forwarded ?? method} request`);
+	calls.splice(calls.indexOf(call), 1);
+	call.response.resolve(value);
+};
+const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
+
+// changeHost ends by reading the new host's models, so each test answers that
+// read before awaiting the change.
+it("reads another host's projects and models through the hub, and starts there (Review Focus 1)", async () => {
+	const { store, calls } = setup();
+	const moving = store.getState().changeHost("paradise-park", "paradise-park");
+	answer(calls, "evener/host/request", "evener/projects/recent", { data: ["/Users/jesse/git/evener"] });
+	await flush();
+	expect(store.getState()).toMatchObject({ source: "paradise-park", cwd: "/Users/jesse/git/evener", hostNote: null });
+	answer(calls, "evener/host/request", "model/list", { data: [model] });
+	await moving;
+	const started = store.getState().submit();
+	const start = calls.find((c) => c.method === "thread/start");
+	expect(start?.params).toMatchObject({ cwd: "/Users/jesse/git/evener", source: "paradise-park" });
+	answer(calls, "thread/start", null, { thread: { id: "t", evener: { ref: "paradise-park:t" } }, turn: {} });
+	expect(await started).toMatchObject({ status: "created" });
+});
+
+it("keeps the project when the new host has it, and moves it with a note when it doesn't (ruling 17)", async () => {
+	const { store, calls } = setup();
+	await store.getState().setCwd("/home/jesse/git/evener", false);
+	const kept = store.getState().changeHost("paradise-park", "paradise-park");
+	answer(calls, "evener/host/request", "evener/path/validate", { path: "/home/jesse/git/evener", valid: true });
+	answer(calls, "evener/host/request", "evener/projects/recent", { data: ["/Users/jesse/git/docs"] });
+	await flush();
+	expect(store.getState()).toMatchObject({ cwd: "/home/jesse/git/evener", hostNote: null });
+	answer(calls, "evener/host/request", "model/list", { data: [model] });
+	await kept;
+	const moved = store.getState().changeHost("local", "magic-kingdom");
+	answer(calls, "evener/path/validate", null, { path: "/home/jesse/git/evener", valid: false });
+	answer(calls, "evener/projects/recent", null, { data: ["/home/jesse/git/docs"] });
+	await flush();
+	expect(store.getState()).toMatchObject({
+		cwd: "/home/jesse/git/docs",
+		hostNote: "evener isn't on magic-kingdom, so the project changed to docs.",
+	});
+	answer(calls, "model/list", null, { data: [model] });
+	await moved;
+});
+
+it("keeps the project when the new host can't say whether it has it", async () => {
+	const { store, calls } = setup();
+	await store.getState().setCwd("/home/jesse/git/evener", false);
+	const moving = store.getState().changeHost("paradise-park", "paradise-park");
+	const validate = calls.find((c) => (c.params as { method?: string }).method === "evener/path/validate");
+	validate?.response.reject(new Error("host went away"));
+	answer(calls, "evener/host/request", "evener/projects/recent", { data: ["/Users/jesse/git/docs"] });
+	await flush();
+	expect(store.getState()).toMatchObject({ cwd: "/home/jesse/git/evener", hostNote: null });
+	answer(calls, "evener/host/request", "model/list", { data: [model] });
+	await moving;
+});
+
+it("drops answers for the host it just left (Review Focus 2)", async () => {
+	const { store, calls } = setup();
+	const leaving = store.getState().changeHost("paradise-park", "paradise-park");
+	const staleRecent = calls.find((c) => (c.params as { method?: string }).method === "evener/projects/recent");
+	const arriving = store.getState().changeHost("local", "magic-kingdom");
+	answer(calls, "evener/projects/recent", null, { data: ["/home/jesse/git/evener"] });
+	await flush();
+	answer(calls, "model/list", null, { data: [model] });
+	await arriving;
+	staleRecent?.response.resolve({ data: ["/Users/jesse/git/elsewhere"] });
+	await leaving;
+	expect(store.getState()).toMatchObject({ source: "local", cwd: "/home/jesse/git/evener" });
+	expect(store.getState().projects).toEqual(["/home/jesse/git/evener"]);
+	expect(calls.some((c) => (c.params as { method?: string }).method === "model/list")).toBe(false);
+});
+
+it("applies a setup and settles its model against the host's list", async () => {
+	const { store, calls } = setup();
+	store.getState().applySetup({
+		host: "local",
+		cwd: "/project",
+		model: { provider: "p", model: "a" },
+		effort: "high",
+		overrides: { sandbox: "read-only", enabledPlugins: ["superpowers"] },
+	});
+	expect(store.getState()).toMatchObject({
+		source: "local",
+		cwd: "/project",
+		reasoning: "high",
+		launchOverrides: { sandbox: "read-only", enabledPlugins: ["superpowers"] },
+	});
+	answer(calls, "model/list", null, { data: [model] });
+	await flush();
+	expect(store.getState().model).toEqual(model);
+	expect(store.getState().reasoning).toBe("high");
+});
+
+it("applies a session's seed and finds its model once the host's models arrive", async () => {
+	const { store, calls } = setup();
+	store.getState().applySeed({ host: "local", cwd: "/project", model: "p/a", effort: "low" });
+	answer(calls, "model/list", null, { data: [model] });
+	await flush();
+	expect(store.getState()).toMatchObject({ source: "local", cwd: "/project", model, reasoning: "low" });
+});
+
+it("restores a draft's host, and a draft saved before hosts as the hub's own machine (ruling 28)", () => {
+	const saved = new Map<string, CreationDraft>();
+	const storage = () => ({
+		read: (hubId: string) => saved.get(hubId) ?? null,
+		write: (hubId: string, draft: CreationDraft) => {
+			saved.set(hubId, structuredClone(draft));
+		},
+		clear: (hubId: string) => saved.delete(hubId),
+	});
+	const draft: CreationDraft = {
+		cwd: "/project",
+		prompt: "",
+		harness: "",
+		model: null,
+		reasoning: "",
+		launchOverrides: {},
+		images: [],
+		unconfirmed: false,
+	};
+	saved.set("before", draft);
+	saved.set("remote", { ...draft, source: "paradise-park" });
+	expect(createNewSessionStore("before", storage).getState().source).toBe("local");
+	const remote = createNewSessionStore("remote", storage);
+	expect(remote.getState().source).toBe("paradise-park");
+	remote.getState().setPrompt("hello");
+	expect(saved.get("remote")).toMatchObject({ source: "paradise-park", prompt: "hello" });
+});
+
+it("reads another host's harnesses through the hub", async () => {
+	const { store, calls } = setup();
+	const moving = store.getState().changeHost("paradise-park", "paradise-park");
+	answer(calls, "evener/host/request", "evener/projects/recent", { data: [] });
+	await flush();
+	answer(calls, "evener/host/request", "model/list", { data: [model] });
+	await moving;
+	void store.getState().loadMetadata();
+	expect(calls.some((c) => c.method === "evener/harnesses/list")).toBe(false);
+	expect(calls.some((c) => (c.params as { method?: string }).method === "evener/harnesses/list")).toBe(true);
+});
+
+it("keeps the new host's projects when the old host's recent list answers late", async () => {
+	const { store, calls } = setup();
+	const metadata = store.getState().loadMetadata();
+	const staleRecent = calls.find((c) => c.method === "evener/projects/recent");
+	const moving = store.getState().changeHost("paradise-park", "paradise-park");
+	answer(calls, "evener/host/request", "evener/projects/recent", { data: ["/Users/jesse/git/evener"] });
+	await flush();
+	answer(calls, "evener/host/request", "model/list", { data: [model] });
+	await moving;
+	if (staleRecent) calls.splice(calls.indexOf(staleRecent), 1);
+	staleRecent?.response.resolve({ data: ["/home/jesse/git/evener"] });
+	answer(calls, "evener/harnesses/list", null, { data: [] });
+	await metadata;
+	expect(store.getState().projects).toEqual(["/Users/jesse/git/evener"]);
+});
+
+it("won't start while a host change is still placing the project, even on the hub's default model", async () => {
+	const { store, calls } = setup();
+	await store.getState().setCwd("/home/jesse/git/evener", false);
+	const moving = store.getState().changeHost("paradise-park", "paradise-park");
+	expect(store.getState().movingHost).toBe(true);
+	expect(await store.getState().submit()).toEqual({ status: "blocked" });
+	expect(calls.some((c) => c.method === "thread/start")).toBe(false);
+	answer(calls, "evener/host/request", "evener/path/validate", { path: "/home/jesse/git/evener", valid: false });
+	answer(calls, "evener/host/request", "evener/projects/recent", { data: ["/Users/jesse/git/docs"] });
+	await flush();
+	expect(store.getState().movingHost).toBe(false);
+	answer(calls, "evener/host/request", "model/list", { data: [model] });
+	await moving;
+});
+
+it("drops a host change's answers once the connection changes, and stops placing", async () => {
+	const { store, calls } = setup();
+	await store.getState().setCwd("/Users/jesse/git/evener", false);
+	const moving = store.getState().changeHost("paradise-park", "paradise-park");
+	const validate = calls.find((c) => (c.params as { method?: string }).method === "evener/path/validate");
+	const recent = calls.find((c) => (c.params as { method?: string }).method === "evener/projects/recent");
+	store.getState().bind(null);
+	expect(store.getState().movingHost).toBe(false);
+	validate?.response.resolve({ path: "/Users/jesse/git/evener", valid: false });
+	recent?.response.resolve({ data: ["/Users/jesse/git/docs"] });
+	await moving;
+	expect(store.getState()).toMatchObject({ cwd: "/Users/jesse/git/evener", hostNote: null, movingHost: false });
+});
+
+it("keeps a project chosen while a host change was still answering (not the host's recent one)", async () => {
+	const { store, calls } = setup();
+	const moving = store.getState().changeHost("paradise-park", "paradise-park");
+	await store.getState().setCwd("/Users/jesse/git/mine", false);
+	answer(calls, "evener/host/request", "evener/projects/recent", { data: ["/Users/jesse/git/evener"] });
+	await moving;
+	expect(store.getState()).toMatchObject({ source: "paradise-park", cwd: "/Users/jesse/git/mine", hostNote: null });
+	expect(store.getState().projects).toEqual(["/Users/jesse/git/evener"]);
+	expect(store.getState().movingHost).toBe(false);
+});
+
+it("forgets a session's model once the form moves somewhere else", async () => {
+	const { store, calls } = setup();
+	store.getState().applySeed({ host: "local", cwd: "/project", model: "p/a" });
+	const failed = calls.find((c) => c.method === "model/list");
+	if (failed) calls.splice(calls.indexOf(failed), 1);
+	failed?.response.reject(new Error("offline"));
+	await flush();
+	const moved = store.getState().setCwd("/other");
+	answer(calls, "model/list", null, { data: [model] });
+	await moved;
+	expect(store.getState().model).toBeNull();
+});
+
+it("reads the recent projects of the host an applied setup names, dropping the old host's at once", async () => {
+	const { store, calls } = setup();
+	const metadata = store.getState().loadMetadata();
+	answer(calls, "evener/projects/recent", null, { data: ["/home/jesse/git/evener"] });
+	answer(calls, "evener/harnesses/list", null, { data: [] });
+	await metadata;
+	expect(store.getState().projects).toEqual(["/home/jesse/git/evener"]);
+	store
+		.getState()
+		.applySetup({ host: "paradise-park", cwd: "/Users/jesse/git/evener", model: null, effort: "", overrides: {} });
+	expect(store.getState().projects).toEqual([]);
+	answer(calls, "evener/host/request", "evener/projects/recent", { data: ["/Users/jesse/git/evener"] });
+	answer(calls, "evener/host/request", "evener/harnesses/list", { data: [] });
+	answer(calls, "evener/host/request", "model/list", { data: [model] });
+	await flush();
+	expect(store.getState().projects).toEqual(["/Users/jesse/git/evener"]);
+});
+
+it("drops a model list for the place the form left when a setup is applied", async () => {
+	const { store, calls } = setup();
+	const stale = store.getState().setCwd("/one");
+	const staleModels = calls.find((c) => c.method === "model/list");
+	store.getState().applySetup({ host: "local", cwd: "/two", model: null, effort: "", overrides: {} });
+	if (staleModels) calls.splice(calls.indexOf(staleModels), 1);
+	staleModels?.response.resolve({ data: [{ provider: "stale", model: "old" }] });
+	await stale;
+	expect(store.getState().models).toEqual([]);
+	answer(calls, "model/list", null, { data: [model] });
+	await flush();
+	expect(store.getState().models).toEqual([model]);
+});
+
+it("keeps the new host's harnesses when the old host's list answers late, and drops them on a move", async () => {
+	const { store, calls } = setup();
+	const metadata = store.getState().loadMetadata();
+	answer(calls, "evener/projects/recent", null, { data: [] });
+	const staleHarnesses = calls.find((c) => c.method === "evener/harnesses/list");
+	const moving = store.getState().changeHost("paradise-park", "paradise-park");
+	expect(store.getState().harnesses).toEqual([]);
+	answer(calls, "evener/host/request", "evener/projects/recent", { data: [] });
+	await flush();
+	answer(calls, "evener/host/request", "model/list", { data: [model] });
+	await moving;
+	if (staleHarnesses) calls.splice(calls.indexOf(staleHarnesses), 1);
+	staleHarnesses?.response.resolve({ data: [{ id: "local-only", label: "Local only" }] });
+	await metadata;
+	expect(store.getState().harnesses).toEqual([]);
+});
+
+it("restores a draft with an empty host as the hub's own machine", () => {
+	const saved = new Map<string, CreationDraft>();
+	const storage = () => ({
+		read: (hubId: string) => saved.get(hubId) ?? null,
+		write: (hubId: string, draft: CreationDraft) => {
+			saved.set(hubId, structuredClone(draft));
+		},
+		clear: (hubId: string) => saved.delete(hubId),
+	});
+	saved.set("hub", {
+		source: "",
+		cwd: "/project",
+		prompt: "",
+		harness: "",
+		model: null,
+		reasoning: "",
+		launchOverrides: {},
+		images: [],
+		unconfirmed: false,
+	});
+	expect(createNewSessionStore("hub", storage).getState().source).toBe("local");
+});

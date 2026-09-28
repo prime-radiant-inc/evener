@@ -117,3 +117,28 @@ it.each([
 	expect(snapshot.loading).toBe(false);
 	expect(snapshot.error).toBe("Could not load paths from this hub. Try again or enter the path manually.");
 });
+it("asks another host through the hub, and the hub's own machine directly", async () => {
+	const calls: unknown[] = [];
+	const client = {
+		request: async (method: string, params: unknown) => {
+			calls.push({ method, params });
+			return { data: ["/Users/jesse/git/"] };
+		},
+	} as unknown as ConversationClientLike;
+	await new HubPaths(client, false, "paradise-park").load("/Users/jesse/");
+	await new HubPaths(client, false).load("/home/jesse/");
+	expect(calls).toEqual([
+		{
+			method: "evener/host/request",
+			params: {
+				host: "paradise-park",
+				method: "evener/paths/complete",
+				params: { prefix: "/Users/jesse/", includeFiles: false, limit: 100 },
+			},
+		},
+		{
+			method: "evener/paths/complete",
+			params: { prefix: "/home/jesse/", includeFiles: false, limit: 100 },
+		},
+	]);
+});
