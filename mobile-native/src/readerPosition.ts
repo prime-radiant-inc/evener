@@ -177,6 +177,30 @@ export function isReaderAnchorLoaded(
 	return false;
 }
 
+/** An anchor at the top of `row`: where a session that opens there (spec
+ * 7.3) will restore, before the row has been laid out. */
+export function readerAnchorAt(
+	hubId: string,
+	sessionRef: string,
+	row: TimelineRow,
+	withinItemOffset: number,
+	touchedAt: number,
+	conversationInstance?: string,
+	turnsSeen?: string,
+): ReaderAnchor {
+	const itemPosition = readerPosition(row);
+	return {
+		hubId,
+		sessionRef,
+		...(conversationInstance ? { conversationInstance } : {}),
+		itemKey: readerKey(row),
+		...(itemPosition ? { itemPosition } : {}),
+		withinItemOffset,
+		touchedAt,
+		...(turnsSeen ? { turnsSeen } : {}),
+	};
+}
+
 export function captureReaderAnchor(
 	hubId: string,
 	sessionRef: string,
@@ -191,19 +215,15 @@ export function captureReaderAnchor(
 		(candidate) => candidate.key === readerKey(row),
 	);
 	if (!measurement) return null;
-	return {
+	return readerAnchorAt(
 		hubId,
 		sessionRef,
-		...(conversationInstance ? { conversationInstance } : {}),
-		itemKey: readerKey(row),
-		...(readerPosition(row) ? { itemPosition: readerPosition(row) } : {}),
-		withinItemOffset: Math.min(
-			measurement.height,
-			Math.max(0, contentOffset - measurement.y),
-		),
+		row,
+		Math.min(measurement.height, Math.max(0, contentOffset - measurement.y)),
 		touchedAt,
-		...(turnsSeen ? { turnsSeen } : {}),
-	};
+		conversationInstance,
+		turnsSeen,
+	);
 }
 export type ReaderRestoreCommand =
 	| { kind: "exact"; index: number; viewOffset: number }

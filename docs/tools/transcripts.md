@@ -13,7 +13,7 @@ hand that to `read`. `read` always takes one ref. They replace the old `recall` 
 This document is the canonical design (workshopped with agent consumers for the
 simplest, easiest surface). The historical decision record is
 `docs/specs/session-transcript-tools.md`; the agent-facing prompt steer is
-`agent/prompts/sections/transcripts.md`.
+the transcripts guidance in `agent/prompts/system.md.tmpl`.
 
 ## The one rule worth memorizing
 

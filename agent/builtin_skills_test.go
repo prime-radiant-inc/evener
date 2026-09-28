@@ -104,7 +104,7 @@ func TestEmbeddedSkills_InSystemPrompt(t *testing.T) {
 
 	sess := newSession(t, withAdapter(&fakeAdapter{name: "anthropic"}), withProfile(newAnthropicProfile("claude-test")), withDir(root))
 
-	data := sess.buildPromptData(sess.currentEnv())
+	data, _ := sess.buildPromptData(sess.currentEnv())
 	if !data.HasUseSkill {
 		t.Fatal("HasUseSkill = false, want true")
 	}
