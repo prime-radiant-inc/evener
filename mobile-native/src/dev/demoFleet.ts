@@ -468,7 +468,7 @@ const SESSIONS: RawSession[] = [
 // "hub-test-env" project data.js's comment says test-run sessions belong to.
 // working_dir mirrors magic-kingdom's root ("/home/jesse/git") plus data.js's
 // path for each; "home" is the bare root.
-const PROJECT_META: { key: string; workingDir: string }[] = [
+export const PROJECT_META: { key: string; workingDir: string }[] = [
 	{ key: "evener", workingDir: "/home/jesse/git/prime-radiant-inc/evener" },
 	{ key: "c-to-wasm", workingDir: "/home/jesse/git/c-to-wasm" },
 	{ key: "prime-radiant-inc.github.io", workingDir: "/home/jesse/git/prime-radiant/prime-radiant-inc.github.io" },
@@ -483,7 +483,7 @@ const PROJECT_META: { key: string; workingDir: string }[] = [
 
 // data.js's `plugins`, minus fields the wire type doesn't carry (desc, counts,
 // the optional newer-version hint).
-const PLUGINS: { id: string; mp: string; on: boolean; version: string }[] = [
+export const PLUGINS: { id: string; mp: string; on: boolean; version: string }[] = [
 	{ id: "superpowers", mp: "superpowers-marketplace", on: true, version: "6.4.1" },
 	{ id: "elements-of-style", mp: "superpowers-marketplace", on: true, version: "1.2.0" },
 	{ id: "claude-session-driver", mp: "superpowers-marketplace", on: true, version: "0.9.3" },
@@ -503,7 +503,7 @@ const PLUGINS: { id: string; mp: string; on: boolean; version: string }[] = [
 // The one provider the Board's notice needs (data.js: codex-jesse-fsck.com,
 // "Sign-in expired"); the other 10 providers in data.js aren't needed for the
 // one thing requirement 2 asks the auth list to prove (the sign-in notice).
-const EXPIRED_PROVIDER = "codex-jesse-fsck.com";
+export const EXPIRED_PROVIDER = "codex-jesse-fsck.com";
 
 function hostId(host: ProtoHost | undefined): string {
 	return (host ?? "magic-kingdom") === "magic-kingdom" ? "local" : "paradise-park";
