@@ -772,4 +772,43 @@ describe("comments (Task 16)", () => {
 		await act(async () => choose(openMenu(tree, 4), "Copy"));
 		expect(harness.clipboard).toEqual(["Fix it."]);
 	});
+
+	// A running subagent's session read carries no capabilities (ruling 30),
+	// so its document collects comments and offers Send review only once the
+	// session can take a message.
+	it("offers Send review, in the bar and the Comments sheet, only while the review session can take a message", async () => {
+		memory.addComment(KEY, { blockIndex: 1, blockHash: goal.hash, quote: goal.text, text: "Say which run." });
+		const { tree, navigation, rerender } = await mount();
+		const sheet = commentsSheet();
+		expect(pressable(tree, "Send review")).toBeUndefined();
+		expect(pressable(sheet, "Send review")).toBeUndefined();
+		act(() =>
+			client.emitNotification({
+				method: "thread/status/changed",
+				params: {
+					threadId: "thread-fix",
+					ref: "local:fix",
+					status: { type: "idle" },
+					capabilities: { send: true, queue: true } as never,
+				},
+			}),
+		);
+		await rerender();
+		const params = { hubId: "studio", sessionRef: "local:fix", path: PATH, reviewRef: "local:coord", reviewTitle: "Coordinator" };
+		act(() => pressable(tree, "Send review")?.props.onPress());
+		expect(navigation.navigate).toHaveBeenCalledWith("ReviewSheet", params);
+		act(() => pressable(sheet, "Send review")?.props.onPress());
+		expect(sheetNavigation.navigate).toHaveBeenCalledWith("ReviewSheet", params);
+		expect(sheetNavigation.goBack).not.toHaveBeenCalled();
+	});
+
+	it("offers no Send review from an empty Comments sheet", async () => {
+		client.on("thread/read", () => ({
+			...threadRead("idle"),
+			thread: { ...threadRead("idle").thread, evener: { ...threadRead("idle").thread.evener, capabilities: { send: true } as never } },
+		}));
+		const { tree } = await mount();
+		expect(pressable(tree, "Send review")).toBeDefined();
+		expect(pressable(commentsSheet(), "Send review")).toBeUndefined();
+	});
 });

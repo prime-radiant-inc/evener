@@ -14,6 +14,7 @@ import {
 } from "react-native";
 import { useColors } from "../ui";
 import { ExpandedEditor } from "./ExpandedEditor";
+import { SendButton } from "./SendButton";
 import { SymbolButton } from "./SymbolButton";
 
 /** The field grows to this many lines, then scrolls. */
@@ -140,20 +141,7 @@ export function Composer({
 					<SymbolView name="plus" tintColor={palette.accentInk} size={20 * scale} />
 				</SymbolButton>
 				<View style={{ flex: 1, minWidth: 0 }}>{settings}</View>
-				<SymbolButton label={sendLabel} disabled={!sendEnabled} onPress={onSend}>
-					<View
-						style={{
-							width: 36,
-							height: 36,
-							borderRadius: 18,
-							alignItems: "center",
-							justifyContent: "center",
-							backgroundColor: palette.accentFill,
-						}}
-					>
-						<SymbolView name="paperplane.fill" tintColor={palette.onFill} size={17} />
-					</View>
-				</SymbolButton>
+				<SendButton label={sendLabel} disabled={!sendEnabled} onPress={onSend} />
 			</View>
 			<ExpandedEditor
 				visible={expanded}

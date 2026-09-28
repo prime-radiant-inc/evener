@@ -1,6 +1,7 @@
 // A document's comments (spec 10.2, ruling 26): each with its quote and its
 // text, a way to show its block in the Reader, and Delete. They are drafts on
-// this phone until the review goes out, so Delete doesn't ask.
+// this phone until the review goes out, so Delete doesn't ask. Send review, at
+// the foot of the list, opens the Review sheet over this one.
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
 import { useSyncExternalStore } from "react";
 import { FlatList, Pressable, Text, View } from "react-native";
@@ -13,7 +14,7 @@ import type { DocumentComment } from "./documentMemory";
 import { documentMemory } from "./nativeDocumentMemory";
 import { readerHosts } from "./readerHosts";
 
-export function CommentsSheet({ route }: NativeStackScreenProps<Routes, "CommentsSheet">) {
+export function CommentsSheet({ route, navigation }: NativeStackScreenProps<Routes, "CommentsSheet">) {
 	const { hubId, sessionRef, path } = route.params;
 	const sheet = useSheet();
 	const host = useSheetHost(readerHosts, sheetKey(hubId, sessionRef, path), sheet);
@@ -42,6 +43,23 @@ export function CommentsSheet({ route }: NativeStackScreenProps<Routes, "Comment
 							Touch and hold a paragraph to comment on it.
 						</Text>
 					</View>
+				}
+				ListFooterComponent={
+					host?.canReview && comments.length > 0 ? (
+						<Pressable
+							accessibilityRole="button"
+							accessibilityLabel="Send review"
+							onPress={() => navigation.navigate("ReviewSheet", route.params)}
+							style={{ minHeight: 44, alignItems: "center", justifyContent: "center" }}
+						>
+							<Text
+								allowFontScaling={allowFontScaling}
+								style={{ color: palette.accentInk, fontSize: 17 * scale, lineHeight: 22 * scale, fontWeight: "600" }}
+							>
+								Send review
+							</Text>
+						</Pressable>
+					) : null
 				}
 				renderItem={({ item: comment }: { item: DocumentComment }) => {
 					const anchored = host?.anchor(comment) ?? null;

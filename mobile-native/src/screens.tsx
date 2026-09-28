@@ -242,6 +242,7 @@ export type Routes = {
 		quote: string;
 	};
 	CommentsSheet: { hubId: string; sessionRef: string; path: string; reviewRef: string; reviewTitle: string };
+	ReviewSheet: { hubId: string; sessionRef: string; path: string; reviewRef: string; reviewTitle: string };
 };
 
 export function HubsScreen({

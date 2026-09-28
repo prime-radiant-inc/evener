@@ -13,6 +13,9 @@ export interface ReaderHost {
 	/** The block a comment's marker sits on now, or null once its words
 	 * changed (ruling 14). */
 	anchor(comment: DocumentComment): number | null;
+	/** Whether the review's session can take a message now: its read
+	 * advertises send or queue. A running subagent's can't (ruling 30). */
+	canReview: boolean;
 }
 
 export const readerHosts = sheetHosts<ReaderHost>();

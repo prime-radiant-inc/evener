@@ -210,15 +210,20 @@ export function ReaderScreen({ route, navigation }: NativeStackScreenProps<Route
 		};
 	}, [memory, key]);
 
-	// The document's session ending a turn may have rewritten the file.
+	// The document's session ending a turn may have rewritten the file. The
+	// same read says whether it can take the review: the review always goes to
+	// the session the document was opened in (ruling 16), which is this one.
+	const [canReview, setCanReview] = useState(false);
 	useEffect(() => {
 		if (!inFront || !client) return;
 		const link = new SessionLink(client, sessionRef);
 		let status: string | null = null;
 		const unsubscribe = link.subscribe(() => {
-			const next = link.getSnapshot()?.status ?? null;
+			const session = link.getSnapshot();
+			const next = session?.status ?? null;
 			if (status === "active" && next !== "active") reload();
 			status = next;
+			setCanReview(Boolean(session?.capabilities.send || session?.capabilities.queue));
 		});
 		link.read({ follow: true }).catch(() => {
 			// Quiet: the Reader shows the document it has either way.
@@ -249,8 +254,9 @@ export function ReaderScreen({ route, navigation }: NativeStackScreenProps<Route
 			outline: headings,
 			jumpTo: (index) => scrollTo({ index, animated: true }),
 			anchor: (comment) => (blocks ? anchorBlock(comment, blocks) : null),
+			canReview,
 		}),
-		[headings, scrollTo, blocks],
+		[headings, scrollTo, blocks, canReview],
 	);
 	useProvideSheetHost(readerHosts, sheetKey(hubId, sessionRef, path), host);
 
@@ -344,7 +350,7 @@ export function ReaderScreen({ route, navigation }: NativeStackScreenProps<Route
 		setMenuOpen(index);
 		if (index !== null) setSelecting((current) => (current === index ? current : null));
 	}, []);
-	const commentsParams = { hubId, sessionRef, path, reviewRef, reviewTitle };
+	const sheetParams = { hubId, sessionRef, path, reviewRef, reviewTitle };
 	// The rows keep one callback; it reaches this render's values through the ref.
 	const act = useRef((_action: BlockAction, _block: DocumentBlock, _words?: string) => {});
 	act.current = (action, block, words) => {
@@ -373,7 +379,7 @@ export function ReaderScreen({ route, navigation }: NativeStackScreenProps<Route
 				setSelecting(block.index);
 				return;
 			case "comments":
-				navigation.navigate("CommentsSheet", commentsParams);
+				navigation.navigate("CommentsSheet", sheetParams);
 		}
 	};
 	const onAction = useCallback((action: BlockAction, block: DocumentBlock, words?: string) => act.current(action, block, words), []);
@@ -468,7 +474,7 @@ export function ReaderScreen({ route, navigation }: NativeStackScreenProps<Route
 									label="Comments"
 									symbol="bubble.left"
 									text={String(comments.length)}
-									onPress={() => navigation.navigate("CommentsSheet", commentsParams)}
+									onPress={() => navigation.navigate("CommentsSheet", sheetParams)}
 								/>
 							) : null}
 						</View>
@@ -486,7 +492,23 @@ export function ReaderScreen({ route, navigation }: NativeStackScreenProps<Route
 								<Chevron name="chevron.right" label="Next change" onPress={() => stepBy(1)} />
 							</View>
 						) : null}
-						<View style={{ flex: 1, alignItems: "flex-end" }} />
+						<View style={{ flex: 1, alignItems: "flex-end" }}>
+							{canReview ? (
+								<Pressable
+									accessibilityRole="button"
+									accessibilityLabel="Send review"
+									onPress={() => navigation.navigate("ReviewSheet", sheetParams)}
+									style={{ minHeight: 44, justifyContent: "center" }}
+								>
+									<Text
+										allowFontScaling={allowFontScaling}
+										style={{ color: palette.accentInk, fontSize: 15 * scale, lineHeight: 20 * scale, fontWeight: "600" }}
+									>
+										Send review
+									</Text>
+								</Pressable>
+							) : null}
+						</View>
 					</View>
 				</View>
 			) : null}
