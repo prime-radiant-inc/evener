@@ -675,7 +675,147 @@ func TestAttachUnderGateHandoffNeverSkipsADeregisteredLoopsMark(t *testing.T) {
 	if n := supervisorLoops(m, host.Name); n != 1 {
 		t.Fatalf("supervisor loops after the handoff interleaved with the teardown = %d, want 1: the handoff read a deregistered loop's mark as live supervision and skipped the only supervisor the channel has", n)
 	}
-	if !m.supervisesChannel(ch) {
+	if !ch.supervised.Load() {
 		t.Fatal("the channel's supervision mark is clear after the handoff")
+	}
+}
+
+// TestAttachUnderGateConcurrentHandoffsStartExactlyOneSupervisor pins the
+// exactly-once registration two handoffs for the same channel must honor: the
+// supervision decision and the loop registration have to be one critical
+// section, or two handoffs using the same held operation can both observe
+// "unsupervised" and register duplicate reconnect loops for one channel. Both
+// handoffs are parked before the decision, so the interleaving is exact rather
+// than a race.
+func TestAttachUnderGateConcurrentHandoffsStartExactlyOneSupervisor(t *testing.T) {
+	arrived := make(chan struct{}, 2)
+	resume := make(chan struct{})
+	m, _, host := attachUnderGateManager(t, Options{
+		beforeSuperviseStart: func(string, *Channel) {
+			arrived <- struct{}{}
+			<-resume
+		},
+	})
+	gate, err := m.TryAcquire(host.Name, attachUnderGateCaller())
+	if err != nil {
+		t.Fatalf("TryAcquire: %v", err)
+	}
+	defer gate()
+
+	_, first, err := m.AttachUnderGate(context.Background(), host, attachUnderGateCaller(), true)
+	if err != nil {
+		t.Fatalf("AttachUnderGate: %v", err)
+	}
+	// A second attach under the same hold finds the channel live and hands back
+	// its own handoff for that same channel — the shape of an operation that
+	// both attach-firsts and reattaches, or one whose attach is entered twice.
+	ch, second, err := m.AttachUnderGate(context.Background(), host, attachUnderGateCaller(), true)
+	if err != nil {
+		t.Fatalf("second AttachUnderGate: %v", err)
+	}
+	if ch == nil || m.currentChannel(host.Name) != ch {
+		t.Fatalf("the second attach did not hand back the live channel: ch=%v current=%v", ch, m.currentChannel(host.Name))
+	}
+
+	done1 := make(chan bool, 1)
+	done2 := make(chan bool, 1)
+	go func() { done1 <- first() }()
+	go func() { done2 <- second() }()
+	// Both handoffs must be parked before their supervision decision, so the
+	// duplicate-registration race is exercised deterministically.
+	for i := range 2 {
+		select {
+		case <-arrived:
+		case <-time.After(5 * time.Second):
+			t.Fatalf("only %d of the two handoffs reached the supervision decision", i)
+		}
+	}
+	close(resume)
+	for i, done := range []chan bool{done1, done2} {
+		select {
+		case ok := <-done:
+			if !ok {
+				t.Fatalf("handoff %d reported that supervision failed", i+1)
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatalf("handoff %d never returned", i+1)
+		}
+	}
+	if n := supervisorLoops(m, host.Name); n != 1 {
+		t.Fatalf("supervisor loops after two concurrent handoffs = %d, want exactly 1: the supervision decision and the loop registration must be one atomic step", n)
+	}
+}
+
+// TestSupervisorReconnectMarksTheReplacementChannel pins the round-7 M2 trace's
+// conclusion: when a loop reconnects and a replacement channel is published, the
+// replacement is marked supervised by the loop that adopts it, so a later
+// live-channel handoff for it finds it supervised and starts no second
+// supervisor. The replacement is not left unmarked.
+func TestSupervisorReconnectMarksTheReplacementChannel(t *testing.T) {
+	exits := make(chan struct{}, 4)
+	m, _, host := attachUnderGateManager(t, Options{
+		BackoffBase: 2 * time.Millisecond,
+		BackoffMax:  10 * time.Millisecond,
+		superviseExited: func(string) {
+			select {
+			case exits <- struct{}{}:
+			default:
+			}
+		},
+	})
+
+	first, err := m.Ensure(context.Background(), host.Name)
+	if err != nil {
+		t.Fatalf("Ensure: %v", err)
+	}
+	if !first.supervised.Load() {
+		t.Fatal("the attached channel is not marked supervised")
+	}
+
+	// Drop the link and let the supervisor reconnect: the replacement it
+	// publishes is adopted by a fresh loop (reconnectOnce starts it) and must
+	// carry its own supervision mark.
+	first.markLost()
+	var replacement *Channel
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if ch := m.currentChannel(host.Name); ch != nil && ch != first {
+			replacement = ch
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the supervisor never reconnected the dropped channel")
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+	deadline = time.Now().Add(5 * time.Second)
+	for !replacement.supervised.Load() {
+		if time.Now().After(deadline) {
+			t.Fatal("the reconnected replacement is unmarked: a later live-channel handoff could start a second supervisor for it")
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+	// The reconnecting loop stands down once its replacement is adopted; wait
+	// for that exit so the loop counting below is exact.
+	select {
+	case <-exits:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the reconnecting loop never stood down after adopting the replacement")
+	}
+
+	gate, err := m.TryAcquire(host.Name, attachUnderGateCaller())
+	if err != nil {
+		t.Fatalf("TryAcquire: %v", err)
+	}
+	defer gate()
+	handoff := m.attachHandoff(host, replacement, attachUnderGateCaller())
+	if !handoff() {
+		t.Fatal("the handoff reported failure for a supervised replacement")
+	}
+	if n := supervisorLoops(m, host.Name); n != 1 {
+		t.Fatalf("supervisor loops after the replacement's handoff = %d, want 1: the replacement is supervised and must not gain a second loop", n)
+	}
+	if !replacement.supervised.Load() {
+		t.Fatal("the replacement's supervision mark was cleared by the handoff")
 	}
 }
