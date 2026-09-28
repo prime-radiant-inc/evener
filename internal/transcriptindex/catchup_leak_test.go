@@ -293,10 +293,7 @@ func TestAddContributorLogsBeforeOverwritingSoAKillLeavesTheCommittedItemUntouch
 	}
 	full := info.Size()
 
-	testKillAfterItemUpdateLog = func() error {
-		return errors.New("killed between the update-log row and the item overwrite")
-	}
-	t.Cleanup(func() { testKillAfterItemUpdateLog = nil })
+	simulateItemKill(t)
 	if err := hub.CatchUpTo(full); err == nil {
 		t.Fatal("the killed extension returned success")
 	}
@@ -332,16 +329,7 @@ func TestALeftoverUpdateRowReadErrorMarksTheIndexForRebuild(t *testing.T) {
 	updatesPath := filepath.Join(x.dir, x.build, x.updatesName)
 
 	// A leftover row past the committed count, as a killed extension leaves.
-	f, err := os.OpenFile(updatesPath, os.O_APPEND|os.O_WRONLY, 0)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := f.Write(make([]byte, updateRecordSize)); err != nil {
-		t.Fatal(err)
-	}
-	if err := f.Close(); err != nil {
-		t.Fatal(err)
-	}
+	appendBytes(t, updatesPath, make([]byte, updateRecordSize))
 	writeOnly, err := os.OpenFile(updatesPath, os.O_WRONLY, 0)
 	if err != nil {
 		t.Fatal(err)
@@ -395,15 +383,8 @@ func TestCatchUpToShortOfALeftoverItemUpdateRebuilds(t *testing.T) {
 	midOfResult := floor + int64(len(lines[1]))/2
 
 	appendBytes(t, path, lines[1])
-	info, err := os.Stat(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	testKillAfterItemUpdateLog = func() error {
-		return errors.New("killed between the update-log row and the item overwrite")
-	}
-	t.Cleanup(func() { testKillAfterItemUpdateLog = nil })
-	if err := hub.CatchUpTo(info.Size()); err == nil {
+	simulateItemKill(t)
+	if err := hub.CatchUp(); err == nil {
 		t.Fatal("the killed extension returned success")
 	}
 	testKillAfterItemUpdateLog = nil
