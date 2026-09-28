@@ -57,14 +57,60 @@ const ALL_EFFORTS = ["low", "medium", "high", "xhigh", "max"];
 // use that isn't the default.
 export const DEMO_MODEL_LIST: ModelListResponse = {
 	data: [
-		{ provider: "lunaroute", model: "deepseek-4.1-flash", displayName: "DeepSeek 4.1 Flash", contextWindow: 256_000, supportsReasoning: true, reasoningEffortLevels: ALL_EFFORTS },
-		{ provider: "lunaroute", model: "glm-5.3-vision", displayName: "GLM 5.3 Vision", contextWindow: 200_000, supportsVision: true, supportsReasoning: true, reasoningEffortLevels: ALL_EFFORTS },
-		{ provider: "lunaroute", model: "glm-5.3-flash", displayName: "GLM 5.3 Flash", contextWindow: 128_000, supportsReasoning: true, reasoningEffortLevels: ["low", "medium", "high"] },
-		{ provider: "codex-jesse-fsck.com", model: "gpt-5.6", displayName: "GPT-5.6", contextWindow: 400_000, supportsVision: true, supportsReasoning: true, reasoningEffortLevels: ALL_EFFORTS },
-		{ provider: "codex-jesse-fsck.com", model: "gpt-6-astra", displayName: "GPT-6 Astra", contextWindow: 1_000_000, supportsVision: true, supportsReasoning: true, reasoningEffortLevels: ALL_EFFORTS },
+		{
+			provider: "lunaroute",
+			model: "deepseek-4.1-flash",
+			displayName: "DeepSeek 4.1 Flash",
+			contextWindow: 256_000,
+			supportsReasoning: true,
+			reasoningEffortLevels: ALL_EFFORTS,
+		},
+		{
+			provider: "lunaroute",
+			model: "glm-5.3-vision",
+			displayName: "GLM 5.3 Vision",
+			contextWindow: 200_000,
+			supportsVision: true,
+			supportsReasoning: true,
+			reasoningEffortLevels: ALL_EFFORTS,
+		},
+		{
+			provider: "lunaroute",
+			model: "glm-5.3-flash",
+			displayName: "GLM 5.3 Flash",
+			contextWindow: 128_000,
+			supportsReasoning: true,
+			reasoningEffortLevels: ["low", "medium", "high"],
+		},
+		{
+			provider: "codex-jesse-fsck.com",
+			model: "gpt-5.6",
+			displayName: "GPT-5.6",
+			contextWindow: 400_000,
+			supportsVision: true,
+			supportsReasoning: true,
+			reasoningEffortLevels: ALL_EFFORTS,
+		},
+		{
+			provider: "codex-jesse-fsck.com",
+			model: "gpt-6-astra",
+			displayName: "GPT-6 Astra",
+			contextWindow: 1_000_000,
+			supportsVision: true,
+			supportsReasoning: true,
+			reasoningEffortLevels: ALL_EFFORTS,
+		},
 	],
 	recent: [
-		{ provider: "lunaroute", model: "glm-5.3-vision", displayName: "GLM 5.3 Vision", contextWindow: 200_000, supportsVision: true, supportsReasoning: true, reasoningEffortLevels: ALL_EFFORTS },
+		{
+			provider: "lunaroute",
+			model: "glm-5.3-vision",
+			displayName: "GLM 5.3 Vision",
+			contextWindow: 200_000,
+			supportsVision: true,
+			supportsReasoning: true,
+			reasoningEffortLevels: ALL_EFFORTS,
+		},
 	],
 };
 
@@ -222,7 +268,13 @@ const CONTENT: Record<string, SessionContent> = {
 				},
 			},
 			{
-				step: { tool: "job_watch", intent: "Waiting on subagents", args: { job_ids: ["g-run-0"] }, seconds: 0, running: true },
+				step: {
+					tool: "job_watch",
+					intent: "Waiting on subagents",
+					args: { job_ids: ["g-run-0"] },
+					seconds: 0,
+					running: true,
+				},
 			},
 		],
 		queued: ["When CI is green, post a summary on the PR."],
@@ -267,7 +319,14 @@ const CONTENT: Record<string, SessionContent> = {
 					output: "1,412 lines, 61 tools",
 				},
 			},
-			{ step: { tool: "grep", intent: "Found every argument schema", args: { pattern: "Parameters:", path: "agent/internal/tool" }, seconds: 3 } },
+			{
+				step: {
+					tool: "grep",
+					intent: "Found every argument schema",
+					args: { pattern: "Parameters:", path: "agent/internal/tool" },
+					seconds: 3,
+				},
+			},
 			{ subagent: "s-audit-g0" },
 			{ subagent: "s-audit-g1" },
 			{ subagent: "s-audit-g2" },
@@ -323,12 +382,19 @@ const CONTENT: Record<string, SessionContent> = {
 				},
 			},
 		],
-		escalation: { tool: "write_file", kind: "file_tool", mode: "workspace-write", deniedPath: "/home/jesse/sites/docs/index.html" },
+		escalation: {
+			tool: "write_file",
+			kind: "file_tool",
+			mode: "workspace-write",
+			deniedPath: "/home/jesse/sites/docs/index.html",
+		},
 	},
 	"s-tasklist": {
 		model: "lunaroute/glm-5.3-vision",
 		entries: [
-			{ user: "The inline task card in the transcript is too tall. Make it one line that expands, and keep the current task visible." },
+			{
+				user: "The inline task card in the transcript is too tall. Make it one line that expands, and keep the current task visible.",
+			},
 			{
 				agent:
 					"I'll fold `TaskCard` into one summary line (*→ Fold the task card · 1 of 4*) that expands in place, and keep the full list in the Tasks panel. Subagents will update the tests and the browser guard.",
@@ -423,7 +489,9 @@ const CONTENT: Record<string, SessionContent> = {
 	"s-jobdisp": {
 		model: "lunaroute/glm-5.3-vision",
 		entries: [
-			{ user: "Failed jobs in the transcript just say 'failed'. Show the exit code and the last lines of output inline." },
+			{
+				user: "Failed jobs in the transcript just say 'failed'. Show the exit code and the last lines of output inline.",
+			},
 			{
 				step: {
 					tool: "edit_file",
@@ -438,7 +506,14 @@ const CONTENT: Record<string, SessionContent> = {
 				},
 			},
 			{ step: shell("Ran the tests", "npm test", 48, testOutput(60)) },
-			{ step: shell("Opened PR #2331", "gh pr create --fill", 6, "https://github.com/prime-radiant-inc/evener/pull/2331") },
+			{
+				step: shell(
+					"Opened PR #2331",
+					"gh pr create --fill",
+					6,
+					"https://github.com/prime-radiant-inc/evener/pull/2331",
+				),
+			},
 			{
 				agent:
 					"Done. Failed jobs now show the exit code and the last 20 lines of output inline, with a link to the full log. PR #2331 is open and green.",
@@ -470,7 +545,8 @@ function genericEntries(session: FleetSession): Entry[] {
 // A working row's activity line as the step it describes.
 function liveStep(activity = "Thinking"): Entry {
 	if (activity === "Thinking") return { thinking: true };
-	if (activity.startsWith("Running ")) return { step: { ...shell(activity, activity.slice("Running ".length), 0), running: true } };
+	if (activity.startsWith("Running "))
+		return { step: { ...shell(activity, activity.slice("Running ".length), 0), running: true } };
 	const [verb, ...rest] = activity.split(" ");
 	const tool = verb === "Editing" ? "edit_file" : verb === "Writing" ? "write_file" : "read_file";
 	return { step: { tool, intent: activity, args: { file_path: rest.join(" ") }, seconds: 0, running: true } };
@@ -686,7 +762,13 @@ function sessionThread(session: FleetSession, now: number): Thread {
 			...(content.agentNote ? { agentNote: content.agentNote } : {}),
 			...(content.links ? { sessionUrls: content.links.map((link) => ({ ...link, addedBy: "agent" })) } : {}),
 			diagnostics: {
-				plugins: enabledPluginNames().map((name) => ({ name, skillCount: 1, agentCount: 0, hookCount: 0, mcpCount: 0 })),
+				plugins: enabledPluginNames().map((name) => ({
+					name,
+					skillCount: 1,
+					agentCount: 0,
+					hookCount: 0,
+					mcpCount: 0,
+				})),
 				delegates: delegatesOf(session, now),
 			},
 			usage: {

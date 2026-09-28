@@ -622,7 +622,8 @@ export function fleetSessions(): FleetSession[] {
 			title: raw.title,
 			state: raw.state,
 			// hub-test-env is the one project PROJECT_META leaves without a folder.
-			workingDir: PROJECT_META.find((project) => project.key === projectKey)?.workingDir ?? `/home/jesse/git/${projectKey}`,
+			workingDir:
+				PROJECT_META.find((project) => project.key === projectKey)?.workingDir ?? `/home/jesse/git/${projectKey}`,
 			ago: raw.ago,
 			...(raw.activity ? { activity: raw.activity } : {}),
 			subagents: rawChildren(raw),

@@ -92,7 +92,11 @@ describe("the demo sessions behind Appendix A's Session frames", () => {
 		for (const run of runs) expect(runSummaryText(runSummary(run.steps))).toMatch(/^\d+ steps? · \d+[smh]/);
 		const lines = subagentsOf(rows).map((row) => subagentLine(row, model.delegates, NOW));
 		expect(lines).toContainEqual(
-			expect.objectContaining({ title: "Fix race in tree settle", state: "failed", activity: "Failed: go test exited 1 (3 times)" }),
+			expect.objectContaining({
+				title: "Fix race in tree settle",
+				state: "failed",
+				activity: "Failed: go test exited 1 (3 times)",
+			}),
 		);
 	});
 
