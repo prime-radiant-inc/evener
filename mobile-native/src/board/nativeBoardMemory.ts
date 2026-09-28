@@ -1,5 +1,5 @@
 import { Storage } from "expo-sqlite/kv-store";
-import { FoldedSections, forgetBoard, OrganizeByPreference, SeenMarkers } from "./boardMemory";
+import { FoldedSections, forgetBoard, OrganizeByPreference, RecentSearches, SeenMarkers } from "./boardMemory";
 import { BoardSeen, forgetHubSeenMarks, hubSeenMarks } from "./hubSeen";
 import { perHub } from "./perHub";
 
@@ -8,6 +8,7 @@ import { perHub } from "./perHub";
 const seen = perHub((hubId) => new SeenMarkers(Storage, hubId));
 const folded = perHub((hubId) => new FoldedSections(Storage, hubId));
 const organize = perHub((hubId) => new OrganizeByPreference(Storage, hubId));
+const recent = perHub((hubId) => new RecentSearches(Storage, hubId));
 
 export function seenMarkers(hubId: string): SeenMarkers {
 	return seen.get(hubId);
@@ -27,8 +28,12 @@ export function organizeByPreference(hubId: string): OrganizeByPreference {
 	return organize.get(hubId);
 }
 
+export function recentSearches(hubId: string): RecentSearches {
+	return recent.get(hubId);
+}
+
 export function forgetBoardForHub(hubId: string): void {
-	for (const memory of [seen, folded, organize]) memory.forget(hubId);
+	for (const memory of [seen, folded, organize, recent]) memory.forget(hubId);
 	forgetHubSeenMarks(hubId);
 	forgetBoard(Storage, hubId);
 }

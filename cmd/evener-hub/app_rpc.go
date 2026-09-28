@@ -126,6 +126,7 @@ func localDaemonEntriesFromRoster(live []hubcore.LiveEntry) []appsource.LocalDae
 			PendingAsk:         item.PendingAsk,
 			PendingEscalation:  item.PendingEscalation,
 			PendingEscalations: item.PendingEscalations,
+			PendingQuestion:    item.PendingQuestion,
 			RunningJobs:        item.RunningJobs,
 			CompletedJobs:      item.CompletedJobs,
 			Watches:            item.Watches,
