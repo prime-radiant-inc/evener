@@ -4,9 +4,9 @@
 // and the actions it offers as text buttons. Tapping the bubble opens the
 // rest of its actions.
 import type { ReactNode } from "react";
-import { ActionSheetIOS, Alert, Platform, Pressable, Text, useWindowDimensions, View } from "react-native";
+import { ActionSheetIOS, Alert, Platform, Pressable, Text, View } from "react-native";
 import { typeRoles } from "../design/tokens";
-import { useColors } from "../ui";
+import { allowFontScaling, useColors, useTextScale } from "../ui";
 import type { Ghost, GhostAction } from "./ghosts";
 
 const BUTTON_LABELS: Record<GhostAction, string> = {
@@ -39,8 +39,7 @@ export interface GhostBubbleProps {
 
 export function GhostBubble({ ghost, disabled, canEdit, editHint, attachments, onAction }: GhostBubbleProps) {
 	const { palette } = useColors();
-	const { fontScale } = useWindowDimensions();
-	const scale = Platform.OS === "ios" ? fontScale : 1;
+	const scale = useTextScale();
 	const editBlocked = ghost.origin.kind !== "queue" && !canEdit;
 	const offersEdit = ghost.buttons.includes("edit") || ghost.menu.includes("edit");
 	const menu = ghost.menu.filter((action) => !(action === "edit" && editBlocked));
@@ -67,7 +66,7 @@ export function GhostBubble({ ghost, disabled, canEdit, editHint, attachments, o
 			]);
 	}
 	const caption = {
-		allowFontScaling: Platform.OS !== "ios",
+		allowFontScaling,
 		style: {
 			fontSize: 13 * scale,
 			lineHeight: 18 * scale,
@@ -92,7 +91,7 @@ export function GhostBubble({ ghost, disabled, canEdit, editHint, attachments, o
 				}}
 			>
 				<Text
-					allowFontScaling={Platform.OS !== "ios"}
+					allowFontScaling={allowFontScaling}
 					numberOfLines={3}
 					ellipsizeMode="tail"
 					style={{
@@ -134,7 +133,7 @@ export function GhostBubble({ ghost, disabled, canEdit, editHint, attachments, o
 								})}
 							>
 								<Text
-									allowFontScaling={Platform.OS !== "ios"}
+									allowFontScaling={allowFontScaling}
 									style={{
 										fontSize: 15 * scale,
 										lineHeight: 20 * scale,

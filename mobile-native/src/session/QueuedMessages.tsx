@@ -3,8 +3,8 @@
 // the queue is one quiet row that opens the Queue sheet (ruling 18).
 import { SymbolView } from "expo-symbols";
 import type { ReactNode } from "react";
-import { Platform, Pressable, Text, useWindowDimensions, View } from "react-native";
-import { useColors } from "../ui";
+import { Pressable, Text, View } from "react-native";
+import { allowFontScaling, useColors, useTextScale } from "../ui";
 import { GhostBubble } from "./GhostBubble";
 import { type Ghost, type GhostAction, shownGhosts } from "./ghosts";
 
@@ -29,8 +29,7 @@ export function QueuedMessages({
 	onMore,
 }: QueuedMessagesProps) {
 	const { palette } = useColors();
-	const { fontScale } = useWindowDimensions();
-	const scale = Platform.OS === "ios" ? fontScale : 1;
+	const scale = useTextScale();
 	if (ghosts.length === 0) return null;
 	const { shown, moreQueued } = shownGhosts(ghosts);
 	const more = `${moreQueued} more queued`;
@@ -55,7 +54,7 @@ export function QueuedMessages({
 					style={{ alignSelf: "flex-end", minHeight: 44, flexDirection: "row", alignItems: "center", gap: 4 }}
 				>
 					<Text
-						allowFontScaling={Platform.OS !== "ios"}
+						allowFontScaling={allowFontScaling}
 						style={{ fontSize: 13 * scale, lineHeight: 18 * scale, color: palette.inkLow, fontVariant: ["tabular-nums"] }}
 					>
 						{more}
