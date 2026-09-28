@@ -1098,6 +1098,35 @@ function turnsMatch(left: TurnModel, right: TurnModel): boolean {
   return left.id === right.id || turnsShareItemIdentity(left, right);
 }
 
+// Two turns carry conflicting keyed identities when they hold items of the
+// same id under two different supplied transcript keys. itemIdentityMatches
+// already refuses that pair directly, but a keyless alias (an item with the
+// same id and no key) matches BOTH by id, and the group merge below would
+// otherwise let it bridge them into one turn and combine their payloads. A
+// keyless alias is unambiguous only while the turns it touches agree on a
+// transcript key; two such turns are distinct recorded turns and stay apart.
+function turnsCarryConflictingKeys(left: TurnModel, right: TurnModel): boolean {
+  return left.items.some((leftItem) =>
+    right.items.some(
+      (rightItem) =>
+        leftItem.id === rightItem.id &&
+        Boolean(leftItem.transcriptKey) &&
+        Boolean(rightItem.transcriptKey) &&
+        leftItem.transcriptKey !== rightItem.transcriptKey,
+    ),
+  );
+}
+
+function groupsCarryConflictingKeys(left: TurnFragmentGroup, right: TurnFragmentGroup): boolean {
+  return left.fragments.some((leftFragment) =>
+    right.fragments.some((rightFragment) => turnsCarryConflictingKeys(leftFragment.turn, rightFragment.turn)),
+  );
+}
+
+function groupConflictsWithFragment(group: TurnFragmentGroup, fragment: TurnFragment): boolean {
+  return group.fragments.some((existing) => turnsCarryConflictingKeys(existing.turn, fragment.turn));
+}
+
 function mergePageTurn(older: TurnModel, newer: TurnModel, context?: ToolItemMergeContext): TurnModel {
   return {
     ...older,
@@ -1279,14 +1308,32 @@ function coalesceTurnFragments(
     const matching = groups.filter((group) =>
       group.fragments.some((existing) => turnsMatch(existing.turn, fragment.turn)),
     );
-    const target = matching[0];
+    // The target is the first matching group the fragment can join without a
+    // same-id conflicting transcript key. It is not always matching[0]: a
+    // fragment that conflicts with an earlier group may still fold into a
+    // later compatible one — refusing outright would leave a shared keyless
+    // item standing twice, the duplication coalescing exists to remove.
+    const target = matching.find((group) => !groupConflictsWithFragment(group, fragment));
     if (target === undefined) {
       groups.push({ fragments: [fragment], firstOrder: order });
       return;
     }
     target.fragments.push(fragment);
-    for (const group of matching.slice(1)) target.fragments.push(...group.fragments);
-    for (const group of matching.slice(1).reverse()) {
+    // A fragment that matches several groups joins them only when they agree
+    // on their keyed identities. A keyless alias matching two turns whose
+    // supplied keys differ would otherwise bridge distinct recorded turns into
+    // one; the conflicting groups stay separate instead. Each candidate is
+    // checked against the group as it grows, so two candidates that conflict
+    // with each other but not with the target are not both absorbed. A group
+    // the fragment cannot join (it conflicts) is skipped, never force-added.
+    const absorbed: TurnFragmentGroup[] = [];
+    for (const group of matching) {
+      if (group === target) continue;
+      if (groupsCarryConflictingKeys(target, group)) continue;
+      target.fragments.push(...group.fragments);
+      absorbed.push(group);
+    }
+    for (const group of absorbed.reverse()) {
       const index = groups.indexOf(group);
       if (index !== -1) groups.splice(index, 1);
     }

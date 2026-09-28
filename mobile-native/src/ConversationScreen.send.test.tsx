@@ -12,10 +12,12 @@ import { getNativeMutationRuntime, nativeMutationTargetKey } from "./nativeMutat
 import { flatListCalls, pressable, render, renderedText, screenConnection, textOf } from "./renderNative.testkit";
 import { queueHosts } from "./QueueSheet";
 import { ConversationScreen } from "./screens";
-import { NotesSheet } from "./session/NotesSheet";
+import { NotesSheet, notesHosts } from "./session/NotesSheet";
 import { QuestionDock } from "./session/QuestionDock";
 import { sheetKey } from "./sheet/sheetHosts";
 import { holdQuote, takeQuote } from "./session/pendingQuote";
+import { modelHosts } from "./session/ModelSheet";
+import { SessionInfoSheet } from "./session/SessionInfoSheet";
 
 const harness = vi.hoisted(() => ({
 	connection: {} as Record<string, unknown>,
@@ -268,6 +270,9 @@ function hubClient(served: Thread, failedReads = 0, readLatencyMs = 0, olderCurs
 			listeners.add(listener);
 			return () => listeners.delete(listener);
 		},
+		forceStop: async (ref: string) => {
+			requests.push({ method: "forceStop", params: { ref } });
+		},
 		resumeThread: async (ref: string) => {
 			requests.push({ method: "resumeThread", params: { ref } });
 		},
@@ -284,6 +289,10 @@ function hubClient(served: Thread, failedReads = 0, readLatencyMs = 0, olderCurs
 				return { thread, ...(olderCursor ? { olderCursor } : {}) };
 			}
 			if (method === "thread/turns/list") return { data: [] };
+			if (method === "model/list")
+				return {
+					data: [{ provider: "anthropic", model: "claude-sonnet-5", displayName: "Claude Sonnet 5" }],
+				};
 			if (method === "notes/human/set")
 				return {
 					note: params.note,
@@ -898,6 +907,160 @@ it("resumes a paused session from its error", async () => {
 	]);
 });
 
+it("names the model on the composer's chip, which opens the model sheet with the session's controls", async () => {
+	vi.mocked(navigation.navigate).mockClear();
+	const served = thread("ref-model", "idle");
+	(served as unknown as { modelProvider: string }).modelProvider = "anthropic/claude-sonnet-5";
+	(served as unknown as { evener: Record<string, unknown> }).evener.capabilities = { ...CAPABILITIES, changeModel: true };
+	const { tree, hub } = await mount(served);
+	// The screen loads the catalog once, so the chip can name the model.
+	expect(hub.requests.filter((request) => request.method === "model/list")).toHaveLength(1);
+	const chip = pressable(tree, "Model: Claude Sonnet 5. Change model or effort");
+	if (!chip) throw new Error("no model chip");
+	act(() => chip.props.onPress());
+	expect(navigation.navigate).toHaveBeenCalledWith("ModelSheet", { hubId: "hub-1", ref: "ref-model", setting: "model" });
+	const host = modelHosts.get(sheetKey("hub-1", "ref-model"));
+	expect(host?.session.modelProvider).toBe("anthropic/claude-sonnet-5");
+	expect(host?.controls?.getSnapshot().catalog?.data).toHaveLength(1);
+});
+
+it("keeps the Session sheet and a half-typed name through a connection blip, and saves once the hub is back", async () => {
+	vi.mocked(navigation.goBack).mockClear();
+	const served = thread("ref-blip", "idle");
+	(served as unknown as { evener: Record<string, unknown> }).evener.capabilities = { ...CAPABILITIES, rename: true };
+	const { tree, hub } = await mount(served);
+	const params = { hubId: "hub-1", ref: "ref-blip" };
+	const sheet = render(
+		<SessionInfoSheet
+			route={{ key: "session-info", name: "SessionInfoSheet", params } as unknown as ComponentProps<typeof SessionInfoSheet>["route"]}
+			navigation={navigation as unknown as ComponentProps<typeof SessionInfoSheet>["navigation"]}
+		/>,
+	);
+	const title = sheet.root.findAll(
+		(node) => String(node.type) === "Pressable" && String(node.props.accessibilityLabel).endsWith(", rename"),
+	)[0];
+	if (!title) throw new Error("no rename");
+	act(() => title.props.onPress());
+	const nameField = () => sheet.root.find((node) => String(node.type) === "TextInput");
+	act(() => nameField().props.onChangeText("Settle race"));
+
+	const screenAt = (state: string) => {
+		harness.connection = { ...harness.connection, state };
+		const route = { key: "conversation-ref-blip", name: "Conversation", params: { ...params, title: "Session" } };
+		act(() =>
+			tree.update(<ConversationScreen route={route as unknown as ConversationScreenProps["route"]} navigation={navigation} />),
+		);
+	};
+	screenAt("connecting");
+	await settle();
+	expect(navigation.goBack).not.toHaveBeenCalled();
+	expect(nameField().props.value).toBe("Settle race");
+	// Save waits for the hub.
+	await act(async () => nameField().props.onSubmitEditing());
+	expect(hub.requests.filter((request) => request.method === "evener/thread/name/set")).toEqual([]);
+	expect(nameField().props.value).toBe("Settle race");
+
+	screenAt("ready");
+	await settle();
+	await act(async () => nameField().props.onSubmitEditing());
+	await settle();
+	expect(hub.requests.filter((request) => request.method === "evener/thread/name/set").map((request) => request.params)).toEqual([
+		{ ref: "ref-blip", name: "Settle race" },
+	]);
+	act(() => sheet.unmount());
+});
+
+describe("a session that can't take a message yet (ruling 20)", () => {
+	it("asks for a restart in the composer's place, and restarts by stopping and resuming", async () => {
+		const served = thread("ref-restart", "idle");
+		(served as unknown as { status: unknown }).status = { type: "restartRequired" };
+		const { tree, hub } = await mount(served);
+		expect(renderedText(tree)).toContain("This session runs an older Evener. Restart it to pick up the hub's update.");
+		expect(field(tree)).toBeUndefined();
+		await press(tree, "Restart session");
+		expect(
+			hub.requests
+				.filter((request) => request.method === "forceStop" || request.method === "resumeThread")
+				.map((request) => [request.method, request.params.ref]),
+		).toEqual([
+			["forceStop", "ref-restart"],
+			["resumeThread", "ref-restart"],
+		]);
+	});
+
+	function restartNeeded(ref: string): Thread {
+		const served = thread(ref, "idle");
+		(served as unknown as { status: unknown }).status = { type: "restartRequired" };
+		return served;
+	}
+
+	function rerender(tree: ReactTestRenderer, ref: string, state: string) {
+		harness.connection = { ...harness.connection, state };
+		const route = { key: `conversation-${ref}`, name: "Conversation", params: { hubId: "hub-1", ref, title: "Session" } };
+		act(() =>
+			tree.update(<ConversationScreen route={route as unknown as ConversationScreenProps["route"]} navigation={navigation} />),
+		);
+	}
+
+	it("still resumes after a restart whose controls were replaced while it stopped", async () => {
+		const { tree, hub } = await mount(restartNeeded("ref-restart-swap"));
+		let stopped!: () => void;
+		hub.client.forceStop = (ref: string) => {
+			hub.requests.push({ method: "forceStop", params: { ref } });
+			return new Promise<void>((resolve) => {
+				stopped = resolve;
+			});
+		};
+		await press(tree, "Restart session");
+		// A blip while the stop is on its way replaces the session's controls.
+		rerender(tree, "ref-restart-swap", "connecting");
+		await settle();
+		rerender(tree, "ref-restart-swap", "ready");
+		await settle();
+		stopped();
+		await settle();
+		expect(
+			hub.requests
+				.filter((request) => request.method === "forceStop" || request.method === "resumeThread")
+				.map((request) => request.method),
+		).toEqual(["forceStop", "resumeThread"]);
+		expect(renderedText(tree)).not.toContain("Restarting…");
+	});
+
+	it("says so in the notice when the session stopped but couldn't start again", async () => {
+		const { tree, hub } = await mount(restartNeeded("ref-restart-fails"));
+		hub.client.resumeThread = async (ref: string) => {
+			hub.requests.push({ method: "resumeThread", params: { ref } });
+			throw new Error("resume refused");
+		};
+		await press(tree, "Restart session");
+		expect(renderedText(tree)).toContain("Stopped, but couldn't start it again.");
+		expect(pressable(tree, "Restart session")?.props.disabled).toBe(false);
+	});
+
+	it("says so in the notice when the stop fails", async () => {
+		const { tree, hub } = await mount(restartNeeded("ref-stop-fails"));
+		hub.client.forceStop = async () => {
+			throw new Error("stop refused");
+		};
+		await press(tree, "Restart session");
+		expect(hub.requests.filter((request) => request.method === "resumeThread")).toEqual([]);
+		expect(renderedText(tree)).toContain("Couldn't restart this session.");
+	});
+
+	it("offers Resume in the composer's place for a paused session", async () => {
+		const served = thread("ref-paused", "idle");
+		(served as unknown as { evener: Record<string, unknown> }).evener.resumeRequired = true;
+		const { tree, hub } = await mount(served);
+		expect(renderedText(tree)).toContain("This session is paused.");
+		expect(field(tree)).toBeUndefined();
+		await press(tree, "Resume");
+		expect(hub.requests.filter((request) => request.method === "resumeThread").map((request) => request.params.ref)).toEqual([
+			"ref-paused",
+		]);
+	});
+});
+
 it("opens sign-in from an error that says a sign-in failed", async () => {
 	vi.mocked(navigation.navigate).mockClear();
 	const { tree } = await mount(failedTurn("ref-error-sign-in", "401 Unauthorized"));
@@ -917,7 +1080,10 @@ it("previews your note in the notes bar, and the sheet it opens saves through th
 		{ id: "u1", url: "https://example.com/pr/1", label: "The PR" },
 		{ id: "u2", url: "https://example.com/pr/2" },
 	];
+	(served as unknown as { cwd: string }).cwd = "/home/jesse/git/evener";
 	const { tree, hub } = await mount(served);
+	// The sheet opens a file link in the Reader with the session's folder and title.
+	expect(notesHosts.get(sheetKey("hub-1", "ref-notes"))).toMatchObject({ cwd: "/home/jesse/git/evener", title: "Session" });
 	const bar = pressable(tree, "Your note: keep the tests, 2 links");
 	if (!bar) throw new Error("no notes bar");
 	act(() => bar.props.onPress());

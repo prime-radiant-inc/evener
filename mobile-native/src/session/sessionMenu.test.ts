@@ -19,7 +19,6 @@ function menu(over: Partial<SessionMenuInput> = {}) {
 		sharedNotes: true,
 		canAside: true,
 		canShutDown: true,
-		deletable: true,
 		choose: (action) => chosen.push(action),
 		...over,
 	});
@@ -69,8 +68,11 @@ describe("the Session's ⋯ menu (spec 8.1)", () => {
 			"Pin to category…",
 			"Archive",
 			"Shut down",
-			"Delete saved session",
 		]);
+	});
+
+	it("leaves Delete to the Session sheet", () => {
+		expect(labels(only(menu().items).menu.items)).not.toContain("Delete saved session");
 	});
 
 	it.each([
@@ -121,11 +123,10 @@ describe("the Session's ⋯ menu (spec 8.1)", () => {
 		["sharedNotes", "Notes & links"],
 		["canAside", "Ask aside…"],
 		["canShutDown", "Shut down"],
-		["deletable", "Delete saved session"],
 	] as const)("shows nothing for %s when it is false", (condition, label) => {
 		const entries = only(menu({ [condition]: false }).items).menu.items;
 		expect(labels(entries)).not.toContain(label);
-		expect(entries).toHaveLength(10);
+		expect(entries).toHaveLength(9);
 	});
 
 	it("opens Files & artifacts", () => {
@@ -153,7 +154,6 @@ describe("the Session's ⋯ menu (spec 8.1)", () => {
 		["Pin to category…", { kind: "pin" }],
 		["Archive", { kind: "archive" }],
 		["Shut down", { kind: "shutDown" }],
-		["Delete saved session", { kind: "delete" }],
 	] as const)("%s chooses its action", (label, expected) => {
 		const { items, chosen } = menu();
 		action(only(items).menu.items, label).onPress();
@@ -167,8 +167,8 @@ describe("the Session's ⋯ menu (spec 8.1)", () => {
 		expect(chosen).toEqual(DETAIL_LEVELS.map(({ level }) => ({ kind: "level", level })));
 	});
 
-	it("draws Shut down and Delete saved session as destructive, and nothing else", () => {
+	it("draws Shut down as destructive, and nothing else", () => {
 		const entries = only(menu().items).menu.items;
-		expect(labels(entries.filter((entry) => entry.destructive))).toEqual(["Shut down", "Delete saved session"]);
+		expect(labels(entries.filter((entry) => entry.destructive))).toEqual(["Shut down"]);
 	});
 });

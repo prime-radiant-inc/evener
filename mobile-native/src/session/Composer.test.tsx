@@ -5,7 +5,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { palettes } from "../design/tokens";
 import { Platform } from "react-native";
 import { alertRequests, pressable, render, renderedText } from "../renderNative.testkit";
-import { Composer } from "./Composer";
+import { Composer, ModelChip } from "./Composer";
 
 const actionSheet = vi.hoisted(() => ({ show: vi.fn() }));
 
@@ -157,5 +157,28 @@ describe("Composer", () => {
 		const words = [...labels, ...renderedText(tree).split(" ")];
 		for (const word of ["Stop", "Steer", "Queue", "Reconnect", "Refresh"])
 			expect(words).not.toContain(word);
+	});
+});
+
+describe("the model chip (spec 8.5)", () => {
+	it("names the model and effort on one line in ink-mid, and opens the model sheet", () => {
+		const onPress = vi.fn();
+		const tree = render(<ModelChip label="GLM 5.3 Vision · XHigh" onPress={onPress} />);
+		const chip = pressable(tree, "Model: GLM 5.3 Vision · XHigh. Change model or effort");
+		if (!chip) throw new Error("no chip");
+		expect(chip.props.style({ pressed: false })).toMatchObject({ minHeight: 44 });
+		const text = chip.findByType("Text" as never);
+		expect(text.props).toMatchObject({ numberOfLines: 1 });
+		expect(text.props.style).toMatchObject({ fontSize: 15, lineHeight: 20, color: light.inkMid });
+		expect(chip.findByType("SymbolView" as never).props).toMatchObject({ name: "chevron.down", size: 11 });
+		act(() => chip.props.onPress());
+		expect(onPress).toHaveBeenCalledOnce();
+	});
+
+	it("only names the model when there's nothing to change", () => {
+		const tree = render(<ModelChip label="muse-spark-1.3" />);
+		expect(tree.root.findAll((node) => String(node.type) === "Pressable")).toEqual([]);
+		expect(tree.root.findAll((node) => String(node.type) === "SymbolView")).toEqual([]);
+		expect(renderedText(tree)).toBe("muse-spark-1.3");
 	});
 });

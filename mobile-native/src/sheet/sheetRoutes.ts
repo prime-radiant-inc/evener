@@ -48,6 +48,10 @@ export const SHEET_ROUTES = {
 	CommentsSheet: sheetOptions(["medium", "large"], "medium"),
 	// You type the review's note in it (ruling 26).
 	ReviewSheet: sheetOptions(["medium", "large"], "large"),
+	// The Session sheet opens at full height (spec 8.6).
+	SessionInfoSheet: sheetOptions(["medium", "large"], "large"),
+	// A picker, so it opens at half height (spec 8.5).
+	ModelSheet: sheetOptions(["medium", "large"], "medium"),
 	// The session's documents, a list (ruling 26).
 	FilesSheet: sheetOptions(["medium", "large"], "medium"),
 } satisfies { [Name in keyof Routes]?: NativeStackNavigationOptions };

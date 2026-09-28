@@ -40,7 +40,9 @@ import {
 	HubsScreen,
 	type Routes,
 } from "./src/screens";
+import { ModelSheet } from "./src/session/ModelSheet";
 import { NotesSheet } from "./src/session/NotesSheet";
+import { SessionInfoSheet } from "./src/session/SessionInfoSheet";
 import { SHEET_ROUTES } from "./src/sheet/sheetRoutes";
 import { QueueSheet } from "./src/QueueSheet";
 import { CommentSheet } from "./src/reader/CommentSheet";
@@ -258,6 +260,16 @@ function Navigation() {
 							name="ReviewSheet"
 							component={ReviewSheet}
 							options={SHEET_ROUTES.ReviewSheet}
+						/>
+						<Stack.Screen
+							name="SessionInfoSheet"
+							component={SessionInfoSheet}
+							options={SHEET_ROUTES.SessionInfoSheet}
+						/>
+						<Stack.Screen
+							name="ModelSheet"
+							component={ModelSheet}
+							options={SHEET_ROUTES.ModelSheet}
 						/>
 						<Stack.Screen
 							name="FilesSheet"

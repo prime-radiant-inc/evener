@@ -1,3 +1,4 @@
+import { useSyncExternalStore } from "react";
 import { WireError } from "@evener/appwire-client";
 import type { ModelListResponse } from "@evener/appwire-client";
 import {
@@ -20,7 +21,7 @@ type Operation =
 	| "setReasoningEffort"
 	| "setVisionModel"
 	| "changeModel";
-interface ControlsState {
+export interface ControlsState {
 	pending: Operation | null;
 	lastAction: Operation | null;
 	error: string | null;
@@ -245,4 +246,13 @@ export class SessionControls {
 			return false;
 		}
 	}
+}
+
+const noSubscription = () => () => {};
+const noState = () => null;
+
+/** The controls' state, or null while there are none: the hub is away, or
+ * the session isn't in front. */
+export function useControlsState(controls: SessionControls | null): ControlsState | null {
+	return useSyncExternalStore(controls?.subscribe ?? noSubscription, controls?.getSnapshot ?? noState);
 }

@@ -1,7 +1,7 @@
 // The Session's ⋯ menu (spec 8.1 and 8.7), as the native header items iOS
 // draws as a UIMenu. It is data: the screen decides what each choice does.
-// Files & artifacts, Subagents, Tasks, Notes & links, Ask aside, Shut down and
-// Delete appear only when they can act.
+// Files & artifacts, Subagents, Tasks, Notes & links, Ask aside and Shut down
+// appear only when they can act. Delete lives in the Session sheet.
 import type { ContentLevel } from "@evener/appwire-client";
 import type {
 	NativeStackHeaderItem,
@@ -12,7 +12,7 @@ import { DETAIL_LEVELS, detailMenuLabel } from "./detailLevels";
 
 export type SessionMenuAction =
 	| { kind: "level"; level: ContentLevel }
-	| { kind: "files" | "subagents" | "tasks" | "notes" | "info" | "aside" | "pin" | "archive" | "shutDown" | "delete" };
+	| { kind: "files" | "subagents" | "tasks" | "notes" | "info" | "aside" | "pin" | "archive" | "shutDown" };
 
 export interface SessionMenuInput {
 	current: ContentLevel | "custom" | null;
@@ -25,7 +25,6 @@ export interface SessionMenuInput {
 	sharedNotes: boolean;
 	canAside: boolean;
 	canShutDown: boolean;
-	deletable: boolean;
 	choose(action: SessionMenuAction): void;
 }
 
@@ -69,7 +68,6 @@ export function sessionMenu(input: SessionMenuInput): NativeStackHeaderItem[] {
 		item("Pin to category…", "pin"),
 		item("Archive", "archive"),
 		...(input.canShutDown ? [item("Shut down", "shutDown", { destructive: true })] : []),
-		...(input.deletable ? [item("Delete saved session", "delete", { destructive: true })] : []),
 	];
 	return [
 		{
