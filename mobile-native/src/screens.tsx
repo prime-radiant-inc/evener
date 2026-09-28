@@ -138,7 +138,7 @@ import {
 import { FloatingStack } from "./session/FloatingStack";
 import { NewContentPill } from "./session/NewContentPill";
 import { BackButton } from "./session/BackButton";
-import { nextNavigation, nextSession, othersNeedingYou } from "./session/fleetOrder";
+import { liveOrder, nextNavigation, nextSession, othersNeedingYou } from "./session/fleetOrder";
 import { NextCapsule } from "./session/NextCapsule";
 import { useFleet } from "./session/useFleet";
 import { QueuedMessages } from "./session/QueuedMessages";
@@ -794,14 +794,21 @@ export function ConversationScreen({
 	// does nothing during that same window (Calm).
 	const chipsConnected =
 		activeProfile?.id === route.params.hubId && connectionText === null;
+	// Who else needs you (spec 13.2), for Back's count and Next.
+	const fleet = useFleet(route.params.hubId, connected ? client : null, focused);
+	// This session's own row, which the fleet re-reads when a turn ends.
+	const fleetRow = useMemo(
+		() => liveOrder(fleet.bands).find((row) => row.ref === route.params.ref),
+		[fleet.bands, route.params.ref],
+	);
 	useMarkSeenInFront(
 		route.params,
 		focused,
 		connected ? client : null,
 		snapshot.status === "open" ? snapshot.conversation : null,
+		fleetRow,
+		fleet.seen,
 	);
-	// Who else needs you (spec 13.2), for Back's count and Next.
-	const fleet = useFleet(route.params.hubId, connected ? client : null, focused);
 	const othersWaiting = useMemo(
 		() => othersNeedingYou(fleet.bands, route.params.ref),
 		[fleet.bands, route.params.ref],
