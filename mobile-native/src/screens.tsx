@@ -22,7 +22,6 @@ import {
 	FlatList,
 	Keyboard,
 	KeyboardAvoidingView,
-	Modal,
 	Platform,
 	Pressable,
 	ScrollView,
@@ -56,7 +55,6 @@ import { CommandCompletion } from "./CommandCompletion";
 import { type ComposerSetting, ComposerSettings } from "./ComposerSettings";
 import { ComposerSettingsSheet } from "./ComposerSettingsSheet";
 import { useConnection } from "./ConnectionProvider";
-import { ConnectionStatus } from "./ConnectionStatus";
 import {
 	CommandArgumentError,
 	composerCommand,
@@ -65,15 +63,15 @@ import {
 	startAside,
 	submitComposerCommand,
 } from "./composerCommand";
-import { canComposeFor, conversationControls } from "./conversationControls";
+import { canComposeFor, conversationControls, queueActionRefusal } from "./conversationControls";
 import type { HubProfile } from "./connection";
 import { goalObjective, submitGoalCommand } from "./goalCommand";
 import { HubEditor } from "./HubEditor";
 import { ImageAttachments } from "./ImageAttachments";
 import { ImageSelection } from "./imageSelection";
 import {
-	MutationRecoveryPanel,
-	shouldOfferRecoveryEntry,
+	projectNativeMutationRecovery,
+	RecoveryFailure,
 	useRecoveryPanel,
 } from "./MutationRecoveryPanel";
 import { useNativePreferences } from "./NativePreferencesProvider";
@@ -96,7 +94,7 @@ import {
 	reviewPairingInput,
 } from "./pairingImport";
 import { QuestionSheet } from "./QuestionSheet";
-import { QueueSheet } from "./QueueSheet";
+import { queueHosts, type QueueHost } from "./QueueSheet";
 import {
 	composeQuestionAnswers,
 	pendingQuestions,
@@ -122,7 +120,9 @@ import {
 import { type SessionDestination, SessionMenu } from "./SessionMenu";
 import { SessionSheet } from "./SessionSheet";
 import { type ErrorAction, errorAction, RETRY_MESSAGE } from "./session/errorAction";
+import { type Ghost, type GhostAction, ghostActionTarget, ghosts, type QueueEntryRef } from "./session/ghosts";
 import { NewContentPill } from "./session/NewContentPill";
+import { QueuedMessages } from "./session/QueuedMessages";
 import { TranscriptSkeleton } from "./session/TranscriptSkeleton";
 import { useReadRetry } from "./session/useReadRetry";
 import {
@@ -158,9 +158,10 @@ import {
 import { SessionTitle } from "./session/SessionTitle";
 import { LiveStatusTray, useFrameCounter } from "./session/StatusTray";
 import { localSessionId } from "./sessionDeletionResult";
+import { sheetKey, useProvideSheetHost } from "./sheet/sheetHosts";
 import { leaveScreen, screenInFront, useScreenInFront } from "./sheet/useScreenInFront";
 import { TimelineItem } from "./TimelineItem";
-import { Toast, useToast } from "./Toast";
+import { Toast, type ToastMessage, useToast } from "./Toast";
 import { TranscriptUsage } from "./TranscriptUsage";
 import { groupTimeline, type TimelineRow, timelineGap } from "./timeline";
 import { projectNativeTranscript } from "./transcriptPresentation";
@@ -168,6 +169,8 @@ import { Action, Copy, ErrorMessage, styles, useColors } from "./ui";
 
 const noControls = () => null;
 const noControlSubscription = () => () => {};
+const STEER_FAILED = { text: "Couldn't steer with this message now." };
+const STEER_ALL_FAILED = { text: "Couldn't steer with these messages now." };
 
 export type Routes = {
 	SessionDeletion: { hubId: string; ref: string; title: string };
@@ -206,6 +209,7 @@ export type Routes = {
 	NewSession: { hubId: string; hubName: string };
 	Conversation: { hubId: string; ref: string; title: string };
 	TasksSheet: { hubId: string; ref: string; threadId: string; hasTasks: boolean };
+	QueueSheet: { hubId: string; ref: string };
 	RowMenuSheet: { hubId: string; ref: string; archived: boolean };
 };
 
@@ -638,9 +642,6 @@ export function ConversationScreen({
 	);
 	const focusAfterModal = useRef(false);
 	useFocusAfterModal(navigation, focusAfterModal, composerInput);
-	const [refreshing, setRefreshing] = useState(false);
-	const [queueOpen, setQueueOpen] = useState(false);
-	const [recoveryOpen, setRecoveryOpen] = useState(false);
 	const [sessionOpen, setSessionOpen] = useState(false);
 	const [activityContext, setActivityContext] = useState<{
 		hubId: string;
@@ -670,12 +671,10 @@ export function ConversationScreen({
 	useFocusEffect(
 		useCallback(
 			() => () => {
-				setQueueOpen(false);
 				setSessionOpen(false);
 				setApprovalsOpen(false);
 				setQuestionsOpen(false);
 				setComposerSetting(null);
-				setRecoveryOpen(false);
 			},
 			[],
 		),
@@ -717,7 +716,7 @@ export function ConversationScreen({
 		snapshot.status === "open" ? snapshot.conversation : null,
 	);
 	// The recovery surface: this exact hub/conversation target's durable
-	// recovery rows, mounted in the recovery modal below. useRecoveryPanel
+	// recovery rows, shown as ghosts above the composer. useRecoveryPanel
 	// acquires the runtime only once the conversation is connected (the
 	// singleton opens the mutations database), so a screen that never reaches a
 	// live conversation never constructs one - what the landed render fence
@@ -727,9 +726,6 @@ export function ConversationScreen({
 		hubId: route.params.hubId,
 		targetRef: route.params.ref,
 	});
-	const deliveryConcern = Boolean(
-		snapshot.error || actionError || unconfirmedSend !== null,
-	);
 	// Bind this screen's client and target to the runtime for the connected
 	// lifetime: the service's read fence calls through mutationHostRef, and the
 	// runtime's dispatch gate opens on this screen's own authoritative read and
@@ -832,21 +828,6 @@ export function ConversationScreen({
 		route.params.ref,
 		snapshot.conversationGeneration,
 	]);
-	async function refresh() {
-		if (!service || !connected || !focused || refreshing) return;
-		setRefreshing(true);
-		try {
-			if (store.getState().status === "open")
-				await store.getState().rehydrate(service, activitySink);
-			else {
-				await store
-					.getState()
-					.resumeProjected(service, activitySink, route.params.ref);
-			}
-		} finally {
-			setRefreshing(false);
-		}
-	}
 	const connectionReady = useRef(connected);
 	connectionReady.current = connected;
 	const bindingGeneration = snapshot.conversationGeneration;
@@ -1066,9 +1047,14 @@ export function ConversationScreen({
 			openSessionDestination(SESSION_DESTINATIONS[kind]);
 			return;
 		}
-		// Today's QueueSheet modal, until the queue sheet route lands.
+		openQueue();
+	}
+	function openQueue() {
 		Keyboard.dismiss();
-		setQueueOpen(true);
+		navigation.navigate("QueueSheet", {
+			hubId: route.params.hubId,
+			ref: route.params.ref,
+		});
 	}
 	const menuLevel = currentLevel(chosenLevel, hubDisplayConfig);
 	// The menu offers Subagents exactly when its chip shows.
@@ -1533,7 +1519,6 @@ export function ConversationScreen({
 		connected &&
 		focused &&
 		snapshot.status === "open" &&
-		!refreshing &&
 		!pending &&
 		!settingsPending;
 	const questions = batches.flatMap((batch) => batch.questions);
@@ -1865,8 +1850,8 @@ export function ConversationScreen({
 			});
 		} catch {
 			// A refused Send adds no text of its own: the draft stays, and the
-			// "Delivery unconfirmed" card document.submit leaves says what
-			// happened and what to do.
+			// unconfirmed ghost document.submit leaves says what happened and
+			// what to do.
 		}
 	}
 	// Whether a message can go out right now, and whether it sends or queues:
@@ -1916,7 +1901,7 @@ export function ConversationScreen({
 				deliver(service, kind, text, images),
 			);
 		} catch {
-			// As with Send, a refusal leaves the delivery card to say so.
+			// As with Send, a refusal leaves the unconfirmed ghost to say so.
 		}
 	}
 	function runErrorAction(errorAction: ErrorAction) {
@@ -1937,44 +1922,239 @@ export function ConversationScreen({
 				}}
 			/>
 		) : null;
-	function unconfirmedDelivery(inset = 16) {
-		return unconfirmedSend !== null ? (
-			<View
-				style={[
-					styles.card,
-					{ marginHorizontal: inset, borderColor: colors.border },
-				]}
-			>
-				<Copy>Delivery unconfirmed</Copy>
-				<Copy muted>
-					Check the transcript before sending again. This message may have
-					reached the hub.
-				</Copy>
-				<ScrollView style={{ maxHeight: 100 }}>
-					<Copy>{unconfirmedSend}</Copy>
-					<ImageAttachments
-						document={document}
-						selection={imageSelection}
-						uncertain
-					/>
-				</ScrollView>
-				<View style={styles.row}>
-					<Action
-						disabled={draft.record.draft !== ""}
-						onPress={() => document.restore()}
-					>
-						Restore to draft
-					</Action>
-					<Action onPress={() => document.dismiss()}>Dismiss</Action>
-				</View>
-				{draft.record.draft !== "" ? (
-					<Copy muted>
-						Your current draft is kept. Clear it to restore this message.
-					</Copy>
-				) : null}
-			</View>
-		) : null;
+	// Everything waiting to reach the agent, as ghosts above the composer
+	// (spec 8.5 and 14). A refused row keeps Edit whenever its record can come
+	// back; whether the composer can take it right now is the bubble's
+	// canEdit, so an occupied composer shows Edit disabled with the reason.
+	const recoveryRows = projectNativeMutationRecovery(
+		recovery.targetKey,
+		recovery.snapshot,
+		() => true,
+	);
+	// A queued message's actions go to the hub, so while it's away they
+	// aren't offered; the message still shows. The rest act on this phone.
+	const allGhosts = ghosts(
+		conversation,
+		snapshot.pendingMutations,
+		unconfirmedSend,
+		recoveryRows,
+	).map((ghost) =>
+		connected || ghost.origin.kind !== "queue"
+			? ghost
+			: { ...ghost, buttons: [], menu: [] },
+	);
+	const canEditGhost = document.canRestoreRecoveredDraft();
+	const ghostEditHint = document.recoveredRestoreHint();
+	const [ghostBusy, setGhostBusy] = useState(false);
+	const ghostBusyRef = useRef(false);
+	// One ghost action at a time, each reading the live session at the press.
+	// It returns its toast rather than showing it, so the caller shows it
+	// where you are: the session's toast, or the Queue sheet's own.
+	async function oneGhostAction(
+		run: () => Promise<ToastMessage | null>,
+	): Promise<ToastMessage | null> {
+		if (ghostBusyRef.current) return null;
+		ghostBusyRef.current = true;
+		setGhostBusy(true);
+		try {
+			return await run();
+		} finally {
+			ghostBusyRef.current = false;
+			setGhostBusy(false);
+		}
 	}
+	function runGhostAction(ghost: Ghost, action: GhostAction) {
+		return oneGhostAction(() => ghostAction(ghost, action));
+	}
+	async function ghostAction(
+		ghost: Ghost,
+		action: GhostAction,
+	): Promise<ToastMessage | null> {
+		const origin = ghost.origin;
+		if (origin.kind === "queue") return queuedGhostAction(origin.entry, action);
+		if (action === "check") {
+			await checkDelivery();
+			return null;
+		}
+		if (origin.kind === "draft") {
+			if (action === "discard") document.dismiss();
+			else if (action === "edit") document.restore();
+			return null;
+		}
+		if (origin.kind === "recovery") {
+			const row = recoveryRows.find(
+				(candidate) =>
+					candidate.clientMutationId === origin.row.clientMutationId,
+			);
+			if (!row) return null;
+			if (action === "discard") recovery.discard(row);
+			else if (action === "edit") {
+				setActionError(null);
+				if (!document.restoreRecoveredDraft(row.text))
+					setActionError("This message could not be restored to the draft.");
+			}
+		}
+		return null;
+	}
+	// Check: read the session again, then show its live end, where the
+	// message is if it arrived.
+	async function checkDelivery() {
+		if (service && connectionReady.current)
+			await store
+				.getState()
+				.rehydrate(service, activitySink)
+				.catch(() => undefined);
+		jumpToLive();
+	}
+	async function queuedGhostAction(
+		entry: QueueEntryRef,
+		action: GhostAction,
+	): Promise<ToastMessage | null> {
+		const live = store.getState().conversation;
+		const instanceId = live?.instanceId;
+		if (!service || !connectionReady.current || !live || !instanceId)
+			return null;
+		// The message you saw, wherever it sits now; nothing once it has left
+		// the queue (Review Focus 2).
+		const target = ghostActionTarget(live.queue, entry);
+		if (!target) return null;
+		const rehydrate = () =>
+			store
+				.getState()
+				.rehydrate(service, activitySink)
+				.catch(() => undefined);
+		const cancel = async () => {
+			try {
+				await service.cancelQueued(target.index, target.id, instanceId);
+				return true;
+			} catch {
+				return false;
+			} finally {
+				await rehydrate();
+			}
+		};
+		if (action === "steerNow" || action === "sendNow") {
+			if (queueActionRefusal(live, "promote") !== null) return STEER_FAILED;
+			try {
+				await service.promoteQueuedAsSteer(target.index, target.id, instanceId);
+				return null;
+			} catch {
+				return STEER_FAILED;
+			} finally {
+				await rehydrate();
+			}
+		}
+		if (action === "cancel")
+			return (await cancel())
+				? null
+				: { text: "Couldn't take this message out of the queue." };
+		if (action === "edit") {
+			const text = live.queue?.texts?.[target.index];
+			if (!text?.trim() || !document.getSnapshot().loaded) return null;
+			// The text goes into the composer before the message leaves the
+			// queue, so a failed cancel never loses it (web QueueStrip).
+			const merged = mergeDraftText(document.getSnapshot().record.draft, text);
+			document.edit(merged);
+			const cancelled = await cancel();
+			requestAnimationFrame(() => {
+				composerInput.current?.setNativeProps({
+					selection: { start: merged.length, end: merged.length },
+				});
+				composerInput.current?.focus();
+			});
+			return cancelled
+				? null
+				: { text: "Moved to your message, but it's still queued." };
+		}
+		return null;
+	}
+	// Steer all now: the whole live queue, whatever it holds at the press.
+	async function steerWithQueue(): Promise<ToastMessage | null> {
+		const live = store.getState().conversation;
+		const instanceId = live?.instanceId;
+		if (!service || !connectionReady.current || !live?.queue || !instanceId)
+			return null;
+		if (queueActionRefusal(live, "drainAll") !== null) return STEER_ALL_FAILED;
+		try {
+			await service.drainAsSteer(live.queue.revision, instanceId);
+			return null;
+		} catch {
+			return STEER_ALL_FAILED;
+		} finally {
+			await store
+				.getState()
+				.rehydrate(service, activitySink)
+				.catch(() => undefined);
+		}
+	}
+	// The Queue sheet's host is memoized on what it shows, so its actions
+	// reach this render's functions through a ref.
+	const liveGhostActions = {
+		act: runGhostAction,
+		steerAll: () => oneGhostAction(steerWithQueue),
+	};
+	const ghostActions = useRef(liveGhostActions);
+	ghostActions.current = liveGhostActions;
+	const queuedGhosts = allGhosts.filter(
+		(ghost) => ghost.origin.kind === "queue",
+	);
+	const queuedKey = JSON.stringify(queuedGhosts);
+	const canSteerAll =
+		!!conversation &&
+		(conversation.queue?.depth ?? 0) > 1 &&
+		conversationControls(conversation).drainQueue;
+	// biome-ignore lint/correctness/useExhaustiveDependencies: queuedKey stands in for queuedGhosts, a new array each render
+	const queueHost = useMemo<QueueHost>(
+		() => ({
+			ghosts: queuedGhosts,
+			disabled: ghostBusy,
+			canEdit: canEditGhost,
+			editHint: ghostEditHint,
+			act: (ghost, action) => ghostActions.current.act(ghost, action),
+			...(canSteerAll
+				? { steerAll: () => ghostActions.current.steerAll() }
+				: {}),
+		}),
+		[queuedKey, ghostBusy, canEditGhost, ghostEditHint, canSteerAll],
+	);
+	useProvideSheetHost(
+		queueHosts,
+		sheetKey(route.params.hubId, route.params.ref),
+		queueHost,
+	);
+	const composerShown = canCompose && questions.length === 0;
+	// What sits above the composer: failures only you can act on, then
+	// everything waiting to reach the agent. While the composer is hidden
+	// (a question is pending) it sits in the composer's place, so a queued
+	// message never drops out of sight.
+	const waitingForAgent = (
+		<>
+			<ErrorMessage message={actionError} />
+			{draft.error ? (
+				<View style={{ alignItems: "flex-start" }}>
+					<ErrorMessage message={draft.error} />
+					<Action tone="accent" onPress={document.retry}>
+						{draft.loaded ? "Retry saving" : "Retry loading draft"}
+					</Action>
+				</View>
+			) : null}
+			{recovery.failed ? (
+				<RecoveryFailure error={recovery.error} onRetry={recovery.retry} />
+			) : null}
+			<QueuedMessages
+				ghosts={allGhosts}
+				disabled={ghostBusy}
+				canEdit={canEditGhost}
+				editHint={ghostEditHint}
+				onAction={(ghost, action) => {
+					void runGhostAction(ghost, action).then((message) => {
+						if (message) toaster.show(message);
+					});
+				}}
+				onMore={openQueue}
+			/>
+		</>
+	);
 	const readerCellRenderer = useMemo(() => {
 		return class ReaderCell extends Component<CellRendererProps<TimelineRow>> {
 			componentWillUnmount() {
@@ -2041,7 +2221,7 @@ export function ConversationScreen({
 					pending={draft.submitting}
 					error={
 						unconfirmedSend !== null
-							? "Delivery is unconfirmed. Close this sheet and check delivery before sending again."
+							? "Delivery is unconfirmed. Close this sheet and check your message before sending again."
 							: actionError
 					}
 					close={() => setQuestionsOpen(false)}
@@ -2112,21 +2292,6 @@ export function ConversationScreen({
 						imageState.busy ||
 						questions.length > 0
 					}
-				/>
-			) : null}
-			{queueOpen && conversation && service ? (
-				<QueueSheet
-					conversation={conversation}
-					latest={() => store.getState().conversation}
-					service={service}
-					ready={ready}
-					refresh={async () => {
-						await refresh();
-						const current = store.getState();
-						if (current.status !== "open" || current.error)
-							throw new Error("Queue refresh failed");
-					}}
-					close={() => setQueueOpen(false)}
 				/>
 			) : null}
 			<KeyboardAvoidingView
@@ -2344,13 +2509,8 @@ export function ConversationScreen({
 									) : null}
 									{/* A failed read says so above, once, and retries on its own. */}
 									<ErrorMessage
-										message={
-											(snapshot.status === "error" ? null : snapshot.error) ||
-											actionError
-										}
+										message={snapshot.status === "error" ? null : snapshot.error}
 									/>
-									<ErrorMessage message={draft.error} />
-									{unconfirmedDelivery()}
 									{connected &&
 									permitted &&
 									!permitted.send &&
@@ -2424,33 +2584,20 @@ export function ConversationScreen({
 									}}
 								>{`${conversation.pendingEscalations.length} ${conversation.pendingEscalations.length === 1 ? "approval" : "approvals"} needed`}</Action>
 							) : null}
-							{conversation?.queue?.depth || conversation?.goal ? (
+							{composerShown ? null : waitingForAgent}
+							{conversation?.goal ? (
 								<View
 									style={{ flexDirection: "row", flexWrap: "wrap", gap: 4 }}
 								>
-									{conversation.queue?.depth ? (
-										<Action
-											tone="quiet"
-											expanded={queueOpen}
-											onPress={() => {
-												Keyboard.dismiss();
-												setQueueOpen(true);
-											}}
-										>
-											{`${conversation.queue?.depth} queued`}
-										</Action>
-									) : null}
-									{conversation.goal ? (
-										<Action
-											tone="quiet"
-											onPress={() => {
-												Keyboard.dismiss();
-												setSessionOpen(true);
-											}}
-										>
-											{`Goal · ${conversation.goal.status}`}
-										</Action>
-									) : null}
+									<Action
+										tone="quiet"
+										onPress={() => {
+											Keyboard.dismiss();
+											setSessionOpen(true);
+										}}
+									>
+										{`Goal · ${conversation.goal.status}`}
+									</Action>
 								</View>
 							) : null}
 							<View style={{ flexDirection: "row", flexWrap: "wrap", gap: 4 }}>
@@ -2472,40 +2619,6 @@ export function ConversationScreen({
 										}}
 									>
 										Review settings error
-									</Action>
-								) : null}
-								{draft.error ? (
-									<Action tone="accent" onPress={document.retry}>
-										{draft.loaded ? "Retry saving" : "Retry loading draft"}
-									</Action>
-								) : null}
-								{deliveryConcern ? (
-									<Action
-										tone="quiet"
-										onPress={() => {
-											Keyboard.dismiss();
-											setRecoveryOpen(true);
-										}}
-									>
-										{unconfirmedSend !== null
-											? "Check delivery"
-											: "Review error"}
-									</Action>
-								) : null}
-								{shouldOfferRecoveryEntry({
-									connected,
-									deliveryConcern,
-									count: recovery.count,
-									failed: recovery.failed,
-								}) ? (
-									<Action
-										tone="quiet"
-										onPress={() => {
-											Keyboard.dismiss();
-											setRecoveryOpen(true);
-										}}
-									>
-										Recovery
 									</Action>
 								) : null}
 							</View>
@@ -2537,7 +2650,7 @@ export function ConversationScreen({
 								}}
 								onJumpToLive={jumpToLive}
 							/>
-							{canCompose && questions.length === 0 ? (
+							{composerShown ? (
 								<Composer
 									value={draft.record.draft}
 									editable={draft.loaded}
@@ -2561,6 +2674,7 @@ export function ConversationScreen({
 									settings={composerSettings}
 									above={
 										<>
+											{waitingForAgent}
 											{connected && client && conversation && slashToken ? (
 												<CommandCompletion
 													// Suggestions use at most 40% of the composer's 80% viewport cap.
@@ -2609,63 +2723,6 @@ export function ConversationScreen({
 								/>
 							) : null}
 						</View>
-						<Modal
-							visible={recoveryOpen}
-							animationType="slide"
-							presentationStyle={
-								Platform.OS === "ios" ? "pageSheet" : "fullScreen"
-							}
-							onRequestClose={() => setRecoveryOpen(false)}
-						>
-							<SafeAreaView
-								style={[styles.fill, { backgroundColor: colors.background }]}
-							>
-								<View
-									style={[
-										styles.row,
-										{
-											paddingHorizontal: 20,
-											paddingVertical: 8,
-											borderBottomWidth: 1,
-											borderColor: colors.border,
-										},
-									]}
-								>
-									<Copy>Review status</Copy>
-									<Action onPress={() => setRecoveryOpen(false)}>Done</Action>
-								</View>
-								<ScrollView contentContainerStyle={{ padding: 20, gap: 12 }}>
-									<ConnectionStatus inset={0} />
-									<MutationRecoveryPanel
-										targetKey={recovery.targetKey}
-										snapshot={recovery.snapshot}
-										error={recovery.error}
-										onRetry={recovery.retry}
-										loading={recovery.loading}
-										actions={{
-											canRestore: () => document.canRestoreRecoveredDraft(),
-											restoreHint: () => document.recoveredRestoreHint(),
-											onRestore: (row) => {
-												// Clear any prior action error first, like every other
-												// action handler here, so a successful restore never
-												// leaves a stale error banner (or hides the Recovery
-												// entry, which keys on deliveryConcern).
-												setActionError(null);
-												if (!document.restoreRecoveredDraft(row.text))
-													setActionError(
-														"This message could not be restored to the draft.",
-													);
-											},
-											onDiscard: recovery.discard,
-										}}
-									/>
-									<ErrorMessage
-										message={snapshot.error || actionError || draft.error}
-									/>
-									{unconfirmedDelivery(0)}
-								</ScrollView>
-							</SafeAreaView>
-						</Modal>
 					</View>
 				</View>
 			</KeyboardAvoidingView>

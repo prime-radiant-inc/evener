@@ -1,8 +1,9 @@
 // The native recovery surface's view of one target's durable recovery rows.
 // It is the panel half of the landed slice-4 hook: the hook owns the read,
 // the storage subscription and the one recovery write; this module is the
-// pure projection, the presentational list a screen mounts inside its
-// recovery modal, and the consumer hook that owns the screen's recovery state.
+// pure projection the screen turns into ghosts above the composer
+// (session/ghosts.ts), the line that shows the surface's own failure, and the
+// consumer hook that owns the screen's recovery state.
 //
 // Two recovery offers, and only these two:
 // - restore: writes a rejected row's recovered text into the composer through
@@ -27,7 +28,7 @@ import {
 	type NativeMutationRecoveryRuntime,
 	useNativeMutationRecovery,
 } from "./useNativeMutationRecovery";
-import { Action, Copy, ErrorMessage, styles, useColors } from "./ui";
+import { Action, ErrorMessage } from "./ui";
 
 export type NativeMutationRecoveryStatus = MutationRecoveryKind;
 export type NativeMutationRecoveryAction = "restore" | "discard";
@@ -48,8 +49,8 @@ export interface NativeMutationRecoveryRow {
 	/** Whether the record-aware fence offers Restore for this row at all,
 	 * independent of the composer. `actions` carries Restore only when the
 	 * converter result also allows it, so a row that offers Restore while its
-	 * actions lack it is offered-but-blocked: the panel still shows the
-	 * disabled affordance and the caller's hint. */
+	 * actions lack it is offered-but-blocked: its ghost still shows a
+	 * disabled Edit and the caller's hint. */
 	restoreOffered: boolean;
 	record: MutationRecoveryRecord<MutationAttachmentRef>;
 	actions: readonly NativeMutationRecoveryAction[];
@@ -187,18 +188,6 @@ export function projectNativeMutationRecovery(
 	);
 }
 
-export interface MutationRecoveryActions {
-	/** Whether the composer can accept a restore of this record right now:
-	 * recovery must not silently do nothing when an existing draft or image
-	 * would be clobbered. */
-	canRestore(record: MutationRecoveryRecord<MutationAttachmentRef>): boolean;
-	/** Why a restore is currently blocked, for an accurate disabled-restore
-	 * hint; falls back to a generic sentence when the caller supplies none. */
-	restoreHint?(row: NativeMutationRecoveryRow): string | null;
-	onRestore(row: NativeMutationRecoveryRow): void;
-	onDiscard(row: NativeMutationRecoveryRow): void;
-}
-
 // The exact-target discard: the row's clientMutationId is discarded through the
 // projection's own runtime, whose target key is the only one it can reach. A
 // row a different target owns is refused before the runtime is touched, so this
@@ -218,27 +207,6 @@ export function recoveryFailureMessage(error: unknown): string {
 	if (error instanceof Error) return error.message;
 	if (typeof error === "string" && error.length > 0) return error;
 	return "Recovery is unavailable.";
-}
-
-// The recovery entry point. Normally it is strictly row-conditional: no rows
-// means no entry, so no dead control ships that opens an empty recovery surface
-// (durable submission, which makes rows exist, is a later slice; until then the
-// entry stays hidden and activates with no further UI change). The one
-// exception is a failed recovery surface: with no rows there is no other way
-// into the modal, so a failure renders the entry and opening it exposes the
-// panel's error and Retry rather than hiding them behind an unopenable modal.
-export function shouldOfferRecoveryEntry({
-	connected,
-	deliveryConcern,
-	count,
-	failed,
-}: {
-	connected: boolean;
-	deliveryConcern: boolean;
-	count: number;
-	failed: boolean;
-}): boolean {
-	return connected && !deliveryConcern && (count > 0 || failed);
 }
 
 export interface RecoveryPanelSurface {
@@ -351,101 +319,22 @@ export function useRecoveryPanel({
 	};
 }
 
-export function MutationRecoveryPanel({
-	targetKey,
-	snapshot,
+/** The recovery surface's own failure: a read, acquisition or discard that
+ * failed, with Retry. It sits above the ghosts, never in place of them, so a
+ * failed discard can't hide rows that can still be recovered. */
+export function RecoveryFailure({
 	error,
 	onRetry,
-	loading = false,
-	actions,
 }: {
-	targetKey: string;
-	snapshot: MutationPersistenceSnapshot<MutationAttachmentRef> | null;
 	error: unknown;
-	onRetry?: () => void;
-	loading?: boolean;
-	actions: MutationRecoveryActions;
+	onRetry: () => void;
 }) {
-	const colors = useColors();
-	// A failure renders as a banner above whatever rows exist, never as a
-	// replacement for them: a failed discard must not hide a target's still
-	// recoverable rows behind its own error.
-	const failure =
-		error !== null && error !== undefined ? (
-			<View style={{ gap: 8 }}>
-				<ErrorMessage message={recoveryFailureMessage(error)} />
-				{onRetry ? (
-					<Action tone="quiet" onPress={onRetry}>
-						Retry
-					</Action>
-				) : null}
-			</View>
-		) : null;
-	if (snapshot === null) {
-		if (failure) return failure;
-		if (loading) return <Copy muted>Loading delivery status…</Copy>;
-		return <Copy muted>Recovery is unavailable.</Copy>;
-	}
-	const rows = projectNativeMutationRecovery(
-		targetKey,
-		snapshot,
-		(record) => actions.canRestore(record),
-	);
 	return (
-		<View style={{ gap: 12 }}>
-			{failure}
-			{rows.length === 0 ? (
-				<Copy muted>No messages need recovery.</Copy>
-			) : null}
-			{rows.map((row) => {
-				// The record-aware fence decides whether Restore is offered at all;
-				// the converter result already folded into row.actions decides
-				// whether it is actionable now. A record-eligible row the composer
-				// cannot accept still shows a disabled Restore with the caller's hint.
-				const offersRestore = row.restoreOffered;
-				const restorable = row.actions.includes("restore");
-				return (
-					<View
-						key={row.clientMutationId}
-						style={[styles.card, { borderColor: colors.border }]}
-					>
-						<Copy>{row.label}</Copy>
-						{row.reason ? <Copy muted>{row.reason}</Copy> : null}
-						{row.text ? (
-							<Copy muted numberOfLines={3}>
-								{row.text}
-							</Copy>
-						) : null}
-						<View style={styles.row}>
-							{offersRestore ? (
-								<Action
-									disabled={!restorable}
-									onPress={() => {
-										if (restorable) actions.onRestore(row);
-									}}
-								>
-									Restore to draft
-								</Action>
-							) : null}
-							<Action onPress={() => actions.onDiscard(row)}>Discard</Action>
-						</View>
-						{offersRestore && !restorable ? (
-							<Copy muted>
-								{actions.restoreHint?.(row) ??
-									"This message can't be restored to the draft right now."}
-							</Copy>
-						) : null}
-						{row.status === "rejected" &&
-						!offersRestore &&
-						row.carriesAttachments ? (
-							<Copy muted>
-								This message carried an image, so it can't be restored to the
-								draft here.
-							</Copy>
-						) : null}
-					</View>
-				);
-			})}
+		<View style={{ alignItems: "flex-start" }}>
+			<ErrorMessage message={recoveryFailureMessage(error)} />
+			<Action tone="quiet" onPress={onRetry}>
+				Retry
+			</Action>
 		</View>
 	);
 }

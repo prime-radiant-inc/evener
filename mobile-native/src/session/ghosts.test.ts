@@ -82,8 +82,15 @@ describe("queued messages (spec 8.5)", () => {
 		});
 	});
 
-	it("treats a queue behind a question as queued, not held", () => {
-		expect(ghosts(session("awaiting", ["first"]), [], null, [])[0]?.state).toBe("queued");
+	it("treats a queue behind a question as queued, not held, and runs it next on its own", () => {
+		const [ghost] = ghosts(session("awaiting", ["first"]), [], null, []);
+		expect(ghost?.state).toBe("queued");
+		expect(ghost?.buttons).toEqual([]);
+	});
+
+	it("offers no Send now for a parked queue a harness can't steer", () => {
+		const [ghost] = ghosts(session("idle", ["first"], { capabilities: caps({ steer: false }) }), [], null, []);
+		expect(ghost).toMatchObject({ state: "held", buttons: ["cancel"] });
 	});
 
 	it("can't act on an entry the daemon gave no id, or edit an image-only one", () => {
@@ -152,6 +159,17 @@ describe("messages that didn't make it (spec 14)", () => {
 		expect(ghosts(session("idle"), [], null, [row({ reason: undefined })])[0]?.caption).toBe("Couldn't send this");
 	});
 
+	it("says why a refused message that carried an image can't come back, and only then", () => {
+		const withImage = row({ actions: ["discard"], carriesAttachments: true });
+		expect(ghosts(session("idle"), [], null, [withImage])[0]).toMatchObject({
+			buttons: ["discard"],
+			note: "This message carried an image, so it can't be restored to the draft here.",
+		});
+		expect(ghosts(session("idle"), [], null, [row()])[0]?.note).toBeUndefined();
+		const orphanWithImage = row({ status: "orphaned", actions: ["discard"], carriesAttachments: true });
+		expect(ghosts(session("idle"), [], null, [orphanWithImage])[0]?.note).toBeUndefined();
+	});
+
 	it("asks you to check a message the phone couldn't place", () => {
 		expect(ghosts(session("idle"), [], null, [row({ status: "orphaned" })])[0]).toMatchObject({
 			state: "unconfirmed",
@@ -180,6 +198,10 @@ describe("messages that didn't make it (spec 14)", () => {
 			"refused",
 		]);
 	});
+});
+
+it("shows what the phone knows before the session has loaded", () => {
+	expect(ghosts(null, [], "maybe sent", [row()]).map((ghost) => ghost.state)).toEqual(["unconfirmed", "refused"]);
 });
 
 describe("acting on the message you saw (Review Focus 2)", () => {

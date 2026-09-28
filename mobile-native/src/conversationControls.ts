@@ -28,21 +28,8 @@ export function canComposeFor(conversation: ControlsSource): boolean {
   return controls.send || controls.steer || controls.queue || conversation.capabilities.goal === true;
 }
 
-/** The queue sheet's steering affordance: whether promote/drain are offered and how they read. */
-export function queueSheetPresentation(conversation: ControlsSource) {
-  const controls = conversationControls(conversation);
-  return {
-    canRun: controls.drain,
-    runLabel: "Use as steering",
-    runAllLabel: "Use all as steering",
-    explanation: controls.drain
-      ? "Messages run in order. Use steering to bring one into the current turn."
-      : "Messages run in order. Your next message runs first, then the queue.",
-  };
-}
-
-/** The queue sheet's presses. Promote and drain-all steer the running turn
- * with queued text; cancel only takes a message out of the queue. */
+/** The presses on queued messages. Promote and drain-all steer the running
+ * turn with queued text; cancel only takes a message out of the queue. */
 export type QueueAction = "cancel" | "promote" | "drainAll";
 
 /**

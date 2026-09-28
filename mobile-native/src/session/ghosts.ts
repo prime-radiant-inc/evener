@@ -20,7 +20,8 @@ export interface QueueEntryRef {
 export type RecoveryGhostRow = Pick<
 	NativeMutationRecoveryRow,
 	"clientMutationId" | "status" | "reason" | "text" | "actions"
->;
+> &
+	Partial<Pick<NativeMutationRecoveryRow, "carriesAttachments">>;
 
 export type GhostOrigin =
 	| { kind: "queue"; entry: QueueEntryRef }
@@ -37,6 +38,8 @@ export interface Ghost {
 	buttons: GhostAction[];
 	/** What tapping the bubble offers. */
 	menu: GhostAction[];
+	/** Why an action you'd expect isn't offered. */
+	note?: string;
 	origin: GhostOrigin;
 }
 
@@ -53,8 +56,10 @@ const CAPTIONS: Record<GhostState, string> = {
 
 const STEERS = new Set(["steer", "drain", "promote"]);
 
+/** `session` is null until the session first loads: the phone's own
+ * unconfirmed send and refused messages still show. */
 export function ghosts(
-	session: GhostSource,
+	session: GhostSource | null,
 	pending: readonly PendingTurnEntry[] | null | undefined,
 	unconfirmedDraft: string | null,
 	recovery: readonly RecoveryGhostRow[],
@@ -65,7 +70,7 @@ export function ghosts(
 	const steering = (entry: PendingTurnEntry) =>
 		STEERS.has(entry.method) && (entry.state === "accepted" || entry.state === "claimed");
 	const out: Ghost[] = own.filter(steering).map((entry) => pendingGhost(entry, "steering", []));
-	out.push(...queueGhosts(session));
+	if (session) out.push(...queueGhosts(session));
 	for (const entry of own) {
 		if (steering(entry)) continue;
 		out.push(
@@ -140,6 +145,11 @@ function recoveryGhost(row: RecoveryGhostRow): Ghost {
 			: CAPTIONS.unconfirmed,
 		buttons,
 		menu: !refused && canEdit ? ["edit"] : [],
+		// Edit brings back text only, so a refused message with an image offers
+		// just Discard, and says why.
+		...(refused && !canEdit && row.carriesAttachments
+			? { note: "This message carried an image, so it can't be restored to the draft here." }
+			: {}),
 		origin: { kind: "recovery", row },
 	};
 }

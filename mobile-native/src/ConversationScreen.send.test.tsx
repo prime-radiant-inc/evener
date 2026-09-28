@@ -5,10 +5,12 @@
 import type { ComponentProps, ReactNode } from "react";
 import { createElement } from "react";
 import { act, type ReactTestRenderer } from "react-test-renderer";
-import { afterEach, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { AnyNotification, Thread } from "@evener/appwire-client";
 import { flatListCalls, pressable, render, renderedText, screenConnection } from "./renderNative.testkit";
+import { queueHosts } from "./QueueSheet";
 import { ConversationScreen } from "./screens";
+import { sheetKey } from "./sheet/sheetHosts";
 
 const harness = vi.hoisted(() => ({
 	connection: {} as Record<string, unknown>,
@@ -202,7 +204,7 @@ const QUESTION_TURN = {
 
 // A thread hydrated like the store tests' makeConversation: a minimal wire
 // Thread the hub answers thread/read with.
-function thread(ref: string, status: "idle" | "active", question = false): Thread {
+function thread(ref: string, status: "idle" | "active", question = false, queued: string[] = []): Thread {
 	return {
 		id: `thread-${ref}`,
 		sessionId: `session-${ref}`,
@@ -220,10 +222,20 @@ function thread(ref: string, status: "idle" | "active", question = false): Threa
 			ref,
 			instanceId: "instance",
 			capabilities: CAPABILITIES,
-			queue: { revision: 0, depth: 0, preview: [] },
+			queue: queueState(queued),
 			...(question ? { askPending: true } : {}),
 		},
 	} as unknown as Thread;
+}
+
+function queueState(texts: string[], revision = 0) {
+	return {
+		revision,
+		depth: texts.length,
+		preview: texts,
+		texts,
+		ids: texts.map((_, index) => `queue_${index + 1}`),
+	};
 }
 
 /** The hub: it answers thread/read with `served` and acknowledges every
@@ -268,6 +280,8 @@ function hubClient(served: Thread, failedReads = 0, readLatencyMs = 0, olderCurs
 						turnId: "turn-1",
 						projectionState: "pending",
 						instanceId: "instance",
+						// A queue action's receipt names the entry it acted on.
+						...(params.expectedEntryId ? { queueEntryIds: [params.expectedEntryId] } : {}),
 					},
 				};
 			return {};
@@ -675,3 +689,59 @@ it("opens sign-in from an error that says a sign-in failed", async () => {
 	expect(navigation.navigate).toHaveBeenCalledWith("Providers", { hubId: "hub-1" });
 });
 
+
+describe("queued messages above the composer (spec 8.5)", () => {
+	it("steers with a queued message the agent hasn't reached yet", async () => {
+		const { tree, hub } = await mount(thread("ref-steer-now", "active", false, ["check the logs"]));
+		expect(renderedText(tree)).toContain("check the logs");
+		expect(renderedText(tree)).toContain("Queued · sends when this turn ends");
+		await press(tree, "Steer now");
+		const promote = hub.requests.filter((request) => request.method === "turn/promoteQueuedAsSteer");
+		expect(promote).toHaveLength(1);
+		expect(promote[0]?.params).toMatchObject({ index: 0, expectedEntryId: "queue_1" });
+		expect(renderedText(tree)).not.toContain("Couldn't steer");
+	});
+
+	it("sends nothing when the message left the queue before the press (Review Focus 2)", async () => {
+		const served = thread("ref-steer-stale", "active", false, ["check the logs"]);
+		const { tree, hub } = await mount(served);
+		const stalePress = pressable(tree, "Steer now")?.props.onPress as () => void;
+		expect(stalePress).toBeDefined();
+		act(() =>
+			hub.notify({
+				method: "thread/queueChanged",
+				params: { threadId: served.id, ref: "ref-steer-stale", queue: queueState([], 1) },
+			} as AnyNotification),
+		);
+		act(() => stalePress());
+		await settle();
+		expect(hub.requests.filter((request) => request.method.startsWith("turn/"))).toEqual([]);
+	});
+
+	it("holds a queue a Stop parked, and Send now releases it (Review Focus 3)", async () => {
+		const { tree, hub } = await mount(thread("ref-held", "idle", false, ["after the stop"]));
+		expect(renderedText(tree)).toContain("Held · you stopped this turn");
+		await press(tree, "Send now");
+		const promote = hub.requests.filter((request) => request.method === "turn/promoteQueuedAsSteer");
+		expect(promote.map((request) => request.params)).toMatchObject([{ index: 0, expectedEntryId: "queue_1" }]);
+	});
+
+	it("shows three queued messages and opens the rest in the Queue sheet", async () => {
+		vi.mocked(navigation.navigate).mockClear();
+		const { tree, hub } = await mount(thread("ref-four", "active", false, ["one", "two", "three", "four"]));
+		const text = renderedText(tree);
+		for (const shown of ["one", "two", "three"]) expect(text).toContain(shown);
+		expect(text).not.toContain("four");
+		act(() => pressable(tree, "1 more queued")?.props.onPress());
+		expect(navigation.navigate).toHaveBeenCalledWith("QueueSheet", { hubId: "hub-1", ref: "ref-four" });
+		const host = queueHosts.get(sheetKey("hub-1", "ref-four"));
+		expect(host?.ghosts.map((ghost) => ghost.text)).toEqual(["one", "two", "three", "four"]);
+		const fourth = host?.ghosts[3];
+		if (!host || !fourth) throw new Error("no fourth queued message in the host");
+		await act(async () => {
+			await host.act(fourth, "cancel");
+		});
+		const cancel = hub.requests.filter((request) => request.method === "turn/cancelQueued");
+		expect(cancel.map((request) => request.params)).toMatchObject([{ index: 3, expectedEntryId: "queue_4" }]);
+	});
+});

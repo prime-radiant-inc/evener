@@ -2,10 +2,10 @@
 // composite target's durable recovery rows (the landed slice-3 projection),
 // offers a restore of a rejected row's text and an exact-target discard of a
 // single row. The projection, the action gate and the discard wrapper are
-// pure; the component is rendered through the shared native testkit so a
-// green run is proof about the real component, not a stub.
+// pure; the rows show as ghosts above the composer (session/ghosts.ts and
+// session/QueuedMessages.test.tsx), and the failure line renders through the
+// shared native testkit so a green run is proof about the real component.
 
-import type { ComponentProps } from "react";
 import { act } from "react-test-renderer";
 import { expect, it, vi } from "vitest";
 import type {
@@ -15,13 +15,12 @@ import type {
 } from "@evener/appwire-client/state/mutation";
 import {
 	discardRecoveredMutation,
-	MutationRecoveryPanel,
 	nativeMutationRecoveryActions,
 	projectNativeMutationRecovery,
 	recordCarriesAttachments,
 	recoveredComposerText,
+	RecoveryFailure,
 	recoveryFailureMessage,
-	shouldOfferRecoveryEntry,
 	useRecoveryPanel,
 } from "./MutationRecoveryPanel";
 import { render, renderedText, renderHook } from "./renderNative.testkit";
@@ -70,12 +69,6 @@ function snapshot(
 ): MutationPersistenceSnapshot<MutationAttachmentRef> {
 	return { outbox: [], optimistic: [], recovery: records };
 }
-
-const noActions = {
-	canRestore: () => true,
-	onRestore: () => {},
-	onDiscard: () => {},
-};
 
 it("projects only the exact target's recovery rows, in intent order", () => {
 	const rows = projectNativeMutationRecovery(
@@ -183,62 +176,6 @@ it("reports the payload's text when a record carries no composer text", () => {
 	).toBe("one\ntwo");
 });
 
-it("renders each row's reason and text with only its approved action labels", () => {
-	const props = {
-		targetKey: TARGET_A,
-		snapshot: snapshot([
-			recovery(TARGET_A, "rejected", 1, "rejected", {
-				recoveryReason: "daemon refused",
-				composerText: "hello there",
-			}),
-			recovery(TARGET_A, "orphaned", 2, "orphaned", { composerText: undefined }),
-		]),
-		error: null as unknown,
-		actions: noActions,
-	} satisfies ComponentProps<typeof MutationRecoveryPanel>;
-	const tree = render(<MutationRecoveryPanel {...props} />);
-
-	const labels = tree.root
-		.findAllByProps({ accessibilityRole: "button" })
-		.map((button) => button.props.accessibilityLabel);
-	expect(labels).toEqual(["Restore to draft", "Discard", "Discard"]);
-
-	const text = renderedText(tree);
-	expect(text).toContain("Rejected");
-	expect(text).toContain("daemon refused");
-	expect(text).toContain("hello there");
-	expect(text).toContain("Needs review");
-});
-
-it("invokes typed restore and discard callbacks for the rows they belong to", () => {
-	const onRestore = vi.fn();
-	const onDiscard = vi.fn();
-	const props = {
-		targetKey: TARGET_A,
-		snapshot: snapshot([
-			recovery(TARGET_A, "rejected", 1, "rejected"),
-			recovery(TARGET_A, "orphaned", 2, "orphaned"),
-		]),
-		error: null as unknown,
-		actions: { canRestore: () => true, onRestore, onDiscard },
-	} satisfies ComponentProps<typeof MutationRecoveryPanel>;
-	const tree = render(<MutationRecoveryPanel {...props} />);
-	const buttons = tree.root.findAllByProps({ accessibilityRole: "button" });
-
-	act(() => {
-		buttons[0]?.props.onPress();
-		buttons[1]?.props.onPress();
-	});
-
-	expect(onRestore).toHaveBeenCalledTimes(1);
-	expect(onRestore).toHaveBeenCalledWith(
-		expect.objectContaining({ clientMutationId: "rejected", targetKey: TARGET_A }),
-	);
-	expect(onDiscard).toHaveBeenCalledWith(
-		expect.objectContaining({ clientMutationId: "rejected", targetKey: TARGET_A }),
-	);
-});
-
 it("discards exactly the row's clientMutationId through the target's own projection", async () => {
 	const discard = vi.fn(async () => true);
 	const projection = { targetKey: TARGET_A, discard };
@@ -267,49 +204,9 @@ it("refuses to discard a row another target owns, so a discard is never blanket"
 	expect(discard).not.toHaveBeenCalled();
 });
 
-it("renders a loading line until the snapshot arrives and an empty line when nothing is recoverable", () => {
-	const loading = render(
-		<MutationRecoveryPanel
-			targetKey={TARGET_A}
-			snapshot={null}
-			error={null}
-			loading
-			actions={noActions}
-		/>,
-	);
-	expect(renderedText(loading)).toContain("Loading delivery status");
-
-	const unavailable = render(
-		<MutationRecoveryPanel
-			targetKey={TARGET_A}
-			snapshot={null}
-			error={null}
-			loading={false}
-			actions={noActions}
-		/>,
-	);
-	expect(renderedText(unavailable)).toContain("Recovery is unavailable");
-	expect(renderedText(unavailable)).not.toContain("Loading delivery status");
-
-	const empty = render(
-		<MutationRecoveryPanel
-			targetKey={TARGET_A}
-			snapshot={snapshot([])}
-			error={null}
-			actions={noActions}
-		/>,
-	);
-	expect(renderedText(empty)).toContain("No messages need recovery");
-});
-
-it("surfaces a read error instead of a silent empty panel", () => {
+it("surfaces a read error with its own words", () => {
 	const tree = render(
-		<MutationRecoveryPanel
-			targetKey={TARGET_A}
-			snapshot={null}
-			error={new Error("recovery table unavailable")}
-			actions={noActions}
-		/>,
+		<RecoveryFailure error={new Error("recovery table unavailable")} onRetry={() => {}} />,
 	);
 	expect(renderedText(tree)).toContain("recovery table unavailable");
 });
@@ -335,53 +232,7 @@ async function flush() {
 	});
 }
 
-it("offers the recovery entry for rows, and for a failed surface so its error and retry stay reachable", () => {
-	expect(
-		shouldOfferRecoveryEntry({
-			connected: true,
-			deliveryConcern: false,
-			count: 1,
-			failed: false,
-		}),
-	).toBe(true);
-	// Empty snapshot + no failure = no entry: no dead affordance ships.
-	expect(
-		shouldOfferRecoveryEntry({
-			connected: true,
-			deliveryConcern: false,
-			count: 0,
-			failed: false,
-		}),
-	).toBe(false);
-	// A failure renders the entry even with no rows, so the modal's error and
-	// Retry are reachable instead of hidden behind an entry that never appears.
-	expect(
-		shouldOfferRecoveryEntry({
-			connected: true,
-			deliveryConcern: false,
-			count: 0,
-			failed: true,
-		}),
-	).toBe(true);
-	expect(
-		shouldOfferRecoveryEntry({
-			connected: true,
-			deliveryConcern: true,
-			count: 3,
-			failed: false,
-		}),
-	).toBe(false);
-	expect(
-		shouldOfferRecoveryEntry({
-			connected: false,
-			deliveryConcern: false,
-			count: 3,
-			failed: true,
-		}),
-	).toBe(false);
-});
-
-it("hides the entry while the snapshot is empty and shows it when rows arrive", async () => {
+it("counts no rows while the snapshot is empty and counts them when rows arrive", async () => {
 	const targetKey = JSON.stringify(["hub-a", "ref-a"]);
 	let rows: MutationRecoveryRecord<MutationAttachmentRef>[] = [];
 	const runtime = fakeRuntime({
@@ -397,27 +248,11 @@ it("hides the entry while the snapshot is empty and shows it when rows arrive", 
 	);
 	await flush();
 	expect(result.current.count).toBe(0);
-	expect(
-		shouldOfferRecoveryEntry({
-			connected: true,
-			deliveryConcern: false,
-			count: result.current.count,
-			failed: result.current.failed,
-		}),
-	).toBe(false);
 
 	rows = [recovery(targetKey, "row-1", 1, "rejected")];
 	act(() => result.current.retry());
 	await flush();
 	expect(result.current.count).toBe(1);
-	expect(
-		shouldOfferRecoveryEntry({
-			connected: true,
-			deliveryConcern: false,
-			count: result.current.count,
-			failed: result.current.failed,
-		}),
-	).toBe(true);
 });
 
 it("surfaces a failed runtime acquisition and clears it on retry", async () => {
@@ -442,16 +277,6 @@ it("surfaces a failed runtime acquisition and clears it on retry", async () => {
 		"mutations db unavailable",
 	);
 	expect(result.current.count).toBe(0);
-	// A failure with no rows still renders the entry, so the modal's error and
-	// Retry are reachable rather than hidden behind an entry that never appears.
-	expect(
-		shouldOfferRecoveryEntry({
-			connected: true,
-			deliveryConcern: false,
-			count: result.current.count,
-			failed: result.current.failed,
-		}),
-	).toBe(true);
 
 	mode = "ok";
 	act(() => result.current.retry());
@@ -460,14 +285,6 @@ it("surfaces a failed runtime acquisition and clears it on retry", async () => {
 	expect(result.current.error).toBeNull();
 	expect(result.current.failed).toBe(false);
 	expect(result.current.count).toBe(1);
-	expect(
-		shouldOfferRecoveryEntry({
-			connected: true,
-			deliveryConcern: false,
-			count: result.current.count,
-			failed: result.current.failed,
-		}),
-	).toBe(true);
 });
 
 it("surfaces a rejected discard instead of leaving an unhandled rejection", async () => {
@@ -525,43 +342,9 @@ it("leaves no failure after a successful discard", async () => {
 	expect(result.current.error).toBeNull();
 });
 
-it("disables restore with an explanation when the composer cannot accept it", () => {
-	const onRestore = vi.fn();
-	const props = {
-		targetKey: TARGET_A,
-		snapshot: snapshot([recovery(TARGET_A, "rejected", 1, "rejected")]),
-		error: null as unknown,
-		actions: {
-			canRestore: () => false,
-			restoreHint: () => "Clear or send your current draft to restore this message.",
-			onRestore,
-			onDiscard: () => {},
-		},
-	} satisfies ComponentProps<typeof MutationRecoveryPanel>;
-	const tree = render(<MutationRecoveryPanel {...props} />);
-	const restore = tree.root.findByProps({
-		accessibilityLabel: "Restore to draft",
-	});
-
-	expect(restore.props.accessibilityState).toMatchObject({ disabled: true });
-	expect(renderedText(tree)).toContain(
-		"Clear or send your current draft to restore this message.",
-	);
-	act(() => restore.props.onPress());
-	expect(onRestore).not.toHaveBeenCalled();
-});
-
 it("offers a retry beside a surfaced error", () => {
 	const onRetry = vi.fn();
-	const tree = render(
-		<MutationRecoveryPanel
-			targetKey={TARGET_A}
-			snapshot={null}
-			error={new Error("read failed")}
-			onRetry={onRetry}
-			actions={noActions}
-		/>,
-	);
+	const tree = render(<RecoveryFailure error={new Error("read failed")} onRetry={onRetry} />);
 	const retry = tree.root.findByProps({ accessibilityLabel: "Retry" });
 	act(() => retry.props.onPress());
 	expect(onRetry).toHaveBeenCalledOnce();
@@ -600,52 +383,15 @@ it("refreshes a failed read on retry", async () => {
 	expect(result.current.count).toBe(1);
 });
 
-it("renders a reachable entry on a failure with no rows, and its Retry is reachable", () => {
-	expect(
-		shouldOfferRecoveryEntry({
-			connected: true,
-			deliveryConcern: false,
-			count: 0,
-			failed: true,
-		}),
-	).toBe(true);
-
+it("shows a failure with no rows, and its Retry is reachable", () => {
 	const onRetry = vi.fn();
 	const tree = render(
-		<MutationRecoveryPanel
-			targetKey={TARGET_A}
-			snapshot={null}
-			error={new Error("mutations db unavailable")}
-			onRetry={onRetry}
-			actions={noActions}
-		/>,
+		<RecoveryFailure error={new Error("mutations db unavailable")} onRetry={onRetry} />,
 	);
 	expect(renderedText(tree)).toContain("mutations db unavailable");
 	const retry = tree.root.findByProps({ accessibilityLabel: "Retry" });
 	act(() => retry.props.onPress());
 	expect(onRetry).toHaveBeenCalledOnce();
-});
-
-it("does not put an image-specific explanation on an orphaned row", () => {
-	const record = recovery(TARGET_A, "orphan-img", 1, "orphaned", {
-		attachments: [
-			{
-				presentationId: "presentation-1",
-				marker: 1,
-				name: "proof.png",
-				mediaType: "image/png",
-			},
-		],
-		payload: { input: [{ type: "text", text: "hi" }] },
-	});
-	const props = {
-		targetKey: TARGET_A,
-		snapshot: snapshot([record]),
-		error: null as unknown,
-		actions: noActions,
-	} satisfies ComponentProps<typeof MutationRecoveryPanel>;
-	const tree = render(<MutationRecoveryPanel {...props} />);
-	expect(renderedText(tree)).not.toContain("carried an image");
 });
 
 it("treats a record with attachment metadata as carrying attachments even without a payload image item", () => {
@@ -667,7 +413,7 @@ it("treats a record with attachment metadata as carrying attachments even withou
 	expect(rows[0].actions).toEqual(["discard"]);
 });
 
-it("withholds restore for a rejected record that carries an image, and says why", () => {
+it("withholds restore for a rejected record that carries an image, which the ghost explains", () => {
 	const record = recovery(TARGET_A, "with-image", 1, "rejected", {
 		payload: {
 			input: [
@@ -687,34 +433,6 @@ it("withholds restore for a rejected record that carries an image, and says why"
 	expect(rows[0].carriesAttachments).toBe(true);
 	expect(rows[0].actions).toEqual(["discard"]);
 
-	const props = {
-		targetKey: TARGET_A,
-		snapshot: snapshot([record]),
-		error: null as unknown,
-		actions: noActions,
-	} satisfies ComponentProps<typeof MutationRecoveryPanel>;
-	const tree = render(<MutationRecoveryPanel {...props} />);
-	expect(
-		tree.root.findAllByProps({ accessibilityLabel: "Restore to draft" }),
-	).toHaveLength(0);
-	expect(renderedText(tree)).toContain("carried an image");
-});
-
-it("renders a failure banner above the rows instead of hiding them", () => {
-	const props = {
-		targetKey: TARGET_A,
-		snapshot: snapshot([
-			recovery(TARGET_A, "rejected", 1, "rejected", {
-				composerText: "hello there",
-			}),
-		]),
-		error: new Error("discard failed"),
-		actions: noActions,
-	} satisfies ComponentProps<typeof MutationRecoveryPanel>;
-	const tree = render(<MutationRecoveryPanel {...props} />);
-	const text = renderedText(tree);
-	expect(text).toContain("discard failed");
-	expect(text).toContain("hello there");
 });
 
 it("clears a stale acquisition failure when a later acquisition succeeds", async () => {
@@ -909,24 +627,6 @@ it("ignores a stale discard rejection that lands after a newer discard", async (
 	});
 	await flush();
 	expect(result.current.error).toBeNull();
-});
-
-it("renders the caller's restore hint instead of assuming an occupied composer", () => {
-	const props = {
-		targetKey: TARGET_A,
-		snapshot: snapshot([recovery(TARGET_A, "rejected", 1, "rejected")]),
-		error: null as unknown,
-		actions: {
-			canRestore: () => false,
-			restoreHint: () => "Wait for the draft to finish saving to restore this message.",
-			onRestore: () => {},
-			onDiscard: () => {},
-		},
-	} satisfies ComponentProps<typeof MutationRecoveryPanel>;
-	const tree = render(<MutationRecoveryPanel {...props} />);
-	const text = renderedText(tree);
-	expect(text).toContain("Wait for the draft to finish saving");
-	expect(text).not.toContain("Clear or send your current draft");
 });
 
 it("returns a string error's own message", () => {
