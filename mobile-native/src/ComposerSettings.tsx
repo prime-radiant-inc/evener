@@ -20,13 +20,11 @@ export function ComposerSettings({
 	conversation,
 	disabled,
 	pending,
-	fullWidth = false,
 	open,
 }: {
 	conversation: MobileConversation;
 	disabled: boolean;
 	pending: boolean;
-	fullWidth?: boolean;
 	open: (setting: ComposerSetting) => void;
 }) {
 	const colors = useColors();
@@ -44,9 +42,9 @@ export function ComposerSettings({
 			style={{
 				flexDirection: "row",
 				alignItems: "center",
-				flex: fullWidth || fontScale > 1.4 ? 0 : 1,
+				flex: fontScale > 1.4 ? 0 : 1,
 				flexShrink: 1,
-				minWidth: fullWidth || fontScale > 1.4 ? "100%" : 120,
+				minWidth: fontScale > 1.4 ? "100%" : 120,
 				gap: 8,
 			}}
 		>
