@@ -1,25 +1,18 @@
-// The screen-level integration proof the #2223 panel follow-up recorded as
-// missing: the conversation screen's recovery entry and the recovery modal it
-// opens, mounted and driven as the real ConversationScreen renders them - not
-// the pure gate (shouldOfferRecoveryEntry) and not the panel alone, which
-// MutationRecoveryPanel.test.tsx already cover.
+// The conversation screen's recovery surface, mounted and driven as the real
+// ConversationScreen renders it: a message the hub refused is a ghost above
+// the composer (spec 8.5 and 14, ruling 3), not an entry that opens a modal.
 //
 // What this pins, end to end, on the real screen:
-// - the entry is row-conditional: a connected screen whose durable recovery
-//   snapshot is empty renders NO Recovery affordance and no recovery modal
-//   (the host Modal stub is visibility-aware, so the panel is only in the tree
-//   when the modal is actually open);
-// - when this target's durable recovery row lands, the screen renders the
-//   Recovery entry, pressing it opens the recovery modal, and the modal mounts
-//   the real MutationRecoveryPanel with that row's label, reason and text;
-// - the #2247 contract, not the pre-#2247 one: the screen folds BOTH the
-//   record-aware fence and the composer converter (document
-//   .canRestoreRecoveredDraft) into the panel's actions, so Restore renders
-//   only while an eligible rejected record meets an empty, loaded composer; an
-//   occupied composer leaves the row offered-but-blocked - a disabled Restore
-//   with the converter's own hint - and Discard is unconditional throughout.
-//
-// Imported test-file only: screens.tsx and every production file are untouched.
+// - the ghost is row-conditional: a connected screen whose durable recovery
+//   snapshot is empty shows no ghost, and never a Recovery, Review status,
+//   Check delivery or Reconnect control;
+// - when this target's durable recovery row lands, a ghost shows its text and
+//   why the hub refused it;
+// - the #2247 contract: the screen folds BOTH the record-aware fence and the
+//   composer converter (document.canRestoreRecoveredDraft) into Edit, so Edit
+//   acts only while an eligible rejected record meets an empty, loaded
+//   composer; an occupied composer leaves Edit disabled with the converter's
+//   own hint, and Discard is actionable throughout.
 import type { ComponentProps, ReactNode } from "react";
 import { createElement } from "react";
 import { act, type ReactTestRenderer } from "react-test-renderer";
@@ -200,7 +193,7 @@ function pendingClient() {
 	};
 }
 
-it("renders the Recovery entry and mounts the recovery panel end to end, row-conditional under the #2247 contract", async () => {
+it("shows a refused message as a ghost above the composer, row-conditional under the #2247 contract", async () => {
 	harness.connection = {
 		...screenConnection(pendingClient(), "ready"),
 		error: null,
@@ -222,24 +215,27 @@ it("renders the Recovery entry and mounts the recovery panel end to end, row-con
 	);
 	await flush();
 
-	// PHASE 1 - empty snapshot, connected: no dead entry ships and the recovery
-	// modal is not mounted at all (its visibility-aware Modal renders nothing).
-	// Positive control first: the real connected screen rendered, so the absent
-	// entry is a wiring verdict and not an empty tree.
-	expect(
+	// PHASE 1 - empty snapshot, connected: no ghost. Positive control first:
+	// the real connected screen rendered, so the absent ghost is a wiring
+	// verdict and not an empty tree.
+	const composer = () =>
 		tree.root
 			.findAll((node) => String(node.type) === "TextInput")
-			.some((node) => node.props.accessibilityLabel === "Message"),
-	).toBe(true);
+			.find((node) => node.props.accessibilityLabel === "Message");
+	expect(composer()).toBeDefined();
 	// A live connection says nothing about itself (spec 14).
 	expect(renderedText(tree)).not.toContain("Connected");
-	expect(
-		pressables(tree).find((n) => n.props.accessibilityLabel === "Reconnect"),
-	).toBeUndefined();
-	expect(
-		pressables(tree).find((n) => n.props.accessibilityLabel === "Recovery"),
-	).toBeUndefined();
-	expect(renderedText(tree)).not.toContain("Review status");
+	expect(renderedText(tree)).not.toContain("Couldn't send this");
+	const retired = ["Recovery", "Review status", "Check delivery", "Reconnect", "Review error"];
+	const expectNoRetiredControls = () => {
+		for (const label of retired) {
+			expect(
+				pressables(tree).find((n) => n.props.accessibilityLabel === label),
+			).toBeUndefined();
+			expect(renderedText(tree)).not.toContain(label);
+		}
+	};
+	expectNoRetiredControls();
 
 	// PHASE 2 - this target's durable recovery row lands and the runtime
 	// publishes the storage change the hook follows.
@@ -263,51 +259,39 @@ it("renders the Recovery entry and mounts the recovery panel end to end, row-con
 	});
 	await flush();
 
-	expect(
-		pressables(tree).find((n) => n.props.accessibilityLabel === "Recovery"),
-	).toBeDefined();
-	expect(renderedText(tree)).not.toContain("Review status");
-
-	// PHASE 3 - pressing the entry opens the recovery modal, which mounts the
-	// real panel holding this row.
-	pressLabel(tree, "Recovery");
-	await flush();
 	const text = renderedText(tree);
-	expect(text).toContain("Review status");
-	expect(text).toContain("Rejected");
-	expect(text).toContain("daemon refused");
 	expect(text).toContain("recover this message");
-	expect(
-		pressables(tree).find((n) => n.props.accessibilityLabel === "Discard"),
-	).toBeDefined();
+	expect(text).toContain("Couldn't send this · daemon refused");
+	expectNoRetiredControls();
 
-	// PHASE 4 - the #2247 converter gate at screen level. With an empty, loaded
-	// composer the eligible record meets the converter's true, so Restore is
-	// offered and enabled.
-	const restore = () =>
-		pressables(tree).find(
-			(n) => n.props.accessibilityLabel === "Restore to draft",
-		);
-	expect(restore()).toBeDefined();
-	expect(restore()?.props.accessibilityState).toMatchObject({
-		disabled: false,
-	});
-
-	// An occupied composer is offered-but-blocked: the row still offers Restore
-	// (the record fence passes) but the converter withholds, so the panel shows
-	// the disabled affordance and the converter's own hint, and Discard is still
-	// actionable.
-	const composer = tree.root
-		.findAll((node) => String(node.type) === "TextInput")
-		.find((node) => node.props.accessibilityLabel === "Message");
-	if (!composer) throw new Error("no composer input to occupy");
-	act(() => composer.props.onChangeText("a draft already in progress"));
+	// PHASE 3 - the #2247 converter gate at screen level. With an empty,
+	// loaded composer the eligible record meets the converter's true, so Edit
+	// is enabled, and it puts the text back in the composer.
+	const edit = () =>
+		pressables(tree).find((n) => n.props.accessibilityLabel === "Edit");
+	const discard = () =>
+		pressables(tree).find((n) => n.props.accessibilityLabel === "Discard");
+	expect(edit()?.props.accessibilityState).toMatchObject({ disabled: false });
+	expect(discard()?.props.accessibilityState).toMatchObject({ disabled: false });
+	await act(async () => edit()?.props.onPress());
 	await flush();
-	expect(restore()?.props.accessibilityState).toMatchObject({ disabled: true });
+	expect(composer()?.props.value).toBe("recover this message");
+
+	// The composer is occupied now: the row still offers Edit (the record
+	// fence passes) but the converter withholds, so Edit is disabled with the
+	// converter's own hint, and Discard is still actionable.
+	act(() => composer()?.props.onChangeText("a draft already in progress"));
+	await flush();
+	expect(edit()?.props.accessibilityState).toMatchObject({ disabled: true });
 	expect(renderedText(tree)).toContain(
 		"Clear or send your current draft to restore this message.",
 	);
-	expect(
-		pressables(tree).find((n) => n.props.accessibilityLabel === "Discard"),
-	).toBeDefined();
+	expect(discard()?.props.accessibilityState).toMatchObject({ disabled: false });
+
+	// PHASE 4 - Discard retires exactly this row, and its ghost goes.
+	await act(async () => discard()?.props.onPress());
+	await flush();
+	await flush();
+	expect(renderedText(tree)).not.toContain("recover this message");
+	expect(await runtime.storage.getRecovery(record.clientMutationId)).toBeUndefined();
 });

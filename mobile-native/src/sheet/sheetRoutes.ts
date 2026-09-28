@@ -39,6 +39,8 @@ export const SHEET_ROUTES = {
 	NotesSheet: sheetOptions(["medium", "large"], "large"),
 	// The Board row's menu (phase 2 Task 12.6) opens at half height.
 	RowMenuSheet: sheetOptions(["medium", "large"], "medium"),
+	// The whole queue, when more wait than the composer shows (ruling 18).
+	QueueSheet: sheetOptions(["medium", "large"], "medium"),
 } satisfies { [Name in keyof Routes]?: NativeStackNavigationOptions };
 
 export function isSheetRoute(name: string): boolean {

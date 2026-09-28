@@ -21,8 +21,10 @@ import {
 	useSyncExternalStore,
 } from "react";
 import {
+	AccessibilityInfo,
 	ActionSheetIOS,
 	Alert,
+	AppState,
 	type LayoutChangeEvent,
 	type NativeScrollEvent,
 	type NativeSyntheticEvent,
@@ -34,9 +36,11 @@ import {
 	useWindowDimensions,
 	View,
 } from "react-native";
+import Animated from "react-native-reanimated";
 import type { ConversationClientLike } from "../../../mobile/src/services/conversation";
 import { useConnection } from "../ConnectionProvider";
 import { reconnectDelay } from "../hubConnection";
+import type { NavigationActions } from "../navigationActions";
 import { getNativeMutationRuntime } from "../nativeMutationRuntime";
 import { drafts } from "../nativeDrafts";
 import { useReduceMotion } from "../reduceMotion";
@@ -59,18 +63,20 @@ import {
 	usualPlace,
 } from "./attention";
 import { ACTIVITY_POLL_MS, ActivityPoll, isFreshRead } from "./activityPoll";
+import { type BoardItem, groupItems, liveItems, pinnedItems, projectItems } from "./boardItems";
 import type { OrganizeBy, SeenMarkers } from "./boardMemory";
+import { ROW_MOVE } from "./boardMotion";
 import { createSearchController, projectResults, type SearchScope } from "./boardSearch";
 import { BoardNotices, NoticeRow } from "./BoardNotices";
-import { BandHeader, FoldChevron } from "./BoardRow";
-import { BoardRows, type RowContext } from "./BoardRows";
+import { BandHeader, FoldChevron, Hairline, TITLE_INSET } from "./BoardRow";
+import { BoardListRow, type RowContext } from "./BoardRows";
 import { BoardToolbar } from "./BoardToolbar";
 import { type BoardController, type BoardSnapshot, createBoardController } from "./boardData";
 import { BoardStops, stopToast } from "./boardStops";
 import { BoardSeen, type HubSeenMarks, hubSeenMarks } from "./hubSeen";
 import { foldedSections, organizeByPreference, recentSearches, seenMarkers } from "./nativeBoardMemory";
 import { notices } from "./notices";
-import { PinnedSection, useBoardFolds, useCategoryFolds } from "./PinnedSections";
+import { PinnedEmptyHint, PinnedSection, useBoardFolds, useCategoryFolds } from "./PinnedSections";
 import { journalHoldsProject, PROJECT_MENU_LABELS, type ProjectMenuAction, projectMenuActions } from "./projectMenu";
 import {
 	expandedProjectKeys,
@@ -87,7 +93,10 @@ import { projectName, ProjectSectionHeader, ProjectTreeRow } from "./ProjectTree
 import { fleetMinutes } from "./pulse";
 import { PulseMeter } from "./PulseMeter";
 import {
+	archiveSession,
+	archiveTarget,
 	archivingSessionId,
+	pinSession,
 	type RowAction,
 	type RowActionContext,
 	renameSession,
@@ -97,8 +106,12 @@ import {
 import { type RowMenuHost, rowMenuHosts } from "./RowMenu";
 import { archiveRow, rowSwipes, type SwipeRowAction } from "./rowSwipes";
 import { SearchResults } from "./SearchResults";
+import { SelectBar } from "./SelectBar";
+import { selectionActions, toggleSelected } from "./selection";
+import { listScrollHandlers } from "./settledList";
 import { type BoardOrganization, organizationOpen, useBoardOrganization } from "./useBoardOrganization";
 import { PROJECT_SECTIONS, showExpanded, useProjectSections } from "./useProjectSections";
+import { useSettledList } from "./useSettledList";
 
 type Props = NativeStackScreenProps<Routes, "Sessions">;
 type Navigation = Props["navigation"];
@@ -147,6 +160,8 @@ function Board({
 	const connected = state === "ready";
 	// This Board's own hub is the connected one, so a hub write may go out.
 	const actionsConnected = connected && activeProfile?.id === hubId;
+	// The client a hub write goes out on, or null while none may.
+	const actionsClient = actionsConnected ? client : null;
 	const focused = useIsFocused();
 	// Activity keeps polling while only a sheet covers the Board: the sheet
 	// is part of the screen under it.
@@ -164,9 +179,24 @@ function Board({
 	const seenRevision = useSyncExternalStore(markers.subscribe, markers.getRevision);
 	const hubMarks = hubSeenMarks(hubId);
 	const hubSeenRevision = useSyncExternalStore(hubMarks.subscribe, hubMarks.getRevision);
-	const seen = useMemo(() => new BoardSeen(markers, hubMarks), [markers, hubMarks]);
+	// A new BoardSeen with each mark or pruned mark, so a memo that reads
+	// isSeen lists seen alone.
+	const seen = useMemo(() => new BoardSeen(markers, hubMarks), [markers, hubMarks, seenRevision, hubSeenRevision]);
 	const [now, setNow] = useState(Date.now);
 	const [draftRefs, setDraftRefs] = useState<Set<string>>(() => new Set());
+	// Select mode (spec 7.1): on from Select until Done or one of its
+	// actions completes (ruling 26), with the refs chosen so far.
+	const [selecting, setSelecting] = useState(false);
+	const [chosen, setChosen] = useState<ReadonlySet<string>>(() => new Set());
+	const leaveSelect = () => {
+		setSelecting(false);
+		setChosen(new Set());
+	};
+	const choose = (row: NavigationSessionSummary) => {
+		const next = toggleSelected(chosen, row.ref);
+		setChosen(next);
+		AccessibilityInfo.announceForAccessibility(`${next.size} selected`);
+	};
 
 	// Declared before the client binding so a first focus resumes an unbound
 	// controller rather than one whose reads just went out.
@@ -206,7 +236,7 @@ function Board({
 					return activity ? quietState(activity, msSinceRead ?? 0)?.state === "stuck" : false;
 				},
 			),
-		// The revisions re-run isSeen after a mark, a pruned mark or first run.
+		// seen re-runs isSeen after a mark, a pruned mark or first run.
 		// activityRevision re-runs isStuck after each read, and activityOf
 		// changes when the connection drops or returns, or the read goes
 		// stale. Bare msSinceRead is left out on purpose: it changes on every
@@ -221,8 +251,6 @@ function Board({
 			snapshot.live.rows,
 			snapshot.needsYou.rows,
 			seen,
-			seenRevision,
-			hubSeenRevision,
 			activityOf,
 			activityRevision,
 			activityTick,
@@ -239,14 +267,14 @@ function Board({
 
 	const classify = useMemo(
 		() => rowClassifier(snapshot.needsYou.rows, (row) => seen.isSeen(row)),
-		[snapshot.needsYou.rows, seen, seenRevision, hubSeenRevision],
+		[snapshot.needsYou.rows, seen],
 	);
 	// A project section's session row: its approval comes from the row's own
 	// flag alone, not from the needs_you section's membership.
-	const projectRow = (row: NavigationSessionSummary): ClassifiedRow => ({
-		row,
-		state: boardState(row, false, seen.isSeen(row)),
-	});
+	const projectRow = useCallback(
+		(row: NavigationSessionSummary): ClassifiedRow => ({ row, state: boardState(row, false, seen.isSeen(row)) }),
+		[seen],
+	);
 	const folds = useCategoryFolds(hubId);
 	const organization = useBoardOrganization(hubId);
 	const toast = useToast();
@@ -273,7 +301,7 @@ function Board({
 		],
 		[snapshot.live.rows, snapshot.needsYou.rows, snapshot.pinSections, ...projectViews],
 	);
-	useHubSeenMarks(hubMarks, connected ? client : null, loadedRows);
+	useHubSeenMarks(hubMarks, actionsClient, loadedRows);
 	const hubNotices = useMemo(
 		() => notices({ auth: snapshot.auth, sources: sources ?? [], plugins: snapshot.plugins, loadedRows }),
 		[snapshot.auth, sources, snapshot.plugins, loadedRows],
@@ -309,19 +337,12 @@ function Board({
 	const cancelSearch = () => {
 		leaveSearch();
 		// Tuck the field back out of view, where the Board keeps it.
-		scroller.current?.scrollTo?.({ y: searchFieldHeight, animated: true });
+		scrollBoardTo(searchFieldHeight);
 	};
-	// The field sits above the Board, scrolled out of view, so Search brings
-	// it down (spec 7.4). A test renderer's host views have no instances.
-	const revealSearch = useCallback(() => {
-		scroller.current?.scrollTo?.({ y: 0, animated: true });
-		searchInput.current?.focus?.();
-	}, []);
-	useHeader(navigation, hubId, hubName, connected, revealSearch);
 
 	const newSession = () => navigation.navigate("NewSession", { hubId, hubName });
 	const openSession = (row: NavigationSessionSummary) => {
-		seen.markRead(actionsConnected ? client : null, [row]);
+		seen.markRead(actionsClient, [row]);
 		navigation.navigate("Conversation", { hubId, ref: row.ref, title: row.title });
 	};
 	// A search result the Board has loaded opens like its row, so it's
@@ -353,11 +374,8 @@ function Board({
 	const measure = (key: string) => (event: LayoutChangeEvent) => {
 		offsets.current[key] = event.nativeEvent.layout.y;
 	};
-	const scrollTo = (key: string, withinLive = false) => {
-		const y = (withinLive ? (offsets.current.live ?? 0) : 0) + (offsets.current[key] ?? 0);
-		// A test renderer's host ScrollView has no instance to scroll.
-		scroller.current?.scrollTo?.({ y, animated: true });
-	};
+	const scrollTo = (key: string, withinLive = false) =>
+		scrollBoardTo((withinLive ? (offsets.current.live ?? 0) : 0) + (offsets.current[key] ?? 0));
 	const jumpToBand = (band: Band) => {
 		if (band === "idle") foldIdle(false);
 		scrollTo(band, true);
@@ -448,8 +466,12 @@ function Board({
 	// row and its actions. It carries the tier it opened from, since a
 	// session can show twice (Live and a project's Archived tier) and the two
 	// copies offer different actions (Archive vs. Unarchive).
-	const openRowMenu = (item: ClassifiedRow, archived: boolean) =>
+	// It holds the list while it's open (ruling 22), until its host hears
+	// it close.
+	const openRowMenu = (item: ClassifiedRow, archived: boolean) => {
+		list.setInteraction("menu", true);
 		navigation.navigate("RowMenuSheet", { hubId, ref: item.row.ref, archived });
+	};
 	const runRowAction = (item: ClassifiedRow, action: Exclude<SwipeRowAction, "more">) => {
 		const { row } = item;
 		if (action === "pin") navigation.navigate("PinAssignment", { hubId, ref: row.ref, title: row.title });
@@ -463,11 +485,10 @@ function Board({
 	 * Session sends them (rulings 18-21). */
 	const actOnRow = (item: ClassifiedRow, action: RowAction) => {
 		const { row } = item;
-		const markClient = actionsConnected ? client : null;
-		if (action === "markRead") seen.markRead(markClient, [row]);
-		else if (action === "markUnread") seen.markUnread(markClient, [row]);
-		else if (action === "shutDown") confirmShutDown(actionsConnected ? client : null, row, toast);
-		else if (action === "rename") promptRename(actionsConnected ? client : null, row, toast);
+		if (action === "markRead") seen.markRead(actionsClient, [row]);
+		else if (action === "markUnread") seen.markUnread(actionsClient, [row]);
+		else if (action === "shutDown") confirmShutDown(actionsClient, row, toast);
+		else if (action === "rename") promptRename(actionsClient, row, toast);
 		else runRowAction(item, action);
 	};
 	const archivingId = archivingSessionId(organization.state);
@@ -476,7 +497,8 @@ function Board({
 		usual,
 		hostLabel,
 		now,
-		onOpen: openSession,
+		// In select mode a press chooses the row instead of opening it.
+		onOpen: selecting ? choose : openSession,
 		draftRefs,
 		activityOf,
 		msSinceRead,
@@ -489,18 +511,9 @@ function Board({
 			onOpenSession: () => openSession(item.row),
 			onAction: (action) => actOnRow(item, action),
 			onOpenSheet: () => openRowMenu(item, archived),
+			onOpenChange: (open) => list.setInteraction("menu", open),
 		}),
 	};
-	const rows = (items: ClassifiedRow[], variant: "signal" | "quiet", moving: boolean, archived = false) => (
-		<BoardRows items={items} variant={variant} moving={moving} archived={archived} context={listContext} />
-	);
-	const band = (key: Exclude<Band, "idle">, moving: boolean) =>
-		bands[key].length ? (
-			<View key={key} onLayout={measure(key)}>
-				<BandHeader text={`${BAND_HEADERS[key]} · ${bands[key].length}`} />
-				{rows(bands[key], "signal", moving)}
-			</View>
-		) : null;
 	const summary = liveSummary(bands);
 	// The fleet meter sums the working sessions the poll has read so far, and
 	// stays still until it has read one.
@@ -516,14 +529,6 @@ function Board({
 		organizeByPreference(hubId).set(next);
 		setOrganizeBy(next);
 	};
-	// A host's live count needs every Live and Needs you row (ruling 12).
-	const hostLiveCount = liveCountsByHost(
-		[...snapshot.live.rows, ...snapshot.needsYou.rows],
-		snapshot.live.loaded &&
-			snapshot.needsYou.loaded &&
-			snapshot.live.remaining === 0 &&
-			snapshot.needsYou.remaining === 0,
-	);
 	const testRuns = manifest?.catalogs.test_runs.count ?? 0;
 	const projectHeaders: Record<ProjectSection, { title: string; label: string; shown: boolean }> = {
 		projects: {
@@ -534,23 +539,87 @@ function Board({
 		"test-runs": { title: `Test runs · ${testRuns}`, label: sectionLabel("Test runs", testRuns, "project"), shown: testRuns > 0 },
 		archived: { title: `ARCHIVED · ${archived}`, label: sectionLabel("Archived", archived, "project"), shown: archived > 0 },
 	};
-	const shownSections = PROJECT_SECTIONS.filter((section) => projectHeaders[section].shown).map((section) => {
-		const folded = isFolded(SECTION_FOLDS[section].fold, SECTION_FOLDS[section].foldedByDefault);
-		const { view } = projectSections[section];
-		const items = folded
-			? []
-			: projectTreeItems({
-					section,
-					projects: view.projects,
-					pages: view.pages,
-					sources: hostSources,
-					organizeBy,
-					isFolded,
-					hostLiveCount,
-					remainingProjects: view.remaining,
-				});
-		return { section, folded, items };
-	});
+	const shownProjectSections = PROJECT_SECTIONS.filter((section) => projectHeaders[section].shown);
+	const { live: livePage, needsYou: needsYouPage } = snapshot;
+	// Memoized, with the Board's list below: a new list each render would
+	// apply again each render.
+	const shownSections = useMemo(() => {
+		// A host's live count needs every Live and Needs you row (ruling 12).
+		const hostLiveCount = liveCountsByHost(
+			[...livePage.rows, ...needsYouPage.rows],
+			livePage.loaded && needsYouPage.loaded && livePage.remaining === 0 && needsYouPage.remaining === 0,
+		);
+		return shownProjectSections.map((section) => {
+			const folded = isFolded(SECTION_FOLDS[section].fold, SECTION_FOLDS[section].foldedByDefault);
+			const { view } = projectSections[section];
+			const items = folded
+				? []
+				: projectTreeItems({
+						section,
+						projects: view.projects,
+						pages: view.pages,
+						sources: sources ?? [],
+						organizeBy,
+						isFolded,
+						hostLiveCount,
+						remainingProjects: view.remaining,
+					});
+			return { section, folded, items };
+		});
+	}, [shownProjectSections.join(" "), isFolded, ...projectViews, sources, organizeBy, livePage, needsYouPage]);
+
+	// The Board's list (spec 7.3, ruling 22): held still while touched, moving
+	// or covered by an interaction, and applied at once when it settles.
+	const boardItems = useMemo(
+		() => [
+			...liveItems(bands, idleFolded),
+			...pinnedItems(pins, snapshot.pinSections, folds.isFolded, classify),
+			...projectItems(shownSections, projectRow),
+		],
+		[bands, idleFolded, pins, snapshot.pinSections, folds.isFolded, classify, shownSections, projectRow],
+	);
+	const { list, snapshot: settled } = useSettledList(boardItems);
+	const shownGroups = groupItems(settled.display);
+	const rowMove = reduceMotion ? undefined : ROW_MOVE;
+	const scrollHandlers = useMemo(() => listScrollHandlers((event) => list.send(event)), [list]);
+	// Every animated scroll the Board starts holds the list until it ends.
+	// Under Reduce Motion it jumps instead, and holds nothing. A test
+	// renderer's host ScrollView has no instance to scroll.
+	const scrollBoardTo = useCallback(
+		(y: number) => {
+			if (!reduceMotion) list.send("appScrollStart");
+			scroller.current?.scrollTo?.({ y, animated: !reduceMotion });
+		},
+		[list, reduceMotion],
+	);
+	// The field sits above the Board, scrolled out of view, so Search brings
+	// it down (spec 7.4).
+	const revealSearch = useCallback(() => {
+		scrollBoardTo(0);
+		searchInput.current?.focus?.();
+	}, [scrollBoardTo]);
+	useHeader(navigation, hubId, hubName, connected, revealSearch);
+	// Leaving lets go (ruling 22): a screen pushed over the Board (its own
+	// sheets are part of it, ruling 28), or the app leaving the foreground.
+	useEffect(() => {
+		if (!inFront) list.send("reset");
+	}, [inFront, list]);
+	// Leaving the app releases every hold; coming back while selecting takes
+	// select mode's hold again, since it lasts until Done or an action.
+	const [appActive, setAppActive] = useState(true);
+	useEffect(() => {
+		const subscription = AppState.addEventListener("change", (state) => {
+			const away = state === "background" || state === "inactive";
+			if (away) list.send("reset");
+			setAppActive(!away);
+		});
+		return () => subscription.remove();
+	}, [list]);
+	// Select mode holds the list while the Board is in front (ruling 22).
+	useEffect(
+		() => list.setInteraction("select", selecting && inFront && appActive),
+		[list, selecting, inFront, appActive],
+	);
 	// The rows the row menu sheet can be about: Live's and the categories'
 	// (a fold hides them, but they stay loaded) and the project sessions in
 	// the shown tree.
@@ -575,10 +644,9 @@ function Board({
 			hostLabel,
 			act: (item, action) => menuHandlers.current.actOnRow(item, action),
 			openSession: (item) => menuHandlers.current.openSession(item.row),
-			// Nothing on the Board waits for the menu to close.
-			closed: () => {},
+			closed: () => list.setInteraction("menu", false),
 		}),
-		[shownRows, rowContext, hostLabel],
+		[shownRows, rowContext, hostLabel, list],
 	);
 	useProvideSheetHost(rowMenuHosts, sheetKey(hubId), rowMenuHost);
 	const itemsOf = (section: ProjectSection) => shownSections.find((shown) => shown.section === section)?.items ?? [];
@@ -646,8 +714,7 @@ function Board({
 		reveal.current = null;
 		setRevealKey(null);
 		const top = pending.sectionTop + pending.row.y;
-		const y = Math.max(0, top - 0.3 * (viewport.current.height - pending.row.height));
-		scroller.current?.scrollTo?.({ y, animated: !reduceMotion });
+		scrollBoardTo(Math.max(0, top - 0.3 * (viewport.current.height - pending.row.height)));
 	};
 	const openProjectResult = (project: NavigationProjectSummary) => {
 		rememberSearch();
@@ -662,17 +729,10 @@ function Board({
 		});
 		return actions.length ? () => openProjectMenu(organization, project, actions) : undefined;
 	};
-	const projectItem = (section: ProjectSection, item: ProjectTreeItem) => {
-		if (item.kind === "session")
-			return (
-				<View key={item.key} style={{ marginLeft: 16 * item.depth }}>
-					{rows([projectRow(item.row)], "quiet", false, item.archived)}
-				</View>
-			);
+	const treeItem = (section: ProjectSection, item: Exclude<ProjectTreeItem, { kind: "session" }>) => {
 		if (item.kind === "more" || item.kind === "moreProjects")
 			return (
 				<View
-					key={item.key}
 					testID={item.kind === "more" ? "project-more" : "project-more-projects"}
 					onLayout={(event) => {
 						moreFrames.current.set(item.key, event.nativeEvent.layout);
@@ -684,7 +744,6 @@ function Board({
 			);
 		const row = (
 			<ProjectTreeRow
-				key={item.key}
 				item={item}
 				onPress={() => {
 					if ("fold" in item) setFolded(item.fold, !item.folded);
@@ -708,28 +767,141 @@ function Board({
 			</View>
 		);
 	};
+	/** One item of the Board's list, moving to its place with the spring. A
+	 * row after another row in its section draws a hairline above it. */
+	const entry = (item: BoardItem, previous: BoardItem | undefined) => {
+		let content: ReactNode;
+		let onLayout: ((event: LayoutChangeEvent) => void) | undefined;
+		if (item.kind === "band") {
+			content = <BandHeader text={`${BAND_HEADERS[item.band]} · ${item.count}`} />;
+			onLayout = measure(item.band);
+		} else if (item.kind === "idleFold") {
+			content = <IdleFold count={item.count} folded={item.folded} onToggle={() => foldIdle(!item.folded)} />;
+			onLayout = measure("idle");
+		} else if (item.kind === "row")
+			content = (
+				<View style={{ marginLeft: 16 * item.depth }}>
+					{item.separated && previous?.kind === "row" ? <Hairline inset={TITLE_INSET} /> : null}
+					<BoardListRow
+						item={item.item}
+						variant={item.variant}
+						moving={item.moving}
+						archived={item.archived}
+						selected={selecting ? chosen.has(item.item.row.ref) : undefined}
+						wash={settled.washed.has(item.key) ? settled.washToken : 0}
+						context={listContext}
+						onSwipeActive={(active) => list.setInteraction(`swipe:${item.key}`, active)}
+					/>
+				</View>
+			);
+		else if (item.kind === "pinEmpty") content = <PinnedEmptyHint />;
+		else if (item.kind === "tree") content = treeItem(item.section, item.tree);
+		else return null;
+		return (
+			<Animated.View key={item.key} layout={rowMove} onLayout={onLayout}>
+				{content}
+			</Animated.View>
+		);
+	};
+	const entries = (items: readonly BoardItem[]) => items.map((item, index) => entry(item, items[index - 1]));
+	/** A pinned category or a project section, from its header item. */
+	const sectionBlock = ([header, ...items]: BoardItem[]) => {
+		if (header.kind === "pinHeader") {
+			const pin = header.section;
+			return (
+				<PinnedSection
+					key={header.key}
+					section={pin}
+					folded={header.folded}
+					onToggle={() => folds.setFolded(pin.id, !folds.isFolded(pin.id))}
+					onMenu={categoryMenu.menuFor(pin)}
+					changing={categoryMenu.changing(pin.id)}
+					onLayout={measure(`pin:${pin.id}`)}
+				>
+					{entries(items)}
+				</PinnedSection>
+			);
+		}
+		if (header.kind !== "projectHeader") return null;
+		const { section: project, folded } = header;
+		return (
+			<View
+				key={header.key}
+				testID={`project-section:${project}`}
+				onLayout={(event) => {
+					measure(project)(event);
+					readVisibleMore();
+					if (project === "projects" && reveal.current) {
+						reveal.current.sectionTop = event.nativeEvent.layout.y;
+						finishReveal();
+					}
+				}}
+				style={{ paddingTop: 10 }}
+			>
+				<ProjectSectionHeader
+					title={projectHeaders[project].title}
+					label={projectHeaders[project].label}
+					folded={folded}
+					onToggle={() => setFolded(SECTION_FOLDS[project].fold, !folded)}
+					organize={
+						project === "projects" && projectGrouping !== "flat" ? { by: organizeBy, onChange: chooseOrganizeBy } : null
+					}
+				/>
+				{entries(items)}
+			</View>
+		);
+	};
+	const liveShown = shownGroups.get("live");
+	const shownRowItems = settled.display.flatMap((item) =>
+		item.kind === "row" ? [{ item: item.item, archived: item.archived }] : [],
+	);
+	const selection = selectionActions(
+		shownRowItems.filter(({ item }) => chosen.has(item.row.ref)),
+		{ connected: actionsConnected, organizationReady: organization.ready },
+	);
+	const archiveChosen = async (rows: readonly NavigationSessionSummary[]) => {
+		const archived = await confirmEach(organization, rows, (actions, row) => archiveOne(actions, row, true));
+		leaveSelect();
+		if (archived.length)
+			toast.show({
+				text: sessionCount("Archived", archived.length, rows.length),
+				action: {
+					label: "Undo",
+					run: () =>
+						void confirmEach(organization, archived, (actions, row) => archiveOne(actions, row, false)).then(
+							(unarchived) => {
+								if (unarchived.length)
+									toast.show({ text: sessionCount("Unarchived", unarchived.length, archived.length) });
+							},
+						),
+				},
+			});
+	};
+	const pinChosen = async (rows: readonly NavigationSessionSummary[], section: PinTarget, name: string) => {
+		const pinned = await confirmEach(organization, rows, (actions, row) =>
+			pinSession(actions, { sessionRef: row.ref, ...section }),
+		);
+		leaveSelect();
+		if (pinned.length) toast.show({ text: `${sessionCount("Pinned", pinned.length, rows.length)} to ${name}` });
+	};
+	const markChosenRead = () => {
+		seen.markRead(actionsClient, selection.markRead);
+		leaveSelect();
+	};
 
 	let live: ReactNode;
 	// Update needed says everything there is to say until something loads.
 	if (!snapshot.loaded && fatal) live = null;
 	else if (firstReadFailed) live = <FirstReadFailed />;
 	else if (!snapshot.loaded) live = <Skeleton />;
-	else if (liveTotal === 0) live = <EmptyBoard disabled={!connected} onNewSession={newSession} />;
+	else if (!liveShown) live = <EmptyBoard disabled={!connected} onNewSession={newSession} />;
 	else
 		live = (
 			<>
 				{summary ? (
 					<SummaryLine summary={summary} connected={connected} perMinute={fleetPerMinute} onJump={jumpToBand} />
 				) : null}
-				{band("needsYou", false)}
-				{band("finished", false)}
-				{band("working", true)}
-				{bands.idle.length ? (
-					<View onLayout={measure("idle")}>
-						<IdleFold count={bands.idle.length} folded={idleFolded} onToggle={() => foldIdle(!idleFolded)} />
-						{idleFolded ? null : rows(bands.idle, "quiet", false)}
-					</View>
-				) : null}
+				{entries(liveShown)}
 			</>
 		);
 
@@ -739,7 +911,7 @@ function Board({
 			    search results are. */}
 			{chips.length && !searching ? <Chips chips={chips} /> : null}
 			<View style={{ flex: 1 }}>
-				<ScrollView
+				<Animated.ScrollView
 					ref={scroller}
 					style={{ flex: 1 }}
 					// Starts just past the search field: pulling down reveals it
@@ -759,6 +931,7 @@ function Board({
 					}}
 					onContentSizeChange={readMoreLiveIfNear}
 					scrollEventThrottle={100}
+					{...scrollHandlers}
 				>
 					<SearchField
 						inputRef={searchInput}
@@ -797,59 +970,49 @@ function Board({
 							>
 								{live}
 							</View>
-							{pins.map((pin) => (
-								<PinnedSection
-									key={pin.id}
-									section={pin}
-									page={snapshot.pinSections[pin.id]}
-									classify={classify}
-									context={listContext}
-									folded={folds.isFolded(pin.id)}
-									onToggle={() => folds.setFolded(pin.id, !folds.isFolded(pin.id))}
-									onMenu={categoryMenu.menuFor(pin)}
-									changing={categoryMenu.changing(pin.id)}
-									onLayout={measure(`pin:${pin.id}`)}
-								/>
-							))}
-							{shownSections.map(({ section, folded, items }) => (
-								<View
-									key={section}
-									testID={`project-section:${section}`}
-									onLayout={(event) => {
-										measure(section)(event);
-										readVisibleMore();
-									if (section === "projects" && reveal.current) {
-										reveal.current.sectionTop = event.nativeEvent.layout.y;
-										finishReveal();
-									}
-									}}
-									style={{ paddingTop: 10 }}
-								>
-									<ProjectSectionHeader
-										title={projectHeaders[section].title}
-										label={projectHeaders[section].label}
-										folded={folded}
-										onToggle={() => setFolded(SECTION_FOLDS[section].fold, !folded)}
-										organize={
-											section === "projects" && projectGrouping !== "flat"
-												? { by: organizeBy, onChange: chooseOrganizeBy }
-												: null
-										}
-									/>
-									{items.map((item) => projectItem(section, item))}
-								</View>
-							))}
+							{[...shownGroups.values()].filter((items) => items[0]?.group !== "live").map(sectionBlock)}
 						</>
 					)}
-				</ScrollView>
+				</Animated.ScrollView>
 				{/* The toast floats 10pt above the toolbar. */}
 				<View pointerEvents="box-none" style={{ position: "absolute", left: 0, right: 0, bottom: 10 }}>
 					<Toast toast={toast.toast} dismiss={toast.dismiss} />
 				</View>
 			</View>
-			<BoardToolbar state={state} fatal={fatal} newSessionDisabled={!connected} onNewSession={newSession} />
+			{selecting ? (
+				<SelectBar
+					counts={{
+						archive: selection.archive.length,
+						// Pin's sheet asks through ActionSheetIOS and Alert.prompt.
+						pin: Platform.OS === "ios" ? selection.pin.length : 0,
+						markRead: selection.markRead.length,
+					}}
+					onDone={leaveSelect}
+					onArchive={() => void archiveChosen(selection.archive)}
+					onPin={() =>
+						chooseCategory(organization, board.getSnapshot().pins.rows, toast, (section, name) =>
+							pinChosen(selection.pin, section, name),
+						)
+					}
+					onMarkRead={markChosenRead}
+				/>
+			) : (
+				<BoardToolbar
+					state={state}
+					fatal={fatal}
+					newSessionDisabled={!connected}
+					onNewSession={newSession}
+					onSelect={shownRowItems.length && !searching ? () => setSelecting(true) : undefined}
+				/>
+			)}
 		</View>
 	);
+}
+
+/** A category's name is at most 80 characters, the journal's own bound. */
+const CATEGORY_NAME_TOO_LONG = "Category names can be up to 80 characters.";
+function categoryNameTooLong(name: string): boolean {
+	return Array.from(name).length > 80;
 }
 
 /** Rename and Delete for the pinned categories (spec 7.1), through the
@@ -869,8 +1032,8 @@ function pinnedCategoryMenu(organization: BoardOrganization, catalog: () => read
 					onPress: (value?: string) => {
 						const name = (value ?? "").trim();
 						if (!name || name === section.name) return;
-						if (Array.from(name).length > 80) {
-							Alert.alert("Category names can be up to 80 characters.");
+						if (categoryNameTooLong(name)) {
+							Alert.alert(CATEGORY_NAME_TOO_LONG);
 							return;
 						}
 						if (!organizationOpen(organization) || !listed(section.id)) return;
@@ -918,6 +1081,87 @@ function pinnedCategoryMenu(organization: BoardOrganization, catalog: () => read
 			(operation?.kind === "renamePinSection" || operation?.kind === "deletePinSection") &&
 			operation.params.sectionId === sectionId,
 	};
+}
+
+/** Where select mode pins: a category the catalog lists, or a new one by
+ * name (the hub makes it for the first session and reuses it after). */
+type PinTarget = { sectionId: string } | { sectionName: string };
+
+/** "Archived 2 sessions", or "Archived 2 of 3 sessions" when some weren't. */
+function sessionCount(verb: string, done: number, of: number): string {
+	return done === of ? `${verb} ${plural(done, "session")}` : `${verb} ${done} of ${plural(of, "session")}`;
+}
+
+/** Makes one journaled change per session, in order, through the Board's
+ * organization journal, stopping at the first the hub doesn't confirm (the
+ * journal is then settled once). Resolves the sessions it confirmed. Does
+ * nothing while a change can't go out. */
+async function confirmEach(
+	organization: BoardOrganization,
+	rows: readonly NavigationSessionSummary[],
+	change: (actions: NavigationActions, row: NavigationSessionSummary) => Promise<boolean>,
+): Promise<NavigationSessionSummary[]> {
+	const actions = organization.actions;
+	if (!actions || !organizationOpen(organization)) return [];
+	const confirmed: NavigationSessionSummary[] = [];
+	for (const row of rows) {
+		if (!(await change(actions, row))) {
+			void actions.reconcile();
+			break;
+		}
+		confirmed.push(row);
+	}
+	return confirmed;
+}
+
+function archiveOne(actions: NavigationActions, row: NavigationSessionSummary, archived: boolean): Promise<boolean> {
+	const target = archiveTarget(row);
+	return target ? archiveSession(actions, target, archived) : Promise.resolve(false);
+}
+
+/** Select mode's Pin (ruling 18): the pin catalog's categories, then a new
+ * one, as an action sheet. A new category's name is 1-80 characters, the
+ * journal's own bound. */
+function chooseCategory(
+	organization: BoardOrganization,
+	categories: readonly NavigationPinSectionDescriptor[],
+	toast: Pick<ToastController, "show">,
+	pin: (section: PinTarget, name: string) => void,
+) {
+	if (!organizationOpen(organization)) return;
+	const createCategory = () =>
+		Alert.prompt(
+			"New category",
+			undefined,
+			[
+				{ text: "Cancel", style: "cancel" },
+				{
+					text: "Create",
+					onPress: (value?: string) => {
+						const name = (value ?? "").trim();
+						if (!name) return;
+						if (categoryNameTooLong(name)) {
+							toast.show({ text: CATEGORY_NAME_TOO_LONG });
+							return;
+						}
+						pin({ sectionName: name }, name);
+					},
+				},
+			],
+			"plain-text",
+		);
+	ActionSheetIOS.showActionSheetWithOptions(
+		{
+			title: "Pin to category",
+			options: [...categories.map((category) => category.name), "New category…", "Cancel"],
+			cancelButtonIndex: categories.length + 1,
+		},
+		(index) => {
+			const category = categories[index];
+			if (category) pin({ sectionId: category.id }, category.name);
+			else if (index === categories.length) createCategory();
+		},
+	);
 }
 
 /** A row's menu actions on this phone: Rename asks through Alert.prompt,

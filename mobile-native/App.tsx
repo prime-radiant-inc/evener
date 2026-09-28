@@ -42,6 +42,7 @@ import {
 } from "./src/screens";
 import { NotesSheet } from "./src/session/NotesSheet";
 import { SHEET_ROUTES } from "./src/sheet/sheetRoutes";
+import { QueueSheet } from "./src/QueueSheet";
 import { TasksSheet } from "./src/TasksSheet";
 import { TranscriptPreferencesScreen } from "./src/TranscriptPreferencesScreen";
 import { ErrorMessage, useColors } from "./src/ui";
@@ -221,6 +222,11 @@ function Navigation() {
 							name="RowMenuSheet"
 							component={RowMenuSheet}
 							options={SHEET_ROUTES.RowMenuSheet}
+						/>
+						<Stack.Screen
+							name="QueueSheet"
+							component={QueueSheet}
+							options={SHEET_ROUTES.QueueSheet}
 						/>
 					</Stack.Group>
 				</Stack.Navigator>

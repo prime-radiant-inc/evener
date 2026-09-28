@@ -1577,3 +1577,14 @@ test("keeps what it submitted across a reconnect, and forgets the targets it wro
 	expect(runtime.submittedHere(nativeMutationTargetKey("hub-1", "ref-50")).size).toBe(1);
 	await runtime.stop();
 });
+
+test("hands out what it submitted as a copy that later submissions don't change", async () => {
+	let next = 0;
+	const runtime = new NativeMutationRuntime(openDatabase(), { createMutationId: () => `mutation-${(next += 1)}` });
+	await registerAndStart(runtime, new FakeClient("ready"));
+	await runtime.submit(request("queue"));
+	const earlier = runtime.submittedHere(nativeMutationTargetKey("hub-1", "ref-1"));
+	await runtime.submit(request("queue"));
+	expect([...earlier.keys()]).toEqual(["mutation-1"]);
+	await runtime.stop();
+});

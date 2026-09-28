@@ -6,6 +6,7 @@ import { applyNotification, hydrateThread } from "./reducer";
 import {
   decideSteerRoute,
   decideSubmitRoute,
+  isQueueParked,
   isTurnActive,
   NO_ACTIVE_TURN,
   QUEUE_EMPTY,
@@ -242,4 +243,14 @@ test("drainQueue needs a queue to drain on top of the drain rule", () => {
   // Where the drain itself is refused, drainQueue carries the drain's reason.
   expect(sessionControls("idle", caps, 0).reason.drainQueue).toBe(NO_ACTIVE_TURN);
   expect(sessionControls("active", { ...caps, steer: false }, 1).reason.drainQueue).toBe(STEER_UNAVAILABLE);
+});
+
+test("isQueueParked: a resting session with messages still queued, which only a Stop leaves", () => {
+  expect(isQueueParked("idle", 2)).toBe(true);
+  // A Stop's parked queue survives a failed turn.
+  expect(isQueueParked("systemError", 1)).toBe(true);
+  expect(isQueueParked("idle", 0)).toBe(false);
+  // Queued behind a running turn or a pending question is waiting, not parked.
+  expect(isQueueParked("active", 2)).toBe(false);
+  expect(isQueueParked("awaiting", 1)).toBe(false);
 });
