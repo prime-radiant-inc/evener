@@ -26,13 +26,22 @@ import type {
   MutationRecoveryRecord,
 } from "./records";
 
-// A pure read over `model`'s active turn: true once an identified user
+// A pure read over `model`'s running turn: true once an identified user
 // message (one carrying its own clientMutationId) has landed in it and
 // nothing but a system message has followed since - the "sent, not yet
 // answered" state a composer shows with no confirmation timer of its own,
 // retired the moment a real assistant frame lands.
+//
+// Reads runningTurnId, not activeTurnId: activeTurnId is the read-only
+// snapshot field (only refreshed by a thread/read), while runningTurnId is
+// kept current by every live thread/status/changed frame too (reducer.ts's
+// model comment). A live session that never re-reads would otherwise never
+// see this go true once its send's echo lands (kata-shaped regression:
+// the skeleton this gates would drop the instant the echo's own
+// clientMutationId got reconciled out of the pending outbox, with nothing
+// live to pick up the baton).
 export function awaitingFirstFrameSend(model: ThreadModel | undefined): boolean {
-  const activeTurn = model?.turns.find((turn) => turn.id === model.activeTurnId);
+  const activeTurn = model?.turns.find((turn) => turn.id === model.runningTurnId);
   if (!activeTurn) return false;
   let sawIdentifiedUserMessage = false;
   for (const item of activeTurn.items) {

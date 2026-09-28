@@ -185,6 +185,5 @@ appwire/providers carve-outs intentionally stay camelCase:
 
 Hub REST/SSE shapes and TUI-internal types that previously leaked
 camelCase have all migrated: REST request bodies use `turn_id`, the
-TUI now reuses the appwire-defined `ToolOutputDeltaParams` and
-`NotificationRef` types directly instead of locally redeclaring the
-wire shape with camelCase tags.
+TUI now reuses the appwire-defined `NotificationRef` type directly
+instead of locally redeclaring the wire shape with camelCase tags.

@@ -25,7 +25,12 @@ tools-golangci:
 tools-gitleaks:
 	@set -eu; \
 	gitleaks=$$(awk '$$1=="gitleaks" {print $$2}' .tool-versions); \
-	go install github.com/zricethezav/gitleaks/v8@v$$gitleaks
+	attempt=0; for delay in 3 10 30 0; do attempt=$$((attempt+1)); \
+		if go install github.com/zricethezav/gitleaks/v8@v$$gitleaks; then exit 0; fi; \
+		echo "tools-gitleaks: attempt $$attempt of 4 failed" >&2; \
+		if [ "$$delay" -gt 0 ]; then echo "tools-gitleaks: retrying in $${delay}s" >&2; sleep "$$delay"; fi; \
+	done; \
+	echo "tools-gitleaks: gitleaks install failed after 4 attempts" >&2; exit 1
 
 # refresh-model-catalog replaces the embedded models.dev snapshot in
 # llm/registry/data/ (models.dev.json.gz plus the meta recording when and

@@ -54,9 +54,9 @@ func startProbeDaemon(t *testing.T, cfg probeDaemonConfig) (*StatusProber, rende
 	}
 	for id, state := range cfg.descendants {
 		srv.RecordDescendantAppEvent(cfg.sessionID, events.SessionEvent{
-			Kind:      events.EventUserInput,
+			Kind:      events.EventExecutionStarted,
 			SessionID: id,
-			Data:      events.UserInputData{Text: "probe fixture"},
+			Data:      events.ExecutionStartedData{TurnID: "t_probe"},
 		})
 		if state != appwire.ThreadStatusActive {
 			srv.RecordDescendantAppEvent(cfg.sessionID, events.SessionEvent{
