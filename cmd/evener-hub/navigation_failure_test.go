@@ -15,7 +15,7 @@ import (
 // daemon's row names the hub's own crashed cause, and any other row carries
 // no key. The summary has no message to give, so none reaches a row.
 func TestNavigationRowsCarryTheFailure(t *testing.T) {
-	rows := liveTaskRows(t, []hubcore.TreeNode{
+	rows := liveNavigationRows(t, []hubcore.TreeNode{
 		{ID: "session-failed", Title: "failed", Kind: "session", State: "errored", Failure: &appwire.ThreadFailure{
 			Title: "Provider error", Cause: &appwire.DiagnosticCause{Kind: "provider", Provider: "codex-jesse-fsck.com", Model: "gpt-5.6", Status: 401},
 		}},
@@ -46,7 +46,7 @@ func TestNavigationRowsCarryTheFailure(t *testing.T) {
 // malformed daemon answer can carry, is dropped from its row instead of
 // failing the whole resource; the row stays Failed.
 func TestNavigationRowsDropAFailureWithNothingToSay(t *testing.T) {
-	rows := liveTaskRows(t, []hubcore.TreeNode{
+	rows := liveNavigationRows(t, []hubcore.TreeNode{
 		{ID: "session-blank", Title: "blank", Kind: "session", State: "errored", Failure: &appwire.ThreadFailure{Title: " \n "}},
 		{ID: "session-kindless", Title: "kindless", Kind: "session", State: "errored", Failure: &appwire.ThreadFailure{Cause: &appwire.DiagnosticCause{Provider: "openai", Status: 500}}},
 	})

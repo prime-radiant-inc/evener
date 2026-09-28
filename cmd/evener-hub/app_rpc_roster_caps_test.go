@@ -67,7 +67,7 @@ func TestLocalDaemonEntriesFromRosterCarriesProbeCapabilitiesAndApprovalFlags(t 
 // the approval, on the remote subagent too. The root's row carries the cards
 // themselves.
 func TestLocalDaemonEntriesFromRosterAliasesInheritNoAskOrApproval(t *testing.T) {
-	card := appwire.SandboxEscalationRequested{ThreadID: "sess_root", Ref: "local:sess_root", EscalationID: "esc_1", Tool: "write_file", Kind: "file", DeniedPath: "/srv/docs/a.md"}
+	card := appwire.SandboxEscalationRequested{ThreadID: "sess_root", Ref: "local:sess_root", EscalationID: "esc_1", Tool: "write_file", Kind: "file_tool", DeniedPath: "/srv/docs/a.md"}
 	live := hubcore.LiveEntry{
 		Entry:              rendezvous.Entry{Protocol: appwire.ProtocolVersion, Endpoint: "ws://127.0.0.1:50001/rpc", ThreadID: "sess_root", SessionID: "sess_root"},
 		SessionID:          "sess_root",

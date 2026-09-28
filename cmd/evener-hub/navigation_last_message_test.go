@@ -13,7 +13,7 @@ import (
 // Finished row's why line. The hub re-cuts what a daemon or a meta held to one
 // line at the wire's bound, and a row with no message carries no key.
 func TestNavigationRowsCarryTheLastMessage(t *testing.T) {
-	rows := liveTaskRows(t, []hubcore.TreeNode{
+	rows := liveNavigationRows(t, []hubcore.TreeNode{
 		{ID: "session-finished", Title: "finished", Kind: "session", State: "idle", LastMessage: "Three layouts are ready for review. I recommend B."},
 		{ID: "session-wide", Title: "wide", Kind: "session", State: "idle", LastMessage: "## Summary\n\n" + strings.Repeat("It keeps the project first. ", 20)},
 		{ID: "session-silent", Title: "silent", Kind: "session", State: "idle"},
