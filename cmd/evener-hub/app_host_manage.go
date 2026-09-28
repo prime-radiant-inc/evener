@@ -2979,7 +2979,19 @@ func (m *hubHostManager) reconcilePipelineBoot() {
 		return
 	}
 	fileCfg, hasFile := m.hostFileRecords()
-	if !hasFile || m.cfg.store.poisoned() != nil {
+	if m.cfg.store.poisoned() != nil {
+		return
+	}
+	if !hasFile {
+		// The config path is set but its document is absent or empty. The
+		// compensation arms that need no bytes still converge here — an armed
+		// record (or one in the hub.toml phase) clears through its own explicit
+		// `!hasFile` arm, and the orphan-stash prune then removes the cleared
+		// record's stash. Returning without this pass left the record and its
+		// stash until a file reappeared, with `resumeCompensation`'s explicit
+		// absent-file clear arm unreachable from the boot path.
+		m.reconcileCompensations()
+		m.pruneOrphanHubTOMLStash()
 		return
 	}
 	// §7's interrupted transition, in its own position (store load, hub.toml

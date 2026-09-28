@@ -1746,3 +1746,37 @@ func TestCompensateStagedCrossFileLeavesTheRecordWhenAStepFails(t *testing.T) {
 		})
 	}
 }
+
+// TestBootCompensationArmedClearsWithNoConfigDocument pins S7's carried-in low:
+// when the config path is set but its document is absent, the boot pipeline
+// still runs the compensation pass and the orphan-stash prune, so an armed
+// record clears through its explicit absent-file arm and its stash is removed.
+// Before the fix the pass returned before either ran, wedging the record until
+// a file reappeared.
+func TestBootCompensationArmedClearsWithNoConfigDocument(t *testing.T) {
+	entry := pipelineEntry("m4", 2)
+	fixture, token, _ := newPipelineRemovalFixture(t, entry, true)
+	stash := hubTOMLStashPath(fixture.configPath, "test-key")
+	if _, err := os.Stat(stash); err != nil {
+		t.Fatalf("the fixture did not leave a stash: %v", err)
+	}
+	// The crash state: an armed record naming the stash, and no config document
+	// at all.
+	if err := fixture.store.ArmCompensation(hostops.Compensation{
+		Host: "m4", Phase: hostops.CompensationArmed, Rows: []hostops.Token{token},
+		Stash: stash, Generation: 2,
+	}); err != nil {
+		t.Fatalf("ArmCompensation: %v", err)
+	}
+	if err := os.Remove(fixture.configPath); err != nil {
+		t.Fatalf("remove hub.toml: %v", err)
+	}
+
+	m := fixture.manager(t)
+	if _, ok := m.cfg.ops.Compensation("m4"); ok {
+		t.Fatal("boot did not clear the armed compensation record with no config document")
+	}
+	if _, err := os.Stat(stash); !os.IsNotExist(err) {
+		t.Fatal("boot did not prune the cleared compensation's stash")
+	}
+}

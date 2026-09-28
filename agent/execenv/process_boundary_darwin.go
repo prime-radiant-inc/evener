@@ -1,0 +1,148 @@
+//go:build darwin
+
+package execenv
+
+import (
+	"errors"
+	"fmt"
+	"os"
+	"os/exec"
+	"slices"
+	"strconv"
+	"strings"
+	"syscall"
+
+	"golang.org/x/sys/unix"
+)
+
+// createBoundary returns the Darwin boundary: the (process group id, session
+// id) pair the worker's setsid-detached launcher holds (§3). There is no Darwin
+// cgroup or job-object primitive, so the launcher itself must have called
+// setsid — the pair is its own session, and every spawn it makes with the
+// attributes SpawnAttr returns inherits that pair. A launcher that is not a
+// session leader has no boundary to offer and fails closed with
+// ErrBoundaryUnavailable.
+//
+// root is a Linux cgroup concept; Darwin ignores it.
+func createBoundary(root string) (*Boundary, error) {
+	_ = root
+	pid := os.Getpid()
+	sessionID, err := unix.Getsid(pid)
+	if err != nil {
+		return nil, fmt.Errorf("%w: read this launcher's session: %v", ErrBoundaryUnavailable, err)
+	}
+	pgid, err := unix.Getpgid(pid)
+	if err != nil {
+		return nil, fmt.Errorf("%w: read this launcher's process group: %v", ErrBoundaryUnavailable, err)
+	}
+	if sessionID != pid || pgid != pid {
+		return nil, fmt.Errorf("%w: the launcher must hold its own session (setsid) before a boundary exists", ErrBoundaryUnavailable)
+	}
+	return newDarwinBoundary(pgid, sessionID), nil
+}
+
+// openBoundary reopens a persisted Darwin boundary for the boot reap: the pair
+// is enumerable from the process table, so no directory or handle survives the
+// crash.
+func openBoundary(id BoundaryIdentity) (*Boundary, error) {
+	if id.Platform != BoundaryPlatformDarwin {
+		return nil, fmt.Errorf("%w: platform %q is not the darwin arm", ErrBoundaryUnavailable, id.Platform)
+	}
+	return newDarwinBoundary(id.PGID, id.SessionID), nil
+}
+
+// newDarwinBoundary binds the operations to one (pgid, session id) pair.
+func newDarwinBoundary(pgid, sessionID int) *Boundary {
+	return &Boundary{
+		id: BoundaryIdentity{Platform: BoundaryPlatformDarwin, PGID: pgid, SessionID: sessionID},
+		ops: boundaryOps{
+			spawnAttr: func() (*syscall.SysProcAttr, func(), error) {
+				// The child must inherit the launcher's (pgid, session id), so the
+				// attributes carry no Setsid and no Setpgid of their own.
+				return &syscall.SysProcAttr{}, func() {}, nil
+			},
+			members: func() ([]BoundaryMember, error) { return darwinBoundaryMembers(pgid, sessionID) },
+			observe: darwinStartToken,
+			signal:  signalDarwinMember,
+			// A session boundary has no handle to release: the pair is the
+			// launcher's own, and it goes away with the launcher.
+			release: func() error { return nil },
+		},
+	}
+}
+
+// darwinBoundaryMembers enumerates the process table and keeps every process
+// whose (process group id, session id) pair equals the boundary's. BSD `ps`
+// reports both columns; the kernel start token for each candidate comes from
+// the process's kinfo_proc, so a member that exits mid-enumeration is omitted
+// (gone reads as already clean).
+func darwinBoundaryMembers(pgid, sessionID int) ([]BoundaryMember, error) {
+	out, err := exec.Command("ps", "-axo", "pid=,pgid=,sess=").Output()
+	if err != nil {
+		return nil, fmt.Errorf("%w: enumerate the process table: %v", ErrBoundaryUnavailable, err)
+	}
+	var members []BoundaryMember
+	for _, line := range strings.Split(string(out), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) != 3 {
+			continue
+		}
+		pid, errPID := strconv.Atoi(fields[0])
+		group, errGroup := strconv.Atoi(fields[1])
+		session, errSession := strconv.Atoi(fields[2])
+		if errPID != nil || errGroup != nil || errSession != nil {
+			continue
+		}
+		if group != pgid || session != sessionID {
+			continue
+		}
+		token, err := darwinStartToken(pid)
+		if errors.Is(err, ErrBoundaryMemberGone) {
+			continue
+		}
+		if err != nil {
+			return nil, err
+		}
+		members = append(members, BoundaryMember{PID: pid, StartToken: token})
+	}
+	slices.SortFunc(members, func(a, b BoundaryMember) int { return a.PID - b.PID })
+	return members, nil
+}
+
+// darwinStartToken reads a process's kernel-owned start time from its
+// kinfo_proc (kern.proc.pid), formatted as seconds.microseconds since the
+// epoch. The value is the kernel's, not derivable from the pid, and a recycled
+// pid never carries its predecessor's value.
+func darwinStartToken(pid int) (string, error) {
+	if pid <= 0 {
+		return "", fmt.Errorf("%w: pid %d", ErrBoundaryMemberGone, pid)
+	}
+	info, err := unix.SysctlKinfoProc("kern.proc.pid", pid)
+	if err != nil {
+		if errors.Is(err, unix.ENOENT) || errors.Is(err, unix.ESRCH) {
+			return "", fmt.Errorf("%w: pid %d", ErrBoundaryMemberGone, pid)
+		}
+		return "", fmt.Errorf("execenv: read process %d info: %v", pid, err)
+	}
+	if info == nil {
+		return "", fmt.Errorf("%w: pid %d", ErrBoundaryMemberGone, pid)
+	}
+	// A process that has exited reports no start time until the kernel reaps the
+	// row: no live instance, already clean.
+	started := info.Proc.P_starttime
+	if started.Sec == 0 && started.Usec == 0 {
+		return "", fmt.Errorf("%w: pid %d has no start time", ErrBoundaryMemberGone, pid)
+	}
+	return fmt.Sprintf("%d.%06d", started.Sec, started.Usec), nil
+}
+
+// signalDarwinMember terminates one already-verified member.
+func signalDarwinMember(pid int) error {
+	if err := unix.Kill(pid, unix.SIGKILL); err != nil {
+		if errors.Is(err, unix.ESRCH) {
+			return fmt.Errorf("%w: pid %d", ErrBoundaryMemberGone, pid)
+		}
+		return fmt.Errorf("execenv: signal boundary member %d: %v", pid, err)
+	}
+	return nil
+}

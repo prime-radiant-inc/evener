@@ -158,11 +158,22 @@ type Record struct {
 	IncarnationID     string          `json:"incarnationId"`
 	FencingEpoch      json.RawMessage `json:"fencingEpoch,omitempty"`
 	OrphanBoundary    json.RawMessage `json:"orphanBoundary,omitempty"`
-	Progress          []ProgressEntry `json:"progress,omitempty"`
-	Result            *Result         `json:"result,omitempty"`
-	CreatedAt         time.Time       `json:"createdAt"`
-	UpdatedAt         time.Time       `json:"updatedAt"`
-	HostRemoved       bool            `json:"hostRemoved"`
+	// PendingSpawns is crash-fencing §3's `pending-spawn` intent set: one entry
+	// per spawned subprocess whose ownership boundary the controller
+	// pre-created but has not yet proven clean. Each entry holds the per-spawn
+	// nonce, the pre-spawn boundary identity, and — once the launcher observed
+	// it — the spawned child's kernel-owned (pid, start time) instance marker.
+	// The intent is present exactly while it is open: it is written before the
+	// spawn, matched after the spawn, and dropped only by a clean local reap or
+	// by orphan-resolve (§3). An empty set marshals as absent, so a record
+	// carrying no open intent never keeps the key. See spawnintent.go for the
+	// lifecycle and the store APIs.
+	PendingSpawns []SpawnIntent   `json:"pendingSpawns,omitempty"`
+	Progress      []ProgressEntry `json:"progress,omitempty"`
+	Result        *Result         `json:"result,omitempty"`
+	CreatedAt     time.Time       `json:"createdAt"`
+	UpdatedAt     time.Time       `json:"updatedAt"`
+	HostRemoved   bool            `json:"hostRemoved"`
 	// Sequence is the store's state-transition sequence value the record was
 	// stamped with when it entered a terminal state; 0 until then.
 	Sequence uint64 `json:"sequence,omitempty"`
@@ -315,6 +326,25 @@ func validateRecord(record Record) error {
 	case record.State != StateOrphanUnverified && len(record.OrphanBoundary) > 0:
 		return fmt.Errorf("%w: record %q carries an orphan boundary in state %q", ErrInvalidRecord, record.ID, record.State)
 	}
+	// §3's pending-spawn intents are schema-checked like every other persisted
+	// value: an intent no writer emits never enters the file, so the boot reap
+	// never has to guess what a malformed one meant. The set is checked in every
+	// state: an operation can finish while its spawn's boundary is still open,
+	// and the intent stays until the reap or resolve drops it.
+	if len(record.PendingSpawns) > MaxPendingSpawnsPerRecord {
+		return fmt.Errorf("%w: record %q carries %d pending-spawn intents, over the %d bound",
+			ErrInvalidRecord, record.ID, len(record.PendingSpawns), MaxPendingSpawnsPerRecord)
+	}
+	nonces := make(map[string]struct{}, len(record.PendingSpawns))
+	for _, intent := range record.PendingSpawns {
+		if err := validateSpawnIntent(intent); err != nil {
+			return fmt.Errorf("%w: record %q: %w", ErrInvalidRecord, record.ID, err)
+		}
+		if _, duplicate := nonces[intent.Nonce]; duplicate {
+			return fmt.Errorf("%w: record %q carries nonce %q twice", ErrInvalidRecord, record.ID, intent.Nonce)
+		}
+		nonces[intent.Nonce] = struct{}{}
+	}
 	for _, entry := range record.Progress {
 		if entry.TS.IsZero() || entry.Message == "" {
 			return fmt.Errorf("%w: record %q carries an empty progress entry", ErrInvalidRecord, record.ID)
@@ -401,6 +431,9 @@ func cloneRecord(record Record) Record {
 	}
 	if record.OrphanBoundary != nil {
 		out.OrphanBoundary = append(json.RawMessage(nil), record.OrphanBoundary...)
+	}
+	if record.PendingSpawns != nil {
+		out.PendingSpawns = cloneSpawnIntents(record.PendingSpawns)
 	}
 	if record.Progress != nil {
 		out.Progress = append([]ProgressEntry(nil), record.Progress...)

@@ -40,6 +40,16 @@ func (s *Store) RecoverInterrupted() (int, error) {
 		if !record.State.InFlight() {
 			continue
 		}
+		// §3/§7: a record carrying an open `pending-spawn` intent is never
+		// boot's to move to `interrupted`. Its spawn may still be running, and
+		// §3's rule is that such a record stays fenced (and is marked
+		// `orphan-unverified` by the local reap, which runs before this pass)
+		// rather than being silently adopted as a terminal unknown outcome. The
+		// guard matters even though the reap runs first: a reap that could not
+		// write its verdict must not lose the fence to this later pass.
+		if len(record.PendingSpawns) > 0 {
+			continue
+		}
 		record.State = StateInterrupted
 		record.Result = &Result{OK: false, Message: InterruptedNote}
 		record.UpdatedAt = now

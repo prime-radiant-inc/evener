@@ -1,0 +1,593 @@
+//go:build linux
+
+package hostfence
+
+// Crash-fencing 08c §3's local reap: the boot pass that reaps a crashed
+// worker's local processes through the persisted boundary-plus-kernel-attested
+// identity, marks an unverifiable boundary `orphan-unverified`, and retries on
+// every boot. The fake boundary below stands in for agent/execenv's enumeration
+// so every disposition is exercised deterministically; the last test drives the
+// real cgroup arm when the host delegates one.
+
+import (
+	"bytes"
+	"errors"
+	"os"
+	"os/exec"
+	"strings"
+	"syscall"
+	"testing"
+	"time"
+
+	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/cmd/evener-hub/internal/hostops"
+)
+
+// realSleeper spawns a real localhost process with the boundary attributes the
+// integration test hands it.
+func realSleeper(t *testing.T, attr *syscall.SysProcAttr) *exec.Cmd {
+	t.Helper()
+	cmd := exec.Command("sleep", "30")
+	cmd.SysProcAttr = attr
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("start the boundary child: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = cmd.Process.Kill()
+		_, _ = cmd.Process.Wait()
+	})
+	return cmd
+}
+
+// fakeBoundary is a scripted LocalBoundaryHandle: its membership is whatever
+// the test set, and a verified signal removes the member the way a real kill
+// does once it lands.
+type fakeBoundary struct {
+	members    []execenv.BoundaryMember
+	membersErr error
+	signalErr  error
+	awaitErr   error
+	killed     []int
+	closed     bool
+}
+
+func (f *fakeBoundary) Members() ([]execenv.BoundaryMember, error) {
+	if f.membersErr != nil {
+		return nil, f.membersErr
+	}
+	return append([]execenv.BoundaryMember(nil), f.members...), nil
+}
+
+func (f *fakeBoundary) SignalVerified(pid int, startToken string) error {
+	if startToken == "" {
+		return errors.New("fake boundary: empty start token")
+	}
+	if f.signalErr != nil {
+		// Model the race the seam refuses to signal through: the pid now names a
+		// different instance, so its start token no longer matches.
+		for i := range f.members {
+			if f.members[i].PID == pid {
+				f.members[i].StartToken = "reused"
+			}
+		}
+		return f.signalErr
+	}
+	f.killed = append(f.killed, pid)
+	kept := f.members[:0]
+	for _, member := range f.members {
+		if member.PID != pid {
+			kept = append(kept, member)
+		}
+	}
+	f.members = kept
+	return nil
+}
+
+func (f *fakeBoundary) Await(wait time.Duration, clean func([]execenv.BoundaryMember) bool) error {
+	if f.awaitErr != nil {
+		return f.awaitErr
+	}
+	if clean(f.members) {
+		return nil
+	}
+	return execenv.ErrBoundaryNotSettled
+}
+
+func (f *fakeBoundary) Close() error {
+	f.closed = true
+	return nil
+}
+
+// newReapStore opens a store under a fresh temp state root.
+func newReapStore(t *testing.T) (*hostops.Store, string) {
+	t.Helper()
+	path := hostops.StorePath(t.TempDir())
+	store, err := hostops.Open(path)
+	if err != nil {
+		t.Fatalf("hostops.Open: %v", err)
+	}
+	return store, path
+}
+
+// newReapRecord persists one pending deploy record.
+func newReapRecord(t *testing.T, store *hostops.Store, host string) hostops.Record {
+	t.Helper()
+	record, err := store.Create(hostops.NewRecord{
+		ClientOperationID: "client-" + host,
+		Host:              host,
+		Kind:              hostops.KindDeploy,
+		Generation:        7,
+		IncarnationID:     "inc-" + host,
+	})
+	if err != nil {
+		t.Fatalf("Create(%s): %v", host, err)
+	}
+	return record
+}
+
+// linuxIntent is a minimal pre-spawn intent under a stable cgroup path.
+func linuxIntent(nonce string) hostops.SpawnIntent {
+	return hostops.SpawnIntent{Nonce: nonce, Platform: hostops.SpawnPlatformLinux, CgroupID: "/cg/" + nonce}
+}
+
+// openOnce returns an Open seam that serves handle for the first boundary and
+// records every identity it was asked for.
+func openOnce(handle LocalBoundaryHandle, opened *[]execenv.BoundaryIdentity) func(execenv.BoundaryIdentity) (LocalBoundaryHandle, error) {
+	return func(id execenv.BoundaryIdentity) (LocalBoundaryHandle, error) {
+		*opened = append(*opened, id)
+		return handle, nil
+	}
+}
+
+// TestReapIsANoOpWithNoOpenIntents pins the empty pass: nothing to enumerate,
+// no boundary opened, no write.
+func TestReapIsANoOpWithNoOpenIntents(t *testing.T) {
+	store, path := newReapStore(t)
+	newReapRecord(t, store, "h1")
+	before, err := os.ReadFile(path)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("read store: %v", err)
+	}
+	var opened []execenv.BoundaryIdentity
+	dropped, err := ReapLocalOrphanBoundary(store, ReapOptions{Open: openOnce(&fakeBoundary{}, &opened)})
+	if err != nil {
+		t.Fatalf("ReapLocalOrphanBoundary: %v", err)
+	}
+	if dropped != 0 || len(opened) != 0 {
+		t.Fatalf("reap = %d dropped, opened %d boundaries; want a no-op", dropped, len(opened))
+	}
+	after, err := os.ReadFile(path)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("read store: %v", err)
+	}
+	if !bytes.Equal(before, after) {
+		t.Fatal("a reap with no open intents rewrote the store")
+	}
+}
+
+// TestReapEmptyBoundaryDropsTheIntent pins §3's pre-spawn crash: a
+// persisted-but-empty boundary reaps nothing and drops the intent. The record
+// is not marked; the later interrupted pass moves it.
+func TestReapEmptyBoundaryDropsTheIntent(t *testing.T) {
+	store, _ := newReapStore(t)
+	record := newReapRecord(t, store, "h1")
+	if _, err := store.ArmSpawnIntent(record.ID, linuxIntent("n1")); err != nil {
+		t.Fatalf("ArmSpawnIntent: %v", err)
+	}
+	var opened []execenv.BoundaryIdentity
+	dropped, err := ReapLocalOrphanBoundary(store, ReapOptions{Open: openOnce(&fakeBoundary{}, &opened)})
+	if err != nil {
+		t.Fatalf("ReapLocalOrphanBoundary: %v", err)
+	}
+	if dropped != 1 || len(opened) != 1 {
+		t.Fatalf("reap = %d dropped, opened %d; want the one intent converged", dropped, len(opened))
+	}
+	stored, _ := store.Record(record.ID)
+	if len(stored.PendingSpawns) != 0 {
+		t.Fatalf("the intent survived a clean empty boundary: %+v", stored.PendingSpawns)
+	}
+	if stored.State != hostops.StatePending {
+		t.Fatalf("the record's state = %q, want it left for the interrupted pass", stored.State)
+	}
+	moved, err := store.RecoverInterrupted()
+	if err != nil || moved != 1 {
+		t.Fatalf("RecoverInterrupted = %d/%v, want the record moved once", moved, err)
+	}
+}
+
+// TestReapMarkerlessBoundaryWithMembersMarksOrphanUnverified pins §3's
+// markerless rule: with no launcher-observed pair, members are never clean. The
+// pass reaps nothing, keeps the intent, and marks the record orphan-unverified
+// with the pre-spawn boundary.
+func TestReapMarkerlessBoundaryWithMembersMarksOrphanUnverified(t *testing.T) {
+	store, _ := newReapStore(t)
+	record := newReapRecord(t, store, "h1")
+	if _, err := store.ArmSpawnIntent(record.ID, linuxIntent("n1")); err != nil {
+		t.Fatalf("ArmSpawnIntent: %v", err)
+	}
+	handle := &fakeBoundary{members: []execenv.BoundaryMember{{PID: 100, StartToken: "42"}}}
+	var opened []execenv.BoundaryIdentity
+	dropped, err := ReapLocalOrphanBoundary(store, ReapOptions{Open: openOnce(handle, &opened)})
+	if err != nil {
+		t.Fatalf("ReapLocalOrphanBoundary: %v", err)
+	}
+	if dropped != 0 || len(handle.killed) != 0 {
+		t.Fatalf("reap dropped %d and killed %v; want neither without a persisted pair", dropped, handle.killed)
+	}
+	stored, _ := store.Record(record.ID)
+	if stored.State != hostops.StateOrphanUnverified {
+		t.Fatalf("the record's state = %q, want orphan-unverified", stored.State)
+	}
+	if len(stored.PendingSpawns) != 1 {
+		t.Fatalf("the intent was dropped on a fail-closed boundary: %+v", stored.PendingSpawns)
+	}
+	want := `[{"kind":"local-markerless","platform":"linux","cgroupId":"/cg/n1","nonce":"n1"}]`
+	if string(stored.OrphanBoundary) != want {
+		t.Fatalf("orphanBoundary = %s, want %s", stored.OrphanBoundary, want)
+	}
+}
+
+// TestReapVerifiedMemberIsKilledAndClears pins the positive arm: a member whose
+// kernel start token still matches the persisted pair is signaled, the boundary
+// is proven clean, and the intent drops.
+func TestReapVerifiedMemberIsKilledAndClears(t *testing.T) {
+	store, _ := newReapStore(t)
+	record := newReapRecord(t, store, "h1")
+	if _, err := store.ArmSpawnIntent(record.ID, linuxIntent("n1")); err != nil {
+		t.Fatalf("ArmSpawnIntent: %v", err)
+	}
+	if _, err := store.MatchSpawnIntent(record.ID, "n1", 100, "42"); err != nil {
+		t.Fatalf("MatchSpawnIntent: %v", err)
+	}
+	handle := &fakeBoundary{members: []execenv.BoundaryMember{{PID: 100, StartToken: "42"}}}
+	var opened []execenv.BoundaryIdentity
+	dropped, err := ReapLocalOrphanBoundary(store, ReapOptions{Open: openOnce(handle, &opened)})
+	if err != nil {
+		t.Fatalf("ReapLocalOrphanBoundary: %v", err)
+	}
+	if dropped != 1 || len(handle.killed) != 1 || handle.killed[0] != 100 {
+		t.Fatalf("reap = %d dropped, killed %v; want the verified member signaled", dropped, handle.killed)
+	}
+	if !handle.closed {
+		t.Fatal("the proven-clean boundary was not torn down")
+	}
+	stored, _ := store.Record(record.ID)
+	if len(stored.PendingSpawns) != 0 || stored.State == hostops.StateOrphanUnverified {
+		t.Fatalf("the verified record = %q/%+v, want the intent dropped and no fence", stored.State, stored.PendingSpawns)
+	}
+}
+
+// TestReapMismatchedStartTokenReadsClean pins §3's reused-id rule: a member
+// whose pid matches but whose start token differs is a different process and is
+// never signaled; the boundary reads as already clean.
+func TestReapMismatchedStartTokenReadsClean(t *testing.T) {
+	store, _ := newReapStore(t)
+	record := newReapRecord(t, store, "h1")
+	if _, err := store.ArmSpawnIntent(record.ID, linuxIntent("n1")); err != nil {
+		t.Fatalf("ArmSpawnIntent: %v", err)
+	}
+	if _, err := store.MatchSpawnIntent(record.ID, "n1", 100, "42"); err != nil {
+		t.Fatalf("MatchSpawnIntent: %v", err)
+	}
+	handle := &fakeBoundary{members: []execenv.BoundaryMember{{PID: 100, StartToken: "99"}}}
+	var opened []execenv.BoundaryIdentity
+	dropped, err := ReapLocalOrphanBoundary(store, ReapOptions{Open: openOnce(handle, &opened)})
+	if err != nil {
+		t.Fatalf("ReapLocalOrphanBoundary: %v", err)
+	}
+	if dropped != 1 || len(handle.killed) != 0 {
+		t.Fatalf("reap = %d dropped, killed %v; want the reused id read as clean and never signaled", dropped, handle.killed)
+	}
+}
+
+// TestReapSignalRaceReadsClean pins the same rule at the signal boundary: a pid
+// recycled between enumeration and signal is refused by the seam and reads as
+// already clean, never as a fail-closed orphan.
+func TestReapSignalRaceReadsClean(t *testing.T) {
+	store, _ := newReapStore(t)
+	record := newReapRecord(t, store, "h1")
+	if _, err := store.ArmSpawnIntent(record.ID, linuxIntent("n1")); err != nil {
+		t.Fatalf("ArmSpawnIntent: %v", err)
+	}
+	if _, err := store.MatchSpawnIntent(record.ID, "n1", 100, "42"); err != nil {
+		t.Fatalf("MatchSpawnIntent: %v", err)
+	}
+	handle := &fakeBoundary{
+		members:   []execenv.BoundaryMember{{PID: 100, StartToken: "42"}},
+		signalErr: execenv.ErrBoundaryIdentityChanged,
+	}
+	var opened []execenv.BoundaryIdentity
+	dropped, err := ReapLocalOrphanBoundary(store, ReapOptions{Open: openOnce(handle, &opened)})
+	if err != nil {
+		t.Fatalf("ReapLocalOrphanBoundary: %v", err)
+	}
+	if dropped != 1 || len(handle.killed) != 0 {
+		t.Fatalf("reap = %d dropped, killed %v; want the raced member read as clean", dropped, handle.killed)
+	}
+	stored, _ := store.Record(record.ID)
+	if stored.State == hostops.StateOrphanUnverified {
+		t.Fatal("a refused signal on a recycled pid fenced the host")
+	}
+}
+
+// TestReapUnrecognizedMemberMarksOrphanAndKeepsIntent pins §3's fail-closed
+// rule: a member whose pid matches no persisted pair — a forked descendant the
+// launcher never observed — reads as live. The pass reaps nothing, keeps the
+// intent open, and marks the record with the marked local entry.
+func TestReapUnrecognizedMemberMarksOrphanAndKeepsIntent(t *testing.T) {
+	store, _ := newReapStore(t)
+	record := newReapRecord(t, store, "h1")
+	if _, err := store.ArmSpawnIntent(record.ID, linuxIntent("n1")); err != nil {
+		t.Fatalf("ArmSpawnIntent: %v", err)
+	}
+	if _, err := store.MatchSpawnIntent(record.ID, "n1", 100, "42"); err != nil {
+		t.Fatalf("MatchSpawnIntent: %v", err)
+	}
+	handle := &fakeBoundary{members: []execenv.BoundaryMember{{PID: 200, StartToken: "7"}}}
+	var opened []execenv.BoundaryIdentity
+	dropped, err := ReapLocalOrphanBoundary(store, ReapOptions{Open: openOnce(handle, &opened)})
+	if err != nil {
+		t.Fatalf("ReapLocalOrphanBoundary: %v", err)
+	}
+	if dropped != 0 || len(handle.killed) != 0 {
+		t.Fatalf("reap = %d dropped, killed %v; want an unrecognized member left alone", dropped, handle.killed)
+	}
+	stored, _ := store.Record(record.ID)
+	if stored.State != hostops.StateOrphanUnverified || len(stored.PendingSpawns) != 1 {
+		t.Fatalf("the record = %q/%+v, want orphan-unverified with the intent kept", stored.State, stored.PendingSpawns)
+	}
+	want := `[{"kind":"local-linux","cgroupId":"/cg/n1","nonce":"n1","pid":100,"startTime":"42"}]`
+	if string(stored.OrphanBoundary) != want {
+		t.Fatalf("orphanBoundary = %s, want %s", stored.OrphanBoundary, want)
+	}
+}
+
+// TestReapEnumerationUnavailableFailsClosed pins the hard fail-closed arm: a
+// boundary the pass cannot reach is never treated as empty.
+func TestReapEnumerationUnavailableFailsClosed(t *testing.T) {
+	for name, opts := range map[string]ReapOptions{
+		"open fails": {
+			Open: func(execenv.BoundaryIdentity) (LocalBoundaryHandle, error) {
+				return nil, execenv.ErrBoundaryUnavailable
+			},
+		},
+		"members fail": {
+			Open: func(execenv.BoundaryIdentity) (LocalBoundaryHandle, error) {
+				return &fakeBoundary{membersErr: execenv.ErrBoundaryUnavailable}, nil
+			},
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			store, _ := newReapStore(t)
+			record := newReapRecord(t, store, "h1")
+			if _, err := store.ArmSpawnIntent(record.ID, linuxIntent("n1")); err != nil {
+				t.Fatalf("ArmSpawnIntent: %v", err)
+			}
+			dropped, err := ReapLocalOrphanBoundary(store, opts)
+			if err != nil {
+				t.Fatalf("ReapLocalOrphanBoundary: %v", err)
+			}
+			if dropped != 0 {
+				t.Fatalf("reap dropped %d; want the unverifiable intent kept", dropped)
+			}
+			stored, _ := store.Record(record.ID)
+			if stored.State != hostops.StateOrphanUnverified || len(stored.PendingSpawns) != 1 {
+				t.Fatalf("the record = %q/%+v, want orphan-unverified with the intent kept", stored.State, stored.PendingSpawns)
+			}
+		})
+	}
+}
+
+// TestReapGoneBoundaryReadsClean pins the vanished-boundary arm: the kernel only
+// removes an empty cgroup, so a boundary that no longer exists is already clean.
+func TestReapGoneBoundaryReadsClean(t *testing.T) {
+	store, _ := newReapStore(t)
+	record := newReapRecord(t, store, "h1")
+	if _, err := store.ArmSpawnIntent(record.ID, linuxIntent("n1")); err != nil {
+		t.Fatalf("ArmSpawnIntent: %v", err)
+	}
+	dropped, err := ReapLocalOrphanBoundary(store, ReapOptions{Open: func(execenv.BoundaryIdentity) (LocalBoundaryHandle, error) {
+		return nil, execenv.ErrBoundaryGone
+	}})
+	if err != nil {
+		t.Fatalf("ReapLocalOrphanBoundary: %v", err)
+	}
+	if dropped != 1 {
+		t.Fatalf("reap dropped %d; want the intent dropped", dropped)
+	}
+	stored, _ := store.Record(record.ID)
+	if len(stored.PendingSpawns) != 0 || stored.State == hostops.StateOrphanUnverified {
+		t.Fatalf("the record = %q/%+v, want the intent dropped", stored.State, stored.PendingSpawns)
+	}
+}
+
+// TestReapRetryResolvesAPreviouslyMarkedRecord pins §7's retry: a second boot
+// that now enumerates clean resolves the marked record to `interrupted`,
+// clearing the boundary and dropping the intent.
+func TestReapRetryResolvesAPreviouslyMarkedRecord(t *testing.T) {
+	store, _ := newReapStore(t)
+	record := newReapRecord(t, store, "h1")
+	if _, err := store.ArmSpawnIntent(record.ID, linuxIntent("n1")); err != nil {
+		t.Fatalf("ArmSpawnIntent: %v", err)
+	}
+	handle := &fakeBoundary{members: []execenv.BoundaryMember{{PID: 100, StartToken: "42"}}}
+	var opened []execenv.BoundaryIdentity
+	if _, err := ReapLocalOrphanBoundary(store, ReapOptions{Open: openOnce(handle, &opened)}); err != nil {
+		t.Fatalf("first reap: %v", err)
+	}
+	marked, _ := store.Record(record.ID)
+	if marked.State != hostops.StateOrphanUnverified {
+		t.Fatalf("after the first boot the state = %q, want orphan-unverified", marked.State)
+	}
+
+	dropped, err := ReapLocalOrphanBoundary(store, ReapOptions{Open: openOnce(&fakeBoundary{}, &opened)})
+	if err != nil {
+		t.Fatalf("second reap: %v", err)
+	}
+	if dropped != 1 {
+		t.Fatalf("the second boot dropped %d; want the resolved intent dropped", dropped)
+	}
+	resolved, _ := store.Record(record.ID)
+	if resolved.State != hostops.StateInterrupted {
+		t.Fatalf("the resolved state = %q, want interrupted", resolved.State)
+	}
+	if len(resolved.OrphanBoundary) != 0 {
+		t.Fatalf("the resolved record kept its boundary: %s", resolved.OrphanBoundary)
+	}
+	if len(resolved.PendingSpawns) != 0 {
+		t.Fatalf("the resolved record kept its intent: %+v", resolved.PendingSpawns)
+	}
+	if resolved.Result == nil || resolved.Result.Message != hostops.InterruptedNote {
+		t.Fatalf("the resolved result = %+v, want the interrupted note", resolved.Result)
+	}
+}
+
+// TestReapKeepsIntentsOnATerminalRecordAndReportsIt pins the corner the state
+// machine cannot mark: a record already terminal cannot become
+// `orphan-unverified`, so the pass keeps the intent open and reports it rather
+// than silently dropping the fence.
+func TestReapKeepsIntentsOnATerminalRecordAndReportsIt(t *testing.T) {
+	store, _ := newReapStore(t)
+	record := newReapRecord(t, store, "h1")
+	if _, err := store.ArmSpawnIntent(record.ID, linuxIntent("n1")); err != nil {
+		t.Fatalf("ArmSpawnIntent: %v", err)
+	}
+	if _, err := store.Transition(record.ID, hostops.StateComplete, func(r *hostops.Record) {
+		r.Result = &hostops.Result{OK: true, Message: "done"}
+	}); err != nil {
+		t.Fatalf("Transition: %v", err)
+	}
+	handle := &fakeBoundary{members: []execenv.BoundaryMember{{PID: 200, StartToken: "7"}}}
+	var opened []execenv.BoundaryIdentity
+	dropped, err := ReapLocalOrphanBoundary(store, ReapOptions{Open: openOnce(handle, &opened)})
+	if err == nil || !strings.Contains(err.Error(), record.ID) {
+		t.Fatalf("reap error = %v, want one naming the terminal record", err)
+	}
+	if dropped != 0 {
+		t.Fatalf("reap dropped %d; want the intent kept", dropped)
+	}
+	stored, _ := store.Record(record.ID)
+	if stored.State != hostops.StateComplete || len(stored.PendingSpawns) != 1 {
+		t.Fatalf("the terminal record = %q/%+v, want complete with the intent kept", stored.State, stored.PendingSpawns)
+	}
+}
+
+// TestReapLeavesRemoteAndUnavailableBoundariesAlone pins the boundary this pass
+// does not own: §4's remote-fencing boundary and §5's boundary-unavailable
+// entry are never enumerated or rewritten by the local reap, so its intent
+// data can never clobber the proof orphan-resolve needs.
+func TestReapLeavesRemoteAndUnavailableBoundariesAlone(t *testing.T) {
+	cases := map[string]string{
+		"remote fencing":       `[{"kind":"remote-fencing","fencingEpoch":{"bootId":"b1","opSeq":3},"guardEpoch":7,"leaseEntries":[]}]`,
+		"boundary unavailable": `[{"kind":"boundary-unavailable","reason":"corrupt-store-custody","custodyRef":"/custody"}]`,
+	}
+	for name, boundary := range cases {
+		t.Run(name, func(t *testing.T) {
+			store, _ := newReapStore(t)
+			record := newReapRecord(t, store, "h1")
+			if _, err := store.ArmSpawnIntent(record.ID, linuxIntent("n1")); err != nil {
+				t.Fatalf("ArmSpawnIntent: %v", err)
+			}
+			if _, err := store.Transition(record.ID, hostops.StateOrphanUnverified, func(r *hostops.Record) {
+				r.OrphanBoundary = []byte(boundary)
+			}); err != nil {
+				t.Fatalf("Transition: %v", err)
+			}
+			handle := &fakeBoundary{}
+			var opened []execenv.BoundaryIdentity
+			dropped, err := ReapLocalOrphanBoundary(store, ReapOptions{Open: openOnce(handle, &opened)})
+			if err != nil {
+				t.Fatalf("ReapLocalOrphanBoundary: %v", err)
+			}
+			if dropped != 0 || len(opened) != 0 {
+				t.Fatalf("the reap enumerated a %s boundary (dropped %d, opened %d)", name, dropped, len(opened))
+			}
+			stored, _ := store.Record(record.ID)
+			if string(stored.OrphanBoundary) != boundary || len(stored.PendingSpawns) != 1 {
+				t.Fatalf("the record = %s/%+v, want it untouched", stored.OrphanBoundary, stored.PendingSpawns)
+			}
+		})
+	}
+}
+
+// TestReapFailClosedMarkIsDurable pins the durability of the disposition: the
+// mark and its boundary are in the store file, not just in memory.
+func TestReapFailClosedMarkIsDurable(t *testing.T) {
+	store, path := newReapStore(t)
+	record := newReapRecord(t, store, "h1")
+	if _, err := store.ArmSpawnIntent(record.ID, linuxIntent("n1")); err != nil {
+		t.Fatalf("ArmSpawnIntent: %v", err)
+	}
+	handle := &fakeBoundary{members: []execenv.BoundaryMember{{PID: 100, StartToken: "42"}}}
+	var opened []execenv.BoundaryIdentity
+	if _, err := ReapLocalOrphanBoundary(store, ReapOptions{Open: openOnce(handle, &opened)}); err != nil {
+		t.Fatalf("ReapLocalOrphanBoundary: %v", err)
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read store: %v", err)
+	}
+	for _, want := range []string{`"state":"orphan-unverified"`, `"kind":"local-markerless"`, `"nonce":"n1"`} {
+		if !strings.Contains(string(raw), want) {
+			t.Fatalf("the store file does not carry %s:\n%s", want, raw)
+		}
+	}
+	_ = record
+}
+
+// TestReapRealCgroupArmReapsALocalChild drives the whole path on a real kernel
+// boundary: a child spawned into the created cgroup is killed through the
+// persisted (pid, start token) pair and the intent drops. It skips on hosts
+// with no writable cgroup2 subtree, exactly the "where available" the spec
+// names.
+func TestReapRealCgroupArmReapsALocalChild(t *testing.T) {
+	store, _ := newReapStore(t)
+	record := newReapRecord(t, store, "h1")
+	boundary, err := execenv.CreateBoundary("")
+	if errors.Is(err, execenv.ErrBoundaryUnavailable) {
+		t.Skipf("no writable cgroup2 subtree: %v", err)
+	}
+	if err != nil {
+		t.Fatalf("CreateBoundary: %v", err)
+	}
+	identity := boundary.Identity()
+	if _, err := store.ArmSpawnIntent(record.ID, hostops.SpawnIntent{
+		Nonce: "n1", Platform: hostops.SpawnPlatformLinux, CgroupID: identity.CgroupID,
+	}); err != nil {
+		t.Fatalf("ArmSpawnIntent: %v", err)
+	}
+	attr, release, err := boundary.SpawnAttr()
+	if err != nil {
+		t.Fatalf("SpawnAttr: %v", err)
+	}
+	cmd := realSleeper(t, attr)
+	release()
+	token, err := boundary.Observe(cmd.Process.Pid)
+	if err != nil {
+		t.Fatalf("Observe: %v", err)
+	}
+	if _, err := store.MatchSpawnIntent(record.ID, "n1", cmd.Process.Pid, token); err != nil {
+		t.Fatalf("MatchSpawnIntent: %v", err)
+	}
+	// Reap the child so the kernel can retire its cgroup entry as soon as the
+	// boundary kills it; a live-parent zombie otherwise keeps the directory
+	// populated.
+	waited := make(chan struct{})
+	go func() { _, _ = cmd.Process.Wait(); close(waited) }()
+
+	dropped, err := ReapLocalOrphanBoundary(store, ReapOptions{Wait: 10 * time.Second})
+	if err != nil {
+		t.Fatalf("ReapLocalOrphanBoundary: %v", err)
+	}
+	<-waited
+	if dropped != 1 {
+		t.Fatalf("reap dropped %d; want the verified intent dropped", dropped)
+	}
+	if err := cmd.Process.Signal(os.Interrupt); err == nil {
+		t.Fatal("the reaped child is still alive")
+	}
+	stored, _ := store.Record(record.ID)
+	if len(stored.PendingSpawns) != 0 || stored.State == hostops.StateOrphanUnverified {
+		t.Fatalf("the record = %q/%+v, want the intent dropped", stored.State, stored.PendingSpawns)
+	}
+}
