@@ -1635,16 +1635,19 @@ describe("Find in session (spec 8.7, ruling 29)", () => {
 			vi.unstubAllGlobals();
 		});
 
+		/** Runs the frames waiting now; any they ask for wait for the next call. */
+		async function oneFrame() {
+			const waiting = [...frames.values()];
+			frames.clear();
+			act(() => {
+				for (const frame of waiting) frame(0);
+			});
+			await settle();
+		}
+
 		/** Runs the waiting frames, and any they ask for, until none wait. */
 		async function runFrames() {
-			while (frames.size > 0) {
-				const waiting = [...frames.values()];
-				frames.clear();
-				act(() => {
-					for (const frame of waiting) frame(0);
-				});
-				await settle();
-			}
+			while (frames.size > 0) await oneFrame();
 		}
 
 		/** Lays out the transcript cell at `index`, so the list has measured it. */
@@ -1685,14 +1688,6 @@ describe("Find in session (spec 8.7, ruling 29)", () => {
 			flatListScrollFailures.remaining = 10;
 			// "Nothing else." is the last row, index 3.
 			await search(tree, "nothing");
-			const oneFrame = async () => {
-				const waiting = [...frames.values()];
-				frames.clear();
-				act(() => {
-					for (const frame of waiting) frame(0);
-				});
-				await settle();
-			};
 			await oneFrame();
 			// A row before the match renders on the way: the budget starts over.
 			measureRow(tree, 0);
