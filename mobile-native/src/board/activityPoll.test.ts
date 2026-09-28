@@ -120,6 +120,18 @@ describe("ActivityPoll (S5)", () => {
 		expect(poll.msSinceRead()).toBeNull();
 	});
 
+	it("a method-not-found answer landing after stop() does not disable the hub", async () => {
+		const fake = client();
+		const settlements = gateSettlements(fake, "evener/activity/read");
+		const poll = new ActivityPoll(fake);
+		poll.start();
+		await vi.advanceTimersByTimeAsync(0); // poll #1 in flight
+		poll.stop();
+		settlements[0]?.reject(new WireError("no such method", -32601));
+		await vi.advanceTimersByTimeAsync(0);
+		expect(poll.supported).toBe(true);
+	});
+
 	it("a stale method-not-found does not disable a hub a newer poll already found supported", async () => {
 		const fake = client();
 		const settlements = gateSettlements(fake, "evener/activity/read");
