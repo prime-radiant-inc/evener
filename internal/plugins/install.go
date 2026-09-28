@@ -327,8 +327,15 @@ func (m *Manager) SetAutoUpgrade(ctx context.Context, plugin, marketplace string
 	return m.mutateEntry(ctx, plugin, marketplace, func(e *InstallEntry) { e.AutoUpgrade = on })
 }
 
-// Remove deletes the registry entry and its cache dir. A plugin referenced in
-// place (directory-source marketplace) leaves the source untouched.
+// Remove uninstalls plugin: the registry save lands first, so a save failure is
+// a plain refusal that leaves the entry installed and its cache dir untouched.
+// Only once that save has landed does the cache dir's own removal run - a
+// failure there is litter the caller cannot undo (reported as
+// ErrPluginUninstalledCacheRemains, the plugin analogue of
+// RemoveMarketplace's ErrMarketplaceUnregisteredCloneRemains), but the plugin
+// itself is already gone from List. A plugin referenced in place
+// (directory-source marketplace) has no cache dir to remove and leaves the
+// source untouched.
 func (m *Manager) Remove(ctx context.Context, plugin, marketplace string) error {
 	release, err := m.lockStore(ctx, installAcquireLock, 30*time.Second)
 	if err != nil {
@@ -344,14 +351,36 @@ func (m *Manager) Remove(ctx context.Context, plugin, marketplace string) error 
 	if !ok {
 		return fmt.Errorf("%s: %w", key, ErrNotInstalled)
 	}
+	cache := ""
 	if len(entries) > 0 {
-		p := entries[0].InstallPath
-		if strings.HasPrefix(p, m.cacheDir()+string(os.PathSeparator)) {
-			_ = installRemoveAll(p)
+		if p := entries[0].InstallPath; strings.HasPrefix(p, m.cacheDir()+string(os.PathSeparator)) {
+			cache = p
 		}
 	}
 	delete(reg.Plugins, key)
-	return m.saveRegistry(reg)
+	if err := m.saveRegistry(reg); err != nil {
+		return err
+	}
+	if cache != "" {
+		if err := installRemoveAll(cache); err != nil {
+			return m.cacheRemovalFailed(key, err)
+		}
+	}
+	return nil
+}
+
+// cacheRemovalFailed reports that removing key's cache directory failed as a
+// cleanup step whose own registry change already applied - not a write failure
+// itself, since Remove has already saved the uninstall by the time this runs.
+// The error wraps ErrPluginUninstalledCacheRemains, so a caller can tell this
+// applied-with-litter outcome from a plain refusal by errors.Is instead of
+// assuming a non-nil error means the plugin is still installed. removeErr's own
+// text can carry this machine's absolute plugin-store path (os.RemoveAll
+// returns a *fs.PathError that names it), so it goes to the hub's log instead
+// of the RPC caller.
+func (m *Manager) cacheRemovalFailed(key string, removeErr error) error {
+	_, _ = fmt.Fprintf(m.stderr(), "warning: removing %s's cache failed: %v\n", key, removeErr)
+	return fmt.Errorf("plugin %q: %w; see the hub's log for detail", key, ErrPluginUninstalledCacheRemains)
 }
 
 type ListItem struct {

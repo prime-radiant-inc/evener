@@ -21,6 +21,14 @@ var (
 	// refusal by errors.Is against this instead of assuming a non-nil error
 	// means the marketplace is still registered.
 	ErrMarketplaceUnregisteredCloneRemains = errors.New("marketplace unregistered, but its clone could not be removed")
+	// ErrPluginUninstalledCacheRemains marks Remove's applied-with-litter
+	// outcome, the plugin analogue of
+	// ErrMarketplaceUnregisteredCloneRemains: the removal save has already
+	// landed (the plugin is gone from List) but its cache directory could
+	// not be removed from disk. A caller distinguishes this from a plain
+	// refusal by errors.Is against this instead of assuming a non-nil error
+	// means the plugin is still installed.
+	ErrPluginUninstalledCacheRemains = errors.New("plugin uninstalled, but its cache could not be removed")
 	// ErrMarketplaceSourceUnsupported rejects a source kind this build does not
 	// accept; it is wire input, not a store failure, and carries no path.
 	ErrMarketplaceSourceUnsupported = errors.New("unsupported marketplace source")
