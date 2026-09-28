@@ -1,7 +1,9 @@
 // A row that swipes (spec 7.3): a full swipe right does its leading action
 // (Archive on the Board), and a swipe left reveals its trailing actions
-// (Stop, Pin, More). It takes any children and actions, so phase 3's queued
-// messages reuse it. A swipe that begins in the screen's left 24 points never
+// (Stop, Pin, More). A row with one destructive action instead does it on a
+// full swipe left (spec 8.5, 8.8: cancel a queued message, remove a link).
+// It takes any children and actions, so the Session's ghosts and links
+// reuse it. A swipe that begins in the screen's left 24 points never
 // acts, by two guards. hitSlop takes the band out of the row's pan gesture
 // (react-native-gesture-handler 2.32 applies it to the Pan, not the view), so
 // a drag there never moves the row and the system's back gesture keeps it; a
@@ -33,21 +35,36 @@ export interface SwipeAction {
 	run(): void;
 }
 
-export interface SwipeRowProps {
+/** A destructive action reads as its label alone, in danger ink on the
+ * danger wash. */
+export type DestructiveSwipeAction = Pick<SwipeAction, "key" | "label" | "run">;
+
+export type SwipeRowProps = {
 	/** Done by a full swipe right: past half the row. */
 	leading?: SwipeAction;
-	/** Revealed by a swipe left, each a button. */
-	trailing?: readonly SwipeAction[];
 	/** True from a swipe's first drag until the row is closed again. */
 	onActiveChange?(active: boolean): void;
 	children: ReactNode;
-}
+} & (
+	| {
+			/** Revealed by a swipe left, each a button. */
+			trailing?: readonly SwipeAction[];
+			destructive?: never;
+	  }
+	| {
+			trailing?: never;
+			/** Revealed as the row drags left, and done by a full swipe left:
+			 * past half the row. */
+			destructive: DestructiveSwipeAction;
+	  }
+);
 
 const ACTION_WIDTH = 76;
 /** ReanimatedSwipeable names the swipe, not the panel: a swipe to the right
  * opens the left (leading) panel (its dispatchEndEvents reports RIGHT for a
  * positive translation). */
 const LEADING_OPENED = SwipeDirection.RIGHT;
+const TRAILING_OPENED = SwipeDirection.LEFT;
 
 /** The row's actions for VoiceOver, spread on the row's accessible element. */
 export function swipeAccessibility(leading: SwipeAction | undefined, trailing: readonly SwipeAction[]) {
@@ -59,7 +76,7 @@ export function swipeAccessibility(leading: SwipeAction | undefined, trailing: r
 	};
 }
 
-export function SwipeRow({ leading, trailing = [], onActiveChange, children }: SwipeRowProps) {
+export function SwipeRow({ leading, trailing = [], destructive, onActiveChange, children }: SwipeRowProps) {
 	const { palette } = useColors();
 	const { width } = useWindowDimensions();
 	const swipeable = useRef<SwipeableMethods>(null);
@@ -90,6 +107,20 @@ export function SwipeRow({ leading, trailing = [], onActiveChange, children }: S
 	const panel = (actions: readonly SwipeAction[]) => () => (
 		<View style={{ flexDirection: "row" }}>{actions.map((action) => button(action))}</View>
 	);
+	// Never a button: the row never rests open on it, since a drag short of
+	// the full swipe springs back.
+	const destructivePanel = (action: DestructiveSwipeAction) => () => (
+		<View
+			style={{
+				width: ACTION_WIDTH,
+				alignItems: "center",
+				justifyContent: "center",
+				backgroundColor: palette.dangerBg,
+			}}
+		>
+			<Text style={{ color: palette.dangerInk, fontSize: 13, fontWeight: "600" }}>{action.label}</Text>
+		</View>
+	);
 	return (
 		<ReanimatedSwipeable
 			ref={swipeable}
@@ -97,8 +128,11 @@ export function SwipeRow({ leading, trailing = [], onActiveChange, children }: S
 			// gesture keeps drags that begin there (spec 7.3).
 			hitSlop={{ left: -EDGE_ZONE_PT }}
 			leftThreshold={width / 2}
+			rightThreshold={destructive ? width / 2 : undefined}
 			renderLeftActions={leading ? panel([leading]) : undefined}
-			renderRightActions={trailing.length > 0 ? panel(trailing) : undefined}
+			renderRightActions={
+				destructive ? destructivePanel(destructive) : trailing.length > 0 ? panel(trailing) : undefined
+			}
 			onSwipeableOpenStartDrag={() => onActiveChange?.(true)}
 			onSwipeableWillOpen={() => {
 				if (startsInEdgeZone(startX.current)) close();
@@ -111,6 +145,10 @@ export function SwipeRow({ leading, trailing = [], onActiveChange, children }: S
 				if (direction === LEADING_OPENED && leading) {
 					close();
 					leading.run();
+				}
+				if (direction === TRAILING_OPENED && destructive) {
+					close();
+					destructive.run();
 				}
 			}}
 			onSwipeableClose={() => onActiveChange?.(false)}
