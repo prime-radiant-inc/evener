@@ -347,7 +347,7 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 
 	past := hubcore.NewPastIndexWithDB(stateGlob, pastIndexDB)
 	if _, err := past.Rebuild(); err != nil {
-		_, _ = fmt.Fprintf(os.Stderr, "[hub] past index rebuild: %v\n", err)
+		_, _ = fmt.Fprintf(stderr, "[hub] past index rebuild: %v\n", err)
 	}
 	archive := hubcore.NewArchiveStore(pastIndexDB)
 	favorite := hubcore.NewFavoriteStore(pastIndexDB)
@@ -396,7 +396,7 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 	}
 	resolvedEvenerBinary := resolveEvenerBinaryPath(opts.evenerBinary, currentExecutable(), exec.LookPath)
 	if opts.evenerBinary == "" && resolvedEvenerBinary != "" && resolvedEvenerBinary != "evener" {
-		_, _ = fmt.Fprintf(os.Stderr, "[hub] resolved evener at %s\n", resolvedEvenerBinary)
+		_, _ = fmt.Fprintf(stderr, "[hub] resolved evener at %s\n", resolvedEvenerBinary)
 	}
 	spawner := &HubSpawner{
 		Cfg:                 cfg,
@@ -890,12 +890,12 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 		ln: hubListener,
 	}
 
-	_, _ = fmt.Fprintf(os.Stderr, "[hub] evener-hub %s listening on %s (run_dir=%s)\n", Version, cfg.Addr, runDir)
+	_, _ = fmt.Fprintf(stderr, "[hub] evener-hub %s listening on %s (run_dir=%s)\n", Version, cfg.Addr, runDir)
 	// Build a usable auth URL. If the bind addr is 0.0.0.0 or ::, replace
 	// it with a hostname the operator can reach the hub at.
 	authHost := advertisedHubHost(cfg.Addr, hubHostname)
-	_, _ = fmt.Fprintf(os.Stderr, "[hub] auth URL (visit once per browser): %s\n", hubedge.AuthURLFor("http://"+authHost, authToken))
-	_, _ = fmt.Fprintf(os.Stderr, "[hub] auth token also at %s (use as Authorization: Bearer ... for scripted clients)\n", filepath.Join(hubStateRoot, hubedge.TokenFileName))
+	_, _ = fmt.Fprintf(stderr, "[hub] auth URL (visit once per browser): %s\n", hubedge.AuthURLFor("http://"+authHost, authToken))
+	_, _ = fmt.Fprintf(stderr, "[hub] auth token also at %s (use as Authorization: Bearer ... for scripted clients)\n", filepath.Join(hubStateRoot, hubedge.TokenFileName))
 	if err := deps.serve(ctx, srv); err != nil {
 		_, _ = fmt.Fprintf(stderr, "[hub] %v\n", err)
 		return err

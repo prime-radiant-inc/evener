@@ -3,12 +3,12 @@
 import type { NativeStackHeaderItem, NativeStackNavigationOptions } from "@react-navigation/native-stack";
 import type { ThreadReadResponse } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
-import { cloneElement } from "react";
+import { cloneElement, type ReactElement } from "react";
 import { FlatList } from "react-native";
 import type { ReactTestInstance, ReactTestRenderer } from "react-test-renderer";
 import { act } from "react-test-renderer";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import { flatListCalls, pressable, render, renderedText } from "../renderNative.testkit";
+import { flatListCalls, pressable, render, render as renderElement, renderedText } from "../renderNative.testkit";
 import { sheetKey } from "../sheet/sheetHosts";
 import type { SyncStringStorage } from "../syncStringStorage";
 import { documentBlocks } from "./documentBlocks";
@@ -255,6 +255,25 @@ it("draws blocks in the document role with serif headings, spaced by the list al
 		expect(style[name]).toMatchObject({ marginTop: 0, marginBottom: 0 });
 });
 
+it("puts the title in the nav bar once the first heading scrolls out", async () => {
+	served[PATH] = { body: `Intro line.\n\n${PLAN}` };
+	const { tree, navigation } = await mount(PATH, { updatedAt: new Date(Date.now() - 3 * MINUTE).toISOString() });
+	const list = documentList(tree);
+	const title = () => {
+		const render = navigation.latest("headerTitle") as (() => ReactElement | null) | undefined;
+		const element = render?.();
+		return element ? renderedText(renderElement(element)) : "";
+	};
+	expect(title()).toBe("");
+	act(() => list.props.onViewableItemsChanged({ viewableItems: [{ index: 0 }, { index: 1 }], changed: [] }));
+	expect(title()).toBe("");
+	// The intro has gone, but the first heading is still on screen.
+	act(() => list.props.onViewableItemsChanged({ viewableItems: [{ index: 1 }, { index: 2 }], changed: [] }));
+	expect(title()).toBe("");
+	act(() => list.props.onViewableItemsChanged({ viewableItems: [{ index: 2 }, { index: 3 }], changed: [] }));
+	expect(title()).toBe("Settle the race Plan · updated 3m ago");
+});
+
 it("leaves out an update time that doesn't parse", async () => {
 	const { tree } = await mount(PATH, { updatedAt: "not a time" });
 	expect(renderedText(tree)).toContain("Plan");
@@ -306,6 +325,26 @@ it("starts the steps over when a re-read changes what changed", async () => {
 	await settle();
 	expect(renderedText(tree)).not.toContain("Change 2 of 1");
 	expect(renderedText(tree)).toContain("1 change");
+});
+
+it("keeps your step when a re-read finds the same changes", async () => {
+	memory.left(KEY, {
+		title: "Settle the race",
+		blocks: documentBlocks(OLDER).map((block) => block.hash),
+		position: null,
+		reviewRef: "local:coord",
+		reviewTitle: "Coordinator",
+	});
+	const { tree } = await mount();
+	act(() => pressable(tree, "Next change")?.props.onPress());
+	act(() => pressable(tree, "Next change")?.props.onPress());
+	expect(renderedText(tree)).toContain("Change 2 of 2");
+	act(() => {
+		for (const listener of harness.appState) listener("active");
+	});
+	await settle();
+	expect(fetchSpy).toHaveBeenCalledTimes(2);
+	expect(renderedText(tree)).toContain("Change 2 of 2");
 });
 
 it("shows no changes and no bar on a first read", async () => {

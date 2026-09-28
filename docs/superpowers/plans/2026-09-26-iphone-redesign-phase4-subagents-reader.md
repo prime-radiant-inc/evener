@@ -5629,6 +5629,12 @@ describe("the demo fleet's documents", () => {
 - [ ] **Step 2:** Implement `demoSubagents.ts` (above) and the `demoFleet.ts` and `demo-hub.mts` changes.
 - [ ] **Step 3:** Run the tests and watch them pass, then `npm run check` and `npm run check:scripts` (the script-import gate for `scripts/*.mts`).
 - [ ] **Step 4:** Run `EVENER_DEMO_FLEET=1 npx tsx scripts/demo-hub.mts`, point a Release simulator build at it, and open Get PR 2138 Test Clean's Subagents list, a subagent, and the plan.
+  PR 5a (#2784) shipped without a simulator pass, so check the Reader here too, on the plan:
+  - it reads the real plan: the caption, serif headings, list items and code blocks, with 14pt between blocks;
+  - the header's trailing items sit in order, the outline button and then ⋯, and the title moves into the nav bar once the first heading scrolls out;
+  - the headings render in Source Serif 4 SemiBold. Their weight is "600" because enriched-markdown's default heading weight is bold, so confirm iOS lands on the embedded SemiBold face and doesn't synthesize bold;
+  - scroll partway, push a screen over it and come back: it keeps its place and its highlights, and doesn't re-read for its own sheets;
+  - leave it partway and reopen it: it reopens at the same block, and the Board offers Continue reading.
 - [ ] **Step 5:** Commit (`feat(native): the demo hub serves subagents and documents`), then open PR 9: "feat(native): the demo fleet's subagents and documents (phase 4, PR 9)".
 
 ---
