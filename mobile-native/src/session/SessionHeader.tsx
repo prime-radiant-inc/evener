@@ -9,10 +9,12 @@ import { Animated, Platform, Pressable, ScrollView, Text, View } from "react-nat
 import { UPDATE_NEEDED, UPDATE_NEEDED_HINT } from "../board/connectionStatus";
 import { useReduceMotion } from "../reduceMotion";
 import { useColors, useTextScale } from "../ui";
+import { FreshDot } from "../reader/FreshDot";
 import type { ChipKind, ContextChip } from "./sessionState";
 
 const SYMBOLS: Record<ChipKind, SFSymbol> = {
 	subagents: "person.2",
+	files: "doc.text",
 	tasks: "checklist",
 	goal: "target",
 	queue: "tray",
@@ -164,6 +166,7 @@ function Chip({ chip, onPress }: { chip: ContextChip; onPress: () => void }) {
 				{chip.failed ? " · " : null}
 				{chip.failed ? <Text style={{ color: palette.dangerInk }}>{chip.failed}</Text> : null}
 			</Text>
+			{chip.dot ? <FreshDot /> : null}
 		</Pressable>
 	);
 }

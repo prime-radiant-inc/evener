@@ -84,6 +84,10 @@ import {
 	nativeMutationTargetKey,
 } from "./nativeMutationRuntime";
 import { readerPositions } from "./nativeReaderPosition";
+import { MessageDocuments } from "./reader/DocumentChip";
+import { documentReferences, fileWrites } from "./reader/documentReferences";
+import { documentMemory } from "./reader/nativeDocumentMemory";
+import { documentFreshness, type SessionDocument, sessionDocuments } from "./reader/sessionDocuments";
 import { locateSession, type SessionLocation } from "./navigationReveal";
 import {
 	editPairingInput,
@@ -275,6 +279,8 @@ export type Routes = {
 	};
 	CommentsSheet: ReviewSheetParams;
 	ReviewSheet: ReviewSheetParams;
+	/** The session's documents as they were when the sheet opened (ruling 26). */
+	FilesSheet: { hubId: string; ref: string; title: string; documents: SessionDocument[] };
 };
 
 /** A document's comments and its review: the document, and the session the
@@ -1109,7 +1115,20 @@ export function ConversationScreen({
 	const stateLine = conversation
 		? sessionStateLine(conversation, Date.now())
 		: null;
-	const chips = conversation ? contextChips(conversation, chipsConnected) : [];
+	// Files & artifacts (spec 10.1): what the session wrote or linked, and
+	// whether any of it is new or changed since you last opened it.
+	const documents = useMemo(() => {
+		const cwd = conversation?.cwd ?? "";
+		return sessionDocuments(documentReferences(conversation?.turns ?? [], cwd), conversation?.sessionUrls ?? [], cwd);
+	}, [conversation?.turns, conversation?.sessionUrls, conversation?.cwd]);
+	const memory = documentMemory(route.params.hubId);
+	useSyncExternalStore(memory.subscribe, memory.getRevision);
+	const freshDocuments = documents.some(
+		({ path, updatedAt }) => documentFreshness(memory.lastRead({ sessionRef: route.params.ref, path }), updatedAt) !== "read",
+	);
+	const chips = conversation
+		? contextChips(conversation, chipsConnected, { count: documents.length, fresh: freshDocuments })
+		: [];
 	const headerHiding = useHeaderHiding();
 	// The header block floats over the list; the list reserves its height.
 	const [sessionHeaderHeight, setSessionHeaderHeight] = useState(0);
@@ -1132,11 +1151,18 @@ export function ConversationScreen({
 		timeline.current?.scrollToOffset({ offset: target, animated: false });
 	}, [sessionHeaderHeight]);
 	function openChip(kind: ChipKind) {
-		if (kind !== "queue") {
-			openSessionDestination(SESSION_DESTINATIONS[kind]);
-			return;
-		}
-		openQueue();
+		if (kind === "queue") openQueue();
+		else if (kind === "files") openFiles();
+		else openSessionDestination(SESSION_DESTINATIONS[kind]);
+	}
+	function openFiles() {
+		Keyboard.dismiss();
+		navigation.navigate("FilesSheet", {
+			hubId: route.params.hubId,
+			ref: route.params.ref,
+			title: route.params.title,
+			documents,
+		});
 	}
 	function openQueue() {
 		Keyboard.dismiss();
@@ -1244,6 +1270,8 @@ export function ConversationScreen({
 				return;
 			case "find":
 				setFind(newFind(""));
+			case "files":
+				openFiles();
 				return;
 			case "subagents":
 			case "tasks":
@@ -1293,6 +1321,7 @@ export function ConversationScreen({
 					? sessionMenu({
 							current: menuLevel,
 							hasSubagents,
+							hasDocuments: documents.length > 0,
 							connected,
 							sharedNotes: !!conversation?.capabilities.sharedNotes,
 							canAside,
@@ -1338,6 +1367,7 @@ export function ConversationScreen({
 		stateLine?.text,
 		menuLevel,
 		hasSubagents,
+		documents.length,
 		conversation?.capabilities.sharedNotes,
 		canAside,
 		canShutDown,
@@ -1386,6 +1416,42 @@ export function ConversationScreen({
 			focusComposerAt(merged.length);
 		},
 		[document, focusComposerAt],
+	);
+	// The documents the agent names become chips under its messages (spec
+	// 8.2), aged by the session's own writes. Every publish hands the screen
+	// new turns, even while the agent only streams text, so the writes are
+	// keyed by their content: a publish that changed no write keeps the same
+	// Map, and each message's chips skip re-reading its markdown.
+	const documentCwd = conversation?.cwd ?? "";
+	const turns = conversation?.turns;
+	const writesKey = useMemo(() => JSON.stringify([...fileWrites(turns ?? [], documentCwd)]), [turns, documentCwd]);
+	const writes = useMemo(() => new Map<string, string>(JSON.parse(writesKey) as [string, string][]), [writesKey]);
+	const openDocument = useCallback(
+		(path: string, updatedAt: string | undefined) =>
+			navigation.navigate("Reader", {
+				hubId: route.params.hubId,
+				sessionRef: route.params.ref,
+				path,
+				reviewRef: route.params.ref,
+				reviewTitle: route.params.title,
+				...(updatedAt === undefined ? {} : { updatedAt }),
+			}),
+		[navigation, route.params.hubId, route.params.ref, route.params.title],
+	);
+	// A message still streaming shows its chips once it settles.
+	const documentChips = useCallback(
+		(message: { id: string; markdown: string; streaming: boolean }) =>
+			message.streaming ? null : (
+				<MessageDocuments
+					hubId={route.params.hubId}
+					sessionRef={route.params.ref}
+					markdown={message.markdown}
+					cwd={documentCwd}
+					writes={writes}
+					open={openDocument}
+				/>
+			),
+		[route.params.hubId, route.params.ref, documentCwd, writes, openDocument],
 	);
 	// Quote in reply from a screen above this session (the Reader) holds the
 	// words until this session is in front again.
@@ -2764,6 +2830,7 @@ export function ConversationScreen({
 								: null
 						}
 						onErrorAction={runErrorAction}
+						documentChips={documentChips}
 					/>
 				</View>
 			</View>
@@ -2786,6 +2853,7 @@ export function ConversationScreen({
 			answerFor,
 			liveSendKind,
 			runErrorAction,
+			documentChips,
 		],
 	);
 
