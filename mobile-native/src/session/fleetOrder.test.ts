@@ -1,20 +1,8 @@
-import type { NavigationSessionSummary } from "@evener/appwire-client";
 import { describe, expect, it } from "vitest";
 import { liveBands } from "../board/attention";
 import { liveOrder, neighbor, nextNavigation, nextSession, othersNeedingYou } from "./fleetOrder";
+import { fleetSession as row } from "./fleetTestUtils";
 
-const row = (ref: string, over: Partial<NavigationSessionSummary> = {}): NavigationSessionSummary => ({
-	ref,
-	host_id: "local",
-	session_id: ref,
-	title: ref,
-	project: "evener",
-	state: "idle",
-	kind: "session",
-	live: true,
-	children: [],
-	...over,
-});
 const at = (minute: number) => new Date(Date.UTC(2026, 8, 26, 12, minute)).toISOString();
 const failed = row("failed", { state: "errored", updated_at: at(5) });
 const question = row("question", { state: "awaiting", ask_pending: true, updated_at: at(1) });
