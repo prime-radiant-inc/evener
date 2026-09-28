@@ -143,7 +143,7 @@ import {
 	newRowCount,
 	sessionRows,
 } from "./session/transcriptRows";
-import { SessionControls } from "./sessionControls";
+import { SessionControls, useControlsState } from "./sessionControls";
 import { useConnectionStatusText } from "./board/connectionStatus";
 import { Composer, ModelChip } from "./session/Composer";
 import { type ModelHost, modelHosts } from "./session/ModelSheet";
@@ -189,8 +189,6 @@ import { groupTimeline, type TimelineRow, timelineGap } from "./timeline";
 import { projectNativeTranscript } from "./transcriptPresentation";
 import { Action, Copy, ErrorMessage, styles, useColors } from "./ui";
 
-const noControls = () => null;
-const noControlSubscription = () => () => {};
 const NO_QUESTIONS: AskQuestionRef[] = [];
 const STEER_FAILED = { text: "Couldn't steer with this message now." };
 const STEER_ALL_FAILED = { text: "Couldn't steer with these messages now." };
@@ -1612,10 +1610,7 @@ export function ConversationScreen({
 		});
 		return () => subscription.remove();
 	}, []);
-	const controlsState = useSyncExternalStore(
-		controls?.subscribe ?? noControlSubscription,
-		controls?.getSnapshot ?? noControls,
-	);
+	const controlsState = useControlsState(controls);
 	const settingsPending = controlsState?.pending != null || commandPending;
 	const pending = snapshot.pendingMutation?.status === "pending";
 	const ready =
