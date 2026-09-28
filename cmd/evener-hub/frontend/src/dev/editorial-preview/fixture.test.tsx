@@ -1,6 +1,6 @@
-import { act, cleanup, render, screen } from "@testing-library/react";
+import { act, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { afterAll, afterEach, beforeAll, expect, test, vi } from "vitest";
+import { afterAll, beforeAll, expect, test, vi } from "vitest";
 import { AppShell } from "../../shell/AppShell";
 import { navigationStore } from "../../stores/navigation/store";
 import { threadsStore } from "../../stores/threads";
@@ -22,7 +22,6 @@ beforeAll(async () => {
   await import("../../panes/session/Session");
   await import("../../shell/DockHost");
 });
-afterEach(cleanup);
 afterAll(() => {
   vi.restoreAllMocks();
   vi.unstubAllGlobals();

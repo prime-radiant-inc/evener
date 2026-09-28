@@ -1,11 +1,9 @@
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
-import { afterEach, expect, test, vi } from "vitest";
+import { fireEvent, render, screen } from "@testing-library/react";
+import { expect, test, vi } from "vitest";
 import { OpenButton, OpenIcon } from ".";
-
-afterEach(cleanup);
 
 // The repo's CSS-source test idiom (difftable.test.tsx, select.test.tsx):
 // jsdom has no layout, so geometry contracts are pinned by reading the

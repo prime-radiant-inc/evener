@@ -1,9 +1,7 @@
 import type { ItemModel } from "@evener/appwire-client";
-import { cleanup, render, screen } from "@testing-library/react";
-import { afterEach, expect, test } from "vitest";
+import { render, screen } from "@testing-library/react";
+import { expect, test } from "vitest";
 import { HeadClippedOutputBody, TailFoldedOutputBody } from "./bodies";
-
-afterEach(cleanup);
 
 function item(overrides: Partial<ItemModel> = {}): ItemModel {
   return { id: "item_1", turnId: "turn_1", type: "commandExecution", text: "", ...overrides };

@@ -1,8 +1,6 @@
-import { cleanup, render, screen } from "@testing-library/react";
-import { afterEach, describe, expect, test } from "vitest";
+import { render, screen } from "@testing-library/react";
+import { describe, expect, test } from "vitest";
 import { Code, FieldDim, SettingsField } from "./settingsField";
-
-afterEach(cleanup);
 
 describe("SettingsField", () => {
   test("renders the label as a definition term and the value as its definition", () => {

@@ -1,6 +1,6 @@
-import { act, cleanup, render, screen } from "@testing-library/react";
+import { act, render, screen } from "@testing-library/react";
 import { lazy } from "react";
-import { afterAll, afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
+import { afterAll, beforeAll, beforeEach, expect, test, vi } from "vitest";
 import { registerPaneForTests } from "../paneRegistry";
 import { resetWorkspaceStoreForTests, workspaceStore } from "../workspace";
 import { MobilePanel } from "./MobilePanel";
@@ -27,8 +27,6 @@ beforeAll(async () => {
 afterAll(() => {
   restoreDocPane();
 });
-
-afterEach(cleanup);
 
 beforeEach(() => {
   resetWorkspaceStoreForTests();

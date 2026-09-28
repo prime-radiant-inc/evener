@@ -10,13 +10,11 @@
 // - McpControl onAdd validation (lines 505-516)
 
 import type { LaunchConfigResolved, LaunchOption } from "@evener/appwire-client";
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { afterEach, expect, test, vi } from "vitest";
+import { expect, test, vi } from "vitest";
 import type { ModelCatalog as ModelCatalogEnvelope } from "../../widgets";
 import { AdvancedOptions } from "./AdvancedOptions";
-
-afterEach(() => cleanup());
 
 function option(partial: Partial<LaunchOption> & { wireField: string; kind: string; label: string }): LaunchOption {
   return { field: partial.wireField, group: "general", perLaunch: true, ...partial };
