@@ -1340,4 +1340,18 @@ describe("document chips under the agent's messages (spec 8.2)", () => {
 		});
 	});
 
+	it("counts the session's documents on a Files chip, dotted while one is new, which opens Files & artifacts", async () => {
+		vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response("# Fix the settle race\n"));
+		vi.mocked(navigation.navigate).mockClear();
+		const { tree } = await mount(namedAfterWriting("ref-files"));
+		const files = pressable(tree, "Files, 1, new or changed");
+		if (!files) throw new Error("no Files chip");
+		act(() => files.props.onPress());
+		expect(navigation.navigate).toHaveBeenCalledWith("FilesSheet", {
+			hubId: "hub-1",
+			ref: "ref-files",
+			title: "Session",
+			documents: [{ path: PLAN_PATH, kind: "Plan", updatedAt: WROTE_AT }],
+		});
+	});
 });

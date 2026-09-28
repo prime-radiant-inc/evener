@@ -3,7 +3,8 @@
 // session wrote it, how long ago. Tapping it opens the Reader. Before its
 // summary lands the title is the file name, and nothing else on it moves.
 import { filenameOf } from "@evener/appwire-client/docContent";
-import { useMemo } from "react";
+import { SymbolView } from "expo-symbols";
+import { useMemo, useSyncExternalStore } from "react";
 import { Pressable, Text, View } from "react-native";
 import { fonts } from "../design/tokens";
 import { compactDuration, spokenDuration } from "../session/format";
@@ -11,6 +12,8 @@ import { useMinuteClock } from "../session/minuteClock";
 import { allowFontScaling, useColors, useTextScale } from "../ui";
 import { documentKind } from "./documentSource";
 import { messageDocuments } from "./documentReferences";
+import { documentMemory } from "./nativeDocumentMemory";
+import { documentFreshness } from "./sessionDocuments";
 import { useDocumentSummary } from "./useDocumentSummary";
 
 export interface DocumentChipProps {
@@ -22,21 +25,36 @@ export interface DocumentChipProps {
 	onOpen(): void;
 }
 
+/** What a chip and a Files row say about a document: its kind, its title
+ * (the file name until its summary lands), its length, its age when the
+ * session wrote it, and whether it's new or changed since you last read it. */
+export function useDocumentFacts(hubId: string, sessionRef: string, path: string, updatedAt?: string) {
+	const now = useMinuteClock();
+	const summary = useDocumentSummary(hubId, sessionRef, path, updatedAt);
+	const memory = documentMemory(hubId);
+	useSyncExternalStore(memory.subscribe, memory.getRevision);
+	const name = filenameOf(path);
+	const written = updatedAt === undefined ? Number.NaN : Date.parse(updatedAt);
+	const age = Number.isNaN(written) ? null : now - written;
+	return {
+		kind: documentKind(path),
+		title: summary?.title || name,
+		name,
+		lines: summary?.lines === undefined ? null : `${summary.lines} ${summary.lines === 1 ? "line" : "lines"}`,
+		age: age === null ? null : `${compactDuration(age)} ago`,
+		spokenAge: age === null ? null : `${spokenDuration(age)} ago`,
+		freshness: documentFreshness(memory.lastRead({ sessionRef, path }), updatedAt),
+	};
+}
+
 export function DocumentChip({ hubId, sessionRef, path, updatedAt, onOpen }: DocumentChipProps) {
 	const { palette } = useColors();
 	const scale = useTextScale();
-	const now = useMinuteClock();
-	const summary = useDocumentSummary(hubId, sessionRef, path, updatedAt);
-	const kind = documentKind(path);
-	const name = filenameOf(path);
-	const title = summary?.title || name;
-	const lines = summary?.lines === undefined ? null : `${summary.lines} ${summary.lines === 1 ? "line" : "lines"}`;
-	const written = updatedAt === undefined ? Number.NaN : Date.parse(updatedAt);
-	const age = Number.isNaN(written) ? null : now - written;
-	const facts = [lines, age === null ? null : `${compactDuration(age)} ago`].filter((fact) => fact !== null);
-	const label = [kind, title, name, lines, age === null ? null : `${spokenDuration(age)} ago`]
-		.filter((part) => part !== null)
-		.join(", ");
+	const { kind, title, name, lines, age, spokenAge, freshness } = useDocumentFacts(hubId, sessionRef, path, updatedAt);
+	// A chip marks only a change (8.2); Files and its chip mark what's new.
+	const changed = freshness === "changed" ? "changed since you last read" : null;
+	const facts = [lines, age, changed].filter((fact) => fact !== null);
+	const label = [kind, title, name, lines, spokenAge, changed].filter((part) => part !== null).join(", ");
 	const small = { fontSize: 13 * scale, lineHeight: 18 * scale, color: palette.inkLow };
 	return (
 		<Pressable
@@ -56,6 +74,7 @@ export function DocumentChip({ hubId, sessionRef, path, updatedAt, onOpen }: Doc
 			})}
 		>
 			<View style={{ flexDirection: "row", alignItems: "baseline", gap: 8 }}>
+				{changed ? <FreshDot /> : null}
 				<Text
 					allowFontScaling={allowFontScaling}
 					style={{ fontSize: 12 * scale, lineHeight: 20 * scale, fontWeight: "600", color: palette.inkMid }}
@@ -83,6 +102,12 @@ export function DocumentChip({ hubId, sessionRef, path, updatedAt, onOpen }: Doc
 			</Text>
 		</Pressable>
 	);
+}
+
+/** The blue dot of a document that's new or changed since you last read it. */
+export function FreshDot() {
+	const { palette } = useColors();
+	return <SymbolView name="circle.fill" size={8} tintColor={palette.accent} />;
 }
 
 /** The chips under one agent's message: the documents it names inside the

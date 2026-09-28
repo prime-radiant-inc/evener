@@ -13,6 +13,7 @@ import type { ChipKind, ContextChip } from "./sessionState";
 
 const SYMBOLS: Record<ChipKind, SFSymbol> = {
 	subagents: "person.2",
+	files: "doc.text",
 	tasks: "checklist",
 	goal: "target",
 	queue: "tray",
@@ -160,6 +161,7 @@ function Chip({ chip, onPress }: { chip: ContextChip; onPress: () => void }) {
 				{chip.failed ? " · " : null}
 				{chip.failed ? <Text style={{ color: palette.dangerInk }}>{chip.failed}</Text> : null}
 			</Text>
+			{chip.dot ? <SymbolView name="circle.fill" size={8} tintColor={palette.accent} /> : null}
 		</Pressable>
 	);
 }

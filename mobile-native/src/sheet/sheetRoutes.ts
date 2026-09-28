@@ -48,6 +48,8 @@ export const SHEET_ROUTES = {
 	CommentsSheet: sheetOptions(["medium", "large"], "medium"),
 	// You type the review's note in it (ruling 26).
 	ReviewSheet: sheetOptions(["medium", "large"], "large"),
+	// The session's documents, a list (ruling 26).
+	FilesSheet: sheetOptions(["medium", "large"], "medium"),
 } satisfies { [Name in keyof Routes]?: NativeStackNavigationOptions };
 
 export function isSheetRoute(name: string): boolean {

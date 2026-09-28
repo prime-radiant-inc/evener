@@ -45,6 +45,7 @@ import { SHEET_ROUTES } from "./src/sheet/sheetRoutes";
 import { QueueSheet } from "./src/QueueSheet";
 import { CommentSheet } from "./src/reader/CommentSheet";
 import { CommentsSheet } from "./src/reader/CommentsSheet";
+import { FilesSheet } from "./src/reader/FilesSheet";
 import { OutlineSheet } from "./src/reader/OutlineSheet";
 import { ReviewSheet } from "./src/reader/ReviewSheet";
 import { ReaderScreen } from "./src/reader/ReaderScreen";
@@ -257,6 +258,11 @@ function Navigation() {
 							name="ReviewSheet"
 							component={ReviewSheet}
 							options={SHEET_ROUTES.ReviewSheet}
+						/>
+						<Stack.Screen
+							name="FilesSheet"
+							component={FilesSheet}
+							options={SHEET_ROUTES.FilesSheet}
 						/>
 					</Stack.Group>
 				</Stack.Navigator>

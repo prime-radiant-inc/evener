@@ -2,12 +2,14 @@
 // document's kind and title, its file name, its length and its age, read once
 // per document and shared by every chip that shows it.
 import { act, type ReactTestRenderer } from "react-test-renderer";
-import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { pressable, render, renderedText } from "../renderNative.testkit";
 import { DocumentChip } from "./DocumentChip";
+import { DocumentMemory } from "./documentMemory";
 import { forgetDocumentSummaries } from "./documentSummaries";
+import type { SyncStringStorage } from "../syncStringStorage";
 
-const harness = vi.hoisted(() => ({ connection: {} as Record<string, unknown> }));
+const harness = vi.hoisted(() => ({ connection: {} as Record<string, unknown>, memory: null as unknown }));
 
 vi.mock("react-native", async () => ({
 	...(await import("../renderNative.testkit")).nativeModuleMock(),
@@ -15,6 +17,7 @@ vi.mock("react-native", async () => ({
 }));
 vi.mock("expo-symbols", () => ({ SymbolView: "SymbolView" }));
 vi.mock("../ConnectionProvider", () => ({ useConnection: () => harness.connection }));
+vi.mock("./nativeDocumentMemory", () => ({ documentMemory: () => harness.memory }));
 vi.mock("expo-secure-store", () => ({
 	getItemAsync: vi.fn(async (key: string) =>
 		key === "evener.hub.studio"
@@ -30,6 +33,16 @@ const PLAN = `# Fix the settle/drain race\n\n${Array.from({ length: 140 }, (_, i
 const MINUTE = 60_000;
 
 let fetchSpy: ReturnType<typeof vi.spyOn>;
+let memory: DocumentMemory;
+
+function storage(): SyncStringStorage {
+	const data = new Map<string, string>();
+	return {
+		getItemSync: (key) => data.get(key) ?? null,
+		setItemSync: (key, value) => void data.set(key, value),
+		removeItemSync: (key) => void data.delete(key),
+	};
+}
 let answers: (() => Response)[];
 const trees: ReactTestRenderer[] = [];
 
@@ -37,6 +50,8 @@ beforeEach(() => {
 	forgetDocumentSummaries("studio");
 	harness.connection = { profiles: [{ id: "studio", name: "Studio", origin: "https://hub.test" }], state: "ready" };
 	answers = [];
+	memory = new DocumentMemory(storage(), "studio");
+	harness.memory = memory;
 	fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(
 		async () => answers.shift()?.() ?? new Response(PLAN, { headers: { "Content-Type": "text/plain; charset=utf-8" } }),
 	);
@@ -120,4 +135,37 @@ it("keeps the file name after a failed read, and reads again when a chip mounts 
 	await settle();
 	expect(renderedText(second)).toContain("Fix the settle/drain race");
 	expect(fetchSpy).toHaveBeenCalledTimes(2);
+});
+
+// Spec 8.2 marks a change; Files marks what's new (Task 19, requirement 8).
+describe("since you last read it", () => {
+	const OLDER = "2026-09-26T11:39:00.000Z";
+	const NEWER = "2026-09-26T11:45:00.000Z";
+	const read = (updatedAt: string) =>
+		memory.left(
+			{ sessionRef: "local:fix", path: PATH },
+			{ title: "Plan", blocks: [], position: null, reviewRef: "local:fix", reviewTitle: "Fix", updatedAt },
+		);
+	const dots = (tree: ReactTestRenderer) =>
+		tree.root.findAll((node) => String(node.type) === "SymbolView" && node.props.name === "circle.fill");
+
+	it("shows a dot and says so when the session wrote it after your last read", async () => {
+		read(OLDER);
+		const tree = chip({ updatedAt: NEWER });
+		await settle();
+		expect(dots(tree)).toHaveLength(1);
+		expect(renderedText(tree)).toContain("changed since you last read");
+		expect(button(tree)?.props.accessibilityLabel).toContain("changed since you last read");
+	});
+
+	it.each([
+		["you haven't opened it", undefined],
+		["you read it since", NEWER],
+	])("shows neither when %s", async (_name, lastRead) => {
+		if (lastRead) read(lastRead);
+		const tree = chip({ updatedAt: NEWER });
+		await settle();
+		expect(dots(tree)).toEqual([]);
+		expect(renderedText(tree)).not.toContain("changed since you last read");
+	});
 });
