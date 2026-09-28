@@ -92,6 +92,12 @@ func (s *WebServer) sourceOnline(id string) bool {
 	if !ok || source == nil {
 		return true
 	}
+	return sourceIsOnline(source)
+}
+
+// sourceIsOnline reports whether a registered source can serve requests now: a
+// source that reports no online state (the controller's own) always can.
+func sourceIsOnline(source appsource.Source) bool {
 	if online, ok := source.(appsource.OnlineSource); ok {
 		return online.Online()
 	}
