@@ -1,8 +1,9 @@
-import type {
-	NavigationPinSectionDescriptor,
-	NavigationProjectSummary,
-	NavigationSessionSummary,
-	SearchResult,
+import {
+	errorText,
+	type NavigationPinSectionDescriptor,
+	type NavigationProjectSummary,
+	type NavigationSessionSummary,
+	type SearchResult,
 } from "@evener/appwire-client";
 import { useFocusEffect, useIsFocused } from "@react-navigation/native";
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
@@ -795,7 +796,7 @@ function confirmShutDown(
 				if (!client) return;
 				shutDownSession(client, row.ref).then(
 					() => toast.show({ text: "Session shut down" }),
-					(error: unknown) => toast.show({ text: `Couldn't shut down “${row.title}”: ${hubMessage(error)}` }),
+					(error: unknown) => toast.show({ text: `Couldn't shut down “${row.title}”: ${errorText(error)}` }),
 				);
 			},
 		},
@@ -818,7 +819,7 @@ function promptRename(client: ConversationClientLike | null, row: NavigationSess
 						(renamed) => {
 							if (renamed) toast.show({ text: "Renamed" });
 						},
-						(error: unknown) => toast.show({ text: `Couldn't rename “${row.title}”: ${hubMessage(error)}` }),
+						(error: unknown) => toast.show({ text: `Couldn't rename “${row.title}”: ${errorText(error)}` }),
 					);
 				},
 			},
@@ -827,8 +828,6 @@ function promptRename(client: ConversationClientLike | null, row: NavigationSess
 		row.title,
 	);
 }
-
-const hubMessage = (error: unknown) => (error instanceof Error ? error.message : String(error));
 
 /** A project row's long-press menu (ruling 15): Pin to top or Unpin, and
  * Archive or Unarchive, as an action sheet, or an alert off iOS. */
