@@ -1512,6 +1512,24 @@ it("shows three skeleton rows until the first read lands", async () => {
 	act(() => tree.unmount());
 });
 
+it("shows the first read's rows at once under a finger that touched the skeleton, never the empty Board", async () => {
+	const id = hubId();
+	adoptedAnHourAgo(id);
+	const fake = hub(fleet, () => true);
+	connect(id, fake.client, "ready");
+	const tree = await mount(navigation());
+	expect(skeletonRows(tree)).toHaveLength(3);
+	listEvent(tree, "onTouchStart");
+	fake.release();
+	await settle();
+	expect(texts(tree)).not.toContain("Nothing's running. Start a session to put an agent to work.");
+	expect(listOrder(tree)).toEqual(workingOrder);
+	liftFinger(tree);
+	await advance(100);
+	expect(listOrder(tree)).toEqual(workingOrder);
+	act(() => tree.unmount());
+});
+
 it("says Update needed and why when no retry can fix the close", async () => {
 	const id = hubId();
 	adoptedAnHourAgo(id);
@@ -3896,7 +3914,8 @@ const workingOrder = [
 	"Build docs",
 	"Idle · 2",
 ];
-/** A Board over the default fleet whose working row can turn into a question. */
+/** A Board over the default fleet whose rows can turn into questions ("Build
+ * docs", the working row, unless the test names another). */
 async function mountAskingFleet(nav = navigation(), withInstances = false) {
 	const id = hubId();
 	adoptedAnHourAgo(id);
@@ -3904,13 +3923,14 @@ async function mountAskingFleet(nav = navigation(), withInstances = false) {
 	const fake = hub(shape);
 	connect(id, fake.client, "ready");
 	const mounted = withInstances ? await mountWithInstances(nav) : { tree: await mount(nav), scrollTo: vi.fn() };
-	/** "Build docs" stops to ask a question. */
-	const ask = async () => {
-		const question = { ...working, state: "awaiting" as const, ask_pending: true };
-		shape.live[0] = shape.live[0].map((row) => (row.ref === working.ref ? question : row));
+	/** The row stops to ask a question, in the hub's next invalidation. */
+	let sequence = 0;
+	const ask = async (asker = working) => {
+		const question = { ...asker, state: "awaiting" as const, ask_pending: true };
+		shape.live[0] = shape.live[0].map((row) => (row.ref === asker.ref ? question : row));
 		shape.needsYou = [...shape.needsYou, question];
 		act(() =>
-			fake.invalidate(1, [
+			fake.invalidate(++sequence, [
 				{ kind: "section", section: "live" },
 				{ kind: "section", section: "needs_you" },
 			]),
@@ -3947,6 +3967,20 @@ it("keeps a row in its place while a finger is on the list, then moves it into N
 	expect(boardRowTitled(tree, "Ship it").props.wash).toBe(0);
 	await advance(WASH_MS);
 	expect(boardRowTitled(tree, "Build docs").props.wash).toBe(0);
+});
+
+it("lets a washed row finish its fade when another row enters Needs you after it", async () => {
+	const { tree, ask } = await mountAskingFleet();
+	await ask();
+	const wash = boardRowTitled(tree, "Build docs").props.wash;
+	expect(wash).toBeGreaterThan(0);
+	await advance(300);
+	await ask(finished);
+	expect(boardRowTitled(tree, "Ship it").props.wash).toBeGreaterThan(0);
+	expect(boardRowTitled(tree, "Build docs").props.wash).toBe(wash);
+	await advance(WASH_MS - 300);
+	expect(boardRowTitled(tree, "Build docs").props.wash).toBe(0);
+	expect(boardRowTitled(tree, "Ship it").props.wash).toBeGreaterThan(0);
 });
 
 it("waits for a fling's glide to end before applying a change", async () => {

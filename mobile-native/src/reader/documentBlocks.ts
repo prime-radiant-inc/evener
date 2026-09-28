@@ -26,6 +26,9 @@ export interface DocumentBlock {
 }
 
 const LIST_MARKER = /^\s*(?:[-*+]|\d+[.)])\s+/;
+// A setext heading's underline ("===" or "---" under its words). Only a
+// heading has one: a line of "=" on its own is a paragraph's words.
+const SETEXT_UNDERLINE = /\n[ \t]*(?:=+|-+)[ \t]*$/;
 
 /** cyrb53: a small, stable 53-bit string hash. Collisions don't matter at a
  * document's scale; stability across launches does. */
@@ -94,7 +97,7 @@ export function documentBlocks(markdown: string): DocumentBlock[] {
 			kind,
 			markdown: source,
 			hash: identity(kind, source),
-			text: extra.code ? extra.code.text : plainText(source),
+			text: extra.code ? extra.code.text : plainText(kind === "heading" ? source.replace(SETEXT_UNDERLINE, "") : source),
 			...extra,
 		});
 	};
