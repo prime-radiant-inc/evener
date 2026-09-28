@@ -819,3 +819,26 @@ func TestSupervisorReconnectMarksTheReplacementChannel(t *testing.T) {
 		t.Fatal("the replacement's supervision mark was cleared by the handoff")
 	}
 }
+
+// TestStartSuperviseRefusalLeavesTheChannelUnmarked pins the registration
+// invariant the round-8 review named: a start attempt that is refused — the
+// manager is already closed — registers no loop and leaves the channel's
+// supervision mark clear, so no later handoff can mistake it for supervised.
+// The mark is stored only after the loop's live-user reference is counted, so
+// the refusal path has already returned by then.
+func TestStartSuperviseRefusalLeavesTheChannelUnmarked(t *testing.T) {
+	m, _, host := attachUnderGateManager(t, Options{})
+	if err := m.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	ch := &Channel{lost: make(chan struct{}), done: make(chan struct{})}
+	if m.startSupervise(host, ch, &hostLockGate{}) {
+		t.Fatal("startSupervise reported success on a closed manager")
+	}
+	if ch.supervised.Load() {
+		t.Fatal("a refused start left the channel marked supervised")
+	}
+	if n := supervisorLoops(m, host.Name); n != 0 {
+		t.Fatalf("supervisor loops after the refused start = %d, want 0", n)
+	}
+}

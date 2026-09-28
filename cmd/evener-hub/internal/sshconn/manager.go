@@ -2377,7 +2377,9 @@ func (m *Manager) supervise(ctx context.Context, host hostreg.Host, ch *Channel,
 // and leaves the channel to the loop that owns it. The false return stays
 // reserved for a manager that cannot supervise at all (Close already ran), so
 // the publish tails that reap on false — Ensure's and reconnectOnce's — are
-// untouched.
+// untouched, and the supervision mark is stored only after the loop's
+// live-user reference is counted: a refused start can never leave a channel
+// marked supervised.
 //
 // Go increments supervisorsWG before it returns, so once Close has set closed
 // and released the lock no new supervisor can join the group, and every
@@ -2415,13 +2417,6 @@ func (m *Manager) startSupervise(host hostreg.Host, ch *Channel, lock *hostLockG
 		m.supervisors[host.Name] = map[*supervisorLoop]struct{}{}
 	}
 	m.supervisors[host.Name][loop] = struct{}{}
-	// Supervision is tracked on the channel itself, not on the loop's
-	// start-time copy: a channel is supervised exactly while a loop owns it,
-	// and the loop's teardown deregisters and clears the mark in one critical
-	// section. The dedupe above reads it under that same mutex, so a second
-	// start attempt cannot miss a loop that has moved past the state it started
-	// with, nor read a deregistered loop's mark as live supervision.
-	ch.supervised.Store(true)
 	// The supervisor goroutine outlives this call and keeps gating on lock, so
 	// it takes its own live-user reference here — under m.mu, before the
 	// goroutine exists, and while the caller's reference still pins the entry
@@ -2430,6 +2425,17 @@ func (m *Manager) startSupervise(host hostreg.Host, ch *Channel, lock *hostLockG
 	// with its return could drop the entry while the loop still holds this
 	// mutex, and a fresh acquisition would build a second gate for the name.
 	m.locks[host.Name].refs++
+	// Supervision is tracked on the channel itself, not on the loop's
+	// start-time copy: a channel is supervised exactly while a loop owns it,
+	// and the loop's teardown deregisters and clears the mark in one critical
+	// section. The dedupe above reads it under that same mutex, so a second
+	// start attempt cannot miss a loop that has moved past the state it started
+	// with, nor read a deregistered loop's mark as live supervision. The mark
+	// is stored last, after the loop's live-user reference is counted and after
+	// every refusal has already returned, so registration is complete by the
+	// time the channel reads as supervised: no failed start can leave a mark
+	// behind for a handoff to mistake for a live loop.
+	ch.supervised.Store(true)
 	// WaitGroup.Go adds, runs, and marks the loop done, so Close waiting on the
 	// group observes the fully-finished loop.
 	m.supervisorsWG.Go(func() {
