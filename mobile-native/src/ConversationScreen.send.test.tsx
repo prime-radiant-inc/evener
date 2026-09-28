@@ -18,6 +18,8 @@ import { sheetKey } from "./sheet/sheetHosts";
 import { holdQuote, takeQuote } from "./session/pendingQuote";
 import { modelHosts } from "./session/ModelSheet";
 import { SessionInfoSheet } from "./session/SessionInfoSheet";
+import { commandHosts } from "./session/CommandsSheet";
+import { ActionSheetIOS } from "react-native";
 
 const harness = vi.hoisted(() => ({
 	connection: {} as Record<string, unknown>,
@@ -1447,4 +1449,53 @@ it("leaves the shared question fixture as the other question tests expect it", (
 	const turn = (thread("ref-fixture-intact", "idle", true) as unknown as { turns: { status: string; error?: unknown }[] }).turns[0];
 	expect(turn.status).toBe("completed");
 	expect(turn.error).toBeUndefined();
+});
+
+describe("Commands and skills (spec 8.5, ruling 15)", () => {
+	// Choosing focuses the field on the next frame; these tests run it at once.
+	beforeEach(() => {
+		vi.stubGlobal("requestAnimationFrame", (frame: (time: number) => void) => {
+			frame(0);
+			return 0;
+		});
+		vi.mocked(navigation.navigate).mockClear();
+	});
+	afterEach(() => vi.unstubAllGlobals());
+
+	it("opens the sheet for a slash typed into an empty draft, and keeps the slash out", async () => {
+		const { tree } = await mount(thread("ref-slash", "idle"));
+		await type(tree, "/");
+		expect(navigation.navigate).toHaveBeenCalledWith("CommandsSheet", { hubId: "hub-1", ref: "ref-slash" });
+		expect(field(tree)?.props.value).toBe("");
+	});
+
+	it("keeps a slash typed after other words", async () => {
+		const { tree } = await mount(thread("ref-slash-later", "idle"));
+		await type(tree, "a");
+		await type(tree, "a/");
+		expect(navigation.navigate).not.toHaveBeenCalledWith("CommandsSheet", expect.anything());
+		expect(field(tree)?.props.value).toBe("a/");
+	});
+
+	it("opens the sheet from +", async () => {
+		const { tree } = await mount(thread("ref-plus", "idle"));
+		vi.mocked(ActionSheetIOS.showActionSheetWithOptions).mockClear();
+		act(() => pressable(tree, "Add")?.props.onPress());
+		const [options, choose] = vi.mocked(ActionSheetIOS.showActionSheetWithOptions).mock.calls[0] as [
+			{ options: string[] },
+			(index: number) => void,
+		];
+		act(() => choose(options.options.indexOf("Commands and skills")));
+		expect(navigation.navigate).toHaveBeenCalledWith("CommandsSheet", { hubId: "hub-1", ref: "ref-plus" });
+	});
+
+	it("puts the chosen command at the start of the draft", async () => {
+		const { tree } = await mount(thread("ref-choose", "idle"));
+		await type(tree, "hello");
+		const host = commandHosts.get(sheetKey("hub-1", "ref-choose"));
+		expect(host?.session.capabilities).toMatchObject({ send: true });
+		act(() => host?.choose("/goal"));
+		await flush();
+		expect(field(tree)?.props.value).toBe("/goal hello");
+	});
 });

@@ -38,8 +38,6 @@ import {
 	buildComposerInput,
 	formatQuoteBlock,
 	mergeDraftText,
-	parseSlashToken,
-	spliceSlashCommand,
 	type TranscriptDisplayConfigV1,
 	translateAttachmentMarkers,
 } from "@evener/appwire-client";
@@ -53,7 +51,6 @@ import {
 import { ActivitySheet } from "./ActivitySheet";
 import { ApprovalControls } from "./approvalControls";
 import { useMarkSeenInFront } from "./board/sessionSeen";
-import { CommandCompletion } from "./CommandCompletion";
 import { useConnection } from "./ConnectionProvider";
 import {
 	CommandArgumentError,
@@ -147,6 +144,7 @@ import { SessionControls, useControlsState } from "./sessionControls";
 import { useConnectionStatusText } from "./board/connectionStatus";
 import { Composer, ModelChip } from "./session/Composer";
 import { type ModelHost, modelHosts } from "./session/ModelSheet";
+import { type CommandsHost, commandHosts, insertInvocation } from "./session/CommandsSheet";
 import {
 	configForLevel,
 	currentLevel,
@@ -234,6 +232,7 @@ export type Routes = {
 	QueueSheet: { hubId: string; ref: string };
 	SessionInfoSheet: { hubId: string; ref: string };
 	ModelSheet: { hubId: string; ref: string; setting: "model" | "vision" };
+	CommandsSheet: { hubId: string; ref: string };
 	RowMenuSheet: { hubId: string; ref: string; archived: boolean };
 	Reader: {
 		hubId: string;
@@ -576,8 +575,6 @@ export function ConversationScreen({
 	} = useConnection();
 	const focused = useScreenInFront(route.key);
 	const colors = useColors();
-	const { height: windowHeight } = useWindowDimensions();
-	const [viewportHeight, setViewportHeight] = useState(windowHeight);
 	const [sessionMenuOpen, setSessionMenuOpen] = useState(false);
 	const headerHeight = useHeaderHeight();
 	// The durable-mutation wiring: the store admits every mutation through a
@@ -685,13 +682,16 @@ export function ConversationScreen({
 	const readerMomentum = useRef(false);
 	const restoreFrame = useRef<number | null>(null);
 	const composerInput = useRef<TextInput>(null);
-	const [composerSelection, setComposerSelection] = useState({
-		start: 0,
-		end: 0,
-	});
-	const [completionClosedAt, setCompletionClosedAt] = useState<string | null>(
-		null,
-	);
+	// Puts the caret at `caret` in the composer and focuses it, on the next
+	// frame so the field has the text the caret is placed in.
+	const focusComposerAt = useCallback((caret: number) => {
+		requestAnimationFrame(() => {
+			composerInput.current?.setNativeProps({
+				selection: { start: caret, end: caret },
+			});
+			composerInput.current?.focus();
+		});
+	}, []);
 	const focusAfterModal = useRef(false);
 	useFocusAfterModal(navigation, focusAfterModal, composerInput);
 	const [activityContext, setActivityContext] = useState<{
@@ -1359,15 +1359,9 @@ export function ConversationScreen({
 			if (quoted === "") return;
 			const merged = mergeDraftText(document.getSnapshot().record.draft, quoted);
 			document.edit(merged);
-			setComposerSelection({ start: merged.length, end: merged.length });
-			requestAnimationFrame(() => {
-				composerInput.current?.setNativeProps({
-					selection: { start: merged.length, end: merged.length },
-				});
-				composerInput.current?.focus();
-			});
+			focusComposerAt(merged.length);
 		},
-		[document],
+		[document, focusComposerAt],
 	);
 	// Quote in reply from a screen above this session (the Reader) holds the
 	// words until this session is in front again.
@@ -1658,11 +1652,6 @@ export function ConversationScreen({
 			(!conversation.resumeRequired &&
 				conversation.status.type !== "restartRequired")) &&
 		(!conversation || canComposeFor(conversation));
-	const slashToken =
-		composerSelection.start === composerSelection.end &&
-		draft.record.draft !== completionClosedAt
-			? parseSlashToken(draft.record.draft, composerSelection.start)
-			: null;
 	const goalCommand = goalObjective(
 		draft.record.draft,
 		draft.record.images?.length,
@@ -2074,6 +2063,30 @@ export function ConversationScreen({
 		sheetKey(route.params.hubId, route.params.ref),
 		modelHost,
 	);
+	// The Commands and skills sheet's host (ruling 37). A choice lands at the
+	// start of the draft, with the caret after it for the command's argument.
+	const commandsHost = useMemo<CommandsHost | undefined>(
+		() =>
+			conversation
+				? {
+						session: conversation,
+						choose: (invocation) => {
+							const inserted = insertInvocation(
+								document.getSnapshot().record.draft,
+								invocation,
+							);
+							document.edit(inserted.text);
+							focusComposerAt(inserted.caret);
+						},
+					}
+				: undefined,
+		[conversation, document, focusComposerAt],
+	);
+	useProvideSheetHost(
+		commandHosts,
+		sheetKey(route.params.hubId, route.params.ref),
+		commandsHost,
+	);
 	// The chip names the model the way the catalog does, so the screen loads
 	// the catalog once for each binding it opens connected.
 	useEffect(() => {
@@ -2279,6 +2292,13 @@ export function ConversationScreen({
 		},
 		[controls, navigation, route.params.hubId, retryFailedTurn],
 	);
+	function openCommands() {
+		Keyboard.dismiss();
+		navigation.navigate("CommandsSheet", {
+			hubId: route.params.hubId,
+			ref: route.params.ref,
+		});
+	}
 	function openModelSheet(setting: "model" | "vision") {
 		Keyboard.dismiss();
 		navigation.navigate("ModelSheet", {
@@ -2442,12 +2462,7 @@ export function ConversationScreen({
 			const merged = mergeDraftText(document.getSnapshot().record.draft, text);
 			document.edit(merged);
 			const cancelled = await cancel();
-			requestAnimationFrame(() => {
-				composerInput.current?.setNativeProps({
-					selection: { start: merged.length, end: merged.length },
-				});
-				composerInput.current?.focus();
-			});
+			focusComposerAt(merged.length);
 			return cancelled
 				? null
 				: { text: "Moved to your message, but it's still queued." };
@@ -2681,12 +2696,7 @@ export function ConversationScreen({
 				behavior={Platform.OS === "ios" ? "padding" : "height"}
 				keyboardVerticalOffset={headerHeight}
 			>
-				<View
-					style={styles.fill}
-					onLayout={(event) =>
-						setViewportHeight(event.nativeEvent.layout.height)
-					}
-				>
+				<View style={styles.fill}>
 					<View style={{ flex: 1 }}>
 						<FlatList
 							ref={timeline}
@@ -3030,8 +3040,19 @@ export function ConversationScreen({
 								<Composer
 									value={draft.record.draft}
 									editable={draft.loaded}
-									onChangeText={(text) => document.edit(text)}
-									onSelectionChange={setComposerSelection}
+									onChangeText={(text) => {
+										// A "/" that starts an empty draft opens Commands and
+										// skills in its place (spec 8.5).
+										if (
+											text === "/" &&
+											draft.record.draft === "" &&
+											commandsHost
+										) {
+											openCommands();
+											return;
+										}
+										document.edit(text);
+									}}
 									inputRef={composerInput}
 									placeholder={composerPlaceholder(action, answering)}
 									// Under an open dock, whose own button reads "Send answer",
@@ -3053,48 +3074,11 @@ export function ConversationScreen({
 										Keyboard.dismiss();
 										void imageSelection.choose("camera");
 									}}
+									onCommands={commandsHost ? openCommands : undefined}
 									settings={bottom.modelChip ? composerSettings : null}
 									above={
 										<>
 											{waitingForAgent}
-											{connected && client && conversation && slashToken ? (
-												<CommandCompletion
-													// Suggestions use at most 40% of the composer's 80% viewport cap.
-													maxHeight={Math.min(160, viewportHeight * 0.32)}
-													client={client}
-													sessionRef={route.params.ref}
-													session={conversation}
-													query={slashToken.query}
-													close={() => setCompletionClosedAt(draft.record.draft)}
-													choose={(item) => {
-														if (
-															document.getSnapshot().record.draft !==
-															draft.record.draft
-														)
-															return;
-														const inserted = spliceSlashCommand(
-															draft.record.draft,
-															slashToken,
-															item.invocation,
-														);
-														document.edit(inserted.text);
-														setCompletionClosedAt(inserted.text);
-														setComposerSelection({
-															start: inserted.caret,
-															end: inserted.caret,
-														});
-														requestAnimationFrame(() => {
-															composerInput.current?.setNativeProps({
-																selection: {
-																	start: inserted.caret,
-																	end: inserted.caret,
-																},
-															});
-															composerInput.current?.focus();
-														});
-													}}
-												/>
-											) : null}
 											<ImageAttachments
 												document={document}
 												selection={imageSelection}

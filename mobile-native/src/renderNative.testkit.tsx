@@ -54,6 +54,7 @@ export function nativeModuleMock() {
 		renderSectionHeader?: (info: { section: { title: string } }) => ReactNode;
 		ListHeaderComponent?: ReactNode;
 		ListEmptyComponent?: ReactNode;
+		ListFooterComponent?: ReactNode;
 	}) =>
 		createElement(
 			"SectionList",
@@ -70,6 +71,7 @@ export function nativeModuleMock() {
 				),
 			]),
 			props.sections.length === 0 ? (props.ListEmptyComponent ?? null) : null,
+			props.ListFooterComponent ?? null,
 		);
 	const FlatList = (props: {
 		ref?: Ref<unknown>;

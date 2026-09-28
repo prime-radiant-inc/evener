@@ -26,7 +26,6 @@ export interface ComposerProps {
 	value: string;
 	editable: boolean;
 	onChangeText(text: string): void;
-	onSelectionChange?(selection: { start: number; end: number }): void;
 	inputRef?: RefObject<TextInput | null>;
 	placeholder: string;
 	sendLabel: string;
@@ -34,10 +33,11 @@ export interface ComposerProps {
 	onSend(): void;
 	onPhotoLibrary(): void;
 	onCamera(): void;
+	/** Opens Commands and skills. Absent, + doesn't offer it. */
+	onCommands?(): void;
 	/** The model chip. Null hides the slot. */
 	settings: ReactNode;
-	/** What sits above the field: attachments, today's inline command
-	 * completion (until PR 10), and PR 2's ghosts. */
+	/** What sits above the field: attachments and the queued ghosts. */
 	above?: ReactNode;
 }
 
@@ -45,7 +45,6 @@ export function Composer({
 	value,
 	editable,
 	onChangeText,
-	onSelectionChange,
 	inputRef,
 	placeholder,
 	sendLabel,
@@ -53,6 +52,7 @@ export function Composer({
 	onSend,
 	onPhotoLibrary,
 	onCamera,
+	onCommands,
 	settings,
 	above,
 }: ComposerProps) {
@@ -68,20 +68,17 @@ export function Composer({
 	const overflows =
 		value.split("\n").length > MAX_LINES || contentHeight > (MAX_LINES + 0.5) * lineHeight;
 	function openAddMenu() {
+		const choices = [
+			{ text: "Photo library", onPress: onPhotoLibrary },
+			{ text: "Camera", onPress: onCamera },
+			...(onCommands ? [{ text: "Commands and skills", onPress: onCommands }] : []),
+		];
 		if (Platform.OS === "ios")
 			ActionSheetIOS.showActionSheetWithOptions(
-				{ options: ["Photo library", "Camera", "Cancel"], cancelButtonIndex: 2 },
-				(index) => {
-					if (index === 0) onPhotoLibrary();
-					else if (index === 1) onCamera();
-				},
+				{ options: [...choices.map((choice) => choice.text), "Cancel"], cancelButtonIndex: choices.length },
+				(index) => choices[index]?.onPress(),
 			);
-		else
-			Alert.alert("Add", undefined, [
-				{ text: "Photo library", onPress: onPhotoLibrary },
-				{ text: "Camera", onPress: onCamera },
-				{ text: "Cancel", style: "cancel" },
-			]);
+		else Alert.alert("Add", undefined, [...choices, { text: "Cancel", style: "cancel" }]);
 	}
 	return (
 		<View
@@ -106,9 +103,6 @@ export function Composer({
 					scrollEnabled
 					value={value}
 					onChangeText={onChangeText}
-					onSelectionChange={
-						onSelectionChange ? (event) => onSelectionChange(event.nativeEvent.selection) : undefined
-					}
 					onContentSizeChange={(event) => setContentHeight(event.nativeEvent.contentSize.height)}
 					editable={editable}
 					placeholder={placeholder}
