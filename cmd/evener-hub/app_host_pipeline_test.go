@@ -10,8 +10,10 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -293,6 +295,25 @@ func TestBootCompensationArmedWithRowsPresentRestoresHubTOML(t *testing.T) {
 	}
 }
 
+// pipelineStashSiblings lists the stash files beside path: every commit names
+// its own, so a test checks the whole family rather than one guessed name.
+func pipelineStashSiblings(t *testing.T, configPath string) []string {
+	t.Helper()
+	dir := filepath.Dir(configPath)
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("ReadDir(%s): %v", dir, err)
+	}
+	prefix := filepath.Base(configPath) + ".stash"
+	var names []string
+	for _, entry := range entries {
+		if strings.HasPrefix(entry.Name(), prefix) {
+			names = append(names, entry.Name())
+		}
+	}
+	return names
+}
+
 // hostRowNamed returns the listed row for name, if the page carries one.
 func hostRowNamed(rows []appwire.HostRow, name string) (appwire.HostRow, bool) {
 	for _, row := range rows {
@@ -388,8 +409,8 @@ func TestRemovePurgesTokensThroughTheIntent(t *testing.T) {
 	if _, ok := m.cfg.ops.Compensation("keep"); ok {
 		t.Fatal("the committed removal left its compensation record open")
 	}
-	if _, err := os.Stat(hubTOMLStashPath(fixture.configPath, "test-key")); !os.IsNotExist(err) {
-		t.Fatal("the committed removal left its stash behind")
+	if names := pipelineStashSiblings(t, fixture.configPath); len(names) != 0 {
+		t.Fatalf("the committed removal left stashes behind: %v", names)
 	}
 	cfg, _ := readPipelineConfig(t, fixture.configPath)
 	if _, carried := cfg.PendingStoreSync["keep"]; carried {
@@ -410,8 +431,8 @@ func TestRemoveWithoutATokenRowCarriesNoIntentOrStash(t *testing.T) {
 	if _, err := m.Remove(context.Background(), removeRequest(t, m, "keep")); err != nil {
 		t.Fatalf("Remove(keep): %v", err)
 	}
-	if _, err := os.Stat(hubTOMLStashPath(fixture.configPath, "test-key")); !os.IsNotExist(err) {
-		t.Fatal("a removal with nothing to sync left a stash behind")
+	if names := pipelineStashSiblings(t, fixture.configPath); len(names) != 0 {
+		t.Fatalf("a removal with nothing to sync left a stash behind: %v", names)
 	}
 	cfg, _ := readPipelineConfig(t, fixture.configPath)
 	if len(cfg.PendingStoreSync) != 0 {
@@ -974,12 +995,26 @@ func TestBootRestoreReversesTheHostRemovedMarks(t *testing.T) {
 		t.Fatalf("Create: %v", err)
 	}
 	m := fixture.manager(t)
+	// Capture the commit's staged marker as the staged write leaves it, then run
+	// the removal: the crash window below re-installs it, so this boot must deal
+	// with an open compensation AND a staged marker for the same name.
+	var staged HostStagedReceipt
+	m.testOnlyAfterStage = func(name string) {
+		if marker, ok := m.cfg.store.stagedSnapshot()[name]; ok {
+			staged = marker
+		}
+	}
 	if _, err := m.Remove(context.Background(), removeRequest(t, m, "keep")); err != nil {
 		t.Fatalf("Remove(keep): %v", err)
 	}
-	// The crash window: the commit's intent is still carried, the record is
-	// armed, and the purged row's preimage is captured. The stash goes down with
-	// the arm: the boot prune removes an orphan, and no record names it yet.
+	m.testOnlyAfterStage = nil
+	if staged.Key == "" {
+		t.Fatal("the staged marker was not captured")
+	}
+	// The crash window: the commit's intent is still carried, the marker is
+	// staged, the record is armed, and the purged row's preimage is captured.
+	// The stash goes down with the arm: the boot prune removes an orphan, and no
+	// record names it yet.
 	token := pipelineToken(t, fixture.store, "keep", 2)
 	fixture.appendTOML(t, "[pending_store_sync.keep]\ngeneration = 2\ntoken_values = [\""+token.Value+"\"]\n")
 	stash := hubTOMLStashPath(fixture.configPath, "mutation-crash/keep/remove/2/inc-keep")
@@ -992,15 +1027,25 @@ func TestBootRestoreReversesTheHostRemovedMarks(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("ArmCompensation: %v", err)
 	}
+	entries := m.cfg.store.snapshot()
+	if err := m.persistHosts(entries, entries, hostPersistChange{
+		marker: &pendingHostMarker{Name: "keep", Marker: staged},
+	}); err != nil {
+		t.Fatalf("re-install the staged marker: %v", err)
+	}
 	// Boot 1 (the crash's boot): the registry loads the committed, host-less
 	// file. The host-removed pass marks the record and drops its row; the
-	// compensation restores hub.toml but cannot yet serve the host, so the
-	// record stays open in `compensating-runtime`.
+	// marker must NOT be finalized as committed (the open compensation owns the
+	// name); the compensation restores hub.toml but cannot yet serve the host,
+	// so the record stays open in `compensating-runtime`.
 	crashed := newHubHostManager(nil, nil, hubcore.WebConfig{
 		RemoteHostOpsStore:   fixture.store,
 		RemoteHostConfigPath: fixture.configPath,
 	}, fixture.configPath, nil, nil)
 	_ = crashed
+	if _, staged := crashed.cfg.store.stagedSnapshot()["keep"]; staged {
+		t.Fatal("the crash boot left the marker staged in the model")
+	}
 	if record, open := fixture.store.Compensation("keep"); !open || hostops.NormalizeCompensationPhase(record.Phase) != hostops.CompensationRuntime {
 		t.Fatalf("record after the crash boot = %+v/%v, want it left in %s", record, open, hostops.CompensationRuntime)
 	}
@@ -1019,6 +1064,17 @@ func TestBootRestoreReversesTheHostRemovedMarks(t *testing.T) {
 	if _, open := fixture.store.Compensation("keep"); open {
 		t.Fatal("the compensation did not converge")
 	}
+	// The compensated commit left no committed receipt and no marker: the
+	// same-key replay is the live, un-committed outcome.
+	cfg, _ := readPipelineConfig(t, fixture.configPath)
+	if _, carried := cfg.StagedReceipts["keep"]; carried {
+		t.Fatal("the converged compensation left its staged marker in hub.toml")
+	}
+	for key, receipt := range cfg.MutationReceipts {
+		if strings.Contains(key, "/keep/remove/") && receipt.Outcome == hostReceiptOutcomeCommitted {
+			t.Fatalf("the compensated commit left a committed receipt %q: %+v", key, receipt)
+		}
+	}
 	record, hit, err := fixture.store.LookupOperation(hostops.OperationDedupQuery{
 		ClientOperationID: "op-1",
 		Host:              "keep",
@@ -1034,7 +1090,6 @@ func TestBootRestoreReversesTheHostRemovedMarks(t *testing.T) {
 	if record.HostRemoved {
 		t.Fatal("the replayed record still renders host-removed")
 	}
-	cfg, _ := readPipelineConfig(t, fixture.configPath)
 	if _, live := hostEntryNamed(hostRegistryEntries(cfg), "keep"); !live {
 		t.Fatal("the compensation did not restore hub.toml")
 	}
@@ -1094,6 +1149,164 @@ func TestPerCommitStashIsNotClobberedByALaterRemoval(t *testing.T) {
 	}
 	if !bytes.Equal(restored, preAlpha) {
 		t.Fatalf("the boot restored bytes that are not the record's own:\n%s", restored)
+	}
+}
+
+// TestBootCompensationOwnsTheStagedMarker pins H1: a name with an open
+// compensation never has its staged marker finalized as committed. The crash
+// boot's registry carries the host, so an erroneous finalization's pinned
+// teardown would succeed and remove it — the assertion the skip protects.
+func TestBootCompensationOwnsTheStagedMarker(t *testing.T) {
+	entry := pipelineEntry("keep", 2)
+	fixture, _, preRemove := newPipelineRemovalFixture(t, entry, true)
+	m := fixture.manager(t)
+	var staged HostStagedReceipt
+	m.testOnlyAfterStage = func(name string) {
+		if marker, ok := m.cfg.store.stagedSnapshot()[name]; ok {
+			staged = marker
+		}
+	}
+	if _, err := m.Remove(context.Background(), removeRequest(t, m, "keep")); err != nil {
+		t.Fatalf("Remove(keep): %v", err)
+	}
+	m.testOnlyAfterStage = nil
+	if staged.Key == "" {
+		t.Fatal("the staged marker was not captured")
+	}
+	token := pipelineToken(t, fixture.store, "keep", 2)
+	fixture.appendTOML(t, "[pending_store_sync.keep]\ngeneration = 2\ntoken_values = [\""+token.Value+"\"]\n")
+	stash := hubTOMLStashPath(fixture.configPath, "mutation-crash/keep/remove/2/inc-keep")
+	if err := os.WriteFile(stash, preRemove, 0o600); err != nil {
+		t.Fatalf("write stash: %v", err)
+	}
+	if err := fixture.store.ArmCompensation(hostops.Compensation{
+		Host: "keep", Phase: hostops.CompensationArmed, Rows: []hostops.Token{token},
+		Stash: stash, Generation: 2,
+	}); err != nil {
+		t.Fatalf("ArmCompensation: %v", err)
+	}
+	entries := m.cfg.store.snapshot()
+	if err := m.persistHosts(entries, entries, hostPersistChange{
+		marker: &pendingHostMarker{Name: "keep", Marker: staged},
+	}); err != nil {
+		t.Fatalf("re-install the staged marker: %v", err)
+	}
+	// The crash boot's registry carries the host: an erroneous finalization's
+	// pinned teardown would remove it and write a committed receipt.
+	registry, err := hostreg.New([]hostreg.Host{entry})
+	if err != nil {
+		t.Fatalf("hostreg.New: %v", err)
+	}
+	var logged strings.Builder
+	newHubHostManager(nil, nil, hubcore.WebConfig{
+		RemoteHostRegistry:   registry,
+		RemoteHostOpsStore:   fixture.store,
+		RemoteHostConfigPath: fixture.configPath,
+	}, fixture.configPath, registry, func(format string, args ...any) {
+		_, _ = fmt.Fprintf(&logged, format+"\n", args...)
+	})
+	// The skip is the direct evidence: the finalization loop names the open
+	// compensation and leaves the marker staged instead of finalizing it.
+	if !strings.Contains(logged.String(), "left staged: an open compensation owns its convergence") {
+		t.Fatalf("the crash boot did not leave the compensated name's marker staged; log:\n%s", logged.String())
+	}
+	if _, still := registry.Get("keep"); !still {
+		t.Fatal("the staged marker was finalized for a compensated name: its pinned teardown removed the host")
+	}
+	cfg, _ := readPipelineConfig(t, fixture.configPath)
+	if _, carried := cfg.StagedReceipts["keep"]; carried {
+		t.Fatal("the marker survived a convergence the compensation owns")
+	}
+	for key, receipt := range cfg.MutationReceipts {
+		if strings.Contains(key, "/keep/remove/") && receipt.Outcome == hostReceiptOutcomeCommitted {
+			t.Fatalf("the compensated commit left a committed receipt %q", key)
+		}
+	}
+}
+
+// TestRemoveWithoutAConfigFilePurgesTokensLive pins M1: a hub with no hub.toml
+// has no cross-file counterpart, so the removal skips the intent/compensation
+// machinery, purges the outstanding token live, and succeeds — never the
+// "carries no stash reference" schema refusal.
+func TestRemoveWithoutAConfigFilePurgesTokensLive(t *testing.T) {
+	entry := pipelineEntry("keep", 2)
+	fixture := newPipelineFixture(t, []hostreg.Host{entry}, func(store *hostops.Store) {
+		pipelineToken(t, store, "keep", 2)
+	})
+	registry, err := hostreg.New([]hostreg.Host{entry})
+	if err != nil {
+		t.Fatalf("hostreg.New: %v", err)
+	}
+	m := newHubHostManager(nil, nil, hubcore.WebConfig{
+		RemoteHostRegistry: registry,
+		RemoteHostOpsStore: fixture.store,
+	}, "", registry, nil)
+	if _, ok := m.cfg.ops.OutstandingToken("keep"); !ok {
+		t.Fatal("the fixture's token row is missing")
+	}
+	if _, err := m.Remove(context.Background(), removeRequest(t, m, "keep")); err != nil {
+		t.Fatalf("Remove(keep) with no hub.toml: %v", err)
+	}
+	if _, ok := m.cfg.ops.OutstandingToken("keep"); ok {
+		t.Fatal("the removal left its token row behind")
+	}
+	if _, open := m.cfg.ops.Compensation("keep"); open {
+		t.Fatal("a removal with no hub.toml armed a cross-file compensation")
+	}
+}
+
+// TestCompensationWithAFailedRollbackConvergesTheModelToTheFile pins M2: when
+// the rollback does not land, the store's model converges to the file the
+// write actually left (the failed commit's bytes), so the next mutation's write
+// does not re-emit a live entry beside the committed tombstone and intent.
+func TestCompensationWithAFailedRollbackConvergesTheModelToTheFile(t *testing.T) {
+	entry := pipelineEntry("keep", 2)
+	fixture, _, preRemove := newPipelineRemovalFixture(t, entry, true)
+	m := fixture.manager(t)
+	if _, err := m.Remove(context.Background(), removeRequest(t, m, "keep")); err != nil {
+		t.Fatalf("Remove(keep): %v", err)
+	}
+	// The crash window: the intent and the tombstone are in the file, the record
+	// is armed, and the preimage is captured.
+	token := pipelineToken(t, fixture.store, "keep", 2)
+	fixture.appendTOML(t, "[pending_store_sync.keep]\ngeneration = 2\ntoken_values = [\""+token.Value+"\"]\n")
+	stash := hubTOMLStashPath(fixture.configPath, "mutation-crash/keep/remove/2/inc-keep")
+	if err := os.WriteFile(stash, preRemove, 0o600); err != nil {
+		t.Fatalf("write stash: %v", err)
+	}
+	if err := fixture.store.ArmCompensation(hostops.Compensation{
+		Host: "keep", Phase: hostops.CompensationArmed, Rows: []hostops.Token{token},
+		Stash: stash, Generation: 2,
+	}); err != nil {
+		t.Fatalf("ArmCompensation: %v", err)
+	}
+	// The rollback cannot land (the directory refuses new files), so the model
+	// must converge to the file, not to the pre-mutation set.
+	if err := os.Chmod(fixture.dir, 0o500); err != nil {
+		t.Fatalf("chmod: %v", err)
+	}
+	plan := &hostCommitPlan{Kind: hostMutationRemove, Name: "keep", Key: "test-key", Entry: entry}
+	cause := errors.New("injected commit-step failure")
+	m.cfg.mu.Lock()
+	m.markMutating("keep")
+	if _, err := m.compensateStagedCrossFile(plan, []hostreg.Host{entry}, cause, stash); err == nil {
+		t.Fatal("the compensation reported success")
+	}
+	if err := os.Chmod(fixture.dir, 0o700); err != nil {
+		t.Fatalf("chmod back: %v", err)
+	}
+	if _, err := m.Add(context.Background(), appwire.HostAddParams{Entry: appwire.HostEntry{Name: "extra", Address: "extra.example"}}); err != nil {
+		t.Fatalf("the next mutation after the failed rollback: %v", err)
+	}
+	cfg, _ := readPipelineConfig(t, fixture.configPath)
+	if _, live := hostEntryNamed(hostRegistryEntries(cfg), "keep"); live {
+		t.Fatal("the next write re-emitted the compensated removal's live entry beside its commit records")
+	}
+	if _, carried := cfg.Tombstones["keep"]; !carried {
+		t.Fatal("the next write dropped the committed removal's tombstone")
+	}
+	if _, carried := cfg.PendingStoreSync["keep"]; !carried {
+		t.Fatal("the next write dropped the open record's intent")
 	}
 }
 

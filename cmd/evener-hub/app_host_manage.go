@@ -1586,6 +1586,19 @@ func newHubHostManager(sources *appsource.Registry, manager *sshconn.Manager, cf
 	// before the hub serves; a failure is logged and leaves the marker for the
 	// next mutation-path write or the next boot.
 	for _, name := range sortedStagedMarkerNames(m.cfg.store.stagedSnapshot()) {
+		if m.cfg.ops != nil {
+			if _, open := m.cfg.ops.Compensation(name); open {
+				// §9's compensation owns this name's convergence: the commit
+				// crashed mid-flight, and finalizing the marker as committed
+				// here would run its pinned teardown and write a committed
+				// receipt for a commit the compensation is about to undo. The
+				// pipeline below resolves the record; the marker goes with the
+				// restore when the compensation converges (the restored bytes
+				// carry no marker), and stays staged while the record is open.
+				m.logf("boot staged-receipt marker for %q left staged: an open compensation owns its convergence", name)
+				continue
+			}
+		}
 		if _, err := m.finalizeOrphanMarkerIfAny(context.Background(), name, true); err != nil {
 			m.logf("boot finalization of the staged receipt marker for %q refused: %v", name, err)
 		}

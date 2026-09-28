@@ -440,9 +440,18 @@ func (m *hubHostManager) compensateStagedCrossFile(plan *hostCommitPlan, previou
 	adopted := m.adoptedPreimage(plan, previous)
 	err := m.rollbackHubTOML(adopted, unionHosts(adopted, plan.Entries), cause, compensationChange(plan))
 	rollbackConverged := !errors.Is(err, errHubTOMLRollbackFailed)
-	// The live set the rollback restored: the pre-mutation entries (with any
-	// adopted foreign edit for this name).
-	m.cfg.store.set(adopted)
+	if rollbackConverged {
+		// The live set the rollback restored: the pre-mutation entries (with any
+		// adopted foreign edit for this name).
+		m.cfg.store.set(adopted)
+	} else if fileCfg, ok := m.hostFileRecords(); ok {
+		// The rollback did not land: the file still holds the failed commit's
+		// bytes, so the store's model converges to them — a model ahead of the
+		// file (the pre-mutation live set) would make the next write re-emit a
+		// live entry beside the committed tombstone and intent, a mix no writer
+		// produces.
+		m.installRestoredRecords(fileCfg)
+	}
 	m.unmarkMutating(plan.Name)
 	if m.cfg.ops == nil {
 		m.pruneHubTOMLStash(stash)
@@ -979,10 +988,25 @@ func (m *hubHostManager) RemoveResult(ctx context.Context, params appwire.HostRe
 			purgePreimage = []hostops.Token{row}
 		}
 	}
+	// The cross-file half exists only when there is a durable hub.toml to be
+	// atomic with. A hub with no config file has no counterpart to carry an
+	// intent and no bytes a stash could restore, so the purge is the whole
+	// story and runs live in one store write (§9's two-phase machinery is for
+	// the pair of files; a missing half has nothing to converge).
+	crossFile := len(purgeValues) > 0 && strings.TrimSpace(m.cfg.configPath) != ""
+	if len(purgeValues) > 0 && !crossFile {
+		if _, err := m.cfg.ops.ApplyStoreSync(hostops.StoreSyncIntent{
+			Host:       host.Name,
+			Generation: host.Generation,
+			Values:     purgeValues,
+		}); err != nil {
+			m.logf("remove %q: outstanding confirmation tokens not dropped: %v", host.Name, err)
+		}
+	}
 	// The stash of the prior hub.toml bytes must exist before the staged write
 	// replaces them, so the swap is compensable.
 	stash := ""
-	if len(purgeValues) > 0 {
+	if crossFile {
 		stash, err = m.writeHubTOMLStash(receiptKey)
 		if err != nil {
 			m.cfg.mu.Unlock()
@@ -1000,7 +1024,7 @@ func (m *hubHostManager) RemoveResult(ctx context.Context, params appwire.HostRe
 		Pinned:    pendingTeardownFor(host, hostTeardownKindRemove),
 		Entry:     host,
 	}
-	if len(purgeValues) > 0 {
+	if crossFile {
 		plan.StoreSync = &pendingHostStoreSync{
 			Name: host.Name,
 			Intent: HostStoreSyncIntent{
@@ -1036,7 +1060,7 @@ func (m *hubHostManager) RemoveResult(ctx context.Context, params appwire.HostRe
 	m.cfg.store.remove(host.Name)
 	m.cfg.store.addReceipt(receiptKey, receipt)
 	m.markMutating(host.Name)
-	if len(purgeValues) > 0 {
+	if crossFile {
 		// The preimage persists in its own store write BEFORE the purge (§9),
 		// then the purge write applies the intent and advances the record past
 		// `armed`, then the follow-up hub.toml write clears the intent. The
@@ -1092,7 +1116,7 @@ func (m *hubHostManager) RemoveResult(ctx context.Context, params appwire.HostRe
 	m.cfg.mu.Lock()
 	defer m.cfg.mu.Unlock()
 	m.unmarkMutating(host.Name)
-	if len(purgeValues) > 0 {
+	if crossFile {
 		// Past the commit point the purge stands: the armed record clears in its
 		// own store write and the stash goes with it. A crash before this clear
 		// finds the intent already cleared at boot, so the record clears without
