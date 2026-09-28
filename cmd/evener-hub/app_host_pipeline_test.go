@@ -325,6 +325,75 @@ func hostRowNamed(rows []appwire.HostRow, name string) (appwire.HostRow, bool) {
 	return appwire.HostRow{}, false
 }
 
+// TestBootCompensationResumesTheOwedRowsAfterAFailedAdvance pins the hubtoml
+// arm's owed-rows window: the purge landed, a boot restored the file, and its
+// advance to the rows arm failed (a plain store-write failure, not a crash).
+// The next boot's hubtoml arm sees a cleared intent over the restored bytes and
+// must finish the owed rows re-insertion before clearing — never clear with the
+// purged rows still missing.
+func TestBootCompensationResumesTheOwedRowsAfterAFailedAdvance(t *testing.T) {
+	entry := pipelineEntry("keep", 2)
+	fixture, token, preRemove := newPipelineRemovalFixture(t, entry, true)
+	m := fixture.manager(t)
+	// The crash state: the purge landed (the record advanced to hubtoml), the
+	// file still carries the intent, and the stash holds the pre-mutation bytes.
+	fixture.appendTOML(t, "[pending_store_sync.keep]\ngeneration = 2\ntoken_values = [\""+token.Value+"\"]\n")
+	stash := hubTOMLStashPath(fixture.configPath, "mutation-crash/keep/remove/2/inc-keep")
+	if err := os.WriteFile(stash, preRemove, 0o600); err != nil {
+		t.Fatalf("write stash: %v", err)
+	}
+	if err := fixture.store.ArmCompensation(hostops.Compensation{
+		Host: "keep", Phase: hostops.CompensationArmed, Rows: []hostops.Token{token},
+		Stash: stash, Generation: 2,
+	}); err != nil {
+		t.Fatalf("ArmCompensation: %v", err)
+	}
+	if _, err := fixture.store.PurgeCompensated("keep", []string{token.Value}); err != nil {
+		t.Fatalf("PurgeCompensated: %v", err)
+	}
+	// The first pass restores the file, then its advance to the rows arm fails:
+	// the record stays hubtoml with the rows owed.
+	m.testOnlyFailCompensationStep = func(_ string, step string) error {
+		if step == "advance-rows" {
+			return errors.New("injected advance failure")
+		}
+		return nil
+	}
+	m.reconcileCompensations()
+	record, open := m.cfg.ops.Compensation("keep")
+	if !open || hostops.NormalizeCompensationPhase(record.Phase) != hostops.CompensationHubTOML {
+		t.Fatalf("record after the failed advance = %+v/%v, want it left in %s", record, open, hostops.CompensationHubTOML)
+	}
+	restoredCfg, _ := readPipelineConfig(t, fixture.configPath)
+	if _, live := hostEntryNamed(hostRegistryEntries(restoredCfg), "keep"); !live {
+		t.Fatal("the restore did not land")
+	}
+	if _, carried := restoredCfg.PendingStoreSync["keep"]; carried {
+		t.Fatal("the restored file still carries the intent")
+	}
+	if _, ok := m.cfg.ops.OutstandingToken("keep"); ok {
+		t.Fatal("the purged row came back before the rows arm")
+	}
+	// The next boot: the file is the restored bytes and the intent is gone; the
+	// hubtoml arm must finish the owed rows re-insertion, not clear.
+	m.testOnlyFailCompensationStep = nil
+	m.reconcileCompensations()
+	if _, open := m.cfg.ops.Compensation("keep"); open {
+		t.Fatal("the resumed compensation did not clear")
+	}
+	back, ok := m.cfg.ops.OutstandingToken("keep")
+	if !ok || back.Value != token.Value || back.Generation != 2 || back.IncarnationID != "inc-keep" {
+		t.Fatalf("row = %+v/%v, want the preimage row re-inserted for the restored identity", back, ok)
+	}
+	after, _ := readPipelineConfig(t, fixture.configPath)
+	if _, live := hostEntryNamed(hostRegistryEntries(after), "keep"); !live {
+		t.Fatal("the resumed compensation did not leave the restored file in place")
+	}
+	if names := pipelineStashSiblings(t, fixture.configPath); len(names) != 0 {
+		t.Fatalf("the converged compensation left its stash behind: %v", names)
+	}
+}
+
 // TestBootCompensationArmedWithRowsPresentLeavesTheRecordWhenTheRegistryLacks
 // TheHost pins the armed rows-present arm's runtime continuation: after the
 // restore, the record must run the rows and runtime arms (not re-enter the

@@ -3393,69 +3393,163 @@ func (m *hubHostManager) resumeArmedCompensation(record hostops.Compensation) {
 func (m *hubHostManager) resumeCompensation(record hostops.Compensation) {
 	switch hostops.NormalizeCompensationPhase(record.Phase) {
 	case hostops.CompensationHubTOML:
-		// §9's commit-point check, the same one the armed arm makes: an intent
-		// already cleared means the commit path passed the commit point before
-		// the crash, so the purge stands and nothing is restored. Only this arm
-		// checks it — past it the restore has already run, and the restored
-		// pre-mutation bytes carry no intent by construction.
+		// §9's commit-point check, the same one the armed arm makes.
 		fileCfg, hasFile := m.hostFileRecords()
-		if _, intentLive := fileCfg.PendingStoreSync[record.Host]; !hasFile || !intentLive {
+		if !hasFile {
+			// No file to converge with (the boot pipeline never enters with an
+			// absent file): whatever the record owes, there are no bytes to
+			// compare or restore, so it clears as before.
+			m.clearCompensation(record, "no hub.toml to converge with")
+			return
+		}
+		if _, intentLive := fileCfg.PendingStoreSync[record.Host]; intentLive {
+			// The commit path had not passed its commit point: restore and
+			// follow the arms.
+			if err := m.restoreHubTOMLFromStash(record.Stash); err != nil {
+				m.logf("boot compensation for %q: hub.toml not restored: %v", record.Host, err)
+				return
+			}
+			// The restored bytes are the authority for every machine record they
+			// carry: the store's model converges to them here, so the rest of this
+			// boot and every later write derive from the restored file rather than
+			// re-emitting the compensated commit's records.
+			if restored, ok := m.hostFileRecords(); ok {
+				m.installRestoredRecords(restored)
+			}
+			if !m.advanceCompensationTo(record, hostops.CompensationRows, "advance-rows") {
+				return
+			}
+			m.resumeFromRows(record)
+			return
+		}
+		// The intent is cleared. Two windows land here, and they converge
+		// differently:
+		//
+		//   - the commit path passed its commit point: the purge stands and the
+		//     file is the committed bytes — nothing is restored, nothing owed.
+		//   - a previous boot's hubtoml arm restored the file and then failed or
+		//     crashed before advancing to the rows arm: the purge landed, so the
+		//     preimage rows are missing and the restored generation revalidates
+		//     them — the re-insertion is still owed. Clearing here would drop the
+		//     record and its stash with the rows missing, diverged forever.
+		//
+		// The stash bytes tell the two apart: the file equals the stash only
+		// after that restore landed.
+		restoredAlready, stashKnown := m.stashMatchesFile(record.Stash)
+		switch {
+		case stashKnown && restoredAlready:
+			// The restore already ran: finish the compensation from the rows arm
+			// instead of clearing over the owed rows.
+			if !m.advanceCompensationTo(record, hostops.CompensationRows, "advance-rows") {
+				return
+			}
+			m.resumeFromRows(record)
+		case stashKnown:
+			// The commit stands: the purge did land and the file is not the
+			// pre-mutation bytes.
 			m.clearCompensation(record, "the intent is already cleared")
-			return
+		default:
+			// The stash is unreadable or gone: the two windows cannot be told
+			// apart, and clearing could drop rows the restored generation still
+			// revalidates. Leave the record open; the next boot retries.
+			m.logf("boot compensation for %q: the intent is cleared and the stash %s cannot be read; leaving the record open rather than clearing over possibly-owed rows",
+				record.Host, record.Stash)
 		}
-		if err := m.restoreHubTOMLFromStash(record.Stash); err != nil {
-			m.logf("boot compensation for %q: hub.toml not restored: %v", record.Host, err)
-			return
-		}
-		// The restored bytes are the authority for every machine record they
-		// carry: the store's model converges to them here, so the rest of this
-		// boot and every later write derive from the restored file rather than
-		// re-emitting the compensated commit's records (the intent, the staged
-		// marker, the tombstone, the provisional receipt).
-		if restored, ok := m.hostFileRecords(); ok {
-			m.installRestoredRecords(restored)
-		}
-		if err := m.cfg.ops.AdvanceCompensation(record.Host, hostops.CompensationRows); err != nil {
-			m.logf("boot compensation for %q not advanced past the restore: %v", record.Host, err)
-			return
-		}
-		record.Phase = hostops.CompensationRows
-		fallthrough
 	case hostops.CompensationRows:
-		restored, ok := m.hostFileRecords()
-		generation, incarnation, live := uint64(0), "", false
-		if ok {
-			generation, incarnation, live = m.restoredIdentity(restored, record.Host)
-		}
-		inserted, err := m.cfg.ops.ReinsertCompensationRows(record.Host, func(row hostops.Token) bool {
-			return live && row.Generation == generation && row.IncarnationID == incarnation
-		})
-		if err != nil {
-			m.logf("boot compensation for %q: rows not re-inserted: %v", record.Host, err)
-			return
-		}
-		if inserted > 0 {
-			m.logf("boot compensation for %q re-inserted %d token row(s)", record.Host, inserted)
-		}
-		record.Phase = hostops.CompensationRuntime
-		fallthrough
+		m.resumeFromRows(record)
 	case hostops.CompensationRuntime:
-		if err := m.reapplyRestoredRuntime(record.Host); err != nil {
-			// The record stays in compensating-runtime with its stash intact:
-			// the next boot (or mutation-path write) retries, never a cleared
-			// compensation beside a diverged runtime.
-			m.logf("boot compensation for %q: runtime revert failed, record left in %s: %v", record.Host, record.Phase, err)
-			return
-		}
-		if err := m.cfg.ops.AdvanceCompensation(record.Host, hostops.CompensationClear); err != nil {
-			m.logf("boot compensation for %q not advanced past the runtime revert: %v", record.Host, err)
-			return
-		}
-		record.Phase = hostops.CompensationClear
-		fallthrough
+		m.resumeFromRuntime(record)
 	case hostops.CompensationClear:
-		m.clearCompensation(record, "the restoration converged")
+		if !m.compensationStepAllowed(record.Host, "clear") {
+			return
+		}
+		m.clearCompensation(record, "the rows are already converged")
 	}
+}
+
+// resumeFromRows runs §9's rows arm and everything after it: the preimage rows
+// the restored hub.toml's generation revalidates come back, the restored runtime
+// set is re-applied to the live handles, and only then does the record clear.
+func (m *hubHostManager) resumeFromRows(record hostops.Compensation) {
+	restored, ok := m.hostFileRecords()
+	generation, incarnation, live := uint64(0), "", false
+	if ok {
+		generation, incarnation, live = m.restoredIdentity(restored, record.Host)
+	}
+	if !m.compensationStepAllowed(record.Host, "reinsert") {
+		return
+	}
+	inserted, err := m.cfg.ops.ReinsertCompensationRows(record.Host, func(row hostops.Token) bool {
+		return live && row.Generation == generation && row.IncarnationID == incarnation
+	})
+	if err != nil {
+		m.logf("boot compensation for %q: rows not re-inserted: %v", record.Host, err)
+		return
+	}
+	if inserted > 0 {
+		m.logf("boot compensation for %q re-inserted %d token row(s)", record.Host, inserted)
+	}
+	m.resumeFromRuntime(record)
+}
+
+// resumeFromRuntime runs §9's runtime arm and the clear: the restored hub.toml's
+// runtime set is re-applied to the live handles first, and a failure leaves the
+// record in `compensating-runtime` with its stash intact, never a cleared
+// compensation beside a diverged runtime.
+func (m *hubHostManager) resumeFromRuntime(record hostops.Compensation) {
+	if err := m.reapplyRestoredRuntime(record.Host); err != nil {
+		m.logf("boot compensation for %q: runtime revert failed, record left in %s: %v", record.Host, record.Phase, err)
+		return
+	}
+	if !m.advanceCompensationTo(record, hostops.CompensationClear, "advance-clear") {
+		return
+	}
+	if !m.compensationStepAllowed(record.Host, "clear") {
+		return
+	}
+	m.clearCompensation(record, "the restoration converged")
+}
+
+// advanceCompensationTo advances one record to the next phase in its own store
+// write, honoring the test-only step seam and logging a failure.
+func (m *hubHostManager) advanceCompensationTo(record hostops.Compensation, to hostops.CompensationPhase, step string) bool {
+	if !m.compensationStepAllowed(record.Host, step) {
+		return false
+	}
+	if err := m.cfg.ops.AdvanceCompensation(record.Host, to); err != nil {
+		m.logf("boot compensation for %q not advanced to %s: %v", record.Host, to, err)
+		return false
+	}
+	return true
+}
+
+// compensationStepAllowed consults the test-only compensation-step seam; nil in
+// production.
+func (m *hubHostManager) compensationStepAllowed(host, step string) bool {
+	if err := m.compensationStepFailure(host, step); err != nil {
+		m.logf("boot compensation for %q: step %s failed; the record and its stash are left for the next boot: %v", host, step, err)
+		return false
+	}
+	return true
+}
+
+// stashMatchesFile reports whether the selected hub.toml currently holds the
+// stash's bytes, and whether the stash was readable at all. It is how the
+// hubtoml arm tells "a previous boot already restored this record" from "the
+// commit path passed its commit point".
+func (m *hubHostManager) stashMatchesFile(stash string) (matches bool, known bool) {
+	if !m.ownsStashPath(stash) {
+		return false, false
+	}
+	want, err := os.ReadFile(stash)
+	if err != nil {
+		return false, false
+	}
+	got, err := configReadFile(strings.TrimSpace(m.cfg.configPath))
+	if err != nil {
+		return false, false
+	}
+	return bytes.Equal(want, got), true
 }
 
 // clearCompensation drops one record and its stash: the compensation
