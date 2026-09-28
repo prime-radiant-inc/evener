@@ -8,7 +8,14 @@
 //
 // Production code never imports this module: it is a .testkit, and vitest's
 // default include collects only *.test.* files as suites.
-import { createElement, type ReactElement, type ReactNode } from "react";
+import {
+	createElement,
+	type ForwardedRef,
+	forwardRef,
+	type ReactElement,
+	type ReactNode,
+	useImperativeHandle,
+} from "react";
 import {
 	act,
 	create,
@@ -106,6 +113,34 @@ export function nativeModuleMock() {
 		View: "View",
 		useColorScheme: () => "light" as const,
 		useWindowDimensions: () => ({ fontScale: 1, scale: 2, width: 390, height: 844 }),
+	};
+}
+
+/** How many times a mocked swipeable's ref was closed; reset it per test. */
+export const swipeableCalls = { closes: 0 };
+
+/** react-native-gesture-handler/ReanimatedSwipeable as an inert host element:
+ * it renders its children and carries every prop, so a test finds it by type
+ * and drives its callbacks; its ref's close() is counted. */
+export function gestureHandlerModuleMock() {
+	const ReanimatedSwipeable = forwardRef(function ReanimatedSwipeable(
+		props: { children?: ReactNode } & Record<string, unknown>,
+		ref: ForwardedRef<unknown>,
+	) {
+		useImperativeHandle(ref, () => ({
+			close: () => {
+				swipeableCalls.closes += 1;
+			},
+			openLeft: () => {},
+			openRight: () => {},
+			reset: () => {},
+		}));
+		return createElement("ReanimatedSwipeable", props, props.children);
+	});
+	return {
+		__esModule: true,
+		default: ReanimatedSwipeable,
+		SwipeDirection: { LEFT: "left", RIGHT: "right" },
 	};
 }
 
