@@ -5465,6 +5465,23 @@ test("hydrateThread carries visionModel and defaults an absent wire value", () =
   ).toBe("anthropic/claude-haiku-4-5");
 });
 
+// S15: the session's sandbox mode and network setting ride the read, for the
+// Session sheet's Access section. Absent (an older daemon or hub) stays
+// absent: the phone leaves the section out rather than guess.
+test("hydrateThread carries the session's access and leaves an absent one out", () => {
+  expect(testHydrate().access).toBeUndefined();
+  expect(
+    testHydrate({
+      evener: {
+        ref: "ref_t",
+        capabilities: CAPABILITIES,
+        queue: { revision: 0 },
+        access: { sandbox: "workspace-write", network: false },
+      },
+    }).access,
+  ).toEqual({ sandbox: "workspace-write", network: false });
+});
+
 test("thread/vision-model/changed updates visionModel", () => {
   let model = testHydrate();
   expect(model.visionModel).toBe("");
