@@ -599,6 +599,15 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 			_, _ = fmt.Fprintf(stderr, "[hub] pruned %d orphaned host-running probe file(s) under %s\n", pruned, root)
 		}
 	}
+	// The operation store opens before the hub serves anything. A corrupt store
+	// file takes §4's custody-first quarantine; a corrupt file whose custody
+	// snapshot is incomplete refuses the boot outright — the hub must never serve
+	// hosts past a fence the quarantine cannot prove.
+	opsStore, err := openHostOpsStore(hubStateRoot, stderr, hostOperationRetention(cfg))
+	if err != nil {
+		_, _ = fmt.Fprintf(stderr, "[hub] %v\n", err)
+		return err
+	}
 	web := newWebServer(hubcore.WebConfig{
 		HubAddr:                   cfg.Addr,
 		AuthToken:                 authToken,
@@ -641,7 +650,7 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 		RemoteHostRegistry:   hostRegistry,
 		RemoteHostSSHManager: sshManager,
 		RemoteHostConfigPath: opts.configPath,
-		RemoteHostOpsStore:   openHostOpsStore(hubStateRoot, stderr, hostOperationRetention(cfg)),
+		RemoteHostOpsStore:   opsStore,
 		// This hub's own running identity and the two owner-adjustable
 		// deploy-pipeline knobs: the probe deadline the plan's gated probe
 		// uses, and the minimum free space evener/host/running's health
@@ -886,12 +895,17 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 
 // openHostOpsStore opens the hub's operation store — the file the
 // host-management surface mirrors per-host boundary records into — beside the
-// hub's other durable stores. A store that cannot be opened (a corrupt file,
-// an unreadable one) is logged and left unwired rather than refusing startup:
-// the mirror is a copy of hub.toml's machine records and never their authority,
-// and the custody-first quarantine a corrupt store file earns belongs to the
-// crash-fencing slice. Until then this is the interim posture: the hub serves,
-// and host mutations commit without mirroring.
+// hub's other durable stores. A corrupt store file takes §4's custody-first
+// quarantine: the corrupt file is renamed aside with its custody file, the
+// replacement store serves empty, and a crash between the custody write and the
+// rename, or between the rename and the replacement open, is completed on the
+// next boot. The quarantine's operator-visible health signal names the
+// quarantined file and its custody, and stays visible for as long as the
+// custody file keeps the names it closed closed.
+//
+// A corrupt file whose custody snapshot is incomplete — anything that would
+// leave a fence unprovable — fails startup here, never serves: the error aborts
+// the boot rather than leaving host operations unwired.
 //
 // The opened store also runs §3's boot reap: expired confirmation tokens are
 // dropped at startup, so a restart never leaves an unexpired-looking row behind
@@ -905,11 +919,15 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 // state-root write probe's crash orphans: an epoch with no mint behind it is
 // inert, and a crashed probe's temp/target file is a stray nothing else will
 // remove.
-func openHostOpsStore(stateRoot string, stderr io.Writer, retention hostops.RetentionPolicy) *hostops.Store {
+func openHostOpsStore(stateRoot string, stderr io.Writer, retention hostops.RetentionPolicy) (*hostops.Store, error) {
 	store, err := hostops.OpenWithRetention(hostops.StorePath(stateRoot), retention)
 	if err != nil {
-		_, _ = fmt.Fprintf(stderr, "[hub] host operation store not opened, host boundary records will not be mirrored: %v\n", err)
-		return nil
+		return nil, fmt.Errorf("host operation store: %w", err)
+	}
+	if signal := store.Quarantine(); signal != nil {
+		_, _ = fmt.Fprintf(stderr,
+			"[hub] host operation store quarantined %s (custody %s, quarantine epoch %d); the replacement store serves empty and every name that custody closed stays closed until orphan-resolve\n",
+			signal.QuarantinedFile, signal.CustodyFile, signal.QuarantineEpoch)
 	}
 	if reaped, err := store.ReapExpiredTokens(); err != nil {
 		_, _ = fmt.Fprintf(stderr, "[hub] host operation store opened, but its expired confirmation tokens were not reaped: %v\n", err)
@@ -929,7 +947,7 @@ func openHostOpsStore(stateRoot string, stderr io.Writer, retention hostops.Rete
 	} else if interrupted > 0 {
 		_, _ = fmt.Fprintf(stderr, "[hub] host operation store moved %d in-flight operation(s) to interrupted\n", interrupted)
 	}
-	return store
+	return store, nil
 }
 
 // hostOperationRetention maps the hub's owner knobs onto the operation store's
