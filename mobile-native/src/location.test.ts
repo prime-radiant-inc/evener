@@ -395,6 +395,17 @@ describe("last mobile location", () => {
 			title: "Build 🛠",
 		});
 	});
+	it("saves a session Next opened as any other, so a relaunch restores it plainly (ruling 2)", () => {
+		expect(
+			locationForRoute(
+				{
+					name: "Conversation",
+					params: { hubId: "studio", ref: "same/ref", title: "Build", openedBy: "next" },
+				},
+				"studio",
+			),
+		).toEqual({ hubId: "studio", conversation: { ref: "same/ref", title: "Build" } });
+	});
 	it("returning to Hubs clears the saved destination", () => {
 		const repo = new LocationRepository(storage());
 		repo.save({ hubId: "studio" });

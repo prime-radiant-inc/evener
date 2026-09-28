@@ -17,6 +17,7 @@ import {
 } from "react";
 import {
 	AccessibilityInfo,
+	ActionSheetIOS,
 	ActivityIndicator,
 	Alert,
 	AppState,
@@ -38,6 +39,7 @@ import {
 	buildComposerInput,
 	formatQuoteBlock,
 	mergeDraftText,
+	type NavigationSessionSummary,
 	type TranscriptDisplayConfigV1,
 	translateAttachmentMarkers,
 } from "@evener/appwire-client";
@@ -50,6 +52,7 @@ import {
 } from "../../mobile/src/state/conversationMutation";
 import { ActivitySheet } from "./ActivitySheet";
 import { ApprovalControls } from "./approvalControls";
+import { hostLabeler } from "./board/attention";
 import { useMarkSeenInFront } from "./board/sessionSeen";
 import { useConnection } from "./ConnectionProvider";
 import {
@@ -133,6 +136,10 @@ import {
 	whatCanActNow,
 } from "./session/ghosts";
 import { NewContentPill } from "./session/NewContentPill";
+import { BackButton } from "./session/BackButton";
+import { nextNavigation, nextSession, othersNeedingYou } from "./session/fleetOrder";
+import { NextCapsule } from "./session/NextCapsule";
+import { useFleet } from "./session/useFleet";
 import { QueuedMessages } from "./session/QueuedMessages";
 import { TranscriptSkeleton } from "./session/TranscriptSkeleton";
 import { useReadRetry } from "./session/useReadRetry";
@@ -248,7 +255,9 @@ export type Routes = {
 	Hubs: undefined;
 	Sessions: undefined;
 	NewSession: { hubId: string; hubName: string };
-	Conversation: { hubId: string; ref: string; title: string };
+	/** openedBy says Next opened this session (ruling 2), so Next from it
+	 * replaces it. location.ts never persists it. */
+	Conversation: { hubId: string; ref: string; title: string; openedBy?: "next" };
 	TasksSheet: { hubId: string; ref: string; threadId: string; hasTasks: boolean };
 	NotesSheet: { hubId: string; ref: string; focusEditor?: boolean };
 	QueueSheet: { hubId: string; ref: string };
@@ -786,6 +795,55 @@ export function ConversationScreen({
 		connected ? client : null,
 		snapshot.status === "open" ? snapshot.conversation : null,
 	);
+	// Who else needs you (spec 13.2), for Back's count and Next.
+	const fleet = useFleet(route.params.hubId, connected ? client : null, focused);
+	const othersWaiting = useMemo(
+		() => othersNeedingYou(fleet.bands, route.params.ref),
+		[fleet.bands, route.params.ref],
+	);
+	const othersWaitingCount = othersWaiting.length;
+	useEffect(() => {
+		// iPhone only: Android keeps its own back arrow.
+		if (Platform.OS !== "ios") return;
+		navigation.setOptions({
+			headerLeft: () => (
+				<BackButton
+					count={othersWaitingCount}
+					onPress={() => navigation.goBack()}
+				/>
+			),
+		});
+	}, [navigation, othersWaitingCount]);
+	// Opens a session that needs you, marked seen the way the Board marks a
+	// row it opens (spec 8.3).
+	function openNext(target: NavigationSessionSummary) {
+		Keyboard.dismiss();
+		fleet.seen.markRead(connected ? client : null, [target]);
+		const params = {
+			hubId: route.params.hubId,
+			ref: target.ref,
+			title: target.title,
+			openedBy: "next" as const,
+		};
+		if (nextNavigation(route.params.openedBy) === "replace")
+			navigation.replace("Conversation", params);
+		else navigation.push("Conversation", params);
+	}
+	// Touch and hold on Next lists who needs you, first eight (spec 8.3).
+	function chooseNext() {
+		if (Platform.OS !== "ios") return;
+		const choices = othersWaiting.slice(0, 8);
+		ActionSheetIOS.showActionSheetWithOptions(
+			{
+				options: [...choices.map((row) => row.title), "Cancel"],
+				cancelButtonIndex: choices.length,
+			},
+			(index) => {
+				const chosen = choices[index];
+				if (chosen) openNext(chosen);
+			},
+		);
+	}
 	// The recovery surface: this exact hub/conversation target's durable
 	// recovery rows, shown as ghosts above the composer. useRecoveryPanel
 	// acquires the runtime only once the conversation is connected (the
@@ -2199,13 +2257,17 @@ export function ConversationScreen({
 	useEffect(() => {
 		goalActionsRef.current = { editGoal, clearGoal: () => void applyCommand(true) };
 	});
-	// Until PR 11 reads the manifest, the hub's own sessions are named for the
-	// connected hub, and any other host by its id.
+	// A host is named by the manifest's label. Until the manifest has
+	// loaded, the hub's own sessions are named for the connected hub, and any
+	// other host by its id.
 	const hubName =
 		activeProfile?.id === route.params.hubId ? activeProfile.name : null;
-	const hostLabel = useCallback(
-		(hostId: string) => (hostId === "local" && hubName ? hubName : hostId),
-		[hubName],
+	const hostLabel = useMemo(
+		() =>
+			hostLabeler(fleet.sources, (hostId) =>
+				hostId === "local" && hubName ? hubName : hostId,
+			),
+		[fleet.sources, hubName],
 	);
 	const modelLabel = conversation
 		? modelChipLabel(conversation, controlsState?.catalog?.data)
@@ -2712,6 +2774,12 @@ export function ConversationScreen({
 		composerBack,
 	});
 	const composerShown = canCompose && bottom.composer;
+	// Next shows while someone else needs you, unless this session asks you
+	// something or you are finding in it (spec 8.3).
+	const nextTarget =
+		approval === null && questionBatch === null && find === null
+			? nextSession(fleet.bands, route.params.ref)
+			: null;
 	// What sits above the composer: failures only you can act on, then
 	// everything waiting to reach the agent. While the composer is hidden
 	// (the dock is open) it sits in the composer's place, so a queued
@@ -3209,8 +3277,9 @@ export function ConversationScreen({
 							</View>
 						</ScrollView>
 						<View>
-							{/* The toast floats 10pt above the tray, or above the
-							    composer when there is no tray. */}
+							{/* The toast and Next float 10pt above the tray, or above
+							    the composer or the folded dock when there is no tray:
+							    the toast centered, Next at the trailing edge below it. */}
 							<View
 								pointerEvents="box-none"
 								style={{
@@ -3219,10 +3288,22 @@ export function ConversationScreen({
 									right: 0,
 									bottom: "100%",
 									paddingBottom: 10,
-									alignItems: "center",
+									gap: 8,
 								}}
 							>
 								<Toast toast={toaster.toast} dismiss={toaster.dismiss} />
+								{nextTarget ? (
+									<View
+										pointerEvents="box-none"
+										style={{ alignItems: "flex-end", paddingHorizontal: 16 }}
+									>
+										<NextCapsule
+											target={nextTarget}
+											onOpen={() => openNext(nextTarget)}
+											onHold={chooseNext}
+										/>
+									</View>
+								) : null}
 							</View>
 							{bottom.dock === "approval" && approval ? (
 								<ApprovalDock
