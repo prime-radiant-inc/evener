@@ -48,7 +48,6 @@ func runServeResumeCountingBoots(t *testing.T, stateDir, sessionID string) strin
 		"--dir", t.TempDir(),
 		"--state-dir", stateDir,
 		"--run-dir", t.TempDir(),
-		"--no-project-prompts",
 	}
 	if err := runServeWithDeps(args, deps); err != nil {
 		t.Fatalf("runServeWithDeps(resume): %v", err)

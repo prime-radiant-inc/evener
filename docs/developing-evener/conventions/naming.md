@@ -73,7 +73,6 @@ JSON and TOML now agree, only the CLI's hyphens differ.
 | Max concurrent delegate turns | `--max-concurrent-delegates` | `max_concurrent_delegate_turns` |
 | Max retained terminal delegate records | `--max-retained-terminal` | `max_retained_terminal` |
 | AppWire replay buffer size | `--app-replay-size` | `app_replay_size` |
-| Suppress `.evener/prompts/` loading | `--no-project-prompts` | `no_project_prompts` |
 
 Note the CLI singular form (`--plugin-dir`, repeatable) pairs with a
 TOML/JSON plural array (`plugin_dirs = [...]`). That is intentional:

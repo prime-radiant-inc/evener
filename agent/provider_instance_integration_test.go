@@ -96,9 +96,7 @@ func TestProviderInstance_RenamedOpenAI_IdentityAndBehavior(t *testing.T) {
 		t.Fatalf("ProviderID() = %q, want openai", got)
 	}
 
-	sess, err := NewSession(c, renamedProfile, execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
-		NoProjectPrompts: true,
-	})
+	sess, err := NewSession(c, renamedProfile, execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
@@ -166,8 +164,7 @@ func TestProviderInstance_CrossInstanceSwitch_PreservesOverrideAndIdentity(t *te
 	)
 
 	sess, err := NewSession(c, startProfile, execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
-		NoProjectPrompts: true,
-		ResolveProfile:   instanceTestResolver,
+		ResolveProfile: instanceTestResolver,
 	})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
@@ -230,8 +227,7 @@ func TestProviderInstance_ProviderConditionalTool_GoogleSwitchWiresWebSearch(t *
 	startProfile := namedOpenAIInstanceProfile("work", "gpt-5.4")
 
 	sess, err := NewSession(c, startProfile, execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
-		NoProjectPrompts: true,
-		ResolveProfile:   instanceTestResolver,
+		ResolveProfile: instanceTestResolver,
 	})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)

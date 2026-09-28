@@ -111,7 +111,6 @@ func TestSessionAuxiliaryModelCallsAttributeToSessionAPILog(t *testing.T) {
 
 			s := newSession(t, withClient(client), withProfile(WithCheapModel(NewOpenAIProfile("gpt-5.2"), "gpt-5.2")), withConfig(SessionConfig{
 				MaxSubagentDepth: 1,
-				NoProjectPrompts: true,
 				StateDir:         stateDir,
 				testOnly:         testConfig{skipGitSnapshot: true, minimalSystemPrompt: true, noSyncJobStore: true},
 			}))
@@ -163,7 +162,6 @@ func TestSideCallsAttributeToSessionAPILog(t *testing.T) {
 
 	s := newSession(t, withClient(client), withConfig(SessionConfig{
 		MaxSubagentDepth: 1,
-		NoProjectPrompts: true,
 		StateDir:         stateDir,
 		testOnly:         testConfig{skipGitSnapshot: true, minimalSystemPrompt: true, noSyncJobStore: true},
 	}))
@@ -268,7 +266,7 @@ func TestPreSessionLiveModelListingAttribution(t *testing.T) {
 			ID:        "restored-attribution-session",
 			ProfileID: "openai",
 			Model:     "gpt-5.2",
-			Config:    (SessionConfig{NoProjectPrompts: true}).toSnapshot(),
+			Config:    (SessionConfig{}).toSnapshot(),
 		}
 		restored, err := RestoreSessionFromMetaWithConfig(client, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(t.TempDir()), meta, RestoreSessionConfig{
 			StateDir: stateDir,
@@ -304,7 +302,6 @@ func TestPreSessionLiveModelListingAttribution(t *testing.T) {
 		childID := identifier.MustNewSessionID()
 		cfg := SessionConfig{
 			MaxSubagentDepth: 1,
-			NoProjectPrompts: true,
 			StateDir:         stateDir,
 			testOnly:         testConfig{skipGitSnapshot: true, minimalSystemPrompt: true, noSyncJobStore: true},
 		}
@@ -336,7 +333,6 @@ func TestPreSessionLiveModelListingAttribution(t *testing.T) {
 
 		sess, err := NewSession(client, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(t.TempDir()), SessionConfig{
 			MaxSubagentDepth: 1,
-			NoProjectPrompts: true,
 			StateDir:         stateDir,
 			testOnly:         testConfig{skipGitSnapshot: true, minimalSystemPrompt: true, noSyncJobStore: true},
 		})
@@ -419,7 +415,6 @@ func TestNewSessionReleasesPreSessionAPILogRouteOnMembershipFailure(t *testing.T
 	childID := identifier.MustNewSessionID()
 	cfg := SessionConfig{
 		MaxSubagentDepth: 1,
-		NoProjectPrompts: true,
 		StateDir:         stateDir,
 		testOnly:         testConfig{skipGitSnapshot: true, minimalSystemPrompt: true, noSyncJobStore: true},
 	}
@@ -468,7 +463,6 @@ func TestNewSessionAttributesOtherProviderStartupListingToSessionAPILog(t *testi
 
 	sess, err := NewSession(client, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(t.TempDir()), SessionConfig{
 		MaxSubagentDepth: 1,
-		NoProjectPrompts: true,
 		StateDir:         stateDir,
 		testOnly:         testConfig{skipGitSnapshot: true, minimalSystemPrompt: true, noSyncJobStore: true},
 	})
@@ -498,7 +492,6 @@ func newModelSwitchAttributionSession(t *testing.T, client *llm.Client, stateDir
 	t.Helper()
 	cfg := SessionConfig{
 		MaxSubagentDepth: 1,
-		NoProjectPrompts: true,
 		StateDir:         stateDir,
 		testOnly:         testConfig{skipGitSnapshot: true, minimalSystemPrompt: true, noSyncJobStore: true},
 	}
@@ -629,7 +622,6 @@ func TestSessionSettlesProviderResolutionFailureBeforeTransport(t *testing.T) {
 	s := newSession(t, withClient(client), withConfig(SessionConfig{
 		LLMRetryPolicy:   &policy,
 		MaxSubagentDepth: 1,
-		NoProjectPrompts: true,
 		StateDir:         stateDir,
 		testOnly:         testConfig{skipGitSnapshot: true, minimalSystemPrompt: true, noSyncJobStore: true},
 	}))
@@ -685,7 +677,6 @@ func TestSessionCloseReleasesAPILogRoute(t *testing.T) {
 
 	s := newSession(t, withClient(client), withConfig(SessionConfig{
 		MaxSubagentDepth: 1,
-		NoProjectPrompts: true,
 		StateDir:         stateDir,
 		testOnly:         testConfig{skipGitSnapshot: true, minimalSystemPrompt: true, noSyncJobStore: true},
 	}))
@@ -825,7 +816,6 @@ func TestPluginAgentModelListingAttributionThroughTurn(t *testing.T) {
 
 	cfg := SessionConfig{
 		MaxSubagentDepth: 1,
-		NoProjectPrompts: true,
 		StateDir:         stateDir,
 		testOnly:         testConfig{skipGitSnapshot: true, minimalSystemPrompt: true, noSyncJobStore: true},
 	}

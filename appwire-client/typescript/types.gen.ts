@@ -1878,7 +1878,6 @@ export interface LaunchConfigLayer {
   maxSubagentDepth?: number;
   maxConcurrentDelegateTurns?: number;
   maxRetainedTerminal?: number;
-  noProjectPrompts?: boolean;
   nonInteractive?: boolean;
   appReplaySize?: number;
   skillsDirs?: string[];

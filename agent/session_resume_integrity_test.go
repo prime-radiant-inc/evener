@@ -109,7 +109,7 @@ func resumeIntegrityMeta(sessionID string) schema.SessionMeta {
 		ID:        sessionID,
 		ProfileID: "openai",
 		Model:     "gpt-5.2",
-		Config:    (SessionConfig{NoProjectPrompts: true}).toSnapshot(),
+		Config:    (SessionConfig{}).toSnapshot(),
 	}
 }
 

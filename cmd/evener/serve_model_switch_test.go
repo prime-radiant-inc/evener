@@ -195,7 +195,6 @@ func TestServeModelSwitch_ProviderFailureRestoresCapability(t *testing.T) {
 			"--dir", workDir,
 			"--state-dir", stateDir,
 			"--run-dir", runDir,
-			"--no-project-prompts",
 		})
 	}()
 

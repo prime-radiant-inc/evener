@@ -16,7 +16,6 @@ func checkToArgs_AllFields(t *testing.T) {
 		OpenAIResponsesContinuation: "auto",
 		MaxRounds:                   new(200),
 		MaxSubagentDepth:            new(2),
-		NoProjectPrompts:            new(true),
 		NonInteractive:              new(true),
 		AppReplaySize:               new(4096),
 		SystemPromptMode:            "file",
@@ -48,7 +47,6 @@ func checkToArgs_AllFields(t *testing.T) {
 		"--openai-responses-continuation", "auto",
 		"--max-rounds", "200",
 		"--max-subagent-depth", "2",
-		"--no-project-prompts",
 		"--non-interactive",
 		"--app-replay-size", "4096",
 		"--system-prompt", "/system.md",
@@ -145,11 +143,8 @@ func checkToArgs_Sandbox(t *testing.T) {
 }
 
 func checkToArgs_BoolFalseDoesNotEmitFlag(t *testing.T) {
-	got := ToArgs(Resolved{Effective: Layer{NoProjectPrompts: new(false), NonInteractive: new(false)}})
+	got := ToArgs(Resolved{Effective: Layer{NonInteractive: new(false)}})
 	for _, a := range got {
-		if a == "--no-project-prompts" {
-			t.Errorf("ToArgs should not emit --no-project-prompts when value is false; got %v", got)
-		}
 		if a == "--non-interactive" {
 			t.Errorf("ToArgs should not emit --non-interactive when value is false; got %v", got)
 		}

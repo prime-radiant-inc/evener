@@ -49,7 +49,6 @@ func TestRootAllowanceFromConfig(t *testing.T) {
 			dir := t.TempDir()
 			sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
 				MaxSubagentDepth: tc.maxSubagentDepth,
-				NoProjectPrompts: true,
 			})
 			if err != nil {
 				t.Fatalf("NewSession: %v", err)
@@ -98,7 +97,7 @@ func TestRestoredRootAllowanceFromConfig(t *testing.T) {
 				ID:        "01TESTRESTOREROOT",
 				ProfileID: "openai",
 				Model:     "gpt-5.2",
-				Config:    (SessionConfig{MaxSubagentDepth: tc.maxSubagentDepth, NoProjectPrompts: true}).toSnapshot(),
+				Config:    (SessionConfig{MaxSubagentDepth: tc.maxSubagentDepth}).toSnapshot(),
 			}
 			sess, err := RestoreSessionFromMetaWithConfig(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(t.TempDir()), meta, RestoreSessionConfig{StateDir: t.TempDir()})
 			if err != nil {
