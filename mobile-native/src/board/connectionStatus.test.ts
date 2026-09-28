@@ -134,10 +134,15 @@ it("counts the data's age from when it was last live, background included", () =
 	expect(connectionStatus("connecting", false, secondsAgo(31), minutesAgo(60), NOW)).toBe("Offline · updated 1h ago");
 });
 
-it("changes on its own only at 2 seconds, 30 seconds, then each minute of the data's age", () => {
+it("changes on its own only at 2 seconds, 30 seconds, then when the age it says changes", () => {
 	expect(nextStatusChange("reconnecting", false, NOW, NOW, NOW + 500)).toBe(NOW + 2_000);
 	expect(nextStatusChange("reconnecting", false, NOW, NOW, NOW + 2_000)).toBe(NOW + 30_000);
-	expect(nextStatusChange("reconnecting", false, NOW, NOW - 10_000, NOW + 30_000)).toBe(NOW + 50_000);
+	// Under 2 minutes old the age already reads "1m", so the next change is 2m.
+	expect(nextStatusChange("reconnecting", false, NOW, NOW - 10_000, NOW + 30_000)).toBe(NOW + 110_000);
+	expect(nextStatusChange("reconnecting", false, NOW, NOW, NOW + 150_000)).toBe(NOW + 180_000);
+	// An hour or more old, it reads in hours, then in days.
+	expect(nextStatusChange("reconnecting", false, NOW - 60_000, NOW - 5_400_000, NOW)).toBe(NOW + 1_800_000);
+	expect(nextStatusChange("reconnecting", false, NOW - 60_000, NOW - 90_000_000, NOW)).toBe(NOW + 82_800_000);
 	expect(nextStatusChange("reconnecting", false, NOW, null, NOW + 30_000)).toBeNull();
 	expect(nextStatusChange("ready", false, null, null, NOW)).toBeNull();
 	expect(nextStatusChange("closed", true, NOW, NOW, NOW)).toBeNull();

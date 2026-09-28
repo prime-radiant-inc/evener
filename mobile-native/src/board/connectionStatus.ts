@@ -15,6 +15,8 @@ export const RECONNECTING_AFTER_MS = 2_000;
  * what's on screen is. */
 export const OFFLINE_AFTER_MS = 30_000;
 const MINUTE = 60_000;
+const HOUR = 60 * MINUTE;
+const DAY = 24 * HOUR;
 /** The status for a close no retry can fix; INCOMPATIBLE_VERSIONS says what
  * it means. */
 export const UPDATE_NEEDED = "Update needed";
@@ -41,15 +43,16 @@ export function connectionStatus(
 }
 
 /** How old the last live data is, in spec 5's compact durations, never under
- * 1m: the status first says it at 30 seconds and then changes once a minute,
- * so a count of seconds would either tick or lie, and "now" would read
- * "updated now ago". */
+ * 1m: the status first says it at 30 seconds, where a count of seconds would
+ * tick every second and "now" would read "updated now ago". */
 export function offlineAge(ms: number): string {
 	return compactDuration(Math.max(MINUTE, ms));
 }
 
 /** When the status next changes on its own, or null when it won't: at the
- * 2- and 30-second marks, then at each minute of the data's age. */
+ * 2- and 30-second marks, then when the age it says next changes, in the unit
+ * it says it in (offlineAge: minutes, never under 1m, then hours, then
+ * days). */
 export function nextStatusChange(
 	state: ConnectionState,
 	fatal: boolean,
@@ -62,7 +65,9 @@ export function nextStatusChange(
 	if (down < RECONNECTING_AFTER_MS) return downSince + RECONNECTING_AFTER_MS;
 	if (down < OFFLINE_AFTER_MS) return downSince + OFFLINE_AFTER_MS;
 	if (lastLiveAt === null) return null;
-	return now + MINUTE - ((now - lastLiveAt) % MINUTE);
+	const age = now - lastLiveAt;
+	const unit = age < HOUR ? MINUTE : age < DAY ? HOUR : DAY;
+	return lastLiveAt + Math.max(2 * MINUTE, (Math.floor(age / unit) + 1) * unit);
 }
 
 /** The status for the app's connection, re-rendered exactly when its words

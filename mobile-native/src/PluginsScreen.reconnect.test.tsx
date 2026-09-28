@@ -19,7 +19,13 @@ import { INCOMPATIBLE_VERSIONS } from "./connectionRecovery";
 import { MarketplaceBrowser } from "./MarketplaceBrowser";
 import { PluginsScreen } from "./PluginsScreen";
 import { createPluginMutationGate } from "./pluginMutationGate";
-import { nativeModuleMock, render, renderedText, screenConnection as connection } from "./renderNative.testkit";
+import {
+	dropped,
+	nativeModuleMock,
+	render,
+	renderedText,
+	screenConnection as connection,
+} from "./renderNative.testkit";
 
 // What useConnection answers with. vi.hoisted because vi.mock's factory is
 // hoisted above every module import and may not close over a module-level let.
@@ -138,12 +144,12 @@ it("shows the connection status inside an open plugin detail modal, with no Reco
 	// The connection drops with the detail modal open: the native modal
 	// covers the screen's banner, so the status lives inside it, with the
 	// modal's own content intact. The app reconnects on its own.
-	harness.connection = connection(hub, "reconnecting");
+	harness.connection = dropped(connection(hub, "ready"));
 	await act(async () => {
 		tree.update(<PluginsScreen {...props} />);
 	});
 	const modal = modalContaining(tree, "Installation details");
-	expect(subtreeText(modal)).toContain("reconnecting");
+	expect(subtreeText(modal)).toContain("Reconnecting…");
 	expect(modal.findAll((node) => node.props.accessibilityLabel === "Reconnect")).toHaveLength(0);
 	expect(subtreeText(modal)).toContain("Installation details");
 });
@@ -259,12 +265,12 @@ it("shows the connection status inside the add-marketplace modal, with no Reconn
 	});
 	await act(async () => {});
 
-	harness.connection = connection(hub, "reconnecting");
+	harness.connection = dropped(connection(hub, "ready"));
 	await act(async () => {
 		tree.update(browser("reconnecting"));
 	});
 	const modal = modalContaining(tree, "Git URL");
-	expect(subtreeText(modal)).toContain("reconnecting");
+	expect(subtreeText(modal)).toContain("Reconnecting…");
 	expect(modal.findAll((node) => node.props.accessibilityLabel === "Reconnect")).toHaveLength(0);
 	expect(subtreeText(modal)).toContain("Git URL");
 });

@@ -21,7 +21,7 @@ import { ProviderSignIn } from "./providerSignIn";
 import { recordClientReadyHub } from "./connectionIdentity";
 import { ProviderEditor } from "./ProviderEditor";
 import { ProvidersScreen } from "./ProvidersScreen";
-import { alertRequests, render, renderedText, screenConnection, scriptedClient } from "./renderNative.testkit";
+import { alertRequests, dropped, render, renderedText, screenConnection, scriptedClient } from "./renderNative.testkit";
 
 // What useConnection answers with. vi.hoisted because vi.mock's factory is
 // hoisted above every module import and may not close over a module-level let.
@@ -114,9 +114,9 @@ it("ready -> reconnecting keeps the screen tree mounted and shows the banner", a
 	const tree = render(<ProvidersScreen {...props} />);
 	await act(async () => {});
 	expect(renderedText(tree)).toContain("work");
-	expect(renderedText(tree)).not.toContain("reconnecting");
+	expect(renderedText(tree)).not.toContain("Reconnecting…");
 
-	harness.connection = { ...harness.connection, state: "reconnecting" };
+	harness.connection = dropped(harness.connection);
 	await act(async () => {
 		tree.update(<ProvidersScreen {...props} />);
 	});
@@ -125,7 +125,7 @@ it("ready -> reconnecting keeps the screen tree mounted and shows the banner", a
 	expect(text).toContain("work");
 	// ... behind a banner announcing it, with no Reconnect: the app
 	// reconnects on its own (spec principle 2).
-	expect(text).toContain("reconnecting");
+	expect(text).toContain("Reconnecting…");
 	expect(tree.root.findAllByProps({ accessibilityLabel: "Reconnect" })).toHaveLength(0);
 });
 
@@ -137,11 +137,11 @@ it("reconnecting -> ready removes the banner", async () => {
 	} as unknown as ComponentProps<typeof ProvidersScreen>;
 	const tree = render(<ProvidersScreen {...props} />);
 	await act(async () => {});
-	harness.connection = { ...harness.connection, state: "reconnecting" };
+	harness.connection = dropped(harness.connection);
 	await act(async () => {
 		tree.update(<ProvidersScreen {...props} />);
 	});
-	expect(renderedText(tree)).toContain("reconnecting");
+	expect(renderedText(tree)).toContain("Reconnecting…");
 
 	harness.connection = { ...harness.connection, state: "ready" };
 	await act(async () => {
@@ -149,7 +149,7 @@ it("reconnecting -> ready removes the banner", async () => {
 	});
 	const text = renderedText(tree);
 	expect(text).toContain("work");
-	expect(text).not.toContain("reconnecting");
+	expect(text).not.toContain("Reconnecting…");
 });
 
 it("a fatal (protocol) close replaces the mounted list with the wall", async () => {
@@ -646,12 +646,12 @@ it("shows the connection status inside an open editor modal, with no Reconnect",
 	// The connection drops with the editor modal open. The native modal
 	// covers the screen's banner, so the status and the manual reconnect
 	// have to live inside it - with the draft still intact.
-	harness.connection = { ...harness.connection, state: "reconnecting" };
+	harness.connection = dropped(harness.connection);
 	await act(async () => {
 		tree.update(<ProvidersScreen {...props} />);
 	});
 	const modal = modalContaining(tree, "Save instance");
-	expect(subtreeText(modal)).toContain("reconnecting");
+	expect(subtreeText(modal)).toContain("Reconnecting…");
 	expect(modal.findAll((node) => node.props.accessibilityLabel === "Reconnect")).toHaveLength(0);
 	// The draft survived: the modal is still the editor's.
 	expect(subtreeText(modal)).toContain("Save instance");
@@ -679,7 +679,7 @@ it("starts a sign-in from behind the banner without a doomed client", async () =
 	const tree = render(<ProvidersScreen {...props} />);
 	await act(async () => {});
 	// A flap the screen survives behind its banner.
-	harness.connection = { ...harness.connection, state: "reconnecting" };
+	harness.connection = dropped(harness.connection);
 	await act(async () => {
 		tree.update(<ProvidersScreen {...props} />);
 	});
@@ -693,7 +693,7 @@ it("starts a sign-in from behind the banner without a doomed client", async () =
 	// native modal that covers the screen's banner.
 	expect(setConnection.mock.calls[0]?.[0]).toBe(null);
 	const sheet = modalContaining(tree, "Waiting for the hub");
-	expect(subtreeText(sheet)).toContain("reconnecting");
+	expect(subtreeText(sheet)).toContain("Reconnecting…");
 	expect(sheet.findAll((node) => node.props.accessibilityLabel === "Reconnect")).toHaveLength(0);
 
 	// Recovery hands the flow the connection it was opened without, and the

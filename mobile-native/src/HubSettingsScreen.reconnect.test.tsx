@@ -21,6 +21,7 @@ import { HubSettingsScreen } from "./HubSettingsScreen";
 import type { UpgradeState } from "./hubUpgrade";
 import {
 	alertRequests,
+	dropped,
 	nativeModuleMock,
 	render,
 	renderedText,
@@ -97,14 +98,14 @@ it("re-reads the overview once a flap the screen survived is ready again", async
 	expect(renderedText(tree)).toContain("Evener 1.2.3");
 	expect(reads).toBe(1);
 
-	harness.connection = connection(hub, "reconnecting");
+	harness.connection = dropped(connection(hub, "ready"));
 	await act(async () => {
 		tree.update(<HubSettingsScreen {...props} />);
 	});
 	// Stale-but-shown: the banner sits over the last successful load, not a
 	// wall; the hub may have moved on while this client was away.
 	expect(renderedText(tree)).toContain("Evener 1.2.3");
-	expect(renderedText(tree)).toContain("reconnecting");
+	expect(renderedText(tree)).toContain("Reconnecting…");
 
 	harness.connection = connection(hub, "ready");
 	await act(async () => {

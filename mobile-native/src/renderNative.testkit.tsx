@@ -411,6 +411,17 @@ export function screenConnection(client: unknown, state: ConnectionState): Recor
 	};
 }
 
+/** `connection` after it has been down long enough for the status to say so
+ * (spec 14: "Reconnecting…" from 2 seconds), keeping its client and hub. */
+export function dropped(
+	connection: Record<string, unknown>,
+	state: ConnectionState = "reconnecting",
+	downFor = 2_000,
+): Record<string, unknown> {
+	const downAt = Date.now() - downFor;
+	return { ...connection, state, downSince: downAt, lastLiveAt: downAt };
+}
+
 /** Mounts `element` and flushes its effects, returning the test renderer. */
 export function render(element: ReactElement): ReactTestRenderer {
 	let tree!: ReactTestRenderer;
