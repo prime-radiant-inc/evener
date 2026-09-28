@@ -66,7 +66,9 @@ function stopBody(): Promise<never> {
 }
 
 // Resolves the next time a body is stopped at a wait: what a wiring test awaits
-// to know the body has reached the point where it would have acted.
+// to know the body has reached the point where it would have acted. A stop
+// reaches only the callers already waiting, so call this before whatever lets
+// the body stop.
 export function whenAnEndedBodyStopsForTests(): Promise<void> {
   return new Promise<void>((resolve) => whenStopped.add(resolve));
 }

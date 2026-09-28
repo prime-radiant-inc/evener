@@ -85,10 +85,14 @@ test("an event its body fires once it resumes does nothing", async () => {
 });
 
 const cleanupRanAfterItsTest = deferred<void>();
+let itsBodyStopped: Promise<void> | undefined;
 
-// Its wait fails on its own, after its test has ended; the body stops there
-// rather than unwinding into its finally.
+// Its wait fails on its own, once its test has timed out, and the body stops
+// there rather than unwinding into its finally. The wait's own clock can run
+// out before the next test starts, so the test listens for the stop before its
+// wait begins.
 test.fails("a test that times out while it waits for text that never comes", async () => {
+  itsBodyStopped = whenAnEndedBodyStopsForTests();
   try {
     await screen.findByText("never rendered", {}, { timeout: 300 });
   } finally {
@@ -99,7 +103,7 @@ test.fails("a test that times out while it waits for text that never comes", asy
 test("its body stops when that wait fails too, before its finally runs", async () => {
   const outcome = await Promise.race([
     cleanupRanAfterItsTest.promise.then(() => "its finally ran"),
-    whenAnEndedBodyStopsForTests().then(() => "it stopped"),
+    itsBodyStopped?.then(() => "it stopped"),
   ]);
   expect(outcome).toBe("it stopped");
 });
