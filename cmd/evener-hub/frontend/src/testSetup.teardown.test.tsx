@@ -114,10 +114,11 @@ test("the test after a throwing afterEach starts with an empty page and a clean 
   expect(document.body.innerHTML).toBe("");
 });
 
-// A test file may register its own cleanup() in an afterEach (the hygiene guard
-// forbids it going forward, but the setup must still survive one). When a tree
-// throws as it unmounts there, that cleanup throws before the setup's teardown
-// runs, and stops part way.
+// A test file may still bundle cleanup() with other work in its own afterEach
+// (the hygiene guard forbids only a hook whose whole body is the cleanup call,
+// so this bundled form is out of its scope). When a tree throws as it unmounts
+// there, that cleanup throws before the setup's teardown runs, and stops part
+// way, which is the hazard the setup has to survive.
 test.fails(testWhoseOwnCleanupMeetsAThrowingUnmount, () => {
   recordWhatFailsThisTest();
   render(<ThrowsOnUnmount />);
