@@ -123,3 +123,23 @@ it("checks again after the connection comes back", async () => {
 	expect(h.calls).toEqual(["evener/update/check", "evener/update/check"]);
 	hook.unmount();
 });
+
+it("lets go of a replaced connection's controller and checks through the new client", async () => {
+	const first = hub();
+	const second = hub();
+	second.state.version = "0.9.413";
+	const current = { client: first.client, ready: true };
+	const hook = renderHook(() => useHubUpdates(current.client, current.ready));
+	await settle();
+	const replaced = hook.result.current;
+	current.client = second.client;
+	hook.rerender();
+	await settle();
+	expect(hook.result.current).not.toBe(replaced);
+	expect(first.calls).toEqual(["evener/update/check"]);
+	expect(second.calls).toEqual(["evener/update/check"]);
+	expect(hook.result.current.getState().check?.currentVersion).toBe("0.9.413");
+	await replaced.apply();
+	expect(first.calls).toEqual(["evener/update/check"]);
+	hook.unmount();
+});
