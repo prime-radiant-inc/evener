@@ -445,25 +445,25 @@ function entityIdentityForResource(
   return { logical: `session\0${value.value.ref as string}`, anchor: false };
 }
 
-// validateEntity runs an entity record's structure check and its value's
-// validator once, returning the value's decoded identity. Callers that only
-// need to know an entity is valid use entity(); validateGraphForResource and
-// decode's entity loop also need the identity, so a single call replaces the
-// entity()+entityIdentityForResource() pair each used to run (#2478).
-function validateEntity(value: unknown, key: ResourceKey): { logical: string; anchor: boolean } {
-  if (
-    !exactKeys(value, ["key", "kind", "value"]) ||
-    !entityKeyValid(key, value.key) ||
-    !safeString(value.kind, 128) ||
-    !isRecord(value.value)
-  )
-    throw schemaError("entity schema");
-  return entityIdentityForResource(key, { kind: value.kind, value: value.value });
+// entity checks an entity record's structure only. validateDeltaForResource
+// runs the value validator separately (entityIdentityForResource below), so
+// this stays a boolean guard rather than a second full validation (#2478).
+function entity(value: unknown, key: ResourceKey): value is NavigationEntityRecord {
+  return (
+    exactKeys(value, ["key", "kind", "value"]) &&
+    entityKeyValid(key, value.key) &&
+    safeString(value.kind, 128) &&
+    isRecord(value.value)
+  );
 }
 
-function entity(value: unknown, key: ResourceKey): value is NavigationEntityRecord {
-  validateEntity(value, key);
-  return true;
+// validateEntity runs an entity record's structure check and its value's
+// validator once, returning the value's decoded identity. validateGraphForResource
+// needs the identity, so a single call replaces the
+// entity()+entityIdentityForResource() pair it used to run (#2478).
+function validateEntity(value: unknown, key: ResourceKey): { logical: string; anchor: boolean } {
+  if (!entity(value, key)) throw schemaError("entity schema");
+  return entityIdentityForResource(key, { kind: value.kind, value: value.value });
 }
 
 function owner(value: unknown): value is NavigationOrderContainer["owner"] {
@@ -948,18 +948,37 @@ export function isDecodedSnapshotResource(resource: NormalizedResource): boolean
   return decodedSnapshotResources.has(resource);
 }
 
+// normalizedGraphFromSnapshot's maps are only read once snapshotResource
+// builds them -- merge copies each into a new Map -- so shadowing their
+// mutators removes the one way a caller could change a marked resource's
+// graph before reconcileSnapshot trusts it (#2478).
+function readonlyMap<K, V>(map: Map<K, V>): void {
+  for (const method of ["set", "delete", "clear"] as const)
+    Object.defineProperty(map, method, {
+      value: () => {
+        throw new TypeError("navigation graph map is immutable");
+      },
+    });
+}
+
 /** The normalized resource a decoded snapshot stands for, built by hand at
  * five call sites before this. */
 export function snapshotResource(
   key: ResourceKey,
   decoded: Extract<DecodedNavigationResponse, { status: "snapshot" }>,
 ): NormalizedResource {
-  const resource: NormalizedResource = {
+  // Freeze the resource and lock the graph's maps so the decoded marker cannot
+  // be moved onto, or a marked graph mutated into, a graph merge would trust
+  // without re-validating it (#2478).
+  const graph = normalizedGraphFromSnapshot(decoded.snapshot);
+  readonlyMap(graph.entities as Map<string, NavigationGraphEntity>);
+  readonlyMap(graph.containers as Map<string, NavigationGraphContainer>);
+  const resource: NormalizedResource = Object.freeze({
     key,
-    graph: normalizedGraphFromSnapshot(decoded.snapshot),
+    graph,
     version: decoded.version,
     presence: "present",
-  };
+  });
   decodedSnapshotResources.add(resource);
   return resource;
 }

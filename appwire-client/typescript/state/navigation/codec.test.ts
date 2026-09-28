@@ -1504,3 +1504,19 @@ test("a snapshot read validates each session value once", () => {
 
   expect(timestampChecks).toHaveLength(1);
 });
+
+// #2478: snapshotResource marks a resource decoded so reconcileSnapshot skips
+// re-validating it. The resource and its graph maps are sealed, so a caller
+// cannot mutate the graph after decode and have merge install the mutation
+// without validation.
+test("a decoded snapshot resource is sealed against later mutation", () => {
+  const snapshot = liveSnapshot();
+  const resource = snapshotResource(key, decodedSnapshot(key, snapshot));
+  expect(Object.isFrozen(resource)).toBe(true);
+  const entityKey = snapshot.entities[0]?.key;
+  const entities = resource.graph.entities as unknown as Map<string, unknown>;
+  const containers = resource.graph.containers as unknown as Map<string, unknown>;
+  expect(() => entities.set(entityKey as string, {})).toThrow(TypeError);
+  expect(() => entities.delete(entityKey as string)).toThrow(TypeError);
+  expect(() => containers.clear()).toThrow(TypeError);
+});
