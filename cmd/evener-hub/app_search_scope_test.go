@@ -3,6 +3,8 @@ package hub
 import (
 	"context"
 	"errors"
+	"fmt"
+	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -160,6 +162,84 @@ func TestHubSearchRefusesAnUnknownScope(t *testing.T) {
 	_, err := hubSearch(context.Background(), hubcore.WebConfig{}, appwire.SearchParams{Query: "x", Scope: "pinned"}, time.Now())
 	if wire, ok := errors.AsType[appwire.WireError](err); !ok || wire.Code != appwire.CodeInvalidParams {
 		t.Fatalf("err = %v, want InvalidParams", err)
+	}
+}
+
+// A broken archive store must not take down ID/title/prompt search: it never
+// failed before archive decisions existed, and a flaky auxiliary index is not
+// a reason to stop answering the query a client is waiting on.
+func TestHubSearchDegradesWhenArchiveDecisionsFail(t *testing.T) {
+	projectsRoot := filepath.Join(t.TempDir(), "projects")
+	stateDir := hubtest.ProjectDir(t, projectsRoot, "alpha")
+	sessionID := hubtest.SessionID(t)
+	if err := schema.SaveSessionMeta(stateDir, schema.SessionMeta{ID: sessionID, UpdatedAt: time.Now(), Name: "Frobnitz audit"}); err != nil {
+		t.Fatal(err)
+	}
+	past := hubcore.NewPastIndex(filepath.Join(projectsRoot, "*"))
+	if _, err := past.Rebuild(); err != nil {
+		t.Fatal(err)
+	}
+	// A file that exists but is not a SQLite database: Decisions() fails
+	// deterministically rather than taking the "no store configured" no-op
+	// path an empty dbPath would.
+	dbPath := filepath.Join(t.TempDir(), "index.db")
+	if err := os.WriteFile(dbPath, []byte("not a sqlite database"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var logged []string
+	cfg := hubcore.WebConfig{Past: past, Archive: hubcore.NewArchiveStore(dbPath), Logf: func(format string, args ...any) {
+		logged = append(logged, fmt.Sprintf(format, args...))
+	}}
+
+	resp, err := hubSearch(context.Background(), cfg, appwire.SearchParams{Query: "frobnitz"}, time.Now())
+	if err != nil {
+		t.Fatalf("hubSearch returned an error instead of degrading: %v", err)
+	}
+	if len(resp.Past) != 1 || resp.Past[0].ID != sessionID {
+		t.Fatalf("past = %+v, want the session found despite the broken archive store", resp.Past)
+	}
+	if len(logged) == 0 {
+		t.Fatal("want the archive failure logged, not silently swallowed")
+	}
+}
+
+// A broken message index must not take down ID/title/prompt search either:
+// the In sessions group is simply absent.
+func TestHubSearchDegradesWhenMessageIndexFails(t *testing.T) {
+	projectsRoot := filepath.Join(t.TempDir(), "projects")
+	stateDir := hubtest.ProjectDir(t, projectsRoot, "alpha")
+	sessionID := hubtest.SessionID(t)
+	if err := schema.SaveSessionMeta(stateDir, schema.SessionMeta{ID: sessionID, UpdatedAt: time.Now(), Name: "Frobnitz audit"}); err != nil {
+		t.Fatal(err)
+	}
+	past := hubcore.NewPastIndex(filepath.Join(projectsRoot, "*"))
+	if _, err := past.Rebuild(); err != nil {
+		t.Fatal(err)
+	}
+	index, err := hubcore.OpenMessageSearch(filepath.Join(t.TempDir(), "search.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := index.Close(); err != nil {
+		t.Fatal(err)
+	}
+	var logged []string
+	cfg := hubcore.WebConfig{Past: past, MessageSearch: index, Logf: func(format string, args ...any) {
+		logged = append(logged, fmt.Sprintf(format, args...))
+	}}
+
+	resp, err := hubSearch(context.Background(), cfg, appwire.SearchParams{Query: "frobnitz"}, time.Now())
+	if err != nil {
+		t.Fatalf("hubSearch returned an error instead of degrading: %v", err)
+	}
+	if len(resp.Past) != 1 || resp.Past[0].ID != sessionID {
+		t.Fatalf("past = %+v, want the session found despite the broken message index", resp.Past)
+	}
+	if resp.InSessions != nil {
+		t.Fatalf("inSessions = %+v, want none from a broken index", resp.InSessions)
+	}
+	if len(logged) == 0 {
+		t.Fatal("want the message index failure logged, not silently swallowed")
 	}
 }
 

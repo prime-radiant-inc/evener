@@ -34,9 +34,14 @@ func hubSearch(ctx context.Context, cfg hubcore.WebConfig, params appwire.Search
 	if scope != appwire.SearchScopeAll && scope != appwire.SearchScopeLive && scope != appwire.SearchScopeArchived {
 		return appwire.SearchResponse{}, appwire.InvalidParams(`scope must be "all", "live" or "archived"`)
 	}
+	logf := hubLogfFor(cfg)
 	decisions, err := searchDecisions(cfg)
 	if err != nil {
-		return appwire.SearchResponse{}, err
+		// A broken archive store must not take down ID/title/prompt search,
+		// which never depended on one: degrade to "nothing archived by
+		// decision" rather than failing the whole query.
+		logf("search: archive decisions: %v", err)
+		decisions = map[hubcore.ArchiveKey]bool{}
 	}
 	resp := appwire.SearchResponse{Live: []appwire.SearchResult{}, Past: []appwire.SearchResult{}, Scope: scope}
 	q := strings.ToLower(strings.TrimSpace(params.Query))
@@ -86,7 +91,13 @@ func hubSearch(ctx context.Context, cfg hubcore.WebConfig, params appwire.Search
 		}
 	}
 	resp.InSessions, err = searchInSessions(ctx, cfg, params.Query, scope, live, decisions, now)
-	return resp, err
+	if err != nil {
+		// Same reasoning as the archive store above: a flaky message index
+		// costs the In sessions group, not the whole query.
+		logf("search: message index: %v", err)
+		resp.InSessions = nil
+	}
+	return resp, nil
 }
 
 // searchDecisions is the hub's archive decisions, or none without a store.
