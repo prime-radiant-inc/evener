@@ -693,29 +693,8 @@ func parityTable(groups ...[]knownDivergence) []knownDivergence {
 
 // parityBeforeRestart lists the divergences between a live client and the
 // transcript for one session. Live history is projected from the recorded
-// entries by the same index a fresh read uses, so there are none but the one
-// flaky row below.
-var parityBeforeRestart = parityTable([]knownDivergence{
-	{
-		Class: "turn-field", Subject: "systemMessage/compaction", Field: "version",
-		Phase: 4,
-		Flaky: true,
-		Why: `ChangedSince logs a turn's update only when its wire-visible ` +
-			`summary actually changed (status/lifecycle/started/usage), not on ` +
-			`every entry after the turn's first (docs/superpowers/specs/` +
-			`2026-09-25-transcript-read-model-design.md "Known gap", ` +
-			`stampTurn/summaryOf in internal/transcriptindex/build.go). The ` +
-			`compaction turn's two entries (a deterministic checkpoint, then a ` +
-			`summary whose scripted response carries no usage) leave the ` +
-			`turn's tracked summary fields unchanged between them, so Version ` +
-			`is the only field that moves. If the live view's publish boundary ` +
-			`happens to land between the two entries -- timing, not scripted ` +
-			`content, decides this -- the client's held Version for that turn ` +
-			`lags the file's by one until some other change resends it. ` +
-			`Bounded harm, by design: nothing reads Version for anything but ` +
-			`display order and idempotent upsert.`,
-	},
-})
+// entries by the same index a fresh read uses, so there are none.
+var parityBeforeRestart = parityTable()
 
 // parityAfterRestart lists them for a daemon restarted over the transcript.
 var parityAfterRestart = parityTable()

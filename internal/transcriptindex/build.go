@@ -835,26 +835,18 @@ func (b *builder) stampTurn(slot uint64, entry *schema.Turn, ordinal uint64, off
 		return err
 	}
 	version := ordinal + 1
-	// The turn's first entry creates its summary, so ChangedSince's
-	// firstTurnCreatedAt already covers it; only a later entry can log an
-	// update.
-	firstEntry := version <= r.FirstOrdinal+1
-	if version <= r.Version {
-		// Already accounted before an interrupted catch-up: the truncation
-		// before this extension removed this entry's own log record
-		// (readers take each slot once), so it is redone unconditionally.
-		// There is no fresh mutation below to diff against here, so whether
-		// the summary actually changed when this entry first applied it
-		// isn't knowable now; logging it is the same conservative default
-		// ChangedSince's callers already tolerate (they upsert idempotently).
-		if !firstEntry {
-			if err := b.logUpdate(updatedTurn, slot, offset); err != nil {
-				return err
-			}
+	// The turn's first entry creates its summary; every later one rewrites
+	// it, and logs that it did. The log record is redone even when a crashed
+	// extension already applied the entry: the truncation before this
+	// extension removed its log record, and readers take each slot once.
+	if version > r.FirstOrdinal+1 {
+		if err := b.logUpdate(updatedTurn, slot, offset); err != nil {
+			return err
 		}
-		return nil
 	}
-	before := summaryOf(r)
+	if version <= r.Version {
+		return nil // already accounted before an interrupted catch-up
+	}
 	if entry.Kind == schema.TurnFailure {
 		r.FailureOffset, r.FailureLength = offset, length
 	}
@@ -900,50 +892,11 @@ func (b *builder) stampTurn(slot uint64, entry *schema.Turn, ordinal uint64, off
 		}
 	}
 	r.Version = version
-	if !firstEntry && summaryOf(r) != before {
-		if err := b.logUpdate(updatedTurn, slot, offset); err != nil {
-			return err
-		}
-	}
 	if err := b.x.turns.write(slot, encodeTurn(r)); err != nil {
 		return err
 	}
 	b.summary, b.summarySlot, b.hasSummary = r, slot, true
 	return nil
-}
-
-// turnSummaryFields is the subset of a turnRecord that reaches the
-// wire-visible appwire.Turn (see reader.turn in window.go): status, failure
-// detail, completion, start, and usage. Version, Model, Awaiting*, and the
-// turn's fixed identity/kind/first-entry fields are excluded on purpose: none
-// of them is itself a field of appwire.Turn (Model only ever reaches a
-// client through an item's Model field, tracked by the item's own update-log
-// record, not the turn's), so a change to one of them alone must not mark
-// the turn changed.
-type turnSummaryFields struct {
-	Status        uint32
-	FailureOffset int64
-	FailureLength uint32
-	HasCompletion bool
-	DurationMS    int64
-	CompletedAt   int64
-	Started       bool
-	StartedAt     int64
-	Usage         [4]int64
-}
-
-func summaryOf(r turnRecord) turnSummaryFields {
-	return turnSummaryFields{
-		Status:        r.Status,
-		FailureOffset: r.FailureOffset,
-		FailureLength: r.FailureLength,
-		HasCompletion: r.HasCompletion,
-		DurationMS:    r.DurationMS,
-		CompletedAt:   r.CompletedAt,
-		Started:       r.Started,
-		StartedAt:     r.StartedAt,
-		Usage:         r.Usage,
-	}
 }
 
 // completionStatus maps a completion entry's status to the summary's.

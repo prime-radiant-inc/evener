@@ -1276,26 +1276,19 @@ rather than resolved in prose here:
   it, and `schemaFields` has its own direct tests
   (`internal/transcriptindex/schema_identity_test.go`) against synthetic
   structs differing by exactly one shape change each.
-- ~~**`ChangedSince` over-reports turns.**~~ Fixed: `stampTurn` now snapshots
-  the turn record's wire-visible fields (`summaryOf` in
-  `internal/transcriptindex/build.go`: status, failure detail, completion,
-  start, usage — not `Version`, which advances on every entry regardless,
-  nor `Model`/`Awaiting*`, which have no corresponding field on
-  `appwire.Turn` at all to diverge over) before and after applying an
-  entry, and logs `updatedTurn` only when they differ. The crash-replay
-  redo path (an entry already applied before a truncated extension) still
-  logs unconditionally, since there is no fresh mutation there to diff
-  against. `TestChangedSinceDoesNotReportATurnWhoseEntryDidNotChangeItsSummary`
-  pins the negative case; `turnScalars`/`turnSummaryChanged` in
-  `internal/transcriptindex/updates_test.go` separate "is this the current
-  turn" from "did the summary change" so the existing reference oracles
-  (`TestChangedSinceReturnsCreatedAndUpdatedRecords`,
-  `TestChangedSinceReturnsWhatLaterEntriesChanged`) hold both ways. One
-  visible consequence: a turn whose only later change is its `Version`
-  counter (no wire-visible field moved) can leave a live client's held
-  `Version` for that turn behind the file's until some other change resends
-  it — bounded harm, since nothing reads `Version` for anything but display
-  order and idempotent upsert (`server/transcript_parity_test.go`'s
-  `parityBeforeRestart` documents the one scenario this surfaces in,
-  timing-dependent since it depends on where a live publish boundary lands
-  relative to a turn's entries, not on scripted content).
+- ~~**`ChangedSince` over-reports turns.**~~ Resolved by decision, not by
+  code: `stampTurn` logging `updatedTurn` for every entry after a turn's
+  first is correct, not a bug. `Version` is itself a field of the
+  wire-visible `appwire.Turn` (`json:"version,omitempty"`, see
+  `appwire/types.go`), and every contributing entry advances it
+  (`stampTurn` sets `r.Version = version` unconditionally); a turn whose
+  other summary fields hold steady but whose `Version` moved has still
+  changed on the wire, so reporting it is exactly what "completed or
+  restamped" should mean once `Version` is counted as part of the summary.
+  A prior version of this fix made `stampTurn` log only on a change to the
+  other fields (status/lifecycle/started/usage), which left a live client's
+  held `Version` for such a turn behind the file's — a live-vs-file
+  divergence phase 3 had at zero — until some other change resent it; the
+  parity harness needed a timing-dependent escape hatch to tolerate that,
+  which was itself a symptom of the regression rather than a legitimate
+  accommodation. No code change.
