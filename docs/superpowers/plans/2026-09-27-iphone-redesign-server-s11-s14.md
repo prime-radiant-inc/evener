@@ -10,7 +10,7 @@
 - **S14a (PR 24).** A message-text index in its own SQLite file, `<hub state>/search.db`. It is FTS5 over the text of every user and agent message in this hub's format-2 transcripts, kept under the transcript key and position a thread read gives each item. It reads transcripts through the transcript read model (`internal/transcriptindex`), the same index thread reads use. On the past index's 60-second tick it re-reads only the transcripts whose size or modification time moved, and then only what changed since the snapshot it holds (`ChangedSince`). Deleting a session forgets its messages at once.
 - **S14b (PR 25).** `evener/search` gains a scope (`all`, `live`, `archived`) that filters every group before the limit, an `archived` flag on every result computed by the rail's own rule, the `inSessions` group (each matching session with its match count and its newest three hits, each hit with a transcript key, a position and a one-line snippet whose matched words are marked), and the applied `scope` echoed as the capability signal. A live session is listed once, live, even when only its prompt matched.
 
-**Tech Stack:** Go 1.27 workspace (root module and `agent/`), AppWire over WebSocket (`ProtocolVersion` `"evener-appwire-v5"`), SQLite through `modernc.org/sqlite` with FTS5, TypeScript 6 in `appwire-client/typescript` (generated types only).
+**Tech Stack:** Go 1.27 workspace (root module and `agent/`), AppWire over WebSocket (`ProtocolVersion` `"evener-appwire-v6"`), SQLite through `modernc.org/sqlite` with FTS5, TypeScript 6 in `appwire-client/typescript` (generated types only).
 
 **Spec:** `docs/superpowers/specs/2026-09-25-mobile-app-redesign-design.md`: 7.1 (notices), 7.4 (search), 7.5 (offline), 12 (Hub > Hosts and Providers), 13.3 (an alert when a notice appears), 17 and 18 (S11, S14). The server plan `docs/superpowers/plans/2026-09-26-iphone-redesign-server-additions.md` holds the design-level sections this plan replaces (PRs 22 to 25), its Global Constraints and Jesse's answers (answer 2 drops "expiring within a day"). Written and dry-run against main at `d18386ade` (see Self-review).
 
@@ -78,7 +78,7 @@ A one-letter prefix is the expensive query and matches nearly every session, whi
 
 ## Global Constraints
 
-- **Wire.** Every change is additive and stays on `ProtocolVersion = "evener-appwire-v5"`. New keys are optional (`omitempty`), and an old peer reads a missing key as no information. `evener/notices/changed` is a new notification, and the TS client hands any notification to its subscribers without validation (`appwire-client/typescript/client.ts`, the `msg.method` branch), so an older phone ignores it. `evener/notices/list` is a new method, and an older hub answers it with MethodNotFound, which is the phone's cue to keep its fallback. `SearchParams.scope` is ignored by an older hub, and `SearchResponse.scope` says whether it was applied.
+- **Wire.** Every change is additive and stays on `ProtocolVersion = "evener-appwire-v6"`. New keys are optional (`omitempty`), and an old peer reads a missing key as no information. `evener/notices/changed` is a new notification, and the TS client hands any notification to its subscribers without validation (`appwire-client/typescript/client.ts`, the `msg.method` branch), so an older phone ignores it. `evener/notices/list` is a new method, and an older hub answers it with MethodNotFound, which is the phone's cue to keep its fallback. `SearchParams.scope` is ignored by an older hub, and `SearchResponse.scope` says whether it was applied.
 - **Never add a `FeatureSet` key.** The TS `initialize` decoder refuses unknown feature keys.
 - **Casing.** `appwire` JSON is camelCase (`affectedSessions`, `inSessions`, `hitCount`, `transcriptKey`). `auth/openai` JSON is snake_case (`refresh_token_sha256`). The tagliatelle lint enforces both (`.golangci.yml`).
 - **Generated files.** After any `appwire` type or catalog change, doc comments included: run `make generate`, then `go test ./internal/appwirets -run '^TestGeneratedFileCurrent$' -count=1`. Commit `appwire-client/typescript/types.gen.ts` and `docs/appwire-protocol.md`.
@@ -122,7 +122,7 @@ Decisions the spec and the server plan leave open, with the reason for each.
 4. **A host notice counts the host's sessions that were live when last reached.**
    - Those are the remote cache's rows for that source whose status is live, subagents left out: the rows a Board still shows for the host.
    - A host never reached since the hub started has none, and its notice carries no count.
-5. **A plugin notice carries no count.** No row says which plugins a session runs.
+5. **A plugin notice carries no count.** No row says which plugins a session runs. Spec 18 asks for counts on every kind, so this is question 5.
 6. **An offline host means what the manifest says.** A host is offline when its source is not attached. A host the hub has not attached since it started is offline too, so its notice shows until someone connects it. The phone's fallback reads the same manifest, so this changes nothing the phone shows today. See question 2.
 7. **A method and a notification that carries the list.**
    - The list is not on the navigation manifest: auth and plugin reads are file reads, and notices change on their own clock.
@@ -132,7 +132,7 @@ Decisions the spec and the server plan leave open, with the reason for each.
    - A watcher re-derives the notices every five seconds (the attention watcher's cadence) and announces a change once.
    - An access token that expires with no refresh token, a refusal a daemon noted, a host dropping and a plugin directory vanishing each have no event.
    - The read is cheap: `evener/auth/list` reads a few small files, and `evener/plugin/list` validates each install directory (14 on Jesse's hub).
-   - A kind whose read fails keeps its last notices, so a transient failure never announces a problem resolved and then new again.
+   - A kind whose read fails keeps its last notices, for `evener/notices/list` and the watcher alike (both go through `hubNotices.read`), so a transient failure never reports a problem resolved and then new again.
    - When the set of providers needing a sign-in changes, the watcher first broadcasts the no-data `evener/auth/updated`, so a providers pane refreshes a state that changed with no write.
 9. **This hub's own providers, hosts and plugins only.**
    - A remote host's sign-ins and plugins are the host's own: its own `evener/auth/list`, reachable through `evener/host/request`.
@@ -165,6 +165,7 @@ Decisions the spec and the server plan leave open, with the reason for each.
     - Its schema version lives in `PRAGMA user_version`; any other version is dropped and rebuilt, because the index is a cache.
     - It re-reads a transcript only when its size or modification time moved. With the same incarnation it applies `ChangedSince` (each changed item's row is dropped and written again); otherwise it replaces the session's rows.
     - A transcript it cannot read is recorded with no rows and not read again until it changes. A format-1 transcript is not a failure; any other failure is logged once.
+    - A rewrite that keeps a transcript's size and modification time would go unseen until the file next grows. Transcripts only grow; a rewrite (the v2 upgrade) changes both.
 18. **Freshness is one past-index interval (60 s).** A live session's newest words become searchable within a minute. The Sessions group's title and prompt matches are immediate, and Find in session (phase 3) searches what the phone has loaded.
 19. **Matching.**
     - Every word must match as a prefix, letter case aside, with words split on anything but letters, digits and underscores. This is the title search's own rule (`ftsQuery`, now sharing `hubcore.SearchTokens`), so FTS5 syntax in a search is only words.
@@ -183,7 +184,7 @@ Decisions the spec and the server plan leave open, with the reason for each.
 22. **One archive rule.**
     - `hubcore.SessionArchived` is the rail's rule: the owning source archived the project, or the session's own decision archives it, or, with no decision, two weeks without activity.
     - The Live band's filter now calls it, and search's `archived` flag reports it.
-    - A past session's project is its state directory's name.
+    - A past session's project is its state directory's name. Search passes the controller's own source: the roster lists only this hub's daemons, and remote rows never reach `hubSearch` (ruling 25).
 23. **Each session once.** A live session is listed only in `live`, and a prompt match lists it there too (spec 7.4: "title and prompt matches"). This fixes today's duplicate, which also showed a working session as "ended".
 24. **The capability signal is the echoed scope.** Every S14 hub echoes the applied `scope`, so a phone that sees none keeps its fallback: All and Live client-side, and no In sessions group.
 25. **This hub's sessions only.** Search does not fan out to attached hosts today, and S14 keeps that. See question 3.
@@ -201,6 +202,8 @@ Each has a recommendation; the plan is written to the recommendation, so none bl
 3. **Should notices and message search reach other hosts?** Both cover this hub only, as today's search does. **Recommendation:** not in these PRs. A follow-up (call it S14c) could fan search out the way `evener/activity/read` does (`RemoteHubSource.ReadSessionActivity`). It must recompute each remote result's `archived` flag with this hub's decisions, since the controller holds the archive decisions for remote sessions. A notices fan-out would follow the same pattern. File both when you want them.
 4. **Should message search cover subagent sessions?** It does (ruling 15), as the Sessions group already lists them. **Recommendation:** keep it. Finding which subagent edited a file is a real use. If results feel noisy, the phone can group a subagent hit under its coordinator later; the result would need a parent ref for that.
 
+5. **Should a broken-plugin notice count sessions?** Spec 18 asks for affected counts on every notice. No row or probe says which plugins a session runs; the StatusOnly root row strips them. **Recommendation:** ship without a count (ruling 5). A plugin that fails validation mostly affects new sessions, since running ones loaded it at start. A count needs the daemon to report its enabled plugins on the root row, which is a small follow-up if you want it.
+
 ## Review Focus
 
 1. **A hit that opens the wrong place.**
@@ -212,7 +215,7 @@ Each has a recommendation; the plan is written to the recommendation, so none bl
 3. **A notice that flaps.**
    - A transient read failure must not announce a sign-in resolved and then needed again.
    - A session count moving must not look like a new sign-in problem to a providers pane.
-   - Pinned by `TestNoticeWatcherKeepsAFailedKindsLastNotices` and `TestNoticeWatcherAnnouncesEachChangeOnce` (Task 22.2).
+   - Pinned by `TestHubNoticesKeepAFailedKindsLastNotices` and `TestNoticeWatcherAnnouncesEachChangeOnce` (Task 22.2).
 4. **A false "sign in" for a healthy login.**
    - A refresh that races another process's refresh, or a refusal followed by a refresh that worked, must not leave the instance asking for a sign-in.
    - Pinned by `TestRefreshRefusalNamesOnlyTheRefusedToken`, `TestRuntimeCredentialsRefreshClearsAnEarlierRefusal` and `TestSaveAuthClearsARefreshRefusal` (Task 23.1).
@@ -267,7 +270,7 @@ This lane changes `mobile-native/` only through the shared package's generated t
 **Known limits.**
 - A live session's newest message is searchable within a minute (ruling 18).
 - Notices and message search cover this hub only (question 3).
-- A turn that failed because the issuer refused a sign-in still reads "Evener configuration error" on its row: see the issue filed with this plan.
+- A turn that failed because the issuer refused a sign-in still reads "Evener configuration error" on its row (#2705).
 
 ---
 
@@ -457,9 +460,9 @@ git commit -m "feat(hub): live entries carry the session's current provider inst
   - `appwire.HubNotice{ID, Kind, Subject, Marketplace, AffectedSessions}`;
   - `appwire.NoticesListResponse{Notices}`;
   - `appwire.MethodEvenerNoticesList = "evener/notices/list"` and `NotifyEvenerNoticesChanged = "evener/notices/changed"`;
-  - `hubNotices{auth, plugins, sources, roster, remote}` with `derive(ctx) ([]appwire.HubNotice, map[string]bool)`;
+  - `hubNotices{auth, plugins, sources, roster, remote}` with `derive(ctx) ([]appwire.HubNotice, map[string]bool)` and `read(ctx) []appwire.HubNotice`, which keeps a failed kind's last notices;
   - `registerNoticesHandler(server, notices)`;
-  - `runNoticeWatcher(ctx, ticks, derive, broadcaster)`;
+  - `runNoticeWatcher(ctx, ticks, read, broadcaster)`;
   - `noticeInterval`;
   - `sourceIsOnline(appsource.Source) bool`.
 
@@ -623,15 +626,13 @@ func TestNoticeWatcherAnnouncesEachChangeOnce(t *testing.T) {
 	for _, step := range steps {
 		derived <- step
 	}
-	derive := func(context.Context) ([]appwire.HubNotice, map[string]bool) {
-		return <-derived, nil
-	}
+	read := func(context.Context) []appwire.HubNotice { return <-derived }
 	broadcaster := newRecordingBroadcaster()
 	ticks := make(chan time.Time)
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() {
-		runNoticeWatcher(ctx, ticks, derive, broadcaster)
+		runNoticeWatcher(ctx, ticks, read, broadcaster)
 		close(done)
 	}()
 	for range steps[1:] {
@@ -655,43 +656,29 @@ func TestNoticeWatcherAnnouncesEachChangeOnce(t *testing.T) {
 }
 
 // A read that fails is no news: the kind whose read failed keeps the notices
-// the last announcement carried, so a transient failure never announces a
-// problem resolved and then new again.
-func TestNoticeWatcherKeepsAFailedKindsLastNotices(t *testing.T) {
-	plugin := appwire.HubNotice{ID: "pluginBroken:superpowers@obra", Kind: appwire.NoticeKindPluginBroken, Subject: "superpowers", Marketplace: "obra"}
-	host := appwire.HubNotice{ID: "hostOffline:paradise-park", Kind: appwire.NoticeKindHostOffline, Subject: "paradise-park"}
-	type step struct {
-		notices []appwire.HubNotice
-		failed  map[string]bool
+// the last read gave, for evener/notices/list and the watcher alike, so a
+// transient failure never reports a problem resolved and then new again.
+func TestHubNoticesKeepAFailedKindsLastNotices(t *testing.T) {
+	sources := appsource.NewRegistry()
+	host := &offlineStubSource{scriptedAppSource: &scriptedAppSource{id: "paradise-park"}, online: true}
+	sources.Add(host)
+	var authErr error
+	notices := &hubNotices{
+		auth: func() (appwire.AuthListResponse, error) {
+			return appwire.AuthListResponse{Providers: []appwire.AuthStatusResponse{{Provider: "codex", NeedsLogin: true}}}, authErr
+		},
+		sources: sources,
 	}
-	steps := []step{
-		{notices: []appwire.HubNotice{plugin}},
-		// The plugin read failed and a host went offline in the same tick.
-		{notices: []appwire.HubNotice{host}, failed: map[string]bool{appwire.NoticeKindPluginBroken: true}},
+	signIn := appwire.HubNotice{ID: "signInRequired:codex", Kind: appwire.NoticeKindSignInRequired, Subject: "codex"}
+	offline := appwire.HubNotice{ID: "hostOffline:paradise-park", Kind: appwire.NoticeKindHostOffline, Subject: "paradise-park"}
+	if got := notices.read(context.Background()); !reflect.DeepEqual(got, []appwire.HubNotice{signIn}) {
+		t.Fatalf("first read = %+v, want the sign-in", got)
 	}
-	derived := make(chan step, len(steps))
-	for _, s := range steps {
-		derived <- s
-	}
-	derive := func(context.Context) ([]appwire.HubNotice, map[string]bool) {
-		s := <-derived
-		return s.notices, s.failed
-	}
-	broadcaster := newRecordingBroadcaster()
-	ticks := make(chan time.Time)
-	ctx, cancel := context.WithCancel(context.Background())
-	done := make(chan struct{})
-	go func() {
-		runNoticeWatcher(ctx, ticks, derive, broadcaster)
-		close(done)
-	}()
-	ticks <- time.Time{}
-	cancel()
-	<-done
-
-	want := []recordedBroadcast{{method: appwire.NotifyEvenerNoticesChanged, params: appwire.NoticesListResponse{Notices: []appwire.HubNotice{host, plugin}}}}
-	if got := broadcaster.broadcasts(); !reflect.DeepEqual(got, want) {
-		t.Fatalf("broadcasts = %+v, want %+v", got, want)
+	// The auth read fails and the host goes offline in the same read.
+	authErr = errors.New("credentials unreadable")
+	host.online = false
+	if got := notices.read(context.Background()); !reflect.DeepEqual(got, []appwire.HubNotice{signIn, offline}) {
+		t.Fatalf("read with a failed auth read = %+v, want the sign-in kept beside the new host notice", got)
 	}
 }
 
@@ -798,6 +785,7 @@ import (
 	"context"
 	"slices"
 	"sort"
+	"sync"
 	"time"
 
 	"primeradiant.com/evener/appwire"
@@ -821,11 +809,28 @@ type hubNotices struct {
 	sources *appsource.Registry
 	roster  *hubcore.Roster
 	remote  *hubcore.RemoteThreadCache
+
+	// mu guards last, the notices read last answered with.
+	mu   sync.Mutex
+	last []appwire.HubNotice
+}
+
+// read is the hub's notices now, as both evener/notices/list and the watcher
+// report them. A kind whose read failed keeps the notices the last read gave
+// for it: a failed read is no news, so neither a client that asks during a
+// transient failure nor the watcher is told a problem resolved when it was
+// only unreadable.
+func (n *hubNotices) read(ctx context.Context) []appwire.HubNotice {
+	next, failed := n.derive(ctx)
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	n.last = keepFailedNotices(next, n.last, failed)
+	return n.last
 }
 
 // derive returns the notices the hub can read now, sign-ins first, then hosts,
-// then plugins. A kind whose read failed is named in failed, so the watcher
-// can keep that kind's last notices instead of announcing them resolved.
+// then plugins. A kind whose read failed is named in failed, so read can keep
+// that kind's last notices instead of reporting them resolved.
 func (n *hubNotices) derive(ctx context.Context) (notices []appwire.HubNotice, failed map[string]bool) {
 	notices = []appwire.HubNotice{}
 	failed = map[string]bool{}
@@ -957,33 +962,31 @@ func (n *hubNotices) pluginNotices(ctx context.Context) ([]appwire.HubNotice, er
 
 func registerNoticesHandler(server *appserver.Server, notices *hubNotices) {
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerNoticesList, func(ctx context.Context, _ appwire.EmptyParams) (appwire.NoticesListResponse, error) {
-		list, _ := notices.derive(ctx)
-		return appwire.NoticesListResponse{Notices: list}, nil
+		return appwire.NoticesListResponse{Notices: notices.read(ctx)}, nil
 	})
 }
 
 // runNoticeWatcher announces every change in the hub's notices: on each tick it
-// re-derives them and, when they differ from the last announced set, broadcasts
-// evener/notices/changed with the new list. When the sign-in notices change it
-// first broadcasts the no-data evener/auth/updated, so a providers pane
-// refreshes a sign-in whose state changed with no write through this hub. A
-// kind whose read failed keeps its last notices: a failed read is no news.
-func runNoticeWatcher(ctx context.Context, ticks <-chan time.Time, derive func(context.Context) ([]appwire.HubNotice, map[string]bool), broadcaster hostNotificationBroadcaster) {
-	last, _ := derive(ctx)
+// reads them again and, when they differ from the last announced set,
+// broadcasts evener/notices/changed with the new list. When the sign-in
+// notices change it first broadcasts the no-data evener/auth/updated, so a
+// providers pane refreshes a sign-in whose state changed with no write through
+// this hub.
+func runNoticeWatcher(ctx context.Context, ticks <-chan time.Time, read func(context.Context) []appwire.HubNotice, broadcaster hostNotificationBroadcaster) {
+	announced := read(ctx)
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-ticks:
-			next, failed := derive(ctx)
-			next = keepFailedNotices(next, last, failed)
-			if slices.Equal(next, last) {
+			next := read(ctx)
+			if slices.Equal(next, announced) {
 				continue
 			}
-			if !slices.Equal(signInSubjects(next), signInSubjects(last)) {
+			if !slices.Equal(signInSubjects(next), signInSubjects(announced)) {
 				broadcaster.BroadcastAll(appwire.NotifyEvenerAuthUpdated, appwire.EvenerAuthUpdatedParams{})
 			}
-			last = next
+			announced = next
 			broadcaster.BroadcastAll(appwire.NotifyEvenerNoticesChanged, appwire.NoticesListResponse{Notices: next})
 		}
 	}
@@ -1030,7 +1033,7 @@ Run: `go test ./cmd/evener-hub -run 'TestHubNotices|TestNoticeWatcher|TestWebSer
 Expected: PASS, with no stderr noise.
 - `TestHubNoticesReadTheAuthAndPluginControllers` uses the real auth controller and plugin manager.
 - The watcher tests drive `runNoticeWatcher` with an unbuffered tick channel. The watcher handles a tick before it can see the cancel, so no sleep is needed.
-- Prove `TestNoticeWatcherKeepsAFailedKindsLastNotices` can fail: make `keepFailedNotices` return `next` unchanged and watch it announce the plugin notice gone.
+- Prove `TestHubNoticesKeepAFailedKindsLastNotices` can fail: set `n.last = next` in `read` and watch the sign-in notice vanish on the failed read.
 
 Gates: `go vet ./cmd/evener-hub/ ./appwire/`. golangci-lint waits for Task 22.3: until then `registerNoticesHandler` and `noticeInterval` have no caller, and its `unused` check would report them.
 
@@ -1199,7 +1202,7 @@ func watchHubNotices(ctx context.Context, web *WebServer) {
 	}
 	ticks, stop := hubTicker(noticeInterval)
 	defer stop()
-	runNoticeWatcher(ctx, ticks, web.notices.derive, web.appRPC)
+	runNoticeWatcher(ctx, ticks, web.notices.read, web.appRPC)
 }
 ```
 
