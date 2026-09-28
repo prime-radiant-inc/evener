@@ -282,12 +282,13 @@ func TestDocFile_UnknownSession404(t *testing.T) {
 	}
 }
 
-func TestDocFile_NonLocalSession404(t *testing.T) {
+func TestDocFile_NonLocalSessionNeedsRawFormat400(t *testing.T) {
 	web, _, _ := docServeTestServer(t)
-	// A non-local remote ref must be skipped — local sources only.
+	// A host-qualified ref is never read locally, and a request the route
+	// would refuse is refused before any host is asked.
 	rec := docRequest(t, web, "remote:th_remote", "README.md")
-	if rec.Code != http.StatusNotFound {
-		t.Errorf("non-local session should 404, got %d body=%q", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("non-raw request for a non-local session should 400, got %d body=%q", rec.Code, rec.Body.String())
 	}
 }
 
@@ -419,11 +420,13 @@ func TestDocFile_Raw_UnknownSession404(t *testing.T) {
 	}
 }
 
-func TestDocFile_Raw_NonLocalSession404(t *testing.T) {
+func TestDocFile_Raw_UnknownHostSession503(t *testing.T) {
 	web, _, _ := docServeTestServer(t)
+	// No source named "remote" is registered: the read is refused as the
+	// host being unavailable, never resolved against this hub's own disk.
 	rec := docRawRequest(t, web, "remote:th_remote", "README.md")
-	if rec.Code != http.StatusNotFound {
-		t.Errorf("non-local session should 404, got %d body=%q", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Errorf("a session on an unknown host should 503, got %d body=%q", rec.Code, rec.Body.String())
 	}
 }
 

@@ -35,10 +35,12 @@ const docFileMaxBytes = 512 * 1024
 // ~/git was 3.2 MB. A larger file is served without a revision.
 const docRevisionMaxBytes = 16 * 1024 * 1024
 
-// handleDocFile serves a LOCAL session file's literal bytes for the React
+// handleDocFile serves a session file's literal bytes for the React
 // doc-viewer pane, which renders the content itself. The route has a single
 // mode, ?format=raw; a request that omits format or sends any other value is a
-// client error (400 with a hint naming the parameter).
+// client error (400 with a hint naming the parameter). A host-qualified session
+// id names a session on another host, so its file is read by the owning host
+// (serveRemoteSessionDocument); a local id reads this hub's own filesystem.
 //
 // The guard chain below (session/path presence, cwd containment) runs before
 // the format check, so a raw and a non-raw request reject the same out-of-cwd
@@ -61,6 +63,16 @@ func (s *WebServer) handleDocFile(w http.ResponseWriter, r *http.Request) {
 	rel := r.URL.Query().Get("path")
 	if session == "" || rel == "" {
 		http.NotFound(w, r)
+		return
+	}
+	if ref, ok := hostQualifiedRouteRef(session); ok {
+		// Checked before the host is asked: a request this route would refuse
+		// is never forwarded.
+		if r.URL.Query().Get("format") != "raw" {
+			http.Error(w, "format=raw required", http.StatusBadRequest)
+			return
+		}
+		s.serveRemoteSessionDocument(w, r, ref, rel)
 		return
 	}
 
@@ -145,7 +157,7 @@ func (s *WebServer) handleDocImage(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	if ref, ok := hostQualifiedImageRef(session); ok {
+	if ref, ok := hostQualifiedRouteRef(session); ok {
 		s.serveRemoteSessionImage(w, r, ref, appwire.SessionImageParams{SessionID: ref.ThreadID, Path: rel})
 		return
 	}
