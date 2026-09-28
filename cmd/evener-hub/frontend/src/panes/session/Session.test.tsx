@@ -9,6 +9,7 @@ import type {
   ThreadCapabilities,
   ThreadReadResponse,
 } from "@evener/appwire-client";
+import * as appwireClient from "@evener/appwire-client";
 import { AppwireClient, makeTranscriptDisplayConfig, WireError } from "@evener/appwire-client";
 import { keyID } from "@evener/appwire-client/state/navigation";
 import { deferred } from "@evener/appwire-client/testing/deferred";
@@ -1168,6 +1169,38 @@ test("a first-ever visit shows no divider, and unmounting stores the last turn a
   expect(screen.queryByTestId("seen-divider")).toBeNull();
   unmount();
   expect(localStorage.getItem("evener.transcript.seen.v1.ref_a")).toBe("turn_2");
+});
+
+// UI-06 (#2383): the live pane derived the thread projection TWICE per model
+// revision - once in Session for its scroll/anchor manifest, then again inside
+// TranscriptBody for rendering - so every streaming snapshot paid whole-thread
+// classification and row construction twice. The fix passes Session's prepared
+// projection and rows into the body; this pins one derivation per distinct
+// (model, config) pair through the live parent -> child path.
+test("derives the live thread projection once per model revision", async ({ onTestFinished }) => {
+  const project = vi.spyOn(appwireClient, "projectThread");
+  onTestFinished(() => project.mockRestore());
+  const fake = connectFakeClient();
+  fake.on("thread/read", () => readResponse("ref_a", { turns: [turnFixture("turn_1", "hello")] }));
+
+  render(
+    <ClientProvider client={fake}>
+      <Session params={{ ref: "ref_a" }} paneId="p1" focused={true} />
+    </ClientProvider>,
+  );
+  await waitFor(() => expect(screen.getAllByTestId("turn-block").length).toBe(1));
+
+  // Session and TranscriptBody receive the exact same model object and config
+  // object, so one derivation per distinct pair means the call count equals
+  // the count of distinct pairs. The pre-fix child recomputation made it 2x.
+  const ids = new Map<unknown, number>();
+  const distinct = new Set<string>();
+  for (const [model, config] of project.mock.calls) {
+    for (const input of [model, config]) if (!ids.has(input)) ids.set(input, ids.size);
+    distinct.add(`${ids.get(model)}:${ids.get(config)}`);
+  }
+  expect(project.mock.calls.length).toBeGreaterThan(0);
+  expect(project.mock.calls.length).toBe(distinct.size);
 });
 
 // --- turn-failure recovery wiring (wave 8) -------------------------------

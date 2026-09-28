@@ -282,6 +282,22 @@ export function transcriptSourceTurnRowIndexesForRows(rows: readonly TranscriptB
 export interface TranscriptBodyProps {
   model: ThreadModel;
   config: TranscriptDisplayConfigV1;
+  /**
+   * A view already derived from this body's own (model, config): the
+   * projection, the rows built from it, and the anchor entries folded from
+   * those rows. A caller that already derives the trio for its own manifest
+   * hands it down so one model revision costs one derivation instead of the
+   * caller's and the body's separate copies. Callers that supply no prepared
+   * view (standalone preview and read-only surfaces) derive their own, as they
+   * always have. The three members travel together: they are one derivation,
+   * and a partially supplied view would let the rendered rows diverge from the
+   * projection the rest of the body reads.
+   */
+  preparedView?: {
+    projection: TranscriptProjection;
+    rows: readonly TranscriptBodyRow[];
+    anchorEntries: readonly TranscriptAnchorEntry[];
+  };
   surface: "live" | "readOnly" | "preview";
   disclosureScope: string;
   sessionRef?: string;
@@ -314,6 +330,7 @@ export interface TranscriptBodyProps {
 export function TranscriptBody({
   model,
   config,
+  preparedView,
   surface,
   disclosureScope,
   sessionRef,
@@ -329,8 +346,11 @@ export function TranscriptBody({
 }: TranscriptBodyProps) {
   const focusFallbackRef = useRef<HTMLElement>(null);
   const entities = useEntityView(sessionRef ?? model.ref, model);
-  const projection = useMemo(() => projectThread(model, config), [model, config]);
-  const rows = useMemo(() => transcriptRowsForProjection(projection), [projection]);
+  const projection = useMemo(
+    () => preparedView?.projection ?? projectThread(model, config),
+    [preparedView, model, config],
+  );
+  const rows = useMemo(() => preparedView?.rows ?? transcriptRowsForProjection(projection), [preparedView, projection]);
   // Source item ids from the projector plus the folded-run ids the rows will
   // render, so the Full baseline reaches every disclosure on screen.
   const eligibleDisclosureIds = useMemo(
@@ -368,7 +388,7 @@ export function TranscriptBody({
     layout: displayViewport,
     viewKey: configFingerprint(config),
     listRef,
-    anchorEntries: transcriptAnchorEntriesForRows(rows),
+    anchorEntries: preparedView?.anchorEntries ?? transcriptAnchorEntriesForRows(rows),
     // Include the synthetic trailing row: following-bottom view restores
     // target renderedRowCount - 1, which is the trailing row when present.
     renderedRowCount: rows.length + (trailingRow === undefined ? 0 : 1),
