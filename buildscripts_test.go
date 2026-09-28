@@ -468,3 +468,37 @@ func TestReleaseBuildsTheWebFirst(t *testing.T) {
 		t.Fatalf(".goreleaser.yml before.hooks = %q, want it to run make build-web so the hub binary embeds a fresh SPA", cfg.Before.Hooks)
 	}
 }
+
+// TestReleaseArchiveDoesNotCarryEvenerDev pins the completion of the evener-dev
+// transition: no install path installs it, and once versions that required it
+// in the archive are gone the release stops building it at all. A published
+// archive with only evener must still upgrade — internal/selfupdate's
+// TestUpgradeInstallsAnArchiveWithoutEvenerDev pins that half.
+func TestReleaseArchiveDoesNotCarryEvenerDev(t *testing.T) {
+	data, err := os.ReadFile(".goreleaser.yml")
+	if err != nil {
+		t.Fatalf("read .goreleaser.yml: %v", err)
+	}
+	var cfg struct {
+		Builds []struct {
+			ID     string `yaml:"id"`
+			Binary string `yaml:"binary"`
+		} `yaml:"builds"`
+		Archives []struct {
+			IDs []string `yaml:"ids"`
+		} `yaml:"archives"`
+	}
+	if err := yaml.Unmarshal(data, &cfg); err != nil {
+		t.Fatalf("parse .goreleaser.yml: %v", err)
+	}
+	for _, b := range cfg.Builds {
+		if b.ID == "evener-dev" || b.Binary == "evener-dev" {
+			t.Fatalf(".goreleaser.yml still builds evener-dev: %+v", b)
+		}
+	}
+	for _, a := range cfg.Archives {
+		if slices.Contains(a.IDs, "evener-dev") {
+			t.Fatalf(".goreleaser.yml archive ids still list evener-dev: %v", a.IDs)
+		}
+	}
+}
