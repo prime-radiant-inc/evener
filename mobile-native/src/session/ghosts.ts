@@ -81,11 +81,14 @@ export function ghosts(
 	// The draft keeps a send uncertain until the store confirms it, and the
 	// outbox admits the same send first, so a binding change in between or a
 	// crash leaves both holding it. One ghost shows: the outbox knows how far
-	// the send got, and the draft keeps what you can do about it.
+	// the send got, and the draft keeps what you can do about it. The draft's
+	// uncertainty is about its latest send, and the store orders pending rows
+	// by when they were admitted (reconcilePendingEntries), so the last match
+	// is the one: an earlier send of the same words keeps its own ghost.
 	const sameSend =
 		unconfirmedDraft === null
 			? undefined
-			: own.find(
+			: own.findLast(
 					(entry) =>
 						!steering(entry) &&
 						(entry.method === "send" || entry.method === "queue") &&
@@ -100,14 +103,17 @@ export function ghosts(
 		);
 	}
 	if (unconfirmedDraft !== null) {
-		const state: GhostState = sameSend && sameSend.state !== "blockedUnknown" ? "sending" : "unconfirmed";
+		// While the outbox still carries the send, nothing is yours to do yet,
+		// as with any send in flight.
+		const sending = sameSend !== undefined && sameSend.state !== "blockedUnknown";
+		const state: GhostState = sending ? "sending" : "unconfirmed";
 		out.push({
 			key: "draft:unconfirmed",
 			state,
 			text: unconfirmedDraft.text,
 			caption: CAPTIONS[state],
-			buttons: ["check", "discard"],
-			menu: ["edit"],
+			buttons: sending ? [] : ["check", "discard"],
+			menu: sending ? [] : ["edit"],
 			origin: { kind: "draft" },
 		});
 	}

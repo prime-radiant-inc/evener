@@ -155,25 +155,50 @@ describe("messages that didn't make it (spec 14)", () => {
 		// outbox holds the same send once it is admitted: a binding change
 		// between the two, or a crash, leaves both.
 		const draft = unsent("look at [image 1]", "look at (attached image 1: a.png)");
-		for (const [state, shown] of [
-			["submitting", "sending"],
-			["blockedUnknown", "unconfirmed"],
-		] as const) {
-			const list = ghosts(
+		const held = (state: PendingTurnEntry["state"]) =>
+			ghosts(
 				session("idle"),
 				[pending({ id: "a", text: "look at  (attached image 1: a.png)", imageCount: 1, state })],
 				draft,
 				[],
 			);
-			expect(list).toHaveLength(1);
-			expect(list[0]).toMatchObject({
-				state: shown,
+		// Still on its way: nothing to do yet, like any send in flight. Discard
+		// here would read as cancelling a send that will still land.
+		expect(held("submitting")).toEqual([
+			expect.objectContaining({ state: "sending", text: "look at [image 1]", buttons: [], menu: [], origin: { kind: "draft" } }),
+		]);
+		// The outbox lost track of it: the draft's actions are yours again.
+		expect(held("blockedUnknown")).toEqual([
+			expect.objectContaining({
+				state: "unconfirmed",
 				text: "look at [image 1]",
 				buttons: ["check", "discard"],
 				menu: ["edit"],
 				origin: { kind: "draft" },
-			});
-		}
+			}),
+		]);
+		// The outbox row is gone and the draft still doesn't know.
+		expect(ghosts(session("idle"), [], draft, [])).toEqual([
+			expect.objectContaining({ state: "unconfirmed", buttons: ["check", "discard"], menu: ["edit"] }),
+		]);
+	});
+
+	it("binds the draft to its newest matching send, after an Edit and a resend of the same words", () => {
+		// "ok" went out unconfirmed, Edit put it back, and it was sent again:
+		// the draft's uncertainty is about the second send.
+		const list = ghosts(
+			session("idle"),
+			[
+				pending({ id: "first", text: "ok", state: "blockedUnknown", createdAt: 1 }),
+				pending({ id: "second", text: " ok ", state: "submitting", createdAt: 2 }),
+			],
+			unsent("ok"),
+			[],
+		);
+		expect(list.map((ghost) => [ghost.key, ghost.state])).toEqual([
+			["pending:first", "unconfirmed"],
+			["draft:unconfirmed", "sending"],
+		]);
 	});
 
 	it("keeps a different message from the outbox as its own ghost", () => {
