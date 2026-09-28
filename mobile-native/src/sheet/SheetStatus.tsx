@@ -5,11 +5,16 @@ import { UPDATE_NEEDED_HINT, useConnectionStatusText } from "../board/connection
 import { useConnection } from "../ConnectionProvider";
 import { allowFontScaling, useColors, useTextScale } from "../ui";
 
-/** The connection's line at the top of a sheet page, in the same words and
- * at the same moments as the Board's toolbar; nothing while live. */
-export function SheetStatus() {
+/** The connection's words (spec 14), the same and at the same moments as the
+ * Board's toolbar: null while live. */
+export function useConnectionLine(): string | null {
 	const { state, fatal } = useConnection();
-	const line = useConnectionStatusText(state, fatal);
+	return useConnectionStatusText(state, fatal);
+}
+
+/** The connection's line at the top of a sheet page; nothing while live. */
+export function SheetStatus() {
+	const line = useConnectionLine();
 	const { palette } = useColors();
 	const scale = useTextScale();
 	if (!line) return null;

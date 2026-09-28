@@ -593,7 +593,7 @@ function Board({
 		scrollBoardTo(0);
 		searchInput.current?.focus?.();
 	}, [scrollBoardTo]);
-	useHeader(navigation, hubId, hubName, connected, revealSearch);
+	useHeader(navigation, hubId, hubName, revealSearch);
 	// Leaving lets go (ruling 22): a screen pushed over the Board (its own
 	// sheets are part of it, ruling 28), or the app leaving the foreground.
 	useEffect(() => {
@@ -1472,15 +1472,13 @@ function useHubSeenMarks(
 	}, [hubMarks, loadedRows]);
 }
 
-function useHeader(navigation: Navigation, hubId: string, hubName: string, connected: boolean, revealSearch: () => void) {
+function useHeader(navigation: Navigation, hubId: string, hubName: string, revealSearch: () => void) {
 	const { fontScale } = useWindowDimensions();
 	useEffect(() => {
 		const hubButton = (
 			<HubButton
 				hubName={hubName}
-				connected={connected}
-				onSettings={() => navigation.navigate("HubSettings", { hubId })}
-				onSwitch={() => navigation.navigate("Hubs")}
+				onOpen={() => navigation.navigate("Hub", { screen: "HubHome", params: { hubId } })}
 			/>
 		);
 		navigation.setOptions({
@@ -1502,57 +1500,23 @@ function useHeader(navigation: Navigation, hubId: string, hubName: string, conne
 				</Action>
 			),
 		});
-	}, [navigation, hubId, hubName, connected, revealSearch, fontScale]);
+	}, [navigation, hubId, hubName, revealSearch, fontScale]);
 }
 
 /** The hub button (spec 7.1): the hub's name and a chevron as one control,
- * opening the hub menu (ruling 9) until phase 5's Hub sheet. A native bar
- * item given both a label and an icon draws only the icon, so this is a
- * custom header view, and the menu is an action sheet. */
-function HubButton({
-	hubName,
-	connected,
-	onSettings,
-	onSwitch,
-}: {
-	hubName: string;
-	connected: boolean;
-	onSettings: () => void;
-	onSwitch: () => void;
-}) {
+ * opening the Hub sheet (spec 12). A native bar item given both a label and an
+ * icon draws only the icon, so this is a custom header view. The Hub opens
+ * while the hub is out of reach too: it keeps its last data and says why its
+ * controls wait. */
+function HubButton({ hubName, onOpen }: { hubName: string; onOpen: () => void }) {
 	const { palette } = useColors();
 	const scale = useTextScale();
 	const { width } = useWindowDimensions();
-	const open = () => {
-		if (Platform.OS === "ios") {
-			ActionSheetIOS.showActionSheetWithOptions(
-				{
-					title: hubName,
-					options: ["Hub settings", "Switch hub", "Cancel"],
-					cancelButtonIndex: 2,
-					// Hub settings needs the hub; Switch hub doesn't.
-					disabledButtonIndices: connected ? [] : [0],
-				},
-				(index) => {
-					if (index === 0) onSettings();
-					else if (index === 1) onSwitch();
-				},
-			);
-			return;
-		}
-		// An alert has no disabled buttons, so Hub settings leaves the list
-		// while the hub is out of reach.
-		Alert.alert(hubName, undefined, [
-			...(connected ? [{ text: "Hub settings", onPress: onSettings }] : []),
-			{ text: "Switch hub", onPress: onSwitch },
-			{ text: "Cancel", style: "cancel" },
-		]);
-	};
 	return (
 		<Pressable
 			accessibilityRole="button"
-			accessibilityLabel={`${hubName}, hub menu`}
-			onPress={open}
+			accessibilityLabel={`${hubName}, Hub`}
+			onPress={onOpen}
 			style={{
 				// A custom header view sizes itself, so a long hub name needs a
 				// cap to truncate against instead of growing into Search.
