@@ -7,7 +7,7 @@ import {
   isTurnError,
 } from "./itemFailure";
 import type { ItemModel, ThreadModel, TurnModel } from "./model";
-import { hasWarningText } from "./reducer";
+import { comparePositions, hasWarningText } from "./reducer";
 import {
   type ContentVector,
   type HookExitDetail,
@@ -122,16 +122,19 @@ const KNOWN_EVENT_KINDS = new Set([
   "error",
   "environment",
   "notes-context",
+  "warning",
+  "interrupted",
 ]);
 
 const PROMPT_EVENT_KINDS = new Set(["system_prompt", "prompt_loaded"]);
 const TURN_TIMING_EVENT_KIND = "round_timings";
 const HOOK_EVENT_KIND = "hook_completed";
-// The one system event critical at every level: a persisted turn failure is
-// the row a reader hunts for (SystemNoticeItem's FailureLine renders it;
-// systemGrouping.ts keeps it out of runs). A tool-repair notice left this set
-// for the informationalNotices gate below.
-const CRITICAL_SYSTEM_EVENT_KINDS = new Set(["error"]);
+// The system events critical at every level: a persisted turn failure, a
+// warning notice, and an interrupted-turn notice are the rows a reader hunts
+// for (SystemNoticeItem's FailureLine renders them; systemGrouping.ts keeps
+// them out of runs). A tool-repair notice left this set for the
+// informationalNotices gate below.
+const CRITICAL_SYSTEM_EVENT_KINDS = new Set(["error", "warning", "interrupted"]);
 const TOOL_REPAIR_EVENT_KIND = "tool_repair";
 
 // ask_user is the current interaction tool. The other names are protocol/tool
@@ -392,13 +395,31 @@ function terminalFallbackEntry(
   return criticalEntry(sourceItem, turn.id, sourceIndex, redactsReasoning(sourceItem, vector));
 }
 
+// Ranks every item across every turn by its real document position, not by
+// turn-then-item array order: turns sort by their OWN first item's position,
+// but two turns' items can themselves interleave (reducer.ts's
+// noticeHistoryTurn: "turns can interleave" - a delegate turn's items landing
+// between a parent turn's, say). sourceIndex is a scroll anchor's identity
+// across renders (useTranscriptScroll), so it must track real position, not
+// this turn's own array slot. Array.prototype.sort is stable, so an item with
+// no position (a legacy, pre-v6 thread) keeps today's turn-then-item order -
+// comparePositions sorts every unpositioned item equal.
+function sourceIndexRanks(turns: readonly TurnModel[]): Map<ItemModel, number> {
+  const all: ItemModel[] = [];
+  for (const turn of turns) for (const item of turn.items) all.push(item);
+  all.sort((left, right) => comparePositions(left.position, right.position));
+  const ranks = new Map<ItemModel, number>();
+  for (const [index, item] of all.entries()) ranks.set(item, index);
+  return ranks;
+}
+
 export function projectThread(model: ThreadModel, config: TranscriptDisplayConfigV1): TranscriptProjection {
   const normalized = normalizeConfig(config);
   const vector = contentVector(normalized);
   const turns: ProjectedTurn[] = [];
   const anchors: ProjectedAnchor[] = [];
   const eligibleDisclosureIds: string[] = [];
-  let sourceIndex = 0;
+  const sourceIndexRank = sourceIndexRanks(model.turns);
   let projectedIndex = 0;
 
   for (const turn of model.turns) {
@@ -406,8 +427,9 @@ export function projectThread(model: ThreadModel, config: TranscriptDisplayConfi
     const visibleItems: ItemModel[] = [];
     const sourceIndexByItem = new Map<ItemModel, number>();
     for (const item of turn.items) {
-      const itemSourceIndex = sourceIndex;
-      sourceIndex += 1;
+      // Always present: sourceIndexRanks just built this map from these same
+      // turns. The fallback is never taken; it only avoids a non-null assertion.
+      const itemSourceIndex = sourceIndexRank.get(item) ?? 0;
       sourceIndexByItem.set(item, itemSourceIndex);
       const decision = decisionFor(item, turn, normalized, vector);
       if (decision === "hidden") continue;

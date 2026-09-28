@@ -38,6 +38,11 @@ type PendingEntry struct {
 	Pending bool
 	Failed  bool
 	Reason  string
+	// ClientMutationID is the identity minted for the RPC this entry tracks,
+	// echoed back on the history item or steering notification that settles
+	// it. Empty on a caller that mints none (kept for compatibility; the
+	// entry then falls back to method+text matching).
+	ClientMutationID string
 }
 
 // PendingRegisteredMsg / PendingConfirmedMsg / PendingFailedMsg are
@@ -122,11 +127,11 @@ func (h *PendingHandleImpl) Fail(reason string) {
 }
 
 // Register satisfies appwire.PendingCoordinator.
-func (p *PendingCoordinator) Register(method, text, ref string) appwire.PendingHandle {
+func (p *PendingCoordinator) Register(method, text, ref, clientMutationID string) appwire.PendingHandle {
 	p.mu.Lock()
 	p.nextID++
 	id := p.nextID
-	entry := PendingEntry{ID: id, Method: method, Text: text, Ref: strings.TrimSpace(ref), Pending: true}
+	entry := PendingEntry{ID: id, Method: method, Text: text, Ref: strings.TrimSpace(ref), Pending: true, ClientMutationID: strings.TrimSpace(clientMutationID)}
 	state := &pendingEntryState{entry: entry}
 	p.entries[id] = state
 	state.timer = p.clock.AfterFunc(pendingTimeout, func() {
@@ -212,6 +217,59 @@ func (p *PendingCoordinator) TryReconcile(method, text, ref string) bool {
 		p.mu.Unlock()
 		return false
 	}
+	return p.confirmLocked(match)
+}
+
+// TryReconcileByMutationID confirms the pending entry of the given method
+// whose ClientMutationID equals mutationID — the authoritative identity the
+// daemon echoes back on the history item or steering notification that
+// settles the mutation, in place of TryReconcile's best-effort text match
+// (fragile once the server substitutes an image placeholder, or joins
+// several queued texts). Returns false without matching anything when
+// mutationID is empty, so a caller that has none simply falls back to
+// TryReconcile.
+func (p *PendingCoordinator) TryReconcileByMutationID(method, mutationID, ref string) bool {
+	mutationID = strings.TrimSpace(mutationID)
+	if mutationID == "" {
+		return false
+	}
+	ref = strings.TrimSpace(ref)
+	p.mu.Lock()
+	var match *pendingEntryState
+	for _, state := range p.entries {
+		if state.entry.Method != method || state.entry.ClientMutationID != mutationID || !pendingRefsMatch(state.entry.Ref, ref) {
+			continue
+		}
+		if !state.entry.Pending && !state.entry.Failed {
+			continue
+		}
+		match = state
+		break
+	}
+	if match == nil {
+		p.mu.Unlock()
+		return false
+	}
+	return p.confirmLocked(match)
+}
+
+// Reconcile tries the authoritative mutation-id match (TryReconcileByMutationID)
+// first and falls back to the best-effort text match (TryReconcile) only when
+// the caller has no mutation id, or nothing pending held it — an older daemon,
+// or a caller (like turn/drainAsSteer, which never carries per-item identity)
+// that mints none. This is the coordinator's own matching-priority policy, so
+// every caller gets it without having to stitch the two primitives together
+// itself.
+func (p *PendingCoordinator) Reconcile(method, clientMutationID, text, ref string) bool {
+	if p.TryReconcileByMutationID(method, clientMutationID, ref) {
+		return true
+	}
+	return p.TryReconcile(method, text, ref)
+}
+
+// confirmLocked settles match as confirmed and dispatches its
+// PendingConfirmedMsg. Called with p.mu held; unlocks before returning.
+func (p *PendingCoordinator) confirmLocked(match *pendingEntryState) bool {
 	match.timer.Stop()
 	delete(p.entries, match.entry.ID)
 	match.entry.Pending = false

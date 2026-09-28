@@ -1002,6 +1002,35 @@ describe("ConversationService", () => {
       expect(call?.params).toMatchObject({ ref: "ref-1" });
     });
 
+    it("forkFromTurn sends a placeholder item key naming the entry ordinal", async () => {
+      const { client, service } = setup();
+      client.on("thread/fork", () => ({
+        thread: makeThread({ evener: { ...makeThread().evener, ref: "ref-2" } }),
+      }));
+      await service.open("ref-1");
+      await service.forkFromTurn(5);
+      const call = client.calls.find((c) => c.method === "thread/fork");
+      expect(call?.params).toMatchObject({
+        ref: "ref-1",
+        sourceItemKey: "apptranscript-item-v2:mobile-fork-entry:4:0",
+        deferInput: true,
+      });
+      expect((call?.params as { sourceTurnId?: string }).sourceTurnId).toBeUndefined();
+    });
+
+    it("forkAside sends aside without a source item key", async () => {
+      const { client, service } = setup();
+      client.on("thread/fork", () => ({
+        thread: makeThread({ evener: { ...makeThread().evener, ref: "ref-2" } }),
+      }));
+      await service.open("ref-1");
+      await service.forkAside();
+      const call = client.calls.find((c) => c.method === "thread/fork");
+      expect(call?.params).toMatchObject({ ref: "ref-1", aside: true });
+      expect((call?.params as { sourceItemKey?: string }).sourceItemKey).toBeUndefined();
+      expect((call?.params as { sourceTurnId?: string }).sourceTurnId).toBeUndefined();
+    });
+
     it("shutdown calls thread/shutdown", async () => {
       const { client, service } = setup();
       client.on("thread/shutdown", () => EMPTY_RESPONSE);

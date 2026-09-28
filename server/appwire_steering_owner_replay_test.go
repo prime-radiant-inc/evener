@@ -73,6 +73,7 @@ func TestLiveSteeringOwnerIdentityReplays(t *testing.T) {
 			<-warmupDone
 
 			server := NewServer(ServerConfig{})
+			t.Cleanup(server.Close)
 			installTranscriptIdentity(t, server, sess.ID(), sess.TranscriptPath())
 			bridgeMu.Lock()
 			srv = server
@@ -104,10 +105,7 @@ func TestLiveSteeringOwnerIdentityReplays(t *testing.T) {
 				t.Fatalf("adapter never accepted steering (calls=%d)", adapter.calls)
 			}
 			assertSteeringOwnerInTranscript(t, sess.TranscriptPath(), start.Turn.ID, adapter.steerStableID, delayed)
-			full, _, err := appTurnsFromTranscriptFile(sess.TranscriptPath())
-			if err != nil {
-				t.Fatalf("cold projection: %v", err)
-			}
+			full := fileHistoryTurns(t, sess.TranscriptPath())
 			if got := len(steeringReplayIdentities(full)); got != 1 {
 				t.Fatalf("projected steering items = %d, want one accepted mutation", got)
 			}

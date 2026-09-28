@@ -1,8 +1,10 @@
 package server
 
 import (
+	"sync"
 	"time"
 
+	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/appwire"
 )
 
@@ -29,13 +31,21 @@ type activitySlot struct {
 // every in-process descendant feed it, so a coordinator's meter shows its whole
 // tree (Jesse's ruling for S5).
 //
-// RecordAppEvent and RecordDescendantAppEvent feed it the AppWire methods they
-// publish, inside their projection commits, and the thread list reads it; all
-// three hold Server.mu, which guards it. It is not part of threadEnvelope: the
-// envelope samples a fixed set of events and never a delta (facetsByEvent in
-// thread_envelope.go), and the meter has to see every delta.
+// RecordAppEvent and RecordDescendantAppEvent feed it the raw session event
+// each call projects, inside their projection commits, and the thread list
+// reads it; all three hold Server.mu. Observing the event itself, rather than
+// the AppWire notification(s) it turns into, keeps the meter working the same
+// way whether or not the thread has a transcript-backed history yet (phase 3's
+// history/overlay notifications only exist once one is attached), and it is
+// simpler: one session event is exactly one unit of transcript motion,
+// independent of how many wire notifications a reader is told about it. It is
+// not part of threadEnvelope: the envelope samples a fixed set of events and
+// never a delta (facetsByEvent in thread_envelope.go), and the meter has to
+// see every delta.
 type activityMeter struct {
-	now        func() time.Time
+	now func() time.Time
+
+	mu         sync.Mutex
 	slots      [activitySlotCount]activitySlot
 	lastMotion time.Time
 }
@@ -52,28 +62,39 @@ func (m *activityMeter) clock() time.Time {
 // session that has not moved since its daemon began serving it has been quiet
 // since then.
 func (m *activityMeter) restart() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	m.slots = [activitySlotCount]activitySlot{}
 	m.lastMotion = m.clock()
 }
 
-// observe records one published AppWire notification. An item finishing and a
-// tool writing output each count toward the current bar ("transcript items and
+// observe records one session event. An item finishing (a user message, an
+// assistant message, a tool call, or a delivered communicate) and a tool
+// writing output each count toward the current bar ("transcript items and
 // tool output events", spec 16.4). A turn or item starting and a message or
 // reasoning summary streaming prove the tree is moving without finishing
-// anything, so they only advance the quiet clock. Everything else (status,
-// queue, usage, task, goal, job and retry notifications) is bookkeeping and
-// moves neither: a retry loop that makes no progress should read May be stuck.
-func (m *activityMeter) observe(method string) {
-	switch method {
-	case appwire.NotifyItemCompleted, appwire.NotifyToolOutputDelta:
+// anything, so they only advance the quiet clock. Everything else (session
+// lifecycle, environment, retries, tasks, goals, notes, jobs, delegates,
+// notices and every other bookkeeping event) moves neither: a retry loop that
+// makes no progress should read May be stuck.
+func (m *activityMeter) observe(kind events.EventKind) {
+	switch kind {
+	case events.EventUserInput, events.EventAssistantTextEnd, events.EventToolCallEnd,
+		events.EventCommunicate, events.EventToolCallOutputDelta:
 		at := m.clock()
+		m.mu.Lock()
 		m.count(at)
 		m.touch(at)
-	case appwire.NotifyTurnStarted, appwire.NotifyItemStarted, appwire.NotifyAgentMessageDelta, appwire.NotifyReasoningSummaryDelta:
+		m.mu.Unlock()
+	case events.EventExecutionStarted, events.EventToolCallStart, events.EventAssistantTextStart,
+		events.EventAssistantTextDelta, events.EventReasoningSummaryDelta:
+		m.mu.Lock()
 		m.touch(m.clock())
+		m.mu.Unlock()
 	}
 }
 
+// count and touch run under m.mu.
 func (m *activityMeter) count(at time.Time) {
 	index := at.Unix() / activitySlotSeconds
 	slot := &m.slots[index%activitySlotCount]
@@ -93,6 +114,8 @@ func (m *activityMeter) touch(at time.Time) {
 // last ending in the current slot, and the time of the newest motion. It is nil
 // until an identity has started the meter.
 func (m *activityMeter) snapshot() *appwire.ThreadActivity {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	if m.lastMotion.IsZero() {
 		return nil
 	}
