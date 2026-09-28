@@ -38,7 +38,6 @@ export interface NativeMutationRecoveryRow {
 	clientMutationId: string;
 	intentSequence: number;
 	status: NativeMutationRecoveryStatus;
-	label: string;
 	reason?: string;
 	/** The text a restore writes into the composer. */
 	text: string;
@@ -49,17 +48,11 @@ export interface NativeMutationRecoveryRow {
 	/** Whether the record-aware fence offers Restore for this row at all,
 	 * independent of the composer. `actions` carries Restore only when the
 	 * converter result also allows it, so a row that offers Restore while its
-	 * actions lack it is offered-but-blocked: its ghost still shows a
-	 * disabled Edit and the caller's hint. */
+	 * actions lack it is offered-but-blocked. */
 	restoreOffered: boolean;
 	record: MutationRecoveryRecord<MutationAttachmentRef>;
 	actions: readonly NativeMutationRecoveryAction[];
 }
-
-const labels = {
-	rejected: "Rejected",
-	orphaned: "Needs review",
-} satisfies Record<NativeMutationRecoveryStatus, string>;
 
 function isTextInputItem(
 	item: unknown,
@@ -145,8 +138,7 @@ export function nativeMutationRecoveryActions(
 }
 
 // The recovery records one exact target owns; the projection layers each
-// record's actions on top. A count that needs only which rows exist uses this
-// directly, since the converter result cannot change the number of rows.
+// record's actions on top.
 function targetRecoveryRecords(
 	targetKey: string,
 	snapshot: MutationPersistenceSnapshot<MutationAttachmentRef> | null,
@@ -170,7 +162,6 @@ export function projectNativeMutationRecovery(
 			clientMutationId: record.clientMutationId,
 			intentSequence: record.intentSequence,
 			status: record.recoveryKind,
-			label: labels[record.recoveryKind],
 			...(record.recoveryReason === undefined
 				? {}
 				: { reason: record.recoveryReason }),
@@ -212,12 +203,10 @@ export function recoveryFailureMessage(error: unknown): string {
 export interface RecoveryPanelSurface {
 	targetKey: string;
 	snapshot: MutationPersistenceSnapshot<MutationAttachmentRef> | null;
-	loading: boolean;
 	/** A read, acquisition or discard failure: the projection's own read error,
 	 * or the acquisition/discard failure the read projection cannot carry. */
 	error: unknown;
 	failed: boolean;
-	count: number;
 	retry(): void;
 	discard(row: NativeMutationRecoveryRow): void;
 }
@@ -307,13 +296,8 @@ export function useRecoveryPanel({
 	return {
 		targetKey,
 		snapshot: projection.snapshot,
-		// A connected surface with no runtime yet is still loading: its read is
-		// pending acquisition. Only a disconnected/never-acquired surface is
-		// genuinely unavailable, which is what lets the panel tell the two apart.
-		loading: projection.loading || (connected && runtime === null),
 		error,
 		failed: error !== null && error !== undefined,
-		count: targetRecoveryRecords(targetKey, projection.snapshot).length,
 		retry,
 		discard,
 	};

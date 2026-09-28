@@ -21,6 +21,7 @@ import {
 	recoveredComposerText,
 	RecoveryFailure,
 	recoveryFailureMessage,
+	type RecoveryPanelSurface,
 	useRecoveryPanel,
 } from "./MutationRecoveryPanel";
 import { render, renderedText, renderHook } from "./renderNative.testkit";
@@ -68,6 +69,16 @@ function snapshot(
 	records: MutationRecoveryRecord<MutationAttachmentRef>[],
 ): MutationPersistenceSnapshot<MutationAttachmentRef> {
 	return { outbox: [], optimistic: [], recovery: records };
+}
+
+// The rows the surface's read shows for its own target, as the screen
+// projects them.
+function recoveryRowCount(surface: RecoveryPanelSurface): number {
+	return projectNativeMutationRecovery(
+		surface.targetKey,
+		surface.snapshot,
+		() => true,
+	).length;
 }
 
 it("projects only the exact target's recovery rows, in intent order", () => {
@@ -247,12 +258,12 @@ it("counts no rows while the snapshot is empty and counts them when rows arrive"
 		}),
 	);
 	await flush();
-	expect(result.current.count).toBe(0);
+	expect(recoveryRowCount(result.current)).toBe(0);
 
 	rows = [recovery(targetKey, "row-1", 1, "rejected")];
 	act(() => result.current.retry());
 	await flush();
-	expect(result.current.count).toBe(1);
+	expect(recoveryRowCount(result.current)).toBe(1);
 });
 
 it("surfaces a failed runtime acquisition and clears it on retry", async () => {
@@ -276,7 +287,7 @@ it("surfaces a failed runtime acquisition and clears it on retry", async () => {
 	expect(recoveryFailureMessage(result.current.error)).toBe(
 		"mutations db unavailable",
 	);
-	expect(result.current.count).toBe(0);
+	expect(recoveryRowCount(result.current)).toBe(0);
 
 	mode = "ok";
 	act(() => result.current.retry());
@@ -284,7 +295,7 @@ it("surfaces a failed runtime acquisition and clears it on retry", async () => {
 
 	expect(result.current.error).toBeNull();
 	expect(result.current.failed).toBe(false);
-	expect(result.current.count).toBe(1);
+	expect(recoveryRowCount(result.current)).toBe(1);
 });
 
 it("surfaces a rejected discard instead of leaving an unhandled rejection", async () => {
@@ -373,14 +384,14 @@ it("refreshes a failed read on retry", async () => {
 	await flush();
 	expect(result.current.error).toBeInstanceOf(Error);
 	expect(result.current.failed).toBe(true);
-	expect(result.current.count).toBe(0);
+	expect(recoveryRowCount(result.current)).toBe(0);
 
 	failing = false;
 	act(() => result.current.retry());
 	await flush();
 
 	expect(result.current.error).toBeNull();
-	expect(result.current.count).toBe(1);
+	expect(recoveryRowCount(result.current)).toBe(1);
 });
 
 it("shows a failure with no rows, and its Retry is reachable", () => {
@@ -463,7 +474,7 @@ it("clears a stale acquisition failure when a later acquisition succeeds", async
 	await flush();
 
 	expect(result.current.error).toBeNull();
-	expect(result.current.count).toBe(1);
+	expect(recoveryRowCount(result.current)).toBe(1);
 });
 
 it("clears an in-scope discard failure after a later successful discard", async () => {
@@ -536,7 +547,7 @@ it("scopes a discard failure to its target, so switching targets shows the new t
 	await flush();
 
 	expect(result.current.error).toBeNull();
-	expect(result.current.count).toBe(1);
+	expect(recoveryRowCount(result.current)).toBe(1);
 });
 
 it("withholds restore for an image input carried by path or metadata without inline data", () => {
