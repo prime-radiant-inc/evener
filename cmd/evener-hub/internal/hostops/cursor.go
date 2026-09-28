@@ -1137,6 +1137,14 @@ func resolvePinnedPair(state *snapshot, q OperationsQuery) (OperationPair, bool,
 		if hasBoundary && boundary.Generation == *q.Generation {
 			return OperationPair{Generation: *q.Generation, IncarnationID: boundary.IncarnationID}, true, nil
 		}
+		if !hasBoundary {
+			// A mirror-less host — §4's custody import — is pinned by its own
+			// newest record, and a generation-only read naming that pair resolves
+			// like any other current pair instead of refusing.
+			if pair, ok := currentHostPairLocked(state, q.Host); ok && pair.Generation == *q.Generation {
+				return pair, true, nil
+			}
+		}
 		return OperationPair{}, false, fmt.Errorf(
 			"%w: host %q has moved past generation %d, so the read needs its incarnationId",
 			ErrInvalidOperationsQuery, q.Host, *q.Generation)
@@ -1188,15 +1196,7 @@ func currentCursorBoundsLocked(state *snapshot) map[string]CursorBound {
 	for name := range state.Boundaries {
 		bounds[name] = CursorBound{Absent: true}
 	}
-	newest := make(map[string]Record, len(state.Records))
-	for i := range state.Records {
-		record := state.Records[i]
-		current, held := newest[record.Host]
-		if !held || record.Generation > current.Generation ||
-			(record.Generation == current.Generation && record.ID > current.ID) {
-			newest[record.Host] = record
-		}
-	}
+	newest := newestRecordByHostLocked(state)
 	for host, boundary := range state.Boundaries {
 		if _, holdsRecords := newest[host]; holdsRecords {
 			bounds[host] = CursorBound{Boundary: boundary}
@@ -1212,4 +1212,36 @@ func currentCursorBoundsLocked(state *snapshot) map[string]CursorBound {
 		}
 	}
 	return bounds
+}
+
+// newestRecordByHostLocked returns, per host, the record whose identity is the
+// host's current one: the highest generation, ties broken by the newest record
+// id. It is the ground truth a mirror-less host's bounds entry and pair are
+// minted from (§4's custody import), and mirrors do not participate.
+func newestRecordByHostLocked(state *snapshot) map[string]Record {
+	newest := make(map[string]Record, len(state.Records))
+	for i := range state.Records {
+		record := state.Records[i]
+		current, held := newest[record.Host]
+		if !held || record.Generation > current.Generation ||
+			(record.Generation == current.Generation && record.ID > current.ID) {
+			newest[record.Host] = record
+		}
+	}
+	return newest
+}
+
+// currentHostPairLocked returns the pair a host is pinned by: its mirrored
+// triple when one exists, and otherwise the pair its own newest record carries —
+// the state §4's custody import produces, which a host-and-generation read must
+// resolve like any other current pair.
+func currentHostPairLocked(state *snapshot, host string) (OperationPair, bool) {
+	if boundary, ok := state.Boundaries[host]; ok {
+		return OperationPair{Generation: boundary.Generation, IncarnationID: boundary.IncarnationID}, true
+	}
+	record, ok := newestRecordByHostLocked(state)[host]
+	if !ok {
+		return OperationPair{}, false
+	}
+	return OperationPair{Generation: record.Generation, IncarnationID: record.IncarnationID}, true
 }

@@ -128,6 +128,15 @@ type quarantineArtifacts struct {
 	// either has its aside or is the one a pending intent names).
 	custodyStamps map[string]bool
 	asideStamps   map[string]bool
+	// sidecarEpoch is the durable counter the sidecar file carried on its own
+	// (zero when there is none). resolveStoreFS persists the live epoch whenever
+	// it exceeds it, so the counter cannot regress if the custody files are
+	// cleaned away later.
+	sidecarEpoch uint64
+	// priorImports maps every id an existing custody file already handed out to
+	// the entry that carried it, so a new fence import cannot reuse one under a
+	// different identity.
+	priorImports map[string]custodyFence
 }
 
 // scanQuarantineArtifacts reads the directory beside the store. Every custody
@@ -139,6 +148,7 @@ func scanQuarantineArtifacts(fs afero.Fs, storePath string) (quarantineArtifacts
 	artifacts := quarantineArtifacts{
 		custodyStamps: map[string]bool{},
 		asideStamps:   map[string]bool{},
+		priorImports:  map[string]custodyFence{},
 	}
 	sidecarEpoch, found, err := readQuarantineEpochFile(fs, storePath)
 	if err != nil {
@@ -146,6 +156,7 @@ func scanQuarantineArtifacts(fs afero.Fs, storePath string) (quarantineArtifacts
 	}
 	if found {
 		artifacts.epoch = sidecarEpoch
+		artifacts.sidecarEpoch = sidecarEpoch
 	}
 
 	names, err := readDirNames(fs, filepath.Dir(storePath))
@@ -177,6 +188,17 @@ func scanQuarantineArtifacts(fs afero.Fs, storePath string) (quarantineArtifacts
 				}
 			}
 			artifacts.custodyStamps[stamp] = true
+			fenceByID := make(map[string]custodyFence, len(custody.Fences))
+			for _, fence := range custody.Fences {
+				fenceByID[fence.RecordID] = fence
+			}
+			for _, row := range custody.RecordIDs {
+				if fence, ok := fenceByID[row.RecordID]; ok {
+					artifacts.priorImports[row.RecordID] = fence
+					continue
+				}
+				artifacts.priorImports[row.RecordID] = custodyFence{RecordID: row.RecordID, Host: row.Host}
+			}
 			if artifacts.rebuildStamp == "" || custody.QuarantineEpoch > artifacts.rebuildEpoch ||
 				(custody.QuarantineEpoch == artifacts.rebuildEpoch && stamp > artifacts.rebuildStamp) {
 				artifacts.rebuildStamp = stamp
@@ -259,6 +281,13 @@ func readQuarantineEpochFile(fs afero.Fs, storePath string) (uint64, bool, error
 	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
 		return 0, false, fmt.Errorf("epoch sidecar %s carries trailing data", sidecarPath)
 	}
+	if sidecar.QuarantineEpoch == 0 {
+		// The writer only ever persists a counter above zero; an empty object or
+		// a zero value is a sidecar this store did not write, and reading it as
+		// "no quarantine yet" would hand a pre-quarantine cursor its old epoch
+		// back.
+		return 0, false, fmt.Errorf("epoch sidecar %s carries no quarantine epoch", sidecarPath)
+	}
 	return sidecar.QuarantineEpoch, true, nil
 }
 
@@ -294,6 +323,15 @@ func resolveStoreFS(fs afero.Fs, path string, faults storeFaults) (snapshot, uin
 	}
 	epoch := artifacts.epoch
 	signal := artifacts.signal
+	if epoch > artifacts.sidecarEpoch {
+		// The counter never regresses: the custody files prove an epoch above the
+		// sidecar's own value (which may have been lost), so it is persisted
+		// again here — before any path can return — and survives the custody
+		// artifacts' later cleanup.
+		if err := writeQuarantineEpoch(fs, path, epoch, faults); err != nil {
+			return snapshot{}, 0, nil, err
+		}
+	}
 
 	intent, haveIntent, err := readQuarantineIntent(fs, path)
 	if err != nil {
@@ -322,18 +360,10 @@ func resolveStoreFS(fs afero.Fs, path string, faults storeFaults) (snapshot, uin
 		if err != nil {
 			return snapshot{}, 0, nil, quarantineFailed(err)
 		}
-		// An intent with no matching aside file re-runs the rename; the custody
-		// file is already written and complete, because it is written before the
-		// rename.
-		if _, err := lstat(fs, intent.AsideFile); errors.Is(err, os.ErrNotExist) {
-			if _, err := lstat(fs, path); err == nil {
-				if err := renameStoreAside(fs, path, intent.AsideFile, faults); err != nil {
-					return snapshot{}, 0, nil, err
-				}
-			} else if !errors.Is(err, os.ErrNotExist) {
-				return snapshot{}, 0, nil, fmt.Errorf("hostops: stat store %s: %w", path, err)
-			}
-		} else if err != nil {
+		asideExists := false
+		if _, err := lstat(fs, intent.AsideFile); err == nil {
+			asideExists = true
+		} else if !errors.Is(err, os.ErrNotExist) {
 			return snapshot{}, 0, nil, fmt.Errorf("hostops: stat quarantine aside %s: %w", intent.AsideFile, err)
 		}
 		if custody.QuarantineEpoch > epoch {
@@ -346,17 +376,23 @@ func resolveStoreFS(fs afero.Fs, path string, faults storeFaults) (snapshot, uin
 				QuarantineEpoch: custody.QuarantineEpoch,
 			}
 		}
-		// Between the rename and the replacement-store open: a store standing at
-		// the path is the replacement the interrupted boot wrote (it loads
-		// cleanly) or a later file; either way a clean store is served, and the
-		// intent is cleared as completed. A missing store is not a clean one —
-		// loadFS reads a missing file as an empty store — so the existence check
-		// comes first and the missing case completes the replacement from the
-		// custody file the intent named.
 		_, statErr := lstat(fs, path)
 		switch {
-		case statErr == nil:
-			if state, err := loadFS(fs, path); err == nil {
+		case errors.Is(statErr, os.ErrNotExist):
+			// The pending rename has nothing to rename — the corrupt file is gone
+			// (renamed by an earlier boot, or removed) — and the replacement the
+			// intent owes has not been written.
+			return replacementFromCustody(fs, path, intent.CustodyFile, custody, artifacts.allocatorFloor, epoch, signal, faults)
+		case statErr != nil:
+			return snapshot{}, 0, nil, fmt.Errorf("hostops: stat store %s: %w", path, statErr)
+		default:
+			state, loadErr := loadFS(fs, path)
+			switch {
+			case loadErr == nil:
+				// A clean store stands at the path: serve it as-is. The pending
+				// rename is never re-run over a healthy file — that would set a
+				// good store aside under a stale intent — so the intent is cleared
+				// and the counter persisted.
 				if err := clearQuarantineIntent(fs, path, faults); err != nil {
 					return snapshot{}, 0, nil, err
 				}
@@ -364,31 +400,26 @@ func resolveStoreFS(fs afero.Fs, path string, faults storeFaults) (snapshot, uin
 					return snapshot{}, 0, nil, err
 				}
 				return state, epoch, signal, nil
+			case errors.Is(loadErr, ErrStoreCorrupt):
+				if !asideExists {
+					// The covered window: the rename never landed, so the corrupt
+					// file at the path is this intent's own quarry. Re-run the
+					// rename and complete the replacement from the intent's custody.
+					if err := renameStoreAside(fs, path, intent.AsideFile, faults); err != nil {
+						return snapshot{}, 0, nil, err
+					}
+					return replacementFromCustody(fs, path, intent.CustodyFile, custody, artifacts.allocatorFloor, epoch, signal, faults)
+				}
+				// The intent's own rename already landed and a different
+				// corruption stands at the path: the intent is stale. Clear it and
+				// quarantine this file in its own custody-first order below, never
+				// moving it aside under the stale intent.
+				if err := clearQuarantineIntent(fs, path, faults); err != nil {
+					return snapshot{}, 0, nil, err
+				}
+			default:
+				return snapshot{}, 0, nil, loadErr
 			}
-		case errors.Is(statErr, os.ErrNotExist):
-			state, err := replacementState(custody, intent.CustodyFile, artifacts.allocatorFloor)
-			if err != nil {
-				return snapshot{}, 0, nil, custodyIncomplete(err)
-			}
-			if err := writeReplacement(fs, path, state, faults); err != nil {
-				return snapshot{}, 0, nil, err
-			}
-			if err := clearQuarantineIntent(fs, path, faults); err != nil {
-				return snapshot{}, 0, nil, err
-			}
-			if err := writeQuarantineEpoch(fs, path, epoch, faults); err != nil {
-				return snapshot{}, 0, nil, err
-			}
-			return state, epoch, signal, nil
-		default:
-			return snapshot{}, 0, nil, fmt.Errorf("hostops: stat store %s: %w", path, statErr)
-		}
-		// The store at the path is corrupt and the intent's own quarantine is
-		// already covered (its rename landed and its custody is complete), so
-		// the intent is stale: clear it and quarantine this file in its own
-		// custody-first order below.
-		if err := clearQuarantineIntent(fs, path, faults); err != nil {
-			return snapshot{}, 0, nil, err
 		}
 	} else if _, err := lstat(fs, path); errors.Is(err, os.ErrNotExist) && artifacts.rebuildStamp != "" {
 		// The store file is gone but an aside and its complete custody remain: a
@@ -400,18 +431,8 @@ func resolveStoreFS(fs afero.Fs, path string, faults storeFaults) (snapshot, uin
 		if err != nil {
 			return snapshot{}, 0, nil, quarantineFailed(err)
 		}
-		state, err := replacementState(custody, custodyPath, artifacts.allocatorFloor)
-		if err != nil {
-			return snapshot{}, 0, nil, custodyIncomplete(err)
-		}
-		if err := writeReplacement(fs, path, state, faults); err != nil {
-			return snapshot{}, 0, nil, err
-		}
 		if custody.QuarantineEpoch > epoch {
 			epoch = custody.QuarantineEpoch
-		}
-		if err := writeQuarantineEpoch(fs, path, epoch, faults); err != nil {
-			return snapshot{}, 0, nil, err
 		}
 		if signal == nil {
 			signal = &QuarantineSignal{
@@ -420,7 +441,7 @@ func resolveStoreFS(fs afero.Fs, path string, faults storeFaults) (snapshot, uin
 				QuarantineEpoch: custody.QuarantineEpoch,
 			}
 		}
-		return state, epoch, signal, nil
+		return replacementFromCustody(fs, path, custodyPath, custody, artifacts.allocatorFloor, epoch, signal, faults)
 	} else if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return snapshot{}, 0, nil, fmt.Errorf("hostops: stat store %s: %w", path, err)
 	}
@@ -438,7 +459,7 @@ func resolveStoreFS(fs afero.Fs, path string, faults storeFaults) (snapshot, uin
 	if err != nil {
 		return snapshot{}, 0, nil, custodyIncomplete(err)
 	}
-	custody, err := custodyFromStore(decoded, path, epoch+1, time.Now().UTC(), artifacts.allocatorFloor)
+	custody, err := custodyFromStore(decoded, path, epoch+1, time.Now().UTC(), artifacts.allocatorFloor, artifacts.priorImports)
 	if err != nil {
 		return snapshot{}, 0, nil, custodyIncomplete(err)
 	}
@@ -528,6 +549,29 @@ func writeReplacement(fs afero.Fs, path string, state snapshot, faults storeFaul
 		return err
 	}
 	return nil
+}
+
+// replacementFromCustody finishes a quarantine whose custody file is already on
+// disk: it writes the replacement store derived from that custody, clears the
+// pending intent the quarantine left (a no-op when there is none), and persists
+// the epoch. Every crash window that lands between the custody write and the
+// replacement's last durable write funnels through here, so all of them open the
+// same state from the same evidence.
+func replacementFromCustody(fs afero.Fs, path, custodyPath string, custody custodyFile, floor uint64, epoch uint64, signal *QuarantineSignal, faults storeFaults) (snapshot, uint64, *QuarantineSignal, error) {
+	state, err := replacementState(custody, custodyPath, floor)
+	if err != nil {
+		return snapshot{}, 0, nil, custodyIncomplete(err)
+	}
+	if err := writeReplacement(fs, path, state, faults); err != nil {
+		return snapshot{}, 0, nil, err
+	}
+	if err := clearQuarantineIntent(fs, path, faults); err != nil {
+		return snapshot{}, 0, nil, err
+	}
+	if err := writeQuarantineEpoch(fs, path, epoch, faults); err != nil {
+		return snapshot{}, 0, nil, err
+	}
+	return state, epoch, signal, nil
 }
 
 // renameStoreAside renames the corrupt store file aside with the boot timestamp,

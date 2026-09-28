@@ -2,6 +2,8 @@ package hostops
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -172,6 +174,32 @@ func boundaryUnavailableEntry(custodyPath string) json.RawMessage {
 	return entry
 }
 
+// quarantineClientOperationID is the server-minted `quarantine-<name>` client
+// operation id for a name the corrupt file yielded none for. It is bounded to
+// MaxClientOperationIDBytes: a name long enough to overflow keeps a
+// deterministic UTF-8-safe prefix plus a digest of the full name, so two long
+// names never collide on one id and the id always satisfies the record schema
+// the import must pass. (Truncating at a byte boundary could split a rune and
+// produce an id the store refuses, turning a complete custody into an aborted
+// boot.)
+func quarantineClientOperationID(host string) string {
+	const prefix = "quarantine-"
+	if id := prefix + host; len(id) <= MaxClientOperationIDBytes {
+		return id
+	}
+	sum := sha256.Sum256([]byte(host))
+	suffix := "-" + hex.EncodeToString(sum[:8])
+	room := MaxClientOperationIDBytes - len(prefix) - len(suffix)
+	cut := 0
+	for i := range host {
+		if i > room {
+			break
+		}
+		cut = i
+	}
+	return prefix + host[:cut] + suffix
+}
+
 // assembleCustody completes and validates one custody snapshot: the cross-entry
 // rules §4's schema rests on. Every fence names an ownership entry (a fence with
 // no ownership cannot be imported as a record identity), every quarantine
@@ -202,6 +230,10 @@ func assembleCustody(custody custodyFile) (custodyFile, error) {
 		if _, duplicate := ownership[entry.Host]; duplicate {
 			return custodyFile{}, fmt.Errorf("%w: host %q carries more than one ownership entry", ErrQuarantineIncomplete, entry.Host)
 		}
+		if entry.Generation == 0 || entry.HighWaterMark < entry.Generation {
+			return custodyFile{}, fmt.Errorf("%w: ownership for %q carries generation %d with high-water mark %d",
+				ErrQuarantineIncomplete, entry.Host, entry.Generation, entry.HighWaterMark)
+		}
 		ownership[entry.Host] = entry
 	}
 	for _, entry := range custody.RecordIDs {
@@ -228,6 +260,12 @@ func assembleCustody(custody custodyFile) (custodyFile, error) {
 		}
 		if err := validateBoundaryEntries(fence.Boundary); err != nil {
 			return custodyFile{}, fmt.Errorf("%w: fence %q: %w", ErrQuarantineIncomplete, fence.RecordID, err)
+		}
+		if fence.Quarantine != boundaryHasRemoteFencing(fence.Boundary) {
+			// The flag is the per-host fencing-quarantine marker; a boundary that
+			// contradicts it would hand a resolver the wrong open state.
+			return custodyFile{}, fmt.Errorf("%w: fence %q carries quarantine %v, which does not match its boundary",
+				ErrQuarantineIncomplete, fence.RecordID, fence.Quarantine)
 		}
 	}
 	// Every entry must be resolvable: the import set is built and validated here
@@ -439,7 +477,12 @@ func readStoreForCustody(fs afero.Fs, path string) (snapshot, error) {
 // corrupt file's own high-water mark, so a later quarantine can never mint an id
 // an earlier custody file still references: an id-only resolve (§5) must never
 // alias an unrelated record.
-func custodyFromStore(state snapshot, path string, epoch uint64, now time.Time, floor uint64) (custodyFile, error) {
+// priorImports maps every id an existing custody file already handed out to the
+// entry that carries it. A fence import reusing such an id is refused unless it
+// is the same record identity — the same lineage's repeated fence keeps its
+// original id, while a different record under an earlier custody's id could
+// otherwise be cleared by resolving the older custody's row.
+func custodyFromStore(state snapshot, path string, epoch uint64, now time.Time, floor uint64, priorImports map[string]custodyFence) (custodyFile, error) {
 	if state.Version != storeVersion {
 		return custodyFile{}, fmt.Errorf("%w: unsupported store version %d", ErrQuarantineIncomplete, state.Version)
 	}
@@ -587,6 +630,20 @@ func custodyFromStore(state snapshot, path string, epoch uint64, now time.Time, 
 			Boundary:          append(json.RawMessage(nil), record.OrphanBoundary...),
 		})
 	}
+	for _, fence := range fences {
+		prior, known := priorImports[fence.RecordID]
+		if !known {
+			continue
+		}
+		if prior.Kind != "" && prior.Host == fence.Host && prior.Kind == fence.Kind &&
+			prior.Generation == fence.Generation && prior.IncarnationID == fence.IncarnationID &&
+			prior.ClientOperationID == fence.ClientOperationID {
+			// The same lineage's fence, kept under its original id.
+			continue
+		}
+		return custodyFile{}, fmt.Errorf("%w: fence %q for host %q reuses an id an earlier custody file carries",
+			ErrQuarantineIncomplete, fence.RecordID, fence.Host)
+	}
 
 	ownership, err := custodyOwnershipFrom(state)
 	if err != nil {
@@ -661,13 +718,18 @@ func fenceIDFor(fences []custodyFence, host string) string {
 }
 
 // custodyOwnershipFrom derives one ownership entry per name the corrupt file
-// yielded: every name a record or the boundary mirror names, plus every removal
-// marker's name. The pair is the name's generation high-water mark with the
-// incarnation id that mark belongs to; the client operation id is the
-// establishing record's own when the corrupt file yielded one, and the
-// server-minted `quarantine-<name>` otherwise. A name that reaches here without
-// a usable pair is incomplete: an ownership entry no record can be built from
-// would leave the name unaddressed and unclosable.
+// yielded: every name a retained record, a tombstone, the boundary mirror or a
+// removal marker names. A tombstone is the last evidence a compacted name has —
+// dropping it would reopen the name past the record the quarantine could no
+// longer prove — so it counts like any other. The pair is the name's generation
+// high-water mark with the incarnation id that mark belongs to; the client
+// operation id is the establishing evidence's own when it carried one, and a
+// bounded server-minted id otherwise. Every name is held to the record schema's
+// host bound here, explicitly, so an over-long name in the mirror or a removal
+// marker refuses custody with a message naming the bound rather than failing
+// later in the import build. A name that reaches here without a usable pair is
+// incomplete: an ownership entry no record can be built from would leave the
+// name unaddressed and unclosable.
 func custodyOwnershipFrom(state snapshot) ([]custodyOwnership, error) {
 	type pair struct {
 		generation    uint64
@@ -689,15 +751,27 @@ func custodyOwnershipFrom(state snapshot) ([]custodyOwnership, error) {
 		}
 		note(record.Host, record.Generation, record.IncarnationID, record.ClientOperationID, record.ID)
 	}
+	for _, tombstone := range state.Tombstones {
+		if err := custodyHostName(tombstone.Host); err != nil {
+			return nil, err
+		}
+		note(tombstone.Host, tombstone.Generation, tombstone.IncarnationID, tombstone.ClientOperationID, tombstone.ID)
+	}
 	for name, boundary := range state.Boundaries {
 		if err := validateBoundary(name, boundary); err != nil {
 			return nil, fmt.Errorf("%w: %w", ErrQuarantineIncomplete, err)
+		}
+		if err := custodyHostName(name); err != nil {
+			return nil, err
 		}
 		note(name, boundary.Generation, boundary.IncarnationID, "", "")
 	}
 	for name, removed := range state.RemovedHosts {
 		if err := validateRemovedHost(name, removed); err != nil {
 			return nil, fmt.Errorf("%w: %w", ErrQuarantineIncomplete, err)
+		}
+		if err := custodyHostName(name); err != nil {
+			return nil, err
 		}
 		note(name, removed.Generation, removed.IncarnationID, "", "")
 	}
@@ -714,7 +788,7 @@ func custodyOwnershipFrom(state snapshot) ([]custodyOwnership, error) {
 		}
 		clientOp := pair.clientOp
 		if clientOp == "" {
-			clientOp = "quarantine-" + host
+			clientOp = quarantineClientOperationID(host)
 		}
 		ownership = append(ownership, custodyOwnership{
 			Host:              host,
@@ -726,6 +800,20 @@ func custodyOwnershipFrom(state snapshot) ([]custodyOwnership, error) {
 		})
 	}
 	return ownership, nil
+}
+
+// custodyHostName holds a name the custody derivation uses to the record
+// schema's host bound, so an over-long mirrored or removal-marker name is an
+// incomplete-custody refusal that names the bound.
+func custodyHostName(name string) error {
+	if err := validateBoundaryName(name); err != nil {
+		return fmt.Errorf("%w: %w", ErrQuarantineIncomplete, err)
+	}
+	if len(name) > MaxHostNameBytes {
+		return fmt.Errorf("%w: name %q is %d bytes, over the %d-byte host bound",
+			ErrQuarantineIncomplete, name, len(name), MaxHostNameBytes)
+	}
+	return nil
 }
 
 // validateBoundaryEntries checks one record's persisted `BoundaryEntry[]`
