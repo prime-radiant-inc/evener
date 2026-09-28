@@ -8,7 +8,6 @@ import {
   operationNeedsRead,
   operationReadPending,
   operationShownOnHost,
-  operationStateSettled,
   planNoTokenAction,
   restartRefusalAction,
   useHostOpsStore,
@@ -155,15 +154,15 @@ export function HostsSection(_props: HostsSectionProps) {
   useEffect(() => {
     const id = setInterval(() => {
       const tracked = hostOpsStore.getState().operations;
-      const load = hostsStore.getState().load;
       for (const name of Object.keys(tracked)) {
         const operation = tracked[name];
-        if (operation === undefined || !operationNeedsRead(operation) || operationReadPending(name)) continue;
-        // An operation belonging to a previous incarnation of a re-created
-        // name is not this row's work: no read can make it this host's, and the
-        // row suppresses it too.
-        const row = load.phase === "ready" ? load.hosts.find((candidate) => candidate.name === name) : undefined;
-        if (row !== undefined && !operationShownOnHost(operation, row)) continue;
+        // A ref suppressed from the row (an older incarnation after a
+        // same-name re-add) is still read to its terminal state: render
+        // suppression is the row's decision, and stopping the poll here would
+        // leave the ref non-terminal forever.
+        if (operation === undefined || !operationNeedsRead(operation) || operationReadPending(name, operation.id)) {
+          continue;
+        }
         void hostOpsStore.getState().pollOperation(name);
       }
     }, OPERATION_POLL_MS);
@@ -631,11 +630,12 @@ function DeployDialog({ row, onClose }: HostOpDialogProps) {
       if (action === "deploy" || action === "retry") {
         await hostOpsStore.getState().deploy(name);
         if (hostOpsStore.getState().plans[name]?.phase === "started") {
-          // A replay (a lost response's retry) answers the existing record: when
-          // it is already terminal, the row shows that past outcome, so the
-          // toast must not claim a fresh start the row would contradict.
+          // 08b §10: a freshly created record reports `pending`; any other state
+          // is the existing record a dedup hit answered. A replay may be
+          // running, not just terminal, and the toast must not claim a fresh
+          // start the row would contradict.
           const record = hostOpsStore.getState().operations[name];
-          if (record !== undefined && operationStateSettled(record.state)) {
+          if (record !== undefined && record.state !== "pending") {
             toasts.push("info", `Deploy ${name} repeated its existing operation (${record.state}).`);
           } else {
             toasts.push("success", `Deploy started for ${name}`);
@@ -766,10 +766,10 @@ function RestartDialog({ row, onClose }: HostOpDialogProps) {
 
   async function finishRestart(): Promise<void> {
     if (hostOpsStore.getState().restarts[name]?.phase === "started") {
-      // The replay arm, as in the deploy dialog: a settled record is the
-      // operation's past outcome, never a fresh start.
+      // The replay arm, as in the deploy dialog: a non-pending state is 08b
+      // §10's dedup-hit discriminator, never a fresh start.
       const record = hostOpsStore.getState().operations[name];
-      if (record !== undefined && operationStateSettled(record.state)) {
+      if (record !== undefined && record.state !== "pending") {
         toasts.push("info", `Restart ${name} repeated its existing operation (${record.state}).`);
       } else {
         toasts.push("success", `Restart started for ${name}`);

@@ -13,6 +13,7 @@ import { connectionStore } from "../../../stores/connection";
 import { hostOpsStore } from "../../../stores/hostOps";
 import { hostsStore } from "../../../stores/hosts";
 import { enterText } from "../../../textEntryTestUtils";
+import { getToasts, resetToastStoreForTests } from "../../../widgets/toast/store";
 import { HOST_POLL_MS, HostsSection, OPERATION_POLL_MS } from "./hosts";
 
 function row(overrides: Partial<HostRow> & Pick<HostRow, "name">): HostRow {
@@ -1112,25 +1113,25 @@ test("a slow read is not re-issued by later ticks, and still publishes when it l
   }
 });
 
-test("an operation from a previous incarnation of a re-created name is not rendered", async () => {
+test("an operation from a previous incarnation is not rendered, and still settles", async () => {
   vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
   try {
     const fake = connectFakeClient();
-    // The row is the re-created host (generation 1/inc-1); the record still
-    // pinned the previous incarnation the name had before the re-add.
-    fake.on("evener/host/list", () => ({ hosts: [row({ name: "beta", address: "b.example" })] }));
-    fake.on("evener/host/plan", () => ({ outcome: "planned", plan: planFixture(), token: "tok-1" }));
-    fake.on("evener/host/deploy", () => ({ id: "op-1", clientOperationId: "client-op-1", state: "pending" }));
-    fake.on("evener/host/operations", () => ({
-      operations: [
-        operationRecord({
-          generation: 9,
-          incarnationId: "inc-9",
-          state: "running",
-          progress: [{ ts: "t", message: "old incarnation work" }],
-        }),
+    let reCreated = false;
+    let record = operationRecord({
+      state: "running",
+      progress: [{ ts: "t", message: "old incarnation work" }],
+    });
+    fake.on("evener/host/list", () => ({
+      hosts: [
+        reCreated
+          ? row({ name: "beta", address: "b.example", generation: 9, incarnationId: "inc-9" })
+          : row({ name: "beta", address: "b.example" }),
       ],
     }));
+    fake.on("evener/host/plan", () => ({ outcome: "planned", plan: planFixture(), token: "tok-1" }));
+    fake.on("evener/host/deploy", () => ({ id: "op-1", clientOperationId: "client-op-1", state: "pending" }));
+    fake.on("evener/host/operations", () => ({ operations: [record] }));
     render(<HostsSection sectionId="hosts" />);
     const betaRow = (await screen.findByText("beta")).closest("li")!;
     fireEvent.click(within(betaRow).getByRole("button", { name: "Deploy" }));
@@ -1139,11 +1140,51 @@ test("an operation from a previous incarnation of a re-created name is not rende
     fireEvent.click(within(dialog).getByRole("button", { name: "Deploy" }));
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
 
+    // The operation runs on the incarnation the row displays (generation 1):
+    // its progress renders.
     await act(() => vi.advanceTimersByTimeAsync(OPERATION_POLL_MS));
     await waitFor(() => expect(hostOpsStore.getState().operations.beta?.fetched).toBe(true));
-    expect(within(betaRow).queryByText("old incarnation work")).toBeNull();
+    expect(within(betaRow).getByText("old incarnation work")).toBeTruthy();
+
+    // The name is removed and re-added (a new generation): the old operation
+    // no longer belongs to the row and stops rendering...
+    reCreated = true;
+    await act(() => vi.advanceTimersByTimeAsync(HOST_POLL_MS));
+    await waitFor(() => expect(within(betaRow).queryByText("old incarnation work")).toBeNull());
     expect(within(betaRow).queryByText("Deploying…")).toBeNull();
+
+    // ...but it is still polled to its terminal state, so the ref can settle
+    // and never lingers non-terminal while the name exists.
+    record = operationRecord({ state: "failed", result: { ok: false, message: "push failed" } });
+    await act(() => vi.advanceTimersByTimeAsync(OPERATION_POLL_MS));
+    await waitFor(() => expect(hostOpsStore.getState().operations.beta?.state).toBe("failed"));
+    expect(within(betaRow).queryByText("old incarnation work")).toBeNull();
+    expect(within(betaRow).queryByText("Deploy failed")).toBeNull();
   } finally {
     vi.useRealTimers();
   }
+});
+
+test("a dedup hit that is still running does not toast a fresh start", async () => {
+  resetToastStoreForTests();
+  const fake = connectFakeClient();
+  fake.on("evener/host/list", () => ({ hosts: [row({ name: "beta", address: "b.example" })] }));
+  fake.on("evener/host/plan", () => ({ outcome: "planned", plan: planFixture(), token: "tok-1" }));
+  // 08b §10: a fresh create reports `pending`; a dedup hit answers the existing
+  // record's actual state — a still-running operation is a replay too.
+  fake.on("evener/host/deploy", () => ({ id: "op-1", clientOperationId: "client-op-1", state: "running" }));
+  fake.on("evener/host/operations", () => ({ operations: [operationRecord({ state: "running" })] }));
+  render(<HostsSection sectionId="hosts" />);
+  const betaRow = (await screen.findByText("beta")).closest("li")!;
+  fireEvent.click(within(betaRow).getByRole("button", { name: "Deploy" }));
+  const dialog = await screen.findByRole("dialog", { name: "Deploy beta" });
+  await waitFor(() => expect(within(dialog).getByText("/srv/evener/evener")).toBeTruthy());
+  fireEvent.click(within(dialog).getByRole("button", { name: "Deploy" }));
+  await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+
+  const texts = getToasts().map((toast) => toast.text);
+  expect(texts).toContain("Deploy beta repeated its existing operation (running).");
+  expect(texts.join(" ")).not.toContain("Deploy started");
+  // The row renders the running operation it adopted.
+  expect(within(betaRow).getByText("Deploying…")).toBeTruthy();
 });

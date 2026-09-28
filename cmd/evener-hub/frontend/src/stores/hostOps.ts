@@ -373,19 +373,33 @@ export function operationNeedsRead(ref: HostOperationRef): boolean {
 }
 
 /** operationShownOnHost reports whether a tracked operation still belongs to
- * the host incarnation the row displays: the identity the ref carries (from
- * its seed, then from the record it read) must match the row's current
- * (generation, incarnation id) pair. A ref that carries no pair renders — it
- * was seeded by the call that just ran on this row. A mismatch suppresses the
- * operation (the previous incarnation's record is not this host's work); the
- * store keeps the ref rather than clearing it so the record reaches its
- * terminal state and retains its read outcome. */
+ * the host incarnation the row displays. Generations are strictly monotonic
+ * (registry spec 08 §1), so the comparison is directional:
+ *
+ * - A ref pinned to an OLDER generation than the row's belongs to a previous
+ *   incarnation (a same-name remove/re-add) and is suppressed — the previous
+ *   incarnation's record is not this host's work. Equal generations compare
+ *   further: a differing incarnation id suppresses too.
+ * - A ref pinned to a NEWER generation than the row's is current and the ROW is
+ *   merely stale (the pane's list poll converges it): the operation stays.
+ * - A ref that carries no pair was seeded by the call that just ran on this
+ *   row, so it renders.
+ *
+ * Suppression is render-only: the poll still drives a suppressed ref to its
+ * terminal state (pollOperation never consults this), so no ref stays
+ * non-terminal forever and the store can still retain the record's outcome. */
 export function operationShownOnHost(
   operation: HostOperationRef,
   row: { generation: number; incarnationId: string },
 ): boolean {
-  if (operation.generation !== undefined && operation.generation !== row.generation) return false;
-  if (operation.incarnationId !== undefined && operation.incarnationId !== row.incarnationId) return false;
+  if (operation.generation !== undefined && operation.generation < row.generation) return false;
+  if (
+    operation.generation === row.generation &&
+    operation.incarnationId !== undefined &&
+    operation.incarnationId !== row.incarnationId
+  ) {
+    return false;
+  }
   return true;
 }
 
@@ -441,7 +455,9 @@ export function hostOperationView(ref: HostOperationRef): HostOperationView {
   const outcome = ref.result === undefined || ref.result.message === "" ? null : ref.result.message;
   let tone: HostOperationView["tone"] = "neutral";
   let label = `${kind} ${ref.state}`;
-  let line: string | null = null;
+  // A state outside the wire's closed set still shows the record's own prose:
+  // the newest progress entry, falling back to the result message.
+  let line: string | null = latest ?? outcome;
   switch (ref.state) {
     case "pending":
     case "running":
@@ -528,11 +544,12 @@ const { requireClient } = connectedClientPort("hostOps");
 const planSequences = new Map<string, number>();
 const restartSequences = new Map<string, number>();
 const operationSequences = new Map<string, number>();
-// Outstanding operation reads per host name, as a count (a direct caller and
-// the section's tick can overlap). The tick skips a pending name, so the
-// interval keeps at most one read per name in flight; the count is released in
-// pollOperation's finally.
-const operationReadsPending = new Map<string, number>();
+// Outstanding operation reads, keyed by host name and the record id the read
+// is for, as counts (a direct caller and the section's tick can overlap). The
+// tick skips a pending (name, id), so the interval keeps at most one read per
+// operation in flight — and a superseded operation's lingering read never
+// blocks its replacement. Counts are released in pollOperation's finally.
+const operationReadsPending = new Map<string, Map<string, number>>();
 function planSequence(name: string): number {
   return planSequences.get(name) ?? 0;
 }
@@ -543,21 +560,27 @@ function operationSequence(name: string): number {
   return operationSequences.get(name) ?? 0;
 }
 
-/** operationReadPending reports whether an operation read is still in flight
- * for this name: the section's tick skips a pending operation instead of
- * piling another read on top of a slow one. */
-export function operationReadPending(name: string): boolean {
-  return (operationReadsPending.get(name) ?? 0) > 0;
+/** operationReadPending reports whether a read for this exact operation is
+ * still in flight: the section's tick skips a pending operation instead of
+ * piling another read on top of a slow one. Keyed by the record id, so a
+ * superseded operation's lingering read never stalls its replacement. */
+export function operationReadPending(name: string, id: string): boolean {
+  return (operationReadsPending.get(name)?.get(id) ?? 0) > 0;
 }
 
-function beginOperationRead(name: string): void {
-  operationReadsPending.set(name, (operationReadsPending.get(name) ?? 0) + 1);
+function beginOperationRead(name: string, id: string): void {
+  const byId = operationReadsPending.get(name) ?? new Map<string, number>();
+  byId.set(id, (byId.get(id) ?? 0) + 1);
+  operationReadsPending.set(name, byId);
 }
 
-function endOperationRead(name: string): void {
-  const remaining = (operationReadsPending.get(name) ?? 0) - 1;
-  if (remaining > 0) operationReadsPending.set(name, remaining);
-  else operationReadsPending.delete(name);
+function endOperationRead(name: string, id: string): void {
+  const byId = operationReadsPending.get(name);
+  if (byId === undefined) return;
+  const remaining = (byId.get(id) ?? 0) - 1;
+  if (remaining > 0) byId.set(id, remaining);
+  else byId.delete(id);
+  if (byId.size === 0) operationReadsPending.delete(name);
 }
 
 function planIsCurrent(name: string, sequence: number, client: AppwireClientLike | null): boolean {
@@ -733,6 +756,16 @@ function publishOperationReadFailure(set: OperationSet, name: string, id: string
     // error on a record whose body was already read and settled: nothing would
     // ever clear it, because a settled record owes no further read.
     if (current.fetched === true && operationStateSettled(current.state)) return previous;
+    // The same refusal seen again is not a new fact: republishing it every tick
+    // would re-render and re-announce the row's alert every second while the
+    // hub stays away.
+    if (
+      current.readRefusal !== undefined &&
+      current.readRefusal.kind === refusal.kind &&
+      current.readRefusal.message === refusal.message
+    ) {
+      return previous;
+    }
     return { operations: { ...previous.operations, [name]: { ...current, readRefusal: refusal } } };
   });
 }
@@ -869,10 +902,20 @@ export const hostOpsStore = create<HostOpsStoreState>((set, get) => ({
       // current: a record from a replaced connection describes the hub that
       // was and must not seed this name's polling.
       if (connectionStore.getState().client === client) {
+        // The seed carries the pair the row it was submitted from displays, so
+        // a same-name re-creation cannot render this operation even before the
+        // first read identifies the record. The row is authoritative for
+        // identity; the plan's generation is the fallback when no row is
+        // loaded. The first read replaces both with the record's own pair.
+        const rowPair = currentPairFor(name);
         publishStartedOperation(
           set,
           name,
-          operationRef(result, "deploy", { host: name, generation: state.plan.generation }),
+          operationRef(result, "deploy", {
+            host: name,
+            generation: rowPair?.generation ?? state.plan.generation,
+            ...(rowPair === undefined ? {} : { incarnationId: rowPair.incarnationId }),
+          }),
         );
       }
       if (!planIsCurrent(name, sequence, client)) return;
@@ -1168,7 +1211,7 @@ export const hostOpsStore = create<HostOpsStoreState>((set, get) => ({
     // name, so this never starves a publish.
     const sequence = operationSequence(name) + 1;
     operationSequences.set(name, sequence);
-    beginOperationRead(name);
+    beginOperationRead(name, ref.id);
     try {
       try {
         const record = await readOperationRecord(client, name, ref.id);
@@ -1204,7 +1247,7 @@ export const hostOpsStore = create<HostOpsStoreState>((set, get) => ({
         }
       }
     } finally {
-      endOperationRead(name);
+      endOperationRead(name, ref.id);
     }
   },
 
