@@ -116,11 +116,11 @@ func canonicalEntry(t *testing.T, e transcript.Entry) (transcript.Entry, []byte)
 // Tracked production follow-up: "hub: CallID communicate echo renders twice live
 // but once after reload" (#2653). Remove this exclusion when it is resolved.
 //
-// Keep synthesizeLiveEvents faithful; the caller removes only the extra live item
-// with the matching CallID and still compares every other item. Derive the echo
-// state through ProjectTurn itself so the exclusion follows the reload registry's
-// rule: only a non-empty final text candidate updates the state, while an
-// assistant record whose final candidate is empty preserves prior registry state.
+// Keep synthesizeLiveEvents faithful; the caller removes at most the first extra
+// live item with each matching CallID and still compares every other item. Derive
+// the echo state through ProjectTurn itself so the exclusion follows the reload
+// registry's rule: only a non-empty final text candidate updates the state, while
+// an assistant record whose final candidate is empty preserves prior registry state.
 func knownClosingCallIDEchoes(turn schema.Turn) map[string]string {
 	if turn.Kind != schema.TurnAssistant {
 		return nil
@@ -158,9 +158,11 @@ func excludeKnownClosingCallIDEchoes(turn schema.Turn, items []appwire.ThreadIte
 		return items
 	}
 	out := make([]appwire.ThreadItem, 0, len(items))
+	consumed := make(map[string]bool, len(echoes))
 	for _, item := range items {
 		message, known := echoes[item.CallID]
-		if known && item.Type == "agentMessage" && strings.TrimSpace(item.Text) == strings.TrimSpace(message) {
+		if known && !consumed[item.CallID] && item.Type == "agentMessage" && strings.TrimSpace(item.Text) == strings.TrimSpace(message) {
+			consumed[item.CallID] = true
 			continue
 		}
 		out = append(out, item)
@@ -244,6 +246,25 @@ func TestClosingCallIDEchoDivergenceExclusionIsNarrow(t *testing.T) {
 		got := excludeKnownClosingCallIDEchoes(turn, items)
 		if len(got) != 1 || got[0].CallID != "other-call" || got[0].Text != "different" {
 			t.Fatalf("exclusion removed more than the known echo item: %+v", got)
+		}
+	})
+
+	t.Run("multiple matching echoes exclude only first", func(t *testing.T) {
+		arguments, err := json.Marshal(map[string]string{"message": "shown"})
+		if err != nil {
+			t.Fatalf("marshal communicate arguments: %v", err)
+		}
+		turn := schema.Turn{Kind: schema.TurnAssistant, Message: llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{
+			{Kind: llm.ContentText, Text: "shown"},
+			{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{ID: "echo-call", Name: "communicate", Arguments: arguments}},
+		}}}
+		items := []appwire.ThreadItem{
+			{Type: "agentMessage", ID: "first-echo", CallID: "echo-call", Text: "shown"},
+			{Type: "agentMessage", ID: "second-echo", CallID: "echo-call", Text: "shown"},
+		}
+		got := excludeKnownClosingCallIDEchoes(turn, items)
+		if len(got) != 1 || got[0].ID != "second-echo" {
+			t.Fatalf("exclusion must remove only the first matching live echo: %+v", got)
 		}
 	})
 }
@@ -644,10 +665,13 @@ func synthesizeLiveEvents(turn schema.Turn, transcriptCloses bool) ([]events.Ses
 						repaired := argrepair.RepairJSON([]byte(p.ToolCall.SentArguments()))
 						normalized := apptranscript.NormalizeCommunicateArguments(repaired)
 						if msg := apptranscript.CommunicateMessageFromArguments(normalized); msg != "" {
-							// At transcript close there is no paired result left to
-							// disambiguate. Model the preview and successful delivery the
-							// live client already saw; reload recovers the same message by
-							// flushing the unconsumed registry entry.
+							// With no paired result, close-time delivery versus rejection is
+							// underdetermined. Model the documented #2204 round-6b flush
+							// contract: an unpaired repairable communicate flushes as its
+							// repaired delivered message. The round-1 proof makes seed #14 fail
+							// when FlushUnpairedCommunicates is disabled, so this still detects
+							// flush regressions; TestHubReplay_UnpairedCommunicateFlushParity
+							// pins the explicit close-time fallback fixture.
 							add(events.CommunicatePreviewStartData{CallID: p.ToolCall.ID})
 							add(events.CommunicateData{CallID: p.ToolCall.ID, Message: msg})
 						}
