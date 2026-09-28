@@ -2317,14 +2317,9 @@ describe("a subagent's own session (spec 9, rulings 10 and 30)", () => {
 		return served;
 	}
 
-	async function mountSubagent(
-		served: Thread,
-		{ stopSubagent = false, jobs = subagentTree(), coordinatorThreadId = COORDINATOR.threadId } = {},
-	) {
+	async function mountSubagent(served: Thread, { stopSubagent = false, jobs = subagentTree() } = {}) {
 		coordinatorHub.tree = jobs;
-		const coordinatorThread = coordinator(stopSubagent);
-		(coordinatorThread as unknown as { id: string }).id = coordinatorThreadId;
-		otherThreads.set(COORDINATOR.ref, coordinatorThread);
+		otherThreads.set(COORDINATOR.ref, coordinator(stopSubagent));
 		const hub = hubClient(served);
 		harness.connection = {
 			...screenConnection(hub.client, "ready"),
@@ -2412,10 +2407,11 @@ describe("a subagent's own session (spec 9, rulings 10 and 30)", () => {
 	});
 
 	it("stops through the coordinator's thread as it reads now, after a restart gave it a new one", async () => {
-		const { tree, hub } = await mountSubagent(subagent(true), {
-			stopSubagent: true,
-			coordinatorThreadId: "thread-restarted",
-		});
+		const { tree, hub } = await mountSubagent(subagent(true), { stopSubagent: true });
+		// The coordinator restarts under a new thread while this screen is open.
+		const restarted = coordinator(true);
+		(restarted as unknown as { id: string }).id = "thread-restarted";
+		otherThreads.set(COORDINATOR.ref, restarted);
 		act(() => pressable(tree, "Stop subagent")?.props.onPress());
 		await act(async () =>
 			alertRequests

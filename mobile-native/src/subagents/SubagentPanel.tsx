@@ -9,6 +9,7 @@ import { WireError } from "@evener/appwire-client";
 import { useCallback, useEffect, useMemo, useState, useSyncExternalStore } from "react";
 import { Alert } from "react-native";
 import { useConnection } from "../ConnectionProvider";
+import { SessionLink } from "../session/sessionMessage";
 import { isMethodNotFound } from "../wireErrors";
 import { returnToSession, type SessionNavigation } from "../session/returnToSession";
 import { stopRequests } from "./nativeStopRequests";
@@ -90,11 +91,6 @@ export function SubagentPanel({
 		coordinatorState.capabilities.stopSubagent === true &&
 		!directUnsupported;
 
-	// The stop names the coordinator's thread as it reads now: a coordinator
-	// that restarted since the screen opened runs under a new one. A direct
-	// stop is offered only once a read has answered.
-	const coordinatorThreadId =
-		coordinatorState !== null && coordinatorState !== "unreadable" ? coordinatorState.threadId : coordinator.threadId;
 	const stopDirectly = useCallback(
 		(target: SubagentRow) => {
 			Alert.alert(`Stop “${target.title}”?`, "Anything it started keeps running.", [
@@ -105,9 +101,15 @@ export function SubagentPanel({
 					onPress: async () => {
 						if (!client) return;
 						try {
+							// The stop names the coordinator's thread as it reads now: a
+							// coordinator that restarted since the screen opened runs
+							// under a new one. Read without following, as the bar's
+							// capability read is.
+							const link = new SessionLink(client, coordinator.ref);
+							const now = await link.read({ follow: false }).finally(() => link.dispose());
 							const response = await client.request("evener/delegate/stop", {
 								ref: coordinator.ref,
-								threadId: coordinatorThreadId,
+								threadId: now.threadId,
 								delegateId: target.id,
 							});
 							if (response.outcome === "stopping")
@@ -123,7 +125,7 @@ export function SubagentPanel({
 				},
 			]);
 		},
-		[client, coordinator.ref, coordinatorThreadId, requests, tree, showToast],
+		[client, coordinator.ref, requests, tree, showToast],
 	);
 
 	if (!barShown) return null;
