@@ -1599,6 +1599,15 @@ describe("Find in session (spec 8.7, ruling 29)", () => {
 					.join(" "),
 			);
 
+	it("opens only the find bar, and no sheet over it", async () => {
+		const { tree } = await mount(findTurns("ref-find-only"));
+		vi.mocked(navigation.navigate).mockClear();
+		chooseMenu("Find in session");
+		await settle();
+		expect(findField(tree)).toBeDefined();
+		expect(navigation.navigate).not.toHaveBeenCalled();
+	});
+
 	it("puts the find bar where the chips were, and Done brings them back", async () => {
 		const { tree } = await mount(findTurns("ref-find-open"));
 		expect(findField(tree)).toBeUndefined();

@@ -1329,6 +1329,7 @@ export function ConversationScreen({
 				return;
 			case "find":
 				setFind(newFind(""));
+				return;
 			case "files":
 				openFiles();
 				return;
