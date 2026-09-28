@@ -13,7 +13,17 @@ import type {
 	TurnModel,
 	Turn,
 } from "@evener/appwire-client";
-import { liveAsksFor, noteFromSteer, projectConversation, projectedRow, projectTimeline } from "./projectedRows";
+import {
+	boundQuestion,
+	liveAsksFor,
+	MAX_ITEM_BYTES,
+	noteFromSteer,
+	projectConversation,
+	projectedRow,
+	projectTimeline,
+	truncateItem,
+	truncateText,
+} from "./projectedRows";
 import type { MobileTimelineItem } from "./projectedRows";
 
 // The row adapter maps the shared projector's ProjectedEntry kinds onto the
@@ -1468,5 +1478,96 @@ describe("the timeline projection delegates to the shared projector", () => {
 		expect(fullShown).toContain("auditing quietly");
 		expect(fullShown).toContain("secret live thought");
 		expect(fullShown).toContain("final thought");
+	});
+});
+
+// capAndTruncate runs over every retained row on every publish. A settled row
+// is already under the bound, so bounding it must hand back the same object —
+// otherwise the clone discards the row identity rowsForProjectedTurn's per-turn
+// cache preserves for an untouched turn, and every frame allocates a fresh row
+// per retained row while streaming.
+describe("truncateItem keeps a row's identity when the bound cuts nothing", () => {
+	const bound = (text: string) => truncateText(text, MAX_ITEM_BYTES);
+	const questionRef = (): AskQuestionRef => ({
+		key: "call_1:0",
+		callId: "call_1",
+		header: "Deploy?",
+		question: "Ship now?",
+		options: [{ label: "Yes", detail: "ship it" }],
+		multiSelect: false,
+	});
+
+	it("returns every settled kind by reference", () => {
+		const rows: MobileTimelineItem[] = [
+			{ kind: "user", id: "u1", text: "hi" },
+			{ kind: "note", id: "n1", text: "a note" },
+			{ kind: "assistant", id: "a1", markdown: "answer", streaming: false },
+			{ kind: "notice", id: "w1", origin: "system", family: "informational", tone: "info", text: "notice" },
+			{ kind: "failure", id: "f1", title: "boom", detail: "stack" },
+			{ kind: "question", id: "q1", questions: [questionRef()] },
+			{
+				kind: "activity",
+				id: "act1",
+				label: "run",
+				family: "tool",
+				state: "completed",
+				detail: { description: "run it", output: "ok" },
+				members: [{ id: "m1", label: "grep", family: "tool", state: "completed", detail: { description: "grep" } }],
+			},
+			{ kind: "attachments", id: "at1", items: [{ id: "img1", src: "data:image/png;base64,AAAA", name: "pic.png" }] },
+		];
+		for (const row of rows) {
+			expect(truncateItem(row, bound)).toBe(row);
+		}
+	});
+
+	it("still clones a row the bound cuts, so no cut is swallowed", () => {
+		const big = "x".repeat(MAX_ITEM_BYTES + 1);
+		const row: MobileTimelineItem = { kind: "user", id: "u1", text: big };
+		const bounded = truncateItem(row, bound);
+		expect(bounded).not.toBe(row);
+		expect(bounded.kind).toBe("user");
+		if (bounded.kind === "user") expect(bounded.text.length).toBeLessThan(big.length);
+	});
+
+	it("clones only the streaming row, leaving the settled one's identity intact", () => {
+		const big = "x".repeat(MAX_ITEM_BYTES + 1);
+		const settled: MobileTimelineItem = { kind: "assistant", id: "a1", markdown: "short", streaming: false };
+		const streaming: MobileTimelineItem = { kind: "assistant", id: "a2", markdown: big, streaming: true };
+		const out = [settled, streaming].map((row) => truncateItem(row, bound));
+		expect(out[0]).toBe(settled);
+		expect(out[1]).not.toBe(streaming);
+	});
+
+	it("keeps an untouched activity member's identity while cloning the cut one", () => {
+		const big = "x".repeat(MAX_ITEM_BYTES + 1);
+		const row: MobileTimelineItem = {
+			kind: "activity",
+			id: "act1",
+			label: "run",
+			family: "tool",
+			state: "completed",
+			detail: {},
+			members: [
+				{ id: "m1", label: "grep", family: "tool", state: "completed", detail: { description: "ok" } },
+				{ id: "m2", label: "cat", family: "tool", state: "completed", detail: { output: big } },
+			],
+		};
+		const out = truncateItem(row, bound);
+		expect(out).not.toBe(row);
+		expect(out.kind).toBe("activity");
+		if (out.kind === "activity") {
+			expect(out.members?.[0]).toBe(row.members?.[0]);
+			expect(out.members?.[1]).not.toBe(row.members?.[1]);
+		}
+	});
+
+	it("keeps boundQuestion's identity and the bounded question's replacement in step", () => {
+		const settled = questionRef();
+		expect(boundQuestion(settled, bound)).toBe(settled);
+		const cut = { ...questionRef(), header: "h".repeat(MAX_ITEM_BYTES + 1) };
+		const bounded = boundQuestion(cut, bound);
+		expect(bounded).not.toBe(cut);
+		expect(bounded.header.length).toBeLessThan(cut.header.length);
 	});
 });
