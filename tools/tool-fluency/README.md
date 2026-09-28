@@ -120,9 +120,12 @@ that `evener serve` wires, waits on runtime kicks, and then closes the session
 after the bounded post-turn window. It is not a polling harness.
 
 To compare system prompt versions, `matrix` runs every version's `evener`
-binary against every model, `prose-stats` counts the writing tics and bare
-identifiers in what the agents wrote, and `review-pack` makes blind transcripts
-for a human read. `tools/prompt-eval/README.md` shows them with the prompt
+binary against every model (building each one itself from a version manifest,
+or from hand-built binaries passed with `--version`), `prose-stats` counts the
+writing tics and bare identifiers in what the agents wrote, `review-pack`
+makes blind transcripts for a human read, and `rank-sets`/`rank-score` turn
+those transcripts into a blind side-by-side ranking and score it.
+`tools/prompt-eval/README.md` walks through all of them with the prompt
 evaluation tasks. `prose-count FILE...` counts the same tics in any file, such
 as a prompt section.
 
