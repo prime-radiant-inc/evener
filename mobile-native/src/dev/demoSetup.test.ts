@@ -57,13 +57,30 @@ describe("providers", () => {
 		expect(instances.find((instance) => instance.name === "ollama")).toMatchObject({ credentialRequired: false });
 	});
 
-	it("reports every OAuth provider's sign-in, with the expired one needing a sign-in", () => {
+	it("describes each provider's sign-in the way the hub does (app_auth.go's authModesFor)", () => {
+		const byName = new Map(
+			setup()
+				.answer("evener/instance/list", {})
+				.instances.map((entry) => [entry.name, entry]),
+		);
+		expect(byName.get("lunaroute")).toMatchObject({ auth: "bearer", authModes: ["apiKey"], activeSource: "store" });
+		expect(byName.get("codex-jesse-fsck.com")).toMatchObject({
+			auth: "oauth-openai-codex",
+			authModes: ["oauth"],
+			activeSource: "oauth",
+			hasStoredOAuth: true,
+		});
+		expect(byName.get("vertex")).toMatchObject({
+			auth: "gcp-adc",
+			authModes: ["adc", "credentialJson"],
+			activeSource: "adc",
+		});
+		expect(byName.get("ollama")).toMatchObject({ auth: "none", authModes: ["none"], activeSource: "none" });
+	});
+
+	it("reports every account sign-in, with the expired one needing a sign-in", () => {
 		const statuses = setup().answer("evener/auth/list", {}).providers;
-		expect(statuses.map((status) => status.provider).sort()).toEqual([
-			"codex-jesse-at-pr",
-			"codex-jesse-fsck.com",
-			"vertex",
-		]);
+		expect(statuses.map((status) => status.provider).sort()).toEqual(["codex-jesse-at-pr", "codex-jesse-fsck.com"]);
 		expect(statuses.find((status) => status.provider === "codex-jesse-fsck.com")?.needsLogin).toBe(true);
 		expect(statuses.filter((status) => status.needsLogin)).toHaveLength(1);
 	});
@@ -202,11 +219,24 @@ describe("launching", () => {
 	it("refuses a forwarded method off the hub's list, and a host it doesn't have", () => {
 		const demo = setup();
 		expect(() =>
-			demo.answer("evener/host/request", { host: "paradise-park", method: "evener/instance/delete", params: {} }),
-		).toThrow('method "evener/instance/delete" is not a permitted remote admin method');
+			demo.answer("evener/host/request", {
+				host: "paradise-park",
+				method: "evener/instance/setModelDisabled",
+				params: {},
+			}),
+		).toThrow('method "evener/instance/setModelDisabled" is not a permitted remote admin method');
 		expect(() => demo.answer("evener/host/request", { host: "elsewhere", method: "model/list", params: {} })).toThrow(
 			"unknown host elsewhere",
 		);
+	});
+
+	it("forwards paradise-park's provider list", () => {
+		const forwarded = setup().answer("evener/host/request", {
+			host: "paradise-park",
+			method: "evener/instance/list",
+			params: {},
+		}) as { instances: unknown[] };
+		expect(forwarded.instances).toHaveLength(11);
 	});
 
 	it("leaves methods it doesn't serve to the rest of the demo hub", () => {

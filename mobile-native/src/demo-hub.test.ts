@@ -263,8 +263,8 @@ describe("native demonstration hub's redesign fleet", () => {
 			const search = await client.request("evener/search", { query: "" });
 			expect(search).toHaveProperty("live");
 			const auth = await client.request("evener/auth/list", {});
-			// The Board's expired sign-in, and the Hub's other account sign-ins.
-			expect(auth.providers).toHaveLength(3);
+			// The Board's expired sign-in, and the Hub's other account sign-in.
+			expect(auth.providers).toHaveLength(2);
 			const plugins = await client.request("evener/plugin/list", {});
 			expect(plugins.plugins).toHaveLength(14);
 			const roster = await client.request("thread/list", { limit: 5 });

@@ -14,6 +14,7 @@ import type {
 	ModelDescriptor,
 	PluginLaunchCandidate,
 } from "@evener/appwire-client";
+import { HOST_DEPENDENT_DISCOVERY_METHODS } from "../../../cmd/evener-hub/frontend/src/stores/hostRouting";
 import { type DemoFleet, EXPIRED_PROVIDER, PLUGINS, PROJECT_META } from "./demoFleet.js";
 
 const HUB_VERSION = "0.9.412";
@@ -21,25 +22,32 @@ const HOST = "paradise-park";
 const HOST_VERSION = "0.9.409";
 const OFFLINE_ERROR = "ssh: connect to host paradise-park port 22: Operation timed out";
 
-// data.js's `providers`. `auth` is how the prototype signs in: an account
-// (oauth), a key, or nothing (ollama).
-const PROVIDERS: { id: string; base: string; auth: "oauth" | "key" | "none"; models: string[] }[] = [
+// data.js's `providers`. `auth` is the transport's auth scheme as the hub names
+// it (llm/registry/types.go): a key (bearer), a Codex account, Google's
+// application default credentials, or nothing (ollama).
+type AuthScheme = "bearer" | "oauth-openai-codex" | "gcp-adc" | "none";
+const PROVIDERS: { id: string; base: string; auth: AuthScheme; models: string[] }[] = [
 	{
 		id: "lunaroute",
 		base: "openai-compatible",
-		auth: "key",
+		auth: "bearer",
 		models: ["deepseek-4.1-flash", "glm-5.3-vision", "glm-5.2-vision", "glm-5.3-flash", "glm-5.3"],
 	},
-	{ id: EXPIRED_PROVIDER, base: "codex", auth: "oauth", models: ["gpt-5.6", "gpt-5.6-luna", "gpt-6-astra"] },
-	{ id: "codex-jesse-at-pr", base: "codex", auth: "oauth", models: ["gpt-5.6"] },
-	{ id: "oai-jrv", base: "openai", auth: "key", models: ["gpt-5.5", "codex-auto-review"] },
-	{ id: "meta", base: "meta", auth: "key", models: ["muse-spark-1.3"] },
-	{ id: "kimi-code", base: "moonshot", auth: "key", models: ["k3"] },
-	{ id: "openrouter-corp", base: "openrouter", auth: "key", models: ["claude-sonnet-5", "qwen3-coder-plus"] },
-	{ id: "vertex", base: "vertex", auth: "oauth", models: ["gemini-3-pro"] },
+	{
+		id: EXPIRED_PROVIDER,
+		base: "codex",
+		auth: "oauth-openai-codex",
+		models: ["gpt-5.6", "gpt-5.6-luna", "gpt-6-astra"],
+	},
+	{ id: "codex-jesse-at-pr", base: "codex", auth: "oauth-openai-codex", models: ["gpt-5.6"] },
+	{ id: "oai-jrv", base: "openai", auth: "bearer", models: ["gpt-5.5", "codex-auto-review"] },
+	{ id: "meta", base: "meta", auth: "bearer", models: ["muse-spark-1.3"] },
+	{ id: "kimi-code", base: "moonshot", auth: "bearer", models: ["k3"] },
+	{ id: "openrouter-corp", base: "openrouter", auth: "bearer", models: ["claude-sonnet-5", "qwen3-coder-plus"] },
+	{ id: "vertex", base: "vertex", auth: "gcp-adc", models: ["gemini-3-pro"] },
 	{ id: "ollama", base: "ollama", auth: "none", models: ["qwen3-coder:30b"] },
-	{ id: "groq3", base: "groq", auth: "key", models: ["kimi-k3-instant"] },
-	{ id: "stepfun", base: "stepfun", auth: "key", models: ["step-3"] },
+	{ id: "groq3", base: "groq", auth: "bearer", models: ["kimi-k3-instant"] },
+	{ id: "stepfun", base: "stepfun", auth: "bearer", models: ["step-3"] },
 ];
 
 const ALL_EFFORTS = ["low", "medium", "high", "xhigh", "max"];
@@ -63,6 +71,12 @@ const MODELS: [string, string, string, number, number, number, boolean, string[]
 	["qwen3-coder:30b", "Qwen3 Coder 30B (local)", "ollama", 128, 0, 0, false, ["low", "medium", "high"]],
 ];
 const RECENT_MODELS = ["deepseek-4.1-flash", "glm-5.3-vision", "gpt-5.6"];
+
+function modelById(id: string): (typeof MODELS)[number] {
+	const found = MODELS.find(([model]) => model === id);
+	if (!found) throw new Error(`demoSetup: no model ${id}`);
+	return found;
+}
 
 // data.js's `marketplaces`: a GitHub repo each, and one local folder.
 const MARKETPLACES: { id: string; source: MarketplaceEntry["source"] }[] = [
@@ -154,22 +168,10 @@ function machine(home: string, projects: string[], repos: string[], lacksChrome:
 const localProjects = PROJECT_META.map((project) => project.workingDir);
 const PARADISE_PROJECTS = ["/Users/jesse/git/evener", "/Users/jesse/git/c-to-wasm"];
 
-// The methods the hub forwards to another host (cmd/evener-hub/
-// host_request_methods.txt); anything else is refused, as the hub does.
-const FORWARDED = new Set([
-	"model/list",
-	"evener/harnesses/list",
-	"evener/launch/resolve",
-	"evener/launch/schema",
-	"evener/paths/complete",
-	"evener/path/validate",
-	"evener/dirs/create",
-	"evener/projects/recent",
-	"evener/spawn/slashCatalog",
-	"evener/git/head",
-	"evener/plugin/preview",
-	"evener/instance/list",
-]);
+// The methods the hub forwards to another host for the spawn form, pinned to
+// cmd/evener-hub/host_request_methods.txt by hostRouting's own test; the
+// demo refuses anything else, as the hub's proxy does.
+const FORWARDED: ReadonlySet<string> = new Set(HOST_DEPENDENT_DISCOVERY_METHODS);
 
 type Answers = {
 	[M in DemoSetupMethod]: (params: MethodTypes[M]["params"]) => MethodTypes[M]["result"];
@@ -259,9 +261,7 @@ export function createDemoSetup(fleet: DemoFleet, options: { offlineHost?: boole
 			"evener/launch/resolve": () => ({ effective: { ...LAUNCH_DEFAULTS }, layers: {}, provenance: {} }),
 			"model/list": () => ({
 				data: MODELS.map(modelDescriptor),
-				recent: RECENT_MODELS.map((id) =>
-					modelDescriptor(MODELS.find(([model]) => model === id) as (typeof MODELS)[number]),
-				),
+				recent: RECENT_MODELS.map((id) => modelDescriptor(modelById(id))),
 			}),
 			"evener/plugin/preview": ({ launchOverrides }: MethodTypes["evener/plugin/preview"]["params"]) => {
 				const chosen = launchOverrides?.enabledPlugins;
@@ -286,7 +286,10 @@ export function createDemoSetup(fleet: DemoFleet, options: { offlineHost?: boole
 		} satisfies Partial<Answers>;
 	}
 	const localLaunch = launchAnswers(local);
-	const paradiseLaunch = launchAnswers(paradise);
+	const instanceList = () => ({ instances: PROVIDERS.map(instanceEntry), availableProviders: [] });
+	// What paradise-park answers through the hub: its own folders, and the
+	// hub's providers.
+	const paradiseForwards = { ...launchAnswers(paradise), "evener/instance/list": instanceList };
 
 	const answers: Answers = {
 		...localLaunch,
@@ -299,7 +302,7 @@ export function createDemoSetup(fleet: DemoFleet, options: { offlineHost?: boole
 		"evener/host/request": ({ host, method, params }) => {
 			if (host !== HOST) throw new Error(`unknown host ${host}`);
 			if (!FORWARDED.has(method)) throw new Error(`method "${method}" is not a permitted remote admin method`);
-			const forward = paradiseLaunch[method as keyof typeof paradiseLaunch] as
+			const forward = paradiseForwards[method as keyof typeof paradiseForwards] as
 				| ((params: unknown) => unknown)
 				| undefined;
 			if (!forward) throw new Error(`demoSetup: ${method} isn't forwarded by the demo`);
@@ -313,14 +316,14 @@ export function createDemoSetup(fleet: DemoFleet, options: { offlineHost?: boole
 			updateAvailable: false,
 			applicable: true,
 		}),
-		"evener/instance/list": () => ({ instances: PROVIDERS.map(instanceEntry), availableProviders: [] }),
+		"evener/instance/list": instanceList,
 		// Extends the fleet's answer (the Board's expired sign-in) with the
 		// other providers that sign in with an account.
 		"evener/auth/list": () => {
 			const fleetStatuses = fleet.answerAuthList().providers;
 			const known = new Set(fleetStatuses.map((status) => status.provider));
 			const signedIn: AuthStatusResponse[] = PROVIDERS.filter(
-				(provider) => provider.auth === "oauth" && !known.has(provider.id),
+				(provider) => provider.auth === "oauth-openai-codex" && !known.has(provider.id),
 			).map((provider) => ({
 				provider: provider.id,
 				supported: true,
@@ -372,26 +375,40 @@ function modelDescriptor([
 	};
 }
 
+// Each scheme's sign-in facts as the hub reports them: authModes from
+// app_auth.go's authModesFor, and the source a configured credential of that
+// kind reports (a stored key, a Codex record, application default
+// credentials, or none).
+const SIGN_IN: Record<
+	AuthScheme,
+	Pick<InstanceEntry, "authModes" | "activeSource" | "hasStoredOAuth" | "hasStoredFile" | "credentialRequired">
+> = {
+	bearer: {
+		authModes: ["apiKey"],
+		activeSource: "store",
+		hasStoredOAuth: false,
+		hasStoredFile: true,
+		credentialRequired: true,
+	},
+	"oauth-openai-codex": { authModes: ["oauth"], activeSource: "oauth", hasStoredOAuth: true, credentialRequired: true },
+	"gcp-adc": {
+		authModes: ["adc", "credentialJson"],
+		activeSource: "adc",
+		hasStoredOAuth: false,
+		credentialRequired: true,
+	},
+	none: { authModes: ["none"], activeSource: "none", hasStoredOAuth: false, credentialRequired: false },
+};
+
 function instanceEntry(provider: (typeof PROVIDERS)[number], index: number): InstanceEntry {
-	const signIn = {
-		oauth: { authModes: ["oauth"], activeSource: "oauth", hasStoredOAuth: true, credentialRequired: true },
-		key: {
-			authModes: ["apiKey"],
-			activeSource: "store",
-			hasStoredOAuth: false,
-			credentialRequired: true,
-			hasStoredFile: true,
-		},
-		none: { authModes: [], activeSource: "none", hasStoredOAuth: false, credentialRequired: false },
-	}[provider.auth];
 	return {
 		name: provider.id,
 		providerId: provider.base,
 		protocol: "openai",
-		auth: provider.auth === "key" ? "api_key" : provider.auth,
+		auth: provider.auth,
 		implicit: false,
 		isDefault: index === 0,
 		models: provider.models.map((id) => ({ id })),
-		...signIn,
+		...SIGN_IN[provider.auth],
 	};
 }
