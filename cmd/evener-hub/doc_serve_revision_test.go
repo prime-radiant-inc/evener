@@ -10,7 +10,6 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"net/http"
-	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -48,14 +47,16 @@ func writeDocAt(t *testing.T, path string, content []byte, modified time.Time) {
 	}
 }
 
-func docRawRequestIfNoneMatch(t *testing.T, web *WebServer, session, path, etag string) *httptest.ResponseRecorder {
+// writeSparseDoc creates a file of size bytes that takes no disk space: the
+// size is real, the disk use is not.
+func writeSparseDoc(t *testing.T, path string, size int64) {
 	t.Helper()
-	req := httptest.NewRequest(http.MethodGet, "/doc/file?format=raw&session="+session+"&path="+path, nil)
-	req.Host = "127.0.0.1:9180"
-	req.Header.Set("If-None-Match", etag)
-	rec := httptest.NewRecorder()
-	web.Handler().ServeHTTP(rec, req)
-	return rec
+	if err := os.WriteFile(path, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Truncate(path, size); err != nil {
+		t.Fatal(err)
+	}
 }
 
 // The revision is the sha256 of the whole file, sent as a strong ETag, with
@@ -135,17 +136,7 @@ func TestDocFile_Raw_IfNoneMatchRevalidates(t *testing.T) {
 // what it was shown.
 func TestDocFile_Raw_NoRevisionPastTheHashLimit(t *testing.T) {
 	web, cwd, session := docServeTestServer(t)
-	f, err := os.Create(filepath.Join(cwd, "huge.log"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	// A sparse file: the size is real, the disk use is not.
-	if err := f.Truncate(docRevisionMaxBytes + 1); err != nil {
-		t.Fatal(err)
-	}
-	if err := f.Close(); err != nil {
-		t.Fatal(err)
-	}
+	writeSparseDoc(t, filepath.Join(cwd, "huge.log"), docRevisionMaxBytes+1)
 
 	rec := docRawRequest(t, web, session, "huge.log")
 	if rec.Code != http.StatusOK || rec.Body.Len() != docFileMaxBytes {
@@ -187,17 +178,7 @@ func TestDocFile_Raw_NoTimeAtOrBeforeTheEpoch(t *testing.T) {
 // A file of exactly docRevisionMaxBytes is still hashed: the limit is inclusive.
 func TestDocFile_Raw_RevisionAtTheHashLimit(t *testing.T) {
 	web, cwd, session := docServeTestServer(t)
-	path := filepath.Join(cwd, "limit.log")
-	f, err := os.Create(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := f.Truncate(docRevisionMaxBytes); err != nil {
-		t.Fatal(err)
-	}
-	if err := f.Close(); err != nil {
-		t.Fatal(err)
-	}
+	writeSparseDoc(t, filepath.Join(cwd, "limit.log"), docRevisionMaxBytes)
 
 	rec := docRawRequest(t, web, session, "limit.log")
 	if got, want := rec.Header().Get("ETag"), `"`+docRevisionOf(make([]byte, docRevisionMaxBytes))+`"`; got != want {
@@ -211,16 +192,7 @@ func TestDocFile_Raw_RevisionAtTheHashLimit(t *testing.T) {
 // moment earlier, which is the order a concurrent writer produces.
 func TestReadDocFile_GrowingPastTheHashLimitReportsWhatWasRead(t *testing.T) {
 	path := filepath.Join(docTestRoot(t), "growing.log")
-	f, err := os.Create(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := f.Truncate(docRevisionMaxBytes + 100); err != nil {
-		t.Fatal(err)
-	}
-	if err := f.Close(); err != nil {
-		t.Fatal(err)
-	}
+	writeSparseDoc(t, path, docRevisionMaxBytes+100)
 	small := filepath.Join(t.TempDir(), "earlier.log")
 	writeDocAt(t, small, []byte("short"), time.UnixMilli(1_790_000_000_000))
 	oldStat := docStat
@@ -247,16 +219,7 @@ func TestReadDocFile_ShrinkingBelowTheHashLimitIsHashed(t *testing.T) {
 	path := filepath.Join(docTestRoot(t), "shrunk.log")
 	writeDocAt(t, path, content, time.UnixMilli(1_790_000_000_000))
 	big := filepath.Join(t.TempDir(), "earlier.log")
-	f, err := os.Create(big)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := f.Truncate(docRevisionMaxBytes + 100); err != nil {
-		t.Fatal(err)
-	}
-	if err := f.Close(); err != nil {
-		t.Fatal(err)
-	}
+	writeSparseDoc(t, big, docRevisionMaxBytes+100)
 	oldStat := docStat
 	t.Cleanup(func() { docStat = oldStat })
 	docStat = func(*os.File) (os.FileInfo, error) { return os.Stat(big) }

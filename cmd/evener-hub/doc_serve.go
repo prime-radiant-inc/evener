@@ -49,7 +49,9 @@ const docRevisionMaxBytes = 16 * 1024 * 1024
 // Security: the only file paths we serve are ones that resolve to a location
 // inside the session's cwd. We clean the request path, reject any residual
 // traversal, and confirm the symlink-resolved absolute path is contained by
-// the symlink-resolved cwd. Anything that escapes the cwd is refused.
+// the symlink-resolved cwd. Anything that escapes the cwd is refused. The
+// read itself opens through an os.Root at the cwd (openDocInRoot), so a
+// symlink swapped in after the check cannot lead it out either.
 func (s *WebServer) handleDocFile(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "GET required", http.StatusMethodNotAllowed)
@@ -298,7 +300,8 @@ func looksBinaryBytes(data []byte) bool {
 // revision is answered 304 without the body.
 func writeDocFileRaw(w http.ResponseWriter, r *http.Request, doc docFileRead) {
 	w.Header().Set("Cache-Control", "private, no-cache")
-	if ms := docModifiedMillis(doc.ModifiedAt); ms != 0 {
+	// A time at or before the epoch is sent as no time at all.
+	if ms := doc.ModifiedAt.UnixMilli(); ms > 0 {
 		w.Header().Set("X-Doc-Modified-At", strconv.FormatInt(ms, 10))
 	}
 	etag := ""
@@ -320,12 +323,6 @@ func writeDocFileRaw(w http.ResponseWriter, r *http.Request, doc docFileRead) {
 		w.Header().Set("X-Doc-Total-Size", strconv.FormatInt(doc.TotalSize, 10))
 	}
 	_, _ = w.Write(doc.Data)
-}
-
-// docModifiedMillis is a modification time in Unix milliseconds, or 0 for a
-// time at or before the epoch, which is sent as no time at all.
-func docModifiedMillis(modified time.Time) int64 {
-	return max(modified.UnixMilli(), 0)
 }
 
 // ifNoneMatchNames reports whether an If-None-Match header lists etag, or is
