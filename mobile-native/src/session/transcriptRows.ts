@@ -96,13 +96,18 @@ const ANSWER_REPLY = /^\[answers\]\n\d+\. \[/;
 /** Drops the "[answers]" message you sent a question, once a question row
  * that shows its questions came before it: that row shows your answer
  * beneath the question (spec 8.2, "Question (history)"). A message that only
- * looks like answers, or follows a question row that can't show itself,
- * stays. */
+ * looks like answers, or whose own question row can't show itself, stays. */
 export function hideAnswerMessages(rows: readonly TimelineRow[]): TimelineRow[] {
 	let asked = false;
 	return rows.filter((row) => {
 		if (row.kind === "activity" && askRowQuestions(row)) asked = true;
-		return !(asked && row.kind === "user" && ANSWER_REPLY.test(row.text));
+		if (asked && row.kind === "user" && ANSWER_REPLY.test(row.text)) {
+			// The reply now shows beneath its question, so clear the flag: a later
+			// answer needs a question of its own before it too is hidden.
+			asked = false;
+			return false;
+		}
+		return true;
 	});
 }
 

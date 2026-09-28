@@ -367,6 +367,15 @@ describe("answers you gave a question", () => {
 		expect(hideAnswerMessages([question, typed]).map((row) => row.id)).toEqual(["q", "typed"]);
 	});
 
+	it("stay when their own question can't show itself, even after an earlier answer", () => {
+		// Hiding the first answer clears the flag, so the second answer is judged
+		// against its own question row — one that can't show its questions — and
+		// stays.
+		const unreadable = step("q2", "ask_user", { detail: { arguments: "{not json" } });
+		const second: TimelineRow = { kind: "user", id: "ans2", text: '[answers]\n1. [Choice] → "Drop them"', turnId: "turn_1" };
+		expect(hideAnswerMessages([question, answer, unreadable, second]).map((row) => row.id)).toEqual(["q", "q2", "ans2"]);
+	});
+
 	it("leave every other row alone", () => {
 		const rows: TimelineRow[] = [question, user("u"), { kind: "user", id: "plain", text: "[answers] are here", turnId: "turn_1" }, reply("r")];
 		expect(hideAnswerMessages(rows)).toEqual(rows);
