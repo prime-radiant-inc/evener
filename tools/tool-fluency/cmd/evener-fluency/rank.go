@@ -190,7 +190,7 @@ Read every packet in a set before ranking it. For each set, on its own line, wri
 
 {"set": <set number>, "ranking": ["B", "A", "C"], "writing": {"A": 4, "B": 5, "C": 2}, "why": "one sentence, quoting the worst packet"}
 
-"ranking" lists every packet's letter in the set, best writing first. "writing" scores every packet 1-5 (3 good, 2 acceptable, 1 poor). "why" says the single most important thing about the set and quotes the worst packet.
+"ranking" lists every packet's letter in the set, best writing first. "writing" scores every packet 1-5 (5 excellent, 3 adequate, 1 poor). "why" says the single most important thing about the set and quotes the worst packet.
 `
 
 // renderRankSets renders the reviewer prompt, the answer format, and every
@@ -474,13 +474,16 @@ func runRankScore(args []string) error {
 	keyPath := fs.String("key", "", "rank-sets' key.json")
 	var reviewFiles cmdutil.StringSliceFlag
 	fs.Var(&reviewFiles, "reviews", "a reviewer's JSON-lines output (repeatable)")
-	detail := fs.Bool("detail", false, "also list each set's unblinded ranking and why")
+	detail := fs.Bool("detail", false, "also list each set's unblinded ranking and why (not with --json: its output is plain text)")
 	asJSON := fs.Bool("json", false, "emit JSON instead of a table")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 	if *keyPath == "" || len(reviewFiles) == 0 {
 		return errors.New("--key and at least one --reviews file are required")
+	}
+	if *asJSON && *detail {
+		return errors.New("--json and --detail cannot be combined: --detail's output is plain text, which would corrupt the JSON on stdout")
 	}
 	data, err := os.ReadFile(*keyPath)
 	if err != nil {
