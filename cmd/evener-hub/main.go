@@ -48,6 +48,15 @@ import (
 
 const Version = "0.1.0"
 
+// Hub HTTP listener deadlines: ReadHeaderTimeout bounds the pre-auth window
+// before a peer finishes its request headers (before AuthGuard middleware
+// runs); IdleTimeout bounds an idle keep-alive socket. Neither governs a
+// hijacked AppWire connection, so long-lived streams are unaffected.
+const (
+	hubHTTPReadHeaderTimeout = 10 * time.Second
+	hubHTTPIdleTimeout       = 120 * time.Second
+)
+
 var (
 	hubExecutable  = os.Executable
 	hubProcessArgs = func() []string { return os.Args }
@@ -830,8 +839,10 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 
 	srv := &listenerHTTPServer{
 		Server: &http.Server{
-			Addr:    cfg.Addr,
-			Handler: web.Handler(),
+			Addr:              cfg.Addr,
+			Handler:           web.Handler(),
+			ReadHeaderTimeout: hubHTTPReadHeaderTimeout,
+			IdleTimeout:       hubHTTPIdleTimeout,
 		},
 		ln: hubListener,
 	}

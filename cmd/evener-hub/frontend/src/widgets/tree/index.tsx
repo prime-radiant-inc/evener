@@ -30,6 +30,17 @@ export interface TreeProps<T extends TreeNode = TreeNode> {
   // bindings are not installed, and Alt+ArrowLeft/Right are the browser's
   // history navigation - the tree keeps them tree-owned instead.
   releaseModifierKeys?: boolean;
+  // Optional single-selection, owned by the caller: Tree only reflects it as
+  // aria-selected on each treeitem (the stylesheet keys the selected wash on
+  // that attribute, the same way the command palette and segmented control
+  // do). Return true for the selected row, false for another of the selectable
+  // rows, or
+  // undefined for a row that has no selected state at all (a heading-like
+  // group row in a list where only some nodes are selectable) - undefined
+  // leaves that treeitem without aria-selected rather than asserting "not
+  // selected". Omit the prop entirely and no treeitem carries aria-selected,
+  // so a consumer with no selection concept renders exactly as before.
+  isSelected?: (node: T) => boolean | undefined;
 }
 
 const CLASS = {
@@ -67,7 +78,8 @@ function flattenVisible<T extends TreeNode>(nodes: T[], depth = 0, parent: T | n
 
 /**
  * A keyboard-navigable tree: roving tabindex across whichever rows are
- * currently visible, role=tree/treeitem/group, aria-expanded/aria-level.
+ * currently visible, role=tree/treeitem/group, aria-expanded/aria-level, and
+ * aria-selected when the caller supplies a selection (see isSelected).
  * `renderRow` owns each row's visible content (icon, label, whatever);
  * Tree owns structure, ARIA, and the keyboard path - Up/Down move,
  * Right expands a closed branch or steps into an open one's first child,
@@ -93,6 +105,7 @@ export function Tree<T extends TreeNode = TreeNode>({
   onToggle,
   renderRow,
   releaseModifierKeys = false,
+  isSelected,
 }: TreeProps<T>) {
   const flat = flattenVisible(nodes);
   const indexById = new Map(flat.map((entry, i) => [entry.node.id, i]));
@@ -260,6 +273,7 @@ export function Tree<T extends TreeNode = TreeNode>({
     for (const node of list) {
       const branchHasChildren = hasChildrenOf(node);
       const expanded = node.expanded === true;
+      const selection = isSelected?.(node);
       out.push(
         <div
           key={node.id}
@@ -269,6 +283,7 @@ export function Tree<T extends TreeNode = TreeNode>({
           }}
           role="treeitem"
           aria-expanded={branchHasChildren ? expanded : undefined}
+          aria-selected={selection}
           aria-level={depth + 1}
           tabIndex={node.id === effectiveCurrentId ? 0 : -1}
           className={CLASS.row}

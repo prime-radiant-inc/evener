@@ -2,7 +2,11 @@ import { afterEach, expect, it } from "vitest";
 import { MAX_ATTACHMENT_BYTES } from "@evener/appwire-client";
 import { DraftDocument } from "./draftDocument";
 import { DraftRepository } from "./draftRepository";
-import { ImageSelection, type PickedImage } from "./imageSelection";
+import {
+  CameraAccessDenied,
+  ImageSelection,
+  type PickedImage,
+} from "./imageSelection";
 import { openSqliteSyncDouble, type SqliteDoubleDatabase } from "./sqliteSync.testkit";
 
 const databases: SqliteDoubleDatabase[] = [];
@@ -12,6 +16,7 @@ afterEach(() => {
 function setup(
   pick: () => Promise<PickedImage[]>,
   encode: (image: PickedImage) => Promise<string>,
+  capture: () => Promise<PickedImage[]> = async () => [],
 ) {
   const { database: db, port } = openSqliteSyncDouble();
   databases.push(db);
@@ -23,6 +28,7 @@ function setup(
     document,
     selection: new ImageSelection(document, {
       pick,
+      capture,
       encode,
       id: () => `image-${++id}`,
     }),
@@ -173,4 +179,41 @@ it("retains current text while decoding and does not reuse a removed marker", as
   await selection.choose();
   expect(document.getSnapshot().record.images?.[0]?.marker).toBe(2);
   expect(document.getSnapshot().record.draft.startsWith("newer ")).toBe(true);
+});
+
+it("adds a photo the camera took through the same encoding and markers", async () => {
+  const shot = { ...photo, name: "camera.jpg" };
+  const { document, selection } = setup(
+    async () => {
+      throw new Error("the library is not asked for a camera photo");
+    },
+    async () => "AQID",
+    async () => [shot],
+  );
+
+  await selection.choose("camera");
+
+  expect(document.getSnapshot().record.images).toHaveLength(1);
+  expect(document.getSnapshot().record.images?.[0]?.name).toBe("camera.jpg");
+  expect(document.getSnapshot().record.images?.[0]?.marker).toBe(1);
+  expect(document.getSnapshot().record.draft).toBe("[image 1]");
+  expect(selection.getSnapshot().error).toBeNull();
+});
+
+it("says how to turn the camera on when its permission is refused", async () => {
+  const { document, selection } = setup(
+    async () => [photo],
+    async () => "AQID",
+    async () => {
+      throw new CameraAccessDenied();
+    },
+  );
+
+  await selection.choose("camera");
+
+  expect(document.getSnapshot().record.images).toBeUndefined();
+  expect(selection.getSnapshot().error).toBe(
+    "Camera access is off. Turn it on in Settings to take photos here.",
+  );
+  expect(selection.getSnapshot().busy).toBe(false);
 });

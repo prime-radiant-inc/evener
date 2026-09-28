@@ -2,9 +2,10 @@
 // navigation rows the hub already sends. Where the spec wants a fact the rows
 // don't carry yet, the fallback from spec 18 lives here, and each server
 // addition replaces its fallback in this file: S1 (why text), S2 (approval
-// flag), S3 (subagent counts), S5 (activity). S4 replaces the
-// seen marker, which lives in boardMemory.ts. Subagent failures never appear
-// on a Board row; they show only in the session's Subagents chip and list.
+// flag), S3 (subagent counts), S5 (activity). S4's seen marker lives in
+// hubSeen.ts, beside boardMemory.ts's fallback. Subagent failures never
+// appear on a Board row; they show only in the session's Subagents chip and
+// list.
 import type { NavigationSessionSummary } from "@evener/appwire-client";
 
 export type BoardState =
@@ -64,15 +65,11 @@ export function approvalRefs(needsYouSection: readonly NavigationSessionSummary[
 	return refs;
 }
 
-export function boardState(
-	row: NavigationSessionSummary,
-	approval: boolean,
-	seen: boolean,
-): BoardState {
-	// A row from an offline source can't be reached, whatever state it last
-	// reported: it is never Working, Finished or Needs you.
-	if (row.offline) return "shutDown";
-	switch (row.state) {
+/** The Board state a hub state decides on its own, whatever flags ride
+ * along, or null for one that leaves it to the row's other facts. A Board
+ * row and a search result both start here. */
+export function decisiveState(state: string): BoardState | null {
+	switch (state) {
 		case "errored":
 			return "failed";
 		case "restartRequired":
@@ -83,6 +80,19 @@ export function boardState(
 		case "notLoaded":
 			return "shutDown";
 	}
+	return null;
+}
+
+export function boardState(
+	row: NavigationSessionSummary,
+	approval: boolean,
+	seen: boolean,
+): BoardState {
+	// A row from an offline source can't be reached, whatever state it last
+	// reported: it is never Working, Finished or Needs you.
+	if (row.offline) return "shutDown";
+	const decisive = decisiveState(row.state);
+	if (decisive) return decisive;
 	if (row.state === "awaiting" && row.ask_pending) return "question";
 	if (approval || row.approval_pending === true) return "approval";
 	if (row.state === "active") return "working";
@@ -135,8 +145,14 @@ function byRef(a: ClassifiedRow, b: ClassifiedRow): number {
 function oldestFirst(a: ClassifiedRow, b: ClassifiedRow): number {
 	return time(a.row) - time(b.row) || byRef(a, b);
 }
-function newestFirst(a: ClassifiedRow, b: ClassifiedRow): number {
-	return time(b.row) - time(a.row) || byRef(a, b);
+// Finished and Idle order by when the turn ended (S4): updated_at moves on
+// renames and model rounds too, so it stands in only for a row without a
+// readable turn_ended_at.
+function endedTime(row: NavigationSessionSummary): number {
+	return hubTime(row.turn_ended_at) ?? time(row);
+}
+function newestEndedFirst(a: ClassifiedRow, b: ClassifiedRow): number {
+	return endedTime(b.row) - endedTime(a.row) || byRef(a, b);
 }
 // Spec 7.1's order: failed leads, then a question or approval, then a
 // warning or restart-needed, regardless of age; age breaks ties within a
@@ -180,8 +196,8 @@ export function liveBands(
 		if (band) bands[band].push(item);
 	}
 	bands.needsYou.sort(needsYouOrder);
-	bands.finished.sort(newestFirst);
-	bands.idle.sort(newestFirst);
+	bands.finished.sort(newestEndedFirst);
+	bands.idle.sort(newestEndedFirst);
 	return bands;
 }
 

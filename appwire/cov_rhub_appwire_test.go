@@ -165,8 +165,8 @@ func TestClientRequestWrappersRoundTrip(t *testing.T) {
 			}
 			return nil
 		}},
-		{"ThreadFork", MethodThreadFork, `{"ref":"local:th","sourceTurnId":"tn_1"}`, ThreadForkResponse{Thread: Thread{ID: "th_5"}}, func(ctx context.Context, c *Client) error {
-			out, err := c.ThreadFork(ctx, ThreadForkParams{Ref: "local:th", SourceTurnID: "tn_1"})
+		{"ThreadFork", MethodThreadFork, `{"ref":"local:th","sourceItemKey":"tn_1"}`, ThreadForkResponse{Thread: Thread{ID: "th_5"}}, func(ctx context.Context, c *Client) error {
+			out, err := c.ThreadFork(ctx, ThreadForkParams{Ref: "local:th", SourceItemKey: "tn_1"})
 			if err != nil {
 				return err
 			}

@@ -1,10 +1,21 @@
-/* Deliberately bare: each row is the same UserMessageView real messages
- * render, so the transcript's own rhythm styles the stack - only the list
- * reset lives here. The provisional register itself (dashed edge, opacity,
- * railmark) belongs to usermessageitem.module.css, applied by the
- * `provisional` prop. */
+/* Each row is the same UserMessageView real messages render, so the
+ * transcript's own rhythm styles the stack - beyond the list reset, only the
+ * trailing-row column rule lives here. The provisional register itself
+ * (dashed edge, opacity, railmark) belongs to usermessageitem.module.css,
+ * applied by the `provisional` prop. */
 .stack {
   list-style: none;
   margin: 0;
   padding: 0;
+  /* The stack renders as the transcript's trailing virtual-list row
+   * (Session's trailingRow), WITHOUT TurnBlock's .turn wrapper, so it must
+   * read the reading measure itself or it spans the full pane while every
+   * turn above stays clamped and centered - the same rule the top-level
+   * intent group (session.module.css's .intentGroup) and AskDock's .dock
+   * carry for rows outside .turn. overflowguard's "held steer column" check
+   * measures this against a live turn. */
+  width: 100%;
+  max-width: var(--session-measure);
+  margin-inline: auto;
+  min-width: 0;
 }
