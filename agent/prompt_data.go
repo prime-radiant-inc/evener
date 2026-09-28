@@ -24,6 +24,11 @@ type promptData struct {
 	// Role is the resolved role body: the role prompt override, or the bundled
 	// agent definition's body without its frontmatter.
 	Role string
+	// TurnEndsProcess is true in a one-shot run (`evener run`, and every
+	// delegate under it): the process exits once the turn's work drains, so a
+	// background shell job still running then is stopped instead of waking the
+	// session later.
+	TurnEndsProcess bool
 
 	// Environment
 	WorkingDir      string
