@@ -37,7 +37,8 @@ export function subagentListItems(
 		items.push({ kind: "section", state, count: section.length });
 		for (const row of section) items.push({ kind: "row", row });
 	}
-	for (const title of view.missing) items.push({ kind: "missing", title });
+	// Two branches can share a title; the line names the title once.
+	for (const title of new Set(view.missing)) items.push({ kind: "missing", title });
 	return items;
 }
 

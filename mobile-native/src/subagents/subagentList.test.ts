@@ -79,3 +79,10 @@ describe("the list's items", () => {
 		]);
 	});
 });
+
+describe("what couldn't be listed", () => {
+	it("says so once per title, however many branches share it", () => {
+		const items = subagentListItems([], { filter: "all", query: "", doneOpen: false, missing: ["Run tests", "Run tests"] });
+		expect(items).toEqual([{ kind: "missing", title: "Run tests" }]);
+	});
+});

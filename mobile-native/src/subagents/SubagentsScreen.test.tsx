@@ -218,6 +218,29 @@ it("follows the coordinator when it comes into focus", async () => {
 	});
 });
 
+it("follows the coordinator again when the connection comes back while it's in front", async () => {
+	const tree = await mount();
+	const follows = () =>
+		client.calls.filter((call) => call.method === "thread/read" && (call.params as { subscribe?: boolean }).subscribe === true).length;
+	expect(follows()).toBe(1);
+	const again = () =>
+		act(() =>
+			tree.update(
+				<SubagentsScreen
+					route={{ key: "subagents", name: "Subagents", params: { hubId: "hub-1", ...COORDINATOR } } as never}
+					navigation={navigation as never}
+				/>,
+			),
+		);
+	harness.connection = screenConnection(client, "reconnecting");
+	again();
+	await settle();
+	harness.connection = screenConnection(client, "ready");
+	again();
+	await settle();
+	expect(follows()).toBe(2);
+});
+
 it("shows three quiet rows until the first read answers, and never offers Retry, Refresh or Reconnect", async () => {
 	let answer: (value: unknown) => void = () => {};
 	client = new FakeClient("ready");
