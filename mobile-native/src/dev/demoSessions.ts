@@ -683,12 +683,16 @@ function turnOf(session: FleetSession, entries: Entry[], error: TurnError | unde
 	};
 }
 
+// A session's queued messages. Each one's entry id doubles as the id of the
+// mutation that queued it, which the daemon lists beside the entries.
 function queueOf(slug: string, texts: string[] = []): QueueState {
 	if (texts.length === 0) return { revision: 0 };
+	const ids = texts.map((_, index) => `${slug}-queued-${index}`);
 	return {
 		revision: 0,
 		depth: texts.length,
-		ids: texts.map((_, index) => `${slug}-queued-${index}`),
+		ids,
+		clientMutationIds: [...ids],
 		texts: [...texts],
 		preview: texts.map((text) => text.slice(0, 80)),
 	};

@@ -6,6 +6,7 @@ import { WebSocket, WebSocketServer } from "ws";
 import { WireError } from "@evener/appwire-client";
 import type {
 	InitializeResponse,
+	InputItem,
 	MutationReceipt,
 	NavigationInvalidatedPayload,
 	Thread,
@@ -169,6 +170,7 @@ export async function createDemoHub(
 					type: "userMessage",
 					text,
 					clientMutationId,
+					status: "completed",
 				},
 				{
 					id: `demo-assistant-${turnNumber}`,
@@ -276,21 +278,20 @@ export async function createDemoHub(
 						created.evener.capabilities.send = true;
 						created.evener.capabilities.interrupt = false;
 						delete created.evener.activeTurnId;
-						const inputText = (params.input ?? [])
-							.map((item: { text?: string }) => item.text ?? "")
-							.join("\n");
+						const openingText = inputText(params.input);
 						const turn: Turn = {
 							id: `demo-opening-${sessionNumber}`,
-							status: inputText ? "inProgress" : "completed",
+							status: openingText ? "inProgress" : "completed",
 							itemsView: "full",
 							items: [],
 						};
-						if (inputText) {
+						if (openingText) {
 							turn.items = [
 								{
 									id: `demo-opening-user-${sessionNumber}`,
 									type: "userMessage",
-									text: inputText,
+									text: openingText,
+									status: "completed",
 								},
 								{
 									id: `demo-opening-assistant-${sessionNumber}`,
@@ -347,20 +348,24 @@ export async function createDemoHub(
 						const queue = selected.evener.queue;
 						const ids = queue.ids ?? [];
 						const texts = queue.texts ?? [];
+						// The phone clears a queued message's ghost once its mutation id
+						// shows here (pendingEntries.ts's reflectedMutationIds), so the
+						// ids stay in step with the entries, as the daemon keeps them.
+						const mutationIds = queue.clientMutationIds ?? [];
 						const method = request.method;
 						let removedText: string | undefined;
 						let removedTexts: string[] = [];
+						let consumedIds: string[] = [];
 						let entryIds: string[] | undefined;
 						if (method === "turn/queue") {
 							const id = `demo-queue-${params.clientMutationId}`;
 							ids.push(id);
-							texts.push(
-								(params.input ?? [])
-									.map((item: { text?: string }) => item.text ?? "")
-									.join("\n"),
-							);
+							texts.push(inputText(params.input));
+							mutationIds.push(params.clientMutationId);
 							entryIds = [id];
-						} else if (method !== "turn/steer") {
+						} else if (method === "turn/steer") {
+							removedTexts = [inputText(params.input)];
+						} else {
 							if (method === "turn/drainAsSteer") {
 								if (
 									params.expectedQueueRevision !== queue.revision ||
@@ -371,6 +376,7 @@ export async function createDemoHub(
 									});
 								removedTexts = texts.splice(0);
 								entryIds = ids.splice(0);
+								consumedIds = mutationIds.splice(0);
 							} else {
 								if (
 									params.index < 0 ||
@@ -383,27 +389,44 @@ export async function createDemoHub(
 								removedTexts = texts.splice(params.index, 1);
 								removedText = removedTexts[0];
 								entryIds = ids.splice(params.index, 1);
+								mutationIds.splice(params.index, 1);
 							}
 						}
 						if (method !== "turn/steer") {
 							queue.revision += 1;
 							queue.ids = ids;
 							queue.texts = texts;
+							queue.clientMutationIds = mutationIds;
 							queue.preview = texts.map((text) => text.slice(0, 80));
 							queue.depth = ids.length;
 						}
-						// Sending a fleet session's held message (Stop parked the queue)
-						// starts a turn with it, as a daemon does. While a turn runs it
-						// steers that turn, which the script doesn't show. The
-						// playground never holds a queue: Stop takes its steering away.
 						const steering =
+							method === "turn/steer" ||
 							method === "turn/promoteQueuedAsSteer" ||
 							method === "turn/drainAsSteer";
-						if (
+						const running = selected.turns?.find(
+							(turn) => turn.id === selected.evener.activeTurnId,
+						);
+						if (steering && running && selected.status.type === "active")
+							// While a turn runs, the steer lands in it as the daemon
+							// records one (apptranscript.go, TurnSteering), carrying the
+							// mutation's id so the phone sees it arrive.
+							running.items?.push({
+								id: `demo-steering-${params.clientMutationId}`,
+								type: "steering",
+								source: "user",
+								text: removedTexts.join("\n"),
+								clientMutationId: params.clientMutationId,
+								status: "completed",
+							});
+						else if (
 							steering &&
-							fleetRefs.has(selected.evener.ref) &&
-							selected.status.type !== "active"
+							method !== "turn/steer" &&
+							fleetRefs.has(selected.evener.ref)
 						)
+							// Sending a fleet session's held message (Stop parked the
+							// queue) starts a turn with it, as a daemon does. The
+							// playground never holds a queue: Stop takes its steering away.
 							startScriptedTurn(
 								selected,
 								removedTexts.join("\n"),
@@ -417,6 +440,9 @@ export async function createDemoHub(
 							projectionState:
 								method === "turn/cancelQueued" ? "removed" : "pending",
 							...(entryIds ? { queueEntryIds: entryIds } : {}),
+							...(method === "turn/drainAsSteer"
+								? { consumedClientMutationIds: consumedIds }
+								: {}),
 							...(method === "turn/queue" || method === "turn/cancelQueued"
 								? {}
 								: { turnId: selected.evener.activeTurnId }),
@@ -448,7 +474,7 @@ export async function createDemoHub(
 								throw new Error("Stop the demonstration before another send");
 							turn = startScriptedTurn(
 								thread,
-								(mutation.input ?? []).map((item) => item.text ?? "").join("\n"),
+								inputText(mutation.input),
 								mutation.clientMutationId,
 							);
 						} else {
@@ -537,6 +563,12 @@ export async function createDemoHub(
 				server.close((error) => (error ? reject(error) : resolve()));
 			}),
 	};
+}
+
+// A mutation's input as the text a transcript item carries: its text parts,
+// one per line.
+function inputText(input: InputItem[] | undefined): string {
+	return (input ?? []).map((item) => item.text ?? "").join("\n");
 }
 
 // EVENER_DEMO_FLEET_ASK_AFTER is a number of seconds; anything else is a

@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import WebSocket from "ws";
 import type { WebSocketLike } from "@evener/appwire-client";
+import { type MutationOptimisticRecord, reconcilePendingEntries } from "@evener/appwire-client/state/mutation";
 import { createConversationService } from "../../mobile/src/services/conversation";
 import { createNewSessionService } from "../../mobile/src/services/newSession";
 import { createActivityStore } from "../../mobile/src/state/activity";
@@ -484,6 +485,91 @@ describe("native demonstration hub's fleet sessions", () => {
 				expect(sent.items.filter((item) => item.kind === "user").at(-1)).toMatchObject({
 					text: "One more thing",
 				});
+			} finally {
+				service.close();
+			}
+		});
+	});
+
+	it("reflects each mutation it takes, so the phone's pending ghosts clear", async () => {
+		await withHub({}, async (client) => {
+			const service = createConversationService(client);
+			const ref = refOf("s-pr2138");
+			// The phone's own accepted record for a mutation, as its outbox keeps
+			// it until the hub reflects the mutation.
+			const accepted = (clientMutationId: string, method: string, text: string): MutationOptimisticRecord => ({
+				version: 1,
+				clientMutationId,
+				targetRef: ref,
+				method,
+				payload: { input: [{ type: "text", text }] },
+				attachments: [],
+				optimisticDisplay: null,
+				intentSequence: 1,
+				createdAt: 1,
+				state: "accepted",
+			});
+			const ghostsFor = async (records: MutationOptimisticRecord[]) => {
+				const model = await service.open(ref);
+				return ghosts(
+					model,
+					reconcilePendingEntries(ref, records, model, new Map(), () => true),
+					null,
+					[],
+				);
+			};
+			try {
+				const opened = await service.open(ref);
+				const expectedInstanceId = opened.instanceId ?? "";
+				await client.request("turn/queue", {
+					ref,
+					clientMutationId: "queue-1",
+					expectedInstanceId,
+					input: [{ type: "text", text: "From the phone" }],
+				});
+				const queuedHere = accepted("queue-1", "turn/queue", "From the phone");
+				// The queued message shows once, as the queue's ghost.
+				expect((await ghostsFor([queuedHere])).map((ghost) => [ghost.state, ghost.text])).toEqual([
+					["queued", "When CI is green, post a summary on the PR."],
+					["queued", "From the phone"],
+				]);
+				// Steer now: the steered message lands in the running turn. The
+				// phone retired its queue record once the queue reflected it.
+				const queued = await service.open(ref);
+				const promote = accepted("promote-1", "turn/promoteQueuedAsSteer", "");
+				await client.request("turn/promoteQueuedAsSteer", {
+					ref,
+					clientMutationId: "promote-1",
+					expectedInstanceId,
+					index: 1,
+					expectedEntryId: queued.queue?.ids?.[1] ?? "",
+				});
+				expect((await ghostsFor([promote])).map((ghost) => ghost.text)).toEqual([
+					"When CI is green, post a summary on the PR.",
+				]);
+				// Steer all: the receipt names every queued message it consumed.
+				const drained = await client.request("turn/drainAsSteer", {
+					ref,
+					clientMutationId: "drain-1",
+					expectedInstanceId,
+					expectedQueueRevision: (await service.open(ref)).queue?.revision ?? -1,
+				});
+				expect(drained.receipt.consumedClientMutationIds).toEqual(["s-pr2138-queued-0"]);
+				await client.request("turn/steer", {
+					ref,
+					clientMutationId: "steer-1",
+					expectedInstanceId,
+					input: [{ type: "text", text: "And check Linux too" }],
+				});
+				const steered = accepted("steer-1", "turn/steer", "And check Linux too");
+				expect(await ghostsFor([promote, accepted("drain-1", "turn/drainAsSteer", ""), steered])).toEqual([]);
+				expect((await service.open(ref)).items.filter((item) => item.kind === "user").map((item) => item.text)).toEqual(
+					expect.arrayContaining([
+						"From the phone",
+						"When CI is green, post a summary on the PR.",
+						"And check Linux too",
+					]),
+				);
 			} finally {
 				service.close();
 			}
