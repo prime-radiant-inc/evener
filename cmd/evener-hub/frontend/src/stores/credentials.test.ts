@@ -2815,6 +2815,53 @@ test("a registry read in flight across a client swap cannot publish the old hub'
   expect(settled.phase === "ready" && settled.hosts.map((row) => row.name)).toEqual(["newhub"]);
 });
 
+// A replaced client is a different hub, so the previous connection's published
+// marker must not carry over: a listing read under the new connection before its
+// registry has answered must not be accepted as verified. Without clearing the
+// marker, a re-read stamped off the new connection's revision passes
+// `readPublished` for a registry that has published nothing.
+test("a replaced client does not carry the previous connection's published marker", async () => {
+  const a = connectFakeClient();
+  serveRemoteList(a, REMOTE_LIST);
+  // The first connection's registry answers, naming the host.
+  hostsStore.setState({ load: { phase: "ready", hosts: [registryRow({ name: "buildbox" })] } });
+
+  const { result } = renderHook(() => useHostInstances("buildbox"));
+  await waitFor(() => expect(result.current.instances).toEqual([REMOTE_INSTANCE]));
+  expect(result.current.read).toBe(true);
+  expect(remoteReads(a)).toBe(1);
+
+  // A connection-banner retry wires a fresh client in; the new connection's
+  // registry has not answered, so its listing is not verified yet.
+  let b!: FakeClient;
+  await act(async () => {
+    b = connectFakeClient();
+  });
+  serveRemoteList(b, REMOTE_LIST);
+
+  expect(result.current.read).toBe(false);
+  expect(result.current.instances).toEqual([]);
+  expect(remoteReads(b)).toBe(0);
+
+  // The new connection's registry publishes the SAME registration: it is that
+  // connection's first answer, so it advances the revision, and the listing is
+  // re-read and becomes verified.
+  b.on("evener/host/list", () => ({ hosts: [registryRow({ name: "buildbox" })] }));
+  await act(async () => {
+    await hostsStore.getState().fetch();
+  });
+  await waitFor(() => expect(result.current.instances).toEqual([REMOTE_INSTANCE]));
+  expect(result.current.read).toBe(true);
+  expect(remoteReads(b)).toBe(1);
+
+  // Anti-churn intact: another identical snapshot under the same connection
+  // re-reads nothing.
+  await act(async () => {
+    await hostsStore.getState().fetch();
+  });
+  expect(remoteReads(b)).toBe(1);
+});
+
 // The rule's cost ceiling: an unchanged snapshot advances no revision, so the
 // poll cadence re-reads nothing.
 test("an unchanged registry snapshot never re-reads a host", async () => {

@@ -30,10 +30,13 @@ interface HostsStoreState {
   revision: number;
   /**
    * The revision at which the registry last SUCCESSFULLY published a snapshot, or
-   * null while it never has. `revision` alone cannot tell "no snapshot has been
-   * published" from "a snapshot was published at revision 0", and a remote
-   * listing read in the first state must not pass for verified once the registry
-   * has been consulted and failed (see stores/credentials.ts's useHostInstances).
+   * null while the CURRENT connection never has. `revision` alone cannot tell "no
+   * snapshot has been published" from "a snapshot was published at revision 0", and
+   * a remote listing read in the first state must not pass for verified once the
+   * registry has been consulted and failed (see stores/credentials.ts's
+   * useHostInstances). A client replacement resets it to null: the previous
+   * connection's publish says nothing about the new one, which has published
+   * nothing yet.
    */
   publishedRevision: number | null;
   /**
@@ -117,7 +120,20 @@ connectionStore.subscribe((state) => {
   if (state.client === lastClient) return;
   const replaced = lastClient !== null && state.client !== null;
   lastClient = state.client;
-  if (replaced) hostsStore.setState((previous) => ({ revision: previous.revision + 1 }));
+  if (replaced) {
+    // A different hub: every snapshot read from the old client is invalid, and
+    // the new connection has not published anything yet. Advance the revision
+    // AND clear the published marker, so a listing read under the new connection
+    // is not accepted as verified before its registry has answered (see
+    // stores/credentials.ts's useHostInstances).
+    hostsStore.setState((previous) => ({ revision: previous.revision + 1, publishedRevision: null }));
+    // Drop the snapshot memo AFTER that setState, so the revision subscription
+    // below does not read the old connection's still-loaded rows as this
+    // connection's first publish. The new connection's first answer then
+    // publishes and advances the revision even when it is byte-identical to the
+    // old one.
+    lastPublished = null;
+  }
 });
 
 // latestGeneration increments with every list request fetch, refresh, and
