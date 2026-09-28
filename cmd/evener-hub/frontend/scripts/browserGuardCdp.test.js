@@ -1394,12 +1394,78 @@ test("without a reported loaderId, attribution degrades to the arrival counter",
   assert.equal(socket.listenerCount("message"), 0);
 });
 
-// layoutguard's boot predicate (review M2): [].every(...) is vacuously true,
-// so a document that links NO stylesheet at all - an error page, a wrong-page
-// harness, a stripped document - used to pass the boot check and walk into
-// waitForFonts to die as the fonts misfire. Every document the predicate
-// visits must have linked at least one stylesheet, and every link must have
-// loaded.
+// The LIVE-DOCUMENT identity must advance as soon as a navigation COMMITS (its
+// Page.navigate response lands), not only when the load event fires. A new
+// document emits Network.requestWillBeSent for its module burst and its
+// iframes BETWEEN commit and load, and a resource that dies on the wire does
+// not delay the load event - so the failure arrives while the identity still
+// named the previous document. Binding a first-seen loaderId to the previous
+// attempt files the flake in the prior bucket and leaves the final attempt's
+// bucket empty: the transient network change this seam exists for is then
+// misreported as a deterministic harness regression.
+test("a first-seen loaderId emitted before the load event belongs to the document currently loading", async () => {
+  const socket = fakeSocket();
+  let navigations = 0;
+  const send = async (method) => {
+    switch (method) {
+      case "Page.navigate":
+        navigations++;
+        if (navigations === 1 + BOOT_RETRY_LIMIT) {
+          // The final navigation's RESPONSE lands first (the commit); only
+          // afterwards does its own document emit a request under its loaderId
+          // and lose it on the wire - all before Page.loadEventFired. This is
+          // the real ordering: a request bearing the new loaderId cannot exist
+          // before the navigation that named it has committed.
+          setTimeout(() => {
+            socket.dispatch("message", {
+              data: JSON.stringify({
+                method: "Network.requestWillBeSent",
+                params: { requestId: "req-loading-doc", loaderId: `loader-${navigations}` },
+              }),
+            });
+            socket.dispatch("message", {
+              data: JSON.stringify({
+                method: "Network.loadingFailed",
+                params: { requestId: "req-loading-doc", type: "Script", errorText: "net::ERR_NETWORK_CHANGED" },
+              }),
+            });
+            socket.dispatch("message", { data: JSON.stringify({ method: "Page.loadEventFired" }) });
+          }, 0);
+          return { result: { frameId: "fixture-frame", loaderId: `loader-${navigations}` } };
+        }
+        socket.dispatch("message", { data: JSON.stringify({ method: "Page.loadEventFired" }) });
+        return { result: { frameId: "fixture-frame", loaderId: `loader-${navigations}` } };
+      case "Runtime.evaluate":
+        return { result: { result: { value: false } } };
+      default:
+        return {};
+    }
+  };
+  const noteError = vi.spyOn(console, "error").mockImplementation(() => {});
+
+  try {
+    await assert.rejects(
+      navigateTo({ ws: socket, send }, "http://127.0.0.1:65535/overflowharness.html", {
+        bootExpression: "typeof window.settled !== 'undefined'",
+        bootLabel: "the overflowharness entry global window.settled",
+        retryDelayMs: 0,
+      }),
+      (error) => {
+        assert.match(error.message, /never booted/);
+        // The failure belongs to the final attempt's own document, so the
+        // environment framing is earned.
+        assert.match(error.message, /environment problem, not a test case failure/);
+        assert.match(error.message, /net::ERR_NETWORK_CHANGED/);
+        return true;
+      },
+    );
+  } finally {
+    noteError.mockRestore();
+  }
+
+  assert.equal(navigations, 1 + BOOT_RETRY_LIMIT);
+  assert.equal(socket.listenerCount("message"), 0);
+});
 
 // Subframe (iframe) documents get their OWN loaderIds, which no top-level
 // Page.navigate response ever names. Without binding them on first sight the
@@ -1533,6 +1599,12 @@ test("a request that reported no loaderId anchors to the document live at send t
   assert.equal(socket.listenerCount("message"), 0);
 });
 
+// layoutguard's boot predicate (review M2): [].every(...) is vacuously true,
+// so a document that links NO stylesheet at all - an error page, a wrong-page
+// harness, a stripped document - used to pass the boot check and walk into
+// waitForFonts to die as the fonts misfire. Every document the predicate
+// visits must have linked at least one stylesheet, and every link must have
+// loaded.
 const sheetLoaded = () => ({ sheet: { cssRules: [] } });
 const sheetFailed = () => ({ sheet: null });
 

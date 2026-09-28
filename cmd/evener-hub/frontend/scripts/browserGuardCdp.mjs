@@ -400,11 +400,18 @@ function isNetworkChangeFailure(failure) {
  * boot seam correlates request evidence by - or null when the response does
  * not report one; the legacy two-argument callers ignore the return value.
  *
+ * `onCommitted`, when given, runs the moment the Page.navigate RESPONSE lands -
+ * the navigation's commit - before the load event is awaited. The boot seam
+ * needs that instant: a committed document emits its own requests (its module
+ * burst, its iframes) between commit and load, and a request that dies on the
+ * wire does not delay the load event, so evidence scoped only once the load
+ * event fires would still name the previous document.
+ *
  * The listener comes off in a finally, not only on the load event: on the
  * timeout path the load never fires, and a handler left behind keeps parsing
  * every later CDP message on a socket the guards reuse across cases.
  */
-async function navigateToOnce({ ws, send }, url) {
+async function navigateToOnce({ ws, send }, url, onCommitted) {
   await withTimeout(send("Page.enable"), 30000, "Page.enable");
   let handler;
   let abandonLoad;
@@ -422,10 +429,16 @@ async function navigateToOnce({ ws, send }, url) {
   try {
     // Observe both immediately: the load tripwire can fire while Page.navigate
     // is still pending. Serial awaits leave that first rejection unhandled.
-    const [, navigated] = await Promise.all([
-      loaded,
-      withTimeout(send("Page.navigate", { url }), 30000, "Page.navigate"),
-    ]);
+    const navigateCommand = withTimeout(send("Page.navigate", { url }), 30000, "Page.navigate");
+    // Report the commit as soon as the response lands, then keep the same
+    // resolution for the caller. Composing it into the awaited promise means a
+    // rejected navigate command stays observed by Promise.all rather than
+    // leaving a second, unhandled rejection behind.
+    const committed = navigateCommand.then((navigated) => {
+      onCommitted?.(navigated?.result?.loaderId ?? null);
+      return navigated;
+    });
+    const [, navigated] = await Promise.all([loaded, committed]);
     return navigated?.result?.loaderId ?? null;
   } finally {
     // A failed command may never produce a load event. Release that wait (and
@@ -602,12 +615,15 @@ export async function navigateTo(
     await withTimeout(send("Network.enable"), 30000, "Network.enable");
     for (;;) {
       attempts++;
-      const loaderId = await navigateToOnce(page, url);
-      if (loaderId) loaderAttempts.set(loaderId, attempts);
-      // Identity for the navigation that just committed. currentLoaderId
-      // advances only HERE - never at the counter increment above - so the
-      // gap between the two still belongs to the previous document.
-      currentLoaderId = loaderId;
+      await navigateToOnce(page, url, (committedLoaderId) => {
+        // Identity for the navigation that just COMMITTED. The counter above
+        // advances at loop top, before this response; currentLoaderId advances
+        // HERE, at the commit - never at the counter increment - so the gap
+        // between the two still belongs to the previous document, while the
+        // new document's own load-window evidence now belongs to it.
+        if (committedLoaderId) loaderAttempts.set(committedLoaderId, attempts);
+        currentLoaderId = committedLoaderId;
+      });
       if (await evaluate(send, bootExpression)) return;
       if (attempts > BOOT_RETRY_LIMIT) {
         const budget =
