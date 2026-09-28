@@ -2005,14 +2005,33 @@ export function ConversationScreen({
 		}
 		return null;
 	}
+	// Reads the session again after a ghost action; a failed read leaves the
+	// session as it was, which the action's own outcome already reports.
+	function rehydrateQuietly(live: NonNullable<typeof service>) {
+		return store
+			.getState()
+			.rehydrate(live, activitySink)
+			.catch(() => undefined);
+	}
+	// A change to the hub's queue: whether the hub took it. The session is
+	// read again either way, so the ghosts show the queue as it now is.
+	async function queueChange(
+		live: NonNullable<typeof service>,
+		change: () => Promise<unknown>,
+	): Promise<boolean> {
+		try {
+			await change();
+			return true;
+		} catch {
+			return false;
+		} finally {
+			await rehydrateQuietly(live);
+		}
+	}
 	// Check: read the session again, then show its live end, where the
 	// message is if it arrived.
 	async function checkDelivery() {
-		if (service && connectionReady.current)
-			await store
-				.getState()
-				.rehydrate(service, activitySink)
-				.catch(() => undefined);
+		if (service && connectionReady.current) await rehydrateQuietly(service);
 		jumpToLive();
 	}
 	async function queuedGhostAction(
@@ -2027,31 +2046,16 @@ export function ConversationScreen({
 		// the queue (Review Focus 2).
 		const target = ghostActionTarget(live.queue, entry);
 		if (!target) return null;
-		const rehydrate = () =>
-			store
-				.getState()
-				.rehydrate(service, activitySink)
-				.catch(() => undefined);
-		const cancel = async () => {
-			try {
-				await service.cancelQueued(target.index, target.id, instanceId);
-				return true;
-			} catch {
-				return false;
-			} finally {
-				await rehydrate();
-			}
-		};
+		const cancel = () =>
+			queueChange(service, () =>
+				service.cancelQueued(target.index, target.id, instanceId),
+			);
 		if (action === "steerNow" || action === "sendNow") {
 			if (queueActionRefusal(live, "promote") !== null) return STEER_FAILED;
-			try {
-				await service.promoteQueuedAsSteer(target.index, target.id, instanceId);
-				return null;
-			} catch {
-				return STEER_FAILED;
-			} finally {
-				await rehydrate();
-			}
+			const promoted = await queueChange(service, () =>
+				service.promoteQueuedAsSteer(target.index, target.id, instanceId),
+			);
+			return promoted ? null : STEER_FAILED;
 		}
 		if (action === "cancel")
 			return (await cancel())
@@ -2084,17 +2088,11 @@ export function ConversationScreen({
 		if (!service || !connectionReady.current || !live?.queue || !instanceId)
 			return null;
 		if (queueActionRefusal(live, "drainAll") !== null) return STEER_ALL_FAILED;
-		try {
-			await service.drainAsSteer(live.queue.revision, instanceId);
-			return null;
-		} catch {
-			return STEER_ALL_FAILED;
-		} finally {
-			await store
-				.getState()
-				.rehydrate(service, activitySink)
-				.catch(() => undefined);
-		}
+		const revision = live.queue.revision;
+		const drained = await queueChange(service, () =>
+			service.drainAsSteer(revision, instanceId),
+		);
+		return drained ? null : STEER_ALL_FAILED;
 	}
 	// The Queue sheet's host is memoized on what it shows, so its actions
 	// reach this render's functions through a ref.
