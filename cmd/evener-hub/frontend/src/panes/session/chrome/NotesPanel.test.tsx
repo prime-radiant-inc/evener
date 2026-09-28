@@ -25,7 +25,7 @@ import {
 import { Toast } from "../../../widgets";
 import { resetToastStoreForTests } from "../../../widgets/toast/store";
 import { flushPendingTurnsProjectionForTests } from "../composer/queue/testing/flushPendingTurnsProjection";
-import { fileURLToPath, NotesPanelBody } from "./NotesPanel";
+import { NotesPanelBody } from "./NotesPanel";
 
 const FULL_CAPABILITIES: ThreadCapabilities = {
   send: true,
@@ -499,17 +499,6 @@ test("a flushed blur save does not resubmit when its original deadline passes", 
   expect(seen).toHaveLength(1);
   expect(setHumanNote).toHaveBeenCalledTimes(1);
   setHumanNote.mockRestore();
-});
-
-test("a malformed file URL never becomes an open-beside target", () => {
-  expect(fileURLToPath("file:///tmp/with%20space.md")).toBe("/tmp/with space.md");
-  // A malformed escape yields no path either: the URL names something we cannot
-  // interpret, and guessing the literal bytes risks opening a different file than
-  // the entry means. Canonical file URLs always encode "%", so this only rejects
-  // input this system never produced.
-  expect(fileURLToPath("file:///tmp/bad%zz.md")).toBe("");
-  // A string that is not a URL yields no path at all.
-  expect(fileURLToPath("not a url")).toBe("");
 });
 
 // --- rule 1: capability unset hides the panel body entirely -------------------

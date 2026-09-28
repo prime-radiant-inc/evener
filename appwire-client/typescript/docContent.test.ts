@@ -1,12 +1,16 @@
 // @vitest-environment node
 import { afterEach, describe, expect, test, vi } from "vitest";
 import {
+  cwdRelative,
   DOC_FILE_MAX_BYTES,
   type DocFetch,
   DocFileError,
   type DocPort,
   docFileRawURL,
   docImageURL,
+  filenameOf,
+  fileURLToPath,
+  isMarkdownPath,
   readDocFile,
 } from "./docContent";
 
@@ -174,5 +178,63 @@ describe("readDocFile", () => {
   test("the rejection is a DocFileError instance so the pane can switch on kind", async () => {
     const port = respondWith(new Response(null, { status: 404 }));
     await expect(readDocFile("s1", "gone.txt", port)).rejects.toBeInstanceOf(DocFileError);
+  });
+});
+
+describe("filenameOf", () => {
+  test("returns the last path segment, the whole name at the top level, and the raw path with no segment", () => {
+    expect(filenameOf("src/panes/doc/DocPane.tsx")).toBe("DocPane.tsx");
+    expect(filenameOf("README.md")).toBe("README.md");
+    expect(filenameOf("")).toBe("");
+  });
+});
+
+describe("isMarkdownPath", () => {
+  test.each(["README.md", "notes.MARKDOWN", "a/b/Guide.Md", "x.markdown"])("treats %s as markdown", (path) => {
+    expect(isMarkdownPath(path)).toBe(true);
+  });
+
+  test.each(["notes.txt", "script.ts", "a.md.txt", "mdfile", "Makefile"])("does not treat %s as markdown", (path) => {
+    expect(isMarkdownPath(path)).toBe(false);
+  });
+});
+
+describe("fileURLToPath", () => {
+  test("decodes a session link's file URL into the path a document read takes", () => {
+    expect(fileURLToPath("file:///tmp/with%20space.md")).toBe("/tmp/with space.md");
+    expect(fileURLToPath("file://localhost/home/jesse/plan.md")).toBe("/home/jesse/plan.md");
+    expect(fileURLToPath("file:///home/jesse/plan.md?x=1#top")).toBe("/home/jesse/plan.md");
+  });
+
+  test("names no path for a malformed escape, another machine, or something that isn't a file URL", () => {
+    // A malformed escape could name a different file than the entry means;
+    // canonical file URLs always encode "%", so this only refuses input this
+    // system never produced.
+    expect(fileURLToPath("file:///tmp/bad%zz.md")).toBe("");
+    expect(fileURLToPath("file://server/share/plan.md")).toBe("");
+    expect(fileURLToPath("https://example.test/plan.md")).toBe("");
+    expect(fileURLToPath("not a url")).toBe("");
+  });
+});
+
+describe("cwdRelative", () => {
+  test("relativizes an absolute path inside the session's folder, with or without a trailing slash", () => {
+    expect(cwdRelative("/home/proj/src/a.ts", "/home/proj")).toBe("src/a.ts");
+    expect(cwdRelative("/home/proj/src/a.ts", "/home/proj/")).toBe("src/a.ts");
+  });
+
+  test("names nothing outside the folder, for the folder itself, or for empty input", () => {
+    expect(cwdRelative("/etc/passwd", "/home/proj")).toBeUndefined();
+    expect(cwdRelative("/home/project-other/a.ts", "/home/proj")).toBeUndefined();
+    expect(cwdRelative("/home/proj", "/home/proj")).toBeUndefined();
+    expect(cwdRelative("", "/home/proj")).toBeUndefined();
+    expect(cwdRelative("/home/proj/a.ts", "")).toBeUndefined();
+  });
+
+  test("takes a relative path as relative unless it climbs out", () => {
+    expect(cwdRelative("src/a.ts", "/home/proj")).toBe("src/a.ts");
+    expect(cwdRelative("a.ts", "/home/proj")).toBe("a.ts");
+    expect(cwdRelative("../secret.ts", "/home/proj")).toBeUndefined();
+    expect(cwdRelative("src/../../secret.ts", "/home/proj")).toBeUndefined();
   });
 });

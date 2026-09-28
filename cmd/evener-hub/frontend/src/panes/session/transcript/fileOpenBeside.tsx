@@ -19,27 +19,12 @@
 // effect. The DocParams type is imported type-only (erased, no side effect).
 // The namespace import of paneActions (not a named one) lets the test spy
 // openBeside through the module object, the reliable vitest seam.
+import { cwdRelative } from "@evener/appwire-client/docContent";
 import * as paneActions from "../../../shell/paneActions";
 import { useThreadsStore } from "../../../stores/threads";
 import { useOptionalTranscriptRenderContext } from "../../../transcriptDisplay/renderContext";
 import { OpenButton } from "../../../widgets";
 import type { DocParams } from "../../doc/openDoc";
-
-// cwdRelative expresses filePath relative to cwd, or undefined when it is not
-// inside the cwd (so the affordance is withheld). Handles both shapes execenv's
-// resolve() accepts (agent/execenv/local.go:1530-1533): an ABSOLUTE arg (strip
-// the cwd prefix; out-of-cwd → undefined) and an already-RELATIVE arg (accepted
-// as cwd-relative unless it escapes via a ".." segment).
-export function cwdRelative(filePath: string, cwd: string): string | undefined {
-  const p = filePath.trim();
-  if (p === "" || cwd === "") return undefined;
-  if (!p.startsWith("/")) {
-    return p.split("/").includes("..") ? undefined : p;
-  }
-  const prefix = cwd.endsWith("/") ? cwd : `${cwd}/`;
-  if (p === cwd) return undefined; // the cwd directory itself is not a file
-  return p.startsWith(prefix) ? p.slice(prefix.length) : undefined;
-}
 
 // A file-path-bearing card whose path is an image file opens as an IMAGE
 // (DECISION C): the doc pane then renders it through docImageURL (/doc/image,
