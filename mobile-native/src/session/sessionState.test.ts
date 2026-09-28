@@ -60,18 +60,21 @@ describe("the nav bar's state line (spec 8.1, 13.1)", () => {
 
 describe("the context chips (spec 8.1)", () => {
 	it("appear only with content", () => {
-		expect(contextChips({ delegates: [], tasks: null, goal: null, queue: null })).toEqual([]);
+		expect(contextChips({ delegates: [], tasks: null, goal: null, queue: null }, true)).toEqual([]);
 	});
 
 	it("count subagents, with failures in their own part", () => {
 		const tally = subagentTally([delegate("running", 1), delegate("completed", 2), delegate("failed", 3), delegate("done", 4, "failed")]);
 		expect(tally).toEqual({ total: 4, running: 1, failed: 2, done: 1 });
-		const [chip] = contextChips({
-			delegates: [delegate("running", 1), delegate("failed", 2)],
-			tasks: null,
-			goal: null,
-			queue: null,
-		});
+		const [chip] = contextChips(
+			{
+				delegates: [delegate("running", 1), delegate("failed", 2)],
+				tasks: null,
+				goal: null,
+				queue: null,
+			},
+			true,
+		);
 		expect(chip).toEqual({
 			kind: "subagents",
 			label: "Subagents 2",
@@ -82,12 +85,15 @@ describe("the context chips (spec 8.1)", () => {
 	});
 
 	it("show tasks done of total, the goal (amber when blocked), and the queue", () => {
-		const chips = contextChips({
-			delegates: undefined,
-			tasks: { total: 7, done: 3 },
-			goal: { objective: "Ship it", status: "blocked", iterations: 2 },
-			queue: { revision: 1, depth: 1 },
-		});
+		const chips = contextChips(
+			{
+				delegates: undefined,
+				tasks: { total: 7, done: 3 },
+				goal: { objective: "Ship it", status: "blocked", iterations: 2 },
+				queue: { revision: 1, depth: 1 },
+			},
+			true,
+		);
 		expect(chips.map((chip) => [chip.kind, chip.label, chip.attention])).toEqual([
 			["tasks", "Tasks 3/7", false],
 			["goal", "Goal", true],
@@ -98,5 +104,18 @@ describe("the context chips (spec 8.1)", () => {
 			"Goal, blocked",
 			"1 queued message",
 		]);
+	});
+
+	it("hides Subagents and Tasks while disconnected, since tapping either can't act (Calm); Goal and Queue don't need a connection", () => {
+		const chips = contextChips(
+			{
+				delegates: [delegate("running", 1)],
+				tasks: { total: 7, done: 3 },
+				goal: { objective: "Ship it", status: "on_track", iterations: 1 },
+				queue: { revision: 1, depth: 1 },
+			},
+			false,
+		);
+		expect(chips.map((chip) => chip.kind)).toEqual(["goal", "queue"]);
 	});
 });

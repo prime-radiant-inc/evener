@@ -451,6 +451,19 @@ it("says so when a shut down can't be confirmed (coordinator ruling: silence rea
 	tree.unmount();
 });
 
+it("has no Shut down item on an already shut-down session, even if the hub still reports the capability", async () => {
+	// A daemon that hasn't probed capabilities yet reports every capability as
+	// true (appsource's fallback), so `capabilities.shutdown` can be true on a
+	// session whose own status is already closed/ended.
+	for (const status of ["closed", "ended"] as const) {
+		const { tree } = mount({ ...withCapabilities({ shutdown: true }), status: { type: status } });
+		await flush();
+
+		expect(menuItems().find((item) => item.label === "Shut down")).toBeUndefined();
+		tree.unmount();
+	}
+});
+
 it("archives the session, with an Undo that restores it", async () => {
 	const { tree, requests } = mount(thread, { "evener/archive/set": {} });
 	await flush();
@@ -643,6 +656,25 @@ it("floats the context chips over the list, opens each one's sheet, and hides th
 	expect(block().props.hidden).toBe(false);
 	// Hiding never moves the list.
 	expect(list().props.contentContainerStyle).toMatchObject({ paddingTop: 64 });
+	tree.unmount();
+});
+
+it("hides the Subagents and Tasks chips once disconnected, since neither can act (Calm), but keeps the cached Goal and Queue chips", async () => {
+	const { tree } = mount(busy);
+	await flush();
+	const block = () => tree.root.findByType(SessionHeader);
+	const label = (text: string) => block().findAll((node) => node.props.accessibilityLabel === text);
+	expect(label("Subagents, 1")).toHaveLength(1);
+
+	// The connection drops; the thread's cached delegates/tasks survive.
+	harness.connection = { ...harness.connection, state: "reconnecting" };
+	act(() => tree.update(screen()));
+
+	expect(label("Subagents, 1")).toEqual([]);
+	expect(label("Tasks, 1 of 2 done")).toEqual([]);
+	// Goal and Queue need no connection, so they still show.
+	expect(label("Goal, blocked")).toHaveLength(1);
+	expect(label("2 queued messages")).toHaveLength(1);
 	tree.unmount();
 });
 

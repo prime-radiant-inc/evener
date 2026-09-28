@@ -39,6 +39,11 @@ export function SessionTitle({
 				{title}
 			</Text>
 			<View style={{ flexDirection: "row", alignItems: "center", gap: 4 }}>
+				{/* markFor's "meter" case needs `moving`, which the title never
+				 * passes (spec 8.1: only the tray gets the live pulse meter), so
+				 * this can only ever be a Glyph or null - the `!== "meter"` check
+				 * narrows the type for `.name`/`.tint` below; it can't actually
+				 * happen at runtime. */}
 				{mark && mark !== "meter" ? (
 					<SymbolView name={mark.name} tintColor={palette[mark.tint]} size={12 * scale} />
 				) : null}

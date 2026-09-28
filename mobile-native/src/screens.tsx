@@ -130,6 +130,7 @@ import { type SessionMenuAction, sessionMenu } from "./session/sessionMenu";
 import {
 	type ChipKind,
 	contextChips,
+	SHUT_DOWN,
 	sessionStateLine,
 } from "./session/sessionState";
 import { SessionTitle } from "./session/SessionTitle";
@@ -975,7 +976,7 @@ export function ConversationScreen({
 		: null;
 	const headerTitleText = headerConversation?.name || route.params.title;
 	const connectionText = useConnectionStatusText(connectionState, fatal);
-	const chips = headerConversation ? contextChips(headerConversation) : [];
+	const chips = headerConversation ? contextChips(headerConversation, connected) : [];
 	const headerHiding = useHeaderHiding();
 	// The header block floats over the list; the list reserves its height.
 	const [sessionHeaderHeight, setSessionHeaderHeight] = useState(0);
@@ -1022,7 +1023,7 @@ export function ConversationScreen({
 	const canShutDown =
 		controls !== null &&
 		!!headerConversation?.capabilities.shutdown &&
-		headerConversation.status.type !== "notLoaded";
+		!SHUT_DOWN.has(headerConversation.status.type);
 	function openAside(ref: string, title: string) {
 		Keyboard.dismiss();
 		navigation.push("Conversation", {

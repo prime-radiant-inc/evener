@@ -17,7 +17,9 @@ export type StateSource = Pick<
 	"status" | "askPending" | "pendingEscalations" | "activeTurnStartedAt" | "turns"
 >;
 
-const SHUT_DOWN = new Set(["notLoaded", "closed", "ended"]);
+/** The statuses `sessionStateLine` reads as "Shut down" - also the ones a
+ * session can't be shut down FROM again, since it already is. */
+export const SHUT_DOWN = new Set(["notLoaded", "closed", "ended"]);
 
 export function sessionStateLine(session: StateSource, now: number): SessionStateLine {
 	const type = session.status.type;
@@ -88,11 +90,18 @@ export interface ContextChip {
 }
 
 /** The chips under the nav bar, each only when it has content (spec 8.1).
- * Files waits for phase 4's Reader (ruling 6). */
-export function contextChips(session: Pick<ThreadModel, "delegates" | "tasks" | "goal" | "queue">): ContextChip[] {
+ * Files waits for phase 4's Reader (ruling 6). Subagents and Tasks open a
+ * live sheet (today's ActivitySheet/TasksSheet), so they hide while
+ * disconnected rather than looking tappable and doing nothing (Calm); Goal
+ * (opens the local Session sheet) and Queue (a local toggle) need no
+ * connection and always show when they have content. */
+export function contextChips(
+	session: Pick<ThreadModel, "delegates" | "tasks" | "goal" | "queue">,
+	connected: boolean,
+): ContextChip[] {
 	const chips: ContextChip[] = [];
 	const subagents = subagentTally(session.delegates);
-	if (subagents.total > 0) {
+	if (connected && subagents.total > 0) {
 		const failed = subagents.failed > 0 ? `${subagents.failed} failed` : undefined;
 		chips.push({
 			kind: "subagents",
@@ -103,7 +112,7 @@ export function contextChips(session: Pick<ThreadModel, "delegates" | "tasks" | 
 		});
 	}
 	const tasks = session.tasks;
-	if (tasks && tasks.total > 0)
+	if (connected && tasks && tasks.total > 0)
 		chips.push({
 			kind: "tasks",
 			label: `Tasks ${tasks.done}/${tasks.total}`,
