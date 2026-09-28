@@ -25,8 +25,10 @@ import {
 import type { ConversationClientLike } from "../../../mobile/src/services/conversation";
 import { useConnection } from "../ConnectionProvider";
 import { reconnectDelay } from "../hubConnection";
+import { getNativeMutationRuntime } from "../nativeMutationRuntime";
 import { drafts } from "../nativeDrafts";
 import type { Routes } from "../screens";
+import { Toast, useToast } from "../Toast";
 import { Action, useColors, useTextScale } from "../ui";
 import {
 	type Band,
@@ -43,10 +45,12 @@ import {
 } from "./attention";
 import type { OrganizeBy, SeenMarkers } from "./boardMemory";
 import { BoardNotices, NoticeRow } from "./BoardNotices";
-import { BandHeader, BoardRows, FoldChevron, type RowContext } from "./BoardRow";
+import { BandHeader, FoldChevron } from "./BoardRow";
+import { BoardRows, type RowContext } from "./BoardRows";
 import { BoardToolbar } from "./BoardToolbar";
 import { type BoardController, type BoardSnapshot, createBoardController } from "./boardData";
 import { createSearchController, type SearchScope } from "./boardSearch";
+import { BoardStops, stopToast } from "./boardStops";
 import { BoardSeen, type HubSeenMarks, hubSeenMarks } from "./hubSeen";
 import { foldedSections, organizeByPreference, recentSearches, seenMarkers } from "./nativeBoardMemory";
 import { notices } from "./notices";
@@ -64,6 +68,8 @@ import {
 } from "./projectTree";
 import { projectName, ProjectSectionHeader, ProjectTreeRow } from "./ProjectTreeRow";
 import { PulseMeter } from "./PulseMeter";
+import { archivingSessionId, type RowActionContext } from "./rowActions";
+import { archiveRow, rowSwipes, type SwipeRowAction } from "./rowSwipes";
 import { SearchResults } from "./SearchResults";
 import { type BoardOrganization, organizationOpen, useBoardOrganization } from "./useBoardOrganization";
 import { PROJECT_SECTIONS, showExpanded, useProjectSections } from "./useProjectSections";
@@ -92,7 +98,7 @@ export function BoardScreen({ navigation }: Props) {
 }
 
 function Board({ hubId, hubName, navigation }: { hubId: string; hubName: string; navigation: Navigation }) {
-	const { client, state, fatal } = useConnection();
+	const { client, state, fatal, activeProfile } = useConnection();
 	const { palette } = useColors();
 	const connected = state === "ready";
 	const focused = useIsFocused();
@@ -154,6 +160,13 @@ function Board({ hubId, hubName, navigation }: { hubId: string; hubName: string;
 	);
 	const folds = useCategoryFolds(hubId);
 	const organization = useBoardOrganization(hubId);
+	const toast = useToast();
+	// Stop from the Board (ruling 17), one per hub. A new client lets go of
+	// every Stop the old one was delivering; an interrupt not yet sent stays
+	// in the outbox, delivered as any durable Stop is.
+	const [stops] = useState(() => new BoardStops(getNativeMutationRuntime, hubId));
+	useEffect(() => () => stops.dispose(), [stops]);
+	useEffect(() => () => stops.releaseAll(), [stops, client]);
 	const categoryMenu = pinnedCategoryMenu(organization, () => board.getSnapshot().pins.rows);
 	const projectSections = useProjectSections(hubId);
 	const [organizeBy, setOrganizeBy] = useState(() => organizeByPreference(hubId).get());
@@ -320,9 +333,34 @@ function Board({ hubId, hubName, navigation }: { hubId: string; hubName: string;
 			onPress: () => scrollTo("archived"),
 		});
 
-	const rowContext: RowContext = { connected, usual, hostLabel, now, onOpen: openSession, draftRefs };
-	const rows = (items: ClassifiedRow[], variant: "signal" | "quiet", moving: boolean) => (
-		<BoardRows items={items} variant={variant} moving={moving} context={rowContext} />
+	// What a row's actions may do now (rulings 16 and 21), by whether it sits
+	// in an archived tier.
+	const rowContext = (archived: boolean): RowActionContext => ({
+		connected: connected && activeProfile?.id === hubId,
+		organizationReady: organization.ready,
+		archived,
+	});
+	const runRowAction = (item: ClassifiedRow, action: SwipeRowAction) => {
+		const { row } = item;
+		if (action === "pin") navigation.navigate("PinAssignment", { hubId, ref: row.ref, title: row.title });
+		else if (action === "stop" && client)
+			void stops.stop(client, row.ref).then((outcome) => toast.show({ text: stopToast(outcome, row.title) }));
+		else if (action === "archive" || action === "unarchive")
+			void archiveRow(organization, row, action === "archive", toast);
+	};
+	const archivingId = archivingSessionId(organization.state);
+	const listContext: RowContext = {
+		connected,
+		usual,
+		hostLabel,
+		now,
+		onOpen: openSession,
+		draftRefs,
+		swipes: (item, archived) =>
+			rowSwipes(item, rowContext(archived), archivingId, (action) => runRowAction(item, action)),
+	};
+	const rows = (items: ClassifiedRow[], variant: "signal" | "quiet", moving: boolean, archived = false) => (
+		<BoardRows items={items} variant={variant} moving={moving} archived={archived} context={listContext} />
 	);
 	const band = (key: Exclude<Band, "idle">, moving: boolean) =>
 		bands[key].length ? (
@@ -430,7 +468,12 @@ function Board({ hubId, hubName, navigation }: { hubId: string; hubName: string;
 		if (item.kind === "session")
 			return (
 				<View key={item.key} style={{ marginLeft: 16 * item.depth }}>
-					{rows([{ row: item.row, state: boardState(item.row, false, seen.isSeen(item.row)) }], "quiet", false)}
+					{rows(
+						[{ row: item.row, state: boardState(item.row, false, seen.isSeen(item.row)) }],
+						"quiet",
+						false,
+						item.archived,
+					)}
 				</View>
 			);
 		if (item.kind === "more" || item.kind === "moreProjects")
@@ -486,103 +529,109 @@ function Board({ hubId, hubName, navigation }: { hubId: string; hubName: string;
 			{/* Fixed under the header; their sections aren't there while
 			    search results are. */}
 			{chips.length && !searching ? <Chips chips={chips} /> : null}
-			<ScrollView
-				ref={scroller}
-				style={{ flex: 1 }}
-				// Starts just past the search field: pulling down reveals it
-				// (spec 7.3). iOS applies this once, when the scroller mounts.
-				contentOffset={{ x: 0, y: searchFieldHeight }}
-				keyboardShouldPersistTaps="handled"
-				keyboardDismissMode="on-drag"
-				// iOS keeps that offset only while the content is taller than the
-				// viewport, so even a short Board (skeleton, empty, a few rows)
-				// is tall enough to keep the field hidden.
-				contentContainerStyle={{ paddingBottom: 24, minHeight: windowHeight + searchFieldHeight }}
-				onScroll={onScroll}
-				onLayout={(event) => {
-					viewport.current = { ...viewport.current, height: event.nativeEvent.layout.height };
-					readMoreLiveIfNear();
-					readVisibleMore();
-				}}
-				onContentSizeChange={readMoreLiveIfNear}
-				scrollEventThrottle={100}
-			>
-				<SearchField
-					inputRef={searchInput}
-					height={searchFieldHeight}
-					text={searchText}
-					searching={searching}
-					onFocus={() => setSearching(true)}
-					onChangeText={typeSearch}
-					onCancel={cancelSearch}
-				/>
-				{searching ? (
-					<SearchResults
-						search={search.snapshot}
-						scope={scope}
-						onScope={setScope}
-						connected={connected}
-						recent={recentList}
-						onOpen={openSearchResult}
-						onRecent={typeSearch}
-						onClearRecent={clearRecent}
+			<View style={{ flex: 1 }}>
+				<ScrollView
+					ref={scroller}
+					style={{ flex: 1 }}
+					// Starts just past the search field: pulling down reveals it
+					// (spec 7.3). iOS applies this once, when the scroller mounts.
+					contentOffset={{ x: 0, y: searchFieldHeight }}
+					keyboardShouldPersistTaps="handled"
+					keyboardDismissMode="on-drag"
+					// iOS keeps that offset only while the content is taller than the
+					// viewport, so even a short Board (skeleton, empty, a few rows)
+					// is tall enough to keep the field hidden.
+					contentContainerStyle={{ paddingBottom: 24, minHeight: windowHeight + searchFieldHeight }}
+					onScroll={onScroll}
+					onLayout={(event) => {
+						viewport.current = { ...viewport.current, height: event.nativeEvent.layout.height };
+						readMoreLiveIfNear();
+						readVisibleMore();
+					}}
+					onContentSizeChange={readMoreLiveIfNear}
+					scrollEventThrottle={100}
+				>
+					<SearchField
+						inputRef={searchInput}
+						height={searchFieldHeight}
+						text={searchText}
+						searching={searching}
+						onFocus={() => setSearching(true)}
+						onChangeText={typeSearch}
+						onCancel={cancelSearch}
 					/>
-				) : (
-					<>
-						{fatal ? <NoticeRow text={INCOMPATIBLE} /> : null}
-						<BoardNotices hubId={hubId} notices={hubNotices} navigation={navigation} />
-						<View
-							testID="live-block"
-							onLayout={(event) => {
-								const { y, height } = event.nativeEvent.layout;
-								offsets.current.live = y;
-								liveEnd.current = y + height;
-								readMoreLiveIfNear();
-							}}
-						>
-							{live}
-						</View>
-						{pins.map((pin) => (
-							<PinnedSection
-								key={pin.id}
-								section={pin}
-								page={snapshot.pinSections[pin.id]}
-								classify={classify}
-								context={rowContext}
-								folded={folds.isFolded(pin.id)}
-								onToggle={() => folds.setFolded(pin.id, !folds.isFolded(pin.id))}
-								onMenu={categoryMenu.menuFor(pin)}
-								changing={categoryMenu.changing(pin.id)}
-								onLayout={measure(`pin:${pin.id}`)}
-							/>
-						))}
-						{shownSections.map(({ section, folded, items }) => (
+					{searching ? (
+						<SearchResults
+							search={search.snapshot}
+							scope={scope}
+							onScope={setScope}
+							connected={connected}
+							recent={recentList}
+							onOpen={openSearchResult}
+							onRecent={typeSearch}
+							onClearRecent={clearRecent}
+						/>
+					) : (
+						<>
+							{fatal ? <NoticeRow text={INCOMPATIBLE} /> : null}
+							<BoardNotices hubId={hubId} notices={hubNotices} navigation={navigation} />
 							<View
-								key={section}
-								testID={`project-section:${section}`}
+								testID="live-block"
 								onLayout={(event) => {
-									measure(section)(event);
-									readVisibleMore();
+									const { y, height } = event.nativeEvent.layout;
+									offsets.current.live = y;
+									liveEnd.current = y + height;
+									readMoreLiveIfNear();
 								}}
-								style={{ paddingTop: 10 }}
 							>
-								<ProjectSectionHeader
-									title={projectHeaders[section].title}
-									label={projectHeaders[section].label}
-									folded={folded}
-									onToggle={() => setFolded(SECTION_FOLDS[section].fold, !folded)}
-									organize={
-										section === "projects" && projectGrouping !== "flat"
-											? { by: organizeBy, onChange: chooseOrganizeBy }
-											: null
-									}
-								/>
-								{items.map((item) => projectItem(section, item))}
+								{live}
 							</View>
-						))}
-					</>
-				)}
-			</ScrollView>
+							{pins.map((pin) => (
+								<PinnedSection
+									key={pin.id}
+									section={pin}
+									page={snapshot.pinSections[pin.id]}
+									classify={classify}
+									context={listContext}
+									folded={folds.isFolded(pin.id)}
+									onToggle={() => folds.setFolded(pin.id, !folds.isFolded(pin.id))}
+									onMenu={categoryMenu.menuFor(pin)}
+									changing={categoryMenu.changing(pin.id)}
+									onLayout={measure(`pin:${pin.id}`)}
+								/>
+							))}
+							{shownSections.map(({ section, folded, items }) => (
+								<View
+									key={section}
+									testID={`project-section:${section}`}
+									onLayout={(event) => {
+										measure(section)(event);
+										readVisibleMore();
+									}}
+									style={{ paddingTop: 10 }}
+								>
+									<ProjectSectionHeader
+										title={projectHeaders[section].title}
+										label={projectHeaders[section].label}
+										folded={folded}
+										onToggle={() => setFolded(SECTION_FOLDS[section].fold, !folded)}
+										organize={
+											section === "projects" && projectGrouping !== "flat"
+												? { by: organizeBy, onChange: chooseOrganizeBy }
+												: null
+										}
+									/>
+									{items.map((item) => projectItem(section, item))}
+								</View>
+							))}
+						</>
+					)}
+				</ScrollView>
+				{/* The toast floats 10pt above the toolbar. */}
+				<View pointerEvents="box-none" style={{ position: "absolute", left: 0, right: 0, bottom: 10 }}>
+					<Toast toast={toast.toast} dismiss={toast.dismiss} />
+				</View>
+			</View>
 			<BoardToolbar state={state} fatal={fatal} newSessionDisabled={!connected} onNewSession={newSession} />
 		</View>
 	);

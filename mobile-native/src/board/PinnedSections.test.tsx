@@ -8,7 +8,8 @@ import { expect, it, vi } from "vitest";
 import { paletteFor } from "../design/tokens";
 import { render } from "../renderNative.testkit";
 import { boardState } from "./attention";
-import { BoardRow, type RowContext } from "./BoardRow";
+import { BoardRow } from "./BoardRow";
+import type { RowContext } from "./BoardRows";
 import { PinnedSection, useCategoryFolds } from "./PinnedSections";
 import { StateMark } from "./StateMark";
 
@@ -18,6 +19,9 @@ vi.mock("react-native", async () => ({
 	...(await import("../renderNative.testkit")).nativeModuleMock(),
 }));
 vi.mock("expo-symbols", () => ({ SymbolView: "SymbolView" }));
+vi.mock("react-native-gesture-handler/ReanimatedSwipeable", async () =>
+	(await import("../renderNative.testkit")).gestureHandlerModuleMock(),
+);
 vi.mock("expo-sqlite/kv-store", () => ({
 	Storage: {
 		getItemSync: (key: string) => harness.kv.get(key) ?? null,
@@ -66,6 +70,7 @@ function Category({ hub, section = release, page, onMenu = null, changing = fals
 		now: NOW,
 		onOpen,
 		draftRefs: new Set(),
+		swipes: () => ({ trailing: [], dimmed: false }),
 	};
 	return (
 		<PinnedSection
