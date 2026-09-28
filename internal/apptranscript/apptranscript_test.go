@@ -1480,6 +1480,57 @@ func TestProjectTurn_RepairedCommunicateRendersDeliveredMessage(t *testing.T) {
 	}
 }
 
+// TestProjectTurn_HealedCommunicateWithoutRecoverableMessageRendersRawBytes
+// pins the corner where a healed communicate's raw bytes repair to valid JSON
+// that carries no message field. The hub's markdown fallback
+// (agent/transcript_render.go writeResultToolMessage) surfaces the raw bytes
+// the model sent; the reload projection must do the same instead of dropping
+// the call. Live never reaches this corner (a healed call carries a message),
+// so the raw-arguments fallback is the same defense-in-depth the hub keeps.
+func TestProjectTurn_HealedCommunicateWithoutRecoverableMessageRendersRawBytes(t *testing.T) {
+	// Malformed JSON (unquoted key) that RepairJSON heals to {"foo":"bar"} — a
+	// valid object with no "message" (or output.message) to recover.
+	const rawArgs = `{foo: "bar"}`
+	reg := NewToolCallRegistry()
+	assistantItems := ProjectTurn("turn_1", 1, schema.Turn{
+		Kind: schema.TurnAssistant,
+		Message: llm.Message{Content: []llm.ContentPart{{
+			Kind: llm.ContentToolCall,
+			ToolCall: &llm.ToolCallData{
+				ID:           "call_comm_unrecoverable",
+				Name:         "communicate",
+				Arguments:    []byte(`{}`),
+				RawArguments: rawArgs,
+			},
+		}}},
+	}, reg, nil, nil)
+	if len(assistantItems) != 0 {
+		t.Fatalf("want 0 items from assistant turn (raw bytes deferred to result), got %d: %+v", len(assistantItems), assistantItems)
+	}
+
+	resultItems := ProjectTurn("turn_2", 2, schema.Turn{
+		Kind: schema.TurnToolResults,
+		Message: llm.Message{Content: []llm.ContentPart{{
+			Kind: llm.ContentToolResult,
+			ToolResult: &llm.ToolResultData{
+				ToolCallID: "call_comm_unrecoverable",
+				Name:       "communicate",
+				IsError:    false,
+			},
+		}}},
+	}, reg, nil, nil)
+
+	if len(resultItems) != 1 {
+		t.Fatalf("want 1 item (agentMessage with the raw-arguments fallback), got %d: %+v", len(resultItems), resultItems)
+	}
+	if resultItems[0].Type != "agentMessage" {
+		t.Fatalf("Type = %q, want agentMessage", resultItems[0].Type)
+	}
+	if resultItems[0].Text != rawArgs {
+		t.Errorf("Text = %q, want the raw bytes %q (mirroring the hub's fallback)", resultItems[0].Text, rawArgs)
+	}
+}
+
 // TestProjectTurn_RejectedCommunicateRendersAsToolError verifies that a
 // rejected communicate (IsError=true, PrevalOnly=true) renders as a
 // commandExecution tool/error item, NOT an agentMessage. Live suppresses

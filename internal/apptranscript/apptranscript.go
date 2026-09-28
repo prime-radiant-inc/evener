@@ -395,6 +395,24 @@ func ProjectTurn(turnID string, turnIndex int, turn schema.Turn, reg *ToolCallRe
 	return projectTurn(turnID, turnIndex, turn, reg, imageProjector, outputImageProjector, nil)
 }
 
+// communicateRawFallbackMaxRunes bounds the raw-arguments fallback a healed
+// communicate renders when repair cannot recover a message, mirroring the
+// hub's resultLineMaxRunes limit (agent/transcript_render.go).
+const communicateRawFallbackMaxRunes = 300
+
+// oneLineTruncRunes collapses newlines to spaces, strips carriage returns, and
+// truncates to at most limit runes with an ellipsis — mirroring the hub's
+// oneLine + truncRunes bounding of the raw-arguments fallback
+// (agent/transcript_render.go).
+func oneLineTruncRunes(s string, limit int) string {
+	s = strings.ReplaceAll(strings.ReplaceAll(s, "\n", " "), "\r", "")
+	r := []rune(s)
+	if len(r) <= limit {
+		return s
+	}
+	return string(r[:limit]) + "…"
+}
+
 // ProjectTurnParts is ProjectTurn plus, for each item, the index of the entry
 // content part it came from. Each part projects at most one item, so the index
 // names an item within its entry. A kind that projects the whole entry as one
@@ -784,12 +802,30 @@ func projectTurn(turnID string, turnIndex int, turn schema.Turn, reg *ToolCallRe
 						// within the turn it repeats. A cross-turn healed
 						// communicate with the same text is a genuine
 						// message, not an echo.
-						if msg := CommunicateMessageFromArguments(normalized); msg != "" && (turnID != reg.LastAssistantTurnID || !EchoesAssistantText(reg.LastAssistantText, msg)) {
+						msg := CommunicateMessageFromArguments(normalized)
+						if msg != "" && (turnID != reg.LastAssistantTurnID || !EchoesAssistantText(reg.LastAssistantText, msg)) {
 							items = append(items, appwire.ThreadItem{
 								Type:   "agentMessage",
 								ID:     fmt.Sprintf("item_assistant_%d_%d", turnIndex, i),
 								TurnID: turnID,
 								Text:   msg,
+								Status: appwire.TurnStatusCompleted,
+							})
+							recordPart(parts, i)
+						} else if msg == "" {
+							// Repair recovered no message (the healed bytes
+							// carry neither "message" nor output.message, or
+							// could not be repaired at all). Mirror the hub's
+							// raw-arguments fallback
+							// (agent/transcript_render.go
+							// writeResultToolMessage): surface the bounded raw
+							// bytes the model sent instead of dropping the call
+							// silently.
+							items = append(items, appwire.ThreadItem{
+								Type:   "agentMessage",
+								ID:     fmt.Sprintf("item_assistant_%d_%d", turnIndex, i),
+								TurnID: turnID,
+								Text:   oneLineTruncRunes(string(rawArgs), communicateRawFallbackMaxRunes),
 								Status: appwire.TurnStatusCompleted,
 							})
 							recordPart(parts, i)
