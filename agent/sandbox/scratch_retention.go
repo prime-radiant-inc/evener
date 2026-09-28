@@ -1764,10 +1764,13 @@ func ScratchDirectoryRetained(dir string) (bool, error) {
 //
 // A lease-owning binding no consumer role names can never be adopted on
 // restore, and the graph reader fails closed on it, so a manifest left holding
-// one (a publication that claimed a binding before its consumer row landed and
-// then stopped) would wedge every later restore of this root. The repair
-// demotes such a binding to the historical, slotless shape the reader keeps.
-// Its allocation stays retained by its own reference, so nothing is deleted,
+// one (a publication that claimed a binding, its pin and its owning slots
+// before the consumer row that maps a session onto it landed and then stopped)
+// would wedge every later restore of this root. The repair reconstructs that
+// consumer row instead of demoting the binding, so restore adopts the retained
+// allocation and the owning session resumes in its original directory. The
+// binding's slots stay intact — the allocation must remain adoptable — and its
+// allocation stays retained by its own reference, so nothing is deleted,
 // collected, or lost.
 //
 // References whose directory still exists and whose pin is present are
@@ -1798,10 +1801,11 @@ func RepairScratchRetention(owner ScratchOwner) (ScratchManifest, bool, error) {
 }
 
 // ScratchRetentionNeedsRepair reports whether RepairScratchRetention would drop
-// a reference, re-publish a pin, or demote a dead binding: a reference whose
-// directory is gone, a referenced directory whose identity pin is missing, or a
-// lease-owning binding no consumer role names. It only reads, so a restore can
-// skip the manifest lock and write for an intact manifest.
+// a reference, re-publish a pin, or reconstruct a consumer for an orphan owning
+// binding: a reference whose directory is gone, a referenced directory whose
+// identity pin is missing, or a lease-owning binding no consumer role names. It
+// only reads, so a restore can skip the manifest lock and write for an intact
+// manifest.
 func ScratchRetentionNeedsRepair(manifest ScratchManifest) bool {
 	for _, ref := range manifest.References {
 		dir, err := canonicalScratchPath(ref.Dir)
@@ -1853,6 +1857,21 @@ func consumerNamedBindingIDs(consumers []ScratchConsumerBinding) map[string]stru
 	return named
 }
 
+// consumerNamesBinding reports whether any role of consumer — current,
+// parent-shared, worktree-restore, or abandoned — names bindingID. It is the
+// single-row form of consumerNamedBindingIDs.
+func consumerNamesBinding(consumer ScratchConsumerBinding, bindingID string) bool {
+	if bindingID == "" {
+		return false
+	}
+	if consumer.CurrentBindingID == bindingID ||
+		consumer.ParentSharedBindingID == bindingID ||
+		consumer.WorktreeRestoreBindingID == bindingID {
+		return true
+	}
+	return slices.Contains(consumer.AbandonedBindingIDs, bindingID)
+}
+
 // repairScratchRetentionLocked is the repair's read-modify-write. The caller
 // holds owner's manifest lock, so the load, the transform and the write are one
 // serialized transaction against every other manifest writer.
@@ -1864,7 +1883,6 @@ func repairScratchRetentionLocked(owner ScratchOwner) (ScratchManifest, bool, er
 	if current.Released {
 		return current, false, nil
 	}
-	named := consumerNamedBindingIDs(current.Consumers)
 	dropped := make(map[string]struct{})
 	survivors := make([]ScratchReference, 0, len(current.References))
 	for _, ref := range current.References {
@@ -1890,33 +1908,86 @@ func repairScratchRetentionLocked(owner ScratchOwner) (ScratchManifest, bool, er
 		}
 		survivors = append(survivors, ref)
 	}
-	// Dropping a reference and the slot that named its directory keeps the graph
-	// the reader validates intact by construction: surviving slots still name
-	// surviving references of their kind, no consumer role names a binding this
-	// touch removes (no binding is removed), and a binding that loses its only
-	// slot becomes the historical slotless shape the reader keeps.
+	// Drop a slot whose directory this repair removed, so the surviving graph
+	// still pairs every slot with a surviving reference of its kind: no consumer
+	// role names a binding this touch removes (no binding is removed), and a
+	// binding that loses its only slot becomes the historical slotless shape the
+	// reader keeps.
 	changed := len(dropped) > 0
 	for i := range current.Bindings {
 		binding := &current.Bindings[i]
-		_, consumerNamed := named[binding.BindingID]
 		for kind, slot := range binding.Slots {
 			slotDir, err := canonicalScratchPath(slot.Dir)
 			if err != nil {
 				return ScratchManifest{}, false, err
 			}
-			_, gone := dropped[slotDir]
-			// Drop a slot whose directory this repair removed, and demote a slot
-			// it cannot attribute: a lease-owning binding no consumer role names
-			// can never be adopted on restore, and the graph reader fails closed
-			// on it, so a manifest left holding one (a publication that claimed a
-			// binding before its consumer row landed, then stopped) would wedge
-			// every later restore of this root. The allocation stays retained by
-			// its own reference.
-			if gone || (!consumerNamed && slot.OwnsLease) {
+			if _, gone := dropped[slotDir]; gone {
 				delete(binding.Slots, kind)
 				changed = true
 			}
 		}
+	}
+	// A lease-owning binding no consumer role names can never be adopted on
+	// restore, and the graph reader fails closed on it — the state a publication
+	// leaves when it claims a binding, its pin and its owning slots BEFORE the
+	// consumer row that maps a session onto it lands, and then stops. Demoting
+	// the binding (deleting its owning slots) would let restore proceed but
+	// silently drop the session's scratch continuity. Reconstruct the consumer
+	// row instead, so the owning session is adopted onto the binding's original
+	// directory: give an existing row the binding as its current one, record it
+	// as abandoned when that row already names a different current binding, or
+	// add the row outright. The binding's slots stay intact — the allocation must
+	// remain adoptable. A binding with no owner session is unattributable and is
+	// left exactly as it is, for the reader to keep refusing.
+	named := consumerNamedBindingIDs(current.Consumers)
+	for i := range current.Bindings {
+		binding := current.Bindings[i]
+		if _, ok := named[binding.BindingID]; ok {
+			continue
+		}
+		ownsLease := false
+		for _, slot := range binding.Slots {
+			if slot.OwnsLease {
+				ownsLease = true
+				break
+			}
+		}
+		if !ownsLease {
+			continue
+		}
+		owner := binding.OwnerSessionID
+		if owner == "" {
+			continue
+		}
+		idx := -1
+		for c := range current.Consumers {
+			if current.Consumers[c].SessionID == owner {
+				idx = c
+				break
+			}
+		}
+		if idx < 0 {
+			current.Consumers = append(current.Consumers, ScratchConsumerBinding{
+				SessionID:        owner,
+				CurrentBindingID: binding.BindingID,
+			})
+			named[binding.BindingID] = struct{}{}
+			changed = true
+			continue
+		}
+		consumer := &current.Consumers[idx]
+		if consumer.CurrentBindingID == "" {
+			consumer.CurrentBindingID = binding.BindingID
+			named[binding.BindingID] = struct{}{}
+			changed = true
+			continue
+		}
+		if consumerNamesBinding(*consumer, binding.BindingID) {
+			continue
+		}
+		consumer.AbandonedBindingIDs = append(consumer.AbandonedBindingIDs, binding.BindingID)
+		named[binding.BindingID] = struct{}{}
+		changed = true
 	}
 	if !changed {
 		return current, false, nil

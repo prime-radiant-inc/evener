@@ -2858,12 +2858,14 @@ func TestScratchRetentionRepairTreatsACommittedWriteAsSuccess(t *testing.T) {
 	}
 }
 
-// TestScratchRetentionRepairDemotesOrphanOwningBinding proves the repair clears
-// a lease-owning binding that no consumer role names — the state a publication
+// TestScratchRetentionRepairAdoptsOrphanOwningBinding proves the repair adopts a
+// lease-owning binding that no consumer role names — the state a publication
 // leaves when it claims a binding before its consumer row lands and then stops,
-// which the graph reader fails closed on. The repair demotes the binding to the
-// historical slotless shape and keeps its allocation retained by reference.
-func TestScratchRetentionRepairDemotesOrphanOwningBinding(t *testing.T) {
+// which the graph reader fails closed on. The repair reconstructs the consumer
+// row naming the binding, keeps the binding's owning slot (the allocation must
+// stay adoptable), and keeps its allocation retained by reference, so restore
+// resumes the owning session in its original directory.
+func TestScratchRetentionRepairAdoptsOrphanOwningBinding(t *testing.T) {
 	base, workspace := scratchRetentionBase(t)
 	owner := ScratchOwner{StateDir: t.TempDir(), RootSessionID: identifier.MustNewSessionID()}
 	scratch, err := NewSessionScratch(base, workspace)
@@ -2910,12 +2912,19 @@ func TestScratchRetentionRepairDemotesOrphanOwningBinding(t *testing.T) {
 		}
 	}
 	if orphan == nil {
-		t.Fatal("the repair dropped the binding instead of demoting it")
+		t.Fatal("the repair dropped the binding instead of adopting it")
 	}
-	for kind, slot := range orphan.Slots {
-		if slot.OwnsLease {
-			t.Fatalf("the repair kept orphan owning slot %q", kind)
+	if slot, ok := orphan.Slots["unsandboxed"]; !ok || !slot.OwnsLease {
+		t.Fatalf("the repair did not keep the orphan's owning slot: %+v", orphan.Slots)
+	}
+	named := false
+	for _, consumer := range repaired.Consumers {
+		if consumer.SessionID == owner.RootSessionID && consumer.CurrentBindingID == "orphan" {
+			named = true
 		}
+	}
+	if !named {
+		t.Fatalf("the repair did not reconstruct a consumer row naming the orphan: %+v", repaired.Consumers)
 	}
 	referenced := false
 	for _, ref := range repaired.References {
