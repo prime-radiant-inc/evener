@@ -201,14 +201,17 @@ type hostManagerConfig struct {
 	restartHost func(ctx context.Context, host hostreg.Host, facts sshconn.Preflight) error
 	// attachedFacts returns the attached channel's captured preflight facts —
 	// the deploy path's facts source, since deploy runs no fresh preflight of
-	// its own (§6 step 3), and the interim reattach wait's attachment probe.
-	// Nil (tests, embedders with no manager) leaves the workers to their own
-	// seam.
+	// its own (§6 step 3), and the attach-first restart's probe source. Nil
+	// (tests, embedders with no manager) leaves the workers to their own seam.
 	attachedFacts func(name string) (sshconn.Preflight, bool)
-	// awaitReattach, when set, is the test/embedder override for waiting on the
-	// host's channel after a restart released the gate; production with a
-	// manager polls the manager's own attachment.
-	awaitReattach func(ctx context.Context, entry hostreg.Host) (*appwire.Client, bool)
+	// attachUnderGate is the operation-owned attach/reattach seam (§6 seam (d)):
+	// the worker's post-restart reattach (and an initially unattached restart's
+	// attach-first), run under the caller's held gate by the sshconn Manager's
+	// AttachUnderGate. It returns the post-verification handoff that starts the
+	// channel's supervisor under the same held gate. Nil (a hub with no manager)
+	// refuses the reattach rather than running the normal attach path, which
+	// would deadlock on the non-reentrant gate.
+	attachUnderGate func(ctx context.Context, entry hostreg.Host) (func() bool, error)
 	// remnantFence reports the open teardown remnant fencing a host name, if
 	// one does: §6 step 2's `remnant-open` refusal is emitted from here, past
 	// the dedup check and before any probe or acquisition. Remnant semantics
@@ -1421,10 +1424,23 @@ func newHubHostManager(sources *appsource.Registry, manager *sshconn.Manager, cf
 		// under the same gate.
 		m.cfg.restartHost = manager.RestartForOperation
 	}
+	if m.cfg.attachUnderGate == nil && manager != nil {
+		// The production operation-owned reattach (§6 seam (d)): the manager's
+		// gate-aware attach primitive, which accepts the already-held gate,
+		// suppresses supervisor startup until the post-verification handoff, and
+		// never re-acquires the non-reentrant lock.
+		m.cfg.attachUnderGate = func(ctx context.Context, entry hostreg.Host) (func() bool, error) {
+			_, handoff, err := manager.AttachUnderGate(ctx, entry)
+			if err != nil {
+				return nil, err
+			}
+			return handoff, nil
+		}
+	}
 	if m.cfg.attachedFacts == nil && manager != nil {
 		// The attached channel's captured preflight is the deploy path's facts
-		// source (deploy runs no fresh preflight of its own) and the interim
-		// reattach wait's attachment probe. PreflightIfAttached never dials.
+		// source (deploy runs no fresh preflight of its own) and the attach-first
+		// restart's probe source. PreflightIfAttached never dials.
 		m.cfg.attachedFacts = manager.PreflightIfAttached
 	}
 	// The file's records are read once, before anything else can mint: its

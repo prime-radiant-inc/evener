@@ -761,6 +761,139 @@ func (m *Manager) Ensure(ctx context.Context, name string) (*Channel, error) {
 	return ch, nil
 }
 
+// hostGateHeld reports whether name's per-host gate is currently held by
+// someone. The entry is fetched under the manager mutex; the held flag itself
+// is atomic by design (hostLockGate), so the read does not disturb a
+// contender's holder registration.
+func (m *Manager) hostGateHeld(name string) bool {
+	m.mu.Lock()
+	entry := m.locks[name]
+	m.mu.Unlock()
+	return entry != nil && entry.gate.isHeld()
+}
+
+// AttachUnderGate re-attaches host under the caller's already-held per-host
+// gate: the operation-owned attach/reattach primitive (registry spec 08 §14)
+// the deploy/restart worker consumes (deploy pipeline 08b §6 seam (d)). The
+// caller holds the gate — Manager.TryAcquire's hold, or the hold a
+// connect/attach path took — and this method never acquires it: the gate is
+// the same non-reentrant per-host lock, so re-running the normal attach path
+// (Ensure) here would deadlock. It re-runs the attach dialing closure
+// (ensureOnce) for the registration it was handed, publishes the replacement
+// exactly as Ensure and reconnectOnce do, and starts no supervisor: the caller
+// owns the channel until terminal verification, then calls the returned
+// handoff — still under the held gate — which starts the supervisor for the
+// channel so the host keeps automatic reconnect after the operation (§6: the
+// suppress-supervisor scope ends at verification).
+//
+// A predecessor mapped under the name (the channel a restart dropped when the
+// operation reattaches) is replaced and reaped here, with its outstanding
+// Attached paired by a Detached before the replacement's Attached, exactly as
+// Ensure's replacement does — otherwise the predecessor's consumer would keep
+// a source nothing owns. The handoff is safe to call once per attach: a repeat
+// call reports the first result without starting a second supervisor, and a
+// call after the caller released the gate refuses instead of starting a
+// supervisor against a gate nobody holds.
+func (m *Manager) AttachUnderGate(ctx context.Context, host hostreg.Host) (*Channel, func() bool, error) {
+	name := strings.TrimSpace(host.Name)
+	if name == "" {
+		return nil, nil, errors.New("sshconn: an attach-under-gate needs a host name")
+	}
+	if !m.beginEnsure() {
+		return nil, nil, ErrManagerClosed
+	}
+	defer m.ensureWG.Done()
+	// The caller's hold is this primitive's whole premise: publishing under
+	// someone else's exclusion is what the gate-aware entry exists to prevent,
+	// and a free (or absent) gate refuses before any dial.
+	if !m.hostGateHeld(name) {
+		return nil, nil, fmt.Errorf("%w: host %q; AttachUnderGate runs under the caller's hold and never acquires the gate", hostops.ErrGateNotHeld, name)
+	}
+	if m.reg == nil || !m.reg.SameRegistration(name, host) {
+		// The generation-pinned entry the caller resolved is not the live
+		// registration (a remove/re-add, or a direct registry swap, landed under
+		// the hold): never attach the superseded identity's configuration.
+		return nil, nil, fmt.Errorf("%w: %q", ErrHostNotFound, name)
+	}
+	// An already-live channel for this same registration is the host attached:
+	// hand it back untouched (it keeps the supervisor that owns it), exactly the
+	// state Ensure reports for an idempotent re-attach.
+	if ch := m.liveChannel(name); ch != nil && ch.MatchesRegistration(host) {
+		return ch, func() bool { return true }, nil
+	}
+	stale := m.currentChannel(name)
+	// Tie the attempt to the manager's lifetime, exactly as Ensure does: a
+	// Close landing mid-attempt must cancel it rather than let it outlive the
+	// manager with its ssh child alive.
+	attemptCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	stopClose := context.AfterFunc(m.baseCtx, cancel)
+	defer stopClose()
+	ch, err := m.ensureOnce(attemptCtx, host, true)
+	if err != nil {
+		if m.baseCtx.Err() != nil && !isTerminal(err) {
+			// Close canceling the attempt, not the host, is why.
+			err = ErrManagerClosed
+		}
+		return nil, nil, err
+	}
+	if ch.isClosed() || ch.isLost() {
+		// The link died between the handshake and the publish: reap the
+		// replacement and report the drop; the predecessor (if any) keeps the
+		// slot, exactly as Ensure's own validation does.
+		_ = ch.Close()
+		return nil, nil, errChannelDropped(name)
+	}
+	if !m.reg.SameRegistration(name, host) {
+		_ = ch.Close()
+		return nil, nil, fmt.Errorf("%w: %q", ErrHostNotFound, name)
+	}
+	if !m.publishChannel(name, ch, host) {
+		_ = ch.Close()
+		return nil, nil, ErrManagerClosed
+	}
+	if m.opts.afterPublish != nil {
+		m.opts.afterPublish(name, ch)
+	}
+	// Order the predecessor's Detached before the replacement's Attached, as
+	// Ensure's replacement does: the predecessor's own supervisor is parked on
+	// the gate this call holds, so it will stand down without pairing them.
+	if stale != nil {
+		m.detachEvent(name, StateReconnecting)
+	}
+	m.attachEvent(name, ch, StateAttached)
+	if ch.isLost() {
+		// The link died between the validation and the announcement: hand the
+		// slot back (to the predecessor when one exists) and pair the events,
+		// exactly as Ensure's post-publish death path does.
+		return nil, nil, m.lostAfterPublish(name, stale)
+	}
+	if stale != nil {
+		// The map no longer references the predecessor; reaping it can block on
+		// its ssh child's exit, which Kill bounds (the child is the dead link
+		// the operation's restart left).
+		_ = stale.Close()
+	}
+	var handedOff sync.Once
+	handoffResult := false
+	handoff := func() bool {
+		handedOff.Do(func() {
+			m.mu.Lock()
+			entry := m.locks[name]
+			m.mu.Unlock()
+			if entry == nil || !entry.gate.isHeld() {
+				// The caller released the gate before the handoff (or Close
+				// cleared the world): never start a supervisor against a gate
+				// nobody holds.
+				return
+			}
+			handoffResult = m.startSupervise(host, ch, &entry.gate)
+		})
+		return handoffResult
+	}
+	return ch, handoff, nil
+}
+
 // ClientIfAttached returns name's current initialized client ONLY while a live,
 // not-closed channel is installed, and reports false otherwise. It is the
 // non-dialing lookup a background caller (component 06's fleet snapshot) and the
