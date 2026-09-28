@@ -99,9 +99,11 @@ const packetToolResultMax = 1500
 // the user appears whole, since those messages are what the reader scores.
 // Other tool calls appear as their previews, and tool results are cut short.
 // A communicate/result-tool message that echoes assistant text already shown
-// within the same logical turn is left out, matching evener itself: the
+// within the same logical turn is not repeated, matching evener itself: the
 // reader must never see a repetition the user never saw (see
-// echo_suppression.go).
+// echo_suppression.go). It still gets a line saying the text above was
+// delivered: an empty turn where that call was reads, to a blind reader, as
+// a report that was never sent, when the app in fact showed it once.
 func renderPacket(tr doctor.TranscriptResult) string {
 	var b strings.Builder
 	var echoes echoSuppressor
@@ -120,8 +122,12 @@ func renderPacket(tr doctor.TranscriptResult) string {
 				fmt.Fprintf(&b, "→ %s `%s`\n\n", call.Name, call.ArgPreview)
 				continue
 			}
-			if msg := shownMessage(call.Arguments); msg != "" && !echoes.echoes(turnSeq, msg) {
-				fmt.Fprintf(&b, "⇒ %s\n\n%s\n\n", call.Name, msg)
+			if msg := shownMessage(call.Arguments); msg != "" {
+				if echoes.echoes(turnSeq, msg) {
+					fmt.Fprintf(&b, "⇒ %s (sent the text above to the user)\n\n", call.Name)
+				} else {
+					fmt.Fprintf(&b, "⇒ %s\n\n%s\n\n", call.Name, msg)
+				}
 			}
 		}
 		for _, result := range turn.ToolResults {

@@ -82,17 +82,20 @@ func writeEchoFixtureRun(t *testing.T, text string, gap bool) (packet string, pr
 // communicate call after it that repeats the assistant's own preceding bare
 // text is the SAME echo evener itself never renders (EchoesAssistantText,
 // scoped to the logical turn that showed the text). The packet must show the
-// text once, and prose-stats' "all" channel must count it once, not twice.
+// text once, not twice, and prose-stats' "all" channel must count it once.
+// The suppressed call must still say the text above was delivered: a blind
+// reader who only sees an empty turn where the communicate call was cannot
+// tell the report was sent at all (issue found after 2df0f9eac6 landed).
 func TestSameLogicalTurnEchoIsSuppressed(t *testing.T) {
 	t.Parallel()
 	const text = "Fixed the off-by-one bug in Sum(). Tests pass now."
 	packet, prose := writeEchoFixtureRun(t, text, false)
 
 	if got := strings.Count(packet, text); got != 1 {
-		t.Errorf("packet shows the text %d times, want 1 (the echoed communicate call must be suppressed):\n%s", got, packet)
+		t.Errorf("packet shows the text %d times, want 1 (the echoed communicate call must not repeat it):\n%s", got, packet)
 	}
-	if strings.Contains(packet, "⇒ communicate") {
-		t.Errorf("packet still renders the suppressed communicate call:\n%s", packet)
+	if !strings.Contains(packet, "⇒ communicate (sent the text above to the user)") {
+		t.Errorf("packet does not say the suppressed communicate call still delivered the text above:\n%s", packet)
 	}
 	if got := countExact(prose.All, text); got != 1 {
 		t.Errorf("prose.All has the text %d times, want 1 (the echo must not double count): %+v", got, prose.All)
