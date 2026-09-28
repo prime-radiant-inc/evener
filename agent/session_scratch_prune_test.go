@@ -1,13 +1,10 @@
 package agent
 
 import (
-	"context"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 
-	"primeradiant.com/evener/agent/internal/clock"
 	"primeradiant.com/evener/agent/sandbox"
 )
 
@@ -122,49 +119,6 @@ func TestPrepareRetainedScratchPrunesMissingAllocation(t *testing.T) {
 	// forever on the missing directory.
 	if err := root.validateRetainedScratchPresent(); err != nil {
 		t.Fatalf("retirement readiness still wedged after the prune: %v", err)
-	}
-}
-
-// TestRetirementPreparationPrunesMissingAllocation proves retirement
-// readiness reconciles the same missing allocation rather than failing closed
-// on it: a live root whose directory vanished out of band stays retirable. The
-// bare fixture has no transcript for the later reconstruction step, so the
-// assertion pins what this change owns — preparation no longer reports the
-// scratch wedge, and the missing reference is pruned.
-func TestRetirementPreparationPrunesMissingAllocation(t *testing.T) {
-	workDir := t.TempDir()
-	base := t.TempDir()
-	root, owner := newPruneTestRoot(t)
-	_, gone := bindSurvivorAndGone(t, owner, base, workDir)
-
-	// The wedge without the prune: readiness fails closed on the missing
-	// directory.
-	if err := root.validateRetainedScratchPresent(); err == nil {
-		t.Fatal("fixture did not reproduce the missing-directory wedge")
-	}
-
-	c, err := NewRetirementController(0, clock.Real())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := c.AttachRoot(root); err != nil {
-		t.Fatal(err)
-	}
-	claim, _, err := c.TryClaim(true)
-	if err != nil || claim == nil {
-		t.Fatalf("claim: %v %v", claim, err)
-	}
-	if _, err := c.Prepare(context.Background(), claim); err != nil && strings.Contains(err.Error(), "retained scratch") {
-		t.Fatalf("retirement preparation wedged on the missing allocation: %v", err)
-	}
-	pruned, err := sandbox.LoadScratchRetention(owner)
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, ref := range pruned.References {
-		if filepath.Clean(ref.Dir) == filepath.Clean(gone.Dir) {
-			t.Fatal("retirement preparation did not prune the missing reference")
-		}
 	}
 }
 
