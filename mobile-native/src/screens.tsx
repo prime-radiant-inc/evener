@@ -138,7 +138,7 @@ import {
 import { FloatingStack } from "./session/FloatingStack";
 import { NewContentPill } from "./session/NewContentPill";
 import { BackButton } from "./session/BackButton";
-import { liveOrder, nextNavigation, nextSession, othersNeedingYou } from "./session/fleetOrder";
+import { liveOrder, neighbor, nextNavigation, nextSession, othersNeedingYou } from "./session/fleetOrder";
 import { NextCapsule } from "./session/NextCapsule";
 import { useFleet } from "./session/useFleet";
 import { QueuedMessages } from "./session/QueuedMessages";
@@ -257,8 +257,16 @@ export type Routes = {
 	Sessions: undefined;
 	NewSession: { hubId: string; hubName: string };
 	/** openedBy says Next opened this session (ruling 2), so Next from it
-	 * replaces it. location.ts never persists it. */
-	Conversation: { hubId: string; ref: string; title: string; openedBy?: "next" };
+	 * replaces it. slideFrom says the title's swipe opened it as the
+	 * previous ("left") or next ("right") session in Live order, the side it
+	 * slides in from (spec 6). location.ts persists neither. */
+	Conversation: {
+		hubId: string;
+		ref: string;
+		title: string;
+		openedBy?: "next";
+		slideFrom?: "left" | "right";
+	};
 	TasksSheet: { hubId: string; ref: string; threadId: string; hasTasks: boolean };
 	NotesSheet: { hubId: string; ref: string; focusEditor?: boolean };
 	QueueSheet: { hubId: string; ref: string };
@@ -796,11 +804,9 @@ export function ConversationScreen({
 		activeProfile?.id === route.params.hubId && connectionText === null;
 	// Who else needs you (spec 13.2), for Back's count and Next.
 	const fleet = useFleet(route.params.hubId, connected ? client : null, focused);
+	const live = useMemo(() => liveOrder(fleet.bands), [fleet.bands]);
 	// This session's own row, which the fleet re-reads when a turn ends.
-	const fleetRow = useMemo(
-		() => liveOrder(fleet.bands).find((row) => row.ref === route.params.ref),
-		[fleet.bands, route.params.ref],
-	);
+	const fleetRow = useMemo(() => live.find((row) => row.ref === route.params.ref), [live, route.params.ref]);
 	useMarkSeenInFront(
 		route.params,
 		focused,
@@ -826,11 +832,14 @@ export function ConversationScreen({
 			),
 		});
 	}, [navigation, othersWaitingCount]);
-	// Opens a session that needs you, marked seen the way the Board marks a
+	// Leaving for another session marks it seen, the way the Board marks a
 	// row it opens (spec 8.3).
-	function openNext(target: NavigationSessionSummary) {
+	function leaveFor(target: NavigationSessionSummary) {
 		Keyboard.dismiss();
 		fleet.seen.markRead(connected ? client : null, [target]);
+	}
+	function openNext(target: NavigationSessionSummary) {
+		leaveFor(target);
 		const params = {
 			hubId: route.params.hubId,
 			ref: target.ref,
@@ -840,6 +849,24 @@ export function ConversationScreen({
 		if (nextNavigation(route.params.openedBy) === "replace")
 			navigation.replace("Conversation", params);
 		else navigation.push("Conversation", params);
+	}
+	// A pan on the title replaces this session with its neighbor in Live
+	// order (spec 6), keeping Next's mark so Next from there still replaces.
+	const previous = neighbor(live, route.params.ref, -1);
+	const next = neighbor(live, route.params.ref, 1);
+	const hasPrevious = previous !== null;
+	const hasNext = next !== null;
+	function swipeToSession(direction: 1 | -1) {
+		const target = direction === -1 ? previous : next;
+		if (!target) return;
+		leaveFor(target);
+		navigation.replace("Conversation", {
+			hubId: route.params.hubId,
+			ref: target.ref,
+			title: target.title,
+			openedBy: route.params.openedBy,
+			slideFrom: direction === -1 ? "left" : "right",
+		});
 	}
 	// Touch and hold on Next lists who needs you, first eight (spec 8.3).
 	function chooseNext() {
@@ -1366,9 +1393,11 @@ export function ConversationScreen({
 	// render, which React's own rules reserve for effects.
 	const chooseSessionActionRef = useRef(chooseSessionAction);
 	const runSessionActionRef = useRef(runSessionAction);
+	const swipeToSessionRef = useRef(swipeToSession);
 	useEffect(() => {
 		chooseSessionActionRef.current = chooseSessionAction;
 		runSessionActionRef.current = runSessionAction;
+		swipeToSessionRef.current = swipeToSession;
 	});
 	useEffect(() => {
 		navigation.setOptions({
@@ -1381,6 +1410,8 @@ export function ConversationScreen({
 								title={children}
 								line={stateLine}
 								onPress={() => openSessionDestination("session")}
+								onSwipe={(direction) => swipeToSessionRef.current(direction)}
+								neighbors={{ previous: hasPrevious, next: hasNext }}
 							/>
 						)
 					: undefined,
@@ -1435,6 +1466,8 @@ export function ConversationScreen({
 		colors.text,
 		stateLine?.state,
 		stateLine?.text,
+		hasPrevious,
+		hasNext,
 		menuLevel,
 		hasSubagents,
 		documents.length,
@@ -2817,6 +2850,8 @@ export function ConversationScreen({
 				disabled={ghostBusy}
 				canEdit={canEditGhost}
 				editHint={ghostEditHint}
+				// Only one of the two places waitingForAgent shows is mounted.
+				backdrop={composerShown ? "surface" : "page"}
 				draftAttachments={
 					<ImageAttachments
 						document={document}

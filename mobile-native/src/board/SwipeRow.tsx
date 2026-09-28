@@ -1,7 +1,9 @@
 // A row that swipes (spec 7.3): a full swipe right does its leading action
 // (Archive on the Board), and a swipe left reveals its trailing actions
-// (Stop, Pin, More). It takes any children and actions, so phase 3's queued
-// messages reuse it. A swipe that begins in the screen's left 24 points never
+// (Stop, Pin, More). A row with one destructive action instead does it on a
+// full swipe left (spec 8.5, 8.8: cancel a queued message, remove a link).
+// It takes any children and actions, so the Session's ghosts and links
+// reuse it. A swipe that begins in the screen's left 24 points never
 // acts, by two guards. hitSlop takes the band out of the row's pan gesture
 // (react-native-gesture-handler 2.32 applies it to the Pan, not the view), so
 // a drag there never moves the row and the system's back gesture keeps it; a
@@ -33,24 +35,56 @@ export interface SwipeAction {
 	run(): void;
 }
 
-export interface SwipeRowProps {
+/** A destructive action reads as its label alone, in danger ink on the
+ * danger wash. */
+export type DestructiveSwipeAction = Pick<SwipeAction, "key" | "label" | "run">;
+
+export type SwipeRowProps = {
 	/** Done by a full swipe right: past half the row. */
 	leading?: SwipeAction;
-	/** Revealed by a swipe left, each a button. */
-	trailing?: readonly SwipeAction[];
 	/** True from a swipe's first drag until the row is closed again. */
 	onActiveChange?(active: boolean): void;
+	/** The color the row sits on, painted under content that has no fill
+	 * of its own, since the action panels are drawn behind the row as soon
+	 * as it moves. */
+	backdrop?: string;
+	/** False holds the row still without unmounting its content. */
+	enabled?: boolean;
 	children: ReactNode;
-}
+} & (
+	| {
+			/** Revealed by a swipe left, each a button. */
+			trailing?: readonly SwipeAction[];
+			destructive?: never;
+	  }
+	| {
+			trailing?: never;
+			/** Revealed as the row drags left, and done by a full swipe left:
+			 * past half the row. */
+			destructive: DestructiveSwipeAction;
+	  }
+);
 
 const ACTION_WIDTH = 76;
 /** ReanimatedSwipeable names the swipe, not the panel: a swipe to the right
  * opens the left (leading) panel (its dispatchEndEvents reports RIGHT for a
  * positive translation). */
 const LEADING_OPENED = SwipeDirection.RIGHT;
+const TRAILING_OPENED = SwipeDirection.LEFT;
+/** The layout and label type shared by a button and the destructive panel;
+ * only their colors differ. */
+const ACTION_CELL = {
+	width: ACTION_WIDTH,
+	alignItems: "center",
+	justifyContent: "center",
+} as const;
+const ACTION_LABEL = { fontSize: 13, fontWeight: "600" } as const;
 
 /** The row's actions for VoiceOver, spread on the row's accessible element. */
-export function swipeAccessibility(leading: SwipeAction | undefined, trailing: readonly SwipeAction[]) {
+export function swipeAccessibility(
+	leading: DestructiveSwipeAction | undefined,
+	trailing: readonly DestructiveSwipeAction[],
+) {
 	const actions = [...(leading ? [leading] : []), ...trailing];
 	return {
 		accessibilityActions: actions.map((action) => ({ name: action.key, label: action.label })),
@@ -59,7 +93,15 @@ export function swipeAccessibility(leading: SwipeAction | undefined, trailing: r
 	};
 }
 
-export function SwipeRow({ leading, trailing = [], onActiveChange, children }: SwipeRowProps) {
+export function SwipeRow({
+	leading,
+	trailing = [],
+	destructive,
+	onActiveChange,
+	backdrop,
+	enabled = true,
+	children,
+}: SwipeRowProps) {
 	const { palette } = useColors();
 	const { width } = useWindowDimensions();
 	const swipeable = useRef<SwipeableMethods>(null);
@@ -75,30 +117,35 @@ export function SwipeRow({ leading, trailing = [], onActiveChange, children }: S
 				close();
 				action.run();
 			}}
-			style={{
-				width: ACTION_WIDTH,
-				alignItems: "center",
-				justifyContent: "center",
-				gap: 4,
-				backgroundColor: palette[action.fill],
-			}}
+			style={{ ...ACTION_CELL, gap: 4, backgroundColor: palette[action.fill] }}
 		>
 			<SymbolView name={action.symbol} tintColor={palette.page} size={20} />
-			<Text style={{ color: palette.page, fontSize: 13, fontWeight: "600" }}>{action.label}</Text>
+			<Text style={{ ...ACTION_LABEL, color: palette.page }}>{action.label}</Text>
 		</Pressable>
 	);
 	const panel = (actions: readonly SwipeAction[]) => () => (
 		<View style={{ flexDirection: "row" }}>{actions.map((action) => button(action))}</View>
 	);
+	// Never a button: the row never rests open on it, since a drag short of
+	// the full swipe springs back.
+	const destructivePanel = (action: DestructiveSwipeAction) => () => (
+		<View style={{ ...ACTION_CELL, backgroundColor: palette.dangerBg }}>
+			<Text style={{ ...ACTION_LABEL, color: palette.dangerInk }}>{action.label}</Text>
+		</View>
+	);
 	return (
 		<ReanimatedSwipeable
 			ref={swipeable}
+			enabled={enabled}
 			// Takes the left edge band out of the row's pan, so the system's back
 			// gesture keeps drags that begin there (spec 7.3).
 			hitSlop={{ left: -EDGE_ZONE_PT }}
 			leftThreshold={width / 2}
+			rightThreshold={destructive ? width / 2 : undefined}
 			renderLeftActions={leading ? panel([leading]) : undefined}
-			renderRightActions={trailing.length > 0 ? panel(trailing) : undefined}
+			renderRightActions={
+				destructive ? destructivePanel(destructive) : trailing.length > 0 ? panel(trailing) : undefined
+			}
 			onSwipeableOpenStartDrag={() => onActiveChange?.(true)}
 			onSwipeableWillOpen={() => {
 				if (startsInEdgeZone(startX.current)) close();
@@ -108,15 +155,17 @@ export function SwipeRow({ leading, trailing = [], onActiveChange, children }: S
 					close();
 					return;
 				}
-				if (direction === LEADING_OPENED && leading) {
+				const action = direction === LEADING_OPENED ? leading : direction === TRAILING_OPENED ? destructive : undefined;
+				if (action) {
 					close();
-					leading.run();
+					action.run();
 				}
 			}}
 			onSwipeableClose={() => onActiveChange?.(false)}
 		>
 			<View
 				testID="swipe-row-content"
+				style={backdrop ? { backgroundColor: backdrop } : undefined}
 				onTouchStart={(event) => {
 					startX.current = event.nativeEvent.pageX;
 				}}

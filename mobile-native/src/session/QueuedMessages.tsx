@@ -5,7 +5,7 @@ import { SymbolView } from "expo-symbols";
 import type { ReactNode } from "react";
 import { Pressable, Text, View } from "react-native";
 import { allowFontScaling, useColors, useTextScale } from "../ui";
-import { GhostBubble } from "./GhostBubble";
+import { type GhostBackdrop, GhostBubble } from "./GhostBubble";
 import { type Ghost, type GhostAction, shownGhosts } from "./ghosts";
 
 export interface QueuedMessagesProps {
@@ -13,6 +13,9 @@ export interface QueuedMessagesProps {
 	disabled: boolean;
 	canEdit: boolean;
 	editHint: string | null;
+	/** What the ghosts sit on: the composer, or the page while the dock
+	 * takes the composer's place. */
+	backdrop: GhostBackdrop;
 	/** The images an unconfirmed send carried, shown in its bubble. */
 	draftAttachments?: ReactNode;
 	onAction(ghost: Ghost, action: GhostAction): void;
@@ -24,6 +27,7 @@ export function QueuedMessages({
 	disabled,
 	canEdit,
 	editHint,
+	backdrop,
 	draftAttachments,
 	onAction,
 	onMore,
@@ -42,6 +46,7 @@ export function QueuedMessages({
 					disabled={disabled}
 					canEdit={canEdit}
 					editHint={editHint}
+					backdrop={backdrop}
 					attachments={ghost.origin.kind === "draft" ? draftAttachments : undefined}
 					onAction={(action) => onAction(ghost, action)}
 				/>

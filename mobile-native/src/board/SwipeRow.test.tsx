@@ -1,7 +1,8 @@
 import { Text } from "react-native";
 import { act, type ReactTestRenderer } from "react-test-renderer";
-import { beforeEach, expect, it, vi } from "vitest";
-import { render, swipeableCalls } from "../renderNative.testkit";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import { palettes } from "../design/tokens";
+import { render, renderedText, swipeableCalls } from "../renderNative.testkit";
 import { type SwipeAction, SwipeRow, swipeAccessibility } from "./SwipeRow";
 
 vi.mock("react-native", async () => ({
@@ -100,4 +101,70 @@ it("gives VoiceOver every action", () => {
 	accessibility.onAccessibilityAction({ nativeEvent: { actionName: "pin" } } as never);
 	expect(pin.run).toHaveBeenCalledOnce();
 	expect(archive.run).not.toHaveBeenCalled();
+});
+
+describe("a destructive swipe (spec 8.5, 8.8)", () => {
+	function mountDestructive() {
+		const cancel = { key: "cancel", label: "Cancel", run: vi.fn() };
+		const tree = render(
+			<SwipeRow destructive={cancel}>
+				<Text>ghost</Text>
+			</SwipeRow>,
+		);
+		const swipeable = tree.root.findByType("ReanimatedSwipeable" as never);
+		const touchStart = (pageX: number) =>
+			act(() => tree.root.findByProps({ testID: "swipe-row-content" }).props.onTouchStart({ nativeEvent: { pageX } }));
+		return { swipeable, cancel, touchStart };
+	}
+
+	it("reveals its label in danger ink on the danger wash as the row drags left", () => {
+		const { swipeable } = mountDestructive();
+		expect(swipeable.props.renderLeftActions).toBeUndefined();
+		const panel = render(swipeable.props.renderRightActions());
+		expect(renderedText(panel)).toBe("Cancel");
+		const [wash] = panel.root.findAllByType("View" as never);
+		expect(wash?.props.style).toMatchObject({ backgroundColor: palettes.light.dangerBg });
+		expect(panel.root.findByType("Text" as never).props.style).toMatchObject({ color: palettes.light.dangerInk });
+	});
+
+	it("acts once on a full swipe left, past half the row, and closes the row", () => {
+		const { swipeable, cancel, touchStart } = mountDestructive();
+		expect(swipeable.props.rightThreshold).toBe(195);
+		touchStart(200);
+		act(() => swipeable.props.onSwipeableOpen("left"));
+		expect(cancel.run).toHaveBeenCalledOnce();
+		expect(swipeableCalls.closes).toBe(1);
+	});
+
+	it("never acts on a swipe that began in the left edge band", () => {
+		const { swipeable, cancel, touchStart } = mountDestructive();
+		touchStart(10);
+		act(() => swipeable.props.onSwipeableWillOpen("left"));
+		act(() => swipeable.props.onSwipeableOpen("left"));
+		expect(cancel.run).not.toHaveBeenCalled();
+		expect(swipeableCalls.closes).toBe(2);
+	});
+
+	it("paints the content the color it sits on, so the panel behind never shows through it", () => {
+		const tree = render(
+			<SwipeRow destructive={{ key: "cancel", label: "Cancel", run: vi.fn() }} backdrop="#123456">
+				<Text>ghost</Text>
+			</SwipeRow>,
+		);
+		expect(tree.root.findByProps({ testID: "swipe-row-content" }).props.style).toEqual({ backgroundColor: "#123456" });
+	});
+
+	it("stays mounted but still while switched off", () => {
+		const tree = render(
+			<SwipeRow destructive={{ key: "cancel", label: "Cancel", run: vi.fn() }} enabled={false}>
+				<Text>ghost</Text>
+			</SwipeRow>,
+		);
+		expect(tree.root.findByType("ReanimatedSwipeable" as never).props.enabled).toBe(false);
+		expect(mount().swipeable.props.enabled).toBe(true);
+	});
+
+	it("keeps the row's own reveal threshold for revealed actions", () => {
+		expect(mount().swipeable.props.rightThreshold).toBeUndefined();
+	});
 });

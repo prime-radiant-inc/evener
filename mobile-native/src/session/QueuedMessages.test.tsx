@@ -1,11 +1,13 @@
 // The ghosts above the composer as a person sees them: each bubble's text,
 // caption and buttons, the menu a tap opens, and the row that leads to the
 // rest of the queue.
-import { createElement } from "react";
+import { createElement, useEffect } from "react";
 import type { ReactTestRenderer } from "react-test-renderer";
 import { act } from "react-test-renderer";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { pressable, render, renderedText } from "../renderNative.testkit";
+import { paletteFor } from "../design/tokens";
+import { pressable, render, renderedText, swipeableCalls } from "../renderNative.testkit";
+import { GhostBubble } from "./GhostBubble";
 import type { Ghost, GhostAction } from "./ghosts";
 import { QueuedMessages } from "./QueuedMessages";
 
@@ -15,8 +17,14 @@ vi.mock("react-native", async () => ({
 	ActionSheetIOS: { showActionSheetWithOptions: native.showActionSheetWithOptions },
 }));
 vi.mock("expo-symbols", () => ({ SymbolView: "SymbolView" }));
+vi.mock("react-native-gesture-handler/ReanimatedSwipeable", async () =>
+	(await import("../renderNative.testkit")).gestureHandlerModuleMock(),
+);
 
-beforeEach(() => native.showActionSheetWithOptions.mockReset());
+beforeEach(() => {
+	native.showActionSheetWithOptions.mockReset();
+	swipeableCalls.closes = 0;
+});
 
 const Image = (props: { accessibilityLabel: string }) => createElement("Image", props);
 
@@ -70,7 +78,12 @@ const refused: Ghost = {
 
 function mount(
 	ghosts: readonly Ghost[],
-	{ disabled = false, canEdit = true, editHint = null as string | null } = {},
+	{
+		disabled = false,
+		canEdit = true,
+		editHint = null as string | null,
+		backdrop = "surface" as "surface" | "page",
+	} = {},
 ) {
 	const onAction = vi.fn<(ghost: Ghost, action: GhostAction) => void>();
 	const onMore = vi.fn();
@@ -80,6 +93,7 @@ function mount(
 			disabled={disabled}
 			canEdit={canEdit}
 			editHint={editHint}
+			backdrop={backdrop}
 			onAction={onAction}
 			onMore={onMore}
 		/>,
@@ -171,6 +185,7 @@ it("shows the images an unconfirmed send carried in its own bubble, and only the
 			disabled={false}
 			canEdit
 			editHint={null}
+			backdrop="surface"
 			draftAttachments={<Image accessibilityLabel="Image 1: proof.png" />}
 			onAction={() => {}}
 			onMore={() => {}}
@@ -293,4 +308,74 @@ it("shows three queued messages, counts the rest, and opens them", () => {
 it("renders nothing when nothing is waiting", () => {
 	const { tree } = mount([]);
 	expect(tree.toJSON()).toBeNull();
+});
+
+describe("swiping a ghost left (spec 8.5)", () => {
+	const swipeables = (tree: ReactTestRenderer) => tree.root.findAllByType("ReanimatedSwipeable" as never);
+	function swipeLeft(tree: ReactTestRenderer, pageX = 200) {
+		const [swipeable] = swipeables(tree);
+		if (!swipeable) throw new Error("no swipeable ghost");
+		act(() => tree.root.findByProps({ testID: "swipe-row-content" }).props.onTouchStart({ nativeEvent: { pageX } }));
+		act(() => swipeable.props.onSwipeableOpen("left"));
+	}
+
+	it.each([
+		["queued", queued],
+		["held", held],
+	] as const)("cancels a %s message on a full swipe, through the same action as its menu", (_state, ghost) => {
+		const { tree, onAction } = mount([ghost]);
+		expect(renderedText(render(swipeables(tree)[0]?.props.renderRightActions()))).toBe("Cancel");
+		swipeLeft(tree);
+		expect(onAction.mock.calls).toEqual([[ghost, "cancel"]]);
+	});
+
+	it("paints a swiped ghost what it sits on, the composer or the page, since the bubble itself is unfilled", () => {
+		const palette = paletteFor("light");
+		for (const backdrop of ["surface", "page"] as const) {
+			const { tree } = mount([queued], { backdrop });
+			expect(tree.root.findByProps({ testID: "swipe-row-content" }).props.style).toEqual({
+				backgroundColor: palette[backdrop],
+			});
+		}
+	});
+
+	it("never cancels from a swipe that began in the screen's left edge band", () => {
+		const { tree, onAction } = mount([queued]);
+		swipeLeft(tree, 10);
+		expect(onAction).not.toHaveBeenCalled();
+	});
+
+	it("doesn't swipe a message with nothing to cancel, or while another action runs", () => {
+		for (const ghost of [steering, sending, unconfirmed, refused])
+			expect(swipeables(mount([ghost]).tree)).toHaveLength(0);
+		// A queued message the hub hasn't named yet can't be canceled.
+		expect(swipeables(mount([{ ...queued, buttons: [], menu: [] }]).tree)).toHaveLength(0);
+		expect(swipeables(mount([queued]).tree)[0]?.props.enabled).toBe(true);
+		expect(swipeables(mount([queued], { disabled: true }).tree)[0]?.props.enabled).toBe(false);
+	});
+
+	it("keeps the same bubble while another action starts and ends", () => {
+		let mounts = 0;
+		function Attachment() {
+			useEffect(() => {
+				mounts += 1;
+			}, []);
+			return null;
+		}
+		const bubble = (disabled: boolean) => (
+			<GhostBubble
+				ghost={queued}
+				disabled={disabled}
+				canEdit
+				editHint={null}
+				backdrop="surface"
+				attachments={<Attachment />}
+				onAction={() => {}}
+			/>
+		);
+		const tree = render(bubble(false));
+		act(() => tree.update(bubble(true)));
+		act(() => tree.update(bubble(false)));
+		expect(mounts).toBe(1);
+	});
 });

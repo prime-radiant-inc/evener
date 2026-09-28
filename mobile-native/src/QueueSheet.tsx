@@ -72,6 +72,7 @@ export function QueueSheet({ route }: NativeStackScreenProps<Routes, "QueueSheet
 						disabled={host.disabled}
 						canEdit
 						editHint={null}
+						backdrop="canvas"
 						onAction={(action) => run(ghost, action)}
 					/>
 				))}

@@ -12,6 +12,7 @@ import { getNativeMutationRuntime, nativeMutationTargetKey } from "./nativeMutat
 import {
 	flatListCalls,
 	flatListScrollFailures,
+	type PanGestureMock,
 	pressable,
 	render,
 	renderedText,
@@ -97,6 +98,12 @@ vi.mock("@react-navigation/native", async () => {
 });
 vi.mock("expo-web-browser", () => ({ openBrowserAsync: vi.fn(async () => ({ type: "dismiss" })) }));
 vi.mock("expo-symbols", () => ({ SymbolView: "SymbolView" }));
+vi.mock("react-native-gesture-handler", async () =>
+	(await import("./renderNative.testkit")).gestureDetectorModuleMock(),
+);
+vi.mock("react-native-gesture-handler/ReanimatedSwipeable", async () =>
+	(await import("./renderNative.testkit")).gestureHandlerModuleMock(),
+);
 vi.mock("expo-clipboard", () => ({
 	setStringAsync: vi.fn(async () => {}),
 	getStringAsync: vi.fn(async () => ""),
@@ -1268,6 +1275,17 @@ it("follows the hub's note in the bar and the open sheet when it changes", async
 });
 
 describe("queued messages above the composer (spec 8.5)", () => {
+	it("paints a swiped ghost what it sits on: the composer, or the page while the dock takes its place", async () => {
+		const palette = paletteFor("light");
+		const backdrop = (tree: ReactTestRenderer) =>
+			tree.root.findByProps({ testID: "swipe-row-content" }).props.style.backgroundColor;
+		const composing = (await mount(thread("ref-swipe-composer", "active", false, ["check the logs"]))).tree;
+		expect(backdrop(composing)).toBe(palette.surface);
+		const asking = (await mount(thread("ref-swipe-dock", "awaiting", true, ["check the logs"]))).tree;
+		expect(field(asking)).toBeUndefined();
+		expect(backdrop(asking)).toBe(palette.page);
+	});
+
 	it("steers with a queued message the agent hasn't reached yet", async () => {
 		const { tree, hub } = await mount(thread("ref-steer-now", "active", false, ["check the logs"]));
 		expect(renderedText(tree)).toContain("check the logs");
@@ -2001,6 +2019,106 @@ describe("moving between sessions (spec 8.3, 13.2)", () => {
 		expect(capsule(tree)).toBeDefined();
 		chooseMenu("Find in session");
 		expect(capsule(tree)).toBeUndefined();
+	});
+
+	describe("swiping the title through Live order (spec 6, ruling 30)", () => {
+		const working = fleetSession("ref-title", { title: "Session", state: "active", updated_at: at(4) });
+		const quiet = fleetSession("local:quiet", {
+			title: "Old spike",
+			state: "idle",
+			dormant: true,
+			updated_at: at(1),
+			turn_ended_at: at(1),
+		});
+		// Live order: failing, asking (Needs you), this one (Working), quiet
+		// (Idle).
+		beforeEach(() => {
+			fleet.live = [failing, asking, working, quiet];
+		});
+
+		/** The title the screen set last, rendered as the header renders it. */
+		function headerTitle() {
+			const calls = vi.mocked(navigation.setOptions).mock.calls as [NativeStackNavigationOptions][];
+			const options = calls.map(([options]) => options).findLast((options) => options.headerTitle);
+			if (typeof options?.headerTitle !== "function") throw new Error("no headerTitle");
+			return render(<>{options.headerTitle({ children: "Session" })}</>);
+		}
+
+		/** Pans the title the screen set last, as far and as fast as given. */
+		function panTitle(translationX: number, velocityX = 0, success = true) {
+			const title = headerTitle();
+			const pan = title.root.findByType("GestureDetector" as never).props.gesture as PanGestureMock;
+			act(() => pan.handlers.onEnd?.({ translationX, velocityX }, success));
+		}
+
+		it("replaces this session with the next one on a pan to the left, sliding in as a push does, marked seen", async () => {
+			const { hub } = await mount(thread("ref-title", "active"));
+			panTitle(-80);
+			await settle();
+			expect(navigation.replace).toHaveBeenCalledWith("Conversation", {
+				hubId: "hub-1",
+				ref: "local:quiet",
+				title: "Old spike",
+				slideFrom: "right",
+			});
+			expect(navigation.push).not.toHaveBeenCalled();
+			expect(
+				hub.requests.filter((request) => request.method === "evener/session/seen/set").map((request) => request.params),
+			).toEqual([{ sessions: [{ ref: "local:quiet", seenThrough: Date.parse(at(1)) }] }]);
+		});
+
+		it("replaces it with the previous one on a pan to the right, sliding in from the left", async () => {
+			await mount(thread("ref-title", "active"));
+			panTitle(30, 900);
+			expect(navigation.replace).toHaveBeenCalledWith("Conversation", {
+				hubId: "hub-1",
+				ref: "local:ask",
+				title: "Pick a name",
+				slideFrom: "left",
+			});
+		});
+
+		it("keeps Next's mark, so Next from the new session still replaces it (ruling 2)", async () => {
+			await mount(thread("ref-title", "active"), { openedBy: "next" });
+			panTitle(-80);
+			expect(navigation.replace).toHaveBeenCalledWith("Conversation", {
+				hubId: "hub-1",
+				ref: "local:quiet",
+				title: "Old spike",
+				openedBy: "next",
+				slideFrom: "right",
+			});
+		});
+
+		it("stays put past either end of Live order, and on a pan too short or slow", async () => {
+			await mount(thread("ref-title", "active"));
+			panTitle(30, 100);
+			fleet.live = [working];
+			fleet.needsYou = [];
+			const { tree } = await mount(thread("ref-title", "active"));
+			expect(renderedText(tree)).not.toContain("Next");
+			panTitle(-80);
+			panTitle(80);
+			expect(navigation.replace).not.toHaveBeenCalled();
+		});
+
+		it("offers VoiceOver the sessions on either side, and only those there are", async () => {
+			const actions = () =>
+				headerTitle()
+					.root.find((node) => node.props.accessibilityRole === "button")
+					.props.accessibilityActions.map((action: { label: string }) => action.label);
+			await mount(thread("ref-title", "active"));
+			expect(actions()).toEqual(["Previous session", "Next session"]);
+			fleet.live = [failing, asking, working];
+			await mount(thread("ref-title", "active"));
+			expect(actions()).toEqual(["Previous session"]);
+		});
+
+		it("goes nowhere on a pan the system cancelled", async () => {
+			await mount(thread("ref-title", "active"));
+			panTitle(-200, -2000, false);
+			expect(navigation.replace).not.toHaveBeenCalled();
+		});
 	});
 
 	it("marks a turn that ends while you watch seen through the hub's own turn end", async () => {
