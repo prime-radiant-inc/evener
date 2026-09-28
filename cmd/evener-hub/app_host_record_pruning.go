@@ -33,6 +33,7 @@ func (s *hostStore) recordsSnapshot() hostTOMLRecords {
 		remnants:       s.remnantSnapshot(),
 		stagedReceipts: s.stagedSnapshot(),
 		attempts:       s.attemptsSnapshot(),
+		storeSync:      s.storeSyncSnapshot(),
 	}
 }
 
@@ -55,6 +56,9 @@ func nonNilRecords(records hostTOMLRecords) hostTOMLRecords {
 	}
 	if records.tombstones == nil {
 		records.tombstones = map[string]HostTombstone{}
+	}
+	if records.storeSync == nil {
+		records.storeSync = map[string]HostStoreSyncIntent{}
 	}
 	if records.prunedReceipts == nil {
 		records.prunedReceipts = map[string]PrunedReceiptMarker{}
@@ -250,6 +254,7 @@ func (m *hubHostManager) deriveHostTOMLRecords(entries, known []hostreg.Host, ch
 		remnants:       m.cfg.store.remnantSnapshot(),
 		stagedReceipts: m.cfg.store.stagedSnapshot(),
 		attempts:       m.cfg.store.attemptsSnapshot(),
+		storeSync:      m.cfg.store.storeSyncSnapshot(),
 	}
 	if records.highWater == nil {
 		records.highWater = map[string]HostGeneration{}
@@ -281,6 +286,9 @@ func (m *hubHostManager) deriveHostTOMLRecords(entries, known []hostreg.Host, ch
 	if records.attempts == nil {
 		records.attempts = map[string]HostTeardownAttempt{}
 	}
+	if records.storeSync == nil {
+		records.storeSync = map[string]HostStoreSyncIntent{}
+	}
 	if records.droppedRemnants == nil {
 		records.droppedRemnants = map[string]struct{}{}
 	}
@@ -302,6 +310,27 @@ func (m *hubHostManager) deriveHostTOMLRecords(entries, known []hostreg.Host, ch
 	if change.dropMarker != "" {
 		delete(records.stagedReceipts, change.dropMarker)
 		records.droppedStaged[change.dropMarker] = struct{}{}
+	}
+	if change.dropStoreSync != "" {
+		// The follow-up write that clears a converged intent, and the
+		// compensation that drops the intent with its hub.toml restore: the
+		// stored set is the write's own, so the removal needs no dropped-name
+		// ledger — the ownership rule already refuses to preserve the file's
+		// older copy for a name this write owns.
+		delete(records.storeSync, change.dropStoreSync)
+	}
+	if change.storeSync != nil {
+		records.storeSync[change.storeSync.Name] = change.storeSync.Intent
+	}
+	// The boot mirror pass's raises land after the tombstone stage: a raise is
+	// the file's new mark, and a tombstoned name's tombstone twin must carry the
+	// same generation (validateHostTombstones ties the pair).
+	for name, raised := range change.highWaterRaises {
+		records.highWater[name] = raised
+		if tombstone, ok := records.tombstones[name]; ok {
+			tombstone.Generation = raised.Generation
+			records.tombstones[name] = tombstone
+		}
 	}
 	if change.marker != nil {
 		records.stagedReceipts[change.marker.Name] = change.marker.Marker

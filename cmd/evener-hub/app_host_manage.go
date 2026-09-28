@@ -14,6 +14,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/BurntSushi/toml"
 	"primeradiant.com/evener/appwire"
@@ -327,6 +328,26 @@ type hostPersistChange struct {
 	// is a write that carries no marker for its host, and the derivation must
 	// drop the stored one rather than preserve it.
 	dropMarker string
+	// storeSync, when set, is the cross-file commit intent this write carries
+	// (deploy-pipeline 08b §9): a removal's staged write stages the exact store
+	// rows it is about to purge. dropStoreSync names a host whose intent this
+	// write removes — the follow-up write that clears it once the purge landed,
+	// and the compensation that drops it with the restored hub.toml.
+	storeSync     *pendingHostStoreSync
+	dropStoreSync string
+	// highWaterRaises carries the boot mirror pass's raised marks: the
+	// discarded generations §4 preserves as the names' high-water marks. The
+	// derivation merges them after the tombstone stage so a raise wins over the
+	// file's older mark, and a tombstoned name's tombstone is raised with its
+	// [generations] twin (validateHostTombstones requires the pair to agree).
+	highWaterRaises map[string]HostGeneration
+}
+
+// pendingHostStoreSync is one cross-file intent a hub.toml write carries,
+// keyed by the host name the intent is keyed by.
+type pendingHostStoreSync struct {
+	Name   string
+	Intent HostStoreSyncIntent
 }
 
 // pendingHostMarker is the staged-receipt marker one hub.toml write carries,
@@ -415,6 +436,12 @@ type hostStore struct {
 	// `teardown-recover` write in the same atomic hub.toml write that claims the
 	// remnant, and the fence a timed-out run leaves standing.
 	attempts map[string]HostTeardownAttempt
+	// storeSync is the durable cross-file commit intent set the file carries,
+	// keyed by host name (deploy-pipeline spec 08b §9): the exact store rows a
+	// removal's swap is deleting, plus the hub.toml generation the intent
+	// belongs to. The commit's staged write installs it, the store purge applies
+	// it after the swap, and a follow-up write drops it.
+	storeSync map[string]HostStoreSyncIntent
 }
 
 // set installs entries as the store's contents; the constructor calls it once
@@ -483,6 +510,23 @@ func (s *hostStore) setRecordMaps(tombstones map[string]HostTombstone, prunedRec
 	s.prunedReceipts = prunedReceipts
 }
 
+// setStoreSync installs the file's cross-file intent set at boot; the
+// constructor calls it once with the intents the file carried. The caller
+// transfers ownership.
+func (s *hostStore) setStoreSync(intents map[string]HostStoreSyncIntent) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.storeSync = intents
+}
+
+// storeSyncSnapshot returns a copy of the stored cross-file intent set, keyed
+// by host name.
+func (s *hostStore) storeSyncSnapshot() map[string]HostStoreSyncIntent {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return maps.Clone(s.storeSync)
+}
+
 // tombstoneSnapshot returns a copy of the stored tombstone set, keyed by name.
 // It takes only the store's own mutex: `list`'s in-memory expiry filter and
 // the tree merge read it without the mutation lock (spec 08 §4: "list takes no
@@ -538,6 +582,7 @@ func (s *hostStore) installRecords(records hostTOMLRecords) {
 	s.stagedReceipts = records.stagedReceipts
 	s.remnants = records.remnants
 	s.attempts = records.attempts
+	s.storeSync = records.storeSync
 	if records.highWater != nil {
 		s.highWater = records.highWater
 	}
@@ -809,6 +854,18 @@ func writeHubTOMLHostsRecords(path string, entries, known []hostreg.Host, record
 	} else {
 		doc["staged_receipts"] = stagedTables
 	}
+	storeSyncTables := hubTOMLStoreSyncTables(fileCfg, entries, known, records.storeSync)
+	if len(storeSyncTables) == 0 {
+		delete(doc, "pending_store_sync")
+	} else {
+		doc["pending_store_sync"] = storeSyncTables
+	}
+	mirrorTables := hubTOMLMirrorCommitTables(fileCfg, entries, known, generations)
+	if len(mirrorTables) == 0 {
+		delete(doc, "mirror_commits")
+	} else {
+		doc["mirror_commits"] = mirrorTables
+	}
 	remnantTables := hubTOMLTeardownRemnantTables(fileCfg, entries, known, records.remnants, records.droppedRemnants)
 	if len(remnantTables) == 0 {
 		delete(doc, "teardown_remnants")
@@ -946,6 +1003,12 @@ var hubTOMLSyncDir = func(dir string) error {
 	}
 	return nil
 }
+
+// hubTOMLStashSyncDir is the stash write's own directory-sync seam. It starts
+// as the hub.toml seam's value at process start and is separate so a test that
+// swaps hubTOMLSyncDir to drive hub.toml's post-rename failure path leaves the
+// stash write (which runs before the staged write) unaffected.
+var hubTOMLStashSyncDir = hubTOMLSyncDir
 
 // hubTOMLPostRenameError marks a write failure that followed the rename
 // that replaced hub.toml: the new entries are already the file's
@@ -1323,6 +1386,12 @@ type hubHostManager struct {
 	// fails after the commit landed — without a live host, the
 	// testOnlyParkPostCommit precedent. Nil in production.
 	testOnlyTeardown func(ctx context.Context, name string) error
+	// testOnlyFailRuntimeRevert, when non-nil, fails the boot compensation's
+	// runtime arm for the named host. It exists so §9's failure posture — a
+	// record left in `compensating-runtime` with its stash intact, never a
+	// cleared compensation beside a diverged runtime — is falsifiable without
+	// a live diverged registry. Nil in production.
+	testOnlyFailRuntimeRevert func(host string) error
 }
 
 // newHubHostManager builds the manager over the live registries. hosts is the
@@ -1479,6 +1548,11 @@ func newHubHostManager(sources *appsource.Registry, manager *sshconn.Manager, cf
 	// alongside the host entries (spec §15: "boot restores them alongside the
 	// host entries, and they survive controller restarts").
 	m.cfg.store.setRecordMaps(fileRecords.Tombstones, fileRecords.PrunedReceipts)
+	// The cross-file commit intents load with the other machine-managed
+	// sections: decodeConfig already validated each shape, so they are restored
+	// as-is, and the boot pipeline below (or the next mutation's write) is what
+	// converges them.
+	m.cfg.store.setStoreSync(fileRecords.PendingStoreSync)
 	// The teardown-repair records load with the other machine-managed sections;
 	// decodeConfig already validated each shape, so they are restored as-is (the
 	// same hard startup-error posture a corrupt host entry takes).
@@ -1522,6 +1596,13 @@ func newHubHostManager(sources *appsource.Registry, manager *sshconn.Manager, cf
 			m.materializeHostRecords(fileRecords, hasFile)
 		}
 	}
+	// Spec 08b §7's remaining boot passes, in their fixed order, before the
+	// manager serves: the tombstone-derived host-removed pass, the bidirectional
+	// generation-mirror reconciliation, and the cross-file intent
+	// reconciliation (§9). The local orphan-boundary reap (crash-fencing §3,
+	// S19) runs FIRST in the full order, at the store open — see the named seam
+	// in main.go's openHostOpsStore.
+	m.reconcilePipelineBoot()
 	return m
 }
 
@@ -2488,6 +2569,708 @@ func (m *hubHostManager) mirrorBoundaries(entries, known []hostreg.Host, records
 	}
 }
 
+// ---------------------------------------------------------------------------
+// The cross-file commit intent and the generation-mirror markers
+// (deploy-pipeline spec 08b §9, §4)
+// ---------------------------------------------------------------------------
+
+// HostStoreSyncIntent is hub.toml's `pending_store_sync` intent (§9): the
+// exact store rows a commit's swap is deleting or invalidating, plus the
+// hub.toml generation the intent belongs to. The commit's staged write carries
+// it, the store's purge applies it after the swap succeeds, and a follow-up
+// atomic write clears it.
+type HostStoreSyncIntent struct {
+	// Generation is the hub.toml generation the intent belongs to (the removed
+	// entry's generation).
+	Generation uint64 `toml:"generation"`
+	// TokenValues names the exact store rows to delete, by token value. A
+	// removal carries the host's outstanding row, when it has one.
+	TokenValues []string `toml:"token_values"`
+}
+
+// HostMirrorCommit is hub.toml's generation-mirror commit marker (§4): the
+// (hub.toml generation, store-mirror generation) pair every commit that
+// advances a mirrored store-side generation writes into hub.toml's atomic
+// write. Boot's bidirectional reconciliation reads it as the authorization
+// evidence for a store mirror: a mirror newer than the file's mark with no
+// matching marker was not authorized by a durable hub.toml write.
+type HostMirrorCommit struct {
+	HubTOMLGeneration uint64 `toml:"hub_toml_generation"`
+	StoreGeneration   uint64 `toml:"store_generation"`
+}
+
+// validateMachineRecordName checks a name keying one of the machine-managed
+// record sections: a bounded, valid-UTF-8, non-empty host name. No writer of
+// these sections emits anything else.
+func validateMachineRecordName(name string) error {
+	if name == "" {
+		return errors.New("a machine record is keyed by an empty host name")
+	}
+	if len(name) > hostops.MaxHostNameBytes {
+		return fmt.Errorf("a machine record is keyed by a %d-byte host name, over the %d-byte bound", len(name), hostops.MaxHostNameBytes)
+	}
+	if !utf8.ValidString(name) {
+		return errors.New("a machine record is keyed by a host name that is not valid UTF-8")
+	}
+	return nil
+}
+
+// validateHostStoreSync checks the cross-file intents a hub.toml document
+// carries: a named key, a pinned generation, and at least one bounded,
+// unique, non-empty row value.
+func validateHostStoreSync(intents map[string]HostStoreSyncIntent) error {
+	for name, intent := range intents {
+		if err := validateMachineRecordName(name); err != nil {
+			return err
+		}
+		if intent.Generation == 0 {
+			return fmt.Errorf("pending_store_sync[%q] pins no hub.toml generation", name)
+		}
+		if len(intent.TokenValues) == 0 {
+			return fmt.Errorf("pending_store_sync[%q] names no store rows", name)
+		}
+		seen := make(map[string]struct{}, len(intent.TokenValues))
+		for _, value := range intent.TokenValues {
+			if value == "" {
+				return fmt.Errorf("pending_store_sync[%q] names an empty row value", name)
+			}
+			if len(value) > hostops.MaxStoreSyncValueBytes {
+				return fmt.Errorf("pending_store_sync[%q] names a %d-byte row value, over the %d-byte bound",
+					name, len(value), hostops.MaxStoreSyncValueBytes)
+			}
+			if !utf8.ValidString(value) {
+				return fmt.Errorf("pending_store_sync[%q] names a row value that is not valid UTF-8", name)
+			}
+			if _, duplicate := seen[value]; duplicate {
+				return fmt.Errorf("pending_store_sync[%q] names row %q twice", name, value)
+			}
+			seen[value] = struct{}{}
+		}
+	}
+	return nil
+}
+
+// validateHostMirrorCommits checks the generation-mirror markers a hub.toml
+// document carries: a named key and two non-zero generations.
+func validateHostMirrorCommits(commits map[string]HostMirrorCommit) error {
+	for name, commit := range commits {
+		if err := validateMachineRecordName(name); err != nil {
+			return err
+		}
+		if commit.HubTOMLGeneration == 0 || commit.StoreGeneration == 0 {
+			return fmt.Errorf("mirror_commits[%q] carries a zero generation", name)
+		}
+	}
+	return nil
+}
+
+// hubTOMLStoreSyncTables derives the pending-store-sync tables a rewrite
+// writes: the intent set this write carries, plus every file intent for a name
+// this write does not own, preserved verbatim — the same ownership rule the
+// other record tables apply, so an intent a mutation does not own is not
+// silently dropped by its rewrite. A nil known is the exact-write sentinel.
+func hubTOMLStoreSyncTables(cfg Config, entries, known []hostreg.Host, intents map[string]HostStoreSyncIntent) map[string]HostStoreSyncIntent {
+	out := make(map[string]HostStoreSyncIntent, len(intents)+len(cfg.PendingStoreSync))
+	maps.Copy(out, intents)
+	owned := ownedRecordNames(entries, known)
+	if owned == nil {
+		return out
+	}
+	for name, intent := range cfg.PendingStoreSync {
+		if _, carried := out[name]; carried {
+			continue
+		}
+		if _, ok := owned[name]; ok {
+			continue
+		}
+		out[name] = intent
+	}
+	return out
+}
+
+// hubTOMLMirrorCommitTables derives the generation-mirror marker tables a
+// rewrite writes. Every name this write owns and carries a generation for gets
+// the (G, G) marker for that generation — the pair the mirror write that
+// follows this one is about to land — while every file marker for a name the
+// write does not own is preserved verbatim. A name with no generation record
+// (a purged name) gets none: the marker goes with the records it authorizes.
+func hubTOMLMirrorCommitTables(cfg Config, entries, known []hostreg.Host, generations map[string]HostGeneration) map[string]HostMirrorCommit {
+	out := make(map[string]HostMirrorCommit, len(generations)+len(cfg.MirrorCommits))
+	owned := ownedRecordNames(entries, known)
+	for name, mark := range generations {
+		if owned != nil {
+			if _, ok := owned[name]; !ok {
+				continue
+			}
+		}
+		if !mark.complete() {
+			continue
+		}
+		out[name] = HostMirrorCommit{HubTOMLGeneration: mark.Generation, StoreGeneration: mark.Generation}
+	}
+	if owned == nil {
+		return out
+	}
+	for name, commit := range cfg.MirrorCommits {
+		if _, carried := out[name]; carried {
+			continue
+		}
+		if _, ok := owned[name]; ok {
+			continue
+		}
+		out[name] = commit
+	}
+	return out
+}
+
+// hubTOMLStashPath is the durable stash one commit captures beside hub.toml
+// (registry spec 08 §6: "stashing a durable copy of the prior `hub.toml`
+// bytes"): the compensation record's stash reference names it, and only a
+// record naming it keeps it from the boot prune.
+func hubTOMLStashPath(configPath string) string {
+	return configPath + ".stash"
+}
+
+// writeHubTOMLStash captures the selected hub.toml's current bytes into the
+// stash before a removal's staged write replaces them, so the commit is
+// compensable. It returns the stash reference the compensation record must
+// carry. A hub with no config file has no cross-file commit to compensate and
+// stashes nothing.
+func (m *hubHostManager) writeHubTOMLStash() (string, error) {
+	path := strings.TrimSpace(m.cfg.configPath)
+	if path == "" {
+		return "", nil
+	}
+	prior, err := configReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		// No file yet: the hub is authoritative in memory and there is no
+		// committed hub.toml bytes a restore would apply.
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("stash hub.toml %s: %w", path, err)
+	}
+	stash := hubTOMLStashPath(path)
+	if err := hubTOMLReplaceWithBytes(stash, prior, hubTOMLStashSyncDir); err != nil {
+		return "", fmt.Errorf("stash hub.toml %s: %w", path, err)
+	}
+	return stash, nil
+}
+
+// hubTOMLReplaceWithBytes atomically replaces path with data: a 0600 temp file
+// in the same directory, fsynced, renamed over the target, then the directory
+// synced — the same posture every hub.toml write keeps. sync is the caller's
+// directory-sync seam: the stash keeps its own (hubTOMLStashSyncDir), so a
+// test injecting a hub.toml sync failure drives the writes it names and not the
+// stash beside them.
+func hubTOMLReplaceWithBytes(path string, data []byte, sync func(string) error) error {
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return fmt.Errorf("mkdir %s: %w", dir, err)
+	}
+	tmp, err := os.CreateTemp(dir, ".hub.toml-*.tmp")
+	if err != nil {
+		return fmt.Errorf("temp file in %s: %w", dir, err)
+	}
+	tmpName := tmp.Name()
+	defer func() { _ = os.Remove(tmpName) }()
+	if err := tmp.Chmod(0o600); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("chmod %s: %w", tmpName, err)
+	}
+	if _, err := tmp.Write(data); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("write %s: %w", tmpName, err)
+	}
+	if err := tmp.Sync(); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("sync %s: %w", tmpName, err)
+	}
+	if err := tmp.Close(); err != nil {
+		return fmt.Errorf("close %s: %w", tmpName, err)
+	}
+	if err := os.Rename(tmpName, path); err != nil {
+		return fmt.Errorf("rename %s over %s: %w", tmpName, path, err)
+	}
+	return sync(dir)
+}
+
+// restoreHubTOMLFromStash applies a compensation's stash: the prior hub.toml
+// bytes go back atomically, so a crash cannot land a half-restored file. The
+// stash is re-parsed through the loader before anything lands, exactly as
+// every rewrite does.
+func (m *hubHostManager) restoreHubTOMLFromStash(stash string) error {
+	path := strings.TrimSpace(m.cfg.configPath)
+	if path == "" {
+		return nil
+	}
+	if strings.TrimSpace(stash) == "" {
+		return errors.New("compensation record names no stash")
+	}
+	data, err := os.ReadFile(stash)
+	if err != nil {
+		return fmt.Errorf("read hub.toml stash %s: %w", stash, err)
+	}
+	if _, err := decodeConfig(path, string(data)); err != nil {
+		return fmt.Errorf("hub.toml stash %s is not a readable document: %w", stash, err)
+	}
+	return hubTOMLReplaceWithBytes(path, data, hubTOMLSyncDir)
+}
+
+// pruneHubTOMLStash removes a stash once its commit reached an outcome: "The
+// stash is deleted once the commit reaches either outcome" (registry spec
+// 08 §6). A missing stash is already pruned.
+func (m *hubHostManager) pruneHubTOMLStash(stash string) {
+	if strings.TrimSpace(stash) == "" {
+		return
+	}
+	if err := os.Remove(stash); err != nil && !errors.Is(err, os.ErrNotExist) {
+		m.logf("hub.toml stash %s not pruned: %v", stash, err)
+	}
+}
+
+// sortedMapKeys returns a map's string keys in sorted order, so every boot
+// pass walks its records deterministically.
+func sortedMapKeys[V any](m map[string]V) []string {
+	keys := make([]string, 0, len(m))
+	for key := range m {
+		keys = append(keys, key)
+	}
+	slices.Sort(keys)
+	return keys
+}
+
+// reconcilePipelineBoot runs spec 08b §7's boot passes in their fixed order,
+// after hub.toml's records are loaded and before the manager serves:
+// interrupted transition (idempotent — the store-open pass already moved
+// in-flight records), tombstone-derived host-removed pass, bidirectional
+// generation-mirror reconciliation, then the cross-file intent reconciliation
+// (§9), which runs the compensation arms before the generic intent rules. Each
+// pass writes nothing when it finds nothing to converge, so an untouched file
+// stays byte-identical.
+//
+// BOUNDARY (S19): crash-fencing §3's safety-critical local reap of the store's
+// local orphan boundary runs FIRST in the full boot order, before this pass —
+// at the store open (`openHostOpsStore` in main.go), where the named seam
+// `reapLocalOrphanBoundary` sits. S19 fills that seam; nothing here does its
+// work.
+func (m *hubHostManager) reconcilePipelineBoot() {
+	if m.cfg.ops == nil || strings.TrimSpace(m.cfg.configPath) == "" {
+		return
+	}
+	fileCfg, hasFile := m.hostFileRecords()
+	if !hasFile || m.cfg.store.poisoned() != nil {
+		return
+	}
+	// §7's interrupted transition, in its own position (store load, hub.toml
+	// load, interrupted, host-removed, mirror, intents). The store-open pass
+	// already ran it as an interim; the pass is idempotent — with nothing left
+	// pending/running it moves nothing and writes nothing.
+	if moved, err := m.cfg.ops.RecoverInterrupted(); err != nil {
+		m.logf("boot interrupted transition not completed: %v", err)
+	} else if moved > 0 {
+		m.logf("boot moved %d in-flight operation(s) to interrupted", moved)
+	}
+	m.reconcileHostRemovedPass(fileCfg)
+	m.reconcileGenerationMirror(fileCfg)
+	m.reconcileCompensations()
+	m.reconcileStoreSyncIntents()
+	m.reconcileTokenRows()
+}
+
+// reconcileHostRemovedPass applies every loaded tombstone to the store (§4's
+// tombstone-derived pass): the removed incarnation's records are marked
+// `host-removed` and the name's token rows drop with it (§7). A crash between
+// a remove's hub.toml commit and its live mark recovers exactly here, and a
+// tombstone colliding with a live re-add's different incarnation id matches
+// nothing.
+func (m *hubHostManager) reconcileHostRemovedPass(fileCfg Config) {
+	if len(fileCfg.Tombstones) == 0 {
+		return
+	}
+	marks := make(map[string]hostops.HostRemovedMark, len(fileCfg.Tombstones))
+	for name, tombstone := range fileCfg.Tombstones {
+		marks[name] = hostops.HostRemovedMark{Generation: tombstone.Generation, IncarnationID: tombstone.IncarnationID}
+	}
+	marked, dropped, err := m.cfg.ops.ApplyHostRemovedPass(marks)
+	if err != nil {
+		m.logf("boot host-removed pass not applied: %v", err)
+		return
+	}
+	if marked > 0 || dropped > 0 {
+		m.logf("boot host-removed pass marked %d operation record(s) and dropped %d token row(s)", marked, dropped)
+	}
+}
+
+// reconcileGenerationMirror runs §4/§7's bidirectional generation-mirror
+// reconciliation: the store mirror is rolled back to the file's mark where it
+// is ahead with no matching commit marker (the discarded generation's records
+// transition to interrupted, its dedup tombstones drop, and the number is
+// preserved as the name's high-water), pushed forward where the file's mark is
+// ahead, and preserved where the file carries no entry.
+func (m *hubHostManager) reconcileGenerationMirror(fileCfg Config) {
+	view := hostops.MirrorView{
+		Marks:   map[string]hostops.Boundary{},
+		Live:    map[string]struct{}{},
+		Removed: map[string]struct{}{},
+		Commits: map[string]hostops.MirrorCommit{},
+	}
+	for name, mark := range fileCfg.Generations {
+		if !mark.complete() {
+			continue
+		}
+		view.Marks[name] = hostops.Boundary{Generation: mark.Generation, IncarnationID: mark.IncarnationID, PresenceEpoch: mark.PresenceEpoch}
+	}
+	for _, entry := range hostRegistryEntries(fileCfg) {
+		view.Live[entry.Name] = struct{}{}
+		if !completeIdentity(entry) {
+			continue
+		}
+		if _, carried := view.Marks[entry.Name]; !carried {
+			view.Marks[entry.Name] = hostops.Boundary{
+				Generation:    entry.Generation,
+				IncarnationID: entry.IncarnationID,
+				PresenceEpoch: entry.PresenceEpoch,
+			}
+		}
+	}
+	for name, tombstone := range fileCfg.Tombstones {
+		view.Removed[name] = struct{}{}
+		if _, carried := view.Marks[name]; !carried {
+			view.Marks[name] = hostops.Boundary{
+				Generation:    tombstone.Generation,
+				IncarnationID: tombstone.IncarnationID,
+				PresenceEpoch: tombstone.PresenceEpoch,
+			}
+		}
+	}
+	for name, commit := range fileCfg.MirrorCommits {
+		view.Commits[name] = hostops.MirrorCommit{
+			HubTOMLGeneration: commit.HubTOMLGeneration,
+			StoreGeneration:   commit.StoreGeneration,
+		}
+	}
+	result, err := m.cfg.ops.ReconcileMirror(view)
+	if err != nil {
+		m.logf("boot generation-mirror reconciliation not applied: %v", err)
+		return
+	}
+	if len(result.RolledBack) > 0 || result.RecordsMoved > 0 || result.TombstonesDropped > 0 {
+		m.logf("boot generation-mirror rollback: %v rolled back, %d record(s) interrupted, %d dedup tombstone(s) dropped",
+			result.RolledBack, result.RecordsMoved, result.TombstonesDropped)
+	}
+	if len(result.PushedForward) > 0 {
+		m.logf("boot generation-mirror push-forward: %v", result.PushedForward)
+	}
+	if len(result.HighWater) == 0 {
+		return
+	}
+	m.applyMirrorHighWater(result.HighWater)
+}
+
+// applyMirrorHighWater writes the mirror pass's high-water raises into
+// hub.toml in one atomic write: each discarded generation (or surviving
+// mirror) becomes the name's [generations] mark, and a tombstoned name's
+// tombstone twin is raised with it. The live registry's counters are seeded up
+// (never lowered), so this process cannot mint a generation the raise covers.
+//
+// The live registry's entry for a name keeps its own generation until the next
+// boot reads the raised mark: hostreg has no boot-restore setter, and an
+// Update would mint a fresh identity. The durable high-water is what prevents
+// reuse, and it is the file's own record.
+func (m *hubHostManager) applyMirrorHighWater(highWater map[string]hostops.Boundary) {
+	entries := m.cfg.store.snapshot()
+	raises := make(map[string]HostGeneration, len(highWater))
+	marks := make(map[string]hostreg.HighWater, len(highWater))
+	for name, boundary := range highWater {
+		raised := HostGeneration{
+			Generation:    boundary.Generation,
+			IncarnationID: boundary.IncarnationID,
+			PresenceEpoch: boundary.PresenceEpoch,
+		}
+		raises[name] = raised
+		marks[name] = hostreg.HighWater{Generation: raised.Generation, PresenceEpoch: raised.PresenceEpoch}
+		for i := range entries {
+			if entries[i].Name == name {
+				entries[i].Generation = raised.Generation
+			}
+		}
+	}
+	if err := m.persistHosts(entries, entries, hostPersistChange{highWaterRaises: raises}); err != nil {
+		m.logf("boot generation-mirror high-water for %s not written: %v", m.cfg.configPath, err)
+		return
+	}
+	m.cfg.hosts.SeedHighWater(marks)
+	m.cfg.store.set(entries)
+}
+
+// reconcileTokenRows runs §9's closing reverse direction: store rows with no
+// covering intent whose hub.toml generation already advanced past them — or
+// whose host resolves to a tombstone — are dropped, before the store serves.
+func (m *hubHostManager) reconcileTokenRows() {
+	fileCfg, hasFile := m.hostFileRecords()
+	if !hasFile {
+		return
+	}
+	view := hostops.TokenRowReconcile{
+		Live:    map[string]uint64{},
+		Removed: map[string]struct{}{},
+		Covered: map[string]map[string]struct{}{},
+	}
+	for _, entry := range hostRegistryEntries(fileCfg) {
+		view.Live[entry.Name] = entry.Generation
+	}
+	for name := range fileCfg.Tombstones {
+		view.Removed[name] = struct{}{}
+	}
+	for name, intent := range fileCfg.PendingStoreSync {
+		covered := view.Covered[name]
+		if covered == nil {
+			covered = map[string]struct{}{}
+			view.Covered[name] = covered
+		}
+		for _, value := range intent.TokenValues {
+			covered[value] = struct{}{}
+		}
+	}
+	dropped, err := m.cfg.ops.ReconcileTokenRows(view)
+	if err != nil {
+		m.logf("boot token-row reconciliation not applied: %v", err)
+		return
+	}
+	if dropped > 0 {
+		m.logf("boot token-row reconciliation dropped %d stale row(s)", dropped)
+	}
+}
+
+// reconcileStoreSyncIntents applies §9's generic intent rules for every intent
+// hub.toml still carries and no open compensation owns: the purge is re-applied
+// where the intent's rows are still present (the swap landed, the store
+// lagged), and the intent is cleared in its own follow-up atomic write once
+// hub.toml and the store agree — the store-already-applied no-op included. No
+// converged intent survives its boot; a store failure leaves the intent for the
+// next boot or the next mutation's write.
+func (m *hubHostManager) reconcileStoreSyncIntents() {
+	fileCfg, hasFile := m.hostFileRecords()
+	if !hasFile {
+		return
+	}
+	for _, name := range sortedMapKeys(fileCfg.PendingStoreSync) {
+		intent := fileCfg.PendingStoreSync[name]
+		if _, open := m.cfg.ops.Compensation(name); open {
+			// A live compensation record owns this name's convergence: its phase
+			// arms decide whether the purge stands or the rows come back.
+			continue
+		}
+		purged, err := m.cfg.ops.ApplyStoreSync(hostops.StoreSyncIntent{
+			Host:       name,
+			Generation: intent.Generation,
+			Values:     intent.TokenValues,
+		})
+		if err != nil {
+			m.logf("boot store-sync intent for %q not applied: %v", name, err)
+			continue
+		}
+		entries := m.cfg.store.snapshot()
+		if err := m.persistHosts(entries, entries, hostPersistChange{dropStoreSync: name}); err != nil {
+			m.logf("boot store-sync intent for %q not cleared: %v", name, err)
+			continue
+		}
+		if purged > 0 {
+			m.logf("boot re-applied the store-sync purge for %q (%d row(s)) and cleared the intent", name, purged)
+		} else {
+			m.logf("boot found the store-sync intent for %q already converged and cleared it", name)
+		}
+	}
+}
+
+// reconcileCompensations resumes every open `pendingCompensation` record by
+// phase (§9's arms), never by blind re-insert: an armed record checks the
+// purge first, a hubtoml record restores hub.toml from its stash before
+// touching rows, a rows record re-inserts exactly the rows the restored
+// hub.toml revalidates, a runtime record re-applies the restored set before
+// clearing, and a clear record clears without resurrecting rows. A failed step
+// leaves the record where it is, with its stash intact — the next boot retries.
+func (m *hubHostManager) reconcileCompensations() {
+	records := m.cfg.ops.Compensations()
+	for _, host := range sortedMapKeys(records) {
+		record, ok := m.cfg.ops.Compensation(host)
+		if !ok {
+			continue
+		}
+		if hostops.NormalizeCompensationPhase(record.Phase) == hostops.CompensationArmed {
+			m.resumeArmedCompensation(record)
+			continue
+		}
+		m.resumeCompensation(record)
+	}
+}
+
+// resumeArmedCompensation runs §9's armed arm: the purge is checked first.
+// An intent already cleared means the commit path passed the commit point, so
+// the record clears without resurrecting rows; an intent still present with the
+// rows still present means the purge never landed, so hub.toml is restored from
+// the stash and the rows stay untouched; an intent still present with the rows
+// absent means the purge landed before the crash, so the record advances and
+// the hubtoml arm follows.
+func (m *hubHostManager) resumeArmedCompensation(record hostops.Compensation) {
+	fileCfg, hasFile := m.hostFileRecords()
+	intent, intentLive := fileCfg.PendingStoreSync[record.Host]
+	rowsPresent := false
+	if row, ok := m.cfg.ops.OutstandingToken(record.Host); ok {
+		for _, preimage := range record.Rows {
+			if preimage.Value == row.Value {
+				rowsPresent = true
+			}
+		}
+	}
+	switch {
+	case !hasFile || !intentLive:
+		// The commit path passed the commit point: the purge stands and nothing
+		// is resurrected.
+		m.clearCompensation(record, "the intent is already cleared")
+		_ = intent
+	case rowsPresent:
+		if err := m.restoreHubTOMLFromStash(record.Stash); err != nil {
+			m.logf("boot compensation for %q not resumed: %v", record.Host, err)
+			return
+		}
+		m.clearCompensation(record, "the purge never landed; hub.toml restored")
+	default:
+		if err := m.cfg.ops.AdvanceCompensation(record.Host, hostops.CompensationHubTOML); err != nil {
+			m.logf("boot compensation for %q not advanced: %v", record.Host, err)
+			return
+		}
+		record.Phase = hostops.CompensationHubTOML
+		m.resumeCompensation(record)
+	}
+}
+
+// resumeCompensation follows the non-armed arms of §9's phase machine: each
+// step lands durably before the next, and a failure returns with the record in
+// the phase the failing step belongs to (a runtime-revert failure leaves the
+// record in `compensating-runtime` with the stash intact).
+func (m *hubHostManager) resumeCompensation(record hostops.Compensation) {
+	switch hostops.NormalizeCompensationPhase(record.Phase) {
+	case hostops.CompensationHubTOML:
+		if err := m.restoreHubTOMLFromStash(record.Stash); err != nil {
+			m.logf("boot compensation for %q: hub.toml not restored: %v", record.Host, err)
+			return
+		}
+		if err := m.cfg.ops.AdvanceCompensation(record.Host, hostops.CompensationRows); err != nil {
+			m.logf("boot compensation for %q not advanced past the restore: %v", record.Host, err)
+			return
+		}
+		record.Phase = hostops.CompensationRows
+		fallthrough
+	case hostops.CompensationRows:
+		restored, ok := m.hostFileRecords()
+		generation, live := uint64(0), false
+		if ok {
+			generation, live = restoredGeneration(restored, record.Host)
+		}
+		inserted, err := m.cfg.ops.ReinsertCompensationRows(record.Host, func(row hostops.Token) bool {
+			return live && row.Generation == generation
+		})
+		if err != nil {
+			m.logf("boot compensation for %q: rows not re-inserted: %v", record.Host, err)
+			return
+		}
+		if inserted > 0 {
+			m.logf("boot compensation for %q re-inserted %d token row(s)", record.Host, inserted)
+		}
+		record.Phase = hostops.CompensationRuntime
+		fallthrough
+	case hostops.CompensationRuntime:
+		if err := m.reapplyRestoredRuntime(record.Host); err != nil {
+			// The record stays in compensating-runtime with its stash intact:
+			// the next boot (or mutation-path write) retries, never a cleared
+			// compensation beside a diverged runtime.
+			m.logf("boot compensation for %q: runtime revert failed, record left in %s: %v", record.Host, record.Phase, err)
+			return
+		}
+		if err := m.cfg.ops.AdvanceCompensation(record.Host, hostops.CompensationClear); err != nil {
+			m.logf("boot compensation for %q not advanced past the runtime revert: %v", record.Host, err)
+			return
+		}
+		record.Phase = hostops.CompensationClear
+		fallthrough
+	case hostops.CompensationClear:
+		m.clearCompensation(record, "the restoration converged")
+	}
+}
+
+// clearCompensation drops one record and its stash: the compensation
+// converged, and no live record names the stash any more.
+func (m *hubHostManager) clearCompensation(record hostops.Compensation, why string) {
+	if err := m.cfg.ops.ClearCompensation(record.Host); err != nil {
+		m.logf("boot compensation for %q not cleared (%s): %v", record.Host, why, err)
+		return
+	}
+	m.pruneHubTOMLStash(record.Stash)
+	m.logf("boot compensation for %q cleared: %s", record.Host, why)
+}
+
+// restoredGeneration returns the generation the restored hub.toml records for
+// name, and whether the file carries a live entry for it: the pair the rows arm
+// revalidates a preimage row against.
+func restoredGeneration(cfg Config, name string) (uint64, bool) {
+	live := false
+	for _, entry := range hostRegistryEntries(cfg) {
+		if entry.Name == name {
+			live = true
+		}
+	}
+	if !live {
+		return 0, false
+	}
+	return cfg.Generations[name].Generation, true
+}
+
+// reapplyRestoredRuntime re-applies the restored hub.toml's runtime set to the
+// live handles (§9's runtime arm): the durable entry set converges to the
+// restored file, the registry's counters are seeded to its marks, and a name
+// the restored file no longer carries drops its derived state. A name the
+// restored file carries but the boot registry did not register is logged: the
+// registry has no boot-restore setter for a persisted identity, so it rejoins
+// at the next start; the durable state is converged either way.
+func (m *hubHostManager) reapplyRestoredRuntime(host string) error {
+	if m.testOnlyFailRuntimeRevert != nil {
+		if err := m.testOnlyFailRuntimeRevert(host); err != nil {
+			return err
+		}
+	}
+	restored, ok := m.hostFileRecords()
+	if !ok {
+		return fmt.Errorf("restored %s is unreadable", m.cfg.configPath)
+	}
+	entries := hostRegistryEntries(restored)
+	m.cfg.store.set(entries)
+	m.cfg.hosts.SeedHighWater(hostHighWaterMarks(restored))
+	entry, present := hostEntryNamed(entries, host)
+	if !present {
+		m.cfg.mu.Lock()
+		defer m.cfg.mu.Unlock()
+		m.dropHostDerivedState(host)
+		return nil
+	}
+	if current, ok := m.cfg.hosts.Get(host); ok && sameEffectiveHostEntry(current, entry) {
+		return nil
+	}
+	m.logf("boot compensation: host %q is live in the restored %s but was not registered at load; it rejoins the live registry at the next hub start", host, m.cfg.configPath)
+	return nil
+}
+
+// hostEntryNamed returns the entry for name, if the slice carries one.
+func hostEntryNamed(entries []hostreg.Host, name string) (hostreg.Host, bool) {
+	for _, entry := range entries {
+		if entry.Name == name {
+			return entry, true
+		}
+	}
+	return hostreg.Host{}, false
+}
+
 // rollbackHubTOML re-persists previous after a post-write live mutation failed,
 // keeping hub.toml in step with the live set: the API reported the
 // mutation as failed, so the file must not keep a copy the next start would
@@ -2516,10 +3299,17 @@ func (m *hubHostManager) rollbackHubTOML(previous, known []hostreg.Host, cause e
 			// that did not happen.
 			return fmt.Errorf("%w; hub.toml rollback landed but its directory step failed: %w", cause, err)
 		}
-		return fmt.Errorf("%w; hub.toml rollback failed: %w", cause, err)
+		return fmt.Errorf("%w; %w: %w", cause, errHubTOMLRollbackFailed, err)
 	}
 	return cause
 }
+
+// errHubTOMLRollbackFailed marks the compensation return whose hub.toml
+// restore did not converge: the rollback's own write failed before its rename,
+// so the file may still hold the failed write. The deploy pipeline's cross-file
+// compensation reads it to keep its store-local record and stash for a later
+// boot rather than clearing a compensation beside a diverged file.
+var errHubTOMLRollbackFailed = errors.New("hub.toml rollback failed")
 
 // List returns every known host with truthful online state in name-sorted
 // order (the registry's own; every row's origin field reads `hub.toml`).

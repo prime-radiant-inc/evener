@@ -839,18 +839,3 @@ func operationRecordWire(record hostops.Record) (appwire.OperationRecord, error)
 	}
 	return wire, nil
 }
-
-// revokeHostTokens drops name's outstanding confirmation tokens (§3's live
-// removal revocation). A missing operation store has no rows to drop, and a
-// store failure is logged rather than returned: the removal's hub.toml commit
-// has already landed and cannot be unwound, and the rows it would leave behind
-// are inert — see the call site in Remove, and the deploy slice's binding
-// comparison that refuses them.
-func (m *hubHostManager) revokeHostTokens(name string) {
-	if m.cfg.ops == nil {
-		return
-	}
-	if err := m.cfg.ops.RevokeTokens(name); err != nil {
-		m.logf("host %q removed, but its outstanding confirmation tokens could not be dropped: %v", name, err)
-	}
-}

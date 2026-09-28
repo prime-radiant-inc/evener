@@ -146,6 +146,12 @@ type hostTOMLRecords struct {
 	droppedRemnants map[string]struct{}
 	droppedStaged   map[string]struct{}
 	droppedAttempts map[string]struct{}
+	// storeSync is the cross-file commit intent set (deploy-pipeline spec 08b
+	// §9) the file carries, keyed by host name: the exact store rows a commit's
+	// swap is deleting, plus the hub.toml generation the intent belongs to. A
+	// removal's staged write merges its own intent in; the writer preserves
+	// unowned names' intents verbatim.
+	storeSync map[string]HostStoreSyncIntent
 }
 
 // hostTombstoneStage is the tombstone a removal stages into the very write

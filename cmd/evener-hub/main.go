@@ -911,6 +911,16 @@ func openHostOpsStore(stateRoot string, stderr io.Writer, retention hostops.Rete
 		_, _ = fmt.Fprintf(stderr, "[hub] host operation store not opened, host boundary records will not be mirrored: %v\n", err)
 		return nil
 	}
+	// §7's boot order starts here: the store load plus the safety-critical local
+	// reap of its local orphan boundary FIRST, before hub.toml loads, before the
+	// interrupted transition, and before anything serves. Crash-fencing §3
+	// (slice S19) owns that reap; this is the named seam it fills, and nothing
+	// here does its work — no host is touched, no epoch is advanced.
+	if reaped, err := reapLocalOrphanBoundary(store); err != nil {
+		_, _ = fmt.Fprintf(stderr, "[hub] host operation store opened, but its local orphan boundary was not reaped: %v\n", err)
+	} else if reaped > 0 {
+		_, _ = fmt.Fprintf(stderr, "[hub] host operation store reaped %d local orphan boundary row(s)\n", reaped)
+	}
 	if reaped, err := store.ReapExpiredTokens(); err != nil {
 		_, _ = fmt.Fprintf(stderr, "[hub] host operation store opened, but its expired confirmation tokens were not reaped: %v\n", err)
 	} else if reaped > 0 {
@@ -930,6 +940,19 @@ func openHostOpsStore(stateRoot string, stderr io.Writer, retention hostops.Rete
 		_, _ = fmt.Fprintf(stderr, "[hub] host operation store moved %d in-flight operation(s) to interrupted\n", interrupted)
 	}
 	return store
+}
+
+// reapLocalOrphanBoundary is the named seam for crash-fencing §3's
+// safety-critical local reap: the FIRST step of §7's boot order, run
+// immediately after the operation store loads and before hub.toml loads, the
+// interrupted transition, or any request is served. Slice S19 owns the reap —
+// it resolves the store's local orphan boundary so a crashed epoch's remote
+// fence is never crossed locally; this slice wires the order and the seam, and
+// deliberately builds none of the reap itself (no remote call, no guard
+// advance, no kill/wait).
+func reapLocalOrphanBoundary(store *hostops.Store) (int, error) {
+	_ = store
+	return 0, nil
 }
 
 // hostOperationRetention maps the hub's owner knobs onto the operation store's
