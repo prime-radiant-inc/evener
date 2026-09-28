@@ -6,8 +6,7 @@ import { Connecting, SheetStatus } from "./SheetStatus";
 const status = { line: null as string | null, state: "ready", fatal: false };
 vi.mock("../board/connectionStatus", async (importOriginal) => ({
 	...(await importOriginal<typeof import("../board/connectionStatus")>()),
-	useConnectionStatusText: (state: string, fatal: boolean) =>
-		state === status.state && fatal === status.fatal ? status.line : "not the connection's own state",
+	useConnectionStatusText: () => status.line,
 }));
 vi.mock("../ConnectionProvider", () => ({ useConnection: () => ({ state: status.state, fatal: status.fatal }) }));
 vi.mock("react-native", async () => ({

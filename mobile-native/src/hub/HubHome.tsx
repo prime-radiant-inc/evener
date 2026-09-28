@@ -5,7 +5,7 @@ import { StackActions } from "@react-navigation/native";
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
 import { Text } from "react-native";
 import { Group, GroupedPage, GroupLabel, Row } from "../sheet/Grouped";
-import { useConnectionLine } from "../sheet/SheetStatus";
+import { useConnectionStatusText } from "../board/connectionStatus";
 import { allowFontScaling, useColors, useTextScale } from "../ui";
 import { hubStatusLine } from "./hubHeader";
 import { type HubRoutes, useHubSheet } from "./hubSheetContext";
@@ -16,7 +16,7 @@ export function HubHome({ navigation }: NativeStackScreenProps<HubRoutes, "HubHo
 	const { hubId, ready } = useHubSheet();
 	const { palette } = useColors();
 	const scale = useTextScale();
-	const line = hubStatusLine(ready, useConnectionLine(), null);
+	const line = hubStatusLine(ready, useConnectionStatusText(), null);
 	// The root stack: the sheet's own route sits on it, so a replace there
 	// closes the sheet and opens the screen in one step.
 	const root = navigation.getParent();

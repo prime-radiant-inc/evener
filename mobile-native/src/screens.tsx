@@ -696,7 +696,7 @@ export function ConversationScreen({
 	}, [focused, imageSelection]);
 	const unconfirmedSend = draft.submitting ? null : draft.record.unconfirmed;
 	const connected = connectionState === "ready" && activeProfile?.id === route.params.hubId;
-	const connectionText = useConnectionStatusText(connectionState, fatal);
+	const connectionText = useConnectionStatusText();
 	// The same debounced signal the connection bar itself waits on (spec 14:
 	// "a blip shorter than this reconnects without a word"), so the chips
 	// never flicker through a hide-and-show the bar stays silent for, and a

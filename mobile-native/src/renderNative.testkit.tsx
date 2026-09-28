@@ -395,13 +395,20 @@ export function scriptedClient(
  * the test-side twin of the useRetainedScreenConnection wiring the screens
  * themselves share (#2164). A test whose scenario needs a different hub,
  * retry or verdict spreads its override over the result, so the outlier
- * stays visible at its use. */
+ * stays visible at its use.
+ *
+ * The status clock (ConnectionClock) reads as the provider's would at the
+ * moment the connection reaches `state`: a connection that isn't live went
+ * down, and was last live, just now. */
 export function screenConnection(client: unknown, state: ConnectionState): Record<string, unknown> {
+	const downAt = state === "ready" ? null : Date.now();
 	return {
 		activeProfile: { id: "hub-1", name: "Work hub" },
 		client,
 		state,
 		fatal: false,
+		downSince: downAt,
+		lastLiveAt: downAt,
 		retry: () => {},
 	};
 }

@@ -1,13 +1,19 @@
+// What the connection says wherever a screen shows it (spec 14): nothing
+// while live, "Reconnecting…" after 2 seconds without a connection,
+// "Offline · updated 3m ago" after 30, and "Update needed" for a close no
+// retry can fix. The Board's toolbar, the Session's connection bar and the
+// sheets' status lines all read it, on ConnectionProvider's one clock.
 import type { ConnectionState } from "@evener/appwire-client";
-import { relativeAge } from "@evener/appwire-client/state/navigation";
 import { useEffect, useState } from "react";
+import { useConnection } from "../ConnectionProvider";
+import { compactDuration } from "../session/format";
 
 /** How long the connection can be down before the status says so: a blip
  * shorter than this reconnects without a word. */
-const RECONNECTING_AFTER_MS = 2_000;
+export const RECONNECTING_AFTER_MS = 2_000;
 /** How long before the status stops promising a reconnect and says how old
  * what's on screen is. */
-const OFFLINE_AFTER_MS = 30_000;
+export const OFFLINE_AFTER_MS = 30_000;
 const MINUTE = 60_000;
 /** The status for a close no retry can fix, and what it means. */
 export const UPDATE_NEEDED = "Update needed";
@@ -30,53 +36,51 @@ export function connectionStatus(
 	if (fatal) return UPDATE_NEEDED;
 	if (state === "ready" || downSince === null) return null;
 	const down = now - downSince;
-	if (down >= OFFLINE_AFTER_MS) {
-		if (lastLiveAt === null) return "Offline";
-		// Whole minutes, at least one: never "updated now ago".
-		const age = relativeAge(new Date(lastLiveAt).toISOString(), now);
-		return `Offline · updated ${age === undefined || age === "now" ? "1m" : age} ago`;
-	}
-	if (down >= RECONNECTING_AFTER_MS) return "Reconnecting…";
-	return null;
+	if (down < RECONNECTING_AFTER_MS) return null;
+	if (down < OFFLINE_AFTER_MS) return "Reconnecting…";
+	return lastLiveAt === null ? "Offline" : `Offline · updated ${offlineAge(now - lastLiveAt)} ago`;
 }
 
-interface Down {
-	since: number;
-	/** When the connection was last seen live, or null when it never has
-	 * been this launch. */
-	lastLiveAt: number | null;
+/** How old the last live data is, in spec 5's compact durations, never under
+ * 1m: the status first says it at 30 seconds and then changes once a minute,
+ * so a count of seconds would either tick or lie, and "now" would read
+ * "updated now ago". */
+export function offlineAge(ms: number): string {
+	return compactDuration(Math.max(MINUTE, ms));
 }
 
-/** connectionStatus over the connection as it changes: tracks when it went
- * down and when it was last live, and re-renders at the 2-second and
- * 30-second marks and then once a minute for the age. A live connection runs
- * no clock. */
-export function useConnectionStatusText(state: ConnectionState, fatal: boolean): string | null {
-	const live = state === "ready";
-	const [down, setDown] = useState<Down | null>(() => (live ? null : { since: Date.now(), lastLiveAt: null }));
+/** When the status next changes on its own, or null when it won't: at the
+ * 2- and 30-second marks, then at each minute of the data's age. */
+export function nextStatusChange(
+	state: ConnectionState,
+	fatal: boolean,
+	downSince: number | null,
+	lastLiveAt: number | null,
+	now: number,
+): number | null {
+	if (fatal || state === "ready" || downSince === null) return null;
+	const down = now - downSince;
+	if (down < RECONNECTING_AFTER_MS) return downSince + RECONNECTING_AFTER_MS;
+	if (down < OFFLINE_AFTER_MS) return downSince + OFFLINE_AFTER_MS;
+	if (lastLiveAt === null) return null;
+	return now + MINUTE - ((now - lastLiveAt) % MINUTE);
+}
+
+/** The status for the app's connection, re-rendered exactly when its words
+ * change, on the provider's one clock (ConnectionClock), so every screen
+ * says the same thing at the same moment however recently it mounted. A
+ * live connection runs no timer. */
+export function useConnectionStatusText(): string | null {
+	const { state, fatal, downSince, lastLiveAt } = useConnection();
 	const [now, setNow] = useState(Date.now);
+	// `now` is a dependency though the body doesn't read it: each tick re-runs
+	// this effect, which schedules the next one.
 	useEffect(() => {
-		if (live) {
-			setDown(null);
-			return () => {
-				const at = Date.now();
-				setDown({ since: at, lastLiveAt: at });
-				setNow(at);
-			};
-		}
-		const tick = () => setNow(Date.now());
-		let minutes: ReturnType<typeof setInterval> | undefined;
-		const timers = [
-			setTimeout(tick, RECONNECTING_AFTER_MS),
-			setTimeout(() => {
-				tick();
-				minutes = setInterval(tick, MINUTE);
-			}, OFFLINE_AFTER_MS),
-		];
-		return () => {
-			for (const timer of timers) clearTimeout(timer);
-			if (minutes !== undefined) clearInterval(minutes);
-		};
-	}, [live]);
-	return connectionStatus(state, fatal, down?.since ?? null, down?.lastLiveAt ?? null, now);
+		const current = Date.now();
+		const next = nextStatusChange(state, fatal, downSince, lastLiveAt, current);
+		if (next === null) return;
+		const timer = setTimeout(() => setNow(Date.now()), Math.max(0, next - current));
+		return () => clearTimeout(timer);
+	}, [state, fatal, downSince, lastLiveAt, now]);
+	return connectionStatus(state, fatal, downSince, lastLiveAt, now);
 }

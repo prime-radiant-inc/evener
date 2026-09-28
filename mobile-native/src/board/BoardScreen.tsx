@@ -1028,8 +1028,6 @@ function Board({
 				/>
 			) : (
 				<BoardToolbar
-					state={state}
-					fatal={fatal}
 					newSessionDisabled={!connected}
 					onNewSession={newSession}
 					onSelect={shownRowItems.length && !searching ? () => setSelecting(true) : undefined}
