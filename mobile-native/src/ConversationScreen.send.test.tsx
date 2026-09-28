@@ -722,8 +722,9 @@ describe("queued messages above the composer (spec 8.5)", () => {
 		const served = thread("ref-cancel-frame", "idle", false, ["drop this"]);
 		const { tree, hub } = await mount(served);
 		// The read after the cancel fails; the hub still reports its queue.
-		const request = hub.client.request;
-		hub.client.request = async (method: string, params: Record<string, unknown>) => {
+		const client = hub.client as { request: (method: string, params: Record<string, unknown>) => Promise<unknown> };
+		const request = client.request;
+		client.request = async (method, params) => {
 			if (method === "thread/read") throw new Error("read failed");
 			const answer = await request(method, params);
 			if (method !== "turn/cancelQueued") return answer;
