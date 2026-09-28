@@ -10,7 +10,6 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
-	"syscall"
 	"testing"
 	"time"
 )
@@ -477,7 +476,11 @@ func TestScriptCrashLeavesEntryLive(t *testing.T) {
 		t.Fatalf("recheck(orphaned entry) = %+v, want live (fail closed)", recheck)
 	}
 	// Signal the exact recorded instance: its kernel-owned start time proves it.
-	if err := syscall.Kill(*entry.Ownership.PID, syscall.SIGKILL); err != nil {
+	instance, err := os.FindProcess(*entry.Ownership.PID)
+	if err != nil {
+		t.Fatalf("find the recorded command instance: %v", err)
+	}
+	if err := instance.Kill(); err != nil {
 		t.Fatalf("kill the recorded command instance: %v", err)
 	}
 	deadline := time.Now().Add(5 * time.Second)
