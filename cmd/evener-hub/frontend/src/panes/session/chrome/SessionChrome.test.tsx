@@ -244,9 +244,9 @@ test("composer placement renders one ordered inline status and actions cluster w
   expect(within(cluster).queryByTestId("session-chrome-cadence")).toBeNull();
   // The goal chip is gone entirely (Jesse's 2026-09-28 design ruling, "drop
   // goal inline in the composer", taken to its conclusion by deleting the
-  // production-dead GoalControl): goal state stays visible and editable
-  // through the composer's own CurrentWork goal row and its inline /goal
-  // built-in.
+  // production-dead GoalControl): the goal objective stays visible and
+  // editable through the composer's own CurrentWork goal row and its inline
+  // /goal built-in.
   expect(screen.queryByTestId("goal-chip-trigger")).toBeNull();
   expect(screen.queryByTestId("goal-compact-trigger")).toBeNull();
 });

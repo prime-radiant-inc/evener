@@ -25,8 +25,9 @@
 // the #1339 composer row dropped it from the composer placement, and the
 // footer mount that remained was production-dead (only the composer and
 // menu placements ever mount), so the component went rather than staying
-// dead code - goal state stays visible and editable through the composer's
-// own CurrentWork goal row and its inline /goal built-in.
+// dead code - the goal objective stays visible and editable through the
+// composer's own CurrentWork goal row and its inline /goal built-in; the
+// status/iterations readout the chip carried has no surface now.
 
 import type { NavigationSessionLocation } from "@evener/appwire-client";
 import { canReadSharedNotes, sessionActionError } from "@evener/appwire-client";
@@ -324,9 +325,9 @@ export function SessionChrome({
             <StatusRow sessionRef={sessionRef} model={model} now={now} />
             {/* The goal chip is gone entirely (Jesse's 2026-09-28 ruling,
                 "drop goal inline in the composer"): the composer row is
-                status and menu alone, and goal state stays visible and
-                editable through the composer's own CurrentWork goal row and
-                its inline /goal built-in. */}
+                status and menu alone, and the goal objective stays visible
+                and editable through the composer's own CurrentWork goal row
+                and its inline /goal built-in. */}
           </div>
         ) : placement === "menu" ? null : (
           /* .body owns compression (sessionchrome.module.css says why): its
