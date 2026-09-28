@@ -17,6 +17,7 @@ import (
 
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-hub/internal/appsource"
+	"primeradiant.com/evener/cmd/evener-hub/internal/hostops"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hostreg"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 	"primeradiant.com/evener/cmd/evener-hub/internal/sshconn"
@@ -463,6 +464,11 @@ func TestHostManageUpdateCommitsWithRemnantWhenTheLivePhaseFails(t *testing.T) {
 	manager := sshconn.New(otherReg, sshconn.Options{})
 	t.Cleanup(func() { _ = manager.Close() })
 	f.m.cfg.manager = manager
+	// The manager is the per-host gate wherever it owns the channels (the same
+	// wiring newHubHostManager performs with hostGateFor): a mutation's held
+	// reservation must be the very lock the manager's gate-inheriting teardown
+	// entries check.
+	f.m.cfg.gate = manager
 	before, _ := f.hosts.Get("side")
 
 	result, err := f.m.UpdateResult(context.Background(), updateRequest(t, f.m, "side", appwire.HostEntry{Address: "edited.example"}))
@@ -539,6 +545,10 @@ func TestHostManageUpdateCommitsWithRemnantWhenTheSwapDropsTheEntry(t *testing.T
 	})
 	t.Cleanup(func() { _ = manager.Close() })
 	f.m.cfg.manager = manager
+	// The manager is the per-host gate wherever it owns the channels (the same
+	// wiring newHubHostManager performs with hostGateFor): the commit-failure
+	// seam below must be reached under the hub's own reservation.
+	f.m.cfg.gate = manager
 	if _, err := manager.Ensure(context.Background(), "side"); err != nil {
 		t.Fatalf("Ensure before Update: %v", err)
 	}
@@ -783,12 +793,14 @@ type updateOutcome struct {
 	err  error
 }
 
-// parkedUpdate is one update driven into its released live-phase window: an
-// Ensure parked inside the manager's first probe holds the per-host gate, so the
-// Update that follows parks inside Manager.UpdateHost's gate wait. The update's
+// parkedUpdate is one update held in its post-commit rebind window: the
+// manager's test-only park seam (testOnlyParkPostCommit) holds the update after
+// its durable commit, with the mutation mutex released and its per-host gate
+// reservation still held (spec 08 §4's "gate released last"), and immediately
+// before the manager rebind — which runs under that reservation. The update's
 // commit has landed by the time the helper returns — the file and the store row
-// hold the edited entry, and the mark fences the name — and the window stays open
-// until release.
+// hold the edited entry, and the mark fences the name — and the window stays
+// open until release.
 type parkedUpdate struct {
 	m          *hubHostManager
 	sources    *appsource.Registry
@@ -853,12 +865,13 @@ func startParkedUpdate(t *testing.T, name string) *parkedUpdate {
 			t.Fatalf("Add(%s): %v", host.Entry.Name, err)
 		}
 	}
-	// Park the update in its released post-commit window with the manager's
-	// test-only seam: the commit lands, the mutation mutex and the gate
-	// reservation are released, and the live phase has not run yet. The seam
-	// replaces the old parked-Ensure technique, which no longer reaches this
-	// window: the guarded update try-acquires the gate before its commit, so a
-	// gate holder refuses it busy instead of parking it.
+	// Park the update in its post-commit window with the manager's test-only
+	// seam: the commit lands, the mutation mutex is released, the gate
+	// reservation is still held (and stays held through the live phase), and the
+	// live phase has not run yet. The seam replaces the old parked-Ensure
+	// technique, which no longer reaches this window: the guarded update
+	// try-acquires the gate before its commit, so a gate holder refuses it busy
+	// instead of parking it.
 	pu := &parkedUpdate{m: m, sources: sources, cache: cache, forgotten: forgotten, configPath: configPath, updateDone: make(chan updateOutcome, 1)}
 	entered := make(chan struct{})
 	releaseCh := make(chan struct{})
@@ -1167,6 +1180,11 @@ func TestHostManageUpdateDropsAnAttachedChannel(t *testing.T) {
 	manager := sshconn.New(f.hosts, sshconn.Options{Runner: runner})
 	t.Cleanup(func() { _ = manager.Close() })
 	f.m.cfg.manager = manager
+	// The manager is the per-host gate wherever it owns the channels (the same
+	// wiring newHubHostManager performs with hostGateFor): a mutation's held
+	// reservation must be the very lock the manager's gate-inheriting teardown
+	// entries check.
+	f.m.cfg.gate = manager
 	f.m.cfg.online = manager.Attached
 	f.m.cfg.clientIfAttached = manager.ClientIfAttached
 
@@ -1495,7 +1513,8 @@ func serveUpdateInitialize(server net.Conn) {
 // reapParkingStdio is one in-memory SSH child whose exit (Wait) parks on a test
 // channel: Channel.Close kills it and then waits on the child's exit, so the
 // reap runs to completion only when the test releases it. Kill signals entered,
-// which UpdateHost reaches only after it has released the per-host gate.
+// which the gate-inheriting rebind reaches while the mutation's per-host
+// reservation is still held (spec 08 §4's "gate released last").
 type reapParkingStdio struct {
 	conn        net.Conn
 	done        chan struct{}
@@ -1520,12 +1539,12 @@ func (s *reapParkingStdio) Wait() error {
 	return nil
 }
 
-// reapParkingRunner drives the update-versus-attach race deterministically. Its
-// first Start attaches a real in-memory channel and parks that channel's reap
-// on reapRelease, so the update's teardown is observed with the per-host gate
-// already released but UpdateHost not yet returned. A later Start parks the
-// attach itself (after the manager has emitted StateAttaching) and keeps holding
-// the per-host gate, so a new-identity Ensure stays mid-attach.
+// reapParkingRunner parks a real attached channel's reap on reapRelease, so a
+// rebind can be observed inside its manager call — after the teardown and the
+// registry swap, with the mutation's per-host reservation still held and
+// UpdateHostUnderGate not yet returned. A later Start parks the attach itself
+// (after the manager has emitted StateAttaching) and keeps holding the per-host
+// gate, so a new-identity Ensure stays mid-attach.
 type reapParkingRunner struct {
 	attachedUpdateRunner
 	mu          sync.Mutex
@@ -1559,12 +1578,15 @@ func (r *reapParkingRunner) Start(_ context.Context, _ []string, _ io.Writer) (s
 // TestHostManageUpdateRetiresTheAttachRecordInsideTheSwapHold is the RED/GREEN
 // test for the update-versus-attach race. The record clear is handed to the
 // manager and runs inside the swap's own gate hold, so it happens before a
-// new-identity attach can start. Pre-fix, the clear ran after UpdateHost
-// returned — a window in which the new registration can already have attached
-// and recorded its own mid-attach state — and erased that fresh state. The test
-// holds UpdateHost in its reap (the gate provably free), drives a real
-// new-identity Ensure into its attach so it records midAttach, then releases the
-// reap and asserts the record still carries the new identity's state.
+// new-identity attach can start, and the mutation's reservation is held through
+// the whole rebind (spec 08 §4's "gate released last"). Pre-fix, the clear ran
+// after UpdateHost returned — a window in which the new registration can
+// already have attached and recorded its own mid-attach state — and erased
+// that fresh state. The test holds the update inside its reap (the swap and the
+// clear done, the reservation still held), pins that a competing acquisition is
+// refused there, records the new identity's mid-attach through the same
+// lifecycle seam a real attach uses, releases the reap, and asserts the
+// response and status rows still carry that fresh state.
 func TestHostManageUpdateRetiresTheAttachRecordInsideTheSwapHold(t *testing.T) {
 	dir := t.TempDir()
 	configPath := filepath.Join(dir, "hub.toml")
@@ -1598,6 +1620,11 @@ func TestHostManageUpdateRetiresTheAttachRecordInsideTheSwapHold(t *testing.T) {
 		newOnce.Do(func() { close(runner.newRelease) })
 	})
 	m.cfg.manager = manager
+	// The manager is the per-host gate wherever it owns the channels (the same
+	// wiring newHubHostManager performs with hostGateFor): a mutation's held
+	// reservation must be the very lock the manager's gate-inheriting teardown
+	// entries check.
+	m.cfg.gate = manager
 
 	if _, err := m.Add(context.Background(), appwire.HostAddParams{
 		Entry: appwire.HostEntry{Name: "side", Address: "side.example"},
@@ -1620,29 +1647,38 @@ func TestHostManageUpdateRetiresTheAttachRecordInsideTheSwapHold(t *testing.T) {
 	}()
 
 	// The update has swapped the entry, emitted the retired identity's Detached,
-	// and released the gate: it is now parked in the reap.
+	// run its retire hook, and is now parked in the reap — inside the manager
+	// call, with the mutation's reservation still held.
 	select {
 	case <-runner.reapEntered:
+	case done := <-updateDone:
+		t.Fatalf("the update finished before its reap: err=%v", done.err)
 	case <-time.After(5 * time.Second):
 		t.Fatal("the update never reached its reap; the runner did not park the channel close")
 	}
 
-	// With the gate free, attach the NEW registration. The runner parks the
-	// attach, so this Ensure stays mid-attach holding the gate and has recorded
-	// StateAttaching's midAttach for the name.
-	newEnsureDone := make(chan error, 1)
-	go func() {
-		_, err := manager.Ensure(context.Background(), "side")
-		newEnsureDone <- err
-	}()
-	select {
-	case <-runner.newEntered:
-	case <-time.After(5 * time.Second):
-		t.Fatal("the new-identity Ensure never reached its attach; the gate was not free")
+	// The window a new-identity attach would enter is closed: with the retire
+	// hook already run, a competing acquisition — the first step of any attach —
+	// is refused busy instead of entering the swap hold.
+	competing, err := manager.TryAcquire("side", hostops.Holder{Kind: hostops.HolderPlan})
+	if err == nil {
+		competing()
+		t.Fatal("a new-identity acquisition entered the swap hold after the retire hook ran")
+	}
+	var busy *hostops.BusyError
+	if !errors.As(err, &busy) || busy.Holder.Kind != hostops.HolderManager || busy.Holder.Activity != "update" {
+		t.Fatalf("competing acquisition refusal = %v, want the update reservation's busy error", err)
 	}
 
-	// Release the reap: UpdateHost returns, and its post-return clear (pre-fix)
-	// would wipe the just-recorded state.
+	// The fresh state the fix protects: a real new-identity attach cannot start
+	// under the held reservation, so its mid-attach state is recorded through the
+	// same lifecycle seam the attach emits (the state write itself takes no
+	// gate). A pre-fix post-return clear would wipe it before the response row
+	// was built.
+	m.observeEvent(sshconn.Event{Host: "side", Kind: sshconn.EventState, State: sshconn.StateAttaching})
+
+	// Release the reap: UpdateHost returns, and its response row is built while
+	// the just-recorded state must still be there.
 	reapOnce.Do(func() { close(runner.reapRelease) })
 	select {
 	case done := <-updateDone:
@@ -1664,11 +1700,6 @@ func TestHostManageUpdateRetiresTheAttachRecordInsideTheSwapHold(t *testing.T) {
 	}
 	if row.Host.Address != "edited.example" {
 		t.Fatalf("row = %+v, want the edited entry", row.Host)
-	}
-
-	newOnce.Do(func() { close(runner.newRelease) })
-	if err := <-newEnsureDone; err == nil {
-		t.Fatal("the parked new-identity Ensure succeeded; the runner must fail the released attach")
 	}
 }
 
@@ -1714,6 +1745,11 @@ func TestHostManageUpdateStaleRowCannotResurrectRetiredState(t *testing.T) {
 		newOnce.Do(func() { close(runner.newRelease) })
 	})
 	m.cfg.manager = manager
+	// The manager is the per-host gate wherever it owns the channels (the same
+	// wiring newHubHostManager performs with hostGateFor): a mutation's held
+	// reservation must be the very lock the manager's gate-inheriting teardown
+	// entries check.
+	m.cfg.gate = manager
 
 	if _, err := m.Add(context.Background(), appwire.HostAddParams{
 		Entry: appwire.HostEntry{Name: "side", Address: "side.example"},
@@ -1734,9 +1770,9 @@ func TestHostManageUpdateStaleRowCannotResurrectRetiredState(t *testing.T) {
 		resp, err := m.Update(context.Background(), updateParams)
 		updateDone <- updateOutcome{resp: resp, err: err}
 	}()
-	// The update has swapped the entry and run its retire hook, then released the
-	// gate and parked in the reap: the retirement is already done, and the gate is
-	// free for the stale write to land.
+	// The update has swapped the entry and run its retire hook, and is parked in
+	// the reap inside the manager call: the retirement is already done, and the
+	// stale writes below are direct state writes that take no gate.
 	select {
 	case <-runner.reapEntered:
 	case <-time.After(5 * time.Second):

@@ -1298,11 +1298,14 @@ func (m *Manager) DetachHost(name string) error {
 // Attached a consumer saw with a Detached under the same lock that ordered
 // them, and makes the pairing a no-op for a channel whose Detached was
 // already emitted — so a Close racing the teardown cannot pair it twice. The
-// returned channel is the one that was mapped, for the caller to reap after
-// releasing the host lock: Channel.Close blocks on the ssh child's exit and
-// must never run under the host lock, while the lock spans the map mutation
-// so no Ensure can interleave between the clear and the reap. Callers hold
-// the host lock.
+// returned channel is the one that was mapped, for the caller to reap at the
+// position its own discipline fixes: the self-acquiring entries (RemoveHost,
+// UpdateHost, DetachHost) reap after releasing the host lock, while the
+// under-gate entries reap inside the caller's own reservation, which the caller
+// releases last (registry spec 08 §4's "gate released last"; the AttachUnderGate
+// precedent reaps the same way). The lock spans the map mutation so no Ensure
+// can interleave between the clear and the reap; Channel.Close's wait on the
+// ssh child's exit needs no lock either way. Callers hold the host lock.
 //
 // captured is the identity the caller resolved before the gate, and
 // hadCaptured says whether it resolved one at all. It scopes the teardown to
@@ -1424,17 +1427,37 @@ func (m *Manager) RemoveHost(name string) error {
 	defer m.releaseHostLock(name)
 	lock.Lock()
 	lock.holdAs(hostops.Holder{Kind: hostops.HolderManager, Activity: "remove"})
+	ch, err := m.removeHostUnderLock(name, host, ok)
+	lock.Unlock()
+	if err != nil {
+		return err
+	}
+	// The reap runs after the lock is released, exactly as DetachHost's does:
+	// Channel.Close blocks on the ssh child's exit, and nothing references the
+	// channel once the map entry is gone.
+	if ch != nil {
+		_ = ch.Close()
+	}
+	return nil
+}
+
+// removeHostUnderLock is RemoveHost's registry-and-channel teardown body with
+// no lock operation of its own: the caller holds the host gate (RemoveHost by
+// acquiring it, RemoveHostUnderGate under the caller's own reservation) and
+// calls this inside that hold. It returns the channel the teardown unmapped,
+// for the caller to reap at the position its own discipline fixes.
+func (m *Manager) removeHostUnderLock(name string, host hostreg.Host, hadHost bool) (*Channel, error) {
 	// Under the gate the name can hold a registration this call never captured
 	// — an add that landed the name while this call waited, the mirror of the
 	// remove/re-add below — so the unknown-name half is re-checked here rather
 	// than trusted from the lookup above: a host whose add is about to answer
 	// success is not this call's to remove, and sweeping its channel would kill
 	// the attach that add's caller is about to use. A name that still holds
-	// nothing keeps the no-op the doc promises.
-	if !ok {
+	// nothing keeps the no-op the doc promises. (Under an under-gate caller
+	// there is no wait to cover, and the re-check is the same no-op.)
+	if !hadHost {
 		if _, exists := m.reg.Get(name); exists {
-			lock.Unlock()
-			return nil
+			return nil, nil
 		}
 	}
 	// A remove/re-add can swap the name's entry in the window this call spent
@@ -1444,25 +1467,63 @@ func (m *Manager) RemoveHost(name string) error {
 	// taking the replacement's would deregister the host its caller re-added,
 	// behind that add's own success. The channel half below still runs, scoped
 	// by the captured identity.
-	if !ok || m.reg.SameRegistration(name, host) {
+	if !hadHost || m.reg.SameRegistration(name, host) {
 		// Registry entry first, under the same lock the rechecks in Ensure and
 		// reconnectOnce consult: once it is gone no attach path can publish. An
 		// unknown name is the no-op the doc promises — the entry is already gone,
 		// but a channel an older attach published for it still comes down.
 		if err := m.reg.Remove(name); err != nil && !errors.Is(err, hostreg.ErrUnknownHost) {
-			lock.Unlock()
-			return err
+			return nil, err
 		}
 	}
-	ch := m.teardownHostChannel(name, host, ok)
-	lock.Unlock()
-	// The reap runs after the lock is released, exactly as DetachHost's does:
-	// Channel.Close blocks on the ssh child's exit, and nothing references the
-	// channel once the map entry is gone.
+	return m.teardownHostChannel(name, host, hadHost), nil
+}
+
+// RemoveHostUnderGate runs RemoveHost's teardown under the caller's
+// already-held per-host gate: §4's "gate released last" for a removal (registry
+// spec 08 §4; deploy pipeline 08b §5's mutation rebind ordering, "the gate
+// releases last. No gate waiter can acquire a half-rebound host"). The caller —
+// the hub's `remove` mutation — reserves the gate before its staged commit and
+// keeps it through the commit and this teardown, presenting the holder its
+// reservation registered (hostGateEntryFor's exact comparison). This method
+// never acquires the gate: it is the same non-reentrant per-host lock, so
+// re-acquiring it would deadlock, and re-acquiring after an early release would
+// be a second exclusion with a gap the caller's reservation is supposed to
+// close. A free gate, or one held by a different holder, refuses with
+// hostops.ErrGateNotHeld before anything live moves.
+//
+// Everything this call does runs inside the caller's hold — the registry drop,
+// the supervisor stop, the channel unmap, and the reap of the unmapped channel
+// — because the caller releases the reservation last (08 §4: "commit first,
+// then rebind/teardown, gate released last"). Reaping under the hold is safe:
+// Channel.Close waits on the ssh child's exit, which needs no lock, exactly as
+// AttachUnderGate reaps a restart's dropped predecessor under its caller's
+// hold.
+//
+// The removal targets the identity resolved under the caller's hold, not
+// whatever holds the name later: this call's span cannot overlap another
+// remove/re-add of the name, because the name's gate is held throughout.
+func (m *Manager) RemoveHostUnderGate(name string, holder hostops.Holder) error {
+	if m.reg == nil {
+		return errors.New("sshconn: RemoveHostUnderGate with no registry")
+	}
+	// Trimmed for the gate key exactly as TryAcquire trims the acquisition the
+	// caller made, so a padded spelling still presents its own hold.
+	name = strings.TrimSpace(name)
+	if !m.hostGateHeldBy(name, holder) {
+		return fmt.Errorf("%w: host %q; RemoveHostUnderGate runs under the caller's hold and never acquires the gate", hostops.ErrGateNotHeld, name)
+	}
+	host, ok := m.reg.Get(name)
+	if ok {
+		// The registry is the authority on the name's spelling, exactly as in
+		// RemoveHost.
+		name = host.Name
+	}
+	ch, err := m.removeHostUnderLock(name, host, ok)
 	if ch != nil {
 		_ = ch.Close()
 	}
-	return nil
+	return err
 }
 
 // AddHost registers entry in the manager's own registry under the same
@@ -1582,6 +1643,24 @@ func (m *Manager) UpdateHost(entry hostreg.Host, onRetire func(retired hostreg.H
 	defer m.releaseHostLock(name)
 	lock.Lock()
 	lock.holdAs(hostops.Holder{Kind: hostops.HolderManager, Activity: "update"})
+	ch, err := m.updateHostUnderLock(entry, onRetire)
+	lock.Unlock()
+	// The reap runs after the lock is released, exactly as DetachHost's and
+	// RemoveHost's do: Channel.Close blocks on the ssh child's exit.
+	if ch != nil {
+		_ = ch.Close()
+	}
+	return err
+}
+
+// updateHostUnderLock is UpdateHost's rebind body with no lock operation of its
+// own: the caller holds the host gate (UpdateHost by acquiring it,
+// UpdateHostUnderGate under the caller's own reservation) and calls this inside
+// that hold. It returns the channel the rebind unmapped — on the registry
+// refusal too, since the teardown has already run by then — for the caller to
+// reap at the position its own discipline fixes.
+func (m *Manager) updateHostUnderLock(entry hostreg.Host, onRetire func(retired hostreg.Host)) (*Channel, error) {
+	name := strings.TrimSpace(entry.Name)
 	// The identity this call retires is resolved under the gate, and so is the
 	// swap: a remove/re-add that took the name while this call waited is not
 	// this call's to tear down, and the teardown below is scoped to the entry
@@ -1601,8 +1680,7 @@ func (m *Manager) UpdateHost(entry hostreg.Host, onRetire func(retired hostreg.H
 	// ErrUnknownHost, name) — so callers' errors.Is keeps working across the
 	// moved check.
 	if !hadCaptured {
-		lock.Unlock()
-		return fmt.Errorf("%w: %q", hostreg.ErrUnknownHost, name)
+		return nil, fmt.Errorf("%w: %q", hostreg.ErrUnknownHost, name)
 	}
 	// Validate before anything live moves. The caller's contract is that an
 	// error from this method means nothing live changed, so a refused update
@@ -1612,8 +1690,7 @@ func (m *Manager) UpdateHost(entry hostreg.Host, onRetire func(retired hostreg.H
 	// lets the teardown stay unconditional — the swap below can then refuse only
 	// for a reason independent of the entry's shape.
 	if err := hostreg.ValidateEntry(entry); err != nil {
-		lock.Unlock()
-		return err
+		return nil, err
 	}
 	// The teardown targets the captured entry's own spelling. The capture is
 	// guaranteed present — an absent name was refused above — so before.Name is
@@ -1637,13 +1714,9 @@ func (m *Manager) UpdateHost(entry hostreg.Host, onRetire func(retired hostreg.H
 		// retired channel is already gone; the host reattaches on the next
 		// Ensure, which finds no channel under the name and dials fresh. Reap
 		// the channel this call did retire — the close blocks on the ssh child's
-		// exit, so it happens after the gate is released, as everywhere else —
-		// and report the refusal.
-		lock.Unlock()
-		if ch != nil {
-			_ = ch.Close()
-		}
-		return err
+		// exit, so it happens at the caller's reap position, as everywhere else
+		// — and report the refusal.
+		return ch, err
 	}
 	// The caller's retirement runs under the gate, in the same hold as the swap,
 	// so no new-identity lifecycle event can interleave before it: an attach
@@ -1663,13 +1736,44 @@ func (m *Manager) UpdateHost(entry hostreg.Host, onRetire func(retired hostreg.H
 	if m.opts.AfterUpdateHostSwap != nil {
 		m.opts.AfterUpdateHostSwap(name)
 	}
-	lock.Unlock()
-	// The reap runs after the lock is released, exactly as DetachHost's and
-	// RemoveHost's do: Channel.Close blocks on the ssh child's exit.
+	return ch, nil
+}
+
+// UpdateHostUnderGate runs UpdateHost's rebind under the caller's already-held
+// per-host gate: §4's "gate released last" for an edit (registry spec 08 §4;
+// deploy pipeline 08b §5's mutation rebind ordering, "the gate releases last.
+// No gate waiter can acquire a half-rebound host"). The caller — the hub's
+// `update` mutation — reserves the gate before its staged commit and keeps it
+// through the commit and this rebind, presenting the holder its reservation
+// registered (hostGateEntryFor's exact comparison). This method never acquires
+// the gate: it is the same non-reentrant per-host lock, so re-acquiring it
+// would deadlock, and re-acquiring after an early release would be a second
+// exclusion with a gap the caller's reservation is supposed to close. A free
+// gate, or one held by a different holder, refuses with hostops.ErrGateNotHeld
+// before anything live moves.
+//
+// Everything this call does runs inside the caller's hold — the retired
+// channel's teardown, the registry swap, the caller's retirement hook, and the
+// reap of the unmapped channel — because the caller releases the reservation
+// last (08 §4: "commit first, then rebind/teardown, gate released last").
+// Reaping under the hold is safe: Channel.Close waits on the ssh child's exit,
+// which needs no lock, exactly as AttachUnderGate reaps a restart's dropped
+// predecessor under its caller's hold.
+func (m *Manager) UpdateHostUnderGate(entry hostreg.Host, holder hostops.Holder, onRetire func(retired hostreg.Host)) error {
+	if m.reg == nil {
+		return errors.New("sshconn: UpdateHostUnderGate with no registry")
+	}
+	// Trimmed for the gate key exactly as TryAcquire trims the acquisition the
+	// caller made, so a padded spelling still presents its own hold.
+	name := strings.TrimSpace(entry.Name)
+	if !m.hostGateHeldBy(name, holder) {
+		return fmt.Errorf("%w: host %q; UpdateHostUnderGate runs under the caller's hold and never acquires the gate", hostops.ErrGateNotHeld, name)
+	}
+	ch, err := m.updateHostUnderLock(entry, onRetire)
 	if ch != nil {
 		_ = ch.Close()
 	}
-	return nil
+	return err
 }
 
 // clearHostCaches drops every per-host record that must not survive a detach or

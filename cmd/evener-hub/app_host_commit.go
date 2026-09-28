@@ -507,11 +507,14 @@ func (m *hubHostManager) finalizeOrphanMarkerIfAny(ctx context.Context, name str
 	}
 	// The gate is held only for the claim; the run below releases it, exactly as
 	// `teardown-retry` does. It has to: the pinned teardown routes a remove or
-	// binding-changing update through the manager's own paths, which take the
-	// same non-reentrant per-host gate — holding the reservation across the run
-	// would hang this goroutine (and boot with it) instead of repairing the
-	// marker. Re-acquiring it before the finalizing write keeps the write inside
-	// the same discipline the mutations apply.
+	// binding-changing update through the manager's self-acquiring paths
+	// (RemoveHost/UpdateHost), which take the same non-reentrant per-host gate —
+	// holding the reservation across the run would hang this goroutine (and boot
+	// with it) instead of repairing the marker. (A mutation's own teardown is
+	// the stronger form: it runs through the gate-inheriting entries with its
+	// reservation held throughout — spec 08 §4's "gate released last".)
+	// Re-acquiring it before the finalizing write keeps the write inside the
+	// same discipline the mutations apply.
 	gateHeld := true
 	releaseOnce := func() {
 		if gateHeld {
@@ -523,7 +526,10 @@ func (m *hubHostManager) finalizeOrphanMarkerIfAny(ctx context.Context, name str
 	m.cfg.mu.Lock()
 	if m.isMutating(name) {
 		// The commit that staged this marker is still in flight in this process
-		// (the name's mutation mark stands for the whole released window). Spec
+		// (the name's mutation mark spans the committing mutation's whole
+		// commit-and-teardown window, held under its reservation since spec 08
+		// §4's "gate released last"; a finder holding the gate only reaches a
+		// live mark through a path that does not present that reservation). Spec
 		// §5: "A replay naming a still-staged marker never re-applies. While the
 		// original commit holds the mutation lock the replay fails fast with the
 		// transient busy form" — so the finder leaves the marker alone and the
