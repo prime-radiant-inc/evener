@@ -56,6 +56,7 @@ import { type ComposerSetting, ComposerSettings } from "./ComposerSettings";
 import { ComposerSettingsSheet } from "./ComposerSettingsSheet";
 import { useConnection } from "./ConnectionProvider";
 import { ConnectionStatus } from "./ConnectionStatus";
+import { reconnectDelay } from "./hubConnection";
 import {
 	CommandArgumentError,
 	composerCommand,
@@ -106,10 +107,12 @@ import {
 	captureReaderAnchor,
 	furthestMeasuredRowBeforeTarget,
 	isReaderAnchorLoaded,
+	openingTarget,
 	type ReaderAnchor,
 	type ReaderMeasurement,
 	ReaderRestoreAttempts,
 	reachableReaderOffset,
+	readerAnchorAt,
 	readerKey,
 	resolveReaderAnchor,
 	restoreReaderCommand,
@@ -117,9 +120,12 @@ import {
 } from "./readerPosition";
 import { type SessionDestination, SessionMenu } from "./SessionMenu";
 import { SessionSheet } from "./SessionSheet";
+import { NewContentPill } from "./session/NewContentPill";
+import { TranscriptSkeleton } from "./session/TranscriptSkeleton";
 import {
-	emptyTranscriptText,
+	latestSettledTurn,
 	liveRunId,
+	newRowCount,
 	sessionRows,
 } from "./session/transcriptRows";
 import { SessionControls } from "./sessionControls";
@@ -567,6 +573,18 @@ export function ConversationScreen({
 	const readerPageAttempts = useRef(new Set<string>());
 	const readerHeader = useRef(false);
 	const readerLatest = useRef(false);
+	// The latest settled turn while the list sat at its end (ruling 31). Every
+	// anchor carries it, so opening the session later can tell a newer reply
+	// finished since.
+	const turnsSeen = useRef<string | undefined>(undefined);
+	// Where the session opened is decided once per route (spec 7.3).
+	const openedFor = useRef<string | null>(null);
+	// The reader keys the list held when you left its end; null at the end.
+	// Rows that arrive below it make "↓ 3 new".
+	const [awayKeys, setAwayKeys] = useState<ReadonlySet<string> | null>(null);
+	// Thread reads that failed in a row while connected: each one retries on
+	// its own after reconnectDelay, and from the third the transcript says so.
+	const [readFailures, setReadFailures] = useState(0);
 	const captureSuppressed = useRef(false);
 	const readerDragging = useRef(false);
 	const readerMomentum = useRef(false);
@@ -722,6 +740,49 @@ export function ConversationScreen({
 			service.close();
 		};
 	}, [service, store, activitySink, connected, focused, route.params.ref]);
+	// A read that failed while connected tries again on its own (spec 14): at
+	// once, then after 1, 2 and 4 seconds, and on up to every 30 seconds. There
+	// is no button to press; from the third failure in a row one quiet line
+	// says the session is still trying.
+	useEffect(() => {
+		// A failed read starts the count; after that each retry counts its own
+		// outcome, since a retry that fails fast can go from "error" to "error"
+		// without the screen ever rendering the "opening" between them.
+		if (snapshot.status === "error")
+			setReadFailures((count) => (count === 0 ? 1 : count));
+		else if (snapshot.status === "open") setReadFailures(0);
+	}, [snapshot.status]);
+	// Keyed on the count, never the status: a retry passing through "opening"
+	// must not cancel itself.
+	useEffect(() => {
+		if (readFailures === 0 || !service || !connected || !focused) return;
+		let cancelled = false;
+		const retry = setTimeout(() => {
+			if (store.getState().status !== "error") return;
+			void store
+				.getState()
+				.resumeProjected(service, activitySink, route.params.ref)
+				.then(() => {
+					if (!cancelled && store.getState().status === "error")
+						setReadFailures((count) => count + 1);
+				})
+				.catch((error) => {
+					console.error("ConversationScreen: retried read failed", error);
+				});
+		}, reconnectDelay(readFailures - 1));
+		return () => {
+			cancelled = true;
+			clearTimeout(retry);
+		};
+	}, [
+		readFailures,
+		service,
+		store,
+		activitySink,
+		connected,
+		focused,
+		route.params.ref,
+	]);
 	// The durable pending-row seam. The store retires it on EVERY thread open,
 	// and `openProjected` runs from more than the resume effect: the /clear
 	// command's cleared callback, the refresh paths, and resumeProjected's own
@@ -1090,7 +1151,63 @@ export function ConversationScreen({
 			route.params.ref,
 		);
 		readerLatest.current = readerAnchor.current === null;
+		turnsSeen.current = readerAnchor.current?.turnsSeen;
+		openedFor.current = null;
+		setAwayKeys(null);
+		setReadFailures(0);
 	}, [route.params.hubId, route.params.ref]);
+	// Where the session opens (spec 7.3, ruling 31), decided once per route on
+	// the first layout with rows: the live end while a question or approval
+	// waits, the start of a reply that finished since you last reached the
+	// end, or where you left off. It only sets the reading position; the
+	// restore effect below moves the list there.
+	useEffect(() => {
+		const routeKey = `${route.params.hubId}\u0000${route.params.ref}`;
+		if (
+			openedFor.current === routeKey ||
+			!conversation ||
+			snapshot.status !== "open" ||
+			timelineRows.length === 0 ||
+			!focused
+		)
+			return;
+		openedFor.current = routeKey;
+		const target = openingTarget(
+			readerAnchor.current,
+			timelineRows,
+			conversation.turns.map((turn) => turn.id),
+			pendingQuestions(conversation).length > 0 ||
+				conversation.pendingEscalations.length > 0,
+		);
+		if (target.kind === "live") {
+			readerAnchor.current = null;
+			readerLatest.current = true;
+			(
+				timeline.current?.getScrollResponder() as ScrollView | null
+			)?.scrollToEnd({ animated: false });
+		} else if (target.kind === "row") {
+			readerAnchor.current = readerAnchorAt(
+				route.params.hubId,
+				route.params.ref,
+				timelineRows[target.index],
+				0,
+				Date.now(),
+				bindingInstance,
+				turnsSeen.current,
+			);
+			readerLatest.current = false;
+			appliedReaderRestore.current = null;
+			readerRestoreAttempts.current.reset();
+		}
+	}, [
+		conversation,
+		snapshot.status,
+		timelineRows,
+		focused,
+		bindingInstance,
+		route.params.hubId,
+		route.params.ref,
+	]);
 	// biome-ignore lint/correctness/useExhaustiveDependencies: Cell layout revisions intentionally retrigger semantic restoration.
 	useEffect(() => {
 		const anchor = readerAnchor.current;
@@ -1540,6 +1657,7 @@ export function ConversationScreen({
 		readerAnchor.current = null;
 		readerLatest.current = true;
 		captureSuppressed.current = false;
+		setAwayKeys(null);
 		(
 			timeline.current?.getScrollResponder() as ScrollView | null
 		)?.scrollToEnd({ animated: true });
@@ -1879,7 +1997,10 @@ export function ConversationScreen({
 									/>
 								</View>
 							)}
-							contentContainerStyle={{ padding: 16, paddingBottom: 72 }}
+							// Room at the end for the Next capsule (spec 8.3).
+							contentContainerStyle={{ padding: 16, paddingBottom: 60 }}
+							// Older history loading above never moves what you read.
+							maintainVisibleContentPosition={{ minIndexForVisible: 0 }}
 							onContentSizeChange={(_width, height) => {
 								readerContentHeight.current = height;
 								setLayoutRevision((revision) => revision + 1);
@@ -1890,10 +2011,41 @@ export function ConversationScreen({
 							}}
 							scrollEventThrottle={100}
 							onScroll={(event) => {
-								if (!focused || captureSuppressed.current) {
-									return;
+								if (!focused) return;
+								const { contentOffset, contentSize, layoutMeasurement } =
+									event.nativeEvent;
+								const y = contentOffset.y;
+								if (y + layoutMeasurement.height >= contentSize.height - 48) {
+									if (awayKeys !== null) setAwayKeys(null);
+									turnsSeen.current = latestSettledTurn(conversation) ?? turnsSeen.current;
+								} else if (awayKeys === null) {
+									setAwayKeys(new Set(timelineRows.map(readerKey)));
 								}
-								const y = event.nativeEvent.contentOffset.y;
+								if (captureSuppressed.current) return;
+								const cursor = snapshot.olderCursor;
+								if (
+									y < 800 &&
+									service &&
+									cursor &&
+									!snapshot.loadingOlder &&
+									!readerPageAttempts.current.has(cursor)
+								) {
+									const pageAttempts = readerPageAttempts.current;
+									pageAttempts.add(cursor);
+									void store
+										.getState()
+										.loadOlder(service)
+										.then((result) => {
+											if (
+												result.status === "ignored" ||
+												(result.status === "loaded" && result.itemKeys.length > 0)
+											)
+												pageAttempts.delete(cursor);
+										})
+										.catch(() => {
+											// A failed page stays guarded until a binding or route reset.
+										});
+								}
 								const visible = timelineRows.find((item) => {
 									const measurement = readerMeasurements.current.get(
 										readerKey(item),
@@ -1909,6 +2061,7 @@ export function ConversationScreen({
 										[...readerMeasurements.current.values()],
 										Date.now(),
 										bindingInstance,
+										turnsSeen.current,
 									);
 									const anchor = readerAnchor.current;
 									const measurement = readerMeasurements.current.get(
@@ -1991,14 +2144,27 @@ export function ConversationScreen({
 								});
 							}}
 							keyboardShouldPersistTaps="handled"
-							refreshing={refreshing}
-							onRefresh={() => {
-								void refresh();
-							}}
 							ListHeaderComponent={
 								<View style={{ gap: 12, paddingBottom: 16 }}>
 									<ConnectionStatus />
-									<ErrorMessage message={snapshot.error || actionError} />
+									{readFailures >= 3 ? (
+										<Text
+											style={{
+												fontSize: 13,
+												lineHeight: 18,
+												color: colors.palette.inkLow,
+											}}
+										>
+											Couldn't load this session. Trying again on its own.
+										</Text>
+									) : null}
+									{/* A failed read says so above, once, and retries on its own. */}
+									<ErrorMessage
+										message={
+											(snapshot.status === "error" ? null : snapshot.error) ||
+											actionError
+										}
+									/>
 									<ErrorMessage message={draft.error} />
 									{unconfirmedDelivery()}
 									{connected &&
@@ -2008,83 +2174,28 @@ export function ConversationScreen({
 									!permitted.queue ? (
 										<Copy muted>Sending is unavailable for this session.</Copy>
 									) : null}
-									{snapshot.olderCursor ? (
-										<Action
-											disabled={!ready || snapshot.loadingOlder}
-											onPress={() => {
-												if (service) void store.getState().loadOlder(service);
-											}}
-										>
-											{snapshot.loadingOlder
-												? "Loading…"
-												: "Load older messages"}
-										</Action>
-									) : null}
 								</View>
 							}
-							ListEmptyComponent={
-								<Copy muted>
-									{emptyTranscriptText(
-										snapshot.status,
-										connected,
-										conversation !== null,
-									)}
-								</Copy>
-							}
+							// Until the conversation first loads, three quiet blocks stand
+							// in for it. A loaded conversation with no rows shows nothing:
+							// the composer's placeholder invites.
+							ListEmptyComponent={conversation ? null : <TranscriptSkeleton />}
 						/>
-						{focused && snapshot.status === "opening" && conversation ? (
-							<View
-								pointerEvents="none"
-								style={{
-									position: "absolute",
-									top: 8,
-									alignSelf: "center",
-									flexDirection: "row",
-									alignItems: "center",
-									gap: 8,
-									paddingHorizontal: 12,
-									paddingVertical: 8,
-									borderRadius: 12,
-									backgroundColor: colors.surface,
-								}}
-							>
-								<ActivityIndicator />
-								<Copy muted>Updating session…</Copy>
-							</View>
-						) : null}
-						{timelineRows.length > 0 ? (
-							<View
-								style={{
-									position: "absolute",
-									right: 16,
-									bottom: 8,
-									backgroundColor: colors.surface,
-									borderRadius: 24,
-									borderWidth: 1,
-									borderColor: colors.border,
-								}}
-							>
-								<Pressable
-									accessibilityRole="button"
-									accessibilityLabel="Latest"
-									onPress={jumpToLive}
-									style={({ pressed }) => ({
-										minWidth: Platform.OS === "ios" ? 44 : 48,
-										minHeight: Platform.OS === "ios" ? 44 : 48,
-										alignItems: "center",
-										justifyContent: "center",
-										opacity: pressed ? 0.6 : 1,
-									})}
-								>
-									<Text
-										allowFontScaling={false}
-										style={{ fontSize: 24, color: colors.secondary }}
-									>
-										↓
-									</Text>
-								</Pressable>
-							</View>
-						) : null}
+						<View
+							pointerEvents="box-none"
+							style={{
+								position: "absolute",
+								left: 0,
+								right: 0,
+								bottom: 10,
+								alignItems: "center",
+							}}
+						>
+							<NewContentPill
+								count={awayKeys ? newRowCount(timelineRows, awayKeys) : 0}
+								onPress={jumpToLive}
+							/>
+						</View>
 					</View>
 					<View style={{ flexShrink: 1, maxHeight: "80%", marginTop: 8, gap: 4 }}>
 						<ScrollView

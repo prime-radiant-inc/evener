@@ -6,8 +6,8 @@
 // - a time marker introduces the first turn, a turn that starts after ten
 //   quiet minutes, and a new day.
 import { parseArgs, str, type TurnModel } from "@evener/appwire-client";
-import type { ConversationStatus } from "../../../mobile/src/state/conversation";
 import { hubTime } from "../board/attention";
+import { readerKey } from "../readerPosition";
 import { type RunStep, rowTurnId, type TimelineRow } from "../timeline";
 import { compactDuration } from "./format";
 
@@ -81,6 +81,31 @@ export function liveRunId(rows: readonly TimelineRow[], activeTurnId: string | u
 	for (let index = rows.length - 1; index >= 0; index -= 1) {
 		const row = rows[index];
 		if (row.kind === "run" && row.turnId === activeTurnId) return row.id;
+	}
+	return undefined;
+}
+
+/** How many rows arrived below while you read above the end: the rows after
+ * the last one whose reader key you had when you left it. Older history that
+ * loads above never counts, and neither do time markers. */
+export function newRowCount(rows: readonly TimelineRow[], seen: ReadonlySet<string>): number {
+	let count = 0;
+	for (let index = rows.length - 1; index >= 0; index -= 1) {
+		const row = rows[index];
+		if (seen.has(readerKey(row))) break;
+		if (row.kind !== "time") count += 1;
+	}
+	return count;
+}
+
+/** The latest turn that is no longer in progress: what a reader at the end
+ * has seen (ruling 31's turnsSeen). */
+export function latestSettledTurn(
+	conversation: { turns: readonly Pick<TurnModel, "id" | "status">[] } | null,
+): string | undefined {
+	const turns = conversation?.turns ?? [];
+	for (let index = turns.length - 1; index >= 0; index -= 1) {
+		if (turns[index].status !== "inProgress") return turns[index].id;
 	}
 	return undefined;
 }
@@ -306,14 +331,4 @@ export function runPartFailedText(part: RunPart): string {
 export function runSummaryText(summary: RunSummary): string {
 	const parts = summary.parts.map((part) => `${part.text}${runPartFailedText(part)}`);
 	return [runHeadText(summary), parts.join(", ")].join(" · ");
-}
-
-/** What the transcript says while it has no rows. The app reconnects and
- * reads on its own (spec principle 2, section 14), so until a conversation
- * has loaded, a missing connection reads as loading and never asks you to
- * reconnect; the connection status says why it is waiting. */
-export function emptyTranscriptText(status: ConversationStatus, connected: boolean, loaded: boolean): string {
-	if (status === "opening" || (!connected && !loaded)) return "Loading conversation…";
-	if (status === "error") return "Pull down to retry.";
-	return "No messages yet.";
 }
