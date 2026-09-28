@@ -74,6 +74,7 @@ import { BoardToolbar } from "./BoardToolbar";
 import { type BoardController, type BoardSnapshot, createBoardController } from "./boardData";
 import { useBoardReadRetry } from "./useBoardReadRetry";
 import { BoardStops, stopToast } from "./boardStops";
+import { UPDATE_NEEDED_HINT } from "./connectionStatus";
 import { type HubSeenMarks, hubSeenMarks } from "./hubSeen";
 import { foldedSections, organizeByPreference, recentSearches, seenMarkers, useBoardSeen } from "./nativeBoardMemory";
 import { notices } from "./notices";
@@ -118,8 +119,6 @@ type Props = NativeStackScreenProps<Routes, "Sessions">;
 type Navigation = Props["navigation"];
 
 const MINUTE = 60_000;
-const INCOMPATIBLE =
-	"This app and the hub need compatible versions. Update the app from TestFlight, or update Evener on the hub.";
 const BAND_HEADERS: Record<Exclude<Band, "idle">, string> = {
 	needsYou: "NEEDS YOU",
 	finished: "FINISHED",
@@ -953,7 +952,7 @@ function Board({
 						/>
 					) : (
 						<>
-							{fatal ? <NoticeRow text={INCOMPATIBLE} /> : null}
+							{fatal ? <NoticeRow text={UPDATE_NEEDED_HINT} /> : null}
 							<BoardNotices hubId={hubId} notices={hubNotices} navigation={navigation} />
 							<View
 								testID="live-block"
