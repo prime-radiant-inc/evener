@@ -12,11 +12,11 @@ import (
 )
 
 // RecursiveDistillStrategy implements logarithmic memory hierarchy through
-// continuous micro-compactions. Every 10 turns, recent actions are distilled
-// into 1-2 sentences (micro-summary). Every 50 turns (5 micro-summaries),
-// the micro-summaries are folded into a macro-summary. This creates a
-// log-depth hierarchy where information is gradually compressed, never lost
-// in a single step.
+// continuous micro-compactions. Every 10 completed actions, recent turns are
+// distilled into 1-2 sentences (micro-summary). Every 50 completed actions
+// (5 micro-summaries), the micro-summaries are folded into a macro-summary.
+// This creates a log-depth hierarchy where information is gradually
+// compressed, never lost in a single step.
 //
 // Uses compact as the base compaction mechanism, with distilled summaries
 // injected as a steering message that survives compaction.
@@ -24,8 +24,15 @@ type RecursiveDistillStrategy struct {
 	cm             *Manager
 	microSummaries []string
 	macroSummaries []string
-	lastMicroAt    int // turn count at last micro-summary
-	lastMacroAt    int // turn count at last macro-summary
+	// actions counts completed actions observed through AfterAction and is
+	// advanced exactly once per call. Cadence is measured against this monotonic
+	// count rather than the history projection: compaction, distilled-context
+	// injection and a fold the session refuses all change that projection, so
+	// deriving the budget from it let the budget shrink with the thing it bounds
+	// and could stall or prematurely fire distillation (CORE-09).
+	actions     int
+	lastMicroAt int // action count at last micro-summary
+	lastMacroAt int // action count at last macro-summary
 	// aux holds the last micro/macro summary failure so a turn that skips the
 	// cadence guard keeps reporting the degradation instead of clearing it
 	// before the next eligible retry.
@@ -99,7 +106,7 @@ func (s *RecursiveDistillStrategy) injectDistilledContext(ctx context.Context, h
 	replaceSteeringMarkerTurn(ctx, history, "[DISTILLED MEMORY]", b.String())
 }
 
-// AfterAction checks if enough turns have accumulated for a micro or macro
+// AfterAction checks if enough actions have accumulated for a micro or macro
 // distillation step.
 func (s *RecursiveDistillStrategy) AfterAction(ctx context.Context, history []schema.Turn, client *llm.Client) error {
 	if client == nil || s.cm == nil {
@@ -107,10 +114,15 @@ func (s *RecursiveDistillStrategy) AfterAction(ctx context.Context, history []sc
 	}
 	history = attentionTransparentHistory(history)
 
-	turnCount := len(history)
+	// AfterAction runs once per completed tool round, so this count is the
+	// monotonic execution clock: it cannot be shrunk by compaction and does not
+	// move for injected context or for a fold the session refuses. Hidden
+	// attention markers are still stripped above so they never enter a summary.
+	s.actions++
 
-	// Micro-summary every 10 turns.
-	if turnCount-s.lastMicroAt < 10 {
+	// Micro-summary every 10 completed actions. A skipped turn still re-reports
+	// any recorded failure, keeping the degradation visible between attempts.
+	if s.actions-s.lastMicroAt < 10 {
 		return s.aux.stale()
 	}
 
@@ -122,12 +134,12 @@ func (s *RecursiveDistillStrategy) AfterAction(ctx context.Context, history []sc
 		auxErr = fmt.Errorf("recursive-distill strategy: micro-summary: %w", err)
 	} else {
 		s.microSummaries = append(s.microSummaries, micro)
-		s.lastMicroAt = turnCount
+		s.lastMicroAt = s.actions
 	}
 
-	// Macro-summary every 50 turns (when we've accumulated 5 micro-summaries).
-	// Attempted even when the micro step failed, as before this change.
-	if len(s.microSummaries) >= 5 && turnCount-s.lastMacroAt >= 50 {
+	// Macro-summary every 50 completed actions (when we've accumulated 5
+	// micro-summaries). Attempted even when the micro step failed, as before.
+	if len(s.microSummaries) >= 5 && s.actions-s.lastMacroAt >= 50 {
 		macro, err := s.macroSummarize(ctx, s.microSummaries)
 		if err != nil {
 			if auxErr == nil {
@@ -136,7 +148,7 @@ func (s *RecursiveDistillStrategy) AfterAction(ctx context.Context, history []sc
 		} else {
 			s.macroSummaries = append(s.macroSummaries, macro)
 			s.microSummaries = nil // Reset after folding into macro.
-			s.lastMacroAt = turnCount
+			s.lastMacroAt = s.actions
 		}
 	}
 

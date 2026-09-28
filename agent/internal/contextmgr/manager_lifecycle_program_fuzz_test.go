@@ -523,8 +523,15 @@ func cmgpCheckMemoryStrategies(t *testing.T, ctx context.Context, token string, 
 		t.Fatal("recursive-distill strategy contract changed")
 	}
 	longHistory := cmgpLongHistory(token, 10)
-	if err := distill.AfterAction(ctx, longHistory, client); err != nil || len(distill.microSummaries) != 1 {
-		t.Fatalf("recursive micro distill = micros:%d err:%v", len(distill.microSummaries), err)
+	// The distillation cadence counts completed actions (CORE-09): ten
+	// AfterAction calls produce one micro-summary.
+	for i := range 10 {
+		if err := distill.AfterAction(ctx, longHistory, client); err != nil {
+			t.Fatalf("recursive distill action %d: %v", i, err)
+		}
+	}
+	if len(distill.microSummaries) != 1 {
+		t.Fatalf("recursive micro distill = micros:%d, want 1", len(distill.microSummaries))
 	}
 	if _, err := distill.microSummarize(ctx, longHistory); err != nil {
 		t.Fatalf("recursive direct micro summary: %v", err)

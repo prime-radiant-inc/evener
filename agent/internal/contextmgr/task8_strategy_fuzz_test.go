@@ -34,8 +34,9 @@ import (
 //   - usage/metric accounting stays non-negative and bounded by its window.
 func FuzzTask8StrategyTransitions(f *testing.F) {
 	// First seed crosses both bounded-state transitions: 22 crystal actions
-	// exercises the 20-entry prune cap, and six distillation steps exercise the
-	// fifth-micro macro fold plus a subsequent micro summary.
+	// exercises the 20-entry prune cap, and sixty completed actions exercise the
+	// fifth-micro macro fold plus a subsequent micro summary. (The distillation
+	// cadence unit is completed actions, not history entries — CORE-09.)
 	f.Add([]byte{21, 5, 0, 17}, "seed evidence")
 	// This seed covers the markdown-fenced fork response and pre-macro route.
 	f.Add([]byte{0, 1, 1}, "")
@@ -112,21 +113,18 @@ func t8RunMemoryCrystals(ctx context.Context, t *testing.T, profile *provider.Pr
 func t8RunRecursiveDistill(ctx context.Context, t *testing.T, profile *provider.Profile, client *llm.Client, history []schema.Turn, program []byte, userEvidence, terminalEvidence string) {
 	t.Helper()
 	strategy := NewRecursiveDistillStrategy(NewManager(profile, client, cheapmodel.New(client)))
-	steps := 1 + int(t8ProgramByte(program, 1)%6)
-	for step := 1; step <= steps; step++ {
-		if err := strategy.AfterAction(ctx, history[:step*10], client); err != nil {
+	// Distillation cadence is measured in completed actions (CORE-09), so drive
+	// a whole number of ten-action micro periods (10..60) with one AfterAction
+	// per completed action. Crossing fifty exercises the macro fold.
+	actions := 10 * (1 + int(t8ProgramByte(program, 1)%6))
+	for step := 1; step <= actions; step++ {
+		if err := strategy.AfterAction(ctx, history, client); err != nil {
 			t.Fatalf("recursive distill AfterAction step %d: %v", step, err)
 		}
 	}
-	// Repeating an already-observed turn count must not re-summarize it.
-	if err := strategy.AfterAction(ctx, history[:steps*10], client); err != nil {
-		t.Fatalf("recursive distill repeated AfterAction: %v", err)
-	}
-	wantMacros, wantMicros := 0, steps
-	if steps >= 5 {
-		wantMacros = 1
-		wantMicros = steps - 5
-	}
+	totalMicros := actions / 10
+	wantMacros := totalMicros / 5
+	wantMicros := totalMicros % 5
 	if len(strategy.macroSummaries) != wantMacros || len(strategy.microSummaries) != wantMicros {
 		t.Fatalf("recursive summaries = macros:%d micros:%d, want macros:%d micros:%d", len(strategy.macroSummaries), len(strategy.microSummaries), wantMacros, wantMicros)
 	}

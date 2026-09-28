@@ -102,6 +102,17 @@ func TestRecursiveDistillStrategy_AfterAction_SurfacesMicroSummaryFailure(t *tes
 		ten[i] = schema.NewTurn(schema.TurnAssistant, llm.Assistant("turn"))
 	}
 
+	// The cadence counts completed actions (CORE-09): nine ineligible actions
+	// keep the failed summary out of reach and must return nil rather than a
+	// stale failure.
+	for i := range 9 {
+		if err := s.AfterAction(context.Background(), ten, client); err != nil {
+			t.Fatalf("ineligible action %d must not report: %v", i, err)
+		}
+	}
+
+	// The tenth completed action is eligible: the failed micro-summary surfaces
+	// and must not advance the action watermark.
 	err := s.AfterAction(context.Background(), ten, client)
 	if !errors.Is(err, errAuxProviderDown) {
 		t.Fatalf("AfterAction must surface the auxiliary failure, got %v", err)
@@ -113,7 +124,7 @@ func TestRecursiveDistillStrategy_AfterAction_SurfacesMicroSummaryFailure(t *tes
 		t.Errorf("a failed micro-summary must not advance the cadence watermark, got %d", s.lastMicroAt)
 	}
 
-	// The unchanged watermark makes the next call eligible again: the retry
+	// The unchanged watermark makes the next action eligible again: the retry
 	// must keep reporting rather than swallowing the outage.
 	err = s.AfterAction(context.Background(), ten, client)
 	if !errors.Is(err, errAuxProviderDown) {
