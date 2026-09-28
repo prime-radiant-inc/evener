@@ -1667,12 +1667,15 @@ func TestDevControllerWithADeployPathForcesTheDeploy(t *testing.T) {
 }
 
 // TestDirtyControllerRefusalsNameTheRemedy pins acceptance criterion 6: a dirty
-// controller's build has no reproducible identity, so the push path and the
-// installer fallback each refuse, and each refusal carries a remedy an operator
-// can act on — a clean rebuild for the push path, and the hub's flags for the
-// installer fallback through Options.DeployHelp. The refusal's type and
-// terminality are pinned by TestRound13DirtyControllerDeployRefusalIsTerminal;
-// this adds the remedy clauses, which is the half the criterion names.
+// controller's build has no reproducible identity, so a SOURCE push (a compile of
+// a checkout or an undeclared BuildBinary) and the installer fallback each
+// refuse, and each refusal carries a remedy an operator can act on — a clean
+// rebuild for the push path, and the hub's flags for the installer fallback
+// through Options.DeployHelp. The controller's own executable is the case that
+// does not refuse (TestDirtyControllerDeploysItsOwnExecutable). The refusal's
+// type and terminality are pinned by
+// TestRound13DirtyControllerDeployRefusalIsTerminal; this adds the remedy
+// clauses, which is the half the criterion names.
 func TestDirtyControllerRefusalsNameTheRemedy(t *testing.T) {
 	const dirty = "abc1234-dirty"
 	host := hostreg.Host{Name: "alpha", SSH: "alpha.example", EvenerPath: "/opt/evener/bin/evener"}
@@ -1694,7 +1697,7 @@ func TestDirtyControllerRefusalsNameTheRemedy(t *testing.T) {
 			t.Fatalf("push-path refusal does not name the remedy: %v", err)
 		}
 		if builds != 0 {
-			t.Fatalf("cross-compiles = %d, want 0 (a dirty controller has no deployable build)", builds)
+			t.Fatalf("cross-compiles = %d, want 0 (a dirty controller has no deployable source build)", builds)
 		}
 	})
 

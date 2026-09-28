@@ -111,6 +111,39 @@ type Options struct {
 	// BuildBinary is set.
 	BuildSource string
 
+	// OwnExecutable, when set, records that BuildBinary serves this controller's
+	// own executable — the hub's default deploy source, adopted without a flag —
+	// rather than an operator-named artifact or a compile of a checkout. It
+	// changes exactly one decision: a dirty controller (a "<sha>-dirty" build)
+	// refuses every other deploy source terminally (errControllerDirty), because
+	// none of them can be proven to be this controller's build — a checkout
+	// cannot be reproduced, and a "<sha>-dirty" label is not an identity (another
+	// dirty tree at the same commit reports it too, so neither the pre-push
+	// checks nor the post-deploy version comparison could tell an
+	// operator-supplied artifact apart from a foreign one). The controller's own
+	// executable is exempt because the caller — the hub's default-adoption path —
+	// declares those bytes ARE this controller's build. That declaration is the
+	// whole of the guarantee: the file is read at deploy time, so a hub whose
+	// executable was replaced under it deploys the replacement — a cross-commit
+	// one is caught after the push (errDeployUnstamped; the host reports a
+	// version this controller did not stamp), and a same-commit dirty variant is
+	// the documented, accepted residual (see the hub's ownExecutableBuild). The
+	// artifact's identity is still judged where it can be: the push re-reads
+	// it (evener identity and host target) before staging, and the on-host launch
+	// contract re-read after the deploy is compared against this controller
+	// (errDeployUnstamped).
+	OwnExecutable bool
+
+	// DeployDisabled, when set, turns deploying off for this whole Manager: no
+	// push and no installer fallback, so a release or snapshot controller cannot
+	// quietly install a published artifact on a host either. canDeploy reports
+	// false (the decision ladder never deploys, and a host that needs a build is
+	// left on its own exactly as with no deploy source), and every deploy that
+	// still reaches deploy — the explicit host-deploy operation — is refused
+	// terminally (errDeployDisabled) with DeployHelp's remedy. It is the hub's
+	// -no-deploy.
+	DeployDisabled bool
+
 	// DeployHelp is the remedy clause the refusals that have nothing to install
 	// append: the missing-executable preflight refusal and the installer fallbacks.
 	// An embedder with its own CLI fills in the flags an operator must set; sshconn
@@ -2032,11 +2065,14 @@ func (m *Manager) deployRequired(name string, facts Preflight, expected string) 
 	// deploy is configured the controller installs its own build once per Manager
 	// and then trusts the host for this process's lifetime; with no deploy
 	// configured there is nothing to install and the literal comparison stands.
-	// A DIRTY controller with a deploy configured cannot install anything (deploy
-	// refuses it terminally: see errControllerDirty), so the force below is what
-	// keeps it from attaching to a host whose code equality cannot prove; the
-	// refusal is terminal rather than a retryable ErrDeploy, so the same forced
-	// deploy cannot become an endless cross-compile.
+	// A DIRTY controller whose deploy source is anything but its own executable
+	// cannot install anything (deploy refuses it terminally: see errControllerDirty),
+	// so the force below is what keeps it from attaching to a host whose code
+	// equality cannot prove; that refusal is terminal rather than a retryable
+	// ErrDeploy, so the same forced deploy cannot become an endless cross-compile.
+	// The controller's own executable (Options.OwnExecutable) is installable, and
+	// once installed it settles the question for this Manager's lifetime like any
+	// other deploy.
 	deployPossible := m.canDeploy()
 	devUnverified := UnverifiableVersion(expected) && deployPossible && !m.isDevDeployed(name)
 
@@ -2658,7 +2694,9 @@ func isTerminal(err error) bool {
 		errors.Is(err, errControllerDirty),
 		errors.Is(err, errRunTargetUnservable),
 		errors.Is(err, errDeployArtifactUnusable),
+		errors.Is(err, errOwnExecutableCannotServe),
 		errors.Is(err, errDeployUnstamped),
+		errors.Is(err, errDeployDisabled),
 		errors.Is(err, ErrManagerClosed):
 		return true
 	default:
@@ -2710,6 +2748,26 @@ var ErrDeployArtifactUnusable = errDeployArtifactUnusable
 // surface it as a typed deploy failure (appwire.HubLaunchError) rather than a
 // generic internal error, the same reason ErrControllerDirty is.
 var ErrDeployUnstamped = errDeployUnstamped
+
+// ErrOwnExecutableCannotServe is the exported alias for the terminal
+// cross-target deploy refusal (errOwnExecutableCannotServe, deploy.go): the
+// controller's only deploy source is its own executable, the host runs another
+// target, and the installer fallback has no published artifact to pin for this
+// build, so this controller can never provision this host — the same host,
+// target, and build re-refuse identically. It is exported so a caller — the
+// hub's attach handler — can match the refusal with errors.Is and surface it as
+// a typed deploy failure (appwire.HubLaunchError) rather than a generic internal
+// error, the same reason ErrDeployUnstamped is.
+var ErrOwnExecutableCannotServe = errOwnExecutableCannotServe
+
+// ErrDeployDisabled is the exported alias for the terminal deploy-disabled
+// refusal (errDeployDisabled, deploy.go): the controller was started with
+// deploying turned off (the hub's -no-deploy), so it will not install a build on
+// any host, and the refusal names the remedy through DeployHelp. It is exported
+// so a caller — the hub's attach handler — can match the refusal with errors.Is
+// and surface it as a typed deploy failure (appwire.HubLaunchError) rather than a
+// generic internal error, the same reason ErrOwnExecutableCannotServe is.
+var ErrDeployDisabled = errDeployDisabled
 
 // hostLockEntry is one per-host gate together with its live-user count.
 // refs counts the hostLock acquisitions that have not been released yet —
@@ -3134,8 +3192,20 @@ func (m *Manager) canBuild() bool {
 // accept this build": a dirty controller with a build source reaches deploy,
 // which refuses it terminally (errControllerDirty) instead of returning false
 // here — returning false would let the decision ladder attach to a host whose
-// code equality the dirty version cannot prove.
+// code equality the dirty version cannot prove. A dirty controller deploying its
+// own executable (Options.OwnExecutable) is accepted by deploy: those bytes are
+// the controller's build by construction, so there is no reproduction proof to
+// make (though for a host on another target that source hands over to the
+// installer fallback, or refuses terminally when the fallback has nothing to
+// pin: errOwnExecutableCannotServe). And a
+// controller with deploying turned off (Options.DeployDisabled) has no deploy
+// path at all, so it is false before even the installer fallback is considered:
+// -no-deploy must not let a release or snapshot controller quietly install a
+// published artifact.
 func (m *Manager) canDeploy() bool {
+	if m.opts.DeployDisabled {
+		return false
+	}
 	if m.canBuild() {
 		return true
 	}

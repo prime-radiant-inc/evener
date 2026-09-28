@@ -183,7 +183,11 @@ func (b *fakeBridge) floodNotifications(n int) error {
 	return nil
 }
 
-const goodLaunchCheck = `{"protocol":"evener-appwire-v6","version":"dev","launch_flags":["api-log"]}`
+// goodLaunchCheck is the launch-check answer a healthy host gives. Its protocol
+// is appwire.ProtocolVersion itself, not a literal, so a protocol bump cannot
+// leave this shared fixture speaking a stale version (which reads as an
+// old-protocol host and refuses every attach that uses it).
+var goodLaunchCheck = `{"protocol":"` + appwire.ProtocolVersion + `","version":"dev","launch_flags":["api-log"]}`
 
 // cannedRun returns a runFn answering the standard preflight commands, with
 // optional substring-keyed overrides consulted first.
@@ -240,15 +244,39 @@ func writeStageBinary(_ context.Context, _, _, out string) error {
 // successive health probes.
 func deployRunner(t *testing.T, launch func(call int) ([]byte, error), health func(call int) ([]byte, error)) *fakeRunner {
 	t.Helper()
+	return deployRunnerFor(t, "linux", "amd64", launch, health)
+}
+
+// deployRunnerFor is deployRunner for a host on an explicit target: its uname
+// answers are the ones preflight's mapOS/mapArch turn back into goos/goarch, so a
+// test can put the host on the very target the controller itself runs on
+// (runtime.GOOS/runtime.GOARCH) instead of the linux/amd64 pair deployRunner
+// hardcodes — the own-executable dispatch compares the host's facts against the
+// controller's own target, so a hardcoded pair makes such a test pass only on
+// the machine that happens to match it. A target preflight itself cannot
+// represent (mapOS and mapArch accept Linux/Darwin and amd64/arm64 only, so no
+// host facts for another target can exist) skips: the test cannot be built here,
+// and running it against facts the controller could never read would test
+// nothing.
+func deployRunnerFor(t *testing.T, goos, goarch string, launch func(call int) ([]byte, error), health func(call int) ([]byte, error)) *fakeRunner {
+	t.Helper()
+	osName, ok := map[string]string{"linux": "Linux", "darwin": "Darwin"}[goos]
+	if !ok {
+		t.Skipf("deployRunnerFor: preflight's mapOS cannot round-trip GOOS %q, so no host facts for it exist and this test cannot run on this platform", goos)
+	}
+	archName, ok := map[string]string{"amd64": "x86_64", "arm64": "aarch64"}[goarch]
+	if !ok {
+		t.Skipf("deployRunnerFor: preflight's mapArch cannot round-trip GOARCH %q, so no host facts for it exist and this test cannot run on this platform", goarch)
+	}
 	launchCalls, healthCalls := 0, 0
 	return &fakeRunner{
 		runFn: func(_ context.Context, argv []string, stdin io.Reader) ([]byte, error) {
 			joined := strings.Join(argv, " ")
 			switch {
 			case strings.HasSuffix(joined, "uname -s"):
-				return []byte("Linux\n"), nil
+				return []byte(osName + "\n"), nil
 			case strings.HasSuffix(joined, "uname -m"):
-				return []byte("x86_64\n"), nil
+				return []byte(archName + "\n"), nil
 			case strings.Contains(joined, "XDG_STATE_HOME"):
 				return []byte("HOME=/home/dev\nXDG_STATE_HOME=\nXDG_CONFIG_HOME=\n"), nil
 			case strings.HasSuffix(joined, "id -u"):
