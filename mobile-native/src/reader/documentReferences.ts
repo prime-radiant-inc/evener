@@ -56,6 +56,28 @@ function visit(tokens: readonly Token[], found: (text: string) => void): void {
 	}
 }
 
+// Every publish hands the screen new turns, so a transcript's settled
+// messages are read again and again. Lexing is the costly part, so the file
+// names each markdown text holds are remembered, for the most recent texts.
+const NAMES_REMEMBERED = 500;
+const namesByMarkdown = new Map<string, readonly string[]>();
+
+function namedFiles(markdown: string): readonly string[] {
+	const known = namesByMarkdown.get(markdown);
+	if (known) return known;
+	const names: string[] = [];
+	visit(lexer(markdown), (text) => {
+		const file = namedFile(text);
+		if (file !== undefined) names.push(file);
+	});
+	namesByMarkdown.set(markdown, names);
+	for (const oldest of namesByMarkdown.keys()) {
+		if (namesByMarkdown.size <= NAMES_REMEMBERED) break;
+		namesByMarkdown.delete(oldest);
+	}
+	return names;
+}
+
 /** The documents one message names, in order, each once: inline code and
  * link targets that name a file inside the session's folder. A name needs a
  * directory ("docs/plan.md") unless the session wrote that file, so a passing
@@ -63,12 +85,11 @@ function visit(tokens: readonly Token[], found: (text: string) => void): void {
  * is code, not a reference. */
 export function messageDocuments(markdown: string, cwd: string, written: ReadonlyMap<string, string>): string[] {
 	const paths: string[] = [];
-	visit(lexer(markdown), (text) => {
-		const file = namedFile(text);
-		const path = file === undefined ? undefined : documentPath(file, cwd);
-		if (path === undefined || paths.includes(path)) return;
-		if (file?.includes("/") || written.has(path)) paths.push(path);
-	});
+	for (const file of namedFiles(markdown)) {
+		const path = documentPath(file, cwd);
+		if (path === undefined || paths.includes(path)) continue;
+		if (file.includes("/") || written.has(path)) paths.push(path);
+	}
 	return paths;
 }
 
