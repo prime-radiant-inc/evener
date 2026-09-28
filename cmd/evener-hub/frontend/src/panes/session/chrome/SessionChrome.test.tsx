@@ -20,7 +20,7 @@ import { installMobileViewport } from "../testing/mobileViewport";
 import "../../sessionPanels";
 import { topNotesStore } from "../../../stores/topNotes";
 import { ActivityPanelBody } from "./ActivityPanel";
-import { SessionChrome as SessionChromeView } from "./SessionChrome";
+import { type SessionChromePlacement, SessionChrome as SessionChromeView } from "./SessionChrome";
 import { TopNotesPanel } from "./TopNotesPanel";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -252,12 +252,48 @@ test("composer placement renders one ordered inline status and actions cluster w
   expect(screen.getAllByRole("button", { name: "Session actions" })).toHaveLength(1);
   expect(screen.queryByTestId("session-chrome")).toBeNull();
   expect(within(cluster).queryByTestId("session-chrome-cadence")).toBeNull();
-  // GoalControl rides the inline status too: production only ever mounts
-  // placement="composer" (Composer.tsx), so leaving it footer-only made it
-  // unreachable in the real app — the live E2E pass caught the regression.
-  // The testid picks the full chip specifically - a role/name query is
-  // ambiguous now that the compact glyph trigger shares its accessible name.
-  expect(within(statusContainer).getByTestId("goal-chip-trigger")).toBeTruthy();
+  // The goal chip is gone from the composer row (Jesse's 2026-09-28 design
+  // ruling: "drop goal inline in the composer"): the fixture's goal is set,
+  // so this asserts the absence is a placement decision, not a fixture gap.
+  // Goal state stays visible and editable through the composer's own
+  // CurrentWork goal row and its inline /goal built-in.
+  expect(screen.queryByTestId("goal-chip-trigger")).toBeNull();
+  expect(screen.queryByTestId("goal-compact-trigger")).toBeNull();
+});
+
+// The composer's narrow layout relocates Stop and Steer into this menu
+// (Jesse's 2026-09-28 ruling on the #1339 phone-width wrap), so the verbs
+// must reach it ONLY through the composer placement: the footer and
+// menu-only mounts share SessionMenu with the rail, where no draft exists
+// for Steer to send.
+test("turn verbs ride the composer placement's menu and no other placement's", async () => {
+  const user = userEvent.setup();
+  const fake = connectFakeClient();
+  fake.on("thread/read", () => readResponse("ref_turn"));
+  await threadsStore.getState().ensureThread("ref_turn");
+  const turnVerbs = {
+    stop: { onSelect: () => {} },
+    steer: { onSelect: () => {} },
+  };
+
+  const expectNoTurnVerbs = async (placement?: SessionChromePlacement) => {
+    render(<SessionChromeView ref="ref_turn" placement={placement} turnVerbs={turnVerbs} />);
+    await user.click(screen.getByRole("button", { name: /session actions/i }));
+    expect(screen.queryByRole("menuitem", { name: "Stop" })).toBeNull();
+    expect(screen.queryByRole("menuitem", { name: "Steer" })).toBeNull();
+    cleanup();
+  };
+
+  render(<SessionChromeView ref="ref_turn" placement="composer" turnVerbs={turnVerbs} />);
+  await user.click(screen.getByRole("button", { name: /session actions/i }));
+  expect(screen.getByRole("menuitem", { name: "Stop" })).toBeTruthy();
+  expect(screen.getByRole("menuitem", { name: "Steer" })).toBeTruthy();
+  cleanup();
+
+  // The default (footer) and menu-only mounts share SessionMenu with the
+  // rail, where no draft exists for Steer to send.
+  await expectNoTurnVerbs();
+  await expectNoTurnVerbs("menu");
 });
 
 test("default placement preserves the standalone session chrome presentation", async () => {

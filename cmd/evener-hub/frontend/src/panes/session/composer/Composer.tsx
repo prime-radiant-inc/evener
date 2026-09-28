@@ -14,6 +14,12 @@
 // that come and go. Keyboard chords live in each control's Tooltip rather than
 // as boxed <kbd> runs inside the buttons.
 //
+// Below the phone-width boundary that cluster no longer fits beside the
+// session-status row, and the row that used to wrap it below (issue #1339's
+// provisional rule) reads badly - so per Jesse's 2026-09-28 design ruling the
+// narrow layout holds Send alone in the row and offers Stop and Steer through
+// the session menu instead (turnVerbs below; narrowComposer.ts owns the gate).
+//
 // T2 (this file): the skill editor, send-vs-steer-vs-queue-vs-drain routing via
 // protocol/sendQueueAvailability's deriveSendQueueAvailability +
 // submitRouting.ts's own steer/drain fork, Enter-to-send preference,
@@ -54,6 +60,7 @@ import {
 } from "react";
 import type { PaletteRunContext, ScopedCommand } from "../../../shell/palette/commands";
 import { sessionBuiltinCommands, visibleCatalogCommands } from "../../../shell/palette/commands";
+import type { SessionMenuTurnVerbs } from "../../../shell/sessionMenu/SessionMenu";
 import { useIsMobile } from "../../../shell/useIsMobile";
 import { useMountAutofocus } from "../../../shell/useMountAutofocus";
 import { workspaceStore } from "../../../shell/workspace";
@@ -100,6 +107,7 @@ import {
   readDraftRevision,
   writeComposerDraft,
 } from "./draft";
+import { useNarrowComposer } from "./narrowComposer";
 import { pendingTurnEntries, QueueStrip, submitWithPendingTracking, usePendingTurnEntries } from "./queue";
 import {
   discardRecoveryPendingTurn,
@@ -191,6 +199,11 @@ type BusyAction = "submit" | "steer" | "interrupt" | "drain" | null;
 // restartRequired/resumeRequired) cannot be acted on at all until the explicit
 // Resume action clears the fence.
 
+// The wide layout's turnVerbs offering: one frozen object, because a fresh
+// {} on every recompute would defeat MemoizedSessionChrome's
+// shallow-equality bailout for a value that carries no information.
+const NO_TURN_VERBS: SessionMenuTurnVerbs = {};
+
 export function Composer({ ref, focused }: ComposerProps) {
   const model = useThreadsStore((s) => s.threads.get(ref));
   const recoveryRequired = useThreadsStore((s) => s.restartBlockingObligations.has(ref));
@@ -275,6 +288,58 @@ export function Composer({ ref, focused }: ComposerProps) {
   // which is what expands it from its one-line resting state. Only read on that
   // path (see the ended card's minLines below); harmless everywhere else.
   const [followUpFocused, setFollowUpFocused] = useState(false);
+
+  // Jesse's 2026-09-28 ruling on the #1339 phone-width verb wrap: below the
+  // phone-width boundary the verb cluster leaves this row for the session
+  // menu instead of wrapping below the status row. narrowComposer.ts says
+  // why the gate reads a ResizeObserver rather than the viewport or CSS.
+  const composerRootRef = useRef<HTMLDivElement>(null);
+  const narrow = useNarrowComposer(composerRootRef);
+
+  // The session menu's turn-verb items press the same handlers the row
+  // buttons press. Those handlers are recreated every render (they close
+  // over per-render press-time state), and this component's SessionChrome
+  // mount is memoized against exactly that (#2490), so the menu's onSelect
+  // closures are identity-stable and read whichever handler is current at
+  // the press through these refs. The sync effect sits ahead of the
+  // null-model guard because hooks cannot go behind a conditional return;
+  // the function declarations it reads are hoisted to this function's top.
+  const interruptClickRef = useRef<() => Promise<void>>(async () => {});
+  const steerClickRef = useRef<() => void>(() => {});
+  useEffect(() => {
+    interruptClickRef.current = handleInterruptClick;
+    steerClickRef.current = handleSteerClick;
+  });
+
+  // The narrow layout's turn-verb offerings. Identity-stable across draft
+  // keystrokes - the deps are the model, the gate, and our own in-flight
+  // request, none of which a keystroke moves - so the memoized chrome sees a
+  // new prop only when the offering actually changed. Presence mirrors the
+  // row buttons' own gate (controlsFor), recomputed here because the row's
+  // own `controls` binding sits behind the null-model guard. Steer's
+  // recovery fence is deliberately NOT a disabled state here: the press
+  // re-reads the fence live and toasts the reason (kata 2f41), which a
+  // disabled menu item cannot explain.
+  const turnVerbs = useMemo<SessionMenuTurnVerbs>(() => {
+    if (!narrow || !model) return NO_TURN_VERBS;
+    const available = controlsFor(model);
+    const items: SessionMenuTurnVerbs = {};
+    if (available.stop) {
+      items.stop = {
+        onSelect: () => {
+          void interruptClickRef.current();
+        },
+        disabled: actionPending,
+      };
+    }
+    if (available.steer) {
+      items.steer = {
+        onSelect: () => steerClickRef.current(),
+        disabled: actionPending,
+      };
+    }
+    return items;
+  }, [narrow, model, actionPending]);
 
   // Inline slash-command completion (slashCompletion.ts's own header
   // comment - ported from Beautiful UI's prompt-bar). slashToken is the
@@ -1486,7 +1551,7 @@ export function Composer({ ref, focused }: ComposerProps) {
   }
 
   return (
-    <div className={CLASS.composer}>
+    <div className={CLASS.composer} ref={composerRootRef}>
       {mutationWriteStalled && (
         <div className={CLASS.storageStatus} role="status" aria-label="Message storage">
           Browser storage has stalled. A message update is still pending; keep this tab open while Evener waits for
@@ -1588,7 +1653,6 @@ export function Composer({ ref, focused }: ComposerProps) {
               <PromptCard
                 data-testid="composer-input-card"
                 hidden={askPending}
-                verbs={1 + (showStop ? 1 : 0) + (showSteer ? 1 : 0)}
                 field={
                   <SkillEditor
                     ref={editorRef}
@@ -1638,6 +1702,7 @@ export function Composer({ ref, focused }: ComposerProps) {
                         placement="composer"
                         onOpenTasks={toggleTasks}
                         discoverActivity
+                        turnVerbs={turnVerbs}
                       />
                     </div>
                   )
@@ -1646,11 +1711,14 @@ export function Composer({ ref, focused }: ComposerProps) {
                   ended && !followUpEngaged ? undefined : (
                     <>
                       {/* Stop leads the cluster, always in the same place: it is
-                        the one control here whose misfire cannot be undone, so
-                        it must never trade positions with Send or Steer as
-                        those come and go. The word, not a glyph - "Stop" is
-                        chrome, and chrome speaks. */}
-                      {showStop && (
+                          the one control here whose misfire cannot be undone, so
+                          it must never trade positions with Send or Steer as
+                          those come and go. The word, not a glyph - "Stop" is
+                          chrome, and chrome speaks. Below the phone-width
+                          boundary the row cannot hold the cluster beside the
+                          status row, so the narrow layout offers it through the
+                          session menu instead (turnVerbs above). */}
+                      {showStop && !narrow && (
                         <Tooltip label="Stop the current turn">
                           <Button
                             variant="dangerQuiet"
@@ -1703,7 +1771,9 @@ export function Composer({ ref, focused }: ComposerProps) {
                           <span className={CLASS.submitLabel}>Send</span>
                         </Button>
                       </Tooltip>
-                      {showSteer && (
+                      {/* Same narrow-layout gate as Stop above: the Steer the
+                          row cannot fit rides in the session menu (turnVerbs). */}
+                      {showSteer && !narrow && (
                         <Tooltip label={steerTooltipLabel({ recoveryFenced: steerRecoveryFenced, enterToSend })}>
                           <Button
                             variant="primary"

@@ -16,6 +16,7 @@
 import { createRoot } from "react-dom/client";
 import { isElementVisible } from "./guardVisibility";
 import "../panes/session";
+import { COMPOSER_PHONE_MAX_WIDTH } from "../panes/session/composer/narrowComposer";
 import { refreshPendingTurnsProjection } from "../panes/session/composer/queue/pendingTurnsStore";
 import Session from "../panes/session/Session";
 import Settings from "../panes/settings/Settings";
@@ -917,9 +918,7 @@ function measureSettings(): SettingsGeometry {
 
 async function inspectDetail(includeAdvanced = true): Promise<DetailGeometry> {
   const pane = document.getElementById("oh-pane");
-  const trigger = Array.from(document.querySelectorAll<HTMLButtonElement>("button")).find((button) =>
-    button.textContent?.includes("Session actions"),
-  );
+  const trigger = findSessionMenuTrigger();
   if (!pane || !trigger) {
     return {
       found: trigger !== undefined,
@@ -1340,6 +1339,15 @@ function twoPaintedFrames(): Promise<void> {
   return new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
 }
 
+// The session menu's trigger, located by the lead words of its accessible
+// name; one finder because three probes read it, so a rename edits one
+// literal. Defaults to the whole document; the verb probe scopes to its pane.
+function findSessionMenuTrigger(root: ParentNode = document): HTMLButtonElement | undefined {
+  return Array.from(root.querySelectorAll<HTMLButtonElement>("button")).find((button) =>
+    button.textContent?.includes("Session actions"),
+  );
+}
+
 async function inspectChatFocus(): Promise<ChatFocusMeasurement> {
   const pane = document.getElementById("oh-pane");
   if (!pane) throw new Error("Chat focus harness pane never mounted");
@@ -1568,17 +1576,24 @@ function measure() {
   const model = pane.querySelector<HTMLElement>('[data-testid="model-switch-value"]');
   const currentWork = pane.querySelector<HTMLElement>('[data-testid="current-work"]');
   const composerCard = pane.querySelector<HTMLElement>('[data-testid="composer-input-card"]');
-  // The fixture is active with the interrupt capability, and with the steer
-  // capability only in steer mode (see CAPABILITIES), so Composer renders
-  // Stop and Send, plus Steer in that mode. These are the actual controls it
-  // must render at every width. The card alone is not a controls check: each
-  // control is measured below. Steer is measured in both modes and expected
-  // only in steer mode, so a Steer drawn for a harness that advertises no
-  // steer fails the guard the same way a missing Stop does.
+  // The composer container its narrow layout keys on: the same walk the
+  // verb cluster's measurement below performs, hoisted here because the
+  // controls' own expectations now depend on it. Below 399px the narrow
+  // layout relocates Stop and Steer into the session menu (Jesse's
+  // 2026-09-28 ruling on the #1339 phone-width wrap), so their buttons are
+  // expected ABSENT from the row there and present above it.
+  let verbContainer = composerCard?.parentElement ?? null;
+  while (verbContainer && !getComputedStyle(verbContainer).containerType.includes("inline-size")) {
+    verbContainer = verbContainer.parentElement;
+  }
+  const composerContainerWidth = verbContainer ? contentBoxWidth(verbContainer) : null;
+  const narrowComposer = composerContainerWidth !== null && composerContainerWidth <= COMPOSER_PHONE_MAX_WIDTH;
   const controlTestIds = ["composer-attach", "composer-stop", "composer-submit", "composer-steer"];
   const composeControls = controlTestIds.map((testId) => ({
     testId,
-    expected: testId !== "composer-steer" || steerMode,
+    expected:
+      (testId !== "composer-steer" || steerMode) &&
+      !(narrowComposer && (testId === "composer-stop" || testId === "composer-steer")),
     element: pane.querySelector<HTMLElement>(`[data-testid="${testId}"]`),
   }));
   const subagentCard = pane.querySelector<HTMLElement>('[data-testid="subagent-row"]');
@@ -1591,9 +1606,7 @@ function measure() {
   const fieldsets = liveEditorElement
     ? Array.from(liveEditorElement.querySelectorAll<HTMLElement>("fieldset")).map(geometryOf)
     : [];
-  const triggerElement = Array.from(document.querySelectorAll<HTMLButtonElement>("button")).find((button) =>
-    button.textContent?.includes("Session actions"),
-  );
+  const triggerElement = findSessionMenuTrigger();
   const triggerBox = triggerElement ? geometryOf(triggerElement) : null;
   const scrollRoots = [pane, ...Array.from(document.querySelectorAll<HTMLElement>('[role="dialog"]'))];
   const scrollContainers = Array.from(new Set(scrollRoots.flatMap((root) => actualScrollContainers(root))));
@@ -1699,30 +1712,31 @@ function measure() {
       controlsDoNotOverlap,
       controls: controls.map(({ box: _box, ...control }) => control),
       // The verb cluster (Stop, Send, Steer) against the status row it shares
-      // the control row with: promptcard.module.css drops a three-verb cluster
-      // below the row at phone width, and the guard asserts that geometry
-      // (wrapped exactly when three verbs meet a phone-width card, inline
-      // otherwise) rather than only that each verb is present and contained.
+      // the control row with: the retired wrap rule used to drop a three-verb
+      // cluster below the row at phone width; the narrow layout now relocates
+      // those verbs into the session menu instead, so the guard asserts the
+      // row NEVER wraps - whatever verbs remain sit beside the status row -
+      // and window.measureMenuVerbs (awaited by the runner's lite pass, not
+      // readable synchronously here) reports what the menu carries.
       verbCluster: (() => {
         const verbs = controls.filter(
           (control) => control.testId !== "composer-attach" && control.present && control.box,
         );
-        // The width the card's @container query resolves against: the content
-        // box of the nearest ancestor with inline-size containment (the
-        // composer root), which the pane's footer padding leaves narrower than
-        // the pane itself.
-        let container = composerCard?.parentElement ?? null;
-        while (container && !getComputedStyle(container).containerType.includes("inline-size")) {
-          container = container.parentElement;
-        }
         return {
           controls: verbs.length,
-          // The verbs this fixture draws while active: Send always, Stop with
-          // the interrupt capability, Steer with the steer capability.
-          expectedVerbs: 1 + (CAPABILITIES.interrupt ? 1 : 0) + (CAPABILITIES.steer ? 1 : 0),
+          // Counted from the compose controls' own expected flags, which
+          // already encode the fixture's rule: Send always, Stop with the
+          // interrupt capability, Steer with the steer capability - each
+          // minus the narrow layout's relocation into the session menu.
+          expectedVerbs: composeControls.filter((control) => control.expected && control.testId !== "composer-attach")
+            .length,
           top: verbs.length > 0 ? Math.min(...verbs.map((control) => (control.box as DOMRect).top)) : null,
           statusRowBottom: statusBox?.bottom ?? null,
-          containerWidth: container ? contentBoxWidth(container) : null,
+          containerWidth: composerContainerWidth,
+          // The page's own narrow gate (narrowComposer.ts), so the runner
+          // asserts the same verdict the layout answered to instead of
+          // re-deriving the boundary in Node.
+          narrowComposer,
         };
       })(),
       sharedPaneWithoutOverflow:
@@ -1873,6 +1887,30 @@ async function verifyItemPaging(): Promise<{
   };
 }
 
+// The narrow layout's relocated verbs, read through the real menu. The popup
+// portals to document.body, so pane-scoped queries cannot see it, and React
+// lands the open on the NEXT animation frame, not in the click's own
+// dispatch: measured live, zero menuitems exist synchronously after the
+// trigger's click() and all of them exist on the first frame after it. So
+// this probe awaits twoPaintedFrames - the file's one settle point - rather
+// than reading in place, opens the menu, and reads Stop/Steer presence. It
+// deliberately leaves the menu open: every measurement navigates a fresh
+// page (run.mjs's measureAt), so toggling it closed again buys nothing.
+async function measureMenuVerbs(): Promise<{ open: boolean; stop: boolean; steer: boolean }> {
+  const pane = document.getElementById("oh-pane");
+  if (!pane) return { open: false, stop: false, steer: false };
+  const trigger = findSessionMenuTrigger(pane);
+  if (!trigger) return { open: false, stop: false, steer: false };
+  trigger.click();
+  await twoPaintedFrames();
+  const items = [...document.querySelectorAll<HTMLElement>('[role="menuitem"]')];
+  return {
+    open: true,
+    stop: items.some((item) => item.textContent === "Stop"),
+    steer: items.some((item) => item.textContent === "Steer"),
+  };
+}
+
 declare global {
   interface Window {
     measure: typeof measure;
@@ -1881,6 +1919,7 @@ declare global {
     inspectChatFocus: typeof inspectChatFocus;
     inspectIntentColumn: typeof inspectIntentColumn;
     inspectHeldSteerColumn: typeof inspectHeldSteerColumn;
+    measureMenuVerbs: typeof measureMenuVerbs;
     settled: Promise<true>;
     verifyItemPaging: typeof verifyItemPaging;
   }
@@ -1891,5 +1930,6 @@ window.inspectDetail = inspectDetail;
 window.inspectChatFocus = inspectChatFocus;
 window.inspectIntentColumn = inspectIntentColumn;
 window.inspectHeldSteerColumn = inspectHeldSteerColumn;
+window.measureMenuVerbs = measureMenuVerbs;
 window.settled = settled;
 window.verifyItemPaging = verifyItemPaging;

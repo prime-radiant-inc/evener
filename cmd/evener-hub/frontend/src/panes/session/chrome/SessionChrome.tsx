@@ -13,7 +13,8 @@
 // width (there are no inline triggers and no narrow-collapse - the status
 // row's container-query variants own compression inside .body instead),
 // followed by Rename, the tree-gated Pin/Archive/Delete organization group,
-// and Shut down. The three
+// and Shut down. The composer placement alone can also lead with the
+// narrow-layout turn verbs (Stop/Steer - SessionMenuProps.turnVerbs). The three
 // panels stay mounted triggerless so their imperative handles still open the
 // mobile Sheets; ActivityPanel's refreshWhenHidden is unconditional because
 // the menu's "Activity · N" label reads the summary that refresh maintains.
@@ -31,7 +32,7 @@ import { useClient } from "../../../shell/clientContext";
 import { closePanesForDeletedSessions } from "../../../shell/deletedSessionPanes";
 import { assignSessionPin, deleteSession, setArchived, unpinSession } from "../../../shell/rail/actions";
 import { navigate, paneToURL } from "../../../shell/routing";
-import { SessionMenu, type SessionMenuProps } from "../../../shell/sessionMenu/SessionMenu";
+import { SessionMenu, type SessionMenuProps, type SessionMenuTurnVerbs } from "../../../shell/sessionMenu/SessionMenu";
 import { useIsMobile } from "../../../shell/useIsMobile";
 import { isPaneOpen, useWorkspaceStore, workspaceStore } from "../../../shell/workspace";
 import { useActivitySummaryStore } from "../../../stores/activitySummary";
@@ -69,6 +70,14 @@ export interface SessionChromeProps {
    * (issue #1335).
    */
   discoveryOnly?: boolean;
+  /**
+   * Turn verbs for the session menu, offered by the composer's narrow
+   * layout (Jesse's 2026-09-28 ruling on the #1339 phone-width wrap). Only
+   * the composer placement forwards them: the footer and menu-only mounts
+   * share SessionMenu with the rail, where no draft exists for Steer to
+   * send. Composer.tsx owns presence, disablement, and the press handlers.
+   */
+  turnVerbs?: SessionMenuTurnVerbs;
 }
 
 const CLASS = {
@@ -90,6 +99,7 @@ export function SessionChrome({
   onOpenTasks,
   discoverActivity = false,
   discoveryOnly = false,
+  turnVerbs,
 }: SessionChromeProps) {
   const client = useClient();
   const model = useThreadsStore((s) => s.threads.get(sessionRef));
@@ -309,10 +319,11 @@ export function SessionChrome({
         {placement === "composer" ? (
           <div className={CLASS.body} data-testid="session-chrome-inline-status">
             <StatusRow sessionRef={sessionRef} model={model} now={now} />
-            {/* Production mounts ONLY this placement (Composer.tsx), so the
-              goal chip must ride here too — footer-only left it unreachable
-              in the real app. */}
-            <GoalControl sessionRef={sessionRef} model={model} />
+            {/* No GoalControl here (Jesse's 2026-09-28 ruling, "drop goal
+                inline in the composer"): the composer row is status and menu
+                alone. Goal state stays visible and editable through the
+                composer's own CurrentWork goal row and its inline /goal
+                built-in, so nothing the chip did is unreachable. */}
           </div>
         ) : placement === "menu" ? null : (
           /* .body owns compression (sessionchrome.module.css says why): its
@@ -344,6 +355,9 @@ export function SessionChrome({
             // the menu's leading pane group.
             activityLabel={activityLabel}
             onOpenVerbosity={() => setVerbosityOpen(true)}
+            // Composer placement only: the header comment on the prop says
+            // why the other placements must never carry turn verbs.
+            turnVerbs={placement === "composer" ? turnVerbs : undefined}
             actions={{
               onOpenPane: (pane) => {
                 if (pane === "details") openDetails();
