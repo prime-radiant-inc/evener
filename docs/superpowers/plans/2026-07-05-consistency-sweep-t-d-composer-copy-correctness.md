@@ -1197,7 +1197,7 @@ _~15 loc._
 - Modify: `agent/events/events.go` (+ `EventTaskUpdated` kind), `agent/events/payloads.go` (+ `TaskUpdatedData`)
 - Modify: `internal/appprojector/appwire_projection.go` (project `EventTaskUpdated` → `NotifyEvenerTaskUpdated`, mirroring the `EventQueueChanged` case at ~588)
 - Modify: `appwire/types.go` (+ `TaskUpdatedParams`), `appwire/protocol.go` (add the `Notifications` catalog entry; drop `NotifyEvenerTaskUpdated` from the "intentionally absent" prose)
-- Modify: `cmd/evener-hub/assets/appwire.js` (`eventsFromNotification`: map `evener/task/updated` → a `TASKS_CHANGED` client event), `cmd/evener-hub/assets/renderer.js` (handle it → refresh the badge)
+- Modify: `cmd/serf-hub/assets/appwire.js` (`eventsFromNotification`: map `evener/task/updated` → a `TASKS_CHANGED` client event), `cmd/evener-hub/assets/renderer.js` (handle it → refresh the badge)
 - Test: `agent/session_tools_task_test.go` (emit), `internal/appprojector/*_test.go` (projection), `cmd/evener-hub/jstest/test-task-updated-subscription.js` (client)
 
 - [ ] **Step 1: Failing test (agent) — updating a task emits EventTaskUpdated**
@@ -1369,7 +1369,7 @@ Expected: PASS (the no-5s-interval assertion still fails until Copy T3 — seque
 
 Run: `cd agent && go test ./ -run 'Task' -count=1 && cd .. && go test ./internal/appprojector/ ./appwire/ ./cmd/evener-hub/ -count=1 && cd cmd/evener-hub/jstest && NODE_PATH=/tmp/evener-jstest-jsdom/node_modules sh run-all.sh`
 Commit (one commit — wire+emit+projector+client together, since the notification threads all hops):
-- `git add agent/events/events.go agent/events/payloads.go agent/session_tools_task.go agent/session_tools_task_test.go internal/appprojector/appwire_projection.go internal/appprojector/appwire_projection_test.go appwire/types.go appwire/protocol.go docs/appwire-protocol.md cmd/evener-hub/assets/appwire.js cmd/evener-hub/assets/renderer.js cmd/evener-hub/jstest/test-task-updated-subscription.js`
+- `git add agent/events/events.go agent/events/payloads.go agent/session_tools_task.go agent/session_tools_task_test.go internal/appprojector/appwire_projection.go internal/appprojector/appwire_projection_test.go appwire/types.go appwire/protocol.go docs/appwire-protocol.md cmd/serf-hub/assets/appwire.js cmd/evener-hub/assets/renderer.js cmd/evener-hub/jstest/test-task-updated-subscription.js`
 - `git commit -m "feat(tasks): emit evener/task/updated on task-status change; subscribe the status row"`
 
 _~90 loc._
