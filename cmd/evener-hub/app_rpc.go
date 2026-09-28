@@ -131,37 +131,42 @@ func localDaemonEntriesFromRoster(live []hubcore.LiveEntry) []appsource.LocalDae
 			Watches:            item.Watches,
 			Capabilities:       item.Capabilities,
 			CapabilitiesKnown:  item.CapabilitiesKnown,
+			Subagents:          item.Subagents,
+			LastTurnEndedAt:    hubcore.UnixMilliseconds(item.LastTurnEndedAt),
+			Tasks:              item.Tasks,
 		}
 		entries = append(entries, entry)
-		// In-process descendants are addressed as their own AppWire
-		// threads, but are served by their owner's daemon endpoint.
+		// In-process descendants are addressed as their own AppWire threads,
+		// served by their owner's daemon endpoint, but each alias is built
+		// from only the fields it owns rather than a copy of the root with
+		// the root-only ones cleared: a pending question, an approval, jobs,
+		// the subagent tally, the turn end and the task list are all the
+		// root's alone (a subagent never asks the user or escalates, and its
+		// own diagnostics carry its own jobs where they belong), so an alias
+		// row never has them to begin with, and a future root-only field
+		// needs no clearing line added here (#2589).
 		for _, childID := range item.RunningSubagentIDs {
-			child := entry
-			child.OwnerSessionID = entry.SessionID
-			child.SessionID = childID
-			// The alias carries the child's OWN watches, sampled by
-			// the prober into ChildWatches. Inheriting the root
-			// entry's Watches would put the root's rows on the
-			// child row (and, for a read-only alias, they were
-			// suppressed anyway), losing the child's own.
-			child.Watches = appwire.CloneEvenerWatches(item.ChildWatches[childID])
-			// The child's own projected status when the daemon carries
-			// it — inheriting the parent's status would render a
-			// settled delegate as working (or vice versa). "" (old
-			// daemon) keeps the inherited status, the pre-states
-			// behavior.
+			status := entry.Status
+			// The child's own projected status when the daemon carries it —
+			// inheriting the parent's status would render a settled delegate
+			// as working (or vice versa). "" (old daemon) keeps the
+			// inherited status, the pre-states behavior.
 			if childState := strings.TrimSpace(item.RunningSubagentStates[childID]); childState != "" {
-				child.Status = childState
+				status = childState
 			}
-			// A pending question or approval is the root's: a subagent
-			// never asks the user or escalates (the agent's escalationAllowed
-			// and ask_user gates are root-only), so the alias drops the copy
-			// it took of the root's, or its row shows the root's question.
-			child.PendingAsk = false
-			child.PendingEscalation = false
-			child.PendingEscalations = nil
-			child.ReadOnlyAlias = true
-			entries = append(entries, child)
+			entries = append(entries, appsource.LocalDaemonEntry{
+				Entry:          entry.Entry,
+				SessionID:      childID,
+				OwnerSessionID: entry.SessionID,
+				Status:         status,
+				// The alias carries the child's OWN watches, sampled by the
+				// prober into ChildWatches: the root's Watches would put the
+				// root's rows on the child row, losing the child's own.
+				Watches:           appwire.CloneEvenerWatches(item.ChildWatches[childID]),
+				Capabilities:      entry.Capabilities,
+				CapabilitiesKnown: entry.CapabilitiesKnown,
+				ReadOnlyAlias:     true,
+			})
 		}
 	}
 	return entries
@@ -317,6 +322,71 @@ func relayOnThreadRead(source appsource.Source) bool {
 	return true
 }
 
+// withReadHistoryIdentity gives response, packed by the hub, the history
+// identity of the read its items came from: what the client merges or
+// replaces by.
+func withReadHistoryIdentity(response, from appwire.ThreadReadResponse) appwire.ThreadReadResponse {
+	response.BootGeneration = from.BootGeneration
+	response.Epoch = from.Epoch
+	response.Snapshot = from.Snapshot
+	response.Overlay = from.Overlay
+	response.Authoritative = from.Authoritative
+	response.Changes = from.Changes
+	return response
+}
+
+// fallbackHistoryIdentity is the identity of a live read whose items the hub
+// filled from the transcript because the source returned none. A daemon that
+// serves the thread's history (it names a boot generation) still streams it,
+// so the response merges under the daemon's generation and epoch rather than
+// replacing as a daemonless read would; the transcript's snapshot stands in
+// when the daemon named none. Otherwise nothing serves the thread's history
+// and the transcript read is daemonless.
+func fallbackHistoryIdentity(live, past appwire.ThreadReadResponse) appwire.ThreadReadResponse {
+	if live.BootGeneration == "" {
+		return past
+	}
+	if live.Snapshot == nil {
+		live.Snapshot = past.Snapshot
+	}
+	return live
+}
+
+// withDroppedWindowItems adds to a source read's changes the window items
+// this hub's packer dropped for size. The source subtracted its own window
+// from its changes, so a changed item it returned in the window that the
+// packer then dropped would otherwise reach the client in neither: the
+// response is authoritative only from its first returned position, and a
+// held copy of the item would stay stale. A read with no changes replaces
+// whole history and needs none.
+func withDroppedWindowItems(source appsource.Source, changes *appwire.HistoryChanges, window transcriptItemCandidateResult, packed appwire.Thread) *appwire.HistoryChanges {
+	if changes == nil {
+		return nil
+	}
+	kept := map[string]bool{}
+	for _, turn := range packed.Turns {
+		for _, item := range turn.Items {
+			kept[item.TranscriptKey] = true
+		}
+	}
+	var dropped []appwire.ThreadItem
+	for _, candidate := range window.Candidates.Candidates {
+		if !kept[candidate.Item.TranscriptKey] {
+			dropped = append(dropped, candidate.Item)
+		}
+	}
+	if len(dropped) == 0 {
+		return changes
+	}
+	// The image passes work on a thread's turns; the dropped items ride in
+	// one carrier turn through them, as the window's own items did.
+	carrier := enrichSourcedThreadImages(source, appwire.Thread{
+		ID: packed.ID, SessionID: packed.SessionID, CWD: packed.CWD,
+		Turns: []appwire.Turn{{Items: dropped}},
+	})
+	return &appwire.HistoryChanges{Turns: changes.Turns, Items: append(append([]appwire.ThreadItem(nil), changes.Items...), carrier.Turns[0].Items...)}
+}
+
 // listItemTurns returns a packed item-mode page when the source has item
 // candidates or when its source page contains data. A legacy source with
 // no data or a ListTurns error is left for the caller's saved-transcript
@@ -380,7 +450,7 @@ func listItemTurns(
 	if packErr != nil {
 		return appwire.ThreadTurnsListResponse{}, true, packErr
 	}
-	return packed, true, nil
+	return candidates.History.StampPage(packed), true, nil
 }
 
 func blockedUnknownMutationError(clientMutationID string, err error) error {
@@ -907,6 +977,17 @@ func hubAuthStateRoot(reg *hubcore.ProviderRegistry) string {
 	return cmdutil.DefaultStateRoot()
 }
 
+// hubLogfFor is where the hub's operational log lines go: cfg.Logf, or
+// stderr with the "[hub] " prefix.
+func hubLogfFor(cfg hubcore.WebConfig) func(format string, args ...any) {
+	if cfg.Logf != nil {
+		return cfg.Logf
+	}
+	return func(format string, args ...any) {
+		fmt.Fprintf(os.Stderr, "[hub] "+format+"\n", args...)
+	}
+}
+
 func newHubAppServer(cfg hubcore.WebConfig, sources *appsource.Registry) *appserver.Server {
 	return newHubAppServerWithNavigation(cfg, sources, nil, nil)
 }
@@ -943,9 +1024,7 @@ func newHubAppServerWithNavigationAndTrace(cfg hubcore.WebConfig, sources *appso
 			return navigation.Capability()
 		}
 	}
-	hubLogf := func(format string, args ...any) {
-		fmt.Fprintf(os.Stderr, "[hub] "+format+"\n", args...)
-	}
+	hubLogf := hubLogfFor(cfg)
 	server := appserver.NewServer(appserver.ServerConfig{
 		ServerName:           "evener-hub",
 		Version:              Version,
@@ -1108,6 +1187,7 @@ func newHubAppServerWithNavigationAndTrace(cfg hubcore.WebConfig, sources *appso
 	registerDaemonHandlers(server, cfg, sources)
 	registerSessionDeleteHandler(server, nil)
 	registerPinSectionHandlers(server, cfg, navigation, resolve)
+	registerSessionSeenHandler(server, cfg, navigation)
 	registerMiscHandlers(server, cfg, sources)
 	// Component 06's Connect action: the browser-reachable explicit attach
 	// trigger. It wraps the Ensure-backed dialing seam and is the only method
@@ -1287,7 +1367,7 @@ func registerThreadHandlers(
 			past, ok, pastErr := pastThreadItemReadResponse(ctx, cfg, params)
 			if pastErr != nil {
 				read.finish(false)
-				return appwire.ThreadReadResponse{}, pastErr
+				return appwire.ThreadReadResponse{}, daemonlessReadError(pastErr)
 			}
 			if ok {
 				pastPage = &past
@@ -1308,6 +1388,7 @@ func registerThreadHandlers(
 			if pastPage != nil {
 				resp.Thread.Turns = pastPage.Thread.Turns
 				resp.OlderCursor = pastPage.OlderCursor
+				resp = withReadHistoryIdentity(resp, fallbackHistoryIdentity(read.response, *pastPage))
 				resp.Thread = enrichSourcedThreadImages(source, resp.Thread)
 				annotateThreadProjects([]appwire.Thread{resp.Thread})
 			} else {
@@ -1333,7 +1414,8 @@ func registerThreadHandlers(
 					read.finish(false)
 					return appwire.ThreadReadResponse{}, packErr
 				}
-				resp = packed
+				resp = withReadHistoryIdentity(packed, read.response)
+				resp.Changes = withDroppedWindowItems(source, resp.Changes, candidates, resp.Thread)
 			}
 		} else {
 			// A live daemon's turns carry sha-addressed tool-result descriptors with
@@ -1346,6 +1428,7 @@ func registerThreadHandlers(
 		// Local forks copy persisted history in the hub. A live daemon's
 		// own unsupported fork flag does not describe this hub-owned action.
 		resp.Thread = applyHubForkCapability(cfg, resp.Thread)
+		resp.RequestGeneration = params.RequestGeneration
 		if err := appwire.ValidateThreadReadItemResponse(resp); err != nil {
 			read.finish(false)
 			return appwire.ThreadReadResponse{}, err
@@ -1442,7 +1525,7 @@ func registerThreadHandlers(
 		}
 		saved, ok, pastErr := pastThreadTurnsList(ctx, cfg, params)
 		if pastErr != nil {
-			return appwire.ThreadTurnsListResponse{}, pastErr
+			return appwire.ThreadTurnsListResponse{}, daemonlessReadError(pastErr)
 		}
 		if ok {
 			return saved, nil
@@ -1462,23 +1545,23 @@ func registerThreadHandlers(
 			if isTargetDeletedError(err) {
 				return appwire.EvenerSubagentPreviewResponse{}, err
 			}
-			thread, ok, pastErr := pastThreadForRead(ctx, cfg, appwire.ThreadReadParams{Ref: ref, IncludeTurns: true, ItemsView: "full"})
+			preview, ok, pastErr := pastSubagentPreview(ctx, cfg, ref, params.Limit)
 			if pastErr != nil {
 				return appwire.EvenerSubagentPreviewResponse{}, pastErr
 			}
 			if ok {
-				return subagentPreviewFromThread(thread, ref, params.Limit), nil
+				return preview, nil
 			}
 			return appwire.EvenerSubagentPreviewResponse{}, err
 		}
 		resp, err := source.ReadThread(ctx, appwire.ThreadReadParams{Ref: ref, IncludeTurns: true, ItemsView: "full"})
 		if err != nil {
-			thread, ok, pastErr := pastThreadForRead(ctx, cfg, appwire.ThreadReadParams{Ref: ref, IncludeTurns: true, ItemsView: "full"})
+			preview, ok, pastErr := pastSubagentPreview(ctx, cfg, ref, params.Limit)
 			if pastErr != nil {
 				return appwire.EvenerSubagentPreviewResponse{}, pastErr
 			}
 			if ok {
-				return subagentPreviewFromThread(thread, ref, params.Limit), nil
+				return preview, nil
 			}
 			return appwire.EvenerSubagentPreviewResponse{}, err
 		}

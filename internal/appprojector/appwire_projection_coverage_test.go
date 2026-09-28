@@ -2,7 +2,6 @@ package appprojector
 
 import (
 	"encoding/json"
-	"strings"
 	"testing"
 
 	"primeradiant.com/evener/appwire"
@@ -165,86 +164,5 @@ func TestMergeAppwireDelegateInfoEmptyCurrent(t *testing.T) {
 	}
 	if merged.DelegateID != "dlg_1" {
 		t.Fatal("should use incoming")
-	}
-}
-
-func TestUseSkillNameFromArgsSkillName(t *testing.T) {
-	got := useSkillNameFromArgs(`{"skill_name":"my-skill"}`)
-	if got != "my-skill" {
-		t.Fatalf("expected 'my-skill', got %q", got)
-	}
-}
-
-func TestUseSkillNameFromArgsName(t *testing.T) {
-	got := useSkillNameFromArgs(`{"name":"other-skill"}`)
-	if got != "other-skill" {
-		t.Fatalf("expected 'other-skill', got %q", got)
-	}
-}
-
-func TestUseSkillNameFromArgsSkillNamePreferred(t *testing.T) {
-	got := useSkillNameFromArgs(`{"skill_name":"preferred","name":"fallback"}`)
-	if got != "preferred" {
-		t.Fatalf("skill_name should take precedence, got %q", got)
-	}
-}
-
-func TestUseSkillNameFromArgsInvalidJSON(t *testing.T) {
-	if useSkillNameFromArgs("not json") != "" {
-		t.Fatal("invalid JSON should return empty string")
-	}
-}
-
-func TestUseSkillNameFromArgsNoSkillName(t *testing.T) {
-	if useSkillNameFromArgs(`{"other":"value"}`) != "" {
-		t.Fatal("missing skill_name should return empty string")
-	}
-}
-
-func TestUseSkillNameFromArgsTrimSpace(t *testing.T) {
-	got := useSkillNameFromArgs(`{"skill_name":"  trimmed  "}`)
-	if got != "trimmed" {
-		t.Fatalf("expected 'trimmed', got %q", got)
-	}
-}
-
-// TestUseSkillNameFromArgsRepairableMalformed (F5 round 6): a repairable-
-// malformed use_skill call carries byte-faithful invalid JSON (bare keys
-// without quotes). The live path repaired the same bytes to dispatch; the
-// consumer must repair too so the skill announcement recovers the name
-// instead of degrading to a plain systemAnnouncement.
-func TestUseSkillNameFromArgsRepairableMalformed(t *testing.T) {
-	// Bare-key malformed JSON — repair.RepairJSON wraps unquoted keys in quotes.
-	got := useSkillNameFromArgs(`{skill_name: "my-skill"}`)
-	if got != "my-skill" {
-		t.Fatalf("repairable-malformed use_skill args should recover skill name, got %q", got)
-	}
-}
-
-// TestUseSkillNameFromArgsUnrepairableMalformed (F5 round 6): when the bytes
-// cannot be repaired (truncated, not just malformed), the consumer stays empty
-// — the repair gate is not a free-for-all, it mirrors what RepairJSON can heal.
-func TestUseSkillNameFromArgsUnrepairableMalformed(t *testing.T) {
-	if useSkillNameFromArgs(`{"skill_name": "incomplete`) != "" {
-		t.Fatal("unrepairable truncated JSON should return empty string")
-	}
-}
-
-func TestSkillActivationRaw(t *testing.T) {
-	raw := skillActivationRaw("test-skill")
-	var payload struct {
-		SkillActivation struct {
-			Name string `json:"name"`
-			Text string `json:"text"`
-		} `json:"skillActivation"`
-	}
-	if err := json.Unmarshal(raw, &payload); err != nil {
-		t.Fatalf("skillActivationRaw should produce valid JSON: %v", err)
-	}
-	if payload.SkillActivation.Name != "test-skill" {
-		t.Fatalf("expected name 'test-skill', got %q", payload.SkillActivation.Name)
-	}
-	if !strings.Contains(payload.SkillActivation.Text, "test-skill") {
-		t.Fatalf("text should contain skill name, got %q", payload.SkillActivation.Text)
 	}
 }

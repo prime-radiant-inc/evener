@@ -5,15 +5,14 @@ import {
   useState,
   useSyncExternalStore,
 } from "react";
+import type { NativeStackScreenProps } from "@react-navigation/native-stack";
 import {
   ActivityIndicator,
-  Modal,
-  Platform,
   Pressable,
+  ScrollView,
   SectionList,
   View,
 } from "react-native";
-import { SafeAreaProvider, SafeAreaView } from "react-native-safe-area-context";
 import type { TaskRow } from "@evener/appwire-client";
 import {
   absoluteTime,
@@ -22,9 +21,13 @@ import {
   groupTasks,
 } from "@evener/appwire-client";
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
+import { isReady } from "./connectionDisplay";
 import { MarkdownResponse } from "./MarkdownResponse";
+import { useRetainedScreenConnection } from "./retainedScreen";
+import type { Routes } from "./screens";
+import { Sheet, useSheet } from "./sheet/Sheet";
 import { tasksReadThroughCurrentClient } from "./tasksRead";
-import { Action, Copy, ErrorMessage, styles, useColors } from "./ui";
+import { Action, Copy, ErrorMessage, useColors } from "./ui";
 
 const statusLabel = {
   open: "Open",
@@ -34,22 +37,54 @@ const statusLabel = {
 };
 const glyph = { open: "○", in_progress: "●", done: "✓", cancelled: "×" };
 
+/** The session's Tasks sheet: a formSheet route over the session it lists
+ * (sheetRoutes.ts). It reads its hub's connection itself, since a sheet
+ * renders beside its screen and takes only plain params. */
 export function TasksSheet({
+  route,
+}: NativeStackScreenProps<Routes, "TasksSheet">) {
+  const { hubId, ref, threadId, hasTasks } = route.params;
+  const { activeProfile, state, renderClient } =
+    useRetainedScreenConnection(hubId);
+  const sheet = useSheet();
+  const hubChanged = activeProfile?.id !== hubId;
+  // The hub changed while the sheet was open: its list belongs to a hub the
+  // connection no longer serves. A fresh mount has no adopted client on its
+  // first render (useRenderClient), so a missing client alone never closes it.
+  useEffect(() => {
+    if (hubChanged) sheet.finish();
+  }, [hubChanged, sheet]);
+  if (hubChanged) return null;
+  return (
+    <Sheet title="Tasks" done={{ onPress: () => sheet.finish() }}>
+      {renderClient ? (
+        <TaskList
+          client={renderClient}
+          sessionRef={ref}
+          threadId={threadId}
+          hasTasks={hasTasks}
+          connected={isReady(state)}
+        />
+      ) : (
+        <ScrollView />
+      )}
+    </Sheet>
+  );
+}
+
+/** The session's task list: the sheet's one scroll view. */
+export function TaskList({
   client,
   sessionRef,
   threadId,
   hasTasks,
   connected,
-  hubName,
-  close,
 }: {
   client: ConversationClientLike;
   sessionRef: string;
   threadId: string;
   hasTasks: boolean;
   connected: boolean;
-  hubName: string;
-  close: () => void;
 }) {
   const colors = useColors();
   const wasConnected = useRef(connected);
@@ -195,98 +230,67 @@ export function TasksSheet({
     );
   }
   return (
-    <Modal
-      animationType="slide"
-      presentationStyle={Platform.OS === "ios" ? "pageSheet" : "fullScreen"}
-      onRequestClose={close}
-    >
-      <SafeAreaProvider>
-        <SafeAreaView
-          style={[styles.fill, { backgroundColor: colors.background }]}
-        >
-          <View
-            style={[
-              styles.row,
-              {
-                paddingHorizontal: 20,
-                paddingVertical: 8,
-                borderBottomWidth: 0.5,
-                borderColor: colors.border,
-              },
-            ]}
-          >
-            <View style={styles.fill}>
-              <Copy>Tasks</Copy>
-              <Copy muted>{hubName}</Copy>
-            </View>
-            <Action onPress={close}>Done</Action>
+    <SectionList
+      sections={sections}
+      keyExtractor={(task) => String(task.id)}
+      stickySectionHeadersEnabled={false}
+      contentContainerStyle={{ paddingHorizontal: 20, paddingBottom: 24 }}
+      extraData={{ expanded, prompts, settled }}
+      renderItem={({ item }) => taskRow(item)}
+      renderSectionHeader={({ section }) =>
+        section.key === "settled" ? (
+          <Action
+            expanded={settled}
+            onPress={() => setSettled(!settled)}
+          >{`${section.title} · ${section.count}`}</Action>
+        ) : (
+          <View style={{ paddingTop: 20, paddingBottom: 4 }}>
+            <Copy muted>{`${section.title} · ${section.count}`}</Copy>
           </View>
-          <SectionList
-            sections={sections}
-            keyExtractor={(task) => String(task.id)}
-            stickySectionHeadersEnabled={false}
-            contentContainerStyle={{ paddingHorizontal: 20, paddingBottom: 24 }}
-            extraData={{ expanded, prompts, settled }}
-            renderItem={({ item }) => taskRow(item)}
-            renderSectionHeader={({ section }) =>
-              section.key === "settled" ? (
-                <Action
-                  expanded={settled}
-                  onPress={() => setSettled(!settled)}
-                >{`${section.title} · ${section.count}`}</Action>
-              ) : (
-                <View style={{ paddingTop: 20, paddingBottom: 4 }}>
-                  <Copy muted>{`${section.title} · ${section.count}`}</Copy>
-                </View>
-              )
-            }
-            ListHeaderComponent={
-              <View style={{ gap: 8, paddingTop: 12 }}>
-                {!connected ? (
-                  <Copy muted>
-                    Disconnected. The last loaded tasks are shown; reconnect to
-                    update them.
-                  </Copy>
-                ) : null}
-                {state.loading ? (
-                  <ActivityIndicator
-                    accessibilityLabel="Loading tasks"
-                    color={colors.accent}
-                  />
-                ) : null}
-                <ErrorMessage message={error} />
-                {error && state.rows ? (
-                  <Copy muted>Showing the last list that loaded.</Copy>
-                ) : null}
-                {error ? (
-                  <Action
-                    disabled={state.loading || !connected}
-                    onPress={refresh}
-                  >
-                    Try again
-                  </Action>
-                ) : null}
-                {state.daemonGone ? (
-                  <Copy muted>
-                    This session’s daemon has exited. Showing the last available
-                    list.
-                  </Copy>
-                ) : null}
-                {state.unsupported ? (
-                  <Copy muted>Tasks are not available for this session.</Copy>
-                ) : null}
-                {!state.loading &&
-                !error &&
-                !state.unsupported &&
-                !state.daemonGone &&
-                state.rows?.length === 0 ? (
-                  <Copy muted>No tasks yet.</Copy>
-                ) : null}
-              </View>
-            }
-          />
-        </SafeAreaView>
-      </SafeAreaProvider>
-    </Modal>
+        )
+      }
+      ListHeaderComponent={
+        <View style={{ gap: 8, paddingTop: 12 }}>
+          {!connected ? (
+            <Copy muted>Disconnected. The last loaded tasks are shown.</Copy>
+          ) : null}
+          {state.loading ? (
+            <ActivityIndicator
+              accessibilityLabel="Loading tasks"
+              color={colors.accent}
+            />
+          ) : null}
+          <ErrorMessage message={error} />
+          {error && state.rows ? (
+            <Copy muted>Showing the last list that loaded.</Copy>
+          ) : null}
+          {error ? (
+            <Action
+              disabled={state.loading || !connected}
+              onPress={refresh}
+            >
+              Try again
+            </Action>
+          ) : null}
+          {state.daemonGone ? (
+            <Copy muted>
+              This session’s daemon has exited. Showing the last available
+              list.
+            </Copy>
+          ) : null}
+          {state.unsupported ? (
+            <Copy muted>Tasks are not available for this session.</Copy>
+          ) : null}
+          {!state.loading &&
+          !error &&
+          !state.unsupported &&
+          !state.daemonGone &&
+          state.rows?.length === 0 ? (
+            <Copy muted>No tasks yet.</Copy>
+          ) : null}
+        </View>
+      }
+      contentInsetAdjustmentBehavior="automatic"
+    />
   );
 }

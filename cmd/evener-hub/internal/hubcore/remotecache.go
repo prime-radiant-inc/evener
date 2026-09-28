@@ -16,6 +16,16 @@ type RemoteSourceSnapshot struct {
 	Threads       []appwire.Thread
 	Complete      bool
 	IncompleteIDs []string
+	// Tombstoned marks a per-source entry the refresh re-applied from a durable
+	// removed-host tombstone (registry spec 08 §15): the source is not
+	// registered, the rows are the removed host's retained last-known-good
+	// rows, and the tree/action logic must force them non-live with
+	// capabilities disabled. The rows keep their metadata for display.
+	Tombstoned bool
+	// RowsTruncated carries the tombstone's truncation indicator: the retained
+	// projection dropped rows at the persistence bound, so consumers must
+	// render the rows as an incomplete set, never as the whole history.
+	RowsTruncated bool
 }
 
 // RemoteThreadSnapshot is one atomically published remote navigation unit.
@@ -276,7 +286,30 @@ func (c *RemoteThreadCache) withoutStaleSources(snapshot RemoteThreadSnapshot, c
 		// still filters.
 		return snapshot
 	}
+	// The tombstone tags the incoming snapshot carries: a tombstone-sourced
+	// entry's rows are owned by the tombstone, not by a registration, until
+	// the name registers again.
+	var tombstoned map[string]struct{}
+	for sourceID, source := range snapshot.Sources {
+		if !source.Tombstoned {
+			continue
+		}
+		if tombstoned == nil {
+			tombstoned = make(map[string]struct{})
+		}
+		tombstoned[sourceID] = struct{}{}
+	}
 	sourceStale := func(sourceID string) bool {
+		if _, isTombstone := tombstoned[sourceID]; isTombstone {
+			// A tombstone-sourced row is owned by the tombstone until the name
+			// registers again: the removal deleted the registration
+			// generation, and a re-add assigns a strictly newer one, whose own
+			// new-generation publication supersedes the tombstone merge. So
+			// "registered now" is exactly the re-add condition, and the rows
+			// drop instead of publishing under the re-added identity.
+			_, registered := c.generations[sourceID]
+			return registered
+		}
 		generation, walked := captured[sourceID]
 		if !walked {
 			// No read-time capture claims the source's rows: the walk read it
@@ -421,6 +454,8 @@ func cloneRemoteThreadSnapshot(snapshot RemoteThreadSnapshot) RemoteThreadSnapsh
 				Threads:       cloneThreads(source.Threads),
 				Complete:      source.Complete,
 				IncompleteIDs: append([]string(nil), source.IncompleteIDs...),
+				Tombstoned:    source.Tombstoned,
+				RowsTruncated: source.RowsTruncated,
 			}
 		}
 	}

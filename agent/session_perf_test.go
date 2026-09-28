@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -511,9 +512,6 @@ func TestCachedSystemPromptComponents_DoesNotDuplicateMCPToolDescriptions(t *tes
 	sess.refreshSystemPromptCache(sess.env)
 	sess.rebuildToolDefsCache()
 
-	if strings.Contains(sess.cachedSystemPrompt, "MCP tools:") {
-		t.Errorf("cached system prompt should not contain MCP tools header, got: %q", sess.cachedSystemPrompt)
-	}
 	if strings.Contains(sess.cachedSystemPrompt, "Test MCP tool") {
 		t.Errorf("cached system prompt should not duplicate MCP tool description, got: %q", sess.cachedSystemPrompt)
 	}
@@ -526,59 +524,6 @@ func TestCachedSystemPromptComponents_DoesNotDuplicateMCPToolDescriptions(t *tes
 	}
 	if !found {
 		t.Fatal("MCP tool description should remain present in provider tool definitions")
-	}
-}
-
-func TestCachedSystemPromptComponents_NonInteractiveGuidance(t *testing.T) {
-	t.Parallel()
-	// NonInteractive guidance should be included in the rendered system prompt.
-	dir := t.TempDir()
-	c := llm.NewClient()
-	f := &fakeAdapter{name: "openai"}
-	c.Register(f)
-
-	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
-		NonInteractive: true,
-	})
-	if err != nil {
-		t.Fatalf("NewSession: %v", err)
-	}
-	defer sess.Close()
-
-	prompt := sess.cachedSystemPrompt
-	if !strings.Contains(prompt, "Non-interactive mode") {
-		t.Error("system prompt should contain non-interactive guidance when NonInteractive is set")
-	}
-}
-
-func TestCachedSystemPromptComponents_AgentSection(t *testing.T) {
-	t.Parallel()
-	// Available subagent types should be rendered into the cached system prompt.
-	dir := t.TempDir()
-	c := llm.NewClient()
-	f := &fakeAdapter{name: "openai"}
-	c.Register(f)
-
-	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
-	if err != nil {
-		t.Fatalf("NewSession: %v", err)
-	}
-	defer sess.Close()
-
-	if !strings.Contains(sess.cachedSystemPrompt, "The following subagent types are available") {
-		t.Errorf("cached system prompt should contain the available-agents section, got: %q", sess.cachedSystemPrompt)
-	}
-	if !strings.Contains(sess.cachedSystemPrompt, "Default tools:") {
-		t.Errorf("cached system prompt should summarize default agent tools, got: %q", sess.cachedSystemPrompt)
-	}
-	if !strings.Contains(sess.cachedSystemPrompt, "Default task list:") {
-		t.Errorf("cached system prompt should summarize default agent task lists, got: %q", sess.cachedSystemPrompt)
-	}
-	if !strings.Contains(sess.cachedSystemPrompt, "Include relevant parent task details in the `delegate` task prompt for this step.") {
-		t.Errorf("cached system prompt should explain parent task slot behavior, got: %q", sess.cachedSystemPrompt)
-	}
-	if strings.Contains(sess.cachedSystemPrompt, "Name: `coordinator`") {
-		t.Errorf("cached system prompt should not advertise top-level-only coordinator as a subagent type, got: %q", sess.cachedSystemPrompt)
 	}
 }
 
@@ -597,15 +542,15 @@ func TestCachedSystemPromptComponents_UsesProviderVisibleToolNames(t *testing.T)
 	}
 	defer sess.Close()
 
-	prompt := sess.cachedSystemPrompt
-	if !strings.Contains(prompt, "`exec_command`") {
-		t.Fatalf("system prompt should list provider-visible exec_command for OpenAI reviewer tools, got: %q", prompt)
+	data := sess.buildPromptData(sess.currentEnv())
+	if !slices.Contains(data.CallableToolNames, "exec_command") {
+		t.Fatalf("CallableToolNames = %q, want the provider-visible exec_command", data.CallableToolNames)
 	}
-	if strings.Contains(prompt, "Provider tools currently unavailable here:\n- `exec_command`") {
-		t.Fatalf("system prompt should not mark exec_command unavailable, got: %q", prompt)
+	if slices.Contains(data.CallableToolNames, "shell") {
+		t.Fatalf("CallableToolNames = %q, must not list the canonical shell", data.CallableToolNames)
 	}
-	if strings.Contains(prompt, "Currently callable tools:\n- `shell`") {
-		t.Fatalf("system prompt should not list canonical shell for OpenAI callable tools, got: %q", prompt)
+	if slices.Contains(data.UnavailableProfileToolNames, "exec_command") {
+		t.Fatalf("UnavailableProfileToolNames = %q, must not mark exec_command unavailable", data.UnavailableProfileToolNames)
 	}
 }
 

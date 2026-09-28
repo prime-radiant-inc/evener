@@ -8,6 +8,7 @@ import (
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-hub/internal/appsource"
 	"primeradiant.com/evener/cmd/evener-hub/internal/daemonprocess"
+	"primeradiant.com/evener/cmd/evener-hub/internal/hostops"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hostreg"
 	"primeradiant.com/evener/cmd/evener-hub/internal/launchconfig"
 	"primeradiant.com/evener/cmd/evener-hub/internal/sshconn"
@@ -80,9 +81,10 @@ type WebConfig struct {
 	NoUserLayer         bool              // EVENER_PROVIDERS_CONFIG is present and empty: no user layer at all (spec §10). A file that fails to load adds to this per call; it is not folded in here.
 	APILogDefault       bool              // hub.toml api_log floor for hub-spawned daemons; applied when no launch layer sets api_log
 
-	Archive     *ArchiveStore    // archive decision store; nil when not configured (tree uses empty decisions)
-	Favorite    *FavoriteStore   // favorite decision store; nil when not configured
-	PinSections *PinSectionStore // named pin-section store; nil when not configured
+	Archive     *ArchiveStore     // archive decision store; nil when not configured (tree uses empty decisions)
+	Favorite    *FavoriteStore    // favorite decision store; nil when not configured
+	PinSections *PinSectionStore  // named pin-section store; nil when not configured
+	SessionSeen *SessionSeenStore // per-session seen-through markers (S4); nil when not configured
 
 	Inputs *InputsVersion // shared inputs-version counter; nil in tests (memo treats as version 0)
 
@@ -116,6 +118,12 @@ type WebConfig struct {
 	// registry spec 08 §6 — so UI-added and UI-edited hosts live in it; empty
 	// disables host persistence (the surface stays memory-only).
 	RemoteHostConfigPath string
+	// RemoteHostOpsStore is the operation store the host-management surface
+	// mirrors each hub.toml commit's per-host boundary record into (registry
+	// spec 08 §7). nil (tests, embedders) disables mirroring; the mirror is a
+	// copy of hub.toml's machine records, never their authority, so a hub
+	// without it still commits and loads hosts.
+	RemoteHostOpsStore *hostops.Store
 	// RemoteHostClient returns an attached, initialized AppWire client for a
 	// remote host, attaching over SSH on first use (component 04). nil
 	// disables remote hosts (tests).
@@ -155,6 +163,62 @@ type WebConfig struct {
 	// currently attached (component 06). Nil leaves every remote host online
 	// (tests).
 	RemoteHostOnline func(host string) bool
+	// RemoteHostPlanFacts refreshes one host's preflight facts for
+	// evener/host/plan (deploy pipeline 08b §6 step 1): the ungated refresh a
+	// plan is built from, on the attached channel. The returned CapturedAt must
+	// be the instant the facts were actually read — the plan's freshness term
+	// and the minted token's deadline both measure from it (§3). An error is the
+	// no-token `refresh-failed` arm, whatever its cause. Nil leaves the hub with
+	// no facts seam: a plan then refuses `refresh-failed` rather than minting
+	// from facts nothing read.
+	RemoteHostPlanFacts func(ctx context.Context, host hostreg.Host) (HostPlanFacts, error)
+	// RemoteHostPlanProbe probes one host's running state for evener/host/plan
+	// (§6 step 2): the gated running read over the attach bridge, given the
+	// client this plan resolved for the host's live channel. An error that
+	// reports the remote predates the deploy pipeline's running handler is the
+	// no-token `handler-absent` arm; any other error is `probe-failed`. Nil
+	// leaves the hub with no probe seam — the honest state until
+	// evener/host/running ships — so a plan refuses `handler-absent`.
+	// epoch is the caller's durable probe epoch, presented on the wire (never a
+	// default, never absent).
+	RemoteHostPlanProbe func(ctx context.Context, host hostreg.Host, client *appwire.Client, epoch appwire.FencingEpoch) (HostRuntimeProbe, error)
+	// HostProbeTimeout bounds one evener/host/running round trip in the plan's
+	// gated probe (deploy pipeline 08b §6 step 2: "deadline-bounded with an
+	// explicit owner-adjustable probe timeout"). Zero takes
+	// DefaultHostProbeTimeout.
+	HostProbeTimeout time.Duration
+	// HostMinFreeSpaceBytes is the owner-set minimum-free-space knob the
+	// serving hub's running-health predicate checks its durable state roots
+	// against (deploy pipeline 08b §10): below it the hub reports unhealthy
+	// without running the write probe. Zero takes DefaultHostMinFreeSpaceBytes.
+	HostMinFreeSpaceBytes int64
+	// The host-record retention knobs (registry spec 08 §6/§11/§15): the
+	// tombstone retention period, the per-tombstone and global tombstone
+	// bounds, and the superseded-receipt, pruned-marker, and keyless-audit
+	// bounds. Each non-positive value takes the hub package's documented
+	// default, so a zero WebConfig (tests, embedders) uses the shipped
+	// defaults.
+	HostTombstoneRetention        time.Duration
+	HostTombstoneMaxRows          int
+	HostTombstoneMaxRowBytes      int64
+	HostTombstoneMaxCount         int
+	HostTombstoneMaxBytes         int64
+	HostSupersededReceiptMaxCount int
+	HostSupersededReceiptTTL      time.Duration
+	HostPrunedReceiptMaxCount     int
+	HostPrunedReceiptTTL          time.Duration
+	HostKeylessAuditMaxCount      int
+	HostKeylessAuditTTL           time.Duration
+	// HubBootID identifies this controller process incarnation for the durable
+	// probe epochs evener/host/plan persists (deploy pipeline 08b §6 step 2,
+	// crash-fencing spec §4). Empty disables probe-epoch persistence, and a plan
+	// refuses `probe-failed` rather than probing without a fencible epoch.
+	HubBootID string
+	// HubProcessStart is when this hub process started, reported as
+	// evener/host/running's processStartTime when non-zero (deploy pipeline 08b
+	// §10: "present exactly when the serving hub knows its own process start
+	// time"). The zero value leaves the field absent.
+	HubProcessStart time.Time
 
 	// PokeAttention nudges the hub's attention watcher to recompute
 	// immediately (e.g. after an archive decision changes tier eligibility)
@@ -163,6 +227,10 @@ type WebConfig struct {
 	PokeAttention func()
 
 	RelayHooks RelayLifecycleHooks // test-only relay lifecycle seams; nil in production
+
+	// Logf receives the hub's operational log lines. Nil writes them to
+	// stderr with the "[hub] " prefix.
+	Logf func(format string, args ...any)
 
 	// Sandbox seams. Each is nil in production (the real implementation runs);
 	// a fuzz/test sandbox sets them so the matching handler runs without

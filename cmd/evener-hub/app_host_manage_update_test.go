@@ -11,6 +11,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -77,7 +78,7 @@ func TestHostManageUpdateRoundTripsEveryMutableField(t *testing.T) {
 		Addr:       "127.0.0.1:9180",
 		Roots:      []string{"/srv/one", "/srv/two"},
 	}
-	resp, err := f.m.Update(context.Background(), appwire.HostUpdateParams{Name: "side", Entry: entry})
+	resp, err := f.m.Update(context.Background(), updateRequest(t, f.m, "side", entry))
 	if err != nil {
 		t.Fatalf("Update: %v", err)
 	}
@@ -134,10 +135,7 @@ func TestHostManageUpdateKeepsTheFileOrder(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("Add(second): %v", err)
 	}
-	if _, err := f.m.Update(context.Background(), appwire.HostUpdateParams{
-		Name:  "side",
-		Entry: appwire.HostEntry{Address: "side2.example"},
-	}); err != nil {
+	if _, err := f.m.Update(context.Background(), updateRequest(t, f.m, "side", appwire.HostEntry{Address: "side2.example"})); err != nil {
 		t.Fatalf("Update: %v", err)
 	}
 	assertHubTOMLHostNames(t, f.configPath, "side", "second")
@@ -152,10 +150,7 @@ func TestHostManageUpdateKeepsTheFileOrder(t *testing.T) {
 // and leave the addressed name stale, with every other test still green.
 func TestHostManageUpdateCannotRename(t *testing.T) {
 	f := newUpdateFixture(t)
-	resp, err := f.m.Update(context.Background(), appwire.HostUpdateParams{
-		Name:  "side",
-		Entry: appwire.HostEntry{Name: "other", Address: "edited.example"},
-	})
+	resp, err := f.m.Update(context.Background(), updateRequest(t, f.m, "side", appwire.HostEntry{Name: "other", Address: "edited.example"}))
 	if err != nil {
 		t.Fatalf("Update: %v", err)
 	}
@@ -211,10 +206,7 @@ func TestHostManageUpdateRefusalsCommitNothing(t *testing.T) {
 	f := newUpdateFixture(t, hostreg.Host{Name: "toml", SSH: "toml.example"})
 	before := readHubTOMLBytes(t, f.configPath)
 
-	_, err := f.m.Update(context.Background(), appwire.HostUpdateParams{
-		Name:  "nope",
-		Entry: appwire.HostEntry{Address: "other.example"},
-	})
+	_, err := f.m.Update(context.Background(), updateRequestFor("nope", 1, "no-such-incarnation", appwire.HostEntry{Address: "other.example"}))
 	if err == nil {
 		t.Fatal("Update of an unknown name committed, want a refusal")
 	}
@@ -226,10 +218,7 @@ func TestHostManageUpdateRefusalsCommitNothing(t *testing.T) {
 	f.m.cfg.mu.Lock()
 	f.m.markMutating("side")
 	f.m.cfg.mu.Unlock()
-	_, err = f.m.Update(context.Background(), appwire.HostUpdateParams{
-		Name:  "side",
-		Entry: appwire.HostEntry{Address: "other.example"},
-	})
+	_, err = f.m.Update(context.Background(), updateRequest(t, f.m, "side", appwire.HostEntry{Address: "other.example"}))
 	if err == nil {
 		t.Fatal("Update of a name with a mutation in flight committed, want a refusal")
 	}
@@ -260,10 +249,7 @@ func TestHostManageUpdateRefusalsCommitNothing(t *testing.T) {
 // Update succeeds on it, with the machine-managed file holding the edit.
 func TestHostManageUpdateEditsAFileDeclaredHost(t *testing.T) {
 	f := newUpdateFixture(t, hostreg.Host{Name: "toml", SSH: "toml.example"})
-	resp, err := f.m.Update(context.Background(), appwire.HostUpdateParams{
-		Name:  "toml",
-		Entry: appwire.HostEntry{Address: "toml2.example", User: "operator"},
-	})
+	resp, err := f.m.Update(context.Background(), updateRequest(t, f.m, "toml", appwire.HostEntry{Address: "toml2.example", User: "operator"}))
 	if err != nil {
 		t.Fatalf("Update of a file-declared host: %v", err)
 	}
@@ -299,7 +285,7 @@ func TestHostManageUpdateValidatesBeforeWriting(t *testing.T) {
 		{Address: "h.example", Roots: []string{"   "}},
 		{Address: "u@h.example", User: "bob"},
 	} {
-		if _, err := f.m.Update(context.Background(), appwire.HostUpdateParams{Name: "side", Entry: entry}); err == nil {
+		if _, err := f.m.Update(context.Background(), updateRequest(t, f.m, "side", entry)); err == nil {
 			t.Errorf("Update(%+v) accepted, want a validation refusal", entry)
 		}
 	}
@@ -310,10 +296,7 @@ func TestHostManageUpdateValidatesBeforeWriting(t *testing.T) {
 		t.Fatalf("live entry after the refusals = %+v, want it untouched", live)
 	}
 	// The refusal names the input, so the dialog can place it (criterion 11).
-	_, err := f.m.Update(context.Background(), appwire.HostUpdateParams{
-		Name:  "side",
-		Entry: appwire.HostEntry{Address: "u@h.example", User: "bob"},
-	})
+	_, err := f.m.Update(context.Background(), updateRequest(t, f.m, "side", appwire.HostEntry{Address: "u@h.example", User: "bob"}))
 	var wire appwire.WireError
 	if !errors.As(err, &wire) {
 		t.Fatalf("refusal = %v, want a WireError", err)
@@ -322,10 +305,7 @@ func TestHostManageUpdateValidatesBeforeWriting(t *testing.T) {
 		t.Fatalf("refusal data = %#v, want the blamed input user", wire.Data)
 	}
 	// A padded input is stored trimmed.
-	if _, err := f.m.Update(context.Background(), appwire.HostUpdateParams{
-		Name:  "side",
-		Entry: appwire.HostEntry{Address: "  side3.example  ", User: "  operator  "},
-	}); err != nil {
+	if _, err := f.m.Update(context.Background(), updateRequest(t, f.m, "side", appwire.HostEntry{Address: "  side3.example  ", User: "  operator  "})); err != nil {
 		t.Fatalf("Update with padded values: %v", err)
 	}
 	live, _ := f.hosts.Get("side")
@@ -374,7 +354,7 @@ func TestHostManageUpdateRefusalPrecedence(t *testing.T) {
 	}
 
 	// Unknown name: not found, not the field refusal.
-	_, err := f.m.Update(context.Background(), appwire.HostUpdateParams{Name: "nope", Entry: invalid})
+	_, err := f.m.Update(context.Background(), updateRequestFor("nope", 1, "no-such-incarnation", invalid))
 	assertTargetRefusal("nope", err, "unknown host")
 
 	// A live host with a mutation in flight: the conflict, not the field
@@ -382,7 +362,7 @@ func TestHostManageUpdateRefusalPrecedence(t *testing.T) {
 	f.m.cfg.mu.Lock()
 	f.m.markMutating("side")
 	f.m.cfg.mu.Unlock()
-	_, err = f.m.Update(context.Background(), appwire.HostUpdateParams{Name: "side", Entry: invalid})
+	_, err = f.m.Update(context.Background(), updateRequest(t, f.m, "side", invalid))
 	assertTargetRefusal("side", err, "a mutation is already in progress")
 	var wire appwire.WireError
 	if !errors.As(err, &wire) || wire.Code != appwire.CodeConflict {
@@ -400,7 +380,7 @@ func TestHostManageUpdateAdvancesTheRegistryGeneration(t *testing.T) {
 	f := newUpdateFixture(t)
 	ctx := context.Background()
 	first, _ := f.hosts.Get("side")
-	if _, err := f.m.Update(ctx, appwire.HostUpdateParams{Name: "side", Entry: appwire.HostEntry{Address: "a2.example"}}); err != nil {
+	if _, err := f.m.Update(ctx, updateRequest(t, f.m, "side", appwire.HostEntry{Address: "a2.example"})); err != nil {
 		t.Fatalf("first Update: %v", err)
 	}
 	second, _ := f.hosts.Get("side")
@@ -410,7 +390,7 @@ func TestHostManageUpdateAdvancesTheRegistryGeneration(t *testing.T) {
 	if f.hosts.SameRegistration("side", first) {
 		t.Fatal("a capture from before the first edit still matches")
 	}
-	if _, err := f.m.Update(ctx, appwire.HostUpdateParams{Name: "side", Entry: appwire.HostEntry{Address: "a3.example"}}); err != nil {
+	if _, err := f.m.Update(ctx, updateRequest(t, f.m, "side", appwire.HostEntry{Address: "a3.example"})); err != nil {
 		t.Fatalf("second Update: %v", err)
 	}
 	third, _ := f.hosts.Get("side")
@@ -438,10 +418,7 @@ func TestHostManageUpdateMintsOneGenerationWithNoManager(t *testing.T) {
 	if !ok {
 		t.Fatal("side not registered before the update")
 	}
-	if _, err := f.m.Update(context.Background(), appwire.HostUpdateParams{
-		Name:  "side",
-		Entry: appwire.HostEntry{Address: "edited.example"},
-	}); err != nil {
+	if _, err := f.m.Update(context.Background(), updateRequest(t, f.m, "side", appwire.HostEntry{Address: "edited.example"})); err != nil {
 		t.Fatalf("Update: %v", err)
 	}
 	after, ok := f.hosts.Get("side")
@@ -483,17 +460,17 @@ func TestHostManageUpdateRollsBackWhenTheLivePhaseFails(t *testing.T) {
 	f.m.cfg.manager = manager
 	before, _ := f.hosts.Get("side")
 
-	if _, err := f.m.Update(context.Background(), appwire.HostUpdateParams{
-		Name:  "side",
-		Entry: appwire.HostEntry{Address: "edited.example"},
-	}); err == nil {
+	if _, err := f.m.Update(context.Background(), updateRequest(t, f.m, "side", appwire.HostEntry{Address: "edited.example"})); err == nil {
 		t.Fatal("Update over a live seam that refuses succeeded, want the failure")
 	}
 
 	// The live registry, the store row, and the file all still describe the old
-	// entry.
+	// entry — identity included: compensation must never re-apply a captured
+	// entry through the registry's minting methods (that would mint a fresh
+	// generation/incarnation here while the restored file kept the old triple).
 	live, ok := f.hosts.Get("side")
-	if !ok || !live.Equal(before) || live.Generation != before.Generation {
+	if !ok || !live.Equal(before) || live.Generation != before.Generation ||
+		live.IncarnationID != before.IncarnationID || live.PresenceEpoch != before.PresenceEpoch {
 		t.Fatalf("live entry after the failed edit = %+v, want %+v", live, before)
 	}
 	stored := f.m.cfg.store.snapshot()
@@ -511,10 +488,7 @@ func TestHostManageUpdateRollsBackWhenTheLivePhaseFails(t *testing.T) {
 	// The retry lands, from a fresh boot over the same config with a live seam
 	// that works: nothing was half-applied.
 	boot := bootHostManager(t, f.configPath)
-	if _, err := boot.Update(context.Background(), appwire.HostUpdateParams{
-		Name:  "side",
-		Entry: appwire.HostEntry{Address: "edited.example"},
-	}); err != nil {
+	if _, err := boot.Update(context.Background(), updateRequest(t, boot, "side", appwire.HostEntry{Address: "edited.example"})); err != nil {
 		t.Fatalf("retry after the rollback: %v", err)
 	}
 	reloaded, err := LoadConfig(f.configPath)
@@ -555,10 +529,7 @@ func TestHostManageUpdateRollsBackWhenTheLiveEntryVanishes(t *testing.T) {
 		t.Fatalf("Ensure before Update: %v", err)
 	}
 
-	_, err := f.m.Update(context.Background(), appwire.HostUpdateParams{
-		Name:  "side",
-		Entry: appwire.HostEntry{Address: "edited.example"},
-	})
+	_, err := f.m.Update(context.Background(), updateRequest(t, f.m, "side", appwire.HostEntry{Address: "edited.example"}))
 	if err == nil {
 		t.Fatal("Update whose live entry vanished succeeded, want the defensive refusal")
 	}
@@ -638,9 +609,6 @@ func TestHostManageUpdateRollsBackAsARemovalWhenTheLiveEntryVanishes(t *testing.
 		t.Fatalf("direct registry removal: %v", err)
 	}
 	pu.release()
-	if err := <-pu.ensureDone; err == nil {
-		t.Fatal("the parked Ensure succeeded; the blocking runner must fail the probe")
-	}
 	done := pu.waitUpdateDone(t)
 	if done.err == nil {
 		t.Fatal("Update whose live entry vanished succeeded, want the un-commit")
@@ -743,10 +711,7 @@ func TestHostManageUpdateVanishedEntryRetiresDerivedState(t *testing.T) {
 		t.Fatalf("Ensure before Update: %v", err)
 	}
 
-	_, err = m.Update(context.Background(), appwire.HostUpdateParams{
-		Name:  "side",
-		Entry: appwire.HostEntry{Address: "edited.example"},
-	})
+	_, err = m.Update(context.Background(), updateRequest(t, m, "side", appwire.HostEntry{Address: "edited.example"}))
 	if err == nil {
 		t.Fatal("Update whose live entry vanished succeeded, want the defensive refusal")
 	}
@@ -793,10 +758,16 @@ type parkedUpdate struct {
 	cache      *hubcore.RemoteThreadCache
 	forgotten  *forgottenSources
 	configPath string
-	runner     *blockingRunner
 	release    func()
-	ensureDone chan error
 	updateDone chan updateOutcome
+	// parked reports the update reached its released window, and returned
+	// reports it left it — the same two moments the old runner flags reported.
+	parked   atomic.Bool
+	returned atomic.Bool
+	// drainOnce guards the one read of updateDone, so the test's own call and
+	// the cleanup's drain can both ask for the outcome safely.
+	drainOnce sync.Once
+	outcome   updateOutcome
 }
 
 // forgottenSources records the names the retention seam was asked to drop. The
@@ -830,8 +801,7 @@ func startParkedUpdate(t *testing.T, name string) *parkedUpdate {
 	if err != nil {
 		t.Fatalf("hostreg.New: %v", err)
 	}
-	runner := &blockingRunner{entered: make(chan struct{}), release: make(chan struct{})}
-	manager := sshconn.New(reg, sshconn.Options{Runner: runner})
+	manager := sshconn.New(reg, sshconn.Options{})
 	t.Cleanup(func() { _ = manager.Close() })
 	sources := appsource.NewRegistry()
 	// The cache and the retention hook are the fixture's own derived-state
@@ -852,46 +822,51 @@ func startParkedUpdate(t *testing.T, name string) *parkedUpdate {
 			t.Fatalf("Add(%s): %v", host.Entry.Name, err)
 		}
 	}
-	// Park an Ensure for the host inside its first probe: it holds the per-host
-	// gate the update's live phase must wait for.
-	var parked sync.WaitGroup
-	parked.Add(2)
-	ensureDone := make(chan error, 1)
+	// Park the update in its released post-commit window with the manager's
+	// test-only seam: the commit lands, the mutation mutex and the gate
+	// reservation are released, and the live phase has not run yet. The seam
+	// replaces the old parked-Ensure technique, which no longer reaches this
+	// window: the guarded update try-acquires the gate before its commit, so a
+	// gate holder refuses it busy instead of parking it.
+	pu := &parkedUpdate{m: m, sources: sources, cache: cache, forgotten: forgotten, configPath: configPath, updateDone: make(chan updateOutcome, 1)}
+	entered := make(chan struct{})
+	releaseCh := make(chan struct{})
+	var releaseOnce sync.Once
+	pu.release = func() { releaseOnce.Do(func() { close(releaseCh) }) }
+	var parkOnce sync.Once
+	m.testOnlyParkPostCommit = func(host string) {
+		if host != name {
+			return
+		}
+		parkOnce.Do(func() { close(entered) })
+		pu.parked.Store(true)
+		<-releaseCh
+		pu.returned.Store(true)
+	}
+	// The guarded request is built on the test goroutine: it reads the live
+	// pair, and a helper call must never run t.Fatalf off this goroutine.
+	generation, incarnation := testMutationIdentity(t, m, name)
+	params := appwire.HostUpdateParams{
+		Name:                  name,
+		Entry:                 appwire.HostEntry{Address: "edited.example"},
+		MutationID:            newTestMutationID(),
+		ExpectedGeneration:    generation,
+		ExpectedIncarnationID: incarnation,
+	}
 	go func() {
-		defer parked.Done()
-		_, err := manager.Ensure(context.Background(), name)
-		ensureDone <- err
-	}()
-	<-runner.entered
-	updateDone := make(chan updateOutcome, 1)
-	go func() {
-		defer parked.Done()
-		resp, err := m.Update(context.Background(), appwire.HostUpdateParams{
-			Name:  name,
-			Entry: appwire.HostEntry{Address: "edited.example"},
-		})
-		updateDone <- updateOutcome{resp: resp, err: err}
+		resp, err := m.Update(context.Background(), params)
+		pu.updateDone <- updateOutcome{resp: resp, err: err}
 	}()
 	// The commit landed once the file holds the edited address: the save runs
-	// under the mutation mutex, ahead of the live phase.
+	// under the mutation mutex, ahead of the live phase; the update then parks
+	// on the seam, so the window stays open until release.
 	waitHubTOMLAddress(t, configPath, name, "edited.example")
-	var releaseOnce sync.Once
-	pu := &parkedUpdate{
-		m:          m,
-		sources:    sources,
-		cache:      cache,
-		forgotten:  forgotten,
-		configPath: configPath,
-		runner:     runner,
-		release:    func() { releaseOnce.Do(func() { close(runner.release) }) },
-		ensureDone: ensureDone,
-		updateDone: updateDone,
-	}
+	<-entered
 	t.Cleanup(func() {
-		// Release the parks, then drain both goroutines before the manager's
-		// Close and the temp dir removal run.
+		// Release the park, then drain the update before the manager's Close
+		// and the temp dir removal run.
 		pu.release()
-		parked.Wait()
+		pu.waitUpdateDone(t)
 	})
 	return pu
 }
@@ -923,13 +898,14 @@ func waitHubTOMLAddress(t *testing.T, configPath, name, want string) {
 // waitUpdateDone collects the parked Update's result once the window closes.
 func (pu *parkedUpdate) waitUpdateDone(t *testing.T) updateOutcome {
 	t.Helper()
-	select {
-	case done := <-pu.updateDone:
-		return done
-	case <-time.After(5 * time.Second):
-		t.Fatal("the update never finished after its live phase was released")
-		return updateOutcome{}
-	}
+	pu.drainOnce.Do(func() {
+		select {
+		case pu.outcome = <-pu.updateDone:
+		case <-time.After(5 * time.Second):
+			t.Fatal("the update never finished after its live phase was released")
+		}
+	})
+	return pu.outcome
 }
 
 // TestHostManageUpdateWindowFencesTheNameAndKeepsConcurrentCommits pins
@@ -946,7 +922,7 @@ func TestHostManageUpdateWindowFencesTheNameAndKeepsConcurrentCommits(t *testing
 	}); err != nil {
 		t.Fatalf("host/list during the update window: %v", err)
 	}
-	if !pu.runner.parked.Load() || pu.runner.returned.Load() {
+	if !pu.parked.Load() || pu.returned.Load() {
 		t.Fatal("the parked live phase finished before host/list served; the test did not hold the window open")
 	}
 
@@ -961,14 +937,11 @@ func TestHostManageUpdateWindowFencesTheNameAndKeepsConcurrentCommits(t *testing
 			return err
 		}},
 		{"host/remove", func() error {
-			_, err := pu.m.Remove(context.Background(), appwire.HostRemoveParams{Name: "side"})
+			_, err := pu.m.Remove(context.Background(), removeRequestFor("side", 1, "mid-window-incarnation"))
 			return err
 		}},
 		{"host/update", func() error {
-			_, err := pu.m.Update(context.Background(), appwire.HostUpdateParams{
-				Name:  "side",
-				Entry: appwire.HostEntry{Address: "second.example"},
-			})
+			_, err := pu.m.Update(context.Background(), updateRequestFor("side", 1, "mid-window-incarnation", appwire.HostEntry{Address: "second.example"}))
 			return err
 		}},
 	} {
@@ -1004,9 +977,6 @@ func TestHostManageUpdateWindowFencesTheNameAndKeepsConcurrentCommits(t *testing
 	// Release: the update completes, the row reports the edited entry, and the
 	// fence lifts with it.
 	pu.release()
-	if err := <-pu.ensureDone; err == nil {
-		t.Fatal("the parked Ensure succeeded; the blocking runner must fail the probe")
-	}
 	done := pu.waitUpdateDone(t)
 	if done.err != nil {
 		t.Fatalf("Update: %v", done.err)
@@ -1014,10 +984,7 @@ func TestHostManageUpdateWindowFencesTheNameAndKeepsConcurrentCommits(t *testing
 	if done.resp.Host.Address != "edited.example" {
 		t.Fatalf("update row = %+v, want the edited entry", done.resp.Host)
 	}
-	if _, err := pu.m.Update(context.Background(), appwire.HostUpdateParams{
-		Name:  "side",
-		Entry: appwire.HostEntry{Address: "after.example"},
-	}); err != nil {
+	if _, err := pu.m.Update(context.Background(), updateRequest(t, pu.m, "side", appwire.HostEntry{Address: "after.example"})); err != nil {
 		t.Fatalf("Update after the window closed: %v", err)
 	}
 }
@@ -1031,9 +998,6 @@ func TestHostManageUpdateWindowFencesTheNameAndKeepsConcurrentCommits(t *testing
 func TestHostManageUpdateLeavesTheRowOffline(t *testing.T) {
 	pu := startParkedUpdate(t, "side")
 	pu.release()
-	if err := <-pu.ensureDone; err == nil {
-		t.Fatal("the parked Ensure succeeded; the blocking runner must fail the probe")
-	}
 	if done := pu.waitUpdateDone(t); done.err != nil {
 		t.Fatalf("Update: %v", done.err)
 	}
@@ -1072,9 +1036,6 @@ func TestHostManageUpdateClearsFactsRecordedWhileWaitingForTheGate(t *testing.T)
 	pu.m.observeEvent(sshconn.Event{Host: "side", Kind: sshconn.EventFailed, Err: errors.New("old attach failed")})
 
 	pu.release()
-	if err := <-pu.ensureDone; err == nil {
-		t.Fatal("the parked Ensure succeeded; the blocking runner must fail the probe")
-	}
 	done := pu.waitUpdateDone(t)
 	if done.err != nil {
 		t.Fatalf("Update: %v", done.err)
@@ -1131,7 +1092,7 @@ func (*attachedUpdateRunner) Run(_ context.Context, argv []string, _ io.Reader) 
 	case strings.HasSuffix(joined, "id -u"):
 		return []byte("1000\n"), nil
 	case strings.Contains(joined, "launch-check"):
-		return []byte(`{"protocol":"evener-appwire-v5","version":"dev","launch_flags":["api-log"]}`), nil
+		return []byte(`{"protocol":"evener-appwire-v6","version":"dev","launch_flags":["api-log"]}`), nil
 	case strings.Contains(joined, "api/health"):
 		return []byte(`{"version":"dev","mobile_api_version":1,"hub_addr":"127.0.0.1:9180"}`), nil
 	default:
@@ -1184,10 +1145,7 @@ func TestHostManageUpdateDropsAnAttachedChannel(t *testing.T) {
 		t.Fatal("ClientIfAttached before Update = false, want a live channel")
 	}
 
-	if _, err := f.m.Update(context.Background(), appwire.HostUpdateParams{
-		Name:  "side",
-		Entry: appwire.HostEntry{Address: "edited.example"},
-	}); err != nil {
+	if _, err := f.m.Update(context.Background(), updateRequest(t, f.m, "side", appwire.HostEntry{Address: "edited.example"})); err != nil {
 		t.Fatalf("Update: %v", err)
 	}
 	if manager.Attached("side") {
@@ -1236,10 +1194,7 @@ func TestHostManageUpdateClearsTheAttachRecord(t *testing.T) {
 		t.Fatalf("row before the edit = %+v, want the retained attach state: in-progress, its error, and its facts", before.Host)
 	}
 
-	if _, err := f.m.Update(context.Background(), appwire.HostUpdateParams{
-		Name:  "side",
-		Entry: appwire.HostEntry{Address: "side2.example"},
-	}); err != nil {
+	if _, err := f.m.Update(context.Background(), updateRequest(t, f.m, "side", appwire.HostEntry{Address: "side2.example"})); err != nil {
 		t.Fatalf("Update: %v", err)
 	}
 
@@ -1352,10 +1307,7 @@ func TestHostManageUpdateReregistersTheSourceOnlyWhenRootsChange(t *testing.T) {
 	}
 
 	// A non-roots edit: the same source, the same generation, nothing forgotten.
-	if _, err := m.Update(context.Background(), appwire.HostUpdateParams{
-		Name:  "side",
-		Entry: appwire.HostEntry{Address: "side2.example", Roots: []string{"/one"}},
-	}); err != nil {
+	if _, err := m.Update(context.Background(), updateRequest(t, m, "side", appwire.HostEntry{Address: "side2.example", Roots: []string{"/one"}})); err != nil {
 		t.Fatalf("non-roots Update: %v", err)
 	}
 	if kept, ok := sources.Source("side"); !ok || kept != firstSource {
@@ -1371,10 +1323,7 @@ func TestHostManageUpdateReregistersTheSourceOnlyWhenRootsChange(t *testing.T) {
 	// A roots edit: a fresh registration, the old identities and retention
 	// dropped first, and the generation the re-registration minted still in place
 	// afterwards.
-	if _, err := m.Update(context.Background(), appwire.HostUpdateParams{
-		Name:  "side",
-		Entry: appwire.HostEntry{Address: "side2.example", Roots: []string{"/two"}},
-	}); err != nil {
+	if _, err := m.Update(context.Background(), updateRequest(t, m, "side", appwire.HostEntry{Address: "side2.example", Roots: []string{"/two"}})); err != nil {
 		t.Fatalf("roots Update: %v", err)
 	}
 	secondSource, ok := sources.Source("side")
@@ -1462,12 +1411,10 @@ func TestHostManageRootsEditCannotResurrectOldRetention(t *testing.T) {
 				<-releaseFinish
 			}
 
+			updateParams := updateRequest(t, m, "side", appwire.HostEntry{Address: "side.example", Roots: []string{"/new-root"}})
 			updateDone := make(chan error, 1)
 			go func() {
-				_, err := m.Update(context.Background(), appwire.HostUpdateParams{
-					Name:  "side",
-					Entry: appwire.HostEntry{Address: "side.example", Roots: []string{"/new-root"}},
-				})
+				_, err := m.Update(context.Background(), updateParams)
 				updateDone <- err
 			}()
 			<-forgotten
@@ -1630,12 +1577,10 @@ func TestHostManageUpdateRetiresTheAttachRecordInsideTheSwapHold(t *testing.T) {
 		t.Fatal("host is offline before Update; the test did not establish the channel")
 	}
 
+	updateParams := updateRequest(t, m, "side", appwire.HostEntry{Address: "edited.example"})
 	updateDone := make(chan updateOutcome, 1)
 	go func() {
-		resp, err := m.Update(context.Background(), appwire.HostUpdateParams{
-			Name:  "side",
-			Entry: appwire.HostEntry{Address: "edited.example"},
-		})
+		resp, err := m.Update(context.Background(), updateParams)
 		updateDone <- updateOutcome{resp: resp, err: err}
 	}()
 
@@ -1748,12 +1693,10 @@ func TestHostManageUpdateStaleRowCannotResurrectRetiredState(t *testing.T) {
 		t.Fatalf("Ensure before Update: %v", err)
 	}
 
+	updateParams := updateRequest(t, m, "side", appwire.HostEntry{Address: "edited.example"})
 	updateDone := make(chan updateOutcome, 1)
 	go func() {
-		resp, err := m.Update(context.Background(), appwire.HostUpdateParams{
-			Name:  "side",
-			Entry: appwire.HostEntry{Address: "edited.example"},
-		})
+		resp, err := m.Update(context.Background(), updateParams)
 		updateDone <- updateOutcome{resp: resp, err: err}
 	}()
 	// The update has swapped the entry and run its retire hook, then released the
@@ -1869,7 +1812,7 @@ func TestHostManageRemoveCarriesTheEffectiveEntryFields(t *testing.T) {
 	if !ok {
 		t.Fatal("rem not registered after Add")
 	}
-	resp, err := f.m.Remove(context.Background(), appwire.HostRemoveParams{Name: "rem"})
+	resp, err := f.m.Remove(context.Background(), removeRequest(t, f.m, "rem"))
 	if err != nil {
 		t.Fatalf("Remove: %v", err)
 	}

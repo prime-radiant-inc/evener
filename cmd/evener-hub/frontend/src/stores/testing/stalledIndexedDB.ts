@@ -1,3 +1,4 @@
+import { IDBDatabase } from "fake-indexeddb";
 import { vi } from "vitest";
 
 // Hold browser callbacks while fake-indexeddb performs the real transaction.
@@ -43,6 +44,43 @@ export function holdIndexedDBEvent(target: EventTarget, type: string) {
       released = true;
       spy.mockRestore();
       for (const deliver of held.splice(0)) deliver();
+    },
+  };
+}
+
+// Holds the next readwrite transaction opened over exactly `stores`:
+// fake-indexeddb commits it, but its "complete" event, and with it the
+// storage call that is waiting on that event, stays held until release().
+// `reached` resolves once the held event has arrived, which is when the
+// write is durably done yet still in flight for everything awaiting it.
+export function holdNextWriteTransaction(stores: readonly string[]) {
+  const transact = IDBDatabase.prototype.transaction;
+  let hold: ReturnType<typeof holdIndexedDBEvent> | undefined;
+  let markReached: (() => void) | undefined;
+  const reached = new Promise<void>((resolve) => {
+    markReached = resolve;
+  });
+  const spy = vi.spyOn(IDBDatabase.prototype, "transaction").mockImplementation(function (
+    this: IDBDatabase,
+    ...args: Parameters<IDBDatabase["transaction"]>
+  ) {
+    const transaction = transact.apply(this, args);
+    if (
+      !hold &&
+      transaction.mode === "readwrite" &&
+      transaction.objectStoreNames.length === stores.length &&
+      stores.every((store) => transaction.objectStoreNames.contains(store))
+    ) {
+      hold = holdIndexedDBEvent(transaction, "complete");
+      void hold.reached.then(() => markReached?.());
+    }
+    return transaction;
+  });
+  return {
+    reached,
+    release() {
+      spy.mockRestore();
+      hold?.release();
     },
   };
 }

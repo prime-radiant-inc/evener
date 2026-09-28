@@ -94,6 +94,21 @@ type LocalDaemonEntry struct {
 	// and the fallback takes over.
 	Capabilities      appwire.ThreadCapabilities
 	CapabilitiesKnown bool
+	// Subagents mirrors hubcore.LiveEntry.Subagents: the root's whole-tree
+	// subagent tally (S3). threadFromEntry carries it into
+	// appwire.EvenerThread.Subagents when the tree has a subagent. A read-only
+	// alias has none.
+	Subagents appwire.SubagentTally
+	// LastTurnEndedAt mirrors hubcore.LiveEntry.LastTurnEndedAt in Unix
+	// milliseconds: when the root's last turn ended (S4). threadFromEntry
+	// carries it into appwire.EvenerThread.LastTurnEndedAt so a controller
+	// reading this hub can tell Finished from Idle. A read-only alias has none.
+	LastTurnEndedAt int64
+	// Tasks mirrors hubcore.LiveEntry.Tasks: the root's task-list progress
+	// (S13b). threadFromEntry carries a copy into appwire.EvenerThread.Tasks,
+	// so a controller hub shows a remote session's task line. nil means the
+	// daemon cannot read its task state; a read-only alias has none.
+	Tasks *appwire.TaskAggregate
 }
 
 func NewLocalDaemonSource(sourceID string, entries func() []rendezvous.Entry, client *http.Client) *LocalDaemonSource {
@@ -1146,8 +1161,13 @@ func (s *LocalDaemonSource) threadFromEntry(item LocalDaemonEntry) appwire.Threa
 			Capabilities:       listRowCapabilities(item, status),
 			AskPending:         item.PendingAsk,
 			PendingEscalations: append([]appwire.SandboxEscalationRequested(nil), item.PendingEscalations...),
+			LastTurnEndedAt:    item.LastTurnEndedAt,
+			Tasks:              appwire.CloneTaskAggregate(item.Tasks),
 		},
 		Status: appwire.ThreadStatus{Type: status},
+	}
+	if tally := item.Subagents; tally != (appwire.SubagentTally{}) {
+		thread.Evener.Subagents = &tally
 	}
 	if status == appwire.ThreadStatusRestartRequired {
 		// A restart-required session cannot act, but its saved notes are still

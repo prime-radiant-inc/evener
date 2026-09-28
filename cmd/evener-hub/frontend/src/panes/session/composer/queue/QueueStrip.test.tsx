@@ -22,6 +22,7 @@ import { MutationOutboxIndexedDB } from "../../../../stores/mutationOutboxIndexe
 import { resetThreadsStoreForTests, setMutationStorageForTests, threadsStore } from "../../../../stores/threads";
 import { Toast } from "../../../../widgets";
 import { getToasts, resetToastStoreForTests } from "../../../../widgets/toast/store";
+import { hoverForTooltip } from "../../../../widgets/tooltip/tooltipTestUtils";
 import { PendingChips } from "../../pending/PendingChips";
 import {
   pendingTurnEntries,
@@ -587,9 +588,8 @@ describe("durable recovery rows", () => {
 
     await user.click(retry);
     const storage = new MutationOutboxIndexedDB();
-    await waitFor(async () => {
-      expect((await storage.listOutbox("ref_a"))[0]?.state).toBe("submitting");
-    });
+    await flushPendingTurnsProjectionForTests();
+    expect((await storage.listOutbox("ref_a"))[0]?.state).toBe("submitting");
     storage.close();
   });
 
@@ -868,9 +868,8 @@ describe("canceled rows", () => {
     if (!row) throw new Error("missing canceled row");
     await user.click(within(row).getByRole("button", { name: "Retry" }));
     const storage = new MutationOutboxIndexedDB();
-    await waitFor(async () => {
-      expect((await storage.listOutbox("ref_a"))[0]?.state).toBe("submitting");
-    });
+    await flushPendingTurnsProjectionForTests();
+    expect((await storage.listOutbox("ref_a"))[0]?.state).toBe("submitting");
     storage.close();
   });
 
@@ -1290,10 +1289,9 @@ describe("promote", () => {
       fireEvent.click(within(row).getByRole("button", { name: /steer now/i }));
     });
 
-    await waitFor(() => {
-      const call = fake.calls.find((c) => c.method === "turn/promoteQueuedAsSteer");
-      expect(call?.params).toMatchObject({ ref: "ref_a", index: 0, expectedEntryId: "q1" });
-    });
+    await flushPendingTurnsProjectionForTests();
+    const call = fake.calls.find((c) => c.method === "turn/promoteQueuedAsSteer");
+    expect(call?.params).toMatchObject({ ref: "ref_a", index: 0, expectedEntryId: "q1" });
   });
 
   test("promote passes the row's text (or the row's stripped preview) into the optimistic display", async () => {
@@ -1338,9 +1336,8 @@ describe("promote", () => {
     // Every press must have committed its durable enqueue before the
     // projection read: a wire call only happens after its enqueue, so this
     // wait - not a timer - is what makes the read below race-free.
-    await waitFor(() => {
-      expect(fake.calls.filter((c) => c.method === "turn/promoteQueuedAsSteer")).toHaveLength(3);
-    });
+    await flushPendingTurnsProjectionForTests();
+    expect(fake.calls.filter((c) => c.method === "turn/promoteQueuedAsSteer")).toHaveLength(3);
     // Each press unlocks its row once its handler has finished.
     await waitFor(() => {
       for (const row of rows) expect(isDisabled(within(row).getByRole("button", { name: /steer now/i }))).toBe(false);
@@ -1524,10 +1521,9 @@ describe("cancel", () => {
       fireEvent.click(within(row).getByRole("button", { name: /remove from queue/i }));
     });
 
-    await waitFor(() => {
-      const call = fake.calls.find((c) => c.method === "turn/cancelQueued");
-      expect(call?.params).toMatchObject({ ref: "ref_a", index: 0, expectedEntryId: "q1" });
-    });
+    await flushPendingTurnsProjectionForTests();
+    const call = fake.calls.find((c) => c.method === "turn/cancelQueued");
+    expect(call?.params).toMatchObject({ ref: "ref_a", index: 0, expectedEntryId: "q1" });
   });
 });
 
@@ -1600,9 +1596,8 @@ describe("edit", () => {
     });
 
     expect(onRestoreToComposer).toHaveBeenCalledWith("queued text", undefined, ["probe"]);
-    await waitFor(() => {
-      expect(fake.calls.some((call) => call.method === "turn/cancelQueued")).toBe(true);
-    });
+    await flushPendingTurnsProjectionForTests();
+    expect(fake.calls.some((call) => call.method === "turn/cancelQueued")).toBe(true);
   });
 
   test("a skill-only queued entry (blank text) stays editable so its chips can be restored", async () => {
@@ -1766,10 +1761,9 @@ describe("re-rendering after the queue shifts", () => {
       fireEvent.click(within(row).getByRole("button", { name: /steer now/i }));
     });
 
-    await waitFor(() => {
-      const call = fake.calls.find((c) => c.method === "turn/promoteQueuedAsSteer");
-      expect(call?.params).toMatchObject({ ref: "ref_a", index: 0, expectedEntryId: "q2" });
-    });
+    await flushPendingTurnsProjectionForTests();
+    const call = fake.calls.find((c) => c.method === "turn/promoteQueuedAsSteer");
+    expect(call?.params).toMatchObject({ ref: "ref_a", index: 0, expectedEntryId: "q2" });
   });
 
   test("after the daemon confirms the head entry is consumed, the surviving row cancels with its NEW index", async () => {
@@ -1820,10 +1814,9 @@ describe("re-rendering after the queue shifts", () => {
       fireEvent.click(within(row).getByRole("button", { name: /remove from queue/i }));
     });
 
-    await waitFor(() => {
-      const call = fake.calls.find((c) => c.method === "turn/cancelQueued");
-      expect(call?.params).toMatchObject({ ref: "ref_a", index: 0, expectedEntryId: "q2" });
-    });
+    await flushPendingTurnsProjectionForTests();
+    const call = fake.calls.find((c) => c.method === "turn/cancelQueued");
+    expect(call?.params).toMatchObject({ ref: "ref_a", index: 0, expectedEntryId: "q2" });
   });
 });
 
@@ -2014,9 +2007,11 @@ describe("drain-as-steer affordance", () => {
     await act(async () => {
       fireEvent.click(steerNow);
     });
-    await waitFor(() => {
-      const call = fake.calls.find((c) => c.method === "turn/promoteQueuedAsSteer");
-      expect(call?.params).toMatchObject({ ref: "ref_a", index: 0, expectedEntryId: "q1" });
+    await flushPendingTurnsProjectionForTests();
+    expect(fake.calls.find((c) => c.method === "turn/promoteQueuedAsSteer")?.params).toMatchObject({
+      ref: "ref_a",
+      index: 0,
+      expectedEntryId: "q1",
     });
 
     const drainButton = screen.getByRole("button", { name: "Steer queue now" });
@@ -2024,10 +2019,7 @@ describe("drain-as-steer affordance", () => {
       fireEvent.click(drainButton);
       await flushPendingTurnsProjectionForTests();
     });
-    await waitFor(() => {
-      const call = fake.calls.find((c) => c.method === "turn/drainAsSteer");
-      expect(call?.params).toMatchObject({ ref: "ref_a" });
-    });
+    expect(fake.calls.find((c) => c.method === "turn/drainAsSteer")?.params).toMatchObject({ ref: "ref_a" });
   });
 
   // When the status is what blocks a drain (awaiting with a queue is the ask
@@ -2050,8 +2042,7 @@ describe("drain-as-steer affordance", () => {
     expect(isDisabled(steerNow)).toBe(true);
     const wrapper = steerNow.parentElement;
     if (!wrapper) throw new Error("Steer now has no tooltip wrapper");
-    fireEvent.mouseEnter(wrapper);
-    expect((await screen.findByRole("tooltip")).textContent).toBe(NO_ACTIVE_TURN);
+    expect(hoverForTooltip(wrapper).textContent).toBe(NO_ACTIVE_TURN);
     expect(screen.queryByRole("button", { name: "Steer queue now" })).toBeNull();
   });
 
@@ -2080,15 +2071,13 @@ describe("drain-as-steer affordance", () => {
     const drainButton = await screen.findByRole("button", { name: "Steer queue now" });
     await act(async () => {
       fireEvent.click(drainButton);
-      // The lookup stays outside the act scope (a waitFor inside it warns), and
-      // the projection flush inside it is main's own warning fix.
+      // Settling the drain's work inside the act keeps its re-renders inside
+      // it, and the drain's request has gone out by the time the flush returns.
       await flushPendingTurnsProjectionForTests();
     });
 
-    await waitFor(() => {
-      const call = fake.calls.find((c) => c.method === "turn/drainAsSteer");
-      expect(call?.params).toMatchObject({ ref: "ref_a", input: [{ type: "text", text: "my current draft" }] });
-    });
+    const call = fake.calls.find((c) => c.method === "turn/drainAsSteer");
+    expect(call?.params).toMatchObject({ ref: "ref_a", input: [{ type: "text", text: "my current draft" }] });
     expect(onDrainSuccess).toHaveBeenCalledTimes(1);
   });
 

@@ -112,7 +112,9 @@ func runRegisteredCoverageSuite(t *testing.T) {
 
 type coverageCoordinator struct{ handle *coverageHandle }
 
-func (c coverageCoordinator) Register(string, string, string) PendingHandle { return c.handle }
+func (c coverageCoordinator) Register(string, string, string, string) PendingHandle {
+	return c.handle
+}
 
 type coverageHandle struct{ failed bool }
 

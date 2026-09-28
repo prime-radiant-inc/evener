@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/jobstore"
 	"primeradiant.com/evener/identifier"
 )
@@ -29,9 +30,80 @@ var openLocalJobProjectDirectory = func(path string) (localJobProjectDirectory, 
 	return os.Open(path)
 }
 
-var readLocalJobOutputSnapshot = jobstore.ReadOutputSnapshot
+var lstatJobOutputFile = os.Lstat
 
-var readLocalJobOutputWindowSnapshot = jobstore.ReadOutputWindowSnapshot
+func jobOutputOpenRoot(path string) string {
+	for candidate := filepath.Dir(filepath.Clean(path)); ; candidate = filepath.Dir(candidate) {
+		if stateHome := stateHomeFor(candidate); stateHome != "" {
+			return filepath.Join(stateHome, "evener")
+		}
+		parent := filepath.Dir(candidate)
+		if parent == candidate {
+			return ""
+		}
+	}
+}
+
+var openJobOutputFile = func(path string) (*os.File, error) {
+	before, err := lstatJobOutputFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("stat job output before open: %w", err)
+	}
+	if !before.Mode().IsRegular() {
+		return nil, fmt.Errorf("job output %q is not a regular file", path)
+	}
+	var f *os.File
+	if root := jobOutputOpenRoot(path); root != "" {
+		f, err = execenv.OpenRegularBeneathRoot(path, root)
+	} else {
+		f, err = execenv.OpenRegularNoFollow(path)
+	}
+	if err != nil {
+		return nil, err
+	}
+	after, err := f.Stat()
+	if err != nil {
+		_ = f.Close()
+		return nil, fmt.Errorf("stat opened job output: %w", err)
+	}
+	if !os.SameFile(before, after) {
+		_ = f.Close()
+		return nil, fmt.Errorf("job output %q changed between validation and open", path)
+	}
+	return f, nil
+}
+
+var readLocalJobOutputSnapshot = func(path string, maxBytes int, fromHead bool) (jobstore.OutputSnapshot, error) {
+	for attempt := range 2 {
+		f, err := openJobOutputFile(path)
+		if err != nil {
+			return jobstore.OutputSnapshot{}, err
+		}
+		snapshot, readErr := jobstore.ReadOutputSnapshotFromFile(path, f, maxBytes, fromHead)
+		_ = f.Close()
+		if errors.Is(readErr, jobstore.ErrOutputChangedDuringRead) && attempt == 0 {
+			continue
+		}
+		return snapshot, readErr
+	}
+	panic("unreachable")
+}
+
+var readLocalJobOutputWindowSnapshot = func(path string, offset int64, maxBytes int) (jobstore.OutputWindowSnapshot, error) {
+	for attempt := range 2 {
+		f, err := openJobOutputFile(path)
+		if err != nil {
+			return jobstore.OutputWindowSnapshot{}, err
+		}
+		snapshot, readErr := jobstore.ReadOutputWindowSnapshotFromFile(path, f, offset, maxBytes)
+		_ = f.Close()
+		if errors.Is(readErr, jobstore.ErrOutputChangedDuringRead) && attempt == 0 {
+			continue
+		}
+		return snapshot, readErr
+	}
+	panic("unreachable")
+}
 
 func locateLocalJob(currentStateDir, jobID string) (localJobLocation, error) {
 	ownerSessionID, err := identifier.JobOwnerSessionID(jobID)
@@ -254,17 +326,17 @@ func locateLocalJobRetainedTarget(currentStateDir, jobID string) (localJobRetain
 	if !outInfo.Mode().IsRegular() {
 		return localJobRetainedTarget{}, fmt.Errorf("read local job %q: output is not a regular file", jobID)
 	}
-	// jobstore.ReadOutputSnapshot / ReadOutputWindowSnapshot open the output
-	// file by path internally (afero.NewOsFs), so there is a residual TOCTOU
-	// window between the Lstat above and the internal open: a symlink or
-	// non-regular entry swapped in between would be followed. Changing
-	// jobstore's API to accept an fd is disproportionate — it touches the
-	// internal package and every caller, the same reasoning the round-10
-	// journal hybrid declined (lines 174-183 above). The window is narrow:
-	// symlinkErrorDeep pre-checks every component, the Lstat rejects
-	// non-regular entries, and the output path is a per-job file under
-	// sessions/<id>/jobs/, not a shared directory. The residual risk is an
-	// in-window swap from regular to non-regular, not a missing check.
+	// Downstream output reads narrow the leaf window with their own
+	// Lstat→anchored descriptor walk→SameFile check, then pass that descriptor
+	// to jobstore. The descriptor walk pins each component beneath
+	// stateHome/evener, so an intermediate directory replaced by a symlink after
+	// this locator's pre-walk is refused at open time. The frozen path-only read
+	// seams cannot carry outInfo to that wrapper, so a regular-to-regular leaf
+	// replacement, or a fully consistent directory-tree rename, after this
+	// locator Lstat but before the wrapper Lstat is accepted as the wrapper's
+	// baseline. That residual is explicit and accepted because changing those
+	// seam signatures would break the fixed injection boundary; replacements
+	// during the wrapper's own Lstat/open interval are refused.
 	return localJobRetainedTarget{
 		JobID:      jobID,
 		Record:     location.Record,
@@ -360,7 +432,7 @@ func readLocalJobSnapshot(currentStateDir, jobID string, readBytes int) (localJo
 	if err != nil {
 		return localJobSnapshot{}, err
 	}
-	snapshot, err := jobstore.ReadOutputSnapshot(target.OutputPath, readBytes, false)
+	snapshot, err := readLocalJobOutputSnapshot(target.OutputPath, readBytes, false)
 	if errors.Is(err, jobstore.ErrOutputChangedDuringRead) {
 		return localJobSnapshot{}, localJobRetainedChangedError(jobID)
 	}

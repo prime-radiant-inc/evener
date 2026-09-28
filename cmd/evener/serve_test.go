@@ -26,7 +26,6 @@ import (
 	"primeradiant.com/evener/agent/sandbox"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/skill"
-	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmdutil"
 	"primeradiant.com/evener/envvars"
@@ -497,7 +496,7 @@ func TestServe_WritesAndRemovesRendezvousFile(t *testing.T) {
 	}
 }
 
-func TestRunServeNonInteractiveFlagControlsPromptAddendum(t *testing.T) {
+func TestRunServeNonInteractiveFlagReachesTheSession(t *testing.T) {
 	oldLoadClient := serveLoadClient
 	serveLoadClient = func(string) (*llm.Client, error) {
 		client := llm.NewClient()
@@ -549,20 +548,12 @@ func TestRunServeNonInteractiveFlagControlsPromptAddendum(t *testing.T) {
 				t.Fatal("runServe did not exit after thread/shutdown")
 			}
 
-			path := filepath.Join(stateDir, "sessions", entry.SessionID+".transcript.jsonl")
-			f, err := os.Open(path)
+			meta, err := schema.LoadSessionMeta(stateDir, entry.SessionID)
 			if err != nil {
-				t.Fatalf("open transcript: %v", err)
+				t.Fatalf("load session meta: %v", err)
 			}
-			var header transcript.Header
-			derr := json.NewDecoder(f).Decode(&header)
-			f.Close()
-			if derr != nil {
-				t.Fatalf("decode transcript header: %v", derr)
-			}
-			got := strings.Contains(header.SystemPrompt, "Non-interactive mode")
-			if got != tc.want {
-				t.Fatalf("non-interactive prompt addendum present=%v, want %v", got, tc.want)
+			if meta.Config.NonInteractive != tc.want {
+				t.Fatalf("session config NonInteractive = %v, want %v", meta.Config.NonInteractive, tc.want)
 			}
 		})
 	}
