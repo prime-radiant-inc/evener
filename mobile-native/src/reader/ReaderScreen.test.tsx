@@ -364,6 +364,43 @@ it("marks what changed since your last read, and steps through the changes", asy
 	expect(flatListCalls.at(-1)).toEqual({ method: "scrollToIndex", args: { index: 4, animated: true } });
 });
 
+it("keeps Send review on one line beside the change stepper", async () => {
+	// Split into equal thirds, the bar left Send review about 81pt of the
+	// iPhone's width, and it wrapped (seen on the simulator, phase 4 PR 9).
+	// The stepper takes what the two ends leave instead.
+	memory.left(KEY, {
+		title: "Settle the race",
+		blocks: documentBlocks(OLDER).map((block) => block.hash),
+		position: null,
+		reviewRef: "local:fix",
+		reviewTitle: "Fix race",
+	});
+	const { tree, rerender } = await mount(PATH, { reviewRef: "local:fix", reviewTitle: "Fix race" });
+	act(() =>
+		client.emitNotification({
+			method: "thread/status/changed",
+			params: {
+				threadId: "thread-fix",
+				ref: "local:fix",
+				status: { type: "idle" },
+				capabilities: { send: true, queue: true } as never,
+			},
+		}),
+	);
+	await rerender();
+	expect(pressable(tree, "Next change")).toBeDefined();
+	const send = pressable(tree, "Send review");
+	expect(send?.find((node) => String(node.type) === "Text").props.numberOfLines).toBe(1);
+	// The View a control sits in.
+	const holder = (node: ReactTestInstance | undefined) => {
+		let parent = node?.parent;
+		while (parent && String(parent.type) !== "View") parent = parent.parent;
+		return (parent?.props.style ?? {}) as { flex?: number };
+	};
+	expect(holder(send).flex).toBeUndefined();
+	expect(holder(pressable(tree, "Next change")).flex).toBe(1);
+});
+
 it("starts the steps over when a re-read changes what changed", async () => {
 	memory.left(KEY, {
 		title: "Settle the race",
