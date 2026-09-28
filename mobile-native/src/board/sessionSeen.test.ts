@@ -175,6 +175,22 @@ it("marks a row the device decides on the device when it changes in front", () =
 	hook.unmount();
 });
 
+it("marks a row with an unreadable turn end again when its updated_at moves in front", () => {
+	const { view, hook, markers } = setup();
+	view.conversation = {};
+	view.row = fleetRow({ turn_ended_at: "not a time", updated_at: iso(T + 5_000) });
+	hook.rerender();
+	expect(markers.isSeen(view.row)).toBe(true);
+	// The device decides this row by its updated_at, so a newer one is a new
+	// thing to mark even though the unreadable stamp didn't change.
+	const newer = fleetRow({ turn_ended_at: "not a time", updated_at: iso(T + 10_000) });
+	expect(markers.isSeen(newer)).toBe(false);
+	view.row = newer;
+	hook.rerender();
+	expect(markers.isSeen(newer)).toBe(true);
+	hook.unmount();
+});
+
 it("leaves a row the device decides unmarked while another screen is in front", () => {
 	const { view, hook, markers } = setup();
 	view.inFront = false;

@@ -4,6 +4,7 @@
 import type { NavigationSessionSummary } from "@evener/appwire-client";
 import { useEffect, useRef } from "react";
 import type { ConversationClientLike } from "../../../mobile/src/services/conversation";
+import { hubTime } from "./attention";
 import { type BoardSeen, hubSeenMarks } from "./hubSeen";
 
 /** Marks the session seen while the screen is in front, so a turn that ends
@@ -47,14 +48,15 @@ export function useMarkSeenInFront(
 	useEffect(() => {
 		if (!inFront) rowMarked.current = null;
 		if (!inFront || !fleetRow) return;
-		// The device decides a row without a hub turn end by its updated_at.
-		const key = `${hubId}\u0000${fleetRow.ref}\u0000${fleetRow.turn_ended_at ?? fleetRow.updated_at ?? ""}`;
+		// The device decides a row without a readable hub turn end by its
+		// updated_at, so that is what a new mark follows for such a row.
+		const key = `${fleetRow.ref}\u0000${hubTime(fleetRow.turn_ended_at) ?? fleetRow.updated_at ?? ""}`;
 		if (rowMarked.current === key) return;
 		// Recorded even when the row already reads seen: an unread marked
 		// elsewhere at this same turn end later is left alone.
 		rowMarked.current = key;
 		if (!seen.isSeen(fleetRow)) seen.markRead(client, [fleetRow]);
-	}, [hubId, inFront, fleetRow, seen, client]);
+	}, [inFront, fleetRow, seen, client]);
 	useEffect(() => {
 		if (client) hubSeenMarks(hubId).flush(client);
 	}, [hubId, client]);
