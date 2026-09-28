@@ -370,7 +370,7 @@ function Board({ hubId, hubName, navigation }: { hubId: string; hubName: string;
 	const runRowAction = (item: ClassifiedRow, action: Exclude<SwipeRowAction, "more">) => {
 		const { row } = item;
 		if (action === "pin") navigation.navigate("PinAssignment", { hubId, ref: row.ref, title: row.title });
-		else if (action === "stop" && client)
+		else if (action === "stop" && actionsConnected && client)
 			void stops.stop(client, row.ref).then((outcome) => toast.show({ text: stopToast(outcome, row.title) }));
 		else if (action === "archive" || action === "unarchive")
 			void archiveRow(organization, row, action === "archive", toast);
@@ -380,11 +380,11 @@ function Board({ hubId, hubName, navigation }: { hubId: string; hubName: string;
 	 * Session sends them (rulings 18-21). */
 	const actOnRow = (item: ClassifiedRow, action: RowAction) => {
 		const { row } = item;
-		const markClient = connected ? client : null;
+		const markClient = actionsConnected ? client : null;
 		if (action === "markRead") seen.markRead(markClient, [row]);
 		else if (action === "markUnread") seen.markUnread(markClient, [row]);
-		else if (action === "shutDown") confirmShutDown(client, row, toast);
-		else if (action === "rename") promptRename(client, row, toast);
+		else if (action === "shutDown") confirmShutDown(actionsConnected ? client : null, row, toast);
+		else if (action === "rename") promptRename(actionsConnected ? client : null, row, toast);
 		else runRowAction(item, action);
 	};
 	const archivingId = archivingSessionId(organization.state);

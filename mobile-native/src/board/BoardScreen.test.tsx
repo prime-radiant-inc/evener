@@ -3160,6 +3160,115 @@ it("marks a finished row read from the menu, moving it to Idle, and unread again
 	expect(bandHeaders(tree)).toEqual(["FINISHED · 2", "WORKING · 1"]);
 });
 
+it("sends no read mark through another hub's client when this Board's hub isn't the active one", async () => {
+	const first = hubId();
+	const second = hubId();
+	adoptedAnHourAgo(first);
+	adoptedAnHourAgo(second);
+	// A row the hub decides (it carries a turn end), so marking it read is a
+	// hub write (BoardSeen.markRead), not just the device's own marker.
+	const row = session("local:hub-unseen", {
+		title: "Hub unseen",
+		updated_at: minutesAgo(90),
+		turn_ended_at: minutesAgo(90),
+		unseen: true,
+	});
+	const shape: Fleet = { ...fleet, live: [[row]], needsYou: [] };
+	const fakeA = hub(shape);
+	const fakeB = hub(shape);
+	connect(first, fakeA.client, "ready");
+	const nav = navigation();
+	const tree = await mount(nav);
+	const host = menuHost(first);
+	const ref = "local:hub-unseen";
+	// The active hub changes to a different one, but this Board (mounted for
+	// "first") stays up, as it would underneath a freshly-selected hub's own
+	// screen; its next render reads the new connection.
+	connect(second, fakeB.client, "ready");
+	setFocused(false);
+	setFocused(true);
+	await settle();
+	act(() => host.act(menuItem(host, ref), "markRead"));
+	await settle();
+	expect(fakeA.seen).toEqual([]);
+	expect(fakeB.seen).toEqual([]);
+	act(() => tree.unmount());
+});
+
+it("sends no stop through another hub's client when this Board's hub isn't the active one", async () => {
+	const first = hubId();
+	const second = hubId();
+	adoptedAnHourAgo(first);
+	adoptedAnHourAgo(second);
+	const fakeA = hub(swipeFleet());
+	const fakeB = hub(swipeFleet());
+	connect(first, fakeA.client, "ready");
+	const nav = navigation();
+	const tree = await mount(nav);
+	const host = menuHost(first);
+	const ref = `local:${SESSION_ID}`;
+	connect(second, fakeB.client, "ready");
+	setFocused(false);
+	setFocused(true);
+	await settle();
+	act(() => host.act(menuItem(host, ref), "stop"));
+	await settle();
+	expect(fakeA.threadCalls).toEqual([]);
+	expect(fakeB.threadCalls).toEqual([]);
+	act(() => tree.unmount());
+});
+
+it("sends no shutdown through another hub's client when this Board's hub isn't the active one", async () => {
+	const first = hubId();
+	const second = hubId();
+	adoptedAnHourAgo(first);
+	adoptedAnHourAgo(second);
+	const fakeA = hub(swipeFleet());
+	const fakeB = hub(swipeFleet());
+	connect(first, fakeA.client, "ready");
+	const nav = navigation();
+	const tree = await mount(nav);
+	const host = menuHost(first);
+	const ref = `local:${SESSION_ID}`;
+	connect(second, fakeB.client, "ready");
+	setFocused(false);
+	setFocused(true);
+	await settle();
+	alertRequests.length = 0;
+	act(() => host.act(menuItem(host, ref), "shutDown"));
+	act(() => alertRequests.at(-1)?.buttons?.[1]?.onPress?.());
+	await settle();
+	expect(fakeA.mutations).toEqual([]);
+	expect(fakeB.mutations).toEqual([]);
+	act(() => tree.unmount());
+});
+
+it("sends no rename through another hub's client when this Board's hub isn't the active one", async () => {
+	const first = hubId();
+	const second = hubId();
+	adoptedAnHourAgo(first);
+	adoptedAnHourAgo(second);
+	const fakeA = hub(swipeFleet());
+	const fakeB = hub(swipeFleet());
+	connect(first, fakeA.client, "ready");
+	const nav = navigation();
+	const tree = await mount(nav);
+	const host = menuHost(first);
+	const ref = `local:${SESSION_ID}`;
+	connect(second, fakeB.client, "ready");
+	setFocused(false);
+	setFocused(true);
+	await settle();
+	harness.prompt.mockClear();
+	act(() => host.act(menuItem(host, ref), "rename"));
+	const buttons = harness.prompt.mock.calls[0]?.[2] as { onPress?: (name?: string) => void }[];
+	act(() => buttons[1]?.onPress?.("New name"));
+	await settle();
+	expect(fakeA.mutations).toEqual([]);
+	expect(fakeB.mutations).toEqual([]);
+	act(() => tree.unmount());
+});
+
 it("opens the session from the menu's card as a tap does", async () => {
 	const { id, nav } = await mountSwipeFleet(hub(swipeFleet()));
 	const host = menuHost(id);
