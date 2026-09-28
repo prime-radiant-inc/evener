@@ -93,7 +93,12 @@ async function sheet(documents: SessionDocument[]) {
 }
 
 const rows = (tree: ReactTestRenderer) =>
-	tree.root.findAll((node) => String(node.type) === "Pressable" && node.props.accessibilityRole === "button" && node.props.testID === "document-row");
+	tree.root.findAll(
+		(node) =>
+			String(node.type) === "Pressable" &&
+			node.props.accessibilityRole === "button" &&
+			node.props.testID === "document-row",
+	);
 const dotted = (row: ReturnType<typeof rows>[number]) =>
 	row.findAll((node) => String(node.type) === "SymbolView" && node.props.name === "circle.fill").length > 0;
 
@@ -118,7 +123,10 @@ it("lists each document with its kind, title, path, length and age, in the order
 
 it("dots a document you haven't opened, and one written after your last read, and not one read since", async () => {
 	const leave = (path: string, updatedAt: string) =>
-		memory.left({ sessionRef: "local:fix", path }, { title: "x", blocks: [], position: null, reviewRef: "local:fix", reviewTitle: "Fix race", updatedAt });
+		memory.left(
+			{ sessionRef: "local:fix", path },
+			{ title: "x", blocks: [], position: null, reviewRef: "local:fix", reviewTitle: "Fix race", updatedAt },
+		);
 	const written = ago(1);
 	leave(PLAN, ago(10));
 	leave(DESIGN, written);

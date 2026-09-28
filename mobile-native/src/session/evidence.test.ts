@@ -54,7 +54,9 @@ describe("what a step has to show (spec 8.2)", () => {
 	});
 
 	it("has nothing to show for a summary-only step", () => {
-		expect(stepEvidence(step("edit_file", { file_path: "a.go", old_string: "a", new_string: "b" }, { summaryOnly: true }))).toEqual([]);
+		expect(
+			stepEvidence(step("edit_file", { file_path: "a.go", old_string: "a", new_string: "b" }, { summaryOnly: true })),
+		).toEqual([]);
 	});
 
 	it("has nothing to show for a step that carries none", () => {

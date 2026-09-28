@@ -7,10 +7,7 @@ import { useEffect } from "react";
 import { act } from "react-test-renderer";
 import { afterEach, expect, it, vi } from "vitest";
 import type { InstanceListResponse } from "@evener/appwire-client";
-import type {
-	CredentialInstancesClient,
-	CredentialInstancesStore,
-} from "@evener/appwire-client/state/credentials";
+import type { CredentialInstancesClient, CredentialInstancesStore } from "@evener/appwire-client/state/credentials";
 import { useCredentialStore } from "./credentialStore";
 import { recordClientReadyHub } from "./connectionIdentity";
 import { render, renderHook, scriptedClient } from "./renderNative.testkit";
@@ -31,10 +28,13 @@ it("binds the store before a child's mount effect reads through it", async () =>
 	const applied: boolean[] = [];
 	function Child({ store }: { store: CredentialInstancesStore }) {
 		useEffect(() => {
-			store.getState().fetch().then(
-				(landed) => applied.push(landed),
-				() => applied.push(false),
-			);
+			store
+				.getState()
+				.fetch()
+				.then(
+					(landed) => applied.push(landed),
+					() => applied.push(false),
+				);
 		}, [store]);
 		return null;
 	}
@@ -101,9 +101,7 @@ it("refuses a previous hub's adopted client after a re-key, then binds the re-po
 	const hook = renderHook(() => useCredentialStore());
 	// The store must not bind the previous hub's client: its listing read
 	// would fetch hub-1's provider rows under hub-2.
-	await expect(
-		hook.result.current.getState().fetch(),
-	).rejects.toThrow(/no client connected/);
+	await expect(hook.result.current.getState().fetch()).rejects.toThrow(/no client connected/);
 	expect(stale.methods).toEqual([]);
 
 	// The connection re-points to hub-2's own client - a new object the

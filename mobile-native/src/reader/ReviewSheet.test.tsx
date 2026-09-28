@@ -63,7 +63,13 @@ vi.mock("../nativeMutationRuntime", async (original) => ({
 const PLAN = "# Settle the race\n\nThe goal is a clean run.\n\n## Steps\n\n- Reproduce it.\n- Fix it.\n";
 const PATH = "docs/superpowers/plans/settle-race.md";
 const KEY = { sessionRef: "local:fix", path: PATH };
-const PARAMS = { hubId: "studio", sessionRef: "local:fix", path: PATH, reviewRef: "local:fix", reviewTitle: "Get PR 2138 Test Clean" };
+const PARAMS = {
+	hubId: "studio",
+	sessionRef: "local:fix",
+	path: PATH,
+	reviewRef: "local:fix",
+	reviewTitle: "Get PR 2138 Test Clean",
+};
 
 const capabilities = (over: Partial<ThreadCapabilities> = {}): ThreadCapabilities => ({
 	send: true,
@@ -140,7 +146,11 @@ beforeEach(async () => {
 		index: 3,
 		routes: [
 			{ key: "board", name: "Sessions" },
-			{ key: "fix", name: "Conversation", params: { hubId: "studio", ref: "local:fix", title: "Get PR 2138 Test Clean" } },
+			{
+				key: "fix",
+				name: "Conversation",
+				params: { hubId: "studio", ref: "local:fix", title: "Get PR 2138 Test Clean" },
+			},
 			{ key: "reader", name: "Reader" },
 			{ key: "review", name: "ReviewSheet" },
 		],
@@ -178,7 +188,10 @@ async function settle() {
 
 async function mount() {
 	const tree = render(
-		<ReviewSheet route={{ key: "review", name: "ReviewSheet", params: PARAMS } as never} navigation={sheetNavigation as never} />,
+		<ReviewSheet
+			route={{ key: "review", name: "ReviewSheet", params: PARAMS } as never}
+			navigation={sheetNavigation as never}
+		/>,
 	);
 	trees.push(tree);
 	await settle();
@@ -291,7 +304,10 @@ it("forgets what Send did while the connection was down, until it reads again", 
 	const again = () =>
 		act(() =>
 			tree.update(
-				<ReviewSheet route={{ key: "review", name: "ReviewSheet", params: PARAMS } as never} navigation={sheetNavigation as never} />,
+				<ReviewSheet
+					route={{ key: "review", name: "ReviewSheet", params: PARAMS } as never}
+					navigation={sheetNavigation as never}
+				/>,
 			),
 		);
 	harness.connection = { state: "reconnecting", client };
@@ -335,7 +351,10 @@ it("waits for the connection, and reads again when it returns", async () => {
 	harness.connection = { state: "ready", client };
 	act(() =>
 		tree.update(
-			<ReviewSheet route={{ key: "review", name: "ReviewSheet", params: PARAMS } as never} navigation={sheetNavigation as never} />,
+			<ReviewSheet
+				route={{ key: "review", name: "ReviewSheet", params: PARAMS } as never}
+				navigation={sheetNavigation as never}
+			/>,
 		),
 	);
 	await settle();

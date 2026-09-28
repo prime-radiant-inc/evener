@@ -6,11 +6,7 @@ import {
 	type SessionTokens,
 	type TranscriptDisplayConfigV1,
 } from "@evener/appwire-client";
-import type {
-	ActivityMember,
-	MobileConversation,
-	MobileTimelineItem,
-} from "./projectedRows";
+import type { ActivityMember, MobileConversation, MobileTimelineItem } from "./projectedRows";
 
 export type ActivityPresentation = {
 	mode: "full" | "intent" | "critical";
@@ -53,19 +49,13 @@ export interface UsageRow {
 // truncated turn window says so); Cached/Total are always the thread's whole
 // -session cumulative figures, so they are labelled with the explicit session
 // scope, never whatever scope the derived pair got.
-export function usageRows(
-	accounting: Pick<SessionAccounting, "derived" | "cumulative"> | null,
-): UsageRow[] {
+export function usageRows(accounting: Pick<SessionAccounting, "derived" | "cumulative"> | null): UsageRow[] {
 	if (!accounting) return [];
 	const { derived, cumulative } = accounting;
 	const derivedUnit = tokenUnitLabel(derived?.scope);
 	const cumulativeUnit = tokenUnitLabel("session");
 	const rows: UsageRow[] = [];
-	const add = (
-		label: UsageRow["label"],
-		value: number | undefined,
-		unit: string,
-	): void => {
+	const add = (label: UsageRow["label"], value: number | undefined, unit: string): void => {
 		if (value !== undefined) rows.push({ label, value, unit });
 	};
 	add("Input", derived?.inputTokens, derivedUnit);
@@ -86,43 +76,30 @@ export interface NativeTranscriptPresentation {
 const ACTION_SUMMARY_UNAVAILABLE = "Action summary unavailable";
 const MAX_ACTION_DETAIL_LENGTH = 256;
 
-function writeFileActionSummary(
-	item: Extract<MobileTimelineItem, { kind: "activity" }>,
-): string | undefined {
+function writeFileActionSummary(item: Extract<MobileTimelineItem, { kind: "activity" }>): string | undefined {
 	if (item.family !== "tool" || item.label !== "write_file") return undefined;
 	if (!item.detail.arguments) return undefined;
 	try {
 		const args: unknown = JSON.parse(item.detail.arguments);
 		if (typeof args !== "object" || args === null) return undefined;
 		const record = args as Record<string, unknown>;
-		const path =
-			typeof record.file_path === "string" ? record.file_path.trim() : "";
+		const path = typeof record.file_path === "string" ? record.file_path.trim() : "";
 		if (!path) return undefined;
 		const boundedPath =
-			path.length > MAX_ACTION_DETAIL_LENGTH
-				? `${path.slice(0, MAX_ACTION_DETAIL_LENGTH - 3)}...`
-				: path;
+			path.length > MAX_ACTION_DETAIL_LENGTH ? `${path.slice(0, MAX_ACTION_DETAIL_LENGTH - 3)}...` : path;
 		return `Write ${boundedPath}`;
 	} catch {
 		return undefined;
 	}
 }
 
-function actionSummary(
-	item: Extract<MobileTimelineItem, { kind: "activity" }>,
-): string {
-	return (
-		item.detail.description?.trim() ||
-		writeFileActionSummary(item) ||
-		ACTION_SUMMARY_UNAVAILABLE
-	);
+function actionSummary(item: Extract<MobileTimelineItem, { kind: "activity" }>): string {
+	return item.detail.description?.trim() || writeFileActionSummary(item) || ACTION_SUMMARY_UNAVAILABLE;
 }
 
 // An activity that is running or failed is attention-worthy. Notice criticality
 // is timeline.ts's isCriticalNotice, not a rule of this layer.
-function activityIsCritical(
-	item: Extract<MobileTimelineItem, { kind: "activity" }>,
-): boolean {
+function activityIsCritical(item: Extract<MobileTimelineItem, { kind: "activity" }>): boolean {
 	return item.state === "failed" || item.state === "running";
 }
 
@@ -138,9 +115,7 @@ function activityIsCritical(
 //   - a summary-only row (the projector's intent entry; the operator's
 //     summary-only ruling) renders its summary line, nothing to expand;
 //   - everything else renders in full.
-function presentationFor(
-	item: Extract<MobileTimelineItem, { kind: "activity" }>,
-): ActivityPresentation {
+function presentationFor(item: Extract<MobileTimelineItem, { kind: "activity" }>): ActivityPresentation {
 	if (activityIsCritical(item)) {
 		return {
 			mode: "critical",
@@ -164,9 +139,7 @@ function presentationFor(
 // nothing may edit one row's presentation and move the rest with it.
 const FULL_PRESENTATION = { mode: "full" } as const;
 
-function memberItem(
-	member: ActivityMember,
-): Extract<MobileTimelineItem, { kind: "activity" }> {
+function memberItem(member: ActivityMember): Extract<MobileTimelineItem, { kind: "activity" }> {
 	return {
 		kind: "activity",
 		id: member.id,
@@ -201,9 +174,7 @@ function accountingFor(
 	const cacheReadTokens = noZero(conversation.usage?.cacheReadTokens);
 	const totalTokens = noZero(conversation.usage?.totalTokens);
 	const cumulative =
-		cacheReadTokens !== undefined || totalTokens !== undefined
-			? { cacheReadTokens, totalTokens }
-			: null;
+		cacheReadTokens !== undefined || totalTokens !== undefined ? { cacheReadTokens, totalTokens } : null;
 	return { derived, cumulative, cost };
 }
 
@@ -224,10 +195,8 @@ export function projectNativeTranscript(
 	return {
 		items,
 		activityPresentation,
-		expandByDefault: (config.content.kind === "preset"
-			? presetContent(config.content.level)
-			: config.content
-		).expandByDefault,
+		expandByDefault: (config.content.kind === "preset" ? presetContent(config.content.level) : config.content)
+			.expandByDefault,
 		usage: accountingFor(conversation, config),
 		showDuration: config.advanced.roundTimings,
 	};
@@ -255,15 +224,10 @@ function projectTimeline(
 	const membersByKey = new Set<string>();
 	for (const item of source)
 		if (item.kind === "activity")
-			for (const member of item.members ?? [])
-				membersByKey.add(member.transcriptKey ?? member.id);
+			for (const member of item.members ?? []) membersByKey.add(member.transcriptKey ?? member.id);
 	const attachmentsByKey = new Map<string, MobileTimelineItem[]>();
 	for (const item of source) {
-		if (
-			item.kind !== "attachments" ||
-			!item.sourceTranscriptKey ||
-			!membersByKey.has(item.sourceTranscriptKey)
-		)
+		if (item.kind !== "attachments" || !item.sourceTranscriptKey || !membersByKey.has(item.sourceTranscriptKey))
 			continue;
 		const attachments = attachmentsByKey.get(item.sourceTranscriptKey) ?? [];
 		attachments.push(item);
@@ -274,21 +238,13 @@ function projectTimeline(
 		if (item.kind === "activity" && item.members?.length) {
 			for (const member of item.members) {
 				const projected = memberItem(member);
-				activityPresentation.set(
-					projected.id,
-					config ? presentationFor(projected) : FULL_PRESENTATION,
-				);
+				activityPresentation.set(projected.id, config ? presentationFor(projected) : FULL_PRESENTATION);
 				projectedItems.push(projected);
 				// Attachments keep their source position even when that activity is hidden.
-				projectedItems.push(
-					...(attachmentsByKey.get(member.transcriptKey ?? member.id) ?? []),
-				);
+				projectedItems.push(...(attachmentsByKey.get(member.transcriptKey ?? member.id) ?? []));
 			}
 		} else if (item.kind === "activity") {
-			activityPresentation.set(
-				item.id,
-				config ? presentationFor(item) : FULL_PRESENTATION,
-			);
+			activityPresentation.set(item.id, config ? presentationFor(item) : FULL_PRESENTATION);
 			projectedItems.push(item);
 		} else if (
 			item.kind === "attachments" &&

@@ -16,12 +16,7 @@ import { FlatList } from "react-native";
 import { act } from "react-test-renderer";
 import { beforeEach, expect, it, vi } from "vitest";
 import type { Thread } from "@evener/appwire-client";
-import {
-	alertRequests,
-	render,
-	renderedText,
-	screenConnection,
-} from "./renderNative.testkit";
+import { alertRequests, render, renderedText, screenConnection } from "./renderNative.testkit";
 import { ConversationScreen } from "./screens";
 import { detailLevels, forgetDetailLevelsForHub } from "./session/nativeDetailLevels";
 import { SessionHeader } from "./session/SessionHeader";
@@ -99,11 +94,9 @@ vi.mock("@react-navigation/elements", () => ({ useHeaderHeight: () => 64 }));
 vi.mock("@react-navigation/native", async () => {
 	const { useEffect } = await import("react");
 	return {
-		useFocusEffect: (effect: () => void | (() => void)) =>
-			useEffect(effect, []),
+		useFocusEffect: (effect: () => void | (() => void)) => useEffect(effect, []),
 		useIsFocused: () => stack.focused,
-		useNavigationState: <T,>(select: (state: typeof stack.state) => T) =>
-			select(stack.state),
+		useNavigationState: <T,>(select: (state: typeof stack.state) => T) => select(stack.state),
 	};
 });
 vi.mock("expo-clipboard", () => ({
@@ -260,17 +253,10 @@ async function flush() {
 }
 
 const screen = () => (
-	<ConversationScreen
-		route={route}
-		navigation={navigation as unknown as ConversationScreenProps["navigation"]}
-	/>
+	<ConversationScreen route={route} navigation={navigation as unknown as ConversationScreenProps["navigation"]} />
 );
 
-function mount(
-	read: Thread = thread,
-	answers: Answers = {},
-	connection: Record<string, unknown> = {},
-) {
+function mount(read: Thread = thread, answers: Answers = {}, connection: Record<string, unknown> = {}) {
 	const { client, requests } = sessionClient(read, answers);
 	harness.connection = {
 		...screenConnection(client, "ready"),
@@ -284,9 +270,7 @@ function mount(
 
 function subscribedReads(requests: { method: string; params: unknown }[]) {
 	return requests.filter(
-		(request) =>
-			request.method === "thread/read" &&
-			(request.params as { subscribe?: boolean }).subscribe === true,
+		(request) => request.method === "thread/read" && (request.params as { subscribe?: boolean }).subscribe === true,
 	);
 }
 
@@ -348,9 +332,7 @@ it("opens Tasks from the header menu as the TasksSheet route", async () => {
 			menu: { items: { label: string; onPress(): void }[] };
 		}[];
 	};
-	const tasks = options
-		.unstable_headerRightItems()[0]
-		?.menu.items.find((item) => item.label === "Tasks");
+	const tasks = options.unstable_headerRightItems()[0]?.menu.items.find((item) => item.label === "Tasks");
 	if (!tasks) throw new Error("no Tasks item in the header menu");
 	act(() => tasks.onPress());
 
@@ -372,9 +354,7 @@ it("opens Notes & links from the header menu as the NotesSheet route, without fo
 			menu: { items: { label: string; onPress(): void }[] };
 		}[];
 	};
-	const notes = options
-		.unstable_headerRightItems()[0]
-		?.menu.items.find((item) => item.label === "Notes & links");
+	const notes = options.unstable_headerRightItems()[0]?.menu.items.find((item) => item.label === "Notes & links");
 	if (!notes) throw new Error("no Notes & links item in the header menu");
 	act(() => notes.onPress());
 
@@ -407,9 +387,7 @@ it("follows no session while a screen is pushed over it", async () => {
 	const { tree, requests } = mount();
 	await flush();
 
-	expect(requests.filter((request) => request.method === "thread/read")).toEqual(
-		[],
-	);
+	expect(requests.filter((request) => request.method === "thread/read")).toEqual([]);
 	tree.unmount();
 });
 
@@ -641,14 +619,20 @@ it("says so when the hub refuses to archive", async () => {
 });
 
 it("opens an aside as its own session", async () => {
-	const aside = { thread: { ...thread, id: "thread-2", name: "Side question", evener: { ...thread.evener, ref: "local:aside" } } };
+	const aside = {
+		thread: { ...thread, id: "thread-2", name: "Side question", evener: { ...thread.evener, ref: "local:aside" } },
+	};
 	const { tree } = mount(withCapabilities({ forkFromTurn: true }), { "thread/fork": aside });
 	await flush();
 
 	act(() => menuAction("Ask aside…").onPress());
 	await flush();
 
-	expect(navigation.push).toHaveBeenCalledWith("Conversation", { hubId: "hub-1", ref: "local:aside", title: "Side question" });
+	expect(navigation.push).toHaveBeenCalledWith("Conversation", {
+		hubId: "hub-1",
+		ref: "local:aside",
+		title: "Side question",
+	});
 	tree.unmount();
 });
 
@@ -736,8 +720,7 @@ function sessionList(tree: ReturnType<typeof render>) {
 		block,
 		list,
 		/** The block's wrapper reporting a new height, as layout would. */
-		measure: (height: number) =>
-			act(() => block().parent?.props.onLayout({ nativeEvent: { layout: { height } } })),
+		measure: (height: number) => act(() => block().parent?.props.onLayout({ nativeEvent: { layout: { height } } })),
 		// contentSize/layoutMeasurement match ConversationScreen.send.test.tsx's
 		// own scrollTo: tall enough that these small offsets never cross the
 		// "near the live end" threshold onScroll also checks.
@@ -768,9 +751,9 @@ it("floats the context chips over the list, opens each one's sheet, and hides th
 	expect(session.block().props.status).toBeNull();
 	expect(renderedText(tree)).not.toMatch(/Connected|Reconnect/);
 	const chip = (label: string) => {
-		const found = session.block().findAll(
-			(node) => node.props.accessibilityRole === "button" && node.props.accessibilityLabel === label,
-		)[0];
+		const found = session
+			.block()
+			.findAll((node) => node.props.accessibilityRole === "button" && node.props.accessibilityLabel === label)[0];
 		if (!found) throw new Error(`no ${label} chip`);
 		return found;
 	};
@@ -780,10 +763,20 @@ it("floats the context chips over the list, opens each one's sheet, and hides th
 	expect(session.list().props.contentContainerStyle).toMatchObject({ paddingTop: 64 });
 
 	act(() => chip("Subagents, 1").props.onPress());
-	expect(navigation.navigate).toHaveBeenCalledWith("Subagents", { hubId: "hub-1", ref, threadId: "thread-1", title: "Session" });
+	expect(navigation.navigate).toHaveBeenCalledWith("Subagents", {
+		hubId: "hub-1",
+		ref,
+		threadId: "thread-1",
+		title: "Session",
+	});
 	vi.mocked(navigation.navigate).mockClear();
 	act(() => menuAction("Subagents").onPress());
-	expect(navigation.navigate).toHaveBeenCalledWith("Subagents", { hubId: "hub-1", ref, threadId: "thread-1", title: "Session" });
+	expect(navigation.navigate).toHaveBeenCalledWith("Subagents", {
+		hubId: "hub-1",
+		ref,
+		threadId: "thread-1",
+		title: "Session",
+	});
 	expect(tree.root.findAllByType(ActivitySheet)).toEqual([]);
 
 	act(() => chip("Tasks, 1 of 2 done").props.onPress());
@@ -857,7 +850,12 @@ it("a Subagents/Tasks chip tap still works during a blip shorter than the connec
 			)[0];
 		vi.mocked(navigation.navigate).mockClear();
 		act(() => chip("Subagents, 1").props.onPress());
-		expect(navigation.navigate).toHaveBeenCalledWith("Subagents", { hubId: "hub-1", ref, threadId: "thread-1", title: "Session" });
+		expect(navigation.navigate).toHaveBeenCalledWith("Subagents", {
+			hubId: "hub-1",
+			ref,
+			threadId: "thread-1",
+			title: "Session",
+		});
 	} finally {
 		vi.useRealTimers();
 	}
@@ -948,9 +946,7 @@ it("says Update needed, with the spec's hint, when no retry can fix the connecti
 	await flush();
 
 	expect(sessionList(tree).block().props.status).toBe("Update needed");
-	const bar = tree.root.find(
-		(node) => node.type === ("Text" as never) && node.props.children === "Update needed",
-	);
+	const bar = tree.root.find((node) => node.type === ("Text" as never) && node.props.children === "Update needed");
 	expect(bar.props.accessibilityHint).toBe(
 		"This app and the hub need compatible versions. Update the app from TestFlight, or update Evener on the hub.",
 	);

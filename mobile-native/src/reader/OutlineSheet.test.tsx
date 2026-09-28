@@ -38,7 +38,11 @@ function mount(host: ReaderHost) {
 	const tree = render(
 		<OutlineSheet
 			route={
-				{ key: "outline", name: "OutlineSheet", params: { hubId: "studio", sessionRef: "local:fix", path: "docs/plan.md" } } as never
+				{
+					key: "outline",
+					name: "OutlineSheet",
+					params: { hubId: "studio", sessionRef: "local:fix", path: "docs/plan.md" },
+				} as never
 			}
 			navigation={navigation as never}
 		/>,
@@ -49,7 +53,10 @@ function mount(host: ReaderHost) {
 
 function rows(tree: ReactTestRenderer): ReactTestInstance[] {
 	return tree.root.findAll(
-		(node) => typeof node.type === "string" && node.props.accessibilityRole === "button" && node.props.accessibilityHint === "Jumps to this heading",
+		(node) =>
+			typeof node.type === "string" &&
+			node.props.accessibilityRole === "button" &&
+			node.props.accessibilityHint === "Jumps to this heading",
 	);
 }
 
@@ -73,7 +80,15 @@ it("lists the headings in order, indented by depth", () => {
 
 it("closes, then jumps the Reader to the heading you tap", () => {
 	const jumpTo = vi.fn((index: number) => order.push(`jumpTo ${index}`));
-	const tree = mount({ outline: [{ index: 0, depth: 1, title: "Top" }, { index: 5, depth: 2, title: "Goal" }], jumpTo, anchor: () => null, canReview: false });
+	const tree = mount({
+		outline: [
+			{ index: 0, depth: 1, title: "Top" },
+			{ index: 5, depth: 2, title: "Goal" },
+		],
+		jumpTo,
+		anchor: () => null,
+		canReview: false,
+	});
 	act(() => pressable(tree, "Goal")?.props.onPress());
 	expect(order).toEqual(["goBack", "jumpTo 5"]);
 });

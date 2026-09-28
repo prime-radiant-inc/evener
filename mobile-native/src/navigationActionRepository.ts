@@ -8,11 +8,7 @@ import type {
 	SessionPinAssignParams,
 	SessionPinUnpinParams,
 } from "@evener/appwire-client";
-import {
-	decodeSessionDeletionResult,
-	localSessionId,
-	type SessionDeletionResult,
-} from "./sessionDeletionResult";
+import { decodeSessionDeletionResult, localSessionId, type SessionDeletionResult } from "./sessionDeletionResult";
 
 export type NavigationOperation =
 	| { kind: "archive"; params: ArchiveParams }
@@ -51,16 +47,10 @@ function record(value: unknown): Record<string, unknown> {
 	valid(value !== null && typeof value === "object" && !Array.isArray(value));
 	return value as Record<string, unknown>;
 }
-function keys(
-	value: Record<string, unknown>,
-	required: string[],
-	optional: string[] = [],
-) {
+function keys(value: Record<string, unknown>, required: string[], optional: string[] = []) {
 	valid(
 		required.every((key) => Object.hasOwn(value, key)) &&
-			Object.keys(value).every(
-				(key) => required.includes(key) || optional.includes(key),
-			),
+			Object.keys(value).every((key) => required.includes(key) || optional.includes(key)),
 	);
 }
 function text(value: unknown): value is string {
@@ -85,18 +75,14 @@ function validateOperation(value: unknown): NavigationOperation {
 			break;
 		case "favorite":
 			keys(p, ["kind", "id", "favorited"]);
-			valid(
-				p.kind === "project" && text(p.id) && typeof p.favorited === "boolean",
-			);
+			valid(p.kind === "project" && text(p.id) && typeof p.favorited === "boolean");
 			break;
 		case "assignPin":
 			keys(p, ["sessionRef"], ["sectionId", "sectionName"]);
 			valid(
 				text(p.sessionRef) &&
 					Object.hasOwn(p, "sectionId") !== Object.hasOwn(p, "sectionName") &&
-					(Object.hasOwn(p, "sectionId")
-						? text(p.sectionId)
-						: name(p.sectionName)),
+					(Object.hasOwn(p, "sectionId") ? text(p.sectionId) : name(p.sectionName)),
 			);
 			break;
 		case "unpin":
@@ -127,39 +113,21 @@ function validateReceipt(value: unknown): NavigationMutation | null {
 	valid(text(receipt.generation_id) && Array.isArray(receipt.targets));
 	for (const raw of receipt.targets) {
 		const target = record(raw);
-		keys(
-			target,
-			["kind"],
-			["section", "sectionId", "catalog", "projectKey", "revision"],
-		);
+		keys(target, ["kind"], ["section", "sectionId", "catalog", "projectKey", "revision"]);
 		valid(
-			[
-				"manifest",
-				"section",
-				"pin_catalog",
-				"pin_section",
-				"catalog",
-				"project",
-				"all_loaded_projects",
-			].includes(String(target.kind)),
+			["manifest", "section", "pin_catalog", "pin_section", "catalog", "project", "all_loaded_projects"].includes(
+				String(target.kind),
+			),
 		);
 		for (const key of ["section", "sectionId", "catalog", "projectKey"])
 			if (Object.hasOwn(target, key)) valid(text(target[key]));
-		if (target.kind === "section")
-			valid(target.section === "live" || target.section === "needs_you");
+		if (target.kind === "section") valid(target.section === "live" || target.section === "needs_you");
 		if (target.kind === "pin_section") valid(text(target.sectionId));
 		if (target.kind === "catalog")
-			valid(
-				["projects", "archived_projects", "test_runs"].includes(
-					String(target.catalog),
-				),
-			);
+			valid(["projects", "archived_projects", "test_runs"].includes(String(target.catalog)));
 		if (target.kind === "project") valid(text(target.projectKey));
 		if (Object.hasOwn(target, "revision"))
-			valid(
-				Number.isSafeInteger(target.revision) &&
-					(target.revision as number) >= 0,
-			);
+			valid(Number.isSafeInteger(target.revision) && (target.revision as number) >= 0);
 	}
 	return value as NavigationMutation;
 }
@@ -178,20 +146,14 @@ function validateCheckpoint(value: unknown): NavigationActionCheckpoint {
 function clone<T>(value: T): T {
 	return JSON.parse(JSON.stringify(value)) as T;
 }
-const equal = (a: unknown, b: unknown) =>
-	JSON.stringify(a) === JSON.stringify(b);
+const equal = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
 
-export function nativeNavigationActions(
-	hubId: string,
-	backend: NavigationActionBackend,
-): NavigationActionStorage {
+export function nativeNavigationActions(hubId: string, backend: NavigationActionBackend): NavigationActionStorage {
 	valid(text(hubId));
 	const key = `evener.native.navigation-action.${hubId}`;
 	const load = (): NavigationActionCheckpoint | null => {
 		const raw = backend.get(key);
-		return raw === null || raw === undefined
-			? null
-			: clone(validateCheckpoint(raw));
+		return raw === null || raw === undefined ? null : clone(validateCheckpoint(raw));
 	};
 	return {
 		load,

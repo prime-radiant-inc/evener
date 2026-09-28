@@ -8,7 +8,14 @@ import { FlatList } from "react-native";
 import type { ReactTestInstance, ReactTestRenderer } from "react-test-renderer";
 import { act } from "react-test-renderer";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { alertRequests, flatListCalls, pressable, render, render as renderElement, renderedText } from "../renderNative.testkit";
+import {
+	alertRequests,
+	flatListCalls,
+	pressable,
+	render,
+	render as renderElement,
+	renderedText,
+} from "../renderNative.testkit";
 import { takeQuote } from "../session/pendingQuote";
 import { sheetKey } from "../sheet/sheetHosts";
 import type { SyncStringStorage } from "../syncStringStorage";
@@ -468,7 +475,13 @@ it("leaves no way back once you read to the end", async () => {
 
 it("keeps the version you last read when you leave a document that didn't load", async () => {
 	const older = documentBlocks(OLDER).map((block) => block.hash);
-	memory.left(KEY, { title: "Settle the race", blocks: older, position: null, reviewRef: "local:coord", reviewTitle: "Coordinator" });
+	memory.left(KEY, {
+		title: "Settle the race",
+		blocks: older,
+		position: null,
+		reviewRef: "local:coord",
+		reviewTitle: "Coordinator",
+	});
 	served[PATH] = { status: 500, body: "boom" };
 	await mount();
 	const tree0 = trees.pop();
@@ -492,7 +505,10 @@ it("remembers where you were in a code file, and reopens there", async () => {
 	expect(memory.continueReading()).toMatchObject({ path: "src/race.go", progress: 0.5 });
 	flatListCalls.length = 0;
 	await mount("src/race.go");
-	expect(flatListCalls).toContainEqual({ method: "scrollToIndex", args: { index: 2, viewOffset: -0, animated: false } });
+	expect(flatListCalls).toContainEqual({
+		method: "scrollToIndex",
+		args: { index: 2, viewOffset: -0, animated: false },
+	});
 });
 
 it("says a document was cut short", async () => {
@@ -515,7 +531,13 @@ it("says why it can't show a binary, a missing file, or another host's document"
 				{
 					key: "reader-1",
 					name: "Reader",
-					params: { hubId: "studio", sessionRef: "laptop:fix", path: PATH, reviewRef: "laptop:fix", reviewTitle: "Fix" },
+					params: {
+						hubId: "studio",
+						sessionRef: "laptop:fix",
+						path: PATH,
+						reviewRef: "laptop:fix",
+						reviewTitle: "Fix",
+					},
 				} as never
 			}
 			navigation={navigation as never}
@@ -552,7 +574,11 @@ it("opens its outline, whose host lists the headings and jumps to one", async ()
 	if (button?.type !== "button") throw new Error("no outline button");
 	expect(button.icon).toEqual({ type: "sfSymbol", name: "list.bullet.indent" });
 	button.onPress();
-	expect(navigation.navigate).toHaveBeenCalledWith("OutlineSheet", { hubId: "studio", sessionRef: "local:fix", path: PATH });
+	expect(navigation.navigate).toHaveBeenCalledWith("OutlineSheet", {
+		hubId: "studio",
+		sessionRef: "local:fix",
+		path: PATH,
+	});
 	const host = readerHosts.get(sheetKey("studio", "local:fix", PATH));
 	expect(host?.outline.map((entry) => entry.title)).toEqual(["Settle the race", "Steps"]);
 	flatListCalls.length = 0;
@@ -674,13 +700,28 @@ describe("comments (Task 16)", () => {
 	}
 
 	function commentSheet(params = commentParams()) {
-		return mountSheet(<CommentSheet route={{ key: "comment", name: "CommentSheet", params } as never} navigation={sheetNavigation as never} />);
+		return mountSheet(
+			<CommentSheet
+				route={{ key: "comment", name: "CommentSheet", params } as never}
+				navigation={sheetNavigation as never}
+			/>,
+		);
 	}
 
 	function commentsSheet(over: Record<string, unknown> = {}) {
-		const params = { hubId: "studio", sessionRef: "local:fix", path: PATH, reviewRef: "local:coord", reviewTitle: "Coordinator", ...over };
+		const params = {
+			hubId: "studio",
+			sessionRef: "local:fix",
+			path: PATH,
+			reviewRef: "local:coord",
+			reviewTitle: "Coordinator",
+			...over,
+		};
 		return mountSheet(
-			<CommentsSheet route={{ key: "comments", name: "CommentsSheet", params } as never} navigation={sheetNavigation as never} />,
+			<CommentsSheet
+				route={{ key: "comments", name: "CommentsSheet", params } as never}
+				navigation={sheetNavigation as never}
+			/>,
 		);
 	}
 
@@ -710,7 +751,9 @@ describe("comments (Task 16)", () => {
 		expect(pressable(sheet, "Add")?.props.accessibilityState).toMatchObject({ disabled: true });
 		typeComment(sheet, "Say which run.");
 		act(() => pressable(sheet, "Add")?.props.onPress());
-		expect(memory.comments(KEY)).toMatchObject([{ blockIndex: 1, blockHash: goal.hash, quote: goal.text, text: "Say which run." }]);
+		expect(memory.comments(KEY)).toMatchObject([
+			{ blockIndex: 1, blockHash: goal.hash, quote: goal.text, text: "Say which run." },
+		]);
 		expect(sheetNavigation.goBack).toHaveBeenCalled();
 		await rerender();
 		expect(marker(tree, 1)).toBe("1 comment");
@@ -753,7 +796,12 @@ describe("comments (Task 16)", () => {
 	});
 
 	it("lists the comments, shows one in the Reader, and deletes one", async () => {
-		memory.addComment(KEY, { blockIndex: 4, blockHash: secondItem.hash, quote: secondItem.text, text: "Name the fix." });
+		memory.addComment(KEY, {
+			blockIndex: 4,
+			blockHash: secondItem.hash,
+			quote: secondItem.text,
+			text: "Name the fix.",
+		});
 		await mount();
 		const sheet = commentsSheet();
 		expect(renderedText(sheet)).toContain("Comments · 1");
@@ -762,7 +810,10 @@ describe("comments (Task 16)", () => {
 		flatListCalls.length = 0;
 		sheetNavigation.goBack.mockImplementation(() => flatListCalls.push({ method: "goBack" }));
 		act(() => pressable(sheet, "Show")?.props.onPress());
-		expect(flatListCalls).toEqual([{ method: "goBack" }, { method: "scrollToIndex", args: { index: 4, animated: true } }]);
+		expect(flatListCalls).toEqual([
+			{ method: "goBack" },
+			{ method: "scrollToIndex", args: { index: 4, animated: true } },
+		]);
 		act(() => pressable(sheet, "Delete")?.props.onPress());
 		expect(memory.comments(KEY)).toEqual([]);
 		expect(renderedText(sheet)).toContain("No comments yet");
@@ -863,7 +914,10 @@ describe("comments (Task 16)", () => {
 	it("offers no Send review from an empty Comments sheet", async () => {
 		client.on("thread/read", () => ({
 			...threadRead("idle"),
-			thread: { ...threadRead("idle").thread, evener: { ...threadRead("idle").thread.evener, capabilities: { send: true } as never } },
+			thread: {
+				...threadRead("idle").thread,
+				evener: { ...threadRead("idle").thread.evener, capabilities: { send: true } as never },
+			},
 		}));
 		const { tree } = await mount(PATH, ownSession);
 		expect(pressable(tree, "Send review")).toBeDefined();

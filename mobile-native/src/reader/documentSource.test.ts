@@ -44,25 +44,42 @@ describe("loading a document (Review Focus 5)", () => {
 			"https://hub.test/doc/file?format=raw&session=local%3As-pr2138&path=docs%2Fsuperpowers%2Fplans%2Fsettle.md",
 		]);
 		expect(document).toMatchObject({ kind: "markdown", title: "Fix the settle/drain race", lines: 3 });
-		expect(document.kind === "markdown" ? document.blocks.map((block) => block.kind) : []).toEqual(["heading", "paragraph"]);
+		expect(document.kind === "markdown" ? document.blocks.map((block) => block.kind) : []).toEqual([
+			"heading",
+			"paragraph",
+		]);
 		expect(documentNotice(document)).toBeNull();
 	});
 
 	it("reads code as text with its line count", async () => {
-		const document = await loadDocument(hub(() => text("package agent\n\nfunc settle() {}\n")), "local:s", "agent/retirement.go");
-		expect(document).toEqual({ kind: "code", title: "retirement.go", text: "package agent\n\nfunc settle() {}\n", lines: 3 });
+		const document = await loadDocument(
+			hub(() => text("package agent\n\nfunc settle() {}\n")),
+			"local:s",
+			"agent/retirement.go",
+		);
+		expect(document).toEqual({
+			kind: "code",
+			title: "retirement.go",
+			text: "package agent\n\nfunc settle() {}\n",
+			lines: 3,
+		});
 	});
 
 	it("says how much of a large document it shows", async () => {
 		const port = hub(() => text("a".repeat(524_288), { "X-Doc-Truncated": "true", "X-Doc-Total-Size": "1363149" }));
 		const document = await loadDocument(port, "local:s", "logs/big.txt");
-		expect(document.kind === "code" ? document.truncated : undefined).toEqual({ shownBytes: 524_288, totalBytes: 1_363_149 });
+		expect(document.kind === "code" ? document.truncated : undefined).toEqual({
+			shownBytes: 524_288,
+			totalBytes: 1_363_149,
+		});
 		expect(truncationNote({ shownBytes: 524_288, totalBytes: 1_363_149 })).toBe("Showing the first 512 KB of 1.3 MB");
 		expect(truncationNote({ shownBytes: 524_288 })).toBe("Showing the first 512 KB");
 	});
 
 	it("never shows a binary file's bytes", async () => {
-		const port = hub(() => new Response(new Uint8Array(10), { headers: { "Content-Type": "application/octet-stream" } }));
+		const port = hub(
+			() => new Response(new Uint8Array(10), { headers: { "Content-Type": "application/octet-stream" } }),
+		);
 		const document = await loadDocument(port, "local:s", "build/blob.bin");
 		expect(document).toEqual({ kind: "binary", title: "blob.bin", sizeBytes: 10 });
 		expect(documentNotice(document)).toBe("blob.bin isn't text, so it can't be shown here (10 bytes).");
@@ -88,7 +105,11 @@ describe("loading a document (Review Focus 5)", () => {
 		[403, "a.md is outside this session's folder, so it can't be shown."],
 		[500, "a.md couldn't be loaded right now."],
 	] as const)("says what a %d means in one sentence", async (status, notice) => {
-		const document = await loadDocument(hub(() => new Response("", { status })), "local:s", "docs/a.md");
+		const document = await loadDocument(
+			hub(() => new Response("", { status })),
+			"local:s",
+			"docs/a.md",
+		);
 		expect(documentNotice(document)).toBe(notice);
 	});
 

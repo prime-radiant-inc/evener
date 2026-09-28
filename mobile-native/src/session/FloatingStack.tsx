@@ -26,10 +26,7 @@ export function floatingCapsule(palette: Palette) {
 
 export function FloatingStack({ toast, next, pill }: { toast: ReactNode; next: ReactNode; pill: ReactNode }) {
 	return (
-		<View
-			pointerEvents="box-none"
-			style={{ position: "absolute", left: 0, right: 0, bottom: 10, gap: 8 }}
-		>
+		<View pointerEvents="box-none" style={{ position: "absolute", left: 0, right: 0, bottom: 10, gap: 8 }}>
 			{toast ? (
 				<View pointerEvents="box-none" style={{ alignItems: "center" }}>
 					{toast}

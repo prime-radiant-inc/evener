@@ -144,17 +144,16 @@ export interface NativeKeybindingDraftBackend extends NativePreferenceDraftBacke
 	 * whether it did. The atomic twin of replaceIf for a record that does not
 	 * exist yet - see DraftPort.insertIfAbsent's own comment. */
 	insertIfAbsent(key: string, checkpoint: KeybindingDraftCheckpoint): boolean;
-	replaceIf(
-		key: string,
-		expected: unknown,
-		next: KeybindingDraftCheckpoint,
-	): boolean;
+	replaceIf(key: string, expected: unknown, next: KeybindingDraftCheckpoint): boolean;
 }
 
 /** One native keybinding backend over any raw string storage. Keeping parsing
  * and identity comparison here lets tests exercise the same code production
  * uses, including malformed bytes, stored JSON null, and key-order changes. */
-export function rawStringDraftBackend(storage: SyncStringStorage, createId: () => string): NativeKeybindingDraftBackend {
+export function rawStringDraftBackend(
+	storage: SyncStringStorage,
+	createId: () => string,
+): NativeKeybindingDraftBackend {
 	function matches(key: string, value: unknown): boolean {
 		return matchesStoredBytes(storage.getItemSync(key), value);
 	}
@@ -195,10 +194,7 @@ export function rawStringDraftBackend(storage: SyncStringStorage, createId: () =
  * discard action needs that distinction (see draftUnreadableAfterDiscard). */
 export type DraftReadOutcome = "absent" | "readable" | "unreadable";
 
-export function classifyDraftRead(
-	loaded: unknown,
-	isReadable: (value: unknown) => boolean,
-): DraftReadOutcome {
+export function classifyDraftRead(loaded: unknown, isReadable: (value: unknown) => boolean): DraftReadOutcome {
 	if (loaded === null || loaded === undefined) return "absent";
 	return isReadable(loaded) ? "readable" : "unreadable";
 }
@@ -241,12 +237,8 @@ export function draftUnreadableAfterDiscard(current: DraftReadOutcome): boolean 
 	return current === "unreadable";
 }
 
-export function nativeKeybindingDrafts(
-	hubId: string,
-	backend: NativeKeybindingDraftBackend,
-): KeybindingDraftStorage {
-	if (!hubId.trim())
-		throw new Error("A hub id is required for preference drafts.");
+export function nativeKeybindingDrafts(hubId: string, backend: NativeKeybindingDraftBackend): KeybindingDraftStorage {
+	if (!hubId.trim()) throw new Error("A hub id is required for preference drafts.");
 	const key = `evener.native.keybinding-draft.${hubId}`;
 	return {
 		createId: () => backend.createId(),
@@ -266,9 +258,7 @@ export function nativeKeybindingDrafts(
  * `value` is not a readable legacy checkpoint (a record that already carries
  * a layout, an unreadable marker, or anything else the old shape did not
  * admit). */
-function migrateLegacyTranscriptCheckpoint(
-	value: unknown,
-): TranscriptDraftCheckpoint | null {
+function migrateLegacyTranscriptCheckpoint(value: unknown): TranscriptDraftCheckpoint | null {
 	if (!isRecord(value) || "layout" in value) return null;
 	if (typeof value.id !== "string" || value.id.length === 0) return null;
 	if (
@@ -292,12 +282,8 @@ function migrateLegacyTranscriptCheckpoint(
 	};
 }
 
-export function nativeTranscriptDrafts(
-	hubId: string,
-	backend: NativePreferenceDraftBackend,
-): TranscriptDraftStorage {
-	if (!hubId.trim())
-		throw new Error("A hub id is required for preference drafts.");
+export function nativeTranscriptDrafts(hubId: string, backend: NativePreferenceDraftBackend): TranscriptDraftStorage {
+	if (!hubId.trim()) throw new Error("A hub id is required for preference drafts.");
 	const key = `evener.native.transcript-draft.${hubId}`;
 	/** The bytes a legacy checkpoint's migration could NOT rewrite, keyed by the
 	 * migrated checkpoint the read returned. The shared repository classifies a
@@ -307,9 +293,7 @@ export function nativeTranscriptDrafts(
 	 * stranding the draft the best-effort migration kept readable. */
 	const legacyBytes = new WeakMap<object, unknown>();
 	const storedIdentity = (identity: unknown): unknown =>
-		typeof identity === "object" &&
-		identity !== null &&
-		legacyBytes.has(identity)
+		typeof identity === "object" && identity !== null && legacyBytes.has(identity)
 			? legacyBytes.get(identity)
 			: identity;
 	return {
@@ -334,9 +318,7 @@ export function nativeTranscriptDrafts(
 			// the shared store would map to storageUnavailable with no draft -
 			// hiding the readable legacy checkpoint this call just decoded.
 			try {
-				return backend.replaceIf(key, value, migrated)
-					? migrated
-					: (backend.get(key) ?? null);
+				return backend.replaceIf(key, value, migrated) ? migrated : (backend.get(key) ?? null);
 			} catch {
 				legacyBytes.set(migrated, value);
 				return migrated;
@@ -345,7 +327,6 @@ export function nativeTranscriptDrafts(
 		save: (checkpoint) => backend.set(key, checkpoint),
 		insertIfAbsent: (checkpoint) => backend.insertIfAbsent(key, checkpoint),
 		removeIf: (checkpoint) => backend.deleteIf(key, storedIdentity(checkpoint)),
-		replaceIf: (expected, next) =>
-			backend.replaceIf(key, storedIdentity(expected), next),
+		replaceIf: (expected, next) => backend.replaceIf(key, storedIdentity(expected), next),
 	};
 }

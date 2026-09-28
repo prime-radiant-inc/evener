@@ -19,7 +19,12 @@ describe("who else needs you (spec 13.2)", () => {
 	it("sends Next to the head of Needs you from elsewhere, and on to the one after from inside it (ruling 11)", () => {
 		expect(nextSession(bands, "working")?.ref).toBe("failed");
 		expect(nextSession(bands, "failed")?.ref).toBe("question");
-		expect(nextSession(liveBands([working], [], () => false), "working")).toBeNull();
+		expect(
+			nextSession(
+				liveBands([working], [], () => false),
+				"working",
+			),
+		).toBeNull();
 	});
 
 	it("walks on through everyone who needs you, and wraps around", () => {
@@ -30,7 +35,12 @@ describe("who else needs you (spec 13.2)", () => {
 		expect(nextSession(three, "a")?.ref).toBe("b");
 		expect(nextSession(three, "b")?.ref).toBe("c");
 		expect(nextSession(three, "c")?.ref).toBe("a");
-		expect(nextSession(liveBands([a], [a], () => false), "a")).toBeNull();
+		expect(
+			nextSession(
+				liveBands([a], [a], () => false),
+				"a",
+			),
+		).toBeNull();
 	});
 });
 

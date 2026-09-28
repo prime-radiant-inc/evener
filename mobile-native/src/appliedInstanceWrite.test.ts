@@ -1,9 +1,5 @@
 import { expect, it } from "vitest";
-import {
-	ErrorInstanceRemoveApplied,
-	ErrorInstanceRenamePersisted,
-	WireError,
-} from "@evener/appwire-client";
+import { ErrorInstanceRemoveApplied, ErrorInstanceRenamePersisted, WireError } from "@evener/appwire-client";
 import { appliedInstanceWrite } from "./appliedInstanceWrite";
 
 it("classifies the hub's applied provider-instance writes", () => {

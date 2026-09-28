@@ -1,10 +1,4 @@
-import {
-	matchesSearch,
-	STATE_ORDER,
-	type SubagentRow,
-	type SubagentState,
-	subagentSections,
-} from "./subagentModel";
+import { matchesSearch, STATE_ORDER, type SubagentRow, type SubagentState, subagentSections } from "./subagentModel";
 
 export type SubagentFilter = "all" | SubagentState;
 
@@ -13,7 +7,6 @@ export type SubagentListItem =
 	| { kind: "row"; row: SubagentRow }
 	| { kind: "doneFold"; count: number; open: boolean }
 	| { kind: "missing"; title: string };
-
 
 /** The list's items for a filter and a search (spec 9): failed, then
  * running, then done, where done is one folded row under All until you open

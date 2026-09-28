@@ -3,11 +3,7 @@ import { expect, it, vi } from "vitest";
 import type { ConnectionState } from "@evener/appwire-client";
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
 import { HubUpgradeSection } from "./HubUpgradeSection";
-import {
-	createHubUpgradeController,
-	type UpgradeCheckpoint,
-	type UpgradeStorage,
-} from "./hubUpgrade";
+import { createHubUpgradeController, type UpgradeCheckpoint, type UpgradeStorage } from "./hubUpgrade";
 import { useLiveReadiness, whenReady } from "./connectionDisplay";
 import { render } from "./renderNative.testkit";
 
@@ -17,8 +13,7 @@ const alerts = vi.hoisted(() => ({
 vi.mock("react-native", async () => ({
 	...(await import("./renderNative.testkit")).nativeModuleMock(),
 	Alert: {
-		alert: (_title: string, _message: string, buttons: typeof alerts.buttons[number]) =>
-			alerts.buttons.push(buttons),
+		alert: (_title: string, _message: string, buttons: (typeof alerts.buttons)[number]) => alerts.buttons.push(buttons),
 	},
 }));
 
@@ -62,11 +57,7 @@ function renderUpgrade(
 	controller: ReturnType<typeof createHubUpgradeController>,
 ) {
 	function Subject() {
-		const canUseConnection = useLiveReadiness(
-			"hub-a",
-			clientRef.current,
-			stateRef.current,
-		);
+		const canUseConnection = useLiveReadiness("hub-a", clientRef.current, stateRef.current);
 		return (
 			<HubUpgradeSection
 				hubName="Work hub"
@@ -90,12 +81,7 @@ it("does not confirm an upgrade opened on a replaced client", async () => {
 	const second = fixture();
 	const clientRef = { current: first.client };
 	const stateRef = { current: "ready" as ConnectionState };
-	const controller = createHubUpgradeController(
-		"hub-a",
-		first.client,
-		first.storage,
-		() => "attempt-a",
-	);
+	const controller = createHubUpgradeController("hub-a", first.client, first.storage, () => "attempt-a");
 	const rendered = renderUpgrade(clientRef, stateRef, controller);
 	await act(async () => {
 		rendered.tree.root.findByProps({ accessibilityLabel: "Upgrade hub" }).props.onPress();
@@ -123,12 +109,7 @@ it("starts an upgrade while the original client remains ready", async () => {
 	const first = fixture();
 	const clientRef = { current: first.client };
 	const stateRef = { current: "ready" as ConnectionState };
-	const controller = createHubUpgradeController(
-		"hub-a",
-		first.client,
-		first.storage,
-		() => "attempt-a",
-	);
+	const controller = createHubUpgradeController("hub-a", first.client, first.storage, () => "attempt-a");
 	const rendered = renderUpgrade(clientRef, stateRef, controller);
 	await act(async () => {
 		rendered.tree.root.findByProps({ accessibilityLabel: "Upgrade hub" }).props.onPress();

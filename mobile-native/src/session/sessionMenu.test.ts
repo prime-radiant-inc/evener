@@ -164,8 +164,7 @@ describe("the Session's ⋯ menu (spec 8.1)", () => {
 
 	it("each level chooses that level", () => {
 		const { items, chosen } = menu();
-		for (const entry of levelSection(only(items).menu.items).items)
-			if (entry.type === "action") entry.onPress();
+		for (const entry of levelSection(only(items).menu.items).items) if (entry.type === "action") entry.onPress();
 		expect(chosen).toEqual(DETAIL_LEVELS.map(({ level }) => ({ kind: "level", level })));
 	});
 

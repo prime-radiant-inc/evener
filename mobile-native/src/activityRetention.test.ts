@@ -29,13 +29,7 @@ it("drops retained activity when its session identity changes", () => {
 	};
 
 	expect(retainedActivityTree(retained, "local:one", "thread-1")).toBe(tree);
-	const replacementTree = retainedActivityTree(
-		retained,
-		"local:one",
-		"thread-2",
-	);
+	const replacementTree = retainedActivityTree(retained, "local:one", "thread-2");
 	expect(replacementTree).toBeNull();
-	expect(
-		() => new ActivityList(client, "local:one", "thread-2", replacementTree),
-	).not.toThrow();
+	expect(() => new ActivityList(client, "local:one", "thread-2", replacementTree)).not.toThrow();
 });

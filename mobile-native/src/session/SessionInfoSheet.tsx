@@ -235,10 +235,12 @@ function SessionInfoBody({
 							text={session.goal ? "Edit goal" : "Set a goal"}
 							tone="accent"
 							disabled={!ready}
-							onPress={() => finish(() => {
-								navigation.goBack();
-								host.editGoal();
-							})}
+							onPress={() =>
+								finish(() => {
+									navigation.goBack();
+									host.editGoal();
+								})
+							}
 						/>
 					) : null}
 					{session.goal && capabilities.goal ? (
@@ -299,9 +301,7 @@ function SessionInfoBody({
 						onPress={() => confirmShutDown(() => leaveFor("shutDown"))}
 					/>
 				) : null}
-				{canDeleteSavedSession(session) ? (
-					<Row text="Delete" tone="danger" onPress={() => leaveFor("delete")} />
-				) : null}
+				{canDeleteSavedSession(session) ? <Row text="Delete" tone="danger" onPress={() => leaveFor("delete")} /> : null}
 			</Section>
 		</ScrollView>
 	);
@@ -415,7 +415,9 @@ function Section({
 			>
 				{title}
 			</Text>
-			<View style={{ backgroundColor: palette.surface, borderRadius: 12, borderCurve: "continuous", overflow: "hidden" }}>
+			<View
+				style={{ backgroundColor: palette.surface, borderRadius: 12, borderCurve: "continuous", overflow: "hidden" }}
+			>
 				{rows.map((row, index) => (
 					<View
 						key={row.key}
@@ -470,7 +472,14 @@ function Row({
 }) {
 	const { palette } = useColors();
 	const scale = useTextScale();
-	const color = tone === "accent" ? palette.accentInk : tone === "danger" ? palette.dangerInk : label ? palette.inkMid : palette.inkHi;
+	const color =
+		tone === "accent"
+			? palette.accentInk
+			: tone === "danger"
+				? palette.dangerInk
+				: label
+					? palette.inkMid
+					: palette.inkHi;
 	// An action row names itself; a row that opens a sheet shows where it leads.
 	const opens = onPress !== undefined && tone === "ink";
 	const content = (
@@ -503,7 +512,12 @@ function Row({
 				{detail ? (
 					<Text
 						allowFontScaling={allowFontScaling}
-						style={{ color: palette.inkMid, fontSize: 13 * scale, lineHeight: 18 * scale, fontVariant: ["tabular-nums"] }}
+						style={{
+							color: palette.inkMid,
+							fontSize: 13 * scale,
+							lineHeight: 18 * scale,
+							fontVariant: ["tabular-nums"],
+						}}
 					>
 						{detail}
 					</Text>

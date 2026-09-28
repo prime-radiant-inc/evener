@@ -14,7 +14,11 @@ describe("the session's documents (spec 10.1)", () => {
 					{ path: "agent/retirement.go" },
 				],
 				[
-					{ id: "u1", url: "file:///home/jesse/git/evener/docs/superpowers/plans/settle.md", label: "Settle race plan" },
+					{
+						id: "u1",
+						url: "file:///home/jesse/git/evener/docs/superpowers/plans/settle.md",
+						label: "Settle race plan",
+					},
 					{ id: "u2", url: "https://github.com/prime-radiant-inc/evener/pull/2138", label: "PR 2138" },
 					{ id: "u3", url: "file:///home/jesse/notes/todo.md" },
 				],
