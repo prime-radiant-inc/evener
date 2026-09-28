@@ -520,6 +520,13 @@ func TestProjectReloadThroughHubDropsOnlyFixedOpener(t *testing.T) {
 	if len(items) != 1 || items[0].Type != "userMessage" || items[0].Text != openerText {
 		t.Fatalf("expected only the fuzzed user message after dropping the fixed opener, got: %+v", items)
 	}
+	item := items[0]
+	if item.Position == nil || item.Position.Entry != 1 || item.Position.Item != 0 {
+		t.Fatalf("retained user message has fixed-opener position, want entry 1 item 0: %+v", item.Position)
+	}
+	if item.TurnID != "turn_2" || item.TranscriptKey != "apptranscript-item-v1:turn_2:1:0" {
+		t.Fatalf("retained user message has fixed-opener identity: turnID=%q transcriptKey=%q", item.TurnID, item.TranscriptKey)
+	}
 }
 
 func TestProjectReloadThroughHubPreservesPagingAndImageMetadata(t *testing.T) {
