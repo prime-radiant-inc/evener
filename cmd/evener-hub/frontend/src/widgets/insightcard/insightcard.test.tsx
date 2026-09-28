@@ -1,8 +1,6 @@
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
-import { afterEach, expect, test, vi } from "vitest";
+import { fireEvent, render, screen } from "@testing-library/react";
+import { expect, test, vi } from "vitest";
 import { type Insight, InsightCard } from "./index";
-
-afterEach(cleanup);
 
 const INSIGHTS: Insight[] = [
   { title: "Token spend up", body: "Usage rose 12% week over week.", series: [3, 5, 4, 8, 9] },

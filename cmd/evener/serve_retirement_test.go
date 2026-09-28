@@ -1628,3 +1628,50 @@ func TestServeRetirementClaimRevalidatesOwnershipAfterClear(t *testing.T) {
 		t.Fatalf("serve exit after the accepted retirement: %v", err)
 	}
 }
+
+// TestServeShutdownJoinsRetirementLoop proves the daemon's exit path waits for
+// the idle-retirement goroutine (controller.Run) to return before serve
+// returns. The loop is parked inside its retire callback when the serve context
+// is cancelled, so a serve that returns then has left Run running behind it —
+// exactly the goroutine that can race a test's TempDir removal or leak check.
+func TestServeShutdownJoinsRetirementLoop(t *testing.T) {
+	deps, state, args := newClearServeDeps(t)
+	clk := newServeRetireClock()
+	deps.retirementClock = clk
+	rec := newRetireEventRecorder()
+	deps.retirementObserve = rec.observe
+	args = append(args, "--daemon-idle-timeout", "1h")
+
+	done := runRetireServe(t, deps, state, args)
+	rec.await(t, "root_published")
+	clk.awaitArm(t)
+	awaitRetirementSettled(t, state.srv)
+
+	// Park controller.Run inside the retire callback it drives on the timer
+	// tick: the loop is now alive and cannot return until the gate opens.
+	release := rec.gateAt("claim_consumed")
+	defer release()
+	clk.Advance(time.Hour)
+	clk.fire(t)
+	rec.await(t, "claim_consumed")
+
+	// Cancel the serve context while the loop is parked. The exit path must
+	// wait on the loop's done channel, not return with Run still running.
+	state.srv.shutdown()
+
+	select {
+	case err := <-done:
+		t.Fatalf("serve returned (err=%v) while the idle-retirement loop was still parked: the retirement goroutine was not joined", err)
+	case <-time.After(2 * time.Second):
+	}
+
+	release()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("serve exit after joining the retirement loop: %v", err)
+		}
+	case <-time.After(15 * time.Second):
+		t.Fatal("serve never returned after the retirement loop was released")
+	}
+}

@@ -3,8 +3,8 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { SettingsOverviewResponse } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
-import { afterEach, beforeEach, expect, test } from "vitest";
+import { fireEvent, render, screen } from "@testing-library/react";
+import { beforeEach, expect, test } from "vitest";
 import { connectionStore } from "../../../stores/connection";
 import { resetSettingsOverviewStoreForTests } from "../../../stores/settingsOverview";
 import { resetDisclosureStoreForTests } from "../../../widgets/disclosure/disclosureStore";
@@ -21,8 +21,6 @@ beforeEach(() => {
   resetSettingsOverviewStoreForTests();
   resetDisclosureStoreForTests();
 });
-
-afterEach(cleanup);
 
 // Renders About with no client connected and waits for the overview fetch it
 // starts on mount to settle (it rejects, and the identity line degrades), so

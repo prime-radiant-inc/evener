@@ -1,8 +1,8 @@
 import { type HostPlan, type HostRow, RequestTimeoutError, WireError } from "@evener/appwire-client";
 import { FakeClient, gateSettlements } from "@evener/appwire-client/testing/fakeClient";
-import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { afterEach, beforeEach, expect, test, vi } from "vitest";
+import { beforeEach, expect, test, vi } from "vitest";
 import { connectionStore } from "../../../stores/connection";
 import { hostOpsStore } from "../../../stores/hostOps";
 import { hostsStore } from "../../../stores/hosts";
@@ -51,8 +51,6 @@ beforeEach(() => {
   hostsStore.getState().resetForTests();
   hostOpsStore.getState().resetForTests();
 });
-
-afterEach(cleanup);
 
 test("lists hosts with online/offline state chips", async () => {
   const fake = connectFakeClient();

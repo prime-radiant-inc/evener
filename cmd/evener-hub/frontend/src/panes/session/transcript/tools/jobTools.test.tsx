@@ -1,15 +1,11 @@
 import type { ActivityTree, EvenerDelegateInfo, ItemModel } from "@evener/appwire-client";
 import { buildEntityView } from "@evener/appwire-client";
-import { act, cleanup, render, screen, within } from "@testing-library/react";
-import { afterEach, expect, test, vi } from "vitest";
+import { act, render, screen, within } from "@testing-library/react";
+import { expect, test, vi } from "vitest";
 import { toolRendererFor } from "../toolRenderers";
 import "./jobTools";
 import "./jobWatch";
 import { TranscriptRenderProvider } from "../../../../transcriptDisplay/renderContext";
-
-afterEach(() => {
-  cleanup();
-});
 
 function item(overrides: Partial<ItemModel> = {}): ItemModel {
   return { id: "item_1", turnId: "turn_1", type: "commandExecution", text: "", ...overrides };

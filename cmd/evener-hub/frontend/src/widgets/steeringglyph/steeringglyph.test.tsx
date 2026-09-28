@@ -1,8 +1,6 @@
-import { cleanup, render, screen } from "@testing-library/react";
-import { afterEach, expect, test } from "vitest";
+import { render, screen } from "@testing-library/react";
+import { expect, test } from "vitest";
 import { SteeringGlyph } from ".";
-
-afterEach(cleanup);
 
 test("renders the mark", () => {
   render(<SteeringGlyph />);

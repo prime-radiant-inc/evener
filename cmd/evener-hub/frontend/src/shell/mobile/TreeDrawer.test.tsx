@@ -1,8 +1,8 @@
 import { keyID } from "@evener/appwire-client/state/navigation";
-import { cleanup, render, screen } from "@testing-library/react";
+import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { lazy } from "react";
-import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
+import { beforeAll, beforeEach, expect, test, vi } from "vitest";
 import { navigationStore, resetNavigationStoreForTests } from "../../stores/navigation/store";
 import { registerPaneForTests } from "../paneRegistry";
 import { resetWorkspaceStoreForTests } from "../workspace";
@@ -64,10 +64,6 @@ beforeAll(async () => {
 beforeEach(() => {
   resetWorkspaceStoreForTests();
   resetNavigationStoreForTests();
-});
-
-afterEach(() => {
-  cleanup();
 });
 
 test("renders a trigger button labeled Sessions", () => {
