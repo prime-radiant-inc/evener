@@ -244,6 +244,11 @@ type NavigationSubagentTally struct {
 	Done    int `json:"done"`
 }
 
+// NavigationFailureCrashed is the cause_kind of a row whose daemon's process
+// exited while the hub still lists it. Nothing is left to report why, so the
+// hub says so itself (S1c).
+const NavigationFailureCrashed = "crashed"
+
 // NavigationQuestion is the first question of a live session's pending ask
 // (S1b): a Needs you row's why line ("Question · keep or drop the implied
 // options?"), the option labels a long-press preview lists, and how many
