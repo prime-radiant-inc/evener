@@ -905,7 +905,10 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 //
 // A corrupt file whose custody snapshot is incomplete — anything that would
 // leave a fence unprovable — fails startup here, never serves: the error aborts
-// the boot rather than leaving host operations unwired.
+// the boot rather than leaving host operations unwired. Every other open failure
+// keeps the pre-quarantine disposition: the failure is logged and the hub
+// serves with host operations unwired, because a transient permission or I/O
+// problem is not a fence the hub cannot prove.
 //
 // The opened store also runs §3's boot reap: expired confirmation tokens are
 // dropped at startup, so a restart never leaves an unexpired-looking row behind
@@ -922,11 +925,15 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 func openHostOpsStore(stateRoot string, stderr io.Writer, retention hostops.RetentionPolicy) (*hostops.Store, error) {
 	store, err := hostops.OpenWithRetention(hostops.StorePath(stateRoot), retention)
 	if err != nil {
-		return nil, fmt.Errorf("host operation store: %w", err)
+		if errors.Is(err, hostops.ErrStoreCorrupt) {
+			return nil, fmt.Errorf("host operation store: %w", err)
+		}
+		_, _ = fmt.Fprintf(stderr, "[hub] host operation store not opened, host boundary records will not be mirrored: %v\n", err)
+		return nil, nil
 	}
 	if signal := store.Quarantine(); signal != nil {
 		_, _ = fmt.Fprintf(stderr,
-			"[hub] host operation store quarantined %s (custody %s, quarantine epoch %d); the replacement store serves empty and every name that custody closed stays closed until orphan-resolve\n",
+			"[hub] host operation store quarantined %s (custody %s, quarantine epoch %d); the replacement store serves the custody's orphan-unverified records only, and every name that custody closed stays closed until orphan-resolve\n",
 			signal.QuarantinedFile, signal.CustodyFile, signal.QuarantineEpoch)
 	}
 	if reaped, err := store.ReapExpiredTokens(); err != nil {

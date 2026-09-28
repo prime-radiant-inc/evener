@@ -192,6 +192,18 @@ type storeCell struct {
 // the cell to model the process restart a fresh load belongs to.
 var storeCells sync.Map
 
+// storeOpenLocks serializes the first open of each canonical store path. The
+// load a first open runs can perform §4's quarantine, so two racing openers of
+// one corrupt file must resolve it once: the loser adopts the winner's cell
+// instead of writing a second set of artifacts and racing the rename.
+var storeOpenLocks sync.Map
+
+// storeOpenLock returns the per-path open lock, creating it on first use.
+func storeOpenLock(key string) *sync.Mutex {
+	lock, _ := storeOpenLocks.LoadOrStore(key, &sync.Mutex{})
+	return lock.(*sync.Mutex)
+}
+
 // Store is a handle on the operation store: one file, one shared cell, one
 // atomic write discipline.
 type Store struct {
@@ -250,6 +262,13 @@ func openFSWithRetention(fs afero.Fs, path string, faults storeFaults, policy Re
 	if err != nil {
 		return nil, err
 	}
+	// One first open per path at a time, across the cell lookup and the whole
+	// load: the load can perform §4's quarantine (intent, custody, epoch, rename
+	// and replacement writes), and a racing opener that arrives second must find
+	// the winner's cell rather than resolve the same corrupt file again.
+	openLock := storeOpenLock(key)
+	openLock.Lock()
+	defer openLock.Unlock()
 	if existing, held := storeCells.Load(key); held {
 		cell := existing.(*storeCell)
 		// A cached cell makes no load, but Open still enforces the path rules a
@@ -265,9 +284,12 @@ func openFSWithRetention(fs afero.Fs, path string, faults storeFaults, policy Re
 				// aside by a quarantine. Serving the records it once held would
 				// answer from a store that no longer exists, and the next write
 				// would put them back; the durable store is what the file says,
-				// and there is no file, so this path starts over.
+				// and there is no file, so this path starts over. The per-path
+				// open lock is not reentrant, so the fresh load runs inline below
+				// rather than in a recursive call.
 				storeCells.Delete(key)
-				return openFSWithRetention(fs, path, faults, policy)
+			} else {
+				return &Store{path: path, fs: fs, faults: faults, cell: cell, retention: policy}, nil
 			}
 		case err != nil:
 			return nil, fmt.Errorf("hostops: stat store %s: %w", path, err)
@@ -278,8 +300,8 @@ func openFSWithRetention(fs afero.Fs, path string, faults storeFaults, policy Re
 			if perm := info.Mode().Perm(); !ownerOnly(perm) {
 				return nil, fmt.Errorf("%w: %s has mode %04o", ErrStoreReadableBeyondOwner, path, perm)
 			}
+			return &Store{path: path, fs: fs, faults: faults, cell: cell, retention: policy}, nil
 		}
-		return &Store{path: path, fs: fs, faults: faults, cell: cell, retention: policy}, nil
 	}
 	fileExists := true
 	if _, err := lstat(fs, path); errors.Is(err, os.ErrNotExist) {
@@ -1370,10 +1392,12 @@ func ownedKeysFor(owned map[string]map[string]struct{}, path string) (map[string
 		return canonical, true
 	}
 	if key, ok := strings.CutPrefix(path, "boundaries."); ok && key != "" {
-		return owned["boundaries[]"], true
+		canonical, ok := owned["boundaries[]"]
+		return canonical, ok
 	}
 	if key, ok := strings.CutPrefix(path, "removedHosts."); ok && key != "" {
-		return owned["removedHosts[]"], true
+		canonical, ok := owned["removedHosts[]"]
+		return canonical, ok
 	}
 	return nil, false
 }

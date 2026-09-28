@@ -112,6 +112,16 @@ type quarantineArtifacts struct {
 	signal     *QuarantineSignal
 	newestAsid string
 	asides     []string
+	// allocatorFloor is the highest controller-assigned id any existing custody
+	// file for this store handed out (its high-water mark or one of its imported
+	// ids). The replacement allocator and every later quarantine's ownership ids
+	// start above it, so no id is ever reused across quarantine epochs.
+	allocatorFloor uint64
+	// custodyStamps and asideStamps are the timestamps of the custody and aside
+	// files found; resolveStoreFS checks they are one-to-one (each custody file
+	// either has its aside or is the one a pending intent names).
+	custodyStamps map[string]bool
+	asideStamps   map[string]bool
 }
 
 // scanQuarantineArtifacts reads the directory beside the store. Every custody
@@ -120,17 +130,16 @@ type quarantineArtifacts struct {
 // of the same stamp (§4: "an aside file with no complete custody fails startup,
 // never serves").
 func scanQuarantineArtifacts(fs afero.Fs, storePath string) (quarantineArtifacts, error) {
-	var artifacts quarantineArtifacts
-	if body, err := afero.ReadFile(fs, quarantineEpochPath(storePath)); err == nil {
-		var sidecar quarantineEpochFile
-		decoder := json.NewDecoder(bytes.NewReader(body))
-		decoder.DisallowUnknownFields()
-		if err := decoder.Decode(&sidecar); err != nil {
-			return artifacts, quarantineFailed(fmt.Errorf("decode epoch sidecar %s: %w", quarantineEpochPath(storePath), err))
-		}
-		artifacts.epoch = sidecar.QuarantineEpoch
-	} else if !errors.Is(err, os.ErrNotExist) {
-		return artifacts, fmt.Errorf("hostops: read quarantine epoch %s: %w", quarantineEpochPath(storePath), err)
+	artifacts := quarantineArtifacts{
+		custodyStamps: map[string]bool{},
+		asideStamps:   map[string]bool{},
+	}
+	sidecarEpoch, found, err := readQuarantineEpochFile(fs, storePath)
+	if err != nil {
+		return artifacts, quarantineFailed(err)
+	}
+	if found {
+		artifacts.epoch = sidecarEpoch
 	}
 
 	names, err := readDirNames(fs, filepath.Dir(storePath))
@@ -161,23 +170,84 @@ func scanQuarantineArtifacts(fs afero.Fs, storePath string) (quarantineArtifacts
 					QuarantineEpoch: custody.QuarantineEpoch,
 				}
 			}
+			artifacts.custodyStamps[stamp] = true
+			if custody.AllocatorHighWaterMark > artifacts.allocatorFloor {
+				artifacts.allocatorFloor = custody.AllocatorHighWaterMark
+			}
+			for _, row := range custody.RecordIDs {
+				allocated, err := parseAllocatorID(row.RecordID)
+				if err != nil {
+					return artifacts, quarantineFailed(fmt.Errorf("custody file %s names record id %q, which is not a controller-assigned id",
+						custodyPath, row.RecordID))
+				}
+				if allocated > artifacts.allocatorFloor {
+					artifacts.allocatorFloor = allocated
+				}
+			}
 		case strings.HasPrefix(name, base+quarantineAsideInfix):
 			stamp := strings.TrimPrefix(name, base+quarantineAsideInfix)
 			if stamp == "" {
 				return artifacts, quarantineFailed(fmt.Errorf("aside file %s carries no timestamp", name))
+			}
+			asidePath := filepath.Join(filepath.Dir(storePath), name)
+			info, err := lstat(fs, asidePath)
+			if err != nil {
+				return artifacts, quarantineFailed(fmt.Errorf("stat aside file %s: %w", asidePath, err))
+			}
+			if err := rejectNonStoreFileKind(asidePath, info); err != nil {
+				return artifacts, quarantineFailed(err)
+			}
+			if perm := info.Mode().Perm(); !ownerOnly(perm) {
+				return artifacts, quarantineFailed(fmt.Errorf("%w: aside file %s has mode %04o",
+					ErrStoreReadableBeyondOwner, asidePath, perm))
 			}
 			custodyPath := filepath.Join(filepath.Dir(storePath), base+quarantineCustodyInfix+stamp+".json")
 			if _, err := readCustodyFile(fs, custodyPath, storePath); err != nil {
 				// §4: an aside file with no complete custody fails startup.
 				return artifacts, quarantineFailed(err)
 			}
-			artifacts.asides = append(artifacts.asides, filepath.Join(filepath.Dir(storePath), name))
+			artifacts.asideStamps[stamp] = true
+			artifacts.asides = append(artifacts.asides, asidePath)
 			if stamp > artifacts.newestAsid {
 				artifacts.newestAsid = stamp
 			}
 		}
 	}
 	return artifacts, nil
+}
+
+// readQuarantineEpochFile reads the durable counter's sidecar: a regular file,
+// owner-only, carrying exactly the sidecar schema. Anything else is refused, so
+// a symlinked or hand-edited sidecar cannot move the counter the cursors pin.
+func readQuarantineEpochFile(fs afero.Fs, storePath string) (uint64, bool, error) {
+	sidecarPath := quarantineEpochPath(storePath)
+	info, err := lstat(fs, sidecarPath)
+	if errors.Is(err, os.ErrNotExist) {
+		return 0, false, nil
+	}
+	if err != nil {
+		return 0, false, fmt.Errorf("stat quarantine epoch %s: %w", sidecarPath, err)
+	}
+	if err := rejectNonStoreFileKind(sidecarPath, info); err != nil {
+		return 0, false, err
+	}
+	if perm := info.Mode().Perm(); !ownerOnly(perm) {
+		return 0, false, fmt.Errorf("%w: %s has mode %04o", ErrStoreReadableBeyondOwner, sidecarPath, perm)
+	}
+	body, err := afero.ReadFile(fs, sidecarPath)
+	if err != nil {
+		return 0, false, fmt.Errorf("read quarantine epoch %s: %w", sidecarPath, err)
+	}
+	if err := checkQuarantineBytes(body); err != nil {
+		return 0, false, fmt.Errorf("quarantine epoch %s: %w", sidecarPath, err)
+	}
+	var sidecar quarantineEpochFile
+	decoder := json.NewDecoder(bytes.NewReader(body))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&sidecar); err != nil {
+		return 0, false, fmt.Errorf("decode epoch sidecar %s: %w", sidecarPath, err)
+	}
+	return sidecar.QuarantineEpoch, true, nil
 }
 
 // stampOf extracts the timestamp token from a custody file path.
@@ -216,6 +286,24 @@ func resolveStoreFS(fs afero.Fs, path string, faults storeFaults) (snapshot, uin
 	intent, haveIntent, err := readQuarantineIntent(fs, path)
 	if err != nil {
 		return snapshot{}, 0, nil, err
+	}
+	// The artifacts must be one-to-one: every custody file either has its aside
+	// on disk or is the one a pending intent names. A custody file with neither
+	// is a quarantine that lost its rename and its intent — the corrupt bytes it
+	// custodied cannot be shown to exist, so the boot refuses rather than
+	// serving beside an unproven snapshot.
+	pendingStamp := ""
+	if haveIntent {
+		if stamp, ok := strings.CutPrefix(intent.AsideFile, path+quarantineAsideInfix); ok {
+			pendingStamp = stamp
+		}
+	}
+	for stamp := range artifacts.custodyStamps {
+		if artifacts.asideStamps[stamp] || stamp == pendingStamp {
+			continue
+		}
+		return snapshot{}, 0, nil, quarantineFailed(fmt.Errorf(
+			"custody file %s has neither its aside file nor a pending intent", quarantineCustodyPath(path, stamp)))
 	}
 	if haveIntent {
 		custody, err := readCustodyFile(fs, intent.CustodyFile, path)
@@ -266,7 +354,7 @@ func resolveStoreFS(fs afero.Fs, path string, faults storeFaults) (snapshot, uin
 				return state, epoch, signal, nil
 			}
 		case errors.Is(statErr, os.ErrNotExist):
-			state, err := replacementState(custody, intent.CustodyFile)
+			state, err := replacementState(custody, intent.CustodyFile, artifacts.allocatorFloor)
 			if err != nil {
 				return snapshot{}, 0, nil, custodyIncomplete(err)
 			}
@@ -299,7 +387,7 @@ func resolveStoreFS(fs afero.Fs, path string, faults storeFaults) (snapshot, uin
 		if err != nil {
 			return snapshot{}, 0, nil, quarantineFailed(err)
 		}
-		state, err := replacementState(custody, custodyPath)
+		state, err := replacementState(custody, custodyPath, artifacts.allocatorFloor)
 		if err != nil {
 			return snapshot{}, 0, nil, custodyIncomplete(err)
 		}
@@ -337,7 +425,7 @@ func resolveStoreFS(fs afero.Fs, path string, faults storeFaults) (snapshot, uin
 	if err != nil {
 		return snapshot{}, 0, nil, custodyIncomplete(err)
 	}
-	custody, err := custodyFromStore(decoded, path, epoch+1, time.Now().UTC())
+	custody, err := custodyFromStore(decoded, path, epoch+1, time.Now().UTC(), artifacts.allocatorFloor)
 	if err != nil {
 		return snapshot{}, 0, nil, custodyIncomplete(err)
 	}
@@ -390,7 +478,7 @@ func resolveStoreFS(fs afero.Fs, path string, faults storeFaults) (snapshot, uin
 			return snapshot{}, 0, nil, err
 		}
 	}
-	replacement, err := replacementState(custody, custodyPath)
+	replacement, err := replacementState(custody, custodyPath, artifacts.allocatorFloor)
 	if err != nil {
 		return snapshot{}, 0, nil, custodyIncomplete(err)
 	}
@@ -440,8 +528,17 @@ func renameStoreAside(fs afero.Fs, path, aside string, faults storeFaults) error
 	if err := rejectNonStoreFileKind(path, info); err != nil {
 		return err
 	}
+	if err := refuseNonRegularTarget(fs, aside); err != nil {
+		return err
+	}
 	if err := fs.Rename(path, aside); err != nil {
 		return fmt.Errorf("hostops: rename corrupt store aside: %w", err)
+	}
+	// The aside preserves the corrupt bytes, never a wider mode: the corrupt file
+	// passed the loader's owner-only rule, but a hand-made file need not have, and
+	// the quarantine is not the place to widen what the store refuses to serve.
+	if err := fs.Chmod(aside, 0o600); err != nil {
+		return fmt.Errorf("hostops: set aside mode: %w", err)
 	}
 	sync := syncDirFS
 	if faults.syncDir != nil {
@@ -482,10 +579,21 @@ func clearQuarantineIntent(fs afero.Fs, path string, faults storeFaults) error {
 // of, so it refuses.
 func readQuarantineIntent(fs afero.Fs, path string) (quarantineIntent, bool, error) {
 	intentPath := quarantineIntentPath(path)
-	raw, err := afero.ReadFile(fs, intentPath)
+	info, err := lstat(fs, intentPath)
 	if errors.Is(err, os.ErrNotExist) {
 		return quarantineIntent{}, false, nil
 	}
+	if err != nil {
+		return quarantineIntent{}, false, fmt.Errorf("hostops: stat quarantine intent %s: %w", intentPath, err)
+	}
+	if err := rejectNonStoreFileKind(intentPath, info); err != nil {
+		return quarantineIntent{}, false, quarantineFailed(err)
+	}
+	if perm := info.Mode().Perm(); !ownerOnly(perm) {
+		return quarantineIntent{}, false, quarantineFailed(fmt.Errorf("%w: %s has mode %04o",
+			ErrStoreReadableBeyondOwner, intentPath, perm))
+	}
+	raw, err := afero.ReadFile(fs, intentPath)
 	if err != nil {
 		return quarantineIntent{}, false, fmt.Errorf("hostops: read quarantine intent %s: %w", intentPath, err)
 	}
@@ -510,6 +618,19 @@ func readQuarantineIntent(fs afero.Fs, path string) (quarantineIntent, bool, err
 		return quarantineIntent{}, false, quarantineFailed(fmt.Errorf("quarantine intent %s carries no boot timestamp", intentPath))
 	case intent.QuarantineEpoch == 0:
 		return quarantineIntent{}, false, quarantineFailed(fmt.Errorf("quarantine intent %s carries no quarantine epoch", intentPath))
+	}
+	// The binding is exact: the intent's aside and custody names must be the
+	// ones this store's quarantine derives from one boot timestamp. An intent
+	// that names another store's artifact — or mismatched stamps — is refused
+	// rather than followed.
+	stamp, ok := strings.CutPrefix(intent.AsideFile, path+quarantineAsideInfix)
+	if !ok || stamp == "" || strings.ContainsRune(stamp, filepath.Separator) {
+		return quarantineIntent{}, false, quarantineFailed(fmt.Errorf("quarantine intent %s names the aside file %q, which is not this store's quarantine aside",
+			intentPath, intent.AsideFile))
+	}
+	if want := quarantineCustodyPath(path, stamp); intent.CustodyFile != want {
+		return quarantineIntent{}, false, quarantineFailed(fmt.Errorf("quarantine intent %s names the custody file %q, want %q",
+			intentPath, intent.CustodyFile, want))
 	}
 	return intent, true, nil
 }
@@ -585,6 +706,9 @@ func writeQuarantineFile(fs afero.Fs, path string, data []byte, faults storeFaul
 		return fmt.Errorf("hostops: close temp quarantine file: %w", err)
 	}
 	temp = nil
+	if err := refuseNonRegularTarget(fs, path); err != nil {
+		return err
+	}
 	if err := fs.Rename(tempPath, path); err != nil {
 		return fmt.Errorf("hostops: rename quarantine file: %w", err)
 	}
@@ -593,6 +717,21 @@ func writeQuarantineFile(fs afero.Fs, path string, data []byte, faults storeFaul
 		return &postRenameError{err: fmt.Errorf("hostops: sync directory behind %s: %w", filepath.Base(path), err)}
 	}
 	return nil
+}
+
+// refuseNonRegularTarget refuses a rename that would replace something other
+// than a regular file (or nothing at all): the rename replaces the link itself,
+// not what it points at, so an artifact path swapped for a symlink must not be
+// silently clobbered — and a directory or fifo must not be replaced either.
+func refuseNonRegularTarget(fs afero.Fs, path string) error {
+	info, err := lstat(fs, path)
+	switch {
+	case errors.Is(err, os.ErrNotExist):
+		return nil
+	case err != nil:
+		return fmt.Errorf("hostops: stat %s: %w", path, err)
+	}
+	return rejectNonStoreFileKind(path, info)
 }
 
 // checkQuarantineBytes applies the byte-level rules every quarantine artifact

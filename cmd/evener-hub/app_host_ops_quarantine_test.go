@@ -51,6 +51,9 @@ func TestOpenHostOpsStoreQuarantinesAndSignals(t *testing.T) {
 		!strings.Contains(logLine, signal.CustodyFile) {
 		t.Fatalf("the boot log does not carry the operator-visible health signal:\n%s", logLine)
 	}
+	if !strings.Contains(logLine, "orphan-unverified") || strings.Contains(logLine, "serves empty") {
+		t.Fatalf("the health log does not name the custody import set the replacement serves:\n%s", logLine)
+	}
 	records := store.Records()
 	if len(records) != 2 {
 		t.Fatalf("the replacement store serves %d records, want the two custody imports: %+v", len(records), records)
@@ -59,6 +62,56 @@ func TestOpenHostOpsStoreQuarantinesAndSignals(t *testing.T) {
 		if record.State != hostops.StateOrphanUnverified {
 			t.Fatalf("the replacement store serves %+v, want only orphan-unverified imports", record)
 		}
+	}
+}
+
+// TestOpenHostOpsStoreKeepsTheNonCorruptOpenDispositions pins the narrowed boot
+// abort: only a corrupt store whose custody cannot be proven aborts the boot.
+// Every other open failure keeps the pre-quarantine disposition — logged, and
+// the hub serves with host operations unwired.
+func TestOpenHostOpsStoreKeepsTheNonCorruptOpenDispositions(t *testing.T) {
+	cases := map[string]struct {
+		prepare func(t *testing.T, path string)
+	}{
+		"a store readable beyond its owner": {
+			prepare: func(t *testing.T, path string) {
+				if err := os.WriteFile(path, []byte(`{"version":1,"sequence":0,"allocatorHighWaterMark":0,"records":[]}`), 0o600); err != nil {
+					t.Fatalf("WriteFile: %v", err)
+				}
+				if err := os.Chmod(path, 0o644); err != nil {
+					t.Fatalf("Chmod: %v", err)
+				}
+			},
+		},
+		"a non-regular store path": {
+			prepare: func(t *testing.T, path string) {
+				if err := os.Mkdir(path, 0o700); err != nil {
+					t.Fatalf("Mkdir: %v", err)
+				}
+			},
+		},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			stateRoot := t.TempDir()
+			path := hostops.StorePath(stateRoot)
+			if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+				t.Fatalf("MkdirAll: %v", err)
+			}
+			tc.prepare(t, path)
+
+			var logged strings.Builder
+			store, err := openHostOpsStore(stateRoot, &logged, hostops.RetentionPolicy{})
+			if err != nil {
+				t.Fatalf("openHostOpsStore aborted the boot on %s: %v", name, err)
+			}
+			if store != nil {
+				t.Fatalf("openHostOpsStore returned a handle for %s", name)
+			}
+			if !strings.Contains(logged.String(), "not opened") {
+				t.Fatalf("the non-corrupt refusal is not logged in the pre-quarantine form:\n%s", logged.String())
+			}
+		})
 	}
 }
 

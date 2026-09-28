@@ -111,14 +111,6 @@ const (
 // pins are stale is CursorStaleError instead.
 var ErrInvalidOperationsQuery = errors.New("hostops: invalid operations query")
 
-// ErrMissingHostBoundary reports a host that holds operation records but no
-// mirrored boundary triple. The store's own writes never produce this state —
-// records are created under a registry pair whose boundary mirror lands in the
-// same registry write, and §4 keeps the boundary until the host's last record
-// compacts — so the read refuses rather than minting a bounds entry it cannot
-// validate.
-var ErrMissingHostBoundary = errors.New("hostops: host holds records but no mirrored boundary")
-
 // CursorStaleError is §8's typed stale-entry re-list refusal for a cursor: the
 // envelope's version is not 2, the pinned quarantine epoch no longer equals the
 // live one, a stored bounds entry no longer matches the host's current
@@ -177,6 +169,21 @@ type CursorBound struct {
 	Absent bool
 	// Boundary is the host's pinned triple when Absent is false.
 	Boundary Boundary
+	// Unmirrored marks an entry minted from the host's own records because no
+	// mirrored triple exists: §4's custody import is the one writer of such a
+	// host (custody ownership carries no presence epoch, so no valid mirror can
+	// be seeded), and grounding the entry in the imported record keeps the
+	// closed name addressable by id. The mark never reaches the wire — the
+	// envelope carries the triple — and comparison is by value (sameEntry), so a
+	// cursor round-tripped through the client still continues.
+	Unmirrored bool
+}
+
+// sameEntry compares two bounds entries by the values §8 pins, not by how they
+// were grounded: a synthesized entry and the same triple decoded back from a
+// cursor are the same entry, because the envelope can only carry the triple.
+func (b CursorBound) sameEntry(other CursorBound) bool {
+	return b.Absent == other.Absent && b.Boundary == other.Boundary
 }
 
 // CursorWindow names the scope a cursor was minted over: "host" for a
@@ -241,9 +248,12 @@ func (b *CursorBound) UnmarshalJSON(raw []byte) error {
 }
 
 // validateBoundaryContainsIncarnation checks the three values of a bounds
-// triple, which has no host name of its own: a zero generation or presence
-// epoch, or an empty or oversized or non-UTF-8 incarnation id, is no triple any
-// writer of this store emits.
+// triple, which has no host name of its own: a zero generation, or an empty or
+// oversized or non-UTF-8 incarnation id, is no triple any writer of this store
+// emits. A zero presence epoch is allowed here and only here: it is the
+// placeholder a synthesized entry carries for a mirror-less host (§4's custody
+// import, whose record grounds the pair but not the presence), while every
+// mirror triple carries a non-zero epoch (validateBoundary refuses a zero one).
 func validateBoundaryContainsIncarnation(boundary Boundary) error {
 	switch {
 	case boundary.Generation == 0:
@@ -254,8 +264,6 @@ func validateBoundaryContainsIncarnation(boundary Boundary) error {
 		return fmt.Errorf("incarnation id is %d bytes, over the %d-byte bound", len(boundary.IncarnationID), MaxIncarnationIDBytes)
 	case !utf8.ValidString(boundary.IncarnationID):
 		return errors.New("incarnation id is not valid UTF-8")
-	case boundary.PresenceEpoch == 0:
-		return errors.New("no presence epoch")
 	}
 	return nil
 }
@@ -771,10 +779,7 @@ func readOperationsLocked(state *snapshot, q OperationsQuery, live CursorEpoch) 
 	// store-wide checks, so a pre-quarantine cursor is the typed stale-entry
 	// refusal even when the replacement store's imported hosts carry no mirrored
 	// boundary yet.
-	current, err := currentCursorBoundsLocked(state)
-	if err != nil {
-		return OperationsPage{}, err
-	}
+	current := currentCursorBoundsLocked(state)
 
 	// §8's bounds validation: every host in the cursor's map must still match
 	// the host's current entry. A host the store has never seen is a refusal
@@ -790,7 +795,7 @@ func readOperationsLocked(state *snapshot, q OperationsQuery, live CursorEpoch) 
 					Binding: StaleBindingGeneration,
 				}
 			}
-			if currentEntry != stored {
+			if !currentEntry.sameEntry(stored) {
 				return OperationsPage{}, &CursorStaleError{
 					Reason:  fmt.Sprintf("host %q's stored boundary no longer matches its current boundary; re-list from the first page", host),
 					Binding: StaleBindingGeneration,
@@ -878,10 +883,11 @@ func readOperationsLocked(state *snapshot, q OperationsQuery, live CursorEpoch) 
 		} else if !detailOnly {
 			// A detail lookup resolves no window pair: the row it returns is the
 			// pair that page lists under, and the response echoes that row.
-			pinnedPair, havePinnedPair, err = resolvePinnedPair(state, q)
+			resolved, ok, err := resolvePinnedPair(state, q)
 			if err != nil {
 				return OperationsPage{}, err
 			}
+			pinnedPair, havePinnedPair = resolved, ok
 		}
 		if havePinnedPair && !detailOnly {
 			windowPairs[q.Host] = pinnedPair
@@ -892,6 +898,15 @@ func readOperationsLocked(state *snapshot, q OperationsQuery, live CursorEpoch) 
 			mintBounds = window.Bounds
 		} else if entry, ok := current[q.Host]; ok {
 			mintBounds = map[string]CursorBound{q.Host: entry}
+			if !havePinnedPair && entry.Unmirrored {
+				// A mirror-less host (the custody import) has one ground truth:
+				// its own record set's pair. Listing under it keeps a host-pinned
+				// read of a closed name from being a silently empty page.
+				windowPairs[q.Host] = OperationPair{
+					Generation:    entry.Boundary.Generation,
+					IncarnationID: entry.Boundary.IncarnationID,
+				}
+			}
 		} else {
 			mintBounds = map[string]CursorBound{q.Host: {Absent: true}}
 		}
@@ -1067,6 +1082,10 @@ func readOperationsLocked(state *snapshot, q OperationsQuery, live CursorEpoch) 
 			generation, incarnation = pinnedPair.Generation, pinnedPair.IncarnationID
 		case detailOnly && len(records) == 1:
 			generation, incarnation = records[0].Generation, records[0].IncarnationID
+		case !havePinnedPair && q.Generation == nil:
+			if entry, ok := current[q.Host]; ok && entry.Unmirrored {
+				generation, incarnation = entry.Boundary.Generation, entry.Boundary.IncarnationID
+			}
 		case q.Generation != nil:
 			generation, incarnation = *q.Generation, q.IncarnationID
 		}
@@ -1157,24 +1176,40 @@ func anchorRecordLocked(state *snapshot, id string) (Record, bool) {
 // currentCursorBoundsLocked computes every known host's current bounds entry in
 // one pass: the record-holding hosts get their mirrored boundary triple, and
 // the mirrored-boundary names that hold no records get the "absent" marker. A
-// host that holds records but no mirrored boundary is the state no writer of
-// this store produces, refused as ErrMissingHostBoundary rather than minting or
-// validating an entry the store cannot ground.
-func currentCursorBoundsLocked(state *snapshot) (map[string]CursorBound, error) {
+// host that holds records but no mirrored boundary — the state §4's custody
+// import produces, and the one state no other writer of this store creates —
+// gets an entry minted from its own newest record: its pinned pair with the
+// documented zero presence placeholder, marked Unmirrored. Grounding the entry
+// in the record keeps every closed name addressable by id, which §4 requires of
+// the operations detail filter, and never fabricates a mirror triple: any later
+// mirror write moves the host's entry and refuses stale continuations.
+func currentCursorBoundsLocked(state *snapshot) map[string]CursorBound {
 	bounds := make(map[string]CursorBound, len(state.Boundaries))
 	for name := range state.Boundaries {
 		bounds[name] = CursorBound{Absent: true}
 	}
+	newest := make(map[string]Record, len(state.Records))
 	for i := range state.Records {
-		host := state.Records[i].Host
-		if entry, known := bounds[host]; known && !entry.Absent {
+		record := state.Records[i]
+		current, held := newest[record.Host]
+		if !held || record.Generation > current.Generation ||
+			(record.Generation == current.Generation && record.ID > current.ID) {
+			newest[record.Host] = record
+		}
+	}
+	for host, boundary := range state.Boundaries {
+		if _, holdsRecords := newest[host]; holdsRecords {
+			bounds[host] = CursorBound{Boundary: boundary}
+		}
+	}
+	for host, record := range newest {
+		if _, mirrored := state.Boundaries[host]; mirrored {
 			continue
 		}
-		boundary, ok := state.Boundaries[host]
-		if !ok {
-			return nil, fmt.Errorf("%w: host %q", ErrMissingHostBoundary, host)
+		bounds[host] = CursorBound{
+			Boundary:   Boundary{Generation: record.Generation, IncarnationID: record.IncarnationID},
+			Unmirrored: true,
 		}
-		bounds[host] = CursorBound{Boundary: boundary}
 	}
-	return bounds, nil
+	return bounds
 }

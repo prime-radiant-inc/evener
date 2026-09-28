@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"sort"
 	"time"
@@ -298,6 +299,17 @@ type custodyDocument struct {
 // failure on the strict half means a region of the file could not be read, so
 // the snapshot cannot be complete.
 func readStoreForCustody(fs afero.Fs, path string) (snapshot, error) {
+	// The kind rule runs before the read, on the path itself: a symlinked or
+	// otherwise non-regular store path is refused here, never followed into a
+	// snapshot the rename step would then refuse — which would leave intent and
+	// custody artifacts that wedge every later boot.
+	info, err := lstat(fs, path)
+	if err != nil {
+		return snapshot{}, fmt.Errorf("stat corrupt store %s: %w", path, err)
+	}
+	if err := rejectNonStoreFileKind(path, info); err != nil {
+		return snapshot{}, err
+	}
 	raw, err := afero.ReadFile(fs, path)
 	if err != nil {
 		return snapshot{}, fmt.Errorf("read corrupt store %s: %w", path, err)
@@ -394,7 +406,13 @@ func readStoreForCustody(fs afero.Fs, path string) (snapshot, error) {
 //   - every open fence's boundary parses under the crash-fencing spec §9;
 //   - every name the file yielded has an ownership entry whose pair and
 //     generation high-water mark are valid.
-func custodyFromStore(state snapshot, path string, epoch uint64, now time.Time) (custodyFile, error) {
+//
+// floor is the highest id any existing custody file for this store already
+// handed out. Ownership-only ids are allocated above it as well as above the
+// corrupt file's own high-water mark, so a later quarantine can never mint an id
+// an earlier custody file still references: an id-only resolve (§5) must never
+// alias an unrelated record.
+func custodyFromStore(state snapshot, path string, epoch uint64, now time.Time, floor uint64) (custodyFile, error) {
 	if state.Version != storeVersion {
 		return custodyFile{}, fmt.Errorf("%w: unsupported store version %d", ErrQuarantineIncomplete, state.Version)
 	}
@@ -441,11 +459,16 @@ func custodyFromStore(state snapshot, path string, epoch uint64, now time.Time) 
 		}
 		ids[allocated] = true
 	}
-	for allocated := uint64(1); allocated <= state.AllocatorHighWaterMark; allocated++ {
-		if !ids[allocated] {
-			return custodyFile{}, fmt.Errorf("%w: id %d below the allocator high-water mark %d is neither a retained record nor removal evidence",
-				ErrQuarantineIncomplete, allocated, state.AllocatorHighWaterMark)
-		}
+	// Dense coverage. The ids are unique and each was just checked at or below
+	// the high-water mark, so the file accounts for its whole record set exactly
+	// when it carries as many ids as the mark claims. The comparison is O(1) on
+	// purpose: the mark is read verbatim from the corrupt file, and iterating it
+	// would let a single malformed number spin the boot (10^12) or wrap forever
+	// (`allocated++` at MaxUint64) before the refusal — a boot hang the
+	// quarantine must never be able to cause.
+	if uint64(len(ids)) != state.AllocatorHighWaterMark {
+		return custodyFile{}, fmt.Errorf("%w: the file accounts for %d ids, but its allocator high-water mark claims %d records",
+			ErrQuarantineIncomplete, len(ids), state.AllocatorHighWaterMark)
 	}
 
 	fences := make([]custodyFence, 0, len(state.Records))
@@ -479,14 +502,25 @@ func custodyFromStore(state snapshot, path string, epoch uint64, now time.Time) 
 	for _, fence := range fences {
 		fenced[fence.Host] = true
 	}
-	next := state.AllocatorHighWaterMark
+	base := max(state.AllocatorHighWaterMark, floor)
+	ownershipOnly := 0
+	for i := range ownership {
+		if !fenced[ownership[i].Host] {
+			ownershipOnly++
+		}
+	}
+	freshIDs, err := nextControllerIDs(base, ownershipOnly)
+	if err != nil {
+		return custodyFile{}, fmt.Errorf("%w: %w", ErrQuarantineIncomplete, err)
+	}
+	next := 0
 	for i := range ownership {
 		if fenced[ownership[i].Host] {
 			ownership[i].QuarantineRecordID = fenceIDFor(fences, ownership[i].Host)
 			continue
 		}
+		ownership[i].QuarantineRecordID = freshIDs[next]
 		next++
-		ownership[i].QuarantineRecordID = formatAllocatorID(next)
 	}
 	sort.Slice(ownership, func(i, j int) bool { return ownership[i].Host < ownership[j].Host })
 
@@ -839,13 +873,15 @@ func readCustodyFile(fs afero.Fs, path, storePath string) (custodyFile, error) {
 // for the custody imports, `compactSeq` from zero, zero outstanding tokens, and
 // the row-id allocator starting above the custodial high-water mark plus the
 // ids the ownership-only imports consumed — so no fresh operation reuses an
-// imported record's id.
-func replacementState(custody custodyFile, custodyPath string) (snapshot, error) {
+// imported record's id. floor carries the highest id any earlier custody file
+// for this store handed out, so an id is never reused across quarantine epochs
+// either.
+func replacementState(custody custodyFile, custodyPath string, floor uint64) (snapshot, error) {
 	records, err := custodyImports(custody, custodyPath)
 	if err != nil {
 		return snapshot{}, fmt.Errorf("%w: %w", ErrQuarantineIncomplete, err)
 	}
-	allocated := custody.AllocatorHighWaterMark
+	allocated := max(custody.AllocatorHighWaterMark, floor)
 	for _, record := range records {
 		id, err := parseAllocatorID(record.ID)
 		if err != nil {
@@ -871,6 +907,21 @@ func replacementState(custody custodyFile, custodyPath string) (snapshot, error)
 		return snapshot{}, fmt.Errorf("%w: the replacement store does not validate: %w", ErrQuarantineIncomplete, err)
 	}
 	return state, nil
+}
+
+// nextControllerIDs mints count controller-assigned ids strictly above base, in
+// ascending order. An allocation that would wrap is refused rather than
+// wrapped: a wrapped id is a zero or an id an earlier quarantine already handed
+// out, and either could alias an unrelated record under an id-only resolve.
+func nextControllerIDs(base uint64, count int) ([]string, error) {
+	if count < 0 || uint64(count) > math.MaxUint64-base {
+		return nil, fmt.Errorf("cannot allocate %d controller-assigned ids above %d", count, base)
+	}
+	ids := make([]string, 0, count)
+	for n := uint64(1); n <= uint64(count); n++ {
+		ids = append(ids, formatAllocatorID(base+n))
+	}
+	return ids, nil
 }
 
 // statKind describes one path for the artifact scans: what the directory holds
