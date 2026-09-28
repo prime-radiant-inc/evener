@@ -7133,7 +7133,12 @@ describe("ConversationStore", () => {
       const ROW_PAGES = 12;
       const ROWS_PER_PAGE = 8;
       const PAYLOAD_ITEMS_PER_TURN = 20;
-      const PAGES = 40;
+      // 28 cycles, not 40: the cap evicts every page row by rehydrate 24 (see
+      // the loop note below), so the extra 12 cycles only re-projected an
+      // ever-larger fresh window without exercising a new state, and pushed
+      // this test's wall time near vitest's 5s budget under load (#2753). 28
+      // keeps several post-eviction cycles of margin while proving the bound.
+      const PAGES = 28;
 
       // A live conversation's fresh read window: `rows` display rows plus one
       // live turn's usage. The fresh window GROWS across the loop the way a
@@ -7240,7 +7245,7 @@ describe("ConversationStore", () => {
       // been evicted and every row-less page turn is outside the window, so
       // the retained payload set must be well under the worst in-window
       // shape (ROW_PAGES turns x 20 items) — on the unbounded main it is the
-      // whole loaded transcript (PAGES turns x 20 items = 800).
+      // whole loaded transcript (PAGES turns x 20 items = 560).
       expect(retainedPayloadItems).toBeLessThanOrEqual(ROW_PAGES * PAYLOAD_ITEMS_PER_TURN);
       // Accounting completeness is the bound's other half: EVERY loaded turn
       // keeps identity... (order is not asserted; the merge places freely)
