@@ -3,7 +3,11 @@ import { useEffect, useState } from "react";
 import {
   deployRefusalAction,
   type HostOpRecovery,
+  hostOperationView,
   hostOpsStore,
+  operationNeedsRead,
+  operationReadPending,
+  operationShownOnHost,
   planNoTokenAction,
   restartRefusalAction,
   useHostOpsStore,
@@ -31,6 +35,14 @@ import { useConnectedEffect } from "./useConnectedEffect";
 // below). Matches the HubResidents section's poll cadence.
 export const HOST_POLL_MS = 2000;
 
+// How often the section reads a tracked operation's record while it is
+// mounted (S15). The read is a cheap controller-local store read that never
+// dials (08b §6, §10), and an operation runs for minutes, so one second keeps
+// the row's progress line fresh without hammering the hub; unlike the row poll
+// there is no separate slow cadence to settle for, because the read is exact
+// and bounded (one record by id).
+export const OPERATION_POLL_MS = 1000;
+
 const CLASS = {
   root: requireClass(styles.root, "hosts.module.css", "root"),
   help: requireClass(styles.help, "hosts.module.css", "help"),
@@ -46,6 +58,8 @@ const CLASS = {
   planLabel: requireClass(styles.planLabel, "hosts.module.css", "planLabel"),
   planValue: requireClass(styles.planValue, "hosts.module.css", "planValue"),
   planNotice: requireClass(styles.planNotice, "hosts.module.css", "planNotice"),
+  rowOperation: requireClass(styles.rowOperation, "hosts.module.css", "rowOperation"),
+  rowOperationError: requireClass(styles.rowOperationError, "hosts.module.css", "rowOperationError"),
 };
 
 export interface HostsSectionProps {
@@ -98,6 +112,9 @@ function rowDetail(row: HostRow): string | null {
  */
 export function HostsSection(_props: HostsSectionProps) {
   const load = useHostsStore((s) => s.load);
+  // The tracked operations, keyed by host name: each row renders its own
+  // operation's progress/terminal state (S15).
+  const operations = useHostOpsStore((s) => s.operations);
   const toasts = useToasts();
   const [dialog, setDialog] = useState<HostDialogState>(null);
   const [connecting, setConnecting] = useState<ReadonlySet<string>>(() => new Set());
@@ -126,6 +143,35 @@ export function HostsSection(_props: HostsSectionProps) {
   useEffect(() => {
     const id = setInterval(() => void hostsStore.getState().refresh(), HOST_POLL_MS);
     return () => clearInterval(id);
+  }, []);
+
+  // The operation poll (S15): every tracked operation that still owes a read is
+  // read once per tick, so its row renders progress through the terminal state
+  // (registry spec 08 §13, deploy-pipeline spec 08b §6). A settled record is
+  // skipped — terminal state ends the loop — while a terminal seed from a
+  // replay is still read once for the retained body. Unmount clears the
+  // interval and cancels any in-flight read's publish.
+  useEffect(() => {
+    const id = setInterval(() => {
+      const tracked = hostOpsStore.getState().operations;
+      for (const name of Object.keys(tracked)) {
+        const operation = tracked[name];
+        // A ref suppressed from the row (an older incarnation after a
+        // same-name re-add) is still read to its terminal state: render
+        // suppression is the row's decision, and stopping the poll here would
+        // leave the ref non-terminal forever.
+        if (operation === undefined || !operationNeedsRead(operation) || operationReadPending(name, operation.id)) {
+          continue;
+        }
+        void hostOpsStore.getState().pollOperation(name);
+      }
+    }, OPERATION_POLL_MS);
+    return () => {
+      clearInterval(id);
+      for (const name of Object.keys(hostOpsStore.getState().operations)) {
+        hostOpsStore.getState().stopOperationPoll(name);
+      }
+    };
   }, []);
 
   async function handleAdd(entry: HostEntry): Promise<void> {
@@ -216,11 +262,30 @@ export function HostsSection(_props: HostsSectionProps) {
             // Connect button on a row the server says is mid-attach.
             const isConnecting = connecting.has(row.name) || row.midAttach;
             const detail = rowDetail(row);
+            const operation = operations[row.name];
+            const operationView =
+              operation === undefined || !operationShownOnHost(operation, row) ? null : hostOperationView(operation);
             return (
               <li key={row.name} className={CLASS.row}>
                 <span className={CLASS.rowName}>{row.name}</span>
                 {stateChip(row, isConnecting)}
                 {detail !== null && <span className={CLASS.rowDetail}>{detail}</span>}
+                {operationView !== null && (
+                  // The operation's own row carries its progress/terminal
+                  // state (registry spec 08 §13): the chip names the state, the
+                  // line is the record's own prose — a failure's 04b message
+                  // verbatim — and a stopped read says so instead of stalling.
+                  <span className={CLASS.rowOperation}>
+                    <Chip tone={operationView.tone}>{operationView.label}</Chip>
+                    {operationView.line !== null && <span className={CLASS.rowDetail}>{operationView.line}</span>}
+                    {operationView.replay !== null && <span className={CLASS.rowDetail}>{operationView.replay}</span>}
+                    {operationView.unavailable !== null && (
+                      <span className={CLASS.rowOperationError} role="alert">
+                        {operationView.unavailable}
+                      </span>
+                    )}
+                  </span>
+                )}
                 <span className={CLASS.rowActions}>
                   {!row.attached && !row.removed && (
                     <Button size="sm" variant="quiet" disabled={isConnecting} onClick={() => void handleConnect(row)}>
@@ -565,7 +630,16 @@ function DeployDialog({ row, onClose }: HostOpDialogProps) {
       if (action === "deploy" || action === "retry") {
         await hostOpsStore.getState().deploy(name);
         if (hostOpsStore.getState().plans[name]?.phase === "started") {
-          toasts.push("success", `Deploy started for ${name}`);
+          // 08b §10: a freshly created record reports `pending`; any other state
+          // is the existing record a dedup hit answered. A replay may be
+          // running, not just terminal, and the toast must not claim a fresh
+          // start the row would contradict.
+          const record = hostOpsStore.getState().operations[name];
+          if (record !== undefined && record.state !== "pending") {
+            toasts.push("info", `Deploy ${name} repeated its existing operation (${record.state}).`);
+          } else {
+            toasts.push("success", `Deploy started for ${name}`);
+          }
           onClose();
         }
         return;
@@ -692,7 +766,14 @@ function RestartDialog({ row, onClose }: HostOpDialogProps) {
 
   async function finishRestart(): Promise<void> {
     if (hostOpsStore.getState().restarts[name]?.phase === "started") {
-      toasts.push("success", `Restart started for ${name}`);
+      // The replay arm, as in the deploy dialog: a non-pending state is 08b
+      // §10's dedup-hit discriminator, never a fresh start.
+      const record = hostOpsStore.getState().operations[name];
+      if (record !== undefined && record.state !== "pending") {
+        toasts.push("info", `Restart ${name} repeated its existing operation (${record.state}).`);
+      } else {
+        toasts.push("success", `Restart started for ${name}`);
+      }
       onClose();
     }
   }
