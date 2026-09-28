@@ -1456,3 +1456,198 @@ func TestHostUpdateRemnantRepairsThroughRetryAndRecover(t *testing.T) {
 		t.Fatal("the fence still stands after the recovery")
 	}
 }
+
+// TestHostMutationFinalizeKeepsAConcurrentSiblingCommit pins roborev's High on
+// the finalizing write: `plan.Entries` is captured at plan time and the mutation
+// lock is released across the post-commit teardown, so a concurrent mutation of
+// a DIFFERENT, pre-existing host can commit inside that window. The finalizing
+// write must carry the live set as it stands now — a stale snapshot would
+// overwrite the sibling's commit on disk (file/memory divergence, and the
+// sibling's commit lost on restart, or a removal resurrected).
+func TestHostMutationFinalizeKeepsAConcurrentSiblingCommit(t *testing.T) {
+	seed := func(t *testing.T) (*hubHostManager, string) {
+		t.Helper()
+		dir := t.TempDir()
+		configPath := filepath.Join(dir, "hub.toml")
+		if err := writeHubTOMLHosts(configPath, []hostreg.Host{
+			{Name: "side", SSH: "side.example"},
+			{Name: "keep", SSH: "keep.example"},
+		}); err != nil {
+			t.Fatalf("seed hub.toml: %v", err)
+		}
+		return bootHostManager(t, configPath), configPath
+	}
+
+	t.Run("a sibling update committed in the window survives", func(t *testing.T) {
+		m, configPath := seed(t)
+		// The outer mutation parks in its released post-commit window and, from
+		// there, a DIFFERENT pre-existing host is edited to completion.
+		parked := make(chan struct{})
+		release := make(chan struct{})
+		var once sync.Once
+		m.testOnlyParkPostCommit = func(name string) {
+			if name != "side" {
+				return
+			}
+			once.Do(func() { close(parked) })
+			<-release
+		}
+		outer := make(chan error, 1)
+		go func() {
+			_, err := m.RemoveResult(context.Background(), removeRequest(t, m, "side"))
+			outer <- err
+		}()
+		select {
+		case <-parked:
+		case <-time.After(5 * time.Second):
+			t.Fatal("the outer mutation never reached its released window")
+		}
+		if _, err := m.Update(context.Background(), updateRequest(t, m, "keep", appwire.HostEntry{Address: "keep2.example"})); err != nil {
+			t.Fatalf("concurrent Update(keep) inside the window: %v", err)
+		}
+		close(release)
+		if err := <-outer; err != nil {
+			t.Fatalf("outer Remove(side): %v", err)
+		}
+		// The FILE is the authority here: reopen it and assert the sibling's
+		// commit is still there.
+		reopened, err := LoadConfig(configPath)
+		if err != nil {
+			t.Fatalf("reload hub.toml: %v", err)
+		}
+		found := false
+		for _, entry := range reopened.Hosts {
+			if entry.Name == "keep" {
+				found = true
+				if entry.SSH != "keep2.example" {
+					t.Fatalf("hub.toml kept %q for the sibling, want the edit that committed in the window", entry.SSH)
+				}
+			}
+		}
+		if !found {
+			t.Fatalf("hub.toml lost the sibling entry entirely: %+v", reopened.Hosts)
+		}
+		// A restart over the same file must agree with the memory it left.
+		restarted := bootHostManager(t, configPath)
+		if entry, ok := restarted.cfg.hosts.Get("keep"); !ok || entry.SSH != "keep2.example" {
+			t.Fatalf("restarted live entry for keep = %+v (ok=%v), want the window's edit", entry, ok)
+		}
+	})
+
+	t.Run("a sibling removal committed in the window does not resurrect", func(t *testing.T) {
+		m, configPath := seed(t)
+		parked := make(chan struct{})
+		release := make(chan struct{})
+		var once sync.Once
+		m.testOnlyParkPostCommit = func(name string) {
+			if name != "side" {
+				return
+			}
+			once.Do(func() { close(parked) })
+			<-release
+		}
+		outer := make(chan error, 1)
+		go func() {
+			_, err := m.RemoveResult(context.Background(), removeRequest(t, m, "side"))
+			outer <- err
+		}()
+		select {
+		case <-parked:
+		case <-time.After(5 * time.Second):
+			t.Fatal("the outer mutation never reached its released window")
+		}
+		if _, err := m.Remove(context.Background(), removeRequest(t, m, "keep")); err != nil {
+			t.Fatalf("concurrent Remove(keep) inside the window: %v", err)
+		}
+		close(release)
+		if err := <-outer; err != nil {
+			t.Fatalf("outer Remove(side): %v", err)
+		}
+		reopened, err := LoadConfig(configPath)
+		if err != nil {
+			t.Fatalf("reload hub.toml: %v", err)
+		}
+		for _, entry := range reopened.Hosts {
+			if entry.Name == "keep" {
+				t.Fatalf("hub.toml resurrected the sibling the window removed: %+v", reopened.Hosts)
+			}
+		}
+		if _, ok := reopened.Tombstones["keep"]; !ok {
+			t.Fatalf("the window's removal left no tombstone: %+v", reopened.Tombstones)
+		}
+	})
+}
+
+// TestHostTeardownRecoverRefusalDoesNotWedgeTheName pins roborev's Medium: when
+// the recover's locked re-check refuses, the attempt this call wrote must be
+// fenced closed. Left open under this boot's epoch it would fence the name for
+// the rest of the process — every later retry and recover refusing busy — which
+// is exactly what the reviewer observed.
+func TestHostTeardownRecoverRefusalDoesNotWedgeTheName(t *testing.T) {
+	m, _, _ := newRemnantFixture(t)
+	host, ok := m.cfg.hosts.Get("side")
+	if !ok {
+		t.Fatal("fixture lost the host")
+	}
+	m.cfg.bootID = "boot-1"
+	remnantID := mintRemnantID()
+	remnant := newTeardownRemnant(hostRemnantKindRemove, "remove-host", host, "", m.nowTime())
+	entries := m.cfg.store.snapshot()
+	if err := m.persistHosts(entries, entries, hostPersistChange{remnant: &pendingHostRemnant{RemnantID: remnantID, Remnant: remnant}}); err != nil {
+		t.Fatalf("stage remnant: %v", err)
+	}
+	// The locked re-check reads the STORE's live row while the first check reads
+	// the registry: a store row carrying the remnant's own pinned pair makes the
+	// first pass and the second refuse, deterministically.
+	m.cfg.store.replace(hostreg.Host{
+		Name:          host.Name,
+		SSH:           host.SSH,
+		Generation:    remnant.Generation,
+		IncarnationID: remnant.IncarnationID,
+		PresenceEpoch: host.PresenceEpoch,
+	})
+
+	_, err := m.TeardownRecover(context.Background(), appwire.HostTeardownRecoverParams{
+		RemnantID: remnantID,
+		Attestation: appwire.HostTeardownAttestation{
+			Operator: "op", Statement: hostRecoveryStatement, ObservedAt: "2026-09-27T12:00:00Z",
+		},
+	})
+	if err == nil {
+		t.Fatal("recover cleared a name whose live row still carries the pinned pair, want the safety refusal")
+	}
+	assertWireCode(t, err, appwire.CodeConflict)
+	// The refusal must not leave a live attempt behind.
+	if attemptID, live := m.liveAttemptInThisBoot(remnantID); live {
+		t.Fatalf("the refused recover left attempt %q live, wedging the name until a restart", attemptID)
+	}
+	for id, attempt := range m.cfg.store.attemptsSnapshot() {
+		if attempt.open() {
+			t.Fatalf("attempt %q = %+v, want it fenced closed on the refusal", id, attempt)
+		}
+	}
+	// The name is not falsely busy: a later recover refuses for the REAL reason
+	// (the safety check), and a later retry proceeds past the attempt fence.
+	_, err = m.TeardownRecover(context.Background(), appwire.HostTeardownRecoverParams{
+		RemnantID: remnantID,
+		Attestation: appwire.HostTeardownAttestation{
+			Operator: "op", Statement: hostRecoveryStatement, ObservedAt: "2026-09-27T12:00:00Z",
+		},
+	})
+	if err == nil {
+		t.Fatal("the second recover cleared the name, want the same safety refusal")
+	}
+	if _, busy := errors.AsType[*hostops.BusyError](err); busy {
+		t.Fatalf("the second recover refused busy (%v), want the safety refusal", err)
+	}
+	retry, err := m.TeardownRetry(context.Background(), appwire.HostTeardownRetryParams{RemnantID: remnantID})
+	if err != nil {
+		if _, busy := errors.AsType[*hostops.BusyError](err); busy {
+			t.Fatalf("a later retry refused busy (%v), want the fence lifted", err)
+		}
+		t.Fatalf("a later retry = %v, want it past the attempt fence", err)
+	}
+	if retry.HostTeardownRetryCompleteRemoved == nil {
+		t.Fatalf("retry = %+v, want the teardown-complete arm", retry)
+	}
+}

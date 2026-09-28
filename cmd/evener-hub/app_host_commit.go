@@ -296,7 +296,16 @@ func (m *hubHostManager) finalizeReceipt(plan *hostCommitPlan, receipt HostMutat
 	if err != nil {
 		return receipt, err
 	}
-	entries, known := plan.Entries, plan.Known
+	// The write carries the LIVE set as it stands now, never the plan-time
+	// snapshot: the mutation lock is released across the post-commit teardown
+	// (spec 08b §5), so a concurrent mutation of a DIFFERENT host can commit in
+	// that window, and persistHosts installs the set this write derives — writing
+	// plan.Entries verbatim would overwrite the sibling's commit on disk (the
+	// file would lose it at the next restart, or resurrect a removal).
+	// `known` stays the plan's pre-mutation snapshot: it is the ownership half of
+	// the preservation rule, which is about what this mutation may change, not
+	// about what the file currently holds.
+	entries, known := m.cfg.store.snapshot(), plan.Known
 	var carryReceipts map[string]HostMutationReceipt
 	if collision != nil {
 		// The file's bytes win (spec §11: "a hand edit the post-rename re-read

@@ -340,10 +340,19 @@ func (m *hubHostManager) TeardownRecover(ctx context.Context, params appwire.Hos
 	// clearing write below, under the lock, so a concurrent retry can neither
 	// start inside the check nor have its in-progress cleanup marker cleared.
 	if err := m.recoverySafetyCheck(remnantID, remnant); err != nil {
+		// The refusal releases the claim: the attempt this call wrote is fenced
+		// closed, because leaving it open would leave the remnant falsely busy —
+		// the fence reads the attempt's boot epoch, so an open attempt of THIS
+		// boot makes every later retry and recover refuse busy until a restart.
+		// A failed fence write is surfaced beside the refusal rather than
+		// swallowed: it leaves exactly that wedge behind.
 		m.cfg.mu.Lock()
 		entries := m.cfg.store.snapshot()
-		_ = m.persistHosts(entries, entries, hostPersistChange{attempt: &pendingHostAttempt{AttemptID: attemptID, Attempt: fencedAttemptRecord(attempt, m.nowTime())}})
+		fenceErr := m.persistHosts(entries, entries, hostPersistChange{attempt: &pendingHostAttempt{AttemptID: attemptID, Attempt: fencedAttemptRecord(attempt, m.nowTime())}})
 		m.cfg.mu.Unlock()
+		if fenceErr != nil {
+			return appwire.HostTeardownRecoverResult{}, fmt.Errorf("%w; the refused recover left its attempt record open: %w", err, fenceErr)
+		}
 		return appwire.HostTeardownRecoverResult{}, err
 	}
 
@@ -351,8 +360,18 @@ func (m *hubHostManager) TeardownRecover(ctx context.Context, params appwire.Hos
 	m.cfg.mu.Lock()
 	defer m.cfg.mu.Unlock()
 	// The re-check runs with the lock held, so it reads only the store's own
-	// snapshot — liveHost would take the mutation lock again.
+	// snapshot — liveHost would take the mutation lock again. Its refusal fences
+	// the claim closed for the same reason the first check's does: an attempt
+	// left open under this boot's epoch fences the name for the rest of the
+	// process, so a later retry or recover would refuse busy instead of acting.
 	if blocking := m.recoverySafetyCheckLocked(remnantID, remnant); blocking != nil {
+		entries := m.cfg.store.snapshot()
+		closed := fencedAttemptRecord(attempt, m.nowTime())
+		if fenceErr := m.persistHosts(entries, entries, hostPersistChange{attempt: &pendingHostAttempt{AttemptID: attemptID, Attempt: closed}}); fenceErr != nil {
+			// The deferred unlock (this branch holds the mutation lock) returns
+			// it on the way out.
+			return appwire.HostTeardownRecoverResult{}, fmt.Errorf("%w; the refused recover left its attempt record open: %w", blocking, fenceErr)
+		}
 		return appwire.HostTeardownRecoverResult{}, blocking
 	}
 	resolved := HostResolvedRemnant{
