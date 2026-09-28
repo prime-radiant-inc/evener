@@ -6,10 +6,17 @@ import {
   activityNodeID,
   parseActivityTree,
 } from "./activityData";
-import { fenceRootSession, graftContinuationTree } from "./activityMerge";
+import { applyDelegateUpdate, fenceRootSession, graftContinuationTree } from "./activityMerge";
 import type { AppwireClient } from "./client";
 import { sessionActionError } from "./errors";
 import { isActionUnavailable, isThreadNotFound } from "./sessionErrors";
+
+// Least time between two whole-tree fetches. Answering evener/jobs/list for a
+// session with hundreds of delegates takes seconds and megabytes, while the
+// notifications that invalidate it can arrive every second, so a refetch per
+// notification never catches up and starves every other request on the socket.
+// A refresh asked for inside this window runs once, when it closes.
+export const ACTIVITY_REFRESH_MIN_INTERVAL_MS = 2000;
 
 export type ActivityClient = Pick<AppwireClient, "request" | "onNotification">;
 
@@ -29,6 +36,8 @@ export interface ActivityBranch extends ActivityDelegateBranch {
   diagnostics?: string[];
 }
 
+const delay = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+
 /** Own activity requests and retained results for one hub/session lifetime. */
 export class ActivityList {
   private state: ActivityState;
@@ -38,6 +47,8 @@ export class ActivityList {
   private dirty = false;
   private queuedBranches: string[] = [];
   private inFlight?: Promise<void>;
+  private lastRootLoadEnd?: number;
+  private trailing = false;
   constructor(
     private client: ActivityClient,
     private ref: string,
@@ -102,18 +113,31 @@ export class ActivityList {
   start() {
     if (this.disposed || this.unsubscribe) return;
     this.unsubscribe = this.client.onNotification((n) => {
-      if (
-        (n.method === "evener/jobs/treeUpdated" ||
-          n.method === "evener/job/started" ||
-          n.method === "evener/job/finished" ||
-          n.method === "evener/delegate/updated" ||
-          n.method === "evener/thread/resync") &&
-        n.params.ref === this.ref &&
-        n.params.threadId === this.threadId
-      )
-        void this.refresh();
+      switch (n.method) {
+        case "evener/delegate/updated": {
+          if (!this.owns(n.params)) return;
+          const tree = this.state.tree;
+          const updated = tree && applyDelegateUpdate(tree, n.params.delegate);
+          if (!updated) this.requestRefresh();
+          else if (updated !== tree) this.publish({ tree: updated });
+          return;
+        }
+        case "evener/jobs/treeUpdated":
+          // A tree at or past this revision already shows what it announces.
+          if (this.owns(n.params) && (!this.state.tree || n.params.revision > this.state.tree.revision))
+            this.requestRefresh();
+          return;
+        case "evener/job/started":
+        case "evener/job/finished":
+        case "evener/thread/resync":
+          if (this.owns(n.params)) this.requestRefresh();
+          return;
+      }
     });
     void this.refresh();
+  }
+  private owns(params: { ref: string; threadId: string }) {
+    return params.ref === this.ref && params.threadId === this.threadId;
   }
   refresh = (): Promise<void> => {
     if (this.disposed) return Promise.resolve();
@@ -123,6 +147,26 @@ export class ActivityList {
     }
     return this.run();
   };
+  // The refresh a notification asks for. Inside the minimum interval it is
+  // deferred to the interval's end, and any number of requests share that one.
+  private requestRefresh() {
+    const wait = this.inFlight ? 0 : this.untilRootLoadAllowed();
+    if (wait <= 0) {
+      void this.refresh();
+      return;
+    }
+    if (this.trailing) return;
+    this.trailing = true;
+    void delay(wait).then(() => {
+      this.trailing = false;
+      void this.refresh();
+    });
+  }
+  // Milliseconds until a whole-tree fetch may start again.
+  private untilRootLoadAllowed() {
+    if (this.lastRootLoadEnd === undefined) return 0;
+    return Math.max(0, this.lastRootLoadEnd + ACTIVITY_REFRESH_MIN_INTERVAL_MS - Date.now());
+  }
   loadMore = (id: string, continuation: string): Promise<void> => {
     if (
       this.disposed ||
@@ -157,7 +201,11 @@ export class ActivityList {
           ref: this.ref,
           ...(branch ? { continuation: branch.continuation } : {}),
         });
-        if (!this.dirty && !this.disposed) {
+        // A whole-tree answer is still a valid tree when a notification has
+        // asked for another; showing it keeps a burst of notifications from
+        // starving every load of its result. A continuation page is different:
+        // it is only good against the tree it was minted for.
+        if ((!this.dirty || !branch) && !this.disposed) {
           const tree = parseActivityTree((result as { data: unknown }).data);
           if (!tree) throw new Error("Invalid activity response");
           if (tree.root.sessionId !== this.threadId || tree.root.ref !== this.ref)
@@ -199,6 +247,7 @@ export class ActivityList {
           if (!branch) this.queuedBranches = [];
         }
       }
+      if (!branch) this.lastRootLoadEnd = Date.now();
       // Invalidation always gets a full refresh before any queued page. A
       // page click targets a branch; its token comes from the refreshed tree.
       if (this.dirty && branch && !this.queuedBranches.includes(branch.id)) this.queuedBranches.push(branch.id);
@@ -209,6 +258,12 @@ export class ActivityList {
           const current = this.branches().find((candidate) => candidate.id === id);
           if (current?.continuation) branch = { id: current.id, continuation: current.continuation };
         }
+      }
+      // The whole-tree fetch an invalidation asks for waits out the minimum
+      // interval since the last one; a queued page is not held to it.
+      if (this.dirty && !branch && !this.disposed) {
+        const wait = this.untilRootLoadAllowed();
+        if (wait > 0) await delay(wait);
       }
     } while ((this.dirty || branch) && !this.disposed);
     // Clear inFlight before the completion publish. A listener that reacts to

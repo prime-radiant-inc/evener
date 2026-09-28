@@ -2,7 +2,7 @@
 
 import { afterEach, expect, test, vi } from "vitest";
 import type { ActivityTree } from "./activityData";
-import { type ActivityClient, ActivityList } from "./activityList";
+import { ACTIVITY_REFRESH_MIN_INTERVAL_MS, type ActivityClient, ActivityList } from "./activityList";
 import { WireError } from "./errors";
 
 const tree = (continuation?: string, revision = 1) => ({
@@ -37,6 +37,7 @@ const tree = (continuation?: string, revision = 1) => ({
 });
 
 test("delegate updated notification refreshes only the matching list", async () => {
+  vi.useFakeTimers();
   let notify: ((n: { method: string; params: { ref: string; threadId: string } }) => void) | undefined;
   const requests: unknown[] = [];
   let release!: () => void;
@@ -57,7 +58,9 @@ test("delegate updated notification refreshes only the matching list", async () 
   const initialRequests = requests.length;
   notify?.({ method: "evener/delegate/updated", params: { ref: "local:session", threadId: "session" } });
   release();
-  await list.refresh();
+  const refreshed = list.refresh();
+  await vi.advanceTimersByTimeAsync(ACTIVITY_REFRESH_MIN_INTERVAL_MS);
+  await refreshed;
   expect(requests).toHaveLength(initialRequests + 1);
   expect(list.getSnapshot().tree?.root.branch).toEqual({});
 });
@@ -294,6 +297,7 @@ function boundaryClient(autoResponses: Array<ActivityTree | undefined> = []) {
 }
 
 test("refresh notification runs before a queued pagination request and retains the fresh delegate state", async () => {
+  vi.useFakeTimers();
   const current = activityTree([delegateEntry("delegate", "old-page", 1)]);
   const fresh = activityTree([delegateEntry("delegate", "new-page", 2)], 2);
   const page = activityTree([delegateEntry("delegate", undefined, 2)], 2);
@@ -305,6 +309,7 @@ test("refresh notification runs before a queued pagination request and retains t
   boundary.notify();
   const more = list.loadMore("delegate:delegate", "old-page");
   boundary.resolveFirst(current);
+  await vi.advanceTimersByTimeAsync(ACTIVITY_REFRESH_MIN_INTERVAL_MS);
   await more;
   expect(boundary.requests.map(({ params }) => params)).toEqual([
     { ref: "local:session" },
@@ -317,6 +322,7 @@ test("refresh notification runs before a queued pagination request and retains t
 });
 
 test("retries a page after notification invalidates its in-flight continuation", async () => {
+  vi.useFakeTimers();
   const current = activityTree([delegateEntry("delegate", "old-page")]);
   const fresh = activityTree([delegateEntry("delegate", "new-page", 2)], 2);
   const page = activityTree([delegateEntry("delegate", undefined, 2)], 2);
@@ -326,12 +332,14 @@ test("retries a page after notification invalidates its in-flight continuation",
   const initial = list.refresh();
   await boundary.waitForRequest(0);
   boundary.resolve(0, current);
+  await vi.advanceTimersByTimeAsync(ACTIVITY_REFRESH_MIN_INTERVAL_MS);
   await initial;
 
   const more = list.loadMore("delegate:delegate", "old-page");
   await boundary.waitForRequest(2);
   boundary.notify();
   boundary.resolve(2, page);
+  await vi.advanceTimersByTimeAsync(ACTIVITY_REFRESH_MIN_INTERVAL_MS);
   await more;
 
   expect(boundary.requests.map(({ params }) => params)).toEqual([
@@ -473,8 +481,6 @@ test("a page requested from the completion notification is loaded", async () => 
 // evener/delegate/updated arrives about once a second; these tests pin that the
 // notifications no longer keep the list refetching back to back.
 
-const REFRESH_INTERVAL_MS = 2000;
-
 afterEach(() => {
   vi.useRealTimers();
 });
@@ -554,7 +560,7 @@ test("a burst of updates for a delegate already in the tree applies in place wit
   const held = activityTree([delegateEntry("delegate")], 5);
   const t = timedClient(0, () => held);
   const list = await startedList(t, held);
-  await vi.advanceTimersByTimeAsync(REFRESH_INTERVAL_MS);
+  await vi.advanceTimersByTimeAsync(ACTIVITY_REFRESH_MIN_INTERVAL_MS);
   const baseline = t.calls.length;
 
   for (let revision = 2; revision <= 51; revision++) {
@@ -564,7 +570,7 @@ test("a burst of updates for a delegate already in the tree applies in place wit
       latestActivityAt: `2026-01-01T00:00:${String(revision).padStart(2, "0")}Z`,
     });
   }
-  await vi.advanceTimersByTimeAsync(10 * REFRESH_INTERVAL_MS);
+  await vi.advanceTimersByTimeAsync(10 * ACTIVITY_REFRESH_MIN_INTERVAL_MS);
 
   expect(t.calls).toHaveLength(baseline);
   expect(heldDelegate(list).phase).toBe("step-51");
@@ -579,7 +585,7 @@ test("an update older than the held delegate only moves its latest activity forw
   (held.root.entries[0] as ReturnType<typeof delegateEntry>).delegate.status = "running";
   const t = timedClient(0, () => held);
   const list = await startedList(t, held);
-  await vi.advanceTimersByTimeAsync(REFRESH_INTERVAL_MS);
+  await vi.advanceTimersByTimeAsync(ACTIVITY_REFRESH_MIN_INTERVAL_MS);
   const baseline = t.calls.length;
 
   t.delegateUpdated({
@@ -588,7 +594,7 @@ test("an update older than the held delegate only moves its latest activity forw
     terminal: true,
     latestActivityAt: "2026-01-01T00:00:09Z",
   });
-  await vi.advanceTimersByTimeAsync(10 * REFRESH_INTERVAL_MS);
+  await vi.advanceTimersByTimeAsync(10 * ACTIVITY_REFRESH_MIN_INTERVAL_MS);
 
   expect(t.calls).toHaveLength(baseline);
   expect(heldDelegate(list).phase).toBeUndefined();
@@ -601,7 +607,7 @@ test("an update that changes what the tree counts or shows of a finished delegat
   const held = activityTree([delegateEntry("delegate")], 5);
   const t = timedClient(0, () => held);
   await startedList(t, held);
-  await vi.advanceTimersByTimeAsync(REFRESH_INTERVAL_MS);
+  await vi.advanceTimersByTimeAsync(ACTIVITY_REFRESH_MIN_INTERVAL_MS);
   const baseline = t.calls.length;
 
   t.delegateUpdated({
@@ -611,7 +617,7 @@ test("an update that changes what the tree counts or shows of a finished delegat
     projectionRevision: 2,
     packetKind: "final",
   });
-  await vi.advanceTimersByTimeAsync(REFRESH_INTERVAL_MS);
+  await vi.advanceTimersByTimeAsync(ACTIVITY_REFRESH_MIN_INTERVAL_MS);
 
   expect(t.calls).toHaveLength(baseline + 1);
 });
@@ -624,11 +630,11 @@ test("an update for a delegate the tree does not hold refreshes once, after the 
   const baseline = t.calls.length;
 
   for (let i = 0; i < 5; i++) t.delegateUpdated({ delegateId: "brand-new", childSessionId: "brand-new-child" });
-  await vi.advanceTimersByTimeAsync(REFRESH_INTERVAL_MS - 1);
+  await vi.advanceTimersByTimeAsync(ACTIVITY_REFRESH_MIN_INTERVAL_MS - 1);
   expect(t.calls).toHaveLength(baseline);
   await vi.advanceTimersByTimeAsync(1);
   expect(t.calls).toHaveLength(baseline + 1);
-  await vi.advanceTimersByTimeAsync(10 * REFRESH_INTERVAL_MS);
+  await vi.advanceTimersByTimeAsync(10 * ACTIVITY_REFRESH_MIN_INTERVAL_MS);
   expect(t.calls).toHaveLength(baseline + 1);
 });
 
@@ -639,7 +645,7 @@ test("an update before any tree is held refreshes", async () => {
   list.start();
   await vi.advanceTimersByTimeAsync(0);
   t.delegateUpdated();
-  await vi.advanceTimersByTimeAsync(1000 + REFRESH_INTERVAL_MS);
+  await vi.advanceTimersByTimeAsync(1000 + ACTIVITY_REFRESH_MIN_INTERVAL_MS);
   expect(t.calls).toHaveLength(2);
 });
 
@@ -648,16 +654,16 @@ test("tree revisions at or below the held one do not refetch; a newer one does",
   const held = activityTree([delegateEntry("delegate")], 5);
   const t = timedClient(0, () => held);
   await startedList(t, held);
-  await vi.advanceTimersByTimeAsync(REFRESH_INTERVAL_MS);
+  await vi.advanceTimersByTimeAsync(ACTIVITY_REFRESH_MIN_INTERVAL_MS);
   const baseline = t.calls.length;
 
   t.treeUpdated(4);
   t.treeUpdated(5);
-  await vi.advanceTimersByTimeAsync(10 * REFRESH_INTERVAL_MS);
+  await vi.advanceTimersByTimeAsync(10 * ACTIVITY_REFRESH_MIN_INTERVAL_MS);
   expect(t.calls).toHaveLength(baseline);
 
   t.treeUpdated(6);
-  await vi.advanceTimersByTimeAsync(REFRESH_INTERVAL_MS);
+  await vi.advanceTimersByTimeAsync(ACTIVITY_REFRESH_MIN_INTERVAL_MS);
   expect(t.calls).toHaveLength(baseline + 1);
 });
 
@@ -675,10 +681,10 @@ test("continuous notifications during slow loads do not refetch back to back", a
     if ((list.getSnapshot().tree?.revision ?? 0) >= 2) sawFreshTree = true;
   }
 
-  expect(t.calls.length).toBeLessThanOrEqual(Math.ceil(elapsed / REFRESH_INTERVAL_MS) + 1);
+  expect(t.calls.length).toBeLessThanOrEqual(Math.ceil(elapsed / ACTIVITY_REFRESH_MIN_INTERVAL_MS) + 1);
   for (let i = 1; i < t.calls.length; i++) {
     const previousAnswer = t.calls[i - 1]?.answeredAt ?? Number.POSITIVE_INFINITY;
-    expect((t.calls[i]?.startedAt ?? 0) - previousAnswer).toBeGreaterThanOrEqual(REFRESH_INTERVAL_MS);
+    expect((t.calls[i]?.startedAt ?? 0) - previousAnswer).toBeGreaterThanOrEqual(ACTIVITY_REFRESH_MIN_INTERVAL_MS);
   }
   // Loads that finish while notifications keep arriving still reach the screen.
   expect(sawFreshTree).toBe(true);
