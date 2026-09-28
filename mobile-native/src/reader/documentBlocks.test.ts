@@ -115,6 +115,12 @@ describe("a document as the Reader draws it (spec 10.2, ruling 12)", () => {
 	});
 });
 
+it("reads a setext heading as its words, without its underline", () => {
+	const [heading] = documentBlocks("Fix the race\n===\n\nBody.");
+	expect([heading?.kind, heading?.text, heading?.depth]).toEqual(["heading", "Fix the race", 1]);
+	expect(documentBlocks("Problem\n---").map((block) => block.text)).toEqual(["Problem"]);
+});
+
 it("reads links and images as their words", () => {
 	expect(plainText("See [the plan](docs/plan.md) and ![the diagram](out/d.png).")).toBe("See the plan and the diagram.");
 });

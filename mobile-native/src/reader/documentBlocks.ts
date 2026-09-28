@@ -58,6 +58,12 @@ function identity(kind: BlockKind, source: string): string {
 	return hashText(`${kind}:${normalized}`);
 }
 
+// A setext heading's underline ("===" under its words). Its "---" form is
+// already a table-rule line to the filter above.
+function isSetextUnderline(line: string): boolean {
+	return /^=+$/.test(line);
+}
+
 function isTableRule(line: string): boolean {
 	return /^[\s|:-]+$/.test(line) && line.includes("-");
 }
@@ -80,7 +86,7 @@ export function plainText(markdown: string): string {
 				.replace(/(^|[^\w_])_([^_\n]+)_(?=[^\w_]|$)/g, "$1$2")
 				.trim(),
 		)
-		.filter((line) => line !== "" && !isTableRule(line))
+		.filter((line) => line !== "" && !isTableRule(line) && !isSetextUnderline(line))
 		.join("\n");
 }
 
