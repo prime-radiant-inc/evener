@@ -20,9 +20,9 @@ Jesse has answered part 1's two questions (2026-09-26), and both of its rulings 
 - Question 1, banners about what changed while disconnected: "sure". Ruling 2: a drop that recovers while you're in the app is diffed and alerts; a return from the background starts a new baseline and alerts nothing.
 - Question 2, banners over a sheet: "don't show over a sheet". Ruling 7: banners wait while a sheet is up and show when it closes, with no full-window overlay.
 
-This part's review raised a third, which is open:
+This part's review raised a third, which Jesse has answered:
 
-3. **Should a session that already needs you alert again when it asks for something new?** Spec 13.3 alerts when a session "becomes" Failed, Question, Approval, Warning or Restart needed, and Task 4 builds that reading until you answer: a new question or approval while the session stays in Question or Approval says nothing more. But the hub probes a session every five seconds, and a question answered with the next one asked between two probes never shows the phone the gap (the S1b plan's ruling 10, `2026-09-27-iphone-redesign-server-s1-s13b.md`), so a session you just answered can ask again without a banner. My recommendation: alert again when the row names a new question (S1b's `question`, on rows since #2675) or a new approval target (S1a's `approval_tool` and `approval_target`), so the banner follows what the row says. The cost is a second banner when a session has several questions or approvals waiting and you answer one elsewhere.
+3. **Should a session that already needs you alert again when it asks for something new?** Jesse, 2026-09-28: "no. one alert is great." A session alerts when it becomes Failed, Question, Approval, Warning or Restart needed (spec 13.3), including a move from one needs-you state to another. A new question or approval while it stays in Question or Approval says nothing more, even when the row names a new question (S1b's `question`) or a new approval target, and even when a question answered and the next one asked fall between two of the hub's five-second probes. Task 4 builds this and pins it.
 
 ---
 
@@ -910,7 +910,7 @@ describe("session alerts (spec 13.3)", () => {
 		expect(detectSessionAlerts(failed.states, bands([row("a", { state: "errored" })]), none).alerts).toEqual([]);
 	});
 
-	it("says nothing more while a session stays in one needs-you state, whatever it now asks (question 3)", () => {
+	it("alerts once per needs-you state: a new question or approval target in it says nothing (question 3)", () => {
 		const asking = row("a", { state: "awaiting", ask_pending: true, question: { text: "Keep the flag?", count: 1 } });
 		const allowing = row("b", { state: "active", approval_pending: true, approval_tool: "write_file", approval_target: "~/a" });
 		const start = detectSessionAlerts(null, bands([asking, allowing]), none).states;
@@ -1025,10 +1025,10 @@ Expected: FAIL: `Cannot find module './alertEvents'`.
 // Failed, Question, Approval, Warning or Restart needed (from any other
 // state, another needs-you state included), a working session that finishes
 // its turn, and a hub notice that appears. A session that stays in one
-// needs-you state says nothing more, whatever it now asks (question 3). Each
-// source's first read on a connection is its baseline and alerts nothing
-// (ruling 2), so opening the app never drops a pile of banners on what the
-// Board already shows.
+// needs-you state says nothing more, whatever it now asks: one alert is
+// great (Jesse, question 3). Each source's first read on a connection is
+// its baseline and alerts nothing (ruling 2), so opening the app never drops
+// a pile of banners on what the Board already shows.
 import { type BoardState, type LiveBands, whyLine } from "../board/attention";
 import type { Notice } from "../board/notices";
 import type { AlertCenter, NeedsYouKind, NoticeAlert, SessionAlert } from "./alertCenter";

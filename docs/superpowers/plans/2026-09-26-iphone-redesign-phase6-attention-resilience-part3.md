@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-This is part 3 of `docs/superpowers/plans/2026-09-26-iphone-redesign-phase6-attention-resilience.md` (part 1: PRs A, E and F, Tasks 1-2 and 12-14; part 2: PRs B, C, D, G and H). Part 1's Goal, Architecture, Tech Stack, Spec, Global Constraints, Rulings (ruling 17 is this part's), "Built on earlier phases" table and Review Focus (item 4) bind this task, and its task number is part 1's. PR I starts once part 1's PR F has landed.
+This is part 3 of `docs/superpowers/plans/2026-09-26-iphone-redesign-phase6-attention-resilience.md` (part 1: PRs A, E and F, Tasks 1-2 and 12-14; part 2: PRs B, C, D, G and H). Part 1's Goal, Architecture, Tech Stack, Spec, Global Constraints, Rulings (ruling 17 is this part's), "Built on earlier phases" table and Review Focus (item 4) bind this task, and its task number is part 1's. PR I starts once part 1's PR F has landed and phase 4's `settleTarget` (its Task 2) is on main.
 
 ## What part 1's review left here
 
@@ -25,7 +25,7 @@ A target nobody holds is settled whatever its records hold, as `handleReady` rea
 **Files:**
 - Create: `mobile-native/src/outbox/outboxFlush.ts`, `mobile-native/src/outbox/nativeOutboxFlush.ts` and `mobile-native/src/outbox/outboxFlush.test.ts`
 - Modify: `mobile-native/src/nativeMutationRuntime.ts` (`targetClient`, beside `registerTarget`)
-- Modify: `mobile-native/App.tsx` (bind the flush to the connection) and the session screen's durable-host effect (`screens.tsx:663-693`: flush after its host lets go)
+- Modify: `mobile-native/App.tsx` (bind the flush to the connection) and the session screen's durable-host effect (`screens.tsx:669-693`: flush after its host lets go)
 
 **Interfaces:**
 - Consumes: `NativeMutationRuntime.settleTarget(hubId, targetRef, client)` (phase 4 Task 2), `registerTarget`, `start`, `subscribeStorage`, `storage.listTargetRefs` and `storage.listOutbox`.
