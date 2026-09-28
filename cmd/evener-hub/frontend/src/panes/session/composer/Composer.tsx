@@ -28,6 +28,7 @@ import {
   deriveSendQueueAvailability,
   filterSlashMenuItems,
   matchBuiltinInvocation,
+  mergeDraftText,
   mergeSlashCommands,
   NO_ACTIVE_TURN,
   parseSlashToken,
@@ -109,7 +110,7 @@ import {
   useComposerSubmitting,
   useRecoveryEntries,
 } from "./queue/pendingTurnsStore";
-import { consumeQuoteInsert, type QuoteInsertPlacement, useQuoteInsertRequest } from "./quoteInsert";
+import { consumeQuoteInsert, useQuoteInsertRequest } from "./quoteInsert";
 import { RepoLocation } from "./RepoLocation";
 import { mergeRecoveryComposerDraft, recoveryComposerDraft } from "./recovery/recoveryDraft";
 import { SkillEditor, type SkillEditorHandle } from "./SkillEditor";
@@ -149,31 +150,6 @@ const CLASS = {
 const MemoizedSessionChrome = memo(function MemoizedSessionChrome(props: SessionChromeProps) {
   return <SessionChrome {...props} />;
 });
-
-// Shared by restoreTextToComposer (QueueStrip's "edit a queued entry" path)
-// and the quote-insert effect below (SelectionQuote's "Quote in reply" path,
-// and the command palette's slash-command insert, via requestQuoteInsert's
-// own placement param - quoteInsert.ts's own header comment). placement
-// "append" (the default, and every existing caller's behavior, byte-
-// identical to before this param existed): existing text is right-trimmed
-// then kept, the incoming text is appended after a blank line - "put text
-// into the composer without clobbering what's already typed there", byte-
-// ported from renderer.js's own restoreTextToComposer (see
-// restoreTextToComposer's own doc comment for the fuller history).
-// placement "prefix" (the palette's own slash-command insert): the addition
-// goes FIRST, with no separator inserted - a slash command only parses at
-// the very start of the draft, and the addition already carries its own
-// trailing space (CommandPalette.tsx's activateCommand), so simple
-// concatenation is exactly right. A module-level function, not a closure,
-// so it can be called from the quote-insert effect below, which (like every
-// hook in this component) must run unconditionally ahead of the `if
-// (!model) return null` narrowing - restoreTextToComposer itself is
-// declared after that point and closes over already-narrowed locals it
-// doesn't need here.
-function mergeDraftText(existing: string, addition: string, placement: QuoteInsertPlacement = "append"): string {
-  if (placement === "prefix") return `${addition}${existing}`;
-  return existing.trim() === "" ? addition : `${existing.replace(/\s+$/, "")}\n\n${addition}`;
-}
 
 // Selections compare by exact ordered content: same names, same order, no
 // extra. A changed chip list is a changed draft even when the text is

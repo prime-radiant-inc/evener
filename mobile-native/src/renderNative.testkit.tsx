@@ -149,6 +149,7 @@ export interface AlertRequest {
 	title: string;
 	message?: string;
 	buttons?: { text?: string; style?: string; onPress?: () => void }[];
+	options?: { cancelable?: boolean };
 }
 
 /** Every Alert.alert call the mounted tree made, oldest first. A test that
@@ -160,8 +161,9 @@ function recordAlert(
 	title: string,
 	message?: string,
 	buttons?: AlertRequest["buttons"],
+	options?: AlertRequest["options"],
 ): void {
-	alertRequests.push({ title, message, buttons });
+	alertRequests.push({ title, message, buttons, options });
 }
 
 /** The client a test hands the credential store: every request method it is
@@ -271,6 +273,12 @@ export function renderedText(tree: ReactTestRenderer): string {
 	if (Array.isArray(json)) for (const node of json) visit(node);
 	else visit(json);
 	return chunks.join(" ");
+}
+
+/** The text one node reads as: its strings and its descendants', joined with
+ * nothing between them, the way nested Text elements run together on screen. */
+export function textOf(node: ReactTestInstance): string {
+	return node.children.map((child) => (typeof child === "string" ? child : textOf(child))).join("");
 }
 
 /** The first mounted Pressable whose accessibility label is `label`, found

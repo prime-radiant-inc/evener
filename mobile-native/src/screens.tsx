@@ -34,6 +34,8 @@ import { SafeAreaView } from "react-native-safe-area-context";
 import {
 	type AskBatch,
 	buildComposerInput,
+	formatQuoteBlock,
+	mergeDraftText,
 	parseSlashToken,
 	spliceSlashCommand,
 	type TranscriptDisplayConfigV1,
@@ -115,6 +117,11 @@ import {
 } from "./readerPosition";
 import { type SessionDestination, SessionMenu } from "./SessionMenu";
 import { SessionSheet } from "./SessionSheet";
+import {
+	emptyTranscriptText,
+	liveRunId,
+	sessionRows,
+} from "./session/transcriptRows";
 import { SessionControls } from "./sessionControls";
 import { Composer } from "./session/Composer";
 import {
@@ -1046,8 +1053,28 @@ export function ConversationScreen({
 		[conversation, displayConfig],
 	);
 	const timelineRows = useMemo(
-		() => groupTimeline(presentation.items),
-		[presentation.items],
+		() =>
+			sessionRows(groupTimeline(presentation.items), conversation?.turns ?? []),
+		[presentation.items, conversation?.turns],
+	);
+	const liveRun = liveRunId(timelineRows, conversation?.activeTurnId);
+	// Stable across renders, so a settled agent message keeps its memoized
+	// markdown view (TimelineItem's AgentMessage) while the list re-renders.
+	const quote = useCallback(
+		(text: string) => {
+			const quoted = formatQuoteBlock(text);
+			if (quoted === "") return;
+			const merged = mergeDraftText(document.getSnapshot().record.draft, quoted);
+			document.edit(merged);
+			setComposerSelection({ start: merged.length, end: merged.length });
+			requestAnimationFrame(() => {
+				composerInput.current?.setNativeProps({
+					selection: { start: merged.length, end: merged.length },
+				});
+				composerInput.current?.focus();
+			});
+		},
+		[document],
 	);
 	useEffect(() => {
 		appliedReaderRestore.current = null;
@@ -1815,6 +1842,9 @@ export function ConversationScreen({
 								setLayoutRevision((revision) => revision + 1);
 							}}
 							data={timelineRows}
+							// The live run changes when a turn starts or ends, without the
+							// rows changing; its row must re-render to fold or unfold.
+							extraData={liveRun}
 							ListFooterComponent={
 								presentation.usage ? (
 									<TranscriptUsage {...presentation.usage} />
@@ -1845,6 +1875,8 @@ export function ConversationScreen({
 										forkDisabled={
 											!connected || !focused || snapshot.status !== "open"
 										}
+										quote={quote}
+										live={item.id === liveRun}
 									/>
 								</View>
 							)}
@@ -1993,13 +2025,11 @@ export function ConversationScreen({
 							}
 							ListEmptyComponent={
 								<Copy muted>
-									{snapshot.status === "opening"
-										? "Loading conversation…"
-										: !connected
-											? "Reconnect to load the conversation. Your draft is kept."
-											: snapshot.status === "error"
-												? "Pull down to retry."
-												: "No messages yet."}
+									{emptyTranscriptText(
+										snapshot.status,
+										connected,
+										conversation !== null,
+									)}
 								</Copy>
 							}
 						/>

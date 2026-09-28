@@ -24,7 +24,8 @@
 // code, duration, call id) returns at tools/activity/full, where the
 // projector routes the same call through its "item" entry. The row is marked
 // summaryOnly so the presentation layer renders the line without an
-// expansion affordance.
+// expansion affordance. Its two clock times stay as metadata, so the run it
+// folds into can say how long it took (Jesse, 2026-09-27).
 //
 // Two robustness behaviors are canonical here (D24-3 deferred them to the
 // re-home): a blank/whitespace tool label falls back to "Tool" instead of "",
@@ -57,6 +58,7 @@ import type {
 	Turn,
 	TurnModel,
 } from "@evener/appwire-client";
+import { hubTime } from "./board/attention";
 
 // --- the conversation native holds -------------------------------------------
 
@@ -103,6 +105,11 @@ export interface ActivityDetail {
 	exitCode?: number;
 	durationMs?: number;
 	callId?: string;
+	// The item's startedAt/completedAt parsed to epoch milliseconds, the same
+	// way durationMs is: absent when either timestamp is missing or fails to
+	// parse.
+	startedAtMs?: number;
+	endedAtMs?: number;
 }
 
 export interface ActivityMember {
@@ -117,6 +124,7 @@ export interface ActivityMember {
 	summaryOnly?: boolean;
 	transcriptKey?: string;
 	position?: { entry: number; item: number };
+	turnId?: string;
 }
 
 // Tone of a steering/lifecycle notice row. "info" for ordinary steering/system
@@ -138,7 +146,10 @@ export type NoticeFamily =
 // The mobile timeline item union. A pure projection of one thread's turns
 // into the families the phone timeline renders. Discriminated by `kind`.
 export type MobileTimelineItem = (
-	| { kind: "user"; id: string; text: string; transcriptEntryIndex?: number }
+	// origin is set only when this row projects a user-sourced steering item
+	// (the message was steered into the transcript mid-turn); a userMessage
+	// row never carries it.
+	| { kind: "user"; id: string; text: string; transcriptEntryIndex?: number; origin?: "steered" }
 	| { kind: "assistant"; id: string; markdown: string; streaming: boolean }
 	| {
 			kind: "activity";
@@ -152,7 +163,7 @@ export type MobileTimelineItem = (
 			family: ActivityFamily;
 			state: ActivityState;
 			detail: ActivityDetail;
-			// The operator's summary-only ruling: the row carries ONLY its
+			// The operator's summary-only ruling: the row shows ONLY its
 			// summary line (detail.description) — nothing to expand. Set on the
 			// projector's intent entries; the presentation layer renders the line
 			// without an expansion affordance.
@@ -180,6 +191,10 @@ export type MobileTimelineItem = (
 	transcriptKey?: string;
 	sourceTranscriptKey?: string;
 	position?: { entry: number; item: number };
+	// The turn this row's item belongs to (ItemModel.turnId), or the failing
+	// turn's id on a turn-error failure row (failureItem). Absent when the
+	// source carried none.
+	turnId?: string;
 };
 
 // --- the entry mapping --------------------------------------------------------
@@ -243,7 +258,9 @@ function unhandledEntryKind(_entry: never): null {
 // ARGUMENTS survive, because they are what the presentation layer's own
 // summary fallback parses to render the line a descriptionless write_file
 // call shows (RoboRev panel: with them dropped, "Write /tmp/x" degraded to
-// the literal placeholder).
+// the literal placeholder). Either way the row keeps its two clock times as
+// metadata that nothing shows on it, so the run it folds into can say how
+// long it took (spec 8.2's run line; Jesse, 2026-09-27).
 //
 // The native attention rule outranks the summarization (D24-4's disclosed
 // contract: a failed or running activity renders critical, with its full
@@ -259,10 +276,12 @@ function intentRow(
 	if (entry.failed || row.state !== "completed") {
 		return { ...row, state: entry.failed ? "failed" : row.state };
 	}
+	const { startedAtMs, endedAtMs } = row.detail;
+	const clock = startedAtMs !== undefined && endedAtMs !== undefined ? { startedAtMs, endedAtMs } : {};
 	const detail =
 		entry.rationale === ACTION_SUMMARY_UNAVAILABLE
-			? { arguments: row.detail.arguments }
-			: { description: entry.rationale };
+			? { arguments: row.detail.arguments, ...clock }
+			: { description: entry.rationale, ...clock };
 	return {
 		...row,
 		state: entry.failed ? "failed" : row.state,
@@ -285,6 +304,7 @@ function rowForItem(it: ItemModel, context: ProjectedRowContext): MobileTimeline
 			...(it.type === "userMessage" && it.transcriptEntryIndex !== undefined
 				? { transcriptEntryIndex: it.transcriptEntryIndex }
 				: {}),
+			...(it.type === "steering" ? { origin: "steered" as const } : {}),
 			...identity,
 		};
 	}
@@ -400,10 +420,12 @@ function isAskUser(it: ItemModel): boolean {
 function itemIdentity(it: ItemModel): {
 	transcriptKey?: string;
 	position?: ItemModel["position"];
+	turnId?: string;
 } {
 	return {
 		...(it.transcriptKey ? { transcriptKey: it.transcriptKey } : {}),
 		...(it.position ? { position: it.position } : {}),
+		...(it.turnId ? { turnId: it.turnId } : {}),
 	};
 }
 
@@ -441,25 +463,29 @@ function activityDescription(it: ItemModel): string | undefined {
 		.join("; ")}`;
 }
 
-// The canonical duration behavior (D24-3's deferred delta): a duration whose
-// timestamps do not parse is dropped (undefined) instead of NaN.
-function itemDurationMs(it: ItemModel): number | undefined {
-	if (it.startedAt === undefined || it.completedAt === undefined) return undefined;
-	const start = Date.parse(it.startedAt);
-	const end = Date.parse(it.completedAt);
-	if (Number.isNaN(start) || Number.isNaN(end)) return undefined;
-	return end - start;
+// The item's started/completed timestamps as epoch milliseconds. The
+// canonical duration behavior (D24-3's deferred delta): absent (both, not
+// just one) when either timestamp is missing or fails to parse, instead of
+// producing NaN, so durationMs, startedAtMs and endedAtMs never disagree
+// about whether this item's timing is known.
+function parsedItemTimes(it: ItemModel): { start?: number; end?: number } {
+	const start = hubTime(it.startedAt);
+	const end = hubTime(it.completedAt);
+	return start === null || end === null ? {} : { start, end };
 }
 
 function activityDetail(it: ItemModel): ActivityDetail {
+	const { start, end } = parsedItemTimes(it);
 	return {
 		description: activityDescription(it),
 		arguments: it.argumentsJSON,
 		output: it.output,
 		error: it.error,
 		exitCode: it.exitCode,
-		durationMs: itemDurationMs(it),
+		durationMs: start !== undefined && end !== undefined ? end - start : undefined,
 		callId: it.callId,
+		startedAtMs: start,
+		endedAtMs: end,
 	};
 }
 
@@ -680,6 +706,7 @@ function clusterActivityRun(
 		...(item.summaryOnly ? { summaryOnly: item.summaryOnly } : {}),
 		...(item.transcriptKey ? { transcriptKey: item.transcriptKey } : {}),
 		...(item.position ? { position: item.position } : {}),
+		...(item.turnId ? { turnId: item.turnId } : {}),
 	}));
 	return { ...first, state, members };
 }
@@ -858,6 +885,9 @@ function rowsForProjectedTurn(
 	return entries;
 }
 
+// An attachments row's fields, before it takes its place in the timeline.
+type AttachmentsRowFields = Omit<Extract<MobileTimelineItem, { kind: "attachments" }>, "kind">;
+
 // The attachments row that follows the row which produced it. It points back at
 // its source by transcript key, so a page or a reread that reissues the source
 // under a new wire id does not orphan its images. An activity's images name the
@@ -869,12 +899,13 @@ function attachmentsRow(
 	source: MobileTimelineItem,
 	attachments: AttachmentRef[],
 	fallbackToId = false,
-): { id: string; items: AttachmentRef[]; sourceTranscriptKey?: string } {
+): AttachmentsRowFields {
 	const key = source.transcriptKey ?? (fallbackToId ? source.id : undefined);
 	return {
 		id: `${source.id}:attachments`,
 		items: attachments,
 		...(key === undefined ? {} : { sourceTranscriptKey: key }),
+		...(source.turnId ? { turnId: source.turnId } : {}),
 	};
 }
 
@@ -905,7 +936,7 @@ export function projectTimeline(
 	// rebuild the timeline in original order.
 	const items: MobileTimelineItem[] = [];
 	let activityRun: PreActivity[] = [];
-	let activityAttachments: Array<{ id: string; items: AttachmentRef[]; sourceTranscriptKey?: string }> = [];
+	let activityAttachments: AttachmentsRowFields[] = [];
 
 	const flushActivityRun = () => {
 		if (activityRun.length === 0) return;
@@ -979,6 +1010,7 @@ function failureItem(
 		id: failureRowIdentity(turnID),
 		title,
 		detail: parts.join("\n"),
+		...(turnID ? { turnId: turnID } : {}),
 	};
 }
 
