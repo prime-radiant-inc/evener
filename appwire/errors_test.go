@@ -91,6 +91,56 @@ func TestWireErrorConstructors(t *testing.T) {
 	}
 }
 
+// TestFencingHelperGateRefusals pins crash-fencing §8's two helper-gate
+// refusals: the conflict class, the host plus pinned-version data shape, and
+// the discriminators, which are never `probe-failed`.
+func TestFencingHelperGateRefusals(t *testing.T) {
+	absent := FencingHelperAbsent("m4", 1, "helper absent")
+	if absent.Code != CodeConflict {
+		t.Fatalf("absent Code = %d, want CodeConflict", absent.Code)
+	}
+	absentData, ok := absent.Data.(FencingHelperGateErrorData)
+	if !ok {
+		t.Fatalf("absent Data = %T, want FencingHelperGateErrorData", absent.Data)
+	}
+	if absentData.EvenerErrorInfo != ErrorFencingHelperAbsent || absentData.Host != "m4" || absentData.PinnedVersion != 1 {
+		t.Fatalf("absent data = %+v, want the %s arm naming m4 and pinned version 1", absentData, ErrorFencingHelperAbsent)
+	}
+	absentRaw, err := json.Marshal(absent)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	if !strings.Contains(string(absentRaw), `"evenerErrorInfo":"fencing-helper-absent"`) ||
+		!strings.Contains(string(absentRaw), `"pinnedVersion":1`) {
+		t.Fatalf("absent wire = %s, want the fencing-helper-absent discriminant and pinned version", absentRaw)
+	}
+	if strings.Contains(string(absentRaw), "observedVersion") {
+		t.Fatalf("absent wire = %s, want no observed version", absentRaw)
+	}
+	if strings.Contains(string(absentRaw), "probe-failed") {
+		t.Fatalf("absent wire = %s, want never probe-failed", absentRaw)
+	}
+
+	untrusted := FencingHelperUntrusted("m4", 1, 99, "helper distrusted")
+	if untrusted.Code != CodeConflict {
+		t.Fatalf("untrusted Code = %d, want CodeConflict", untrusted.Code)
+	}
+	untrustedData, ok := untrusted.Data.(FencingHelperGateErrorData)
+	if !ok {
+		t.Fatalf("untrusted Data = %T, want FencingHelperGateErrorData", untrusted.Data)
+	}
+	if untrustedData.EvenerErrorInfo != ErrorFencingHelperUntrusted || untrustedData.ObservedVersion != 99 {
+		t.Fatalf("untrusted data = %+v, want the %s arm naming version 99", untrustedData, ErrorFencingHelperUntrusted)
+	}
+	untrustedRaw, err := json.Marshal(untrusted)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	if !strings.Contains(string(untrustedRaw), `"observedVersion":99`) {
+		t.Fatalf("untrusted wire = %s, want the distrusted version named", untrustedRaw)
+	}
+}
+
 func TestTranscriptItemCursorError(t *testing.T) {
 	const opaqueCursor = "opaque-cursor-bytes-MUST-NOT-LEAK"
 	err := TranscriptItemCursorStale()
