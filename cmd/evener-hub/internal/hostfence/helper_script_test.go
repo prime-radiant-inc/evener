@@ -945,6 +945,15 @@ func TestScriptDescendantIdentityRevalidated(t *testing.T) {
 	}()
 	waitForFile(t, filepath.Join(work, "started"))
 	entry := waitForRunningEntry(t, remote)
+	// Let the command finish first: this test drives the entry it writes
+	// below, and a live command carrying the entry's nonce would (correctly,
+	// under S18's enumeration rule) keep the member live. The case under
+	// test is the hand-written entry whose recorded instance and descendant
+	// name an unrelated process.
+	if err := os.WriteFile(goFile, []byte("go"), 0o600); err != nil {
+		t.Fatalf("release the command: %v", err)
+	}
+	<-performDone
 	// An unrelated live process: its pid is real, but it carries neither the
 	// entry's nonce nor its recorded start token.
 	unrelated := exec.Command("sh", "-c", "sleep 30")
@@ -953,21 +962,19 @@ func TestScriptDescendantIdentityRevalidated(t *testing.T) {
 	}
 	defer func() { _ = unrelated.Process.Kill(); _, _ = unrelated.Process.Wait() }()
 	entryPath := filepath.Join(remote.state, "leases", entry.ID)
-	raw, err := os.ReadFile(entryPath)
-	if err != nil {
-		t.Fatalf("read entry: %v", err)
-	}
-	broken := string(raw)
-	broken = strings.Replace(broken, fmt.Sprintf("pid\t%d\n", *entry.Ownership.PID),
-		fmt.Sprintf("pid\t%d\n", unrelated.Process.Pid), 1)
-	broken = strings.Replace(broken, fmt.Sprintf("pidStartTime\t%s\n", entry.Ownership.PIDStartTime),
-		"pidStartTime\t999999999\n", 1)
-	broken = strings.Replace(broken, "descendants\t\n",
-		fmt.Sprintf("descendants\t%d:999999999\n", unrelated.Process.Pid), 1)
-	if broken == string(raw) {
-		t.Fatalf("entry carried nothing to rewrite: %q", raw)
-	}
-	if err := os.WriteFile(entryPath, []byte(broken), 0o600); err != nil {
+	body := "id\t" + entry.ID + "\n" +
+		"command\tsleep 30\n" +
+		"registeredAt\t2026-09-28T00:00:00Z\n" +
+		"state\trunning\n" +
+		"ownershipKind\tpid\n" +
+		fmt.Sprintf("pid\t%d\n", unrelated.Process.Pid) +
+		"pidStartTime\t999999999\n" +
+		"nonce\t\n" +
+		"cgroupId\t\n" +
+		"exit\t\n" +
+		"exitedAt\t\n" +
+		fmt.Sprintf("descendants\t%d:999999999\n", unrelated.Process.Pid)
+	if err := os.WriteFile(entryPath, []byte(body), 0o600); err != nil {
 		t.Fatalf("write entry: %v", err)
 	}
 	stdout, stderr, code := remote.run(nil, "recheck", entry.ID)
@@ -984,10 +991,6 @@ func TestScriptDescendantIdentityRevalidated(t *testing.T) {
 	if !processAlive(t, unrelated.Process.Pid) {
 		t.Fatal("the unrelated process was signaled or killed")
 	}
-	if err := os.WriteFile(goFile, []byte("go"), 0o600); err != nil {
-		t.Fatalf("release the command: %v", err)
-	}
-	<-performDone
 }
 
 // TestScriptHolderMismatchRefuses pins that advance and perform require the

@@ -911,10 +911,13 @@ nonce_holds() { # <environ path> <nonce>
 # descendants_of prints the PIDs still carrying the command's per-spawn nonce.
 # A command's children inherit the nonce in their environment, so a survivor —
 # however it detached — is found and the entry never reads settled while it
-# lives. A platform without /proc cannot enumerate; the entry then records no
-# descendants and the pid/start-time identity remains the whole proof.
+# lives. Its exit status is part of the contract: when the scan cannot run (no
+# /proc, the helper's own environment unreadable, or grep missing) it returns
+# nonzero, and callers must read that as "cannot disprove", never as "no
+# survivors". On a platform where it cannot run, a running command records no
+# descendants, and the fencing worker's nonce arms read the member live.
 descendants_of() { # <nonce>
-	[ -d /proc/self ] || return 0
+	nonce_scan_available || return 1
 	# One substring grep decides whether any candidate exists at all; only then
 	# is the per-pid pass worth its forks. A substring hit is a candidate, never
 	# an answer: nonce_holds extracts and compares the value exactly, so a
@@ -984,7 +987,7 @@ do_perform() { # <bootId> <opSeq> <command>
 	status=0
 	wait "$child" || status=$?
 	exited=$(date -u '+%Y-%m-%dT%H:%M:%SZ' 2>/dev/null || printf 0)
-	survivors=$(descendants_of "$nonce")
+	survivors=$(descendants_of "$nonce") || survivors=''
 	if [ -n "$survivors" ]; then
 		# The command's own children outlive it: the entry stays running with
 		# them recorded, so a verifier reads it live and a fencing takeover
@@ -1011,7 +1014,7 @@ post_spawn_failure() {
 	kill "$child" 2>/dev/null || true
 	attempt=0
 	while [ "$attempt" -lt 20 ]; do
-		remaining=$(descendants_of "${child_nonce:-}")
+		remaining=$(descendants_of "${child_nonce:-}") || remaining=''
 		[ -z "$remaining" ] && break
 		for descendant in $remaining; do
 			descendant_pid=${descendant%%:*}
@@ -1066,23 +1069,26 @@ do_recheck() { # <id>
 			fi
 			;;
 		nonce)
-			# The nonce is the entry's stored ownership identity: a process
-			# carrying it exactly is the wrapper's work, and no matching process
-			# is a proven-gone member. Where /proc cannot enumerate, liveness
-			# cannot be disproven and the entry stays live: fail closed, never a
-			# clean read.
-			if [ -d /proc/self ]; then
-				if [ -n "$(descendants_of "$ENTRY_NONCE")" ]; then
-					live=true
-				fi
-			else
-				live=true
-			fi
+			# The nonce is the entry's stored ownership identity; the carrier
+			# scan below is its check.
 			;;
 		cgroup)
 			live=true
 			;;
 		esac
+		# The command's children inherit the wrapper's per-spawn nonce (the entry
+		# id), and a running command's descendants are not recorded yet: while
+		# any process carries the nonce exactly the member is live. An
+		# enumeration that cannot run, or that fails, can never read clean.
+		if nonce_scan_available; then
+			if ! carriers=$(entry_nonce_scan); then
+				live=true
+			elif [ -n "$carriers" ]; then
+				live=true
+			fi
+		else
+			live=true
+		fi
 		for descendant in $ENTRY_DESCENDANTS; do
 			# A recorded descendant counts only while it still carries this
 			# invocation's exact nonce AND the kernel-owned start token recorded
@@ -1129,6 +1135,44 @@ do_recheck() { # <id>
 
 # --- kill --------------------------------------------------------------------
 
+# nonce_scan_available reports whether the nonce enumeration can run at all: it
+# needs /proc with the wrapper's own environment readable, and grep. A scan that
+# cannot run must never read as "no process carries the nonce" — callers fall
+# back to the stored ownership identity (and, for a nonce-owned entry, to live).
+nonce_scan_available() {
+	[ -d /proc/self ] || return 1
+	[ -r /proc/self/environ ] || return 1
+	command -v grep >/dev/null 2>&1 || return 1
+	return 0
+}
+
+# entry_nonce_scan prints one "pid:startToken" token per process carrying one of
+# the entry's nonces exactly. The wrapper mints the per-spawn nonce as the entry
+# id; a stored nonce field names the same value on nonce-owned entries. Its exit
+# status is nonzero when any scan could not run: the caller must then read the
+# member live, never settled. The scan's per-file semantics are descendants_of's
+# (an unreadable environment file is not this work; see its comment and
+# TestScriptNonceMatchIsExact).
+entry_nonce_scan() {
+	status=0
+	for nonce in "$ENTRY_ID" "$ENTRY_NONCE"; do
+		[ -n "$nonce" ] || continue
+		descendants_of "$nonce" || status=1
+	done
+	return "$status"
+}
+
+# emit_target prints one live target once. The identity is the (pid, token)
+# pair, so the ownership arm's answer and the scan's answer for one process
+# collapse to one target.
+emit_target() { # <pid> <startToken>
+	case " $target_seen " in
+	*" $1 $2 "*) return 0 ;;
+	esac
+	target_seen="$target_seen $1 $2"
+	printf '%s:%s ' "$1" "$2"
+}
+
 # entry_live_targets prints one "pid:startToken" token per process still
 # matching the entry's stored ownership identity. An empty result is the only
 # proof the member is gone; a process whose identity cannot be read prints as
@@ -1136,70 +1180,83 @@ do_recheck() { # <id>
 # apply: a pid is checked against its stored start time, a nonce is
 # re-presented to the wrapper, and a cgroup membership this helper cannot
 # attest fails closed.
+#
+# The nonce scan runs for every kind, not only nonce-owned entries: a command's
+# children inherit the wrapper's per-spawn nonce (the entry id), and a running
+# command never has recorded descendants — do_perform records them after the
+# command exits — so without this scan a signaled primary's surviving children
+# would be invisible and the entry would mark settled over a live orphan.
 entry_live_targets() { # (uses ENTRY_*)
+	target_seen=''
 	case $ENTRY_KIND in
 	pid)
 		if kill -0 "$ENTRY_PID" 2>/dev/null; then
 			current=$(current_start_token "$ENTRY_PID" || true)
 			if [ -z "$current" ]; then
-				printf '%s:unknown ' "$ENTRY_PID"
+				emit_target "$ENTRY_PID" unknown
 			elif [ "$current" = "$ENTRY_START" ]; then
-				printf '%s:%s ' "$ENTRY_PID" "$current"
+				emit_target "$ENTRY_PID" "$current"
 			fi
 		elif ps -p "$ENTRY_PID" >/dev/null 2>&1; then
 			# Present but not signalable: the identity cannot be proven.
-			printf '%s:unknown ' "$ENTRY_PID"
+			emit_target "$ENTRY_PID" unknown
 		fi
 		;;
 	nonce)
-		if [ ! -d /proc/self ]; then
-			# A platform that cannot enumerate cannot disprove the member.
-			printf '%s:unknown ' "-"
-			return 0
-		fi
-		for target in $(descendants_of "$ENTRY_NONCE"); do
-			target_pid=${target%%:*}
-			target_start=${target#*:}
-			if [ "$target_start" = unknown ] || descendant_pair_conflicts "$target_pid" "$target_start"; then
-				printf '%s:unknown ' "$target_pid"
-			else
-				printf '%s:%s ' "$target_pid" "$target_start"
-			fi
-		done
 		;;
 	cgroup)
 		# This helper cannot attest a cgroup membership, so the member reads
 		# live and is never signaled.
-		printf '%s:unknown ' "-"
+		emit_target '-' unknown
 		;;
 	esac
-	if [ "$ENTRY_KIND" != nonce ]; then
-		# A recorded descendant counts only while it still carries this entry's
-		# exact nonce (the entry id is the wrapper's per-spawn nonce) and its
-		# recorded start token: a reused id is not the wrapper's work.
-		for descendant in $ENTRY_DESCENDANTS; do
-			descendant_pid=${descendant%%:*}
-			descendant_start=${descendant#*:}
-			kill -0 "$descendant_pid" 2>/dev/null || continue
-			if [ "$descendant_start" = unknown ] || [ ! -r "/proc/$descendant_pid/environ" ]; then
-				# No start token was recorded, or the environment cannot be
-				# read: the identity cannot be disproven.
-				printf '%s:unknown ' "$descendant_pid"
-				continue
-			fi
-			if ! nonce_holds "/proc/$descendant_pid/environ" "$ENTRY_ID"; then
-				continue
-			fi
-			current=$(current_start_token "$descendant_pid" || true)
-			if [ -z "$current" ]; then
-				printf '%s:unknown ' "$descendant_pid"
-			elif [ "$current" = "$descendant_start" ]; then
-				printf '%s:%s ' "$descendant_pid" "$current"
-			fi
-			# A differing start token is a reused id: already clean for that
-			# member, never signaled.
-		done
+	if nonce_scan_available; then
+		if ! carriers=$(entry_nonce_scan); then
+			# The scan could not complete: liveness cannot be disproven.
+			emit_target '-' unknown
+		else
+			for target in $carriers; do
+				target_pid=${target%%:*}
+				target_start=${target#*:}
+				if [ "$target_start" = unknown ] || descendant_pair_conflicts "$target_pid" "$target_start"; then
+					emit_target "$target_pid" unknown
+				else
+					emit_target "$target_pid" "$target_start"
+				fi
+			done
+		fi
+	else
+		# A platform that cannot enumerate cannot disprove the member: an empty
+		# result here would read settled over possibly-live children.
+		emit_target '-' unknown
 	fi
+	# A recorded descendant counts only while it still carries this entry's
+	# exact nonce (the entry id is the wrapper's per-spawn nonce) and its
+	# recorded start token: a reused id is not the wrapper's work. This pass
+	# also covers a descendant whose environment cannot be read (which reads
+	# live), on platforms where the nonce scan cannot run at all.
+	for descendant in $ENTRY_DESCENDANTS; do
+		descendant_pid=${descendant%%:*}
+		descendant_start=${descendant#*:}
+		kill -0 "$descendant_pid" 2>/dev/null || continue
+		if [ "$descendant_start" = unknown ] || [ ! -r "/proc/$descendant_pid/environ" ]; then
+			# No start token was recorded, or the environment cannot be
+			# read: the identity cannot be disproven.
+			emit_target "$descendant_pid" unknown
+			continue
+		fi
+		if ! nonce_holds "/proc/$descendant_pid/environ" "$ENTRY_ID"; then
+			continue
+		fi
+		current=$(current_start_token "$descendant_pid" || true)
+		if [ -z "$current" ]; then
+			emit_target "$descendant_pid" unknown
+		elif [ "$current" = "$descendant_start" ]; then
+			emit_target "$descendant_pid" "$current"
+		fi
+		# A differing start token is a reused id: already clean for that
+		# member, never signaled.
+	done
 }
 
 # descendant_pair_conflicts reports whether pid carries a recorded descendant
@@ -1301,11 +1358,17 @@ do_kill() { # <bootId> <opSeq> <id>
 			remaining=$(entry_live_targets)
 		done
 	fi
-	if [ -z "$remaining" ] && [ "$signaled" = true ]; then
-		# The kill path marks through the same entry file: the entry this call
-		# ended reads killed, with the signal convention's exit status.
+	if [ -z "$remaining" ]; then
+		# Settled: a successful enumeration found no process matching the stored
+		# identity (an enumeration that cannot run, or that cannot verify a
+		# member, prints an opaque target and keeps this branch out). The
+		# fencing path marks the entry through the same entry file — exit 143,
+		# the SIGTERM convention — whether this call signaled it or found it
+		# already gone, so the lease file never keeps a live-looking entry with
+		# no live holder. The command field is passed exactly as stored (already
+		# JSON-escaped), matching do_perform's own write.
 		exited=$(date -u '+%Y-%m-%dT%H:%M:%SZ' 2>/dev/null || printf 0)
-		write_entry "$ENTRY_ID" "$(json_escape "$ENTRY_COMMAND")" "$ENTRY_REGISTERED" killed \
+		write_entry "$ENTRY_ID" "$ENTRY_COMMAND" "$ENTRY_REGISTERED" killed \
 			"$ENTRY_KIND" "$ENTRY_PID" "$ENTRY_START" "$ENTRY_NONCE" "$ENTRY_CGROUP" 143 "$exited" '' ||
 			refuse io-error "cannot record the killed lease entry" 69
 		state=killed

@@ -18,6 +18,11 @@ import (
 // with FencingQuarantine, and the same write is the one the resolver's clearing
 // write must mirror.
 
+// remoteFencingKind is §9's discriminator on the boundary variant a
+// fencing-timeout record carries: the one variant this write persists and the
+// one the custody import re-materializes the marker from.
+const remoteFencingKind = "remote-fencing"
+
 // FencingQuarantine is the durable per-host fencing-quarantine marker: the
 // host's open orphan-unverified record (the `orphan-resolve` way out) and when
 // the fencing timeout landed it. The marker is keyed by host name — "the fence
@@ -59,9 +64,21 @@ func (s *Store) QuarantineFencing(recordID string, boundary json.RawMessage) (Re
 	if s == nil {
 		return Record{}, errors.New("hostops: store is not configured")
 	}
+	// The boundary this write carries is §9's one-member `remote-fencing`
+	// variant — "a single `remote-fencing` entry for a fencing-timeout
+	// quarantine record". Checking the discriminator here is what keeps a
+	// marker from being paired with a boundary custody recovery cannot
+	// re-materialize it from: a `null` member, an empty object, or another
+	// variant's boundary is refused before anything commits.
 	var members []json.RawMessage
-	if jsonFieldIsNull(boundary) || json.Unmarshal(boundary, &members) != nil || len(members) == 0 {
-		return Record{}, fmt.Errorf("%w: a fencing-quarantine boundary is not a non-empty BoundaryEntry array", ErrInvalidRecord)
+	if jsonFieldIsNull(boundary) || json.Unmarshal(boundary, &members) != nil || len(members) != 1 {
+		return Record{}, fmt.Errorf("%w: a fencing-quarantine boundary is not a one-member BoundaryEntry array", ErrInvalidRecord)
+	}
+	var discriminator struct {
+		Kind string `json:"kind"`
+	}
+	if err := json.Unmarshal(members[0], &discriminator); err != nil || discriminator.Kind != remoteFencingKind {
+		return Record{}, fmt.Errorf("%w: a fencing-quarantine boundary carries no %s entry", ErrInvalidRecord, remoteFencingKind)
 	}
 	s.cell.mu.Lock()
 	defer s.cell.mu.Unlock()

@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/spf13/afero"
 )
@@ -150,9 +151,13 @@ func TestQuarantineFencingRefusals(t *testing.T) {
 		t.Fatalf("terminal record = %v, want ErrRecordTerminal", err)
 	}
 	for name, boundary := range map[string]string{
-		"not an array": `{"kind":"remote-fencing"}`,
-		"null":         `null`,
-		"empty array":  `[]`,
+		"not an array":  `{"kind":"remote-fencing"}`,
+		"null":          `null`,
+		"empty array":   `[]`,
+		"two members":   `[{"kind":"remote-fencing"},{"kind":"remote-fencing"}]`,
+		"object member": `[{}]`,
+		"null member":   `[null]`,
+		"wrong kind":    `[{"kind":"local-linux"}]`,
 	} {
 		if _, err := store.QuarantineFencing(record.ID, json.RawMessage(boundary)); err == nil {
 			t.Fatalf("%s boundary = nil error, want refusal", name)
@@ -188,6 +193,33 @@ func TestQuarantineFencingRefusals(t *testing.T) {
 	}
 	if _, ok := store.FencingQuarantine("h3"); ok {
 		t.Fatal("the refused write left a marker for h3")
+	}
+}
+
+// TestCustodyImportRefusesTwoUnresolvedFencingRecordsForOneHost pins the
+// recovery posture: one marker names one record, so a corrupt file carrying two
+// unresolved remote-fencing records for one host cannot be represented exactly.
+// Dropping one record's quarantine precedence would hand a resolver the wrong
+// open state, so the replacement store's build fails closed instead.
+func TestCustodyImportRefusesTwoUnresolvedFencingRecordsForOneHost(t *testing.T) {
+	custody := custodyFile{
+		QuarantineEpoch:        1,
+		QuarantinedFile:        "/state/hostops/operations.json",
+		CustodiedAt:            time.Now().UTC(),
+		AllocatorHighWaterMark: 2,
+		RecordIDs: []custodyRecordID{
+			{RecordID: "00000000000000000001", Host: "h1"},
+			{RecordID: "00000000000000000002", Host: "h1"},
+		},
+		Fences: []custodyFence{
+			{RecordID: "00000000000000000001", Host: "h1", Kind: KindDeploy, ClientOperationID: "op-1",
+				Generation: 1, IncarnationID: "inc-1", Quarantine: true, Boundary: json.RawMessage(remoteFencingBoundaryJSON)},
+			{RecordID: "00000000000000000002", Host: "h1", Kind: KindDeploy, ClientOperationID: "op-2",
+				Generation: 1, IncarnationID: "inc-2", Quarantine: true, Boundary: json.RawMessage(remoteFencingBoundaryJSON)},
+		},
+	}
+	if _, err := replacementState(custody, custody.QuarantinedFile, 0); !errors.Is(err, ErrQuarantineIncomplete) {
+		t.Fatalf("replacementState(two fencing records for one host) = %v, want ErrQuarantineIncomplete", err)
 	}
 }
 

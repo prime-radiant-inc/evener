@@ -132,7 +132,10 @@ func (b RemoteFencingBoundary) BoundaryArray() (json.RawMessage, error) {
 // FencingQuarantineStore is the operation-store half the fencing worker needs:
 // §4's single atomic write that lands the fencing-timeout record, its
 // remote-fencing boundary, and the per-host quarantine marker. hostops.Store
-// implements it.
+// implements it. Its return contract is hostops': a write whose rename landed
+// and whose directory sync behind it failed returns the committed record
+// alongside the error (RenameLanded), so the worker treats any returned record
+// as the durable quarantine.
 type FencingQuarantineStore interface {
 	QuarantineFencing(recordID string, boundary json.RawMessage) (hostops.Record, error)
 }
@@ -359,7 +362,7 @@ func (v Verified) killAndWait(ctx context.Context, e Epoch, live []LeaseEntry, d
 		for _, entry := range live {
 			report, err := v.Kill(killCtx, e, entry.ID)
 			if err != nil {
-				if killCtx.Err() != nil && ctx.Err() == nil {
+				if !isTypedRefusal(err) && killCtx.Err() != nil && ctx.Err() == nil {
 					return &deadlineError{stillLive: unconfirmedEntries(live, settled), cause: killCtx.Err()}
 				}
 				return err
@@ -394,7 +397,7 @@ func (v Verified) killAndWait(ctx context.Context, e Epoch, live []LeaseEntry, d
 		for _, entry := range unsettled {
 			recheck, err := v.WrapperHandle().Recheck(waitCtx, entry.ID)
 			if err != nil {
-				if waitCtx.Err() != nil && ctx.Err() == nil {
+				if !isTypedRefusal(err) && waitCtx.Err() != nil && ctx.Err() == nil {
 					return nil, &deadlineError{stillLive: unsettled, cause: waitCtx.Err()}
 				}
 				return nil, err
@@ -445,11 +448,27 @@ func (v Verified) persistTimeout(req FenceRequest, landed GuardState, superseded
 	}
 	record, err := req.Store.QuarantineFencing(req.RecordID, raw)
 	if err != nil {
+		// A store reports a write whose rename landed and whose directory sync
+		// behind it failed by returning the committed record alongside the error
+		// (hostops' RenameLanded contract), so a returned record is durable: the
+		// caller reconciles with the persisted record rather than treating it as
+		// absent.
 		timeout.PersistErr = err
-		return timeout
 	}
-	timeout.Record = &record
+	if record.ID != "" {
+		timeout.Record = &record
+	}
 	return timeout
+}
+
+// isTypedRefusal reports whether err is a helper refusal — the §6 gate's or the
+// protocol's: a refusal is never masked as a deadline, even when the bound
+// happened to expire in the same instant, because the quarantine
+// classification depends on the refusal class.
+func isTypedRefusal(err error) bool {
+	var refusal *HelperRefusalError
+	var gate *HelperGateError
+	return errors.As(err, &refusal) || errors.As(err, &gate)
 }
 
 // liveLeaseEntries filters the enumerated lease entries to the work a fencing

@@ -479,18 +479,151 @@ type recordingQuarantineStore struct {
 	boundary json.RawMessage
 	record   hostops.Record
 	err      error
+	// durableWithError models a landed write whose directory sync failed: the
+	// committed record comes back alongside the error (hostops' RenameLanded
+	// contract).
+	durableWithError bool
 }
 
 func (s *recordingQuarantineStore) QuarantineFencing(recordID string, boundary json.RawMessage) (hostops.Record, error) {
 	s.boundary = boundary
-	if s.err != nil {
+	if s.err != nil && !s.durableWithError {
 		return hostops.Record{}, s.err
 	}
 	s.record = hostops.Record{
 		ID: recordID, Host: "h1", Kind: hostops.KindDeploy, State: hostops.StateOrphanUnverified,
 		Generation: 1, IncarnationID: "inc-h1", OrphanBoundary: boundary,
 	}
-	return s.record, nil
+	return s.record, s.err
+}
+
+// TestFenceTypedRefusalIsNotMaskedAsTimeout pins that a helper refusal keeps its
+// typed class even when it arrives after the bound has expired: the quarantine
+// classification depends on the refusal, so a refusal is never turned into a
+// fencing-failure timeout.
+func TestFenceTypedRefusalIsNotMaskedAsTimeout(t *testing.T) {
+	old := Epoch{BootID: "boot-1", OpSeq: 1}
+	next := Epoch{BootID: "boot-1", OpSeq: 2}
+	settled := GuardState{
+		Version: 1, GuardEpoch: 2, Epoch: &old, Holder: &old,
+		BootHighWater: map[string]uint64{"boot-1": 1},
+	}
+	entries := `{"version":1,"entries":[{"id":"n1","command":"deploy","registeredAt":"2026-09-28T00:00:00Z",` +
+		`"ownership":{"pid":41,"pidStartTime":"777"},"state":"running"}]}`
+	killLive := `{"version":1,"id":"n1","signaled":true,"live":true,"state":"running","remaining":[{"pid":41,"startToken":"777"}]}`
+	// The kill's refusal arrives after the kill bound expired.
+	killRunner := &cannedRunner{t: t, respond: func(command string) (string, string, int) {
+		switch {
+		case strings.Contains(command, " status"):
+			return statusJSON(t, settled, 0), "", 0
+		case strings.Contains(command, " takeover"):
+			return statusJSON(t, plannedGuard(t, settled, next), 1), "", 0
+		case strings.Contains(command, " entries"):
+			return entries, "", 0
+		case strings.Contains(command, " kill"):
+			time.Sleep(70 * time.Millisecond)
+			return "", RefusalPrefix + `{"version":1,"refused":true,"error":"state-corrupt","detail":"corrupt"}`, HelperExitIO
+		default:
+			t.Fatalf("unexpected command %q", command)
+			return "", "", 0
+		}
+	}}
+	store := &recordingQuarantineStore{}
+	_, err := (Verified{wrapper: Wrapper{Runner: killRunner, Host: "h1"}}).Fence(context.Background(), FenceRequest{
+		Epoch: next, RecordID: "00000000000000000001", Store: store,
+		Deadlines: FencingDeadlines{Kill: 50 * time.Millisecond, Wait: time.Second},
+	})
+	if !errors.Is(err, ErrStateCorrupt) {
+		t.Fatalf("Fence(refusal after the kill bound) = %v, want ErrStateCorrupt", err)
+	}
+	if errors.Is(err, ErrFencingFailure) {
+		t.Fatalf("Fence(refusal after the kill bound) = %v, want it not masked as a fencing failure", err)
+	}
+	if store.boundary != nil {
+		t.Fatal("a typed refusal after the bound persisted a quarantine")
+	}
+	// The recheck's refusal arrives after the wait bound expired.
+	waitRunner := &cannedRunner{t: t, respond: func(command string) (string, string, int) {
+		switch {
+		case strings.Contains(command, " status"):
+			return statusJSON(t, settled, 0), "", 0
+		case strings.Contains(command, " takeover"):
+			return statusJSON(t, plannedGuard(t, settled, next), 1), "", 0
+		case strings.Contains(command, " entries"):
+			return entries, "", 0
+		case strings.Contains(command, " kill"):
+			return killLive, "", 0
+		case strings.Contains(command, " recheck"):
+			time.Sleep(70 * time.Millisecond)
+			return "", RefusalPrefix + `{"version":1,"refused":true,"error":"stale-epoch","detail":"superseded"}`, HelperExitRefusal
+		default:
+			t.Fatalf("unexpected command %q", command)
+			return "", "", 0
+		}
+	}}
+	store = &recordingQuarantineStore{}
+	_, err = (Verified{wrapper: Wrapper{Runner: waitRunner, Host: "h1"}}).Fence(context.Background(), FenceRequest{
+		Epoch: next, RecordID: "00000000000000000001", Store: store,
+		Deadlines: FencingDeadlines{Kill: time.Second, Wait: 50 * time.Millisecond},
+	})
+	if !errors.Is(err, ErrStaleEpoch) {
+		t.Fatalf("Fence(refusal after the wait bound) = %v, want ErrStaleEpoch", err)
+	}
+	if errors.Is(err, ErrFencingFailure) {
+		t.Fatalf("Fence(refusal after the wait bound) = %v, want it not masked as a fencing failure", err)
+	}
+	if store.boundary != nil {
+		t.Fatal("a typed refusal after the wait bound persisted a quarantine")
+	}
+}
+
+// TestFenceTimeoutKeepsADurableRecordReturnedWithError pins the persistence
+// report: a store that landed the quarantine and then reported the sync failure
+// still hands the committed record back, so the timeout carries it as evidence
+// instead of claiming the record could not be persisted.
+func TestFenceTimeoutKeepsADurableRecordReturnedWithError(t *testing.T) {
+	old := Epoch{BootID: "boot-1", OpSeq: 1}
+	next := Epoch{BootID: "boot-1", OpSeq: 2}
+	settled := GuardState{
+		Version: 1, GuardEpoch: 2, Epoch: &old, Holder: &old,
+		BootHighWater: map[string]uint64{"boot-1": 1},
+	}
+	entries := `{"version":1,"entries":[{"id":"n1","command":"deploy","registeredAt":"2026-09-28T00:00:00Z",` +
+		`"ownership":{"pid":41,"pidStartTime":"777"},"state":"running"}]}`
+	kill := `{"version":1,"id":"n1","signaled":true,"live":true,"state":"running","remaining":[{"pid":41,"startToken":"777"}]}`
+	recheck := `{"version":1,"id":"n1","live":true,"state":"running","ownership":{"pid":41,"pidStartTime":"777"}}`
+	runner := &cannedRunner{t: t, respond: func(command string) (string, string, int) {
+		switch {
+		case strings.Contains(command, " status"):
+			return statusJSON(t, settled, 0), "", 0
+		case strings.Contains(command, " takeover"):
+			return statusJSON(t, plannedGuard(t, settled, next), 1), "", 0
+		case strings.Contains(command, " entries"):
+			return entries, "", 0
+		case strings.Contains(command, " kill"):
+			return kill, "", 0
+		case strings.Contains(command, " recheck"):
+			return recheck, "", 0
+		default:
+			t.Fatalf("unexpected command %q", command)
+			return "", "", 0
+		}
+	}}
+	store := &recordingQuarantineStore{err: errors.New("dir sync failed"), durableWithError: true}
+	_, err := (Verified{wrapper: Wrapper{Runner: runner, Host: "h1"}}).Fence(context.Background(), FenceRequest{
+		Epoch: next, RecordID: "00000000000000000001", Store: store,
+		Deadlines: FencingDeadlines{Kill: time.Second, Wait: 100 * time.Millisecond},
+	})
+	var timeout *FencingTimeoutError
+	if !errors.As(err, &timeout) {
+		t.Fatalf("Fence = %v, want *FencingTimeoutError", err)
+	}
+	if timeout.Record == nil || timeout.Record.State != hostops.StateOrphanUnverified {
+		t.Fatalf("timeout record = %+v, want the durable committed record", timeout.Record)
+	}
+	if timeout.PersistErr == nil {
+		t.Fatal("the sync failure was not reported as evidence")
+	}
 }
 
 // ctxCancelRunner answers the read and kill steps, then blocks in the wait's

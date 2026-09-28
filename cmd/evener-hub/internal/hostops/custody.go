@@ -1100,14 +1100,19 @@ func replacementState(custody custodyFile, custodyPath string, floor uint64) (sn
 	}
 	// The replacement closes every imported name; a name whose fence boundary is
 	// the remote-fencing variant is a fencing quarantine, and its marker is
-	// re-materialized here. custodyImports sorts by id, so a host with more than
-	// one such fence takes the lowest id deterministically.
+	// re-materialized here. One marker names one record, so a host carrying two
+	// unresolved remote-fencing records cannot be represented exactly — and
+	// silently dropping one record's quarantine precedence would hand a
+	// resolver the wrong open state. This writer never produces two (a second
+	// fencing-timeout write refuses a host whose marker is open), so the
+	// custody import fails closed instead of guessing.
 	for _, record := range records {
 		if !boundaryHasRemoteFencing(record.OrphanBoundary) {
 			continue
 		}
 		if _, taken := state.FencingQuarantines[record.Host]; taken {
-			continue
+			return snapshot{}, fmt.Errorf("%w: host %q carries more than one unresolved remote-fencing record",
+				ErrQuarantineIncomplete, record.Host)
 		}
 		state.FencingQuarantines[record.Host] = FencingQuarantine{RecordID: record.ID, QuarantinedAt: custody.CustodiedAt}
 	}

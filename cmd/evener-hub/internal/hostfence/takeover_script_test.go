@@ -1,8 +1,8 @@
 package hostfence
 
 import (
-	"bytes"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -299,6 +299,194 @@ func TestScriptKillUnverifiableIdentityStaysLiveAndUnsignaled(t *testing.T) {
 	}
 }
 
+// TestScriptKillSeesUnrecordedNonceCarriers pins the high finding's fix: a
+// running command's descendants are not recorded (the wrapper records them
+// after the command exits), so the kill path must find the children through the
+// per-spawn nonce — otherwise a signaled primary's surviving child reads
+// settled and the next epoch overlaps a live orphan.
+func TestScriptKillSeesUnrecordedNonceCarriers(t *testing.T) {
+	if _, err := os.Stat("/proc/self/environ"); err != nil {
+		t.Skip("nonce enumeration needs /proc (Linux)")
+	}
+	remote := newFenceRemote(t)
+	old := Epoch{BootID: "boot-1", OpSeq: 1}
+	remote.settle(old)
+	work := t.TempDir()
+	childFile := filepath.Join(work, "child")
+	// The primary exits on TERM; its own child ignores TERM and keeps running.
+	command := fmt.Sprintf(
+		`sh -c 'trap "" TERM; while :; do sleep 0.5; done' & echo $! > %s; exec sleep 30`, childFile)
+	entry := crashPerformLeavingCommand(t, remote, old, nil, command)
+	defer killProcess(*entry.Ownership.PID)
+	waitForFile(t, childFile)
+	raw, err := os.ReadFile(childFile)
+	if err != nil {
+		t.Fatalf("read child pid: %v", err)
+	}
+	child, err := strconv.Atoi(strings.TrimSpace(string(raw)))
+	if err != nil {
+		t.Fatalf("parse child pid %q: %v", raw, err)
+	}
+	defer killProcess(child)
+	takeover(t, remote, Epoch{BootID: "boot-1", OpSeq: 2})
+	stdout, stderr, code := remote.run(nil, "kill", "boot-1", "2", entry.ID)
+	if code != 0 {
+		t.Fatalf("kill exited %d: %s", code, stderr)
+	}
+	report, err := DecodeKillReport([]byte(stdout))
+	if err != nil {
+		t.Fatalf("DecodeKillReport(%q) = %v", stdout, err)
+	}
+	if !report.Signaled || !report.Live {
+		t.Fatalf("kill report = %+v, want the primary signaled and the surviving child keeping the member live", report)
+	}
+	if report.State == LeaseKilled {
+		t.Fatal("the kill marked the entry settled over a live unrecorded child")
+	}
+	// With the child gone (and its own transient sleeper with it), a successful
+	// empty enumeration settles the entry.
+	killProcess(child)
+	deadline := time.Now().Add(5 * time.Second)
+	for recheckID(t, remote, entry.ID).Live {
+		if time.Now().After(deadline) {
+			t.Fatal("the entry still reads live after the surviving child was killed")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	stdout, stderr, code = remote.run(nil, "kill", "boot-1", "2", entry.ID)
+	if code != 0 {
+		t.Fatalf("second kill exited %d: %s", code, stderr)
+	}
+	report, err = DecodeKillReport([]byte(stdout))
+	if err != nil {
+		t.Fatalf("DecodeKillReport(%q) = %v", stdout, err)
+	}
+	if report.Signaled || report.Live || report.State != LeaseKilled {
+		t.Fatalf("second kill report = %+v, want a settled entry", report)
+	}
+}
+
+// TestScriptKillMarksAnAlreadyGoneEntry pins the settlement rule: an entry
+// whose recorded instance is already gone settles — marked through the same
+// entry file — even though this call signaled nothing, so the lease file never
+// keeps a live-looking entry with no live holder.
+func TestScriptKillMarksAnAlreadyGoneEntry(t *testing.T) {
+	remote := newFenceRemote(t)
+	remote.settle(Epoch{BootID: "boot-1", OpSeq: 1})
+	takeover(t, remote, Epoch{BootID: "boot-1", OpSeq: 2})
+	// A pid this test owned and reaped: not ours any more, and any reused pid
+	// carries a different start token, so the identity reads as already clean.
+	gone := exec.Command("true")
+	if err := gone.Run(); err != nil {
+		t.Fatalf("run the throwaway process: %v", err)
+	}
+	writeLeaseEntry(t, remote, "n1", LeaseRunning, "pid", strconv.Itoa(gone.Process.Pid), "1", "", "")
+	stdout, stderr, code := remote.run(nil, "kill", "boot-1", "2", "n1")
+	if code != 0 {
+		t.Fatalf("kill exited %d: %s", code, stderr)
+	}
+	report, err := DecodeKillReport([]byte(stdout))
+	if err != nil {
+		t.Fatalf("DecodeKillReport(%q) = %v", stdout, err)
+	}
+	if report.Signaled || report.Live || report.State != LeaseKilled {
+		t.Fatalf("kill report = %+v, want an already-gone entry settled", report)
+	}
+	if recheck := recheckID(t, remote, "n1"); recheck.Live || recheck.State != LeaseKilled {
+		t.Fatalf("recheck after the kill = %+v, want killed and not live", recheck)
+	}
+}
+
+// TestScriptScanUnavailableStaysLive pins the enumeration contract: when the
+// nonce scan cannot run (here: grep is not on PATH), no member reads settled —
+// the answer is live, and never a signal on a possibly-live child.
+func TestScriptScanUnavailableStaysLive(t *testing.T) {
+	if _, err := os.Stat("/proc/self/environ"); err != nil {
+		t.Skip("nonce enumeration needs /proc (Linux)")
+	}
+	remote := newFenceRemote(t)
+	remote.settle(Epoch{BootID: "boot-1", OpSeq: 1})
+	// A PATH with every tool the helper's kill/recheck paths use, minus grep.
+	pathDir := t.TempDir()
+	for _, tool := range []string{
+		"awk", "basename", "cat", "chmod", "date", "ln", "ls", "mkdir", "mv", "od",
+		"ps", "rm", "sed", "sleep", "tr",
+	} {
+		if resolved, err := exec.LookPath(tool); err == nil {
+			if err := os.Symlink(resolved, filepath.Join(pathDir, tool)); err != nil {
+				t.Fatalf("link %s: %v", tool, err)
+			}
+		}
+	}
+	if _, err := exec.LookPath("grep"); err != nil {
+		t.Skip("grep is not installed at all")
+	}
+	noGrep := []string{"PATH=" + pathDir}
+	if _, stderr, code := remote.run(noGrep, "takeover", "boot-1", "2"); code != 0 {
+		t.Fatalf("takeover under the grep-less PATH exited %d: %s", code, stderr)
+	}
+	writeLeaseEntry(t, remote, "n1", LeaseRunning, "nonce", "", "", "n1", "")
+	stdout, stderr, code := remote.run(noGrep, "recheck", "n1")
+	if code != 0 {
+		t.Fatalf("recheck exited %d: %s", code, stderr)
+	}
+	recheck, err := DecodeRecheck([]byte(stdout))
+	if err != nil {
+		t.Fatalf("DecodeRecheck(%q) = %v", stdout, err)
+	}
+	if !recheck.Live {
+		t.Fatalf("recheck without the scan = %+v, want live (cannot disprove)", recheck)
+	}
+	stdout, stderr, code = remote.run(noGrep, "kill", "boot-1", "2", "n1")
+	if code != 0 {
+		t.Fatalf("kill exited %d: %s", code, stderr)
+	}
+	report, err := DecodeKillReport([]byte(stdout))
+	if err != nil {
+		t.Fatalf("DecodeKillReport(%q) = %v", stdout, err)
+	}
+	if report.Signaled || !report.Live || report.State == LeaseKilled {
+		t.Fatalf("kill report without the scan = %+v, want live and unsettled", report)
+	}
+}
+
+// TestScriptKillPreservesTheCommandText pins the stored-field round trip: the
+// kill path writes the command field exactly as it read it (already
+// JSON-escaped), so a command carrying quotes or backslashes survives the kill
+// mark and the boundary's lease entries verbatim.
+func TestScriptKillPreservesTheCommandText(t *testing.T) {
+	remote := newFenceRemote(t)
+	old := Epoch{BootID: "boot-1", OpSeq: 1}
+	remote.settle(old)
+	work := t.TempDir()
+	command := fmt.Sprintf(`printf 'a"b\c' > %s/probe; exec sleep 30`, work)
+	entry := crashPerformLeavingCommand(t, remote, old, nil, command)
+	defer killProcess(*entry.Ownership.PID)
+	takeover(t, remote, Epoch{BootID: "boot-1", OpSeq: 2})
+	stdout, stderr, code := remote.run(nil, "kill", "boot-1", "2", entry.ID)
+	if code != 0 {
+		t.Fatalf("kill exited %d: %s", code, stderr)
+	}
+	report, err := DecodeKillReport([]byte(stdout))
+	if err != nil {
+		t.Fatalf("DecodeKillReport(%q) = %v", stdout, err)
+	}
+	if report.State != LeaseKilled {
+		t.Fatalf("kill report = %+v, want the entry killed", report)
+	}
+	stdout, stderr, code = remote.run(nil, "entries")
+	if code != 0 {
+		t.Fatalf("entries exited %d: %s", code, stderr)
+	}
+	entries, err := DecodeEntries([]byte(stdout))
+	if err != nil || len(entries) != 1 {
+		t.Fatalf("entries = %+v (err %v), want one entry", entries, err)
+	}
+	if entries[0].Command != command {
+		t.Fatalf("command after the kill mark = %q, want %q", entries[0].Command, command)
+	}
+}
+
 // TestScriptOutOfRangeHighWaterRefuses pins S17's recorded Low: the per-boot
 // high-water is a uint64 (the Go decoder unmarshals it into one), so a value
 // above the maximum is state-corrupt — never an accepted value that skips the
@@ -526,10 +714,11 @@ func TestScriptKillReportShapeIsClosed(t *testing.T) {
 	}
 }
 
-// TestScriptKillEntryWasNotMutatedByARefusal pins that a refused kill leaves
-// the lease file exactly as it was: no state transition without a verified,
-// signaled kill.
-func TestScriptKillEntryWasNotMutatedByARefusal(t *testing.T) {
+// TestScriptKillSettlesAReusedIdentityWithoutSignaling pins the settlement
+// rule's other half: a recorded pid whose start token no longer matches is a
+// reused id naming unrelated work — never signaled — and the member settles
+// through the same entry file, so no live-looking entry is left behind.
+func TestScriptKillSettlesAReusedIdentityWithoutSignaling(t *testing.T) {
 	remote := newFenceRemote(t)
 	remote.settle(Epoch{BootID: "boot-1", OpSeq: 1})
 	victim := exec.Command("sleep", "30")
@@ -539,20 +728,14 @@ func TestScriptKillEntryWasNotMutatedByARefusal(t *testing.T) {
 	defer func() { _ = victim.Process.Kill(); _, _ = victim.Process.Wait() }()
 	takeover(t, remote, Epoch{BootID: "boot-1", OpSeq: 2})
 	writeLeaseEntry(t, remote, "n1", LeaseRunning, "pid", strconv.Itoa(victim.Process.Pid), "999999999999", "", "")
-	path := filepath.Join(remote.state, "leases", "n1")
-	before, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("read entry: %v", err)
+	if _, stderr, code := remote.run(nil, "kill", "boot-1", "2", "n1"); code != 0 {
+		t.Fatalf("kill exited %d: %s", code, stderr)
 	}
-	if _, _, code := remote.run(nil, "kill", "boot-1", "2", "n1"); code != 0 {
-		t.Fatalf("kill exited %d", code)
+	if !processAlive(t, victim.Process.Pid) {
+		t.Fatal("a reused pid was signaled")
 	}
-	after, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("read entry after kill: %v", err)
-	}
-	if !bytes.Equal(before, after) {
-		t.Fatalf("a clean-read kill rewrote the entry: before %q after %q", before, after)
+	if recheck := recheckID(t, remote, "n1"); recheck.Live || recheck.State != LeaseKilled {
+		t.Fatalf("recheck after the clean-read kill = %+v, want killed and not live", recheck)
 	}
 	assertNoTempFiles(t, remote.state)
 }
