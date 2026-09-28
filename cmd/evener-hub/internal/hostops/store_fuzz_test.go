@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"path/filepath"
-	"strings"
 	"testing"
 
 	"github.com/spf13/afero"
@@ -259,23 +258,21 @@ func TestRepairedFuzzSeedsReachTheirIntendedArms(t *testing.T) {
 		t.Fatalf("complete record after the pass = %+v (present %v), want untouched", record, ok)
 	}
 
-	// The stamp-ahead and shared-stamp seeds are refused for their sequence
-	// shape, never for a missing result.
-	for name, tc := range map[string]struct{ body, want string }{
-		"stamp ahead":  {stampAhead, "above the store's"},
-		"shared stamp": {sharedStamp, "more than one record"},
-	} {
+	// The stamp-ahead and shared-stamp seeds reach §4's custody-first quarantine
+	// for their sequence shape — the corrupt file is quarantined, never served as
+	// its own state — and never for a missing result. A seed that short-circuited
+	// on the result rule would be a record-level parse failure whose custody is
+	// incomplete, and the open would refuse instead.
+	for name, body := range map[string]string{"stamp ahead": stampAhead, "shared stamp": sharedStamp} {
 		path := StorePath(t.TempDir())
-		writeRawStore(t, path, 0o600, tc.body)
-		_, err := Open(path)
-		if !errors.Is(err, ErrStoreCorrupt) {
-			t.Fatalf("%s: err = %v, want ErrStoreCorrupt", name, err)
+		writeRawStore(t, path, 0o600, body)
+		store, err := Open(path)
+		if err != nil {
+			t.Fatalf("%s: Open = %v, want the custody-first quarantine", name, err)
 		}
-		if !strings.Contains(err.Error(), tc.want) {
-			t.Fatalf("%s: err = %v, want it to name %q", name, err, tc.want)
-		}
-		if strings.Contains(err.Error(), "terminal result") {
-			t.Fatalf("%s: refused for the result rule instead of its intended arm: %v", name, err)
+		wantQuarantined(t, store, path, body)
+		if got := store.Sequence(); got != 0 {
+			t.Fatalf("%s: the replacement sequence = %d, want the fresh store's 0", name, got)
 		}
 	}
 }

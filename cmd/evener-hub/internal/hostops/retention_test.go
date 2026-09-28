@@ -997,19 +997,22 @@ func TestByteBoundLeavesARecordSetThatAlreadyFits(t *testing.T) {
 	}
 }
 
-// TestOpenRefusesACaseVariantRemovedHostKey pins the Low: the per-name removal
-// markers are objects this store decodes, so a key outside the canonical
-// spelling — including the case variants Go's decoder accepts — is refused on
-// load rather than silently rewritten on the next save.
-func TestOpenRefusesACaseVariantRemovedHostKey(t *testing.T) {
+// TestOpenQuarantinesACaseVariantRemovedHostKey pins the Low: the per-name
+// removal markers are objects this store decodes, so a key outside the
+// canonical spelling — including the case variants Go's decoder accepts — is
+// never silently rewritten on the next save. Under §4 it takes the custody-first
+// quarantine: the file is renamed aside verbatim, and the replacement store
+// never carries the marker.
+func TestOpenQuarantinesACaseVariantRemovedHostKey(t *testing.T) {
 	body := `{"version":1,"sequence":0,"allocatorHighWaterMark":0,"records":[],"removedHosts":{"m4":{"RemovedAt":"2026-09-26T00:00:00Z","generation":7,"incarnationId":"inc-1"}}}`
 	path := StorePath(t.TempDir())
 	writeRawStore(t, path, 0o600, body)
-	_, err := Open(path)
-	if !errors.Is(err, ErrStoreCorrupt) {
-		t.Fatalf("Open(case-variant removal marker key) = %v, want ErrStoreCorrupt", err)
+	store, err := Open(path)
+	if err != nil {
+		t.Fatalf("Open(case-variant removal marker key) = %v, want the custody-first quarantine", err)
 	}
-	if !strings.Contains(err.Error(), "removedHosts") && !strings.Contains(err.Error(), "RemovedAt") {
-		t.Fatalf("refusal = %v, want it to name the offending key", err)
+	wantQuarantined(t, store, path, body)
+	if state := storeSnapshotForTest(store); len(state.RemovedHosts) != 0 {
+		t.Fatalf("the replacement store carried the removal marker forward: %+v", state.RemovedHosts)
 	}
 }
