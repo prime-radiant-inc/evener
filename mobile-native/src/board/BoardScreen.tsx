@@ -160,6 +160,8 @@ function Board({
 	const connected = state === "ready";
 	// This Board's own hub is the connected one, so a hub write may go out.
 	const actionsConnected = connected && activeProfile?.id === hubId;
+	// The client a hub write goes out on, or null while none may.
+	const actionsClient = actionsConnected ? client : null;
 	const focused = useIsFocused();
 	// Activity keeps polling while only a sheet covers the Board: the sheet
 	// is part of the screen under it.
@@ -299,7 +301,7 @@ function Board({
 		],
 		[snapshot.live.rows, snapshot.needsYou.rows, snapshot.pinSections, ...projectViews],
 	);
-	useHubSeenMarks(hubMarks, actionsConnected ? client : null, loadedRows);
+	useHubSeenMarks(hubMarks, actionsClient, loadedRows);
 	const hubNotices = useMemo(
 		() => notices({ auth: snapshot.auth, sources: sources ?? [], plugins: snapshot.plugins, loadedRows }),
 		[snapshot.auth, sources, snapshot.plugins, loadedRows],
@@ -340,7 +342,7 @@ function Board({
 
 	const newSession = () => navigation.navigate("NewSession", { hubId, hubName });
 	const openSession = (row: NavigationSessionSummary) => {
-		seen.markRead(actionsConnected ? client : null, [row]);
+		seen.markRead(actionsClient, [row]);
 		navigation.navigate("Conversation", { hubId, ref: row.ref, title: row.title });
 	};
 	// A search result the Board has loaded opens like its row, so it's
@@ -483,11 +485,10 @@ function Board({
 	 * Session sends them (rulings 18-21). */
 	const actOnRow = (item: ClassifiedRow, action: RowAction) => {
 		const { row } = item;
-		const markClient = actionsConnected ? client : null;
-		if (action === "markRead") seen.markRead(markClient, [row]);
-		else if (action === "markUnread") seen.markUnread(markClient, [row]);
-		else if (action === "shutDown") confirmShutDown(actionsConnected ? client : null, row, toast);
-		else if (action === "rename") promptRename(actionsConnected ? client : null, row, toast);
+		if (action === "markRead") seen.markRead(actionsClient, [row]);
+		else if (action === "markUnread") seen.markUnread(actionsClient, [row]);
+		else if (action === "shutDown") confirmShutDown(actionsClient, row, toast);
+		else if (action === "rename") promptRename(actionsClient, row, toast);
 		else runRowAction(item, action);
 	};
 	const archivingId = archivingSessionId(organization.state);
@@ -876,7 +877,7 @@ function Board({
 		if (pinned.length) toast.show({ text: `${sessionCount("Pinned", pinned.length, rows.length)} to ${name}` });
 	};
 	const markChosenRead = () => {
-		seen.markRead(actionsConnected ? client : null, selection.markRead);
+		seen.markRead(actionsClient, selection.markRead);
 		leaveSelect();
 	};
 
