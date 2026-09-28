@@ -48,7 +48,7 @@ import {
 } from "./retainedScreen";
 import type { Routes } from "./screens";
 import { Action, Copy, ErrorMessage, WarningMessage, styles, useColors } from "./ui";
-import { haptic } from "./haptics";
+import { destructiveButton } from "./haptics";
 
 // The warnings shown for the two refusals the generic "could not be confirmed"
 // line would misreport: a provider-instance write the hub APPLIED before a
@@ -349,14 +349,7 @@ function Providers({
 		if (!canUseConnection()) return;
 		Alert.alert(title, `${selected} on ${hubName}`, [
 			{ text: "Cancel", style: "cancel" },
-			{
-				text: "Confirm",
-				style: "destructive",
-				onPress: () => {
-					haptic("rigid");
-					void act(action, options);
-				},
-			},
+			destructiveButton("Confirm", () => act(action, options)),
 		]);
 	}
 

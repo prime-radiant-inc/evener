@@ -40,7 +40,7 @@ import {
 } from "./retainedScreen";
 import type { Routes } from "./screens";
 import { Action, Copy, ErrorMessage, styles, useColors } from "./ui";
-import { haptic } from "./haptics";
+import { destructiveButton } from "./haptics";
 
 /** The applied marketplace removals one client's writes reported, keyed by
  * name with the publication version each fence predates: a name is one a
@@ -425,15 +425,10 @@ function Plugins({
 		const version = editorVersion.current;
 		Alert.alert("Remove plugin?", `${target.plugin} from ${target.marketplace} on ${hubName}`, [
 			{ text: "Cancel", style: "cancel" },
-			{
-				text: "Remove",
-				style: "destructive",
-				onPress: () => {
-					haptic("rigid");
-					if (version === editorVersion.current && canUseConnection())
-						void act(() => state.removePlugin(target.plugin, target.marketplace));
-				},
-			},
+			destructiveButton("Remove", () => {
+				if (version === editorVersion.current && canUseConnection())
+					void act(() => state.removePlugin(target.plugin, target.marketplace));
+			}),
 		]);
 	}
 	return (

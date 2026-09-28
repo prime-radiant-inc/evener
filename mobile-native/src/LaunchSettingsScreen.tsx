@@ -12,7 +12,7 @@ import { scalarKinds } from "./launchScalar";
 import { RepositoryLaunchReview } from "./RepositoryLaunchReview";
 import type { Routes } from "./screens";
 import { Action, Copy, ErrorMessage, styles, useColors } from "./ui";
-import { haptic } from "./haptics";
+import { destructiveButton } from "./haptics";
 
 type Props = NativeStackScreenProps<Routes, "LaunchSettings">;
 export function LaunchSettingsScreen({ route, navigation }: Props) {
@@ -75,14 +75,7 @@ function LaunchDefaults({
 		if (state.saving) return;
 		Alert.alert("Discard launch changes?", "Your unsaved changes will be lost.", [
 			{ text: "Keep editing", style: "cancel" },
-			{
-				text: "Discard",
-				style: "destructive",
-				onPress: () => {
-					haptic("rigid");
-					navigation.dispatch(data.action);
-				},
-			},
+			destructiveButton("Discard", () => navigation.dispatch(data.action)),
 		]);
 	});
 	const options = (state.options ?? []).filter(
@@ -133,14 +126,7 @@ function LaunchDefaults({
 							if (state.dirty)
 								Alert.alert("Reload launch defaults?", "This discards your unsaved changes.", [
 									{ text: "Cancel", style: "cancel" },
-									{
-										text: "Reload",
-										style: "destructive",
-										onPress: () => {
-											haptic("rigid");
-											reload();
-										},
-									},
+									destructiveButton("Reload", () => reload()),
 								]);
 							else reload();
 						}}

@@ -117,7 +117,7 @@ import { listScrollHandlers } from "./settledList";
 import { type BoardOrganization, organizationOpen, useBoardOrganization } from "./useBoardOrganization";
 import { PROJECT_SECTIONS, showExpanded, useProjectSections } from "./useProjectSections";
 import { useSettledList } from "./useSettledList";
-import { haptic } from "../haptics";
+import { destructiveButton, haptic } from "../haptics";
 
 type Props = NativeStackScreenProps<Routes, "Sessions">;
 type Navigation = Props["navigation"];
@@ -1078,15 +1078,10 @@ function pinnedCategoryMenu(organization: BoardOrganization, catalog: () => read
 	const remove = (section: NavigationPinSectionDescriptor) =>
 		Alert.alert(`Delete “${section.name}”?`, "Its sessions stay; they're only unpinned.", [
 			{ text: "Cancel", style: "cancel" },
-			{
-				text: "Delete",
-				style: "destructive",
-				onPress: () => {
-					haptic("rigid");
-					if (!organizationOpen(organization) || !listed(section.id)) return;
-					void organization.actions?.deletePinSection({ sectionId: section.id });
-				},
-			},
+			destructiveButton("Delete", () => {
+				if (!organizationOpen(organization) || !listed(section.id)) return;
+				void organization.actions?.deletePinSection({ sectionId: section.id });
+			}),
 		]);
 	const open = (section: NavigationPinSectionDescriptor) => {
 		if (!organizationOpen(organization)) return;
@@ -1217,18 +1212,13 @@ function confirmShutDown(
 ) {
 	Alert.alert(`Shut down “${row.title}”?`, "The agent stops. Send it a message to resume it.", [
 		{ text: "Cancel", style: "cancel" },
-		{
-			text: "Shut down",
-			style: "destructive",
-			onPress: () => {
-				haptic("rigid");
-				if (!client) return;
-				shutDownSession(client, row.ref).then(
-					() => toast.show({ text: "Session shut down" }),
-					(error: unknown) => toast.show({ text: `Couldn't shut down “${row.title}”: ${errorText(error)}` }),
-				);
-			},
-		},
+		destructiveButton("Shut down", () => {
+			if (!client) return;
+			shutDownSession(client, row.ref).then(
+				() => toast.show({ text: "Session shut down" }),
+				(error: unknown) => toast.show({ text: `Couldn't shut down “${row.title}”: ${errorText(error)}` }),
+			);
+		}),
 	]);
 }
 

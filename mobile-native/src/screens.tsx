@@ -175,7 +175,7 @@ import { TranscriptUsage } from "./TranscriptUsage";
 import { groupTimeline, type TimelineRow, timelineGap } from "./timeline";
 import { projectNativeTranscript } from "./transcriptPresentation";
 import { Action, Copy, ErrorMessage, styles, useColors } from "./ui";
-import { haptic } from "./haptics";
+import { destructiveButton, haptic } from "./haptics";
 
 const NO_QUESTIONS: AskQuestionRef[] = [];
 const STEER_FAILED = { text: "Couldn't steer with this message now." };
@@ -346,16 +346,11 @@ export function HubsScreen({ navigation }: NativeStackScreenProps<Routes, "Hubs"
 			"The saved hub, its credentials, and its local drafts will be removed from this device.",
 			[
 				{ text: "Cancel", style: "cancel" },
-				{
-					text: "Remove",
-					style: "destructive",
-					onPress: () => {
-						haptic("rigid");
-						void removeHub(id).catch((error: unknown) =>
-							setError(error instanceof Error ? error.message : "Could not remove this hub. Try again."),
-						);
-					},
-				},
+				destructiveButton("Remove", () => {
+					void removeHub(id).catch((error: unknown) =>
+						setError(error instanceof Error ? error.message : "Could not remove this hub. Try again."),
+					);
+				}),
 			],
 		);
 	}

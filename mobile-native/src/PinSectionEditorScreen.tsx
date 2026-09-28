@@ -10,7 +10,7 @@ import type { PinSectionDraft } from "./pinSectionDrafts";
 import type { Routes } from "./screens";
 import { Action, Copy, ErrorMessage, styles, useColors } from "./ui";
 import { usePinNavigation } from "./usePinNavigation";
-import { haptic } from "./haptics";
+import { destructiveButton } from "./haptics";
 
 const storageError =
 	"Your last saved section name is kept. This edit could not be saved on this device; refresh to retry.";
@@ -106,17 +106,12 @@ export function PinSectionEditorScreen({ route, navigation }: NativeStackScreenP
 			`This removes the pinned section and unpins its ${section.count} ${section.count === 1 ? "session" : "sessions"}. Sessions and their history are kept.`,
 			[
 				{ text: "Cancel", style: "cancel" },
-				{
-					text: "Delete section",
-					style: "destructive",
-					onPress: () => {
-						haptic("rigid");
-						// The catalog re-reads itself while the alert is up; delete only
-						// the section as it was shown.
-						if (pinSectionAsShown(pin.pages?.getSnapshot().rows ?? [], section)) void execute(true);
-						else setChangedUnderAlert(true);
-					},
-				},
+				destructiveButton("Delete section", () => {
+					// The catalog re-reads itself while the alert is up; delete only
+					// the section as it was shown.
+					if (pinSectionAsShown(pin.pages?.getSnapshot().rows ?? [], section)) void execute(true);
+					else setChangedUnderAlert(true);
+				}),
 			],
 		);
 	}
