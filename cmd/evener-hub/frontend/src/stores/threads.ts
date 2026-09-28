@@ -126,6 +126,7 @@ export interface PromoteDisplayInput {
 export interface ThreadsStoreState {
   threads: Map<string, ThreadModel>;
   mutationWriteStalled: boolean;
+  mutationStorageWedged: boolean;
   mutationReconciliationFailures: ReadonlySet<string>;
   restartBlockingObligations: ReadonlyMap<string, symbol>;
   mutationAuthorityRefs: ReadonlySet<string>;
@@ -959,6 +960,9 @@ function getMutationRuntime(): MutationRuntime | null {
     new MutationOutboxIndexedDB({
       onWriteStalled: (waiting) => {
         if (isCurrentMutationRuntime(runtime)) threadsStore.setState({ mutationWriteStalled: waiting });
+      },
+      onStorageWedged: (wedged) => {
+        if (isCurrentMutationRuntime(runtime)) threadsStore.setState({ mutationStorageWedged: wedged });
       },
     });
   // §6's note-row supersede discard commits fire-and-forget AFTER the settle
@@ -3213,6 +3217,7 @@ function replaceThread(
 export const threadsStore = createStore<ThreadsStoreState>(() => ({
   threads: new Map(),
   mutationWriteStalled: false,
+  mutationStorageWedged: false,
   mutationReconciliationFailures: new Set(),
   restartBlockingObligations: new Map(),
   mutationAuthorityRefs: new Set(),

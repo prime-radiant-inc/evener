@@ -335,6 +335,13 @@ async function deleteMutationDatabase(): Promise<void> {
   });
 }
 
+// A request that never fires success, error, or blocked: the wedged
+// connection-coordinator shape, where open()/deleteDatabase() return and then
+// no event ever arrives.
+function wedgedRequest(): IDBOpenDBRequest {
+  return new EventTarget() as unknown as IDBOpenDBRequest;
+}
+
 async function flushIndexedDBUntil(done: () => boolean, maxTurns = 30): Promise<void> {
   const probe = new MutationOutboxIndexedDB();
   for (let turn = 0; turn < maxTurns && !done(); turn += 1) await probe.listTargetRefs();
@@ -12677,4 +12684,18 @@ describe("Stop cancellation durability across reload, tabs, and resume", () => {
     threadsStore.getState().releaseThread("ref_gone");
     expect(threadsStore.getState().threads.has("ref_gone")).toBe(false);
   });
+});
+
+// The wedged latch is a storage status the runtime reports to the store, the
+// same way onWriteStalled reports a stalled write. A wedged open whose probe
+// also stalls never resolves, so the adapter latches and the store must show
+// it: the Composer's actionable banner reads this field.
+test("the store latches mutationStorageWedged when a wedged adapter cannot reset", async () => {
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  vi.spyOn(globalThis.indexedDB, "open").mockImplementation(() => wedgedRequest());
+  vi.spyOn(globalThis.indexedDB, "deleteDatabase").mockImplementation(() => wedgedRequest());
+  const read = readMutationPersistence("ref_a").catch(() => undefined);
+  await vi.runAllTimersAsync();
+  expect(threadsStore.getState().mutationStorageWedged).toBe(true);
+  await read;
 });

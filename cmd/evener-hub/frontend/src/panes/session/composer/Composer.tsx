@@ -195,6 +195,7 @@ export function Composer({ ref, focused }: ComposerProps) {
   const model = useThreadsStore((s) => s.threads.get(ref));
   const recoveryRequired = useThreadsStore((s) => s.restartBlockingObligations.has(ref));
   const mutationWriteStalled = useThreadsStore((s) => s.mutationWriteStalled);
+  const mutationStorageWedged = useThreadsStore((s) => s.mutationStorageWedged);
   const submitting = useComposerSubmitting(ref);
   const pendingSendEntries = usePendingTurnEntries(ref, "send");
   const toasts = useToasts();
@@ -1491,6 +1492,11 @@ export function Composer({ ref, focused }: ComposerProps) {
         <div className={CLASS.storageStatus} role="status" aria-label="Message storage">
           Browser storage has stalled. A message update is still pending; keep this tab open while Evener waits for
           confirmation.
+        </div>
+      )}
+      {mutationStorageWedged && (
+        <div className={CLASS.storageStatus} role="alert" aria-label="Message storage">
+          Message storage is stuck. Reload the page; if it stays stuck, clear this site's data in your browser settings.
         </div>
       )}
       {/* The ask dock no longer renders here: pending questions are the
