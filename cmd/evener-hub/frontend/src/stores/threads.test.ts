@@ -11208,6 +11208,10 @@ test("the queued-non-send projection read blocks the foldable predicate", async 
     ),
   );
   await refreshPendingTurnsProjection(ref);
+  // The runtime's startup discovery scan starts an all-targets read that
+  // out-ranks this specific one; readiness now waits for the latest read, so
+  // settle the outstanding work before asserting the ref is loaded.
+  await flushPendingTurnsProjectionForTests();
   expect(hasQueuedNonSend(ref)).toBe(false);
   expect(resumeOnlyLocalModel(ref)).toBe(true);
 
@@ -11326,6 +11330,10 @@ test("a foldable ref whose outbox has not loaded is not foldable", async () => {
   expect(resumeOnlyLocalModel(ref)).toBe(false);
   // Only once the durable outbox has loaded is the ref foldable.
   await refreshPendingTurnsProjection(ref);
+  // The runtime's startup discovery scan starts an all-targets read that
+  // out-ranks this specific one; readiness now waits for the latest read, so
+  // settle the outstanding work before asserting the ref is loaded.
+  await flushPendingTurnsProjectionForTests();
   expect(hasBlockedUnknown(ref)).toBe(false);
   expect(hasQueuedNonSend(ref)).toBe(false);
   expect(resumeOnlyLocalModel(ref)).toBe(true);
@@ -11464,6 +11472,80 @@ test("a healthy authoritative refresh releases the fence after refused force sto
   await refresh.mock.results[0]?.value;
   expect(threadsStore.getState().restartBlockingObligations.has(ref)).toBe(false);
   expect(fake.calls.some((call) => call.method === "thread/resume")).toBe(false);
+});
+
+// RoboRev Medium (PR 2862, round 9): stoppingRefs is a boolean Set with no
+// ownership or generation. Two overlapping forceStop calls therefore cleared
+// the fence when the FIRST completed, while the second stop was still
+// draining - and a stale thread/read refresh could then clear the restart
+// obligation too, reopening mutation dispatch for the rest of the stop
+// window. A per-ref in-flight count keeps the fence armed until the last stop
+// returns, whichever order they finish in.
+test("an earlier forceStop completion cannot clear the fence while a second stop still drains", async () => {
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  const ref = "ref_a";
+  const fake = connectFakeClient();
+  fake.on("thread/read", () => readResponse(ref));
+  await threadsStore.getState().ensureThread(ref);
+  const stops = [deferred<void>(), deferred<void>()];
+  let stopCalls = 0;
+  fake.on("evener/thread/forceStop", () => stops[stopCalls++]?.promise ?? Promise.resolve());
+  const first = threadsStore.getState().forceStop(ref);
+  const second = threadsStore.getState().forceStop(ref);
+  expect(threadsStore.getState().stoppingRefs.has(ref)).toBe(true);
+  // The first stop resolves while the second is still in flight.
+  stops[0]?.resolve();
+  await first;
+  // The fence must stay armed: the second stop has not returned.
+  expect(threadsStore.getState().stoppingRefs.has(ref)).toBe(true);
+  // A stale refresh clearing the obligation must not reopen dispatch while
+  // the second stop still drains: stoppingRefs is the independent fence.
+  threadsStore.setState((state) => {
+    const restartBlockingObligations = new Map(state.restartBlockingObligations);
+    restartBlockingObligations.delete(ref);
+    return { restartBlockingObligations };
+  });
+  expect(threadsStore.getState().restartBlockingObligations.has(ref)).toBe(false);
+  expect(threadsStore.getState().stoppingRefs.has(ref)).toBe(true);
+  // Only when the last stop returns does the fence clear.
+  stops[1]?.resolve();
+  await second;
+  expect(threadsStore.getState().stoppingRefs.has(ref)).toBe(false);
+});
+
+// RoboRev Low (PR 2862, round 9, a regression from the round's own Stop
+// fence): the restart obligation forceStop arms is restored only when the
+// cancellation write fails. A requireClient() lookup failure (offline, no
+// ready client) throws before any signal reaches a daemon, so the armed
+// obligation must be restored exactly as the storage failure does - and
+// refreshThread must NOT be kicked, since while offline it cannot clear the
+// fence and only leaves a live session's recovery fenced.
+test("forceStop with no connected client leaves the obligation untouched and does not refresh", async () => {
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  connectionStore.setState({ client: null, state: "idle" });
+  const ref = "local:offline";
+  const refresh = vi.spyOn(threadsStore.getState(), "refreshThread");
+  await expect(threadsStore.getState().forceStop(ref)).rejects.toThrow("threads store: no client connected");
+  expect(threadsStore.getState().restartBlockingObligations.has(ref)).toBe(false);
+  expect(threadsStore.getState().stoppingRefs.has(ref)).toBe(false);
+  expect(refresh).not.toHaveBeenCalled();
+});
+
+test("forceStop with no connected client restores a pre-existing obligation exactly", async () => {
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  connectionStore.setState({ client: null, state: "idle" });
+  const ref = "local:offline-owned";
+  const original = Symbol();
+  threadsStore.setState((state) => ({
+    restartBlockingObligations: new Map(state.restartBlockingObligations).set(ref, original),
+  }));
+  const refresh = vi.spyOn(threadsStore.getState(), "refreshThread");
+  await expect(threadsStore.getState().forceStop(ref)).rejects.toThrow("threads store: no client connected");
+  expect(threadsStore.getState().restartBlockingObligations.get(ref)).toBe(original);
+  expect(refresh).not.toHaveBeenCalled();
 });
 
 test("a stale client's ready callback cannot begin a generation for a replaced client", async () => {

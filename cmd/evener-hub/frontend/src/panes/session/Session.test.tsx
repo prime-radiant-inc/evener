@@ -3007,6 +3007,11 @@ test("a merely-resumable local session shows no standalone Resume notice", async
   // render, so load the outbox and re-render - the pane's own liveness tick
   // does the same within a tick - before asserting the notice is dropped.
   await refreshPendingTurnsProjection(ref);
+  // Readiness now follows the fence's own ownership check: the runtime's
+  // startup discovery scan starts an all-targets read that out-ranks this
+  // specific one, so settle the outstanding projection work and let the latest
+  // read be the one that marks the ref loaded.
+  await flushPendingTurnsProjectionForTests();
   rerender(tree());
   expect(screen.queryByRole("button", { name: "Resume session" })).toBeNull();
   expect(screen.queryByRole("alert")).toBeNull();

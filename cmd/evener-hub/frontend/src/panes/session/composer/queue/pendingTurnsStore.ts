@@ -5,6 +5,7 @@ import {
   createSubmissionRunner,
   type MutationPersistencePort,
   type MutationPersistenceSnapshot,
+  type MutationProjectionRefresh,
   outboxEntriesByState,
   type PendingTurnsDraftPort,
   type PendingTurnsThreadsPort,
@@ -127,31 +128,41 @@ async function readProjectionIntoStore(ref?: string): Promise<boolean> {
   // between, and it must still out-rank this snapshot for that target.
   const targets = accepted.apply();
   pendingTurnsStore.projectSnapshot(targets, snapshot);
-  // The durable read that just resolved is what makes a ref's outbox "loaded":
-  // even when apply() superseded the target (a newer read or a live commit
-  // moved on), storage for the ref was durably read, which is the readiness
-  // fact the predicate's fail-closed read needs.
-  markProjectionLoaded(ref, targets, snapshot);
+  // Readiness follows the fence's own ownership check, at the same moment the
+  // snapshot is projected: a read a newer read or a live commit has already
+  // superseded is not this ref's current word, so it must not mark the ref
+  // loaded - the still-outstanding winning read is the one that will publish
+  // the rows, and marks it loaded when it does. Otherwise the predicate would
+  // read "loaded, no uncertainty" from a projection the winner has not filled
+  // in yet and fold a resume ahead of blocked or queued rows.
+  markProjectionLoaded(accepted, ref, targets, snapshot);
   return true;
 }
 
-// Marks the refs a resolved durable read covered as loaded. A specific read
-// names its ref. A global read covers every ref this page tracks (a tracked ref
-// with no durable rows was read and found empty) plus every ref the snapshot
-// named.
+// Marks the refs a resolved durable read covered as loaded, but only the refs
+// this read's generation still owns: a ref a newer in-flight read or a live
+// commit's advance superseded stays unloaded so the winner marks it. A specific
+// read names its ref. A global read covers every ref this page tracks (a
+// tracked ref with no durable rows was read and found empty) plus every ref the
+// snapshot named, each gated the same way.
 function markProjectionLoaded(
+  refresh: MutationProjectionRefresh<MutationAttachment>,
   ref: string | undefined,
   targets: ReadonlySet<string>,
   snapshot: MutationPersistenceSnapshot<MutationAttachment>,
 ): void {
   if (ref !== undefined) {
-    loadedRefs.add(ref);
+    if (refresh.stillOwns(ref)) loadedRefs.add(ref);
     return;
   }
-  for (const target of targets) loadedRefs.add(target);
-  for (const target of threadsStore.getState().threads.keys()) loadedRefs.add(target);
+  for (const target of targets) {
+    if (refresh.stillOwns(target)) loadedRefs.add(target);
+  }
+  for (const target of threadsStore.getState().threads.keys()) {
+    if (refresh.stillOwns(target)) loadedRefs.add(target);
+  }
   for (const record of [...snapshot.outbox, ...snapshot.optimistic, ...snapshot.recovery]) {
-    loadedRefs.add(record.targetRef);
+    if (refresh.stillOwns(record.targetRef)) loadedRefs.add(record.targetRef);
   }
 }
 
