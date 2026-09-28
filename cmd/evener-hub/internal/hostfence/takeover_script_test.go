@@ -644,6 +644,287 @@ func TestScriptUnreadableSameOwnerProcessStaysLive(t *testing.T) {
 	}
 }
 
+// skipWithoutProc skips a test whose fixture needs /proc (Linux).
+func skipWithoutProc(t *testing.T) {
+	t.Helper()
+	if _, err := os.Stat("/proc/self/environ"); err != nil {
+		t.Skip("process inspection needs /proc (Linux)")
+	}
+}
+
+// statParts parses a /proc/<pid>/stat line the way the helper does — through
+// the last ") " of the comm field — and returns the state letter and the
+// kernel-owned start token (field 22, starttime).
+func statParts(raw string) (state, token string, ok bool) {
+	cut := strings.LastIndex(raw, ") ")
+	if cut < 0 {
+		return "", "", false
+	}
+	fields := strings.Fields(raw[cut+2:])
+	if len(fields) < 20 {
+		return "", "", false
+	}
+	return fields[0], fields[19], true
+}
+
+// statStateToken reads pid's state and start token, failing the test when the
+// file cannot be read or parsed.
+func statStateToken(t *testing.T, pid int) (state, token string) {
+	t.Helper()
+	raw, err := os.ReadFile(fmt.Sprintf("/proc/%d/stat", pid))
+	if err != nil {
+		t.Fatalf("read /proc/%d/stat: %v", pid, err)
+	}
+	state, token, ok := statParts(string(raw))
+	if !ok {
+		t.Fatalf("stat of pid %d is outside the expected shape: %q", pid, raw)
+	}
+	return state, token
+}
+
+// unsignalablePid finds a live process this user may not signal (a kernel
+// thread): /proc names it and its stat is readable, but kill -0 answers EPERM.
+// The test skips when the host shows no such process.
+func unsignalablePid(t *testing.T) int {
+	t.Helper()
+	entries, err := os.ReadDir("/proc")
+	if err != nil {
+		t.Fatalf("read /proc: %v", err)
+	}
+	for _, entry := range entries {
+		pid, err := strconv.Atoi(entry.Name())
+		if err != nil || pid == os.Getpid() {
+			continue
+		}
+		raw, err := os.ReadFile(fmt.Sprintf("/proc/%d/stat", pid))
+		if err != nil {
+			continue
+		}
+		// One pair of parentheses keeps this test's token parse and the
+		// helper's identical: a comm with its own parentheses would not be.
+		if strings.Count(string(raw), "(") != 1 || strings.Count(string(raw), ")") != 1 {
+			continue
+		}
+		state, _, ok := statParts(string(raw))
+		if !ok || state == "Z" {
+			continue
+		}
+		if !processAlive(t, pid) {
+			return pid
+		}
+	}
+	t.Skip("no live process this user cannot signal is visible")
+	return 0
+}
+
+// pathWithoutPs builds a PATH holding every tool the helper invokes except ps:
+// the fixture models a host where pid presence cannot fall back to ps.
+func pathWithoutPs(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	for _, tool := range []string{
+		"awk", "basename", "cat", "chmod", "date", "getconf", "grep", "install",
+		"ln", "ls", "mkdir", "mv", "od", "rm", "sed", "seq", "sh", "sleep",
+		"stat", "sync", "tr",
+	} {
+		path, err := exec.LookPath(tool)
+		if err != nil {
+			continue
+		}
+		if err := os.Symlink(path, filepath.Join(dir, tool)); err != nil {
+			t.Fatalf("link %s into the ps-less PATH: %v", tool, err)
+		}
+	}
+	return dir
+}
+
+// TestScriptScanErrorBesideAFalseCandidateStaysLive pins the enumeration's
+// error rule where grep also emitted a match: a substring candidate is never an
+// answer, and it must not hide the environments the scan could not read. The
+// uninspectable same-owner process here could be the entry's descendant, so the
+// scan stays unverified and the member reads live.
+func TestScriptScanErrorBesideAFalseCandidateStaysLive(t *testing.T) {
+	skipWithoutProc(t)
+	remote := newFenceRemote(t)
+	remote.settle(Epoch{BootID: "boot-1", OpSeq: 1})
+	// A live, readable process whose nonce merely starts with the entry's id:
+	// grep matches the substring and the exact compare must reject it.
+	decoy := exec.Command("sh", "-c", "sleep 60")
+	decoy.Env = append(os.Environ(), "EVENER_FENCE_NONCE=n1extra")
+	if err := decoy.Start(); err != nil {
+		t.Fatalf("start the substring decoy: %v", err)
+	}
+	defer func() { _ = decoy.Process.Kill(); _, _ = decoy.Process.Wait() }()
+	victim := exec.Command("sleep", "30")
+	if err := victim.Start(); err != nil {
+		t.Fatalf("start the recorded-instance stand-in: %v", err)
+	}
+	defer func() { _ = victim.Process.Kill(); _, _ = victim.Process.Wait() }()
+	writeLeaseEntry(t, remote, "n1", LeaseRunning, "pid", strconv.Itoa(victim.Process.Pid), "999999999999", "", "")
+	sleeper := startUninspectableSleeper(t, "n1")
+	defer func() { _ = sleeper.Process.Kill(); _, _ = sleeper.Process.Wait() }()
+	takeover(t, remote, Epoch{BootID: "boot-1", OpSeq: 2})
+	if recheck := recheckID(t, remote, "n1"); !recheck.Live {
+		t.Fatalf("recheck with a substring candidate beside an uninspectable process = %+v, want live", recheck)
+	}
+	stdout, stderr, code := remote.run(nil, "kill", "boot-1", "2", "n1")
+	if code != 0 {
+		t.Fatalf("kill exited %d: %s", code, stderr)
+	}
+	report, err := DecodeKillReport([]byte(stdout))
+	if err != nil {
+		t.Fatalf("DecodeKillReport(%q) = %v", stdout, err)
+	}
+	if report.Signaled || !report.Live {
+		t.Fatalf("kill report = %+v, want no signal and live: the scan could not read every environment", report)
+	}
+}
+
+// TestScriptUnsignalableRecordedInstanceStaysLive pins the pid arm's presence
+// rule: the recorded instance exists but this user may not signal it, and the
+// host has no ps. Presence comes from /proc, so the member still reads live.
+func TestScriptUnsignalableRecordedInstanceStaysLive(t *testing.T) {
+	skipWithoutProc(t)
+	pid := unsignalablePid(t)
+	state, token := statStateToken(t, pid)
+	if state == "Z" {
+		t.Fatalf("the fixture at pid %d is a zombie, want a live unsignalable process", pid)
+	}
+	remote := newFenceRemote(t)
+	remote.settle(Epoch{BootID: "boot-1", OpSeq: 1})
+	writeLeaseEntry(t, remote, "n1", LeaseRunning, "pid", strconv.Itoa(pid), token, "", "")
+	takeover(t, remote, Epoch{BootID: "boot-1", OpSeq: 2})
+	env := []string{"PATH=" + pathWithoutPs(t)}
+	stdout, stderr, code := remote.run(env, "recheck", "n1")
+	if code != 0 {
+		t.Fatalf("recheck exited %d: %s", code, stderr)
+	}
+	recheck, err := DecodeRecheck([]byte(stdout))
+	if err != nil {
+		t.Fatalf("DecodeRecheck(%q) = %v", stdout, err)
+	}
+	if !recheck.Live {
+		t.Fatalf("recheck of an unsignalable but present instance (pid %d) = %+v, want live", pid, recheck)
+	}
+	stdout, stderr, code = remote.run(env, "kill", "boot-1", "2", "n1")
+	if code != 0 {
+		t.Fatalf("kill exited %d: %s", code, stderr)
+	}
+	report, err := DecodeKillReport([]byte(stdout))
+	if err != nil {
+		t.Fatalf("DecodeKillReport(%q) = %v", stdout, err)
+	}
+	if !report.Live {
+		t.Fatalf("kill report = %+v, want live: pid %d is still present", report, pid)
+	}
+}
+
+// TestScriptPostSpawnFailureNeverSignalsAnUnreadableToken pins §3's
+// verify-then-signal rule on the tracking-failure reap: a descendant whose
+// start token cannot be read is left unresolved, never signaled.
+func TestScriptPostSpawnFailureNeverSignalsAnUnreadableToken(t *testing.T) {
+	skipWithoutProc(t)
+	remote := newFenceRemote(t)
+	epoch := Epoch{BootID: "boot-1", OpSeq: 1}
+	remote.settle(epoch)
+	work := t.TempDir()
+	command := fmt.Sprintf("sleep 60 & echo $! > %s/descendant; sleep 60", work)
+	// File-backed streams: the surviving descendant would hold a pipe open and
+	// block this call for its full sleep.
+	combined, _, code := remote.runFile(
+		[]string{"EVENER_FENCE_FAULT_AFTER_SPAWN=1", "EVENER_FENCE_FAULT_UNREADABLE_START=1"},
+		"perform", epoch.BootID, "1", command)
+	if code != 69 {
+		t.Fatalf("faulted perform exited %d, want 69: %s", code, combined)
+	}
+	raw, err := os.ReadFile(filepath.Join(work, "descendant"))
+	if err != nil {
+		t.Fatalf("the command never ran: %v", err)
+	}
+	pid, err := strconv.Atoi(strings.TrimSpace(string(raw)))
+	if err != nil {
+		t.Fatalf("parse descendant pid %q: %v", raw, err)
+	}
+	defer killProcess(pid)
+	if !processAlive(t, pid) {
+		t.Fatalf("descendant %d was signaled although its start token could not be read", pid)
+	}
+}
+
+// TestScriptUnreapedChildReadsGone pins the pid arms' corpse rule: an unreaped
+// child satisfies kill -0 and the start-token match, and must still read gone —
+// otherwise the kill's wait never empties and a healthy host is quarantined
+// over a corpse.
+func TestScriptUnreapedChildReadsGone(t *testing.T) {
+	skipWithoutProc(t)
+	corpse := exec.Command("true")
+	if err := corpse.Start(); err != nil {
+		t.Fatalf("start the unreaped child: %v", err)
+	}
+	defer func() { _ = corpse.Process.Kill(); _, _ = corpse.Process.Wait() }()
+	pid := corpse.Process.Pid
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		raw, err := os.ReadFile(fmt.Sprintf("/proc/%d/stat", pid))
+		if err != nil {
+			t.Fatalf("read the child's stat: %v", err)
+		}
+		if state, _, ok := statParts(string(raw)); ok && state == "Z" {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the child at pid %d never became an unreaped corpse", pid)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	_, token := statStateToken(t, pid)
+	remote := newFenceRemote(t)
+	remote.settle(Epoch{BootID: "boot-1", OpSeq: 1})
+	writeLeaseEntry(t, remote, "n1", LeaseRunning, "pid", strconv.Itoa(pid), token, "", "")
+	takeover(t, remote, Epoch{BootID: "boot-1", OpSeq: 2})
+	if recheck := recheckID(t, remote, "n1"); recheck.Live {
+		t.Fatalf("recheck over the unreaped corpse at pid %d = %+v, want gone", pid, recheck)
+	}
+	stdout, stderr, code := remote.run(nil, "kill", "boot-1", "2", "n1")
+	if code != 0 {
+		t.Fatalf("kill exited %d: %s", code, stderr)
+	}
+	report, err := DecodeKillReport([]byte(stdout))
+	if err != nil {
+		t.Fatalf("DecodeKillReport(%q) = %v", stdout, err)
+	}
+	if report.Signaled || report.Live || report.State != LeaseKilled {
+		t.Fatalf("kill over the unreaped corpse at pid %d = %+v, want settled without a signal", pid, report)
+	}
+}
+
+// TestScriptKillReportsUndeliveredSignal pins the kill report's definition: a
+// target whose signal is refused (here a present instance this user may not
+// signal) is not reported as signaled work, although the member stays live.
+func TestScriptKillReportsUndeliveredSignal(t *testing.T) {
+	skipWithoutProc(t)
+	pid := unsignalablePid(t)
+	_, token := statStateToken(t, pid)
+	remote := newFenceRemote(t)
+	remote.settle(Epoch{BootID: "boot-1", OpSeq: 1})
+	writeLeaseEntry(t, remote, "n1", LeaseRunning, "pid", strconv.Itoa(pid), token, "", "")
+	takeover(t, remote, Epoch{BootID: "boot-1", OpSeq: 2})
+	stdout, stderr, code := remote.run(nil, "kill", "boot-1", "2", "n1")
+	if code != 0 {
+		t.Fatalf("kill exited %d: %s", code, stderr)
+	}
+	report, err := DecodeKillReport([]byte(stdout))
+	if err != nil {
+		t.Fatalf("DecodeKillReport(%q) = %v", stdout, err)
+	}
+	if report.Signaled {
+		t.Fatalf("kill report = %+v, want signaled false: the signal to pid %d was not delivered", report, pid)
+	}
+	if !report.Live {
+		t.Fatalf("kill report = %+v, want live: pid %d is still present", report, pid)
+	}
+}
+
 // TestScriptGuardSequenceIncrementsPastSignedWidth pins the increment's string
 // arithmetic: guard epochs above MaxInt64 are valid schema values, so the
 // advance and the takeover must move them exactly instead of wrapping or

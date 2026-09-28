@@ -265,7 +265,9 @@ acquire_lock() {
 			steal_stale_lock "$observed" || true
 			;;
 		*)
-			if ! kill -0 "$pid" 2>/dev/null; then
+			# Presence, never a signal's permission: a live owner this helper
+			# cannot signal must not read as gone (process_present).
+			if ! process_present "$pid"; then
 				# A failed steal (lost rename, replaced claim, live owner) is
 				# not an error: the bounded loop decides the outcome, so its
 				# nonzero return never aborts the helper under set -e.
@@ -321,7 +323,9 @@ steal_stale_lock() {
 	case $moved_pid in
 	'' | *[!0-9]*) ;;
 	*)
-		if kill -0 "$moved_pid" 2>/dev/null; then
+		# Presence, never a signal's permission: a live owner this helper
+		# cannot signal is not a dead one (process_present).
+		if process_present "$moved_pid"; then
 			provably_dead=false
 		fi
 		;;
@@ -987,19 +991,18 @@ registered_epoch() { # <rfc3339>
 }
 
 # started_after reports whether pid started at or after the epoch second in $2.
-# It reads the kernel-owned start tick beside the current uptime and clock tick,
-# so it needs no wall-clock arithmetic on the process side. A pid whose start
-# cannot be determined answers yes: the caller must then fail closed.
-started_after() { # <pid> <epoch>
-	now=$(date +%s 2>/dev/null || true)
-	uptime=$(awk '{ print int($1) }' /proc/uptime 2>/dev/null || true)
-	hz=$(getconf CLK_TCK 2>/dev/null || true)
-	ticks=$(awk '{ sub(/.*\) /, ""); print $20 }' "/proc/$1/stat" 2>/dev/null || true)
-	if [ -z "$now" ] || [ -z "$uptime" ] || [ -z "$hz" ]; then
+# It reads the kernel-owned start tick beside the caller's clock facts ($3 epoch
+# seconds, $4 uptime seconds, $5 clock ticks per second — one read per scan, not
+# one per process), so it needs no wall-clock arithmetic on the process side. A
+# pid whose start cannot be determined answers yes: the caller must then fail
+# closed.
+started_after() { # <pid> <epoch> <now> <uptime> <hz>
+	if [ -z "$3" ] || [ -z "$4" ] || [ -z "$5" ]; then
 		return 0
 	fi
+	ticks=$(awk '{ sub(/.*\) /, ""); print $20 }' "/proc/$1/stat" 2>/dev/null || true)
 	is_uint64 "$ticks" || return 0
-	start_epoch=$((now - uptime + ticks / hz))
+	start_epoch=$(($3 - $4 + ticks / $5))
 	[ "$start_epoch" -ge "$2" ]
 }
 
@@ -1012,6 +1015,21 @@ process_present() { # <pid>
 		return 0
 	fi
 	kill -0 "$1" 2>/dev/null
+}
+
+# process_gone reports whether pid names a process that is provably gone: no
+# /proc entry, an unreaped corpse (state Z carries no work), or an entry whose
+# state cannot be read — a live task keeps /proc/<pid>/stat world-readable, so
+# an empty read is a vanished task, never an opaque one. Without /proc nothing
+# about a pid is provable, so the answer is "not gone" and the callers fall
+# through to their token checks, which fail closed.
+process_gone() { # <pid>
+	[ -d /proc/self ] || return 1
+	process_present "$1" || return 0
+	case $(process_state "$1") in
+	'' | Z) return 0 ;;
+	esac
+	return 1
 }
 
 # descendants_of prints the PIDs still carrying the command's per-spawn nonce.
@@ -1027,33 +1045,39 @@ descendants_of() { # <nonce> [<since-epoch>]
 	# that started before it cannot be this command's descendant.
 	since=${2:-}
 	nonce_scan_available || return 1
-	# One substring grep decides whether any candidate exists at all; only then
-	# is the per-pid pass worth its forks. A substring hit is a candidate, never
-	# an answer: the extracted value is compared exactly, so a process whose
-	# nonce merely starts with the searched one is not ours. grep's exit status
-	# is inspected: an empty candidate list from a scan that reported an error
-	# proves nothing, while an empty list from a clean scan proves no carrier.
-	# A candidate that can no longer be inspected also returns nonzero — the
-	# caller must read both as "cannot disprove", never as empty.
+	# The candidate grep emits is a substring hit, never an answer: the extracted
+	# value is compared exactly, so a process whose nonce merely starts with the
+	# searched one is not ours. grep's own exit status is inspected: a clean scan
+	# answers from its candidate list, while a scan that reported an error probes
+	# the environments it could not read BEFORE any candidate is compared — the
+	# match it did emit can be such a false positive, and it must never hide a
+	# possible carrier behind it. A candidate that can no longer be inspected
+	# also returns nonzero: the caller must read both as "cannot disprove",
+	# never as empty.
 	grep_status=0
 	candidates=$(grep -als "EVENER_FENCE_NONCE=$1" /proc/[0-9]*/environ 2>/dev/null) || grep_status=$?
-	if [ -z "$candidates" ]; then
-		if [ "$grep_status" -le 1 ]; then
-			# A clean, empty scan: nothing carries the nonce.
-			return 0
-		fi
-		# The scan reported an error and found no candidate. An unreadable
-		# environment hides the nonce, so only a same-uid, live process that
-		# started at or after the entry's registration could still be this
-		# command's descendant; that proof skips every other uninspectable
-		# process, and a possible one leaves the enumeration unverified.
-		# Without a registration second to bound them, nothing can be disproved.
+	if [ "$grep_status" -le 1 ]; then
+		# A clean scan: every environment grep was handed was read, so an empty
+		# candidate list is the proof no carrier exists.
+		[ -n "$candidates" ] || return 0
+	else
+		# The scan reported an error, so an environment it could not read may
+		# still carry the nonce: an unreadable environment hides it, so only a
+		# same-uid, live process that started at or after the entry's
+		# registration could still be this command's descendant. That proof
+		# skips every other uninspectable process, and a possible one leaves the
+		# enumeration unverified; without a registration second to bound them,
+		# nothing can be disproved.
 		case $since in '' | *[!0-9]*) return 2 ;; esac
 		# The registration second is the command's own spawn: the slack keeps a
 		# process started within that same second inside the bound.
 		probe_since=$((since - 2))
 		my_uid=$(process_uid "$$")
 		[ -n "$my_uid" ] || return 2
+		# The clock reads are one scan-wide fact, not one per process.
+		probe_now=$(date +%s 2>/dev/null || true)
+		probe_uptime=$(awk '{ print int($1) }' /proc/uptime 2>/dev/null || true)
+		probe_hz=$(getconf CLK_TCK 2>/dev/null || true)
 		for probe in /proc/[0-9]*/environ; do
 			if [ -r "$probe" ]; then
 				continue
@@ -1062,10 +1086,19 @@ descendants_of() { # <nonce> [<since-epoch>]
 			probe_pid=${probe_pid%/environ}
 			case $probe_pid in '' | *[!0-9]*) continue ;; esac
 			[ "$probe_pid" = "$$" ] && continue
-			# A zombie can never carry the nonce: its task is dead. /proc/<pid>/stat
-			# is kernel-owned and world-readable, even for a process whose
-			# environment cannot be read, so an empty read means the task has
-			# already vanished — never that a live task is opaque.
+			# /proc/<pid>/status is kernel-owned and world-readable, even for a
+			# process whose environment cannot be read: a foreign uid can never
+			# carry this wrapper's nonce, and an empty read is a task that is
+			# gone, not an identity that is hidden.
+			probe_uid=$(process_uid "$probe_pid")
+			if [ -z "$probe_uid" ]; then
+				continue
+			fi
+			if [ "$probe_uid" != "$my_uid" ]; then
+				continue
+			fi
+			# The same holds for the state: a zombie can never carry the nonce,
+			# its task is dead, and an empty read is a vanished task.
 			probe_state=$(process_state "$probe_pid")
 			if [ -z "$probe_state" ]; then
 				continue
@@ -1073,24 +1106,13 @@ descendants_of() { # <nonce> [<since-epoch>]
 			if [ "$probe_state" = Z ]; then
 				continue
 			fi
-			# The same holds for /proc/<pid>/status: an empty uid reads as a task
-			# that is gone, not as an identity that is hidden.
-			probe_uid=$(process_uid "$probe_pid")
-			if [ -z "$probe_uid" ]; then
-				continue
-			fi
-			# A foreign-uid process can never carry this wrapper's nonce.
-			if [ "$probe_uid" != "$my_uid" ]; then
-				continue
-			fi
 			# A same-uid live process whose environment cannot be read could
 			# carry the nonce only if it started at or after the registration;
 			# without that proof the scan cannot disprove it.
-			if started_after "$probe_pid" "$probe_since"; then
+			if started_after "$probe_pid" "$probe_since" "$probe_now" "$probe_uptime" "$probe_hz"; then
 				return 2
 			fi
 		done
-		return 0
 	fi
 	for envfile in $candidates; do
 		if [ "${EVENER_FENCE_FAULT_UNREADABLE_CANDIDATE:-0}" = 1 ]; then
@@ -1206,10 +1228,13 @@ post_spawn_failure() {
 			descendant_pid=${descendant%%:*}
 			descendant_start=${descendant#*:}
 			# Signal only an instance we can still identify: the nonce matched
-			# at collection, and the start token must still match here.
+			# at collection, and the start token must still match here. A token
+			# that cannot be read now, or that no longer matches, leaves the
+			# descendant unresolved and unsignaled — this reap never signals
+			# unverified or reused work (§3's verify-then-signal rule).
 			process_present "$descendant_pid" || continue
 			current=$(current_start_token "$descendant_pid" || true)
-			if [ -z "$current" ] || [ "$current" = "$descendant_start" ]; then
+			if [ -n "$current" ] && [ "$current" = "$descendant_start" ]; then
 				kill "$descendant_pid" 2>/dev/null || true
 			fi
 		done
@@ -1237,7 +1262,11 @@ do_recheck() { # <id>
 	running | registering)
 		case $ENTRY_KIND in
 		pid)
-			if kill -0 "$ENTRY_PID" 2>/dev/null; then
+			if ! process_gone "$ENTRY_PID"; then
+				# Presence is answered from /proc, never from a signal's
+				# permission: a live instance this helper cannot signal still
+				# reads here, while an unreaped corpse or a vanished task reads
+				# gone (process_gone).
 				current=$(current_start_token "$ENTRY_PID" || true)
 				if [ -z "$current" ]; then
 					# The process is there but its identity cannot be read: live,
@@ -1249,9 +1278,6 @@ do_recheck() { # <id>
 					# different process and reads as already clean.
 					live=true
 				fi
-			elif ps -p "$ENTRY_PID" >/dev/null 2>&1; then
-				# Present but not signalable: the identity cannot be proven.
-				live=true
 			fi
 			;;
 		nonce)
@@ -1392,16 +1418,16 @@ entry_live_targets() { # (uses ENTRY_*)
 	target_seen=''
 	case $ENTRY_KIND in
 	pid)
-		if kill -0 "$ENTRY_PID" 2>/dev/null; then
+		if ! process_gone "$ENTRY_PID"; then
+			# Presence is answered from /proc, never from a signal's permission
+			# (process_gone): an instance this helper cannot signal is still
+			# read here, and an unreaped corpse or a vanished task reads gone.
 			current=$(current_start_token "$ENTRY_PID" || true)
 			if [ -z "$current" ]; then
 				emit_target "$ENTRY_PID" unknown
 			elif [ "$current" = "$ENTRY_START" ]; then
 				emit_target "$ENTRY_PID" "$current"
 			fi
-		elif ps -p "$ENTRY_PID" >/dev/null 2>&1; then
-			# Present but not signalable: the identity cannot be proven.
-			emit_target "$ENTRY_PID" unknown
 		fi
 		;;
 	nonce)
@@ -1560,8 +1586,12 @@ do_kill() { # <bootId> <opSeq> <id>
 		if [ -z "$current" ] || [ "$current" != "$target_start" ]; then
 			continue
 		fi
-		kill "$target_pid" 2>/dev/null || true
-		signaled=true
+		# Only a delivered signal is reported as one: a target that left, or
+		# that this helper may not signal, between the re-read and this call is
+		# not signaled work, and the report crosses the helper's trust boundary.
+		if kill "$target_pid" 2>/dev/null; then
+			signaled=true
+		fi
 	done
 	state=$ENTRY_STATE
 	if [ "$signaled" = true ]; then
