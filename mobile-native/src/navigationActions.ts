@@ -176,16 +176,11 @@ export class NavigationActions {
 		)
 			return;
 		this.publish({ ...this.state, pending: true });
-		// Only the read's own failure with no checkpoint is a failed load; a
-		// checkpoint that appeared while the read was in flight, a scope change
-		// or a recovery that moved is still about a previous change.
-		let reading = true;
 		try {
 			await this.reconcileCurrent(
 				checkpoint ?? undefined,
 				accepted !== undefined,
 			);
-			reading = false;
 			if (this.disposed) return;
 			if (!this.current()) throw Error("scope changed");
 			this.confirmCurrent();
@@ -204,10 +199,11 @@ export class NavigationActions {
 		} catch {
 			if (this.disposed) return;
 			// The message and the screens' reason line both key off this
-			// checkpoint, so surface the one the failure is about: a checkpoint
-			// that appeared while the read was in flight is a previous change too.
+			// checkpoint, so surface the one the failure is about: a checkpoint in
+			// the journal, including one that appeared while the read was in
+			// flight, is a previous change too.
 			let recovery = this.state.recovery;
-			if (!reading && !recovery) {
+			if (!recovery) {
 				try {
 					recovery = this.storage?.load() ?? null;
 				} catch {

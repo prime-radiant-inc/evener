@@ -551,6 +551,9 @@ describe("navigation organization actions", () => {
 		expect(actions.getSnapshot()).toMatchObject({
 			pending: false,
 			uncertain: true,
+			recovery: null,
+			error:
+				"Could not load the current navigation. Refresh before trying again.",
 		});
 	});
 
@@ -676,6 +679,33 @@ describe("navigation organization actions", () => {
 		expect(actions.getSnapshot()).toMatchObject({
 			pending: false,
 			uncertain: true,
+			error:
+				"Could not confirm current navigation for the previous change. Refresh before trying again.",
+		});
+	});
+
+	it("surfaces a checkpoint written while a failing read was in flight", async () => {
+		const journal = journalFixture();
+		const actions = new NavigationActions(
+			{} as ConversationClientLike,
+			async () => {},
+			() => true,
+			async () => {
+				// Another screen sharing the journal starts a change mid-read, then
+				// this screen's own read fails.
+				journal.begin({
+					kind: "unpin",
+					params: { sessionRef: "local:new" },
+				});
+				throw new Error("read failed");
+			},
+			journal,
+		);
+		await actions.reconcile();
+		expect(actions.getSnapshot()).toMatchObject({
+			pending: false,
+			uncertain: true,
+			recovery: journal.load(),
 			error:
 				"Could not confirm current navigation for the previous change. Refresh before trying again.",
 		});
