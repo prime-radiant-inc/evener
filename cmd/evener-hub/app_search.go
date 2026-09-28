@@ -45,18 +45,15 @@ func hubSearch(ctx context.Context, cfg hubcore.WebConfig, params appwire.Search
 	}
 	resp := appwire.SearchResponse{Live: []appwire.SearchResult{}, Past: []appwire.SearchResult{}, Scope: scope}
 	q := strings.ToLower(strings.TrimSpace(params.Query))
-	// All admits every match, so searchPastLimit newest is enough, as before
-	// scopes existed. Live and Archived filter after the fetch, so the newest
-	// matches must not crowd out an admitted one further back: fetch every
-	// match for those two.
-	pastFetchLimit := searchPastLimit
-	if scope != appwire.SearchScopeAll {
-		pastFetchLimit = math.MaxInt32
-	}
+	// Every past match, so the scope filters before the limit cuts: the
+	// newest matches are rarely the archived ones. This same fetch also
+	// feeds pastMatched (a live session's own prompt match), so bounding it
+	// even for scope=all would let enough newer past-only matches crowd a
+	// live session's older past-index entry out of both groups entirely.
 	var pastMatches []hubcore.PastEntry
 	pastMatched := map[string]bool{}
 	if cfg.Past != nil {
-		pastMatches = cfg.Past.Search(q, pastFetchLimit, 0)
+		pastMatches = cfg.Past.Search(q, math.MaxInt32, 0)
 		for _, e := range pastMatches {
 			pastMatched[e.Meta.ID] = true
 		}

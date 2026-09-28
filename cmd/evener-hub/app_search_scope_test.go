@@ -63,6 +63,45 @@ func TestHubSearchListsALiveSessionOnceAsLive(t *testing.T) {
 	}
 }
 
+// A bounded past fetch must not crowd out a live session's own prompt match:
+// more than searchPastLimit other past-only sessions also matching the query,
+// all newer than the live session's own past-index entry, must not push that
+// entry below whatever page size the fetch uses.
+func TestHubSearchLivePromptMatchSurvivesManyNewerPastMatches(t *testing.T) {
+	now := time.Now()
+	projectsRoot := filepath.Join(t.TempDir(), "projects")
+	stateDir := hubtest.ProjectDir(t, projectsRoot, "alpha")
+	for i := range searchPastLimit + 5 {
+		id := hubtest.SessionID(t)
+		if err := schema.SaveSessionMeta(stateDir, schema.SessionMeta{
+			ID: id, UpdatedAt: now.Add(-time.Duration(i) * time.Minute),
+			Name: "Unrelated frobnitz chatter", EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/alpha"},
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	liveID := hubtest.SessionID(t)
+	if err := schema.SaveSessionMeta(stateDir, schema.SessionMeta{
+		ID: liveID, UpdatedAt: now.Add(-time.Hour), Name: "Refactor the queue",
+		OriginalPrompt: "fix the frobnitz drain", EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/alpha"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	past := hubcore.NewPastIndex(filepath.Join(projectsRoot, "*"))
+	if _, err := past.Rebuild(); err != nil {
+		t.Fatal(err)
+	}
+	roster := hubcore.NewRosterWithEntries(hubcore.LiveEntry{PID: 1, WorkingDir: "/projects/alpha", SessionID: liveID, Status: appwire.ThreadStatusActive})
+
+	resp, err := hubSearch(context.Background(), hubcore.WebConfig{Past: past, Roster: roster}, appwire.SearchParams{Query: "frobnitz"}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := searchIDs(resp.Live); !reflect.DeepEqual(got, []string{liveID}) {
+		t.Fatalf("live = %v, want the live session found via its own past-index prompt, not crowded out by newer matches", got)
+	}
+}
+
 // The scopes and the archived flag follow the rail (S14, spec 7.1 and 7.4):
 // an explicit decision wins; with none, a session whose project is archived,
 // or one two weeks without activity, is archived. Live keeps the Live
