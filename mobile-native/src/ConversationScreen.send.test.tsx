@@ -12,7 +12,7 @@ import { getNativeMutationRuntime, nativeMutationTargetKey } from "./nativeMutat
 import { flatListCalls, pressable, render, renderedText, screenConnection, textOf } from "./renderNative.testkit";
 import { queueHosts } from "./QueueSheet";
 import { ConversationScreen } from "./screens";
-import { NotesSheet } from "./session/NotesSheet";
+import { NotesSheet, notesHosts } from "./session/NotesSheet";
 import { QuestionDock } from "./session/QuestionDock";
 import { sheetKey } from "./sheet/sheetHosts";
 
@@ -912,7 +912,10 @@ it("previews your note in the notes bar, and the sheet it opens saves through th
 		{ id: "u1", url: "https://example.com/pr/1", label: "The PR" },
 		{ id: "u2", url: "https://example.com/pr/2" },
 	];
+	(served as unknown as { cwd: string }).cwd = "/home/jesse/git/evener";
 	const { tree, hub } = await mount(served);
+	// The sheet opens a file link in the Reader with the session's folder and title.
+	expect(notesHosts.get(sheetKey("hub-1", "ref-notes"))).toMatchObject({ cwd: "/home/jesse/git/evener", title: "Session" });
 	const bar = pressable(tree, "Your note: keep the tests, 2 links");
 	if (!bar) throw new Error("no notes bar");
 	act(() => bar.props.onPress());
