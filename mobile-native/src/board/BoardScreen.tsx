@@ -111,6 +111,8 @@ function Board({ hubId, hubName, navigation }: { hubId: string; hubName: string;
 	const { client, state, fatal, activeProfile } = useConnection();
 	const { palette } = useColors();
 	const connected = state === "ready";
+	// This Board's own hub is the connected one, so a hub write may go out.
+	const actionsConnected = connected && activeProfile?.id === hubId;
 	const focused = useIsFocused();
 	const [board] = useState(createBoardController);
 	useEffect(() => () => board.dispose(), [board]);
@@ -244,7 +246,7 @@ function Board({ hubId, hubName, navigation }: { hubId: string; hubName: string;
 
 	const newSession = () => navigation.navigate("NewSession", { hubId, hubName });
 	const openSession = (row: NavigationSessionSummary) => {
-		seen.markRead(connected ? client : null, [row]);
+		seen.markRead(actionsConnected ? client : null, [row]);
 		navigation.navigate("Conversation", { hubId, ref: row.ref, title: row.title });
 	};
 	// A search result the Board has loaded opens like its row, so it's
@@ -352,7 +354,6 @@ function Board({ hubId, hubName, navigation }: { hubId: string; hubName: string;
 	// What a row's actions may do now (rulings 16 and 21), by whether it sits
 	// in an archived tier. It keeps its identity while those facts hold, so
 	// the row menu's host below changes when a row's actions can.
-	const actionsConnected = connected && activeProfile?.id === hubId;
 	const rowContext = useCallback(
 		(archived: boolean): RowActionContext => ({
 			connected: actionsConnected,

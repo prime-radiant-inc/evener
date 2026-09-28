@@ -3195,6 +3195,36 @@ it("sends no read mark through another hub's client when this Board's hub isn't 
 	act(() => tree.unmount());
 });
 
+it("opens a session from the menu's card without marking it through another hub's client", async () => {
+	const first = hubId();
+	const second = hubId();
+	adoptedAnHourAgo(first);
+	adoptedAnHourAgo(second);
+	const row = session("local:hub-unseen", {
+		title: "Hub unseen",
+		updated_at: minutesAgo(90),
+		turn_ended_at: minutesAgo(90),
+		unseen: true,
+	});
+	const shape: Fleet = { ...fleet, live: [[row]], needsYou: [] };
+	const fakeA = hub(shape);
+	const fakeB = hub(shape);
+	connect(first, fakeA.client, "ready");
+	const nav = navigation();
+	const tree = await mount(nav);
+	const host = menuHost(first);
+	const ref = "local:hub-unseen";
+	connect(second, fakeB.client, "ready");
+	setFocused(false);
+	setFocused(true);
+	await settle();
+	act(() => host.openSession(menuItem(host, ref)));
+	await settle();
+	expect(nav.navigate).toHaveBeenCalledWith("Conversation", { hubId: first, ref, title: "Hub unseen" });
+	expect(fakeB.seen).toEqual([]);
+	act(() => tree.unmount());
+});
+
 it("sends no stop through another hub's client when this Board's hub isn't the active one", async () => {
 	const first = hubId();
 	const second = hubId();
