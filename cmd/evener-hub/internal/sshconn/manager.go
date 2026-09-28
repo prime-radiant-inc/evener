@@ -908,13 +908,25 @@ func (m *Manager) AttachUnderGate(ctx context.Context, host hostreg.Host, holder
 			// Close canceling the attempt, not the host, is why.
 			err = ErrManagerClosed
 		}
+		// Mirror Ensure's non-close failure handling: consumers tracking the
+		// host's phase must see the attach end, not park on the last
+		// intermediate state. A closing manager or a canceled caller owns its
+		// own events (Close emits the Detached; a canceled caller emits
+		// nothing), exactly as Ensure suppresses them there.
+		if m.baseCtx.Err() == nil && ctx.Err() == nil {
+			m.stateEvent(name, StateDisconnected)
+		}
 		return nil, nil, err
 	}
 	if ch.isClosed() || ch.isLost() {
 		// The link died between the handshake and the publish: reap the
 		// replacement and report the drop; the predecessor (if any) keeps the
-		// slot, exactly as Ensure's own validation does.
+		// slot, exactly as Ensure's own validation does. With no predecessor
+		// the honest state is disconnected, the same event Ensure emits there.
 		_ = ch.Close()
+		if stale == nil {
+			m.stateEvent(name, StateDisconnected)
+		}
 		return nil, nil, errChannelDropped(name)
 	}
 	if !m.reg.SameRegistration(name, host) {

@@ -1325,6 +1325,161 @@ func TestHostRestartRestoresTheOperationHolderBeforeTheAttach(t *testing.T) {
 	}
 }
 
+// nthHoldAsFailingGate fails the chosen HoldAs call (1-based) and delegates
+// every other call, so a test can break one specific holder publication — the
+// post-attach restore, say — without disturbing the others.
+type nthHoldAsFailingGate struct {
+	inner  hostops.Gate
+	mu     sync.Mutex
+	calls  int
+	failAt int
+}
+
+func (g *nthHoldAsFailingGate) TryAcquire(host string, holder hostops.Holder) (func(), error) {
+	return g.inner.TryAcquire(host, holder)
+}
+
+func (g *nthHoldAsFailingGate) HoldAs(host string, holder hostops.Holder) error {
+	g.mu.Lock()
+	g.calls++
+	fail := g.calls == g.failAt
+	g.mu.Unlock()
+	if fail {
+		return hostops.ErrGateNotHeld
+	}
+	return g.inner.HoldAs(host, holder)
+}
+
+// TestHostRestartKeepsThePublishedChannelsHandoffWhenTheHolderRestoreFails pins
+// the restore-failure contract: when the post-attach holder restore fails after
+// the attach published a channel, the worker still invokes that channel's
+// handoff before recording the failure, so a published channel is never left
+// without the supervisor start its handoff owns.
+func TestHostRestartKeepsThePublishedChannelsHandoffWhenTheHolderRestoreFails(t *testing.T) {
+	entry := deployTestHost()
+	entry.Generation = 2
+	entry.IncarnationID = "inc-new"
+	configPath := deployTestConfigPath(t, entry)
+	before := time.Date(2026, 9, 27, 12, 0, 0, 0, time.UTC)
+	after := before.Add(time.Minute)
+	var handoffCalls atomic.Int64
+	var m *hubHostManager
+	var store *hostops.Store
+	m, store, _ = deployTestHub(t, configPath, []hostreg.Host{entry}, deploySeams{
+		probe: restartProbeScript(t, "dev", "dev", before, after),
+		attachUnderGate: func(_ context.Context, _ hostreg.Host, _ hostops.Holder) (func() bool, error) {
+			return func() bool {
+				handoffCalls.Add(1)
+				return true
+			}, nil
+		},
+	})
+	// Call 1 is the record promotion, call 2 the pre-attach restore, call 3 the
+	// post-attach restore: failing only call 3 leaves the gate held by the
+	// operation holder, so the handoff itself can still run.
+	m.cfg.gate = &nthHoldAsFailingGate{inner: m.cfg.gate, failAt: 3}
+
+	response, err := m.Restart(context.Background(), appwire.HostRestartParams{
+		Name: entry.Name, OperationID: "op-1", Generation: 2, IncarnationID: "inc-new",
+	})
+	if err != nil {
+		t.Fatalf("Restart: %v", err)
+	}
+	record := waitOperationState(t, store, response.ID, hostops.StateFailed)
+	if record.Result == nil || !strings.Contains(record.Result.Message, "could not be restored after the attach") {
+		t.Fatalf("failure = %+v, want the restore failure named", record.Result)
+	}
+	if got := handoffCalls.Load(); got != 1 {
+		t.Fatalf("handoff calls = %d, want the published channel's handoff invoked despite the restore failure", got)
+	}
+}
+
+// TestHostRestartWithoutAnAttachSeamPreservesTheNoManagerArm pins the
+// manager-less contract: with no operation-owned attach wired there is no
+// channel to reattach, so the worker's arm is a no-op success — exactly the
+// interim wait's manager-less arm — and the refresh's own attachment check
+// still decides completion.
+func TestHostRestartWithoutAnAttachSeamPreservesTheNoManagerArm(t *testing.T) {
+	entry := deployTestHost()
+	entry.Generation = 2
+	entry.IncarnationID = "inc-new"
+	configPath := deployTestConfigPath(t, entry)
+	before := time.Date(2026, 9, 27, 12, 0, 0, 0, time.UTC)
+	after := before.Add(time.Minute)
+	m, store, _ := deployTestHub(t, configPath, []hostreg.Host{entry}, deploySeams{
+		probe: restartProbeScript(t, "dev", "dev", before, after),
+	})
+	m.cfg.attachUnderGate = nil // the manager-less configuration
+
+	response, err := m.Restart(context.Background(), appwire.HostRestartParams{
+		Name: entry.Name, OperationID: "op-1", Generation: 2, IncarnationID: "inc-new",
+	})
+	if err != nil {
+		t.Fatalf("Restart without an attach seam: %v", err)
+	}
+	record := waitOperationState(t, store, response.ID, hostops.StateComplete)
+	if record.Result == nil || !record.Result.OK {
+		t.Fatalf("restart record result = %+v, want ok", record.Result)
+	}
+}
+
+// TestHostRestartAttachFirstProbesTheFreshlyAttachedClient pins the probe's
+// client source: the pre-restart probe resolves the live client after the
+// attach-first attach, never a value captured before the worker ran — the
+// attach-first arm's probe must see the client the attach just published, not
+// nil and not the dropped predecessor.
+func TestHostRestartAttachFirstProbesTheFreshlyAttachedClient(t *testing.T) {
+	entry := deployTestHost()
+	entry.Generation = 2
+	entry.IncarnationID = "inc-new"
+	configPath := deployTestConfigPath(t, entry)
+	before := time.Date(2026, 9, 27, 12, 0, 0, 0, time.UTC)
+	after := before.Add(time.Minute)
+	var attachState atomic.Bool
+	var published atomic.Pointer[appwire.Client]
+	var probeSawStaleClient atomic.Bool
+	probe := restartProbeScript(t, "dev", "dev", before, after)
+	var m *hubHostManager
+	var store *hostops.Store
+	m, store, _ = deployTestHub(t, configPath, []hostreg.Host{entry}, deploySeams{
+		probe: func(ctx context.Context, host hostreg.Host, client *appwire.Client, epoch appwire.FencingEpoch) (hubcore.HostRuntimeProbe, error) {
+			if client == nil || client != published.Load() {
+				probeSawStaleClient.Store(true)
+			}
+			return probe(ctx, host, client, epoch)
+		},
+		clientAttached: func(string) (*appwire.Client, bool) {
+			if !attachState.Load() {
+				return nil, false
+			}
+			return published.Load(), true
+		},
+		attached: func(string) (sshconn.Preflight, bool) { return deployTestFacts(entry), attachState.Load() },
+		restart: func(context.Context, hostreg.Host, sshconn.Preflight) error {
+			attachState.Store(false) // the restart drops the channel
+			return nil
+		},
+		attachUnderGate: func(_ context.Context, _ hostreg.Host, _ hostops.Holder) (func() bool, error) {
+			published.Store(&appwire.Client{})
+			attachState.Store(true)
+			return func() bool { return true }, nil
+		},
+	})
+	response, err := m.Restart(context.Background(), appwire.HostRestartParams{
+		Name: entry.Name, OperationID: "op-1", Generation: 2, IncarnationID: "inc-new",
+	})
+	if err != nil {
+		t.Fatalf("Restart: %v", err)
+	}
+	record := waitOperationState(t, store, response.ID, hostops.StateComplete)
+	if record.Result == nil || !record.Result.OK {
+		t.Fatalf("restart record result = %+v, want ok", record.Result)
+	}
+	if probeSawStaleClient.Load() {
+		t.Fatal("a running probe received nil or a client other than the freshly attached one")
+	}
+}
+
 // TestHostDeployPostRefreshRecordsAnUnverifiableFailureVerbatim pins §6's
 // verification rule: a post-restart probe whose process start time did not
 // change is a recorded failure, never a clean success.

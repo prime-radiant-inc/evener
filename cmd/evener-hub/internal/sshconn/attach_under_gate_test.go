@@ -409,6 +409,39 @@ func TestAttachUnderGateHandoffRefusesAfterTheHolderChanged(t *testing.T) {
 	}
 }
 
+// TestAttachUnderGateLiveChannelWithASupervisorDoesNotDoubleSupervise pins the
+// dedup side of the live-channel handoff: a channel an existing loop already
+// owns is left to it, and the handoff neither starts a second loop nor
+// disturbs the first.
+func TestAttachUnderGateLiveChannelWithASupervisorDoesNotDoubleSupervise(t *testing.T) {
+	m, _, host := attachUnderGateManager(t, Options{})
+	if _, err := m.Ensure(context.Background(), host.Name); err != nil {
+		t.Fatalf("Ensure: %v", err)
+	}
+	if n := supervisorLoops(m, host.Name); n != 1 {
+		t.Fatalf("supervisor loops after Ensure = %d, want 1", n)
+	}
+	release, err := m.TryAcquire(host.Name, attachUnderGateCaller())
+	if err != nil {
+		t.Fatalf("TryAcquire: %v", err)
+	}
+	defer release()
+
+	ch, handoff, err := m.AttachUnderGate(context.Background(), host, attachUnderGateCaller())
+	if err != nil {
+		t.Fatalf("AttachUnderGate: %v", err)
+	}
+	if ch != m.currentChannel(host.Name) {
+		t.Fatal("the live call did not hand back the installed channel")
+	}
+	if !handoff() {
+		t.Fatal("the live-channel handoff reported failure")
+	}
+	if n := supervisorLoops(m, host.Name); n != 1 {
+		t.Fatalf("supervisor loops after the live-channel handoff = %d, want the existing loop only", n)
+	}
+}
+
 // TestAttachUnderGateRefusesAClosedManager pins the close discipline every
 // attach path carries: a manager already closed refuses before dialing.
 func TestAttachUnderGateRefusesAClosedManager(t *testing.T) {
@@ -423,5 +456,52 @@ func TestAttachUnderGateRefusesAClosedManager(t *testing.T) {
 	}
 	if got := len(fr.recordedStarts()); got != 0 {
 		t.Fatalf("a closed-manager call dialed: %d starts", got)
+	}
+}
+
+// TestAttachUnderGateEmitsDisconnectedOnAnAttachFailure pins the state stream:
+// a failed attach ends at the disconnected phase instead of leaving consumers
+// parked on the last intermediate state, exactly as Ensure's failure path
+// emits it.
+func TestAttachUnderGateEmitsDisconnectedOnAnAttachFailure(t *testing.T) {
+	host := attachUnderGateHost()
+	var mu sync.Mutex
+	var states []State
+	// No startFn: the bridge start fails, so ensureOnce returns a retryable
+	// attach failure after the preflight.
+	fr := &fakeRunner{runFn: cannedRun(nil)}
+	m := newTestManager(t, testRegistry(t, host), fr, Options{
+		controllerVersionOverride: "dev",
+		OnEvent: func(ev Event) {
+			if ev.Kind != EventState || ev.Host != host.Name {
+				return
+			}
+			mu.Lock()
+			states = append(states, ev.State)
+			mu.Unlock()
+		},
+	})
+	stamped, ok := m.reg.Get(host.Name)
+	if !ok {
+		t.Fatalf("the test registry holds no %q", host.Name)
+	}
+	release, err := m.TryAcquire(host.Name, attachUnderGateCaller())
+	if err != nil {
+		t.Fatalf("TryAcquire: %v", err)
+	}
+	defer release()
+
+	if _, _, err := m.AttachUnderGate(context.Background(), stamped, attachUnderGateCaller()); err == nil {
+		t.Fatal("AttachUnderGate succeeded without a runnable bridge")
+	}
+	mu.Lock()
+	last := State("")
+	if len(states) > 0 {
+		last = states[len(states)-1]
+	}
+	snapshot := append([]State(nil), states...)
+	mu.Unlock()
+	if last != StateDisconnected {
+		t.Fatalf("last state after a failed attach = %q, want %q (states: %v)", last, StateDisconnected, snapshot)
 	}
 }

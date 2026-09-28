@@ -209,8 +209,9 @@ type hostManagerConfig struct {
 	// attach-first), run under the caller's held gate by the sshconn Manager's
 	// AttachUnderGate. It returns the post-verification handoff that starts the
 	// channel's supervisor under the same held gate. Nil (a hub with no manager)
-	// refuses the reattach rather than running the normal attach path, which
-	// would deadlock on the non-reentrant gate.
+	// means no channels are owned to reattach, so the worker's arm is the no-op
+	// success the interim wait had; running the normal attach path instead would
+	// deadlock on the non-reentrant gate.
 	// holder is the operation holder the worker's hold registered, which the
 	// primitive requires the gate to currently carry.
 	attachUnderGate func(ctx context.Context, entry hostreg.Host, holder hostops.Holder) (func() bool, error)

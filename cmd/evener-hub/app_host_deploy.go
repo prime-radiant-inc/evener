@@ -743,6 +743,18 @@ func (m *hubHostManager) runOperationWorker(ctx context.Context, work opWork) {
 		return false
 	}
 	defer func() { handOff("as the operation ended") }()
+	// fail records a terminal failure, first handing the channel a completed
+	// attach left to its supervisor under the still-held gate. A handoff that
+	// cannot start the supervisor is joined into the recorded failure instead
+	// of being masked by it, so an attached-but-unsupervised host is visible in
+	// the record. The deferred finish above stays the backstop for paths that
+	// return without recording a failure (an interrupted shutdown).
+	fail := func(err error) {
+		if !handOff("as the operation failed") {
+			err = errors.Join(err, errors.New("the host's supervisor could not be started, so the host may be attached without automatic reconnect"))
+		}
+		m.failOperation(ctx, id, err)
+	}
 
 	if m.interruptIfShuttingDown(ctx, id) {
 		return
@@ -771,38 +783,38 @@ func (m *hubHostManager) runOperationWorker(ctx context.Context, work opWork) {
 	// The irreversible steps, each behind a fresh fingerprint check.
 	if work.record.Kind == hostops.KindDeploy {
 		if err := m.checkOperationFingerprint(work.entry, work.token.HubTOMLFingerprint); err != nil {
-			m.failOperation(ctx, id, err)
+			fail(err)
 			return
 		}
 		if m.cfg.deployHost == nil {
-			m.failOperation(ctx, id, errors.New("this hub has no deploy step wired, so the operation cannot run"))
+			fail(errors.New("this hub has no deploy step wired, so the operation cannot run"))
 			return
 		}
 		facts, ok := m.attachedFactsFor(work.entry.Name)
 		if !ok {
-			m.failOperation(ctx, id, hostDetachedRefusal(work.entry.Name))
+			fail(hostDetachedRefusal(work.entry.Name))
 			return
 		}
 		m.recordProgress(id, "pushing the controller's build")
 		_, afterDeploy, err := m.cfg.deployHost(ctx, work.entry, facts)
 		if err != nil {
-			m.failOperation(ctx, id, err)
+			fail(err)
 			return
 		}
 		m.recordProgress(id, "the controller's build is installed and verified")
 		if restartFollows {
 			if err := m.checkOperationFingerprint(work.entry, work.token.HubTOMLFingerprint); err != nil {
-				m.failOperation(ctx, id, err)
+				fail(err)
 				return
 			}
 			if err := m.runRestartStep(ctx, id, work.entry, afterDeploy); err != nil {
-				m.failOperation(ctx, id, err)
+				fail(err)
 				return
 			}
 		}
 	} else {
 		if err := m.checkOperationFingerprint(work.entry, work.fingerprint); err != nil {
-			m.failOperation(ctx, id, err)
+			fail(err)
 			return
 		}
 		// §6's attach-first arm: a restart with no usable attached channel —
@@ -816,11 +828,15 @@ func (m *hubHostManager) runOperationWorker(ctx context.Context, work opWork) {
 		if _, attached := m.attachedClient(work.entry); !attached {
 			h, err := m.attachOperationChannel(ctx, id, work.entry,
 				"attach-first: the host had no usable attached channel, so the restart attaches it under the held host gate")
+			if h != nil {
+				// A published channel keeps its handoff even when the call
+				// reports a failure, so it is never left unsupervised.
+				handoff = h
+			}
 			if err != nil {
-				m.failOperation(ctx, id, err)
+				fail(err)
 				return
 			}
-			handoff = h
 		}
 		// Restart has no pre-operation probe step of its own (no token, no
 		// plan), so the worker takes the "pre-operation probe" value the
@@ -828,17 +844,17 @@ func (m *hubHostManager) runOperationWorker(ctx context.Context, work opWork) {
 		// presenting the epoch the record was created with.
 		probe, err := m.probeBeforeRestart(ctx, work)
 		if err != nil {
-			m.failOperation(ctx, id, err)
+			fail(err)
 			return
 		}
 		beforeProbe = probe
 		facts, ok := m.attachedFactsFor(work.entry.Name)
 		if !ok {
-			m.failOperation(ctx, id, hostDetachedRefusal(work.entry.Name))
+			fail(hostDetachedRefusal(work.entry.Name))
 			return
 		}
 		if err := m.runRestartStep(ctx, id, work.entry, facts); err != nil {
-			m.failOperation(ctx, id, err)
+			fail(err)
 			return
 		}
 		restartFollows = true
@@ -857,11 +873,15 @@ func (m *hubHostManager) runOperationWorker(ctx context.Context, work opWork) {
 	if restartFollows {
 		h, err := m.attachOperationChannel(ctx, id, work.entry,
 			"restart verified; reattaching the host under the held host gate")
+		if h != nil {
+			// A published replacement keeps its handoff even when the call
+			// reports a failure, so it is never left unsupervised.
+			handoff = h
+		}
 		if err != nil {
-			m.failOperation(ctx, id, err)
+			fail(err)
 			return
 		}
-		handoff = h
 	}
 
 	// §6's post-operation refresh: the verified channel-free preflight, then
@@ -881,7 +901,7 @@ func (m *hubHostManager) runOperationWorker(ctx context.Context, work opWork) {
 		return
 	}
 	if refreshErr != nil || handoffErr != nil {
-		m.failOperation(ctx, id, errors.Join(refreshErr, handoffErr))
+		fail(errors.Join(refreshErr, handoffErr))
 		return
 	}
 	m.recordTerminal(id, hostops.StateComplete, true, "operation complete")
@@ -1011,7 +1031,11 @@ func (m *hubHostManager) refreshOperation(ctx context.Context, id string, work o
 func (m *hubHostManager) attachOperationChannel(ctx context.Context, id string, entry hostreg.Host, progress string) (func() bool, error) {
 	m.recordProgress(id, progress)
 	if m.cfg.attachUnderGate == nil {
-		return nil, errors.New("this hub has no operation-owned attach wired, so the host cannot be attached under the held gate")
+		// No manager owns channels here (tests, embedders): there is nothing to
+		// reattach, so the arm is the no-op success the interim wait had. The
+		// post-operation refresh's own attachment check still decides whether
+		// the operation can complete.
+		return func() bool { return true }, nil
 	}
 	// The record's holder promotion is logged, never fatal (the record is
 	// durable and the worker still runs), but the gate-aware primitive requires
@@ -1033,7 +1057,10 @@ func (m *hubHostManager) attachOperationChannel(ctx context.Context, id string, 
 	// the attach: a holder change performed inside the ladder must not make the
 	// handoff refuse and leave the published channel unsupervised.
 	if err := m.cfg.gate.HoldAs(entry.Name, holder); err != nil {
-		return nil, fmt.Errorf("the operation holder could not be restored after the attach for host %q, so the supervisor handoff cannot run: %w", entry.Name, err)
+		// The channel is already published; return its handoff alongside the
+		// error so the caller can still invoke it, rather than discarding the
+		// only closure that would start its supervisor.
+		return handoff, fmt.Errorf("the operation holder could not be restored after the attach for host %q: %w", entry.Name, err)
 	}
 	return handoff, nil
 }
