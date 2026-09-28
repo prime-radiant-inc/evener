@@ -19,7 +19,12 @@ const read = (status: string): ThreadReadResponse =>
 			id: "coord",
 			status: { type: status },
 			modelProvider: "glm",
-			evener: { ref: "local:coord", instanceId: "instance-coord", capabilities: { send: true }, queue: { revision: 1 } },
+			evener: {
+				ref: "local:coord",
+				instanceId: "instance-coord",
+				capabilities: { send: true },
+				queue: { revision: 1 },
+			},
 		},
 	}) as ThreadReadResponse;
 

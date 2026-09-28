@@ -163,7 +163,9 @@ describe("a stop you sent directly (S6)", () => {
 	it("settles once its own run is cancelled, though its subagents still work", () => {
 		const requests = new StopRequests(memoryStorage(), "hub-1");
 		requests.request("local:coord", row(runningWithChild), 1000, { direct: true });
-		expect(requests.reconcile("local:coord", rows(cancelledWithChild)).map((stoppedRow) => stoppedRow.id)).toEqual(["fix"]);
+		expect(requests.reconcile("local:coord", rows(cancelledWithChild)).map((stoppedRow) => stoppedRow.id)).toEqual([
+			"fix",
+		]);
 		expect(requests.view(row(cancelledWithChild))).toBe("stopped");
 	});
 

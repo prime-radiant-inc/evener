@@ -36,7 +36,11 @@ export class StopRequests {
 		const value = readJson(storage, storageKey(hubId));
 		if (isPlainObject(value))
 			for (const [id, record] of Object.entries(value))
-				if (isPlainObject(record) && typeof record.coordinatorRef === "string" && typeof record.requestedAt === "number")
+				if (
+					isPlainObject(record) &&
+					typeof record.coordinatorRef === "string" &&
+					typeof record.requestedAt === "number"
+				)
 					this.records[id] = {
 						coordinatorRef: record.coordinatorRef,
 						requestedAt: record.requestedAt,

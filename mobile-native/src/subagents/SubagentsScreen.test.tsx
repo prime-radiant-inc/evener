@@ -412,7 +412,10 @@ it("says a stop you asked for is pending, then that it stopped, with the toast o
 	await settle();
 	expect(text(tree)).toContain("Stop requested from the coordinator");
 	stopped = true;
-	client.emitNotification({ method: "evener/jobs/treeUpdated", params: { threadId: "coord", ref: "local:coord", revision: 2 } } as never);
+	client.emitNotification({
+		method: "evener/jobs/treeUpdated",
+		params: { threadId: "coord", ref: "local:coord", revision: 2 },
+	} as never);
 	await settle();
 	// A stopped subagent is done, under the fold.
 	act(() => pressable(tree, "Done · 22")?.props.onPress());
@@ -444,5 +447,7 @@ it("toasts a stop recorded after the tree already shows it", async () => {
 	if (!race) throw new Error("no race row");
 	act(() => stopRequests("hub-1").request(COORDINATOR.ref, race, Date.now()));
 	await settle();
-	expect(tree.root.findAllByType(Toast).map((toast) => toast.props.toast?.text)).toEqual(["“Fix race in tree settle” stopped"]);
+	expect(tree.root.findAllByType(Toast).map((toast) => toast.props.toast?.text)).toEqual([
+		"“Fix race in tree settle” stopped",
+	]);
 });

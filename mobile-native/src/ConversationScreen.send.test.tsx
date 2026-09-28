@@ -293,11 +293,12 @@ const fleet: FleetShape = { live: [], needsYou: [] };
 const mountedScreens: ReactTestRenderer[] = [];
 // A coordinator's subagent tree (evener/jobs/list) and its direct stop
 // (evener/delegate/stop), for the subagent screen's tests.
-const coordinatorHub: { tree: unknown; stop: (params: Record<string, unknown>) => unknown; readFails: string | null } = {
-	tree: null,
-	stop: () => ({ outcome: "stopping" }),
-	readFails: null,
-};
+const coordinatorHub: { tree: unknown; stop: (params: Record<string, unknown>) => unknown; readFails: string | null } =
+	{
+		tree: null,
+		stop: () => ({ outcome: "stopping" }),
+		readFails: null,
+	};
 afterEach(() => {
 	for (const tree of mountedScreens.splice(0)) if (tree.toJSON() !== null) act(() => tree.unmount());
 	coordinatorHub.tree = null;
@@ -2335,7 +2336,11 @@ describe("a subagent's own session (spec 9, rulings 10 and 30)", () => {
 			index: 2,
 			routes: [
 				{ key: "board", name: "Sessions" },
-				{ key: "coord", name: "Conversation", params: { hubId: "hub-1", ref: COORDINATOR.ref, title: COORDINATOR.title } },
+				{
+					key: "coord",
+					name: "Conversation",
+					params: { hubId: "hub-1", ref: COORDINATOR.ref, title: COORDINATOR.title },
+				},
 				route,
 			] as never,
 		};
@@ -2394,9 +2399,9 @@ describe("a subagent's own session (spec 9, rulings 10 and 30)", () => {
 		expect(hub.requests.filter((request) => request.method === "evener/delegate/stop")).toEqual([]);
 		await act(async () => confirm?.buttons?.find((button) => button.text === "Stop")?.onPress?.());
 		await settle();
-		expect(hub.requests.filter((request) => request.method === "evener/delegate/stop").map((request) => request.params)).toEqual([
-			{ ref: COORDINATOR.ref, threadId: COORDINATOR.threadId, delegateId: "d-fix" },
-		]);
+		expect(
+			hub.requests.filter((request) => request.method === "evener/delegate/stop").map((request) => request.params),
+		).toEqual([{ ref: COORDINATOR.ref, threadId: COORDINATOR.threadId, delegateId: "d-fix" }]);
 		expect(renderedText(tree)).toContain("Stop requested");
 		expect(stopRequests("hub-1").direct({ id: "d-fix" } as never)).toBe(true);
 	});
@@ -2407,7 +2412,12 @@ describe("a subagent's own session (spec 9, rulings 10 and 30)", () => {
 		};
 		const { tree } = await mountSubagent(subagent(true), { stopSubagent: true });
 		act(() => pressable(tree, "Stop subagent")?.props.onPress());
-		await act(async () => alertRequests.at(-1)?.buttons?.find((button) => button.text === "Stop")?.onPress?.());
+		await act(async () =>
+			alertRequests
+				.at(-1)
+				?.buttons?.find((button) => button.text === "Stop")
+				?.onPress?.(),
+		);
 		await settle();
 		expect(pressable(tree, "Ask coordinator to stop it")).toBeDefined();
 	});
@@ -2419,7 +2429,12 @@ describe("a subagent's own session (spec 9, rulings 10 and 30)", () => {
 		const { tree, hub } = await mountSubagent(subagent(true), { stopSubagent: true });
 		const before = jobReads(hub);
 		act(() => pressable(tree, "Stop subagent")?.props.onPress());
-		await act(async () => alertRequests.at(-1)?.buttons?.find((button) => button.text === "Stop")?.onPress?.());
+		await act(async () =>
+			alertRequests
+				.at(-1)
+				?.buttons?.find((button) => button.text === "Stop")
+				?.onPress?.(),
+		);
 		await settle();
 		expect(jobReads(hub)).toBeGreaterThan(before);
 		expect(renderedText(tree)).not.toContain("Stop requested");
@@ -2430,7 +2445,12 @@ describe("a subagent's own session (spec 9, rulings 10 and 30)", () => {
 		const { tree, hub } = await mountSubagent(subagent(true), { stopSubagent: true });
 		const before = jobReads(hub);
 		act(() => pressable(tree, "Stop subagent")?.props.onPress());
-		await act(async () => alertRequests.at(-1)?.buttons?.find((button) => button.text === "Stop")?.onPress?.());
+		await act(async () =>
+			alertRequests
+				.at(-1)
+				?.buttons?.find((button) => button.text === "Stop")
+				?.onPress?.(),
+		);
 		await settle();
 		expect(jobReads(hub)).toBeGreaterThan(before);
 		expect(renderedText(tree)).not.toContain("Stop requested");
@@ -2456,7 +2476,12 @@ describe("a subagent's own session (spec 9, rulings 10 and 30)", () => {
 		};
 		const { tree } = await mountSubagent(subagent(true), { stopSubagent: true });
 		act(() => pressable(tree, "Stop subagent")?.props.onPress());
-		await act(async () => alertRequests.at(-1)?.buttons?.find((button) => button.text === "Stop")?.onPress?.());
+		await act(async () =>
+			alertRequests
+				.at(-1)
+				?.buttons?.find((button) => button.text === "Stop")
+				?.onPress?.(),
+		);
 		await settle();
 		expect(pressable(tree, "Stop subagent")).toBeUndefined();
 		const route = {
@@ -2486,7 +2511,10 @@ describe("a subagent's own session (spec 9, rulings 10 and 30)", () => {
 		await type(tree, "Try the other lock order");
 		await press(tree, "Send");
 		const sent = hub.requests.find((request) => request.method === "turn/start");
-		expect(sent?.params).toMatchObject({ ref: "local:fix", input: [{ type: "text", text: "Try the other lock order" }] });
+		expect(sent?.params).toMatchObject({
+			ref: "local:fix",
+			input: [{ type: "text", text: "Try the other lock order" }],
+		});
 	});
 
 	it("goes back to the coordinator from Open coordinator", async () => {
@@ -2612,7 +2640,8 @@ describe("a subagent's own session (spec 9, rulings 10 and 30)", () => {
 		const { tree } = await mount(served);
 		const row = tree.root.findAll(
 			(node) =>
-				String(node.type) === "Pressable" && String(node.props.accessibilityLabel).startsWith("Fix race in tree settle, "),
+				String(node.type) === "Pressable" &&
+				String(node.props.accessibilityLabel).startsWith("Fix race in tree settle, "),
 		)[0];
 		if (!row) throw new Error("no subagent row");
 		act(() => row.props.onPress());
@@ -2629,7 +2658,10 @@ describe("a subagent's own session (spec 9, rulings 10 and 30)", () => {
 		const [row] = flattenSubagents(subagentTree() as never);
 		if (!row) throw new Error("no row");
 		act(() => stopRequests("hub-1").request(COORDINATOR.ref, row, Date.now()));
-		coordinatorHub.tree = subagentTree({ terminal: true, outcome: "cancelled", runEndedAt: new Date().toISOString() }, 2);
+		coordinatorHub.tree = subagentTree(
+			{ terminal: true, outcome: "cancelled", runEndedAt: new Date().toISOString() },
+			2,
+		);
 		act(() =>
 			hub.notify({
 				method: "thread/status/changed",

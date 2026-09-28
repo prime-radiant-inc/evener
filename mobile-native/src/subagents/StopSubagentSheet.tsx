@@ -32,7 +32,8 @@ export function StopSubagentSheet({ route }: NativeStackScreenProps<Routes, "Sto
 	const scale = useTextScale();
 	const { snapshot } = useSubagentTree(hubId, coordinator.ref, coordinator.threadId);
 	const row = useMemo(
-		() => (snapshot.tree ? (flattenSubagents(snapshot.tree).find((candidate) => candidate.ref === ref) ?? null) : undefined),
+		() =>
+			snapshot.tree ? (flattenSubagents(snapshot.tree).find((candidate) => candidate.ref === ref) ?? null) : undefined,
 		[snapshot.tree, ref],
 	);
 

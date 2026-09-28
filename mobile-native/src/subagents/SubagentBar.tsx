@@ -69,7 +69,11 @@ export function SubagentBar({
 					opacity: pressed ? 0.6 : 1,
 				})}
 			>
-				<Text allowFontScaling={allowFontScaling} numberOfLines={1} style={{ ...label, fontWeight: "600", color: palette.onFill }}>
+				<Text
+					allowFontScaling={allowFontScaling}
+					numberOfLines={1}
+					style={{ ...label, fontWeight: "600", color: palette.onFill }}
+				>
 					Open coordinator
 				</Text>
 			</Pressable>

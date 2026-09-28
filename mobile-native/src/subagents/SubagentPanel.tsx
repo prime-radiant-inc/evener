@@ -37,9 +37,18 @@ export interface SubagentPanelProps {
 	navigation: SessionNavigation & { navigate(name: "StopSubagentSheet", params: object): void };
 }
 
-const isResourceNotFound = (error: unknown) => error instanceof WireError && error.evenerErrorInfo === "resourceNotFound";
+const isResourceNotFound = (error: unknown) =>
+	error instanceof WireError && error.evenerErrorInfo === "resourceNotFound";
 
-export function SubagentPanel({ hubId, ref, coordinator, inFront, barShown, showToast, navigation }: SubagentPanelProps) {
+export function SubagentPanel({
+	hubId,
+	ref,
+	coordinator,
+	inFront,
+	barShown,
+	showToast,
+	navigation,
+}: SubagentPanelProps) {
 	const { client, state, activeProfile } = useConnection();
 	const connected = state === "ready" && activeProfile?.id === hubId && client !== null;
 	const { tree, snapshot } = useSubagentTree(hubId, coordinator.ref, coordinator.threadId);

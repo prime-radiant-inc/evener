@@ -356,7 +356,10 @@ it("sends as the coordinator is when you press Send, not as it was when the shee
 it("keeps an edited message open when the subagent leaves the tree, rather than dropping it", async () => {
 	const mounted = await mount();
 	act(() => field(mounted).props.onChangeText("Stop it please."));
-	client.on("evener/jobs/list", () => ({ data: { ...tree(), revision: 2, root: { ...tree().root, entries: [] } } }) as never);
+	client.on(
+		"evener/jobs/list",
+		() => ({ data: { ...tree(), revision: 2, root: { ...tree().root, entries: [] } } }) as never,
+	);
 	client.emitNotification({
 		method: "evener/jobs/treeUpdated",
 		params: { threadId: COORDINATOR.threadId, ref: COORDINATOR.ref, revision: 2 },
