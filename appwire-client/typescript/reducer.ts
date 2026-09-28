@@ -2863,16 +2863,7 @@ function turnModelsToFragment(turns: readonly TurnModel[]): HistoryFragment {
 // but anything else — the fresh read's own snapshot, whatever it is —
 // resolves the invalidation, since it is the only signal this caller has.
 function readModelDisposition(held: HistoryState, freshHistory: HistoryState | undefined): ReadDisposition {
-  if (freshHistory === undefined) return "merge";
-  const identity = { bootGeneration: freshHistory.bootGeneration, epoch: freshHistory.epoch };
-  if (held.invalidatedAtGeneration !== undefined) {
-    return classifySignal(held, identity) === "ignore" ? "discard" : "replace";
-  }
-  const action = compareBootGeneration(held.bootGeneration, identity.bootGeneration);
-  if (action !== "apply") return action === "ignore" ? "discard" : "replace";
-  if (identity.epoch < held.epoch) return "discard";
-  if (identity.epoch > held.epoch || freshHistory.incarnation !== held.incarnation) return "replace";
-  return freshHistory.length < held.length ? "discard" : "merge";
+  return freshHistory === undefined ? "merge" : identityDisposition(held, freshHistory);
 }
 
 /**
