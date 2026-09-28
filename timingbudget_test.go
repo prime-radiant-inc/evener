@@ -37,7 +37,7 @@ func timingBudgetRun(t *testing.T, stream string, extraArgs ...string) (string, 
 		writeAuditScriptFixture(t, filepath.Join(root, rel), string(body))
 	}
 
-	writeAuditScriptFixture(t, filepath.Join(root, "mod/go.mod"), "module example.com/mod\n")
+	writeAuditScriptFixture(t, filepath.Join(root, "mod", "go.mod"), "module example.com/mod\n")
 	streamPath := filepath.Join(root, "stream.jsonl")
 	writeAuditScriptFixture(t, streamPath, stream)
 
