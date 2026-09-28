@@ -27,13 +27,16 @@
 //     responses, which are a trust boundary: a response outside the schema the
 //     helper emits is refused, never half-understood.
 //
-// What this package deliberately does not own: the bounded kill/wait and the
-// quarantine marker (S18), the local-reap enumeration (S19), the
-// `orphan-resolve` handler and the `BoundaryEntry` union (S20), and bootstrap
-// delivery with `helperInstalled` (S21). They consume the types and decoders
-// here; the guard rules below are the same rules the helper enforces remotely,
-// restated controller-side so a caller can decide (and verify what the helper
-// reports) without trusting a remote string.
+// Beyond that layer this package owns the fencing worker's sequence — the
+// takeover decision, the bounded kill/wait, and the guard advance (takeover.go
+// and kill.go) — and the fencing-failure outcome carrying the `remote-fencing`
+// boundary the quarantine record persists (the per-host marker write itself
+// lives in hostops). What it deliberately does not own: the local-reap
+// enumeration (S19), the `orphan-resolve` handler and the `BoundaryEntry` union
+// (S20), and bootstrap delivery with `helperInstalled` (S21). They consume the
+// types and decoders here; the guard rules below are the same rules the helper
+// enforces remotely, restated controller-side so a caller can decide (and
+// verify what the helper reports) without trusting a remote string.
 package hostfence
 
 import (
@@ -315,6 +318,15 @@ func FreshOperationPermitted(reapComplete bool, g GuardState, e Epoch) bool {
 // never takes over. A replay of the current fence, or of an already-advanced
 // epoch, is idempotent.
 //
+// A pending fence for another epoch does not block the takeover: the new epoch
+// supersedes the epoch that fence names. That is the crashed incarnation whose
+// work the new worker kills under the new lease — §4:107's "The next
+// `deploy`/`restart` past the cleared marker runs its kill/wait plus guard
+// advance under a fresh epoch" would be impossible otherwise, because a
+// kill/wait timeout leaves exactly that pending fence behind. The superseded,
+// same-boot and high-water checks below still refuse an epoch the guard has
+// already retired, so a late orphan can never move the guard backward.
+//
 // This is the same rule the helper enforces in the guard file; a caller uses it
 // to choose the next step and to verify a reported state, never as a substitute
 // for the helper's server-side check.
@@ -325,14 +337,12 @@ func (g GuardState) Takeover(e Epoch) (GuardState, error) {
 	if g.Superseded != nil && *g.Superseded == e {
 		// An epoch the guard already superseded is stale whatever else is
 		// pending: it must never be reinstalled, so this refuses before the
-		// pending-fence answer below.
+		// takeover below can supersede anything.
 		return GuardState{}, fmt.Errorf("%w: epoch %+v was superseded", ErrStaleEpoch, e)
 	}
-	if g.Fence != nil {
-		if g.Fence.Epoch == e {
-			return g, nil
-		}
-		return GuardState{}, fmt.Errorf("%w: fence for epoch %+v is still pending", ErrFenced, g.Fence.Epoch)
+	if g.Fence != nil && g.Fence.Epoch == e {
+		// A replay of this epoch's own pending fence is idempotent.
+		return g, nil
 	}
 	if g.Epoch != nil && *g.Epoch == e {
 		// Already settled on this epoch: the takeover happened and the advance

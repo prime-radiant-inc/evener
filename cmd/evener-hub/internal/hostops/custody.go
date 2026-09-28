@@ -351,6 +351,12 @@ type custodyDocument struct {
 	GuardEpoch             json.RawMessage            `json:"guardEpoch"`
 	WallClockHighWaterMark json.RawMessage            `json:"wallClockHighWaterMark"`
 	PendingCompensation    json.RawMessage            `json:"pendingCompensation"`
+	// FencingQuarantines is the per-host fencing-quarantine marker set, consumed
+	// as a raw region: the replacement store re-materializes a marker for every
+	// imported fence whose boundary is the remote-fencing variant, so the
+	// markers a corrupt file carried are re-derived from the boundaries custody
+	// already preserves, not read from here.
+	FencingQuarantines json.RawMessage `json:"fencingQuarantines"`
 }
 
 // readStoreForCustody decodes a corrupt store file for the custody snapshot. It
@@ -1084,12 +1090,26 @@ func replacementState(custody custodyFile, custodyPath string, floor uint64) (sn
 		AllocatorHighWaterMark: allocated,
 		Records:                records,
 		Boundaries:             map[string]Boundary{},
+		FencingQuarantines:     map[string]FencingQuarantine{},
 		Tombstones:             []Tombstone{},
 		CompactionMarks:        []CompactionMark{},
 		RemovedHosts:           map[string]RemovedHost{},
 		Tokens:                 []Token{},
 		ProbeEpochs:            []ProbeEpoch{},
 		ProbeEpochSeq:          map[string]uint64{},
+	}
+	// The replacement closes every imported name; a name whose fence boundary is
+	// the remote-fencing variant is a fencing quarantine, and its marker is
+	// re-materialized here. custodyImports sorts by id, so a host with more than
+	// one such fence takes the lowest id deterministically.
+	for _, record := range records {
+		if !boundaryHasRemoteFencing(record.OrphanBoundary) {
+			continue
+		}
+		if _, taken := state.FencingQuarantines[record.Host]; taken {
+			continue
+		}
+		state.FencingQuarantines[record.Host] = FencingQuarantine{RecordID: record.ID, QuarantinedAt: custody.CustodiedAt}
 	}
 	if err := validateSnapshot(state); err != nil {
 		return snapshot{}, fmt.Errorf("%w: the replacement store does not validate: %w", ErrQuarantineIncomplete, err)

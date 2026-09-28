@@ -17,6 +17,9 @@ func FuzzHostfenceDecode(f *testing.F) {
 		`{"version":1,"entries":[{"id":"n1","command":"deploy --now","registeredAt":"2026-09-28T10:00:00Z","ownership":{"pid":41,"pidStartTime":"777"},"state":"running"}]}`,
 		`{"version":1,"entries":[{"id":"n2","command":"restart","registeredAt":"2026-09-28T09:00:00Z","ownership":{"nonce":"n2"},"state":"exited","exit":0,"exitedAt":"2026-09-28T09:00:05Z"}]}`,
 		`{"version":1,"id":"n1","live":true,"state":"running","ownership":{"pid":41,"pidStartTime":"777"}}`,
+		`{"version":1,"id":"n1","signaled":true,"live":false,"state":"killed"}`,
+		`{"version":1,"id":"n2","signaled":false,"live":false,"state":""}`,
+		`{"version":1,"id":"n3","signaled":true,"live":true,"state":"running","remaining":[{"pid":41,"startToken":"777"}]}`,
 		`{"version":1,"refused":true,"error":"stale-epoch","detail":"older"}`,
 		`{"bootId":"b1","opSeq":3}`,
 		`null`, ``, `[]`, `{`, `{"version":1}`,
@@ -44,6 +47,19 @@ func FuzzHostfenceDecode(f *testing.F) {
 		}
 		if recheck, err := DecodeRecheck(raw); err == nil && recheck.ID == "" {
 			t.Fatal("accepted recheck answer carries no id")
+		}
+		if report, err := DecodeKillReport(raw); err == nil {
+			if report.ID == "" {
+				t.Fatal("accepted kill answer carries no id")
+			}
+			if report.Live && report.State != LeaseRegistering && report.State != LeaseRunning {
+				t.Fatalf("accepted kill answer reports state %q live", report.State)
+			}
+			for _, remaining := range report.Remaining {
+				if err := remaining.Validate(); err != nil {
+					t.Fatalf("accepted kill answer carries an invalid member: %+v: %v", remaining, err)
+				}
+			}
 		}
 		if err := DecodeRefusal(raw); err != nil {
 			var refusal *HelperRefusalError

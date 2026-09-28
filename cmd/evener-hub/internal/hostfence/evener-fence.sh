@@ -35,11 +35,21 @@
 #   recheck <id>                  §9's nonce re-presentation: report whether the
 #                                 lease entry carrying that identity still
 #                                 names a live holder (read-only, lock-free)
+#   kill <bootId> <opSeq> <id>    §4's remote kill of one superseded-epoch lease
+#                                 entry: under this epoch's taken-over lease,
+#                                 revalidate the entry's stored ownership
+#                                 identity on the remote, signal the verified
+#                                 instance, and mark the entry killed through the
+#                                 same entry file once nothing matching that
+#                                 identity is left. A process whose identity
+#                                 cannot be verified is never signaled: the
+#                                 fencing worker's bounded wait decides.
 #
 # status, entries, and recheck are read-only and take no lock: a verifier must
 # be able to enumerate and re-present identities while a command holds the
 # exclusive lease, so they read one cat snapshot of each file and never block
-# behind a running command. Only takeover, advance, and perform take the lock.
+# behind a running command. Only takeover, advance, perform, and kill take the
+# lock.
 #
 # Files, all mode 0600 (umask 077) and written temp+fsync+rename+dir-fsync:
 #
@@ -71,8 +81,10 @@
 # exit code. Exit codes: 0 success; the wrapped command's own status for
 # perform; 64 malformed request; 69 corrupt state or I/O failure; 75 fencing
 # refusal. Nothing here kills a remote process: kill/wait and the quarantine
-# marker belong to the fencing worker (S18), which verifies entries through
-# `entries` and `recheck` before signaling.
+# marker belong to the fencing worker (S18), which enumerates the superseded
+# epoch's work through `entries` and `recheck` and signals only through `kill`,
+# where the stored ownership identity is revalidated remotely before any signal
+# and the kill is recorded through the same entry file.
 #
 # Three environment seams exist for the tests' fault injection, mirroring the Go
 # stores' fault seams: EVENER_FENCE_FAULT_AFTER_GUARD=1 exits right after a
@@ -141,13 +153,6 @@ json_escape() { # one value as a JSON string body
 		}'
 }
 
-is_uint() {
-	case $1 in
-	'' | *[!0-9]*) return 1 ;;
-	*) return 0 ;;
-	esac
-}
-
 # is_canonical_uint additionally refuses a leading zero: a value like 001 is
 # stored and emitted verbatim into JSON, where 001 is not a number, so the
 # controller would read the state as corrupt.
@@ -169,6 +174,18 @@ is_uint64() {
 		return 1
 	fi
 	return 0
+}
+
+# seq_at_or_below reports whether canonical uint <a> is at or below canonical
+# uint <b>. Both callers hold is_uint64-bounded values, which may exceed the
+# shell's integer width, so the comparison is by length then lexically — the
+# same bound is_uint64 applies. `[ "$a" -le "$b" ]` errors on such a value
+# (dash: "Illegal number"), and an errored test silently skips the refusal it
+# guards, which is the stale-epoch bypass this shape closes.
+seq_at_or_below() { # <a> <b>
+	[ "${#1}" -lt "${#2}" ] && return 0
+	[ "${#1}" -gt "${#2}" ] && return 1
+	[ "$1" = "$2" ] || [ "$1" \< "$2" ]
 }
 
 sync_path() { # best-effort durability for a file or directory
@@ -334,6 +351,22 @@ guard_file_valid() { # <snapshot>
 		}' >/dev/null 2>&1
 }
 
+# guard_boot_high_water_valid bounds every per-boot high-water to a uint64, the
+# schema the Go decoder unmarshals it into. guard_file_valid's coarse check
+# (digits, at most 20) lets a value above the maximum through, and such a value
+# both wedges every later status/takeover/advance controller-side (the emitted
+# JSON is not a uint64) and overflows the shell's own comparisons, silently
+# skipping the stale-epoch refusal. is_uint64 is the exact bound the Go side
+# applies, so an out-of-range value refuses as state-corrupt — never a bypass,
+# and never a value this helper emits.
+guard_boot_high_water_valid() { # <snapshot>
+	printf '%s\n' "$1" | while IFS="$TAB" read -r key value; do
+		case $key in
+		boot.*) is_uint64 "$value" || exit 1 ;;
+		esac
+	done
+}
+
 # read_guard loads the guard state into GUARD_* globals. A missing file is the
 # empty state (a host no fencing has touched); a present file outside the schema
 # is corrupt and fails closed.
@@ -352,6 +385,7 @@ read_guard() {
 	[ -f "$GUARD_FILE" ] || return 0
 	GUARD_SNAPSHOT=$(cat "$GUARD_FILE" 2>/dev/null) || return 1
 	guard_file_valid "$GUARD_SNAPSHOT" || return 1
+	guard_boot_high_water_valid "$GUARD_SNAPSHOT" || return 1
 	[ "$(guard_field "$GUARD_SNAPSHOT" version)" = "$PROTOCOL" ] || return 1
 	GUARD_EPOCH=$(guard_field "$GUARD_SNAPSHOT" guardEpoch)
 	EPOCH_BOOT=$(guard_field "$GUARD_SNAPSHOT" epochBootId)
@@ -373,8 +407,10 @@ read_guard() {
 		[ "$FENCE_GUARD" = 0 ] || return 1
 	else
 		# The fence's sequence sits inside the guard's own, exactly as the Go
-		# validator decides: a fence ahead of the guard is corrupt.
-		[ "$FENCE_GUARD" -ge 1 ] && [ "$FENCE_GUARD" -le "$GUARD_EPOCH" ] || return 1
+		# validator decides: a fence ahead of the guard is corrupt. Both values
+		# are is_uint64-bounded, so the compare is length-then-lexical: an
+		# in-range value above the shell's integer width must not read corrupt.
+		[ "$FENCE_GUARD" != 0 ] && seq_at_or_below "$FENCE_GUARD" "$GUARD_EPOCH" || return 1
 	fi
 	return 0
 }
@@ -742,24 +778,31 @@ do_takeover() {
 	if [ "$SUP_BOOT" = "$E_BOOT" ] && [ "$SUP_SEQ" = "$E_SEQ" ]; then
 		# An epoch the guard already superseded is stale whatever else is
 		# pending: it must never be reinstalled, so this refuses before the
-		# pending-fence answer below.
+		# takeover below can supersede anything.
 		refuse_stale "epoch $E_BOOT/$E_SEQ was superseded by the guard"
 	fi
-	if [ "$FENCE_BOOT" != "-" ]; then
-		if [ "$FENCE_BOOT" = "$E_BOOT" ] && [ "$FENCE_SEQ" = "$E_SEQ" ]; then
-			repair_holder "$E_BOOT" "$E_SEQ"
-			emit_status
-			return 0
-		fi
-		refuse_fenced "a fence for epoch $FENCE_BOOT/$FENCE_SEQ is still pending"
+	if [ "$FENCE_BOOT" = "$E_BOOT" ] && [ "$FENCE_SEQ" = "$E_SEQ" ]; then
+		# A replay of this epoch's own pending fence repairs a lost holder write
+		# and reports the same fence: the sequence never advances twice for one
+		# fencing.
+		repair_holder "$E_BOOT" "$E_SEQ"
+		emit_status
+		return 0
 	fi
+	# A pending fence for a DIFFERENT epoch does not block this takeover: the
+	# new epoch supersedes the epoch that fence names — the crashed incarnation
+	# whose work the new worker kills under this lease (§4:107's "The next
+	# `deploy`/`restart` past the cleared marker runs its kill/wait plus guard
+	# advance under a fresh epoch"). The superseded check above and the
+	# holder/high-water checks below refuse an epoch the guard has already
+	# retired, so a late orphan can never move the guard backward.
 	if [ "$EPOCH_BOOT" = "$E_BOOT" ] && [ "$EPOCH_SEQ" = "$E_SEQ" ]; then
 		repair_holder "$E_BOOT" "$E_SEQ"
 		emit_status
 		return 0
 	fi
 	highwater=$(guard_field "$GUARD_SNAPSHOT" "boot.$E_BOOT")
-	if [ -n "$highwater" ] && is_uint "$highwater" && [ "$E_SEQ" -le "$highwater" ]; then
+	if [ -n "$highwater" ] && seq_at_or_below "$E_SEQ" "$highwater"; then
 		# The durable per-boot high-water: an epoch this boot already admitted
 		# never takes over again, even after later boots have settled.
 		refuse_stale "epoch $E_BOOT/$E_SEQ is at or below boot $E_BOOT's high-water $highwater"
@@ -771,7 +814,7 @@ do_takeover() {
 		previous_boot=$EPOCH_BOOT
 		previous_seq=$EPOCH_SEQ
 	fi
-	if [ "$previous_boot" != "-" ] && [ "$previous_boot" = "$E_BOOT" ] && [ "$E_SEQ" -le "$previous_seq" ]; then
+	if [ "$previous_boot" != "-" ] && [ "$previous_boot" = "$E_BOOT" ] && seq_at_or_below "$E_SEQ" "$previous_seq"; then
 		refuse_stale "epoch $E_BOOT/$E_SEQ is no newer than the guard's holder $previous_boot/$previous_seq"
 	fi
 	GUARD_EPOCH=$((GUARD_EPOCH + 1))
@@ -1023,9 +1066,18 @@ do_recheck() { # <id>
 			fi
 			;;
 		nonce)
-			# A registered nonce entry whose liveness cannot be disproven stays
-			# live: fail closed, never a clean read.
-			live=true
+			# The nonce is the entry's stored ownership identity: a process
+			# carrying it exactly is the wrapper's work, and no matching process
+			# is a proven-gone member. Where /proc cannot enumerate, liveness
+			# cannot be disproven and the entry stays live: fail closed, never a
+			# clean read.
+			if [ -d /proc/self ]; then
+				if [ -n "$(descendants_of "$ENTRY_NONCE")" ]; then
+					live=true
+				fi
+			else
+				live=true
+			fi
 			;;
 		cgroup)
 			live=true
@@ -1073,6 +1125,197 @@ do_recheck() { # <id>
 		printf ']'
 	fi
 	printf '}\n'
+}
+
+# --- kill --------------------------------------------------------------------
+
+# entry_live_targets prints one "pid:startToken" token per process still
+# matching the entry's stored ownership identity. An empty result is the only
+# proof the member is gone; a process whose identity cannot be read prints as
+# "<pid>:unknown", which reads live and is never signaled. §9's verifier rules
+# apply: a pid is checked against its stored start time, a nonce is
+# re-presented to the wrapper, and a cgroup membership this helper cannot
+# attest fails closed.
+entry_live_targets() { # (uses ENTRY_*)
+	case $ENTRY_KIND in
+	pid)
+		if kill -0 "$ENTRY_PID" 2>/dev/null; then
+			current=$(current_start_token "$ENTRY_PID" || true)
+			if [ -z "$current" ]; then
+				printf '%s:unknown ' "$ENTRY_PID"
+			elif [ "$current" = "$ENTRY_START" ]; then
+				printf '%s:%s ' "$ENTRY_PID" "$current"
+			fi
+		elif ps -p "$ENTRY_PID" >/dev/null 2>&1; then
+			# Present but not signalable: the identity cannot be proven.
+			printf '%s:unknown ' "$ENTRY_PID"
+		fi
+		;;
+	nonce)
+		if [ ! -d /proc/self ]; then
+			# A platform that cannot enumerate cannot disprove the member.
+			printf '%s:unknown ' "-"
+			return 0
+		fi
+		for target in $(descendants_of "$ENTRY_NONCE"); do
+			target_pid=${target%%:*}
+			target_start=${target#*:}
+			if [ "$target_start" = unknown ] || descendant_pair_conflicts "$target_pid" "$target_start"; then
+				printf '%s:unknown ' "$target_pid"
+			else
+				printf '%s:%s ' "$target_pid" "$target_start"
+			fi
+		done
+		;;
+	cgroup)
+		# This helper cannot attest a cgroup membership, so the member reads
+		# live and is never signaled.
+		printf '%s:unknown ' "-"
+		;;
+	esac
+	if [ "$ENTRY_KIND" != nonce ]; then
+		# A recorded descendant counts only while it still carries this entry's
+		# exact nonce (the entry id is the wrapper's per-spawn nonce) and its
+		# recorded start token: a reused id is not the wrapper's work.
+		for descendant in $ENTRY_DESCENDANTS; do
+			descendant_pid=${descendant%%:*}
+			descendant_start=${descendant#*:}
+			kill -0 "$descendant_pid" 2>/dev/null || continue
+			if [ "$descendant_start" = unknown ] || [ ! -r "/proc/$descendant_pid/environ" ]; then
+				# No start token was recorded, or the environment cannot be
+				# read: the identity cannot be disproven.
+				printf '%s:unknown ' "$descendant_pid"
+				continue
+			fi
+			if ! nonce_holds "/proc/$descendant_pid/environ" "$ENTRY_ID"; then
+				continue
+			fi
+			current=$(current_start_token "$descendant_pid" || true)
+			if [ -z "$current" ]; then
+				printf '%s:unknown ' "$descendant_pid"
+			elif [ "$current" = "$descendant_start" ]; then
+				printf '%s:%s ' "$descendant_pid" "$current"
+			fi
+			# A differing start token is a reused id: already clean for that
+			# member, never signaled.
+		done
+	fi
+}
+
+# descendant_pair_conflicts reports whether pid carries a recorded descendant
+# pair whose start token differs: that pid is a reused id, not this work.
+descendant_pair_conflicts() { # <pid> <start>
+	for descendant in $ENTRY_DESCENDANTS; do
+		descendant_pid=${descendant%%:*}
+		descendant_start=${descendant#*:}
+		if [ "$descendant_pid" = "$1" ] && [ "$descendant_start" != "$2" ]; then
+			return 0
+		fi
+	done
+	return 1
+}
+
+emit_kill_report() { # <id> <state> <signaled> <live> [<remaining tokens>]
+	printf '{"version":%s,"id":"%s","signaled":%s,"live":%s,"state":"%s"' \
+		"$PROTOCOL" "$1" "$3" "$4" "$2"
+	# Only a member with a numeric pid is a process this report can name: an
+	# opaque token ("-:unknown") still makes the answer live, but there is no
+	# pid to emit.
+	started=0
+	for target in ${5:-}; do
+		target_pid=${target%%:*}
+		case $target_pid in '' | *[!0-9]*) continue ;; esac
+		if [ "$started" -eq 1 ]; then
+			printf ','
+		else
+			printf ',"remaining":['
+			started=1
+		fi
+		printf '{"pid":%s,"startToken":"%s"}' "$target_pid" "$(json_escape "${target#*:}")"
+	done
+	if [ "$started" -eq 1 ]; then
+		printf ']'
+	fi
+	printf '}\n'
+}
+
+# do_kill signals the superseded epoch's tracked work for one lease entry,
+# under the presented epoch's taken-over lease: §4's "kill (bounded kill
+# context)" step. The fencing worker's own bounded wait reads `recheck`; this
+# call revalidates the stored ownership identity on the remote before any
+# signal, gives the signaled work a bounded chance to leave, and records the
+# kill through the same entry file — state killed, exit 143, the shell's
+# SIGTERM convention — once nothing matching that identity is left. A member
+# that cannot be verified is never signaled and reads live.
+do_kill() { # <bootId> <opSeq> <id>
+	E_BOOT=$1
+	E_SEQ=$2
+	load_guard_or_refuse
+	# The caller must hold the taken-over lease: the guard carries this epoch's
+	# pending fence and the lease holder names the same epoch. Anything else is
+	# a superseded or foreign epoch, whose kill is dead.
+	if [ "$FENCE_BOOT" = "-" ] || [ "$FENCE_BOOT" != "$E_BOOT" ] || [ "$FENCE_SEQ" != "$E_SEQ" ]; then
+		refuse_stale "no fence for epoch $E_BOOT/$E_SEQ is pending"
+	fi
+	read_holder || refuse_corrupt "the lease holder is outside its schema"
+	if [ "$HOLDER_BOOT" != "$E_BOOT" ] || [ "$HOLDER_SEQ" != "$E_SEQ" ]; then
+		refuse_corrupt "the lease holder $HOLDER_BOOT/$HOLDER_SEQ does not name the fenced epoch $E_BOOT/$E_SEQ; replay the takeover"
+	fi
+	id=$3
+	case $id in '' | *[!A-Za-z0-9]*) refuse_malformed "a lease entry id is required" ;; esac
+	path=$LEASE_DIR/$id
+	if [ ! -f "$path" ]; then
+		# No entry was registered under this id: the member is already clean.
+		emit_kill_report "$id" "" false false
+		return 0
+	fi
+	load_entry "$path" || refuse_corrupt "lease entry $id is outside its schema"
+	case $ENTRY_STATE in
+	exited | killed)
+		emit_kill_report "$ENTRY_ID" "$ENTRY_STATE" false false
+		return 0
+		;;
+	esac
+	signaled=false
+	remaining=$(entry_live_targets)
+	for target in $remaining; do
+		target_pid=${target%%:*}
+		target_start=${target#*:}
+		# Signal only a fully verified identity: "unknown" is a member this
+		# helper cannot prove is the wrapper's work.
+		if [ "$target_start" = unknown ]; then
+			continue
+		fi
+		kill "$target_pid" 2>/dev/null || true
+		signaled=true
+	done
+	state=$ENTRY_STATE
+	if [ "$signaled" = true ]; then
+		# Only a signaled process has something to wait for: an unverifiable
+		# member is already the answer, and polling it would burn the worker's
+		# kill budget for nothing.
+		attempt=0
+		while [ -n "$remaining" ] && [ "$attempt" -lt 20 ]; do
+			attempt=$((attempt + 1))
+			sleep 0.1
+			remaining=$(entry_live_targets)
+		done
+	fi
+	if [ -z "$remaining" ] && [ "$signaled" = true ]; then
+		# The kill path marks through the same entry file: the entry this call
+		# ended reads killed, with the signal convention's exit status.
+		exited=$(date -u '+%Y-%m-%dT%H:%M:%SZ' 2>/dev/null || printf 0)
+		write_entry "$ENTRY_ID" "$(json_escape "$ENTRY_COMMAND")" "$ENTRY_REGISTERED" killed \
+			"$ENTRY_KIND" "$ENTRY_PID" "$ENTRY_START" "$ENTRY_NONCE" "$ENTRY_CGROUP" 143 "$exited" '' ||
+			refuse io-error "cannot record the killed lease entry" 69
+		state=killed
+	fi
+	if [ -z "$remaining" ]; then
+		live=false
+	else
+		live=true
+	fi
+	emit_kill_report "$ENTRY_ID" "$state" "$signaled" "$live" "$remaining"
 }
 
 # --- dispatch ----------------------------------------------------------------
@@ -1123,6 +1366,14 @@ perform)
 recheck)
 	[ $# -eq 1 ] || refuse_malformed "recheck needs a lease entry id"
 	do_recheck "$1"
+	;;
+kill)
+	[ $# -eq 3 ] || refuse_malformed "kill needs an epoch and a lease entry id"
+	parse_epoch "$1" "$2" || refuse_malformed "malformed fencing epoch"
+	trap 'release_lock' EXIT
+	trap 'release_lock; exit 1' HUP INT TERM
+	acquire_lock || refuse busy "the remote lease is held" 75
+	do_kill "$1" "$2" "$3"
 	;;
 *)
 	refuse_malformed "unknown operation $op"
