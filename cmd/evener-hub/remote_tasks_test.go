@@ -54,7 +54,7 @@ func fillEveryFieldNonZero(t *testing.T, v reflect.Value) {
 		m := reflect.MakeMap(v.Type())
 		m.SetMapIndex(key, val)
 		v.Set(m)
-	case reflect.Ptr:
+	case reflect.Pointer:
 		p := reflect.New(v.Type().Elem())
 		fillEveryFieldNonZero(t, p.Elem())
 		v.Set(p)
@@ -69,17 +69,16 @@ func fillEveryFieldNonZero(t *testing.T, v reflect.Value) {
 	}
 }
 
-// The hub's own list rows carry a root's task progress, and an in-process
-// subagent alias carries only the fields it owns. Every field of live starts
-// non-zero (fillEveryFieldNonZero), so comparing the WHOLE alias entry against
-// an explicit "want" of only the fields the alias is meant to carry means a
-// field added to the root later (a pending question, a failure summary, a
-// last message) needs no field-specific "only on the root" test of its own,
+// The hub's own list rows carry a root's task progress and pending question,
+// and an in-process subagent alias carries only the fields it owns. Every
+// field of live starts non-zero (fillEveryFieldNonZero), so comparing the
+// WHOLE alias entry against an explicit "want" of only the fields the alias
+// is meant to carry means a field added to the root later (a failure summary,
+// a last message) needs no field-specific "only on the root" test of its own,
 // and no update to this fixture: any root-only field the alias literal in
 // localDaemonEntriesFromRoster accidentally starts copying makes the
-// comparison fail the moment it stops being nil/zero on one side only (S13b;
-// fixes #2589; RoboRev found the previous fixture left new fields at their
-// zero value on both sides, which a nil-vs-nil comparison can't catch).
+// comparison fail the moment it stops being nil/zero on one side only (S13b
+// and S1b; fixes #2589).
 func TestLocalDaemonEntriesFromRosterAliasCarriesOnlyItsOwnFields(t *testing.T) {
 	var live hubcore.LiveEntry
 	fillEveryFieldNonZero(t, reflect.ValueOf(&live).Elem())
@@ -101,6 +100,9 @@ func TestLocalDaemonEntriesFromRosterAliasCarriesOnlyItsOwnFields(t *testing.T) 
 	}
 	if !reflect.DeepEqual(entries[0].Tasks, live.Tasks) {
 		t.Fatalf("root entry tasks = %+v, want %+v", entries[0].Tasks, live.Tasks)
+	}
+	if !reflect.DeepEqual(entries[0].PendingQuestion, live.PendingQuestion) {
+		t.Fatalf("root entry question = %+v, want %+v", entries[0].PendingQuestion, live.PendingQuestion)
 	}
 	want := appsource.LocalDaemonEntry{
 		Entry:             rootEntry,

@@ -1,7 +1,6 @@
 package hub
 
 import (
-	"reflect"
 	"slices"
 	"testing"
 
@@ -103,35 +102,5 @@ func TestLocalDaemonEntriesFromRosterAliasesInheritNoAskOrApproval(t *testing.T)
 	}
 	if childRow.Evener.Kind != "subagent" || childRow.Evener.AskPending || len(childRow.Evener.PendingEscalations) != 0 {
 		t.Fatalf("child row = %+v, want a subagent row with no question and no card", childRow.Evener)
-	}
-}
-
-// TestLocalDaemonEntriesFromRosterCarriesTheRootsPendingQuestion pins the
-// root-side hand-off Task 8.3 adds: a roster entry's first pending question
-// (hubcore.LiveEntry.PendingQuestion, S1b) must reach the LocalDaemonEntry the
-// hub's own list rows render from, the same hop
-// TestLocalDaemonEntriesFromRosterCarriesProbeCapabilitiesAndApprovalFlags
-// pins for capabilities. The in-process alias never carries a root-only
-// field at all (TestLocalDaemonEntriesFromRosterAliasesInheritNoAskOrApproval
-// pins that for PendingAsk/PendingEscalation, and the alias literal in
-// localDaemonEntriesFromRoster builds every field itself rather than copying
-// the root and clearing root-only ones, #2589), so there is no separate
-// alias-side assertion to make here.
-func TestLocalDaemonEntriesFromRosterCarriesTheRootsPendingQuestion(t *testing.T) {
-	question := &appwire.PendingQuestion{Question: "Which datastore?", Options: []string{"Postgres", "SQLite"}, Count: 1}
-	live := hubcore.LiveEntry{
-		Entry:              rendezvous.Entry{ThreadID: "sess_root", SessionID: "sess_root"},
-		SessionID:          "sess_root",
-		Status:             appwire.ThreadStatusAwaiting,
-		PendingAsk:         true,
-		PendingQuestion:    question,
-		RunningSubagentIDs: []string{"sess_child"},
-	}
-	entries := localDaemonEntriesFromRoster([]hubcore.LiveEntry{live})
-	if len(entries) != 2 {
-		t.Fatalf("entries = %+v, want the root and its in-process child", entries)
-	}
-	if !reflect.DeepEqual(entries[0].PendingQuestion, question) {
-		t.Fatalf("root entry = %+v, want the roster's pending question %+v", entries[0], question)
 	}
 }
