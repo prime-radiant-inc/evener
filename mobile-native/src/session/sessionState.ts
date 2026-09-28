@@ -4,7 +4,7 @@
 // never unread, so a finished one is Idle, with no dot.
 import type { EvenerDelegateInfo, ThreadModel } from "@evener/appwire-client";
 import { projectDelegateEntry } from "../../../mobile/src/services/activity";
-import type { BoardState } from "../board/attention";
+import { type BoardState, hubTime } from "../board/attention";
 import { compactDuration } from "./format";
 
 export interface SessionStateLine {
@@ -30,29 +30,23 @@ export function sessionStateLine(session: StateSource, now: number): SessionStat
 	if (session.pendingEscalations.length > 0) return { state: "approval", text: "Asks for approval" };
 	if (type === "warning") return { state: "warning", text: "Warning" };
 	if (type === "active") {
-		const started = timeOf(session.activeTurnStartedAt);
-		return { state: "working", text: started === undefined ? "Working" : `Working · ${compactDuration(now - started)}` };
+		const started = hubTime(session.activeTurnStartedAt);
+		return { state: "working", text: started === null ? "Working" : `Working · ${compactDuration(now - started)}` };
 	}
 	if (SHUT_DOWN.has(type)) return { state: "shutDown", text: "Shut down" };
 	const finished = lastCompletion(session.turns);
 	return {
 		state: "idle",
-		text: finished === undefined ? "Finished" : `Finished · ${compactDuration(now - finished)} ago`,
+		text: finished === null ? "Finished" : `Finished · ${compactDuration(now - finished)} ago`,
 	};
 }
 
-function lastCompletion(turns: StateSource["turns"]): number | undefined {
+function lastCompletion(turns: StateSource["turns"]): number | null {
 	for (let index = turns.length - 1; index >= 0; index -= 1) {
-		const time = timeOf(turns[index]?.completedAt);
-		if (time !== undefined) return time;
+		const time = hubTime(turns[index]?.completedAt);
+		if (time !== null) return time;
 	}
-	return undefined;
-}
-
-function timeOf(value: string | undefined): number | undefined {
-	if (!value) return undefined;
-	const time = Date.parse(value);
-	return Number.isFinite(time) ? time : undefined;
+	return null;
 }
 
 export interface SubagentTally {

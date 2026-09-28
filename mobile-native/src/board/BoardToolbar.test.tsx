@@ -14,11 +14,11 @@ vi.mock("react-native-safe-area-context", () => ({
 }));
 
 const palette = paletteFor("light");
-const NOW = Date.UTC(2026, 8, 26, 12, 0);
 
+// The status clock arms timers whenever the connection isn't live; fake ones
+// never fire after a test ends.
 beforeEach(() => {
 	vi.useFakeTimers();
-	vi.setSystemTime(NOW);
 });
 afterEach(() => {
 	vi.useRealTimers();

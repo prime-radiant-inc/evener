@@ -23,7 +23,7 @@ import {
 	screenConnection,
 } from "./renderNative.testkit";
 import { ConversationScreen } from "./screens";
-import { detailLevels } from "./session/nativeDetailLevels";
+import { detailLevels, forgetDetailLevelsForHub } from "./session/nativeDetailLevels";
 import { SessionHeader } from "./session/SessionHeader";
 import { SessionTitle } from "./session/SessionTitle";
 import { SessionSheet } from "./SessionSheet";
@@ -121,7 +121,7 @@ vi.mock("expo-sqlite", async () => {
 	};
 });
 vi.mock("expo-sqlite/kv-store", () => ({
-	Storage: { getItemSync: () => null, setItemSync: () => {} },
+	Storage: { getItemSync: () => null, setItemSync: () => {}, removeItemSync: () => {} },
 }));
 vi.mock("expo-file-system", () => ({
 	File: class File {
@@ -221,7 +221,7 @@ const thread: Thread = {
  * for a rejection, or a function of the call's params for a method whose
  * calls answer differently (Undo re-sending the same method with the
  * opposite `archived`). Any other request stays pending. */
-type Answers = Record<string, unknown | ((params: unknown) => unknown)>;
+type Answers = Record<string, unknown>;
 
 /** A hub that answers the session's read with `read` and records every
  * request the screen makes. */
@@ -293,6 +293,8 @@ beforeEach(() => {
 	navigation.setOptions.mockClear();
 	alertRequests.length = 0;
 	listScrolls.length = 0;
+	// Each test starts with no detail level chosen on this device.
+	forgetDetailLevelsForHub("hub-1");
 });
 
 /** The header options the screen set last. */
@@ -313,6 +315,15 @@ function menuItems(): (NativeStackHeaderItemMenuAction | NativeStackHeaderItemMe
 function menuAction(label: string): NativeStackHeaderItemMenuAction {
 	const found = menuItems().find((item) => item.label === label);
 	if (found?.type !== "action") throw new Error(`no ${label} in the header menu`);
+	return found;
+}
+
+/** A level in the ⋯ menu's detail-level submenu. */
+function levelAction(label: string): NativeStackHeaderItemMenuAction {
+	const [detail] = menuItems();
+	const [section] = detail?.type === "submenu" ? detail.items : [];
+	const found = section?.type === "submenu" ? section.items.find((item) => item.label === label) : undefined;
+	if (found?.type !== "action") throw new Error(`no ${label} level in the menu`);
 	return found;
 }
 
@@ -393,11 +404,7 @@ it("shows the chosen detail level and confirms it", async () => {
 	const { tree } = mount();
 	await flush();
 
-	const [detail] = menuItems();
-	const [section] = detail?.type === "submenu" ? detail.items : [];
-	const full = section?.type === "submenu" ? section.items.find((item) => item.label === "Full") : undefined;
-	if (full?.type !== "action") throw new Error("no Full level in the menu");
-	act(() => full.onPress());
+	act(() => levelAction("Full").onPress());
 
 	expect(detailLevels("hub-1").get(ref)).toBe("full");
 	expect(menuItems()[0]).toMatchObject({ label: "Detail level · Full" });
@@ -561,11 +568,7 @@ it("projects the transcript at the level chosen for it, from the menu or elsewhe
 	const { tree } = mount({ ...thread, turns: [turn] } as unknown as Thread);
 	await flush();
 
-	const [detail] = menuItems();
-	const [section] = detail?.type === "submenu" ? detail.items : [];
-	const chat = section?.type === "submenu" ? section.items.find((item) => item.label === "Chat") : undefined;
-	if (chat?.type !== "action") throw new Error("no Chat level in the menu");
-	act(() => chat.onPress());
+	act(() => levelAction("Chat").onPress());
 	await flush();
 	expect(renderedText(tree)).toContain("look");
 	expect(renderedText(tree)).not.toContain("shell");
@@ -606,16 +609,36 @@ const busy = {
 		},
 	},
 } as unknown as Thread;
+
+/** The screen's header block, its list, and scrolling it. */
+function sessionList(tree: ReturnType<typeof render>) {
+	const block = () => tree.root.findByType(SessionHeader);
+	const list = () => tree.root.findByType(FlatList);
+	return {
+		block,
+		list,
+		/** The block's wrapper reporting a new height, as layout would. */
+		measure: (height: number) =>
+			act(() => block().parent?.props.onLayout({ nativeEvent: { layout: { height } } })),
+		scroll: (y: number) => act(() => list().props.onScroll({ nativeEvent: { contentOffset: { y } } })),
+		drag: (y: number) => {
+			act(() => list().props.onScrollBeginDrag());
+			act(() => list().props.onScroll({ nativeEvent: { contentOffset: { y } } }));
+			act(() => list().props.onScrollEndDrag());
+		},
+	};
+}
+
 it("floats the context chips over the list, opens each one's sheet, and hides them on a downward scroll", async () => {
 	const { tree } = mount(busy);
 	await flush();
+	const session = sessionList(tree);
 
-	const block = () => tree.root.findByType(SessionHeader);
 	// A live connection says nothing, and the old Reconnect row is gone.
-	expect(block().props.status).toBeNull();
+	expect(session.block().props.status).toBeNull();
 	expect(renderedText(tree)).not.toMatch(/Connected|Reconnect/);
 	const chip = (label: string) => {
-		const found = block().findAll(
+		const found = session.block().findAll(
 			(node) => node.props.accessibilityRole === "button" && node.props.accessibilityLabel === label,
 		)[0];
 		if (!found) throw new Error(`no ${label} chip`);
@@ -623,9 +646,8 @@ it("floats the context chips over the list, opens each one's sheet, and hides th
 	};
 
 	// The list reserves the block's height under its own top padding.
-	const list = () => tree.root.findByType(FlatList);
-	act(() => block().parent?.props.onLayout({ nativeEvent: { layout: { height: 48 } } }));
-	expect(list().props.contentContainerStyle).toMatchObject({ paddingTop: 64 });
+	session.measure(48);
+	expect(session.list().props.contentContainerStyle).toMatchObject({ paddingTop: 64 });
 
 	expect(tree.root.findAllByType(ActivitySheet)).toEqual([]);
 	act(() => chip("Subagents, 1").props.onPress());
@@ -647,22 +669,20 @@ it("floats the context chips over the list, opens each one's sheet, and hides th
 	act(() => chip("2 queued messages").props.onPress());
 	expect(tree.root.findAllByType(QueueSheet)).toHaveLength(1);
 
-	const scroll = (y: number) =>
-		act(() => list().props.onScroll({ nativeEvent: { contentOffset: { y } } }));
-	act(() => list().props.onScrollBeginDrag());
-	scroll(40);
-	expect(block().props.hidden).toBe(true);
-	scroll(30);
-	expect(block().props.hidden).toBe(false);
+	act(() => session.list().props.onScrollBeginDrag());
+	session.scroll(40);
+	expect(session.block().props.hidden).toBe(true);
+	session.scroll(30);
+	expect(session.block().props.hidden).toBe(false);
 	// Hiding never moves the list.
-	expect(list().props.contentContainerStyle).toMatchObject({ paddingTop: 64 });
+	expect(session.list().props.contentContainerStyle).toMatchObject({ paddingTop: 64 });
 	tree.unmount();
 });
 
 it("hides the Subagents and Tasks chips once disconnected, since neither can act (Calm), but keeps the cached Goal and Queue chips", async () => {
 	const { tree } = mount(busy);
 	await flush();
-	const block = () => tree.root.findByType(SessionHeader);
+	const { block } = sessionList(tree);
 	const label = (text: string) => block().findAll((node) => node.props.accessibilityLabel === text);
 	expect(label("Subagents, 1")).toHaveLength(1);
 
@@ -677,25 +697,6 @@ it("hides the Subagents and Tasks chips once disconnected, since neither can act
 	expect(label("2 queued messages")).toHaveLength(1);
 	tree.unmount();
 });
-
-/** The screen's header block, its list, and scrolling it. */
-function sessionList(tree: ReturnType<typeof render>) {
-	const block = () => tree.root.findByType(SessionHeader);
-	const list = () => tree.root.findByType(FlatList);
-	return {
-		block,
-		list,
-		/** The block's wrapper reporting a new height, as layout would. */
-		measure: (height: number) =>
-			act(() => block().parent?.props.onLayout({ nativeEvent: { layout: { height } } })),
-		scroll: (y: number) => act(() => list().props.onScroll({ nativeEvent: { contentOffset: { y } } })),
-		drag: (y: number) => {
-			act(() => list().props.onScrollBeginDrag());
-			act(() => list().props.onScroll({ nativeEvent: { contentOffset: { y } } }));
-			act(() => list().props.onScrollEndDrag());
-		},
-	};
-}
 
 it("hides the chips only for the person's own drag, never for the app moving the list", async () => {
 	const { tree } = mount(busy);

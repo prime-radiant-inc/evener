@@ -83,8 +83,9 @@ const storageKey = (hubId: string) => `evener.native.detail-level.${hubId}`;
 const LIMIT = 500;
 const LEVELS = new Set<string>(DETAIL_LEVELS.map((level) => level.level));
 
-function parse(raw: string | null): [string, ContentLevel][] {
+function read(storage: SyncStringStorage, hubId: string): [string, ContentLevel][] {
 	try {
+		const raw = storage.getItemSync(storageKey(hubId));
 		const value: unknown = raw ? JSON.parse(raw) : [];
 		if (!Array.isArray(value)) return [];
 		return value.filter(
@@ -96,6 +97,7 @@ function parse(raw: string | null): [string, ContentLevel][] {
 				LEVELS.has(entry[1]),
 		);
 	} catch {
+		// Nothing readable: nothing chosen yet.
 		return [];
 	}
 }
@@ -110,13 +112,7 @@ export class DetailLevels {
 		private readonly storage: SyncStringStorage,
 		private readonly hubId: string,
 	) {
-		let raw: string | null = null;
-		try {
-			raw = storage.getItemSync(storageKey(hubId));
-		} catch {
-			// Nothing readable: nothing chosen yet.
-		}
-		this.entries = parse(raw);
+		this.entries = read(storage, hubId);
 	}
 
 	get(ref: string): ContentLevel | null {

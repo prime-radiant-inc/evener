@@ -6,6 +6,7 @@
 import { type SFSymbol, SymbolView } from "expo-symbols";
 import { type ReactNode, useCallback, useEffect, useRef, useState } from "react";
 import { AccessibilityInfo, Animated, Platform, Pressable, ScrollView, Text, View } from "react-native";
+import { UPDATE_NEEDED, UPDATE_NEEDED_HINT } from "../board/connectionStatus";
 import { useColors, useTextScale } from "../ui";
 import type { ChipKind, ContextChip } from "./sessionState";
 
@@ -15,9 +16,6 @@ const SYMBOLS: Record<ChipKind, SFSymbol> = {
 	goal: "target",
 	queue: "tray",
 };
-
-const UPDATE_NEEDED_HINT =
-	"This app and the hub need compatible versions. Update the app from TestFlight, or update Evener on the hub.";
 
 /** How far the list scrolls down, from where it last turned, before the chips
  * get out of the way. */
@@ -61,7 +59,7 @@ export function SessionHeader({
 					<Text
 						allowFontScaling={Platform.OS !== "ios"}
 						accessibilityLiveRegion="polite"
-						accessibilityHint={status === "Update needed" ? UPDATE_NEEDED_HINT : undefined}
+						accessibilityHint={status === UPDATE_NEEDED ? UPDATE_NEEDED_HINT : undefined}
 						style={{
 							fontSize: 13 * scale,
 							lineHeight: 18 * scale,

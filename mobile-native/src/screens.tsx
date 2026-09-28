@@ -474,6 +474,16 @@ export function useFocusAfterModal(
 	}, [navigation, focusAfterModal, composerInput]);
 }
 
+/** The sheet or screen each context chip and ⋯ menu item opens. */
+const SESSION_DESTINATIONS = {
+	subagents: "activity",
+	tasks: "tasks",
+	goal: "session",
+	info: "session",
+	pin: "pin",
+	delete: "delete",
+} as const satisfies Record<string, SessionDestination>;
+
 export function ConversationScreen({
 	route,
 	navigation,
@@ -970,13 +980,12 @@ export function ConversationScreen({
 		const clock = setInterval(() => setClock((tick) => tick + 1), 30_000);
 		return () => clearInterval(clock);
 	}, [focused]);
-	const headerConversation = snapshot.conversation;
-	const stateLine = headerConversation
-		? sessionStateLine(headerConversation, Date.now())
+	const conversation = snapshot.conversation;
+	const stateLine = conversation
+		? sessionStateLine(conversation, Date.now())
 		: null;
-	const headerTitleText = headerConversation?.name || route.params.title;
 	const connectionText = useConnectionStatusText(connectionState, fatal);
-	const chips = headerConversation ? contextChips(headerConversation, connected) : [];
+	const chips = conversation ? contextChips(conversation, connected) : [];
 	const headerHiding = useHeaderHiding();
 	// The header block floats over the list; the list reserves its height.
 	const [sessionHeaderHeight, setSessionHeaderHeight] = useState(0);
@@ -996,34 +1005,25 @@ export function ConversationScreen({
 		});
 	}, [sessionHeaderHeight]);
 	function openChip(kind: ChipKind) {
-		switch (kind) {
-			case "subagents":
-				openSessionDestination("activity");
-				return;
-			case "tasks":
-				openSessionDestination("tasks");
-				return;
-			case "goal":
-				openSessionDestination("session");
-				return;
-			case "queue":
-				// Today's QueueSheet modal, until the queue sheet route lands.
-				Keyboard.dismiss();
-				setQueueOpen(true);
-				return;
+		if (kind !== "queue") {
+			openSessionDestination(SESSION_DESTINATIONS[kind]);
+			return;
 		}
+		// Today's QueueSheet modal, until the queue sheet route lands.
+		Keyboard.dismiss();
+		setQueueOpen(true);
 	}
 	const menuLevel = currentLevel(chosenLevel, hubDisplayConfig);
-	const hasSubagents =
-		connected && (headerConversation?.delegates?.length ?? 0) > 0;
+	// The menu offers Subagents exactly when its chip shows.
+	const hasSubagents = chips.some((chip) => chip.kind === "subagents");
 	const canAside =
 		connected &&
 		service !== null &&
-		!!headerConversation?.capabilities.forkFromTurn;
+		!!conversation?.capabilities.forkFromTurn;
 	const canShutDown =
 		controls !== null &&
-		!!headerConversation?.capabilities.shutdown &&
-		!SHUT_DOWN.has(headerConversation.status.type);
+		!!conversation?.capabilities.shutdown &&
+		!SHUT_DOWN.has(conversation.status.type);
 	function openAside(ref: string, title: string) {
 		Keyboard.dismiss();
 		navigation.push("Conversation", {
@@ -1047,19 +1047,11 @@ export function ConversationScreen({
 				toast.show({ text: levelToast(action.level) });
 				return;
 			case "subagents":
-				openSessionDestination("activity");
-				return;
 			case "tasks":
-				openSessionDestination("tasks");
-				return;
 			case "info":
-				openSessionDestination("session");
-				return;
 			case "pin":
-				openSessionDestination("pin");
-				return;
 			case "delete":
-				openSessionDestination("delete");
+				openSessionDestination(SESSION_DESTINATIONS[action.kind]);
 				return;
 			case "aside":
 				if (!service) return;
@@ -1087,9 +1079,8 @@ export function ConversationScreen({
 					() => toast.show({ text: "Couldn't archive this session." }),
 				);
 				return;
-			case "shutDown": {
-				const stopping = controls;
-				if (!stopping) return;
+			case "shutDown":
+				if (!controls) return;
 				Alert.alert(
 					"Shut down this session?",
 					"It stops now and keeps its history. Sending a message resumes it.",
@@ -1099,19 +1090,18 @@ export function ConversationScreen({
 							text: "Shut down",
 							style: "destructive",
 							onPress: () => {
-								void stopping.shutdown().then((stopped) => {
-									toast.show(
-										stopped
-											? { text: "Session shut down" }
-											: { text: "Couldn't shut down this session." },
-									);
+								void controls.shutdown().then((stopped) => {
+									toast.show({
+										text: stopped
+											? "Session shut down"
+											: "Couldn't shut down this session.",
+									});
 								});
 							},
 						},
 					],
 				);
 				return;
-			}
 		}
 	}
 	// The header items outlive this render; they reach the latest choices
@@ -1124,9 +1114,9 @@ export function ConversationScreen({
 			// 8.1). Android keeps the plain title.
 			headerTitle:
 				Platform.OS === "ios" && stateLine
-					? () => (
+					? ({ children }) => (
 							<SessionTitle
-								title={headerTitleText}
+								title={children}
 								line={stateLine}
 								onPress={() => openSessionDestination("session")}
 							/>
@@ -1180,7 +1170,6 @@ export function ConversationScreen({
 		connected,
 		openSessionDestination,
 		colors.text,
-		headerTitleText,
 		stateLine?.state,
 		stateLine?.text,
 		menuLevel,
@@ -1193,7 +1182,6 @@ export function ConversationScreen({
 		if (currentName && currentName !== route.params.title)
 			navigation.setParams({ title: currentName });
 	}, [navigation, currentName, route.params.title]);
-	const conversation = snapshot.conversation;
 	// The conversation's rows are already level-correct: the store projected
 	// them at displayConfig (D24-6's seam routing), so the presentation layer
 	// only reshapes (member unrolling, attachment adjacency) and computes the
@@ -1986,15 +1974,15 @@ export function ConversationScreen({
 							}}
 							scrollEventThrottle={100}
 							onScroll={(event) => {
-								listOffset.current = event.nativeEvent.contentOffset.y;
+								const y = event.nativeEvent.contentOffset.y;
+								listOffset.current = y;
 								headerHiding.onScroll(
-									listOffset.current,
+									y,
 									readerDragging.current || readerMomentum.current,
 								);
 								if (!focused || captureSuppressed.current) {
 									return;
 								}
-								const y = event.nativeEvent.contentOffset.y;
 								const visible = timelineRows.find((item) => {
 									const measurement = readerMeasurements.current.get(
 										readerKey(item),

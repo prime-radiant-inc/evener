@@ -2,13 +2,17 @@ import type { ConnectionState } from "@evener/appwire-client";
 import { relativeAge } from "@evener/appwire-client/state/navigation";
 import { useEffect, useState } from "react";
 
-/** How long the connection can be down before the toolbar says so: a blip
+/** How long the connection can be down before the status says so: a blip
  * shorter than this reconnects without a word. */
-export const RECONNECTING_AFTER_MS = 2_000;
-/** How long before the toolbar stops promising a reconnect and says how old
- * the rows are. */
-export const OFFLINE_AFTER_MS = 30_000;
+const RECONNECTING_AFTER_MS = 2_000;
+/** How long before the status stops promising a reconnect and says how old
+ * what's on screen is. */
+const OFFLINE_AFTER_MS = 30_000;
 const MINUTE = 60_000;
+/** The status for a close no retry can fix, and what it means. */
+export const UPDATE_NEEDED = "Update needed";
+export const UPDATE_NEEDED_HINT =
+	"This app and the hub need compatible versions. Update the app from TestFlight, or update Evener on the hub.";
 
 /** The connection status the Board toolbar and the Session's connection bar
  * show (spec 14), or null when there is nothing to
@@ -23,7 +27,7 @@ export function connectionStatus(
 	lastLiveAt: number | null,
 	now: number,
 ): string | null {
-	if (fatal) return "Update needed";
+	if (fatal) return UPDATE_NEEDED;
 	if (state === "ready" || downSince === null) return null;
 	const down = now - downSince;
 	if (down >= OFFLINE_AFTER_MS) {

@@ -1,6 +1,7 @@
 // The Session's ⋯ menu (spec 8.1 and 8.7), as the native header items iOS
 // draws as a UIMenu. It is data: the screen decides what each choice does.
-// An item appears only when it can act.
+// Subagents, Tasks, Ask aside, Shut down and Delete appear only when they can
+// act.
 import type { ContentLevel } from "@evener/appwire-client";
 import type {
 	NativeStackHeaderItem,
@@ -44,7 +45,7 @@ export function sessionMenu(input: SessionMenuInput): NativeStackHeaderItem[] {
 					type: "action",
 					label,
 					description,
-					...(level === input.current ? { state: "on" as const } : {}),
+					state: level === input.current ? "on" : "off",
 					onPress: () => choose({ kind: "level", level }),
 				})),
 			},
