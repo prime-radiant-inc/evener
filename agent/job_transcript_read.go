@@ -32,15 +32,28 @@ var openLocalJobProjectDirectory = func(path string) (localJobProjectDirectory, 
 
 var lstatJobOutputFile = os.Lstat
 
+// jobOutputOpenRoot returns the descriptor-walk root for a job output path in
+// the evener projects layout, or "" when the path is not laid out that way.
+//
+// The root is the projects directory containing the path's bucket, not the
+// state home: the locate step already validated the state home's evener/ and
+// evener/projects/ prefixes and the bucket itself (validateLayoutPrefix), so
+// rooting the walk above projects/ only re-walks ancestors the read does not
+// need. Stopping at projects/ keeps the bucket a walked component, so the
+// descriptor walk still refuses a bucket — or a sessions/, session, or jobs
+// directory — swapped for a symlink after the locate, while an ancestor above
+// the anchored root stays followable by design.
 func jobOutputOpenRoot(path string) string {
-	for candidate := filepath.Dir(filepath.Clean(path)); ; candidate = filepath.Dir(candidate) {
+	candidate := filepath.Dir(filepath.Clean(path))
+	for {
 		if stateHome := stateHomeFor(candidate); stateHome != "" {
-			return filepath.Join(stateHome, "evener")
+			return filepath.Join(stateHome, "evener", "projects")
 		}
 		parent := filepath.Dir(candidate)
 		if parent == candidate {
 			return ""
 		}
+		candidate = parent
 	}
 }
 
@@ -328,8 +341,9 @@ func locateLocalJobRetainedTarget(currentStateDir, jobID string) (localJobRetain
 	}
 	// Downstream output reads narrow the leaf window with their own
 	// Lstat→anchored descriptor walk→SameFile check, then pass that descriptor
-	// to jobstore. The descriptor walk pins each component beneath
-	// stateHome/evener, so an intermediate directory replaced by a symlink after
+	// to jobstore. For an in-layout output the descriptor walk is anchored at
+	// the projects directory, so the bucket and the directories below it
+	// (sessions/, the session dir, jobs/) replaced by a symlink after
 	// this locator's pre-walk is refused at open time. The frozen path-only read
 	// seams cannot carry outInfo to that wrapper, so a regular-to-regular leaf
 	// replacement, or a fully consistent directory-tree rename, after this
