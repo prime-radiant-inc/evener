@@ -3,43 +3,9 @@ import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import * as paneActions from "../../../shell/paneActions";
 import { resetThreadsStoreForTests, threadsStore } from "../../../stores/threads";
-import { cwdRelative, FileOpenBesideButton, fileDocParams } from "./fileOpenBeside";
+import { FileOpenBesideButton, fileDocParams } from "./fileOpenBeside";
 
 afterEach(cleanup);
-
-// --- cwdRelative: a file arg made relative to the session cwd, or undefined
-// (no affordance) when it is out of the cwd. Handles BOTH an absolute arg
-// (legacy renderer.js:2204-2210) and an already-relative arg (execenv resolve()
-// joins it against the cwd root, local.go:1533). --------------------------
-
-test("an absolute path inside the cwd is relativized (prefix stripped)", () => {
-  expect(cwdRelative("/home/proj/src/a.ts", "/home/proj")).toBe("src/a.ts");
-  expect(cwdRelative("/home/proj/src/a.ts", "/home/proj/")).toBe("src/a.ts"); // trailing slash tolerated
-});
-
-test("an absolute path OUTSIDE the cwd earns no affordance", () => {
-  expect(cwdRelative("/etc/passwd", "/home/proj")).toBeUndefined();
-  expect(cwdRelative("/home/project-other/a.ts", "/home/proj")).toBeUndefined(); // sibling prefix, not inside
-});
-
-test("the cwd directory itself is not a file", () => {
-  expect(cwdRelative("/home/proj", "/home/proj")).toBeUndefined();
-});
-
-test("an already-relative arg is accepted as cwd-relative", () => {
-  expect(cwdRelative("src/a.ts", "/home/proj")).toBe("src/a.ts");
-  expect(cwdRelative("a.ts", "/home/proj")).toBe("a.ts");
-});
-
-test("a relative arg that escapes the cwd earns no affordance", () => {
-  expect(cwdRelative("../secret.ts", "/home/proj")).toBeUndefined();
-  expect(cwdRelative("src/../../secret.ts", "/home/proj")).toBeUndefined();
-});
-
-test("empty inputs earn no affordance", () => {
-  expect(cwdRelative("", "/home/proj")).toBeUndefined();
-  expect(cwdRelative("/home/proj/a.ts", "")).toBeUndefined();
-});
 
 // --- fileDocParams: builds a file DocParams, or undefined when anything the
 // affordance needs is missing (no ref, no cwd, or out-of-cwd path) ----------

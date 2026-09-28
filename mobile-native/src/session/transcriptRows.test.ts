@@ -344,7 +344,9 @@ describe("the turn you have seen at the end (ruling 31)", () => {
 });
 
 describe("answers you gave a question", () => {
-	const question = step("q", "ask_user");
+	const question = step("q", "ask_user", {
+		detail: { arguments: JSON.stringify({ questions: [{ header: "Choice", question: "Keep or drop?", options: [{ label: "Drop them", detail: "" }] }] }) },
+	});
 	const answer: TimelineRow = { kind: "user", id: "ans", text: '[answers]\n1. [Choice] → "Drop them"', turnId: "turn_1" };
 
 	it("leave the transcript: the question row shows the answer", () => {
@@ -353,6 +355,16 @@ describe("answers you gave a question", () => {
 
 	it("stay when no question came before them", () => {
 		expect(hideAnswerMessages([user("u"), answer]).map((row) => row.id)).toEqual(["u", "ans"]);
+	});
+
+	it("stay when the question row before them can't show its questions", () => {
+		const unreadable = step("q", "ask_user", { detail: { arguments: "{not json" } });
+		expect(hideAnswerMessages([unreadable, answer]).map((row) => row.id)).toEqual(["q", "ans"]);
+	});
+
+	it("stay when they only look like answers", () => {
+		const typed: TimelineRow = { kind: "user", id: "typed", text: "[answers]\nsee above", turnId: "turn_1" };
+		expect(hideAnswerMessages([question, typed]).map((row) => row.id)).toEqual(["q", "typed"]);
 	});
 
 	it("leave every other row alone", () => {

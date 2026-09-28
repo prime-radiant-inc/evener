@@ -757,3 +757,13 @@ describe("queued messages above the composer (spec 8.5)", () => {
 		expect(cancel.map((request) => request.params)).toMatchObject([{ index: 3, expectedEntryId: "queue_4" }]);
 	});
 });
+
+it("offers no Retry that couldn't send: a question still waits on the failed turn", async () => {
+	const served = thread("ref-retry-question", "idle", true);
+	const turn = (served as unknown as { turns: { status: string; error?: unknown }[] }).turns[0];
+	turn.status = "failed";
+	turn.error = { message: "go test exited 1" };
+	const { tree } = await mount(served);
+	expect(renderedText(tree)).toContain("go test exited 1");
+	expect(pressable(tree, "Retry")).toBeUndefined();
+});

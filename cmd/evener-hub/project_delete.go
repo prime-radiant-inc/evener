@@ -512,6 +512,12 @@ func (s *WebServer) scrubSessionDecisions(threadID string) (decisionErrors []str
 			decisionErrors = append(decisionErrors, fmt.Sprintf("seen marker store error: %v", err))
 		}
 	}
+	// A deleted session's words leave search now, not at the next refresh.
+	if s.cfg.MessageSearch != nil {
+		if err := s.cfg.MessageSearch.Forget(context.Background(), threadID); err != nil {
+			decisionErrors = append(decisionErrors, fmt.Sprintf("message search index error: %v", err))
+		}
+	}
 	return decisionErrors
 }
 
