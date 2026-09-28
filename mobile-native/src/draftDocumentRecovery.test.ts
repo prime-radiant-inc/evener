@@ -92,8 +92,7 @@ describe("atomic recovery restore", () => {
 			write: () => {
 				throw new Error("save failed");
 			},
-			imageInputs: (to: typeof destination, images: DraftImage[]) =>
-				repository.imageInputs(to, images),
+			imageInputs: (to: typeof destination, images: DraftImage[]) => repository.imageInputs(to, images),
 		};
 		const document = new DraftDocument(() => failing, destination);
 
@@ -108,8 +107,7 @@ describe("atomic recovery restore", () => {
 			write: () => {
 				throw new Error("save failed");
 			},
-			imageInputs: (to: typeof destination, images: DraftImage[]) =>
-				repository.imageInputs(to, images),
+			imageInputs: (to: typeof destination, images: DraftImage[]) => repository.imageInputs(to, images),
 		};
 		const document = new DraftDocument(() => failing, destination);
 
@@ -131,8 +129,7 @@ describe("recovered restore hint", () => {
 			write: () => {
 				throw new Error("save failed");
 			},
-			imageInputs: (to: typeof destination, images: DraftImage[]) =>
-				repository.imageInputs(to, images),
+			imageInputs: (to: typeof destination, images: DraftImage[]) => repository.imageInputs(to, images),
 		};
 		const blocked = new DraftDocument(() => failing, destination);
 		expect(blocked.restoreRecoveredDraft("recovered")).toBe(false);

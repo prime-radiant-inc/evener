@@ -5,6 +5,7 @@
 // hub's rows catch up. A row without a readable turn_ended_at (an older hub,
 // or a daemon that hasn't stamped a turn end) keeps the device's own
 // SeenMarkers.
+import { isMethodNotFound } from "../wireErrors";
 import { type NavigationSessionSummary, type SessionSeenMark, WireError } from "@evener/appwire-client";
 import type { ConversationClientLike } from "../../../mobile/src/services/conversation";
 import { hubTime } from "./attention";
@@ -17,7 +18,6 @@ const MAX_MARKS_PER_CALL = 500;
 // an older hub without seen/set, and a mark it rejects as malformed or naming
 // an unknown host. Its other errors (a store error, an unavailable navigation
 // service) say nothing about the mark, which goes again on the next flush.
-const METHOD_NOT_FOUND = -32601;
 const INVALID_PARAMS = -32602;
 
 /** A mark as seen/set carries it, less its ref. */
@@ -108,8 +108,7 @@ export class HubSeenMarks {
 			if (!entry) continue;
 			const ended = hubTurnEnd(row);
 			if (ended === null) continue;
-			const done =
-				"unread" in entry.mark ? row.unseen === true : row.unseen !== true || ended > entry.mark.seenThrough;
+			const done = "unread" in entry.mark ? row.unseen === true : row.unseen !== true || ended > entry.mark.seenThrough;
 			if (done) {
 				this.pending.delete(row.ref);
 				changed = true;
@@ -146,13 +145,13 @@ export class HubSeenMarks {
 					for (const [, entry] of batch.filter(stillSent)) entry.acknowledged = true;
 				} catch (error) {
 					const code = error instanceof WireError ? error.code : null;
-					if (code === METHOD_NOT_FOUND) withoutSeenSet.add(client);
+					if (isMethodNotFound(error)) withoutSeenSet.add(client);
 					// The connection changed while the call was out: whatever
 					// the failure, the marks go again over the current one.
 					if (this.client !== client) continue;
 					// Closed, timed out or failed for now: the marks go again
 					// on the next flush.
-					if (code !== METHOD_NOT_FOUND && code !== INVALID_PARAMS) return;
+					if (!isMethodNotFound(error) && code !== INVALID_PARAMS) return;
 					// The hub refused for good: resending is pointless, so the rows
 					// show the hub's own state again.
 					const refused = batch.filter(stillSent);

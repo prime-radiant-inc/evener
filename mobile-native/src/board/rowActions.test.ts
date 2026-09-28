@@ -35,16 +35,40 @@ const online: RowActionContext = { connected: true, organizationReady: true, arc
 
 describe("the long-press menu per state (spec 7.3)", () => {
 	it.each([
-		["a working session of this hub", row({ rename: true }), "working", online, ["pin", "stop", "shutDown", "archive", "rename"]],
+		[
+			"a working session of this hub",
+			row({ rename: true }),
+			"working",
+			online,
+			["pin", "stop", "shutDown", "archive", "rename"],
+		],
 		["a finished one", row({ state: "awaiting" }), "finished", online, ["pin", "markRead", "shutDown", "archive"]],
 		["one seen since", row({ state: "idle" }), "idle", online, ["pin", "markUnread", "shutDown", "archive"]],
-		["one asking a question", row({ state: "awaiting", ask_pending: true }), "question", online, ["pin", "shutDown", "archive"]],
+		[
+			"one asking a question",
+			row({ state: "awaiting", ask_pending: true }),
+			"question",
+			online,
+			["pin", "shutDown", "archive"],
+		],
 		["one needing a restart", row({ state: "restartRequired" }), "restartNeeded", online, ["pin", "archive"]],
 		["one working on another host", row({ ...remote }), "working", online, ["pin", "stop", "shutDown", "archive"]],
 		["one on an offline host", row({ ...remote, offline: true, live: false }), "shutDown", online, ["pin", "archive"]],
 		["a fork", row({ kind: "fork" }), "working", online, ["stop", "shutDown"]],
-		["one in an archived tier", row({ state: "ended", live: false }), "shutDown", { ...online, archived: true }, ["pin", "unarchive"]],
-		["one while a change is unresolved", row({ rename: true }), "working", { ...online, organizationReady: false }, ["pin", "stop", "shutDown", "rename"]],
+		[
+			"one in an archived tier",
+			row({ state: "ended", live: false }),
+			"shutDown",
+			{ ...online, archived: true },
+			["pin", "unarchive"],
+		],
+		[
+			"one while a change is unresolved",
+			row({ rename: true }),
+			"working",
+			{ ...online, organizationReady: false },
+			["pin", "stop", "shutDown", "rename"],
+		],
 		["a finished one offline", row({ state: "awaiting" }), "finished", { ...online, connected: false }, ["markRead"]],
 		["a seen one offline", row({ state: "idle" }), "idle", { ...online, connected: false }, ["markUnread"]],
 		["a working one offline", row(), "working", { ...online, connected: false }, []],
@@ -55,10 +79,34 @@ describe("the long-press menu per state (spec 7.3)", () => {
 
 describe("swipes (spec 7.3)", () => {
 	it.each([
-		["a working session of this hub", row(), "working", online, { leading: "archive", trailing: ["stop", "pin", "more"] }],
-		["a finished one", row({ state: "awaiting" }), "finished", online, { leading: "archive", trailing: ["pin", "more"] }],
-		["one working on another host", row({ ...remote }), "working", online, { leading: "archive", trailing: ["stop", "pin", "more"] }],
-		["one in an archived tier", row({ state: "ended", live: false }), "shutDown", { ...online, archived: true }, { leading: "unarchive", trailing: ["pin", "more"] }],
+		[
+			"a working session of this hub",
+			row(),
+			"working",
+			online,
+			{ leading: "archive", trailing: ["stop", "pin", "more"] },
+		],
+		[
+			"a finished one",
+			row({ state: "awaiting" }),
+			"finished",
+			online,
+			{ leading: "archive", trailing: ["pin", "more"] },
+		],
+		[
+			"one working on another host",
+			row({ ...remote }),
+			"working",
+			online,
+			{ leading: "archive", trailing: ["stop", "pin", "more"] },
+		],
+		[
+			"one in an archived tier",
+			row({ state: "ended", live: false }),
+			"shutDown",
+			{ ...online, archived: true },
+			{ leading: "unarchive", trailing: ["pin", "more"] },
+		],
 		["any row offline", row(), "working", { ...online, connected: false }, { leading: null, trailing: ["more"] }],
 	] as const)("%s", (_name, summary, state, context, expected) => {
 		expect(swipeActions({ row: summary, state: state as BoardState }, context)).toEqual(expected);
@@ -94,7 +142,13 @@ describe("archiving (rulings 16 and 20)", () => {
 			return { ok: true, changed: true, navigation: { generation_id: "g", targets: [] } };
 		});
 		const storage = journal();
-		const actions = new NavigationActions(hub.client, async () => {}, () => current, async () => {}, storage);
+		const actions = new NavigationActions(
+			hub.client,
+			async () => {},
+			() => current,
+			async () => {},
+			storage,
+		);
 		return { hub, storage, actions };
 	}
 
@@ -117,7 +171,13 @@ describe("archiving (rulings 16 and 20)", () => {
 	it("sends nothing while another change is unresolved, or when the Board isn't on screen", async () => {
 		const busy = organization();
 		busy.storage.begin({ kind: "unpin", params: { sessionRef: "local:other" } });
-		const blocked = new NavigationActions(busy.hub.client, async () => {}, () => true, async () => {}, busy.storage);
+		const blocked = new NavigationActions(
+			busy.hub.client,
+			async () => {},
+			() => true,
+			async () => {},
+			busy.storage,
+		);
 		expect(await archiveSession(blocked, { kind: "session", id: SESSION_ID }, true)).toBe(false);
 		const covered = organization({ current: false });
 		expect(await archiveSession(covered.actions, { kind: "session", id: SESSION_ID }, true)).toBe(false);
@@ -146,7 +206,10 @@ describe("archiving (rulings 16 and 20)", () => {
 			archivingSessionId({
 				...idle,
 				pending: true,
-				recovery: { ...recovery, operation: { kind: "archive", params: { kind: "project", id: "p", workingDir: "/w", archived: true } } },
+				recovery: {
+					...recovery,
+					operation: { kind: "archive", params: { kind: "project", id: "p", workingDir: "/w", archived: true } },
+				},
 			}),
 		).toBeNull();
 	});

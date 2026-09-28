@@ -1,9 +1,5 @@
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
-import type {
-	AppwireClient,
-	ConnectionState,
-	WebSocketLike,
-} from "@evener/appwire-client";
+import type { AppwireClient, ConnectionState, WebSocketLike } from "@evener/appwire-client";
 import { createConnectionStore } from "@evener/appwire-client/state/connection";
 import { createHubClient } from "./connection";
 import { recordClientReadyHub } from "./connectionIdentity";
@@ -79,9 +75,7 @@ export function useHubConnection(
 	// hook existed (`session?.profileId === selected`) and still has to do
 	// here - just keyed on every input that opens a new connection, not only
 	// the hub id.
-	const connectedFor = useRef<{ key: string; client: AppwireClient } | undefined>(
-		undefined,
-	);
+	const connectedFor = useRef<{ key: string; client: AppwireClient } | undefined>(undefined);
 	const targetKey = JSON.stringify([activeId, activeOrigin, foreground, attempt, retry]);
 	const [fatal, setFatal] = useState(false);
 	useEffect(() => {
@@ -180,8 +174,7 @@ export function useHubConnection(
 	// case so backgrounded and profile-less mounts keep their exact "idle"
 	// report, and a fresh attempt's own effect body re-arms "connecting"
 	// synchronously, so the verdict never outlives its generation.
-	const closedWithoutClient =
-		!client && activeId && foreground && coreState.state === "closed";
+	const closedWithoutClient = !client && activeId && foreground && coreState.state === "closed";
 	const state: ConnectionState = client
 		? coreState.state
 		: closedWithoutClient

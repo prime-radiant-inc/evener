@@ -133,7 +133,12 @@ export function contextChips(
 		});
 	if (session.goal) {
 		const blocked = session.goal.status === "blocked";
-		chips.push({ kind: "goal", label: "Goal", attention: blocked, accessibilityLabel: blocked ? "Goal, blocked" : "Goal" });
+		chips.push({
+			kind: "goal",
+			label: "Goal",
+			attention: blocked,
+			accessibilityLabel: blocked ? "Goal, blocked" : "Goal",
+		});
 	}
 	const depth = session.queue?.depth ?? 0;
 	if (depth > 0)

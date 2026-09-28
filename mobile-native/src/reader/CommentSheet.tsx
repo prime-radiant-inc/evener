@@ -37,9 +37,18 @@ export function CommentSheet({ route }: NativeStackScreenProps<Routes, "CommentS
 					value={text}
 					onChangeText={setText}
 					allowFontScaling={allowFontScaling}
-					style={{ minHeight: 120, color: palette.inkHi, fontSize: 17 * scale, lineHeight: 22 * scale, textAlignVertical: "top" }}
+					style={{
+						minHeight: 120,
+						color: palette.inkHi,
+						fontSize: 17 * scale,
+						lineHeight: 22 * scale,
+						textAlignVertical: "top",
+					}}
 				/>
-				<Text allowFontScaling={allowFontScaling} style={{ color: palette.inkMid, fontSize: 13 * scale, lineHeight: 18 * scale }}>
+				<Text
+					allowFontScaling={allowFontScaling}
+					style={{ color: palette.inkMid, fontSize: 13 * scale, lineHeight: 18 * scale }}
+				>
 					Comments stay with this document until you send your review.
 				</Text>
 			</ScrollView>
@@ -67,7 +76,12 @@ export function QuoteBlock({
 		<View style={{ borderLeftWidth: 2, borderLeftColor: palette.edgeStrong, paddingLeft: 10 }}>
 			<Text
 				allowFontScaling={allowFontScaling}
-				style={{ fontFamily: fonts.serif, color: palette.inkMid, fontSize: size * scale, lineHeight: lineHeight * scale }}
+				style={{
+					fontFamily: fonts.serif,
+					color: palette.inkMid,
+					fontSize: size * scale,
+					lineHeight: lineHeight * scale,
+				}}
 			>
 				{shown}
 			</Text>

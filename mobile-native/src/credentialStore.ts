@@ -1,6 +1,6 @@
 import {
-  type CredentialInstancesStore,
-  createCredentialInstancesStore,
+	type CredentialInstancesStore,
+	createCredentialInstancesStore,
 } from "@evener/appwire-client/state/credentials";
 import { randomUUID } from "expo-crypto";
 import { useEffect, useLayoutEffect, useState } from "react";
@@ -16,7 +16,7 @@ const nativeClientId = `native-${randomUUID()}`;
  * with this app's identity. Constructing it subscribes to nothing; only
  * connectionChanged listens on a client and lets reads through. */
 export function createNativeCredentialStore(): CredentialInstancesStore {
-  return createCredentialInstancesStore({ ownClientId: () => nativeClientId });
+	return createCredentialInstancesStore({ ownClientId: () => nativeClientId });
 }
 
 /** The credential store for the Providers screen, shared by the provider list
@@ -33,10 +33,7 @@ export function useCredentialStore(): CredentialInstancesStore {
 	// withheld until the connection re-points; an unknown client passes
 	// exactly as before (connectionIdentity's rule — a genuinely new client
 	// arrives unknown, and only the re-point distinguishes it).
-	const gated =
-		client !== null && clientServesHub(client, activeProfile?.id)
-			? client
-			: null;
+	const gated = client !== null && clientServesHub(client, activeProfile?.id) ? client : null;
 	// The instance is committed state, and nothing binds it during render: a
 	// render React discards (StrictMode's double render, a concurrent render it
 	// throws away) would otherwise leave a bound store whose cleanup below never
@@ -48,9 +45,9 @@ export function useCredentialStore(): CredentialInstancesStore {
 	useLayoutEffect(() => {
 		store.connectionChanged(gated, state);
 	}, [store, gated, state]);
-  // Unmount only, and separate from the effect above: a single effect with a
-  // cleanup would say "closed" on every client swap before saying "ready",
-  // cancelling reads in flight.
-  useEffect(() => () => store.connectionChanged(null, "closed"), [store]);
-  return store;
+	// Unmount only, and separate from the effect above: a single effect with a
+	// cleanup would say "closed" on every client swap before saying "ready",
+	// cancelling reads in flight.
+	useEffect(() => () => store.connectionChanged(null, "closed"), [store]);
+	return store;
 }

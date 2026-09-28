@@ -72,7 +72,12 @@ describe("the context chips (spec 8.1)", () => {
 	});
 
 	it("count subagents, with failures in their own part", () => {
-		const tally = subagentTally([delegate("running", 1), delegate("completed", 2), delegate("failed", 3), delegate("done", 4, "failed")]);
+		const tally = subagentTally([
+			delegate("running", 1),
+			delegate("completed", 2),
+			delegate("failed", 3),
+			delegate("done", 4, "failed"),
+		]);
 		expect(tally).toEqual({ total: 4, running: 1, failed: 2, done: 1 });
 		const [chip] = contextChips(
 			{

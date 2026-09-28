@@ -35,10 +35,7 @@ const noSubscription = () => () => {};
 export function ApprovalDock({ request, controls, onDecided, waiting = 0 }: ApprovalDockProps) {
 	const { palette } = useColors();
 	const scale = useTextScale();
-	const state = useSyncExternalStore(
-		controls?.subscribe ?? noSubscription,
-		controls?.getSnapshot ?? noDecision,
-	);
+	const state = useSyncExternalStore(controls?.subscribe ?? noSubscription, controls?.getSnapshot ?? noDecision);
 	const card = approvalCard(request);
 	// A decision it couldn't confirm re-reads the session once on its own, so
 	// there is no refresh to press. The error line stays until a read clears it
@@ -128,9 +125,7 @@ export function ApprovalDock({ request, controls, onDecided, waiting = 0 }: Appr
 			>
 				{card.target ? `${card.tool}  ${breakAtSlashes(card.target)}` : card.tool}
 			</Text>
-			<Text {...body}>
-				{card.partiallyRan ? `${card.scope} Part of this may already have run.` : card.scope}
-			</Text>
+			<Text {...body}>{card.partiallyRan ? `${card.scope} Part of this may already have run.` : card.scope}</Text>
 			{waiting > 0 ? (
 				<Text
 					allowFontScaling={allowFontScaling}
@@ -175,7 +170,10 @@ export function ApprovalDock({ request, controls, onDecided, waiting = 0 }: Appr
 						>
 							{card.primary.label}
 						</Text>
-						<Text allowFontScaling={allowFontScaling} style={{ fontSize: 13 * scale, lineHeight: 18 * scale, color: palette.onFill }}>
+						<Text
+							allowFontScaling={allowFontScaling}
+							style={{ fontSize: 13 * scale, lineHeight: 18 * scale, color: palette.onFill }}
+						>
 							{card.primary.detail}
 						</Text>
 					</Pressable>
@@ -194,7 +192,10 @@ export function ApprovalDock({ request, controls, onDecided, waiting = 0 }: Appr
 							opacity: off ? 0.4 : pressed ? 0.6 : 1,
 						})}
 					>
-						<Text allowFontScaling={allowFontScaling} style={{ fontSize: 17 * scale, lineHeight: 22 * scale, color: palette.inkHi }}>
+						<Text
+							allowFontScaling={allowFontScaling}
+							style={{ fontSize: 17 * scale, lineHeight: 22 * scale, color: palette.inkHi }}
+						>
 							Deny
 						</Text>
 					</Pressable>

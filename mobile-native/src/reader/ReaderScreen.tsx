@@ -91,10 +91,7 @@ export function ReaderScreen({ route, navigation }: NativeStackScreenProps<Route
 	const now = useMinuteClock();
 	const blocks = document?.kind === "markdown" ? document.blocks : null;
 	const rows = useMemo(() => rowsOf(document), [document]);
-	const changed = useMemo(
-		() => (blocks ? changedBlocks(blocks, lastRead?.blocks ?? null) : []),
-		[blocks, lastRead],
-	);
+	const changed = useMemo(() => (blocks ? changedBlocks(blocks, lastRead?.blocks ?? null) : []), [blocks, lastRead]);
 	const changedSet = useMemo(() => new Set(changed), [changed]);
 	const headings = useMemo(() => (blocks ? outline(blocks) : []), [blocks]);
 	// Where a position can point: each block, or each line of a code file.
@@ -263,9 +260,10 @@ export function ReaderScreen({ route, navigation }: NativeStackScreenProps<Route
 	useProvideSheetHost(readerHosts, sheetKey(hubId, sessionRef, path), host);
 
 	const updated = updatedAt === undefined ? Number.NaN : Date.parse(updatedAt);
-	const about = [documentKind(path), ...(Number.isNaN(updated) ? [] : [`updated ${compactDuration(now - updated)} ago`])].join(
-		" · ",
-	);
+	const about = [
+		documentKind(path),
+		...(Number.isNaN(updated) ? [] : [`updated ${compactDuration(now - updated)} ago`]),
+	].join(" · ");
 	const changeNote = lastRead ? changesCaption(changed.length, lastRead.readAt, now) : null;
 	const title = document?.title ?? "";
 	const text = document?.kind === "markdown" || document?.kind === "code" ? document.text : null;
@@ -388,7 +386,10 @@ export function ReaderScreen({ route, navigation }: NativeStackScreenProps<Route
 				navigation.navigate("CommentsSheet", sheetParams);
 		}
 	};
-	const onAction = useCallback((action: BlockAction, block: DocumentBlock, words?: string) => act.current(action, block, words), []);
+	const onAction = useCallback(
+		(action: BlockAction, block: DocumentBlock, words?: string) => act.current(action, block, words),
+		[],
+	);
 
 	const rowState = useMemo(
 		() => ({ changedSet, menuOpen, selecting, commentCounts }),
@@ -490,7 +491,13 @@ export function ReaderScreen({ route, navigation }: NativeStackScreenProps<Route
 								<Chevron name="chevron.left" label="Previous change" onPress={() => stepBy(-1)} />
 								<Text
 									allowFontScaling={allowFontScaling}
-									style={{ color: palette.inkMid, fontSize: 15 * scale, lineHeight: 20 * scale, minWidth: 120, textAlign: "center" }}
+									style={{
+										color: palette.inkMid,
+										fontSize: 15 * scale,
+										lineHeight: 20 * scale,
+										minWidth: 120,
+										textAlign: "center",
+									}}
 								>
 									{step === null
 										? `${changed.length} ${changed.length === 1 ? "change" : "changes"}`
@@ -509,7 +516,12 @@ export function ReaderScreen({ route, navigation }: NativeStackScreenProps<Route
 								>
 									<Text
 										allowFontScaling={allowFontScaling}
-										style={{ color: palette.accentInk, fontSize: 15 * scale, lineHeight: 20 * scale, fontWeight: "600" }}
+										style={{
+											color: palette.accentInk,
+											fontSize: 15 * scale,
+											lineHeight: 20 * scale,
+											fontWeight: "600",
+										}}
 									>
 										Send review
 									</Text>
@@ -530,7 +542,10 @@ function CommentTip() {
 	return (
 		<View style={{ flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 6, paddingTop: 8 }}>
 			<SymbolView name="bubble.left" size={13} tintColor={palette.inkLow} />
-			<Text allowFontScaling={allowFontScaling} style={{ color: palette.inkLow, fontSize: 13 * scale, lineHeight: 17 * scale }}>
+			<Text
+				allowFontScaling={allowFontScaling}
+				style={{ color: palette.inkLow, fontSize: 13 * scale, lineHeight: 17 * scale }}
+			>
 				Touch and hold a paragraph to comment on it
 			</Text>
 		</View>
@@ -560,7 +575,10 @@ function BarButton({
 			style={{ minHeight: 44, minWidth: 44, flexDirection: "row", alignItems: "center", gap: 6 }}
 		>
 			<SymbolView name={symbol} size={17} tintColor={palette.accentInk} />
-			<Text allowFontScaling={allowFontScaling} style={{ color: palette.accentInk, fontSize: 15 * scale, lineHeight: 20 * scale }}>
+			<Text
+				allowFontScaling={allowFontScaling}
+				style={{ color: palette.accentInk, fontSize: 15 * scale, lineHeight: 20 * scale }}
+			>
 				{text}
 			</Text>
 		</Pressable>

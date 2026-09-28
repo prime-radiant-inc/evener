@@ -28,9 +28,19 @@ const step = (id: string, label: string, over: Partial<Activity> = {}): Activity
 	...over,
 });
 const user = (id: string, turnId = "turn_1"): TimelineRow => ({ kind: "user", id, text: id, turnId });
-const reply = (id: string, turnId = "turn_1"): TimelineRow => ({ kind: "assistant", id, markdown: id, streaming: false, turnId });
+const reply = (id: string, turnId = "turn_1"): TimelineRow => ({
+	kind: "assistant",
+	id,
+	markdown: id,
+	streaming: false,
+	turnId,
+});
 const at = (hour: number, minute: number, day = 26) => new Date(Date.UTC(2026, 8, day, hour, minute)).toISOString();
-const turn = (id: string, startedAt?: string, completedAt?: string): Pick<TurnModel, "id" | "startedAt" | "completedAt"> => ({
+const turn = (
+	id: string,
+	startedAt?: string,
+	completedAt?: string,
+): Pick<TurnModel, "id" | "startedAt" | "completedAt"> => ({
 	id,
 	startedAt,
 	completedAt,
@@ -100,7 +110,13 @@ describe("runs of steps (spec 8.2)", () => {
 		const rows = sessionRows(
 			[
 				step("a", "screenshot"),
-				{ kind: "attachments", id: "a:attachments", items: [{ id: "a:out:0", src: "/doc/image?1" }], sourceTranscriptKey: "key-a", turnId: "turn_1" },
+				{
+					kind: "attachments",
+					id: "a:attachments",
+					items: [{ id: "a:out:0", src: "/doc/image?1" }],
+					sourceTranscriptKey: "key-a",
+					turnId: "turn_1",
+				},
 				step("b", "read_file"),
 			],
 			[turn("turn_1")],
@@ -136,7 +152,11 @@ describe("time markers", () => {
 	});
 
 	it("splits a run at a marked turn boundary (the first loaded turn is always marked)", () => {
-		const rows = sessionRows([step("a", "read_file", { turnId: "turn_2" }), step("b", "grep", { turnId: "turn_3" })], turns, "UTC");
+		const rows = sessionRows(
+			[step("a", "read_file", { turnId: "turn_2" }), step("b", "grep", { turnId: "turn_3" })],
+			turns,
+			"UTC",
+		);
 		expect(rows.map((row) => row.kind)).toEqual(["time", "run", "time", "run"]);
 	});
 
@@ -161,7 +181,12 @@ describe("time markers", () => {
 			[turn("turn_1", at(12, 0), at(12, 5)), turn("turn_2")],
 			"UTC",
 		);
-		expect(rows.map((row) => (row.kind === "time" ? `time:${row.turnId}` : row.id))).toEqual(["time:turn_1", "u", "n", "r"]);
+		expect(rows.map((row) => (row.kind === "time" ? `time:${row.turnId}` : row.id))).toEqual([
+			"time:turn_1",
+			"u",
+			"n",
+			"r",
+		]);
 	});
 
 	// A goal continuation turn can start well inside the ten-minute window, so
@@ -193,9 +218,9 @@ describe("time markers", () => {
 		// America/New_York's 2026 DST began 2026-03-08 at 2 AM local, so that
 		// day has only 23 wall-clock hours: subtracting a flat 24h from "now"
 		// (00:30 local on March 9) lands on March 7, not March 8.
-		expect(
-			timeMarkerText(Date.UTC(2026, 2, 8, 13, 3), Date.UTC(2026, 2, 9, 4, 30), "America/New_York"),
-		).toBe("Yesterday 9:03 AM");
+		expect(timeMarkerText(Date.UTC(2026, 2, 8, 13, 3), Date.UTC(2026, 2, 9, 4, 30), "America/New_York")).toBe(
+			"Yesterday 9:03 AM",
+		);
 	});
 
 	it("keeps the weekday window to whole calendar days", () => {
@@ -236,16 +261,24 @@ describe("a run's one line", () => {
 
 	it("counts steps, says what they did, and how long the run took", () => {
 		const steps: RunStep[] = [
-			...Array.from({ length: 6 }, (_, n) => step(`r${n}`, "read_file", { detail: { startedAtMs: 1_000 * n, endedAtMs: 1_000 * n + 500 } })),
+			...Array.from({ length: 6 }, (_, n) =>
+				step(`r${n}`, "read_file", { detail: { startedAtMs: 1_000 * n, endedAtMs: 1_000 * n + 500 } }),
+			),
 			shell("s1", "go test ./agent/...", {
 				state: "failed",
 				detail: { arguments: JSON.stringify({ command: "go test ./agent/..." }), startedAtMs: 6_000, endedAtMs: 6_500 },
 			}),
 			shell("s2", "go test ./agent/... -run X", {
 				state: "failed",
-				detail: { arguments: JSON.stringify({ command: "go test ./agent/... -run X" }), startedAtMs: 6_500, endedAtMs: 7_000 },
+				detail: {
+					arguments: JSON.stringify({ command: "go test ./agent/... -run X" }),
+					startedAtMs: 6_500,
+					endedAtMs: 7_000,
+				},
 			}),
-			shell("s3", "go test ./agent/", { detail: { arguments: JSON.stringify({ command: "go test ./agent/" }), startedAtMs: 10_000, endedAtMs: 480_000 } }),
+			shell("s3", "go test ./agent/", {
+				detail: { arguments: JSON.stringify({ command: "go test ./agent/" }), startedAtMs: 10_000, endedAtMs: 480_000 },
+			}),
 			...Array.from({ length: 3 }, (_, n) =>
 				step(`e${n}`, "edit_file", { detail: { startedAtMs: 20_000 + n * 1_000, endedAtMs: 20_500 + n * 1_000 } }),
 			),
@@ -266,8 +299,12 @@ describe("a run's one line", () => {
 
 	it("says one step, and names commands only when it knows them all", () => {
 		expect(runSummaryText(runSummary([step("a", "read_file")]))).toBe("1 step · read 1 file");
-		expect(runSummary([shell("a", "go test"), shell("b", "npm run check")]).parts).toEqual([{ family: "shell", text: "ran 2 commands", failed: 0 }]);
-		expect(runSummary([shell("a", undefined), shell("b", "go test")]).parts).toEqual([{ family: "shell", text: "ran 2 commands", failed: 0 }]);
+		expect(runSummary([shell("a", "go test"), shell("b", "npm run check")]).parts).toEqual([
+			{ family: "shell", text: "ran 2 commands", failed: 0 },
+		]);
+		expect(runSummary([shell("a", undefined), shell("b", "go test")]).parts).toEqual([
+			{ family: "shell", text: "ran 2 commands", failed: 0 },
+		]);
 		expect(runSummary([shell("a", "ls -la")]).parts).toEqual([{ family: "shell", text: "ran ls", failed: 0 }]);
 	});
 
@@ -307,7 +344,15 @@ describe("a run's one line", () => {
 				sourceItemId: id,
 				rationale: `Read ${id}`,
 				failed: false,
-				item: { id, turnId: "turn_1", type: "commandExecution", toolName: "read_file", text: "", startedAt, completedAt },
+				item: {
+					id,
+					turnId: "turn_1",
+					type: "commandExecution",
+					toolName: "read_file",
+					text: "",
+					startedAt,
+					completedAt,
+				},
 			});
 		const steps = [summarized("a", at(12, 0), at(12, 1)), summarized("b", at(12, 2), at(12, 8))];
 		expect(steps.every((row) => row?.kind === "activity" && row.summaryOnly === true)).toBe(true);
@@ -320,9 +365,12 @@ describe("a run's one line", () => {
 
 	it("groups the rest by kind, in the order they first appear", () => {
 		expect(
-			runSummary([step("a", "web_fetch"), step("b", "task_list"), step("c", "web_search"), step("d", "use_skill")]).parts.map(
-				(part) => part.text,
-			),
+			runSummary([
+				step("a", "web_fetch"),
+				step("b", "task_list"),
+				step("c", "web_search"),
+				step("d", "use_skill"),
+			]).parts.map((part) => part.text),
 		).toEqual(["fetched 1 page", "2 other steps", "searched the web once"]);
 	});
 });
@@ -358,7 +406,11 @@ describe("rows that arrived while you read above the end", () => {
 	});
 
 	it("leaves time markers out of the count", () => {
-		const marked: TimelineRow[] = [...rows.slice(0, 2), { kind: "time", id: "time:turn_2", turnId: "turn_2", at: 0 }, ...rows.slice(2)];
+		const marked: TimelineRow[] = [
+			...rows.slice(0, 2),
+			{ kind: "time", id: "time:turn_2", turnId: "turn_2", at: 0 },
+			...rows.slice(2),
+		];
 		expect(newRowCount(marked, seen)).toBe(2);
 	});
 
@@ -369,7 +421,11 @@ describe("rows that arrived while you read above the end", () => {
 
 describe("the turn you have seen at the end (ruling 31)", () => {
 	it("is the latest turn that is not still in progress", () => {
-		const turns = [{ id: "turn_1", status: "completed" }, { id: "turn_2", status: "failed" }, { id: "turn_3", status: "inProgress" }];
+		const turns = [
+			{ id: "turn_1", status: "completed" },
+			{ id: "turn_2", status: "failed" },
+			{ id: "turn_3", status: "inProgress" },
+		];
 		expect(latestSettledTurn({ turns })).toBe("turn_2");
 	});
 
@@ -381,9 +437,18 @@ describe("the turn you have seen at the end (ruling 31)", () => {
 
 describe("answers you gave a question", () => {
 	const question = step("q", "ask_user", {
-		detail: { arguments: JSON.stringify({ questions: [{ header: "Choice", question: "Keep or drop?", options: [{ label: "Drop them", detail: "" }] }] }) },
+		detail: {
+			arguments: JSON.stringify({
+				questions: [{ header: "Choice", question: "Keep or drop?", options: [{ label: "Drop them", detail: "" }] }],
+			}),
+		},
 	});
-	const answer: TimelineRow = { kind: "user", id: "ans", text: '[answers]\n1. [Choice] → "Drop them"', turnId: "turn_1" };
+	const answer: TimelineRow = {
+		kind: "user",
+		id: "ans",
+		text: '[answers]\n1. [Choice] → "Drop them"',
+		turnId: "turn_1",
+	};
 
 	it("leave the transcript: the question row shows the answer", () => {
 		expect(hideAnswerMessages([question, answer, reply("r")]).map((row) => row.id)).toEqual(["q", "r"]);
@@ -408,12 +473,26 @@ describe("answers you gave a question", () => {
 		// against its own question row — one that can't show its questions — and
 		// stays.
 		const unreadable = step("q2", "ask_user", { detail: { arguments: "{not json" } });
-		const second: TimelineRow = { kind: "user", id: "ans2", text: '[answers]\n1. [Choice] → "Drop them"', turnId: "turn_1" };
-		expect(hideAnswerMessages([question, answer, unreadable, second]).map((row) => row.id)).toEqual(["q", "q2", "ans2"]);
+		const second: TimelineRow = {
+			kind: "user",
+			id: "ans2",
+			text: '[answers]\n1. [Choice] → "Drop them"',
+			turnId: "turn_1",
+		};
+		expect(hideAnswerMessages([question, answer, unreadable, second]).map((row) => row.id)).toEqual([
+			"q",
+			"q2",
+			"ans2",
+		]);
 	});
 
 	it("leave every other row alone", () => {
-		const rows: TimelineRow[] = [question, user("u"), { kind: "user", id: "plain", text: "[answers] are here", turnId: "turn_1" }, reply("r")];
+		const rows: TimelineRow[] = [
+			question,
+			user("u"),
+			{ kind: "user", id: "plain", text: "[answers] are here", turnId: "turn_1" },
+			reply("r"),
+		];
 		expect(hideAnswerMessages(rows)).toEqual(rows);
 	});
 });
@@ -430,7 +509,8 @@ describe("the answer you gave a question", () => {
 		}),
 	};
 	const answered = { id: "ans-1", turnId: "turn_2", type: "userMessage", text: '[answers]\n1. [Choice] → "Drop them"' };
-	const model = (items: unknown[]) => ({ turns: [{ id: "turn_1", items }] }) as unknown as Parameters<typeof answerTo>[0];
+	const model = (items: unknown[]) =>
+		({ turns: [{ id: "turn_1", items }] }) as unknown as Parameters<typeof answerTo>[0];
 
 	// The answer keeps the wire's own words, a chosen option quoted as the web
 	// shows it: "You answered: "Drop them"".
@@ -444,4 +524,3 @@ describe("the answer you gave a question", () => {
 		expect(answerTo(null, "ask-1")).toBeUndefined();
 	});
 });
-

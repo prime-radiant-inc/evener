@@ -30,13 +30,12 @@ const levels: Record<ContentLevel, { label: string; description: string }> = {
 		description: "Include reasoning and open details by default.",
 	},
 };
-const customFields: ReadonlyArray<{ key: keyof ContentVector; label: string }> =
-	[
-		{ key: "toolIntent", label: "Action summaries" },
-		{ key: "toolCalls", label: "Tool calls" },
-		{ key: "reasoning", label: "Reasoning" },
-		{ key: "expandByDefault", label: "Open details by default" },
-	];
+const customFields: ReadonlyArray<{ key: keyof ContentVector; label: string }> = [
+	{ key: "toolIntent", label: "Action summaries" },
+	{ key: "toolCalls", label: "Tool calls" },
+	{ key: "reasoning", label: "Reasoning" },
+	{ key: "expandByDefault", label: "Open details by default" },
+];
 const advancedFields = [
 	["roundTimings", "Timing"],
 	["tokenCounts", "Token counts"],
@@ -62,21 +61,11 @@ function Toggle({
 	change(value: boolean): void;
 }) {
 	return (
-		<View
-			style={[
-				styles.row,
-				{ justifyContent: "space-between", gap: 16, paddingVertical: 6 },
-			]}
-		>
+		<View style={[styles.row, { justifyContent: "space-between", gap: 16, paddingVertical: 6 }]}>
 			<View style={{ flex: 1 }}>
 				<Copy>{label}</Copy>
 			</View>
-			<Switch
-				accessibilityLabel={label}
-				value={value}
-				disabled={disabled}
-				onValueChange={change}
-			/>
+			<Switch accessibilityLabel={label} value={value} disabled={disabled} onValueChange={change} />
 		</View>
 	);
 }
@@ -107,29 +96,17 @@ export function TranscriptPreferencesEditor({
 	const review = current !== null && reviewRevision === current.revision;
 	const selected = state.draft ?? current;
 	const config = selected?.config;
-	const disabled =
-		!connected ||
-		state.loading ||
-		state.saving ||
-		state.writeUncertain ||
-		state.storageUnavailable;
+	const disabled = !connected || state.loading || state.saving || state.writeUncertain || state.storageUnavailable;
 	const dirty = state.draft !== null;
 	return (
 		<View style={styles.fill}>
 			<ScrollView contentContainerStyle={{ padding: 20, gap: 16 }}>
 				<Copy>{hubName}</Copy>
 				<Copy muted>
-					Applies to mobile views connected to this hub. Questions, failures and
-					active work stay visible.
+					Applies to mobile views connected to this hub. Questions, failures and active work stay visible.
 				</Copy>
-				{!connected ? (
-					<Copy muted>
-						Reconnect to change these settings. Your saved draft is kept.
-					</Copy>
-				) : null}
-				{state.support === "unsupported" ? (
-					<Copy>This hub does not offer transcript display settings.</Copy>
-				) : null}
+				{!connected ? <Copy muted>Reconnect to change these settings. Your saved draft is kept.</Copy> : null}
+				{state.support === "unsupported" ? <Copy>This hub does not offer transcript display settings.</Copy> : null}
 				{state.support === "unknown" || (state.loading && !current) ? (
 					<Copy muted>Loading display settings…</Copy>
 				) : null}
@@ -137,19 +114,13 @@ export function TranscriptPreferencesEditor({
 				{state.draftUnreadable ? (
 					<View style={{ gap: 8 }}>
 						<Copy>
-							A saved transcript draft on this hub could not be read. Discard it
-							to edit these settings again.
+							A saved transcript draft on this hub could not be read. Discard it to edit these settings again.
 						</Copy>
 						<Action
 							// Live-model-only: unlike keybindings there is no store-free
 							// offline discard for transcripts, so a disconnected screen
 							// must not offer an action that could silently do nothing.
-							disabled={
-								!connected ||
-								state.loading ||
-								state.saving ||
-								state.writeUncertain
-							}
+							disabled={!connected || state.loading || state.saving || state.writeUncertain}
 							onPress={discard}
 						>
 							Discard unreadable draft
@@ -159,13 +130,8 @@ export function TranscriptPreferencesEditor({
 				{state.writeUncertain ? (
 					<View style={{ gap: 8 }}>
 						<Copy>The last save could not be confirmed.</Copy>
-						<Copy muted>
-							Check the hub's current settings before applying this draft again.
-						</Copy>
-						<Action
-							disabled={!connected || state.loading || state.saving}
-							onPress={refresh}
-						>
+						<Copy muted>Check the hub's current settings before applying this draft again.</Copy>
+						<Action disabled={!connected || state.loading || state.saving} onPress={refresh}>
 							Check current settings
 						</Action>
 					</View>
@@ -175,18 +141,14 @@ export function TranscriptPreferencesEditor({
 						<Action
 							disabled={disabled}
 							expanded={review}
-							onPress={() =>
-								setReviewRevision(review ? null : (current?.revision ?? null))
-							}
+							onPress={() => setReviewRevision(review ? null : (current?.revision ?? null))}
 						>
 							Review current settings
 						</Action>
 						{review && current ? (
 							<View style={{ gap: 8 }}>
 								<ConfigSummary title="On the hub" config={current.config} />
-								{config ? (
-									<ConfigSummary title="Your draft" config={config} />
-								) : null}
+								{config ? <ConfigSummary title="Your draft" config={config} /> : null}
 								<Action
 									disabled={disabled}
 									onPress={() => {
@@ -217,14 +179,9 @@ export function TranscriptPreferencesEditor({
 								<Choice
 									key={level}
 									label={levels[level].label}
-									selected={
-										config.content.kind === "preset" &&
-										config.content.level === level
-									}
+									selected={config.content.kind === "preset" && config.content.level === level}
 									disabled={disabled}
-									onPress={() =>
-										edit({ ...config, content: { kind: "preset", level } })
-									}
+									onPress={() => edit({ ...config, content: { kind: "preset", level } })}
 								/>
 							))}
 							<Choice
@@ -236,9 +193,7 @@ export function TranscriptPreferencesEditor({
 										...config,
 										content: {
 											kind: "custom",
-											...(config.content.kind === "preset"
-												? presetContent(config.content.level)
-												: config.content),
+											...(config.content.kind === "preset" ? presetContent(config.content.level) : config.content),
 										},
 									})
 								}
@@ -256,9 +211,7 @@ export function TranscriptPreferencesEditor({
 										key={key}
 										label={label}
 										disabled={disabled}
-										value={
-											config.content.kind === "custom" && config.content[key]
-										}
+										value={config.content.kind === "custom" && config.content[key]}
 										change={(value) => {
 											if (config.content.kind === "custom")
 												edit({
@@ -277,10 +230,7 @@ export function TranscriptPreferencesEditor({
 								paddingTop: 8,
 							}}
 						>
-							<Action
-								expanded={advanced}
-								onPress={() => setAdvanced(!advanced)}
-							>
+							<Action expanded={advanced} onPress={() => setAdvanced(!advanced)}>
 								More detail
 							</Action>
 							{advanced ? (
@@ -320,10 +270,7 @@ export function TranscriptPreferencesEditor({
 					</>
 				) : null}
 				{state.error && !state.writeUncertain ? (
-					<Action
-						disabled={!connected || state.loading || state.saving}
-						onPress={refresh}
-					>
+					<Action disabled={!connected || state.loading || state.saving} onPress={refresh}>
 						Refresh settings
 					</Action>
 				) : null}
@@ -338,19 +285,9 @@ export function TranscriptPreferencesEditor({
 						borderColor: colors.border,
 					}}
 				>
-					<Copy muted>
-						{state.saving
-							? "Saving…"
-							: dirty
-								? "Unsaved changes"
-								: "Using hub settings"}
-					</Copy>
+					<Copy muted>{state.saving ? "Saving…" : dirty ? "Unsaved changes" : "Using hub settings"}</Copy>
 					<View style={[styles.row, { flexWrap: "wrap" }]}>
-						<Action
-							tone="primary"
-							disabled={disabled || !dirty || state.conflict}
-							onPress={save}
-						>
+						<Action tone="primary" disabled={disabled || !dirty || state.conflict} onPress={save}>
 							Save changes
 						</Action>
 						{dirty ? (
@@ -365,33 +302,21 @@ export function TranscriptPreferencesEditor({
 	);
 }
 
-function ConfigSummary({
-	title,
-	config,
-}: {
-	title: string;
-	config: TranscriptDisplayConfigV1;
-}) {
+function ConfigSummary({ title, config }: { title: string; config: TranscriptDisplayConfigV1 }) {
 	const content =
 		config.content.kind === "preset"
 			? levels[config.content.level].label
 			: customFields
-					.filter(
-						({ key }) =>
-							config.content.kind === "custom" && config.content[key],
-					)
+					.filter(({ key }) => config.content.kind === "custom" && config.content[key])
 					.map(({ label }) => label)
 					.join(", ") || "Messages and essential context";
-	const extra = advancedFields
-		.filter(([key]) => config.advanced[key])
-		.map(([, label]) => label);
+	const extra = advancedFields.filter(([key]) => config.advanced[key]).map(([, label]) => label);
 	return (
 		<View style={{ gap: 3 }}>
 			<Copy>{title}</Copy>
 			<Copy muted>{content}</Copy>
 			<Copy muted>
-				{extra.length ? extra.join(", ") : "No extra metadata"} ·{" "}
-				{hookLabels[config.advanced.hookExits]}
+				{extra.length ? extra.join(", ") : "No extra metadata"} · {hookLabels[config.advanced.hookExits]}
 			</Copy>
 		</View>
 	);

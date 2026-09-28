@@ -29,9 +29,7 @@ it("shows a toast, announces it once, and clears it after four seconds", () => {
 
 it("keeps a toast that offers an action for eight seconds", () => {
 	const hook = renderHook(() => useToast());
-	act(() =>
-		hook.result.current.show({ text: "Session archived", action: { label: "Undo", run: () => {} } }),
-	);
+	act(() => hook.result.current.show({ text: "Session archived", action: { label: "Undo", run: () => {} } }));
 	act(() => {
 		vi.advanceTimersByTime(TOAST_MS);
 	});

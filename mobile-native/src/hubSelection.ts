@@ -1,9 +1,4 @@
-import type {
-	HubInput,
-	HubProfile,
-	HubProfiles,
-	HubUpdate,
-} from "./connection";
+import type { HubInput, HubProfile, HubProfiles, HubUpdate } from "./connection";
 import { removeSavedHub } from "./removeHub";
 
 export interface HubSelectionCallbacks {
@@ -75,15 +70,11 @@ export class HubSelection {
 			await this.load();
 		} finally {
 			// The credentials were saved even if refreshing the roster fails.
-			if (input.token !== undefined && this.currentId === id)
-				this.callbacks.onRetry();
+			if (input.token !== undefined && this.currentId === id) this.callbacks.onRetry();
 		}
 	}
 
-	async remove(
-		id: string,
-		drafts: Parameters<typeof removeSavedHub>[1],
-	): Promise<void> {
+	async remove(id: string, drafts: Parameters<typeof removeSavedHub>[1]): Promise<void> {
 		this.intentRevision += 1;
 		let readRevision = 0;
 		const result = await removeSavedHub(
@@ -97,11 +88,7 @@ export class HubSelection {
 			drafts,
 			id,
 		);
-		if (
-			result.removed &&
-			!result.profiles &&
-			readRevision === this.rosterRevision
-		)
+		if (result.removed && !result.profiles && readRevision === this.rosterRevision)
 			this.publish(this.roster.filter((profile) => profile.id !== id));
 		if (result.removed && this.currentId === id) {
 			this.currentId = null;

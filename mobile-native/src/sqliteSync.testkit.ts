@@ -16,8 +16,7 @@ export function sqliteSyncDouble(database: DatabaseSync): SqliteSync {
 		runSync: (sql, ...params) => database.prepare(sql).run(...params),
 		getFirstSync: <T>(sql: string, ...params: SqliteSyncParam[]) =>
 			(database.prepare(sql).get(...params) as T | undefined) ?? null,
-		getAllSync: <T>(sql: string, ...params: SqliteSyncParam[]) =>
-			database.prepare(sql).all(...params) as T[],
+		getAllSync: <T>(sql: string, ...params: SqliteSyncParam[]) => database.prepare(sql).all(...params) as T[],
 	};
 }
 

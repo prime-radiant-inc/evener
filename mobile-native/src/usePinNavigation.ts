@@ -1,12 +1,5 @@
 import { useIsFocused } from "@react-navigation/native";
-import {
-	useCallback,
-	useEffect,
-	useMemo,
-	useRef,
-	useState,
-	useSyncExternalStore,
-} from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import type { NavigationPinSectionDescriptor } from "@evener/appwire-client";
 import { useConnection } from "./ConnectionProvider";
 import { organizationJournal } from "./nativeOrganization";
@@ -18,11 +11,7 @@ const noSnapshot = () => null;
 const noSubscription = () => () => {};
 const sectionKey = (section: NavigationPinSectionDescriptor) => section.id;
 
-export function usePinNavigation(
-	hubId: string,
-	sessionRef?: string,
-	sectionId?: string,
-) {
+export function usePinNavigation(hubId: string, sessionRef?: string, sectionId?: string) {
 	const { client, activeProfile, state, retry } = useConnection();
 	const focused = useIsFocused();
 	const belongs = activeProfile?.id === hubId;
@@ -46,20 +35,14 @@ export function usePinNavigation(
 	);
 	const owner = useRef<typeof binding | null>(binding);
 	owner.current = binding;
-	const isCurrent = useCallback(
-		() => owner.current === binding && binding.ready && binding.focused,
-		[binding],
-	);
+	const isCurrent = useCallback(() => owner.current === binding && binding.ready && binding.focused, [binding]);
 	const [readback, setReadback] = useState<{
 		owner: typeof binding;
 		value: Awaited<ReturnType<typeof refreshPinNavigation>>;
 	} | null>(null);
 	const read = useMemo(() => {
 		if (!client || !pages) return null;
-		return async (
-			checkpoint?: Parameters<typeof refreshPinNavigation>[2]["checkpoint"],
-			confirmReceipt = false,
-		) => {
+		return async (checkpoint?: Parameters<typeof refreshPinNavigation>[2]["checkpoint"], confirmReceipt = false) => {
 			const value = await refreshPinNavigation(client, pages, {
 				checkpoint,
 				sessionRef,
@@ -83,23 +66,13 @@ export function usePinNavigation(
 			journal,
 		);
 	}, [client, read, journal, isCurrent]);
-	const page = useSyncExternalStore(
-		pages?.subscribe ?? noSubscription,
-		pages?.getSnapshot ?? noSnapshot,
-	);
-	const action = useSyncExternalStore(
-		actions?.subscribe ?? noSubscription,
-		actions?.getSnapshot ?? noSnapshot,
-	);
+	const page = useSyncExternalStore(pages?.subscribe ?? noSubscription, pages?.getSnapshot ?? noSnapshot);
+	const action = useSyncExternalStore(actions?.subscribe ?? noSubscription, actions?.getSnapshot ?? noSnapshot);
 	// A mutation's own confirmation re-reads everything, so catalog changes
 	// wait for it; the follower drains on each action state change.
 	useEffect(() => {
 		if (!pages || !read || !actions) return;
-		const follower = followPinCatalog(
-			pages,
-			read,
-			() => isCurrent() && !actions.getSnapshot().pending,
-		);
+		const follower = followPinCatalog(pages, read, () => isCurrent() && !actions.getSnapshot().pending);
 		const unsubscribe = actions.subscribe(follower.drain);
 		return () => {
 			unsubscribe();

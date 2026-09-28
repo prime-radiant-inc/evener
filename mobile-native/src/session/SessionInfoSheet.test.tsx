@@ -196,9 +196,9 @@ describe("what the sheet shows (spec 8.6)", () => {
 	it("leads with the name and the state line, with no header title", () => {
 		provide(conversation());
 		const tree = sheet();
-		expect(tree.root.findAll((node) => node.props.accessibilityRole === "header" && textOf(node) === "Session")).toEqual(
-			[],
-		);
+		expect(
+			tree.root.findAll((node) => node.props.accessibilityRole === "header" && textOf(node) === "Session"),
+		).toEqual([]);
 		expect(styleOf(textNode(tree, "Fix the settle race"))).toMatchObject({ fontSize: 20, fontWeight: "600" });
 		expect(renderedText(tree)).toContain("Finished");
 	});
@@ -290,7 +290,12 @@ describe("what the sheet shows (spec 8.6)", () => {
 	it("says what the session used, with failed tool calls in red and a context gauge", () => {
 		provide(
 			conversation({
-				usage: { totalTokens: 46_000_000, inputTokens: 12_000_000, outputTokens: 1_200_000, cacheReadTokens: 33_000_000 },
+				usage: {
+					totalTokens: 46_000_000,
+					inputTokens: 12_000_000,
+					outputTokens: 1_200_000,
+					cacheReadTokens: 33_000_000,
+				},
 				cost: "~$4.12",
 				workMillis: 3 * 3_600_000,
 				contextUsed: 50_000,
@@ -507,10 +512,18 @@ describe("actions", () => {
 		expect(labels(sheet())).toEqual(["Pin to category…", "Archive"]);
 	});
 
-	it.each(["closed", "ended"])("offers no Shut down on a %s session, even when the hub still reports the capability", (status) => {
-		provide(conversation({ capabilities: { ...NONE, shutdown: true }, status: { type: status } as MobileConversation["status"] }));
-		expect(pressable(sheet(), "Shut down")).toBeUndefined();
-	});
+	it.each(["closed", "ended"])(
+		"offers no Shut down on a %s session, even when the hub still reports the capability",
+		(status) => {
+			provide(
+				conversation({
+					capabilities: { ...NONE, shutdown: true },
+					status: { type: status } as MobileConversation["status"],
+				}),
+			);
+			expect(pressable(sheet(), "Shut down")).toBeUndefined();
+		},
+	);
 
 	it("draws Shut down and Delete as destructive", () => {
 		provide(conversation({ capabilities: { ...NONE, shutdown: true } }));
@@ -548,13 +561,16 @@ describe("actions", () => {
 		["Aside", "aside", { forkFromTurn: true }],
 		["Pin to category…", "pin", {}],
 		["Archive", "archive", {}],
-	] as const)("closes the sheet before %s, and leaves its toast to the session", async (label, action, capabilities) => {
-		const { calls } = provide(conversation({ capabilities: { ...NONE, ...capabilities } }));
-		const tree = sheet();
-		press(tree, label);
-		await flush();
-		expect(calls).toEqual(["goBack", `act:${action}`, `toast:${action} done`]);
-	});
+	] as const)(
+		"closes the sheet before %s, and leaves its toast to the session",
+		async (label, action, capabilities) => {
+			const { calls } = provide(conversation({ capabilities: { ...NONE, ...capabilities } }));
+			const tree = sheet();
+			press(tree, label);
+			await flush();
+			expect(calls).toEqual(["goBack", `act:${action}`, `toast:${action} done`]);
+		},
+	);
 
 	it("forks from the latest message after closing the sheet", async () => {
 		const { calls } = provide(

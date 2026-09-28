@@ -50,7 +50,10 @@ function StepLine({ step, hubId, sessionRef, evidenceOpenByDefault }: { step: Ru
 				/>
 			</View>
 			<View style={{ flex: 1, minWidth: 0 }}>
-				<Text allowFontScaling={Platform.OS !== "ios"} style={{ fontSize: 14 * scale, lineHeight: 19 * scale, color: palette.inkHi }}>
+				<Text
+					allowFontScaling={Platform.OS !== "ios"}
+					style={{ fontSize: 14 * scale, lineHeight: 19 * scale, color: palette.inkHi }}
+				>
 					{intent}
 				</Text>
 				{target ? (
@@ -143,7 +146,11 @@ export function RunRow({
 	return (
 		<View>
 			{live ? (
-				<View accessible accessibilityLabel={runSummaryText(summary)} style={{ minHeight: 44, justifyContent: "center" }}>
+				<View
+					accessible
+					accessibilityLabel={runSummaryText(summary)}
+					style={{ minHeight: 44, justifyContent: "center" }}
+				>
 					{line}
 				</View>
 			) : (
@@ -157,7 +164,17 @@ export function RunRow({
 					{line}
 				</Pressable>
 			)}
-			{open ? run.steps.map((step) => <StepLine key={step.id} step={step} hubId={hubId} sessionRef={sessionRef} evidenceOpenByDefault={evidenceOpenByDefault} />) : null}
+			{open
+				? run.steps.map((step) => (
+						<StepLine
+							key={step.id}
+							step={step}
+							hubId={hubId}
+							sessionRef={sessionRef}
+							evidenceOpenByDefault={evidenceOpenByDefault}
+						/>
+					))
+				: null}
 		</View>
 	);
 }

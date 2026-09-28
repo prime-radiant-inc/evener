@@ -15,8 +15,8 @@ export function useDocumentSummary(
 	const origin = profiles.find((profile) => profile.id === hubId)?.origin ?? "";
 	// A summary already read shows on the first render, so a list of chips
 	// doesn't flash file names as it scrolls.
-	const [summary, setSummary] = useState<DocumentSummary | null>(
-		() => knownSummary(hubId, sessionRef, path, updatedAt),
+	const [summary, setSummary] = useState<DocumentSummary | null>(() =>
+		knownSummary(hubId, sessionRef, path, updatedAt),
 	);
 	useEffect(() => {
 		// Until the hub's profile loads there's nowhere to read from, and a read

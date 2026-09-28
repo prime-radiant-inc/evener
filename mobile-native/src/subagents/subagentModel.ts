@@ -63,12 +63,25 @@ export function subagentStateWord(state: SubagentState): string {
 	return STATE_WORDS[state];
 }
 
-/** The subagent ended in a stop: its own run, or a run somewhere under it.
- * For PR 3's stop request ("Stopped at your request"); a row's own "Stopped"
- * is its own outcome (ruling 4). */
+// A command the job system stopped ends as stopped or cancelled
+// (agent/internal/jobstore/record.go).
+const STOPPED_JOB_STATUSES = new Set(["stopped", "cancelled"]);
+
+/** How many runs in the subagent's subtree, its own included, ended in a
+ * stop: its subagents' runs and the commands they ran. For PR 3's stop
+ * request ("Stopped at your request"); a row's own "Stopped" is its own
+ * outcome (ruling 4). */
+export function subtreeStops(delegate: ActivityDelegate): number {
+	const own = delegate.terminal === true && STOPPED_OUTCOMES.has(delegate.outcome ?? "") ? 1 : 0;
+	return (delegate.child?.entries ?? []).reduce((count, entry) => {
+		if (entry.kind === "delegate") return count + subtreeStops(entry.delegate);
+		return count + (entry.job.terminal && STOPPED_JOB_STATUSES.has(entry.job.status) ? 1 : 0);
+	}, own);
+}
+
+/** The subagent ended in a stop: its own run, or a run somewhere under it. */
 export function subtreeStopped(delegate: ActivityDelegate): boolean {
-	if (delegate.terminal === true && STOPPED_OUTCOMES.has(delegate.outcome ?? "")) return true;
-	return (delegate.child?.entries ?? []).some((entry) => entry.kind === "delegate" && subtreeStopped(entry.delegate));
+	return subtreeStops(delegate) > 0;
 }
 
 /** The short description (spec 9's "mandate"; the wire's `mandate` is the
@@ -247,7 +260,11 @@ export interface SubagentLastLine {
  * modelProvider can carry a "provider/" prefix a delegate's resolved model
  * doesn't. */
 export function sameModel(a: string, b: string): boolean {
-	const part = (value: string) => value.slice(value.lastIndexOf("/") + 1).trim().toLowerCase();
+	const part = (value: string) =>
+		value
+			.slice(value.lastIndexOf("/") + 1)
+			.trim()
+			.toLowerCase();
 	return part(a) === part(b);
 }
 

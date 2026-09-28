@@ -6,12 +6,13 @@ import type { ComponentProps, ReactNode } from "react";
 import { createElement } from "react";
 import { act, type ReactTestRenderer } from "react-test-renderer";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { AnyNotification, Thread } from "@evener/appwire-client";
+import { type AnyNotification, type Thread, WireError } from "@evener/appwire-client";
 import { nativeDrafts } from "./nativeDrafts";
 import { getNativeMutationRuntime, nativeMutationTargetKey } from "./nativeMutationRuntime";
 import {
 	flatListCalls,
 	flatListScrollFailures,
+	alertRequests,
 	type PanGestureMock,
 	pressable,
 	render,
@@ -38,6 +39,9 @@ import { paletteFor } from "./design/tokens";
 import { answerFleetRead, type FleetShape, fleetSession } from "./session/fleetTestUtils";
 import { FloatingStack } from "./session/FloatingStack";
 import { Toast } from "./Toast";
+import { forgetStopRequestsForHub, stopRequests } from "./subagents/nativeStopRequests";
+import { SubagentScreen } from "./subagents/SubagentScreen";
+import { flattenSubagents } from "./subagents/subagentModel";
 
 const harness = vi.hoisted(() => ({
 	connection: {} as Record<string, unknown>,
@@ -87,10 +91,8 @@ vi.mock("@react-navigation/elements", () => ({ useHeaderHeight: () => 64 }));
 vi.mock("@react-navigation/native", async () => {
 	const { useEffect } = await import("react");
 	return {
-		useFocusEffect: (effect: () => void | (() => void)) =>
-			useEffect(effect, []),
-		useNavigationState: <T,>(select: (state: typeof navigationState.state) => T) =>
-			select(navigationState.state),
+		useFocusEffect: (effect: () => void | (() => void)) => useEffect(effect, []),
+		useNavigationState: <T,>(select: (state: typeof navigationState.state) => T) => select(navigationState.state),
 		// A sheet route rendered beside the screen (NotesSheet) reads these.
 		useNavigation: () => navigation,
 		usePreventRemove: () => {},
@@ -289,8 +291,19 @@ const fleet: FleetShape = { live: [], needsYou: [] };
 // shared navigation mock, so a later test reading the last header options
 // could act on it instead of its own screen.
 const mountedScreens: ReactTestRenderer[] = [];
+// A coordinator's subagent tree (evener/jobs/list) and its direct stop
+// (evener/delegate/stop), for the subagent screen's tests.
+const coordinatorHub: { tree: unknown; stop: (params: Record<string, unknown>) => unknown; readFails: string | null } =
+	{
+		tree: null,
+		stop: () => ({ outcome: "stopping" }),
+		readFails: null,
+	};
 afterEach(() => {
 	for (const tree of mountedScreens.splice(0)) if (tree.toJSON() !== null) act(() => tree.unmount());
+	coordinatorHub.tree = null;
+	coordinatorHub.stop = () => ({ outcome: "stopping" });
+	coordinatorHub.readFails = null;
 	otherThreads.clear();
 	fleet.live = [];
 	fleet.needsYou = [];
@@ -330,6 +343,7 @@ function hubClient(
 					readsToFail -= 1;
 					throw new Error("read failed");
 				}
+				if (params.ref === coordinatorHub.readFails) throw new Error("read failed");
 				// A second session this client can also read, by its ref.
 				const thread = otherThreads.get(String(params.ref)) ?? served;
 				return { thread, ...(olderCursor ? { olderCursor } : {}) };
@@ -364,6 +378,8 @@ function hubClient(
 						...(params.expectedEntryId ? { queueEntryIds: [params.expectedEntryId] } : {}),
 					},
 				};
+			if (method === "evener/jobs/list" && coordinatorHub.tree) return { data: coordinatorHub.tree };
+			if (method === "evener/delegate/stop") return coordinatorHub.stop(params);
 			if (method === "evener/session/seen/set")
 				return { ok: true, changed: true, navigation: { generation_id: "generation-test", targets: [] } };
 			return answerFleetRead(fleet, method, params) ?? {};
@@ -371,10 +387,7 @@ function hubClient(
 	};
 	return {
 		client,
-		mutations: () =>
-			requests
-				.filter((request) => request.method.startsWith("turn/"))
-				.map((request) => request.method),
+		mutations: () => requests.filter((request) => request.method.startsWith("turn/")).map((request) => request.method),
 		requests,
 		/** A frame the hub pushes to every live subscriber. */
 		notify(notification: AnyNotification) {
@@ -475,10 +488,7 @@ it("queues a second Send pressed before the first one's turn is seen", async () 
 	const inputs = hub.requests
 		.filter((request) => request.method.startsWith("turn/"))
 		.map((request) => request.params.input);
-	expect(inputs).toEqual([
-		[{ type: "text", text: "first" }],
-		[{ type: "text", text: "second" }],
-	]);
+	expect(inputs).toEqual([[{ type: "text", text: "first" }], [{ type: "text", text: "second" }]]);
 });
 
 // The composer's Send, told apart from the dock's own "Send answer" by its
@@ -584,7 +594,9 @@ describe("a question waiting for an answer (spec 8.4)", () => {
 	// is called.
 	function questionReadsFail(): () => void {
 		nativeDrafts();
-		const drafts = sqlite.ports.get("evener-drafts.db") as { getFirstSync: (sql: string, ...args: unknown[]) => unknown };
+		const drafts = sqlite.ports.get("evener-drafts.db") as {
+			getFirstSync: (sql: string, ...args: unknown[]) => unknown;
+		};
 		const getFirstSync = drafts.getFirstSync;
 		drafts.getFirstSync = (sql, ...args) => {
 			if (sql.includes("question_")) throw new Error("database is locked");
@@ -596,7 +608,11 @@ describe("a question waiting for an answer (spec 8.4)", () => {
 	}
 
 	function rerender(tree: ReactTestRenderer, ref: string) {
-		const route = { key: `conversation-${ref}`, name: "Conversation", params: { hubId: "hub-1", ref, title: "Session" } };
+		const route = {
+			key: `conversation-${ref}`,
+			name: "Conversation",
+			params: { hubId: "hub-1", ref, title: "Session" },
+		};
 		act(() =>
 			tree.update(
 				<ConversationScreen route={route as unknown as ConversationScreenProps["route"]} navigation={navigation} />,
@@ -777,7 +793,9 @@ it("opens at the start of a reply that finished since you last read to the end",
 	flatListCalls.length = 0;
 	await mount(twoTurns("ref-opening"));
 	// The rows are ask/reply for turn_1, then turn_2: its reply is row 3.
-	const indexes = flatListCalls.filter((call) => call.method === "scrollToIndex").map((call) => (call.args as { index: number }).index);
+	const indexes = flatListCalls
+		.filter((call) => call.method === "scrollToIndex")
+		.map((call) => (call.args as { index: number }).index);
 	expect(indexes).toContain(3);
 	expect(indexes).not.toContain(0);
 });
@@ -812,7 +830,9 @@ it("keeps trying quietly, and says so from the third failure in a row", async ()
 		};
 		await advance(50);
 		// Until the conversation first loads, quiet blocks stand in for it.
-		expect(tree.root.findAll((node) => node.props.accessibilityLabel === "Loading conversation").length).toBeGreaterThan(0);
+		expect(
+			tree.root.findAll((node) => node.props.accessibilityLabel === "Loading conversation").length,
+		).toBeGreaterThan(0);
 		const reads = () => hub.requests.filter((request) => request.method === "thread/read").length;
 		// The first failure retries at once, the second after a second.
 		expect(reads()).toBe(2);
@@ -835,7 +855,8 @@ it("has no Latest button, no pull to refresh, and no Load older button", async (
 	expect(tree.root.findAll((node) => node.props.accessibilityLabel === "Latest")).toEqual([]);
 	// The transcript list itself (the stub component, whose props the screen set).
 	const list = tree.root.findAll(
-		(node) => typeof node.type === "function" && Array.isArray(node.props.data) && typeof node.props.renderItem === "function",
+		(node) =>
+			typeof node.type === "function" && Array.isArray(node.props.data) && typeof node.props.renderItem === "function",
 	)[0];
 	expect(list).toBeDefined();
 	expect(list.props.onRefresh).toBeUndefined();
@@ -845,7 +866,8 @@ it("has no Latest button, no pull to refresh, and no Load older button", async (
 
 function transcriptList(tree: ReactTestRenderer) {
 	return tree.root.findAll(
-		(node) => typeof node.type === "function" && Array.isArray(node.props.data) && typeof node.props.renderItem === "function",
+		(node) =>
+			typeof node.type === "function" && Array.isArray(node.props.data) && typeof node.props.renderItem === "function",
 	)[0];
 }
 
@@ -870,16 +892,24 @@ it("loads older history as you scroll near the top", async () => {
 	expect(hub.requests.filter((request) => request.method === "thread/turns/list")).toEqual([]);
 	scrollTo(tree, 100);
 	await settle();
-	expect(hub.requests.filter((request) => request.method === "thread/turns/list").map((request) => request.params.cursor)).toEqual([
-		"cursor-1",
-	]);
+	expect(
+		hub.requests.filter((request) => request.method === "thread/turns/list").map((request) => request.params.cursor),
+	).toEqual(["cursor-1"]);
 });
 
 it("doesn't page older history while the hub is away", async () => {
 	const { tree, hub } = await mount(twoTurns("ref-older-away"), { olderCursor: "cursor-1" });
 	harness.connection = { ...harness.connection, state: "connecting" };
-	const route = { key: "conversation-ref-older-away", name: "Conversation", params: { hubId: "hub-1", ref: "ref-older-away", title: "Session" } };
-	act(() => tree.update(<ConversationScreen route={route as unknown as ConversationScreenProps["route"]} navigation={navigation} />));
+	const route = {
+		key: "conversation-ref-older-away",
+		name: "Conversation",
+		params: { hubId: "hub-1", ref: "ref-older-away", title: "Session" },
+	};
+	act(() =>
+		tree.update(
+			<ConversationScreen route={route as unknown as ConversationScreenProps["route"]} navigation={navigation} />,
+		),
+	);
 	await settle();
 	scrollTo(tree, 100);
 	await settle();
@@ -937,10 +967,16 @@ it("opens a session switched to in place at its own newer reply, never the last 
 		params: { hubId: "hub-1", ref: "ref-switched-to", title: "Session" },
 	};
 	navigationState.state = { index: 0, routes: [route as unknown as { key: string; name: string }] };
-	act(() => tree.update(<ConversationScreen route={route as unknown as ConversationScreenProps["route"]} navigation={navigation} />));
+	act(() =>
+		tree.update(
+			<ConversationScreen route={route as unknown as ConversationScreenProps["route"]} navigation={navigation} />,
+		),
+	);
 	await settle();
 	expect(renderedText(tree)).toContain("ask turn_2");
-	const indexes = flatListCalls.filter((call) => call.method === "scrollToIndex").map((call) => (call.args as { index: number }).index);
+	const indexes = flatListCalls
+		.filter((call) => call.method === "scrollToIndex")
+		.map((call) => (call.args as { index: number }).index);
 	expect(indexes).toContain(3);
 });
 
@@ -963,23 +999,30 @@ function failedTurn(ref: string, message: string, resumeRequired = false): Threa
 it("resumes a paused session from its error", async () => {
 	const { tree, hub } = await mount(failedTurn("ref-error-resume", "go test exited 1", true));
 	await press(tree, "Resume");
-	expect(hub.requests.filter((request) => request.method === "resumeThread").map((request) => request.params.ref)).toEqual([
-		"ref-error-resume",
-	]);
+	expect(
+		hub.requests.filter((request) => request.method === "resumeThread").map((request) => request.params.ref),
+	).toEqual(["ref-error-resume"]);
 });
 
 it("names the model on the composer's chip, which opens the model sheet with the session's controls", async () => {
 	vi.mocked(navigation.navigate).mockClear();
 	const served = thread("ref-model", "idle");
 	(served as unknown as { modelProvider: string }).modelProvider = "anthropic/claude-sonnet-5";
-	(served as unknown as { evener: Record<string, unknown> }).evener.capabilities = { ...CAPABILITIES, changeModel: true };
+	(served as unknown as { evener: Record<string, unknown> }).evener.capabilities = {
+		...CAPABILITIES,
+		changeModel: true,
+	};
 	const { tree, hub } = await mount(served);
 	// The screen loads the catalog once, so the chip can name the model.
 	expect(hub.requests.filter((request) => request.method === "model/list")).toHaveLength(1);
 	const chip = pressable(tree, "Model: Claude Sonnet 5. Change model or effort");
 	if (!chip) throw new Error("no model chip");
 	act(() => chip.props.onPress());
-	expect(navigation.navigate).toHaveBeenCalledWith("ModelSheet", { hubId: "hub-1", ref: "ref-model", setting: "model" });
+	expect(navigation.navigate).toHaveBeenCalledWith("ModelSheet", {
+		hubId: "hub-1",
+		ref: "ref-model",
+		setting: "model",
+	});
 	const host = modelHosts.get(sheetKey("hub-1", "ref-model"));
 	expect(host?.session.modelProvider).toBe("anthropic/claude-sonnet-5");
 	expect(host?.controls?.getSnapshot().catalog?.data).toHaveLength(1);
@@ -993,7 +1036,11 @@ it("keeps the Session sheet and a half-typed name through a connection blip, and
 	const params = { hubId: "hub-1", ref: "ref-blip" };
 	const sheet = render(
 		<SessionInfoSheet
-			route={{ key: "session-info", name: "SessionInfoSheet", params } as unknown as ComponentProps<typeof SessionInfoSheet>["route"]}
+			route={
+				{ key: "session-info", name: "SessionInfoSheet", params } as unknown as ComponentProps<
+					typeof SessionInfoSheet
+				>["route"]
+			}
 			navigation={navigation as unknown as ComponentProps<typeof SessionInfoSheet>["navigation"]}
 		/>,
 	);
@@ -1009,7 +1056,9 @@ it("keeps the Session sheet and a half-typed name through a connection blip, and
 		harness.connection = { ...harness.connection, state };
 		const route = { key: "conversation-ref-blip", name: "Conversation", params: { ...params, title: "Session" } };
 		act(() =>
-			tree.update(<ConversationScreen route={route as unknown as ConversationScreenProps["route"]} navigation={navigation} />),
+			tree.update(
+				<ConversationScreen route={route as unknown as ConversationScreenProps["route"]} navigation={navigation} />,
+			),
 		);
 	};
 	screenAt("connecting");
@@ -1025,9 +1074,9 @@ it("keeps the Session sheet and a half-typed name through a connection blip, and
 	await settle();
 	await act(async () => nameField().props.onSubmitEditing());
 	await settle();
-	expect(hub.requests.filter((request) => request.method === "evener/thread/name/set").map((request) => request.params)).toEqual([
-		{ ref: "ref-blip", name: "Settle race" },
-	]);
+	expect(
+		hub.requests.filter((request) => request.method === "evener/thread/name/set").map((request) => request.params),
+	).toEqual([{ ref: "ref-blip", name: "Settle race" }]);
 	act(() => sheet.unmount());
 });
 
@@ -1057,9 +1106,15 @@ describe("a session that can't take a message yet (ruling 20)", () => {
 
 	function rerender(tree: ReactTestRenderer, ref: string, state: string) {
 		harness.connection = { ...harness.connection, state };
-		const route = { key: `conversation-${ref}`, name: "Conversation", params: { hubId: "hub-1", ref, title: "Session" } };
+		const route = {
+			key: `conversation-${ref}`,
+			name: "Conversation",
+			params: { hubId: "hub-1", ref, title: "Session" },
+		};
 		act(() =>
-			tree.update(<ConversationScreen route={route as unknown as ConversationScreenProps["route"]} navigation={navigation} />),
+			tree.update(
+				<ConversationScreen route={route as unknown as ConversationScreenProps["route"]} navigation={navigation} />,
+			),
 		);
 	}
 
@@ -1116,9 +1171,9 @@ describe("a session that can't take a message yet (ruling 20)", () => {
 		expect(renderedText(tree)).toContain("This session is paused.");
 		expect(field(tree)).toBeUndefined();
 		await press(tree, "Resume");
-		expect(hub.requests.filter((request) => request.method === "resumeThread").map((request) => request.params.ref)).toEqual([
-			"ref-paused",
-		]);
+		expect(
+			hub.requests.filter((request) => request.method === "resumeThread").map((request) => request.params.ref),
+		).toEqual(["ref-paused"]);
 	});
 });
 
@@ -1128,7 +1183,6 @@ it("opens sign-in from an error that says a sign-in failed", async () => {
 	await press(tree, "Sign in");
 	expect(navigation.navigate).toHaveBeenCalledWith("Providers", { hubId: "hub-1" });
 });
-
 
 it("previews your note in the notes bar, and the sheet it opens saves through the screen", async () => {
 	vi.mocked(navigation.navigate).mockClear();
@@ -1144,7 +1198,10 @@ it("previews your note in the notes bar, and the sheet it opens saves through th
 	(served as unknown as { cwd: string }).cwd = "/home/jesse/git/evener";
 	const { tree, hub } = await mount(served);
 	// The sheet opens a file link in the Reader with the session's folder and title.
-	expect(notesHosts.get(sheetKey("hub-1", "ref-notes"))).toMatchObject({ cwd: "/home/jesse/git/evener", title: "Session" });
+	expect(notesHosts.get(sheetKey("hub-1", "ref-notes"))).toMatchObject({
+		cwd: "/home/jesse/git/evener",
+		title: "Session",
+	});
 	const bar = pressable(tree, "Your note: keep the tests, 2 links");
 	if (!bar) throw new Error("no notes bar");
 	act(() => bar.props.onPress());
@@ -1171,7 +1228,9 @@ it("previews your note in the notes bar, and the sheet it opens saves through th
 	act(() => sheet.unmount());
 	await settle();
 
-	expect(hub.requests.filter((request) => request.method === "notes/human/set").map((request) => request.params)).toEqual([
+	expect(
+		hub.requests.filter((request) => request.method === "notes/human/set").map((request) => request.params),
+	).toEqual([
 		expect.objectContaining({ ref: "ref-notes", expectedInstanceId: "instance", note: "keep the tests green" }),
 	]);
 	expect(renderedText(tree)).toContain("Note saved. The agent is reading it.");
@@ -1179,7 +1238,10 @@ it("previews your note in the notes bar, and the sheet it opens saves through th
 
 it("shows no notes bar for a session with nothing shared", async () => {
 	const served = thread("ref-no-notes", "idle");
-	(served as unknown as { evener: Record<string, unknown> }).evener.capabilities = { ...CAPABILITIES, sharedNotes: true };
+	(served as unknown as { evener: Record<string, unknown> }).evener.capabilities = {
+		...CAPABILITIES,
+		sharedNotes: true,
+	};
 	const { tree } = await mount(served);
 	expect(renderedText(tree)).not.toContain("Your note");
 	expect(tree.root.findAll((node) => String(node.type) === "SymbolView" && node.props.name === "person")).toEqual([]);
@@ -1187,7 +1249,10 @@ it("shows no notes bar for a session with nothing shared", async () => {
 
 it("retries a note that failed to save once, on its own, without needing a reconnect", async () => {
 	const served = thread("ref-notes-retry", "idle");
-	(served as unknown as { evener: Record<string, unknown> }).evener.capabilities = { ...CAPABILITIES, sharedNotes: true };
+	(served as unknown as { evener: Record<string, unknown> }).evener.capabilities = {
+		...CAPABILITIES,
+		sharedNotes: true,
+	};
 	const { hub } = await mount(served);
 	const client = hub.client as { request: (method: string, params: Record<string, unknown>) => Promise<unknown> };
 	const request = client.request;
@@ -1202,7 +1267,9 @@ it("retries a note that failed to save once, on its own, without needing a recon
 	const params = { hubId: "hub-1", ref: "ref-notes-retry" };
 	const sheet = render(
 		<NotesSheet
-			route={{ key: "notes-sheet", name: "NotesSheet", params } as unknown as ComponentProps<typeof NotesSheet>["route"]}
+			route={
+				{ key: "notes-sheet", name: "NotesSheet", params } as unknown as ComponentProps<typeof NotesSheet>["route"]
+			}
 			navigation={navigation as unknown as ComponentProps<typeof NotesSheet>["navigation"]}
 		/>,
 	);
@@ -1218,19 +1285,22 @@ it("retries a note that failed to save once, on its own, without needing a recon
 	// screen retries the failed save on its own rather than waiting for an
 	// unrelated reconnect or remount to notice it.
 	expect(attempts).toBe(2);
-	expect(hub.requests.filter((request) => request.method === "notes/human/set").map((request) => request.params.note)).toEqual([
-		"first try",
-	]);
+	expect(
+		hub.requests.filter((request) => request.method === "notes/human/set").map((request) => request.params.note),
+	).toEqual(["first try"]);
 });
 
 it("sends a note kept on this phone from a failed save once the session opens connected", async () => {
 	harness.kv.set("evener.native.note-draft.hub-1", JSON.stringify({ "ref-kept-note": "kept from before" }));
 	const served = thread("ref-kept-note", "idle");
-	(served as unknown as { evener: Record<string, unknown> }).evener.capabilities = { ...CAPABILITIES, sharedNotes: true };
+	(served as unknown as { evener: Record<string, unknown> }).evener.capabilities = {
+		...CAPABILITIES,
+		sharedNotes: true,
+	};
 	const { hub } = await mount(served);
-	expect(hub.requests.filter((request) => request.method === "notes/human/set").map((request) => request.params.note)).toEqual([
-		"kept from before",
-	]);
+	expect(
+		hub.requests.filter((request) => request.method === "notes/human/set").map((request) => request.params.note),
+	).toEqual(["kept from before"]);
 	expect(harness.kv.has("evener.native.note-draft.hub-1")).toBe(false);
 });
 
@@ -1238,7 +1308,10 @@ it("keeps a note from a failed save on this phone while the session can't take n
 	harness.kv.set("evener.native.note-draft.hub-1", JSON.stringify({ "ref-kept-ended": "kept from before" }));
 	const served = thread("ref-kept-ended", "idle");
 	(served as unknown as { status: { type: string } }).status = { type: "ended" };
-	(served as unknown as { evener: Record<string, unknown> }).evener.capabilities = { ...CAPABILITIES, sharedNotes: true };
+	(served as unknown as { evener: Record<string, unknown> }).evener.capabilities = {
+		...CAPABILITIES,
+		sharedNotes: true,
+	};
 	const { hub } = await mount(served);
 	expect(hub.requests.filter((request) => request.method === "notes/human/set")).toEqual([]);
 	expect(harness.kv.has("evener.native.note-draft.hub-1")).toBe(true);
@@ -1253,7 +1326,9 @@ it("follows the hub's note in the bar and the open sheet when it changes", async
 	const params = { hubId: "hub-1", ref: "ref-notes-follow", focusEditor: false };
 	const sheet = render(
 		<NotesSheet
-			route={{ key: "notes-sheet", name: "NotesSheet", params } as unknown as ComponentProps<typeof NotesSheet>["route"]}
+			route={
+				{ key: "notes-sheet", name: "NotesSheet", params } as unknown as ComponentProps<typeof NotesSheet>["route"]
+			}
 			navigation={navigation as unknown as ComponentProps<typeof NotesSheet>["navigation"]}
 		/>,
 	);
@@ -1351,8 +1426,16 @@ describe("queued messages above the composer (spec 8.5)", () => {
 		const host = () => queueHosts.get(sheetKey("hub-1", "ref-steer-all"));
 		expect(host()?.steerAll).toBeDefined();
 		harness.connection = { ...harness.connection, state: "connecting" };
-		const route = { key: "conversation-ref-steer-all", name: "Conversation", params: { hubId: "hub-1", ref: "ref-steer-all", title: "Session" } };
-		act(() => tree.update(<ConversationScreen route={route as unknown as ConversationScreenProps["route"]} navigation={navigation} />));
+		const route = {
+			key: "conversation-ref-steer-all",
+			name: "Conversation",
+			params: { hubId: "hub-1", ref: "ref-steer-all", title: "Session" },
+		};
+		act(() =>
+			tree.update(
+				<ConversationScreen route={route as unknown as ConversationScreenProps["route"]} navigation={navigation} />,
+			),
+		);
 		await settle();
 		expect(host()?.ghosts).toHaveLength(2);
 		expect(host()?.steerAll).toBeUndefined();
@@ -1517,7 +1600,9 @@ it("puts a quote held for this session into the draft when it comes back to the 
 });
 
 it("leaves the shared question fixture as the other question tests expect it", () => {
-	const turn = (thread("ref-fixture-intact", "idle", true) as unknown as { turns: { status: string; error?: unknown }[] }).turns[0];
+	const turn = (
+		thread("ref-fixture-intact", "idle", true) as unknown as { turns: { status: string; error?: unknown }[] }
+	).turns[0];
 	expect(turn.status).toBe("completed");
 	expect(turn.error).toBeUndefined();
 });
@@ -1799,9 +1884,9 @@ describe("Find in session (spec 8.7, ruling 29)", () => {
 		expect(renderedText(tree)).toContain("2 of 2");
 		await press(tree, "Older match");
 		await press(tree, "Older match");
-		expect(hub.requests.filter((request) => request.method === "thread/turns/list").map((request) => request.params.cursor)).toEqual([
-			"cursor-1",
-		]);
+		expect(
+			hub.requests.filter((request) => request.method === "thread/turns/list").map((request) => request.params.cursor),
+		).toEqual(["cursor-1"]);
 		expect(washed(tree).join(" ")).toContain("Is settle flaky?");
 		expect(renderedText(tree)).toContain("1 of 3");
 	});
@@ -2170,5 +2255,440 @@ describe("moving between sessions (spec 8.3, 13.2)", () => {
 		);
 		expect(renderedText(sheet)).toContain("Laptop");
 		expect(renderedText(sheet)).not.toContain("Work hub");
+	});
+});
+
+describe("a subagent's own session (spec 9, rulings 10 and 30)", () => {
+	const COORDINATOR = { ref: "local:coord", threadId: "thread-local:coord", title: "Get PR 2138 Test Clean" };
+	const RUNNING_SINCE = new Date(Date.now() - 4 * 60_000).toISOString();
+
+	function subagentTree(over: Record<string, unknown> = {}, revision = 1) {
+		return {
+			revision,
+			root: {
+				kind: "session",
+				// ActivityList checks the root is the coordinator's thread.
+				sessionId: COORDINATOR.threadId,
+				ref: COORDINATOR.ref,
+				label: COORDINATOR.title,
+				aggregate: "working",
+				counts: { active: 1, failed: 0, completed: 0, complete: true },
+				branch: {},
+				entries: [
+					{
+						kind: "delegate",
+						delegate: {
+							delegateId: "d-fix",
+							childSessionId: "fix",
+							childRef: "local:fix",
+							type: "delegate",
+							description: "Fix race in tree settle",
+							branch: {},
+							runStartedAt: RUNNING_SINCE,
+							// A delegate's update lands only with a newer projection revision.
+							projectionRevision: revision,
+							...over,
+						},
+					},
+				],
+			},
+		};
+	}
+
+	/** The coordinator's thread, as the phone reads it without following it. */
+	function coordinator(stopSubagent: boolean) {
+		const served = thread(COORDINATOR.ref, "active");
+		(served as unknown as { evener: { capabilities: Record<string, boolean> } }).evener.capabilities = {
+			...CAPABILITIES,
+			...(stopSubagent ? { stopSubagent: true } : {}),
+		};
+		return served;
+	}
+
+	/** The subagent's own thread: a running one is the hub's read-only alias,
+	 * every capability false (the Go encoder writes each key); a finished one
+	 * reads as a past session. */
+	function subagent(running: boolean) {
+		const served = thread("local:fix", running ? "active" : "idle");
+		const evener = (served as unknown as { evener: Record<string, unknown> }).evener;
+		evener.capabilities = running
+			? Object.fromEntries(Object.keys(CAPABILITIES).map((key) => [key, false]))
+			: { ...CAPABILITIES, steer: false, interrupt: false };
+		return served;
+	}
+
+	async function mountSubagent(served: Thread, { stopSubagent = false, jobs = subagentTree() } = {}) {
+		coordinatorHub.tree = jobs;
+		otherThreads.set(COORDINATOR.ref, coordinator(stopSubagent));
+		const hub = hubClient(served);
+		harness.connection = {
+			...screenConnection(hub.client, "ready"),
+			profiles: [{ id: "hub-1", name: "Work hub", origin: "https://hub.test" }],
+			error: null,
+			disconnect: () => {},
+		};
+		const route = {
+			key: "subagent-local:fix",
+			name: "Subagent",
+			params: { hubId: "hub-1", ref: "local:fix", title: "Fix race in tree settle", coordinator: COORDINATOR },
+		};
+		navigationState.state = {
+			index: 2,
+			routes: [
+				{ key: "board", name: "Sessions" },
+				{
+					key: "coord",
+					name: "Conversation",
+					params: { hubId: "hub-1", ref: COORDINATOR.ref, title: COORDINATOR.title },
+				},
+				route,
+			] as never,
+		};
+		const tree = render(<SubagentScreen route={route as never} navigation={navigation as never} />);
+		mountedScreens.push(tree);
+		await settle();
+		return { tree, hub };
+	}
+
+	const jobReads = (hub: ReturnType<typeof hubClient>) =>
+		hub.requests.filter((request) => request.method === "evener/jobs/list").length;
+
+	beforeEach(() => {
+		vi.mocked(navigation.navigate).mockClear();
+		vi.mocked(navigation.pop).mockClear();
+		vi.mocked(navigation.push).mockClear();
+		// The per-hub stop requests are one instance for the app's life.
+		forgetStopRequestsForHub("hub-1");
+	});
+
+	it("holds Ask coordinator to stop it where a running subagent's composer would be", async () => {
+		const { tree } = await mountSubagent(subagent(true));
+		expect(field(tree)).toBeUndefined();
+		expect(pressable(tree, "Ask coordinator to stop it")).toBeDefined();
+		expect(pressable(tree, "Open coordinator")).toBeDefined();
+		expect(pressable(tree, "Stop")).toBeUndefined();
+		// The bar says what you can do; the footer adds nothing.
+		expect(renderedText(tree)).not.toContain("Sending is unavailable");
+		for (const words of ["Retry", "Refresh", "Reconnect", "From the coordinator", "Talk to it through its coordinator"])
+			expect(renderedText(tree)).not.toContain(words);
+		act(() => pressable(tree, "Ask coordinator to stop it")?.props.onPress());
+		expect(navigation.navigate).toHaveBeenCalledWith("StopSubagentSheet", {
+			hubId: "hub-1",
+			coordinator: COORDINATOR,
+			ref: "local:fix",
+		});
+	});
+
+	it("says Stop requested while a request you sent is pending", async () => {
+		const { tree } = await mountSubagent(subagent(true));
+		const [row] = flattenSubagents(subagentTree() as never);
+		if (!row) throw new Error("no row");
+		act(() => stopRequests("hub-1").request(COORDINATOR.ref, row, Date.now()));
+		await settle();
+		expect(renderedText(tree)).toContain("Stop requested");
+		expect(pressable(tree, "Ask coordinator to stop it")).toBeUndefined();
+		expect(pressable(tree, "Open coordinator")).toBeDefined();
+	});
+
+	it("offers Stop subagent itself when the coordinator can stop one directly (S6), after you confirm", async () => {
+		const { tree, hub } = await mountSubagent(subagent(true), { stopSubagent: true });
+		expect(pressable(tree, "Ask coordinator to stop it")).toBeUndefined();
+		act(() => pressable(tree, "Stop subagent")?.props.onPress());
+		const confirm = alertRequests.at(-1);
+		expect(confirm?.title).toBe("Stop “Fix race in tree settle”?");
+		expect(hub.requests.filter((request) => request.method === "evener/delegate/stop")).toEqual([]);
+		await act(async () => confirm?.buttons?.find((button) => button.text === "Stop")?.onPress?.());
+		await settle();
+		expect(
+			hub.requests.filter((request) => request.method === "evener/delegate/stop").map((request) => request.params),
+		).toEqual([{ ref: COORDINATOR.ref, threadId: COORDINATOR.threadId, delegateId: "d-fix" }]);
+		expect(renderedText(tree)).toContain("Stop requested");
+		expect(stopRequests("hub-1").direct({ id: "d-fix" } as never)).toBe(true);
+	});
+
+	it("stops through the coordinator's thread as it reads now, after a restart gave it a new one", async () => {
+		const { tree, hub } = await mountSubagent(subagent(true), { stopSubagent: true });
+		// The coordinator restarts under a new thread while this screen is open.
+		const restarted = coordinator(true);
+		(restarted as unknown as { id: string }).id = "thread-restarted";
+		otherThreads.set(COORDINATOR.ref, restarted);
+		act(() => pressable(tree, "Stop subagent")?.props.onPress());
+		await act(async () =>
+			alertRequests
+				.at(-1)
+				?.buttons?.find((button) => button.text === "Stop")
+				?.onPress?.(),
+		);
+		await settle();
+		expect(
+			hub.requests.filter((request) => request.method === "evener/delegate/stop").map((request) => request.params),
+		).toEqual([{ ref: COORDINATOR.ref, threadId: "thread-restarted", delegateId: "d-fix" }]);
+	});
+
+	it("falls back to asking the coordinator when the hub doesn't know the direct stop", async () => {
+		coordinatorHub.stop = () => {
+			throw new WireError("method not found", -32601);
+		};
+		const { tree } = await mountSubagent(subagent(true), { stopSubagent: true });
+		act(() => pressable(tree, "Stop subagent")?.props.onPress());
+		await act(async () =>
+			alertRequests
+				.at(-1)
+				?.buttons?.find((button) => button.text === "Stop")
+				?.onPress?.(),
+		);
+		await settle();
+		expect(pressable(tree, "Ask coordinator to stop it")).toBeDefined();
+	});
+
+	it("reads the tree again when the direct stop names a subagent the hub no longer has", async () => {
+		coordinatorHub.stop = () => {
+			throw new WireError("delegate not found", -32603, { evenerErrorInfo: "resourceNotFound" });
+		};
+		const { tree, hub } = await mountSubagent(subagent(true), { stopSubagent: true });
+		const before = jobReads(hub);
+		act(() => pressable(tree, "Stop subagent")?.props.onPress());
+		await act(async () =>
+			alertRequests
+				.at(-1)
+				?.buttons?.find((button) => button.text === "Stop")
+				?.onPress?.(),
+		);
+		await settle();
+		expect(jobReads(hub)).toBeGreaterThan(before);
+		expect(renderedText(tree)).not.toContain("Stop requested");
+	});
+
+	it("reads the tree again when the direct stop finds it already finishing", async () => {
+		coordinatorHub.stop = () => ({ outcome: "notRunning" });
+		const { tree, hub } = await mountSubagent(subagent(true), { stopSubagent: true });
+		const before = jobReads(hub);
+		act(() => pressable(tree, "Stop subagent")?.props.onPress());
+		await act(async () =>
+			alertRequests
+				.at(-1)
+				?.buttons?.find((button) => button.text === "Stop")
+				?.onPress?.(),
+		);
+		await settle();
+		expect(jobReads(hub)).toBeGreaterThan(before);
+		expect(renderedText(tree)).not.toContain("Stop requested");
+	});
+
+	it("offers no direct stop from a connection that has gone", async () => {
+		const { tree } = await mountSubagent(subagent(true), { stopSubagent: true });
+		expect(pressable(tree, "Stop subagent")).toBeDefined();
+		harness.connection = { ...harness.connection, state: "reconnecting" };
+		const route = {
+			key: "subagent-local:fix",
+			name: "Subagent",
+			params: { hubId: "hub-1", ref: "local:fix", title: "Fix race in tree settle", coordinator: COORDINATOR },
+		};
+		act(() => tree.update(<SubagentScreen route={route as never} navigation={navigation as never} />));
+		await settle();
+		expect(pressable(tree, "Stop subagent")).toBeUndefined();
+	});
+
+	it("tries the direct stop again on a new connection after one hub didn't know it", async () => {
+		coordinatorHub.stop = () => {
+			throw new WireError("method not found", -32601);
+		};
+		const { tree } = await mountSubagent(subagent(true), { stopSubagent: true });
+		act(() => pressable(tree, "Stop subagent")?.props.onPress());
+		await act(async () =>
+			alertRequests
+				.at(-1)
+				?.buttons?.find((button) => button.text === "Stop")
+				?.onPress?.(),
+		);
+		await settle();
+		expect(pressable(tree, "Stop subagent")).toBeUndefined();
+		const route = {
+			key: "subagent-local:fix",
+			name: "Subagent",
+			params: { hubId: "hub-1", ref: "local:fix", title: "Fix race in tree settle", coordinator: COORDINATOR },
+		};
+		const upgraded = hubClient(subagent(true));
+		harness.connection = { ...harness.connection, client: upgraded.client };
+		act(() => tree.update(<SubagentScreen route={route as never} navigation={navigation as never} />));
+		await settle();
+		expect(pressable(tree, "Stop subagent")).toBeDefined();
+	});
+
+	it("asks the coordinator when its thread can't be read to learn whether a direct stop works", async () => {
+		coordinatorHub.readFails = COORDINATOR.ref;
+		const { tree } = await mountSubagent(subagent(true), { stopSubagent: true });
+		expect(pressable(tree, "Ask coordinator to stop it")).toBeDefined();
+		expect(pressable(tree, "Stop subagent")).toBeUndefined();
+	});
+
+	it("gives a finished subagent the composer back, which sends to it", async () => {
+		const { tree, hub } = await mountSubagent(subagent(false), {
+			jobs: subagentTree({ terminal: true, outcome: "completed", runEndedAt: new Date().toISOString() }),
+		});
+		expect(pressable(tree, "Open coordinator")).toBeUndefined();
+		await type(tree, "Try the other lock order");
+		await press(tree, "Send");
+		const sent = hub.requests.find((request) => request.method === "turn/start");
+		expect(sent?.params).toMatchObject({
+			ref: "local:fix",
+			input: [{ type: "text", text: "Try the other lock order" }],
+		});
+	});
+
+	it("goes back to the coordinator from Open coordinator", async () => {
+		const { tree } = await mountSubagent(subagent(true));
+		act(() => pressable(tree, "Open coordinator")?.props.onPress());
+		expect(navigation.pop).toHaveBeenCalledWith(1);
+	});
+
+	it("reads the coordinator's tree again when this subagent's status changes", async () => {
+		const { hub } = await mountSubagent(subagent(true));
+		const before = jobReads(hub);
+		act(() =>
+			hub.notify({
+				method: "thread/status/changed",
+				params: { threadId: "thread-local:fix", ref: "local:fix", status: { type: "idle" } },
+			} as AnyNotification),
+		);
+		await settle();
+		expect(jobReads(hub)).toBeGreaterThan(before);
+	});
+
+	it("opens its coordinator's Subagents list from its own Subagents chip", async () => {
+		const served = subagent(true);
+		(served as unknown as { evener: Record<string, unknown> }).evener.diagnostics = {
+			delegates: [
+				{
+					delegateId: "d-child",
+					ownerSessionId: "fix",
+					rootSessionId: "coord",
+					childSessionId: "child",
+					transcriptRef: "local:child",
+					type: "subagent",
+					lifecycle: "running",
+					phase: "running",
+					status: "running",
+					resumable: false,
+					needsAttention: false,
+					projectionRevision: 1,
+				},
+			],
+		};
+		const { tree } = await mountSubagent(served);
+		act(() => pressable(tree, "Subagents, 1")?.props.onPress());
+		expect(navigation.navigate).toHaveBeenCalledWith("Subagents", { hubId: "hub-1", ...COORDINATOR });
+	});
+
+	it("opens a document it names in the Reader on its own ref, where its review goes (ruling 16)", async () => {
+		vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response("# Fix the settle race\n"));
+		const served = subagent(false);
+		(served as unknown as { cwd: string }).cwd = "/home/jesse/git/evener";
+		(served as unknown as { turns: unknown[] }).turns = [
+			{
+				id: "t1",
+				status: "completed",
+				itemsView: "default",
+				items: [
+					{
+						id: "said-1",
+						turnId: "t1",
+						type: "agentMessage",
+						status: "completed",
+						text: "The plan is in `docs/superpowers/plans/settle-race.md`.",
+					},
+				],
+			},
+		];
+		const { tree } = await mountSubagent(served, {
+			jobs: subagentTree({ terminal: true, outcome: "completed", runEndedAt: new Date().toISOString() }),
+		});
+		const chip = tree.root.findAll(
+			(node) => String(node.type) === "Pressable" && String(node.props.accessibilityLabel).startsWith("Plan, "),
+		)[0];
+		if (!chip) throw new Error("no document chip");
+		act(() => chip.props.onPress());
+		expect(navigation.navigate).toHaveBeenCalledWith("Reader", {
+			hubId: "hub-1",
+			sessionRef: "local:fix",
+			path: "docs/superpowers/plans/settle-race.md",
+			reviewRef: "local:fix",
+			reviewTitle: "Fix race in tree settle",
+		});
+	});
+
+	it("opens a subagent row in a coordinator's transcript as that subagent's own session, under this one", async () => {
+		const served = thread(COORDINATOR.ref, "active");
+		(served as unknown as { turns: unknown[] }).turns = [
+			{
+				id: "t1",
+				status: "inProgress",
+				itemsView: "default",
+				items: [
+					{
+						id: "call-d",
+						turnId: "t1",
+						type: "commandExecution",
+						toolName: "delegate",
+						status: "inProgress",
+						argumentsJson: JSON.stringify({ description: "Fix race in tree settle" }),
+					},
+				],
+			},
+		];
+		(served as unknown as { evener: Record<string, unknown> }).evener.diagnostics = {
+			delegates: [
+				{
+					delegateId: "d-fix",
+					ownerSessionId: "coord",
+					rootSessionId: "coord",
+					childSessionId: "fix",
+					transcriptRef: "local:fix",
+					originItemId: "call-d",
+					description: "Fix race in tree settle",
+					type: "subagent",
+					lifecycle: "running",
+					phase: "running",
+					status: "running",
+					resumable: false,
+					needsAttention: false,
+					projectionRevision: 1,
+				},
+			],
+		};
+		const { tree } = await mount(served);
+		const row = tree.root.findAll(
+			(node) =>
+				String(node.type) === "Pressable" &&
+				String(node.props.accessibilityLabel).startsWith("Fix race in tree settle, "),
+		)[0];
+		if (!row) throw new Error("no subagent row");
+		act(() => row.props.onPress());
+		expect(navigation.push).toHaveBeenCalledWith("Subagent", {
+			hubId: "hub-1",
+			ref: "local:fix",
+			title: "Fix race in tree settle",
+			coordinator: { ref: COORDINATOR.ref, threadId: COORDINATOR.threadId, title: "Session" },
+		});
+	});
+
+	it("shows the toast once when the subagent stops at your request", async () => {
+		const { tree, hub } = await mountSubagent(subagent(true));
+		const [row] = flattenSubagents(subagentTree() as never);
+		if (!row) throw new Error("no row");
+		act(() => stopRequests("hub-1").request(COORDINATOR.ref, row, Date.now()));
+		coordinatorHub.tree = subagentTree(
+			{ terminal: true, outcome: "cancelled", runEndedAt: new Date().toISOString() },
+			2,
+		);
+		act(() =>
+			hub.notify({
+				method: "thread/status/changed",
+				params: { threadId: "thread-local:fix", ref: "local:fix", status: { type: "idle" } },
+			} as AnyNotification),
+		);
+		await settle();
+		const toasts = () => tree.root.findAllByType(Toast).map((toast) => toast.props.toast?.text);
+		expect(toasts()).toContain("“Fix race in tree settle” stopped");
 	});
 });

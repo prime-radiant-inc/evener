@@ -39,9 +39,9 @@ describe("the review message (spec 10.2)", () => {
 	});
 
 	it("keeps a comment's own lines and quotes one line of at most 160 characters", () => {
-		expect(reviewMessage("a.md", "commentOnly", [{ quote: "  Split\n this   into two.  ", text: "One.\nTwo.\n" }], "")).toBe(
-			"Review of a.md: comments only.\n\n> Split this into two.\nOne.\nTwo.",
-		);
+		expect(
+			reviewMessage("a.md", "commentOnly", [{ quote: "  Split\n this   into two.  ", text: "One.\nTwo.\n" }], ""),
+		).toBe("Review of a.md: comments only.\n\n> Split this into two.\nOne.\nTwo.");
 		expect(quoteLine("x".repeat(200))).toBe(`${"x".repeat(159)}…`);
 		expect(quoteLine("x".repeat(160))).toBe("x".repeat(160));
 	});

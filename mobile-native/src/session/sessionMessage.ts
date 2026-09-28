@@ -4,7 +4,12 @@
 // runtime, like the composer's messages, so they survive a dropped
 // connection. Both read the session's live state from here, because the
 // session's own screen isn't reading while another screen is on top.
-import { type AppwireClientLike, hydrateThread, sessionControls, type ThreadCapabilities } from "@evener/appwire-client";
+import {
+	type AppwireClientLike,
+	hydrateThread,
+	sessionControls,
+	type ThreadCapabilities,
+} from "@evener/appwire-client";
 import { reconcilePendingEntries } from "@evener/appwire-client/state/mutation";
 import { type ConversationClientLike, READ_ITEM_LIMIT } from "../../../mobile/src/services/conversation";
 import { type NativeMutationRuntime, nativeMutationTargetKey } from "../nativeMutationRuntime";

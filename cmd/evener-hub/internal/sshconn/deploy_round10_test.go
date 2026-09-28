@@ -211,6 +211,8 @@ func TestRound10ResolvedTargetAvoidsRedeploy(t *testing.T) {
 			return os.WriteFile(out, []byte("staged-binary"), 0o755)
 		},
 	})
+	testDeployRecorder(t, m)
+	testRestartRecorder(t, m)
 
 	// Two attempts from the SAME original host (empty EvenerPath), exactly as a
 	// reconnect starts from the registry host rather than the last attempt's copy.

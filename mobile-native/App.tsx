@@ -13,6 +13,7 @@ import { SafeAreaProvider } from "react-native-safe-area-context";
 import { BoardScreen } from "./src/board/BoardScreen";
 import { RowMenuSheet } from "./src/board/RowMenu";
 import { ConnectionProvider, useConnection } from "./src/ConnectionProvider";
+import { HubSheet } from "./src/hub/HubSheet";
 import { ForkScreen } from "./src/ForkScreen";
 import { HubSettingsScreen } from "./src/HubSettingsScreen";
 import { KeybindingPreferencesScreen } from "./src/KeybindingPreferencesScreen";
@@ -51,6 +52,8 @@ import { CommentsSheet } from "./src/reader/CommentsSheet";
 import { FilesSheet } from "./src/reader/FilesSheet";
 import { OutlineSheet } from "./src/reader/OutlineSheet";
 import { ReviewSheet } from "./src/reader/ReviewSheet";
+import { StopSubagentSheet } from "./src/subagents/StopSubagentSheet";
+import { SubagentScreen } from "./src/subagents/SubagentScreen";
 import { SubagentsScreen } from "./src/subagents/SubagentsScreen";
 import { ReaderScreen } from "./src/reader/ReaderScreen";
 import { replaceAnimation } from "./src/session/titleSwipe";
@@ -203,6 +206,11 @@ function Navigation() {
 						})}
 					/>
 					<Stack.Screen
+						name="Hub"
+						component={HubSheet}
+						options={{ presentation: "modal", headerShown: false }}
+					/>
+					<Stack.Screen
 						name="NewSession"
 						component={NewSessionScreen}
 						options={{ title: "New session" }}
@@ -224,6 +232,11 @@ function Navigation() {
 						name="Subagents"
 						component={SubagentsScreen}
 						options={{ title: "" }}
+					/>
+					<Stack.Screen
+						name="Subagent"
+						component={SubagentScreen}
+						options={({ route }) => ({ title: route.params.title || "Subagent" })}
 					/>
 					<Stack.Group
 						screenOptions={{
@@ -289,6 +302,11 @@ function Navigation() {
 							name="FilesSheet"
 							component={FilesSheet}
 							options={SHEET_ROUTES.FilesSheet}
+						/>
+						<Stack.Screen
+							name="StopSubagentSheet"
+							component={StopSubagentSheet}
+							options={SHEET_ROUTES.StopSubagentSheet}
 						/>
 					</Stack.Group>
 				</Stack.Navigator>

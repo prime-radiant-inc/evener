@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import type { ActivityDelegate, ActivityEntry, ActivityJob, ActivitySessionNode, ActivityTree } from "@evener/appwire-client";
+import type {
+	ActivityDelegate,
+	ActivityEntry,
+	ActivityJob,
+	ActivitySessionNode,
+	ActivityTree,
+} from "@evener/appwire-client";
 import {
 	countLabel,
 	flattenSubagents,
@@ -62,12 +68,22 @@ const delegate = (id: string, over: Partial<ActivityDelegate> = {}): ActivityDel
 	branch: {},
 	...over,
 });
-const running = (id: string, over: Partial<ActivityDelegate> = {}) => delegate(id, { runStartedAt: ago(4 * MIN), ...over });
+const running = (id: string, over: Partial<ActivityDelegate> = {}) =>
+	delegate(id, { runStartedAt: ago(4 * MIN), ...over });
 const failed = (id: string, over: Partial<ActivityDelegate> = {}) =>
 	delegate(id, { terminal: true, outcome: "failed", runStartedAt: ago(20 * MIN), runEndedAt: ago(6 * MIN), ...over });
 const done = (id: string, over: Partial<ActivityDelegate> = {}) =>
-	delegate(id, { terminal: true, outcome: "completed", runStartedAt: ago(30 * MIN), runEndedAt: ago(10 * MIN), ...over });
-const tree = (...delegates: ActivityDelegate[]): ActivityTree => ({ revision: 1, root: session("local:coord", delegates.map(entry)) });
+	delegate(id, {
+		terminal: true,
+		outcome: "completed",
+		runStartedAt: ago(30 * MIN),
+		runEndedAt: ago(10 * MIN),
+		...over,
+	});
+const tree = (...delegates: ActivityDelegate[]): ActivityTree => ({
+	revision: 1,
+	root: session("local:coord", delegates.map(entry)),
+});
 const rowOf = (d: ActivityDelegate) => flattenSubagents(tree(d))[0] as SubagentRow;
 
 describe("a subagent's state is its own (spec 9)", () => {
@@ -94,7 +110,9 @@ describe("a subagent's state is its own (spec 9)", () => {
 
 	it("reads a turn container by its turns", () => {
 		expect(subagentState(delegate("t", { type: "turns", turns: [job(true), job(false)] }))).toBe("running");
-		expect(subagentState(delegate("t", { type: "turns", turns: [job(true, { outcome: "failure" }), job(true)] }))).toBe("failed");
+		expect(subagentState(delegate("t", { type: "turns", turns: [job(true, { outcome: "failure" }), job(true)] }))).toBe(
+			"failed",
+		);
 		expect(subagentState(delegate("t", { type: "turns", turns: [job(true, { outcome: "success" })] }))).toBe("done");
 	});
 
@@ -130,9 +148,11 @@ describe("one flat list", () => {
 		expect(subagentTitle(delegate("x", { description: "  ", mandate: "Fix the settle race.\nThen report." }))).toBe(
 			"Fix the settle race.",
 		);
-		expect(subagentTitle(delegate("x", { description: undefined, child: { ...session("local:x"), label: "Read the plan" } }))).toBe(
-			"Read the plan",
-		);
+		expect(
+			subagentTitle(
+				delegate("x", { description: undefined, child: { ...session("local:x"), label: "Read the plan" } }),
+			),
+		).toBe("Read the plan");
 		expect(subagentTitle(delegate("x", { description: undefined }))).toBe("local:x");
 	});
 
@@ -209,7 +229,9 @@ describe("why lines on the fallbacks (ruling 6)", () => {
 			child: session("local:r", [{ kind: "shell", job: job(false, { command: "go test ./agent/..." }) }]),
 		});
 		expect(subagentWhy(rowOf(commanding), NOW)).toEqual({ text: "Running go test ./agent/..." });
-		const waiting = running("w", { child: session("local:w", [entry(running("a")), entry(running("b")), entry(done("c"))]) });
+		const waiting = running("w", {
+			child: session("local:w", [entry(running("a")), entry(running("b")), entry(done("c"))]),
+		});
 		expect(subagentWhy(rowOf(waiting), NOW)).toEqual({ text: "Waiting on 2 subagents" });
 		expect(subagentWhy(rowOf(running("q", { latestActivityAt: ago(4 * MIN) })), NOW)).toEqual({ text: "Quiet 4m" });
 		expect(subagentWhy(rowOf(running("n", { latestActivityAt: ago(1 * MIN) })), NOW)).toEqual({ text: "Working" });

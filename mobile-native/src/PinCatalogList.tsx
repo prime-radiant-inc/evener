@@ -36,14 +36,7 @@ export function PinCatalogList({
 }) {
 	const colors = useColors();
 	const isUpdating = updating({ loading, error, stale, remaining });
-	const showEmpty =
-		connected &&
-		loaded &&
-		!loading &&
-		!pending &&
-		!uncertain &&
-		!error &&
-		sections.length === 0;
+	const showEmpty = connected && loaded && !loading && !pending && !uncertain && !error && sections.length === 0;
 	return (
 		<FlatList
 			data={sections}
@@ -52,9 +45,7 @@ export function PinCatalogList({
 			ListHeaderComponent={
 				<View style={{ gap: 8, paddingBottom: 8 }}>
 					<Copy>{hubName}</Copy>
-					{loading || pending ? (
-						<ActivityIndicator accessibilityLabel="Checking pinned sections" />
-					) : null}
+					{loading || pending ? <ActivityIndicator accessibilityLabel="Checking pinned sections" /> : null}
 					{!connected ? (
 						<Copy muted>Reconnect to view pinned sections.</Copy>
 					) : uncertain ? (
@@ -68,20 +59,14 @@ export function PinCatalogList({
 					) : null}
 					<ErrorMessage message={error} />
 					{!connected || uncertain || error ? (
-						<Action
-							disabled={loading || pending}
-							onPress={refresh}
-							tone="quiet"
-						>
+						<Action disabled={loading || pending} onPress={refresh} tone="quiet">
 							{connected ? "Refresh sections" : "Reconnect"}
 						</Action>
 					) : null}
 					{showEmpty ? (
 						<View style={{ gap: 8 }}>
 							<Copy>No pinned sections yet.</Copy>
-							<Copy muted>
-								Pin a session from its actions menu to create a section.
-							</Copy>
+							<Copy muted>Pin a session from its actions menu to create a section.</Copy>
 						</View>
 					) : null}
 				</View>
@@ -97,11 +82,7 @@ export function PinCatalogList({
 						},
 					]}
 				>
-					<Action
-						tone="quiet"
-						onPress={() => open(section)}
-						label={`Open ${section.name}`}
-					>
+					<Action tone="quiet" onPress={() => open(section)} label={`Open ${section.name}`}>
 						{section.name}
 					</Action>
 					<Copy muted>
@@ -111,10 +92,7 @@ export function PinCatalogList({
 			)}
 			ListFooterComponent={
 				remaining > 0 ? (
-					<Action
-						disabled={!connected || !loaded || loading || uncertain || pending}
-						onPress={more}
-					>
+					<Action disabled={!connected || !loaded || loading || uncertain || pending} onPress={more}>
 						{`Load more sections (${remaining} remaining)`}
 					</Action>
 				) : null

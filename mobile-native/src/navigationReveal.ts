@@ -1,7 +1,4 @@
-import type {
-	NavigationReadParams,
-	NavigationSessionLocation,
-} from "@evener/appwire-client";
+import type { NavigationReadParams, NavigationSessionLocation } from "@evener/appwire-client";
 import {
 	decodeNavigationResponse,
 	materializeSnapshot,
@@ -25,30 +22,18 @@ export async function locateSession(
 		resource: "location",
 		ref,
 	});
-	if (signal?.aborted)
-		throw new Error(
-			"The location request was cancelled when you left the session.",
-		);
+	if (signal?.aborted) throw new Error("The location request was cancelled when you left the session.");
 	let location: NavigationSessionLocation | undefined;
 	try {
 		const key: ResourceKey = { kind: "location", ref };
 		const decoded = decodeNavigationResponse(key, undefined, response);
 		if (decoded.status === "snapshot")
-			location = materializeSnapshot(
-				key,
-				decoded,
-			) as unknown as NavigationSessionLocation;
+			location = materializeSnapshot(key, decoded) as unknown as NavigationSessionLocation;
 	} catch {
 		location = undefined;
 	}
-	if (
-		response.status !== "ok" ||
-		location?.ref !== ref ||
-		location.session?.ref !== ref
-	)
-		throw new Error(
-			"This session could not be located. Refresh and try again.",
-		);
+	if (response.status !== "ok" || location?.ref !== ref || location.session?.ref !== ref)
+		throw new Error("This session could not be located. Refresh and try again.");
 	if (location.project_key) {
 		if (!["current", "recent", "archived"].includes(location.tier ?? ""))
 			throw new Error("The hub returned an unknown project section.");
@@ -108,15 +93,9 @@ export async function revealNavigationRow<T>(
 	await pages.refresh();
 	while (isCurrent()) {
 		const state = pages.getSnapshot();
-		if (state.loading || !state.loaded)
-			throw new Error(
-				"The list is refreshing. Try locating the session again.",
-			);
+		if (state.loading || !state.loaded) throw new Error("The list is refreshing. Try locating the session again.");
 		if (state.error || state.stale)
-			throw new Error(
-				state.error ||
-					"The list changed while locating the session. Locate again.",
-			);
+			throw new Error(state.error || "The list changed while locating the session. Locate again.");
 		const path = pathTo(state.rows, ref, key, children);
 		if (path) return path;
 		if (!state.remaining)

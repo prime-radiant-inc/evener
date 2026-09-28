@@ -56,6 +56,8 @@ export const SHEET_ROUTES = {
 	CommandsSheet: sheetOptions(["medium", "large"], "medium"),
 	// The session's documents, a list (ruling 26).
 	FilesSheet: sheetOptions(["medium", "large"], "medium"),
+	// You type the stop request in it (ruling 26).
+	StopSubagentSheet: sheetOptions(["medium", "large"], "large"),
 } satisfies { [Name in keyof Routes]?: NativeStackNavigationOptions };
 
 export function isSheetRoute(name: string): boolean {

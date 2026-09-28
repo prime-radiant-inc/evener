@@ -58,13 +58,26 @@ describe("a subagent's row (spec 8.2)", () => {
 		const children = [
 			delegate({ delegateId: "c1", parentDelegateId: "d1", originItemId: "other-1" }),
 			delegate({ delegateId: "c2", parentDelegateId: "d1", originItemId: "other-2" }),
-			delegate({ delegateId: "c3", parentDelegateId: "d1", originItemId: "other-3", status: "completed", terminal: true }),
+			delegate({
+				delegateId: "c3",
+				parentDelegateId: "d1",
+				originItemId: "other-3",
+				status: "completed",
+				terminal: true,
+			}),
 		];
-		expect(subagentLine(row(), [delegate({ quietForMs: 300_000 }), ...children], NOW).activity).toBe("Waiting on 2 subagents");
+		expect(subagentLine(row(), [delegate({ quietForMs: 300_000 }), ...children], NOW).activity).toBe(
+			"Waiting on 2 subagents",
+		);
 	});
 
 	it("says how long ago a failed one failed, and why", () => {
-		const failed = delegate({ status: "failed", terminal: true, runEndedAt: ago(360_000), reason: "model refused the task" });
+		const failed = delegate({
+			status: "failed",
+			terminal: true,
+			runEndedAt: ago(360_000),
+			reason: "model refused the task",
+		});
 		expect(subagentLine(row({ state: "failed" }), [failed], NOW)).toMatchObject({
 			state: "failed",
 			stateText: "failed · 6m",
@@ -102,7 +115,12 @@ describe("a running subagent between updates", () => {
 	// The delegate snapshot's runningForMs and quietForMs were true when it
 	// last arrived; the row reads the clock against its timestamps instead.
 	it("keeps counting from when it started and when it last did anything", () => {
-		const stale = delegate({ runStartedAt: ago(300_000), runningForMs: 60_000, latestActivityAt: ago(240_000), quietForMs: 0 });
+		const stale = delegate({
+			runStartedAt: ago(300_000),
+			runningForMs: 60_000,
+			latestActivityAt: ago(240_000),
+			quietForMs: 0,
+		});
 		expect(subagentLine(row(), [stale], NOW)).toMatchObject({ stateText: "running · 5m", activity: "Quiet 4m" });
 	});
 

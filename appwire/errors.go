@@ -45,6 +45,11 @@ const (
 	// an older AppWire protocol than the server speaks; the message names both
 	// versions.
 	ErrorUpgradeRequired ErrorInfo = "upgradeRequired"
+	// ErrorPathOutsideSession marks a file read whose path, or a symlink along
+	// it, leads outside the session's working directory. It shares
+	// CodeInvalidParams; the controller's /doc/file proxy maps it to 403, the
+	// status the local route answers.
+	ErrorPathOutsideSession ErrorInfo = "pathOutsideSession"
 	// ErrorKeybindingsPostRename marks a keybindings patch that APPLIED (the
 	// rename published the new revision) before a follow-up durable step
 	// failed; the error's data carries the applied canonical state.
@@ -549,6 +554,14 @@ func TranscriptItemCursorStale() WireError {
 			EvenerErrorInfo:  ErrorTranscriptItemCursorStale,
 			RetryDisposition: RetryDispositionAutomatic,
 		},
+	}
+}
+
+func PathOutsideSession(message string) WireError {
+	return WireError{
+		Code:    CodeInvalidParams,
+		Message: message,
+		Data:    ErrorData{EvenerErrorInfo: ErrorPathOutsideSession},
 	}
 }
 
