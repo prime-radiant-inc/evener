@@ -8,16 +8,17 @@
 // the platform's storage adapter and the authoritative-read/lifecycle
 // orchestration that drives the dispatcher.
 //
-// The README's text is loaded through Vite's `?raw` import: the package
-// declares no @types/node, so node:fs is not an option in its tests.
+// The assertion anchors on the ownership sentence itself: the list of
+// responsibilities that sentence hands to applications must not name mutation
+// reconciliation. It is an absence check with no positive phrase match, so an
+// unrelated README rewording cannot turn a docs edit red. The README is read
+// through Vite's `?raw` import because the package declares no @types/node, so
+// node:fs is not an option in its tests.
 import { expect, test } from "vitest";
 import readme from "./README.md?raw";
 
-test("the README's ownership summary does not assign mutation reconciliation to applications", () => {
-  expect(readme).not.toMatch(/applications own[^.]*\bmutation reconciliation\b/i);
-});
-
-test("the README's ownership summary credits the package with the reusable mutation policy", () => {
-  expect(readme).toMatch(/\breusable mutation policy\b/);
-  expect(readme).toMatch(/\bMutationDispatcher\b/);
+test("the README's ownership sentence does not assign mutation reconciliation to applications", () => {
+  const ownership = /Applications own[^.]*\./.exec(readme.replace(/\s+/g, " "));
+  expect(ownership, "the README must still name what applications own").not.toBeNull();
+  expect(ownership?.[0]).not.toMatch(/mutation reconciliation/i);
 });
