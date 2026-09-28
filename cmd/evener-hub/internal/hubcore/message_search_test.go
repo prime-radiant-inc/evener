@@ -305,6 +305,59 @@ func TestMessageSearchRereadsARewrittenTranscriptWhole(t *testing.T) {
 	}
 }
 
+// A rebuild of the transcript index (another handle compacting or resuming
+// it) can land between readTranscriptItems' own incarnation check and its
+// ChangedSince call: a rebuild always mints a new incarnation
+// (transcriptindex.TestRebuildMintsANewIncarnation), and a rebuild resets the
+// update log's floor to zero, so ChangedSince no longer recognizes held.Length
+// as stale and would otherwise answer from the new incarnation's update log
+// using the old incarnation's length. readTranscriptItems must notice the
+// incarnation moved and read the whole (new) incarnation instead of trusting
+// that partial view.
+func TestReadTranscriptItemsFallsBackWholeWhenARebuildRacesTheIncarnationCheck(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "sessions", "s1.transcript.jsonl")
+	writeTestTranscript(t, path, "s1", schema.NewTurn(schema.TurnUserInput, llm.User("first message")))
+	first, err := readTranscriptItems(path, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	held := appwire.SnapshotIdentity{Incarnation: first.snapshot.Incarnation, Length: first.snapshot.Length}
+	appendTestTranscript(t, path, schema.NewTurn(schema.TurnUserInput, llm.User("second message")))
+
+	t.Cleanup(func() { testHookAfterIncarnationCheck = func() {} })
+	testHookAfterIncarnationCheck = func() {
+		other, err := transcriptindex.Open(path, transcriptindex.DirFor(path))
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = other.Close() }()
+		window, err := other.Latest(1)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := other.Rebuild(window.Length); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	read, err := readTranscriptItems(path, &held)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !read.replace {
+		t.Fatalf("read = %+v, want a whole re-read after the racing rebuild, not a partial 'changes since' view", read)
+	}
+	var texts []string
+	for _, item := range read.items {
+		if searchableMessage(item) {
+			texts = append(texts, item.Text)
+		}
+	}
+	if want := []string{"first message", "second message"}; !reflect.DeepEqual(texts, want) {
+		t.Fatalf("texts = %q, want %q: both messages, from a whole read of the new incarnation", texts, want)
+	}
+}
+
 // The index outlives the hub: reopened, it keeps what it read and reads
 // nothing again until a transcript changes.
 func TestMessageSearchKeepsWhatItReadAcrossAReopen(t *testing.T) {
@@ -518,6 +571,43 @@ func TestMessageSearchForgetsSessions(t *testing.T) {
 	}
 	if matches, _ := index.Match(context.Background(), "settle", 3); len(matches) != 0 {
 		t.Fatalf("after the past index listed nothing, matches = %+v, want none", matches)
+	}
+}
+
+// A hit's row id must never be reused by a later message, or a stale hit
+// (captured by Match before the message it names left the index) would
+// resolve, through Texts, to unrelated text instead of coming back empty as
+// Texts documents.
+func TestMessageSearchNeverReusesARowIDForAStaleHit(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "sessions", "s1.transcript.jsonl")
+	writeTestTranscript(t, path, "s1", settleTurns()...)
+	index := openTestMessageSearch(t)
+	if _, err := index.Refresh(context.Background(), []MessageSearchSession{{ID: "s1", TranscriptPath: path}}); err != nil {
+		t.Fatal(err)
+	}
+	matches, err := index.Match(context.Background(), "settle", 3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	staleHits := matches["s1"].Hits
+	if err := index.Forget(context.Background(), "s1"); err != nil {
+		t.Fatal(err)
+	}
+
+	path2 := filepath.Join(t.TempDir(), "sessions", "s2.transcript.jsonl")
+	writeTestTranscript(t, path2, "s2", settleTurns()...)
+	if _, err := index.Refresh(context.Background(), []MessageSearchSession{{ID: "s2", TranscriptPath: path2}}); err != nil {
+		t.Fatal(err)
+	}
+
+	texts, err := index.Texts(context.Background(), staleHits)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i, text := range texts {
+		if text != "" {
+			t.Fatalf("Texts(stale hit %+v) = %q, want empty: its row id must not have been reused by s2's re-indexing", staleHits[i], text)
+		}
 	}
 }
 

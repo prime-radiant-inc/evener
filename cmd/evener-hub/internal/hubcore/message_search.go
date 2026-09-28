@@ -39,6 +39,11 @@ const messageSearchSchemaVersion = 1
 //
 // The tokenizer leaves diacritics alone, so a word matches exactly what the
 // search's highlighting finds (package hub's snippets), letter case aside.
+//
+// messages.id is AUTOINCREMENT so a row id is never reused: a MessageHit
+// captured by Match can outlive its message (a later Refresh or Forget can
+// remove it), and Texts must then find nothing rather than resolve the hit's
+// id to an unrelated message that reused it.
 var messageSearchSchema = []string{
 	`CREATE TABLE transcripts(
 	session_id TEXT PRIMARY KEY,
@@ -48,7 +53,7 @@ var messageSearchSchema = []string{
 	length INTEGER NOT NULL
 )`,
 	`CREATE TABLE messages(
-	id INTEGER PRIMARY KEY,
+	id INTEGER PRIMARY KEY AUTOINCREMENT,
 	session_id TEXT NOT NULL,
 	transcript_key TEXT NOT NULL,
 	entry INTEGER NOT NULL,
@@ -343,6 +348,12 @@ func (x *MessageSearch) indexedTranscripts(ctx context.Context) (map[string]inde
 	return indexed, rows.Err()
 }
 
+// testHookAfterIncarnationCheck runs, if set, after readTranscriptItems
+// confirms the held incarnation still matches the transcript index's current
+// one, just before it calls ChangedSince. A test uses it to force a rebuild
+// of the same transcript index into that exact window.
+var testHookAfterIncarnationCheck = func() {}
+
 // readTranscriptItems reads a transcript's items through its transcript index,
 // the read model a thread read uses, so every item carries the key and
 // position a reader shows. It opens its own handle and closes it, so indexing
@@ -367,13 +378,25 @@ func readTranscriptItems(transcriptPath string, held *appwire.SnapshotIdentity) 
 			return transcriptItems{}, err
 		}
 		if incarnation == held.Incarnation {
+			testHookAfterIncarnationCheck()
 			changes, err := index.ChangedSince(held.Length)
-			if err == nil {
+			switch {
+			case err == nil && changes.Incarnation == incarnation:
 				return transcriptItems{items: candidateItems(changes.Items), snapshot: appwire.SnapshotIdentity{Incarnation: changes.Incarnation, Length: changes.Length}}, nil
-			}
-			if !errors.Is(err, transcriptindex.ErrUpdateLogTruncated) {
+			case err != nil && !errors.Is(err, transcriptindex.ErrUpdateLogTruncated):
 				return transcriptItems{}, err
 			}
+			// Either ChangedSince reported the update log truncated, or it
+			// succeeded but under an incarnation that raced past the one
+			// just confirmed above: a rebuild landed between the two calls
+			// (another handle compacting or resuming the same transcript
+			// index always mints a new incarnation,
+			// transcriptindex.TestRebuildMintsANewIncarnation) and also
+			// resets the update log's floor, so ChangedSince no longer
+			// recognizes held.Length as stale and would otherwise answer
+			// from the new incarnation's update log using the old
+			// incarnation's length. Either way the partial view it produced
+			// cannot be trusted: read the whole (current) incarnation.
 		}
 	}
 	return readEveryItem(index)
