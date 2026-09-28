@@ -167,6 +167,22 @@ describe("what alerts at all", () => {
 		expect(shown(alerts)).toEqual(["a"]);
 	});
 
+	it("takes notices away when you go to the Board, which lists them", () => {
+		const { alerts } = center();
+		alerts.offer(hostOffline);
+		expect(shown(alerts)).toEqual(["host:paradise-park"]);
+		alerts.setScreen({ kind: "board" });
+		expect(alerts.getSnapshot().banner).toBeNull();
+		const release = alerts.hold("quiet");
+		alerts.setScreen({ kind: "other" });
+		alerts.offer(hostOffline);
+		alerts.offer(session("a"));
+		alerts.setScreen({ kind: "board" });
+		release();
+		vi.advanceTimersByTime(RELEASE_MS);
+		expect(shown(alerts)).toEqual(["a"]);
+	});
+
 	it("takes a session's alerts away when you open it", () => {
 		const { alerts } = center();
 		alerts.offer(session("a"));

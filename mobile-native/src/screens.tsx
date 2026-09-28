@@ -2176,9 +2176,7 @@ export function ConversationScreen({
 		try {
 			await document.submit(async (text, images) => {
 				store.getState().setDraft(text);
-				const admitted = await deliver(service, kind, text, images);
-				if (admitted) haptic("light");
-				return admitted;
+				return deliver(service, kind, text, images);
 			});
 		} catch {
 			// A refused Send adds no text of its own: the draft stays, and the
@@ -2240,7 +2238,10 @@ export function ConversationScreen({
 			const previous = store.getState().lastAcceptedMutation;
 			await store.getState()[kind](through, buildComposerInput(text, images));
 			const accepted = store.getState().lastAcceptedMutation;
-			return accepted != null && accepted !== previous && accepted.kind === kind;
+			const admitted = accepted != null && accepted !== previous && accepted.kind === kind;
+			// Spec 16.6: a light impact on send, Send's and an error row's Retry's.
+			if (admitted) haptic("light");
+			return admitted;
 		},
 		[store],
 	);

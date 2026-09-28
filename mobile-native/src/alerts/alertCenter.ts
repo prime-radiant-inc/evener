@@ -147,12 +147,14 @@ export class AlertCenter {
 	}
 
 	/** What is on screen. Looking at a session answers its alerts: it leaves
-	 * the banner, the held alerts and the recent order. */
+	 * the banner, the held alerts and the recent order. The Board lists every
+	 * notice, so going there answers the notices the same way. */
 	setScreen(screen: AlertScreen): void {
 		this.screen = screen;
-		if (screen.kind !== "session") return;
-		const about = (alert: Alert) => alert.kind !== "notice" && alert.ref === screen.ref;
-		const recent = this.recent.filter((ref) => ref !== screen.ref);
+		if (screen.kind === "other") return;
+		const about = (alert: Alert) =>
+			screen.kind === "board" ? alert.kind === "notice" : alert.kind !== "notice" && alert.ref === screen.ref;
+		const recent = screen.kind === "session" ? this.recent.filter((ref) => ref !== screen.ref) : this.recent;
 		const held = this.held.filter((alert) => !about(alert));
 		const shown = this.banner?.alerts ?? [];
 		const kept = shown.filter((alert) => !about(alert));

@@ -936,8 +936,11 @@ it("retries a failed turn with Jesse's sentence, and leaves your draft alone", a
 	];
 	const { tree, hub } = await mount(served);
 	await type(tree, "keep this");
+	playedHaptics.length = 0;
 	await press(tree, "Retry");
 	expect(hub.mutations()).toEqual(["turn/start"]);
+	// Spec 16.6: a light impact on send, a retry's included.
+	expect(playedHaptics).toEqual(["impact:light"]);
 	const start = hub.requests.find((request) => request.method === "turn/start");
 	expect(start?.params.input).toEqual([{ type: "text", text: "Something went wrong. Please try again." }]);
 	expect(field(tree)?.props.value).toBe("keep this");
