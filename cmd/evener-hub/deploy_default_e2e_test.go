@@ -2,6 +2,7 @@ package hub
 
 import (
 	"debug/buildinfo"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -55,9 +56,18 @@ func TestDefaultDeploySourceIsTheHubExecutableE2E(t *testing.T) {
 		t.Fatalf("start fake provider: %v", err)
 	}
 	t.Cleanup(provider.Close)
-	// No extra hub args: the deploy flags are the state under test, and a hub
+	// The hub is started from the binary this test asserts about, passed
+	// explicitly: the identity under test is an input here, not whatever binary
+	// the stack helper happens to pick. No deploy flags are passed — a hub
 	// started without them is the shape production runs.
-	stack := startHubStack(t, provider)
+	stack := startHubStackOnProviderWithEvener(t, fmt.Sprintf(`
+default = "fake"
+
+[providers.fake]
+base     = "openai-compatible"
+base_url = %q
+api_key  = "fakellm-not-a-secret"
+`, provider.BaseURL()), "fake/"+fakellm.ModelID, bin)
 
 	body, err := os.ReadFile(filepath.Join(stack.home, "hub.log"))
 	if err != nil {

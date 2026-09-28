@@ -235,7 +235,7 @@ func (o *hubOptions) validateDeployFlags() error {
 // binary, and the binary `make build-hub` builds is ./cmd/evener/. os.Executable()
 // in a running hub is therefore exactly the artifact validateDeployBinary
 // accepts (buildinfo.Path == evenerMainPackage) — the test that boots a real hub
-// and reads the line this resolution logs pins it (deploy_default_e2e_test.go).
+// and reads the line this resolution logs asserts it (deploy_default_e2e_test.go).
 // It is also why the default cannot fire for an embedder or a test binary: their
 // own executable is not that build, and the unwired state is explicit rather
 // than silent — the refusals name the remedy (hubDeployHelpUnwired).

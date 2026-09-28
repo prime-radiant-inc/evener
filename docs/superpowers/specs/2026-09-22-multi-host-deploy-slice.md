@@ -261,9 +261,10 @@ pins the channel source, the wait, the restart wiring, and the start wiring.
   it, and the new `-no-deploy` wins over all three, disabling the push path and
   the installer fallback so nothing is written to a host. The unwired case is
   now only a hub whose executable is not an evener build. A dirty controller
-  may deploy its own executable or a named artifact (the bytes are the build,
-  and the post-push check still verifies them), while a `-build-source` compile
-  from a dirty tree stays refused.
+  may deploy only its own executable (see criterion 6): both a `-build-source`
+  compile and a named artifact stay refused, because neither can be proven to
+  be the controller's build — a `<sha>-dirty` label is shared by every dirty
+  tree at that commit.
 - **When a deploy happens** is unchanged from `04:1006-1016`: on an **on-disk**
   version difference **and only when a deploy path is configured** — with none,
   the host keeps its build and attaches — not on every reconnect, and a restart
@@ -492,11 +493,13 @@ coverage.
 6. **Pinned** — `TestDirtyControllerRefusalsNameTheRemedy` (both refusals and
    each remedy clause), with `TestRound13DirtyControllerDeployRefusalIsTerminal`
    pinning the push refusal's type and terminality.
-   **Amended 2026-09-27:** the refusals are the source-build ones
-   (`-build-source`, or a `BuildBinary` not declared a binary artifact);
-   `TestDirtyControllerDeploysABinaryArtifact` and
-   `TestDirtyControllerArtifactDeployConvergesThroughTheOperation` pin the
-   artifact path that now proceeds.
+   **Amended 2026-09-27:** the refusals are every source that is not this
+   controller's own executable (`-build-source`, or any `BuildBinary` without
+   `Options.OwnExecutable`); `TestDirtyControllerDeploysItsOwnExecutable` and
+   `TestDirtyControllerOwnExecutableDeployConvergesThroughTheOperation` pin the
+   own-executable path that now proceeds, and
+   `TestDirtyControllerRefusesANamedBuildBinary` pins the named artifact's
+   refusal.
 7. **Pinned** — `TestRound8InstallerVersionMismatchIsTerminal` (a moved tag is
    refused terminally, not retried) and
    `TestInstallerMovedTagRefusalNamesThePushPath` (that refusal names the

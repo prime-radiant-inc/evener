@@ -121,11 +121,14 @@ type Options struct {
 	// dirty tree at the same commit reports it too, so neither the pre-push
 	// checks nor the post-deploy version comparison could tell an
 	// operator-supplied artifact apart from a foreign one). The controller's own
-	// executable is exempt because the caller declares its bytes ARE this
-	// controller's build; the hub holds that claim up by pinning the adopted
-	// file's size and digest at startup and re-checking them before staging, so a
-	// file replaced under the hub is refused there rather than mislabeled here.
-	// The artifact's identity is still judged where it can be: the push re-reads
+	// executable is exempt because the caller — the hub's default-adoption path —
+	// declares those bytes ARE this controller's build. That declaration is the
+	// whole of the guarantee: the file is read at deploy time, so a hub whose
+	// executable was replaced under it deploys the replacement — a cross-commit
+	// one is caught after the push (errDeployUnstamped; the host reports a
+	// version this controller did not stamp), and a same-commit dirty variant is
+	// the documented, accepted residual (see the hub's ownExecutableBuild). The
+	// artifact's identity is still judged where it can be: the push re-reads
 	// it (evener identity and host target) before staging, and the on-host launch
 	// contract re-read after the deploy is compared against this controller
 	// (errDeployUnstamped).
