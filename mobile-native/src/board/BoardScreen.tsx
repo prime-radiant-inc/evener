@@ -68,7 +68,7 @@ import {
 } from "./projectTree";
 import { projectName, ProjectSectionHeader, ProjectTreeRow } from "./ProjectTreeRow";
 import { PulseMeter } from "./PulseMeter";
-import { archiveTarget, archivingSessionId, type RowActionContext } from "./rowActions";
+import { archivingSessionId, type RowActionContext } from "./rowActions";
 import { archiveRow, rowSwipes, type SwipeRowAction } from "./rowSwipes";
 import { SearchResults } from "./SearchResults";
 import { type BoardOrganization, organizationOpen, useBoardOrganization } from "./useBoardOrganization";
@@ -336,7 +336,7 @@ function Board({ hubId, hubName, navigation }: { hubId: string; hubName: string;
 	// What a row's actions may do now (rulings 16 and 21), by whether it sits
 	// in an archived tier.
 	const rowContext = (archived: boolean): RowActionContext => ({
-		connected: state === "ready" && activeProfile?.id === hubId,
+		connected: connected && activeProfile?.id === hubId,
 		organizationReady: organization.ready,
 		archived,
 	});
@@ -356,10 +356,8 @@ function Board({ hubId, hubName, navigation }: { hubId: string; hubName: string;
 		now,
 		onOpen: openSession,
 		draftRefs,
-		swipes: (item, archived) => ({
-			...rowSwipes(item, rowContext(archived), (action) => runRowAction(item, action)),
-			dimmed: archivingId !== null && archiveTarget(item.row)?.id === archivingId,
-		}),
+		swipes: (item, archived) =>
+			rowSwipes(item, rowContext(archived), archivingId, (action) => runRowAction(item, action)),
 	};
 	const rows = (items: ClassifiedRow[], variant: "signal" | "quiet", moving: boolean, archived = false) => (
 		<BoardRows items={items} variant={variant} moving={moving} archived={archived} context={listContext} />

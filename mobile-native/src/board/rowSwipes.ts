@@ -25,18 +25,21 @@ export interface RowSwipes {
 	dimmed: boolean;
 }
 
-/** A row's swipe actions, each running `run` with its action. The trailing
- * side leaves out More until the row menu it opens exists. */
+/** A row's swipe actions, each running `run` with its action, and whether
+ * it dims for `archivingId`, the session an unresolved archive is about. The
+ * trailing side leaves out More until the row menu it opens exists. */
 export function rowSwipes(
 	item: ClassifiedRow,
 	context: RowActionContext,
+	archivingId: string | null,
 	run: (action: SwipeRowAction) => void,
-): Omit<RowSwipes, "dimmed"> {
+): RowSwipes {
 	const { leading, trailing } = swipeActions(item, context);
 	const action = (key: SwipeRowAction): SwipeAction => ({ key, ...LOOKS[key], run: () => run(key) });
 	return {
 		leading: leading ? action(leading) : undefined,
 		trailing: trailing.filter((key) => key !== "more").map(action),
+		dimmed: archivingId !== null && archiveTarget(item.row)?.id === archivingId,
 	};
 }
 
