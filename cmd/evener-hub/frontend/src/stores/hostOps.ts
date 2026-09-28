@@ -1530,7 +1530,14 @@ export const hostOpsStore = create<HostOpsStoreState>((set, get) => ({
     // (and the remnant may have belonged to a remove), so re-read first and
     // never replay the old pair. reReadForced issues a new read rather than
     // joining an in-flight poll that predates the resolution.
+    //
+    // Identity captured BEFORE the read: a newer attempt (a re-opened dialog)
+    // or a replaced connection owns the state if either moved while it was
+    // out, and this continuation then publishes nothing.
+    const sequence = restartSequence(name);
+    const client = connectionStore.getState().client;
     const published = await hostsStore.getState().reReadForced();
+    if (!restartIsCurrent(name, sequence, client)) return;
     const pair = published ? currentPairFor(name) : undefined;
     set((previous) => {
       const current = previous.restarts[name];

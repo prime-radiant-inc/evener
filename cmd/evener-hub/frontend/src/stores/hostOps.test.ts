@@ -2167,6 +2167,32 @@ describe("operations polling (S15)", () => {
       expect(repair.result.outcome).toBe("teardown-complete");
     });
 
+    test("a re-seed landing after a newer restart attempt publishes nothing", async () => {
+      const fake = connectFakeClient();
+      fake.on("evener/host/list", () => ({ hosts: [row("beta")] }));
+      await hostsStore.getState().fetch();
+      hostOpsStore.getState().beginRestart("beta", { generation: 3, incarnationId: "inc-3" });
+
+      // The re-seed's forced read hangs while a NEWER attempt (a re-opened
+      // dialog) supersedes the one the continuation was started for.
+      const settlements = gateSettlements(fake, "evener/host/list");
+      const reseed = hostOpsStore.getState().reSeedRestart("beta");
+      await vi.waitFor(() => expect(settlements).toHaveLength(1));
+      hostOpsStore.getState().beginRestart("beta", { generation: 9, incarnationId: "inc-9" });
+      const newer = hostOpsStore.getState().restarts.beta;
+      if (newer === undefined) throw new Error("unreachable");
+
+      settlements[0]!.resolve({ hosts: [{ ...row("beta"), generation: 3, incarnationId: "inc-3" }] });
+      await reseed;
+
+      // The stale continuation must not overwrite the newer attempt's pair or
+      // operation ID.
+      const after = hostOpsStore.getState().restarts.beta;
+      if (after === undefined) throw new Error("unreachable");
+      expect(after.pair).toEqual(newer.pair);
+      expect(after.operationId).toBe(newer.operationId);
+    });
+
     test("teardown recovery actions: the transient busy retries; fence and unknown key never bare-retry", () => {
       expect(teardownRetryRefusalAction("host-busy-transient")).toBe("retry");
       expect(teardownRetryRefusalAction("host-busy-operation")).toBe("none");

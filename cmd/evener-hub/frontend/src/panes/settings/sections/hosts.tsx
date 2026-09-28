@@ -1080,6 +1080,9 @@ function RemnantRepairControls({
       : refusal !== null || failedArm
         ? "Retry teardown"
         : "Teardown retry";
+  // The unknown/purged remnant id has no repair action at all: the only way
+  // out is re-grounding on the list, so the surface offers exactly that.
+  const unknownRemnant = refusal?.kind === "teardown-unknown-key";
   // The escalation comes from the row's stamp, or from the retry arm itself
   // when it ran past the bound (the removed arms under-stamp the row fields).
   const escalatedNow = escalated || (repair?.phase === "retried" && repair.result.escalationAgeSec !== undefined);
@@ -1122,6 +1125,20 @@ function RemnantRepairControls({
       return;
     }
     await submitRetry();
+  }
+
+  async function rereadUnknownRemnant(): Promise<void> {
+    // The refusal names a remnant id the hub no longer knows: re-read the list
+    // so the row converges, and drop the refusal so the operator can act on
+    // whatever the list now names instead of closing and reopening into the
+    // same refusal.
+    setBusy(true);
+    try {
+      await hostsStore.getState().reReadForced();
+      hostOpsStore.getState().clearRepairRefusal(name);
+    } finally {
+      setBusy(false);
+    }
   }
 
   return (
@@ -1229,7 +1246,12 @@ function RemnantRepairControls({
                 Recover remnant
               </Button>
             )}
-            {resolved && !fenced && onContinue !== undefined && (
+            {unknownRemnant && (
+              <Button size="sm" variant="quiet" disabled={busy} onClick={() => void rereadUnknownRemnant()}>
+                Re-read host list
+              </Button>
+            )}
+            {resolved && onContinue !== undefined && (
               <Button size="sm" variant="quiet" disabled={busy} onClick={onContinue}>
                 {continueLabel}
               </Button>
