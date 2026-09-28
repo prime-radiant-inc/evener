@@ -62,7 +62,9 @@ export function GhostBubble({ ghost, disabled, canEdit, editHint, attachments, o
 				},
 			);
 		else
-			Alert.alert(ghost.text, undefined, [
+			// The caption titles it; the message itself, however long, reads
+			// beneath.
+			Alert.alert(ghost.caption, ghost.text, [
 				...menu.map((action) => ({ text: MENU_LABELS[action], onPress: () => onAction(action) })),
 				{ text: "Cancel", style: "cancel" as const },
 			]);

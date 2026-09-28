@@ -199,6 +199,27 @@ describe("tapping a ghost", () => {
 		expect(onAction).toHaveBeenCalledTimes(1);
 	});
 
+	it("asks with a short title on Android, and the message itself beneath it", async () => {
+		const { Platform } = await import("react-native");
+		const { alertRequests } = await import("../renderNative.testkit");
+		const was = Platform.OS;
+		Object.assign(Platform, { OS: "android" });
+		try {
+			alertRequests.length = 0;
+			const { tree, onAction } = mount([queued]);
+			press(tree, `${queued.text}. ${queued.caption}`);
+			expect(alertRequests).toHaveLength(1);
+			const [ask] = alertRequests;
+			expect(ask?.title).toBe(queued.caption);
+			expect(ask?.message).toBe(queued.text);
+			expect(ask?.buttons?.map((button) => button.text)).toEqual(["Edit", "Cancel message", "Cancel"]);
+			ask?.buttons?.[0]?.onPress?.();
+			expect(onAction).toHaveBeenCalledWith(queued, "edit");
+		} finally {
+			Object.assign(Platform, { OS: was });
+		}
+	});
+
 	it("does nothing when there is nothing to offer", () => {
 		const { tree } = mount([steering]);
 		press(tree, `${steering.text}. ${steering.caption}`);
