@@ -663,7 +663,24 @@ type SessionSeenSetResponse struct {
 // sessions, matching the palette's initial result set.
 type SearchParams struct {
 	Query string `json:"query,omitempty"`
+	// Scope narrows every group of the answer (S14, spec 7.4): SearchScopeAll
+	// (the default when absent), SearchScopeLive or SearchScopeArchived. An
+	// older hub ignores it and answers as for all; SearchResponse.Scope says
+	// whether it was applied.
+	Scope string `json:"scope,omitempty"`
 }
+
+// The search scopes (S14, spec 7.4).
+const (
+	// SearchScopeAll is every session.
+	SearchScopeAll = "all"
+	// SearchScopeLive is the sessions the Board's Live section holds: live and
+	// not archived.
+	SearchScopeLive = "live"
+	// SearchScopeArchived is the sessions the rail files as archived, live or
+	// ended.
+	SearchScopeArchived = "archived"
+)
 
 // SearchResult is one session hit from the hub's live or past search index.
 // Ref is the qualified session reference that clients use to open the hit.
@@ -682,6 +699,32 @@ type SearchResult struct {
 	// neither. Additive: an older hub omits both, decoding as false.
 	AskPending      bool `json:"askPending,omitempty"`
 	ApprovalPending bool `json:"approvalPending,omitempty"`
+	// Archived says the rail files the session as archived: its own archive
+	// decision, its project's, or two weeks without activity (S14). Absent
+	// when it is not, and from an older hub.
+	Archived bool `json:"archived,omitempty"`
+	// Hits are the session's newest messages that match the search, newest
+	// first, and HitCount how many match in all. Only an InSessions result
+	// carries them (S14).
+	Hits     []SearchHit `json:"hits,omitempty"`
+	HitCount int         `json:"hitCount,omitempty"`
+}
+
+// SearchHit is one message that matches a search (S14).
+type SearchHit struct {
+	// TranscriptKey and Position name the transcript item the message is, as
+	// a thread read's items carry them, so a client opens the session at it.
+	TranscriptKey string             `json:"transcriptKey"`
+	Position      ThreadItemPosition `json:"position"`
+	// Snippet is the message around its first match, one line, in parts: a
+	// part with match set is text the search matched.
+	Snippet []SearchSnippetPart `json:"snippet"`
+}
+
+// SearchSnippetPart is one run of a snippet's text.
+type SearchSnippetPart struct {
+	Text  string `json:"text"`
+	Match bool   `json:"match,omitempty"`
 }
 
 // SearchResponse groups matching live sessions separately from persisted
@@ -689,6 +732,13 @@ type SearchResult struct {
 type SearchResponse struct {
 	Live []SearchResult `json:"live"`
 	Past []SearchResult `json:"past"`
+	// InSessions lists the sessions whose messages match, each with its hits
+	// (S14), newest session first: live sessions, then ended ones. Absent when
+	// none match, and from an older hub.
+	InSessions []SearchResult `json:"inSessions,omitempty"`
+	// Scope is the scope the answer applied. An older hub leaves it out, so a
+	// client knows it offers no Archived scope and no message hits.
+	Scope string `json:"scope,omitempty"`
 }
 
 // ActivityReadParams selects the sessions evener/activity/read reports. Refs

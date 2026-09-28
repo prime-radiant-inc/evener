@@ -984,18 +984,17 @@ func TestRetirementRestoreFailsClosedOnReferenceWithoutBinding(t *testing.T) {
 	}
 }
 
-// TestRetirementRestoreFailsClosedOnOwningBindingWithoutConsumer covers the
-// crash window installScratchRetentionFor leaves open: it calls
+// TestRetirementRestoreAdoptsOwningBindingWithoutConsumer covers the crash
+// window installScratchRetentionFor leaves open: it calls
 // env.SetScratchRetentionBinding and env.PinOwnedScratch — publishing the
 // binding, its directory pin and its lease-owning slots — BEFORE
 // sandbox.UpsertScratchBinding publishes the consumer that maps a session onto
 // it. A crash in between leaves a binding that owns the retained allocation and
-// no consumer role naming it. Nothing then adopts that allocation: restore
-// prepares a pool, finds no consumer for the binding, and initialization mints
-// a replacement scratch while the original durable allocation stays pinned but
-// never adopted. Restore must refuse this manifest instead of silently losing
-// the session's scratch.
-func TestRetirementRestoreFailsClosedOnOwningBindingWithoutConsumer(t *testing.T) {
+// no consumer role naming it. Restore must not silently lose the session's
+// scratch. It reconstructs the consumer row naming the orphaned binding and
+// adopts the allocation, so the session resumes in its ORIGINAL scratch
+// directory and loses nothing.
+func TestRetirementRestoreAdoptsOwningBindingWithoutConsumer(t *testing.T) {
 	stateDir := t.TempDir()
 	base := t.TempDir()
 	workDir := t.TempDir()
@@ -1042,8 +1041,38 @@ func TestRetirementRestoreFailsClosedOnOwningBindingWithoutConsumer(t *testing.T
 	root.stateDir = stateDir
 	root.id = rootID
 	root.delegateRootSessionID = ""
-	if err := root.prepareRetainedScratch(); err == nil {
-		t.Fatal("restore prepared a manifest whose retained allocation no consumer can adopt")
+	if err := root.prepareRetainedScratch(); err != nil {
+		t.Fatalf("restore refused a manifest whose retained allocation a consumer can adopt: %v", err)
+	}
+	// The repair reconstructed the consumer row naming the orphaned binding, and
+	// kept the binding's owning slot so the allocation stays adoptable.
+	after, err := sandbox.LoadScratchRetention(owner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	row, ok := findScratchBinding(after, binding.BindingID)
+	if !ok {
+		t.Fatalf("the binding %q is absent after the restore", binding.BindingID)
+	}
+	if slot, has := row.Slots[sandbox.ScratchKindUnsandboxed]; !has || !slot.OwnsLease || filepath.Clean(slot.Dir) != filepath.Clean(scratch.Dir) {
+		t.Fatalf("the restore dropped the orphaned binding's owning slot: %+v", row.Slots)
+	}
+	current := ""
+	for _, consumer := range after.Consumers {
+		if consumer.SessionID == rootID {
+			current = consumer.CurrentBindingID
+		}
+	}
+	if current != binding.BindingID {
+		t.Fatalf("the reconstructed consumer row names %q, want the orphaned binding %q", current, binding.BindingID)
+	}
+	// Adoption installs the binding's original directory on the environment.
+	env := execenv.NewLocalExecutionEnvironment(t.TempDir())
+	if _, _, err := root.adoptConsumerScratch(env, rootID); err != nil {
+		t.Fatalf("adopt the reconstructed consumer binding: %v", err)
+	}
+	if got := env.SessionScratchDir(); filepath.Clean(got) != filepath.Clean(scratch.Dir) {
+		t.Fatalf("restored scratch = %q, want the original %q", got, scratch.Dir)
 	}
 }
 

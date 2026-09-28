@@ -71,6 +71,12 @@ it("renders nothing without a toast", () => {
 	expect(render(<Toast toast={null} dismiss={() => {}} />).toJSON()).toBeNull();
 });
 
+it("lets taps and scrolls pass through its empty area to the content behind it", () => {
+	const tree = render(<Toast toast={{ id: 1, text: "Stopped" }} dismiss={() => {}} />);
+	const [root] = tree.root.findAllByType("View" as never);
+	expect(root?.props.pointerEvents).toBe("box-none");
+});
+
 it("dismisses before running the action, so a follow-up toast the action shows survives the same batch", () => {
 	let controller!: ReturnType<typeof useToast>;
 	function Harness() {

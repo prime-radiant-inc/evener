@@ -144,8 +144,10 @@ than uniquely re-addressing one session; sids that collide with a canonical
 bucket are omitted and disclosed instead. Non-reproducible
 sessions (bare id ambiguous across buckets) and colliding bare sids (a
 bare id that silently resolves to the wrong session on the agent side) are
-omitted from `sessionRefs` and disclosed via `totalSessionRefs` and the
-Description prose instead. `evidence.doctorCommand` is the
+omitted from `sessionRefs` and disclosed instead via `sessionLocations`
+structured `{bucket, sessionId}` identities for the non-reproducible ones (in
+the same capped set the prose names), `totalSessionRefs` (the overall distinct
+count), and the Description prose. `evidence.doctorCommand` is the
 audit invocation (runbook + session refs) that
 reproduces it, scoped to the affected sessions — empty when every affected session is non-reproducible (bare id ambiguous across buckets), and capped at `evidenceSessionRefCap` (200) entries when there are more reproducible selectors than the command can carry; the Description prose discloses any omission or non-reproducibility.
 
