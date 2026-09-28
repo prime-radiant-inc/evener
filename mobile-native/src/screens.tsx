@@ -289,6 +289,10 @@ export type Routes = {
 	};
 	CommentsSheet: ReviewSheetParams;
 	ReviewSheet: ReviewSheetParams;
+	/** A coordinator's subagents (spec 9). */
+	Subagents: { hubId: string; ref: string; threadId: string; title: string };
+	/** A subagent's own session, over its coordinator's (ruling 30). */
+	Subagent: { hubId: string; ref: string; title: string; coordinator: { ref: string; threadId: string; title: string } };
 	/** The session's documents as they were when the sheet opened (ruling 26). */
 	FilesSheet: { hubId: string; ref: string; title: string; documents: SessionDocument[] };
 };
@@ -1150,12 +1154,12 @@ export function ConversationScreen({
 				});
 				return;
 			}
-			setActivityContext({
+			// The Subagents list (spec 9), in place of the Activity sheet.
+			navigation.navigate("Subagents", {
 				hubId: route.params.hubId,
 				ref: route.params.ref,
 				threadId: current.threadId,
-				hubName: activeProfile?.name ?? "Hub",
-				client,
+				title: route.params.title,
 			});
 		},
 		[
@@ -1164,7 +1168,6 @@ export function ConversationScreen({
 			chipsConnected,
 			route.params.hubId,
 			route.params.ref,
-			activeProfile?.name,
 			navigation,
 			route.params.title,
 		],
@@ -2951,6 +2954,8 @@ export function ConversationScreen({
 					choose={openSessionDestination}
 				/>
 			) : null}
+			{/* Dormant: the Subagents list replaced its one way in, and phase 4 PR 8
+			    (plan Task 21) deletes the sheet with this state. */}
 			{activeProfile?.id === route.params.hubId &&
 			activityContext?.hubId === route.params.hubId &&
 			activityContext.ref === route.params.ref ? (

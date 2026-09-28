@@ -773,9 +773,12 @@ it("floats the context chips over the list, opens each one's sheet, and hides th
 	session.measure(48);
 	expect(session.list().props.contentContainerStyle).toMatchObject({ paddingTop: 64 });
 
-	expect(tree.root.findAllByType(ActivitySheet)).toEqual([]);
 	act(() => chip("Subagents, 1").props.onPress());
-	expect(tree.root.findAllByType(ActivitySheet)).toHaveLength(1);
+	expect(navigation.navigate).toHaveBeenCalledWith("Subagents", { hubId: "hub-1", ref, threadId: "thread-1", title: "Session" });
+	vi.mocked(navigation.navigate).mockClear();
+	act(() => menuAction("Subagents").onPress());
+	expect(navigation.navigate).toHaveBeenCalledWith("Subagents", { hubId: "hub-1", ref, threadId: "thread-1", title: "Session" });
+	expect(tree.root.findAllByType(ActivitySheet)).toEqual([]);
 
 	act(() => chip("Tasks, 1 of 2 done").props.onPress());
 	expect(navigation.navigate).toHaveBeenCalledWith("TasksSheet", {
@@ -846,9 +849,9 @@ it("a Subagents/Tasks chip tap still works during a blip shorter than the connec
 			block().findAll(
 				(node) => node.props.accessibilityRole === "button" && node.props.accessibilityLabel === label,
 			)[0];
-		expect(tree.root.findAllByType(ActivitySheet)).toEqual([]);
+		vi.mocked(navigation.navigate).mockClear();
 		act(() => chip("Subagents, 1").props.onPress());
-		expect(tree.root.findAllByType(ActivitySheet)).toHaveLength(1);
+		expect(navigation.navigate).toHaveBeenCalledWith("Subagents", { hubId: "hub-1", ref, threadId: "thread-1", title: "Session" });
 	} finally {
 		vi.useRealTimers();
 	}

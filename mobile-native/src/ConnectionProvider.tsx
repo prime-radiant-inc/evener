@@ -29,6 +29,7 @@ import { removeOrganizationData } from "./nativeOrganization";
 import { readerPositions } from "./nativeReaderPosition";
 import { forgetDocumentSummaries } from "./reader/documentSummaries";
 import { forgetDocumentsForHub } from "./reader/nativeDocumentMemory";
+import { forgetSubagentTrees } from "./subagents/subagentTree";
 import { forgetDetailLevelsForHub } from "./session/nativeDetailLevels";
 import { forgetNoteDrafts } from "./session/sessionNotes";
 
@@ -148,6 +149,7 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
 						(id) => forgetNoteDrafts(Storage, id),
 						forgetDocumentsForHub,
 						forgetDocumentSummaries,
+						forgetSubagentTrees,
 					]);
 				},
 			}),
