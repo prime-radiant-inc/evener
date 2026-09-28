@@ -1,8 +1,6 @@
-import { cleanup, render, screen } from "@testing-library/react";
-import { afterEach, expect, test, vi } from "vitest";
+import { render, screen } from "@testing-library/react";
+import { expect, test, vi } from "vitest";
 import { Timestamp } from "./index";
-
-afterEach(() => cleanup());
 
 // Expected absolutes are computed through the SAME Intl formatters the
 // widget uses, on the SAME epoch values — so the suite is timezone-

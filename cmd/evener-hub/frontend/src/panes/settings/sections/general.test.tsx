@@ -1,7 +1,7 @@
 import type { SettingsOverviewResponse } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
-import { cleanup, render, screen } from "@testing-library/react";
-import { afterEach, beforeEach, expect, test } from "vitest";
+import { render, screen } from "@testing-library/react";
+import { beforeEach, expect, test } from "vitest";
 import { connectionStore } from "../../../stores/connection";
 import { resetSettingsOverviewStoreForTests } from "../../../stores/settingsOverview";
 import { GeneralSection } from "./general";
@@ -30,8 +30,6 @@ beforeEach(() => {
   connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
   resetSettingsOverviewStoreForTests();
 });
-
-afterEach(cleanup);
 
 test("renders every field in the documented order with the cross-referenced State dir from storage", async () => {
   const fake = connectFakeClient();

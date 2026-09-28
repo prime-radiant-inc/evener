@@ -2,14 +2,12 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { AskQuestionRef } from "@evener/appwire-client";
-import { cleanup, render, screen } from "@testing-library/react";
+import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { useState } from "react";
-import { afterEach, expect, test, vi } from "vitest";
+import { expect, test, vi } from "vitest";
 import { AskQuestionCard } from "./AskQuestionCard";
 import type { AskAnswerState } from "./askDockStore";
-
-afterEach(cleanup);
 
 // A stylesheet assertion must never match its own commentary (testing.md:
 // "A stylesheet assertion that matches its own comment") - strip comments

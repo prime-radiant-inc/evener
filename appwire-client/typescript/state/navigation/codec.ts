@@ -445,18 +445,25 @@ function entityIdentityForResource(
   return { logical: `session\0${value.value.ref as string}`, anchor: false };
 }
 
+// entity checks an entity record's structure only. validateDeltaForResource
+// runs the value validator separately (entityIdentityForResource below), so
+// this stays a boolean guard rather than a second full validation (#2478).
 function entity(value: unknown, key: ResourceKey): value is NavigationEntityRecord {
-  if (
-    !exactKeys(value, ["key", "kind", "value"]) ||
-    !entityKeyValid(key, value.key) ||
-    !safeString(value.kind, 128) ||
-    !isRecord(value.value)
-  )
-    return false;
-  const kind = value.kind;
-  if (typeof kind !== "string") return false;
-  entityIdentityForResource(key, { kind, value: value.value });
-  return true;
+  return (
+    exactKeys(value, ["key", "kind", "value"]) &&
+    entityKeyValid(key, value.key) &&
+    safeString(value.kind, 128) &&
+    isRecord(value.value)
+  );
+}
+
+// validateEntity runs an entity record's structure check and its value's
+// validator once, returning the value's decoded identity. validateGraphForResource
+// needs the identity, so a single call replaces the
+// entity()+entityIdentityForResource() pair it used to run (#2478).
+function validateEntity(value: unknown, key: ResourceKey): { logical: string; anchor: boolean } {
+  if (!entity(value, key)) throw schemaError("entity schema");
+  return entityIdentityForResource(key, { kind: value.kind, value: value.value });
 }
 
 function owner(value: unknown): value is NavigationOrderContainer["owner"] {
@@ -634,10 +641,10 @@ export function validateGraphForResource(
   let anchorKey: string | undefined;
   let sessionEntities = 0;
   for (const [mapKey, item] of graph.entities) {
-    if (mapKey !== item.key || !entity(item, key)) throw schemaError("entity schema");
+    if (mapKey !== item.key) throw schemaError("entity schema");
+    const decoded = validateEntity(item, key);
     if (item.kind === "session" && ++sessionEntities > MAX_NAVIGATION_SESSION_ENTITIES)
       throw schemaError("resource graph");
-    const decoded = entityIdentityForResource(key, item);
     if (logical.has(decoded.logical)) throw schemaError("logical identity");
     logical.add(decoded.logical);
     if (decoded.anchor) {
@@ -731,14 +738,19 @@ export function validateSnapshotForResource(
     !Array.isArray(snapshot.containers)
   )
     throw schemaError("snapshot");
+  // Build the maps decode validates, rejecting a duplicate key outright.
+  // validateGraphForResource below runs each entity and container validator
+  // exactly once; validating here too made a snapshot read run them twice
+  // before merge's third pass (#2478).
   const entities = new Map<string, NavigationGraphEntity>();
   for (const item of snapshot.entities) {
-    if (!entity(item, key) || entities.has(item.key)) throw schemaError("entity schema");
-    entities.set(item.key, item);
+    if (!isRecord(item) || typeof item.key !== "string" || entities.has(item.key)) throw schemaError("entity schema");
+    entities.set(item.key, item as NavigationGraphEntity);
   }
   const containers = new Map<string, NavigationGraphContainer>();
   for (const item of snapshot.containers) {
-    if (!container(item, key) || containers.has(item.key)) throw schemaError("container schema");
+    if (!isRecord(item) || typeof item.key !== "string" || containers.has(item.key))
+      throw schemaError("container schema");
     containers.set(item.key, item as NavigationGraphContainer);
   }
   validateGraphForResource(key, versionValue, {
@@ -788,8 +800,8 @@ const RESPONSE_COMMON_KEYS = ["status", "generationId", "revision", "etag"] as c
 const RESPONSE_SNAPSHOT_KEYS = [...RESPONSE_COMMON_KEYS, "representation", "data"] as const;
 const RESPONSE_DELTA_KEYS = [...RESPONSE_COMMON_KEYS, "representation", "base", "data"] as const;
 
-// The value-record keys of an entity a resource holds; entity() already
-// refused a kind the resource cannot hold.
+// The value-record keys of an entity a resource holds; validateEntity already
+// refused, through entityIdentityForResource, a kind the resource cannot hold.
 function entityValueKeys(key: ResourceKey, kind: string): ValueRecordKeys {
   if (kind === "session") return SESSION_KEYS;
   if (kind === "pin_section") return PIN_SECTION_KEYS;

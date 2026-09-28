@@ -102,6 +102,42 @@ func TestBuildTreeClearReplacementUsesStableWorkspaceRef(t *testing.T) {
 	}
 }
 
+// A replaced daemon's NeedsYou row must carry the same stable workspace ref as
+// its Live and project rows. The NeedsYou node literal omitted Ref, so
+// navigationNodeRef fell back to the new instance ID; a client that matches
+// Needs-you membership to rows by ref then missed the session.
+func TestBuildTreeClearReplacementNeedsYouUsesStableWorkspaceRef(t *testing.T) {
+	now := time.Date(2026, 8, 28, 12, 0, 0, 0, time.UTC)
+	metas := []schema.SessionMeta{{
+		ID:             "old-instance",
+		CreatedAt:      now,
+		UpdatedAt:      now,
+		OriginalPrompt: "old prompt",
+		EnvInfo:        schema.EnvironmentInfo{WorkingDir: "/workspace"},
+	}}
+	live := []LiveEntry{{
+		Entry: rendezvous.Entry{
+			SourceID:     "local",
+			SessionID:    "new-instance",
+			WorkspaceRef: "local:old-instance",
+			WorkingDir:   "/workspace",
+		},
+		SessionID: "new-instance",
+		Status:    appwire.ThreadStatusAwaiting,
+	}}
+	projects := map[string]identifier.Project{
+		"/workspace": {ID: "project", CanonicalPath: "/workspace"},
+	}
+
+	tree := BuildTreeAtWithProjects(metas, live, nil, now, projects)
+	if len(tree.NeedsYou) != 1 || tree.NeedsYou[0].ID != "new-instance" || tree.NeedsYou[0].Ref != "local:old-instance" {
+		t.Fatalf("needs-you replacement = %#v, want new instance with stable ref", tree.NeedsYou)
+	}
+	if len(tree.Live) != 1 || tree.Live[0].Ref != "local:old-instance" {
+		t.Fatalf("live replacement ref = %#v, want local:old-instance", tree.Live)
+	}
+}
+
 func TestBuildTreeDoesNotUseCrossSourceWorkspaceRef(t *testing.T) {
 	now := time.Date(2026, 8, 28, 12, 0, 0, 0, time.UTC)
 	metas := []schema.SessionMeta{{
@@ -1377,7 +1413,7 @@ func fuzzScenarioBuildTree_ClampsSubagentsOfDeadParent(t *testing.T) {
 // state: no flag, no tool, no target.
 func fuzzScenarioBuildTree_DeadParentClearsItsSubagentsApproval(t *testing.T) {
 	child := staleSubagentOfDeadParent(t, LiveEntry{PID: 9, SessionID: "01STALESUB", Status: appwire.ThreadStatusActive, PendingEscalation: true, PendingEscalations: []appwire.SandboxEscalationRequested{
-		{EscalationID: "esc_1", Tool: "write_file", Kind: "file", DeniedPath: "/home/me/sites/docs/index.md"},
+		{EscalationID: "esc_1", Tool: "write_file", Kind: "file_tool", DeniedPath: "/home/me/sites/docs/index.md"},
 	}})
 	if child.State != "ended" || child.ApprovalPending || child.ApprovalTool != "" || child.ApprovalTarget != "" {
 		t.Fatalf("stale subagent = state %q, approval %v %q %q; want ended with no approval", child.State, child.ApprovalPending, child.ApprovalTool, child.ApprovalTarget)
@@ -2370,8 +2406,8 @@ func fuzzScenarioLiveTier_LiveOnlyLeafCarriesApprovalPending(t *testing.T) {
 // builder names the oldest pending card's tool and target too.
 func fuzzScenarioLiveTier_LiveOnlyLeafCarriesTheFirstApproval(t *testing.T) {
 	live := []LiveEntry{{PID: 1, SessionID: "01NOMETA", Status: appwire.ThreadStatusActive, PendingEscalation: true, PendingEscalations: []appwire.SandboxEscalationRequested{
-		{EscalationID: "esc_1", Tool: "write_file", Kind: "file", DeniedPath: "/home/me/sites/docs/index.md"},
-		{EscalationID: "esc_2", Tool: "edit_file", Kind: "file", DeniedPath: "/etc/hosts"},
+		{EscalationID: "esc_1", Tool: "write_file", Kind: "file_tool", DeniedPath: "/home/me/sites/docs/index.md"},
+		{EscalationID: "esc_2", Tool: "edit_file", Kind: "file_tool", DeniedPath: "/etc/hosts"},
 	}}}
 	tree := buildTree(nil, live)
 	if len(tree.Live) != 1 || tree.Live[0].ApprovalTool != "write_file" || tree.Live[0].ApprovalTarget != "/home/me/sites/docs/index.md" {

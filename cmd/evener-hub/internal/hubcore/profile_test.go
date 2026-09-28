@@ -5,7 +5,6 @@ import (
 	"testing"
 
 	"primeradiant.com/evener/appwire"
-	"primeradiant.com/evener/rendezvous"
 	"primeradiant.com/evener/server"
 )
 
@@ -34,11 +33,7 @@ func fuzzScenarioStatusProber_KeepsTheRootsProfile(t *testing.T) {
 // A resumed session's first publication carries its profile too, so a sign-in
 // notice counts it before the next scan.
 func TestRosterReadSpawnedThreadPublishesTheProfile(t *testing.T) {
-	r := NewRoster(t.TempDir(), nil)
-	entry := rendezvous.Entry{
-		PID: 1001, SourceID: "local", Protocol: appwire.ProtocolVersion,
-		Endpoint: "ws://127.0.0.1:50001/rpc", ThreadID: "01SPAWNED", SessionID: "01SPAWNED",
-	}
+	r, entry := newSpawnedRoster(t)
 	if _, err := r.ReadSpawnedThread(t.Context(), entry, func(context.Context) (appwire.ThreadReadResponse, error) {
 		return appwire.ThreadReadResponse{Thread: appwire.Thread{
 			ID: "01SPAWNED", SessionID: "01SPAWNED",

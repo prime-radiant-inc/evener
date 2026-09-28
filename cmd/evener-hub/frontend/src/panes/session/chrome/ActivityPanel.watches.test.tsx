@@ -5,9 +5,9 @@
 import type { NavigationWatchSummary, ThreadCapabilities, ThreadModel } from "@evener/appwire-client";
 import * as activityRows from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
-import { act, cleanup, render, screen } from "@testing-library/react";
+import { act, render, screen } from "@testing-library/react";
 import { createRef } from "react";
-import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+import { beforeEach, describe, expect, test, vi } from "vitest";
 import { activityPanelStore, resetActivityPanelStoreForTests } from "../../../stores/activityPanel";
 import { connectionStore } from "../../../stores/connection";
 import { resetThreadsStoreForTests } from "../../../stores/threads";
@@ -92,10 +92,6 @@ beforeEach(() => {
   connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
   resetThreadsStoreForTests();
   resetActivityPanelStoreForTests();
-});
-
-afterEach(() => {
-  cleanup();
 });
 
 describe("ActivityPanelBody watches", () => {

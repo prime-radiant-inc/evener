@@ -49,6 +49,16 @@ func simulateKill(t *testing.T) {
 	t.Cleanup(func() { testKillAfterRecordWrites = nil })
 }
 
+// simulateItemKill installs testKillAfterItemUpdateLog the same way
+// simulateKill installs testKillAfterRecordWrites.
+func simulateItemKill(t *testing.T) {
+	t.Helper()
+	testKillAfterItemUpdateLog = func() error {
+		return errors.New("killed between the update-log row and the item overwrite")
+	}
+	t.Cleanup(func() { testKillAfterItemUpdateLog = nil })
+}
+
 // changedIgnoringIncarnation is x's ChangedSince(0), with Incarnation zeroed
 // so two builds of the same content compare equal regardless of which
 // random incarnation each minted.

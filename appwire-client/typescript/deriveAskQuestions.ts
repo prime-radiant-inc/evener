@@ -114,15 +114,23 @@ function lastResolutionIndex(items: readonly ItemModel[]): number {
   return last;
 }
 
-export function liveAskQuestions(model: ThreadModel): AskQuestionRef[] {
-  if (!model.askPending) return [];
-  const items = model.turns.flatMap((turn) => turn.items);
-  const boundary = lastResolutionIndex(items);
+// refsForItem flattens one ask_user item's questions into refs, memoized on
+// the ITEM reference. The reducer hands an untouched turn back by reference
+// across a fold (reducer.ts's mapTurn and mergeHistory), but it rebuilds the
+// turns ARRAY every fold — so a memo keyed on model.turns never
+// survives a notification, and liveAskQuestions used to re-parse every pending
+// ask_user's argumentsJson on each delta (#1580's residual, #1709). The item's
+// own fields never move once it exists (an update replaces the item), so the
+// parse and the callId fallback are stable under this key. A WeakMap so a
+// discarded item's refs go with it.
+const refsByItem = new WeakMap<ItemModel, AskQuestionRef[]>();
+
+function refsForItem(item: ItemModel): AskQuestionRef[] {
+  const cached = refsByItem.get(item);
+  if (cached !== undefined) return cached;
   const refs: AskQuestionRef[] = [];
-  items.forEach((item, index) => {
-    if (index <= boundary || !isAckedAskUserItem(item)) return;
-    const questions = parseAskUserQuestions(item);
-    if (!questions) return;
+  const questions = parseAskUserQuestions(item);
+  if (questions) {
     // callId should always be present for a real ask_user call (set at
     // TOOL_CALL_START); item.id is a defensive fallback so a malformed/
     // synthetic item still gets a stable, non-colliding-with-nothing key
@@ -140,6 +148,19 @@ export function liveAskQuestions(model: ThreadModel): AskQuestionRef[] {
         ifUnanswered: q.ifUnanswered,
       });
     });
+  }
+  refsByItem.set(item, refs);
+  return refs;
+}
+
+export function liveAskQuestions(model: ThreadModel): AskQuestionRef[] {
+  if (!model.askPending) return [];
+  const items = model.turns.flatMap((turn) => turn.items);
+  const boundary = lastResolutionIndex(items);
+  const refs: AskQuestionRef[] = [];
+  items.forEach((item, index) => {
+    if (index <= boundary || !isAckedAskUserItem(item)) return;
+    refs.push(...refsForItem(item));
   });
   return refs;
 }

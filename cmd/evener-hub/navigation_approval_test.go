@@ -32,8 +32,8 @@ func TestNavigationRowsCarryApprovalPending(t *testing.T) {
 	}
 	roster := hubcore.NewRosterWithEntries(
 		hubcore.LiveEntry{Entry: rendezvous.Entry{PID: 1, SessionID: "01APPROVAL", WorkingDir: project.CanonicalPath}, SessionID: "01APPROVAL", Status: appwire.ThreadStatusActive, PendingEscalation: true, PendingEscalations: []appwire.SandboxEscalationRequested{
-			{EscalationID: "esc_1", Tool: "write_file", Kind: "file", DeniedPath: "/home/me/sites/docs/index.md"},
-			{EscalationID: "esc_2", Tool: "edit_file", Kind: "file", DeniedPath: "/etc/hosts"},
+			{EscalationID: "esc_1", Tool: "write_file", Kind: "file_tool", DeniedPath: "/home/me/sites/docs/index.md"},
+			{EscalationID: "esc_2", Tool: "edit_file", Kind: "file_tool", DeniedPath: "/etc/hosts"},
 		}},
 		hubcore.LiveEntry{Entry: rendezvous.Entry{PID: 2, SessionID: "01WORKING", WorkingDir: project.CanonicalPath}, SessionID: "01WORKING", Status: appwire.ThreadStatusActive},
 	)
@@ -88,7 +88,7 @@ func assertNavigationApprovalJSON(t *testing.T, row hubapi.NavigationSessionSumm
 // bound arrives cut to that, so one long path cannot make the hub's schema, and
 // then the client's codec, refuse the whole section and every other row in it.
 func TestNavigationProjectionTruncatesTheApprovalDetail(t *testing.T) {
-	rows := liveTaskRows(t, []hubcore.TreeNode{{
+	rows := liveNavigationRows(t, []hubcore.TreeNode{{
 		ID: "session-approval", Title: "approval", Kind: "session", State: "active", ApprovalPending: true,
 		ApprovalTool:   strings.Repeat("t", maxNavigationIdentityBytes+10),
 		ApprovalTarget: strings.Repeat("é", 600),

@@ -661,7 +661,10 @@ func TestMaxRoundsFlagIsAuthoritative(t *testing.T) {
 	probe := probeFile{Prompt: "p"}
 	res := probeResult{WorkDir: "/work", StateDir: "/state"}
 
-	args := cliProbeArgs(cfg, probe, res)
+	args, err := cliProbeArgs(cfg, probe, res)
+	if err != nil {
+		t.Fatalf("cliProbeArgs: %v", err)
+	}
 	value := ""
 	for i, a := range args {
 		if a == "--max-rounds" && i+1 < len(args) {
@@ -693,7 +696,10 @@ func TestMaxRoundsFlagIsAuthoritative(t *testing.T) {
 		t.Fatalf("default maxRounds = %d, want %d", parsed.maxRounds, defaultMaxRounds)
 	}
 	defCfg := runConfig{model: "openai/m", maxRounds: defaultMaxRounds, reasoningEffort: "high"}
-	defArgs := cliProbeArgs(defCfg, probe, res)
+	defArgs, err := cliProbeArgs(defCfg, probe, res)
+	if err != nil {
+		t.Fatalf("cliProbeArgs: %v", err)
+	}
 	defValue := ""
 	for i, a := range defArgs {
 		if a == "--max-rounds" && i+1 < len(defArgs) {

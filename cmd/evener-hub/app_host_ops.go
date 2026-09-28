@@ -651,19 +651,191 @@ func (m *hubHostManager) registerOpsHandlers(server *appserver.Server) {
 	// its own fixed processing order (app_host_deploy.go).
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerHostDeploy, hostManageHandler(m.Deploy))
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerHostRestart, hostManageHandler(m.Restart))
+	// operations is the surface's read: no gate, no dial, no registry
+	// resolution — the same admission as the rest (controller-local; a remote
+	// origin refused) and nothing held while it answers from the store.
+	appserver.HandleTyped(server.Router(), appwire.MethodEvenerHostOperations, hostManageHandler(m.Operations))
 }
 
-// revokeHostTokens drops name's outstanding confirmation tokens (§3's live
-// removal revocation). A missing operation store has no rows to drop, and a
-// store failure is logged rather than returned: the removal's hub.toml commit
-// has already landed and cannot be unwound, and the rows it would leave behind
-// are inert — see the call site in Remove, and the deploy slice's binding
-// comparison that refuses them.
-func (m *hubHostManager) revokeHostTokens(name string) {
+// Operations implements evener/host/operations (§8, §10): the read-only page of
+// the operation store's records. It is a read in every sense — no gate, no
+// dial, no write, no registry resolution — so a removed host's retained history
+// stays readable, and a read never attaches anything (the same
+// no-lazy-attachment rule `list`/`status` carry). Admission is the host
+// surface's: the registration-time origin guard refuses a remote-originated
+// request, and the handler keeps the guard for direct callers (tests,
+// embedders), exactly as Plan does.
+func (m *hubHostManager) Operations(ctx context.Context, params appwire.HostOperationsParams) (appwire.HostOperationsResponse, error) {
+	if err := guardControllerLocalHosts(ctx); err != nil {
+		return appwire.HostOperationsResponse{}, err
+	}
 	if m.cfg.ops == nil {
-		return
+		return appwire.HostOperationsResponse{}, appwire.InternalError("the host operation store is not configured, so no operations can be read")
 	}
-	if err := m.cfg.ops.RevokeTokens(name); err != nil {
-		m.logf("host %q removed, but its outstanding confirmation tokens could not be dropped: %v", name, err)
+	query, err := operationsQuery(params)
+	if err != nil {
+		return appwire.HostOperationsResponse{}, err
 	}
+	page, err := m.cfg.ops.ReadOperations(query)
+	if err != nil {
+		return appwire.HostOperationsResponse{}, operationsRefusal(err)
+	}
+	response, err := operationsResponse(page)
+	if err != nil {
+		return appwire.HostOperationsResponse{}, appwire.InternalError(err.Error())
+	}
+	return response, nil
+}
+
+// operationsQuery maps §10's params onto the store's read. The store owns the
+// filter semantics; this translation only splits the wire's presence rules from
+// the store's pointers and refuses a state outside the closed wire set before
+// the store ever sees it.
+func operationsQuery(params appwire.HostOperationsParams) (hostops.OperationsQuery, error) {
+	query := hostops.OperationsQuery{
+		Host:              strings.TrimSpace(params.Name),
+		ClientOperationID: params.OperationID,
+		IncarnationID:     params.IncarnationID,
+		ID:                params.ID,
+		Limit:             params.Limit,
+		Cursor:            params.Cursor,
+	}
+	if params.State != "" {
+		state, err := hostopsState(params.State)
+		if err != nil {
+			return hostops.OperationsQuery{}, appwire.InvalidParams(fmt.Sprintf("evener/host/operations: %v", err))
+		}
+		query.State = state
+	}
+	if params.Generation != 0 {
+		generation := params.Generation
+		query.Generation = &generation
+	}
+	return query, nil
+}
+
+// hostopsState maps the wire's closed operation-state set onto the store's.
+func hostopsState(state appwire.OperationState) (hostops.State, error) {
+	switch state {
+	case appwire.OperationStatePending:
+		return hostops.StatePending, nil
+	case appwire.OperationStateRunning:
+		return hostops.StateRunning, nil
+	case appwire.OperationStateComplete:
+		return hostops.StateComplete, nil
+	case appwire.OperationStateFailed:
+		return hostops.StateFailed, nil
+	case appwire.OperationStateInterrupted:
+		return hostops.StateInterrupted, nil
+	case appwire.OperationStateOrphanUnverified:
+		return hostops.StateOrphanUnverified, nil
+	}
+	return "", fmt.Errorf("operation state %q is outside the wire's set", state)
+}
+
+// operationsRefusal maps the store's read refusals onto §11's envelopes:
+// stale-entry (a cursor pin drifted), cursor-invalidated (a mid-pagination
+// compaction), cursor-too-large (the over-cap first page), and invalid params
+// for a malformed query. Anything else — a record host without its mirrored
+// boundary included — is an internal error.
+func operationsRefusal(err error) error {
+	if stale, ok := errors.AsType[*hostops.CursorStaleError](err); ok {
+		return appwire.StaleEntry(appwire.StaleEntryBinding(stale.Binding), err.Error())
+	}
+	if invalidated, ok := errors.AsType[*hostops.CursorInvalidatedError](err); ok {
+		return appwire.CursorInvalidated(invalidated.CompactSeq, invalidated.Host,
+			cursorBoundWire(invalidated.Bound), err.Error())
+	}
+	if tooLarge, ok := errors.AsType[*hostops.CursorTooLargeError](err); ok {
+		return appwire.CursorTooLarge(tooLarge.CapBytes, err.Error())
+	}
+	if errors.Is(err, hostops.ErrInvalidOperationsQuery) {
+		return appwire.InvalidParams(err.Error())
+	}
+	return appwire.InternalError(fmt.Sprintf("reading the operation store failed: %v", err))
+}
+
+// cursorBoundWire renders one cursor bounds entry as §11's value union: the
+// {generation, incarnationId, presenceEpoch} object, or the literal "absent"
+// the hostBoundaries map also carries.
+func cursorBoundWire(bound hostops.CursorBound) any {
+	if bound.Absent {
+		return appwire.HostBoundaryAbsent
+	}
+	return appwire.HostBoundary{
+		Generation:    bound.Boundary.Generation,
+		IncarnationID: bound.Boundary.IncarnationID,
+		PresenceEpoch: bound.Boundary.PresenceEpoch,
+	}
+}
+
+// operationsResponse renders one store page as §10's response: the records
+// field-for-field, the top-level pair exactly on host-pinned pages, and the
+// hostBoundaries value union exactly on unfiltered cross-host pages.
+func operationsResponse(page hostops.OperationsPage) (appwire.HostOperationsResponse, error) {
+	response := appwire.HostOperationsResponse{
+		Operations: make([]appwire.OperationRecord, 0, len(page.Records)),
+		NextCursor: page.NextCursor,
+	}
+	for _, record := range page.Records {
+		wire, err := operationRecordWire(record)
+		if err != nil {
+			return appwire.HostOperationsResponse{}, err
+		}
+		response.Operations = append(response.Operations, wire)
+	}
+	if page.Generation != nil {
+		response.Generation = *page.Generation
+	}
+	response.IncarnationID = page.IncarnationID
+	if page.HostBoundaries != nil {
+		response.HostBoundaries = make(map[string]any, len(page.HostBoundaries))
+		for host, bound := range page.HostBoundaries {
+			if bound.Absent {
+				response.HostBoundaries[host] = appwire.HostBoundaryAbsent
+				continue
+			}
+			response.HostBoundaries[host] = appwire.HostBoundary{
+				Generation:    bound.Boundary.Generation,
+				IncarnationID: bound.Boundary.IncarnationID,
+				PresenceEpoch: bound.Boundary.PresenceEpoch,
+			}
+		}
+	}
+	return response, nil
+}
+
+// operationRecordWire renders one stored record as §10's OperationRecord. The
+// `compacted` marker is set exactly on a read-only replay rebuilt from a dedup
+// tombstone; the fencing-owned fields (`orphanBoundary`, `orphanResolved`,
+// `attestation`) stay absent until their owning slices register them, exactly
+// as appwire.OperationRecord's own comment records.
+func operationRecordWire(record hostops.Record) (appwire.OperationRecord, error) {
+	state, err := operationWireState(record.State)
+	if err != nil {
+		return appwire.OperationRecord{}, err
+	}
+	wire := appwire.OperationRecord{
+		ID:                record.ID,
+		ClientOperationID: record.ClientOperationID,
+		Host:              record.Host,
+		Generation:        record.Generation,
+		IncarnationID:     record.IncarnationID,
+		Kind:              string(record.Kind),
+		State:             state,
+		CreatedAt:         record.CreatedAt.Format(time.RFC3339),
+		UpdatedAt:         record.UpdatedAt.Format(time.RFC3339),
+		HostRemoved:       record.HostRemoved,
+		Compacted:         record.Compacted,
+	}
+	for _, entry := range record.Progress {
+		wire.Progress = append(wire.Progress, appwire.OperationProgressEntry{
+			TS:      entry.TS.Format(time.RFC3339),
+			Message: entry.Message,
+		})
+	}
+	if record.Result != nil {
+		wire.Result = &appwire.OperationResult{OK: record.Result.OK, Message: record.Result.Message}
+	}
+	return wire, nil
 }

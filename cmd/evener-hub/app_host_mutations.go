@@ -33,6 +33,7 @@ package hub
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -422,6 +423,143 @@ func (m *hubHostManager) compensateStagedCommit(plan *hostCommitPlan, previous [
 	return appwire.HostMutationResult{}, err
 }
 
+// compensateStagedCrossFile is §9's pre-commit compensation for a removal whose
+// cross-file step failed after the swap landed: hub.toml is restored to the
+// pre-mutation set (adopting any foreign edit, exactly as
+// compensateStagedCommit does), the intent goes with the restore, the purged
+// rows come back exactly as the restored hub.toml's generation revalidates them
+// — only when the purge actually landed, which the compensation record's own
+// phase is the durable evidence of — and the armed record and its stash clear.
+// The clear happens only after every step of the arm succeeded: a failed step
+// returns early leaving the record and its stash for the next boot, never a
+// cleared compensation beside a half-restored state.
+// The mutation lock is held on entry and released before return.
+func (m *hubHostManager) compensateStagedCrossFile(plan *hostCommitPlan, previous []hostreg.Host, cause error, stash string) (appwire.HostMutationResult, error) {
+	// The mutation lock is held on entry; every path releases it here.
+	defer m.cfg.mu.Unlock()
+	adopted := m.adoptedPreimage(plan, previous)
+	err := m.rollbackHubTOML(adopted, unionHosts(adopted, plan.Entries), cause, compensationChange(plan))
+	rollbackConverged := !errors.Is(err, errHubTOMLRollbackFailed)
+	if rollbackConverged {
+		// The live set the rollback restored: the pre-mutation entries (with any
+		// adopted foreign edit for this name).
+		m.cfg.store.set(adopted)
+	} else if fileCfg, ok := m.hostFileRecords(); ok {
+		// The rollback did not land: the file still holds the failed commit's
+		// bytes, so the store's model converges to them — a model ahead of the
+		// file (the pre-mutation live set) would make the next write re-emit a
+		// live entry beside the committed tombstone and intent, a mix no writer
+		// produces.
+		m.installRestoredRecords(fileCfg)
+	}
+	m.unmarkMutating(plan.Name)
+	if m.cfg.ops == nil {
+		m.pruneHubTOMLStash(stash)
+		return appwire.HostMutationResult{}, err
+	}
+	record, open := m.cfg.ops.Compensation(plan.Name)
+	if !open {
+		// Nothing armed (the arm itself failed): there is no store state to
+		// compensate, and the stash has no record to serve.
+		m.pruneHubTOMLStash(stash)
+		return appwire.HostMutationResult{}, err
+	}
+	if record.Generation != plan.Entry.Generation || record.Stash != stash {
+		// A stale record from an earlier mutation of this name (a crash left it
+		// open and this commit armed nothing): it is not this commit's to clear,
+		// and its stash is the earlier commit's restore source.
+		m.logf("remove %q compensation: the open record (generation %d, stash %q) does not belong to this commit (generation %d, stash %q); the record and its stash are left untouched",
+			plan.Name, record.Generation, record.Stash, plan.Entry.Generation, stash)
+		return appwire.HostMutationResult{}, err
+	}
+	if !rollbackConverged {
+		// The hub.toml restore did not converge: leave the record and its stash
+		// for the next boot to retry, never a cleared compensation beside a
+		// diverged file.
+		m.logf("remove %q compensation: hub.toml rollback did not converge; the store-local record and its stash are left for the next boot", plan.Name)
+		return appwire.HostMutationResult{}, err
+	}
+	// The restored hub.toml's generation revalidates the rows that come back.
+	generation, incarnation := plan.Entry.Generation, plan.Entry.IncarnationID
+	alsoKeep := func(row hostops.Token) bool {
+		return row.Generation == generation && row.IncarnationID == incarnation
+	}
+	failStep := func(step string, stepErr error) {
+		m.logf("remove %q compensation: step %s failed; the record and its stash are left for the next boot: %v", plan.Name, step, stepErr)
+	}
+	seam := func(step string) error { return m.compensationStepFailure(plan.Name, step) }
+	switch hostops.NormalizeCompensationPhase(record.Phase) {
+	case hostops.CompensationArmed:
+		// The purge never landed: the rows are untouched.
+	case hostops.CompensationHubTOML, hostops.CompensationRows:
+		// The purge landed (the record advanced in the same write): the hub.toml
+		// restore is back, so the rows the restored generation revalidates are
+		// re-inserted, then the runtime step advances and the record clears. A
+		// record left in `rows` by an earlier crash resumes the same way.
+		if hostops.NormalizeCompensationPhase(record.Phase) == hostops.CompensationHubTOML {
+			if stepErr := seam("advance-rows"); stepErr != nil {
+				failStep("advance-rows", stepErr)
+				return appwire.HostMutationResult{}, err
+			}
+			if stepErr := m.cfg.ops.AdvanceCompensation(plan.Name, hostops.CompensationRows); stepErr != nil {
+				failStep("advance-rows", stepErr)
+				return appwire.HostMutationResult{}, err
+			}
+		}
+		if stepErr := seam("reinsert"); stepErr != nil {
+			failStep("reinsert", stepErr)
+			return appwire.HostMutationResult{}, err
+		}
+		if _, stepErr := m.cfg.ops.ReinsertCompensationRows(plan.Name, alsoKeep); stepErr != nil {
+			failStep("reinsert", stepErr)
+			return appwire.HostMutationResult{}, err
+		}
+		if stepErr := seam("advance-clear"); stepErr != nil {
+			failStep("advance-clear", stepErr)
+			return appwire.HostMutationResult{}, err
+		}
+		if stepErr := m.cfg.ops.AdvanceCompensation(plan.Name, hostops.CompensationClear); stepErr != nil {
+			failStep("advance-clear", stepErr)
+			return appwire.HostMutationResult{}, err
+		}
+	case hostops.CompensationRuntime:
+		// A record an earlier crash left past the rows step: advance it.
+		if stepErr := seam("advance-clear"); stepErr != nil {
+			failStep("advance-clear", stepErr)
+			return appwire.HostMutationResult{}, err
+		}
+		if stepErr := m.cfg.ops.AdvanceCompensation(plan.Name, hostops.CompensationClear); stepErr != nil {
+			failStep("advance-clear", stepErr)
+			return appwire.HostMutationResult{}, err
+		}
+	case hostops.CompensationClear:
+		// The rows are already converged; the clear is next.
+	default:
+		m.logf("remove %q compensation: record in unknown phase %q; left for the next boot", plan.Name, record.Phase)
+		return appwire.HostMutationResult{}, err
+	}
+	if stepErr := seam("clear"); stepErr != nil {
+		failStep("clear", stepErr)
+		return appwire.HostMutationResult{}, err
+	}
+	if stepErr := m.cfg.ops.ClearCompensation(plan.Name); stepErr != nil {
+		failStep("clear", stepErr)
+		return appwire.HostMutationResult{}, err
+	}
+	m.pruneHubTOMLStash(stash)
+	return appwire.HostMutationResult{}, err
+}
+
+// compensationStepFailure consults the test-only compensation-step seam. It is
+// nil in production, where the store's own write failures are the only way a
+// step fails.
+func (m *hubHostManager) compensationStepFailure(host, step string) error {
+	if m.testOnlyFailCompensationStep == nil {
+		return nil
+	}
+	return m.testOnlyFailCompensationStep(host, step)
+}
+
 // keylessAddObservedRowLocked is spec §5's read-after-unknown comparison for a keyless
 // add: it reads the listed entry for the name and reports it when the effective
 // fields plus `generation`/`origin` match the intended entry — "a keyless `add`
@@ -512,7 +650,14 @@ func (m *hubHostManager) UpdateResult(ctx context.Context, params appwire.HostUp
 	} else if hit != nil {
 		return m.receiptArm(hit, hostMutationUpdate), nil
 	}
-	releaseGate, err := m.acquireHostGate(name, hostops.Holder{Kind: hostops.HolderManager, Activity: "update"})
+	// Spec 08 §4's "gate released last" (deploy pipeline 08b §5's mutation
+	// rebind ordering): the reservation is held through the staged commit AND
+	// the post-commit rebind/teardown, and released last — the defer below fires
+	// at function exit, after the finish phase. The manager call below is the
+	// gate-inheriting UpdateHostUnderGate, which runs the rebind under this very
+	// hold, so no gate waiter can acquire a half-rebound host.
+	gateHolder := hostops.Holder{Kind: hostops.HolderManager, Activity: "update"}
+	releaseGate, err := m.acquireHostGate(name, gateHolder)
 	if err != nil {
 		return appwire.HostMutationResult{}, err
 	}
@@ -590,7 +735,8 @@ func (m *hubHostManager) UpdateResult(ctx context.Context, params appwire.HostUp
 	}
 	// The intent flip lands as the post-swap form: for an edit and a removal the
 	// runtime transition and the planned teardown are one manager call
-	// (UpdateHost / RemoveHost tears down as it swaps), so there is no window a
+	// (UpdateHostUnderGate / RemoveHostUnderGate tears down as it swaps, under
+	// the mutation's held reservation), so there is no window a
 	// separate `swapStarted`-only flip could describe — a crash inside the call
 	// leaves either side applied, which is exactly what
 	// `runtime-swapped` + `teardownStarted: true` records. The phase-aware
@@ -603,7 +749,13 @@ func (m *hubHostManager) UpdateResult(ctx context.Context, params appwire.HostUp
 	m.cfg.store.addReceipt(receiptKey, receipt)
 	m.markMutating(name)
 	m.cfg.mu.Unlock()
-	releaseGate()
+	// The reservation is deliberately NOT released here: the post-commit live
+	// phase below (the manager's rebind/teardown, through the gate-inheriting
+	// entry) runs under it, and the deferred release fires last. The mutation
+	// mark still fences the name across this window — it is what refuses a
+	// same-name `add`, which checks its mark before any gate acquisition —
+	// while every gate consumer (attach, plan, deploy, another mutation) is
+	// refused busy by the held reservation.
 	if m.testOnlyParkPostCommit != nil {
 		m.testOnlyParkPostCommit(name)
 	}
@@ -615,7 +767,7 @@ func (m *hubHostManager) UpdateResult(ctx context.Context, params appwire.HostUp
 			liveErr = fmt.Errorf("update host %q: %w", name, err)
 		}
 	case m.cfg.manager != nil:
-		if err := m.cfg.manager.UpdateHost(entry, func(retired hostreg.Host) {
+		if err := m.cfg.manager.UpdateHostUnderGate(entry, gateHolder, func(retired hostreg.Host) {
 			m.cfg.state.retire(name, retired.Generation)
 		}); err != nil {
 			liveErr = fmt.Errorf("update host %q: %w", name, err)
@@ -770,7 +922,14 @@ func (m *hubHostManager) RemoveResult(ctx context.Context, params appwire.HostRe
 	} else if hit != nil {
 		return m.receiptArm(hit, hostMutationRemove), nil
 	}
-	releaseGate, err := m.acquireHostGate(name, hostops.Holder{Kind: hostops.HolderManager, Activity: "remove"})
+	// Spec 08 §4's "gate released last" (deploy pipeline 08b §5's mutation
+	// rebind ordering): the reservation is held through the staged commit AND
+	// the post-commit teardown, and released last — the defer below fires at
+	// function exit, after the finish phase. The manager call below is the
+	// gate-inheriting RemoveHostUnderGate, which runs the teardown under this
+	// very hold, so no gate waiter can acquire a half-rebound host.
+	gateHolder := hostops.Holder{Kind: hostops.HolderManager, Activity: "remove"}
+	releaseGate, err := m.acquireHostGate(name, gateHolder)
 	if err != nil {
 		return appwire.HostMutationResult{}, err
 	}
@@ -818,6 +977,33 @@ func (m *hubHostManager) RemoveResult(ctx context.Context, params appwire.HostRe
 		IncarnationID: host.IncarnationID,
 	})
 	prev := m.cfg.store.snapshot()
+	// §9's cross-file commit, only when there is a token row to purge: the
+	// intent names the exact store rows the swap is deleting, captured before
+	// anything purges them (a host holds at most one outstanding token row).
+	var purgeValues []string
+	var purgePreimage []hostops.Token
+	if m.cfg.ops != nil {
+		if row, ok := m.cfg.ops.OutstandingToken(host.Name); ok {
+			purgeValues = []string{row.Value}
+			purgePreimage = []hostops.Token{row}
+		}
+	}
+	// The stash of the prior hub.toml bytes must exist before the staged write
+	// replaces them, so the swap is compensable. The stash is written FIRST and
+	// the cross-file half is keyed on its landing, not on the configured path:
+	// a configured path whose file does not exist yet yields no stash (there are
+	// no bytes to restore), and that is exactly the same state as a hub with no
+	// config file — no counterpart to carry an intent, nothing a compensation
+	// could restore.
+	stash := ""
+	if len(purgeValues) > 0 {
+		stash, err = m.writeHubTOMLStash(receiptKey)
+		if err != nil {
+			m.cfg.mu.Unlock()
+			return appwire.HostMutationResult{}, err
+		}
+	}
+	crossFile := len(purgeValues) > 0 && stash != ""
 	plan := &hostCommitPlan{
 		Kind:      hostMutationRemove,
 		Name:      host.Name,
@@ -829,32 +1015,94 @@ func (m *hubHostManager) RemoveResult(ctx context.Context, params appwire.HostRe
 		Pinned:    pendingTeardownFor(host, hostTeardownKindRemove),
 		Entry:     host,
 	}
+	if crossFile {
+		plan.StoreSync = &pendingHostStoreSync{
+			Name: host.Name,
+			Intent: HostStoreSyncIntent{
+				Generation:  host.Generation,
+				TokenValues: purgeValues,
+			},
+		}
+	}
 	plan.reconcileFingerprint, _ = hubTOMLFingerprintAt(m.cfg.configPath)
 	if err := m.stageCommit(plan, m.nowTime()); err != nil {
 		err = m.compensateStagedWrite(plan, prev, err)
+		// The cross-file commit never armed: the staged write's compensation
+		// drops the intent with the staged records, and the stash has no record
+		// left to serve.
+		m.pruneHubTOMLStash(stash)
 		m.cfg.mu.Unlock()
 		return appwire.HostMutationResult{}, err
 	}
 	// The intent flip lands as the post-swap form: for an edit and a removal the
 	// runtime transition and the planned teardown are one manager call
-	// (UpdateHost / RemoveHost tears down as it swaps), so there is no window a
+	// (UpdateHostUnderGate / RemoveHostUnderGate tears down as it swaps, under
+	// the mutation's held reservation), so there is no window a
 	// separate `swapStarted`-only flip could describe — a crash inside the call
 	// leaves either side applied, which is exactly what
 	// `runtime-swapped` + `teardownStarted: true` records. The phase-aware
 	// recovery then re-runs the pinned teardown to completion, and that re-run is
 	// idempotent ("an already-applied swap lands on the same values").
 	if err := m.flipRuntimeSwapped(plan); err != nil {
-		return m.compensateStagedCommit(plan, prev, nil, err)
+		result, cerr := m.compensateStagedCommit(plan, prev, nil, err)
+		m.pruneHubTOMLStash(stash)
+		return result, cerr
 	}
 	m.cfg.store.remove(host.Name)
 	m.cfg.store.addReceipt(receiptKey, receipt)
 	m.markMutating(host.Name)
+	if crossFile {
+		// The preimage persists in its own store write BEFORE the purge (§9),
+		// then the purge write applies the intent and advances the record past
+		// `armed`, then the follow-up hub.toml write clears the intent. The
+		// commit path is only past its swap half once that clear lands; every
+		// failure before it compensates to the pre-mutation view.
+		armed := hostops.Compensation{
+			Host:       host.Name,
+			Phase:      hostops.CompensationArmed,
+			Rows:       purgePreimage,
+			Stash:      stash,
+			Generation: host.Generation,
+		}
+		if err := m.cfg.ops.ArmCompensation(armed); err != nil {
+			return m.compensateStagedCrossFile(plan, prev, err, stash)
+		}
+		if _, err := m.cfg.ops.PurgeCompensated(host.Name, purgeValues); err != nil {
+			return m.compensateStagedCrossFile(plan, prev, err, stash)
+		}
+		if err := m.persistHosts(m.cfg.store.snapshot(), plan.Known, hostPersistChange{
+			marker:        &pendingHostMarker{Name: host.Name, Marker: plan.Marker},
+			dropStoreSync: host.Name,
+		}); err != nil {
+			return m.compensateStagedCrossFile(plan, prev, err, stash)
+		}
+	} else if len(purgeValues) > 0 {
+		// No stash landed (no config file, or a configured path whose file does
+		// not exist yet): there is no cross-file counterpart to carry an
+		// intent, so the purge is the whole story and rides the commit — after
+		// the staged write and the flip landed, before the commit point (§9's
+		// ordering: a failure before this point leaves the token in place for
+		// the retry, and a failure behind it is a committed removal whose tokens
+		// are already gone). One atomic store write, logged on failure like the
+		// pre-§9 live revocation it replaces.
+		if _, err := m.cfg.ops.ApplyStoreSync(hostops.StoreSyncIntent{
+			Host:       host.Name,
+			Generation: host.Generation,
+			Values:     purgeValues,
+		}); err != nil {
+			m.logf("remove %q: outstanding confirmation tokens not dropped: %v", host.Name, err)
+		}
+	}
 	m.cfg.mu.Unlock()
-	releaseGate()
+	// The reservation is deliberately NOT released here: the post-commit
+	// teardown below (the manager's, through the gate-inheriting entry) runs
+	// under it, and the deferred release fires last. The mutation mark still
+	// fences the name across this window — it is what refuses a same-name
+	// `add`, which checks its mark before any gate acquisition — while every
+	// gate consumer is refused busy by the held reservation.
 	if m.testOnlyParkPostCommit != nil {
 		m.testOnlyParkPostCommit(host.Name)
 	}
-	m.revokeHostTokens(host.Name)
 
 	var teardownErr error
 	switch {
@@ -863,7 +1111,7 @@ func (m *hubHostManager) RemoveResult(ctx context.Context, params appwire.HostRe
 			teardownErr = fmt.Errorf("remove host %q: %w", host.Name, err)
 		}
 	case m.cfg.manager != nil:
-		if err := m.cfg.manager.RemoveHost(host.Name); err != nil {
+		if err := m.cfg.manager.RemoveHostUnderGate(host.Name, gateHolder); err != nil {
 			teardownErr = fmt.Errorf("remove host %q: %w", host.Name, err)
 		}
 	default:
@@ -875,6 +1123,16 @@ func (m *hubHostManager) RemoveResult(ctx context.Context, params appwire.HostRe
 	m.cfg.mu.Lock()
 	defer m.cfg.mu.Unlock()
 	m.unmarkMutating(host.Name)
+	if crossFile {
+		// Past the commit point the purge stands: the armed record clears in its
+		// own store write and the stash goes with it. A crash before this clear
+		// finds the intent already cleared at boot, so the record clears without
+		// resurrecting rows.
+		if err := m.cfg.ops.ClearCompensation(host.Name); err != nil {
+			m.logf("remove %q: compensation record not cleared past the commit point: %v", host.Name, err)
+		}
+		m.pruneHubTOMLStash(stash)
+	}
 	removedRow := hostEntryRow(host)
 	removedRow.Removed = true
 	if teardownErr != nil {

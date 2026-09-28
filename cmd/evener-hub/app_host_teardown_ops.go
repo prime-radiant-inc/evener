@@ -103,12 +103,14 @@ func (m *hubHostManager) TeardownRetry(ctx context.Context, params appwire.HostT
 		return appwire.HostTeardownRetryResult{}, err
 	}
 	// The gate is held only while this attempt is *claiming and finalizing*; the
-	// run itself releases it, the same discipline the mutations apply across
-	// their post-commit teardowns ("released across post-commit teardowns"). It
-	// has to: the pinned teardown goes through the manager's own paths, which
-	// take the same non-reentrant per-host gate ��� holding the reservation across
-	// the run would refuse our own call. The attempt record is the fence for the
-	// window the reservation is released, exactly as it is after a timeout.
+	// run itself releases it. It has to: the pinned teardown goes through the
+	// manager's self-acquiring paths (RemoveHost/UpdateHost), which take the
+	// same non-reentrant per-host gate — holding the reservation across the run
+	// would refuse our own call. The mutation paths are the stronger form
+	// (spec 08 §4's "gate released last"): their teardown runs through the
+	// gate-inheriting entries with the reservation held throughout. The attempt
+	// record is the fence for the window this retry releases the reservation in,
+	// exactly as it is after a timeout.
 	gateHeld := true
 	releaseOnce := func() {
 		if gateHeld {

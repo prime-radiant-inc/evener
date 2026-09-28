@@ -19,7 +19,7 @@ export function pendingQuestions(
 ): AskQuestionRef[] {
   // Asked of the MODEL, with the package's own rule — the same call the
   // projection's question rows come from (projectedRows.ts's askQuestionsByCall,
-  // through liveAsksFor's shared scan), so the refs are canonical: the sheet
+  // through liveAsksFor's shared scan), so the refs are canonical: the dock
   // renders, and the answer composer validates against, exactly the labels
   // the agent offered. The timeline rows a reader scrolls carry the display
   // bound's cut copies instead — a label longer than the bound would submit
@@ -32,9 +32,9 @@ export function pendingQuestions(
   return [...liveAsksFor(conversation).values()].flat();
 }
 
-// The sheet's own rendered text, bounded the same as a timeline row
+// The dock's own rendered text, bounded the same as a timeline row
 // (the row module, projectedRows.ts). Shared by questionsIdentity below and
-// QuestionSheet.tsx's own display copy, so the identity and what a reader
+// QuestionDock.tsx's own display copy, so the identity and what a reader
 // actually sees are cut exactly the same way.
 export const boundQuestionText = (text: string) =>
   truncateText(text, MAX_ITEM_BYTES);
@@ -59,7 +59,7 @@ function questionHash(text: string): string {
 }
 
 // A question set's identity for everything that keys, signs or persists it —
-// a React key over a batch, the sheet's draft signature, and the definitions
+// a React key over a batch, the dock's draft signature, and the definitions
 // that guard a persisted answer (draftRepository.ts's questionDefinitions).
 // None of those need pendingQuestions()'s canonical, uncut refs: they only
 // ever need to tell "the same questions" apart from "different questions",
