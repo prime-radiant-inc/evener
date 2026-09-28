@@ -143,10 +143,8 @@ export class DetailLevels {
 	getRevision = (): number => this.revision;
 }
 
+/** A storage failure throws, like removeHub's other cleanups, so the person
+ * hears that some local data could not be deleted. */
 export function forgetDetailLevels(storage: SyncStringStorage, hubId: string): void {
-	try {
-		storage.removeItemSync(storageKey(hubId));
-	} catch {
-		// Nothing stored to forget.
-	}
+	storage.removeItemSync(storageKey(hubId));
 }

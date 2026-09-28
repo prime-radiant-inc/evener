@@ -148,4 +148,15 @@ describe("the level chosen for each session", () => {
 		forgetDetailLevels(storage, "hub-a");
 		expect([...storage.values.keys()]).toEqual(["evener.native.detail-level.hub-b"]);
 	});
+
+	it("lets a storage failure surface when forgetting, so removing the hub can say so", () => {
+		const broken: SyncStringStorage = {
+			getItemSync: () => null,
+			setItemSync: () => {},
+			removeItemSync: () => {
+				throw new Error("disk");
+			},
+		};
+		expect(() => forgetDetailLevels(broken, "hub-a")).toThrow("disk");
+	});
 });
