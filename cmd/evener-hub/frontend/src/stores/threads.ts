@@ -1427,6 +1427,23 @@ function heldSnapshotFor(baseModel: ThreadModel | undefined): SnapshotIdentity |
   return history?.incarnation === undefined ? undefined : { incarnation: history.incarnation, length: history.length };
 }
 
+// A held snapshot whose length the kept update log no longer reaches (spec's
+// "Below-floor update-log requests" follow-up) cannot be answered with the
+// window alone - held items outside it may have changed with no way to tell
+// - so the hub rejects it with TranscriptItemCursorStale rather than
+// silently merging a bare window. shouldRetryWithoutHeldSnapshot, called
+// from a thread/read catch block that already has `held` and `err` in
+// scope, reports whether that is what happened and the caller should retry
+// once with no held snapshot (for a full latest-window replacement). Both
+// call sites inline that retry in their own nested try/catch (rather than
+// wrapping the whole request in one shared async helper) so the ordinary,
+// non-stale-cursor path awaits client.request() exactly once, matching the
+// microtask timing callers (e.g. a reconnect's response-cut ordering) depend
+// on.
+function shouldRetryWithoutHeldSnapshot(held: SnapshotIdentity | undefined, err: unknown): boolean {
+  return held !== undefined && isStaleCursorError(err);
+}
+
 interface ThreadHydration {
   model: ThreadModel;
   response: ThreadReadResponse;
@@ -1489,12 +1506,23 @@ async function hydrateAndSubscribe(
   pending: PendingThreadHydration,
 ): Promise<ThreadHydration> {
   let response: ThreadReadResponse;
+  let discardHeldHistory = false;
   const { subscribe, markSubscribed } = wireSubscribeDecision(ref);
+  const held = heldSnapshotFor(pending.baseModel);
   try {
-    response = await client.request(
-      "thread/read",
-      threadReadParams(ref, true, subscribe, pending.requestGeneration, heldSnapshotFor(pending.baseModel)),
-    );
+    try {
+      response = await client.request(
+        "thread/read",
+        threadReadParams(ref, true, subscribe, pending.requestGeneration, held),
+      );
+    } catch (err) {
+      if (!shouldRetryWithoutHeldSnapshot(held, err)) throw err;
+      response = await client.request(
+        "thread/read",
+        threadReadParams(ref, true, subscribe, pending.requestGeneration, undefined),
+      );
+      discardHeldHistory = true;
+    }
   } catch (err) {
     // thread/read is answered from the daemon's in-memory snapshot, so a
     // rejection here is a transport failure, not a slow file read and not a
@@ -1513,8 +1541,15 @@ async function hydrateAndSubscribe(
     throw err;
   }
   markSubscribed();
+  // A retry that dropped the held snapshot asked for, and must be treated
+  // as, a full latest-window replacement: applyReadResponse would still
+  // merge it (same incarnation/epoch, length >= held's), leaving every held
+  // item outside the fresh window exactly as stale as it was -- precisely
+  // the items TranscriptItemCursorStale exists to protect, since the window
+  // alone cannot answer for them. hydrateThread discards the held history
+  // instead, matching the hub's intent.
   const model =
-    pending.baseModel?.history !== undefined
+    !discardHeldHistory && pending.baseModel?.history !== undefined
       ? applyReadResponse(pending.baseModel, response, now)
       : hydrateThread(response, ref, now);
   applyHydrationResponseCut(pending, ref, model);
@@ -1603,12 +1638,23 @@ async function hydrateAndSubscribeWatch(
   includeTurns = false,
 ): Promise<ThreadModel> {
   let resp: ThreadReadResponse;
+  let discardHeldHistory = false;
   const { subscribe, markSubscribed } = wireSubscribeDecision(ref);
+  const held = heldSnapshotFor(pending.baseModel);
   try {
-    resp = await client.request(
-      "thread/read",
-      threadReadParams(ref, includeTurns, subscribe, pending.requestGeneration, heldSnapshotFor(pending.baseModel)),
-    );
+    try {
+      resp = await client.request(
+        "thread/read",
+        threadReadParams(ref, includeTurns, subscribe, pending.requestGeneration, held),
+      );
+    } catch (err) {
+      if (!shouldRetryWithoutHeldSnapshot(held, err)) throw err;
+      resp = await client.request(
+        "thread/read",
+        threadReadParams(ref, includeTurns, subscribe, pending.requestGeneration, undefined),
+      );
+      discardHeldHistory = true;
+    }
   } catch (err) {
     markThreadDeletedIfFenced(ref, err);
     if (isTranscriptHistoryFailedError(err) && pending.baseModel) {
@@ -1622,8 +1668,10 @@ async function hydrateAndSubscribeWatch(
     throw err;
   }
   markSubscribed();
+  // See hydrateAndSubscribe's identical comment: a retry that dropped the
+  // held snapshot must fully replace history, not merge into it.
   const model =
-    pending.baseModel?.history !== undefined
+    !discardHeldHistory && pending.baseModel?.history !== undefined
       ? applyReadResponse(pending.baseModel, resp, now)
       : hydrateThread(resp, ref, now);
   applyHydrationResponseCut(pending, ref, model);

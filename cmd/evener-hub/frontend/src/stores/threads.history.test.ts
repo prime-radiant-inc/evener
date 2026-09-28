@@ -13,6 +13,7 @@ import type {
   ThreadReadResponse,
   ThreadTurnsListResponse,
 } from "@evener/appwire-client";
+import { WireError } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { connectionStore } from "./connection";
@@ -194,9 +195,13 @@ describe("versioned history: backfill pages", () => {
     const fake = connectFakeClient();
     // The initial latest-window read's snapshot length (100) is what a
     // later page's own snapshot length is judged against - held.length
-    // advances only from latest-window reads, never from pages
-    // (task-15-report.md), so a page below it is out of order no matter how
-    // many other pages have merged since.
+    // advances only from latest-window reads, never from pages (spec's
+    // "Backfill accumulation" follow-up: a page's length is the transcript
+    // length at read time, not a promise everything through it was
+    // delivered, so advancing held to it could make a later heldSnapshot
+    // claim completeness through changes the client never actually saw),
+    // so a page below it is out of order no matter how many other pages
+    // have merged since.
     fake.on("thread/read", () => ({ ...read("initial"), olderCursor: "cursor_1" }));
     await threadsStore.getState().ensureThread(REF);
 
@@ -208,6 +213,7 @@ describe("versioned history: backfill pages", () => {
         .threads.get(REF)
         ?.turns.map((t) => t.id),
     ).toContain("turn_new");
+    expect(threadsStore.getState().threads.get(REF)?.history?.length).toBe(100);
 
     // A page that arrives after it, from a snapshot shorter than the one the
     // client already holds (the initial read's length 100), is stale - it
@@ -221,5 +227,72 @@ describe("versioned history: backfill pages", () => {
       ?.turns.map((t) => t.id);
     expect(turnIds).toContain("turn_new");
     expect(turnIds).not.toContain("turn_stale");
+    expect(threadsStore.getState().threads.get(REF)?.history?.length).toBe(100);
+  });
+});
+
+describe("versioned history: below-floor held snapshot", () => {
+  test("a stale-cursor rejection retries thread/read without the held snapshot", async () => {
+    const fake = connectFakeClient();
+    fake.on("thread/read", () => read("initial"));
+    await threadsStore.getState().ensureThread(REF);
+    expect(modelName()).toBe("initial");
+
+    fake.on("thread/read", (params) => {
+      // The held snapshot named a length the kept update log no longer
+      // reaches: the hub answers transcriptItemCursorStale rather than
+      // silently merging a bare window (spec's "Below-floor update-log
+      // requests" follow-up). The retry must ask again with no held
+      // snapshot at all.
+      if (params.heldSnapshot !== undefined) {
+        throw new WireError("stale", -32000, { evenerErrorInfo: "transcriptItemCursorStale" });
+      }
+      return read("recovered", { length: 300, requestGeneration: params.requestGeneration });
+    });
+    await threadsStore.getState().refreshThread(REF);
+
+    expect(modelName()).toBe("recovered");
+    expect(threadsStore.getState().threads.get(REF)?.history?.length).toBe(300);
+    const readCalls = fake.calls.filter((c) => c.method === "thread/read");
+    expect(readCalls.length).toBeGreaterThanOrEqual(2);
+    const last = readCalls[readCalls.length - 1]?.params as { heldSnapshot?: unknown };
+    expect(last.heldSnapshot).toBeUndefined();
+  });
+
+  // roborev finding on this PR: the retry must fully replace held history,
+  // not merge into it through applyReadResponse (same incarnation/epoch,
+  // length >= held's, so readDisposition would call it a "merge" and never
+  // touch a held item outside the fresh window) - that would leave exactly
+  // the items TranscriptItemCursorStale exists to protect (one outside the
+  // latest window whose completion landed after the held length) stale
+  // forever.
+  test("a stale-cursor retry discards an older held turn outside the recovered window, not merges it", async () => {
+    const fake = connectFakeClient();
+    fake.on("thread/read", () => ({ ...read("initial"), olderCursor: "cursor_1" }));
+    await threadsStore.getState().ensureThread(REF);
+
+    fake.on("thread/turns/list", () => page("turn_old", { length: 100 }));
+    await threadsStore.getState().loadOlderTurns(REF);
+    expect(
+      threadsStore
+        .getState()
+        .threads.get(REF)
+        ?.turns.map((t) => t.id),
+    ).toContain("turn_old");
+
+    fake.on("thread/read", (params) => {
+      if (params.heldSnapshot !== undefined) {
+        throw new WireError("stale", -32000, { evenerErrorInfo: "transcriptItemCursorStale" });
+      }
+      return read("recovered", { length: 300, requestGeneration: params.requestGeneration });
+    });
+    await threadsStore.getState().refreshThread(REF);
+
+    const turnIds = threadsStore
+      .getState()
+      .threads.get(REF)
+      ?.turns.map((t) => t.id);
+    expect(turnIds).not.toContain("turn_old");
+    expect(turnIds).toEqual(["turn_recovered"]);
   });
 });
