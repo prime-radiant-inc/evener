@@ -1389,9 +1389,10 @@ export function ConversationScreen({
 		[document],
 	);
 	// The documents the agent names become chips under its messages (spec
-	// 8.2), aged by the session's own writes. The writes are keyed by their
-	// content, so a publish that changed no write leaves every message's chips
-	// memoized.
+	// 8.2), aged by the session's own writes. Every publish hands the screen
+	// new turns, even while the agent only streams text, so the writes are
+	// keyed by their content: a publish that changed no write keeps the same
+	// Map, and each message's chips skip re-reading its markdown.
 	const documentCwd = conversation?.cwd ?? "";
 	const turns = conversation?.turns;
 	const writesKey = useMemo(() => JSON.stringify([...fileWrites(turns ?? [], documentCwd)]), [turns, documentCwd]);
@@ -2611,6 +2612,7 @@ export function ConversationScreen({
 			answerFor,
 			liveSendKind,
 			runErrorAction,
+			documentChips,
 		],
 	);
 

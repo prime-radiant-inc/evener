@@ -9,7 +9,8 @@ import { fonts } from "../design/tokens";
 import type { Routes } from "../screens";
 import { Sheet, useSheet } from "../sheet/Sheet";
 import { allowFontScaling, useColors, useTextScale } from "../ui";
-import { FreshDot, useDocumentFacts } from "./DocumentChip";
+import { useDocumentFacts } from "./DocumentChip";
+import { FreshDot } from "./FreshDot";
 import type { SessionDocument } from "./sessionDocuments";
 
 export function FilesSheet({ route, navigation }: NativeStackScreenProps<Routes, "FilesSheet">) {

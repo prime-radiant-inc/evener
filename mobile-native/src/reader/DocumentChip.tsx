@@ -3,7 +3,6 @@
 // session wrote it, how long ago. Tapping it opens the Reader. Before its
 // summary lands the title is the file name, and nothing else on it moves.
 import { filenameOf } from "@evener/appwire-client/docContent";
-import { SymbolView } from "expo-symbols";
 import { useMemo, useSyncExternalStore } from "react";
 import { Pressable, Text, View } from "react-native";
 import { fonts } from "../design/tokens";
@@ -11,6 +10,7 @@ import { compactDuration, spokenDuration } from "../session/format";
 import { useMinuteClock } from "../session/minuteClock";
 import { allowFontScaling, useColors, useTextScale } from "../ui";
 import { documentKind } from "./documentSource";
+import { FreshDot } from "./FreshDot";
 import { messageDocuments } from "./documentReferences";
 import { documentMemory } from "./nativeDocumentMemory";
 import { documentFreshness } from "./sessionDocuments";
@@ -61,9 +61,8 @@ export function DocumentChip({ hubId, sessionRef, path, updatedAt, onOpen }: Doc
 			accessibilityRole="button"
 			accessibilityLabel={label}
 			onPress={onOpen}
+			// The list's 16pt sides and the row's 8pt gap place it (spec 8.2).
 			style={({ pressed }) => ({
-				marginHorizontal: 16,
-				marginTop: 8,
 				minHeight: 44,
 				paddingVertical: 12,
 				paddingHorizontal: 14,
@@ -102,12 +101,6 @@ export function DocumentChip({ hubId, sessionRef, path, updatedAt, onOpen }: Doc
 			</Text>
 		</Pressable>
 	);
-}
-
-/** The blue dot of a document that's new or changed since you last read it. */
-export function FreshDot() {
-	const { palette } = useColors();
-	return <SymbolView name="circle.fill" size={8} tintColor={palette.accent} />;
 }
 
 /** The chips under one agent's message: the documents it names inside the
