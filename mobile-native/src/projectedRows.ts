@@ -166,8 +166,7 @@ export type MobileTimelineItem = (
 			// The operator's summary-only ruling: the row shows ONLY its
 			// summary line (detail.description) — nothing to expand. Set on the
 			// projector's intent entries; the presentation layer renders the line
-			// without an expansion affordance. Its clock times stay in detail
-			// for the run it folds into (intentRow).
+			// without an expansion affordance.
 			summaryOnly?: boolean;
 			members?: ActivityMember[];
 		}
