@@ -51,7 +51,8 @@ func TestBuildPromptDataHasUseSkillTracksCallableDefinitions(t *testing.T) {
 			} else {
 				rebuildPromptToolCacheForTest(s, tc.keep...)
 			}
-			if got := s.buildPromptData(s.currentEnv()).HasUseSkill; got != tc.want {
+			data, _ := s.buildPromptData(s.currentEnv())
+			if got := data.HasUseSkill; got != tc.want {
 				t.Fatalf("HasUseSkill = %v, want %v", got, tc.want)
 			}
 		})
@@ -342,7 +343,7 @@ func TestUseSkill_SystemPromptContainsSkillList(t *testing.T) {
 
 	sess := newSession(t, withAdapter(&fakeAdapter{name: "anthropic"}), withProfile(newAnthropicProfile("claude-test")), withDir(root))
 
-	data := sess.buildPromptData(sess.currentEnv())
+	data, _ := sess.buildPromptData(sess.currentEnv())
 	if !slices.ContainsFunc(data.Skills, func(s skillEntry) bool {
 		return s.CatalogNameOrName() == "greet" && s.Description == "Greeting skill"
 	}) {
@@ -358,7 +359,7 @@ func TestOpenAI_SkillsSectionUsesUseSkill(t *testing.T) {
 
 	sess := newSession(t, withDir(root))
 
-	data := sess.buildPromptData(sess.currentEnv())
+	data, _ := sess.buildPromptData(sess.currentEnv())
 	if !data.HasUseSkill {
 		t.Fatal("HasUseSkill = false, want true on the openai surface")
 	}
@@ -389,7 +390,7 @@ func TestOpenAI_PluginSkillCatalogUsesNamespacedName(t *testing.T) {
 		AgentsDocPath: filepath.Join(t.TempDir(), "no-personal-AGENTS.md"),
 	}))
 
-	data := sess.buildPromptData(sess.currentEnv())
+	data, _ := sess.buildPromptData(sess.currentEnv())
 	if !slices.ContainsFunc(data.Skills, func(s skillEntry) bool { return s.CatalogNameOrName() == "skill-plugin:my-skill" }) {
 		t.Fatalf("prompt skills = %+v, want the namespaced skill-plugin:my-skill", data.Skills)
 	}
@@ -591,7 +592,8 @@ func TestSkillCatalogPortableFilteredStartup(t *testing.T) {
 			rebuildPromptToolCacheForTest(sess, "read_file")
 		}
 		got := map[string]bool{}
-		for _, d := range sess.buildPromptData(sess.currentEnv()).Skills {
+		data, _ := sess.buildPromptData(sess.currentEnv())
+		for _, d := range data.Skills {
 			got[d.CatalogName] = true
 		}
 		if !got["portable-both"] || !got["portable-model"] || got["portable-user"] || got["portable-invalid"] {
