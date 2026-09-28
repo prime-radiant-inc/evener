@@ -488,6 +488,26 @@ test("the prompt disclosure summary reaches the tap floor on a coarse pointer", 
   expect(rule![1]).toContain("min-height: var(--tap-min)");
 });
 
+// Rhythm (2026-09-28): the prompt's Markdown sizes itself from
+// --prose-font-size (widgets/markdown defaults it to the 18px prose step),
+// which swamped the caption-size meta strip and timestamps around it. The
+// disclosure must pin the hook so the preview line and the expanded body sit
+// at the same step as the rest of the expanded row - a font-size on the host
+// alone is inert, because the Markdown root declares its own. jsdom computes
+// no cascade, so this reads the stylesheet's own source, the same technique
+// the tap-floor test above and agentMessageSize.contract.test.ts use.
+test("the prompt disclosure renders its markdown at the caption step, not prose size", () => {
+  const css = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "taskspanel.module.css"), "utf8");
+  const details = css.match(/\.promptDetails\s*\{([^}]*)\}/);
+  expect(details, "taskspanel.module.css must style .promptDetails").not.toBeNull();
+  expect(details![1]).toContain("--prose-font-size: var(--font-size-caption)");
+  const body = css.match(/\.promptBody\s*\{([^}]*)\}/);
+  expect(body, "taskspanel.module.css must style .promptBody").not.toBeNull();
+  expect(body![1], "the Markdown root owns the body's size; a host-side font-size never applied").not.toMatch(
+    /font-size\s*:/,
+  );
+});
+
 test("the prompt disclosure shows a one-line markdown preview collapsed and the full markdown body open", async () => {
   const user = userEvent.setup();
   const fake = connectFakeClient();

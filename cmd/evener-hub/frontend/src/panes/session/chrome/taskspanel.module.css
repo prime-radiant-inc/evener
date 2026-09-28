@@ -192,9 +192,16 @@
   color: var(--ink-low);
 }
 
+/* The prompt's Markdown sizes itself from --prose-font-size (see
+ * widgets/markdown), whose default is the 18px prose step - far above the
+ * caption-size meta strip and timestamps this disclosure sits between - so
+ * the preview line and the expanded body pin the hook to caption or they
+ * swamp the row. A font-size on the host instead would be inert: the
+ * Markdown root declares its own. */
 .promptDetails {
   font-family: var(--font-sans);
   font-size: var(--font-size-caption);
+  --prose-font-size: var(--font-size-caption);
 }
 
 .promptSummary {
@@ -254,7 +261,6 @@
 
 .promptBody {
   margin-top: var(--space-1);
-  font-size: var(--font-size-ui);
   color: var(--ink-hi);
   overflow-wrap: anywhere;
 }
