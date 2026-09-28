@@ -46,6 +46,8 @@ export class SubagentTree {
 	private tree: ActivityTree | null = null;
 	private coordinatorModel: string | null = null;
 	private settledMissing: string[] = [];
+	/** Bumped with each new client, so an old client's reload stops where it stands. */
+	private generation = 0;
 	private reloading: Promise<void> | null = null;
 	private again = false;
 	private snapshot: SubagentTreeSnapshot;
@@ -82,6 +84,10 @@ export class SubagentTree {
 		this.detachList = null;
 		this.list = null;
 		this.client = client;
+		// The old client's reload is abandoned where it stands: it may never
+		// answer, and the new client reads on its own.
+		this.generation += 1;
+		this.reloading = null;
 		let read: Promise<void> = Promise.resolve();
 		if (client) {
 			const list = new ActivityList(client, this.ref, this.threadId);
@@ -133,6 +139,8 @@ export class SubagentTree {
 			this.again = true;
 			return this.reloading;
 		}
+		const generation = this.generation;
+		const current = () => generation === this.generation;
 		const run: Promise<void> = (async () => {
 			do {
 				this.again = false;
@@ -141,7 +149,7 @@ export class SubagentTree {
 				const tried = new Set<string>();
 				await list.refresh();
 				for (;;) {
-					if (this.list !== list || this.again) break;
+					if (!current() || this.list !== list || this.again) break;
 					const next = list
 						.branches()
 						.find((branch) => branch.continuation !== undefined && !tried.has(branch.continuation));
@@ -149,7 +157,7 @@ export class SubagentTree {
 					tried.add(next.continuation);
 					await list.loadMore(next.id, next.continuation);
 				}
-			} while (this.again && this.list !== null);
+			} while (current() && this.again && this.list !== null);
 		})().finally(() => {
 			if (this.reloading === run) this.reloading = null;
 			this.publish();

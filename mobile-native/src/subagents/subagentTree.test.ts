@@ -70,6 +70,15 @@ describe("one coordinator's subagent tree", () => {
 		expect(reads(client)).toEqual(["root", "page-2", "root", "page-2"]);
 	});
 
+	it("reads through a new client even while the old client's read never answers", async () => {
+		const stuck = new FakeClient("ready");
+		stuck.on("evener/jobs/list", () => new Promise(() => {}));
+		const tree = new SubagentTree("local:coord", "coord");
+		void tree.setClient(stuck);
+		await tree.setClient(hub(() => whole));
+		expect(listed(tree)).toEqual(["a"]);
+	});
+
 	it("calls its count partial while later pages are still loading", async () => {
 		let answer: (page: unknown) => void = () => {};
 		const client = hub((continuation) =>

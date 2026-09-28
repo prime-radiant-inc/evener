@@ -114,24 +114,24 @@ function LastLine({ last }: { last: SubagentLastLine }) {
 	const scale = useTextScale();
 	const small = { fontSize: 13 * scale, lineHeight: 18 * scale, color: palette.inkLow };
 	const parts: { key: string; node: ReactNode }[] = [];
-	if (last.parent) parts.push({ key: "parent", node: <Text numberOfLines={1} style={{ ...small, flexShrink: 1 }}>{`from ${last.parent}`}</Text> });
-	if (last.model) parts.push({ key: "model", node: <Text numberOfLines={1} style={{ ...small, flexShrink: 1 }}>{last.model}</Text> });
+	if (last.parent) parts.push({ key: "parent", node: <Text allowFontScaling={allowFontScaling} numberOfLines={1} style={{ ...small, flexShrink: 1 }}>{`from ${last.parent}`}</Text> });
+	if (last.model) parts.push({ key: "model", node: <Text allowFontScaling={allowFontScaling} numberOfLines={1} style={{ ...small, flexShrink: 1 }}>{last.model}</Text> });
 	if (last.branch)
 		parts.push({
 			key: "branch",
 			node: (
 				<>
 					<SymbolView name="arrow.triangle.branch" size={12} tintColor={palette.inkLow} />
-					<Text numberOfLines={1} style={{ ...small, flexShrink: 1, fontFamily: fonts.mono, fontSize: 12 * scale }}>{last.branch}</Text>
+					<Text allowFontScaling={allowFontScaling} numberOfLines={1} style={{ ...small, flexShrink: 1, fontFamily: fonts.mono, fontSize: 12 * scale }}>{last.branch}</Text>
 				</>
 			),
 		});
-	if (last.tokens) parts.push({ key: "tokens", node: <Text style={{ ...small, fontVariant: ["tabular-nums"] }}>{last.tokens}</Text> });
+	if (last.tokens) parts.push({ key: "tokens", node: <Text allowFontScaling={allowFontScaling} style={{ ...small, fontVariant: ["tabular-nums"] }}>{last.tokens}</Text> });
 	return (
 		<View style={{ flexDirection: "row", alignItems: "center", columnGap: 4, overflow: "hidden" }}>
 			{parts.map((part, index) => (
 				<Fragment key={part.key}>
-					{index > 0 ? <Text style={small}>·</Text> : null}
+					{index > 0 ? <Text allowFontScaling={allowFontScaling} style={small}>·</Text> : null}
 					{part.node}
 				</Fragment>
 			))}
