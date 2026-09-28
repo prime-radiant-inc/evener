@@ -305,6 +305,8 @@ describe("NewSessionService", () => {
 					return { head: "main" };
 				case "evener/launch/resolve":
 					return { effective: { sandbox: "workspace-write" }, layers: {}, provenance: {} };
+				case "evener/harnesses/list":
+					return { data: [{ id: "evener", label: "Evener" }] };
 				default:
 					throw new Error(`unexpected ${request.method}`);
 			}
@@ -318,6 +320,7 @@ describe("NewSessionService", () => {
 		expect(await service.createDirectory("paradise-park", "/Users/jesse/git/scratch")).toBe("/Users/jesse/git/scratch");
 		expect(await service.branch("paradise-park", cwd)).toBe("main");
 		expect((await service.resolveLaunch("paradise-park", cwd, {})).effective.sandbox).toBe("workspace-write");
+		expect(await service.harnesses("paradise-park")).toEqual([{ id: "evener", label: "Evener" }]);
 		expect(client.calls.map((call) => call.params)).toEqual([
 			{ host: "paradise-park", method: "evener/projects/recent", params: {} },
 			{ host: "paradise-park", method: "model/list", params: { cwd } },
@@ -326,6 +329,7 @@ describe("NewSessionService", () => {
 			{ host: "paradise-park", method: "evener/dirs/create", params: { path: "/Users/jesse/git/scratch" } },
 			{ host: "paradise-park", method: "evener/git/head", params: { cwd } },
 			{ host: "paradise-park", method: "evener/launch/resolve", params: { cwd } },
+			{ host: "paradise-park", method: "evener/harnesses/list", params: {} },
 		]);
 	});
 

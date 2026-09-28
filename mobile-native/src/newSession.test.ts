@@ -625,6 +625,18 @@ it("restores a draft's host, and a draft saved before hosts as the hub's own mac
 	expect(saved.get("remote")).toMatchObject({ source: "paradise-park", prompt: "hello" });
 });
 
+it("reads another host's harnesses through the hub", async () => {
+	const { store, calls } = setup();
+	const moving = store.getState().changeHost("paradise-park", "paradise-park");
+	answer(calls, "evener/host/request", "evener/projects/recent", { data: [] });
+	await flush();
+	answer(calls, "evener/host/request", "model/list", { data: [model] });
+	await moving;
+	void store.getState().loadMetadata();
+	expect(calls.some((c) => c.method === "evener/harnesses/list")).toBe(false);
+	expect(calls.some((c) => (c.params as { method?: string }).method === "evener/harnesses/list")).toBe(true);
+});
+
 it("keeps the new host's projects when the old host's recent list answers late", async () => {
 	const { store, calls } = setup();
 	const metadata = store.getState().loadMetadata();
@@ -706,7 +718,7 @@ it("reads the recent projects of the host an applied setup names, dropping the o
 		.applySetup({ host: "paradise-park", cwd: "/Users/jesse/git/evener", model: null, effort: "", overrides: {} });
 	expect(store.getState().projects).toEqual([]);
 	answer(calls, "evener/host/request", "evener/projects/recent", { data: ["/Users/jesse/git/evener"] });
-	answer(calls, "evener/harnesses/list", null, { data: [] });
+	answer(calls, "evener/host/request", "evener/harnesses/list", { data: [] });
 	answer(calls, "evener/host/request", "model/list", { data: [model] });
 	await flush();
 	expect(store.getState().projects).toEqual(["/Users/jesse/git/evener"]);

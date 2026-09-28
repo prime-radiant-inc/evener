@@ -252,7 +252,7 @@ export function createNewSessionStore(
 			const host = get().source;
 			if (!current) return;
 			try {
-				const [projects, harnesses] = await Promise.all([current.recentProjects(host), current.harnesses()]);
+				const [projects, harnesses] = await Promise.all([current.recentProjects(host), current.harnesses(host)]);
 				if (generation === connection)
 					set({
 						// Another host's recent projects never land in this one's list.

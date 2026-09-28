@@ -42,7 +42,7 @@ export interface NewSessionParams {
 export interface NewSessionService {
 	start(params: NewSessionParams): Promise<{ thread: Thread; turn: Turn }>;
 	recentProjects(host?: string): Promise<string[]>;
-	harnesses(): Promise<HarnessDescriptor[]>;
+	harnesses(host?: string): Promise<HarnessDescriptor[]>;
 	models(params?: ModelListParams, host?: string): Promise<ModelListResponse>;
 	previewPlugins(params: PluginPreviewParams, host?: string): Promise<PluginPreviewResponse>;
 	directoryExists(host: string, path: string): Promise<boolean>;
@@ -90,8 +90,8 @@ export function createNewSessionService(client: ConversationClientLike): NewSess
 			return response.data ?? [];
 		},
 
-		async harnesses() {
-			const response: HarnessListResponse = await client.request("evener/harnesses/list", {});
+		async harnesses(host) {
+			const response: HarnessListResponse = await hostRequest(client, host, "evener/harnesses/list", {});
 			return response.data ?? [];
 		},
 
