@@ -2811,3 +2811,49 @@ func TestScratchRetentionRepairRepinsLostPinSoTheSweepSparesIt(t *testing.T) {
 		t.Fatalf("control: pinless referenced directory should have been collected: %v", err)
 	}
 }
+
+// TestScratchRetentionRepairTreatsACommittedWriteAsSuccess covers the repair's
+// post-rename failure arm: writeScratchRetention can report an error after its
+// rename already committed (the scratchManifestWriteProbe seam models the fsync
+// failure class). The repair must re-read under the lock and treat the advanced
+// revision as its own commit, so a manifest that is already healed is not
+// reported as a failed restore. The predicate differs from
+// ReleaseScratchRetention's tombstone key: here the commit is an unreleased
+// manifest at the new revision.
+func TestScratchRetentionRepairTreatsACommittedWriteAsSuccess(t *testing.T) {
+	base, workspace := scratchRetentionBase(t)
+	owner := ScratchOwner{StateDir: t.TempDir(), RootSessionID: identifier.MustNewSessionID()}
+	scratch, err := NewSessionScratch(base, workspace)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := scratch.Pin(owner, ScratchReference{Dir: scratch.Dir, Kind: "unsandboxed"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := scratch.Retain(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.RemoveAll(scratch.Dir); err != nil {
+		t.Fatal(err)
+	}
+	before, err := LoadScratchRetention(owner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	restore := SetScratchManifestWriteProbeForTesting(func() error { return errors.New("post-rename fsync failed") })
+	defer restore()
+
+	manifest, written, err := RepairScratchRetention(owner)
+	if err != nil {
+		t.Fatalf("a committed repair write was reported as a failure: %v", err)
+	}
+	if !written {
+		t.Fatal("the committed repair write did not report as written")
+	}
+	if len(manifest.References) != 0 {
+		t.Fatalf("the committed repair did not prune the missing reference: %+v", manifest.References)
+	}
+	if manifest.Revision != before.Revision+1 {
+		t.Fatalf("committed manifest revision = %d, want %d", manifest.Revision, before.Revision+1)
+	}
+}
