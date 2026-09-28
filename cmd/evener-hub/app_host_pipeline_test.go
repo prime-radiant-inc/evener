@@ -1780,3 +1780,32 @@ func TestBootCompensationArmedClearsWithNoConfigDocument(t *testing.T) {
 		t.Fatal("boot did not prune the cleared compensation's stash")
 	}
 }
+
+// TestBootCompensationSurvivesAnUnreadableConfigDocument pins the other half of
+// the carry-in fix: hostFileRecords reports false for a document that cannot be
+// decoded, but that is not genuine absence, so the boot must leave the armed
+// record and its stash alone rather than discarding the only durable copy of
+// the pre-mutation hub.toml.
+func TestBootCompensationSurvivesAnUnreadableConfigDocument(t *testing.T) {
+	entry := pipelineEntry("m4", 2)
+	fixture, token, _ := newPipelineRemovalFixture(t, entry, true)
+	stash := hubTOMLStashPath(fixture.configPath, "test-key")
+	if err := fixture.store.ArmCompensation(hostops.Compensation{
+		Host: "m4", Phase: hostops.CompensationArmed, Rows: []hostops.Token{token},
+		Stash: stash, Generation: 2,
+	}); err != nil {
+		t.Fatalf("ArmCompensation: %v", err)
+	}
+	// The document exists but cannot be decoded.
+	if err := os.WriteFile(fixture.configPath, []byte("= = = not TOML [[[\n"), 0o600); err != nil {
+		t.Fatalf("write undecodable hub.toml: %v", err)
+	}
+
+	m := fixture.manager(t)
+	if _, ok := m.cfg.ops.Compensation("m4"); !ok {
+		t.Fatal("boot cleared the armed compensation over a document it could not decode")
+	}
+	if _, err := os.Stat(stash); err != nil {
+		t.Fatalf("boot pruned the stash over a document it could not decode: %v", err)
+	}
+}

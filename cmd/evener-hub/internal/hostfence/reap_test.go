@@ -14,6 +14,7 @@ import (
 	"errors"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"testing"
@@ -47,6 +48,7 @@ type fakeBoundary struct {
 	membersErr error
 	signalErr  error
 	awaitErr   error
+	closeErr   error
 	killed     []int
 	closed     bool
 }
@@ -95,7 +97,7 @@ func (f *fakeBoundary) Await(wait time.Duration, clean func([]execenv.BoundaryMe
 
 func (f *fakeBoundary) Close() error {
 	f.closed = true
-	return nil
+	return f.closeErr
 }
 
 // newReapStore opens a store under a fresh temp state root.
@@ -343,7 +345,9 @@ func TestReapUnrecognizedMemberMarksOrphanAndKeepsIntent(t *testing.T) {
 }
 
 // TestReapEnumerationUnavailableFailsClosed pins the hard fail-closed arm: a
-// boundary the pass cannot reach is never treated as empty.
+// boundary the pass cannot reach is never treated as empty. The pass keeps the
+// intent, marks the record, and reports the unreachable boundary as a
+// diagnostic.
 func TestReapEnumerationUnavailableFailsClosed(t *testing.T) {
 	for name, opts := range map[string]ReapOptions{
 		"open fails": {
@@ -364,8 +368,8 @@ func TestReapEnumerationUnavailableFailsClosed(t *testing.T) {
 				t.Fatalf("ArmSpawnIntent: %v", err)
 			}
 			dropped, err := ReapLocalOrphanBoundary(store, opts)
-			if err != nil {
-				t.Fatalf("ReapLocalOrphanBoundary: %v", err)
+			if err == nil || !strings.Contains(err.Error(), record.ID) {
+				t.Fatalf("reap error = %v, want a diagnostic naming the record", err)
 			}
 			if dropped != 0 {
 				t.Fatalf("reap dropped %d; want the unverifiable intent kept", dropped)
@@ -443,19 +447,15 @@ func TestReapRetryResolvesAPreviouslyMarkedRecord(t *testing.T) {
 }
 
 // TestReapKeepsIntentsOnATerminalRecordAndReportsIt pins the corner the state
-// machine cannot mark: a record already terminal cannot become
-// `orphan-unverified`, so the pass keeps the intent open and reports it rather
-// than silently dropping the fence.
+// machine keeps out of reach: this build refuses to terminalize a record with an
+// open intent, so only a hand-edited or pre-guard store file carries the shape.
+// The pass cannot mark a terminal record, so it keeps the intent open and
+// reports it rather than silently dropping the fence.
 func TestReapKeepsIntentsOnATerminalRecordAndReportsIt(t *testing.T) {
-	store, _ := newReapStore(t)
-	record := newReapRecord(t, store, "h1")
-	if _, err := store.ArmSpawnIntent(record.ID, linuxIntent("n1")); err != nil {
-		t.Fatalf("ArmSpawnIntent: %v", err)
-	}
-	if _, err := store.Transition(record.ID, hostops.StateComplete, func(r *hostops.Record) {
-		r.Result = &hostops.Result{OK: true, Message: "done"}
-	}); err != nil {
-		t.Fatalf("Transition: %v", err)
+	store := openLegacyTerminalIntentStore(t)
+	record, ok := store.Record("00000000000000000001")
+	if !ok {
+		t.Fatal("the hand-written store did not load its record")
 	}
 	handle := &fakeBoundary{members: []execenv.BoundaryMember{{PID: 200, StartToken: "7"}}}
 	var opened []execenv.BoundaryIdentity
@@ -469,6 +469,56 @@ func TestReapKeepsIntentsOnATerminalRecordAndReportsIt(t *testing.T) {
 	stored, _ := store.Record(record.ID)
 	if stored.State != hostops.StateComplete || len(stored.PendingSpawns) != 1 {
 		t.Fatalf("the terminal record = %q/%+v, want complete with the intent kept", stored.State, stored.PendingSpawns)
+	}
+}
+
+// openLegacyTerminalIntentStore writes a store file carrying the shape only a
+// hand-edited or pre-guard file can have — a terminal record with an open spawn
+// intent — and opens it.
+func openLegacyTerminalIntentStore(t *testing.T) *hostops.Store {
+	t.Helper()
+	dir := t.TempDir()
+	path := hostops.StorePath(dir)
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatalf("mkdir store dir: %v", err)
+	}
+	const body = `{"version":1,"sequence":1,"allocatorHighWaterMark":1,"records":[` +
+		`{"id":"00000000000000000001","clientOperationId":"client-h1","host":"h1","kind":"deploy",` +
+		`"state":"complete","generation":7,"incarnationId":"inc-h1",` +
+		`"pendingSpawns":[{"nonce":"n1","platform":"linux","cgroupId":"/cg/n1"}],` +
+		`"result":{"ok":true,"message":"done"},"createdAt":"2026-09-28T00:00:00Z",` +
+		`"updatedAt":"2026-09-28T00:00:00Z","hostRemoved":false,"sequence":1}]}`
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatalf("write store: %v", err)
+	}
+	store, err := hostops.Open(path)
+	if err != nil {
+		t.Fatalf("hostops.Open: %v", err)
+	}
+	return store
+}
+
+// TestReapCloseFailureIsUnsettled pins §3's teardown half: a boundary that does
+// not come down is not a clean boundary, so the pass keeps the intent and marks
+// the record unverified rather than dropping it over a live directory.
+func TestReapCloseFailureIsUnsettled(t *testing.T) {
+	store, _ := newReapStore(t)
+	record := newReapRecord(t, store, "h1")
+	if _, err := store.ArmSpawnIntent(record.ID, linuxIntent("n1")); err != nil {
+		t.Fatalf("ArmSpawnIntent: %v", err)
+	}
+	handle := &fakeBoundary{closeErr: errors.New("device or resource busy")}
+	var opened []execenv.BoundaryIdentity
+	dropped, err := ReapLocalOrphanBoundary(store, ReapOptions{Wait: 50 * time.Millisecond, Open: openOnce(handle, &opened)})
+	if err == nil || !strings.Contains(err.Error(), record.ID) {
+		t.Fatalf("reap error = %v, want one naming the record whose boundary did not tear down", err)
+	}
+	if dropped != 0 {
+		t.Fatalf("reap dropped %d; want the intent kept over an un-torn boundary", dropped)
+	}
+	stored, _ := store.Record(record.ID)
+	if stored.State != hostops.StateOrphanUnverified || len(stored.PendingSpawns) != 1 {
+		t.Fatalf("the record = %q/%+v, want orphan-unverified with the intent kept", stored.State, stored.PendingSpawns)
 	}
 }
 

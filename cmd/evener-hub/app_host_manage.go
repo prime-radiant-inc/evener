@@ -1800,6 +1800,25 @@ func (m *hubHostManager) hostFileRecords() (Config, bool) {
 	return cfg, true
 }
 
+// hostFileAbsentOrEmpty reports whether the selected config path genuinely holds
+// no document: the path is unset, the file does not exist, or it exists with
+// zero bytes. It deliberately differs from hostFileRecords' ok — which is also
+// false for a file that cannot be read or that fails to decode — because the
+// boot compensation pass may only converge over real absence: clearing an armed
+// record on a read or decode failure would discard the compensation record and
+// its stash, the only durable copy of the pre-mutation hub.toml.
+func (m *hubHostManager) hostFileAbsentOrEmpty() bool {
+	path := strings.TrimSpace(m.cfg.configPath)
+	if path == "" {
+		return false
+	}
+	raw, err := configReadFile(path)
+	if err != nil {
+		return errors.Is(err, os.ErrNotExist)
+	}
+	return len(raw) == 0
+}
+
 // migrateLegacyHostSidecar folds a retired hub.hosts.json into hub.toml exactly
 // once, at boot. The order is the crash-safety story, and it is fixed:
 //
@@ -2983,13 +3002,23 @@ func (m *hubHostManager) reconcilePipelineBoot() {
 		return
 	}
 	if !hasFile {
-		// The config path is set but its document is absent or empty. The
-		// compensation arms that need no bytes still converge here — an armed
-		// record (or one in the hub.toml phase) clears through its own explicit
-		// `!hasFile` arm, and the orphan-stash prune then removes the cleared
-		// record's stash. Returning without this pass left the record and its
-		// stash until a file reappeared, with `resumeCompensation`'s explicit
-		// absent-file clear arm unreachable from the boot path.
+		// hostFileRecords reports false for a genuinely absent or empty document
+		// AND for a file it could not read or decode. Only the first is a state
+		// the compensation arms may converge over: an armed record clearing
+		// through its explicit absent-file arm would delete the record and its
+		// stash — the only durable copy of the pre-mutation hub.toml — on a mere
+		// read or decode failure. An unreadable or undecodable document leaves
+		// everything as it was for the operator to repair.
+		if !m.hostFileAbsentOrEmpty() {
+			return
+		}
+		// The document is genuinely absent or empty. The compensation arms that
+		// need no bytes still converge here — an armed record (or one in the
+		// hub.toml phase) clears through its own explicit `!hasFile` arm, and the
+		// orphan-stash prune then removes the cleared record's stash. Returning
+		// without this pass left the record and its stash until a file
+		// reappeared, with `resumeCompensation`'s explicit absent-file clear arm
+		// unreachable from the boot path.
 		m.reconcileCompensations()
 		m.pruneOrphanHubTOMLStash()
 		return
@@ -3413,9 +3442,10 @@ func (m *hubHostManager) resumeCompensation(record hostops.Compensation) {
 		// §9's commit-point check, the same one the armed arm makes.
 		fileCfg, hasFile := m.hostFileRecords()
 		if !hasFile {
-			// No file to converge with (the boot pipeline never enters with an
-			// absent file): whatever the record owes, there are no bytes to
-			// compare or restore, so it clears as before.
+			// No file to converge with: the boot pipeline enters here only for a
+			// genuinely absent or empty document (hostFileAbsentOrEmpty gates it),
+			// so there are no bytes to compare or restore and the record clears
+			// as before.
 			m.clearCompensation(record, "no hub.toml to converge with")
 			return
 		}

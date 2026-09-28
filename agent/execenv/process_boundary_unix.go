@@ -152,8 +152,10 @@ type boundaryOps struct {
 	members func() ([]BoundaryMember, error)
 	// observe reads one process's kernel start token.
 	observe func(pid int) (string, error)
-	// signal terminates one enumerated member.
-	signal func(pid int) error
+	// signal terminates one enumerated member, verifying startToken with an
+	// identity-stable kernel handle where the platform offers one. A platform
+	// without such a handle must refuse (fail closed) rather than check-then-kill.
+	signal func(pid int, startToken string) error
 	// release tears the boundary down after it is proven clean.
 	release func() error
 }
@@ -213,6 +215,14 @@ func (b *Boundary) Identity() BoundaryIdentity { return b.id }
 // A spawn that does not carry the returned attributes is not a member, and its
 // process can never be reaped through this boundary — so the caller must treat
 // a SpawnAttr failure as a spawn-refusal, never as a spawn without a boundary.
+//
+// On Linux the attributes carry Pdeathsig, and Go documents that signal as
+// delivered "on thread termination, which may happen before process
+// termination" (syscall/exec_linux.go; go.dev/issue/27505). The caller must
+// therefore keep the OS thread that calls Start alive for as long as the child
+// should live — runtime.LockOSThread around the spawn, released only after the
+// child exits — or the child can be SIGKILLed while the hub and its boundary
+// are alive.
 func (b *Boundary) SpawnAttr() (*syscall.SysProcAttr, func(), error) {
 	if b == nil || b.ops.spawnAttr == nil {
 		return nil, nil, fmt.Errorf("%w: this boundary has no spawn handle", ErrBoundaryUnavailable)
@@ -234,6 +244,9 @@ func (b *Boundary) Observe(pid int) (string, error) {
 	if pid <= 0 {
 		return "", fmt.Errorf("%w: pid %d", ErrBoundaryMemberGone, pid)
 	}
+	if b == nil || b.ops.observe == nil {
+		return "", fmt.Errorf("%w: this boundary cannot observe", ErrBoundaryUnavailable)
+	}
 	return b.ops.observe(pid)
 }
 
@@ -248,12 +261,16 @@ func (b *Boundary) Members() ([]BoundaryMember, error) {
 	return b.ops.members()
 }
 
-// SignalVerified signals the one member the caller has verified: it re-reads
-// the member's kernel start token and signals only when it still equals
-// startToken. A member whose token differs is a reused pid naming a different
-// process — §3's already-clean rule — and is never signaled; a member whose
-// process is gone is ErrBoundaryMemberGone. An empty startToken refuses: the
-// boundary never kills on a pid alone.
+// SignalVerified signals the one member the caller has verified. On Linux the
+// platform performs the re-check and the signal as one identity-stable
+// operation (pidfd_open pins the pid, the token is re-read through the pinned
+// handle, and pidfd_send_signal delivers to exactly that process), so a pid
+// reused between enumeration and signal can never receive it. A member whose
+// token differs is a reused pid naming a different process — §3's already-clean
+// rule — and is never signaled; a member whose process is gone is
+// ErrBoundaryMemberGone. An empty startToken refuses: the boundary never kills
+// on a pid alone. A platform with no identity-stable handle refuses to signal
+// at all (fail closed).
 func (b *Boundary) SignalVerified(pid int, startToken string) error {
 	if pid <= 0 {
 		return fmt.Errorf("%w: pid %d", ErrBoundaryMemberGone, pid)
@@ -261,17 +278,10 @@ func (b *Boundary) SignalVerified(pid int, startToken string) error {
 	if startToken == "" {
 		return errors.New("execenv: refuse to signal a member with no kernel start token")
 	}
-	if b == nil || b.ops.observe == nil || b.ops.signal == nil {
+	if b == nil || b.ops.signal == nil {
 		return fmt.Errorf("%w: this boundary cannot signal", ErrBoundaryUnavailable)
 	}
-	current, err := b.ops.observe(pid)
-	if err != nil {
-		return err
-	}
-	if current != startToken {
-		return fmt.Errorf("%w: pid %d carried token %s, expected %s", ErrBoundaryIdentityChanged, pid, current, startToken)
-	}
-	return b.ops.signal(pid)
+	return b.ops.signal(pid, startToken)
 }
 
 // Await is the bounded proof that a boundary no longer holds an unverified

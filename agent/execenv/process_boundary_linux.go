@@ -161,6 +161,11 @@ func newLinuxCgroupBoundary(dir string) (*Boundary, error) {
 // it can neither run outside the boundary nor leave it. The attributes also
 // carry §3's baseline — its own process group, and parent-death cleanup — and
 // the release closes the cgroup handle once Start has returned.
+//
+// Pdeathsig is delivered on the spawning OS thread's termination, not
+// necessarily the process's (Go's own documentation of the field; see
+// SpawnAttr's note): the caller must hold the calling thread with
+// runtime.LockOSThread for the child's lifetime.
 func linuxCgroupSpawnAttr(dir string) (*syscall.SysProcAttr, func(), error) {
 	fd, err := unix.Open(dir, unix.O_RDONLY|unix.O_DIRECTORY, 0)
 	if err != nil {
@@ -237,10 +242,35 @@ func observeLinuxStartToken(pid int) (string, error) {
 	return token, nil
 }
 
-// signalLinuxMember terminates one already-verified member.
-func signalLinuxMember(pid int) error {
-	if err := syscall.Kill(pid, syscall.SIGKILL); err != nil {
-		if errors.Is(err, syscall.ESRCH) {
+// signalLinuxMember terminates one already-verified member through an
+// identity-stable kernel handle, closing the check-then-kill race §3's rule
+// would otherwise leave open: pidfd_open pins the pid so the kernel cannot
+// recycle the number while the handle is open, the start token is re-read
+// through the pinned handle, and pidfd_send_signal delivers to exactly that
+// process. A pid whose token differs at the second read is a reused id and is
+// refused; a pid that no longer exists is gone. A kernel without pidfd fails
+// closed rather than falling back to kill(2), where the race is unclosable.
+func signalLinuxMember(pid int, startToken string) error {
+	fd, err := unix.PidfdOpen(pid, 0)
+	if err != nil {
+		if errors.Is(err, unix.ESRCH) {
+			return fmt.Errorf("%w: pid %d", ErrBoundaryMemberGone, pid)
+		}
+		if errors.Is(err, unix.ENOSYS) {
+			return fmt.Errorf("%w: pidfd_open is unavailable on this kernel, refusing a non-atomic signal: %w", ErrBoundaryUnavailable, err)
+		}
+		return fmt.Errorf("execenv: open pidfd for %d: %w", pid, err)
+	}
+	defer func() { _ = unix.Close(fd) }()
+	current, err := observeLinuxStartToken(pid)
+	if err != nil {
+		return err
+	}
+	if current != startToken {
+		return fmt.Errorf("%w: pid %d carried token %s, expected %s", ErrBoundaryIdentityChanged, pid, current, startToken)
+	}
+	if err := unix.PidfdSendSignal(fd, unix.SIGKILL, nil, 0); err != nil {
+		if errors.Is(err, unix.ESRCH) {
 			return fmt.Errorf("%w: pid %d", ErrBoundaryMemberGone, pid)
 		}
 		return fmt.Errorf("execenv: signal boundary member %d: %w", pid, err)

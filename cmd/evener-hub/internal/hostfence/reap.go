@@ -89,6 +89,7 @@ func ReapLocalOrphanBoundary(store *hostops.Store, opts ReapOptions) (int, error
 
 	dropped := 0
 	var failures []error
+	var diagnostics []error
 	for _, record := range store.SpawnIntentRecords() {
 		if record.State == hostops.StateOrphanUnverified && boundaryHasForeignVariant(record.OrphanBoundary) {
 			// §4's fencing-quarantine boundary is remote and §5's
@@ -107,7 +108,13 @@ func ReapLocalOrphanBoundary(store *hostops.Store, opts ReapOptions) (int, error
 		var cleanNonces []string
 		var failing []hostops.SpawnIntent
 		for _, group := range groups {
-			clean := reapBoundaryGroup(group, open, wait)
+			clean, diag := reapBoundaryGroup(group, open, wait)
+			if diag != nil {
+				// A boundary that could not be opened, enumerated or torn down is
+				// reported even though the record still converges fail-closed: the
+				// leak or unreachable boundary is the operator's to see.
+				diagnostics = append(diagnostics, fmt.Errorf("record %s: %w", record.ID, diag))
+			}
 			if clean {
 				for _, intent := range group.intents {
 					cleanNonces = append(cleanNonces, intent.Nonce)
@@ -159,24 +166,15 @@ func ReapLocalOrphanBoundary(store *hostops.Store, opts ReapOptions) (int, error
 		}
 		dropped += len(cleanNonces)
 	}
-	return dropped, errors.Join(failures...)
+	return dropped, errors.Join(append(failures, diagnostics...)...)
 }
 
-// resolveReapedRecord converges one record the reap proved clean: §3's
+// resolveReapedRecord converges one record the reap proved clean: §3/§5's
 // `orphan-unverified`→`interrupted` transition with the persisted boundary
-// cleared, in its own atomic write, and then the open intents dropped in a
-// second one. The order is the crash-safe one: a crash between them leaves an
-// interrupted record with an open intent, which the next boot's reap finds
-// clean and drops; the reverse order would leave an `orphan-unverified` record
-// with no intent and no enumerable boundary, wedged with no retry.
+// cleared and every open intent dropped, in one atomic write.
 func resolveReapedRecord(store *hostops.Store, recordID string, nonces []string) error {
-	if _, err := store.Transition(recordID, hostops.StateInterrupted, func(r *hostops.Record) {
-		r.OrphanBoundary = nil
-		r.Result = &hostops.Result{OK: false, Message: hostops.InterruptedNote}
-	}); err != nil {
-		return err
-	}
-	return store.ClearSpawnIntents(recordID, nonces)
+	_, err := store.ResolveReapedSpawn(recordID, nonces)
+	return err
 }
 
 // boundaryGroup is one pre-created boundary's intents: the intents that share an
@@ -213,12 +211,18 @@ func groupSpawnIntents(intents []hostops.SpawnIntent) ([]boundaryGroup, error) {
 // (`remote-fencing`, `boundary-unavailable`, or anything a build this old
 // cannot parse). Such a record is never the local reap's to rewrite.
 func boundaryHasForeignVariant(raw json.RawMessage) bool {
+	if len(bytes.TrimSpace(raw)) == 0 {
+		// Nil or empty bytes carry no member at all: local, with nothing foreign
+		// to protect. (An `orphan-unverified` record is validated to carry an
+		// array, so this is the defensive arm, not the common one.)
+		return false
+	}
 	var members []struct {
 		Kind string `json:"kind"`
 	}
 	if err := json.Unmarshal(raw, &members); err != nil {
-		// Unparseable is not this pass's evidence to act on: fail closed by
-		// leaving the record alone.
+		// Present but unparseable is not this pass's evidence to act on: fail
+		// closed by leaving the record alone.
 		return true
 	}
 	for _, member := range members {
@@ -247,20 +251,27 @@ func boundaryIdentity(intent hostops.SpawnIntent) (execenv.BoundaryIdentity, err
 }
 
 // reapBoundaryGroup applies §3's clean rule to one group and reports whether the
-// boundary proved clean. A false result is the fail-closed disposition, never
-// "unknown": the caller marks the record `orphan-unverified` and keeps the
-// intent.
-func reapBoundaryGroup(group boundaryGroup, open func(execenv.BoundaryIdentity) (LocalBoundaryHandle, error), wait time.Duration) bool {
+// boundary proved clean and settled. A false result is the fail-closed
+// disposition, never "unknown": the caller marks the record `orphan-unverified`
+// and keeps the intent. The returned diagnostic names a failure the operator
+// should see (an unreachable boundary, an unavailable enumeration, a signal
+// that failed, a dead proof that did not settle, or a boundary that did not
+// tear down); the expected fail-closed arms — a live member no persisted pair
+// accounts for — carry none.
+func reapBoundaryGroup(group boundaryGroup, open func(execenv.BoundaryIdentity) (LocalBoundaryHandle, error), wait time.Duration) (bool, error) {
 	handle, err := open(group.identity)
 	if err != nil {
 		// A vanished boundary is clean — the kernel only removes an empty cgroup
 		// — and any other failure to reach the boundary is fail-closed, never an
 		// empty boundary.
-		return errors.Is(err, execenv.ErrBoundaryGone)
+		if errors.Is(err, execenv.ErrBoundaryGone) {
+			return true, nil
+		}
+		return false, fmt.Errorf("the boundary could not be opened: %w", err)
 	}
 	members, err := handle.Members()
 	if err != nil {
-		return false
+		return false, fmt.Errorf("enumeration is unavailable: %w", err)
 	}
 	pairs := persistedPairs(group.intents)
 	verified, unrecognized := partitionMembers(members, pairs)
@@ -268,12 +279,16 @@ func reapBoundaryGroup(group boundaryGroup, open func(execenv.BoundaryIdentity) 
 		// §3: a member whose pid matches no persisted pair — a forked descendant
 		// the launcher never observed — reads as live. Membership alone never
 		// authorizes a kill, so the pass reaps nothing here.
-		return false
+		return false, nil
 	}
 	if len(verified) == 0 {
 		// Empty, or every member's start token differs: §3's already-clean arms.
-		_ = handle.Close()
-		return true
+		// Teardown is part of the verdict: a boundary that will not come down is
+		// not proven dead, so it is unsettled, never clean.
+		if err := closeBoundary(handle, wait); err != nil {
+			return false, fmt.Errorf("the clean boundary did not tear down: %w", err)
+		}
+		return true, nil
 	}
 	for _, member := range verified {
 		err := handle.SignalVerified(member.PID, member.StartToken)
@@ -285,17 +300,47 @@ func reapBoundaryGroup(group boundaryGroup, open func(execenv.BoundaryIdentity) 
 			// The pid was recycled between enumeration and signal; §3 reads a
 			// start-token mismatch as already clean, and the signal was refused.
 		default:
-			return false
+			return false, fmt.Errorf("signaling a verified member failed: %w", err)
 		}
 	}
 	if err := handle.Await(wait, func(current []execenv.BoundaryMember) bool {
 		leftVerified, leftUnrecognized := partitionMembers(current, pairs)
 		return len(leftVerified) == 0 && len(leftUnrecognized) == 0
 	}); err != nil {
-		return false
+		return false, fmt.Errorf("the dead proof did not settle: %w", err)
 	}
-	_ = handle.Close()
-	return true
+	if err := closeBoundary(handle, wait); err != nil {
+		return false, fmt.Errorf("the reaped boundary did not tear down: %w", err)
+	}
+	return true, nil
+}
+
+// boundaryClosePollInterval is how often closeBoundary retries a teardown while
+// it waits. The kernel refuses to remove a cgroup whose member tasks have not
+// been reaped yet — a just-killed orphan is a zombie until its new parent
+// reaps it — so the retry waits for that reaping rather than reading the
+// refusal as a clean boundary.
+const boundaryClosePollInterval = 25 * time.Millisecond
+
+// closeBoundary tears the boundary down within wait: it retries until the bound
+// expires, and a boundary still present at the deadline reports the teardown
+// failure. §3's dead proof is not complete until the boundary is gone.
+func closeBoundary(handle LocalBoundaryHandle, wait time.Duration) error {
+	deadline := time.Now().Add(wait)
+	for {
+		err := handle.Close()
+		if err == nil {
+			return nil
+		}
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			return err
+		}
+		if remaining > boundaryClosePollInterval {
+			remaining = boundaryClosePollInterval
+		}
+		time.Sleep(remaining)
+	}
 }
 
 // persistedPair is one launcher-observed kernel instance marker.

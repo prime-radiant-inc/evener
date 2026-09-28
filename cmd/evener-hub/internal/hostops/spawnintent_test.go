@@ -272,32 +272,115 @@ func TestInterruptedTransitionsSkipOpenSpawnIntents(t *testing.T) {
 
 // TestCompactionKeepsRecordsWithOpenSpawnIntents pins §3's "never an invisible
 // orphan": a terminal record still carrying an open intent is not a compaction
-// victim, and once its intent drops it compacts normally.
+// victim, and once its intent drops it compacts normally. This build's API
+// cannot produce the shape (Transition refuses to terminalize an intent-carrying
+// record and ResolveReapedSpawn clears every intent), so the test injects it
+// the way a hand-edited or pre-guard store file can still carry it.
 func TestCompactionKeepsRecordsWithOpenSpawnIntents(t *testing.T) {
 	store, _ := openRetentionStore(t, RetentionPolicy{TerminalPerHost: 1})
 	first := createOp(t, store, "h1", "client-1")
 	second := createOp(t, store, "h1", "client-2")
-	if _, err := store.ArmSpawnIntent(first.ID, linuxIntent("n1")); err != nil {
-		t.Fatalf("ArmSpawnIntent: %v", err)
-	}
 	finish(t, store, first.ID)
-	finish(t, store, second.ID)
+	// Inject the intent the moment the record is terminal, before any further
+	// committing write: a hand-edited or pre-guard file carries this shape.
+	store.cell.mu.Lock()
+	for i := range store.cell.state.Records {
+		if store.cell.state.Records[i].ID == first.ID {
+			store.cell.state.Records[i].PendingSpawns = []SpawnIntent{linuxIntent("n1")}
+		}
+	}
+	store.cell.mu.Unlock()
 
+	finish(t, store, second.ID)
 	if _, ok := store.Record(first.ID); !ok {
 		t.Fatal("compaction dropped a terminal record whose spawn intent is still open")
-	}
-	if _, ok := store.Record(second.ID); !ok {
-		t.Fatal("compaction dropped the newest terminal record")
 	}
 	// Dropping the intent makes the record compactable, and the drop's own
 	// committing write runs the pass: the oldest terminal record now compacts.
 	if err := store.DropSpawnIntent(first.ID, "n1"); err != nil {
 		t.Fatalf("DropSpawnIntent: %v", err)
 	}
-	if _, ok := store.Record(first.ID); ok {
+	// The injected intent is in the live snapshot but the drop's write turned it
+	// into the file's own state: reload fresh so the assertion is durable.
+	reopened := reopenFresh(t, store.path)
+	if _, ok := reopened.Record(first.ID); ok {
 		t.Fatal("the record did not compact after its intent dropped")
 	}
-	if _, ok := store.Record(second.ID); !ok {
-		t.Fatal("the newest terminal record was compacted instead of the oldest")
+}
+
+// TestTransitionRefusesTerminalizationWithOpenIntents pins §3's fence over a
+// record whose boundary is still unaccounted for: a worker cannot record a
+// terminal outcome — which would make the record invisible to OrphanUnverified
+// and to orphan-resolve — while a spawn intent is open. Dropping the intent
+// first is what lets the operation finish.
+func TestTransitionRefusesTerminalizationWithOpenIntents(t *testing.T) {
+	store, _ := openTestStore(t)
+	record := createTestRecord(t, store, "h1")
+	if _, err := store.ArmSpawnIntent(record.ID, linuxIntent("n1")); err != nil {
+		t.Fatalf("ArmSpawnIntent: %v", err)
+	}
+	if _, err := store.Transition(record.ID, StateComplete, terminalChange(true)); !errors.Is(err, ErrInvalidTransition) {
+		t.Fatalf("Transition to complete with an open intent = %v, want ErrInvalidTransition", err)
+	}
+	if _, err := store.TransitionToState(record.ID, StateComplete, &Result{OK: true, Message: "done"}, ""); !errors.Is(err, ErrInvalidTransition) {
+		t.Fatalf("TransitionToState to complete with an open intent = %v, want ErrInvalidTransition", err)
+	}
+	if err := store.DropSpawnIntent(record.ID, "n1"); err != nil {
+		t.Fatalf("DropSpawnIntent: %v", err)
+	}
+	if _, err := store.Transition(record.ID, StateComplete, terminalChange(true)); err != nil {
+		t.Fatalf("Transition after the intent dropped: %v", err)
+	}
+}
+
+// TestResolveReapedSpawnClearsIntentsInOneWrite pins §5's atomic resolution:
+// the `orphan-unverified`→`interrupted` transition, the boundary clear and the
+// intent drop land in one write, and a resolve that would leave an intent
+// unnamed refuses.
+func TestResolveReapedSpawnClearsIntentsInOneWrite(t *testing.T) {
+	store, path := openTestStore(t)
+	record := createTestRecord(t, store, "h1")
+	if _, err := store.ArmSpawnIntent(record.ID, linuxIntent("n1")); err != nil {
+		t.Fatalf("ArmSpawnIntent: %v", err)
+	}
+	if _, err := store.ArmSpawnIntent(record.ID, linuxIntent("n2")); err != nil {
+		t.Fatalf("ArmSpawnIntent: %v", err)
+	}
+	boundary := []byte(`[{"kind":"local-markerless","platform":"linux","cgroupId":"/cg/n1","nonce":"n1"},{"kind":"local-markerless","platform":"linux","cgroupId":"/cg/n2","nonce":"n2"}]`)
+	if _, err := store.Transition(record.ID, StateOrphanUnverified, func(r *Record) { r.OrphanBoundary = boundary }); err != nil {
+		t.Fatalf("Transition to orphan-unverified: %v", err)
+	}
+
+	if _, err := store.ResolveReapedSpawn(record.ID, []string{"n1"}); !errors.Is(err, ErrInvalidTransition) {
+		t.Fatalf("resolve with an unnamed intent = %v, want ErrInvalidTransition", err)
+	}
+	stored, _ := store.Record(record.ID)
+	if stored.State != StateOrphanUnverified || len(stored.PendingSpawns) != 2 {
+		t.Fatalf("a refused resolve changed the record: %q/%+v", stored.State, stored.PendingSpawns)
+	}
+	if _, err := store.ResolveReapedSpawn("00000000000000000099", []string{"n1"}); !errors.Is(err, ErrRecordNotFound) {
+		t.Fatalf("resolve of an unknown id = %v, want ErrRecordNotFound", err)
+	}
+
+	resolved, err := store.ResolveReapedSpawn(record.ID, []string{"n1", "n2"})
+	if err != nil {
+		t.Fatalf("ResolveReapedSpawn: %v", err)
+	}
+	if resolved.State != StateInterrupted || len(resolved.OrphanBoundary) != 0 || len(resolved.PendingSpawns) != 0 {
+		t.Fatalf("resolved record = %q/%s/%+v, want interrupted with no boundary or intents", resolved.State, resolved.OrphanBoundary, resolved.PendingSpawns)
+	}
+	if resolved.Result == nil || resolved.Result.Message != InterruptedNote {
+		t.Fatalf("resolved result = %+v, want the interrupted note", resolved.Result)
+	}
+	if resolved.Sequence == 0 {
+		t.Fatal("the resolution did not advance the sequence")
+	}
+	reloaded := reopenFresh(t, path)
+	durable, _ := reloaded.Record(record.ID)
+	if durable.State != StateInterrupted || len(durable.PendingSpawns) != 0 || len(durable.OrphanBoundary) != 0 {
+		t.Fatalf("the reloaded record = %q/%+v/%s, want one durable write", durable.State, durable.PendingSpawns, durable.OrphanBoundary)
+	}
+	if _, err := store.ResolveReapedSpawn(record.ID, []string{"n1"}); !errors.Is(err, ErrInvalidTransition) {
+		t.Fatalf("resolve of a non-orphan record = %v, want ErrInvalidTransition", err)
 	}
 }

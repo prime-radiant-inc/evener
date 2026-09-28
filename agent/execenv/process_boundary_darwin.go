@@ -75,7 +75,12 @@ func newDarwinBoundary(pgid, sessionID int) *Boundary {
 // whose (process group id, session id) pair equals the boundary's. BSD `ps`
 // reports both columns; the kernel start token for each candidate comes from
 // the process's kinfo_proc, so a member that exits mid-enumeration is omitted
-// (gone reads as already clean).
+// (gone reads as already clean). The boundary owner itself — this launcher,
+// whose own pid equals the pair — is excluded: counting it would make a live
+// launcher's boundary never enumerate empty. A row whose columns do not parse
+// fails closed: `ps` succeeded but its output no longer carries the numbers
+// this verification needs, and guessing around it would be a boundary read as
+// clean for the wrong reason.
 func darwinBoundaryMembers(pgid, sessionID int) ([]BoundaryMember, error) {
 	out, err := exec.Command("ps", "-axo", "pid=,pgid=,sess=").Output()
 	if err != nil {
@@ -85,13 +90,20 @@ func darwinBoundaryMembers(pgid, sessionID int) ([]BoundaryMember, error) {
 	for _, line := range strings.Split(string(out), "\n") {
 		fields := strings.Fields(line)
 		if len(fields) != 3 {
+			if strings.TrimSpace(line) == "" {
+				continue
+			}
+			return nil, fmt.Errorf("%w: unparseable process row %q", ErrBoundaryUnavailable, line)
+		}
+		if fields[0] == strconv.Itoa(os.Getpid()) {
+			// The boundary owner (this launcher): not a member to reap.
 			continue
 		}
 		pid, errPID := strconv.Atoi(fields[0])
 		group, errGroup := strconv.Atoi(fields[1])
 		session, errSession := strconv.Atoi(fields[2])
 		if errPID != nil || errGroup != nil || errSession != nil {
-			continue
+			return nil, fmt.Errorf("%w: process row %q does not carry numeric columns", ErrBoundaryUnavailable, line)
 		}
 		if group != pgid || session != sessionID {
 			continue
@@ -136,13 +148,14 @@ func darwinStartToken(pid int) (string, error) {
 	return fmt.Sprintf("%d.%06d", started.Sec, started.Usec), nil
 }
 
-// signalDarwinMember terminates one already-verified member.
-func signalDarwinMember(pid int) error {
-	if err := unix.Kill(pid, unix.SIGKILL); err != nil {
-		if errors.Is(err, unix.ESRCH) {
-			return fmt.Errorf("%w: pid %d", ErrBoundaryMemberGone, pid)
-		}
-		return fmt.Errorf("execenv: signal boundary member %d: %v", pid, err)
-	}
-	return nil
+// signalDarwinMember refuses to signal: Darwin offers no identity-stable handle
+// that pins a process across the start-token check and the signal (checked
+// golang.org/x/sys/unix, which has no pidfd equivalent on darwin; the
+// pidfd_open/pidfd_send_signal pair is Linux-only). A plain kill(2) would be
+// check-then-kill, and §3 forbids signaling an instance that cannot be proven,
+// so the seam fails closed: the reap marks the record `orphan-unverified` and
+// keeps the intent for a platform arm that can verify atomically.
+func signalDarwinMember(pid int, startToken string) error {
+	_ = startToken
+	return fmt.Errorf("%w: no identity-stable handle exists on darwin to signal pid %d atomically", ErrBoundaryUnavailable, pid)
 }

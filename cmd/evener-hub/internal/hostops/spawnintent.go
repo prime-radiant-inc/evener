@@ -357,6 +357,66 @@ func (s *Store) SpawnIntentRecords() []Record {
 	return records
 }
 
+// ResolveReapedSpawn is §3/§5's clean resolution in one atomic write: it drops
+// every named open intent AND moves the record from `orphan-unverified` to
+// `interrupted`, clearing the boundary and writing the interrupted outcome,
+// with the durable sequence advanced once. One write is what §5 requires of the
+// resolution ("under the store mutex in one atomic write"), and it is also what
+// keeps the store's invariant: a terminal record never carries a pending-spawn
+// intent, so no later boot can find an interrupted record whose boundary is
+// still unaccounted for.
+//
+// Every open intent on the record must be named. A record with an intent left
+// unnamed refuses: resolving half a boundary would record a terminal outcome
+// while an unverified spawn's intent still names live-or-unknown work. A record
+// not in `orphan-unverified` refuses; the fencing paths, not a stray caller,
+// own that state.
+func (s *Store) ResolveReapedSpawn(recordID string, nonces []string) (Record, error) {
+	if s == nil {
+		return Record{}, errors.New("hostops: store is not configured")
+	}
+	if slices.Contains(nonces, "") {
+		return Record{}, fmt.Errorf("%w: a resolve names an intent's nonce", ErrInvalidSpawnIntent)
+	}
+	s.cell.mu.Lock()
+	defer s.cell.mu.Unlock()
+
+	next := cloneSnapshot(s.cell.state)
+	index := slices.IndexFunc(next.Records, func(record Record) bool { return record.ID == recordID })
+	if index < 0 {
+		return Record{}, fmt.Errorf("%w: %q", ErrRecordNotFound, recordID)
+	}
+	record := next.Records[index]
+	if record.State != StateOrphanUnverified {
+		return Record{}, fmt.Errorf("%w: record %q is %q, not %q", ErrInvalidTransition, recordID, record.State, StateOrphanUnverified)
+	}
+	kept := make([]SpawnIntent, 0, len(record.PendingSpawns))
+	for _, intent := range record.PendingSpawns {
+		if slices.Contains(nonces, intent.Nonce) {
+			continue
+		}
+		kept = append(kept, intent)
+	}
+	if len(kept) > 0 {
+		return Record{}, fmt.Errorf("%w: record %q still carries %d unnamed open intent(s)", ErrInvalidTransition, recordID, len(kept))
+	}
+	record.PendingSpawns = nil
+	record.State = StateInterrupted
+	record.OrphanBoundary = nil
+	record.Result = &Result{OK: false, Message: InterruptedNote}
+	record.UpdatedAt = nowUTC()
+	next.advanceSequence(&record)
+	if err := validateRecord(record); err != nil {
+		return Record{}, err
+	}
+	next.Records[index] = cloneRecord(record)
+	landed, err := s.commitLocked(next)
+	if err != nil && !landed {
+		return Record{}, err
+	}
+	return cloneRecord(record), err
+}
+
 // OrphanUnverified returns copies of every open `orphan-unverified` record, in
 // record-id order. It is the read the admission fence and orphan-resolve stand
 // on: while a host has a record here, §8 admits no new lifecycle or mutation

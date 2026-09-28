@@ -537,6 +537,17 @@ func (s *Store) Transition(id string, to State, change func(*Record)) (Record, e
 		return Record{}, fmt.Errorf("%w: orphan-unverified record %q resolves only to %q",
 			ErrInvalidTransition, id, StateInterrupted)
 	}
+	// §3 keeps a record whose spawn intent is still open fenced: its boundary
+	// may still hold the orphan, and "never clean, never `interrupted`" is the
+	// rule for a record the reap has not verified. A worker that wants to
+	// finish must drop each intent first — its own clean reap once the child
+	// exited — so a completion can never be recorded before the boundary it
+	// owns is accounted for. ResolveReapedSpawn clears the intents in the same
+	// write as the resolve, which is why it does not come through here.
+	if to.Terminal() && len(record.PendingSpawns) > 0 {
+		return Record{}, fmt.Errorf("%w: record %q carries %d open pending-spawn intent(s) and cannot become %q",
+			ErrInvalidTransition, id, len(record.PendingSpawns), to)
+	}
 	identity := identityOf(record)
 	if change != nil {
 		change(&record)
