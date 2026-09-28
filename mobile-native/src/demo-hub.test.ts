@@ -329,13 +329,48 @@ describe("native demonstration hub's redesign fleet", () => {
 			const search = await client.request("evener/search", { query: "" });
 			expect(search).toHaveProperty("live");
 			const auth = await client.request("evener/auth/list", {});
-			expect(auth.providers).toHaveLength(1);
+			// The Board's expired sign-in, and the Hub's other account sign-ins.
+			expect(auth.providers).toHaveLength(3);
 			const plugins = await client.request("evener/plugin/list", {});
 			expect(plugins.plugins).toHaveLength(14);
 			const roster = await client.request("thread/list", { limit: 5 });
 			expect(roster.data.map((thread) => thread.evener.ref)).toContain(
 				"demo:playground",
 			);
+		} finally {
+			client.close();
+			await hub.close();
+		}
+	});
+
+	it("serves New session's reads for each host and starts a session on paradise-park", async () => {
+		const hub = await createDemoHub(0, undefined, {});
+		const client = createHubClient(
+			hub.origin,
+			"",
+			(url) => new WebSocket(url) as unknown as WebSocketLike,
+		);
+		try {
+			await client.connect();
+			const recent = await client.request("evener/projects/recent", {});
+			expect(recent.data?.[0]).toBe("/home/jesse/git/prime-radiant-inc/evener");
+			expect(
+				await client.request("evener/host/request", {
+					host: "paradise-park",
+					method: "evener/projects/recent",
+					params: {},
+				}),
+			).toEqual({ data: ["/Users/jesse/git/evener", "/Users/jesse/git/c-to-wasm"] });
+			expect((await client.request("model/list", {})).data).toHaveLength(15);
+			expect((await client.request("evener/host/list", {})).hosts[0]?.attached).toBe(true);
+			const started = await client.request("thread/start", {
+				cwd: "/Users/jesse/git/evener",
+				source: "paradise-park",
+			});
+			expect(started.thread.evener.ref).toBe("paradise-park:created-1");
+			expect(started.thread.cwd).toBe("/Users/jesse/git/evener");
+			const local = await client.request("thread/start", { cwd: "/home/jesse/git/prime-radiant-inc/evener" });
+			expect(local.thread.evener.ref).toBe("demo:created-2");
 		} finally {
 			client.close();
 			await hub.close();

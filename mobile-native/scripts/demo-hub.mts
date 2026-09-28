@@ -13,6 +13,7 @@ import type {
 	TurnStartParams,
 } from "@evener/appwire-client";
 import { createDemoFleet, type DemoFleetOptions } from "../src/dev/demoFleet.js";
+import { createDemoSetup } from "../src/dev/demoSetup.js";
 
 export async function createDemoHub(
 	port = 9196,
@@ -20,6 +21,9 @@ export async function createDemoHub(
 	fleetOptions?: DemoFleetOptions,
 ) {
 	const demoFleet = fleetOptions ? createDemoFleet(fleetOptions) : null;
+	// With the fleet on, New session and the Hub read the prototype's hosts,
+	// providers, plugins, models and folders (demoSetup.ts).
+	const demoSetup = demoFleet ? createDemoSetup(demoFleet, fleetOptions) : null;
 	const server = new WebSocketServer({ host: "0.0.0.0", port, path: "/rpc" });
 	await once(server, "listening");
 	const address = server.address();
@@ -151,7 +155,10 @@ export async function createDemoHub(
 				let changed: Thread | null = null;
 				let navigationChange: NavigationInvalidatedPayload | null = null;
 				const selected = threads.get(params.ref);
-				switch (request.method) {
+				if (demoSetup?.handles(request.method))
+					result = demoSetup.answer(request.method, params);
+				else
+					switch (request.method) {
 					case "initialize":
 						result = demoFleet
 							? { ...handshake, navigation: demoFleet.navigationCapability() }
@@ -195,7 +202,9 @@ export async function createDemoHub(
 						const created: Thread = structuredClone(thread);
 						created.id = `demo-thread-created-${sessionNumber}`;
 						created.sessionId = `demo-session-created-${sessionNumber}`;
-						created.evener.ref = `demo:created-${sessionNumber}`;
+						// Another host's session is named by that host, as a real
+						// hub qualifies a remote ref (appwire/refs.go).
+						created.evener.ref = `${params.source || "demo"}:created-${sessionNumber}`;
 						created.evener.instanceId = `demo-instance-created-${sessionNumber}`;
 						created.cwd = params.cwd;
 						created.modelProvider = params.modelProvider ?? "demonstration";

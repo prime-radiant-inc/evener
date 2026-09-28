@@ -1,0 +1,370 @@
+// The demo hub's answers for New session and the Hub (phase 5's Task 26), from
+// the prototype's data.js (docs/design/mobile/redesign/prototype/), which is
+// the spec's canonical fixture (Appendix B): the hosts, providers, plugins,
+// marketplaces, models and folders that Appendix A's frames 20-24 show. Every
+// answer is typed as its method's result, so npm run check holds this fixture
+// to the wire. Dev support only: nothing in the app imports it.
+import type {
+	AuthStatusResponse,
+	HostRow,
+	InstanceEntry,
+	LaunchConfigLayer,
+	MarketplaceEntry,
+	MethodTypes,
+	ModelDescriptor,
+	PluginLaunchCandidate,
+} from "@evener/appwire-client";
+import { type DemoFleet, EXPIRED_PROVIDER, PLUGINS, PROJECT_META } from "./demoFleet.js";
+
+const HUB_VERSION = "0.9.412";
+const HOST = "paradise-park";
+const HOST_VERSION = "0.9.409";
+const OFFLINE_ERROR = "ssh: connect to host paradise-park port 22: Operation timed out";
+
+// data.js's `providers`. `auth` is how the prototype signs in: an account
+// (oauth), a key, or nothing (ollama).
+const PROVIDERS: { id: string; base: string; auth: "oauth" | "key" | "none"; models: string[] }[] = [
+	{ id: "lunaroute", base: "openai-compatible", auth: "key", models: ["deepseek-4.1-flash", "glm-5.3-vision", "glm-5.2-vision", "glm-5.3-flash", "glm-5.3"] },
+	{ id: EXPIRED_PROVIDER, base: "codex", auth: "oauth", models: ["gpt-5.6", "gpt-5.6-luna", "gpt-6-astra"] },
+	{ id: "codex-jesse-at-pr", base: "codex", auth: "oauth", models: ["gpt-5.6"] },
+	{ id: "oai-jrv", base: "openai", auth: "key", models: ["gpt-5.5", "codex-auto-review"] },
+	{ id: "meta", base: "meta", auth: "key", models: ["muse-spark-1.3"] },
+	{ id: "kimi-code", base: "moonshot", auth: "key", models: ["k3"] },
+	{ id: "openrouter-corp", base: "openrouter", auth: "key", models: ["claude-sonnet-5", "qwen3-coder-plus"] },
+	{ id: "vertex", base: "vertex", auth: "oauth", models: ["gemini-3-pro"] },
+	{ id: "ollama", base: "ollama", auth: "none", models: ["qwen3-coder:30b"] },
+	{ id: "groq3", base: "groq", auth: "key", models: ["kimi-k3-instant"] },
+	{ id: "stepfun", base: "stepfun", auth: "key", models: ["step-3"] },
+];
+
+const ALL_EFFORTS = ["low", "medium", "high", "xhigh", "max"];
+// data.js's `models`: id, name, provider, context in thousands, $ in and out
+// per million tokens, vision, efforts.
+const MODELS: [string, string, string, number, number, number, boolean, string[]][] = [
+	["deepseek-4.1-flash", "DeepSeek 4.1 Flash", "lunaroute", 256, 0.3, 1.2, false, ALL_EFFORTS],
+	["glm-5.3-vision", "GLM 5.3 Vision", "lunaroute", 200, 0.6, 2.2, true, ALL_EFFORTS],
+	["glm-5.2-vision", "GLM 5.2 Vision", "lunaroute", 200, 0.5, 2.0, true, ALL_EFFORTS],
+	["glm-5.3-flash", "GLM 5.3 Flash", "lunaroute", 128, 0.1, 0.4, false, ["low", "medium", "high"]],
+	["glm-5.3", "GLM 5.3", "lunaroute", 200, 0.6, 2.2, false, ALL_EFFORTS],
+	["gpt-5.6", "GPT-5.6", EXPIRED_PROVIDER, 400, 1.25, 10, true, ALL_EFFORTS],
+	["gpt-5.6-luna", "GPT-5.6 Luna", EXPIRED_PROVIDER, 400, 1.25, 10, true, ALL_EFFORTS],
+	["gpt-6-astra", "GPT-6 Astra", EXPIRED_PROVIDER, 1000, 5, 30, true, ALL_EFFORTS],
+	["gpt-5.5", "GPT-5.5", "oai-jrv", 400, 1.25, 10, true, ALL_EFFORTS],
+	["muse-spark-1.3", "Muse Spark 1.3", "meta", 1000, 2, 8, true, ["low", "medium", "high", "xhigh"]],
+	["k3", "Kimi K3", "kimi-code", 256, 0.6, 2.5, false, ["low", "medium", "high", "xhigh"]],
+	["claude-sonnet-5", "Claude Sonnet 5", "openrouter-corp", 1000, 3, 15, true, ALL_EFFORTS],
+	["qwen3-coder-plus", "Qwen3 Coder Plus", "openrouter-corp", 256, 0.4, 1.6, false, ["low", "medium", "high"]],
+	["gemini-3-pro", "Gemini 3 Pro", "vertex", 1000, 2, 12, true, ALL_EFFORTS],
+	["qwen3-coder:30b", "Qwen3 Coder 30B (local)", "ollama", 128, 0, 0, false, ["low", "medium", "high"]],
+];
+const RECENT_MODELS = ["deepseek-4.1-flash", "glm-5.3-vision", "gpt-5.6"];
+
+// data.js's `marketplaces`: a GitHub repo each, and one local folder.
+const MARKETPLACES: { id: string; source: MarketplaceEntry["source"] }[] = [
+	{ id: "superpowers-marketplace", source: { kind: "github", repo: "obra/superpowers-marketplace" } },
+	{ id: "claude-plugins-official", source: { kind: "github", repo: "anthropics/claude-plugins-official" } },
+	{ id: "go-skills", source: { kind: "github", repo: "prime-radiant-inc/go-skills" } },
+	{ id: "prime-radiant-marketplace", source: { kind: "github", repo: "prime-radiant-inc/marketplace" } },
+	{ id: "simplify-code-dev", source: { kind: "directory", path: "/home/jesse/git/simplify-code" } },
+];
+
+// What PLUGINS (demoFleet.ts) leaves out: data.js's description and counts
+// text for each plugin, keyed by its id.
+const PLUGIN_FACTS: Record<string, { description: string; counts: string }> = {
+	superpowers: { description: "Brainstorming, TDD, debugging, plans and reviews", counts: "38 skills · 3 agents · 6 commands · 2 hooks" },
+	"elements-of-style": { description: "Write clearly and concisely", counts: "1 skill" },
+	"claude-session-driver": { description: "Manage other agent sessions as workers", counts: "1 skill · 1 command" },
+	"private-journal-mcp": { description: "A private journal the agent can write to", counts: "1 MCP server" },
+	"superpowers-chrome": { description: "Drive Chrome through DevTools", counts: "1 skill · 1 MCP server" },
+	"frontend-design": { description: "Distinctive, production-grade interfaces", counts: "1 skill" },
+	go: { description: "Idiomatic Go, testing and profiling", counts: "12 skills" },
+	"go-release": { description: "Release engineering for Go modules", counts: "3 skills · 1 command" },
+	"go-spec-reviewer": { description: "Review Go design specs", counts: "1 agent" },
+	"fileflow-pathologize": { description: "Trace how files flow through a codebase", counts: "2 skills" },
+	"iterative-development": { description: "Small steps with checkpoints", counts: "4 skills" },
+	"shepherd-pr": { description: "Shepherd a PR through review to merge", counts: "2 skills · 2 commands · 1 hook" },
+	"study-skills": { description: "Research and summarize unfamiliar code", counts: "3 skills" },
+	"simplify-code": { description: "Simplify recently changed code", counts: "1 skill · 1 command" },
+};
+
+type Counts = Pick<PluginLaunchCandidate, "skillCount" | "agentCount" | "commandCount" | "hookCount" | "mcpCount">;
+const COUNT_FIELDS: Record<string, keyof Counts> = {
+	skill: "skillCount",
+	agent: "agentCount",
+	command: "commandCount",
+	hook: "hookCount",
+	"MCP server": "mcpCount",
+};
+
+/** "38 skills · 3 agents · 1 MCP server" as the preview's counts. */
+function parseCounts(text: string): Counts {
+	const counts: Counts = { skillCount: 0, agentCount: 0, commandCount: 0, hookCount: 0, mcpCount: 0 };
+	for (const part of text.split(" · ")) {
+		const match = /^(\d+) (.+?)s?$/.exec(part);
+		const field = match ? COUNT_FIELDS[match[2] ?? ""] : undefined;
+		if (!match || !field) throw new Error(`demoSetup: can't read the count "${part}"`);
+		counts[field] = Number(match[1]);
+	}
+	return counts;
+}
+
+const BROWSE_CATALOG = [
+	{ name: "go-bench", description: "Benchmarks and profiles for Go", category: "development" },
+	{ name: "go-lint-fix", description: "Fix what the linters report", category: "development" },
+	{ name: "go-docs", description: "Write package documentation", category: "writing" },
+];
+
+const LAUNCH_DEFAULTS: LaunchConfigLayer = {
+	sandbox: "workspace-write",
+	sandboxNet: true,
+	contextStrategy: "compact",
+	maxSubagentDepth: 2,
+	maxRounds: -1,
+};
+
+/** One machine's folders, as the launch reads describe them. */
+interface Machine {
+	home: string;
+	/** Every folder, without a trailing slash. */
+	dirs: Set<string>;
+	recent: string[];
+	/** Folders that are git repositories, on main. */
+	repos: string[];
+	/** Chrome isn't installed here (superpowers-chrome's preview warning). */
+	lacksChrome: boolean;
+}
+
+function machine(home: string, projects: string[], repos: string[], lacksChrome: boolean): Machine {
+	const dirs = new Set<string>();
+	for (const project of projects)
+		for (let dir = project; dir.length >= home.length; dir = dir.slice(0, dir.lastIndexOf("/"))) dirs.add(dir);
+	return { home, dirs, recent: projects, repos, lacksChrome };
+}
+
+// The hub's own machine (magic-kingdom) holds the fleet's projects; its
+// "home" project is the home folder itself, which isn't a repository.
+const localProjects = PROJECT_META.map((project) => project.workingDir);
+const PARADISE_PROJECTS = ["/Users/jesse/git/evener", "/Users/jesse/git/c-to-wasm"];
+
+// The methods the hub forwards to another host (cmd/evener-hub/
+// host_request_methods.txt); anything else is refused, as the hub does.
+const FORWARDED = new Set([
+	"model/list",
+	"evener/harnesses/list",
+	"evener/launch/resolve",
+	"evener/launch/schema",
+	"evener/paths/complete",
+	"evener/path/validate",
+	"evener/dirs/create",
+	"evener/projects/recent",
+	"evener/spawn/slashCatalog",
+	"evener/git/head",
+	"evener/plugin/preview",
+	"evener/instance/list",
+]);
+
+type Answers = {
+	[M in DemoSetupMethod]: (params: MethodTypes[M]["params"]) => MethodTypes[M]["result"];
+};
+
+const SETUP_METHODS = [
+	"evener/host/list",
+	"evener/host/attach",
+	"evener/host/request",
+	"evener/update/check",
+	"evener/instance/list",
+	"evener/auth/list",
+	"evener/marketplace/list",
+	"evener/marketplace/browse",
+	"evener/plugin/preview",
+	"model/list",
+	"evener/projects/recent",
+	"evener/paths/complete",
+	"evener/path/validate",
+	"evener/dirs/create",
+	"evener/git/head",
+	"evener/launch/resolve",
+] as const;
+export type DemoSetupMethod = (typeof SETUP_METHODS)[number];
+
+export interface DemoSetup {
+	/** Whether this fixture answers `method`; the demo hub answers the rest. */
+	handles(method: string): method is DemoSetupMethod;
+	answer<M extends DemoSetupMethod>(method: M, params: MethodTypes[M]["params"]): MethodTypes[M]["result"];
+}
+
+export function createDemoSetup(fleet: DemoFleet, options: { offlineHost?: boolean } = {}): DemoSetup {
+	let hostAttached = !options.offlineHost;
+	const local = machine(
+		"/home/jesse",
+		localProjects,
+		localProjects.filter((dir) => dir !== "/home/jesse"),
+		true,
+	);
+	const paradise = machine("/Users/jesse", PARADISE_PROJECTS, PARADISE_PROJECTS, false);
+
+	function hostRow(): HostRow {
+		return {
+			name: HOST,
+			origin: "hub.toml",
+			address: "jesse@paradise-park",
+			roots: ["/Users/jesse/git"],
+			generation: 1,
+			incarnationId: "demo-paradise-park",
+			attached: hostAttached,
+			midAttach: false,
+			removed: false,
+			hubVersion: HOST_VERSION,
+			os: "darwin",
+			arch: "arm64",
+			...(hostAttached ? {} : { lastAttachError: OFFLINE_ERROR }),
+		};
+	}
+
+	/** The launch reads, answered for one machine. */
+	function launchAnswers(on: Machine) {
+		const within = (path: string, root: string) => path === root || path.startsWith(`${root}/`);
+		return {
+			"evener/projects/recent": () => ({ data: on.recent }),
+			"evener/paths/complete": ({ prefix }: MethodTypes["evener/paths/complete"]["params"]) => {
+				const full = prefix === "" ? `${on.home}/` : prefix;
+				const parent = full.slice(0, full.lastIndexOf("/"));
+				const data = [...on.dirs]
+					.filter((dir) => dir.slice(0, dir.lastIndexOf("/")) === parent && `${dir}/`.startsWith(full))
+					.sort()
+					.map((dir) => `${dir}/`);
+				return { data };
+			},
+			"evener/path/validate": ({ path }: MethodTypes["evener/path/validate"]["params"]) => ({
+				path,
+				valid: on.dirs.has(path.replace(/\/+$/, "")),
+			}),
+			"evener/dirs/create": ({ path }: MethodTypes["evener/dirs/create"]["params"]) => {
+				const dir = path.replace(/\/+$/, "");
+				const created = !on.dirs.has(dir);
+				on.dirs.add(dir);
+				return { path: dir, created };
+			},
+			"evener/git/head": ({ cwd }: MethodTypes["evener/git/head"]["params"]) => ({
+				head: on.repos.some((repo) => within(cwd, repo)) ? "main" : "",
+			}),
+			"evener/launch/resolve": () => ({ effective: { ...LAUNCH_DEFAULTS }, layers: {}, provenance: {} }),
+			"model/list": () => ({
+				data: MODELS.map(modelDescriptor),
+				recent: RECENT_MODELS.map((id) => modelDescriptor(MODELS.find(([model]) => model === id) as (typeof MODELS)[number])),
+			}),
+			"evener/plugin/preview": ({ launchOverrides }: MethodTypes["evener/plugin/preview"]["params"]) => {
+				const chosen = launchOverrides?.enabledPlugins;
+				return {
+					plugins: PLUGINS.map((plugin) => {
+						const facts = PLUGIN_FACTS[plugin.id];
+						return {
+							name: plugin.id,
+							version: plugin.version,
+							description: facts?.description,
+							source: "installed",
+							marketplace: plugin.mp,
+							selected: chosen ? chosen.includes(plugin.id) : plugin.on,
+							...parseCounts(facts?.counts ?? ""),
+						};
+					}),
+					...(on.lacksChrome
+						? { diagnostics: [{ name: "superpowers-chrome", message: "Chrome isn't installed on this host" }] }
+						: {}),
+				};
+			},
+		} satisfies Partial<Answers>;
+	}
+	const localLaunch = launchAnswers(local);
+	const paradiseLaunch = launchAnswers(paradise);
+
+	const answers: Answers = {
+		...localLaunch,
+		"evener/host/list": () => ({ hosts: [hostRow()] }),
+		"evener/host/attach": ({ host }) => {
+			if (host !== HOST) throw new Error(`unknown host ${host}`);
+			hostAttached = true;
+			return { attached: true, host, hubVersion: HOST_VERSION, os: "darwin", arch: "arm64" };
+		},
+		"evener/host/request": ({ host, method, params }) => {
+			if (host !== HOST) throw new Error(`unknown host ${host}`);
+			if (!FORWARDED.has(method)) throw new Error(`method "${method}" is not a permitted remote admin method`);
+			const forward = paradiseLaunch[method as keyof typeof paradiseLaunch] as ((params: unknown) => unknown) | undefined;
+			if (!forward) throw new Error(`demoSetup: ${method} isn't forwarded by the demo`);
+			return forward(params ?? {}) as MethodTypes["evener/host/request"]["result"];
+		},
+		"evener/update/check": () => ({
+			channel: "release",
+			buildChannel: "release",
+			currentVersion: HUB_VERSION,
+			currentCommit: "demo",
+			updateAvailable: false,
+			applicable: true,
+		}),
+		"evener/instance/list": () => ({ instances: PROVIDERS.map(instanceEntry), availableProviders: [] }),
+		// Extends the fleet's answer (the Board's expired sign-in) with the
+		// other providers that sign in with an account.
+		"evener/auth/list": () => {
+			const fleetStatuses = fleet.answerAuthList().providers;
+			const known = new Set(fleetStatuses.map((status) => status.provider));
+			const signedIn: AuthStatusResponse[] = PROVIDERS.filter(
+				(provider) => provider.auth === "oauth" && !known.has(provider.id),
+			).map((provider) => ({
+				provider: provider.id,
+				supported: true,
+				signedIn: true,
+				activeSource: "oauth",
+				authModes: ["oauth"],
+				hasStoredOAuth: true,
+				needsLogin: false,
+			}));
+			return { providers: [...fleetStatuses, ...signedIn] };
+		},
+		"evener/marketplace/list": () => ({
+			marketplaces: MARKETPLACES.map((marketplace) => ({
+				name: marketplace.id,
+				source: marketplace.source,
+				lastUpdated: 1_790_000_000,
+			})),
+		}),
+		"evener/marketplace/browse": ({ name }) => ({ name, plugins: BROWSE_CATALOG }),
+	};
+
+	return {
+		handles: (method): method is DemoSetupMethod => (SETUP_METHODS as readonly string[]).includes(method),
+		answer: (method, params) => answers[method](params as never) as never,
+	};
+}
+
+function modelDescriptor([model, displayName, provider, contextK, input, output, vision, efforts]: (typeof MODELS)[number]): ModelDescriptor {
+	return {
+		provider,
+		model,
+		displayName,
+		contextWindow: contextK * 1000,
+		inputCostPerMillion: input,
+		outputCostPerMillion: output,
+		supportsVision: vision,
+		supportsTools: true,
+		supportsReasoning: true,
+		reasoningEffortLevels: efforts,
+	};
+}
+
+function instanceEntry(provider: (typeof PROVIDERS)[number], index: number): InstanceEntry {
+	const signIn = {
+		oauth: { authModes: ["oauth"], activeSource: "oauth", hasStoredOAuth: true, credentialRequired: true },
+		key: { authModes: ["apiKey"], activeSource: "store", hasStoredOAuth: false, credentialRequired: true, hasStoredFile: true },
+		none: { authModes: [], activeSource: "none", hasStoredOAuth: false, credentialRequired: false },
+	}[provider.auth];
+	return {
+		name: provider.id,
+		providerId: provider.base,
+		protocol: "openai",
+		auth: provider.auth === "key" ? "api_key" : provider.auth,
+		implicit: false,
+		isDefault: index === 0,
+		models: provider.models.map((id) => ({ id })),
+		...signIn,
+	};
+}
