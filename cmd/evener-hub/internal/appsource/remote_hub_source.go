@@ -1,6 +1,7 @@
 package appsource
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -1122,13 +1123,7 @@ func remoteItemPageHead(candidates []appitempaging.TranscriptItemCandidate) (app
 // remotePositionCompare orders two positions the way the paging package does:
 // negative when a is older, zero when equal, positive when newer.
 func remotePositionCompare(a, b appwire.ThreadItemPosition) int {
-	if a.Entry < b.Entry || (a.Entry == b.Entry && a.Item < b.Item) {
-		return -1
-	}
-	if a == b {
-		return 0
-	}
-	return 1
+	return cmp.Or(cmp.Compare(a.Entry, b.Entry), cmp.Compare(a.Item, b.Item), cmp.Compare(a.Sub, b.Sub))
 }
 
 // remoteItemPageIdentity chooses the controller-owned identity for a fresh
