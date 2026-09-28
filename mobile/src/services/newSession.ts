@@ -1,32 +1,35 @@
-// NewSessionService wraps an AppwireClient's thread/start,
-// evener/projects/recent, and evener/harnesses/list methods to provide a
-// typed API for starting a new session thread. It is the protocol/native
-// service layer between the NewSessionScreen and the wire.
+// NewSessionService wraps an AppwireClient's launch methods (thread/start,
+// recent projects, models, plugin preview, path checks, git HEAD and launch
+// resolution) in a typed API for the New session form.
 //
 // The service does NOT create or own the socket — it wraps an existing
-// ConversationClientLike (structurally compatible with AppwireClient). It
-// calls thread/start with the provided params and returns the new thread and
-// first turn. It also fetches recent projects and available harnesses for the
-// form's autocomplete and optional fields.
+// ConversationClientLike (structurally compatible with AppwireClient). Reads
+// that describe a machine take the host they are about: the hub's own machine
+// is asked directly, and any other host through evener/host/request
+// (hostRouting.ts), so a session for another host is set up from that host's
+// projects, models and plugins.
 
 import type {
   HarnessDescriptor,
   HarnessListResponse,
   InputItem,
   LaunchConfigLayer,
+  LaunchConfigResolved,
   MethodTypes,
   ModelListParams,
   ModelListResponse,
   PluginPreviewParams,
   PluginPreviewResponse,
-  ProjectsRecentResponse,
   Thread,
   ThreadStartResponse,
   Turn,
 } from "@evener/appwire-client";
+import { hostRequest, isLocalHost } from "../../../cmd/evener-hub/frontend/src/stores/hostRouting";
 import type { ConversationClientLike } from "./conversation";
 
 export interface NewSessionParams {
+  /** The host to start on; absent or "local" is the hub's own machine. */
+  source?: string;
   cwd: string;
   input?: InputItem[];
   modelProvider?: string;
@@ -38,10 +41,15 @@ export interface NewSessionParams {
 
 export interface NewSessionService {
   start(params: NewSessionParams): Promise<{ thread: Thread; turn: Turn }>;
-  recentProjects(): Promise<string[]>;
+  recentProjects(host?: string): Promise<string[]>;
   harnesses(): Promise<HarnessDescriptor[]>;
-  models(params?: ModelListParams): Promise<ModelListResponse>;
-  previewPlugins(params: PluginPreviewParams): Promise<PluginPreviewResponse>;
+  models(params?: ModelListParams, host?: string): Promise<ModelListResponse>;
+  previewPlugins(params: PluginPreviewParams, host?: string): Promise<PluginPreviewResponse>;
+  directoryExists(host: string, path: string): Promise<boolean>;
+  createDirectory(host: string, path: string): Promise<string>;
+  /** The project's current branch, or null outside a repository. */
+  branch(host: string, cwd: string): Promise<string | null>;
+  resolveLaunch(host: string, cwd: string, launchOverrides: LaunchConfigLayer): Promise<LaunchConfigResolved>;
 }
 
 export function createNewSessionService(
@@ -52,6 +60,11 @@ export function createNewSessionService(
       const wireParams: MethodTypes["thread/start"]["params"] = {
         cwd: params.cwd,
       };
+      // The hub's own machine takes no source (ruling 2): only another host
+      // is named on the wire.
+      if (params.source !== undefined && !isLocalHost(params.source)) {
+        wireParams.source = params.source;
+      }
       if (params.input !== undefined) {
         wireParams.input = params.input;
       }
@@ -77,11 +90,8 @@ export function createNewSessionService(
       return { thread: response.thread, turn: response.turn };
     },
 
-    async recentProjects() {
-      const response: ProjectsRecentResponse = await client.request(
-        "evener/projects/recent",
-        {},
-      );
+    async recentProjects(host) {
+      const response = await hostRequest(client, host, "evener/projects/recent", {});
       return response.data ?? [];
     },
 
@@ -93,11 +103,29 @@ export function createNewSessionService(
       return response.data ?? [];
     },
 
-    async models(params = {}) {
-      return client.request("model/list", params);
+    async models(params = {}, host) {
+      return hostRequest(client, host, "model/list", params);
     },
-    async previewPlugins(params) {
-      return client.request("evener/plugin/preview", params);
+    async previewPlugins(params, host) {
+      return hostRequest(client, host, "evener/plugin/preview", params);
+    },
+    async directoryExists(host, path) {
+      const response = await hostRequest(client, host, "evener/path/validate", { path, kind: "dir" });
+      return response.valid;
+    },
+    async createDirectory(host, path) {
+      const response = await hostRequest(client, host, "evener/dirs/create", { path });
+      return response.path;
+    },
+    async branch(host, cwd) {
+      const response = await hostRequest(client, host, "evener/git/head", { cwd });
+      return response.head || null;
+    },
+    async resolveLaunch(host, cwd, launchOverrides) {
+      return hostRequest(client, host, "evener/launch/resolve", {
+        cwd,
+        ...(Object.keys(launchOverrides).length > 0 ? { launchOverrides } : {}),
+      });
     },
   };
 }
