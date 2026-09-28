@@ -18,6 +18,7 @@ import { sheetHosts, sheetKey, useSheetHost } from "../sheet/sheetHosts";
 import { Toast, type ToastController, type ToastMessage, useToast } from "../Toast";
 import { allowFontScaling, useColors, useTextScale } from "../ui";
 import { wrapAfterSlashes } from "./format";
+import { MODEL_ACTIONS } from "./ModelSheet";
 import {
 	accessFacts,
 	canDeleteSavedSession,
@@ -60,9 +61,6 @@ export function confirmShutDown(shutDown: () => void): void {
 		{ text: "Shut down", style: "destructive", onPress: shutDown },
 	]);
 }
-
-// The model sheet's actions (Task 21) show their own errors there.
-const MODEL_ACTIONS = new Set(["changeModel", "setReasoningEffort", "setVisionModel"]);
 
 const GOAL_STATUS: Record<string, string> = { active: "Active", complete: "Complete", blocked: "Blocked" };
 

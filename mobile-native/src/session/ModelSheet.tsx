@@ -30,7 +30,8 @@ export interface ModelHost {
 
 export const modelHosts = sheetHosts<ModelHost>();
 
-const MODEL_ACTIONS = new Set(["changeModel", "setReasoningEffort", "setVisionModel"]);
+// The actions whose errors this sheet shows; the Session sheet shows every other one.
+export const MODEL_ACTIONS = new Set(["changeModel", "setReasoningEffort", "setVisionModel"]);
 
 export function ModelSheet({ route }: NativeStackScreenProps<Routes, "ModelSheet">) {
 	const { hubId, ref, setting } = route.params;
