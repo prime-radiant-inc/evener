@@ -130,7 +130,13 @@ function queueGhosts(session: GhostSource): Ghost[] {
 		const id = queue?.ids?.[index];
 		const fullText = queue?.texts?.[index] ?? "";
 		const text = fullText || queue?.preview?.[index] || "Queued message";
-		const buttons: GhostAction[] = held ? (canDrain ? ["sendNow", "cancel"] : ["cancel"]) : canDrain ? ["steerNow"] : [];
+		const buttons: GhostAction[] = held
+			? canDrain
+				? ["sendNow", "cancel"]
+				: ["cancel"]
+			: canDrain
+				? ["steerNow"]
+				: [];
 		// Edit restores text only, so an image-only message has nothing to edit.
 		const menu: GhostAction[] = fullText.trim() ? ["edit", "cancel"] : ["cancel"];
 		return {
@@ -165,11 +171,7 @@ function recoveryGhost(row: RecoveryGhostRow): Ghost {
 		key: `recovery:${row.clientMutationId}`,
 		state: refused ? "refused" : "unconfirmed",
 		text: row.text || "Message",
-		caption: refused
-			? row.reason
-				? `${CAPTIONS.refused} · ${row.reason}`
-				: CAPTIONS.refused
-			: CAPTIONS.unconfirmed,
+		caption: refused ? (row.reason ? `${CAPTIONS.refused} · ${row.reason}` : CAPTIONS.refused) : CAPTIONS.unconfirmed,
 		buttons,
 		menu: !refused && canEdit ? ["edit"] : [],
 		// Edit brings back text only, so a refused message with an image offers

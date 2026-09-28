@@ -1,12 +1,4 @@
-import {
-	existsSync,
-	mkdtempSync,
-	mkdirSync,
-	readdirSync,
-	readFileSync,
-	rmSync,
-	writeFileSync,
-} from "node:fs";
+import { existsSync, mkdtempSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it, vi } from "vitest";
@@ -47,10 +39,7 @@ const deletedDir = path.join(repoRoot, "mobile", "src", "conversation");
 const deletedSegment = ["conversation", "project"].join("/");
 const deletedRoot = ["mobile", "src", "conversation"].join("/");
 
-const APP_TREES = [
-	path.join(repoRoot, "mobile/src"),
-	path.join(repoRoot, "mobile-native/src"),
-];
+const APP_TREES = [path.join(repoRoot, "mobile/src"), path.join(repoRoot, "mobile-native/src")];
 
 function* sourceFiles(dir: string): Generator<string> {
 	let entries;
@@ -89,14 +78,11 @@ function offendersIn(trees: readonly string[], deleted: string): string[] {
 			const source = specifiers.parseSource(ts, file, text);
 			for (const site of specifiers.moduleSpecifierSites(ts, source)) {
 				const resolved =
-					site.text.startsWith(".") || site.text.startsWith("/")
-						? path.resolve(path.dirname(file), site.text)
-						: null;
+					site.text.startsWith(".") || site.text.startsWith("/") ? path.resolve(path.dirname(file), site.text) : null;
 				if (
 					site.text.includes(deletedSegment) ||
 					site.text.includes(deletedRoot) ||
-					(resolved !== null &&
-						(resolved === deleted || resolved.startsWith(`${deleted}${path.sep}`)))
+					(resolved !== null && (resolved === deleted || resolved.startsWith(`${deleted}${path.sep}`)))
 				) {
 					found.push(`${path.relative(tree, file)}: ${site.text}`);
 					break;
@@ -119,10 +105,7 @@ function scratchAppTree(files: Record<string, string>): {
 	cleanup: () => void;
 } {
 	const root = mkdtempSync(
-		path.join(
-			process.env.EVENER_SCRATCH_DIR ?? process.env.TMPDIR ?? "/tmp",
-			"reachability-fixture-",
-		),
+		path.join(process.env.EVENER_SCRATCH_DIR ?? process.env.TMPDIR ?? "/tmp", "reachability-fixture-"),
 	);
 	const tree = path.join(root, "mobile/src");
 	for (const [relative, contents] of Object.entries(files)) {
@@ -162,9 +145,7 @@ describe("the deleted private projection family is unreachable", () => {
 			"state/smuggler.ts": `import type { Thing } from "../conversation/types";\n`,
 		});
 		try {
-			expect(offendersIn([tree], deleted)).toEqual([
-				"state/smuggler.ts: ../conversation/types",
-			]);
+			expect(offendersIn([tree], deleted)).toEqual(["state/smuggler.ts: ../conversation/types"]);
 		} finally {
 			cleanup();
 		}
@@ -197,9 +178,7 @@ describe("the deleted private projection family is unreachable", () => {
 			"state/smuggler.ts": `import type { Thing } from "../convers\\u0061tion/types";\n`,
 		});
 		try {
-			expect(offendersIn([tree], deleted)).toEqual([
-				"state/smuggler.ts: ../conversation/types",
-			]);
+			expect(offendersIn([tree], deleted)).toEqual(["state/smuggler.ts: ../conversation/types"]);
 		} finally {
 			cleanup();
 		}

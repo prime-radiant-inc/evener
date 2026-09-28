@@ -1,9 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
-import {
-	type NavigationActionCheckpoint,
-	nativeNavigationActions,
-} from "./navigationActionRepository";
+import { type NavigationActionCheckpoint, nativeNavigationActions } from "./navigationActionRepository";
 import { NavigationActions } from "./navigationActions";
 import { sessionDeletionResult } from "./sessionDeletionResult";
 
@@ -21,8 +18,7 @@ function boundary(reply: () => Promise<unknown> = async () => deleted) {
 			values.set(key, structuredClone(value));
 		},
 		deleteIf: (key: string, value: unknown) => {
-			if (JSON.stringify(values.get(key)) !== JSON.stringify(value))
-				return false;
+			if (JSON.stringify(values.get(key)) !== JSON.stringify(value)) return false;
 			return values.delete(key);
 		},
 	};
@@ -76,12 +72,9 @@ describe("session deletion result", () => {
 			},
 			{ kind: "skipped", reason: "resumed live" },
 		],
-	])(
-		"decodes the target-specific result without an ok field",
-		(response, expected) => {
-			expect(sessionDeletionResult(ref, response)).toEqual(expected);
-		},
-	);
+	])("decodes the target-specific result without an ok field", (response, expected) => {
+		expect(sessionDeletionResult(ref, response)).toEqual(expected);
+	});
 	it.each([
 		{ deleted: [ref], skipped: [] },
 		{ deleted: [id, id], skipped: [] },
@@ -102,9 +95,7 @@ describe("durable session deletion", () => {
 		await f.actions.deleteSession({ ref });
 		const checkpoint = f.journal.load();
 		if (!checkpoint) throw Error("intent missing");
-		expect(
-			f.actions.allowDeletionRetry({ ...checkpoint, id: "different" }),
-		).toBe(false);
+		expect(f.actions.allowDeletionRetry({ ...checkpoint, id: "different" })).toBe(false);
 		expect(f.journal.load()).toEqual(checkpoint);
 		expect(f.actions.allowDeletionRetry(checkpoint)).toBe(true);
 		expect(f.calls).toHaveLength(1);
@@ -128,14 +119,8 @@ describe("durable session deletion", () => {
 	it("rejects invalid persisted deletion results without changing the existing record", () => {
 		const f = boundary();
 		const pending = f.journal.begin({ kind: "deleteSession", params: { ref } });
-		for (const result of [
-			{ kind: "wrong" },
-			{ kind: "skipped", reason: "" },
-			{ kind: "deleted", reason: "x" },
-		]) {
-			expect(() =>
-				f.journal.acknowledge(pending, receipt, result as never),
-			).toThrow();
+		for (const result of [{ kind: "wrong" }, { kind: "skipped", reason: "" }, { kind: "deleted", reason: "x" }]) {
+			expect(() => f.journal.acknowledge(pending, receipt, result as never)).toThrow();
 			expect(f.journal.load()).toEqual(pending);
 		}
 	});
@@ -147,31 +132,24 @@ describe("durable session deletion", () => {
 			navigation: receipt,
 		},
 		{ deleted: [], skipped: [], navigation: receipt },
-	])(
-		"retains the exact acknowledgement until readback and never replays",
-		async (response) => {
-			const f = boundary(async () => response);
-			await f.actions.deleteSession({ ref });
-			expect(f.calls).toEqual([
-				{ method: "evener/session/delete", params: { ref } },
-			]);
-			expect(f.journal.load()).toMatchObject({
-				receipt,
-				deletion: sessionDeletionResult(ref, response),
-			});
-			f.actions.dispose();
-			const next = f.create();
-			await next.deleteSession({ ref });
-			expect(f.calls).toHaveLength(1);
-			f.permitRead();
-			await next.reconcile();
-			expect(f.reads.at(-1)?.deletion).toEqual(
-				sessionDeletionResult(ref, response),
-			);
-			expect(f.journal.load()).toBeNull();
-			expect(f.calls).toHaveLength(1);
-		},
-	);
+	])("retains the exact acknowledgement until readback and never replays", async (response) => {
+		const f = boundary(async () => response);
+		await f.actions.deleteSession({ ref });
+		expect(f.calls).toEqual([{ method: "evener/session/delete", params: { ref } }]);
+		expect(f.journal.load()).toMatchObject({
+			receipt,
+			deletion: sessionDeletionResult(ref, response),
+		});
+		f.actions.dispose();
+		const next = f.create();
+		await next.deleteSession({ ref });
+		expect(f.calls).toHaveLength(1);
+		f.permitRead();
+		await next.reconcile();
+		expect(f.reads.at(-1)?.deletion).toEqual(sessionDeletionResult(ref, response));
+		expect(f.journal.load()).toBeNull();
+		expect(f.calls).toHaveLength(1);
+	});
 	it("does not dispatch when the durable intent cannot be saved", async () => {
 		const f = boundary();
 		f.backend.set = () => {

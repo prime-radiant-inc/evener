@@ -1,13 +1,6 @@
 import { type EvenerDelegateInfo, scopedDisclosureId } from "@evener/appwire-client";
 import { type ReactNode, useMemo, useState } from "react";
-import {
-	Modal,
-	Platform,
-	Pressable,
-	ScrollView,
-	Text,
-	View,
-} from "react-native";
+import { Modal, Platform, Pressable, ScrollView, Text, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { copyText } from "./clipboard";
 import { type MenuItem, menuAccessibility, menuPreview, showMenu } from "./longPressMenu";
@@ -25,11 +18,7 @@ import { subagentLine } from "./session/subagentLine";
 import { ThoughtRow } from "./session/ThoughtRow";
 import { askRowQuestions, timeMarkerText } from "./session/transcriptRows";
 import { TranscriptImages } from "./TranscriptImages";
-import {
-	isCriticalNotice,
-	steeringNoticeLabel,
-	type TimelineRow,
-} from "./timeline";
+import { isCriticalNotice, steeringNoticeLabel, type TimelineRow } from "./timeline";
 import type { ActivityPresentation } from "./transcriptPresentation";
 import { Action, Copy, styles, useColors, useTextScale } from "./ui";
 
@@ -49,6 +38,7 @@ export function TimelineItem({
 	answerFor,
 	errorActionFor,
 	onErrorAction,
+	documentChips,
 }: {
 	item: TimelineRow;
 	hubId: string;
@@ -71,13 +61,12 @@ export function TimelineItem({
 	/** The one action an error row offers (errorAction), and running it. */
 	errorActionFor?: (row: { id: string; title: string; detail: string; turnId?: string }) => ErrorAction | null;
 	onErrorAction?: (action: ErrorAction) => void;
+	/** The document chips under an agent's message (spec 8.2): the screen
+	 * decides which documents a message names and where a chip opens. */
+	documentChips?: (message: { id: string; markdown: string; streaming: boolean }) => ReactNode;
 }) {
-	const disclosureId = scopedDisclosureId(
-		JSON.stringify([hubId, sessionRef]),
-		JSON.stringify([item.kind, item.id]),
-	);
-	const defaultOpen =
-		(item.kind === "activity" || item.kind === "run") && expandByDefault;
+	const disclosureId = scopedDisclosureId(JSON.stringify([hubId, sessionRef]), JSON.stringify([item.kind, item.id]));
+	const defaultOpen = (item.kind === "activity" || item.kind === "run") && expandByDefault;
 	const expanded = useDisclosureOpen(disclosureId, defaultOpen);
 	const toggle = () => toggleDisclosure(disclosureId, defaultOpen);
 	const colors = useColors();
@@ -85,17 +74,12 @@ export function TimelineItem({
 	// error rule, unless the thought itself failed.
 	const quietThought = item.kind === "failure" && item.thought === true && item.title !== "Thought failed";
 	const textScale = useTextScale();
-	const noticeLabel =
-		item.kind === "notice" ? steeringNoticeLabel(item) : undefined;
+	const noticeLabel = item.kind === "notice" ? steeringNoticeLabel(item) : undefined;
 	let content: ReactNode;
 	switch (item.kind) {
 		case "details":
 			content = (
-				<SystemEvent
-					label={`Session details · ${item.entries.length}`}
-					expanded={expanded}
-					onToggle={toggle}
-				>
+				<SystemEvent label={`Session details · ${item.entries.length}`} expanded={expanded} onToggle={toggle}>
 					{item.entries.map((entry) => (
 						<TimelineItem
 							key={entry.id}
@@ -130,7 +114,12 @@ export function TimelineItem({
 			content = <NoteRow text={item.text} />;
 			break;
 		case "assistant":
-			content = <AgentMessage markdown={item.markdown} quote={quote} />;
+			content = (
+				<>
+					<AgentMessage markdown={item.markdown} quote={quote} />
+					{documentChips?.({ id: item.id, markdown: item.markdown, streaming: item.streaming })}
+				</>
+			);
 			break;
 		case "notice":
 			content = isCriticalNotice(item) ? (
@@ -171,7 +160,12 @@ export function TimelineItem({
 		case "activity":
 			if (item.family === "reasoning" && item.state !== "running") {
 				content = (
-					<ThoughtRow durationMs={item.detail.durationMs} text={item.detail.output} expanded={expanded} onToggle={toggle} />
+					<ThoughtRow
+						durationMs={item.detail.durationMs}
+						text={item.detail.output}
+						expanded={expanded}
+						onToggle={toggle}
+					/>
 				);
 				break;
 			}
@@ -192,9 +186,7 @@ export function TimelineItem({
 			}
 			content = (
 				<>
-					{activityPresentation?.summary ? (
-						<Copy muted>{activityPresentation.summary}</Copy>
-					) : null}
+					{activityPresentation?.summary ? <Copy muted>{activityPresentation.summary}</Copy> : null}
 					<Action
 						tone="quiet"
 						label={`${expanded ? "Collapse" : "Expand"} ${item.label}`}
@@ -221,9 +213,7 @@ export function TimelineItem({
 									<Copy>{item.detail.error}</Copy>
 								</>
 							) : null}
-							{item.detail.exitCode !== undefined ? (
-								<Copy muted>Exit code: {item.detail.exitCode}</Copy>
-							) : null}
+							{item.detail.exitCode !== undefined ? <Copy muted>Exit code: {item.detail.exitCode}</Copy> : null}
 							{showDuration && item.detail.durationMs !== undefined ? (
 								<Copy muted>Duration: {item.detail.durationMs} ms</Copy>
 							) : null}
@@ -251,9 +241,7 @@ export function TimelineItem({
 	}
 	return (
 		// A failure and a critical notice draw their own red rule (ErrorRow).
-		<View style={{ gap: 8 }}>
-			{content}
-		</View>
+		<View style={{ gap: 8 }}>{content}</View>
 	);
 }
 
@@ -281,9 +269,7 @@ function YourMessage({
 					},
 				]
 			: []),
-		...(quote
-			? [{ name: "quote", label: "Quote", run: () => quote(item.text) }]
-			: []),
+		...(quote ? [{ name: "quote", label: "Quote", run: () => quote(item.text) }] : []),
 	];
 	return (
 		<View style={{ alignItems: "flex-end", gap: 4 }}>
@@ -324,7 +310,9 @@ function NoteRow({ text }: { text: string }) {
 	const { palette } = useColors();
 	const scale = useTextScale();
 	return (
-		<View style={{ borderLeftWidth: 2, borderLeftColor: palette.edgeStrong, paddingLeft: 12, paddingVertical: 4, gap: 4 }}>
+		<View
+			style={{ borderLeftWidth: 2, borderLeftColor: palette.edgeStrong, paddingLeft: 12, paddingVertical: 4, gap: 4 }}
+		>
 			<Text
 				allowFontScaling={Platform.OS !== "ios"}
 				style={{ fontSize: 13 * scale, lineHeight: 18 * scale, color: palette.inkMid }}
@@ -336,13 +324,7 @@ function NoteRow({ text }: { text: string }) {
 	);
 }
 
-function AgentMessage({
-	markdown,
-	quote,
-}: {
-	markdown: string;
-	quote?: (text: string) => void;
-}) {
+function AgentMessage({ markdown, quote }: { markdown: string; quote?: (text: string) => void }) {
 	const colors = useColors();
 	const [selecting, setSelecting] = useState(false);
 	// Memoized so an unchanged message hands MarkdownResponse the same props
@@ -350,9 +332,7 @@ function AgentMessage({
 	const menu = useMemo<MenuItem[]>(
 		() => [
 			{ name: "copy", label: "Copy", run: () => void copyText(markdown) },
-			...(quote
-				? [{ name: "quote", label: "Quote in reply", run: () => quote(markdown) }]
-				: []),
+			...(quote ? [{ name: "quote", label: "Quote in reply", run: () => quote(markdown) }] : []),
 			{ name: "select", label: "Select text", run: () => setSelecting(true) },
 		],
 		[markdown, quote],
@@ -363,11 +343,7 @@ function AgentMessage({
 			{/* The markdown view stays VoiceOver's element (it reads the
 			formatting and its links); the pressable only adds touch and hold. */}
 			<Pressable accessible={false} onLongPress={() => showMenu(menu, menuPreview(markdown))}>
-				<MarkdownResponse
-					markdown={markdown || "…"}
-					selectable={false}
-					{...accessibility}
-				/>
+				<MarkdownResponse markdown={markdown || "…"} selectable={false} {...accessibility} />
 			</Pressable>
 			<Modal
 				visible={selecting}
@@ -375,15 +351,8 @@ function AgentMessage({
 				presentationStyle="fullScreen"
 				onRequestClose={() => setSelecting(false)}
 			>
-				<SafeAreaView
-					style={[styles.fill, { backgroundColor: colors.background }]}
-				>
-					<View
-						style={[
-							styles.row,
-							{ paddingHorizontal: 16, justifyContent: "flex-end" },
-						]}
-					>
+				<SafeAreaView style={[styles.fill, { backgroundColor: colors.background }]}>
+					<View style={[styles.row, { paddingHorizontal: 16, justifyContent: "flex-end" }]}>
 						<Action onPress={() => setSelecting(false)}>Done</Action>
 					</View>
 					<ScrollView contentContainerStyle={{ padding: 16 }}>

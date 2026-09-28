@@ -1,4 +1,6 @@
+import { act } from "react-test-renderer";
 import { describe, expect, it, vi } from "vitest";
+import { renderHook } from "../renderNative.testkit";
 import { hubSeenMarks } from "./hubSeen";
 import {
 	boardSeen,
@@ -7,6 +9,7 @@ import {
 	organizeByPreference,
 	recentSearches,
 	seenMarkers,
+	useBoardSeen,
 } from "./nativeBoardMemory";
 
 const kv = vi.hoisted(() => new Map<string, string>());
@@ -89,5 +92,30 @@ describe("the Board's memory per hub", () => {
 		expect(seen.isSeen({ ...base, ref: "local:hub", turn_ended_at: new Date(1).toISOString() })).toBe(false);
 		seenMarkers("hub-both").markUnread("local:device");
 		expect(seen.isSeen({ ...base, ref: "local:device" })).toBe(false);
+	});
+
+	it("hands a screen a new BoardSeen after each mark on either path, so its memos re-classify", () => {
+		seenMarkers("hub-hook").adoptEpoch([]);
+		const hook = renderHook(() => useBoardSeen("hub-hook"));
+		const first = hook.result.current;
+		const row = {
+			ref: "local:device",
+			host_id: "local",
+			session_id: "s",
+			title: "t",
+			project: "p",
+			state: "idle",
+			kind: "session",
+			live: true,
+			children: [],
+		};
+		expect(first.isSeen(row)).toBe(true);
+		act(() => seenMarkers("hub-hook").markUnread("local:device"));
+		const second = hook.result.current;
+		expect(second).not.toBe(first);
+		expect(second.isSeen(row)).toBe(false);
+		act(() => hubSeenMarks("hub-hook").markUnread(null, ["local:hub"]));
+		expect(hook.result.current).not.toBe(second);
+		hook.unmount();
 	});
 });

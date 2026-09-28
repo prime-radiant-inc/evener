@@ -29,9 +29,7 @@ function tray(overrides: Partial<Parameters<typeof StatusTray>[0]> = {}) {
 }
 
 function lineText(tree: ReactTestRenderer): ReactTestInstance {
-	const text = tree.root.findAll(
-		(node) => String(node.type) === "Text" && node.props.numberOfLines === 1,
-	)[0];
+	const text = tree.root.findAll((node) => String(node.type) === "Text" && node.props.numberOfLines === 1)[0];
 	if (!text) throw new Error("no tray line");
 	return text;
 }

@@ -503,14 +503,14 @@ test("offers 'Sign in on host' for a remote host's Codex instance, and never for
   const user = setupUser();
   await screen.findByText("controller-only");
   // This hub's own listing never offers it.
-  expect(screen.queryByRole("button", { name: "Sign in on host" })).toBeNull();
+  expect(screen.queryByRole("button", { name: "Sign in on host to codex" })).toBeNull();
 
   await user.selectOptions(select, "beta");
-  expect(await screen.findByRole("button", { name: "Sign in on host" })).toBeTruthy();
+  expect(await screen.findByRole("button", { name: "Sign in on host to codex" })).toBeTruthy();
 
   // Only for a remote host: back on this hub the affordance is gone.
   await user.selectOptions(select, "local");
-  expect(screen.queryByRole("button", { name: "Sign in on host" })).toBeNull();
+  expect(screen.queryByRole("button", { name: "Sign in on host to codex" })).toBeNull();
 });
 
 test("'Sign in on host' drives device/start and device/poll through evener/host/request for the selected host, showing the code and the URL, and stops polling on success", async () => {
@@ -526,7 +526,7 @@ test("'Sign in on host' drives device/start and device/poll through evener/host/
   const user = setupUser();
   await screen.findByRole("option", { name: "beta" });
   await user.selectOptions(select, "beta");
-  await user.click(await screen.findByRole("button", { name: "Sign in on host" }));
+  await user.click(await screen.findByRole("button", { name: "Sign in on host to codex" }));
 
   // The start is forwarded to the selected host...
   await waitFor(() => {
@@ -588,7 +588,7 @@ test("a host that offers no device flow surfaces a named failure that points at 
   const user = setupUser();
   await screen.findByRole("option", { name: "beta" });
   await user.selectOptions(select, "beta");
-  await user.click(await screen.findByRole("button", { name: "Sign in on host" }));
+  await user.click(await screen.findByRole("button", { name: "Sign in on host to codex" }));
 
   const alert = await screen.findByRole("alert");
   expect(alert.textContent).toContain("Device-code sign-in is not enabled on beta");
@@ -615,7 +615,7 @@ test("a refused remote device/start surfaces the host's own failure, never a sil
   const user = setupUser();
   await screen.findByRole("option", { name: "beta" });
   await user.selectOptions(select, "beta");
-  await user.click(await screen.findByRole("button", { name: "Sign in on host" }));
+  await user.click(await screen.findByRole("button", { name: "Sign in on host to codex" }));
 
   expect((await screen.findByRole("alert")).textContent).toContain('host "beta" is not attached');
   expect(screen.queryByRole("dialog")).toBeNull();
@@ -850,7 +850,7 @@ test("a picker change while device/start is outstanding never renders or polls t
   const user = setupUser();
   await screen.findByRole("option", { name: "gamma" });
   await user.selectOptions(select, "beta");
-  await user.click(await screen.findByRole("button", { name: "Sign in on host" }));
+  await user.click(await screen.findByRole("button", { name: "Sign in on host to codex" }));
   await waitFor(() => {
     expect(forwardedMethodCalls(fake, "evener/auth/device/start")).toEqual([
       { host: "beta", method: "evener/auth/device/start", params: { provider: "codex" } },
@@ -895,7 +895,7 @@ test("a sign-in failure naming the old host does not survive a host change", asy
   const user = setupUser();
   await screen.findByRole("option", { name: "gamma" });
   await user.selectOptions(select, "beta");
-  await user.click(await screen.findByRole("button", { name: "Sign in on host" }));
+  await user.click(await screen.findByRole("button", { name: "Sign in on host to codex" }));
   expect((await screen.findByRole("alert")).textContent).toContain("Device-code sign-in is not enabled on beta");
 
   await user.selectOptions(select, "gamma");
@@ -929,7 +929,7 @@ test("a failed 'Start again' clears the expired dialog instead of leaving it sta
   const user = setupUser();
   await screen.findByRole("option", { name: "beta" });
   await user.selectOptions(select, "beta");
-  await user.click(await screen.findByRole("button", { name: "Sign in on host" }));
+  await user.click(await screen.findByRole("button", { name: "Sign in on host to codex" }));
 
   // The flow expires, which is what offers "Start again".
   await screen.findByText("REMOTE-CODE");
@@ -965,7 +965,7 @@ test("a successful 'Start again' opens the new flow's dialog", async () => {
   const user = setupUser();
   await screen.findByRole("option", { name: "beta" });
   await user.selectOptions(select, "beta");
-  await user.click(await screen.findByRole("button", { name: "Sign in on host" }));
+  await user.click(await screen.findByRole("button", { name: "Sign in on host to codex" }));
 
   await screen.findByText("REMOTE-CODE");
   const startAgain = await screen.findByRole("button", { name: "Start again" }, { timeout: 3000 });
@@ -1023,12 +1023,16 @@ test("'Sign in on host' follows the instance's auth scheme, not its provider id"
 
   // The instance the host's gate accepts is the one offered the action...
   const acceptedRow = within(remoteSection).getByText("oauth-on-openai").closest("li");
-  expect(within(acceptedRow as HTMLElement).getByRole("button", { name: "Sign in on host" })).toBeTruthy();
+  expect(
+    within(acceptedRow as HTMLElement).getByRole("button", { name: "Sign in on host to oauth-on-openai" }),
+  ).toBeTruthy();
   // ...and the one it refuses is not offered it at all: the button could only
   // produce the host's own "OAuth is not supported for instance" refusal.
   const refusedRow = within(remoteSection).getByText("codex-overridden").closest("li");
-  expect(within(refusedRow as HTMLElement).queryByRole("button", { name: "Sign in on host" })).toBeNull();
-  expect(within(remoteSection).getAllByRole("button", { name: "Sign in on host" })).toHaveLength(1);
+  expect(
+    within(refusedRow as HTMLElement).queryByRole("button", { name: "Sign in on host to codex-overridden" }),
+  ).toBeNull();
+  expect(within(remoteSection).getAllByRole("button", { name: "Sign in on host to oauth-on-openai" })).toHaveLength(1);
 });
 
 // L1, the fallback half of the same clause: a restart the host answers with
@@ -1050,7 +1054,7 @@ test("a restart the host answers with fallback clears the expired dialog", async
   const user = setupUser();
   await screen.findByRole("option", { name: "beta" });
   await user.selectOptions(select, "beta");
-  await user.click(await screen.findByRole("button", { name: "Sign in on host" }));
+  await user.click(await screen.findByRole("button", { name: "Sign in on host to codex" }));
 
   await screen.findByText("REMOTE-CODE");
   const startAgain = await screen.findByRole("button", { name: "Start again" }, { timeout: 3000 });
@@ -1082,7 +1086,7 @@ test("a host coming back online does not restart the sign-in it is not part of",
   const user = setupUser();
   await screen.findByRole("option", { name: "beta (offline)" });
   await user.selectOptions(select, "beta");
-  await user.click(await screen.findByRole("button", { name: "Sign in on host" }));
+  await user.click(await screen.findByRole("button", { name: "Sign in on host to codex" }));
   await screen.findByText("REMOTE-CODE");
   await waitFor(() => expect(forwardedMethodCalls(fake, "evener/auth/device/poll").length).toBeGreaterThan(0), {
     timeout: 3000,
@@ -1156,11 +1160,18 @@ test("a superseded sign-in start never replaces the newer one, and its flow is n
   const firstRow = (await within(remoteSection).findByText("codex-one")).closest("li") as HTMLElement;
   const secondRow = within(remoteSection).getByText("codex-two").closest("li") as HTMLElement;
 
+  // Each row's button names its own instance: with two Codex-capable rows on one
+  // host, a screen reader or voice-control user must be able to tell which
+  // instance each control signs in on (issue #2285). The two accessible names
+  // are distinct by construction.
+  expect(within(firstRow).getByRole("button", { name: "Sign in on host to codex-one" })).toBeTruthy();
+  expect(within(secondRow).getByRole("button", { name: "Sign in on host to codex-two" })).toBeTruthy();
+
   // Both starts are on the wire before either answers: the first row's, then
   // the second row's.
-  await user.click(within(firstRow).getByRole("button", { name: "Sign in on host" }));
+  await user.click(within(firstRow).getByRole("button", { name: "Sign in on host to codex-one" }));
   await waitFor(() => expect(starts.has("codex-one")).toBe(true));
-  await user.click(within(secondRow).getByRole("button", { name: "Sign in on host" }));
+  await user.click(within(secondRow).getByRole("button", { name: "Sign in on host to codex-two" }));
   await waitFor(() => expect(starts.has("codex-two")).toBe(true));
 
   // The SECOND (last-clicked) start answers first; the superseded first one
@@ -1184,4 +1195,30 @@ test("a superseded sign-in start never replaces the newer one, and its flow is n
   expect(polls.length).toBeGreaterThan(0);
   expect(polls.every((call) => (call.params as { flowId: string }).flowId === "flow-two")).toBe(true);
   expect(screen.queryByText("CODE-ONE")).toBeNull();
+});
+
+// WCAG 2.5.3 (Label in Name): a control's accessible name must CONTAIN its
+// visible label text, or a speech/voice-control user who says the words on the
+// button ("Sign in on host") has no name to hit. Naming the instance is what
+// makes several Codex rows distinguishable, but it must be ADDED to the visible
+// text rather than replacing it (issue #2285). An aria-label override would
+// replace the name outright, so the instance rides a visually-hidden suffix
+// inside the button instead.
+test("the sign-in button's accessible name contains its visible label, not just the instance", async () => {
+  const fake = connectFakeClient();
+  fake.on("evener/instance/list", () => CONTROLLER_LIST);
+  fake.on("evener/host/list", () => ({ hosts: [hostRow({ name: "beta", attached: true })] }));
+  fake.on("evener/host/request", () => CODEX_HOST_LIST);
+
+  settingsHostStore.setState({ host: "beta" });
+  render(<CredentialsHostScope sectionId="credentials" />);
+
+  // The regex holds only if the visible string is a SUBSTRING of the accessible
+  // name: the pre-fix name "Sign in to codex on host" does not contain it.
+  const button = await screen.findByRole("button", { name: /Sign in on host/ });
+  // The instance is still named, so two rows remain distinguishable...
+  expect(screen.getByRole("button", { name: "Sign in on host to codex" })).toBe(button);
+  // ...and the name comes from the button's content, not an aria-label that
+  // would replace the visible text.
+  expect(button.getAttribute("aria-label")).toBeNull();
 });

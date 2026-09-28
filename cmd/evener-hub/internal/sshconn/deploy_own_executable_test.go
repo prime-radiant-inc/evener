@@ -549,6 +549,8 @@ func TestDirtyControllerOwnExecutableMismatchRefusesUnstamped(t *testing.T) {
 		BuildBinary:               writeStageBinary,
 		sleep:                     func(context.Context, time.Duration) error { return nil },
 	})
+	testDeployRecorder(t, m)
+	testRestartRecorder(t, m)
 
 	_, err := m.Ensure(context.Background(), "alpha")
 	if !errors.Is(err, errDeployUnstamped) {

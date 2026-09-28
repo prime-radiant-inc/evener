@@ -1,4 +1,5 @@
-import { AccessibilityInfo, Animated } from "react-native";
+import type { ReactNode } from "react";
+import { AccessibilityInfo, Animated, Text } from "react-native";
 import { act, type ReactTestInstance, type ReactTestRenderer } from "react-test-renderer";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { paletteFor } from "../design/tokens";
@@ -40,7 +41,13 @@ const queue: ContextChip = {
 };
 
 function header(
-	over: { status?: string | null; chips?: readonly ContextChip[]; hidden?: boolean; onChip?: (kind: ChipKind) => void } = {},
+	over: {
+		status?: string | null;
+		chips?: readonly ContextChip[];
+		hidden?: boolean;
+		onChip?: (kind: ChipKind) => void;
+		find?: ReactNode;
+	} = {},
 ) {
 	return (
 		<SessionHeader
@@ -48,19 +55,17 @@ function header(
 			chips={over.chips ?? []}
 			hidden={over.hidden ?? false}
 			onChip={over.onChip ?? (() => {})}
+			find={over.find}
 		/>
 	);
 }
 
-const chipButtons = (tree: ReactTestRenderer) =>
-	tree.root.findAll((node) => node.type === ("Pressable" as never));
+const chipButtons = (tree: ReactTestRenderer) => tree.root.findAll((node) => node.type === ("Pressable" as never));
 const textNode = (tree: ReactTestRenderer, text: string) =>
 	tree.root.find((node) => node.type === ("Text" as never) && [node.props.children].flat()[0] === text);
 /** The chips row: the element whose transform hides it. */
-const chipsRow = (tree: ReactTestRenderer) =>
-	tree.root.find((node) => node.type === ("Animated.View" as never));
-const translateY = (row: ReactTestInstance) =>
-	(row.props.style.transform[0].translateY as { value: number }).value;
+const chipsRow = (tree: ReactTestRenderer) => tree.root.find((node) => node.type === ("Animated.View" as never));
+const translateY = (row: ReactTestInstance) => (row.props.style.transform[0].translateY as { value: number }).value;
 
 async function flushReduceMotion() {
 	await act(async () => {
@@ -103,7 +108,9 @@ describe("the connection bar (spec 8.1, 14)", () => {
 		expect(textNode(tree, "Update needed").props.accessibilityHint).toBe(
 			"This app and the hub need compatible versions. Update the app from TestFlight, or update Evener on the hub.",
 		);
-		expect(textNode(render(header({ status: "Reconnecting…" })), "Reconnecting…").props.accessibilityHint).toBeUndefined();
+		expect(
+			textNode(render(header({ status: "Reconnecting…" })), "Reconnecting…").props.accessibilityHint,
+		).toBeUndefined();
 	});
 });
 
@@ -124,6 +131,24 @@ describe("the chips row (spec 8.1)", () => {
 			color: palette.inkHi,
 			fontVariant: ["tabular-nums"],
 		});
+	});
+
+	it("draws Files with doc.text, and a blue dot after its label when a document is new or changed", () => {
+		const files: ContextChip = {
+			kind: "files",
+			label: "Files 4",
+			attention: false,
+			dot: false,
+			accessibilityLabel: "Files, 4",
+		};
+		const symbols = (chip: ContextChip) =>
+			render(header({ chips: [chip] }))
+				.root.findAllByType("SymbolView" as never)
+				.map((node) => node.props);
+		expect(symbols(files).map((props) => props.name)).toEqual(["doc.text"]);
+		const dotted = symbols({ ...files, dot: true });
+		expect(dotted.map((props) => props.name)).toEqual(["doc.text", "circle.fill"]);
+		expect(dotted[1]).toMatchObject({ size: 8, tintColor: palette.accent });
 	});
 
 	it("draws each chip as a 32pt capsule with a 44pt hit area, inset fill and an edge border", () => {
@@ -183,6 +208,30 @@ describe("the chips row (spec 8.1)", () => {
 	});
 });
 
+describe("the find bar in the chips' place (spec 8.7)", () => {
+	it("replaces the chips while find is open", () => {
+		const tree = render(header({ chips: [goal, tasks], find: <FindStandIn /> }));
+		expect(chipButtons(tree)).toEqual([]);
+		expect(tree.root.findAll((node) => node.props.testID === "find-stand-in")).toHaveLength(1);
+	});
+
+	it("shows even when the session has no chips", () => {
+		const tree = render(header({ find: <FindStandIn /> }));
+		expect(tree.root.findAll((node) => node.props.testID === "find-stand-in")).toHaveLength(1);
+	});
+
+	it("never slides away while you scroll through matches", async () => {
+		const tree = render(header({ chips: [goal], find: <FindStandIn />, hidden: true }));
+		await flushReduceMotion();
+		act(() => chipsRow(tree).props.onLayout({ nativeEvent: { layout: { width: 390, height: 52, x: 0, y: 0 } } }));
+		expect(translateY(chipsRow(tree))).toBe(0);
+	});
+});
+
+function FindStandIn() {
+	return <Text testID="find-stand-in">Find</Text>;
+}
+
 describe("hiding on scroll (spec 8.1)", () => {
 	function measured(tree: ReactTestRenderer) {
 		act(() => chipsRow(tree).props.onLayout({ nativeEvent: { layout: { width: 390, height: 48, x: 0, y: 24 } } }));
@@ -195,7 +244,10 @@ describe("hiding on scroll (spec 8.1)", () => {
 		measured(tree);
 		expect(translateY(chipsRow(tree))).toBe(0);
 		act(() => tree.update(header({ status: "Reconnecting…", chips: [goal], hidden: true })));
-		expect(timing).toHaveBeenLastCalledWith(expect.anything(), expect.objectContaining({ toValue: -48, duration: 200 }));
+		expect(timing).toHaveBeenLastCalledWith(
+			expect.anything(),
+			expect.objectContaining({ toValue: -48, duration: 200 }),
+		);
 		expect(translateY(chipsRow(tree))).toBe(-48);
 		act(() => tree.update(header({ status: "Reconnecting…", chips: [goal] })));
 		expect(timing).toHaveBeenLastCalledWith(expect.anything(), expect.objectContaining({ toValue: 0, duration: 200 }));
@@ -218,9 +270,7 @@ describe("hiding on scroll (spec 8.1)", () => {
 	type Step = number | { programmatic: number };
 	const programmatic = (y: number): Step => ({ programmatic: y });
 	const apply = (state: HeaderHiding, step: Step) =>
-		typeof step === "number"
-			? nextHeaderHiding(state, step, true)
-			: nextHeaderHiding(state, step.programmatic, false);
+		typeof step === "number" ? nextHeaderHiding(state, step, true) : nextHeaderHiding(state, step.programmatic, false);
 
 	it("hides after more than 8pt dragged down, and shows on any upward scroll or at the top", () => {
 		const cases: Array<{ name: string; from: Step[]; to: Step; hidden: boolean }> = [
@@ -235,9 +285,19 @@ describe("hiding on scroll (spec 8.1)", () => {
 			{ name: "the bounce above the top shows", from: [0, 200], to: -30, hidden: false },
 			{ name: "a programmatic jump down leaves the chips shown", from: [], to: programmatic(5000), hidden: false },
 			{ name: "a programmatic jump leaves hidden chips hidden", from: [0, 200], to: programmatic(5000), hidden: true },
-			{ name: "a drag after a programmatic jump counts from where it landed", from: [programmatic(5000)], to: 5008, hidden: false },
+			{
+				name: "a drag after a programmatic jump counts from where it landed",
+				from: [programmatic(5000)],
+				to: 5008,
+				hidden: false,
+			},
 			{ name: "and hides past 8pt from there", from: [programmatic(5000)], to: 5009, hidden: true },
-			{ name: "a programmatic move up leaves hidden chips hidden", from: [0, 200], to: programmatic(100), hidden: true },
+			{
+				name: "a programmatic move up leaves hidden chips hidden",
+				from: [0, 200],
+				to: programmatic(100),
+				hidden: true,
+			},
 			{ name: "a programmatic move to the top shows", from: [0, 200], to: programmatic(0), hidden: false },
 		];
 		for (const { name, from, to, hidden } of cases) {

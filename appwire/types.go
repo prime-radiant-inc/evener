@@ -153,8 +153,8 @@ const (
 	// MethodEvenerDelegateStop ends one subagent's current run at the user's
 	// request (S6): that subagent alone, never the subagents it started. It
 	// targets the root session (ref/threadId) and names the delegate.
-	// ScopeDaemon (the root's daemon serves it). A UI-only request, never
-	// advertised to the model.
+	// ScopeBoth (the root's daemon serves it; the hub relays). A UI-only
+	// request, never advertised to the model.
 	MethodEvenerDelegateStop = "evener/delegate/stop"
 	// MethodEvenerHostRequest forwards one hub-scoped admin RPC to a named
 	// remote host's hub (component 07a). Host is the component-03 source ID;
@@ -251,6 +251,11 @@ const (
 	// another source, so bytes stamped by a remote hub never resolve against
 	// the controller's filesystem. See SessionImageParams.
 	MethodEvenerSessionImage = "evener/session/image"
+	// MethodEvenerSessionDocument reads one document out of the recipient hub's
+	// own local session state (S7): the controller's /doc/file proxies through
+	// it when the session id names another source, as the image routes do
+	// through MethodEvenerSessionImage. See SessionDocumentParams.
+	MethodEvenerSessionDocument = "evener/session/document"
 )
 
 const (
@@ -1402,6 +1407,12 @@ type ThreadCapabilities struct {
 	// against the live daemon. ValidateSkillInputSupport keeps skill items
 	// rejected wherever this capability is false.
 	SkillInput bool `json:"skillInput,omitempty"`
+	// StopSubagent advertises evener/delegate/stop on a root session (S6):
+	// true while its daemon wires the stop and the session is open. Absent
+	// from an older daemon, from a session with no daemon running (it runs no
+	// subagents), and from a subagent's own thread: the stop targets the root
+	// that owns the tree.
+	StopSubagent bool `json:"stopSubagent,omitempty"`
 }
 
 // EvenerHookEventStatus describes a single hook event's registration state.
@@ -2200,6 +2211,28 @@ type SessionImageResponse struct {
 	Size      int64  `json:"size"`
 	SHA       string `json:"sha,omitempty"`
 	Data      []byte `json:"data"`
+}
+
+// SessionDocumentParams names one file in a session's working directory on the
+// recipient hub. SessionID names the session in the recipient's own namespace
+// and is never a routing field for another source. Path is resolved exactly as
+// the local /doc/file route resolves it: relative to the session's working
+// directory, or absolute inside it, and refused when it or a symlink along it
+// leads outside.
+type SessionDocumentParams struct {
+	SessionID string `json:"sessionId"`
+	Path      string `json:"path"`
+}
+
+// SessionDocumentResponse is one read of a session document: at most the first
+// 512 KiB of the file (base64 inside the JSON frame), the file's true size, the
+// lowercase hex sha256 of the whole file (absent for a file too large to hash),
+// and its modification time in Unix milliseconds.
+type SessionDocumentResponse struct {
+	Data       []byte `json:"data"`
+	TotalSize  int64  `json:"totalSize"`
+	Revision   string `json:"revision,omitempty"`
+	ModifiedAt int64  `json:"modifiedAt,omitempty"`
 }
 
 type ThreadTranscriptListParams struct {

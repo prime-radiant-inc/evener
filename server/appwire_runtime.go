@@ -2856,6 +2856,10 @@ func (s *Server) appCapabilitiesLocked(state string, processing bool) appwire.Th
 		// the session is open. Like Goal it is NOT gated on !active: a human
 		// save may land mid-turn (it steers the running turn), unlike Send.
 		SharedNotes: s.notesHumanSetFunc != nil && s.urlsRemoveFunc != nil && !closed,
+		// StopSubagent is available whenever the stop is wired and the
+		// session is open. Like Interrupt, whether a run is there to stop is
+		// the handler's answer (S6).
+		StopSubagent: s.delegateStopFunc != nil && !closed,
 		// SkillInput advertises that this thread's input-bearing turn mutations
 		// (turn/start, turn/steer, turn/queue, turn/drainAsSteer) consume skill
 		// selections at the input's actual claim. It is true exactly when every

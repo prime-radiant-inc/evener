@@ -26,7 +26,9 @@ function nameTableRecord(d: Buffer, nameId: number): string | undefined {
 			const r = off + 6 + 12 * j;
 			if (d.readUInt16BE(r) === 3 && d.readUInt16BE(r + 6) === nameId) {
 				const at = strings + d.readUInt16BE(r + 10);
-				return Buffer.from(d.subarray(at, at + d.readUInt16BE(r + 8))).swap16().toString("utf16le");
+				return Buffer.from(d.subarray(at, at + d.readUInt16BE(r + 8)))
+					.swap16()
+					.toString("utf16le");
 			}
 		}
 	}

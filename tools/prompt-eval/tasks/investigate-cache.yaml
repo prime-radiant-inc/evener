@@ -1,0 +1,56 @@
+schema: 1
+id: prose.investigate-cache
+tool: prompt-eval
+prompt: |
+  Users say the page cache never seems to work in staging. Figure out why and write me a short explanation. Please don't change any files; I want to understand it first.
+fixture:
+  git: true
+  files:
+    go.mod: |
+      module example.com/pages
+
+      go 1.22
+    main.go: |
+      package main
+
+      import (
+      	"fmt"
+      	"os"
+      	"strconv"
+      	"time"
+      )
+
+      // cacheTTL reads how long cached pages live. Zero turns the cache off.
+      func cacheTTL() time.Duration {
+      	secs, err := strconv.Atoi(os.Getenv("APP_CACHE_TTL"))
+      	if err != nil || secs <= 0 {
+      		return 0
+      	}
+      	return time.Duration(secs) * time.Second
+      }
+
+      func main() {
+      	if ttl := cacheTTL(); ttl > 0 {
+      		fmt.Printf("cache on, ttl %s\n", ttl)
+      	} else {
+      		fmt.Println("cache off")
+      	}
+      }
+    deploy/staging.env: |
+      PORT=8080
+      CACHE_TTL=300
+      LOG_LEVEL=info
+    deploy/production.env: |
+      PORT=8080
+      APP_CACHE_TTL=300
+      LOG_LEVEL=warn
+    README.md: |
+      # pages
+
+      Serves the marketing pages. Each environment's settings live in deploy/<environment>.env.
+expect:
+  allow_tool_errors: true
+  final_contains: ["APP_CACHE_TTL"]
+  checks:
+    - name: no files changed
+      run: test -z "$(git status --porcelain)"

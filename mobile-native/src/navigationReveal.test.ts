@@ -97,9 +97,7 @@ it("loads later pages and expands the nested destination's ancestors", async () 
 	const list = pages((offset) => {
 		offsets.push(offset);
 		return response(
-			offset === 0
-				? [{ ref: "other" }]
-				: [{ ref: "root", children: [{ ref: "child" }] }],
+			offset === 0 ? [{ ref: "other" }] : [{ ref: "root", children: [{ ref: "child" }] }],
 			offset === 0 ? 1 : 0,
 			1,
 			offset,
@@ -158,38 +156,28 @@ it.each([
 		{ resource: "pin_section", sectionId: "pin" },
 		{ kind: "pin_section", sectionId: "pin" },
 	],
-] as const)(
-	"invalidates the located container when its revision changes",
-	async (params, target) => {
-		let notify: Parameters<ConversationClientLike["onNotification"]>[0] =
-			() => {};
-		const client = {
-			request: async () =>
-				response([{ ref: "child" }], 0, 1, 0, params.resource),
-			onNotification: (listener: typeof notify) => {
-				notify = listener;
-				return () => {};
-			},
-		} as ConversationClientLike;
-		const list = new NavigationPages<Row>(
-			client,
-			params,
-			"sessions",
-			(r) => r.ref,
-		);
-		list.watch();
-		await list.refresh();
-		notify({
-			method: "evener/navigation/invalidated",
-			params: {
-				generationId: "g",
-				sequence: 1,
-				targets: [{ ...target, revision: 2 }],
-			},
-		});
-		expect(list.getSnapshot().stale).toBe(true);
-	},
-);
+] as const)("invalidates the located container when its revision changes", async (params, target) => {
+	let notify: Parameters<ConversationClientLike["onNotification"]>[0] = () => {};
+	const client = {
+		request: async () => response([{ ref: "child" }], 0, 1, 0, params.resource),
+		onNotification: (listener: typeof notify) => {
+			notify = listener;
+			return () => {};
+		},
+	} as ConversationClientLike;
+	const list = new NavigationPages<Row>(client, params, "sessions", (r) => r.ref);
+	list.watch();
+	await list.refresh();
+	notify({
+		method: "evener/navigation/invalidated",
+		params: {
+			generationId: "g",
+			sequence: 1,
+			targets: [{ ...target, revision: 2 }],
+		},
+	});
+	expect(list.getSnapshot().stale).toBe(true);
+});
 it("rejects a delayed location after its screen was left", async () => {
 	let release!: (value: unknown) => void;
 	const client = {

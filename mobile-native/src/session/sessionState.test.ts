@@ -72,7 +72,12 @@ describe("the context chips (spec 8.1)", () => {
 	});
 
 	it("count subagents, with failures in their own part", () => {
-		const tally = subagentTally([delegate("running", 1), delegate("completed", 2), delegate("failed", 3), delegate("done", 4, "failed")]);
+		const tally = subagentTally([
+			delegate("running", 1),
+			delegate("completed", 2),
+			delegate("failed", 3),
+			delegate("done", 4, "failed"),
+		]);
 		expect(tally).toEqual({ total: 4, running: 1, failed: 2, done: 1 });
 		const [chip] = contextChips(
 			{
@@ -112,6 +117,25 @@ describe("the context chips (spec 8.1)", () => {
 			"Goal, blocked",
 			"1 queued message",
 		]);
+	});
+
+	it("follow Subagents with Files and its count, dotted when a document is new or changed", () => {
+		const session = { delegates: [delegate("running", 1)], tasks: { total: 7, done: 3 }, goal: null, queue: null };
+		const chips = contextChips(session, true, { count: 4, fresh: false });
+		expect(chips.map((chip) => chip.kind)).toEqual(["subagents", "files", "tasks"]);
+		expect(chips[1]).toEqual({
+			kind: "files",
+			label: "Files 4",
+			attention: false,
+			dot: false,
+			accessibilityLabel: "Files, 4",
+		});
+		expect(contextChips(session, true, { count: 4, fresh: true })[1]).toMatchObject({
+			dot: true,
+			accessibilityLabel: "Files, 4, new or changed",
+		});
+		expect(contextChips(session, true, { count: 0, fresh: false }).map((chip) => chip.kind)).not.toContain("files");
+		expect(contextChips(session, true).map((chip) => chip.kind)).not.toContain("files");
 	});
 
 	it("hides Subagents and Tasks while disconnected, since tapping either can't act (Calm); Goal and Queue don't need a connection", () => {

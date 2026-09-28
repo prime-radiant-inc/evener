@@ -1305,6 +1305,11 @@ func registerThreadHandlers(
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerSessionImage, func(_ context.Context, params appwire.SessionImageParams) (appwire.SessionImageResponse, error) {
 		return sessionImageFromHub(cfg, params)
 	})
+	// evener/session/document is the AppWire counterpart of the raw /doc/file
+	// read, for the controller's /doc/file proxy (S7).
+	appserver.HandleTyped(server.Router(), appwire.MethodEvenerSessionDocument, func(_ context.Context, params appwire.SessionDocumentParams) (appwire.SessionDocumentResponse, error) {
+		return sessionDocumentFromHub(cfg, params)
+	})
 	appserver.HandleTyped(server.Router(), appwire.MethodThreadList, func(ctx context.Context, params appwire.ThreadListParams) (appwire.ThreadListResponse, error) {
 		return hubThreadList(ctx, cfg, sources, params)
 	})
@@ -1797,6 +1802,22 @@ func registerThreadHandlers(
 				return appwire.EmptyResponse{}, err
 			}
 			return appwire.EmptyResponse{}, source.ResolveSandboxEscalation(ctx, params)
+		})
+	})
+	appserver.HandleTyped(server.Router(), appwire.MethodEvenerDelegateStop, func(ctx context.Context, params appwire.DelegateStopParams) (appwire.DelegateStopResponse, error) {
+		return withSessionActionOwnership(ctx, cfg, params.Ref, params.ThreadID, func() (appwire.DelegateStopResponse, error) {
+			if err := refreshDaemonRestartRequiredError(ctx, cfg, params.Ref, params.ThreadID, ""); err != nil {
+				return appwire.DelegateStopResponse{}, err
+			}
+			source, err := sourceForThread(sources, params.Ref, params.ThreadID)
+			if err != nil {
+				return appwire.DelegateStopResponse{}, err
+			}
+			stopper, ok := source.(appsource.DelegateStopSource)
+			if !ok {
+				return appwire.DelegateStopResponse{}, appwire.Unavailable("this session's source cannot stop a subagent")
+			}
+			return stopper.StopDelegate(ctx, params)
 		})
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodTurnQueue, func(ctx context.Context, params appwire.TurnQueueParams) (appwire.TurnQueueResponse, error) {

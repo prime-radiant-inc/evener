@@ -1,10 +1,7 @@
 import { DraftDocument } from "./draftDocument";
 import type { DraftDestination, DraftRepository } from "./draftRepository";
 
-export type DraftStorage = Pick<
-	DraftRepository,
-	"read" | "write" | "removeHub" | "imageInputs" | "refsWithDrafts"
->;
+export type DraftStorage = Pick<DraftRepository, "read" | "write" | "removeHub" | "imageInputs" | "refsWithDrafts">;
 
 /** One document per destination keeps pending work coherent across navigation. */
 export class DraftLibrary {
@@ -33,8 +30,7 @@ export class DraftLibrary {
 		try {
 			this.repository().removeHub(hubId);
 		} finally {
-			for (const document of this.hubs.get(hubId)?.values() ?? [])
-				document.forget();
+			for (const document of this.hubs.get(hubId)?.values() ?? []) document.forget();
 			this.hubs.delete(hubId);
 		}
 	}

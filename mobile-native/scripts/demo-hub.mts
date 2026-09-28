@@ -7,6 +7,7 @@ import { WireError } from "@evener/appwire-client";
 import type {
 	InitializeResponse,
 	MutationReceipt,
+	NavigationInvalidatedPayload,
 	Thread,
 	Turn,
 	TurnStartParams,
@@ -99,17 +100,21 @@ export async function createDemoHub(
 		},
 	};
 	let turnNumber = 0;
-	// Makes the fleet's working row ask its question and tells every socket
-	// connected at that moment, as a real hub broadcasts navigation changes
-	// to every navigation client. Returned for tests to fire on demand.
-	function askQuestion() {
+	// Tells every socket connected at that moment that navigation changed,
+	// as a real hub broadcasts navigation changes to every navigation client.
+	function broadcastNavigation(payload: NavigationInvalidatedPayload) {
 		const notification = JSON.stringify({
 			jsonrpc: "2.0",
 			method: "evener/navigation/invalidated",
-			params: requireFleet().askQuestion(),
+			params: payload,
 		});
 		for (const socket of server.clients)
 			if (socket.readyState === WebSocket.OPEN) socket.send(notification);
+	}
+	// Makes the fleet's working row ask its question. Returned for tests to
+	// fire on demand.
+	function askQuestion() {
+		broadcastNavigation(requireFleet().askQuestion());
 	}
 	// EVENER_DEMO_FLEET_ASK_AFTER: counted from the hub's start, not from any
 	// one client's connection.
@@ -144,6 +149,7 @@ export async function createDemoHub(
 				const params = request.params ?? {};
 				let result: unknown;
 				let changed: Thread | null = null;
+				let navigationChange: NavigationInvalidatedPayload | null = null;
 				const selected = threads.get(params.ref);
 				switch (request.method) {
 					case "initialize":
@@ -413,11 +419,18 @@ export async function createDemoHub(
 					case "evener/plugin/list":
 						result = requireFleet().answerPluginList();
 						break;
+					case "evener/archive/set": {
+						const { response, invalidated } = requireFleet().archive(params);
+						result = response;
+						navigationChange = invalidated;
+						break;
+					}
 					default:
 						throw new Error("Method not implemented by demonstration server");
 				}
 				socket.send(JSON.stringify({ jsonrpc: "2.0", id, result }));
 				if (changed) resync(changed);
+				if (navigationChange) broadcastNavigation(navigationChange);
 			} catch (error) {
 				socket.send(
 					JSON.stringify({

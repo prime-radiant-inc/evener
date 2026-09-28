@@ -1,9 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type {
-	NavigationProjectSummary,
-	NavigationSessionSummary,
-	Source,
-} from "@evener/appwire-client";
+import type { NavigationProjectSummary, NavigationSessionSummary, Source } from "@evener/appwire-client";
 import type { ProjectBrowserSnapshot } from "../projectBrowser";
 import { boardState } from "./attention";
 import {
@@ -214,7 +210,9 @@ describe("organized by host (spec 7.1, ruling 11)", () => {
 	it("puts the archived group's more row on a host that has archived rows", () => {
 		const list = items({
 			projects: [evener],
-			pages: new Map([["evener", pages([session("local:a")], [], [session("paradise-park:y", "paradise-park")], { archived: 40 })]]),
+			pages: new Map([
+				["evener", pages([session("local:a")], [], [session("paradise-park:y", "paradise-park")], { archived: 40 })],
+			]),
 		});
 		expect(outline(list)).toEqual([
 			"host this host",
@@ -248,30 +246,42 @@ describe("organized by project (spec 7.1)", () => {
 			"    local:z",
 		]);
 		expect(
-			outline(items({ organizeBy: "project-host", projects: [project("docs")], pages: new Map([["docs", pages([session("local:d")])]]) })),
+			outline(
+				items({
+					organizeBy: "project-host",
+					projects: [project("docs")],
+					pages: new Map([["docs", pages([session("local:d")])]]),
+				}),
+			),
 		).toEqual(["project docs", "  Today", "  local:d"]);
 	});
 
 	it("folds branches and the archived group by default, as the web does", () => {
 		const shown = project("evener", { ...evener, default_expanded: true });
-		expect(outline(items({ organizeBy: "project-host", projects: [shown], pages: spanning, isFolded: defaults }))).toEqual([
-			"project evener · 3 live",
-			"  branch this host",
-			"  branch paradise-park",
-			"  Archived · 1",
-		]);
+		expect(
+			outline(items({ organizeBy: "project-host", projects: [shown], pages: spanning, isFolded: defaults })),
+		).toEqual(["project evener · 3 live", "  branch this host", "  branch paradise-park", "  Archived · 1"]);
 	});
 
 	it("ignores Organize by while the hub has one host", () => {
 		expect(
-			outline(items({ sources: [LOCAL], projects: [project("docs")], pages: new Map([["docs", pages([session("local:d")])]]) })),
+			outline(
+				items({
+					sources: [LOCAL],
+					projects: [project("docs")],
+					pages: new Map([["docs", pages([session("local:d")])]]),
+				}),
+			),
 		).toEqual(["project docs", "  Today", "  local:d"]);
 	});
 
 	it("floats pinned projects to the top in both modes", () => {
 		const list = [project("a"), project("b", { favorite: true })];
 		const folded = () => true;
-		expect(outline(items({ organizeBy: "project-host", projects: list, isFolded: folded }))).toEqual(["project b", "project a"]);
+		expect(outline(items({ organizeBy: "project-host", projects: list, isFolded: folded }))).toEqual([
+			"project b",
+			"project a",
+		]);
 		expect(outline(items({ projects: list, isFolded: (fold) => fold.startsWith("project:") }))).toEqual([
 			"host this host",
 			"  project b",
@@ -285,15 +295,32 @@ describe("organized by project (spec 7.1)", () => {
 				items({
 					organizeBy: "project-host",
 					projects: [project("docs")],
-					pages: new Map([["docs", pages([session("local:d")], [], [session("local:o")], { current: 20, recent: 3, archived: 40 })]]),
+					pages: new Map([
+						["docs", pages([session("local:d")], [], [session("local:o")], { current: 20, recent: 3, archived: 40 })],
+					]),
 				}),
 			),
-		).toEqual(["project docs", "  Today", "  local:d", "  20 more current", "  3 more recent", "  Archived", "    local:o", "    40 more archived"]);
+		).toEqual([
+			"project docs",
+			"  Today",
+			"  local:d",
+			"  20 more current",
+			"  3 more recent",
+			"  Archived",
+			"    local:o",
+			"    40 more archived",
+		]);
 	});
 	it("shows a session the hub lists in both Today and Recent once, under Today", () => {
 		const both = session("local:a");
 		expect(
-			outline(items({ sources: [LOCAL], projects: [project("docs")], pages: new Map([["docs", pages([both], [both, session("local:b")])]]) })),
+			outline(
+				items({
+					sources: [LOCAL],
+					projects: [project("docs")],
+					pages: new Map([["docs", pages([both], [both, session("local:b")])]]),
+				}),
+			),
 		).toEqual(["project docs", "  Today", "  local:a", "  Recent", "  local:b"]);
 	});
 });
@@ -302,10 +329,23 @@ describe("test runs and archived", () => {
 	it("stay flat, and an archived project opens its archived group by default", () => {
 		const old = project("old", { default_expanded: true });
 		expect(
-			outline(items({ section: "archived", projects: [old], pages: new Map([["old", pages([], [], [session("local:o")])]]), isFolded: defaults })),
+			outline(
+				items({
+					section: "archived",
+					projects: [old],
+					pages: new Map([["old", pages([], [], [session("local:o")])]]),
+					isFolded: defaults,
+				}),
+			),
 		).toEqual(["project old", "  Archived · 1", "    local:o"]);
 		expect(
-			outline(items({ section: "test-runs", projects: [project("hub-test-env")], pages: new Map([["hub-test-env", pages([session("local:t")])]]) })),
+			outline(
+				items({
+					section: "test-runs",
+					projects: [project("hub-test-env")],
+					pages: new Map([["hub-test-env", pages([session("local:t")])]]),
+				}),
+			),
 		).toEqual(["project hub-test-env", "  Today", "  local:t"]);
 	});
 
@@ -339,18 +379,25 @@ describe("test runs and archived", () => {
 	});
 
 	it("show one placeholder until a project's pages land, and say so when a first read fails", () => {
-		expect(outline(items({ organizeBy: "project-host", projects: [project("p")] }))).toEqual(["project p", "  loading"]);
-		const failed = { ...pages(), current: { rows: [], remaining: 0, loaded: false, error: "offline" } };
-		expect(outline(items({ organizeBy: "project-host", projects: [project("p")], pages: new Map([["p", failed]]) }))).toEqual([
+		expect(outline(items({ organizeBy: "project-host", projects: [project("p")] }))).toEqual([
 			"project p",
-			"  failed",
+			"  loading",
 		]);
+		const failed = { ...pages(), current: { rows: [], remaining: 0, loaded: false, error: "offline" } };
+		expect(
+			outline(items({ organizeBy: "project-host", projects: [project("p")], pages: new Map([["p", failed]]) })),
+		).toEqual(["project p", "  failed"]);
 	});
 });
 
 describe("keys", () => {
 	it("names every fold per section and host, and keeps every item key unique", () => {
-		const list = items({ projects: [evener], pages: new Map([["evener", pages([session("local:a"), session("paradise-park:b", "paradise-park")], [], [session("local:z")])]]) });
+		const list = items({
+			projects: [evener],
+			pages: new Map([
+				["evener", pages([session("local:a"), session("paradise-park:b", "paradise-park")], [], [session("local:z")])],
+			]),
+		});
 		expect(list.flatMap((item) => ("fold" in item ? [item.fold] : []))).toEqual([
 			"host:local",
 			"project:evener@local",
@@ -359,14 +406,22 @@ describe("keys", () => {
 			"project:evener@paradise-park",
 		]);
 		expect(new Set(list.map((item) => item.key)).size).toBe(list.length);
-		const branches = items({ organizeBy: "project-host", projects: [evener], pages: new Map([["evener", pages([session("local:a"), session("paradise-park:b", "paradise-park")])]]) });
+		const branches = items({
+			organizeBy: "project-host",
+			projects: [evener],
+			pages: new Map([["evener", pages([session("local:a"), session("paradise-park:b", "paradise-park")])]]),
+		});
 		expect(branches.flatMap((item) => ("fold" in item ? [item.fold] : []))).toEqual([
 			"project:evener",
 			"project:evener@host:local",
 			"project:evener@host:paradise-park",
 		]);
-		expect(items({ section: "test-runs", projects: [project("t")], isFolded: () => true })[0]).toMatchObject({ fold: "test-run:t" });
-		expect(items({ section: "archived", projects: [project("o")], isFolded: () => true })[0]).toMatchObject({ fold: "archived-project:o" });
+		expect(items({ section: "test-runs", projects: [project("t")], isFolded: () => true })[0]).toMatchObject({
+			fold: "test-run:t",
+		});
+		expect(items({ section: "archived", projects: [project("o")], isFolded: () => true })[0]).toMatchObject({
+			fold: "archived-project:o",
+		});
 	});
 });
 
@@ -375,30 +430,47 @@ describe("revealing a project for search (spec 7.4)", () => {
 		target.unfold.includes(fold) ? false : byDefault;
 
 	it("opens the project row when projects come first", () => {
-		const target = projectRevealTarget({ project: evener, pages: undefined, sources: [LOCAL, PARK], organizeBy: "project-host" });
+		const target = projectRevealTarget({
+			project: evener,
+			pages: undefined,
+			sources: [LOCAL, PARK],
+			organizeBy: "project-host",
+		});
 		expect(target).toEqual({ unfold: ["projects", "project:evener"], scrollTo: "projects/project:evener" });
-		expect(items({ organizeBy: "project-host", projects: [evener], isFolded: unfoldOnly(target) }).some((item) => item.key === target.scrollTo)).toBe(true);
+		expect(
+			items({ organizeBy: "project-host", projects: [evener], isFolded: unfoldOnly(target) }).some(
+				(item) => item.key === target.scrollTo,
+			),
+		).toBe(true);
 	});
 
 	it("opens the canonical copy of a project on several hosts when hosts come first", () => {
 		const loaded = pages([session("paradise-park:b", "paradise-park")]);
-		const target = projectRevealTarget({ project: evener, pages: loaded, sources: [LOCAL, PARK], organizeBy: "host-project" });
+		const target = projectRevealTarget({
+			project: evener,
+			pages: loaded,
+			sources: [LOCAL, PARK],
+			organizeBy: "host-project",
+		});
 		expect(target).toEqual({
 			unfold: ["projects", "host:paradise-park", "project:evener@paradise-park"],
 			scrollTo: "projects/project:evener@paradise-park",
 		});
 		expect(
-			items({ projects: [evener], pages: new Map([["evener", loaded]]), isFolded: unfoldOnly(target) }).some((item) => item.key === target.scrollTo),
+			items({ projects: [evener], pages: new Map([["evener", loaded]]), isFolded: unfoldOnly(target) }).some(
+				(item) => item.key === target.scrollTo,
+			),
 		).toBe(true);
-		expect(projectRevealTarget({ project: evener, pages: undefined, sources: [LOCAL, PARK], organizeBy: "host-project" }).scrollTo).toBe(
-			"projects/project:evener@local",
-		);
+		expect(
+			projectRevealTarget({ project: evener, pages: undefined, sources: [LOCAL, PARK], organizeBy: "host-project" })
+				.scrollTo,
+		).toBe("projects/project:evener@local");
 	});
 
 	it("opens the project row on a hub with one host, whatever Organize by says", () => {
-		expect(projectRevealTarget({ project: evener, pages: undefined, sources: [LOCAL], organizeBy: "host-project" }).scrollTo).toBe(
-			"projects/project:evener",
-		);
+		expect(
+			projectRevealTarget({ project: evener, pages: undefined, sources: [LOCAL], organizeBy: "host-project" }).scrollTo,
+		).toBe("projects/project:evener");
 	});
 });
 
@@ -410,7 +482,12 @@ describe("what the Board reads", () => {
 	});
 
 	it("counts a host's live rows once each, only when every Live page is loaded", () => {
-		const rows = [session("local:a"), session("paradise-park:b", "paradise-park"), session("paradise-park:c", "paradise-park"), session("paradise-park:c", "paradise-park")];
+		const rows = [
+			session("local:a"),
+			session("paradise-park:b", "paradise-park"),
+			session("paradise-park:c", "paradise-park"),
+			session("paradise-park:c", "paradise-park"),
+		];
 		const counts = liveCountsByHost(rows, true);
 		expect([counts("local"), counts("paradise-park"), counts("devbox")]).toEqual([1, 2, null]);
 		expect(liveCountsByHost(rows, false)("local")).toBeNull();
@@ -468,7 +545,12 @@ describe("keeping rows through a reconnect (part 1 Review Focus 1)", () => {
 	});
 
 	it("shows a first read as it is when nothing was shown before", () => {
-		expect(projectsView(snapshot(false), null)).toEqual({ projects: [], loaded: false, remaining: 0, pages: new Map() });
+		expect(projectsView(snapshot(false), null)).toEqual({
+			projects: [],
+			loaded: false,
+			remaining: 0,
+			pages: new Map(),
+		});
 	});
 
 	it("never keeps a failed first read, so a retry in flight reads as loading", () => {

@@ -273,6 +273,8 @@ func TestEnsureVersionDiffersDeploysRestartsThenAttaches(t *testing.T) {
 			return os.WriteFile(out, []byte("new-binary"), 0o755)
 		},
 	})
+	testDeployRecorder(t, m)
+	testRestartRecorder(t, m)
 
 	ch, err := m.Ensure(context.Background(), "alpha")
 	if err != nil {
@@ -393,6 +395,8 @@ func TestEnsureDeploysBeforeEnforcingLaunchContract(t *testing.T) {
 			return os.WriteFile(out, []byte("new-binary"), 0o755)
 		},
 	})
+	testDeployRecorder(t, m)
+	testRestartRecorder(t, m)
 
 	ch, err := m.Ensure(context.Background(), "alpha")
 	if err != nil {
@@ -1834,6 +1838,7 @@ func TestEnsureRestartsWhenTheRunningHubVersionDiffers(t *testing.T) {
 		controllerVersionOverride: "newsha",
 		BuildBinary:               func(context.Context, string, string, string) error { return nil },
 	})
+	testRestartRecorder(t, m)
 
 	ch, err := m.Ensure(context.Background(), "alpha")
 	if err != nil {
@@ -2055,6 +2060,7 @@ func TestPendingStartRecoveryAcceptsTheHostsOwnBuild(t *testing.T) {
 		controllerVersionOverride: "newsha",
 		sleep:                     func(context.Context, time.Duration) error { return nil },
 	})
+	testRestartRecorder(t, m)
 	// The recorded start an interrupted first attach leaves behind.
 	m.setPendingStart(host.Name, relaunch)
 
@@ -2116,6 +2122,7 @@ func TestRestartOnlyMismatchOnAnotherBuildAttaches(t *testing.T) {
 		controllerVersionOverride: "newsha",
 		sleep:                     func(context.Context, time.Duration) error { return nil },
 	})
+	testRestartRecorder(t, m)
 	m.setPendingStart(host.Name, relaunch)
 
 	if _, err := m.Ensure(context.Background(), "alpha"); err != nil {
@@ -2264,6 +2271,7 @@ func TestPendingStartNotSettledForWrongSnapshotCommit(t *testing.T) {
 		controllerVersionOverride: "newsha",
 		sleep:                     func(context.Context, time.Duration) error { return nil },
 	})
+	testRestartRecorder(t, m)
 	m.setPendingStart(host.Name, relaunch)
 
 	if _, err := m.Ensure(context.Background(), "alpha"); !errors.Is(err, ErrRestart) {
@@ -2406,6 +2414,7 @@ func TestBootstrapUnhealthyIsErrRestart(t *testing.T) {
 		controllerVersionOverride: "newsha",
 		sleep:                     func(context.Context, time.Duration) error { return nil },
 	})
+	testRestartRecorder(t, m)
 
 	_, err := m.Ensure(context.Background(), "alpha")
 	if !errors.Is(err, ErrRestart) {
@@ -2475,6 +2484,8 @@ func TestFirstAttachAfterDeployBootstrapsStoppedHost(t *testing.T) {
 		sleep:                     func(context.Context, time.Duration) error { return nil },
 		BuildBinary:               writeStageBinary,
 	})
+	testDeployRecorder(t, m)
+	testRestartRecorder(t, m)
 
 	ch, err := m.Ensure(context.Background(), "alpha")
 	if err != nil {
@@ -2561,6 +2572,8 @@ func TestDeployThenExplicitAttachStartsDormantUnit(t *testing.T) {
 		sleep:                     func(context.Context, time.Duration) error { return nil },
 		BuildBinary:               writeStageBinary,
 	})
+	testDeployRecorder(t, m)
+	testRestartRecorder(t, m)
 
 	ch, err := m.Ensure(context.Background(), "alpha")
 	if err != nil {
@@ -2736,6 +2749,8 @@ func TestEnsureDevBuildDeploysOncePerManager(t *testing.T) {
 			return os.WriteFile(out, []byte("bin"), 0o755)
 		},
 	})
+	testDeployRecorder(t, m)
+	testRestartRecorder(t, m)
 
 	ch, err := m.Ensure(context.Background(), "alpha")
 	if err != nil {
@@ -2836,6 +2851,8 @@ func TestEnsureRestartRecoveryRetriesRelaunch(t *testing.T) {
 		controllerVersionOverride: "newsha",
 		BuildBinary:               writeStageBinary,
 	})
+	testDeployRecorder(t, m)
+	testRestartRecorder(t, m)
 
 	_, err := m.Ensure(context.Background(), "alpha")
 	if !errors.Is(err, ErrRestart) {
@@ -3042,6 +3059,8 @@ func TestEnsureDeployPhaseHasItsOwnBudget(t *testing.T) {
 			return os.WriteFile(out, []byte("bin"), 0o755)
 		},
 	})
+	testDeployRecorder(t, m)
+	testRestartRecorder(t, m)
 
 	if _, err := m.Ensure(context.Background(), "alpha"); err != nil {
 		t.Fatalf("Ensure: %v (a build longer than attemptLimit must still fit the deploy budget)", err)
@@ -3107,6 +3126,8 @@ func TestEnsureSupervisorRestartRecoveryRetriesRestart(t *testing.T) {
 		sleep:                     func(context.Context, time.Duration) error { return nil },
 		BuildBinary:               writeStageBinary,
 	})
+	testDeployRecorder(t, m)
+	testRestartRecorder(t, m)
 
 	if _, err := m.Ensure(context.Background(), "alpha"); !errors.Is(err, ErrRestart) {
 		t.Fatalf("Ensure 1 err = %v, want ErrRestart (the supervisor restart never brought the hub up)", err)
@@ -3249,6 +3270,8 @@ func TestEnsureKeepsPendingRestartWhenOldProcessStillServes(t *testing.T) {
 		controllerVersionOverride: "dev",
 		BuildBinary:               writeStageBinary,
 	})
+	testDeployRecorder(t, m)
+	testRestartRecorder(t, m)
 
 	if _, err := m.Ensure(context.Background(), "alpha"); !errors.Is(err, ErrRestart) {
 		t.Fatalf("Ensure 1 err = %v, want ErrRestart (the restart command failed)", err)
@@ -3480,6 +3503,8 @@ func TestEnsureCorruptLaunchCheckReachesTheDeployPath(t *testing.T) {
 		controllerVersionOverride: "newsha",
 		BuildBinary:               writeStageBinary,
 	})
+	testDeployRecorder(t, m)
+	testRestartRecorder(t, m)
 
 	ch, err := m.Ensure(context.Background(), "alpha")
 	if err != nil {

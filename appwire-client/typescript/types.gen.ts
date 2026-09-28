@@ -3097,6 +3097,18 @@ export interface SessionDeleteResponse {
   navigation: NavigationMutation;
 }
 
+export interface SessionDocumentParams {
+  sessionId: string;
+  path: string;
+}
+
+export interface SessionDocumentResponse {
+  data: string;
+  totalSize: number;
+  revision?: string;
+  modifiedAt?: number;
+}
+
 export interface SessionImageParams {
   sessionId: string;
   sha?: string;
@@ -3444,6 +3456,14 @@ export interface ThreadCapabilities {
    * rejected wherever this capability is false.
    */
   skillInput?: boolean;
+  /**
+   * StopSubagent advertises evener/delegate/stop on a root session (S6):
+   * true while its daemon wires the stop and the session is open. Absent
+   * from an older daemon, from a session with no daemon running (it runs no
+   * subagents), and from a subagent's own thread: the stop targets the root
+   * that owns the tree.
+   */
+  stopSubagent?: boolean;
 }
 
 export interface ThreadClearParams {
@@ -4387,6 +4407,7 @@ export const METHOD_NAMES = [
   "evener/host/running",
   "evener/host/pushCredentials",
   "evener/session/image",
+  "evener/session/document",
 ] as const;
 
 export type MethodName = (typeof METHOD_NAMES)[number];
@@ -4610,6 +4631,7 @@ export interface MethodTypes {
   "evener/host/running": { params: HostRunningParams; result: HostRunningResponse };
   "evener/host/pushCredentials": { params: HostPushCredentialsParams; result: HostPushCredentialsResponse };
   "evener/session/image": { params: SessionImageParams; result: SessionImageResponse };
+  "evener/session/document": { params: SessionDocumentParams; result: SessionDocumentResponse };
 }
 
 export interface NotificationTypes {

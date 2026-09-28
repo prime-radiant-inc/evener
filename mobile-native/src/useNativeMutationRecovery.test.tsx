@@ -10,20 +10,11 @@ import type { MutationRecoveryRecord } from "@evener/appwire-client/state/mutati
 import { act, create, type ReactTestRenderer } from "react-test-renderer";
 import { afterEach, expect, test, vi } from "vitest";
 import { TABLES } from "./mutationOutboxStorage";
-import {
-	NativeMutationRuntime,
-	nativeMutationTargetKey,
-} from "./nativeMutationRuntime";
+import { NativeMutationRuntime, nativeMutationTargetKey } from "./nativeMutationRuntime";
 import { renderHook } from "./renderNative.testkit";
 import type { SqliteSync } from "./sqliteSync";
-import {
-	openSqliteSyncDouble,
-	type SqliteDoubleDatabase,
-} from "./sqliteSync.testkit";
-import {
-	type NativeMutationRecoveryProjection,
-	useNativeMutationRecovery,
-} from "./useNativeMutationRecovery";
+import { openSqliteSyncDouble, type SqliteDoubleDatabase } from "./sqliteSync.testkit";
+import { type NativeMutationRecoveryProjection, useNativeMutationRecovery } from "./useNativeMutationRecovery";
 
 const expoSQLite = vi.hoisted(() => ({ openDatabaseSync: vi.fn() }));
 vi.mock("expo-sqlite", () => expoSQLite);
@@ -70,11 +61,7 @@ async function seedRecovery(
 			input: [{ type: "text", text: "hello" }],
 		},
 	});
-	const recovery = await runtime.storage.transferToRecovery(
-		record.clientMutationId,
-		"rejected",
-		reason,
-	);
+	const recovery = await runtime.storage.transferToRecovery(record.clientMutationId, "rejected", reason);
 	if (!recovery) throw new Error("seeding recovery failed");
 	return recovery;
 }
@@ -105,8 +92,7 @@ function gatedPort(port: SqliteSync) {
 		runSync: (sql, ...params) => port.runSync(sql, ...params),
 		getFirstSync: (sql, ...params) => port.getFirstSync(sql, ...params),
 		getAllSync: (sql, ...params) => {
-			if (gate.closed && sql.includes(`FROM ${TABLES.recovery}`))
-				throw new Error("recovery table unavailable");
+			if (gate.closed && sql.includes(`FROM ${TABLES.recovery}`)) throw new Error("recovery table unavailable");
 			return port.getAllSync(sql, ...params);
 		},
 	};
@@ -143,9 +129,7 @@ test("enumerates the target's durable recovery rows through the real runtime", a
 	]);
 	expect(hook.result.current.error).toBeNull();
 	expect(hook.result.current.targetKey).toBe(TARGET);
-	expect(
-		hook.result.current.snapshot?.outbox.map((row) => row.clientMutationId),
-	).toEqual([outbox.clientMutationId]);
+	expect(hook.result.current.snapshot?.outbox.map((row) => row.clientMutationId)).toEqual([outbox.clientMutationId]);
 });
 
 test("refreshes only on the real runtime's storage changes for the exact target key", async () => {
@@ -154,9 +138,7 @@ test("refreshes only on the real runtime's storage changes for the exact target 
 
 	const hook = renderHook(() => useNativeMutationRecovery(runtime, TARGET));
 	await vi.waitFor(() =>
-		expect(recoveryRows(hook.result.current)).toEqual([
-			{ id: "a-1", kind: "rejected", reason: "daemon refused a-1" },
-		]),
+		expect(recoveryRows(hook.result.current)).toEqual([{ id: "a-1", kind: "rejected", reason: "daemon refused a-1" }]),
 	);
 
 	await seedRecovery(runtime, TARGET, "daemon refused a-2");
@@ -164,9 +146,7 @@ test("refreshes only on the real runtime's storage changes for the exact target 
 	// zero-included rule); the other target's change must not re-read.
 	await runtime.discardRecovery("missing", OTHER_TARGET);
 	await flush();
-	expect(recoveryRows(hook.result.current)).toEqual([
-		{ id: "a-1", kind: "rejected", reason: "daemon refused a-1" },
-	]);
+	expect(recoveryRows(hook.result.current)).toEqual([{ id: "a-1", kind: "rejected", reason: "daemon refused a-1" }]);
 
 	await runtime.discardRecovery("missing", TARGET);
 	await vi.waitFor(() =>
@@ -180,17 +160,11 @@ test("refreshes only on the real runtime's storage changes for the exact target 
 test("discards a row durably through the real runtime and follows its own projection refresh", async () => {
 	const runtime = openRuntime("a");
 	const row = await seedRecovery(runtime, TARGET, "daemon refused a-1");
-	const otherRow = await seedRecovery(
-		runtime,
-		OTHER_TARGET,
-		"other target row",
-	);
+	const otherRow = await seedRecovery(runtime, OTHER_TARGET, "other target row");
 
 	const hook = renderHook(() => useNativeMutationRecovery(runtime, TARGET));
 	await vi.waitFor(() =>
-		expect(recoveryRows(hook.result.current)).toEqual([
-			{ id: "a-1", kind: "rejected", reason: "daemon refused a-1" },
-		]),
+		expect(recoveryRows(hook.result.current)).toEqual([{ id: "a-1", kind: "rejected", reason: "daemon refused a-1" }]),
 	);
 
 	expect(await hook.result.current.discard(row.clientMutationId)).toBe(true);
@@ -201,9 +175,7 @@ test("discards a row durably through the real runtime and follows its own projec
 	// The discard is idempotent and stays scoped to this projection's key:
 	// another target's row is not reachable through it.
 	expect(await hook.result.current.discard(row.clientMutationId)).toBe(false);
-	expect(await hook.result.current.discard(otherRow.clientMutationId)).toBe(
-		false,
-	);
+	expect(await hook.result.current.discard(otherRow.clientMutationId)).toBe(false);
 	expect(await runtime.storage.listRecovery(OTHER_TARGET)).toHaveLength(1);
 });
 
@@ -216,9 +188,7 @@ test("clears the old snapshot when the runtime is replaced and drops the old gen
 	const hook = renderHook(() => useNativeMutationRecovery(runtime, TARGET));
 
 	await vi.waitFor(() =>
-		expect(recoveryRows(hook.result.current)).toEqual([
-			{ id: "a-1", kind: "rejected", reason: "daemon refused a-1" },
-		]),
+		expect(recoveryRows(hook.result.current)).toEqual([{ id: "a-1", kind: "rejected", reason: "daemon refused a-1" }]),
 	);
 
 	runtime = runtimeB;
@@ -231,9 +201,7 @@ test("clears the old snapshot when the runtime is replaced and drops the old gen
 		snapshot: null,
 	});
 	await vi.waitFor(() =>
-		expect(recoveryRows(hook.result.current)).toEqual([
-			{ id: "b-1", kind: "rejected", reason: "daemon refused b-1" },
-		]),
+		expect(recoveryRows(hook.result.current)).toEqual([{ id: "b-1", kind: "rejected", reason: "daemon refused b-1" }]),
 	);
 
 	// A late storage change on the OLD runtime must not repopulate the new
@@ -242,9 +210,7 @@ test("clears the old snapshot when the runtime is replaced and drops the old gen
 	await seedRecovery(runtimeA, TARGET, "daemon refused a-2");
 	await runtimeA.discardRecovery("missing", TARGET);
 	await flush();
-	expect(recoveryRows(hook.result.current)).toEqual([
-		{ id: "b-1", kind: "rejected", reason: "daemon refused b-1" },
-	]);
+	expect(recoveryRows(hook.result.current)).toEqual([{ id: "b-1", kind: "rejected", reason: "daemon refused b-1" }]);
 });
 
 test("drops a replaced generation's in-flight read completion", async () => {
@@ -281,9 +247,7 @@ test("drops a replaced generation's in-flight read completion", async () => {
 	runtime = runtimeB;
 	hook.rerender();
 	await vi.waitFor(() =>
-		expect(recoveryRows(hook.result.current)).toEqual([
-			{ id: "b-1", kind: "rejected", reason: "daemon refused b-1" },
-		]),
+		expect(recoveryRows(hook.result.current)).toEqual([{ id: "b-1", kind: "rejected", reason: "daemon refused b-1" }]),
 	);
 });
 
@@ -306,9 +270,7 @@ test("exposes none of the replaced runtime's rows on the first render after the 
 		renderer = create(<Probe />);
 	});
 	await vi.waitFor(() => expect(observed.at(-1)?.loading).toBe(false));
-	expect(
-		observed.at(-1)?.snapshot?.recovery.map((row) => row.clientMutationId),
-	).toEqual(["a-1"]);
+	expect(observed.at(-1)?.snapshot?.recovery.map((row) => row.clientMutationId)).toEqual(["a-1"]);
 
 	const beforeSwap = observed.length;
 	runtime = runtimeB;
@@ -324,14 +286,11 @@ test("exposes none of the replaced runtime's rows on the first render after the 
 		snapshot: null,
 	});
 	for (const projection of observed.slice(beforeSwap)) {
-		const ids =
-			projection.snapshot?.recovery.map((row) => row.clientMutationId) ?? [];
+		const ids = projection.snapshot?.recovery.map((row) => row.clientMutationId) ?? [];
 		expect(ids).not.toContain("a-1");
 	}
 	await vi.waitFor(() =>
-		expect(
-			observed.at(-1)?.snapshot?.recovery.map((row) => row.clientMutationId),
-		).toEqual(["b-1"]),
+		expect(observed.at(-1)?.snapshot?.recovery.map((row) => row.clientMutationId)).toEqual(["b-1"]),
 	);
 });
 
@@ -344,9 +303,7 @@ test("switches the composite target key without leaking the old target's rows", 
 	const hook = renderHook(() => useNativeMutationRecovery(runtime, targetKey));
 
 	await vi.waitFor(() =>
-		expect(recoveryRows(hook.result.current)).toEqual([
-			{ id: "a-1", kind: "rejected", reason: "daemon refused a-1" },
-		]),
+		expect(recoveryRows(hook.result.current)).toEqual([{ id: "a-1", kind: "rejected", reason: "daemon refused a-1" }]),
 	);
 
 	targetKey = KEY_B;
@@ -357,9 +314,7 @@ test("switches the composite target key without leaking the old target's rows", 
 		snapshot: null,
 	});
 	await vi.waitFor(() =>
-		expect(recoveryRows(hook.result.current)).toEqual([
-			{ id: "a-2", kind: "rejected", reason: "daemon refused b-1" },
-		]),
+		expect(recoveryRows(hook.result.current)).toEqual([{ id: "a-2", kind: "rejected", reason: "daemon refused b-1" }]),
 	);
 
 	// A storage change for the OLD key never refreshes the new one, even
@@ -367,9 +322,7 @@ test("switches the composite target key without leaking the old target's rows", 
 	await seedRecovery(runtime, TARGET, "daemon refused a-2");
 	await runtime.discardRecovery("missing", TARGET);
 	await flush();
-	expect(recoveryRows(hook.result.current)).toEqual([
-		{ id: "a-2", kind: "rejected", reason: "daemon refused b-1" },
-	]);
+	expect(recoveryRows(hook.result.current)).toEqual([{ id: "a-2", kind: "rejected", reason: "daemon refused b-1" }]);
 
 	// The new key's own storage change refreshes it.
 	await seedRecovery(runtime, KEY_B, "daemon refused b-2");
@@ -393,16 +346,12 @@ test("reports a failed read and recovers on the next real storage change", async
 	const hook = renderHook(() => useNativeMutationRecovery(runtime, TARGET));
 	await vi.waitFor(() => expect(hook.result.current.loading).toBe(false));
 	expect(hook.result.current.snapshot).toBeNull();
-	expect(hook.result.current.error).toEqual(
-		new Error("recovery table unavailable"),
-	);
+	expect(hook.result.current.error).toEqual(new Error("recovery table unavailable"));
 
 	gate.release();
 	await runtime.discardRecovery("missing", TARGET);
 	await vi.waitFor(() =>
-		expect(recoveryRows(hook.result.current)).toEqual([
-			{ id: "a-1", kind: "rejected", reason: "daemon refused a-1" },
-		]),
+		expect(recoveryRows(hook.result.current)).toEqual([{ id: "a-1", kind: "rejected", reason: "daemon refused a-1" }]),
 	);
 	expect(hook.result.current.error).toBeNull();
 });
@@ -434,9 +383,7 @@ test("unsubscribes on unmount and the runtime stays usable for the next mount", 
 	expect(removed).toBe(1);
 	await flush();
 
-	const remounted = renderHook(() =>
-		useNativeMutationRecovery(runtime, TARGET),
-	);
+	const remounted = renderHook(() => useNativeMutationRecovery(runtime, TARGET));
 	await vi.waitFor(() =>
 		expect(recoveryRows(remounted.result.current)).toEqual([
 			{ id: "a-1", kind: "rejected", reason: "daemon refused a-1" },
@@ -461,8 +408,6 @@ test("exposes an empty projection with a no-op discard when no runtime is mounte
 	mounted = runtime;
 	hook.rerender();
 	await vi.waitFor(() =>
-		expect(recoveryRows(hook.result.current)).toEqual([
-			{ id: "a-1", kind: "rejected", reason: "daemon refused a-1" },
-		]),
+		expect(recoveryRows(hook.result.current)).toEqual([{ id: "a-1", kind: "rejected", reason: "daemon refused a-1" }]),
 	);
 });

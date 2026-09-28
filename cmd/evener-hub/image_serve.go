@@ -42,7 +42,7 @@ func (s *WebServer) handleSessionImage(w http.ResponseWriter, r *http.Request, s
 	// on that host's filesystem, so the request is proxied to the owning source
 	// instead of resolved here. A bare or "local:" id resolves exactly as
 	// before.
-	if ref, ok := hostQualifiedImageRef(sessionID); ok {
+	if ref, ok := hostQualifiedRouteRef(sessionID); ok {
 		s.serveRemoteSessionImage(w, r, ref, appwire.SessionImageParams{SessionID: ref.ThreadID, SHA: sha})
 		return
 	}

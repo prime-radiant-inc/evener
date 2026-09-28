@@ -2,13 +2,7 @@ import type { NotesHumanSetResponse, SessionURL, ThreadCapabilities } from "@eve
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ConversationClientLike } from "../../../mobile/src/services/conversation";
 import type { SyncStringStorage } from "../syncStringStorage";
-import {
-	NOTE_LIMIT,
-	NotesController,
-	notesBarPreview,
-	noteStatusLine,
-	SAVE_AFTER_BLUR_MS,
-} from "./sessionNotes";
+import { NOTE_LIMIT, NotesController, notesBarPreview, noteStatusLine, SAVE_AFTER_BLUR_MS } from "./sessionNotes";
 
 const sharedNotes = { sharedNotes: true } as ThreadCapabilities;
 const url = (id: string, label?: string): SessionURL => ({ id, url: `https://example.com/${id}`, label });

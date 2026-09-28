@@ -1187,6 +1187,8 @@ func TestRecoveryAdmissionUsesNativeTargetAndPreservesRetryEpoch(t *testing.T) {
 		{"sandbox threadId", appwire.MethodEvenerSandboxEscalationResolve, "B", map[string]any{"threadId": "B"}},
 		{"sandbox ignores mutation ID", appwire.MethodEvenerSandboxEscalationResolve, "B", map[string]any{"ref": "local:B", "clientMutationId": []string{"ignored"}}},
 		{"sandbox invalid target", appwire.MethodEvenerSandboxEscalationResolve, "", map[string]any{"threadId": []string{"invalid"}}},
+		{"delegate stop ref precedence", appwire.MethodEvenerDelegateStop, "B", map[string]any{"ref": "local:B", "threadId": "A", "delegateId": "dlg_1"}},
+		{"delegate stop threadId", appwire.MethodEvenerDelegateStop, "B", map[string]any{"threadId": "B", "delegateId": "dlg_1"}},
 		{"model ignores unknown field types", appwire.MethodThreadModelSet, "B", map[string]any{"ref": "local:B", "threadId": []string{"ignored"}}},
 		{"unknown method", "unknown", "", map[string]any{"ref": "local:B"}},
 		{"foreign ref", appwire.MethodThreadResume, "", map[string]any{"ref": "remote:B", "sessionId": "A"}},

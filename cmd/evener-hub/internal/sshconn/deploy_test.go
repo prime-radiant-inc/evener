@@ -463,6 +463,8 @@ func TestEnsureInstallerFallbackDeploysPinnedRelease(t *testing.T) {
 	m := newTestManager(t, testRegistry(t, host), fr, Options{
 		sleep: func(context.Context, time.Duration) error { return nil },
 	})
+	testDeployRecorder(t, m)
+	testRestartRecorder(t, m)
 
 	if _, err := m.Ensure(context.Background(), "alpha"); err != nil {
 		t.Fatalf("Ensure: %v", err)
@@ -539,6 +541,8 @@ func TestInstallerFallbackRecordsDefaultRunTarget(t *testing.T) {
 	m := newTestManager(t, testRegistry(t, host), fr, Options{
 		sleep: func(context.Context, time.Duration) error { return nil },
 	})
+	testDeployRecorder(t, m)
+	testRestartRecorder(t, m)
 
 	if _, err := m.Ensure(context.Background(), "alpha"); err != nil {
 		t.Fatalf("Ensure: %v", err)
@@ -1382,6 +1386,8 @@ func TestEnsureMissingEvenerReachesTheInstallerFallback(t *testing.T) {
 		controllerVersionOverride: "newsha",
 		sleep:                     func(context.Context, time.Duration) error { return nil },
 	})
+	testDeployRecorder(t, m)
+	testRestartRecorder(t, m)
 
 	if _, err := m.Ensure(context.Background(), "alpha"); err != nil {
 		t.Fatalf("Ensure: %v (a host with no evener on PATH must reach the installer fallback)", err)
@@ -1794,6 +1800,8 @@ func TestEnsurePostDeployBuildMismatchRefusesTerminally(t *testing.T) {
 	t.Run("a stopped host whose installed artifact reports another build", func(t *testing.T) {
 		fr := postDeployBuildRunner(t, "othersha")
 		m := newTestManager(t, testRegistry(t, host), fr, opts)
+		testDeployRecorder(t, m)
+		testRestartRecorder(t, m)
 
 		_, err := m.Ensure(context.Background(), "alpha")
 		requireUnstampedRefusal(t, err)
@@ -1824,6 +1832,8 @@ func TestEnsurePostDeployBuildMismatchRefusesTerminally(t *testing.T) {
 			},
 		)
 		m := newTestManager(t, testRegistry(t, host), fr, opts)
+		testDeployRecorder(t, m)
+		testRestartRecorder(t, m)
 
 		_, err := m.Ensure(context.Background(), "alpha")
 		requireUnstampedRefusal(t, err)
@@ -1843,6 +1853,8 @@ func TestEnsurePostDeployBuildMismatchRefusesTerminally(t *testing.T) {
 			},
 		)
 		m := newTestManager(t, testRegistry(t, host), fr, opts)
+		testDeployRecorder(t, m)
+		testRestartRecorder(t, m)
 
 		ch, err := m.Ensure(context.Background(), "alpha")
 		if err != nil {
@@ -1882,6 +1894,8 @@ func TestDeployArtifactUnusableIsTerminal(t *testing.T) {
 				errDeployArtifactUnusable, "/tmp/evener")
 		},
 	})
+	testDeployRecorder(t, m)
+	testRestartRecorder(t, m)
 
 	_, err := m.Ensure(context.Background(), "alpha")
 	if !errors.Is(err, errDeployArtifactUnusable) {
@@ -1942,6 +1956,8 @@ func TestEnsureWrongArtifactAgainstRunningHubRefusesBeforeRestart(t *testing.T) 
 		sleep:                     func(context.Context, time.Duration) error { return nil },
 		BuildBinary:               writeStageBinary,
 	})
+	testDeployRecorder(t, m)
+	testRestartRecorder(t, m)
 
 	_, err := m.Ensure(context.Background(), "alpha")
 	requireUnstampedRefusal(t, err)
@@ -2047,6 +2063,7 @@ func TestEnsureRestartOnlyMismatchAttachesTheServingBuild(t *testing.T) {
 		sleep:                     func(context.Context, time.Duration) error { return nil },
 		BuildBinary:               writeStageBinary,
 	})
+	testRestartRecorder(t, m)
 
 	if _, err := m.Ensure(context.Background(), "alpha"); err != nil {
 		t.Fatalf("Ensure = %v, want nil: the serving hub reports the controller's build", err)

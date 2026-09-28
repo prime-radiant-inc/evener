@@ -58,14 +58,18 @@ vi.mock("@react-navigation/elements", () => ({ useHeaderHeight: () => 64 }));
 vi.mock("@react-navigation/native", async () => {
 	const { useEffect } = await import("react");
 	return {
-		useFocusEffect: (effect: () => void | (() => void)) =>
-			useEffect(effect, []),
-		useNavigationState: <T,>(select: (state: typeof navigationState.state) => T) =>
-			select(navigationState.state),
+		useFocusEffect: (effect: () => void | (() => void)) => useEffect(effect, []),
+		useNavigationState: <T,>(select: (state: typeof navigationState.state) => T) => select(navigationState.state),
 	};
 });
 vi.mock("expo-web-browser", () => ({ openBrowserAsync: vi.fn(async () => ({ type: "dismiss" })) }));
 vi.mock("expo-symbols", () => ({ SymbolView: "SymbolView" }));
+vi.mock("react-native-gesture-handler", async () =>
+	(await import("./renderNative.testkit")).gestureDetectorModuleMock(),
+);
+vi.mock("react-native-gesture-handler/ReanimatedSwipeable", async () =>
+	(await import("./renderNative.testkit")).gestureHandlerModuleMock(),
+);
 vi.mock("expo-clipboard", () => ({
 	setStringAsync: vi.fn(async () => {}),
 	getStringAsync: vi.fn(async () => ""),
@@ -245,9 +249,7 @@ async function mount(served: Thread) {
 function transcriptList(tree: ReactTestRenderer) {
 	return tree.root.findAll(
 		(node) =>
-			typeof node.type === "function" &&
-			Array.isArray(node.props.data) &&
-			typeof node.props.renderItem === "function",
+			typeof node.type === "function" && Array.isArray(node.props.data) && typeof node.props.renderItem === "function",
 	)[0];
 }
 
@@ -258,9 +260,7 @@ function forkOf(tree: ReactTestRenderer) {
 // Re-render the screen exactly as a state change on the screen itself would:
 // the same route and navigation, a fresh element so React runs the component.
 function rerender(tree: ReactTestRenderer, route: ConversationScreenProps["route"]) {
-	act(() =>
-		tree.update(<ConversationScreen route={route} navigation={navigation} />),
-	);
+	act(() => tree.update(<ConversationScreen route={route} navigation={navigation} />));
 }
 
 it("keeps one renderItem across a re-render that no row reads", async () => {

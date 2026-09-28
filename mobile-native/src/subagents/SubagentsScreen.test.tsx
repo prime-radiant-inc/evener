@@ -1,0 +1,380 @@
+// The Subagents list (spec 9): a coordinator's subagents, read whole from
+// evener/jobs/list, in failed, running and done sections, with the strip, the
+// chips, search, and each row's why and last line.
+import type { NativeStackNavigationOptions } from "@react-navigation/native-stack";
+import { WireError } from "@evener/appwire-client";
+import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
+import type { ReactElement } from "react";
+import { act, type ReactTestRenderer } from "react-test-renderer";
+import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { pressable, render, renderedText, screenConnection } from "../renderNative.testkit";
+import { forgetSubagentTrees } from "./subagentTree";
+import { SubagentsScreen } from "./SubagentsScreen";
+
+const harness = vi.hoisted(() => ({ connection: {} as Record<string, unknown> }));
+
+vi.mock("react-native", async () => ({
+	...(await import("../renderNative.testkit")).nativeModuleMock(),
+	TextInput: "TextInput",
+	useWindowDimensions: () => ({ width: 393, height: 852, fontScale: 1, scale: 3 }),
+}));
+vi.mock("expo-symbols", () => ({ SymbolView: "SymbolView" }));
+vi.mock("@react-navigation/native", async () => {
+	const { useEffect } = await import("react");
+	return { useFocusEffect: (effect: () => void | (() => void)) => useEffect(effect, [effect]) };
+});
+vi.mock("../ConnectionProvider", () => ({ useConnection: () => harness.connection }));
+
+const NOW = Date.now();
+const MIN = 60_000;
+const ago = (ms: number) => new Date(NOW - ms).toISOString();
+const COORDINATOR = { ref: "local:coord", threadId: "coord", title: "Get PR 2138 Test Clean" };
+
+const session = (ref: string, label: string, entries: unknown[], branch: Record<string, unknown> = {}) => ({
+	kind: "session",
+	sessionId: ref.slice(ref.indexOf(":") + 1),
+	ref,
+	label,
+	aggregate: "working",
+	counts: { active: 0, failed: 0, completed: 0, complete: true },
+	entries,
+	branch,
+});
+const delegate = (id: string, description: string, over: Record<string, unknown> = {}) => ({
+	kind: "delegate",
+	delegate: {
+		delegateId: id,
+		childSessionId: id,
+		childRef: `local:${id}`,
+		type: "delegate",
+		description,
+		branch: {},
+		...over,
+	},
+});
+const runningOne = (id: string, description: string, over: Record<string, unknown> = {}) =>
+	delegate(id, description, { runStartedAt: ago(4 * MIN), ...over });
+const failedOne = (id: string, description: string, over: Record<string, unknown> = {}) =>
+	delegate(id, description, {
+		terminal: true,
+		outcome: "failed",
+		runStartedAt: ago(20 * MIN),
+		runEndedAt: ago(6 * MIN),
+		...over,
+	});
+const doneOne = (id: string, description: string) =>
+	delegate(id, description, {
+		terminal: true,
+		outcome: "completed",
+		runStartedAt: ago(30 * MIN),
+		runEndedAt: ago(10 * MIN),
+	});
+
+/** The spec's coordinator: 2 failed (one with a running child), 32 running
+ * and 21 done, 55 in all. */
+function specTree() {
+	const race = failedOne("race", "Fix race in tree settle", {
+		reason: "go test exited 1 (3 times)",
+		child: session("local:race", "Fix race in tree settle", [runningOne("repro", "Reproduce the race")]),
+	});
+	const running = Array.from({ length: 31 }, (_, index) =>
+		runningOne(`run-${index}`, index === 0 ? "Port the drain to the new lock" : `Running task ${index}`, {
+			...(index === 0
+				? {
+						resolvedModel: "gpt-5",
+						worktree: { path: "/w", branch: "fix/drain", headSha: "abc", ahead: 1, dirty: false },
+						usage: { inputTokens: 1_000_000, outputTokens: 200_000, totalTokens: 1_200_000 },
+					}
+				: {}),
+		}),
+	);
+	const done = Array.from({ length: 21 }, (_, index) => doneOne(`done-${index}`, `Finished task ${index}`));
+	return {
+		revision: 1,
+		root: session("local:coord", COORDINATOR.title, [race, failedOne("lint", "Lint the tree"), ...running, ...done]),
+	};
+}
+
+let client: FakeClient;
+let navigation: {
+	navigate: ReturnType<typeof vi.fn>;
+	push: ReturnType<typeof vi.fn>;
+	setOptions: ReturnType<typeof vi.fn>;
+	options: NativeStackNavigationOptions[];
+};
+const trees: ReactTestRenderer[] = [];
+
+function hub(pages: (continuation: string | undefined) => unknown) {
+	const next = new FakeClient("ready");
+	next.on("evener/jobs/list", async (params) => ({ data: await pages(params.continuation) }));
+	next.on(
+		"thread/read",
+		() => ({ thread: { id: "coord", modelProvider: "anthropic/claude-opus", status: { type: "active" } } }) as never,
+	);
+	next.on("model/list", () => ({ data: [{ model: "gpt-5", displayName: "GPT-5" }] }) as never);
+	return next;
+}
+
+beforeEach(() => {
+	forgetSubagentTrees("hub-1");
+	client = hub(() => specTree());
+	harness.connection = screenConnection(client, "ready");
+	const options: NativeStackNavigationOptions[] = [];
+	navigation = { navigate: vi.fn(), push: vi.fn(), setOptions: vi.fn((next) => options.push(next)), options };
+});
+afterEach(() => {
+	for (const tree of trees.splice(0)) act(() => tree.unmount());
+});
+
+async function settle() {
+	await act(async () => {
+		for (let turn = 0; turn < 20; turn += 1) await Promise.resolve();
+		await new Promise((resolve) => setTimeout(resolve, 0));
+	});
+}
+
+async function mount(flush = true) {
+	const params = { hubId: "hub-1", ...COORDINATOR };
+	const tree = render(
+		<SubagentsScreen
+			route={{ key: "subagents", name: "Subagents", params } as never}
+			navigation={navigation as never}
+		/>,
+	);
+	trees.push(tree);
+	if (flush) await settle();
+	return tree;
+}
+
+function headerTitle(): string {
+	const title = navigation.options.findLast((options) => options.headerTitle)?.headerTitle;
+	if (typeof title !== "function") throw new Error("no header title");
+	return renderedText(render(title({ children: "", tintColor: "" }) as ReactElement));
+}
+
+/** The list's text, in order: section headers, rows' titles, folds. */
+const text = (tree: ReactTestRenderer) => renderedText(tree);
+
+it("titles itself with the count over the coordinator's title", async () => {
+	await mount();
+	expect(headerTitle()).toBe("Subagents · 55 Get PR 2138 Test Clean");
+});
+
+it("lists failed, then running, then a folded done, with chips that count the same", async () => {
+	const tree = await mount();
+	const shown = text(tree);
+	const failed = shown.indexOf("FAILED · 2");
+	const running = shown.indexOf("RUNNING · 32");
+	const done = shown.indexOf("Done · 21");
+	expect(failed).toBeGreaterThanOrEqual(0);
+	expect(running).toBeGreaterThan(failed);
+	expect(done).toBeGreaterThan(running);
+	expect(shown).not.toContain("Finished task 0");
+	for (const label of ["All, 55", "Failed, 2", "Running, 32", "Done, 21"]) expect(pressable(tree, label)).toBeDefined();
+	expect(tree.root.find((node) => node.props.accessibilityLabel === "2 failed, 32 running, 21 done")).toBeDefined();
+});
+
+it("filters to a chip's state, and offers no chip for a state with no subagents", async () => {
+	const tree = await mount();
+	act(() => pressable(tree, "Failed, 2")?.props.onPress());
+	expect(pressable(tree, "Failed, 2")?.props.accessibilityState).toMatchObject({ selected: true });
+	const shown = text(tree);
+	expect(shown).toContain("Fix race in tree settle");
+	expect(shown).not.toContain("Running task 1");
+	expect(shown).not.toContain("RUNNING");
+
+	client = hub(() => ({
+		revision: 1,
+		root: session("local:coord", COORDINATOR.title, [runningOne("solo", "Only one")]),
+	}));
+	harness.connection = screenConnection(client, "ready");
+	forgetSubagentTrees("hub-1");
+	const other = await mount();
+	expect(pressable(other, "Failed, 0")).toBeUndefined();
+	expect(pressable(other, "Running, 1")).toBeDefined();
+});
+
+it("opens the done fold in place", async () => {
+	const tree = await mount();
+	act(() => pressable(tree, "Done · 21")?.props.onPress());
+	expect(text(tree)).toContain("Finished task 0");
+});
+
+it("searches past eight subagents, filtering rows and section counts while the chips keep the whole", async () => {
+	const tree = await mount();
+	const field = tree.root.find((node) => String(node.type) === "TextInput");
+	expect(field.props.placeholder).toBe("Filter subagents");
+	act(() => field.props.onChangeText("race"));
+	const shown = text(tree);
+	expect(shown).toContain("FAILED · 1");
+	expect(shown).toContain("Fix race in tree settle");
+	expect(shown).toContain("RUNNING · 1");
+	expect(shown).toContain("Reproduce the race");
+	expect(shown).not.toContain("Lint the tree");
+	expect(pressable(tree, "All, 55")).toBeDefined();
+	expect(pressable(tree, "Clear filter")).toBeDefined();
+});
+
+it("reads a failure, a nested subagent, another model, a branch and tokens on their rows", async () => {
+	const tree = await mount();
+	const shown = text(tree);
+	expect(shown).toContain("go test exited 1 (3 times)");
+	expect(shown).toContain("from Fix race in tree settle");
+	expect(shown).toContain("GPT-5");
+	expect(shown).toContain("fix/drain");
+	expect(shown).toContain("1.2M tokens");
+	expect(pressable(tree, "Fix race in tree settle, Failed, go test exited 1 (3 times), 6 minutes")).toBeDefined();
+	expect(shown).toContain("6m");
+});
+
+// A subagent's screen is its session (ruling 30). Until PR 3's "Subagent"
+// screen lands, a row pushes it on the session route, over this list, as the
+// coordinator's own subagent rows do.
+it("opens a subagent's own session", async () => {
+	const tree = await mount();
+	act(() => pressable(tree, "Fix race in tree settle, Failed, go test exited 1 (3 times), 6 minutes")?.props.onPress());
+	expect(navigation.push).toHaveBeenCalledWith("Conversation", {
+		hubId: "hub-1",
+		ref: "local:race",
+		title: "Fix race in tree settle",
+	});
+});
+
+it("follows the coordinator when it comes into focus", async () => {
+	await mount();
+	expect(client.calls.find((call) => call.method === "thread/read")?.params).toMatchObject({
+		ref: "local:coord",
+		subscribe: true,
+		replaceSubscription: true,
+	});
+});
+
+it("follows the coordinator again when the connection comes back while it's in front", async () => {
+	const tree = await mount();
+	const follows = () =>
+		client.calls.filter(
+			(call) => call.method === "thread/read" && (call.params as { subscribe?: boolean }).subscribe === true,
+		).length;
+	expect(follows()).toBe(1);
+	const again = () =>
+		act(() =>
+			tree.update(
+				<SubagentsScreen
+					route={{ key: "subagents", name: "Subagents", params: { hubId: "hub-1", ...COORDINATOR } } as never}
+					navigation={navigation as never}
+				/>,
+			),
+		);
+	harness.connection = screenConnection(client, "reconnecting");
+	again();
+	await settle();
+	harness.connection = screenConnection(client, "ready");
+	again();
+	await settle();
+	expect(follows()).toBe(2);
+});
+
+it("follows the coordinator on a new client when the connection changes under it without leaving ready", async () => {
+	const tree = await mount();
+	const follows = (on: FakeClient) =>
+		on.calls.filter(
+			(call) => call.method === "thread/read" && (call.params as { subscribe?: boolean }).subscribe === true,
+		).length;
+	const next = hub(() => specTree());
+	harness.connection = screenConnection(next, "ready");
+	act(() =>
+		tree.update(
+			<SubagentsScreen
+				route={{ key: "subagents", name: "Subagents", params: { hubId: "hub-1", ...COORDINATOR } } as never}
+				navigation={navigation as never}
+			/>,
+		),
+	);
+	await settle();
+	expect(follows(next)).toBe(1);
+});
+
+it("shows three quiet rows until the first read answers, and never offers Retry, Refresh or Reconnect", async () => {
+	let answer: (value: unknown) => void = () => {};
+	client = new FakeClient("ready");
+	client.on("evener/jobs/list", () => new Promise((resolve) => (answer = (tree) => resolve({ data: tree }))) as never);
+	client.on("thread/read", () => ({ thread: { id: "coord", modelProvider: "", status: { type: "active" } } }) as never);
+	client.on("model/list", () => ({ data: [] }) as never);
+	harness.connection = screenConnection(client, "ready");
+	const tree = await mount();
+	expect(tree.root.findAll((node) => node.props.testID === "subagent-skeleton")).toHaveLength(3);
+	for (const word of ["Retry", "Refresh", "Reconnect"]) expect(text(tree)).not.toContain(word);
+	await act(async () => answer(specTree()));
+	await settle();
+	expect(tree.root.findAll((node) => node.props.testID === "subagent-skeleton")).toEqual([]);
+});
+
+it("says the count is partial and whose subagents are missing when a later page fails", async () => {
+	client = hub((continuation) => {
+		if (continuation === "page-2") throw new Error("offline");
+		return {
+			revision: 1,
+			root: session("local:coord", COORDINATOR.title, [runningOne("a", "First"), runningOne("b", "Second")], {
+				truncated: true,
+				continuation: "page-2",
+			}),
+		};
+	});
+	harness.connection = screenConnection(client, "ready");
+	const tree = await mount();
+	expect(headerTitle()).toBe("Subagents · 2+ Get PR 2138 Test Clean");
+	expect(text(tree)).toContain("Some subagents under “Get PR 2138 Test Clean” aren't listed.");
+});
+
+it.each([
+	[
+		"can't list its activity",
+		new WireError("unavailable", -32603, { evenerErrorInfo: "actionUnavailable" }),
+		"This session can't list its subagents.",
+	],
+	[
+		"is shut down",
+		new WireError("thread not found: coord", -32603, { evenerErrorInfo: "sessionUnavailable" }),
+		"This session is shut down, so its subagents can't be listed.",
+	],
+])("says so when the session %s, and offers nothing to press", async (_name, error, words) => {
+	client = new FakeClient("ready");
+	client.on("evener/jobs/list", () => Promise.reject(error));
+	client.on("thread/read", () => ({ thread: { id: "coord", modelProvider: "", status: { type: "active" } } }) as never);
+	client.on("model/list", () => ({ data: [] }) as never);
+	harness.connection = screenConnection(client, "ready");
+	const tree = await mount();
+	expect(text(tree)).toContain(words);
+	for (const word of ["Retry", "Refresh", "Reconnect"]) expect(text(tree)).not.toContain(word);
+});
+
+it("keeps the search field while it has words, even once the list shrinks", async () => {
+	let small = false;
+	client = hub(() =>
+		small
+			? { revision: 2, root: session("local:coord", COORDINATOR.title, [runningOne("solo", "Only one")]) }
+			: specTree(),
+	);
+	harness.connection = screenConnection(client, "ready");
+	const tree = await mount();
+	act(() => tree.root.find((node) => String(node.type) === "TextInput").props.onChangeText("race"));
+	small = true;
+	client.emitNotification({
+		method: "evener/jobs/treeUpdated",
+		params: { threadId: "coord", ref: "local:coord", revision: 2 },
+	} as never);
+	await settle();
+	expect(pressable(tree, "Clear filter")).toBeDefined();
+	act(() => pressable(tree, "Clear filter")?.props.onPress());
+	expect(text(tree)).toContain("Only one");
+});
+
+it("says why it can't list them when the read fails", async () => {
+	client = new FakeClient("ready");
+	client.on("evener/jobs/list", () => Promise.reject(new Error("boom")));
+	client.on("thread/read", () => ({ thread: { id: "coord", modelProvider: "", status: { type: "active" } } }) as never);
+	client.on("model/list", () => ({ data: [] }) as never);
+	harness.connection = screenConnection(client, "ready");
+	const tree = await mount();
+	expect(text(tree)).toContain("The subagents couldn't be listed right now.");
+});

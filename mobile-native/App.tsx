@@ -13,6 +13,7 @@ import { SafeAreaProvider } from "react-native-safe-area-context";
 import { BoardScreen } from "./src/board/BoardScreen";
 import { RowMenuSheet } from "./src/board/RowMenu";
 import { ConnectionProvider, useConnection } from "./src/ConnectionProvider";
+import { HubSheet } from "./src/hub/HubSheet";
 import { ForkScreen } from "./src/ForkScreen";
 import { HubSettingsScreen } from "./src/HubSettingsScreen";
 import { KeybindingPreferencesScreen } from "./src/KeybindingPreferencesScreen";
@@ -40,14 +41,20 @@ import {
 	HubsScreen,
 	type Routes,
 } from "./src/screens";
+import { ModelSheet } from "./src/session/ModelSheet";
+import { CommandsSheet } from "./src/session/CommandsSheet";
 import { NotesSheet } from "./src/session/NotesSheet";
+import { SessionInfoSheet } from "./src/session/SessionInfoSheet";
 import { SHEET_ROUTES } from "./src/sheet/sheetRoutes";
 import { QueueSheet } from "./src/QueueSheet";
 import { CommentSheet } from "./src/reader/CommentSheet";
 import { CommentsSheet } from "./src/reader/CommentsSheet";
+import { FilesSheet } from "./src/reader/FilesSheet";
 import { OutlineSheet } from "./src/reader/OutlineSheet";
 import { ReviewSheet } from "./src/reader/ReviewSheet";
+import { SubagentsScreen } from "./src/subagents/SubagentsScreen";
 import { ReaderScreen } from "./src/reader/ReaderScreen";
+import { replaceAnimation } from "./src/session/titleSwipe";
 import { TasksSheet } from "./src/TasksSheet";
 import { TranscriptPreferencesScreen } from "./src/TranscriptPreferencesScreen";
 import { ErrorMessage, useColors } from "./src/ui";
@@ -197,6 +204,11 @@ function Navigation() {
 						})}
 					/>
 					<Stack.Screen
+						name="Hub"
+						component={HubSheet}
+						options={{ presentation: "modal", headerShown: false }}
+					/>
+					<Stack.Screen
 						name="NewSession"
 						component={NewSessionScreen}
 						options={{ title: "New session" }}
@@ -206,11 +218,17 @@ function Navigation() {
 						component={ConversationScreen}
 						options={({ route }) => ({
 							title: route.params.title || "Conversation",
+							animationTypeForReplace: replaceAnimation(route.params),
 						})}
 					/>
 					<Stack.Screen
 						name="Reader"
 						component={ReaderScreen}
+						options={{ title: "" }}
+					/>
+					<Stack.Screen
+						name="Subagents"
+						component={SubagentsScreen}
 						options={{ title: "" }}
 					/>
 					<Stack.Group
@@ -257,6 +275,26 @@ function Navigation() {
 							name="ReviewSheet"
 							component={ReviewSheet}
 							options={SHEET_ROUTES.ReviewSheet}
+						/>
+						<Stack.Screen
+							name="SessionInfoSheet"
+							component={SessionInfoSheet}
+							options={SHEET_ROUTES.SessionInfoSheet}
+						/>
+						<Stack.Screen
+							name="ModelSheet"
+							component={ModelSheet}
+							options={SHEET_ROUTES.ModelSheet}
+						/>
+						<Stack.Screen
+							name="CommandsSheet"
+							component={CommandsSheet}
+							options={SHEET_ROUTES.CommandsSheet}
+						/>
+						<Stack.Screen
+							name="FilesSheet"
+							component={FilesSheet}
+							options={SHEET_ROUTES.FilesSheet}
 						/>
 					</Stack.Group>
 				</Stack.Navigator>

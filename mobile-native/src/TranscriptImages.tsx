@@ -23,9 +23,7 @@ function HubImage({ image, hubId }: { image: AttachmentRef; hubId: string }) {
 	const { profiles } = useConnection();
 	const origin = profiles.find((profile) => profile.id === hubId)?.origin;
 	const colors = useColors();
-	const [source, setSource] = useState<ReturnType<
-		typeof transcriptImageSource
-	> | null>(null);
+	const [source, setSource] = useState<ReturnType<typeof transcriptImageSource> | null>(null);
 	const [error, setError] = useState(false);
 	const [loading, setLoading] = useState(true);
 	useEffect(() => {
@@ -34,9 +32,7 @@ function HubImage({ image, hubId }: { image: AttachmentRef; hubId: string }) {
 		setError(false);
 		setLoading(true);
 		async function load() {
-			const token = image.src.startsWith("data:")
-				? ""
-				: await hubs.token(hubId);
+			const token = image.src.startsWith("data:") ? "" : await hubs.token(hubId);
 			const next = transcriptImageSource(image.src, origin ?? "", token);
 			if (!cancelled) setSource(next);
 		}
@@ -66,11 +62,7 @@ function HubImage({ image, hubId }: { image: AttachmentRef; hubId: string }) {
 				/>
 			) : null}
 			{loading ? (
-				<ActivityIndicator
-					accessibilityLabel="Loading image"
-					color={colors.accent}
-					style={{ position: "absolute" }}
-				/>
+				<ActivityIndicator accessibilityLabel="Loading image" color={colors.accent} style={{ position: "absolute" }} />
 			) : null}
 			{error ? <Copy muted>Image unavailable</Copy> : null}
 		</View>
@@ -79,13 +71,7 @@ function HubImage({ image, hubId }: { image: AttachmentRef; hubId: string }) {
 
 // A row of images in the transcript (spec 8.2, "Images"): 96pt thumbnails,
 // and a full-screen viewer that swipes between them.
-export function TranscriptImages({
-	images,
-	hubId,
-}: {
-	images: AttachmentRef[];
-	hubId: string;
-}) {
+export function TranscriptImages({ images, hubId }: { images: AttachmentRef[]; hubId: string }) {
 	const colors = useColors();
 	const { width } = useWindowDimensions();
 	// The page the viewer shows, or null while it's closed.
@@ -100,11 +86,7 @@ export function TranscriptImages({
 	}
 	return (
 		<>
-			<ScrollView
-				horizontal
-				showsHorizontalScrollIndicator={false}
-				contentContainerStyle={{ gap: 8 }}
-			>
+			<ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 8 }}>
 				{images.map((image, position) => (
 					<Pressable
 						key={image.id}
@@ -124,15 +106,9 @@ export function TranscriptImages({
 				))}
 			</ScrollView>
 			{page !== null ? (
-				<Modal
-					animationType="fade"
-					presentationStyle="fullScreen"
-					onRequestClose={() => setPage(null)}
-				>
+				<Modal animationType="fade" presentationStyle="fullScreen" onRequestClose={() => setPage(null)}>
 					<SafeAreaProvider>
-						<SafeAreaView
-							style={{ flex: 1, backgroundColor: colors.background }}
-						>
+						<SafeAreaView style={{ flex: 1, backgroundColor: colors.background }}>
 							<View
 								style={{
 									padding: 16,

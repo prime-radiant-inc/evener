@@ -419,7 +419,7 @@ func admitSessionRecovery(ctx context.Context, cfg hubcore.WebConfig, message ap
 			return ctx
 		}
 		rawRef, id = params.Ref, strings.TrimSpace(params.ThreadID)
-	case appwire.MethodEvenerSandboxEscalationResolve:
+	case appwire.MethodEvenerSandboxEscalationResolve, appwire.MethodEvenerDelegateStop:
 		var params appwire.SandboxEscalationResolveParams
 		if json.Unmarshal(message.Request.Params, &params) != nil {
 			return ctx

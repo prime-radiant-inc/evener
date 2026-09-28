@@ -49,4 +49,7 @@ func WireCapabilitySeams(srv *daemonserver.Server) {
 		return appwire.NotesHumanSetResponse{}, nil
 	})
 	srv.SetUrlsRemoveFunc(func(outerID, id string) (bool, error) { return false, nil })
+	srv.SetDelegateStopFunc(func(string) (appwire.DelegateStopOutcome, error) {
+		return appwire.DelegateStopNotRunning, nil
+	})
 }
