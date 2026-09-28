@@ -703,9 +703,15 @@ it("forgets a session's model once the form moves somewhere else", async () => {
   expect(store.getState().model).toBeNull();
 });
 
-it("reads the recent projects of the host a recipe names", async () => {
+it("reads the recent projects of the host a recipe names, dropping the old host's at once", async () => {
   const { store, calls } = setup();
+  const metadata = store.getState().loadMetadata();
+  answer(calls, "evener/projects/recent", null, { data: ["/home/jesse/git/evener"] });
+  answer(calls, "evener/harnesses/list", null, { data: [] });
+  await metadata;
+  expect(store.getState().projects).toEqual(["/home/jesse/git/evener"]);
   store.getState().applySetup({ host: "paradise-park", cwd: "/Users/jesse/git/evener", model: null, effort: "", overrides: {} });
+  expect(store.getState().projects).toEqual([]);
   answer(calls, "evener/host/request", "evener/projects/recent", { data: ["/Users/jesse/git/evener"] });
   answer(calls, "evener/harnesses/list", null, { data: [] });
   answer(calls, "evener/host/request", "model/list", { data: [model] });

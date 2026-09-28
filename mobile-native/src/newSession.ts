@@ -538,6 +538,8 @@ export function createNewSessionStore(
       movePlacement();
       set({
         source: setup.host,
+        // Another host's recent projects are read below; the old host's go.
+        ...(setup.host !== previous.source ? { projects: [] } : {}),
         cwd: setup.cwd,
         hostNote: null,
         model: setup.model
@@ -559,6 +561,7 @@ export function createNewSessionStore(
       pendingModelId = seed.model ?? null;
       set({
         source: seed.host,
+        ...(seed.host !== previous.source ? { projects: [] } : {}),
         cwd: seed.cwd,
         hostNote: null,
         model: null,
