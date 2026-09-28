@@ -26,6 +26,10 @@ export interface BoardRowProps {
 	dimmed?: boolean;
 	accessibilityActions?: readonly AccessibilityActionInfo[];
 	onAccessibilityAction?: (event: AccessibilityActionEvent) => void;
+	/** The row's long press, which RowMenu gives it: the row is the one
+	 * pressable a touch reaches, so the menu's press has to live on it. */
+	onLongPress?: () => void;
+	delayLongPress?: number;
 }
 
 /** Where a row's title starts: its 16pt padding, the 28pt mark column and
@@ -105,6 +109,8 @@ export function BoardRow({
 	dimmed = false,
 	accessibilityActions,
 	onAccessibilityAction,
+	onLongPress,
+	delayLongPress,
 }: BoardRowProps): ReactElement {
 	const { palette } = useColors();
 	const scale = useTextScale();
@@ -127,6 +133,8 @@ export function BoardRow({
 			accessibilityActions={accessibilityActions}
 			onAccessibilityAction={onAccessibilityAction}
 			onPress={() => onOpen(row)}
+			onLongPress={onLongPress}
+			delayLongPress={delayLongPress}
 			style={({ pressed }) => ({
 				flexDirection: "row",
 				alignItems: signal ? "flex-start" : "center",
