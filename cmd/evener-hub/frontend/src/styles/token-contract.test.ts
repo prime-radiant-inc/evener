@@ -1265,9 +1265,25 @@ const UNDECLARED_BY_DESIGN = new Set([
 ]);
 
 const DECLARED_CUSTOM_PROPERTIES = new Set<string>();
-for (const text of Object.values(STYLESHEETS)) {
-  for (const match of text.replace(COMMENT_RE, " ").matchAll(CUSTOM_PROPERTY_DECLARATION_RE)) {
+// --prose-font-size declarers, path -> declared values, collected by the
+// same comment-stripped walk that builds DECLARED_CUSTOM_PROPERTIES: the
+// reading-surface guardrail test below asserts on this map instead of
+// re-scanning the tree.
+const PROSE_PIN_DECLARERS = new Map<string, string[]>();
+for (const [path, text] of Object.entries(STYLESHEETS)) {
+  const withoutComments = text.replace(COMMENT_RE, " ");
+  for (const match of withoutComments.matchAll(CUSTOM_PROPERTY_DECLARATION_RE)) {
     DECLARED_CUSTOM_PROPERTIES.add(match[1]!);
+    if (match[1] === "--prose-font-size") {
+      const values = PROSE_PIN_DECLARERS.get(path) ?? [];
+      values.push(
+        withoutComments
+          .slice(match.index + match[0].length)
+          .split(/[;}]/)[0]!
+          .trim(),
+      );
+      PROSE_PIN_DECLARERS.set(path, values);
+    }
   }
 }
 
@@ -1298,20 +1314,18 @@ for (const [path, text] of Object.entries(STYLESHEETS)) {
 // widgets/markdown/markdown.module.css): a surface declares it ONLY to keep
 // the shared prose step where the widget's 1em fallback would otherwise
 // inherit the host's own size. Two reading surfaces own it today - the agent
-// message (.message) and the doc pane (.markdown). Every other Markdown host
+// message (.bubble) and the doc pane (.markdown). Every other Markdown host
 // composes with its host by design; a new declaration means a new reading
 // surface, and that decision belongs in this list, not in a module quietly.
-// Comments are stripped first: markdown.module.css's own header explains the
-// hook by name without declaring it.
-test("--prose-font-size is declared only by the reading-surface hosts", () => {
-  const uncommented = (text: string) => text.replace(/\/\*[\s\S]*?\*\//g, "");
-  const declarers = Object.keys(STYLESHEETS)
-    .filter((path) => /(^|\n)\s*--prose-font-size\s*:/.test(uncommented(STYLESHEETS[path]!)))
-    .sort();
-  expect(declarers).toEqual([
+// The value assertion keeps "who" and "what" in one guard.
+test("--prose-font-size is declared only by reading-surface hosts, at the prose step", () => {
+  expect([...PROSE_PIN_DECLARERS.keys()].sort()).toEqual([
     "panes/doc/docpane.module.css",
     "panes/session/transcript/messages/agentmessageitem.module.css",
   ]);
+  for (const values of PROSE_PIN_DECLARERS.values()) {
+    expect(values).toEqual(["var(--font-size-prose)"]);
+  }
 });
 
 test("the declared set spans module-local custom properties, not just tokens.css", () => {

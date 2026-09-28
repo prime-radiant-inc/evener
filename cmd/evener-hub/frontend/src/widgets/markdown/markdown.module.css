@@ -10,7 +10,8 @@
  * font-size applies and dense chrome never needs a pin. A true reading
  * surface (agent messages, the doc pane) pins
  * --prose-font-size: var(--font-size-prose) on an ancestor to keep the 18px
- * reading step. */
+ * reading step. Body text composes with the host; headings and GFM tables
+ * stay on the fixed document ramp below regardless - the known boundary. */
 .root {
   color: var(--markdown-ink, var(--ink-hi));
   /* Long unbreakable tokens (paths, URLs) wrap at any point rather than

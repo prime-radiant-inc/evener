@@ -178,9 +178,10 @@ test("takes its body ink from --markdown-ink, defaulting to --ink-hi", () => {
 // --- agent prose is the transcript's hero (kata 7pa0) -----------------------
 // jsdom computes no cascade, so - like the ink assertion above - these read
 // the stylesheet's own source rather than a rendered element's computed
-// style. AgentMessageItem.test.tsx asserts the other half of this contract:
-// that streamingtext.module.css exposes the identical hook with the
-// identical fallback, so the live and settled paths can never disagree.
+// style. streamingtext.module.css exposes the same --prose-font-size hook
+// with its own fallback (the body step, not 1em); agent messages no longer
+// depend on that pairing for size parity, since their live and settled
+// paths are both this same Markdown component.
 
 // The root composes with its host: a host's own font-size applies unless the
 // surface pins --prose-font-size (reading surfaces pin it to the prose step).

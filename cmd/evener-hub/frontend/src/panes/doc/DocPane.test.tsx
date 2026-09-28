@@ -46,10 +46,12 @@ afterEach(() => {
 });
 
 // The doc pane is a reading surface: the Markdown widget composes with its
-// host (1em fallback), so the pane must pin the prose step on its own host
-// element or its documents would render at the ambient body step. jsdom
-// computes no cascade, so this reads the stylesheet's own source.
-test("markdown documents read at the prose step, pinned on the pane's own host element", () => {
+// host, so the pane pins the prose step on its own host element or its
+// documents would render at the ambient body step (see the .markdown rule
+// comment in docpane.module.css). jsdom computes no cascade, so this reads
+// the stylesheet's own source. This pins BODY text - headings and tables
+// keep the widget's fixed ramp (see widgets/markdown).
+test("the doc pane's markdown body text reads at the prose step, pinned on the pane's own host element", () => {
   const css = readModuleCss(import.meta.url, "docpane.module.css").replace(/\/\*[\s\S]*?\*\//g, "");
   expect(css.match(/--prose-font-size/g)).toHaveLength(1);
   expect(css).toMatch(/\.markdown\s*\{[^}]*--prose-font-size:\s*var\(--font-size-prose\);/);

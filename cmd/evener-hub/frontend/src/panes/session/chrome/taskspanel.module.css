@@ -194,9 +194,10 @@
 
 /* The prompt's Markdown composes with its host (see widgets/markdown): the
  * caption font-size below sizes the "Prompt" label, the one-line preview,
- * and the expanded body together, matching the meta strip and timestamps
- * around them. No --prose-font-size pin is needed - the widget's 1em
- * fallback inherits this size. */
+ * and the expanded body's text together, matching the meta strip and
+ * timestamps around them. No --prose-font-size pin is needed - the widget's
+ * 1em fallback inherits this size. Headings and GFM tables inside the
+ * markdown keep the widget's fixed ramp steps (its known boundary). */
 .promptDetails {
   font-family: var(--font-sans);
   font-size: var(--font-size-caption);

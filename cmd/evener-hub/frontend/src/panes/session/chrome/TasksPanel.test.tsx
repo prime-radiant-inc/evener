@@ -491,20 +491,17 @@ test("the prompt disclosure summary reaches the tap floor on a coarse pointer", 
 
 // jsdom computes no cascade, so the caption step is asserted against the
 // stylesheet's own source - readModuleCss/topRuleBlock from styles/cssBlock,
-// the technique the tap-floor test above and agentMessageSize.contract.test.ts
-// use - with comments stripped so an in-rule comment can never satisfy or
-// defeat an assertion. The Markdown widget composes with its host (its root
-// falls back to 1em), so the disclosure needs no hook: the caption font-size
-// on .promptDetails sizes the label, the preview, and the expanded body
-// together. The rationale lives in the .promptDetails rule comment in
-// taskspanel.module.css.
-test("the prompt disclosure renders its markdown at the caption step, not prose size", () => {
-  const css = readModuleCss(import.meta.url, "taskspanel.module.css");
-  const uncommented = css.replace(/\/\*[\s\S]*?\*\//g, "");
+// the technique the tap-floor test above uses - comments stripped once up
+// front so an in-rule comment can never satisfy or defeat an assertion. The
+// sizing rationale lives in the .promptDetails rule comment in
+// taskspanel.module.css; this pins BODY text - headings and tables keep the
+// widget's fixed ramp (see widgets/markdown).
+test("the prompt disclosure renders its markdown body text at the caption step, not prose size", () => {
+  const uncommented = readModuleCss(import.meta.url, "taskspanel.module.css").replace(/\/\*[\s\S]*?\*\//g, "");
   expect(uncommented).not.toContain("--prose-font-size");
-  const details = topRuleBlock(css, ".promptDetails").replace(/\/\*[\s\S]*?\*\//g, "");
+  const details = topRuleBlock(uncommented, ".promptDetails");
   expect(details).toContain("font-size: var(--font-size-caption)");
-  const body = topRuleBlock(css, ".promptBody").replace(/\/\*[\s\S]*?\*\//g, "");
+  const body = topRuleBlock(uncommented, ".promptBody");
   expect(body, "the caption step comes from .promptDetails; the body wrapper re-declares nothing").not.toMatch(
     /(^|[;{\s])font-size\s*:/m,
   );

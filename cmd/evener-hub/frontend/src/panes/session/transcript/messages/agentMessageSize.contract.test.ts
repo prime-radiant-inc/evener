@@ -19,12 +19,11 @@ const css = readFileSync(join(here, "agentmessageitem.module.css"), "utf8");
 const uncommented = css.replace(/\/\*[\s\S]*?\*\//g, "");
 
 test("agent prose is not size-promoted above body text", () => {
-  // The Markdown root composes with its host (1em fallback), so the message
-  // itself pins the shared reading step - without the pin agent prose would
-  // fall to the ambient body step, and any step ABOVE prose (the pane-title
-  // bump this file's header documents) remains forbidden.
+  // The pin keeps agent prose at the shared reading step (see the .bubble
+  // rule comment in agentmessageitem.module.css); steps above prose - the
+  // pane-title bump this file's header documents - remain forbidden.
   expect(uncommented.match(/--prose-font-size/g)).toHaveLength(1);
-  expect(uncommented).toMatch(/\.message\s*\{[^}]*--prose-font-size:\s*var\(--font-size-prose\);/);
+  expect(uncommented).toMatch(/\.bubble\s*\{[^}]*--prose-font-size:\s*var\(--font-size-prose\);/);
 });
 
 test("prose typography stays with Markdown/StreamingText: the .message wrapper declares no font-size of its own", () => {

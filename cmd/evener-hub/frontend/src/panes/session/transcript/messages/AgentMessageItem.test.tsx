@@ -299,11 +299,11 @@ test("a live closer carries no terminal class - the wash is settled-only", () =>
 // file in isolation: it's that all three agree, which is exactly what keeps
 // a message from visibly resizing the instant it settles.
 
-test("sets --prose-font-size once, on the .message ancestor the live and settled children share", () => {
+test("sets --prose-font-size once, on the .bubble the live and settled prose share", () => {
   const here = dirname(fileURLToPath(import.meta.url));
   const css = readFileSync(join(here, "agentmessageitem.module.css"), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
   expect(css.match(/--prose-font-size/g)).toHaveLength(1);
-  expect(css).toMatch(/\.message\s*\{[^}]*--prose-font-size:\s*var\(--font-size-prose\);/);
+  expect(css).toMatch(/\.bubble\s*\{[^}]*--prose-font-size:\s*var\(--font-size-prose\);/);
 });
 
 test("the agent message keeps .message a bare layout row - the bubble treatment lives on .bubble, not the row", () => {
