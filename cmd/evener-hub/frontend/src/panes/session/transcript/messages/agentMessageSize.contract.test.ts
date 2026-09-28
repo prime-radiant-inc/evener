@@ -19,11 +19,17 @@ const css = readFileSync(join(here, "agentmessageitem.module.css"), "utf8");
 const uncommented = css.replace(/\/\*[\s\S]*?\*\//g, "");
 
 test("agent prose is not size-promoted above body text", () => {
-  expect(css).not.toContain("--prose-font-size");
+  // The pin keeps agent prose at the shared reading step (see the .bubble
+  // rule comment in agentmessageitem.module.css); steps above prose - the
+  // pane-title bump this file's header documents - remain forbidden.
+  expect(uncommented.match(/--prose-font-size/g)).toHaveLength(1);
+  expect(uncommented).toMatch(/\.bubble\s*\{[^}]*--prose-font-size:\s*var\(--font-size-prose\);/);
 });
 
 test("prose typography stays with Markdown/StreamingText: the .message wrapper declares no font-size of its own", () => {
-  expect(uncommented).not.toMatch(/\.message\s*\{[^}]*font-size\s*:/);
+  // The [;{\s] anchor keeps the check on real declarations: the
+  // --prose-font-size pin above must not trip it.
+  expect(uncommented).not.toMatch(/\.message\s*\{[^}]*[;{\s]font-size\s*:/);
 });
 
 test("the speaker header's name is body-size like the prose it introduces; only the meta drops to the ui size", () => {
