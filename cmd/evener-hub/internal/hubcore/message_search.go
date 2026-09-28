@@ -247,7 +247,14 @@ func (x *MessageSearch) Refresh(ctx context.Context, sessions []MessageSearchSes
 		listed[session.ID] = true
 		info, err := os.Stat(session.TranscriptPath)
 		if err != nil {
-			// No transcript yet, or not any more: nothing to search.
+			if !os.IsNotExist(err) {
+				// A transient failure (permissions, a flaky disk): report it
+				// and try again next refresh, but keep what is already
+				// indexed rather than reading a mere stat error as deletion.
+				failures = append(failures, MessageSearchFailure{SessionID: session.ID, Err: err})
+				continue
+			}
+			// No transcript any more: nothing to search.
 			if _, ok := indexed[session.ID]; ok {
 				if err := x.Forget(ctx, session.ID); err != nil {
 					return failures, err

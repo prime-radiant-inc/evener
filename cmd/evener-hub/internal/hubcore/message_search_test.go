@@ -386,6 +386,42 @@ func TestMessageSearchRecordsAnUnreadableTranscriptOnce(t *testing.T) {
 	}
 }
 
+// A transient stat failure (permissions, a flaky disk) is not the same as a
+// deleted transcript: it must not forget the session's already-indexed
+// messages, only report the failure and try again next refresh.
+func TestMessageSearchATransientStatFailureDoesNotForgetTheSession(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "sessions")
+	path := filepath.Join(dir, "s1.transcript.jsonl")
+	writeTestTranscript(t, path, "s1", settleTurns()...)
+	index := openTestMessageSearch(t)
+	if _, err := index.Refresh(context.Background(), []MessageSearchSession{{ID: "s1", TranscriptPath: path}}); err != nil {
+		t.Fatal(err)
+	}
+
+	// A path whose parent component is a plain file, not a directory: os.Stat
+	// fails with "not a directory" rather than os.ErrNotExist, standing in for
+	// any stat failure that is not "the transcript is gone."
+	notADir := filepath.Join(t.TempDir(), "notadir")
+	if err := os.WriteFile(notADir, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	unreachable := filepath.Join(notADir, "sub", "s1.transcript.jsonl")
+	if _, err := os.Stat(unreachable); os.IsNotExist(err) {
+		t.Fatalf("the fixture's stat error is os.ErrNotExist, want another failure: %v", err)
+	}
+
+	failures, err := index.Refresh(context.Background(), []MessageSearchSession{{ID: "s1", TranscriptPath: unreachable}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(failures) != 1 || failures[0].SessionID != "s1" {
+		t.Fatalf("failures = %+v, want one for the unreachable transcript", failures)
+	}
+	if matches, _ := index.Match(context.Background(), "settle", 3); matches["s1"].Count != 2 {
+		t.Fatalf("matches = %+v, want the session's earlier messages kept", matches)
+	}
+}
+
 // A session the past index no longer lists, and one Forget names, leave the
 // index at once: their words are not found.
 func TestMessageSearchForgetsSessions(t *testing.T) {
