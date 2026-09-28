@@ -577,23 +577,18 @@ func (c *delegateTreeController) FailCommittedRestart(lease delegateLease, failu
 // the error: the failure path joins the append error onto that sentinel, and
 // errors.Is walks a join, so no inspection of the error can tell them apart.
 func (c *delegateTreeController) finishStoppedStartLocked(lease delegateLease, live *delegateLiveState) (delegateMutationPlans, context.CancelFunc, delegateCommittedStartFailureDisposition, error) {
-	packet := delegateStoppedTerminalPacket()
-	deliveryID := delegateDeliveryID(lease.delegateID, lease.generation)
-	finish := delegateRunFinishedEvent(
-		lease,
-		delegatestore.OutcomeStopped,
-		delegatestore.DispositionTerminalError,
-		"stopped_by_parent",
-		c.now(),
-		deliveryID,
-		&packet,
-	)
-	if _, finishErr := c.appendLocked(finish); finishErr != nil {
-		live.recoveryRequired = true
-		plans := delegateMutationPlans{updates: []delegateUpdatePlan{c.capturedPlanLocked(lease.delegateID)}}
-		return plans, nil, delegateCommittedStartFailureAppendFailed, errors.Join(errDelegateTargetBusy, finishErr)
+	decision := c.reduceStoppedGenerationFinishIntent(finishIntent{
+		lease: lease,
+		latch: finishLatchRecoveryOnly,
+	})
+	// Latch the caller's authenticated live state on a failed append; the
+	// reduce step carries no controller state.
+	decision.latchLive = live
+	plans, cancel, finishErr := c.executeFinishDecisionLocked(decision)
+	if finishErr != nil {
+		failurePlans := delegateMutationPlans{updates: []delegateUpdatePlan{c.capturedPlanLocked(lease.delegateID)}}
+		return failurePlans, nil, delegateCommittedStartFailureAppendFailed, errors.Join(errDelegateTargetBusy, finishErr)
 	}
-	plans, cancel := c.generationFinishedPlansLocked(lease, deliveryID)
 	return plans, cancel, delegateCommittedStartFailureStopWon, errDelegateTargetBusy
 }
 
