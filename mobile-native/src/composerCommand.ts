@@ -82,6 +82,15 @@ export function builtinComposerItems(session: ComposerCommandSession) {
 
 export class CommandArgumentError extends Error {}
 
+/** Starts an aside and names the session it opens, for /aside and the
+ * Session menu's Ask aside alike. */
+export async function startAside(
+  service: ConversationForkActions,
+): Promise<{ ref: string; title: string }> {
+  const { thread } = await service.forkAside();
+  return { ref: thread.evener.ref, title: thread.name || thread.preview || "Aside" };
+}
+
 interface CommandContext {
   isCurrent(): boolean;
   local(command: LocalComposerCommand): Promise<void>;
@@ -162,12 +171,8 @@ export async function submitComposerCommand(
     };
   } else if (id === "aside") {
     operation = async () => {
-      const { thread } = await service.forkAside();
-      afterSubmit = () =>
-        context.openAside(
-          thread.evener.ref,
-          thread.name || thread.preview || "Aside",
-        );
+      const aside = await startAside(service);
+      afterSubmit = () => context.openAside(aside.ref, aside.title);
     };
   } else if (id === "steer" || id === "queue" || id === "drain-as-steer") {
     requireControl();

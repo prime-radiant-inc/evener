@@ -1,9 +1,11 @@
 package execenv
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"syscall"
 
 	"github.com/spf13/afero"
 )
@@ -57,7 +59,9 @@ func (e *LocalExecutionEnvironment) WriteFileRaw(path string, data []byte, perm 
 }
 
 // RemovePath deletes path best-effort (a missing target is not an error), but an
-// out-of-policy target is a denial.
+// out-of-policy target is a denial. Any other remove failure — permission, a
+// read-only filesystem, a nonempty directory — is surfaced, so a delete that did
+// not happen is never reported as success (issue #2376).
 func (e *LocalExecutionEnvironment) RemovePath(path string) error {
 	if sfs := e.sandbox(); sfs != nil {
 		defer sfs.release()
@@ -72,8 +76,18 @@ func (e *LocalExecutionEnvironment) RemovePath(path string) error {
 	if err != nil {
 		return err
 	}
-	_ = e.filesystem().Remove(abs)
+	if err := e.filesystem().Remove(abs); err != nil && !isAbsentRemove(err) {
+		return fmt.Errorf("remove %s: %w", path, err)
+	}
 	return nil
+}
+
+// isAbsentRemove reports whether a remove error means the target is already
+// absent: ENOENT (missing target or parent) or ENOTDIR (an ancestor is not a
+// directory). Those are the only remove failures a best-effort delete may treat
+// as a no-op success; every other failure must propagate (issue #2376).
+func isAbsentRemove(err error) bool {
+	return errors.Is(err, os.ErrNotExist) || errors.Is(err, syscall.ENOTDIR)
 }
 
 // RenamePath moves oldPath to newPath, creating newPath's parents. Both endpoints

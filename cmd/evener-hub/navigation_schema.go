@@ -425,6 +425,7 @@ func navigationSessionValueValid(value hubapi.NavigationSessionSummary) bool {
 		utf8.RuneCountInString(value.Branch) > maxNavigationLabelRunes || len(value.Children) != 0 ||
 		!navigationSchemaIdentity(value.ApprovalTool, true) ||
 		utf8.RuneCountInString(value.ApprovalTarget) > maxNavigationLabelRunes ||
+		appwire.Excerpt(value.LastMessage, appwire.MaxMessageExcerptRunes) != value.LastMessage ||
 		!navigationIntCount(value.ClusterCount) || !navigationIntCount(value.MoreSubagents) ||
 		!navigationIntCount(value.OmittedDescendants) || !navigationIntCount(value.OmittedWatches) ||
 		!navigationIntCount(value.OmittedArmedWatches) || value.OmittedArmedWatches > value.OmittedWatches {
@@ -447,7 +448,20 @@ func navigationSessionValueValid(value hubapi.NavigationSessionSummary) bool {
 	}
 	return (value.Tasks == nil || navigationTaskProgressValid(*value.Tasks)) &&
 		(value.Subagents == nil || navigationSubagentTallyValid(*value.Subagents)) &&
-		(value.Question == nil || navigationQuestionValid(*value.Question))
+		(value.Question == nil || navigationQuestionValid(*value.Question)) &&
+		(value.Failure == nil || navigationFailureValid(*value.Failure))
+}
+
+// navigationFailureValid mirrors the web codec's failureValue: something to
+// say (a title or a cause kind), cause identities within the identity bound,
+// and a safe non-negative status. The hub also holds the title to be an
+// excerpt at its bound, which the projector's cut always yields. The projector
+// drops a failure this refuses rather than failing the whole resource.
+func navigationFailureValid(failure hubapi.NavigationFailure) bool {
+	return (failure.Title != "" || failure.CauseKind != "") &&
+		appwire.Excerpt(failure.Title, appwire.MaxFailureTitleRunes) == failure.Title &&
+		navigationSchemaIdentity(failure.CauseKind, true) && navigationSchemaIdentity(failure.Provider, true) &&
+		navigationIntCount(failure.Status)
 }
 
 // navigationQuestionValid mirrors the web codec's questionValue: text that is

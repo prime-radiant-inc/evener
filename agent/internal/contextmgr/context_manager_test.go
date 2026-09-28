@@ -644,6 +644,141 @@ func TestCheckpoint_TracksModifiedFiles(t *testing.T) {
 	}
 }
 
+// A write is only a completed-work fact when its paired result confirmed
+// success. This asserts the extracted status before rendering.
+func TestCheckpoint_WriteStatus_PairsCallsWithResults(t *testing.T) {
+	t.Parallel()
+	history := []schema.Turn{
+		{Kind: schema.TurnUserInput, Message: llm.User("prompt")},
+		{Kind: schema.TurnAssistant, Message: assistantWithToolCall("w1", "write_file", `{"file_path":"confirmed.go"}`)},
+		{Kind: schema.TurnTool, Message: llm.ToolResultNamed("w1", "write_file", "OK", false)},
+		{Kind: schema.TurnAssistant, Message: assistantWithToolCall("w2", "edit_file", `{"file_path":"failed.go"}`)},
+		{Kind: schema.TurnTool, Message: llm.ToolResultNamed("w2", "edit_file", "permission denied", true)},
+		{Kind: schema.TurnAssistant, Message: assistantWithToolCall("w3", "apply_patch", `{"patch":"*** Begin Patch\n*** Update File: pending.go\n*** End Patch"}`)},
+		// No result for w3: the attempt stays unconfirmed, never completed.
+		{Kind: schema.TurnAssistant, Message: llm.Assistant("done")},
+	}
+
+	data := collectCheckpointData(history, len(history), "communicate")
+
+	wants := map[string]checkpointWriteStatus{
+		"confirmed.go": writeConfirmed,
+		"failed.go":    writeFailed,
+		"pending.go":   writeUnconfirmed,
+	}
+	for path, want := range wants {
+		got, ok := data.fileWrites[path]
+		if !ok || got != want {
+			t.Fatalf("fileWrites[%q] = %v (present=%v), want %v", path, got, ok, want)
+		}
+	}
+}
+
+// A confirmed write is sticky: a later failed or unconfirmed attempt on the
+// same path must not downgrade it out of "Files modified:", while a path whose
+// first attempt failed is confirmed once a later attempt succeeds.
+func TestCheckpoint_ConfirmedWriteNotDowngradedByLaterAttempt(t *testing.T) {
+	t.Parallel()
+	history := []schema.Turn{
+		{Kind: schema.TurnUserInput, Message: llm.User("prompt")},
+		// confirmed.go succeeds, then a later edit of the same path fails.
+		{Kind: schema.TurnAssistant, Message: assistantWithToolCall("w1", "write_file", `{"file_path":"confirmed.go"}`)},
+		{Kind: schema.TurnTool, Message: llm.ToolResultNamed("w1", "write_file", "OK", false)},
+		{Kind: schema.TurnAssistant, Message: assistantWithToolCall("w2", "edit_file", `{"file_path":"confirmed.go"}`)},
+		{Kind: schema.TurnTool, Message: llm.ToolResultNamed("w2", "edit_file", "denied", true)},
+		// retried.go fails, then a later attempt succeeds.
+		{Kind: schema.TurnAssistant, Message: assistantWithToolCall("w3", "write_file", `{"file_path":"retried.go"}`)},
+		{Kind: schema.TurnTool, Message: llm.ToolResultNamed("w3", "write_file", "denied", true)},
+		{Kind: schema.TurnAssistant, Message: assistantWithToolCall("w4", "write_file", `{"file_path":"retried.go"}`)},
+		{Kind: schema.TurnTool, Message: llm.ToolResultNamed("w4", "write_file", "OK", false)},
+		{Kind: schema.TurnAssistant, Message: llm.Assistant("done")},
+	}
+
+	result := checkpoint(history, 1, nil, "communicate")
+	line := checkpointModifiedFilesLine(result[0].Message.Text())
+	for _, path := range []string{"confirmed.go", "retried.go"} {
+		if !strings.Contains(line, path) {
+			t.Fatalf("confirmed write %q missing from Files modified: %q", path, line)
+		}
+	}
+}
+
+// A rejected or unanswered terminal communicate is not a completed agent
+// reply; only an accepted result belongs in the extracted conversation.
+func TestCheckpoint_CommunicateOnlyRecordsAcceptedReplies(t *testing.T) {
+	t.Parallel()
+	history := []schema.Turn{
+		{Kind: schema.TurnUserInput, Message: llm.User("prompt")},
+		{Kind: schema.TurnAssistant, Message: assistantWithToolCall("c1", "communicate", `{"message":"rejected reply","end_turn":true}`)},
+		{Kind: schema.TurnTool, Message: llm.ToolResultNamed("c1", "communicate", "dispatch failed", true)},
+		{Kind: schema.TurnAssistant, Message: assistantWithToolCall("c2", "communicate", `{"message":"accepted reply","end_turn":true}`)},
+		{Kind: schema.TurnTool, Message: llm.ToolResultNamed("c2", "communicate", "delivered", false)},
+		{Kind: schema.TurnAssistant, Message: assistantWithToolCall("c3", "communicate", `{"message":"unanswered reply","end_turn":true}`)},
+		{Kind: schema.TurnAssistant, Message: llm.Assistant("still working")},
+	}
+
+	data := collectCheckpointData(history, len(history), "communicate")
+
+	var agents []string
+	for _, e := range data.conversation {
+		if e.Role == "agent" {
+			agents = append(agents, e.Text)
+		}
+	}
+	if len(agents) != 1 || agents[0] != "accepted reply" {
+		t.Fatalf("agent conversation = %v, want only the accepted reply", agents)
+	}
+}
+
+// A failed or result-missing write must never render on the "Files modified:"
+// line, and re-compacting a checkpoint must not upgrade it to completed work.
+// This pins the rendered completion contract the audit finding faulted.
+func TestCheckpoint_AttemptedWritesNeverUpgradeAcrossCompactions(t *testing.T) {
+	t.Parallel()
+	history := []schema.Turn{
+		{Kind: schema.TurnUserInput, Message: llm.User("prompt")},
+		{Kind: schema.TurnAssistant, Message: assistantWithToolCall("w1", "write_file", `{"file_path":"good.go"}`)},
+		{Kind: schema.TurnTool, Message: llm.ToolResultNamed("w1", "write_file", "OK", false)},
+		{Kind: schema.TurnAssistant, Message: assistantWithToolCall("w2", "write_file", `{"file_path":"failed.go"}`)},
+		{Kind: schema.TurnTool, Message: llm.ToolResultNamed("w2", "write_file", "denied", true)},
+		{Kind: schema.TurnAssistant, Message: assistantWithToolCall("w3", "write_file", `{"file_path":"pending.go"}`)},
+		{Kind: schema.TurnAssistant, Message: llm.Assistant("done")},
+	}
+
+	attempted := []string{"failed.go", "pending.go"}
+
+	first := checkpoint(history, 1, nil, "communicate")
+	firstLine := checkpointModifiedFilesLine(first[0].Message.Text())
+	if !strings.Contains(firstLine, "good.go") {
+		t.Fatalf("first checkpoint should report the confirmed write: %q", firstLine)
+	}
+	for _, path := range attempted {
+		if strings.Contains(firstLine, path) {
+			t.Fatalf("attempted write %q reported as modified in first checkpoint: %q", path, firstLine)
+		}
+	}
+
+	// Re-compacting the checkpoint must not upgrade an attempted write either.
+	second := checkpoint(first, 0, nil, "communicate")
+	secondLine := checkpointModifiedFilesLine(second[0].Message.Text())
+	for _, path := range attempted {
+		if strings.Contains(secondLine, path) {
+			t.Fatalf("attempted write %q upgraded to modified after re-compaction: %q", path, secondLine)
+		}
+	}
+}
+
+// checkpointModifiedFilesLine returns the rendered "Files modified:" line, or
+// "" when the checkpoint reports no confirmed writes.
+func checkpointModifiedFilesLine(text string) string {
+	for line := range strings.SplitSeq(text, "\n") {
+		if rest, ok := strings.CutPrefix(line, "Files modified:"); ok {
+			return rest
+		}
+	}
+	return ""
+}
+
 func TestCheckpoint_SummarizesActions(t *testing.T) {
 	history := []schema.Turn{
 		{Kind: schema.TurnUserInput, Message: llm.User("task")},
@@ -2780,6 +2915,185 @@ func TestCheckpoint_WorkingNotes_ShedOldestFirst(t *testing.T) {
 	lastNote := notes[len(notes)-1]
 	if !strings.Contains(lastNote, "Note 149:") {
 		t.Fatalf("latest note should be preserved, got: %q", lastNote)
+	}
+}
+
+func TestCheckpoint_ShedOrder_PreservesOriginalTask(t *testing.T) {
+	// The first conversation entry is the session's original task statement.
+	// Budget shedding must keep it and drop the oldest entry after it, so a
+	// handoff under pressure never loses what the user asked for.
+	original := "ORIGINAL TASK: " + strings.Repeat("t", 400)
+	middle := "middle chatter " + strings.Repeat("m", 400)
+	recent := "recent " + strings.Repeat("r", 400)
+	data := checkpointData{
+		conversation: []checkpointConversationEntry{
+			{Role: "user", Text: original},
+			{Role: "agent", Text: middle},
+			{Role: "agent", Text: recent},
+		},
+	}
+
+	// maxChars 100 floors the variable budget to 1000: enough for the original
+	// task plus the newest entry once the middle entry is shed.
+	cp := formatCheckpoint(data, nil, 100)
+
+	if !strings.Contains(cp, original) {
+		t.Fatalf("the original task (conversation[0]) must survive shedding:\n%s", cp)
+	}
+	if strings.Contains(cp, middle) {
+		t.Fatalf("the oldest entry after the original task should be shed first:\n%s", cp)
+	}
+	if !strings.Contains(cp, recent) {
+		t.Fatalf("the newest conversation entry should survive:\n%s", cp)
+	}
+}
+
+func TestCheckpoint_ShedOrder_PinsEarliestUserEntry(t *testing.T) {
+	// The pin targets the earliest user entry, not index 0: an agent-led prefix
+	// must not redirect the pin onto chatter and shed the original task.
+	lead := "leading agent chatter " + strings.Repeat("l", 400)
+	original := "ORIGINAL TASK: " + strings.Repeat("t", 400)
+	recent := "recent " + strings.Repeat("r", 400)
+	data := checkpointData{
+		conversation: []checkpointConversationEntry{
+			{Role: "agent", Text: lead},
+			{Role: "user", Text: original},
+			{Role: "agent", Text: recent},
+		},
+	}
+
+	cp := formatCheckpoint(data, nil, 100)
+
+	if !strings.Contains(cp, original) {
+		t.Fatalf("the earliest user entry (the original task) must survive shedding:\n%s", cp)
+	}
+	if strings.Contains(cp, lead) {
+		t.Fatalf("the agent entry before the original task should be shed first:\n%s", cp)
+	}
+}
+
+func TestCheckpoint_ShedOrder_NoUserEntryShedsOldestFirst(t *testing.T) {
+	// With no user entry there is no original task to pin; shedding must keep its
+	// pre-existing oldest-first order rather than protecting an arbitrary entry.
+	old := "OLD AGENT " + strings.Repeat("a", 800)
+	newest := "NEW AGENT " + strings.Repeat("b", 800)
+	data := checkpointData{
+		conversation: []checkpointConversationEntry{
+			{Role: "agent", Text: old},
+			{Role: "agent", Text: newest},
+		},
+	}
+
+	cp := formatCheckpoint(data, nil, 100)
+
+	if strings.Contains(cp, old) {
+		t.Fatalf("with no user entry the oldest agent entry should be shed:\n%s", cp)
+	}
+	if !strings.Contains(cp, newest) {
+		t.Fatalf("with no user entry the newest agent entry should survive:\n%s", cp)
+	}
+}
+
+func TestCheckpoint_ShedOrder_BoundsOversizedOriginalTask(t *testing.T) {
+	// A pinned original task too large to ever fit must be trimmed, not left to
+	// defeat the checkpoint's size cap and not dropped entirely.
+	original := "ORIGINAL TASK: " + strings.Repeat("t", 5000)
+	data := checkpointData{
+		conversation: []checkpointConversationEntry{
+			{Role: "user", Text: original},
+			{Role: "agent", Text: "small follow-up"},
+		},
+	}
+
+	const maxChars = 1200
+	cp := formatCheckpoint(data, nil, maxChars)
+
+	if len(cp) > maxChars {
+		t.Fatalf("checkpoint length %d exceeds maxChars %d", len(cp), maxChars)
+	}
+	if !strings.Contains(cp, "ORIGINAL TASK: "+strings.Repeat("t", 900)) {
+		t.Fatalf("the head of the original task should survive trimming:\n%s", cp)
+	}
+	if !strings.Contains(cp, "...") {
+		t.Fatalf("the trimmed original task should carry an ellipsis:\n%s", cp)
+	}
+}
+
+func TestCheckpoint_ShedOrder_ShedsNotesToFitBudget(t *testing.T) {
+	// Working notes carry the lowest priority: when the conversation and notes
+	// together exceed the budget, notes are shed before the original task, which
+	// survives intact.
+	original := "ORIGINAL TASK: " + strings.Repeat("t", 300)
+	data := checkpointData{
+		conversation: []checkpointConversationEntry{{Role: "user", Text: original}},
+		workingNotes: []string{
+			"NOTE-A " + strings.Repeat("a", 500),
+			"NOTE-B " + strings.Repeat("b", 500),
+			"NOTE-C " + strings.Repeat("c", 500),
+		},
+	}
+
+	const maxChars = 1200
+	cp := formatCheckpoint(data, nil, maxChars)
+
+	if len(cp) > maxChars {
+		t.Fatalf("checkpoint length %d exceeds maxChars %d", len(cp), maxChars)
+	}
+	if !strings.Contains(cp, original) {
+		t.Fatalf("the original task should survive intact:\n%s", cp)
+	}
+	if !strings.Contains(cp, "NOTE-C") {
+		t.Fatalf("the newest working note should survive:\n%s", cp)
+	}
+	if strings.Contains(cp, "NOTE-A") {
+		t.Fatalf("the oldest working note should be shed first:\n%s", cp)
+	}
+}
+
+func TestCheckpoint_ShedOrder_SkipsWhitespaceUserEntry(t *testing.T) {
+	// A whitespace-only user turn must not become the pinned original task and
+	// redirect shedding onto the real one.
+	original := "ORIGINAL TASK: " + strings.Repeat("t", 400)
+	chatter := "chatter " + strings.Repeat("c", 400)
+	recent := "recent " + strings.Repeat("r", 400)
+	data := checkpointData{
+		conversation: []checkpointConversationEntry{
+			{Role: "user", Text: "   "},
+			{Role: "user", Text: original},
+			{Role: "agent", Text: chatter},
+			{Role: "agent", Text: recent},
+		},
+	}
+
+	cp := formatCheckpoint(data, nil, 100)
+
+	if !strings.Contains(cp, original) {
+		t.Fatalf("the real original task must survive a leading whitespace entry:\n%s", cp)
+	}
+	if strings.Contains(cp, chatter) {
+		t.Fatalf("the oldest entry after the original task should be shed:\n%s", cp)
+	}
+}
+
+func TestCheckpoint_ShedOrder_DropsOversizedWorkingNote(t *testing.T) {
+	// A lone working note larger than the budget is shed like any other note
+	// rather than allowed to blow the size cap: notes have the lowest priority.
+	data := checkpointData{
+		conversation: []checkpointConversationEntry{{Role: "user", Text: "task"}},
+		workingNotes: []string{"NOTE " + strings.Repeat("n", 3000)},
+	}
+
+	const maxChars = 1200
+	cp := formatCheckpoint(data, nil, maxChars)
+
+	if len(cp) > maxChars {
+		t.Fatalf("checkpoint length %d exceeds maxChars %d", len(cp), maxChars)
+	}
+	if !strings.Contains(cp, "task") {
+		t.Fatalf("the conversation should survive:\n%s", cp)
+	}
+	if strings.Contains(cp, "NOTE ") {
+		t.Fatalf("the oversized lone note should be shed:\n%s", cp)
 	}
 }
 

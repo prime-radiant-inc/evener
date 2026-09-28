@@ -94,7 +94,14 @@ export {
 // chunkViewBackingForTests is deliberately absent here; the white-box test hook
 // is published through the non-shipped testing/reducerHooks.ts instead.
 export { pendingTextJoined } from "./chunkview";
-export type { AnyNotification, AppwireClientOptions, ConnectionState, TerminalReason } from "./client";
+export type {
+  AnyNotification,
+  AppwireClientOptions,
+  ConnectionState,
+  SubscriberErrorInfo,
+  SubscriberErrorPhase,
+  TerminalReason,
+} from "./client";
 export { APPWIRE_PROTOCOL_VERSION, AppwireClient } from "./client";
 export type { AppwireClientLike } from "./clientLike";
 export type {
@@ -106,7 +113,7 @@ export type {
 } from "./commandCatalog";
 export { createCommandCatalog, createSessionCommandCatalog, sessionPluginNames } from "./commandCatalog";
 export type { InputAttachment } from "./composerInput";
-export { buildComposerInput, buildInput, canonicalSkillNames } from "./composerInput";
+export { buildComposerInput, buildInput, canonicalSkillNames, formatQuoteBlock, mergeDraftText } from "./composerInput";
 export type { CredentialLayerView, InstanceProviderGroup } from "./credentialLabels";
 export {
   activeSourceLabel,
@@ -150,6 +157,7 @@ export type { DocFileContent, DocFileErrorKind } from "./docContent";
 export { DOC_FILE_MAX_BYTES, DocFileError, docFileRawURL, docImageURL } from "./docContent";
 export type { DiscardStoredDraftResult } from "./draftCheckpointPort";
 export { canonicalJson } from "./draftCheckpointPort";
+export { diffStats, editDiffText } from "./editDiff";
 export type { EntityIdMatch, EntityKind } from "./entityIds";
 export { entityKindOf, findEntityIds, jobOwnerSessionId } from "./entityIds";
 export type { DelegateEntityView, EntityView, JobEntityView, OpenTarget, WatchEntityView } from "./entityView";
@@ -414,6 +422,7 @@ export {
   canSteer,
   decideSteerRoute,
   decideSubmitRoute,
+  isQueueParked,
   isSessionResting,
   isTurnActive,
   NO_ACTIVE_TURN,
@@ -422,6 +431,7 @@ export {
   SEND_UNAVAILABLE,
   type SessionControlName,
   type SessionControls,
+  SHUT_DOWN_STATUSES,
   STEER_UNAVAILABLE,
   STOP_UNAVAILABLE,
   sessionControls,

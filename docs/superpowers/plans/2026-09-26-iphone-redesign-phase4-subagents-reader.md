@@ -166,10 +166,10 @@ None open. Jesse answered this plan's three on 2026-09-26: the Activity sheet re
 
 | PR | Tasks | Model | Starts when | Lane |
 |---|---|---|---|---|
-| 1: sending from above a session, and shared helpers | 1-3 | Sonnet (the plan carries the code) | phase 3 is on main | first |
+| 1: sending from above a session, and shared helpers | 2-3 (Task 1 landed with PR 4) | Sonnet (the plan carries the code) | phase 3 is on main | first |
 | 2: the Subagents list | 4-6 | Sonnet (4-5), Opus medium (6) | PR 1 lands | A |
 | 3: a subagent's screen and Ask coordinator to stop it | 7-9 | Sonnet (7), Opus medium (8-9) | PR 2 lands | A |
-| 4: document foundations | 10-13 | Sonnet | PR 1 lands | B |
+| 4: document foundations | 10-13, and Task 1 | Sonnet | phase 3 is on main (it carries Task 1, the one piece of PR 1 it needs) | B |
 | 5: the Reader | 14-15 | Opus medium | PR 4 lands | B |
 | 6: comments and review | 16-17 | Opus medium | PRs 5 and 1 land | B |
 | 7: document chips and Files & artifacts | 18-19 | Opus medium (Task 18's pure module is written out) | PR 6 lands | B |
@@ -188,6 +188,8 @@ None open. Jesse answered this plan's three on 2026-09-26: the Activity sheet re
 PR 1 lands the pieces both lanes share: the device-storage helpers phase 2's Board memory already uses, and the path by which a screen above a session sends to it. Its first consumers are PR 3 (the stop request) and PR 6 (the review); say so in the PR description.
 
 ### Task 1: Shared device-storage helpers
+
+> **Landed with PR 4.** PR 4's Task 12 needed these helpers before PR 1 started, so PR 4 carried this task verbatim, `boardMemory.ts` change included. PR 1 starts at Task 2.
 
 **Files:**
 - Create: `mobile-native/src/deviceStorage.ts`

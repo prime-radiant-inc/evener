@@ -105,6 +105,33 @@ type MethodSpec struct {
 // pipeline 08b §10). A name absent here has an ordinary single-struct result.
 var MethodResultArms = map[string][]any{
 	MethodEvenerHostPlan: {HostPlanPlanned{}, HostPlanNoToken{}},
+	// The mutation-result union (registry spec 08 §11): the four arms, each
+	// carried by its own named Go struct, with remove's arms spelled in the
+	// dedicated RemovedRow shape. add and update never return the removed
+	// variants and remove never returns the HostRow ones, but the union is one
+	// registration because the wire discriminates by `outcome` alone.
+	MethodEvenerHostAdd: {
+		HostMutationCommitted{}, HostMutationCommittedRemoved{},
+		HostMutationTeardownFailure{}, HostMutationTeardownFailureRemoved{},
+		HostMutationCollisionDropped{}, HostMutationAmbiguous{},
+	},
+	MethodEvenerHostUpdate: {
+		HostMutationCommitted{}, HostMutationCommittedRemoved{},
+		HostMutationTeardownFailure{}, HostMutationTeardownFailureRemoved{},
+		HostMutationCollisionDropped{}, HostMutationAmbiguous{},
+	},
+	MethodEvenerHostRemove: {
+		HostMutationCommitted{}, HostMutationCommittedRemoved{},
+		HostMutationTeardownFailure{}, HostMutationTeardownFailureRemoved{},
+		HostMutationCollisionDropped{}, HostMutationAmbiguous{},
+	},
+	// teardown-retry's six declared arms: three outcomes crossed with both host
+	// shapes (registry spec 08 §11).
+	MethodEvenerHostTeardownRetry: {
+		HostTeardownRetryCompleteLive{}, HostTeardownRetryCompleteRemoved{},
+		HostTeardownRetryClearedLive{}, HostTeardownRetryClearedRemoved{},
+		HostTeardownRetryFailedLive{}, HostTeardownRetryFailedRemoved{},
+	},
 }
 
 // NotificationSpec is one server→client notification: the wire name, the Go
@@ -175,6 +202,7 @@ var Methods = []MethodSpec{
 	{MethodEvenerSessionSeenSet, SessionSeenSetParams{}, SessionSeenSetResponse{}, ScopeHub, "Marks sessions seen through a turn end, or unread, on the hub (S4), and returns the committed navigation receipt. Live rows then carry unseen from the hub's marker."},
 	{MethodEvenerSearch, SearchParams{}, SearchResponse{}, ScopeHub, "Searches live and persisted sessions for the hub command palette."},
 	{MethodEvenerActivityRead, ActivityReadParams{}, ActivityReadResponse{}, ScopeHub, "Reads the pulse meter (seven one-minute activity counts over the whole tree), running subagents and quiet time of the hub's live top-level sessions and its attached hosts' (S5). A client polls it while a Board or session is on screen; it is never part of navigation."},
+	{MethodEvenerNoticesList, EmptyParams{}, NoticesListResponse{}, ScopeHub, "Lists the hub's notices (S11): provider instances on this hub that need signing in again, hosts that are offline, and installed plugins that are broken, each with the live sessions it blocks when the hub can count them. evener/notices/changed announces every change."},
 	{MethodEvenerHarnessesList, HarnessListParams{}, HarnessListResponse{}, ScopeHub, "Lists available harness descriptors."},
 	{MethodEvenerUpgrade, UpgradeParams{}, UpgradeResponse{}, ScopeHub, "Performs or reports a evener binary upgrade."},
 	{MethodEvenerUpdateCheck, UpdateCheckParams{}, UpdateCheckResponse{}, ScopeHub, "Compares the running hub build against a release channel's current commit; dev builds report applicable=false without a network request."},
@@ -231,11 +259,13 @@ var Methods = []MethodSpec{
 	{MethodEvenerSandboxEscalationResolve, SandboxEscalationResolveParams{}, EmptyResponse{}, ScopeBoth, "Delivers a human's approve/deny decision for a pending sandbox-exemption escalation (M7); the daemon unblocks the waiting tool-exec goroutine, the hub relays."},
 	{MethodEvenerHostRequest, HostRequestParams{}, HostForwardedResult{}, ScopeHub, "Forwards one hub-scoped admin RPC to a named remote host's hub through the allow-listed proxy (component 07a); the result is the forwarded method's own result, verbatim — an opaque JSON object, not a wrapper, so a typed client must treat the result as unknown and cast it to the forwarded method's own result type (see HostForwardedResult)."},
 	{MethodEvenerHostAttach, HostAttachParams{}, HostAttachResponse{}, ScopeHub, "Explicitly attaches one configured remote host by name through the Ensure-backed dialing seam (component 06's Connect action); a mutation and the only browser-reachable attach trigger, idempotent while attached, returning the host's post-attach state."},
-	{MethodEvenerHostAdd, HostAddParams{}, HostRow{}, ScopeHub, "Registers one host entry (its full entry: name, ssh address, user, key path, and the host's paths and roots) into the machine-managed hub.toml; validates like hub.toml loading and refuses a name the live set already holds."},
+	{MethodEvenerHostAdd, HostAddParams{}, HostMutationResult{}, ScopeHub, "Registers one host entry (its full entry: name, ssh address, user, key path, and the host's paths and roots) into the machine-managed hub.toml; validates like hub.toml loading and refuses a name the live set already holds. Result is the mutation-result union: committed, committed-with-teardown-failure, collision-dropped, or the keyless-add ambiguous arm."},
 	{MethodEvenerHostList, EmptyParams{}, HostListResponse{}, ScopeHub, "Lists every known host with truthful online state; never dials — attached rows read the live channel, offline rows render last-known state."},
 	{MethodEvenerHostStatus, HostStatusParams{}, HostStatusResponse{}, ScopeHub, "Returns one host's list row for a single named host; never dials."},
-	{MethodEvenerHostRemove, HostRemoveParams{}, HostRemoveResponse{}, ScopeHub, "Deregisters one live host entry, stopping its supervisor and dropping its channel; every live host is removable here."},
-	{MethodEvenerHostUpdate, HostUpdateParams{}, HostUpdateResponse{}, ScopeHub, "Edits one live host entry in place (every field but the name; the name is the target) and retires the host's channel with the identity it replaced; the edit is written into the machine-managed hub.toml."},
+	{MethodEvenerHostRemove, HostRemoveParams{}, HostMutationResult{}, ScopeHub, "Deregisters one live host entry, stopping its supervisor and dropping its channel; every live host is removable here. Result is the mutation-result union, whose committed and teardown-failure arms carry the dedicated removed row."},
+	{MethodEvenerHostUpdate, HostUpdateParams{}, HostMutationResult{}, ScopeHub, "Edits one live host entry in place (every field but the name; the name is the target) and retires the host's channel with the identity it replaced; the edit is written into the machine-managed hub.toml. Result is the mutation-result union."},
+	{MethodEvenerHostTeardownRetry, HostTeardownRetryParams{}, HostTeardownRetryResult{}, ScopeHub, "Resumes one named teardown remnant by its opaque id: gate first, claim under the mutation lock, the pinned teardown run to completion with a bounded deadline, then finalization from the observed result. Result is the six-arm outcome x hostKind union; an unknown or purged id is the typed teardown-unknown-key refusal."},
+	{MethodEvenerHostTeardownRecover, HostTeardownRecoverParams{}, HostTeardownRecoverResult{}, ScopeHub, "Clears an open remnant whose pinned target is unresolvable, on an authenticated operator's audited teardown-verified-absent attestation: gate first, the safety checks immediately before the clearing write, the attestation recorded on the original receipt beside remnantResolvedAt, and a typed resolved-remnant record persisted in the same atomic write."},
 	{MethodEvenerHostPlan, HostPlanParams{}, HostPlanResult{}, ScopeHub, "Plans one deploy against a named host and mints the single-use confirmation token evener/host/deploy consumes: refreshes the host's preflight facts without a gate, probes its running state, and answers with either the plan plus token (HostPlanPlanned) or the no-token arm (HostPlanNoToken) naming why nothing was minted and whether the refusal is terminal."},
 	{MethodEvenerHostDeploy, HostDeployParams{}, HostDeployResponse{}, ScopeHub, "Consumes a plan's confirmation token and starts the deploy operation it names: dedup-first on the client operation ID, then the token's single-use consume under the host gate after the running probe and under-gate re-resolution, and a durable pending operation record whose worker runs the 04b deploy path outside the RPC."},
 	{MethodEvenerHostRestart, HostRestartParams{}, HostRestartResponse{}, ScopeHub, "Starts a restart operation for one named host: dedup on the client operation ID and the intended (generation, incarnation id) pair, the gated under-gate re-resolution and terminal-operation scan, then a durable pending operation record whose worker runs the 04b restart path outside the RPC."},
@@ -320,6 +350,7 @@ var Notifications = []NotificationSpec{
 	{NotifyEvenerNavigationInvalidated, NavigationInvalidatedPayload{}, "Hub-derived scoped navigation-resource invalidation. Clients conditionally revalidate only the named loaded resources."},
 	{NotifyEvenerMarketplaceUpdated, EmptyParams{}, "Broadcast after a marketplace mutation (add/edit/remove/refresh); no payload. Clients refresh the marketplace list."},
 	{NotifyEvenerPluginUpdated, EmptyParams{}, "Broadcast after a plugin mutation (install/upgrade/remove/enable/disable/setAutoUpgrade, or a marketplace edit that can re-key installs); no payload. Clients refresh the plugin list."},
+	{NotifyEvenerNoticesChanged, NoticesListResponse{}, "Hub-derived: the hub's notices changed (a notice appeared, cleared, or its session count moved); carries the whole new list, as evener/notices/list returns it. Hub-originated; never sent by daemons."},
 	{NotifyEvenerThreadResync, ThreadResyncParams{}, "Hub-originated hint asking clients to re-read one thread after relay recovery."},
 	{NotifyEvenerTaskUpdated, TaskUpdatedParams{}, "The session's task-list outcome counts (total/done/cancelled/remaining) changed."},
 	{NotifyEvenerGoalUpdated, GoalUpdatedParams{}, "The session's complete structured goal state changed; null clears it."},

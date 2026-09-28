@@ -1,216 +1,93 @@
-import { useEffect, useRef, useState } from "react";
-import {
-  type QueueAction,
-  queueActionRefusal,
-  queueSheetPresentation,
-} from "./conversationControls";
-import {
-  ActivityIndicator,
-  Modal,
-  Platform,
-  ScrollView,
-  View,
-} from "react-native";
-import { SafeAreaView } from "react-native-safe-area-context";
-import { WireError } from "@evener/appwire-client";
-import type { MobileConversation } from "./projectedRows";
-import type { QueueConversationService } from "../../mobile/src/services/conversation";
-import { Action, Copy, ErrorMessage, styles, useColors } from "./ui";
+// The Queue sheet (ruling 37): every queued message, when more are waiting
+// than the three above the composer show (ruling 18). It is a formSheet route
+// over the session, so it reads the session's queue through the host the
+// screen provides, and follows it live.
+import { useNavigation } from "@react-navigation/native";
+import type { NativeStackScreenProps } from "@react-navigation/native-stack";
+import { useEffect } from "react";
+import { ScrollView } from "react-native";
+import type { Routes } from "./screens";
+import { GhostBubble } from "./session/GhostBubble";
+import type { Ghost, GhostAction } from "./session/ghosts";
+import { Sheet, useSheet } from "./sheet/Sheet";
+import { sheetHosts, sheetKey, useSheetHost } from "./sheet/sheetHosts";
+import { Toast, type ToastMessage, useToast } from "./Toast";
+import { Action } from "./ui";
 
-export function QueueSheet({
-  conversation,
-  latest,
-  service,
-  ready,
-  refresh,
-  close,
-}: {
-  conversation: MobileConversation;
-  /** The live conversation at press time; the render's `conversation` may be
-   * a status behind it. */
-  latest: () => MobileConversation | null;
-  service: QueueConversationService;
-  ready: boolean;
-  refresh: () => Promise<void>;
-  close: () => void;
-}) {
-  const colors = useColors();
-  const [pending, setPending] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const busy = useRef(false);
-  const mounted = useRef(true);
-  useEffect(() => {
-    mounted.current = true;
-    return () => {
-      mounted.current = false;
-    };
-  }, []);
-  const queue = conversation.queue;
-  const depth = queue?.depth ?? 0;
-  const instanceId = conversation.instanceId;
-  // Promote and drain follow the conversation's controls
-  // (conversationControls.ts): the harness steers, and a turn is running or the
-  // queue is one a Stop parked.
-  const { canRun, runLabel, runAllLabel, explanation } =
-    queueSheetPresentation(conversation);
-  const disabled = !ready || pending || !!error || !instanceId;
-  async function act(action: QueueAction, operation: () => Promise<unknown>) {
-    if (disabled || busy.current) return;
-    // Re-check the action's control against the live conversation: the
-    // status may have flipped since the render that offered it.
-    const refusal = queueActionRefusal(latest() ?? conversation, action);
-    if (refusal !== null) {
-      setError(refusal);
-      return;
-    }
-    busy.current = true;
-    setPending(true);
-    let failure: string | null = null;
-    try {
-      await operation();
-    } catch (cause) {
-      failure =
-        cause instanceof WireError
-          ? `Could not confirm this action: ${cause.message}. Check the queue and conversation before trying again; it may have been applied.`
-          : "Delivery unconfirmed. Check the queue and conversation before trying again. This action may have reached the hub.";
-    }
-    if (!mounted.current) return;
-    try {
-      await refresh();
-    } catch {
-      failure ??=
-        "The action was acknowledged, but the queue could not be refreshed.";
-    }
-    if (!mounted.current) return;
-    setError(failure);
-    setPending(false);
-    busy.current = false;
-  }
-  return (
-    <Modal
-      animationType="slide"
-      presentationStyle={Platform.OS === "ios" ? "pageSheet" : "fullScreen"}
-      onRequestClose={close}
-    >
-      <SafeAreaView
-        style={[styles.fill, { backgroundColor: colors.background }]}
-      >
-        <View
-          style={[
-            styles.row,
-            {
-              paddingHorizontal: 20,
-              paddingVertical: 8,
-              borderBottomWidth: 1,
-              borderColor: colors.border,
-            },
-          ]}
-        >
-          <View style={styles.fill}>
-            <Copy>Queued messages</Copy>
-            <Copy muted>{depth} waiting</Copy>
-          </View>
-          <Action onPress={close}>Done</Action>
-        </View>
-        <ScrollView contentContainerStyle={{ padding: 20, gap: 16 }}>
-          <Copy muted>{explanation}</Copy>
-          <ErrorMessage message={error} />
-          {error ? (
-            <Action
-              disabled={!ready || pending}
-              onPress={() => {
-                void refresh()
-                  .then(() => setError(null))
-                  .catch(() => setError("Could not refresh."));
-              }}
-            >
-              Refresh queue
-            </Action>
-          ) : null}
-          {pending ? (
-            <ActivityIndicator
-              accessibilityLabel="Updating queue"
-              color={colors.accent}
-            />
-          ) : null}
-          {!ready ? (
-            <Copy muted>Disconnected. This queue can't change right now.</Copy>
-          ) : null}
-          {depth === 0 ? <Copy muted>No queued messages.</Copy> : null}
-          {Array.from({ length: depth }, (_, index) => {
-            const id = queue?.ids?.[index];
-            const fullText = queue?.texts?.[index];
-            return (
-              <View
-                key={id ?? `preview-${index}`}
-                style={{
-                  paddingBottom: 16,
-                  gap: 8,
-                  borderBottomWidth: 1,
-                  borderColor: colors.border,
-                }}
-              >
-                <Copy muted>
-                  {index + 1}
-                  {fullText === undefined ? " · Preview" : ""}
-                </Copy>
-                <Copy>
-                  {fullText ??
-                    queue?.preview?.[index] ??
-                    "Message content is unavailable."}
-                </Copy>
-                <View
-                  style={[
-                    styles.row,
-                    { flexWrap: "wrap", justifyContent: "flex-end" },
-                  ]}
-                >
-                  <Action
-                    label={`Cancel queued message ${index + 1}`}
-                    tone="quiet"
-                    disabled={disabled || !id}
-                    onPress={() => {
-                      if (id && instanceId)
-                        void act("cancel", () =>
-                          service.cancelQueued(index, id, instanceId),
-                        );
-                    }}
-                  >
-                    Cancel
-                  </Action>
-                  {canRun ? (
-                    <Action
-                      label={`${runLabel}: queued message ${index + 1}`}
-                      disabled={disabled || !id}
-                      onPress={() => {
-                        if (id && instanceId)
-                          void act("promote", () =>
-                            service.promoteQueuedAsSteer(index, id, instanceId),
-                          );
-                      }}
-                    >
-                      {runLabel}
-                    </Action>
-                  ) : null}
-                </View>
-              </View>
-            );
-          })}
-          {queue && depth > 1 && canRun ? (
-            <Action
-              disabled={disabled}
-              onPress={() => {
-                if (instanceId)
-                  void act("drainAll", () =>
-                    service.drainAsSteer(queue.revision, instanceId),
-                  );
-              }}
-            >
-              {runAllLabel}
-            </Action>
-          ) : null}
-        </ScrollView>
-      </SafeAreaView>
-    </Modal>
-  );
+export interface QueueHost {
+	/** The session's queued messages, every one of them. */
+	ghosts: readonly Ghost[];
+	disabled: boolean;
+	/** Runs one ghost's action on the live queue, and says what to tell you. */
+	act(ghost: Ghost, action: GhostAction): Promise<ToastMessage | null>;
+	/** Shows a toast on the session, for an action that closed the sheet. */
+	showOnSession(message: ToastMessage): void;
+	/** Steers with the whole queue, when the session can. */
+	steerAll?: () => Promise<ToastMessage | null>;
+}
+
+export const queueHosts = sheetHosts<QueueHost>();
+
+export function QueueSheet({ route }: NativeStackScreenProps<Routes, "QueueSheet">) {
+	const { hubId, ref } = route.params;
+	const navigation = useNavigation();
+	const sheet = useSheet();
+	const toast = useToast();
+	const host = useSheetHost(queueHosts, sheetKey(hubId, ref), sheet);
+	const empty = host !== undefined && host.ghosts.length === 0;
+	useEffect(() => {
+		if (empty) sheet.finish();
+	}, [empty, sheet]);
+	function run(ghost: Ghost, action: GhostAction) {
+		if (!host) return;
+		// Edit puts the message in the composer, so the sheet gets out of the
+		// way first and the composer's field can take the keyboard.
+		if (action === "edit") {
+			sheet.finish(() => {
+				navigation.goBack();
+				void host.act(ghost, action).then((message) => {
+					if (message) host.showOnSession(message);
+				});
+			});
+			return;
+		}
+		void host.act(ghost, action).then((message) => {
+			if (message) toast.show(message);
+		});
+	}
+	const steerAll = host?.steerAll;
+	return (
+		<Sheet
+			title="Queued messages"
+			done={{ onPress: () => sheet.finish() }}
+			accessory={<Toast toast={toast.toast} dismiss={toast.dismiss} />}
+		>
+			<ScrollView contentContainerStyle={{ padding: 16, gap: 12 }}>
+				{/* Every ghost here is queued, and a queued message's Edit merges
+				into whatever is typed, so the composer never blocks it. */}
+				{host?.ghosts.map((ghost) => (
+					<GhostBubble
+						key={ghost.key}
+						ghost={ghost}
+						disabled={host.disabled}
+						canEdit
+						editHint={null}
+						onAction={(action) => run(ghost, action)}
+					/>
+				))}
+				{steerAll ? (
+					<Action
+						disabled={host.disabled}
+						onPress={() => {
+							void steerAll().then((message) => {
+								if (message) toast.show(message);
+							});
+						}}
+					>
+						Steer all now
+					</Action>
+				) : null}
+			</ScrollView>
+		</Sheet>
+	);
 }

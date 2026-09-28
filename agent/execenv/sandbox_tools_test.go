@@ -699,6 +699,29 @@ func TestRemoveMissingParentIsNoop(t *testing.T) {
 	mustDenied(t, env.RemovePath(filepath.Join(home, "outside.txt")), "delete outside the writable root")
 }
 
+// TestRemoveNonEmptyDirSurfacesFailure pins issue #2376 on the sandboxed path: a
+// delete of a NONEMPTY directory is a real filesystem failure (unlinkat EISDIR,
+// then AT_REMOVEDIR ENOTEMPTY), not absence. It must surface as an error and leave
+// the directory on disk rather than reporting the path as applied. An empty
+// directory still removes (securepath_edge_program_fuzz_test.go covers that).
+func TestRemoveNonEmptyDirSurfacesFailure(t *testing.T) {
+	t.Parallel()
+	env, _, worktree := sandboxedEnv(t, sandbox.ModeWorkspaceWrite)
+	dir := filepath.Join(worktree, "full")
+	if err := os.Mkdir(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "child.txt"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := env.RemovePath(dir); err == nil {
+		t.Fatal("delete of a nonempty directory reported success")
+	}
+	if _, err := os.Stat(filepath.Join(dir, "child.txt")); err != nil {
+		t.Errorf("a failed delete must leave the nonempty directory in place: %v", err)
+	}
+}
+
 // ---- Task 4: browse surface (glob, grep) ----
 
 // TestGlobRestrictedOutsideRefused: under restricted, a glob base outside the

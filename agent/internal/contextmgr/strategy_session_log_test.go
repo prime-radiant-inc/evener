@@ -282,7 +282,7 @@ func TestSessionLogStrategy_AfterAction_CallsForkSummarizeAndAppendsToLog(t *tes
 	}
 }
 
-func TestSessionLogStrategy_AfterAction_LLMErrorIsNonFatal(t *testing.T) {
+func TestSessionLogStrategy_AfterAction_SurfacesLLMErrorWithoutAppending(t *testing.T) {
 	adapter := &stubSummarizeAdapter{
 		name: "openai",
 		respFn: func(req llm.Request) (llm.Response, error) {
@@ -307,10 +307,14 @@ func TestSessionLogStrategy_AfterAction_LLMErrorIsNonFatal(t *testing.T) {
 		{Kind: schema.TurnAssistant, Message: llm.Assistant("hello")},
 	}
 
-	// Should not return an error even though LLM call fails.
+	// The failure must be surfaced to the caller (which reports it as a
+	// warning, not a turn failure) instead of reading as a healthy no-op.
 	err := sls.AfterAction(context.Background(), turns, client)
-	if err != nil {
-		t.Fatalf("AfterAction should be non-fatal on LLM error, got: %v", err)
+	if err == nil {
+		t.Fatal("AfterAction must surface the LLM error, got nil")
+	}
+	if !strings.Contains(err.Error(), "rate limited") {
+		t.Errorf("surfaced error must carry the provider cause, got: %v", err)
 	}
 
 	// Log should remain empty since the summarize failed.

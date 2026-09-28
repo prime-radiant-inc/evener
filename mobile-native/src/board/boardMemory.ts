@@ -3,6 +3,7 @@
 // searched for. Kept in expo-sqlite's kv-store under per-hub keys that
 // ConnectionProvider.removeHub clears.
 import { isPlainObject } from "@evener/appwire-client";
+import { readJson, writeJson } from "../deviceStorage";
 import type { SyncStringStorage } from "../syncStringStorage";
 import { hubTime } from "./attention";
 
@@ -13,21 +14,6 @@ const recentSearchesKey = (hubId: string) => `evener.native.recent-searches.${hu
 const MARK_LIMIT = 500;
 const RECENT_LIMIT = 8;
 
-function readJson(storage: SyncStringStorage, key: string): unknown {
-	try {
-		const raw = storage.getItemSync(key);
-		return raw ? JSON.parse(raw) : null;
-	} catch {
-		return null;
-	}
-}
-function writeJson(storage: SyncStringStorage, key: string, value: unknown): void {
-	try {
-		storage.setItemSync(key, JSON.stringify(value));
-	} catch {
-		// The in-memory copy still serves this launch.
-	}
-}
 interface SeenRecord {
 	through?: string;
 	unread?: true;
@@ -244,10 +230,10 @@ export function forgetBoard(storage: SyncStringStorage, hubId: string): void {
 			// Keep trying the other keys: a storage failure orphans this one (hub
 			// ids are fresh UUIDs, never reused, so nothing reads it again), but
 			// the caller must still hear about it. ConnectionProvider's removeHub
-			// cleanup runs this last, alongside cleanups that surface their own
-			// storage failures the same way, so rethrowing here shows the user
-			// the same "could not be deleted" message instead of a silently
-			// incomplete removal.
+			// runs this alongside other cleanups that surface their own storage
+			// failures the same way, so rethrowing here shows the user the same
+			// "could not be deleted" message instead of a silently incomplete
+			// removal.
 			failed = true;
 		}
 	if (failed) throw new Error("forgetBoard: could not remove board memory from storage");

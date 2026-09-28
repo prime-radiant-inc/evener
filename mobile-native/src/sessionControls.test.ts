@@ -114,6 +114,23 @@ describe("conversation-owned session controls", () => {
 		expect(stopped).toBe(1);
 	});
 
+	it("shuts down without narrating it: the screen confirms (ruling 19)", async () => {
+		let stopped = 0;
+		const controls = new SessionControls(
+			await boundary({ shutdown: async () => {} }),
+			async () => {},
+			() => {
+				stopped += 1;
+			},
+			() => true,
+			() => null,
+			() => true,
+		);
+		expect(await controls.shutdown()).toBe(true);
+		expect(stopped).toBe(1);
+		expect(controls.getSnapshot()).toMatchObject({ pending: null, error: null, notice: null });
+	});
+
 	it("does not claim force stop success when recovery fails", async () => {
 		let stopped = 0;
 		const controls = new SessionControls(

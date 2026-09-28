@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"sync/atomic"
+	"time"
 
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/transcript"
@@ -100,6 +101,102 @@ func (s *Session) failClosedOnUnhealthyTranscript() {
 	}
 	if s.attachedTranscript().Poisoned() {
 		_ = s.failClosed(errTranscriptRefusesRecords())
+	}
+}
+
+// durabilityRetryAttempts bounds the background retry of the durability
+// barrier for a recorded-but-unsynced (*transcript.RetainedUnsyncedError)
+// COMMUNICATE or completion entry, after the one attempt recordSynced already
+// made inline. durabilityRetryDelay/durabilityRetryMaxDelay are the same
+// shape of exponential backoff as shellFinalizeBackoff (agent/job_shell.go),
+// scaled down: a durability barrier is a local fsync, not a store round trip.
+const (
+	durabilityRetryAttempts = 5
+	durabilityRetryDelay    = 20 * time.Millisecond
+	durabilityRetryMaxDelay = 200 * time.Millisecond
+)
+
+// durabilityRetryBackoff is attempt's backoff delay: durabilityRetryDelay,
+// doubling each attempt, capped at durabilityRetryMaxDelay.
+func durabilityRetryBackoff(attempt int) time.Duration {
+	delay := durabilityRetryDelay
+	for range attempt {
+		delay *= 2
+		if delay >= durabilityRetryMaxDelay {
+			return durabilityRetryMaxDelay
+		}
+	}
+	return delay
+}
+
+// retainedUnsyncedError extracts a *transcript.RetainedUnsyncedError from a
+// synced write's error, or nil when err is anything else (including nil).
+func retainedUnsyncedError(err error) *transcript.RetainedUnsyncedError {
+	retained, _ := errors.AsType[*transcript.RetainedUnsyncedError](err)
+	return retained
+}
+
+// settleRetainedUnsynced chases durability for a COMMUNICATE or completion
+// entry that recordSynced adopted with a *RetainedUnsyncedError: the entry is
+// already in the file, already adopted into history, and (for COMMUNICATE)
+// already announced. It retries the durability barrier with backoff in its
+// own goroutine, so the caller returns immediately and the session keeps
+// running while the retry is in flight -- no session lock is held across a
+// sleep. If a retry establishes durability, the debt is settled silently. If
+// the retry budget is exhausted, a served session fails closed (its terminal
+// status or delivered message could not be made durable); an unserved session
+// keeps running -- warn-and-continue, matching the ordinary write path -- since
+// only a served session's fail-closed rule applies here.
+//
+// The retry does not start at all if the session is already closing: closing
+// tears down the writer itself, and a session shutting down is not a
+// durability failure (see failClosedUnlessRecorded's closed-writer exemption).
+func (s *Session) settleRetainedUnsynced(retained *transcript.RetainedUnsyncedError, what string) {
+	s.mu.Lock()
+	if s.closingOrClosedLocked() {
+		s.mu.Unlock()
+		return
+	}
+	s.sendersWG.Add(1)
+	s.mu.Unlock()
+	go func() {
+		defer s.sendersWG.Done()
+		s.retryDurabilityUntilSettledOrExhausted(retained, what)
+	}()
+}
+
+// retryDurabilityUntilSettledOrExhausted is settleRetainedUnsynced's retry
+// loop; split out so tests can call it synchronously.
+func (s *Session) retryDurabilityUntilSettledOrExhausted(retained *transcript.RetainedUnsyncedError, what string) {
+	lastErr := error(retained)
+	for attempt := range durabilityRetryAttempts {
+		s.sclock().Sleep(durabilityRetryBackoff(attempt))
+		// Re-fetched every attempt, not captured once: attention recovery can
+		// reopen the transcript on a new *Writer for the same file mid-retry,
+		// closing the old handle. A stale handle would read Closed() true on
+		// a session that never shut down and abandon the retry silently. An
+		// EstablishDurability barrier on the reopened handle still settles
+		// the earlier bytes -- fsync flushes the whole file, not only what
+		// this handle itself wrote.
+		writer := s.attachedTranscript()
+		if writer == nil || writer.Closed() {
+			return // the session is shutting down, not a genuine durability failure
+		}
+		err := writer.EstablishDurability()
+		if err == nil {
+			return // settled
+		}
+		lastErr = err
+	}
+	if writer := s.attachedTranscript(); writer == nil || writer.Closed() {
+		return // the session shut down while the last attempt was in flight
+	}
+	if !s.servedByDaemon() {
+		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("%s could not be made durable after retrying: %v", what, lastErr)})
+		return
+	}
+	if refusal := s.failClosed(fmt.Errorf("%s could not be made durable after retrying: %w", what, lastErr)); refusal != nil {
+		s.announceFailClosed()
 	}
 }
 

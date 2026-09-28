@@ -1,7 +1,13 @@
-import type { AnyNotification, SearchParams, SearchResponse, SearchResult } from "@evener/appwire-client";
+import type {
+	AnyNotification,
+	NavigationProjectSummary,
+	SearchParams,
+	SearchResponse,
+	SearchResult,
+} from "@evener/appwire-client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ConversationClientLike } from "../../../mobile/src/services/conversation";
-import { createSearchController, searchResultMark, sessionResults } from "./boardSearch";
+import { createSearchController, projectResults, searchResultMark, sessionResults } from "./boardSearch";
 
 /** A hub that holds every evener/search until the test answers it. */
 function boundary() {
@@ -191,6 +197,44 @@ describe("session results", () => {
 
 	it("lists only live results in Live", () => {
 		expect(sessionResults({ live, past }, "live").map((row) => row.id)).toEqual(["live-1", "live-2"]);
+	});
+
+	it("lists a live session once, when the past index has it too", () => {
+		// The hub's past index holds live sessions' records, and evener/search
+		// doesn't leave them out of its past results.
+		const livePast = result("live-2", { state: "ended", age: "5m" });
+		const rows = sessionResults({ live, past: [livePast, ...past] }, "all");
+		expect(rows.map((row) => row.id)).toEqual(["live-1", "live-2", "past-1"]);
+		expect(rows[1]).toBe(live[1]);
+	});
+});
+
+describe("project results", () => {
+	const project = (key: string, name: string, workingDir?: string): NavigationProjectSummary => ({
+		key,
+		name,
+		session_count: 1,
+		...(workingDir === undefined ? {} : { working_dir: workingDir }),
+	});
+	const catalog = [
+		project("evener", "evener", "/home/jesse/git/evener"),
+		project("docs", "Docs site", "/srv/www/handbook"),
+		project("tools", "", "/home/jesse/git/Evener-tools"),
+		// The hub may send a project with no working directory.
+		project("scratch", "Scratch"),
+	];
+	const keys = (query: string) => projectResults(catalog, query).map((found) => found.key);
+
+	it("matches a project's name or working directory, ignoring case, in the catalog's order", () => {
+		expect(keys("EVENER")).toEqual(["evener", "tools"]);
+		expect(keys("docs")).toEqual(["docs"]);
+		expect(keys("handbook")).toEqual(["docs"]);
+		expect(keys("scratch")).toEqual(["scratch"]);
+	});
+
+	it("finds nothing for an empty query, or one nothing matches", () => {
+		expect(keys("")).toEqual([]);
+		expect(keys("zebra")).toEqual([]);
 	});
 });
 

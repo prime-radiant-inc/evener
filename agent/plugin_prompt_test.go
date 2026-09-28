@@ -30,7 +30,8 @@ func availableAgentEntriesForTest(t *testing.T, agents map[string]plugin.Agent, 
 	}
 	sess.pluginAgents = make(map[string]plugin.Agent, len(agents))
 	maps.Copy(sess.pluginAgents, agents)
-	return sess.buildPromptData(sess.currentEnv()).AvailableAgents
+	data, _ := sess.buildPromptData(sess.currentEnv())
+	return data.AvailableAgents
 }
 
 // depthOneSubagentForTest builds a depth-1 child session with the given
@@ -58,11 +59,11 @@ func depthOneSubagentForTest(t *testing.T, allowance int, allowedTools []string)
 func TestSubagentPromptStatesAllowance(t *testing.T) {
 	t.Parallel()
 	granting := depthOneSubagentForTest(t, 2, nil)
-	if data := granting.buildPromptData(granting.env); !data.CanDelegate || data.DelegationAllowance != 2 {
+	if data, _ := granting.buildPromptData(granting.env); !data.CanDelegate || data.DelegationAllowance != 2 {
 		t.Errorf("allowance-2 child: CanDelegate=%v DelegationAllowance=%d, want true and 2", data.CanDelegate, data.DelegationAllowance)
 	}
 	leaf := depthOneSubagentForTest(t, 0, nil)
-	if data := leaf.buildPromptData(leaf.env); data.CanDelegate {
+	if data, _ := leaf.buildPromptData(leaf.env); data.CanDelegate {
 		t.Error("allowance-0 child: CanDelegate = true, want false")
 	}
 }
@@ -70,7 +71,7 @@ func TestSubagentPromptStatesAllowance(t *testing.T) {
 func TestSubagentPromptSuppressesDelegationWhenToolsUnavailable(t *testing.T) {
 	t.Parallel()
 	sess := depthOneSubagentForTest(t, 1, []string{"communicate", "delegate", "job_watch"})
-	if data := sess.buildPromptData(sess.env); data.CanDelegate {
+	if data, _ := sess.buildPromptData(sess.env); data.CanDelegate {
 		t.Fatal("CanDelegate = true with an incomplete delegation tool surface, want false")
 	}
 }

@@ -127,6 +127,7 @@ func localDaemonEntriesFromRoster(live []hubcore.LiveEntry) []appsource.LocalDae
 			PendingEscalation:  item.PendingEscalation,
 			PendingEscalations: item.PendingEscalations,
 			PendingQuestion:    item.PendingQuestion,
+			Failure:            item.Failure,
 			RunningJobs:        item.RunningJobs,
 			CompletedJobs:      item.CompletedJobs,
 			Watches:            item.Watches,
@@ -134,6 +135,7 @@ func localDaemonEntriesFromRoster(live []hubcore.LiveEntry) []appsource.LocalDae
 			CapabilitiesKnown:  item.CapabilitiesKnown,
 			Subagents:          item.Subagents,
 			LastTurnEndedAt:    hubcore.UnixMilliseconds(item.LastTurnEndedAt),
+			LastMessage:        item.LastMessage,
 			Tasks:              item.Tasks,
 		}
 		entries = append(entries, entry)
@@ -994,7 +996,7 @@ func newHubAppServer(cfg hubcore.WebConfig, sources *appsource.Registry) *appser
 }
 
 func newHubAppServerWithNavigation(cfg hubcore.WebConfig, sources *appsource.Registry, navigation *NavigationService, resolve topLevelSessionResolver) *appserver.Server {
-	server, _, _ := newHubAppServerWithNavigationAndTrace(cfg, sources, navigation, resolve, nil)
+	server, _, _, _ := newHubAppServerWithNavigationAndTrace(cfg, sources, navigation, resolve, nil)
 	return server
 }
 
@@ -1006,7 +1008,7 @@ func newHubAppServerWithNavigation(cfg hubcore.WebConfig, sources *appsource.Reg
 // server directly, for a caller that never builds through newWebServer
 // (most tests, and any embedder calling this constructor's exported
 // wrappers directly).
-func newHubAppServerWithNavigationAndTrace(cfg hubcore.WebConfig, sources *appsource.Registry, navigation *NavigationService, resolve topLevelSessionResolver, appwireTrace *appserver.WebSocketTrace) (*appserver.Server, *hubHostAdminController, *hubHostManager) {
+func newHubAppServerWithNavigationAndTrace(cfg hubcore.WebConfig, sources *appsource.Registry, navigation *NavigationService, resolve topLevelSessionResolver, appwireTrace *appserver.WebSocketTrace) (*appserver.Server, *hubHostAdminController, *hubHostManager, *hubNotices) {
 	// One fallback registry when cfg carries no live one, built once here so
 	// every host surface below — attach, management, and the admin proxy —
 	// validates against the same instance: a host added at runtime must be
@@ -1184,16 +1186,22 @@ func newHubAppServerWithNavigationAndTrace(cfg hubcore.WebConfig, sources *appso
 	registerNavigationReadHandler(server, navigation)
 	registerFavoriteHandler(server, cfg, navigation)
 	registerActivityReadHandler(server, cfg, sources)
+	// The notices read the same answers evener/auth/list and evener/plugin/list
+	// give, through the controllers those methods use (S11).
+	notices := &hubNotices{
+		auth:    func() (appwire.AuthListResponse, error) { return authController.List(appwire.EmptyParams{}) },
+		plugins: pluginsController.ListPlugins,
+		sources: sources,
+		roster:  cfg.Roster,
+		remote:  cfg.RemoteThreadCache,
+	}
+	registerNoticesHandler(server, notices)
 	registerArchiveHandler(server, cfg, sources, func() *NavigationService { return navigation })
 	registerDaemonHandlers(server, cfg, sources)
 	registerSessionDeleteHandler(server, nil)
 	registerPinSectionHandlers(server, cfg, navigation, resolve)
 	registerSessionSeenHandler(server, cfg, navigation)
 	registerMiscHandlers(server, cfg, sources)
-	// Component 06's Connect action: the browser-reachable explicit attach
-	// trigger. It wraps the Ensure-backed dialing seam and is the only method
-	// that may dial a remote host on the user's behalf.
-	registerHostAttachHandler(server, cfg, sources, cfg.RemoteHostRegistry)
 	// Component 08's host registry surface (add/list/status/remove from slice
 	// 1; update from slice 2). Controller-local, never dials; add and remove
 	// invalidate the manifest's sources, and an edit that changes the roots
@@ -1206,6 +1214,18 @@ func newHubAppServerWithNavigationAndTrace(cfg hubcore.WebConfig, sources *appso
 	// placeholder. It returns the manager so newWebServer can expose it
 	// (main.go binds its event recorder to the SSH manager's lifecycle).
 	hostManage := registerHostManageHandlers(server, sources, cfg, cfg.RemoteHostRegistry, navigation, hubLogf)
+	// The remnant fence reaches the attach path through the WebConfig seam: the
+	// manager owns the durable teardown-remnant records and attach has no
+	// manager handle of its own. It must be installed BEFORE the attach handler
+	// is registered: registerHostAttachHandler takes cfg BY VALUE, so its
+	// closure reads the field off the copy that call captures — assigning it
+	// afterwards would leave the handler reading an empty seam and dialing over
+	// a host whose teardown is still open.
+	cfg.HostRemnantFence = hostManage.openRemnantID
+	// Component 06's Connect action: the browser-reachable explicit attach
+	// trigger. It wraps the Ensure-backed dialing seam and is the only method
+	// that may dial a remote host on the user's behalf.
+	registerHostAttachHandler(server, cfg, sources, cfg.RemoteHostRegistry)
 	registerPluginAutoUpgradeHandlers(server, pluginsController.mgr)
 	registerTranscriptDisplayHandlers(server, cfg.TranscriptDisplayStore)
 	registerKeybindingsHandlers(server, cfg.KeybindingsStore)
@@ -1239,7 +1259,7 @@ func newHubAppServerWithNavigationAndTrace(cfg hubcore.WebConfig, sources *appso
 	// push) instead of a nil store one of them dereferences.
 	credsStore, credsErr := authController.credentialStore()
 	hostAdmin := registerHostAdminHandlers(server.Lifetime(), server, cfg.RemoteHostRegistry, sources, credsStore, credsErr)
-	return server, hostAdmin, hostManage
+	return server, hostAdmin, hostManage, notices
 }
 
 func normalizedAdmissionRef(params appwire.ThreadReadParams) string {
