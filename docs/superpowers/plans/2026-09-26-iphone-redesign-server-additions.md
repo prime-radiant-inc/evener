@@ -1,6 +1,6 @@
 # iPhone redesign, Phase 7: Server additions (Implementation Plan)
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking. PR 1 and PR 3 are written out in full, and PR 2 is a requirements-only section. PRs 4 to 6 and 12 are task-level: the files, interfaces and tests are named and the code is given where its shape is obvious. PRs 14 to 19 (S5, S4 and S3) are planned in full in `docs/superpowers/plans/2026-09-26-iphone-redesign-server-s4-s5-s3.md`, PRs 7 to 11 and 13 (S1b, S1c, S1d and S13b) in `docs/superpowers/plans/2026-09-27-iphone-redesign-server-s1-s13b.md`, PRs 22 to 25 (S11 and S14) in `docs/superpowers/plans/2026-09-27-iphone-redesign-server-s11-s14.md`, PRs 30 to 33 (S6, S15 and S16) in `docs/superpowers/plans/2026-09-28-iphone-redesign-server-s15-s16-s6.md`, and PRs 34 and 35 (S9 and S7) in `docs/superpowers/plans/2026-09-28-iphone-redesign-server-s7-s9.md`. Every other later item is a design-level section; turn each into a full plan (same format as PR 1 or PR 3) just before it starts, against main as it is then.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking. PR 1 and PR 3 are written out in full, and PR 2 is a requirements-only section. PRs 4 to 6 and 12 are task-level: the files, interfaces and tests are named and the code is given where its shape is obvious. PRs 14 to 19 (S5, S4 and S3) are planned in full in `docs/superpowers/plans/2026-09-26-iphone-redesign-server-s4-s5-s3.md`, PRs 7 to 11 and 13 (S1b, S1c, S1d and S13b) in `docs/superpowers/plans/2026-09-27-iphone-redesign-server-s1-s13b.md`, PRs 22 to 25 (S11 and S14) in `docs/superpowers/plans/2026-09-27-iphone-redesign-server-s11-s14.md`, PRs 30 to 33 (S6, S15 and S16) in `docs/superpowers/plans/2026-09-28-iphone-redesign-server-s15-s16-s6.md`, PRs 34 and 35 (S9 and S7) in `docs/superpowers/plans/2026-09-28-iphone-redesign-server-s7-s9.md`, and PRs 36 to 39 (S17, S18 and S8) in `docs/superpowers/plans/2026-09-28-iphone-redesign-server-s17-s18-s8.md`. Every other later item is a design-level section; turn each into a full plan (same format as PR 1 or PR 3) just before it starts, against main as it is then.
 
 **Goal:** The hub gives the phone (and the web and the TUI) the facts the redesign's Board, Session and Hub screens need, item by item in the roadmap's value order, so the phone can switch from each fallback as its addition lands.
 
@@ -59,12 +59,15 @@
 | 24-25 | Message-text search (S14a index, S14b results) | S14 | full, in the S11-S14 plan | PR 25 needs PR 24 |
 | 26-27 | Remote document and image proxying: renumbered, see PR 35 | S7 | moved | |
 | 28 | Document revision identity: renumbered, see PR 34 | S9 | moved | |
-| 29 | Hub-stored launch recipes | S8 | design | none |
+| 29 | Hub-stored launch recipes: renumbered, see PR 39 | S8 | moved | |
 | 30-31 | Direct subagent stop (S6a daemon method, S6b hub routing and capability) | S6 | full, in the S15-S16-S6 plan | PR 31 needs PR 30 |
 | 32 | A session's sandbox mode and network on the thread read | S15 | full, in the S15-S16-S6 plan | none |
 | 33 | Transcript records for queued delivery and approval decisions | S16 | full, in the S15-S16-S6 plan | none |
 | 34 | A document read names its revision | S9 | full, in the S7-S9 plan | none |
 | 35 | Documents in remote sessions (images already proxy, #2462) | S7 | full, in the S7-S9 plan | PR 34 |
+| 36 | The model's display name on rows | S17 | full, in the S17-S18-S8 plan | none |
+| 37-38 | A new worktree branch at launch (S18a `evener serve --worktree`, S18b `worktreeBranch` on thread/start and `evener/worktree/check`) | S18 | full, in the S17-S18-S8 plan | PR 38 needs PR 37 |
+| 39 | Hub-stored launch recipes | S8 | full, in the S17-S18-S8 plan | none |
 
 Documents and artifacts named in the final message (the last part of S1) wait for the shared-artifacts work to reach main; no PR is planned for it here and the phone keeps its fallback (no chips).
 
@@ -1449,7 +1452,9 @@ type NavigationTaskProgress struct {
 
 ---
 
-## S8: Hub-stored launch recipes (PR 29, design level)
+## S8: Hub-stored launch recipes (PR 39, full plan elsewhere)
+
+- **Plan.** Written in full in `docs/superpowers/plans/2026-09-28-iphone-redesign-server-s17-s18-s8.md` (PR 39, rulings 14 to 21). It departs from the design below: the methods are `evener/launch/recipes/get` and `evener/launch/recipes/set` (a whole-list replace against an expected revision, not a patch); a recipe is thread/start's own fields, `{id, name, source?, cwd, modelProvider?, model?, reasoningEffort?, launchOverrides?, newWorktree?}`, with no `order` field (the list's order is the order) and a yes-or-no `newWorktree` in place of a branch; `launchOverrides` is limited to the six settings the New session sheets own; and "Same as last time" stays on each device. The keybindings and transcript-display stores' shared file code moves into one helper the new store uses.
 
 - **Adds.** Recipes that follow you across devices and appear on the web: host, project, model, effort, plugins, access and branch (spec 11), with list, edit, reorder and delete (spec 12).
 - **Today.** Nothing exists. The web keeps per-directory spawn defaults in `localStorage` (`frontend/src/panes/spawn/spawnDefaults.ts:13-32`, `:145-204`); launch configuration layers are TOML files behind `evener/launch/*` (`internal/launchconfig/paths.go`).
@@ -1459,6 +1464,20 @@ type NavigationTaskProgress struct {
 - **Open questions.** "Same as last time" (the last setup used for the chosen project) could come from the hub's newest session meta in that project, with no store at all, so web and phone agree for free; decide at planning time. The web's spawn sheet adopting recipes is web work outside this lane.
 
 ---
+
+## S17: The model's display name on rows (PR 36, full plan elsewhere)
+
+- **Plan.** Written in full in `docs/superpowers/plans/2026-09-28-iphone-redesign-server-s17-s18-s8.md` (PR 36, rulings 1 to 5).
+- **Adds.** "Show model on Board rows" in the Hub's Display and the model on a row's last line (spec 7.2, 12).
+- **Design.** Hub-only: the daemon's root row already names its current model (`Thread.ModelProvider`, which follows a switch). The prober keeps it as `LiveEntry.CurrentModel`, the tree resolves each row's model from one closure (live, else the start model, else the ended session's meta), and rows carry `model_name`, the name `model/list` gives the model, so a row and the picker agree. Subagent rows carry none. A host names its roots' current model to its controller.
+- **Fallback.** No model on rows; Display leaves the toggle out (phase 5, ruling 8).
+
+## S18: A new worktree branch at launch (PRs 37-38, full plan elsewhere)
+
+- **Plan.** Written in full in `docs/superpowers/plans/2026-09-28-iphone-redesign-server-s17-s18-s8.md` (PRs 37 and 38, rulings 6 to 13).
+- **Adds.** New session's Branch row: "a new worktree branch (name field)" (spec 11).
+- **Design.** The daemon makes the lane with the code `manage_worktree create` already runs: PR 37 adds `evener serve --worktree <branch>` for a fresh session, before it listens, and `launch-check` advertises the flag. PR 38 adds `ThreadStartParams.worktreeBranch`, the read-only `evener/worktree/check` (the Branch row's problem: `invalidName`, `notGitRepository` or `branchExists`), a typed `worktreeBranchRefused` refusal, and a check of a remote host before forwarding, so a host too old for the field refuses instead of starting on its current branch. The lane lives on the host that runs the session at `<state dir for the project>/worktrees/<project id>/<branch>`; the name passes the worktree name rule before any git call, and every git call is an argument vector.
+- **Fallback.** Branch shows the project's current branch, as information only (phase 5, ruling 15).
 
 ## S6: Direct subagent stop (PRs 30-31, full plan elsewhere)
 
