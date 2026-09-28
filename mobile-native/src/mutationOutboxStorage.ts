@@ -425,8 +425,13 @@ export class MutationOutboxSQLite<A extends MutationAttachmentRef = MutationAtta
 	// Read methods required by MutationOutboxStorage.
 
 	async listTargetRefs(): Promise<string[]> {
+		// UNION (not UNION ALL) already removes duplicates, so a DISTINCT under
+		// each arm would only repeat what the merge already guarantees. The
+		// ordering stays in JS: the web adapter sorts by the default UTF-16
+		// comparison, which a SQL ORDER BY's BINARY collation does not always
+		// match for non-ASCII refs, and the two hosts must agree exactly.
 		const rows = this.db.getAllSync<{ target_ref: string }>(
-			`SELECT DISTINCT target_ref FROM ${TABLES.outbox} UNION SELECT DISTINCT target_ref FROM ${TABLES.optimistic}`,
+			`SELECT target_ref FROM ${TABLES.outbox} UNION SELECT target_ref FROM ${TABLES.optimistic}`,
 		);
 		return rows.map((row) => row.target_ref).sort();
 	}
@@ -478,40 +483,54 @@ export class MutationOutboxSQLite<A extends MutationAttachmentRef = MutationAtta
 	// daemon may already have applied it, so the FIFO stays closed behind it
 	// and every later one on the SAME target, never another target's.
 	async nextDispatchable(targetRef: string): Promise<MutationOutboxRecord<A> | undefined> {
-		for (const record of this.list<MutationOutboxRecord<A>>(TABLES.outbox, targetRef)) {
-			if (record.state === "submitting") return record;
-			if (record.state === "blockedUnknown") return undefined;
-		}
-		return undefined;
+		// The FIFO head is the lowest-sequence row still in play; a canceled row
+		// above it provably never left the client and never parks the queue. Ask
+		// SQLite for that one row directly instead of decoding the target's whole
+		// queue only to discard it. The state filter mirrors the loop it replaces:
+		// the first submitting/blockedUnknown row decides, and anything else is
+		// skipped.
+		const row = this.db.getFirstSync<Row>(
+			`SELECT * FROM ${TABLES.outbox} WHERE target_ref = ? AND state IN ('submitting', 'blockedUnknown')
+			 ORDER BY intent_sequence LIMIT 1`,
+			targetRef,
+		);
+		if (!row || row.state === "blockedUnknown") return undefined;
+		return fromRow<A, MutationOutboxRecord<A>>(row);
 	}
 
 	// Reopens every blockedUnknown record for this target the authoritative
 	// read does NOT name - a missing id is not proof of non-delivery (a
 	// bounded transcript can omit older work), so only an id the snapshot
 	// explicitly confirms stays settled. Returns the ids restored. Wrapped in
-	// the same savepoint as every other compound write here: a throw partway
-	// through the loop must not leave some blockedUnknown records reopened
-	// and others not.
+	// the same savepoint as every other compound write here: a throw must not
+	// leave some blockedUnknown records reopened and others not.
 	async restoreProvenAbsent(targetRef: string, authoritativeIds: ReadonlySet<string>): Promise<string[]> {
 		return this.transaction("mutation_outbox_restore_absent", () => {
-			const blocked = this.list<MutationOutboxRecord<A>>(TABLES.outbox, targetRef).filter(
-				(record) => record.state === "blockedUnknown" && !authoritativeIds.has(record.clientMutationId),
+			// One statement reopens the whole omitted set and reports the ids it
+			// changed, instead of decoding every row on the target and updating the
+			// blocked ones one at a time. It stays inside the savepoint: a fault on
+			// any row aborts the single UPDATE and rolls the entire restore back,
+			// the same all-or-nothing the loop's savepoint gave.
+			const named = [...authoritativeIds];
+			const namedClause = named.length > 0 ? ` AND client_mutation_id NOT IN (${named.map(() => "?").join(", ")})` : "";
+			const restored = this.db.getAllSync<{ client_mutation_id: string }>(
+				`UPDATE ${TABLES.outbox} SET state = 'submitting'
+				 WHERE target_ref = ? AND state = 'blockedUnknown'${namedClause}
+				 RETURNING client_mutation_id`,
+				targetRef,
+				...named,
 			);
-			for (const record of blocked) {
-				this.db.runSync(
-					`UPDATE ${TABLES.outbox} SET state = 'submitting' WHERE client_mutation_id = ?`,
-					record.clientMutationId,
-				);
-			}
-			return blocked.map((record) => record.clientMutationId);
+			return restored.map((row) => row.client_mutation_id);
 		});
 	}
 
 	protected list<T extends MutationRecord<A>>(table: string, targetRef?: string): T[] {
-		const rows =
-			targetRef === undefined
-				? this.db.getAllSync<Row>(`SELECT * FROM ${table} ORDER BY intent_sequence`)
-				: this.db.getAllSync<Row>(`SELECT * FROM ${table} WHERE target_ref = ? ORDER BY intent_sequence`, targetRef);
+		// One statement template, scoped or not, so the query string lives in one
+		// place instead of two near-identical copies.
+		const rows = this.db.getAllSync<Row>(
+			`SELECT * FROM ${table}${targetRef === undefined ? "" : " WHERE target_ref = ?"} ORDER BY intent_sequence`,
+			...(targetRef === undefined ? [] : [targetRef]),
+		);
 		return rows.map((row) => fromRow<A, T>(row));
 	}
 
