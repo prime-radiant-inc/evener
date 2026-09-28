@@ -9,6 +9,7 @@ import { WireError } from "@evener/appwire-client";
 import { useCallback, useEffect, useMemo, useState, useSyncExternalStore } from "react";
 import { Alert } from "react-native";
 import { useConnection } from "../ConnectionProvider";
+import { SessionLink } from "../session/sessionMessage";
 import { isMethodNotFound } from "../wireErrors";
 import { returnToSession, type SessionNavigation } from "../session/returnToSession";
 import { stopRequests } from "./nativeStopRequests";
@@ -100,9 +101,15 @@ export function SubagentPanel({
 					onPress: async () => {
 						if (!client) return;
 						try {
+							// The stop names the coordinator's thread as it reads now: a
+							// coordinator that restarted since the screen opened runs
+							// under a new one. Read without following, as the bar's
+							// capability read is.
+							const link = new SessionLink(client, coordinator.ref);
+							const now = await link.read({ follow: false }).finally(() => link.dispose());
 							const response = await client.request("evener/delegate/stop", {
 								ref: coordinator.ref,
-								threadId: coordinator.threadId,
+								threadId: now.threadId,
 								delegateId: target.id,
 							});
 							if (response.outcome === "stopping")
@@ -118,7 +125,7 @@ export function SubagentPanel({
 				},
 			]);
 		},
-		[client, coordinator.ref, coordinator.threadId, requests, tree, showToast],
+		[client, coordinator.ref, requests, tree, showToast],
 	);
 
 	if (!barShown) return null;

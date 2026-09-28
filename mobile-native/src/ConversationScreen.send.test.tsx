@@ -2406,6 +2406,25 @@ describe("a subagent's own session (spec 9, rulings 10 and 30)", () => {
 		expect(stopRequests("hub-1").direct({ id: "d-fix" } as never)).toBe(true);
 	});
 
+	it("stops through the coordinator's thread as it reads now, after a restart gave it a new one", async () => {
+		const { tree, hub } = await mountSubagent(subagent(true), { stopSubagent: true });
+		// The coordinator restarts under a new thread while this screen is open.
+		const restarted = coordinator(true);
+		(restarted as unknown as { id: string }).id = "thread-restarted";
+		otherThreads.set(COORDINATOR.ref, restarted);
+		act(() => pressable(tree, "Stop subagent")?.props.onPress());
+		await act(async () =>
+			alertRequests
+				.at(-1)
+				?.buttons?.find((button) => button.text === "Stop")
+				?.onPress?.(),
+		);
+		await settle();
+		expect(
+			hub.requests.filter((request) => request.method === "evener/delegate/stop").map((request) => request.params),
+		).toEqual([{ ref: COORDINATOR.ref, threadId: "thread-restarted", delegateId: "d-fix" }]);
+	});
+
 	it("falls back to asking the coordinator when the hub doesn't know the direct stop", async () => {
 		coordinatorHub.stop = () => {
 			throw new WireError("method not found", -32601);
