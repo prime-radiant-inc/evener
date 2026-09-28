@@ -103,8 +103,8 @@ func TestAppThreadReadColdDelegateRosterCapsBriefStoredTwice(t *testing.T) {
 		t.Fatal("past thread not found")
 	}
 	got := thread.Evener.Diagnostics.Delegates[0]
-	if got.Task != "" || got.Description == "" || !strings.HasPrefix(brief, strings.TrimSuffix(got.Description, "…")) ||
-		len([]rune(got.Description)) > appwire.DelegateRosterTextMaxRunes {
+	if got.Description != "" || got.Task == "" || !strings.HasPrefix(brief, strings.TrimSuffix(got.Task, "…")) ||
+		len([]rune(got.Task)) > appwire.DelegateRosterTextMaxRunes {
 		t.Fatalf("cold roster label = task %d runes, description %d runes; want one capped copy", len([]rune(got.Task)), len([]rune(got.Description)))
 	}
 }

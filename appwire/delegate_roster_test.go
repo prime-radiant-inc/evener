@@ -14,10 +14,12 @@ func TestSlimDelegateForRoster(t *testing.T) {
 		task, desc      string
 		wantTask, wantD string
 	}{
-		{"brief stored twice keeps one copy", "review the diff", "review the diff", "", "review the diff"},
+		{"brief stored twice keeps the Task copy", "review the diff", "review the diff", "review the diff", ""},
 		{"distinct task and description both survive", "the long brief", "short label", "the long brief", "short label"},
+		{"only a description survives as the description", "", "just a label", "", "just a label"},
 		{"only a task survives as the task", "just a task", "", "just a task", ""},
-		{"long brief is cut on a rune boundary once", long, long, "", strings.Repeat("é", DelegateRosterTextMaxRunes-1) + "…"},
+		{"texts differing past the cap stay distinct", "a" + long, "b" + long, "a" + strings.Repeat("é", DelegateRosterTextMaxRunes-2) + "…", "b" + strings.Repeat("é", DelegateRosterTextMaxRunes-2) + "…"},
+		{"long brief is cut on a rune boundary once", long, long, strings.Repeat("é", DelegateRosterTextMaxRunes-1) + "…", ""},
 		{"text at the cap is untouched", strings.Repeat("a", DelegateRosterTextMaxRunes), "", strings.Repeat("a", DelegateRosterTextMaxRunes), ""},
 	}
 	for _, tc := range tests {

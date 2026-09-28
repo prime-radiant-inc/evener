@@ -51,8 +51,8 @@ func TestThreadReadDelegateRosterStaysSmallForDelegateHeavySession(t *testing.T)
 		got.ProjectionRevision != 4 || got.AgentType != "explorer" || got.Model != "gpt-5" {
 		t.Fatalf("roster row lost identity or lifecycle fields: %+v", got)
 	}
-	if got.Description == "" || !strings.HasPrefix(brief, strings.TrimSuffix(got.Description, "…")) || got.Task != "" {
-		t.Fatalf("roster label = %q (task %q), want the start of the brief once", got.Description, got.Task)
+	if got.Task == "" || !strings.HasPrefix(brief, strings.TrimSuffix(got.Task, "…")) || got.Description != "" {
+		t.Fatalf("roster label = %q (description %q), want the start of the brief once", got.Task, got.Description)
 	}
 	if len(got.Message) != 0 || len(got.StructuredResult) != 0 {
 		t.Fatalf("roster carries the final message/result (%d, %d bytes)", len(got.Message), len(got.StructuredResult))
