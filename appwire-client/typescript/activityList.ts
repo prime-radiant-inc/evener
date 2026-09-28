@@ -10,6 +10,7 @@ import { applyDelegateUpdate, fenceRootSession, graftContinuationTree } from "./
 import type { AppwireClient } from "./client";
 import { sessionActionError } from "./errors";
 import { isActionUnavailable, isThreadNotFound } from "./sessionErrors";
+import type { AnyNotification } from "./types.gen";
 
 // Least time between two whole-tree fetches. Answering evener/jobs/list for a
 // session with hundreds of delegates takes seconds and megabytes, while the
@@ -117,28 +118,40 @@ export class ActivityList {
   start() {
     if (this.disposed || this.unsubscribe) return;
     this.unsubscribe = this.client.onNotification((n) => {
-      switch (n.method) {
-        case "evener/delegate/updated": {
-          if (!this.owns(n.params)) return;
-          const tree = this.state.tree;
-          const updated = tree && applyDelegateUpdate(tree, n.params.delegate);
-          if (!updated) this.requestRefresh();
-          else if (updated !== tree) this.publish({ tree: updated });
-          return;
-        }
-        case "evener/jobs/treeUpdated":
-          // A tree at or past this revision already shows what it announces.
-          if (this.owns(n.params) && (!this.state.tree || n.params.revision > this.state.tree.revision))
-            this.requestRefresh();
-          return;
-        case "evener/job/started":
-        case "evener/job/finished":
-        case "evener/thread/resync":
-          if (this.owns(n.params)) this.requestRefresh();
-          return;
-      }
+      if (this.applyNotification(n)) this.requestRefresh();
     });
     void this.refresh();
+  }
+  /**
+   * Folds a notification into the held tree where it can, and returns whether
+   * the whole tree has to be fetched again to show what it announces. For a
+   * caller that runs its own reloads instead of start().
+   */
+  applyNotification(n: AnyNotification): boolean {
+    switch (n.method) {
+      case "evener/delegate/updated": {
+        if (!this.owns(n.params)) return false;
+        const tree = this.state.tree;
+        const updated = tree && applyDelegateUpdate(tree, n.params.delegate);
+        if (!updated) return true;
+        if (updated !== tree) this.publish({ tree: updated });
+        return false;
+      }
+      case "evener/jobs/treeUpdated":
+        // A tree at or past this revision already shows what it announces.
+        return this.owns(n.params) && (!this.state.tree || n.params.revision > this.state.tree.revision);
+      case "evener/job/started":
+      case "evener/job/finished":
+      case "evener/thread/resync":
+        return this.owns(n.params);
+      default:
+        return false;
+    }
+  }
+  /** Resolves once the minimum interval since the last whole-tree fetch has
+   * passed, rechecking after each wait since a fetch may have ended meanwhile. */
+  async waitForRefreshWindow(): Promise<void> {
+    for (let wait = this.untilRootLoadAllowed(); wait > 0; wait = this.untilRootLoadAllowed()) await delay(wait);
   }
   private owns(params: { ref: string; threadId: string }) {
     return params.ref === this.ref && params.threadId === this.threadId;

@@ -149,7 +149,7 @@ import { configForLevel, currentLevel, levelToast } from "./session/detailLevels
 import { detailLevels } from "./session/nativeDetailLevels";
 import { composerPlaceholder, sendAction, sendLabel } from "./session/sendAction";
 import { NotesBar } from "./session/NotesBar";
-import { canWriteHumanNote, type NotesHost, notesHosts } from "./session/NotesSheet";
+import { type NotesHost, notesHosts } from "./session/NotesSheet";
 import { SessionHeader, useHeaderHiding } from "./session/SessionHeader";
 import { type SessionMenuAction, sessionMenu } from "./session/sessionMenu";
 import {
@@ -162,7 +162,7 @@ import { SessionNotice } from "./session/SessionNotice";
 import { useSessionRestart } from "./session/sessionRestart";
 import { canDeleteSavedSession, canOpenModelSheet, latestForkPoint, modelChipLabel } from "./session/sessionFacts";
 import { type ChipKind, contextChips, SHUT_DOWN, sessionStateLine } from "./session/sessionState";
-import { NotesController, notesBarPreview, type SaveOutcome } from "./session/sessionNotes";
+import { canWriteHumanNote, NotesController, notesBarPreview, type SaveOutcome } from "./session/sessionNotes";
 import { SessionTitle } from "./session/SessionTitle";
 import { LiveStatusTray, useFrameCounter } from "./session/StatusTray";
 import { sheetKey, useProvideSheetHost } from "./sheet/sheetHosts";
