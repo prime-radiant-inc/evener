@@ -37,6 +37,8 @@ type WebServer struct {
 	// update). main.go binds its event recorder to the same sshconn lifecycle
 	// path, so host rows retain attach state from the manager's events.
 	hostManage *hubHostManager
+	// notices derives the Board's notices (S11); main.go runs its watcher.
+	notices *hubNotices
 
 	// lastGoodThreads retains each remote source's most recent successful
 	// ListThreads result so a transient list failure doesn't blank that
@@ -172,10 +174,11 @@ func newWebServer(cfg hubcore.WebConfig, appwireTrace *appserver.WebSocketTrace)
 		web.cfg.LiveModels = web.fetchLiveModels
 	}
 	web.navigation = newNavigationService(navigationServiceConfig{Source: webNavigationSource{web: web}})
-	server, hostAdmin, hostManage := newHubAppServerWithNavigationAndTrace(web.cfg, sources, web.navigation, web.resolveTopLevelSessionRef, appwireTrace)
+	server, hostAdmin, hostManage, notices := newHubAppServerWithNavigationAndTrace(web.cfg, sources, web.navigation, web.resolveTopLevelSessionRef, appwireTrace)
 	web.appRPC = server
 	web.hostAdmin = hostAdmin
 	web.hostManage = hostManage
+	web.notices = notices
 	// The manager's remove finish phase prunes every per-name store the
 	// removal touches; lastGoodThreads lives here, on the web server, so its
 	// prune crosses the boundary as a callback wired the same way hostManage

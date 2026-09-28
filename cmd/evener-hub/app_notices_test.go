@@ -230,3 +230,20 @@ func TestHubNoticesLeaveOutAKindThatFailsToRead(t *testing.T) {
 		t.Fatalf("notices = %+v failed = %v, want %+v failed %v", got, failed, want, wantFailed)
 	}
 }
+
+// evener/notices/list answers over the wire with every notice the hub derives
+// now.
+func TestHubRPCNoticesListRoundTrip(t *testing.T) {
+	sources := appsource.NewRegistry()
+	sources.Add(&offlineStubSource{scriptedAppSource: &scriptedAppSource{id: "paradise-park"}, online: false})
+	server := newHubAppServer(hubcore.WebConfig{}, sources)
+	response, err := server.Router().Dispatch(context.Background(), appwire.Request{Method: appwire.MethodEvenerNoticesList})
+	if err != nil {
+		t.Fatalf("evener/notices/list: %v", err)
+	}
+	got, ok := response.(appwire.NoticesListResponse)
+	want := []appwire.HubNotice{{ID: "hostOffline:paradise-park", Kind: appwire.NoticeKindHostOffline, Subject: "paradise-park"}}
+	if !ok || !reflect.DeepEqual(got.Notices, want) {
+		t.Fatalf("evener/notices/list = %#v, want %+v", response, want)
+	}
+}

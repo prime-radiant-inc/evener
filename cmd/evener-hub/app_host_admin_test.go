@@ -504,6 +504,7 @@ func TestHostAdminAllowListMatchesCatalog(t *testing.T) {
 		"evener/marketplace/remove":               true,
 		"evener/mobile/pairing":                   false,
 		"evener/navigation/read":                  false,
+		"evener/notices/list":                     false,
 		"evener/path/validate":                    true, // discovery: validate against the host's filesystem
 		"evener/paths/complete":                   true, // discovery: complete against the host's filesystem
 		"evener/pin-section/delete":               false,
