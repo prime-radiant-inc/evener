@@ -128,10 +128,10 @@ type ProtoHost = "magic-kingdom" | "paradise-park";
 // The prototype's own state vocabulary (data.js sessions[].state), mapped to
 // the wire's below. "shutdown" covers every non-live session (shut down,
 // test-run and archived alike -- data.js sets `live: false` on all of them).
-type ProtoState = "failed" | "question" | "approval" | "restart" | "yourmove" | "working" | "idle" | "shutdown";
+export type ProtoState = "failed" | "question" | "approval" | "restart" | "yourmove" | "working" | "idle" | "shutdown";
 type SubState = "running" | "failed" | "done";
 
-interface RawSubagent {
+export interface RawSubagent {
 	id: string;
 	title: string;
 	state: SubState;
@@ -501,6 +501,46 @@ function projectKeyOf(raw: { project?: string }): string {
 // The ref the wire names a fleet session by: its owning host and its id.
 function sessionRef(raw: RawSession): string {
 	return `${hostId(raw.host)}:${demoSessionId(raw.id)}`;
+}
+
+// A fleet session as demoSessions.ts needs it to serve the session's own
+// thread/read: the row's identity and state, where it runs, and its subagent
+// tree, uncapped (a session's own delegates are not a navigation list).
+export interface FleetSession {
+	slug: string;
+	ref: string;
+	hostId: string;
+	title: string;
+	state: ProtoState;
+	workingDir: string;
+	ago: number;
+	activity?: string;
+	subagents: RawSubagent[];
+}
+
+// Every session the fleet holds, in the fleet's own order.
+export function fleetSessions(): FleetSession[] {
+	return SESSIONS.map((raw) => {
+		const projectKey = projectKeyOf(raw);
+		return {
+			slug: raw.id,
+			ref: sessionRef(raw),
+			hostId: hostId(raw.host),
+			title: raw.title,
+			state: raw.state,
+			// hub-test-env is the one project PROJECT_META leaves without a folder.
+			workingDir: PROJECT_META.find((project) => project.key === projectKey)?.workingDir ?? `/home/jesse/git/${projectKey}`,
+			ago: raw.ago,
+			...(raw.activity ? { activity: raw.activity } : {}),
+			subagents: rawChildren(raw),
+		};
+	});
+}
+
+// The plugins a fleet session starts with: data.js's defaultPlugins, every
+// enabled one.
+export function enabledPluginNames(): string[] {
+	return PLUGINS.filter((plugin) => plugin.on).map((plugin) => plugin.id);
 }
 
 function toRow(raw: RawSession, startupMs: number, offlineHost: boolean): NavigationSessionSummary {

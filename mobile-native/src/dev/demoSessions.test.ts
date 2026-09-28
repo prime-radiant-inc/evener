@@ -1,0 +1,183 @@
+// The demo hub's sessions for Appendix A's Session frames, read the way the
+// phone reads them: each thread hydrated by the package (hydrateThread) and
+// projected at a detail level (projectConversation), then asked the same
+// questions the Session's own screen asks. This keeps the fixture honest to
+// the wire (see demoSessions.ts's header comment).
+import { describe, expect, it } from "vitest";
+import { hydrateThread, type Thread } from "@evener/appwire-client";
+import type { ContentLevel } from "@evener/appwire-client";
+import { liveAsksFor, projectConversation } from "../projectedRows.js";
+import { projectNativeTranscript } from "../transcriptPresentation.js";
+import { groupTimeline, type TimelineRow } from "../timeline.js";
+import { configForLevel } from "../session/detailLevels.js";
+import { EVIDENCE_PREVIEW_LINES, stepEvidence } from "../session/evidence.js";
+import { ghosts, shownGhosts } from "../session/ghosts.js";
+import { modelChipLabel, notesSummary } from "../session/sessionFacts.js";
+import { notesBarPreview } from "../session/sessionNotes.js";
+import { contextChips, sessionStateLine } from "../session/sessionState.js";
+import { subagentLine } from "../session/subagentLine.js";
+import { runSummary, runSummaryText, sessionRows } from "../session/transcriptRows.js";
+import { fleetSessions } from "./demoFleet.js";
+import { createDemoSessions, DEMO_MODEL_LIST } from "./demoSessions.js";
+
+const NOW = Date.parse("2026-09-28T21:00:00.000Z");
+const sessions = createDemoSessions({ now: NOW });
+
+function refOf(slug: string): string {
+	const session = fleetSessions().find((candidate) => candidate.slug === slug);
+	if (!session) throw new Error(`no fleet session ${slug}`);
+	return session.ref;
+}
+
+function threadOf(slug: string): Thread {
+	const thread = sessions.find((candidate) => candidate.evener.ref === refOf(slug));
+	if (!thread) throw new Error(`no demo thread for ${slug}`);
+	return thread;
+}
+
+// One session as the Session screen sees it at a detail level: the store's
+// projection, then the screen's presentation and transcript rows.
+function open(slug: string, level: ContentLevel = "intent") {
+	const thread = threadOf(slug);
+	const model = hydrateThread({ thread }, thread.evener.ref, NOW);
+	const config = configForLevel(level, null) ?? undefined;
+	const conversation = projectConversation(model, liveAsksFor(model), config);
+	const rows = sessionRows(groupTimeline(projectNativeTranscript(conversation, config).items), model.turns);
+	return { thread, model, conversation, rows };
+}
+
+type Run = Extract<TimelineRow, { kind: "run" }>;
+type Activity = Extract<TimelineRow, { kind: "activity" }>;
+const runsOf = (rows: TimelineRow[]) => rows.filter((row): row is Run => row.kind === "run");
+const subagentsOf = (rows: TimelineRow[]) =>
+	rows.filter((row): row is Activity => row.kind === "activity" && row.label === "delegate");
+
+describe("the demo sessions behind Appendix A's Session frames", () => {
+	it("serves a valid thread for every fleet session, so the title's swipe always lands on a real neighbor", () => {
+		const refs = fleetSessions().map((session) => session.ref);
+		expect(sessions.map((thread) => thread.evener.ref)).toEqual(refs);
+		for (const session of fleetSessions()) {
+			const { thread, conversation } = open(session.slug);
+			expect(thread.name).toBe(session.title);
+			expect(conversation.items.length).toBeGreaterThan(0);
+			expect(thread.evener.capabilities.sharedNotes).toBe(true);
+		}
+	});
+
+	it("frame 7: a working session at Intent, with its chips, notes, runs and a failed subagent", () => {
+		const { model, rows } = open("s-pr2138");
+		expect(model.name).toBe("Get PR 2138 Test Clean");
+		expect(sessionStateLine(model, NOW).text).toMatch(/^Working · \d+[smh]/);
+		expect(contextChips(model, true).map(({ label, failed }) => ({ label, failed }))).toEqual([
+			{ label: "Subagents 55", failed: "2 failed" },
+			{ label: "Tasks 3/7", failed: undefined },
+			{ label: "Goal", failed: undefined },
+			{ label: "Queue 1", failed: undefined },
+		]);
+		expect(notesBarPreview(model)).toEqual({
+			glyph: "person",
+			text: "Your note: Don't skip or quarantine tests. Fix causes.",
+			links: "3 links",
+		});
+		expect(notesSummary(model)).toBe("Your note · agent note · 3 links");
+		expect(model.sessionUrls.map((link) => link.url)).toEqual([
+			"https://github.com/prime-radiant-inc/evener/pull/2138",
+			"https://github.com/prime-radiant-inc/evener/pull/2138/checks",
+			"file:///home/jesse/git/prime-radiant-inc/evener/docs/superpowers/plans/2026-09-25-settle-race.md",
+		]);
+		expect(rows.some((row) => row.kind === "user")).toBe(true);
+		expect(rows.some((row) => row.kind === "assistant")).toBe(true);
+		const runs = runsOf(rows);
+		expect(runs.length).toBeGreaterThanOrEqual(2);
+		for (const run of runs) expect(runSummaryText(runSummary(run.steps))).toMatch(/^\d+ steps? · \d+[smh]/);
+		const lines = subagentsOf(rows).map((row) => subagentLine(row, model.delegates, NOW));
+		expect(lines).toContainEqual(
+			expect.objectContaining({ title: "Fix race in tree settle", state: "failed", activity: "Failed: go test exited 1 (3 times)" }),
+		);
+	});
+
+	it("frames 13 and 14: frame 7's session names its model and effort from a catalog with two providers", () => {
+		const { model } = open("s-pr2138");
+		expect(modelChipLabel(model, DEMO_MODEL_LIST.data)).toBe("DeepSeek 4.1 Flash · XHigh");
+		expect(new Set(DEMO_MODEL_LIST.data.map((entry) => entry.provider)).size).toBe(2);
+		expect(DEMO_MODEL_LIST.recent?.length).toBeGreaterThan(0);
+		expect(model.reasoningEffortLevels.length).toBeGreaterThan(1);
+		expect(model.contextWindow).toBeGreaterThan(model.contextUsed);
+		expect(model.diagnostics?.plugins?.length).toBeGreaterThan(0);
+	});
+
+	it("frame 8: a question with two questions, one multi-select and one option recommended", () => {
+		const { model, rows } = open("s-audit");
+		expect(sessionStateLine(model, NOW).text).toBe("Asks a question");
+		const questions = [...liveAsksFor(model).values()].flat();
+		expect(questions.map((question) => question.question)).toEqual([
+			"Keep or drop the implied options?",
+			"Which tool groups should I audit next?",
+		]);
+		expect(questions.map((question) => question.multiSelect)).toEqual([false, true]);
+		expect(questions[0]?.options.filter((option) => option.recommended).map((option) => option.label)).toEqual([
+			"Drop them",
+		]);
+		// The dock is the question while it is open, so the transcript leaves it out.
+		expect(rows.some((row) => row.kind === "question")).toBe(false);
+	});
+
+	it("frame 9: an approval to write outside the workspace, spelled out absolutely", () => {
+		const { model } = open("s-mirror");
+		expect(sessionStateLine(model, NOW).text).toBe("Asks for approval");
+		expect(model.pendingEscalations).toEqual([
+			expect.objectContaining({
+				tool: "write_file",
+				deniedPath: "/home/jesse/sites/docs/index.html",
+				ref: refOf("s-mirror"),
+			}),
+		]);
+	});
+
+	it("frame 10: a working session whose one queued message offers Steer now", () => {
+		const { model } = open("s-tasklist");
+		expect(model.status.type).toBe("active");
+		const queued = ghosts(model, [], null, []);
+		expect(queued).toHaveLength(1);
+		expect(queued[0]).toMatchObject({ state: "queued", buttons: ["steerNow"] });
+	});
+
+	it("queues enough on one working session to open the Queue sheet from 'N more queued'", () => {
+		const { model } = open("s-stumble");
+		expect(model.status.type).toBe("active");
+		expect(shownGhosts(ghosts(model, [], null, [])).moreQueued).toBeGreaterThan(0);
+	});
+
+	it("frame 11: the last turn failed on a sign-in error", () => {
+		const { model, conversation } = open("s-retry");
+		expect(sessionStateLine(model, NOW).text).toBe("Failed");
+		expect(model.turns.at(-1)).toMatchObject({ status: "failed", error: { message: expect.stringContaining("401") } });
+		expect(conversation.items).toContainEqual(
+			expect.objectContaining({ kind: "failure", title: expect.stringContaining("401") }),
+		);
+	});
+
+	it("frame 12: at Tools, an edit shows a diff and a shell step has 60 lines to show all of", () => {
+		const { rows } = open("s-jobdisp", "tools");
+		const steps = runsOf(rows).flatMap((run) => run.steps);
+		const edit = steps.find((step) => step.label === "edit_file");
+		const shell = steps.find((step) => step.label === "shell");
+		if (!edit || !shell) throw new Error("frame 12 needs an edit and a shell step");
+		expect(stepEvidence(edit)).toEqual([expect.objectContaining({ kind: "diff" })]);
+		const [output] = stepEvidence(shell);
+		expect(output).toMatchObject({ kind: "output", lines: 60 });
+		// More lines than the transcript previews, so the step offers "Show all 60 lines".
+		expect(EVIDENCE_PREVIEW_LINES).toBeLessThan(60);
+	});
+
+	it("frame 13a: a shut-down session keeps read-only notes and a link", () => {
+		const { model } = open("s-roster");
+		expect(sessionStateLine(model, NOW).text).toBe("Shut down");
+		expect(model.capabilities.sharedNotes).toBe(true);
+		expect(notesBarPreview(model)).toEqual({
+			glyph: "person",
+			text: "Your note: Measure on magic-kingdom, not a laptop.",
+			links: "1 link",
+		});
+	});
+});

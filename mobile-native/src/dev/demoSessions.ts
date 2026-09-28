@@ -1,0 +1,709 @@
+// The demo fleet's sessions as the Session screen reads them (thread/read),
+// so Appendix A's Session frames (7-14 and 13a of
+// docs/superpowers/specs/2026-09-25-mobile-app-redesign-design.md) can be
+// seen and screenshotted without a real hub. demoFleet.ts serves the Board's
+// rows; this file serves each of those rows' own thread, on the same ref.
+//
+// Every fleet session gets a thread, so the Session title's swipe always
+// lands on a real neighbor. The frames' sessions carry content transcribed
+// from the prototype's transcripts, asks and approvals
+// (docs/design/mobile/redesign/prototype/data.js, `T`, `ASKS` and
+// `APPROVALS`), turned into wire items: each prototype step becomes the tool
+// call a real session makes for it. Every other session gets data.js's
+// `generic` transcript. The frames:
+// - 7, 13 and 14: s-pr2138, working, with subagents, tasks, a goal, notes,
+//   links and one queued message;
+// - 8: s-audit, asking two questions;
+// - 9: s-mirror, waiting on an approval to write outside its workspace;
+// - 10: s-tasklist, working with one queued message;
+// - 11: s-retry, whose last turn failed on a sign-in error;
+// - 12: s-jobdisp, with an edit and a 60-line command output to open at Tools;
+// - 13a: s-pr2138's notes, and s-roster, shut down with read-only notes.
+// s-stumble queues five messages, more than the Session shows inline, so its
+// "2 more queued" opens the Queue sheet.
+import type {
+	EvenerDelegateInfo,
+	GoalState,
+	ModelListResponse,
+	QueueState,
+	SandboxEscalationRequested,
+	SessionURL,
+	TaskAggregate,
+	Thread,
+	ThreadItem,
+	Turn,
+	TurnError,
+} from "@evener/appwire-client";
+import {
+	demoSessionId,
+	enabledPluginNames,
+	type FleetSession,
+	fleetSessions,
+	type ProtoState,
+	type RawSubagent,
+} from "./demoFleet";
+
+const ALL_EFFORTS = ["low", "medium", "high", "xhigh", "max"];
+
+// Two of data.js's provider profiles and their models, with its effort
+// ladders and context windows. The recent model is one the fleet's sessions
+// use that isn't the default.
+export const DEMO_MODEL_LIST: ModelListResponse = {
+	data: [
+		{ provider: "lunaroute", model: "deepseek-4.1-flash", displayName: "DeepSeek 4.1 Flash", contextWindow: 256_000, supportsReasoning: true, reasoningEffortLevels: ALL_EFFORTS },
+		{ provider: "lunaroute", model: "glm-5.3-vision", displayName: "GLM 5.3 Vision", contextWindow: 200_000, supportsVision: true, supportsReasoning: true, reasoningEffortLevels: ALL_EFFORTS },
+		{ provider: "lunaroute", model: "glm-5.3-flash", displayName: "GLM 5.3 Flash", contextWindow: 128_000, supportsReasoning: true, reasoningEffortLevels: ["low", "medium", "high"] },
+		{ provider: "codex-jesse-fsck.com", model: "gpt-5.6", displayName: "GPT-5.6", contextWindow: 400_000, supportsVision: true, supportsReasoning: true, reasoningEffortLevels: ALL_EFFORTS },
+		{ provider: "codex-jesse-fsck.com", model: "gpt-6-astra", displayName: "GPT-6 Astra", contextWindow: 1_000_000, supportsVision: true, supportsReasoning: true, reasoningEffortLevels: ALL_EFFORTS },
+	],
+	recent: [
+		{ provider: "lunaroute", model: "glm-5.3-vision", displayName: "GLM 5.3 Vision", contextWindow: 200_000, supportsVision: true, supportsReasoning: true, reasoningEffortLevels: ALL_EFFORTS },
+	],
+};
+
+// One prototype step as the tool call a real session makes for it.
+interface Step {
+	tool: string;
+	intent: string;
+	args: Record<string, unknown>;
+	seconds: number;
+	output?: string;
+	failed?: { error: string; exitCode: number };
+	// The step still running: the status tray's line.
+	running?: true;
+}
+
+interface Question {
+	header: string;
+	question: string;
+	why: string;
+	multi_select: boolean;
+	options: { label: string; detail: string; recommended?: true }[];
+}
+
+type Entry =
+	| { user: string }
+	| { steer: string }
+	| { agent: string }
+	| { step: Step }
+	// A subagent the session started, by its id in the session's subagent tree.
+	| { subagent: string }
+	| { thinking: true }
+	| { ask: Question[] };
+
+// What a frame's session carries beyond its fleet row.
+interface SessionContent {
+	entries?: Entry[];
+	error?: TurnError;
+	model?: string;
+	effort?: string;
+	queued?: string[];
+	tasks?: TaskAggregate;
+	goal?: GoalState;
+	humanNote?: string;
+	agentNote?: string;
+	links?: Omit<SessionURL, "addedBy">[];
+	escalation?: Pick<SandboxEscalationRequested, "tool" | "kind" | "mode" | "deniedPath">;
+	usage?: Usage;
+}
+
+// A session's usage for the Session sheet: tokens, the estimated cost, and
+// how much of its context window it holds.
+interface Usage {
+	inputTokens: number;
+	outputTokens: number;
+	cacheReadTokens: number;
+	cost: string;
+	contextUsed: number;
+	contextWindow: number;
+}
+
+// data.js's `base` usage, which every session it doesn't override shares.
+const BASE_USAGE: Usage = {
+	inputTokens: 38_200_000,
+	outputTokens: 1_100_000,
+	cacheReadTokens: 29_400_000,
+	cost: "~$11.40",
+	contextUsed: 96_000,
+	contextWindow: 256_000,
+};
+
+const DEFAULT_MODEL = "lunaroute/deepseek-4.1-flash";
+const DEFAULT_EFFORT = "xhigh";
+
+// data.js's subagent lines for the failures a frame shows; any other failed
+// subagent reads as data.js's genericSubs failure.
+const FAILURE_REASONS: Record<string, string> = {
+	"g-settle": "Failed: go test exited 1 (3 times)",
+	"g-repro": "Failed: could not reproduce in 200 runs",
+	"r-3": "Failed: provider sign-in expired",
+};
+const GENERIC_FAILURE = "Failed: tests still failing after 3 attempts";
+
+const shell = (intent: string, command: string, seconds: number, output?: string): Step => ({
+	tool: "shell",
+	intent,
+	args: { command },
+	seconds,
+	...(output === undefined ? {} : { output }),
+});
+
+// A test run's output, `lines` lines long: enough for "Show all N lines".
+function testOutput(lines: number): string {
+	const passes = Array.from({ length: lines - 2 }, (_, index) => `✓ JobRow case ${index + 1} (${(index % 7) + 2} ms)`);
+	return [...passes, "", `Tests  ${lines - 2} passed (${lines - 2})`].join("\n");
+}
+
+const CONTENT: Record<string, SessionContent> = {
+	"s-pr2138": {
+		entries: [
+			{ user: "PR 2138 has 6 failing tests on CI. Get it clean without skipping anything." },
+			{
+				agent:
+					"I'll pull the failing runs, group the failures by cause, and give each cause its own subagent. I'll keep the goal as *green without skipped tests*.",
+			},
+			{
+				step: shell(
+					"Read the CI failures",
+					"gh run view 34717544502 --log-failed",
+					40,
+					"--- FAIL: TestRetirementTreeSettleDrainsPendingRootAttention (0.41s)\n--- FAIL: TestFoldPublicationMarkersLandInOrder (0.12s)\n--- FAIL: TestQueueRetirementCancelsQueued (0.08s)\nFAIL\tgithub.com/prime-radiant-inc/evener/agent\t41.2s",
+				),
+			},
+			{
+				step: {
+					...shell(
+						"Ran the agent tests",
+						"go test ./agent/... -run 'Retirement|Fold' -count=5",
+						190,
+						"--- FAIL: TestRetirementTreeSettleDrainsPendingRootAttention (0.44s)\n    retirement_test.go:212: settle finished before drain: got state idle, want draining\nFAIL\nexit status 1",
+					),
+					failed: { error: "exit status 1", exitCode: 1 },
+				},
+			},
+			{
+				step: {
+					tool: "edit_file",
+					intent: "Edited the settle pass",
+					args: {
+						file_path: "agent/retirement.go",
+						old_string: "func (t *tree) settle(ctx context.Context) error {\n\tt.mu.Lock()\n\tdefer t.mu.Unlock()",
+						new_string:
+							'func (t *tree) settle(ctx context.Context) error {\n\tif err := t.drain.wait(ctx); err != nil {\n\t\treturn fmt.Errorf("settle: wait for drain: %w", err)\n\t}\n\tt.mu.Lock()\n\tdefer t.mu.Unlock()',
+					},
+					seconds: 50,
+				},
+			},
+			{
+				agent:
+					"The flaky tests share one cause: a race between the **tree settle pass** and the **retirement drain**. Both take the tree lock, and settle can finish before drain has seen the pending work.\n\nI've written the fix up as a plan in `docs/superpowers/plans/2026-09-25-settle-race.md` and I'm splitting it across subagents: one fixes the race, others run every affected package under `-race` to prove it.",
+			},
+			{ subagent: "g-settle" },
+			{ subagent: "g-run-0" },
+			{ steer: "Also make sure the race test runs under -race on Linux, not just macOS." },
+			{ agent: "Good call. I added a Linux `-race` run to the plan and gave it its own subagent on magic-kingdom." },
+			{
+				step: {
+					tool: "edit_file",
+					intent: "Added the Linux -race run to the plan",
+					args: {
+						file_path: "docs/superpowers/plans/2026-09-25-settle-race.md",
+						old_string: "- Run the flaky tests 200 times on macOS.",
+						new_string: "- Run the flaky tests 200 times on macOS.\n- Run them under -race on Linux (magic-kingdom).",
+					},
+					seconds: 20,
+				},
+			},
+			{
+				step: { tool: "job_watch", intent: "Waiting on subagents", args: { job_ids: ["g-run-0"] }, seconds: 0, running: true },
+			},
+		],
+		queued: ["When CI is green, post a summary on the PR."],
+		tasks: { total: 7, done: 3, remaining: 4, current: { id: 4, description: "Fix the settle/drain race" } },
+		goal: { objective: "PR 2138 green on CI without skipped tests", status: "active", iterations: 3 },
+		usage: {
+			inputTokens: 46_100_000,
+			outputTokens: 1_900_000,
+			cacheReadTokens: 38_800_000,
+			cost: "~$19.60",
+			contextUsed: 38_000,
+			contextWindow: 256_000,
+		},
+		humanNote: "Don't skip or quarantine tests. Fix causes.",
+		agentNote: "Race is in retirement drain vs tree settle; see plan.",
+		links: [
+			{ id: "u-2138", url: "https://github.com/prime-radiant-inc/evener/pull/2138", label: "PR #2138" },
+			{ id: "u-checks", url: "https://github.com/prime-radiant-inc/evener/pull/2138/checks", label: "CI checks" },
+			{
+				id: "u-splan",
+				url: "file:///home/jesse/git/prime-radiant-inc/evener/docs/superpowers/plans/2026-09-25-settle-race.md",
+				label: "Settle race plan",
+			},
+		],
+	},
+	"s-audit": {
+		model: "lunaroute/glm-5.3-vision",
+		entries: [
+			{
+				user: "Audit every tool description in agent/internal/tool/definitions.go for options the tool doesn't actually accept. List them and fix the descriptions.",
+			},
+			{
+				agent:
+					"I'll read all 61 tool definitions and check each description against the tool's real argument schema. I'm splitting the tools across subagents so this goes quickly.",
+			},
+			{
+				step: {
+					tool: "read_file",
+					intent: "Read the tool definitions",
+					args: { file_path: "agent/internal/tool/definitions.go" },
+					seconds: 4,
+					output: "1,412 lines, 61 tools",
+				},
+			},
+			{ step: { tool: "grep", intent: "Found every argument schema", args: { pattern: "Parameters:", path: "agent/internal/tool" }, seconds: 3 } },
+			{ subagent: "s-audit-g0" },
+			{ subagent: "s-audit-g1" },
+			{ subagent: "s-audit-g2" },
+			{
+				agent:
+					"## What I found\n\n14 descriptions mention options their tools don't accept. The worst three:\n\n| Tool | Implied option | Accepted |\n|---|---|---|\n| `read_file` | `--force` | no |\n| `job_watch` | `timeout_ms` | no |\n| `delegate` | `priority` | no |\n\nThere are two reasonable fixes and they change behavior differently, so I'd like your call.",
+			},
+			{
+				ask: [
+					{
+						header: "Implied options",
+						question: "Keep or drop the implied options?",
+						why: "Fourteen descriptions mention flags the tools don't accept, like --force on read_file. Models try them and fail.",
+						multi_select: false,
+						options: [
+							{ label: "Drop them", detail: "Remove the implied options from all 14 descriptions", recommended: true },
+							{ label: "Keep them and add the flags", detail: "Implement the 9 missing flags; about 400 lines" },
+							{ label: "Ask me per tool", detail: "I'll list each one for a yes or no" },
+						],
+					},
+					{
+						header: "Next audit",
+						question: "Which tool groups should I audit next?",
+						why: "I can check the rest the same way while you review.",
+						multi_select: true,
+						options: [
+							{ label: "Job tools", detail: "job_watch, job_status, job_list, job_stop", recommended: true },
+							{ label: "Delegate tools", detail: "delegate, delegate_send" },
+							{ label: "Search tools", detail: "grep, glob, search" },
+							{ label: "Notes tools", detail: "notes and urls" },
+						],
+					},
+				],
+			},
+		],
+	},
+	"s-mirror": {
+		effort: "high",
+		entries: [
+			{ user: "Mirror the docs site into ~/sites/docs so I can browse it offline." },
+			{
+				agent:
+					"I'll fetch the site map and write each page under `~/sites/docs`. That folder is outside this session's workspace, so I'll need your approval to write there.",
+			},
+			{ step: shell("Fetched the site map", "curl -s https://docs.prime-radiant.com/sitemap.xml", 6, "214 URLs") },
+			{
+				step: {
+					tool: "write_file",
+					intent: "Writing the first page",
+					args: { file_path: "/home/jesse/sites/docs/index.html" },
+					seconds: 0,
+					running: true,
+				},
+			},
+		],
+		escalation: { tool: "write_file", kind: "file_tool", mode: "workspace-write", deniedPath: "/home/jesse/sites/docs/index.html" },
+	},
+	"s-tasklist": {
+		model: "lunaroute/glm-5.3-vision",
+		entries: [
+			{ user: "The inline task card in the transcript is too tall. Make it one line that expands, and keep the current task visible." },
+			{
+				agent:
+					"I'll fold `TaskCard` into one summary line (*→ Fold the task card · 1 of 4*) that expands in place, and keep the full list in the Tasks panel. Subagents will update the tests and the browser guard.",
+			},
+			{
+				step: {
+					tool: "read_file",
+					intent: "Read the task card",
+					args: { file_path: "cmd/evener-hub/frontend/src/panes/session/transcript/TaskCard.tsx" },
+					seconds: 3,
+				},
+			},
+			{
+				step: {
+					tool: "edit_file",
+					intent: "Folded the card to one line",
+					args: {
+						file_path: "cmd/evener-hub/frontend/src/panes/session/transcript/TaskCard.tsx",
+						old_string: "  return <section className={styles.card}>{rows}</section>;",
+						new_string:
+							"  if (!open) return <button className={styles.line} onClick={expand}>\n    → {current.title} · {done} of {total}\n  </button>;",
+					},
+					seconds: 40,
+				},
+			},
+			{ step: shell("Ran the frontend tests", "npm test -- TaskCard", 25, "✓ 14 tests passed") },
+			{ subagent: "t-1" },
+			{ subagent: "t-2" },
+			{ step: { ...shell("Running the hub tests", "go test ./cmd/evener-hub/...", 0), running: true } },
+		],
+		queued: ["Keep the expand arrow on the left, like the Tasks panel."],
+		tasks: { total: 4, done: 1, remaining: 3, current: { id: 2, description: "Fold the task card to one line" } },
+	},
+	"s-stumble": {
+		queued: [
+			"Start with the edit_file stumbles; they're the most common.",
+			"Keep the repair logging so we can count what it fixes.",
+			"Don't change the tool schemas in this pass.",
+			"Add a test for each stumble you repair.",
+			"When you're done, rerun last week's corpus and report the rate.",
+		],
+		tasks: { total: 5, done: 2, remaining: 3, current: { id: 3, description: "Repair malformed tool arguments" } },
+	},
+	"s-retry": {
+		model: "codex-jesse-fsck.com/gpt-5.6",
+		effort: "high",
+		entries: [
+			{ user: "Sessions on codex get stuck retrying forever when the provider returns 429. Find the loop and cap it." },
+			{
+				agent:
+					"I'll find where provider retries are scheduled, write a test that reproduces the endless loop, then cap retries with backoff.",
+			},
+			{ subagent: "r-1" },
+			{ subagent: "r-2" },
+			{
+				agent:
+					"The loop is in `llm/retry.go`: a 429 resets the attempt counter instead of incrementing it, so it never gives up. The test reproduces it. Now capping retries at 5 with exponential backoff.",
+			},
+			{
+				step: {
+					tool: "edit_file",
+					intent: "Edited the retry loop",
+					args: {
+						file_path: "llm/retry.go",
+						old_string: "for attempt := 0; ; attempt++ {\n\tif resp.StatusCode == 429 { attempt = 0 }",
+						new_string:
+							'for attempt := 0; ; attempt++ {\n\tif attempt >= maxRetries {\n\t\treturn nil, fmt.Errorf("gave up after %d attempts: %w", attempt, lastErr)\n\t}',
+					},
+					seconds: 30,
+				},
+			},
+			{
+				step: {
+					...shell(
+						"Ran the retry tests",
+						"go test ./llm/... -run Retry",
+						12,
+						"llm: provider codex-jesse-fsck.com: 401 Unauthorized: sign-in expired\nFAIL\tgithub.com/prime-radiant-inc/evener/llm\t0.9s",
+					),
+					failed: { error: "exit status 1", exitCode: 1 },
+				},
+			},
+			{ subagent: "r-3" },
+		],
+		error: {
+			title: "codex-jesse-fsck.com sign-in expired (401)",
+			message: "codex-jesse-fsck.com: 401 Unauthorized: sign-in expired",
+			hint: "The session stopped after the provider refused 5 requests in a row. Sign in again, then retry.",
+		},
+		tasks: { total: 4, done: 2, remaining: 2, current: { id: 3, description: "Cap retries per provider" } },
+	},
+	"s-jobdisp": {
+		model: "lunaroute/glm-5.3-vision",
+		entries: [
+			{ user: "Failed jobs in the transcript just say 'failed'. Show the exit code and the last lines of output inline." },
+			{
+				step: {
+					tool: "edit_file",
+					intent: "Edited the job row",
+					args: {
+						file_path: "cmd/evener-hub/frontend/src/panes/session/transcript/JobRow.tsx",
+						old_string: "  return <span className={styles.status}>failed</span>;",
+						new_string:
+							"  return (\n    <div className={styles.failed}>\n      <span className={styles.status}>exit {job.exitCode}</span>\n      <pre className={styles.tail}>{lastLines(job.output, 20)}</pre>\n    </div>\n  );",
+					},
+					seconds: 90,
+				},
+			},
+			{ step: shell("Ran the tests", "npm test", 48, testOutput(60)) },
+			{ step: shell("Opened PR #2331", "gh pr create --fill", 6, "https://github.com/prime-radiant-inc/evener/pull/2331") },
+			{
+				agent:
+					"Done. Failed jobs now show the exit code and the last 20 lines of output inline, with a link to the full log. PR #2331 is open and green.",
+			},
+		],
+		agentNote: "PR #2331 is green. I'll merge once you've looked at the new failed-job card.",
+		links: [{ id: "u-2331", url: "https://github.com/prime-radiant-inc/evener/pull/2331", label: "PR #2331" }],
+	},
+	"s-roster": {
+		humanNote: "Measure on magic-kingdom, not a laptop.",
+		agentNote: "Roster p95 went from 1.8s to 240ms. The fix is in PR #2290.",
+		links: [{ id: "u-2290", url: "https://github.com/prime-radiant-inc/evener/pull/2290", label: "PR #2290" }],
+	},
+};
+
+// data.js's `generic` transcript: the prompt, a first reply, a read, and the
+// row's activity as the step still running while the session works.
+function genericEntries(session: FleetSession): Entry[] {
+	const entries: Entry[] = [
+		{ user: `${session.title}.` },
+		{ agent: "Starting on this now. I'll read the relevant code first and report back." },
+		{ step: { tool: "read_file", intent: "Read the relevant files", args: { file_path: "README.md" }, seconds: 20 } },
+	];
+	if (session.state === "working") entries.push(liveStep(session.activity));
+	if (session.state === "idle") entries.push({ agent: "Finished. Summary is above." });
+	return entries;
+}
+
+// A working row's activity line as the step it describes.
+function liveStep(activity = "Thinking"): Entry {
+	if (activity === "Thinking") return { thinking: true };
+	if (activity.startsWith("Running ")) return { step: { ...shell(activity, activity.slice("Running ".length), 0), running: true } };
+	const [verb, ...rest] = activity.split(" ");
+	const tool = verb === "Editing" ? "edit_file" : verb === "Writing" ? "write_file" : "read_file";
+	return { step: { tool, intent: activity, args: { file_path: rest.join(" ") }, seconds: 0, running: true } };
+}
+
+// The seconds each entry takes on the session's clock; a running step and a
+// live thought take the rest of the turn.
+function secondsOf(entry: Entry): number {
+	if ("step" in entry) return entry.step.seconds;
+	if ("user" in entry || "steer" in entry) return 10;
+	if ("agent" in entry) return 30;
+	return 5;
+}
+
+// The prototype's session states as a thread's status. A session that
+// finished without asking ("yourmove") rests idle, as a daemon's does.
+const THREAD_STATUS: Record<ProtoState, string> = {
+	failed: "systemError",
+	question: "awaiting",
+	approval: "active",
+	restart: "restartRequired",
+	yourmove: "idle",
+	working: "active",
+	idle: "idle",
+	shutdown: "notLoaded",
+};
+
+const SUBAGENT_STATUS = { running: "running", failed: "failed", done: "completed" } as const;
+const SUBAGENT_ITEM_STATUS = { running: "inProgress", failed: "failed", done: "completed" } as const;
+
+function flatten(subagents: RawSubagent[], parent?: string): { subagent: RawSubagent; parent?: string }[] {
+	return subagents.flatMap((subagent) => [
+		{ subagent, ...(parent ? { parent } : {}) },
+		...flatten(subagent.children ?? [], subagent.id),
+	]);
+}
+
+const iso = (ms: number) => new Date(ms).toISOString();
+const callId = (subagentId: string) => `call-${subagentId}`;
+
+// The session's whole subagent tree as the delegates its diagnostics carry,
+// each tied to the transcript's delegate call by its tool call id.
+function delegatesOf(session: FleetSession, now: number): EvenerDelegateInfo[] {
+	return flatten(session.subagents).map(({ subagent, parent }) => {
+		const running = subagent.state === "running";
+		const lastActive = now - subagent.ago * 1000;
+		return {
+			delegateId: subagent.id,
+			ownerSessionId: demoSessionId(parent ?? session.slug),
+			rootSessionId: demoSessionId(session.slug),
+			childSessionId: demoSessionId(subagent.id),
+			transcriptRef: `${session.hostId}:${demoSessionId(subagent.id)}`,
+			...(parent ? { parentDelegateId: parent } : {}),
+			type: "delegate",
+			lifecycle: "stable",
+			phase: running ? "running" : "idle",
+			status: SUBAGENT_STATUS[subagent.state],
+			terminal: !running,
+			resumable: false,
+			needsAttention: subagent.state === "failed",
+			projectionRevision: 1,
+			description: subagent.title,
+			originToolCallId: callId(subagent.id),
+			runStartedAt: iso(lastActive - 5 * 60_000),
+			...(running ? { latestActivityAt: iso(lastActive) } : { runEndedAt: iso(lastActive) }),
+			...(subagent.state === "failed" ? { reason: FAILURE_REASONS[subagent.id] ?? GENERIC_FAILURE } : {}),
+		};
+	});
+}
+
+// The session's one turn, its entries laid end to end so the last one lands
+// when the row says the session last changed.
+function turnOf(session: FleetSession, entries: Entry[], error: TurnError | undefined, now: number): Turn {
+	const end = now - session.ago * 1000;
+	const start = end - entries.reduce((total, entry) => total + secondsOf(entry) * 1000, 0);
+	const subagents = new Map(flatten(session.subagents).map(({ subagent }) => [subagent.id, subagent]));
+	const id = `${session.slug}-turn`;
+	let at = start;
+	const items = entries.map((entry, index): ThreadItem => {
+		const item = { id: `${id}-${index}`, startedAt: at };
+		const seconds = secondsOf(entry);
+		at += seconds * 1000;
+		if ("user" in entry) return { ...item, type: "userMessage", text: entry.user };
+		if ("steer" in entry) return { ...item, type: "steering", source: "user", text: entry.steer, status: "completed" };
+		if ("agent" in entry) return { ...item, type: "agentMessage", text: entry.agent, status: "completed" };
+		if ("thinking" in entry) return { ...item, type: "reasoning", text: "", status: "inProgress" };
+		if ("ask" in entry)
+			return {
+				...item,
+				type: "commandExecution",
+				toolName: "ask_user",
+				callId: `${id}-ask`,
+				argumentsJson: JSON.stringify({ questions: entry.ask }),
+				status: "completed",
+				completedAt: at,
+			};
+		if ("subagent" in entry) {
+			const subagent = subagents.get(entry.subagent);
+			if (!subagent) throw new Error(`${session.slug} has no subagent ${entry.subagent}`);
+			return {
+				...item,
+				type: "commandExecution",
+				toolName: "delegate",
+				callId: callId(subagent.id),
+				description: subagent.title,
+				argumentsJson: JSON.stringify({ description: subagent.title }),
+				status: SUBAGENT_ITEM_STATUS[subagent.state],
+				...(subagent.state === "running" ? {} : { completedAt: at }),
+			};
+		}
+		const { step } = entry;
+		return {
+			...item,
+			type: "commandExecution",
+			toolName: step.tool,
+			callId: `${id}-${index}-call`,
+			description: step.intent,
+			argumentsJson: JSON.stringify(step.args),
+			status: step.running ? "inProgress" : step.failed ? "failed" : "completed",
+			...(step.running ? {} : { completedAt: at }),
+			...(step.output === undefined ? {} : { output: step.output }),
+			...(step.failed ? { error: step.failed.error, exitCode: step.failed.exitCode } : {}),
+		};
+	});
+	const active = THREAD_STATUS[session.state] === "active";
+	return {
+		id,
+		itemsView: "full",
+		status: active ? "inProgress" : error ? "failed" : "completed",
+		items,
+		startedAt: start,
+		...(active ? {} : { completedAt: end, durationMs: end - start }),
+		...(error ? { error } : {}),
+	};
+}
+
+function queueOf(slug: string, texts: string[] = []): QueueState {
+	if (texts.length === 0) return { revision: 0 };
+	return {
+		revision: 0,
+		depth: texts.length,
+		ids: texts.map((_, index) => `${slug}-queued-${index}`),
+		texts: [...texts],
+		preview: texts.map((text) => text.slice(0, 80)),
+	};
+}
+
+function sessionThread(session: FleetSession, now: number): Thread {
+	const content = CONTENT[session.slug] ?? {};
+	const usage = content.usage ?? BASE_USAGE;
+	const status = THREAD_STATUS[session.state];
+	const active = status === "active";
+	const live = session.state !== "shutdown";
+	const turn = turnOf(session, content.entries ?? genericEntries(session), content.error, now);
+	const sessionId = demoSessionId(session.slug);
+	const threadId = `demo-thread-${session.slug}`;
+	const updatedAt = Math.floor((now - session.ago * 1000) / 1000);
+	return {
+		id: threadId,
+		sessionId,
+		name: session.title,
+		preview: session.title,
+		ephemeral: false,
+		modelProvider: content.model ?? DEFAULT_MODEL,
+		createdAt: Math.floor((turn.startedAt ?? now) / 1000),
+		updatedAt,
+		status: { type: status },
+		cwd: session.workingDir,
+		projectPath: session.workingDir,
+		gitInfo: { branch: "main" },
+		cliVersion: "demo",
+		source: "demo",
+		turns: [turn],
+		evener: {
+			ref: session.ref,
+			instanceId: `demo-instance-${session.slug}`,
+			queue: queueOf(session.slug, content.queued),
+			// A live session advertises what a daemon does whatever the turn
+			// (cmd/evener-hub/internal/appsource/local_daemon.go: Steer,
+			// Interrupt and Queue are !closed, Send is !active). A shut-down one
+			// keeps its notes readable and nothing else.
+			capabilities: {
+				send: live && !active,
+				steer: live,
+				interrupt: live,
+				compact: false,
+				clear: false,
+				forkFromTurn: false,
+				shutdown: false,
+				changeModel: live,
+				changeVisionModel: false,
+				sharedNotes: true,
+				queue: live,
+				goal: false,
+				rename: false,
+			},
+			...(active ? { activeTurnId: turn.id, activeTurnStartedAt: turn.startedAt } : {}),
+			...(turn.completedAt === undefined ? {} : { lastTurnEndedAt: turn.completedAt }),
+			reasoningEffort: content.effort ?? DEFAULT_EFFORT,
+			reasoningEffortLevels: ALL_EFFORTS,
+			supportsReasoning: true,
+			...(session.state === "question" ? { askPending: true } : {}),
+			...(content.escalation
+				? {
+						pendingEscalations: [
+							{ threadId, ref: session.ref, escalationId: `${session.slug}-escalation`, ...content.escalation },
+						],
+					}
+				: {}),
+			...(content.tasks ? { tasks: content.tasks } : {}),
+			...(content.goal ? { goal: content.goal } : {}),
+			...(content.humanNote ? { humanNote: content.humanNote } : {}),
+			...(content.agentNote ? { agentNote: content.agentNote } : {}),
+			...(content.links ? { sessionUrls: content.links.map((link) => ({ ...link, addedBy: "agent" })) } : {}),
+			diagnostics: {
+				plugins: enabledPluginNames().map((name) => ({ name, skillCount: 1, agentCount: 0, hookCount: 0, mcpCount: 0 })),
+				delegates: delegatesOf(session, now),
+			},
+			usage: {
+				inputTokens: usage.inputTokens,
+				outputTokens: usage.outputTokens,
+				cacheReadTokens: usage.cacheReadTokens,
+				totalTokens: usage.inputTokens + usage.outputTokens + usage.cacheReadTokens,
+			},
+			cost: usage.cost,
+			workMillis: turn.durationMs ?? now - (turn.startedAt ?? now),
+			contextUsed: usage.contextUsed,
+			contextWindow: usage.contextWindow,
+			access: { sandbox: "workspace-write", network: true },
+		},
+	};
+}
+
+export interface DemoSessionsOptions {
+	// The instant the fleet's "ago" is measured from, as DemoFleetOptions.now.
+	now?: number;
+}
+
+// A thread for every fleet session, in the fleet's order.
+export function createDemoSessions(options: DemoSessionsOptions = {}): Thread[] {
+	const now = options.now ?? Date.now();
+	return fleetSessions().map((session) => sessionThread(session, now));
+}
