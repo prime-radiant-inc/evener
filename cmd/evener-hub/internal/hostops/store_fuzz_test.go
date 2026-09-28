@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/spf13/afero"
@@ -37,7 +38,7 @@ func FuzzLoadStore(f *testing.F) {
 		// A pending record and a complete one: the pass must move only the first.
 		`{"version":1,"sequence":1,"allocatorHighWaterMark":2,"records":[` +
 			`{"id":"00000000000000000001","clientOperationId":"client-h1","host":"h1","kind":"deploy","state":"pending","generation":7,"incarnationId":"inc-1","createdAt":"2026-09-26T00:00:00Z","updatedAt":"2026-09-26T00:00:00Z","hostRemoved":false},` +
-			`{"id":"00000000000000000002","clientOperationId":"client-h2","host":"h2","kind":"restart","state":"complete","generation":7,"incarnationId":"inc-2","createdAt":"2026-09-26T00:00:00Z","updatedAt":"2026-09-26T00:00:01Z","hostRemoved":false,"sequence":1}]}`,
+			`{"id":"00000000000000000002","clientOperationId":"client-h2","host":"h2","kind":"restart","state":"complete","generation":7,"incarnationId":"inc-2","createdAt":"2026-09-26T00:00:00Z","updatedAt":"2026-09-26T00:00:01Z","hostRemoved":false,"result":{"ok":true,"message":"done"},"sequence":1}]}`,
 		// A running record carrying its fencing epoch and an orphan-unverified
 		// record carrying its boundary: the pass moves the first and must leave
 		// the second alone (spec §7's one exception).
@@ -49,7 +50,7 @@ func FuzzLoadStore(f *testing.F) {
 		`{"version":1,"sequence":0,"allocatorHighWaterMark":1,"records":[` +
 			`{"id":"00000000000000000001","clientOperationId":"client-h1","host":"h1","kind":"deploy","state":"pending","generation":0,"incarnationId":"inc-1","createdAt":"2026-09-26T00:00:00Z","updatedAt":"2026-09-26T00:00:00Z","hostRemoved":false}]}`,
 		`{"version":1,"sequence":0,"allocatorHighWaterMark":1,"records":[` +
-			`{"id":"00000000000000000001","clientOperationId":"client-h1","host":"h1","kind":"deploy","state":"failed","generation":7,"incarnationId":"inc-1","createdAt":"2026-09-26T00:00:00Z","updatedAt":"2026-09-26T00:00:00Z","hostRemoved":false,"sequence":9}]}`,
+			`{"id":"00000000000000000001","clientOperationId":"client-h1","host":"h1","kind":"deploy","state":"failed","generation":7,"incarnationId":"inc-1","createdAt":"2026-09-26T00:00:00Z","updatedAt":"2026-09-26T00:00:00Z","hostRemoved":false,"result":{"ok":false,"message":"failed"},"sequence":9}]}`,
 		// A file missing a required top-level field, a file with a null record
 		// list, and a file whose record set is not in the allocator's canonical
 		// ascending id order: all schema-invalid, never an empty or reordered
@@ -86,8 +87,8 @@ func FuzzLoadStore(f *testing.F) {
 		`{"version":1,"sequence":1,"allocatorHighWaterMark":1,"records":[` +
 			`{"id":"00000000000000000001","clientOperationId":"client-h1","host":"h1","kind":"deploy","state":"complete","generation":7,"incarnationId":"inc-1","createdAt":"2026-09-26T00:00:00Z","updatedAt":"2026-09-26T00:00:00Z","hostRemoved":false,"result":{"message":"failed"},"sequence":1}]}`,
 		`{"version":1,"sequence":1,"allocatorHighWaterMark":2,"records":[` +
-			`{"id":"00000000000000000001","clientOperationId":"client-h1","host":"h1","kind":"deploy","state":"complete","generation":7,"incarnationId":"inc-1","createdAt":"2026-09-26T00:00:00Z","updatedAt":"2026-09-26T00:00:00Z","hostRemoved":false,"sequence":1},` +
-			`{"id":"00000000000000000002","clientOperationId":"client-h2","host":"h1","kind":"deploy","state":"failed","generation":7,"incarnationId":"inc-1","createdAt":"2026-09-26T00:00:00Z","updatedAt":"2026-09-26T00:00:00Z","hostRemoved":false,"sequence":1}]}`,
+			`{"id":"00000000000000000001","clientOperationId":"client-h1","host":"h1","kind":"deploy","state":"complete","generation":7,"incarnationId":"inc-1","createdAt":"2026-09-26T00:00:00Z","updatedAt":"2026-09-26T00:00:00Z","hostRemoved":false,"result":{"ok":true,"message":"done"},"sequence":1},` +
+			`{"id":"00000000000000000002","clientOperationId":"client-h2","host":"h1","kind":"deploy","state":"failed","generation":7,"incarnationId":"inc-1","createdAt":"2026-09-26T00:00:00Z","updatedAt":"2026-09-26T00:00:00Z","hostRemoved":false,"result":{"ok":false,"message":"failed"},"sequence":1}]}`,
 	}
 	for _, seed := range seeds {
 		f.Add(seed)
@@ -223,4 +224,58 @@ func marshalRecords(t *testing.T, records []Record) []byte {
 		t.Fatalf("marshal records: %v", err)
 	}
 	return data
+}
+
+// TestRepairedFuzzSeedsReachTheirIntendedArms pins the Low review finding's
+// fix: the terminal fuzz seeds now carry the result field the writer always
+// emits, so the pending/complete seed still exercises the boot pass and the
+// stamp-ahead and shared-stamp seeds still reach their sequence refusals
+// instead of short-circuiting on the missing-result rule.
+func TestRepairedFuzzSeedsReachTheirIntendedArms(t *testing.T) {
+	pendingComplete := `{"version":1,"sequence":1,"allocatorHighWaterMark":2,"records":[` +
+		`{"id":"00000000000000000001","clientOperationId":"client-h1","host":"h1","kind":"deploy","state":"pending","generation":7,"incarnationId":"inc-1","createdAt":"2026-09-26T00:00:00Z","updatedAt":"2026-09-26T00:00:00Z","hostRemoved":false},` +
+		`{"id":"00000000000000000002","clientOperationId":"client-h2","host":"h2","kind":"restart","state":"complete","generation":7,"incarnationId":"inc-2","createdAt":"2026-09-26T00:00:00Z","updatedAt":"2026-09-26T00:00:01Z","hostRemoved":false,"result":{"ok":true,"message":"done"},"sequence":1}]}`
+	stampAhead := `{"version":1,"sequence":0,"allocatorHighWaterMark":1,"records":[` +
+		`{"id":"00000000000000000001","clientOperationId":"client-h1","host":"h1","kind":"deploy","state":"failed","generation":7,"incarnationId":"inc-1","createdAt":"2026-09-26T00:00:00Z","updatedAt":"2026-09-26T00:00:00Z","hostRemoved":false,"result":{"ok":false,"message":"failed"},"sequence":9}]}`
+	sharedStamp := `{"version":1,"sequence":1,"allocatorHighWaterMark":2,"records":[` +
+		`{"id":"00000000000000000001","clientOperationId":"client-h1","host":"h1","kind":"deploy","state":"complete","generation":7,"incarnationId":"inc-1","createdAt":"2026-09-26T00:00:00Z","updatedAt":"2026-09-26T00:00:00Z","hostRemoved":false,"result":{"ok":true,"message":"done"},"sequence":1},` +
+		`{"id":"00000000000000000002","clientOperationId":"client-h2","host":"h1","kind":"deploy","state":"failed","generation":7,"incarnationId":"inc-1","createdAt":"2026-09-26T00:00:00Z","updatedAt":"2026-09-26T00:00:00Z","hostRemoved":false,"result":{"ok":false,"message":"failed"},"sequence":1}]}`
+
+	// The boot-pass seed loads and moves only the pending record.
+	path := StorePath(t.TempDir())
+	writeRawStore(t, path, 0o600, pendingComplete)
+	store, err := Open(path)
+	if err != nil {
+		t.Fatalf("Open(pending/complete): %v", err)
+	}
+	moved, err := store.RecoverInterrupted()
+	if err != nil || moved != 1 {
+		t.Fatalf("RecoverInterrupted = %d, %v; want 1 moved", moved, err)
+	}
+	if record, ok := store.Record("00000000000000000001"); !ok || record.State != StateInterrupted {
+		t.Fatalf("pending record after the pass = %+v (present %v), want interrupted", record, ok)
+	}
+	if record, ok := store.Record("00000000000000000002"); !ok || record.State != StateComplete {
+		t.Fatalf("complete record after the pass = %+v (present %v), want untouched", record, ok)
+	}
+
+	// The stamp-ahead and shared-stamp seeds are refused for their sequence
+	// shape, never for a missing result.
+	for name, tc := range map[string]struct{ body, want string }{
+		"stamp ahead":  {stampAhead, "above the store's"},
+		"shared stamp": {sharedStamp, "more than one record"},
+	} {
+		path := StorePath(t.TempDir())
+		writeRawStore(t, path, 0o600, tc.body)
+		_, err := Open(path)
+		if !errors.Is(err, ErrStoreCorrupt) {
+			t.Fatalf("%s: err = %v, want ErrStoreCorrupt", name, err)
+		}
+		if !strings.Contains(err.Error(), tc.want) {
+			t.Fatalf("%s: err = %v, want it to name %q", name, err, tc.want)
+		}
+		if strings.Contains(err.Error(), "terminal result") {
+			t.Fatalf("%s: refused for the result rule instead of its intended arm: %v", name, err)
+		}
+	}
 }

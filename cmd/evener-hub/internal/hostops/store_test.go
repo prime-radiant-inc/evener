@@ -162,7 +162,7 @@ func TestReplacementPreservesTheStoresOwnerMode(t *testing.T) {
 	if err := os.Chmod(path, 0o400); err != nil {
 		t.Fatalf("Chmod(%s, 0400): %v", path, err)
 	}
-	if _, err := store.Transition(record.ID, StateComplete, nil); err != nil {
+	if _, err := store.Transition(record.ID, StateComplete, terminalChange(true)); err != nil {
 		t.Fatalf("Transition: %v", err)
 	}
 	info, err := os.Stat(path)
@@ -205,9 +205,11 @@ func TestOpenRefusesACorruptStore(t *testing.T) {
 		`"kind":"deploy","state":"pending","generation":7,"incarnationId":"inc-1",` +
 		`"createdAt":"2026-09-26T00:00:00Z","updatedAt":"2026-09-26T00:00:00Z","hostRemoved":false}`
 	cases := map[string]string{
-		"truncated json":             `{"version":1,"sequence":0,"allocatorHighWaterMark":0,"records":[`,
-		"trailing json value":        validStoreJSON + `{"version":1}`,
-		"unknown field":              `{"version":1,"sequence":0,"allocatorHighWaterMark":0,"records":[],"compactSeq":0}`,
+		"truncated json":      `{"version":1,"sequence":0,"allocatorHighWaterMark":0,"records":[`,
+		"trailing json value": validStoreJSON + `{"version":1}`,
+		// A key this store's writer never emits (S6 added compactSeq, so the
+		// stand-in for "unknown" moved to a key no slice owns).
+		"unknown field":              `{"version":1,"sequence":0,"allocatorHighWaterMark":0,"records":[],"unknownTopLevelKey":0}`,
 		"unsupported version":        `{"version":2,"sequence":0,"allocatorHighWaterMark":0,"records":[]}`,
 		"duplicate record id":        `{"version":1,"sequence":0,"allocatorHighWaterMark":1,"records":[` + record + `,` + record + `]}`,
 		"invalid state":              `{"version":1,"sequence":0,"allocatorHighWaterMark":1,"records":[` + strings.Replace(record, `"state":"pending"`, `"state":"queued"`, 1) + `]}`,
@@ -581,7 +583,7 @@ func TestAPostRenameFailureKeepsMemoryInStepWithTheFile(t *testing.T) {
 
 	// Only this write fails behind its rename.
 	syncErr = errors.New("directory sync fault")
-	landed, err := store.Transition(running.ID, StateComplete, nil)
+	landed, err := store.Transition(running.ID, StateComplete, terminalChange(true))
 	if err == nil {
 		t.Fatalf("a write whose directory sync failed reported success")
 	}
@@ -719,7 +721,7 @@ func TestANilStoreAnswersSafely(t *testing.T) {
 	if _, err := store.Create(NewRecord{ClientOperationID: "op", Host: "h1", Kind: KindDeploy, Generation: 1, IncarnationID: "inc"}); err == nil {
 		t.Fatalf("Create on a nil store succeeded")
 	}
-	if _, err := store.Transition("00000000000000000001", StateComplete, nil); err == nil {
+	if _, err := store.Transition("00000000000000000001", StateComplete, terminalChange(true)); err == nil {
 		t.Fatalf("Transition on a nil store succeeded")
 	}
 	if _, err := store.RecoverInterrupted(); err == nil {
@@ -732,7 +734,8 @@ func TestANilStoreAnswersSafely(t *testing.T) {
 func terminalRecordJSON(id string, stamp uint64) string {
 	return `{"id":"` + id + `","clientOperationId":"client-h1","host":"h1","kind":"deploy","state":"complete",` +
 		`"generation":7,"incarnationId":"inc-1","createdAt":"2026-09-26T00:00:00Z",` +
-		`"updatedAt":"2026-09-26T00:00:00Z","hostRemoved":false,"sequence":` + strconv.FormatUint(stamp, 10) + `}`
+		`"updatedAt":"2026-09-26T00:00:00Z","hostRemoved":false,` +
+		`"result":{"ok":true,"message":"done"},"sequence":` + strconv.FormatUint(stamp, 10) + `}`
 }
 
 // TestOpenRefusesDuplicateStampsButAcceptsGaps pins the sequence stamp's

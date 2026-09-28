@@ -867,7 +867,7 @@ func TestTokenMintIfQuiescentRefusesAConcurrentTerminalOperation(t *testing.T) {
 	store, _, _ := openClockStore(t)
 	record := createTestRecord(t, store, "m4")
 	position := store.Sequence()
-	if _, err := store.Transition(record.ID, StateComplete, nil); err != nil {
+	if _, err := store.Transition(record.ID, StateComplete, terminalChange(true)); err != nil {
 		t.Fatalf("Transition(complete): %v", err)
 	}
 
