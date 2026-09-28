@@ -327,10 +327,12 @@ func validateRecord(record Record) error {
 		return fmt.Errorf("%w: record %q carries an orphan boundary in state %q", ErrInvalidRecord, record.ID, record.State)
 	}
 	// §3's pending-spawn intents are schema-checked like every other persisted
-	// value: an intent no writer emits never enters the file, so the boot reap
-	// never has to guess what a malformed one meant. The set is checked in every
-	// state: an operation can finish while its spawn's boundary is still open,
-	// and the intent stays until the reap or resolve drops it.
+	// value, in every state. The every-state rule is defensive: this build's API
+	// refuses to terminalize a record with an open intent (Store.Transition) and
+	// keeps such records out of compaction, so no API path produces a terminal
+	// record carrying one — but a hand-edited or pre-guard store file can, and
+	// the schema check is what keeps that shape from being loaded as if it were
+	// ordinary history.
 	if len(record.PendingSpawns) > MaxPendingSpawnsPerRecord {
 		return fmt.Errorf("%w: record %q carries %d pending-spawn intents, over the %d bound",
 			ErrInvalidRecord, record.ID, len(record.PendingSpawns), MaxPendingSpawnsPerRecord)

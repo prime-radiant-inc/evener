@@ -3,6 +3,7 @@
 package execenv
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -11,9 +12,13 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+	"time"
 
 	"golang.org/x/sys/unix"
 )
+
+// darwinEnumerationTimeout bounds the process-table read the Darwin arm makes.
+const darwinEnumerationTimeout = 5 * time.Second
 
 // createBoundary returns the Darwin boundary: the (process group id, session
 // id) pair the worker's setsid-detached launcher holds (§3). There is no Darwin
@@ -86,7 +91,11 @@ func newDarwinBoundary(pgid, sessionID int) *Boundary {
 // this verification needs, and guessing around it would be a boundary read as
 // clean for the wrong reason.
 func darwinBoundaryMembers(pgid, sessionID int) ([]BoundaryMember, error) {
-	out, err := exec.Command("ps", "-axo", "pid=,pgid=,sess=").Output()
+	// The process-table read is bounded: a hung `ps` must not stall the boot
+	// reap, and an expired read is fail-closed (never an empty boundary).
+	ctx, cancel := context.WithTimeout(context.Background(), darwinEnumerationTimeout)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, "ps", "-axo", "pid=,pgid=,sess=").Output()
 	if err != nil {
 		return nil, fmt.Errorf("%w: enumerate the process table: %v", ErrBoundaryUnavailable, err)
 	}
@@ -150,6 +159,13 @@ func darwinStartToken(pid int) (string, error) {
 		return "", fmt.Errorf("%w: pid %d has no start time", ErrBoundaryMemberGone, pid)
 	}
 	return fmt.Sprintf("%d.%06d", started.Sec, started.Usec), nil
+}
+
+// ObserveProcess reads one process's kernel-owned start time without a boundary
+// handle, so a recorded instance can be proved gone when its boundary no longer
+// exists.
+func ObserveProcess(pid int) (string, error) {
+	return darwinStartToken(pid)
 }
 
 // signalDarwinMember refuses to signal: Darwin offers no identity-stable handle

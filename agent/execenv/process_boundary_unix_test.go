@@ -60,6 +60,30 @@ func setMembers(t *testing.T, boundary *Boundary, pids ...int) {
 	}
 }
 
+// TestBoundaryCreateReopenSymmetry pins the create/reopen contract: whatever
+// CreateBoundary names a fresh boundary, OpenBoundary must accept — otherwise
+// every legitimate boundary would fail closed forever.
+func TestBoundaryCreateReopenSymmetry(t *testing.T) {
+	created, err := CreateBoundary("")
+	if errors.Is(err, ErrBoundaryUnavailable) {
+		t.Skipf("no writable cgroup2 subtree: %v", err)
+	}
+	if err != nil {
+		t.Fatalf("CreateBoundary: %v", err)
+	}
+	t.Cleanup(func() { _ = created.Close() })
+	if !strings.HasPrefix(filepath.Base(created.Identity().CgroupID), boundaryDirPrefix) {
+		t.Fatalf("CreateBoundary named %s, which does not carry the boundary prefix", created.Identity().CgroupID)
+	}
+	reopened, err := OpenBoundary(created.Identity())
+	if err != nil {
+		t.Fatalf("OpenBoundary(created identity) = %v, want the creator's own naming to reopen", err)
+	}
+	if reopened.Identity() != created.Identity() {
+		t.Fatalf("reopened identity = %+v, want %+v", reopened.Identity(), created.Identity())
+	}
+}
+
 // TestBoundaryCreateRefusesANonCgroupRoot pins the fail-closed half of the
 // creation contract: a root that is not a cgroup2 mount can never become an
 // ownership boundary, so CreateBoundary refuses it instead of returning a

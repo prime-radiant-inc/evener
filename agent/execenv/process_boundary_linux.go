@@ -23,9 +23,11 @@ import (
 const cgroup2Mount = "/sys/fs/cgroup"
 
 // boundaryDirPrefix is the controller-created boundary directory's name prefix.
-// It is the provenance a reopened path must carry: only a directory this
-// package created is a boundary whose members may be enumerated, signaled or
-// removed.
+// The naming rule is the contract between createBoundary and openBoundary:
+// CreateBoundary names every boundary `<parent>/evener-boundary-<random>` (via
+// os.MkdirTemp), and openBoundary accepts only a clean, absolute path whose
+// basename carries this prefix under a verified cgroup2 parent — so the check
+// always accepts what the creator produces and refuses anything else.
 const boundaryDirPrefix = "evener-boundary-"
 
 // createBoundary pre-creates the Linux cgroup boundary.
@@ -318,6 +320,14 @@ func observeLinuxStartToken(pid int) (string, error) {
 		return "", fmt.Errorf("execenv: process %d start token %q: %w", pid, token, err)
 	}
 	return token, nil
+}
+
+// ObserveProcess reads one process's kernel-owned start token without a
+// boundary handle. The reap uses it to prove a recorded instance gone when the
+// boundary itself no longer exists (a vanished cgroup is not on its own proof
+// that the process it held is dead).
+func ObserveProcess(pid int) (string, error) {
+	return observeLinuxStartToken(pid)
 }
 
 // signalLinuxMember terminates one already-verified member through an

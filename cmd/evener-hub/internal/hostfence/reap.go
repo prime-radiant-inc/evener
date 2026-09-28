@@ -31,6 +31,7 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+	"syscall"
 	"time"
 
 	"primeradiant.com/evener/agent/execenv"
@@ -52,9 +53,6 @@ type LocalBoundaryHandle interface {
 	Enforcing() bool
 	// Members enumerates current members with kernel start tokens.
 	Members() ([]execenv.BoundaryMember, error)
-	// Observe reads one process's kernel start token, so the pass can re-verify
-	// a recorded (pid, start token) pair that no longer appears in membership.
-	Observe(pid int) (string, error)
 	// SignalVerified signals one member only while its token still matches.
 	SignalVerified(pid int, startToken string) error
 	// Await is the bounded dead proof.
@@ -70,6 +68,10 @@ type ReapOptions struct {
 	// Open reopens a persisted boundary identity. Nil means
 	// execenv.OpenBoundary. A test substitutes a fake.
 	Open func(execenv.BoundaryIdentity) (LocalBoundaryHandle, error)
+	// Observe reads one process's kernel start token without a boundary handle,
+	// so a recorded (pid, start token) pair can be checked even when its
+	// boundary no longer exists. Nil means execenv.ObserveProcess.
+	Observe func(pid int) (string, error)
 }
 
 // ReapLocalOrphanBoundary runs §3's local reap over every open `pending-spawn`
@@ -92,6 +94,10 @@ func ReapLocalOrphanBoundary(store *hostops.Store, opts ReapOptions) (int, error
 		open = func(id execenv.BoundaryIdentity) (LocalBoundaryHandle, error) {
 			return execenv.OpenBoundary(id)
 		}
+	}
+	observe := opts.Observe
+	if observe == nil {
+		observe = execenv.ObserveProcess
 	}
 
 	dropped := 0
@@ -123,7 +129,7 @@ func ReapLocalOrphanBoundary(store *hostops.Store, opts ReapOptions) (int, error
 		var failing []hostops.SpawnIntent
 		groupFailed := false
 		for _, group := range groups {
-			clean, diag := reapBoundaryGroup(group, open, wait)
+			clean, diag := reapBoundaryGroup(group, open, observe, wait)
 			if diag != nil {
 				// A boundary that could not be opened, enumerated or torn down is
 				// reported even though the record still converges fail-closed: the
@@ -279,6 +285,7 @@ func groupSpawnIntents(intents []hostops.SpawnIntent) ([]boundaryGroup, error) {
 func groupPersistedBoundary(raw json.RawMessage) ([]boundaryGroup, error) {
 	var members []struct {
 		Kind      string `json:"kind"`
+		Platform  string `json:"platform"`
 		CgroupID  string `json:"cgroupId"`
 		Nonce     string `json:"nonce"`
 		PGID      *int   `json:"pgid"`
@@ -302,13 +309,22 @@ func groupPersistedBoundary(raw json.RawMessage) ([]boundaryGroup, error) {
 			}
 			identity = execenv.BoundaryIdentity{Platform: execenv.BoundaryPlatformDarwin, PGID: *member.PGID, SessionID: *member.SessionID}
 		case "local-markerless":
-			switch {
-			case member.CgroupID != "":
+			// §9's platform discriminator selects the arm: an entry that
+			// disagrees with it, or carries both arms, is corrupt and must not
+			// silently enumerate the wrong boundary.
+			switch member.Platform {
+			case "linux":
+				if member.CgroupID == "" || member.PGID != nil || member.SessionID != nil {
+					return nil, errors.New("a persisted linux markerless boundary does not carry exactly its cgroup identity")
+				}
 				identity = execenv.BoundaryIdentity{Platform: execenv.BoundaryPlatformLinux, CgroupID: member.CgroupID}
-			case member.PGID != nil && member.SessionID != nil:
+			case "darwin":
+				if member.PGID == nil || member.SessionID == nil || member.CgroupID != "" {
+					return nil, errors.New("a persisted darwin markerless boundary does not carry exactly its (pgid, session id) pair")
+				}
 				identity = execenv.BoundaryIdentity{Platform: execenv.BoundaryPlatformDarwin, PGID: *member.PGID, SessionID: *member.SessionID}
 			default:
-				return nil, errors.New("a persisted markerless boundary carries no local identity")
+				return nil, fmt.Errorf("a persisted markerless boundary carries platform %q", member.Platform)
 			}
 		default:
 			return nil, fmt.Errorf("persisted boundary entry kind %q is not local", member.Kind)
@@ -352,13 +368,20 @@ func boundaryIdentity(intent hostops.SpawnIntent) (execenv.BoundaryIdentity, err
 // that failed, a dead proof that did not settle, or a boundary that did not
 // tear down); the expected fail-closed arms — a live member no persisted pair
 // accounts for — carry none.
-func reapBoundaryGroup(group boundaryGroup, open func(execenv.BoundaryIdentity) (LocalBoundaryHandle, error), wait time.Duration) (bool, error) {
+func reapBoundaryGroup(group boundaryGroup, open func(execenv.BoundaryIdentity) (LocalBoundaryHandle, error), observe func(int) (string, error), wait time.Duration) (bool, error) {
 	handle, err := open(group.identity)
 	if err != nil {
-		// A vanished boundary is clean — the kernel only removes an empty cgroup
-		// — and any other failure to reach the boundary is fail-closed, never an
-		// empty boundary.
+		// A vanished boundary is not on its own proof the process it held is
+		// dead: every recorded pair must still be gone, and a boundary that
+		// recorded none has no evidence at all and stays fenced. Any other
+		// failure to reach the boundary is fail-closed too.
 		if errors.Is(err, execenv.ErrBoundaryGone) {
+			if len(group.pairs) == 0 {
+				return false, errors.New("the boundary is gone and no recorded pair proves the process gone")
+			}
+			if err := recordedPairsGone(observe, group.pairs); err != nil {
+				return false, err
+			}
 			return true, nil
 		}
 		return false, fmt.Errorf("the boundary could not be opened: %w", err)
@@ -389,7 +412,7 @@ func reapBoundaryGroup(group boundaryGroup, open func(execenv.BoundaryIdentity) 
 		// out of the cgroup, and a pair still alive with its recorded start token
 		// must keep the record fenced rather than clear it. (A marker-less
 		// boundary has no pair to check; membership remains its only proof.)
-		if err := recordedPairsGone(handle, pairs); err != nil {
+		if err := recordedPairsGone(observe, pairs); err != nil {
 			return false, err
 		}
 		// Teardown is part of the verdict: a boundary that will not come down is
@@ -418,7 +441,7 @@ func reapBoundaryGroup(group boundaryGroup, open func(execenv.BoundaryIdentity) 
 	}); err != nil {
 		return false, fmt.Errorf("the dead proof did not settle: %w", err)
 	}
-	if err := recordedPairsGone(handle, pairs); err != nil {
+	if err := recordedPairsGone(observe, pairs); err != nil {
 		return false, err
 	}
 	if err := closeBoundary(handle, wait); err != nil {
@@ -432,9 +455,9 @@ func reapBoundaryGroup(group boundaryGroup, open func(execenv.BoundaryIdentity) 
 // naming a different process). A pair whose recorded token is still current is
 // alive outside the boundary — the escape M3 names — and keeps the record
 // fenced. An observation that fails for any other reason is fail-closed too.
-func recordedPairsGone(handle LocalBoundaryHandle, pairs []persistedPair) error {
+func recordedPairsGone(observe func(int) (string, error), pairs []persistedPair) error {
 	for _, pair := range pairs {
-		token, err := handle.Observe(pair.pid)
+		token, err := observe(pair.pid)
 		switch {
 		case err == nil && token == pair.startToken:
 			return fmt.Errorf("the recorded process %d is still alive outside the boundary", pair.pid)
@@ -465,6 +488,12 @@ func closeBoundary(handle LocalBoundaryHandle, wait time.Duration) error {
 		err := handle.Close()
 		if err == nil {
 			return nil
+		}
+		if !errors.Is(err, syscall.EBUSY) && !errors.Is(err, syscall.ENOTEMPTY) {
+			// A permanent teardown failure (permission, an unexpected error) is
+			// reported at once; only the "still busy / not empty yet" refusals
+			// are worth retrying within the bound.
+			return err
 		}
 		remaining := time.Until(deadline)
 		if remaining <= 0 {

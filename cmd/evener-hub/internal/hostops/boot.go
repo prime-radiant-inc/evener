@@ -4,7 +4,8 @@ import "errors"
 
 // RecoverInterrupted is the boot pass of spec §7's interrupted transition: with
 // the store loaded and before it serves any request, every record still in
-// `pending`/`running` transitions to `interrupted` — a terminal unknown outcome
+// `pending`/`running` and carrying no open spawn intent transitions to
+// `interrupted` — a terminal unknown outcome
 // — with a note naming the crash. Each moved record is stamped with the value
 // the durable sequence advanced to for it, in stored order, and the whole pass
 // lands in one atomic write (spec §4 advances the sequence once per record the
