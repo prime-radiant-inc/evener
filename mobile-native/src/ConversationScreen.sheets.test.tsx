@@ -802,7 +802,7 @@ it("floats the context chips over the list, opens each one's sheet, and hides th
 });
 
 it("hides the Subagents and Tasks chips once the connection bar itself would say something, but keeps the cached Goal and Queue chips", async () => {
-	const { tree } = mount(busy);
+	const { tree, client } = mount(busy);
 	await flush();
 	vi.useFakeTimers();
 	try {
@@ -811,7 +811,7 @@ it("hides the Subagents and Tasks chips once the connection bar itself would say
 		expect(label("Subagents, 1")).toHaveLength(1);
 
 		// The connection drops; the thread's cached delegates/tasks survive.
-		harness.connection = { ...harness.connection, state: "reconnecting" };
+		harness.connection = { ...harness.connection, ...screenConnection(client, "reconnecting") };
 		act(() => tree.update(screen()));
 		// A blip shorter than the bar's own grace period (spec 14) - the chips
 		// stay exactly as visible as they were, since the bar itself says
@@ -834,11 +834,11 @@ it("hides the Subagents and Tasks chips once the connection bar itself would say
 });
 
 it("a Subagents/Tasks chip tap still works during a blip shorter than the connection bar's own grace period (Calm)", async () => {
-	const { tree } = mount(busy);
+	const { tree, client } = mount(busy);
 	await flush();
 	vi.useFakeTimers();
 	try {
-		harness.connection = { ...harness.connection, state: "reconnecting" };
+		harness.connection = { ...harness.connection, ...screenConnection(client, "reconnecting") };
 		act(() => tree.update(screen()));
 
 		const { block } = sessionList(tree);
@@ -959,7 +959,7 @@ it("says Reconnecting… and then how old the session is while the hub is out of
 	try {
 		harness.connection = {
 			...harness.connection,
-			state: "reconnecting",
+			...screenConnection(client, "reconnecting"),
 			error: OLD_TRANSPORT_ERROR,
 		};
 		act(() => tree.update(screen()));
@@ -973,7 +973,11 @@ it("says Reconnecting… and then how old the session is while the hub is out of
 		expect(status()).toBe("Reconnecting…");
 		advance(28_000);
 		expect(status()).toBe("Offline · updated 1m ago");
-		advance(180_000);
+		// The status re-renders once a minute of the data's age, one tick per
+		// act.
+		advance(30_000);
+		advance(60_000);
+		advance(60_000);
 		expect(status()).toBe("Offline · updated 3m ago");
 		expect(renderedText(tree)).not.toContain(OLD_TRANSPORT_ERROR);
 		expect(renderedText(tree)).toContain("Offline · updated 3m ago");

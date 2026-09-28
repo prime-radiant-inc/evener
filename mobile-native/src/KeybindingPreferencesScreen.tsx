@@ -21,6 +21,7 @@ import { checkedKeybindingChange, keybindingPreview } from "./keybindingRules";
 import { useNativePreferences } from "./NativePreferencesProvider";
 import type { Routes } from "./screens";
 import { Action, allowFontScaling, Copy, ErrorMessage, styles, useColors } from "./ui";
+import { HUB_NO_LONGER_SELECTED } from "./retainedScreen";
 
 function shortcutLabel(chord: string): string {
 	return chord.replaceAll("$mod", "Command / Control").replaceAll("Meta", "Command").replaceAll("Alt", "Option");
@@ -123,8 +124,7 @@ export function KeybindingPreferencesScreen({
 			setError(failure instanceof Error ? failure.message : "This shortcut cannot be used.");
 		}
 	};
-	if (connection.activeProfile?.id !== route.params.hubId)
-		return <Copy>This hub is no longer selected. Return to Hubs to reconnect.</Copy>;
+	if (connection.activeProfile?.id !== route.params.hubId) return <Copy>{HUB_NO_LONGER_SELECTED}</Copy>;
 	return (
 		<SafeAreaView edges={["bottom", "left", "right"]} style={[styles.fill, { backgroundColor: colors.background }]}>
 			<KeyboardAvoidingView style={styles.fill} behavior={Platform.OS === "ios" ? "padding" : undefined}>
@@ -134,7 +134,6 @@ export function KeybindingPreferencesScreen({
 						Configure this hub’s web keyboard shortcuts. This preview uses Apple keys. The web character-key setting can
 						turn the ? shortcut off.
 					</Copy>
-					{!preferences.connected && <Action onPress={connection.retry}>Reconnect</Action>}
 					{domain?.support === "unsupported" && <Copy>This hub does not support keyboard shortcut settings.</Copy>}
 					{(!domain || domain.loading) && <ActivityIndicator accessibilityLabel="Loading keyboard shortcuts" />}
 					<ErrorMessage

@@ -48,6 +48,8 @@ const harness = vi.hoisted(() => ({
 		client: null,
 		state: "idle",
 		fatal: false,
+		downSince: null,
+		lastLiveAt: null,
 		error: null,
 		loading: false,
 		saveHub: async () => true,
@@ -55,7 +57,6 @@ const harness = vi.hoisted(() => ({
 		selectHub: () => {},
 		removeHub: async () => {},
 		disconnect: () => {},
-		retry: () => {},
 	},
 	preferences: {
 		hubId: null,

@@ -158,6 +158,14 @@ type Record struct {
 	IncarnationID     string          `json:"incarnationId"`
 	FencingEpoch      json.RawMessage `json:"fencingEpoch,omitempty"`
 	OrphanBoundary    json.RawMessage `json:"orphanBoundary,omitempty"`
+	// OrphanResolved is §5's resolution marker: true exactly on a record resolved
+	// through `orphan-resolve` (state `interrupted`, no boundary). It is what
+	// makes a resolved record's lost-response replay distinguishable from an
+	// ordinary boot-transitioned `interrupted` record, which carries no marker.
+	OrphanResolved bool `json:"orphanResolved,omitempty"`
+	// OrphanAttestation is §5's operator attestation, persisted on the resolved
+	// record beside the marker when the resolve presented one; nil otherwise.
+	OrphanAttestation *OrphanResolveAttestation `json:"attestation,omitempty"`
 	// PendingSpawns is crash-fencing §3's `pending-spawn` intent set: one entry
 	// per spawned subprocess whose ownership boundary the controller
 	// pre-created but has not yet proven clean. Each entry holds the per-spawn
@@ -326,6 +334,23 @@ func validateRecord(record Record) error {
 	case record.State != StateOrphanUnverified && len(record.OrphanBoundary) > 0:
 		return fmt.Errorf("%w: record %q carries an orphan boundary in state %q", ErrInvalidRecord, record.ID, record.State)
 	}
+	// §5's resolve marker and attestation: the marker is present exactly on a
+	// record resolved through `orphan-resolve` — state `interrupted`, nothing
+	// else — and the attestation is present only beside the marker. An open
+	// `orphan-unverified` record carrying either would read as resolved while
+	// its fence still stands; an ordinary interrupted record (the boot
+	// transition, the local reap's resolve) carries neither.
+	switch {
+	case record.OrphanResolved && record.State != StateInterrupted:
+		return fmt.Errorf("%w: record %q carries the orphanResolved marker in state %q", ErrInvalidRecord, record.ID, record.State)
+	case record.OrphanAttestation != nil && !record.OrphanResolved:
+		return fmt.Errorf("%w: record %q carries an orphan-resolve attestation without the resolved marker", ErrInvalidRecord, record.ID)
+	}
+	if record.OrphanAttestation != nil {
+		if err := validateOrphanResolveAttestation(*record.OrphanAttestation, record.ID); err != nil {
+			return fmt.Errorf("%w: record %q: %w", ErrInvalidRecord, record.ID, err)
+		}
+	}
 	// §3's pending-spawn intents are schema-checked like every other persisted
 	// value, in every state. The every-state rule is defensive: this build's API
 	// refuses to terminalize a record with an open intent (Store.Transition) and
@@ -436,6 +461,10 @@ func cloneRecord(record Record) Record {
 	}
 	if record.PendingSpawns != nil {
 		out.PendingSpawns = cloneSpawnIntents(record.PendingSpawns)
+	}
+	if record.OrphanAttestation != nil {
+		attestation := *record.OrphanAttestation
+		out.OrphanAttestation = &attestation
 	}
 	if record.Progress != nil {
 		out.Progress = append([]ProgressEntry(nil), record.Progress...)

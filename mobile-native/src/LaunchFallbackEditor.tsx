@@ -139,7 +139,9 @@ export function LaunchFallbackEditor({
 							>
 								Add model
 							</Action>
-							{!client && <Copy muted>Reconnect to browse this hub's models. Your fallbacks are kept here.</Copy>}
+							{!client && (
+								<Copy muted>You can browse this hub's models once it's back. Your fallbacks are kept here.</Copy>
+							)}
 						</ScrollView>
 					)}
 				</KeyboardAvoidingView>

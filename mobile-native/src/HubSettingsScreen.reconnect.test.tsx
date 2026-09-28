@@ -17,7 +17,13 @@ import type { ConnectionState } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
 import { HubSettingsScreen } from "./HubSettingsScreen";
-import { nativeModuleMock, render, renderedText, screenConnection as connection } from "./renderNative.testkit";
+import {
+	dropped,
+	nativeModuleMock,
+	render,
+	renderedText,
+	screenConnection as connection,
+} from "./renderNative.testkit";
 
 const harness = vi.hoisted(() => ({
 	connection: {} as Record<string, unknown>,
@@ -63,14 +69,14 @@ it("re-reads the overview once a flap the screen survived is ready again", async
 	expect(renderedText(tree)).toContain("Evener 1.2.3");
 	expect(reads).toBe(1);
 
-	harness.connection = connection(hub, "reconnecting");
+	harness.connection = dropped(connection(hub, "ready"));
 	await act(async () => {
 		tree.update(<HubSettingsScreen {...props} />);
 	});
 	// Stale-but-shown: the banner sits over the last successful load, not a
 	// wall; the hub may have moved on while this client was away.
 	expect(renderedText(tree)).toContain("Evener 1.2.3");
-	expect(renderedText(tree)).toContain("reconnecting");
+	expect(renderedText(tree)).toContain("Reconnecting…");
 
 	harness.connection = connection(hub, "ready");
 	await act(async () => {
@@ -141,7 +147,6 @@ it("treats a route re-keyed to another hub as a fresh screen", async () => {
 		client: null,
 		state: "connecting",
 		fatal: false,
-		retry: () => {},
 	};
 	await act(async () => {
 		tree.update(<HubSettingsScreen {...forHub("hub-2")} />);
@@ -158,7 +163,6 @@ it("treats a route re-keyed to another hub as a fresh screen", async () => {
 		client: fakeB as unknown as ConversationClientLike,
 		state: "ready",
 		fatal: false,
-		retry: () => {},
 	};
 	await act(async () => {
 		tree.update(<HubSettingsScreen {...forHub("hub-2")} />);

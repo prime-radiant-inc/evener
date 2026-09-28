@@ -33,7 +33,7 @@ export async function locateSession(
 		location = undefined;
 	}
 	if (response.status !== "ok" || location?.ref !== ref || location.session?.ref !== ref)
-		throw new Error("This session could not be located. Refresh and try again.");
+		throw new Error("This session could not be located. Try again.");
 	if (location.project_key) {
 		if (!["current", "recent", "archived"].includes(location.tier ?? ""))
 			throw new Error("The hub returned an unknown project section.");

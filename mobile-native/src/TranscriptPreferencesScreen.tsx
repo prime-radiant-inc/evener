@@ -6,15 +6,15 @@ import { useConnection } from "./ConnectionProvider";
 import { useNativePreferences } from "./NativePreferencesProvider";
 import type { Routes } from "./screens";
 import { TranscriptPreferencesEditor } from "./TranscriptPreferencesEditor";
-import { Action, Copy, ErrorMessage, styles, useColors } from "./ui";
+import { Copy, ErrorMessage, styles, useColors } from "./ui";
+import { HUB_NO_LONGER_SELECTED } from "./retainedScreen";
 
 export function TranscriptPreferencesScreen({ route }: NativeStackScreenProps<Routes, "TranscriptPreferences">) {
 	const connection = useConnection();
 	const preferences = useNativePreferences();
 	const colors = useColors();
 	const [error, setError] = useState<string | null>(null);
-	if (connection.activeProfile?.id !== route.params.hubId)
-		return <Copy>This hub is no longer selected. Return to Hubs to reconnect.</Copy>;
+	if (connection.activeProfile?.id !== route.params.hubId) return <Copy>{HUB_NO_LONGER_SELECTED}</Copy>;
 	const model = preferences.model;
 	const run = (action: () => unknown) => {
 		setError(null);
@@ -27,11 +27,6 @@ export function TranscriptPreferencesScreen({ route }: NativeStackScreenProps<Ro
 	return (
 		<SafeAreaView edges={["bottom", "left", "right"]} style={[styles.fill, { backgroundColor: colors.background }]}>
 			<ErrorMessage message={error} />
-			{!preferences.connected ? (
-				<View style={{ paddingHorizontal: 20 }}>
-					<Action onPress={connection.retry}>Reconnect</Action>
-				</View>
-			) : null}
 			{preferences.snapshot ? (
 				<TranscriptPreferencesEditor
 					key={route.params.hubId}
