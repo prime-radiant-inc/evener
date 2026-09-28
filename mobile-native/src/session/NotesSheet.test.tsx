@@ -14,7 +14,7 @@ import type { SyncStringStorage } from "../syncStringStorage";
 import { canWriteHumanNote, type NotesHost, NotesSheet, notesHosts } from "./NotesSheet";
 import { NOTE_LIMIT, NotesController, type SaveOutcome } from "./sessionNotes";
 
-const navigation = vi.hoisted(() => ({ goBack: vi.fn(), dispatch: vi.fn() }));
+const navigation = vi.hoisted(() => ({ goBack: vi.fn(), dispatch: vi.fn(), navigate: vi.fn() }));
 const appState = vi.hoisted(() => ({ listeners: [] as ((state: string) => void)[] }));
 const browser = vi.hoisted(() => ({ openBrowserAsync: vi.fn(async () => ({ type: "dismiss" })) }));
 const clipboard = vi.hoisted(() => ({ setStringAsync: vi.fn(async () => true) }));
@@ -41,6 +41,7 @@ vi.mock("expo-clipboard", () => clipboard);
 const palette = paletteFor("light");
 const HUB = "hub-1";
 const REF = "ref-notes";
+const CWD = "/home/jesse/git/evener";
 
 type Session = NotesHost["session"];
 
@@ -102,7 +103,7 @@ function provide(current: Session, { removeFails = false } = {}) {
 	controller = notes;
 	const saved = vi.fn<(outcome: SaveOutcome) => void>();
 	owner = {};
-	notesHosts.provide(sheetKey(HUB, REF), owner, { session: current, notes, saved });
+	notesHosts.provide(sheetKey(HUB, REF), owner, { session: current, notes, saved, cwd: CWD, title: "Fix race" });
 	return { notes, saved, requests };
 }
 
@@ -136,6 +137,7 @@ const actionSheet = vi.mocked(ActionSheetIOS.showActionSheetWithOptions);
 
 beforeEach(() => {
 	navigation.goBack.mockClear();
+	navigation.navigate.mockClear();
 	browser.openBrowserAsync.mockClear();
 	clipboard.setStringAsync.mockClear();
 	actionSheet.mockClear();
@@ -297,6 +299,43 @@ describe("links", () => {
 		});
 		expect(pressable(tree, "The plan, file:///Users/j/plan.md")?.props.onPress).toBeUndefined();
 		expect(browser.openBrowserAsync).toHaveBeenCalledOnce();
+	});
+
+	it("opens a file link inside the session's folder in the Reader, after the sheet goes", () => {
+		const plan: SessionURL = { id: "u3", url: `file://${CWD}/docs/plan.md`, label: "The plan" };
+		provide(session({ sessionUrls: [plan] }));
+		const tree = sheet();
+		const order: string[] = [];
+		navigation.goBack.mockImplementation(() => order.push("goBack"));
+		navigation.navigate.mockImplementation((name: string) => order.push(name));
+		const row = pressable(tree, `The plan, file://${CWD}/docs/plan.md`);
+		expect(row?.props.accessibilityRole).toBe("link");
+		act(() => row?.props.onPress());
+		expect(order).toEqual(["goBack", "Reader"]);
+		expect(navigation.navigate).toHaveBeenCalledWith("Reader", {
+			hubId: HUB,
+			sessionRef: REF,
+			path: "docs/plan.md",
+			reviewRef: REF,
+			reviewTitle: "Fix race",
+		});
+		expect(symbols(tree)).toEqual(["doc.text"]);
+		expect(browser.openBrowserAsync).not.toHaveBeenCalled();
+	});
+
+	it.each([
+		["another machine", "file://server/x.md"],
+		["outside the session's folder", "file:///home/jesse/notes/todo.md"],
+		["a malformed escape", "file:///tmp/bad%zz.md"],
+	])("leaves a file link on %s untappable", (_name, url) => {
+		provide(session({ sessionUrls: [{ id: "u4", url }] }));
+		const tree = sheet();
+		const row = pressable(tree, url);
+		expect(row?.props.onPress).toBeUndefined();
+		expect(row?.props.accessibilityRole).toBe("text");
+		expect(symbols(tree)).toEqual(["doc.text"]);
+		expect(navigation.navigate).not.toHaveBeenCalled();
+		expect(navigation.goBack).not.toHaveBeenCalled();
 	});
 
 	it("offers Open, Copy link and Remove link on touch and hold, and says in the sheet that removing can't be undone", async () => {

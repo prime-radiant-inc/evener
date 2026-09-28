@@ -1998,9 +1998,13 @@ export function ConversationScreen({
 						},
 						notes,
 						saved: notesSaved,
+						cwd: conversation.cwd,
+						title: route.params.title,
 					}
 				: undefined,
 		[
+			conversation?.cwd,
+			route.params.title,
 			conversation?.humanNote,
 			conversation?.agentNote,
 			conversation?.sessionUrls,
