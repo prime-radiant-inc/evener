@@ -44,6 +44,30 @@
       "description": "Illustrative documentation preview translated from the Board's Live section chip, with its Needs You badge.",
       "html": "<div class=\"ds-chip\"><span class=\"ds-chip-name\">Live</span><span class=\"ds-chip-count\">20</span><span class=\"ds-chip-badge\">4</span></div>",
       "css": ".ds-chip{display:inline-flex;align-items:center;column-gap:6px;min-height:32px;padding:0 12px;border-radius:16px;border:.5px solid #DDDCD4;background:#FCFBF8}.ds-chip-name{font:600 14px system-ui;color:#252521}.ds-chip-count{font:500 14px system-ui;color:#6D6D64;font-variant-numeric:tabular-nums}.ds-chip-badge{display:inline-flex;align-items:center;justify-content:center;min-width:18px;height:18px;padding:0 5px;border-radius:9px;background:#F59E0B;color:#252521;font:700 11px system-ui;font-variant-numeric:tabular-nums}"
+    },
+    {
+      "name": "Status tray",
+      "kind": "custom",
+      "refersTo": "status-tray",
+      "description": "Illustrative documentation preview translated from the Session's status tray while the agent works: the pulse meter, the current step, and Stop.",
+      "html": "<div class=\"ds-tray\"><span class=\"ds-tray-meter\" aria-hidden=\"true\"><i></i><i></i><i></i><i></i><i></i><i></i><i></i></span><span class=\"ds-tray-line\">Running go test ./cmd/evener-hub/… · 5m</span><span class=\"ds-tray-stop\" role=\"button\" aria-label=\"Stop\"></span></div>",
+      "css": ".ds-tray{display:flex;align-items:center;column-gap:8px;min-height:36px;padding:0 4px 0 16px;background:#FAF9F6}.ds-tray-meter{display:inline-flex;align-items:flex-end;column-gap:1px;width:22px;height:15px}.ds-tray-meter i{flex:1;height:1px;background:#189A4D}.ds-tray-meter i:last-child{height:6px}.ds-tray-line{flex:1;font:400 15px/20px system-ui;color:#252521;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.ds-tray-stop{width:44px;height:44px;display:inline-flex;align-items:center;justify-content:center}.ds-tray-stop::after{content:\"\";width:13px;height:13px;border-radius:2px;background:#252521}"
+    },
+    {
+      "name": "Ghost bubble",
+      "kind": "custom",
+      "refersTo": "ghost-bubble",
+      "description": "Illustrative documentation preview translated from a queued message's ghost above the Session's composer, with its caption and Steer now.",
+      "html": "<div class=\"ds-ghost\"><div class=\"ds-ghost-bubble\">When CI is green, post a summary on the PR.</div><div class=\"ds-ghost-caption\">Queued · sends when this turn ends</div><div class=\"ds-ghost-action\">Steer now</div></div>",
+      "css": ".ds-ghost{display:flex;flex-direction:column;align-items:flex-end;row-gap:4px;padding:8px 16px;background:#FCFBF8}.ds-ghost-bubble{max-width:80%;padding:10px 14px;border:1px dashed #B7B6AC;border-radius:18px;font:400 17px/25px 'Source Serif 4',Georgia,serif;color:#252521}.ds-ghost-caption{font:400 13px system-ui;color:#5F5F57}.ds-ghost-action{padding:8px 0;font:400 15px system-ui;color:#0064C2}"
+    },
+    {
+      "name": "Ask dock",
+      "kind": "custom",
+      "refersTo": "ask-dock",
+      "description": "Illustrative documentation preview translated from the Session's question dock: the question, its recommended option first, Other answer, and the primary button.",
+      "html": "<div class=\"ds-dock\"><div class=\"ds-dock-count\">Question 1 of 2</div><p class=\"ds-dock-question\">Keep or drop the implied options?</p><div class=\"ds-dock-option\"><span class=\"ds-dock-radio ds-dock-radio--on\" aria-hidden=\"true\"></span><span>Drop them<span class=\"ds-dock-rec\"> · Recommended</span></span></div><div class=\"ds-dock-option\"><span class=\"ds-dock-radio\" aria-hidden=\"true\"></span><span>Keep them and add the flags</span></div><div class=\"ds-dock-actions\"><span class=\"ds-dock-other\">Other answer…</span><span class=\"ds-dock-primary\">Next question</span></div></div>",
+      "css": ".ds-dock{margin:0 16px 8px;padding:14px 16px;border:1px solid #E9C598;border-radius:12px;background:#FCFBF8}.ds-dock-count{font:400 13px system-ui;color:#5F5F57}.ds-dock-question{margin:8px 0;font:600 17px/24px 'Source Serif 4',Georgia,serif;color:#252521}.ds-dock-option{display:flex;align-items:center;column-gap:12px;min-height:44px;font:400 17px system-ui;color:#252521}.ds-dock-radio{width:18px;height:18px;border-radius:9px;border:1.5px solid #5F5F57}.ds-dock-radio--on{border-color:#0064C2;background:#0064C2;box-shadow:inset 0 0 0 3px #FCFBF8}.ds-dock-rec{font-size:13px;color:#5F5F57}.ds-dock-actions{display:flex;justify-content:space-between;margin-top:8px;font:400 17px system-ui}.ds-dock-other{color:#0064C2}.ds-dock-primary{font-weight:600;color:#0064C2}"
     }
   ],
   "narrative": {
