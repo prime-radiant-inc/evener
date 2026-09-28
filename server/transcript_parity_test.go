@@ -697,9 +697,9 @@ func parityTable(groups ...[]knownDivergence) []knownDivergence {
 // flaky row below.
 var parityBeforeRestart = parityTable([]knownDivergence{
 	{
-		parityDivergence: parityDivergence{Class: "turn-field", Subject: "systemMessage/compaction", Field: "version"},
-		Phase:            4,
-		Flaky:            true,
+		Class: "turn-field", Subject: "systemMessage/compaction", Field: "version",
+		Phase: 4,
+		Flaky: true,
 		Why: `ChangedSince logs a turn's update only when its wire-visible ` +
 			`summary actually changed (status/lifecycle/started/usage), not on ` +
 			`every entry after the turn's first (docs/superpowers/specs/` +
