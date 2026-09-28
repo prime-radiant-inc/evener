@@ -56,6 +56,7 @@ import {
 	grouping,
 	liveCountsByHost,
 	type ProjectSection,
+	type ProjectsView,
 	type ProjectTreeItem,
 	projectTreeItems,
 	SECTION_FOLDS,
@@ -138,19 +139,6 @@ function Board({ hubId, hubName, navigation }: { hubId: string; hubName: string;
 
 	const usual = useMemo(() => usualPlace(snapshot.live.rows), [snapshot.live.rows]);
 	const sources = snapshot.manifest?.sources;
-	// Every session row the Board has loaded so far, from any section.
-	const loadedRows = useMemo(
-		() => [
-			...snapshot.live.rows,
-			...snapshot.needsYou.rows,
-			...Object.values(snapshot.pinSections).flatMap((page) => page.rows),
-		],
-		[snapshot.live.rows, snapshot.needsYou.rows, snapshot.pinSections],
-	);
-	const hubNotices = useMemo(
-		() => notices({ auth: snapshot.auth, sources: sources ?? [], plugins: snapshot.plugins, loadedRows }),
-		[snapshot.auth, sources, snapshot.plugins, loadedRows],
-	);
 	const hostLabel = useMemo(() => {
 		const labels = new Map((sources ?? []).map((source) => [source.id, source.label]));
 		return (hostId: string) => labels.get(hostId) ?? hostId;
@@ -167,6 +155,22 @@ function Board({ hubId, hubName, navigation }: { hubId: string; hubName: string;
 	const [organizeBy, setOrganizeBy] = useState(() => organizeByPreference(hubId).get());
 	// Every fold inside the project sections, by its ProjectTreeItem fold.
 	const { isFolded, setFolded } = useBoardFolds(hubId);
+	// Every session row the Board has loaded so far, from any section. A
+	// project section's view keeps its identity until its reads change.
+	const projectViews = PROJECT_SECTIONS.map((section) => projectSections[section].view);
+	const loadedRows = useMemo(
+		() => [
+			...snapshot.live.rows,
+			...snapshot.needsYou.rows,
+			...Object.values(snapshot.pinSections).flatMap((page) => page.rows),
+			...projectViews.flatMap(projectSessionRows),
+		],
+		[snapshot.live.rows, snapshot.needsYou.rows, snapshot.pinSections, ...projectViews],
+	);
+	const hubNotices = useMemo(
+		() => notices({ auth: snapshot.auth, sources: sources ?? [], plugins: snapshot.plugins, loadedRows }),
+		[snapshot.auth, sources, snapshot.plugins, loadedRows],
+	);
 
 	const [idleFolded, setIdleFolded] = useState(() => foldedSections(hubId).isFolded("idle", true));
 	const foldIdle = (folded: boolean) => {
@@ -763,6 +767,12 @@ function SearchField({
 			) : null}
 		</View>
 	);
+}
+
+/** Every session row a project section's view holds, across its projects'
+ * tiers. */
+function projectSessionRows(view: ProjectsView): NavigationSessionSummary[] {
+	return [...view.pages.values()].flatMap((pages) => Object.values(pages).flatMap((page) => page.rows));
 }
 
 /** The drafts saved on this device for a hub's sessions, or none when the

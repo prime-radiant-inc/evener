@@ -2181,6 +2181,41 @@ it("reads a tier's next page once its more row is at least half on screen", asyn
 	act(() => tree.unmount());
 });
 
+it("counts an offline host's sessions a project section loaded, and opens one from search marking it seen", async () => {
+	const id = hubId();
+	adoptedAnHourAgo(id);
+	// Only the evener project's current tier lists this session.
+	const projectOnly = session("studio:project-only", {
+		host_id: "studio",
+		title: "Studio report",
+		live: false,
+		updated_at: minutesAgo(10),
+	});
+	const shape = {
+		...troubledFleet(),
+		catalogs: { projects: [evenerProject({ default_expanded: true })] },
+		projectPages: { "evener:current": [projectOnly] },
+		searchOnly: [projectOnly],
+	};
+	connect(id, hub(shape).client, "ready");
+	const nav = navigation();
+	const tree = await mount(nav);
+	expect(hasRow(tree, "Studio report")).toBe(true);
+	expect(noticeTexts(tree)).toContain("Studio Mac is offline · 3 sessionsDetails");
+	expect(seenMarkers(id).isSeen(projectOnly)).toBe(false);
+	const bar = searchField(tree);
+	bar.focus();
+	await bar.type("studio report");
+	act(() => resultTitled(tree, "Studio report").props.onPress());
+	expect(nav.navigate).toHaveBeenLastCalledWith("Conversation", {
+		hubId: id,
+		ref: "studio:project-only",
+		title: "Studio report",
+	});
+	expect(seenMarkers(id).isSeen(projectOnly)).toBe(true);
+	act(() => tree.unmount());
+});
+
 it("reads no more of a project section while search results fill the scroller", async () => {
 	const id = hubId();
 	adoptedAnHourAgo(id);
