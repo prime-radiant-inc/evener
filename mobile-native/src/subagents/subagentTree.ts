@@ -30,15 +30,6 @@ export interface SubagentTreeSnapshot {
 	coordinatorModel: string | null;
 }
 
-// The notifications ActivityList.start() refreshes on (activityList.ts).
-const TREE_NOTIFICATIONS = new Set([
-	"evener/jobs/treeUpdated",
-	"evener/job/started",
-	"evener/job/finished",
-	"evener/delegate/updated",
-	"evener/thread/resync",
-]);
-
 export class SubagentTree {
 	private client: ConversationClientLike | null = null;
 	private list: ActivityList | null = null;
@@ -49,7 +40,8 @@ export class SubagentTree {
 	/** Bumped with each new client, so an old client's reload stops where it stands. */
 	private generation = 0;
 	private reloading: Promise<void> | null = null;
-	private again = false;
+	/** A read asked for while one runs: at once, or paced when only notifications asked. */
+	private again: "now" | "paced" | null = null;
 	private snapshot: SubagentTreeSnapshot;
 	private listeners = new Set<() => void>();
 
@@ -98,10 +90,10 @@ export class SubagentTree {
 				if (tree) this.tree = tree;
 				this.publish();
 			});
+			// The shared list decides which notifications need a read: it applies a
+			// held delegate's update in place, and skips a revision it already shows.
 			const stopNotifications = client.onNotification((notification) => {
-				if (!TREE_NOTIFICATIONS.has(notification.method)) return;
-				const params = notification.params as { ref?: string; threadId?: string };
-				if (params.ref === this.ref && params.threadId === this.threadId) void this.reload();
+				if (list.applyNotification(notification)) void this.reload({ paced: true });
 			});
 			this.list = list;
 			this.detachList = () => {
@@ -135,31 +127,42 @@ export class SubagentTree {
 		await this.reload();
 	}
 
-	/** Reads the root, then every page it names, each at most once per reload. */
-	reload(): Promise<void> {
+	/** Reads the root, then every page it names, each at most once per reload.
+	 * A paced read waits out the list's minimum interval since its last
+	 * whole-tree read; notifications ask for those, and folding into a running
+	 * reload keeps them paced. */
+	reload({ paced = false }: { paced?: boolean } = {}): Promise<void> {
 		if (this.reloading) {
-			this.again = true;
+			if (!paced) this.again = "now";
+			else this.again ??= "paced";
 			return this.reloading;
 		}
 		const generation = this.generation;
 		const current = () => generation === this.generation;
 		const run: Promise<void> = (async () => {
+			let next: "now" | "paced" | null = paced ? "paced" : "now";
 			do {
-				this.again = false;
 				const list = this.list;
 				if (!list) return;
+				if (next === "paced") {
+					await list.waitForRefreshWindow();
+					if (!current() || this.list !== list) return;
+				}
+				// Notifications that arrived while waiting are answered by this read.
+				this.again = null;
 				const tried = new Set<string>();
 				await list.refresh();
 				for (;;) {
 					if (!current() || this.list !== list || this.again) break;
-					const next = list
+					const page = list
 						.branches()
 						.find((branch) => branch.continuation !== undefined && !tried.has(branch.continuation));
-					if (next?.continuation === undefined) break;
-					tried.add(next.continuation);
-					await list.loadMore(next.id, next.continuation);
+					if (page?.continuation === undefined) break;
+					tried.add(page.continuation);
+					await list.loadMore(page.id, page.continuation);
 				}
-			} while (current() && this.again && this.list !== null);
+				next = this.again;
+			} while (current() && next && this.list !== null);
 		})().finally(() => {
 			if (this.reloading === run) this.reloading = null;
 			this.publish();

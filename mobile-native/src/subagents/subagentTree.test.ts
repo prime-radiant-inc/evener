@@ -1,4 +1,5 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { ACTIVITY_REFRESH_MIN_INTERVAL_MS } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { forgetSubagentTrees, holdSubagentTree, SubagentTree, subagentTree } from "./subagentTree";
 
@@ -45,6 +46,38 @@ const reads = (client: FakeClient) =>
 		.map((call) => (call.params as { continuation?: string }).continuation ?? "root");
 const treeUpdated = (client: FakeClient, ref = "local:coord", threadId = "coord") =>
 	client.emitNotification({ method: "evener/jobs/treeUpdated", params: { threadId, ref, revision: 2 } });
+
+const delegateUpdated = (client: FakeClient, delegateId: string, projectionRevision: number, phase = "running") =>
+	client.emitNotification({
+		method: "evener/delegate/updated",
+		params: {
+			ref: "local:coord",
+			threadId: "coord",
+			delegate: {
+				delegateId,
+				ownerSessionId: "coord",
+				rootSessionId: "coord",
+				childSessionId: delegateId,
+				transcriptRef: `local:${delegateId}`,
+				type: "delegate",
+				lifecycle: "running",
+				phase,
+				status: "running",
+				terminal: false,
+				resumable: false,
+				needsAttention: false,
+				projectionRevision,
+			},
+		},
+	} as never);
+const heldPhase = (tree: SubagentTree) => {
+	const entry = tree.getSnapshot().tree?.root.entries[0];
+	return entry?.kind === "delegate" ? entry.delegate.phase : undefined;
+};
+
+afterEach(() => {
+	vi.useRealTimers();
+});
 
 describe("one coordinator's subagent tree", () => {
 	it("reads the tree when it gets a client, and keeps it when the client goes", async () => {
@@ -156,14 +189,58 @@ describe("one coordinator's subagent tree", () => {
 	});
 
 	it("reads again on its coordinator's tree notifications, folding a burst into one more read", async () => {
+		vi.useFakeTimers();
 		const client = hub(() => whole);
 		const tree = new SubagentTree("local:coord", "coord");
 		await tree.setClient(client);
 		treeUpdated(client);
 		treeUpdated(client);
 		treeUpdated(client, "local:other", "other");
-		await tree.reload();
-		expect(reads(client)).toEqual(["root", "root", "root"]);
+		await vi.advanceTimersByTimeAsync(ACTIVITY_REFRESH_MIN_INTERVAL_MS);
+		expect(reads(client)).toEqual(["root", "root"]);
+	});
+
+	it("applies a burst of updates for a subagent it holds in place, without reading again", async () => {
+		vi.useFakeTimers();
+		const client = hub(() => whole);
+		const tree = new SubagentTree("local:coord", "coord");
+		await tree.setClient(client);
+		for (let revision = 2; revision <= 51; revision++) delegateUpdated(client, "a", revision, `step-${revision}`);
+		await vi.advanceTimersByTimeAsync(10 * ACTIVITY_REFRESH_MIN_INTERVAL_MS);
+		expect(reads(client)).toEqual(["root"]);
+		expect(heldPhase(tree)).toBe("step-51");
+	});
+
+	it("reads once for a burst of updates about a subagent it doesn't hold, after the minimum interval", async () => {
+		vi.useFakeTimers();
+		const client = hub(() => whole);
+		const tree = new SubagentTree("local:coord", "coord");
+		await tree.setClient(client);
+		for (let i = 0; i < 5; i++) delegateUpdated(client, "new", 1);
+		await vi.advanceTimersByTimeAsync(1000);
+		expect(reads(client)).toEqual(["root"]);
+		await vi.advanceTimersByTimeAsync(ACTIVITY_REFRESH_MIN_INTERVAL_MS);
+		expect(reads(client)).toEqual(["root", "root"]);
+	});
+
+	it("doesn't read back to back while updates keep arriving and reads are slow", async () => {
+		vi.useFakeTimers();
+		const client = new FakeClient("ready");
+		const starts: number[] = [];
+		client.on("evener/jobs/list", () => {
+			starts.push(Date.now());
+			return new Promise((resolve) => setTimeout(() => resolve({ data: whole }), 3000));
+		});
+		const tree = new SubagentTree("local:coord", "coord");
+		void tree.setClient(client);
+		for (let at = 0; at < 60_000; at += 500) {
+			delegateUpdated(client, "new", 1);
+			await vi.advanceTimersByTimeAsync(500);
+		}
+		// Each read starts at least the minimum interval after the last one ended.
+		for (let i = 1; i < starts.length; i++)
+			expect((starts[i] ?? 0) - (starts[i - 1] ?? 0)).toBeGreaterThanOrEqual(3000 + ACTIVITY_REFRESH_MIN_INTERVAL_MS);
+		expect(starts.length).toBeLessThanOrEqual(13);
 	});
 
 	it("follows the coordinator when asked, learning its model", async () => {
@@ -216,6 +293,7 @@ describe("one coordinator's subagent tree", () => {
 
 describe("the shared tree", () => {
 	it("is one per hub and coordinator, reads while any screen holds it, and keeps its tree after", async () => {
+		vi.useFakeTimers();
 		const tree = subagentTree("hub-1", "local:coord", "coord");
 		expect(subagentTree("hub-1", "local:coord", "coord")).toBe(tree);
 		expect(subagentTree("hub-2", "local:coord", "coord")).not.toBe(tree);
@@ -226,9 +304,11 @@ describe("the shared tree", () => {
 		releaseSubagent();
 		const before = reads(client).length;
 		treeUpdated(client);
+		await vi.advanceTimersByTimeAsync(ACTIVITY_REFRESH_MIN_INTERVAL_MS);
 		expect(reads(client).length).toBe(before + 1);
 		releaseList();
 		treeUpdated(client);
+		await vi.advanceTimersByTimeAsync(ACTIVITY_REFRESH_MIN_INTERVAL_MS);
 		expect(reads(client).length).toBe(before + 1);
 		expect(listed(tree)).toEqual(["a"]);
 		forgetSubagentTrees("hub-1");
