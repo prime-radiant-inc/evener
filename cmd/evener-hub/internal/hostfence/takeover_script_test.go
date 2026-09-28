@@ -497,6 +497,101 @@ func TestScriptPerformUnverifiedEnumerationStaysRunning(t *testing.T) {
 	}
 }
 
+// TestScriptUninspectableCandidateStaysLive pins the inspection-error contract:
+// a candidate the scan can no longer inspect is never read as a nonce mismatch,
+// so both the recording site and the recheck stay live under the injected
+// uninspectable candidate.
+func TestScriptUninspectableCandidateStaysLive(t *testing.T) {
+	if _, err := os.Stat("/proc/self/environ"); err != nil {
+		t.Skip("nonce enumeration needs /proc (Linux)")
+	}
+	remote := newFenceRemote(t)
+	epoch := Epoch{BootID: "boot-1", OpSeq: 1}
+	remote.settle(epoch)
+	work := t.TempDir()
+	childFile := filepath.Join(work, "child")
+	// The forked child outlives the primary and carries the entry's nonce, so
+	// the scan has a candidate; the injected fault then models a candidate that
+	// cannot be inspected at the read.
+	command := "sh -c 'exec sleep 30' & echo $! > " + childFile
+	fault := []string{"EVENER_FENCE_FAULT_UNREADABLE_CANDIDATE=1"}
+	// File-backed streams: the surviving child would otherwise hold the pipes
+	// open and block this call for its full sleep.
+	if combined, _, code := remote.runFile(fault, "perform", epoch.BootID, "1", command); code != 0 {
+		t.Fatalf("perform exited %d: %s", code, combined)
+	}
+	waitForFile(t, childFile)
+	raw, err := os.ReadFile(childFile)
+	if err != nil {
+		t.Fatalf("read child pid: %v", err)
+	}
+	child, err := strconv.Atoi(strings.TrimSpace(string(raw)))
+	if err != nil {
+		t.Fatalf("parse child pid %q: %v", raw, err)
+	}
+	defer killProcess(child)
+	stdout, stderr, code := remote.run(nil, "entries")
+	if code != 0 {
+		t.Fatalf("entries exited %d: %s", code, stderr)
+	}
+	entries, err := DecodeEntries([]byte(stdout))
+	if err != nil || len(entries) != 1 {
+		t.Fatalf("entries = %+v (err %v), want one entry", entries, err)
+	}
+	if entries[0].State != LeaseRunning && entries[0].State != LeaseRegistering {
+		t.Fatalf("entry after an uninspectable candidate = %+v, want a live state", entries[0])
+	}
+	stdout, stderr, code = remote.run(fault, "recheck", entries[0].ID)
+	if code != 0 {
+		t.Fatalf("recheck exited %d: %s", code, stderr)
+	}
+	recheck, err := DecodeRecheck([]byte(stdout))
+	if err != nil {
+		t.Fatalf("DecodeRecheck(%q) = %v", stdout, err)
+	}
+	if !recheck.Live {
+		t.Fatalf("recheck with an uninspectable candidate = %+v, want live", recheck)
+	}
+}
+
+// TestScriptGuardSequenceIncrementsPastSignedWidth pins the increment's string
+// arithmetic: guard epochs above MaxInt64 are valid schema values, so the
+// advance and the takeover must move them exactly instead of wrapping or
+// aborting in the shell's signed arithmetic.
+func TestScriptGuardSequenceIncrementsPastSignedWidth(t *testing.T) {
+	remote := newFenceRemote(t)
+	takeover(t, remote, Epoch{BootID: "boot-1", OpSeq: 1})
+	guard := filepath.Join(remote.state, "guard")
+	widen := func(from, to string) {
+		t.Helper()
+		raw, err := os.ReadFile(guard)
+		if err != nil {
+			t.Fatalf("read guard: %v", err)
+		}
+		next := strings.Replace(string(raw), from, to, 1)
+		if next == string(raw) {
+			t.Fatalf("guard carried no %q to replace: %q", from, raw)
+		}
+		if err := os.WriteFile(guard, []byte(next), 0o600); err != nil {
+			t.Fatalf("write guard: %v", err)
+		}
+	}
+	widen("guardEpoch\t1\n", "guardEpoch\t9223372036854775807\n")
+	widen("fenceGuardEpoch\t1\n", "fenceGuardEpoch\t9223372036854775807\n")
+	if _, stderr, code := remote.run(nil, "advance", "boot-1", "1"); code != 0 {
+		t.Fatalf("advance from MaxInt64 exited %d: %s", code, stderr)
+	}
+	if status := remote.status(); status.GuardEpoch != 9223372036854775808 {
+		t.Fatalf("guardEpoch after advancing from MaxInt64 = %d, want 9223372036854775808", status.GuardEpoch)
+	}
+	if _, stderr, code := remote.run(nil, "takeover", "boot-2", "1"); code != 0 {
+		t.Fatalf("takeover from MaxInt64+1 exited %d: %s", code, stderr)
+	}
+	if status := remote.status(); status.GuardEpoch != 9223372036854775809 {
+		t.Fatalf("guardEpoch after the takeover = %d, want 9223372036854775809", status.GuardEpoch)
+	}
+}
+
 // TestScriptKillPreservesTheCommandText pins the stored-field round trip: the
 // kill path writes the command field exactly as it read it (already
 // JSON-escaped), so a command carrying quotes or backslashes survives the kill

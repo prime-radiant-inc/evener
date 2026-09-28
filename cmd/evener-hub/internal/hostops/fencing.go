@@ -80,6 +80,14 @@ func (s *Store) QuarantineFencing(recordID string, boundary json.RawMessage) (Re
 	if err := json.Unmarshal(members[0], &discriminator); err != nil || discriminator.Kind != remoteFencingKind {
 		return Record{}, fmt.Errorf("%w: a fencing-quarantine boundary carries no %s entry", ErrInvalidRecord, remoteFencingKind)
 	}
+	// The boundary is held to the same schema custody later reads it under, so a
+	// write can never commit a record whose boundary a quarantine would refuse:
+	// a `{"kind":"remote-fencing"}` member missing its epoch, guard epoch or
+	// lease entries is not a boundary this store can custody.
+	if err := validateBoundaryEntries(boundary); err != nil {
+		return Record{}, fmt.Errorf("%w: a fencing-quarantine boundary is outside the %s schema: %w",
+			ErrInvalidRecord, remoteFencingKind, err)
+	}
 	s.cell.mu.Lock()
 	defer s.cell.mu.Unlock()
 

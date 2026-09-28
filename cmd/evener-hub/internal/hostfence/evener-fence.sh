@@ -86,13 +86,16 @@
 # where the stored ownership identity is revalidated remotely before any signal
 # and the kill is recorded through the same entry file.
 #
-# Three environment seams exist for the tests' fault injection, mirroring the Go
+# Four environment seams exist for the tests' fault injection, mirroring the Go
 # stores' fault seams: EVENER_FENCE_FAULT_AFTER_GUARD=1 exits right after a
 # takeover's guard write (before the holder write, the crash window the replay
 # reconciliation repairs), EVENER_FENCE_FAULT_AFTER_SPAWN=1 fails the post-spawn
 # entry write so the kill-on-tracking-failure path is exercised, and
 # EVENER_FENCE_FAULT_UNREADABLE_START=1 hides a live process's start token so
-# the fail-closed recheck arm is exercised. None is set in production.
+# the fail-closed recheck arm is exercised, and
+# EVENER_FENCE_FAULT_UNREADABLE_CANDIDATE=1 makes a nonce candidate
+# uninspectable so the fail-closed enumeration arm is exercised. None is set in
+# production.
 #
 # EVENER_FENCE_TOKEN, when set, is echoed in every refusal: the caller mints it
 # per invocation and clears it for the wrapped command, so a command's own
@@ -193,6 +196,35 @@ seq_at_or_below() { # <a> <b>
 # abort the shell) rather than write a guard the Go decoder accepts.
 seq_exhausted() {
 	[ "${#1}" -eq 20 ] && [ "$1" = "18446744073709551615" ]
+}
+
+# seq_increment prints the canonical uint one above <value>, by string
+# arithmetic: the shell's signed integer width cannot represent the schema's
+# full uint64 range, so `$((value + 1))` wraps or aborts for values above
+# MaxInt64. <value> must be is_uint64-validated and below the schema maximum;
+# seq_exhausted refuses that case before this is called.
+seq_increment() {
+	rest=$1
+	out=''
+	carry=1
+	while [ -n "$rest" ]; do
+		prefix=${rest%?}
+		digit=${rest#"$prefix"}
+		rest=$prefix
+		if [ "$carry" -eq 1 ]; then
+			if [ "$digit" = 9 ]; then
+				digit=0
+			else
+				digit=$((digit + 1))
+				carry=0
+			fi
+		fi
+		out=$digit$out
+	done
+	if [ "$carry" -eq 1 ]; then
+		out=1$out
+	fi
+	printf '%s' "$out"
 }
 
 sync_path() { # best-effort durability for a file or directory
@@ -830,7 +862,7 @@ do_takeover() {
 		# it, and wrapping would write a guard the Go decoder rejects.
 		refuse_corrupt "the guard's fencing sequence is exhausted"
 	fi
-	GUARD_EPOCH=$((GUARD_EPOCH + 1))
+	GUARD_EPOCH=$(seq_increment "$GUARD_EPOCH")
 	FENCE_BOOT=$E_BOOT
 	FENCE_SEQ=$E_SEQ
 	FENCE_SUP_BOOT=$previous_boot
@@ -873,7 +905,7 @@ do_advance() {
 	fi
 	EPOCH_BOOT=$E_BOOT
 	EPOCH_SEQ=$E_SEQ
-	GUARD_EPOCH=$((GUARD_EPOCH + 1))
+	GUARD_EPOCH=$(seq_increment "$GUARD_EPOCH")
 	SUP_BOOT=$FENCE_SUP_BOOT
 	SUP_SEQ=$FENCE_SUP_SEQ
 	FENCE_BOOT=-
@@ -916,11 +948,20 @@ current_start_token() { # <pid>
 	pid_start_time "$1"
 }
 
+# nonce_value prints the exact per-spawn nonce a process's environment carries
+# (empty when it carries none), and returns nonzero when the environment cannot
+# be read: an uninspectable environment is never a nonce mismatch, and its
+# caller must read it as "cannot disprove".
+nonce_value() { # <environ path>
+	value=$(tr '\0' '\n' <"$1" 2>/dev/null) || return 1
+	printf '%s\n' "$value" | sed -n 's/^EVENER_FENCE_NONCE=//p'
+}
+
 # nonce_holds reports whether one process's environment carries exactly this
 # nonce: the value is extracted and compared whole, never substring-matched, so
 # a process whose nonce merely starts with the searched value is not ours.
 nonce_holds() { # <environ path> <nonce>
-	value=$(tr '\0' '\n' <"$1" 2>/dev/null | sed -n 's/^EVENER_FENCE_NONCE=//p' || true)
+	value=$(nonce_value "$1") || return 1
 	[ "$value" = "$2" ]
 }
 
@@ -936,20 +977,26 @@ descendants_of() { # <nonce>
 	nonce_scan_available || return 1
 	# One substring grep decides whether any candidate exists at all; only then
 	# is the per-pid pass worth its forks. A substring hit is a candidate, never
-	# an answer: nonce_holds extracts and compares the value exactly, so a
-	# process whose nonce merely starts with the searched one is not ours. The
-	# pass reads grep's output, never its exit status: unreadable environ files
+	# an answer: the extracted value is compared exactly, so a process whose
+	# nonce merely starts with the searched one is not ours. The pass reads
+	# grep's candidate list, never its exit status: unreadable environ files
 	# make grep exit 2 even after a match, and a nonzero status must never read
-	# as "no survivors".
+	# as "no survivors". A candidate that can no longer be inspected returns
+	# nonzero — the caller must read that as "cannot disprove", never as empty.
 	candidates=$(grep -als "EVENER_FENCE_NONCE=$1" /proc/[0-9]*/environ 2>/dev/null || true)
 	[ -n "$candidates" ] || return 0
-	for envfile in /proc/[0-9]*/environ; do
-		[ -r "$envfile" ] || continue
+	for envfile in $candidates; do
+		if [ "${EVENER_FENCE_FAULT_UNREADABLE_CANDIDATE:-0}" = 1 ]; then
+			# Test-only fault injection: models a candidate that cannot be
+			# inspected at the read, so the fail-closed arm is exercised.
+			return 2
+		fi
+		value=$(nonce_value "$envfile") || return 2
+		[ "$value" = "$1" ] || continue
 		pid=${envfile#/proc/}
 		pid=${pid%/environ}
 		case $pid in '' | *[!0-9]*) continue ;; esac
 		[ "$pid" = "$$" ] && continue
-		nonce_holds "$envfile" "$1" || continue
 		start=$(pid_start_time "$pid" 2>/dev/null || true)
 		[ -n "$start" ] || start=unknown
 		printf '%s:%s ' "$pid" "$start"
@@ -1130,13 +1177,17 @@ do_recheck() { # <id>
 			descendant_pid=${descendant%%:*}
 			descendant_start=${descendant#*:}
 			kill -0 "$descendant_pid" 2>/dev/null || continue
-			if [ "$descendant_start" = unknown ] || [ ! -r "/proc/$descendant_pid/environ" ]; then
-				# No start token was recorded, or the environment cannot be
-				# read: the identity cannot be disproven.
+			if [ "$descendant_start" = unknown ]; then
+				# No start token was recorded: the identity cannot be disproven.
 				live=true
 				break
 			fi
-			if ! nonce_holds "/proc/$descendant_pid/environ" "$id"; then
+			if ! value=$(nonce_value "/proc/$descendant_pid/environ"); then
+				# The environment cannot be read now: cannot be disproven.
+				live=true
+				break
+			fi
+			if [ "$value" != "$id" ]; then
 				# The exact nonce is absent: this is not the wrapper's process.
 				continue
 			fi
@@ -1282,13 +1333,18 @@ entry_live_targets() { # (uses ENTRY_*)
 		descendant_pid=${descendant%%:*}
 		descendant_start=${descendant#*:}
 		kill -0 "$descendant_pid" 2>/dev/null || continue
-		if [ "$descendant_start" = unknown ] || [ ! -r "/proc/$descendant_pid/environ" ]; then
-			# No start token was recorded, or the environment cannot be
-			# read: the identity cannot be disproven.
+		if [ "$descendant_start" = unknown ]; then
+			# No start token was recorded: the identity cannot be disproven.
 			emit_target "$descendant_pid" unknown
 			continue
 		fi
-		if ! nonce_holds "/proc/$descendant_pid/environ" "$ENTRY_ID"; then
+		if ! value=$(nonce_value "/proc/$descendant_pid/environ"); then
+			# The environment cannot be read now: the identity cannot be
+			# disproven, so the member reads live and is never signaled.
+			emit_target "$descendant_pid" unknown
+			continue
+		fi
+		if [ "$value" != "$ENTRY_ID" ]; then
 			continue
 		fi
 		current=$(current_start_token "$descendant_pid" || true)
@@ -1384,6 +1440,16 @@ do_kill() { # <bootId> <opSeq> <id>
 		# Signal only a fully verified identity: "unknown" is a member this
 		# helper cannot prove is the wrapper's work.
 		if [ "$target_start" = unknown ]; then
+			continue
+		fi
+		# Re-read the kernel-owned start token immediately before signaling. It
+		# narrows (never closes) the check-then-act window: the design's
+		# 2026-09-26 decision withdraws the atomic pidfd requirement — no atomic
+		# ownership-and-signal form is reachable through the helper's shell
+		# interface — and accepts the residual window. An identity that cannot
+		# be re-read now is skipped, never signaled.
+		current=$(current_start_token "$target_pid" || true)
+		if [ -z "$current" ] || [ "$current" != "$target_start" ]; then
 			continue
 		fi
 		kill "$target_pid" 2>/dev/null || true

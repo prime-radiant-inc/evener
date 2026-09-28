@@ -83,7 +83,7 @@ func TestQuarantineFencingPersistsRecordAndMarkerInOneWrite(t *testing.T) {
 	}
 	// A replay of the same record is idempotent: the stored record comes back
 	// unchanged, never a second transition and never a rewritten boundary.
-	replayed, err := fresh.QuarantineFencing(record.ID, json.RawMessage(`[{"kind":"remote-fencing"}]`))
+	replayed, err := fresh.QuarantineFencing(record.ID, json.RawMessage(remoteFencingBoundaryJSON))
 	if err != nil {
 		t.Fatalf("QuarantineFencing(replay): %v", err)
 	}
@@ -158,6 +158,7 @@ func TestQuarantineFencingRefusals(t *testing.T) {
 		"object member": `[{}]`,
 		"null member":   `[null]`,
 		"wrong kind":    `[{"kind":"local-linux"}]`,
+		"kind only":     `[{"kind":"remote-fencing"}]`,
 	} {
 		if _, err := store.QuarantineFencing(record.ID, json.RawMessage(boundary)); err == nil {
 			t.Fatalf("%s boundary = nil error, want refusal", name)
@@ -276,6 +277,51 @@ func TestFencingMarkerAndBoundaryMustAgree(t *testing.T) {
 	}
 	if marker, ok := store.FencingQuarantine("h1"); !ok || marker.RecordID != "00000000000000000001" {
 		t.Fatalf("FencingQuarantine(h1) = (%+v, %v), want the marker served", marker, ok)
+	}
+}
+
+// TestFencingQuarantineTimestampNormalizesOnWrite pins §8's stored-UTC rule for
+// the marker's timestamp: an offset form read from a hand-edited file is
+// normalized at load, so the next write serializes the Z form.
+func TestFencingQuarantineTimestampNormalizesOnWrite(t *testing.T) {
+	dir := t.TempDir()
+	path := StorePath(dir)
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatalf("create store dir: %v", err)
+	}
+	body := `{"version":1,"sequence":0,"allocatorHighWaterMark":1,"records":[` +
+		`{"id":"00000000000000000001","clientOperationId":"client-h1","host":"h1","kind":"deploy",` +
+		`"state":"orphan-unverified","generation":7,"incarnationId":"inc-1","createdAt":"2026-09-26T00:00:00Z",` +
+		`"updatedAt":"2026-09-26T00:00:00Z","hostRemoved":false,"orphanBoundary":[` +
+		`{"kind":"remote-fencing","fencingEpoch":{"bootId":"boot-1","opSeq":2},"guardEpoch":3,"leaseEntries":[]}` +
+		`]}],"fencingQuarantines":{"h1":{"recordId":"00000000000000000001","quarantinedAt":"2026-09-26T02:00:00+02:00"}}}`
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatalf("write store: %v", err)
+	}
+	store, err := Open(path)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	marker, ok := store.FencingQuarantine("h1")
+	if !ok {
+		t.Fatal("the marker did not load")
+	}
+	if got := marker.QuarantinedAt.Format(time.RFC3339); got != "2026-09-26T00:00:00Z" {
+		t.Fatalf("loaded marker timestamp = %q, want the UTC-normalized form", got)
+	}
+	// Force one write and read the bytes back: the normalized form is what the
+	// store serializes.
+	if _, err := store.Create(NewRecord{
+		ClientOperationID: "client-h2", Host: "h2", Kind: KindDeploy, Generation: 1, IncarnationID: "inc-h2",
+	}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read store: %v", err)
+	}
+	if !strings.Contains(string(raw), `"quarantinedAt":"2026-09-26T00:00:00Z"`) {
+		t.Fatalf("the marker timestamp was not normalized on write: %s", raw)
 	}
 }
 

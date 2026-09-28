@@ -996,6 +996,12 @@ func readStoreFS(fs afero.Fs, path string) (snapshot, error) {
 		state.Records[i].CreatedAt = state.Records[i].CreatedAt.UTC()
 		state.Records[i].UpdatedAt = state.Records[i].UpdatedAt.UTC()
 	}
+	// The fencing-quarantine markers' timestamps take the same normalization, so
+	// a hand-edited or imported offset form never survives a rewrite either.
+	for host, marker := range state.FencingQuarantines {
+		marker.QuarantinedAt = marker.QuarantinedAt.UTC()
+		state.FencingQuarantines[host] = marker
+	}
 	return state, nil
 }
 
