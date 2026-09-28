@@ -457,6 +457,13 @@ func (m *hubHostManager) operationProbeRefusal(name string, err error) error {
 	if wire, ok := helperGateWireRefusal(err); ok {
 		return wire
 	}
+	if gate, ok := errors.AsType[*hostfence.HelperGateError](err); ok {
+		// A gate refusal whose discriminator this build cannot render is still a
+		// gate refusal: refuse it as an internal error naming the unknown class,
+		// never as `fencing-helper-absent` and never as `probe-failed` (§8:161).
+		return appwire.InternalError(fmt.Sprintf(
+			"host %q: the helper gate refused with an unknown discriminator %q: %v", name, gate.Discriminator, err))
+	}
 	switch {
 	case errors.Is(err, errHostDetached):
 		return hostDetachedRefusal(name)
@@ -486,10 +493,17 @@ func helperGateWireRefusal(err error) (appwire.WireError, bool) {
 		return appwire.WireError{}, false
 	}
 	message := gate.Error()
-	if gate.Discriminator == hostfence.DiscriminatorHelperUntrusted {
+	switch gate.Discriminator {
+	case hostfence.DiscriminatorHelperAbsent:
+		return appwire.FencingHelperAbsent(gate.Host, gate.PinnedVersion, message), true
+	case hostfence.DiscriminatorHelperUntrusted:
 		return appwire.FencingHelperUntrusted(gate.Host, gate.PinnedVersion, gate.ObservedVersion, message), true
+	default:
+		// A discriminator this build does not know is not the absent class: the
+		// caller refuses it explicitly (operationProbeRefusal's guard) rather
+		// than rendering it as an arm this build never defined.
+		return appwire.WireError{}, false
 	}
-	return appwire.FencingHelperAbsent(gate.Host, gate.PinnedVersion, message), true
 }
 
 // hostDetachedRefusal is §11's `host-detached`: the channel is gone, the token

@@ -376,6 +376,19 @@ func (m *hubHostManager) deriveHostTOMLRecords(entries, known []hostreg.Host, ch
 		// hub.toml writes, staged here and installed only by a successful write.
 		records.provisioning[change.provisioning.Name] = change.provisioning.Provisioning
 	}
+	// Provisioning belongs only to live hosts. A removed name's record is gone
+	// from the file, so carrying its flags in the store would let an in-process
+	// re-add inherit a stale attempt fence or a converged helperInstalled flag:
+	// the fresh host would read as provisioned forever, with the outcome
+	// depending on process lifetime rather than persisted state. The derivation
+	// is authoritative — every name this write does not carry live is dropped,
+	// and installRecords installs the pruned set wholesale.
+	liveNames := hostNameSet(entries)
+	for name := range records.provisioning {
+		if _, ok := liveNames[name]; !ok {
+			delete(records.provisioning, name)
+		}
+	}
 	if change.tombstone != nil {
 		tombstone := change.tombstone.Tombstone
 		records.tombstones[tombstone.Name] = tombstone

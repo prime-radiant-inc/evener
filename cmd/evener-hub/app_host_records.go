@@ -575,19 +575,27 @@ func (s hostBootstrapStore) Provisioning(host string) (hostfence.Provisioning, e
 // PersistAttemptFence writes §6:133's durable bootstrap-attempt fence in its
 // own atomic hub.toml write.
 func (s hostBootstrapStore) PersistAttemptFence(host string) (hostfence.Provisioning, error) {
-	return s.m.persistProvisioning(host, func(p hostfence.Provisioning) hostfence.Provisioning {
+	return s.m.persistProvisioning(host, func(p hostfence.Provisioning) (hostfence.Provisioning, error) {
 		p.AttemptFenced = true
-		return p
+		return p, nil
 	})
 }
 
 // FinalizeBootstrap converges helperInstalled with the delivered version in the
-// finalizing atomic write (§6:137).
+// finalizing atomic write (§6:137). It refuses a host that never carried the
+// attempt fence: the fence-before-install invariant is what closes the unfenced
+// exemption, and an installed-without-fence record is a shape no writer emits.
 func (s hostBootstrapStore) FinalizeBootstrap(host string, helperVersion uint64) (hostfence.Provisioning, error) {
-	return s.m.persistProvisioning(host, func(p hostfence.Provisioning) hostfence.Provisioning {
+	if helperVersion == 0 {
+		return hostfence.Provisioning{}, errors.New("hostfence: finalize needs the delivered helper version")
+	}
+	return s.m.persistProvisioning(host, func(p hostfence.Provisioning) (hostfence.Provisioning, error) {
+		if !p.AttemptFenced {
+			return hostfence.Provisioning{}, fmt.Errorf("host %q has no bootstrap-attempt fence, so helperInstalled is not converged", host)
+		}
 		p.HelperInstalled = true
 		p.HelperVersion = helperVersion
-		return p
+		return p, nil
 	})
 }
 
@@ -596,7 +604,7 @@ func (s hostBootstrapStore) FinalizeBootstrap(host string, helperVersion uint64)
 // failed write installs nothing, so the store's record stays exactly as it was
 // and the caller re-reads it; a name that is not a live entry refuses before
 // any write (a bootstrap flag has no meaning for a removed name).
-func (m *hubHostManager) persistProvisioning(host string, mutate func(hostfence.Provisioning) hostfence.Provisioning) (hostfence.Provisioning, error) {
+func (m *hubHostManager) persistProvisioning(host string, mutate func(hostfence.Provisioning) (hostfence.Provisioning, error)) (hostfence.Provisioning, error) {
 	m.cfg.mu.Lock()
 	defer m.cfg.mu.Unlock()
 	entries := m.cfg.store.snapshot()
@@ -610,7 +618,10 @@ func (m *hubHostManager) persistProvisioning(host string, mutate func(hostfence.
 	if !live {
 		return hostfence.Provisioning{}, fmt.Errorf("host %q is not a live host, so no bootstrap record was written", host)
 	}
-	next := mutate(m.cfg.store.provisioningFor(host))
+	next, err := mutate(m.cfg.store.provisioningFor(host))
+	if err != nil {
+		return hostfence.Provisioning{}, err
+	}
 	if err := m.persistHosts(entries, entries, hostPersistChange{
 		provisioning: &pendingHostProvisioning{Name: host, Provisioning: next},
 	}); err != nil {

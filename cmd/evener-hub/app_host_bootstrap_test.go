@@ -335,8 +335,16 @@ func TestHelperGateRefusalsRideTheConflictClass(t *testing.T) {
 	if !ok || data.EvenerErrorInfo != appwire.ErrorFencingHelperUntrusted {
 		t.Fatalf("untrusted data = %#v, want the %s arm", wire.Data, appwire.ErrorFencingHelperUntrusted)
 	}
-	if data.ObservedVersion != 99 {
-		t.Fatalf("untrusted observed version = %d, want 99", data.ObservedVersion)
+	// An unknown discriminator is refused as an internal error naming the class,
+	// never misclassified as absent (and never as probe-failed).
+	unknown := &hostfence.HelperGateError{Host: "alpha", Discriminator: "fencing-helper-future", PinnedVersion: hostfence.HelperVersion}
+	err = m.operationProbeRefusal("alpha", unknown)
+	wire, ok = errors.AsType[appwire.WireError](err)
+	if !ok || wire.Code != appwire.CodeInternalError {
+		t.Fatalf("unknown discriminator = (%v, %v), want an internal-class refusal", wire, err)
+	}
+	if data, ok := wire.Data.(appwire.ErrorData); !ok || data.EvenerErrorInfo != appwire.ErrorInternal {
+		t.Fatalf("unknown discriminator data = %#v, want internal", wire.Data)
 	}
 
 	// An ordinary read failure still classifies as probe-failed.
@@ -347,5 +355,86 @@ func TestHelperGateRefusalsRideTheConflictClass(t *testing.T) {
 	}
 	if data, ok := wire.Data.(appwire.ProbeFailedErrorData); !ok || data.EvenerErrorInfo != appwire.ErrorProbeFailed {
 		t.Fatalf("ordinary probe failure data = %#v, want the %s arm", wire.Data, appwire.ErrorProbeFailed)
+	}
+}
+
+// TestHostBootstrapProvisioningDoesNotSurviveRemoval pins the derivation's
+// purge: a removed name's bootstrap flags leave the store with its file record,
+// so an in-process re-add never inherits a stale attempt fence or a converged
+// helperInstalled flag — an inherited flag would read as provisioned forever,
+// making the outcome depend on process lifetime rather than persisted state.
+func TestHostBootstrapProvisioningDoesNotSurviveRemoval(t *testing.T) {
+	f := newBootstrapFixture(t)
+	store := f.m.bootstrapStore()
+	if _, err := store.PersistAttemptFence("alpha"); err != nil {
+		t.Fatalf("PersistAttemptFence: %v", err)
+	}
+	if _, err := store.FinalizeBootstrap("alpha", hostfence.HelperVersion); err != nil {
+		t.Fatalf("FinalizeBootstrap: %v", err)
+	}
+	if p := f.m.cfg.store.provisioningFor("alpha"); !p.Provisioned() {
+		t.Fatalf("provisioning after the finalize = %+v, want the converged record", p)
+	}
+
+	// The removal write: the live set no longer carries the name.
+	entries := f.m.cfg.store.snapshot()
+	removal := make([]hostreg.Host, 0, len(entries))
+	for _, entry := range entries {
+		if entry.Name != "alpha" {
+			removal = append(removal, entry)
+		}
+	}
+	f.m.cfg.mu.Lock()
+	err := f.m.persistHosts(removal, entries, hostPersistChange{})
+	f.m.cfg.mu.Unlock()
+	if err != nil {
+		t.Fatalf("removal write: %v", err)
+	}
+	records, _ := readHostRecords(t, f.path)
+	if _, carried := records["alpha"]; carried {
+		t.Fatal("the removal left a host_records entry for the removed name")
+	}
+	if p := f.m.cfg.store.provisioningFor("alpha"); p != (hostfence.Provisioning{}) {
+		t.Fatalf("the store kept %+v after the removal; an in-process re-add would inherit it", p)
+	}
+
+	// The re-add: a fresh incarnation for the same name mints no flags.
+	fresh := entries[0]
+	fresh.Generation = entries[0].Generation + 1
+	fresh.IncarnationID = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
+	fresh.PresenceEpoch = entries[0].PresenceEpoch + 1
+	f.m.cfg.mu.Lock()
+	err = f.m.persistHosts([]hostreg.Host{fresh}, removal, hostPersistChange{})
+	f.m.cfg.mu.Unlock()
+	if err != nil {
+		t.Fatalf("re-add write: %v", err)
+	}
+	record := liveRecord(t, f.path, "alpha")
+	if record.BootstrapAttempted || record.HelperInstalled || record.HelperVersion != 0 {
+		t.Fatalf("the re-added host inherited bootstrap flags: %+v", record)
+	}
+	if p := f.m.cfg.store.provisioningFor("alpha"); p != (hostfence.Provisioning{}) {
+		t.Fatalf("the re-added host's store record = %+v, want the zero record", p)
+	}
+}
+
+// TestHostBootstrapFinalizeRequiresTheAttemptFence pins the fence-before-install
+// invariant at the real store: a direct finalize on a never-fenced host refuses
+// instead of writing installed-without-fence, a shape the loader rejects.
+func TestHostBootstrapFinalizeRequiresTheAttemptFence(t *testing.T) {
+	f := newBootstrapFixture(t)
+	store := f.m.bootstrapStore()
+	if _, err := store.FinalizeBootstrap("alpha", hostfence.HelperVersion); err == nil {
+		t.Fatal("FinalizeBootstrap on a never-fenced host = nil error, want a refusal")
+	} else if !strings.Contains(err.Error(), "has no bootstrap-attempt fence") {
+		t.Fatalf("FinalizeBootstrap error = %v, want the explicit fence-before-install refusal", err)
+	}
+	if record := liveRecord(t, f.path, "alpha"); record.HelperInstalled || record.BootstrapAttempted {
+		t.Fatalf("the refused finalize wrote flags: %+v", record)
+	}
+	if _, err := store.FinalizeBootstrap("alpha", 0); err == nil {
+		t.Fatal("FinalizeBootstrap with version 0 = nil error, want a refusal")
+	} else if !strings.Contains(err.Error(), "needs the delivered helper version") {
+		t.Fatalf("FinalizeBootstrap(version 0) error = %v, want the explicit version refusal", err)
 	}
 }

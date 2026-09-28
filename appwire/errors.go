@@ -355,8 +355,10 @@ type FencingHelperGateErrorData struct {
 	Host          string `json:"host"`
 	PinnedVersion int    `json:"pinnedVersion"`
 	// ObservedVersion is the version the remote reported, omitted on the absent
-	// arm (nothing was read) and present on the untrusted arm.
-	ObservedVersion int `json:"observedVersion,omitempty"`
+	// arm (nothing was read) and always present on the untrusted arm — a
+	// pointer so a reported version of 0 (a helper that answered nothing
+	// readable) still serializes instead of being dropped by omitempty.
+	ObservedVersion *int `json:"observedVersion,omitempty"`
 }
 
 // FencingHelperAbsent is §8's `fencing-helper-absent` refusal (conflict class):
@@ -387,7 +389,7 @@ func FencingHelperUntrusted(host string, pinnedVersion, observedVersion int, mes
 			ErrorData:       ErrorData{EvenerErrorInfo: ErrorFencingHelperUntrusted},
 			Host:            host,
 			PinnedVersion:   pinnedVersion,
-			ObservedVersion: observedVersion,
+			ObservedVersion: &observedVersion,
 		},
 	}
 }

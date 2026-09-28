@@ -129,7 +129,7 @@ func TestFencingHelperGateRefusals(t *testing.T) {
 	if !ok {
 		t.Fatalf("untrusted Data = %T, want FencingHelperGateErrorData", untrusted.Data)
 	}
-	if untrustedData.EvenerErrorInfo != ErrorFencingHelperUntrusted || untrustedData.ObservedVersion != 99 {
+	if untrustedData.EvenerErrorInfo != ErrorFencingHelperUntrusted {
 		t.Fatalf("untrusted data = %+v, want the %s arm naming version 99", untrustedData, ErrorFencingHelperUntrusted)
 	}
 	untrustedRaw, err := json.Marshal(untrusted)
@@ -138,6 +138,15 @@ func TestFencingHelperGateRefusals(t *testing.T) {
 	}
 	if !strings.Contains(string(untrustedRaw), `"observedVersion":99`) {
 		t.Fatalf("untrusted wire = %s, want the distrusted version named", untrustedRaw)
+	}
+	// An observed version of 0 is a real mismatch value: the untrusted arm must
+	// still carry it, never drop it as an empty value.
+	zeroRaw, err := json.Marshal(FencingHelperUntrusted("m4", 1, 0, "helper distrusted"))
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	if !strings.Contains(string(zeroRaw), `"observedVersion":0`) {
+		t.Fatalf("zero-version untrusted wire = %s, want observedVersion present", zeroRaw)
 	}
 }
 
