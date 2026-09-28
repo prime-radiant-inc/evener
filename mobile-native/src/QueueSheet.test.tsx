@@ -15,6 +15,9 @@ vi.mock("react-native", async () => ({
 	ActionSheetIOS: { showActionSheetWithOptions: vi.fn() },
 }));
 vi.mock("expo-symbols", () => ({ SymbolView: "SymbolView" }));
+vi.mock("react-native-gesture-handler/ReanimatedSwipeable", async () =>
+	(await import("./renderNative.testkit")).gestureHandlerModuleMock(),
+);
 vi.mock("@react-navigation/native", () => ({
 	useNavigation: () => navigation,
 	usePreventRemove: () => {},

@@ -2,9 +2,10 @@
 // agent, or one that needs a look. It sits where your message will land,
 // right-aligned, dashed and unfilled, with what it is waiting for beneath it
 // and the actions it offers as text buttons. Tapping the bubble opens the
-// rest of its actions.
+// rest of its actions, and a queued or held message swipes left to cancel.
 import type { ReactNode } from "react";
 import { ActionSheetIOS, Alert, Platform, Pressable, Text, View } from "react-native";
+import { SwipeRow } from "../board/SwipeRow";
 import { typeRoles } from "../design/tokens";
 import { allowFontScaling, useColors, useTextScale } from "../ui";
 import type { Ghost, GhostAction } from "./ghosts";
@@ -77,7 +78,7 @@ export function GhostBubble({ ghost, disabled, canEdit, editHint, attachments, o
 			color: ghost.state === "refused" ? palette.dangerInk : palette.inkLow,
 		},
 	};
-	return (
+	const bubble = (
 		<View style={{ alignItems: "flex-end", gap: 2 }}>
 			<Pressable
 				accessibilityLabel={`${ghost.text}. ${ghost.caption}`}
@@ -155,5 +156,15 @@ export function GhostBubble({ ghost, disabled, canEdit, editHint, attachments, o
 				</View>
 			) : null}
 		</View>
+	);
+	// Cancel takes the same path as the menu's, which checks at the moment
+	// it runs that the message is still the one you swiped.
+	const cancels = !disabled && (ghost.buttons.includes("cancel") || ghost.menu.includes("cancel"));
+	return cancels ? (
+		<SwipeRow destructive={{ key: "cancel", label: BUTTON_LABELS.cancel, run: () => onAction("cancel") }}>
+			{bubble}
+		</SwipeRow>
+	) : (
+		bubble
 	);
 }

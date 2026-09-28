@@ -5,7 +5,7 @@ import { createElement } from "react";
 import type { ReactTestRenderer } from "react-test-renderer";
 import { act } from "react-test-renderer";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { pressable, render, renderedText } from "../renderNative.testkit";
+import { pressable, render, renderedText, swipeableCalls } from "../renderNative.testkit";
 import type { Ghost, GhostAction } from "./ghosts";
 import { QueuedMessages } from "./QueuedMessages";
 
@@ -15,8 +15,14 @@ vi.mock("react-native", async () => ({
 	ActionSheetIOS: { showActionSheetWithOptions: native.showActionSheetWithOptions },
 }));
 vi.mock("expo-symbols", () => ({ SymbolView: "SymbolView" }));
+vi.mock("react-native-gesture-handler/ReanimatedSwipeable", async () =>
+	(await import("../renderNative.testkit")).gestureHandlerModuleMock(),
+);
 
-beforeEach(() => native.showActionSheetWithOptions.mockReset());
+beforeEach(() => {
+	native.showActionSheetWithOptions.mockReset();
+	swipeableCalls.closes = 0;
+});
 
 const Image = (props: { accessibilityLabel: string }) => createElement("Image", props);
 
@@ -293,4 +299,38 @@ it("shows three queued messages, counts the rest, and opens them", () => {
 it("renders nothing when nothing is waiting", () => {
 	const { tree } = mount([]);
 	expect(tree.toJSON()).toBeNull();
+});
+
+describe("swiping a ghost left (spec 8.5)", () => {
+	const swipeables = (tree: ReactTestRenderer) => tree.root.findAllByType("ReanimatedSwipeable" as never);
+	function swipeLeft(tree: ReactTestRenderer, pageX = 200) {
+		const [swipeable] = swipeables(tree);
+		if (!swipeable) throw new Error("no swipeable ghost");
+		act(() => tree.root.findByProps({ testID: "swipe-row-content" }).props.onTouchStart({ nativeEvent: { pageX } }));
+		act(() => swipeable.props.onSwipeableOpen("left"));
+	}
+
+	it.each([
+		["queued", queued],
+		["held", held],
+	] as const)("cancels a %s message on a full swipe, through the same action as its menu", (_state, ghost) => {
+		const { tree, onAction } = mount([ghost]);
+		expect(renderedText(render(swipeables(tree)[0]?.props.renderRightActions()))).toBe("Cancel");
+		swipeLeft(tree);
+		expect(onAction.mock.calls).toEqual([[ghost, "cancel"]]);
+	});
+
+	it("never cancels from a swipe that began in the screen's left edge band", () => {
+		const { tree, onAction } = mount([queued]);
+		swipeLeft(tree, 10);
+		expect(onAction).not.toHaveBeenCalled();
+	});
+
+	it("doesn't swipe a message with nothing to cancel, or while another action runs", () => {
+		for (const ghost of [steering, sending, unconfirmed, refused])
+			expect(swipeables(mount([ghost]).tree)).toHaveLength(0);
+		// A queued message the hub hasn't named yet can't be canceled.
+		expect(swipeables(mount([{ ...queued, buttons: [], menu: [] }]).tree)).toHaveLength(0);
+		expect(swipeables(mount([queued], { disabled: true }).tree)).toHaveLength(0);
+	});
 });
