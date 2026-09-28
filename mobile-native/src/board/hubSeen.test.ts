@@ -349,6 +349,13 @@ describe("sending", () => {
 		]);
 	});
 
+	it("sends a mark made right after a flush that found nothing to send", () => {
+		const { marks, client, calls } = setup();
+		marks.flush(client);
+		marks.markSeen(client, [{ ref: "a", seenThrough: T }]);
+		expect(calls.map((call) => call.sessions)).toEqual([[{ ref: "a", seenThrough: T }]]);
+	});
+
 	it("records marks made with no connection, and sends them once one is ready", () => {
 		const { marks, client, calls } = setup();
 		marks.markSeen(null, [{ ref: "a", seenThrough: T }]);

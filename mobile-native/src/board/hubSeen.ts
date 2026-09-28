@@ -91,10 +91,7 @@ export class HubSeenMarks {
 	flush(client: ConversationClientLike | null): void {
 		this.client = client;
 		if (!client || this.sending) return;
-		this.sending = true;
-		void this.send().finally(() => {
-			this.sending = false;
-		});
+		void this.send();
 	}
 
 	/** Drops each pending mark the hub's rows show landed, or show no longer
@@ -124,33 +121,42 @@ export class HubSeenMarks {
 
 	getRevision = (): number => this.revision;
 
+	/** Sends until nothing unacknowledged is left or there is no client to
+	 * send on. `sending` resets in the same tick the loop ends: a flush right
+	 * after one that found nothing to send must start a loop of its own, and
+	 * a finally chained on the returned promise would run a microtask late. */
 	private async send(): Promise<void> {
-		for (;;) {
-			const client = this.client;
-			if (!client || withoutSeenSet.has(client)) return;
-			const batch = [...this.pending].filter(([, entry]) => !entry.acknowledged).slice(0, MAX_MARKS_PER_CALL);
-			if (batch.length === 0) return;
-			const sessions: SessionSeenMark[] = batch.map(([ref, { mark }]) => ({ ref, ...mark }));
-			// An entry replaced while its call was out is a newer mark: only the
-			// entry that was sent takes the call's outcome.
-			const stillSent = ([ref, entry]: [string, PendingEntry]) => this.pending.get(ref) === entry;
-			try {
-				await client.request("evener/session/seen/set", { sessions });
-				for (const [, entry] of batch.filter(stillSent)) entry.acknowledged = true;
-			} catch (error) {
-				if (!(error instanceof WireError)) {
-					// Closed or timed out: the marks go again on the next flush, or
-					// now if a new connection arrived while this call was out.
-					if (this.client === client) return;
-					continue;
+		this.sending = true;
+		try {
+			for (;;) {
+				const client = this.client;
+				if (!client || withoutSeenSet.has(client)) return;
+				const batch = [...this.pending].filter(([, entry]) => !entry.acknowledged).slice(0, MAX_MARKS_PER_CALL);
+				if (batch.length === 0) return;
+				const sessions: SessionSeenMark[] = batch.map(([ref, { mark }]) => ({ ref, ...mark }));
+				// An entry replaced while its call was out is a newer mark: only the
+				// entry that was sent takes the call's outcome.
+				const stillSent = ([ref, entry]: [string, PendingEntry]) => this.pending.get(ref) === entry;
+				try {
+					await client.request("evener/session/seen/set", { sessions });
+					for (const [, entry] of batch.filter(stillSent)) entry.acknowledged = true;
+				} catch (error) {
+					if (!(error instanceof WireError)) {
+						// Closed or timed out: the marks go again on the next flush, or
+						// now if a new connection arrived while this call was out.
+						if (this.client === client) return;
+						continue;
+					}
+					// The hub refused: resending is pointless, so the rows show the
+					// hub's own state again.
+					if (error.code === METHOD_NOT_FOUND) withoutSeenSet.add(client);
+					const refused = batch.filter(stillSent);
+					for (const [ref] of refused) this.pending.delete(ref);
+					if (refused.length) this.changed();
 				}
-				// The hub refused: resending is pointless, so the rows show the
-				// hub's own state again.
-				if (error.code === METHOD_NOT_FOUND) withoutSeenSet.add(client);
-				const refused = batch.filter(stillSent);
-				for (const [ref] of refused) this.pending.delete(ref);
-				if (refused.length) this.changed();
 			}
+		} finally {
+			this.sending = false;
 		}
 	}
 
