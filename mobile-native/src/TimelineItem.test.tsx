@@ -4,7 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { MobileTimelineItem } from "./projectedRows";
 import { errorAction } from "./session/errorAction";
 import { TimelineItem } from "./TimelineItem";
-import { Platform } from "react-native";
+import { Platform, Text } from "react-native";
 import { alertRequests, render, renderedText, textOf } from "./renderNative.testkit";
 import type { TimelineRow } from "./timeline";
 
@@ -302,6 +302,21 @@ describe("the agent's message", () => {
 		act(() => tree.update(message()));
 		const after = tree.root.findByType("EnrichedMarkdownText" as never).props;
 		expect(after).toBe(before);
+	});
+
+	it("draws the chips its screen gives it under the message, and a user's message asks for none", () => {
+		const documentChips = vi.fn(() => <Text>chip for plan.md</Text>);
+		const tree = render(
+			<TimelineItem item={reply({ streaming: true })} hubId="hub" sessionRef="s" documentChips={documentChips} />,
+		);
+		expect(documentChips).toHaveBeenCalledWith({ id: "a-1", markdown: "Done. **All** tests pass.\nNext: ship.", streaming: true });
+		const text = renderedText(tree);
+		expect(text.indexOf("chip for plan.md")).toBeGreaterThan(text.indexOf("ship."));
+		documentChips.mockClear();
+		render(
+			<TimelineItem item={{ kind: "user", id: "u-1", text: "Read `docs/plan.md`" }} hubId="hub" sessionRef="s" documentChips={documentChips} />,
+		);
+		expect(documentChips).not.toHaveBeenCalled();
 	});
 
 	it("says nothing about writing while it streams: the tray says it", () => {

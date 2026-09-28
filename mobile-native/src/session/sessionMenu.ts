@@ -1,7 +1,7 @@
 // The Session's ⋯ menu (spec 8.1 and 8.7), as the native header items iOS
 // draws as a UIMenu. It is data: the screen decides what each choice does.
-// Subagents, Tasks, Notes & links, Ask aside and Shut down appear only when
-// they can act. Delete lives in the Session sheet.
+// Files & artifacts, Subagents, Tasks, Notes & links, Ask aside and Shut down
+// appear only when they can act. Delete lives in the Session sheet.
 import type { ContentLevel } from "@evener/appwire-client";
 import type {
 	NativeStackHeaderItem,
@@ -12,11 +12,13 @@ import { DETAIL_LEVELS, detailMenuLabel } from "./detailLevels";
 
 export type SessionMenuAction =
 	| { kind: "level"; level: ContentLevel }
-	| { kind: "subagents" | "tasks" | "notes" | "info" | "aside" | "pin" | "archive" | "shutDown" };
+	| { kind: "files" | "subagents" | "tasks" | "notes" | "info" | "aside" | "pin" | "archive" | "shutDown" };
 
 export interface SessionMenuInput {
 	current: ContentLevel | "custom" | null;
 	hasSubagents: boolean;
+	/** The session wrote or linked documents (Files & artifacts, spec 10.1). */
+	hasDocuments: boolean;
 	connected: boolean;
 	/** The session keeps shared notes (`capabilities.sharedNotes`). They read
 	 * without a connection, so this needs none. */
@@ -55,6 +57,7 @@ export function sessionMenu(input: SessionMenuInput): NativeStackHeaderItem[] {
 	};
 	const entries: Entry[] = [
 		levels,
+		...(input.hasDocuments ? [item("Files & artifacts", "files")] : []),
 		...(input.hasSubagents ? [item("Subagents", "subagents")] : []),
 		...(input.connected ? [item("Tasks", "tasks")] : []),
 		...(input.sharedNotes ? [item("Notes & links", "notes")] : []),

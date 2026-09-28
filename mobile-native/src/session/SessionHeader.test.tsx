@@ -126,6 +126,16 @@ describe("the chips row (spec 8.1)", () => {
 		});
 	});
 
+	it("draws Files with doc.text, and a blue dot after its label when a document is new or changed", () => {
+		const files: ContextChip = { kind: "files", label: "Files 4", attention: false, dot: false, accessibilityLabel: "Files, 4" };
+		const symbols = (chip: ContextChip) =>
+			render(header({ chips: [chip] })).root.findAllByType("SymbolView" as never).map((node) => node.props);
+		expect(symbols(files).map((props) => props.name)).toEqual(["doc.text"]);
+		const dotted = symbols({ ...files, dot: true });
+		expect(dotted.map((props) => props.name)).toEqual(["doc.text", "circle.fill"]);
+		expect(dotted[1]).toMatchObject({ size: 8, tintColor: palette.accent });
+	});
+
 	it("draws each chip as a 32pt capsule with a 44pt hit area, inset fill and an edge border", () => {
 		const [chip] = chipButtons(render(header({ chips: [tasks] })));
 		expect(chip?.props.style({ pressed: false })).toMatchObject({

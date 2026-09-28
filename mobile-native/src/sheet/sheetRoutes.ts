@@ -52,6 +52,8 @@ export const SHEET_ROUTES = {
 	SessionInfoSheet: sheetOptions(["medium", "large"], "large"),
 	// A picker, so it opens at half height (spec 8.5).
 	ModelSheet: sheetOptions(["medium", "large"], "medium"),
+	// The session's documents, a list (ruling 26).
+	FilesSheet: sheetOptions(["medium", "large"], "medium"),
 } satisfies { [Name in keyof Routes]?: NativeStackNavigationOptions };
 
 export function isSheetRoute(name: string): boolean {

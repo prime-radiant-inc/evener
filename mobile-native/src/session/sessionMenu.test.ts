@@ -14,6 +14,7 @@ function menu(over: Partial<SessionMenuInput> = {}) {
 	const items = sessionMenu({
 		current: "intent",
 		hasSubagents: true,
+		hasDocuments: true,
 		connected: true,
 		sharedNotes: true,
 		canAside: true,
@@ -58,6 +59,7 @@ describe("the Session's ⋯ menu (spec 8.1)", () => {
 	it("lists every item in order when every condition holds", () => {
 		expect(labels(only(menu().items).menu.items)).toEqual([
 			"Detail level · Intent",
+			"Files & artifacts",
 			"Subagents",
 			"Tasks",
 			"Notes & links",
@@ -115,6 +117,7 @@ describe("the Session's ⋯ menu (spec 8.1)", () => {
 	});
 
 	it.each([
+		["hasDocuments", "Files & artifacts"],
 		["hasSubagents", "Subagents"],
 		["connected", "Tasks"],
 		["sharedNotes", "Notes & links"],
@@ -123,7 +126,13 @@ describe("the Session's ⋯ menu (spec 8.1)", () => {
 	] as const)("shows nothing for %s when it is false", (condition, label) => {
 		const entries = only(menu({ [condition]: false }).items).menu.items;
 		expect(labels(entries)).not.toContain(label);
-		expect(entries).toHaveLength(8);
+		expect(entries).toHaveLength(9);
+	});
+
+	it("opens Files & artifacts", () => {
+		const { items, chosen } = menu();
+		action(only(items).menu.items, "Files & artifacts").onPress();
+		expect(chosen).toEqual([{ kind: "files" }]);
 	});
 
 	it("offers Notes & links without a connection: the notes are readable offline", () => {
