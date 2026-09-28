@@ -603,10 +603,13 @@ test("a settled tool call carrying item.error surfaces the error text", () => {
   expect(screen.getByText("permission denied by sandbox")).toBeTruthy();
 });
 
-test("an errored tool row force-expands even for a descriptor with no autoExpand", () => {
+test("an errored tool row at tools level stays collapsed, then opens on the reader's click (no failure auto-open)", () => {
   registerToolRenderer({ match: "tci_err_expand", summary: () => "s", body: () => <div>body text</div> });
-  render(<ToolCallItem item={item({ toolName: "tci_err_expand", error: "boom" })} turn={turn} live={false} />);
+  renderTools(<ToolCallItem item={item({ toolName: "tci_err_expand", error: "boom" })} turn={turn} live={false} />);
   const details = screen.getByTestId("tool-call-item");
+  expect(details.getAttribute("data-failed")).toBe("true");
+  expect(rowIsOpen(details)).toBe(false);
+  expandRow();
   expect(rowIsOpen(details)).toBe(true);
 });
 
@@ -645,10 +648,13 @@ test("a descriptor's summary stays the row's only hover-visible text - no row-le
   expect(screen.getByTestId("tool-row-summary").textContent).toBe("Ran false");
 });
 
-test("a body-less descriptor still becomes an expandable details when the call errored (shows the error)", () => {
+test("a body-less errored row is still an expandable disclosure, collapsed until the reader opens it to read the error", () => {
   registerToolRenderer({ match: "tci_err_no_body", summary: () => "s" });
-  render(<ToolCallItem item={item({ toolName: "tci_err_no_body", error: "denied" })} turn={turn} live={false} />);
+  renderTools(<ToolCallItem item={item({ toolName: "tci_err_no_body", error: "denied" })} turn={turn} live={false} />);
   const details = screen.getByTestId("tool-call-item");
+  expect(rowIsOpen(details)).toBe(false);
+  expect(screen.queryByText("denied")).toBeNull();
+  expandRow();
   expect(rowIsOpen(details)).toBe(true);
   expect(screen.getByText("denied")).toBeTruthy();
 });
@@ -767,11 +773,10 @@ test("foldByDefault still settles closed when the descriptor also sets autoExpan
   expect(screen.queryByTestId("tool-call-body")).toBeNull();
 });
 
-test("an errored tool row still force-expands under a foldByDefault descriptor", () => {
-  // foldByDefault beats posture defaults, not attribution: "only failure
-  // earns the eye" survives the fold, or a failed task_list call would
-  // hide its error behind the quiet-line posture (the task card's own
-  // failed-mutation test catches exactly this at the card level).
+test("an errored tool row stays folded under a foldByDefault descriptor (the reader opens it to read the error)", () => {
+  // foldByDefault's quiet-line posture holds for a failure too: the glyph and
+  // data-attention carry the news, and the body opens only on the reader's own
+  // toggle - a failure is attribution, not an auto-open.
   registerToolRenderer({
     match: "tci_fold_fail",
     summary: () => "the news",
@@ -781,15 +786,18 @@ test("an errored tool row still force-expands under a foldByDefault descriptor",
   render(
     <ToolCallItem item={item({ toolName: "tci_fold_fail", error: "task 9 not found" })} turn={turn} live={false} />,
   );
-  expect(rowIsOpen(screen.getByTestId("tool-call-item"))).toBe(true);
+  const row = screen.getByTestId("tool-call-item");
+  expect(rowIsOpen(row)).toBe(false);
+  expect(row.getAttribute("data-failed")).toBe("true");
+  expandRow();
   expect(screen.getByText("task 9 not found")).toBeTruthy();
 });
 
-test("a row whose failure is corroborated after it settled still force-opens", () => {
+test("a row whose failure is corroborated after it settled stays closed (a failure is not an auto-open)", () => {
   // `failed` is read reactively (like superseded), not only stashed at the
   // settle transition: a row that settled clean but later turns out to have
-  // failed opens the moment the failure is known. The force-open is
-  // attribution, not a settle-time posture, and the fold cannot hide it.
+  // failed gains the glyph and data-attention the moment the failure is known -
+  // but never an open body.
   registerToolRenderer({
     match: "tci_late_fail",
     summary: () => "the news",
@@ -801,7 +809,10 @@ test("a row whose failure is corroborated after it settled still force-opens", (
   view.rerender(
     <ToolCallItem item={item({ toolName: "tci_late_fail", error: "late boom" })} turn={turn} live={false} />,
   );
-  expect(rowIsOpen(screen.getByTestId("tool-call-item"))).toBe(true);
+  const row = screen.getByTestId("tool-call-item");
+  expect(rowIsOpen(row)).toBe(false);
+  expect(row.getAttribute("data-failed")).toBe("true");
+  expandRow();
   expect(screen.getByText("late boom")).toBeTruthy();
 });
 
@@ -832,10 +843,13 @@ test("a foldByDefault descriptor stays folded under the full preset's open basel
 
 test('honest status:"failed" corroborates a failure even with no error text', () => {
   registerToolRenderer({ match: "tci_status_failed", summary: () => "s", body: () => <div>b</div> });
-  render(<ToolCallItem item={item({ toolName: "tci_status_failed", status: "failed" })} turn={turn} live={false} />);
+  renderTools(
+    <ToolCallItem item={item({ toolName: "tci_status_failed", status: "failed" })} turn={turn} live={false} />,
+  );
   const details = screen.getByTestId("tool-call-item");
   expect(details.getAttribute("data-failed")).toBe("true");
-  expect(rowIsOpen(details)).toBe(true);
+  // The honest status marks the row; it does not open it.
+  expect(rowIsOpen(details)).toBe(false);
 });
 
 test('old-daemon reload: error present but status still "completed" is treated as failed (error presence is primary)', () => {
@@ -885,16 +899,17 @@ test("an empty-string error is not a failure (the wire only stamps failed when e
   expect(rowIsOpen(screen.getByTestId("tool-call-item"))).toBe(false);
 });
 
-// --- kata hgm1: a self-corrected preval-only failure (never reached real
-// execution) collapses once the model's next call to the same tool
-// succeeds, but is still marked failed and reachable - "only failure earns
-// the eye" is untouched for every real execution failure/denial. ----------
+// --- failures settle collapsed, like any other row -------------------------
+// A real execution failure/denial and a self-corrected preval-only bounce are
+// alike: both are marked failed (glyph + data-failed) and reachable, and
+// neither auto-opens. At a level whose expand-details default is off (tools),
+// every one of them starts collapsed and opens only on the reader's toggle.
 
 function threadWith(items: ItemModel[]): ThreadModel {
   return { turns: [{ id: "t1", status: "completed", items }] } as unknown as ThreadModel;
 }
 
-test("a preval-only failure superseded by a later same-tool success starts collapsed", () => {
+test("a failed row stays collapsed at tools level and keeps its failure marker, whichever call follows", () => {
   registerToolRenderer({ match: "tci_preval_ok", summary: () => "s" });
   const failedItem = item({
     id: "item_bad",
@@ -911,19 +926,17 @@ test("a preval-only failure superseded by a later same-tool success starts colla
   };
   threadsStore.setState({ threads: new Map([["ref_a", threadWith([failedItem, okItem])]]) });
 
-  // At activity level the body auto-expands; use tools level to verify the
-  // superseded failure starts collapsed.
   renderTools(<ToolCallItem item={failedItem} turn={turn} live={false} sessionRef="ref_a" />);
 
   const details = screen.getByTestId("tool-call-item");
   // Still attributable: the failure marker never goes away.
   expect(details.getAttribute("data-failed")).toBe("true");
   expect(screen.getByTestId("failure-glyph")).toBeTruthy();
-  // But no longer forced open, since the very next attempt succeeded.
+  // Never auto-open, whatever the later call did.
   expect(rowIsOpen(details)).toBe(false);
 });
 
-test("a preval-only failure with NO later success stays forced open (nothing corrected it)", () => {
+test("a preval-only failure with NO later success stays collapsed too (a failure is never an auto-open)", () => {
   registerToolRenderer({ match: "tci_preval_unfixed", summary: () => "s" });
   const failedItem = item({
     id: "item_bad",
@@ -933,12 +946,12 @@ test("a preval-only failure with NO later success stays forced open (nothing cor
   });
   threadsStore.setState({ threads: new Map([["ref_a", threadWith([failedItem])]]) });
 
-  render(<ToolCallItem item={failedItem} turn={turn} live={false} sessionRef="ref_a" />);
+  renderTools(<ToolCallItem item={failedItem} turn={turn} live={false} sessionRef="ref_a" />);
 
-  expect(rowIsOpen(screen.getByTestId("tool-call-item"))).toBe(true);
+  expect(rowIsOpen(screen.getByTestId("tool-call-item"))).toBe(false);
 });
 
-test("a preval-only failure followed by ANOTHER preval-only failure stays forced open (recurring, not yet corrected)", () => {
+test("a preval-only failure followed by ANOTHER preval-only failure stays collapsed (recurring, not yet corrected)", () => {
   registerToolRenderer({ match: "tci_preval_recur", summary: () => "s" });
   const failed1 = item({
     id: "item_bad1",
@@ -957,12 +970,12 @@ test("a preval-only failure followed by ANOTHER preval-only failure stays forced
   };
   threadsStore.setState({ threads: new Map([["ref_a", threadWith([failed1, failed2])]]) });
 
-  render(<ToolCallItem item={failed1} turn={turn} live={false} sessionRef="ref_a" />);
+  renderTools(<ToolCallItem item={failed1} turn={turn} live={false} sessionRef="ref_a" />);
 
-  expect(rowIsOpen(screen.getByTestId("tool-call-item"))).toBe(true);
+  expect(rowIsOpen(screen.getByTestId("tool-call-item"))).toBe(false);
 });
 
-test("a REAL execution failure stays forced open even when the next same-tool call succeeds (shared contract untouched)", () => {
+test("a REAL execution failure stays collapsed even when the next same-tool call succeeds (the reader opens it)", () => {
   registerToolRenderer({ match: "tci_real_fail_then_ok", summary: () => "s" });
   const failedItem = item({
     id: "item_bad",
@@ -978,12 +991,14 @@ test("a REAL execution failure stays forced open even when the next same-tool ca
   };
   threadsStore.setState({ threads: new Map([["ref_a", threadWith([failedItem, okItem])]]) });
 
-  render(<ToolCallItem item={failedItem} turn={turn} live={false} sessionRef="ref_a" />);
+  renderTools(<ToolCallItem item={failedItem} turn={turn} live={false} sessionRef="ref_a" />);
 
-  expect(rowIsOpen(screen.getByTestId("tool-call-item"))).toBe(true);
+  const details = screen.getByTestId("tool-call-item");
+  expect(details.getAttribute("data-failed")).toBe("true");
+  expect(rowIsOpen(details)).toBe(false);
 });
 
-test("supersession is reactive: a row already settled and rendered collapses once the correcting call lands", () => {
+test("a failure corroborated after settle does not open a row already rendered", () => {
   registerToolRenderer({ match: "tci_preval_reactive", summary: () => "s" });
   const failedItem = item({
     id: "item_bad",
@@ -993,10 +1008,8 @@ test("supersession is reactive: a row already settled and rendered collapses onc
   });
   threadsStore.setState({ threads: new Map([["ref_a", threadWith([failedItem])]]) });
 
-  // At activity level the body auto-expands; use tools level so the only
-  // thing keeping the row open is the preval failure's autoExpand.
   renderTools(<ToolCallItem item={failedItem} turn={turn} live={false} sessionRef="ref_a" />);
-  expect(rowIsOpen(screen.getByTestId("tool-call-item"))).toBe(true);
+  expect(rowIsOpen(screen.getByTestId("tool-call-item"))).toBe(false);
 
   const okItem: ItemModel = {
     id: "item_ok",
@@ -1012,7 +1025,7 @@ test("supersession is reactive: a row already settled and rendered collapses onc
   expect(rowIsOpen(screen.getByTestId("tool-call-item"))).toBe(false);
 });
 
-test("a reader who manually reopened a superseded row keeps it open (explicit toggle still wins)", () => {
+test("a reader who opens a failed row keeps it open (explicit toggle wins)", () => {
   registerToolRenderer({ match: "tci_preval_manual_reopen", summary: () => "s" });
   const failedItem = item({
     id: "item_bad",
@@ -1029,8 +1042,7 @@ test("a reader who manually reopened a superseded row keeps it open (explicit to
   };
   threadsStore.setState({ threads: new Map([["ref_a", threadWith([failedItem, okItem])]]) });
 
-  // At activity level the body auto-expands; use tools level so the
-  // superseded failure starts collapsed (autoDefault is false).
+  // At tools level the row starts collapsed; the reader's own toggle opens it.
   renderTools(<ToolCallItem item={failedItem} turn={turn} live={false} sessionRef="ref_a" />);
   const details = screen.getByTestId("tool-call-item");
   expect(rowIsOpen(details)).toBe(false);
@@ -1039,8 +1051,10 @@ test("a reader who manually reopened a superseded row keeps it open (explicit to
   expect(rowIsOpen(details)).toBe(true);
 });
 
-test("a manual collapse of an errored row sticks (the reader's own choice wins over force-expand)", () => {
+test("a reader's collapse of an errored row sticks (the explicit toggle beats the level default)", () => {
   registerToolRenderer({ match: "tci_err_toggle", summary: () => "s", body: () => <div>body text</div> });
+  // At activity level the body opens through the config default, not failure;
+  // the reader's own collapse still wins afterward.
   render(<ToolCallItem item={item({ toolName: "tci_err_toggle", error: "boom" })} turn={turn} live={false} />);
   const details = screen.getByTestId("tool-call-item");
   expect(rowIsOpen(details)).toBe(true);
@@ -1750,14 +1764,12 @@ test("defaults apply at each level; an explicit summary choice persists across l
 });
 
 // --- failure force-open also opens the summary line (one-line tool call) ---
-// A failed row's body auto-opens at every verbosity level ("only failure earns
-// the eye"). That force-open must carry the summary line with it: otherwise a
-// chat/intent-level failure lands on a state that skips L1 - intent visible,
-// one-line tool call hidden, body open - instead of the complete L2. A clean
-// row is untouched (the level's own default still governs it).
+// A failed row follows the level's own defaults exactly like a clean row: at
+// chat/intent it stays intent-only (summary line and body both closed), and the
+// reader opens them. A failure does not force anything open.
 
 test.each(["chat", "intent"] as const)(
-  "a failed row at the %s level auto-opens its summary line together with the body",
+  "a failed row at the %s level stays intent-only until the reader opens it",
   (level) => {
     const config = makeTranscriptDisplayConfig({ kind: "preset", level });
     renderWithConfig(
@@ -1770,18 +1782,21 @@ test.each(["chat", "intent"] as const)(
         output: "fatal: not a git repository\n[exit 128]",
       }),
     );
-    // The failure force-opens the body (unchanged).
-    expect(screen.getByTestId("tool-row-body-trigger").getAttribute("aria-expanded")).toBe("true");
-    expect(screen.getByTestId("tool-call-body")).toBeTruthy();
-    // The summary line (the one-line tool call) opens with it, so the row reads
-    // as intent + call + body rather than skipping the call on its way down.
+    // No force-open: the row reads as its stated intent alone.
     expect(screen.getByTestId("tool-row-intent").textContent).toBe("Checking for stray process records");
-    expect(screen.getByTestId("tool-row-summary").textContent).toBe("Ran a shell command");
-    expect(screen.getByTestId("tool-row-trigger").getAttribute("aria-expanded")).toBe("true");
+    expect(screen.queryByTestId("tool-row-summary")).toBeNull();
+    expect(screen.queryByTestId("tool-call-body")).toBeNull();
+    // The failure is still marked.
+    const row = screen.getByTestId("tool-call-item");
+    expect(row.getAttribute("data-failed")).toBe("true");
+    expect(screen.getByTestId("failure-glyph")).toBeTruthy();
+    // The reader opens the summary line, then reaches the body.
+    fireEvent.click(screen.getByTestId("tool-row-trigger"));
+    expect(screen.getByTestId("tool-row-summary")).toBeTruthy();
   },
 );
 
-test("a manual collapse of a failure-opened summary line sticks (the reader's choice wins)", () => {
+test("a failed row's summary line obeys the reader's explicit choice (no failure auto-open)", () => {
   const config = makeTranscriptDisplayConfig({ kind: "preset", level: "chat" });
   renderWithConfig(
     config,
@@ -1793,9 +1808,15 @@ test("a manual collapse of a failure-opened summary line sticks (the reader's ch
       output: "stdout\n[exit 1]",
     }),
   );
-  expect(screen.getByTestId("tool-row-summary")).toBeTruthy();
+  // Chat level leaves the summary line closed; a failure does not force it open.
+  expect(screen.queryByTestId("tool-row-summary")).toBeNull();
 
-  // The intent trigger toggles the summary disclosure.
+  // The reader opens it...
+  fireEvent.click(screen.getByTestId("tool-row-trigger"));
+  expect(screen.getByTestId("tool-row-summary")).toBeTruthy();
+  expect(screen.getByTestId("tool-row-trigger").getAttribute("aria-expanded")).toBe("true");
+
+  // ...and can close it again; the explicit choice wins.
   fireEvent.click(screen.getByTestId("tool-row-trigger"));
   expect(screen.queryByTestId("tool-row-summary")).toBeNull();
   expect(screen.getByTestId("tool-row-trigger").getAttribute("aria-expanded")).toBe("false");

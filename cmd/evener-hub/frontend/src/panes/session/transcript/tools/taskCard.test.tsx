@@ -89,9 +89,13 @@ test('action:"view" renders nothing at all (no card, no divider, no tool-call ro
 
 test("a failed task_list mutation renders NO card (its error is surfaced by the generic tool-error path instead)", () => {
   renderItem(taskItem({ action: "update", updates: [{ id: 9, status: "done" }] }, "", { error: "task 9 not found" }));
-  // The row still exists (the generic error path owns it), but no task card.
+  // The row still exists (the generic error path owns it) and stays collapsed
+  // (foldByDefault: a failure does not force the quiet card open), but no task
+  // card renders - and the error is reachable on the reader's own click.
   expect(screen.getByTestId("tool-call-item")).toBeTruthy();
+  expect(rowIsOpen()).toBe(false);
   expect(screen.queryByTestId("task-card")).toBe(null);
+  openRow();
   expect(screen.getByText("task 9 not found")).toBeTruthy();
 });
 

@@ -83,9 +83,8 @@ export interface ToolRendererDescriptor {
   // toggle opens it - and that toggle then persists like any other, through
   // the shared disclosure store. It also outranks the descriptor's own
   // autoExpand nudge: the posture claim wins, so the body settles folded
-  // even at the settle moment that would otherwise auto-open it. One
-  // carve-out: a failed call still force-opens, so its error never hides
-  // behind the fold. For a card whose collapsed summary line already
+  // even at the settle moment that would otherwise auto-open it. For a card
+  // whose collapsed summary line already
   // carries the news (the task card's window: its folded line names
   // the latest update), so a run of updates reads as quiet one-liners.
   foldByDefault?: boolean;
@@ -110,7 +109,7 @@ export interface ToolRendererDescriptor {
   // today is read_file, whose image reads are the call's output itself (and
   // whose body renders nothing for them - fsTools.tsx).
   outputImageSize?: "large";
-  autoExpand?(item: ItemModel): boolean; // e.g. shell on nonzero exit
+  autoExpand?(item: ItemModel): boolean; // e.g. an image read whose picture IS the output
   // failed is a TOOL-SPECIFIC failure signal, OR'd with the generic one
   // ToolCallItem derives from ItemModel.error/status. It exists because a
   // clean tool RESULT can still report a failed action: a shell command that

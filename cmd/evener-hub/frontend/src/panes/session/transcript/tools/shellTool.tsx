@@ -2,7 +2,7 @@
 // §2's shellRenderer). Failure signal for a settled call: the daemon promotes
 // the process exit code onto the item as a typed wire field
 // (ItemModel.exitCode), so that structured number is the PRIMARY source for
-// both the exit-code summary suffix and autoExpand. One fact still shapes the
+// the row's failure glyph. One fact still shapes the
 // logic: a nonzero EXIT is not a tool error. The wire stamps an honest settled
 // status — "failed" only when the tool RESULT carried an error, "completed"
 // otherwise (apptranscript.SettledToolStatus, appwire_projection.go:438) — and
@@ -180,8 +180,9 @@ function ShellBody(props: ToolRenderProps) {
   );
 }
 
-// nonzeroExit is the "this command failed" predicate shared by failed() and
-// autoExpand() so the glyph and the auto-open can never disagree.
+// nonzeroExit is the "this command failed" predicate behind failed(), the
+// row's failure glyph. It does not auto-open the row: a failed call earns the
+// glyph and data-attention, and the reader opens it to read the output.
 function nonzeroExit(item: ItemModel): boolean {
   const exitCode = shellExitCode(item);
   return exitCode !== undefined && exitCode !== 0;
@@ -215,5 +216,4 @@ registerToolRenderer({
   // the summary line stays (it is the line the disclosure chevron rides) and
   // the collapsed row keeps the command, where it is the only glance at it.
   summaryWhenExpanded: "Ran a shell command",
-  autoExpand: nonzeroExit,
 });
