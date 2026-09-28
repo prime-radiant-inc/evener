@@ -12,6 +12,93 @@ import { type DemoFleetOptions, demoSessionId, fleetSessionRef, fleetSessions } 
 import { DEMO_MODEL_LIST } from "./dev/demoSetup.js";
 import { readOrganizationNavigation } from "./organizationNavigation";
 import { ghosts } from "./session/ghosts";
+import { parseActivityTree } from "@evener/appwire-client";
+import { readDocFile } from "@evener/appwire-client/docContent";
+import { SETTLE_RACE_PLAN, SETTLE_RACE_PLAN_REVISED } from "./dev/demoSubagents";
+import { nativeDocPort } from "./nativeDocPort";
+import { flattenSubagents } from "./subagents/subagentModel";
+
+describe("the demo fleet's subagents and documents (phase 4, PR 9)", () => {
+	const PR2138 = `local:${demoSessionId("s-pr2138")}`;
+	const PLAN = "docs/superpowers/plans/2026-09-25-settle-race.md";
+
+	async function withFleetHub(
+		run: (hub: Awaited<ReturnType<typeof createDemoHub>>, client: ReturnType<typeof createHubClient>) => Promise<void>,
+	) {
+		const hub = await createDemoHub(0, undefined, { now: Date.now() });
+		const client = createHubClient(hub.origin, "", (url) => new WebSocket(url) as unknown as WebSocketLike);
+		try {
+			await client.connect();
+			await run(hub, client);
+		} finally {
+			client.close();
+			await hub.close();
+		}
+	}
+
+	it("lists Get PR 2138 Test Clean's 55 subagents over a real socket", async () => {
+		await withFleetHub(async (_hub, client) => {
+			const response = await client.request("evener/jobs/list", { ref: PR2138 });
+			const tree = parseActivityTree((response as { data: unknown }).data);
+			if (!tree) throw new Error("no tree");
+			expect(flattenSubagents(tree)).toHaveLength(55);
+		});
+	});
+
+	it("opens a subagent's own session through the real conversation service", async () => {
+		await withFleetHub(async (_hub, client) => {
+			const response = await client.request("evener/jobs/list", { ref: PR2138 });
+			const child = flattenSubagents(parseActivityTree((response as { data: unknown }).data) as never).find(
+				(row) => row.title === "Check drain ordering in tests",
+			);
+			if (!child) throw new Error("no nested subagent");
+			const service = createConversationService(client);
+			try {
+				const conversation = await service.open(child.ref);
+				expect(conversation.items.length).toBeGreaterThan(0);
+			} finally {
+				service.close();
+			}
+		});
+	});
+
+	it("gives Get PR 2138 Test Clean's transcript the same subagent refs as its Subagents list", async () => {
+		await withFleetHub(async (_hub, client) => {
+			const listed = flattenSubagents(
+				parseActivityTree(
+					((await client.request("evener/jobs/list", { ref: PR2138 })) as { data: unknown }).data,
+				) as never,
+			).map((row) => row.ref);
+			const read = await client.request("thread/read", { ref: PR2138, includeTurns: false });
+			const transcript = (read.thread.evener.diagnostics?.delegates ?? []).map((delegate) => delegate.transcriptRef);
+			expect(transcript.length).toBeGreaterThan(0);
+			for (const ref of transcript) expect(listed).toContain(ref);
+			expect(read.thread.id).toBe(PR2138.slice(PR2138.indexOf(":") + 1));
+		});
+	});
+
+	it("serves the plan its link names, by the session's own folder", async () => {
+		await withFleetHub(async (hub, client) => {
+			const read = await client.request("thread/read", { ref: PR2138, includeTurns: false });
+			const link = (read.thread.evener.sessionUrls ?? []).find((url) => url.url.endsWith("settle-race.md"));
+			if (!link) throw new Error("no plan link");
+			const absolute = decodeURIComponent(new URL(link.url).pathname);
+			expect(absolute.startsWith(`${read.thread.cwd}/`)).toBe(true);
+			const text = await readDocFile(PR2138, absolute, nativeDocPort(hub.origin, ""));
+			expect(text.text).toBe(SETTLE_RACE_PLAN);
+		});
+	});
+
+	it("serves the plan on the same port, then its revision", async () => {
+		await withFleetHub(async (hub) => {
+			const port = nativeDocPort(hub.origin, "");
+			const first = await readDocFile(PR2138, PLAN, port);
+			const second = await readDocFile(PR2138, PLAN, port);
+			expect(first.text).toBe(SETTLE_RACE_PLAN);
+			expect(second.text).toBe(SETTLE_RACE_PLAN_REVISED);
+		});
+	});
+});
 
 describe("native demonstration hub", () => {
 	it("starts a turn when a resting playground is steered or its held message is sent", async () => {

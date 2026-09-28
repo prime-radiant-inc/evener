@@ -24,16 +24,18 @@ package agent
 // its delivery plans, evidence-version bump, snapshot capture), and the
 // entry point's stale-lease policy already applied to the returned error.
 //
-// Deferred by spec (do not add here): the start-failure finishers
-// (CompleteStartInput, FailCommittedStart, FailCommittedRestart,
-// finishStoppedStartLocked) and the recovery finishers
-// (reconcileRecoveryRequiredStopLocked,
-// reconcileRuntimeLostFromEvidenceLocked).
+// The stop-finish decision and prepared-terminal outcome normalization are
+// single-homed here (stoppedGenerationFinishEvent,
+// reduceStoppedGenerationFinishIntent, settledGenerationFinish) and reached by
+// the generation finish reducer and by the start-failure and recovery
+// finishers alike. Those finishers still drive their own entry paths, claim
+// types, and journal batches.
 
 import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"primeradiant.com/evener/agent/internal/delegatestore"
 )
@@ -49,6 +51,19 @@ const (
 	finishStalePropagate finishStalePolicy = iota
 	finishStaleSuppress
 	finishStaleSwallow
+)
+
+// finishLatchShape selects the append-failure recovery latch a finish site
+// applies when its journal batch cannot land. The shapes are per-site inputs,
+// not a constant: the generation finish and settlement completion latch the
+// full recovery triple; the start-finish path latches only recoveryRequired;
+// the recovery stop latches nothing (its live state is already latched).
+type finishLatchShape uint8
+
+const (
+	finishLatchTriple finishLatchShape = iota
+	finishLatchRecoveryOnly
+	finishLatchNone
 )
 
 // resolveStalePolicy applies this entry point's stale-lease policy to a guard
@@ -83,6 +98,9 @@ type finishIntent struct {
 	// finish, whose no-action disposition was fenced by prepareNoAction.
 	authorizedNoAction bool
 	stalePolicy        finishStalePolicy
+	// latch selects the append-failure recovery latch shape this site applies.
+	// Zero is finishLatchTriple, the generation-finish and settlement default.
+	latch finishLatchShape
 }
 
 // finishDecision is the reducer's verdict for one intent.
@@ -110,6 +128,8 @@ type finishDecision struct {
 	// lease re-resolves the binding at apply time and latches only when it
 	// still matches (CompleteSettlement).
 	latchLive *delegateLiveState
+	// latch is the append-failure recovery latch shape carried from the intent.
+	latch finishLatchShape
 	// Post-append effects, applied by finishEffectsLocked against post-append
 	// durable state only when the append succeeded. Sites without a journal
 	// batch apply their effects inline in the reducer instead.
@@ -157,9 +177,15 @@ func (c *delegateTreeController) executeFinishDecisionLocked(decision finishDeci
 	}
 	if appendErr != nil {
 		if live := c.latchTargetLocked(decision); live != nil {
-			live.recoveryRequired = true
-			live.finalizationRecoveryRequired = true
-			live.recoveryRunnerPending = true
+			switch decision.latch {
+			case finishLatchRecoveryOnly:
+				live.recoveryRequired = true
+			case finishLatchNone:
+			default:
+				live.recoveryRequired = true
+				live.finalizationRecoveryRequired = true
+				live.recoveryRunnerPending = true
+			}
 		}
 		return delegateMutationPlans{}, nil, appendErr
 	}
@@ -521,37 +547,19 @@ func (c *delegateTreeController) reduceGenerationFinishIntent(intent finishInten
 		if aggregate.PreparedTerminal == nil {
 			return finishDecision{err: fmt.Errorf("delegate %q settling without prepared terminal", lease.delegateID)}
 		}
-		preparedFinish := delegatePreparedFinish(*aggregate.PreparedTerminal)
-		outcome, disposition, reason = preparedFinish.outcome, preparedFinish.disposition, preparedFinish.reason
-		if aggregate.PreparedTerminal.Kind == delegatestore.PacketTerminalError &&
-			!delegateIsMissingTerminalPacket(*aggregate.PreparedTerminal) && finish.outcome != "" && finish.outcome != delegatestore.OutcomeCompleted {
-			outcome = finish.outcome
-			disposition = delegatestore.DispositionTerminalError
-			reason = finish.reason
-		} else if preparedFinish.outcome == delegatestore.OutcomeExhausted {
-			finish = preparedFinish
-		}
+		settled := settledGenerationFinish(*aggregate.PreparedTerminal, finish)
+		finish = settled.meta
+		outcome, disposition, reason = settled.outcome, settled.disposition, settled.reason
 		deliveryID = delegateDeliveryID(lease.delegateID, lease.generation)
 		finished := delegateRunFinishedEvent(lease, outcome, disposition, reason, endedAt, deliveryID, nil)
 		events = []delegatestore.Event{finished}
 
 	case delegatestore.PhaseStopping:
-		// An externally cancelled generation still reports whatever evidence its
-		// own run loop already gathered (task, worktree, scratch path — see
-		// delegateTerminalPacketMetadata) via finish.packet; only fall back to the
-		// bare synthetic packet when the run loop produced none at all (kata
-		// tpb0). The fold layer (applyRunFinished) still has final say: it
-		// replaces this with the bare packet when the owner is outside the
-		// stopped subtree or the packet isn't a terminal-error kind.
-		packet := delegateStoppedTerminalPacket()
-		if finish.packet != nil {
-			packet = cloneDelegateTerminalPacket(*finish.packet)
-		}
-		outcome = delegatestore.OutcomeStopped
-		disposition = delegatestore.DispositionTerminalError
-		reason = "stopped_by_parent"
-		deliveryID = delegateDeliveryID(lease.delegateID, lease.generation)
-		events = []delegatestore.Event{delegateRunFinishedEvent(lease, outcome, disposition, reason, endedAt, deliveryID, &packet)}
+		decision := c.reduceStoppedGenerationFinishIntent(finishIntent{lease: lease, finish: finish, latch: finishLatchTriple})
+		// The generation finish latches its authenticated live state
+		// unconditionally on a failed append.
+		decision.latchLive = live
+		return decision
 
 	case delegatestore.PhaseRunning:
 		if disposition == delegatestore.DispositionCompletedNoAction {
@@ -603,6 +611,99 @@ func (c *delegateTreeController) reduceGenerationFinishIntent(intent finishInten
 		lease:             lease,
 		deliveryID:        deliveryID,
 	}
+}
+
+// stoppedGenerationFinishEvent is the single home for the stop-finish
+// decision: the stopped outcome, terminal-error disposition, the
+// "stopped_by_parent" reason, the delivery ID, and the terminal packet. An
+// externally cancelled generation still reports whatever evidence its own run
+// loop already gathered (task, worktree, scratch path — see
+// delegateTerminalPacketMetadata) via the supplied packet; only the bare
+// synthetic packet is used when the run loop produced none at all (kata tpb0).
+// The fold layer (applyRunFinished) still has final say: it replaces this with
+// the bare packet when the owner is outside the stopped subtree or the packet
+// isn't a terminal-error kind.
+func stoppedGenerationFinishEvent(lease delegateLease, packet *delegatestore.TerminalPacket, endedAt time.Time) (delegatestore.Event, string) {
+	stopped := delegateStoppedTerminalPacket()
+	if packet != nil {
+		stopped = cloneDelegateTerminalPacket(*packet)
+	}
+	deliveryID := delegateDeliveryID(lease.delegateID, lease.generation)
+	return delegateRunFinishedEvent(
+		lease,
+		delegatestore.OutcomeStopped,
+		delegatestore.DispositionTerminalError,
+		"stopped_by_parent",
+		endedAt,
+		deliveryID,
+		&stopped,
+	), deliveryID
+}
+
+// reduceStoppedGenerationFinishIntent is the stop-finish decision: one
+// RunFinished event closing a generation a covering stop is ending, plus the
+// generation release that follows. The generation finish's PhaseStopping
+// branch, finishStoppedStartLocked, and the recovery stops all reduce through
+// here so the stopped outcome, reason, packet, and delivery ID have one home.
+func (c *delegateTreeController) reduceStoppedGenerationFinishIntent(intent finishIntent) finishDecision {
+	lease := intent.lease
+	endedAt := intent.finish.endedAt
+	if endedAt.IsZero() {
+		endedAt = c.now()
+	}
+	event, deliveryID := stoppedGenerationFinishEvent(lease, intent.finish.packet, endedAt)
+	return finishDecision{
+		events:            []delegatestore.Event{event},
+		latch:             intent.latch,
+		releaseGeneration: true,
+		lease:             lease,
+		deliveryID:        deliveryID,
+	}
+}
+
+// settledFinishDecision is the single home for prepared-terminal outcome
+// normalization. The generation finish's Settling branch and the runtime-lost
+// recovery finisher both normalize a settled generation's prepared terminal
+// through settledGenerationFinish, so the prepared-finish mapping, the
+// terminal-error override, and the exhaustion carry-through cannot drift.
+type settledFinishDecision struct {
+	// meta is the finish whose exhaustion fields the RunFinished metadata
+	// event carries: the incoming finish normally, the prepared finish when an
+	// exhaustion outcome carries through.
+	meta delegateFinish
+	// prepared is delegatePreparedFinish's result. Callers that resolve the
+	// ended timestamp from the prepared metadata read prepared.endedAt.
+	prepared    delegateFinish
+	outcome     delegatestore.OutcomeStatus
+	disposition delegatestore.RunDisposition
+	reason      string
+}
+
+// settledGenerationFinish normalizes a settled generation's prepared terminal.
+// A non-missing terminal-error prepared packet is overridden by an incoming
+// finish with a non-completed outcome; an exhausted prepared finish carries
+// its exhaustion fields through. The zero delegateFinish reproduces the
+// runtime-lost recovery path, whose run loop produced no finish of its own.
+func settledGenerationFinish(prepared delegatestore.TerminalPacket, incoming delegateFinish) settledFinishDecision {
+	preparedFinish := delegatePreparedFinish(prepared)
+	decision := settledFinishDecision{
+		meta:        incoming,
+		prepared:    preparedFinish,
+		outcome:     preparedFinish.outcome,
+		disposition: preparedFinish.disposition,
+		reason:      preparedFinish.reason,
+	}
+	if prepared.Kind == delegatestore.PacketTerminalError && !delegateIsMissingTerminalPacket(prepared) &&
+		incoming.outcome != "" && incoming.outcome != delegatestore.OutcomeCompleted {
+		decision.outcome = incoming.outcome
+		decision.disposition = delegatestore.DispositionTerminalError
+		decision.reason = incoming.reason
+		return decision
+	}
+	if preparedFinish.outcome == delegatestore.OutcomeExhausted {
+		decision.meta = preparedFinish
+	}
+	return decision
 }
 
 // reduceRequireFinalizationRecoveryIntent latches an exact finalization

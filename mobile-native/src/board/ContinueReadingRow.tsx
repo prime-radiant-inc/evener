@@ -2,10 +2,10 @@
 // left partway through in the last two hours, one tap from where you were.
 // A flat row like the notices, with no box.
 import { SymbolView } from "expo-symbols";
-import { Platform, Pressable, Text, View } from "react-native";
+import { Pressable, Text, View } from "react-native";
 import { fonts } from "../design/tokens";
 import type { ContinueReading } from "../reader/documentMemory";
-import { useColors, useTextScale } from "../ui";
+import { allowFontScaling, useColors, useTextScale } from "../ui";
 
 export function ContinueReadingRow({
 	trail,
@@ -36,13 +36,13 @@ export function ContinueReadingRow({
 			</View>
 			<View style={{ flex: 1, minWidth: 0, gap: 2 }}>
 				<Text
-					allowFontScaling={Platform.OS !== "ios"}
+					allowFontScaling={allowFontScaling}
 					style={{ fontSize: 12 * scale, lineHeight: 16 * scale, fontWeight: "600", color: palette.inkMid }}
 				>
 					{`Continue reading · ${percent}%`}
 				</Text>
 				<Text
-					allowFontScaling={Platform.OS !== "ios"}
+					allowFontScaling={allowFontScaling}
 					numberOfLines={1}
 					ellipsizeMode="tail"
 					style={{

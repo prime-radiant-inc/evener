@@ -1,9 +1,10 @@
 package tui
 
 import (
+	"bytes"
 	"errors"
 	"flag"
-	"os"
+	"io"
 	"strings"
 	"testing"
 
@@ -12,7 +13,7 @@ import (
 )
 
 func TestParseTUIStartupOptionsDefaults(t *testing.T) {
-	opts, err := hubstart.ParseTUIStartupOptions(nil, func(string) string { return "" })
+	opts, err := hubstart.ParseTUIStartupOptions(nil, func(string) string { return "" }, io.Discard)
 	if err != nil {
 		t.Fatalf("hubstart.ParseTUIStartupOptions: %v", err)
 	}
@@ -34,7 +35,7 @@ func TestParseTUIStartupOptionsUsesEnvironmentDefaults(t *testing.T) {
 		"EVENER_STATE_DIR":    "/env/state/evener",
 		"EVENER_TUI_LOG_FILE": "/env/evener-tui.log",
 	}
-	opts, err := hubstart.ParseTUIStartupOptions(nil, func(key string) string { return env[key] })
+	opts, err := hubstart.ParseTUIStartupOptions(nil, func(key string) string { return env[key] }, io.Discard)
 	if err != nil {
 		t.Fatalf("hubstart.ParseTUIStartupOptions: %v", err)
 	}
@@ -57,7 +58,7 @@ func TestParseTUIStartupOptionsFlagsOverrideEnvironment(t *testing.T) {
 		"--log-file", "/flag/evener-tui.log",
 		"--no-auto-start-hub",
 		"--debug",
-	}, func(key string) string { return env[key] })
+	}, func(key string) string { return env[key] }, io.Discard)
 	if err != nil {
 		t.Fatalf("hubstart.ParseTUIStartupOptions: %v", err)
 	}
@@ -73,40 +74,24 @@ func TestParseTUIStartupOptionsFlagsOverrideEnvironment(t *testing.T) {
 }
 
 func TestParseTUIStartupOptionsHelpReturnsErrHelp(t *testing.T) {
-	_, err := hubstart.ParseTUIStartupOptions([]string{"--help"}, func(string) string { return "" })
+	_, err := hubstart.ParseTUIStartupOptions([]string{"--help"}, func(string) string { return "" }, io.Discard)
 	if !errors.Is(err, flag.ErrHelp) {
 		t.Fatalf("hubstart.ParseTUIStartupOptions(--help) err = %v, want flag.ErrHelp", err)
 	}
 }
 
 func TestParseTUIStartupOptionsHelpUsesEnvironmentHubAddr(t *testing.T) {
-	origStderr := os.Stderr
-	// A file, not a pipe: a pipe's writer blocks when its buffer fills, and on
-	// a busy Mac that buffer is 512 bytes, smaller than the usage (#2495).
-	stderr, err := os.CreateTemp(t.TempDir(), "help-stderr-")
-	if err != nil {
-		t.Fatalf("CreateTemp: %v", err)
-	}
-	os.Stderr = stderr
-	t.Cleanup(func() {
-		os.Stderr = origStderr
-		_ = stderr.Close()
-	})
-
+	var stderr bytes.Buffer
 	_, parseErr := hubstart.ParseTUIStartupOptions([]string{"--help"}, func(key string) string {
 		if key == "EVENER_HUB_ADDR" {
 			return "http://env-hub:9180"
 		}
 		return ""
-	})
-	out, readErr := os.ReadFile(stderr.Name())
-	if readErr != nil {
-		t.Fatalf("ReadFile: %v", readErr)
-	}
+	}, &stderr)
 	if !errors.Is(parseErr, flag.ErrHelp) {
 		t.Fatalf("hubstart.ParseTUIStartupOptions(--help) err = %v, want flag.ErrHelp", parseErr)
 	}
-	if got := string(out); !strings.Contains(got, "default: http://env-hub:9180") {
+	if got := stderr.String(); !strings.Contains(got, "default: http://env-hub:9180") {
 		t.Fatalf("help output missing env hub addr default:\n%s", got)
 	}
 }

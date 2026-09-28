@@ -4,6 +4,7 @@ import (
 	"context"
 	"strings"
 	"testing"
+	"time"
 
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/execenv"
@@ -37,6 +38,41 @@ func warningEvents(capturedEvents []events.SessionEvent) []events.WarningData {
 		}
 	}
 	return warnings
+}
+
+// standingRequestTokens measures one input's standing request -- the system
+// prompt, the tool schemas, and that input -- by running it through a throwaway
+// session whose context window is wide enough that no warning or compaction
+// interferes, then estimating the captured request's input tokens the way
+// maybeWarnContextUsage does. Warning tests size their window or their history
+// from this measurement, so a prompt rewrite cannot move the request across a
+// threshold a hardcoded constant pinned.
+func standingRequestTokens(t *testing.T, dir string, profile *provider.Profile, input string) int {
+	t.Helper()
+	adapter := &fakeAdapter{
+		name: profile.ID(),
+		steps: []func(req llm.Request) llm.Response{
+			func(req llm.Request) llm.Response { return finalResponse("ok") },
+		},
+	}
+	client := llm.NewClient()
+	client.Register(adapter)
+	sess, err := NewSession(client, WithContextWindow(profile, 8_000_000), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
+	if err != nil {
+		t.Fatalf("probe NewSession: %v", err)
+	}
+	muteNoteElicitation(sess)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) // TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
+	defer cancel()
+	if _, err := sess.ProcessInput(ctx, input, nil); err != nil {
+		t.Fatalf("probe ProcessInput: %v", err)
+	}
+	sess.Close()
+	reqs := adapter.Requests()
+	if len(reqs) == 0 {
+		t.Fatal("probe captured no model request")
+	}
+	return llm.EstimateInputTokensForResolved(profile.Resolved(), reqs[0]).Tokens
 }
 
 func assertWarningPrecedesCompaction(t *testing.T, captured []events.SessionEvent) {
@@ -565,7 +601,8 @@ func TestSessionFallbackContextWarningNamesTheWindowThatHandledTheRequest(t *tes
 
 	policy := llm.RetryPolicy{MaxRetries: 0}
 	primary := WithContextWindow(testOpenAICompatProfile("ctxwarn-primary", "primary-model", 0), 2_000_000)
-	fallback := WithContextWindow(testOpenAICompatProfile("ctxwarn-fallback", "fallback-model", 0), 120_000)
+	fallbackWindow := 120_000
+	fallback := WithContextWindow(testOpenAICompatProfile("ctxwarn-fallback", "fallback-model", 0), fallbackWindow)
 	sess, err := NewSession(client, primary, execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
 		StateDir:       dir,
 		LLMRetryPolicy: &policy,
@@ -579,10 +616,18 @@ func TestSessionFallbackContextWarningNamesTheWindowThatHandledTheRequest(t *tes
 	// registry, which has no row for it.
 	sess.cfg.ModelFallbacks = []string{"ctxwarn-fallback/fallback-model"}
 	sess.resolveProfile = func(string) (*provider.Profile, error) { return fallback, nil }
-	// ~106k estimated input tokens with the standing prompt: over the fallback's
-	// 80% threshold (96k of 120k), under its window, and far under the
-	// primary's 2M.
-	sess.history = []schema.Turn{schema.NewTurn(schema.TurnUserInput, llm.User(strings.Repeat("x", 340_000)))}
+	// Size the history from this test's own standing request so the round lands
+	// between the fallback's 80% threshold and its window: a hardcoded history
+	// length drops under the threshold when the prompt shrinks. The midpoint of
+	// the band leaves margin on both sides.
+	standing := standingRequestTokens(t, dir, primary, "task")
+	threshold := fallbackWindow * 8 / 10
+	target := (threshold + fallbackWindow) / 2
+	historyChars := (target - standing) * 4
+	if historyChars <= 0 {
+		t.Fatalf("standing request %d tokens leaves no room under the %d-token target for fallback window %d", standing, target, fallbackWindow)
+	}
+	sess.history = []schema.Turn{schema.NewTurn(schema.TurnUserInput, llm.User(strings.Repeat("x", historyChars)))}
 	if _, err := sess.ProcessInput(context.Background(), "task", nil); err != nil {
 		t.Fatalf("ProcessInput: %v", err)
 	}
@@ -598,7 +643,7 @@ func TestSessionFallbackContextWarningNamesTheWindowThatHandledTheRequest(t *tes
 	if ctxWarn == nil {
 		t.Fatalf("no context-usage warning: the fallback's window is near, not the primary's: %+v", warnings)
 	}
-	if ctxWarn.ContextWindowSize != 120_000 {
-		t.Fatalf("warning window = %d, want the fallback's 120000: %+v", ctxWarn.ContextWindowSize, *ctxWarn)
+	if ctxWarn.ContextWindowSize != fallbackWindow {
+		t.Fatalf("warning window = %d, want the fallback's %d: %+v", ctxWarn.ContextWindowSize, fallbackWindow, *ctxWarn)
 	}
 }

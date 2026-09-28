@@ -659,7 +659,11 @@ const NO_CAPABILITIES: ThreadCapabilities = {
 // - shut down, the hub's past-session set (cmd/evener-hub/app_threadread.go's
 //   pastThreadCapabilities), since sending resumes it;
 // - needing a restart, readable notes alone
-//   (cmd/evener-hub/internal/appsource/local_daemon.go).
+//   (cmd/evener-hub/internal/appsource/local_daemon.go);
+// - a subagent while it runs, nothing: the hub serves it as a read-only alias
+//   of its coordinator's process (cmd/evener-hub/app_rpc.go), so its screen
+//   shows the bar in the composer's place (ruling 30). Once its run ends it
+//   reads as a past session.
 // Called whenever a session changes, so what it offers follows its state.
 export function refreshCapabilities(thread: Thread): void {
 	const status = thread.status.type;
@@ -680,15 +684,21 @@ export function refreshCapabilities(thread: Thread): void {
 		rename: true,
 		skillInput: true,
 	};
-	thread.evener.capabilities = SHUT_DOWN_STATUSES.has(status)
-		? { ...resumable, send: true, clear: true, forkFromTurn: true }
-		: {
-				...resumable,
-				send: status !== "active",
-				steer: true,
-				interrupt: true,
-				clear: clearAvailable(thread),
-			};
+	const subagent = thread.evener.parentRef !== undefined;
+	if (subagent && status === "active") {
+		thread.evener.capabilities = NO_CAPABILITIES;
+		return;
+	}
+	thread.evener.capabilities =
+		subagent || SHUT_DOWN_STATUSES.has(status)
+			? { ...resumable, send: true, clear: true, forkFromTurn: true }
+			: {
+					...resumable,
+					send: status !== "active",
+					steer: true,
+					interrupt: true,
+					clear: clearAvailable(thread),
+				};
 }
 
 // Whether a live session can Clear: only at rest, with nothing queued or

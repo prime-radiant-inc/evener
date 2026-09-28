@@ -4,7 +4,7 @@ import { expect, test, vi } from "vitest";
 // consumer's test runner uses, and package-test-files.mjs refuses one.
 import timestampFixture from "../../../../cmd/evener-hub/testdata/navigation/timestamps.json?raw";
 import valueRecordsFixture from "../../../../cmd/evener-hub/testdata/navigation/value-records.json?raw";
-import type { NavigationSnapshot } from "../../types.gen";
+import type { NavigationSessionSummary, NavigationSnapshot } from "../../types.gen";
 import {
   decodeNavigationResponse,
   materializeNavigationResource,
@@ -12,6 +12,7 @@ import {
   type NormalizedResource,
   normalizedGraphFromSnapshot,
   snapshotResource,
+  type ValueRecordKeyTable,
 } from "./codec";
 import { applyDelta, reconcileSnapshot } from "./merge";
 import {
@@ -1448,6 +1449,32 @@ test("codec keeps a row's model name within its bound and refuses one past it", 
     expectContentFreeRejection(key, snapshotWithSessionField("model_name", malformed));
   }
 });
+
+// #2477: a value record's key table is mapped over its generated interface, so
+// a key the interface drops, a key missing from a table, and a key whose
+// required/optional mark does not match the interface's `?` all stop
+// compiling. These deliberate drifts pin that; an unused directive means the
+// mapped type stopped rejecting one.
+type SampleKeyTable = ValueRecordKeyTable<{ required: string; optional?: number }>;
+const sampleKeyTable: SampleKeyTable = { required: "required", optional: "optional" };
+// @ts-expect-error a key the interface marks required must read "required"
+const sampleFlippedToOptional: SampleKeyTable = { required: "optional", optional: "optional" };
+// @ts-expect-error a key the interface marks optional must read "optional"
+const sampleFlippedToRequired: SampleKeyTable = { required: "required", optional: "required" };
+// @ts-expect-error a key the interface does not name must not appear
+const sampleExtraKey: SampleKeyTable = { required: "required", optional: "optional", gone: "optional" };
+// @ts-expect-error every key the interface names must appear
+const sampleMissingKey: SampleKeyTable = { required: "required" };
+// @ts-expect-error every key of the real generated summary must be listed
+const missingSummaryKey: ValueRecordKeyTable<NavigationSessionSummary> = { ref: "required" };
+void [
+  sampleKeyTable,
+  sampleFlippedToOptional,
+  sampleFlippedToRequired,
+  sampleExtraKey,
+  sampleMissingKey,
+  missingSummaryKey,
+];
 
 // cmd/evener-hub/navigation_value_records_test.go keeps this fixture naming
 // every wire field of every navigation value record. Decoding it must keep all

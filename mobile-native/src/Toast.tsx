@@ -4,7 +4,7 @@
 // it floats on the raised surface, and VoiceOver hears it once.
 import { useCallback, useEffect, useRef, useState } from "react";
 import { AccessibilityInfo, Platform, Pressable, Text, useWindowDimensions, View } from "react-native";
-import { styles, useColors } from "./ui";
+import { allowFontScaling, styles, useColors } from "./ui";
 
 export interface ToastAction {
 	label: string;
@@ -78,7 +78,7 @@ export function Toast({ toast, dismiss }: Pick<ToastController, "toast" | "dismi
 			}}
 		>
 			<Text
-				allowFontScaling={Platform.OS !== "ios"}
+				allowFontScaling={allowFontScaling}
 				numberOfLines={2}
 				style={{ flexShrink: 1, color: palette.inkHi, fontSize: 15 * scale, lineHeight: 20 * scale }}
 			>
@@ -98,7 +98,7 @@ export function Toast({ toast, dismiss }: Pick<ToastController, "toast" | "dismi
 					style={styles.action}
 				>
 					<Text
-						allowFontScaling={Platform.OS !== "ios"}
+						allowFontScaling={allowFontScaling}
 						style={{ color: palette.accentInk, fontSize: 15 * scale, fontWeight: "600" }}
 					>
 						{action.label}

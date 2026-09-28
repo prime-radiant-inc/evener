@@ -830,13 +830,18 @@ func TestSession_ContextWindowAwareness_EmitsWarningOver80Percent(t *testing.T) 
 	}
 	c.Register(f)
 
-	// Keep enough room for the full base prompt while constraining the window
-	// enough that this request crosses the warning threshold: the prompt
-	// (system + tool schemas, which drift as tool descriptions change) sits
-	// around 20k tokens, so the window must stay above it (or ProcessInput
-	// blocks outright) yet below 1.25x it (or the request drops under the 80%
-	// warning threshold).
-	sess, err := NewSession(c, WithContextWindow(namedInstanceProfile("tiny", "openai", "m"), 23_000), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
+	// Size the window from this test's own standing request instead of a
+	// hardcoded constant: a prompt rewrite changes the system prompt and tool
+	// schemas, and a fixed window silently lands on the wrong side of the 80%
+	// threshold. The window must stay above the standing request (or local
+	// admission blocks ProcessInput outright) yet below 1.25x it (or the request
+	// drops under the threshold); 1.1x sits inside that band with margin both
+	// ways.
+	profile := namedInstanceProfile("tiny", "openai", "m")
+	input := strings.Repeat("a", 40)
+	window := standingRequestTokens(t, dir, profile, input) * 11 / 10
+
+	sess, err := NewSession(c, WithContextWindow(profile, window), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
@@ -845,7 +850,7 @@ func TestSession_ContextWindowAwareness_EmitsWarningOver80Percent(t *testing.T) 
 	muteNoteElicitation(sess)
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) // TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
 	defer cancel()
-	_, err = sess.ProcessInput(ctx, strings.Repeat("a", 40), nil)
+	_, err = sess.ProcessInput(ctx, input, nil)
 	if err != nil {
 		t.Fatalf("ProcessInput: %v", err)
 	}

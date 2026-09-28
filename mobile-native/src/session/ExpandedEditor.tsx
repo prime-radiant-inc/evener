@@ -2,7 +2,7 @@
 // with room to read it, for a message that has outgrown six lines.
 import { Modal, Platform, TextInput, useWindowDimensions, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
-import { Action, styles, useColors } from "../ui";
+import { Action, allowFontScaling, styles, useColors } from "../ui";
 
 export function ExpandedEditor({
 	visible,
@@ -30,7 +30,7 @@ export function ExpandedEditor({
 				</View>
 				<TextInput
 					accessibilityLabel="Message"
-					allowFontScaling={Platform.OS !== "ios"}
+					allowFontScaling={allowFontScaling}
 					multiline
 					autoFocus
 					editable={editable}
