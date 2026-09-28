@@ -5,17 +5,17 @@
 // its composer would be. A stop goes to the hub directly when the
 // coordinator's hub can make one (S6), and is asked of the coordinator
 // otherwise.
-import { type ThreadCapabilities, WireError } from "@evener/appwire-client";
+import { WireError } from "@evener/appwire-client";
 import { useCallback, useEffect, useMemo, useState, useSyncExternalStore } from "react";
 import { Alert } from "react-native";
 import { useConnection } from "../ConnectionProvider";
 import { isMethodNotFound } from "../wireErrors";
 import { returnToSession, type SessionNavigation } from "../session/returnToSession";
-import { SessionLink } from "../session/sessionMessage";
 import { stopRequests } from "./nativeStopRequests";
 import { SubagentBar } from "./SubagentBar";
 import { stopOffer } from "./stopOffer";
 import { flattenSubagents, type SubagentRow } from "./subagentModel";
+import { useCoordinatorState } from "./useCoordinatorState";
 import { useSubagentTree } from "./useSubagentTree";
 
 export interface Coordinator {
@@ -69,25 +69,17 @@ export function SubagentPanel({ hubId, ref, coordinator, inFront, barShown, show
 	}, [inFront, rows, requests, coordinator.ref, showToast, stopRevision]);
 
 	// Whether the coordinator's hub can stop a subagent directly (S6), read
-	// without taking the connection's subscription, which follows this
-	// subagent's transcript.
-	// "unreadable" when the read failed: the bar then asks the coordinator,
-	// whose sheet reads it again.
-	const [capabilities, setCapabilities] = useState<ThreadCapabilities | "unreadable" | null>(null);
+	// while this screen is in front. "unreadable" when the read failed: the
+	// bar then asks the coordinator, whose sheet reads it again. A hub that
+	// didn't know the direct stop is asked again on the next connection.
+	const coordinatorState = useCoordinatorState(inFront && connected ? client : null, coordinator.ref);
 	const [directUnsupported, setDirectUnsupported] = useState(false);
-	useEffect(() => {
-		// What another connection said doesn't hold on this one.
-		setCapabilities(null);
-		setDirectUnsupported(false);
-		if (!inFront || !connected || !client) return;
-		const link = new SessionLink(client, coordinator.ref);
-		link.read({ follow: false }).then(
-			(session) => setCapabilities(session.capabilities),
-			() => setCapabilities("unreadable"),
-		);
-		return () => link.dispose();
-	}, [inFront, connected, client, coordinator.ref]);
-	const direct = capabilities !== null && capabilities !== "unreadable" && capabilities.stopSubagent === true && !directUnsupported;
+	useEffect(() => setDirectUnsupported(false), [client]);
+	const direct =
+		coordinatorState !== null &&
+		coordinatorState !== "unreadable" &&
+		coordinatorState.capabilities.stopSubagent === true &&
+		!directUnsupported;
 
 	const stopDirectly = useCallback(
 		(target: SubagentRow) => {
@@ -124,7 +116,7 @@ export function SubagentPanel({ hubId, ref, coordinator, inFront, barShown, show
 	const offer = stopOffer({
 		row,
 		requested: row !== null && requests.view(row) === "requested",
-		direct: capabilities === null ? "unknown" : direct ? "yes" : "no",
+		direct: coordinatorState === null ? "unknown" : direct ? "yes" : "no",
 	});
 	return (
 		<SubagentBar

@@ -11,11 +11,12 @@ import { useConnection } from "../ConnectionProvider";
 import { getNativeMutationRuntime } from "../nativeMutationRuntime";
 import type { Routes } from "../screens";
 import { SendButton } from "../session/SendButton";
-import { SessionLink, type SessionState, stopRequestKind, submitSessionMessage } from "../session/sessionMessage";
+import { stopRequestKind, submitSessionMessage } from "../session/sessionMessage";
 import { Sheet, useSheet } from "../sheet/Sheet";
 import { allowFontScaling, useColors, useTextScale } from "../ui";
 import { stopRequests } from "./nativeStopRequests";
 import { flattenSubagents, type SubagentRow } from "./subagentModel";
+import { useCoordinatorState } from "./useCoordinatorState";
 import { useSubagentTree } from "./useSubagentTree";
 
 function prefill(row: SubagentRow): string {
@@ -51,18 +52,10 @@ export function StopSubagentSheet({ route }: NativeStackScreenProps<Routes, "Sto
 	}, [row, snapshot.partial, sheet]);
 
 	// The coordinator's state, read without taking the connection's
-	// subscription, which the transcript under this sheet follows.
-	const [coordinatorState, setCoordinatorState] = useState<SessionState | null>(null);
-	useEffect(() => {
-		// A read from another connection names that connection's instance.
-		setCoordinatorState(null);
-		if (!online || !client) return;
-		const link = new SessionLink(client, coordinator.ref);
-		link.read({ follow: false }).then(setCoordinatorState, () => {
-			// Unknown: Send waits, and the next reconnect reads again.
-		});
-		return () => link.dispose();
-	}, [online, client, coordinator.ref]);
+	// subscription, which the transcript under this sheet follows. A read
+	// names its connection's instance, so each connection reads again.
+	const coordinatorRead = useCoordinatorState(online ? client : null, coordinator.ref);
+	const coordinatorState = coordinatorRead === "unreadable" ? null : coordinatorRead;
 	// With S6 the subagent bar offers "Stop subagent", with a confirmation
 	// and no message, stopping only that subagent; it opens this sheet only
 	// for a coordinator that doesn't advertise stopSubagent.
@@ -113,7 +106,7 @@ export function StopSubagentSheet({ route }: NativeStackScreenProps<Routes, "Sto
 					<SendButton label="Send stop request" disabled={!canSend} onPress={() => void submit()} />
 				</View>
 				<Text allowFontScaling={allowFontScaling} style={{ ...small, color: palette.inkMid }}>
-					{coordinatorState && kind === null
+					{coordinatorRead === "unreadable" || (coordinatorState && kind === null)
 						? "The coordinator can't take a message right now."
 						: "Arrives at the coordinator's next step"}
 				</Text>
