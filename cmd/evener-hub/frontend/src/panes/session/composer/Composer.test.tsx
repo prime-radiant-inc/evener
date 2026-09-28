@@ -6,7 +6,7 @@ import { WireError } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { IDBDatabase, IDBFactory } from "fake-indexeddb";
+import { IDBFactory } from "fake-indexeddb";
 import { useLayoutEffect } from "react";
 import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
 import { ClientProvider } from "../../../shell/clientContext";
@@ -20,7 +20,7 @@ import { connectionStore } from "../../../stores/connection";
 import type { MutationOutboxRecord } from "../../../stores/mutationOutbox";
 import { MutationOutboxIndexedDB } from "../../../stores/mutationOutboxIndexedDB";
 import { prefsStore, resetPrefsStoreForTests } from "../../../stores/prefs";
-import { holdIndexedDBEvent, holdNextWriteTransaction } from "../../../stores/testing/stalledIndexedDB";
+import { holdNextWriteTransaction } from "../../../stores/testing/stalledIndexedDB";
 import {
   readMutationPersistence,
   resetThreadsStoreForTests,
@@ -2897,25 +2897,8 @@ test.each([
   const submittedText = image ? "edit me [image 1]" : "retry me";
   expect(textarea().textContent).toBe(submittedText);
 
-  const transact = IDBDatabase.prototype.transaction;
-  let hold: ReturnType<typeof holdIndexedDBEvent> | undefined;
-  let announceWrite: (() => void) | undefined;
-  const written = new Promise<void>((resolve) => {
-    announceWrite = resolve;
-  });
-  vi.spyOn(IDBDatabase.prototype, "transaction").mockImplementation(function (this: IDBDatabase, ...args) {
-    const transaction = transact.apply(this, args);
-    if (
-      !hold &&
-      transaction.mode === "readwrite" &&
-      transaction.objectStoreNames.length === 1 &&
-      transaction.objectStoreNames.contains("recovery")
-    ) {
-      hold = holdIndexedDBEvent(transaction, "complete");
-      void hold.reached.then(() => announceWrite?.());
-    }
-    return transaction;
-  });
+  const hold = holdNextWriteTransaction(["recovery"]);
+  const written = hold.reached;
   try {
     fireEvent.click(submitButton());
     await written;
@@ -2940,7 +2923,7 @@ test.each([
       if (edit === "same text") replaceEditorText(textarea(), submittedText);
     }
   } finally {
-    await act(async () => hold?.release());
+    await act(async () => hold.release());
     await flushPendingTurnsProjectionForTests();
   }
   const expected = edit === "unchanged" ? "" : edit === "edited" ? "new draft" : image ? "edit me " : "retry me";
@@ -2994,28 +2977,19 @@ test("draining an active recovery consumes its owner before the next submission"
   await flushPendingTurnsProjectionForTests();
   const editor = textarea();
   expect(editor.textContent).toBe("retry me");
-  const transact = IDBDatabase.prototype.transaction;
-  let hold: ReturnType<typeof holdIndexedDBEvent> | undefined;
-  const committed = deferred<void>();
-  vi.spyOn(IDBDatabase.prototype, "transaction").mockImplementation(function (this: IDBDatabase, ...args) {
-    const transaction = transact.apply(this, args);
-    if (!hold && transaction.mode === "readwrite" && transaction.objectStoreNames.contains("sequences")) {
-      hold = holdIndexedDBEvent(transaction, "complete");
-      void hold.reached.then(() => committed.resolve());
-    }
-    return transaction;
-  });
+  const hold = holdNextWriteTransaction(["outbox", "optimistic", "recovery", "sequences"]);
+  const committed = hold.reached;
   try {
     await act(async () => {
       fireEvent.click(screen.getByRole("button", { name: "Steer queue now" }));
-      await committed.promise;
+      await committed;
     });
     // Recovery ownership must be consumed by the same durable write, before
     // the mounted composer's success callback can clear or autosave its draft.
     expect(await storage.getRecovery(recovery.clientMutationId)).toBeUndefined();
   } finally {
     await act(async () => {
-      hold?.release();
+      hold.release();
       await dispatched.promise;
     });
     await flushPendingTurnsProjectionForTests();
@@ -3048,23 +3022,14 @@ test.each([false, true])(
     const second = render(<Composer ref="ref_a" focused={false} />);
     const secondInput = within(second.container).getByRole<HTMLDivElement>("textbox");
     await flushPendingTurnsProjectionForTests();
-    const transact = IDBDatabase.prototype.transaction;
-    let hold: ReturnType<typeof holdIndexedDBEvent> | undefined;
-    const committed = deferred<void>();
-    vi.spyOn(IDBDatabase.prototype, "transaction").mockImplementation(function (this: IDBDatabase, ...args) {
-      const transaction = transact.apply(this, args);
-      if (!hold && transaction.mode === "readwrite" && transaction.objectStoreNames.contains("sequences")) {
-        hold = holdIndexedDBEvent(transaction, "complete");
-        void hold.reached.then(() => committed.resolve());
-      }
-      return transaction;
-    });
+    const hold = holdNextWriteTransaction(["outbox", "optimistic", "recovery", "sequences"]);
+    const committed = hold.reached;
     try {
       fireEvent.click(firstButton);
-      await committed.promise;
+      await committed;
       replaceEditorText(secondInput, "newer shared draft");
     } finally {
-      await act(async () => hold?.release());
+      await act(async () => hold.release());
       await flushPendingTurnsProjectionForTests();
     }
     expect(firstInput.textContent).toBe("");
@@ -4035,20 +4000,8 @@ test.each([
     const submittedText = textarea().textContent;
     const originalAttachment = recovery ? "proof.png" : "original.png";
 
-    const transact = IDBDatabase.prototype.transaction;
-    let hold: ReturnType<typeof holdIndexedDBEvent> | undefined;
-    let announceCommit: (() => void) | undefined;
-    const committed = new Promise<void>((resolve) => {
-      announceCommit = resolve;
-    });
-    vi.spyOn(IDBDatabase.prototype, "transaction").mockImplementation(function (this: IDBDatabase, ...args) {
-      const transaction = transact.apply(this, args);
-      if (!hold && transaction.mode === "readwrite" && transaction.objectStoreNames.contains("sequences")) {
-        hold = holdIndexedDBEvent(transaction, "complete");
-        void hold.reached.then(() => announceCommit?.());
-      }
-      return transaction;
-    });
+    const hold = holdNextWriteTransaction(["outbox", "optimistic", "recovery", "sequences"]);
+    const committed = hold.reached;
     try {
       await user.click(actionButton());
       // The commit's store publications re-render the queue strip; they land
@@ -4068,7 +4021,7 @@ test.each([
       }
       expect(textarea().textContent).toBe(submittedText);
     } finally {
-      await act(async () => hold?.release());
+      await act(async () => hold.release());
       await flushPendingTurnsProjectionForTests();
     }
     const remainingText = remount ? submittedText : edited && recovery ? "edit me " : "";
@@ -4092,20 +4045,8 @@ test.each(["keep marker", "delete marker", "add attachment", "replace attachment
     pastePngInto(textarea(), "original.png");
     await screen.findByRole("button", { name: "View original.png" });
 
-    const transact = IDBDatabase.prototype.transaction;
-    let hold: ReturnType<typeof holdIndexedDBEvent> | undefined;
-    let announceCommit: (() => void) | undefined;
-    const committed = new Promise<void>((resolve) => {
-      announceCommit = resolve;
-    });
-    vi.spyOn(IDBDatabase.prototype, "transaction").mockImplementation(function (this: IDBDatabase, ...args) {
-      const transaction = transact.apply(this, args);
-      if (!hold && transaction.mode === "readwrite" && transaction.objectStoreNames.contains("sequences")) {
-        hold = holdIndexedDBEvent(transaction, "complete");
-        void hold.reached.then(() => announceCommit?.());
-      }
-      return transaction;
-    });
+    const hold = holdNextWriteTransaction(["outbox", "optimistic", "recovery", "sequences"]);
+    const committed = hold.reached;
     try {
       await act(async () => {
         fireEvent.click(submitButton());
@@ -4131,7 +4072,7 @@ test.each(["keep marker", "delete marker", "add attachment", "replace attachment
         fireEvent.click(within(row).getByRole("button", { name: "Edit message" }));
       }
     } finally {
-      await act(async () => hold?.release());
+      await act(async () => hold.release());
       await flushPendingTurnsProjectionForTests();
     }
     expect(screen.queryByRole("button", { name: "Remove original.png" }) !== null).toBe(edit === "replace attachment");

@@ -1,24 +1,7 @@
-// The option rows a question timeline item renders key on their POSITION in
-// the ask (timeline.ts's questionOptionKey), never on the label: the store's
-// publish bounds every label the timeline carries (projectedRows.ts's
-// truncateItem through boundQuestion, at MAX_ITEM_BYTES), so two options
-// whose labels share a prefix past the bound cut to the same string. Keyed
-// on that label — the pre-fix expression `${question.key}:${option.label}`
-// — both rows answered to ONE React key, and React reported the duplicate
-// on every render. This mounts the real TimelineItem with two such options
-// (bounded exactly the way the store publishes them) and pins the absence
-// of that report; the pure key's contract is pinned separately in
-// timeline.test.ts.
 import { createElement, type ReactNode } from "react";
 import { act, type ReactTestInstance } from "react-test-renderer";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { AskQuestionRef } from "@evener/appwire-client";
-import {
-	boundQuestion,
-	MAX_ITEM_BYTES,
-	truncateText,
-	type MobileTimelineItem,
-} from "./projectedRows";
+import type { MobileTimelineItem } from "./projectedRows";
 import { errorAction } from "./session/errorAction";
 import { TimelineItem } from "./TimelineItem";
 import { Platform } from "react-native";
@@ -48,53 +31,6 @@ vi.mock("expo-symbols", () => ({ SymbolView: "SymbolView" }));
 // Attachments are not under test here, and the image leaf drags in the
 // connection stack (expo-secure-store and the rest).
 vi.mock("./TranscriptImages", () => ({ TranscriptImages: () => null }));
-
-const ask: AskQuestionRef = {
-	key: "call:0",
-	callId: "call",
-	header: "Choose",
-	question: "Pick one",
-	multiSelect: false,
-	options: [],
-};
-
-// The store's bounded publish of one ask whose two options share a prefix
-// past the display bound, so both labels cut to the same string.
-function boundedAskRow(first: string, second: string): MobileTimelineItem {
-	const questions = [
-		boundQuestion(
-			{
-				...ask,
-				options: [
-					{ label: first, detail: "" },
-					{ label: second, detail: "" },
-				],
-			},
-			(text) => truncateText(text, MAX_ITEM_BYTES),
-		),
-	];
-	return { kind: "question", id: "ask-1", questions };
-}
-
-it("renders an ask's option rows without a duplicate-key report when the bounded labels collide", () => {
-	const prefix = "x".repeat(MAX_ITEM_BYTES * 2);
-	const row = boundedAskRow(`${prefix}-first-tail`, `${prefix}-second-tail`);
-	// The collision is real: the store's publish cuts both labels to the
-	// same copy, so the pre-fix label-based key answered for both rows.
-	const bounded = row.kind === "question" ? row.questions[0] : undefined;
-	expect(bounded?.options[0].label).toBe(bounded?.options[1].label);
-
-	const errors: string[] = [];
-	const spy = vi.spyOn(console, "error").mockImplementation((...args) => {
-		errors.push(args.map(String).join(" "));
-	});
-	try {
-		render(<TimelineItem item={row} hubId="hub" sessionRef="session" />);
-	} finally {
-		spy.mockRestore();
-	}
-	expect(errors.filter((line) => /same key/.test(line))).toEqual([]);
-});
 
 function renderUserRow() {
 	const row: MobileTimelineItem = { kind: "user", id: "u-1", text: "Ship it" };
@@ -139,6 +75,8 @@ it("sets your message text in Source Serif 4 at 17/25 with the prose ink, keepin
 });
 
 const INK_LOW = "#6D6D64";
+const INK_MID = "#5F5F57";
+const EDGE_STRONG = "#B7B6AC";
 
 beforeEach(() => {
 	mode.scheme = "light";
@@ -369,6 +307,43 @@ describe("the agent's message", () => {
 	it("says nothing about writing while it streams: the tray says it", () => {
 		const tree = render(<TimelineItem item={reply({ streaming: true })} hubId="hub" sessionRef="s" />);
 		expect(renderedText(tree)).not.toContain("Writing");
+	});
+});
+
+describe("a saved note (spec 8.2, 8.8)", () => {
+	function render_(text: string) {
+		const row: MobileTimelineItem = { kind: "note", id: "note:1", text };
+		return render(<TimelineItem item={row} hubId="hub" sessionRef="s" />);
+	}
+
+	function caption(tree: ReturnType<typeof render>) {
+		return tree.root.findAll(
+			(node) => String(node.type) === "Text" && /your note/i.test(textOf(node)),
+		)[0];
+	}
+
+	it('reads "You updated your note" over the note, in the serif prose ink, behind a left rule', () => {
+		mode.scheme = "light";
+		const tree = render_("Fix causes");
+		expect(textOf(caption(tree))).toBe("You updated your note");
+		expect(caption(tree).props.style).toMatchObject({ fontSize: 13, lineHeight: 18, color: INK_MID });
+		const [body] = tree.root.findAll((node) => String(node.type) === "Text" && textOf(node) === "Fix causes");
+		expect(body.props.style).toMatchObject({
+			fontFamily: "SourceSerif4-Regular",
+			fontSize: 17,
+			lineHeight: 25,
+			color: "#252521",
+		});
+		const [rule] = tree.root.findAll((node) => node.props.style?.borderLeftWidth === 2);
+		expect(rule.props.style).toMatchObject({ borderLeftColor: EDGE_STRONG });
+		act(() => tree.unmount());
+	});
+
+	it('reads "You cleared your note" with no text beneath, for an emptied note', () => {
+		const tree = render_("");
+		expect(textOf(caption(tree))).toBe("You cleared your note");
+		expect(tree.root.findAll((node) => String(node.type) === "Text").length).toBe(1);
+		act(() => tree.unmount());
 	});
 });
 

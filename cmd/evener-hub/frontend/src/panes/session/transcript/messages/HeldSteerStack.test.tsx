@@ -3,9 +3,9 @@
 // become, caption in the meta slot, in the shared known-first order
 // reconcilePendingEntries already produced (the stack never re-sorts), with
 // the stack-owned [queued messages] fallback for a blank composed body.
-import { cleanup, render, renderHook, screen, within } from "@testing-library/react";
+import { render, renderHook, screen, within } from "@testing-library/react";
 import { IDBFactory } from "fake-indexeddb";
-import { afterEach, beforeEach, expect, test } from "vitest";
+import { beforeEach, expect, test } from "vitest";
 import { connectionStore } from "../../../../stores/connection";
 import type { InputAttachment } from "../../../../stores/threads";
 import { resetThreadsStoreForTests, threadsStore } from "../../../../stores/threads";
@@ -28,10 +28,6 @@ beforeEach(() => {
   connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
   resetThreadsStoreForTests();
   resetPendingTurnsStoreForTests();
-});
-
-afterEach(() => {
-  cleanup();
 });
 
 // --- pure caption tests (spec §4's state table) -------------------------------

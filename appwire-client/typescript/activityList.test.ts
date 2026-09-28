@@ -437,3 +437,33 @@ test("a queued page that succeeds clears the error left by an earlier failed pag
 
   expect(list.getSnapshot().error).toBeNull();
 });
+
+test("a page requested from the completion notification is loaded", async () => {
+  const current = activityTree([delegateEntry("delegate", "next")]);
+  const page = activityTree([delegateEntry("delegate", undefined, 2)]);
+  const boundary = boundaryClient([current, page]);
+  const list = new ActivityList(boundary.client, "local:session", "session");
+  let requested: Promise<void> | undefined;
+  let reacted = false;
+  // A surface that pages from a subscription asks for the next page when the
+  // load reports it is done, rather than driving its own reloads.
+  list.subscribe(() => {
+    const branch = list.branches()[0];
+    if (reacted || list.getSnapshot().loading || !branch?.continuation) return;
+    reacted = true;
+    requested = list.loadMore(branch.id, branch.continuation);
+  });
+
+  const refresh = list.refresh();
+  await refresh;
+  await requested;
+
+  expect(boundary.requests.map(({ params }) => params)).toEqual([
+    { ref: "local:session" },
+    { ref: "local:session", continuation: "next" },
+  ]);
+  const entry = list.getSnapshot().tree?.root.entries[0];
+  if (entry?.kind !== "delegate") throw new Error("missing delegate");
+  expect(entry.delegate.projectionRevision).toBe(2);
+  expect(list.branches()).toEqual([]);
+});

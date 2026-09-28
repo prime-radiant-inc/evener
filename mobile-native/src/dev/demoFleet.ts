@@ -8,10 +8,16 @@
 // is a browser script (it assigns to `window.EV_DATA`), so its content is
 // transcribed here rather than imported; the mapping choices are recorded
 // inline as each raw session is turned into a NavigationSessionSummary row.
+import {
+	NAVIGATION_CATALOG_LIMIT,
+	NAVIGATION_SECTION_LIMIT,
+	relativeAge,
+} from "@evener/appwire-client/state/navigation";
 import { capability, wireV2 } from "@evener/appwire-client/testing/navigation";
 import type {
 	AuthListResponse,
 	NavigationCapability,
+	NavigationInvalidatedPayload,
 	NavigationJobSummary,
 	NavigationProjectSummary,
 	NavigationReadParams,
@@ -23,57 +29,18 @@ import type {
 	Source,
 } from "@evener/appwire-client";
 
-// Mirrors @evener/appwire-client/state/navigation's NAVIGATION_SECTION_LIMIT
-// and NAVIGATION_CATALOG_LIMIT (in turn cmd/evener-hub/navigation_projection.
-// go's maxNavigationSectionRows/maxNavigationCatalogRows) rather than
-// importing them: that module's index.ts re-exports everything with
-// `export * from "./x"`, and demo-hub.mts (which reaches this file through
-// its own import graph) is .mts, always real ESM to Node -- the CommonJS
-// compile a re-export barrel gets there turns `export *` into a dynamic
-// spread Node's real ESM loader can't statically find named exports in, so
-// `import { X } from "@evener/appwire-client/state/navigation"` fails to
-// load from anywhere that graph reaches, even though the identical
-// specifier shape works from testing/navigation (a plain file with direct
-// declarations, not a re-export barrel). Vitest's own resolver doesn't hit
-// this, which is why the test file next to this one can import the real
-// constants directly.
-const SECTION_LIMIT = 50;
-const CATALOG_LIMIT = 100;
-
-// The generation id demo-hub.mts advertises in the initialize handshake's
-// navigation capability. Every wireV2 response must carry the exact same
-// id: the shared navigation store rejects any other generation as a
-// mismatch (appwire-client/typescript/state/navigation/revalidator.ts's
-// `validate`, "generation mismatch"), so this is exported and imported by
-// demo-hub.mts rather than each file keeping its own string.
+// The generation id the fleet's navigationCapability advertises in demo-hub.mts's
+// initialize handshake. Every wireV2 response must carry the exact same id:
+// the shared navigation store rejects any other generation as a mismatch
+// (appwire-client/typescript/state/navigation/revalidator.ts's `validate`,
+// "generation mismatch"). Exported for the tests that assert it.
 export const DEMO_FLEET_GENERATION = "demo-fleet";
-const DEMO_ETAG = '"demo-fleet-1"';
-const DEMO_REVISION = 1;
-const respond = (params: NavigationReadParams, data: unknown): NavigationReadResponse =>
-	wireV2(params, data, DEMO_ETAG, DEMO_REVISION, DEMO_FLEET_GENERATION);
-
-// demo-hub.mts's handshake capability, built here so it is the one file in
-// mobile-native that touches @evener/appwire-client/testing/ at all: that
-// subpath is in-repo test support (AGENTS.md "Importing the AppWire
-// TypeScript package"), and only a test or dev-support file may import it --
-// this one qualifies by living under src/dev/, the way the web's own
-// analogous fixture (cmd/evener-hub/frontend/src/dev/editorial-preview/) does.
-export function navigationCapability(): NavigationCapability {
-	return capability(DEMO_FLEET_GENERATION);
-}
-
-// A local copy of that same module's relativeAge (now/m/h/d), for the same
-// reason: SearchResult.age needs it and importing it hits the barrel above.
-// The format is a spec contract (redesign design.md 7.2: "2m", "1h", "3d"),
-// not an implementation detail likely to drift out from under this copy.
-function relativeAge(updatedAt: string | undefined, now: number): string {
-	if (!updatedAt) return "now";
-	const seconds = Math.max(0, Math.floor((now - Date.parse(updatedAt)) / 1000));
-	if (seconds < 60) return "now";
-	if (seconds < 3600) return `${Math.floor(seconds / 60)}m`;
-	if (seconds < 86400) return `${Math.floor(seconds / 3600)}h`;
-	return `${Math.floor(seconds / 86400)}d`;
-}
+// Every resource shares one revision, bumped when the fleet changes (the
+// question askQuestion below poses), so an invalidation's target revision is
+// one the next read actually reaches: the navigation store refuses a
+// response below the revision it was told to expect.
+const respond = (revision: number, params: NavigationReadParams, data: unknown): NavigationReadResponse =>
+	wireV2(params, data, `"demo-fleet-${revision}"`, revision, DEMO_FLEET_GENERATION);
 
 const M = 60;
 const H = 3600;
@@ -99,6 +66,43 @@ const ARCHIVED_TOTAL = 271; // data.js: archivedTotal (Board mockup: "ARCHIVED Â
 // How many archived rows a "project" overview embeds as a preview, versus a
 // project_page(tier=archived) read paging through the real, full list.
 const PROJECT_OVERVIEW_ARCHIVED_PREVIEW = 5;
+
+// The base62 alphabet the hub's own ids use
+// (appwire-client/typescript/entityIds.ts, identifier/uuid.go). A real hub
+// names a session with a 22-character id of exactly these, and a `local:` ref
+// is recognised only when its id is that shape
+// (mobile-native/src/sessionDeletionResult.ts's localSessionId). The Board's
+// archiveTarget reads a local row's identity through that same check, so a
+// session the demo fleet names with a readable slug (s-gateway, ...) must
+// still carry a real-shaped id on the wire.
+const SESSION_ID_ALPHABET = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
+
+// The 22-character wire id a fleet session with this slug carries. Derived
+// from the slug so it is stable (a slug always yields the same id) and spread
+// across the whole id space so no two fleet rows share one. The slug stays the
+// fixture's own key -- and the handle the tests name -- while only the wire's
+// ref and session_id carry this id.
+export function demoSessionId(slug: string): string {
+	// FNV-1a seeds a xorshift32 generator. A nonzero state keeps the generator
+	// periodic, and because xorshift32 is a bijection distinct seeds yield
+	// distinct sequences, so distinct slugs collide only if their hashes do --
+	// which the fleet's own uniqueness test rules out for every slug it names.
+	let state = 0x811c9dc5;
+	for (let i = 0; i < slug.length; i++) {
+		state = Math.imul(state ^ slug.charCodeAt(i), 0x01000193) >>> 0;
+	}
+	if (state === 0) state = 0x9e3779b9;
+	let id = "";
+	for (let i = 0; i < 22; i++) {
+		state ^= state << 13;
+		state >>>= 0;
+		state ^= state >>> 17;
+		state ^= state << 5;
+		state >>>= 0;
+		id += SESSION_ID_ALPHABET[state % SESSION_ID_ALPHABET.length];
+	}
+	return id;
+}
 
 // Names cycled through for a swarm whose members aren't individually named in
 // the fixture, copied verbatim from data.js's swarmNames.
@@ -490,15 +494,16 @@ function runningJobs(raw: RawSession): NavigationJobSummary[] | undefined {
 function toRow(raw: RawSession, startupMs: number, offlineHost: boolean): NavigationSessionSummary {
 	const owner = hostId(raw.host);
 	const project = raw.project ?? "evener";
+	const sessionId = demoSessionId(raw.id);
 	const { state, askPending, approvalPending } = WIRE_STATE[raw.state];
 	const live = raw.state !== "shutdown";
 	const offline = owner === "paradise-park" && offlineHost;
 	const { capped, omitted } = capChildren(rawChildren(raw));
 	const jobs = runningJobs(raw);
 	return {
-		ref: `${owner}:${raw.id}`,
+		ref: `${owner}:${sessionId}`,
 		host_id: owner,
-		session_id: raw.id,
+		session_id: sessionId,
 		title: raw.title,
 		project,
 		state,
@@ -520,23 +525,23 @@ function toRow(raw: RawSession, startupMs: number, offlineHost: boolean): Naviga
 // `ago` the row's age already carries.
 const underProjects = (raw: RawSession) => !raw.archived && !raw.test;
 
-function projectSessionsRaw(projectKey: string): RawSession[] {
-	return SESSIONS.filter((raw) => underProjects(raw) && (raw.project ?? "evener") === projectKey);
+function projectSessionsRaw(sessions: RawSession[], projectKey: string): RawSession[] {
+	return sessions.filter((raw) => underProjects(raw) && (raw.project ?? "evener") === projectKey);
 }
 
 // The hosts that own a project's sessions, in the hub's own shape
 // (NavigationProjectSummary.sources): "local" for this hub's sessions and a
 // host's name for its own, omitted when this hub owns every one.
-function projectSources(projectKey: string): string[] | undefined {
-	const owners = new Set(SESSIONS.filter((raw) => (raw.project ?? "evener") === projectKey).map((raw) => hostId(raw.host)));
+function projectSources(sessions: RawSession[], projectKey: string): string[] | undefined {
+	const owners = new Set(sessions.filter((raw) => (raw.project ?? "evener") === projectKey).map((raw) => hostId(raw.host)));
 	if ([...owners].every((owner) => owner === "local")) return undefined;
 	return ["local", "paradise-park"].filter((owner) => owners.has(owner));
 }
 
-function projectSummary(key: string, sessionCount: number): NavigationProjectSummary {
+function projectSummary(sessions: RawSession[], key: string, sessionCount: number): NavigationProjectSummary {
 	const meta = PROJECT_META.find((project) => project.key === key);
 	if (!meta) throw new Error(`Unknown demonstration project: ${key}`);
-	const sources = projectSources(key);
+	const sources = projectSources(sessions, key);
 	return { key, name: key, working_dir: meta.workingDir, session_count: sessionCount, ...(sources ? { sources } : {}) };
 }
 
@@ -548,6 +553,20 @@ export interface DemoFleetOptions {
 	// Mirrors EVENER_DEMO_FLEET_OFFLINE_HOST: marks paradise-park's source
 	// offline and every one of its rows offline, for the offline frames.
 	offlineHost?: boolean;
+	// Mirrors EVENER_DEMO_FLEET_EMPTY: serves a hub with nothing live -- zero
+	// sessions, so the manifest, sections, pin catalog, project catalogs and
+	// search all come back empty. The sources still name a host (a real empty
+	// hub is still a hub), so only offlineHost touches them. For the Board's
+	// EmptyBoard state.
+	empty?: boolean;
+	// Mirrors EVENER_DEMO_FLEET_ASK_AFTER: that many seconds after the demo
+	// hub starts, the working row s-gateway ("Design Gateway Token Command
+	// MVP") asks a question, moving from Working into Needs you, so the
+	// Board's spring and amber wash can be watched on a still list. The fleet
+	// itself only knows how to make the change (askQuestion); demo-hub.mts
+	// owns the timer and sends the resulting invalidation, so a test fires the
+	// change by calling askQuestion directly instead of sleeping.
+	askAfterSeconds?: number;
 	// The clock evener/search's `age` reads, sampled fresh on every call --
 	// unlike `now` above, which freezes each row's updated_at once at
 	// startup. Defaults to Date.now; a test injects a fixed function so the
@@ -555,27 +574,103 @@ export interface DemoFleetOptions {
 	clock?: () => number;
 }
 
-export interface DemoFleet {
+interface FleetAnswers {
 	answerNavigationRead(params: NavigationReadParams): NavigationReadResponse;
 	answerSearch(params: SearchParams): SearchResponse;
 	answerAuthList(): AuthListResponse;
 	answerPluginList(): PluginListResponse;
 }
 
+export interface DemoFleet extends FleetAnswers {
+	// demo-hub.mts's handshake capability, carrying the sequence the fleet
+	// has reached: the navigation store refuses a reconnect whose sequence
+	// moved backward within the generation. Built here so this is the one
+	// file in mobile-native that touches @evener/appwire-client/testing/ at
+	// all: that subpath is in-repo test support (AGENTS.md "Importing the
+	// AppWire TypeScript package"), and only a test or dev-support file may
+	// import it -- this one qualifies by living under src/dev/, the way the
+	// web's own analogous fixture (cmd/evener-hub/frontend/src/dev/editorial-preview/) does.
+	navigationCapability(): NavigationCapability;
+	// Turns ASKING_SESSION_ID's working row into a pending question and
+	// returns the evener/navigation/invalidated payload a real hub would send
+	// for that change.
+	askQuestion(): NavigationInvalidatedPayload;
+}
+
+// The working row EVENER_DEMO_FLEET_ASK_AFTER turns into a question: a plain
+// local "evener" session with no pin category, subagents or running job, so
+// the only thing that changes on the Board is its band.
+const ASKING_SESSION_ID = "s-gateway";
+const ASKING_PROJECT = SESSIONS.find((raw) => raw.id === ASKING_SESSION_ID)?.project ?? "evener";
+
 export function createDemoFleet(options: DemoFleetOptions = {}): DemoFleet {
 	const startupMs = options.now ?? Date.now();
 	const offlineHost = options.offlineHost ?? false;
 	const clock = options.clock ?? Date.now;
-	const rowById = new Map(SESSIONS.map((raw) => [raw.id, toRow(raw, startupMs, offlineHost)]));
+	// Building the fleet from an empty list, rather than special-casing each
+	// answer, keeps every count, section and catalog below in step for free:
+	// a hub with nothing live just has nothing to filter, page or search over.
+	const sessionsList = options.empty ? [] : SESSIONS;
+	// Every resource's revision is one ahead of the navigation sequence: both
+	// start there and askQuestion advances them together.
+	let sequence = 0;
+	let answers = fleetAnswers(sessionsList, sequence + 1, startupMs, offlineHost, clock);
+
+	function askQuestion(): NavigationInvalidatedPayload {
+		// A negative `ago` puts updated_at at the moment of asking, after
+		// startup, the way a real hub stamps a row when its state changes.
+		const askedAgo = (startupMs - clock()) / 1000;
+		const asked = sessionsList.map((raw) =>
+			raw.id === ASKING_SESSION_ID ? { ...raw, state: "question" as const, ago: askedAgo } : raw,
+		);
+		sequence += 1;
+		const revision = sequence + 1;
+		answers = fleetAnswers(asked, revision, startupMs, offlineHost, clock);
+		// The resources a real hub invalidates for one row's state change
+		// (cmd/evener-hub/navigation_service.go): the manifest's counts, both
+		// Board sections, and the row's project. Search has no invalidation
+		// target; the next search simply answers from the changed fleet.
+		return {
+			generationId: DEMO_FLEET_GENERATION,
+			sequence,
+			targets: [
+				{ kind: "manifest", revision },
+				{ kind: "section", section: "live", revision },
+				{ kind: "section", section: "needs_you", revision },
+				{ kind: "project", projectKey: ASKING_PROJECT, revision },
+			],
+		};
+	}
+
+	return {
+		answerNavigationRead: (params) => answers.answerNavigationRead(params),
+		answerSearch: (params) => answers.answerSearch(params),
+		answerAuthList: () => answers.answerAuthList(),
+		answerPluginList: () => answers.answerPluginList(),
+		navigationCapability: () => ({ ...capability(DEMO_FLEET_GENERATION), sequence }),
+		askQuestion,
+	};
+}
+
+// Every answer the fleet gives, for one fixed list of sessions at one
+// revision; askQuestion swaps in a new one rather than mutating this.
+function fleetAnswers(
+	sessionsList: RawSession[],
+	revision: number,
+	startupMs: number,
+	offlineHost: boolean,
+	clock: () => number,
+): FleetAnswers {
+	const rowById = new Map(sessionsList.map((raw) => [raw.id, toRow(raw, startupMs, offlineHost)]));
 	const rowOf = (raw: RawSession) => rowById.get(raw.id) as NavigationSessionSummary;
 
-	const liveRaw = SESSIONS.filter((raw) => raw.state !== "shutdown");
+	const liveRaw = sessionsList.filter((raw) => raw.state !== "shutdown");
 	const liveSessions = liveRaw.map(rowOf);
 	const needsYouSessions = liveRaw.filter((raw) => NEEDS_YOU_STATES.has(raw.state)).map(rowOf);
 	// "9 working" (spec 7.1's Live summary line) is the working band itself,
 	// which excludes the approval row despite its sharing state "active".
-	const workingCount = SESSIONS.filter((raw) => raw.state === "working").length;
-	const erroredCount = SESSIONS.filter((raw) => raw.state === "failed").length;
+	const workingCount = sessionsList.filter((raw) => raw.state === "working").length;
+	const erroredCount = sessionsList.filter((raw) => raw.state === "failed").length;
 
 	const sources: Source[] = [
 		{ id: "local", label: "this host", kind: "local", online: true },
@@ -584,18 +679,26 @@ export function createDemoFleet(options: DemoFleetOptions = {}): DemoFleet {
 
 	const pinCategoryIds = ["release", "research"] as const;
 	const pinSessions = (id: string) => liveRaw.filter((raw) => raw.category === id).map(rowOf);
-	const pinSections = pinCategoryIds.map((id) => ({
-		id,
-		name: id === "release" ? "Release" : "Research",
-		count: pinSessions(id).length,
-	}));
+	// A category with nothing pinned in it doesn't get a row, which is what
+	// empties the pin catalog for the empty fleet. The real hub keeps empty
+	// durable sections (navigation_projection.go buildPinSectionsContext);
+	// both demo categories hold rows in the full fleet, so only the empty
+	// fleet sees the difference.
+	const pinSections = pinCategoryIds
+		.map((id) => ({ id, name: id === "release" ? "Release" : "Research", count: pinSessions(id).length }))
+		.filter((section) => section.count > 0);
 
-	const projectKeys = PROJECT_META.map((project) => project.key);
-	const projects = projectKeys.map((key) => projectSummary(key, projectSessionsRaw(key).length));
-	const archivedRaw = SESSIONS.filter((raw) => raw.archived);
-	const archivedProjects: NavigationProjectSummary[] = [projectSummary("evener", ARCHIVED_TOTAL)];
-	const testRunRaw = SESSIONS.filter((raw) => raw.test);
-	const testRunProjects: NavigationProjectSummary[] = [{ key: "hub-test-env", name: "hub-test-env", session_count: testRunRaw.length }];
+	// PROJECT_META is static fixture metadata, not derived from sessionsList
+	// (the full fleet lists "home" with no sessions), so an empty fleet needs
+	// its own check here rather than falling out of a filter for free.
+	const projectKeys = sessionsList.length > 0 ? PROJECT_META.map((project) => project.key) : [];
+	const projects = projectKeys.map((key) => projectSummary(sessionsList, key, projectSessionsRaw(sessionsList, key).length));
+	const archivedRaw = sessionsList.filter((raw) => raw.archived);
+	const archivedProjects: NavigationProjectSummary[] =
+		archivedRaw.length > 0 ? [projectSummary(sessionsList, "evener", archivedRaw.length)] : [];
+	const testRunRaw = sessionsList.filter((raw) => raw.test);
+	const testRunProjects: NavigationProjectSummary[] =
+		testRunRaw.length > 0 ? [{ key: "hub-test-env", name: "hub-test-env", session_count: testRunRaw.length }] : [];
 
 	function knownProjectKey(params: NavigationReadParams): string {
 		const projectKey = params.projectKey as string;
@@ -604,16 +707,25 @@ export function createDemoFleet(options: DemoFleetOptions = {}): DemoFleet {
 		return projectKey;
 	}
 
+	// The tier a row is served under, in one place: the location branch reports
+	// this tier and a reveal then asks that exact project_page tier, so the two
+	// must come from one computation. An archived row's is "archived", a
+	// hub-test-env test-run row's is "current" (test runs are never split by
+	// age), every other row's current or recent by the same 24h boundary.
+	function servedTier(raw: RawSession): "current" | "recent" | "archived" {
+		return raw.archived ? "archived" : raw.test || raw.ago < D ? "current" : "recent";
+	}
+
 	// Every tier is a real, fully pageable list -- including archived, now
 	// that SESSIONS carries all 271 (5 named plus the generated filler) --
 	// so callers page it with the same page() every other resource uses
 	// instead of a bespoke "5 rows, 266 remaining forever" shortcut.
 	function tierRows(projectKey: string, tier: "current" | "recent" | "archived"): NavigationSessionSummary[] {
-		if (tier === "archived") return projectKey === "evener" ? archivedRaw.map(rowOf) : [];
-		if (projectKey === "hub-test-env") return tier === "current" ? testRunRaw.map(rowOf) : [];
-		const inProject = projectSessionsRaw(projectKey);
-		const inTier = tier === "current" ? inProject.filter((raw) => raw.ago < D) : inProject.filter((raw) => raw.ago >= D);
-		return inTier.map(rowOf);
+		if (tier === "archived") return projectKey === "evener" ? archivedRaw.filter((raw) => servedTier(raw) === tier).map(rowOf) : [];
+		if (projectKey === "hub-test-env") return testRunRaw.filter((raw) => servedTier(raw) === tier).map(rowOf);
+		return projectSessionsRaw(sessionsList, projectKey)
+			.filter((raw) => servedTier(raw) === tier)
+			.map(rowOf);
 	}
 
 	// A value the wire's own uint32 field could actually carry: a safe integer
@@ -658,7 +770,7 @@ export function createDemoFleet(options: DemoFleetOptions = {}): DemoFleet {
 	function answerNavigationRead(params: NavigationReadParams): NavigationReadResponse {
 		switch (params.resource) {
 			case "manifest":
-				return respond(params, {
+				return respond(revision, params, {
 					sources,
 					attentionSummary: { needsYou: needsYouSessions.length, error: erroredCount, working: workingCount },
 					sections: {
@@ -678,18 +790,18 @@ export function createDemoFleet(options: DemoFleetOptions = {}): DemoFleet {
 				if (params.section !== "live" && params.section !== "needs_you")
 					throw new Error(`Unknown demonstration section: ${params.section}`);
 				const source = params.section === "needs_you" ? needsYouSessions : liveSessions;
-				const { page: sessions, remaining } = page(source, params, SECTION_LIMIT);
-				return respond(params, { sessions, remaining, truncated: anyTruncated(sessions) });
+				const { page: sessions, remaining } = page(source, params, NAVIGATION_SECTION_LIMIT);
+				return respond(revision, params, { sessions, remaining, truncated: anyTruncated(sessions) });
 			}
 			case "pin_catalog": {
-				const { page: sections, remaining } = page(pinSections, params, CATALOG_LIMIT);
-				return respond(params, { pin_sections: sections, remaining });
+				const { page: sections, remaining } = page(pinSections, params, NAVIGATION_CATALOG_LIMIT);
+				return respond(revision, params, { pin_sections: sections, remaining });
 			}
 			case "pin_section": {
 				const id = pinCategoryIds.find((candidate) => candidate === params.sectionId);
 				if (!id) throw new Error(`Unknown demonstration pin section: ${params.sectionId}`);
-				const { page: sessions, remaining } = page(pinSessions(id), params, SECTION_LIMIT);
-				return respond(params, { sessions, remaining, truncated: anyTruncated(sessions) });
+				const { page: sessions, remaining } = page(pinSessions(id), params, NAVIGATION_SECTION_LIMIT);
+				return respond(revision, params, { sessions, remaining, truncated: anyTruncated(sessions) });
 			}
 			case "catalog": {
 				// Same as "section": an unrecognized catalog is a hard error, never
@@ -697,8 +809,8 @@ export function createDemoFleet(options: DemoFleetOptions = {}): DemoFleet {
 				if (params.catalog !== "projects" && params.catalog !== "archived_projects" && params.catalog !== "test_runs")
 					throw new Error(`Unknown demonstration catalog: ${params.catalog}`);
 				const source = params.catalog === "archived_projects" ? archivedProjects : params.catalog === "test_runs" ? testRunProjects : projects;
-				const { page: rows, remaining } = page(source, params, CATALOG_LIMIT);
-				return respond(params, { projects: rows, remaining });
+				const { page: rows, remaining } = page(source, params, NAVIGATION_CATALOG_LIMIT);
+				return respond(revision, params, { projects: rows, remaining });
 			}
 			case "project": {
 				const projectKey = knownProjectKey(params);
@@ -712,7 +824,7 @@ export function createDemoFleet(options: DemoFleetOptions = {}): DemoFleet {
 				// same 5 rows this call showed before archived became fully
 				// pageable; "See all" is what project_page is for.
 				const archived = tierRows(projectKey, "archived").slice(0, PROJECT_OVERVIEW_ARCHIVED_PREVIEW);
-				return respond(params, {
+				return respond(revision, params, {
 					key: projectKey,
 					current: { sessions: current, remaining: 0 },
 					recent: { sessions: recent, remaining: 0 },
@@ -727,8 +839,37 @@ export function createDemoFleet(options: DemoFleetOptions = {}): DemoFleet {
 				if (params.tier !== "current" && params.tier !== "recent" && params.tier !== "archived")
 					throw new Error(`Unknown demonstration tier: ${params.tier}`);
 				const tier = params.tier;
-				const { page: sessions, remaining } = page(tierRows(projectKey, tier), params, SECTION_LIMIT);
-				return respond(params, { key: projectKey, tier, sessions, remaining, truncated: anyTruncated(sessions) });
+				const { page: sessions, remaining } = page(tierRows(projectKey, tier), params, NAVIGATION_SECTION_LIMIT);
+				return respond(revision, params, { key: projectKey, tier, sessions, remaining, truncated: anyTruncated(sessions) });
+			}
+			case "location": {
+				const ref = params.ref as string;
+				const raw = sessionsList.find((session) => rowOf(session).ref === ref);
+				if (!raw) throw new Error(`Unknown demonstration session location: ${ref}`);
+				// The hub's location is a shallow summary (navigation_projection.go's
+				// projectShallow), not a row with its descendants: a location resource
+				// holds exactly one entity, and projectShallow sets no omitted_descendants
+				// (the child cap is a list-row fact, not the summary's), so the capped
+				// count is dropped with the children. servedTier is the one place this
+				// row's tier is decided, so the reveal that asks this exact tier's
+				// project_page cannot drift from what tierRows serves it under.
+				const tier = servedTier(raw);
+				const { omitted_descendants: _omitted, ...shallow } = rowOf(raw);
+				const response = respond(revision, params, {
+					session: { ...shallow, children: [] },
+					top_level_ref: ref,
+					top_level: true,
+				});
+				// The shared v2 encoder (wireV2) builds a location's metadata with only
+				// ref/top_level_ref/top_level; a real hub also names the row's project,
+				// tier and pin section, so they are stamped on here, the way the web's
+				// own fixture (cmd/evener-hub/frontend/src/dev/editorial-preview/
+				// fixture.ts) stamps the top_level it serves.
+				const { metadata } = response.data as { metadata: Record<string, unknown> };
+				metadata.project_key = raw.project ?? "evener";
+				metadata.tier = tier;
+				if (raw.category) metadata.pin_section_id = raw.category;
+				return response;
 			}
 			default:
 				throw new Error(`Navigation resource not served by the demo fleet: ${params.resource}`);
@@ -737,13 +878,16 @@ export function createDemoFleet(options: DemoFleetOptions = {}): DemoFleet {
 
 	function answerSearch(params: SearchParams): SearchResponse {
 		const query = params.query?.trim().toLowerCase();
-		const matches = query ? SESSIONS.filter((raw) => raw.title.toLowerCase().includes(query)) : SESSIONS;
+		const matches = query ? sessionsList.filter((raw) => raw.title.toLowerCase().includes(query)) : sessionsList;
 		// Sampled per call, not the startup instant: a hit's age should grow as
 		// the demo hub keeps running, the same as a real search would.
 		const now = clock();
 		const toHit = (raw: RawSession) => {
 			const row = rowOf(raw);
-			const age = relativeAge(row.updated_at, now);
+			// relativeAge answers undefined for a row with no timestamp; a
+			// SearchResult's age is a required string, so a missing one reads
+			// "now", the way this file's own copy used to.
+			const age = relativeAge(row.updated_at, now) ?? "now";
 			return {
 				id: row.session_id,
 				title: row.title,

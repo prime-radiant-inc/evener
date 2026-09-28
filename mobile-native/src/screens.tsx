@@ -3,6 +3,8 @@ import { useHeaderHeight } from "@react-navigation/elements";
 import { useFocusEffect } from "@react-navigation/native";
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
 import * as Clipboard from "expo-clipboard";
+import { randomUUID } from "expo-crypto";
+import { Storage } from "expo-sqlite/kv-store";
 import {
 	Component,
 	type RefObject,
@@ -33,6 +35,7 @@ import {
 import { SafeAreaView } from "react-native-safe-area-context";
 import {
 	type AskBatch,
+	type AskQuestionRef,
 	buildComposerInput,
 	formatQuoteBlock,
 	mergeDraftText,
@@ -49,7 +52,6 @@ import {
 	type ConversationMutationSubmitter,
 } from "../../mobile/src/state/conversationMutation";
 import { ActivitySheet } from "./ActivitySheet";
-import { ApprovalSheet } from "./ApprovalSheet";
 import { ApprovalControls } from "./approvalControls";
 import { useMarkSeenInFront } from "./board/sessionSeen";
 import { CommandCompletion } from "./CommandCompletion";
@@ -94,7 +96,6 @@ import {
 	importPairing as importReviewedPairing,
 	reviewPairingInput,
 } from "./pairingImport";
-import { QuestionSheet } from "./QuestionSheet";
 import { queueHosts, type QueueHost } from "./QueueSheet";
 import {
 	composeQuestionAnswers,
@@ -102,6 +103,11 @@ import {
 	type QuestionSelections,
 	questionsIdentity,
 } from "./questionAnswers";
+import { ApprovalDock } from "./session/ApprovalDock";
+import { answerWithText } from "./session/askDockCopy";
+import { bottomStack } from "./session/bottomStack";
+import { QuestionDock } from "./session/QuestionDock";
+import { useQuestionDraft } from "./session/useQuestionDraft";
 import { QuestionBatches } from "./questionBatches";
 import {
 	captureReaderAnchor,
@@ -155,6 +161,8 @@ import {
 	sendAction,
 	sendLabel,
 } from "./session/sendAction";
+import { NotesBar } from "./session/NotesBar";
+import { canWriteHumanNote, type NotesHost, notesHosts } from "./session/NotesSheet";
 import { SessionHeader, useHeaderHiding } from "./session/SessionHeader";
 import { type SessionMenuAction, sessionMenu } from "./session/sessionMenu";
 import {
@@ -163,11 +171,17 @@ import {
 	SHUT_DOWN,
 	sessionStateLine,
 } from "./session/sessionState";
+import {
+	NotesController,
+	notesBarPreview,
+	type SaveOutcome,
+} from "./session/sessionNotes";
 import { SessionTitle } from "./session/SessionTitle";
 import { LiveStatusTray, useFrameCounter } from "./session/StatusTray";
 import { localSessionId } from "./sessionDeletionResult";
 import { sheetKey, useProvideSheetHost } from "./sheet/sheetHosts";
-import { leaveScreen, screenInFront, useScreenInFront } from "./sheet/useScreenInFront";
+import { screenInFront, useScreenInFront } from "./sheet/useScreenInFront";
+import { takeQuote } from "./session/pendingQuote";
 import { TimelineItem } from "./TimelineItem";
 import { Toast, type ToastMessage, useToast } from "./Toast";
 import { TranscriptUsage } from "./TranscriptUsage";
@@ -177,6 +191,7 @@ import { Action, Copy, ErrorMessage, styles, useColors } from "./ui";
 
 const noControls = () => null;
 const noControlSubscription = () => () => {};
+const NO_QUESTIONS: AskQuestionRef[] = [];
 const STEER_FAILED = { text: "Couldn't steer with this message now." };
 const STEER_ALL_FAILED = { text: "Couldn't steer with these messages now." };
 
@@ -217,6 +232,7 @@ export type Routes = {
 	NewSession: { hubId: string; hubName: string };
 	Conversation: { hubId: string; ref: string; title: string };
 	TasksSheet: { hubId: string; ref: string; threadId: string; hasTasks: boolean };
+	NotesSheet: { hubId: string; ref: string; focusEditor?: boolean };
 	QueueSheet: { hubId: string; ref: string };
 	RowMenuSheet: { hubId: string; ref: string; archived: boolean };
 	Reader: {
@@ -231,7 +247,22 @@ export type Routes = {
 		updatedAt?: string;
 	};
 	OutlineSheet: { hubId: string; sessionRef: string; path: string };
+	CommentSheet: {
+		hubId: string;
+		sessionRef: string;
+		path: string;
+		blockIndex: number;
+		blockHash: string;
+		/** The words the comment is on: a selection, or its block's words. */
+		quote: string;
+	};
+	CommentsSheet: ReviewSheetParams;
+	ReviewSheet: ReviewSheetParams;
 };
+
+/** A document's comments and its review: the document, and the session the
+ * review goes to. */
+type ReviewSheetParams = { hubId: string; sessionRef: string; path: string; reviewRef: string; reviewTitle: string };
 
 export function HubsScreen({
 	navigation,
@@ -526,6 +557,7 @@ export function useFocusAfterModal(
 const SESSION_DESTINATIONS = {
 	subagents: "activity",
 	tasks: "tasks",
+	notes: "notes",
 	goal: "session",
 	info: "session",
 	pin: "pin",
@@ -670,8 +702,6 @@ export function ConversationScreen({
 		hubName: string;
 		client: NonNullable<typeof client>;
 	} | null>(null);
-	const [approvalsOpen, setApprovalsOpen] = useState(false);
-	const [questionsOpen, setQuestionsOpen] = useState(false);
 	// biome-ignore lint/correctness/useExhaustiveDependencies: Question ownership follows the destination store.
 	const questionBatches = useMemo(() => new QuestionBatches(), [store]);
 	const batches = useSyncExternalStore(
@@ -692,8 +722,6 @@ export function ConversationScreen({
 		useCallback(
 			() => () => {
 				setSessionOpen(false);
-				setApprovalsOpen(false);
-				setQuestionsOpen(false);
 				setComposerSetting(null);
 			},
 			[],
@@ -860,28 +888,41 @@ export function ConversationScreen({
 	connectionReady.current = connected;
 	const bindingGeneration = snapshot.conversationGeneration;
 	const bindingInstance = snapshot.conversation?.instanceId;
-	function forkMessage(entryIndex: number, preview: string) {
-		const current = store.getState();
-		if (
-			!connectionReady.current ||
-			!screenInFront(navigation, route.key) ||
-			current.status !== "open" ||
-			!current.conversation?.capabilities?.forkFromTurn ||
-			!bindingInstance ||
-			current.conversation.instanceId !== bindingInstance ||
-			current.conversationGeneration !== bindingGeneration ||
-			!Number.isSafeInteger(entryIndex) ||
-			entryIndex <= 0
-		)
-			return;
-		Keyboard.dismiss();
-		navigation.navigate("Fork", {
-			...route.params,
-			instanceId: bindingInstance,
-			entryIndex,
-			preview,
-		});
-	}
+	// Stable across renders, so the row it is handed to does not rebuild when
+	// the screen re-renders for a reason no fork can see (the reader keying,
+	// the composer, a sheet opening).
+	const forkMessage = useCallback(
+		(entryIndex: number, preview: string) => {
+			const current = store.getState();
+			if (
+				!connectionReady.current ||
+				!screenInFront(navigation, route.key) ||
+				current.status !== "open" ||
+				!current.conversation?.capabilities?.forkFromTurn ||
+				!bindingInstance ||
+				current.conversation.instanceId !== bindingInstance ||
+				current.conversationGeneration !== bindingGeneration ||
+				!Number.isSafeInteger(entryIndex) ||
+				entryIndex <= 0
+			)
+				return;
+			Keyboard.dismiss();
+			navigation.navigate("Fork", {
+				...route.params,
+				instanceId: bindingInstance,
+				entryIndex,
+				preview,
+			});
+		},
+		[
+			store,
+			navigation,
+			route.key,
+			route.params,
+			bindingInstance,
+			bindingGeneration,
+		],
+	);
 	const controls = useMemo(() => {
 		if (!service || !connected || !focused) return null;
 		const refreshSession = async () => {
@@ -1006,6 +1047,14 @@ export function ConversationScreen({
 				setSessionOpen(true);
 				return;
 			}
+			// Shared notes read without a connection.
+			if (destination === "notes") {
+				navigation.navigate("NotesSheet", {
+					hubId: route.params.hubId,
+					ref: route.params.ref,
+				});
+				return;
+			}
 			// The same debounced signal the chips (and the connection bar) use:
 			// a blip shorter than the bar's own grace period must not make an
 			// already-visible chip's tap silently do nothing (Calm).
@@ -1121,6 +1170,7 @@ export function ConversationScreen({
 				return;
 			case "subagents":
 			case "tasks":
+			case "notes":
 			case "info":
 			case "pin":
 			case "delete":
@@ -1207,6 +1257,7 @@ export function ConversationScreen({
 							current: menuLevel,
 							hasSubagents,
 							connected,
+							sharedNotes: !!conversation?.capabilities.sharedNotes,
 							canAside,
 							canShutDown,
 							deletable: deletionAvailable,
@@ -1251,6 +1302,7 @@ export function ConversationScreen({
 		stateLine?.text,
 		menuLevel,
 		hasSubagents,
+		conversation?.capabilities.sharedNotes,
 		canAside,
 		canShutDown,
 	]);
@@ -1305,6 +1357,13 @@ export function ConversationScreen({
 		},
 		[document],
 	);
+	// Quote in reply from a screen above this session (the Reader) holds the
+	// words until this session is in front again.
+	useEffect(() => {
+		if (!focused) return;
+		const words = takeQuote(route.params.hubId, route.params.ref);
+		if (words !== null) quote(words);
+	}, [focused, route.params.hubId, route.params.ref, quote]);
 	useEffect(() => {
 		appliedReaderRestore.current = null;
 		readerRestoreAttempts.current.reset();
@@ -1552,6 +1611,36 @@ export function ConversationScreen({
 		!pending &&
 		!settingsPending;
 	const questions = batches.flatMap((batch) => batch.questions);
+	// The ask dock shows the first batch only; the rest wait behind it.
+	const questionBatch = batches[0] ?? null;
+	const questionDraft = useQuestionDraft(
+		{ hubId: route.params.hubId, sessionRef: route.params.ref },
+		questionBatch?.questions ?? NO_QUESTIONS,
+	);
+	// Saved answers that couldn't be read get another try on their own when
+	// the hub comes back and when the session comes back to front: there is
+	// no Retry to press (Calm).
+	// biome-ignore lint/correctness/useExhaustiveDependencies: reload is a new function each render; it runs on these transitions only.
+	useEffect(() => {
+		if (connected && focused) questionDraft.reload();
+	}, [connected, focused]);
+	// Whether the dock is folded, and whether "Other answer…" brought the
+	// composer back: both start over for each new batch of questions.
+	const [questionFolded, setQuestionFolded] = useState(false);
+	const [composerBack, setComposerBack] = useState(false);
+	// Why the answers didn't go: the dock's own line, open or folded. Every
+	// other failure keeps the screen's error area.
+	const [answerError, setAnswerError] = useState<string | null>(null);
+	const dockBatch = questionBatch
+		? questionBatch.id + questionsIdentity(questionBatch.questions)
+		: null;
+	const [dockFor, setDockFor] = useState(dockBatch);
+	if (dockFor !== dockBatch) {
+		setDockFor(dockBatch);
+		setQuestionFolded(false);
+		setComposerBack(false);
+		setAnswerError(null);
+	}
 	// What this conversation may be asked to do now (conversationControls.ts):
 	// every affordance and submission below reads it, never a raw capability.
 	const permitted = conversation ? conversationControls(conversation) : null;
@@ -1692,12 +1781,9 @@ export function ConversationScreen({
 					});
 			if (!completed || !currentBinding()) return;
 			if (isLocalComposerCommand(completed) || completed === "aside") return;
-			if (completed === "shutdown") {
-				store.getState().close();
-				service.close();
-				setSessionOpen(false);
-				leaveScreen(navigation, route.key);
-			} else await store.getState().rehydrate(service, activitySink);
+			// A shut-down session stays open on its history, like the ⋯ menu's
+			// own Shut down (ruling 19): the store's error surfaces a failed read.
+			await store.getState().rehydrate(service, activitySink);
 		} catch (error) {
 			if (!currentBinding()) return;
 			setActionError(
@@ -1741,7 +1827,12 @@ export function ConversationScreen({
 			);
 		else replace();
 	}
-	async function sendAnswers(batch: AskBatch, selections: QuestionSelections) {
+	// Sends a batch's answers as one message, and says whether the hub took
+	// them.
+	async function sendAnswers(
+		batch: AskBatch,
+		selections: QuestionSelections,
+	): Promise<boolean> {
 		const current = store.getState();
 		questionBatches.reconcile(pendingQuestions(current.conversation));
 		const text = composeQuestionAnswers(batch.questions, selections);
@@ -1759,8 +1850,8 @@ export function ConversationScreen({
 			text === null ||
 			!questionBatches.getSnapshot().includes(batch)
 		)
-			return;
-		setActionError(null);
+			return false;
+		setAnswerError(null);
 		let acceptedAnswers = false;
 		try {
 			await document.submitText(text, async (input) => {
@@ -1771,10 +1862,13 @@ export function ConversationScreen({
 				if (!accepted || accepted === previous || accepted.kind !== "send")
 					return false;
 				questionBatches.finish(batch.id, true);
-				setQuestionsOpen(false);
 				acceptedAnswers = true;
 				return true;
 			});
+			if (acceptedAnswers)
+				toaster.show({
+					text: batch.questions.length > 1 ? "Answers sent" : "Answer sent",
+				});
 			if (
 				acceptedAnswers &&
 				connectionReady.current &&
@@ -1784,15 +1878,137 @@ export function ConversationScreen({
 			)
 				await store.getState().rehydrate(service, activitySink);
 		} catch {
-			setActionError(
+			setAnswerError(
 				"Could not confirm delivery. Your answers are retained; check delivery before trying again.",
 			);
 		} finally {
 			questionBatches.finish(batch.id, false);
 		}
+		return acceptedAnswers;
 	}
 	const frames = useFrameCounter(store);
 	const toaster = useToast();
+	// The session's shared notes (spec 8.8). The controller lives here, not in
+	// the sheet, so a save the sheet starts as it closes outlives it. store
+	// itself is already rebuilt exactly when route.params.hubId/ref change
+	// (its own useMemo above), so this would rebuild on a session switch
+	// through [store] alone - hubId/ref are listed too anyway, so the
+	// rebuild condition doesn't rest on that indirection (RoboRev #2769
+	// round 3).
+	// biome-ignore lint/correctness/useExhaustiveDependencies: One controller per conversation binding.
+	const notes = useMemo(
+		() =>
+			new NotesController({
+				client: {
+					request: (method, params) => {
+						const live = connectionReady.current
+							? currentDestination.current.client
+							: null;
+						return live
+							? live.request(method, params)
+							: Promise.reject(new Error("Not connected"));
+					},
+				},
+				hubId: route.params.hubId,
+				ref: route.params.ref,
+				instanceId: () => store.getState().conversation?.instanceId,
+				savedNote: () => store.getState().conversation?.humanNote ?? "",
+				writable: () => {
+					const live = store.getState().conversation;
+					return live ? canWriteHumanNote(live) : false;
+				},
+				working: () =>
+					store.getState().conversation?.status.type === "active",
+				storage: Storage,
+				uuid: randomUUID,
+			}),
+		[store, route.params.hubId, route.params.ref],
+	);
+	useEffect(() => () => notes.dispose(), [notes]);
+	// Follow the hub's note (evener/notes/updated) as it changes: sync() itself
+	// is a no-op unless the text actually differs.
+	useEffect(() => {
+		notes.sync();
+	}, [conversation?.humanNote, notes]);
+	const writable = conversation ? canWriteHumanNote(conversation) : false;
+	// A note kept on this phone because its save failed sends once the
+	// session is open, connected, in front and still takes notes; otherwise
+	// it stays on this phone. The controller is watched, not
+	// only the deps, so a save that fails while already connected is tried
+	// again without waiting for a reconnect. One retry per failure: the
+	// retry's own "failed" publish must not start another.
+	useEffect(() => {
+		let retrying = false;
+		let timer: ReturnType<typeof setTimeout> | null = null;
+		function retryIfNeeded() {
+			if (retrying || !connected || !focused || !bindingInstance || !writable) return;
+			if (notes.getSnapshot().phase !== "failed") return;
+			retrying = true;
+			// Next tick: the "failed" publish can come from inside a flush whose
+			// shared saving promise hasn't cleared, and a flush in the same tick
+			// would join that failing promise instead of trying again.
+			timer = setTimeout(() => {
+				timer = null;
+				void notes.flush().finally(() => {
+					retrying = false;
+				});
+			}, 0);
+		}
+		retryIfNeeded();
+		const unsubscribe = notes.subscribe(retryIfNeeded);
+		return () => {
+			unsubscribe();
+			if (timer !== null) clearTimeout(timer);
+		};
+	}, [connected, focused, bindingInstance, notes, writable]);
+	const notesSaved = useCallback(
+		(outcome: SaveOutcome) => {
+			if (outcome.saved)
+				toaster.show({
+					text: outcome.woke
+						? "Note saved. The agent is reading it."
+						: "Note saved",
+				});
+		},
+		[toaster.show],
+	);
+	const notesHost = useMemo<NotesHost | undefined>(
+		() =>
+			conversation
+				? {
+						session: {
+							humanNote: conversation.humanNote,
+							agentNote: conversation.agentNote,
+							sessionUrls: conversation.sessionUrls,
+							status: conversation.status,
+							resumeRequired: conversation.resumeRequired,
+							capabilities: conversation.capabilities,
+						},
+						notes,
+						saved: notesSaved,
+						cwd: conversation.cwd,
+						title: route.params.title,
+					}
+				: undefined,
+		[
+			conversation?.cwd,
+			route.params.title,
+			conversation?.humanNote,
+			conversation?.agentNote,
+			conversation?.sessionUrls,
+			conversation?.status,
+			conversation?.resumeRequired,
+			conversation?.capabilities,
+			notes,
+			notesSaved,
+		],
+	);
+	useProvideSheetHost(
+		notesHosts,
+		sheetKey(route.params.hubId, route.params.ref),
+		notesHost,
+	);
+	const notesPreview = conversation ? notesBarPreview(conversation) : null;
 	const [stopping, setStopping] = useState(false);
 	const stopBusy = useRef(false);
 	async function stop() {
@@ -1841,8 +2057,16 @@ export function ConversationScreen({
 		!draft.submitting &&
 		unconfirmedSend === null &&
 		!imageState.busy;
-	const sendEnabled =
-		command !== null
+	// While a question waits, Send answers it with your text (ruling 14).
+	const answering = questionBatch !== null;
+	const sendEnabled = answering
+		? composerReady &&
+			!!draft.record.draft.trim() &&
+			!!permitted?.send &&
+			!questionBatch.sending &&
+			// Your text answers against the saved answers, so it waits for them.
+			questionDraft.loaded
+		: command !== null
 			? composerReady &&
 				!(command.command.id === "goal" && !goalCommand && !conversation?.goal) &&
 				!!conversation &&
@@ -1851,8 +2075,8 @@ export function ConversationScreen({
 				(!!draft.record.draft.trim() || !!draft.record.images?.length) &&
 				action !== "none";
 	const composerSendLabel =
-		command === null
-			? sendLabel(action, false)
+		answering || command === null
+			? sendLabel(action, answering)
 			: command.command.id === "compact"
 				? "Compact transcript"
 				: command.command.id === "goal"
@@ -1861,6 +2085,10 @@ export function ConversationScreen({
 						: "Clear goal"
 					: command.command.label;
 	async function send() {
+		if (questionBatch) {
+			await answerWithComposer(questionBatch);
+			return;
+		}
 		if (command !== null) {
 			void applyCommand();
 			return;
@@ -1880,11 +2108,38 @@ export function ConversationScreen({
 			// what to do.
 		}
 	}
+	// Your text as the free answer to the question the dock is on. When that
+	// completes the ask, every answer goes out as one message; otherwise the
+	// dock returns at the next unanswered question and the composer steps
+	// aside again (ruling 14).
+	async function answerWithComposer(batch: AskBatch) {
+		if (!questionDraft.loaded) return;
+		const text = document.getSnapshot().record.draft;
+		const result = answerWithText(
+			batch.questions,
+			questionDraft.selections,
+			questionDraft.activeIndex,
+			text,
+		);
+		if (result.message === null) {
+			questionDraft.setSelections(() => result.selections);
+			if (result.nextIndex !== undefined)
+				questionDraft.setActiveIndex(result.nextIndex);
+			document.edit("");
+			setComposerBack(false);
+			return;
+		}
+		if (await sendAnswers(batch, result.selections)) {
+			// Only the text you typed is cleared: an edit made while the answer
+			// was on its way stays.
+			if (document.getSnapshot().record.draft === text) document.edit("");
+		}
+	}
 	// Whether a message can go out right now, and whether it sends or queues:
 	// routed on what is true at the press, the way the web composer re-derives
 	// at submit, since a turn may have started or ended since render. Send and
 	// an error row's Retry both ask.
-	function liveSendKind(): "send" | "queue" | null {
+	const liveSendKind = useCallback((): "send" | "queue" | null => {
 		const live = store.getState();
 		if (
 			!service ||
@@ -1904,23 +2159,26 @@ export function ConversationScreen({
 		);
 		if (liveAction === "none") return null;
 		return liveAction === "queue" ? "queue" : "send";
-	}
+	}, [service, ready, controls, unconfirmedSend, store]);
 	// Sends or queues one message the way Send does, and says whether the hub
 	// took it.
-	async function deliver(
-		through: NonNullable<typeof service>,
-		kind: "send" | "queue",
-		text: string,
-		images: Parameters<typeof buildComposerInput>[1],
-	) {
-		const previous = store.getState().lastAcceptedMutation;
-		await store.getState()[kind](through, buildComposerInput(text, images));
-		const accepted = store.getState().lastAcceptedMutation;
-		return accepted != null && accepted !== previous && accepted.kind === kind;
-	}
+	const deliver = useCallback(
+		async (
+			through: NonNullable<typeof service>,
+			kind: "send" | "queue",
+			text: string,
+			images: Parameters<typeof buildComposerInput>[1],
+		) => {
+			const previous = store.getState().lastAcceptedMutation;
+			await store.getState()[kind](through, buildComposerInput(text, images));
+			const accepted = store.getState().lastAcceptedMutation;
+			return accepted != null && accepted !== previous && accepted.kind === kind;
+		},
+		[store],
+	);
 	// An error row's Retry sends Jesse's sentence as your message through
 	// Send's own path (ruling 26), leaving whatever you were typing alone.
-	async function retryFailedTurn() {
+	const retryFailedTurn = useCallback(async () => {
 		const kind = liveSendKind();
 		if (!service || kind === null) return;
 		setActionError(null);
@@ -1931,13 +2189,16 @@ export function ConversationScreen({
 		} catch {
 			// As with Send, a refusal leaves the unconfirmed ghost to say so.
 		}
-	}
-	function runErrorAction(errorAction: ErrorAction) {
-		if (errorAction === "resume") void controls?.resume();
-		else if (errorAction === "signIn")
-			navigation.navigate("Providers", { hubId: route.params.hubId });
-		else void retryFailedTurn();
-	}
+	}, [liveSendKind, service, document, deliver]);
+	const runErrorAction = useCallback(
+		(errorAction: ErrorAction) => {
+			if (errorAction === "resume") void controls?.resume();
+			else if (errorAction === "signIn")
+				navigation.navigate("Providers", { hubId: route.params.hubId });
+			else void retryFailedTurn();
+		},
+		[controls, navigation, route.params.hubId, retryFailedTurn],
+	);
 	const composerSettings =
 		conversation && canCompose ? (
 			<ComposerSettings
@@ -1957,7 +2218,6 @@ export function ConversationScreen({
 	const recoveryRows = projectNativeMutationRecovery(
 		recovery.targetKey,
 		recovery.snapshot,
-		() => true,
 	);
 	const allGhosts = whatCanActNow(
 		ghosts(
@@ -2155,10 +2415,18 @@ export function ConversationScreen({
 		sheetKey(route.params.hubId, route.params.ref),
 		queueHost,
 	);
-	const composerShown = canCompose && questions.length === 0;
+	// The docks, the tray and the composer, by one rule (bottomStack.ts).
+	const approval = conversation?.pendingEscalations[0] ?? null;
+	const bottom = bottomStack({
+		approvalPending: approval !== null,
+		questionPending: questionBatch !== null,
+		folded: questionFolded,
+		composerBack,
+	});
+	const composerShown = canCompose && bottom.composer;
 	// What sits above the composer: failures only you can act on, then
 	// everything waiting to reach the agent. While the composer is hidden
-	// (a question is pending) it sits in the composer's place, so a queued
+	// (the dock is open) it sits in the composer's place, so a queued
 	// message never drops out of sight.
 	const waitingForAgent = (
 		<>
@@ -2225,6 +2493,64 @@ export function ConversationScreen({
 		};
 	}, []);
 
+	// One render function for the list's lifetime: FlatList sees the same
+	// reference across a re-render that changes nothing a row reads (the
+	// composer's selection, the reader keying, a sheet opening), so it does not
+	// rebuild every visible transcript cell for them.
+	const renderItem = useCallback(
+		({ item, index }: { item: TimelineRow; index: number }) => (
+			<View
+				style={{
+					paddingBottom: timelineGap(item, timelineRows[index + 1]),
+				}}
+			>
+				<TimelineItem
+					item={item}
+					hubId={route.params.hubId}
+					sessionRef={route.params.ref}
+					activityPresentation={presentation.activityPresentation.get(item.id)}
+					expandByDefault={presentation.expandByDefault}
+					showDuration={presentation.showDuration}
+					fork={
+						snapshot.conversation?.capabilities?.forkFromTurn
+							? forkMessage
+							: undefined
+					}
+					forkDisabled={!connected || !focused || snapshot.status !== "open"}
+					quote={quote}
+					live={item.id === liveRun}
+					delegates={conversation?.delegates}
+					openSubagent={openSubagent}
+					answerFor={answerFor}
+					errorActionFor={(row) =>
+						conversation
+							? // Retry shows only when a press would send.
+								errorAction(row, conversation, liveSendKind() !== null)
+							: null
+					}
+					onErrorAction={runErrorAction}
+				/>
+			</View>
+		),
+		[
+			timelineRows,
+			route.params.hubId,
+			route.params.ref,
+			presentation,
+			snapshot,
+			forkMessage,
+			connected,
+			focused,
+			quote,
+			liveRun,
+			conversation,
+			openSubagent,
+			answerFor,
+			liveSendKind,
+			runErrorAction,
+		],
+	);
+
 	return (
 		<SafeAreaView
 			edges={["bottom", "left", "right"]}
@@ -2238,42 +2564,6 @@ export function ConversationScreen({
 					deletionAvailable={deletionAvailable}
 					close={() => setSessionMenuOpen(false)}
 					choose={openSessionDestination}
-				/>
-			) : null}
-			{batches.map((batch, index) => (
-				<QuestionSheet
-					key={batch.id + questionsIdentity(batch.questions)}
-					visible={questionsOpen && index === 0}
-					destination={{
-						hubId: route.params.hubId,
-						sessionRef: route.params.ref,
-					}}
-					questions={batch.questions}
-					hubName={activeProfile?.name ?? "Hub"}
-					ready={
-						ready &&
-						!!permitted?.send &&
-						draft.loaded &&
-						!draft.error &&
-						unconfirmedSend === null &&
-						!batch.sending
-					}
-					pending={draft.submitting}
-					error={
-						unconfirmedSend !== null
-							? "Delivery is unconfirmed. Close this sheet and check your message before sending again."
-							: actionError
-					}
-					close={() => setQuestionsOpen(false)}
-					send={(selections) => sendAnswers(batch, selections)}
-				/>
-			))}
-			{approvalsOpen && conversation && approvalControls ? (
-				<ApprovalSheet
-					approvals={conversation.pendingEscalations}
-					controls={approvalControls}
-					hubName={activeProfile?.name ?? "Hub"}
-					close={() => setApprovalsOpen(false)}
 				/>
 			) : null}
 			{composerSetting && conversation && controls ? (
@@ -2363,44 +2653,7 @@ export function ConversationScreen({
 							}
 							CellRendererComponent={readerCellRenderer}
 							keyExtractor={(item) => item.id}
-							renderItem={({ item, index }) => (
-								<View
-									style={{
-										paddingBottom: timelineGap(item, timelineRows[index + 1]),
-									}}
-								>
-									<TimelineItem
-										item={item}
-										hubId={route.params.hubId}
-										sessionRef={route.params.ref}
-										activityPresentation={presentation.activityPresentation.get(
-											item.id,
-										)}
-										expandByDefault={presentation.expandByDefault}
-										showDuration={presentation.showDuration}
-										fork={
-											snapshot.conversation?.capabilities?.forkFromTurn
-												? forkMessage
-												: undefined
-										}
-										forkDisabled={
-											!connected || !focused || snapshot.status !== "open"
-										}
-										quote={quote}
-										live={item.id === liveRun}
-										delegates={conversation?.delegates}
-										openSubagent={openSubagent}
-										answerFor={answerFor}
-										errorActionFor={(row) =>
-											conversation
-												? // Retry shows only when a press would send.
-													errorAction(row, conversation, liveSendKind() !== null)
-												: null
-										}
-										onErrorAction={runErrorAction}
-									/>
-								</View>
-							)}
+							renderItem={renderItem}
 							// Room at the end for the Next capsule (spec 8.3).
 							contentContainerStyle={{
 								padding: 16,
@@ -2578,6 +2831,22 @@ export function ConversationScreen({
 								chips={chips}
 								hidden={headerHiding.hidden}
 								onChip={openChip}
+								notes={
+									notesPreview ? (
+										<NotesBar
+											preview={notesPreview}
+											onPress={() => {
+												Keyboard.dismiss();
+												// Showing your note, the editor opens with the caret at its end.
+												navigation.navigate("NotesSheet", {
+													hubId: route.params.hubId,
+													ref: route.params.ref,
+													focusEditor: notesPreview.glyph === "person",
+												});
+											}}
+										/>
+									) : undefined
+								}
 							/>
 						</View>
 						<View
@@ -2603,28 +2872,6 @@ export function ConversationScreen({
 							keyboardShouldPersistTaps="handled"
 							nestedScrollEnabled
 						>
-							{questions.length ? (
-								<Action
-									disabled={!ready}
-									expanded={questionsOpen}
-									onPress={() => {
-										Keyboard.dismiss();
-										setQuestionsOpen(true);
-									}}
-								>
-									{`${questions.length} ${questions.length === 1 ? "question" : "questions"} to answer`}
-								</Action>
-							) : null}
-							{conversation?.pendingEscalations.length ? (
-								<Action
-									disabled={!ready || !approvalControls}
-									expanded={approvalsOpen}
-									onPress={() => {
-										Keyboard.dismiss();
-										setApprovalsOpen(true);
-									}}
-								>{`${conversation.pendingEscalations.length} ${conversation.pendingEscalations.length === 1 ? "approval" : "approvals"} needed`}</Action>
-							) : null}
 							{composerShown ? null : waitingForAgent}
 							{conversation?.goal ? (
 								<View
@@ -2680,17 +2927,59 @@ export function ConversationScreen({
 							>
 								<Toast toast={toaster.toast} dismiss={toaster.dismiss} />
 							</View>
-							<LiveStatusTray
-								session={conversation}
-								frames={frames}
-								connected={connected}
-								canStop={!!permitted?.stop}
-								stopping={stopping || pending}
-								onStop={() => {
-									void stop();
-								}}
-								onJumpToLive={jumpToLive}
-							/>
+							{bottom.dock === "approval" && approval ? (
+								<ApprovalDock
+									// A new approval starts with nothing decided.
+									key={approval.escalationId}
+									request={approval}
+									// Null while the hub is away: the dock still says what
+									// waits, without Allow or Deny.
+									controls={approvalControls}
+									waiting={(conversation?.pendingEscalations.length ?? 1) - 1}
+									onDecided={(allowed) =>
+										toaster.show({ text: allowed ? "Allowed once" : "Denied" })
+									}
+								/>
+							) : null}
+							{(bottom.dock === "question" ||
+								bottom.dock === "foldedQuestion") &&
+							questionBatch ? (
+								<QuestionDock
+									questions={questionBatch.questions}
+									draft={questionDraft}
+									ready={
+										ready &&
+										!!permitted?.send &&
+										draft.loaded &&
+										!draft.error &&
+										unconfirmedSend === null
+									}
+									sending={draft.submitting || questionBatch.sending}
+									folded={bottom.dock === "foldedQuestion"}
+									onFold={setQuestionFolded}
+									onOtherAnswer={() => {
+										setComposerBack(true);
+										requestAnimationFrame(() => composerInput.current?.focus());
+									}}
+									onSend={(selections) => {
+										void sendAnswers(questionBatch, selections);
+									}}
+									error={answerError}
+								/>
+							) : null}
+							{bottom.tray ? (
+								<LiveStatusTray
+									session={conversation}
+									frames={frames}
+									connected={connected}
+									canStop={!!permitted?.stop}
+									stopping={stopping || pending}
+									onStop={() => {
+										void stop();
+									}}
+									onJumpToLive={jumpToLive}
+								/>
+							) : null}
 							{composerShown ? (
 								<Composer
 									value={draft.record.draft}
@@ -2698,8 +2987,14 @@ export function ConversationScreen({
 									onChangeText={(text) => document.edit(text)}
 									onSelectionChange={setComposerSelection}
 									inputRef={composerInput}
-									placeholder={composerPlaceholder(action, false)}
-									sendLabel={composerSendLabel}
+									placeholder={composerPlaceholder(action, answering)}
+									// Under an open dock, whose own button reads "Send answer",
+									// this Send says it sends what you typed.
+									sendLabel={
+										bottom.dock === "question"
+											? "Send your answer"
+											: composerSendLabel
+									}
 									sendEnabled={sendEnabled}
 									onSend={() => {
 										void send();
@@ -2712,7 +3007,7 @@ export function ConversationScreen({
 										Keyboard.dismiss();
 										void imageSelection.choose("camera");
 									}}
-									settings={composerSettings}
+									settings={bottom.modelChip ? composerSettings : null}
 									above={
 										<>
 											{waitingForAgent}

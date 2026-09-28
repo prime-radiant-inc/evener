@@ -417,6 +417,16 @@ export interface DaemonStatusResponse {
   lifecycle: DaemonLifecycle;
 }
 
+export interface DelegateStopParams {
+  threadId?: string;
+  ref?: string;
+  delegateId: string;
+}
+
+export interface DelegateStopResponse {
+  outcome: string;
+}
+
 export interface DeletionSkip {
   id: string;
   reason: string;
@@ -861,6 +871,14 @@ export interface EvenerThread {
    * never a thread/read snapshot: no notification announces its changes.
    */
   subagents?: SubagentTally;
+  /**
+   * Access is what the session's sandbox lets it reach (S15): the sandbox
+   * mode it started under and whether that sandbox allows the network. Every
+   * current producer sets it; it is absent from an older daemon or hub, which
+   * a client reads as "not known". Snapshot-only: a session's sandbox is
+   * fixed when it starts, so no notification carries it.
+   */
+  access?: ThreadAccess;
 }
 
 export interface EvenerToolInfo {
@@ -1158,6 +1176,25 @@ export interface HostNotificationParams {
   host: string;
   method: string;
   params?: unknown;
+}
+
+export interface HostOperationsParams {
+  name?: string;
+  operationId?: string;
+  state?: string;
+  generation?: number;
+  incarnationId?: string;
+  id?: string;
+  limit?: number;
+  cursor?: string;
+}
+
+export interface HostOperationsResponse {
+  operations: OperationRecord[];
+  generation?: number;
+  incarnationId?: string;
+  hostBoundaries?: Record<string, unknown>;
+  nextCursor?: string;
 }
 
 export interface HostPlan {
@@ -2558,6 +2595,32 @@ export interface NoticesListResponse {
   notices: HubNotice[];
 }
 
+export interface OperationProgressEntry {
+  ts: string;
+  message: string;
+}
+
+export interface OperationRecord {
+  id: string;
+  clientOperationId: string;
+  host: string;
+  generation: number;
+  incarnationId: string;
+  kind: string;
+  state: string;
+  progress?: OperationProgressEntry[];
+  result?: OperationResult;
+  createdAt: string;
+  updatedAt: string;
+  hostRemoved: boolean;
+  compacted?: boolean;
+}
+
+export interface OperationResult {
+  ok: boolean;
+  message: string;
+}
+
 export interface OutputImage {
   source: string;
   name?: string;
@@ -2903,13 +2966,45 @@ export interface SandboxEscalationResolved {
   escalationId: string;
 }
 
+export interface SearchHit {
+  /**
+   * TranscriptKey and Position name the transcript item the message is, as
+   * a thread read's items carry them, so a client opens the session at it.
+   */
+  transcriptKey: string;
+  position: ThreadItemPosition;
+  /**
+   * Snippet is the message around its first match, one line, in parts: a
+   * part with match set is text the search matched.
+   */
+  snippet: SearchSnippetPart[];
+}
+
 export interface SearchParams {
   query?: string;
+  /**
+   * Scope narrows every group of the answer (S14, spec 7.4): SearchScopeAll
+   * (the default when absent), SearchScopeLive or SearchScopeArchived. An
+   * older hub ignores it and answers as for all; SearchResponse.Scope says
+   * whether it was applied.
+   */
+  scope?: string;
 }
 
 export interface SearchResponse {
   live: SearchResult[];
   past: SearchResult[];
+  /**
+   * InSessions lists the sessions whose messages match, each with its hits
+   * (S14), newest session first: live sessions, then ended ones. Absent when
+   * none match, and from an older hub.
+   */
+  inSessions?: SearchResult[];
+  /**
+   * Scope is the scope the answer applied. An older hub leaves it out, so a
+   * client knows it offers no Archived scope and no message hits.
+   */
+  scope?: string;
 }
 
 export interface SearchResult {
@@ -2929,6 +3024,24 @@ export interface SearchResult {
    */
   askPending?: boolean;
   approvalPending?: boolean;
+  /**
+   * Archived says the rail files the session as archived: its own archive
+   * decision, its project's, or two weeks without activity (S14). Absent
+   * when it is not, and from an older hub.
+   */
+  archived?: boolean;
+  /**
+   * Hits are the session's newest messages that match the search, newest
+   * first, and HitCount how many match in all. Only an InSessions result
+   * carries them (S14).
+   */
+  hits?: SearchHit[];
+  hitCount?: number;
+}
+
+export interface SearchSnippetPart {
+  text: string;
+  match?: boolean;
 }
 
 export interface ServerInfo {
@@ -3254,6 +3367,11 @@ export interface Thread {
   name?: string;
   turns?: Turn[];
   evener: EvenerThread;
+}
+
+export interface ThreadAccess {
+  sandbox: string;
+  network: boolean;
 }
 
 export interface ThreadActivity {
@@ -4240,6 +4358,7 @@ export const METHOD_NAMES = [
   "evener/settings/agentsDoc/get",
   "evener/settings/agentsDoc/set",
   "evener/sandbox/escalation/resolve",
+  "evener/delegate/stop",
   "evener/host/request",
   "evener/host/attach",
   "evener/host/add",
@@ -4252,6 +4371,7 @@ export const METHOD_NAMES = [
   "evener/host/plan",
   "evener/host/deploy",
   "evener/host/restart",
+  "evener/host/operations",
   "evener/host/running",
   "evener/host/pushCredentials",
   "evener/session/image",
@@ -4461,6 +4581,7 @@ export interface MethodTypes {
   "evener/settings/agentsDoc/get": { params: EmptyParams; result: AgentsDocResponse };
   "evener/settings/agentsDoc/set": { params: AgentsDocSetParams; result: AgentsDocResponse };
   "evener/sandbox/escalation/resolve": { params: SandboxEscalationResolveParams; result: EmptyResponse };
+  "evener/delegate/stop": { params: DelegateStopParams; result: DelegateStopResponse };
   "evener/host/request": { params: HostRequestParams; result: HostForwardedResult };
   "evener/host/attach": { params: HostAttachParams; result: HostAttachResponse };
   "evener/host/add": { params: HostAddParams; result: HostMutationCommitted | HostMutationCommittedRemoved | HostMutationTeardownFailure | HostMutationTeardownFailureRemoved | HostMutationCollisionDropped | HostMutationAmbiguous };
@@ -4473,6 +4594,7 @@ export interface MethodTypes {
   "evener/host/plan": { params: HostPlanParams; result: HostPlanPlanned | HostPlanNoToken };
   "evener/host/deploy": { params: HostDeployParams; result: HostDeployResponse };
   "evener/host/restart": { params: HostRestartParams; result: HostRestartResponse };
+  "evener/host/operations": { params: HostOperationsParams; result: HostOperationsResponse };
   "evener/host/running": { params: HostRunningParams; result: HostRunningResponse };
   "evener/host/pushCredentials": { params: HostPushCredentialsParams; result: HostPushCredentialsResponse };
   "evener/session/image": { params: SessionImageParams; result: SessionImageResponse };

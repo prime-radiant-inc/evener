@@ -28,7 +28,10 @@ func TestHubSearchIncludesMatchingPastSession(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	resp := hubSearch(hubcore.WebConfig{Past: idx}, appwire.SearchParams{Query: "generated"})
+	resp, err := hubSearch(context.Background(), hubcore.WebConfig{Past: idx}, appwire.SearchParams{Query: "generated"}, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
 	if resp.Live == nil || resp.Past == nil {
 		t.Fatalf("search arrays must be non-nil: %+v", resp)
 	}
@@ -57,7 +60,10 @@ func TestHubSearchLiveResultCarriesApprovalPending(t *testing.T) {
 			Status: appwire.ThreadStatusActive, PendingEscalation: true,
 		},
 	)
-	resp := hubSearch(hubcore.WebConfig{Roster: roster}, appwire.SearchParams{})
+	resp, err := hubSearch(context.Background(), hubcore.WebConfig{Roster: roster}, appwire.SearchParams{}, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
 	if len(resp.Live) != 1 || !resp.Live[0].ApprovalPending {
 		t.Fatalf("live=%+v, want one result carrying ApprovalPending", resp.Live)
 	}
@@ -75,7 +81,10 @@ func TestHubSearchLiveResultCarriesAskPending(t *testing.T) {
 			Status: appwire.ThreadStatusAwaiting, PendingAsk: true,
 		},
 	)
-	resp := hubSearch(hubcore.WebConfig{Roster: roster}, appwire.SearchParams{})
+	resp, err := hubSearch(context.Background(), hubcore.WebConfig{Roster: roster}, appwire.SearchParams{}, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
 	if len(resp.Live) != 1 || !resp.Live[0].AskPending {
 		t.Fatalf("live=%+v, want one result carrying AskPending", resp.Live)
 	}
@@ -99,7 +108,10 @@ func TestHubSearchOrdersLiveResultsByPastAwareRecency(t *testing.T) {
 		hubcore.LiveEntry{PID: 3, StartedAt: base.Add(-2 * time.Hour), WorkingDir: "/projects/evener", SessionID: tieAID, Status: appwire.ThreadStatusIdle},
 	)
 
-	resp := hubSearch(hubcore.WebConfig{Roster: roster}, appwire.SearchParams{})
+	resp, err := hubSearch(context.Background(), hubcore.WebConfig{Roster: roster}, appwire.SearchParams{}, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
 	got := make([]string, 0, len(resp.Live))
 	for _, result := range resp.Live {
 		got = append(got, result.ID)

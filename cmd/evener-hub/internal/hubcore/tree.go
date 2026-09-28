@@ -399,6 +399,26 @@ func (p TreeProject) TierRows(tier string) ([]TreeNode, bool) {
 	}
 }
 
+// SessionArchived reports whether the rail files a session as archived: the
+// source that owns it archived its project, or its own decision archives it,
+// or, with no decision, it has gone archiveWindow without activity. The Live
+// band leaves such a session out, and search's archived flag reports it
+// (S14). source is the project decision's owning source ("" for this hub's
+// own); lastActivity is the session's last-activity time, now for a session
+// with no meta, which age never archives.
+func SessionArchived(decisions map[ArchiveKey]bool, sessionID, projectID, source string, lastActivity, now time.Time) bool {
+	return projectArchivedDecision(decisions, projectID, []string{source}) ||
+		classifySession(decisionFor(decisions, sessionID), lastActivity, now) == "archived"
+}
+
+// LiveSessionArchived is SessionArchived for a live entry, consulting only the
+// project decision of the source that owns it: a project can merge the same
+// ID/path across hosts, so a different host archiving the shared project ID
+// does not archive this host's still-live session.
+func LiveSessionArchived(decisions map[ArchiveKey]bool, entry LiveEntry, lastActivity, now time.Time) bool {
+	return SessionArchived(decisions, entry.SessionID, entry.Project.ID, liveEntrySource(entry), lastActivity, now)
+}
+
 // classifySession returns a session's sidebar tier from its last activity and
 // archive decision. A user decision (archive/unarchive) overrides the auto rule;
 // otherwise inactivity older than archiveWindow auto-archives.
@@ -1647,19 +1667,12 @@ func buildTreeAtWithProjects(metas []schema.SessionMeta, live []LiveEntry, decis
 	unarchivedLive := make([]TreeNode, 0, len(liveNodes))
 	for _, node := range liveNodes {
 		entry := liveMap[node.ID]
-		if entry.Project.ID != "" {
-			// A project can merge the same ID/path across hosts, but an archive
-			// decision is source-qualified: consult only the source that owns
-			// this entry, so a different host archiving the shared project ID
-			// does not hide this host's still-live session.
-			if projectArchivedDecision(decisions, entry.Project.ID, []string{liveEntrySource(entry)}) {
-				continue
-			}
+		// A live session with no meta has no last activity to age: now.
+		lastActivity := now
+		if _, hasMeta := metaMap[node.ID]; hasMeta {
+			lastActivity = node.UpdatedAt
 		}
-		if decision := decisionFor(decisions, node.ID); decision != nil && *decision {
-			continue
-		}
-		if _, hasMeta := metaMap[node.ID]; hasMeta && classifySession(decisionFor(decisions, node.ID), node.UpdatedAt, now) == "archived" {
+		if LiveSessionArchived(decisions, entry, lastActivity, now) {
 			continue
 		}
 		unarchivedLive = append(unarchivedLive, node)
@@ -1710,6 +1723,7 @@ func buildTreeAtWithProjects(metas []schema.SessionMeta, live []LiveEntry, decis
 		approval := firstApprovalFor(le.SessionID)
 		node := TreeNode{
 			ID:              le.SessionID,
+			Ref:             liveRefMap[le.SessionID],
 			State:           st,
 			Kind:            "session",
 			AskPending:      le.PendingAsk,

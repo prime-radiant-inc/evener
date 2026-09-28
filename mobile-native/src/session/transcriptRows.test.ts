@@ -70,6 +70,18 @@ describe("runs of steps (spec 8.2)", () => {
 		]);
 	});
 
+	it("leaves a question still waiting to the dock (spec 8.2)", () => {
+		const live: TimelineRow = {
+			kind: "question",
+			id: "ask",
+			questions: [
+				{ key: "q1", callId: "ask", header: "Choice", question: "Keep them?", options: [], multiSelect: false },
+			],
+		};
+		const rows = sessionRows([user("u"), live, reply("r")], [turn("turn_1")]);
+		expect(rows.map((row) => row.id)).toEqual(["u", "r"]);
+	});
+
 	it("leaves the step in progress, and a live thought, to the tray (ruling 10)", () => {
 		const rows = sessionRows(
 			[
@@ -126,6 +138,30 @@ describe("time markers", () => {
 	it("splits a run at a marked turn boundary (the first loaded turn is always marked)", () => {
 		const rows = sessionRows([step("a", "read_file", { turnId: "turn_2" }), step("b", "grep", { turnId: "turn_3" })], turns, "UTC");
 		expect(rows.map((row) => row.kind)).toEqual(["time", "run", "time", "run"]);
+	});
+
+	// The reducer can seat a notice in the display turn that holds its recorded
+	// item, and the notice keeps its own turn id, so one turn's rows can have
+	// another turn's row inside them. When the outer turn resumes, its start is
+	// compared against the notice's turn, which carries no times — read as a
+	// gap — so a second marker for the same turn would appear, and the
+	// transcript's FlatList keys rows by id, so the two markers collide.
+	it("marks a turn once when another turn's row sits inside it", () => {
+		const notice: TimelineRow = {
+			kind: "notice",
+			id: "n",
+			origin: "system",
+			family: "lifecycle",
+			tone: "info",
+			text: "note",
+			turnId: "turn_2",
+		};
+		const rows = sessionRows(
+			[user("u", "turn_1"), notice, reply("r", "turn_1")],
+			[turn("turn_1", at(12, 0), at(12, 5)), turn("turn_2")],
+			"UTC",
+		);
+		expect(rows.map((row) => (row.kind === "time" ? `time:${row.turnId}` : row.id))).toEqual(["time:turn_1", "u", "n", "r"]);
 	});
 
 	// A goal continuation turn can start well inside the ten-minute window, so
@@ -365,6 +401,15 @@ describe("answers you gave a question", () => {
 	it("stay when they only look like answers", () => {
 		const typed: TimelineRow = { kind: "user", id: "typed", text: "[answers]\nsee above", turnId: "turn_1" };
 		expect(hideAnswerMessages([question, typed]).map((row) => row.id)).toEqual(["q", "typed"]);
+	});
+
+	it("stay when their own question can't show itself, even after an earlier answer", () => {
+		// Hiding the first answer clears the flag, so the second answer is judged
+		// against its own question row — one that can't show its questions — and
+		// stays.
+		const unreadable = step("q2", "ask_user", { detail: { arguments: "{not json" } });
+		const second: TimelineRow = { kind: "user", id: "ans2", text: '[answers]\n1. [Choice] → "Drop them"', turnId: "turn_1" };
+		expect(hideAnswerMessages([question, answer, unreadable, second]).map((row) => row.id)).toEqual(["q", "q2", "ans2"]);
 	});
 
 	it("leave every other row alone", () => {

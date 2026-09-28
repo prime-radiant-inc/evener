@@ -251,13 +251,20 @@ handshake, read-only requests, structured readback, and private output file.
 The qualification command is run with the repository's configured Node 22
 runtime.
 
-Applications own credentials, caches, transcript storage, subscriptions, and
-mutation reconciliation. Connection loss during a mutation leaves its outcome
-uncertain; callers must follow the protocol mutation identity rules before
-retrying. The examples use Node 22's platform WebSocket and therefore require
-Node 22 or newer. For a hub requiring an Authorization header, provide an
-authenticated `socketFactory` from the host application's WebSocket
-implementation.
+The package carries the reusable mutation policy: the durable record shapes,
+the outbox's discovery half, the pure reconciliation, and the
+`MutationDispatcher` that serializes one attempt per target ref, reconciles a
+receipt into storage before the next attempt, and leaves an outcome nobody can
+vouch for `blockedUnknown` rather than replaying it. Applications own
+credentials, caches, transcript storage, subscriptions, the transport (the
+WebSocket and any authenticated `socketFactory`), the platform's own durable
+storage adapter, and the per-platform authoritative-read and lifecycle
+orchestration that drives the dispatcher. Connection loss during a mutation
+leaves its outcome uncertain; callers must follow the protocol mutation
+identity rules before retrying. The examples use Node 22's platform WebSocket
+and therefore require Node 22 or newer. For a hub requiring an Authorization
+header, provide an authenticated `socketFactory` from the host application's
+WebSocket implementation.
 
 
 ## Read-only discovery

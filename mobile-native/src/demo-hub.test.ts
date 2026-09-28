@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import WebSocket from "ws";
 import type { WebSocketLike } from "@evener/appwire-client";
 import { createConversationService } from "../../mobile/src/services/conversation";
@@ -7,6 +7,7 @@ import { createActivityStore } from "../../mobile/src/state/activity";
 import { createConversationStore } from "../../mobile/src/state/conversation";
 import { createDemoHub } from "../scripts/demo-hub.mjs";
 import { createHubClient } from "./connection";
+import { demoSessionId } from "./dev/demoFleet.js";
 
 describe("native demonstration hub", () => {
 	it("changes the observed queue and rejects stale identities and revisions", async () => {
@@ -365,4 +366,102 @@ describe("native demonstration hub's redesign fleet", () => {
 			await hub.close();
 		}
 	});
+
+	it("tells a connected client navigation changed when a working row asks its question", async () => {
+		const hub = await createDemoHub(0, undefined, {});
+		const client = createHubClient(
+			hub.origin,
+			"",
+			(url) => new WebSocket(url) as unknown as WebSocketLike,
+		);
+		const invalidated = navigationInvalidated(client);
+		try {
+			// The initialize answer means the hub holds this socket, so the
+			// question below reaches it.
+			const handshake = await client.connect();
+			hub.askQuestion();
+			const payload = (await invalidated) as {
+				generationId: string;
+				sequence: number;
+				targets: { kind: string; section?: string; revision?: number }[];
+			};
+			expect(payload.generationId).toBe(handshake.navigation?.generationId);
+			expect(payload.sequence).toBe(1);
+			expect(payload.targets).toEqual(
+				expect.arrayContaining([
+					expect.objectContaining({ kind: "section", section: "live" }),
+					expect.objectContaining({ kind: "section", section: "needs_you" }),
+				]),
+			);
+			const needsYou = await client.request("evener/navigation/read", {
+				representationVersion: 2,
+				resource: "section",
+				section: "needs_you",
+			});
+			expect(needsYou.revision).toBe(payload.targets[0]?.revision);
+			const entities = (
+				needsYou.data as { entities: { value: { session_id?: string } }[] }
+			).entities;
+			expect(entities.map((entity) => entity.value.session_id)).toContain(
+				demoSessionId("s-gateway"),
+			);
+		} finally {
+			client.close();
+			await hub.close();
+		}
+	});
+
+	it("tells a client connecting after the question the sequence it already reached", async () => {
+		const hub = await createDemoHub(0, undefined, {});
+		hub.askQuestion();
+		const client = createHubClient(
+			hub.origin,
+			"",
+			(url) => new WebSocket(url) as unknown as WebSocketLike,
+		);
+		try {
+			// The navigation store refuses a reconnect whose sequence is below
+			// the last one it accepted, so a phone connected through the
+			// question must be told 1 again when it comes back.
+			const handshake = await client.connect();
+			expect(handshake.navigation?.sequence).toBe(1);
+		} finally {
+			client.close();
+			await hub.close();
+		}
+	});
+
+	it("asks the question from its askAfterSeconds timer", async () => {
+		// Only the timer functions are faked: the sockets still need real I/O.
+		// The delay stays under the client's 20s heartbeat, which the same
+		// advance would otherwise fire and time out, dropping the socket.
+		vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+		const hub = await createDemoHub(0, undefined, { askAfterSeconds: 5 });
+		const client = createHubClient(
+			hub.origin,
+			"",
+			(url) => new WebSocket(url) as unknown as WebSocketLike,
+		);
+		const invalidated = navigationInvalidated(client);
+		try {
+			await client.connect();
+			vi.advanceTimersByTime(5_000);
+			expect(await invalidated).toMatchObject({ sequence: 1 });
+		} finally {
+			vi.useRealTimers();
+			client.close();
+			await hub.close();
+		}
+	});
 });
+
+function navigationInvalidated(
+	client: ReturnType<typeof createHubClient>,
+): Promise<unknown> {
+	return new Promise((resolve) => {
+		client.onNotification((notification) => {
+			if (notification.method === "evener/navigation/invalidated")
+				resolve(notification.params);
+		});
+	});
+}

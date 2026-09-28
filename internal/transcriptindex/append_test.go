@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strconv"
 	"testing"
 
 	"primeradiant.com/evener/agent/schema"
@@ -205,8 +206,17 @@ func TestAppendEntryByEntryMatchesTheReference(t *testing.T) {
 				t.Fatalf("line %d: extending rebuilt the index", i)
 			}
 		}
-		assertAllCandidates(t, x, path)
-		assertAllWindows(t, x, path)
+		// The full boundary sweep at every prefix is O(lines x items x
+		// limits): about 30s alone, and ten minutes under -race on a loaded
+		// runner, enough to time out the whole package. -short (make test,
+		// the race lanes) samples each earlier prefix and sweeps only the
+		// final transcript; ROOT_FULL=1 keeps the sweep at every prefix.
+		if testing.Short() && i < len(lines)-1 {
+			assertSampledWindows(t, x, path)
+		} else {
+			assertAllCandidates(t, x, path)
+			assertAllWindows(t, x, path)
+		}
 	}
 }
 
@@ -294,7 +304,11 @@ func TestReplacedTruncatedOrRewrittenTranscriptRebuilds(t *testing.T) {
 			if x.rebuilds != 2 {
 				t.Fatalf("builds = %d, want a rebuild after the change", x.rebuilds)
 			}
-			assertAllWindows(t, x, path)
+			// assertSampledWindows, not assertAllWindows: the point of this
+			// test is that the rebuilt index reads back correctly, not a
+			// full boundary sweep at every limit over the whole "everything"
+			// fixture four times.
+			assertSampledWindows(t, x, path)
 		})
 	}
 }
@@ -498,6 +512,25 @@ func TestCorruptSidecarRebuilds(t *testing.T) {
 		}},
 		{"fabricated last-assistant position", func(t *testing.T, dir string) {
 			rewriteMetaField(t, dir, "last_assistant_pos", `{"offset":0,"ordinal":0,"length":4294967295}`)
+		}},
+		{"other schema identity", func(t *testing.T, dir string) {
+			// A sidecar built by a binary whose schema.Turn/llm.Message shape
+			// differs must not be adopted: window.go's readEntry re-decodes
+			// raw transcript bytes with the lenient DecodeValidatedEntry,
+			// which would silently drop a field this binary's schema doesn't
+			// declare instead of failing loudly (see the "Known gap" spec
+			// section, cross-version schema skew). currentProjection folds
+			// schemaID into the same "projection" field this case rewrites.
+			// The rewritten value is the bare projectionID with no schemaID
+			// suffix at all — what a pre-schema-fold build would have
+			// written and what the old bare "Projection != projectionID"
+			// check alone would have accepted — so this pins that the
+			// schema fold is actually load-bearing here, not merely that
+			// some mismatched string rebuilds. Quoting the constant, not a
+			// literal copy of today's value, so a future projectionID bump
+			// keeps this pinned to "the bare projection, no schema suffix"
+			// rather than silently going stale.
+			rewriteMetaField(t, dir, "projection", strconv.Quote(projectionID))
 		}},
 	}
 	for _, tc := range cases {

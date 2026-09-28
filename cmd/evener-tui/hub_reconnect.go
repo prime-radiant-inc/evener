@@ -144,11 +144,12 @@ func reconnectHub(dial hubDialer, attempt int, delay time.Duration) tea.Cmd {
 	}
 }
 
-// hubReconnectDelay is the web client's backoff shape — 250ms doubling with no
-// jitter (protocol/client.ts RECONNECT_BASE_MS) — with a higher ceiling than
-// its 5s. A TUI reconnect re-runs the whole startup path, which can LAUNCH a
-// hub, so what the floor bounds here is process spawns rather than sockets.
-// The first attempt is immediate: a dropped connection is a blip until proven
+// hubReconnectDelay is the web client's backoff shape — 250ms doubling
+// (protocol/client.ts RECONNECT_BASE_MS), deliberately without the equal
+// jitter that client adds — with a higher ceiling than its 5s. A TUI
+// reconnect re-runs the whole startup path, which can LAUNCH a hub, so what
+// the floor bounds here is process spawns rather than sockets. The first
+// attempt is immediate: a dropped connection is a blip until proven
 // otherwise.
 func hubReconnectDelay(attempt int) time.Duration {
 	if attempt <= 1 {

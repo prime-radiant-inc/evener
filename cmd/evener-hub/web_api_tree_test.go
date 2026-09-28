@@ -287,8 +287,8 @@ func TestAppThreadTreeEntriesPreserveRemoteLineageAndKind(t *testing.T) {
 // its rows show them and the approval promotes it into NeedsYou.
 func TestAppThreadTreeEntriesCarryRemoteAskAndApproval(t *testing.T) {
 	cards := []appwire.SandboxEscalationRequested{
-		{ThreadID: "thread-remote", Ref: "remote:thread-remote", EscalationID: "esc_1", Tool: "write_file", Kind: "file", DeniedPath: "/srv/docs/a.md"},
-		{ThreadID: "thread-remote", Ref: "remote:thread-remote", EscalationID: "esc_2", Tool: "edit_file", Kind: "file", DeniedPath: "/srv/docs/b.md"},
+		{ThreadID: "thread-remote", Ref: "remote:thread-remote", EscalationID: "esc_1", Tool: "write_file", Kind: "file_tool", DeniedPath: "/srv/docs/a.md"},
+		{ThreadID: "thread-remote", Ref: "remote:thread-remote", EscalationID: "esc_2", Tool: "edit_file", Kind: "file_tool", DeniedPath: "/srv/docs/b.md"},
 	}
 	_, entry, ok := appThreadTreeEntries(appwire.Thread{
 		ID:     "thread-remote",

@@ -380,7 +380,7 @@ function wireToTurnModel(turn: Turn, imageSessionRoute?: string): TurnModel {
 
 // evener.activeTurnId is the primary signal; a turn already marked inProgress
 // in the snapshot is the fallback for daemons/sources that don't populate it
-// (mirrors activeTurnIDFromThread in cmd/evener-hub/assets/appwire.js).
+// (mirrors activeTurnIDFromThread in cmd/serf-hub/assets/appwire.js).
 function activeTurnIdFromThread(thread: Thread): string | undefined {
   if (thread.evener.activeTurnId) return thread.evener.activeTurnId;
   return thread.turns?.find((t) => t.status === "inProgress")?.id;
@@ -1098,6 +1098,35 @@ function turnsMatch(left: TurnModel, right: TurnModel): boolean {
   return left.id === right.id || turnsShareItemIdentity(left, right);
 }
 
+// Two turns carry conflicting keyed identities when they hold items of the
+// same id under two different supplied transcript keys. itemIdentityMatches
+// already refuses that pair directly, but a keyless alias (an item with the
+// same id and no key) matches BOTH by id, and the group merge below would
+// otherwise let it bridge them into one turn and combine their payloads. A
+// keyless alias is unambiguous only while the turns it touches agree on a
+// transcript key; two such turns are distinct recorded turns and stay apart.
+function turnsCarryConflictingKeys(left: TurnModel, right: TurnModel): boolean {
+  return left.items.some((leftItem) =>
+    right.items.some(
+      (rightItem) =>
+        leftItem.id === rightItem.id &&
+        Boolean(leftItem.transcriptKey) &&
+        Boolean(rightItem.transcriptKey) &&
+        leftItem.transcriptKey !== rightItem.transcriptKey,
+    ),
+  );
+}
+
+function groupsCarryConflictingKeys(left: TurnFragmentGroup, right: TurnFragmentGroup): boolean {
+  return left.fragments.some((leftFragment) =>
+    right.fragments.some((rightFragment) => turnsCarryConflictingKeys(leftFragment.turn, rightFragment.turn)),
+  );
+}
+
+function groupConflictsWithFragment(group: TurnFragmentGroup, fragment: TurnFragment): boolean {
+  return group.fragments.some((existing) => turnsCarryConflictingKeys(existing.turn, fragment.turn));
+}
+
 function mergePageTurn(older: TurnModel, newer: TurnModel, context?: ToolItemMergeContext): TurnModel {
   return {
     ...older,
@@ -1220,6 +1249,7 @@ function threadFields(resp: ThreadReadResponse, ref: string, now: number): Omit<
     // Passed straight through, undefined and all: absent is "nobody counted"
     // and must not become a 0 that reads as "nothing failed".
     failedToolCalls: thread.evener.failedToolCalls,
+    ...(thread.evener.access ? { access: { ...thread.evener.access } } : {}),
     workMillis: thread.evener.workMillis ?? 0,
     activeTurnStartedAt: epochMsToISO(thread.evener.activeTurnStartedAt),
     lastTurnEndedAt: epochMsToISO(thread.evener.lastTurnEndedAt),
@@ -1278,14 +1308,32 @@ function coalesceTurnFragments(
     const matching = groups.filter((group) =>
       group.fragments.some((existing) => turnsMatch(existing.turn, fragment.turn)),
     );
-    const target = matching[0];
+    // The target is the first matching group the fragment can join without a
+    // same-id conflicting transcript key. It is not always matching[0]: a
+    // fragment that conflicts with an earlier group may still fold into a
+    // later compatible one — refusing outright would leave a shared keyless
+    // item standing twice, the duplication coalescing exists to remove.
+    const target = matching.find((group) => !groupConflictsWithFragment(group, fragment));
     if (target === undefined) {
       groups.push({ fragments: [fragment], firstOrder: order });
       return;
     }
     target.fragments.push(fragment);
-    for (const group of matching.slice(1)) target.fragments.push(...group.fragments);
-    for (const group of matching.slice(1).reverse()) {
+    // A fragment that matches several groups joins them only when they agree
+    // on their keyed identities. A keyless alias matching two turns whose
+    // supplied keys differ would otherwise bridge distinct recorded turns into
+    // one; the conflicting groups stay separate instead. Each candidate is
+    // checked against the group as it grows, so two candidates that conflict
+    // with each other but not with the target are not both absorbed. A group
+    // the fragment cannot join (it conflicts) is skipped, never force-added.
+    const absorbed: TurnFragmentGroup[] = [];
+    for (const group of matching) {
+      if (group === target) continue;
+      if (groupsCarryConflictingKeys(target, group)) continue;
+      target.fragments.push(...group.fragments);
+      absorbed.push(group);
+    }
+    for (const group of absorbed.reverse()) {
       const index = groups.indexOf(group);
       if (index !== -1) groups.splice(index, 1);
     }
@@ -2722,15 +2770,26 @@ export function applyHistoryReadFailure<M extends ThreadModel>(
 
 type ReadDisposition = "discard" | "replace" | "merge";
 
-// What a latest-window response does to held history. Request generations
-// decide whether it applies at all; then the generation token, the epoch and
-// the incarnation decide between replacing the whole history and merging.
-function readDisposition(held: HistoryState, resp: ThreadReadResponse): ReadDisposition {
-  const generation = resp.requestGeneration ?? 0;
-  if (generation < held.issuedGeneration) return "discard";
-  const identity = readIdentity(resp);
+// The read identity fields readDisposition needs, structurally — satisfied by
+// a wire ThreadReadResponse and, for applyReadModel below (a caller whose own
+// service layer hydrates the wire response before the merge boundary), by a
+// HistoryState the caller already holds.
+interface ReadDispositionSignal {
+  requestGeneration?: number;
+  bootGeneration?: string;
+  epoch?: number;
+  snapshot?: { incarnation: string; length: number };
+}
+
+// The identity-only half of readDisposition: replace/merge/discard from boot
+// generation, epoch, incarnation and length alone, with no request-generation
+// ordering at all. Shared by readDisposition (which layers request-generation
+// ordering on top, for a caller that tracks one — issueLatestWindowRead) and
+// applyReadModel (whose caller has no such generation to supply, so this is
+// its own disposition outright — see that function's own doc comment for why
+// a generation gate would misfire there).
+function identityDisposition(held: HistoryState, identity: ReadIdentity): ReadDisposition {
   if (held.invalidatedAtGeneration !== undefined) {
-    if (generation <= held.invalidatedAtGeneration) return "discard";
     const { bootGeneration, epoch } = identity;
     return classifySignal(held, { bootGeneration, epoch }) === "ignore" ? "discard" : "replace";
   }
@@ -2739,6 +2798,16 @@ function readDisposition(held: HistoryState, resp: ThreadReadResponse): ReadDisp
   if (identity.epoch < held.epoch) return "discard";
   if (identity.epoch > held.epoch || identity.incarnation !== held.incarnation) return "replace";
   return identity.length < held.length ? "discard" : "merge";
+}
+
+// What a latest-window response does to held history. Request generations
+// decide whether it applies at all; then the generation token, the epoch and
+// the incarnation decide between replacing the whole history and merging.
+function readDisposition(held: HistoryState, resp: ReadDispositionSignal): ReadDisposition {
+  const generation = resp.requestGeneration ?? 0;
+  if (generation < held.issuedGeneration) return "discard";
+  if (held.invalidatedAtGeneration !== undefined && generation <= held.invalidatedAtGeneration) return "discard";
+  return identityDisposition(held, readIdentity(resp));
 }
 
 /**
@@ -2798,6 +2867,132 @@ export function applyReadResponse<M extends ThreadModel>(
     { ...base, ...fields, ...runningTurn(resp.thread), olderCursor },
     history,
     overlayRecord(resp.overlay),
+  );
+  for (const deferred of held.deferredPages) {
+    if (deferred.snapshot?.incarnation === history.incarnation) {
+      next = mergeVersionedPage(next, next.history, deferred, false);
+    }
+  }
+  return publicModel<M>(next);
+}
+
+// Splits turns already merged into TurnModel[] back into a HistoryFragment
+// (turn scalars, items) — the shape mergeHistory folds in applyReadModel
+// below, mirroring splitWireTurns for a caller whose input is an
+// already-hydrated model rather than a wire response.
+function turnModelsToFragment(turns: readonly TurnModel[]): HistoryFragment {
+  return {
+    turns: turns.map((turn) => ({ ...turn, items: [] })),
+    // mergeHistory joins each item to its turn by item.turnId alone (never by
+    // array nesting) — splitWireTurns backfills a blank one from the
+    // containing wire turn for exactly this reason. A model hydrated outside
+    // this package's own versioned path (a caller's pre-v6 display model, or
+    // a legacy hydrate with no snapshot) can carry items whose turnId was
+    // never stamped at all — nesting was the only membership signal there —
+    // so the same backfill runs here, or every such item joins the same
+    // synthetic turnId-"" turn instead of the one that actually holds it.
+    items: turns.flatMap((turn) => turn.items.map((item) => (item.turnId ? item : { ...item, turnId: turn.id }))),
+  };
+}
+
+// readDisposition for a caller with no request-generation protocol of its
+// own (see applyReadModel's doc comment: no issueLatestWindowRead, no
+// requestGeneration on the wire request, so appliedGeneration is always the
+// held value and never advances). readDisposition's own generation gates
+// (`generation < held.issuedGeneration`, `generation <= held.invalidatedAtGeneration`)
+// assume a caller that bumps issuedGeneration BEFORE every read and echoes it
+// back — exactly the thing this caller cannot do, so gating discard/replace
+// on it would silently freeze an invalidated thread forever (a resync sets
+// invalidatedAtGeneration to whatever is currently held, and every later read
+// arrives at that SAME value, never a higher one, so `generation <=
+// invalidatedAtGeneration` never clears). Once invalidated, this instead
+// classifies the fresh read's own identity directly: an ignorable boot
+// generation/epoch (older or equal to what invalidated it) still discards,
+// but anything else — the fresh read's own snapshot, whatever it is —
+// resolves the invalidation, since it is the only signal this caller has.
+function readModelDisposition(held: HistoryState, freshHistory: HistoryState | undefined): ReadDisposition {
+  return freshHistory === undefined ? "merge" : identityDisposition(held, freshHistory);
+}
+
+/**
+ * applyReadResponse for a caller whose own service layer hydrates the wire
+ * ThreadReadResponse into a ThreadModel (hydrateThread) before the merge
+ * boundary reaches this package — mobile's ConversationService is exactly
+ * this shape, and its existing test suite scripts fixtures at the
+ * hydrated-model level throughout, so requiring the raw wire response here
+ * would force rewriting it wholesale. Disposition rules mirror
+ * applyReadResponse (read from `fresh.history`, which hydrateThread already
+ * stamps, instead of a wire response's own fields) with one difference:
+ * this caller has no request-generation protocol of its own (see
+ * readModelDisposition's doc comment) — invalidation recovery classifies the
+ * fresh read's identity directly instead of gating on a generation this
+ * caller cannot supply. A fresh read that carries no snapshot identity at
+ * all (fresh.history undefined — a legacy hydrate, or a daemon that answered
+ * with no history support) always merges by identity (a version-less item,
+ * held or incoming, always yields — see `supersedes` — so this degrades to
+ * the same content-wins-on-reissue behavior an unversioned merge always
+ * had), never discarded or replaced outright: with no generation/epoch/
+ * incarnation of its own to compare, discarding or replacing would be a
+ * guess this entry point has no basis for. This entry point never sees
+ * `authoritative`/`changes` (wire-response-only fields with no analog on a
+ * hydrated model, and no caller of it needs either — a daemonless or
+ * partial-refresh read) — a caller needing either folds the wire response
+ * through applyReadResponse instead.
+ */
+export function applyReadModel<M extends ThreadModel>(model: M, fresh: ThreadModel): ThreadModel & ModelExtras<M> {
+  const held = model.history ?? EMPTY_HISTORY;
+  const freshHistory = fresh.history;
+  const disposition = readModelDisposition(held, freshHistory);
+  if (disposition === "discard") return publicModel<M>(model);
+  const fragment = turnModelsToFragment(freshHistory?.turns ?? fresh.turns);
+  let turns: TurnModel[];
+  let olderCursor = fresh.olderCursor;
+  if (disposition === "replace") {
+    turns = mergeHistory([], fragment);
+  } else {
+    const window = fragmentRange(fragment.items);
+    turns = held.turns;
+    // Older pages the client holds keep their own cursor.
+    const oldest = earliestPosition(turns);
+    if (oldest && (!window || comparePositions(oldest, window[0]) < 0)) olderCursor = model.olderCursor;
+    turns = mergeHistory(turns, fragment);
+  }
+  // A caller here never tracks a request generation of its own (no
+  // issueLatestWindowRead, no requestGeneration on the wire request — see
+  // readModelDisposition's own doc comment), so there is no meaningful
+  // appliedGeneration/issuedGeneration to advance past what is already
+  // held; carrying held's forward (rather than always 0) at least survives
+  // a real one arriving from elsewhere (a page response's own snapshot).
+  const history: HistoryState = {
+    // freshHistory undefined (a caller with no snapshot support, or one
+    // hydrated on the legacy branch) has no identity of its own to
+    // supersede held's with — keep held's exactly, or the next genuinely
+    // versioned read reads a real incarnation against a blanked-out one and
+    // replaces wholesale, discarding the very history this merge just
+    // preserved. Only the four identity fields carry over — never
+    // invalidatedAtGeneration/awaited/pendingIncarnation/failed, which this
+    // merge (a non-discard disposition) already resolved.
+    bootGeneration: freshHistory?.bootGeneration ?? held.bootGeneration,
+    epoch: freshHistory?.epoch ?? held.epoch,
+    incarnation: freshHistory?.incarnation ?? held.incarnation,
+    length: freshHistory?.length ?? held.length,
+    appliedGeneration: held.appliedGeneration,
+    issuedGeneration: held.issuedGeneration,
+    deferredPages: [],
+    turns,
+  };
+  const {
+    turns: _freshTurns,
+    history: _freshHistoryField,
+    overlay: freshOverlay,
+    runningTurnId: freshRunningTurnId,
+    ...fields
+  } = fresh;
+  const { runningTurnId: _previous, ...base } = model;
+  let next = withDisplay(
+    { ...base, ...fields, ...(freshRunningTurnId ? { runningTurnId: freshRunningTurnId } : {}), olderCursor },
+    history,
+    freshOverlay ?? {},
   );
   for (const deferred of held.deferredPages) {
     if (deferred.snapshot?.incarnation === history.incarnation) {
@@ -3549,7 +3744,14 @@ function applyNotificationToThread<M extends ThreadModel>(model: M, n: AnyNotifi
       // are derived, so a minted item would vanish at the next derivation. The
       // hub's own relay-attach warning (cmd/evener-hub/app_rpc.go) still comes
       // as this notification and needs a v6 home before Task 20 deletes it.
-      if (!activeTurnId || model.history) return { ...model, lastFrameAt: now };
+      // bootGeneration "" (EMPTY_HISTORY's own spelling) means no real read
+      // ever stamped one — applyReadModel's caller (a service layer that
+      // hydrates outside this package's own snapshot branch) can mint a
+      // `.history` of its own for merge continuity alone (applyReadModel's
+      // doc comment) without that model ever having gone through a real v6
+      // read, so a genuine bootGeneration is what actually distinguishes the
+      // two here, not `.history`'s mere presence.
+      if (!activeTurnId || model.history?.bootGeneration) return { ...model, lastFrameAt: now };
       const params = n.params;
       const folded = foldWarningParams(params);
       return {

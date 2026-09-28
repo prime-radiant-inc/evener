@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type {
   SandboxEscalationRequested,
   Thread,
@@ -161,7 +161,11 @@ describe("approval decisions", () => {
     await controls.resolve(displayed, true);
     expect(calls).toBe(0);
   });
-  it("retains failure and never repeats an unconfirmed decision", async () => {
+  // A press after a failure tries again: the hub refuses a resolve for an
+  // escalation it already settled (agent/session_escalation.go's
+  // ResolveSandboxEscalation, a Conflict), so trying again never decides
+  // twice, and a failure never latches the decision off.
+  it("retains failure, and a new press tries again and clears it", async () => {
     let calls = 0;
     const client = {
       request: async () => {
@@ -178,9 +182,16 @@ describe("approval decisions", () => {
     );
     await controls.resolve(pending, false);
     expect(calls).toBe(1);
-    expect(controls.getSnapshot().error).not.toBeNull();
+    // Calm: it says what may have happened, and names no refresh to press.
+    expect(controls.getSnapshot().error).toBe(
+      "Couldn't confirm your decision. It may already have been applied.",
+    );
+    const seen: (string | null)[] = [];
+    controls.subscribe(() => seen.push(controls.getSnapshot().error));
     await controls.resolve(pending, true);
-    expect(calls).toBe(1);
+    expect(calls).toBe(2);
+    // The new try clears the old error as it sends.
+    expect(seen[0]).toBeNull();
   });
   it.each(
     [undefined, null, [], "ok", 0, false].map((receipt) => ({ receipt })),
@@ -208,11 +219,11 @@ describe("approval decisions", () => {
       expect(refreshed).toBe(0);
       expect(controls.getSnapshot().error).not.toBeNull();
       await controls.resolve(pending, false);
-      expect(calls).toBe(1);
+      expect(calls).toBe(2);
       expect(controls.getSnapshot().pending).toBeNull();
     },
   );
-  it("requires a successful current refresh before allowing another decision", async () => {
+  it("tries a decision again after a failure, whether or not a re-read succeeded", async () => {
     let refreshFails = true;
     let calls = 0;
     const controls = new ApprovalControls(
@@ -230,19 +241,18 @@ describe("approval decisions", () => {
       },
     );
     await controls.resolve(pending, true);
-    expect(controls.getSnapshot().error).not.toBeNull();
-    await controls.resolve(pending, false);
-    expect(calls).toBe(1);
+    expect(controls.getSnapshot().error).toBe(
+      "Couldn't confirm your decision. It may already have been applied.",
+    );
     await controls.refresh();
     expect(controls.getSnapshot().error).not.toBeNull();
     await controls.resolve(pending, false);
-    expect(calls).toBe(1);
+    expect(calls).toBe(2);
     refreshFails = false;
     await controls.refresh();
     expect(controls.getSnapshot().error).toBeNull();
-    expect(calls).toBe(1);
     await controls.resolve(pending, false);
-    expect(calls).toBe(2);
+    expect(calls).toBe(3);
   });
   it("does not dispatch a card removed by the recovery read", async () => {
     let values = [pending];
@@ -267,7 +277,7 @@ describe("approval decisions", () => {
     await controls.resolve(pending, false);
     expect(calls).toBe(1);
   });
-  it("serializes recovery reads and retains uncertainty when the binding changes", async () => {
+  it("serializes recovery reads, retains uncertainty when the binding changes, and tries again on a new press", async () => {
     let current = true;
     let calls = 0;
     let reads = 0;
@@ -300,9 +310,15 @@ describe("approval decisions", () => {
     await reading;
     expect(controls.getSnapshot().refreshing).toBe(false);
     expect(controls.getSnapshot().error).not.toBeNull();
+    // Back on the current binding, a new press tries the decision, then
+    // re-reads the session.
     current = true;
-    await controls.resolve(pending, false);
-    expect(calls).toBe(0);
+    const retry = controls.resolve(pending, false);
+    await vi.waitFor(() => expect(reads).toBe(2));
+    expect(calls).toBe(1);
+    release();
+    await retry;
+    expect(controls.getSnapshot().error).toBeNull();
   });
   it("ignores late acknowledgments and reads after disposal", async () => {
     let release!: () => void;

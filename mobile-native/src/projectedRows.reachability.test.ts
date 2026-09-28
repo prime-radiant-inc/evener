@@ -9,12 +9,11 @@ import {
 } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import ts from "typescript";
-import {
-	moduleSpecifierSites,
-	parseSource,
-} from "../../scripts/sdk/module-specifiers.mjs";
+// Namespace import, not destructured: the parse guard below is a spy target,
+// and a spy only intercepts a call made through the module object.
+import * as specifiers from "../../scripts/sdk/module-specifiers.mjs";
 
 // D24-6 deleted the private projection family: mobile/src/conversation/ held
 // the seam's pre-shared-projector rows (project.ts, project.test.ts), and the
@@ -73,11 +72,22 @@ function* sourceFiles(dir: string): Generator<string> {
 // "<file>: <specifier>" per offender, first hit per file.
 function offendersIn(trees: readonly string[], deleted: string): string[] {
 	const found: string[] = [];
+	// A file can only name the deleted directory if its text carries the
+	// directory's final segment (a specifier that resolves into
+	// ".../conversation" must name that segment) or a backslash escape that
+	// could decode to it. A string literal decodes to its raw text unless it
+	// holds an escape, and every escape begins with a backslash, so a file
+	// with neither cannot name the directory: read it, but do not parse it.
+	// Escapes only ever add files to the parsed set, so this fast path never
+	// hides an offender — the escape fixture below still fails as before.
+	const deletedName = path.basename(deleted);
 	for (const tree of trees) {
 		for (const file of sourceFiles(tree)) {
 			if (file === self) continue;
-			const source = parseSource(ts, file, readFileSync(file, "utf8"));
-			for (const site of moduleSpecifierSites(ts, source)) {
+			const text = readFileSync(file, "utf8");
+			if (!text.includes(deletedName) && !text.includes("\\")) continue;
+			const source = specifiers.parseSource(ts, file, text);
+			for (const site of specifiers.moduleSpecifierSites(ts, source)) {
 				const resolved =
 					site.text.startsWith(".") || site.text.startsWith("/")
 						? path.resolve(path.dirname(file), site.text)
@@ -95,6 +105,36 @@ function offendersIn(trees: readonly string[], deleted: string): string[] {
 		}
 	}
 	return found;
+}
+
+// A throwaway app tree under a unique scratch root, for the guard fixtures
+// below. Each file in `files` is written under a fresh `mobile/src` root; the
+// returned `deleted` is the (absent) conversation directory the guard looks
+// for. The unique root (review round 3) keeps concurrent runs — parallel
+// worktrees, CI shards on one host — from deleting each other's fixture
+// mid-assertion.
+function scratchAppTree(files: Record<string, string>): {
+	tree: string;
+	deleted: string;
+	cleanup: () => void;
+} {
+	const root = mkdtempSync(
+		path.join(
+			process.env.EVENER_SCRATCH_DIR ?? process.env.TMPDIR ?? "/tmp",
+			"reachability-fixture-",
+		),
+	);
+	const tree = path.join(root, "mobile/src");
+	for (const [relative, contents] of Object.entries(files)) {
+		const full = path.join(tree, relative);
+		mkdirSync(path.dirname(full), { recursive: true });
+		writeFileSync(full, contents);
+	}
+	return {
+		tree,
+		deleted: path.join(root, "mobile", "src", "conversation"),
+		cleanup: () => rmSync(root, { recursive: true, force: true }),
+	};
 }
 
 describe("the deleted private projection family is unreachable", () => {
@@ -118,30 +158,50 @@ describe("the deleted private projection family is unreachable", () => {
 		// the guard. The fixture exercises the resolution the real sweep runs
 		// against a smuggled `../conversation/types` — a specifier the old
 		// substring-only match slipped.
-		// A unique root (review round 3): concurrent runs share the scratch
-		// dir — parallel worktrees, CI shards on one host — and a fixed name
-		// lets one run's cleanup delete another run's fixture mid-assertion.
-		const root = mkdtempSync(
-			path.join(
-				process.env.EVENER_SCRATCH_DIR ?? process.env.TMPDIR ?? "/tmp",
-				"reachability-fixture-",
-			),
-		);
-		const stateDir = path.join(root, "mobile", "src", "state");
-		mkdirSync(stateDir, { recursive: true });
-		writeFileSync(
-			path.join(stateDir, "smuggler.ts"),
-			`import type { Thing } from "../conversation/types";\n`,
-		);
+		const { tree, deleted, cleanup } = scratchAppTree({
+			"state/smuggler.ts": `import type { Thing } from "../conversation/types";\n`,
+		});
 		try {
-			expect(
-				offendersIn(
-					[path.join(root, "mobile/src")],
-					path.join(root, "mobile", "src", "conversation"),
-				),
-			).toEqual(["state/smuggler.ts: ../conversation/types"]);
+			expect(offendersIn([tree], deleted)).toEqual([
+				"state/smuggler.ts: ../conversation/types",
+			]);
 		} finally {
-			rmSync(root, { recursive: true, force: true });
+			cleanup();
+		}
+	});
+
+	it("skips parsing a file that cannot name the deleted directory", () => {
+		// The sweep's runtime scales with the tree because it parsed every file;
+		// the guard parses only files whose text could carry a matching
+		// specifier. This file has neither the directory's segment nor a
+		// backslash escape, so it is never parsed.
+		const { tree, deleted, cleanup } = scratchAppTree({
+			"state/unrelated.ts": `export const unrelated = 1;\n`,
+		});
+		const parse = vi.spyOn(specifiers, "parseSource");
+		try {
+			expect(offendersIn([tree], deleted)).toEqual([]);
+			expect(parse).not.toHaveBeenCalled();
+		} finally {
+			parse.mockRestore();
+			cleanup();
+		}
+	});
+
+	it("still parses a file whose specifier hides the segment behind an escape", () => {
+		// The fast path keeps any file carrying a backslash, because an escape
+		// decodes to text the raw bytes do not spell. `\u0061` is `a`, so this
+		// import names "../conversation/types" while its raw text never says
+		// "conversation" — the guard must still see the offender.
+		const { tree, deleted, cleanup } = scratchAppTree({
+			"state/smuggler.ts": `import type { Thing } from "../convers\\u0061tion/types";\n`,
+		});
+		try {
+			expect(offendersIn([tree], deleted)).toEqual([
+				"state/smuggler.ts: ../conversation/types",
+			]);
+		} finally {
+			cleanup();
 		}
 	});
 });

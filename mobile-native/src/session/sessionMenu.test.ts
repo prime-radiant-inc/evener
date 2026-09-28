@@ -15,6 +15,7 @@ function menu(over: Partial<SessionMenuInput> = {}) {
 		current: "intent",
 		hasSubagents: true,
 		connected: true,
+		sharedNotes: true,
 		canAside: true,
 		canShutDown: true,
 		deletable: true,
@@ -60,6 +61,7 @@ describe("the Session's ⋯ menu (spec 8.1)", () => {
 			"Detail level · Intent",
 			"Subagents",
 			"Tasks",
+			"Notes & links",
 			"Session info",
 			"Ask aside…",
 			"Pin to category…",
@@ -113,13 +115,18 @@ describe("the Session's ⋯ menu (spec 8.1)", () => {
 	it.each([
 		["hasSubagents", "Subagents"],
 		["connected", "Tasks"],
+		["sharedNotes", "Notes & links"],
 		["canAside", "Ask aside…"],
 		["canShutDown", "Shut down"],
 		["deletable", "Delete saved session"],
 	] as const)("shows nothing for %s when it is false", (condition, label) => {
 		const entries = only(menu({ [condition]: false }).items).menu.items;
 		expect(labels(entries)).not.toContain(label);
-		expect(entries).toHaveLength(8);
+		expect(entries).toHaveLength(9);
+	});
+
+	it("offers Notes & links without a connection: the notes are readable offline", () => {
+		expect(labels(only(menu({ connected: false }).items).menu.items)).toContain("Notes & links");
 	});
 
 	it("describes Ask aside", () => {
@@ -131,6 +138,7 @@ describe("the Session's ⋯ menu (spec 8.1)", () => {
 	it.each([
 		["Subagents", { kind: "subagents" }],
 		["Tasks", { kind: "tasks" }],
+		["Notes & links", { kind: "notes" }],
 		["Session info", { kind: "info" }],
 		["Ask aside…", { kind: "aside" }],
 		["Pin to category…", { kind: "pin" }],

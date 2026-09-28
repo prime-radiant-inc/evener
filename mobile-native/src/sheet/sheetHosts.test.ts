@@ -54,6 +54,24 @@ describe("providing and finding a host", () => {
 		expect(seen).toEqual(["first", "second", undefined]);
 	});
 
+	it("provides nothing while the screen has no host yet, and takes a host away when it has none again", () => {
+		const hosts = sheetHosts<{ text: string }>();
+		// The same session open lower in the stack keeps answering until this
+		// copy has something to say.
+		const lower = { text: "lower screen" };
+		hosts.provide("s", {}, lower);
+		let host: { text: string } | undefined;
+		const screen = renderHook(() => useProvideSheetHost(hosts, "s", host));
+		expect(hosts.get("s")).toBe(lower);
+		host = { text: "loaded" };
+		screen.rerender();
+		expect(hosts.get("s")).toBe(host);
+		host = undefined;
+		screen.rerender();
+		expect(hosts.get("s")).toBe(lower);
+		screen.unmount();
+	});
+
 	it("hands a sheet its screen's host, and closes the sheet once the screen is gone", () => {
 		const hosts = sheetHosts<string>();
 		const owner = {};

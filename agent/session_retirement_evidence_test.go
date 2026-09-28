@@ -335,15 +335,24 @@ func TestRetirementAutonomousAttentionRetryOverlap(t *testing.T) {
 			}
 		}
 		clk.Drain()
-		root.SetNotifyFunc(nil)
 	}()
+	// Pause each root attention retry callback in place. The seam fires inside
+	// scheduleRootAttentionRetryLocked's callback, right after it takes ownership
+	// (beginAttentionCallback succeeded, so the outstanding callback already
+	// projects a notification blocker), so the pause belongs to that callback by
+	// construction. It replaces a notify hook gated on root.attentionCallbacks,
+	// which identified a counter value rather than the caller: a foreign wake
+	// landing between the retry's increment and its own notify matched the same
+	// count and could still steal the pause, letting the retry run unpaused and
+	// the later blocker check find no notification evidence (#1879's "missing
+	// notification evidence").
 	var gate atomic.Int32
-	root.SetNotifyFunc(func() {
+	root.cfg.testOnly.rootAttentionRetryCallback = func() {
 		if selected := gate.Swap(0); selected != 0 {
 			close(entered[selected-1])
 			<-resume[selected-1]
 		}
-	})
+	}
 	var c *RetirementController
 	for i := range 2 {
 		d := root.createDelegate(context.Background(), delegateArgs{Task: "original overlapping attention"})
@@ -406,6 +415,71 @@ func TestRetirementAutonomousAttentionRetryOverlap(t *testing.T) {
 		t.Fatalf("settled callbacks retained %d registrations", remaining)
 	}
 	assertRetirementEvidenceEligible(t, c)
+}
+
+// A superseded root attention retry callback must not take the pause seam: its
+// generation no longer matches, so it returns at scheduleRootAttentionRetryLocked's
+// early return instead of proceeding. If the seam fired before that check, a
+// doomed timer would consume the gate a live retry needs, reintroducing the
+// mis-attribution #1879's flake was.
+func TestRetirementRootAttentionRetrySeamSkipsStaleCallback(t *testing.T) {
+	t.Parallel()
+	clk := agenttest.NewFakeClock()
+	root := newSession(t, withConfig(SessionConfig{StateDir: t.TempDir(), clock: clk}))
+	defer root.Close()
+	var fired atomic.Int32
+	root.cfg.testOnly.rootAttentionRetryCallback = func() { fired.Add(1) }
+
+	root.attentionMu.Lock()
+	root.rootAttentionWakeIDs["stale-seam-source"] = struct{}{}
+	root.scheduleRootAttentionRetryLocked()
+	// Supersede the armed callback (a newer schedule or a reset invalidated it)
+	// before it fires; the parked timer is not cancelled, so it still runs.
+	root.resetRootAttentionRetryLocked()
+	root.attentionMu.Unlock()
+
+	clk.Advance(jobNotificationRetryInitialDelay)
+	clk.Drain()
+	if got := fired.Load(); got != 0 {
+		t.Fatalf("stale retry callback fired the pause seam %d times, want 0", got)
+	}
+}
+
+// A root attention retry callback that fires while the rail is parked must not
+// take the pause seam either: it returns at the parkedAtFire early return
+// instead of proceeding. Parking is the durable hold a Stop takes, so this is
+// the second early return the seam must sit behind, beside the stale-generation
+// case above.
+func TestRetirementRootAttentionRetrySeamSkipsParkedCallback(t *testing.T) {
+	t.Parallel()
+	clk := agenttest.NewFakeClock()
+	root := newSession(t, withConfig(SessionConfig{StateDir: t.TempDir(), clock: clk}))
+	defer root.Close()
+	var fired atomic.Int32
+	root.cfg.testOnly.rootAttentionRetryCallback = func() { fired.Add(1) }
+
+	root.attentionMu.Lock()
+	root.rootAttentionWakeIDs["parked-seam-source"] = struct{}{}
+	root.scheduleRootAttentionRetryLocked()
+	root.attentionMu.Unlock()
+
+	// Park the rail before the armed callback fires; the parked timer is not
+	// cancelled, so it still runs and reads the hold.
+	if err := root.clientMutations.mutate(func(snapshot *clientMutationSnapshot) error {
+		snapshot.QueueHeld = true
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if !root.rootAttentionRailParked() {
+		t.Fatal("fixture: the attention rail is not parked")
+	}
+
+	clk.Advance(jobNotificationRetryInitialDelay)
+	clk.Drain()
+	if got := fired.Load(); got != 0 {
+		t.Fatalf("parked retry callback fired the pause seam %d times, want 0", got)
+	}
 }
 
 func TestRetirementAutonomousAttentionRetryStale(t *testing.T) {

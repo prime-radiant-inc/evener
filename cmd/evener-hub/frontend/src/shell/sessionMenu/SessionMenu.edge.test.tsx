@@ -5,9 +5,9 @@
 // - Rename confirm button disabled with empty input (line 184)
 
 import type { NavigationSessionSummary } from "@evener/appwire-client";
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { afterEach, beforeEach, expect, test, vi } from "vitest";
+import { beforeEach, expect, test, vi } from "vitest";
 import { resetToastStoreForTests } from "../../widgets/toast/store";
 import { SessionMenu, type SessionMenuActions, type SessionMenuProps } from "./SessionMenu";
 
@@ -58,10 +58,6 @@ async function openMenu(user: ReturnType<typeof userEvent.setup>) {
 
 beforeEach(() => {
   resetToastStoreForTests();
-});
-
-afterEach(() => {
-  cleanup();
 });
 
 // Line 169: rename dialog onClose

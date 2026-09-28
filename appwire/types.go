@@ -150,6 +150,12 @@ const (
 	// (daemon serves it; hub relays). It is a UI-only request, never advertised to
 	// the model.
 	MethodEvenerSandboxEscalationResolve = "evener/sandbox/escalation/resolve"
+	// MethodEvenerDelegateStop ends one subagent's current run at the user's
+	// request (S6): that subagent alone, never the subagents it started. It
+	// targets the root session (ref/threadId) and names the delegate.
+	// ScopeDaemon (the root's daemon serves it). A UI-only request, never
+	// advertised to the model.
+	MethodEvenerDelegateStop = "evener/delegate/stop"
 	// MethodEvenerHostRequest forwards one hub-scoped admin RPC to a named
 	// remote host's hub (component 07a). Host is the component-03 source ID;
 	// Method must be in the proxy's exact allow-list. See HostRequestParams.
@@ -202,6 +208,14 @@ const (
 	// request naming the intended (generation, incarnation id) pair. See
 	// HostRestartParams.
 	MethodEvenerHostRestart = "evener/host/restart"
+	// MethodEvenerHostOperations reads the operation store's records (deploy
+	// pipeline 08b §8, §10): one bounded page ascending by the
+	// controller-assigned id, resumed by an opaque cursor, either host-pinned
+	// or unfiltered across hosts. It is a read — no gate, no dial, no registry
+	// resolution — so a removed host's retained history stays readable, and it
+	// admits like the rest of the host surface: controller-local, refusing a
+	// remote origin. See HostOperationsParams.
+	MethodEvenerHostOperations = "evener/host/operations"
 	// MethodEvenerHostTeardownRetry resumes one named teardown remnant
 	// (registry spec 08 §6/§11): it looks the remnant up by its opaque id — the
 	// lookup never requires a current live entry — try-acquires the host's
@@ -655,7 +669,24 @@ type SessionSeenSetResponse struct {
 // sessions, matching the palette's initial result set.
 type SearchParams struct {
 	Query string `json:"query,omitempty"`
+	// Scope narrows every group of the answer (S14, spec 7.4): SearchScopeAll
+	// (the default when absent), SearchScopeLive or SearchScopeArchived. An
+	// older hub ignores it and answers as for all; SearchResponse.Scope says
+	// whether it was applied.
+	Scope string `json:"scope,omitempty"`
 }
+
+// The search scopes (S14, spec 7.4).
+const (
+	// SearchScopeAll is every session.
+	SearchScopeAll = "all"
+	// SearchScopeLive is the sessions the Board's Live section holds: live and
+	// not archived.
+	SearchScopeLive = "live"
+	// SearchScopeArchived is the sessions the rail files as archived, live or
+	// ended.
+	SearchScopeArchived = "archived"
+)
 
 // SearchResult is one session hit from the hub's live or past search index.
 // Ref is the qualified session reference that clients use to open the hit.
@@ -674,6 +705,32 @@ type SearchResult struct {
 	// neither. Additive: an older hub omits both, decoding as false.
 	AskPending      bool `json:"askPending,omitempty"`
 	ApprovalPending bool `json:"approvalPending,omitempty"`
+	// Archived says the rail files the session as archived: its own archive
+	// decision, its project's, or two weeks without activity (S14). Absent
+	// when it is not, and from an older hub.
+	Archived bool `json:"archived,omitempty"`
+	// Hits are the session's newest messages that match the search, newest
+	// first, and HitCount how many match in all. Only an InSessions result
+	// carries them (S14).
+	Hits     []SearchHit `json:"hits,omitempty"`
+	HitCount int         `json:"hitCount,omitempty"`
+}
+
+// SearchHit is one message that matches a search (S14).
+type SearchHit struct {
+	// TranscriptKey and Position name the transcript item the message is, as
+	// a thread read's items carry them, so a client opens the session at it.
+	TranscriptKey string             `json:"transcriptKey"`
+	Position      ThreadItemPosition `json:"position"`
+	// Snippet is the message around its first match, one line, in parts: a
+	// part with match set is text the search matched.
+	Snippet []SearchSnippetPart `json:"snippet"`
+}
+
+// SearchSnippetPart is one run of a snippet's text.
+type SearchSnippetPart struct {
+	Text  string `json:"text"`
+	Match bool   `json:"match,omitempty"`
 }
 
 // SearchResponse groups matching live sessions separately from persisted
@@ -681,6 +738,13 @@ type SearchResult struct {
 type SearchResponse struct {
 	Live []SearchResult `json:"live"`
 	Past []SearchResult `json:"past"`
+	// InSessions lists the sessions whose messages match, each with its hits
+	// (S14), newest session first: live sessions, then ended ones. Absent when
+	// none match, and from an older hub.
+	InSessions []SearchResult `json:"inSessions,omitempty"`
+	// Scope is the scope the answer applied. An older hub leaves it out, so a
+	// client knows it offers no Archived scope and no message hits.
+	Scope string `json:"scope,omitempty"`
 }
 
 // ActivityReadParams selects the sessions evener/activity/read reports. Refs
@@ -1002,6 +1066,22 @@ type EvenerThread struct {
 	// thread/list root rows only, when the tree has at least one subagent, and
 	// never a thread/read snapshot: no notification announces its changes.
 	Subagents *SubagentTally `json:"subagents,omitempty"`
+	// Access is what the session's sandbox lets it reach (S15): the sandbox
+	// mode it started under and whether that sandbox allows the network. Every
+	// current producer sets it; it is absent from an older daemon or hub, which
+	// a client reads as "not known". Snapshot-only: a session's sandbox is
+	// fixed when it starts, so no notification carries it.
+	Access *ThreadAccess `json:"access,omitempty"`
+}
+
+// ThreadAccess is a session's sandbox mode and network setting (spec 8.6,
+// S15). Sandbox is the mode name a session starts with ("off", "read-only",
+// "workspace-write" or "restricted"). Network is true when the session may use
+// the network: always for "off", and for a sandboxed session unless it started
+// with the network turned off.
+type ThreadAccess struct {
+	Sandbox string `json:"sandbox"`
+	Network bool   `json:"network"`
 }
 
 // ThreadActivity is one pulse meter sample. Minutes holds seven one-minute
@@ -1232,6 +1312,32 @@ type SandboxEscalationResolved struct {
 	ThreadID     string `json:"threadId"`
 	Ref          string `json:"ref"`
 	EscalationID string `json:"escalationId"`
+}
+
+// DelegateStopParams is the request shape for evener/delegate/stop: the root
+// session that owns the delegate tree (ThreadID/Ref, as every turn mutation
+// names it) and the delegate to stop (EvenerDelegateInfo.DelegateID).
+type DelegateStopParams struct {
+	ThreadID   string `json:"threadId,omitempty"`
+	Ref        string `json:"ref,omitempty"`
+	DelegateID string `json:"delegateId"`
+}
+
+// DelegateStopOutcome is what evener/delegate/stop did.
+type DelegateStopOutcome string
+
+const (
+	// DelegateStopStopping: the subagent's run was cancelled. It ends as
+	// cancelled, which evener/delegate/updated reports.
+	DelegateStopStopping DelegateStopOutcome = "stopping"
+	// DelegateStopNotRunning: the subagent had no run to stop, because it was
+	// idle, finished, or already finishing. A repeated stop answers this.
+	DelegateStopNotRunning DelegateStopOutcome = "notRunning"
+)
+
+// DelegateStopResponse is the result of evener/delegate/stop.
+type DelegateStopResponse struct {
+	Outcome DelegateStopOutcome `json:"outcome"`
 }
 
 // SandboxEscalationResolveParams is the request shape for
@@ -4811,6 +4917,59 @@ type HostRestartResponse struct {
 	State             OperationState `json:"state"`
 }
 
+// HostOperationsParams is the evener/host/operations payload (deploy pipeline
+// 08b §10): every filter is optional, and empty params list the first
+// unfiltered cross-host page. `operationId` matches the client-supplied
+// clientOperationId, never the controller-assigned `id`; `generation` selects
+// the incarnation after client operation-ID reuse (omitted: the current
+// generation) and `incarnationId` narrows that selection to the exact
+// incarnation, required alongside `generation` whenever the caller names a
+// superseded pair; `id` is the detail filter for the controller-assigned
+// record id; `limit` defaults to 50 and caps at 200; `cursor` is the opaque
+// continuation the previous page returned.
+type HostOperationsParams struct {
+	Name          string         `json:"name,omitempty"`
+	OperationID   string         `json:"operationId,omitempty"`
+	State         OperationState `json:"state,omitempty"`
+	Generation    uint64         `json:"generation,omitempty"`
+	IncarnationID string         `json:"incarnationId,omitempty"`
+	ID            string         `json:"id,omitempty"`
+	Limit         int            `json:"limit,omitempty"`
+	Cursor        string         `json:"cursor,omitempty"`
+}
+
+// HostBoundary is one host's boundary in an operations page's hostBoundaries
+// map (deploy pipeline 08b §10): the {generation, incarnationId,
+// presenceEpoch} object. The map's value is the union of this object and the
+// literal "absent" string (HostBoundaryAbsent), carried as `unknown` in the
+// generated client — the generator has no value-union emission, so the
+// protocol-shapes test pins both arms' bytes instead.
+type HostBoundary struct {
+	Generation    uint64 `json:"generation"`
+	IncarnationID string `json:"incarnationId"`
+	PresenceEpoch uint64 `json:"presenceEpoch"`
+}
+
+// HostBoundaryAbsent is the literal string §10's hostBoundaries union encodes
+// a host with no records in the query as — never an omission.
+const HostBoundaryAbsent = "absent"
+
+// HostOperationsResponse is evener/host/operations' result (deploy pipeline
+// 08b §10): the bounded page of records plus the identity the client pages
+// under. `generation`/`incarnationId` are present exactly on host-pinned pages
+// (the single host named by the request) and absent on unfiltered cross-host
+// pages, where `hostBoundaries` is authoritative instead: one boundary per
+// every host in the query at cursor creation, the object triple or the literal
+// "absent" (HostBoundaryAbsent) for hosts with no records. `nextCursor` is
+// present exactly when the page listed at least one record.
+type HostOperationsResponse struct {
+	Operations     []OperationRecord `json:"operations"`
+	Generation     uint64            `json:"generation,omitempty"`
+	IncarnationID  string            `json:"incarnationId,omitempty"`
+	HostBoundaries map[string]any    `json:"hostBoundaries,omitempty"`
+	NextCursor     string            `json:"nextCursor,omitempty"`
+}
+
 // OperationState is one durable operation record's lifecycle state (deploy
 // pipeline 08b §4, §10). The set is closed; the wire carries the exact string.
 type OperationState string
@@ -4842,6 +5001,9 @@ type OperationResult struct {
 // (deploy pipeline 08b §4, §10). `incarnationId` is the pinned incarnation the
 // record ran against; `result` is present exactly on terminal records;
 // `hostRemoved` marks a record whose pinned incarnation a removal tombstoned.
+// `compacted: true` is present exactly on a replay the operation store
+// answered from a dedup tombstone — the terminal record itself was compacted
+// (§4) — and absent on every retained record.
 // The fencing-epoch and orphan-boundary details a later slice's wire carries
 // (the crash-fencing spec's shapes) stay off this shape until that slice
 // registers its filters.
@@ -4858,6 +5020,7 @@ type OperationRecord struct {
 	CreatedAt         string                   `json:"createdAt"`
 	UpdatedAt         string                   `json:"updatedAt"`
 	HostRemoved       bool                     `json:"hostRemoved"`
+	Compacted         bool                     `json:"compacted,omitempty"`
 }
 
 // HostRunningParams is the evener/host/running payload (deploy pipeline 08b

@@ -1,9 +1,6 @@
 import { type EvenerDelegateInfo, scopedDisclosureId } from "@evener/appwire-client";
 import { type ReactNode, useMemo, useState } from "react";
 import {
-	type AccessibilityActionEvent,
-	ActionSheetIOS,
-	Alert,
 	Modal,
 	Platform,
 	Pressable,
@@ -13,6 +10,7 @@ import {
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { copyText } from "./clipboard";
+import { type MenuItem, menuAccessibility, menuPreview, showMenu } from "./longPressMenu";
 import { MarkdownResponse } from "./MarkdownResponse";
 import { toggleDisclosure, useDisclosureOpen } from "./nativeDisclosure";
 import type { MobileTimelineItem } from "./projectedRows";
@@ -29,7 +27,6 @@ import { askRowQuestions, timeMarkerText } from "./session/transcriptRows";
 import { TranscriptImages } from "./TranscriptImages";
 import {
 	isCriticalNotice,
-	questionOptionKey,
 	steeringNoticeLabel,
 	type TimelineRow,
 } from "./timeline";
@@ -129,6 +126,9 @@ export function TimelineItem({
 				/>
 			);
 			break;
+		case "note":
+			content = <NoteRow text={item.text} />;
+			break;
 		case "assistant":
 			content = <AgentMessage markdown={item.markdown} quote={quote} />;
 			break;
@@ -167,28 +167,6 @@ export function TimelineItem({
 			break;
 		case "attachments":
 			content = <TranscriptImages images={item.items} hubId={hubId} />;
-			break;
-		case "question":
-			content = (
-				<>
-					{item.questions.map((question) => (
-						<View key={question.key} style={{ gap: 8 }}>
-							<Copy>{question.header}</Copy>
-							<Copy>{question.question}</Copy>
-							{question.options.map((option, index) => (
-								// biome-ignore lint/suspicious/noArrayIndexKey: an ask's options render in the order the agent offered them; their bounded labels can cut to the same string past the display bound, so position is their only collision-free identity.
-								<Copy key={questionOptionKey(question.key, index)}>
-									{option.label}
-									{option.recommended ? " (recommended)" : ""}
-									{option.detail ? ` — ${option.detail}` : ""}
-								</Copy>
-							))}
-							{question.why ? <Copy muted>{question.why}</Copy> : null}
-						</View>
-					))}
-					<Copy muted>Open Questions to answer by the composer.</Copy>
-				</>
-			);
 			break;
 		case "activity":
 			if (item.family === "reasoning" && item.state !== "running") {
@@ -272,65 +250,11 @@ export function TimelineItem({
 			break;
 	}
 	return (
-		<View
-			style={[
-				{ gap: 8 },
-				// A failure and a critical notice draw their own red rule (ErrorRow).
-				item.kind === "question"
-					? {
-							borderLeftWidth: 2,
-							borderLeftColor: colors.accent,
-							paddingLeft: 14,
-							paddingVertical: 8,
-						}
-					: null,
-			]}
-		>
+		// A failure and a critical notice draw their own red rule (ErrorRow).
+		<View style={{ gap: 8 }}>
 			{content}
 		</View>
 	);
-}
-
-/** One item of a message's touch-and-hold menu, which VoiceOver also offers
- * as an action on the message. */
-interface MenuItem {
-	name: string;
-	label: string;
-	run: () => void;
-}
-
-function showMenu(items: readonly MenuItem[], preview: string) {
-	if (Platform.OS === "ios") {
-		ActionSheetIOS.showActionSheetWithOptions(
-			{
-				options: [...items.map((item) => item.label), "Cancel"],
-				cancelButtonIndex: items.length,
-			},
-			(index) => items[index]?.run(),
-		);
-		return;
-	}
-	// Android's alert holds at most three buttons, so it dismisses by a tap
-	// outside rather than spending one on Cancel.
-	Alert.alert(
-		"Message",
-		preview,
-		items.map((item) => ({ text: item.label, onPress: item.run })),
-		{ cancelable: true },
-	);
-}
-
-/** A message's first 120 characters on one line, for the Android menu. */
-function menuPreview(text: string): string {
-	return text.replace(/\s+/g, " ").trim().slice(0, 120);
-}
-
-function menuAccessibility(items: readonly MenuItem[]) {
-	return {
-		accessibilityActions: items.map(({ name, label }) => ({ name, label })),
-		onAccessibilityAction: (event: AccessibilityActionEvent) =>
-			items.find((item) => item.name === event.nativeEvent.actionName)?.run(),
-	};
 }
 
 function YourMessage({
@@ -389,6 +313,25 @@ function YourMessage({
 					Steered in mid-turn
 				</Text>
 			) : null}
+		</View>
+	);
+}
+
+// A shared-notes update (spec 8.2, 8.8): a 2pt left rule like a subagent row,
+// a quiet caption, and the note itself in the serif prose used for your
+// messages. An emptied note reads only the caption.
+function NoteRow({ text }: { text: string }) {
+	const { palette } = useColors();
+	const scale = useTextScale();
+	return (
+		<View style={{ borderLeftWidth: 2, borderLeftColor: palette.edgeStrong, paddingLeft: 12, paddingVertical: 4, gap: 4 }}>
+			<Text
+				allowFontScaling={Platform.OS !== "ios"}
+				style={{ fontSize: 13 * scale, lineHeight: 18 * scale, color: palette.inkMid }}
+			>
+				{text ? "You updated your note" : "You cleared your note"}
+			</Text>
+			{text ? <Copy variant="yourMessage">{text}</Copy> : null}
 		</View>
 	);
 }
