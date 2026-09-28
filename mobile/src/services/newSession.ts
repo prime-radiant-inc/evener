@@ -10,96 +10,85 @@
 // form's autocomplete and optional fields.
 
 import type {
-  HarnessDescriptor,
-  HarnessListResponse,
-  InputItem,
-  LaunchConfigLayer,
-  MethodTypes,
-  ModelListParams,
-  ModelListResponse,
-  PluginPreviewParams,
-  PluginPreviewResponse,
-  ProjectsRecentResponse,
-  Thread,
-  ThreadStartResponse,
-  Turn,
+	HarnessDescriptor,
+	HarnessListResponse,
+	InputItem,
+	LaunchConfigLayer,
+	MethodTypes,
+	ModelListParams,
+	ModelListResponse,
+	PluginPreviewParams,
+	PluginPreviewResponse,
+	ProjectsRecentResponse,
+	Thread,
+	ThreadStartResponse,
+	Turn,
 } from "@evener/appwire-client";
 import type { ConversationClientLike } from "./conversation";
 
 export interface NewSessionParams {
-  cwd: string;
-  input?: InputItem[];
-  modelProvider?: string;
-  model?: string;
-  harness?: string;
-  reasoningEffort?: string;
-  launchOverrides?: LaunchConfigLayer;
+	cwd: string;
+	input?: InputItem[];
+	modelProvider?: string;
+	model?: string;
+	harness?: string;
+	reasoningEffort?: string;
+	launchOverrides?: LaunchConfigLayer;
 }
 
 export interface NewSessionService {
-  start(params: NewSessionParams): Promise<{ thread: Thread; turn: Turn }>;
-  recentProjects(): Promise<string[]>;
-  harnesses(): Promise<HarnessDescriptor[]>;
-  models(params?: ModelListParams): Promise<ModelListResponse>;
-  previewPlugins(params: PluginPreviewParams): Promise<PluginPreviewResponse>;
+	start(params: NewSessionParams): Promise<{ thread: Thread; turn: Turn }>;
+	recentProjects(): Promise<string[]>;
+	harnesses(): Promise<HarnessDescriptor[]>;
+	models(params?: ModelListParams): Promise<ModelListResponse>;
+	previewPlugins(params: PluginPreviewParams): Promise<PluginPreviewResponse>;
 }
 
-export function createNewSessionService(
-  client: ConversationClientLike,
-): NewSessionService {
-  return {
-    async start(params) {
-      const wireParams: MethodTypes["thread/start"]["params"] = {
-        cwd: params.cwd,
-      };
-      if (params.input !== undefined) {
-        wireParams.input = params.input;
-      }
-      if (params.modelProvider !== undefined) {
-        wireParams.modelProvider = params.modelProvider;
-      }
-      if (params.model !== undefined) {
-        wireParams.model = params.model;
-      }
-      if (params.harness !== undefined) {
-        wireParams.harness = params.harness;
-      }
-      if (params.reasoningEffort !== undefined) {
-        wireParams.reasoningEffort = params.reasoningEffort;
-      }
-      if (params.launchOverrides !== undefined) {
-        wireParams.launchOverrides = params.launchOverrides;
-      }
-      const response: ThreadStartResponse = await client.request(
-        "thread/start",
-        wireParams,
-      );
-      return { thread: response.thread, turn: response.turn };
-    },
+export function createNewSessionService(client: ConversationClientLike): NewSessionService {
+	return {
+		async start(params) {
+			const wireParams: MethodTypes["thread/start"]["params"] = {
+				cwd: params.cwd,
+			};
+			if (params.input !== undefined) {
+				wireParams.input = params.input;
+			}
+			if (params.modelProvider !== undefined) {
+				wireParams.modelProvider = params.modelProvider;
+			}
+			if (params.model !== undefined) {
+				wireParams.model = params.model;
+			}
+			if (params.harness !== undefined) {
+				wireParams.harness = params.harness;
+			}
+			if (params.reasoningEffort !== undefined) {
+				wireParams.reasoningEffort = params.reasoningEffort;
+			}
+			if (params.launchOverrides !== undefined) {
+				wireParams.launchOverrides = params.launchOverrides;
+			}
+			const response: ThreadStartResponse = await client.request("thread/start", wireParams);
+			return { thread: response.thread, turn: response.turn };
+		},
 
-    async recentProjects() {
-      const response: ProjectsRecentResponse = await client.request(
-        "evener/projects/recent",
-        {},
-      );
-      return response.data ?? [];
-    },
+		async recentProjects() {
+			const response: ProjectsRecentResponse = await client.request("evener/projects/recent", {});
+			return response.data ?? [];
+		},
 
-    async harnesses() {
-      const response: HarnessListResponse = await client.request(
-        "evener/harnesses/list",
-        {},
-      );
-      return response.data ?? [];
-    },
+		async harnesses() {
+			const response: HarnessListResponse = await client.request("evener/harnesses/list", {});
+			return response.data ?? [];
+		},
 
-    async models(params = {}) {
-      return client.request("model/list", params);
-    },
-    async previewPlugins(params) {
-      return client.request("evener/plugin/preview", params);
-    },
-  };
+		async models(params = {}) {
+			return client.request("model/list", params);
+		},
+		async previewPlugins(params) {
+			return client.request("evener/plugin/preview", params);
+		},
+	};
 }
 
 export type { ConversationClientLike };

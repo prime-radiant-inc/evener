@@ -17,10 +17,7 @@ import type {
 	MutationPersistenceSnapshot,
 	MutationRecoveryRecord,
 } from "@evener/appwire-client/state/mutation";
-import {
-	createConversationMutationPendingPort,
-	type ConversationMutationPendingRuntime,
-} from "./conversationMutation";
+import { createConversationMutationPendingPort, type ConversationMutationPendingRuntime } from "./conversationMutation";
 
 // The composite storage target key the native runtime scopes records by: the
 // same JSON [hub, ref] shape nativeMutationRuntime.nativeMutationTargetKey
