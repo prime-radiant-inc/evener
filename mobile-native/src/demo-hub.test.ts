@@ -430,65 +430,73 @@ describe("native demonstration hub's fleet sessions", () => {
 			await hub.close();
 		}
 	}
-
-	it("opens every live fleet session, so the title's swipe lands on real neighbors", async () => {
-		await withHub({}, async (client) => {
+	// withHub, with the conversation service open on its client, closed after
+	// `body` runs.
+	async function withSession(
+		fleetOptions: DemoFleetOptions | undefined,
+		body: (
+			service: ReturnType<typeof createConversationService>,
+			client: ReturnType<typeof createHubClient>,
+			hub: Awaited<ReturnType<typeof createDemoHub>>,
+		) => Promise<void>,
+	) {
+		await withHub(fleetOptions, async (client, hub) => {
 			const service = createConversationService(client);
 			try {
-				for (const session of fleetSessions().filter((candidate) => candidate.state !== "shutdown")) {
-					const conversation = await service.open(session.ref);
-					expect(conversation.name).toBe(session.title);
-					expect(conversation.items.length).toBeGreaterThan(0);
-				}
-				const turns = await client.request("thread/turns/list", {
-					ref: fleetSessionRef("s-pr2138"),
-				});
-				expect(turns.data).toEqual([]);
+				await body(service, client, hub);
 			} finally {
 				service.close();
 			}
+		});
+	}
+
+	it("opens every live fleet session, so the title's swipe lands on real neighbors", async () => {
+		await withSession({}, async (service, client) => {
+			for (const session of fleetSessions().filter((candidate) => candidate.state !== "shutdown")) {
+				const conversation = await service.open(session.ref);
+				expect(conversation.name).toBe(session.title);
+				expect(conversation.items.length).toBeGreaterThan(0);
+			}
+			const turns = await client.request("thread/turns/list", {
+				ref: fleetSessionRef("s-pr2138"),
+			});
+			expect(turns.data).toEqual([]);
 		});
 	});
 
 	it("queues, steers, stops and holds a fleet session's messages, then sends one held", async () => {
-		await withHub({}, async (client) => {
-			const service = createConversationService(client);
-			try {
-				const opened = await service.open(fleetSessionRef("s-pr2138"));
-				const instanceId = opened.instanceId;
-				if (!instanceId) throw new Error("Missing instance id");
-				await service.queue([{ type: "text", text: "One more thing" }]);
-				const queued = await service.open(fleetSessionRef("s-pr2138"));
-				expect(queued.queue?.texts).toEqual(["When CI is green, post a summary on the PR.", "One more thing"]);
-				// Steer now, while the turn runs.
-				const [first, second] = queued.queue?.ids ?? [];
-				if (!first || !second) throw new Error("Missing queue ids");
-				expect(ghosts(queued, [], null, []).map((ghost) => ghost.buttons)).toEqual([["steerNow"], ["steerNow"]]);
-				await service.promoteQueuedAsSteer(0, first, instanceId);
-				// Stop with a message queued holds it, and Send now releases it.
-				await service.interrupt();
-				const stopped = await service.open(fleetSessionRef("s-pr2138"));
-				expect(stopped.status.type).toBe("idle");
-				expect(stopped.queue?.texts).toEqual(["One more thing"]);
-				expect(ghosts(stopped, [], null, [])).toEqual([
-					expect.objectContaining({ state: "held", buttons: ["sendNow", "cancel"] }),
-				]);
-				await service.promoteQueuedAsSteer(0, second, instanceId);
-				const sent = await service.open(fleetSessionRef("s-pr2138"));
-				expect(sent.queue?.depth).toBe(0);
-				expect(sent.status.type).toBe("active");
-				expect(sent.items.filter((item) => item.kind === "user").at(-1)).toMatchObject({
-					text: "One more thing",
-				});
-			} finally {
-				service.close();
-			}
+		await withSession({}, async (service) => {
+			const opened = await service.open(fleetSessionRef("s-pr2138"));
+			const instanceId = opened.instanceId;
+			if (!instanceId) throw new Error("Missing instance id");
+			await service.queue([{ type: "text", text: "One more thing" }]);
+			const queued = await service.open(fleetSessionRef("s-pr2138"));
+			expect(queued.queue?.texts).toEqual(["When CI is green, post a summary on the PR.", "One more thing"]);
+			// Steer now, while the turn runs.
+			const [first, second] = queued.queue?.ids ?? [];
+			if (!first || !second) throw new Error("Missing queue ids");
+			expect(ghosts(queued, [], null, []).map((ghost) => ghost.buttons)).toEqual([["steerNow"], ["steerNow"]]);
+			await service.promoteQueuedAsSteer(0, first, instanceId);
+			// Stop with a message queued holds it, and Send now releases it.
+			await service.interrupt();
+			const stopped = await service.open(fleetSessionRef("s-pr2138"));
+			expect(stopped.status.type).toBe("idle");
+			expect(stopped.queue?.texts).toEqual(["One more thing"]);
+			expect(ghosts(stopped, [], null, [])).toEqual([
+				expect.objectContaining({ state: "held", buttons: ["sendNow", "cancel"] }),
+			]);
+			await service.promoteQueuedAsSteer(0, second, instanceId);
+			const sent = await service.open(fleetSessionRef("s-pr2138"));
+			expect(sent.queue?.depth).toBe(0);
+			expect(sent.status.type).toBe("active");
+			expect(sent.items.filter((item) => item.kind === "user").at(-1)).toMatchObject({
+				text: "One more thing",
+			});
 		});
 	});
 
 	it("reflects each mutation it takes, so the phone's pending ghosts clear", async () => {
-		await withHub({}, async (client) => {
-			const service = createConversationService(client);
+		await withSession({}, async (service, client) => {
 			const ref = fleetSessionRef("s-pr2138");
 			// The phone's own accepted record for a mutation, as its outbox keeps
 			// it until the hub reflects the mutation.
@@ -513,112 +521,98 @@ describe("native demonstration hub's fleet sessions", () => {
 					[],
 				);
 			};
-			try {
-				const opened = await service.open(ref);
-				const expectedInstanceId = opened.instanceId ?? "";
-				await client.request("turn/queue", {
-					ref,
-					clientMutationId: "queue-1",
-					expectedInstanceId,
-					input: [{ type: "text", text: "From the phone" }],
-				});
-				const queuedHere = accepted("queue-1", "turn/queue", "From the phone");
-				// The queued message shows once, as the queue's ghost.
-				expect((await ghostsFor([queuedHere])).map((ghost) => [ghost.state, ghost.text])).toEqual([
-					["queued", "When CI is green, post a summary on the PR."],
-					["queued", "From the phone"],
-				]);
-				// Steer now: the steered message lands in the running turn. The
-				// phone retired its queue record once the queue reflected it.
-				const queued = await service.open(ref);
-				const promote = accepted("promote-1", "turn/promoteQueuedAsSteer", "");
-				await client.request("turn/promoteQueuedAsSteer", {
-					ref,
-					clientMutationId: "promote-1",
-					expectedInstanceId,
-					index: 1,
-					expectedEntryId: queued.queue?.ids?.[1] ?? "",
-				});
-				expect((await ghostsFor([promote])).map((ghost) => ghost.text)).toEqual([
+			const opened = await service.open(ref);
+			const expectedInstanceId = opened.instanceId ?? "";
+			await client.request("turn/queue", {
+				ref,
+				clientMutationId: "queue-1",
+				expectedInstanceId,
+				input: [{ type: "text", text: "From the phone" }],
+			});
+			const queuedHere = accepted("queue-1", "turn/queue", "From the phone");
+			// The queued message shows once, as the queue's ghost.
+			expect((await ghostsFor([queuedHere])).map((ghost) => [ghost.state, ghost.text])).toEqual([
+				["queued", "When CI is green, post a summary on the PR."],
+				["queued", "From the phone"],
+			]);
+			// Steer now: the steered message lands in the running turn. The
+			// phone retired its queue record once the queue reflected it.
+			const queued = await service.open(ref);
+			const promote = accepted("promote-1", "turn/promoteQueuedAsSteer", "");
+			await client.request("turn/promoteQueuedAsSteer", {
+				ref,
+				clientMutationId: "promote-1",
+				expectedInstanceId,
+				index: 1,
+				expectedEntryId: queued.queue?.ids?.[1] ?? "",
+			});
+			expect((await ghostsFor([promote])).map((ghost) => ghost.text)).toEqual([
+				"When CI is green, post a summary on the PR.",
+			]);
+			// Steer all: the receipt names every queued message it consumed.
+			const drained = await client.request("turn/drainAsSteer", {
+				ref,
+				clientMutationId: "drain-1",
+				expectedInstanceId,
+				expectedQueueRevision: (await service.open(ref)).queue?.revision ?? -1,
+			});
+			expect(drained.receipt.consumedClientMutationIds).toEqual(["s-pr2138-queued-0"]);
+			await client.request("turn/steer", {
+				ref,
+				clientMutationId: "steer-1",
+				expectedInstanceId,
+				input: [{ type: "text", text: "And check Linux too" }],
+			});
+			const steered = accepted("steer-1", "turn/steer", "And check Linux too");
+			expect(await ghostsFor([promote, accepted("drain-1", "turn/drainAsSteer", ""), steered])).toEqual([]);
+			expect((await service.open(ref)).items.filter((item) => item.kind === "user").map((item) => item.text)).toEqual(
+				expect.arrayContaining([
+					"From the phone",
 					"When CI is green, post a summary on the PR.",
-				]);
-				// Steer all: the receipt names every queued message it consumed.
-				const drained = await client.request("turn/drainAsSteer", {
-					ref,
-					clientMutationId: "drain-1",
-					expectedInstanceId,
-					expectedQueueRevision: (await service.open(ref)).queue?.revision ?? -1,
-				});
-				expect(drained.receipt.consumedClientMutationIds).toEqual(["s-pr2138-queued-0"]);
-				await client.request("turn/steer", {
-					ref,
-					clientMutationId: "steer-1",
-					expectedInstanceId,
-					input: [{ type: "text", text: "And check Linux too" }],
-				});
-				const steered = accepted("steer-1", "turn/steer", "And check Linux too");
-				expect(await ghostsFor([promote, accepted("drain-1", "turn/drainAsSteer", ""), steered])).toEqual([]);
-				expect((await service.open(ref)).items.filter((item) => item.kind === "user").map((item) => item.text)).toEqual(
-					expect.arrayContaining([
-						"From the phone",
-						"When CI is green, post a summary on the PR.",
-						"And check Linux too",
-					]),
-				);
-			} finally {
-				service.close();
-			}
+					"And check Linux too",
+				]),
+			);
 		});
 	});
 
 	it("cancels one queued message and steers with the rest from a long queue", async () => {
-		await withHub({}, async (client) => {
-			const service = createConversationService(client);
-			try {
-				const opened = await service.open(fleetSessionRef("s-stumble"));
-				const [first] = opened.queue?.ids ?? [];
-				if (!first || !opened.instanceId || !opened.queue) throw new Error("Missing queue guards");
-				await service.cancelQueued(0, first, opened.instanceId);
-				const cancelled = await service.open(fleetSessionRef("s-stumble"));
-				expect(cancelled.queue?.depth).toBe(4);
-				if (!cancelled.queue) throw new Error("Missing queue");
-				await service.drainAsSteer(cancelled.queue.revision, opened.instanceId);
-				expect((await service.open(fleetSessionRef("s-stumble"))).queue?.depth).toBe(0);
-			} finally {
-				service.close();
-			}
+		await withSession({}, async (service) => {
+			const opened = await service.open(fleetSessionRef("s-stumble"));
+			const [first] = opened.queue?.ids ?? [];
+			if (!first || !opened.instanceId || !opened.queue) throw new Error("Missing queue guards");
+			await service.cancelQueued(0, first, opened.instanceId);
+			const cancelled = await service.open(fleetSessionRef("s-stumble"));
+			expect(cancelled.queue?.depth).toBe(4);
+			if (!cancelled.queue) throw new Error("Missing queue");
+			await service.drainAsSteer(cancelled.queue.revision, opened.instanceId);
+			expect((await service.open(fleetSessionRef("s-stumble"))).queue?.depth).toBe(0);
 		});
 	});
 
 	it("settles the stopped turn's open items and times, and times the next turn", async () => {
-		await withHub({}, async (client) => {
-			const service = createConversationService(client);
+		await withSession({}, async (service, client) => {
 			const ref = fleetSessionRef("s-tasklist");
 			const read = async () => (await client.request("thread/read", { ref, includeTurns: true })).thread;
-			try {
-				const before = await read();
-				await service.open(ref);
-				await service.interrupt();
-				const stopped = await read();
-				const turn = stopped.turns?.at(-1);
-				if (!turn?.startedAt) throw new Error("the stopped turn needs its start");
-				expect(turn.status).toBe("interrupted");
-				expect(turn.items?.filter((item) => item.status === "inProgress")).toEqual([]);
-				expect(turn.items?.filter((item) => item.status === "interrupted").map((item) => item.toolName)).toEqual([
-					"delegate",
-					"delegate",
-					"shell",
-				]);
-				expect(turn.completedAt).toBeGreaterThanOrEqual(turn.startedAt);
-				expect(turn.durationMs).toBe((turn.completedAt ?? 0) - turn.startedAt);
-				expect(stopped.evener.lastTurnEndedAt).toBe(turn.completedAt);
-				expect(stopped.evener.workMillis).toBeGreaterThan(before.evener.workMillis ?? 0);
-				await service.open(ref);
-				await service.send([{ type: "text", text: "Go on" }]);
-				expect((await read()).turns?.at(-1)?.startedAt).toBeGreaterThanOrEqual(turn.completedAt ?? 0);
-			} finally {
-				service.close();
-			}
+			const before = await read();
+			await service.open(ref);
+			await service.interrupt();
+			const stopped = await read();
+			const turn = stopped.turns?.at(-1);
+			if (!turn?.startedAt) throw new Error("the stopped turn needs its start");
+			expect(turn.status).toBe("interrupted");
+			expect(turn.items?.filter((item) => item.status === "inProgress")).toEqual([]);
+			expect(turn.items?.filter((item) => item.status === "interrupted").map((item) => item.toolName)).toEqual([
+				"delegate",
+				"delegate",
+				"shell",
+			]);
+			expect(turn.completedAt).toBeGreaterThanOrEqual(turn.startedAt);
+			expect(turn.durationMs).toBe((turn.completedAt ?? 0) - turn.startedAt);
+			expect(stopped.evener.lastTurnEndedAt).toBe(turn.completedAt);
+			expect(stopped.evener.workMillis).toBeGreaterThan(before.evener.workMillis ?? 0);
+			await service.open(ref);
+			await service.send([{ type: "text", text: "Go on" }]);
+			expect((await read()).turns?.at(-1)?.startedAt).toBeGreaterThanOrEqual(turn.completedAt ?? 0);
 		});
 	});
 
@@ -654,18 +648,13 @@ describe("native demonstration hub's fleet sessions", () => {
 	});
 
 	it("clears frame 8's question once you answer it", async () => {
-		await withHub({}, async (client) => {
-			const service = createConversationService(client);
+		await withSession({}, async (service, client) => {
 			const ref = fleetSessionRef("s-audit");
-			try {
-				await service.open(ref);
-				await service.send([{ type: "text", text: "[answers]\n1. [Implied options] → Drop them" }]);
-				const { thread } = await client.request("thread/read", { ref, includeTurns: false });
-				expect(thread.evener.askPending).toBeFalsy();
-				expect(thread.evener).not.toHaveProperty("pendingQuestion");
-			} finally {
-				service.close();
-			}
+			await service.open(ref);
+			await service.send([{ type: "text", text: "[answers]\n1. [Implied options] → Drop them" }]);
+			const { thread } = await client.request("thread/read", { ref, includeTurns: false });
+			expect(thread.evener.askPending).toBeFalsy();
+			expect(thread.evener).not.toHaveProperty("pendingQuestion");
 		});
 	});
 
@@ -692,70 +681,55 @@ describe("native demonstration hub's fleet sessions", () => {
 	});
 
 	it("keeps Clear off while a held queue waits, and offers it once the queue empties", async () => {
-		await withHub({}, async (client) => {
-			const service = createConversationService(client);
+		await withSession({}, async (service) => {
 			const ref = fleetSessionRef("s-pr2138");
-			try {
-				await service.open(ref);
-				await service.interrupt();
-				const held = await service.open(ref);
-				expect(held.capabilities.clear).toBe(false);
-				const [entry] = held.queue?.ids ?? [];
-				if (!entry || !held.instanceId) throw new Error("Missing queue guards");
-				await service.cancelQueued(0, entry, held.instanceId);
-				expect((await service.open(ref)).capabilities.clear).toBe(true);
-			} finally {
-				service.close();
-			}
+			await service.open(ref);
+			await service.interrupt();
+			const held = await service.open(ref);
+			expect(held.capabilities.clear).toBe(false);
+			const [entry] = held.queue?.ids ?? [];
+			if (!entry || !held.instanceId) throw new Error("Missing queue guards");
+			await service.cancelQueued(0, entry, held.instanceId);
+			expect((await service.open(ref)).capabilities.clear).toBe(true);
 		});
 	});
 
 	it("gives a shut-down session a live daemon's capabilities once you send to it", async () => {
-		await withHub({}, async (client) => {
-			const service = createConversationService(client);
+		await withSession({}, async (service) => {
 			const ref = fleetSessionRef("s-roster");
-			try {
-				await service.open(ref);
-				await service.send([{ type: "text", text: "Measure it again" }]);
-				const working = await service.open(ref);
-				expect(working.status.type).toBe("active");
-				expect(working.capabilities).toMatchObject({
-					send: false,
-					steer: true,
-					interrupt: true,
-					clear: false,
-					forkFromTurn: false,
-				});
-				await service.interrupt();
-				expect((await service.open(ref)).status.type).toBe("idle");
-			} finally {
-				service.close();
-			}
+			await service.open(ref);
+			await service.send([{ type: "text", text: "Measure it again" }]);
+			const working = await service.open(ref);
+			expect(working.status.type).toBe("active");
+			expect(working.capabilities).toMatchObject({
+				send: false,
+				steer: true,
+				interrupt: true,
+				clear: false,
+				forkFromTurn: false,
+			});
+			await service.interrupt();
+			expect((await service.open(ref)).status.type).toBe("idle");
 		});
 	});
 
 	it("keeps a stopped fleet session sendable, like a daemon", async () => {
-		await withHub({}, async (client) => {
-			const service = createConversationService(client);
-			try {
-				await service.open(fleetSessionRef("s-gateway"));
-				await service.interrupt();
-				const stopped = await service.open(fleetSessionRef("s-gateway"));
-				expect(stopped.capabilities).toMatchObject({
-					send: true,
-					clear: true,
-					steer: true,
-					interrupt: true,
-					queue: true,
-				});
-				await service.send([{ type: "text", text: "Keep going" }]);
-				const working = await service.open(fleetSessionRef("s-gateway"));
-				expect(working.status.type).toBe("active");
-				expect(working.capabilities).toMatchObject({ send: false, clear: false, steer: true, interrupt: true });
-				expect(working.activeTurnStartedAt).toBeDefined();
-			} finally {
-				service.close();
-			}
+		await withSession({}, async (service) => {
+			await service.open(fleetSessionRef("s-gateway"));
+			await service.interrupt();
+			const stopped = await service.open(fleetSessionRef("s-gateway"));
+			expect(stopped.capabilities).toMatchObject({
+				send: true,
+				clear: true,
+				steer: true,
+				interrupt: true,
+				queue: true,
+			});
+			await service.send([{ type: "text", text: "Keep going" }]);
+			const working = await service.open(fleetSessionRef("s-gateway"));
+			expect(working.status.type).toBe("active");
+			expect(working.capabilities).toMatchObject({ send: false, clear: false, steer: true, interrupt: true });
+			expect(working.activeTurnStartedAt).toBeDefined();
 		});
 	});
 

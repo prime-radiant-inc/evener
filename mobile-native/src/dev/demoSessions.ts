@@ -43,12 +43,13 @@ import type {
 	UrlsRemoveParams,
 	UrlsRemoveResponse,
 } from "@evener/appwire-client";
-import { WireError } from "@evener/appwire-client";
+import { SHUT_DOWN_STATUSES, WireError } from "@evener/appwire-client";
 import {
 	demoSessionId,
 	enabledPluginNames,
 	type FleetSession,
 	fleetSessions,
+	hostSessionRef,
 	type ProtoState,
 	type RawSubagent,
 } from "./demoFleet";
@@ -594,7 +595,7 @@ function delegatesOf(session: FleetSession, now: number): EvenerDelegateInfo[] {
 			ownerSessionId: demoSessionId(parent ?? session.slug),
 			rootSessionId: demoSessionId(session.slug),
 			childSessionId: demoSessionId(subagent.id),
-			transcriptRef: `${session.hostId}:${demoSessionId(subagent.id)}`,
+			transcriptRef: hostSessionRef(session.hostId, subagent.id),
 			...(parent ? { parentDelegateId: parent } : {}),
 			type: "delegate",
 			lifecycle: "stable",
@@ -682,13 +683,14 @@ function queueOf(slug: string, texts: string[] = []): QueueState {
 		ids,
 		clientMutationIds: [...ids],
 		texts: [...texts],
-		preview: texts.map((text) => text.slice(0, 80)),
+		preview: queuePreview(texts),
 	};
 }
 
-// The statuses of a session whose daemon has gone: the hub serves it from
-// its saved transcript (SHUT_DOWN in session/sessionState.ts).
-const PAST_STATUSES = new Set(["notLoaded", "ended", "closed"]);
+// A queue's preview: each entry's first 80 characters.
+export function queuePreview(texts: readonly string[]): string[] {
+	return texts.map((text) => text.slice(0, 80));
+}
 
 const NO_CAPABILITIES: ThreadCapabilities = {
 	send: false,
@@ -716,40 +718,32 @@ const NO_CAPABILITIES: ThreadCapabilities = {
 // Called whenever a session changes, so what it offers follows its state.
 export function refreshCapabilities(thread: Thread): void {
 	const status = thread.status.type;
-	if (status === "restartRequired") thread.evener.capabilities = { ...NO_CAPABILITIES, sharedNotes: true };
-	else if (PAST_STATUSES.has(status))
-		thread.evener.capabilities = {
-			...NO_CAPABILITIES,
-			send: true,
-			compact: true,
-			clear: true,
-			forkFromTurn: true,
-			shutdown: true,
-			changeModel: true,
-			changeVisionModel: true,
-			queue: true,
-			goal: true,
-			sharedNotes: true,
-			rename: true,
-			skillInput: true,
-		};
-	else
-		thread.evener.capabilities = {
-			...NO_CAPABILITIES,
-			send: status !== "active",
-			steer: true,
-			interrupt: true,
-			compact: true,
-			clear: clearAvailable(thread),
-			shutdown: true,
-			changeModel: true,
-			changeVisionModel: true,
-			queue: true,
-			goal: true,
-			sharedNotes: true,
-			rename: true,
-			skillInput: true,
-		};
+	if (status === "restartRequired") {
+		thread.evener.capabilities = { ...NO_CAPABILITIES, sharedNotes: true };
+		return;
+	}
+	// What a live daemon and a past session both offer.
+	const resumable: ThreadCapabilities = {
+		...NO_CAPABILITIES,
+		compact: true,
+		shutdown: true,
+		changeModel: true,
+		changeVisionModel: true,
+		queue: true,
+		goal: true,
+		sharedNotes: true,
+		rename: true,
+		skillInput: true,
+	};
+	thread.evener.capabilities = SHUT_DOWN_STATUSES.has(status)
+		? { ...resumable, send: true, clear: true, forkFromTurn: true }
+		: {
+				...resumable,
+				send: status !== "active",
+				steer: true,
+				interrupt: true,
+				clear: clearAvailable(thread),
+			};
 }
 
 // Whether a live session can Clear: only at rest, with nothing queued or
@@ -763,6 +757,26 @@ function clearAvailable(thread: Thread): boolean {
 		!thread.evener.askPending &&
 		(thread.evener.pendingEscalations ?? []).length === 0
 	);
+}
+
+// A fleet session starts `turn`: it works, and its working line counts from
+// `now`. It keeps Stop and steering as a daemon does, whatever the turn, so a
+// queue held by Stop can still be sent (refreshCapabilities).
+export function startFleetTurn(thread: Thread, turn: Turn, now: number): void {
+	thread.status = { type: "active" };
+	thread.evener.activeTurnId = turn.id;
+	thread.evener.activeTurnStartedAt = now;
+	thread.updatedAt += 1;
+	refreshCapabilities(thread);
+}
+
+// A fleet session stops running a turn and rests, idle or waiting on you.
+export function restFleetSession(thread: Thread, status: "idle" | "awaiting"): void {
+	thread.status = { type: status };
+	delete thread.evener.activeTurnId;
+	delete thread.evener.activeTurnStartedAt;
+	thread.updatedAt += 1;
+	refreshCapabilities(thread);
 }
 
 // A turn ends: its open items settle as a daemon records them (a tool call
@@ -1025,10 +1039,7 @@ export function askWorkingSessionQuestion(thread: Thread, now: number): void {
 	if (!turn) throw new Error(`${thread.name} has no running turn to ask from`);
 	turn.items?.push(askItem(`${turn.id}-ask`, `${turn.id}-ask`, WORKING_SESSION_QUESTION, now, now));
 	endTurn(thread, turn, "completed", now);
-	thread.status = { type: "awaiting" };
 	thread.evener.askPending = true;
 	thread.evener.pendingQuestion = pendingQuestionOf(WORKING_SESSION_QUESTION);
-	delete thread.evener.activeTurnId;
-	delete thread.evener.activeTurnStartedAt;
-	refreshCapabilities(thread);
+	restFleetSession(thread, "awaiting");
 }

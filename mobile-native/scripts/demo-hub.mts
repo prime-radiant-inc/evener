@@ -7,6 +7,7 @@ import { WireError } from "@evener/appwire-client";
 import type {
 	InitializeResponse,
 	InputItem,
+	ModelListResponse,
 	MutationReceipt,
 	NavigationInvalidatedPayload,
 	Thread,
@@ -24,11 +25,35 @@ import {
 	createDemoSessions,
 	DEMO_MODEL_LIST,
 	endTurn,
+	queuePreview,
 	refreshCapabilities,
 	removeLink,
 	resolveEscalation,
+	restFleetSession,
 	setHumanNote,
+	startFleetTurn,
 } from "../src/dev/demoSessions.js";
+
+// The playground's one scripted model; the fleet lists DEMO_MODEL_LIST.
+const PLAYGROUND_MODEL_LIST = {
+	data: [
+		{
+			provider: "demonstration",
+			model: "scripted",
+			displayName: "Scripted reply",
+			reasoningEffortLevels: [],
+		},
+	],
+} satisfies ModelListResponse;
+
+// The fleet sessions' shared-notes and approval methods, served only with
+// EVENER_DEMO_FLEET.
+const FLEET_SESSION_METHODS = {
+	"notes/human/set": setHumanNote,
+	"urls/remove": removeLink,
+	"evener/sandbox/escalation/resolve": resolveEscalation,
+} as const;
+type FleetSessionMethod = keyof typeof FLEET_SESSION_METHODS;
 
 export async function createDemoHub(
 	port = 9196,
@@ -213,22 +238,20 @@ export async function createDemoHub(
 		endTurn(thread, turn, "interrupted", Date.now());
 		setTurnRunning(thread, undefined);
 	}
-	// Moves the thread to `turn` running, or with no turn, to resting.
+	// Moves the thread to `turn` running, or with no turn, to resting. A
+	// fleet session follows demoSessions.ts's rules; the playground offers
+	// Stop and steering only while its scripted turn runs.
 	function setTurnRunning(thread: Thread, turn: Turn | undefined) {
+		if (fleetRefs.has(thread.evener.ref)) {
+			if (turn) startFleetTurn(thread, turn, Date.now());
+			else restFleetSession(thread, "idle");
+			return;
+		}
 		const running = turn !== undefined;
 		thread.status = { type: running ? "active" : "idle" };
 		thread.evener.capabilities.send = !running;
-		if (fleetRefs.has(thread.evener.ref)) {
-			// A fleet session keeps Stop and steering as a daemon does,
-			// whatever the turn: its capabilities follow its state
-			// (refreshCapabilities, after every change), so a queue held by
-			// Stop can still be sent. The working state line counts from the
-			// turn's start.
-			thread.evener.activeTurnStartedAt = running ? Date.now() : undefined;
-		} else {
-			thread.evener.capabilities.interrupt = running;
-			thread.evener.capabilities.steer = running;
-		}
+		thread.evener.capabilities.interrupt = running;
+		thread.evener.capabilities.steer = running;
 		thread.evener.activeTurnId = turn?.id;
 		thread.updatedAt += 1;
 	}
@@ -270,18 +293,7 @@ export async function createDemoHub(
 					case "model/list":
 						// The fleet's sessions pick from real-looking providers; the
 						// playground keeps its one scripted model.
-						result = demoFleet
-							? DEMO_MODEL_LIST
-							: {
-									data: [
-										{
-											provider: "demonstration",
-											model: "scripted",
-											displayName: "Scripted reply",
-											reasoningEffortLevels: [],
-										},
-									],
-								};
+						result = demoFleet ? DEMO_MODEL_LIST : PLAYGROUND_MODEL_LIST;
 						break;
 					case "thread/list":
 						result = {
@@ -427,7 +439,7 @@ export async function createDemoHub(
 							queue.ids = ids;
 							queue.texts = texts;
 							queue.clientMutationIds = mutationIds;
-							queue.preview = texts.map((text) => text.slice(0, 80));
+							queue.preview = queuePreview(texts);
 							queue.depth = ids.length;
 						}
 						const steering =
@@ -525,21 +537,14 @@ export async function createDemoHub(
 						break;
 					}
 					case "notes/human/set":
-						requireFleet();
-						if (!selected) throw new Error("Unknown demonstration session");
-						result = setHumanNote(selected, params);
-						changed = selected;
-						break;
 					case "urls/remove":
-						requireFleet();
-						if (!selected) throw new Error("Unknown demonstration session");
-						result = removeLink(selected, params);
-						changed = selected;
-						break;
 					case "evener/sandbox/escalation/resolve":
 						requireFleet();
 						if (!selected) throw new Error("Unknown demonstration session");
-						result = resolveEscalation(selected, params);
+						result = FLEET_SESSION_METHODS[request.method as FleetSessionMethod](
+							selected,
+							params,
+						);
 						changed = selected;
 						break;
 					case "evener/navigation/read":

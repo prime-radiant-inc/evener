@@ -551,7 +551,7 @@ function toChildRow(
 	// parent's delegates name its transcript by this same ref (demoSessions.ts).
 	const sessionId = demoSessionId(sub.id);
 	return {
-		ref: `${ownerHostId}:${sessionId}`,
+		ref: hostSessionRef(ownerHostId, sub.id),
 		host_id: ownerHostId,
 		session_id: sessionId,
 		title: sub.title,
@@ -594,9 +594,15 @@ function projectKeyOf(raw: { project?: string }): string {
 	return raw.project ?? "evener";
 }
 
+// The ref the wire names a session or subagent by: the host that owns it and
+// the hub-shaped id of its fixture slug.
+export function hostSessionRef(host: string, slug: string): string {
+	return `${host}:${demoSessionId(slug)}`;
+}
+
 // The ref the wire names a fleet session by: its owning host and its id.
 function sessionRef(raw: RawSession): string {
-	return `${hostId(raw.host)}:${demoSessionId(raw.id)}`;
+	return hostSessionRef(hostId(raw.host), raw.id);
 }
 
 // A fleet session as demoSessions.ts needs it to serve the session's own
