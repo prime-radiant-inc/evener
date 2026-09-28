@@ -1563,6 +1563,12 @@ func TestProjectTurn_HealedCommunicateFallbackIsBoundedAndOneLine(t *testing.T) 
 	if len(short) != 1 || short[0].Text != "line1 line2" {
 		t.Errorf("short fallback = %+v, want one item with text %q", short, "line1 line2")
 	}
+
+	// Whitespace-only raw bytes collapse to nothing: no empty item is emitted,
+	// matching the previous "drop when there is nothing to show" behavior.
+	if blank := projectHealedCommunicateFallback(t, "\r \r"); len(blank) != 0 {
+		t.Errorf("blank fallback = %+v, want no items", blank)
+	}
 }
 
 // projectHealedCommunicateFallback projects a healed communicate whose raw

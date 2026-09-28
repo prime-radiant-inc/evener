@@ -822,14 +822,16 @@ func projectTurn(turnID string, turnIndex int, turn schema.Turn, reg *ToolCallRe
 							// writeResultToolMessage): surface the bounded raw
 							// bytes the model sent instead of dropping the call
 							// silently.
-							items = append(items, appwire.ThreadItem{
-								Type:   "agentMessage",
-								ID:     fmt.Sprintf("item_assistant_%d_%d", turnIndex, i),
-								TurnID: turnID,
-								Text:   communicateRawFallbackText(rawArgs),
-								Status: appwire.TurnStatusCompleted,
-							})
-							recordPart(parts, i)
+							if text := communicateRawFallbackText(rawArgs); strings.TrimSpace(text) != "" {
+								items = append(items, appwire.ThreadItem{
+									Type:   "agentMessage",
+									ID:     fmt.Sprintf("item_assistant_%d_%d", turnIndex, i),
+									TurnID: turnID,
+									Text:   text,
+									Status: appwire.TurnStatusCompleted,
+								})
+								recordPart(parts, i)
+							}
 						}
 					}
 				}
