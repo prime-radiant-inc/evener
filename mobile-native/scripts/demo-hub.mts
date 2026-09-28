@@ -88,6 +88,7 @@ export async function createDemoHub(
 			: [];
 	for (const fleetThread of fleetThreads)
 		threads.set(fleetThread.evener.ref, fleetThread);
+	const fleetRefs = new Set(fleetThreads.map((value) => value.evener.ref));
 	let sessionNumber = 0;
 	const handshake: InitializeResponse = {
 		serverInfo: { name: "Native UI demonstration", version: "1" },
@@ -141,6 +142,57 @@ export async function createDemoHub(
 						params: { threadId: thread.id, ref: thread.evener.ref },
 					}),
 				);
+	}
+	// Starts the scripted turn: your message, stamped with its mutation id as
+	// the real projector stamps it (appwire_projection.go, EventUserInput), so
+	// a client recognizes its own send reflected back rather than treating it
+	// as a message from elsewhere, then the scripted reply.
+	function startScriptedTurn(
+		thread: Thread,
+		text: string,
+		clientMutationId: string,
+	): Turn {
+		turnNumber += 1;
+		const turn = {
+			id: `demo-turn-${turnNumber}`,
+			itemsView: "full",
+			status: "inProgress",
+			items: [
+				{
+					id: `demo-user-${turnNumber}`,
+					type: "userMessage",
+					text,
+					clientMutationId,
+				},
+				{
+					id: `demo-assistant-${turnNumber}`,
+					type: "agentMessage",
+					text: "Demonstration reply: your message reached this scripted test server. Tap Stop to end this demonstration turn.",
+					status: "completed",
+				},
+			],
+		} satisfies Turn;
+		thread.turns?.push(turn);
+		setTurnRunning(thread, turn);
+		return turn;
+	}
+	// Moves the thread to `turn` running, or with no turn, to resting.
+	function setTurnRunning(thread: Thread, turn: Turn | undefined) {
+		const running = turn !== undefined;
+		thread.status = { type: running ? "active" : "idle" };
+		thread.evener.capabilities.send = !running;
+		if (fleetRefs.has(thread.evener.ref)) {
+			// A fleet session keeps Stop and steering as a daemon does,
+			// whatever the turn (demoSessions.ts's capabilities), so a queue
+			// held by Stop can still be sent; the working state line counts
+			// from the turn's start.
+			thread.evener.activeTurnStartedAt = running ? Date.now() : undefined;
+		} else {
+			thread.evener.capabilities.interrupt = running;
+			thread.evener.capabilities.steer = running;
+		}
+		thread.evener.activeTurnId = turn?.id;
+		thread.updatedAt += 1;
 	}
 	function requireFleet() {
 		if (!demoFleet)
@@ -287,6 +339,7 @@ export async function createDemoHub(
 						const texts = queue.texts ?? [];
 						const method = request.method;
 						let removedText: string | undefined;
+						let removedTexts: string[] = [];
 						let entryIds: string[] | undefined;
 						if (method === "turn/queue") {
 							const id = `demo-queue-${params.clientMutationId}`;
@@ -306,7 +359,7 @@ export async function createDemoHub(
 									throw new WireError("Queue revision changed", -32013, {
 										evenerErrorInfo: "conflict",
 									});
-								texts.splice(0);
+								removedTexts = texts.splice(0);
 								entryIds = ids.splice(0);
 							} else {
 								if (
@@ -317,7 +370,8 @@ export async function createDemoHub(
 									throw new WireError("Queue entry changed", -32013, {
 										evenerErrorInfo: "conflict",
 									});
-								removedText = texts.splice(params.index, 1)[0];
+								removedTexts = texts.splice(params.index, 1);
+								removedText = removedTexts[0];
 								entryIds = ids.splice(params.index, 1);
 							}
 						}
@@ -328,6 +382,23 @@ export async function createDemoHub(
 							queue.preview = texts.map((text) => text.slice(0, 80));
 							queue.depth = ids.length;
 						}
+						// Sending a fleet session's held message (Stop parked the queue)
+						// starts a turn with it, as a daemon does. While a turn runs it
+						// steers that turn, which the script doesn't show. The
+						// playground never holds a queue: Stop takes its steering away.
+						const steering =
+							method === "turn/promoteQueuedAsSteer" ||
+							method === "turn/drainAsSteer";
+						if (
+							steering &&
+							fleetRefs.has(selected.evener.ref) &&
+							selected.status.type !== "active"
+						)
+							startScriptedTurn(
+								selected,
+								removedTexts.join("\n"),
+								params.clientMutationId,
+							);
 						const receipt: MutationReceipt = {
 							clientMutationId: params.clientMutationId,
 							disposition: "applied",
@@ -365,45 +436,17 @@ export async function createDemoHub(
 						if (starting) {
 							if (thread.status.type === "active")
 								throw new Error("Stop the demonstration before another send");
-							turnNumber += 1;
-							turn = {
-								id: `demo-turn-${turnNumber}`,
-								itemsView: "full",
-								status: "inProgress",
-								items: [
-									{
-										id: `demo-user-${turnNumber}`,
-										type: "userMessage",
-										text: (mutation.input ?? [])
-											.map((item) => item.text ?? "")
-											.join("\n"),
-										// The real projector stamps this too
-										// (appwire_projection.go, EventUserInput), so a client
-										// recognizes its own send reflected back rather than
-										// treating it as a message from elsewhere.
-										clientMutationId: mutation.clientMutationId,
-									},
-									{
-										id: `demo-assistant-${turnNumber}`,
-										type: "agentMessage",
-										text: "Demonstration reply: your message reached this scripted test server. Tap Stop to end this demonstration turn.",
-										status: "completed",
-									},
-								],
-							} satisfies Turn;
-							thread.turns?.push(turn);
+							turn = startScriptedTurn(
+								thread,
+								(mutation.input ?? []).map((item) => item.text ?? "").join("\n"),
+								mutation.clientMutationId,
+							);
 						} else {
 							if (!turn || thread.status.type !== "active")
 								throw new Error("No active demonstration turn");
 							turn.status = "interrupted";
+							setTurnRunning(thread, undefined);
 						}
-						if (!turn) throw new Error("Missing demonstration turn");
-						thread.status = { type: starting ? "active" : "idle" };
-						thread.evener.capabilities.send = !starting;
-						thread.evener.capabilities.interrupt = starting;
-						thread.evener.capabilities.steer = starting;
-						thread.evener.activeTurnId = starting ? turn.id : undefined;
-						thread.updatedAt += 1;
 						const receipt: MutationReceipt = {
 							clientMutationId: mutation.clientMutationId,
 							disposition: "applied",

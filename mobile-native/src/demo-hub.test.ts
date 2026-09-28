@@ -9,6 +9,7 @@ import { createDemoHub } from "../scripts/demo-hub.mjs";
 import { createHubClient } from "./connection";
 import { type DemoFleetOptions, demoSessionId, fleetSessions } from "./dev/demoFleet.js";
 import { readOrganizationNavigation } from "./organizationNavigation";
+import { ghosts } from "./session/ghosts";
 
 describe("native demonstration hub", () => {
 	it("changes the observed queue and rejects stale identities and revisions", async () => {
@@ -549,6 +550,87 @@ describe("native demonstration hub's fleet sessions", () => {
 					ref: refOf("s-pr2138"),
 				});
 				expect(turns.data).toEqual([]);
+			} finally {
+				service.close();
+			}
+		});
+	});
+
+	it("queues, steers, stops and holds a fleet session's messages, then sends one held", async () => {
+		await withHub({}, async (client) => {
+			const service = createConversationService(client);
+			try {
+				const opened = await service.open(refOf("s-pr2138"));
+				const instanceId = opened.instanceId;
+				if (!instanceId) throw new Error("Missing instance id");
+				await service.queue([{ type: "text", text: "One more thing" }]);
+				const queued = await service.open(refOf("s-pr2138"));
+				expect(queued.queue?.texts).toEqual([
+					"When CI is green, post a summary on the PR.",
+					"One more thing",
+				]);
+				// Steer now, while the turn runs.
+				const [first, second] = queued.queue?.ids ?? [];
+				if (!first || !second) throw new Error("Missing queue ids");
+				expect(ghosts(queued, [], null, []).map((ghost) => ghost.buttons)).toEqual([
+					["steerNow"],
+					["steerNow"],
+				]);
+				await service.promoteQueuedAsSteer(0, first, instanceId);
+				// Stop with a message queued holds it, and Send now releases it.
+				await service.interrupt();
+				const stopped = await service.open(refOf("s-pr2138"));
+				expect(stopped.status.type).toBe("idle");
+				expect(stopped.queue?.texts).toEqual(["One more thing"]);
+				expect(ghosts(stopped, [], null, [])).toEqual([
+					expect.objectContaining({ state: "held", buttons: ["sendNow", "cancel"] }),
+				]);
+				await service.promoteQueuedAsSteer(0, second, instanceId);
+				const sent = await service.open(refOf("s-pr2138"));
+				expect(sent.queue?.depth).toBe(0);
+				expect(sent.status.type).toBe("active");
+				expect(sent.items.filter((item) => item.kind === "user").at(-1)).toMatchObject({
+					text: "One more thing",
+				});
+			} finally {
+				service.close();
+			}
+		});
+	});
+
+	it("cancels one queued message and steers with the rest from a long queue", async () => {
+		await withHub({}, async (client) => {
+			const service = createConversationService(client);
+			try {
+				const opened = await service.open(refOf("s-stumble"));
+				const [first] = opened.queue?.ids ?? [];
+				if (!first || !opened.instanceId || !opened.queue)
+					throw new Error("Missing queue guards");
+				await service.cancelQueued(0, first, opened.instanceId);
+				const cancelled = await service.open(refOf("s-stumble"));
+				expect(cancelled.queue?.depth).toBe(4);
+				if (!cancelled.queue) throw new Error("Missing queue");
+				await service.drainAsSteer(cancelled.queue.revision, opened.instanceId);
+				expect((await service.open(refOf("s-stumble"))).queue?.depth).toBe(0);
+			} finally {
+				service.close();
+			}
+		});
+	});
+
+	it("keeps a stopped fleet session sendable, like a daemon", async () => {
+		await withHub({}, async (client) => {
+			const service = createConversationService(client);
+			try {
+				await service.open(refOf("s-gateway"));
+				await service.interrupt();
+				const stopped = await service.open(refOf("s-gateway"));
+				expect(stopped.capabilities).toMatchObject({ send: true, steer: true, interrupt: true, queue: true });
+				await service.send([{ type: "text", text: "Keep going" }]);
+				const working = await service.open(refOf("s-gateway"));
+				expect(working.status.type).toBe("active");
+				expect(working.capabilities).toMatchObject({ send: false, steer: true, interrupt: true });
+				expect(working.activeTurnStartedAt).toBeDefined();
 			} finally {
 				service.close();
 			}
