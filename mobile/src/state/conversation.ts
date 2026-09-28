@@ -63,6 +63,7 @@ import {
   attachmentSourceId,
   attachmentSourceIdentity,
   capItems,
+  failureRowIdentity,
   MAX_ITEM_BYTES,
   ownTimelineIdentities,
   projectConversation,
@@ -2045,6 +2046,19 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
             sameInstance && currentConvForMerge !== null
               ? applyReadModel(currentConvForMerge, conversation)
               : conversation;
+          // applyReadModel returns the held model BY REFERENCE, completely
+          // unchanged, when the read's own wire identity disposition is
+          // "discard" (an older epoch, a stale same-incarnation length, or
+          // an ignorable boot generation — the read raced a resync or a
+          // second rehydrate and lost). Bail out exactly like the store's
+          // own staleness guards above (entryEpoch/gen/token): committing
+          // nothing here is the correct outcome, and continuing would treat
+          // this discarded read's own turns as fresh, authoritative content
+          // for the strip pass below, clearing real held payloads (an
+          // image, a tool's output) a NEWER frame or read already settled.
+          if (sameInstance && currentConvForMerge !== null && appliedModel === currentConvForMerge) {
+            return;
+          }
           // A fresh read can reissue a paged/retained item under a DIFFERENT
           // turn id than before (the versioned merge matches by turn id
           // alone and never renames an item across turns) — fold that the
@@ -2358,6 +2372,16 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
                 rawPageIdentities.add(item.id);
               }
             }
+            // A failed turn projects its own row keyed failure:<turnId>
+            // (projectedRows.ts), never an item identity — count it too, or
+            // the F8 honest-stop below never sees the cap discard a page's
+            // own failure-row contribution and keeps offering a cursor whose
+            // every page discards its own history. A real v6 turn id is
+            // stable (mergeHistory never renames one), so the raw page
+            // turn's own id is exactly the merged output's id.
+            for (const turn of result.turnsPage.data) {
+              if (turn.error !== undefined) rawPageIdentities.add(failureRowIdentity(turn.id));
+            }
             // itemKeys is the reader's no-progress signal (nonempty clears
             // its retry guard): an identity already held before this page
             // merged in contributed nothing new, whatever field the page's
@@ -2370,6 +2394,23 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
               if (!beforeIdentities.has(id)) pageKeys.add(id);
             }
             const versionedMerge = mergeOlderItemPage(currentConv, result.turnsPage);
+            if (versionedMerge.turns === currentConv.turns) {
+              // mergeOlderItemPage's own versioned disposition (discard,
+              // defer, or invalidate — mergeVersionedPage's pageDisposition
+              // switch) merged nothing in: `turns` comes back by reference,
+              // unchanged. A discarded or deferred page is silently
+              // absorbed (a deferred one resolves itself once the held
+              // incarnation's own latest-window read lands, per
+              // applyReadModel/applyReadResponse's own deferredPages replay);
+              // an invalidated one means this page raced a resync mid-flight
+              // and only a fresh read can recover — the same gap the
+              // live-frame path already requests one for.
+              set({ loadingOlder: false });
+              if (versionedMerge.history?.invalidatedAtGeneration !== currentConv.history?.invalidatedAtGeneration) {
+                requestRehydrate(currentConv.ref);
+              }
+              return { status: "ignored" };
+            }
             // A page can re-serve an identity the window already holds under
             // a DIFFERENT turn id than before (the pagination boundary can
             // split a turn differently across pages) — the versioned merge

@@ -10567,6 +10567,176 @@ describe("ConversationStore", () => {
     });
   });
 
+  // RoboRev round 1 (Medium): mergeOlderItemPage's own versioned disposition
+  // (mergeVersionedPage's discard/defer/invalidate branches, pageDisposition)
+  // returns `turns` unchanged by reference when nothing merged — loadOlder
+  // must honor that instead of always reporting "loaded" and advancing the
+  // cursor regardless.
+  describe("loadOlder honors mergeOlderItemPage's own versioned disposition", () => {
+    async function openVersioned(turns: Turn[]): Promise<{
+      store: ReturnType<typeof createConversationStore>;
+      service: FakeConversationService;
+    }> {
+      const service = new FakeConversationService();
+      service.readProjectionResult = makeReadProjectionResult(makeThread({ turns }), ALL_TRUE_CAPS, true);
+      const store = createConversationStore();
+      await store.getState().openProjected(service, createFakeSink(), "ref-1");
+      return { store, service };
+    }
+
+    it("a page discarded as stale (shorter same-incarnation length) does not advance the cursor", async () => {
+      const { store, service } = await openVersioned([makeTurn({ id: "t0", items: [] })]);
+      // V6_HISTORY_BASELINE always hydrates at length 0; give the held
+      // model a real length to page a genuinely SHORTER one against.
+      const held = store.getState().conversation!;
+      store.setState({
+        conversation: { ...held, history: held.history && { ...held.history, length: 10 } },
+        olderCursor: "cursor-1",
+      });
+      service.olderItems = {
+        turnsPage: {
+          data: [wireTurn("t-old", 5, 1)],
+          nextCursor: "cursor-2",
+          bootGeneration: "1",
+          epoch: 1,
+          snapshot: { incarnation: "inc-1", length: 5 },
+        },
+        nextCursor: "cursor-2",
+      };
+      const result = await store.getState().loadOlder(service);
+      expect(result.status).toBe("ignored");
+      expect(store.getState().olderCursor).toBe("cursor-1");
+      expect(store.getState().conversation?.turns.some((turn) => turn.id === "t-old")).toBe(false);
+      expect(store.getState().loadingOlder).toBe(false);
+    });
+
+    it("a page that lands after a resync (a newer epoch) requests the recovering rehydrate instead of merging", async () => {
+      const { store, service } = await openVersioned([makeTurn({ id: "t0", items: [] })]);
+      store.setState({ olderCursor: "cursor-1" });
+      const readsBefore = service.readProjectionCalls.length;
+      service.olderItems = {
+        turnsPage: {
+          data: [wireTurn("t-old", 5, 1)],
+          nextCursor: "cursor-2",
+          bootGeneration: "1",
+          epoch: 2,
+          snapshot: { incarnation: "inc-1", length: 1 },
+        },
+        nextCursor: "cursor-2",
+      };
+      const result = await store.getState().loadOlder(service);
+      expect(result.status).toBe("ignored");
+      expect(store.getState().olderCursor).toBe("cursor-1");
+      for (let i = 0; i < 40 && service.readProjectionCalls.length <= readsBefore; i++) {
+        await Promise.resolve();
+      }
+      expect(service.readProjectionCalls.length).toBeGreaterThan(readsBefore);
+    });
+  });
+
+  // RoboRev round 1 (Medium): a failed page turn projects its own row keyed
+  // failure:<turnId> (projectedRows.ts), never an item identity — the F8
+  // honest-stop must count it or paging never stops offering a cursor whose
+  // every page discards its own contribution.
+  describe("F8 honest-stop counts a page's own failure-row contribution", () => {
+    it("ends paging when the cap discards a page's failed-turn row", async () => {
+      const windowItems: ThreadItem[] = [];
+      for (let i = 0; i < 500; i++) {
+        windowItems.push({ ...userMessageItem(`item-${i}`, ""), position: { entry: 100 + i, item: 0 } });
+      }
+      const service = new FakeConversationService();
+      service.readProjectionResult = makeReadProjectionResult(
+        makeThread({ turns: [makeTurn({ id: "t-latest", items: windowItems })] }),
+      );
+      const store = createConversationStore();
+      await store.getState().openProjected(service, createFakeSink(), "ref-1");
+      store.setState({ olderCursor: "cursor-1" });
+      service.olderItems = {
+        turnsPage: turnsPage(
+          [
+            {
+              id: "t-failed",
+              itemsView: "fragment",
+              status: "failed",
+              error: { message: "boom" },
+              items: [],
+            },
+          ],
+          "cursor-2",
+        ),
+        nextCursor: "cursor-2",
+      };
+      const result = await store.getState().loadOlder(service);
+      expect(result.status).toBe("loaded");
+      // The cap discarded the page's only contribution (its failure row,
+      // identified failure:t-failed — never a raw item identity) — paging
+      // must stop honestly rather than keep offering a cursor whose every
+      // page discards its own history.
+      expect(store.getState().olderCursor).toBeNull();
+    });
+  });
+
+  // RoboRev round 1 (Medium): applyReadModel returns the held model BY
+  // REFERENCE, completely unchanged, when the read's disposition is
+  // "discard" (a stale same-incarnation length here) — rehydrate must not
+  // treat that discarded read's own turns as fresh, authoritative content
+  // for the snapshot-authority strip pass, or a payload the discarded read
+  // omits (but the still-current held item carries) gets cleared.
+  describe("rehydrate does not act on a discarded (stale) read", () => {
+    it("a same-incarnation reread with a shorter length does not clear a held payload it omits", async () => {
+      const service = new FakeConversationService();
+      service.readProjectionResult = makeReadProjectionResult(
+        makeThread({
+          turns: [
+            makeTurn({
+              id: "t0",
+              items: [
+                {
+                  type: "commandExecution",
+                  id: "call-1",
+                  toolName: "shell",
+                  status: "completed",
+                  output: "held output",
+                } as ThreadItem,
+              ],
+            }),
+          ],
+        }),
+        ALL_TRUE_CAPS,
+        true,
+      );
+      const store = createConversationStore();
+      const sink = createFakeSink();
+      await store.getState().openProjected(service, sink, "ref-1");
+      const held = store.getState().conversation!;
+      store.setState({
+        conversation: { ...held, history: held.history && { ...held.history, length: 10 } },
+      });
+      // A stale response: same incarnation, SHORTER length, and it omits
+      // the output the held item already carries.
+      service.readProjectionResult = {
+        conversation: {
+          ...makeReadProjectionResult(
+            makeThread({
+              turns: [
+                makeTurn({
+                  id: "t0",
+                  items: [{ type: "commandExecution", id: "call-1", toolName: "shell", status: "completed" } as ThreadItem],
+                }),
+              ],
+            }),
+            ALL_TRUE_CAPS,
+            true,
+          ).conversation,
+        },
+        activity: { tasks: [], work: [], usage: {}, capabilities: ALL_TRUE_CAPS },
+        olderCursor: null,
+      };
+      await store.getState().rehydrate(service, sink);
+      expect(rowById(store, "call-1")).toMatchObject({ detail: { output: "held output" } });
+    });
+  });
+
   // #1919 follow-up (retained-turn bound): loadOlder's page turns used to be
   // exempt from every retention bound — once any older page loaded, the store
   // retained every page turn's FULL item payloads for the conversation's
