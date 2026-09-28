@@ -13,7 +13,7 @@ import { useConnection } from "../ConnectionProvider";
 import { HubModels } from "../hubModels";
 import type { Routes } from "../screens";
 import { allowFontScaling, useColors, useTextScale } from "../ui";
-import { type SubagentFilter, type SubagentListItem, subagentListItems, subagentListKey } from "./subagentList";
+import { STATE_ORDER, type SubagentFilter, type SubagentListItem, subagentListItems, subagentListKey } from "./subagentList";
 import {
 	countLabel,
 	flattenSubagents,
@@ -25,10 +25,8 @@ import {
 	tallySubagents,
 } from "./subagentModel";
 import { SubagentRowView } from "./SubagentRowView";
-import { SubagentStrip } from "./SubagentStrip";
+import { SubagentStrip, stateColors } from "./SubagentStrip";
 import { useSubagentTree } from "./useSubagentTree";
-
-const STATES: readonly SubagentState[] = ["failed", "running", "done"];
 
 export function SubagentsScreen({ route, navigation }: NativeStackScreenProps<Routes, "Subagents">) {
 	const { hubId, ref, threadId, title } = route.params;
@@ -114,7 +112,7 @@ export function SubagentsScreen({ route, navigation }: NativeStackScreenProps<Ro
 			{tally.total > 0 ? (
 				<View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8, paddingHorizontal: 16 }}>
 					<FilterChip label="All" count={tally.total} selected={filter === "all"} onPress={() => setFilter("all")} />
-					{STATES.filter((state) => tally[state] > 0).map((state) => (
+					{STATE_ORDER.filter((state) => tally[state] > 0).map((state) => (
 						<FilterChip
 							key={state}
 							state={state}
@@ -208,7 +206,6 @@ function FilterChip({
 }) {
 	const { palette } = useColors();
 	const scale = useTextScale();
-	const swatch = { failed: palette.danger, running: palette.alive, done: palette.edge };
 	return (
 		<Pressable
 			accessibilityRole="button"
@@ -226,13 +223,13 @@ function FilterChip({
 				backgroundColor: selected ? palette.accentBg : palette.canvas,
 			}}
 		>
-			{state ? <View style={{ width: 8, height: 8, borderRadius: 2, backgroundColor: swatch[state] }} /> : null}
+			{state ? <View style={{ width: 8, height: 8, borderRadius: 2, backgroundColor: stateColors(palette)[state] }} /> : null}
 			<Text
 				allowFontScaling={allowFontScaling}
 				style={{ fontSize: 15 * scale, lineHeight: 20 * scale, color: selected ? palette.accentInk : palette.inkHi }}
 			>
 				{`${label} `}
-				<Text style={{ color: selected ? palette.accentInk : palette.inkMid, fontVariant: ["tabular-nums"] }}>{count}</Text>
+				<Text style={{ color: palette.inkMid, fontVariant: ["tabular-nums"] }}>{count}</Text>
 			</Text>
 		</Pressable>
 	);

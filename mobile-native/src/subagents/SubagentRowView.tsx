@@ -114,15 +114,15 @@ function LastLine({ last }: { last: SubagentLastLine }) {
 	const scale = useTextScale();
 	const small = { fontSize: 13 * scale, lineHeight: 18 * scale, color: palette.inkLow };
 	const parts: { key: string; node: ReactNode }[] = [];
-	if (last.parent) parts.push({ key: "parent", node: <Text style={small}>{`from ${last.parent}`}</Text> });
-	if (last.model) parts.push({ key: "model", node: <Text style={small}>{last.model}</Text> });
+	if (last.parent) parts.push({ key: "parent", node: <Text numberOfLines={1} style={{ ...small, flexShrink: 1 }}>{`from ${last.parent}`}</Text> });
+	if (last.model) parts.push({ key: "model", node: <Text numberOfLines={1} style={{ ...small, flexShrink: 1 }}>{last.model}</Text> });
 	if (last.branch)
 		parts.push({
 			key: "branch",
 			node: (
 				<>
 					<SymbolView name="arrow.triangle.branch" size={12} tintColor={palette.inkLow} />
-					<Text style={{ ...small, fontFamily: fonts.mono, fontSize: 12 * scale }}>{last.branch}</Text>
+					<Text numberOfLines={1} style={{ ...small, flexShrink: 1, fontFamily: fonts.mono, fontSize: 12 * scale }}>{last.branch}</Text>
 				</>
 			),
 		});

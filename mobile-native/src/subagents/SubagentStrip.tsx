@@ -1,9 +1,15 @@
 import { View } from "react-native";
+import type { Palette } from "../design/tokens";
 import { useColors } from "../ui";
 import type { SubagentTally } from "../session/sessionState";
-import { stripSegments } from "./subagentModel";
+import { type SubagentState, stripSegments } from "./subagentModel";
 
 const HEIGHT = 6;
+
+/** Each state's color in the strip, and in the chips' swatches, its legend. */
+export function stateColors(palette: Palette): Record<SubagentState, string> {
+	return { failed: palette.danger, running: palette.alive, done: palette.edge };
+}
 const GAP = 1;
 
 /** The Subagents list's full-width strip (spec 9): failures, then running,
@@ -12,7 +18,7 @@ export function SubagentStrip({ tally, width }: { tally: SubagentTally; width: n
 	const { palette } = useColors();
 	const segments = stripSegments(tally, width, GAP);
 	if (segments.length === 0) return null;
-	const color = { failed: palette.danger, running: palette.alive, done: palette.edge };
+	const color = stateColors(palette);
 	return (
 		<View
 			accessible

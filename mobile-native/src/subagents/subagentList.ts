@@ -13,7 +13,8 @@ export type SubagentListItem =
 	| { kind: "doneFold"; count: number; open: boolean }
 	| { kind: "missing"; title: string };
 
-const ORDER: readonly SubagentState[] = ["failed", "running", "done"];
+/** The list's order, and the chips': failed first, then running, then done. */
+export const STATE_ORDER: readonly SubagentState[] = ["failed", "running", "done"];
 
 /** The list's items for a filter and a search (spec 9): failed, then
  * running, then done, where done is one folded row under All until you open
@@ -25,7 +26,7 @@ export function subagentListItems(
 ): SubagentListItem[] {
 	const sections = subagentSections(rows.filter((row) => matchesSearch(row, view.query)));
 	const items: SubagentListItem[] = [];
-	for (const state of ORDER) {
+	for (const state of STATE_ORDER) {
 		if (view.filter !== "all" && view.filter !== state) continue;
 		const section = sections[state];
 		if (section.length === 0) continue;
