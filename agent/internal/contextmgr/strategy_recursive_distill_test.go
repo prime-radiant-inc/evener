@@ -2,6 +2,7 @@ package contextmgr
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -421,5 +422,48 @@ func TestRecursiveDistillStrategy_InjectionOnlyRoundsDoNotAdvanceCadence(t *test
 	}
 	if got := len(s.microSummaries); got != 1 {
 		t.Fatalf("ten actions did not distill: micros=%d, want 1", got)
+	}
+}
+
+// TestRecursiveDistillStrategy_MicroSummaryCoversCadenceSpan pins that a
+// micro-summary distills every turn across the ten-action cadence span. A
+// completed action appends at least an assistant turn and a tool-results turn,
+// so a fixed last-ten-turn window would drop the earlier half of each period
+// once compaction removes it — a turn from the first half must appear in the
+// summary prompt.
+func TestRecursiveDistillStrategy_MicroSummaryCoversCadenceSpan(t *testing.T) {
+	client := llm.NewClient()
+	f := &fakeAdapter{name: "openai"}
+	client.Register(f)
+
+	cm := NewManager(NewOpenAIProfile("gpt-5.2"), client, cheapmodel.New(client))
+	s := NewRecursiveDistillStrategy(cm)
+	ctx := context.Background()
+
+	history := make([]schema.Turn, 0, 24)
+	for action := 1; action <= 10; action++ {
+		mark := fmt.Sprintf("ACTION-MARK-%02d", action)
+		history = append(history,
+			schema.NewTurn(schema.TurnAssistant, llm.Assistant(mark+" assistant")),
+			schema.NewTurn(schema.TurnToolResults, llm.ToolResultNamed(fmt.Sprintf("t%d", action), "shell", mark+" result", false)),
+		)
+		if err := s.AfterAction(ctx, history, client); err != nil {
+			t.Fatalf("AfterAction %d: %v", action, err)
+		}
+	}
+	if got := len(s.microSummaries); got != 1 {
+		t.Fatalf("micro-summaries = %d, want 1", got)
+	}
+
+	reqs := f.Requests()
+	if len(reqs) != 1 {
+		t.Fatalf("micro-summary requests = %d, want 1", len(reqs))
+	}
+	prompt := reqs[0].Messages[0].Text()
+	// The span is twenty turns; the earlier half must survive into the prompt.
+	for _, want := range []string{"ACTION-MARK-01", "ACTION-MARK-05", "ACTION-MARK-10"} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("micro-summary prompt dropped %q from the cadence span:\n%s", want, prompt)
+		}
 	}
 }

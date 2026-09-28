@@ -33,6 +33,10 @@ type RecursiveDistillStrategy struct {
 	actions     int
 	lastMicroAt int // action count at last micro-summary
 	lastMacroAt int // action count at last macro-summary
+	// microMarkTurns is the attention-transparent history length at the last
+	// successful micro-summary, so the next one distills every turn accumulated
+	// across the whole ten-action cadence span rather than a fixed tail.
+	microMarkTurns int
 	// aux holds the last micro/macro summary failure so a turn that skips the
 	// cadence guard keeps reporting the degradation instead of clearing it
 	// before the next eligible retry.
@@ -127,7 +131,7 @@ func (s *RecursiveDistillStrategy) AfterAction(ctx context.Context, history []sc
 	}
 
 	var auxErr error
-	micro, err := s.microSummarize(ctx, history)
+	micro, err := s.microSummarize(ctx, s.microSpan(history))
 	if err != nil {
 		// Surface it and leave the watermark unchanged so the eligible action
 		// retries; the caller warns without failing the turn.
@@ -135,6 +139,7 @@ func (s *RecursiveDistillStrategy) AfterAction(ctx context.Context, history []sc
 	} else {
 		s.microSummaries = append(s.microSummaries, micro)
 		s.lastMicroAt = s.actions
+		s.microMarkTurns = len(history)
 	}
 
 	// Macro-summary every 50 completed actions (when we've accumulated 5
@@ -159,12 +164,21 @@ func (s *RecursiveDistillStrategy) AfterAction(ctx context.Context, history []sc
 	return nil
 }
 
-// microSummarize distills the last 10 turns into 1-2 sentences.
+// microSpan returns the attention-transparent turns accumulated since the last
+// successful micro-summary. A ten-action cadence spans roughly twenty turns, so
+// distilling only a fixed tail would drop the earlier half of every period once
+// compaction removes it. Compaction can shrink history below the mark; then the
+// whole retained history is the span, since nothing older survives to distill.
+func (s *RecursiveDistillStrategy) microSpan(history []schema.Turn) []schema.Turn {
+	if s.microMarkTurns > 0 && s.microMarkTurns < len(history) {
+		return history[s.microMarkTurns:]
+	}
+	return history
+}
+
+// microSummarize distills the supplied turns into 1-2 sentences.
 func (s *RecursiveDistillStrategy) microSummarize(ctx context.Context, history []schema.Turn) (string, error) {
 	recent := history
-	if len(recent) > 10 {
-		recent = recent[len(recent)-10:]
-	}
 
 	var b strings.Builder
 	for _, t := range recent {
