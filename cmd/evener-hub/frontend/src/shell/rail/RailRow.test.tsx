@@ -1493,6 +1493,24 @@ describe("session row", () => {
     expect(screen.getByTestId("rail-row-activity").textContent).toMatch(/question waiting/i);
   });
 
+  // leadsOverWork and activeWorkSummary read state/ask_pending/children, never
+  // a row's own kind - #2560 pinned that a ROOT row's question outranks its
+  // subagents' work (above); a subagent row that is itself blocked on
+  // ask_user, with subagents of its own still running, must read the same
+  // way. Otherwise a delegate genuinely waiting on the user could hide behind
+  // its own children's green dot.
+  test("a subagent blocked on ask_user keeps the needs-you dot while its own children work", () => {
+    const session = apiNode({
+      kind: "subagent",
+      state: "awaiting",
+      ask_pending: true,
+      children: [apiNode({ row_id: "grandchild", ref: "local:grandchild", kind: "subagent", state: "active" })],
+    });
+    render(<RailRow node={sessionRailNode(session)} info={info({ depth: 1 })} actions={actions()} />);
+    expect(within(screen.getByTestId("rail-row-signal")).getByRole("img", { name: "Needs you" })).toBeTruthy();
+    expect(screen.getByTestId("rail-row-activity").textContent).toBe("question waiting · 1 subagent working");
+  });
+
   test.each(["idle", "ended", "notLoaded", ""] as const)(
     "a quiet, nested row (%s, depth > 0) is title + age on one line, with no gloss at all",
     (state) => {

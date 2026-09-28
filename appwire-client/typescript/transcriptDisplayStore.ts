@@ -97,6 +97,13 @@ export interface TranscriptDisplayStoreFields {
   hubErrors: Partial<Record<ViewportClass, string>>;
   /** Confirmed defaults keep presenting across a transient disconnect. */
   hub: HubDefaultsByLayout;
+  /** The layouts whose confirmed `hub` entry the most recent publication
+   * replaced, added, or cleared. The core publishes this fact so a consumer
+   * routes per-layout work from the transition itself instead of
+   * identity-diffing `hub` between two states; a publication that does not
+   * touch `hub` leaves this value's identity alone, which is what a consumer
+   * keys on. */
+  changedLayouts: readonly ViewportClass[];
   /** Optimistic direct-write previews, retained only across transient disconnects. */
   drafts: Partial<Record<ViewportClass, TranscriptDisplayConfigV1>>;
   /** True only after the current ready generation's read has completed. */
@@ -172,6 +179,7 @@ function initialState(): TranscriptDisplayStoreFields {
     hubError: null,
     hubErrors: {},
     hub: {},
+    changedLayouts: [],
     drafts: {},
     loaded: false,
     saving: false,
@@ -409,7 +417,30 @@ export function createTranscriptDisplayStore(deps: TranscriptDisplayStoreDeps): 
     discardDraft,
     rebaseDraft,
   }));
-  const { getState, setState } = store;
+  const { getState } = store;
+  const publishState = store.setState;
+
+  /** Publishes a partial, naming - as `changedLayouts` - the layouts whose
+   * confirmed `hub` entry this publication replaces, adds, or clears. Every
+   * hub-changing publication (an accepted payload, a retirement's cleared map,
+   * a reset) funnels through here, so the fact is derived once from the hub
+   * delta rather than reconstructed downstream by identity-diffing
+   * `hub[layout]`. A publication that does not carry `hub` leaves the field's
+   * identity alone, which is what a consumer keys on. */
+  const setState: FrameworkFreeStore<TranscriptDisplayStoreState>["setState"] = (partial) => {
+    const next = typeof partial === "function" ? partial(getState()) : partial;
+    if (!Object.hasOwn(next, "hub")) {
+      // Forward the resolved partial rather than the updater: the base store
+      // invokes a function-form updater exactly once, and we already did.
+      publishState(next);
+      return;
+    }
+    const previous = getState().hub;
+    const changedLayouts = LAYOUTS.filter((layout) => previous[layout] !== next.hub?.[layout]);
+    // A hub publication that moved no entry keeps the previous array's
+    // identity, so an identity-checking consumer does not wake with no work.
+    publishState(changedLayouts.length === 0 ? next : { ...next, changedLayouts });
+  };
 
   function isSupported(): boolean {
     return getState().hubSupport === "supported";
@@ -1231,6 +1262,7 @@ export function createTranscriptDisplayStore(deps: TranscriptDisplayStoreDeps): 
 
   return {
     ...store,
+    setState,
     setSupport,
     beginReadyGeneration,
     endReadyGeneration,
@@ -1259,6 +1291,10 @@ export function createTranscriptDisplayStore(deps: TranscriptDisplayStoreDeps): 
         draftUnreadable: _draftUnreadable,
         draftConflict: _draftConflict,
         draftError: _draftError,
+        // The wrapper is the sole producer of changedLayouts: spreading the
+        // initial empty array here would churn the identity consumers key on
+        // even when the reset moves no hub entry.
+        changedLayouts: _changedLayouts,
         ...lifecycle
       } = initialState();
       try {
