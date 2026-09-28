@@ -166,6 +166,18 @@ func TestExtractRecordedResponse_ResponsesSSE_ArgumentsDoneRawArguments(t *testi
 	}
 }
 
+func TestExtractRecordedResponse_ResponsesSSE_MultipleArgumentsDonePreserveCallRouting(t *testing.T) {
+	want := [][]byte{
+		[]byte(`{"first":"` + "\xff" + `final"}`),
+		[]byte(`{"second":"` + "\xfe" + `final"}`),
+	}
+	resp, err := ExtractRecordedResponse(rawMultipleArgumentsDoneSSE(string(want[0]), string(want[1])), "gpt-5.5")
+	if err != nil {
+		t.Fatalf("ExtractRecordedResponse: %v", err)
+	}
+	assertRawArgsByIndex(t, responseToolCallArguments(resp), want)
+}
+
 // TestExtractRecordedResponse_EmptyBody covers the empty body error path.
 func TestExtractRecordedResponse_EmptyBody(t *testing.T) {
 	if _, err := ExtractRecordedResponse([]byte("   "), "gpt-5.2"); err == nil {
