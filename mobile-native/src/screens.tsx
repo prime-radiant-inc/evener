@@ -2744,7 +2744,13 @@ export function ConversationScreen({
 									onSelectionChange={setComposerSelection}
 									inputRef={composerInput}
 									placeholder={composerPlaceholder(action, answering)}
-									sendLabel={composerSendLabel}
+									// Under an open dock, whose own button reads "Send answer",
+									// this Send says it sends what you typed.
+									sendLabel={
+										bottom.dock === "question"
+											? "Send your answer"
+											: composerSendLabel
+									}
 									sendEnabled={sendEnabled}
 									onSend={() => {
 										void send();

@@ -422,7 +422,11 @@ describe("a question waiting for an answer (spec 8.4)", () => {
 		await press(tree, "Other answer…");
 		expect(field(tree)?.props.placeholder).toBe("Answer or ask…");
 		await type(tree, "Drop them");
-		const send = composerSend(tree, "Send answer");
+		// The dock's own "Send answer" stays above; the composer's Send says
+		// it sends what you typed, so VoiceOver tells the two apart.
+		expect(composerSend(tree, "Send answer")).toBeUndefined();
+		expect(pressable(tree, "Send answer")).toBeDefined();
+		const send = composerSend(tree, "Send your answer");
 		expect(send?.props.accessibilityState).toMatchObject({ disabled: false });
 		act(() => send?.props.onPress());
 		await settle();
@@ -450,6 +454,8 @@ describe("a question waiting for an answer (spec 8.4)", () => {
 		await press(tree, "Fold");
 		expect(renderedText(tree)).toContain("Answer the question");
 		expect(field(tree)?.props.placeholder).toBe("Answer or ask…");
+		// Folded, the composer's Send is the only one.
+		expect(composerSend(tree, "Send answer")).toBeDefined();
 		await press(tree, "Answer the question");
 		expect(field(tree)).toBeUndefined();
 	});
