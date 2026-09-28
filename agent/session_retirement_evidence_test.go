@@ -445,6 +445,43 @@ func TestRetirementRootAttentionRetrySeamSkipsStaleCallback(t *testing.T) {
 	}
 }
 
+// A root attention retry callback that fires while the rail is parked must not
+// take the pause seam either: it returns at the parkedAtFire early return
+// instead of proceeding. Parking is the durable hold a Stop takes, so this is
+// the second early return the seam must sit behind, beside the stale-generation
+// case above.
+func TestRetirementRootAttentionRetrySeamSkipsParkedCallback(t *testing.T) {
+	t.Parallel()
+	clk := agenttest.NewFakeClock()
+	root := newSession(t, withConfig(SessionConfig{StateDir: t.TempDir(), clock: clk}))
+	defer root.Close()
+	var fired atomic.Int32
+	root.cfg.testOnly.rootAttentionRetryCallback = func() { fired.Add(1) }
+
+	root.attentionMu.Lock()
+	root.rootAttentionWakeIDs["parked-seam-source"] = struct{}{}
+	root.scheduleRootAttentionRetryLocked()
+	root.attentionMu.Unlock()
+
+	// Park the rail before the armed callback fires; the parked timer is not
+	// cancelled, so it still runs and reads the hold.
+	if err := root.clientMutations.mutate(func(snapshot *clientMutationSnapshot) error {
+		snapshot.QueueHeld = true
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if !root.rootAttentionRailParked() {
+		t.Fatal("fixture: the attention rail is not parked")
+	}
+
+	clk.Advance(jobNotificationRetryInitialDelay)
+	clk.Drain()
+	if got := fired.Load(); got != 0 {
+		t.Fatalf("parked retry callback fired the pause seam %d times, want 0", got)
+	}
+}
+
 func TestRetirementAutonomousAttentionRetryStale(t *testing.T) {
 	t.Parallel()
 	clk := agenttest.NewFakeClock()

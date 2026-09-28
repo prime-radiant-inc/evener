@@ -373,12 +373,13 @@ type testConfig struct {
 	// repair. Nil preserves the production transcript opener.
 	delegateAttentionOpenWriter delegateAttentionWriterOpener
 	// rootAttentionRetryCallback observes a root attention retry callback that
-	// has taken ownership and will proceed into the wake: beginAttentionCallback
-	// succeeded, the generation still matches, and the rail is not parked -- all
-	// of scheduleRootAttentionRetryLocked's early returns are behind it. It runs
-	// just before the callback's notify, so a test that pauses here holds exactly
-	// the live retry (and a stale or parked timer never reaches it). A notify
-	// hook cannot identify the caller. Nil in production.
+	// has passed scheduleRootAttentionRetryLocked's early returns: it took
+	// ownership (beginAttentionCallback succeeded), its generation is still
+	// current, and the rail is not parked. It fires whether or not that callback
+	// then notifies -- the notification blocker is projected by the ownership
+	// lease, not by the notify -- so a test that pauses here holds exactly the
+	// live retry, and a stale or parked timer never reaches it. A notify hook
+	// cannot identify the caller. Nil in production.
 	rootAttentionRetryCallback func()
 	// delegateRuntimeReclaimClose replaces only the external Session close
 	// boundary used by admission-triggered stable-runtime reclamation.
