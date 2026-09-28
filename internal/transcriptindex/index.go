@@ -459,18 +459,13 @@ func (x *Index) extend(length int64) error {
 	// record itself, so its later update comes back too, or the record
 	// stays new and uncommitted either way), but not for a row logging an
 	// in-place update to an already-committed record: its slot precedes the
-	// committed counts, so truncate never touches it, and the update can
-	// already be on disk from an entry this call's length does not reach.
-	// Rebuild instead: it recomputes every record from scratch up to
-	// length, so it cannot leave such a leftover behind. The transcript
-	// still extends the covered prefix, so the incarnation is kept, as
-	// errRebuild's rebuild below does.
-	unsafe, err := x.unsafeLeftoverUpdate(length)
+	// committed counts, so truncate never touches it, and the update may
+	// already be on disk from an entry this scan does not reach. Collect
+	// such rows' offsets before truncating them away, so they can be
+	// checked against where the scan below actually lands.
+	unsafeOffsets, err := x.leftoverUpdatesToCommittedSlots()
 	if err != nil {
 		return err
-	}
-	if unsafe {
-		return x.rebuild(length, x.meta.Incarnation)
 	}
 	// Whatever an extension that did not finish left past the counts goes
 	// before this one appends.
@@ -488,6 +483,22 @@ func (x *Index) extend(length int64) error {
 			incarnation = x.meta.Incarnation
 		}
 		return x.rebuild(length, incarnation)
+	}
+	// A scan only advances x.meta.Length past a line once that whole line is
+	// read and applied, in order, so x.meta.Length landing past one of the
+	// offsets collected above proves the entry there was a complete line
+	// within this scan's bound and so was fully redone; landing at or before
+	// it proves the scan stopped no later than the entry's own start,
+	// meaning it never reprocessed it, leaving whatever the truncated row
+	// announced already on disk from before this call with nothing left to
+	// say so. Rebuild instead of trusting that: it recomputes every record
+	// from scratch up to length, so it cannot leave such a leftover behind.
+	// The transcript still extends the covered prefix, so the incarnation
+	// is kept, as errRebuild's rebuild above does.
+	for _, offset := range unsafeOffsets {
+		if x.meta.Length <= offset {
+			return x.rebuild(length, x.meta.Incarnation)
+		}
 	}
 	x.meta.PendingCommunicate = len(x.builder.commCalls) > 0
 	if x.meta.PendingCommunicate && !x.builder.lastAssistantKnown {
@@ -529,33 +540,41 @@ func (x *Index) repairBuilder(length int64) error {
 	return nil
 }
 
-// unsafeLeftoverUpdate reports whether the update log holds a leftover row
-// (past its committed count, the signature of an extension that wrote its
-// records but was interrupted before the meta commit that would count them)
-// logging an in-place update to an already-committed item or turn record
-// (one whose slot precedes items.n/turns.n) whose causing entry ends at or
-// after length: a scan bounded at length cannot reach a complete line there,
-// so it would not redo that update, yet the update may already sit on disk.
-func (x *Index) unsafeLeftoverUpdate(length int64) (bool, error) {
+// leftoverUpdatesToCommittedSlots returns the causing Offset of every
+// leftover update-log row (past its committed count, the signature of an
+// extension that wrote its records but was interrupted before the meta
+// commit that would count them) that logs an in-place update to an
+// already-committed item or turn record: one whose slot precedes
+// items.n/turns.n. Only rows of a kind real code appends (updatedItem,
+// updatedTurn) count: garbage bytes written straight to the file (as a test
+// fault-injects to simulate leftovers, bypassing logUpdate) decode to
+// neither and name no slot at all.
+func (x *Index) leftoverUpdatesToCommittedSlots() ([]int64, error) {
 	available, err := x.updates.available()
 	if err != nil {
-		return false, err
+		return nil, err
 	}
+	var offsets []int64
 	for slot := x.updates.n; slot < available; slot++ {
 		buf := make([]byte, x.updates.size)
 		if _, err := x.updates.file.ReadAt(buf, int64(slot)*x.updates.size); err != nil {
-			return false, fmt.Errorf("%w: read leftover update record: %w", errCorrupt, err)
+			return nil, fmt.Errorf("%w: read leftover update record: %w", errCorrupt, err)
 		}
 		row := decodeUpdate(buf)
-		committed := x.items.n
-		if row.Kind == updatedTurn {
+		var committed uint64
+		switch row.Kind {
+		case updatedItem:
+			committed = x.items.n
+		case updatedTurn:
 			committed = x.turns.n
+		default:
+			continue
 		}
-		if row.Slot < committed && length <= row.Offset {
-			return true, nil
+		if row.Slot < committed {
+			offsets = append(offsets, row.Offset)
 		}
 	}
-	return false, nil
+	return offsets, nil
 }
 
 // grownByAppends reports whether the transcript at path is still the file the

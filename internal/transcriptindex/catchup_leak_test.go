@@ -6,9 +6,12 @@ import (
 	"path/filepath"
 	"reflect"
 	"testing"
+	"time"
 
+	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/llm"
 )
 
 // firstInPlaceUpdatePair finds the first turn in fx's lines with at least two
@@ -146,6 +149,98 @@ func TestCatchUpToShorterThanAKilledExtensionsReachRedoesTheLeftoverUpdate(t *te
 	got, want := findTurn(daemon), findTurn(reference)
 	if got.Version != want.Version || got.Status != want.Status {
 		t.Fatalf("daemon's target turn = status %v version %d, want the reference's (never touched by the killed extension's reach past shortOfSecond) status %v version %d",
+			got.Status, got.Version, want.Status, want.Version)
+	}
+}
+
+// TestCatchUpToInsideTheCausingEntryStillRebuilds pins a roborev finding on
+// this PR's CatchUpTo fix: a leftover update-log row only records its causing
+// entry's start (Offset), not its end, so a requested length landing inside
+// that entry (past its start, short of its end) must still force a rebuild.
+// Comparing only against the start (length <= row.Offset, an earlier version
+// of this fix) would wrongly call such a length safe; comparing the scan's
+// actual resulting x.meta.Length against the offset, after the scan runs,
+// does not (a scan only advances x.meta.Length once a whole line is read, so
+// stopping mid-entry leaves x.meta.Length at or before the entry's start
+// regardless of how far into it the requested length reached).
+//
+// A minimal, single-update fixture (one turn, exactly two entries): the
+// everything() corpus this file's other CatchUpTo test uses keeps updating
+// turns throughout, so a length landing inside its second entry still lands
+// past several later entries' own causing offsets, which the old (start-only)
+// check would separately catch anyway -- masking the exact gap this test
+// isolates.
+func TestCatchUpToInsideTheCausingEntryStillRebuilds(t *testing.T) {
+	header := transcript.Header{SessionID: "kill_turn_mid", CreatedAt: fixtureClock, ProfileID: "openai", Model: "gpt-test"}
+	opening := schema.Turn{
+		Kind: schema.TurnUserInput, Message: llm.User("question"),
+		Format: schema.TurnFormatIdentity, TurnID: "turn_m1", TurnKind: schema.TurnSpanExecution,
+	}
+	completing := schema.Turn{
+		Kind: schema.TurnCompletion, Message: llm.Message{Role: llm.RoleUser},
+		Completion: &schema.TurnCompletionInfo{Status: schema.TurnCompleted, CompletedAt: time.Unix(1700000100, 0).UTC(), DurationMS: 100},
+		Format:     schema.TurnFormatIdentity, TurnID: "turn_m1",
+	}
+	lines := [][]byte{encodeEntry(t, 1, opening), encodeEntry(t, 2, completing)}
+	if len(lines[1]) < 2 {
+		t.Fatalf("completing entry's line is too short (%d bytes) to land a length inside it", len(lines[1]))
+	}
+
+	path := filepath.Join(t.TempDir(), "session.transcript.jsonl")
+	if err := os.WriteFile(path, encodeHeader(t, header), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+
+	appendBytes(t, path, lines[0])
+	hub := openIndex(t, path, dir)
+	floor := hub.meta.Length
+
+	daemon := openIndex(t, path, dir)
+	reference := openIndex(t, path, filepath.Join(t.TempDir(), "reference"))
+
+	secondStart := floor
+	midOfSecond := secondStart + int64(len(lines[1]))/2
+
+	appendBytes(t, path, lines[1])
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	full := info.Size()
+	simulateKill(t)
+	if err := hub.CatchUpTo(full); err == nil {
+		t.Fatal("the killed extension returned success")
+	}
+	testKillAfterRecordWrites = nil
+
+	if err := daemon.CatchUpTo(midOfSecond); err != nil {
+		t.Fatal(err)
+	}
+	if daemon.meta.Length > midOfSecond {
+		t.Fatalf("daemon's index covers %d, want at most the requested %d", daemon.meta.Length, midOfSecond)
+	}
+	if err := reference.CatchUpTo(midOfSecond); err != nil {
+		t.Fatal(err)
+	}
+
+	findTurn := func(x *Index) appwire.Turn {
+		t.Helper()
+		changes, err := x.ChangedSince(0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, turn := range changes.Turns {
+			if turn.ID == "turn_m1" {
+				return turn
+			}
+		}
+		t.Fatalf("target turn not found")
+		return appwire.Turn{}
+	}
+	got, want := findTurn(daemon), findTurn(reference)
+	if got.Version != want.Version || got.Status != want.Status {
+		t.Fatalf("daemon's target turn (length requested inside the causing entry) = status %v version %d, want the reference's status %v version %d",
 			got.Status, got.Version, want.Status, want.Version)
 	}
 }
