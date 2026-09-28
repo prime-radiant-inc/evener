@@ -2,7 +2,7 @@ import { Modal, Pressable, ScrollView, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Action, Copy, styles, useColors } from "./ui";
 
-export type SessionDestination = "session" | "tasks" | "notes" | "activity" | "pin" | "delete";
+export type SessionDestination = "session" | "tasks" | "notes" | "subagents" | "pin" | "delete";
 
 export function SessionMenu({
 	title,
@@ -50,8 +50,8 @@ export function SessionMenu({
 						<Action disabled={!connected} onPress={() => choose("tasks")}>
 							Tasks
 						</Action>
-						<Action disabled={!connected} onPress={() => choose("activity")}>
-							Activity
+						<Action disabled={!connected} onPress={() => choose("subagents")}>
+							Subagents
 						</Action>
 						<Action tone="quiet" onPress={close}>
 							Cancel
