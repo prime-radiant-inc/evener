@@ -1023,4 +1023,57 @@ describe("applyReadModel", () => {
       ["t2", [itemKey("t2", 2), itemKey("t2", 3)]],
     ]);
   });
+
+  // roborev round 1 (High): a caller here (mobile) never issues a request
+  // generation of its own — no issueLatestWindowRead, no requestGeneration
+  // on the wire request — so every read hydrates at appliedGeneration 0.
+  // readDisposition's own invalidation gate (`generation <=
+  // invalidatedAtGeneration`) assumes a caller that bumps its OWN generation
+  // before every read; gating on it here would read every recovering read's
+  // generation (0) as no newer than what invalidated it (0), discard it
+  // forever, and freeze the thread.
+  test("a resync-invalidated model recovers on the next read despite carrying no request generation of its own", () => {
+    const model = hydrate([turn("t1", 1, [item("t1", 0)])], { bootGeneration: "1", epoch: 0 });
+    const invalid = applyNotification(
+      model,
+      { method: "evener/thread/resync", params: { threadId: THREAD_ID, ref: REF, bootGeneration: "1", epoch: 1 } },
+      NOW,
+    );
+    expect(invalid.history?.invalidatedAtGeneration).toBeDefined();
+    const fresh = hydrate([turn("t1", 2, [item("t1", 1)])], { bootGeneration: "1", epoch: 1 });
+    const recovered = applyReadModel(invalid, fresh);
+    expect(recovered.history?.invalidatedAtGeneration).toBeUndefined();
+    expect(shown(recovered)).toEqual([["t1", [itemKey("t1", 1)]]]);
+  });
+
+  // roborev round 1 (Medium): a fresh read with no snapshot of its own must
+  // not blank a held real identity — the next genuinely versioned read would
+  // then read a real incarnation against an emptied one and replace
+  // wholesale, discarding the very history this merge just preserved.
+  test("a fresh read with no snapshot identity keeps the held identity, not an empty one", () => {
+    const held = hydrate([turn("t1", 1, [item("t1", 0)])], {
+      bootGeneration: "1",
+      epoch: 1,
+      incarnation: "inc_a",
+      length: 50,
+    });
+    const { history: _legacyHistory, ...legacyFresh } = hydrate([turn("t1", 2, [item("t1", 1)])]);
+    const merged = applyReadModel(held, legacyFresh);
+    expect(merged.history?.bootGeneration).toBe("1");
+    expect(merged.history?.incarnation).toBe("inc_a");
+    // A later genuinely versioned read at the SAME identity still merges —
+    // the blanked-identity bug would have read this as a new incarnation
+    // and replaced, dropping t1.
+    const laterReal = hydrate([turn("t2", 3, [item("t2", 2)])], {
+      bootGeneration: "1",
+      epoch: 1,
+      incarnation: "inc_a",
+      length: 60,
+    });
+    const next = applyReadModel(merged, laterReal);
+    expect(shown(next)).toEqual([
+      ["t1", [itemKey("t1", 0), itemKey("t1", 1)]],
+      ["t2", [itemKey("t2", 2)]],
+    ]);
+  });
 });
