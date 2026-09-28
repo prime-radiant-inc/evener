@@ -51,7 +51,6 @@ import {
 	createConversationMutationPendingPort,
 	type ConversationMutationSubmitter,
 } from "../../mobile/src/state/conversationMutation";
-import { ActivitySheet } from "./ActivitySheet";
 import { ApprovalControls } from "./approvalControls";
 import { hostLabeler } from "./board/attention";
 import { useMarkSeenInFront } from "./board/sessionSeen";
@@ -533,7 +532,7 @@ export function useFocusAfterModal(
 
 /** The sheet or screen each context chip and ⋯ menu item opens. */
 const SESSION_DESTINATIONS = {
-	subagents: "activity",
+	subagents: "subagents",
 	tasks: "tasks",
 	notes: "notes",
 	goal: "session",
@@ -667,13 +666,6 @@ export function ConversationScreen({
 	}, []);
 	const focusAfterModal = useRef(false);
 	useFocusAfterModal(navigation, focusAfterModal, composerInput);
-	const [activityContext, setActivityContext] = useState<{
-		hubId: string;
-		ref: string;
-		threadId: string;
-		hubName: string;
-		client: NonNullable<typeof client>;
-	} | null>(null);
 	// biome-ignore lint/correctness/useExhaustiveDependencies: Question ownership follows the destination store.
 	const questionBatches = useMemo(() => new QuestionBatches(), [store]);
 	const batches = useSyncExternalStore(questionBatches.subscribe, questionBatches.getSnapshot);
@@ -2618,29 +2610,6 @@ export function ConversationScreen({
 					deletionAvailable={deletionAvailable}
 					close={() => setSessionMenuOpen(false)}
 					choose={openSessionDestination}
-				/>
-			) : null}
-			{/* Dormant: the Subagents list replaced its one way in, and phase 4 PR 8
-			    (plan Task 21) deletes the sheet with this state. */}
-			{activeProfile?.id === route.params.hubId &&
-			activityContext?.hubId === route.params.hubId &&
-			activityContext.ref === route.params.ref ? (
-				<ActivitySheet
-					key={`${route.params.hubId}:${route.params.ref}`}
-					client={client ?? activityContext.client}
-					sessionRef={route.params.ref}
-					threadId={conversation?.threadId ?? activityContext.threadId}
-					connected={connected}
-					hubName={activityContext.hubName}
-					close={() => setActivityContext(null)}
-					openSession={(ref, title) => {
-						setActivityContext(null);
-						navigation.push("Conversation", {
-							hubId: route.params.hubId,
-							ref,
-							title,
-						});
-					}}
 				/>
 			) : null}
 			<KeyboardAvoidingView

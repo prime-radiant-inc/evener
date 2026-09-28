@@ -23,7 +23,6 @@ import { SessionHeader } from "./session/SessionHeader";
 import { SessionTitle } from "./session/SessionTitle";
 import { sessionInfoHosts } from "./session/SessionInfoSheet";
 import { sheetKey } from "./sheet/sheetHosts";
-import { ActivitySheet } from "./ActivitySheet";
 
 const harness = vi.hoisted(() => ({
 	connection: {} as Record<string, unknown>,
@@ -777,7 +776,6 @@ it("floats the context chips over the list, opens each one's sheet, and hides th
 		threadId: "thread-1",
 		title: "Session",
 	});
-	expect(tree.root.findAllByType(ActivitySheet)).toEqual([]);
 
 	act(() => chip("Tasks, 1 of 2 done").props.onPress());
 	expect(navigation.navigate).toHaveBeenCalledWith("TasksSheet", {

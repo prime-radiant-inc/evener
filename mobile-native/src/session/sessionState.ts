@@ -91,7 +91,7 @@ export interface ContextChip {
 }
 
 /** The chips under the nav bar, each only when it has content (spec 8.1).
- * Subagents and Tasks open a live sheet (today's ActivitySheet/TasksSheet),
+ * Subagents and Tasks open live views (the Subagents list, the Tasks sheet),
  * so they hide while disconnected rather than looking tappable and doing
  * nothing (Calm). Files opens the documents the session wrote or linked, as
  * the screen last read them; Goal (opens the local Session sheet) and Queue
