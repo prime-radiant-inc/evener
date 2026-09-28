@@ -62,8 +62,9 @@ type AuthStatus struct {
 	// refresh-skew window and should be refreshed before use.
 	NeedsRefresh bool
 	// NeedsLogin is true when the access token has expired and no refresh
-	// token is on file to recover it, so the user must sign in again (see
-	// AuthRecord.NeedsLogin).
+	// token is on file to recover it, or the issuer has permanently refused
+	// the refresh token on file, so the user must sign in again (see
+	// AuthRecord.NeedsLogin and RefreshRejected).
 	NeedsLogin bool
 }
 
