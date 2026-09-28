@@ -449,13 +449,10 @@ type CursorEpoch struct {
 	QuarantineEpoch uint64
 }
 
-// CursorEpoch returns the live epoch pair. It is the S6/S8 seam: compaction
-// (S6) ships here: `compactSeq` is persisted in the store file and advanced by
-// every compacting write (§4), and this reads it. The custody-first quarantine
-// (S8) does not exist yet, so `quarantineEpoch` still reads zero; the cursor
-// codec, the mint and the continuation comparison thread the value through, so
-// S8 replaces only that half — `quarantineEpoch` persisted outside the
-// quarantined file (§4) — without touching the read path.
+// CursorEpoch returns the live epoch pair: the compaction position, persisted
+// in the store file and advanced by every compacting write (§4), and the
+// quarantine epoch, persisted outside the quarantined file and advanced by
+// exactly one per corrupt-store quarantine (§4).
 func (s *Store) CursorEpoch() CursorEpoch {
 	if s == nil {
 		return CursorEpoch{}
@@ -468,7 +465,7 @@ func (s *Store) CursorEpoch() CursorEpoch {
 // cursorEpochLocked is CursorEpoch's locked body, which ReadOperations' caller
 // already holds the store mutex for.
 func (s *Store) cursorEpochLocked() CursorEpoch {
-	return CursorEpoch{CompactSeq: s.cell.state.CompactSeq}
+	return CursorEpoch{CompactSeq: s.cell.state.CompactSeq, QuarantineEpoch: s.cell.quarantineEpoch}
 }
 
 // checkCursorCompactionLocked implements §8's post-cursor compaction refusal:
@@ -745,14 +742,6 @@ func readOperationsLocked(state *snapshot, q OperationsQuery, live CursorEpoch) 
 		limit = MaxOperationsLimit
 	}
 
-	// The current entry of every host the store knows, computed once: the
-	// continuation validation and the unfiltered host universe both read it, so
-	// no pass scans the record set per host.
-	current, err := currentCursorBoundsLocked(state)
-	if err != nil {
-		return OperationsPage{}, err
-	}
-
 	// The presented cursor: decode, then the two store-wide checks — the pinned
 	// quarantine epoch first (§8: "before any boundary comparison"), then the
 	// S6 compaction seam.
@@ -774,6 +763,17 @@ func readOperationsLocked(state *snapshot, q OperationsQuery, live CursorEpoch) 
 			return OperationsPage{}, err
 		}
 		window = decoded
+	}
+
+	// The current entry of every host the store knows, computed once: the
+	// continuation validation and the unfiltered host universe both read it, so
+	// no pass scans the record set per host. It runs after the cursor's
+	// store-wide checks, so a pre-quarantine cursor is the typed stale-entry
+	// refusal even when the replacement store's imported hosts carry no mirrored
+	// boundary yet.
+	current, err := currentCursorBoundsLocked(state)
+	if err != nil {
+		return OperationsPage{}, err
 	}
 
 	// §8's bounds validation: every host in the cursor's map must still match

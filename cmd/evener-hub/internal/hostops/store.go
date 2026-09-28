@@ -49,6 +49,16 @@ type storeFaults struct {
 	// the one failure point at which the write has already replaced the store
 	// file, so a test can drive the post-rename path deterministically.
 	syncDir func(afero.Fs, string) error
+	// The quarantine seams below mark the crash windows of §4's custody-first
+	// order, each firing after the named write has landed: afterIntentWrite
+	// between the intent and the custody write, afterCustodyWrite between the
+	// custody write and the corrupt-file rename, afterRename between the rename
+	// and the replacement-store open, and beforeIntentClear between the
+	// replacement write and the intent's removal.
+	afterIntentWrite  func() error
+	afterCustodyWrite func() error
+	afterRename       func() error
+	beforeIntentClear func() error
 }
 
 // postRenameError marks a write failure that followed the rename replacing the
@@ -168,6 +178,12 @@ type storeCell struct {
 	// lets a cached open tell a store that was never written from one whose file
 	// has since disappeared.
 	hasFile atomic.Bool
+	// quarantineEpoch is the durable §4 counter this path's store was opened at:
+	// or validates (§8 compares it before any boundary comparison).
+	quarantineEpoch uint64
+	// quarantine is the operator-visible health signal §4 requires a quarantined
+	// store to boot with, nil when no custody file exists for this path.
+	quarantine *QuarantineSignal
 }
 
 // storeCells holds the process's one cell per store file path. The key is the
@@ -269,11 +285,16 @@ func openFSWithRetention(fs afero.Fs, path string, faults storeFaults, policy Re
 	if _, err := lstat(fs, path); errors.Is(err, os.ErrNotExist) {
 		fileExists = false
 	}
-	state, err := loadFS(fs, path)
+	state, epoch, signal, err := resolveStoreFS(fs, path, faults)
 	if err != nil {
 		return nil, err
 	}
-	cell := &storeCell{state: state}
+	if _, err := lstat(fs, path); err == nil {
+		// The quarantine paths write a replacement store at the path, so a file
+		// that was absent before the load can exist after it.
+		fileExists = true
+	}
+	cell := &storeCell{state: state, quarantineEpoch: epoch, quarantine: signal}
 	cell.hasFile.Store(fileExists)
 	// Two racing first opens of one path must adopt one cell, never two.
 	if existing, loaded := storeCells.LoadOrStore(key, cell); loaded {
@@ -720,8 +741,25 @@ func (f recordFile) record() (Record, error) {
 }
 
 // loadFS reads and validates the store file. A missing file is an empty store;
-// every other failure is reported, never papered over.
+// every other failure is reported, never papered over. The whole-file checks
+// live in readStoreFS; this adds the store-level invariants.
 func loadFS(fs afero.Fs, path string) (snapshot, error) {
+	state, err := readStoreFS(fs, path)
+	if err != nil {
+		return snapshot{}, err
+	}
+	if err := validateSnapshot(state); err != nil {
+		return snapshot{}, fmt.Errorf("%w: validate %s: %w", ErrStoreCorrupt, path, err)
+	}
+	return state, nil
+}
+
+// readStoreFS reads and decodes the store file with every whole-file rule this
+// store applies — the byte-level checks, the strict decode, and the per-record
+// mapping — without the store-level validation. The quarantine path reads the
+// same decode: a corrupt file whose bytes this function refuses cannot yield a
+// custody snapshot, because a region of it was left unparsed or discarded.
+func readStoreFS(fs afero.Fs, path string) (snapshot, error) {
 	empty := snapshot{Version: storeVersion}
 	// The kind check runs on the path itself (never following a final link) and
 	// before the missing-file case: a dangling symlink reports "missing" to a
@@ -844,9 +882,6 @@ func loadFS(fs afero.Fs, path string) (snapshot, error) {
 	for i := range state.Records {
 		state.Records[i].CreatedAt = state.Records[i].CreatedAt.UTC()
 		state.Records[i].UpdatedAt = state.Records[i].UpdatedAt.UTC()
-	}
-	if err := validateSnapshot(state); err != nil {
-		return snapshot{}, fmt.Errorf("%w: validate %s: %w", ErrStoreCorrupt, path, err)
 	}
 	return state, nil
 }
