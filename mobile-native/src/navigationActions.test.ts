@@ -29,7 +29,11 @@ it("does not call an empty-journal reconciliation complete after another model s
 	release();
 	await read;
 	expect(journal.load()).toBe(other);
-	expect(actions.getSnapshot().uncertain).toBe(true);
+	expect(actions.getSnapshot()).toMatchObject({
+		uncertain: true,
+		error:
+			"Could not confirm current navigation for the previous change. Refresh before trying again.",
+	});
 });
 it.each(["acknowledge", "finish"] as const)(
 	"keeps recovery when %s fails after acknowledgement",

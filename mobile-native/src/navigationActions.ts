@@ -176,11 +176,16 @@ export class NavigationActions {
 		)
 			return;
 		this.publish({ ...this.state, pending: true });
+		// Only the read's own failure with no checkpoint is a failed load; a
+		// checkpoint that appeared while the read was in flight, a scope change
+		// or a recovery that moved is still about a previous change.
+		let reading = true;
 		try {
 			await this.reconcileCurrent(
 				checkpoint ?? undefined,
 				accepted !== undefined,
 			);
+			reading = false;
 			if (this.disposed) return;
 			if (!this.current()) throw Error("scope changed");
 			this.confirmCurrent();
@@ -202,9 +207,10 @@ export class NavigationActions {
 				...this.state,
 				pending: false,
 				uncertain: true,
-				error: checkpoint
-					? "Could not confirm current navigation for the previous change. Refresh before trying again."
-					: "Could not load the current navigation. Refresh before trying again.",
+				error:
+					checkpoint || !reading
+						? "Could not confirm current navigation for the previous change. Refresh before trying again."
+						: "Could not load the current navigation. Refresh before trying again.",
 			});
 		}
 	}
