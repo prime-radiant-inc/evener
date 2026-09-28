@@ -5,6 +5,7 @@ import { expect, it, vi } from "vitest";
 import type { ConversationClientLike } from "../../../mobile/src/services/conversation";
 import { seenMarkers } from "../board/nativeBoardMemory";
 import { renderHook } from "../renderNative.testkit";
+import { othersNeedingYou } from "./fleetOrder";
 import { answerFleetRead, type FleetShape, fleetSession } from "./fleetTestUtils";
 import { useFleet } from "./useFleet";
 
@@ -27,11 +28,16 @@ const fleet: FleetShape = {
 	sources: [{ id: "local", label: "Laptop" }],
 };
 
-function hub() {
+/** A hub that answers from `fleet`, failing the first read of each
+ * section `failOnce` names. */
+function hub({ failOnce = [] as string[] } = {}) {
 	const methods: string[] = [];
+	const toFail = new Set(failOnce);
 	const client: ConversationClientLike = {
 		request: (method, params) => {
 			methods.push(method);
+			const section = (params as { section?: string }).section;
+			if (section && toFail.delete(section)) return Promise.reject(new Error("request timed out"));
 			return Promise.resolve(answerFleetRead(fleet, method, params) as never);
 		},
 		onNotification: () => () => {},
@@ -88,4 +94,23 @@ it("reads nothing while another screen is in front", async () => {
 	await act(settle);
 	expect(methods).toContain("evener/navigation/read");
 	hook.unmount();
+});
+
+it("retries a failed read on its own, so Back's count appears", async () => {
+	vi.useFakeTimers();
+	try {
+		const { client } = hub({ failOnce: ["live", "needs_you"] });
+		const { hook } = mount(client);
+		await act(settle);
+		expect(othersNeedingYou(hook.result.current.bands, "local:here")).toEqual([]);
+		// The Board's backoff: the first retry waits a second.
+		await act(async () => {
+			await vi.advanceTimersByTimeAsync(1000);
+		});
+		await act(settle);
+		expect(othersNeedingYou(hook.result.current.bands, "local:here").map((row) => row.ref)).toEqual(["local:fail"]);
+		hook.unmount();
+	} finally {
+		vi.useRealTimers();
+	}
 });

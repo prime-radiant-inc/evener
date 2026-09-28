@@ -9,6 +9,7 @@ import { type LiveBands, liveBands } from "../board/attention";
 import { createBoardController } from "../board/boardData";
 import type { BoardSeen } from "../board/hubSeen";
 import { useBoardSeen } from "../board/nativeBoardMemory";
+import { useBoardReadRetry } from "../board/useBoardReadRetry";
 
 export interface Fleet {
 	bands: LiveBands;
@@ -31,6 +32,9 @@ export function useFleet(hubId: string, client: ConversationClientLike | null, i
 		board.setClient(client);
 	}, [board, client]);
 	const snapshot = useSyncExternalStore(board.subscribe, board.getSnapshot);
+	// A failed read tries again on its own while the Session is in front,
+	// as the Board's does.
+	useBoardReadRetry(board, inFront ? client : null, snapshot);
 	const seen = useBoardSeen(hubId);
 	const bands = useMemo(
 		// Never the bare seen.isSeen: it reads `this`.
