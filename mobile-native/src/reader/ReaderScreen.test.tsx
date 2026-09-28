@@ -299,6 +299,19 @@ it("draws blocks in the document role with serif headings, spaced by the list al
 		expect(style[name]).toMatchObject({ marginTop: 0, marginBottom: 0 });
 });
 
+it("leaves a table to the markdown view, which scrolls a wide one itself", async () => {
+	// Wrapped in a horizontal ScrollView, the native view measured no width
+	// and the table drew nothing (seen on the simulator, phase 4 PR 9).
+	served[PATH] = { body: "| Work | Subagents |\n|---|---|\n| Fix the race | 1 |\n" };
+	const { tree } = await mount();
+	const table = tree.root.find(
+		(node) => String(node.type) === "EnrichedMarkdownText" && String(node.props.markdown).includes("| Work |"),
+	);
+	expect(table.props.flavor).toBe("github");
+	for (let node = table.parent; node; node = node.parent)
+		expect(String(node.type) === "ScrollView" && node.props.horizontal).not.toBe(true);
+});
+
 it("puts the title in the nav bar once the first heading scrolls out", async () => {
 	served[PATH] = { body: `Intro line.\n\n${PLAN}` };
 	const { tree, navigation } = await mount(PATH, { updatedAt: new Date(Date.now() - 3 * MINUTE).toISOString() });
@@ -349,6 +362,43 @@ it("marks what changed since your last read, and steps through the changes", asy
 	act(() => pressable(tree, "Previous change")?.props.onPress());
 	expect(renderedText(tree)).toContain("Change 2 of 2");
 	expect(flatListCalls.at(-1)).toEqual({ method: "scrollToIndex", args: { index: 4, animated: true } });
+});
+
+it("keeps Send review on one line beside the change stepper", async () => {
+	// Split into equal thirds, the bar left Send review about 81pt of the
+	// iPhone's width, and it wrapped (seen on the simulator, phase 4 PR 9).
+	// The stepper takes what the two ends leave instead.
+	memory.left(KEY, {
+		title: "Settle the race",
+		blocks: documentBlocks(OLDER).map((block) => block.hash),
+		position: null,
+		reviewRef: "local:fix",
+		reviewTitle: "Fix race",
+	});
+	const { tree, rerender } = await mount(PATH, { reviewRef: "local:fix", reviewTitle: "Fix race" });
+	act(() =>
+		client.emitNotification({
+			method: "thread/status/changed",
+			params: {
+				threadId: "thread-fix",
+				ref: "local:fix",
+				status: { type: "idle" },
+				capabilities: { send: true, queue: true } as never,
+			},
+		}),
+	);
+	await rerender();
+	expect(pressable(tree, "Next change")).toBeDefined();
+	const send = pressable(tree, "Send review");
+	expect(send?.find((node) => String(node.type) === "Text").props.numberOfLines).toBe(1);
+	// The View a control sits in.
+	const holder = (node: ReactTestInstance | undefined) => {
+		let parent = node?.parent;
+		while (parent && String(parent.type) !== "View") parent = parent.parent;
+		return (parent?.props.style ?? {}) as { flex?: number };
+	};
+	expect(holder(send).flex).toBeUndefined();
+	expect(holder(pressable(tree, "Next change")).flex).toBe(1);
 });
 
 it("starts the steps over when a re-read changes what changed", async () => {
@@ -774,6 +824,15 @@ describe("comments (Task 16)", () => {
 		const { tree } = await mount();
 		expect(marker(tree, 4)).toBe("2 comments");
 		expect(marker(tree, 3)).toBeNull();
+	});
+
+	it("keeps a block's words clear of its comment pill", async () => {
+		// The pill sat on the item's last words (seen on the simulator, phase 4 PR 9).
+		memory.addComment(KEY, { blockIndex: 4, blockHash: secondItem.hash, quote: secondItem.text, text: "one" });
+		const { tree } = await mount();
+		const inset = (index: number) => (block(tree, index).props.style as { paddingRight?: number }).paddingRight;
+		expect(inset(4)).toBeGreaterThanOrEqual(44);
+		expect(inset(3)).toBeUndefined();
 	});
 
 	it("shows the tip until the first comment, then the Comments button", async () => {
