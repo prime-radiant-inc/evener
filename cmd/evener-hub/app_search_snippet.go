@@ -84,6 +84,12 @@ func searchSnippet(text string, tokens []string) []appwire.SearchSnippetPart {
 	if end < len(line) {
 		add("…", false)
 	}
+	if parts == nil {
+		// An empty message (Texts returns "" for a hit whose message left the
+		// index since Match) must still be a non-nil slice: SearchHit.Snippet
+		// has no omitempty, so nil would encode as JSON null.
+		parts = []appwire.SearchSnippetPart{}
+	}
 	return parts
 }
 

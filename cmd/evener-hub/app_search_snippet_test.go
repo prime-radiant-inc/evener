@@ -57,6 +57,16 @@ func TestSearchSnippetWithoutAMatchIsTheOpening(t *testing.T) {
 	}
 }
 
+// An empty message (Texts documents that a hit whose message left the index
+// since Match comes back as "") must still produce a non-nil slice: the wire
+// type has no omitempty on SearchHit.Snippet, so a nil slice would encode as
+// JSON null against a client's non-nullable array type.
+func TestSearchSnippetOfEmptyTextIsNeverNil(t *testing.T) {
+	if got := searchSnippet("", []string{"settle"}); got == nil {
+		t.Fatalf("searchSnippet(\"\", ...) = nil, want a non-nil (possibly empty) slice")
+	}
+}
+
 // A single matched word longer than searchSnippetRunes (a hash, a URL, a
 // stack-trace line with no spaces) must still be marked whole rather than cut
 // mid-word and silently losing its mark: the cut never lands before the
