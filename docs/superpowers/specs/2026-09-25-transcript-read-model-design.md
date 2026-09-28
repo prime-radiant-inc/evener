@@ -1210,12 +1210,25 @@ previous phase has landed.
 
 ## Follow-ups from the final spec review (phase 4)
 
-The last roborev round on this spec raised these. They are tracked for phase 4
-rather than resolved in prose here:
+The last roborev round on this spec raised these. All five are resolved
+below (phase 4):
 
-- **COMMUNICATE and completion durability when fsync fails.** A
-  recorded-but-unsynced entry is adopted and announced. Decide whether to
-  retry the fsync or fail closed, and pin the decision with a test.
+- ~~**COMMUNICATE and completion durability when fsync fails.**~~ Resolved:
+  RETRY. A recorded-but-unsynced entry (`*RetainedUnsyncedError`) is adopted
+  and announced immediately, as before; the session then retries the
+  durability barrier in its own goroutine, with backoff on the session's
+  clock, no session lock held across a sleep, so the session keeps running
+  while it retries (`Session.settleRetainedUnsynced`,
+  `agent/session_fail_closed.go`). A retry that establishes durability settles
+  the debt silently. When the retry budget (5 attempts) is exhausted, a served
+  session fails closed — a COMMUNICATE or completion's durability must not be
+  left permanently owed; an unserved session keeps warn-and-continue, since
+  the fail-closed rule applies only to served sessions. Pinned by
+  `TestRetainedCompletionSettlesAfterRetryingTheBarrier`,
+  `TestRetainedCompletionFailsAServedSessionClosedAfterExhaustingRetries`, and
+  `TestRetainedCompletionOnAnUnservedSessionKeepsRunningAfterExhaustingRetries`
+  (`agent/session_fail_closed_test.go`), driven deterministically with a fake
+  clock (no real sleeps).
 - ~~**Below-floor update-log requests.**~~ Resolved: a same-incarnation
   `LatestSince` whose held length predates the kept update log answers
   `TranscriptItemCursorStale` (`internal/transcriptindex.LatestSince`
@@ -1244,10 +1257,21 @@ rather than resolved in prose here:
   keeps comparing a page's length against that one true watermark, never one
   a page pushed forward, which is what "the same snapshot identity" holds
   pages to.
-- **`RetainedUnsyncedError` boundary tests.** Test adoption, later durability,
-  and a crash between adoption and fsync.
-- **Minting delivery turn IDs.** Name which component mints them: the registry
-  entry, under the append lock.
+- ~~**`RetainedUnsyncedError` boundary tests.**~~ Resolved: adoption was
+  already covered
+  (`TestAppendSyncedReportsRetainedUnsyncedForAdoptionWithoutDuplication`).
+  Added: later durability
+  (`TestRetainedUnsyncedRecordIsSettledByALaterSuccessfulFsync` — a retained
+  record's debt clears on a subsequent successful `EstablishDurability`, with
+  no duplication) and a crash between adoption and the next fsync
+  (`TestRetainedUnsyncedRecordSurvivesACrashBeforeTheNextFsync` — reopening
+  the file finds the retained entry exactly once, and the next append lands
+  after it, not over it), both in `agent/transcript/durability_test.go`.
+- ~~**Minting delivery turn IDs.**~~ Resolved: already implemented and named.
+  `stampDelivery` mints inside `turnPlacement.place`
+  (`agent/transcript/placement.go`), under the append tail's `mu`
+  (`agent/transcript/append_tail.go`), matching the "Lock order" and
+  "Asynchronous writes" description above (~lines 328-361 of this spec).
 
 ## Known gap in the phase 1 index (PR #2303 roborev)
 
