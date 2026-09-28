@@ -55,6 +55,43 @@ func TestSessionSeenStoreMarkBatchIsOneTransaction(t *testing.T) {
 	}
 }
 
+// TestSessionSeenStoreMarkBatchPersistsEveryMark pins the success path the
+// rollback test above leaves uncovered: a multi-mark batch commits every mark
+// it was given - seen and unread, across sources - not just the last one, so
+// every session in a validated call lands in the snapshot.
+func TestSessionSeenStoreMarkBatchPersistsEveryMark(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "index.db")
+	now := seenTestNow
+	store := newSeenTestStore(path, &now)
+	turnA := seenTestNow.Add(10 * time.Minute)
+	turnB := seenTestNow.Add(20 * time.Minute)
+	changed, err := store.MarkBatch([]SessionSeenMark{
+		{SessionID: "01A", SeenThrough: turnA},
+		{Source: "paradise-park", SessionID: "01B", SeenThrough: turnB},
+		{SessionID: "01C", Unread: true},
+	})
+	if err != nil || !changed {
+		t.Fatalf("MarkBatch = %v, %v; want a committed change", changed, err)
+	}
+	snapshot, err := store.Snapshot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[ArchiveKey]SessionSeenRecord{
+		SessionPinKey("", "01A"):              {SeenThrough: turnA},
+		SessionPinKey("paradise-park", "01B"): {SeenThrough: turnB},
+		SessionPinKey("", "01C"):              {Unread: true},
+	}
+	if len(snapshot.Records) != len(want) {
+		t.Fatalf("records after one batch = %+v, want every mark (%d)", snapshot.Records, len(want))
+	}
+	for key, record := range want {
+		if got := snapshot.Records[key]; !got.SeenThrough.Equal(record.SeenThrough) || got.Unread != record.Unread {
+			t.Errorf("record %v = %+v, want %+v", key, got, record)
+		}
+	}
+}
+
 // fuzzScenarioSessionSeenStore_EpochIsSetOnceAndSurvivesReopen: the epoch is
 // the store's first read and never moves after, so the first Board after an
 // upgrade counts every earlier turn as seen (S4 ruling 13).

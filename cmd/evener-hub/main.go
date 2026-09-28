@@ -346,7 +346,7 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 
 	past := hubcore.NewPastIndexWithDB(stateGlob, pastIndexDB)
 	if _, err := past.Rebuild(); err != nil {
-		_, _ = fmt.Fprintf(os.Stderr, "[hub] past index rebuild: %v\n", err)
+		_, _ = fmt.Fprintf(stderr, "[hub] past index rebuild: %v\n", err)
 	}
 	archive := hubcore.NewArchiveStore(pastIndexDB)
 	favorite := hubcore.NewFavoriteStore(pastIndexDB)
@@ -395,7 +395,7 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 	}
 	resolvedEvenerBinary := resolveEvenerBinaryPath(opts.evenerBinary, currentExecutable(), exec.LookPath)
 	if opts.evenerBinary == "" && resolvedEvenerBinary != "" && resolvedEvenerBinary != "evener" {
-		_, _ = fmt.Fprintf(os.Stderr, "[hub] resolved evener at %s\n", resolvedEvenerBinary)
+		_, _ = fmt.Fprintf(stderr, "[hub] resolved evener at %s\n", resolvedEvenerBinary)
 	}
 	spawner := &HubSpawner{
 		Cfg:                 cfg,

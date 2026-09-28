@@ -93,12 +93,13 @@ func TestRunMainAddrZeroReportsAndBindsTheRealPort(t *testing.T) {
 		t.Fatal("deps.serve saw a nil hubHTTPServer")
 	}
 
-	// The startup log line (including "listening on") is written to stderr
-	// before deps.serve is called, so it's already there once served fires -
-	// the same happens-before edge gotSrv above relies on. Snapshot it now,
-	// before the dial loop below gives background goroutines time to run and
-	// write more: stderr is a plain bytes.Buffer, not safe to read while
-	// runMain's goroutine might still be writing to it.
+	// The startup banners (including "listening on") are written to stderr
+	// before deps.serve is called, so they are already there once served
+	// fires. Reading the buffer here is race-free not because of when we read
+	// it but because nothing in this hostless test writes to stderr after the
+	// banners: runMain is parked inside deps.serve, and the only background
+	// holder of this writer is the sshconn logger, which has no configured
+	// host to log about.
 	captured := stderr.String()
 
 	// The log line must carry a real, non-zero port - not the literal ":0"
