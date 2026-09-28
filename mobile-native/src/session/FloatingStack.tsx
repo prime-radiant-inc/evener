@@ -28,7 +28,7 @@ export function FloatingStack({ toast, next, pill }: { toast: ReactNode; next: R
 	return (
 		<View
 			pointerEvents="box-none"
-			style={{ position: "absolute", left: 0, right: 0, bottom: 10, flexDirection: "column", gap: 8 }}
+			style={{ position: "absolute", left: 0, right: 0, bottom: 10, gap: 8 }}
 		>
 			{toast ? (
 				<View pointerEvents="box-none" style={{ alignItems: "center" }}>
