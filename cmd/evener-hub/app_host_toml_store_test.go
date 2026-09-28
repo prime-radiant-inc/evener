@@ -209,10 +209,7 @@ func TestHubTOMLWriteOrderIsTheStores(t *testing.T) {
 	if got := hubTOMLHostNames(t, configPath); !slices.Equal(got, []string{"alpha", "zeta", "mid"}) {
 		t.Fatalf("write order after add = %v, want the name-sorted boot set then the add", got)
 	}
-	if _, err := m.Update(context.Background(), appwire.HostUpdateParams{
-		Name:  "zeta",
-		Entry: appwire.HostEntry{Address: "zeta2.example"},
-	}); err != nil {
+	if _, err := m.Update(context.Background(), updateRequest(t, m, "zeta", appwire.HostEntry{Address: "zeta2.example"})); err != nil {
 		t.Fatalf("Update(zeta) = %v", err)
 	}
 	if got := hubTOMLHostNames(t, configPath); !slices.Equal(got, []string{"alpha", "zeta", "mid"}) {
@@ -279,7 +276,7 @@ func TestHubTOMLMigrationMergesSidecarOnce(t *testing.T) {
 	}
 	// A later removal must not resurrect through the retired sidecar.
 	sameBoot := bootHostManager(t, configPath)
-	if _, err := sameBoot.Remove(context.Background(), appwire.HostRemoveParams{Name: "beta"}); err != nil {
+	if _, err := sameBoot.Remove(context.Background(), removeRequest(t, sameBoot, "beta")); err != nil {
 		t.Fatalf("Remove(beta) = %v", err)
 	}
 	fresh := bootHostManager(t, configPath)

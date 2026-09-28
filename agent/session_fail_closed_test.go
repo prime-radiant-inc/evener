@@ -1,0 +1,513 @@
+package agent
+
+import (
+	"bytes"
+	"context"
+	"errors"
+	"os"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/spf13/afero"
+
+	"primeradiant.com/evener/agent/events"
+	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/agent/transcript"
+	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/llm"
+)
+
+// servedEvents makes s a served session (a daemon's authoritative event
+// consumer) and records its events.
+type servedEvents struct {
+	mu      sync.Mutex
+	events  []events.SessionEvent
+	drained chan struct{}
+}
+
+func serveFailClosedSession(s *Session) *servedEvents {
+	served := &servedEvents{drained: make(chan struct{})}
+	s.ConsumeEventsLossless(func(ev events.SessionEvent) {
+		served.mu.Lock()
+		served.events = append(served.events, ev)
+		served.mu.Unlock()
+	}, func() { close(served.drained) })
+	return served
+}
+
+// settle closes the session and returns every event it emitted.
+func (e *servedEvents) settle(s *Session) []events.SessionEvent {
+	s.Close()
+	<-e.drained
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return append([]events.SessionEvent(nil), e.events...)
+}
+
+func failClosedDiagnostics(evs []events.SessionEvent) int {
+	count := 0
+	for _, ev := range evs {
+		if data, ok := ev.Data.(events.ErrorData); ok && ev.Kind == events.EventError && data.Cause != nil && data.Cause.Kind == failClosedCause {
+			count++
+		}
+	}
+	return count
+}
+
+func countKind(evs []events.SessionEvent, kind events.EventKind) int {
+	count := 0
+	for _, ev := range evs {
+		if ev.Kind == kind {
+			count++
+		}
+	}
+	return count
+}
+
+func newFailClosedSession(t *testing.T, fault func(string) error) (*Session, *executionAdapter) {
+	t.Helper()
+	adapter := &executionAdapter{}
+	client := llm.NewClient()
+	client.Register(adapter)
+	s := newSession(t, withClient(client), withConfig(SessionConfig{
+		StateDir:         t.TempDir(),
+		MaxSubagentDepth: 1,
+		NoProjectPrompts: true,
+		LLMRetryPolicy:   &llm.RetryPolicy{MaxRetries: 2},
+		LLMSleep:         func(context.Context, time.Duration) error { return nil },
+		testOnly:         testConfig{skipGitSnapshot: true, minimalSystemPrompt: true, noSyncJobStore: true, sessionInitFault: fault},
+	}))
+	return s, adapter
+}
+
+// A served session whose transcript could not be created refuses its input,
+// with one diagnostic, however often input arrives.
+func TestAServedSessionWithNoTranscriptFailsClosed(t *testing.T) {
+	s, _ := newFailClosedSession(t, func(point string) error {
+		if point == "new_transcript" {
+			return errors.New("disk full")
+		}
+		return nil
+	})
+	served := serveFailClosedSession(s)
+	for range 2 {
+		if _, err := s.ProcessInput(context.Background(), "hello", nil); !errors.Is(err, errTranscriptFailedClosed) {
+			t.Fatalf("input on a failed-closed session = %v, want the fail-closed refusal", err)
+		}
+	}
+	evs := served.settle(s)
+	if got := failClosedDiagnostics(evs); got != 1 {
+		t.Fatalf("%d fail-closed diagnostics, want 1", got)
+	}
+	if countKind(evs, events.EventUserInput) != 0 {
+		t.Fatal("a failed-closed session ran an input")
+	}
+}
+
+// entryRefusingFs is the real filesystem whose files refuse, writing
+// nothing, every write of an entry of kind: that append records nothing and
+// leaves the writer usable, and every other entry records as usual.
+type entryRefusingFs struct {
+	afero.Fs
+	kind schema.TurnKind
+}
+
+func (fs entryRefusingFs) OpenFile(name string, flag int, perm os.FileMode) (afero.File, error) {
+	f, err := fs.Fs.OpenFile(name, flag, perm)
+	if err != nil {
+		return nil, err
+	}
+	return entryRefusingFile{File: f, marker: []byte(`"kind":"` + string(fs.kind) + `"`)}, nil
+}
+
+type entryRefusingFile struct {
+	afero.File
+	marker []byte
+}
+
+func (f entryRefusingFile) Write(p []byte) (int, error) {
+	if bytes.Contains(p, f.marker) {
+		return 0, errors.New("injected write failure")
+	}
+	return f.File.Write(p)
+}
+
+// toolResultsTearingFs is the real filesystem whose files write only half of
+// a TOOL_RESULTS entry and then fail: the partial line poisons the writer.
+type toolResultsTearingFs struct{ afero.Fs }
+
+func (fs toolResultsTearingFs) OpenFile(name string, flag int, perm os.FileMode) (afero.File, error) {
+	f, err := fs.Fs.OpenFile(name, flag, perm)
+	if err != nil {
+		return nil, err
+	}
+	return toolResultsTearingFile{File: f}, nil
+}
+
+type toolResultsTearingFile struct{ afero.File }
+
+func (f toolResultsTearingFile) Write(p []byte) (int, error) {
+	if bytes.Contains(p, []byte(`"kind":"TOOL_RESULTS"`)) {
+		n, _ := f.File.Write(p[:len(p)/2])
+		return n, errors.New("injected torn write")
+	}
+	return f.File.Write(p)
+}
+
+// A real append that tears its line poisons the writer: a served session
+// fails closed, once, and refuses what comes next.
+func TestAPoisonedWriterFailsAServedSessionClosed(t *testing.T) {
+	s, adapter := newFailClosedSession(t, nil)
+	served := serveFailClosedSession(s)
+	w, _, err := transcript.OpenWriterForSessionWithFS(toolResultsTearingFs{Fs: afero.NewOsFs()}, s.TranscriptPath(), s.ID())
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.mu.Lock()
+	previous := s.transcript
+	s.transcript = w
+	s.mu.Unlock()
+	t.Cleanup(func() { _ = previous.Close() })
+	adapter.script(func(context.Context) (llm.Response, error) {
+		return communicateResponse(false, "working"), nil
+	})
+	if _, err := s.ProcessInput(context.Background(), "tear", nil); err == nil {
+		t.Fatal("the input completed on a poisoned transcript")
+	}
+	if !w.Poisoned() {
+		t.Fatal("setup: the torn write did not poison the writer")
+	}
+	if _, err := s.ProcessInput(context.Background(), "again", nil); !errors.Is(err, errTranscriptFailedClosed) {
+		t.Fatalf("input after the poisoning = %v, want the fail-closed refusal", err)
+	}
+	if got := failClosedDiagnostics(served.settle(s)); got != 1 {
+		t.Fatalf("%d fail-closed diagnostics, want 1", got)
+	}
+}
+
+// refuseCommunicateEntries swaps s's writer for one on the same file whose
+// COMMUNICATE appends fail.
+func refuseCommunicateEntries(t *testing.T, s *Session) {
+	t.Helper()
+	refuseEntries(t, s, schema.TurnCommunicate)
+}
+
+// refuseEntries swaps s's writer for one on the same file whose appends of
+// kind fail.
+func refuseEntries(t *testing.T, s *Session, kind schema.TurnKind) {
+	t.Helper()
+	w, _, err := transcript.OpenWriterForSessionWithFS(entryRefusingFs{Fs: afero.NewOsFs(), kind: kind}, s.TranscriptPath(), s.ID())
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.mu.Lock()
+	previous := s.transcript
+	s.transcript = w
+	s.mu.Unlock()
+	t.Cleanup(func() { _ = previous.Close() })
+}
+
+// A served session with no transcript refuses a client turn at its claim, and
+// shows its one diagnostic there too: the claim path runs no turn loop.
+func TestAFailedClosedSessionAnnouncesAtAClientClaim(t *testing.T) {
+	s, _ := newFailClosedSession(t, func(point string) error {
+		if point == "new_transcript" {
+			return errors.New("disk full")
+		}
+		return nil
+	})
+	served := serveFailClosedSession(s)
+	s.SetClientMutationStartWakeFunc(func() {})
+	if _, err := s.AcceptClientMutationStart(appwire.TurnStartParams{
+		ClientMutationID: "start-on-a-dead-transcript", ExpectedInstanceID: s.ID(),
+		Input: []appwire.InputItem{{Type: "text", Text: "hello"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := s.ProcessClientMutationStart(context.Background(), nil); !errors.Is(err, errTranscriptFailedClosed) {
+		t.Fatalf("claim on a failed-closed session = %v, want the fail-closed refusal", err)
+	}
+	if got := failClosedDiagnostics(served.settle(s)); got != 1 {
+		t.Fatalf("%d fail-closed diagnostics, want 1", got)
+	}
+}
+
+// A communicate message whose entry is not recorded is never announced: the
+// served session fails closed, and the running execution is interrupted.
+func TestAnUnrecordedCommunicateFailsAServedSessionClosed(t *testing.T) {
+	s, adapter := newFailClosedSession(t, nil)
+	served := serveFailClosedSession(s)
+	refuseCommunicateEntries(t, s)
+	adapter.script(func(context.Context) (llm.Response, error) {
+		return communicateResponse(true, "never delivered"), nil
+	})
+	if _, err := s.ProcessInput(context.Background(), "talk", nil); err == nil {
+		t.Fatal("the input completed after its communicate was not recorded")
+	}
+	if _, err := s.ProcessInput(context.Background(), "again", nil); !errors.Is(err, errTranscriptFailedClosed) {
+		t.Fatalf("input after failing closed = %v, want the fail-closed refusal", err)
+	}
+	evs := served.settle(s)
+	if got := countKind(evs, events.EventCommunicate); got != 0 {
+		t.Fatalf("%d communicate events announced a message the transcript never recorded", got)
+	}
+	if got := failClosedDiagnostics(evs); got != 1 {
+		t.Fatalf("%d fail-closed diagnostics, want 1", got)
+	}
+}
+
+// Failing closed interrupts the execution that is running.
+func TestFailingClosedInterruptsTheRunningExecution(t *testing.T) {
+	s, adapter := newFailClosedSession(t, nil)
+	served := serveFailClosedSession(s)
+	inCall := make(chan struct{})
+	adapter.script(func(ctx context.Context) (llm.Response, error) {
+		close(inCall)
+		<-ctx.Done()
+		return llm.Response{}, ctx.Err()
+	})
+	processed := make(chan error, 1)
+	go func() {
+		_, err := s.ProcessInput(context.Background(), "long", nil)
+		processed <- err
+	}()
+	<-inCall
+	s.failClosed(errors.New("writer poisoned"))
+	if err := <-processed; err == nil {
+		t.Fatal("the running execution completed after the session failed closed")
+	}
+	evs := served.settle(s)
+	if got := failClosedDiagnostics(evs); got != 1 {
+		t.Fatalf("%d fail-closed diagnostics, want 1", got)
+	}
+}
+
+// A communicate that lands after the session closed its transcript (a turn
+// finishing while the session shuts down) is not a writer failure: nothing
+// fails closed, and the unrecorded message is not announced either --
+// history would otherwise show a message the transcript never has.
+func TestACommunicateAfterTheTranscriptClosedDoesNotFailClosed(t *testing.T) {
+	s, adapter := newFailClosedSession(t, nil)
+	served := serveFailClosedSession(s)
+	adapter.script(func(context.Context) (llm.Response, error) {
+		if err := s.attachedTranscript().Close(); err != nil {
+			t.Error(err)
+		}
+		return communicateResponse(true, "after close"), nil
+	})
+	_, _ = s.ProcessInput(context.Background(), "talk", nil)
+	evs := served.settle(s)
+	if got := failClosedDiagnostics(evs); got != 0 {
+		t.Fatalf("%d fail-closed diagnostics for a closed transcript, want 0", got)
+	}
+	if got := countKind(evs, events.EventCommunicate); got != 0 {
+		t.Fatalf("%d communicate events announced a message the closed writer never recorded", got)
+	}
+}
+
+// A served session with no transcript defensively fails closed if
+// deliverCommunicate is ever reached directly, even though admission (the
+// create-failure check in failClosedOnUnhealthyTranscript) already refuses
+// every input before any turn runs, so this path is not reachable through
+// ProcessInput today (TestAServedSessionWithNoTranscriptFailsClosed). Pinned
+// so deliverCommunicate stays correct on its own, independent of its callers.
+func TestDeliverCommunicateFailsClosedWithNoTranscript(t *testing.T) {
+	s, _ := newFailClosedSession(t, func(point string) error {
+		if point == "new_transcript" {
+			return errors.New("disk full")
+		}
+		return nil
+	})
+	served := serveFailClosedSession(s)
+	if s.attachedTranscript() != nil {
+		t.Fatal("setup: expected no writer")
+	}
+	if err := s.deliverCommunicate(events.CommunicateData{CallID: "comm-no-writer", EndTurn: true, Message: "lost"}); !errors.Is(err, errTranscriptFailedClosed) {
+		t.Fatalf("deliverCommunicate with no writer = %v, want the fail-closed refusal", err)
+	}
+	evs := served.settle(s)
+	if got := countKind(evs, events.EventCommunicate); got != 0 {
+		t.Fatalf("%d communicate events announced with no writer to record them", got)
+	}
+	if got := failClosedDiagnostics(evs); got != 1 {
+		t.Fatalf("%d fail-closed diagnostics, want 1", got)
+	}
+}
+
+// A COMMUNICATE that reaches delivery after the session already failed
+// closed -- the running execution was cancelled but the tool call was
+// mid-flight -- is refused immediately, without a second attempt to record
+// or a second diagnostic.
+func TestDeliverCommunicateAfterAlreadyFailedClosedDoesNotReannounce(t *testing.T) {
+	s, _ := newFailClosedSession(t, nil)
+	served := serveFailClosedSession(s)
+	s.failClosed(errors.New("earlier cause"))
+	if err := s.deliverCommunicate(events.CommunicateData{CallID: "comm-late", EndTurn: true, Message: "too late"}); !errors.Is(err, errTranscriptFailedClosed) {
+		t.Fatalf("deliverCommunicate on an already failed-closed session = %v, want the fail-closed refusal", err)
+	}
+	evs := served.settle(s)
+	if got := countKind(evs, events.EventCommunicate); got != 0 {
+		t.Fatalf("%d communicate events announced after the session failed closed", got)
+	}
+	if got := failClosedDiagnostics(evs); got != 1 {
+		t.Fatalf("%d fail-closed diagnostics, want 1 (no re-announce)", got)
+	}
+}
+
+// trackExecutionCancel's cleanup only clears its own tracked cancel: a
+// finishing execution overlapping a newer one must not clear the newer
+// execution's cancel out from under it, or a later failClosed could not
+// interrupt the run still in flight.
+func TestTrackExecutionCancelDoesNotClearANewerExecutionsCancel(t *testing.T) {
+	s, _ := newFailClosedSession(t, nil)
+	served := serveFailClosedSession(s)
+	var firstCancelled, secondCancelled bool
+	stopFirst := s.trackExecutionCancel(func() { firstCancelled = true })
+	stopSecond := s.trackExecutionCancel(func() { secondCancelled = true })
+	stopFirst() // the first execution finishes while the second still runs
+	s.failClosed(errors.New("writer poisoned"))
+	if firstCancelled {
+		t.Fatal("the finished execution's own cancel ran")
+	}
+	if !secondCancelled {
+		t.Fatal("failClosed did not cancel the newer execution still tracked")
+	}
+	stopSecond()
+	served.settle(s)
+}
+
+// An unserved session keeps today's behavior: the message is announced and
+// no fail-closed diagnostic appears.
+func TestAnUnservedSessionDeliversAnUnrecordedCommunicate(t *testing.T) {
+	s, adapter := newFailClosedSession(t, nil)
+	evs := drainEvents(s)
+	refuseCommunicateEntries(t, s)
+	adapter.script(func(context.Context) (llm.Response, error) {
+		return communicateResponse(true, "delivered anyway"), nil
+	})
+	_, _ = s.ProcessInput(context.Background(), "talk", nil)
+	s.Close()
+	got := evs()
+	if countKind(got, events.EventCommunicate) != 1 || failClosedDiagnostics(got) != 0 {
+		t.Fatalf("communicate events %d, fail-closed diagnostics %d; want 1 and 0", countKind(got, events.EventCommunicate), failClosedDiagnostics(got))
+	}
+}
+
+// A completion entry that is not recorded fails a served session closed, as
+// an unrecorded COMMUNICATE does: a turn's terminal status is never lost.
+func TestAnUnrecordedCompletionFailsAServedSessionClosed(t *testing.T) {
+	s, adapter := newFailClosedSession(t, nil)
+	served := serveFailClosedSession(s)
+	refuseEntries(t, s, schema.TurnCompletion)
+	adapter.script(func(context.Context) (llm.Response, error) {
+		return communicateResponse(true, "done"), nil
+	})
+	_, _ = s.ProcessInput(context.Background(), "finish", nil)
+	if _, err := s.ProcessInput(context.Background(), "again", nil); !errors.Is(err, errTranscriptFailedClosed) {
+		t.Fatalf("input after an unrecorded completion = %v, want the fail-closed refusal", err)
+	}
+	if got := failClosedDiagnostics(served.settle(s)); got != 1 {
+		t.Fatalf("%d fail-closed diagnostics, want 1", got)
+	}
+}
+
+// Any other entry whose append rolls back cleanly leaves the writer usable
+// and the served session running: the caller's own error handling applies
+// (an unrecorded USER_INPUT fails its input), and nothing fails closed. Only
+// COMMUNICATE and completions, and a poisoned, missing or never-created
+// writer, fail a served session closed.
+func TestACleanRollbackOfAnOrdinaryEntryKeepsTheSessionRunning(t *testing.T) {
+	s, _ := newFailClosedSession(t, nil)
+	served := serveFailClosedSession(s)
+	refuseEntries(t, s, schema.TurnUserInput)
+	for _, input := range []string{"first", "second"} {
+		_, err := s.ProcessInput(context.Background(), input, nil)
+		if err == nil || errors.Is(err, errTranscriptFailedClosed) {
+			t.Fatalf("input %q with its USER_INPUT rolled back = %v, want the append's own error", input, err)
+		}
+	}
+	if s.attachedTranscript().Poisoned() {
+		t.Fatal("a clean rollback poisoned the writer")
+	}
+	if got := failClosedDiagnostics(served.settle(s)); got != 0 {
+		t.Fatalf("%d fail-closed diagnostics, want 0", got)
+	}
+}
+
+// syncTrackingFs is the real filesystem whose files report, for each entry
+// kind, whether a line of that kind was fsynced before the next write.
+type syncTrackingFs struct {
+	afero.Fs
+	mu     *sync.Mutex
+	last   *string
+	synced map[string]bool
+}
+
+func (fs syncTrackingFs) OpenFile(name string, flag int, perm os.FileMode) (afero.File, error) {
+	f, err := fs.Fs.OpenFile(name, flag, perm)
+	if err != nil {
+		return nil, err
+	}
+	return syncTrackingFile{File: f, fs: fs}, nil
+}
+
+type syncTrackingFile struct {
+	afero.File
+	fs syncTrackingFs
+}
+
+func (f syncTrackingFile) Write(p []byte) (int, error) {
+	f.fs.mu.Lock()
+	*f.fs.last = ""
+	for _, kind := range []schema.TurnKind{schema.TurnCommunicate, schema.TurnCompletion} {
+		if bytes.Contains(p, []byte(`"kind":"`+string(kind)+`"`)) {
+			*f.fs.last = string(kind)
+		}
+	}
+	f.fs.mu.Unlock()
+	return f.File.Write(p)
+}
+
+func (f syncTrackingFile) Sync() error {
+	f.fs.mu.Lock()
+	if *f.fs.last != "" {
+		f.fs.synced[*f.fs.last] = true
+	}
+	f.fs.mu.Unlock()
+	return f.File.Sync()
+}
+
+// COMMUNICATE and completion entries go through the synced door: each is
+// fsynced as it is recorded, so a delivered message or a terminal status
+// survives a crash. The writer's buffered door is held to an hour here, so
+// only a synced write fsyncs.
+func TestCommunicateAndCompletionEntriesAreSynced(t *testing.T) {
+	s, adapter := newFailClosedSession(t, nil)
+	served := serveFailClosedSession(s)
+	tracking := syncTrackingFs{Fs: afero.NewOsFs(), mu: &sync.Mutex{}, last: new(string), synced: map[string]bool{}}
+	w, _, err := transcript.OpenWriterForSessionWithFS(tracking, s.TranscriptPath(), s.ID())
+	if err != nil {
+		t.Fatal(err)
+	}
+	w.SyncInterval = time.Hour
+	s.mu.Lock()
+	previous := s.transcript
+	s.transcript = w
+	s.mu.Unlock()
+	t.Cleanup(func() { _ = previous.Close() })
+	adapter.script(func(context.Context) (llm.Response, error) {
+		return communicateResponse(true, "synced"), nil
+	})
+	if _, err := s.ProcessInput(context.Background(), "talk", nil); err != nil {
+		t.Fatal(err)
+	}
+	served.settle(s)
+	tracking.mu.Lock()
+	defer tracking.mu.Unlock()
+	for _, kind := range []schema.TurnKind{schema.TurnCommunicate, schema.TurnCompletion} {
+		if !tracking.synced[string(kind)] {
+			t.Errorf("a %s entry was not fsynced as it was recorded", kind)
+		}
+	}
+}

@@ -10,6 +10,8 @@ import { HOST_POLL_MS, HostsSection } from "./hosts";
 
 function row(overrides: Partial<HostRow> & Pick<HostRow, "name">): HostRow {
   return {
+    generation: 1,
+    incarnationId: "inc-1",
     origin: "hub.toml",
     attached: false,
     midAttach: false,
@@ -35,7 +37,15 @@ test("lists hosts with online/offline state chips", async () => {
   const fake = connectFakeClient();
   fake.on("evener/host/list", () => ({
     hosts: [
-      row({ name: "alpha", address: "a.example", attached: true, hubVersion: "1.2.3", origin: "hub.toml" }),
+      row({
+        name: "alpha",
+        address: "a.example",
+        attached: true,
+        hubVersion: "1.2.3",
+        generation: 1,
+        incarnationId: "inc-1",
+        origin: "hub.toml",
+      }),
       row({ name: "beta", address: "b.example", attached: false }),
     ],
   }));
@@ -76,7 +86,9 @@ test("the add dialog submits every entry field", async () => {
   const user = userEvent.setup();
   const fake = connectFakeClient();
   fake.on("evener/host/list", () => ({ hosts: [] }));
-  fake.on("evener/host/add", () => row({ name: "gamma", address: "g.example" }));
+  // The registry mutations return the mutation-result union (registry spec 08
+  // §11), so a fake answers with the committed arm rather than a bare row.
+  fake.on("evener/host/add", () => ({ outcome: "committed", host: row({ name: "gamma", address: "g.example" }) }));
   render(<HostsSection sectionId="hosts" />);
   await user.click(await screen.findByRole("button", { name: "Add host" }));
   await user.type(screen.getByLabelText("Name"), "gamma");
@@ -112,7 +124,10 @@ test("a host row offers Edit, prefills the whole entry, and sends no name input"
   fake.on("evener/host/list", () => ({
     hosts: [row({ name: "beta", address: "b.example", user: "bob", roots: ["/srv/b"] })],
   }));
-  fake.on("evener/host/update", () => ({ host: row({ name: "beta", address: "b2.example" }) }));
+  fake.on("evener/host/update", () => ({
+    outcome: "committed",
+    host: row({ name: "beta", address: "b2.example" }),
+  }));
   render(<HostsSection sectionId="hosts" />);
   const rowEl = (await screen.findByText("beta")).closest("li")!;
   await user.click(within(rowEl).getByRole("button", { name: "Edit" }));
@@ -139,7 +154,9 @@ test("a host row offers Edit, prefills the whole entry, and sends no name input"
 
 test("a hub.toml row offers Edit and Remove like every other row", async () => {
   const fake = connectFakeClient();
-  fake.on("evener/host/list", () => ({ hosts: [row({ name: "alpha", address: "a.example", origin: "hub.toml" })] }));
+  fake.on("evener/host/list", () => ({
+    hosts: [row({ name: "alpha", address: "a.example", generation: 1, incarnationId: "inc-1", origin: "hub.toml" })],
+  }));
   render(<HostsSection sectionId="hosts" />);
   const rowEl = (await screen.findByText("alpha")).closest("li")!;
   expect(within(rowEl).getByRole("button", { name: "Edit" })).toBeTruthy();
@@ -284,7 +301,12 @@ test("remove confirms then calls evener/host/remove", async () => {
   const user = userEvent.setup();
   const fake = connectFakeClient();
   fake.on("evener/host/list", () => ({ hosts: [row({ name: "beta", address: "b.example" })] }));
-  fake.on("evener/host/remove", () => ({ host: row({ name: "beta", removed: true }) }));
+  // remove's committed arm carries the dedicated removed row, whose shape
+  // spells `attached: false` and `midEnsure: false` explicitly.
+  fake.on("evener/host/remove", () => ({
+    outcome: "committed",
+    host: { ...row({ name: "beta" }), removed: true, attached: false, midEnsure: false },
+  }));
   render(<HostsSection sectionId="hosts" />);
   const betaRow = (await screen.findByText("beta")).closest("li")!;
   await user.click(within(betaRow).getByRole("button", { name: "Remove" }));

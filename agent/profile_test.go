@@ -246,22 +246,6 @@ func TestProviderProfiles_AddIntentToWorkToolSchemas(t *testing.T) {
 	}
 }
 
-func TestSystemPrompt_ImplementerWarnsOnUnavailableTools(t *testing.T) {
-	t.Parallel()
-	prompt := renderPromptForTest(t, NewOpenAIProfile("gpt-5.4"), promptData{
-		Agent:                       "implementer",
-		CallableToolNames:           []string{"read_file", "exec_command", "communicate"},
-		UnavailableProfileToolNames: []string{"delegate", "job_watch"},
-	})
-
-	if !strings.Contains(prompt, "If the task depends on tools or capabilities explicitly listed as unavailable in") {
-		t.Fatalf("implementer prompt missing unavailable-tools guidance:\n%s", prompt)
-	}
-	if !strings.Contains(prompt, "Do not try to recreate unavailable evener-native tools by shelling out to") {
-		t.Fatalf("implementer prompt missing nested-evener warning:\n%s", prompt)
-	}
-}
-
 func TestSystemPrompt_CoordinatorHasImpossibleDelegationException(t *testing.T) {
 	t.Parallel()
 	prompt := renderPromptForTest(t, NewOpenAIProfile("gpt-5.4"), promptData{
@@ -273,57 +257,6 @@ func TestSystemPrompt_CoordinatorHasImpossibleDelegationException(t *testing.T) 
 	}
 	if !strings.Contains(prompt, "Do not force an impossible delegation.") {
 		t.Fatalf("coordinator prompt missing impossible-delegation rule:\n%s", prompt)
-	}
-}
-
-func TestBuildSystemPrompt_IncludesBackgroundJobsSection(t *testing.T) {
-	t.Parallel()
-	prompt := renderPromptForTest(t, newAnthropicProfile("claude-test"), promptData{})
-
-	if !strings.Contains(prompt, "## Background jobs") {
-		t.Fatalf("system prompt missing background-jobs section heading:\n%s", prompt)
-	}
-	if !strings.Contains(prompt, "Delegates are durable resources identified by") {
-		t.Fatalf("system prompt missing background-jobs section body (stable delegate statement):\n%s", prompt)
-	}
-	if !strings.Contains(prompt, "Pick the waiting primitive by how many answers you need:") {
-		t.Fatalf("system prompt missing background-jobs section body (waiting primitive sentence):\n%s", prompt)
-	}
-}
-
-// TestBuildSystemPrompt_PinsAntiPollGuidance makes the scenario card
-// test/scenarios/job-delegate-wait-no-poll.md's grep pin durable: the assembled
-// system prompt must carry the exact anti-poll sentence.
-func TestBuildSystemPrompt_PinsAntiPollGuidance(t *testing.T) {
-	t.Parallel()
-	prompt := renderPromptForTest(t, newAnthropicProfile("claude-test"), promptData{})
-
-	if !strings.Contains(prompt, "Do not call `job_status` in a loop") {
-		t.Fatalf("system prompt missing anti-poll pin (scenario job-delegate-wait-no-poll depends on it):\n%s", prompt)
-	}
-}
-
-func TestSubagentPrompt_DoesNotIncludeBackgroundJobsSection(t *testing.T) {
-	t.Parallel()
-	resolver := &sectionResolver{
-		surface: "openai",
-		agent:   "implementer",
-		agentFS: bundled.Agents(),
-		sources: []sectionSource{embedSource{fs: embeddedPrompts, prefix: "prompts/sections/"}},
-	}
-	data := promptData{
-		Provider:           "openai",
-		Agent:              "implementer",
-		RolePromptOverride: mustWorkflowAgent(t, "implementer").SystemPrompt,
-		Model:              "gpt-5.4",
-		ResultToolName:     "communicate",
-	}
-	result, _, err := resolver.RenderEmbedded(embeddedPrompts, "prompts/templates/", "subagent", data)
-	if err != nil {
-		t.Fatalf("RenderEmbedded subagent: %v", err)
-	}
-	if strings.Contains(result, "## Background jobs") {
-		t.Fatalf("subagent prompt must not contain background-jobs section (root-only):\n%s", result)
 	}
 }
 
@@ -339,31 +272,6 @@ func TestSystemPrompt_DefaultAgentDoesNotUseCoordinatorRole(t *testing.T) {
 	}
 }
 
-func TestProviderProfiles_BuildSystemPrompt_IncludesEnvironment(t *testing.T) {
-	t.Parallel()
-	data := promptData{
-		WorkingDir:      "/tmp",
-		Platform:        "linux",
-		OSVersion:       "test",
-		Today:           "2026-02-07",
-		KnowledgeCutoff: "2024-06-01",
-	}
-
-	for _, p := range []*provider.Profile{
-		NewOpenAIProfile("gpt-5.2"),
-		newAnthropicProfile("claude-test"),
-		newGeminiProfile("gemini-test"),
-	} {
-		sys := renderPromptForTest(t, p, data)
-		if !strings.Contains(sys, "<environment>") {
-			t.Errorf("%s prompt missing <environment> block", p.ID())
-		}
-		if !strings.Contains(sys, "## Tool usage") {
-			t.Errorf("%s prompt missing tool usage section", p.ID())
-		}
-	}
-}
-
 func TestBuildSystemPrompt_DoesNotDuplicateProviderToolDescriptions(t *testing.T) {
 	t.Parallel()
 	p := NewOpenAIProfile("gpt-5.2")
@@ -375,9 +283,6 @@ func TestBuildSystemPrompt_DoesNotDuplicateProviderToolDescriptions(t *testing.T
 
 	prompt := renderPromptForTest(t, p, data)
 
-	if strings.Contains(prompt, "Tools:") {
-		t.Fatalf("system prompt should not include provider tool description list already present in tool definitions:\n%s", prompt)
-	}
 	for _, td := range p.ToolDefinitions() {
 		desc := strings.TrimSpace(td.Description)
 		if desc != "" && strings.Contains(prompt, desc) {
@@ -402,8 +307,6 @@ func TestBuildSystemPrompt_DoesNotDuplicateMCPOrCustomToolDescriptions(t *testin
 	})
 
 	for _, unwanted := range []string{
-		"MCP tools:",
-		"Custom tools:",
 		"Searches the remote index with an MCP-backed provider tool.",
 		"Runs a project-specific custom tool.",
 	} {
@@ -844,116 +747,6 @@ func assertMissingTool(t *testing.T, p *provider.Profile, name string) {
 	}
 }
 
-// TestAllProfiles_SystemPromptContainsSkillsGuidance verifies that all
-// profiles include skills guidance when skills are provided.
-// All provider profiles use the use_skill tool with directory paths.
-func TestAllProfiles_SystemPromptContainsSkillsGuidance(t *testing.T) {
-	t.Parallel()
-	profiles := map[string]*provider.Profile{
-		"openai":    NewOpenAIProfile("gpt-5.2"),
-		"anthropic": newAnthropicProfile("claude-test"),
-		"gemini":    newGeminiProfile("gemini-test"),
-	}
-	skills := []skillEntry{
-		{Name: "test-skill", Description: "A test skill", Dir: "/tmp/skills/test-skill", SkillFile: "/tmp/skills/test-skill/SKILL.md"},
-	}
-
-	for name, p := range profiles {
-		prompt := renderPromptForTest(t, p, promptData{
-			WorkingDir:  "/tmp",
-			Platform:    "linux",
-			Today:       "2026-02-09",
-			Skills:      skills,
-			HasUseSkill: true,
-		})
-
-		// All profiles should render <skills> when skills are provided.
-		if !strings.Contains(prompt, "<skill-catalog>") {
-			t.Errorf("profile %q system prompt missing <skills> section", name)
-		}
-
-		if !strings.Contains(prompt, "use_skill") {
-			t.Errorf("profile %q system prompt missing use_skill guidance", name)
-		}
-		if !strings.Contains(prompt, "/tmp/skills/test-skill]") {
-			t.Errorf("profile %q system prompt missing skill directory path", name)
-		}
-	}
-}
-
-func TestBuildSystemPrompt_IncludesSkillsList(t *testing.T) {
-	t.Parallel()
-	// Anthropic profile has use_skill, so skills are rendered with directory paths.
-	p := newAnthropicProfile("claude-test")
-	skills := []skillEntry{
-		{Name: "greet", Description: "Greeting skill", Dir: "/tmp/skills/greet", SkillFile: "/tmp/skills/greet/SKILL.md"},
-		{Name: "deploy", Description: "Deploy skill", Dir: "/tmp/skills/deploy", SkillFile: "/tmp/skills/deploy/SKILL.md"},
-	}
-	prompt := renderPromptForTest(t, p, promptData{
-		WorkingDir:  "/tmp",
-		Platform:    "linux",
-		Today:       "2026-02-09",
-		Skills:      skills,
-		HasUseSkill: true,
-	})
-
-	if !strings.Contains(prompt, "<skill-catalog>") {
-		t.Error("prompt missing <skills> section")
-	}
-	if !strings.Contains(prompt, "- greet: Greeting skill [/tmp/skills/greet]") {
-		t.Error("prompt missing greet skill entry with directory path")
-	}
-	if !strings.Contains(prompt, "- deploy: Deploy skill [/tmp/skills/deploy]") {
-		t.Error("prompt missing deploy skill entry with directory path")
-	}
-	if !strings.Contains(prompt, "</skill-catalog>") {
-		t.Error("prompt missing </skill-catalog> closing tag")
-	}
-	if !strings.Contains(prompt, "use_skill") {
-		t.Error("prompt missing use_skill instruction")
-	}
-}
-
-func TestBuildSystemPrompt_OpenAI_SkillsWithUseSkill(t *testing.T) {
-	t.Parallel()
-	p := NewOpenAIProfile("gpt-5.2")
-	skills := []skillEntry{
-		{Name: "greet", Description: "Greeting skill", Dir: "/tmp/skills/greet", SkillFile: "/tmp/skills/greet/SKILL.md"},
-	}
-	prompt := renderPromptForTest(t, p, promptData{
-		WorkingDir:  "/tmp",
-		Platform:    "linux",
-		Today:       "2026-02-09",
-		Skills:      skills,
-		HasUseSkill: true,
-	})
-
-	if !strings.Contains(prompt, "<skill-catalog>") {
-		t.Error("OpenAI prompt should contain <skills> section")
-	}
-	if !strings.Contains(prompt, "Load a skill by calling use_skill with its name") {
-		t.Error("OpenAI prompt should instruct model to use use_skill for skills")
-	}
-	if !strings.Contains(prompt, "- greet: Greeting skill [/tmp/skills/greet]") {
-		t.Error("OpenAI prompt should include skill directory path for use_skill")
-	}
-}
-
-func TestBuildSystemPrompt_NoSkills_NoSkillsSection(t *testing.T) {
-	t.Parallel()
-	p := NewOpenAIProfile("gpt-5.2")
-	prompt := renderPromptForTest(t, p, promptData{
-		WorkingDir: "/tmp",
-		Platform:   "linux",
-		Today:      "2026-02-09",
-	})
-
-	// Verify no skill-catalog block is present when no skills exist.
-	if strings.Contains(prompt, "</skill-catalog>") {
-		t.Error("prompt should not contain </skill-catalog> section when no skills present")
-	}
-}
-
 func TestGeminiProfile_IncludesWebSearch(t *testing.T) {
 	t.Parallel()
 	assertHasTool(t, newGeminiProfile("gemini-test"), "web_search")
@@ -1335,31 +1128,6 @@ func TestGeminiProfile_ContextWindow_IsAtLeast1M(t *testing.T) {
 	}
 }
 
-func TestBuildSystemPrompt_ToolUsageBeforeProjectDocs(t *testing.T) {
-	t.Parallel()
-	p := NewOpenAIProfile("gpt-5.2")
-	prompt := renderPromptForTest(t, p, promptData{
-		WorkingDir:  "/tmp",
-		Platform:    "linux",
-		Today:       "2026-02-11",
-		ProjectDocs: []ProjectDoc{{Path: "AGENTS.md", Content: "project instructions here"}},
-		MCPTools:    []toolEntry{{Name: "mcp__server__tool1", Description: "Does thing one"}},
-		CustomTools: []toolEntry{{Name: "my_custom_tool", Description: "Does custom things"}},
-	})
-
-	beginIdx := strings.Index(prompt, "----- BEGIN AGENTS.md -----")
-	if beginIdx < 0 {
-		t.Fatal("prompt missing project doc BEGIN marker")
-	}
-	toolUsageIdx := strings.Index(prompt, "## Tool usage")
-	if toolUsageIdx < 0 {
-		t.Fatal("prompt missing tool usage section")
-	}
-	if toolUsageIdx > beginIdx {
-		t.Errorf("tool usage (pos %d) must appear before project docs (pos %d)", toolUsageIdx, beginIdx)
-	}
-}
-
 func TestApplyPatch_DescriptionIncludesCapabilities(t *testing.T) {
 	t.Parallel()
 	d := tool.DefApplyPatch()
@@ -1498,14 +1266,6 @@ func TestBuildSystemPrompt_WorkspaceSection(t *testing.T) {
 		BuildInfo:     env.Workspace.BuildInfo,
 	})
 
-	// Should contain workspace section.
-	if !strings.Contains(prompt, "<workspace>") {
-		t.Fatalf("prompt missing <workspace> section:\n%s", prompt)
-	}
-	if !strings.Contains(prompt, "</workspace>") {
-		t.Fatal("prompt missing </workspace> closing tag")
-	}
-
 	// Should contain the directory tree.
 	if !strings.Contains(prompt, "main.py") {
 		t.Error("workspace section missing main.py in tree")
@@ -1522,65 +1282,6 @@ func TestBuildSystemPrompt_WorkspaceSection(t *testing.T) {
 	// Should show build system info.
 	if !strings.Contains(prompt, "Makefile") {
 		t.Error("workspace section missing Makefile info")
-	}
-
-	// Workspace section should come after environment and after the tool list.
-	wsIdx := strings.Index(prompt, "<workspace>")
-	envIdx := strings.Index(prompt, "</environment>")
-	toolIdx := strings.Index(prompt, "## Tool usage")
-	if wsIdx < envIdx {
-		t.Errorf("workspace (pos %d) should come after environment (pos %d)", wsIdx, envIdx)
-	}
-	if wsIdx < toolIdx {
-		t.Errorf("workspace (pos %d) should come after tools (pos %d)", wsIdx, toolIdx)
-	}
-}
-
-func TestBuildSystemPrompt_EmptyWorkspace(t *testing.T) {
-	t.Parallel()
-	env := schema.EnvironmentInfo{
-		WorkingDir: "/tmp",
-		Platform:   "linux",
-		Today:      "2026-03-01",
-		// Workspace is zero value (empty).
-	}
-
-	p := NewOpenAIProfile("gpt-5.3-codex")
-	prompt := renderPromptForTest(t, p, promptData{
-		WorkingDir: env.WorkingDir,
-		Platform:   env.Platform,
-		Today:      env.Today,
-	})
-
-	// Should NOT render an empty workspace section.
-	if strings.Contains(prompt, "<workspace>") {
-		t.Error("empty workspace should not render a <workspace> section")
-	}
-}
-
-func TestBuildSystemPrompt_WorkspaceAnnotation(t *testing.T) {
-	t.Parallel()
-	dir := t.TempDir()
-	touchFile(t, filepath.Join(dir, "main.py"), "print('hello')\n")
-
-	env := schema.EnvironmentInfo{
-		WorkingDir: dir,
-		Platform:   "linux",
-		Today:      "2026-03-01",
-		Workspace:  ScanWorkspace(dir),
-	}
-
-	p := NewOpenAIProfile("gpt-5.3-codex")
-	prompt := renderPromptForTest(t, p, promptData{
-		WorkingDir:    env.WorkingDir,
-		Platform:      env.Platform,
-		Today:         env.Today,
-		WorkspaceTree: env.Workspace.Tree,
-		BuildInfo:     env.Workspace.BuildInfo,
-	})
-
-	if !strings.Contains(prompt, "snapshot of the working directory taken at session start") {
-		t.Error("workspace section missing static annotation")
 	}
 }
 

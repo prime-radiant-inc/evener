@@ -1,8 +1,8 @@
 // @vitest-environment node
 
 import { IDBFactory } from "fake-indexeddb";
-import { expect, test } from "vitest";
-import { holdIndexedDBEvent } from "./stalledIndexedDB";
+import { afterEach, expect, test, vi } from "vitest";
+import { holdIndexedDBEvent, holdNextWriteTransaction } from "./stalledIndexedDB";
 
 function requestResult<T>(request: IDBRequest<T>): Promise<T> {
   return new Promise((resolve, reject) => {
@@ -13,7 +13,10 @@ function requestResult<T>(request: IDBRequest<T>): Promise<T> {
 
 function openStore(): Promise<IDBDatabase> {
   const open = new IDBFactory().open("stalled-indexeddb-test", 1);
-  open.addEventListener("upgradeneeded", () => open.result.createObjectStore("rows", { keyPath: "id" }));
+  open.addEventListener("upgradeneeded", () => {
+    open.result.createObjectStore("rows", { keyPath: "id" });
+    open.result.createObjectStore("other", { keyPath: "id" });
+  });
   return requestResult(open);
 }
 
@@ -67,4 +70,48 @@ test("a read released before its success event still settles", async () => {
   const rows = requestResult<unknown[]>(request);
   hold.release();
   expect(await rows).toEqual([]);
+});
+
+function completion(transaction: IDBTransaction): { done: Promise<void>; isDone: () => boolean } {
+  let finished = false;
+  const done = new Promise<void>((resolve) => {
+    transaction.addEventListener("complete", () => {
+      finished = true;
+      resolve();
+    });
+  });
+  return { done, isDone: () => finished };
+}
+
+function writeRow(database: IDBDatabase, stores: string | string[], id: string) {
+  const transaction = database.transaction(stores, "readwrite");
+  transaction.objectStore("rows").put({ id });
+  return completion(transaction);
+}
+
+afterEach(() => {
+  vi.restoreAllMocks();
+});
+
+// The storage's transactions differ by mode and store scope, and the helper
+// holds exactly one: the first readwrite transaction over exactly the stores it
+// names. A readonly transaction and a write over a wider scope are not held,
+// and neither is a later write over the same stores.
+test("holdNextWriteTransaction holds only the first readwrite transaction over exactly the named stores", async () => {
+  const database = await openStore();
+  const held = holdNextWriteTransaction(["rows"]);
+
+  const read = completion(database.transaction("rows", "readonly"));
+  const wider = writeRow(database, ["rows", "other"], "wider");
+  const target = writeRow(database, "rows", "target");
+  const later = writeRow(database, "rows", "later");
+
+  await held.reached;
+  expect(read.isDone()).toBe(true);
+  expect(wider.isDone()).toBe(true);
+  expect(target.isDone()).toBe(false);
+
+  held.release();
+  expect(target.isDone()).toBe(true);
+  await later.done;
 });

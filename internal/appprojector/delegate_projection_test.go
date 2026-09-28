@@ -18,8 +18,8 @@ func TestDelegateProjection_DescendantOrdinaryEventsReachRootTransport(t *testin
 	if got := p.Project(delegateProjectionEvent("child", stable)); len(got) != 1 {
 		t.Fatalf("stable update notifications = %+v, want one", got)
 	}
-	out := p.Project(events.SessionEvent{Kind: events.EventWarning, SessionID: "child", Data: events.WarningData{Message: "ordinary descendant warning"}})
-	if len(out) != 1 || out[0].Method != appwire.NotifyWarning || out[0].ThreadID != "child" {
+	out := p.Project(events.SessionEvent{Kind: events.EventNotesUpdated, SessionID: "child", Data: events.NotesUpdatedData{AgentNote: "ordinary descendant note"}})
+	if len(out) != 1 || out[0].Method != appwire.NotifyEvenerNotesUpdated || out[0].ThreadID != "child" {
 		t.Fatalf("ordinary descendant projection = %+v", out)
 	}
 }
@@ -145,19 +145,6 @@ func TestDelegateProjection_ShellUsesParentDelegateID(t *testing.T) {
 	}
 	if leaked := p.Project(events.SessionEvent{Kind: events.EventJobStarted, SessionID: "child", Data: events.JobStartedData{JobID: "job_activation", JobType: "delegate", Status: "running", DelegateID: "dlg_parent"}}); len(leaked) != 0 {
 		t.Fatalf("delegate activation leaked through shell event: %+v", leaked)
-	}
-}
-
-func TestDelegateProjection_TranscriptPreseedSubscriptionAndThreadReadRemainAvailable(t *testing.T) {
-	p := NewAppEventProjector("child", "local:child")
-	p.SeedPersistedTurns(4)
-	stable := delegateProjectionFixture()
-	stable.OwnerSessionID = "child"
-	requireDelegateProjection(t, p.Project(delegateProjectionEvent("child", stable)))
-	out := p.Project(events.SessionEvent{Kind: events.EventUserInput, SessionID: "child", Timestamp: time.Unix(10, 0), Data: events.UserInputData{Text: "after restore", Turn: 5}})
-	turn := notificationTurn(t, out, appwire.NotifyTurnStarted)
-	if turn.ID != "turn_5" {
-		t.Fatalf("preseeded descendant turn id = %q, want turn_5", turn.ID)
 	}
 }
 

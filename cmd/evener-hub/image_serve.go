@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"regexp"
 
+	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-hub/internal/fspaths"
@@ -200,6 +201,9 @@ func scanTranscriptForImage(path, wantSha string, maxRecordBytes int, maxImageBy
 	return matchedData, matchedMediaType, matchedData != nil, nil
 }
 
+// imageSha is the content address the image routes this hub serves key on.
+var imageSha = events.ImageSHA
+
 // decodeHexSha256 parses a lowercase hex sha256 into the raw sum the scan
 // compares, reporting false for a value that is not one. The canonical-spelling
 // check keeps the comparison's meaning exactly: an upper-case or otherwise
@@ -214,12 +218,6 @@ func decodeHexSha256(raw string) ([sha256.Size]byte, bool) {
 		return [sha256.Size]byte{}, false
 	}
 	return sum, true
-}
-
-// imageSha returns the lowercase hex sha256 of raw image bytes.
-func imageSha(data []byte) string {
-	h := sha256.Sum256(data)
-	return hex.EncodeToString(h[:])
 }
 
 // sessionImageFromHub serves the evener/session/image AppWire method: one image
@@ -313,7 +311,7 @@ func sessionImageByPath(cfg hubcore.WebConfig, sessionID, rel string) (appwire.S
 	return appwire.SessionImageResponse{
 		MediaType: mediaType,
 		Size:      info.Size(),
-		SHA:       outputImageSHA(data),
+		SHA:       imageSha(data),
 		Data:      data,
 	}, nil
 }

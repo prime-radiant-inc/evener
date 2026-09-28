@@ -1,13 +1,17 @@
 // What this device remembers about one hub's Board: which sessions you have
-// seen and which sections you folded. Kept in expo-sqlite's kv-store under
-// per-hub keys that ConnectionProvider.removeHub clears.
+// seen, which sections you folded, how you organize projects, and what you
+// searched for. Kept in expo-sqlite's kv-store under per-hub keys that
+// ConnectionProvider.removeHub clears.
 import { isPlainObject } from "@evener/appwire-client";
 import type { SyncStringStorage } from "../syncStringStorage";
 import { hubTime } from "./attention";
 
 const seenKey = (hubId: string) => `evener.native.seen.${hubId}`;
 const foldedKey = (hubId: string) => `evener.native.board-sections.${hubId}`;
+const organizeKey = (hubId: string) => `evener.native.board-organize.${hubId}`;
+const recentSearchesKey = (hubId: string) => `evener.native.recent-searches.${hubId}`;
 const MARK_LIMIT = 500;
+const RECENT_LIMIT = 8;
 
 function readJson(storage: SyncStringStorage, key: string): unknown {
 	try {
@@ -170,13 +174,74 @@ export class FoldedSections {
 	}
 }
 
+/** How the Board's Projects section nests sessions once the hub has more
+ * than one host (spec 7.1's "Organize by"): by project, then host (the
+ * default, as on the web), or by host, then project. */
+export type OrganizeBy = "project-host" | "host-project";
+
+/** The Organize by choice, per device and hub, stored as a JSON string. It
+ * has its own key: FoldedSections stores a flat map of fold flags, and a mode
+ * is not a fold. */
+export class OrganizeByPreference {
+	private value: OrganizeBy;
+
+	constructor(
+		private readonly storage: SyncStringStorage,
+		private readonly hubId: string,
+	) {
+		// Unreadable storage, or a value this build doesn't know, reads as the default.
+		this.value = readJson(storage, organizeKey(hubId)) === "host-project" ? "host-project" : "project-host";
+	}
+
+	get(): OrganizeBy {
+		return this.value;
+	}
+
+	set(value: OrganizeBy): void {
+		this.value = value;
+		writeJson(this.storage, organizeKey(this.hubId), value);
+	}
+}
+
+/** The last queries you searched and opened a result from, most recent
+ * first, per device and hub. */
+export class RecentSearches {
+	private queries: string[];
+
+	constructor(
+		private readonly storage: SyncStringStorage,
+		private readonly hubId: string,
+	) {
+		const value = readJson(storage, recentSearchesKey(hubId));
+		this.queries = Array.isArray(value)
+			? value.filter((query): query is string => typeof query === "string" && query !== "").slice(0, RECENT_LIMIT)
+			: [];
+	}
+
+	list(): string[] {
+		return this.queries;
+	}
+
+	add(text: string): void {
+		const query = text.trim();
+		if (!query) return;
+		this.queries = [query, ...this.queries.filter((other) => other !== query)].slice(0, RECENT_LIMIT);
+		writeJson(this.storage, recentSearchesKey(this.hubId), this.queries);
+	}
+
+	clear(): void {
+		this.queries = [];
+		writeJson(this.storage, recentSearchesKey(this.hubId), this.queries);
+	}
+}
+
 export function forgetBoard(storage: SyncStringStorage, hubId: string): void {
 	let failed = false;
-	for (const key of [seenKey(hubId), foldedKey(hubId)])
+	for (const key of [seenKey(hubId), foldedKey(hubId), organizeKey(hubId), recentSearchesKey(hubId)])
 		try {
 			storage.removeItemSync(key);
 		} catch {
-			// Keep trying the other key: a storage failure orphans this one (hub
+			// Keep trying the other keys: a storage failure orphans this one (hub
 			// ids are fresh UUIDs, never reused, so nothing reads it again), but
 			// the caller must still hear about it. ConnectionProvider's removeHub
 			// cleanup runs this last, alongside cleanups that surface their own

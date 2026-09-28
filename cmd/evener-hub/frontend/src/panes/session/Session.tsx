@@ -44,6 +44,7 @@ import { Composer } from "./composer/Composer";
 import { useBlockedMutationEntries, usePendingTurnEntries } from "./composer/queue/pendingTurnsStore";
 import { requestQuoteInsert } from "./composer/quoteInsert";
 import { cadenceStateForStatus, NOW_TICK_MS, SessionNowContext, useNowTick } from "./liveness";
+import { useMarkSessionSeenOnOpen } from "./markSeen";
 import { PendingChips } from "./pending/PendingChips";
 import styles from "./session.module.css";
 import { navigationSummaryFor, resolveThreadName } from "./threadTitle";
@@ -266,6 +267,10 @@ export default function Session({ params, paneId, focused: paneFocused }: PanePr
     };
   }, [ref]);
 
+  // S4: opening the pane marks its session seen on the hub, so the session's
+  // blue dot clears on the phone too.
+  useMarkSessionSeenOnOpen(ref);
+
   // Older-turn paging reports its own failures IN the transcript, not as a
   // toast: it is automatic (nobody pressed anything, so a toast would be a
   // notification about work the reader never asked for) and the failure belongs
@@ -352,6 +357,13 @@ export default function Session({ params, paneId, focused: paneFocused }: PanePr
   const renderRows = useMemo(() => (projection ? transcriptRowsForProjection(projection) : []), [projection]);
   const anchorEntries = useMemo(() => transcriptAnchorEntriesForRows(renderRows), [renderRows]);
   const sourceTurnRowIndexes = useMemo(() => transcriptSourceTurnRowIndexesForRows(renderRows), [renderRows]);
+  // The projection/rows/anchors trio travels to TranscriptBody as one prepared
+  // view: this pane already derives all three for its scroll manifest, so the
+  // body reuses them instead of deriving a second copy on every model revision.
+  const preparedView = useMemo(
+    () => (projection ? { projection, rows: renderRows, anchorEntries } : undefined),
+    [projection, renderRows, anchorEntries],
+  );
 
   // VirtualList's own imperative handle (getScrollElement/scrollToIndex) is
   // the seam useTranscriptScroll needs for every scroll-behavior concern
@@ -526,6 +538,7 @@ export default function Session({ params, paneId, focused: paneFocused }: PanePr
       <TranscriptBody
         model={model}
         config={displayConfig}
+        preparedView={preparedView}
         surface="live"
         disclosureScope={`transcript:live:${ref}`}
         sessionRef={ref}
@@ -594,7 +607,14 @@ export default function Session({ params, paneId, focused: paneFocused }: PanePr
               now={now}
               active={model.status.type === "active"}
               sessionRef={ref}
-              turnId={model.activeTurnId}
+              // runningTurnId is the live-updated field (spec "Turn status":
+              // running state lives in the overlay/status frames, not a
+              // one-time read) - a v6 thread's activeTurnId is only ever
+              // refreshed by a fresh thread/read, so it can go stale between
+              // reads. Falls back to activeTurnId for a thread that has not
+              // (yet) hydrated through the v6 path, where runningTurnId is
+              // never set.
+              turnId={model.runningTurnId ?? model.activeTurnId}
               retry={model.modelRetry}
               primaryModel={model.model}
             />

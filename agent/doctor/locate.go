@@ -7,6 +7,7 @@ import (
 	"sort"
 	"strings"
 
+	"primeradiant.com/evener/agent/internal/bucketref"
 	"primeradiant.com/evener/envvars/userdirs"
 	"primeradiant.com/evener/identifier"
 )
@@ -135,25 +136,27 @@ func resolveBuckets(stateBase string) ([]bucket, string, error) {
 // foreign-named bucket that holds real sessions — a forensic sweep must see
 // what is on disk.
 //
-// Symlink policy: globBuckets follows symlinks deliberately. Its isDir helper
-// uses os.Stat (which follows), so a symlinked bucket dir under projects/ is
-// enumerated like any other. The doctor is a user-facing diagnostic tool and
-// must see symlinked state layouts an operator has wired up; the agent's
-// model-facing transcript read paths (agent/transcript_lookup.go's
-// enumerateBuckets) refuse symlinked resolution paths as a security boundary
-// (#2205). That divergence is by owner ruling, recorded in issue #2275
-// ("this is a user tool. allow symlinked buckets.") — do not "harmonize" the
-// two without the owner.
+// Symlink policy: globBuckets follows symlinks deliberately via
+// bucketref.EnumerateBuckets(…, WithSymlinkPolicy(FollowSymlinks)) — the
+// shared enumeration re-Stats a symlinked bucket dir (matching the old isDir
+// helper's os.Stat, which follows), so it is enumerated like any other. The
+// doctor is a user-facing diagnostic tool and must see symlinked state layouts
+// an operator has wired up; the agent's model-facing transcript read paths
+// (agent/transcript_lookup.go's enumerateBuckets) call the same shared
+// enumeration with RefuseSymlinks as a security boundary (#2205). That
+// divergence is by owner ruling, recorded in issue #2275 ("this is a user
+// tool. allow symlinked buckets.") — do not "harmonize" the two without the
+// owner.
 func globBuckets(projects string) ([]bucket, error) {
-	matches, err := globProjectBuckets(filepath.Join(projects, "*"))
+	shared, err := bucketref.EnumerateBuckets(projects,
+		bucketref.WithGlob(globProjectBuckets),
+		bucketref.WithSymlinkPolicy(bucketref.FollowSymlinks))
 	if err != nil {
-		return nil, fmt.Errorf("glob project buckets: %w", err)
+		return nil, err // already wrapped "glob project buckets: …" by the shared core
 	}
-	buckets := make([]bucket, 0, len(matches))
-	for _, m := range matches {
-		if isDir(m) {
-			buckets = append(buckets, bucket{dir: m, projectID: filepath.Base(m)})
-		}
+	buckets := make([]bucket, 0, len(shared))
+	for _, b := range shared {
+		buckets = append(buckets, bucket{dir: b.Dir, projectID: b.ProjectID})
 	}
 	return buckets, nil
 }
@@ -188,15 +191,11 @@ func pathsFor(b bucket, sid string) Paths {
 // handle read_transcript and find_session_transcripts reject. Such sessions
 // stay fully locatable (session id, bucket, paths) and remain addressable
 // through the doctor's own selector grammar — a bare id sweeps to them, and
-// an explicit proj:<name>:<sid> parses for every traversal-safe name.
+// an explicit proj:<name>:<sid> parses for every traversal-safe name. Delegates
+// to bucketref.RefFor so the agent and the doctor share one ref-formatting
+// implementation.
 func refFor(projectID, sid string) string {
-	if projectID == "" {
-		return "local:" + sid
-	}
-	if identifier.ValidateProjectID(projectID) != nil {
-		return ""
-	}
-	return projRef(projectID, sid)
+	return bucketref.RefFor(projectID, sid)
 }
 
 // projRef builds the proj:<projectID>:<sid> selector form. refFor calls
@@ -206,7 +205,7 @@ func refFor(projectID, sid string) string {
 // covers non-canonical legacy names like hex-style bucket directories).
 // The grammar-safety check stays at each call site.
 func projRef(projectID, sid string) string {
-	return "proj:" + projectID + ":" + sid
+	return bucketref.ProjScheme + projectID + ":" + sid
 }
 
 // sessionInBucket reports whether the session's transcript file is present in b.

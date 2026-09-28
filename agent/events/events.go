@@ -157,6 +157,20 @@ const (
 	// clear its now-stale approval card. The projector maps it to the AppWire
 	// escalation-resolved notification.
 	EventSandboxEscalationResolved EventKind = "SANDBOX_ESCALATION_RESOLVED"
+	// EventRoundStarted marks a model round opening: the requests (attempts,
+	// retries, fallback groups) that can record one ASSISTANT entry, all
+	// under the round's RoundID.
+	EventRoundStarted EventKind = "ROUND_STARTED"
+	// EventRoundEnded marks a round over: the next round of its execution
+	// opened, or the execution completed. It follows the round's tools and
+	// hooks, so everything live the round produced is settled by then.
+	EventRoundEnded EventKind = "ROUND_ENDED"
+	// EventExecutionStarted marks an execution admitted under its TurnID,
+	// before any of its entries is recorded.
+	EventExecutionStarted EventKind = "EXECUTION_STARTED"
+	// EventExecutionEnded marks an execution over, after its completion entry
+	// is recorded.
+	EventExecutionEnded EventKind = "EXECUTION_ENDED"
 )
 
 // SessionEvent is a single timestamped event on a session's event stream,

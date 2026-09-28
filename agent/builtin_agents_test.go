@@ -14,7 +14,6 @@ import (
 
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/toolname"
-	"primeradiant.com/evener/agent/plugin"
 	"primeradiant.com/evener/llm"
 )
 
@@ -352,25 +351,6 @@ func TestSession_PluginAgentOverridesBuiltin(t *testing.T) {
 	}
 }
 
-// --- available-agents section tag ---
-
-func TestAvailableAgentsSection_UsesAvailableAgentsTag(t *testing.T) {
-	t.Parallel()
-	agents := map[string]plugin.Agent{
-		"explorer": {Name: "explorer", Description: "Explores code"},
-	}
-	result := renderAvailableAgentsSectionForTest(t, agents)
-	if !strings.Contains(result, "<available_agents>") {
-		t.Error("should contain <available_agents> opening tag")
-	}
-	if !strings.Contains(result, "</available_agents>") {
-		t.Error("should contain </available_agents> closing tag")
-	}
-	if strings.Contains(result, "plugin_agents") {
-		t.Error("should NOT contain old 'plugin_agents' tag")
-	}
-}
-
 type releaseAdapter struct {
 	name    string
 	started chan struct{}
@@ -493,48 +473,6 @@ func TestSpawnAgent_BlockingWithExplorerAgent(t *testing.T) {
 	}
 }
 
-func TestSpawnAgent_PluginAgentGetsComposedPrompt(t *testing.T) {
-	t.Parallel()
-	dir := t.TempDir()
-	c := llm.NewClient()
-
-	var subagentSystemPrompt string
-	adapter := &fakeAdapter{
-		name: "openai",
-		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response {
-				for _, m := range req.Messages {
-					if m.Role == llm.RoleSystem {
-						subagentSystemPrompt = m.Text()
-					}
-				}
-				return finalResponse("done")
-			},
-		},
-	}
-	c.Register(adapter)
-
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
-		MaxSubagentDepth: 1,
-		testOnly:         testConfig{sandboxProber: bwrapCapableProber(dir)},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer sess.Close()
-
-	agentID := spawnRuntimeAgent(t, sess, "survey the project", "", 0, "explorer", "", nil)
-	waitForRuntimeSubagent(t, sess, agentID)
-
-	// Subagent prompt should contain template-rendered content AND the agent-specific prompt.
-	if !strings.Contains(subagentSystemPrompt, "communicate") {
-		t.Error("subagent prompt should contain communicate guidance")
-	}
-	if !strings.Contains(subagentSystemPrompt, "workspace scout") {
-		t.Error("subagent prompt should contain agent-specific prompt (explorer)")
-	}
-}
-
 func TestSpawnAgent_DefaultSubagentGetsComposedPrompt(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
@@ -567,13 +505,7 @@ func TestSpawnAgent_DefaultSubagentGetsComposedPrompt(t *testing.T) {
 	agentID := spawnRuntimeAgent(t, sess, "do something", "", 0, "", "", nil)
 	waitForRuntimeSubagent(t, sess, agentID)
 
-	// Default subagent should get core + subagent persona.
-	if !strings.Contains(subagentSystemPrompt, "communicate") {
-		t.Error("default subagent prompt should contain communicate guidance from core")
-	}
-	if !strings.Contains(subagentSystemPrompt, "Delegated task limits") {
-		t.Error("default subagent prompt should contain shared delegated-task guidance")
-	}
+	// Default subagent should get the subagent persona.
 	if !strings.Contains(subagentSystemPrompt, "one delegated unit of work") {
 		t.Error("default subagent prompt should contain subagent persona instructions")
 	}
@@ -623,9 +555,6 @@ func TestSpawnAgent_SystemPromptFileDoesNotOverrideSubagentPrompt(t *testing.T) 
 
 	if strings.Contains(subagentSystemPrompt, "ROOT ONLY CUSTOM PROMPT") {
 		t.Fatalf("subagent prompt should not inherit the root-only system prompt override:\n%s", subagentSystemPrompt)
-	}
-	if !strings.Contains(subagentSystemPrompt, "Delegated task limits") {
-		t.Fatalf("subagent prompt should still use the dedicated subagent template:\n%s", subagentSystemPrompt)
 	}
 }
 

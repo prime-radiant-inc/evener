@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"path/filepath"
 	"slices"
@@ -19,6 +20,7 @@ import (
 	"github.com/BurntSushi/toml"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-hub/internal/appsource"
+	"primeradiant.com/evener/cmd/evener-hub/internal/hostops"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hostreg"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 	"primeradiant.com/evener/cmd/evener-hub/internal/sshconn"
@@ -295,12 +297,12 @@ func TestHostManageStatusUnknownIsInvalidParams(t *testing.T) {
 // refuses unknown names, removing nothing in the refusal case.
 func TestHostManageRemoveRefusals(t *testing.T) {
 	m := testHostManager([]hostreg.Host{{Name: "m4", SSH: "m4.example"}}, nil)
-	if _, err := m.Remove(context.Background(), appwire.HostRemoveParams{Name: "ghost"}); err == nil {
+	if _, err := m.Remove(context.Background(), removeRequestFor("ghost", 1, "no-such-incarnation")); err == nil {
 		t.Fatal("Remove(unknown) accepted, want InvalidParams")
 	} else {
 		assertWireCode(t, err, appwire.CodeInvalidParams)
 	}
-	if _, err := m.Remove(context.Background(), appwire.HostRemoveParams{Name: "m4"}); err != nil {
+	if _, err := m.Remove(context.Background(), removeRequest(t, m, "m4")); err != nil {
 		t.Fatalf("Remove(live file host) = %v, want success", err)
 	}
 	if _, ok := m.cfg.hosts.Get("m4"); ok {
@@ -315,7 +317,7 @@ func TestHostManageRemoveThenReAdd(t *testing.T) {
 	if _, err := m.Add(context.Background(), appwire.HostAddParams{Entry: appwire.HostEntry{Name: "side", Address: "s.example", KeyPath: "/keys/s"}}); err != nil {
 		t.Fatalf("Add = %v", err)
 	}
-	resp, err := m.Remove(context.Background(), appwire.HostRemoveParams{Name: "side"})
+	resp, err := m.Remove(context.Background(), removeRequest(t, m, "side"))
 	if err != nil {
 		t.Fatalf("Remove = %v", err)
 	}
@@ -340,10 +342,24 @@ func TestHostManageRemoveThenReAdd(t *testing.T) {
 	if err != nil {
 		t.Fatalf("List = %v", err)
 	}
-	for _, r := range list.Hosts {
+	// Registry spec 08 §15 (S11) changes this assertion's contract: a removed
+	// host is retained as a TOMBSTONE row — `removed: true` plus its
+	// retained-row count, rendered from the removed entry's effective config —
+	// so its last-known sessions survive as stale in the tree. The old
+	// "not listed at all" expectation predates tombstones; the row's absence
+	// from the registry, source set, and store is asserted above and is
+	// unchanged.
+	var tombstone *appwire.HostRow
+	for i, r := range list.Hosts {
 		if r.Name == "side" {
-			t.Fatalf("removed host still listed: %+v", r)
+			tombstone = &list.Hosts[i]
 		}
+	}
+	if tombstone == nil {
+		t.Fatal("removed host has no tombstone row in list")
+	}
+	if !tombstone.Removed || tombstone.Attached || tombstone.RetainedRows == nil {
+		t.Fatalf("tombstone row = %+v, want removed, detached, with a retained-row count", *tombstone)
 	}
 	// Re-add works with a different address: no resurrection of the old row.
 	row, err := m.Add(context.Background(), appwire.HostAddParams{Entry: appwire.HostEntry{Name: "side", Address: "s2.example"}})
@@ -352,6 +368,16 @@ func TestHostManageRemoveThenReAdd(t *testing.T) {
 	}
 	if row.Address != "s2.example" || row.Removed || row.Origin != hostOriginHubTOML {
 		t.Fatalf("re-add row = %+v, want a fresh hub.toml row", row)
+	}
+	// The re-add purged the tombstone: no removed row for the name survives.
+	relisted, err := m.List(context.Background(), appwire.EmptyParams{})
+	if err != nil {
+		t.Fatalf("List after re-add = %v", err)
+	}
+	for _, r := range relisted.Hosts {
+		if r.Name == "side" && r.Removed {
+			t.Fatalf("re-add left a tombstone row: %+v", r)
+		}
 	}
 }
 
@@ -395,7 +421,7 @@ func TestHostManageRemoveDetachesManager(t *testing.T) {
 	if _, ok := reg.Get("side"); !ok {
 		t.Fatal("Add did not insert into the shared registry the manager consults")
 	}
-	if _, err := m.Remove(context.Background(), appwire.HostRemoveParams{Name: "side"}); err != nil {
+	if _, err := m.Remove(context.Background(), removeRequest(t, m, "side")); err != nil {
 		t.Fatalf("Remove = %v", err)
 	}
 	if _, ok := reg.Get("side"); ok {
@@ -408,7 +434,7 @@ func TestHostManageRemoveDetachesManager(t *testing.T) {
 		t.Fatal("removed host still has an attached client")
 	}
 	// Removal is idempotent from the host surface: the host stays gone.
-	if _, err := m.Remove(context.Background(), appwire.HostRemoveParams{Name: "side"}); err == nil {
+	if _, err := m.Remove(context.Background(), removeRequestFor("side", 1, "absent-incarnation")); err == nil {
 		t.Fatal("second Remove accepted, want InvalidParams (stays removed)")
 	} else {
 		assertWireCode(t, err, appwire.CodeInvalidParams)
@@ -663,7 +689,7 @@ func TestHostManageRemovePersists(t *testing.T) {
 	if _, err := m.Add(context.Background(), appwire.HostAddParams{Entry: appwire.HostEntry{Name: "side", Address: "s.example"}}); err != nil {
 		t.Fatalf("Add = %v", err)
 	}
-	if _, err := m.Remove(context.Background(), appwire.HostRemoveParams{Name: "side"}); err != nil {
+	if _, err := m.Remove(context.Background(), removeRequest(t, m, "side")); err != nil {
 		t.Fatalf("Remove = %v", err)
 	}
 	m2 := bootHostManager(t, configPath)
@@ -696,12 +722,12 @@ func TestHostManageRefusesRemoteOrigin(t *testing.T) {
 	} else {
 		assertWireCode(t, err, appwire.CodeInvalidParams)
 	}
-	if _, err := m.Remove(ctx, appwire.HostRemoveParams{Name: "m4"}); err == nil {
+	if _, err := m.Remove(ctx, removeRequestFor("m4", 1, "bridge-incarnation")); err == nil {
 		t.Fatal("bridge-originated Remove accepted, want refusal")
 	} else {
 		assertWireCode(t, err, appwire.CodeInvalidParams)
 	}
-	if _, err := m.Update(ctx, appwire.HostUpdateParams{Name: "m4", Entry: appwire.HostEntry{Address: "edited.example"}}); err == nil {
+	if _, err := m.Update(ctx, updateRequestFor("m4", 1, "bridge-incarnation", appwire.HostEntry{Address: "edited.example"})); err == nil {
 		t.Fatal("bridge-originated Update accepted, want refusal")
 	} else {
 		assertWireCode(t, err, appwire.CodeInvalidParams)
@@ -1137,7 +1163,7 @@ func TestHostManageSaveFailureCommitsNothing(t *testing.T) {
 		t.Fatal("Add registered a source the write never committed")
 	}
 	// Remove fails and leaves the host fully intact.
-	if _, err := m.Remove(context.Background(), appwire.HostRemoveParams{Name: "keep"}); err == nil {
+	if _, err := m.Remove(context.Background(), removeRequest(t, m, "keep")); err == nil {
 		t.Fatal("Remove over a failing write succeeded, want refusal")
 	}
 	if _, ok := m.cfg.hosts.Get("keep"); !ok {
@@ -1392,7 +1418,7 @@ func TestHubTOMLMigrationNormalizesEntries(t *testing.T) {
 		t.Fatalf("reloaded sidecar row = %+v, want the one origin again", row)
 	}
 	// Removal works: the migrated row keys off the normalized entry.
-	if _, err := m2.Remove(context.Background(), appwire.HostRemoveParams{Name: "side"}); err != nil {
+	if _, err := m2.Remove(context.Background(), removeRequest(t, m2, "side")); err != nil {
 		t.Fatalf("Remove(side) = %v, want success for a migrated entry", err)
 	}
 	// The file lost the entry, so the next boot does not resurrect it (the
@@ -1402,8 +1428,17 @@ func TestHubTOMLMigrationNormalizesEntries(t *testing.T) {
 	if err != nil {
 		t.Fatalf("List after remove: %v", err)
 	}
-	if len(list.Hosts) != 0 {
-		t.Fatalf("list after the removal-and-reload = %+v, want no hosts", list.Hosts)
+	// Registry spec 08 §15 (S11): the removed migrated host survives as a
+	// tombstone row (`removed: true`) — no LIVE host may render, which is what
+	// the resurrection check needs, and the retired sidecar's entries stay
+	// gone from the registry.
+	for _, row := range list.Hosts {
+		if !row.Removed {
+			t.Fatalf("list after the removal-and-reload = %+v, want no live hosts", list.Hosts)
+		}
+	}
+	if _, live := m3.cfg.hosts.Get("side"); live {
+		t.Fatal("the removed migrated host was resurrected on reload")
 	}
 }
 
@@ -1664,20 +1699,16 @@ func TestHostManageRetainedFactsFollowPerLookupValidity(t *testing.T) {
 	}
 }
 
-// TestHostManageRemoveRollsHubTOMLBackWhenLiveTeardownFails pins the round-5
-// M3 fix from the failing side, mirroring
-// TestHostManageAddRollsHubTOMLBackWhenLiveInsertFails: with a threaded SSH
-// manager that owns no registry — the supported embedder shape
-// hostRegistryFromConfig keeps a fresh copy for — RemoveHost refuses loudly
-// the way AddHost always has, instead of reporting success for a teardown
-// that never happened. Pre-fix, RemoveHost returned nil for a nil registry, so
-// Remove dropped the store row, the source, and the retained state and
-// answered Removed:true while the host stayed in the live registry: listed
-// forever, refused by add as a duplicate, and unremovable. Now the failed
-// teardown rolls hub.toml back — round-4's defensive Remove rollback branch,
-// exercised here for the first time — and the host stays fully intact for the
-// operator to retry.
-func TestHostManageRemoveRollsHubTOMLBackWhenLiveTeardownFails(t *testing.T) {
+// TestHostManageRemoveCommitsWithRemnantWhenLiveTeardownFails pins spec 08 §6's
+// commit-point rule: with a manager that can never complete the teardown
+// (RemoveHost refuses with no registry), the removal is COMMITTED — the
+// tombstone and the receipt are durable, the row is gone, and the response is
+// the union's committed-with-teardown-failure arm naming the seam and the
+// pre-minted remnantId. Forward repair is the only path back: "a failure at or
+// after the commit point is reported as a committed-with-teardown-failure with
+// the seam named, and recovery is forward (retry the teardown / re-apply),
+// never a restore of the prior bytes".
+func TestHostManageRemoveCommitsWithRemnantWhenLiveTeardownFails(t *testing.T) {
 	dir := t.TempDir()
 	configPath := filepath.Join(dir, "hub.toml")
 	if err := os.WriteFile(configPath, []byte(""), 0o600); err != nil {
@@ -1696,59 +1727,112 @@ func TestHostManageRemoveRollsHubTOMLBackWhenLiveTeardownFails(t *testing.T) {
 	sources := appsource.NewRegistry()
 	m := newHubHostManager(sources, manager, hubcore.WebConfig{}, configPath, nil, nil)
 
-	if _, err := m.Remove(context.Background(), appwire.HostRemoveParams{Name: "side"}); err == nil {
-		t.Fatal("Remove over a manager with no registry succeeded, want the live-teardown refusal")
+	result, err := m.RemoveResult(context.Background(), removeRequest(t, m, "side"))
+	if err != nil {
+		t.Fatalf("Remove = %v, want the committed-with-teardown-failure arm", err)
 	}
-	// The live set is fully intact: registry entry, store row, source...
-	if _, ok := m.cfg.hosts.Get("side"); !ok {
-		t.Fatal("the refused Remove dropped the registry entry")
+	arm := result.HostMutationTeardownFailureRemoved
+	if arm == nil {
+		t.Fatalf("Remove = %+v, want the teardown-failure arm", result)
 	}
-	if !storeHas(m.cfg.store, "side") {
-		t.Fatal("the refused Remove dropped the store row")
+	if arm.RemnantID == "" || arm.Seam == "" || !arm.Host.Removed {
+		t.Fatalf("failure arm = %+v, want seam, remnantId, and the removed row", arm)
 	}
-	if _, ok := sources.Source("side"); !ok {
-		t.Fatal("the refused Remove dropped the source")
+	// The removal committed: the store row is gone, the tombstone is durable in
+	// the same write, and the file carries both the tombstone and the open
+	// remnant.
+	if storeHas(m.cfg.store, "side") {
+		t.Fatal("the committed-with-teardown-failure removal left its store row live")
 	}
-	// ...and so is the durable file: the rollback re-persisted the entry, so
-	// a restart does not lose the host the API just reported as still present.
 	cfg, err := LoadConfig(configPath)
 	if err != nil {
 		t.Fatalf("load hub.toml: %v", err)
 	}
-	if len(cfg.Hosts) != 1 || cfg.Hosts[0].Name != "side" || cfg.Hosts[0].KeyPath != "/keys/s" {
-		t.Fatalf("hub.toml after the refused Remove = %+v, want the entry rolled back intact", cfg.Hosts)
+	if len(cfg.Hosts) != 0 {
+		t.Fatalf("hub.toml after the committed removal = %+v, want no live entry", cfg.Hosts)
 	}
-	// The row still serves with the one origin — nothing half-removed.
-	resp, err := m.Status(context.Background(), appwire.HostStatusParams{Name: "side"})
-	if err != nil {
-		t.Fatalf("Status after the refused Remove = %v, want the host intact", err)
+	if _, ok := cfg.Tombstones["side"]; !ok {
+		t.Fatal("hub.toml carries no tombstone for the committed removal")
 	}
-	if resp.Host.Origin != hostOriginHubTOML || resp.Host.Removed {
-		t.Fatalf("row = %+v, want the hub.toml origin and no removed marker", resp.Host)
+	remnant, ok := cfg.TeardownRemnants[arm.RemnantID]
+	if !ok || remnant.Resolved != nil {
+		t.Fatalf("hub.toml remnant = %+v, want an open remnant %q", remnant, arm.RemnantID)
 	}
-	// The failed removal cleared its in-flight mark, so the name stays usable:
-	// the retry reports the same live-teardown refusal — not an in-progress
-	// conflict leaking from the first attempt — and the host stays intact for
-	// it, so the failed teardown never fences the name for good.
-	if _, retryErr := m.Remove(context.Background(), appwire.HostRemoveParams{Name: "side"}); retryErr == nil {
-		t.Fatal("the retried Remove over a manager with no registry succeeded, want the live-teardown refusal again")
+	if remnant.Host != "side" || remnant.PendingTeardown.Kind != hostTeardownKindRemove ||
+		!remnant.PendingTeardown.Supervisor || len(remnant.CleanupHandle.Kind) == 0 {
+		t.Fatalf("remnant = %+v, want the pinned removal target and a cleanup handle", remnant)
+	}
+	// The fence stands: the name refuses every lifecycle mutation with the
+	// typed `remnant-open` naming the blocking remnant — including a re-add on
+	// the tombstone-only name, which is never a not-found.
+	if _, err := m.Add(context.Background(), appwire.HostAddParams{Entry: appwire.HostEntry{Name: "side", Address: "x.example"}}); err == nil {
+		t.Fatal("Add over the remnant-fenced name succeeded")
 	} else {
-		var retryWire appwire.WireError
-		if errors.As(retryErr, &retryWire) && retryWire.Code == appwire.CodeConflict {
-			t.Fatalf("the retried Remove = %v; the removal-in-progress mark leaked past the failed teardown", retryErr)
+		var wireErr appwire.WireError
+		if !errors.As(err, &wireErr) {
+			t.Fatalf("Add refusal = %v, want the typed envelope", err)
+		}
+		if data, ok := wireErr.Data.(appwire.RemnantOpenErrorData); !ok || data.RemnantID != arm.RemnantID {
+			t.Fatalf("Add refusal data = %+v, want remnant-open naming %q", wireErr.Data, arm.RemnantID)
 		}
 	}
-	if _, err := m.Add(context.Background(), appwire.HostAddParams{Entry: appwire.HostEntry{Name: "side", Address: "x.example"}}); err == nil {
-		t.Fatal("Add over the intact host succeeded, want the duplicate refusal")
-	} else {
-		assertWireCode(t, err, appwire.CodeInvalidParams)
+	// list renders the still-registered entry with the open remnant named on it:
+	// the teardown failed before it could drop the registry entry, so the old
+	// lifecycle still owns handles — exactly the state the remnant exists to
+	// repair — and the row must say so rather than render a bare live host.
+	list, err := m.List(context.Background(), appwire.EmptyParams{})
+	if err != nil {
+		t.Fatalf("List = %v", err)
 	}
-	retryCfg, retryFileErr := LoadConfig(configPath)
-	if retryFileErr != nil {
-		t.Fatalf("load hub.toml: %v", retryFileErr)
+	if len(list.Hosts) != 1 || list.Hosts[0].OpenRemnantID != arm.RemnantID {
+		t.Fatalf("list rows = %+v, want one row carrying openRemnantId %q", list.Hosts, arm.RemnantID)
 	}
-	if len(retryCfg.Hosts) != 1 || retryCfg.Hosts[0].Name != "side" {
-		t.Fatalf("hub.toml after the retried Remove = %+v, want the entry intact again", retryCfg.Hosts)
+	// Replaying the original mutationId is a no-op receipt return of the same
+	// arm — never a second teardown (asserted against a fresh attempt's counted
+	// teardown calls in TestHostRemoveTeardownFailureCommitsWithRemnant).
+}
+
+// TestHostManageRemoveRemnantKeepsThePinnedIdentity pins that the committed
+// removal's remnant carries the removed incarnation's pinned pair — the identity
+// `teardown-retry` validates against, never the registry's current values.
+func TestHostManageRemoveRemnantKeepsThePinnedIdentity(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "hub.toml")
+	if err := os.WriteFile(configPath, []byte(""), 0o600); err != nil {
+		t.Fatalf("write hub.toml: %v", err)
+	}
+	sidecarBytes := []byte(`{"hosts":[{"name":"side","ssh":"s.example","key_path":"/keys/s"}]}`)
+	if err := os.WriteFile(legacySidecarPathFor(configPath), sidecarBytes, 0o600); err != nil {
+		t.Fatalf("write sidecar: %v", err)
+	}
+	manager := sshconn.New(nil, sshconn.Options{})
+	t.Cleanup(func() { _ = manager.Close() })
+	m := newHubHostManager(appsource.NewRegistry(), manager, hubcore.WebConfig{}, configPath, nil, nil)
+
+	before, ok := m.cfg.hosts.Get("side")
+	if !ok || !completeIdentity(before) {
+		t.Fatalf("the boot left no complete live identity: %+v", before)
+	}
+	result, err := m.RemoveResult(context.Background(), removeRequest(t, m, "side"))
+	if err != nil {
+		t.Fatalf("Remove = %v", err)
+	}
+	arm := result.HostMutationTeardownFailureRemoved
+	if arm == nil {
+		t.Fatalf("Remove = %+v, want the teardown-failure arm", result)
+	}
+	remnant, ok := m.cfg.store.remnantByID(arm.RemnantID)
+	if !ok {
+		t.Fatalf("no durable remnant %q", arm.RemnantID)
+	}
+	if remnant.Generation != before.Generation || remnant.IncarnationID != before.IncarnationID ||
+		remnant.PendingTeardown.Generation != before.Generation ||
+		remnant.PendingTeardown.IncarnationID != before.IncarnationID {
+		t.Fatalf("remnant = %+v, want the pinned pair %d/%s", remnant, before.Generation, before.IncarnationID)
+	}
+	if remnant.CleanupHandle.Generation != before.Generation ||
+		remnant.CleanupHandle.IncarnationID != before.IncarnationID {
+		t.Fatalf("cleanup handle = %+v, want the pinned identity", remnant.CleanupHandle)
 	}
 }
 
@@ -1844,75 +1928,45 @@ func TestHostManageListStatusReleaseLockDuringRowReads(t *testing.T) {
 	}
 }
 
-// blockingRunner parks the first process call the SSH manager makes — a
-// preflight probe or the attach dial, whichever comes first — until the test
-// releases it. An Ensure that parks there holds the manager's per-host gate
-// for the probe's whole duration, which is exactly what makes
-// Manager.RemoveHost block: the removal's teardown waits for the same gate a
-// supervisor's reconnect/ensure cycle can hold for minutes. Later calls fail
-// fast, so the released sequence unwinds promptly.
-type blockingRunner struct {
-	entered  chan struct{}
-	release  chan struct{}
-	parked   atomic.Bool
-	returned atomic.Bool
-}
-
-// block parks the first caller until release (or ctx dies, so a hung test
-// still unwinds) and refuses every later call.
-func (r *blockingRunner) block(ctx context.Context) error {
-	if r.parked.CompareAndSwap(false, true) {
-		close(r.entered)
-		select {
-		case <-r.release:
-			r.returned.Store(true)
-			return errors.New("blockingRunner: released")
-		case <-ctx.Done():
-			return ctx.Err()
-		}
-	}
-	return errors.New("blockingRunner: refusing a follow-up call")
-}
-
-func (r *blockingRunner) Run(ctx context.Context, _ []string, _ io.Reader) ([]byte, error) {
-	return nil, r.block(ctx)
-}
-
-func (r *blockingRunner) Start(ctx context.Context, _ []string, _ io.Writer) (sshconn.Stdio, error) {
-	return nil, r.block(ctx)
-}
-
 // removeOutcome carries the parked Remove's result back to the test.
 type removeOutcome struct {
 	resp appwire.HostRemoveResponse
 	err  error
 }
 
-// parkedRemoval is one removal driven into its released teardown window: an
-// Ensure parked inside the manager's first probe holds the per-host gate, so
-// the Remove that follows parks inside Manager.RemoveHost's gate wait. The
-// removal's commit has landed by the time the helper returns — the store row
-// and hub.toml already lost the entry, and the mark fences the name — and the
-// window stays open until release.
+// parkedRemoval is one removal held in its released teardown window: the
+// manager's test-only park seam (testOnlyParkPostCommit) holds the removal after
+// its durable commit, after the mutation mutex and its per-host gate
+// reservation are released, and immediately before the manager teardown. That
+// is the window registry spec 08 §5 describes — the commit has landed and the
+// mark fences the name — and it stays open until release. The seam replaces
+// the old parked-Ensure technique, which no longer reaches this window: the
+// guarded remove try-acquires the gate before its commit, so a gate holder
+// now refuses the removal busy instead of parking it.
 type parkedRemoval struct {
 	m          *hubHostManager
 	sources    *appsource.Registry
 	configPath string
-	runner     *blockingRunner
 	release    func()
-	ensureDone chan error
 	removeDone chan removeOutcome
+	// parked reports the removal reached its released window, and returned
+	// reports it left it — the same two moments the old runner flags reported.
+	parked   atomic.Bool
+	returned atomic.Bool
+	// drainOnce guards the one read of removeDone, so the test's own call and
+	// the cleanup's drain can both ask for the outcome safely.
+	drainOnce sync.Once
+	outcome   removeOutcome
 }
 
-// startParkedRemoval drives the removal of name into its teardown window over
-// a real SSH manager with the blocking runner: the Add calls commit through
-// the manager's registry, the parked Ensure holds the per-host gate inside its
-// first probe, and the Remove parks behind it. "keep" is a second sidecar
-// host so the window's refusals and saves have an unrelated entry to leave
-// alone. The cleanup releases the parks and drains both goroutines
-// (registered after the manager's, so it runs first): a failing test's
-// teardown never races a removal still writing hub.toml into the
-// temp dir.
+// startParkedRemoval drives the removal of name into its released window over
+// a real SSH manager: the Add calls commit through the manager's registry, the
+// Remove commits, releases its gate reservation, and parks on the test seam
+// before running its teardown. "keep" is a second host so the window's
+// refusals and saves have an unrelated entry to leave alone. The cleanup
+// releases the park and drains the removal goroutine (registered after the
+// manager's, so it runs first): a failing test's teardown never races a
+// removal still writing hub.toml into the temp dir.
 func startParkedRemoval(t *testing.T, name string) *parkedRemoval {
 	t.Helper()
 	dir := t.TempDir()
@@ -1924,8 +1978,7 @@ func startParkedRemoval(t *testing.T, name string) *parkedRemoval {
 	if err != nil {
 		t.Fatalf("hostreg.New: %v", err)
 	}
-	runner := &blockingRunner{entered: make(chan struct{}), release: make(chan struct{})}
-	manager := sshconn.New(reg, sshconn.Options{Runner: runner})
+	manager := sshconn.New(reg, sshconn.Options{})
 	t.Cleanup(func() { _ = manager.Close() })
 	sources := appsource.NewRegistry()
 	m := newHubHostManager(sources, manager, hubcore.WebConfig{}, configPath, reg, nil)
@@ -1937,45 +1990,49 @@ func startParkedRemoval(t *testing.T, name string) *parkedRemoval {
 			t.Fatalf("Add(%s): %v", host.Entry.Name, err)
 		}
 	}
-	// Park an Ensure for the host inside its first probe: it holds the
-	// per-host gate the removal's teardown below must wait for.
-	var parked sync.WaitGroup
-	parked.Add(2)
-	ensureDone := make(chan error, 1)
+	pr := &parkedRemoval{m: m, sources: sources, configPath: configPath, removeDone: make(chan removeOutcome, 1)}
+	entered := make(chan struct{})
+	releaseCh := make(chan struct{})
+	var releaseOnce sync.Once
+	pr.release = func() { releaseOnce.Do(func() { close(releaseCh) }) }
+	var parkOnce sync.Once
+	m.testOnlyParkPostCommit = func(host string) {
+		if host != name {
+			return
+		}
+		// The flag is published BEFORE the channel close the test waits on: the
+		// close is the happens-before edge, so a reader that has received from
+		// `entered` must observe `parked` as true. Publishing it after the close
+		// let a loaded runner read a stale false and fail the window assertion.
+		pr.parked.Store(true)
+		parkOnce.Do(func() { close(entered) })
+		<-releaseCh
+		pr.returned.Store(true)
+	}
+	// The guarded request is built on the test goroutine: it reads the live
+	// pair, and a helper call must never run t.Fatalf off this goroutine.
+	generation, incarnation := testMutationIdentity(t, m, name)
+	params := appwire.HostRemoveParams{
+		Name:                  name,
+		MutationID:            newTestMutationID(),
+		ExpectedGeneration:    generation,
+		ExpectedIncarnationID: incarnation,
+	}
 	go func() {
-		defer parked.Done()
-		_, err := manager.Ensure(context.Background(), name)
-		ensureDone <- err
-	}()
-	<-runner.entered
-	// The removal parks in its teardown, inside RemoveHost's gate wait.
-	removeDone := make(chan removeOutcome, 1)
-	go func() {
-		defer parked.Done()
-		resp, err := m.Remove(context.Background(), appwire.HostRemoveParams{Name: name})
-		removeDone <- removeOutcome{resp: resp, err: err}
+		resp, err := m.Remove(context.Background(), params)
+		pr.removeDone <- removeOutcome{resp: resp, err: err}
 	}()
 	// The removal's durable commit landed once the file lost the entry: the
-	// write runs under the mutation mutex, ahead of the teardown, on both the
-	// pre-fix and post-fix code. The condition persists until release, so the
-	// poll cannot race past the window.
+	// write runs under the mutation mutex, ahead of the teardown; the removal
+	// then parks on the seam, so the window stays open until release.
 	waitHubTOMLLacks(t, configPath, name)
-	var releaseOnce sync.Once
-	pr := &parkedRemoval{
-		m:          m,
-		sources:    sources,
-		configPath: configPath,
-		runner:     runner,
-		release:    func() { releaseOnce.Do(func() { close(runner.release) }) },
-		ensureDone: ensureDone,
-		removeDone: removeDone,
-	}
+	<-entered
 	t.Cleanup(func() {
-		// Release the parks, then drain both goroutines before the manager's
-		// Close and the temp dir removal run: a failing test's teardown must
-		// not race a removal still writing hub.toml.
+		// Release the park, then drain the removal before the manager's Close
+		// and the temp dir removal run: a failing test's teardown must not
+		// race a removal still writing hub.toml.
 		pr.release()
-		parked.Wait()
+		pr.waitRemovalDone(t)
 	})
 	return pr
 }
@@ -2032,13 +2089,14 @@ func served(t *testing.T, name string, call func() error) error {
 // waitRemovalDone collects the parked Remove's result once the window closes.
 func (pr *parkedRemoval) waitRemovalDone(t *testing.T) removeOutcome {
 	t.Helper()
-	select {
-	case done := <-pr.removeDone:
-		return done
-	case <-time.After(5 * time.Second):
-		t.Fatal("the removal never finished after its teardown was released")
-		return removeOutcome{}
-	}
+	pr.drainOnce.Do(func() {
+		select {
+		case pr.outcome = <-pr.removeDone:
+		case <-time.After(5 * time.Second):
+			t.Fatal("the removal never finished after its teardown was released")
+		}
+	})
+	return pr.outcome
 }
 
 // TestHostManageRemoveReleasesLockDuringTeardown pins the round-8 finding:
@@ -2048,10 +2106,10 @@ func (pr *parkedRemoval) waitRemovalDone(t *testing.T) removeOutcome {
 // removal froze every concurrent host/list, host/status, and host/add for
 // every host (the Settings hosts pane polls host/list every two seconds).
 // The teardown now runs mutex-free: while the removal below is parked inside
-// RemoveHost (an Ensure holding the gate through a probe the test keeps
-// blocked), List and Status keep serving, and the mid-removal row still
-// renders its sidecar origin. Every park is a channel the test holds open,
-// never a timed sleep.
+// its released window — the park seam holds it after the commit and the gate
+// release, before RemoveHost — List and Status keep serving, and the
+// mid-removal row still renders its hub.toml origin. Every park is a channel
+// the test holds open, never a timed sleep.
 func TestHostManageRemoveReleasesLockDuringTeardown(t *testing.T) {
 	pr := startParkedRemoval(t, "side")
 
@@ -2068,7 +2126,7 @@ func TestHostManageRemoveReleasesLockDuringTeardown(t *testing.T) {
 	}
 	// The teardown was still parked when List served — the two genuinely
 	// overlapped; this is not a list that ran after the removal finished.
-	if !pr.runner.parked.Load() || pr.runner.returned.Load() {
+	if !pr.parked.Load() || pr.returned.Load() {
 		t.Fatal("the parked teardown finished before host/list served; the test did not hold the window open")
 	}
 	// The mid-removal row is fully committed, never half-gone: the registry
@@ -2097,9 +2155,6 @@ func TestHostManageRemoveReleasesLockDuringTeardown(t *testing.T) {
 
 	// Let the teardown finish and the removal complete.
 	pr.release()
-	if err := <-pr.ensureDone; err == nil {
-		t.Fatal("the parked Ensure succeeded; the blocking runner must fail the probe")
-	}
 	done := pr.waitRemovalDone(t)
 	if done.err != nil {
 		t.Fatalf("Remove: %v", done.err)
@@ -2144,7 +2199,7 @@ func TestHostManageRemoveWindowFencesTheNameAndKeepsConcurrentCommits(t *testing
 		assertWireCode(t, err, appwire.CodeConflict)
 	}
 	if err := served(t, "host/remove", func() error {
-		_, err := pr.m.Remove(context.Background(), appwire.HostRemoveParams{Name: "side"})
+		_, err := pr.m.Remove(context.Background(), removeRequestFor("side", 1, "absent-incarnation"))
 		return err
 	}); err == nil {
 		t.Fatal("a second Remove of the mid-removal name committed, want the removal conflict")
@@ -2168,9 +2223,6 @@ func TestHostManageRemoveWindowFencesTheNameAndKeepsConcurrentCommits(t *testing
 
 	// Release the window: the removal completes and its end state holds.
 	pr.release()
-	if err := <-pr.ensureDone; err == nil {
-		t.Fatal("the parked Ensure succeeded; the blocking runner must fail the probe")
-	}
 	done := pr.waitRemovalDone(t)
 	if done.err != nil {
 		t.Fatalf("Remove: %v", done.err)
@@ -2195,8 +2247,25 @@ func TestHostManageRemoveWindowFencesTheNameAndKeepsConcurrentCommits(t *testing
 		names = append(names, row.Name)
 	}
 	slices.Sort(names)
-	if !slices.Equal(names, []string{"keep", "other"}) {
-		t.Fatalf("reloaded hosts = %v, want keep + other only: a mid-window save resurrected or lost an entry", names)
+	// Registry spec 08 §15 (S11): the removed host stays as a tombstone ROW,
+	// so the reload lists it with `removed: true` while the durable [[hosts]]
+	// set (asserted just above) holds only the two live names. A resurrected
+	// live row would fail the Removed check below.
+	byName := make(map[string]appwire.HostRow, len(list.Hosts))
+	for _, row := range list.Hosts {
+		if _, duplicate := byName[row.Name]; duplicate {
+			t.Fatalf("reloaded hosts list %q twice: %+v", row.Name, list.Hosts)
+		}
+		byName[row.Name] = row
+	}
+	for _, name := range []string{"keep", "other"} {
+		row, ok := byName[name]
+		if !ok || row.Removed {
+			t.Fatalf("reloaded host %q = %+v, want a live row: a mid-window save resurrected or lost an entry", name, row)
+		}
+	}
+	if row, ok := byName["side"]; !ok || !row.Removed {
+		t.Fatalf("reloaded host side = %+v, want the tombstone row spec 08 §15 requires", row)
 	}
 
 	// The fence lifted with the removal: the name is addable again.
@@ -2204,4 +2273,162 @@ func TestHostManageRemoveWindowFencesTheNameAndKeepsConcurrentCommits(t *testing
 		t.Fatalf("re-Add after the removal finished: %v", err)
 	}
 	assertHubTOMLHostNames(t, pr.configPath, "keep", "other", "side")
+}
+
+// TestHostManageRemoveRollbackKeepsTheLiveIdentity pins the property roborev
+// round 7's rollback finding asks for, on the branch it names: a compensated
+// removal leaves the live entry's whole (generation, incarnation id, presence
+// epoch) triple exactly as it was, and hub.toml's records and the store row stay
+// that same triple. Compensation touches the store row and the file only — no
+// rollback path re-applies a captured entry through the registry's minting
+// methods (Add/Update), which would mint a fresh identity there while the
+// restored file kept the old triple. If such a re-apply were ever introduced,
+// this test would fail on the mismatched triple.
+// TestHostManageRemoveRemnantIsDurableAcrossRestart pins the remnant's
+// durability: a boot over the file the failed removal wrote reads the same
+// open remnant back, with its pinned target and cleanup handle intact — "the
+// disk wins" (spec §6).
+func TestHostManageRemoveRemnantIsDurableAcrossRestart(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "hub.toml")
+	if err := os.WriteFile(configPath, []byte(""), 0o600); err != nil {
+		t.Fatalf("write hub.toml: %v", err)
+	}
+	// A sidecar entry the boot migration folds in and records an identity for —
+	// with a manager that can never complete the teardown, so the removal
+	// commits with a remnant.
+	sidecarBytes := []byte(`{"hosts":[{"name":"side","ssh":"s.example","key_path":"/keys/s"}]}`)
+	if err := os.WriteFile(legacySidecarPathFor(configPath), sidecarBytes, 0o600); err != nil {
+		t.Fatalf("write sidecar: %v", err)
+	}
+	manager := sshconn.New(nil, sshconn.Options{})
+	t.Cleanup(func() { _ = manager.Close() })
+	m := newHubHostManager(appsource.NewRegistry(), manager, hubcore.WebConfig{}, configPath, nil, nil)
+	before, ok := m.cfg.hosts.Get("side")
+	if !ok || !completeIdentity(before) {
+		t.Fatalf("the boot left no complete live identity: %+v", before)
+	}
+	result, err := m.RemoveResult(context.Background(), removeRequest(t, m, "side"))
+	if err != nil {
+		t.Fatalf("Remove = %v", err)
+	}
+	arm := result.HostMutationTeardownFailureRemoved
+	if arm == nil {
+		t.Fatalf("Remove = %+v, want the teardown-failure arm", result)
+	}
+
+	// The next boot reads the durable records: the tombstone, the receipt, and
+	// the open remnant with the pinned identity the commit staged.
+	restarted := bootHostManager(t, configPath)
+	remnant, ok := restarted.cfg.store.remnantByID(arm.RemnantID)
+	if !ok || !remnant.open() {
+		t.Fatalf("the restarted manager lost remnant %q: %+v", arm.RemnantID, remnant)
+	}
+	if remnant.Generation != before.Generation || remnant.IncarnationID != before.IncarnationID {
+		t.Fatalf("remnant = %+v, want the pinned pair %d/%s", remnant, before.Generation, before.IncarnationID)
+	}
+	if _, tombstoned := restarted.cfg.store.tombstoneSnapshot()["side"]; !tombstoned {
+		t.Fatal("the restarted manager lost the removal's tombstone")
+	}
+	// The fence is live on the restarted manager too: the name is tombstone-only
+	// and its fence answers `remnant-open`, never not-found.
+	if _, err := restarted.AddResult(context.Background(), appwire.HostAddParams{
+		Entry: appwire.HostEntry{Name: "side", Address: "x.example"},
+	}); err == nil {
+		t.Fatal("Add over the restarted fence succeeded")
+	} else if data, ok := wireData(err).(appwire.RemnantOpenErrorData); !ok || data.RemnantID != arm.RemnantID {
+		t.Fatalf("Add refusal = %v, want remnant-open naming %q", err, arm.RemnantID)
+	}
+}
+
+// wireData returns a wire error's data, or nil when err is not one.
+func wireData(err error) any {
+	var wireErr appwire.WireError
+	if !errors.As(err, &wireErr) {
+		return nil
+	}
+	return wireErr.Data
+}
+
+// TestHostManageAddRefusalKeepsRetainedState pins roborev round 8's low
+// finding: Add reset the name's retained attach state before it stamped the
+// entry, so a stamp refusal — the generation counter at its maximum — rejected
+// the add but dropped the retained state anyway, and a refused mutation must
+// commit nothing. The sweep is now a detach, and every refusal path restores
+// it, so a refused add leaves the retained state exactly as it was.
+func TestHostManageAddRefusalKeepsRetainedState(t *testing.T) {
+	f := newUpdateFixture(t)
+	// Retained state for a name the fixture does not hold live: the facts of a
+	// row that once rendered attached.
+	f.m.cfg.state.recordKnown(appwire.HostRow{
+		Name: "fresh", Attached: true, ServerName: "remote-hub", ServerVersion: "0.1.0",
+	}, hostFactsValidity{handshake: true}, 1)
+	// The generation counter at its maximum: the add's Stamp cannot mint an
+	// identity, so the add is refused before anything may change.
+	f.m.cfg.hosts.SeedHighWater(map[string]hostreg.HighWater{"exhausted": {Generation: math.MaxUint64}})
+	_, err := f.m.Add(context.Background(), appwire.HostAddParams{
+		Entry: appwire.HostEntry{Name: "fresh", Address: "fresh.example"},
+	})
+	if !errors.Is(err, hostreg.ErrCounterExhausted) {
+		t.Fatalf("Add at an exhausted generation counter = %v, want hostreg.ErrCounterExhausted", err)
+	}
+	// The refused add left the retained state exactly as it was.
+	row := appwire.HostRow{Name: "fresh"}
+	f.m.cfg.state.apply(&row, 1)
+	if row.ServerName != "remote-hub" || row.ServerVersion != "0.1.0" {
+		t.Fatalf("the refused add dropped the name's retained state: %+v", row)
+	}
+}
+
+// TestHostManageAddRefusesAHeldGateWithTheTypedBusyError pins §5's order and
+// busy rendering through the Add handler: the manager's AddHost try-acquires
+// the name's gate (it is called while the mutation mutex is held, so it must
+// never wait), a held gate arrives as the typed busy envelope, and the failed
+// add leaves neither a live entry nor a durable one — the durable-first write
+// is compensated back.
+func TestHostManageAddRefusesAHeldGateWithTheTypedBusyError(t *testing.T) {
+	configPath := filepath.Join(t.TempDir(), "hub.toml")
+	if err := os.WriteFile(configPath, []byte(""), 0o600); err != nil {
+		t.Fatalf("write hub.toml: %v", err)
+	}
+	reg, err := hostreg.New(nil)
+	if err != nil {
+		t.Fatalf("hostreg.New: %v", err)
+	}
+	manager := sshconn.New(reg, sshconn.Options{})
+	t.Cleanup(func() { _ = manager.Close() })
+	m := newHubHostManager(nil, manager, hubcore.WebConfig{RemoteHostRegistry: reg}, configPath, reg, nil)
+
+	release, err := manager.TryAcquire("held", hostops.Holder{Kind: hostops.HolderManager, Activity: "attach"})
+	if err != nil {
+		t.Fatalf("TryAcquire: %v", err)
+	}
+	_, err = m.Add(context.Background(), appwire.HostAddParams{Entry: appwire.HostEntry{Name: "held", Address: "held.example"}})
+	var wire appwire.WireError
+	if !errors.As(err, &wire) || wire.Code != appwire.CodeConflict {
+		t.Fatalf("Add against a held gate = %T (%v), want the conflict-class refusal", err, err)
+	}
+	data, ok := wire.Data.(appwire.ErrorData)
+	if !ok || data.EvenerErrorInfo != appwire.ErrorHostBusyTransient {
+		t.Fatalf("busy data = %#v, want %q", wire.Data, appwire.ErrorHostBusyTransient)
+	}
+	if _, ok := reg.Get("held"); ok {
+		t.Fatal("an add refused by a held gate inserted the entry anyway")
+	}
+	cfg, err := LoadConfig(configPath)
+	if err != nil {
+		t.Fatalf("load hub.toml: %v", err)
+	}
+	for _, entry := range cfg.Hosts {
+		if entry.Name == "held" {
+			t.Fatalf("hub.toml kept %q after the gate-held refusal: the next start would resurrect it", entry.Name)
+		}
+	}
+	release()
+	if _, err := m.Add(context.Background(), appwire.HostAddParams{Entry: appwire.HostEntry{Name: "held", Address: "held.example"}}); err != nil {
+		t.Fatalf("Add after the release: %v", err)
+	}
+	if _, ok := reg.Get("held"); !ok {
+		t.Fatal("the add did not register the entry once the gate was free")
+	}
 }

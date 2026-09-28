@@ -20,7 +20,15 @@ import { AgentsDocHostScope } from "./agentsDoc";
 // never this hub's. Local stays the plain-call section.
 
 function hostRow(overrides: Partial<HostRow> & Pick<HostRow, "name">): HostRow {
-  return { origin: "hub.toml", attached: false, midAttach: false, removed: false, ...overrides };
+  return {
+    generation: 1,
+    incarnationId: "inc-1",
+    origin: "hub.toml",
+    attached: false,
+    midAttach: false,
+    removed: false,
+    ...overrides,
+  };
 }
 
 const BETA_DOC: AgentsDocResponse = { path: "/home/b/.config/evener/AGENTS.md", exists: true, content: "# beta\n" };

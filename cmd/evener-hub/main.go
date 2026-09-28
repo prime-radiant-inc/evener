@@ -3,6 +3,8 @@ package hub
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"flag"
 	"fmt"
@@ -23,6 +25,7 @@ import (
 	"primeradiant.com/evener/buildinfo"
 	"primeradiant.com/evener/cmd/evener-hub/internal/appsource"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hostlock"
+	"primeradiant.com/evener/cmd/evener-hub/internal/hostops"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hostreg"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubedge"
@@ -45,12 +48,46 @@ import (
 
 const Version = "0.1.0"
 
+// Hub HTTP listener deadlines: ReadHeaderTimeout bounds the pre-auth window
+// before a peer finishes its request headers (before AuthGuard middleware
+// runs); IdleTimeout bounds an idle keep-alive socket. Neither governs a
+// hijacked AppWire connection, so long-lived streams are unaffected.
+const (
+	hubHTTPReadHeaderTimeout = 10 * time.Second
+	hubHTTPIdleTimeout       = 120 * time.Second
+)
+
 var (
 	hubExecutable  = os.Executable
 	hubProcessArgs = func() []string { return os.Args }
 	hubHostname    = os.Hostname
 	hubRunMain     = runMain
+	// hubProcessStart is this hub process's own start instant, captured when
+	// the package initializes. It is what evener/host/running reports as its
+	// processStartTime (deploy pipeline 08b §10: "present exactly when the
+	// serving hub knows its own process start time"), and a restart's new
+	// instant is what makes the post-restart probe distinguish the replacement
+	// process.
+	hubProcessStart = time.Now()
+	// hubBootID identifies this controller process incarnation for the durable
+	// probe epochs evener/host/plan persists (deploy pipeline 08b §6 step 2;
+	// crash-fencing spec §4: "a worker's durable (controller boot id, per-host
+	// monotonic op sequence)"). It is drawn once per process, so a restart
+	// always presents a fresh boot id and never continues an old boot's
+	// sequence.
+	hubBootID = newHubBootID()
 )
+
+// newHubBootID draws this process's boot id: random hex, with a pid+nanotime
+// fallback for the (practically unreachable) entropy failure, so a boot id
+// always exists.
+func newHubBootID() string {
+	var raw [16]byte
+	if _, err := rand.Read(raw[:]); err != nil {
+		return fmt.Sprintf("pid-%d-%d", os.Getpid(), time.Now().UnixNano())
+	}
+	return hex.EncodeToString(raw[:])
+}
 
 type hubHTTPServer interface {
 	ListenAndServe() error
@@ -289,6 +326,7 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 	archive := hubcore.NewArchiveStore(pastIndexDB)
 	favorite := hubcore.NewFavoriteStore(pastIndexDB)
 	pinSections := hubcore.NewPinSectionStore(pastIndexDB)
+	sessionSeen := hubcore.NewSessionSeenStore(pastIndexDB)
 
 	// Spawner
 	hubToken, err := deps.newToken()
@@ -431,8 +469,11 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 	hostEntries := hostRegistryEntries(cfg)
 	// Config loading already validated these through hostreg.New; build the
 	// real registry used by the SSH manager and handle the (impossible) error
-	// like any other startup failure.
-	hostRegistry, err := hostreg.New(hostEntries)
+	// like any other startup failure. The file's retained high-water marks seed
+	// the counters first, so a hub.toml host with no persisted record is minted
+	// above every mark the file carries (registry spec 08 §1) rather than below
+	// a mark another name retained.
+	hostRegistry, err := hostreg.NewSeeded(hostEntries, hostHighWaterMarks(cfg))
 	if err != nil {
 		_ = hubListener.Close()
 		return fmt.Errorf("validate hosts: %w", err)
@@ -516,6 +557,15 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 	// process so they die with the hub.
 	defer func() { _ = sshManager.Close() }()
 
+	// Boot-prune the state-root write probe's crash orphans: evener/host/running
+	// writes (and removes) one probe file per probe under every durable state
+	// root, so a crash between its rename and its remove leaves a prefix-named
+	// stray that only this pass removes.
+	for _, root := range runningStateRoots(hubStateRoot, stateDir) {
+		if pruned := pruneHostRunningProbeStrays(root); pruned > 0 {
+			_, _ = fmt.Fprintf(stderr, "[hub] pruned %d orphaned host-running probe file(s) under %s\n", pruned, root)
+		}
+	}
 	web := newWebServer(hubcore.WebConfig{
 		HubAddr:                   cfg.Addr,
 		AuthToken:                 authToken,
@@ -535,6 +585,7 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 		Archive:                   archive,
 		Favorite:                  favorite,
 		PinSections:               pinSections,
+		SessionSeen:               sessionSeen,
 		Spawner:                   spawner,
 		APILogDefault:             cfg.APILog,
 		DeletionStore:             deletionStore,
@@ -556,6 +607,29 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 		RemoteHostRegistry:   hostRegistry,
 		RemoteHostSSHManager: sshManager,
 		RemoteHostConfigPath: opts.configPath,
+		RemoteHostOpsStore:   openHostOpsStore(hubStateRoot, stderr),
+		// This hub's own running identity and the two owner-adjustable
+		// deploy-pipeline knobs: the probe deadline the plan's gated probe
+		// uses, and the minimum free space evener/host/running's health
+		// predicate requires on each durable state root.
+		HubBootID:             hubBootID,
+		HubProcessStart:       hubProcessStart,
+		HostProbeTimeout:      cfg.HostProbeTimeout,
+		HostMinFreeSpaceBytes: cfg.HostMinFreeSpaceBytes,
+		// The host-record retention knobs (registry spec 08 §6/§11/§15): the
+		// tombstone retention and bounds and the receipt/marker/audit bounds the
+		// host-management surface prunes and evicts by.
+		HostTombstoneRetention:        cfg.HostTombstoneRetention,
+		HostTombstoneMaxRows:          cfg.HostTombstoneMaxRows,
+		HostTombstoneMaxRowBytes:      cfg.HostTombstoneMaxRowBytes,
+		HostTombstoneMaxCount:         cfg.HostTombstoneMaxCount,
+		HostTombstoneMaxBytes:         cfg.HostTombstoneMaxBytes,
+		HostSupersededReceiptMaxCount: cfg.HostSupersededReceiptMaxCount,
+		HostSupersededReceiptTTL:      cfg.HostSupersededReceiptTTL,
+		HostPrunedReceiptMaxCount:     cfg.HostPrunedReceiptMaxCount,
+		HostPrunedReceiptTTL:          cfg.HostPrunedReceiptTTL,
+		HostKeylessAuditMaxCount:      cfg.HostKeylessAuditMaxCount,
+		HostKeylessAuditTTL:           cfg.HostKeylessAuditTTL,
 		RemoteHostClient: func(ctx context.Context, host string) (*appwire.Client, error) {
 			ch, err := sshManager.Ensure(ctx, host)
 			if err != nil {
@@ -603,6 +677,13 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 	if web.hostManage != nil {
 		hostManageEvents = web.hostManage.observeEvent
 	}
+	// The deploy pipeline's operation workers run under the controller's
+	// lifetime, never an RPC's. On the way out they are cancelled and their
+	// records settle to `interrupted` (naming the shutdown) with their hosts'
+	// gates released, before the SSH manager below tears the channels down.
+	if web.hostManage != nil {
+		defer func() { web.hostManage.ShutdownHostOperations(operationsShutdownTimeout) }()
+	}
 	// Drain the AppWire RPC server on every exit path, tracing or not: the
 	// remote-admin fan-out is bound to appserver.Server.Lifetime(), and
 	// Shutdown is what cancels it, so a hub that only stopped its HTTP server
@@ -645,6 +726,9 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 	if pinSections != nil {
 		pinSections.SetOnChange(func() { bump(); web.navigation.Invalidate(navigationChangeHint{}) })
 	}
+	// A seen mark changes live rows' unseen flag; a mark committed by any
+	// writer, the RPC or a session deletion's scrub, invalidates navigation.
+	sessionSeen.SetOnChange(func() { bump(); web.navigation.Invalidate(navigationChangeHint{}) })
 
 	if deps.afterWeb != nil {
 		deps.afterWeb(web)
@@ -737,8 +821,10 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 
 	srv := &listenerHTTPServer{
 		Server: &http.Server{
-			Addr:    cfg.Addr,
-			Handler: web.Handler(),
+			Addr:              cfg.Addr,
+			Handler:           web.Handler(),
+			ReadHeaderTimeout: hubHTTPReadHeaderTimeout,
+			IdleTimeout:       hubHTTPIdleTimeout,
 		},
 		ln: hubListener,
 	}
@@ -756,6 +842,54 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 	return nil
 }
 
+// openHostOpsStore opens the hub's operation store — the file the
+// host-management surface mirrors per-host boundary records into — beside the
+// hub's other durable stores. A store that cannot be opened (a corrupt file,
+// an unreadable one) is logged and left unwired rather than refusing startup:
+// the mirror is a copy of hub.toml's machine records and never their authority,
+// and the custody-first quarantine a corrupt store file earns belongs to the
+// crash-fencing slice. Until then this is the interim posture: the hub serves,
+// and host mutations commit without mirroring.
+//
+// The opened store also runs §3's boot reap: expired confirmation tokens are
+// dropped at startup, so a restart never leaves an unexpired-looking row behind
+// for a later pass to trust. A reap that cannot write is logged for the same
+// reason the mirror's failures are — the hub serves, and the next validate or
+// consume pass for a name reaps lazily anyway.
+//
+// The same boot pass deletes every probe-epoch row silently (§7: "an epoch-only
+// probe record ... boot deletes it silently, never transitions it to
+// interrupted, and never revives a token or a worker") and prunes the
+// state-root write probe's crash orphans: an epoch with no mint behind it is
+// inert, and a crashed probe's temp/target file is a stray nothing else will
+// remove.
+func openHostOpsStore(stateRoot string, stderr io.Writer) *hostops.Store {
+	store, err := hostops.Open(hostops.StorePath(stateRoot))
+	if err != nil {
+		_, _ = fmt.Fprintf(stderr, "[hub] host operation store not opened, host boundary records will not be mirrored: %v\n", err)
+		return nil
+	}
+	if reaped, err := store.ReapExpiredTokens(); err != nil {
+		_, _ = fmt.Fprintf(stderr, "[hub] host operation store opened, but its expired confirmation tokens were not reaped: %v\n", err)
+	} else if reaped > 0 {
+		_, _ = fmt.Fprintf(stderr, "[hub] host operation store reaped %d expired confirmation token(s)\n", reaped)
+	}
+	if reapedEpochs, err := store.ReapProbeEpochs(); err != nil {
+		_, _ = fmt.Fprintf(stderr, "[hub] host operation store opened, but its probe epochs were not reaped: %v\n", err)
+	} else if reapedEpochs > 0 {
+		_, _ = fmt.Fprintf(stderr, "[hub] host operation store reaped %d probe epoch(s)\n", reapedEpochs)
+	}
+	// §7's interrupted transition, before the store serves any request: a
+	// record a crash left pending/running is a terminal unknown outcome. A
+	// retry with the same operation ID gets the interrupted record back.
+	if interrupted, err := store.RecoverInterrupted(); err != nil {
+		_, _ = fmt.Fprintf(stderr, "[hub] host operation store opened, but its in-flight operations were not moved to interrupted: %v\n", err)
+	} else if interrupted > 0 {
+		_, _ = fmt.Fprintf(stderr, "[hub] host operation store moved %d in-flight operation(s) to interrupted\n", interrupted)
+	}
+	return store
+}
+
 // hostRegistryEntries maps the validated [[hosts]] entries onto the host
 // registry's values. runMain hands the result to hostreg.New (the registry
 // sshconn consumes) and to the web config's RemoteHosts (one source per host),
@@ -763,9 +897,17 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 // either consumer sees it: every field belongs here, including the host's
 // non-default locations (EvenerPath, ConfigPath, Addr) that keep the SSH
 // manager attaching with the host's own hub.toml and probing its own listener.
+//
+// It is also where the file's machine records join the entry: the persisted
+// (generation, incarnation id, presence epoch) triple is restored onto the
+// entry, so the boot load keeps the identity the file recorded instead of
+// minting a new one (registry spec 08 §15: "The boot load restores persisted
+// generations before the store serves any request"). A file that carries no
+// record leaves the zeros hostreg.New fills at load.
 func hostRegistryEntries(cfg Config) []hostreg.Host {
 	entries := make([]hostreg.Host, 0, len(cfg.Hosts))
 	for _, h := range cfg.Hosts {
+		generation, incarnation, epoch := resolveHostIdentity(h.Name, cfg.HostRecords, cfg.Generations)
 		entries = append(entries, hostreg.Host{
 			Name:       h.Name,
 			SSH:        h.SSH,
@@ -775,6 +917,11 @@ func hostRegistryEntries(cfg Config) []hostreg.Host {
 			Addr:       h.Addr,
 			Roots:      h.Roots,
 			KeyPath:    h.KeyPath,
+			// Generation, IncarnationID and PresenceEpoch: the persisted
+			// identity, when the file carries one.
+			Generation:    generation,
+			IncarnationID: incarnation,
+			PresenceEpoch: epoch,
 		})
 	}
 	return entries

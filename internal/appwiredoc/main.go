@@ -89,6 +89,13 @@ func run(args []string, stderr *os.File, writeFile func(string, []byte, os.FileM
 			}
 			return ""
 		},
+		// tableCell escapes the one character a markdown table cannot carry
+		// unescaped: GFM splits a row on `|` even inside inline code, so a union
+		// result type joined with a pipe (or any prose that carries one) would
+		// silently add a column and shift the row.
+		"tableCell": func(text string) string {
+			return strings.ReplaceAll(text, "|", `\|`)
+		},
 	}).Parse(tmplText))
 
 	var buf strings.Builder
@@ -130,6 +137,27 @@ func build() docData {
 	// instance/action/reason fields have no field table at all while
 	// types.gen.ts still emits the interface (roborev review of the 07c push).
 	register(appwire.HostCredentialPushResult{})
+	// HostPlan and HostPlanStaleFacts nest inside the evener/host/plan union's
+	// arms — HostPlanPlanned.Plan and HostPlanNoToken.StaleFacts — so without
+	// these the reference would name both types with no field table of their own
+	// while the TypeScript output emits them.
+	register(appwire.HostPlan{})
+	register(appwire.HostPlanStaleFacts{})
+	// HostRow and RemovedRow are the row shapes the registry mutations' union
+	// arms carry — HostMutationCommitted.Host, the teardown-failure arms' Host,
+	// HostMutationAmbiguous.ObservedRow, HostMutationCollisionDropped.Host and
+	// .DroppedEntry — and they are also the shapes evener/host/list and
+	// evener/host/status return, so the reference needs both field tables:
+	// without them the row's own fields (`openRemnantId`, `escalationAgeSec`,
+	// `retainedRows`, …) are named but never documented (roborev review of the
+	// S12 union conversion).
+	register(appwire.HostRow{})
+	register(appwire.RemovedRow{})
+	// HostTeardownAttestation only nests inside HostTeardownRecoverParams and
+	// the recovery receipt record, so it needs the same explicit registration
+	// for a field table of its own — the operator/statement/observedAt triple is
+	// the audited recovery contract a reader has to see.
+	register(appwire.HostTeardownAttestation{})
 
 	for _, m := range appwire.Methods {
 		d.Methods = append(d.Methods, methodView{
@@ -137,7 +165,7 @@ func build() docData {
 			Scope:      string(m.Scope),
 			Summary:    m.Summary,
 			ParamsType: register(m.Params),
-			ResultType: register(m.Result),
+			ResultType: resultType(register, m),
 		})
 	}
 	for _, n := range appwire.Notifications {
@@ -153,6 +181,22 @@ func build() docData {
 	}
 	sort.Slice(d.Types, func(i, j int) bool { return d.Types[i].Name < d.Types[j].Name })
 	return d
+}
+
+// resultType renders one method's result type. An ordinary method is its single
+// result struct; a method registered as a union (appwire.MethodResultArms) is
+// the union over its arm names, with every arm registered so each gets its own
+// field table — the union type itself carries no fields of its own to document.
+func resultType(register func(any) string, m appwire.MethodSpec) string {
+	arms, union := appwire.MethodResultArms[m.Name]
+	if !union {
+		return register(m.Result)
+	}
+	names := make([]string, 0, len(arms))
+	for _, arm := range arms {
+		names = append(names, register(arm))
+	}
+	return strings.Join(names, " | ")
 }
 
 func registerType(typeNames map[string]typeView, v any) string {

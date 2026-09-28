@@ -39,6 +39,12 @@ type LiveEntry struct {
 	// A card carries the full literal denied path for informed consent, so it
 	// reaches human clients only, as thread/read's cards already do.
 	PendingEscalations []appwire.SandboxEscalationRequested
+	// PendingQuestion is the first question of the daemon's pending ask
+	// (S1b), from the same root row as PendingAsk; nil while none waits and
+	// from a daemon that predates it. A row names it only while PendingAsk is
+	// set, and rosterFingerprint hashes it: a question answered and another
+	// asked between two probes leaves PendingAsk and Status where they were.
+	PendingQuestion *appwire.PendingQuestion
 	// Capabilities mirrors the daemon's own Evener capability set from the
 	// probe that produced this entry, so list projections can advertise the
 	// daemon's answer instead of a hand approximation (#1840's one-answer
@@ -100,6 +106,11 @@ type LiveEntry struct {
 	// renders on the row's last line and Subagents chip, so rosterFingerprint
 	// hashes it; the counts move only when a subagent's run starts or ends.
 	Subagents appwire.SubagentTally
+	// LastTurnEndedAt is when the session's last turn ended, stamped by its
+	// daemon at the turn boundary (S4). It decides Finished versus Idle against
+	// the hub's seen marker, so rosterFingerprint hashes it: a turn that starts
+	// and ends between two probes leaves Status unchanged and moves only this.
+	LastTurnEndedAt time.Time
 }
 
 // ProbeResult is the dynamic session state returned by a daemon liveness probe.
@@ -112,6 +123,9 @@ type ProbeResult struct {
 	// PendingEscalations mirrors LiveEntry.PendingEscalations: the blocked
 	// cards from the same root row, in raise order.
 	PendingEscalations []appwire.SandboxEscalationRequested
+	// PendingQuestion mirrors LiveEntry.PendingQuestion: the first pending
+	// question from the same root row as PendingAsk (S1b).
+	PendingQuestion *appwire.PendingQuestion
 	// Capabilities is the daemon's own Evener capability set from the same
 	// projection cut as Status. CapabilitiesKnown reports whether this probe
 	// read one: a failed, protocol-mismatched, or legacy probe leaves the set
@@ -139,6 +153,9 @@ type ProbeResult struct {
 	// Subagents is the listed root's whole-tree subagent tally (S3); zero from
 	// a daemon that predates it and for a tree with no subagent.
 	Subagents appwire.SubagentTally
+	// LastTurnEndedAt is when the listed root's last turn ended (S4); zero from
+	// a daemon that predates it, or before any turn has ended.
+	LastTurnEndedAt time.Time
 	// ProtocolMismatch: the endpoint answered, but as a daemon this hub cannot
 	// talk to (restart required). Such an answer names no session of its own,
 	// so it does not vouch for the entry's PID the way a bound answer does.
@@ -191,6 +208,7 @@ func CloneLiveEntry(in LiveEntry) LiveEntry {
 	out := in
 	out.ActiveFlags = append([]string(nil), in.ActiveFlags...)
 	out.PendingEscalations = append([]appwire.SandboxEscalationRequested(nil), in.PendingEscalations...)
+	out.PendingQuestion = appwire.ClonePendingQuestion(in.PendingQuestion)
 	out.RunningSubagentIDs = append([]string(nil), in.RunningSubagentIDs...)
 	out.RunningSubagentStates = cloneSubagentStates(in.RunningSubagentStates)
 	out.RunningJobs = cloneRunningJobs(in.RunningJobs)
@@ -459,6 +477,19 @@ func rosterFingerprint(bySess map[string]LiveEntry) uint64 {
 			_, _ = h.Write([]byte{0})
 		}
 		_, _ = h.Write([]byte{0})
+		// A row names the first pending question, and a question answered and
+		// another asked between two probes holds the ask flag and the status
+		// still (S1b).
+		if question := bySess[id].PendingQuestion; question != nil {
+			_, _ = h.Write([]byte(question.Question))
+			_, _ = h.Write([]byte{0})
+			for _, label := range question.Options {
+				_, _ = h.Write([]byte(label))
+				_, _ = h.Write([]byte{0})
+			}
+			_, _ = h.Write([]byte(strconv.Itoa(question.Count)))
+		}
+		_, _ = h.Write([]byte{0})
 		// The daemon's capability answer is per-session observable state in
 		// the same sense the status is: bits fold daemon state the status
 		// string itself does not (Clear folds the clear-blocked reason, Send
@@ -572,6 +603,10 @@ func rosterFingerprint(bySess map[string]LiveEntry) uint64 {
 			_, _ = h.Write([]byte(strconv.Itoa(count)))
 			_, _ = h.Write([]byte{0})
 		}
+		_, _ = h.Write([]byte{0})
+		// A turn that starts and ends between two probes leaves Status where it
+		// was and moves only this, and it turns the row Finished (S4).
+		_, _ = h.Write([]byte(strconv.FormatInt(UnixMilliseconds(bySess[id].LastTurnEndedAt), 10)))
 	}
 	return h.Sum64()
 }
@@ -1120,6 +1155,26 @@ func (r *Roster) IsSubagentActive(sessionID string) bool {
 	return live
 }
 
+// RestartRequired reports whether any live daemon on this roster needs a
+// restart (an incompatible build: thread status restart-required). It is the
+// direct local scan evener/host/running's health predicate evaluates — under
+// the roster's read lock, without List's per-entry clones and sort — and never
+// the authenticated-probe path (restartRequiredDaemon), which dials and
+// verifies ownership.
+func (r *Roster) RestartRequired() bool {
+	if r == nil {
+		return false
+	}
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	for _, entry := range r.byPID {
+		if !entry.Crashed && entry.Status == appwire.ThreadStatusRestartRequired {
+			return true
+		}
+	}
+	return false
+}
+
 // SubagentState resolves a running in-process child's own projected status.
 // live is true when a live parent daemon currently lists the child (it is
 // non-closed and resumable); the returned state is the child's own reported
@@ -1361,6 +1416,7 @@ func liveEntryFromProbe(e rendezvous.Entry, result ProbeResult) LiveEntry {
 		PendingAsk:            result.PendingAsk,
 		PendingEscalation:     result.PendingEscalation,
 		PendingEscalations:    result.PendingEscalations,
+		PendingQuestion:       result.PendingQuestion,
 		Capabilities:          result.Capabilities,
 		CapabilitiesKnown:     result.CapabilitiesKnown,
 		RunningSubagentIDs:    result.RunningSubagentIDs,
@@ -1374,6 +1430,7 @@ func liveEntryFromProbe(e rendezvous.Entry, result ProbeResult) LiveEntry {
 		Tasks:                 result.Tasks,
 		Activity:              result.Activity,
 		Subagents:             result.Subagents,
+		LastTurnEndedAt:       result.LastTurnEndedAt,
 	})
 }
 
@@ -1437,6 +1494,7 @@ func (r *Roster) ReadSpawnedThread(ctx context.Context, entry rendezvous.Entry, 
 		ActiveFlags: append([]string(nil), root.Status.ActiveFlags...),
 		PendingAsk:  root.Evener.AskPending, PendingEscalation: len(root.Evener.PendingEscalations) > 0,
 		PendingEscalations: root.Evener.PendingEscalations,
+		PendingQuestion:    root.Evener.PendingQuestion,
 		RunningJobs:        runningJobs, CompletedJobs: completedJobs,
 		Watches: diagnosticsWatches(root.Evener.Diagnostics),
 		Tasks:   root.Evener.Tasks,

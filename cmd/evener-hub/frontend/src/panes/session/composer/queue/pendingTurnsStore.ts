@@ -1,7 +1,6 @@
 import {
   awaitingFirstFrameSend,
   createMutationProjectionFence,
-  createMutationProjectionWorkTracker,
   createPendingTurnsStore,
   createSubmissionRunner,
   type MutationPersistencePort,
@@ -9,7 +8,6 @@ import {
   type PendingTurnsDraftPort,
   type PendingTurnsThreadsPort,
   recoveryEntries,
-  replaceTargetRecords,
   wireMutationCommitFeed,
 } from "@evener/appwire-client/state/mutation";
 import { useCallback, useEffect, useMemo, useRef, useSyncExternalStore } from "react";
@@ -20,6 +18,7 @@ import type {
   MutationOutboxRecord,
   MutationRecoveryRecord,
 } from "../../../../stores/mutationOutbox";
+import { clearProjectionWorkForTests, trackProjectionWork } from "../../../../stores/projectionWork";
 import {
   type ComposerMutationRoute,
   discardRecoveryMutation,
@@ -42,8 +41,9 @@ export type { PendingMethod, PendingTurnEntry } from "./pendingReconcile";
 // (`@evener/appwire-client/state/mutation`); this module is the web's one
 // instance, bound to the browser's thread store, composer-draft storage and
 // client identity through the three ports the core takes. Every durable-read
-// op below (the generation fencing, IndexedDB reads, settle tracking) stays
-// here: it is genuinely web-specific, not part of what moved.
+// op below (the generation fencing and IndexedDB reads) stays here: it is
+// genuinely web-specific, not part of what moved. The work they start is
+// counted by the stores' projection work tracker (stores/projectionWork.ts).
 const threadsPort: PendingTurnsThreadsPort = {
   getThreadModel: (ref) => threadsStore.getState().threads.get(ref),
 };
@@ -64,52 +64,9 @@ const pendingTurnsStore = createPendingTurnsStore<MutationAttachment>({
 const projectionFence = createMutationProjectionFence<MutationAttachment>();
 const persistencePort: MutationPersistencePort<MutationAttachment> = { read: readMutationPersistence };
 
-// Every durable projection operation below is registered with this tracker
-// while it runs. The work is the mutation runtime's start plus real IndexedDB
-// reads and writes, so its wall time scales with machine load - a
-// mount-to-activation latency of 124-1246ms was measured for the Composer's
-// own path (kata 3c7t). That leaves a test with nothing to await but the
-// operation itself: polling its side effects against a fixed window is a
-// race, not an assertion. The stall tripwire and the macrotask yield the
-// tracker settles through are the package's; this binds them to the
-// browser's own timers and a MessageChannel hop.
-const projectionWorkTracker = createMutationProjectionWorkTracker({
-  setTimeout: (callback, milliseconds) => setTimeout(callback, milliseconds),
-  clearTimeout: (timerId) => clearTimeout(timerId),
-  yieldMacrotask: () =>
-    new Promise<void>((resolve) => {
-      const hop = new MessageChannel();
-      hop.port1.onmessage = () => {
-        hop.port1.close();
-        resolve();
-      };
-      hop.port2.postMessage(undefined);
-    }),
-});
-
-// A caller that starts durable work outside the paths in this file must
-// register it here from the moment it starts. The refreshes a commit starts
-// register only once its write lands, so until then a flush finds nothing
-// outstanding and declares the projection settled with the write in flight -
-// the window submitWithPendingTracking avoids by tracking its whole duration
-// (kata 3p22). Composer registers its Stop button and its typed built-ins,
-// which can enqueue straight through the threads store; issue #2571 lists the
-// callers that do not register yet.
-export function trackProjectionWork<T>(work: Promise<T>): Promise<T> {
-  return projectionWorkTracker.track(work);
-}
-
 // The fire-and-forget refresh port both the commit feed and the submission
 // runner take, bound once here rather than written inline at each site.
 const refreshTarget: (ref?: string) => void = (ref) => void refreshPendingTurnsProjection(ref);
-
-// Awaits whatever projection work is outstanding right now and reports how
-// much that was. Callers repeat until it reports zero, flushing React in
-// between: the components start this work from effects, so only a flush can
-// reveal whether anything is left.
-export async function settlePendingTurnsProjectionForTests(): Promise<number> {
-  return projectionWorkTracker.settle();
-}
 
 export function refreshPendingTurnsProjection(ref?: string): Promise<boolean> {
   return trackProjectionWork(readProjectionIntoStore(ref));
@@ -130,12 +87,7 @@ async function readProjectionIntoStore(ref?: string): Promise<boolean> {
   // apply() re-decides the accepted targets right here, not at refresh()'s
   // resolution: a live commit's advance() for one of them can land in
   // between, and it must still out-rank this snapshot for that target.
-  const targets = accepted.apply();
-  pendingTurnsStore.setState((state) => ({
-    outbox: replaceTargetRecords(state.outbox, targets, snapshot.outbox),
-    optimistic: replaceTargetRecords(state.optimistic, targets, snapshot.optimistic),
-    recovery: replaceTargetRecords(state.recovery, targets, snapshot.recovery),
-  }));
+  pendingTurnsStore.projectSnapshot(accepted.apply(), snapshot);
   return true;
 }
 
@@ -429,7 +381,7 @@ export function resetPendingTurnsStoreForTests(): void {
   projectionFence.reset();
   // The epoch bump already voids anything still running against the previous
   // test's storage, so it is not this test's projection work to wait for.
-  projectionWorkTracker.clear();
+  clearProjectionWorkForTests();
   pendingTurnsStore.setState({
     outbox: new Map(),
     optimistic: new Map(),

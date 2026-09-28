@@ -94,7 +94,7 @@ no router (reserved).
 | `thread/turns/items/list` | unimplemented | `ThreadTurnItemsListParams` | `ThreadTurnItemsListResponse` | Codex-parity: paginated items for one turn. Experimental even in Codex (returns method-not-supported) and served by no evener router. |
 | `thread/start` | hub | `ThreadStartParams` | `ThreadStartResponse` | Starts a new thread and attaches a live-update relay. |
 | `thread/resume` | hub | `ThreadResumeParams` | `ThreadResumeResponse` | Resumes an existing session and attaches its relay. |
-| `thread/fork` | hub | `ThreadForkParams` | `ThreadForkResponse` | Forks a thread from a source turn, either replacing the turn with edited input or deferring the original input back to the client for editing (deferInput, mutually exclusive with editedInput). With `aside: true` (local evener threads only; mutually exclusive with sourceTurnId/editedInput/deferInput/label), forks the session at its tip into a side thread that inherits the parent's permissions and config. |
+| `thread/fork` | hub | `ThreadForkParams` | `ThreadForkResponse` | Forks a thread from a source item (sourceItemKey), either replacing the turn with edited input or deferring the original input back to the client for editing (deferInput, mutually exclusive with editedInput). With `aside: true` (local evener threads only; mutually exclusive with sourceItemKey/editedInput/deferInput/label), forks the session at its tip into a side thread that inherits the parent's permissions and config. |
 | `thread/clear` | both | `ThreadClearParams` | `ThreadClearResponse` | Clears the thread's conversation when no turn, queued, or approval work is unresolved. |
 | `thread/model/set` | both | `ThreadModelSetParams` | `EmptyResponse` | Changes the session's model/provider. |
 | `evener/thread/name/set` | both | `ThreadNameSetParams` | `EmptyResponse` | Sets a user-chosen session title (rename). |
@@ -137,6 +137,7 @@ no router (reserved).
 | `evener/pin-section/delete` | hub | `PinSectionDeleteParams` | `PinSectionDeleteResponse` | Deletes a named pin section and returns its removed membership and committed navigation receipt. |
 | `evener/session-pin/assign` | hub | `SessionPinAssignParams` | `SessionPinAssignResponse` | Assigns a top-level session to a named pin section and returns the canonical assignment and committed navigation receipt. |
 | `evener/session-pin/unpin` | hub | `SessionPinUnpinParams` | `SessionPinUnpinResponse` | Removes a top-level session's named pin assignment and returns its committed navigation receipt. |
+| `evener/session/seen/set` | hub | `SessionSeenSetParams` | `SessionSeenSetResponse` | Marks sessions seen through a turn end, or unread, on the hub (S4), and returns the committed navigation receipt. Live rows then carry unseen from the hub's marker. |
 | `evener/search` | hub | `SearchParams` | `SearchResponse` | Searches live and persisted sessions for the hub command palette. |
 | `evener/activity/read` | hub | `ActivityReadParams` | `ActivityReadResponse` | Reads the pulse meter (seven one-minute activity counts over the whole tree), running subagents and quiet time of the hub's live top-level sessions and its attached hosts' (S5). A client polls it while a Board or session is on screen; it is never part of navigation. |
 | `evener/harnesses/list` | hub | `HarnessListParams` | `HarnessListResponse` | Lists available harness descriptors. |
@@ -195,11 +196,17 @@ no router (reserved).
 | `evener/sandbox/escalation/resolve` | both | `SandboxEscalationResolveParams` | `EmptyResponse` | Delivers a human's approve/deny decision for a pending sandbox-exemption escalation (M7); the daemon unblocks the waiting tool-exec goroutine, the hub relays. |
 | `evener/host/request` | hub | `HostRequestParams` | `HostForwardedResult` | Forwards one hub-scoped admin RPC to a named remote host's hub through the allow-listed proxy (component 07a); the result is the forwarded method's own result, verbatim — an opaque JSON object, not a wrapper, so a typed client must treat the result as unknown and cast it to the forwarded method's own result type (see HostForwardedResult). |
 | `evener/host/attach` | hub | `HostAttachParams` | `HostAttachResponse` | Explicitly attaches one configured remote host by name through the Ensure-backed dialing seam (component 06's Connect action); a mutation and the only browser-reachable attach trigger, idempotent while attached, returning the host's post-attach state. |
-| `evener/host/add` | hub | `HostAddParams` | `HostRow` | Registers one host entry (its full entry: name, ssh address, user, key path, and the host's paths and roots) into the machine-managed hub.toml; validates like hub.toml loading and refuses a name the live set already holds. |
+| `evener/host/add` | hub | `HostAddParams` | `HostMutationCommitted \| HostMutationCommittedRemoved \| HostMutationTeardownFailure \| HostMutationTeardownFailureRemoved \| HostMutationCollisionDropped \| HostMutationAmbiguous` | Registers one host entry (its full entry: name, ssh address, user, key path, and the host's paths and roots) into the machine-managed hub.toml; validates like hub.toml loading and refuses a name the live set already holds. Result is the mutation-result union: committed, committed-with-teardown-failure, collision-dropped, or the keyless-add ambiguous arm. |
 | `evener/host/list` | hub | `EmptyParams` | `HostListResponse` | Lists every known host with truthful online state; never dials — attached rows read the live channel, offline rows render last-known state. |
 | `evener/host/status` | hub | `HostStatusParams` | `HostStatusResponse` | Returns one host's list row for a single named host; never dials. |
-| `evener/host/remove` | hub | `HostRemoveParams` | `HostRemoveResponse` | Deregisters one live host entry, stopping its supervisor and dropping its channel; every live host is removable here. |
-| `evener/host/update` | hub | `HostUpdateParams` | `HostUpdateResponse` | Edits one live host entry in place (every field but the name; the name is the target) and retires the host's channel with the identity it replaced; the edit is written into the machine-managed hub.toml. |
+| `evener/host/remove` | hub | `HostRemoveParams` | `HostMutationCommitted \| HostMutationCommittedRemoved \| HostMutationTeardownFailure \| HostMutationTeardownFailureRemoved \| HostMutationCollisionDropped \| HostMutationAmbiguous` | Deregisters one live host entry, stopping its supervisor and dropping its channel; every live host is removable here. Result is the mutation-result union, whose committed and teardown-failure arms carry the dedicated removed row. |
+| `evener/host/update` | hub | `HostUpdateParams` | `HostMutationCommitted \| HostMutationCommittedRemoved \| HostMutationTeardownFailure \| HostMutationTeardownFailureRemoved \| HostMutationCollisionDropped \| HostMutationAmbiguous` | Edits one live host entry in place (every field but the name; the name is the target) and retires the host's channel with the identity it replaced; the edit is written into the machine-managed hub.toml. Result is the mutation-result union. |
+| `evener/host/teardown-retry` | hub | `HostTeardownRetryParams` | `HostTeardownRetryCompleteLive \| HostTeardownRetryCompleteRemoved \| HostTeardownRetryClearedLive \| HostTeardownRetryClearedRemoved \| HostTeardownRetryFailedLive \| HostTeardownRetryFailedRemoved` | Resumes one named teardown remnant by its opaque id: gate first, claim under the mutation lock, the pinned teardown run to completion with a bounded deadline, then finalization from the observed result. Result is the six-arm outcome x hostKind union; an unknown or purged id is the typed teardown-unknown-key refusal. |
+| `evener/host/teardown-recover` | hub | `HostTeardownRecoverParams` | `HostTeardownRecoverResult` | Clears an open remnant whose pinned target is unresolvable, on an authenticated operator's audited teardown-verified-absent attestation: gate first, the safety checks immediately before the clearing write, the attestation recorded on the original receipt beside remnantResolvedAt, and a typed resolved-remnant record persisted in the same atomic write. |
+| `evener/host/plan` | hub | `HostPlanParams` | `HostPlanPlanned \| HostPlanNoToken` | Plans one deploy against a named host and mints the single-use confirmation token evener/host/deploy consumes: refreshes the host's preflight facts without a gate, probes its running state, and answers with either the plan plus token (HostPlanPlanned) or the no-token arm (HostPlanNoToken) naming why nothing was minted and whether the refusal is terminal. |
+| `evener/host/deploy` | hub | `HostDeployParams` | `HostDeployResponse` | Consumes a plan's confirmation token and starts the deploy operation it names: dedup-first on the client operation ID, then the token's single-use consume under the host gate after the running probe and under-gate re-resolution, and a durable pending operation record whose worker runs the 04b deploy path outside the RPC. |
+| `evener/host/restart` | hub | `HostRestartParams` | `HostRestartResponse` | Starts a restart operation for one named host: dedup on the client operation ID and the intended (generation, incarnation id) pair, the gated under-gate re-resolution and terminal-operation scan, then a durable pending operation record whose worker runs the 04b restart path outside the RPC. |
+| `evener/host/running` | hub | `HostRunningParams` | `HostRunningResponse` | Serves one hub's own running build revision and authoritative health to the controller probing it over an attached session, presenting the caller's required fencing epoch: process start time is present exactly when the hub knows it, and healthy reflects the local restart-required predicate, the owner-set minimum-free-space knob, and the state-root write probe. |
 | `evener/host/pushCredentials` | hub | `HostPushCredentialsParams` | `HostPushCredentialsResponse` | Copies the controller's local provider-instance keys to one named remote host (component 07c): each local store key is joined to the host's own instance by name (the lookup folds case), and the HOST's own spelling of the matched entry is what travels as Provider to evener/auth/status and evener/auth/apiKey/conditionalSet, the host classifies and writes its own store, and each entry reports added/updated/skipped/failed. |
 | `evener/session/image` | hub | `SessionImageParams` | `SessionImageResponse` | Fetches one image out of the recipient hub's own local session state for the controller's host-qualified image routes (component 05): SHA addresses a replayed transcript image and Path a session-relative file inside the session's working directory; the sha branch enforces the 8 MiB bound while scanning, and the media type is re-derived from the bytes. Never an HTTP route. |
 
@@ -218,17 +225,8 @@ Pushed to subscribed connections; no `id`. The web client maps these in
 | `thread/model/changed` | `ThreadModelChangedParams` | The session's model/provider changed mid-session (thread/model/set or an equivalent switch). |
 | `thread/reasoning-effort/changed` | `ThreadReasoningEffortChangedParams` | The session's reasoning effort changed mid-session (thread/reasoning-effort/set). |
 | `thread/vision-model/changed` | `ThreadVisionModelChangedParams` | The session's vision side-channel routing changed mid-session (thread/vision-model/set). |
-| `turn/started` | `TurnStartedParams` | A new turn began (inProgress). |
-| `turn/completed` | `TurnCompletedParams` | A turn reached a terminal state (completed/failed/interrupted). |
-| `item/started` | `ItemLifecycleParams` | A thread item began streaming. |
-| `item/completed` | `ItemLifecycleParams` | A thread item finished. |
-| `item/agentMessage/delta` | `AgentMessageDeltaParams` | Incremental assistant-message text chunk for an item. |
-| `item/agentMessage/reset` | `AgentMessageResetParams` | Discard the in-progress streamed item (assistant or reasoning — a retry replaces it). |
-| `item/reasoning/summaryTextDelta` | `ReasoningSummaryDeltaParams` | Incremental reasoning-summary text chunk for a reasoning item. |
-| `item/toolOutput/delta` | `ToolOutputDeltaParams` | Incremental tool-output chunk for a tool-call item. |
 | `warning` | `WarningParams` | Non-fatal diagnostic. Also used for cancelled turns and relay-attach failures. |
 | `evener/thread/modelRetry` | `ThreadModelRetryParams` | A model call failed with a retryable error and will be retried after a wait. Ephemeral liveness state, not a thread item. |
-| `evener/steering/injected` | `EvenerSteeringInjectedParams` | A steering message was injected into the active turn. |
 | `evener/job/started` | `EvenerJobParams` | A background job started. |
 | `evener/job/finished` | `EvenerJobParams` | A background job finished; the job carries status/reason/exitCode/output. |
 | `evener/delegate/updated` | `EvenerDelegateParams` | A stable delegate projection changed. |
@@ -250,6 +248,11 @@ Pushed to subscribed connections; no `id`. The web client maps these in
 | `evener/settings/keybindings/changed` | `KeybindingsOverrides` | Broadcast after the user keybinding overrides change; carries the revision and canonical rules. |
 | `evener/settings/agentsDoc/changed` | `AgentsDocResponse` | Broadcast after the personal AGENTS.md is written; carries the new path, existence, and content. |
 | `evener/host/notification` | `HostNotificationParams` | Re-emits one host-owned config notification to the controller's browser clients tagged with the source host (component 07a); local notifications keep their unwrapped methods. This is the Go-side fan-out contract: the client-side unwrapping into host-scoped stores is component 07b, and no Go-side consumer exists here. |
+| `history/updated` | `HistoryUpdatedParams` | The full current form of every item and turn whose recorded entries changed. |
+| `overlay/upserted` | `OverlayUpsertedParams` | One overlay item (a stream, preview, running tool, or notice) was created or replaced. |
+| `overlay/delta` | `OverlayDeltaParams` | An incremental chunk appended to one overlay item's text or output. |
+| `overlay/reset` | `OverlayResetParams` | Discard a stream's in-progress overlay item; a retry replaces it. |
+| `overlay/end` | `OverlayEndParams` | A round's overlay state is final and about to be replaced by recorded history. |
 
 ## Type reference
 
@@ -269,27 +272,6 @@ An embedded type contributes its own fields inline.
 | Field | Go type | Omitempty | Embedded |
 |-------|---------|-----------|----------|
 | `sessions` | `[]appwire.SessionActivity` |  |  |
-
-
-### `AgentMessageDeltaParams`
-
-| Field | Go type | Omitempty | Embedded |
-|-------|---------|-----------|----------|
-| `threadId` | `string` |  |  |
-| `ref` | `string` |  |  |
-| `turnId` | `string` |  |  |
-| `itemId` | `string` |  |  |
-| `delta` | `string` |  |  |
-
-
-### `AgentMessageResetParams`
-
-| Field | Go type | Omitempty | Embedded |
-|-------|---------|-----------|----------|
-| `threadId` | `string` |  |  |
-| `ref` | `string` |  |  |
-| `turnId` | `string` |  |  |
-| `itemId` | `string` |  |  |
 
 
 ### `AgentsDocResponse`
@@ -700,20 +682,6 @@ _(no fields)_
 | `layer` | `string` |  |  |
 
 
-### `EvenerSteeringInjectedParams`
-
-| Field | Go type | Omitempty | Embedded |
-|-------|---------|-----------|----------|
-| `startedAt` | `*int64` | yes |  |
-| `threadId` | `string` |  |  |
-| `ref` | `string` |  |  |
-| `text` | `string` | yes |  |
-| `images` | `[]appwire.InputItem` | yes |  |
-| `source` | `string` | yes |  |
-| `kind` | `string` | yes |  |
-| `clientMutationId` | `string` | yes |  |
-
-
 ### `EvenerSubagentPreviewParams`
 
 | Field | Go type | Omitempty | Embedded |
@@ -801,11 +769,25 @@ _(no fields)_
 | `data` | `[]appwire.HarnessDescriptor` |  |  |
 
 
+### `HistoryUpdatedParams`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `threadId` | `string` |  |  |
+| `ref` | `string` |  |  |
+| `bootGeneration` | `string` |  |  |
+| `epoch` | `uint64` |  |  |
+| `snapshot` | `appwire.SnapshotIdentity` |  |  |
+| `turns` | `[]appwire.Turn` | yes |  |
+| `items` | `[]appwire.ThreadItem` | yes |  |
+
+
 ### `HostAddParams`
 
 | Field | Go type | Omitempty | Embedded |
 |-------|---------|-----------|----------|
 | `entry` | `appwire.HostEntry` |  |  |
+| `mutationId` | `string` | yes |  |
 
 
 ### `HostAttachParams`
@@ -839,6 +821,24 @@ _(no fields)_
 | `reason` | `string` | yes |  |
 
 
+### `HostDeployParams`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `name` | `string` |  |  |
+| `token` | `string` |  |  |
+| `operationId` | `string` |  |  |
+
+
+### `HostDeployResponse`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `id` | `string` |  |  |
+| `clientOperationId` | `string` |  |  |
+| `state` | `appwire.OperationState` |  |  |
+
+
 ### `HostEntry`
 
 | Field | Go type | Omitempty | Embedded |
@@ -865,6 +865,61 @@ _(no fields)_
 | `hosts` | `[]appwire.HostRow` |  |  |
 
 
+### `HostMutationAmbiguous`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `outcome` | `string` |  |  |
+| `observedRow` | `appwire.HostRow` |  |  |
+
+
+### `HostMutationCollisionDropped`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `outcome` | `string` |  |  |
+| `droppedEntry` | `appwire.HostRow` |  |  |
+| `winningFingerprint` | `string` |  |  |
+| `host` | `*appwire.HostRow` | yes |  |
+| `removed` | `bool` | yes |  |
+
+
+### `HostMutationCommitted`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `outcome` | `string` |  |  |
+| `host` | `appwire.HostRow` |  |  |
+
+
+### `HostMutationCommittedRemoved`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `outcome` | `string` |  |  |
+| `host` | `appwire.RemovedRow` |  |  |
+
+
+### `HostMutationTeardownFailure`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `outcome` | `string` |  |  |
+| `seam` | `string` |  |  |
+| `remnantId` | `string` |  |  |
+| `host` | `appwire.HostRow` |  |  |
+
+
+### `HostMutationTeardownFailureRemoved`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `outcome` | `string` |  |  |
+| `seam` | `string` |  |  |
+| `remnantId` | `string` |  |  |
+| `host` | `appwire.RemovedRow` |  |  |
+
+
 ### `HostNotificationParams`
 
 | Field | Go type | Omitempty | Embedded |
@@ -872,6 +927,59 @@ _(no fields)_
 | `host` | `string` |  |  |
 | `method` | `string` |  |  |
 | `params` | `jsontext.Value` | yes |  |
+
+
+### `HostPlan`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `host` | `string` |  |  |
+| `generation` | `uint64` |  |  |
+| `targetPath` | `string` |  |  |
+| `controllerRevision` | `string` |  |  |
+| `restartFollows` | `bool` |  |  |
+| `factsRevision` | `string` |  |  |
+| `hubTomlFingerprint` | `string` |  |  |
+| `factsCapturedAt` | `string` |  |  |
+| `factsAgeSec` | `int64` |  |  |
+| `runningVersion` | `string` |  |  |
+| `runningHealthy` | `bool` |  |  |
+| `runningProcessStartTime` | `string` | yes |  |
+
+
+### `HostPlanNoToken`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `outcome` | `string` |  |  |
+| `staleFacts` | `appwire.HostPlanStaleFacts` |  |  |
+| `terminal` | `bool` |  |  |
+| `remnantId` | `string` | yes |  |
+
+
+### `HostPlanParams`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `name` | `string` |  |  |
+
+
+### `HostPlanPlanned`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `outcome` | `string` |  |  |
+| `plan` | `appwire.HostPlan` |  |  |
+| `token` | `string` |  |  |
+
+
+### `HostPlanStaleFacts`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `message` | `string` |  |  |
+| `attached` | `bool` |  |  |
+| `reason` | `string` |  |  |
 
 
 ### `HostPushCredentialsParams`
@@ -894,13 +1002,9 @@ _(no fields)_
 | Field | Go type | Omitempty | Embedded |
 |-------|---------|-----------|----------|
 | `name` | `string` |  |  |
-
-
-### `HostRemoveResponse`
-
-| Field | Go type | Omitempty | Embedded |
-|-------|---------|-----------|----------|
-| `host` | `appwire.HostRow` |  |  |
+| `mutationId` | `string` |  |  |
+| `expectedGeneration` | `uint64` |  |  |
+| `expectedIncarnationId` | `string` |  |  |
 
 
 ### `HostRequestParams`
@@ -910,6 +1014,25 @@ _(no fields)_
 | `host` | `string` |  |  |
 | `method` | `string` |  |  |
 | `params` | `jsontext.Value` | yes |  |
+
+
+### `HostRestartParams`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `name` | `string` |  |  |
+| `operationId` | `string` |  |  |
+| `generation` | `uint64` |  |  |
+| `incarnationId` | `string` |  |  |
+
+
+### `HostRestartResponse`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `id` | `string` |  |  |
+| `clientOperationId` | `string` |  |  |
+| `state` | `appwire.OperationState` |  |  |
 
 
 ### `HostRow`
@@ -925,6 +1048,8 @@ _(no fields)_
 | `addr` | `string` | yes |  |
 | `roots` | `[]string` | yes |  |
 | `origin` | `string` |  |  |
+| `generation` | `uint64` |  |  |
+| `incarnationId` | `string` |  |  |
 | `attached` | `bool` |  |  |
 | `serverName` | `string` | yes |  |
 | `serverVersion` | `string` | yes |  |
@@ -934,6 +1059,26 @@ _(no fields)_
 | `lastAttachError` | `string` | yes |  |
 | `midAttach` | `bool` |  |  |
 | `removed` | `bool` |  |  |
+| `retainedRows` | `*int` | yes |  |
+| `rowsTruncated` | `bool` | yes |  |
+| `openRemnantId` | `string` | yes |  |
+| `escalationAgeSec` | `*int64` | yes |  |
+
+
+### `HostRunningParams`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `fencingEpoch` | `appwire.FencingEpoch` |  |  |
+
+
+### `HostRunningResponse`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `buildRevision` | `string` |  |  |
+| `healthy` | `bool` |  |  |
+| `processStartTime` | `string` | yes |  |
 
 
 ### `HostStatusParams`
@@ -950,19 +1095,118 @@ _(no fields)_
 | `host` | `appwire.HostRow` |  |  |
 
 
+### `HostTeardownAttestation`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `operator` | `string` |  |  |
+| `statement` | `string` |  |  |
+| `observedAt` | `string` |  |  |
+
+
+### `HostTeardownRecoverParams`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `remnantId` | `string` |  |  |
+| `attestation` | `appwire.HostTeardownAttestation` |  |  |
+
+
+### `HostTeardownRecoverResult`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `outcome` | `string` |  |  |
+| `remnantId` | `string` |  |  |
+| `clearedName` | `string` |  |  |
+| `clearedAt` | `string` |  |  |
+| `hostKind` | `string` |  |  |
+
+
+### `HostTeardownRetryClearedLive`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `outcome` | `string` |  |  |
+| `hostKind` | `string` |  |  |
+| `host` | `appwire.HostRow` |  |  |
+| `remnantId` | `string` |  |  |
+| `escalationAgeSec` | `*int64` | yes |  |
+
+
+### `HostTeardownRetryClearedRemoved`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `outcome` | `string` |  |  |
+| `hostKind` | `string` |  |  |
+| `host` | `appwire.RemovedRow` |  |  |
+| `remnantId` | `string` |  |  |
+| `escalationAgeSec` | `*int64` | yes |  |
+
+
+### `HostTeardownRetryCompleteLive`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `outcome` | `string` |  |  |
+| `hostKind` | `string` |  |  |
+| `host` | `appwire.HostRow` |  |  |
+| `remnantId` | `string` |  |  |
+| `escalationAgeSec` | `*int64` | yes |  |
+
+
+### `HostTeardownRetryCompleteRemoved`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `outcome` | `string` |  |  |
+| `hostKind` | `string` |  |  |
+| `host` | `appwire.RemovedRow` |  |  |
+| `remnantId` | `string` |  |  |
+| `escalationAgeSec` | `*int64` | yes |  |
+
+
+### `HostTeardownRetryFailedLive`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `outcome` | `string` |  |  |
+| `hostKind` | `string` |  |  |
+| `host` | `appwire.HostRow` |  |  |
+| `remnantId` | `string` |  |  |
+| `seam` | `string` |  |  |
+| `escalationAgeSec` | `*int64` | yes |  |
+
+
+### `HostTeardownRetryFailedRemoved`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `outcome` | `string` |  |  |
+| `hostKind` | `string` |  |  |
+| `host` | `appwire.RemovedRow` |  |  |
+| `remnantId` | `string` |  |  |
+| `seam` | `string` |  |  |
+| `escalationAgeSec` | `*int64` | yes |  |
+
+
+### `HostTeardownRetryParams`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `remnantId` | `string` |  |  |
+
+
 ### `HostUpdateParams`
 
 | Field | Go type | Omitempty | Embedded |
 |-------|---------|-----------|----------|
 | `name` | `string` |  |  |
 | `entry` | `appwire.HostEntry` |  |  |
-
-
-### `HostUpdateResponse`
-
-| Field | Go type | Omitempty | Embedded |
-|-------|---------|-----------|----------|
-| `host` | `appwire.HostRow` |  |  |
+| `mutationId` | `string` |  |  |
+| `expectedGeneration` | `uint64` |  |  |
+| `expectedIncarnationId` | `string` |  |  |
 
 
 ### `InitializeParams`
@@ -1105,17 +1349,6 @@ _(no fields)_
 | `model` | `string` |  |  |
 | `disabled` | `bool` |  |  |
 | `originClientId` | `string` | yes |  |
-
-
-### `ItemLifecycleParams`
-
-| Field | Go type | Omitempty | Embedded |
-|-------|---------|-----------|----------|
-| `threadId` | `string` |  |  |
-| `ref` | `string` |  |  |
-| `turnId` | `string` |  |  |
-| `item` | `appwire.ThreadItem` |  |  |
-| `failedToolCalls` | `*int` | yes |  |
 
 
 ### `JobActivityBranchState`
@@ -1560,6 +1793,44 @@ _(no fields)_
 | `agentNote` | `string` | yes |  |
 
 
+### `OverlayDeltaParams`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `threadId` | `string` |  |  |
+| `ref` | `string` |  |  |
+| `key` | `string` |  |  |
+| `field` | `appwire.OverlayDeltaField` |  |  |
+| `delta` | `string` |  |  |
+
+
+### `OverlayEndParams`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `threadId` | `string` |  |  |
+| `ref` | `string` |  |  |
+| `roundId` | `string` |  |  |
+
+
+### `OverlayResetParams`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `threadId` | `string` |  |  |
+| `ref` | `string` |  |  |
+| `streamId` | `string` |  |  |
+
+
+### `OverlayUpsertedParams`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `threadId` | `string` |  |  |
+| `ref` | `string` |  |  |
+| `item` | `appwire.OverlayItem` |  |  |
+
+
 ### `PathValidateParams`
 
 | Field | Go type | Omitempty | Embedded |
@@ -1709,16 +1980,28 @@ _(no fields)_
 | `data` | `[]string` |  |  |
 
 
-### `ReasoningSummaryDeltaParams`
+### `RemovedRow`
 
 | Field | Go type | Omitempty | Embedded |
 |-------|---------|-----------|----------|
-| `threadId` | `string` |  |  |
-| `ref` | `string` |  |  |
-| `turnId` | `string` |  |  |
-| `itemId` | `string` |  |  |
-| `summaryIndex` | `int` |  |  |
-| `delta` | `string` |  |  |
+| `name` | `string` |  |  |
+| `address` | `string` | yes |  |
+| `user` | `string` | yes |  |
+| `keyPath` | `string` | yes |  |
+| `evenerPath` | `string` | yes |  |
+| `configPath` | `string` | yes |  |
+| `addr` | `string` | yes |  |
+| `roots` | `[]string` | yes |  |
+| `origin` | `string` |  |  |
+| `generation` | `uint64` |  |  |
+| `incarnationId` | `string` |  |  |
+| `removed` | `bool` |  |  |
+| `attached` | `bool` |  |  |
+| `midEnsure` | `bool` |  |  |
+| `retainedRows` | `*int` | yes |  |
+| `rowsTruncated` | `bool` | yes |  |
+| `escalationAgeSec` | `*int64` | yes |  |
+| `openRemnantId` | `string` | yes |  |
 
 
 ### `SandboxEscalationRequested`
@@ -1842,6 +2125,22 @@ _(no fields)_
 | `navigation` | `appwire.NavigationMutation` |  |  |
 
 
+### `SessionSeenSetParams`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `sessions` | `[]appwire.SessionSeenMark` |  |  |
+
+
+### `SessionSeenSetResponse`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `ok` | `bool` |  |  |
+| `changed` | `bool` |  |  |
+| `navigation` | `appwire.NavigationMutation` |  |  |
+
+
 ### `SettingsOverviewResponse`
 
 | Field | Go type | Omitempty | Embedded |
@@ -1943,13 +2242,13 @@ _(no fields)_
 | Field | Go type | Omitempty | Embedded |
 |-------|---------|-----------|----------|
 | `ref` | `string` |  |  |
-| `sourceTurnId` | `string` |  |  |
 | `editedInput` | `string` | yes |  |
 | `label` | `string` | yes |  |
 | `modelProvider` | `string` | yes |  |
 | `model` | `string` | yes |  |
 | `deferInput` | `bool` | yes |  |
 | `aside` | `bool` | yes |  |
+| `sourceItemKey` | `string` | yes |  |
 
 
 ### `ThreadForkResponse`
@@ -2062,6 +2361,8 @@ _(no fields)_
 | `subscribe` | `bool` | yes |  |
 | `replaceSubscription` | `bool` | yes |  |
 | `itemLimit` | `int` | yes |  |
+| `requestGeneration` | `uint64` | yes |  |
+| `heldSnapshot` | `*appwire.SnapshotIdentity` | yes |  |
 
 
 ### `ThreadReadResponse`
@@ -2070,6 +2371,13 @@ _(no fields)_
 |-------|---------|-----------|----------|
 | `thread` | `appwire.Thread` |  |  |
 | `olderCursor` | `string` | yes |  |
+| `requestGeneration` | `uint64` | yes |  |
+| `bootGeneration` | `string` | yes |  |
+| `epoch` | `uint64` | yes |  |
+| `snapshot` | `*appwire.SnapshotIdentity` | yes |  |
+| `overlay` | `[]appwire.OverlayItem` | yes |  |
+| `authoritative` | `bool` | yes |  |
+| `changes` | `*appwire.HistoryChanges` | yes |  |
 
 
 ### `ThreadReasoningEffortChangedParams`
@@ -2110,6 +2418,8 @@ _(no fields)_
 |-------|---------|-----------|----------|
 | `threadId` | `string` |  |  |
 | `ref` | `string` |  |  |
+| `bootGeneration` | `string` | yes |  |
+| `epoch` | `uint64` | yes |  |
 
 
 ### `ThreadShutdownParams`
@@ -2162,6 +2472,7 @@ _(no fields)_
 | `failedToolCalls` | `*int` | yes |  |
 | `askPending` | `*bool` | yes |  |
 | `capabilities` | `*appwire.ThreadCapabilities` | yes |  |
+| `activeTurnId` | `string` | yes |  |
 
 
 ### `ThreadTranscriptListParams`
@@ -2214,6 +2525,10 @@ _(no fields)_
 |-------|---------|-----------|----------|
 | `data` | `[]appwire.Turn` |  |  |
 | `nextCursor` | `string` | yes |  |
+| `bootGeneration` | `string` | yes |  |
+| `epoch` | `uint64` | yes |  |
+| `snapshot` | `*appwire.SnapshotIdentity` | yes |  |
+| `authoritative` | `bool` | yes |  |
 
 
 ### `ThreadUnsubscribeParams`
@@ -2239,18 +2554,6 @@ _(no fields)_
 |-------|---------|-----------|----------|
 | `ref` | `string` |  |  |
 | `visionModel` | `string` |  |  |
-
-
-### `ToolOutputDeltaParams`
-
-| Field | Go type | Omitempty | Embedded |
-|-------|---------|-----------|----------|
-| `threadId` | `string` |  |  |
-| `ref` | `string` |  |  |
-| `turnId` | `string` | yes |  |
-| `itemId` | `string` |  |  |
-| `callId` | `string` |  |  |
-| `delta` | `string` |  |  |
 
 
 ### `TranscriptDisplayChangedParams`
@@ -2306,15 +2609,6 @@ _(no fields)_
 | `removedText` | `string` |  |  |
 | `removedImages` | `int` | yes |  |
 | `receipt` | `appwire.MutationReceipt` |  |  |
-
-
-### `TurnCompletedParams`
-
-| Field | Go type | Omitempty | Embedded |
-|-------|---------|-----------|----------|
-| `threadId` | `string` |  |  |
-| `ref` | `string` |  |  |
-| `turn` | `appwire.Turn` |  |  |
 
 
 ### `TurnDrainAsSteerParams`
@@ -2404,15 +2698,6 @@ _(no fields)_
 |-------|---------|-----------|----------|
 | `turn` | `appwire.Turn` |  |  |
 | `receipt` | `appwire.MutationReceipt` |  |  |
-
-
-### `TurnStartedParams`
-
-| Field | Go type | Omitempty | Embedded |
-|-------|---------|-----------|----------|
-| `threadId` | `string` |  |  |
-| `ref` | `string` |  |  |
-| `turn` | `appwire.Turn` |  |  |
 
 
 ### `TurnSteerParams`

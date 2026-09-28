@@ -3,6 +3,8 @@ package agent
 import (
 	"context"
 	"maps"
+	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -10,147 +12,66 @@ import (
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/plugin"
 	"primeradiant.com/evener/agent/task"
-	"primeradiant.com/evener/internal/bundled"
 	"primeradiant.com/evener/llm"
 )
 
-func renderAvailableAgentsSectionForTest(t *testing.T, agents map[string]plugin.Agent) string {
+// availableAgentEntriesForTest returns the available-agents entries a root
+// session builds for agents. allowance >= 0 overrides the session's
+// delegation allowance; allowedTools, when set, restricts its tool surface.
+func availableAgentEntriesForTest(t *testing.T, agents map[string]plugin.Agent, allowance int, allowedTools []string) []agentEntry {
 	t.Helper()
-	return renderAvailableAgentsSectionWithAllowance(t, agents, -1)
-}
-
-// renderAvailableAgentsSectionWithAllowance renders the available-agents section with
-// the given delegationAllowance overridden (pass -1 to use the session default).
-func renderAvailableAgentsSectionWithAllowance(t *testing.T, agents map[string]plugin.Agent, allowance int) string {
-	return renderAvailableAgentsSectionWithAllowanceAndTools(t, agents, allowance, nil)
-}
-
-func renderAvailableAgentsSectionWithAllowanceAndTools(t *testing.T, agents map[string]plugin.Agent, allowance int, allowedTools []string) string {
-	t.Helper()
-
-	client := llm.NewClient()
-	client.Register(&fakeAdapter{name: "openai"})
-
-	cfg := SessionConfig{}
+	cfg := SessionConfig{AgentsDocPath: filepath.Join(t.TempDir(), "no-personal-AGENTS.md")}
 	cfg.spawn.allowedToolNames = append([]string(nil), allowedTools...)
-	sess, err := NewSession(client, withTestSessionNamer(client, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(t.TempDir()), cfg)
-	if err != nil {
-		t.Fatalf("NewSession: %v", err)
-	}
-	defer sess.Close()
-
+	sess := newSession(t, withDir(t.TempDir()), withConfig(cfg))
 	if allowance >= 0 {
 		sess.mu.Lock()
 		sess.delegationAllowance = allowance
 		sess.mu.Unlock()
 	}
-
 	sess.pluginAgents = make(map[string]plugin.Agent, len(agents))
 	maps.Copy(sess.pluginAgents, agents)
-
-	resolver := &sectionResolver{
-		surface: sess.profile.ID(),
-		agent:   defaultAgentName,
-		agentFS: bundled.Agents(),
-		sources: []sectionSource{
-			embedSource{fs: embeddedPrompts, prefix: "prompts/sections/"},
-		},
-	}
-	return resolver.Section("available-agents", sess.buildPromptData(sess.currentEnv()))
+	return sess.buildPromptData(sess.currentEnv()).AvailableAgents
 }
 
-// renderSubagentPromptWithAllowance builds a depth-1 child session with the
-// given delegation_allowance and returns its rendered system prompt (the
-// subagent template, selected because depth > 0).
-func renderSubagentPromptWithAllowance(t *testing.T, allowance int) string {
+// depthOneSubagentForTest builds a depth-1 child session with the given
+// delegation allowance and, when allowedTools is set, that tool surface.
+func depthOneSubagentForTest(t *testing.T, allowance int, allowedTools []string) *Session {
 	t.Helper()
-	return renderSubagentPromptWithAllowanceAndTools(t, allowance, nil)
-}
-
-func renderSubagentPromptWithAllowanceAndTools(t *testing.T, allowance int, allowedTools []string) string {
-	t.Helper()
-
-	client := llm.NewClient()
-	client.Register(&fakeAdapter{name: "openai"})
-
 	cfg := SessionConfig{
 		StateDir:         t.TempDir(),
 		NoProjectPrompts: true,
+		AgentsDocPath:    filepath.Join(t.TempDir(), "no-personal-AGENTS.md"),
 	}
 	cfg.spawn.depth = 1
 	cfg.spawn.parentSessionID = "parent-session"
 	cfg.spawn.delegationAllowance = allowance
 	cfg.spawn.allowedToolNames = append([]string(nil), allowedTools...)
-
-	sess, err := NewSession(client, withTestSessionNamer(client, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(t.TempDir()), cfg)
-	if err != nil {
-		t.Fatalf("NewSession: %v", err)
-	}
-	defer sess.Close()
-
+	sess := newSession(t, withDir(t.TempDir()), withConfig(cfg))
 	if sess.depth == 0 {
-		t.Fatalf("expected depth > 0 subagent session, got depth 0")
+		t.Fatal("expected a depth > 0 subagent session, got depth 0")
 	}
-	prompt, _ := sess.renderSystemPrompt(sess.env)
-	return prompt
+	return sess
 }
 
-// TestSubagentPromptStatesAllowance pins spec §5: the subagent template has
-// conditional sections keyed on CanDelegate. A child with allowance > 0 sees the
-// delegation + background-jobs sections and is told its allowance; a leaf
-// (allowance 0) child sees the leaf limits block and no delegation text.
+// TestSubagentPromptStatesAllowance pins spec §5 as typed inputs: a child with
+// allowance > 0 can delegate and carries its allowance; a leaf cannot.
 func TestSubagentPromptStatesAllowance(t *testing.T) {
 	t.Parallel()
-	// Allowance > 0: delegation surface present, allowance stated, no "only you".
-	granting := renderSubagentPromptWithAllowance(t, 2)
-	if !strings.Contains(granting, "## Delegation") {
-		t.Errorf("allowance>0 subagent prompt should contain the Delegation section, got:\n%s", granting)
+	granting := depthOneSubagentForTest(t, 2, nil)
+	if data := granting.buildPromptData(granting.env); !data.CanDelegate || data.DelegationAllowance != 2 {
+		t.Errorf("allowance-2 child: CanDelegate=%v DelegationAllowance=%d, want true and 2", data.CanDelegate, data.DelegationAllowance)
 	}
-	if !strings.Contains(granting, "## Background jobs") {
-		t.Errorf("allowance>0 subagent prompt should contain the Background jobs section, got:\n%s", granting)
-	}
-	if !strings.Contains(granting, "delegation_allowance` is 2") {
-		t.Errorf("allowance>0 subagent prompt should state its allowance (2) in context, got:\n%s", granting)
-	}
-	if strings.Contains(granting, "Only you can call") {
-		t.Errorf("allowance>0 subagent prompt must not say \"Only you can call\", got:\n%s", granting)
-	}
-
-	// Allowance 0 (leaf): leaf limits block present, no delegation text.
-	leaf := renderSubagentPromptWithAllowance(t, 0)
-	if !strings.Contains(leaf, "## Delegated task limits") {
-		t.Errorf("allowance=0 subagent prompt should contain the leaf limits block, got:\n%s", leaf)
-	}
-	if strings.Contains(leaf, "## Delegation") {
-		t.Errorf("allowance=0 subagent prompt must not contain the Delegation section, got:\n%s", leaf)
-	}
-}
-
-func TestSubagentPromptUsesDelegateSendForFollowup(t *testing.T) {
-	t.Parallel()
-	prompt := renderSubagentPromptWithAllowance(t, 2)
-	if !strings.Contains(prompt, "delegate_send") {
-		t.Fatalf("delegating subagent prompt should mention delegate_send:\n%s", prompt)
-	}
-	if !strings.Contains(prompt, "delegate_id") {
-		t.Fatalf("delegating subagent prompt should describe delegate_id follow-up:\n%s", prompt)
-	}
-	if strings.Contains(prompt, "job_send_message") {
-		t.Fatalf("delegating subagent prompt must not advertise removed job_send_message:\n%s", prompt)
+	leaf := depthOneSubagentForTest(t, 0, nil)
+	if data := leaf.buildPromptData(leaf.env); data.CanDelegate {
+		t.Error("allowance-0 child: CanDelegate = true, want false")
 	}
 }
 
 func TestSubagentPromptSuppressesDelegationWhenToolsUnavailable(t *testing.T) {
 	t.Parallel()
-	prompt := renderSubagentPromptWithAllowanceAndTools(t, 1, []string{"communicate", "delegate", "job_watch"})
-	if strings.Contains(prompt, "## Delegation") {
-		t.Fatalf("subagent prompt must not contain delegation guidance when delegate tools are unavailable:\n%s", prompt)
-	}
-	if strings.Contains(prompt, "## Background jobs") {
-		t.Fatalf("subagent prompt must not contain background-job guidance when job_watch is unavailable:\n%s", prompt)
-	}
-	if !strings.Contains(prompt, "## Delegated task limits") {
-		t.Fatalf("subagent prompt should fall back to delegated-task limits when delegation tools are unavailable:\n%s", prompt)
+	sess := depthOneSubagentForTest(t, 1, []string{"communicate", "delegate", "job_watch"})
+	if data := sess.buildPromptData(sess.env); data.CanDelegate {
+		t.Fatal("CanDelegate = true with an incomplete delegation tool surface, want false")
 	}
 }
 
@@ -205,13 +126,8 @@ func TestUntypedDelegatingSubagentUsesDelegatingRolePrompt(t *testing.T) {
 
 func TestAvailableAgentsSection_NoAgents(t *testing.T) {
 	t.Parallel()
-	result := renderAvailableAgentsSectionForTest(t, nil)
-	if result != "" {
-		t.Errorf("expected empty string for nil, got %q", result)
-	}
-	result = renderAvailableAgentsSectionForTest(t, map[string]plugin.Agent{})
-	if result != "" {
-		t.Errorf("expected empty string for empty map, got %q", result)
+	if got := availableAgentEntriesForTest(t, nil, -1, nil); len(got) != 0 {
+		t.Errorf("available agents = %+v, want none", got)
 	}
 }
 
@@ -230,32 +146,25 @@ func TestAvailableAgentsSection_WithAgents(t *testing.T) {
 		},
 		"my-plugin:tester": {Name: "tester", Description: "Generates test cases", PluginName: "my-plugin"},
 	}
-	result := renderAvailableAgentsSectionForTest(t, agents)
-	if !strings.Contains(result, "my-plugin:reviewer") {
-		t.Error("should contain agent name 'my-plugin:reviewer'")
+	entries := availableAgentEntriesForTest(t, agents, -1, nil)
+	byName := make(map[string]agentEntry, len(entries))
+	for _, e := range entries {
+		byName[e.Name] = e
 	}
-	if !strings.Contains(result, "Reviews code for quality") {
-		t.Error("should contain agent description")
+	reviewer, ok := byName["my-plugin:reviewer"]
+	if !ok || reviewer.Description != "Reviews code for quality" {
+		t.Fatalf("reviewer entry = %+v (present %v)", reviewer, ok)
 	}
-	if !strings.Contains(result, "my-plugin:tester") {
-		t.Error("should contain second agent name")
-	}
-	if !strings.Contains(result, "Generates test cases") {
-		t.Error("should contain second agent description")
-	}
-	if !strings.Contains(result, "available_agents") {
-		t.Error("should have available_agents XML tag")
-	}
-	if !strings.Contains(result, "delegate") {
-		t.Error("should mention delegate usage")
+	if tester, ok := byName["my-plugin:tester"]; !ok || tester.Description != "Generates test cases" {
+		t.Fatalf("tester entry = %+v (present %v)", tester, ok)
 	}
 	for _, want := range []string{"communicate", "grep_files", "read_file", "task_list"} {
-		if !strings.Contains(result, want) {
-			t.Errorf("default tool summary should include %q, got:\n%s", want, result)
+		if !strings.Contains(reviewer.DefaultTools, "`"+want+"`") {
+			t.Errorf("reviewer DefaultTools = %q, want %q", reviewer.DefaultTools, want)
 		}
 	}
-	if !strings.Contains(result, "Include relevant parent task details in the `delegate` task prompt for this step.") {
-		t.Errorf("should explain parent task slot behavior, got: %s", result)
+	if len(reviewer.TaskList) != 2 || reviewer.TaskList[0].ReplacedByParentTasks || !reviewer.TaskList[1].ReplacedByParentTasks {
+		t.Errorf("reviewer TaskList = %+v, want only the second task to insert parent tasks", reviewer.TaskList)
 	}
 }
 
@@ -265,11 +174,11 @@ func TestAvailableAgentsSection_Sorted(t *testing.T) {
 		"z-plugin:agent": {Name: "agent", Description: "Z agent", PluginName: "z-plugin"},
 		"a-plugin:agent": {Name: "agent", Description: "A agent", PluginName: "a-plugin"},
 	}
-	result := renderAvailableAgentsSectionForTest(t, agents)
-	aIdx := strings.Index(result, "a-plugin:agent")
-	zIdx := strings.Index(result, "z-plugin:agent")
+	entries := availableAgentEntriesForTest(t, agents, -1, nil)
+	aIdx := slices.IndexFunc(entries, func(e agentEntry) bool { return e.Name == "a-plugin:agent" })
+	zIdx := slices.IndexFunc(entries, func(e agentEntry) bool { return e.Name == "z-plugin:agent" })
 	if aIdx < 0 || zIdx < 0 {
-		t.Fatalf("expected both agents in output, got: %s", result)
+		t.Fatalf("expected both agents, got %+v", entries)
 	}
 	if aIdx >= zIdx {
 		t.Errorf("agents should be sorted alphabetically: a at %d, z at %d", aIdx, zIdx)
@@ -284,18 +193,15 @@ func TestAvailableAgentsSection_OmitsTopLevelOnlyAgents(t *testing.T) {
 	}
 
 	// At allowance=0 (leaf/dark) no agent types are actionable through delegate.
-	result := renderAvailableAgentsSectionWithAllowance(t, agents, 0)
-	if result != "" {
-		t.Fatalf("available agents should be hidden at allowance=0, got: %s", result)
+	if got := availableAgentEntriesForTest(t, agents, 0, nil); len(got) != 0 {
+		t.Fatalf("available agents should be hidden at allowance=0, got %+v", got)
 	}
-
-	// At allowance=1 (grantable) delegate-listing types ARE included in the prompt.
-	result = renderAvailableAgentsSectionWithAllowance(t, agents, 1)
-	if !strings.Contains(result, "coordinator") {
-		t.Fatalf("delegate-listing agent should be included at allowance=1, got: %s", result)
-	}
-	if !strings.Contains(result, "reviewer") {
-		t.Fatalf("spawnable agent should remain in prompt at allowance=1, got: %s", result)
+	// At allowance=1 (grantable) delegate-listing types are included.
+	entries := availableAgentEntriesForTest(t, agents, 1, nil)
+	for _, name := range []string{"coordinator", "reviewer"} {
+		if !slices.ContainsFunc(entries, func(e agentEntry) bool { return e.Name == name }) {
+			t.Fatalf("%s should be available at allowance=1, got %+v", name, entries)
+		}
 	}
 }
 
@@ -304,9 +210,7 @@ func TestAvailableAgentsSectionSuppressedWhenDelegationSurfaceUnavailable(t *tes
 	agents := map[string]plugin.Agent{
 		"reviewer": {Name: "reviewer", Description: "Reviews work", Tools: []string{"read_file"}},
 	}
-
-	result := renderAvailableAgentsSectionWithAllowanceAndTools(t, agents, 1, []string{"communicate", "delegate", "job_watch"})
-	if result != "" {
-		t.Fatalf("available agents should be hidden when delegation prompt surface is incomplete, got: %s", result)
+	if got := availableAgentEntriesForTest(t, agents, 1, []string{"communicate", "delegate", "job_watch"}); len(got) != 0 {
+		t.Fatalf("available agents should be hidden when the delegation surface is incomplete, got %+v", got)
 	}
 }

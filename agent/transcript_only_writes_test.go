@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"sync"
 	"testing"
 
@@ -105,43 +106,47 @@ func TestCommunicateWithoutATranscriptStillDelivers(t *testing.T) {
 	}
 }
 
-// A communicate delivery whose entry a poisoned writer refuses to record must
-// not announce a message that the transcript never got: EventCommunicate is
-// not emitted, and no COMMUNICATE entry lands (there is nowhere for one to
-// land). deliverCommunicate is exercised directly, past the tool call layer,
-// so the fault lands exactly on its own write rather than an earlier one in
-// the turn's admission.
-func TestCommunicateNotRecordedByAPoisonedWriterDoesNotAnnounce(t *testing.T) {
+// A communicate delivery whose entry a poisoned writer refuses to record is
+// still announced for a session nobody serves: unserved sessions keep
+// today's warn-and-continue (Task 27), so a served daemon consumer -- not a
+// direct call through deliverCommunicate -- is what would fail closed instead
+// (TestAnUnrecordedCommunicateFailsAServedSessionClosed,
+// TestAPoisonedWriterFailsAServedSessionClosed). deliverCommunicate is
+// exercised directly, past the tool call layer, so the fault lands exactly on
+// its own write rather than an earlier one in the turn's admission.
+func TestCommunicateNotRecordedByAPoisonedWriterStillAnnouncesWhenUnserved(t *testing.T) {
 	s, _ := newExecutionSession(t)
-	fs := attachEnvironmentFailureFS(t, s)
-	armEnvironmentPartialWrite(fs)
+	// COMMUNICATE goes through the synced door, which attempts a rollback on a
+	// partial write; only a rollback that also fails leaves the writer
+	// poisoned (attachEnvironmentPoisoningWrite), unlike the buffered door's
+	// plain partial write (armEnvironmentPartialWrite).
+	attachEnvironmentPoisoningWrite(t, s, errors.New("injected transcript write failure"), errors.New("injected rollback failure"))
 	collectEvents := drainEvents(s)
-	s.deliverCommunicate(events.CommunicateData{CallID: "comm-poisoned", EndTurn: true, Message: "lost"})
+	if err := s.deliverCommunicate(events.CommunicateData{CallID: "comm-poisoned", EndTurn: true, Message: "lost"}); err != nil {
+		t.Fatalf("deliverCommunicate on an unserved session: %v", err)
+	}
 	if !s.attachedTranscript().Poisoned() {
 		t.Fatal("setup: the writer was not poisoned")
 	}
 	s.Close()
-	for _, ev := range collectEvents() {
-		if ev.Kind == events.EventCommunicate {
-			t.Fatalf("EventCommunicate emitted for a message a poisoned writer refused to record: %+v", ev.Data)
-		}
+	if got := countKind(collectEvents(), events.EventCommunicate); got != 1 {
+		t.Fatalf("%d EventCommunicate for an unserved session's unrecorded message, want 1 (warn-and-continue)", got)
 	}
 	for _, turn := range entriesOfKind(transcriptTurnsOf(t, s), schema.TurnCommunicate) {
 		t.Fatalf("a COMMUNICATE entry landed despite the poisoned writer: %+v", turn)
 	}
 }
 
-// The communicate tool call itself must fail when its entry is not recorded:
-// silently swallowing the failure (no event, but a reported success) would
-// let the model believe a message reached the client when it reached neither
-// the client nor the transcript.
-func TestCommunicateToolFailsWhenNotRecorded(t *testing.T) {
+// The communicate tool call itself succeeds for an unserved session even
+// when its entry is not recorded: only a served session fails closed on an
+// unrecorded COMMUNICATE (Task 27); an unserved one keeps today's
+// warn-and-continue, so the model is told what a client was actually shown.
+func TestCommunicateToolSucceedsWhenNotRecordedAndUnserved(t *testing.T) {
 	s, _ := newExecutionSession(t)
-	fs := attachEnvironmentFailureFS(t, s)
-	armEnvironmentPartialWrite(fs)
+	attachEnvironmentPoisoningWrite(t, s, errors.New("injected transcript write failure"), errors.New("injected rollback failure"))
 	res := s.reg.ExecuteCall(context.Background(), s.env, communicateCallArgs("comm-poisoned", map[string]any{"message": "lost", "end_turn": true}))
-	if !res.IsError {
-		t.Fatalf("communicate call succeeded despite a poisoned writer refusing to record it: %+v", res)
+	if res.IsError {
+		t.Fatalf("communicate call failed on an unserved session despite warn-and-continue: %+v", res)
 	}
 	if !s.attachedTranscript().Poisoned() {
 		t.Fatal("setup: the writer was not poisoned")

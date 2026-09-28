@@ -426,6 +426,7 @@ func NewSession(client *llm.Client, profile *provider.Profile, env execenv.Execu
 		skillLifecycle:                schema.SkillLifecycleSnapshot{Inventory: make(map[string]schema.SkillInventoryEntry)},
 		cfg:                           cfg,
 		descendantEvent:               cfg.spawn.descendantEvent,
+		transcriptRecorded:            descendantRecordedHook(cfg.spawn.descendantRecorded, sessionID),
 		client:                        client,
 		profile:                       profile,
 		resolveProfile:                cfg.ResolveProfile,
@@ -611,6 +612,10 @@ func NewSession(client *llm.Client, profile *provider.Profile, env execenv.Execu
 			// fired yet at this point in construction, and every other
 			// construction-time diagnostic already waits for it.
 			s.pendingTranscriptWarnings = append(s.pendingTranscriptWarnings, events.WarningData{Message: fmt.Sprintf("transcript create failed: %v", twErr)})
+			// A served session fails closed on it at its first input
+			// (session_fail_closed.go); an unserved one runs without a
+			// transcript, as it always has.
+			s.transcriptCreateErr = twErr
 		}
 		if tw != nil {
 			tw.SyncInterval = 1 * time.Second
@@ -1107,6 +1112,7 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 		skillLifecycle:           schema.SkillLifecycleSnapshot{Inventory: make(map[string]schema.SkillInventoryEntry)},
 		cfg:                      cfg,
 		descendantEvent:          cfg.spawn.descendantEvent,
+		transcriptRecorded:       descendantRecordedHook(cfg.spawn.descendantRecorded, meta.ID),
 		client:                   client,
 		profile:                  profile,
 		resolveProfile:           cfg.ResolveProfile,
@@ -1129,6 +1135,7 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 		createdAt:                meta.CreatedAt,
 		workMillis:               meta.WorkMillis,
 		lastTurnEndedAt:          meta.LastTurnEndedAt,
+		lastMessage:              meta.LastMessage,
 		fork: forkInfo{
 			parentID:   meta.ParentSessionID,
 			divergence: meta.DivergenceTurn,
