@@ -277,10 +277,26 @@ func (x *MessageSearch) Refresh(ctx context.Context, sessions []MessageSearchSes
 		sinceGen := x.forgetGeneration(session.ID)
 		read, err := x.read(session.TranscriptPath, since)
 		if err != nil {
-			if !errors.Is(err, transcript.ErrUnsupportedFormat) {
+			if errors.Is(err, transcript.ErrUnsupportedFormat) {
+				// Not a failure: record it as read, with no messages, so a
+				// transcript no reader opens is not tried again until it
+				// changes.
+				read = transcriptItems{replace: true}
+			} else {
 				failures = append(failures, MessageSearchFailure{SessionID: session.ID, Err: err})
+				if !known {
+					// Never indexed, so there is nothing to lose: record it
+					// the same way, rather than retrying every refresh.
+					read = transcriptItems{replace: true}
+				} else {
+					// Already indexed: a transient failure must not wipe what
+					// is there. Recording the current stamp here would freeze
+					// that loss, since the next refresh would then see the
+					// transcript as unchanged and skip it; leave both alone
+					// and retry next refresh.
+					continue
+				}
 			}
-			read = transcriptItems{replace: true}
 		}
 		if err := x.apply(ctx, session.ID, stamp, read, sinceGen); err != nil {
 			return failures, err

@@ -422,6 +422,44 @@ func TestMessageSearchATransientStatFailureDoesNotForgetTheSession(t *testing.T)
 	}
 }
 
+// A read failure on a transcript that has already been indexed (the file
+// changed, so a refresh attempts to re-read it, and this attempt fails for a
+// reason other than an unsupported format) must not wipe the session's
+// existing rows: there is something real to lose here, unlike a transcript
+// that has never been read. The failure is retried next refresh rather than
+// recorded as final.
+func TestMessageSearchAFailedReadOnAnIndexedSessionKeepsItsMessages(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "sessions", "s1.transcript.jsonl")
+	writeTestTranscript(t, path, "s1", settleTurns()...)
+	index := openTestMessageSearch(t)
+	if _, err := index.Refresh(context.Background(), []MessageSearchSession{{ID: "s1", TranscriptPath: path}}); err != nil {
+		t.Fatal(err)
+	}
+	appendTestTranscript(t, path, schema.NewTurn(schema.TurnUserInput, llm.User("more settle work")))
+	next := index.read
+	index.read = func(path string, held *appwire.SnapshotIdentity) (transcriptItems, error) {
+		return transcriptItems{}, errors.New("the disk refused the read")
+	}
+	failures, err := index.Refresh(context.Background(), []MessageSearchSession{{ID: "s1", TranscriptPath: path}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(failures) != 1 || failures[0].SessionID != "s1" {
+		t.Fatalf("failures = %+v, want one for the failed read", failures)
+	}
+	if matches, _ := index.Match(context.Background(), "settle", 3); matches["s1"].Count != 2 {
+		t.Fatalf("matches = %+v, want the session's earlier messages kept, not wiped by the failed read", matches)
+	}
+
+	index.read = next
+	if _, err := index.Refresh(context.Background(), []MessageSearchSession{{ID: "s1", TranscriptPath: path}}); err != nil {
+		t.Fatal(err)
+	}
+	if matches, _ := index.Match(context.Background(), "settle", 3); matches["s1"].Count != 3 {
+		t.Fatalf("matches = %+v, want the appended message found once the retry succeeds", matches)
+	}
+}
+
 // A session the past index no longer lists, and one Forget names, leave the
 // index at once: their words are not found.
 func TestMessageSearchForgetsSessions(t *testing.T) {
