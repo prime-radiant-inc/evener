@@ -35,7 +35,7 @@ func TestStatusChangeCarriesTheRunningFailureCount(t *testing.T) {
 	srv.SetAppIdentity("local", "th_1")
 	publishFailureCount(srv, 0)
 
-	srv.RecordAppEvent(events.SessionEvent{Kind: events.EventUserInput, SessionID: "th_1", Data: events.UserInputData{Text: "go"}})
+	startExecution(srv, "th_1", "t_go")
 	publishFailureCount(srv, 4)
 	srv.RecordAppEvent(events.SessionEvent{Kind: events.EventSessionEnd, SessionID: "th_1", Data: events.SessionEndData{Reason: "input_complete", State: "idle"}})
 
@@ -60,7 +60,7 @@ func TestStatusChangeOmitsAnUnmeasuredFailureCount(t *testing.T) {
 	srv.SetAppIdentity("local", "th_1")
 	setEnvelope(srv, func(e *stubThreadEnvelopeSource) { e.failedToolCalls = 0; e.failuresMeasured = false })
 
-	srv.RecordAppEvent(events.SessionEvent{Kind: events.EventUserInput, SessionID: "th_1", Data: events.UserInputData{Text: "go"}})
+	startExecution(srv, "th_1", "t_go")
 
 	for _, params := range statusNotifications(t, srv, "th_1") {
 		if params.FailedToolCalls != nil {
@@ -73,7 +73,7 @@ func TestStatusChangeOmitsTheCountOnADaemonThatNeverWiredIt(t *testing.T) {
 	srv := NewServer(ServerConfig{})
 	srv.SetAppIdentity("local", "th_1")
 
-	srv.RecordAppEvent(events.SessionEvent{Kind: events.EventUserInput, SessionID: "th_1", Data: events.UserInputData{Text: "go"}})
+	startExecution(srv, "th_1", "t_go")
 
 	for _, params := range statusNotifications(t, srv, "th_1") {
 		if params.FailedToolCalls != nil {

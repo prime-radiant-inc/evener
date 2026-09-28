@@ -210,11 +210,31 @@ func FuzzSessionGoTailCoverage(f *testing.F) {
 			if err := s.appendSteeringTurnDurably("durable", ""); err == nil {
 				t.Fatal("durable append unexpectedly succeeded")
 			}
+			// appendAssistantTurn opens the model round before it writes (RoundID:
+			// s.roundIDForModelCall()), which announces EXECUTION_STARTED-like
+			// round boundaries (roundIDForModelCall): a fresh round with none
+			// open emits EVENT_ROUND_STARTED alongside the write's own warning.
 			if err := s.appendAssistantTurn(llm.Response{Message: llm.Assistant("assistant")}, ModelAttemptMetadata{}); !errors.Is(err, errInjectedTranscriptWrite) {
 				t.Fatalf("assistant append error = %v, want injected transcript write failure", err)
 			}
-			if got := len(s.events); got != 3 {
-				t.Fatalf("warning events = %d, want 3", got)
+			warnings, other := 0, 0
+			for done := false; !done; {
+				select {
+				case ev := <-s.events:
+					if ev.Kind == events.EventWarning {
+						warnings++
+					} else {
+						other++
+					}
+				default:
+					done = true
+				}
+			}
+			if warnings != 3 {
+				t.Fatalf("warning events = %d, want 3", warnings)
+			}
+			if other != 1 {
+				t.Fatalf("non-warning events = %d, want 1 (the assistant append's round-started)", other)
 			}
 		})
 

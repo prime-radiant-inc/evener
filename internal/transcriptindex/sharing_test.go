@@ -151,3 +151,32 @@ func TestConcurrentExtendersWhileAppending(t *testing.T) {
 		assertAllWindows(t, x, path)
 	}
 }
+
+// Incarnation is the sidecar's current incarnation, including one another
+// handle's rebuild minted: a backfill read validates its cursor against it.
+func TestIncarnationReadsTheSidecarsCurrentIncarnation(t *testing.T) {
+	fx := namedResults()
+	path, lines := writeHeaderOnly(t, fx)
+	dir := t.TempDir()
+	a := openIndex(t, path, dir)
+	b := openIndex(t, path, dir)
+	appendBytes(t, path, joinLines(lines))
+	catchUp(t, a)
+	window, err := a.Latest(40)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, err := b.Incarnation(); err != nil || got != window.Incarnation {
+		t.Fatalf("Incarnation() = %q, %v; want %q", got, err, window.Incarnation)
+	}
+	if err := a.Rebuild(window.Length); err != nil {
+		t.Fatal(err)
+	}
+	rebuilt, err := a.Latest(40)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, err := b.Incarnation(); err != nil || got != rebuilt.Incarnation || got == window.Incarnation {
+		t.Fatalf("Incarnation() after the rebuild = %q, %v; want the new %q (was %q)", got, err, rebuilt.Incarnation, window.Incarnation)
+	}
+}

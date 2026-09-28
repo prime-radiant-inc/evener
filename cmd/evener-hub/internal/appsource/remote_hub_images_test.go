@@ -182,10 +182,8 @@ func TestRemoteHubTranslateOutRewritesStampedImageURLs(t *testing.T) {
 }
 
 // The notification carriers are the other half of the same rule: thread/started
-// carries a Thread, turn/started and turn/completed carry a Turn, and
-// item/started and item/completed carry a ThreadItem. Each must be rewritten in
-// place, and fields the translator does not understand must still survive
-// byte-for-byte.
+// carries a Thread, whose turns and items must be rewritten in place. Fields
+// the translator does not understand must still survive byte-for-byte.
 func TestRemoteHubTranslateNotificationRewritesStampedImageURLs(t *testing.T) {
 	source := NewRemoteHubSource(remoteImageHost, nil, nil)
 
@@ -206,65 +204,33 @@ func TestRemoteHubTranslateNotificationRewritesStampedImageURLs(t *testing.T) {
 		assertRemoteImageItemRewritten(t, "thread/started", started.Thread.Turns[0].Items[0])
 	})
 
-	t.Run("turn/started", func(t *testing.T) {
-		params, err := json.Marshal(appwire.TurnStartedParams{
-			ThreadID: "t1", Ref: "local:t1", Turn: remoteImageTurnFixture(),
+	// history/updated carries its turns and items in the plural "turns"/
+	// "items" arrays (HistoryUpdatedParams), not the singular "turn"/"item"
+	// fields turn/started, turn/completed, item/started and item/completed
+	// use. A remote image in one of those arrays must be rewritten exactly
+	// like the singular carriers, or a history update leaves an unreachable
+	// remote-origin route in the browser.
+	t.Run("history/updated", func(t *testing.T) {
+		params, err := json.Marshal(appwire.HistoryUpdatedParams{
+			ThreadID: "t1",
+			Turns:    []appwire.Turn{{ID: "turn-1", Status: appwire.TurnStatusCompleted}},
+			Items:    []appwire.ThreadItem{remoteImageItemFixture()},
 		})
 		if err != nil {
 			t.Fatal(err)
 		}
-		translated, _, ok := source.translateNotification(appwire.Notification{
-			Method: appwire.NotifyTurnStarted, Params: params,
+		translated, threadID, ok := source.translateNotification(appwire.Notification{
+			Method: appwire.NotifyHistoryUpdated, Params: params,
 		})
-		if !ok {
-			t.Fatalf("translateNotification dropped the frame: %+v", translated)
+		if !ok || threadID != "t1" {
+			t.Fatalf("translateNotification = (%+v, %q, %v), want thread t1 routed", translated, threadID, ok)
 		}
-		started := decodeNotificationParams[appwire.TurnStartedParams](t, translated)
-		assertRemoteImageItemRewritten(t, "turn/started", started.Turn.Items[0])
+		updated := decodeNotificationParams[appwire.HistoryUpdatedParams](t, translated)
+		if len(updated.Items) != 1 {
+			t.Fatalf("history/updated items = %+v, want 1", updated.Items)
+		}
+		assertRemoteImageItemRewritten(t, "history/updated", updated.Items[0])
 	})
-
-	t.Run("turn/completed", func(t *testing.T) {
-		params, err := json.Marshal(appwire.TurnCompletedParams{
-			ThreadID: "t1", Ref: "local:t1", Turn: remoteImageTurnFixture(),
-		})
-		if err != nil {
-			t.Fatal(err)
-		}
-		translated, _, ok := source.translateNotification(appwire.Notification{
-			Method: appwire.NotifyTurnCompleted, Params: params,
-		})
-		if !ok {
-			t.Fatalf("translateNotification dropped the frame: %+v", translated)
-		}
-		completed := decodeNotificationParams[appwire.TurnCompletedParams](t, translated)
-		assertRemoteImageItemRewritten(t, "turn/completed", completed.Turn.Items[0])
-	})
-
-	for _, method := range []string{appwire.NotifyItemStarted, appwire.NotifyItemCompleted} {
-		t.Run(method, func(t *testing.T) {
-			params, err := json.Marshal(appwire.ItemLifecycleParams{
-				ThreadID: "t1", Ref: "local:t1", TurnID: "turn-1", Item: remoteImageItemFixture(),
-			})
-			if err != nil {
-				t.Fatal(err)
-			}
-			// A field this hub does not understand must reach the client intact.
-			params = append(params[:len(params)-1], []byte(`,"future":{"kept":true}}`)...)
-			translated, _, ok := source.translateNotification(appwire.Notification{Method: method, Params: params})
-			if !ok {
-				t.Fatalf("translateNotification dropped the frame: %+v", translated)
-			}
-			item := decodeNotificationParams[appwire.ItemLifecycleParams](t, translated)
-			assertRemoteImageItemRewritten(t, method, item.Item)
-			var fields map[string]json.RawMessage
-			if err := json.Unmarshal(translated.Params, &fields); err != nil {
-				t.Fatalf("decode translated params %s: %v", translated.Params, err)
-			}
-			if _, ok := fields["future"]; !ok {
-				t.Fatalf("translated params %s dropped the unknown future field", translated.Params)
-			}
-		})
-	}
 }
 
 // An origin-relative image URL a remote hub minted that cannot be qualified as

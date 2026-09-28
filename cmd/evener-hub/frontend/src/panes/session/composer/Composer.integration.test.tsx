@@ -142,7 +142,12 @@ function testThread(ref: string, overrides: Partial<Thread> = {}): Thread {
 }
 
 function readResponse(ref: string, overrides: Partial<Thread> = {}): ThreadReadResponse {
-  return { thread: testThread(ref, overrides) };
+  return {
+    thread: testThread(ref, overrides),
+    bootGeneration: "1",
+    epoch: 1,
+    snapshot: { incarnation: "inc-1", length: 0 },
+  };
 }
 
 function connectFakeClient(): FakeClient {
@@ -874,8 +879,15 @@ test("rejected inline skill input restores its atoms and resends edited prose wi
 function startTurn(fake: FakeClient, ref: string, turnId: string): void {
   act(() => {
     fake.emitNotification({
-      method: "turn/started",
-      params: { threadId: `thr_${ref}`, ref, turn: { id: turnId, status: "inProgress", itemsView: "" } },
+      method: "history/updated",
+      params: {
+        threadId: `thr_${ref}`,
+        ref: "ref-1",
+        bootGeneration: "1",
+        epoch: 1,
+        snapshot: { incarnation: "inc-1", length: 1 },
+        turns: [{ id: turnId, status: "inProgress", itemsView: "" }],
+      },
     });
   });
 }
@@ -1458,17 +1470,20 @@ test("relay recovery refreshes stale queue capability without reconnecting or re
   const user = userEvent.setup();
   const fake = connectFakeClient();
   let readCount = 0;
-  fake.on("thread/read", () => {
+  fake.on("thread/read", (params) => {
     readCount += 1;
-    return readResponse("ref_a", {
-      status: { type: "active" },
-      evener: {
-        ref: "ref_a",
-        capabilities: { ...FULL_CAPABILITIES, queue: readCount > 1 },
-        queue: { revision: 0 },
-        activeTurnId: "turn_1",
-      },
-    });
+    return {
+      ...readResponse("ref_a", {
+        status: { type: "active" },
+        evener: {
+          ref: "ref_a",
+          capabilities: { ...FULL_CAPABILITIES, queue: readCount > 1 },
+          queue: { revision: 0 },
+          activeTurnId: "turn_1",
+        },
+      }),
+      ...(params.requestGeneration !== undefined ? { requestGeneration: params.requestGeneration } : {}),
+    };
   });
   fake.on("turn/queue", (params) => ({
     receipt: {

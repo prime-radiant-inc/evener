@@ -50,12 +50,26 @@ export function ackAskUserCall(
     },
   };
   fake.emitNotification({
-    method: "item/started",
-    params: { ...base, item: { ...base.item, status: "inProgress" } },
+    method: "history/updated",
+    params: {
+      threadId: base.threadId,
+      ref: base.ref,
+      bootGeneration: "1",
+      epoch: 1,
+      snapshot: { incarnation: "inc-1", length: 1 },
+      items: [{ ...base.item, turnId: base.turnId, status: "inProgress" }],
+    },
   });
   fake.emitNotification({
-    method: "item/completed",
-    params: { ...base, item: { ...base.item, status: "completed" } },
+    method: "history/updated",
+    params: {
+      threadId: base.threadId,
+      ref: base.ref,
+      bootGeneration: "1",
+      epoch: 1,
+      snapshot: { incarnation: "inc-1", length: 1 },
+      items: [{ ...base.item, turnId: base.turnId, status: "completed" }],
+    },
   });
   fake.emitNotification(askPendingStatusChanged(ref));
 }
