@@ -353,6 +353,13 @@ func (s *Session) recordEnvironmentOwnership(env execenv.ExecutionEnvironment, o
 // No owner is left to hand anything to, so its owned scratch goes with it.
 func disposeUnadoptedSubagentSession(sess *Session) {
 	teardownChildSession(context.Background(), sess, disposeChildScratch)
+	// The delegation's durable artifacts directory is created at creation, so a
+	// child disposed before it was ever adopted must take its artifacts with it;
+	// the transcript and metadata are left for the resumability evidence the
+	// teardown above preserves.
+	if sess != nil {
+		_ = removeDelegateArtifacts(sess.stateDir, sess.id)
+	}
 }
 
 func (p *preparedSubagentRun) disposeUnadopted() {

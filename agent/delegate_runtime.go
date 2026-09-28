@@ -1788,12 +1788,30 @@ func (runtime delegateRuntime) create(ctx context.Context, args delegateArgs) de
 		isolation.cleanup(s, reservation.delegateID)
 		return delegateStartFailed(err)
 	}
+	// Every delegation gets its own durable artifacts directory at creation,
+	// under its own session state (<stateDir>/sessions/<childSessionID>) rather
+	// than a /tmp scratch base, so a read-only or non-writing seat has a private
+	// place for report artifacts that survives it and is named in the creation
+	// result. A failure here aborts the committed start through the same
+	// construction-failure path as any later failure.
+	var artifactsDir string
 	createResult := func(result delegateResult) delegateResult {
 		if selection.warning != nil {
 			result.Warnings = []string{selection.warning.Message}
 		}
 		result.Worktree = s.stableDelegateWorktreeReport(started.descriptor)
+		result.ArtifactsDir = artifactsDir
 		return result
+	}
+	if childID := strings.TrimSpace(started.descriptor.ChildSessionID); childID != "" {
+		artifactsDir, err = ensureDelegateArtifactsDir(s.stateDir, childID)
+		if err != nil {
+			// No child session exists yet, so the directory this call may have
+			// partially created is not covered by the unadopted-child disposal
+			// below; take it back here.
+			_ = removeDelegateArtifacts(s.stateDir, childID)
+			return createResult(runtime.failCommittedStart(started, isolation, nil, false, err, "artifacts_dir_failed"))
+		}
 	}
 	s.delegateController.emitDelegateUpdate(started.plan)
 	prepared, err := runtime.construct(ctx, args, selection, started, isolation)

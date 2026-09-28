@@ -100,6 +100,10 @@ type stableDelegateCreateResult struct {
 	Worktree       *delegateWorktreeToolResult `json:"worktree,omitempty"`
 	Warnings       []string                    `json:"warnings,omitempty"`
 	StartError     string                      `json:"error,omitempty"`
+	// ArtifactsDir names the delegation's durable per-delegation artifacts
+	// directory so the controller can reference it in briefs and hand it to
+	// later seats. It dies with the delegate's own session state.
+	ArtifactsDir string `json:"artifacts_dir,omitempty"`
 }
 
 func registerStableDelegateTool(reg *tool.Registry, s *Session) error {
@@ -203,6 +207,7 @@ func stableDelegateCreateTool(ctx context.Context, s *Session, args map[string]a
 		Model:          result.Model,
 		Sandbox:        delegateSandboxToolResultFrom(result.Sandbox),
 		Worktree:       delegateWorktreeToolResultFrom(result.Worktree),
+		ArtifactsDir:   result.ArtifactsDir,
 		Warnings:       append([]string(nil), result.Warnings...),
 	}
 	if result.Err != nil {
@@ -218,6 +223,10 @@ func marshalStableDelegateCreateResult(out stableDelegateCreateResult, maxChars 
 	// Preserve the durable identity and outcome by dropping optional diagnostics
 	// from least to most useful before falling back to the bounded core.
 	out.StartError = ""
+	if fit, ok, err := marshalBoundedJSONWithFit(out, maxChars); err != nil || ok {
+		return fit, err
+	}
+	out.ArtifactsDir = ""
 	if fit, ok, err := marshalBoundedJSONWithFit(out, maxChars); err != nil || ok {
 		return fit, err
 	}

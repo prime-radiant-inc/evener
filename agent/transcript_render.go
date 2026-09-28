@@ -1306,6 +1306,7 @@ var jobResultKnownKeys = map[string]bool{
 	"latest_activity_at":  true, // delegateSendResult
 	"cumulative_usage":    true, // delegateSendResult
 	"tools":               true, // stableDelegateCreateResult, delegateSendResult
+	"artifacts_dir":       true, // stableDelegateCreateResult
 }
 
 var jobResultMetadataKeys = []string{
