@@ -1413,7 +1413,7 @@ func fuzzScenarioBuildTree_ClampsSubagentsOfDeadParent(t *testing.T) {
 // state: no flag, no tool, no target.
 func fuzzScenarioBuildTree_DeadParentClearsItsSubagentsApproval(t *testing.T) {
 	child := staleSubagentOfDeadParent(t, LiveEntry{PID: 9, SessionID: "01STALESUB", Status: appwire.ThreadStatusActive, PendingEscalation: true, PendingEscalations: []appwire.SandboxEscalationRequested{
-		{EscalationID: "esc_1", Tool: "write_file", Kind: "file", DeniedPath: "/home/me/sites/docs/index.md"},
+		{EscalationID: "esc_1", Tool: "write_file", Kind: "file_tool", DeniedPath: "/home/me/sites/docs/index.md"},
 	}})
 	if child.State != "ended" || child.ApprovalPending || child.ApprovalTool != "" || child.ApprovalTarget != "" {
 		t.Fatalf("stale subagent = state %q, approval %v %q %q; want ended with no approval", child.State, child.ApprovalPending, child.ApprovalTool, child.ApprovalTarget)
@@ -2406,8 +2406,8 @@ func fuzzScenarioLiveTier_LiveOnlyLeafCarriesApprovalPending(t *testing.T) {
 // builder names the oldest pending card's tool and target too.
 func fuzzScenarioLiveTier_LiveOnlyLeafCarriesTheFirstApproval(t *testing.T) {
 	live := []LiveEntry{{PID: 1, SessionID: "01NOMETA", Status: appwire.ThreadStatusActive, PendingEscalation: true, PendingEscalations: []appwire.SandboxEscalationRequested{
-		{EscalationID: "esc_1", Tool: "write_file", Kind: "file", DeniedPath: "/home/me/sites/docs/index.md"},
-		{EscalationID: "esc_2", Tool: "edit_file", Kind: "file", DeniedPath: "/etc/hosts"},
+		{EscalationID: "esc_1", Tool: "write_file", Kind: "file_tool", DeniedPath: "/home/me/sites/docs/index.md"},
+		{EscalationID: "esc_2", Tool: "edit_file", Kind: "file_tool", DeniedPath: "/etc/hosts"},
 	}}}
 	tree := buildTree(nil, live)
 	if len(tree.Live) != 1 || tree.Live[0].ApprovalTool != "write_file" || tree.Live[0].ApprovalTarget != "/home/me/sites/docs/index.md" {

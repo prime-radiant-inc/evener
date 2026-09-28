@@ -271,7 +271,8 @@ describe("effective transcript display state", () => {
     );
     expect(transcriptDisplayStore.getState().drafts.desktop).toBeUndefined();
     expect(transcriptDisplayStore.getState().hub.desktop).toEqual({ revision: 4, config: preset("full") });
-    expect(transcriptDisplayStore.getState().hubError).toBe("revision conflict");
+    expect(transcriptDisplayStore.getState().hubErrors.desktop).toBe("revision conflict");
+    expect(transcriptDisplayStore.getState().hubError).toBeNull();
   });
 
   test("ignores a stale post-apply reconciliation once a newer patch has committed", async () => {

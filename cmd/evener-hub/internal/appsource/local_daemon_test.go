@@ -1188,8 +1188,8 @@ func TestThreadFromEntryReadOnlyAliasCarriesKindAndParentRef(t *testing.T) {
 func TestThreadFromEntryCarriesPendingEscalationCards(t *testing.T) {
 	source := NewLocalDaemonSourceWithEntries("local", func() []LocalDaemonEntry { return nil }, nil)
 	cards := []appwire.SandboxEscalationRequested{
-		{ThreadID: "sess_root", Ref: "local:sess_root", EscalationID: "esc_1", Tool: "write_file", Kind: "file", DeniedPath: "/srv/docs/a.md"},
-		{ThreadID: "sess_root", Ref: "local:sess_root", EscalationID: "esc_2", Tool: "edit_file", Kind: "file", DeniedPath: "/srv/docs/b.md"},
+		{ThreadID: "sess_root", Ref: "local:sess_root", EscalationID: "esc_1", Tool: "write_file", Kind: "file_tool", DeniedPath: "/srv/docs/a.md"},
+		{ThreadID: "sess_root", Ref: "local:sess_root", EscalationID: "esc_2", Tool: "edit_file", Kind: "file_tool", DeniedPath: "/srv/docs/b.md"},
 	}
 	item := LocalDaemonEntry{
 		Entry: rendezvous.Entry{
