@@ -97,7 +97,7 @@ func TestRestoreSessionLifetimeOwnsRootAndChild(t *testing.T) {
 		ID:        ulid.Make().String(),
 		ProfileID: "openai",
 		Model:     "gpt-5.2",
-		Config:    (SessionConfig{MaxSubagentDepth: 1, NoProjectPrompts: true}).toSnapshot(),
+		Config:    (SessionConfig{MaxSubagentDepth: 1}).toSnapshot(),
 	}
 	restored, err := RestoreSessionFromMetaWithConfig(
 		client,

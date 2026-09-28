@@ -215,7 +215,6 @@ func TestTaskInactivityReminderGatesAtTheCallSite(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			s := newSession(t, withDir(t.TempDir()), withConfig(SessionConfig{
 				MaxSubagentDepth: 1,
-				NoProjectPrompts: true,
 				testOnly:         testConfig{skipGitSnapshot: true, minimalSystemPrompt: true, noSyncJobStore: true},
 			}))
 			store := s.getOrCreateTaskStore()
@@ -254,7 +253,6 @@ func TestTasksDoneReminderUsesTheRenamedResultToolAtTheCallSite(t *testing.T) {
 	t.Parallel()
 	s := newSession(t, withDir(t.TempDir()), withConfig(SessionConfig{
 		MaxSubagentDepth: 1,
-		NoProjectPrompts: true,
 		ResultToolName:   "report_result",
 		testOnly:         testConfig{skipGitSnapshot: true, minimalSystemPrompt: true, noSyncJobStore: true},
 	}))

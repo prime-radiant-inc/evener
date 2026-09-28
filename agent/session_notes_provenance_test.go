@@ -182,7 +182,7 @@ func TestRestoredHistoryCopyKeepsOrdinarySteerThatImitatesTheNotePrefix(t *testi
 		ID:        sessionID,
 		ProfileID: "openai",
 		Model:     "gpt-5.2",
-		Config:    (SessionConfig{NoProjectPrompts: true}).toSnapshot(),
+		Config:    (SessionConfig{}).toSnapshot(),
 	}
 	restored, err := RestoreSessionFromMetaWithConfig(
 		c,
@@ -418,7 +418,7 @@ func TestRestoredForkEscapesItsInheritedPrefixWithoutTheChildJournal(t *testing.
 		ID:        sessionID,
 		ProfileID: "openai",
 		Model:     "gpt-5.2",
-		Config:    (SessionConfig{NoProjectPrompts: true}).toSnapshot(),
+		Config:    (SessionConfig{}).toSnapshot(),
 		// The child diverged after its first turn: one inherited turn precedes it.
 		ParentSessionID: "01KPARENT0000000000000000",
 		DivergenceTurn:  2,
@@ -512,7 +512,7 @@ func TestRestoredCompactedForkKeepsItsOwnTurnProvenance(t *testing.T) {
 		ID:        sessionID,
 		ProfileID: "openai",
 		Model:     "gpt-5.2",
-		Config:    (SessionConfig{NoProjectPrompts: true}).toSnapshot(),
+		Config:    (SessionConfig{}).toSnapshot(),
 		// Two inherited turns precede the child's own history.
 		ParentSessionID: "01KPARENT0000000000000000",
 		DivergenceTurn:  3,
@@ -603,7 +603,7 @@ func TestRestoredForkBoundaryCountsRepairInsertions(t *testing.T) {
 		ID:        sessionID,
 		ProfileID: "openai",
 		Model:     "gpt-5.2",
-		Config:    (SessionConfig{NoProjectPrompts: true}).toSnapshot(),
+		Config:    (SessionConfig{}).toSnapshot(),
 		// Three inherited turns precede the child's own history.
 		ParentSessionID: "01KPARENT0000000000000000",
 		DivergenceTurn:  4,

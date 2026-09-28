@@ -238,35 +238,14 @@ func layerRows(l, effective appwire.LaunchConfigLayer) []layerRow {
 		}
 		return strconv.Itoa(*p)
 	}
-	ptrBoolStr := func(p *bool) string {
-		if p == nil {
-			return "(default)"
-		}
-		if *p {
-			return "true"
-		}
-		return "false"
-	}
-	// resolvedPtrIntStr/resolvedPtrBoolStr render a nil pointer as the
-	// resolved effective value with a " (default)" suffix, keeping the bare
-	// "(default)" label when the effective layer leaves the field unset too.
+	// resolvedPtrIntStr renders a nil pointer as the resolved effective value
+	// with a " (default)" suffix, keeping the bare "(default)" label when the
+	// effective layer leaves the field unset too.
 	resolvedPtrIntStr := func(p, eff *int) string {
 		if p != nil {
 			return strconv.Itoa(*p)
 		}
 		if r := ptrIntStr(eff); r != "(default)" {
-			return r + " (default)"
-		}
-		return "(default)"
-	}
-	resolvedPtrBoolStr := func(p, eff *bool) string {
-		if p != nil {
-			if *p {
-				return "true"
-			}
-			return "false"
-		}
-		if r := ptrBoolStr(eff); r != "(default)" {
 			return r + " (default)"
 		}
 		return "(default)"
@@ -283,7 +262,6 @@ func layerRows(l, effective appwire.LaunchConfigLayer) []layerRow {
 		{"max_subagent_depth", "max_subagent_depth", resolvedPtrIntStr(l.MaxSubagentDepth, effective.MaxSubagentDepth), ptrIntStr(l.MaxSubagentDepth), false},
 		{"max_concurrent_delegate_turns", "max_concurrent_delegate_turns", resolvedPtrIntStr(l.MaxConcurrentDelegateTurns, effective.MaxConcurrentDelegateTurns), ptrIntStr(l.MaxConcurrentDelegateTurns), false},
 		{"max_retained_terminal", "max_retained_terminal", resolvedPtrIntStr(l.MaxRetainedTerminal, effective.MaxRetainedTerminal), ptrIntStr(l.MaxRetainedTerminal), false},
-		{"no_project_prompts", "no_project_prompts", resolvedPtrBoolStr(l.NoProjectPrompts, effective.NoProjectPrompts), ptrBoolStr(l.NoProjectPrompts), false},
 		{"skills_dirs", "skills_dirs", fmt.Sprintf("%d entries", len(l.SkillsDirs)), strings.Join(l.SkillsDirs, ", "), true},
 		{"plugin_dirs", "plugin_dirs", fmt.Sprintf("%d entries", len(l.PluginDirs)), strings.Join(l.PluginDirs, ", "), true},
 		{"mcp_configs", "mcp_configs", fmt.Sprintf("%d entries", len(l.MCPConfigs)), strings.Join(l.MCPConfigs, ", "), true},
@@ -439,12 +417,6 @@ func applyEdit(layer appwire.LaunchConfigLayer, field, value string) (appwire.La
 			return layer, err
 		}
 		layer.AppReplaySize = v
-	case "no_project_prompts":
-		v, err := parseOptionalBool(value)
-		if err != nil {
-			return layer, err
-		}
-		layer.NoProjectPrompts = v
 	case "sandbox_net":
 		v, err := parseOptionalBool(value)
 		if err != nil {

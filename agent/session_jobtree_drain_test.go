@@ -677,7 +677,7 @@ func TestDrainSettlesRootDurableOnlyPending(t *testing.T) {
 			for i := range steps {
 				steps[i] = func(llm.Request) llm.Response { return finalResponse("ack") }
 			}
-			sess := newSession(t, withSteps(steps...), withConfig(SessionConfig{NoProjectPrompts: true}))
+			sess := newSession(t, withSteps(steps...), withConfig(SessionConfig{}))
 			jm := sess.jobManager
 			seedOwnedDurablePending(t, jm, tt.jobID, tt.typ)
 			if p := sess.peekNotifications(); p != 0 {
@@ -722,7 +722,7 @@ func TestDrainSettlesAlreadyInjectedDurablePending(t *testing.T) {
 			for i := range steps {
 				steps[i] = func(llm.Request) llm.Response { return finalResponse("ack") }
 			}
-			sess := newSession(t, withSteps(steps...), withConfig(SessionConfig{NoProjectPrompts: true}))
+			sess := newSession(t, withSteps(steps...), withConfig(SessionConfig{}))
 			jm := sess.jobManager
 			seedOwnedDurablePending(t, jm, tt.jobID, tt.typ)
 
@@ -795,13 +795,13 @@ func TestDrainSettlesChildDurableOnlyPending(t *testing.T) {
 			for i := range rootSteps {
 				rootSteps[i] = func(llm.Request) llm.Response { return finalResponse("root-ack") }
 			}
-			root := newSession(t, withSteps(rootSteps...), withConfig(SessionConfig{NoProjectPrompts: true}))
+			root := newSession(t, withSteps(rootSteps...), withConfig(SessionConfig{}))
 
 			childSteps := make([]func(llm.Request) llm.Response, 8)
 			for i := range childSteps {
 				childSteps[i] = func(llm.Request) llm.Response { return finalResponse("child-ack") }
 			}
-			child := newSession(t, withSteps(childSteps...), withConfig(SessionConfig{NoProjectPrompts: true}))
+			child := newSession(t, withSteps(childSteps...), withConfig(SessionConfig{}))
 			childID := child.ID()
 
 			root.subagents.mu.Lock()
@@ -839,7 +839,7 @@ func TestDrainJobTreeBatchesQueuedShellNotifications(t *testing.T) {
 			func(llm.Request) llm.Response { return finalResponse("batch handled") },
 		},
 	}
-	sess := newSession(t, withAdapter(adapter), withConfig(SessionConfig{NoProjectPrompts: true}))
+	sess := newSession(t, withAdapter(adapter), withConfig(SessionConfig{}))
 	jm := sess.jobManager
 	seedOwnedDurablePending(t, jm, "shell-batch-one", jobstore.JobShell)
 	seedOwnedDurablePending(t, jm, "shell-batch-two", jobstore.JobShell)
@@ -876,7 +876,7 @@ func TestDrainJobTreeConsumesRootDelegateAttentionBeforeCompletion(t *testing.T)
 	requestSawAttention := false
 	root := newSession(t,
 		withDir(stateDir),
-		withConfig(SessionConfig{StateDir: stateDir, MaxSubagentDepth: 1, NoProjectPrompts: true}),
+		withConfig(SessionConfig{StateDir: stateDir, MaxSubagentDepth: 1}),
 		withSteps(func(req llm.Request) llm.Response {
 			requestSawAttention = requestContainsText(req, content)
 			return toolCallResponse(communicateCall("root-attention-drain", "root attention drained"))
@@ -930,7 +930,6 @@ func TestDrainJobTreeWaitsForRunningDelegate(t *testing.T) {
 	sess := newSession(t, withDir(stateDir), withSteps(steps...), withConfig(SessionConfig{
 		StateDir:         stateDir,
 		MaxSubagentDepth: 2,
-		NoProjectPrompts: true,
 	}))
 
 	// Background a delegate; it runs to completion in its own goroutine and
@@ -974,8 +973,7 @@ func TestDrainJobTreeWaitsForForegroundPromotedShell(t *testing.T) {
 		},
 	}
 	sess := newSession(t, withAdapter(adapter), withConfig(SessionConfig{
-		NoProjectPrompts: true,
-		clock:            clk,
+		clock: clk,
 	}))
 	sess.stopLaneResidueSweepTimer()
 	se := newDelayedSuccessStreamingExecutor()
@@ -1054,7 +1052,7 @@ func TestDrainDoesNotExcuseFiredReadinessWatch(t *testing.T) {
 	adapter := &fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
 		func(llm.Request) llm.Response { return finalResponse("readiness acknowledged") },
 	}}
-	sess := newSession(t, withAdapter(adapter), withConfig(SessionConfig{NoProjectPrompts: true, TurnEndsProcess: true}))
+	sess := newSession(t, withAdapter(adapter), withConfig(SessionConfig{TurnEndsProcess: true}))
 	shell := sess.reg.ExecuteCall(context.Background(), sess.env, llm.ToolCallData{
 		ID: "shell", Name: "shell", Arguments: json.RawMessage(`{"command":"printf READY\\n; sleep 5","mode":"background"}`),
 	})

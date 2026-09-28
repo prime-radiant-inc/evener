@@ -42,6 +42,8 @@ import {
 } from "./src/screens";
 import { SHEET_ROUTES } from "./src/sheet/sheetRoutes";
 import { QueueSheet } from "./src/QueueSheet";
+import { OutlineSheet } from "./src/reader/OutlineSheet";
+import { ReaderScreen } from "./src/reader/ReaderScreen";
 import { TasksSheet } from "./src/TasksSheet";
 import { TranscriptPreferencesScreen } from "./src/TranscriptPreferencesScreen";
 import { ErrorMessage, useColors } from "./src/ui";
@@ -202,6 +204,11 @@ function Navigation() {
 							title: route.params.title || "Conversation",
 						})}
 					/>
+					<Stack.Screen
+						name="Reader"
+						component={ReaderScreen}
+						options={{ title: "" }}
+					/>
 					<Stack.Group
 						screenOptions={{
 							contentStyle: { backgroundColor: colors.palette.canvas },
@@ -221,6 +228,11 @@ function Navigation() {
 							name="QueueSheet"
 							component={QueueSheet}
 							options={SHEET_ROUTES.QueueSheet}
+						/>
+						<Stack.Screen
+							name="OutlineSheet"
+							component={OutlineSheet}
+							options={SHEET_ROUTES.OutlineSheet}
 						/>
 					</Stack.Group>
 				</Stack.Navigator>

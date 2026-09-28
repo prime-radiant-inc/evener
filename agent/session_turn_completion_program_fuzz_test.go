@@ -229,7 +229,6 @@ func tfpNewSession(t *testing.T, program tfpProgram, adapter *tfpAdapter) *Sessi
 		LLMRetryPolicy:     &policy,
 		ReasoningEffort:    program.effort,
 		SystemPromptAsUser: program.systemPromptAsUser,
-		NoProjectPrompts:   true,
 		clock:              agenttest.NewFakeClock(),
 		testOnly: testConfig{
 			skipGitSnapshot:     true,
@@ -461,7 +460,6 @@ func sefNewSession(t *testing.T) *Session {
 	client.Register(&tfpAdapter{program: tfpProgram{scenario: tfpDirect, text: "unused"}})
 	sess, err := NewSession(client, NewOpenAIProfile("primary"), &agenttest.DenyEnv{WorkDir: t.TempDir()}, SessionConfig{
 		MaxSubagentDepth: 1,
-		NoProjectPrompts: true,
 		clock:            agenttest.NewFakeClock(),
 		testOnly: testConfig{
 			skipGitSnapshot:     true,

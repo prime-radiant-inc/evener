@@ -38,7 +38,6 @@ func TestLinuxEnforcedSandboxKeepsTrustedResourcesOutsideModelShellMask(t *testi
 	client.Register(&fakeAdapter{name: "openai"})
 	sess, err := NewSession(client, NewOpenAIProfile("gpt-5.2"), env, SessionConfig{
 		MaxSubagentDepth: 1,
-		NoProjectPrompts: true,
 	})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)

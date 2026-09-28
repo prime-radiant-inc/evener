@@ -484,7 +484,6 @@ func TestClientMutation_ProcessStartUsesDurablePayloadAndIdentity(t *testing.T) 
 		withSteps(func(llm.Request) llm.Response { return finalResponse("done") }),
 		withConfig(SessionConfig{
 			MaxSubagentDepth: 1,
-			NoProjectPrompts: true,
 			testOnly:         testConfig{skipGitSnapshot: true, minimalSystemPrompt: true, noSyncJobStore: true},
 		}),
 	)

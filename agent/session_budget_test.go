@@ -27,7 +27,6 @@ func newBudgetSession(
 	adapter := &agenttest.ScriptedAdapter{Provider: "openai", Responder: responder}
 	client := llm.NewClient()
 	client.Register(adapter)
-	cfg.NoProjectPrompts = true
 	cfg.clock = agenttest.NewFakeClock()
 	cfg.testOnly.skipGitSnapshot = true
 	cfg.testOnly.minimalSystemPrompt = true

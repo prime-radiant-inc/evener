@@ -2208,7 +2208,7 @@ func TestDelegateAttention_PostAckArmReadFailureRetriesExactID(t *testing.T) {
 	clock := agenttest.NewFakeClock()
 	root := newSession(t,
 		withDir(stateDir),
-		withConfig(SessionConfig{StateDir: stateDir, MaxSubagentDepth: 1, NoProjectPrompts: true, clock: clock}),
+		withConfig(SessionConfig{StateDir: stateDir, MaxSubagentDepth: 1, clock: clock}),
 		withSteps(func(llm.Request) llm.Response {
 			return communicateResponse(true, "retried exact attention")
 		}),
@@ -2883,7 +2883,7 @@ func TestRootDelegateAttention_DurableAppendWaitsForSourceSettlementBeforeWake(t
 	stateDir := t.TempDir()
 	root := newSession(t,
 		withDir(stateDir),
-		withConfig(SessionConfig{StateDir: stateDir, MaxSubagentDepth: 1, NoProjectPrompts: true}),
+		withConfig(SessionConfig{StateDir: stateDir, MaxSubagentDepth: 1}),
 	)
 	wakes := make(chan struct{}, 1)
 	root.SetNotifyFunc(func() { wakes <- struct{}{} })
@@ -2920,7 +2920,7 @@ func TestRootDelegateAttention_SuccessfulNotificationConsumesExactIDs(t *testing
 	requestSawAttention := false
 	root := newSession(t,
 		withDir(stateDir),
-		withConfig(SessionConfig{StateDir: stateDir, MaxSubagentDepth: 1, NoProjectPrompts: true}),
+		withConfig(SessionConfig{StateDir: stateDir, MaxSubagentDepth: 1}),
 		withSteps(func(req llm.Request) llm.Response {
 			requestSawAttention = requestContainsText(req, content)
 			return toolCallResponse(communicateCall("root-attention-consumed", "completion received"))
@@ -2974,7 +2974,7 @@ func TestRootDelegateAttention_MidTurnArmedAttentionConsumedWithoutRedundantWake
 	)
 	root = newSession(t,
 		withDir(stateDir),
-		withConfig(SessionConfig{StateDir: stateDir, MaxSubagentDepth: 1, NoProjectPrompts: true}),
+		withConfig(SessionConfig{StateDir: stateDir, MaxSubagentDepth: 1}),
 		withSteps(
 			func(llm.Request) llm.Response {
 				calls++
@@ -3059,7 +3059,7 @@ func TestRootDelegateAttention_PostBuildArmedAttentionStaysPendingForWake(t *tes
 	)
 	root = newSession(t,
 		withDir(stateDir),
-		withConfig(SessionConfig{StateDir: stateDir, MaxSubagentDepth: 1, NoProjectPrompts: true}),
+		withConfig(SessionConfig{StateDir: stateDir, MaxSubagentDepth: 1}),
 		withSteps(
 			func(llm.Request) llm.Response {
 				calls++
@@ -3144,7 +3144,7 @@ func TestRootDelegateAttention_EmptySnapshotNotificationTurnConsumesCoveredDeliv
 	)
 	root = newSession(t,
 		withDir(stateDir),
-		withConfig(SessionConfig{StateDir: stateDir, MaxSubagentDepth: 1, NoProjectPrompts: true}),
+		withConfig(SessionConfig{StateDir: stateDir, MaxSubagentDepth: 1}),
 		withSteps(
 			func(llm.Request) llm.Response {
 				calls++
@@ -3211,7 +3211,7 @@ func TestRootDelegateAttention_UserTurnConsumesCoveredMidTurnDelivery(t *testing
 	)
 	root = newSession(t,
 		withDir(stateDir),
-		withConfig(SessionConfig{StateDir: stateDir, MaxSubagentDepth: 1, NoProjectPrompts: true}),
+		withConfig(SessionConfig{StateDir: stateDir, MaxSubagentDepth: 1}),
 		withSteps(
 			func(llm.Request) llm.Response {
 				if appendErr == nil {
@@ -3282,7 +3282,7 @@ func TestRootDelegateAttention_CoverageExcludesAttentionArmedBeforeTurnBegin(t *
 	)
 	root := newSession(t,
 		withDir(stateDir),
-		withConfig(SessionConfig{StateDir: stateDir, MaxSubagentDepth: 1, NoProjectPrompts: true}),
+		withConfig(SessionConfig{StateDir: stateDir, MaxSubagentDepth: 1}),
 	)
 	if _, err := root.appendDelegateNotificationDurably(preTurnID, preContent); err != nil {
 		t.Fatalf("append pre-turn attention: %v", err)
@@ -3357,7 +3357,7 @@ func TestRootDelegateAttention_DeltaRequestStagesNothing(t *testing.T) {
 	)
 	root := newSession(t,
 		withDir(stateDir),
-		withConfig(SessionConfig{StateDir: stateDir, MaxSubagentDepth: 1, NoProjectPrompts: true}),
+		withConfig(SessionConfig{StateDir: stateDir, MaxSubagentDepth: 1}),
 	)
 	root.resetRootDelegateAttentionCoverage()
 	if _, err := root.appendDelegateNotificationDurably(attentionID, content); err != nil {
@@ -3404,7 +3404,7 @@ func TestRootDelegateAttention_CoverageCreditsOnlySettledRounds(t *testing.T) {
 	)
 	root := newSession(t,
 		withDir(stateDir),
-		withConfig(SessionConfig{StateDir: stateDir, MaxSubagentDepth: 1, NoProjectPrompts: true}),
+		withConfig(SessionConfig{StateDir: stateDir, MaxSubagentDepth: 1}),
 	)
 	root.resetRootDelegateAttentionCoverage()
 	if _, err := root.appendDelegateNotificationDurably(attentionID, content); err != nil {
@@ -3478,7 +3478,7 @@ func TestRootDelegateAttention_EmptySnapshotCoverageFailureWarnsAndRetries(t *te
 	var root *Session
 	root = newSession(t,
 		withDir(stateDir),
-		withConfig(SessionConfig{StateDir: stateDir, MaxSubagentDepth: 1, NoProjectPrompts: true, clock: clock}),
+		withConfig(SessionConfig{StateDir: stateDir, MaxSubagentDepth: 1, clock: clock}),
 		withSteps(
 			func(llm.Request) llm.Response {
 				if _, err := root.appendDelegateNotificationDurably(attentionID, content); err != nil {
@@ -3547,7 +3547,7 @@ func TestRootDelegateAttention_PanicUnwindDoesNotConsumeCoverage(t *testing.T) {
 	)
 	root := newSession(t,
 		withDir(stateDir),
-		withConfig(SessionConfig{StateDir: stateDir, MaxSubagentDepth: 1, NoProjectPrompts: true}),
+		withConfig(SessionConfig{StateDir: stateDir, MaxSubagentDepth: 1}),
 	)
 	if _, err := root.appendDelegateNotificationDurably(attentionID, content); err != nil {
 		t.Fatalf("append attention: %v", err)
@@ -3591,7 +3591,7 @@ func TestRootDelegateAttention_CoveredResolutionFailureDoesNotFailUserTurn(t *te
 	var wakeTurnSaw bool
 	root = newSession(t,
 		withDir(stateDir),
-		withConfig(SessionConfig{StateDir: stateDir, MaxSubagentDepth: 1, NoProjectPrompts: true}),
+		withConfig(SessionConfig{StateDir: stateDir, MaxSubagentDepth: 1}),
 		withSteps(
 			func(llm.Request) llm.Response {
 				if _, err := root.appendDelegateNotificationDurably(attentionID, content); err != nil {
@@ -3638,7 +3638,7 @@ func TestRootDelegateAttention_FailedTurnWithSnapshotSkipsFoldRead(t *testing.T)
 	stateDir := t.TempDir()
 	root := newSession(t,
 		withDir(stateDir),
-		withConfig(SessionConfig{StateDir: stateDir, MaxSubagentDepth: 1, NoProjectPrompts: true}),
+		withConfig(SessionConfig{StateDir: stateDir, MaxSubagentDepth: 1}),
 	)
 	const (
 		snapshotID = "delegate:dlg_snapshotfail/delivery/1"
@@ -3682,7 +3682,7 @@ func TestRootDelegateAttention_FailedEmptySnapshotTurnStillReadsFold(t *testing.
 	stateDir := t.TempDir()
 	root := newSession(t,
 		withDir(stateDir),
-		withConfig(SessionConfig{StateDir: stateDir, MaxSubagentDepth: 1, NoProjectPrompts: true}),
+		withConfig(SessionConfig{StateDir: stateDir, MaxSubagentDepth: 1}),
 	)
 	const coveredID = "delegate:dlg_coveredgate/delivery/1"
 	if _, err := root.appendDelegateNotificationDurably(coveredID, `<delegate-notification delegate_id="dlg_coveredgate">gate needs the fold</delegate-notification>`); err != nil {
@@ -3727,7 +3727,7 @@ func TestRootDelegateAttention_FailedEmptyCoverageTurnRefiresViaArmKick(t *testi
 	var root *Session
 	root = newSession(t,
 		withDir(stateDir),
-		withConfig(SessionConfig{StateDir: stateDir, MaxSubagentDepth: 1, NoProjectPrompts: true, clock: clock}),
+		withConfig(SessionConfig{StateDir: stateDir, MaxSubagentDepth: 1, clock: clock}),
 		withSteps(
 			// The covering turn: appends and arms the attention mid-turn, then
 			// its round settles — the notification turn that consumes it comes
@@ -3796,7 +3796,7 @@ func TestRootDelegateAttention_FailedConsumptionRemainsPendingAndRearms(t *testi
 	clock := agenttest.NewFakeClock()
 	root := newSession(t,
 		withDir(stateDir),
-		withConfig(SessionConfig{StateDir: stateDir, MaxSubagentDepth: 1, NoProjectPrompts: true, clock: clock}),
+		withConfig(SessionConfig{StateDir: stateDir, MaxSubagentDepth: 1, clock: clock}),
 		withSteps(
 			func(llm.Request) llm.Response {
 				return toolCallResponse(communicateCall("root-attention-first", "first attempt"))

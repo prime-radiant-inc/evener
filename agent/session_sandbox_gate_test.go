@@ -25,7 +25,7 @@ func restoreWithSandbox(t *testing.T, mode string, prober sandbox.Prober) (*exec
 		ID:        "restored-sandbox-session",
 		ProfileID: "openai",
 		Model:     "gpt-5.2",
-		Config:    (SessionConfig{Sandbox: mode, NoProjectPrompts: true}).toSnapshot(),
+		Config:    (SessionConfig{Sandbox: mode}).toSnapshot(),
 	}
 	env := execenv.NewLocalExecutionEnvironment(dir)
 	sess, err := RestoreSessionFromMetaWithConfig(c, NewOpenAIProfile("gpt-5.2"), env, meta, RestoreSessionConfig{

@@ -18,7 +18,6 @@ func TestLaunchOptionValue_AllFields(t *testing.T) {
 		OpenAIResponsesContinuation: "on",
 		MaxRounds:                   new(10),
 		MaxSubagentDepth:            new(3),
-		NoProjectPrompts:            new(true),
 		AppReplaySize:               new(5),
 		SystemPromptMode:            "custom",
 		SystemPromptFile:            "/p",
@@ -52,7 +51,6 @@ func TestLaunchOptionValue_AllFields(t *testing.T) {
 		{"openai_responses_continuation", "on", "on"},
 		{"max_rounds", "10", "10"},
 		{"max_subagent_depth", "3", "3"},
-		{"no_project_prompts", "true", "true"},
 		{"app_replay_size", "5", "5"},
 		{"system_prompt_mode", "custom", "custom"},
 		{"system_prompt_file", "/p", "/p"},
@@ -88,7 +86,7 @@ func TestLaunchOptionValue_AllFields(t *testing.T) {
 
 func TestLaunchOptionValue_Defaults(t *testing.T) {
 	empty := appwire.LaunchConfigLayer{}
-	for _, field := range []string{"agent", "max_rounds", "no_project_prompts", "verbose", "api_log", "system_prompt_text"} {
+	for _, field := range []string{"agent", "max_rounds", "verbose", "api_log", "system_prompt_text"} {
 		value, _ := launchOptionValue(appwire.LaunchOption{Field: field}, empty, appwire.LaunchConfigLayer{})
 		if value != "(default)" {
 			t.Errorf("field %q value = %q, want (default)", field, value)
