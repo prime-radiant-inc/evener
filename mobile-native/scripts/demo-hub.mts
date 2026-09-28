@@ -13,6 +13,7 @@ import type {
 	TurnStartParams,
 } from "@evener/appwire-client";
 import { createDemoFleet, type DemoFleetOptions } from "../src/dev/demoFleet.js";
+import { createDemoSessions } from "../src/dev/demoSessions.js";
 
 export async function createDemoHub(
 	port = 9196,
@@ -79,6 +80,14 @@ export async function createDemoHub(
 		},
 	};
 	const threads = new Map([[thread.evener.ref, thread]]);
+	// Each fleet session's own thread, on the ref its Board row names, so
+	// opening a row reads a real conversation. An empty fleet has none.
+	const fleetThreads =
+		fleetOptions && !fleetOptions.empty
+			? createDemoSessions({ now: fleetOptions.now })
+			: [];
+	for (const fleetThread of fleetThreads)
+		threads.set(fleetThread.evener.ref, fleetThread);
 	let sessionNumber = 0;
 	const handshake: InitializeResponse = {
 		serverInfo: { name: "Native UI demonstration", version: "1" },

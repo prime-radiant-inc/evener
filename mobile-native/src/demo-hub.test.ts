@@ -7,7 +7,7 @@ import { createActivityStore } from "../../mobile/src/state/activity";
 import { createConversationStore } from "../../mobile/src/state/conversation";
 import { createDemoHub } from "../scripts/demo-hub.mjs";
 import { createHubClient } from "./connection";
-import { demoSessionId } from "./dev/demoFleet.js";
+import { type DemoFleetOptions, demoSessionId, fleetSessions } from "./dev/demoFleet.js";
 import { readOrganizationNavigation } from "./organizationNavigation";
 
 describe("native demonstration hub", () => {
@@ -504,6 +504,63 @@ describe("native demonstration hub's redesign fleet", () => {
 			client.close();
 			await hub.close();
 		}
+	});
+});
+
+describe("native demonstration hub's fleet sessions", () => {
+	// A hub (a fleet hub unless fleetOptions is undefined) and a connected
+	// client, closed after `body` runs.
+	async function withHub(
+		fleetOptions: DemoFleetOptions | undefined,
+		body: (client: ReturnType<typeof createHubClient>) => Promise<void>,
+	) {
+		const hub = await createDemoHub(0, undefined, fleetOptions);
+		const client = createHubClient(
+			hub.origin,
+			"",
+			(url) => new WebSocket(url) as unknown as WebSocketLike,
+		);
+		try {
+			await client.connect();
+			await body(client);
+		} finally {
+			client.close();
+			await hub.close();
+		}
+	}
+	const refOf = (slug: string) => {
+		const session = fleetSessions().find((candidate) => candidate.slug === slug);
+		if (!session) throw new Error(`no fleet session ${slug}`);
+		return session.ref;
+	};
+
+	it("opens every live fleet session, so the title's swipe lands on real neighbors", async () => {
+		await withHub({}, async (client) => {
+			const service = createConversationService(client);
+			try {
+				for (const session of fleetSessions().filter(
+					(candidate) => candidate.state !== "shutdown",
+				)) {
+					const conversation = await service.open(session.ref);
+					expect(conversation.name).toBe(session.title);
+					expect(conversation.items.length).toBeGreaterThan(0);
+				}
+				const turns = await client.request("thread/turns/list", {
+					ref: refOf("s-pr2138"),
+				});
+				expect(turns.data).toEqual([]);
+			} finally {
+				service.close();
+			}
+		});
+	});
+
+	it("serves no fleet session without EVENER_DEMO_FLEET", async () => {
+		await withHub(undefined, async (client) => {
+			await expect(
+				client.request("thread/read", { ref: refOf("s-pr2138") }),
+			).rejects.toThrow("Unknown demonstration session");
+		});
 	});
 });
 
