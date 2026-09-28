@@ -1076,3 +1076,74 @@ test("a stopped read renders a visible progress state on the row, never a silent
     vi.useRealTimers();
   }
 });
+
+test("a slow read is not re-issued by later ticks, and still publishes when it lands", async () => {
+  vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+  try {
+    const fake = connectFakeClient();
+    fake.on("evener/host/list", () => ({ hosts: [row({ name: "beta", address: "b.example" })] }));
+    fake.on("evener/host/plan", () => ({ outcome: "planned", plan: planFixture(), token: "tok-1" }));
+    fake.on("evener/host/deploy", () => ({ id: "op-1", clientOperationId: "client-op-1", state: "pending" }));
+    const settlements = gateSettlements(fake, "evener/host/operations");
+    render(<HostsSection sectionId="hosts" />);
+    const betaRow = (await screen.findByText("beta")).closest("li")!;
+    fireEvent.click(within(betaRow).getByRole("button", { name: "Deploy" }));
+    const dialog = await screen.findByRole("dialog", { name: "Deploy beta" });
+    await waitFor(() => expect(within(dialog).getByText("/srv/evener/evener")).toBeTruthy());
+    fireEvent.click(within(dialog).getByRole("button", { name: "Deploy" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+
+    // The first tick's read hangs. Later ticks must not pile more reads on top
+    // of it (one outstanding read per operation)...
+    await act(() => vi.advanceTimersByTimeAsync(OPERATION_POLL_MS * 4));
+    expect(operationReads(fake)).toBe(1);
+
+    // ...and when it lands, its record still publishes: the tick never issued a
+    // newer read that would have starved this one.
+    await act(async () => {
+      settlements[0]!.resolve({
+        operations: [operationRecord({ state: "complete", result: { ok: true, message: "deployed 1.5.0" } })],
+      });
+    });
+    await waitFor(() => expect(within(betaRow).getByText("deployed 1.5.0")).toBeTruthy());
+    expect(within(betaRow).getByText("Deploy complete")).toBeTruthy();
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+test("an operation from a previous incarnation of a re-created name is not rendered", async () => {
+  vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+  try {
+    const fake = connectFakeClient();
+    // The row is the re-created host (generation 1/inc-1); the record still
+    // pinned the previous incarnation the name had before the re-add.
+    fake.on("evener/host/list", () => ({ hosts: [row({ name: "beta", address: "b.example" })] }));
+    fake.on("evener/host/plan", () => ({ outcome: "planned", plan: planFixture(), token: "tok-1" }));
+    fake.on("evener/host/deploy", () => ({ id: "op-1", clientOperationId: "client-op-1", state: "pending" }));
+    fake.on("evener/host/operations", () => ({
+      operations: [
+        operationRecord({
+          generation: 9,
+          incarnationId: "inc-9",
+          state: "running",
+          progress: [{ ts: "t", message: "old incarnation work" }],
+        }),
+      ],
+    }));
+    render(<HostsSection sectionId="hosts" />);
+    const betaRow = (await screen.findByText("beta")).closest("li")!;
+    fireEvent.click(within(betaRow).getByRole("button", { name: "Deploy" }));
+    const dialog = await screen.findByRole("dialog", { name: "Deploy beta" });
+    await waitFor(() => expect(within(dialog).getByText("/srv/evener/evener")).toBeTruthy());
+    fireEvent.click(within(dialog).getByRole("button", { name: "Deploy" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+
+    await act(() => vi.advanceTimersByTimeAsync(OPERATION_POLL_MS));
+    await waitFor(() => expect(hostOpsStore.getState().operations.beta?.fetched).toBe(true));
+    expect(within(betaRow).queryByText("old incarnation work")).toBeNull();
+    expect(within(betaRow).queryByText("Deploying…")).toBeNull();
+  } finally {
+    vi.useRealTimers();
+  }
+});

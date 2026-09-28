@@ -317,6 +317,14 @@ export interface HostOperationRef {
    * the operation, refreshed from the record. */
   kind: string;
   state: string;
+  /** The record's host and pinned (generation, incarnation id) pair: the seed
+   * carries what the starting call knew (the plan's generation, the restart's
+   * pair), and the first read replaces them with the record's own. They are
+   * what lets a row refuse to display another incarnation's operation after a
+   * same-name remove/re-add. */
+  host?: string;
+  generation?: number;
+  incarnationId?: string;
   /** The record's progress entries, newest last (08b §10). Empty until the
    * first read answers. */
   progress: OperationProgressEntry[];
@@ -364,6 +372,23 @@ export function operationNeedsRead(ref: HostOperationRef): boolean {
   return !operationStateSettled(ref.state);
 }
 
+/** operationShownOnHost reports whether a tracked operation still belongs to
+ * the host incarnation the row displays: the identity the ref carries (from
+ * its seed, then from the record it read) must match the row's current
+ * (generation, incarnation id) pair. A ref that carries no pair renders — it
+ * was seeded by the call that just ran on this row. A mismatch suppresses the
+ * operation (the previous incarnation's record is not this host's work); the
+ * store keeps the ref rather than clearing it so the record reaches its
+ * terminal state and retains its read outcome. */
+export function operationShownOnHost(
+  operation: HostOperationRef,
+  row: { generation: number; incarnationId: string },
+): boolean {
+  if (operation.generation !== undefined && operation.generation !== row.generation) return false;
+  if (operation.incarnationId !== undefined && operation.incarnationId !== row.incarnationId) return false;
+  return true;
+}
+
 /** HostOperationView is one operation ref as a host row renders it. */
 export interface HostOperationView {
   tone: "neutral" | "attention" | "alive" | "danger";
@@ -408,7 +433,9 @@ function operationInFlightLabel(kind: string): string {
 export function hostOperationView(ref: HostOperationRef): HostOperationView {
   const kind = operationKindLabel(ref.kind);
   const lastEntry = ref.progress[ref.progress.length - 1];
-  const latest = lastEntry === undefined ? null : lastEntry.message;
+  // A blank progress message is no line, exactly like an empty result message:
+  // never an empty detail span.
+  const latest = lastEntry === undefined || lastEntry.message.trim() === "" ? null : lastEntry.message;
   // A record with no result (or an empty message) renders the state chip alone
   // rather than an invented sentence.
   const outcome = ref.result === undefined || ref.result.message === "" ? null : ref.result.message;
@@ -501,6 +528,11 @@ const { requireClient } = connectedClientPort("hostOps");
 const planSequences = new Map<string, number>();
 const restartSequences = new Map<string, number>();
 const operationSequences = new Map<string, number>();
+// Outstanding operation reads per host name, as a count (a direct caller and
+// the section's tick can overlap). The tick skips a pending name, so the
+// interval keeps at most one read per name in flight; the count is released in
+// pollOperation's finally.
+const operationReadsPending = new Map<string, number>();
 function planSequence(name: string): number {
   return planSequences.get(name) ?? 0;
 }
@@ -509,6 +541,23 @@ function restartSequence(name: string): number {
 }
 function operationSequence(name: string): number {
   return operationSequences.get(name) ?? 0;
+}
+
+/** operationReadPending reports whether an operation read is still in flight
+ * for this name: the section's tick skips a pending operation instead of
+ * piling another read on top of a slow one. */
+export function operationReadPending(name: string): boolean {
+  return (operationReadsPending.get(name) ?? 0) > 0;
+}
+
+function beginOperationRead(name: string): void {
+  operationReadsPending.set(name, (operationReadsPending.get(name) ?? 0) + 1);
+}
+
+function endOperationRead(name: string): void {
+  const remaining = (operationReadsPending.get(name) ?? 0) - 1;
+  if (remaining > 0) operationReadsPending.set(name, remaining);
+  else operationReadsPending.delete(name);
 }
 
 function planIsCurrent(name: string, sequence: number, client: AppwireClientLike | null): boolean {
@@ -561,12 +610,24 @@ function currentPairFor(name: string): HostMutationPair | undefined {
 
 /** operationRef is the seed the deploy/restart response leaves (08b §10: the
  * response carries only the id, client operation ID, and state): the kind comes
- * from the call that started the operation, and the poll fills the body. */
+ * from the call that started the operation, the identity from what that call
+ * knew (the plan's generation, the restart's intended pair), and the poll fills
+ * the body. */
 function operationRef(
   result: { id: string; clientOperationId: string; state: string },
   kind: string,
+  identity: { host: string; generation?: number; incarnationId?: string },
 ): HostOperationRef {
-  return { id: result.id, clientOperationId: result.clientOperationId, kind, state: result.state, progress: [] };
+  return {
+    id: result.id,
+    clientOperationId: result.clientOperationId,
+    kind,
+    state: result.state,
+    progress: [],
+    host: identity.host,
+    ...(identity.generation === undefined ? {} : { generation: identity.generation }),
+    ...(identity.incarnationId === undefined ? {} : { incarnationId: identity.incarnationId }),
+  };
 }
 
 /** OPERATION_READ_TIMEOUT_MS bounds one `evener/host/operations` read. The call
@@ -603,6 +664,9 @@ function recordToOperationRef(record: OperationRecord): HostOperationRef {
     kind: record.kind,
     state: record.state,
     progress: record.progress ?? [],
+    host: record.host,
+    generation: record.generation,
+    incarnationId: record.incarnationId,
     fetched: true,
   };
   if (record.result !== undefined) ref.result = { ok: record.result.ok, message: record.result.message };
@@ -639,13 +703,22 @@ function publishOperationRecord(
   const held = get().operations[name];
   if (held === undefined || held.id !== id) return;
   const wasSettled = operationStateSettled(held.state);
+  // A seed (the deploy/restart response) carries no result/progress: its first
+  // full read is a refresh-worthy terminal observation too, so a replayed
+  // (deduplicated) operation does not leave the row on stale facts.
+  const firstBody = held.fetched !== true;
   set((previous) => {
     const current = previous.operations[name];
     if (current === undefined || current.id !== id) return previous;
     return { operations: { ...previous.operations, [name]: recordToOperationRef(record) } };
   });
-  if (!wasSettled && operationStateSettled(record.state)) {
-    void hostsStore.getState().refresh();
+  if ((!wasSettled || firstBody) && operationStateSettled(record.state)) {
+    // A failed refresh is the background poll's own business (it keeps the
+    // last rows); it must never surface as an unhandled rejection here.
+    void hostsStore
+      .getState()
+      .refresh()
+      .catch(() => undefined);
   }
 }
 
@@ -656,6 +729,10 @@ function publishOperationReadFailure(set: OperationSet, name: string, id: string
   set((previous) => {
     const current = previous.operations[name];
     if (current === undefined || current.id !== id) return previous;
+    // A read that is no longer the newest must not strand a stopped-progress
+    // error on a record whose body was already read and settled: nothing would
+    // ever clear it, because a settled record owes no further read.
+    if (current.fetched === true && operationStateSettled(current.state)) return previous;
     return { operations: { ...previous.operations, [name]: { ...current, readRefusal: refusal } } };
   });
 }
@@ -792,7 +869,11 @@ export const hostOpsStore = create<HostOpsStoreState>((set, get) => ({
       // current: a record from a replaced connection describes the hub that
       // was and must not seed this name's polling.
       if (connectionStore.getState().client === client) {
-        publishStartedOperation(set, name, operationRef(result, "deploy"));
+        publishStartedOperation(
+          set,
+          name,
+          operationRef(result, "deploy", { host: name, generation: state.plan.generation }),
+        );
       }
       if (!planIsCurrent(name, sequence, client)) return;
       set((previous) => {
@@ -900,7 +981,15 @@ export const hostOpsStore = create<HostOpsStoreState>((set, get) => ({
     try {
       const result = await send(attempt.pair, operationId);
       if (connectionStore.getState().client === client) {
-        publishStartedOperation(set, name, operationRef(result, "restart"));
+        publishStartedOperation(
+          set,
+          name,
+          operationRef(result, "restart", {
+            host: name,
+            generation: attempt.pair.generation,
+            incarnationId: attempt.pair.incarnationId,
+          }),
+        );
       }
       if (!restartIsCurrent(name, sequence, client)) return;
       set((previous) => {
@@ -978,7 +1067,15 @@ export const hostOpsStore = create<HostOpsStoreState>((set, get) => ({
       try {
         const result = await send(current, retryId);
         if (connectionStore.getState().client === client) {
-          publishStartedOperation(set, name, operationRef(result, "restart"));
+          publishStartedOperation(
+            set,
+            name,
+            operationRef(result, "restart", {
+              host: name,
+              generation: current.generation,
+              incarnationId: current.incarnationId,
+            }),
+          );
         }
         if (!restartIsCurrent(name, sequence, client)) return;
         set((previous) => {
@@ -1065,27 +1162,14 @@ export const hostOpsStore = create<HostOpsStoreState>((set, get) => ({
       publishOperationReadFailure(set, name, ref.id, hostOpRefusal(error, "progress"));
       return;
     }
-    const sequence = operationSequence(name);
+    // Per-issue sequence: this read owns the newest position, so any earlier
+    // read (a direct caller's overlap) is dropped whole — its record and its
+    // refusal alike. The tick's own skip keeps the interval at one read per
+    // name, so this never starves a publish.
+    const sequence = operationSequence(name) + 1;
+    operationSequences.set(name, sequence);
+    beginOperationRead(name);
     try {
-      const record = await readOperationRecord(client, name, ref.id);
-      if (!operationPollIsCurrent(name, sequence, client)) return;
-      if (record === undefined) {
-        markOperationGone(set, name, ref.id);
-        return;
-      }
-      publishOperationRecord(set, get, name, ref.id, record);
-    } catch (error) {
-      if (!operationPollIsCurrent(name, sequence, client)) return;
-      const refusal = hostOpRefusal(error, "progress");
-      if (refusal.kind !== "cursor-invalidated") {
-        publishOperationReadFailure(set, name, ref.id, refusal);
-        return;
-      }
-      // 08b §8: compaction invalidated the position this read resumed from, and
-      // the fix is a fresh first-page read. This poll never presents a cursor,
-      // so the arm cannot arise with its shape; if it ever does, retry ONCE from
-      // scratch rather than surfacing the refusal, and never loop on the
-      // invalidated position.
       try {
         const record = await readOperationRecord(client, name, ref.id);
         if (!operationPollIsCurrent(name, sequence, client)) return;
@@ -1094,10 +1178,33 @@ export const hostOpsStore = create<HostOpsStoreState>((set, get) => ({
           return;
         }
         publishOperationRecord(set, get, name, ref.id, record);
-      } catch (retryError) {
+      } catch (error) {
         if (!operationPollIsCurrent(name, sequence, client)) return;
-        publishOperationReadFailure(set, name, ref.id, hostOpRefusal(retryError, "progress"));
+        const refusal = hostOpRefusal(error, "progress");
+        if (refusal.kind !== "cursor-invalidated") {
+          publishOperationReadFailure(set, name, ref.id, refusal);
+          return;
+        }
+        // 08b §8: compaction invalidated the position this read resumed from,
+        // and the fix is a fresh first-page read. This poll never presents a
+        // cursor, so the arm cannot arise with its shape; if it ever does, retry
+        // ONCE from scratch rather than surfacing the refusal, and never loop on
+        // the invalidated position.
+        try {
+          const record = await readOperationRecord(client, name, ref.id);
+          if (!operationPollIsCurrent(name, sequence, client)) return;
+          if (record === undefined) {
+            markOperationGone(set, name, ref.id);
+            return;
+          }
+          publishOperationRecord(set, get, name, ref.id, record);
+        } catch (retryError) {
+          if (!operationPollIsCurrent(name, sequence, client)) return;
+          publishOperationReadFailure(set, name, ref.id, hostOpRefusal(retryError, "progress"));
+        }
       }
+    } finally {
+      endOperationRead(name);
     }
   },
 
@@ -1109,6 +1216,7 @@ export const hostOpsStore = create<HostOpsStoreState>((set, get) => ({
     planSequences.clear();
     restartSequences.clear();
     operationSequences.clear();
+    operationReadsPending.clear();
     set({ plans: {}, restarts: {}, operations: {} });
   },
 }));

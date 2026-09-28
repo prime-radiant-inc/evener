@@ -6,6 +6,8 @@ import {
   hostOperationView,
   hostOpsStore,
   operationNeedsRead,
+  operationReadPending,
+  operationShownOnHost,
   operationStateSettled,
   planNoTokenAction,
   restartRefusalAction,
@@ -153,11 +155,16 @@ export function HostsSection(_props: HostsSectionProps) {
   useEffect(() => {
     const id = setInterval(() => {
       const tracked = hostOpsStore.getState().operations;
+      const load = hostsStore.getState().load;
       for (const name of Object.keys(tracked)) {
         const operation = tracked[name];
-        if (operation !== undefined && operationNeedsRead(operation)) {
-          void hostOpsStore.getState().pollOperation(name);
-        }
+        if (operation === undefined || !operationNeedsRead(operation) || operationReadPending(name)) continue;
+        // An operation belonging to a previous incarnation of a re-created
+        // name is not this row's work: no read can make it this host's, and the
+        // row suppresses it too.
+        const row = load.phase === "ready" ? load.hosts.find((candidate) => candidate.name === name) : undefined;
+        if (row !== undefined && !operationShownOnHost(operation, row)) continue;
+        void hostOpsStore.getState().pollOperation(name);
       }
     }, OPERATION_POLL_MS);
     return () => {
@@ -257,7 +264,8 @@ export function HostsSection(_props: HostsSectionProps) {
             const isConnecting = connecting.has(row.name) || row.midAttach;
             const detail = rowDetail(row);
             const operation = operations[row.name];
-            const operationView = operation === undefined ? null : hostOperationView(operation);
+            const operationView =
+              operation === undefined || !operationShownOnHost(operation, row) ? null : hostOperationView(operation);
             return (
               <li key={row.name} className={CLASS.row}>
                 <span className={CLASS.rowName}>{row.name}</span>

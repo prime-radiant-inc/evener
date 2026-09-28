@@ -26,6 +26,8 @@ import {
   hostOpRefusalBlocksRetry,
   hostOpsStore,
   operationNeedsRead,
+  operationReadPending,
+  operationShownOnHost,
   operationStateSettled,
   planNoTokenAction,
   planRefusalAction,
@@ -355,6 +357,8 @@ describe("deploy", () => {
       kind: "deploy",
       progress: [],
       state: "pending",
+      host: "beta",
+      generation: 3,
     });
   });
 
@@ -416,6 +420,8 @@ describe("deploy", () => {
       kind: "deploy",
       progress: [],
       state: "pending",
+      host: "beta",
+      generation: 3,
     });
   });
 
@@ -572,6 +578,9 @@ describe("restart", () => {
       kind: "restart",
       progress: [],
       state: "pending",
+      host: "beta",
+      generation: 3,
+      incarnationId: "inc-3",
     });
   });
 
@@ -1050,6 +1059,58 @@ describe("operations polling (S15)", () => {
     await vi.waitFor(() => expect(fake.calls.filter((c) => c.method === "evener/host/list").length).toBe(1));
   });
 
+  test("a late read cannot overwrite a terminal record or strand a stopped-progress error", async () => {
+    const fake = connectFakeClient();
+    fake.on("evener/host/plan", () => ({ outcome: "planned", plan: plan(), token: "tok-1" }));
+    fake.on("evener/host/deploy", () => ({ id: "op-1", clientOperationId: "client-op-1", state: "pending" }));
+    const settlements = gateSettlements(fake, "evener/host/operations");
+    await hostOpsStore.getState().plan("beta");
+    await hostOpsStore.getState().deploy("beta");
+
+    // Two reads issue before either answers (a slow read overlaps the next
+    // tick): only the newest may publish, whatever order they settle in.
+    const older = hostOpsStore.getState().pollOperation("beta");
+    const newer = hostOpsStore.getState().pollOperation("beta");
+    await vi.waitFor(() => expect(settlements).toHaveLength(2));
+    settlements[1]!.resolve({
+      operations: [operationRecord({ state: "complete", result: { ok: true, message: "deployed 1.5.0" } })],
+    });
+    await newer;
+    settlements[0]!.reject(new Error("late read timed out"));
+    await older;
+
+    const ref = hostOpsStore.getState().operations.beta;
+    if (ref === undefined) throw new Error("unreachable");
+    // The late read's failure must not resurrect the running state or attach a
+    // "progress stopped" error to the finished record — nothing would ever
+    // clear it, because a settled record owes no further read.
+    expect(ref.state).toBe("complete");
+    expect(ref.readRefusal).toBeUndefined();
+    expect(hostOperationView(ref).unavailable).toBeNull();
+    expect(hostOperationView(ref).label).toBe("Deploy complete");
+  });
+
+  test("a read counts as pending while in flight and is released when it settles", async () => {
+    const fake = connectFakeClient();
+    fake.on("evener/host/plan", () => ({ outcome: "planned", plan: plan(), token: "tok-1" }));
+    fake.on("evener/host/deploy", () => ({ id: "op-1", clientOperationId: "client-op-1", state: "pending" }));
+    const settlements = gateSettlements(fake, "evener/host/operations");
+    await hostOpsStore.getState().plan("beta");
+    await hostOpsStore.getState().deploy("beta");
+
+    const pending = hostOpsStore.getState().pollOperation("beta");
+    await vi.waitFor(() => expect(settlements).toHaveLength(1));
+    expect(operationReadPending("beta")).toBe(true);
+
+    settlements[0]!.resolve({
+      operations: [operationRecord({ state: "complete", result: { ok: true, message: "deployed 1.5.0" } })],
+    });
+    await pending;
+    // Released in pollOperation's finally, so the tick resumes after a slow or
+    // failed read.
+    expect(operationReadPending("beta")).toBe(false);
+  });
+
   test("a lost connection is a visible progress state that a good read clears", async () => {
     const fake = connectFakeClient();
     await startedDeploy(fake, () => ({
@@ -1131,6 +1192,7 @@ describe("operations polling (S15)", () => {
       compacted: true,
     } as unknown as OperationRecord;
     fake.on("evener/host/operations", () => ({ operations: [tombstone] }));
+    fake.on("evener/host/list", () => ({ hosts: [row("beta")] }));
 
     await hostOpsStore.getState().plan("beta");
     await hostOpsStore.getState().deploy("beta");
@@ -1151,6 +1213,10 @@ describe("operations polling (S15)", () => {
     expect(operationNeedsRead(ref)).toBe(false);
     // Nothing opened a fresh operation.
     expect(fake.calls.filter((c) => c.method === "evener/host/deploy")).toHaveLength(1);
+    // The replay's first full read is terminal too, so the rows refresh here
+    // exactly as they do for a live transition: a deduplicated successful
+    // deploy must not leave the row on stale post-operation facts.
+    await vi.waitFor(() => expect(fake.calls.filter((c) => c.method === "evener/host/list").length).toBe(1));
   });
 
   test("a stale-entry read refusal is visible, and polling continues", async () => {
@@ -1261,7 +1327,29 @@ describe("operations polling (S15)", () => {
     // A failure with no result message renders the chip alone rather than a
     // generic sentence.
     expect(hostOperationView({ ...base, state: "failed" })).toMatchObject({ label: "Restart failed", line: null });
+    // A blank progress message is no line either: never an empty detail span.
+    expect(hostOperationView({ ...base, progress: [{ ts: "t", message: "   " }] })).toMatchObject({ line: null });
     // An unknown future state renders its raw value, never a fabricated success.
     expect(hostOperationView({ ...base, state: "paused" })).toMatchObject({ tone: "neutral", label: "Restart paused" });
+  });
+
+  test("an operation tracks its host identity, and only renders on the incarnation it belongs to", () => {
+    const identity = { host: "beta", generation: 1, incarnationId: "inc-1" };
+    const base: HostOperationRef = {
+      id: "op-1",
+      clientOperationId: "client-op-1",
+      kind: "deploy",
+      state: "running",
+      progress: [],
+    };
+    // A seed that has not read its record renders on the row it was started
+    // from; once a read answers, the record's pair decides.
+    expect(operationShownOnHost(base, identity)).toBe(true);
+    const read: HostOperationRef = { ...base, ...identity, fetched: true };
+    expect(operationShownOnHost(read, identity)).toBe(true);
+    // A re-created same-name host (a new generation or incarnation) must not
+    // display the previous incarnation's operation.
+    expect(operationShownOnHost(read, { generation: 2, incarnationId: "inc-1" })).toBe(false);
+    expect(operationShownOnHost(read, { generation: 1, incarnationId: "inc-2" })).toBe(false);
   });
 });
