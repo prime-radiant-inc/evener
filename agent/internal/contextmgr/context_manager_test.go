@@ -2837,6 +2837,53 @@ func TestCheckpoint_ShedOrder_PinsEarliestUserEntry(t *testing.T) {
 	}
 }
 
+func TestCheckpoint_ShedOrder_NoUserEntryShedsOldestFirst(t *testing.T) {
+	// With no user entry there is no original task to pin; shedding must keep its
+	// pre-existing oldest-first order rather than protecting an arbitrary entry.
+	old := "OLD AGENT " + strings.Repeat("a", 800)
+	newest := "NEW AGENT " + strings.Repeat("b", 800)
+	data := checkpointData{
+		conversation: []checkpointConversationEntry{
+			{Role: "agent", Text: old},
+			{Role: "agent", Text: newest},
+		},
+	}
+
+	cp := formatCheckpoint(data, nil, 100)
+
+	if strings.Contains(cp, old) {
+		t.Fatalf("with no user entry the oldest agent entry should be shed:\n%s", cp)
+	}
+	if !strings.Contains(cp, newest) {
+		t.Fatalf("with no user entry the newest agent entry should survive:\n%s", cp)
+	}
+}
+
+func TestCheckpoint_ShedOrder_BoundsOversizedOriginalTask(t *testing.T) {
+	// A pinned original task too large to ever fit must be trimmed, not left to
+	// defeat the checkpoint's size cap and not dropped entirely.
+	original := "ORIGINAL TASK: " + strings.Repeat("t", 5000)
+	data := checkpointData{
+		conversation: []checkpointConversationEntry{
+			{Role: "user", Text: original},
+			{Role: "agent", Text: "small follow-up"},
+		},
+	}
+
+	const maxChars = 1200
+	cp := formatCheckpoint(data, nil, maxChars)
+
+	if len(cp) > maxChars {
+		t.Fatalf("checkpoint length %d exceeds maxChars %d", len(cp), maxChars)
+	}
+	if !strings.Contains(cp, "ORIGINAL TASK: "+strings.Repeat("t", 900)) {
+		t.Fatalf("the head of the original task should survive trimming:\n%s", cp)
+	}
+	if !strings.Contains(cp, "...") {
+		t.Fatalf("the trimmed original task should carry an ellipsis:\n%s", cp)
+	}
+}
+
 // --- buildSummaryPrompt ---
 
 func TestBuildSummaryPrompt_NoInstructions(t *testing.T) {

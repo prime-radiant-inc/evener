@@ -1292,8 +1292,10 @@ func formatCheckpoint(data checkpointData, meta *CompactionMeta, maxChars int) s
 	notesMarkdown := renderCheckpointWorkingNotes(workingNotes)
 
 	// Pin the original task — the earliest user entry — so the checkpoint keeps
-	// what the user asked for instead of shedding it under budget pressure.
-	pinnedOriginal := 0
+	// what the user asked for instead of shedding it under budget pressure. With
+	// no user entry (-1) the pin is inactive and shedding keeps its oldest-first
+	// order.
+	pinnedOriginal := -1
 	for i, entry := range conversation {
 		if entry.Role == "user" {
 			pinnedOriginal = i
@@ -1321,6 +1323,17 @@ func formatCheckpoint(data checkpointData, meta *CompactionMeta, maxChars int) s
 			continue
 		}
 		break
+	}
+
+	// The pinned original task is never shed, so the loop above cannot shrink it
+	// when it alone exceeds the budget. Trim it rather than let the checkpoint
+	// blow past its size cap (or drop the task entirely).
+	if pinnedOriginal >= 0 && len(conversation) == 1 && len(conversationMarkdown) > variableBudget {
+		entry := conversation[pinnedOriginal]
+		overhead := len(renderCheckpointConversation([]checkpointConversationEntry{{Role: entry.Role, Text: "x"}})) - 1
+		limit := max(variableBudget-overhead-len("..."), 0)
+		conversation = []checkpointConversationEntry{{Role: entry.Role, Text: truncate(entry.Text, limit)}}
+		conversationMarkdown = renderCheckpointConversation(conversation)
 	}
 
 	// Assemble final checkpoint.
