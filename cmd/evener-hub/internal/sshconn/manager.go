@@ -761,15 +761,25 @@ func (m *Manager) Ensure(ctx context.Context, name string) (*Channel, error) {
 	return ch, nil
 }
 
-// hostGateHeld reports whether name's per-host gate is currently held by
-// someone. The entry is fetched under the manager mutex; the held flag itself
-// is atomic by design (hostLockGate), so the read does not disturb a
-// contender's holder registration.
-func (m *Manager) hostGateHeld(name string) bool {
+// hostGateHeldBy reports whether name's per-host gate is currently held by
+// holder: the same holder the hold published through TryAcquire/HoldAs
+// (deploy pipeline 08b §5's holder vocabulary). The entry is fetched under the
+// manager mutex; the held flag and holder themselves are atomic by design
+// (hostLockGate), so the read does not disturb a contender's registration. It
+// is a cooperative precondition, not a security boundary: it proves the
+// caller presents the hold the gate currently carries, which is the strongest
+// check the try-acquire/release API allows.
+func (m *Manager) hostGateHeldBy(name string, holder hostops.Holder) bool {
 	m.mu.Lock()
 	entry := m.locks[name]
 	m.mu.Unlock()
-	return entry != nil && entry.gate.isHeld()
+	if entry == nil || !entry.gate.isHeld() {
+		return false
+	}
+	held := entry.gate.holderOf()
+	return held.Kind == holder.Kind &&
+		strings.TrimSpace(held.OperationID) == strings.TrimSpace(holder.OperationID) &&
+		strings.TrimSpace(held.Activity) == strings.TrimSpace(holder.Activity)
 }
 
 // AttachUnderGate re-attaches host under the caller's already-held per-host
@@ -786,6 +796,11 @@ func (m *Manager) hostGateHeld(name string) bool {
 // channel so the host keeps automatic reconnect after the operation (§6: the
 // suppress-supervisor scope ends at verification).
 //
+// The caller presents the holder its hold registered (the operation's record
+// id): a gate held by some other holder is not the caller's hold, so a call
+// presenting a different holder refuses before any dial rather than publish
+// under another holder's exclusion.
+//
 // A predecessor mapped under the name (the channel a restart dropped when the
 // operation reattaches) is replaced and reaped here, with its outstanding
 // Attached paired by a Detached before the replacement's Attached, exactly as
@@ -794,7 +809,7 @@ func (m *Manager) hostGateHeld(name string) bool {
 // call reports the first result without starting a second supervisor, and a
 // call after the caller released the gate refuses instead of starting a
 // supervisor against a gate nobody holds.
-func (m *Manager) AttachUnderGate(ctx context.Context, host hostreg.Host) (*Channel, func() bool, error) {
+func (m *Manager) AttachUnderGate(ctx context.Context, host hostreg.Host, holder hostops.Holder) (*Channel, func() bool, error) {
 	name := strings.TrimSpace(host.Name)
 	if name == "" {
 		return nil, nil, errors.New("sshconn: an attach-under-gate needs a host name")
@@ -803,10 +818,11 @@ func (m *Manager) AttachUnderGate(ctx context.Context, host hostreg.Host) (*Chan
 		return nil, nil, ErrManagerClosed
 	}
 	defer m.ensureWG.Done()
-	// The caller's hold is this primitive's whole premise: publishing under
+	// The caller's own hold is this primitive's whole premise: publishing under
 	// someone else's exclusion is what the gate-aware entry exists to prevent,
-	// and a free (or absent) gate refuses before any dial.
-	if !m.hostGateHeld(name) {
+	// so a free gate — or one held by a different holder — refuses before any
+	// dial.
+	if !m.hostGateHeldBy(name, holder) {
 		return nil, nil, fmt.Errorf("%w: host %q; AttachUnderGate runs under the caller's hold and never acquires the gate", hostops.ErrGateNotHeld, name)
 	}
 	if m.reg == nil || !m.reg.SameRegistration(name, host) {
@@ -855,6 +871,15 @@ func (m *Manager) AttachUnderGate(ctx context.Context, host hostreg.Host) (*Chan
 	if m.opts.afterPublish != nil {
 		m.opts.afterPublish(name, ch)
 	}
+	if ch.isLost() || ch.isClosed() {
+		// The link died between the validation and the announcement: reap the
+		// replacement, hand the slot back (to the predecessor when one exists),
+		// and pair nothing — the check runs before the event pair exactly as
+		// Ensure's post-publish death path orders it, so no consumer is ever
+		// told about a channel nothing will supervise.
+		_ = ch.Close()
+		return nil, nil, m.lostAfterPublish(name, stale)
+	}
 	// Order the predecessor's Detached before the replacement's Attached, as
 	// Ensure's replacement does: the predecessor's own supervisor is parked on
 	// the gate this call holds, so it will stand down without pairing them.
@@ -862,12 +887,6 @@ func (m *Manager) AttachUnderGate(ctx context.Context, host hostreg.Host) (*Chan
 		m.detachEvent(name, StateReconnecting)
 	}
 	m.attachEvent(name, ch, StateAttached)
-	if ch.isLost() {
-		// The link died between the validation and the announcement: hand the
-		// slot back (to the predecessor when one exists) and pair the events,
-		// exactly as Ensure's post-publish death path does.
-		return nil, nil, m.lostAfterPublish(name, stale)
-	}
 	if stale != nil {
 		// The map no longer references the predecessor; reaping it can block on
 		// its ssh child's exit, which Kill bounds (the child is the dead link

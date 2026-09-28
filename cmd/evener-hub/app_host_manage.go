@@ -211,7 +211,9 @@ type hostManagerConfig struct {
 	// channel's supervisor under the same held gate. Nil (a hub with no manager)
 	// refuses the reattach rather than running the normal attach path, which
 	// would deadlock on the non-reentrant gate.
-	attachUnderGate func(ctx context.Context, entry hostreg.Host) (func() bool, error)
+	// holder is the operation holder the worker's hold registered, which the
+	// primitive requires the gate to currently carry.
+	attachUnderGate func(ctx context.Context, entry hostreg.Host, holder hostops.Holder) (func() bool, error)
 	// remnantFence reports the open teardown remnant fencing a host name, if
 	// one does: §6 step 2's `remnant-open` refusal is emitted from here, past
 	// the dedup check and before any probe or acquisition. Remnant semantics
@@ -1429,8 +1431,8 @@ func newHubHostManager(sources *appsource.Registry, manager *sshconn.Manager, cf
 		// gate-aware attach primitive, which accepts the already-held gate,
 		// suppresses supervisor startup until the post-verification handoff, and
 		// never re-acquires the non-reentrant lock.
-		m.cfg.attachUnderGate = func(ctx context.Context, entry hostreg.Host) (func() bool, error) {
-			_, handoff, err := manager.AttachUnderGate(ctx, entry)
+		m.cfg.attachUnderGate = func(ctx context.Context, entry hostreg.Host, holder hostops.Holder) (func() bool, error) {
+			_, handoff, err := manager.AttachUnderGate(ctx, entry, holder)
 			if err != nil {
 				return nil, err
 			}

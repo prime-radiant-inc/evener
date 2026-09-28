@@ -160,7 +160,7 @@ type deploySeams struct {
 	// attachUnderGate is the operation-owned attach/reattach seam (§6 seam (d)).
 	// Nil takes a handoff-only stub: no manager owns channels in these tests, so
 	// the worker's reattach is a no-op unless a test scripts it.
-	attachUnderGate func(ctx context.Context, entry hostreg.Host) (func() bool, error)
+	attachUnderGate func(ctx context.Context, entry hostreg.Host, holder hostops.Holder) (func() bool, error)
 	lastKnown       func(entry hostreg.Host, probe hubcore.HostRuntimeProbe, facts hubcore.HostPlanFacts) error
 	counters        *deployCounters
 }
@@ -224,7 +224,7 @@ func deployTestHub(t *testing.T, configPath string, entries []hostreg.Host, seam
 	}
 	attachUnderGate := seams.attachUnderGate
 	if attachUnderGate == nil {
-		attachUnderGate = func(context.Context, hostreg.Host) (func() bool, error) {
+		attachUnderGate = func(context.Context, hostreg.Host, hostops.Holder) (func() bool, error) {
 			return func() bool { return true }, nil
 		}
 	}
@@ -891,11 +891,14 @@ func TestHostDeployPlannedRestartReattachesUnderTheHeldGate(t *testing.T) {
 			restartSawGateHeld.Store(gateHeldBy(m, entry.Name))
 			return nil
 		},
-		attachUnderGate: func(_ context.Context, got hostreg.Host) (func() bool, error) {
+		attachUnderGate: func(_ context.Context, got hostreg.Host, holder hostops.Holder) (func() bool, error) {
 			reattachSawGateHeld.Store(gateHeldBy(m, entry.Name))
 			live, ok := m.liveHost(got.Name)
 			if !ok || !hostreg.SameRegistration(live, got) {
 				return nil, fmt.Errorf("the reattach ran for %q/%d, not the live registration %+v", got.Name, got.Generation, live)
+			}
+			if holder.Kind != hostops.HolderOperation || holder.OperationID == "" {
+				return nil, fmt.Errorf("the reattach presented holder %+v, want the operation holder naming the record", holder)
 			}
 			reattachCalls.Add(1)
 			return func() bool {
@@ -966,7 +969,7 @@ func TestHostRestartUnattachedAttachFirstsUnderTheHeldGate(t *testing.T) {
 			attachedState.Store(false) // the restart drops the channel
 			return nil
 		},
-		attachUnderGate: func(_ context.Context, _ hostreg.Host) (func() bool, error) {
+		attachUnderGate: func(_ context.Context, _ hostreg.Host, _ hostops.Holder) (func() bool, error) {
 			call := attachCalls.Add(1)
 			if !gateHeldBy(m, entry.Name) {
 				attachGateFree.Store(true)
@@ -1005,6 +1008,114 @@ func TestHostRestartUnattachedAttachFirstsUnderTheHeldGate(t *testing.T) {
 	progress := progressText(record)
 	if !strings.Contains(progress, "attach-first") {
 		t.Fatalf("the record does not name the attach-first path:\n%s", progress)
+	}
+}
+
+// TestHostRestartDroppedChannelAttachFirstsUnderTheHeldGate pins the
+// detached-window rule: a restart whose channel drops between the handler's
+// resolution and the worker's start attaches first under the held gate. The
+// attach-first decision is re-evaluated where the channel is used, never
+// trusted from the earlier check.
+func TestHostRestartDroppedChannelAttachFirstsUnderTheHeldGate(t *testing.T) {
+	entry := deployTestHost()
+	entry.Generation = 2
+	entry.IncarnationID = "inc-new"
+	configPath := deployTestConfigPath(t, entry)
+	before := time.Date(2026, 9, 27, 12, 0, 0, 0, time.UTC)
+	after := before.Add(time.Minute)
+	var attachState atomic.Bool
+	var clientChecks, attachCalls, attachFirstCalls atomic.Int64
+	var m *hubHostManager
+	var store *hostops.Store
+	m, store, _ = deployTestHub(t, configPath, []hostreg.Host{entry}, deploySeams{
+		probe: restartProbeScript(t, "dev", "dev", before, after),
+		clientAttached: func(string) (*appwire.Client, bool) {
+			// The handler's check (the first call) sees the host attached; the
+			// drop lands before the worker's own check, which must attach first.
+			return &appwire.Client{}, clientChecks.Add(1) == 1 || attachState.Load()
+		},
+		attached: func(string) (sshconn.Preflight, bool) { return deployTestFacts(entry), attachState.Load() },
+		restart: func(context.Context, hostreg.Host, sshconn.Preflight) error {
+			attachState.Store(false) // the restart drops the channel
+			return nil
+		},
+		attachUnderGate: func(_ context.Context, _ hostreg.Host, _ hostops.Holder) (func() bool, error) {
+			call := attachCalls.Add(1)
+			if call == 1 {
+				attachFirstCalls.Add(1)
+			}
+			attachState.Store(true)
+			return func() bool { return true }, nil
+		},
+	})
+	response, err := m.Restart(context.Background(), appwire.HostRestartParams{
+		Name: entry.Name, OperationID: "op-1", Generation: 2, IncarnationID: "inc-new",
+	})
+	if err != nil {
+		t.Fatalf("Restart: %v", err)
+	}
+	record := waitOperationState(t, store, response.ID, hostops.StateComplete)
+	if got := attachFirstCalls.Load(); got != 1 {
+		t.Fatalf("attach-first calls = %d, want 1 for the channel that dropped before the worker", got)
+	}
+	if got := attachCalls.Load(); got != 2 {
+		t.Fatalf("attach calls = %d, want the attach-first plus the post-restart reattach", got)
+	}
+	if record.Result == nil || !record.Result.OK {
+		t.Fatalf("dropped-window restart record result = %+v, want ok", record.Result)
+	}
+	if progress := progressText(record); !strings.Contains(progress, "attach-first") {
+		t.Fatalf("the record does not name the attach-first path:\n%s", progress)
+	}
+}
+
+// TestHostRestartAttachFirstHandsOffWhenTheRestartFails pins the retained
+// handoff: when a restart fails after the attach-first attached the host, the
+// worker still hands that channel to a supervisor under the held gate before
+// releasing — a failed restart must never strand a live attached channel.
+func TestHostRestartAttachFirstHandsOffWhenTheRestartFails(t *testing.T) {
+	entry := deployTestHost()
+	entry.Generation = 2
+	entry.IncarnationID = "inc-new"
+	configPath := deployTestConfigPath(t, entry)
+	before := time.Date(2026, 9, 27, 12, 0, 0, 0, time.UTC)
+	after := before.Add(time.Minute)
+	var attachedState atomic.Bool
+	var handoffCalls atomic.Int64
+	var handoffSawGateHeld atomic.Bool
+	var m *hubHostManager
+	var store *hostops.Store
+	m, store, _ = deployTestHub(t, configPath, []hostreg.Host{entry}, deploySeams{
+		probe:          restartProbeScript(t, "dev", "dev", before, after),
+		clientAttached: func(string) (*appwire.Client, bool) { return &appwire.Client{}, attachedState.Load() },
+		attached:       func(string) (sshconn.Preflight, bool) { return deployTestFacts(entry), attachedState.Load() },
+		restart: func(context.Context, hostreg.Host, sshconn.Preflight) error {
+			return errors.New("the restart command failed before replacing the process")
+		},
+		attachUnderGate: func(_ context.Context, _ hostreg.Host, _ hostops.Holder) (func() bool, error) {
+			attachedState.Store(true)
+			return func() bool {
+				handoffSawGateHeld.Store(gateHeldBy(m, entry.Name))
+				handoffCalls.Add(1)
+				return true
+			}, nil
+		},
+	})
+	response, err := m.Restart(context.Background(), appwire.HostRestartParams{
+		Name: entry.Name, OperationID: "op-1", Generation: 2, IncarnationID: "inc-new",
+	})
+	if err != nil {
+		t.Fatalf("Restart: %v", err)
+	}
+	record := waitOperationState(t, store, response.ID, hostops.StateFailed)
+	if record.Result == nil || record.Result.OK {
+		t.Fatalf("failed restart record result = %+v, want a failure", record.Result)
+	}
+	if got := handoffCalls.Load(); got != 1 {
+		t.Fatalf("handoff calls = %d, want the attach-first channel handed off despite the failed restart", got)
+	}
+	if !handoffSawGateHeld.Load() {
+		t.Fatal("the handoff ran after the gate was released")
 	}
 }
 

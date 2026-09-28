@@ -281,17 +281,11 @@ func (m *hubHostManager) startOperation(ctx context.Context, req operationReques
 			"host %q's registration moved while this operation was being resolved; retry", entry.Name))
 	}
 	client, attached := m.attachedClient(entry)
-	attachFirst := false
-	switch {
-	case req.kind == hostops.KindDeploy && !attached:
+	if req.kind == hostops.KindDeploy && !attached {
 		// §6's detached-during-deploy rule: deploy must not consume its
 		// single-use token to open a worker that then attach-firsts into an
 		// unvalidated channel.
 		return hostops.Record{}, hostDetachedRefusal(entry.Name)
-	case req.kind == hostops.KindRestart && !attached:
-		// §6's attach-first arm: a restart with no attached channel attaches the
-		// host under this held gate, named in the record by the worker.
-		attachFirst = true
 	}
 
 	// sequenceBefore is §6 step 3's probe-window position: any terminal
@@ -421,7 +415,6 @@ func (m *hubHostManager) startOperation(ctx context.Context, req operationReques
 		entry:       entry,
 		probe:       probe,
 		fingerprint: req.fingerprint,
-		attachFirst: attachFirst,
 		release:     release,
 	}
 	if req.kind == hostops.KindDeploy {
@@ -632,10 +625,6 @@ type opWork struct {
 	probe       hubcore.HostRuntimeProbe
 	epoch       appwire.FencingEpoch
 	fingerprint string
-	// attachFirst records a restart the handler found with no attached channel:
-	// §6's attach-first arm — the worker attaches the host under the held gate
-	// before its pre-restart probe, naming the path in the record.
-	attachFirst bool
 	release     func()
 }
 
@@ -733,6 +722,28 @@ func (m *hubHostManager) runOperationWorker(ctx context.Context, work opWork) {
 	defer work.release()
 
 	id := work.record.ID
+	// handoff is the supervisor handoff for the channel a restart left live:
+	// the attach-first attach's, superseded by the post-restart reattach's once
+	// that replacement is published. It is invoked exactly once, always under
+	// the still-held gate — explicitly at terminal verification, or by the
+	// deferred finish below on any earlier exit — so a restart that fails after
+	// an attach-first can never strand an attached channel without a
+	// supervisor.
+	var handoff func() bool
+	handedOff := false
+	handOff := func(when string) bool {
+		if handedOff || handoff == nil {
+			return true
+		}
+		handedOff = true
+		if handoff() {
+			return true
+		}
+		m.logf("operation %s: the host's supervisor could not be started %s; the host may be left without automatic reconnect", id, when)
+		return false
+	}
+	defer func() { handOff("as the operation ended") }()
+
 	if m.interruptIfShuttingDown(ctx, id) {
 		return
 	}
@@ -794,19 +805,22 @@ func (m *hubHostManager) runOperationWorker(ctx context.Context, work opWork) {
 			m.failOperation(ctx, id, err)
 			return
 		}
-		// §6's attach-first arm: a restart the handler found with no attached
-		// channel attaches the host under the held gate first, and names the
-		// path in the record. The pre-restart probe then reads the identity of
-		// the process the restart must replace over that channel. The handoff
-		// from this attach is deliberately not kept: the restart drops this
-		// channel, and the reattach below returns the handoff the worker hands
-		// off at verification.
-		if work.attachFirst {
-			if _, err := m.attachOperationChannel(ctx, id, work.entry,
-				"attach-first: the host had no attached channel, so the restart attaches it under the held host gate"); err != nil {
+		// §6's attach-first arm: a restart with no usable attached channel —
+		// the handler saw none, or the link dropped before this worker ran —
+		// attaches the host under the held gate first, and names the path in
+		// the record. The pre-restart probe then reads the identity of the
+		// process the restart must replace over that channel. The handoff from
+		// this attach is provisional: the reattach below supersedes it when its
+		// replacement publishes, and the deferred finish hands this channel off
+		// on any earlier exit (a failed probe or restart must not strand it).
+		if _, attached := m.attachedClient(work.entry); !attached {
+			h, err := m.attachOperationChannel(ctx, id, work.entry,
+				"attach-first: the host had no usable attached channel, so the restart attaches it under the held host gate")
+			if err != nil {
 				m.failOperation(ctx, id, err)
 				return
 			}
+			handoff = h
 		}
 		// Restart has no pre-operation probe step of its own (no token, no
 		// plan), so the worker takes the "pre-operation probe" value the
@@ -840,7 +854,6 @@ func (m *hubHostManager) runOperationWorker(ctx context.Context, work opWork) {
 	// probes the reattached channel, and the handoff that follows it starts the
 	// supervisor under the still-held gate. Re-running the normal attach path
 	// while holding the gate is a deadlock: the gate is non-reentrant.
-	var handoff func() bool
 	if restartFollows {
 		h, err := m.attachOperationChannel(ctx, id, work.entry,
 			"restart verified; reattaching the host under the held host gate")
@@ -855,20 +868,20 @@ func (m *hubHostManager) runOperationWorker(ctx context.Context, work opWork) {
 	// the running probe over the attached (reattached) channel, then the
 	// verification.
 	refreshErr := m.refreshOperation(ctx, id, work, beforeProbe, restartFollows)
-	if handoff != nil {
-		// The suppress-supervisor scope ends at verification: hand the channel
-		// back to a supervisor under the still-held gate, whether or not the
-		// refresh verified the outcome — the operation is over either way, and
-		// the host must keep automatic reconnect after the restart.
-		if !handoff() && refreshErr == nil {
-			refreshErr = errors.New("the host's supervisor could not be started after the restart, so the reattached host is left without automatic reconnect")
-		}
+	// The suppress-supervisor scope ends at verification: hand the channel back
+	// to a supervisor under the still-held gate, whether or not the refresh
+	// verified the outcome — the operation is over either way, and the host
+	// must keep automatic reconnect after the restart. A failed handoff is
+	// recorded alongside a failed refresh rather than masked by it.
+	var handoffErr error
+	if !handOff("after the restart verification") {
+		handoffErr = errors.New("the host's supervisor could not be started after the restart, so the host is attached without automatic reconnect")
 	}
 	if m.interruptIfShuttingDown(ctx, id) {
 		return
 	}
-	if refreshErr != nil {
-		m.failOperation(ctx, id, refreshErr)
+	if refreshErr != nil || handoffErr != nil {
+		m.failOperation(ctx, id, errors.Join(refreshErr, handoffErr))
 		return
 	}
 	m.recordTerminal(id, hostops.StateComplete, true, "operation complete")
@@ -1000,7 +1013,7 @@ func (m *hubHostManager) attachOperationChannel(ctx context.Context, id string, 
 	if m.cfg.attachUnderGate == nil {
 		return nil, errors.New("this hub has no operation-owned attach wired, so the host cannot be attached under the held gate")
 	}
-	handoff, err := m.cfg.attachUnderGate(ctx, entry)
+	handoff, err := m.cfg.attachUnderGate(ctx, entry, hostops.Holder{Kind: hostops.HolderOperation, OperationID: id})
 	if err != nil {
 		return nil, fmt.Errorf("the operation-owned attach for host %q failed: %w", entry.Name, err)
 	}

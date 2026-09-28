@@ -48,6 +48,12 @@ func supervisorLoops(m *Manager, name string) int {
 	return len(m.supervisors[name])
 }
 
+// attachUnderGateCaller is the operation holder these tests' holds register and
+// present to the primitive.
+func attachUnderGateCaller() hostops.Holder {
+	return hostops.Holder{Kind: hostops.HolderOperation, OperationID: "op-1"}
+}
+
 // TestAttachUnderGatePublishesUnderTheHeldGateAndSuppressesTheSupervisor pins
 // the primitive's contract: called while the caller holds the host's gate (a
 // re-acquire of the non-reentrant lock would deadlock), it publishes the
@@ -55,13 +61,13 @@ func supervisorLoops(m *Manager, name string) int {
 func TestAttachUnderGatePublishesUnderTheHeldGateAndSuppressesTheSupervisor(t *testing.T) {
 	m, fr, host := attachUnderGateManager(t, Options{})
 
-	release, err := m.TryAcquire(host.Name, hostops.Holder{Kind: hostops.HolderOperation, OperationID: "op-1"})
+	release, err := m.TryAcquire(host.Name, attachUnderGateCaller())
 	if err != nil {
 		t.Fatalf("TryAcquire: %v", err)
 	}
 	defer release()
 
-	ch, handoff, err := m.AttachUnderGate(context.Background(), host)
+	ch, handoff, err := m.AttachUnderGate(context.Background(), host, attachUnderGateCaller())
 	if err != nil {
 		t.Fatalf("AttachUnderGate under the held gate: %v", err)
 	}
@@ -108,14 +114,14 @@ func TestAttachUnderGateRetiresTheLostPredecessorAndPairsItsEvents(t *testing.T)
 
 	// Hold the gate before the drop, so the dropped channel's supervisor parks
 	// on it exactly as it does while an operation owns the host.
-	release, err := m.TryAcquire(host.Name, hostops.Holder{Kind: hostops.HolderOperation, OperationID: "op-1"})
+	release, err := m.TryAcquire(host.Name, attachUnderGateCaller())
 	if err != nil {
 		t.Fatalf("TryAcquire: %v", err)
 	}
 	defer release()
 	first.markLost()
 
-	replacement, handoff, err := m.AttachUnderGate(context.Background(), host)
+	replacement, handoff, err := m.AttachUnderGate(context.Background(), host, attachUnderGateCaller())
 	if err != nil {
 		t.Fatalf("AttachUnderGate over the lost predecessor: %v", err)
 	}
@@ -166,12 +172,12 @@ func TestAttachUnderGateHandoffStartsTheSupervisorThatReconnectsAfterTheGate(t *
 	if err != nil {
 		t.Fatalf("Ensure: %v", err)
 	}
-	release, err := m.TryAcquire(host.Name, hostops.Holder{Kind: hostops.HolderOperation, OperationID: "op-1"})
+	release, err := m.TryAcquire(host.Name, attachUnderGateCaller())
 	if err != nil {
 		t.Fatalf("TryAcquire: %v", err)
 	}
 	first.markLost()
-	replacement, handoff, err := m.AttachUnderGate(context.Background(), host)
+	replacement, handoff, err := m.AttachUnderGate(context.Background(), host, attachUnderGateCaller())
 	if err != nil {
 		t.Fatalf("AttachUnderGate: %v", err)
 	}
@@ -204,7 +210,7 @@ func TestAttachUnderGateHandoffStartsTheSupervisorThatReconnectsAfterTheGate(t *
 func TestAttachUnderGateRefusesWithoutTheHeldGate(t *testing.T) {
 	m, fr, host := attachUnderGateManager(t, Options{})
 
-	_, _, err := m.AttachUnderGate(context.Background(), host)
+	_, _, err := m.AttachUnderGate(context.Background(), host, attachUnderGateCaller())
 	if !errors.Is(err, hostops.ErrGateNotHeld) {
 		t.Fatalf("AttachUnderGate without the gate = %v, want hostops.ErrGateNotHeld", err)
 	}
@@ -219,7 +225,7 @@ func TestAttachUnderGateRefusesWithoutTheHeldGate(t *testing.T) {
 func TestAttachUnderGateRefusesAStaleRegistration(t *testing.T) {
 	m, fr, host := attachUnderGateManager(t, Options{})
 
-	release, err := m.TryAcquire(host.Name, hostops.Holder{Kind: hostops.HolderOperation, OperationID: "op-1"})
+	release, err := m.TryAcquire(host.Name, attachUnderGateCaller())
 	if err != nil {
 		t.Fatalf("TryAcquire: %v", err)
 	}
@@ -234,12 +240,95 @@ func TestAttachUnderGateRefusesAStaleRegistration(t *testing.T) {
 		t.Fatalf("registry Add: %v", err)
 	}
 
-	_, _, err = m.AttachUnderGate(context.Background(), host)
+	_, _, err = m.AttachUnderGate(context.Background(), host, attachUnderGateCaller())
 	if !errors.Is(err, ErrHostNotFound) {
 		t.Fatalf("AttachUnderGate with a stale registration = %v, want ErrHostNotFound", err)
 	}
 	if got := len(fr.recordedStarts()); got != 0 {
 		t.Fatalf("a stale-registration call dialed: %d starts", got)
+	}
+}
+
+// TestAttachUnderGateRequiresTheCallersOwnHold pins the precondition's
+// strength: a gate held by some other holder is not the caller's hold, so a
+// call presenting a different holder refuses rather than publishing under
+// another holder's exclusion.
+func TestAttachUnderGateRequiresTheCallersOwnHold(t *testing.T) {
+	m, fr, host := attachUnderGateManager(t, Options{})
+
+	otherRelease, err := m.TryAcquire(host.Name, hostops.Holder{Kind: hostops.HolderManager, Activity: "attach"})
+	if err != nil {
+		t.Fatalf("TryAcquire (manager hold): %v", err)
+	}
+	defer otherRelease()
+
+	_, _, err = m.AttachUnderGate(context.Background(), host, attachUnderGateCaller())
+	if !errors.Is(err, hostops.ErrGateNotHeld) {
+		t.Fatalf("AttachUnderGate under another holder = %v, want hostops.ErrGateNotHeld", err)
+	}
+	if got := len(fr.recordedStarts()); got != 0 {
+		t.Fatalf("a foreign-holder call dialed: %d starts", got)
+	}
+}
+
+// TestAttachUnderGateReapsAndNeverAnnouncesADropAfterPublish pins the
+// post-publish death path: a link that dies between the publish and the event
+// pair is reaped, the slot is given back, and no Attached is left outstanding —
+// the check runs before the pair, exactly as Ensure orders it.
+func TestAttachUnderGateReapsAndNeverAnnouncesADropAfterPublish(t *testing.T) {
+	host := attachUnderGateHost()
+	var mu sync.Mutex
+	var events []Event
+	var published *Channel
+	fr := &fakeRunner{runFn: cannedRun(nil), startFn: goodStartFn(t)}
+	m := newTestManager(t, testRegistry(t, host), fr, Options{
+		controllerVersionOverride: "dev",
+		afterPublish: func(_ string, ch *Channel) {
+			published = ch
+			ch.markLost()
+		},
+		OnEvent: func(ev Event) {
+			mu.Lock()
+			events = append(events, ev)
+			mu.Unlock()
+		},
+	})
+	stamped, ok := m.reg.Get(host.Name)
+	if !ok {
+		t.Fatalf("the test registry holds no %q", host.Name)
+	}
+	release, err := m.TryAcquire(host.Name, attachUnderGateCaller())
+	if err != nil {
+		t.Fatalf("TryAcquire: %v", err)
+	}
+	defer release()
+
+	ch, handoff, err := m.AttachUnderGate(context.Background(), stamped, attachUnderGateCaller())
+	if !errors.Is(err, ErrSSHStart) {
+		t.Fatalf("AttachUnderGate with a drop after publish = %v, want the dropped-channel refusal", err)
+	}
+	if ch != nil || handoff != nil {
+		t.Fatalf("a dropped replacement was handed back: ch!=nil=%t handoff!=nil=%t", ch != nil, handoff != nil)
+	}
+	if published == nil || !published.isClosed() {
+		t.Fatal("the dropped replacement was not reaped")
+	}
+	if cur := m.currentChannel(host.Name); cur != nil {
+		t.Fatalf("the dropped replacement stayed mapped: %v", cur)
+	}
+	mu.Lock()
+	snapshot := append([]Event(nil), events...)
+	mu.Unlock()
+	for _, ev := range snapshot {
+		if ev.Kind == EventAttached && ev.Host == host.Name {
+			t.Fatalf("an Attached was announced for the dropped replacement: %+v", ev)
+		}
+	}
+	m.mu.Lock()
+	announced := m.announced[host.Name]
+	m.mu.Unlock()
+	if announced != nil {
+		t.Fatalf("announced = %v, want none", announced)
 	}
 }
 
@@ -251,7 +340,7 @@ func TestAttachUnderGateRefusesAClosedManager(t *testing.T) {
 	if err := m.Close(); err != nil {
 		t.Fatalf("Close: %v", err)
 	}
-	_, _, err := m.AttachUnderGate(context.Background(), host)
+	_, _, err := m.AttachUnderGate(context.Background(), host, attachUnderGateCaller())
 	if !errors.Is(err, ErrManagerClosed) {
 		t.Fatalf("AttachUnderGate on a closed manager = %v, want ErrManagerClosed", err)
 	}
