@@ -149,8 +149,8 @@ func (s *Session) swapEnvAndRefresh(next *execenv.LocalExecutionEnvironment, rec
 	}
 	// Step 2 — under s.mu: atomically install env+envInfo (so the two are
 	// never observed in a torn intermediate state) and rebuild the caches that
-	// derive from them. next's git-root cache is already warm, so this render
-	// hits the cache instead of forking.
+	// derive from them. The prompt render here reads session state and files
+	// only and starts no subprocess.
 	s.mu.Lock()
 	if s.closing {
 		s.mu.Unlock()
