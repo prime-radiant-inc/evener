@@ -75,7 +75,7 @@ func safeAuditPackageDoc(t *testing.T, path string) string {
 		t.Fatalf("read %s: %v", path, err)
 	}
 	var b strings.Builder
-	for _, line := range strings.Split(string(body), "\n") {
+	for line := range strings.SplitSeq(string(body), "\n") {
 		switch {
 		case strings.HasPrefix(line, "//"):
 			b.WriteString(strings.TrimPrefix(line, "//"))
