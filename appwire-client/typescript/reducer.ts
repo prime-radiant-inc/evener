@@ -380,7 +380,7 @@ function wireToTurnModel(turn: Turn, imageSessionRoute?: string): TurnModel {
 
 // evener.activeTurnId is the primary signal; a turn already marked inProgress
 // in the snapshot is the fallback for daemons/sources that don't populate it
-// (mirrors activeTurnIDFromThread in cmd/evener-hub/assets/appwire.js).
+// (mirrors activeTurnIDFromThread in cmd/serf-hub/assets/appwire.js).
 function activeTurnIdFromThread(thread: Thread): string | undefined {
   if (thread.evener.activeTurnId) return thread.evener.activeTurnId;
   return thread.turns?.find((t) => t.status === "inProgress")?.id;
