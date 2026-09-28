@@ -456,6 +456,11 @@ export interface ThreadModel {
   // like every other timestamp on this model, converted from the wire's
   // epoch-ms EvenerThread.ActiveTurnStartedAt). No live push.
   activeTurnStartedAt?: string;
+  // lastTurnEndedAt is when the session's last turn ended (S4), an ISO string
+  // converted from the wire's epoch-ms EvenerThread.LastTurnEndedAt; undefined
+  // before any turn has ended and from an older daemon. The phone marks a
+  // session seen through it. No live push: a re-read replaces it.
+  lastTurnEndedAt?: string;
   // reasoningEffortLevels/supportsReasoning DO get a live update, but only
   // via thread/model/changed (a model switch describes the new model's full
   // profile - see reducer.ts's own case) - never independently pushed.

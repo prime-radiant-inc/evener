@@ -2,7 +2,7 @@ import type { NavigationSessionSummary } from "@evener/appwire-client";
 import { relativeAge } from "@evener/appwire-client/state/navigation";
 import { SymbolView } from "expo-symbols";
 import type { ReactElement } from "react";
-import { Platform, Pressable, Text, View } from "react-native";
+import { type AccessibilityActionEvent, type AccessibilityActionInfo, Platform, Pressable, Text, View } from "react-native";
 import type { Palette } from "../design/tokens";
 import { useColors, useTextScale } from "../ui";
 import { bandOf, type ClassifiedRow, lastLine, stateWord, type Usual, whyLine } from "./attention";
@@ -22,51 +22,20 @@ export interface BoardRowProps {
 	hasDraft: boolean;
 	now: number;
 	onOpen: (row: NavigationSessionSummary) => void;
+	/** Half opacity and busy while a change to this row is on its way. */
+	dimmed?: boolean;
+	accessibilityActions?: readonly AccessibilityActionInfo[];
+	onAccessibilityAction?: (event: AccessibilityActionEvent) => void;
 }
 
 /** Where a row's title starts: its 16pt padding, the 28pt mark column and
  * the 10pt gap. */
 export const TITLE_INSET = 16 + 28 + 10;
 
-/** What every row in one of the Board's lists shares. */
-export type RowContext = Pick<BoardRowProps, "connected" | "usual" | "hostLabel" | "now" | "onOpen"> & {
-	draftRefs: ReadonlySet<string>;
-};
-
-function Hairline({ inset = 0 }: { inset?: number }) {
+/** The separator between rows, inset to the title by default. */
+export function Hairline({ inset = TITLE_INSET }: { inset?: number }) {
 	const { palette } = useColors();
 	return <View style={{ height: 0.5, marginLeft: inset, backgroundColor: palette.edge }} />;
-}
-
-/** A list of Board rows, separated by hairlines inset to the title. */
-export function BoardRows({
-	items,
-	variant,
-	moving,
-	context,
-}: {
-	items: readonly ClassifiedRow[];
-	variant: BoardRowProps["variant"];
-	moving: boolean;
-	context: RowContext;
-}): ReactElement {
-	const { draftRefs, ...shared } = context;
-	return (
-		<>
-			{items.map((item, index) => (
-				<View key={item.row.ref}>
-					{index > 0 ? <Hairline inset={TITLE_INSET} /> : null}
-					<BoardRow
-						item={item}
-						variant={variant}
-						moving={moving}
-						hasDraft={draftRefs.has(item.row.ref)}
-						{...shared}
-					/>
-				</View>
-			))}
-		</>
-	);
 }
 
 /** The type of the Board's section headers (spec 7.1): 13pt semibold,
@@ -93,11 +62,32 @@ export function FoldChevron({ folded }: { folded: boolean }): ReactElement {
 const UNITS: Record<string, string> = { m: "minute", h: "hour", d: "day" };
 
 /** relativeAge's "2m" as VoiceOver should say it: "2 minutes". */
-function spokenAge(age: string): string {
+export function spokenAge(age: string): string {
 	const match = /^(\d+)([mhd])$/.exec(age);
 	if (!match) return age;
 	const count = Number(match[1]);
 	return `${count} ${UNITS[match[2]]}${count === 1 ? "" : "s"}`;
+}
+
+/** A group's header: a Live band, or a search group. */
+export function BandHeader({ text }: { text: string }) {
+	const { palette } = useColors();
+	const scale = useTextScale();
+	return (
+		<Text
+			testID="band-header"
+			accessibilityRole="header"
+			allowFontScaling={Platform.OS !== "ios"}
+			style={{
+				paddingTop: 22,
+				paddingBottom: 6,
+				paddingHorizontal: 16,
+				...bandHeaderText(palette, scale),
+			}}
+		>
+			{text}
+		</Text>
+	);
 }
 
 /** One Board row (spec 7.2). It draws no separator: the list draws hairlines
@@ -112,6 +102,9 @@ export function BoardRow({
 	hasDraft,
 	now,
 	onOpen,
+	dimmed = false,
+	accessibilityActions,
+	onAccessibilityAction,
 }: BoardRowProps): ReactElement {
 	const { palette } = useColors();
 	const scale = useTextScale();
@@ -130,6 +123,9 @@ export function BoardRow({
 		<Pressable
 			accessibilityRole="button"
 			accessibilityLabel={label}
+			accessibilityState={{ busy: dimmed }}
+			accessibilityActions={accessibilityActions}
+			onAccessibilityAction={onAccessibilityAction}
 			onPress={() => onOpen(row)}
 			style={({ pressed }) => ({
 				flexDirection: "row",
@@ -140,6 +136,7 @@ export function BoardRow({
 				paddingBottom: signal ? 12 : 0,
 				minHeight: signal ? 64 : 48,
 				backgroundColor: pressed ? palette.pressed : palette.page,
+				opacity: dimmed ? 0.5 : 1,
 			})}
 		>
 			<View style={{ height: lineOne, justifyContent: "center" }}>

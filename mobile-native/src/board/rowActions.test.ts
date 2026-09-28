@@ -1,0 +1,182 @@
+import { describe, expect, it } from "vitest";
+import type { NavigationSessionSummary } from "@evener/appwire-client";
+import type { ConversationClientLike } from "../../../mobile/src/services/conversation";
+import { nativeNavigationActions } from "../navigationActionRepository";
+import { NavigationActions } from "../navigationActions";
+import type { BoardState } from "./attention";
+import { organizationHub, SESSION_ID } from "./organizationTestUtils";
+import {
+	archiveSession,
+	archiveTarget,
+	archivingSessionId,
+	pinSession,
+	type RowActionContext,
+	renameSession,
+	rowMenuActions,
+	shutDownSession,
+	swipeActions,
+} from "./rowActions";
+
+const local = `local:${SESSION_ID}`;
+const row = (over: Partial<NavigationSessionSummary> = {}): NavigationSessionSummary => ({
+	ref: local,
+	host_id: "local",
+	session_id: SESSION_ID,
+	title: "Session",
+	project: "evener",
+	state: "active",
+	kind: "session",
+	live: true,
+	children: [],
+	...over,
+});
+const remote = { ref: "paradise-park:x", host_id: "paradise-park", session_id: "x" };
+const online: RowActionContext = { connected: true, organizationReady: true, archived: false };
+
+describe("the long-press menu per state (spec 7.3)", () => {
+	it.each([
+		["a working session of this hub", row({ rename: true }), "working", online, ["pin", "stop", "shutDown", "archive", "rename"]],
+		["a finished one", row({ state: "awaiting" }), "finished", online, ["pin", "markRead", "shutDown", "archive"]],
+		["one seen since", row({ state: "idle" }), "idle", online, ["pin", "markUnread", "shutDown", "archive"]],
+		["one asking a question", row({ state: "awaiting", ask_pending: true }), "question", online, ["pin", "shutDown", "archive"]],
+		["one needing a restart", row({ state: "restartRequired" }), "restartNeeded", online, ["pin", "archive"]],
+		["one working on another host", row({ ...remote }), "working", online, ["pin", "stop", "shutDown", "archive"]],
+		["one on an offline host", row({ ...remote, offline: true, live: false }), "shutDown", online, ["pin", "archive"]],
+		["a fork", row({ kind: "fork" }), "working", online, ["stop", "shutDown"]],
+		["one in an archived tier", row({ state: "ended", live: false }), "shutDown", { ...online, archived: true }, ["pin", "unarchive"]],
+		["one while a change is unresolved", row({ rename: true }), "working", { ...online, organizationReady: false }, ["pin", "stop", "shutDown", "rename"]],
+		["a finished one offline", row({ state: "awaiting" }), "finished", { ...online, connected: false }, ["markRead"]],
+		["a seen one offline", row({ state: "idle" }), "idle", { ...online, connected: false }, ["markUnread"]],
+		["a working one offline", row(), "working", { ...online, connected: false }, []],
+	] as const)("%s", (_name, summary, state, context, expected) => {
+		expect(rowMenuActions({ row: summary, state: state as BoardState }, context)).toEqual(expected);
+	});
+});
+
+describe("swipes (spec 7.3)", () => {
+	it.each([
+		["a working session of this hub", row(), "working", online, { leading: "archive", trailing: ["stop", "pin", "more"] }],
+		["a finished one", row({ state: "awaiting" }), "finished", online, { leading: "archive", trailing: ["pin", "more"] }],
+		["one working on another host", row({ ...remote }), "working", online, { leading: "archive", trailing: ["stop", "pin", "more"] }],
+		["one in an archived tier", row({ state: "ended", live: false }), "shutDown", { ...online, archived: true }, { leading: "unarchive", trailing: ["pin", "more"] }],
+		["any row offline", row(), "working", { ...online, connected: false }, { leading: null, trailing: ["more"] }],
+	] as const)("%s", (_name, summary, state, context, expected) => {
+		expect(swipeActions({ row: summary, state: state as BoardState }, context)).toEqual(expected);
+	});
+});
+
+describe("archiving (rulings 16 and 20)", () => {
+	it("archives a top-level session of this hub by its id and one of another host by its ref", () => {
+		expect(archiveTarget(row())).toEqual({ kind: "session", id: SESSION_ID });
+		expect(archiveTarget(row({ ...remote }))).toEqual({ kind: "session", id: "paradise-park:x" });
+		expect(archiveTarget(row({ ...remote, kind: "subagent" }))).toBeNull();
+		expect(archiveTarget(row({ ref: "cluster:abc" }))).toBeNull();
+		expect(archiveTarget(row({ ref: "local:not-a-session", session_id: "not-a-session" }))).toBeNull();
+		for (const kind of ["subagent", "fork", "cluster"]) expect(archiveTarget(row({ kind }))).toBeNull();
+	});
+
+	function journal() {
+		const values = new Map<string, unknown>();
+		let id = 0;
+		return nativeNavigationActions("hub", {
+			createId: () => String(++id),
+			get: (key) => values.get(key),
+			set: (key, value) => {
+				values.set(key, value);
+			},
+			deleteIf: (key, value) => JSON.stringify(values.get(key)) === JSON.stringify(value) && values.delete(key),
+		});
+	}
+	function organization({ current = true, accept = true } = {}) {
+		const hub = organizationHub();
+		hub.answerWrites(() => {
+			if (!accept) throw new Error("refused");
+			return { ok: true, changed: true, navigation: { generation_id: "g", targets: [] } };
+		});
+		const storage = journal();
+		const actions = new NavigationActions(hub.client, async () => {}, () => current, async () => {}, storage);
+		return { hub, storage, actions };
+	}
+
+	it("archives through the journal and reports it confirmed", async () => {
+		const { hub, storage, actions } = organization();
+		expect(await archiveSession(actions, { kind: "session", id: SESSION_ID }, true)).toBe(true);
+		expect(hub.writes).toEqual([
+			{ method: "evener/archive/set", params: { kind: "session", id: SESSION_ID, archived: true } },
+		]);
+		expect(storage.load()).toBeNull();
+	});
+
+	it("reports a refused archive as unconfirmed, with the journal holding it for the Board to settle", async () => {
+		const { storage, actions } = organization({ accept: false });
+		expect(await archiveSession(actions, { kind: "session", id: SESSION_ID }, true)).toBe(false);
+		expect(storage.load()).not.toBeNull();
+		expect(actions.getSnapshot().uncertain).toBe(true);
+	});
+
+	it("sends nothing while another change is unresolved, or when the Board isn't on screen", async () => {
+		const busy = organization();
+		busy.storage.begin({ kind: "unpin", params: { sessionRef: "local:other" } });
+		const blocked = new NavigationActions(busy.hub.client, async () => {}, () => true, async () => {}, busy.storage);
+		expect(await archiveSession(blocked, { kind: "session", id: SESSION_ID }, true)).toBe(false);
+		const covered = organization({ current: false });
+		expect(await archiveSession(covered.actions, { kind: "session", id: SESSION_ID }, true)).toBe(false);
+		expect([...busy.hub.writes, ...covered.hub.writes]).toEqual([]);
+	});
+
+	it("pins select mode's sessions through the same journal", async () => {
+		const { hub, actions } = organization();
+		expect(await pinSession(actions, { sessionRef: local, sectionName: "Release" })).toBe(true);
+		expect(hub.writes).toEqual([
+			{ method: "evener/session-pin/assign", params: { sessionRef: local, sectionName: "Release" } },
+		]);
+	});
+
+	it("names the session an unresolved archive is about, so its rows dim", () => {
+		const recovery = {
+			id: "1",
+			operation: { kind: "archive" as const, params: { kind: "session", id: SESSION_ID, archived: true } },
+			receipt: null,
+		};
+		const idle = { pending: false, uncertain: false, recovery: null };
+		expect(archivingSessionId({ ...idle, pending: true, recovery })).toBe(SESSION_ID);
+		expect(archivingSessionId({ ...idle, uncertain: true, recovery })).toBe(SESSION_ID);
+		expect(archivingSessionId(idle)).toBeNull();
+		expect(
+			archivingSessionId({
+				...idle,
+				pending: true,
+				recovery: { ...recovery, operation: { kind: "archive", params: { kind: "project", id: "p", workingDir: "/w", archived: true } } },
+			}),
+		).toBeNull();
+	});
+});
+
+describe("the Session's direct requests (ruling 19)", () => {
+	function recorder() {
+		const requests: { method: string; params: unknown }[] = [];
+		const client = {
+			request: async (method: string, params: unknown) => {
+				requests.push({ method, params });
+				return {};
+			},
+			onNotification: () => () => {},
+		} as unknown as ConversationClientLike;
+		return { client, requests };
+	}
+
+	it("shuts a session down with thread/shutdown", async () => {
+		const { client, requests } = recorder();
+		await shutDownSession(client, local);
+		expect(requests).toEqual([{ method: "thread/shutdown", params: { ref: local } }]);
+	});
+
+	it("renames with the trimmed name, and sends nothing for a blank one", async () => {
+		const { client, requests } = recorder();
+		expect(await renameSession(client, local, "  Fix the settle race ")).toBe(true);
+		expect(await renameSession(client, local, "   ")).toBe(false);
+		expect(requests).toEqual([
+			{ method: "evener/thread/name/set", params: { ref: local, name: "Fix the settle race" } },
+		]);
+	});
+});

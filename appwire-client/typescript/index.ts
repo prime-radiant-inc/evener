@@ -106,7 +106,7 @@ export type {
 } from "./commandCatalog";
 export { createCommandCatalog, createSessionCommandCatalog, sessionPluginNames } from "./commandCatalog";
 export type { InputAttachment } from "./composerInput";
-export { buildComposerInput, buildInput, canonicalSkillNames } from "./composerInput";
+export { buildComposerInput, buildInput, canonicalSkillNames, formatQuoteBlock, mergeDraftText } from "./composerInput";
 export type { CredentialLayerView, InstanceProviderGroup } from "./credentialLabels";
 export {
   activeSourceLabel,
@@ -423,6 +423,7 @@ export {
   SEND_UNAVAILABLE,
   type SessionControlName,
   type SessionControls,
+  SHUT_DOWN_STATUSES,
   STEER_UNAVAILABLE,
   STOP_UNAVAILABLE,
   sessionControls,

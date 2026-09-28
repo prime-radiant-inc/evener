@@ -1,8 +1,24 @@
 import { scopedDisclosureId } from "@evener/appwire-client";
-import type { ReactNode } from "react";
-import { ActionSheetIOS, Alert, Platform, Pressable, View } from "react-native";
+import { type ReactNode, useMemo, useState } from "react";
+import {
+	type AccessibilityActionEvent,
+	ActionSheetIOS,
+	Alert,
+	Modal,
+	Platform,
+	Pressable,
+	ScrollView,
+	Text,
+	View,
+} from "react-native";
+import { SafeAreaView } from "react-native-safe-area-context";
+import { copyText } from "./clipboard";
 import { MarkdownResponse } from "./MarkdownResponse";
 import { toggleDisclosure, useDisclosureOpen } from "./nativeDisclosure";
+import type { MobileTimelineItem } from "./projectedRows";
+import { useMinuteClock } from "./session/minuteClock";
+import { RunRow } from "./session/RunRow";
+import { timeMarkerText } from "./session/transcriptRows";
 import { TranscriptImages } from "./TranscriptImages";
 import {
 	isCriticalNotice,
@@ -11,7 +27,7 @@ import {
 	type TimelineRow,
 } from "./timeline";
 import type { ActivityPresentation } from "./transcriptPresentation";
-import { Action, Copy, useColors } from "./ui";
+import { Action, Copy, styles, useColors, useTextScale } from "./ui";
 
 export function TimelineItem({
 	item,
@@ -22,6 +38,8 @@ export function TimelineItem({
 	showDuration = true,
 	fork,
 	forkDisabled = false,
+	quote,
+	live = false,
 }: {
 	item: TimelineRow;
 	hubId: string;
@@ -31,12 +49,17 @@ export function TimelineItem({
 	showDuration?: boolean;
 	fork?: (entryIndex: number, preview: string) => void;
 	forkDisabled?: boolean;
+	/** Quotes text into the composer's draft. */
+	quote?: (text: string) => void;
+	/** This row is the live run: the last run of the turn in progress. */
+	live?: boolean;
 }) {
 	const disclosureId = scopedDisclosureId(
 		JSON.stringify([hubId, sessionRef]),
 		JSON.stringify([item.kind, item.id]),
 	);
-	const defaultOpen = item.kind === "activity" && expandByDefault;
+	const defaultOpen =
+		(item.kind === "activity" || item.kind === "run") && expandByDefault;
 	const expanded = useDisclosureOpen(disclosureId, defaultOpen);
 	const toggle = () => toggleDisclosure(disclosureId, defaultOpen);
 	const colors = useColors();
@@ -66,82 +89,25 @@ export function TimelineItem({
 				</>
 			);
 			break;
-		case "user": {
-			const preview = item.text.replace(/\s+/g, " ").trim().slice(0, 120);
-			const forkMessage = () => {
-				if (item.transcriptEntryIndex !== undefined)
-					fork?.(item.transcriptEntryIndex, item.text);
-			};
-			const showActions = () => {
-				if (Platform.OS === "ios") {
-					ActionSheetIOS.showActionSheetWithOptions(
-						{
-							title: preview ? `Message: ${preview}` : "Message actions",
-							options: ["Fork from here", "Cancel"],
-							cancelButtonIndex: 1,
-						},
-						(buttonIndex) => {
-							if (buttonIndex === 0) forkMessage();
-						},
-					);
-					return;
-				}
-				Alert.alert("Message actions", preview, [
-					{ text: "Fork from here", onPress: forkMessage },
-					{ text: "Cancel", style: "cancel" },
-				]);
-			};
+		case "user":
 			content = (
-				<View
-					style={{ flexDirection: "row", alignItems: "flex-start", gap: 8 }}
-				>
-					<View style={{ flex: 1, minWidth: 0 }}>
-						<Copy variant="yourMessage" label={`You: ${item.text}`}>{item.text}</Copy>
-					</View>
-					{fork &&
-					item.transcriptEntryIndex !== undefined &&
-					Number.isSafeInteger(item.transcriptEntryIndex) &&
-					item.transcriptEntryIndex > 0 ? (
-						<Pressable
-							accessibilityRole="button"
-							accessibilityLabel={`Message actions for ${preview}`}
-							accessibilityState={{ disabled: forkDisabled }}
-							disabled={forkDisabled}
-							onPress={showActions}
-							style={({ pressed }) => ({
-								width: 44,
-								height: 44,
-								alignItems: "center",
-								justifyContent: "center",
-								opacity: forkDisabled ? 0.4 : pressed ? 0.65 : 1,
-							})}
-						>
-							<View style={{ flexDirection: "row", gap: 3 }}>
-								{[0, 1, 2].map((dot) => (
-									<View
-										key={dot}
-										style={{
-											width: 4,
-											height: 4,
-											borderRadius: 2,
-											backgroundColor: colors.secondary,
-										}}
-									/>
-								))}
-							</View>
-						</Pressable>
-					) : null}
-				</View>
+				<YourMessage
+					item={item}
+					fork={
+						fork &&
+						!forkDisabled &&
+						item.transcriptEntryIndex !== undefined &&
+						Number.isSafeInteger(item.transcriptEntryIndex) &&
+						item.transcriptEntryIndex > 0
+							? fork
+							: undefined
+					}
+					quote={quote}
+				/>
 			);
 			break;
-		}
 		case "assistant":
-			content = (
-				<>
-					{item.streaming ? <Copy muted>Writing…</Copy> : null}
-					<MarkdownResponse markdown={item.markdown || "…"} />
-				</>
-			);
+			content = <AgentMessage markdown={item.markdown} quote={quote} />;
 			break;
 		case "notice":
 			content = noticeLabel ? (
@@ -246,33 +212,222 @@ export function TimelineItem({
 				</>
 			);
 			break;
+		case "run":
+			content = (
+				<RunRow
+					run={item}
+					live={live}
+					expanded={expanded}
+					onToggle={toggle}
+					// A step's evidence arrives in PR 8.
+					onStep={() => {}}
+				/>
+			);
+			break;
+		case "time":
+			content = <TimeMarker at={item.at} />;
+			break;
 	}
 	return (
 		<View
 			style={[
 				{ gap: 8 },
-				item.kind === "user"
+				item.kind === "question" ||
+				item.kind === "failure" ||
+				(item.kind === "notice" && isCriticalNotice(item))
 					? {
-							backgroundColor: colors.palette.bubble,
-							borderRadius: 18,
-							borderBottomRightRadius: 5,
-							padding: 14,
-							marginLeft: 24,
+							borderLeftWidth: 2,
+							borderLeftColor:
+								item.kind === "failure" ? colors.error : colors.accent,
+							paddingLeft: 14,
+							paddingVertical: 8,
 						}
-					: item.kind === "question" ||
-							item.kind === "failure" ||
-							(item.kind === "notice" && isCriticalNotice(item))
-						? {
-								borderLeftWidth: 2,
-								borderLeftColor:
-									item.kind === "failure" ? colors.error : colors.accent,
-								paddingLeft: 14,
-								paddingVertical: 8,
-							}
-						: null,
+					: null,
 			]}
 		>
 			{content}
 		</View>
+	);
+}
+
+/** One item of a message's touch-and-hold menu, which VoiceOver also offers
+ * as an action on the message. */
+interface MenuItem {
+	name: string;
+	label: string;
+	run: () => void;
+}
+
+function showMenu(items: readonly MenuItem[], preview: string) {
+	if (Platform.OS === "ios") {
+		ActionSheetIOS.showActionSheetWithOptions(
+			{
+				options: [...items.map((item) => item.label), "Cancel"],
+				cancelButtonIndex: items.length,
+			},
+			(index) => items[index]?.run(),
+		);
+		return;
+	}
+	// Android's alert holds at most three buttons, so it dismisses by a tap
+	// outside rather than spending one on Cancel.
+	Alert.alert(
+		"Message",
+		preview,
+		items.map((item) => ({ text: item.label, onPress: item.run })),
+		{ cancelable: true },
+	);
+}
+
+/** A message's first 120 characters on one line, for the Android menu. */
+function menuPreview(text: string): string {
+	return text.replace(/\s+/g, " ").trim().slice(0, 120);
+}
+
+function menuAccessibility(items: readonly MenuItem[]) {
+	return {
+		accessibilityActions: items.map(({ name, label }) => ({ name, label })),
+		onAccessibilityAction: (event: AccessibilityActionEvent) =>
+			items.find((item) => item.name === event.nativeEvent.actionName)?.run(),
+	};
+}
+
+function YourMessage({
+	item,
+	fork,
+	quote,
+}: {
+	item: Extract<MobileTimelineItem, { kind: "user" }>;
+	/** Set only when a fork from this message can run now. */
+	fork?: (entryIndex: number, preview: string) => void;
+	quote?: (text: string) => void;
+}) {
+	const { palette } = useColors();
+	const scale = useTextScale();
+	const entryIndex = item.transcriptEntryIndex;
+	const menu: MenuItem[] = [
+		{ name: "copy", label: "Copy", run: () => void copyText(item.text) },
+		...(fork && entryIndex !== undefined
+			? [
+					{
+						name: "fork",
+						label: "Fork from here",
+						run: () => fork(entryIndex, item.text),
+					},
+				]
+			: []),
+		...(quote
+			? [{ name: "quote", label: "Quote", run: () => quote(item.text) }]
+			: []),
+	];
+	return (
+		<View style={{ alignItems: "flex-end", gap: 4 }}>
+			<Pressable
+				accessibilityLabel={`You: ${item.text}`}
+				{...menuAccessibility(menu)}
+				onLongPress={() => showMenu(menu, menuPreview(item.text))}
+				style={{
+					alignSelf: "flex-end",
+					maxWidth: "85%",
+					backgroundColor: palette.bubble,
+					borderRadius: 18,
+					borderCurve: "continuous",
+					paddingHorizontal: 14,
+					paddingVertical: 10,
+				}}
+			>
+				<Copy variant="yourMessage" selectable={false} label={`You: ${item.text}`}>
+					{item.text}
+				</Copy>
+			</Pressable>
+			{item.origin === "steered" ? (
+				<Text
+					allowFontScaling={Platform.OS !== "ios"}
+					style={{ fontSize: 12 * scale, lineHeight: 16 * scale, color: palette.inkLow }}
+				>
+					Steered in mid-turn
+				</Text>
+			) : null}
+		</View>
+	);
+}
+
+function AgentMessage({
+	markdown,
+	quote,
+}: {
+	markdown: string;
+	quote?: (text: string) => void;
+}) {
+	const colors = useColors();
+	const [selecting, setSelecting] = useState(false);
+	// Memoized so an unchanged message hands MarkdownResponse the same props
+	// and its memo skips the render the list asks of every row on each publish.
+	const menu = useMemo<MenuItem[]>(
+		() => [
+			{ name: "copy", label: "Copy", run: () => void copyText(markdown) },
+			...(quote
+				? [{ name: "quote", label: "Quote in reply", run: () => quote(markdown) }]
+				: []),
+			{ name: "select", label: "Select text", run: () => setSelecting(true) },
+		],
+		[markdown, quote],
+	);
+	const accessibility = useMemo(() => menuAccessibility(menu), [menu]);
+	return (
+		<>
+			{/* The markdown view stays VoiceOver's element (it reads the
+			formatting and its links); the pressable only adds touch and hold. */}
+			<Pressable accessible={false} onLongPress={() => showMenu(menu, menuPreview(markdown))}>
+				<MarkdownResponse
+					markdown={markdown || "…"}
+					selectable={false}
+					{...accessibility}
+				/>
+			</Pressable>
+			<Modal
+				visible={selecting}
+				animationType="slide"
+				presentationStyle="fullScreen"
+				onRequestClose={() => setSelecting(false)}
+			>
+				<SafeAreaView
+					style={[styles.fill, { backgroundColor: colors.background }]}
+				>
+					<View
+						style={[
+							styles.row,
+							{ paddingHorizontal: 16, justifyContent: "flex-end" },
+						]}
+					>
+						<Action onPress={() => setSelecting(false)}>Done</Action>
+					</View>
+					<ScrollView contentContainerStyle={{ padding: 16 }}>
+						<Copy variant="agentProse">{markdown}</Copy>
+					</ScrollView>
+				</SafeAreaView>
+			</Modal>
+		</>
+	);
+}
+
+function TimeMarker({ at }: { at: number }) {
+	const { palette } = useColors();
+	const scale = useTextScale();
+	const now = useMinuteClock();
+	return (
+		<Text
+			allowFontScaling={Platform.OS !== "ios"}
+			style={{
+				paddingTop: 16,
+				fontSize: 12 * scale,
+				lineHeight: 16 * scale,
+				color: palette.inkLow,
+				textAlign: "center",
+				fontVariant: ["tabular-nums"],
+			}}
+		>
+			{timeMarkerText(at, now)}
+		</Text>
 	);
 }

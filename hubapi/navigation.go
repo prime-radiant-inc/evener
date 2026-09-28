@@ -244,6 +244,17 @@ type NavigationSubagentTally struct {
 	Done    int `json:"done"`
 }
 
+// NavigationQuestion is the first question of a live session's pending ask
+// (S1b): a Needs you row's why line ("Question · keep or drop the implied
+// options?"), the option labels a long-press preview lists, and how many
+// questions the ask holds. Text and each label are one line, cut to the
+// wire's bounds (appwire.BoundedPendingQuestion).
+type NavigationQuestion struct {
+	Text    string   `json:"text"`
+	Options []string `json:"options,omitempty"`
+	Count   int      `json:"count"`
+}
+
 // NavigationSessionSummary is the bounded recursive navigation row shape.
 type NavigationSessionSummary struct {
 	Ref          string `json:"ref"`
@@ -274,7 +285,11 @@ type NavigationSessionSummary struct {
 	// bound and the target to the label bound.
 	ApprovalTool   string `json:"approval_tool,omitempty"`
 	ApprovalTarget string `json:"approval_target,omitempty"`
-	Dormant        bool   `json:"dormant,omitempty"`
+	// Question is the first question of the session's pending ask (S1b). It
+	// is present only on a row that carries AskPending and whose daemon named
+	// the question.
+	Question *NavigationQuestion `json:"question,omitempty"`
+	Dormant  bool                `json:"dormant,omitempty"`
 	// Offline marks a row folded into the merged list from a source that is
 	// currently unreachable: its last-known rows stay visible, but they are not
 	// live and cannot serve host-targeted actions until the source reattaches.
