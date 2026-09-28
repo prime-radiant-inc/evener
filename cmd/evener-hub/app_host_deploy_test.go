@@ -1084,6 +1084,7 @@ func TestHostRestartAttachFirstHandsOffWhenTheRestartFails(t *testing.T) {
 	var attachedState atomic.Bool
 	var handoffCalls atomic.Int64
 	var handoffSawGateHeld atomic.Bool
+	handedOffCh := make(chan struct{}, 1)
 	var m *hubHostManager
 	var store *hostops.Store
 	m, store, _ = deployTestHub(t, configPath, []hostreg.Host{entry}, deploySeams{
@@ -1098,6 +1099,10 @@ func TestHostRestartAttachFirstHandsOffWhenTheRestartFails(t *testing.T) {
 			return func() bool {
 				handoffSawGateHeld.Store(gateHeldBy(m, entry.Name))
 				handoffCalls.Add(1)
+				select {
+				case handedOffCh <- struct{}{}:
+				default:
+				}
 				return true
 			}, nil
 		},
@@ -1111,6 +1116,13 @@ func TestHostRestartAttachFirstHandsOffWhenTheRestartFails(t *testing.T) {
 	record := waitOperationState(t, store, response.ID, hostops.StateFailed)
 	if record.Result == nil || record.Result.OK {
 		t.Fatalf("failed restart record result = %+v, want a failure", record.Result)
+	}
+	// The handoff runs after the failure is recorded (the worker's deferred
+	// finish), so wait for it rather than racing the record's terminal write.
+	select {
+	case <-handedOffCh:
+	case <-time.After(5 * time.Second):
+		t.Fatalf("handoff calls = %d, want the attach-first channel handed off despite the failed restart", handoffCalls.Load())
 	}
 	if got := handoffCalls.Load(); got != 1 {
 		t.Fatalf("handoff calls = %d, want the attach-first channel handed off despite the failed restart", got)
@@ -1166,6 +1178,101 @@ func (g *promotionFailingGate) effectiveHolder() hostops.Holder {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	return g.effective
+}
+
+// holderTrackingGate delegates to inner and records the holder the inner gate
+// carries, so a test can observe the gate's holder across the attach ladder's
+// own holder changes (an Ensure-triggered deploy promotes it and restores the
+// manager holder when the step finishes).
+type holderTrackingGate struct {
+	inner hostops.Gate
+	mu    sync.Mutex
+	// effective is the holder the inner gate carries: what TryAcquire
+	// registered, or what the last successful HoldAs published.
+	effective hostops.Holder
+}
+
+func (g *holderTrackingGate) TryAcquire(host string, holder hostops.Holder) (func(), error) {
+	release, err := g.inner.TryAcquire(host, holder)
+	if err == nil {
+		g.mu.Lock()
+		g.effective = holder
+		g.mu.Unlock()
+	}
+	return release, err
+}
+
+func (g *holderTrackingGate) HoldAs(host string, holder hostops.Holder) error {
+	if err := g.inner.HoldAs(host, holder); err != nil {
+		return err
+	}
+	g.mu.Lock()
+	g.effective = holder
+	g.mu.Unlock()
+	return nil
+}
+
+func (g *holderTrackingGate) effectiveHolder() hostops.Holder {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.effective
+}
+
+// TestHostRestartRestoresTheHolderAfterANestedEnsureDeploy pins the nested-
+// deploy interaction: the attach ladder can run an Ensure-triggered deploy
+// whose recorder promotes the gate to the inner operation and whose finish
+// restores the manager holder. The worker must re-assert its own holder after
+// the attach — otherwise the handoff's own-hold precondition refuses and a
+// published channel is left unsupervised with the operation recorded failed.
+func TestHostRestartRestoresTheHolderAfterANestedEnsureDeploy(t *testing.T) {
+	entry := deployTestHost()
+	entry.Generation = 2
+	entry.IncarnationID = "inc-new"
+	configPath := deployTestConfigPath(t, entry)
+	before := time.Date(2026, 9, 27, 12, 0, 0, 0, time.UTC)
+	after := before.Add(time.Minute)
+	var gate *holderTrackingGate
+	var handoffRefused atomic.Bool
+	var m *hubHostManager
+	var store *hostops.Store
+	m, store, _ = deployTestHub(t, configPath, []hostreg.Host{entry}, deploySeams{
+		probe: restartProbeScript(t, "dev", "dev", before, after),
+		attachUnderGate: func(_ context.Context, got hostreg.Host, holder hostops.Holder) (func() bool, error) {
+			// The attach ladder ran an Ensure-triggered deploy: its recorder
+			// promoted the gate to the inner operation, and its finish restored
+			// the manager holder, exactly as m.EnsureDeploy/finishEnsureDeploy
+			// do in production.
+			if err := gate.HoldAs(got.Name, hostops.Holder{Kind: hostops.HolderManager, Activity: "attach"}); err != nil {
+				return nil, err
+			}
+			return func() bool {
+				if got := gate.effectiveHolder(); got != holder {
+					handoffRefused.Store(true)
+					return false
+				}
+				return true
+			}, nil
+		},
+	})
+	gate = &holderTrackingGate{inner: m.cfg.gate}
+	m.cfg.gate = gate
+
+	response, err := m.Restart(context.Background(), appwire.HostRestartParams{
+		Name: entry.Name, OperationID: "op-1", Generation: 2, IncarnationID: "inc-new",
+	})
+	if err != nil {
+		t.Fatalf("Restart: %v", err)
+	}
+	record := waitOperationState(t, store, response.ID, hostops.StateComplete)
+	if handoffRefused.Load() {
+		t.Fatal("the handoff's own-hold precondition refused after the nested Ensure deploy")
+	}
+	if record.Result == nil || !record.Result.OK {
+		t.Fatalf("restart record result = %+v, want ok", record.Result)
+	}
+	if got := gate.effectiveHolder(); got.OperationID != record.ID {
+		t.Fatalf("the gate carries holder %+v, want the operation holder %q restored", got, record.ID)
+	}
 }
 
 // TestHostRestartRestoresTheOperationHolderBeforeTheAttach pins the contract

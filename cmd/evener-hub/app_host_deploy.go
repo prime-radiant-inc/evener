@@ -1026,6 +1026,15 @@ func (m *hubHostManager) attachOperationChannel(ctx context.Context, id string, 
 	if err != nil {
 		return nil, fmt.Errorf("the operation-owned attach for host %q failed: %w", entry.Name, err)
 	}
+	// The attach ladder can run an Ensure-triggered deploy, whose recorder
+	// promotes the gate to the inner operation and whose finish restores the
+	// manager holder (finishEnsureDeploy). The returned handoff requires the
+	// gate to carry this operation's holder when it runs, so re-assert it after
+	// the attach: a holder change performed inside the ladder must not make the
+	// handoff refuse and leave the published channel unsupervised.
+	if err := m.cfg.gate.HoldAs(entry.Name, holder); err != nil {
+		return nil, fmt.Errorf("the operation holder could not be restored after the attach for host %q, so the supervisor handoff cannot run: %w", entry.Name, err)
+	}
 	return handoff, nil
 }
 
