@@ -726,6 +726,18 @@ describe("queued messages above the composer (spec 8.5)", () => {
 		expect(promote.map((request) => request.params)).toMatchObject([{ index: 0, expectedEntryId: "queue_1" }]);
 	});
 
+	it("offers Steer all now only while the hub is there to take it", async () => {
+		const { tree } = await mount(thread("ref-steer-all", "active", false, ["one", "two"]));
+		const host = () => queueHosts.get(sheetKey("hub-1", "ref-steer-all"));
+		expect(host()?.steerAll).toBeDefined();
+		harness.connection = { ...harness.connection, state: "connecting" };
+		const route = { key: "conversation-ref-steer-all", name: "Conversation", params: { hubId: "hub-1", ref: "ref-steer-all", title: "Session" } };
+		act(() => tree.update(<ConversationScreen route={route as unknown as ConversationScreenProps["route"]} navigation={navigation} />));
+		await settle();
+		expect(host()?.ghosts).toHaveLength(2);
+		expect(host()?.steerAll).toBeUndefined();
+	});
+
 	it("shows three queued messages and opens the rest in the Queue sheet", async () => {
 		vi.mocked(navigation.navigate).mockClear();
 		const { tree, hub } = await mount(thread("ref-four", "active", false, ["one", "two", "three", "four"]));

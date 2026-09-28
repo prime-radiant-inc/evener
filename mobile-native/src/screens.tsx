@@ -2099,7 +2099,10 @@ export function ConversationScreen({
 		(ghost) => ghost.origin.kind === "queue",
 	);
 	const queuedKey = JSON.stringify(queuedGhosts);
+	// Like the per-message actions, it goes to the hub, so it isn't offered
+	// while the hub is away.
 	const canSteerAll =
+		connected &&
 		!!conversation &&
 		(conversation.queue?.depth ?? 0) > 1 &&
 		conversationControls(conversation).drainQueue;
