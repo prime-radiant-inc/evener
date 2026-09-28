@@ -41,7 +41,7 @@ export function useMarkSeenInFront(
 	});
 	// The device decides a row without a readable hub turn end by its
 	// updated_at, so that is what a new mark follows for such a row.
-	const rowKey = fleetRow && `${ref}\u0000${hubTime(fleetRow.turn_ended_at) ?? fleetRow.updated_at ?? ""}`;
+	const rowKey = fleetRow && `${hubId}\u0000${ref}\u0000${hubTime(fleetRow.turn_ended_at) ?? fleetRow.updated_at ?? ""}`;
 	// Recorded even when the row already reads seen: an unread marked
 	// elsewhere at this same turn end later is left alone.
 	useOncePerStayInFront(inFront, rowKey, () => {

@@ -55,6 +55,7 @@ function setup({ refuse = false, fail = false } = {}) {
 	const markers = seenMarkers(hubId);
 	markers.adoptEpoch([{ updated_at: iso(T - 60_000) }]);
 	const view = {
+		hubId,
 		inFront: true,
 		client: client as ConversationClientLike | null,
 		conversation: null as { lastTurnEndedAt?: string } | null,
@@ -63,12 +64,12 @@ function setup({ refuse = false, fail = false } = {}) {
 	};
 	const hook = renderHook(() =>
 		useMarkSeenInFront(
-			{ hubId, ref: "local:s" },
+			{ hubId: view.hubId, ref: "local:s" },
 			view.inFront,
 			view.client,
 			view.conversation,
 			view.row,
-			useBoardSeen(hubId),
+			useBoardSeen(view.hubId),
 		),
 	);
 	return { hubId, sent, view, hook, client, markers };
@@ -294,5 +295,22 @@ it("sends a mark it queued without a client once one arrives, with no Board to f
 	view.client = client;
 	hook.rerender();
 	expect(sent).toEqual([[{ ref: "local:s", seenThrough: T }]]);
+	hook.unmount();
+});
+
+it("marks the same session ref and turn end again when the screen's hub changes", async () => {
+	const { sent, view, hook } = setup();
+	view.row = fleetRow({ turn_ended_at: iso(T), unseen: true });
+	hook.rerender();
+	await settle();
+	expect(sent).toEqual([[{ ref: "local:s", seenThrough: T }]]);
+	hubCount += 1;
+	view.hubId = `session-seen-hub-${hubCount}`;
+	hook.rerender();
+	await settle();
+	expect(sent).toEqual([
+		[{ ref: "local:s", seenThrough: T }],
+		[{ ref: "local:s", seenThrough: T }],
+	]);
 	hook.unmount();
 });
