@@ -40,12 +40,13 @@ export interface DocFileContent {
 // is no longer inferred from the body length.
 export const DOC_FILE_MAX_BYTES = 512 * 1024;
 
-export type DocFileErrorKind = "forbidden" | "not-found" | "error";
+export type DocFileErrorKind = "forbidden" | "not-found" | "host-unsupported" | "error";
 
 // A failed raw-file fetch, carrying the honest HTTP status so the pane maps it
 // to the same guard/status contract the HTML variant enforces: 403 for a path
-// that escapes the session cwd, 404 for a missing file / unknown or non-local
-// session, and a generic error for anything else (doc_serve.go:57-73).
+// that escapes the session cwd, 404 for a missing file or unknown session, 501
+// for a session on a host whose hub predates remote document reads (S7,
+// cmd/evener-hub/doc_proxy.go), and a generic error for anything else.
 export class DocFileError extends Error {
   readonly kind: DocFileErrorKind;
   readonly status: number;
@@ -87,6 +88,7 @@ export interface DocPort {
 function errorKindForStatus(status: number): DocFileErrorKind {
   if (status === 403) return "forbidden";
   if (status === 404) return "not-found";
+  if (status === 501) return "host-unsupported";
   return "error";
 }
 

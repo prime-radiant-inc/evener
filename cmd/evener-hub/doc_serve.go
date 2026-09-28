@@ -35,16 +35,20 @@ const docFileMaxBytes = 512 * 1024
 // ~/git was 3.2 MB. A larger file is served without a revision.
 const docRevisionMaxBytes = 16 * 1024 * 1024
 
-// handleDocFile serves a LOCAL session file's literal bytes for the React
+// handleDocFile serves a session file's literal bytes for the React
 // doc-viewer pane, which renders the content itself. The route has a single
 // mode, ?format=raw; a request that omits format or sends any other value is a
-// client error (400 with a hint naming the parameter).
+// client error (400 with a hint naming the parameter). A host-qualified session
+// id names a session on another host, so its file is read by the owning host
+// (serveRemoteSessionDocument); a local id reads this hub's own filesystem.
 //
-// The guard chain below (session/path presence, cwd containment) runs before
-// the format check, so a raw and a non-raw request reject the same out-of-cwd
-// or unknown-session input identically — only a fully valid request reaches the
-// format gate, where a raw request is served (writeDocFileRaw) and anything
-// else is refused.
+// For a local session the guard chain below (session/path presence, cwd
+// containment) runs before the format check, so a raw and a non-raw request
+// reject the same out-of-cwd or unknown-session input identically — only a
+// fully valid request reaches the format gate, where a raw request is served
+// (writeDocFileRaw) and anything else is refused. A host-qualified session
+// checks the format first, so the host is never asked for a request this route
+// would refuse.
 //
 // Security: the only file paths we serve are ones that resolve to a location
 // inside the session's cwd. We clean the request path, reject any residual
@@ -63,6 +67,16 @@ func (s *WebServer) handleDocFile(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
+	if ref, ok := hostQualifiedRouteRef(session); ok {
+		// Checked before the host is asked: a request this route would refuse
+		// is never forwarded.
+		if r.URL.Query().Get("format") != "raw" {
+			http.Error(w, "format=raw required", http.StatusBadRequest)
+			return
+		}
+		s.serveRemoteSessionDocument(w, r, ref, rel)
+		return
+	}
 
 	cwd, ok := s.localSessionCWD(session)
 	if !ok {
@@ -70,7 +84,7 @@ func (s *WebServer) handleDocFile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	abs, err := fspaths.ResolveInRoot(cwd, rel)
+	doc, err := readSessionDocument(cwd, rel)
 	if err != nil {
 		// A path that escapes the cwd, or that doesn't resolve, is refused.
 		// 403 for an escape attempt; 404 for a missing file.
@@ -82,17 +96,52 @@ func (s *WebServer) handleDocFile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	doc, err := readDocFile(cwd, abs)
-	if err != nil {
-		http.NotFound(w, r)
-		return
-	}
-
 	if r.URL.Query().Get("format") != "raw" {
 		http.Error(w, "format=raw required", http.StatusBadRequest)
 		return
 	}
 	writeDocFileRaw(w, r, doc)
+}
+
+// sessionDocumentFromHub serves the evener/session/document AppWire method: one
+// document out of THIS hub's own local session state, for the controller's
+// /doc/file proxy (S7). It is the AppWire counterpart of handleDocFile and
+// resolves the path by the same rule (sessionCWD, which refuses a session id
+// naming another source, then fspaths.ResolveInRoot), so a remote read is
+// confined to the session's folder exactly as a local one is.
+func sessionDocumentFromHub(cfg hubcore.WebConfig, params appwire.SessionDocumentParams) (appwire.SessionDocumentResponse, error) {
+	if params.SessionID == "" || params.Path == "" {
+		return appwire.SessionDocumentResponse{}, appwire.InvalidParams("sessionId and path are required")
+	}
+	cwd, ok := sessionCWD(cfg, canonicalRouteID(params.SessionID))
+	if !ok {
+		return appwire.SessionDocumentResponse{}, appwire.ResourceNotFound("session not found")
+	}
+	doc, err := readSessionDocument(cwd, params.Path)
+	if errors.Is(err, fspaths.ErrPathEscapesRoot) {
+		return appwire.SessionDocumentResponse{}, appwire.PathOutsideSession("path must resolve inside the session's working directory")
+	}
+	if err != nil {
+		return appwire.SessionDocumentResponse{}, appwire.ResourceNotFound("document not found")
+	}
+	return appwire.SessionDocumentResponse{
+		Data:       doc.Data,
+		TotalSize:  doc.TotalSize,
+		Revision:   doc.Revision,
+		ModifiedAt: docModifiedMillis(doc.ModifiedAt),
+	}, nil
+}
+
+// readSessionDocument reads the document rel names inside a session's working
+// directory cwd, for both /doc/file and evener/session/document. It fails with
+// fspaths.ErrPathEscapesRoot when rel, or a symlink along it, leads outside cwd;
+// any other failure means the document cannot be read.
+func readSessionDocument(cwd, rel string) (docFileRead, error) {
+	abs, err := fspaths.ResolveInRoot(cwd, rel)
+	if err != nil {
+		return docFileRead{}, err
+	}
+	return readDocFile(cwd, abs)
 }
 
 // handleDocImage serves a validated image file inside a session's working
@@ -112,7 +161,7 @@ func (s *WebServer) handleDocImage(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	if ref, ok := hostQualifiedImageRef(session); ok {
+	if ref, ok := hostQualifiedRouteRef(session); ok {
 		s.serveRemoteSessionImage(w, r, ref, appwire.SessionImageParams{SessionID: ref.ThreadID, Path: rel})
 		return
 	}
@@ -300,8 +349,7 @@ func looksBinaryBytes(data []byte) bool {
 // revision is answered 304 without the body.
 func writeDocFileRaw(w http.ResponseWriter, r *http.Request, doc docFileRead) {
 	w.Header().Set("Cache-Control", "private, no-cache")
-	// A time at or before the epoch is sent as no time at all.
-	if ms := doc.ModifiedAt.UnixMilli(); ms > 0 {
+	if ms := docModifiedMillis(doc.ModifiedAt); ms != 0 {
 		w.Header().Set("X-Doc-Modified-At", strconv.FormatInt(ms, 10))
 	}
 	etag := ""
@@ -323,6 +371,12 @@ func writeDocFileRaw(w http.ResponseWriter, r *http.Request, doc docFileRead) {
 		w.Header().Set("X-Doc-Total-Size", strconv.FormatInt(doc.TotalSize, 10))
 	}
 	_, _ = w.Write(doc.Data)
+}
+
+// docModifiedMillis is a modification time in Unix milliseconds, or 0 for a
+// time at or before the epoch, which is sent as no time at all.
+func docModifiedMillis(modified time.Time) int64 {
+	return max(modified.UnixMilli(), 0)
 }
 
 // ifNoneMatchNames reports whether an If-None-Match header lists etag, or is
