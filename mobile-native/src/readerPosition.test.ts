@@ -683,6 +683,24 @@ describe("where a session opens (spec 7.3, ruling 31)", () => {
 		];
 		expect(openingTarget(anchor({ turnsSeen: "turn_1" }), rowsWithRun, turnIds, false)).toEqual({ kind: "row", index: 4 });
 	});
+	// Your own images follow your message as an attachments row. They are not
+	// the reply, and neither is any other attachments row: a step's images
+	// ride inside its run, and any other attachments row follows the row that
+	// produced it, so skipping them never skips the start of the reply.
+	it("opens past the images you sent, at the reply itself", () => {
+		const rowsWithImages: TimelineRow[] = [
+			...rows.slice(0, 4),
+			{
+				kind: "attachments",
+				id: "u2:attachments",
+				items: [{ id: "u2:0", src: "/doc/image?1" }],
+				sourceTranscriptKey: "u2",
+				turnId: "turn_2",
+			},
+			{ kind: "run", id: "run:a", steps: [], turnId: "turn_2" },
+		];
+		expect(openingTarget(anchor({ turnsSeen: "turn_1" }), rowsWithImages, turnIds, false)).toEqual({ kind: "row", index: 5 });
+	});
 	it("opens where you left off when nothing is newer, or the seen turn isn't loaded", () => {
 		expect(openingTarget(anchor({ turnsSeen: "turn_2" }), rows, turnIds, false)).toEqual({ kind: "anchor" });
 		expect(openingTarget(anchor({ turnsSeen: "turn_0" }), rows, turnIds, false)).toEqual({ kind: "anchor" });

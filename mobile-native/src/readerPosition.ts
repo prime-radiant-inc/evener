@@ -132,9 +132,11 @@ export type OpeningTarget = { kind: "live" } | { kind: "anchor" } | { kind: "row
 
 /** Where a session opens (spec 7.3, ruling 31). While a question or approval
  * waits: the live end, where the dock is. After a reply that finished since
- * you last reached the end: the start of that reply. Otherwise where you left
- * off, and failing that the live end. Turn ids, never clocks, decide what is
- * newer. */
+ * you last reached the end: the start of that reply, past your own message,
+ * its time marker and any attachments row (a step's images ride inside its
+ * run, and any other attachments row follows the row that produced it).
+ * Otherwise where you left off, and failing that the live end. Turn ids,
+ * never clocks, decide what is newer. */
 export function openingTarget(
 	anchor: ReaderAnchor | null,
 	rows: readonly TimelineRow[],
@@ -147,7 +149,11 @@ export function openingTarget(
 		const newer = seen === -1 ? undefined : turnIds[seen + 1];
 		if (newer !== undefined) {
 			const index = rows.findIndex(
-				(row) => rowTurnId(row) === newer && row.kind !== "user" && row.kind !== "time",
+				(row) =>
+					rowTurnId(row) === newer &&
+					row.kind !== "user" &&
+					row.kind !== "time" &&
+					row.kind !== "attachments",
 			);
 			if (index !== -1) return { kind: "row", index };
 		}
