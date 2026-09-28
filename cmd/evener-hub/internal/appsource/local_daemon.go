@@ -1307,13 +1307,9 @@ func listRowCapabilities(item LocalDaemonEntry, status string) appwire.ThreadCap
 		// genuinely lacks the support still refuses each selection
 		// honestly.
 		SkillInput: true,
-		// The daemon advertises the subagent stop whenever it is wired and
-		// the session is open, the way Interrupt gates on !closed alone.
-		// Unlike Interrupt, a descendant alias never gets it: the stop
-		// targets the root that owns the tree, not a subagent's own thread
-		// (ruling 3). ReadOnlyAlias already zeroes the whole struct
-		// downstream, so this gate documents the intent even though it is
-		// redundant, matching Queue and SharedNotes above.
+		// Open sessions get the subagent stop, the way Interrupt gates on
+		// !closed. A descendant alias never does: the stop targets the root
+		// that owns the tree.
 		StopSubagent: !item.ReadOnlyAlias && !closed,
 	}
 }
