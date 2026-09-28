@@ -43,17 +43,26 @@ it("checks, applies, and clears the restart once the hub is back on a new versio
 	const applying = updates.controller.apply();
 	await settle();
 	expect(updates.controller.getState().restarting).toBe(true);
-	// The hub drops the connection while it restarts, then comes back.
-	readiness.set(false);
-	readiness.set(true);
-	await settle();
-	// Back on the old version: still restarting.
-	expect(updates.controller.getState().restarting).toBe(true);
+	// The hub drops the connection while it restarts, then comes back new.
 	h.state.version = "0.9.413";
 	readiness.set(false);
 	readiness.set(true);
 	await applying;
 	expect(updates.controller.getState()).toMatchObject({ restarting: false, restartTimedOut: false });
+});
+
+it("ends the restart when the hub comes back on the same version, rather than waiting forever", async () => {
+	const h = hub();
+	const readiness = createReadiness();
+	readiness.set(true);
+	const updates = createPhoneHubUpdates(h.client, readiness);
+	await updates.controller.runCheck();
+	const applying = updates.controller.apply();
+	await settle();
+	readiness.set(false);
+	readiness.set(true);
+	await applying;
+	expect(updates.controller.getState()).toMatchObject({ restarting: false, restartTimedOut: true });
 });
 
 it("stops waiting when the sheet lets go of it", async () => {

@@ -199,13 +199,41 @@ describe("apply", () => {
     expect(hub.controller.getState()).toMatchObject({ restarting: false, restartTimedOut: true });
   });
 
-  test("reports an answer of restarting: false as already up to date and waits for nothing", async () => {
+  test("reports an answer of restarting: false as already up to date, stops offering it, and waits for nothing", async () => {
     const hub = await checked(WAITING);
     const applying = hub.controller.apply();
     hub.take("evener/update/apply").resolve({ restarting: false });
     await applying;
     expect(hub.controller.getState()).toMatchObject({ applying: false, applyError: "Already up to date" });
+    // The hub re-checked and found nothing to install, so the kept check no
+    // longer offers an update.
+    expect(hub.controller.getState().check?.updateAvailable).toBe(false);
     expect(hub.restarts).toHaveLength(0);
+  });
+
+  test("waits for no restart once disposed while the apply was in flight", async () => {
+    const hub = await checked(WAITING);
+    const applying = hub.controller.apply();
+    const request = hub.take("evener/update/apply");
+    hub.controller.dispose();
+    request.resolve({ restarting: true });
+    await applying;
+    expect(hub.restarts).toHaveLength(0);
+  });
+
+  test("clears the restart when the wait itself fails", async () => {
+    const controller = createHubUpdateController({
+      client: () => ({
+        request: (async (method: string) =>
+          method === "evener/update/apply" ? { restarting: true } : WAITING) as never,
+      }),
+      awaitRestart: async () => {
+        throw new Error("the wait broke");
+      },
+    });
+    await controller.runCheck();
+    await controller.apply();
+    expect(controller.getState()).toMatchObject({ restarting: false, restartTimedOut: true });
   });
 
   test.each([

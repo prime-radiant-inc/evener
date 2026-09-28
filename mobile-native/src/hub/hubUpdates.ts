@@ -1,9 +1,10 @@
 // The phone's side of the shared hub-update client (ruling 22): the Hub
 // sheet's controller, and how the phone notices a restarted hub. The app
 // reconnects on its own (hubConnection.ts), so the restart wait needs no
-// clock: each time the connection is ready again it asks the hub its version,
-// and it is done once that differs from the version the update replaced.
-// While the hub is away the sheet's connection line says so (spec 14).
+// clock: the first time the connection is ready again it asks the hub its
+// version. A new version is the update installed; the old one is a restart
+// that came back on the build it had. While the hub is away the sheet's
+// connection line says so (spec 14).
 import { type AppwireClientLike, createHubUpdateController, type HubUpdateController } from "@evener/appwire-client";
 import { useEffect, useMemo, useState } from "react";
 
@@ -66,9 +67,7 @@ export function createPhoneHubUpdates(
 					if (!client || !readiness.isReady()) return;
 					client
 						.request("evener/update/check", { channel: controller.getState().channel ?? "" })
-						.then((check) => {
-							if (check.currentVersion !== previousVersion) finish(true);
-						})
+						.then((check) => finish(check.currentVersion !== previousVersion))
 						// A check that fails while the hub settles waits for the
 						// next time the connection is ready.
 						.catch(() => {});

@@ -17,13 +17,7 @@ import type { ConnectionState } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
 import { HubSettingsScreen } from "./HubSettingsScreen";
-import {
-	alertRequests,
-	nativeModuleMock,
-	render,
-	renderedText,
-	screenConnection as connection,
-} from "./renderNative.testkit";
+import { nativeModuleMock, render, renderedText, screenConnection as connection } from "./renderNative.testkit";
 
 const harness = vi.hoisted(() => ({
 	connection: {} as Record<string, unknown>,

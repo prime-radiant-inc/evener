@@ -98,7 +98,9 @@ export function createHubUpdateController(
   let checkSequence = 0;
 
   async function waitForRestart(previous: string | null): Promise<void> {
-    const back = await ports.awaitRestart(previous);
+    // A wait that fails is a hub that didn't come back as far as the app can
+    // tell: never leave the restart showing.
+    const back = await ports.awaitRestart(previous).catch(() => false);
     set(back ? { restarting: false } : { restarting: false, restartTimedOut: true });
   }
 
@@ -173,7 +175,8 @@ export function createHubUpdateController(
         // when the channel was already current: no download, no exec, no new
         // version to wait for. Report it instead of waiting into a timeout.
         if (!resp.restarting) {
-          set({ applying: false, applyError: ALREADY_UP_TO_DATE });
+          // The kept check said an update waited; the hub says otherwise.
+          set({ applying: false, applyError: ALREADY_UP_TO_DATE, check: { ...check, updateAvailable: false } });
           return;
         }
       } catch (err) {
@@ -194,6 +197,9 @@ export function createHubUpdateController(
           return;
         }
       }
+      // A controller disposed while its apply was in flight belongs to a
+      // replaced connection: it waits for nothing.
+      if (disposed) return;
       set({ applying: false, restarting: true });
       await waitForRestart(previous);
     },
