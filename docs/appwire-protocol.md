@@ -140,6 +140,7 @@ no router (reserved).
 | `evener/session/seen/set` | hub | `SessionSeenSetParams` | `SessionSeenSetResponse` | Marks sessions seen through a turn end, or unread, on the hub (S4), and returns the committed navigation receipt. Live rows then carry unseen from the hub's marker. |
 | `evener/search` | hub | `SearchParams` | `SearchResponse` | Searches live and persisted sessions for the hub command palette. |
 | `evener/activity/read` | hub | `ActivityReadParams` | `ActivityReadResponse` | Reads the pulse meter (seven one-minute activity counts over the whole tree), running subagents and quiet time of the hub's live top-level sessions and its attached hosts' (S5). A client polls it while a Board or session is on screen; it is never part of navigation. |
+| `evener/notices/list` | hub | `EmptyParams` | `NoticesListResponse` | Lists the hub's notices (S11): provider instances on this hub that need signing in again, hosts that are offline, and installed plugins that are broken, each with the live sessions it blocks when the hub can count them. evener/notices/changed announces every change. |
 | `evener/harnesses/list` | hub | `HarnessListParams` | `HarnessListResponse` | Lists available harness descriptors. |
 | `evener/upgrade` | hub | `UpgradeParams` | `UpgradeResponse` | Performs or reports a evener binary upgrade. |
 | `evener/update/check` | hub | `UpdateCheckParams` | `UpdateCheckResponse` | Compares the running hub build against a release channel's current commit; dev builds report applicable=false without a network request. |
@@ -237,6 +238,7 @@ Pushed to subscribed connections; no `id`. The web client maps these in
 | `evener/navigation/invalidated` | `NavigationInvalidatedPayload` | Hub-derived scoped navigation-resource invalidation. Clients conditionally revalidate only the named loaded resources. |
 | `evener/marketplace/updated` | `EmptyParams` | Broadcast after a marketplace mutation (add/edit/remove/refresh); no payload. Clients refresh the marketplace list. |
 | `evener/plugin/updated` | `EmptyParams` | Broadcast after a plugin mutation (install/upgrade/remove/enable/disable/setAutoUpgrade, or a marketplace edit that can re-key installs); no payload. Clients refresh the plugin list. |
+| `evener/notices/changed` | `NoticesListResponse` | Hub-derived: the hub's notices changed (a notice appeared, cleared, or its session count moved); carries the whole new list, as evener/notices/list returns it. Hub-originated; never sent by daemons. |
 | `evener/thread/resync` | `ThreadResyncParams` | Hub-originated hint asking clients to re-read one thread after relay recovery. |
 | `evener/task/updated` | `TaskUpdatedParams` | The session's task-list outcome counts (total/done/cancelled/remaining) changed. |
 | `evener/goal/updated` | `GoalUpdatedParams` | The session's complete structured goal state changed; null clears it. |
@@ -1209,6 +1211,17 @@ _(no fields)_
 | `expectedIncarnationId` | `string` |  |  |
 
 
+### `HubNotice`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `id` | `string` |  |  |
+| `kind` | `string` |  |  |
+| `subject` | `string` |  |  |
+| `marketplace` | `string` | yes |  |
+| `affectedSessions` | `int` | yes |  |
+
+
 ### `InitializeParams`
 
 | Field | Go type | Omitempty | Embedded |
@@ -1791,6 +1804,13 @@ _(no fields)_
 | `ref` | `string` |  |  |
 | `humanNote` | `string` | yes |  |
 | `agentNote` | `string` | yes |  |
+
+
+### `NoticesListResponse`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `notices` | `[]appwire.HubNotice` |  |  |
 
 
 ### `OverlayDeltaParams`
