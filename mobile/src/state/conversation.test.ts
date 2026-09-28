@@ -10632,6 +10632,49 @@ describe("ConversationStore", () => {
       }
       expect(service.readProjectionCalls.length).toBeGreaterThan(readsBefore);
     });
+
+    // RoboRev round 4 (Low): mobile's issuedGeneration never advances (it
+    // never calls issueLatestWindowRead), so invalidatedAtGeneration can
+    // only ever move from undefined to 0 — comparing it before/after a page
+    // merge cannot tell "still invalid, nothing new" apart from "invalid
+    // again at a NEWER signal" (a second, newer epoch/incarnation arriving
+    // before the first recovering read lands). Detect the latter from
+    // `awaited`, which DOES change, instead.
+    it("a page that re-invalidates an already-invalid thread at a newer epoch still requests a rehydrate", async () => {
+      const { store, service } = await openVersioned([makeTurn({ id: "t0", items: [] })]);
+      const held = store.getState().conversation!;
+      store.setState({
+        conversation: {
+          ...held,
+          history: held.history && {
+            ...held.history,
+            invalidatedAtGeneration: 0,
+            awaited: { bootGeneration: "1", epoch: 1 },
+          },
+        },
+        olderCursor: "cursor-1",
+      });
+      const readsBefore = service.readProjectionCalls.length;
+      // A page observing a STILL NEWER epoch than what already invalidated
+      // the thread — invalidatedAtGeneration cannot move (mobile's is
+      // always 0), but `awaited` re-arms to this newer signal.
+      service.olderItems = {
+        turnsPage: {
+          data: [wireTurn("t-old", 5, 1)],
+          nextCursor: "cursor-2",
+          bootGeneration: "1",
+          epoch: 2,
+          snapshot: { incarnation: "inc-1", length: 1 },
+        },
+        nextCursor: "cursor-2",
+      };
+      const result = await store.getState().loadOlder(service);
+      expect(result.status).toBe("ignored");
+      for (let i = 0; i < 40 && service.readProjectionCalls.length <= readsBefore; i++) {
+        await Promise.resolve();
+      }
+      expect(service.readProjectionCalls.length).toBeGreaterThan(readsBefore);
+    });
   });
 
   // RoboRev round 1 (Medium): a failed page turn projects its own row keyed
@@ -10767,6 +10810,42 @@ describe("ConversationStore", () => {
       expect(store.getState().status).toBe("open");
       expect(store.getState().error).toBeNull();
       expect(service.notificationHandler).not.toBeNull();
+    });
+
+    // RoboRev round 4 (Medium): the activity sink is a strict identity gate
+    // (applyLiveNotification drops anything whose identity — generation
+    // included — does not match what setLiveView last installed).
+    // resumeProjected bumps conversationGeneration BEFORE calling rehydrate
+    // and binds its live handler to that new generation, so a discard that
+    // never calls setLiveView leaves the real activity store pinned to the
+    // PRE-suspend generation — every live frame after a discarded resume
+    // read is then silently ignored, freezing the activity/jobs/usage panel.
+    it("a discarded resume read still installs the new generation's identity, so later live frames are not ignored", async () => {
+      const service = new FakeConversationService();
+      service.readProjectionResult = makeReadProjectionResult(
+        makeThread({ turns: [makeTurn({ id: "t0", items: [] })] }),
+        ALL_TRUE_CAPS,
+        true,
+      );
+      const store = createConversationStore();
+      const activityStore = createActivityStore();
+      await store.getState().openProjected(service, activityStore.getState(), "ref-1");
+      const held = store.getState().conversation!;
+      store.setState({
+        conversation: { ...held, history: held.history && { ...held.history, length: 10 } },
+      });
+      store.getState().suspendProjected();
+      // A stale response: same incarnation, SHORTER length than the held 10.
+      service.readProjectionResult = makeReadProjectionResult(
+        makeThread({ turns: [makeTurn({ id: "t0", items: [] })] }),
+        ALL_TRUE_CAPS,
+        true,
+      );
+      await store.getState().resumeProjected(service, activityStore.getState(), "ref-1");
+      // The activity store's own identity must have advanced to the SAME
+      // generation resumeProjected bound its live handler to, or every live
+      // frame from here on reads as a stale identity and is dropped.
+      expect(activityStore.getState().generationForTest()).toBe(store.getState().conversationGeneration);
     });
   });
 

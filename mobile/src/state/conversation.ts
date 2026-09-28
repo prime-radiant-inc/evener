@@ -2060,9 +2060,23 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
           // just declined to apply it) — mark it accepted before returning,
           // or resumeProjected reads the untouched acceptedRehydrate=null
           // from entry as a failure and tears down a healthy subscription
-          // over a read that merely lost an identity race.
+          // over a read that merely lost an identity race. The activity
+          // sink is a strict identity gate (applyLiveNotification drops
+          // anything whose identity, generation included, does not match
+          // what setLiveView last installed) — resumeProjected bumps the
+          // generation before this call and binds its live handler to it,
+          // so a discard that skips setLiveView leaves the sink pinned to
+          // the PRE-suspend generation and silently drops every live frame
+          // from here on, freezing the activity/jobs/usage panel. Install
+          // the current generation's identity exactly as the accepted path
+          // does, keeping the held conversation model.
           if (sameInstance && currentConvForMerge !== null && appliedModel === currentConvForMerge) {
-            acceptedRehydrate = { generation: gen, sink };
+            const discardAccepted = sink.setLiveView(activity, {
+              threadId: conversation.threadId,
+              ref,
+              generation: gen,
+            });
+            if (discardAccepted) acceptedRehydrate = { generation: gen, sink };
             return;
           }
           // A fresh read can reissue a paged/retained item under a DIFFERENT
@@ -2412,7 +2426,27 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
               // and only a fresh read can recover — the same gap the
               // live-frame path already requests one for.
               set({ loadingOlder: false });
-              if (versionedMerge.history?.invalidatedAtGeneration !== currentConv.history?.invalidatedAtGeneration) {
+              // A newly-invalidated thread needs a rehydrate; re-arming an
+              // ALREADY-invalid one (a second, newer signal arriving before
+              // the recovering read lands) needs one too, since the earlier
+              // request was issued against the now-superseded `awaited`
+              // identity. invalidatedAtGeneration itself cannot tell the two
+              // apart from "still invalid, nothing new" here: this caller's
+              // issuedGeneration never advances (mobile never issues
+              // issueLatestWindowRead), so invalidatedAtGeneration can only
+              // ever move from undefined to 0 — comparing it before/after
+              // misses a re-invalidation (the awaited signal moving from one
+              // real epoch/incarnation to a newer one) entirely. Compare the
+              // signal that actually changes instead.
+              const heldHistory = currentConv.history;
+              const mergedHistory = versionedMerge.history;
+              const newlyInvalidated =
+                mergedHistory?.invalidatedAtGeneration !== undefined &&
+                (heldHistory?.invalidatedAtGeneration === undefined ||
+                  heldHistory.awaited?.bootGeneration !== mergedHistory.awaited?.bootGeneration ||
+                  heldHistory.awaited?.epoch !== mergedHistory.awaited?.epoch ||
+                  heldHistory.pendingIncarnation !== mergedHistory.pendingIncarnation);
+              if (newlyInvalidated) {
                 requestRehydrate(currentConv.ref);
               }
               return { status: "ignored" };
