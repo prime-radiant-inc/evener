@@ -92,6 +92,7 @@ Handed to an engineer (small, off the critical path): #2664 (server Lows batch 5
 - 2026-09-27: Flakes and small issues off the critical path become GitHub issues for a less senior engineer.
 - 2026-09-27: Ready phase 2 PRs can merge without waiting for RoboRev.
 - 2026-09-28: "Don't hold back. Merge." Phases no longer land in order. Every ready PR merges once CI is green on its merged head.
+- 2026-09-28: One alert per needs-you state ("no. one alert is great."). A session that already needs you does not alert again when it asks a new question or names a new approval target (phase 6 part 2, question 3).
 - Sequencing (coordinator, 2026-09-27): S11 and S14 come before S12, since approvals are rare.
 
 ### Standing rules
