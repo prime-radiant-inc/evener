@@ -8,7 +8,7 @@ import { createActivityStore } from "../../mobile/src/state/activity";
 import { createConversationStore } from "../../mobile/src/state/conversation";
 import { createDemoHub } from "../scripts/demo-hub.mjs";
 import { createHubClient } from "./connection";
-import { type DemoFleetOptions, demoSessionId, fleetSessions } from "./dev/demoFleet.js";
+import { type DemoFleetOptions, demoSessionId, fleetSessionRef, fleetSessions } from "./dev/demoFleet.js";
 import { DEMO_MODEL_LIST } from "./dev/demoSessions.js";
 import { readOrganizationNavigation } from "./organizationNavigation";
 import { ghosts } from "./session/ghosts";
@@ -430,11 +430,6 @@ describe("native demonstration hub's fleet sessions", () => {
 			await hub.close();
 		}
 	}
-	const refOf = (slug: string) => {
-		const session = fleetSessions().find((candidate) => candidate.slug === slug);
-		if (!session) throw new Error(`no fleet session ${slug}`);
-		return session.ref;
-	};
 
 	it("opens every live fleet session, so the title's swipe lands on real neighbors", async () => {
 		await withHub({}, async (client) => {
@@ -446,7 +441,7 @@ describe("native demonstration hub's fleet sessions", () => {
 					expect(conversation.items.length).toBeGreaterThan(0);
 				}
 				const turns = await client.request("thread/turns/list", {
-					ref: refOf("s-pr2138"),
+					ref: fleetSessionRef("s-pr2138"),
 				});
 				expect(turns.data).toEqual([]);
 			} finally {
@@ -459,11 +454,11 @@ describe("native demonstration hub's fleet sessions", () => {
 		await withHub({}, async (client) => {
 			const service = createConversationService(client);
 			try {
-				const opened = await service.open(refOf("s-pr2138"));
+				const opened = await service.open(fleetSessionRef("s-pr2138"));
 				const instanceId = opened.instanceId;
 				if (!instanceId) throw new Error("Missing instance id");
 				await service.queue([{ type: "text", text: "One more thing" }]);
-				const queued = await service.open(refOf("s-pr2138"));
+				const queued = await service.open(fleetSessionRef("s-pr2138"));
 				expect(queued.queue?.texts).toEqual(["When CI is green, post a summary on the PR.", "One more thing"]);
 				// Steer now, while the turn runs.
 				const [first, second] = queued.queue?.ids ?? [];
@@ -472,14 +467,14 @@ describe("native demonstration hub's fleet sessions", () => {
 				await service.promoteQueuedAsSteer(0, first, instanceId);
 				// Stop with a message queued holds it, and Send now releases it.
 				await service.interrupt();
-				const stopped = await service.open(refOf("s-pr2138"));
+				const stopped = await service.open(fleetSessionRef("s-pr2138"));
 				expect(stopped.status.type).toBe("idle");
 				expect(stopped.queue?.texts).toEqual(["One more thing"]);
 				expect(ghosts(stopped, [], null, [])).toEqual([
 					expect.objectContaining({ state: "held", buttons: ["sendNow", "cancel"] }),
 				]);
 				await service.promoteQueuedAsSteer(0, second, instanceId);
-				const sent = await service.open(refOf("s-pr2138"));
+				const sent = await service.open(fleetSessionRef("s-pr2138"));
 				expect(sent.queue?.depth).toBe(0);
 				expect(sent.status.type).toBe("active");
 				expect(sent.items.filter((item) => item.kind === "user").at(-1)).toMatchObject({
@@ -494,7 +489,7 @@ describe("native demonstration hub's fleet sessions", () => {
 	it("reflects each mutation it takes, so the phone's pending ghosts clear", async () => {
 		await withHub({}, async (client) => {
 			const service = createConversationService(client);
-			const ref = refOf("s-pr2138");
+			const ref = fleetSessionRef("s-pr2138");
 			// The phone's own accepted record for a mutation, as its outbox keeps
 			// it until the hub reflects the mutation.
 			const accepted = (clientMutationId: string, method: string, text: string): MutationOptimisticRecord => ({
@@ -580,15 +575,15 @@ describe("native demonstration hub's fleet sessions", () => {
 		await withHub({}, async (client) => {
 			const service = createConversationService(client);
 			try {
-				const opened = await service.open(refOf("s-stumble"));
+				const opened = await service.open(fleetSessionRef("s-stumble"));
 				const [first] = opened.queue?.ids ?? [];
 				if (!first || !opened.instanceId || !opened.queue) throw new Error("Missing queue guards");
 				await service.cancelQueued(0, first, opened.instanceId);
-				const cancelled = await service.open(refOf("s-stumble"));
+				const cancelled = await service.open(fleetSessionRef("s-stumble"));
 				expect(cancelled.queue?.depth).toBe(4);
 				if (!cancelled.queue) throw new Error("Missing queue");
 				await service.drainAsSteer(cancelled.queue.revision, opened.instanceId);
-				expect((await service.open(refOf("s-stumble"))).queue?.depth).toBe(0);
+				expect((await service.open(fleetSessionRef("s-stumble"))).queue?.depth).toBe(0);
 			} finally {
 				service.close();
 			}
@@ -598,7 +593,7 @@ describe("native demonstration hub's fleet sessions", () => {
 	it("settles the stopped turn's open items and times, and times the next turn", async () => {
 		await withHub({}, async (client) => {
 			const service = createConversationService(client);
-			const ref = refOf("s-tasklist");
+			const ref = fleetSessionRef("s-tasklist");
 			const read = async () => (await client.request("thread/read", { ref, includeTurns: true })).thread;
 			try {
 				const before = await read();
@@ -636,7 +631,7 @@ describe("native demonstration hub's fleet sessions", () => {
 		});
 		try {
 			await withHub({}, async (client) => {
-				const ref = refOf("s-pr2138");
+				const ref = fleetSessionRef("s-pr2138");
 				// The hub has built its fleet; the rest runs on the real clock.
 				now.mockRestore();
 				const live = await client.request("evener/navigation/read", {
@@ -661,7 +656,7 @@ describe("native demonstration hub's fleet sessions", () => {
 	it("clears frame 8's question once you answer it", async () => {
 		await withHub({}, async (client) => {
 			const service = createConversationService(client);
-			const ref = refOf("s-audit");
+			const ref = fleetSessionRef("s-audit");
 			try {
 				await service.open(ref);
 				await service.send([{ type: "text", text: "[answers]\n1. [Implied options] → Drop them" }]);
@@ -676,7 +671,7 @@ describe("native demonstration hub's fleet sessions", () => {
 
 	it("asks the working session's question in its thread too, when the fleet asks it", async () => {
 		await withHub({}, async (client, hub) => {
-			const ref = refOf("s-gateway");
+			const ref = fleetSessionRef("s-gateway");
 			hub.askQuestion();
 			const { thread } = await client.request("thread/read", { ref, includeTurns: true });
 			expect(thread.status.type).toBe("awaiting");
@@ -695,9 +690,9 @@ describe("native demonstration hub's fleet sessions", () => {
 		await withHub({}, async (client) => {
 			const service = createConversationService(client);
 			try {
-				await service.open(refOf("s-gateway"));
+				await service.open(fleetSessionRef("s-gateway"));
 				await service.interrupt();
-				const stopped = await service.open(refOf("s-gateway"));
+				const stopped = await service.open(fleetSessionRef("s-gateway"));
 				expect(stopped.capabilities).toMatchObject({
 					send: true,
 					clear: true,
@@ -706,7 +701,7 @@ describe("native demonstration hub's fleet sessions", () => {
 					queue: true,
 				});
 				await service.send([{ type: "text", text: "Keep going" }]);
-				const working = await service.open(refOf("s-gateway"));
+				const working = await service.open(fleetSessionRef("s-gateway"));
 				expect(working.status.type).toBe("active");
 				expect(working.capabilities).toMatchObject({ send: false, clear: false, steer: true, interrupt: true });
 				expect(working.activeTurnStartedAt).toBeDefined();
@@ -718,7 +713,7 @@ describe("native demonstration hub's fleet sessions", () => {
 
 	it("saves your note and removes a link on a fleet session", async () => {
 		await withHub({}, async (client) => {
-			const ref = refOf("s-pr2138");
+			const ref = fleetSessionRef("s-pr2138");
 			const { thread } = await client.request("thread/read", { ref, includeTurns: false });
 			const expectedInstanceId = thread.evener.instanceId ?? "";
 			const saved = await client.request("notes/human/set", {
@@ -780,7 +775,7 @@ describe("native demonstration hub's fleet sessions", () => {
 
 	it("resolves a fleet session's approval", async () => {
 		await withHub({}, async (client) => {
-			const ref = refOf("s-mirror");
+			const ref = fleetSessionRef("s-mirror");
 			const { thread } = await client.request("thread/read", { ref, includeTurns: false });
 			const [escalation] = thread.evener.pendingEscalations ?? [];
 			if (!escalation) throw new Error("frame 9 needs an escalation");
@@ -848,7 +843,7 @@ describe("native demonstration hub's fleet sessions", () => {
 		await withHub(undefined, async (client) => {
 			await expect(
 				client.request("thread/read", {
-					ref: refOf("s-pr2138"),
+					ref: fleetSessionRef("s-pr2138"),
 					includeTurns: false,
 				}),
 			).rejects.toThrow("Unknown demonstration session");

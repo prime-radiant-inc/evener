@@ -25,6 +25,7 @@ import type {
 	EmptyResponse,
 	EvenerDelegateInfo,
 	GoalState,
+	ModelDescriptor,
 	ModelListResponse,
 	NotesHumanSetParams,
 	NotesHumanSetResponse,
@@ -57,63 +58,55 @@ const ALL_EFFORTS = ["low", "medium", "high", "xhigh", "max"];
 // Two of data.js's provider profiles and their models, with its effort
 // ladders and context windows. The recent model is one the fleet's sessions
 // use that isn't the default.
+const DEMO_MODELS: ModelDescriptor[] = [
+	{
+		provider: "lunaroute",
+		model: "deepseek-4.1-flash",
+		displayName: "DeepSeek 4.1 Flash",
+		contextWindow: 256_000,
+		supportsReasoning: true,
+		reasoningEffortLevels: ALL_EFFORTS,
+	},
+	{
+		provider: "lunaroute",
+		model: "glm-5.3-vision",
+		displayName: "GLM 5.3 Vision",
+		contextWindow: 200_000,
+		supportsVision: true,
+		supportsReasoning: true,
+		reasoningEffortLevels: ALL_EFFORTS,
+	},
+	{
+		provider: "lunaroute",
+		model: "glm-5.3-flash",
+		displayName: "GLM 5.3 Flash",
+		contextWindow: 128_000,
+		supportsReasoning: true,
+		reasoningEffortLevels: ["low", "medium", "high"],
+	},
+	{
+		provider: "codex-jesse-fsck.com",
+		model: "gpt-5.6",
+		displayName: "GPT-5.6",
+		contextWindow: 400_000,
+		supportsVision: true,
+		supportsReasoning: true,
+		reasoningEffortLevels: ALL_EFFORTS,
+	},
+	{
+		provider: "codex-jesse-fsck.com",
+		model: "gpt-6-astra",
+		displayName: "GPT-6 Astra",
+		contextWindow: 1_000_000,
+		supportsVision: true,
+		supportsReasoning: true,
+		reasoningEffortLevels: ALL_EFFORTS,
+	},
+];
+
 export const DEMO_MODEL_LIST: ModelListResponse = {
-	data: [
-		{
-			provider: "lunaroute",
-			model: "deepseek-4.1-flash",
-			displayName: "DeepSeek 4.1 Flash",
-			contextWindow: 256_000,
-			supportsReasoning: true,
-			reasoningEffortLevels: ALL_EFFORTS,
-		},
-		{
-			provider: "lunaroute",
-			model: "glm-5.3-vision",
-			displayName: "GLM 5.3 Vision",
-			contextWindow: 200_000,
-			supportsVision: true,
-			supportsReasoning: true,
-			reasoningEffortLevels: ALL_EFFORTS,
-		},
-		{
-			provider: "lunaroute",
-			model: "glm-5.3-flash",
-			displayName: "GLM 5.3 Flash",
-			contextWindow: 128_000,
-			supportsReasoning: true,
-			reasoningEffortLevels: ["low", "medium", "high"],
-		},
-		{
-			provider: "codex-jesse-fsck.com",
-			model: "gpt-5.6",
-			displayName: "GPT-5.6",
-			contextWindow: 400_000,
-			supportsVision: true,
-			supportsReasoning: true,
-			reasoningEffortLevels: ALL_EFFORTS,
-		},
-		{
-			provider: "codex-jesse-fsck.com",
-			model: "gpt-6-astra",
-			displayName: "GPT-6 Astra",
-			contextWindow: 1_000_000,
-			supportsVision: true,
-			supportsReasoning: true,
-			reasoningEffortLevels: ALL_EFFORTS,
-		},
-	],
-	recent: [
-		{
-			provider: "lunaroute",
-			model: "glm-5.3-vision",
-			displayName: "GLM 5.3 Vision",
-			contextWindow: 200_000,
-			supportsVision: true,
-			supportsReasoning: true,
-			reasoningEffortLevels: ALL_EFFORTS,
-		},
-	],
+	data: DEMO_MODELS,
+	recent: DEMO_MODELS.filter((entry) => entry.model === "glm-5.3-vision"),
 };
 
 // One prototype step as the tool call a real session makes for it.

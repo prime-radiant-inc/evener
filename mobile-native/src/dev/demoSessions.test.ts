@@ -17,20 +17,14 @@ import { canWriteHumanNote, notesBarPreview } from "../session/sessionNotes.js";
 import { contextChips, sessionStateLine } from "../session/sessionState.js";
 import { subagentLine } from "../session/subagentLine.js";
 import { runSummary, runSummaryText, sessionRows } from "../session/transcriptRows.js";
-import { demoSessionId, fleetSessions } from "./demoFleet.js";
+import { demoSessionId, fleetSessionRef, fleetSessions } from "./demoFleet.js";
 import { createDemoSessions, DEMO_MODEL_LIST } from "./demoSessions.js";
 
 const NOW = Date.parse("2026-09-28T21:00:00.000Z");
 const sessions = createDemoSessions({ now: NOW });
 
-function refOf(slug: string): string {
-	const session = fleetSessions().find((candidate) => candidate.slug === slug);
-	if (!session) throw new Error(`no fleet session ${slug}`);
-	return session.ref;
-}
-
 function threadOf(slug: string): Thread {
-	const thread = sessions.find((candidate) => candidate.evener.ref === refOf(slug));
+	const thread = sessions.find((candidate) => candidate.evener.ref === fleetSessionRef(slug));
 	if (!thread) throw new Error(`no demo thread for ${slug}`);
 	return thread;
 }
@@ -156,7 +150,7 @@ describe("the demo sessions behind Appendix A's Session frames", () => {
 			expect.objectContaining({
 				tool: "write_file",
 				deniedPath: "/home/jesse/sites/docs/index.html",
-				ref: refOf("s-mirror"),
+				ref: fleetSessionRef("s-mirror"),
 			}),
 		]);
 	});
