@@ -9,13 +9,14 @@ import type { SwipeAction } from "./SwipeRow";
 import { type BoardOrganization, organizationOpen } from "./useBoardOrganization";
 
 /** The actions a Board row's swipes can do. */
-export type SwipeRowAction = "archive" | "unarchive" | "stop" | "pin";
+export type SwipeRowAction = "archive" | "unarchive" | "stop" | "pin" | "more";
 
 const LOOKS: Record<SwipeRowAction, Pick<SwipeAction, "label" | "symbol" | "fill">> = {
 	archive: { label: "Archive", symbol: "archivebox", fill: "inkMid" },
 	unarchive: { label: "Unarchive", symbol: "archivebox", fill: "inkMid" },
 	stop: { label: "Stop", symbol: "stop.fill", fill: "inkHi" },
 	pin: { label: "Pin", symbol: "pin.fill", fill: "inkMid" },
+	more: { label: "More", symbol: "ellipsis.circle", fill: "inkLow" },
 };
 
 export interface RowSwipes {
@@ -26,8 +27,8 @@ export interface RowSwipes {
 }
 
 /** A row's swipe actions, each running `run` with its action, and whether
- * it dims for `archivingId`, the session an unresolved archive is about. The
- * trailing side leaves out More until the row menu it opens exists. */
+ * it dims for `archivingId`, the session an unresolved archive is about.
+ * More, which opens the row menu, ends the trailing side, online or not. */
 export function rowSwipes(
 	item: ClassifiedRow,
 	context: RowActionContext,
@@ -38,7 +39,7 @@ export function rowSwipes(
 	const action = (key: SwipeRowAction): SwipeAction => ({ key, ...LOOKS[key], run: () => run(key) });
 	return {
 		leading: leading ? action(leading) : undefined,
-		trailing: trailing.filter((key) => key !== "more").map(action),
+		trailing: trailing.map(action),
 		dimmed: archivingId !== null && archiveTarget(item.row)?.id === archivingId,
 	};
 }
