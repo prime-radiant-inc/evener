@@ -1,4 +1,5 @@
-import { AccessibilityInfo, Animated } from "react-native";
+import type { ReactNode } from "react";
+import { AccessibilityInfo, Animated, Text } from "react-native";
 import { act, type ReactTestInstance, type ReactTestRenderer } from "react-test-renderer";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { paletteFor } from "../design/tokens";
@@ -40,7 +41,13 @@ const queue: ContextChip = {
 };
 
 function header(
-	over: { status?: string | null; chips?: readonly ContextChip[]; hidden?: boolean; onChip?: (kind: ChipKind) => void } = {},
+	over: {
+		status?: string | null;
+		chips?: readonly ContextChip[];
+		hidden?: boolean;
+		onChip?: (kind: ChipKind) => void;
+		find?: ReactNode;
+	} = {},
 ) {
 	return (
 		<SessionHeader
@@ -48,6 +55,7 @@ function header(
 			chips={over.chips ?? []}
 			hidden={over.hidden ?? false}
 			onChip={over.onChip ?? (() => {})}
+			find={over.find}
 		/>
 	);
 }
@@ -192,6 +200,30 @@ describe("the chips row (spec 8.1)", () => {
 		);
 	});
 });
+
+describe("the find bar in the chips' place (spec 8.7)", () => {
+	it("replaces the chips while find is open", () => {
+		const tree = render(header({ chips: [goal, tasks], find: <FindStandIn /> }));
+		expect(chipButtons(tree)).toEqual([]);
+		expect(tree.root.findAll((node) => node.props.testID === "find-stand-in")).toHaveLength(1);
+	});
+
+	it("shows even when the session has no chips", () => {
+		const tree = render(header({ find: <FindStandIn /> }));
+		expect(tree.root.findAll((node) => node.props.testID === "find-stand-in")).toHaveLength(1);
+	});
+
+	it("never slides away while you scroll through matches", async () => {
+		const tree = render(header({ chips: [goal], find: <FindStandIn />, hidden: true }));
+		await flushReduceMotion();
+		act(() => chipsRow(tree).props.onLayout({ nativeEvent: { layout: { width: 390, height: 52, x: 0, y: 0 } } }));
+		expect(translateY(chipsRow(tree))).toBe(0);
+	});
+});
+
+function FindStandIn() {
+	return <Text testID="find-stand-in">Find</Text>;
+}
 
 describe("hiding on scroll (spec 8.1)", () => {
 	function measured(tree: ReactTestRenderer) {

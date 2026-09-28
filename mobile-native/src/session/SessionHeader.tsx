@@ -31,18 +31,22 @@ export function SessionHeader({
 	hidden,
 	onChip,
 	notes,
+	find,
 }: {
 	status: string | null;
 	chips: readonly ContextChip[];
 	hidden: boolean;
 	onChip: (kind: ChipKind) => void;
 	notes?: ReactNode;
+	/** The find bar, in the chips' place while find is open (spec 8.7). It
+	 * stays put while the list scrolls from match to match. */
+	find?: ReactNode;
 }) {
 	const { palette } = useColors();
 	const scale = useTextScale();
 	const [rowHeight, setRowHeight] = useState(0);
-	const offset = useSlide(hidden ? -rowHeight : 0);
-	const hasRow = chips.length > 0 || notes != null;
+	const offset = useSlide(hidden && find == null ? -rowHeight : 0);
+	const hasRow = chips.length > 0 || notes != null || find != null;
 	if (status === null && !hasRow) return null;
 	return (
 		// Clipping keeps the slid-away row from drawing over the nav bar, and
@@ -80,7 +84,7 @@ export function SessionHeader({
 					onLayout={(event) => setRowHeight(event.nativeEvent.layout.height)}
 					style={{ transform: [{ translateY: offset }] }}
 				>
-					{chips.length > 0 ? <ChipsRow chips={chips} onChip={onChip} /> : null}
+					{find ?? (chips.length > 0 ? <ChipsRow chips={chips} onChip={onChip} /> : null)}
 					{notes}
 				</Animated.View>
 			) : null}

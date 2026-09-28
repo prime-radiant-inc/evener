@@ -50,6 +50,9 @@ describe("a sheet's size (spec 6)", () => {
 		// The model sheet is a picker, so it opens at half height (spec 8.5).
 		expect(isSheetRoute("ModelSheet")).toBe(true);
 		expect(SHEET_ROUTES.ModelSheet).toEqual(sheetOptions(["medium", "large"], "medium"));
+		// Commands and skills is a picker too (spec 8.5).
+		expect(isSheetRoute("CommandsSheet")).toBe(true);
+		expect(SHEET_ROUTES.CommandsSheet).toEqual(sheetOptions(["medium", "large"], "medium"));
 	});
 });
 
