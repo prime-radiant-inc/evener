@@ -138,7 +138,7 @@ no router (reserved).
 | `evener/session-pin/assign` | hub | `SessionPinAssignParams` | `SessionPinAssignResponse` | Assigns a top-level session to a named pin section and returns the canonical assignment and committed navigation receipt. |
 | `evener/session-pin/unpin` | hub | `SessionPinUnpinParams` | `SessionPinUnpinResponse` | Removes a top-level session's named pin assignment and returns its committed navigation receipt. |
 | `evener/session/seen/set` | hub | `SessionSeenSetParams` | `SessionSeenSetResponse` | Marks sessions seen through a turn end, or unread, on the hub (S4), and returns the committed navigation receipt. Live rows then carry unseen from the hub's marker. |
-| `evener/search` | hub | `SearchParams` | `SearchResponse` | Searches live and persisted sessions for the hub command palette. |
+| `evener/search` | hub | `SearchParams` | `SearchResponse` | Searches the hub's sessions: live and ended ones whose ID, title or prompt match, each once, and (S14) the sessions whose messages match, with each one's newest hits and snippets. A scope narrows every group; every result says whether it is archived. |
 | `evener/activity/read` | hub | `ActivityReadParams` | `ActivityReadResponse` | Reads the pulse meter (seven one-minute activity counts over the whole tree), running subagents and quiet time of the hub's live top-level sessions and its attached hosts' (S5). A client polls it while a Board or session is on screen; it is never part of navigation. |
 | `evener/notices/list` | hub | `EmptyParams` | `NoticesListResponse` | Lists the hub's notices (S11): provider instances on this hub that need signing in again, hosts that are offline, and installed plugins that are broken, each with the live sessions it blocks when the hub can count them. evener/notices/changed announces every change. |
 | `evener/harnesses/list` | hub | `HarnessListParams` | `HarnessListResponse` | Lists available harness descriptors. |
@@ -2084,11 +2084,21 @@ _(no fields)_
 | `escalationId` | `string` |  |  |
 
 
+### `SearchHit`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `transcriptKey` | `string` |  |  |
+| `position` | `appwire.ThreadItemPosition` |  |  |
+| `snippet` | `[]appwire.SearchSnippetPart` |  |  |
+
+
 ### `SearchParams`
 
 | Field | Go type | Omitempty | Embedded |
 |-------|---------|-----------|----------|
 | `query` | `string` | yes |  |
+| `scope` | `string` | yes |  |
 
 
 ### `SearchResponse`
@@ -2097,6 +2107,33 @@ _(no fields)_
 |-------|---------|-----------|----------|
 | `live` | `[]appwire.SearchResult` |  |  |
 | `past` | `[]appwire.SearchResult` |  |  |
+| `inSessions` | `[]appwire.SearchResult` | yes |  |
+| `scope` | `string` | yes |  |
+
+
+### `SearchResult`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `id` | `string` |  |  |
+| `title` | `string` |  |  |
+| `project` | `string` |  |  |
+| `state` | `string` |  |  |
+| `age` | `string` |  |  |
+| `ref` | `string` |  |  |
+| `askPending` | `bool` | yes |  |
+| `approvalPending` | `bool` | yes |  |
+| `archived` | `bool` | yes |  |
+| `hits` | `[]appwire.SearchHit` | yes |  |
+| `hitCount` | `int` | yes |  |
+
+
+### `SearchSnippetPart`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `text` | `string` |  |  |
+| `match` | `bool` | yes |  |
 
 
 ### `SessionDeleteParams`
