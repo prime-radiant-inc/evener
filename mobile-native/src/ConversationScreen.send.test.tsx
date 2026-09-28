@@ -738,6 +738,13 @@ describe("queued messages above the composer (spec 8.5)", () => {
 		expect(host()?.steerAll).toBeUndefined();
 	});
 
+	it("shows what the Queue sheet hands back on the session, once the sheet has closed", async () => {
+		const { tree } = await mount(thread("ref-sheet-toast", "active", false, ["one"]));
+		const host = queueHosts.get(sheetKey("hub-1", "ref-sheet-toast"));
+		act(() => host?.showOnSession({ text: "Moved to your message, but it's still queued." }));
+		expect(renderedText(tree)).toContain("Moved to your message, but it's still queued.");
+	});
+
 	it("shows three queued messages and opens the rest in the Queue sheet", async () => {
 		vi.mocked(navigation.navigate).mockClear();
 		const { tree, hub } = await mount(thread("ref-four", "active", false, ["one", "two", "three", "four"]));

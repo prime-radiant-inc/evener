@@ -2117,11 +2117,12 @@ export function ConversationScreen({
 			ghosts: queuedGhosts,
 			disabled: ghostBusy,
 			act: (ghost, action) => ghostActions.current.act(ghost, action),
+			showOnSession: toaster.show,
 			...(canSteerAll
 				? { steerAll: () => ghostActions.current.steerAll() }
 				: {}),
 		}),
-		[queuedKey, ghostBusy, canSteerAll],
+		[queuedKey, ghostBusy, canSteerAll, toaster.show],
 	);
 	useProvideSheetHost(
 		queueHosts,

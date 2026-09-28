@@ -20,6 +20,8 @@ export interface QueueHost {
 	disabled: boolean;
 	/** Runs one ghost's action on the live queue, and says what to tell you. */
 	act(ghost: Ghost, action: GhostAction): Promise<ToastMessage | null>;
+	/** Shows a toast on the session, for an action that closed the sheet. */
+	showOnSession(message: ToastMessage): void;
 	/** Steers with the whole queue, when the session can. */
 	steerAll?: () => Promise<ToastMessage | null>;
 }
@@ -43,7 +45,9 @@ export function QueueSheet({ route }: NativeStackScreenProps<Routes, "QueueSheet
 		if (action === "edit") {
 			sheet.finish(() => {
 				navigation.goBack();
-				void host.act(ghost, action);
+				void host.act(ghost, action).then((message) => {
+					if (message) host.showOnSession(message);
+				});
 			});
 			return;
 		}

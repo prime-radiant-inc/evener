@@ -54,6 +54,7 @@ function host(over: Partial<QueueHost> = {}): QueueHost {
 		ghosts: [heldGhost(1), heldGhost(2), heldGhost(3), heldGhost(4)],
 		disabled: false,
 		act: vi.fn(async () => null),
+		showOnSession: vi.fn(),
 		...over,
 	};
 }
@@ -122,6 +123,22 @@ it("closes before Edit, so the message lands in the composer", async () => {
 	];
 	await act(async () => pick(0));
 	expect(calls).toEqual(["goBack", "act:edit"]);
+});
+
+it("shows an Edit's toast on the session, since the sheet has closed", async () => {
+	const moved = { text: "Moved to your message, but it's still queued." };
+	const showOnSession = vi.fn();
+	const tree = mountSheet(host({ ghosts: [queuedGhost(1)], act: vi.fn(async () => moved), showOnSession }));
+	const { ActionSheetIOS } = await import("react-native");
+	act(() => pressable(tree, "message 1. Queued · sends when this turn ends")?.props.onPress());
+	const [, pick] = vi.mocked(ActionSheetIOS.showActionSheetWithOptions).mock.calls.at(-1) as [
+		unknown,
+		(index: number) => void,
+	];
+	await act(async () => pick(0));
+	await flush();
+	expect(showOnSession).toHaveBeenCalledWith(moved);
+	expect(renderedText(tree)).not.toContain(moved.text);
 });
 
 it("closes when the queue empties, or when its session is gone", () => {
