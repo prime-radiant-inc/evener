@@ -22,6 +22,7 @@ function bar(over: Partial<ComponentProps<typeof FindBar>> = {}) {
 		query: "settle",
 		label: "2 of 3",
 		searchingOlder: false,
+		settled: true,
 		onQuery: vi.fn(),
 		onStep: vi.fn(),
 		onDone: vi.fn(),
@@ -88,15 +89,18 @@ describe("the find bar", () => {
 		expect(props.onQuery).toHaveBeenCalledWith("flaky");
 	});
 
-	it("tells VoiceOver where you are each time it changes", () => {
+	it("tells VoiceOver where you are once it settles, and while older messages load", () => {
 		announce.mockClear();
 		const { props, tree } = bar({ query: "", label: "" });
 		expect(announce).not.toHaveBeenCalled();
 		act(() => tree.update(<FindBar {...props} query="settle" label="2 of 3" />));
 		act(() => tree.update(<FindBar {...props} query="settle" label="2 of 3" />));
-		act(() => tree.update(<FindBar {...props} query="settle" label="1 of 3" />));
-		act(() => tree.update(<FindBar {...props} query="settle" label="1 of 3" searchingOlder />));
-		expect(announce.mock.calls).toEqual([["2 of 3"], ["1 of 3"], ["Searching older messages…"]]);
+		// Between a keystroke and its result the label is passing through.
+		act(() => tree.update(<FindBar {...props} query="settles" label="No matches" settled={false} />));
+		act(() => tree.update(<FindBar {...props} query="settles" label="No matches" settled={false} searchingOlder />));
+		act(() => tree.update(<FindBar {...props} query="settles" label="1 of 1" />));
+		act(() => tree.update(<FindBar {...props} query="settles" label="1 of 1" />));
+		expect(announce.mock.calls).toEqual([["2 of 3"], ["Searching older messages…"], ["1 of 1"]]);
 	});
 
 	it("closes with Done", () => {

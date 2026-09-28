@@ -3,7 +3,7 @@
 // step to the older and the newer match, and Done. The screen owns the search
 // (findInSession.ts) and moves the list.
 import { SymbolView } from "expo-symbols";
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
 import { AccessibilityInfo, Pressable, Text, TextInput, View } from "react-native";
 import { allowFontScaling, useColors, useTextScale } from "../ui";
 import { SymbolButton } from "./SymbolButton";
@@ -12,6 +12,7 @@ export function FindBar({
 	query,
 	label,
 	searchingOlder,
+	settled,
 	onQuery,
 	onStep,
 	onDone,
@@ -19,8 +20,10 @@ export function FindBar({
 	query: string;
 	/** Where you are among the matches: "2 of 3", "No matches". */
 	label: string;
-	/** Older history is loading to look for a match in it. */
+	/** An older page is loading to look for a match in it. */
 	searchingOlder: boolean;
+	/** The label is the search's answer, not a step on the way to it. */
+	settled: boolean;
 	onQuery(query: string): void;
 	onStep(direction: 1 | -1): void;
 	onDone(): void;
@@ -29,11 +32,16 @@ export function FindBar({
 	const scale = useTextScale();
 	const canStep = query.trim() !== "" && !searchingOlder;
 	const shown = searchingOlder ? "Searching older messages…" : label;
-	// VoiceOver hears where you are after each step and search. An announcement,
-	// since iOS ignores accessibilityLiveRegion, which only Android reads.
+	// VoiceOver hears where you are once a step or search settles, and that
+	// older messages are loading while they do; what the label passes through
+	// on the way stays quiet. An announcement, since iOS ignores
+	// accessibilityLiveRegion, which only Android reads.
+	const announced = useRef("");
 	useEffect(() => {
-		if (shown) AccessibilityInfo.announceForAccessibility(shown);
-	}, [shown]);
+		if (!shown || shown === announced.current || !(settled || searchingOlder)) return;
+		announced.current = shown;
+		AccessibilityInfo.announceForAccessibility(shown);
+	}, [shown, settled, searchingOlder]);
 	return (
 		<View
 			style={{

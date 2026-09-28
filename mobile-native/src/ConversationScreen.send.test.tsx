@@ -27,7 +27,7 @@ import { holdQuote, takeQuote } from "./session/pendingQuote";
 import { modelHosts } from "./session/ModelSheet";
 import { SessionInfoSheet } from "./session/SessionInfoSheet";
 import { commandHosts } from "./session/CommandsSheet";
-import { ActionSheetIOS } from "react-native";
+import { AccessibilityInfo, ActionSheetIOS } from "react-native";
 import type {
 	NativeStackHeaderItemMenu,
 	NativeStackHeaderItemMenuAction,
@@ -1723,6 +1723,19 @@ describe("Find in session (spec 8.7, ruling 29)", () => {
 			await runFrames();
 			expect(findScrolls()).toEqual([1, 0, 0, 0, 0]);
 		});
+	});
+
+	it("tells VoiceOver the count a search settles on, and nothing on the way", async () => {
+		const { tree } = await mount(findTurns("ref-find-announce"));
+		chooseMenu("Find in session");
+		const announce = vi.spyOn(AccessibilityInfo, "announceForAccessibility");
+		try {
+			await search(tree, "settle");
+			await search(tree, "settle test");
+			expect(announce.mock.calls).toEqual([["2 of 2"], ["1 of 1"]]);
+		} finally {
+			announce.mockRestore();
+		}
 	});
 
 	it("says so when nothing matches", async () => {

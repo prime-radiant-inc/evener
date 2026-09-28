@@ -3049,7 +3049,8 @@ export function ConversationScreen({
 														? matchLabel(findHits, findCurrent)
 														: ""
 											}
-											searchingOlder={find.seeking}
+											searchingOlder={find.seeking && snapshot.loadingOlder}
+											settled={!find.seeking}
 											onQuery={(query) =>
 												setFind({
 													query,
