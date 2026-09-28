@@ -132,13 +132,15 @@ export function ReviewSheet({ route, navigation }: NativeStackScreenProps<Routes
 										backgroundColor: selected ? palette.accentBg : undefined,
 									}}
 								>
+									{/* The choice shows in its fill and colour alone: a bolder
+									    "Request changes" outgrows its third of the row. */}
 									<Text
 										allowFontScaling={allowFontScaling}
 										style={{
 											color: selected ? palette.accentInk : palette.inkHi,
 											fontSize: 15 * scale,
 											lineHeight: 20 * scale,
-											fontWeight: selected ? "600" : "400",
+											textAlign: "center",
 										}}
 									>
 										{choice.label}

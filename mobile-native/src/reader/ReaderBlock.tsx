@@ -1,6 +1,7 @@
 // One block of a document in the Reader (spec 10.2): markdown in the document
-// role with serif headings, code in the machine face on an inset box, a wide
-// table in its own horizontal scroll, a rule as a line. A block that changed
+// role with serif headings, code in the machine face on an inset box, a
+// table as the markdown view draws it (it scrolls a wide one sideways
+// itself), a rule as a line. A block that changed
 // since you last read it carries an accent rule down its left edge. Touch
 // and hold opens its menu (comment, quote, copy, select), and a pill at its
 // top trailing corner counts the comments on it.
@@ -121,8 +122,6 @@ function BlockBody({
 					</ScrollView>
 				</View>
 			);
-		case "table":
-			return <ScrollView horizontal>{markdown}</ScrollView>;
 		case "rule":
 			return <View style={{ height: 1, marginVertical: 16, backgroundColor: palette.edge }} />;
 		default:
@@ -179,9 +178,13 @@ export const ReaderBlock = memo(function ReaderBlock({
 		() => (onAction ? (action: "comment" | "quote", words: string) => onAction(action, block, words) : undefined),
 		[block, onAction],
 	);
+	const scale = useTextScale();
 	const style = {
 		...(changed ? { borderLeftWidth: 3, borderLeftColor: palette.accent, paddingLeft: 12 } : {}),
 		...(selected ? { backgroundColor: palette.accentBg } : {}),
+		// Room for the comment pill at the top trailing corner, so it never
+		// sits on the block's words.
+		...(commentCount > 0 ? { paddingRight: 48 * scale } : {}),
 	};
 	const body = (
 		<BlockBody block={block} selecting={selecting} onSelection={onSelection} accessibility={accessibility} />

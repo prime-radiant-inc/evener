@@ -299,6 +299,19 @@ it("draws blocks in the document role with serif headings, spaced by the list al
 		expect(style[name]).toMatchObject({ marginTop: 0, marginBottom: 0 });
 });
 
+it("leaves a table to the markdown view, which scrolls a wide one itself", async () => {
+	// Wrapped in a horizontal ScrollView, the native view measured no width
+	// and the table drew nothing (seen on the simulator, phase 4 PR 9).
+	served[PATH] = { body: "| Work | Subagents |\n|---|---|\n| Fix the race | 1 |\n" };
+	const { tree } = await mount();
+	const table = tree.root.find(
+		(node) => String(node.type) === "EnrichedMarkdownText" && String(node.props.markdown).includes("| Work |"),
+	);
+	expect(table.props.flavor).toBe("github");
+	for (let node = table.parent; node; node = node.parent)
+		expect(String(node.type) === "ScrollView" && node.props.horizontal).not.toBe(true);
+});
+
 it("puts the title in the nav bar once the first heading scrolls out", async () => {
 	served[PATH] = { body: `Intro line.\n\n${PLAN}` };
 	const { tree, navigation } = await mount(PATH, { updatedAt: new Date(Date.now() - 3 * MINUTE).toISOString() });
@@ -774,6 +787,15 @@ describe("comments (Task 16)", () => {
 		const { tree } = await mount();
 		expect(marker(tree, 4)).toBe("2 comments");
 		expect(marker(tree, 3)).toBeNull();
+	});
+
+	it("keeps a block's words clear of its comment pill", async () => {
+		// The pill sat on the item's last words (seen on the simulator, phase 4 PR 9).
+		memory.addComment(KEY, { blockIndex: 4, blockHash: secondItem.hash, quote: secondItem.text, text: "one" });
+		const { tree } = await mount();
+		const inset = (index: number) => (block(tree, index).props.style as { paddingRight?: number }).paddingRight;
+		expect(inset(4)).toBeGreaterThanOrEqual(44);
+		expect(inset(3)).toBeUndefined();
 	});
 
 	it("shows the tip until the first comment, then the Comments button", async () => {
