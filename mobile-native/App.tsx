@@ -11,6 +11,7 @@ import { ActivityIndicator, useColorScheme, View } from "react-native";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
 import { SafeAreaProvider } from "react-native-safe-area-context";
 import { BoardScreen } from "./src/board/BoardScreen";
+import { RowMenuSheet } from "./src/board/RowMenu";
 import { ConnectionProvider, useConnection } from "./src/ConnectionProvider";
 import { ForkScreen } from "./src/ForkScreen";
 import { HubSettingsScreen } from "./src/HubSettingsScreen";
@@ -209,6 +210,11 @@ function Navigation() {
 							name="TasksSheet"
 							component={TasksSheet}
 							options={SHEET_ROUTES.TasksSheet}
+						/>
+						<Stack.Screen
+							name="RowMenuSheet"
+							component={RowMenuSheet}
+							options={SHEET_ROUTES.RowMenuSheet}
 						/>
 					</Stack.Group>
 				</Stack.Navigator>

@@ -1,10 +1,11 @@
-import type { SearchResult } from "@evener/appwire-client";
+import type { NavigationProjectSummary, SearchResult } from "@evener/appwire-client";
 import { SymbolView } from "expo-symbols";
 import { Platform, Pressable, Text, View } from "react-native";
 import { useColors, useTextScale } from "../ui";
 import { stateWord } from "./attention";
 import { BandHeader, Hairline, spokenAge } from "./BoardRow";
 import { type SearchScope, type SearchSnapshot, searchResultMark, sessionResults } from "./boardSearch";
+import { projectName } from "./ProjectTreeRow";
 import { markFor, StateMark } from "./StateMark";
 
 export interface SearchResultsProps {
@@ -17,6 +18,9 @@ export interface SearchResultsProps {
 	onOpen: (result: SearchResult) => void;
 	onRecent: (query: string) => void;
 	onClearRecent: () => void;
+	/** The loaded projects the query matches (projectResults). */
+	projects: readonly NavigationProjectSummary[];
+	onOpenProject: (project: NavigationProjectSummary) => void;
 }
 
 const SCOPES: Array<{ scope: SearchScope; name: string }> = [
@@ -25,8 +29,8 @@ const SCOPES: Array<{ scope: SearchScope; name: string }> = [
 ];
 
 /** What the Board shows under its search field while you search (spec
- * 7.4): the scope chips, then recent searches for an empty field or the
- * Sessions group for a query. */
+ * 7.4): the scope chips, then recent searches for an empty field, or for a
+ * query the Sessions group and then, in All, the Projects group. */
 export function SearchResults(props: SearchResultsProps) {
 	return (
 		<>
@@ -93,7 +97,29 @@ function Recent({ recent, onRecent, onClearRecent }: SearchResultsProps) {
 	);
 }
 
-function Found({ search, scope, connected, onOpen }: SearchResultsProps) {
+function Found(props: SearchResultsProps) {
+	const { scope, projects, onOpenProject } = props;
+	// The projects are the Board's own, so they show whatever the hub's search
+	// is doing. Live narrows to live sessions, which projects are not.
+	return (
+		<>
+			<Sessions {...props} />
+			{scope === "all" && projects.length ? (
+				<>
+					<BandHeader text={`PROJECTS · ${projects.length}`} />
+					{projects.map((project, index) => (
+						<View key={project.key}>
+							{index > 0 ? <Hairline /> : null}
+							<ProjectResultRow project={project} onOpen={onOpenProject} />
+						</View>
+					))}
+				</>
+			) : null}
+		</>
+	);
+}
+
+function Sessions({ search, scope, connected, onOpen }: SearchResultsProps) {
 	if (search.failed) return <Note text="Couldn't search this hub's sessions." />;
 	if (search.results) {
 		const rows = sessionResults(search.results, scope);
@@ -154,6 +180,35 @@ function Scopes({ scope, onScope }: { scope: SearchScope; onScope: (scope: Searc
 	);
 }
 
+/** The row every search result sits in, session or project. */
+function resultRowStyle(palette: ReturnType<typeof useColors>["palette"]) {
+	return ({ pressed }: { pressed: boolean }) => ({
+		minHeight: 56,
+		paddingHorizontal: 16,
+		paddingVertical: 8,
+		flexDirection: "row" as const,
+		alignItems: "center" as const,
+		columnGap: 10,
+		backgroundColor: pressed ? palette.pressed : palette.page,
+	});
+}
+
+/** A result's second line: the session's project or the project's folder. */
+function ResultDetail({ text }: { text: string }) {
+	const { palette } = useColors();
+	const scale = useTextScale();
+	return (
+		<Text
+			allowFontScaling={Platform.OS !== "ios"}
+			numberOfLines={1}
+			ellipsizeMode="middle"
+			style={{ marginTop: 2, fontSize: 13 * scale, lineHeight: 18 * scale, color: palette.inkLow }}
+		>
+			{text}
+		</Text>
+	);
+}
+
 function ResultRow({
 	result,
 	connected,
@@ -176,15 +231,7 @@ function ResultRow({
 			accessibilityRole="button"
 			accessibilityLabel={label}
 			onPress={() => onOpen(result)}
-			style={({ pressed }) => ({
-				minHeight: 56,
-				paddingHorizontal: 16,
-				paddingVertical: 8,
-				flexDirection: "row",
-				alignItems: "center",
-				columnGap: 10,
-				backgroundColor: pressed ? palette.pressed : palette.page,
-			})}
+			style={resultRowStyle(palette)}
 		>
 			<StateMark state={state} connected={connected} />
 			<View style={{ flex: 1, minWidth: 0 }}>
@@ -205,16 +252,43 @@ function ResultRow({
 						</Text>
 					) : null}
 				</View>
-				{result.project ? (
-					<Text
-						allowFontScaling={Platform.OS !== "ios"}
-						numberOfLines={1}
-						ellipsizeMode="middle"
-						style={{ marginTop: 2, fontSize: 13 * scale, lineHeight: 18 * scale, color: palette.inkLow }}
-					>
-						{result.project}
-					</Text>
-				) : null}
+				{result.project ? <ResultDetail text={result.project} /> : null}
+			</View>
+		</Pressable>
+	);
+}
+
+function ProjectResultRow({
+	project,
+	onOpen,
+}: {
+	project: NavigationProjectSummary;
+	onOpen: (project: NavigationProjectSummary) => void;
+}) {
+	const { palette } = useColors();
+	const scale = useTextScale();
+	const name = projectName(project);
+	const folder = project.working_dir && project.working_dir !== name ? project.working_dir : null;
+	return (
+		<Pressable
+			testID="project-result"
+			accessibilityRole="button"
+			accessibilityLabel={[name, "project", folder].filter(Boolean).join(", ")}
+			onPress={() => onOpen(project)}
+			style={resultRowStyle(palette)}
+		>
+			<View style={{ width: 28, alignItems: "center" }}>
+				<SymbolView name="folder" size={17 * scale} tintColor={palette.inkMid} />
+			</View>
+			<View style={{ flex: 1, minWidth: 0 }}>
+				<Text
+					allowFontScaling={Platform.OS !== "ios"}
+					numberOfLines={1}
+					style={{ fontSize: 17 * scale, lineHeight: 22 * scale, fontWeight: "600", color: palette.inkHi }}
+				>
+					{name}
+				</Text>
+				{folder ? <ResultDetail text={folder} /> : null}
 			</View>
 		</Pressable>
 	);

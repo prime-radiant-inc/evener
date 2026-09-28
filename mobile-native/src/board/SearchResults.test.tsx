@@ -1,4 +1,4 @@
-import type { SearchResult } from "@evener/appwire-client";
+import type { NavigationProjectSummary, SearchResult } from "@evener/appwire-client";
 import type { ReactTestInstance, ReactTestRenderer } from "react-test-renderer";
 import { act } from "react-test-renderer";
 import { expect, it, vi } from "vitest";
@@ -43,6 +43,8 @@ function mount(over: Partial<SearchResultsProps> = {}) {
 		onOpen: vi.fn(),
 		onRecent: vi.fn(),
 		onClearRecent: vi.fn(),
+		projects: [],
+		onOpenProject: vi.fn(),
 		...over,
 	};
 	return { tree: render(<SearchResults {...props} />), props };
@@ -60,6 +62,9 @@ const textWith = (within: ReactTestRenderer | ReactTestInstance, content: string
 		(node) => node.type === ("Text" as never) && node.props.children === content,
 	);
 const resultRows = (tree: ReactTestRenderer) => tree.root.findAll((node) => node.props.testID === "search-result");
+const projectRows = (tree: ReactTestRenderer) => tree.root.findAll((node) => node.props.testID === "project-result");
+const evener: NavigationProjectSummary = { key: "evener", name: "evener", working_dir: "/home/jesse/git/evener", session_count: 2 };
+const unnamed: NavigationProjectSummary = { key: "tools", name: "", working_dir: "/srv/tools", session_count: 1 };
 
 it("lists live results then past ones, each with its mark, project and age", () => {
 	const { tree } = mount();
@@ -165,4 +170,39 @@ it("shows only the scope chips when the field is empty and there are no recent s
 it("names an untitled session", () => {
 	const { tree } = mount({ search: { ...answered, results: { live: [result("x", { title: "" })], past: [] } } });
 	expect(resultRows(tree)[0].props.accessibilityLabel).toBe("Untitled session, evener, 2 minutes");
+});
+
+it("lists the matching projects after the sessions, each opening its project", () => {
+	const { tree, props } = mount({ projects: [evener, unnamed] });
+	const text = renderedText(tree);
+	expect(text.indexOf("PROJECTS · 2")).toBeGreaterThan(text.indexOf("SESSIONS · 3"));
+	expect(projectRows(tree).map((row) => row.props.accessibilityLabel)).toEqual([
+		"evener, project, /home/jesse/git/evener",
+		// A project with no name is named by its folder, said once.
+		"/srv/tools, project",
+	]);
+	expect(flatten(projectRows(tree)[0].props.style).minHeight).toBeGreaterThanOrEqual(44);
+	act(() => projectRows(tree)[0].props.onPress());
+	expect(props.onOpenProject).toHaveBeenCalledWith(evener);
+});
+
+it("shows no Projects group in the Live scope", () => {
+	const { tree } = mount({ scope: "live", projects: [evener] });
+	expect(projectRows(tree)).toHaveLength(0);
+	expect(renderedText(tree)).not.toContain("PROJECTS");
+});
+
+it("lists matching projects whatever the hub's search is doing", () => {
+	const states: SearchSnapshot[] = [
+		{ query: "even", results: null, searching: true, failed: false },
+		{ query: "even", results: null, searching: false, failed: true },
+		{ query: "even", results: { live: [], past: [] }, searching: false, failed: false },
+	];
+	for (const search of states) {
+		const { tree } = mount({ search, projects: [evener] });
+		expect(projectRows(tree)).toHaveLength(1);
+		act(() => tree.unmount());
+	}
+	const offline = mount({ connected: false, search: states[0], projects: [evener] });
+	expect(projectRows(offline.tree)).toHaveLength(1);
 });
