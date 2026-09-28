@@ -654,7 +654,7 @@ describe("AppwireClient", () => {
     expect(received).toEqual([{ method: "thread/started", params: {} }]);
   });
 
-  test("requests before ready are rejected except initialize/ping", async () => {
+  test("requests before ready are rejected, including the heartbeat's ping", async () => {
     const fake = new FakeSocket({ autoInitialize: false });
     const client = new AppwireClient({ url: "ws://x/rpc", socketFactory: () => fake });
 
@@ -663,9 +663,8 @@ describe("AppwireClient", () => {
     expect(client.state).toBe("connecting");
 
     await expect(client.request("thread/list", { limit: 1 })).rejects.toThrow(/thread\/list/);
-
-    void client.request("ping", {});
-    expect(sentFrames(fake).some((f) => f.method === "ping")).toBe(true);
+    await expect(client.request("ping", {})).rejects.toThrow(/ping/);
+    expect(sentFrames(fake).some((f) => f.method === "ping")).toBe(false);
   });
 
   test("close() transitions to closed and rejects pending requests", async () => {

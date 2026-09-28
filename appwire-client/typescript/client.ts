@@ -1,9 +1,8 @@
 // AppwireClient owns the websocket connection to the hub's /rpc endpoint: the
 // initialize/initialized handshake, typed request/response correlation,
 // notification fan-out, an application-level heartbeat, and automatic
-// reconnect with backoff. It mirrors the message-handling and reconnect
-// semantics of the legacy cmd/evener-hub/assets/appwire.js, but backs off
-// exponentially up to a cap instead of that file's fixed 250ms retry.
+// reconnect with backoff. Unlike the legacy client's fixed 250ms retry, it
+// backs off exponentially up to a cap.
 
 import { ConnectionClosedError, RequestTimeoutError, WireError } from "./errors";
 import { isPlainObject } from "./plainObject";
@@ -103,10 +102,13 @@ export const HEARTBEAT_TIMEOUT_MS = 10_000;
 export const RECONNECT_BASE_MS = 250;
 export const RECONNECT_MAX_MS = 5_000;
 
-// Methods allowed before the client reaches "ready": initialize is how it
-// gets there, and ping is an app-level liveness probe the heartbeat needs to
-// send even while connecting/reconnecting.
-const READY_EXEMPT_METHODS: ReadonlySet<MethodName> = new Set<MethodName>(["initialize", "ping"]);
+// The only method allowed before the client reaches "ready". initialize is how
+// it gets there (dialAndHandshake sends it while the state is still
+// "connecting"), so it cannot wait for ready. Everything else, including the
+// heartbeat's own ping, waits: the heartbeat is armed only on entering "ready"
+// and disarmed on every path out of it, so a ping is never sent while
+// connecting or reconnecting.
+const READY_EXEMPT_METHODS: ReadonlySet<MethodName> = new Set<MethodName>(["initialize"]);
 
 // Methods whose response is owned by the operation the request starts, not by
 // an ordinary transport deadline: a pending call carries its own (longer)
