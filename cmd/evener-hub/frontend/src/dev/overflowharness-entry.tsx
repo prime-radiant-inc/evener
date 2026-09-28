@@ -384,10 +384,22 @@ const pagingSnapshot: ThreadReadResponse = {
   olderCursor: "opaque-paging-cursor",
 };
 
+// One fixture selection for every consumer below (the thread/read handler,
+// putThreadModel, the navigation location): the first mode whose flag is set
+// wins, and the default row is the main snapshot. A new fixture mode is one
+// entry here - previously this selection was written out three times (the
+// read handler, activeRef, activeSnapshot) and the copies had to be kept in
+// lockstep by hand.
+const FIXTURES = [
+  { on: pagingMode, ref: PAGING_REF, snapshot: pagingSnapshot },
+  { on: intentTailMode, ref: INTENTTAIL_REF, snapshot: intentTailSnapshot },
+  { on: heldTailMode, ref: HELDTAIL_REF, snapshot: heldTailSnapshot },
+];
+const activeFixture = FIXTURES.find((fixture) => fixture.on) ?? { ref: REF, snapshot };
+const { ref: activeRef, snapshot: activeSnapshot } = activeFixture;
+
 const fake = new FakeClient("ready");
-fake.on("thread/read", () =>
-  pagingMode ? pagingSnapshot : intentTailMode ? intentTailSnapshot : heldTailMode ? heldTailSnapshot : snapshot,
-);
+fake.on("thread/read", () => activeSnapshot);
 fake.on("thread/turns/list", (request: ThreadTurnsListParams): ThreadTurnsListResponse => {
   if (!pagingMode || request.ref !== PAGING_REF) return { data: [] };
   return {
@@ -406,14 +418,6 @@ fake.on("evener/tasks/list", () => ({ data: [] }));
 connectionStore.getState().connect(fake);
 // putThreadModel keeps the routing index in step with the seeded map
 // entry (the store's membership path for threads).
-const activeRef = pagingMode ? PAGING_REF : intentTailMode ? INTENTTAIL_REF : heldTailMode ? HELDTAIL_REF : REF;
-const activeSnapshot = pagingMode
-  ? pagingSnapshot
-  : intentTailMode
-    ? intentTailSnapshot
-    : heldTailMode
-      ? heldTailSnapshot
-      : snapshot;
 putThreadModel(activeRef, hydrateThread(activeSnapshot, activeRef, 1000));
 // The one durable row the held fixture renders from: the same
 // enqueueIntent + shared projection refresh every real submission takes
@@ -1316,23 +1320,36 @@ interface ChatFocusMeasurement {
   activeTestId: string | null;
 }
 
+// The frame-wait every harness inspection shares: poll read() once per
+// painted frame for up to 180 frames (~3s), then throw naming the harness
+// and what never appeared. One definition, not one per inspect - the settle
+// policy (frame budget, rAF cadence) must not drift between checks.
+async function waitFor<T>(read: () => T | null | undefined, harness: string, label: string): Promise<T> {
+  for (let frame = 0; frame < 180; frame += 1) {
+    const value = read();
+    if (value !== null && value !== undefined) return value;
+    await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+  }
+  throw new Error(`${harness} harness did not settle: ${label}`);
+}
+
+// Two painted frames - the settle point after DOM reads/writes, so geometry
+// is measured at rest rather than mid-assembly (the same idiom the settled
+// promise above resolves on).
+function twoPaintedFrames(): Promise<void> {
+  return new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
+}
+
 async function inspectChatFocus(): Promise<ChatFocusMeasurement> {
   const pane = document.getElementById("oh-pane");
   if (!pane) throw new Error("Chat focus harness pane never mounted");
   const layout = transcriptDisplayStore.getState().viewport;
   const original = transcriptDisplayStore.getState().local[layout];
-  const waitFor = async <T,>(read: () => T | null | undefined, label: string): Promise<T> => {
-    for (let frame = 0; frame < 180; frame += 1) {
-      const value = read();
-      if (value !== null && value !== undefined) return value;
-      await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
-    }
-    throw new Error(`Chat focus harness did not settle: ${label}`);
-  };
   try {
     transcriptDisplayStore.getState().setLocal(layout, makeTranscriptDisplayConfig({ kind: "preset", level: "tools" }));
     const toolTrigger = await waitFor(
       () => pane.querySelector<HTMLElement>('[data-view-anchor-id="i3b"] [data-testid="tool-row-trigger"]'),
+      "Chat focus",
       "Tools row trigger",
     );
     toolTrigger.focus();
@@ -1341,9 +1358,10 @@ async function inspectChatFocus(): Promise<ChatFocusMeasurement> {
     transcriptDisplayStore.getState().setLocal(layout, makeTranscriptDisplayConfig({ kind: "preset", level: "chat" }));
     const rationale = await waitFor(
       () => pane.querySelector<HTMLElement>('[data-view-anchor-id="intent:i3b"]'),
+      "Chat focus",
       "Chat intent rationale",
     );
-    await new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
+    await twoPaintedFrames();
     const group = rationale.closest<HTMLDetailsElement>('details[data-testid="intent-group"]');
     const summary = group?.querySelector<HTMLElement>(":scope > summary");
     const active = document.activeElement;
@@ -1384,14 +1402,6 @@ async function inspectIntentColumn(): Promise<IntentColumnMeasurement> {
   if (!pane) throw new Error("Intent column harness pane never mounted");
   const layout = transcriptDisplayStore.getState().viewport;
   const original = transcriptDisplayStore.getState().local[layout];
-  const waitFor = async <T,>(read: () => T | null | undefined, label: string): Promise<T> => {
-    for (let frame = 0; frame < 180; frame += 1) {
-      const value = read();
-      if (value !== null && value !== undefined) return value;
-      await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
-    }
-    throw new Error(`Intent column harness did not settle: ${label}`);
-  };
   try {
     transcriptDisplayStore.getState().setLocal(layout, makeTranscriptDisplayConfig({ kind: "preset", level: "chat" }));
     const group = await waitFor(
@@ -1401,10 +1411,15 @@ async function inspectIntentColumn(): Promise<IntentColumnMeasurement> {
           // construction; only the top-level row's geometry is in question.
           (details) => details.closest('[data-testid="turn-block"]') === null,
         ),
+      "Intent column",
       "top-level intent group",
     );
-    const turn = await waitFor(() => pane.querySelector<HTMLElement>('[data-testid="turn-block"]'), "turn block");
-    await new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
+    const turn = await waitFor(
+      () => pane.querySelector<HTMLElement>('[data-testid="turn-block"]'),
+      "Intent column",
+      "turn block",
+    );
+    await twoPaintedFrames();
     const groupRect = group.getBoundingClientRect();
     const turnRect = turn.getBoundingClientRect();
     return {
@@ -1440,20 +1455,17 @@ interface HeldSteerColumnMeasurement {
 async function inspectHeldSteerColumn(): Promise<HeldSteerColumnMeasurement> {
   const pane = document.getElementById("oh-pane");
   if (!pane) throw new Error("Held steer column harness pane never mounted");
-  const waitFor = async <T,>(read: () => T | null | undefined, label: string): Promise<T> => {
-    for (let frame = 0; frame < 180; frame += 1) {
-      const value = read();
-      if (value !== null && value !== undefined) return value;
-      await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
-    }
-    throw new Error(`Held steer column harness did not settle: ${label}`);
-  };
   const stack = await waitFor(
     () => pane.querySelector<HTMLElement>('[data-testid="held-steer-stack"]'),
+    "Held steer column",
     "held steer stack",
   );
-  const turn = await waitFor(() => pane.querySelector<HTMLElement>('[data-testid="turn-block"]'), "turn block");
-  await new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
+  const turn = await waitFor(
+    () => pane.querySelector<HTMLElement>('[data-testid="turn-block"]'),
+    "Held steer column",
+    "turn block",
+  );
+  await twoPaintedFrames();
   const stackRect = stack.getBoundingClientRect();
   const turnRect = turn.getBoundingClientRect();
   return {
