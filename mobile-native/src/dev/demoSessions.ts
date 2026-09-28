@@ -26,9 +26,9 @@ import type {
 	EvenerDelegateInfo,
 	GoalState,
 	ModelListResponse,
-	MutationReceipt,
 	NotesHumanSetParams,
 	NotesHumanSetResponse,
+	PendingQuestion,
 	QueueState,
 	SandboxEscalationRequested,
 	SandboxEscalationResolveParams,
@@ -42,6 +42,7 @@ import type {
 	UrlsRemoveParams,
 	UrlsRemoveResponse,
 } from "@evener/appwire-client";
+import { WireError } from "@evener/appwire-client";
 import {
 	demoSessionId,
 	enabledPluginNames,
@@ -484,6 +485,7 @@ const CONTENT: Record<string, SessionContent> = {
 			title: "codex-jesse-fsck.com sign-in expired (401)",
 			message: "codex-jesse-fsck.com: 401 Unauthorized: sign-in expired",
 			hint: "The session stopped after the provider refused 5 requests in a row. Sign in again, then retry.",
+			cause: { kind: "provider", provider: "codex-jesse-fsck.com", model: "gpt-5.6", status: 401 },
 		},
 		tasks: { total: 4, done: 2, remaining: 2, current: { id: 3, description: "Cap retries per provider" } },
 	},
@@ -630,10 +632,11 @@ function turnOf(session: FleetSession, entries: Entry[], error: TurnError | unde
 		const item = { id: `${id}-${index}`, startedAt: at };
 		const seconds = secondsOf(entry);
 		at += seconds * 1000;
-		if ("user" in entry) return { ...item, type: "userMessage", text: entry.user };
+		if ("user" in entry) return { ...item, type: "userMessage", text: entry.user, status: "completed" };
 		if ("steer" in entry) return { ...item, type: "steering", source: "user", text: entry.steer, status: "completed" };
 		if ("agent" in entry) return { ...item, type: "agentMessage", text: entry.agent, status: "completed" };
-		if ("thinking" in entry) return { ...item, type: "reasoning", text: "", status: "inProgress" };
+		// A thought with no text yet: the encoder leaves the empty text out.
+		if ("thinking" in entry) return { ...item, type: "reasoning", status: "inProgress" };
 		if ("ask" in entry)
 			return {
 				...item,
@@ -764,13 +767,23 @@ export function clearAvailable(thread: Thread): boolean {
 	);
 }
 
+// The first question of the session's pending ask, as the daemon summarizes
+// it for the Board's row (appwire/types.go's PendingQuestion).
+function pendingQuestionOf(entries: Entry[]): PendingQuestion {
+	const ask = entries.find((entry): entry is { ask: Question[] } => "ask" in entry)?.ask ?? [];
+	const [first] = ask;
+	if (!first) throw new Error("a pending question needs an ask");
+	return { question: first.question, options: first.options.map((option) => option.label), count: ask.length };
+}
+
 function sessionThread(session: FleetSession, now: number): Thread {
 	const content = CONTENT[session.slug] ?? {};
 	const usage = content.usage ?? BASE_USAGE;
 	const status = THREAD_STATUS[session.state];
 	const active = status === "active";
 	const live = session.state !== "shutdown";
-	const turn = turnOf(session, content.entries ?? genericEntries(session), content.error, now);
+	const entries = content.entries ?? genericEntries(session);
+	const turn = turnOf(session, entries, content.error, now);
 	const sessionId = demoSessionId(session.slug);
 	const threadId = `demo-thread-${session.slug}`;
 	const updatedAt = Math.floor((now - session.ago * 1000) / 1000);
@@ -800,7 +813,15 @@ function sessionThread(session: FleetSession, now: number): Thread {
 			reasoningEffort: content.effort ?? DEFAULT_EFFORT,
 			reasoningEffortLevels: ALL_EFFORTS,
 			supportsReasoning: true,
-			...(session.state === "question" ? { askPending: true } : {}),
+			...(session.state === "question" ? { askPending: true, pendingQuestion: pendingQuestionOf(entries) } : {}),
+			...(status === "systemError" && content.error
+				? {
+						failure: {
+							...(content.error.title ? { title: content.error.title } : {}),
+							...(content.error.cause ? { cause: content.error.cause } : {}),
+						},
+					}
+				: {}),
 			...(content.escalation
 				? {
 						pendingEscalations: [
@@ -854,39 +875,48 @@ export function createDemoSessions(options: DemoSessionsOptions = {}): Thread[] 
 }
 
 // A notes change must reach a session that takes shared notes, and name the
-// instance it read, as a daemon checks.
-function requireSharedNotes(thread: Thread, expectedInstanceId: string): void {
+// instance it read. A stale instance is refused as the daemon refuses it
+// (server/appwire_runtime.go, appwire.MutationNotAccepted).
+function requireSharedNotes(thread: Thread, expectedInstanceId: string, clientMutationId: string): void {
 	if (!thread.evener.capabilities.sharedNotes) throw new Error("This session doesn't take shared notes");
-	if (expectedInstanceId !== thread.evener.instanceId) throw new Error("Session identity changed");
+	if (expectedInstanceId !== thread.evener.instanceId)
+		throw new WireError("thread instance is stale", -32013, {
+			evenerErrorInfo: "conflict",
+			clientMutationId,
+			mutationOutcome: "notAccepted",
+			retryDisposition: "none",
+		});
 }
 
-function appliedReceipt(thread: Thread, clientMutationId: string, projectionState: string): MutationReceipt {
-	return {
-		clientMutationId,
-		disposition: "applied",
-		threadId: thread.id,
-		...(thread.evener.instanceId ? { instanceId: thread.evener.instanceId } : {}),
-		projectionState,
-	};
-}
-
-// notes/human/set: your note replaces the session's. An unchanged note
+// notes/human/set: your note replaces the session's. A changed note steers
+// the agent in a turn of its own, which the receipt names; an unchanged one
 // projects "removed" and wakes no one, as the daemon's does
 // (agent/session_notes_rpc.go).
 export function setHumanNote(thread: Thread, params: NotesHumanSetParams): NotesHumanSetResponse {
-	requireSharedNotes(thread, params.expectedInstanceId);
+	requireSharedNotes(thread, params.expectedInstanceId, params.clientMutationId);
 	const note = params.note ?? "";
-	const unchanged = note === (thread.evener.humanNote ?? "");
+	const changed = note !== (thread.evener.humanNote ?? "");
 	thread.evener.humanNote = note;
-	return { note, receipt: appliedReceipt(thread, params.clientMutationId, unchanged ? "removed" : "pending") };
+	return {
+		note,
+		receipt: {
+			clientMutationId: params.clientMutationId,
+			disposition: "applied",
+			threadId: thread.id,
+			...(thread.evener.instanceId ? { instanceId: thread.evener.instanceId } : {}),
+			projectionState: changed ? "pending" : "removed",
+			...(changed ? { turnId: `turn_note_${params.clientMutationId}` } : {}),
+		},
+	};
 }
 
 // urls/remove: a link that isn't there is refused with the daemon's message,
 // which the phone reads as already removed (sessionNotes.ts's removeLink).
 export function removeLink(thread: Thread, params: UrlsRemoveParams): UrlsRemoveResponse {
-	requireSharedNotes(thread, params.expectedInstanceId);
+	requireSharedNotes(thread, params.expectedInstanceId, params.clientMutationId);
 	const links = thread.evener.sessionUrls ?? [];
-	if (!links.some((link) => link.id === params.id)) throw new Error(`no URL entry with id ${params.id}`);
+	if (!links.some((link) => link.id === params.id))
+		throw new Error(`no URL entry with id ${JSON.stringify(params.id)}`);
 	thread.evener.sessionUrls = links.filter((link) => link.id !== params.id);
 	return {};
 }

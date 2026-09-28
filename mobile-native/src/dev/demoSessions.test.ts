@@ -61,6 +61,12 @@ describe("the demo sessions behind Appendix A's Session frames", () => {
 			expect(thread.name).toBe(session.title);
 			expect(conversation.items.length).toBeGreaterThan(0);
 			expect(thread.evener.capabilities.sharedNotes).toBe(true);
+			// As the Go encoder writes items: your message is completed, and a
+			// thought with no text yet leaves the text out (omitempty).
+			for (const item of thread.turns?.flatMap((turn) => turn.items ?? []) ?? []) {
+				if (item.type === "userMessage") expect(item.status).toBe("completed");
+				if (item.type === "reasoning") expect(item).not.toHaveProperty("text");
+			}
 		}
 	});
 
@@ -113,6 +119,12 @@ describe("the demo sessions behind Appendix A's Session frames", () => {
 	it("frame 8: a question with two questions, one multi-select and one option recommended", () => {
 		const { model, rows } = open("s-audit");
 		expect(sessionStateLine(model, NOW).text).toBe("Asks a question");
+		// The Board's row and a long-press preview read the first question here.
+		expect(threadOf("s-audit").evener.pendingQuestion).toEqual({
+			question: "Keep or drop the implied options?",
+			options: ["Drop them", "Keep them and add the flags", "Ask me per tool"],
+			count: 2,
+		});
 		const questions = [...liveAsksFor(model).values()].flat();
 		expect(questions.map((question) => question.question)).toEqual([
 			"Keep or drop the implied options?",
@@ -155,6 +167,9 @@ describe("the demo sessions behind Appendix A's Session frames", () => {
 	it("frame 11: the last turn failed on a sign-in error", () => {
 		const { model, conversation } = open("s-retry");
 		expect(sessionStateLine(model, NOW).text).toBe("Failed");
+		const cause = { kind: "provider", provider: "codex-jesse-fsck.com", model: "gpt-5.6", status: 401 };
+		expect(threadOf("s-retry").evener.failure).toEqual({ title: "codex-jesse-fsck.com sign-in expired (401)", cause });
+		expect(model.turns.at(-1)?.error).toMatchObject({ cause });
 		expect(model.turns.at(-1)).toMatchObject({ status: "failed", error: { message: expect.stringContaining("401") } });
 		expect(conversation.items).toContainEqual(
 			expect.objectContaining({ kind: "failure", title: expect.stringContaining("401") }),

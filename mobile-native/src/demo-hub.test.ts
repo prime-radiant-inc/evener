@@ -665,8 +665,22 @@ describe("native demonstration hub's fleet sessions", () => {
 			});
 			expect(saved).toMatchObject({
 				note: "Fix causes, and say which.",
-				receipt: { clientMutationId: "note-1", disposition: "applied", projectionState: "pending" },
+				receipt: {
+					clientMutationId: "note-1",
+					disposition: "applied",
+					projectionState: "pending",
+					turnId: expect.any(String),
+				},
 			});
+			// An unchanged note wakes no one and starts no turn.
+			const unchanged = await client.request("notes/human/set", {
+				ref,
+				clientMutationId: "note-same",
+				expectedInstanceId,
+				note: "Fix causes, and say which.",
+			});
+			expect(unchanged.receipt.projectionState).toBe("removed");
+			expect(unchanged.receipt).not.toHaveProperty("turnId");
 			await client.request("urls/remove", { ref, clientMutationId: "link-1", expectedInstanceId, id: "u-checks" });
 			const after = await client.request("thread/read", { ref, includeTurns: false });
 			expect(after.thread.evener.humanNote).toBe("Fix causes, and say which.");
@@ -674,10 +688,20 @@ describe("native demonstration hub's fleet sessions", () => {
 			// The phone reads this message as "already gone" (sessionNotes.ts).
 			await expect(
 				client.request("urls/remove", { ref, clientMutationId: "link-2", expectedInstanceId, id: "u-checks" }),
-			).rejects.toThrow("no URL entry with id u-checks");
+			).rejects.toThrow('no URL entry with id "u-checks"');
+			// The daemon's MutationNotAccepted for a stale instance.
 			await expect(
 				client.request("notes/human/set", { ref, clientMutationId: "note-2", expectedInstanceId: "stale", note: "x" }),
-			).rejects.toThrow("Session identity changed");
+			).rejects.toMatchObject({
+				code: -32013,
+				message: "thread instance is stale",
+				data: {
+					evenerErrorInfo: "conflict",
+					clientMutationId: "note-2",
+					mutationOutcome: "notAccepted",
+					retryDisposition: "none",
+				},
+			});
 			// The playground has no shared notes, as its capabilities say.
 			await expect(
 				client.request("notes/human/set", {
