@@ -245,6 +245,14 @@ describe("cwdRelative", () => {
     expect(cwdRelative("/home/proj/a.ts", "")).toBeUndefined();
   });
 
+  test("names nothing for an absolute path that climbs out, or for the folder itself with a trailing slash", () => {
+    expect(cwdRelative("/home/proj/../secret.ts", "/home/proj")).toBeUndefined();
+    expect(cwdRelative("/home/proj/src/../../secret.ts", "/home/proj")).toBeUndefined();
+    expect(cwdRelative("/home/proj/", "/home/proj")).toBeUndefined();
+    expect(cwdRelative("/home/proj/", "/home/proj/")).toBeUndefined();
+    expect(cwdRelative("/home/proj/src/..hidden.ts", "/home/proj")).toBe("src/..hidden.ts");
+  });
+
   test("takes a relative path as relative unless it climbs out", () => {
     expect(cwdRelative("src/a.ts", "/home/proj")).toBe("src/a.ts");
     expect(cwdRelative("a.ts", "/home/proj")).toBe("a.ts");
