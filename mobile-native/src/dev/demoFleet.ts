@@ -677,7 +677,9 @@ export function createDemoFleet(options: DemoFleetOptions = {}): DemoFleet {
 		// sections, the project catalogs' counts and the row's project, and
 		// the real hub adds every loaded project page besides
 		// (app_archive.go's AllLoadedProjects hint, appended last by
-		// navigation_service.go's commitTargetsLocked).
+		// navigation_service.go's commitTargetsLocked). The list is fixed, a
+		// superset of the real hub's, which names only resources that changed;
+		// the client just re-reads the extra ones.
 		const invalidated = commit(changed, (revision) => [
 			{ kind: "manifest", revision },
 			{ kind: "section", section: "live", revision },
@@ -731,7 +733,10 @@ function fleetAnswers(
 	];
 
 	const pinCategoryIds = ["release", "research"] as const;
-	const pinSessions = (id: string) => liveRaw.filter((raw) => raw.category === id).map(rowOf);
+	// A named pin stays reachable when its session is archived, as the real
+	// hub's PinCandidates keeps it (cmd/evener-hub/internal/hubcore/tree.go).
+	const pinSessions = (id: string) =>
+		sessionsList.filter((raw) => raw.state !== "shutdown" && raw.category === id).map(rowOf);
 	// A category with nothing pinned in it doesn't get a row, which is what
 	// empties the pin catalog for the empty fleet. The real hub keeps empty
 	// durable sections (navigation_projection.go buildPinSectionsContext);
@@ -745,10 +750,23 @@ function fleetAnswers(
 	// (the full fleet lists "home" with no sessions), so an empty fleet needs
 	// its own check here rather than falling out of a filter for free.
 	const projectKeys = sessionsList.length > 0 ? PROJECT_META.map((project) => project.key) : [];
-	const projects = projectKeys.map((key) => projectSummary(sessionsList, key, projectSessionsRaw(sessionsList, key).length));
 	const archivedRaw = sessionsList.filter((raw) => raw.archived);
-	const archivedProjects: NavigationProjectSummary[] =
-		archivedRaw.length > 0 ? [projectSummary(sessionsList, "evener", archivedRaw.length)] : [];
+	const archivedIn = (key: string) => archivedRaw.filter((raw) => (raw.project ?? "evener") === key);
+	// The real hub moves a project whose every session is archived into
+	// Archived projects (cmd/evener-hub/internal/hubcore/tree.go's Tree).
+	const allArchived = (key: string) => {
+		const sessions = sessionsList.filter((raw) => (raw.project ?? "evener") === key && !raw.test);
+		return sessions.length > 0 && sessions.every((raw) => raw.archived);
+	};
+	const projects = projectKeys
+		.filter((key) => !allArchived(key))
+		.map((key) => projectSummary(sessionsList, key, projectSessionsRaw(sessionsList, key).length));
+	// evener is the fixture's stand-in: data.js lists its 271 archived
+	// sessions as an archived evener row though evener still has live ones.
+	// An archived row counts only its archived sessions.
+	const archivedProjects: NavigationProjectSummary[] = projectKeys
+		.filter((key) => archivedIn(key).length > 0 && (key === "evener" || allArchived(key)))
+		.map((key) => projectSummary(sessionsList, key, archivedIn(key).length));
 	const testRunRaw = sessionsList.filter((raw) => raw.test);
 	const testRunProjects: NavigationProjectSummary[] =
 		testRunRaw.length > 0 ? [{ key: "hub-test-env", name: "hub-test-env", session_count: testRunRaw.length }] : [];
@@ -774,7 +792,7 @@ function fleetAnswers(
 	// so callers page it with the same page() every other resource uses
 	// instead of a bespoke "5 rows, 266 remaining forever" shortcut.
 	function tierRows(projectKey: string, tier: "current" | "recent" | "archived"): NavigationSessionSummary[] {
-		if (tier === "archived") return projectKey === "evener" ? archivedRaw.filter((raw) => servedTier(raw) === tier).map(rowOf) : [];
+		if (tier === "archived") return archivedIn(projectKey).map(rowOf);
 		if (projectKey === "hub-test-env") return testRunRaw.filter((raw) => servedTier(raw) === tier).map(rowOf);
 		return projectSessionsRaw(sessionsList, projectKey)
 			.filter((raw) => servedTier(raw) === tier)
