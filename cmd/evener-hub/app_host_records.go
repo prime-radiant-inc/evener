@@ -599,6 +599,12 @@ func (s hostBootstrapStore) PersistAttemptFence(host string, epoch hostfence.Epo
 		return hostfence.Provisioning{}, err
 	}
 	return s.m.persistProvisioning(host, func(p hostfence.Provisioning) (hostfence.Provisioning, error) {
+		if p.AttemptFenced {
+			// The conditional write: another attempt already owns the fence, so
+			// this one is returned unchanged — its epoch is what §6:139's recovery
+			// must name — and persistProvisioning writes nothing for it.
+			return p, nil
+		}
 		p.AttemptFenced = true
 		p.AttemptEpoch = epoch
 		return p, nil
@@ -642,9 +648,17 @@ func (m *hubHostManager) persistProvisioning(host string, mutate func(hostfence.
 	if !live {
 		return hostfence.Provisioning{}, fmt.Errorf("host %q is not a live host, so no bootstrap record was written", host)
 	}
-	next, err := mutate(m.cfg.store.provisioningFor(host))
+	current := m.cfg.store.provisioningFor(host)
+	next, err := mutate(current)
 	if err != nil {
 		return hostfence.Provisioning{}, err
+	}
+	if next == current {
+		// A conditional write that found the record already in the requested
+		// state (another attempt owns the fence) writes nothing: the read and the
+		// comparison ran under the mutation lock, so the compare-and-set is
+		// atomic and a lost race leaves hub.toml byte-identical.
+		return next, nil
 	}
 	if err := m.persistHosts(entries, entries, hostPersistChange{
 		provisioning: &pendingHostProvisioning{Name: host, Provisioning: next},

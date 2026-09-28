@@ -1,6 +1,7 @@
 package hub
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -512,5 +513,35 @@ func TestHostBootstrapPersistsTheAttemptEpoch(t *testing.T) {
 	if record.BootstrapEpochBoot != epoch.BootID || record.BootstrapEpochOpSeq != epoch.OpSeq {
 		t.Fatalf("the epoch after an unrelated rewrite = (%q, %d), want (%q, %d)",
 			record.BootstrapEpochBoot, record.BootstrapEpochOpSeq, epoch.BootID, epoch.OpSeq)
+	}
+}
+
+// TestHostBootstrapFenceWriteIsConditional pins the compare-and-set at the real
+// record: a second attempt's fence write returns the first owner's record
+// unchanged and leaves hub.toml byte-identical, so two concurrent first-contacts
+// cannot both deliver and the fence owner's epoch survives.
+func TestHostBootstrapFenceWriteIsConditional(t *testing.T) {
+	f := newBootstrapFixture(t)
+	store := f.m.bootstrapStore()
+	owner := hostfence.Epoch{BootID: "boot-a", OpSeq: 5}
+	if _, err := store.PersistAttemptFence("alpha", owner); err != nil {
+		t.Fatalf("first PersistAttemptFence: %v", err)
+	}
+	before := readHostFileBytes(t, f.path)
+
+	delayed, err := store.PersistAttemptFence("alpha", hostfence.Epoch{BootID: "boot-b", OpSeq: 9})
+	if err != nil {
+		t.Fatalf("second PersistAttemptFence: %v", err)
+	}
+	if delayed.AttemptEpoch != owner {
+		t.Fatalf("the delayed fence write returned %+v, want the first owner's %+v", delayed.AttemptEpoch, owner)
+	}
+	if after := readHostFileBytes(t, f.path); !bytes.Equal(before, after) {
+		t.Fatalf("the delayed fence write rewrote hub.toml on a lost race:\nbefore:\n%s\nafter:\n%s", before, after)
+	}
+	record := liveRecord(t, f.path, "alpha")
+	if record.BootstrapEpochBoot != owner.BootID || record.BootstrapEpochOpSeq != owner.OpSeq {
+		t.Fatalf("host_records[alpha] epoch = (%q, %d), want the owner's (%q, %d)",
+			record.BootstrapEpochBoot, record.BootstrapEpochOpSeq, owner.BootID, owner.OpSeq)
 	}
 }

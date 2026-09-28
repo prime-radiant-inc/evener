@@ -95,8 +95,12 @@ type BootstrapStore interface {
 	Provisioning(host string) (Provisioning, error)
 	// PersistAttemptFence writes the durable bootstrap-attempt fence with the
 	// attempt's epoch in its own atomic hub.toml write, before the attempt's
-	// first remote side effect. A record returned without the fence is refused
-	// by the caller, never delivered behind.
+	// first remote side effect. The write is conditional and atomic: a record
+	// that already carries a fence is returned unchanged — the record still
+	// carries that first attempt's fenced epoch — never overwritten by a later
+	// attempt, so two concurrent first-contacts cannot both deliver. A record
+	// returned without the fence is refused by the caller, never delivered
+	// behind.
 	PersistAttemptFence(host string, epoch Epoch) (Provisioning, error)
 	// FinalizeBootstrap converges helperInstalled with the delivered version in
 	// the same atomic hub.toml write that finalizes bootstrap (§6:137). A
@@ -197,6 +201,10 @@ func (k BootstrapKind) String() string {
 type BootstrapOutcome struct {
 	Kind         BootstrapKind
 	Provisioning Provisioning
+	// ReleaseErr is the held claim's release failure, when one happened: the
+	// host-side claim may still be held, so a caller must not treat the attempt
+	// as clean. Nil on a clean release and when no claim was held.
+	ReleaseErr error
 }
 
 // BootstrapRequest is one first-contact attempt: the host, the epoch it runs
@@ -227,6 +235,10 @@ type BootstrapRequest struct {
 	// ("attempt", "claim", "deliver", "verify", "finalize"): the ordering
 	// evidence the crash-window tests pin.
 	Order func(step string)
+	// Logf, when set, receives diagnostics that must not change the outcome —
+	// today the held claim's release failure. BootstrapOutcome.ReleaseErr always
+	// carries it; this sink is for a caller's own log.
+	Logf func(format string, args ...any)
 }
 
 // AttemptOrphanError reports §6:139's live crashed-attempt process: a
@@ -268,7 +280,7 @@ func (e *AttemptOrphanError) Error() string {
 // Nothing here auto-installs out of band, migrates in band, or degrades the
 // exemption to an overwrite. Every refusal the helper gate owns is typed; the
 // caller maps it onto §8's conflict-class envelope.
-func Bootstrap(ctx context.Context, req BootstrapRequest) (BootstrapOutcome, error) {
+func Bootstrap(ctx context.Context, req BootstrapRequest) (outcome BootstrapOutcome, err error) {
 	if req.Store == nil {
 		return BootstrapOutcome{}, errors.New("hostfence: bootstrap needs the record store for the attempt fence")
 	}
@@ -323,6 +335,13 @@ func Bootstrap(ctx context.Context, req BootstrapRequest) (BootstrapOutcome, err
 		// fence write: replay as provisioned rather than delivering a second time.
 		return BootstrapOutcome{Kind: BootstrapProvisioned, Provisioning: fenced}, nil
 	}
+	if fenced.AttemptEpoch != req.Epoch {
+		// The fence write is conditional: the record already carried another
+		// attempt's fence, so this attempt does not own it. It must never deliver
+		// a second time — the first attempt's remote work may be running — and it
+		// takes the recovery path naming the owning attempt's epoch.
+		return recoverFencedAttempt(ctx, req, fenced)
+	}
 
 	// §6:135 — delivery is permitted only through the atomic claim-plus-quiesce.
 	if req.Quiesce == nil {
@@ -339,6 +358,29 @@ func Bootstrap(ctx context.Context, req BootstrapRequest) (BootstrapOutcome, err
 		}
 		return BootstrapOutcome{}, helperAbsentRefusal(req.Host, "the host's atomic claim-plus-quiesce primitive failed: "+err.Error())
 	}
+	if claim != nil {
+		// The claim is held from here on — including on the non-bare refusal just
+		// below — and released on every exit (a crash drops it with the process).
+		// A release failure is surfaced, never silently dropped: the host-side
+		// claim may still be held.
+		defer func() {
+			if releaseErr := claim.Release(context.WithoutCancel(ctx)); releaseErr != nil {
+				outcome.ReleaseErr = releaseErr
+				if req.Logf != nil {
+					req.Logf("bootstrap: releasing the claim for host %q failed: %v", req.Host, releaseErr)
+				}
+				// A claim that could not be released is still held: surface it on
+				// the returned error whether or not the step itself also failed,
+				// so a silently held claim is impossible.
+				if err == nil {
+					err = releaseErr
+				} else {
+					err = errors.Join(err, releaseErr)
+				}
+			}
+			step("release")
+		}()
+	}
 	if !report.Bare() {
 		return BootstrapOutcome{}, helperAbsentRefusal(req.Host, describeClaim(report))
 	}
@@ -349,14 +391,6 @@ func Bootstrap(ctx context.Context, req BootstrapRequest) (BootstrapOutcome, err
 		return BootstrapOutcome{}, helperAbsentRefusal(req.Host,
 			"the host's claim-plus-quiesce primitive returned no held claim, so the delivery could not run under one")
 	}
-	// The claim is held across the delivery, the self-test, and the finalize, and
-	// released on every exit (including a crash, which drops it with the process).
-	defer func() {
-		if releaseErr := claim.Release(context.WithoutCancel(ctx)); releaseErr != nil && req.Order != nil {
-			req.Order("release-failed")
-		}
-		step("release")
-	}()
 
 	// The one exempt delivery step: ship the deployed payload with the helper
 	// bytes inside (§6:131), unfenced but under the won claim.
@@ -416,7 +450,7 @@ func recoverFencedAttempt(ctx context.Context, req BootstrapRequest, record Prov
 	}
 	if live {
 		return BootstrapOutcome{}, &AttemptOrphanError{
-			Host: req.Host, Epoch: req.Epoch,
+			Host: req.Host, Epoch: attempt,
 			Detail: "a bootstrapped process from the crashed attempt is live",
 		}
 	}

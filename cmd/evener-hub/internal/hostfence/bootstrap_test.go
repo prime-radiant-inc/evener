@@ -3,6 +3,7 @@ package hostfence
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -27,13 +28,28 @@ type scriptedStore struct {
 	// racingFinalize makes PersistAttemptFence land a concurrent finalize's
 	// converged record: the retry window §6:139 closes under dedup.
 	racingFinalize bool
+	// foreignFence, when set, is another attempt's fence the conditional write
+	// returns instead of the caller's: the interleaving where a delayed attempt's
+	// write finds the fence already owned.
+	foreignFence *Provisioning
 }
 
 func (s *scriptedStore) Provisioning(string) (Provisioning, error) { return s.record, nil }
 
+// PersistAttemptFence mirrors the real store's conditional write: a record that
+// already carries a fence is returned unchanged, never overwritten. foreignFence,
+// when set, is the interleaving where a delayed attempt's write finds another
+// attempt's fence already landed.
 func (s *scriptedStore) PersistAttemptFence(_ string, epoch Epoch) (Provisioning, error) {
 	if s.persistErr != nil {
 		return Provisioning{}, s.persistErr
+	}
+	if s.foreignFence != nil {
+		s.record = *s.foreignFence
+		return s.record, nil
+	}
+	if s.record.AttemptFenced {
+		return s.record, nil
 	}
 	s.writes = append(s.writes, "attempt")
 	s.record.AttemptFenced = true
@@ -58,12 +74,16 @@ func (s *scriptedStore) FinalizeBootstrap(_ string, version uint64) (Provisionin
 	return s.record, nil
 }
 
-// scriptedClaim is a held claim that records its release.
-type scriptedClaim struct{ released int }
+// scriptedClaim is a held claim that records its release and, when err is set,
+// fails it.
+type scriptedClaim struct {
+	released int
+	err      error
+}
 
 func (c *scriptedClaim) Release(context.Context) error {
 	c.released++
-	return nil
+	return c.err
 }
 
 // scriptedQuiesce is the claim-plus-quiesce primitive's scripted answer. claim,
@@ -664,5 +684,123 @@ func TestBootstrapRecoveryRefusesAnUnidentifiableAttempt(t *testing.T) {
 	}
 	if probe.calls != 0 {
 		t.Fatalf("recovery probes = %d, want 0 for an unidentifiable attempt", probe.calls)
+	}
+}
+
+// TestBootstrapDoesNotDeliverWhenAnotherAttemptOwnsTheFence pins the
+// compare-and-set fence: a delayed attempt whose conditional write finds
+// another attempt's fence must neither clobber it nor deliver a second time; it
+// takes the recovery path naming the fence owner's epoch.
+func TestBootstrapDoesNotDeliverWhenAnotherAttemptOwnsTheFence(t *testing.T) {
+	owner := Provisioning{AttemptFenced: true, AttemptEpoch: Epoch{BootID: "boot-a", OpSeq: 5}}
+	store := &scriptedStore{foreignFence: &owner}
+	runner := &scriptedRunner{}
+	quiesce := &scriptedQuiesce{report: bareClaim()}
+	probe := &scriptedProbe{}
+	outcome, err := Bootstrap(context.Background(), BootstrapRequest{
+		Host: "h1", Epoch: Epoch{BootID: "boot-b", OpSeq: 9}, Evidence: eligibleFacts(),
+		Store: store, Runner: runner, Quiesce: quiesce, Probe: probe,
+	})
+	if err != nil || outcome.Kind != BootstrapFenced {
+		t.Fatalf("delayed attempt = (%v, %v), want the fenced recovery path", outcome.Kind, err)
+	}
+	if quiesce.calls != 0 || len(runner.calls) != 0 {
+		t.Fatalf("the delayed attempt delivered again: quiesce=%d runner=%v", quiesce.calls, runner.calls)
+	}
+	if probe.seen != owner.AttemptEpoch {
+		t.Fatalf("recovery probed %+v, want the fence owner's epoch %+v", probe.seen, owner.AttemptEpoch)
+	}
+	if store.record.AttemptEpoch != owner.AttemptEpoch {
+		t.Fatalf("the fence was clobbered to %+v, want the owner's %+v", store.record.AttemptEpoch, owner.AttemptEpoch)
+	}
+}
+
+// TestBootstrapRecoveryNamesThePersistedEpochInTheOrphan pins that a live
+// refusal names the crashed attempt's persisted epoch, not the request's.
+
+func TestBootstrapRecoveryNamesThePersistedEpochInTheOrphan(t *testing.T) {
+	store := &scriptedStore{}
+	crashed := Epoch{BootID: "boot-old", OpSeq: 7}
+	if _, err := Bootstrap(context.Background(), BootstrapRequest{
+		Host: "h1", Epoch: crashed, Evidence: eligibleFacts(),
+		Store: store, Runner: &scriptedRunner{}, Quiesce: &scriptedQuiesce{err: errors.New("crash")},
+	}); err == nil {
+		t.Fatal("Bootstrap = nil error, want the crashed claim")
+	}
+	probe := &scriptedProbe{live: true}
+	_, err := Bootstrap(context.Background(), BootstrapRequest{
+		Host: "h1", Epoch: Epoch{BootID: "boot-new", OpSeq: 3},
+		Store: store, Runner: &scriptedRunner{}, Probe: probe,
+	})
+	orphan, ok := errors.AsType[*AttemptOrphanError](err)
+	if !ok {
+		t.Fatalf("err = %v, want an AttemptOrphanError", err)
+	}
+	if orphan.Epoch != crashed {
+		t.Fatalf("orphan epoch = %+v, want the persisted crashed attempt %+v", orphan.Epoch, crashed)
+	}
+}
+
+// TestBootstrapReleasesTheClaimOnANonBareRefusal pins that a won claim is given
+// back when foreign presence refuses the delivery: the refusal must not leak the
+// hold it took.
+func TestBootstrapReleasesTheClaimOnANonBareRefusal(t *testing.T) {
+	store := &scriptedStore{}
+	claim := &scriptedClaim{}
+	runner := &scriptedRunner{}
+	_, err := Bootstrap(context.Background(), BootstrapRequest{
+		Host: "h1", Epoch: bootstrapEpoch(), Evidence: eligibleFacts(),
+		Store: store, Runner: runner,
+		Quiesce: &scriptedQuiesce{report: QuiesceReport{Claimed: true, ForeignProcesses: []string{"hub@h1"}}, claim: claim},
+	})
+	var gate *HelperGateError
+	if !errors.As(err, &gate) || gate.Discriminator != DiscriminatorHelperAbsent {
+		t.Fatalf("err = %v, want a typed %s refusal", err, DiscriminatorHelperAbsent)
+	}
+	if claim.released != 1 {
+		t.Fatalf("the won claim was released %d times on a non-bare refusal, want exactly 1", claim.released)
+	}
+	if len(runner.calls) != 0 {
+		t.Fatalf("remote calls = %v, want none", runner.calls)
+	}
+}
+
+// TestBootstrapSurfacesAReleaseFailure pins that a claim that could not be
+// released is never silent: it reaches the caller on an otherwise successful
+// path, is joined with a primary failure, and goes to the log sink.
+func TestBootstrapSurfacesAReleaseFailure(t *testing.T) {
+	// (a) the delivery succeeded, but the release failed.
+	claim := &scriptedClaim{err: errors.New("release failed")}
+	var logs []string
+	outcome, err := Bootstrap(context.Background(), BootstrapRequest{
+		Host: "h1", Epoch: bootstrapEpoch(), Evidence: eligibleFacts(),
+		Store: &scriptedStore{}, Runner: versionRunner(), Quiesce: &scriptedQuiesce{report: bareClaim(), claim: claim},
+		Logf: func(format string, args ...any) { logs = append(logs, fmt.Sprintf(format, args...)) },
+	})
+	if err == nil || !strings.Contains(err.Error(), "release failed") {
+		t.Fatalf("err = %v, want the release failure surfaced", err)
+	}
+	if outcome.Kind != BootstrapDelivered {
+		t.Fatalf("outcome kind = %v, want BootstrapDelivered", outcome.Kind)
+	}
+	if outcome.ReleaseErr == nil {
+		t.Fatal("outcome.ReleaseErr = nil, want the release failure")
+	}
+	if len(logs) == 0 {
+		t.Fatal("the release failure did not reach the log sink")
+	}
+
+	// (b) a primary failure plus a release failure: both stay visible, and the
+	// primary gate refusal stays matchable.
+	claim2 := &scriptedClaim{err: errors.New("release failed again")}
+	_, err = Bootstrap(context.Background(), BootstrapRequest{
+		Host: "h1", Epoch: bootstrapEpoch(), Evidence: eligibleFacts(),
+		Store: &scriptedStore{}, Runner: &scriptedRunner{}, Quiesce: &scriptedQuiesce{report: bareClaim(), claim: claim2},
+	})
+	if err == nil || !strings.Contains(err.Error(), "release failed again") {
+		t.Fatalf("err = %v, want the release failure joined with the primary failure", err)
+	}
+	if _, ok := errors.AsType[*HelperGateError](err); !ok {
+		t.Fatalf("err = %v, want the primary gate refusal still matchable", err)
 	}
 }
