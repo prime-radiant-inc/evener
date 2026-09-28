@@ -430,12 +430,16 @@ export function createTranscriptDisplayStore(deps: TranscriptDisplayStoreDeps): 
   const setState: FrameworkFreeStore<TranscriptDisplayStoreState>["setState"] = (partial) => {
     const next = typeof partial === "function" ? partial(getState()) : partial;
     if (!Object.hasOwn(next, "hub")) {
-      publishState(partial);
+      // Forward the resolved partial rather than the updater: the base store
+      // invokes a function-form updater exactly once, and we already did.
+      publishState(next);
       return;
     }
     const previous = getState().hub;
     const changedLayouts = LAYOUTS.filter((layout) => previous[layout] !== next.hub?.[layout]);
-    publishState({ ...next, changedLayouts });
+    // A hub publication that moved no entry keeps the previous array's
+    // identity, so an identity-checking consumer does not wake with no work.
+    publishState(changedLayouts.length === 0 ? next : { ...next, changedLayouts });
   };
 
   function isSupported(): boolean {

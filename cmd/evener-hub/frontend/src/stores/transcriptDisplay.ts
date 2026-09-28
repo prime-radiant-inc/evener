@@ -222,7 +222,7 @@ function mirrorPackageState(store: TranscriptDisplayStore, next: PackageStoreSta
   // adapter routes from that fact instead of identity-diffing `hub` between
   // the two states.
   if (next.changedLayouts !== previous.changedLayouts) {
-    for (const layout of next.changedLayouts) {
+    for (const layout of next.changedLayouts ?? []) {
       if (epoch !== storeEpoch) return;
       applyMirroredHubDefault(layout, store.getState().hub[layout]);
     }

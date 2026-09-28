@@ -200,6 +200,36 @@ describe("hub defaults", () => {
     expect(claimed).toEqual([["desktop", "mobile"], ["mobile"]]);
   });
 
+  test("a cleared hub names the layouts it cleared", async () => {
+    const store = await readyStore(serving(hubDefault(3, desktopConfig), hubDefault(2, mobileConfig)));
+    const claimed: string[][] = [];
+    store.subscribe((state, previous) => {
+      if (state.changedLayouts !== previous.changedLayouts) claimed.push([...state.changedLayouts]);
+    });
+    store.detachHub();
+    expect(store.getState().hub).toEqual({});
+    expect(claimed).toEqual([["desktop", "mobile"]]);
+
+    const resetStore = await readyStore(serving(hubDefault(3, desktopConfig), hubDefault(2, mobileConfig)));
+    const resetClaimed: string[][] = [];
+    resetStore.subscribe((state, previous) => {
+      if (state.changedLayouts !== previous.changedLayouts) resetClaimed.push([...state.changedLayouts]);
+    });
+    resetStore.reset();
+    expect(resetStore.getState().hub).toEqual({});
+    expect(resetClaimed).toEqual([["desktop", "mobile"]]);
+  });
+
+  test("a function-form update runs its updater exactly once", () => {
+    const store = createTranscriptDisplayStore({ client: new FakeClient("ready") });
+    let calls = 0;
+    store.setState((state) => {
+      calls += 1;
+      return { hubError: state.hubError };
+    });
+    expect(calls).toBe(1);
+  });
+
   test("a GET reply with extra top-level keys still decodes", async () => {
     const client = new FakeClient("ready");
     client.on(getMethod, () => ({
