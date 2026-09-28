@@ -145,7 +145,9 @@ func liveSearchResult(cfg hubcore.WebConfig, le hubcore.LiveEntry, decisions map
 		if pe, ok := cfg.Past.Find(le.SessionID); ok {
 			lastActivity = hubcore.OrderUpdatedAt(pe.Meta.UpdatedAt, pe.Meta.CreatedAt)
 			if archiveEntry.Project.ID == "" {
-				archiveEntry.Project.ID = filepath.Base(pe.StateDir)
+				if id, ok := stateDirProjectID(pe.StateDir); ok {
+					archiveEntry.Project.ID = id
+				}
 			}
 		}
 	}
@@ -163,15 +165,19 @@ func liveSearchResult(cfg hubcore.WebConfig, le hubcore.LiveEntry, decisions map
 }
 
 func pastSearchResult(e hubcore.PastEntry, decisions map[hubcore.ArchiveKey]bool, now time.Time) appwire.SearchResult {
+	// A past entry's state directory is named by its project's ID, but only
+	// when that basename is well formed: the navigation tree skips a
+	// malformed one, so search skips the project decision too rather than
+	// applying one the tree would not (#2775).
+	projectID, _ := stateDirProjectID(e.StateDir)
 	return appwire.SearchResult{
-		ID:      e.Meta.ID,
-		Title:   searchPastTitle(e),
-		State:   "ended",
-		Project: filepath.Base(e.Meta.EnvInfo.WorkingDir),
-		Age:     hubcore.AgeString(e.Meta.UpdatedAt),
-		Ref:     hubRefFromTreeNodeID(e.Meta.ID).String(),
-		// A past entry's state directory is named by its project's ID.
-		Archived: hubcore.SessionArchived(decisions, e.Meta.ID, filepath.Base(e.StateDir), "", hubcore.OrderUpdatedAt(e.Meta.UpdatedAt, e.Meta.CreatedAt), now),
+		ID:       e.Meta.ID,
+		Title:    searchPastTitle(e),
+		State:    "ended",
+		Project:  filepath.Base(e.Meta.EnvInfo.WorkingDir),
+		Age:      hubcore.AgeString(e.Meta.UpdatedAt),
+		Ref:      hubRefFromTreeNodeID(e.Meta.ID).String(),
+		Archived: hubcore.SessionArchived(decisions, e.Meta.ID, projectID, "", hubcore.OrderUpdatedAt(e.Meta.UpdatedAt, e.Meta.CreatedAt), now),
 	}
 }
 
