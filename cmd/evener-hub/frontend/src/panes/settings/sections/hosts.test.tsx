@@ -1,4 +1,10 @@
-import { type HostPlan, type HostRow, RequestTimeoutError, WireError } from "@evener/appwire-client";
+import {
+  type HostPlan,
+  type HostRow,
+  type OperationRecord,
+  RequestTimeoutError,
+  WireError,
+} from "@evener/appwire-client";
 import { FakeClient, gateSettlements } from "@evener/appwire-client/testing/fakeClient";
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -7,7 +13,7 @@ import { connectionStore } from "../../../stores/connection";
 import { hostOpsStore } from "../../../stores/hostOps";
 import { hostsStore } from "../../../stores/hosts";
 import { enterText } from "../../../textEntryTestUtils";
-import { HOST_POLL_MS, HostsSection } from "./hosts";
+import { HOST_POLL_MS, HostsSection, OPERATION_POLL_MS } from "./hosts";
 
 function row(overrides: Partial<HostRow> & Pick<HostRow, "name">): HostRow {
   return {
@@ -896,4 +902,177 @@ test("a surfaced restart stale-entry names the operation, not a plan", async () 
   await waitFor(() =>
     expect(within(dialog).getByText(/The host changed since this operation was prepared\./)).toBeTruthy(),
   );
+});
+
+// --- S15: operations polling, progress/terminal render, replay ---------------
+
+// operationRecord is one `evener/host/operations` record (deploy-pipeline spec
+// 08b §10).
+function operationRecord(overrides: Partial<OperationRecord> = {}): OperationRecord {
+  return {
+    id: "op-1",
+    clientOperationId: "client-op-1",
+    host: "beta",
+    generation: 1,
+    incarnationId: "inc-1",
+    kind: "deploy",
+    state: "running",
+    progress: [],
+    createdAt: "2026-09-28T08:00:00Z",
+    updatedAt: "2026-09-28T08:00:05Z",
+    hostRemoved: false,
+    ...overrides,
+  };
+}
+
+// startDeploy drives one Deploy dialog to a started operation, the row the
+// operations poll then tracks.
+async function startDeploy(fake: FakeClient): Promise<{ betaRow: HTMLElement; view: ReturnType<typeof render> }> {
+  fake.on("evener/host/list", () => ({ hosts: [row({ name: "beta", address: "b.example" })] }));
+  fake.on("evener/host/plan", () => ({ outcome: "planned", plan: planFixture(), token: "tok-1" }));
+  fake.on("evener/host/deploy", () => ({ id: "op-1", clientOperationId: "client-op-1", state: "pending" }));
+  const view = render(<HostsSection sectionId="hosts" />);
+  const betaRow = (await screen.findByText("beta")).closest("li")!;
+  fireEvent.click(within(betaRow).getByRole("button", { name: "Deploy" }));
+  const dialog = await screen.findByRole("dialog", { name: "Deploy beta" });
+  await waitFor(() => expect(within(dialog).getByText("/srv/evener/evener")).toBeTruthy());
+  fireEvent.click(within(dialog).getByRole("button", { name: "Deploy" }));
+  await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+  return { betaRow, view };
+}
+
+const operationReads = (fake: FakeClient): number =>
+  fake.calls.filter((call) => call.method === "evener/host/operations").length;
+
+test("an operation's progress renders on its host row, then its failure renders verbatim", async () => {
+  vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+  try {
+    const fake = connectFakeClient();
+    let record = operationRecord({
+      state: "running",
+      progress: [{ ts: "2026-09-28T08:00:05Z", message: "pushing evener to /srv/evener/evener" }],
+    });
+    fake.on("evener/host/operations", () => ({ operations: [record] }));
+    const { betaRow } = await startDeploy(fake);
+
+    // The pane's mounted poll reads the started operation and renders its
+    // progress on the operation's own row (registry spec 08 §13).
+    await act(() => vi.advanceTimersByTimeAsync(OPERATION_POLL_MS));
+    await waitFor(() => expect(within(betaRow).getByText("pushing evener to /srv/evener/evener")).toBeTruthy());
+    expect(within(betaRow).getByText("Deploying…")).toBeTruthy();
+
+    // The operation fails with the worker's 04b error: the row surfaces it
+    // VERBATIM — never a rewritten or generic message.
+    const verbatim = "deploy failed: the remote evener service exited with status 1 after the swap";
+    record = operationRecord({ state: "failed", result: { ok: false, message: verbatim } });
+    await act(() => vi.advanceTimersByTimeAsync(OPERATION_POLL_MS));
+    await waitFor(() => expect(within(betaRow).getByText(verbatim)).toBeTruthy());
+    expect(within(betaRow).getByText("Deploy failed")).toBeTruthy();
+    expect(within(betaRow).queryByText("Deploying…")).toBeNull();
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+test("a replayed operation renders its past terminal outcome, never a fresh Deploying row", async () => {
+  vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+  try {
+    const fake = connectFakeClient();
+    fake.on("evener/host/list", () => ({ hosts: [row({ name: "beta", address: "b.example" })] }));
+    fake.on("evener/host/plan", () => ({ outcome: "planned", plan: planFixture(), token: "tok-1" }));
+    // The dedup hit answers the existing record (08b §10): the retry reuses the
+    // client operation ID and the hub returns this operation, not a new one.
+    fake.on("evener/host/deploy", () => ({ id: "op-1", clientOperationId: "client-op-1", state: "failed" }));
+    const verbatim = "deploy failed: the remote service did not come back healthy";
+    // A tombstoned replay (S6's `compacted` marker) carries the retained result.
+    fake.on("evener/host/operations", () => ({
+      operations: [
+        {
+          ...operationRecord({ state: "failed", result: { ok: false, message: verbatim } }),
+          compacted: true,
+        } as unknown as OperationRecord,
+      ],
+    }));
+    render(<HostsSection sectionId="hosts" />);
+    const betaRow = (await screen.findByText("beta")).closest("li")!;
+    fireEvent.click(within(betaRow).getByRole("button", { name: "Deploy" }));
+    const dialog = await screen.findByRole("dialog", { name: "Deploy beta" });
+    await waitFor(() => expect(within(dialog).getByText("/srv/evener/evener")).toBeTruthy());
+    fireEvent.click(within(dialog).getByRole("button", { name: "Deploy" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+
+    // The terminal seed is read once for its retained body: the row renders the
+    // past outcome, marked as the compacted replay — not a running operation.
+    await act(() => vi.advanceTimersByTimeAsync(OPERATION_POLL_MS));
+    await waitFor(() => expect(within(betaRow).getByText(verbatim)).toBeTruthy());
+    expect(within(betaRow).getByText("Deploy failed")).toBeTruthy();
+    expect(within(betaRow).getByText(/replayed from a compacted operation/)).toBeTruthy();
+    expect(within(betaRow).queryByText("Deploying…")).toBeNull();
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+test("the mounted poll stops reading once the record is terminal", async () => {
+  vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+  try {
+    const fake = connectFakeClient();
+    fake.on("evener/host/operations", () => ({
+      operations: [operationRecord({ state: "complete", result: { ok: true, message: "deployed 1.5.0" } })],
+    }));
+    const { betaRow } = await startDeploy(fake);
+
+    await act(() => vi.advanceTimersByTimeAsync(OPERATION_POLL_MS));
+    await waitFor(() => expect(within(betaRow).getByText("Deploy complete")).toBeTruthy());
+    const reads = operationReads(fake);
+    expect(reads).toBe(1);
+
+    // A terminal record ends the loop: further ticks issue no reads.
+    await act(() => vi.advanceTimersByTimeAsync(OPERATION_POLL_MS * 3));
+    expect(operationReads(fake)).toBe(reads);
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+test("unmounting the section stops the operation poll", async () => {
+  vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+  try {
+    const fake = connectFakeClient();
+    fake.on("evener/host/operations", () => ({
+      operations: [operationRecord({ state: "running", progress: [{ ts: "t", message: "installing" }] })],
+    }));
+    const { view } = await startDeploy(fake);
+    await act(() => vi.advanceTimersByTimeAsync(OPERATION_POLL_MS));
+    await waitFor(() => expect(screen.getByText("installing")).toBeTruthy());
+
+    const reads = operationReads(fake);
+    view.unmount();
+    await act(() => vi.advanceTimersByTimeAsync(OPERATION_POLL_MS * 3));
+    expect(operationReads(fake)).toBe(reads);
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+test("a stopped read renders a visible progress state on the row, never a silent stall", async () => {
+  vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+  try {
+    const fake = connectFakeClient();
+    fake.on("evener/host/operations", () => ({
+      operations: [operationRecord({ state: "running", progress: [{ ts: "t", message: "installing" }] })],
+    }));
+    const { betaRow } = await startDeploy(fake);
+    await act(() => vi.advanceTimersByTimeAsync(OPERATION_POLL_MS));
+    await waitFor(() => expect(within(betaRow).getByText("installing")).toBeTruthy());
+
+    // The connection drops: the last-known progress stays, and the row says the
+    // updates stopped instead of pretending the operation is still reporting.
+    connectionStore.setState({ client: null });
+    await act(() => vi.advanceTimersByTimeAsync(OPERATION_POLL_MS));
+    await waitFor(() => expect(within(betaRow).getByText(/Progress updates stopped/)).toBeTruthy());
+    expect(within(betaRow).getByText("installing")).toBeTruthy();
+  } finally {
+    vi.useRealTimers();
+  }
 });

@@ -7,15 +7,26 @@
 // Pattern mirrors hosts.test.ts: each test resets the stores and connection in
 // beforeEach, and a FakeClient answers the wire methods.
 
-import { type HostPlan, type HostRow, RequestTimeoutError, WireError } from "@evener/appwire-client";
+import {
+  type HostOperationsResponse,
+  type HostPlan,
+  type HostRow,
+  type OperationRecord,
+  RequestTimeoutError,
+  WireError,
+} from "@evener/appwire-client";
 import { FakeClient, gateSettlements } from "@evener/appwire-client/testing/fakeClient";
-import { beforeEach, describe, expect, test } from "vitest";
+import { beforeEach, describe, expect, test, vi } from "vitest";
 import { connectionStore } from "./connection";
 import {
   deployRefusalAction,
+  type HostOperationRef,
+  hostOperationView,
   hostOpRefusal,
   hostOpRefusalBlocksRetry,
   hostOpsStore,
+  operationNeedsRead,
+  operationStateSettled,
   planNoTokenAction,
   planRefusalAction,
   restartRefusalAction,
@@ -341,6 +352,8 @@ describe("deploy", () => {
     expect(hostOpsStore.getState().operations.beta).toEqual({
       id: "op-1",
       clientOperationId: "client-op-1",
+      kind: "deploy",
+      progress: [],
       state: "pending",
     });
   });
@@ -400,6 +413,8 @@ describe("deploy", () => {
     expect(hostOpsStore.getState().operations.beta).toEqual({
       id: "op-keep",
       clientOperationId: "client-op-keep",
+      kind: "deploy",
+      progress: [],
       state: "pending",
     });
   });
@@ -554,6 +569,8 @@ describe("restart", () => {
     expect(hostOpsStore.getState().operations.beta).toEqual({
       id: "op-9",
       clientOperationId: "client-op-9",
+      kind: "restart",
+      progress: [],
       state: "pending",
     });
   });
@@ -911,5 +928,340 @@ describe("restart", () => {
     expect(hostOpsStore.getState().restarts.beta).toBeDefined();
     hostOpsStore.getState().discardRestart("beta");
     expect(hostOpsStore.getState().restarts.beta).toBeUndefined();
+  });
+});
+
+// --- S15: operations polling, progress/terminal render, replay ---------------
+
+// operationRecord is one wire record as `evener/host/operations` answers it
+// (deploy-pipeline spec 08b §10).
+function operationRecord(overrides: Partial<OperationRecord> = {}): OperationRecord {
+  return {
+    id: "op-1",
+    clientOperationId: "client-op-1",
+    host: "beta",
+    generation: 3,
+    incarnationId: "inc-3",
+    kind: "deploy",
+    state: "running",
+    progress: [],
+    createdAt: "2026-09-28T08:00:00Z",
+    updatedAt: "2026-09-28T08:00:05Z",
+    hostRemoved: false,
+    ...overrides,
+  };
+}
+
+// startedDeploy drives one plan -> deploy submission and scripts the
+// operations read the polling then issues.
+async function startedDeploy(fake: FakeClient, operations: () => HostOperationsResponse): Promise<void> {
+  fake.on("evener/host/plan", () => ({ outcome: "planned", plan: plan(), token: "tok-1" }));
+  fake.on("evener/host/deploy", () => ({ id: "op-1", clientOperationId: "client-op-1", state: "pending" }));
+  fake.on("evener/host/operations", operations);
+  await hostOpsStore.getState().plan("beta");
+  await hostOpsStore.getState().deploy("beta");
+}
+
+describe("operations polling (S15)", () => {
+  test("polls the started operation by host name and controller-assigned id", async () => {
+    const fake = connectFakeClient();
+    await startedDeploy(fake, () => ({
+      operations: [
+        operationRecord({ state: "running", progress: [{ ts: "2026-09-28T08:00:05Z", message: "pushing evener" }] }),
+      ],
+    }));
+
+    await hostOpsStore.getState().pollOperation("beta");
+
+    // 08b §10: `id` is the detail filter for the controller-assigned record id,
+    // and `name` pins the page to this host — the narrowest exact read, never a
+    // broad unfiltered page.
+    const read = fake.calls.find((c) => c.method === "evener/host/operations");
+    expect(read?.params).toEqual({ name: "beta", id: "op-1" });
+    const ref = hostOpsStore.getState().operations.beta;
+    if (ref === undefined) throw new Error("unreachable");
+    expect(ref.state).toBe("running");
+    expect(ref.progress).toEqual([{ ts: "2026-09-28T08:00:05Z", message: "pushing evener" }]);
+    expect(ref.fetched).toBe(true);
+    expect(hostOperationView(ref)).toEqual({
+      tone: "attention",
+      label: "Deploying…",
+      line: "pushing evener",
+      replay: null,
+      unavailable: null,
+    });
+  });
+
+  test("a terminal success renders the completed outcome", async () => {
+    const fake = connectFakeClient();
+    await startedDeploy(fake, () => ({
+      operations: [operationRecord({ state: "complete", result: { ok: true, message: "deployed controller-rev-9" } })],
+    }));
+
+    await hostOpsStore.getState().pollOperation("beta");
+
+    const ref = hostOpsStore.getState().operations.beta;
+    if (ref === undefined) throw new Error("unreachable");
+    expect(hostOperationView(ref)).toMatchObject({
+      tone: "alive",
+      label: "Deploy complete",
+      line: "deployed controller-rev-9",
+    });
+  });
+
+  test("a terminal failure renders the record's result message verbatim", async () => {
+    const fake = connectFakeClient();
+    const verbatim = "deploy failed: the remote evener service exited with status 1 after the swap";
+    await startedDeploy(fake, () => ({
+      operations: [operationRecord({ state: "failed", result: { ok: false, message: verbatim } })],
+    }));
+
+    await hostOpsStore.getState().pollOperation("beta");
+
+    const ref = hostOpsStore.getState().operations.beta;
+    if (ref === undefined) throw new Error("unreachable");
+    expect(ref.result).toEqual({ ok: false, message: verbatim });
+    const view = hostOperationView(ref);
+    expect(view.label).toBe("Deploy failed");
+    expect(view.tone).toBe("danger");
+    // Exact equality: §13's verbatim 04b error, never rewritten, prefixed, or
+    // generalised into a generic failure.
+    expect(view.line).toBe(verbatim);
+  });
+
+  test("a terminal read ends the loop: no further reads, and the rows refresh", async () => {
+    const fake = connectFakeClient();
+    fake.on("evener/host/list", () => ({ hosts: [row("beta")] }));
+    await startedDeploy(fake, () => ({
+      operations: [operationRecord({ state: "complete", result: { ok: true, message: "deployed 1.5.0" } })],
+    }));
+
+    await hostOpsStore.getState().pollOperation("beta");
+    await hostOpsStore.getState().pollOperation("beta");
+
+    const reads = () => fake.calls.filter((c) => c.method === "evener/host/operations").length;
+    expect(reads()).toBe(1);
+    const ref = hostOpsStore.getState().operations.beta;
+    if (ref === undefined) throw new Error("unreachable");
+    expect(operationNeedsRead(ref)).toBe(false);
+    // 08b §13 item 1: the worker publishes the verified post-operation facts
+    // before the record reads `complete`; the terminal read refreshes the rows
+    // so the row's version signal is current without waiting for the pane poll.
+    await vi.waitFor(() => expect(fake.calls.filter((c) => c.method === "evener/host/list").length).toBe(1));
+  });
+
+  test("a lost connection is a visible progress state that a good read clears", async () => {
+    const fake = connectFakeClient();
+    await startedDeploy(fake, () => ({
+      operations: [
+        operationRecord({ state: "running", progress: [{ ts: "2026-09-28T08:00:05Z", message: "waiting healthy" }] }),
+      ],
+    }));
+    await hostOpsStore.getState().pollOperation("beta");
+
+    connectionStore.setState({ client: null });
+    await hostOpsStore.getState().pollOperation("beta");
+
+    let ref = hostOpsStore.getState().operations.beta;
+    if (ref === undefined) throw new Error("unreachable");
+    // The last-known state stays rendered; the stopped read is explicit — a
+    // lost connection is never a silent stall.
+    expect(ref.state).toBe("running");
+    expect(ref.readRefusal?.kind).toBe("unknown");
+    expect(hostOperationView(ref).unavailable).toContain("Progress updates stopped");
+    // The loop keeps wanting a read: a transient failure never ends polling.
+    expect(operationNeedsRead(ref)).toBe(true);
+
+    const recovered = new FakeClient("ready");
+    connectionStore.getState().connect(recovered);
+    recovered.on("evener/host/operations", () => ({
+      operations: [operationRecord({ state: "complete", result: { ok: true, message: "deployed 1.5.0" } })],
+    }));
+    await hostOpsStore.getState().pollOperation("beta");
+
+    ref = hostOpsStore.getState().operations.beta;
+    if (ref === undefined) throw new Error("unreachable");
+    expect(ref.readRefusal).toBeUndefined();
+    expect(hostOperationView(ref).unavailable).toBeNull();
+    expect(ref.state).toBe("complete");
+  });
+
+  test("a retry after a lost response reuses the same operation ID and adopts the returned record", async () => {
+    const fake = connectFakeClient();
+    fake.on("evener/host/plan", () => ({ outcome: "planned", plan: plan(), token: "tok-1" }));
+    let deploys = 0;
+    fake.on("evener/host/deploy", () => {
+      deploys += 1;
+      if (deploys === 1) throw new RequestTimeoutError("no response");
+      // The dedup hit answers the existing record (08b §10): same controller id,
+      // the record's actual state — never a fresh operation.
+      return { id: "op-1", clientOperationId: "client-op-1", state: "failed" };
+    });
+    await hostOpsStore.getState().plan("beta");
+    const planned = hostOpsStore.getState().plans.beta;
+    if (planned?.phase !== "planned") throw new Error("unreachable");
+
+    await hostOpsStore.getState().deploy("beta");
+    const afterLostResponse = hostOpsStore.getState().plans.beta;
+    if (afterLostResponse?.phase !== "planned") throw new Error("unreachable");
+    await hostOpsStore.getState().deploy("beta");
+
+    const calls = fake.calls.filter((c) => c.method === "evener/host/deploy");
+    // §13: a retry after a lost response re-submits the SAME client operation ID.
+    expect((calls[0]!.params as { operationId: string }).operationId).toBe(
+      (calls[1]!.params as { operationId: string }).operationId,
+    );
+    // The returned record is what the store tracks, by the id it answered.
+    expect(hostOpsStore.getState().operations.beta?.id).toBe("op-1");
+    expect(hostOpsStore.getState().operations.beta?.state).toBe("failed");
+    expect(deploys).toBe(2);
+  });
+
+  test("a replay past compaction renders the tombstoned terminal outcome, never a fresh operation", async () => {
+    const fake = connectFakeClient();
+    const verbatim = "restart failed: the post-restart probe still reports the old process instance";
+    fake.on("evener/host/plan", () => ({ outcome: "planned", plan: plan(), token: "tok-1" }));
+    fake.on("evener/host/deploy", () => ({ id: "op-1", clientOperationId: "client-op-1", state: "failed" }));
+    // S6's `compacted` marker is not in the generated base types yet
+    // (app_host_ops.go's operationRecordWire leaves it absent until S6 registers
+    // it); the store reads it structurally, so a tombstoned replay renders as
+    // the operation's past outcome the moment the marker lands.
+    const tombstone = {
+      ...operationRecord({ state: "failed", result: { ok: false, message: verbatim } }),
+      compacted: true,
+    } as unknown as OperationRecord;
+    fake.on("evener/host/operations", () => ({ operations: [tombstone] }));
+
+    await hostOpsStore.getState().plan("beta");
+    await hostOpsStore.getState().deploy("beta");
+
+    // The seed is already terminal but carries no body, so the loop still owes
+    // it one read for the retained outcome.
+    const seed = hostOpsStore.getState().operations.beta;
+    if (seed === undefined) throw new Error("unreachable");
+    expect(operationNeedsRead(seed)).toBe(true);
+    await hostOpsStore.getState().pollOperation("beta");
+
+    const ref = hostOpsStore.getState().operations.beta;
+    if (ref === undefined) throw new Error("unreachable");
+    const view = hostOperationView(ref);
+    expect(view.label).toBe("Deploy failed");
+    expect(view.line).toBe(verbatim);
+    expect(view.replay).toContain("compacted");
+    expect(operationNeedsRead(ref)).toBe(false);
+    // Nothing opened a fresh operation.
+    expect(fake.calls.filter((c) => c.method === "evener/host/deploy")).toHaveLength(1);
+  });
+
+  test("a stale-entry read refusal is visible, and polling continues", async () => {
+    const fake = connectFakeClient();
+    await startedDeploy(fake, () => {
+      throw new WireError("the pinned boundary moved", -32013, { evenerErrorInfo: "stale-entry" });
+    });
+
+    await hostOpsStore.getState().pollOperation("beta");
+
+    const ref = hostOpsStore.getState().operations.beta;
+    if (ref === undefined) throw new Error("unreachable");
+    expect(ref.readRefusal?.kind).toBe("stale-entry");
+    expect(hostOperationView(ref).unavailable).toContain("The host changed since this operation was prepared.");
+    expect(operationNeedsRead(ref)).toBe(true);
+  });
+
+  test("a mid-poll cursor-invalidated restarts from one fresh read, not a loop", async () => {
+    const fake = connectFakeClient();
+    let reads = 0;
+    await startedDeploy(fake, () => {
+      reads += 1;
+      if (reads === 1) {
+        throw new WireError("compaction removed the row this cursor resumed after", -32013, {
+          evenerErrorInfo: "cursor-invalidated",
+        });
+      }
+      return { operations: [operationRecord({ state: "complete", result: { ok: true, message: "deployed 1.5.0" } })] };
+    });
+
+    await hostOpsStore.getState().pollOperation("beta");
+
+    // Exactly one immediate fresh read: the invalidated position is dropped,
+    // and a repeating refusal would surface rather than loop.
+    expect(reads).toBe(2);
+    const ref = hostOpsStore.getState().operations.beta;
+    if (ref === undefined) throw new Error("unreachable");
+    expect(ref.state).toBe("complete");
+    expect(ref.readRefusal).toBeUndefined();
+    expect(hostOperationView(ref).line).toBe("deployed 1.5.0");
+  });
+
+  test("a cursor-too-large read refusal renders its concrete headline", async () => {
+    const fake = connectFakeClient();
+    await startedDeploy(fake, () => {
+      throw new WireError("the cursor would be 9100 bytes, over the 8192-byte encoded cap", -32013, {
+        evenerErrorInfo: "cursor-too-large",
+        capBytes: 8192,
+      });
+    });
+
+    await hostOpsStore.getState().pollOperation("beta");
+
+    const ref = hostOpsStore.getState().operations.beta;
+    if (ref === undefined) throw new Error("unreachable");
+    expect(ref.readRefusal?.kind).toBe("cursor-too-large");
+    const unavailable = hostOperationView(ref).unavailable;
+    expect(unavailable).toContain("too large to page through");
+    // The hub's own sentence rides along as the detail.
+    expect(unavailable).toContain("8192-byte encoded cap");
+  });
+
+  test("settled states end the read loop; a terminal seed is still read once for its body", () => {
+    for (const state of ["complete", "failed", "interrupted", "orphan-unverified"]) {
+      expect(operationStateSettled(state)).toBe(true);
+    }
+    for (const state of ["pending", "running"]) {
+      expect(operationStateSettled(state)).toBe(false);
+    }
+    const seed: HostOperationRef = {
+      id: "op-1",
+      clientOperationId: "client-op-1",
+      kind: "deploy",
+      state: "failed",
+      progress: [],
+    };
+    // A seed (deploy/restart's response) carries no result/progress: one read
+    // fills the retained body, then the terminal state ends the loop.
+    expect(operationNeedsRead(seed)).toBe(true);
+    expect(operationNeedsRead({ ...seed, fetched: true })).toBe(false);
+    expect(operationNeedsRead({ ...seed, fetched: true, gone: true })).toBe(false);
+    expect(operationNeedsRead({ ...seed, state: "running" })).toBe(true);
+  });
+
+  test("the view names the operation's kind and state, and never invents a message", () => {
+    const base: HostOperationRef = {
+      id: "op-1",
+      clientOperationId: "client-op-1",
+      kind: "restart",
+      state: "running",
+      progress: [{ ts: "t", message: "reconnecting the channel" }],
+    };
+    expect(hostOperationView(base)).toMatchObject({
+      tone: "attention",
+      label: "Restarting…",
+      line: "reconnecting the channel",
+    });
+    expect(
+      hostOperationView({ ...base, state: "interrupted", result: { ok: false, message: "controller shutdown" } }),
+    ).toMatchObject({ tone: "danger", label: "Restart interrupted", line: "controller shutdown" });
+    // `orphan-unverified` is durable (its affordance is the fencing slice's):
+    // render the state truthfully, nothing more.
+    expect(hostOperationView({ ...base, state: "orphan-unverified" })).toMatchObject({
+      tone: "attention",
+      label: "Restart orphan-unverified",
+      line: null,
+    });
+    // A failure with no result message renders the chip alone rather than a
+    // generic sentence.
+    expect(hostOperationView({ ...base, state: "failed" })).toMatchObject({ label: "Restart failed", line: null });
+    // An unknown future state renders its raw value, never a fabricated success.
+    expect(hostOperationView({ ...base, state: "paused" })).toMatchObject({ tone: "neutral", label: "Restart paused" });
   });
 });
