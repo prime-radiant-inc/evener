@@ -270,7 +270,7 @@ func (s *Service) Login(ctx context.Context, stateDir, instanceName string) (Aut
 	if err := SaveAuth(stateDir, instanceName, record); err != nil {
 		return AuthStatus{}, err
 	}
-	return s.statusFromRecord(record), nil
+	return s.statusFromRecord(stateDir, instanceName, record), nil
 }
 
 // LoginWithDevice runs the OpenAI device-code flow. It is the headless
@@ -340,7 +340,7 @@ func (s *Service) LoginWithDevice(ctx context.Context, stateDir, instanceName st
 		if s.notifyConcurrentLogin != nil {
 			s.notifyConcurrentLogin()
 		}
-		return s.statusFromRecord(record), nil
+		return s.statusFromRecord(stateDir, instanceName, record), nil
 	}
 
 	if pollErr != nil {
@@ -360,7 +360,7 @@ func (s *Service) LoginWithDevice(ctx context.Context, stateDir, instanceName st
 	if err := SaveAuth(stateDir, instanceName, record); err != nil {
 		return AuthStatus{}, err
 	}
-	return s.statusFromRecord(record), nil
+	return s.statusFromRecord(stateDir, instanceName, record), nil
 }
 
 // watchForConcurrentLogin polls the auth state file every
@@ -416,7 +416,7 @@ func (s *Service) Status(stateDir, instanceName string) (AuthStatus, error) {
 	record, err := LoadAuth(stateDir, instanceName)
 	switch {
 	case err == nil:
-		return s.statusFromRecord(record), nil
+		return s.statusFromRecord(stateDir, instanceName, record), nil
 	case errors.Is(err, ErrAuthNotFound):
 		// fall through to env fallback below
 	default:
@@ -484,6 +484,10 @@ func (s *Service) ResolveRuntimeCredentials(ctx context.Context, stateDir, insta
 	})
 	if err != nil {
 		if isPermanentRefreshError(err) {
+			// Note the refusal where status can read it (#2479). Best effort:
+			// the turn fails with ErrLoginRequired either way, and the next
+			// attempt refreshes again rather than trusting the note.
+			_ = RecordRefreshRejection(stateDir, instanceName, record.RefreshToken, s.now())
 			return RuntimeCredentials{}, loginRequiredError(err)
 		}
 		return RuntimeCredentials{}, fmt.Errorf("refresh OpenAI auth: %w", err)
@@ -508,15 +512,14 @@ func (s *Service) ResolveRuntimeCredentials(ctx context.Context, stateDir, insta
 // access token has expired (a non-zero expiry at or before now) and it has no
 // refresh token. An expired access token backed by a refresh token is routine,
 // since ResolveRuntimeCredentials refreshes it on the next use (issue #2468).
-// A refresh token the issuer has permanently rejected still counts as usable
-// here, because nothing records that rejection on the stored record
-// (issue #2479).
+// A refresh token the issuer permanently refused is noted beside the record,
+// not on it, so status also asks RefreshRejected (issue #2479).
 func (r AuthRecord) NeedsLogin(now time.Time) bool {
 	expired := !r.Expiry.IsZero() && !r.Expiry.After(now)
 	return expired && strings.TrimSpace(r.RefreshToken) == ""
 }
 
-func (s *Service) statusFromRecord(record AuthRecord) AuthStatus {
+func (s *Service) statusFromRecord(stateDir, instanceName string, record AuthRecord) AuthStatus {
 	now := s.now()
 	return AuthStatus{
 		SignedIn:     true,
@@ -526,7 +529,7 @@ func (s *Service) statusFromRecord(record AuthRecord) AuthStatus {
 		WorkspaceID:  record.WorkspaceID,
 		Expiry:       record.Expiry,
 		NeedsRefresh: needsRefresh(now, record.Expiry),
-		NeedsLogin:   record.NeedsLogin(now),
+		NeedsLogin:   record.NeedsLogin(now) || RefreshRejected(stateDir, instanceName, record),
 	}
 }
 

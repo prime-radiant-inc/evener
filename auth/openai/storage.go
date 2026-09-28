@@ -138,7 +138,13 @@ func SaveAuth(stateDir, instanceName string, record AuthRecord) error {
 	}
 	data = append(data, '\n')
 
-	return WriteAuthFile(path, data)
+	if err := WriteAuthFile(path, data); err != nil {
+		return err
+	}
+	// A saved record is a login or a refresh that worked, so a refusal noted
+	// for the record it replaced no longer applies (#2479).
+	_ = clearRefreshRejection(stateDir, instanceName)
+	return nil
 }
 
 // WriteAuthFile writes data to path as an auth file, replacing whatever was
@@ -185,6 +191,8 @@ func WriteAuthFile(path string, data []byte) error {
 // (false, nil).
 func DeleteAuth(stateDir, instanceName string) (bool, error) {
 	path := AuthFilePath(stateDir, instanceName)
+	// A signed-out instance has no refresh token for a refusal to be about.
+	_ = clearRefreshRejection(stateDir, instanceName)
 	if err := os.Remove(path); err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return false, nil
