@@ -33,31 +33,35 @@ export function useMarkSeenInFront(
 ): void {
 	const { hubId, ref } = session;
 	const lastTurnEndedAt = conversation?.lastTurnEndedAt;
-	// The turn end each source last marked in this stay in front, or null.
-	const snapshotMarked = useRef<string | null>(null);
-	const rowMarked = useRef<string | null>(null);
-	useEffect(() => {
-		if (!inFront) snapshotMarked.current = null;
-		if (!inFront || !lastTurnEndedAt) return;
-		const key = `${hubId}\u0000${ref}\u0000${lastTurnEndedAt}`;
-		if (snapshotMarked.current === key) return;
-		snapshotMarked.current = key;
+	const snapshotKey = lastTurnEndedAt ? `${hubId}\u0000${ref}\u0000${lastTurnEndedAt}` : undefined;
+	useOncePerStayInFront(inFront, snapshotKey, () => {
+		if (!lastTurnEndedAt) return;
 		// The model's ISO string round-trips the hub's milliseconds exactly.
 		hubSeenMarks(hubId).markSeen(client, [{ ref, seenThrough: Date.parse(lastTurnEndedAt) }]);
-	}, [hubId, ref, inFront, lastTurnEndedAt, client]);
-	useEffect(() => {
-		if (!inFront) rowMarked.current = null;
-		if (!inFront || !fleetRow) return;
-		// The device decides a row without a readable hub turn end by its
-		// updated_at, so that is what a new mark follows for such a row.
-		const key = `${fleetRow.ref}\u0000${hubTime(fleetRow.turn_ended_at) ?? fleetRow.updated_at ?? ""}`;
-		if (rowMarked.current === key) return;
-		// Recorded even when the row already reads seen: an unread marked
-		// elsewhere at this same turn end later is left alone.
-		rowMarked.current = key;
-		if (!seen.isSeen(fleetRow)) seen.markRead(client, [fleetRow]);
-	}, [inFront, fleetRow, seen, client]);
+	});
+	// The device decides a row without a readable hub turn end by its
+	// updated_at, so that is what a new mark follows for such a row.
+	const rowKey = fleetRow && `${ref}\u0000${hubTime(fleetRow.turn_ended_at) ?? fleetRow.updated_at ?? ""}`;
+	// Recorded even when the row already reads seen: an unread marked
+	// elsewhere at this same turn end later is left alone.
+	useOncePerStayInFront(inFront, rowKey, () => {
+		if (fleetRow && !seen.isSeen(fleetRow)) seen.markRead(client, [fleetRow]);
+	});
 	useEffect(() => {
 		if (client) hubSeenMarks(hubId).flush(client);
 	}, [hubId, client]);
+}
+
+/** Runs `mark` once per `key` while in front, and again for the same key on
+ * a new visit to the front; an undefined key marks nothing. The effect runs
+ * on every new `mark`, and the key check is what keeps it to once. */
+function useOncePerStayInFront(inFront: boolean, key: string | undefined, mark: () => void): void {
+	// The key last marked in this stay in front, or null.
+	const marked = useRef<string | null>(null);
+	useEffect(() => {
+		if (!inFront) marked.current = null;
+		if (!inFront || key === undefined || marked.current === key) return;
+		marked.current = key;
+		mark();
+	}, [inFront, key, mark]);
 }
