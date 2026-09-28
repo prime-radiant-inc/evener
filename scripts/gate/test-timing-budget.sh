@@ -9,10 +9,12 @@
 # It measures the SAME surface ROOT_FULL=1 make test proves, reusing
 # gate-surface-lib.sh exactly like `evener dev coverage-floor`: -short on every
 # module except root, the gate's Test/Example filter, and the fuzz-owned name
-# skip. Go durations come from `go test -json`'s per-test Elapsed field, summed
-# per PACKAGE (the import path go test -json already reports — no extra
-# grouping). The frontend has no per-package shape, so its whole vitest run
-# rolls up under the single key "web", read from the vitest JSON reporter.
+# skip. A Go package's duration is its own wall time, read from the package-level
+# terminal event `go test -json` emits for it (the Elapsed field); the per-test
+# and per-subtest Elapsed values feed only the per-test ceiling below, never the
+# per-package number (issue #172). The frontend has no per-package shape, so its
+# whole vitest run rolls up under the single key "web", read from the vitest
+# JSON reporter.
 #
 # Two independent things are checked, both from the same measurement:
 #
@@ -134,12 +136,13 @@ measured="$work/measured.tsv"
 : >"$measured"
 
 # go_test_json_to_tsv PACKAGE_JSON_LOG EXPECTED_PACKAGES_FILE >> measured.tsv
-# — appends one "SUM\t<package>\t<seconds>" line per package (summing only
-# TOP-LEVEL Test/Example results, never subtests, so a parent's elapsed and its
-# subtests' elapsed are not both counted) and one
-# "TEST\t<package>\t<name>\t<seconds>" line per test AND subtest result, which
-# is what the ceiling check needs to catch a slow subtest a top-level-only sum
-# would hide.
+# — appends one "SUM\t<package>\t<seconds>" line per package, the package's own
+# wall time read from its package-level terminal event's Elapsed field, and one
+# "TEST\t<package>\t<name>\t<seconds>" line per test AND subtest result, which is
+# what the ceiling check needs to catch a slow subtest a top-level-only view
+# would hide. (The SUM used to be the sum of top-level Test/Example Elapsed;
+# under t.Parallel that counts overlapping tests additively, so it measured
+# contention as much as work — issue #172.)
 #
 # It also emits one "PKG\t<package>" line per package-level terminal event
 # (pass/fail/skip with no Test field). go test -json emits exactly one such
@@ -155,7 +158,7 @@ go_test_json_to_tsv() {
 	python3 - "$1" "$2" <<'PY'
 import json, sys
 
-sums = {}
+pkg_seconds = {}
 seen = set()
 with open(sys.argv[1]) as fh:
 	for line in fh:
@@ -171,14 +174,19 @@ with open(sys.argv[1]) as fh:
 		pkg = ev.get("Package", "")
 		test = ev.get("Test")
 		if not test:
+			# Package-level terminal event. Its Elapsed is the package's own
+			# wall time — the metric the budget compares (issue #172). A
+			# package with no test files (skip) carries no Elapsed, so it is
+			# seeded at 0 by the PKG row below instead.
 			seen.add(pkg)
 			print(f"PKG\t{pkg}")
+			elapsed = ev.get("Elapsed")
+			if elapsed is not None:
+				pkg_seconds[pkg] = elapsed
 			continue
 		elapsed = ev.get("Elapsed", 0.0)
 		print(f"TEST\t{pkg}\t{test}\t{elapsed}")
-		if "/" not in test:
-			sums[pkg] = sums.get(pkg, 0.0) + elapsed
-for pkg, total in sums.items():
+for pkg, total in pkg_seconds.items():
 	print(f"SUM\t{pkg}\t{total}")
 
 with open(sys.argv[2]) as fh:
