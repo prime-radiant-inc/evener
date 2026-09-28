@@ -34,7 +34,12 @@ export async function createDemoHub(
 	initialMarkdown?: string,
 	fleetOptions?: DemoFleetOptions,
 ) {
-	const demoFleet = fleetOptions ? createDemoFleet(fleetOptions) : null;
+	// One instant the fleet's rows and its sessions' threads both measure
+	// "ago" from, so a row and its thread agree on when it last changed.
+	const startedAt = fleetOptions?.now ?? Date.now();
+	const demoFleet = fleetOptions
+		? createDemoFleet({ ...fleetOptions, now: startedAt })
+		: null;
 	const server = new WebSocketServer({ host: "0.0.0.0", port, path: "/rpc" });
 	await once(server, "listening");
 	const address = server.address();
@@ -98,7 +103,7 @@ export async function createDemoHub(
 	// opening a row reads a real conversation. An empty fleet has none.
 	const fleetThreads =
 		fleetOptions && !fleetOptions.empty
-			? createDemoSessions({ now: fleetOptions.now })
+			? createDemoSessions({ now: startedAt })
 			: [];
 	for (const fleetThread of fleetThreads)
 		threads.set(fleetThread.evener.ref, fleetThread);

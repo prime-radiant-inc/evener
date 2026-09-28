@@ -627,6 +627,37 @@ describe("native demonstration hub's fleet sessions", () => {
 		});
 	});
 
+	it("measures the fleet's rows and its sessions' threads from one clock", async () => {
+		// Every read of the clock moves it a second on, so two clocks would disagree.
+		let clock = Date.parse("2026-09-28T21:00:00.000Z");
+		const now = vi.spyOn(Date, "now").mockImplementation(() => {
+			clock += 1000;
+			return clock;
+		});
+		try {
+			await withHub({}, async (client) => {
+				const ref = refOf("s-pr2138");
+				// The hub has built its fleet; the rest runs on the real clock.
+				now.mockRestore();
+				const live = await client.request("evener/navigation/read", {
+					representationVersion: 2,
+					resource: "section",
+					section: "live",
+				});
+				const { thread } = await client.request("thread/read", { ref, includeTurns: false });
+				// The row's own object in the section's payload, wherever it sits.
+				const found: { updated_at?: string }[] = [];
+				JSON.stringify(live.data, (_key, value) => {
+					if (value?.session_id === thread.sessionId && value?.kind === "session") found.push(value);
+					return value;
+				});
+				expect(found.map((row) => row.updated_at)).toEqual([new Date(thread.updatedAt * 1000).toISOString()]);
+			});
+		} finally {
+			now.mockRestore();
+		}
+	});
+
 	it("clears frame 8's question once you answer it", async () => {
 		await withHub({}, async (client) => {
 			const service = createConversationService(client);
