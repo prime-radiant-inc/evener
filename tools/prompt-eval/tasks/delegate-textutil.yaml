@@ -65,7 +65,7 @@ expect:
     - name: tests pass
       run: go test ./...
     - name: tests unchanged
-      run: git diff --quiet HEAD -- textutil/textutil_test.go
+      run: git diff --quiet $(git rev-list --max-parents=0 HEAD) -- textutil/textutil_test.go
 reference: |
   cat > textutil/reverse.go <<'EOF'
   package textutil

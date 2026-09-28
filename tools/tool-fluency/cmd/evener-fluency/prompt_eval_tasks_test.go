@@ -151,6 +151,63 @@ func TestLoadProbesRefusesAMisspelledField(t *testing.T) {
 	}
 }
 
+// TestAmbiguousExportChecksSurviveACommittedFix: ambiguous-export.yaml's
+// checks must still report correctly when the agent commits its fix, not
+// only when the fix is left sitting uncommitted in the work tree. A check
+// written against HEAD breaks the moment the agent commits: HEAD then IS the
+// fix, so the "export changed" check would wrongly say nothing changed.
+func TestAmbiguousExportChecksSurviveACommittedFix(t *testing.T) {
+	t.Parallel()
+	probe := decodeTaskStrict(t, filepath.Join(promptEvalTasksDir, "ambiguous-export.yaml"))
+	work := filepath.Join(t.TempDir(), "work")
+	if err := materializeFixture(work, probe.Fixture); err != nil {
+		t.Fatal(err)
+	}
+	if ok, detail := runCheck(work, checkSpec{Name: "reference", Run: probe.Reference}, 3*time.Minute); !ok {
+		t.Fatalf("reference solution failed: %s", detail)
+	}
+	// The agent commits its fix, as an agent's own workflow might.
+	fixtureGit(t, work, "add", "-A")
+	fixtureGit(t, work, "commit", "-q", "-m", "agent's commit")
+
+	if failing := failingChecks(work, probe.Expect.Checks); len(failing) > 0 {
+		t.Fatalf("checks %v fail once the agent's fix is committed", failing)
+	}
+}
+
+// TestFirstCommitCheckJudgesACommittedChangeCorrectly: a task's "file
+// changed" check must still see the change when the agent commits it, not
+// only when the change is left uncommitted. A check written against HEAD
+// breaks the moment the agent commits: HEAD then IS the change, so
+// `git diff HEAD` shows nothing and the check wrongly says the file never
+// changed. A check written against the fixture's first commit
+// ($(git rev-list --max-parents=0 HEAD)) stays correct either way, since
+// that commit never moves. This is the fix applied to ambiguous-export.yaml,
+// bugfix-tally.yaml, and delegate-textutil.yaml.
+func TestFirstCommitCheckJudgesACommittedChangeCorrectly(t *testing.T) {
+	t.Parallel()
+	work := filepath.Join(t.TempDir(), "work")
+	if err := materializeFixture(work, fixtureSpec{
+		Git:   true,
+		Files: map[string]string{"export.go": "package export\n\nfunc F() int { return 1 }\n"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	mustWrite(t, filepath.Join(work, "export.go"), "package export\n\nfunc F() int { return 2 }\n")
+	fixtureGit(t, work, "add", "-A")
+	fixtureGit(t, work, "commit", "-q", "-m", "agent's commit")
+
+	firstCommitCheck := checkSpec{Name: "export changed", Run: `! git diff --quiet $(git rev-list --max-parents=0 HEAD) -- export.go`}
+	if ok, detail := runCheck(work, firstCommitCheck, checkTimeout); !ok {
+		t.Errorf("check against the fixture's first commit failed after the agent committed its change: %s", detail)
+	}
+
+	headCheck := checkSpec{Name: "export changed (against HEAD, the bug this replaces)", Run: `! git diff --quiet HEAD -- export.go`}
+	if ok, _ := runCheck(work, headCheck, checkTimeout); ok {
+		t.Error("check against HEAD passed after the agent committed its change; it should wrongly fail here, which is exactly why HEAD was the wrong comparison")
+	}
+}
+
 func failingChecks(workDir string, checks []checkSpec) []string {
 	var names []string
 	for _, c := range checks {
