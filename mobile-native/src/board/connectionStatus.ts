@@ -6,7 +6,7 @@
 import type { ConnectionState } from "@evener/appwire-client";
 import { useEffect, useState } from "react";
 import { useConnection } from "../ConnectionProvider";
-import { compactDuration } from "../session/format";
+import { compactDuration, DURATION_UNIT_MS, durationIn } from "../session/format";
 
 /** How long the connection can be down before the status says so: a blip
  * shorter than this reconnects without a word. */
@@ -15,8 +15,6 @@ export const RECONNECTING_AFTER_MS = 2_000;
  * what's on screen is. */
 export const OFFLINE_AFTER_MS = 30_000;
 const MINUTE = 60_000;
-const HOUR = 60 * MINUTE;
-const DAY = 24 * HOUR;
 /** The status for a close no retry can fix; INCOMPATIBLE_VERSIONS says what
  * it means. */
 export const UPDATE_NEEDED = "Update needed";
@@ -65,9 +63,10 @@ export function nextStatusChange(
 	if (down < RECONNECTING_AFTER_MS) return downSince + RECONNECTING_AFTER_MS;
 	if (down < OFFLINE_AFTER_MS) return downSince + OFFLINE_AFTER_MS;
 	if (lastLiveAt === null) return null;
-	const age = now - lastLiveAt;
-	const unit = age < HOUR ? MINUTE : age < DAY ? HOUR : DAY;
-	return lastLiveAt + Math.max(2 * MINUTE, (Math.floor(age / unit) + 1) * unit);
+	// The age reads as offlineAge renders it, in its one largest whole unit:
+	// it next changes when that count goes up by one.
+	const { count, unit } = durationIn(Math.max(MINUTE, now - lastLiveAt));
+	return lastLiveAt + (count + 1) * DURATION_UNIT_MS[unit];
 }
 
 /** The status for the app's connection, re-rendered exactly when its words
