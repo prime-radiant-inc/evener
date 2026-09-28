@@ -59,7 +59,7 @@
         "expo-image-picker",
         {
           "photosPermission": "Choose images to attach to your Evener conversations.",
-          "cameraPermission": false,
+          "cameraPermission": "Take photos to attach to your Evener conversations.",
           "microphonePermission": false
         }
       ],

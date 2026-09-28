@@ -428,3 +428,101 @@ func hubTOMLPrunedReceiptTables(cfg Config, entries, known []hostreg.Host, marke
 	}
 	return out
 }
+
+// hubTOMLStagedReceiptTables derives the staged-receipt marker tables a rewrite
+// writes: the carried set plus every file marker for a host this write does not
+// own, preserved verbatim — the same ownership rule the other record tables
+// apply, so a marker a mutation does not own is not silently dropped by its
+// rewrite (spec §5: "every marker write preserves other hosts' entries
+// verbatim"). A nil known is the exact-write sentinel.
+func hubTOMLStagedReceiptTables(cfg Config, entries, known []hostreg.Host, markers map[string]HostStagedReceipt, dropped map[string]struct{}) map[string]HostStagedReceipt {
+	out := make(map[string]HostStagedReceipt, len(markers)+len(cfg.StagedReceipts))
+	maps.Copy(out, markers)
+	owned := ownedRecordNames(entries, known)
+	if owned == nil {
+		return out
+	}
+	for name, marker := range cfg.StagedReceipts {
+		if _, carried := out[name]; carried {
+			// The carried set is authoritative for the keys it names: a marker
+			// this write moves (the flip writes) or drops must not be overwritten
+			// by the file's older copy, which is also why the ownership test
+			// below cannot be the only guard — a marker for a name outside the
+			// live set (a tombstoned host's) is still this write's to move.
+			continue
+		}
+		if _, carried := owned[name]; carried {
+			continue
+		}
+		if _, pruned := dropped[name]; pruned {
+			continue
+		}
+		out[name] = marker
+	}
+	return out
+}
+
+// hubTOMLTeardownRemnantTables derives the teardown-remnant tables a rewrite
+// writes. The remnant's owner is the host name in its record — the name the
+// fence and the retention rules key by — so a remnant for a name this write
+// does not own rides through verbatim, exactly as the other record tables'
+// records do.
+func hubTOMLTeardownRemnantTables(cfg Config, entries, known []hostreg.Host, remnants map[string]HostTeardownRemnant, dropped map[string]struct{}) map[string]HostTeardownRemnant {
+	out := make(map[string]HostTeardownRemnant, len(remnants)+len(cfg.TeardownRemnants))
+	maps.Copy(out, remnants)
+	owned := ownedRecordNames(entries, known)
+	if owned == nil {
+		return out
+	}
+	for id, remnant := range cfg.TeardownRemnants {
+		if _, carried := out[id]; carried {
+			// The carried record wins: the retry's clearance, the re-add purge,
+			// and the boot compaction all move records for names outside the
+			// live set (a removed host's), so ownership alone cannot guard them.
+			continue
+		}
+		if _, carried := owned[remnant.Host]; carried {
+			continue
+		}
+		if _, pruned := dropped[id]; pruned {
+			continue
+		}
+		out[id] = remnant
+	}
+	return out
+}
+
+// hubTOMLTeardownAttemptTables derives the attempt tables a rewrite writes. An
+// attempt is owned through its remnant's host: a dropped remnant takes its
+// attempts with it, which is why the ownership lookup goes through the carried
+// remnant set rather than the host entry alone.
+func hubTOMLTeardownAttemptTables(cfg Config, entries, known []hostreg.Host, attempts map[string]HostTeardownAttempt, remnants map[string]HostTeardownRemnant, dropped map[string]struct{}) map[string]HostTeardownAttempt {
+	out := make(map[string]HostTeardownAttempt, len(attempts)+len(cfg.TeardownAttempts))
+	maps.Copy(out, attempts)
+	owned := ownedRecordNames(entries, known)
+	if owned == nil {
+		return out
+	}
+	for id, attempt := range cfg.TeardownAttempts {
+		if _, carried := out[id]; carried {
+			continue
+		}
+		if _, carried := remnants[attempt.RemnantID]; carried {
+			// A remnant this write carries owns its attempts: the derivation
+			// already decided which survive.
+			continue
+		}
+		if remnant, ok := cfg.TeardownRemnants[attempt.RemnantID]; ok {
+			if _, carried := owned[remnant.Host]; carried {
+				// The write owns the remnant's host but no longer carries the
+				// remnant (a purge): the attempt goes with it.
+				continue
+			}
+		}
+		if _, pruned := dropped[id]; pruned {
+			continue
+		}
+		out[id] = attempt
+	}
+	return out
+}

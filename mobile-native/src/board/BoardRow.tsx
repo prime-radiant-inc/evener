@@ -33,7 +33,8 @@ export type RowContext = Pick<BoardRowProps, "connected" | "usual" | "hostLabel"
 	draftRefs: ReadonlySet<string>;
 };
 
-function Hairline({ inset = 0 }: { inset?: number }) {
+/** The separator between rows, inset to the title by default. */
+export function Hairline({ inset = TITLE_INSET }: { inset?: number }) {
 	const { palette } = useColors();
 	return <View style={{ height: 0.5, marginLeft: inset, backgroundColor: palette.edge }} />;
 }
@@ -93,11 +94,32 @@ export function FoldChevron({ folded }: { folded: boolean }): ReactElement {
 const UNITS: Record<string, string> = { m: "minute", h: "hour", d: "day" };
 
 /** relativeAge's "2m" as VoiceOver should say it: "2 minutes". */
-function spokenAge(age: string): string {
+export function spokenAge(age: string): string {
 	const match = /^(\d+)([mhd])$/.exec(age);
 	if (!match) return age;
 	const count = Number(match[1]);
 	return `${count} ${UNITS[match[2]]}${count === 1 ? "" : "s"}`;
+}
+
+/** A group's header: a Live band, or a search group. */
+export function BandHeader({ text }: { text: string }) {
+	const { palette } = useColors();
+	const scale = useTextScale();
+	return (
+		<Text
+			testID="band-header"
+			accessibilityRole="header"
+			allowFontScaling={Platform.OS !== "ios"}
+			style={{
+				paddingTop: 22,
+				paddingBottom: 6,
+				paddingHorizontal: 16,
+				...bandHeaderText(palette, scale),
+			}}
+		>
+			{text}
+		</Text>
+	);
 }
 
 /** One Board row (spec 7.2). It draws no separator: the list draws hairlines

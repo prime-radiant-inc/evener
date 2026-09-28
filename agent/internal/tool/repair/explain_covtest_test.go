@@ -123,7 +123,7 @@ func TestConstraintMessage_FieldSchemaNil(t *testing.T) {
 		"required":   []string{"missing"},
 	}
 	args := map[string]any{"missing": "value"}
-	got := constraintMessage("my_tool", params, "missing", "missing", "maxLength", args, "missing")
+	got := constraintMessage("my_tool", params, "missing", "missing", "maxLength", args, "missing", nil)
 	if got != "" {
 		t.Fatalf("constraintMessage = %q, want empty", got)
 	}
@@ -140,7 +140,7 @@ func TestConstraintMessage_UnrecognizedKeyword(t *testing.T) {
 		"required": []string{"val"},
 	}
 	args := map[string]any{"val": float64(5)}
-	got := constraintMessage("my_tool", params, "val", "val", "minimum", args, "val")
+	got := constraintMessage("my_tool", params, "val", "val", "minimum", args, "val", nil)
 	if got != "" {
 		t.Fatalf("constraintMessage = %q, want empty for unrecognized keyword", got)
 	}

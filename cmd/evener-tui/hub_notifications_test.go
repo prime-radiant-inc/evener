@@ -2,6 +2,7 @@ package tui
 
 import (
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -163,9 +164,9 @@ func TestTUISteeringInjectedTiesEveryJobNotificationBlock(t *testing.T) {
 	blockB := `<job-notification job_id="job_B" job_type="delegate" status="completed" exit_code="0">` +
 		`excerpt: {"data":{"test_summary":"3 passed","commit_hashes":["1234567890abcdef"]}}` +
 		`</job-notification>`
-	sendTUINotification(t, &m, appwire.NotifyEvenerSteeringInjected, appwire.EvenerSteeringInjectedParams{
-		Ref:  "local:root",
-		Text: blockA + "\n" + blockB,
+	sendTUINotification(t, &m, appwire.NotifyHistoryUpdated, appwire.HistoryUpdatedParams{
+		Ref:   "local:root",
+		Items: []appwire.ThreadItem{{Type: "steering", ID: "item_steering_1", TurnID: "turn_1", Text: blockA + "\n" + blockB}},
 	})
 
 	runA := requireTUIJobRun(t, &m, "job_A")
@@ -190,8 +191,11 @@ func TestTUIStableDelegateWatchAndObserverNoticesRemainVisible(t *testing.T) {
 
 	watchNotice := `<delegate-notification delegate_id="dlg_observer">watch fired for parent shell</delegate-notification>`
 	observerNotice := `<delegate-notification delegate_id="dlg_observer">observer callback remains active</delegate-notification>`
-	for _, notice := range []string{watchNotice, observerNotice} {
-		sendTUINotification(t, &m, appwire.NotifyEvenerSteeringInjected, appwire.EvenerSteeringInjectedParams{Ref: "local:root", Text: notice})
+	for i, notice := range []string{watchNotice, observerNotice} {
+		sendTUINotification(t, &m, appwire.NotifyHistoryUpdated, appwire.HistoryUpdatedParams{
+			Ref:   "local:root",
+			Items: []appwire.ThreadItem{{Type: "steering", ID: fmt.Sprintf("item_steering_%d", i), TurnID: "turn_1", Text: notice}},
+		})
 	}
 
 	seen := map[string]bool{}
@@ -249,70 +253,6 @@ func requireTUIJobRun(t testing.TB, m *hubModel, jobID string) *transcript.Subag
 	}
 	t.Fatalf("messages = %+v, want job %q", m.session.messages, jobID)
 	return nil
-}
-
-// TestStreamDeltaChunkDecodesAppWireCamelCaseParams pins the wire contract
-// decodeStreamDeltaChunk decodes: the three delta notifications' params are
-// camelCase on the wire, so appwire.ToolOutputDeltaParams's json tags must be
-// camelCase too. Renaming them to this repo's snake_case default would leave
-// every routing field empty, silently dropping deltas at the current-session
-// filter instead of failing loudly.
-func TestStreamDeltaChunkDecodesAppWireCamelCaseParams(t *testing.T) {
-	agent, err := json.Marshal(appwire.AgentMessageDeltaParams{
-		ThreadID: "th_1", Ref: "local:th_1", TurnID: "turn_1", ItemID: "item_1", Delta: "hello",
-	})
-	if err != nil {
-		t.Fatalf("marshal agent params: %v", err)
-	}
-	reasoning, err := json.Marshal(appwire.ReasoningSummaryDeltaParams{
-		ThreadID: "th_1", Ref: "local:th_1", TurnID: "turn_1", ItemID: "item_2", Delta: "thinking",
-	})
-	if err != nil {
-		t.Fatalf("marshal reasoning params: %v", err)
-	}
-	toolOutput, err := json.Marshal(appwire.ToolOutputDeltaParams{
-		ThreadID: "th_1", Ref: "local:th_1", TurnID: "turn_1", ItemID: "item_3", CallID: "call_3", Delta: "one\n",
-	})
-	if err != nil {
-		t.Fatalf("marshal tool-output params: %v", err)
-	}
-
-	for _, tc := range []struct {
-		name string
-		raw  json.RawMessage
-		want appwire.ToolOutputDeltaParams
-	}{
-		{
-			name: "agentMessage",
-			raw:  agent,
-			want: appwire.ToolOutputDeltaParams{Ref: "local:th_1", ThreadID: "th_1", TurnID: "turn_1", ItemID: "item_1", Delta: "hello"},
-		},
-		{
-			name: "reasoningSummary",
-			raw:  reasoning,
-			want: appwire.ToolOutputDeltaParams{Ref: "local:th_1", ThreadID: "th_1", TurnID: "turn_1", ItemID: "item_2", Delta: "thinking"},
-		},
-		{
-			name: "toolOutput",
-			raw:  toolOutput,
-			want: appwire.ToolOutputDeltaParams{Ref: "local:th_1", ThreadID: "th_1", TurnID: "turn_1", ItemID: "item_3", CallID: "call_3", Delta: "one\n"},
-		},
-		{
-			name: "wireKeySpelling",
-			raw:  json.RawMessage(`{"ref":"local:th_1","threadId":"th_1","turnId":"turn_1","itemId":"item_3","callId":"call_3","delta":"one\n"}`),
-			want: appwire.ToolOutputDeltaParams{Ref: "local:th_1", ThreadID: "th_1", TurnID: "turn_1", ItemID: "item_3", CallID: "call_3", Delta: "one\n"},
-		},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			got, ok := decodeStreamDeltaChunk(tc.raw)
-			if !ok {
-				t.Fatalf("decode %s failed: %s", tc.name, tc.raw)
-			}
-			if got != tc.want {
-				t.Fatalf("chunk=%+v want=%+v from %s", got, tc.want, tc.raw)
-			}
-		})
-	}
 }
 
 // TestApplyHubNotification_WarningDecodesHintAndPolymorphicWarningField drives

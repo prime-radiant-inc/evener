@@ -204,7 +204,11 @@ func TestMemHarness(t *testing.T) {
 	completed := make(chan struct{}, 1024)
 	go func() {
 		for n := range client.Notifications() {
-			if n.Method == appwire.NotifyTurnCompleted {
+			if n.Method != appwire.NotifyThreadStatusChanged {
+				continue
+			}
+			var params appwire.ThreadStatusChangedParams
+			if json.Unmarshal(n.Params, &params) == nil && params.Status.Type == appwire.ThreadStatusIdle {
 				completed <- struct{}{}
 			}
 		}
@@ -213,7 +217,7 @@ func TestMemHarness(t *testing.T) {
 		select {
 		case <-completed:
 		case <-time.After(5 * time.Minute):
-			t.Fatalf("%s: no turn/completed", what)
+			t.Fatalf("%s: no thread/status/changed(idle)", what)
 		}
 	}
 

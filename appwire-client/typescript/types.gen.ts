@@ -8,21 +8,6 @@ export interface ActivityReadResponse {
   sessions: SessionActivity[];
 }
 
-export interface AgentMessageDeltaParams {
-  threadId: string;
-  ref: string;
-  turnId: string;
-  itemId: string;
-  delta: string;
-}
-
-export interface AgentMessageResetParams {
-  threadId: string;
-  ref: string;
-  turnId: string;
-  itemId: string;
-}
-
 export interface AgentsDocResponse {
   path: string;
   exists: boolean;
@@ -655,20 +640,6 @@ export interface EvenerSkillInfo {
   allowedTools?: string[];
 }
 
-export interface EvenerSteeringInjectedParams {
-  /**
-   * StartedAt is the server event timestamp in epoch milliseconds.
-   */
-  startedAt?: number;
-  threadId: string;
-  ref: string;
-  text?: string;
-  images?: InputItem[];
-  source?: string;
-  kind?: string;
-  clientMutationId?: string;
-}
-
 export interface EvenerSubagentPreviewParams {
   ref: string;
   limit?: number;
@@ -1053,6 +1024,26 @@ export interface HarnessListResponse {
   data: HarnessDescriptor[];
 }
 
+export interface HistoryChanges {
+  turns?: Turn[];
+  items?: ThreadItem[];
+}
+
+export interface HistoryUpdatedParams {
+  threadId: string;
+  ref: string;
+  /**
+   * BootGeneration is the publishing daemon's boot generation for this
+   * thread: its counter for its root thread, "<n>@<rootSessionID>" for a
+   * descendant (DescendantBootGeneration). See CompareBootGeneration.
+   */
+  bootGeneration: string;
+  epoch: number;
+  snapshot: SnapshotIdentity;
+  turns?: Turn[];
+  items?: ThreadItem[];
+}
+
 export interface HostAddParams {
   entry: HostEntry;
   mutationId?: string;
@@ -1119,6 +1110,43 @@ export interface HostListResponse {
   hosts: HostRow[];
 }
 
+export interface HostMutationAmbiguous {
+  outcome: string;
+  observedRow: HostRow;
+}
+
+export interface HostMutationCollisionDropped {
+  outcome: string;
+  droppedEntry: HostRow;
+  winningFingerprint: string;
+  host?: HostRow;
+  removed?: boolean;
+}
+
+export interface HostMutationCommitted {
+  outcome: string;
+  host: HostRow;
+}
+
+export interface HostMutationCommittedRemoved {
+  outcome: string;
+  host: RemovedRow;
+}
+
+export interface HostMutationTeardownFailure {
+  outcome: string;
+  seam: string;
+  remnantId: string;
+  host: HostRow;
+}
+
+export interface HostMutationTeardownFailureRemoved {
+  outcome: string;
+  seam: string;
+  remnantId: string;
+  host: RemovedRow;
+}
+
 export interface HostNotificationParams {
   host: string;
   method: string;
@@ -1177,10 +1205,6 @@ export interface HostRemoveParams {
   mutationId: string;
   expectedGeneration: number;
   expectedIncarnationId: string;
-}
-
-export interface HostRemoveResponse {
-  host: HostRow;
 }
 
 export interface HostRequestParams {
@@ -1243,6 +1267,19 @@ export interface HostRow {
    */
   retainedRows?: number;
   rowsTruncated?: boolean;
+  /**
+   * OpenRemnantID is present exactly on rows — live or tombstone — whose name
+   * holds an open remnant: the blocking remnant's id the remnant fence's
+   * `remnant-open` refusal also names (registry spec 08 §11).
+   */
+  openRemnantId?: string;
+  /**
+   * EscalationAgeSec is present only on rows — live or tombstone — whose name
+   * holds an open remnant past the escalation bound: the escalation age the
+   * expiry-escalation rule promises, in whole seconds. Absent everywhere else
+   * per the absent-when-unknown rule.
+   */
+  escalationAgeSec?: number;
 }
 
 export interface HostRunningParams {
@@ -1263,16 +1300,85 @@ export interface HostStatusResponse {
   host: HostRow;
 }
 
+export interface HostTeardownAttestation {
+  operator: string;
+  statement: string;
+  observedAt: string;
+}
+
+export interface HostTeardownRecoverParams {
+  remnantId: string;
+  attestation: HostTeardownAttestation;
+}
+
+export interface HostTeardownRecoverResult {
+  outcome: string;
+  remnantId: string;
+  clearedName: string;
+  clearedAt: string;
+  hostKind: string;
+}
+
+export interface HostTeardownRetryClearedLive {
+  outcome: string;
+  hostKind: string;
+  host: HostRow;
+  remnantId: string;
+  escalationAgeSec?: number;
+}
+
+export interface HostTeardownRetryClearedRemoved {
+  outcome: string;
+  hostKind: string;
+  host: RemovedRow;
+  remnantId: string;
+  escalationAgeSec?: number;
+}
+
+export interface HostTeardownRetryCompleteLive {
+  outcome: string;
+  hostKind: string;
+  host: HostRow;
+  remnantId: string;
+  escalationAgeSec?: number;
+}
+
+export interface HostTeardownRetryCompleteRemoved {
+  outcome: string;
+  hostKind: string;
+  host: RemovedRow;
+  remnantId: string;
+  escalationAgeSec?: number;
+}
+
+export interface HostTeardownRetryFailedLive {
+  outcome: string;
+  hostKind: string;
+  host: HostRow;
+  remnantId: string;
+  seam: string;
+  escalationAgeSec?: number;
+}
+
+export interface HostTeardownRetryFailedRemoved {
+  outcome: string;
+  hostKind: string;
+  host: RemovedRow;
+  remnantId: string;
+  seam: string;
+  escalationAgeSec?: number;
+}
+
+export interface HostTeardownRetryParams {
+  remnantId: string;
+}
+
 export interface HostUpdateParams {
   name: string;
   entry: HostEntry;
   mutationId: string;
   expectedGeneration: number;
   expectedIncarnationId: string;
-}
-
-export interface HostUpdateResponse {
-  host: HostRow;
 }
 
 export interface InitializeParams {
@@ -1525,31 +1631,6 @@ export interface InstanceSetModelDisabledParams {
    * broadcast without an id.
    */
   originClientId?: string;
-}
-
-export interface ItemLifecycleParams {
-  threadId: string;
-  ref: string;
-  turnId: string;
-  item: ThreadItem;
-  /**
-   * FailedToolCalls carries the session's running failure count (kata 895d),
-   * same field and meaning as ThreadStatusChangedParams.FailedToolCalls —
-   * only ever populated on item/completed (never item/started: a failure
-   * lands at completion), and only on the item whose completion actually
-   * moved the figure since the last one that carried it. thread/status/
-   * changed already carries the count unconditionally at every turn
-   * boundary, but a live watcher on a long turn sees nothing move however
-   * many tool calls fail inside it; this rides the finer-grained
-   * per-item notification instead so the count moves the instant a failure
-   * lands. Gating on "changed since last stamp" is what keeps this from
-   * resending an unchanged figure on the many item/completed notifications
-   * a turn with no new failures still produces.
-   *
-   * Absent means "no change" here, same as on ThreadStatusChangedParams —
-   * never "nobody counted".
-   */
-  failedToolCalls?: number;
 }
 
 export interface JobActivityBranchState {
@@ -2149,6 +2230,12 @@ export interface NavigationProjectSummary {
   session_count: number;
 }
 
+export interface NavigationQuestion {
+  text: string;
+  options?: string[];
+  count: number;
+}
+
 export interface NavigationReadBase {
   generationId: string;
   revision: number;
@@ -2242,6 +2329,12 @@ export interface NavigationSessionSummary {
    */
   approval_tool?: string;
   approval_target?: string;
+  /**
+   * Question is the first question of the session's pending ask (S1b). It
+   * is present only on a row that carries AskPending and whose daemon named
+   * the question.
+   */
+  question?: NavigationQuestion;
   dormant?: boolean;
   /**
    * Offline marks a row folded into the merged list from a source that is
@@ -2413,6 +2506,50 @@ export interface OutputImage {
   url?: string;
   sha?: string;
   path?: string;
+}
+
+export interface OverlayDeltaParams {
+  threadId: string;
+  ref: string;
+  key: string;
+  field: string;
+  delta: string;
+}
+
+export interface OverlayEndParams {
+  threadId: string;
+  ref: string;
+  roundId: string;
+}
+
+export interface OverlayItem {
+  /**
+   * Key identifies this overlay slot: "stream:<streamId>:<agentMessage|reasoning>",
+   * "preview:<callId>", "tool:<historyKey>", or a notice key. Notice keys
+   * are opaque: a daemon's are "notice:<n>", and the hub mints its own
+   * (such as "notice:hub:relay-gave-up").
+   */
+  key: string;
+  kind: string;
+  turnId?: string;
+  roundId?: string;
+  streamId?: string;
+  callId?: string;
+  historyKey?: string;
+  anchor?: ThreadItemPosition;
+  item: ThreadItem;
+}
+
+export interface OverlayResetParams {
+  threadId: string;
+  ref: string;
+  streamId: string;
+}
+
+export interface OverlayUpsertedParams {
+  threadId: string;
+  ref: string;
+  item: OverlayItem;
 }
 
 export interface PathValidateParams {
@@ -2622,13 +2759,45 @@ export interface QueueState {
   skillNames?: string[][];
 }
 
-export interface ReasoningSummaryDeltaParams {
-  threadId: string;
-  ref: string;
-  turnId: string;
-  itemId: string;
-  summaryIndex: number;
-  delta: string;
+export interface RemovedRow {
+  name: string;
+  address?: string;
+  user?: string;
+  keyPath?: string;
+  evenerPath?: string;
+  configPath?: string;
+  addr?: string;
+  roots?: string[];
+  origin: string;
+  /**
+   * Generation and IncarnationID are the removed entry's pair — what a
+   * re-add mints strictly above.
+   */
+  generation: number;
+  incarnationId: string;
+  /**
+   * Removed is always true on this arm; Attached and MidEnsure are always
+   * false, per `list`'s tombstone values.
+   */
+  removed: boolean;
+  attached: boolean;
+  midEnsure: boolean;
+  /**
+   * RetainedRows is the tombstone's retained-projection count; a nil renders
+   * as an absent key, exactly as HostRow's tombstone arm does.
+   */
+  retainedRows?: number;
+  rowsTruncated?: boolean;
+  /**
+   * EscalationAgeSec is present only when the row's name holds an escalated
+   * open remnant, mirroring HostRow.
+   */
+  escalationAgeSec?: number;
+  /**
+   * OpenRemnantID is present exactly on rows whose name holds an open
+   * remnant, mirroring HostRow.
+   */
+  openRemnantId?: string;
 }
 
 export interface RepoLaunchConfigStatus {
@@ -2934,6 +3103,11 @@ export interface SettingsStorageOverview {
   stateDir?: string;
 }
 
+export interface SnapshotIdentity {
+  incarnation: string;
+  length: number;
+}
+
 export interface Source {
   id: string;
   label: string;
@@ -3115,17 +3289,6 @@ export interface ThreadForceStopParams {
 
 export interface ThreadForkParams {
   ref: string;
-  /**
-   * SourceTurnID names the divergence position as a 1-based index into the
-   * parent transcript's ENTRY list — every entry, not just the ones that
-   * opened a turn — optionally spelled with a "turn_" prefix. Despite the
-   * name it is NOT a turn id: the hub parses it with parseSourceTurnID and
-   * hands the number straight to agent.ForkSessionAtUserTurn. Send
-   * ThreadItem.TranscriptEntryIndex, never Turn.ID; the two coincide only on
-   * a transcript replayed from disk, because every live turn minter numbers
-   * turns off its own counter (kata 0jhh).
-   */
-  sourceTurnId: string;
   editedInput?: string;
   label?: string;
   modelProvider?: string;
@@ -3143,10 +3306,25 @@ export interface ThreadForkParams {
    * Aside forks a local evener thread at its tip instead of at a source turn:
    * the child is a complete copy of the parent session (same permissions and
    * config via the inherited session meta) and opens as a side thread. Aside
-   * is mutually exclusive with SourceTurnID, EditedInput, DeferInput, and
+   * is mutually exclusive with SourceItemKey, EditedInput, DeferInput, and
    * Label, and is only supported for local evener threads.
    */
   aside?: boolean;
+  /**
+   * SourceItemKey names the divergence position as an item key
+   * (transcriptindex.ItemKey): a 0-based entry ordinal into the parent
+   * transcript's ENTRY list — every entry, not just the ones that opened a
+   * turn — plus the content part that opened the item. The hub parses it
+   * with parseSourceItemKey, which turns the ordinal into the matching
+   * 1-based entry index and hands that straight to
+   * agent.ForkSessionAtUserTurn. Despite embedding a turn id, the key is
+   * NOT read as one for this: send ThreadItem.TranscriptKey, never Turn.ID;
+   * the entry ordinal a live turn's own id implies coincides with its
+   * transcript entry index only on a transcript replayed from disk,
+   * because every live turn minter numbers turns off its own counter (kata
+   * 0jhh). Required unless Aside.
+   */
+  sourceItemKey?: string;
 }
 
 export interface ThreadForkResponse {
@@ -3240,11 +3418,32 @@ export interface ThreadItem {
    */
   steeringKind?: string;
   clientMutationId?: string;
+  /**
+   * Version is the highest entry ordinal (below) among the entries that
+   * contributed to this item, stored and sent as ordinal + 1 so 0 means "no
+   * history version" (an overlay item). The higher version wins.
+   */
+  version?: number;
+  /**
+   * RoundID names the round an ASSISTANT-projected item belongs to. Empty
+   * for items that are not projected from an ASSISTANT entry.
+   */
+  roundId?: string;
+  /**
+   * CompletedAtEntry is, on a tool item, the entry ordinal + 1 of the
+   * TOOL_RESULTS entry that completed it (the spec's `completedAt`
+   * metadata; CompletedAt is the completion timestamp). 0 until results
+   * are recorded. Key and position stay the opener's, so the item never
+   * moves when it completes; a client drops the overlay's execution state
+   * for the item's key once it holds a non-zero value.
+   */
+  completedAtEntry?: number;
 }
 
 export interface ThreadItemPosition {
   entry: number;
   item: number;
+  sub?: number;
 }
 
 export interface ThreadListParams {
@@ -3328,6 +3527,18 @@ export interface ThreadReadParams {
   subscribe?: boolean;
   replaceSubscription?: boolean;
   itemLimit?: number;
+  /**
+   * RequestGeneration is the client's own read-request counter, echoed back
+   * on ThreadReadResponse so a client can discard a stale reply that
+   * resolves after a newer request it already issued.
+   */
+  requestGeneration?: number;
+  /**
+   * HeldSnapshot names what the client's currently held read was projected
+   * from, so the server can answer with HistoryChanges instead of a full
+   * re-read when nothing outside the client's window changed.
+   */
+  heldSnapshot?: SnapshotIdentity;
 }
 
 export interface ThreadReadResponse {
@@ -3338,6 +3549,42 @@ export interface ThreadReadResponse {
    * the response already includes the oldest item.
    */
   olderCursor?: string;
+  /**
+   * RequestGeneration echoes ThreadReadParams.RequestGeneration.
+   */
+  requestGeneration?: number;
+  /**
+   * BootGeneration is the serving daemon's boot generation for this thread:
+   * its counter for its root thread, "<n>@<rootSessionID>" for a descendant
+   * (DescendantBootGeneration), or DaemonlessBootGeneration for the hub's
+   * own read. See CompareBootGeneration.
+   */
+  bootGeneration?: string;
+  /**
+   * Epoch is the history epoch this response was projected under; it
+   * advances on a replacement (a new incarnation, a resync epoch, or an
+   * authoritative daemonless read).
+   */
+  epoch?: number;
+  /**
+   * Snapshot names what this read was projected from.
+   */
+  snapshot?: SnapshotIdentity;
+  /**
+   * Overlay carries the live, not-yet-recorded state (streams, previews,
+   * running tools, notices) alongside the recorded thread.
+   */
+  overlay?: OverlayItem[];
+  /**
+   * Authoritative is true when this response can settle uncertain state
+   * (a live daemon read), false for a saved-transcript read that cannot.
+   */
+  authoritative?: boolean;
+  /**
+   * Changes carries items and turns outside the client's held window whose
+   * version grew since HeldSnapshot, in place of a full re-read.
+   */
+  changes?: HistoryChanges;
 }
 
 export interface ThreadReasoningEffortChangedParams {
@@ -3363,6 +3610,16 @@ export interface ThreadResumeResponse {
 export interface ThreadResyncParams {
   threadId: string;
   ref: string;
+  /**
+   * BootGeneration is the publishing daemon's boot generation for this
+   * thread, as on HistoryUpdatedParams. Empty on a resync the hub pushes
+   * itself. See CompareBootGeneration.
+   */
+  bootGeneration?: string;
+  /**
+   * Epoch is the history epoch a client should resync to, when known.
+   */
+  epoch?: number;
 }
 
 export interface ThreadShutdownParams {
@@ -3463,6 +3720,11 @@ export interface ThreadStatusChangedParams {
    * follow-up composer for a session the hub would happily resume (kata pk2d).
    */
   capabilities?: ThreadCapabilities;
+  /**
+   * ActiveTurnID is the currently running turn's id, empty when none. See
+   * EvenerThread.ActiveTurnID.
+   */
+  activeTurnId?: string;
 }
 
 export interface ThreadTranscriptListParams {
@@ -3507,6 +3769,25 @@ export interface ThreadTurnsListParams {
 export interface ThreadTurnsListResponse {
   data: Turn[];
   nextCursor?: string;
+  /**
+   * BootGeneration is the serving daemon's boot generation for this thread,
+   * as on ThreadReadResponse. See CompareBootGeneration.
+   */
+  bootGeneration?: string;
+  /**
+   * Epoch is the history epoch this page was projected under; see
+   * ThreadReadResponse.Epoch.
+   */
+  epoch?: number;
+  /**
+   * Snapshot names what this page was projected from.
+   */
+  snapshot?: SnapshotIdentity;
+  /**
+   * Authoritative is true when this page can settle uncertain state; see
+   * ThreadReadResponse.Authoritative.
+   */
+  authoritative?: boolean;
 }
 
 export interface ThreadUnsubscribeParams {
@@ -3523,15 +3804,6 @@ export interface ThreadVisionModelChangedParams {
 export interface ThreadVisionModelSetParams {
   ref: string;
   visionModel: string;
-}
-
-export interface ToolOutputDeltaParams {
-  threadId: string;
-  ref: string;
-  turnId?: string;
-  itemId: string;
-  callId: string;
-  delta: string;
 }
 
 export interface TranscriptDisplayAdvanced {
@@ -3597,6 +3869,11 @@ export interface Turn {
   status: string;
   error?: TurnError;
   /**
+   * Version is the highest contributing entry ordinal + 1 (0 means an
+   * overlay-only turn with no recorded history yet).
+   */
+  version?: number;
+  /**
    * HasEarlierItems and HasLaterItems describe completeness at the item
    * boundaries of a fragment. They are omitted by legacy/full responses.
    */
@@ -3634,12 +3911,6 @@ export interface TurnCancelQueuedResponse {
   removedText: string;
   removedImages?: number;
   receipt: MutationReceipt;
-}
-
-export interface TurnCompletedParams {
-  threadId: string;
-  ref: string;
-  turn: Turn;
 }
 
 export interface TurnDrainAsSteerParams {
@@ -3709,12 +3980,6 @@ export interface TurnStartParams {
 export interface TurnStartResponse {
   turn: Turn;
   receipt: MutationReceipt;
-}
-
-export interface TurnStartedParams {
-  threadId: string;
-  ref: string;
-  turn: Turn;
 }
 
 export interface TurnSteerParams {
@@ -3916,6 +4181,8 @@ export const METHOD_NAMES = [
   "evener/host/status",
   "evener/host/remove",
   "evener/host/update",
+  "evener/host/teardown-retry",
+  "evener/host/teardown-recover",
   "evener/host/plan",
   "evener/host/deploy",
   "evener/host/restart",
@@ -3935,17 +4202,8 @@ export const NOTIFICATION_NAMES = [
   "thread/model/changed",
   "thread/reasoning-effort/changed",
   "thread/vision-model/changed",
-  "turn/started",
-  "turn/completed",
-  "item/started",
-  "item/completed",
-  "item/agentMessage/delta",
-  "item/agentMessage/reset",
-  "item/reasoning/summaryTextDelta",
-  "item/toolOutput/delta",
   "warning",
   "evener/thread/modelRetry",
-  "evener/steering/injected",
   "evener/job/started",
   "evener/job/finished",
   "evener/delegate/updated",
@@ -3967,6 +4225,11 @@ export const NOTIFICATION_NAMES = [
   "evener/settings/keybindings/changed",
   "evener/settings/agentsDoc/changed",
   "evener/host/notification",
+  "history/updated",
+  "overlay/upserted",
+  "overlay/delta",
+  "overlay/reset",
+  "overlay/end",
 ] as const;
 
 export type NotificationName = (typeof NOTIFICATION_NAMES)[number];
@@ -4014,6 +4277,8 @@ export const THREAD_ITEM_EVENT_KINDS = [
   "error",
   "environment",
   "notes-context",
+  "warning",
+  "interrupted",
 ] as const;
 
 export type ThreadItemEventKind = (typeof THREAD_ITEM_EVENT_KINDS)[number];
@@ -4130,11 +4395,13 @@ export interface MethodTypes {
   "evener/sandbox/escalation/resolve": { params: SandboxEscalationResolveParams; result: EmptyResponse };
   "evener/host/request": { params: HostRequestParams; result: HostForwardedResult };
   "evener/host/attach": { params: HostAttachParams; result: HostAttachResponse };
-  "evener/host/add": { params: HostAddParams; result: HostRow };
+  "evener/host/add": { params: HostAddParams; result: HostMutationCommitted | HostMutationCommittedRemoved | HostMutationTeardownFailure | HostMutationTeardownFailureRemoved | HostMutationCollisionDropped | HostMutationAmbiguous };
   "evener/host/list": { params: EmptyParams; result: HostListResponse };
   "evener/host/status": { params: HostStatusParams; result: HostStatusResponse };
-  "evener/host/remove": { params: HostRemoveParams; result: HostRemoveResponse };
-  "evener/host/update": { params: HostUpdateParams; result: HostUpdateResponse };
+  "evener/host/remove": { params: HostRemoveParams; result: HostMutationCommitted | HostMutationCommittedRemoved | HostMutationTeardownFailure | HostMutationTeardownFailureRemoved | HostMutationCollisionDropped | HostMutationAmbiguous };
+  "evener/host/update": { params: HostUpdateParams; result: HostMutationCommitted | HostMutationCommittedRemoved | HostMutationTeardownFailure | HostMutationTeardownFailureRemoved | HostMutationCollisionDropped | HostMutationAmbiguous };
+  "evener/host/teardown-retry": { params: HostTeardownRetryParams; result: HostTeardownRetryCompleteLive | HostTeardownRetryCompleteRemoved | HostTeardownRetryClearedLive | HostTeardownRetryClearedRemoved | HostTeardownRetryFailedLive | HostTeardownRetryFailedRemoved };
+  "evener/host/teardown-recover": { params: HostTeardownRecoverParams; result: HostTeardownRecoverResult };
   "evener/host/plan": { params: HostPlanParams; result: HostPlanPlanned | HostPlanNoToken };
   "evener/host/deploy": { params: HostDeployParams; result: HostDeployResponse };
   "evener/host/restart": { params: HostRestartParams; result: HostRestartResponse };
@@ -4152,17 +4419,8 @@ export interface NotificationTypes {
   "thread/model/changed": ThreadModelChangedParams;
   "thread/reasoning-effort/changed": ThreadReasoningEffortChangedParams;
   "thread/vision-model/changed": ThreadVisionModelChangedParams;
-  "turn/started": TurnStartedParams;
-  "turn/completed": TurnCompletedParams;
-  "item/started": ItemLifecycleParams;
-  "item/completed": ItemLifecycleParams;
-  "item/agentMessage/delta": AgentMessageDeltaParams;
-  "item/agentMessage/reset": AgentMessageResetParams;
-  "item/reasoning/summaryTextDelta": ReasoningSummaryDeltaParams;
-  "item/toolOutput/delta": ToolOutputDeltaParams;
   "warning": WarningParams;
   "evener/thread/modelRetry": ThreadModelRetryParams;
-  "evener/steering/injected": EvenerSteeringInjectedParams;
   "evener/job/started": EvenerJobParams;
   "evener/job/finished": EvenerJobParams;
   "evener/delegate/updated": EvenerDelegateParams;
@@ -4184,6 +4442,11 @@ export interface NotificationTypes {
   "evener/settings/keybindings/changed": KeybindingsOverrides;
   "evener/settings/agentsDoc/changed": AgentsDocResponse;
   "evener/host/notification": HostNotificationParams;
+  "history/updated": HistoryUpdatedParams;
+  "overlay/upserted": OverlayUpsertedParams;
+  "overlay/delta": OverlayDeltaParams;
+  "overlay/reset": OverlayResetParams;
+  "overlay/end": OverlayEndParams;
 }
 
 export type AnyNotification = { [K in NotificationName]: { method: K; params: NotificationTypes[K] } }[NotificationName];

@@ -358,6 +358,13 @@ export default function Session({ params, paneId, focused: paneFocused }: PanePr
   const renderRows = useMemo(() => (projection ? transcriptRowsForProjection(projection) : []), [projection]);
   const anchorEntries = useMemo(() => transcriptAnchorEntriesForRows(renderRows), [renderRows]);
   const sourceTurnRowIndexes = useMemo(() => transcriptSourceTurnRowIndexesForRows(renderRows), [renderRows]);
+  // The projection/rows/anchors trio travels to TranscriptBody as one prepared
+  // view: this pane already derives all three for its scroll manifest, so the
+  // body reuses them instead of deriving a second copy on every model revision.
+  const preparedView = useMemo(
+    () => (projection ? { projection, rows: renderRows, anchorEntries } : undefined),
+    [projection, renderRows, anchorEntries],
+  );
 
   // VirtualList's own imperative handle (getScrollElement/scrollToIndex) is
   // the seam useTranscriptScroll needs for every scroll-behavior concern
@@ -532,6 +539,7 @@ export default function Session({ params, paneId, focused: paneFocused }: PanePr
       <TranscriptBody
         model={model}
         config={displayConfig}
+        preparedView={preparedView}
         surface="live"
         disclosureScope={`transcript:live:${ref}`}
         sessionRef={ref}
@@ -600,7 +608,14 @@ export default function Session({ params, paneId, focused: paneFocused }: PanePr
               now={now}
               active={model.status.type === "active"}
               sessionRef={ref}
-              turnId={model.activeTurnId}
+              // runningTurnId is the live-updated field (spec "Turn status":
+              // running state lives in the overlay/status frames, not a
+              // one-time read) - a v6 thread's activeTurnId is only ever
+              // refreshed by a fresh thread/read, so it can go stale between
+              // reads. Falls back to activeTurnId for a thread that has not
+              // (yet) hydrated through the v6 path, where runningTurnId is
+              // never set.
+              turnId={model.runningTurnId ?? model.activeTurnId}
               retry={model.modelRetry}
               primaryModel={model.model}
             />

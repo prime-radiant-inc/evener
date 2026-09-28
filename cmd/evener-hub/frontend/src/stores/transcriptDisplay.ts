@@ -554,6 +554,10 @@ export const transcriptDisplayStore: StoreApi<TranscriptDisplayStoreState> = cre
     },
     applyHubChange: (change) => {
       if (!isLayout(change.layout) || !isRevision(change.revision)) return;
+      // A hub that does not advertise the section cannot own a default for it,
+      // so a relayed change must not repopulate hub. "unknown" (before any
+      // handshake) is not that: the web oracle seeds hub pre-connection here.
+      if (currentSupport() === "unsupported") return;
       const store = packageStore;
       if (store !== null) {
         const before = store.getState().hub[change.layout];

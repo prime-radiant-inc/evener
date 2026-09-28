@@ -2,7 +2,8 @@
 
 import { expect, test } from "vitest";
 import type { InputItem, PendingMutation } from "../../types.gen";
-import { queueEntryPreviewText, reconcilePendingEntries } from "./pendingEntries";
+import type { PendingTurnEntry } from "./pendingEntries";
+import { ownPendingSend, queueEntryPreviewText, reconcilePendingEntries } from "./pendingEntries";
 import type { MutationOutboxRecord } from "./records";
 import { threadModel as model } from "./testing";
 
@@ -337,4 +338,34 @@ test("the map carrier hands an authoritative entry its createdAt after the settl
       UNATTRIBUTED_ONLY,
     ),
   ).toEqual([expect.objectContaining({ id: "mutation_1", createdAt: 42, fromThisClient: true })]);
+});
+
+function entry(over: Partial<PendingTurnEntry> = {}): PendingTurnEntry {
+  return {
+    id: "cmid-1",
+    ref: "ref-1",
+    method: "send",
+    text: "hello",
+    imageCount: 0,
+    skillNames: [],
+    state: "submitting",
+    source: "outbox",
+    fromThisClient: true,
+    ...over,
+  };
+}
+
+test("ownPendingSend counts this client's unreflected send, uncertain ones included", () => {
+  expect(ownPendingSend([entry()])).toBe(true);
+  expect(ownPendingSend([entry({ state: "blockedUnknown" })])).toBe(true);
+  expect(ownPendingSend([entry({ state: "accepted", source: "authoritative" })])).toBe(true);
+});
+
+test("ownPendingSend ignores a send Stop canceled, another client's send, and other methods", () => {
+  expect(ownPendingSend([entry({ state: "canceled" })])).toBe(false);
+  expect(ownPendingSend([entry({ fromThisClient: false })])).toBe(false);
+  expect(ownPendingSend([entry({ method: "queue" })])).toBe(false);
+  expect(ownPendingSend([])).toBe(false);
+  expect(ownPendingSend(null)).toBe(false);
+  expect(ownPendingSend(undefined)).toBe(false);
 });
