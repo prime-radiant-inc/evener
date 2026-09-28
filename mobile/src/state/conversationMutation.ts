@@ -1,8 +1,5 @@
 import type { InputItem, MutationReceipt } from "@evener/appwire-client";
-import type {
-	MutationAttachmentRef,
-	MutationPersistenceSnapshot,
-} from "@evener/appwire-client/state/mutation";
+import type { MutationAttachmentRef, MutationPersistenceSnapshot } from "@evener/appwire-client/state/mutation";
 
 export type ConversationMutationKind = "send" | "steer" | "queue" | "interrupt";
 
@@ -32,9 +29,7 @@ export interface ConversationMutationPendingPort {
 	// The pending projection reads only the two record families it projects;
 	// the recovery family belongs to the recovery surface, so the seam stays
 	// the caller's view of the same read rather than the whole snapshot.
-	read(): Promise<
-		Pick<MutationPersistenceSnapshot<MutationAttachmentRef>, "outbox" | "optimistic">
-	>;
+	read(): Promise<Pick<MutationPersistenceSnapshot<MutationAttachmentRef>, "outbox" | "optimistic">>;
 	subscribe(listener: () => void): () => void;
 	isOwnMutationRecord(record: { originClientId?: string }): boolean;
 }
@@ -45,12 +40,8 @@ export interface ConversationMutationPendingPort {
 // this structurally, so the factory needs no native import and the landed
 // runtime is untouched.
 export interface ConversationMutationPendingRuntime {
-	read(
-		targetRef: string,
-	): Promise<MutationPersistenceSnapshot<MutationAttachmentRef>>;
-	subscribeStorage(
-		listener: (targetRefs: readonly string[]) => void,
-	): () => void;
+	read(targetRef: string): Promise<MutationPersistenceSnapshot<MutationAttachmentRef>>;
+	subscribeStorage(listener: (targetRefs: readonly string[]) => void): () => void;
 }
 
 // Binds one conversation's durable outbox/optimistic records as the store's
