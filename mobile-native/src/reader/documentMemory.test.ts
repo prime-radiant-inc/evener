@@ -83,6 +83,21 @@ describe("what the phone remembers about a document", () => {
 		expect(memory.comments(plan)).toEqual([]);
 	});
 
+	it("gives every comment on a document its own id, even one written the same moment after a relaunch", () => {
+		const storage = memoryStorage();
+		const first = new DocumentMemory(storage, "hub-1", () => 9_000).addComment(plan, {
+			blockIndex: 0,
+			blockHash: "h",
+			quote: "q",
+			text: "one",
+		});
+		const relaunched = new DocumentMemory(storage, "hub-1", () => 9_000);
+		const second = relaunched.addComment(plan, { blockIndex: 0, blockHash: "h", quote: "q", text: "two" });
+		expect(second.id).not.toBe(first.id);
+		relaunched.removeComment(plan, first.id);
+		expect(relaunched.comments(plan).map((comment) => comment.text)).toEqual(["two"]);
+	});
+
 	it("keeps the 100 most recent documents, and never drops one with unsent comments for that", () => {
 		const storage = memoryStorage();
 		let now = 0;

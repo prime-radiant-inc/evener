@@ -447,9 +447,11 @@ export class NativeMutationRuntime
 	}
 
 	/** The mutations this phone submitted to a target this launch, by id,
-	 * with when (reconcilePendingEntries' submittedHere). */
+	 * with when (reconcilePendingEntries' submittedHere): a copy, so later
+	 * submissions never change what a caller already holds. */
 	submittedHere(targetKey: string): ReadonlyMap<string, number> {
-		return this.#submittedHere.get(targetKey) ?? NOTHING_SUBMITTED;
+		const submitted = this.#submittedHere.get(targetKey);
+		return submitted ? new Map(submitted) : NOTHING_SUBMITTED;
 	}
 
 	#rememberSubmitted(targetKey: string, clientMutationId: string, createdAt: number): void {
