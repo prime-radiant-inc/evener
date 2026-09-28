@@ -15,7 +15,12 @@ const check = (over: Partial<UpdateCheckResponse> = {}): UpdateCheckResponse => 
 it.each([
 	[true, null, null, "Connected"],
 	[true, null, check(), "Connected · evener 0.9.412 · up to date"],
-	[true, null, check({ updateAvailable: true, latestTag: "v0.9.413" }), "Connected · evener 0.9.412 · Update available"],
+	[
+		true,
+		null,
+		check({ updateAvailable: true, latestTag: "v0.9.413" }),
+		"Connected · evener 0.9.412 · Update available",
+	],
 	[true, null, check({ applicable: false, buildChannel: "dev" }), "Connected · evener 0.9.412"],
 	[false, "Reconnecting…", check(), "Reconnecting… · evener 0.9.412 · up to date"],
 	[false, "Update needed", null, "Update needed"],

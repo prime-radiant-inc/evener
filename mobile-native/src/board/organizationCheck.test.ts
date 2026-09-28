@@ -24,14 +24,18 @@ const always = () => true;
 
 it("checks an archive through the session's location, settled once the hub shows it", async () => {
 	const { client, pinPages, reads } = setup();
-	expect(await checkOrganizationChange(client, pinPages, archive({ generation_id: "g", targets: [] }), always, true)).toBe(true);
+	expect(
+		await checkOrganizationChange(client, pinPages, archive({ generation_id: "g", targets: [] }), always, true),
+	).toBe(true);
 	expect(reads.map((read) => read.resource)).toEqual(["manifest", "location", "manifest"]);
 	expect(reads[1]?.ref).toBe(`local:${SESSION_ID}`);
 });
 
 it("reports an archive the hub doesn't show as unsettled, without rejecting", async () => {
 	const { client, pinPages } = setup({ tier: "recent" });
-	expect(await checkOrganizationChange(client, pinPages, archive({ generation_id: "g", targets: [] }), always, true)).toBe(false);
+	expect(
+		await checkOrganizationChange(client, pinPages, archive({ generation_id: "g", targets: [] }), always, true),
+	).toBe(false);
 });
 
 it("reports an archive whose reply was lost as unsettled even when the hub shows it", async () => {

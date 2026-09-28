@@ -118,8 +118,7 @@ export function Row({
 }: RowProps) {
 	const { palette } = useColors();
 	const scale = useTextScale();
-	const labelColor =
-		tone === "accent" ? palette.accentInk : tone === "danger" ? palette.dangerInk : palette.inkHi;
+	const labelColor = tone === "accent" ? palette.accentInk : tone === "danger" ? palette.dangerInk : palette.inkHi;
 	const plainValue = typeof value === "string" || typeof value === "number" ? String(value) : undefined;
 	const reading = accessibilityLabel ?? [label, sub, plainValue].filter(Boolean).join(", ");
 	const body = (
@@ -224,11 +223,17 @@ export function SwitchRow({
 		>
 			{icon ? <Glyph name={icon} color={palette.inkMid} /> : null}
 			<View style={{ flex: 1, gap: 2 }} accessibilityElementsHidden importantForAccessibility="no-hide-descendants">
-				<Text allowFontScaling={allowFontScaling} style={{ color: palette.inkHi, fontSize: 17 * scale, lineHeight: 22 * scale }}>
+				<Text
+					allowFontScaling={allowFontScaling}
+					style={{ color: palette.inkHi, fontSize: 17 * scale, lineHeight: 22 * scale }}
+				>
 					{label}
 				</Text>
 				{sub ? (
-					<Text allowFontScaling={allowFontScaling} style={{ color: palette.inkLow, fontSize: 13 * scale, lineHeight: 18 * scale }}>
+					<Text
+						allowFontScaling={allowFontScaling}
+						style={{ color: palette.inkLow, fontSize: 13 * scale, lineHeight: 18 * scale }}
+					>
 						{sub}
 					</Text>
 				) : null}
@@ -262,7 +267,14 @@ export function GroupFooter({
 	return (
 		<Text
 			allowFontScaling={allowFontScaling}
-			style={{ color, fontSize: 13 * scale, lineHeight: 18 * scale, paddingHorizontal: 32, paddingTop: 6, paddingBottom: 8 }}
+			style={{
+				color,
+				fontSize: 13 * scale,
+				lineHeight: 18 * scale,
+				paddingHorizontal: 32,
+				paddingTop: 6,
+				paddingBottom: 8,
+			}}
 		>
 			{children}
 		</Text>

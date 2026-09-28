@@ -97,7 +97,11 @@ describe("a write and an error", () => {
 	it("shows the error in danger ink, and its exit code", () => {
 		const failed = step("shell", { error: "exit status 1", exitCode: 1 }, { state: "failed" });
 		const tree = render(<StepEvidence step={failed} evidence={stepEvidence(failed)} hubId="hub-1" />);
-		expect(byText(tree.root, "exit status 1")?.props.style).toMatchObject({ color: DANGER_INK, fontSize: 15, lineHeight: 20 });
+		expect(byText(tree.root, "exit status 1")?.props.style).toMatchObject({
+			color: DANGER_INK,
+			fontSize: 15,
+			lineHeight: 20,
+		});
 		expect(byText(tree.root, "Exit 1")?.props.style).toMatchObject({ color: INK_LOW });
 	});
 });

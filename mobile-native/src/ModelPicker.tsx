@@ -241,7 +241,13 @@ function Quiet({ children }: { children: string }) {
 	return (
 		<Text
 			allowFontScaling={allowFontScaling}
-			style={{ paddingHorizontal: 16, paddingTop: 16, color: palette.inkMid, fontSize: 15 * scale, lineHeight: 20 * scale }}
+			style={{
+				paddingHorizontal: 16,
+				paddingTop: 16,
+				color: palette.inkMid,
+				fontSize: 15 * scale,
+				lineHeight: 20 * scale,
+			}}
 		>
 			{children}
 		</Text>

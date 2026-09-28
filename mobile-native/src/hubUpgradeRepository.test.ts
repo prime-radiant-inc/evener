@@ -49,8 +49,6 @@ describe("native hub upgrade storage", () => {
 				startedAt: 1,
 			}),
 		);
-		expect(() => new HubUpgradeRepository(raw).read("a")).toThrow(
-			"Invalid upgrade checkpoint",
-		);
+		expect(() => new HubUpgradeRepository(raw).read("a")).toThrow("Invalid upgrade checkpoint");
 	});
 });

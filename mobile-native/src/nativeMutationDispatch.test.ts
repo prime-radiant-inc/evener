@@ -16,22 +16,14 @@
 
 import { afterEach, expect, test, vi } from "vitest";
 import { WireError } from "@evener/appwire-client";
-import type {
-	AppwireClientLike,
-	Thread,
-	ThreadCapabilities,
-	ThreadReadResponse,
-} from "@evener/appwire-client";
+import type { AppwireClientLike, Thread, ThreadCapabilities, ThreadReadResponse } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { createConversationService } from "../../mobile/src/services/conversation";
 import { createConversationStore } from "../../mobile/src/state/conversation";
 import { createActivityStore } from "../../mobile/src/state/activity";
 import { DraftDocument } from "./draftDocument";
 import { DraftRepository } from "./draftRepository";
-import {
-	createDurableSubmitter,
-	createNativeMutationHost,
-} from "./nativeMutationHost";
+import { createDurableSubmitter, createNativeMutationHost } from "./nativeMutationHost";
 import {
 	NativeMutationRuntime,
 	nativeMutationTargetKey,
@@ -129,10 +121,8 @@ function compose(runtimeOptions: NativeMutationRuntimeOptions = {}) {
 	const client = new FakeClient("ready");
 	const host = createNativeMutationHost(runtime, "hub-1", "ref-1", client);
 	const service = createConversationService(client, {
-		onReadStart: (ref, expectedThreadId) =>
-			host.beginRead(ref, expectedThreadId),
-		onReadComplete: (lease, response) =>
-			host.reconcileRead(lease, response),
+		onReadStart: (ref, expectedThreadId) => host.beginRead(ref, expectedThreadId),
+		onReadComplete: (lease, response) => host.reconcileRead(lease, response),
 	});
 	const store = createConversationStore({
 		mutationHubId: "hub-1",
@@ -148,12 +138,15 @@ function compose(runtimeOptions: NativeMutationRuntimeOptions = {}) {
 	};
 }
 
-async function open(host: ReturnType<typeof createNativeMutationHost>, client: FakeClient, store: ReturnType<typeof createConversationStore>, service: ReturnType<typeof createConversationService>) {
+async function open(
+	host: ReturnType<typeof createNativeMutationHost>,
+	client: FakeClient,
+	store: ReturnType<typeof createConversationStore>,
+	service: ReturnType<typeof createConversationService>,
+) {
 	client.on("thread/read", () => ({ thread: makeThread() }) as ThreadReadResponse);
 	await host.start();
-	await store
-		.getState()
-		.openProjected(service, createActivityStore().getState(), "ref-1");
+	await store.getState().openProjected(service, createActivityStore().getState(), "ref-1");
 }
 
 test("a rejected production send is admitted durably and lands a recovery row the panel surfaces", async () => {
@@ -169,9 +162,7 @@ test("a rejected production send is admitted durably and lands a recovery row th
 	store.getState().setDraft("my message");
 
 	const previous = store.getState().lastAcceptedMutation;
-	await store
-		.getState()
-		.send(service, [{ type: "text", text: "my message" }]);
+	await store.getState().send(service, [{ type: "text", text: "my message" }]);
 
 	// The store reported durable admission without inventing a wire receipt,
 	// and the service transport was never called for the mutation.
@@ -181,16 +172,12 @@ test("a rejected production send is admitted durably and lands a recovery row th
 	});
 	expect(store.getState().lastAcceptedMutation).not.toBe(previous);
 	await vi.waitFor(() => {
-		expect(
-			client.calls.filter((call) => call.method === "turn/start"),
-		).toHaveLength(1);
+		expect(client.calls.filter((call) => call.method === "turn/start")).toHaveLength(1);
 	});
 
 	await vi.waitFor(async () => {
 		const snapshot = await runtime.read(targetKey);
-		expect(snapshot.recovery).toMatchObject([
-			{ method: "turn/start", recoveryKind: "rejected" },
-		]);
+		expect(snapshot.recovery).toMatchObject([{ method: "turn/start", recoveryKind: "rejected" }]);
 		expect(snapshot.outbox).toEqual([]);
 	});
 	await runtime.stop();
@@ -229,13 +216,9 @@ test("a durable send clears the composer's durable unconfirmed draft at enqueue,
 
 	// The intent is durably enqueued and the wire turn is still in flight...
 	await vi.waitFor(() => {
-		expect(
-			client.calls.filter((call) => call.method === "turn/start"),
-		).toHaveLength(1);
+		expect(client.calls.filter((call) => call.method === "turn/start")).toHaveLength(1);
 	});
-	expect((await runtime.read(targetKey)).outbox).toMatchObject([
-		{ state: "submitting" },
-	]);
+	expect((await runtime.read(targetKey)).outbox).toMatchObject([{ state: "submitting" }]);
 	// ...yet the unconfirmed draft marker is already gone: a crash here cannot
 	// resurrect the message the outbox owns.
 	expect(document.getSnapshot().record.unconfirmed).toBeNull();
@@ -275,18 +258,12 @@ test("a failed host startup keeps the registration so a later admission still di
 	// retried start has a bound client to dispatch for.
 	expect(host.beginRead("ref-1")).toBeDefined();
 
-	await store
-		.getState()
-		.openProjected(service, createActivityStore().getState(), "ref-1");
+	await store.getState().openProjected(service, createActivityStore().getState(), "ref-1");
 	store.getState().setDraft("retry after failure");
-	await store
-		.getState()
-		.send(service, [{ type: "text", text: "retry after failure" }]);
+	await store.getState().send(service, [{ type: "text", text: "retry after failure" }]);
 
 	await vi.waitFor(() => {
-		expect(
-			client.calls.filter((call) => call.method === "turn/start"),
-		).toHaveLength(1);
+		expect(client.calls.filter((call) => call.method === "turn/start")).toHaveLength(1);
 	});
 	await runtime.stop();
 });
@@ -325,9 +302,7 @@ test("the durable submitter refuses while no host is live and delegates once one
 	// happened, never asks the person to reconnect - the app does that on its
 	// own - so the exact text is pinned here.
 	const refused = createDurableSubmitter(() => null);
-	await expect(refused.submit(request)).rejects.toThrow(
-		new Error("Durable sending is unavailable right now."),
-	);
+	await expect(refused.submit(request)).rejects.toThrow(new Error("Durable sending is unavailable right now."));
 
 	// A live host delegates to the runtime and enqueues durably.
 	const { runtime, host, targetKey } = compose();

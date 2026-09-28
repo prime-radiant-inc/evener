@@ -71,7 +71,10 @@ it("leaves the sheet for today's screens until their pages land (ruling 10)", ()
 	];
 	for (const [label, screen] of interim) {
 		press(label);
-		expect(root.dispatch).toHaveBeenLastCalledWith({ type: "REPLACE", payload: { name: screen, params: { hubId: "hub-1" } } });
+		expect(root.dispatch).toHaveBeenLastCalledWith({
+			type: "REPLACE",
+			payload: { name: screen, params: { hubId: "hub-1" } },
+		});
 	}
 	press("Hubs");
 	expect(root.navigate).toHaveBeenLastCalledWith("Hubs");

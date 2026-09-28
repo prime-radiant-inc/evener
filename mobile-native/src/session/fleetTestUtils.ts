@@ -12,10 +12,7 @@ export interface FleetShape {
 	revision?: number;
 }
 
-export const fleetSession = (
-	ref: string,
-	over: Partial<NavigationSessionSummary> = {},
-): NavigationSessionSummary => ({
+export const fleetSession = (ref: string, over: Partial<NavigationSessionSummary> = {}): NavigationSessionSummary => ({
 	ref,
 	host_id: "local",
 	session_id: ref,

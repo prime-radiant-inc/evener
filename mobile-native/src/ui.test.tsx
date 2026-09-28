@@ -24,8 +24,15 @@ it("maps the existing color keys onto the spec's light palette", () => {
 	mode.scheme = "light";
 	const colors = renderHook(() => useColors()).result.current;
 	expect(colors).toMatchObject({
-		background: "#FAF9F6", surface: "#F4F3EE", text: "#252521", secondary: "#5F5F57",
-		border: "#DDDCD4", accent: "#0064C2", error: "#C51D23", warning: "#AD5209", onAccent: "#FFFFFF",
+		background: "#FAF9F6",
+		surface: "#F4F3EE",
+		text: "#252521",
+		secondary: "#5F5F57",
+		border: "#DDDCD4",
+		accent: "#0064C2",
+		error: "#C51D23",
+		warning: "#AD5209",
+		onAccent: "#FFFFFF",
 	});
 	expect(colors.palette.scheme).toBe("light");
 });
@@ -34,8 +41,15 @@ it("maps the existing color keys onto the spec's dark palette", () => {
 	mode.scheme = "dark";
 	const colors = renderHook(() => useColors()).result.current;
 	expect(colors).toMatchObject({
-		background: "#191918", surface: "#20201E", text: "#F2F1EB", secondary: "#B0AFA6",
-		border: "#34342F", accent: "#459EFF", error: "#F17478", warning: "#F68F3C", onAccent: "#FFFFFF",
+		background: "#191918",
+		surface: "#20201E",
+		text: "#F2F1EB",
+		secondary: "#B0AFA6",
+		border: "#34342F",
+		accent: "#459EFF",
+		error: "#F17478",
+		warning: "#F68F3C",
+		onAccent: "#FFFFFF",
 	});
 	expect(colors.palette.scheme).toBe("dark");
 });
@@ -49,7 +63,11 @@ it("treats an unspecified scheme as light", () => {
 
 it("fills a primary action with accent-fill so white text passes contrast in dark mode", () => {
 	mode.scheme = "dark";
-	const tree = render(<Action tone="primary" onPress={() => {}}>Send</Action>);
+	const tree = render(
+		<Action tone="primary" onPress={() => {}}>
+			Send
+		</Action>,
+	);
 	const pressable = tree.root.findByProps({ accessibilityLabel: "Send" });
 	const style = pressable.props.style({ pressed: false });
 	expect(style).toEqual(expect.arrayContaining([expect.objectContaining({ backgroundColor: "#0070E0" })]));
@@ -58,7 +76,11 @@ it("fills a primary action with accent-fill so white text passes contrast in dar
 it("scales the yourMessage variant's text size with Dynamic Type", () => {
 	mode.scheme = "light";
 	mode.fontScale = 1.5;
-	const tree = render(<Copy variant="yourMessage" label="You: Hi">Hi</Copy>);
+	const tree = render(
+		<Copy variant="yourMessage" label="You: Hi">
+			Hi
+		</Copy>,
+	);
 	const text = tree.root.findByType("Text" as never);
 	expect(text.props.style).toMatchObject({
 		fontFamily: "SourceSerif4-Regular",

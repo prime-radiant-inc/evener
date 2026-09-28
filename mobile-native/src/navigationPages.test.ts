@@ -85,26 +85,19 @@ function boundary(resource: "catalog" | "section" = "catalog") {
 	return {
 		requests,
 		requested: (count: number) =>
-			requests.length >= count
-				? Promise.resolve()
-				: new Promise<void>((resolve) => arrivals.set(count, resolve)),
+			requests.length >= count ? Promise.resolve() : new Promise<void>((resolve) => arrivals.set(count, resolve)),
 		invalidate: (payload: NavigationInvalidatedPayload) =>
 			notify({ method: "evener/navigation/invalidated", params: payload }),
 		pages: new NavigationPages<{ key: string; ref?: string }>(
 			client,
-			resource === "catalog"
-				? { resource: "catalog", catalog: "projects" }
-				: { resource: "section", section: "live" },
+			resource === "catalog" ? { resource: "catalog", catalog: "projects" } : { resource: "section", section: "live" },
 			resource === "catalog" ? "projects" : "sessions",
 			(row) => row.ref ?? row.key,
 			2,
 		),
 	};
 }
-function until<T>(
-	pages: NavigationPages<T>,
-	ready: (state: ReturnType<NavigationPages<T>["getSnapshot"]>) => boolean,
-) {
+function until<T>(pages: NavigationPages<T>, ready: (state: ReturnType<NavigationPages<T>["getSnapshot"]>) => boolean) {
 	return new Promise<void>((resolve) => {
 		let stop = () => {};
 		const check = () => {
@@ -116,8 +109,7 @@ function until<T>(
 		check();
 	});
 }
-const settled = <T>(pages: NavigationPages<T>) =>
-	until(pages, (state) => !state.loading && !state.stale);
+const settled = <T>(pages: NavigationPages<T>) => until(pages, (state) => !state.loading && !state.stale);
 const tick = () => new Promise((resolve) => setTimeout(resolve));
 function response(
 	keys: string[],
@@ -152,11 +144,7 @@ describe("navigation pages", () => {
 		expect(requests[1].params.offset).toBe(2);
 		requests[1].resolve(response(["b", "c"], 0, 1, 2));
 		await next;
-		expect(pages.getSnapshot().rows.map((row) => row.key)).toEqual([
-			"a",
-			"b",
-			"c",
-		]);
+		expect(pages.getSnapshot().rows.map((row) => row.key)).toEqual(["a", "b", "c"]);
 		expect(pages.getSnapshot().remaining).toBe(0);
 	});
 	it("refuses to combine revisions and re-reads from the first page", async () => {
@@ -593,12 +581,7 @@ it("retries a read that predates a generation change during the request", async 
 
 it("retains session truncation across pages and clears it on refresh", async () => {
 	const { requests, pages } = boundary("section");
-	const page = (
-		ref: string,
-		offset: number,
-		remaining: number,
-		truncated: boolean,
-	) =>
+	const page = (ref: string, offset: number, remaining: number, truncated: boolean) =>
 		wireV2(
 			{
 				representationVersion: 2,
@@ -728,8 +711,7 @@ it("uses exact page bases for conditional refresh and preserves not-modified row
 it("applies delta removals and container order before publishing refreshed rows", async () => {
 	const { pages, requests } = boundary();
 	const original = response(["a", "b"]);
-	const graph =
-		original.data as import("@evener/appwire-client").NavigationSnapshot;
+	const graph = original.data as import("@evener/appwire-client").NavigationSnapshot;
 	const first = pages.refresh();
 	requests[0].resolve(original);
 	await first;
@@ -750,16 +732,12 @@ it("applies delta removals and container order before publishing refreshed rows"
 				},
 			],
 			removedEntityKeys: [graph.entities[0].key],
-			upsertedContainers: [
-				{ ...graph.containers[0], children: [graph.entities[1].key] },
-			],
+			upsertedContainers: [{ ...graph.containers[0], children: [graph.entities[1].key] }],
 			removedContainerKeys: [],
 		},
 	});
 	await refresh;
-	expect(pages.getSnapshot().rows).toEqual([
-		{ key: "b", name: "Renamed", session_count: 2 },
-	]);
+	expect(pages.getSnapshot().rows).toEqual([{ key: "b", name: "Renamed", session_count: 2 }]);
 	const next = pages.refresh();
 	expect(requests[2].params.base?.etag).toBe("changed");
 	requests[2].resolve(response(["b"], 0, 2));
@@ -986,9 +964,7 @@ describe("updating copy", () => {
 	});
 	it("gives way to an error on screen", () => {
 		expect(updating(page({ stale: true, error: "offline" }))).toBe(false);
-		expect(
-			updating(page({ stale: true, loading: true, error: "offline" })),
-		).toBe(false);
+		expect(updating(page({ stale: true, loading: true, error: "offline" }))).toBe(false);
 	});
 	it("says nothing about a fresh page, loading or not", () => {
 		expect(updating(page({ loading: true }))).toBe(false);

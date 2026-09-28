@@ -44,7 +44,9 @@ export function FilesSheet({ route, navigation }: NativeStackScreenProps<Routes,
 						This session hasn't written or linked any documents yet.
 					</Text>
 				}
-				renderItem={({ item }) => <DocumentRow hubId={hubId} sessionRef={ref} document={item} onPress={() => open(item)} />}
+				renderItem={({ item }) => (
+					<DocumentRow hubId={hubId} sessionRef={ref} document={item} onPress={() => open(item)} />
+				)}
 			/>
 		</Sheet>
 	);
@@ -79,7 +81,13 @@ function DocumentRow({
 			accessibilityRole="button"
 			accessibilityLabel={label}
 			onPress={onPress}
-			style={({ pressed }) => ({ minHeight: 44, paddingVertical: 10, paddingHorizontal: 16, gap: 2, opacity: pressed ? 0.6 : 1 })}
+			style={({ pressed }) => ({
+				minHeight: 44,
+				paddingVertical: 10,
+				paddingHorizontal: 16,
+				gap: 2,
+				opacity: pressed ? 0.6 : 1,
+			})}
 		>
 			<View style={{ flexDirection: "row", alignItems: "baseline", gap: 8 }}>
 				{fresh ? <FreshDot /> : null}
@@ -92,7 +100,13 @@ function DocumentRow({
 				<Text
 					allowFontScaling={allowFontScaling}
 					numberOfLines={1}
-					style={{ flexShrink: 1, fontFamily: fonts.serifSemibold, fontSize: 15 * scale, lineHeight: 20 * scale, color: palette.inkHi }}
+					style={{
+						flexShrink: 1,
+						fontFamily: fonts.serifSemibold,
+						fontSize: 15 * scale,
+						lineHeight: 20 * scale,
+						color: palette.inkHi,
+					}}
 				>
 					{title}
 				</Text>

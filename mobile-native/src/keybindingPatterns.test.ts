@@ -40,43 +40,32 @@ const patterns = [
 ];
 
 describe("native shortcut pattern compilation", () => {
-	it.each(patterns)(
-		"compiles %s to UnicodeSets membership without the v flag",
-		(pattern) => {
-			const chord = `Control+(${pattern})`;
-			const native = parseKeybinding(chord)[0]?.[2];
-			const web = parseWeb(chord)[0]?.[2];
-			expect(native).toBeInstanceOf(RegExp);
-			expect(web).toBeInstanceOf(RegExp);
-			if (!(native instanceof RegExp) || !(web instanceof RegExp))
-				throw new Error("Expected pattern matchers");
-			expect(native.flags).not.toContain("v");
-			for (const sample of samples) {
-				// V8's ASCII-property fast path omits simple case folding for these
-				// two members. Use the ECMAScript membership oracle for that case;
-				// see docs/design/mobile/keybinding-patterns.md for the derivation.
-				const expected =
-					pattern === String.raw`[\p{ASCII}&&\p{Letter}]` &&
-					(sample === "K" || sample === "ſ")
-						? true
-						: web.test(sample);
-				expect(native.test(sample), `${pattern}: ${sample}`).toBe(expected);
-				expect(native.test(sample)).toBe(expected);
-				expect(new RegExp(native.source, native.flags).test(sample)).toBe(
-					expected,
-				);
-			}
-		},
-	);
+	it.each(patterns)("compiles %s to UnicodeSets membership without the v flag", (pattern) => {
+		const chord = `Control+(${pattern})`;
+		const native = parseKeybinding(chord)[0]?.[2];
+		const web = parseWeb(chord)[0]?.[2];
+		expect(native).toBeInstanceOf(RegExp);
+		expect(web).toBeInstanceOf(RegExp);
+		if (!(native instanceof RegExp) || !(web instanceof RegExp)) throw new Error("Expected pattern matchers");
+		expect(native.flags).not.toContain("v");
+		for (const sample of samples) {
+			// V8's ASCII-property fast path omits simple case folding for these
+			// two members. Use the ECMAScript membership oracle for that case;
+			// see docs/design/mobile/keybinding-patterns.md for the derivation.
+			const expected =
+				pattern === String.raw`[\p{ASCII}&&\p{Letter}]` && (sample === "K" || sample === "ſ") ? true : web.test(sample);
+			expect(native.test(sample), `${pattern}: ${sample}`).toBe(expected);
+			expect(native.test(sample)).toBe(expected);
+			expect(new RegExp(native.source, native.flags).test(sample)).toBe(expected);
+		}
+	});
 	it("preserves the authored pattern through the real native preview and change validator", () => {
 		const chord = String.raw`([\p{ASCII}&&\p{Letter}])`;
 		const changed = checkedKeybindingChange([], "palette.open", chord);
 		const preview = keybindingPreview(changed);
 		expect(changed).toEqual([{ action: "palette.open", chord }]);
 		expect(preview.warnings).toEqual([]);
-		expect(
-			preview.rows.find((row) => row.actionId === "palette.open")?.shortcuts,
-		).toEqual([chord]);
+		expect(preview.rows.find((row) => row.actionId === "palette.open")?.shortcuts).toEqual([chord]);
 	});
 	it("rejects the same invalid Unicode sets as the web parser", () => {
 		for (const chord of ["([a&&])", "([a--])", "(\\p{NotAProperty})"]) {

@@ -50,21 +50,24 @@ export function useReadRetry({
 	const erroring = status === "error";
 	useEffect(() => {
 		if (failures === 0 || !active || !erroring) return;
-		const retry = setTimeout(() => {
-			if (inFlight.current || readStatus() !== "error") return;
-			inFlight.current = true;
-			const attempt = generation.current;
-			const settle = () => {
-				if (attempt !== generation.current) return;
-				inFlight.current = false;
-				// Only a retry that left the store on an error counts. One that a
-				// newer read took over ("opening") doesn't: if that read fails too,
-				// the status turns back to "error" and the retry re-arms at the
-				// same step.
-				if (readStatus() === "error") setFailures((count) => count + 1);
-			};
-			resume().then(settle, settle);
-		}, reconnectDelay(failures - 1));
+		const retry = setTimeout(
+			() => {
+				if (inFlight.current || readStatus() !== "error") return;
+				inFlight.current = true;
+				const attempt = generation.current;
+				const settle = () => {
+					if (attempt !== generation.current) return;
+					inFlight.current = false;
+					// Only a retry that left the store on an error counts. One that a
+					// newer read took over ("opening") doesn't: if that read fails too,
+					// the status turns back to "error" and the retry re-arms at the
+					// same step.
+					if (readStatus() === "error") setFailures((count) => count + 1);
+				};
+				resume().then(settle, settle);
+			},
+			reconnectDelay(failures - 1),
+		);
 		return () => clearTimeout(retry);
 	}, [failures, active, erroring, readStatus, resume]);
 	return failures;

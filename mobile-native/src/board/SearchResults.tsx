@@ -54,7 +54,12 @@ function Recent({ recent, onRecent, onClearRecent }: SearchResultsProps) {
 					onPress={onClearRecent}
 					// The action draws 30pt tall; the slop makes a 44pt target.
 					hitSlop={{ top: 7, bottom: 7 }}
-					style={({ pressed }) => ({ minHeight: 30, marginTop: 16, justifyContent: "center", opacity: pressed ? 0.6 : 1 })}
+					style={({ pressed }) => ({
+						minHeight: 30,
+						marginTop: 16,
+						justifyContent: "center",
+						opacity: pressed ? 0.6 : 1,
+					})}
 				>
 					<Text
 						allowFontScaling={Platform.OS !== "ios"}
@@ -300,7 +305,13 @@ function Note({ text }: { text: string }) {
 	return (
 		<Text
 			allowFontScaling={Platform.OS !== "ios"}
-			style={{ paddingHorizontal: 16, paddingVertical: 24, fontSize: 15 * scale, lineHeight: 20 * scale, color: palette.inkMid }}
+			style={{
+				paddingHorizontal: 16,
+				paddingVertical: 24,
+				fontSize: 15 * scale,
+				lineHeight: 20 * scale,
+				color: palette.inkMid,
+			}}
 		>
 			{text}
 		</Text>

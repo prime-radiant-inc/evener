@@ -36,9 +36,11 @@ function openStorage() {
 }
 
 function rawRow(table: string, clientMutationId: string): Row | undefined {
-	return (database.prepare(`SELECT * FROM ${table} WHERE client_mutation_id = ?`).get(clientMutationId) as
-		| Row
-		| undefined) ?? undefined;
+	return (
+		(database.prepare(`SELECT * FROM ${table} WHERE client_mutation_id = ?`).get(clientMutationId) as
+			| Row
+			| undefined) ?? undefined
+	);
 }
 
 beforeEach(() => {
@@ -260,7 +262,9 @@ test("enqueueInterruptAndCancel rejects a clientMutationId already active elsewh
 
 	expect(rawRow("mutation_outbox", waiting.clientMutationId)).toMatchObject({ state: "submitting" });
 	expect(database.prepare("SELECT * FROM mutation_outbox WHERE method = 'turn/interrupt'").all()).toHaveLength(0);
-	expect(database.prepare("SELECT stop_epoch, last_sequence FROM mutation_sequence WHERE target_ref = ?").get(TARGET)).toMatchObject({
+	expect(
+		database.prepare("SELECT stop_epoch, last_sequence FROM mutation_sequence WHERE target_ref = ?").get(TARGET),
+	).toMatchObject({
 		stop_epoch: 0,
 		last_sequence: 1,
 	});
@@ -294,10 +298,7 @@ test("intentSequence is gap-free and per target ref", async () => {
 // could otherwise make two enqueue operations compute the same sequence.
 test("enqueueIntent's sequence allocation never collides when enqueue operations interleave", async () => {
 	let otherNext = 0;
-	const storageB = new MutationOutboxSQLite(
-		port,
-		{ createMutationId: () => `other-${++otherNext}`, now: () => 5678 },
-	);
+	const storageB = new MutationOutboxSQLite(port, { createMutationId: () => `other-${++otherNext}`, now: () => 5678 });
 
 	let sequenceAllocations = 0;
 	let recordB: ReturnType<typeof storageB.enqueueIntent> | undefined;
@@ -314,7 +315,10 @@ test("enqueueIntent's sequence allocation never collides when enqueue operations
 			return result;
 		},
 	};
-	const racingStorage = new MutationOutboxSQLite(racingAdapter, { createMutationId: () => "handle-a", now: () => 1234 });
+	const racingStorage = new MutationOutboxSQLite(racingAdapter, {
+		createMutationId: () => "handle-a",
+		now: () => 1234,
+	});
 
 	const recordA = await racingStorage.enqueueIntent(intent("handle A", TARGET));
 	if (!recordB) throw new Error("reentrant enqueue did not run");
@@ -326,7 +330,9 @@ test("enqueueIntent's sequence allocation never collides when enqueue operations
 		.map((row) => (row as { intent_sequence: number }).intent_sequence);
 	expect([recordA.intentSequence, persistedB.intentSequence].sort()).toEqual([1, 2]);
 	expect(sequences).toEqual([1, 2]);
-	expect(database.prepare("SELECT last_sequence FROM mutation_sequence WHERE target_ref = ?").get(TARGET)).toMatchObject({
+	expect(
+		database.prepare("SELECT last_sequence FROM mutation_sequence WHERE target_ref = ?").get(TARGET),
+	).toMatchObject({
 		last_sequence: 2,
 	});
 });
@@ -339,7 +345,9 @@ test("enqueueIntent rolls back when target sequence uniqueness rejects a duplica
 
 	expect(rawRow("mutation_outbox", first.clientMutationId)).toBeDefined();
 	expect(database.prepare("SELECT * FROM mutation_outbox WHERE target_ref = ?").all(TARGET)).toHaveLength(1);
-	expect(database.prepare("SELECT last_sequence FROM mutation_sequence WHERE target_ref = ?").get(TARGET)).toMatchObject({
+	expect(
+		database.prepare("SELECT last_sequence FROM mutation_sequence WHERE target_ref = ?").get(TARGET),
+	).toMatchObject({
 		last_sequence: 0,
 	});
 });
@@ -417,7 +425,10 @@ test("settleReceipt moves a pending, input-carrying record into the optimistic t
 	});
 	await expect(storage.settleReceipt(record.clientMutationId, "pending")).resolves.toBe(true);
 	expect(rawRow("mutation_outbox", record.clientMutationId)).toBeUndefined();
-	expect(rawRow("mutation_optimistic", record.clientMutationId)).toMatchObject({ state: "accepted", composer_text: null });
+	expect(rawRow("mutation_optimistic", record.clientMutationId)).toMatchObject({
+		state: "accepted",
+		composer_text: null,
+	});
 });
 
 // RoboRev PR #1873 Medium: the accepted optimistic copy is built
@@ -518,7 +529,11 @@ test("settleReceipt's optimistic insert fully replaces a stale row rather than o
 			TARGET,
 			"thread-1",
 			"turn/queue",
-			JSON.stringify({ ref: TARGET, input: [{ type: "text", text: "stale" }], clientMutationId: record.clientMutationId }),
+			JSON.stringify({
+				ref: TARGET,
+				input: [{ type: "text", text: "stale" }],
+				clientMutationId: record.clientMutationId,
+			}),
 			JSON.stringify({ input: [{ type: "text", text: "stale" }] }),
 		);
 
@@ -662,16 +677,15 @@ test("listRecovery scopes composite targets and discardRecovery requires the exa
 	await storage.transferToRecovery(other.clientMutationId, "rejected");
 
 	const scoped = await storage.listRecovery(targetA);
-	expect(scoped.map((record) => record.clientMutationId)).toEqual([
-		first.clientMutationId,
-		second.clientMutationId,
-	]);
+	expect(scoped.map((record) => record.clientMutationId)).toEqual([first.clientMutationId, second.clientMutationId]);
 	expect(scoped[0]).toMatchObject({
 		composerText: "first source",
 		targetRef: targetA,
 		attachments: [{ presentationId: "image-a", marker: 3 }],
 	});
-	await expect(storage.listRecovery(targetB)).resolves.toEqual([expect.objectContaining({ clientMutationId: other.clientMutationId })]);
+	await expect(storage.listRecovery(targetB)).resolves.toEqual([
+		expect.objectContaining({ clientMutationId: other.clientMutationId }),
+	]);
 
 	await expect(storage.discardRecovery(first.clientMutationId, targetB)).resolves.toBe(false);
 	await expect(storage.getRecovery(first.clientMutationId)).resolves.toBeDefined();
@@ -812,9 +826,9 @@ BEGIN SELECT RAISE(ABORT, 'stop failed'); END",
 	await expect(storage.enqueueInterruptAndCancel(interruptIntent())).rejects.toThrow("stop failed");
 
 	expect(rawRow("mutation_outbox", queued.clientMutationId)).toMatchObject({ state: "submitting" });
-	const remaining = database
-		.prepare("SELECT method FROM mutation_outbox WHERE target_ref = ?")
-		.all(TARGET) as { method: string }[];
+	const remaining = database.prepare("SELECT method FROM mutation_outbox WHERE target_ref = ?").all(TARGET) as {
+		method: string;
+	}[];
 	expect(remaining.map((row) => row.method)).toEqual(["turn/queue"]);
 	// The sequence the failed write allocated - and the stop-epoch bump it
 	// made - roll back with everything else: a leftover bump would fence
@@ -858,7 +872,9 @@ test("nextDispatchable skips canceled rows without parking the queue, and the in
 	const interrupt = await storage.enqueueInterruptAndCancel(interruptIntent());
 	// A Stop whose own interrupt never went out would stop nothing: the
 	// canceled rows ahead of it do not park the interrupt behind them.
-	await expect(storage.nextDispatchable(TARGET)).resolves.toMatchObject({ clientMutationId: interrupt.clientMutationId });
+	await expect(storage.nextDispatchable(TARGET)).resolves.toMatchObject({
+		clientMutationId: interrupt.clientMutationId,
+	});
 
 	await storage.settleApplied(interrupt.clientMutationId);
 	const later = await storage.enqueueIntent(intent("later send"));
@@ -901,7 +917,9 @@ test("an in-flight enqueue whose barrier predates the stop commits canceled, not
 	const raced = await storage.enqueueIntent(intent("raced the stop"), { stopEpoch: capture });
 	expect(raced).toMatchObject({ state: "canceled", attempted: false });
 	// The FIFO head is the stop's own interrupt, never the canceled row behind it.
-	await expect(storage.nextDispatchable(TARGET)).resolves.toMatchObject({ clientMutationId: interrupt.clientMutationId });
+	await expect(storage.nextDispatchable(TARGET)).resolves.toMatchObject({
+		clientMutationId: interrupt.clientMutationId,
+	});
 });
 
 // Oracle: "an enqueue after the stop captures the bumped epoch and still

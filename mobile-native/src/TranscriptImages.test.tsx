@@ -21,7 +21,9 @@ const images = [
 ];
 
 function thumbnails(root: ReactTestInstance) {
-	return root.findAll((node) => String(node.type) === "Pressable" && /^Open image/.test(node.props.accessibilityLabel ?? ""));
+	return root.findAll(
+		(node) => String(node.type) === "Pressable" && /^Open image/.test(node.props.accessibilityLabel ?? ""),
+	);
 }
 
 function pager(root: ReactTestInstance) {
@@ -54,7 +56,11 @@ describe("a row of images (spec 8.2)", () => {
 		act(() => thumbnails(tree.root)[1].props.onPress());
 		expect(renderedText(tree)).toContain("2 of 2");
 		expect(pager(tree.root).props.initialScrollIndex).toBe(1);
-		act(() => tree.root.findAll((node) => node.props.accessibilityLabel === "Done" && typeof node.props.onPress === "function")[0].props.onPress());
+		act(() =>
+			tree.root
+				.findAll((node) => node.props.accessibilityLabel === "Done" && typeof node.props.onPress === "function")[0]
+				.props.onPress(),
+		);
 		expect(pager(tree.root)).toBeUndefined();
 	});
 });
@@ -66,7 +72,10 @@ describe("the viewer with VoiceOver", () => {
 		const list = pager(tree.root);
 		expect(list.props.accessibilityRole).toBe("adjustable");
 		expect(list.props.accessibilityValue).toEqual({ text: "Image 1 of 2" });
-		expect(list.props.accessibilityActions.map((action: { name: string }) => action.name)).toEqual(["increment", "decrement"]);
+		expect(list.props.accessibilityActions.map((action: { name: string }) => action.name)).toEqual([
+			"increment",
+			"decrement",
+		]);
 		flatListCalls.length = 0;
 		act(() => list.props.onAccessibilityAction({ nativeEvent: { actionName: "increment" } }));
 		expect(renderedText(tree)).toContain("2 of 2");
@@ -78,4 +87,3 @@ describe("the viewer with VoiceOver", () => {
 		expect(renderedText(tree)).toContain("1 of 2");
 	});
 });
-
