@@ -11,9 +11,6 @@ vi.mock("react-native", async () => ({
 	...(await import("../renderNative.testkit")).nativeModuleMock(),
 }));
 vi.mock("expo-symbols", () => ({ SymbolView: "SymbolView" }));
-vi.mock("react-native-gesture-handler/ReanimatedSwipeable", async () =>
-	(await import("../renderNative.testkit")).gestureHandlerModuleMock(),
-);
 
 const palette = paletteFor("light");
 const NOW = Date.UTC(2026, 8, 26, 12, 0);

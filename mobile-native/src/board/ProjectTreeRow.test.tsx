@@ -9,9 +9,6 @@ vi.mock("react-native", async () => ({
 	...(await import("../renderNative.testkit")).nativeModuleMock(),
 }));
 vi.mock("expo-symbols", () => ({ SymbolView: "SymbolView" }));
-vi.mock("react-native-gesture-handler/ReanimatedSwipeable", async () =>
-	(await import("../renderNative.testkit")).gestureHandlerModuleMock(),
-);
 
 const project = (over: Partial<NavigationProjectSummary> = {}): NavigationProjectSummary => ({
 	key: "evener",

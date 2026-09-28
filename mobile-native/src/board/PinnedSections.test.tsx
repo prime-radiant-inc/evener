@@ -8,7 +8,8 @@ import { expect, it, vi } from "vitest";
 import { paletteFor } from "../design/tokens";
 import { render } from "../renderNative.testkit";
 import { boardState } from "./attention";
-import { BoardRow, type RowContext } from "./BoardRow";
+import { BoardRow } from "./BoardRow";
+import type { RowContext } from "./BoardRows";
 import { PinnedSection, useCategoryFolds } from "./PinnedSections";
 import { StateMark } from "./StateMark";
 

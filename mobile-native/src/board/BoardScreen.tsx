@@ -45,7 +45,8 @@ import {
 } from "./attention";
 import type { OrganizeBy, SeenMarkers } from "./boardMemory";
 import { BoardNotices, NoticeRow } from "./BoardNotices";
-import { BandHeader, BoardRows, FoldChevron, type RowContext } from "./BoardRow";
+import { BandHeader, FoldChevron } from "./BoardRow";
+import { BoardRows, type RowContext } from "./BoardRows";
 import { BoardToolbar } from "./BoardToolbar";
 import { type BoardController, type BoardSnapshot, createBoardController } from "./boardData";
 import { createSearchController, type SearchScope } from "./boardSearch";

@@ -6,9 +6,7 @@ import { type AccessibilityActionEvent, type AccessibilityActionInfo, Platform, 
 import type { Palette } from "../design/tokens";
 import { useColors, useTextScale } from "../ui";
 import { bandOf, type ClassifiedRow, lastLine, stateWord, type Usual, whyLine } from "./attention";
-import type { RowSwipes } from "./rowSwipes";
 import { StateMark } from "./StateMark";
-import { SwipeRow, swipeAccessibility } from "./SwipeRow";
 
 export interface BoardRowProps {
 	item: ClassifiedRow;
@@ -34,58 +32,10 @@ export interface BoardRowProps {
  * the 10pt gap. */
 export const TITLE_INSET = 16 + 28 + 10;
 
-/** What every row in one of the Board's lists shares. */
-export type RowContext = Pick<BoardRowProps, "connected" | "usual" | "hostLabel" | "now" | "onOpen"> & {
-	draftRefs: ReadonlySet<string>;
-	/** A row's swipes, by whether it sits in an archived tier. */
-	swipes: (item: ClassifiedRow, archived: boolean) => RowSwipes;
-};
-
 /** The separator between rows, inset to the title by default. */
 export function Hairline({ inset = TITLE_INSET }: { inset?: number }) {
 	const { palette } = useColors();
 	return <View style={{ height: 0.5, marginLeft: inset, backgroundColor: palette.edge }} />;
-}
-
-/** A list of Board rows, each one swipeable, separated by hairlines inset
- * to the title. `archived` rows sit in an archived tier. */
-export function BoardRows({
-	items,
-	variant,
-	moving,
-	archived = false,
-	context,
-}: {
-	items: readonly ClassifiedRow[];
-	variant: BoardRowProps["variant"];
-	moving: boolean;
-	archived?: boolean;
-	context: RowContext;
-}): ReactElement {
-	const { draftRefs, swipes, ...shared } = context;
-	return (
-		<>
-			{items.map((item, index) => {
-				const { leading, trailing, dimmed } = swipes(item, archived);
-				return (
-					<View key={item.row.ref}>
-						{index > 0 ? <Hairline inset={TITLE_INSET} /> : null}
-						<SwipeRow leading={leading} trailing={trailing}>
-							<BoardRow
-								item={item}
-								variant={variant}
-								moving={moving}
-								hasDraft={draftRefs.has(item.row.ref)}
-								dimmed={dimmed}
-								{...swipeAccessibility(leading, trailing)}
-								{...shared}
-							/>
-						</SwipeRow>
-					</View>
-				);
-			})}
-		</>
-	);
 }
 
 /** The type of the Board's section headers (spec 7.1): 13pt semibold,
