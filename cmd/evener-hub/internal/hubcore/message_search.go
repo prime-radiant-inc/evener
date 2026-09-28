@@ -152,9 +152,10 @@ type indexedTranscript struct {
 }
 
 // transcriptItems is one read of a transcript: the items it returned and the
-// snapshot they describe. replace says they are every item; otherwise they
-// are the ones an entry at or past the held snapshot's length created or
-// changed.
+// snapshot they describe. replace says they are every searchable message;
+// otherwise they are every item an entry at or past the held snapshot's
+// length created or changed, messages or not, since a changed item that is no
+// longer a message still drops its row.
 type transcriptItems struct {
 	items    []appwire.ThreadItem
 	snapshot appwire.SnapshotIdentity
@@ -343,7 +344,9 @@ func readTranscriptItems(transcriptPath string, held *appwire.SnapshotIdentity) 
 	return readEveryItem(index)
 }
 
-// readEveryItem pages through every item of the index, newest window first.
+// readEveryItem pages through every item of the index, newest window first,
+// and keeps only the searchable messages: a whole read replaces the session's
+// rows, so the rest (tool output above all) would only be held to be dropped.
 func readEveryItem(index *transcriptindex.Index) (transcriptItems, error) {
 	window, err := index.Latest(appwire.TranscriptItemPageLimit)
 	if err != nil {
@@ -351,7 +354,11 @@ func readEveryItem(index *transcriptindex.Index) (transcriptItems, error) {
 	}
 	read := transcriptItems{snapshot: appwire.SnapshotIdentity{Incarnation: window.Incarnation, Length: window.Length}, replace: true}
 	for {
-		read.items = append(read.items, candidateItems(window.Candidates)...)
+		for _, candidate := range window.Candidates {
+			if searchableMessage(candidate.Item) {
+				read.items = append(read.items, candidate.Item)
+			}
+		}
 		if !window.HasOlder || len(window.Candidates) == 0 {
 			return read, nil
 		}
@@ -427,17 +434,28 @@ func (x *MessageSearch) apply(ctx context.Context, sessionID string, stamp trans
 			return fmt.Errorf("index session %s: %w", sessionID, err)
 		}
 	}
+	// One statement of each kind per read: a first read of a long transcript
+	// writes a row per message.
+	drop, err := tx.PrepareContext(ctx, `DELETE FROM messages WHERE session_id = ? AND transcript_key = ?`)
+	if err != nil {
+		return fmt.Errorf("index session %s: %w", sessionID, err)
+	}
+	defer func() { _ = drop.Close() }()
+	insert, err := tx.PrepareContext(ctx, `INSERT INTO messages(session_id, transcript_key, entry, item, sub, text) VALUES (?, ?, ?, ?, ?, ?)`)
+	if err != nil {
+		return fmt.Errorf("index session %s: %w", sessionID, err)
+	}
+	defer func() { _ = insert.Close() }()
 	for _, item := range read.items {
 		if !read.replace {
-			if _, err := tx.ExecContext(ctx, `DELETE FROM messages WHERE session_id = ? AND transcript_key = ?`, sessionID, item.TranscriptKey); err != nil {
+			if _, err := drop.ExecContext(ctx, sessionID, item.TranscriptKey); err != nil {
 				return fmt.Errorf("index session %s: %w", sessionID, err)
 			}
 		}
 		if !searchableMessage(item) {
 			continue
 		}
-		if _, err := tx.ExecContext(ctx, `INSERT INTO messages(session_id, transcript_key, entry, item, sub, text) VALUES (?, ?, ?, ?, ?, ?)`,
-			sessionID, item.TranscriptKey, int64(item.Position.Entry), int64(item.Position.Item), int64(item.Position.Sub), item.Text); err != nil {
+		if _, err := insert.ExecContext(ctx, sessionID, item.TranscriptKey, int64(item.Position.Entry), int64(item.Position.Item), int64(item.Position.Sub), item.Text); err != nil {
 			return fmt.Errorf("index session %s: %w", sessionID, err)
 		}
 	}

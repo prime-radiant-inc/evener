@@ -350,7 +350,6 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 	messageSearch, err := hubcore.OpenMessageSearch(filepath.Join(hubStateRoot, "search.db"))
 	if err != nil {
 		_, _ = fmt.Fprintf(stderr, "[hub] message search: %v\n", err)
-		messageSearch = nil
 	} else {
 		defer func() { _ = messageSearch.Close() }()
 	}
