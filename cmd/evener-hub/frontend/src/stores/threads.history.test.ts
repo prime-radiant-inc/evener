@@ -258,4 +258,41 @@ describe("versioned history: below-floor held snapshot", () => {
     const last = readCalls[readCalls.length - 1]?.params as { heldSnapshot?: unknown };
     expect(last.heldSnapshot).toBeUndefined();
   });
+
+  // roborev finding on this PR: the retry must fully replace held history,
+  // not merge into it through applyReadResponse (same incarnation/epoch,
+  // length >= held's, so readDisposition would call it a "merge" and never
+  // touch a held item outside the fresh window) - that would leave exactly
+  // the items TranscriptItemCursorStale exists to protect (one outside the
+  // latest window whose completion landed after the held length) stale
+  // forever.
+  test("a stale-cursor retry discards an older held turn outside the recovered window, not merges it", async () => {
+    const fake = connectFakeClient();
+    fake.on("thread/read", () => ({ ...read("initial"), olderCursor: "cursor_1" }));
+    await threadsStore.getState().ensureThread(REF);
+
+    fake.on("thread/turns/list", () => page("turn_old", { length: 100 }));
+    await threadsStore.getState().loadOlderTurns(REF);
+    expect(
+      threadsStore
+        .getState()
+        .threads.get(REF)
+        ?.turns.map((t) => t.id),
+    ).toContain("turn_old");
+
+    fake.on("thread/read", (params) => {
+      if (params.heldSnapshot !== undefined) {
+        throw new WireError("stale", -32000, { evenerErrorInfo: "transcriptItemCursorStale" });
+      }
+      return read("recovered", { length: 300, requestGeneration: params.requestGeneration });
+    });
+    await threadsStore.getState().refreshThread(REF);
+
+    const turnIds = threadsStore
+      .getState()
+      .threads.get(REF)
+      ?.turns.map((t) => t.id);
+    expect(turnIds).not.toContain("turn_old");
+    expect(turnIds).toEqual(["turn_recovered"]);
+  });
 });
