@@ -202,8 +202,9 @@ export class NavigationActions {
 				...this.state,
 				pending: false,
 				uncertain: true,
-				error:
-					"Could not confirm current navigation for the previous change. Refresh before trying again.",
+				error: checkpoint
+					? "Could not confirm current navigation for the previous change. Refresh before trying again."
+					: "Could not load the current navigation. Refresh before trying again.",
 			});
 		}
 	}

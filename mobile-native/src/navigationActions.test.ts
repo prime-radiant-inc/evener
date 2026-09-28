@@ -632,4 +632,46 @@ describe("navigation organization actions", () => {
 		expect(refreshed).toBe(true);
 		expect(actions.getSnapshot().uncertain).toBe(false);
 	});
+
+	it("words a failed first read as a load failure, not a previous change", async () => {
+		const actions = new NavigationActions(
+			{} as ConversationClientLike,
+			async () => {},
+			() => true,
+			async () => {
+				throw new Error("read failed");
+			},
+		);
+		await actions.reconcile();
+		expect(actions.getSnapshot()).toMatchObject({
+			pending: false,
+			uncertain: true,
+			error:
+				"Could not load the current navigation. Refresh before trying again.",
+		});
+	});
+
+	it("keeps the previous-change wording when a checkpoint precedes the failed read", async () => {
+		const journal = journalFixture();
+		journal.begin({
+			kind: "assignPin",
+			params: { sessionRef: "local:s", sectionName: "Focus" },
+		});
+		const actions = new NavigationActions(
+			{} as ConversationClientLike,
+			async () => {},
+			() => true,
+			async () => {
+				throw new Error("read failed");
+			},
+			journal,
+		);
+		await actions.reconcile();
+		expect(actions.getSnapshot()).toMatchObject({
+			pending: false,
+			uncertain: true,
+			error:
+				"Could not confirm current navigation for the previous change. Refresh before trying again.",
+		});
+	});
 });
