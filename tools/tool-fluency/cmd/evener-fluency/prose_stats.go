@@ -166,9 +166,9 @@ type proseStats struct {
 	Model              string      `json:"model"`
 	Runs               int         `json:"runs"`
 	Passed             int         `json:"passed"`
-	Blocked            int         `json:"blocked"` // runs the gateway or harness stopped; they say nothing about the prompt
-	Tasks              int         `json:"tasks"`
-	TasksAllPassed     int         `json:"tasks_all_passed"` // tasks that passed on every run
+	Blocked            int         `json:"blocked"`          // runs the gateway or harness stopped; they say nothing about the prompt
+	Tasks              int         `json:"tasks"`            // tasks with at least one run that passed or failed
+	TasksAllPassed     int         `json:"tasks_all_passed"` // tasks whose runs all passed, not counting blocked runs
 	Messages           int         `json:"messages"`         // root result-tool messages
 	MedianMessageWords int         `json:"median_message_words"`
 	ToUser             proseCounts `json:"to_user"`
@@ -181,7 +181,7 @@ func summarizeProse(dirs []labeledDir) ([]proseStats, error) {
 	type key struct{ label, model string }
 	rows := map[key]*proseStats{}
 	messageWords := map[key][]int{}
-	taskFailed := map[key]map[string]bool{} // probe -> failed on some run
+	taskFailed := map[key]map[string]bool{} // probe -> failed on some run that was not blocked
 	for _, d := range dirs {
 		results, err := loadResults(d.Dir)
 		if err != nil {
@@ -198,12 +198,15 @@ func summarizeProse(dirs []labeledDir) ([]proseStats, error) {
 			}
 			row.Runs++
 			passed := res.Status == "passed"
+			decided := passed || res.Status == "failed"
 			if passed {
 				row.Passed++
-			} else if res.Status != "failed" {
+			} else if !decided {
 				row.Blocked++
 			}
-			taskFailed[k][res.Probe] = taskFailed[k][res.Probe] || !passed
+			if decided {
+				taskFailed[k][res.Probe] = taskFailed[k][res.Probe] || !passed
+			}
 			p, err := extractRunProse(res.StateDir)
 			if err != nil {
 				row.ProseErrors++

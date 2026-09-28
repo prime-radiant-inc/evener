@@ -2624,9 +2624,11 @@ Expected: 27 result lines per model (nine tasks, three runs each), and results u
 - [ ] **Step 2: Find the gateway's limit and rule out harness trouble**
 
 ```bash
-grep -l -i -E '429|rate.?limit|too many requests' $LAB/runs/v0/*/*/rep-*/stderr.ndjson | wc -l
+cat $LAB/runs/v0/*/*/rep-*/stderr.ndjson | jq -cR 'fromjson? | select(.kind == "MODEL_RETRY" and (.data.status_code == 429 or .data.error_class == "rate_limit"))' | wc -l
 grep -h '"status"' $LAB/runs/v0/*/*/rep-*/result.json | sort | uniq -c
 ```
+
+The first command counts the gateway's rate-limit retries by their event fields. A plain text search for 429 also matches timestamps and token counts.
 
 Expected: no rate-limit hits, and every status is `passed` or `failed`. On rate limits, rerun each blocked task at `--max-concurrent 2`, with `--probe` naming the task, into a new `--out` such as `$LAB/retry-1`, since a run refuses a directory that holds results. Later steps pass both directories to `prose-stats` and `review-pack` under the same label; the blocked runs show in their own column and do not count against the version. Log the concurrency that held as a line `cap: N` in `$LAB/LAB-LOG.md`. With no hits at 4, log `cap: 7` and watch the next round for rate limits. Look into every status other than passed or failed before the baseline is trusted: timeouts, infra errors, harness failures.
 
@@ -2748,6 +2750,8 @@ git add docs/prompt-lab agent/prompts agent/internal/tool/definitions.go
 git commit -m "lab: rewrite the system prompt prose (no persona)"
 git tag lab/v1-C
 ```
+
+When a Step 5 resolution changed Go code or a test, such as a new prompt field or a test sized to the old prompt, stage those files by name in the same commit, and run `(cd agent && go test ./...)` before tagging.
 
 Persona A replaces the first paragraph of `identity.md` with:
 

@@ -159,6 +159,26 @@ func TestSummarizeProseCountsBlockedRuns(t *testing.T) {
 	}
 }
 
+// TestSummarizeProseLeavesBlockedRunsOutOfTaskPasses: a blocked run says
+// nothing about the prompt, so it neither fails its task nor makes a task
+// count when no run of it was decided.
+func TestSummarizeProseLeavesBlockedRunsOutOfTaskPasses(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	stateDir := filepath.Join(dir, "state")
+	writeProseRun(t, stateDir, "Done.")
+	writeFluencyResult(t, dir, probeResult{Probe: "prose.smoke", Model: "m", Repetition: 1, Status: "passed", StateDir: stateDir})
+	writeFluencyResult(t, dir, probeResult{Probe: "prose.smoke", Model: "m", Repetition: 2, Status: "blocked_infra", StateDir: stateDir})
+	writeFluencyResult(t, dir, probeResult{Probe: "prose.git-greeting", Model: "m", Repetition: 1, Status: "blocked_infra", StateDir: stateDir})
+	stats, err := summarizeProse([]labeledDir{{Label: "v0", Dir: dir}})
+	if err != nil {
+		t.Fatalf("summarizeProse: %v", err)
+	}
+	if len(stats) != 1 || stats[0].Tasks != 1 || stats[0].TasksAllPassed != 1 || stats[0].Blocked != 2 {
+		t.Fatalf("stats = %+v, want 1 decided task that passed every decided run, and 2 blocked runs", stats)
+	}
+}
+
 func TestParseLabeledNeedsBothParts(t *testing.T) {
 	t.Parallel()
 	for _, bad := range []string{"", "label", "=dir", "label="} {

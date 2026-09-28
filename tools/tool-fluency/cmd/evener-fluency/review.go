@@ -12,6 +12,7 @@ import (
 	"slices"
 	"strings"
 	"time"
+	"unicode"
 
 	"primeradiant.com/evener/agent/doctor"
 	"primeradiant.com/evener/agent/schema"
@@ -36,8 +37,8 @@ type reviewEntry struct {
 // time does not group them by version.
 func writeReviewPack(dirs []labeledDir, packetsDir, maskRoot string, rng *rand.Rand) ([]reviewEntry, error) {
 	for _, d := range dirs {
-		if !strings.ContainsAny(d.Label, "0123456789") {
-			return nil, fmt.Errorf("label %q needs a digit, such as v0 or v1-A: the label is masked wherever it appears, and an ordinary word would be masked in the agents' own writing", d.Label)
+		if !strings.ContainsAny(d.Label, "0123456789") || !strings.ContainsFunc(d.Label, unicode.IsLetter) {
+			return nil, fmt.Errorf("label %q needs a letter and a digit, such as v0 or v1-A: the label is masked wherever it appears, and an ordinary word or number would be masked in the agents' own writing", d.Label)
 		}
 	}
 	if err := os.MkdirAll(packetsDir, 0o755); err != nil {
@@ -211,6 +212,12 @@ func runReviewPack(args []string) error {
 		} else if !inside {
 			return fmt.Errorf("%s is outside --mask-root %s, so its paths would not be masked", d.Dir, *maskRoot)
 		}
+	}
+	if holdsResults(*packets) {
+		return fmt.Errorf("%s already holds packets; name a new --packets directory", *packets)
+	}
+	if _, err := os.Stat(*keyPath); err == nil {
+		return fmt.Errorf("%s already exists; name a new --key file", *keyPath)
 	}
 	key, err := writeReviewPack(dirs, *packets, *maskRoot, rand.New(rand.NewPCG(*seed, *seed)))
 	if err != nil {

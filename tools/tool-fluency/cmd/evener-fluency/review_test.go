@@ -159,6 +159,61 @@ func TestReviewPackRefusesALabelWithoutADigit(t *testing.T) {
 	}
 }
 
+// TestReviewPackRefusesANumericLabel: a label with no letter, such as 0, is
+// masked as a whole word, so every standalone number in the agents' writing
+// would become the version mask.
+func TestReviewPackRefusesANumericLabel(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	writeReviewRun(t, filepath.Join(root, "0", "lunarouter-m"), 1)
+	err := run([]string{"review-pack", "--results", "0=" + filepath.Join(root, "0"), "--mask-root", root,
+		"--packets", filepath.Join(t.TempDir(), "packets"), "--key", filepath.Join(t.TempDir(), "key.json")})
+	if err == nil || !strings.Contains(err.Error(), "letter") {
+		t.Fatalf("review-pack = %v, want a refusal asking for a letter in the label", err)
+	}
+}
+
+// TestReviewPackRefusesToReuseAnEarlierPacksOutputs: packets left from an
+// earlier pack would sit beside the new ones with no key entry, and a key
+// written over an earlier one loses the only map back from that pack's
+// packets.
+func TestReviewPackRefusesToReuseAnEarlierPacksOutputs(t *testing.T) {
+	t.Parallel()
+	for _, c := range []struct {
+		name  string
+		setup func(t *testing.T, packets, keyPath string)
+		want  string
+	}{
+		{"a packets directory that holds packets", func(t *testing.T, packets, _ string) {
+			if err := os.MkdirAll(packets, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(packets, "stale.md"), []byte("an earlier packet\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}, "already holds"},
+		{"an existing key file", func(t *testing.T, _, keyPath string) {
+			if err := os.WriteFile(keyPath, []byte("[]\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}, "already exists"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
+			root := t.TempDir()
+			writeReviewRun(t, filepath.Join(root, "v1-A", "lunarouter-m"), 1)
+			packets := filepath.Join(t.TempDir(), "packets")
+			keyPath := filepath.Join(t.TempDir(), "key.json")
+			c.setup(t, packets, keyPath)
+			err := run([]string{"review-pack", "--results", "v1-A=" + filepath.Join(root, "v1-A"), "--mask-root", root,
+				"--packets", packets, "--key", keyPath})
+			if err == nil || !strings.Contains(err.Error(), c.want) {
+				t.Fatalf("review-pack = %v, want an error containing %q", err, c.want)
+			}
+		})
+	}
+}
+
 // TestReviewPackMasksUnderARelativeMaskRoot: a relative --mask-root still
 // masks the absolute paths a transcript holds. Not parallel: it changes the
 // working directory.
