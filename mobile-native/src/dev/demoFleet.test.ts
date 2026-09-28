@@ -219,6 +219,50 @@ describe("demo fleet pin categories", () => {
 	});
 });
 
+describe("demo fleet location", () => {
+	const fleet = createDemoFleet({ now: STARTUP });
+
+	it("serves a top-level row's location as the shallow summary the archive check reads", () => {
+		const location = read(fleet, params({ resource: "location", ref: "local:s-jobdisp" }));
+		expect(location).toMatchObject({
+			ref: "local:s-jobdisp",
+			top_level_ref: "local:s-jobdisp",
+			top_level: true,
+			project_key: "evener",
+			tier: "current",
+			pin_section_id: "release",
+		});
+		// A location resource holds exactly one entity: the row itself, with no
+		// descendant tree (cmd/evener-hub's projectShallow summary).
+		const session = location.session as NavigationSessionSummary;
+		expect(session).toMatchObject({ ref: "local:s-jobdisp", session_id: "s-jobdisp", host_id: "local" });
+		expect(session.children).toEqual([]);
+	});
+
+	it("reports a remote row's own host-prefixed ref and project", () => {
+		const location = read(fleet, params({ resource: "location", ref: "paradise-park:s-wasm" }));
+		expect(location).toMatchObject({ ref: "paradise-park:s-wasm", project_key: "c-to-wasm", tier: "current" });
+		expect((location.session as NavigationSessionSummary).host_id).toBe("paradise-park");
+	});
+
+	it("reports an archived row's tier as archived, the fact the Board's archive check compares", () => {
+		expect(read(fleet, params({ resource: "location", ref: "local:s-gocache" }))).toMatchObject({ tier: "archived" });
+	});
+
+	it("reports an older row as recent, matching the project tier split", () => {
+		// s-roster: ago 1d, not archived -- the same boundary tierRows uses.
+		expect(read(fleet, params({ resource: "location", ref: "local:s-roster" }))).toMatchObject({ tier: "recent" });
+	});
+
+	it("leaves pin_section_id off a row that sits in no pin section", () => {
+		expect(read(fleet, params({ resource: "location", ref: "local:s-audit" }))).not.toHaveProperty("pin_section_id");
+	});
+
+	it("rejects a ref the fleet doesn't hold, like the hub's own not-found error", () => {
+		expect(() => fleet.answerNavigationRead(params({ resource: "location", ref: "local:nope" }))).toThrow(/nope/);
+	});
+});
+
 describe("demo fleet catalogs and projects", () => {
 	const fleet = createDemoFleet({ now: STARTUP });
 
@@ -358,8 +402,8 @@ describe("demo fleet search, auth and plugins", () => {
 describe("demo fleet error handling", () => {
 	const fleet = createDemoFleet({ now: STARTUP });
 
-	it("fails loudly on a navigation resource kind it doesn't serve", () => {
-		expect(() => fleet.answerNavigationRead(params({ resource: "location", ref: "local:s-retry" }))).toThrow();
+	it("fails loudly on a navigation resource name it doesn't serve", () => {
+		expect(() => fleet.answerNavigationRead(params({ resource: "mystery" }))).toThrow(/mystery/);
 	});
 
 	// cmd/evener-hub/app_navigation.go's navigationReadKeyWithFields: an

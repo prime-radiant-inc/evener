@@ -795,6 +795,32 @@ function fleetAnswers(
 				const { page: sessions, remaining } = page(tierRows(projectKey, tier), params, NAVIGATION_SECTION_LIMIT);
 				return respond(revision, params, { key: projectKey, tier, sessions, remaining, truncated: anyTruncated(sessions) });
 			}
+			case "location": {
+				const ref = params.ref as string;
+				const raw = SESSIONS.find((session) => rowOf(session).ref === ref);
+				if (!raw) throw new Error(`Unknown demonstration session location: ${ref}`);
+				// The hub's location is a shallow summary (navigation_projection.go's
+				// projectShallow), not a row with its descendants: a location resource
+				// holds exactly one entity. Its tier is the one the Board's archive
+				// check compares: an archived row's is "archived", every other row's
+				// current or recent by the same age split tierRows uses.
+				const tier = raw.archived ? "archived" : raw.ago < D ? "current" : "recent";
+				const response = respond(params, {
+					session: { ...rowOf(raw), children: [] },
+					top_level_ref: ref,
+					top_level: true,
+				});
+				// The shared v2 encoder (wireV2) builds a location's metadata with only
+				// ref/top_level_ref/top_level; a real hub also names the row's project,
+				// tier and pin section, so they are stamped on here, the way the web's
+				// own fixture (cmd/evener-hub/frontend/src/dev/editorial-preview/
+				// fixture.ts) stamps the top_level it serves.
+				const { metadata } = response.data as { metadata: Record<string, unknown> };
+				metadata.project_key = raw.project ?? "evener";
+				metadata.tier = tier;
+				if (raw.category) metadata.pin_section_id = raw.category;
+				return response;
+			}
 			default:
 				throw new Error(`Navigation resource not served by the demo fleet: ${params.resource}`);
 		}
