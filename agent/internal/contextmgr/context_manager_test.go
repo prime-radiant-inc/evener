@@ -2884,6 +2884,36 @@ func TestCheckpoint_ShedOrder_BoundsOversizedOriginalTask(t *testing.T) {
 	}
 }
 
+func TestCheckpoint_ShedOrder_BoundsOversizedOriginalTaskWithNotes(t *testing.T) {
+	// The trim must account for a surviving working note so the whole checkpoint
+	// still fits maxChars, not just the conversation section.
+	original := "ORIGINAL TASK: " + strings.Repeat("t", 3000)
+	data := checkpointData{
+		conversation: []checkpointConversationEntry{
+			{Role: "user", Text: original},
+			{Role: "agent", Text: "small follow-up"},
+		},
+		workingNotes: []string{
+			"NOTE-A " + strings.Repeat("a", 500),
+			"NOTE-B " + strings.Repeat("b", 500),
+			"NOTE-C " + strings.Repeat("c", 500),
+		},
+	}
+
+	const maxChars = 1400
+	cp := formatCheckpoint(data, nil, maxChars)
+
+	if len(cp) > maxChars {
+		t.Fatalf("checkpoint length %d exceeds maxChars %d", len(cp), maxChars)
+	}
+	if !strings.Contains(cp, "ORIGINAL TASK: ") || !strings.Contains(cp, "...") {
+		t.Fatalf("the original task should survive in trimmed form:\n%s", cp)
+	}
+	if !strings.Contains(cp, "NOTE-C") {
+		t.Fatalf("the newest working note should survive:\n%s", cp)
+	}
+}
+
 // --- buildSummaryPrompt ---
 
 func TestBuildSummaryPrompt_NoInstructions(t *testing.T) {

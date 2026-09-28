@@ -1326,13 +1326,27 @@ func formatCheckpoint(data checkpointData, meta *CompactionMeta, maxChars int) s
 	}
 
 	// The pinned original task is never shed, so the loop above cannot shrink it
-	// when it alone exceeds the budget. Trim it rather than let the checkpoint
-	// blow past its size cap (or drop the task entirely).
-	if pinnedOriginal >= 0 && len(conversation) == 1 && len(conversationMarkdown) > variableBudget {
+	// when it — plus any surviving working note — exceeds the budget. Trim it
+	// rather than let the checkpoint blow past its size cap, or drop the task.
+	if pinnedOriginal >= 0 && len(conversation) == 1 && len(conversationMarkdown)+len(notesMarkdown) > variableBudget {
 		entry := conversation[pinnedOriginal]
-		overhead := len(renderCheckpointConversation([]checkpointConversationEntry{{Role: entry.Role, Text: "x"}})) - 1
-		limit := max(variableBudget-overhead-len("..."), 0)
-		conversation = []checkpointConversationEntry{{Role: entry.Role, Text: truncate(entry.Text, limit)}}
+		available := variableBudget - len(notesMarkdown)
+		renderedLen := func(limit int) int {
+			trimmed := []checkpointConversationEntry{{Role: entry.Role, Text: truncate(entry.Text, limit)}}
+			return len(renderCheckpointConversation(trimmed))
+		}
+		// Truncating never increases the rendered length, so binary-search the
+		// largest limit that still fits.
+		lo, hi := 0, len(entry.Text)
+		for lo < hi {
+			mid := (lo + hi + 1) / 2
+			if renderedLen(mid) <= available {
+				lo = mid
+			} else {
+				hi = mid - 1
+			}
+		}
+		conversation = []checkpointConversationEntry{{Role: entry.Role, Text: truncate(entry.Text, lo)}}
 		conversationMarkdown = renderCheckpointConversation(conversation)
 	}
 
