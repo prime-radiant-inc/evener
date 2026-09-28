@@ -183,7 +183,11 @@ func (b *fakeBridge) floodNotifications(n int) error {
 	return nil
 }
 
-const goodLaunchCheck = `{"protocol":"evener-appwire-v6","version":"dev","launch_flags":["api-log"]}`
+// goodLaunchCheck is the launch-check answer a healthy host gives. Its protocol
+// is appwire.ProtocolVersion itself, not a literal, so a protocol bump cannot
+// leave this shared fixture speaking a stale version (which reads as an
+// old-protocol host and refuses every attach that uses it).
+var goodLaunchCheck = `{"protocol":"` + appwire.ProtocolVersion + `","version":"dev","launch_flags":["api-log"]}`
 
 // cannedRun returns a runFn answering the standard preflight commands, with
 // optional substring-keyed overrides consulted first.

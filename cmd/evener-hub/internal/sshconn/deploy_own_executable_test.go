@@ -425,7 +425,7 @@ func TestDirtyControllerOwnExecutableDeployConvergesThroughTheOperation(t *testi
 		case strings.Contains(joined, "launch-check"):
 			// The artifact the deploy installed reports the controller's own
 			// dirty build, as the hub's own executable does by construction.
-			return []byte(`{"protocol":"evener-appwire-v5","version":"` + dirtyControllerVersion + `","launch_flags":["api-log"]}`), nil
+			return []byte(launchCheckJSON(dirtyControllerVersion)), nil
 		default:
 			return nil, fmt.Errorf("unexpected remote command: %v", argv)
 		}
@@ -527,11 +527,12 @@ func TestDirtyControllerOwnExecutableMismatchRefusesUnstamped(t *testing.T) {
 			if call == 0 {
 				// The on-disk binary before the deploy: this controller's own
 				// dirty build.
-				return []byte(`{"protocol":"evener-appwire-v5","version":"` + dirtyControllerVersion + `","launch_flags":["api-log"]}`), nil
+				return []byte(launchCheckJSON(dirtyControllerVersion)), nil
 			}
 			// The artifact the deploy wrote: right platform, foreign identity.
-			return []byte(`{"protocol":"evener-appwire-v5","version":"othersha","launch_flags":["api-log"]}`), nil
+			return []byte(launchCheckJSON("othersha")), nil
 		},
+
 		func(int) ([]byte, error) {
 			return []byte(`{"version":"othersha","mobile_api_version":1,"hub_addr":"127.0.0.1:9180"}`), nil
 		},
@@ -553,4 +554,14 @@ func TestDirtyControllerOwnExecutableMismatchRefusesUnstamped(t *testing.T) {
 	if !isTerminal(err) {
 		t.Fatalf("Ensure err = %v, want a terminal refusal", err)
 	}
+}
+
+// launchCheckJSON renders the launch-check answer a host gives for version: its
+// protocol is appwire.ProtocolVersion itself, never a literal, so a protocol
+// bump cannot leave this fixture speaking the previous version — which reads as
+// an old-protocol host and fails the post-deploy agreement check with "host
+// protocol incompatible" (what a hardcoded "evener-appwire-v5" did when the
+// protocol moved to v6 on main).
+func launchCheckJSON(version string) string {
+	return fmt.Sprintf(`{"protocol":%q,"version":%q,"launch_flags":["api-log"]}`, appwire.ProtocolVersion, version)
 }
