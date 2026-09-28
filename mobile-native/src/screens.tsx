@@ -1010,10 +1010,13 @@ export function ConversationScreen({
 		const change = sessionHeaderHeight - reservedHeaderHeight.current;
 		reservedHeaderHeight.current = sessionHeaderHeight;
 		if (change === 0 || listOffset.current <= 0) return;
-		timeline.current?.scrollToOffset({
-			offset: Math.max(0, listOffset.current + change),
-			animated: false,
-		});
+		const target = Math.max(0, listOffset.current + change);
+		// Set optimistically: the list's own onScroll is throttled
+		// (scrollEventThrottle), so a second height change in the same window
+		// must compose with where this scroll is already taking the list, not
+		// with the last offset the list actually reported.
+		listOffset.current = target;
+		timeline.current?.scrollToOffset({ offset: target, animated: false });
 	}, [sessionHeaderHeight]);
 	function openChip(kind: ChipKind) {
 		if (kind !== "queue") {

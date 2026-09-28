@@ -99,7 +99,6 @@ vi.mock("@react-navigation/native", async () => {
 			select(stack.state),
 	};
 });
-vi.mock("expo-symbols", () => ({ SymbolView: "SymbolView" }));
 vi.mock("expo-clipboard", () => ({
 	setStringAsync: vi.fn(async () => {}),
 	getStringAsync: vi.fn(async () => ""),
@@ -739,6 +738,28 @@ it("keeps the transcript in place when the connection bar comes and goes", async
 	session.measure(48);
 	expect(session.list().props.contentContainerStyle).toMatchObject({ paddingTop: 64 });
 	expect(listScrolls.at(-1)).toEqual({ offset: 500, animated: false });
+	tree.unmount();
+});
+
+it("composes two header-height changes correctly even before the list's own onScroll catches up (scrollEventThrottle)", async () => {
+	const { tree } = mount(busy);
+	await flush();
+	const session = sessionList(tree);
+	session.measure(48);
+	session.drag(500);
+
+	// Two height changes land within the same 100ms onScroll throttle window
+	// (a reconnect can change the bar and the chips from different sources),
+	// so the second compensation has to build on where the first one is
+	// already taking the list, not on the last onScroll the list actually
+	// reported.
+	session.measure(72);
+	session.measure(96);
+
+	expect(listScrolls).toEqual([
+		{ offset: 524, animated: false },
+		{ offset: 548, animated: false },
+	]);
 	tree.unmount();
 });
 
