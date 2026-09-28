@@ -23,6 +23,12 @@ vi.mock("expo-sqlite/kv-store", () => ({
 const T = Date.UTC(2026, 8, 26, 12, 0);
 const iso = (ms: number) => new Date(ms).toISOString();
 
+/** Runs enough microtask rounds for the hub's answer to a mark, and the
+ * bookkeeping it settles, to finish. */
+async function settle() {
+	for (let step = 0; step < 30; step++) await Promise.resolve();
+}
+
 let hubCount = 0;
 /** `refuse` makes the hub answer every mark with invalid params, a refusal
  * for good. `fail` makes the next call fail for now, as a dropped connection
@@ -84,7 +90,7 @@ it("marks a turn that ends while the screen stays in front through the hub row's
 	view.conversation = { lastTurnEndedAt: iso(T) };
 	view.row = fleetRow({ turn_ended_at: iso(T), updated_at: iso(T), unseen: false });
 	hook.rerender();
-	for (let step = 0; step < 10; step++) await Promise.resolve();
+	await settle();
 	// The turn ends, and the fleet's next read shows the hub's stamp for it.
 	view.row = fleetRow({ turn_ended_at: iso(T + 5_000), updated_at: iso(T + 5_000), unseen: true });
 	hook.rerender();
@@ -96,7 +102,7 @@ it("marks through a newer turn end a re-read of the session brings while in fron
 	const { sent, view, hook } = setup();
 	view.conversation = { lastTurnEndedAt: iso(T) };
 	hook.rerender();
-	for (let step = 0; step < 10; step++) await Promise.resolve();
+	await settle();
 	view.conversation = { lastTurnEndedAt: iso(T + 5_000) };
 	hook.rerender();
 	expect(sent).toEqual([[{ ref: "local:s", seenThrough: T }], [{ ref: "local:s", seenThrough: T + 5_000 }]]);
@@ -108,7 +114,7 @@ it("sends a refused mark once, however often the hub's refusal re-renders the sc
 	view.conversation = {};
 	view.row = fleetRow({ turn_ended_at: iso(T), updated_at: iso(T), unseen: true });
 	hook.rerender();
-	for (let step = 0; step < 30; step++) await Promise.resolve();
+	await settle();
 	hook.rerender();
 	expect(sent).toEqual([[{ ref: "local:s", seenThrough: T }]]);
 	hook.unmount();
@@ -119,7 +125,7 @@ it("sends a mark once across rerenders with the same row and snapshot", async ()
 	view.conversation = { lastTurnEndedAt: iso(T) };
 	view.row = fleetRow({ turn_ended_at: iso(T), updated_at: iso(T), unseen: true });
 	hook.rerender();
-	for (let step = 0; step < 10; step++) await Promise.resolve();
+	await settle();
 	// The hub's rows show the mark landed, so nothing is pending any more.
 	hubSeenMarks(hubId).prune([fleetRow({ turn_ended_at: iso(T), unseen: false })]);
 	hook.rerender();
@@ -133,7 +139,7 @@ it("leaves an unread another device marked at the turn end it already marked", a
 	view.conversation = {};
 	view.row = fleetRow({ turn_ended_at: iso(T), updated_at: iso(T), unseen: true });
 	hook.rerender();
-	for (let step = 0; step < 10; step++) await Promise.resolve();
+	await settle();
 	hubSeenMarks(hubId).prune([fleetRow({ turn_ended_at: iso(T), unseen: false })]);
 	// Mark as unread elsewhere: the hub reads unseen at the same turn end.
 	view.row = fleetRow({ turn_ended_at: iso(T), updated_at: iso(T), unseen: true });
@@ -151,7 +157,7 @@ it("doesn't mark a turn that ends while another screen is in front", async () =>
 	view.conversation = { lastTurnEndedAt: iso(T) };
 	view.row = fleetRow({ turn_ended_at: iso(T), updated_at: iso(T), unseen: false });
 	hook.rerender();
-	for (let step = 0; step < 10; step++) await Promise.resolve();
+	await settle();
 	view.inFront = false;
 	hook.rerender();
 	view.row = fleetRow({ turn_ended_at: iso(T + 5_000), updated_at: iso(T + 5_000), unseen: true });
@@ -203,7 +209,7 @@ it("marks again after the screen leaves the front and comes back", async () => {
 	view.conversation = { lastTurnEndedAt: iso(T) };
 	hook.rerender();
 	// The first call is answered before the next visit.
-	for (let step = 0; step < 10; step++) await Promise.resolve();
+	await settle();
 	view.conversation = { lastTurnEndedAt: iso(T + 5_000) };
 	view.inFront = false;
 	hook.rerender();
@@ -219,7 +225,7 @@ it("marks a row again at the same turn end on a new visit to the front", async (
 	view.conversation = {};
 	view.row = fleetRow({ turn_ended_at: iso(T), updated_at: iso(T), unseen: true });
 	hook.rerender();
-	for (let step = 0; step < 10; step++) await Promise.resolve();
+	await settle();
 	hubSeenMarks(hubId).prune([fleetRow({ turn_ended_at: iso(T), unseen: false })]);
 	view.inFront = false;
 	hook.rerender();
@@ -267,7 +273,7 @@ it("keeps a mark whose call failed for now pending, and sends it on the next flu
 	const { hubId, sent, view, hook, client } = setup({ fail: true });
 	view.conversation = { lastTurnEndedAt: iso(T) };
 	hook.rerender();
-	for (let step = 0; step < 10; step++) await Promise.resolve();
+	await settle();
 	expect(sent).toEqual([[{ ref: "local:s", seenThrough: T }]]);
 	expect(hubSeenMarks(hubId).isSeenOnHub({ ref: "local:s", turn_ended_at: iso(T), unseen: true })).toBe(true);
 	// The connection comes back: the screen's next ready client flushes.
