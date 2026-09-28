@@ -187,6 +187,51 @@ describe("the approval dock (spec 8.4)", () => {
 		expect(first.controls.resolve).toHaveBeenCalledTimes(1);
 	});
 
+	it("lets only the latest controls' read decide after two reconnects in a row", async () => {
+		const approval = request();
+		const first = fakeControls();
+		first.controls.resolve.mockImplementation(async (sent: SandboxEscalationRequested) => {
+			first.publish({ pending: sent.escalationId });
+			await new Promise<void>(() => {});
+		});
+		const tree = render(<ApprovalDock request={approval} controls={first.asControls} onDecided={vi.fn()} />);
+		await press(tree, "Allow this file only");
+		// Each reconnect's read settles only when the test says so.
+		const deferredRead = (fake: ReturnType<typeof fakeControls>) => {
+			let settle = () => {};
+			fake.controls.refresh.mockImplementation(
+				() =>
+					new Promise<void>((resolve) => {
+						settle = resolve;
+					}),
+			);
+			return () => settle();
+		};
+		const second = fakeControls();
+		const settleSecond = deferredRead(second);
+		await act(async () => {
+			tree.update(<ApprovalDock request={approval} controls={second.asControls} onDecided={vi.fn()} />);
+		});
+		const third = fakeControls();
+		const settleThird = deferredRead(third);
+		await act(async () => {
+			tree.update(<ApprovalDock request={approval} controls={third.asControls} onDecided={vi.fn()} />);
+		});
+		expect(third.controls.refresh).toHaveBeenCalledTimes(1);
+		// The replaced controls' read says nothing about the hub now.
+		await act(async () => {
+			settleSecond();
+			await new Promise((resolve) => setTimeout(resolve, 0));
+		});
+		expect(pressable(tree, "Deny")?.props.accessibilityState).toMatchObject({ disabled: true });
+		// The current controls' read still lists the approval: decide again.
+		await act(async () => {
+			settleThird();
+			await new Promise((resolve) => setTimeout(resolve, 0));
+		});
+		expect(pressable(tree, "Deny")?.props.accessibilityState).toMatchObject({ disabled: false });
+	});
+
 	it("lets you decide again once the new controls report an error for it", async () => {
 		const approval = request();
 		const first = fakeControls();

@@ -55,9 +55,15 @@ export function ApprovalDock({ request, controls, onDecided }: ApprovalDockProps
 	useEffect(() => {
 		if (!decisionSent || !controls || sentWith.current === null || controls === sentWith.current) return;
 		sentWith.current = controls;
+		// Another reconnect may replace these controls before their read
+		// lands; only the current controls' read speaks for the hub now.
+		let current = true;
 		void controls.refresh().then(() => {
-			if (controls.getSnapshot().error === null) setDecisionSent(false);
+			if (current && controls.getSnapshot().error === null) setDecisionSent(false);
 		});
+		return () => {
+			current = false;
+		};
 	}, [decisionSent, controls]);
 	useEffect(() => {
 		if (state.error === null) {
