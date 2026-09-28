@@ -700,6 +700,11 @@ func sortCompactionCandidates(candidates []compactionCandidate) {
 // bounded rather than one marshal per removed row. Nil in production.
 var compactionMeasureHook func()
 
+// maxByteMeasurements bounds the full-store byte measurements one byte-bound
+// victim search may take. A package variable so a test can exhaust the budget
+// on a small store.
+var maxByteMeasurements = 64
+
 // compactionVictimsForBytes trims the oldest surviving terminal victims until
 // the exact post-compaction snapshot fits StoreMaxBytes or no removable
 // terminal record remains. It measures the same transformation the write will
@@ -709,6 +714,14 @@ var compactionMeasureHook func()
 // near the boundary (bounded by maxByteMeasurements), so a store whose bulk is
 // many records cannot force one full marshal per removed row. It reports
 // whether it marked any new victim.
+//
+// The per-candidate delta is a deliberate upper bound of the bytes the write
+// gains: the removed record's bytes are credited without its JSON separator,
+// the tombstone's are charged with slack, and each newly affected host's
+// ledger entry is charged from its actual marshaled form plus a scaffold
+// margin. So whenever `estimated` is at or below the cap, the committed size
+// is too — the exact checks exist to give victims back and tighten the fit,
+// and the budget-exhausted path can never return an over-cap write.
 func (s *Store) compactionVictimsForBytes(next *snapshot, candidates []compactionCandidate, byID map[string]Record, victim map[string]bool, pastHorizon map[string]bool, policy RetentionPolicy, now time.Time) bool {
 	exactSize := func() int64 {
 		if compactionMeasureHook != nil {
@@ -724,11 +737,11 @@ func (s *Store) compactionVictimsForBytes(next *snapshot, candidates []compactio
 		}
 		return int64(len(raw))
 	}
-	const maxByteMeasurements = 64
 	measurements := 1
 	estimated := exactSize() // one exact baseline, then per-candidate deltas
 
 	changed := false
+	finalChecked := false
 	var added []string
 	hostsMarked := map[string]bool{}
 	for _, candidate := range candidates {
@@ -744,11 +757,15 @@ func (s *Store) compactionVictimsForBytes(next *snapshot, candidates []compactio
 		if err != nil {
 			continue
 		}
-		delta := int64(len(tombstoneBytes) - len(recordBytes))
+		delta := int64(len(tombstoneBytes) + 4 - len(recordBytes))
 		if !hostsMarked[record.Host] {
-			// The write's ledger mark gains one host entry; the exact check at
-			// the boundary absorbs JSON separator drift.
-			delta += int64(len(record.Host) + len(candidate.id) + 8)
+			// The write's ledger mark gains one host entry; charge its actual
+			// marshaled form plus room for the surrounding mark object.
+			entry, err := json.Marshal(map[string]string{record.Host: candidate.id})
+			if err != nil {
+				continue
+			}
+			delta += int64(len(entry) + 32)
 			hostsMarked[record.Host] = true
 		}
 		victim[candidate.id] = true
@@ -759,9 +776,20 @@ func (s *Store) compactionVictimsForBytes(next *snapshot, candidates []compactio
 			continue
 		}
 		if measurements >= maxByteMeasurements {
-			// The estimate is at or below the bound: keep this prefix rather
-			// than spending another full-store measurement.
-			return changed
+			if finalChecked {
+				// The estimate is a provable upper bound, so a fit it reports is
+				// real: keep this prefix rather than spend another measurement.
+				return changed
+			}
+			finalChecked = true
+			exact := exactSize()
+			if exact <= policy.StoreMaxBytes {
+				return changed
+			}
+			// The exact form is still over: keep removing on the upper-bound
+			// estimate, which guarantees the fit it next reports is real.
+			estimated = exact + 1
+			continue
 		}
 		exact := exactSize()
 		measurements++

@@ -732,3 +732,58 @@ func TestByteBoundMeasurementPassesAreBounded(t *testing.T) {
 		t.Fatal("the byte-bound compaction removed every record instead of stopping at the fit")
 	}
 }
+
+// TestByteBoundNeverCommitsOverTheCapWhenTheBudgetIsExhausted pins the
+// measurement budget's safety: when the full-store measurement budget is spent,
+// the per-candidate estimate is a provable upper bound, so whatever prefix the
+// loop keeps still commits at or below StoreMaxBytes. The budget is lowered so
+// a small store reaches the path.
+func TestByteBoundNeverCommitsOverTheCapWhenTheBudgetIsExhausted(t *testing.T) {
+	store, path := openRetentionStore(t, RetentionPolicy{TerminalPerHost: 10000, TerminalStoreWide: 10000, TombstonesPerHost: 10000})
+	pad := strings.Repeat("y", 512)
+	seed := func(i int) {
+		record := createOp(t, store, "m4", fmt.Sprintf("op-%03d", i))
+		fence := json.RawMessage(fmt.Sprintf(`{"bootId":"boot","opSeq":%d,"pad":%q}`, i+1, pad))
+		if _, err := store.Transition(record.ID, StateComplete, func(r *Record) {
+			r.Result = &Result{OK: true, Message: "done"}
+			r.FencingEpoch = fence
+		}); err != nil {
+			t.Fatalf("Transition(%s): %v", record.ID, err)
+		}
+	}
+	for i := range 40 {
+		seed(i)
+	}
+	// One pending record stays out of the bound until its terminal transition:
+	// that single commit is the one whose byte loop this test observes.
+	pending := createOp(t, store, "m4", "op-pending")
+	before := int64(len(mustReadFile(t, path)))
+	store.retention.StoreMaxBytes = before / 2
+
+	measurements := 0
+	compactionMeasureHook = func() { measurements++ }
+	defer func() { compactionMeasureHook = nil }()
+	saved := maxByteMeasurements
+	maxByteMeasurements = 1
+	defer func() { maxByteMeasurements = saved }()
+	if _, err := store.Transition(pending.ID, StateComplete, func(r *Record) {
+		r.Result = &Result{OK: true, Message: "done"}
+		r.FencingEpoch = json.RawMessage(fmt.Sprintf(`{"bootId":"boot","opSeq":99,"pad":%q}`, pad))
+	}); err != nil {
+		t.Fatalf("Transition(%s): %v", pending.ID, err)
+	}
+
+	// The budget is spent, so the keep path must have taken its mandatory
+	// final exact measurement (baseline plus the final check): an estimate-only
+	// return is exactly the hole this guards.
+	if measurements < 2 {
+		t.Fatalf("byte-bound measurements = %d with the budget exhausted, want the baseline plus the final exact check", measurements)
+	}
+	if got := int64(len(mustReadFile(t, path))); got > store.retention.StoreMaxBytes {
+		t.Fatalf("committed store = %d bytes, over the %d-byte cap with the measurement budget exhausted",
+			got, store.retention.StoreMaxBytes)
+	}
+	if got := len(store.Records()); got == 0 {
+		t.Fatal("the byte-bound compaction removed every record instead of stopping at the fit")
+	}
+}

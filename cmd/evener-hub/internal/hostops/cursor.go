@@ -1017,7 +1017,19 @@ func readOperationsLocked(state *snapshot, q OperationsQuery, live CursorEpoch) 
 				// cursor forever.
 				continue
 			}
-			if !pageHosts[tombstone.Host] {
+			if q.ID != "" {
+				// A direct id lookup addresses the row itself: a retained
+				// tombstone is retrievable even when its host no longer appears
+				// in the current host set — a removed host's boundary drops
+				// with its last record while its tombstones stay — so the
+				// unfiltered and host-pinned spellings of the same lookup agree.
+				if q.Host != "" && tombstone.Host != q.Host {
+					continue
+				}
+			} else if !pageHosts[tombstone.Host] {
+				// The operationId filter stays a listing filter over the
+				// cursor's window: retrieval of a compacted record is by its
+				// controller-assigned id, which deploy/restart return.
 				continue
 			}
 			if q.ClientOperationID != "" && tombstone.ClientOperationID != q.ClientOperationID {
