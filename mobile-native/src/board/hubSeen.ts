@@ -149,13 +149,12 @@ export class HubSeenMarks {
 				} catch (error) {
 					const code = error instanceof WireError ? error.code : null;
 					if (code === METHOD_NOT_FOUND) withoutSeenSet.add(client);
-					if ((code !== METHOD_NOT_FOUND && code !== INVALID_PARAMS) || this.client !== client) {
-						// Closed, timed out, failed for now, or answered over a
-						// connection since replaced: the marks go again on the next
-						// flush, or now over the new connection.
-						if (this.client === client) return;
-						continue;
-					}
+					// The connection changed while the call was out: whatever
+					// the failure, the marks go again over the current one.
+					if (this.client !== client) continue;
+					// Closed, timed out or failed for now: the marks go again
+					// on the next flush.
+					if (code !== METHOD_NOT_FOUND && code !== INVALID_PARAMS) return;
 					// The hub refused for good: resending is pointless, so the rows
 					// show the hub's own state again.
 					const refused = batch.filter(stillSent);
