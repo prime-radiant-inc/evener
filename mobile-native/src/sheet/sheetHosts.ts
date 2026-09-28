@@ -60,11 +60,13 @@ export function sheetKey(...parts: readonly string[]): string {
 
 /** A screen provides its sheets' host while it's mounted. Memoize `host`:
  * each new object re-renders the open sheet, which is how the sheet sees the
- * screen's live state. */
-export function useProvideSheetHost<Host>(hosts: SheetHosts<Host>, key: string, host: Host): void {
+ * screen's live state. Undefined provides nothing, such as before the
+ * screen's session has loaded. */
+export function useProvideSheetHost<Host>(hosts: SheetHosts<Host>, key: string, host: Host | undefined): void {
 	const owner = useRef({}).current;
 	useEffect(() => {
-		hosts.provide(key, owner, host);
+		if (host === undefined) hosts.release(key, owner);
+		else hosts.provide(key, owner, host);
 	}, [hosts, key, owner, host]);
 	useEffect(() => () => hosts.release(key, owner), [hosts, key, owner]);
 }

@@ -40,6 +40,7 @@ import {
 	HubsScreen,
 	type Routes,
 } from "./src/screens";
+import { NotesSheet } from "./src/session/NotesSheet";
 import { SHEET_ROUTES } from "./src/sheet/sheetRoutes";
 import { QueueSheet } from "./src/QueueSheet";
 import { OutlineSheet } from "./src/reader/OutlineSheet";
@@ -218,6 +219,11 @@ function Navigation() {
 							name="TasksSheet"
 							component={TasksSheet}
 							options={SHEET_ROUTES.TasksSheet}
+						/>
+						<Stack.Screen
+							name="NotesSheet"
+							component={NotesSheet}
+							options={SHEET_ROUTES.NotesSheet}
 						/>
 						<Stack.Screen
 							name="RowMenuSheet"

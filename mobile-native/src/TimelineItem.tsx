@@ -128,6 +128,9 @@ export function TimelineItem({
 				/>
 			);
 			break;
+		case "note":
+			content = <NoteRow text={item.text} />;
+			break;
 		case "assistant":
 			content = <AgentMessage markdown={item.markdown} quote={quote} />;
 			break;
@@ -354,6 +357,25 @@ function YourMessage({
 					Steered in mid-turn
 				</Text>
 			) : null}
+		</View>
+	);
+}
+
+// A shared-notes update (spec 8.2, 8.8): a 2pt left rule like a subagent row,
+// a quiet caption, and the note itself in the serif prose used for your
+// messages. An emptied note reads only the caption.
+function NoteRow({ text }: { text: string }) {
+	const { palette } = useColors();
+	const scale = useTextScale();
+	return (
+		<View style={{ borderLeftWidth: 2, borderLeftColor: palette.edgeStrong, paddingLeft: 12, paddingVertical: 4, gap: 4 }}>
+			<Text
+				allowFontScaling={Platform.OS !== "ios"}
+				style={{ fontSize: 13 * scale, lineHeight: 18 * scale, color: palette.inkMid }}
+			>
+				{text ? "You updated your note" : "You cleared your note"}
+			</Text>
+			{text ? <Copy variant="yourMessage">{text}</Copy> : null}
 		</View>
 	);
 }

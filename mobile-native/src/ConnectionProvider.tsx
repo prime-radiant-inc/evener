@@ -1,5 +1,6 @@
 import * as Crypto from "expo-crypto";
 import * as SecureStore from "expo-secure-store";
+import { Storage } from "expo-sqlite/kv-store";
 import {
 	createContext,
 	type ReactNode,
@@ -28,6 +29,7 @@ import { removeOrganizationData } from "./nativeOrganization";
 import { readerPositions } from "./nativeReaderPosition";
 import { forgetDocumentsForHub } from "./reader/nativeDocumentMemory";
 import { forgetDetailLevelsForHub } from "./session/nativeDetailLevels";
+import { forgetNoteDrafts } from "./session/sessionNotes";
 
 const repository = new HubProfiles(SecureStore);
 interface Connection {
@@ -142,6 +144,7 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
 						removeOrganizationData,
 						forgetBoardForHub,
 						forgetDetailLevelsForHub,
+						(id) => forgetNoteDrafts(Storage, id),
 						forgetDocumentsForHub,
 					]);
 				},

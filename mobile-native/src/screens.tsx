@@ -3,6 +3,8 @@ import { useHeaderHeight } from "@react-navigation/elements";
 import { useFocusEffect } from "@react-navigation/native";
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
 import * as Clipboard from "expo-clipboard";
+import { randomUUID } from "expo-crypto";
+import { Storage } from "expo-sqlite/kv-store";
 import {
 	Component,
 	type RefObject,
@@ -159,6 +161,8 @@ import {
 	sendAction,
 	sendLabel,
 } from "./session/sendAction";
+import { NotesBar } from "./session/NotesBar";
+import { canWriteHumanNote, type NotesHost, notesHosts } from "./session/NotesSheet";
 import { SessionHeader, useHeaderHiding } from "./session/SessionHeader";
 import { type SessionMenuAction, sessionMenu } from "./session/sessionMenu";
 import {
@@ -167,6 +171,11 @@ import {
 	SHUT_DOWN,
 	sessionStateLine,
 } from "./session/sessionState";
+import {
+	NotesController,
+	notesBarPreview,
+	type SaveOutcome,
+} from "./session/sessionNotes";
 import { SessionTitle } from "./session/SessionTitle";
 import { LiveStatusTray, useFrameCounter } from "./session/StatusTray";
 import { localSessionId } from "./sessionDeletionResult";
@@ -222,6 +231,7 @@ export type Routes = {
 	NewSession: { hubId: string; hubName: string };
 	Conversation: { hubId: string; ref: string; title: string };
 	TasksSheet: { hubId: string; ref: string; threadId: string; hasTasks: boolean };
+	NotesSheet: { hubId: string; ref: string; focusEditor?: boolean };
 	QueueSheet: { hubId: string; ref: string };
 	RowMenuSheet: { hubId: string; ref: string; archived: boolean };
 	Reader: {
@@ -531,6 +541,7 @@ export function useFocusAfterModal(
 const SESSION_DESTINATIONS = {
 	subagents: "activity",
 	tasks: "tasks",
+	notes: "notes",
 	goal: "session",
 	info: "session",
 	pin: "pin",
@@ -1020,6 +1031,14 @@ export function ConversationScreen({
 				setSessionOpen(true);
 				return;
 			}
+			// Shared notes read without a connection.
+			if (destination === "notes") {
+				navigation.navigate("NotesSheet", {
+					hubId: route.params.hubId,
+					ref: route.params.ref,
+				});
+				return;
+			}
 			// The same debounced signal the chips (and the connection bar) use:
 			// a blip shorter than the bar's own grace period must not make an
 			// already-visible chip's tap silently do nothing (Calm).
@@ -1135,6 +1154,7 @@ export function ConversationScreen({
 				return;
 			case "subagents":
 			case "tasks":
+			case "notes":
 			case "info":
 			case "pin":
 			case "delete":
@@ -1221,6 +1241,7 @@ export function ConversationScreen({
 							current: menuLevel,
 							hasSubagents,
 							connected,
+							sharedNotes: !!conversation?.capabilities.sharedNotes,
 							canAside,
 							canShutDown,
 							deletable: deletionAvailable,
@@ -1265,6 +1286,7 @@ export function ConversationScreen({
 		stateLine?.text,
 		menuLevel,
 		hasSubagents,
+		conversation?.capabilities.sharedNotes,
 		canAside,
 		canShutDown,
 	]);
@@ -1843,6 +1865,123 @@ export function ConversationScreen({
 	}
 	const frames = useFrameCounter(store);
 	const toaster = useToast();
+	// The session's shared notes (spec 8.8). The controller lives here, not in
+	// the sheet, so a save the sheet starts as it closes outlives it. store
+	// itself is already rebuilt exactly when route.params.hubId/ref change
+	// (its own useMemo above), so this would rebuild on a session switch
+	// through [store] alone - hubId/ref are listed too anyway, so the
+	// rebuild condition doesn't rest on that indirection (RoboRev #2769
+	// round 3).
+	// biome-ignore lint/correctness/useExhaustiveDependencies: One controller per conversation binding.
+	const notes = useMemo(
+		() =>
+			new NotesController({
+				client: {
+					request: (method, params) => {
+						const live = connectionReady.current
+							? currentDestination.current.client
+							: null;
+						return live
+							? live.request(method, params)
+							: Promise.reject(new Error("Not connected"));
+					},
+				},
+				hubId: route.params.hubId,
+				ref: route.params.ref,
+				instanceId: () => store.getState().conversation?.instanceId,
+				savedNote: () => store.getState().conversation?.humanNote ?? "",
+				writable: () => {
+					const live = store.getState().conversation;
+					return live ? canWriteHumanNote(live) : false;
+				},
+				working: () =>
+					store.getState().conversation?.status.type === "active",
+				storage: Storage,
+				uuid: randomUUID,
+			}),
+		[store, route.params.hubId, route.params.ref],
+	);
+	useEffect(() => () => notes.dispose(), [notes]);
+	// Follow the hub's note (evener/notes/updated) as it changes: sync() itself
+	// is a no-op unless the text actually differs.
+	useEffect(() => {
+		notes.sync();
+	}, [conversation?.humanNote, notes]);
+	const writable = conversation ? canWriteHumanNote(conversation) : false;
+	// A note kept on this phone because its save failed sends once the
+	// session is open, connected, in front and still takes notes; otherwise
+	// it stays on this phone. The controller is watched, not
+	// only the deps, so a save that fails while already connected is tried
+	// again without waiting for a reconnect. One retry per failure: the
+	// retry's own "failed" publish must not start another.
+	useEffect(() => {
+		let retrying = false;
+		let timer: ReturnType<typeof setTimeout> | null = null;
+		function retryIfNeeded() {
+			if (retrying || !connected || !focused || !bindingInstance || !writable) return;
+			if (notes.getSnapshot().phase !== "failed") return;
+			retrying = true;
+			// Next tick: the "failed" publish can come from inside a flush whose
+			// shared saving promise hasn't cleared, and a flush in the same tick
+			// would join that failing promise instead of trying again.
+			timer = setTimeout(() => {
+				timer = null;
+				void notes.flush().finally(() => {
+					retrying = false;
+				});
+			}, 0);
+		}
+		retryIfNeeded();
+		const unsubscribe = notes.subscribe(retryIfNeeded);
+		return () => {
+			unsubscribe();
+			if (timer !== null) clearTimeout(timer);
+		};
+	}, [connected, focused, bindingInstance, notes, writable]);
+	const notesSaved = useCallback(
+		(outcome: SaveOutcome) => {
+			if (outcome.saved)
+				toaster.show({
+					text: outcome.woke
+						? "Note saved. The agent is reading it."
+						: "Note saved",
+				});
+		},
+		[toaster.show],
+	);
+	const notesHost = useMemo<NotesHost | undefined>(
+		() =>
+			conversation
+				? {
+						session: {
+							humanNote: conversation.humanNote,
+							agentNote: conversation.agentNote,
+							sessionUrls: conversation.sessionUrls,
+							status: conversation.status,
+							resumeRequired: conversation.resumeRequired,
+							capabilities: conversation.capabilities,
+						},
+						notes,
+						saved: notesSaved,
+					}
+				: undefined,
+		[
+			conversation?.humanNote,
+			conversation?.agentNote,
+			conversation?.sessionUrls,
+			conversation?.status,
+			conversation?.resumeRequired,
+			conversation?.capabilities,
+			notes,
+			notesSaved,
+		],
+	);
+	useProvideSheetHost(
+		notesHosts,
+		sheetKey(route.params.hubId, route.params.ref),
+		notesHost,
+	);
+	const notesPreview = conversation ? notesBarPreview(conversation) : null;
 	const [stopping, setStopping] = useState(false);
 	const stopBusy = useRef(false);
 	async function stop() {
@@ -2665,6 +2804,22 @@ export function ConversationScreen({
 								chips={chips}
 								hidden={headerHiding.hidden}
 								onChip={openChip}
+								notes={
+									notesPreview ? (
+										<NotesBar
+											preview={notesPreview}
+											onPress={() => {
+												Keyboard.dismiss();
+												// Showing your note, the editor opens with the caret at its end.
+												navigation.navigate("NotesSheet", {
+													hubId: route.params.hubId,
+													ref: route.params.ref,
+													focusEditor: notesPreview.glyph === "person",
+												});
+											}}
+										/>
+									) : undefined
+								}
 							/>
 						</View>
 						<View
