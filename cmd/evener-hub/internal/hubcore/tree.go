@@ -510,6 +510,10 @@ type TreeNode struct {
 	// live session's from its probe, an ended one's from its meta. Every
 	// builder sets it from one closure; subagent rows have none.
 	LastMessage string
+	// Model is the id of the model the session runs (S17): a live session's
+	// current model from its probe, an ended one's from its meta. Every
+	// builder sets it from one closure; subagent rows have none.
+	Model string
 	// Tasks is this session's own task-list progress, carried from its live
 	// entry; nil for a session with no live entry, which includes every
 	// in-process child.
@@ -1168,6 +1172,27 @@ func buildTreeAtWithProjects(metas []schema.SessionMeta, live []LiveEntry, decis
 		return metaMap[id].LastMessage
 	}
 
+	// modelFor resolves the model a session's rows name (S17): a live
+	// session's current model from its daemon's probe, which follows a model
+	// switch and outranks the meta the past index may still hold, then the
+	// model its daemon started on (an entry no probe has reached yet), and an
+	// ended one's from its meta, so every row of one session agrees. A
+	// subagent row names none: the Board lists top-level sessions, and a tree
+	// of 500 subagents would spend the response's byte budget on names no row
+	// shows.
+	modelFor := func(id, kind string) string {
+		if kind == "subagent" {
+			return ""
+		}
+		if entry, live := liveMap[id]; live {
+			if entry.CurrentModel != "" {
+				return entry.CurrentModel
+			}
+			return entry.Model // the model its daemon started on
+		}
+		return metaMap[id].Model
+	}
+
 	// turnEndedAtFor resolves a live session's last turn end from the same live
 	// map stateFor reads, so its Live, project and NeedsYou rows agree (S4).
 	turnEndedAtFor := func(id string) time.Time {
@@ -1383,6 +1408,7 @@ func buildTreeAtWithProjects(metas []schema.SessionMeta, live []LiveEntry, decis
 			Subagents:       subagentTally,
 			TurnEndedAt:     turnEndedAt,
 			LastMessage:     lastMessageFor(m.ID, kind),
+			Model:           modelFor(m.ID, kind),
 		}
 
 		childMetas := childrenByParent[m.ID]
@@ -1637,6 +1663,7 @@ func buildTreeAtWithProjects(metas []schema.SessionMeta, live []LiveEntry, decis
 				Subagents:       subagentsFor(le.SessionID),
 				TurnEndedAt:     turnEndedAtFor(le.SessionID),
 				LastMessage:     lastMessageFor(le.SessionID, "session"),
+				Model:           modelFor(le.SessionID, "session"),
 			}
 			liveNodes = append(liveNodes, node)
 			continue
@@ -1740,6 +1767,7 @@ func buildTreeAtWithProjects(metas []schema.SessionMeta, live []LiveEntry, decis
 			Subagents:       subagentsFor(le.SessionID),
 			TurnEndedAt:     turnEndedAtFor(le.SessionID),
 			LastMessage:     lastMessageFor(le.SessionID, "session"),
+			Model:           modelFor(le.SessionID, "session"),
 		}
 		if meta != nil {
 			node.Title = nodeTitle(*meta, nodeKind(*meta))
