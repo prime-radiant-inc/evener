@@ -83,6 +83,29 @@ test("a non-intersecting observation loads nothing", () => {
   expect(onLoad).not.toHaveBeenCalled();
 });
 
+// The sentinel is always in view (see scrollMetrics.shouldAutoLoadOlder), so
+// left unguarded the observer loads an older page on every open.
+test("does not auto-load while the caller says the page already fills its scroll port", () => {
+  const onLoad = vi.fn();
+  render(<LoadOlderRow onLoad={onLoad} loading={false} error={null} canAutoLoad={() => false} />);
+
+  latestObserver().enter();
+
+  expect(onLoad).not.toHaveBeenCalled();
+});
+
+// A first page too short to scroll at all produces no scroll events, so the
+// near-top scroll trigger cannot see it; the sentinel is the only thing that
+// fills it, and it must still do so.
+test("auto-loads when the caller says the page does not fill its scroll port", () => {
+  const onLoad = vi.fn();
+  render(<LoadOlderRow onLoad={onLoad} loading={false} error={null} canAutoLoad={() => true} />);
+
+  latestObserver().enter();
+
+  expect(onLoad).toHaveBeenCalledTimes(1);
+});
+
 test("there is no 'load more' button to press - paging is automatic", () => {
   render(<LoadOlderRow onLoad={() => {}} loading={false} error={null} />);
   expect(screen.queryByRole("button")).toBeNull();

@@ -77,3 +77,22 @@ export function isNearTop(scrollTop: number, thresholdPx: number = NEAR_TOP_THRE
 export function readScrollMetrics(el: HTMLElement): ScrollMetrics {
   return { scrollTop: el.scrollTop, scrollHeight: el.scrollHeight, clientHeight: el.clientHeight };
 }
+
+/**
+ * Whether the paging sentinel may auto-load an older page for this scroll
+ * port.
+ *
+ * The sentinel lives in FlowOverlay's non-scrolling `top` slot, pinned to the
+ * transcript FRAME, so it is inside the viewport at every scroll position and
+ * its IntersectionObserver reports "intersecting" the moment it is observed.
+ * Paging a transcript that already overflows is the near-top scroll trigger's
+ * job (useTranscriptScroll's handleScroll); the one case that trigger cannot
+ * see - because there is nothing to scroll, so no scroll event ever fires - is
+ * a first page too short to fill the port. That case is what this allows.
+ * Ungated, the observer loads an unrequested older page on every open.
+ */
+export function shouldAutoLoadOlder(el: HTMLElement | null): boolean {
+  // No element yet: behave as the sentinel always has.
+  if (el === null) return true;
+  return el.scrollHeight <= el.clientHeight;
+}

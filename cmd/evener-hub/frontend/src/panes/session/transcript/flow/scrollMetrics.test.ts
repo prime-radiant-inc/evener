@@ -8,6 +8,7 @@ import {
   NEAR_TOP_THRESHOLD_PX,
   readScrollMetrics,
   type ScrollMetrics,
+  shouldAutoLoadOlder,
 } from "./scrollMetrics";
 
 // isAtBottom: "at the bottom" means the reader is at the TRUE end of the
@@ -136,6 +137,34 @@ test("isEndBelowFold: true for a shortfall inside isAtBottom's tolerance", () =>
   const shortByFour: ScrollMetrics = { scrollTop: 950, scrollHeight: 1000, clientHeight: 46 };
   expect(isAtBottom(shortByFour)).toBe(true);
   expect(isEndBelowFold(shortByFour)).toBe(true);
+});
+
+// shouldAutoLoadOlder: the sentinel is always in view (see the helper), so
+// this decides whether it may load: not while the transcript overflows, but
+// yes while the page is too short to scroll - the trigger's blind spot.
+test("shouldAutoLoadOlder: false once the content overflows its port", () => {
+  const el = document.createElement("div");
+  Object.defineProperty(el, "scrollHeight", { configurable: true, value: 5000 });
+  Object.defineProperty(el, "clientHeight", { configurable: true, value: 500 });
+  expect(shouldAutoLoadOlder(el)).toBe(false);
+});
+
+test("shouldAutoLoadOlder: true while the content does not fill the port (nothing to scroll)", () => {
+  const el = document.createElement("div");
+  Object.defineProperty(el, "scrollHeight", { configurable: true, value: 300 });
+  Object.defineProperty(el, "clientHeight", { configurable: true, value: 500 });
+  expect(shouldAutoLoadOlder(el)).toBe(true);
+});
+
+test("shouldAutoLoadOlder: true when the content exactly fills the port (still unscrollable)", () => {
+  const el = document.createElement("div");
+  Object.defineProperty(el, "scrollHeight", { configurable: true, value: 500 });
+  Object.defineProperty(el, "clientHeight", { configurable: true, value: 500 });
+  expect(shouldAutoLoadOlder(el)).toBe(true);
+});
+
+test("shouldAutoLoadOlder: true with no element yet, matching the pre-guard behavior", () => {
+  expect(shouldAutoLoadOlder(null)).toBe(true);
 });
 
 test("isEndBelowFold: false for content that does not scroll at all", () => {

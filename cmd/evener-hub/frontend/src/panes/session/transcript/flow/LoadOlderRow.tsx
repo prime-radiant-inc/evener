@@ -32,6 +32,11 @@ export interface LoadOlderRowProps {
   // from the failed session resume behind it, so a label added here would
   // talk over that.
   error: string | null;
+  // Whether the sentinel may auto-load right now, asked at the moment it would
+  // fire. The sentinel is always in view (see
+  // scrollMetrics.shouldAutoLoadOlder), so callers gate it on the real scroll
+  // geometry; omitted, it fires as it always has.
+  canAutoLoad?: () => boolean;
 }
 
 const CLASS = {
@@ -46,13 +51,15 @@ const CLASS = {
 // reaches the top, rather than starting when they hit it.
 const PREFETCH_MARGIN = "400px";
 
-export function LoadOlderRow({ onLoad, loading, error }: LoadOlderRowProps) {
+export function LoadOlderRow({ onLoad, loading, error, canAutoLoad }: LoadOlderRowProps) {
   const sentinelRef = useRef<HTMLDivElement>(null);
   // Latest-ref so the observer - attached once - never calls a stale
   // onLoad/loading pair. loadOlder's identity changes on every loadingOlder
   // flip (useTranscript.ts), and a stale closure would read a stale guard.
   const onLoadRef = useRef(onLoad);
   onLoadRef.current = onLoad;
+  const canAutoLoadRef = useRef(canAutoLoad);
+  canAutoLoadRef.current = canAutoLoad;
   const blockedRef = useRef(false);
   // A failed fetch stops the automatic retry loop: without this the observer
   // would re-fire against a still-visible sentinel and hammer a failing
@@ -69,7 +76,9 @@ export function LoadOlderRow({ onLoad, loading, error }: LoadOlderRowProps) {
     const observer = new IntersectionObserver(
       (entries) => {
         if (blockedRef.current) return;
-        if (entries.some((e) => e.isIntersecting)) onLoadRef.current();
+        if (!entries.some((e) => e.isIntersecting)) return;
+        if (canAutoLoadRef.current?.() === false) return;
+        onLoadRef.current();
       },
       { rootMargin: PREFETCH_MARGIN },
     );

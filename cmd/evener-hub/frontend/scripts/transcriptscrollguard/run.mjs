@@ -232,6 +232,41 @@ async function main() {
             );
           }
         }
+
+        // The open-with-history shape: a page plus an olderCursor, so the
+        // paging sentinel mounts. Before the fix it fired on mount and the
+        // prepend stranded the reader a page short of the bottom.
+        if (failures.length === 0) {
+          await navigateTo(page, `http://127.0.0.1:${vitePort}/transcriptscrollguard.html?paged=1`, BOOT);
+          await waitForFonts(send);
+          const opened = JSON.parse(
+            await evaluate(send, "(async () => JSON.stringify(await window.waitForPagedOpenSettled()))()"),
+          );
+          if (opened.errors.length > 0) failures.push(`page errors on the paged open: ${opened.errors.join("; ")}`);
+          if (!opened.paged) failures.push("the paged pass opened without a paging sentinel");
+          if (opened.listCalls !== 0) {
+            failures.push(
+              `opening a session with older history auto-loaded ${opened.listCalls} older page(s); the paging ` +
+                "sentinel must wait until the reader approaches the top of history",
+            );
+          }
+          if (opened.pill) failures.push("pill is visible right after opening a session with older history");
+          if (Math.abs(opened.bottomGap) > BOTTOM_TOLERANCE_PX) {
+            failures.push(
+              `opened ${opened.bottomGap}px off the true bottom after opening a session with older history ` +
+                `(scrollTop ${opened.scrollTop}, scrollHeight ${opened.scrollHeight}, clientHeight ${opened.clientHeight}) ` +
+                "- the landing did not hold across the settle",
+            );
+          }
+          // Paging must still work: a real scroll to the top drives the
+          // near-top trigger and fetches a page.
+          if (failures.length === 0) {
+            const scrolled = JSON.parse(
+              await evaluate(send, "(async () => JSON.stringify(await window.scrollAwayAndWaitForPill()))()"),
+            );
+            if (scrolled.listCalls < 1) failures.push("scrolling to the top of a paged session fetched no older page");
+          }
+        }
       }
     } finally {
       await clearViewportOverride(send);
@@ -243,7 +278,8 @@ async function main() {
         `transcriptscrollguard ok: transcript ${initial.scrollHeight}px in a ${initial.clientHeight}px scroll port ` +
           `(${initial.turns} turns); pill appeared on a native scroll away; jump settled at the true bottom ` +
           `(bottomGap ${landed.bottomGap}px, pill gone, held ${landed.tail.length} frames); ` +
-          `post-mount content growth and a scroll-port shrink both re-anchored to the true bottom`,
+          `post-mount content growth and a scroll-port shrink both re-anchored to the true bottom; ` +
+          `a session opened with older history stayed at the bottom without auto-loading a page`,
       );
     } else {
       for (const failure of failures) console.error(`transcriptscrollguard FAIL: ${failure}`);

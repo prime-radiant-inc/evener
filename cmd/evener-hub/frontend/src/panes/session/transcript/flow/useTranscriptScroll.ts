@@ -131,6 +131,13 @@ export interface RestoredViewAnchor {
   offset: number;
 }
 
+// The end-anchored VirtualList owns the transcript's position; this is the one
+// call that tells it "the end". The mount landing, an append's follow, and a
+// leading-edge change's re-target all make exactly this request.
+function scrollToLastRow(listRef: RefObject<VirtualListHandle | null>, count: number): void {
+  if (count > 0) listRef.current?.scrollToIndex(count - 1, { align: "end" });
+}
+
 export function captureTopAnchor(position: ViewAnchorPosition): ViewAnchor {
   return {
     id: position.id,
@@ -1354,8 +1361,7 @@ export function useTranscriptScroll({
       // replaced the earlier per-ref restore of a stored scroll offset — the
       // whole persistence (threads.ts scrollPositions + the debounced writer
       // that lived below) was removed with it, not just bypassed.
-      const count = renderedRowCountRef.current;
-      if (count > 0) listRef.current?.scrollToIndex(count - 1, { align: "end" });
+      scrollToLastRow(listRef, renderedRowCountRef.current);
       const m = measure(el);
       lastScrollGeometryRef.current = m;
       wasAtBottomRef.current = isAtBottom(m);
@@ -1722,10 +1728,20 @@ export function useTranscriptScroll({
         for (const t of currentModel.turns.slice(0, prevIndex)) {
           if (isFailedTurn(t)) resolvedFailedTurnIdsRef.current.add(t.id);
         }
-        // No scrollTop correction here on purpose: the end-anchored
-        // VirtualList (anchorToEnd) re-anchors the visible row across a
-        // prepend with real per-item geometry. This hook used to add the
-        // scrollHeight delta by hand; doing both double-shifts the viewport.
+      }
+      // The visible row is anchored by the end-anchored VirtualList
+      // (anchorToEnd) with real per-item geometry, and this hook still never
+      // writes scrollTop itself. But the mount's (or a jump's)
+      // scrollToIndex(count-1, {align:"end"}) leaves the virtualizer's
+      // reconcile loop holding THAT row index, and a leading-edge change
+      // shifts every row's index - so the stale index now names a row a page
+      // above the true end, and the reconcile drags the viewport up to it,
+      // leaving a reader who opened at the bottom a page short of the latest
+      // with the jump-to-latest pill showing. When the reader is following
+      // the bottom, re-issuing the end target with the NEW last row keeps that
+      // loop pointed at the bottom; a reader scrolled away is left alone.
+      if (wasAtBottomRef.current) {
+        scrollToLastRow(listRef, renderedRowCountRef.current);
       }
     } else {
       // Failed-turn tracking runs independent of item growth - the real
@@ -1761,8 +1777,7 @@ export function useTranscriptScroll({
       const unseen = itemCount - baselineItemCountRef.current;
       if (unseen > 0) {
         if (wasAtBottomRef.current) {
-          const count = renderedRowCountRef.current;
-          if (count > 0) listRef.current?.scrollToIndex(count - 1, { align: "end" });
+          scrollToLastRow(listRef, renderedRowCountRef.current);
           wasAtBottomRef.current = true;
           baselineItemCountRef.current = itemCount;
         } else {

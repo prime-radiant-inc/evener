@@ -51,6 +51,7 @@ import { navigationSummaryFor, resolveThreadName } from "./threadTitle";
 import { LivenessLine } from "./transcript/flow/LivenessLine";
 import { LoadOlderRow } from "./transcript/flow/LoadOlderRow";
 import { NewContentPill } from "./transcript/flow/NewContentPill";
+import { shouldAutoLoadOlder } from "./transcript/flow/scrollMetrics";
 import { useSeenDivider } from "./transcript/flow/useSeenDivider";
 import { useTranscriptScroll } from "./transcript/flow/useTranscriptScroll";
 import { useTranscriptScrollKeys } from "./transcript/flow/useTranscriptScrollKeys";
@@ -551,7 +552,12 @@ export default function Session({ params, paneId, focused: paneFocused }: PanePr
         showSeenDividerTurnId={seenDividerTurnId ?? undefined}
         loadOlderRow={
           model.olderCursor && (
-            <LoadOlderRow onLoad={loadOlderReportingError} loading={loadingOlder} error={olderError} />
+            <LoadOlderRow
+              onLoad={loadOlderReportingError}
+              loading={loadingOlder}
+              error={olderError}
+              canAutoLoad={() => shouldAutoLoadOlder(virtualListRef.current?.getScrollElement() ?? null)}
+            />
           )
         }
         liveOverlay={
