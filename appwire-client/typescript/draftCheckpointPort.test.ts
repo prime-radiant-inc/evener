@@ -424,4 +424,11 @@ describe("canonicalJson", () => {
     // non-string it is.
     expect(canonicalJson(undefined)).toBe("undefined");
   });
+
+  it("returns a string for a top-level function or symbol, the other no-text cases", () => {
+    // JSON.stringify returns undefined for these too, so the same contract
+    // violation applies; String() normalizes every one of them to a string.
+    expect(typeof canonicalJson(() => {})).toBe("string");
+    expect(typeof canonicalJson(Symbol("s"))).toBe("string");
+  });
 });
