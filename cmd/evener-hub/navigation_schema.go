@@ -9,6 +9,7 @@ import (
 	"slices"
 	"unicode/utf8"
 
+	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/hubapi"
 )
 
@@ -445,7 +446,27 @@ func navigationSessionValueValid(value hubapi.NavigationSessionSummary) bool {
 		}
 	}
 	return (value.Tasks == nil || navigationTaskProgressValid(*value.Tasks)) &&
-		(value.Subagents == nil || navigationSubagentTallyValid(*value.Subagents))
+		(value.Subagents == nil || navigationSubagentTallyValid(*value.Subagents)) &&
+		(value.Question == nil || navigationQuestionValid(*value.Question))
+}
+
+// navigationQuestionValid mirrors the web codec's questionValue: text that is
+// not empty, at least one question counted, and at most five labels, none of
+// them empty. The hub also holds each text to be an excerpt at its bound
+// (appwire.Excerpt leaves it unchanged: valid UTF-8, one trimmed line, within
+// the bound), which the projector's cut always yields. The projector drops a
+// question this refuses rather than failing the whole resource.
+func navigationQuestionValid(question hubapi.NavigationQuestion) bool {
+	if question.Text == "" || appwire.Excerpt(question.Text, appwire.MaxQuestionTextRunes) != question.Text ||
+		question.Count < 1 || !navigationIntCount(question.Count) || len(question.Options) > appwire.MaxQuestionOptions {
+		return false
+	}
+	for _, label := range question.Options {
+		if label == "" || appwire.Excerpt(label, appwire.MaxQuestionOptionRunes) != label {
+			return false
+		}
+	}
+	return true
 }
 
 // navigationTaskProgressValid mirrors the web codec's tasksValue: every count is

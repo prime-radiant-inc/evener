@@ -125,6 +125,7 @@ func cloneTreeNodesContext(ctx context.Context, nodes []TreeNode) ([]TreeNode, e
 		out[index].CompletedJobs = appwire.CloneEvenerJobs(node.CompletedJobs)
 		out[index].Watches = appwire.CloneEvenerWatches(node.Watches)
 		out[index].Tasks = appwire.CloneTaskAggregate(node.Tasks)
+		out[index].Question = appwire.ClonePendingQuestion(node.Question)
 		children, err := cloneTreeNodesContext(ctx, node.Children)
 		if err != nil {
 			return nil, err
@@ -444,6 +445,11 @@ type TreeNode struct {
 	// reaches human clients only, as thread/read's cards already do.
 	ApprovalTool   string
 	ApprovalTarget string
+	// Question is the first question of the session's pending ask
+	// (LiveEntry.PendingQuestion, S1b). Like the approval detail, every
+	// builder sets it from one closure and only while AskPending is set, so a
+	// row always names the question it says is pending.
+	Question *appwire.PendingQuestion
 	// Dormant is true for a session that has never run: no model response and
 	// no accepted user input. An empty-prompt spawn creates one, and it reports
 	// State "idle" — the same word a session that ran and finished reports — so
@@ -1068,6 +1074,17 @@ func buildTreeAtWithProjects(metas []schema.SessionMeta, live []LiveEntry, decis
 		return appwire.SandboxEscalationRequested{}
 	}
 
+	// pendingQuestionFor resolves the first pending question for a session ID
+	// from the same live map, for the reason firstApprovalFor does: every
+	// builder names the same question, and only while the entry's ask flag is
+	// set. Each row gets its own copy.
+	pendingQuestionFor := func(id string) *appwire.PendingQuestion {
+		if entry := liveMap[id]; entry.PendingAsk {
+			return appwire.ClonePendingQuestion(entry.PendingQuestion)
+		}
+		return nil
+	}
+
 	// tasksFor resolves a session's task-list progress from its own live
 	// entry, the same live map stateFor reads, so every builder below puts the
 	// same progress on every row of one session and a child row never borrows
@@ -1256,6 +1273,7 @@ func buildTreeAtWithProjects(metas []schema.SessionMeta, live []LiveEntry, decis
 		askPending := askPendingFor(m.ID)
 		approvalPending := approvalPendingFor(m.ID)
 		approval := firstApprovalFor(m.ID)
+		question := pendingQuestionFor(m.ID)
 		subagentTally := subagentsFor(m.ID)
 		turnEndedAt := turnEndedAtFor(m.ID)
 		if parentDead {
@@ -1263,6 +1281,7 @@ func buildTreeAtWithProjects(metas []schema.SessionMeta, live []LiveEntry, decis
 			askPending = false
 			approvalPending = false
 			approval = appwire.SandboxEscalationRequested{}
+			question = nil
 			subagentTally = appwire.SubagentTally{}
 			turnEndedAt = time.Time{}
 		}
@@ -1284,6 +1303,7 @@ func buildTreeAtWithProjects(metas []schema.SessionMeta, live []LiveEntry, decis
 			ApprovalPending: approvalPending,
 			ApprovalTool:    approval.Tool,
 			ApprovalTarget:  approval.DeniedPath,
+			Question:        question,
 			Dormant:         dormantFor(m.ID),
 			Kind:            kind,
 			CreatedAt:       OrderCreatedAt(m.CreatedAt, m.UpdatedAt),
@@ -1534,6 +1554,7 @@ func buildTreeAtWithProjects(metas []schema.SessionMeta, live []LiveEntry, decis
 				ApprovalPending: approvalPendingFor(le.SessionID),
 				ApprovalTool:    approval.Tool,
 				ApprovalTarget:  approval.DeniedPath,
+				Question:        pendingQuestionFor(le.SessionID),
 				Dormant:         dormantFor(le.SessionID),
 				Kind:            "session",
 				Title:           ShortID(le.SessionID),
@@ -1645,6 +1666,7 @@ func buildTreeAtWithProjects(metas []schema.SessionMeta, live []LiveEntry, decis
 			ApprovalPending: le.PendingEscalation,
 			ApprovalTool:    approval.Tool,
 			ApprovalTarget:  approval.DeniedPath,
+			Question:        pendingQuestionFor(le.SessionID),
 			Dormant:         dormantFor(le.SessionID),
 			RunningJobs:     appwire.CloneEvenerJobs(le.RunningJobs),
 			CompletedJobs:   appwire.CloneEvenerJobs(le.CompletedJobs),

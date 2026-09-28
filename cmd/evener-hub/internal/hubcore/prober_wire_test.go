@@ -23,6 +23,7 @@ import (
 // the zero value a daemon with nothing to say reports.
 type wireProbeEnvelopeSource struct {
 	askPending  bool
+	question    *appwire.PendingQuestion
 	escalations []appwire.SandboxEscalationRequested
 	detailed    server.DetailedStatus
 	tasks       *appwire.TaskAggregate
@@ -139,6 +140,9 @@ func (s wireProbeEnvelopeSource) WorkMetrics() (int64, *appwire.EvenerUsage, int
 }
 func (s wireProbeEnvelopeSource) FailedToolCalls() (int, bool) { return 0, false }
 func (s wireProbeEnvelopeSource) PendingQuestion() *appwire.PendingQuestion {
+	if s.question != nil {
+		return s.question
+	}
 	if s.askPending {
 		return &appwire.PendingQuestion{Count: 1}
 	}

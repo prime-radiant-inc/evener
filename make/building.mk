@@ -130,7 +130,7 @@ install: build-web
 	install -d "$(INSTALL_BUILD_DIR)"
 	go build -ldflags "$(LDFLAGS)" -o "$(INSTALL_BUILD_DIR)/evener" ./cmd/evener/
 	install -d "$(EVENER_SHARE_BINDIR)" "$(BINDIR)"
-	@for bin in $(EVENER_INSTALL_BINS); do \
+	@set -e; for bin in $(EVENER_INSTALL_BINS); do \
 		install -m 0755 "$(INSTALL_BUILD_DIR)/$$bin" "$(EVENER_SHARE_BINDIR)/$$bin"; \
 		ln -sfn "$(EVENER_SHARE_BINDIR)/$$bin" "$(BINDIR)/$$bin"; \
 	done

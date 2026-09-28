@@ -72,6 +72,12 @@ type LocalDaemonEntry struct {
 	// appwire.EvenerThread.PendingEscalations, so a controller hub listing this
 	// hub's sessions sees the approval that thread/read already shows.
 	PendingEscalations []appwire.SandboxEscalationRequested
+	// PendingQuestion mirrors hubcore.LiveEntry.PendingQuestion: the root's
+	// first pending question (S1b). threadFromEntry carries it into
+	// appwire.EvenerThread.PendingQuestion, so a controller hub listing this
+	// hub's sessions names the question as a local probe would. A read-only
+	// alias has none.
+	PendingQuestion *appwire.PendingQuestion
 	// RunningJobs carries the roster's non-terminal, non-agent work into the
 	// typed thread diagnostics consumed by hub and TUI status views.
 	RunningJobs []appwire.EvenerJobInfo
@@ -1160,6 +1166,7 @@ func (s *LocalDaemonSource) threadFromEntry(item LocalDaemonEntry) appwire.Threa
 			InstanceID:         instanceID,
 			Capabilities:       listRowCapabilities(item, status),
 			AskPending:         item.PendingAsk,
+			PendingQuestion:    appwire.ClonePendingQuestion(item.PendingQuestion),
 			PendingEscalations: append([]appwire.SandboxEscalationRequested(nil), item.PendingEscalations...),
 			LastTurnEndedAt:    item.LastTurnEndedAt,
 			Tasks:              appwire.CloneTaskAggregate(item.Tasks),

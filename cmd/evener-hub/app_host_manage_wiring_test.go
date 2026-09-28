@@ -159,11 +159,13 @@ func TestHostManageUIAddedHostThroughRealServer(t *testing.T) {
 		t.Fatalf("Initialize: %v", err)
 	}
 
-	// Add through the real server: the row renders the one origin + offline.
-	var added appwire.HostRow
-	if err := client.Request(context.Background(), appwire.MethodEvenerHostAdd, appwire.HostAddParams{Entry: appwire.HostEntry{Name: "web-side", Address: "ws.example", KeyPath: "/keys/ws"}}, &added); err != nil {
+	// Add through the real server: the result is the mutation-result union
+	// (registry spec 08 §11), and the row renders the one origin + offline.
+	var addedResult appwire.HostMutationResult
+	if err := client.Request(context.Background(), appwire.MethodEvenerHostAdd, appwire.HostAddParams{Entry: appwire.HostEntry{Name: "web-side", Address: "ws.example", KeyPath: "/keys/ws"}}, &addedResult); err != nil {
 		t.Fatalf("evener/host/add: %v", err)
 	}
+	added := committedRowForTest(t, addedResult)
 	if added.Name != "web-side" || added.Origin != hostOriginHubTOML || added.Attached {
 		t.Fatalf("add row = %+v, want web-side/hub.toml/offline", added)
 	}
@@ -279,10 +281,11 @@ func TestHostManageNilRegistryAddAttachThroughRealServer(t *testing.T) {
 		t.Fatalf("Initialize: %v", err)
 	}
 
-	var added appwire.HostRow
-	if err := client.Request(context.Background(), appwire.MethodEvenerHostAdd, appwire.HostAddParams{Entry: appwire.HostEntry{Name: "web-side", Address: "ws.example"}}, &added); err != nil {
+	var addedResult appwire.HostMutationResult
+	if err := client.Request(context.Background(), appwire.MethodEvenerHostAdd, appwire.HostAddParams{Entry: appwire.HostEntry{Name: "web-side", Address: "ws.example"}}, &addedResult); err != nil {
 		t.Fatalf("evener/host/add: %v", err)
 	}
+	added := committedRowForTest(t, addedResult)
 	if added.Origin != hostOriginHubTOML {
 		t.Fatalf("add row = %+v, want a hub.toml row", added)
 	}
@@ -1180,4 +1183,16 @@ func TestHostManageConfiguredHostsRegisterCacheGeneration(t *testing.T) {
 	if _, ok := generations["m4"]; !ok {
 		t.Fatalf("configured host registered no cache generation (%v); a walk that captured it would drop its rows as unowned", generations)
 	}
+}
+
+// committedRowForTest narrows the mutation-result union to its committed row,
+// failing the test on any other arm: a real-server test asserts the committed
+// outcome, and the failure arms are not success.
+func committedRowForTest(t *testing.T, result appwire.HostMutationResult) appwire.HostRow {
+	t.Helper()
+	row, err := committedRow(result)
+	if err != nil {
+		t.Fatalf("mutation result = %+v, want the committed arm: %v", result, err)
+	}
+	return row
 }
