@@ -1443,6 +1443,38 @@ func TestFormatShellResultPromotionFooter(t *testing.T) {
 	}
 }
 
+// TestFormatShellResultBackgroundReminderOneShot pins #2644: the background-job
+// reminder must not promise a wake that a one-shot run cannot deliver. Under
+// `evener run` (TurnEndsProcess) the process exits once the turn's work drains,
+// and a background job still running then is stopped unless a job_watch is set.
+// The serve-mode reminder keeps its notify-and-wake wording.
+func TestFormatShellResultBackgroundReminderOneShot(t *testing.T) {
+	t.Parallel()
+	direct := shellToolResult{
+		JobID:  "job_bg",
+		Type:   "shell",
+		Status: string(jobstore.StatusRunning),
+		Mode:   "background",
+	}
+
+	normal := formatShellResult(direct)
+	if !strings.Contains(normal, "You do not need to wait for it explicitly") {
+		t.Fatalf("serve-mode reminder = %q, want the notify-and-wake wording", normal)
+	}
+
+	direct.TurnEndsProcess = true
+	oneShot := formatShellResult(direct)
+	if strings.Contains(oneShot, "You do not need to wait for it explicitly") {
+		t.Fatalf("one-shot reminder = %q, must not claim no wait is needed", oneShot)
+	}
+	if !strings.Contains(oneShot, "job_watch") {
+		t.Fatalf("one-shot reminder = %q, want it to name the job_watch remedy", oneShot)
+	}
+	if strings.Contains(normal, "job_watch") {
+		t.Fatalf("serve-mode reminder = %q, must not mention the one-shot job_watch remedy", normal)
+	}
+}
+
 // TestFormatShellResultRunTimeoutFooter pins the wording for a genuine
 // stopped/run_timeout terminal result (job-control.md:212, :214): the process
 // was stopped by evener's own runtime limit, not by failing on its own. The
