@@ -527,6 +527,41 @@ func TestCursorRefusalNamesTheEarliestInvalidatingWrite(t *testing.T) {
 	}
 }
 
+// TestLingeringMarkerStillReplaysTheLiveIncarnationsTombstone pins the
+// companion arm of the stale-marker rule: the marker may suppress the OLD
+// removal's tombstone, but a tombstone pinned to the live current pair replays
+// with compacted: true — the marker must not swallow the live incarnation's
+// lost-response replay.
+func TestLingeringMarkerStillReplaysTheLiveIncarnationsTombstone(t *testing.T) {
+	store, _ := openRetentionStore(t, RetentionPolicy{TerminalPerHost: 1})
+	base := time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC)
+	store.clock = func() time.Time { return base }
+	if err := store.MirrorHostState(HostMirror{
+		Boundaries: map[string]Boundary{"m4": {Generation: 7, IncarnationID: "inc-old", PresenceEpoch: 2}},
+		Removed:    map[string]RemovedHost{"m4": {RemovedAt: base, Generation: 7, IncarnationID: "inc-old"}},
+	}); err != nil {
+		t.Fatalf("MirrorHostState: %v", err)
+	}
+	first := createOpPair(t, store, "m4", "live-1", 8, "inc-new")
+	finish(t, store, first.ID)
+	second := createOpPair(t, store, "m4", "live-2", 8, "inc-new")
+	finish(t, store, second.ID) // compacts live-1 into a tombstone pinned to 8/inc-new.
+	if _, ok := store.Record(first.ID); ok {
+		t.Fatal("test setup: the live record was not compacted")
+	}
+
+	replayed, hit, err := store.LookupOperation(OperationDedupQuery{
+		ClientOperationID: "live-1", Host: "m4", Kind: KindDeploy,
+		Current: OperationPair{Generation: 8, IncarnationID: "inc-new"},
+	})
+	if err != nil {
+		t.Fatalf("LookupOperation: %v", err)
+	}
+	if !hit || !replayed.Compacted {
+		t.Fatalf("live-incarnation replay = hit %v compacted %v, want the compacted: true replay", hit, replayed.Compacted)
+	}
+}
+
 // TestLingeringRemovalMarkerNeverReplaysAgainstANewPair pins the re-add
 // clean-slate rule over a marker whose clear mirror write trailed: the request
 // resolves the name's current pair as the new incarnation, so the old

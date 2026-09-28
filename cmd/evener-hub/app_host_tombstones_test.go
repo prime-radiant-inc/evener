@@ -993,8 +993,11 @@ func TestHostRemovalMirrorsTheRemovalMarker(t *testing.T) {
 		t.Fatalf("mirrored removed pair = %d/%s, want the tombstone's own %d/%s",
 			marker.Generation, marker.IncarnationID, tombstone.Generation, tombstone.IncarnationID)
 	}
-	if _, ok := store.Boundary("side"); !ok {
-		t.Fatal("the removed host's boundary was not mirrored")
+	// The name never held an operation record, so §4's rule has nothing to
+	// validate and the store does not mirror a boundary it would discard: the
+	// removal marker is the mirror's durable half here.
+	if _, ok := store.Boundary("side"); ok {
+		t.Fatal("the store mirrored a boundary for a record-less removed host")
 	}
 
 	// A re-add is the live mirror: the marker goes, so no later pass treats the

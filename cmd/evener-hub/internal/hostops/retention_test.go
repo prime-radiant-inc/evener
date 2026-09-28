@@ -936,6 +936,29 @@ func TestMirrorDoesNotReproposeADroppedRemovedHostBoundary(t *testing.T) {
 	if writes != 1 {
 		t.Fatalf("live mirror writes = %d, want 1", writes)
 	}
+
+	// A removed host that never held an operation record is in the same state:
+	// its marker lands, but no boundary §4 would discard is created, and a
+	// later re-proposal is a no-op rather than an oscillation.
+	neverMirror := HostMirror{
+		Boundaries: map[string]Boundary{"never": {Generation: 9, IncarnationID: "inc-never", PresenceEpoch: 1}},
+		Removed:    map[string]RemovedHost{"never": {RemovedAt: base.Add(-30 * time.Minute), Generation: 9, IncarnationID: "inc-never"}},
+	}
+	if err := store.MirrorHostState(neverMirror); err != nil {
+		t.Fatalf("first mirror: %v", err)
+	}
+	if writes != 2 {
+		t.Fatalf("marker mirror writes = %d, want 2 (the marker still lands)", writes)
+	}
+	if _, ok := store.Boundary("never"); ok {
+		t.Fatal("a boundary was created for a record-less removed host")
+	}
+	if err := store.MirrorHostState(neverMirror); err != nil {
+		t.Fatalf("re-proposal: %v", err)
+	}
+	if writes != 2 {
+		t.Fatalf("re-proposal writes = %d, want no new write", writes)
+	}
 }
 
 // TestByteBoundLeavesARecordSetThatAlreadyFits pins the baseline

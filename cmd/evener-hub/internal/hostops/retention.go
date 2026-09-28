@@ -494,12 +494,13 @@ func (s *Store) MirrorHostState(mirror HostMirror) error {
 // skipBoundaryProposal reports whether a boundary the caller proposes for name
 // would be discarded again by §4's own rule: the name's removal marker agrees
 // with the store's data (the host is genuinely removed), its removal is past
-// the tombstoneRetention horizon, it holds no records, and it carries at least
-// one dedup tombstone — the trace its compacted history left. That is the state
-// in which the historical boundary was dropped with the host's last record, so
-// re-proposing it commits a write that changes nothing. A name with no
-// tombstones never held records this store compacted, and its first mirror
-// write still lands.
+// the tombstoneRetention horizon, and it holds no records — the state in which
+// the historical boundary is dropped with the host's last record, whatever
+// evidence of that history survives. Re-proposing it commits a write that
+// changes nothing (and, when a later write carries unrelated victims, flips the
+// boundary in and out across mutations), so it is skipped. A name with records,
+// or inside its horizon, still mirrors normally; the marker itself is not
+// affected.
 func (s *Store) skipBoundaryProposal(state *snapshot, name string, mirror HostMirror, now time.Time, policy RetentionPolicy) bool {
 	marker, marked := mirror.Removed[name]
 	if !marked {
@@ -511,10 +512,7 @@ func (s *Store) skipBoundaryProposal(state *snapshot, name string, mirror HostMi
 	if !removedMarkerAgrees(state, name, marker) {
 		return false
 	}
-	if slices.ContainsFunc(state.Records, func(record Record) bool { return record.Host == name }) {
-		return false
-	}
-	return slices.ContainsFunc(state.Tombstones, func(tombstone Tombstone) bool { return tombstone.Host == name })
+	return !slices.ContainsFunc(state.Records, func(record Record) bool { return record.Host == name })
 }
 
 func mirrorLiveSet(live []string) map[string]struct{} {
