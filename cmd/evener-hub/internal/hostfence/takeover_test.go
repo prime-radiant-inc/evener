@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"math"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -334,6 +335,42 @@ func TestGuardTakeoverSupersedesAPendingFence(t *testing.T) {
 	// order, never the pair alone.
 	if _, err := held.Takeover(Epoch{BootID: "boot-2", OpSeq: 1}); err != nil {
 		t.Fatalf("Takeover(later boot) over a pending fence = %v, want success", err)
+	}
+}
+
+// TestKillRefusesAReportForAnotherEntry pins the trust boundary's identity
+// check: a kill answer naming another entry is never read as this entry's
+// outcome, so a mismatched report can never advance the guard over live work.
+func TestKillRefusesAReportForAnotherEntry(t *testing.T) {
+	runner := &cannedRunner{t: t, respond: func(command string) (string, string, int) {
+		return `{"version":1,"id":"other","signaled":true,"live":false,"state":"killed"}`, "", 0
+	}}
+	_, err := (Verified{wrapper: Wrapper{Runner: runner, Host: "h1"}}).Kill(
+		context.Background(), Epoch{BootID: "boot-1", OpSeq: 1}, "n1")
+	if !errors.Is(err, ErrInvalidGuard) {
+		t.Fatalf("Kill(report for another entry) = %v, want ErrInvalidGuard", err)
+	}
+}
+
+// TestGuardSequenceExhaustionRefuses pins the sequence's edge: at the uint64
+// maximum the guard has no next value, so a takeover and an advance both refuse
+// typed rather than wrapping into a state the decoders reject.
+func TestGuardSequenceExhaustionRefuses(t *testing.T) {
+	old := Epoch{BootID: "boot-1", OpSeq: 1}
+	exhausted := GuardState{
+		Version: 1, GuardEpoch: math.MaxUint64, Epoch: &old, Holder: &old,
+		BootHighWater: map[string]uint64{"boot-1": 1},
+	}
+	if err := exhausted.Validate(); err != nil {
+		t.Fatalf("Validate(exhausted sequence) = %v, want the state readable", err)
+	}
+	if _, err := exhausted.Takeover(Epoch{BootID: "boot-2", OpSeq: 1}); !errors.Is(err, ErrInvalidGuard) {
+		t.Fatalf("Takeover at the exhausted sequence = %v, want ErrInvalidGuard", err)
+	}
+	fenced := exhausted
+	fenced.Fence = &FenceState{Epoch: old, GuardEpoch: math.MaxUint64}
+	if _, err := fenced.Advance(old); !errors.Is(err, ErrInvalidGuard) {
+		t.Fatalf("Advance at the exhausted sequence = %v, want ErrInvalidGuard", err)
 	}
 }
 

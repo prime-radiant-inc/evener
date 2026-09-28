@@ -188,6 +188,13 @@ seq_at_or_below() { # <a> <b>
 	[ "$1" = "$2" ] || [ "$1" \< "$2" ]
 }
 
+# seq_exhausted reports whether a canonical uint is the schema maximum: the
+# guard's sequence then has no next value, and incrementing it would wrap (or
+# abort the shell) rather than write a guard the Go decoder accepts.
+seq_exhausted() {
+	[ "${#1}" -eq 20 ] && [ "$1" = "18446744073709551615" ]
+}
+
 sync_path() { # best-effort durability for a file or directory
 	sync "$1" 2>/dev/null || sync 2>/dev/null || true
 }
@@ -338,7 +345,8 @@ guard_file_valid() { # <snapshot>
 		}
 		NF != 2 { bad = 1 }
 		$1 ~ /^boot\./ {
-			if ($1 !~ /^boot\.[A-Za-z0-9._-]+$/ || $1 == "boot.-" || $2 !~ /^[1-9][0-9]*$/ || length($2) > 20) { bad = 1 }
+			if ($1 !~ /^boot\.[A-Za-z0-9._-]+$/ || $1 == "boot.-" || $2 !~ /^[1-9][0-9]*$/) { bad = 1 }
+			else if (length($2) > 20 || (length($2) == 20 && ($2 "") > ("18446744073709551615" ""))) { bad = 1 }
 		}
 		{ seen[$1]++ }
 		END {
@@ -423,7 +431,7 @@ check_boot_pair() { # <bootId> <opSeq>
 	-) [ "$2" = 0 ] || return 1 ;;
 	'') return 1 ;;
 	*[!A-Za-z0-9._-]*) return 1 ;;
-	*) is_uint64 "$2" && [ "$2" -ge 1 ] || return 1 ;;
+	*) is_uint64 "$2" && [ "$2" != 0 ] || return 1 ;;
 	esac
 	return 0
 }
@@ -493,7 +501,7 @@ read_holder() { # sets HOLDER_BOOT and HOLDER_SEQ
 	'') return 1 ;;
 	-) [ "$HOLDER_SEQ" = 0 ] || return 1 ;;
 	*[!A-Za-z0-9._-]*) return 1 ;;
-	*) is_uint64 "$HOLDER_SEQ" && [ "$HOLDER_SEQ" -ge 1 ] || return 1 ;;
+	*) is_uint64 "$HOLDER_SEQ" && [ "$HOLDER_SEQ" != 0 ] || return 1 ;;
 	esac
 	return 0
 }
@@ -817,6 +825,11 @@ do_takeover() {
 	if [ "$previous_boot" != "-" ] && [ "$previous_boot" = "$E_BOOT" ] && seq_at_or_below "$E_SEQ" "$previous_seq"; then
 		refuse_stale "epoch $E_BOOT/$E_SEQ is no newer than the guard's holder $previous_boot/$previous_seq"
 	fi
+	if seq_exhausted "$GUARD_EPOCH"; then
+		# The guard's sequence has no next value: the takeover cannot advance
+		# it, and wrapping would write a guard the Go decoder rejects.
+		refuse_corrupt "the guard's fencing sequence is exhausted"
+	fi
 	GUARD_EPOCH=$((GUARD_EPOCH + 1))
 	FENCE_BOOT=$E_BOOT
 	FENCE_SEQ=$E_SEQ
@@ -854,6 +867,9 @@ do_advance() {
 	read_holder || refuse_corrupt "the lease holder is outside its schema"
 	if [ "$HOLDER_BOOT" != "$E_BOOT" ] || [ "$HOLDER_SEQ" != "$E_SEQ" ]; then
 		refuse_corrupt "the lease holder $HOLDER_BOOT/$HOLDER_SEQ does not name the fenced epoch $E_BOOT/$E_SEQ; replay the takeover"
+	fi
+	if seq_exhausted "$GUARD_EPOCH"; then
+		refuse_corrupt "the guard's fencing sequence is exhausted"
 	fi
 	EPOCH_BOOT=$E_BOOT
 	EPOCH_SEQ=$E_SEQ
@@ -987,20 +1003,30 @@ do_perform() { # <bootId> <opSeq> <command>
 	status=0
 	wait "$child" || status=$?
 	exited=$(date -u '+%Y-%m-%dT%H:%M:%SZ' 2>/dev/null || printf 0)
-	survivors=$(descendants_of "$nonce") || survivors=''
-	if [ -n "$survivors" ]; then
-		# The command's own children outlive it: the entry stays running with
-		# them recorded, so a verifier reads it live and a fencing takeover
-		# treats the surviving work as the superseded epoch's, never as clean.
-		write_entry "$nonce" "$(json_escape "$command")" "$registered" running "$own_kind" "$own_pid" "$own_start" "$own_nonce" '' '' '' "$survivors" ||
-			refuse io-error "cannot record the lease descendants" 69
+	# The survivor enumeration is the proof the command's own children are gone,
+	# and it is read strictly: a scan that cannot run proves nothing, so the
+	# entry stays running rather than recording an exit that would exclude
+	# surviving work from every later fencing's live-entry set. The command's
+	# own exit status still rides this helper's exit code.
+	if survivors=$(descendants_of "$nonce"); then
+		if [ -n "$survivors" ]; then
+			# The command's own children outlive it: the entry stays running with
+			# them recorded, so a verifier reads it live and a fencing takeover
+			# treats the surviving work as the superseded epoch's, never as clean.
+			write_entry "$nonce" "$(json_escape "$command")" "$registered" running "$own_kind" "$own_pid" "$own_start" "$own_nonce" '' '' '' "$survivors" ||
+				refuse io-error "cannot record the lease descendants" 69
+			exit "$status"
+		fi
+		# A command that exited, however it exited, is recorded exited: the lease
+		# file's exit state is what a verifier enumerates. A killed orphan is
+		# marked by the fencing worker's kill path (S18) through the same entry
+		# file.
+		write_entry "$nonce" "$(json_escape "$command")" "$registered" exited "$own_kind" "$own_pid" "$own_start" "$own_nonce" '' "$status" "$exited" '' ||
+			refuse io-error "cannot record the lease exit" 69
 		exit "$status"
 	fi
-	# A command that exited, however it exited, is recorded exited: the lease
-	# file's exit state is what a verifier enumerates. A killed orphan is marked
-	# by the fencing worker's kill path (S18) through the same entry file.
-	write_entry "$nonce" "$(json_escape "$command")" "$registered" exited "$own_kind" "$own_pid" "$own_start" "$own_nonce" '' "$status" "$exited" '' ||
-		refuse io-error "cannot record the lease exit" 69
+	write_entry "$nonce" "$(json_escape "$command")" "$registered" running "$own_kind" "$own_pid" "$own_start" "$own_nonce" '' '' '' '' ||
+		refuse io-error "cannot record the unverified lease exit" 69
 	exit "$status"
 }
 
@@ -1014,8 +1040,14 @@ post_spawn_failure() {
 	kill "$child" 2>/dev/null || true
 	attempt=0
 	while [ "$attempt" -lt 20 ]; do
-		remaining=$(descendants_of "${child_nonce:-}") || remaining=''
-		[ -z "$remaining" ] && break
+		if remaining=$(descendants_of "${child_nonce:-}"); then
+			[ -z "$remaining" ] && break
+		else
+			# The enumeration could not run: nothing is proven gone, so this
+			# attempt keeps the loop's remaining window instead of reading the
+			# failure as a clean reap.
+			remaining=''
+		fi
 		for descendant in $remaining; do
 			descendant_pid=${descendant%%:*}
 			descendant_start=${descendant#*:}
@@ -1143,6 +1175,17 @@ nonce_scan_available() {
 	[ -d /proc/self ] || return 1
 	[ -r /proc/self/environ ] || return 1
 	command -v grep >/dev/null 2>&1 || return 1
+	# At least one numeric process directory must be visible: an unmatched glob
+	# would hand the scan a literal path, and its failure must not read as an
+	# empty (proven-clean) result.
+	found=false
+	for entry in /proc/[0-9]*; do
+		if [ -e "$entry" ]; then
+			found=true
+			break
+		fi
+	done
+	[ "$found" = true ] || return 1
 	return 0
 }
 
@@ -1166,10 +1209,10 @@ entry_nonce_scan() {
 # pair, so the ownership arm's answer and the scan's answer for one process
 # collapse to one target.
 emit_target() { # <pid> <startToken>
-	case " $target_seen " in
-	*" $1 $2 "*) return 0 ;;
+	case $target_seen in
+	*"|$1:$2|"*) return 0 ;;
 	esac
-	target_seen="$target_seen $1 $2"
+	target_seen="$target_seen|$1:$2|"
 	printf '%s:%s ' "$1" "$2"
 }
 

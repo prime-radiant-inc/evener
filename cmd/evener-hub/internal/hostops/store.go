@@ -1738,6 +1738,22 @@ func validateSnapshot(state snapshot) error {
 		if record := state.Records[index]; record.State != StateOrphanUnverified || record.Host != host {
 			return fmt.Errorf("%w: fencing quarantine for %q names record %s in state %q for host %q",
 				ErrInvalidRecord, host, marker.RecordID, record.State, record.Host)
+		} else if !boundaryHasRemoteFencing(record.OrphanBoundary) {
+			return fmt.Errorf("%w: fencing quarantine for %q names record %s whose boundary is not remote-fencing",
+				ErrInvalidRecord, host, marker.RecordID)
+		}
+	}
+	// The equivalence runs both ways: a record whose boundary is the
+	// remote-fencing variant is a fencing quarantine, so its host's marker must
+	// name it. A store carrying one half but not the other would disagree with
+	// what custody recovery and the admission fence read.
+	for _, record := range state.Records {
+		if record.State != StateOrphanUnverified || !boundaryHasRemoteFencing(record.OrphanBoundary) {
+			continue
+		}
+		if marker, ok := state.FencingQuarantines[record.Host]; !ok || marker.RecordID != record.ID {
+			return fmt.Errorf("%w: record %s carries a remote-fencing boundary but host %q carries no matching quarantine marker",
+				ErrInvalidRecord, record.ID, record.Host)
 		}
 	}
 	// Probe epochs and the guard epoch carry the same refuse-always rule: a row

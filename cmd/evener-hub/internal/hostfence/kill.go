@@ -68,7 +68,16 @@ func (w Wrapper) kill(ctx context.Context, e Epoch, id string) (KillReport, erro
 	if exit != 0 {
 		return KillReport{}, w.refusal(stderr, exit)
 	}
-	return DecodeKillReport([]byte(stdout))
+	report, err := DecodeKillReport([]byte(stdout))
+	if err != nil {
+		return KillReport{}, err
+	}
+	if report.ID != id {
+		// A report naming another entry is not this invocation's answer: it is
+		// never read as this entry's outcome.
+		return KillReport{}, fmt.Errorf("%w: the kill answer names entry %q, want %q", ErrInvalidGuard, report.ID, id)
+	}
+	return report, nil
 }
 
 // DecodeKillReport decodes one kill answer. The helper's output is a trust
@@ -97,6 +106,20 @@ func DecodeKillReport(raw []byte) (KillReport, error) {
 	// negation, and a settled or missing entry can never be reported live.
 	if report.Live && report.State != LeaseRegistering && report.State != LeaseRunning {
 		return KillReport{}, fmt.Errorf("%w: a kill answer reports state %q live", ErrInvalidGuard, report.State)
+	}
+	// A settled answer requires a settled state and no survivors: the kill path
+	// settles an entry only after a successful enumeration found nothing
+	// matching, so "not live" on a running entry or alongside a named survivor
+	// is a contradiction the worker must never read as exit confirmation.
+	if !report.Live {
+		switch report.State {
+		case "", LeaseExited, LeaseKilled:
+		default:
+			return KillReport{}, fmt.Errorf("%w: a kill answer reports state %q not live", ErrInvalidGuard, report.State)
+		}
+		if len(report.Remaining) > 0 {
+			return KillReport{}, fmt.Errorf("%w: a kill answer reports %d remaining processes on a settled entry", ErrInvalidGuard, len(report.Remaining))
+		}
 	}
 	for _, remaining := range report.Remaining {
 		if err := remaining.Validate(); err != nil {

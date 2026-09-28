@@ -223,6 +223,62 @@ func TestCustodyImportRefusesTwoUnresolvedFencingRecordsForOneHost(t *testing.T)
 	}
 }
 
+// TestFencingMarkerAndBoundaryMustAgree pins the equivalence the live store and
+// custody recovery both rely on: a marker names a record whose boundary is the
+// remote-fencing variant, and every record carrying that boundary is named by
+// its host's marker. A file with one half only would make the two readers
+// disagree about which hosts are quarantined.
+func TestFencingMarkerAndBoundaryMustAgree(t *testing.T) {
+	const record = `{"id":"00000000000000000001","clientOperationId":"client-h1","host":"h1","kind":"deploy",` +
+		`"state":"orphan-unverified","generation":7,"incarnationId":"inc-1","createdAt":"2026-09-26T00:00:00Z",` +
+		`"updatedAt":"2026-09-26T00:00:00Z","hostRemoved":false,"orphanBoundary":[`
+	const remoteFencing = `{"kind":"remote-fencing","fencingEpoch":{"bootId":"boot-1","opSeq":2},"guardEpoch":3,"leaseEntries":[]}`
+	const localBoundary = `{"kind":"local-linux","cgroupId":"cg-1","nonce":"n1","pid":1,"startTime":"1"}`
+	refused := map[string]string{
+		"remote-fencing boundary without a marker": `{"version":1,"sequence":0,"allocatorHighWaterMark":1,"records":[` +
+			record + remoteFencing + `]}]}`,
+		"marker whose record carries another boundary": `{"version":1,"sequence":0,"allocatorHighWaterMark":1,"records":[` +
+			record + localBoundary + `]}],"fencingQuarantines":{"h1":{"recordId":"00000000000000000001","quarantinedAt":"2026-09-26T00:00:00Z"}}}`,
+	}
+	for name, body := range refused {
+		dir := t.TempDir()
+		path := StorePath(dir)
+		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+			t.Fatalf("%s: create store dir: %v", name, err)
+		}
+		if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+			t.Fatalf("%s: write store: %v", name, err)
+		}
+		store, err := Open(path)
+		if err == nil && store.Quarantine() == nil {
+			// A half-state file is never served as its own state: it goes through
+			// §4's custody-first quarantine (or refuses outright).
+			t.Fatalf("%s: Open served the invalid shape as its own state", name)
+		}
+	}
+	// The agreed shape loads.
+	dir := t.TempDir()
+	path := StorePath(dir)
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatalf("create store dir: %v", err)
+	}
+	agreed := `{"version":1,"sequence":0,"allocatorHighWaterMark":1,"records":[` +
+		record + remoteFencing + `]}],"fencingQuarantines":{"h1":{"recordId":"00000000000000000001","quarantinedAt":"2026-09-26T00:00:00Z"}}}`
+	if err := os.WriteFile(path, []byte(agreed), 0o600); err != nil {
+		t.Fatalf("write store: %v", err)
+	}
+	store, err := Open(path)
+	if err != nil {
+		t.Fatalf("Open(agreed shapes) = %v, want it accepted", err)
+	}
+	if store.Quarantine() != nil {
+		t.Fatal("the agreed shapes were quarantined, want them served")
+	}
+	if marker, ok := store.FencingQuarantine("h1"); !ok || marker.RecordID != "00000000000000000001" {
+		t.Fatalf("FencingQuarantine(h1) = (%+v, %v), want the marker served", marker, ok)
+	}
+}
+
 func TestFencingQuarantineKeyIsOptionalOnRead(t *testing.T) {
 	// A store file written before the key existed loads: absent and null both
 	// read as "no host quarantined", never as a corrupt store.

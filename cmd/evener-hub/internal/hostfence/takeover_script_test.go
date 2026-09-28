@@ -406,22 +406,7 @@ func TestScriptScanUnavailableStaysLive(t *testing.T) {
 	}
 	remote := newFenceRemote(t)
 	remote.settle(Epoch{BootID: "boot-1", OpSeq: 1})
-	// A PATH with every tool the helper's kill/recheck paths use, minus grep.
-	pathDir := t.TempDir()
-	for _, tool := range []string{
-		"awk", "basename", "cat", "chmod", "date", "ln", "ls", "mkdir", "mv", "od",
-		"ps", "rm", "sed", "sleep", "tr",
-	} {
-		if resolved, err := exec.LookPath(tool); err == nil {
-			if err := os.Symlink(resolved, filepath.Join(pathDir, tool)); err != nil {
-				t.Fatalf("link %s: %v", tool, err)
-			}
-		}
-	}
-	if _, err := exec.LookPath("grep"); err != nil {
-		t.Skip("grep is not installed at all")
-	}
-	noGrep := []string{"PATH=" + pathDir}
+	noGrep := []string{"PATH=" + grepLessPath(t)}
 	if _, stderr, code := remote.run(noGrep, "takeover", "boot-1", "2"); code != 0 {
 		t.Fatalf("takeover under the grep-less PATH exited %d: %s", code, stderr)
 	}
@@ -447,6 +432,68 @@ func TestScriptScanUnavailableStaysLive(t *testing.T) {
 	}
 	if report.Signaled || !report.Live || report.State == LeaseKilled {
 		t.Fatalf("kill report without the scan = %+v, want live and unsettled", report)
+	}
+}
+
+// grepLessPath builds a PATH with every tool the helper's kill/recheck/perform
+// paths use, except grep: the nonce enumeration then cannot run.
+func grepLessPath(t *testing.T) string {
+	t.Helper()
+	pathDir := t.TempDir()
+	for _, tool := range []string{
+		"awk", "basename", "cat", "chmod", "date", "ln", "ls", "mkdir", "mv", "od",
+		"ps", "rm", "sed", "sh", "sleep", "tr",
+	} {
+		if resolved, err := exec.LookPath(tool); err == nil {
+			if err := os.Symlink(resolved, filepath.Join(pathDir, tool)); err != nil {
+				t.Fatalf("link %s: %v", tool, err)
+			}
+		}
+	}
+	if _, err := exec.LookPath("grep"); err != nil {
+		t.Skip("grep is not installed at all")
+	}
+	return pathDir
+}
+
+// TestScriptPerformUnverifiedEnumerationStaysRunning pins the enumeration
+// contract at the recording site: when the survivor scan cannot run, a
+// command's exit is never recorded as settled, because a settled entry is
+// excluded from every later fencing's live-entry set.
+func TestScriptPerformUnverifiedEnumerationStaysRunning(t *testing.T) {
+	if _, err := os.Stat("/proc/self/environ"); err != nil {
+		t.Skip("nonce enumeration needs /proc (Linux)")
+	}
+	remote := newFenceRemote(t)
+	epoch := Epoch{BootID: "boot-1", OpSeq: 1}
+	remote.settle(epoch)
+	noGrep := []string{"PATH=" + grepLessPath(t)}
+	if _, stderr, code := remote.run(noGrep, "perform", epoch.BootID, "1", "true"); code != 0 {
+		t.Fatalf("perform exited %d: %s", code, stderr)
+	}
+	stdout, stderr, code := remote.run(nil, "entries")
+	if code != 0 {
+		t.Fatalf("entries exited %d: %s", code, stderr)
+	}
+	entries, err := DecodeEntries([]byte(stdout))
+	if err != nil || len(entries) != 1 {
+		t.Fatalf("entries = %+v (err %v), want one entry", entries, err)
+	}
+	if entries[0].State != LeaseRunning && entries[0].State != LeaseRegistering {
+		t.Fatalf("entry after an unverifiable exit = %+v, want a live state", entries[0])
+	}
+	// Read under the same grep-less PATH, the entry is live: nothing about its
+	// possible children was proven gone.
+	stdout, stderr, code = remote.run(noGrep, "recheck", entries[0].ID)
+	if code != 0 {
+		t.Fatalf("recheck exited %d: %s", code, stderr)
+	}
+	recheck, err := DecodeRecheck([]byte(stdout))
+	if err != nil {
+		t.Fatalf("DecodeRecheck(%q) = %v", stdout, err)
+	}
+	if !recheck.Live {
+		t.Fatalf("recheck of the unverified entry = %+v, want live", recheck)
 	}
 }
 
@@ -643,6 +690,19 @@ func TestScriptGuardSequenceComparesAtUint64Width(t *testing.T) {
 	if status.GuardEpoch != 18446744073709551615 || status.Fence == nil || status.Fence.GuardEpoch != 18446744073709551615 {
 		t.Fatalf("status with uint64-maximum sequences = %+v", status)
 	}
+	// Exhaustion is refused before it can wrap: neither the advance nor a
+	// takeover toward a new epoch can move the sequence, and the refusal is
+	// typed rather than a shell arithmetic failure.
+	for _, op := range [][]string{
+		{"advance", "boot-1", "1"},
+		{"takeover", "boot-2", "1"},
+	} {
+		if _, stderr, code := remote.run(nil, op...); code == 0 {
+			t.Fatalf("%v at the uint64-maximum sequence succeeded, want refusal", op)
+		} else if err := DecodeRefusal([]byte(stderr)); !errors.Is(err, ErrStateCorrupt) {
+			t.Fatalf("%v at the uint64-maximum sequence = %v, want ErrStateCorrupt", op, err)
+		}
+	}
 }
 
 // TestScriptRecheckNonceVerifiesTheExactCarrier pins the nonce arm of the
@@ -703,6 +763,9 @@ func TestScriptKillReportShapeIsClosed(t *testing.T) {
 		"wrong version":    `{"version":2,"id":"n1","signaled":false,"live":false,"state":""}`,
 		"unknown state":    `{"version":1,"id":"n1","signaled":false,"live":false,"state":"gone"}`,
 		"live while dead":  `{"version":1,"id":"n1","signaled":false,"live":true,"state":"exited"}`,
+		"not-live running": `{"version":1,"id":"n1","signaled":false,"live":false,"state":"running"}`,
+		"not-live with survivors": `{"version":1,"id":"n1","signaled":true,"live":false,"state":"killed",` +
+			`"remaining":[{"pid":41,"startToken":"777"}]}`,
 		"trailing bytes":   good + " junk",
 		"missing id":       `{"version":1,"signaled":false,"live":false,"state":""}`,
 		"missing signaled": `{"version":1,"id":"n1","live":false,"state":""}`,

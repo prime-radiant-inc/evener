@@ -46,6 +46,7 @@ import (
 	"fmt"
 	"io"
 	"maps"
+	"math"
 	"strings"
 	"unicode/utf8"
 
@@ -361,6 +362,12 @@ func (g GuardState) Takeover(e Epoch) (GuardState, error) {
 		// never takes over again, even after later boots have settled.
 		return GuardState{}, fmt.Errorf("%w: epoch %+v is at or below boot %q's high-water %d", ErrStaleEpoch, e, e.BootID, highWater)
 	}
+	if g.GuardEpoch == math.MaxUint64 {
+		// The guard's sequence has no next value: a takeover cannot take the
+		// compare-and-swap it needs, and wrapping it would write a guard the
+		// decoders reject.
+		return GuardState{}, fmt.Errorf("%w: the guard's fencing sequence is exhausted", ErrInvalidGuard)
+	}
 	next := g
 	next.GuardEpoch++
 	if previous != nil {
@@ -398,6 +405,10 @@ func (g GuardState) Advance(e Epoch) (GuardState, error) {
 	}
 	if g.Fence.Epoch != e {
 		return GuardState{}, fmt.Errorf("%w: the fence names %+v, not %+v", ErrStaleEpoch, g.Fence.Epoch, e)
+	}
+	if g.GuardEpoch == math.MaxUint64 {
+		// No next sequence value exists for the advance either.
+		return GuardState{}, fmt.Errorf("%w: the guard's fencing sequence is exhausted", ErrInvalidGuard)
 	}
 	next := g
 	advanced := e
