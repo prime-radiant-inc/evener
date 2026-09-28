@@ -5,7 +5,7 @@
 import type { ComponentProps, ReactNode } from "react";
 import { createElement } from "react";
 import { act, type ReactTestRenderer } from "react-test-renderer";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AnyNotification, Thread } from "@evener/appwire-client";
 import { getNativeMutationRuntime, nativeMutationTargetKey } from "./nativeMutationRuntime";
 import { flatListCalls, pressable, render, renderedText, screenConnection, textOf } from "./renderNative.testkit";
@@ -138,13 +138,6 @@ vi.mock("./NativePreferencesProvider", () => ({
 		discardUnreadableKeybindingsDraft: () => null,
 	}),
 }));
-
-// The screen focuses the composer on the next frame; the test runs that frame
-// at once.
-vi.stubGlobal("requestAnimationFrame", (frame: (time: number) => void) => {
-	frame(0);
-	return 0;
-});
 
 type ConversationScreenProps = ComponentProps<typeof ConversationScreen>;
 
@@ -408,6 +401,16 @@ function composerSend(tree: ReactTestRenderer, label: string) {
 }
 
 describe("a question waiting for an answer (spec 8.4)", () => {
+	// "Other answer…" focuses the composer on the next frame; these tests run
+	// that frame at once.
+	beforeEach(() => {
+		vi.stubGlobal("requestAnimationFrame", (frame: (time: number) => void) => {
+			frame(0);
+			return 0;
+		});
+	});
+	afterEach(() => vi.unstubAllGlobals());
+
 	it("shows the dock in the composer's place", async () => {
 		const { tree } = await mount(thread("ref-question", "awaiting", true));
 		const text = renderedText(tree);
