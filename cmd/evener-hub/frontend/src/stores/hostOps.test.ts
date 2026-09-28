@@ -2137,6 +2137,36 @@ describe("operations polling (S15)", () => {
       expect(after.operationId).not.toBe(before.operationId);
     });
 
+    test("clearRepairRefusal drops a refusal but never cancels an in-flight repair", async () => {
+      const fake = connectFakeClient();
+      // A refused entry is dropped: the fence re-check must be able to clear it.
+      fake.on("evener/host/teardown-retry", () => {
+        throw new WireError("busy", -32014, { evenerErrorInfo: "host-busy-transient" });
+      });
+      await hostOpsStore.getState().teardownRetry("beta", "remnant-7");
+      expect(hostOpsStore.getState().repairs.beta?.phase).toBe("refused");
+      hostOpsStore.getState().clearRepairRefusal("beta");
+      expect(hostOpsStore.getState().repairs.beta).toBeUndefined();
+
+      // An IN-FLIGHT entry is untouched: clearing it would drop the arm the
+      // live request is about to publish.
+      const settlements = gateSettlements(fake, "evener/host/teardown-retry");
+      const pending = hostOpsStore.getState().teardownRetry("beta", "remnant-7");
+      await vi.waitFor(() => expect(settlements).toHaveLength(1));
+      hostOpsStore.getState().clearRepairRefusal("beta");
+      expect(hostOpsStore.getState().repairs.beta?.phase).toBe("retrying");
+      settlements[0]!.resolve({
+        outcome: "teardown-complete",
+        hostKind: "live",
+        host: row("beta"),
+        remnantId: "remnant-7",
+      });
+      await pending;
+      const repair = hostOpsStore.getState().repairs.beta;
+      if (repair?.phase !== "retried") throw new Error("unreachable");
+      expect(repair.result.outcome).toBe("teardown-complete");
+    });
+
     test("teardown recovery actions: the transient busy retries; fence and unknown key never bare-retry", () => {
       expect(teardownRetryRefusalAction("host-busy-transient")).toBe("retry");
       expect(teardownRetryRefusalAction("host-busy-operation")).toBe("none");

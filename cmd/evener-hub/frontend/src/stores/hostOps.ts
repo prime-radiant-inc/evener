@@ -719,6 +719,10 @@ interface HostOpsStoreState {
   /** Drops the name's repair state (a dialog close): a later response for it
    * publishes nothing. */
   clearRepair: (name: string) => void;
+  /** Drops a REFUSED repair entry, leaving any in-flight submission
+   * untouched: the fence re-check never cancels the arm a live request is
+   * about to publish. */
+  clearRepairRefusal: (name: string) => void;
   /** Makes any in-flight read for this name publish nothing (the caller owns
    * the interval; the section calls this on unmount). It also releases the
    * name's pending-read entries, so a remount's first tick is not skipped. */
@@ -1745,6 +1749,18 @@ export const hostOpsStore = create<HostOpsStoreState>((set, get) => ({
   clearRepair: (name) => {
     repairSequences.set(name, repairSequence(name) + 1);
     set((previous) => {
+      const repairs = { ...previous.repairs };
+      delete repairs[name];
+      return { repairs };
+    });
+  },
+
+  clearRepairRefusal: (name) => {
+    // Fence-only clear: a live retry/recover keeps its sequence, so its arm
+    // still publishes when it lands. Only a settled refusal is dropped.
+    set((previous) => {
+      const current = previous.repairs[name];
+      if (current === undefined || current.phase !== "refused") return previous;
       const repairs = { ...previous.repairs };
       delete repairs[name];
       return { repairs };

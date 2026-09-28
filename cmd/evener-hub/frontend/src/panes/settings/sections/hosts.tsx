@@ -15,6 +15,7 @@ import {
   retryArmResolved,
   retryOutcomeLine,
   TEARDOWN_RECOVER_STATEMENT,
+  teardownRecoverRefusalAction,
   teardownRetryRefusalAction,
   useHostOpsStore,
 } from "../../../stores/hostOps";
@@ -190,6 +191,18 @@ export function HostsSection(_props: HostsSectionProps) {
     };
   }, []);
 
+  // A repair dialog can only render for a live row that still names a remnant:
+  // when either goes away, drop the target so a LATER remnant on the name never
+  // auto-opens a dialog the operator did not ask for. (The dialog's own unmount
+  // cleanup drops its repair entry.)
+  const repairTargetName = repairTarget?.name;
+  useEffect(() => {
+    if (repairTargetName === undefined) return;
+    const row =
+      load.phase === "ready" ? load.hosts.find((candidate) => candidate.name === repairTargetName) : undefined;
+    if (row === undefined || (row.openRemnantId ?? "") === "") setRepairTarget(null);
+  }, [repairTargetName, load]);
+
   async function handleAdd(entry: HostEntry): Promise<void> {
     await hostsStore.getState().add(entry);
     toasts.push("success", `Added ${entry.name}`);
@@ -295,6 +308,8 @@ export function HostsSection(_props: HostsSectionProps) {
             // would silently refuse.
             const remnantId = row.openRemnantId ?? "";
             const repairFence = orphanFenceFor(repairs[row.name], operation, remnantId);
+            const repairSubmitting =
+              repairs[row.name]?.phase === "retrying" || repairs[row.name]?.phase === "recovering";
             return (
               <li key={row.name} className={CLASS.row}>
                 <span className={CLASS.rowName}>{row.name}</span>
@@ -323,7 +338,12 @@ export function HostsSection(_props: HostsSectionProps) {
                         <span className={CLASS.rowRepairNotice} role="status">
                           {orphanFenceNotice(repairFence.recordId)}
                         </span>
-                        <Button size="sm" variant="quiet" onClick={() => recheckOrphanFence(row.name)}>
+                        <Button
+                          size="sm"
+                          variant="quiet"
+                          disabled={repairSubmitting}
+                          onClick={() => recheckOrphanFence(row.name)}
+                        >
                           Re-check
                         </Button>
                       </>
@@ -786,6 +806,9 @@ function DeployDialog({ row, onClose }: HostOpDialogProps) {
                   teardown-retry affordance — never Connect, never re-plan (a
                   re-plan mints nothing while the remnant is open). */}
               <RemnantRepairControls
+                // A different remnant is a different repair: a fresh mount
+                // resets the collected attestation with it.
+                key={`repair-controls:${noToken.remnantId}`}
                 name={name}
                 remnantId={noToken.remnantId}
                 escalated={row.escalationAgeSec !== undefined}
@@ -818,6 +841,7 @@ function DeployDialog({ row, onClose }: HostOpDialogProps) {
           )}
           {refusal?.kind === "remnant-open" && refusal.remnantId !== undefined && (
             <RemnantRepairControls
+              key={`repair-controls:${refusal.remnantId}`}
               name={name}
               remnantId={refusal.remnantId}
               escalated={row.escalationAgeSec !== undefined}
@@ -952,6 +976,7 @@ function RestartDialog({ row, onClose }: HostOpDialogProps) {
           </p>
           {refusal.kind === "remnant-open" && refusal.remnantId !== undefined && (
             <RemnantRepairControls
+              key={`repair-controls:${refusal.remnantId}`}
               name={name}
               remnantId={refusal.remnantId}
               escalated={row.escalationAgeSec !== undefined}
@@ -987,7 +1012,8 @@ function orphanFenceNotice(recordId: string | null): string {
  * `orphan-fenced-busy` refusal therefore never fences the name past the
  * orphan's resolution (boot reap, S20's `orphan-resolve`, a terminal record). */
 function recheckOrphanFence(name: string): void {
-  hostOpsStore.getState().clearRepair(name);
+  // Fence-only: dropping a settled refusal never cancels an in-flight arm.
+  hostOpsStore.getState().clearRepairRefusal(name);
   void hostOpsStore.getState().pollOperation(name);
 }
 
@@ -1015,7 +1041,10 @@ function RemnantRepairControls({
   onContinue?: () => void;
   continueLabel?: string;
 }) {
-  const repair = useHostOpsStore((s) => s.repairs[name]);
+  const storedRepair = useHostOpsStore((s) => s.repairs[name]);
+  // The stored entry belongs to ONE remnant: a different remnant on the name
+  // renders neutral, never the previous remnant's arm, refusal, or outcome.
+  const repair = storedRepair !== undefined && storedRepair.remnantId === remnantId ? storedRepair : undefined;
   const operation = useHostOpsStore((s) => s.operations[name]);
   const [recovering, setRecovering] = useState(initialRecovering);
   const [operator, setOperator] = useState("");
@@ -1034,12 +1063,36 @@ function RemnantRepairControls({
   const resolved = repair?.phase === "cleared" || (repair?.phase === "retried" && retryArmResolved(repair.result));
   const failedArm = repair?.phase === "retried" && !retryArmResolved(repair.result);
   const refusal = repair?.phase === "refused" ? repair.refusal : null;
-  const retryAllowed =
-    !fenced && !submitting && !resolved && (refusal === null || teardownRetryRefusalAction(refusal.kind) === "retry");
+  // Which repair a refusal came from: a refused recovery resumes the RECOVERY
+  // (its collected attestation is the submission), never a bare teardown retry.
+  const refusedAction: "retry" | "recover" = repair?.phase === "refused" ? repair.action : "retry";
+  const resumeAllowed =
+    !fenced &&
+    !submitting &&
+    !resolved &&
+    (refusal === null ||
+      (refusedAction === "recover"
+        ? teardownRecoverRefusalAction(refusal.kind) === "retry"
+        : teardownRetryRefusalAction(refusal.kind) === "retry"));
+  const resumeLabel =
+    refusedAction === "recover"
+      ? "Retry recovery"
+      : refusal !== null || failedArm
+        ? "Retry teardown"
+        : "Teardown retry";
   // The escalation comes from the row's stamp, or from the retry arm itself
   // when it ran past the bound (the removed arms under-stamp the row fields).
   const escalatedNow = escalated || (repair?.phase === "retried" && repair.result.escalationAgeSec !== undefined);
-  const recoverAllowed = !fenced && escalatedNow && !submitting && !resolved && !recovering;
+  // The recover escalation obeys the recover's own refusal actions too, and is
+  // never offered beside the resume of a refused recovery (that resume IS the
+  // recovery, attestation and all).
+  const recoverAllowed =
+    !fenced &&
+    escalatedNow &&
+    !submitting &&
+    !resolved &&
+    !recovering &&
+    (refusal === null || (refusedAction === "retry" && teardownRecoverRefusalAction(refusal.kind) === "retry"));
 
   async function submitRetry(): Promise<void> {
     setBusy(true);
@@ -1063,6 +1116,14 @@ function RemnantRepairControls({
     }
   }
 
+  async function resumeRefusedAction(): Promise<void> {
+    if (refusedAction === "recover") {
+      await submitRecover();
+      return;
+    }
+    await submitRetry();
+  }
+
   return (
     <div className={CLASS.planFields}>
       {fenced && (
@@ -1070,7 +1131,9 @@ function RemnantRepairControls({
           <span className={CLASS.rowRepairNotice} role="status">
             {orphanFenceNotice(fence.recordId)}
           </span>
-          <Button size="sm" variant="quiet" onClick={() => recheckOrphanFence(name)}>
+          {/* Disabled in flight: re-check clears a refusal, and must never
+              cancel the arm a live retry/recover is about to publish. */}
+          <Button size="sm" variant="quiet" disabled={submitting} onClick={() => recheckOrphanFence(name)}>
             Re-check
           </Button>
         </div>
@@ -1099,7 +1162,7 @@ function RemnantRepairControls({
         </>
       )}
 
-      {recovering && !fenced ? (
+      {recovering && !fenced && !resolved ? (
         <div className={CLASS.form}>
           <p className={CLASS.planNotice}>
             The audited recovery requires the wire's attestation: operator, statement, and the observed time of the
@@ -1156,9 +1219,9 @@ function RemnantRepairControls({
             <p className={CLASS.planNotice}>Past the escalation bound: recovering requires the audited attestation.</p>
           )}
           <div className={CLASS.rowRepair}>
-            {retryAllowed && (
-              <Button size="sm" variant="quiet" disabled={busy} onClick={() => void submitRetry()}>
-                {busy ? "Retrying…" : refusal !== null || failedArm ? "Retry teardown" : "Teardown retry"}
+            {resumeAllowed && (
+              <Button size="sm" variant="quiet" disabled={busy} onClick={() => void resumeRefusedAction()}>
+                {busy ? "Retrying…" : resumeLabel}
               </Button>
             )}
             {recoverAllowed && (
