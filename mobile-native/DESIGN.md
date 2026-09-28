@@ -1,6 +1,6 @@
 ---
-name: Evener Native Board
-description: The Board, the native iPhone app's home: every live session ordered by who needs you, then the user's own organization.
+name: Evener Native
+description: The native iPhone app: the Board, its home, orders every live session by who needs you, and the Session is one conversation with its agent.
 colors:
   light-background: "#FAF9F6"
   light-surface: "#F4F3EE"
@@ -83,7 +83,7 @@ components:
     rounded: "12px"
 ---
 
-# Design System: Evener Native Board
+# Design System: Evener Native
 
 ## Overview
 
