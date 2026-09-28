@@ -9,6 +9,7 @@ import {
 	render,
 	renderedText,
 	swipeableCalls,
+	swipeRowFully,
 } from "../renderNative.testkit";
 import { type SwipeAction, SwipeRow, swipeAccessibility } from "./SwipeRow";
 
@@ -63,11 +64,9 @@ beforeEach(() => {
 });
 
 it("a full swipe right does the leading action once and closes the row", () => {
-	const { swipeable, leading, touchStart, release, open } = mount();
+	const { swipeable, leading } = mount();
 	expect(swipeable.props.leftThreshold).toBe(195);
-	touchStart(200);
-	release(250, 400);
-	open("right");
+	swipeRowFully(swipeable, "right");
 	expect(leading.run).toHaveBeenCalledOnce();
 	expect(swipeableCalls.closes).toBe(1);
 });
@@ -98,6 +97,7 @@ it("tracks the finger with a pan that activates as the row's own does and recogn
 		hitSlop: { left: -24 },
 		enabled: true,
 	});
+	expect(swipeable.props).toMatchObject({ dragOffsetFromLeftEdge: 10, dragOffsetFromRightEdge: 10 });
 	expect(tracker?.config).not.toHaveProperty("activeOffsetY");
 	expect(swipeable.props.simultaneousWithExternalGesture).toBe(tracker);
 });
@@ -151,12 +151,9 @@ it("holds its tracker still while the row is switched off", () => {
 });
 
 it("a swipe that began in the left edge band closes without acting, whichever way it opened", () => {
-	const { leading, pin, touchStart, release, open } = mount();
-	touchStart(10);
-	release(250);
-	open("right");
-	release(-250);
-	open("left");
+	const { swipeable, leading, pin } = mount();
+	swipeRowFully(swipeable, "right", { pageX: 10 });
+	swipeRowFully(swipeable, "left", { pageX: 10 });
 	expect(leading.run).not.toHaveBeenCalled();
 	expect(pin.run).not.toHaveBeenCalled();
 	expect(swipeableCalls.closes).toBe(4);
@@ -224,11 +221,9 @@ describe("a destructive swipe (spec 8.5, 8.8)", () => {
 	});
 
 	it("acts once on a full swipe left, past half the row at release, and closes the row", () => {
-		const { swipeable, cancel, touchStart, release, open } = mountDestructive();
+		const { swipeable, cancel } = mountDestructive();
 		expect(swipeable.props.rightThreshold).toBe(195);
-		touchStart(200);
-		release(-250, -400);
-		open("left");
+		swipeRowFully(swipeable, "left");
 		expect(cancel.run).toHaveBeenCalledOnce();
 		expect(swipeableCalls.closes).toBe(1);
 	});
@@ -258,10 +253,8 @@ describe("a destructive swipe (spec 8.5, 8.8)", () => {
 	});
 
 	it("never acts on a swipe that began in the left edge band", () => {
-		const { cancel, touchStart, release, open } = mountDestructive();
-		touchStart(10);
-		release(-250);
-		open("left");
+		const { swipeable, cancel } = mountDestructive();
+		swipeRowFully(swipeable, "left", { pageX: 10 });
 		expect(cancel.run).not.toHaveBeenCalled();
 		expect(swipeableCalls.closes).toBe(2);
 	});

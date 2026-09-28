@@ -38,9 +38,9 @@ import type {
 // "generation mismatch"). Exported for the tests that assert it.
 export const DEMO_FLEET_GENERATION = "demo-fleet";
 // Every resource shares one revision, bumped when the fleet changes (the
-// question askQuestion below poses, or an archive), so an invalidation's target revision is
-// one the next read actually reaches: the navigation store refuses a
-// response below the revision it was told to expect.
+// question askQuestion below poses, or an archive), so an invalidation's
+// target revision is one the next read actually reaches: the navigation
+// store refuses a response below the revision it was told to expect.
 const respond = (revision: number, params: NavigationReadParams, data: unknown): NavigationReadResponse =>
 	wireV2(params, data, `"demo-fleet-${revision}"`, revision, DEMO_FLEET_GENERATION);
 
@@ -493,6 +493,11 @@ function runningJobs(raw: RawSession): NavigationJobSummary[] | undefined {
 	];
 }
 
+// The project a fleet session belongs to; the fixture leaves evener's unset.
+function projectKeyOf(raw: { project?: string }): string {
+	return raw.project ?? "evener";
+}
+
 // The ref the wire names a fleet session by: its owning host and its id.
 function sessionRef(raw: RawSession): string {
 	return `${hostId(raw.host)}:${demoSessionId(raw.id)}`;
@@ -500,7 +505,7 @@ function sessionRef(raw: RawSession): string {
 
 function toRow(raw: RawSession, startupMs: number, offlineHost: boolean): NavigationSessionSummary {
 	const owner = hostId(raw.host);
-	const project = raw.project ?? "evener";
+	const project = projectKeyOf(raw);
 	const sessionId = demoSessionId(raw.id);
 	const { state, askPending, approvalPending } = WIRE_STATE[raw.state];
 	const live = raw.state !== "shutdown";
@@ -533,14 +538,14 @@ function toRow(raw: RawSession, startupMs: number, offlineHost: boolean): Naviga
 const underProjects = (raw: RawSession) => !raw.archived && !raw.test;
 
 function projectSessionsRaw(sessions: RawSession[], projectKey: string): RawSession[] {
-	return sessions.filter((raw) => underProjects(raw) && (raw.project ?? "evener") === projectKey);
+	return sessions.filter((raw) => underProjects(raw) && projectKeyOf(raw) === projectKey);
 }
 
 // The hosts that own a project's sessions, in the hub's own shape
 // (NavigationProjectSummary.sources): "local" for this hub's sessions and a
 // host's name for its own, omitted when this hub owns every one.
 function projectSources(sessions: RawSession[], projectKey: string): string[] | undefined {
-	const owners = new Set(sessions.filter((raw) => (raw.project ?? "evener") === projectKey).map((raw) => hostId(raw.host)));
+	const owners = new Set(sessions.filter((raw) => projectKeyOf(raw) === projectKey).map((raw) => hostId(raw.host)));
 	if ([...owners].every((owner) => owner === "local")) return undefined;
 	return ["local", "paradise-park"].filter((owner) => owners.has(owner));
 }
@@ -613,7 +618,7 @@ export interface DemoFleet extends FleetAnswers {
 // local "evener" session with no pin category, subagents or running job, so
 // the only thing that changes on the Board is its band.
 const ASKING_SESSION_ID = "s-gateway";
-const ASKING_PROJECT = SESSIONS.find((raw) => raw.id === ASKING_SESSION_ID)?.project ?? "evener";
+const ASKING_PROJECT = projectKeyOf(SESSIONS.find((raw) => raw.id === ASKING_SESSION_ID) ?? {});
 
 export function createDemoFleet(options: DemoFleetOptions = {}): DemoFleet {
 	const startupMs = options.now ?? Date.now();
@@ -668,8 +673,7 @@ export function createDemoFleet(options: DemoFleetOptions = {}): DemoFleet {
 		// (app_archive.go's NormalizeDecisionSessionID); another host's session
 		// is named by its ref.
 		const target = sessionsList.find((raw) => {
-			const ref = sessionRef(raw);
-			return params.id === ref || (ref.startsWith("local:") && params.id === demoSessionId(raw.id));
+			return params.id === sessionRef(raw) || (hostId(raw.host) === "local" && params.id === demoSessionId(raw.id));
 		});
 		if (!target) throw new Error(`Unknown demonstration session: ${params.id}`);
 		const changed = sessionsList.map((raw) => (raw === target ? { ...raw, archived: params.archived } : raw));
@@ -686,7 +690,7 @@ export function createDemoFleet(options: DemoFleetOptions = {}): DemoFleet {
 			{ kind: "section", section: "needs_you", revision },
 			{ kind: "catalog", catalog: "projects", revision },
 			{ kind: "catalog", catalog: "archived_projects", revision },
-			{ kind: "project", projectKey: target.project ?? "evener", revision },
+			{ kind: "project", projectKey: projectKeyOf(target), revision },
 			{ kind: "all_loaded_projects" },
 		]);
 		return {
@@ -751,11 +755,11 @@ function fleetAnswers(
 	// its own check here rather than falling out of a filter for free.
 	const projectKeys = sessionsList.length > 0 ? PROJECT_META.map((project) => project.key) : [];
 	const archivedRaw = sessionsList.filter((raw) => raw.archived);
-	const archivedIn = (key: string) => archivedRaw.filter((raw) => (raw.project ?? "evener") === key);
+	const archivedIn = (key: string) => archivedRaw.filter((raw) => projectKeyOf(raw) === key);
 	// The real hub moves a project whose every session is archived into
 	// Archived projects (cmd/evener-hub/internal/hubcore/tree.go's Tree).
 	const allArchived = (key: string) => {
-		const sessions = sessionsList.filter((raw) => (raw.project ?? "evener") === key && !raw.test);
+		const sessions = sessionsList.filter((raw) => projectKeyOf(raw) === key && !raw.test);
 		return sessions.length > 0 && sessions.every((raw) => raw.archived);
 	};
 	const projects = projectKeys
@@ -937,7 +941,7 @@ function fleetAnswers(
 				// own fixture (cmd/evener-hub/frontend/src/dev/editorial-preview/
 				// fixture.ts) stamps the top_level it serves.
 				const { metadata } = response.data as { metadata: Record<string, unknown> };
-				metadata.project_key = raw.project ?? "evener";
+				metadata.project_key = projectKeyOf(raw);
 				metadata.tier = tier;
 				if (raw.category) metadata.pin_section_id = raw.category;
 				return response;

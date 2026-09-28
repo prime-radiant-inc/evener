@@ -288,6 +288,21 @@ export function openSwipeRow(swipeable: ReactTestInstance, direction: "left" | "
 	act(() => swipeable.props.onSwipeableOpen(direction));
 }
 
+/** A full swipe on a SwipeRow: the finger touches down at pageX (by default
+ * well clear of the screen's left edge band), drags the row 250 points
+ * (past half a 390-point window) toward `direction`, and lets go, and the
+ * swipeable opens it. */
+export function swipeRowFully(
+	swipeable: ReactTestInstance | undefined,
+	direction: "left" | "right",
+	{ pageX = 200 }: { pageX?: number } = {},
+) {
+	if (!swipeable) throw new Error("no swipeable row");
+	act(() => swipeable.findByProps({ testID: "swipe-row-content" }).props.onTouchStart({ nativeEvent: { pageX } }));
+	releaseSwipeRow(swipeable, direction === "right" ? 250 : -250);
+	openSwipeRow(swipeable, direction);
+}
+
 /** react-native-reanimated for vitest: Animated.ScrollView is a host
  * "ScrollView" carrying every prop (the Board's scroller, found and driven
  * as a plain one is), Animated.View a host element, and LinearTransition a

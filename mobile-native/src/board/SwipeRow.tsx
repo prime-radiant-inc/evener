@@ -77,6 +77,13 @@ export type SwipeRowProps = {
 );
 
 const ACTION_WIDTH = 76;
+/** How far a drag goes sideways before the row's pan, and the tracker that
+ * reads its release, start: the same for both, so the tracker never runs
+ * without the row. */
+const SWIPE_ACTIVATION_PT = 10;
+/** Takes the screen's left edge band out of a pan's hit frame, so the
+ * system's back gesture keeps drags that begin there (spec 7.3). */
+const EDGE_BAND_SLOP = { left: -EDGE_ZONE_PT };
 /** ReanimatedSwipeable names the swipe, not the panel: a swipe to the right
  * opens the left (leading) panel (its dispatchEndEvents reports RIGHT for a
  * positive translation). */
@@ -133,8 +140,8 @@ export function SwipeRow({
 				.runOnJS(true)
 				// It activates only as the swipeable's own pan does: the same
 				// sideways offset, outside the same edge band.
-				.activeOffsetX([-10, 10])
-				.hitSlop({ left: -EDGE_ZONE_PT })
+				.activeOffsetX([-SWIPE_ACTIVATION_PT, SWIPE_ACTIVATION_PT])
+				.hitSlop(EDGE_BAND_SLOP)
 				.onBegin(() => {
 					dragX.current = 0;
 				})
@@ -183,9 +190,9 @@ export function SwipeRow({
 					ref={swipeable}
 					enabled={enabled}
 					simultaneousWithExternalGesture={releaseTracker}
-					// Takes the left edge band out of the row's pan, so the system's back
-					// gesture keeps drags that begin there (spec 7.3).
-					hitSlop={{ left: -EDGE_ZONE_PT }}
+					hitSlop={EDGE_BAND_SLOP}
+					dragOffsetFromLeftEdge={SWIPE_ACTIVATION_PT}
+					dragOffsetFromRightEdge={SWIPE_ACTIVATION_PT}
 					leftThreshold={width / 2}
 					rightThreshold={destructive ? width / 2 : undefined}
 					renderLeftActions={leading ? panel([leading]) : undefined}

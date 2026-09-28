@@ -26,12 +26,11 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type { ConversationClientLike } from "../../../mobile/src/services/conversation";
 import {
 	alertRequests,
-	openSwipeRow,
-	releaseSwipeRow,
 	render,
 	renderedText,
 	screenConnection,
 	swipeableCalls,
+	swipeRowFully,
 } from "../renderNative.testkit";
 import { sheetKey } from "../sheet/sheetHosts";
 import { ACTIVITY_POLL_MS, STALE_AFTER_MS } from "./activityPoll";
@@ -3336,13 +3335,6 @@ function pressRevealed(swipeable: ReactTestInstance, side: "left" | "right", lab
 	if (!button) throw new Error(`no ${label} on the ${side}`);
 	act(() => button.props.onPress());
 }
-/** A full swipe right, begun well clear of the screen's left edge and let
- * go past half the row. */
-function swipeRight(swipeable: ReactTestInstance) {
-	act(() => swipeable.findByProps({ testID: "swipe-row-content" }).props.onTouchStart({ nativeEvent: { pageX: 200 } }));
-	releaseSwipeRow(swipeable, 250);
-	openSwipeRow(swipeable, "right");
-}
 async function mountSwipeFleet(fake: ReturnType<typeof hub>, nav = navigation()) {
 	const id = hubId();
 	adoptedAnHourAgo(id);
@@ -3384,7 +3376,7 @@ it("archives a local row on a full swipe right, dims it until the hub confirms, 
 	const fake = hub(swipeFleet(), undefined, undefined, { holdChanges: true });
 	const { tree } = await mountSwipeFleet(fake);
 	swipeableCalls.closes = 0;
-	swipeRight(swipeableOf(tree, "Refactor parser"));
+	swipeRowFully(swipeableOf(tree, "Refactor parser"), "right");
 	expect(swipeableCalls.closes).toBe(1);
 	await settle();
 	expect(fake.mutations).toEqual([
@@ -3413,7 +3405,7 @@ it("archives a local row on a full swipe right, dims it until the hub confirms, 
 it("archives another host's row by its ref", async () => {
 	const fake = hub(swipeFleet());
 	const { tree } = await mountSwipeFleet(fake);
-	swipeRight(swipeableOf(tree, "Park chore"));
+	swipeRowFully(swipeableOf(tree, "Park chore"), "right");
 	await settle();
 	expect(fake.mutations).toEqual([
 		{ method: "evener/archive/set", params: { kind: "session", id: "paradise-park:pp", archived: true } },
@@ -3424,7 +3416,7 @@ it("archives another host's row by its ref", async () => {
 it("says nothing when an archive can't be confirmed, and settles the journal so the row can swipe again", async () => {
 	const fake = hub(swipeFleet(), undefined, undefined, { refuse: true });
 	const { tree } = await mountSwipeFleet(fake);
-	swipeRight(swipeableOf(tree, "Refactor parser"));
+	swipeRowFully(swipeableOf(tree, "Refactor parser"), "right");
 	await settle();
 	expect(fake.mutations).toHaveLength(1);
 	expect(texts(tree)).not.toContain("Archived");
