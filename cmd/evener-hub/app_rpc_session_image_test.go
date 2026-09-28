@@ -95,13 +95,20 @@ func seedSessionImageSession(t *testing.T, cwd string, image []byte, storedMedia
 
 func requestSessionImage(t *testing.T, srv *httptest.Server, params appwire.SessionImageParams) (appwire.SessionImageResponse, error) {
 	t.Helper()
+	return requestHubMethod[appwire.SessionImageResponse](t, srv, appwire.MethodEvenerSessionImage, params)
+}
+
+// requestHubMethod dials hub srv, initializes the connection, and issues one
+// request for method, returning its typed response or the hub's refusal.
+func requestHubMethod[R any](t *testing.T, srv *httptest.Server, method string, params any) (R, error) {
+	t.Helper()
 	rpc := dialHubRPC(t, srv)
 	defer rpc.Close()
 	if _, err := rpc.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
 		t.Fatalf("Initialize: %v", err)
 	}
-	var resp appwire.SessionImageResponse
-	err := rpc.Request(context.Background(), appwire.MethodEvenerSessionImage, params, &resp)
+	var resp R
+	err := rpc.Request(context.Background(), method, params, &resp)
 	return resp, err
 }
 

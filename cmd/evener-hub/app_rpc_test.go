@@ -12688,6 +12688,7 @@ func TestHubRPCRegistersExpectedHandlerSet(t *testing.T) {
 		appwire.MethodThreadList,
 		appwire.MethodThreadRead,
 		appwire.MethodEvenerSessionImage,
+		appwire.MethodEvenerSessionDocument,
 		appwire.MethodThreadUnsubscribe,
 		appwire.MethodThreadTurnsList,
 		appwire.MethodEvenerSubagentPreview,

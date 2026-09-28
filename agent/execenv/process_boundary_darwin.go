@@ -34,11 +34,11 @@ func createBoundary(root string) (*Boundary, error) {
 	pid := os.Getpid()
 	sessionID, err := unix.Getsid(pid)
 	if err != nil {
-		return nil, fmt.Errorf("%w: read this launcher's session: %v", ErrBoundaryUnavailable, err)
+		return nil, fmt.Errorf("%w: read this launcher's session: %w", ErrBoundaryUnavailable, err)
 	}
 	pgid, err := unix.Getpgid(pid)
 	if err != nil {
-		return nil, fmt.Errorf("%w: read this launcher's process group: %v", ErrBoundaryUnavailable, err)
+		return nil, fmt.Errorf("%w: read this launcher's process group: %w", ErrBoundaryUnavailable, err)
 	}
 	if sessionID != pid || pgid != pid {
 		return nil, fmt.Errorf("%w: the launcher must hold its own session (setsid) before a boundary exists", ErrBoundaryUnavailable)
@@ -97,10 +97,10 @@ func darwinBoundaryMembers(pgid, sessionID int) ([]BoundaryMember, error) {
 	defer cancel()
 	out, err := exec.CommandContext(ctx, "ps", "-axo", "pid=,pgid=,sess=").Output()
 	if err != nil {
-		return nil, fmt.Errorf("%w: enumerate the process table: %v", ErrBoundaryUnavailable, err)
+		return nil, fmt.Errorf("%w: enumerate the process table: %w", ErrBoundaryUnavailable, err)
 	}
 	var members []BoundaryMember
-	for _, line := range strings.Split(string(out), "\n") {
+	for line := range strings.SplitSeq(string(out), "\n") {
 		fields := strings.Fields(line)
 		if len(fields) != 3 {
 			if strings.TrimSpace(line) == "" {
@@ -147,7 +147,7 @@ func darwinStartToken(pid int) (string, error) {
 		if errors.Is(err, unix.ENOENT) || errors.Is(err, unix.ESRCH) {
 			return "", fmt.Errorf("%w: pid %d", ErrBoundaryMemberGone, pid)
 		}
-		return "", fmt.Errorf("execenv: read process %d info: %v", pid, err)
+		return "", fmt.Errorf("execenv: read process %d info: %w", pid, err)
 	}
 	if info == nil {
 		return "", fmt.Errorf("%w: pid %d", ErrBoundaryMemberGone, pid)
