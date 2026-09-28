@@ -322,6 +322,7 @@ export async function createDemoHub(
 						// Another host's session is named by that host, as a real
 						// hub qualifies a remote ref (appwire/refs.go).
 						created.evener.ref = `${params.source || "demo"}:created-${sessionNumber}`;
+						created.source = params.source || "demo";
 						created.evener.instanceId = `demo-instance-created-${sessionNumber}`;
 						created.cwd = params.cwd;
 						created.modelProvider = params.modelProvider ?? "demonstration";
