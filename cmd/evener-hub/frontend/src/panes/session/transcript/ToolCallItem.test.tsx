@@ -17,7 +17,7 @@ import { ToolCallItem } from "./ToolCallItem";
 import itemStyles from "./toolcallitem.module.css";
 import { registerToolRenderer, type ToolRenderProps } from "./toolRenderers";
 import { ignoringTurn, itemRendererFor } from "./types";
-import "./tools/shellTool"; // registers the real "shell" descriptor, incl. its own autoExpand heuristic
+import "./tools/shellTool"; // registers the real "shell" descriptor (failed() from the exit code)
 import "./tools/fsTools"; // registers the real "read_file" (openBesidePath) + grep/list_dir/glob (opt-out)
 import "./tools/jobTools"; // registers the real "delegate_send" (openTranscriptRef/openTranscriptInline)
 import "./tools/jobWatch"; // registers the real "job_watch" (hasBody predicate)
@@ -346,7 +346,7 @@ test("suppress returning false renders the row normally", () => {
 // --- expand/collapse: collapsed by default, descriptor.autoExpand can pop
 // it open at settle (parity-m4-transcript.md's own Highlights: "every tool
 // row, including diffs, starts collapsed" - the default-expanded states are
-// a failed shell call and an image read whose picture IS its output) -------
+// an image read whose picture IS its output and a delegate card) ----------
 
 test("a row with a body starts collapsed", () => {
   registerToolRenderer({ match: "tci_collapsed", summary: () => "s", body: () => <div>body text</div> });
@@ -478,9 +478,9 @@ test("the same tool item id has independent disclosure state in different sessio
   expect(rowIsOpen(rows[1]!)).toBe(false);
 });
 
-test("shell: a failing exit code auto-expands the row once it settles (the real parseShellExitCode heuristic)", () => {
+test("shell: a failing exit code marks the row failed but does not auto-expand it (the real parseShellExitCode heuristic)", () => {
   const output = "stdout\n[exit 1]";
-  render(
+  renderTools(
     <ToolCallItem
       item={item({ toolName: "shell", argumentsJSON: JSON.stringify({ command: "false" }), output })}
       turn={turn}
@@ -488,7 +488,9 @@ test("shell: a failing exit code auto-expands the row once it settles (the real 
     />,
   );
   const details = screen.getByTestId("tool-call-item");
-  expect(rowIsOpen(details)).toBe(true);
+  expect(details.getAttribute("data-failed")).toBe("true");
+  expect(screen.getByTestId("failure-glyph")).toBeTruthy();
+  expect(rowIsOpen(details)).toBe(false);
 });
 
 test("shell: a clean exit does not auto-expand", () => {
@@ -506,12 +508,12 @@ test("shell: a clean exit does not auto-expand", () => {
   expect(rowIsOpen(details)).toBe(false);
 });
 
-test("manual collapse of an auto-expanded row sticks (wins over autoExpand)", () => {
+test("manual collapse of a row opened by the level default sticks", () => {
   const output = "stdout\n[exit 1]";
   const failing = item({ toolName: "shell", argumentsJSON: JSON.stringify({ command: "false" }), output });
   render(<ToolCallItem item={failing} turn={turn} live={false} />);
   const details = screen.getByTestId("tool-call-item");
-  expect(rowIsOpen(details)).toBe(true); // auto-expanded at settle
+  expect(rowIsOpen(details)).toBe(true); // opened by the activity level default
 
   toggleRow(details);
   expect(rowIsOpen(details)).toBe(false); // the user's own collapse wins
@@ -585,9 +587,9 @@ test("outputImages render even for a body-less descriptor (the row still becomes
 });
 
 // --- ItemModel.error rendering: a failed/denied tool call surfaces its
-// error text, force-expands, and earns a failure marker (parity-m4 §11:261
-// "only failure earns the eye"; §2:100 renderer-tools.js:589-594 force-open
-// on error). Keyed off item.error PRESENCE as primary (present on old-daemon
+// error text and earns a failure marker (parity-m4 §11:261 "only failure
+// earns the eye"). It does not force-expand; the reader opens the row to read
+// the error. Keyed off item.error PRESENCE as primary (present on old-daemon
 // reloads whose status is still "completed"), with the honest status:"failed"
 // as corroboration (appwire_projection.go:438 SettledToolStatus). ----------
 
@@ -660,7 +662,8 @@ test("a body-less errored row is still an expandable disclosure, collapsed until
 });
 
 test("an expanded shell row swaps the one-line command for a placeholder - the body's block stays the single copy", () => {
-  // A nonzero exit auto-expands the row on settle (descriptor.autoExpand).
+  // At activity level the body opens through the config default, so an open
+  // shell row swaps its summary for the placeholder.
   render(
     <ToolCallItem
       item={item({
@@ -1763,7 +1766,7 @@ test("defaults apply at each level; an explicit summary choice persists across l
   expect(screen.queryByTestId("tool-row-summary")).toBeNull();
 });
 
-// --- failure force-open also opens the summary line (one-line tool call) ---
+// --- a failed row follows the level's own summary/body defaults -------------
 // A failed row follows the level's own defaults exactly like a clean row: at
 // chat/intent it stays intent-only (summary line and body both closed), and the
 // reader opens them. A failure does not force anything open.
@@ -1822,7 +1825,7 @@ test("a failed row's summary line obeys the reader's explicit choice (no failure
   expect(screen.getByTestId("tool-row-trigger").getAttribute("aria-expanded")).toBe("false");
 });
 
-test("a superseded preval-only failure at the chat level leaves the summary line closed", () => {
+test("a failed preval-only row at the chat level leaves the summary line closed", () => {
   registerToolRenderer({ match: "tci_summary_preval", summary: () => "s", body: () => <div>b</div> });
   const failedItem = item({
     id: "summary_preval_bad",
@@ -1845,8 +1848,8 @@ test("a superseded preval-only failure at the chat level leaves the summary line
       <ToolCallItem item={failedItem} turn={turn} live={false} sessionRef="ref_a" />
     </TranscriptRenderProvider>,
   );
-  // Superseded by the next same-tool success: neither the body nor the summary
-  // is forced open.
+  // A failure does not force the body or the summary open: both stay closed at
+  // the chat level.
   expect(screen.queryByTestId("tool-call-body")).toBeNull();
   expect(screen.queryByTestId("tool-row-summary")).toBeNull();
 });
@@ -1867,8 +1870,8 @@ test("a non-failure auto-expand (image read) at the chat level leaves the summar
   // The picture's own auto-expand still opens the body...
   expect(screen.getByTestId("tool-row-body-trigger").getAttribute("aria-expanded")).toBe("true");
   expect(screen.getByTestId("tool-call-body")).toBeTruthy();
-  // ...but the summary-open is scoped to FAILED rows, so an image read keeps
-  // its level's default (chat: L0, only the intent line).
+  // ...but the summary line still follows its level's own default, so an image
+  // read at chat keeps the intent line alone (L0).
   expect(screen.queryByTestId("tool-row-summary")).toBeNull();
 });
 
@@ -1905,8 +1908,8 @@ test("a summary-only job_watch clear renders a non-expandable row (hasBody predi
 
 // --- #1173: a summary-less intent-bearing row stays single-level on failure ---
 // A delegate row deliberately renders no summary text (subagentModule owns its
-// presentation), so the failure force-open must not carry an empty summary line
-// open. The body disclosure chevron stays on the intent line
+// presentation), so the disclosure must never carry an empty summary line open.
+// The body disclosure chevron stays on the intent line
 // (data-body-trigger-intent), exactly as it does for a clean delegate row.
 test.each(["chat", "intent"] as const)(
   "a failed delegate row at the %s level renders no empty summary line (body trigger on the intent line)",
@@ -1922,7 +1925,7 @@ test.each(["chat", "intent"] as const)(
         error: "delegate activation failed",
       }),
     );
-    // The body force-opens (only failure earns the eye, unchanged).
+    // The body opens through the delegate descriptor's own autoExpand.
     expect(screen.getByTestId("tool-row-body-trigger").getAttribute("aria-expanded")).toBe("true");
     expect(screen.getByTestId("tool-call-body")).toBeTruthy();
     // No summary text exists for a delegate row, so no summary line (empty or

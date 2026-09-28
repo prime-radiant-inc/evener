@@ -103,11 +103,10 @@ captured and `rm -rf` your own run dir. Leave any real hub untouched.
 
 - **A tool row starts COLLAPSED, and the gallery only exists while it is
   expanded.** `<ImageGallery images={item.outputImages} />` is inside
-  `{expanded && …}` (`ToolCallItem.tsx:270-286`), and nothing about carrying
-  images auto-expands a row — only `descriptor.autoExpand` or a failure does
-  (`:163-170`). A `read_file` that succeeded is collapsed, so a DOM query run
-  straight after page load finds zero thumbs and looks exactly like a
-  regression. Expand the row first.
+  `{expanded && …}`, and nothing about carrying images auto-expands a row —
+  only `descriptor.autoExpand` does; a failure no longer does. A `read_file`
+  that succeeded is collapsed, so a DOM query run straight after page load
+  finds zero thumbs and looks exactly like a regression. Expand the row first.
 - **The gallery silently drops any `src` the browser refuses to load**
   (`onError` → `markUnloadable`, `ImageGallery.tsx:73-77,140`), leaving the row
   looking as if no descriptor ever arrived. That is why step 3 fetches the URL

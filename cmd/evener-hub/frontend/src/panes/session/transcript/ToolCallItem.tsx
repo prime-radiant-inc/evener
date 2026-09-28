@@ -214,8 +214,9 @@ function ToolCallItemBody({ item, live, sessionRef, projectedSummary, renderCont
 
   // Every row with a body starts collapsed (parity-m4-transcript.md's own
   // Highlights: "every tool row, including diffs, starts collapsed" - the
-  // only default-expanded state a descriptor can request is autoExpand, an
-  // image read whose picture IS its output; a failure does NOT auto-open).
+  // only default-expanded states a descriptor can request are its own
+  // autoExpand calls (a read_file image read whose picture IS its output; a
+  // delegate card); a failure does NOT auto-open).
   // autoExpand only means anything once the call has actually finished (a
   // descriptor's own heuristic can't resolve mid-stream), so it is consulted
   // exactly once, at the live -> settled transition, and stashed as
@@ -252,10 +253,9 @@ function ToolCallItemBody({ item, live, sessionRef, projectedSummary, renderCont
   // that explicit store entry still wins over everything afterward. A
   // failure earns the row's glyph and data-attention, not an open body: the
   // reader opens it to read the error like any other call.
-  const configDefault = descriptor.foldByDefault
+  const disclosureFallback = descriptor.foldByDefault
     ? false
-    : expandDetailsByDefault(config) || disclosureDefault(disclosureScope, item.id, false);
-  const disclosureFallback = configDefault || (!descriptor.foldByDefault && autoDefault);
+    : expandDetailsByDefault(config) || disclosureDefault(disclosureScope, item.id, false) || autoDefault;
   const expanded = isDisclosureOpen(
     disclosureKey,
     disclosureFallback,
@@ -305,11 +305,10 @@ function ToolCallItemBody({ item, live, sessionRef, projectedSummary, renderCont
   // across verbosity level changes — the default only applies when there is
   // no explicit choice.
   const summaryDisclosureKey = scopedDisclosureId(disclosureScope, `summary:${item.id}`);
-  const summaryConfigDefault = summaryOpenByDefault(config);
   // The summary line follows the level's own default (and any explicit reader
   // toggle) exactly like a clean call's: a failure does not carry it open, so a
   // failed row at chat/intent stays intent-only until the reader opens it.
-  const summaryFallback = summaryConfigDefault;
+  const summaryFallback = summaryOpenByDefault(config);
   const summaryDisclosureOpen = isDisclosureOpen(summaryDisclosureKey, summaryFallback);
   const summaryOpen = statedIntent === undefined ? true : summaryDisclosureOpen;
   // The intent-only density hook (toolcallitem.module.css's

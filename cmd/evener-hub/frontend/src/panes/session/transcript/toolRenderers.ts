@@ -84,9 +84,9 @@ export interface ToolRendererDescriptor {
   // the shared disclosure store. It also outranks the descriptor's own
   // autoExpand nudge: the posture claim wins, so the body settles folded
   // even at the settle moment that would otherwise auto-open it. For a card
-  // whose collapsed summary line already
-  // carries the news (the task card's window: its folded line names
-  // the latest update), so a run of updates reads as quiet one-liners.
+  // whose collapsed summary line already carries the news (the task card's
+  // window: its folded line names the latest update), so a run of updates
+  // reads as quiet one-liners.
   foldByDefault?: boolean;
   // statusLine renders the row's standalone status line, mounted in the slot
   // below the summary/intent on BOTH of the row's render paths. The
