@@ -1431,11 +1431,11 @@ function heldSnapshotFor(baseModel: ThreadModel | undefined): SnapshotIdentity |
 // "Below-floor update-log requests" follow-up) cannot be answered with the
 // window alone - held items outside it may have changed with no way to tell
 // - so the hub rejects it with TranscriptItemCursorStale rather than
-// silently merging a bare window. retryThreadReadWithoutHeldSnapshot, called
-// from a thread/read catch block that already has `held` and `err` in scope,
-// reports whether the caller should retry (asking again with no held
-// snapshot, for a full latest-window replacement) and, if so, the retried
-// response - both call sites stay inline in their own try/catch (rather than
+// silently merging a bare window. shouldRetryWithoutHeldSnapshot, called
+// from a thread/read catch block that already has `held` and `err` in
+// scope, reports whether that is what happened and the caller should retry
+// once with no held snapshot (for a full latest-window replacement). Both
+// call sites inline that retry in their own nested try/catch (rather than
 // wrapping the whole request in one shared async helper) so the ordinary,
 // non-stale-cursor path awaits client.request() exactly once, matching the
 // microtask timing callers (e.g. a reconnect's response-cut ordering) depend

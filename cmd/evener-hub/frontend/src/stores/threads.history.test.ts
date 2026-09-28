@@ -191,13 +191,17 @@ describe("versioned history: resync", () => {
 });
 
 describe("versioned history: backfill pages", () => {
-  test("a daemonless backfill page keeps newer pages and advances the held length", async () => {
+  test("a daemonless backfill page keeps newer pages", async () => {
     const fake = connectFakeClient();
-    // Pages accumulate under one snapshot identity (spec's "Backfill
-    // accumulation" follow-up): a merged page's length becomes the held
-    // length, since pageDisposition only merges a page whose length is at
-    // least held's, so a later page short of what has already accumulated
-    // is out of order no matter how many other pages have merged since.
+    // The initial latest-window read's snapshot length (100) is what a
+    // later page's own snapshot length is judged against - held.length
+    // advances only from latest-window reads, never from pages (spec's
+    // "Backfill accumulation" follow-up: a page's length is the transcript
+    // length at read time, not a promise everything through it was
+    // delivered, so advancing held to it could make a later heldSnapshot
+    // claim completeness through changes the client never actually saw),
+    // so a page below it is out of order no matter how many other pages
+    // have merged since.
     fake.on("thread/read", () => ({ ...read("initial"), olderCursor: "cursor_1" }));
     await threadsStore.getState().ensureThread(REF);
 
@@ -209,12 +213,11 @@ describe("versioned history: backfill pages", () => {
         .threads.get(REF)
         ?.turns.map((t) => t.id),
     ).toContain("turn_new");
-    expect(threadsStore.getState().threads.get(REF)?.history?.length).toBe(120);
+    expect(threadsStore.getState().threads.get(REF)?.history?.length).toBe(100);
 
     // A page that arrives after it, from a snapshot shorter than the one the
-    // client already holds (120, advanced by the page above, not the
-    // initial read's 100), is stale - it must be discarded, not merged over
-    // the newer page above.
+    // client already holds (the initial read's length 100), is stale - it
+    // must be discarded, not merged over the newer page above.
     fake.on("thread/turns/list", () => page("turn_stale", { length: 90 }));
     await threadsStore.getState().loadOlderTurns(REF);
 
@@ -224,7 +227,7 @@ describe("versioned history: backfill pages", () => {
       ?.turns.map((t) => t.id);
     expect(turnIds).toContain("turn_new");
     expect(turnIds).not.toContain("turn_stale");
-    expect(threadsStore.getState().threads.get(REF)?.history?.length).toBe(120);
+    expect(threadsStore.getState().threads.get(REF)?.history?.length).toBe(100);
   });
 });
 

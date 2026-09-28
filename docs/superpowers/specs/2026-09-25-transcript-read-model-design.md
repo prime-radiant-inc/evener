@@ -1227,15 +1227,23 @@ rather than resolved in prose here:
   serving stale content. The daemon's own `ChangedSince` call (`project`,
   `server/thread_history.go`) already treated the same error as a failure
   and rebuilt; this only changes the hub's non-daemon (daemonless) read path.
-- ~~**Backfill accumulation.**~~ Resolved: pages accumulate under one snapshot
-  identity, and the held length ratchets forward. `pageDisposition` already
-  requires a page's length to be at least the held length to merge (a
-  shorter one is discarded); `mergeVersionedPage`'s merge case now advances
-  the held length to the merged page's length. This is the reading that
-  cannot silently hold stale data: the alternative (require an exact length
-  match, discarding a longer page too) would freeze the held length at
-  whatever the first page happened to report and quietly reject every
-  correct, more-complete page after it.
+- ~~**Backfill accumulation.**~~ Resolved: pages accumulate under the held
+  incarnation, and the held length never advances from a page. A page's
+  snapshot length is the transcript length the index had when it answered
+  `Before`, not a promise that everything through that length was
+  delivered: `Before` only returns items older than the cursor, so a page
+  can carry a longer length than held without carrying the live items
+  created in between. Advancing held to it would make the next
+  latest-window read's `heldSnapshot` claim completeness through a length
+  whose in-between changes it never saw, and `LatestSince`'s
+  `ChangedSince(held.length)` would then skip them silently were more than
+  one window's worth of items to land before the next latest-window read —
+  the reading that risks silently holding (missing, in this case) live
+  data. Only a latest-window read (and its accompanying `changes`) verifies
+  completeness up to a length, so only that advances held; `pageDisposition`
+  keeps comparing a page's length against that one true watermark, never one
+  a page pushed forward, which is what "the same snapshot identity" holds
+  pages to.
 - **`RetainedUnsyncedError` boundary tests.** Test adoption, later durability,
   and a crash between adoption and fsync.
 - **Minting delivery turn IDs.** Name which component mints them: the registry

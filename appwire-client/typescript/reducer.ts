@@ -2849,13 +2849,20 @@ function mergeVersionedPage<M extends ThreadModel>(
       const range = resp.authoritative ? fragmentRange(fresh.items) : undefined;
       const turns = mergeHistory(range ? dropItemsInRange(held.turns, range[0], range[1]) : held.turns, fresh);
       const next = takeCursor ? { ...model, olderCursor: resp.nextCursor } : model;
-      // Pages accumulate under one snapshot identity: pageDisposition only
-      // merges a page whose length is at least held's, so the held length
-      // always advances to it (never back), and a page arriving later with a
-      // length short of what has already accumulated is discarded rather
-      // than silently held alongside newer content.
-      const length = readIdentity(resp).length;
-      return withDisplay(next, { ...held, turns, length }, model.overlay ?? {});
+      // The held length never advances from a page: a page's snapshot length
+      // is the transcript length the index had at read time, not a promise
+      // that everything through it was delivered - Before only returns items
+      // older than the cursor, so a page can carry a longer length than held
+      // without carrying the live items created in between. Advancing held
+      // to it would make the next latest-window read's heldSnapshot claim
+      // completeness through a length whose in-between changes it never
+      // saw, and LatestSince's ChangedSince(held.length) would then skip
+      // them silently. Only a latest-window read (and its accompanying
+      // changes) verifies completeness up to a length, so only that advances
+      // held. pageDisposition still requires a page's length to be at least
+      // held's to merge, comparing against that one true, latest-window
+      // watermark - never one a page pushed forward.
+      return withDisplay(next, { ...held, turns }, model.overlay ?? {});
     }
   }
 }
