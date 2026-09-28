@@ -40,7 +40,16 @@ type knownDivergence struct {
 	// the same turn), not on the scenario's scripted content: it can occur
 	// on one run and not the next. checkParity still fails if it is ever
 	// unlisted, but never fails it as "gone" for being absent on a run where
-	// the timing happened not to produce it.
+	// the timing happened not to produce it. This is deliberately narrow:
+	// it excuses only this one row's presence/absence, not what it names.
+	// A regression that made ChangedSince suppress more than the documented
+	// Version-only case would still show up as an unlisted divergence with
+	// a different Field/Subject the first time it touched a field this
+	// harness compares; the mechanism itself (that stampTurn logs
+	// updatedTurn only on an actual summary change) is pinned deterministically
+	// by TestChangedSinceDoesNotReportATurnWhoseEntryDidNotChangeItsSummary
+	// in internal/transcriptindex/changes_test.go, which does not depend on
+	// this harness's live-publish timing at all.
 	Flaky bool
 }
 

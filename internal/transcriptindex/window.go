@@ -290,10 +290,14 @@ type Changes struct {
 
 // ChangedSince returns the items and turns whose record an entry at or past
 // length created or touched: an item a later entry opened or a call a later
-// TOOL_RESULTS completed, a turn a later entry opened or restamped. A reader
-// holding a snapshot at length learns everything past it changed, without
-// re-reading what it already holds. Items are in position order, turns in
-// slot order (the order their first entry created them), each once.
+// TOOL_RESULTS completed, a turn a later entry opened or whose wire-visible
+// summary a later entry restamped (status/lifecycle/started/usage; see
+// stampTurn/summaryOf in build.go — a turn's Version advances on every entry
+// it owns regardless, so a later entry that leaves the summary itself
+// unchanged is not "restamped" in this sense). A reader holding a snapshot
+// at length learns everything past it changed, without re-reading what it
+// already holds. Items are in position order, turns in slot order (the
+// order their first entry created them), each once.
 func (x *Index) ChangedSince(length int64) (Changes, error) {
 	x.mu.Lock()
 	defer x.mu.Unlock()
