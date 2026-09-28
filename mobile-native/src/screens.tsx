@@ -8,6 +8,7 @@ import {
 	type RefObject,
 	useCallback,
 	useEffect,
+	useLayoutEffect,
 	useMemo,
 	useRef,
 	useState,
@@ -61,6 +62,7 @@ import {
 	composerCommand,
 	composerCommandAvailable,
 	isLocalComposerCommand,
+	startAside,
 	submitComposerCommand,
 } from "./composerCommand";
 import { canComposeFor, conversationControls } from "./conversationControls";
@@ -129,12 +131,28 @@ import {
 	sessionRows,
 } from "./session/transcriptRows";
 import { SessionControls } from "./sessionControls";
+import { useConnectionStatusText } from "./board/connectionStatus";
 import { Composer } from "./session/Composer";
+import {
+	configForLevel,
+	currentLevel,
+	levelToast,
+} from "./session/detailLevels";
+import { detailLevels } from "./session/nativeDetailLevels";
 import {
 	composerPlaceholder,
 	sendAction,
 	sendLabel,
 } from "./session/sendAction";
+import { SessionHeader, useHeaderHiding } from "./session/SessionHeader";
+import { type SessionMenuAction, sessionMenu } from "./session/sessionMenu";
+import {
+	type ChipKind,
+	contextChips,
+	SHUT_DOWN,
+	sessionStateLine,
+} from "./session/sessionState";
+import { SessionTitle } from "./session/SessionTitle";
 import { LiveStatusTray, useFrameCounter } from "./session/StatusTray";
 import { localSessionId } from "./sessionDeletionResult";
 import { leaveScreen, screenInFront, useScreenInFront } from "./sheet/useScreenInFront";
@@ -476,6 +494,16 @@ export function useFocusAfterModal(
 	}, [navigation, focusAfterModal, composerInput]);
 }
 
+/** The sheet or screen each context chip and ⋯ menu item opens. */
+const SESSION_DESTINATIONS = {
+	subagents: "activity",
+	tasks: "tasks",
+	goal: "session",
+	info: "session",
+	pin: "pin",
+	delete: "delete",
+} as const satisfies Record<string, SessionDestination>;
+
 export function ConversationScreen({
 	route,
 	navigation,
@@ -484,6 +512,7 @@ export function ConversationScreen({
 		activeProfile,
 		client,
 		state: connectionState,
+		fatal,
 	} = useConnection();
 	const focused = useScreenInFront(route.key);
 	const colors = useColors();
@@ -513,8 +542,17 @@ export function ConversationScreen({
 	// so the ref (not the render value) is what it closes over — the store is
 	// not recreated per config change.
 	const preferences = useNativePreferences();
-	const displayConfig =
+	const hubDisplayConfig =
 		preferences.hubId === route.params.hubId ? preferences.config : null;
+	// The detail level chosen for this session on this device replaces the
+	// hub config's content (spec 8.7); nothing chosen leaves the hub's.
+	const levels = detailLevels(route.params.hubId);
+	useSyncExternalStore(levels.subscribe, levels.getRevision);
+	const chosenLevel = levels.get(route.params.ref);
+	const displayConfig = useMemo(
+		() => configForLevel(chosenLevel, hubDisplayConfig),
+		[chosenLevel, hubDisplayConfig],
+	);
 	const displayConfigRef = useRef<TranscriptDisplayConfigV1 | null>(displayConfig);
 	displayConfigRef.current = displayConfig;
 	const resolveDisplayConfig = useCallback(
@@ -831,67 +869,63 @@ export function ConversationScreen({
 			preview,
 		});
 	}
-	const controls = useMemo(
-		() =>
-			service && connected && focused
-				? new SessionControls(
-						service,
-						async () => {
-							if (store.getState().status === "open")
-								await store.getState().rehydrate(service, activitySink);
-							else
-								await store
-									.getState()
-									.resumeProjected(service, activitySink, route.params.ref);
-							const current = store.getState();
-							if (current.status !== "open" || current.error)
-								throw new Error("Session refresh failed");
-						},
-						() => {
-							store.getState().close();
-							service.close();
-							setSessionOpen(false);
-							if (screenInFront(navigation, route.key))
-								leaveScreen(navigation, route.key);
-						},
-						(scope) => {
-							const current = store.getState();
-							if (
-								currentDestination.current.store !== store ||
-								currentDestination.current.client !== client ||
-								!connectionReady.current ||
-								!screenInFront(navigation, route.key)
-							)
-								return false;
-							if (scope === "destination")
-								return current.ref === route.params.ref;
-							return (
-								current.status === "open" &&
-								current.conversationGeneration === bindingGeneration &&
-								current.conversation?.instanceId === bindingInstance
-							);
-						},
-						() => store.getState().conversation,
-						() =>
-							!commandBusy.current &&
-							!document.getSnapshot().submitting &&
-							store.getState().pendingMutation?.status !== "pending",
-					)
-				: null,
-		[
+	const controls = useMemo(() => {
+		if (!service || !connected || !focused) return null;
+		const refreshSession = async () => {
+			if (store.getState().status === "open")
+				await store.getState().rehydrate(service, activitySink);
+			else
+				await store
+					.getState()
+					.resumeProjected(service, activitySink, route.params.ref);
+			const current = store.getState();
+			if (current.status !== "open" || current.error)
+				throw new Error("Session refresh failed");
+		};
+		return new SessionControls(
 			service,
-			store,
-			client,
-			route.params.ref,
-			activitySink,
-			navigation,
-			connected,
-			focused,
-			bindingGeneration,
-			bindingInstance,
-			document,
-		],
-	);
+			refreshSession,
+			// A shut-down session stays open on its history (ruling 19); a
+			// failed read surfaces through the store's own error.
+			() => {
+				void refreshSession().catch(() => undefined);
+			},
+			(scope) => {
+				const current = store.getState();
+				if (
+					currentDestination.current.store !== store ||
+					currentDestination.current.client !== client ||
+					!connectionReady.current ||
+					!screenInFront(navigation, route.key)
+				)
+					return false;
+				if (scope === "destination")
+					return current.ref === route.params.ref;
+				return (
+					current.status === "open" &&
+					current.conversationGeneration === bindingGeneration &&
+					current.conversation?.instanceId === bindingInstance
+				);
+			},
+			() => store.getState().conversation,
+			() =>
+				!commandBusy.current &&
+				!document.getSnapshot().submitting &&
+				store.getState().pendingMutation?.status !== "pending",
+		);
+	}, [
+		service,
+		store,
+		client,
+		route.params.ref,
+		activitySink,
+		navigation,
+		connected,
+		focused,
+		bindingGeneration,
+		bindingInstance,
+		document,
+	]);
 	useEffect(() => () => controls?.dispose(), [controls]);
 	const approvalControls = useMemo(
 		() =>
@@ -988,52 +1022,177 @@ export function ConversationScreen({
 			route.params.title,
 		],
 	);
+	// The title's state line reads live ages ("Working · 38m", "Finished ·
+	// 1h ago"): re-render twice a minute while the session is in front.
+	const [, setClock] = useState(0);
+	useEffect(() => {
+		if (!focused) return;
+		const clock = setInterval(() => setClock((tick) => tick + 1), 30_000);
+		return () => clearInterval(clock);
+	}, [focused]);
+	const conversation = snapshot.conversation;
+	const stateLine = conversation
+		? sessionStateLine(conversation, Date.now())
+		: null;
+	const connectionText = useConnectionStatusText(connectionState, fatal);
+	const chips = conversation ? contextChips(conversation, connected) : [];
+	const headerHiding = useHeaderHiding();
+	// The header block floats over the list; the list reserves its height.
+	const [sessionHeaderHeight, setSessionHeaderHeight] = useState(0);
+	const listOffset = useRef(0);
+	const reservedHeaderHeight = useRef(0);
+	// When the block grows or shrinks (the connection bar comes or goes), the
+	// list's top padding moves by the same amount; scrolling the list by it
+	// too keeps every row where it was on screen. At the top the list stays
+	// at the top, and the rows make room for the block.
+	useLayoutEffect(() => {
+		const change = sessionHeaderHeight - reservedHeaderHeight.current;
+		reservedHeaderHeight.current = sessionHeaderHeight;
+		if (change === 0 || listOffset.current <= 0) return;
+		const target = Math.max(0, listOffset.current + change);
+		// Set optimistically: the list's own onScroll is throttled
+		// (scrollEventThrottle), so a second height change in the same window
+		// must compose with where this scroll is already taking the list, not
+		// with the last offset the list actually reported.
+		listOffset.current = target;
+		timeline.current?.scrollToOffset({ offset: target, animated: false });
+	}, [sessionHeaderHeight]);
+	function openChip(kind: ChipKind) {
+		if (kind !== "queue") {
+			openSessionDestination(SESSION_DESTINATIONS[kind]);
+			return;
+		}
+		// Today's QueueSheet modal, until the queue sheet route lands.
+		Keyboard.dismiss();
+		setQueueOpen(true);
+	}
+	const menuLevel = currentLevel(chosenLevel, hubDisplayConfig);
+	// The menu offers Subagents exactly when its chip shows.
+	const hasSubagents = chips.some((chip) => chip.kind === "subagents");
+	const canAside =
+		connected &&
+		service !== null &&
+		!!conversation?.capabilities.forkFromTurn;
+	const canShutDown =
+		controls !== null &&
+		!!conversation?.capabilities.shutdown &&
+		!SHUT_DOWN.has(conversation.status.type);
+	function openAside(ref: string, title: string) {
+		Keyboard.dismiss();
+		navigation.push("Conversation", {
+			hubId: route.params.hubId,
+			ref,
+			title,
+		});
+	}
+	function archive(archived: boolean) {
+		if (!client) return Promise.reject(new Error("Not connected"));
+		return client.request("evener/archive/set", {
+			kind: "session",
+			id: route.params.ref,
+			archived,
+		});
+	}
+	function chooseSessionAction(action: SessionMenuAction) {
+		switch (action.kind) {
+			case "level":
+				levels.set(route.params.ref, action.level);
+				toaster.show({ text: levelToast(action.level) });
+				return;
+			case "subagents":
+			case "tasks":
+			case "info":
+			case "pin":
+			case "delete":
+				openSessionDestination(SESSION_DESTINATIONS[action.kind]);
+				return;
+			case "aside":
+				if (!service) return;
+				startAside(service).then(
+					(aside) => {
+						if (screenInFront(navigation, route.key))
+							openAside(aside.ref, aside.title);
+					},
+					() => toaster.show({ text: "Couldn't start an aside." }),
+				);
+				return;
+			case "archive":
+				archive(true).then(
+					() =>
+						toaster.show({
+							text: "Session archived",
+							action: {
+								label: "Undo",
+								run: () =>
+									void archive(false).catch(() =>
+										toaster.show({ text: "Couldn't undo the archive." }),
+									),
+							},
+						}),
+					() => toaster.show({ text: "Couldn't archive this session." }),
+				);
+				return;
+			case "shutDown":
+				if (!controls) return;
+				Alert.alert(
+					"Shut down this session?",
+					"It stops now and keeps its history. Sending a message resumes it.",
+					[
+						{ text: "Cancel", style: "cancel" },
+						{
+							text: "Shut down",
+							style: "destructive",
+							onPress: () => {
+								void controls.shutdown().then((stopped) => {
+									toaster.show({
+										text: stopped
+											? "Session shut down"
+											: "Couldn't shut down this session.",
+									});
+								});
+							},
+						},
+					],
+				);
+				return;
+		}
+	}
+	// The header items outlive this render; they reach the latest choices
+	// through the ref, so the header is not reset on every render. The ref is
+	// written after commit, in its own effect with no deps, not during
+	// render, which React's own rules reserve for effects.
+	const chooseSessionActionRef = useRef(chooseSessionAction);
+	useEffect(() => {
+		chooseSessionActionRef.current = chooseSessionAction;
+	});
 	useEffect(() => {
 		navigation.setOptions({
-			unstable_headerRightItems: () => [
-				{
-					type: "menu",
-					label: "Session actions",
-					accessibilityLabel: "Session actions",
-					icon: { type: "sfSymbol", name: "ellipsis" },
-					disabled: !hasConversation,
-					menu: {
-						items: [
-							...(deletionAvailable
-								? [
-										{
-											type: "action" as const,
-											label: "Delete saved session",
-											onPress: () => openSessionDestination("delete"),
-										},
-									]
-								: []),
-							{
-								type: "action",
-								label: "Session details",
-								onPress: () => openSessionDestination("session"),
-							},
-							{
-								type: "action",
-								label: "Pin to section",
-								onPress: () => openSessionDestination("pin"),
-							},
-							{
-								type: "action",
-								label: "Tasks",
-								disabled: !connected,
-								onPress: () => openSessionDestination("tasks"),
-							},
-							{
-								type: "action",
-								label: "Activity",
-								disabled: !connected,
-								onPress: () => openSessionDestination("activity"),
-							},
-						],
-					},
-				},
-			],
+			// iPhone only: the pressable title with the session's state (spec
+			// 8.1). Android keeps the plain title.
+			headerTitle:
+				Platform.OS === "ios" && stateLine
+					? ({ children }) => (
+							<SessionTitle
+								title={children}
+								line={stateLine}
+								onPress={() => openSessionDestination("session")}
+							/>
+						)
+					: undefined,
+			// iOS draws these as a native menu and ignores headerRight; Android
+			// ignores them and keeps headerRight's SessionMenu.
+			unstable_headerRightItems: () =>
+				hasConversation
+					? sessionMenu({
+							current: menuLevel,
+							hasSubagents,
+							connected,
+							canAside,
+							canShutDown,
+							deletable: deletionAvailable,
+							choose: (action) => chooseSessionActionRef.current(action),
+						})
+					: [],
 			headerRight: () => (
 				<Pressable
 					accessibilityRole="button"
@@ -1068,13 +1227,18 @@ export function ConversationScreen({
 		connected,
 		openSessionDestination,
 		colors.text,
+		stateLine?.state,
+		stateLine?.text,
+		menuLevel,
+		hasSubagents,
+		canAside,
+		canShutDown,
 	]);
 	const currentName = snapshot.conversation?.name;
 	useEffect(() => {
 		if (currentName && currentName !== route.params.title)
 			navigation.setParams({ title: currentName });
 	}, [navigation, currentName, route.params.title]);
-	const conversation = snapshot.conversation;
 	// The conversation's rows are already level-correct: the store projected
 	// them at displayConfig (D24-6's seam routing), so the presentation layer
 	// only reshapes (member unrolling, attachment adjacency) and computes the
@@ -1422,14 +1586,7 @@ export function ConversationScreen({
 									replacement,
 								);
 						},
-						openAside: (ref, title) => {
-							Keyboard.dismiss();
-							navigation.push("Conversation", {
-								hubId: route.params.hubId,
-								ref,
-								title,
-							});
-						},
+						openAside,
 						local: async (id) => {
 							if (!currentBinding())
 								throw new CommandArgumentError(
@@ -1975,7 +2132,11 @@ export function ConversationScreen({
 								</View>
 							)}
 							// Room at the end for the Next capsule (spec 8.3).
-							contentContainerStyle={{ padding: 16, paddingBottom: 60 }}
+							contentContainerStyle={{
+								padding: 16,
+								paddingTop: 16 + sessionHeaderHeight,
+								paddingBottom: 60,
+							}}
 							// Older history loading above never moves what you read.
 							maintainVisibleContentPosition={{ minIndexForVisible: 0 }}
 							onContentSizeChange={(_width, height) => {
@@ -1988,10 +2149,15 @@ export function ConversationScreen({
 							}}
 							scrollEventThrottle={100}
 							onScroll={(event) => {
-								if (!focused) return;
 								const { contentOffset, contentSize, layoutMeasurement } =
 									event.nativeEvent;
 								const y = contentOffset.y;
+								listOffset.current = y;
+								headerHiding.onScroll(
+									y,
+									readerDragging.current || readerMomentum.current,
+								);
+								if (!focused) return;
 								if (y + layoutMeasurement.height >= contentSize.height - 48) {
 									if (awayKeys !== null) setAwayKeys(null);
 									turnsSeen.current = latestSettledTurn(conversation) ?? turnsSeen.current;
@@ -2101,7 +2267,6 @@ export function ConversationScreen({
 							keyboardShouldPersistTaps="handled"
 							ListHeaderComponent={
 								<View style={{ gap: 12, paddingBottom: 16 }}>
-									<ConnectionStatus />
 									{readFailures >= 3 ? (
 										<Text
 											style={{
@@ -2136,6 +2301,20 @@ export function ConversationScreen({
 							// the composer's placeholder invites.
 							ListEmptyComponent={conversation ? null : <TranscriptSkeleton />}
 						/>
+						<View
+							pointerEvents="box-none"
+							style={{ position: "absolute", top: 0, left: 0, right: 0 }}
+							onLayout={(event) =>
+								setSessionHeaderHeight(event.nativeEvent.layout.height)
+							}
+						>
+							<SessionHeader
+								status={connectionText}
+								chips={chips}
+								hidden={headerHiding.hidden}
+								onChip={openChip}
+							/>
+						</View>
 						<View
 							pointerEvents="box-none"
 							style={{
