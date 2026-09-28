@@ -228,14 +228,17 @@ function Board({ hubId, hubName, navigation }: { hubId: string; hubName: string;
 	// marked seen the same way. Any other session marks itself seen when its
 	// screen loads (useMarkSeenInFront).
 	const openSearchResult = (result: SearchResult) => {
-		recent.add(search.snapshot.query);
-		setRecentList(recent.list());
+		rememberSearch();
 		const row = loadedRows.find((loaded) => loaded.ref === result.ref);
 		if (row) openSession(row);
 		else navigation.navigate("Conversation", { hubId, ref: result.ref, title: result.title });
 	};
 	const clearRecent = () => {
 		recent.clear();
+		setRecentList(recent.list());
+	};
+	const rememberSearch = () => {
+		recent.add(search.snapshot.query);
 		setRecentList(recent.list());
 	};
 
@@ -454,8 +457,7 @@ function Board({ hubId, hubName, navigation }: { hubId: string; hubName: string;
 		scroller.current?.scrollTo?.({ y, animated: !reduceMotion });
 	};
 	const openProjectResult = (project: NavigationProjectSummary) => {
-		recent.add(search.snapshot.query);
-		setRecentList(recent.list());
+		rememberSearch();
 		leaveSearch();
 		revealProject(project.key);
 	};
