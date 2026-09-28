@@ -181,6 +181,7 @@ import { LiveStatusTray, useFrameCounter } from "./session/StatusTray";
 import { localSessionId } from "./sessionDeletionResult";
 import { sheetKey, useProvideSheetHost } from "./sheet/sheetHosts";
 import { screenInFront, useScreenInFront } from "./sheet/useScreenInFront";
+import { takeQuote } from "./session/pendingQuote";
 import { TimelineItem } from "./TimelineItem";
 import { Toast, type ToastMessage, useToast } from "./Toast";
 import { TranscriptUsage } from "./TranscriptUsage";
@@ -246,7 +247,22 @@ export type Routes = {
 		updatedAt?: string;
 	};
 	OutlineSheet: { hubId: string; sessionRef: string; path: string };
+	CommentSheet: {
+		hubId: string;
+		sessionRef: string;
+		path: string;
+		blockIndex: number;
+		blockHash: string;
+		/** The words the comment is on: a selection, or its block's words. */
+		quote: string;
+	};
+	CommentsSheet: ReviewSheetParams;
+	ReviewSheet: ReviewSheetParams;
 };
+
+/** A document's comments and its review: the document, and the session the
+ * review goes to. */
+type ReviewSheetParams = { hubId: string; sessionRef: string; path: string; reviewRef: string; reviewTitle: string };
 
 export function HubsScreen({
 	navigation,
@@ -1341,6 +1357,13 @@ export function ConversationScreen({
 		},
 		[document],
 	);
+	// Quote in reply from a screen above this session (the Reader) holds the
+	// words until this session is in front again.
+	useEffect(() => {
+		if (!focused) return;
+		const words = takeQuote(route.params.hubId, route.params.ref);
+		if (words !== null) quote(words);
+	}, [focused, route.params.hubId, route.params.ref, quote]);
 	useEffect(() => {
 		appliedReaderRestore.current = null;
 		readerRestoreAttempts.current.reset();

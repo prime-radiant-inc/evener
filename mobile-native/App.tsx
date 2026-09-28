@@ -43,7 +43,10 @@ import {
 import { NotesSheet } from "./src/session/NotesSheet";
 import { SHEET_ROUTES } from "./src/sheet/sheetRoutes";
 import { QueueSheet } from "./src/QueueSheet";
+import { CommentSheet } from "./src/reader/CommentSheet";
+import { CommentsSheet } from "./src/reader/CommentsSheet";
 import { OutlineSheet } from "./src/reader/OutlineSheet";
+import { ReviewSheet } from "./src/reader/ReviewSheet";
 import { ReaderScreen } from "./src/reader/ReaderScreen";
 import { TasksSheet } from "./src/TasksSheet";
 import { TranscriptPreferencesScreen } from "./src/TranscriptPreferencesScreen";
@@ -239,6 +242,21 @@ function Navigation() {
 							name="OutlineSheet"
 							component={OutlineSheet}
 							options={SHEET_ROUTES.OutlineSheet}
+						/>
+						<Stack.Screen
+							name="CommentSheet"
+							component={CommentSheet}
+							options={SHEET_ROUTES.CommentSheet}
+						/>
+						<Stack.Screen
+							name="CommentsSheet"
+							component={CommentsSheet}
+							options={SHEET_ROUTES.CommentsSheet}
+						/>
+						<Stack.Screen
+							name="ReviewSheet"
+							component={ReviewSheet}
+							options={SHEET_ROUTES.ReviewSheet}
 						/>
 					</Stack.Group>
 				</Stack.Navigator>
