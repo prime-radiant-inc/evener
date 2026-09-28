@@ -9,6 +9,7 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, expect, test } from "vitest";
 import { connectionStore } from "../../../stores/connection";
 import { resetThreadsStoreForTests } from "../../../stores/threads";
+import { readModuleCss, topRuleBlock } from "../../../styles/cssBlock";
 import { Toast } from "../../../widgets";
 import { resetDisclosureStoreForTests } from "../../../widgets/disclosure/disclosureStore";
 import { resetToastStoreForTests } from "../../../widgets/toast/store";
@@ -488,22 +489,18 @@ test("the prompt disclosure summary reaches the tap floor on a coarse pointer", 
   expect(rule![1]).toContain("min-height: var(--tap-min)");
 });
 
-// Rhythm (2026-09-28): the prompt's Markdown sizes itself from
-// --prose-font-size (widgets/markdown defaults it to the 18px prose step),
-// which swamped the caption-size meta strip and timestamps around it. The
-// disclosure must pin the hook so the preview line and the expanded body sit
-// at the same step as the rest of the expanded row - a font-size on the host
-// alone is inert, because the Markdown root declares its own. jsdom computes
-// no cascade, so this reads the stylesheet's own source, the same technique
-// the tap-floor test above and agentMessageSize.contract.test.ts use.
+// jsdom computes no cascade, so the caption pin is asserted against the
+// stylesheet's own source - readModuleCss/topRuleBlock from styles/cssBlock,
+// the technique the tap-floor test above and agentMessageSize.contract.test.ts
+// use - with comments stripped so an in-rule comment can never satisfy or
+// defeat an assertion. The sizing rationale lives in the .promptDetails rule
+// comment in taskspanel.module.css.
 test("the prompt disclosure renders its markdown at the caption step, not prose size", () => {
-  const css = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "taskspanel.module.css"), "utf8");
-  const details = css.match(/\.promptDetails\s*\{([^}]*)\}/);
-  expect(details, "taskspanel.module.css must style .promptDetails").not.toBeNull();
-  expect(details![1]).toContain("--prose-font-size: var(--font-size-caption)");
-  const body = css.match(/\.promptBody\s*\{([^}]*)\}/);
-  expect(body, "taskspanel.module.css must style .promptBody").not.toBeNull();
-  expect(body![1], "the Markdown root owns the body's size; a host-side font-size never applied").not.toMatch(
+  const css = readModuleCss(import.meta.url, "taskspanel.module.css");
+  const details = topRuleBlock(css, ".promptDetails").replace(/\/\*[\s\S]*?\*\//g, "");
+  expect(details).toContain("--prose-font-size: var(--font-size-caption)");
+  const body = topRuleBlock(css, ".promptBody").replace(/\/\*[\s\S]*?\*\//g, "");
+  expect(body, "the Markdown root owns the body's size; a host-side font-size never applied").not.toMatch(
     /font-size\s*:/,
   );
 });
