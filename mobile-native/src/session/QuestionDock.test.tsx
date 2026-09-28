@@ -3,6 +3,7 @@
 // onSend. Its saved answers live in the device's drafts, doubled here in
 // memory.
 import type { AskQuestionRef } from "@evener/appwire-client";
+import { useState } from "react";
 import { act, type ReactTestRenderer } from "react-test-renderer";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { DraftDestination } from "../draftRepository";
@@ -19,14 +20,22 @@ vi.mock("expo-symbols", () => ({ SymbolView: "SymbolView" }));
 const saved = vi.hoisted(() => ({
 	questions: new Map<string, QuestionSelections>(),
 	positions: new Map<string, string>(),
+	// The device's drafts can't be read, or can't be written, while set.
+	readsFail: false,
+	writesFail: false,
 }));
 vi.mock("../nativeDrafts", () => {
 	const at = (destination: DraftDestination) => `${destination.hubId}\u0000${destination.sessionRef}`;
 	return {
 		nativeDrafts: () => ({
-			readQuestions: (destination: DraftDestination) => saved.questions.get(at(destination)) ?? {},
-			writeQuestions: (destination: DraftDestination, _signature: string, selections: QuestionSelections) =>
-				void saved.questions.set(at(destination), selections),
+			readQuestions: (destination: DraftDestination) => {
+				if (saved.readsFail) throw new Error("database is locked");
+				return saved.questions.get(at(destination)) ?? {};
+			},
+			writeQuestions: (destination: DraftDestination, _signature: string, selections: QuestionSelections) => {
+				if (saved.writesFail) throw new Error("disk full");
+				saved.questions.set(at(destination), selections);
+			},
 			readQuestionPosition: (destination: DraftDestination, keys: string[]) => {
 				const key = saved.positions.get(at(destination));
 				return key && keys.includes(key) ? key : keys[0];
@@ -40,6 +49,8 @@ vi.mock("../nativeDrafts", () => {
 beforeEach(() => {
 	saved.questions.clear();
 	saved.positions.clear();
+	saved.readsFail = false;
+	saved.writesFail = false;
 });
 
 const destination = { hubId: "hub-1", sessionRef: "local:s1" };
@@ -69,14 +80,18 @@ function mount(
 	const onOtherAnswer = vi.fn();
 	function Dock() {
 		const draft = useQuestionDraft(destination, questions);
+		const [isFolded, setFolded] = useState(folded);
 		return (
 			<QuestionDock
 				questions={questions}
 				draft={draft}
 				ready={ready}
 				sending={false}
-				folded={folded}
-				onFold={onFold}
+				folded={isFolded}
+				onFold={(next) => {
+					onFold(next);
+					setFolded(next);
+				}}
 				onOtherAnswer={onOtherAnswer}
 				onSend={onSend}
 				error={error}
@@ -211,7 +226,66 @@ describe("the question dock (spec 8.4)", () => {
 	});
 });
 
+describe("saved answers that couldn't be read", () => {
+	it("reads them again when the folded bar opens, and the dock can answer again", () => {
+		saved.questions.set(`${destination.hubId}\u0000${destination.sessionRef}`, {
+			q1: { note: "", resolution: { kind: "option", labels: ["Drop them"] } },
+		});
+		saved.readsFail = true;
+		const { tree } = mount(two, { folded: true });
+		saved.readsFail = false;
+		press(tree, "Answer 2 questions");
+		expect(pressable(tree, "Keep them")?.props.accessibilityState).toMatchObject({ disabled: false });
+		expect(pressable(tree, "Drop them")?.props.accessibilityState).toMatchObject({ checked: true });
+	});
+});
+
 describe("useQuestionDraft", () => {
+	it("reloads saved answers that couldn't be read", () => {
+		saved.questions.set(`${destination.hubId}\u0000${destination.sessionRef}`, {
+			q2: { note: "", resolution: { kind: "option", labels: ["Run them"] } },
+		});
+		saved.readsFail = true;
+		const draft = renderHook(() => useQuestionDraft(destination, two));
+		expect(draft.result.current).toMatchObject({ loaded: false, error: "Saved answers could not be loaded." });
+		// Still unreadable: it stays unloaded, and says so.
+		act(() => draft.result.current.reload());
+		expect(draft.result.current.loaded).toBe(false);
+		saved.readsFail = false;
+		act(() => draft.result.current.reload());
+		expect(draft.result.current).toMatchObject({
+			loaded: true,
+			error: null,
+			selections: { q2: { note: "", resolution: { kind: "option", labels: ["Run them"] } } },
+		});
+	});
+
+	it("keeps answers it couldn't save when asked to reload, and saves them on the next change", () => {
+		const draft = renderHook(() => useQuestionDraft(destination, two));
+		saved.writesFail = true;
+		act(() =>
+			draft.result.current.setSelections((values) => ({
+				...values,
+				q1: { note: "", resolution: { kind: "option", labels: ["Keep them"] } },
+			})),
+		);
+		expect(draft.result.current.error).not.toBeNull();
+		act(() => draft.result.current.reload());
+		expect(draft.result.current.selections.q1?.resolution).toEqual({ kind: "option", labels: ["Keep them"] });
+		saved.writesFail = false;
+		act(() =>
+			draft.result.current.setSelections((values) => ({
+				...values,
+				q2: { note: "", resolution: { kind: "option", labels: ["Skip them"] } },
+			})),
+		);
+		expect(draft.result.current.error).toBeNull();
+		expect(saved.questions.get(`${destination.hubId}\u0000${destination.sessionRef}`)).toMatchObject({
+			q1: { resolution: { kind: "option", labels: ["Keep them"] } },
+			q2: { resolution: { kind: "option", labels: ["Skip them"] } },
+		});
+	});
+
 	it("keeps a chosen answer and your place across a remount", () => {
 		const first = renderHook(() => useQuestionDraft(destination, two));
 		act(() => {

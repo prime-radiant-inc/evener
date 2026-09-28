@@ -7,6 +7,7 @@ import { createElement } from "react";
 import { act, type ReactTestRenderer } from "react-test-renderer";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AnyNotification, Thread } from "@evener/appwire-client";
+import { nativeDrafts } from "./nativeDrafts";
 import { getNativeMutationRuntime, nativeMutationTargetKey } from "./nativeMutationRuntime";
 import { flatListCalls, pressable, render, renderedText, screenConnection, textOf } from "./renderNative.testkit";
 import { queueHosts } from "./QueueSheet";
@@ -489,6 +490,66 @@ describe("a question waiting for an answer (spec 8.4)", () => {
 		expect(dock).toHaveLength(1);
 		expect(textOf(dock[0])).toContain("Keep or drop the implied options?");
 		expect(textOf(dock[0])).not.toContain(failure);
+	});
+
+	// The device's saved answers can't be read until the returned function
+	// is called.
+	function questionReadsFail(): () => void {
+		nativeDrafts();
+		const drafts = sqlite.ports.get("evener-drafts.db") as { getFirstSync: (sql: string, ...args: unknown[]) => unknown };
+		const getFirstSync = drafts.getFirstSync;
+		drafts.getFirstSync = (sql, ...args) => {
+			if (sql.includes("question_")) throw new Error("database is locked");
+			return getFirstSync(sql, ...args);
+		};
+		return () => {
+			drafts.getFirstSync = getFirstSync;
+		};
+	}
+
+	function rerender(tree: ReactTestRenderer, ref: string) {
+		const route = { key: `conversation-${ref}`, name: "Conversation", params: { hubId: "hub-1", ref, title: "Session" } };
+		act(() =>
+			tree.update(
+				<ConversationScreen route={route as unknown as ConversationScreenProps["route"]} navigation={navigation} />,
+			),
+		);
+	}
+
+	it("waits to answer until saved answers load, and reads them again when the hub comes back", async () => {
+		const ref = "ref-question-unloaded";
+		const readable = questionReadsFail();
+		const { tree } = await mount(thread(ref, "awaiting", true));
+		expect(pressable(tree, "Drop them")?.props.accessibilityState).toMatchObject({ disabled: true });
+		await press(tree, "Fold");
+		await type(tree, "Drop them");
+		expect(composerSend(tree, "Send answer")?.props.accessibilityState).toMatchObject({ disabled: true });
+		readable();
+		harness.connection = { ...harness.connection, state: "connecting" };
+		rerender(tree, ref);
+		await settle();
+		harness.connection = { ...harness.connection, state: "ready" };
+		rerender(tree, ref);
+		await settle();
+		expect(composerSend(tree, "Send answer")?.props.accessibilityState).toMatchObject({ disabled: false });
+	});
+
+	it("reads saved answers again when the session comes back to front", async () => {
+		const ref = "ref-question-front";
+		const readable = questionReadsFail();
+		const { tree } = await mount(thread(ref, "awaiting", true));
+		await press(tree, "Fold");
+		await type(tree, "Drop them");
+		expect(composerSend(tree, "Send answer")?.props.accessibilityState).toMatchObject({ disabled: true });
+		readable();
+		const own = navigationState.state.routes[0];
+		navigationState.state = { index: 1, routes: [own, { key: "conversation-other", name: "Conversation" }] };
+		rerender(tree, ref);
+		await settle();
+		navigationState.state = { index: 0, routes: [own] };
+		rerender(tree, ref);
+		await settle();
+		expect(composerSend(tree, "Send answer")?.props.accessibilityState).toMatchObject({ disabled: false });
 	});
 
 	it("folds to a bar, and the composer comes back beneath it", async () => {

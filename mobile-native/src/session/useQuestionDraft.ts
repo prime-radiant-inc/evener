@@ -21,6 +21,12 @@ export interface QuestionDraft {
 	activeIndex: number;
 	setSelections(update: (values: QuestionSelections) => QuestionSelections): void;
 	setActiveIndex(index: number): void;
+	/** Reads the saved answers again after a read failed. It is called on its
+	 * own (the connection coming back, the screen coming to front, the folded
+	 * bar opening), never from a button. Once loaded it does nothing: answers
+	 * that couldn't be saved stay in memory and are written on the next
+	 * change. */
+	reload(): void;
 }
 
 function load(destination: DraftDestination, questions: AskQuestionRef[], signature: string): Saved {
@@ -93,7 +99,12 @@ export function useQuestionDraft(destination: DraftDestination, questions: AskQu
 			}));
 		}
 	}
+	function reload() {
+		if (current.loaded) return;
+		setSaved(load(destination, questions, signature));
+	}
 	return {
+		reload,
 		selections: current.selections,
 		loaded: current.loaded,
 		error: current.error ?? positionError,

@@ -69,7 +69,11 @@ export function QuestionDock({
 				// The label names the bar; VoiceOver reads why an answer didn't go after it.
 				accessibilityHint={error ?? undefined}
 				accessibilityState={{ expanded: false, disabled: false }}
-				onPress={() => onFold(false)}
+				onPress={() => {
+					// Answers that couldn't be read get another try as the dock opens.
+					draft.reload();
+					onFold(false);
+				}}
 				style={({ pressed }) => ({
 					...card,
 					minHeight: 44,

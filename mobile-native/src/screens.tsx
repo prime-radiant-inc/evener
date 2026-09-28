@@ -1559,6 +1559,13 @@ export function ConversationScreen({
 		{ hubId: route.params.hubId, sessionRef: route.params.ref },
 		questionBatch?.questions ?? NO_QUESTIONS,
 	);
+	// Saved answers that couldn't be read get another try on their own when
+	// the hub comes back and when the session comes back to front: there is
+	// no Retry to press (Calm).
+	// biome-ignore lint/correctness/useExhaustiveDependencies: reload is a new function each render; it runs on these transitions only.
+	useEffect(() => {
+		if (connected && focused) questionDraft.reload();
+	}, [connected, focused]);
 	// Whether the dock is folded, and whether "Other answer…" brought the
 	// composer back: both start over for each new batch of questions.
 	const [questionFolded, setQuestionFolded] = useState(false);
@@ -1880,7 +1887,9 @@ export function ConversationScreen({
 		? composerReady &&
 			!!draft.record.draft.trim() &&
 			!!permitted?.send &&
-			!questionBatch.sending
+			!questionBatch.sending &&
+			// Your text answers against the saved answers, so it waits for them.
+			questionDraft.loaded
 		: command !== null
 			? composerReady &&
 				!(command.command.id === "goal" && !goalCommand && !conversation?.goal) &&
@@ -1928,6 +1937,7 @@ export function ConversationScreen({
 	// dock returns at the next unanswered question and the composer steps
 	// aside again (ruling 14).
 	async function answerWithComposer(batch: AskBatch) {
+		if (!questionDraft.loaded) return;
 		const text = document.getSnapshot().record.draft;
 		const result = answerWithText(
 			batch.questions,
