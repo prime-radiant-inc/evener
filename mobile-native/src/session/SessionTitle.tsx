@@ -42,7 +42,10 @@ export function SessionTitle({
 				// edge the swipe back starts from.
 				.activeOffsetX([-10, 10])
 				.failOffsetY([-10, 10])
-				.onEnd((event) => {
+				// success is false for a pan that failed or that the system
+				// cancelled, which moves nowhere.
+				.onEnd((event, success) => {
+					if (!success) return;
 					const direction = titleSwipeDirection(event.translationX, event.velocityX);
 					if (direction !== null) onSwipeRef.current(direction);
 				}),

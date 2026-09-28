@@ -72,9 +72,12 @@ describe("the Session's nav bar title (spec 8.1)", () => {
 		// It starts only once a drag has gone sideways, so a tap stays the
 		// title's, and a drag that goes up or down first is never a swipe.
 		expect(pan.config).toMatchObject({ activeOffsetX: [-10, 10], failOffsetY: [-10, 10], runOnJS: true });
-		act(() => pan.handlers.onEnd?.({ translationX: -80, velocityX: 0 }));
-		act(() => pan.handlers.onEnd?.({ translationX: 30, velocityX: 900 }));
-		act(() => pan.handlers.onEnd?.({ translationX: 30, velocityX: 100 }));
+		act(() => pan.handlers.onEnd?.({ translationX: -80, velocityX: 0 }, true));
+		act(() => pan.handlers.onEnd?.({ translationX: 30, velocityX: 900 }, true));
+		act(() => pan.handlers.onEnd?.({ translationX: 30, velocityX: 100 }, true));
+		// A pan the system cancelled, or that failed, goes nowhere however far
+		// it went.
+		act(() => pan.handlers.onEnd?.({ translationX: -200, velocityX: -2000 }, false));
 		expect(onSwipe.mock.calls).toEqual([[1], [-1]]);
 		expect(onPress).not.toHaveBeenCalled();
 	});

@@ -2025,13 +2025,13 @@ describe("moving between sessions (spec 8.3, 13.2)", () => {
 		});
 
 		/** Pans the title the screen set last, as far and as fast as given. */
-		function panTitle(translationX: number, velocityX = 0) {
+		function panTitle(translationX: number, velocityX = 0, success = true) {
 			const calls = vi.mocked(navigation.setOptions).mock.calls as [NativeStackNavigationOptions][];
 			const options = calls.map(([options]) => options).findLast((options) => options.headerTitle);
 			if (typeof options?.headerTitle !== "function") throw new Error("no headerTitle");
 			const title = render(<>{options.headerTitle({ children: "Session" })}</>);
 			const pan = title.root.findByType("GestureDetector" as never).props.gesture as PanGestureMock;
-			act(() => pan.handlers.onEnd?.({ translationX, velocityX }));
+			act(() => pan.handlers.onEnd?.({ translationX, velocityX }, success));
 		}
 
 		it("replaces this session with the next one on a pan to the left, sliding in as a push does, marked seen", async () => {
@@ -2080,6 +2080,12 @@ describe("moving between sessions (spec 8.3, 13.2)", () => {
 			expect(renderedText(tree)).not.toContain("Next");
 			panTitle(-80);
 			panTitle(80);
+			expect(navigation.replace).not.toHaveBeenCalled();
+		});
+
+		it("goes nowhere on a pan the system cancelled", async () => {
+			await mount(thread("ref-title", "active"));
+			panTitle(-200, -2000, false);
 			expect(navigation.replace).not.toHaveBeenCalled();
 		});
 	});

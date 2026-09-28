@@ -215,7 +215,7 @@ export function gestureHandlerModuleMock() {
  * end by hand. */
 export interface PanGestureMock {
 	config: Record<string, unknown>;
-	handlers: { onEnd?(event: { translationX: number; velocityX: number }): void };
+	handlers: { onEnd?(event: { translationX: number; velocityX: number }, success: boolean): void };
 }
 
 /** react-native-gesture-handler's GestureDetector and Gesture.Pan for
