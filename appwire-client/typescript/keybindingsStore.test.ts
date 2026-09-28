@@ -1470,21 +1470,26 @@ describe("the checkpointed draft editor", () => {
 
     // The stale first request settling must not clear the second write's
     // claim: saveDraft must stay refused (never issuing a THIRD PATCH)
-    // while the second write is still out. Raced against a bounded timeout
-    // instead of a bare `await` - the bug this guards against is exactly a
-    // saveDraft call slipping past the gate and hanging on a PATCH reply
-    // nothing in this test ever sends.
+    // while the second write is still out. The refusal is a rejected
+    // promise, so it settles within a macrotask; were it to regress and
+    // slip past the gate, it would issue a third PATCH and hang on a reply
+    // nothing in this test ever sends - so `outcome` stays "pending" and
+    // `replies` grows to three. Both assertions settle after one
+    // nextMacrotask, with no dependence on CI load, unlike a wall-clock
+    // timeout.
     replyAt(replies, 0).resolve(payload(4, rules));
     await one;
     const attempt = store.getState().saveDraft(rules);
-    attempt.catch(() => {});
-    const outcome = await Promise.race([
-      attempt.then(
-        () => "resolved",
-        (error: unknown) => `rejected:${error instanceof Error ? error.message : String(error)}`,
-      ),
-      new Promise<string>((resolve) => setTimeout(() => resolve("still pending"), 200)),
-    ]);
+    let outcome = "pending";
+    attempt.then(
+      () => {
+        outcome = "resolved";
+      },
+      (error: unknown) => {
+        outcome = `rejected:${error instanceof Error ? error.message : String(error)}`;
+      },
+    );
+    await nextMacrotask();
     expect(outcome).toBe("rejected:Hub keybindings settings are unavailable.");
     expect(replies).toHaveLength(2);
 

@@ -1,7 +1,7 @@
 // @vitest-environment node
 
 import { describe, expect, it } from "vitest";
-import { createDraftRepository, type DraftPort, discardStoredDraft } from "./draftCheckpointPort";
+import { canonicalJson, createDraftRepository, type DraftPort, discardStoredDraft } from "./draftCheckpointPort";
 import { memoryDraftStorage } from "./testing/draftStorage";
 
 interface Checkpoint {
@@ -380,5 +380,64 @@ describe("memoryDraftStorage", () => {
 
     expect(drafts.storage.replaceIf(undefined, { id: "d1", value: "a" })).toBe(false);
     expect(drafts.stored()).toBeNull();
+  });
+
+  // load() and every real consumer classify BOTH null and undefined as
+  // absent, so every absent check must use the loose compare. The default
+  // parameter turns an explicit `undefined` initial into null, so the only
+  // way this port holds the OTHER absent sentinel is a write of an undefined
+  // value (a JSON store that omits the key, say).
+  const holdingUndefined = () => {
+    const drafts = memoryDraftStorage<Checkpoint>();
+    drafts.storage.save(undefined as unknown as Checkpoint);
+    expect(drafts.storage.load()).toBeUndefined();
+    return drafts;
+  };
+
+  it("insertIfAbsent succeeds when the port holds undefined, the other absent sentinel", () => {
+    const drafts = holdingUndefined();
+
+    expect(drafts.storage.insertIfAbsent({ id: "d1", value: "a" })).toBe(true);
+    expect(drafts.stored()).toEqual({ id: "d1", value: "a" });
+  });
+
+  it("removeIf(undefined) reports false when the port holds undefined, never a false match", () => {
+    const drafts = holdingUndefined();
+
+    expect(drafts.storage.removeIf(undefined)).toBe(false);
+    expect(drafts.stored()).toBeUndefined();
+  });
+
+  it("replaceIf(undefined, ...) reports false when the port holds undefined, never a false match", () => {
+    const drafts = holdingUndefined();
+
+    expect(drafts.storage.replaceIf(undefined, { id: "d1", value: "a" })).toBe(false);
+    expect(drafts.stored()).toBeUndefined();
+  });
+});
+
+describe("canonicalJson", () => {
+  it('returns the string "undefined" for a top-level undefined, never the undefined value', () => {
+    // JSON.stringify(undefined) returns the undefined VALUE, not a string -
+    // which would violate canonicalJson's declared `string` return type and
+    // let a bare canonicalJson(undefined) flow into a byte compare as the
+    // non-string it is.
+    expect(canonicalJson(undefined)).toBe("undefined");
+  });
+
+  it("returns a string for a top-level function or symbol, the other no-text cases", () => {
+    // JSON.stringify returns undefined for these too, so the same contract
+    // violation applies; String() normalizes every one of them to a string.
+    expect(typeof canonicalJson(() => {})).toBe("string");
+    expect(typeof canonicalJson(Symbol("s"))).toBe("string");
+  });
+
+  it("matches JSON.stringify for nested non-serializable values", () => {
+    // A canonical encoding must be stable under a JSON round-trip: a nested
+    // undefined/function/symbol is what JSON.stringify drops (an object key)
+    // or turns into null (an array item), so the canonical form must do the
+    // same rather than leak a non-JSON token like `undefined`.
+    expect(canonicalJson([undefined, () => {}, Symbol("s"), 1, null])).toBe("[null,null,null,1,null]");
+    expect(canonicalJson({ a: undefined, b: () => {}, c: Symbol("s"), d: 1, e: null })).toBe('{"d":1,"e":null}');
   });
 });
