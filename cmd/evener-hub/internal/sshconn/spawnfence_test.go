@@ -16,6 +16,7 @@ import (
 	"testing"
 
 	"primeradiant.com/evener/cmd/evener-hub/internal/hostops"
+	"primeradiant.com/evener/cmd/evener-hub/internal/hostreg"
 )
 
 // fenceTestLog is one ordered log of the fence's steps, shared by the fake
@@ -237,4 +238,26 @@ func TestSpawnScopeCarriesThroughDerivedContexts(t *testing.T) {
 	if _, ok := SpawnScopeFrom(WithSpawnScope(context.Background(), nil)); ok {
 		t.Fatal("a nil scope arms the context")
 	}
+}
+
+// testRestartRecorder wires a restart recorder into m so a restart-only Ensure
+// attempt runs in tests: the scope names a synthetic record (the fake runner
+// spawns nothing, so the store is never written) and the finish is a no-op.
+// Tests that intend the attempt to fail closed leave the hook unwired.
+func testRestartRecorder(t *testing.T, m *Manager) {
+	t.Helper()
+	m.SetEnsureRestartHook(func(hostreg.Host) (*SpawnScope, func(error), error) {
+		return NewSpawnScope("test-restart-record", &fenceFakeStore{log: &fenceTestLog{}}), func(error) {}, nil
+	})
+}
+
+// testDeployRecorder wires a deploy recorder into m so an Ensure-triggered
+// deploy runs in tests: the scope names a synthetic record (the fake runner
+// spawns nothing, so the store is never written) and the finish is a no-op.
+// Tests that intend the attempt to fail closed leave the hook unwired.
+func testDeployRecorder(t *testing.T, m *Manager) {
+	t.Helper()
+	m.SetEnsureDeployHook(func(hostreg.Host) (*SpawnScope, func(error), error) {
+		return NewSpawnScope("test-deploy-record", &fenceFakeStore{log: &fenceTestLog{}}), func(error) {}, nil
+	})
 }

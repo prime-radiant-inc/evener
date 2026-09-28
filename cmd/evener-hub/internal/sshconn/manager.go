@@ -383,11 +383,13 @@ func defaultJitter(d time.Duration) time.Duration {
 // concurrent use.
 type Manager struct {
 	// ensureDeploy is the deploy pipeline's Ensure-deploy recorder (see
-	// SetEnsureDeployHook); nil leaves Ensure-triggered deploys unrecorded.
-	// It is published atomically because Ensure reads it on its hot path.
+	// SetEnsureDeployHook); nil refuses an Ensure-triggered deploy before any
+	// mutating command (§6's durable-record rule). It is published atomically
+	// because Ensure reads it on its hot path.
 	ensureDeploy atomic.Pointer[EnsureDeployHook]
 	// ensureRestart is the restart-only Ensure recorder (see
-	// SetEnsureRestartHook); nil leaves a restart-only attempt unrecorded.
+	// SetEnsureRestartHook); nil refuses a restart-only attempt before any
+	// mutating command.
 	ensureRestart atomic.Pointer[EnsureRestartHook]
 	reg           *hostreg.Registry
 	opts          Options
@@ -1957,22 +1959,28 @@ func (m *Manager) ensureOnce(ctx context.Context, host hostreg.Host, explicit bo
 		// The Ensure-triggered deploy is a durable fenced operation (deploy
 		// pipeline 08b §6): the record carrying its fencing epoch is persisted
 		// before the deploy's first remote write, and the gate hold publishes
-		// the operation so a contender's busy refusal names it. A hook that
-		// cannot persist the record refuses the deploy with nothing launched.
-		if hook := m.ensureDeployHook(); hook != nil {
-			scope, finish, err := hook(host)
-			if err != nil {
-				return nil, err
-			}
-			deployScope, finishEnsureOp = scope, finish
+		// the operation so a contender's busy refusal names it. A Manager with
+		// no recorder wired has no record to persist, so the deploy refuses
+		// here — before any mutating command — rather than running unrecorded
+		// (§6's durable-record rule; the same contract the restart-only arm
+		// holds).
+		hook := m.ensureDeployHook()
+		if hook == nil {
+			return nil, errors.New("sshconn: this Manager has no deploy recorder wired, so an Ensure-triggered deploy performs no mutating SSH command (§6); nothing was launched")
 		}
+		scope, finish, err := hook(host)
+		if err != nil {
+			return nil, err
+		}
+		if scope == nil {
+			return nil, errors.New("sshconn: the deploy recorder returned no durable record, so an Ensure-triggered deploy performs no mutating SSH command (§6); nothing was launched")
+		}
+		deployScope, finishEnsureOp = scope, finish
 		deployCtx, cancelDeploy := context.WithTimeout(ctx, m.opts.deployLimit())
-		if deployScope != nil {
-			// §3: the deploy step's ssh subprocesses are armed into the record
-			// the hook just persisted, so a crash between any pre-spawn intent
-			// and the deploy's completion is convergent at the next boot.
-			deployCtx = WithSpawnScope(deployCtx, deployScope)
-		}
+		// §3: the deploy step's ssh subprocesses are armed into the record the
+		// hook just persisted, so a crash between any pre-spawn intent and the
+		// deploy's completion is convergent at the next boot.
+		deployCtx = WithSpawnScope(deployCtx, deployScope)
 		resolvedTarget, err := m.deploy(deployCtx, host, facts)
 		cancelDeploy()
 		if err != nil {
@@ -2027,14 +2035,21 @@ func (m *Manager) ensureOnce(ctx context.Context, host hostreg.Host, explicit bo
 		// pendingRestart) is its own durable operation (§6: "a reconnect with
 		// no durable record performs no mutating SSH command"): the hook mints
 		// the record under the held gate before the leg's first remote command,
-		// and the record's scope arms the leg below.
-		if hook := m.ensureRestartHook(); hook != nil {
-			scope, finish, err := hook(host)
-			if err != nil {
-				return nil, err
-			}
-			restartScope, finishEnsureOp = scope, finish
+		// and the record's scope arms the leg below. With no recorder wired
+		// there is no record and no scope, so the attempt refuses here — before
+		// any mutating command — rather than restarting unrecorded.
+		hook := m.ensureRestartHook()
+		if hook == nil {
+			return nil, errors.New("sshconn: this Manager has no restart recorder wired, so a restart-only Ensure attempt performs no mutating SSH command (§6); nothing was launched")
 		}
+		scope, finish, err := hook(host)
+		if err != nil {
+			return nil, err
+		}
+		if scope == nil {
+			return nil, errors.New("sshconn: the restart recorder returned no durable record, so a restart-only Ensure attempt performs no mutating SSH command (§6); nothing was launched")
+		}
+		restartScope, finishEnsureOp = scope, finish
 	}
 	if restart {
 		m.stateEvent(host.Name, StateRestarting)
@@ -2044,17 +2059,13 @@ func (m *Manager) ensureOnce(ctx context.Context, host hostreg.Host, explicit bo
 		// record the hook above minted (§6's "a reconnect with no durable record
 		// performs no mutating SSH command"). The leg's ssh subprocesses carry
 		// that record's scope, so a crash mid-restart is convergent at the next
-		// boot instead of leaving an unowned ssh child. The one case left
-		// unarmed is a Manager with no restart hook wired at all (tests and
-		// embedders that configure no operation store): production always wires
-		// it, and a wired hook that cannot persist its record refuses the
-		// attempt above instead of running the leg unrecorded.
+		// boot instead of leaving an unowned ssh child. Both arms refuse when
+		// their recorder is unwired or returns no record, so there is no
+		// restart leg that runs unarmed by omission.
 		if restartScope == nil {
 			restartScope = deployScope
 		}
-		if restartScope != nil {
-			restartCtx = WithSpawnScope(restartCtx, restartScope)
-		}
+		restartCtx = WithSpawnScope(restartCtx, restartScope)
 		var restartErr error
 		if pending := m.pendingRestart(host.Name); pending.command != "" && !runningKnown {
 			// A previous restart killed the old hub and left no listener. There is
@@ -3175,14 +3186,17 @@ func (m *Manager) HoldAs(host string, holder hostops.Holder) error {
 // carrying the attempt's fencing epoch and returns the finish the leg's
 // outcome is recorded through, plus the spawn scope (crash-fencing §3) the
 // leg's ssh subprocesses are armed under. A non-nil error means no durable
-// record could be persisted, so nothing may be restarted.
+// record could be persisted, so nothing may be restarted; with no hook wired
+// at all, the attempt is refused for the same reason.
 type EnsureRestartHook func(host hostreg.Host) (scope *SpawnScope, finish func(err error), err error)
 
 // SetEnsureRestartHook wires the deploy pipeline's restart recorder into this
 // Manager's Ensure path. It is a setter for the same reason
 // SetEnsureDeployHook is: the hub's host surface is constructed after the
-// Manager. A nil hook clears it, and a nil hook leaves a restart-only Ensure
-// attempt unrecorded (and therefore unarmed) — production always wires it.
+// Manager. A nil hook clears it; an unwired recorder refuses a restart-only
+// Ensure attempt before any mutating command (§6's durable-record rule), so
+// production always wires it (newHubHostManager wires both recorders in one
+// block, and that is the only production construction).
 func (m *Manager) SetEnsureRestartHook(hook EnsureRestartHook) {
 	if hook == nil {
 		m.ensureRestart.Store(nil)
@@ -3207,14 +3221,17 @@ func (m *Manager) ensureRestartHook() EnsureRestartHook {
 // fencing §3) the deploy step's ssh subprocesses are armed under — the record
 // the hook persisted is the record their pre-spawn intents bind to, so a crash
 // mid-deploy leaves state the boot reap converges. A non-nil error means no
-// durable record could be persisted, so nothing may be launched.
+// durable record could be persisted, so nothing may be launched; with no hook
+// wired at all, the deploy is refused for the same reason.
 type EnsureDeployHook func(host hostreg.Host) (scope *SpawnScope, finish func(err error), err error)
 
 // SetEnsureDeployHook wires the deploy pipeline's recorder into this Manager's
 // Ensure path. It is a setter rather than an Options field because the hub's
 // host surface (which owns the operation store and the gate's holder
 // publication) is constructed after the Manager; the wiring runs before the
-// Manager serves any request. A nil hook clears it.
+// Manager serves any request. A nil hook clears it; an unwired recorder
+// refuses an Ensure-triggered deploy before any mutating command (§6's
+// durable-record rule), so production always wires it.
 func (m *Manager) SetEnsureDeployHook(hook EnsureDeployHook) {
 	if hook == nil {
 		m.ensureDeploy.Store(nil)

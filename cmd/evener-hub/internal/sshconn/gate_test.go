@@ -725,3 +725,74 @@ func TestEnsureNeverInheritsAnOuterSpawnScope(t *testing.T) {
 		t.Fatalf("record = %+v, want complete", record)
 	}
 }
+
+// TestEnsureRestartOnlyRefusesWithoutARecorder pins §6's rule at the restart
+// leg: a restart-only attempt with no durable-record hook wired performs no
+// mutating SSH command. It refuses before the restart, while the read-only
+// decision probes that ran first (§6 allows probing and staging) are not the
+// refusal's business.
+func TestEnsureRestartOnlyRefusesWithoutARecorder(t *testing.T) {
+	host := hostreg.Host{Name: "alpha", SSH: "alpha.example", EvenerPath: "/opt/evener/bin/evener"}
+	fr := deployRunner(t,
+		func(int) ([]byte, error) {
+			return []byte(`{"protocol":"` + appwire.ProtocolVersion + `","version":"newsha","launch_flags":["api-log"]}`), nil
+		},
+		func(int) ([]byte, error) {
+			return []byte(`{"version":"oldsha","mobile_api_version":1,"hub_addr":"127.0.0.1:9180"}`), nil
+		},
+	)
+	var commands []string
+	innerRun := fr.runFn
+	fr.runFn = func(ctx context.Context, argv []string, stdin io.Reader) ([]byte, error) {
+		commands = append(commands, strings.Join(argv, " "))
+		return innerRun(ctx, argv, stdin)
+	}
+	m := newTestManager(t, testRegistry(t, host), fr, Options{controllerVersionOverride: "newsha"})
+
+	_, err := m.Ensure(context.Background(), "alpha")
+	if err == nil || !strings.Contains(err.Error(), "no restart recorder wired") {
+		t.Fatalf("Ensure error = %v, want the no-recorder refusal", err)
+	}
+	for _, command := range commands {
+		if strings.Contains(command, "systemctl restart") {
+			t.Fatalf("the refused attempt ran a mutating restart anyway: %s", command)
+		}
+	}
+	if len(commands) == 0 {
+		t.Fatal("the attempt ran no commands at all: the refusal must land at the leg, after the read-only probes §6 allows")
+	}
+}
+
+// TestEnsureDeployRefusesWithoutARecorder pins the durable-record contract on
+// the deploy arm, the twin of the restart-only refusal: a Manager with no
+// deploy recorder wired performs no mutating SSH command (§6), so the attempt
+// refuses before the push while the read-only decision probes that ran first
+// are not the refusal's business.
+func TestEnsureDeployRefusesWithoutARecorder(t *testing.T) {
+	host := hostreg.Host{Name: "alpha", SSH: "alpha.example", EvenerPath: "/opt/evener/bin/evener"}
+	fr := deployRunner(t,
+		func(int) ([]byte, error) {
+			return []byte(`{"protocol":"` + appwire.ProtocolVersion + `","version":"oldsha","launch_flags":["api-log"]}`), nil
+		},
+		func(int) ([]byte, error) {
+			return []byte(`{"version":"oldsha","mobile_api_version":1,"hub_addr":"127.0.0.1:9180"}`), nil
+		},
+	)
+	var commands []string
+	innerRun := fr.runFn
+	fr.runFn = func(ctx context.Context, argv []string, stdin io.Reader) ([]byte, error) {
+		commands = append(commands, strings.Join(argv, " "))
+		return innerRun(ctx, argv, stdin)
+	}
+	m := newTestManager(t, testRegistry(t, host), fr, Options{controllerVersionOverride: "newsha", BuildBinary: writeStageBinary})
+
+	_, err := m.Ensure(context.Background(), "alpha")
+	if err == nil || !strings.Contains(err.Error(), "no deploy recorder wired") {
+		t.Fatalf("Ensure error = %v, want the no-recorder refusal", err)
+	}
+	for _, command := range commands {
+		if strings.Contains(command, "cat >") || strings.Contains(command, "nohup") {
+			t.Fatalf("the refused attempt ran a mutating command anyway: %s", command)
+		}
+	}
+}
