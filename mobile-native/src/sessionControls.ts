@@ -189,13 +189,15 @@ export class SessionControls {
 			}
 			if (this.disposed || !this.isCurrent()) return false;
 			if (kind === "shutdown" || kind === "forceStop") {
+				// A shutdown narrates nothing here: the session's own toast
+				// confirms it and the screen stays (ruling 19).
 				this.publish({
 					pending: null,
 					error: null,
 					notice:
 						kind === "forceStop"
 							? "Runtime stopped. Saved history is available to resume."
-							: "Runtime stop requested.",
+							: null,
 				});
 				this.stopped();
 				return true;

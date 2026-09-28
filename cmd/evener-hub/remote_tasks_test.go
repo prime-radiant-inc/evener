@@ -107,6 +107,9 @@ func TestLocalDaemonEntriesFromRosterAliasCarriesOnlyItsOwnFields(t *testing.T) 
 	if !reflect.DeepEqual(entries[0].Failure, live.Failure) {
 		t.Fatalf("root entry failure = %+v, want %+v", entries[0].Failure, live.Failure)
 	}
+	if entries[0].LastMessage != live.LastMessage {
+		t.Fatalf("root entry last message = %q, want %q", entries[0].LastMessage, live.LastMessage)
+	}
 	want := appsource.LocalDaemonEntry{
 		Entry:             rootEntry,
 		SessionID:         "sess_child",

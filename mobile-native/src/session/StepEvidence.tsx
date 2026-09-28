@@ -11,7 +11,6 @@ import { TranscriptImages } from "../TranscriptImages";
 import type { RunStep } from "../timeline";
 import { useColors, useTextScale } from "../ui";
 import { EVIDENCE_PREVIEW_LINES, type Evidence } from "./evidence";
-import { useStepEvidence } from "./useStepEvidence";
 import { LogViewer } from "./LogViewer";
 
 type Palette = ReturnType<typeof useColors>["palette"];
@@ -140,8 +139,9 @@ function EvidenceView({ evidence, title }: { evidence: Evidence; title: string }
 	}
 }
 
-export function StepEvidence({ step, hubId }: { step: RunStep; hubId: string }) {
-	const evidence = useStepEvidence(step);
+/** Draws a step's evidence. Its row works the evidence out (useStepEvidence),
+ * since the row also needs it to decide whether the step opens at all. */
+export function StepEvidence({ step, evidence, hubId }: { step: RunStep; evidence: readonly Evidence[]; hubId: string }) {
 	const title = step.detail.description || step.label;
 	return (
 		<View style={{ gap: 8 }}>

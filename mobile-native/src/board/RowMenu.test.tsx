@@ -207,6 +207,7 @@ describe("the row's long press, with the sheet", () => {
 					usual={{}}
 					hostLabel={hostLabel}
 					hasDraft={false}
+					msSinceRead={null}
 					now={Date.UTC(2026, 8, 26, 12, 0)}
 					onOpen={() => {}}
 				/>

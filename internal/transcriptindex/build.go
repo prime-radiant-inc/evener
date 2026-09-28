@@ -812,10 +812,22 @@ func (b *builder) addContributor(slot uint64, c contributor, version uint64) err
 	}
 	record.Completer = c
 	record.Version = version
-	if err := b.x.items.write(slot, encodeItem(record)); err != nil {
+	// Logged before the write, like stampTurn: an extension interrupted
+	// between the two must leave a leftover update-log row behind it, or a
+	// later CatchUpTo for a length short of this entry could truncate the
+	// log away and find nothing telling it the committed slot below was
+	// already overwritten (transcriptindex.unsafeLeftoverUpdate reads
+	// exactly that row to force a rebuild rather than leak the overwrite
+	// past Window.Length).
+	if err := b.logUpdate(updatedItem, slot, c.Offset); err != nil {
 		return err
 	}
-	return b.logUpdate(updatedItem, slot, c.Offset)
+	if testKillAfterItemUpdateLog != nil {
+		if err := testKillAfterItemUpdateLog(); err != nil {
+			return err
+		}
+	}
+	return b.x.items.write(slot, encodeItem(record))
 }
 
 // logUpdate records an in-place update, so a reader holding an older snapshot

@@ -102,8 +102,34 @@ export function nativeModuleMock() {
 	const KeyboardAvoidingView = (props: { children?: ReactNode }) =>
 		createElement("KeyboardAvoidingView", null, props.children);
 
+	// Animated keeps its values observable: a Value holds the number the
+	// screen last drove it to, and timing lands on its target at once, so a
+	// test reads where a transform ended up from the rendered style.
+	class AnimatedValue {
+		constructor(public value: number) {}
+		setValue(value: number) {
+			this.value = value;
+		}
+	}
+	const Animated = {
+		View: "Animated.View",
+		Value: AnimatedValue,
+		timing: (value: AnimatedValue, config: { toValue: number }) => ({
+			start: (done?: (result: { finished: boolean }) => void) => {
+				value.setValue(config.toValue);
+				done?.({ finished: true });
+			},
+		}),
+	};
+
 	return {
+		AccessibilityInfo: {
+			announceForAccessibility: () => {},
+			isReduceMotionEnabled: () => Promise.resolve(false),
+			addEventListener: () => ({ remove: () => {} }),
+		},
 		ActivityIndicator: "ActivityIndicator",
+		Animated,
 		Alert: { alert: recordAlert },
 		FlatList,
 		KeyboardAvoidingView,

@@ -244,10 +244,10 @@ export function forgetBoard(storage: SyncStringStorage, hubId: string): void {
 			// Keep trying the other keys: a storage failure orphans this one (hub
 			// ids are fresh UUIDs, never reused, so nothing reads it again), but
 			// the caller must still hear about it. ConnectionProvider's removeHub
-			// cleanup runs this last, alongside cleanups that surface their own
-			// storage failures the same way, so rethrowing here shows the user
-			// the same "could not be deleted" message instead of a silently
-			// incomplete removal.
+			// runs this alongside other cleanups that surface their own storage
+			// failures the same way, so rethrowing here shows the user the same
+			// "could not be deleted" message instead of a silently incomplete
+			// removal.
 			failed = true;
 		}
 	if (failed) throw new Error("forgetBoard: could not remove board memory from storage");

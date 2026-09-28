@@ -1,14 +1,26 @@
 import {
 	errorText,
+	humanizeState,
 	type NavigationPinSectionDescriptor,
 	type NavigationProjectSummary,
 	type NavigationSessionSummary,
+	quietState,
 	type SearchResult,
 } from "@evener/appwire-client";
 import { useFocusEffect, useIsFocused } from "@react-navigation/native";
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
 import { SymbolView } from "expo-symbols";
-import { type ReactNode, type RefObject, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import {
+	type ReactNode,
+	type RefObject,
+	useCallback,
+	useEffect,
+	useMemo,
+	useReducer,
+	useRef,
+	useState,
+	useSyncExternalStore,
+} from "react";
 import {
 	ActionSheetIOS,
 	Alert,
@@ -30,6 +42,7 @@ import { getNativeMutationRuntime } from "../nativeMutationRuntime";
 import { drafts } from "../nativeDrafts";
 import type { Routes } from "../screens";
 import { sheetKey, useProvideSheetHost } from "../sheet/sheetHosts";
+import { useScreenInFront } from "../sheet/useScreenInFront";
 import { Toast, type ToastController, useToast } from "../Toast";
 import { Action, useColors, useTextScale } from "../ui";
 import {
@@ -45,13 +58,14 @@ import {
 	summaryText,
 	usualPlace,
 } from "./attention";
+import { ACTIVITY_POLL_MS, ActivityPoll, isFreshRead } from "./activityPoll";
 import type { OrganizeBy, SeenMarkers } from "./boardMemory";
+import { createSearchController, type SearchScope } from "./boardSearch";
 import { BoardNotices, NoticeRow } from "./BoardNotices";
 import { BandHeader, FoldChevron } from "./BoardRow";
 import { BoardRows, type RowContext } from "./BoardRows";
 import { BoardToolbar } from "./BoardToolbar";
 import { type BoardController, type BoardSnapshot, createBoardController } from "./boardData";
-import { createSearchController, type SearchScope } from "./boardSearch";
 import { BoardStops, stopToast } from "./boardStops";
 import { BoardSeen, type HubSeenMarks, hubSeenMarks } from "./hubSeen";
 import { foldedSections, organizeByPreference, recentSearches, seenMarkers } from "./nativeBoardMemory";
@@ -69,6 +83,7 @@ import {
 	SECTION_FOLDS,
 } from "./projectTree";
 import { projectName, ProjectSectionHeader, ProjectTreeRow } from "./ProjectTreeRow";
+import { fleetMinutes } from "./pulse";
 import { PulseMeter } from "./PulseMeter";
 import {
 	archivingSessionId,
@@ -100,20 +115,42 @@ type MoreItem = Extract<ProjectTreeItem, { kind: "more" | "moreProjects" }>;
 
 /** Home (spec 7.1): every live session ordered by who needs you, then the
  * user's pinned categories, projects and archive. */
-export function BoardScreen({ navigation }: Props) {
+export function BoardScreen({ navigation, route }: Props) {
 	const { activeProfile } = useConnection();
 	const { palette } = useColors();
 	if (!activeProfile) return <View style={{ flex: 1, backgroundColor: palette.page }} />;
-	return <Board key={activeProfile.id} hubId={activeProfile.id} hubName={activeProfile.name} navigation={navigation} />;
+	return (
+		<Board
+			key={activeProfile.id}
+			hubId={activeProfile.id}
+			hubName={activeProfile.name}
+			navigation={navigation}
+			routeKey={route.key}
+		/>
+	);
 }
 
-function Board({ hubId, hubName, navigation }: { hubId: string; hubName: string; navigation: Navigation }) {
+function Board({
+	hubId,
+	hubName,
+	navigation,
+	routeKey,
+}: {
+	hubId: string;
+	hubName: string;
+	navigation: Navigation;
+	routeKey: string;
+}) {
 	const { client, state, fatal, activeProfile } = useConnection();
 	const { palette } = useColors();
 	const connected = state === "ready";
 	// This Board's own hub is the connected one, so a hub write may go out.
 	const actionsConnected = connected && activeProfile?.id === hubId;
 	const focused = useIsFocused();
+	// Activity keeps polling while only a sheet covers the Board: the sheet
+	// is part of the screen under it.
+	const inFront = useScreenInFront(routeKey);
+	const { activityOf, msSinceRead, revision: activityRevision } = useActivityPoll(client, connected, inFront);
 	const [board] = useState(createBoardController);
 	useEffect(() => () => board.dispose(), [board]);
 	const snapshot = useSyncExternalStore(board.subscribe, board.getSnapshot);
@@ -153,9 +190,24 @@ function Board({ hubId, hubName, navigation }: { hubId: string; hubName: string;
 	useReadRetry(board, connected && focused ? client : null, snapshot);
 
 	const bands = useMemo(
-		() => liveBands(snapshot.live.rows, snapshot.needsYou.rows, (row) => seen.isSeen(row)),
+		() =>
+			liveBands(
+				snapshot.live.rows,
+				snapshot.needsYou.rows,
+				(row) => seen.isSeen(row),
+				(row) => {
+					const activity = activityOf(row.ref);
+					return activity ? quietState(activity, msSinceRead ?? 0)?.state === "stuck" : false;
+				},
+			),
 		// The revisions re-run isSeen after a mark, a pruned mark or first run.
-		[snapshot.live.rows, snapshot.needsYou.rows, seen, seenRevision, hubSeenRevision],
+		// activityRevision re-runs isStuck after each read, and activityOf
+		// changes when the connection drops or returns, or the read goes
+		// stale. msSinceRead is left out on purpose: it changes on every
+		// render, so it would re-sort Working every time, and a row's place
+		// only needs to be as fresh as the last read (its why line reads
+		// msSinceRead live).
+		[snapshot.live.rows, snapshot.needsYou.rows, seen, seenRevision, hubSeenRevision, activityOf, activityRevision],
 	);
 	useFirstRun(board, markers, snapshot, focused);
 
@@ -396,6 +448,8 @@ function Board({ hubId, hubName, navigation }: { hubId: string; hubName: string;
 		now,
 		onOpen: openSession,
 		draftRefs,
+		activityOf,
+		msSinceRead,
 		swipes: (item, archived) =>
 			rowSwipes(item, rowContext(archived), archivingId, (action) =>
 				action === "more" ? openRowMenu(item, archived) : runRowAction(item, action),
@@ -418,6 +472,12 @@ function Board({ hubId, hubName, navigation }: { hubId: string; hubName: string;
 			</View>
 		) : null;
 	const summary = liveSummary(bands);
+	// The fleet meter sums the working sessions the poll has read so far, and
+	// stays still until it has read one.
+	const workingMinutes = bands.working
+		.map((item) => activityOf(item.row.ref)?.minutes)
+		.filter((minutes): minutes is number[] => minutes !== undefined);
+	const fleetPerMinute = workingMinutes.length ? fleetMinutes(workingMinutes) : undefined;
 
 	// Projects (or Hosts), Test runs and Archived, after the pinned categories.
 	const hostSources = sources ?? [];
@@ -584,7 +644,9 @@ function Board({ hubId, hubName, navigation }: { hubId: string; hubName: string;
 	else
 		live = (
 			<>
-				{summary ? <SummaryLine summary={summary} connected={connected} onJump={jumpToBand} /> : null}
+				{summary ? (
+					<SummaryLine summary={summary} connected={connected} perMinute={fleetPerMinute} onJump={jumpToBand} />
+				) : null}
 				{band("needsYou", false)}
 				{band("finished", false)}
 				{band("working", true)}
@@ -1025,6 +1087,51 @@ function useFirstRun(board: BoardController, markers: SeenMarkers, snapshot: Boa
 	}, [board, markers, snapshot, focused]);
 }
 
+const noSubscription = () => () => {};
+const noRevision = () => 0;
+
+/** S5's activity for every live session (activityPoll.ts), polled while
+ * connected and in front. A poll is bound to the client it was made with, so
+ * each client gets a fresh one, and there is none without a client. The
+ * revision changes whenever the poll's report does: a read lands, or the hub
+ * turns out to predate S5.
+ *
+ * The underlying client survives a reconnect (hubConnection.ts), so a poll
+ * that stops on disconnect still holds its last read, and a hub that reports
+ * ready but has stopped delivering reads leaves the same stale data behind
+ * without ever disconnecting at all - reading either as current would let a
+ * read merely aging past isFreshRead's threshold read as "stuck", a false
+ * alarm about the connection or the hub rather than the session (Jesse's
+ * ruling). Gating the RETURNED reading on `connected` AND freshness, and
+ * never handing back the poll itself, means no caller can read around this:
+ * every row, its meter and the Working order all fall back to their pre-S5
+ * appearance the moment either one fails, and agree with each other since
+ * there is only the one gate. Nothing re-renders the Board when a read merely
+ * ages, so while a fresh read is on screen the recheck below re-renders at
+ * the polling cadence, dropping the read within one interval of its going
+ * stale, whatever becomes of the poll meanwhile. With no fresh read on screen
+ * there is nothing to expire, so it doesn't run: not before the first read
+ * lands, not while reads keep failing, and never on a hub that predates S5. */
+function useActivityPoll(client: ConversationClientLike | null, connected: boolean, inFront: boolean) {
+	const poll = useMemo(() => (client ? new ActivityPoll(client) : null), [client]);
+	const revision = useSyncExternalStore(poll?.subscribe ?? noSubscription, poll?.getRevision ?? noRevision);
+	useEffect(() => {
+		if (!poll || !connected || !inFront) return;
+		poll.start();
+		return () => poll.stop();
+	}, [poll, connected, inFront]);
+	const msSinceRead = poll?.msSinceRead() ?? null;
+	const reading = connected && isFreshRead(msSinceRead) ? poll : null;
+	const [, recheck] = useReducer((n: number) => n + 1, 0);
+	useEffect(() => {
+		if (!reading || !inFront) return;
+		const timer = setInterval(recheck, ACTIVITY_POLL_MS);
+		return () => clearInterval(timer);
+	}, [reading, inFront]);
+	const activityOf = useCallback((ref: string) => reading?.activity(ref), [reading]);
+	return { revision, activityOf, msSinceRead: reading ? msSinceRead : null };
+}
+
 /** The hub's seen marks (S4): marks go out whenever the connection is ready,
  * which resends any a dropped connection lost and sends those made while
  * offline, and each pending mark is pruned once a row the Board has loaded,
@@ -1286,10 +1393,13 @@ function Chips({ chips }: { chips: ChipProps[] }) {
 function SummaryLine({
 	summary,
 	connected,
+	perMinute,
 	onJump,
 }: {
 	summary: LiveSummary;
 	connected: boolean;
+	/** The fleet meter's per-minute counts; absent, it shows its still fallback. */
+	perMinute?: readonly number[];
 	onJump: (band: Band) => void;
 }) {
 	const { palette } = useColors();
@@ -1329,7 +1439,7 @@ function SummaryLine({
 							opacity: pressed ? 0.6 : 1,
 						})}
 					>
-						{band === "working" ? <PulseMeter tone={connected ? "alive" : "gray"} /> : null}
+						{band === "working" ? <PulseMeter tone={connected ? "alive" : "gray"} perMinute={perMinute} /> : null}
 						<Text
 							allowFontScaling={Platform.OS !== "ios"}
 							style={{

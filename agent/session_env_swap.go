@@ -70,7 +70,7 @@ func (s *Session) swapEnvAndRefresh(next *execenv.LocalExecutionEnvironment, rec
 		return err
 	}
 	// Step 0 — move the session's scratch onto next BEFORE any command runs on
-	// it: the git snapshot and the pre-warm below spawn through next, and a
+	// it: the git snapshot below spawns through next, and a
 	// command is what mints a scratch on an environment that owns none. Adopting
 	// after them would find next already owning a fresh one, keep it, and retain
 	// the session's original — a silently changed $EVENER_SCRATCH_DIR and an

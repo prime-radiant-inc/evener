@@ -72,6 +72,8 @@ function Category({ hub, section = release, page, onMenu = null, changing = fals
 		now: NOW,
 		onOpen,
 		draftRefs: new Set(),
+		activityOf: () => undefined,
+		msSinceRead: null,
 		swipes: () => ({ trailing: [], dimmed: false }),
 		menu: () => ({ actions: [], onOpenSession: () => {}, onAction: () => {}, onOpenSheet: () => {} }),
 	};

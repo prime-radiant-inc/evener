@@ -1,6 +1,7 @@
 // The Board's swipeable row lists. They live apart from BoardRow.tsx so a
 // module that uses only a row's pieces (headers, hairlines, the row itself)
 // never loads react-native-gesture-handler.
+import type { SessionActivity } from "@evener/appwire-client";
 import type { ReactElement } from "react";
 import { View } from "react-native";
 import type { ClassifiedRow } from "./attention";
@@ -10,12 +11,14 @@ import type { RowSwipes } from "./rowSwipes";
 import { SwipeRow, swipeAccessibility } from "./SwipeRow";
 
 /** What every row in one of the Board's lists shares. */
-export type RowContext = Pick<BoardRowProps, "connected" | "usual" | "hostLabel" | "now" | "onOpen"> & {
+export type RowContext = Pick<BoardRowProps, "connected" | "usual" | "hostLabel" | "msSinceRead" | "now" | "onOpen"> & {
 	draftRefs: ReadonlySet<string>;
 	/** A row's swipes, by whether it sits in an archived tier. */
 	swipes: (item: ClassifiedRow, archived: boolean) => RowSwipes;
 	/** A row's long-press menu, by whether it sits in an archived tier. */
 	menu: (item: ClassifiedRow, archived: boolean) => Omit<RowMenuProps, "item" | "hostLabel" | "children">;
+	/** Each session's latest activity read (S5), by ref. */
+	activityOf: (ref: string) => SessionActivity | undefined;
 };
 
 /** A list of Board rows, each one swipeable and with a long-press menu,
@@ -34,7 +37,7 @@ export function BoardRows({
 	archived?: boolean;
 	context: RowContext;
 }): ReactElement {
-	const { draftRefs, swipes, menu, ...shared } = context;
+	const { draftRefs, swipes, menu, activityOf, ...shared } = context;
 	return (
 		<>
 			{items.map((item, index) => {
@@ -49,6 +52,7 @@ export function BoardRows({
 									variant={variant}
 									moving={moving}
 									hasDraft={draftRefs.has(item.row.ref)}
+									activity={activityOf(item.row.ref)}
 									dimmed={dimmed}
 									{...swipeAccessibility(leading, trailing)}
 									{...shared}

@@ -116,6 +116,10 @@ type LiveEntry struct {
 	// the hub's seen marker, so rosterFingerprint hashes it: a turn that starts
 	// and ends between two probes leaves Status unchanged and moves only this.
 	LastTurnEndedAt time.Time
+	// LastMessage is the opening of the session's last agent message, from its
+	// probe (S1d): a Finished row's why line. rosterFingerprint hashes it: a
+	// message can land while the status and the turn end hold still.
+	LastMessage string
 }
 
 // ProbeResult is the dynamic session state returned by a daemon liveness probe.
@@ -164,6 +168,9 @@ type ProbeResult struct {
 	// LastTurnEndedAt is when the listed root's last turn ended (S4); zero from
 	// a daemon that predates it, or before any turn has ended.
 	LastTurnEndedAt time.Time
+	// LastMessage mirrors LiveEntry.LastMessage: the opening of the listed
+	// root's last agent message (S1d), empty from a daemon that predates it.
+	LastMessage string
 	// ProtocolMismatch: the endpoint answered, but as a daemon this hub cannot
 	// talk to (restart required). Such an answer names no session of its own,
 	// so it does not vouch for the entry's PID the way a bound answer does.
@@ -629,6 +636,10 @@ func rosterFingerprint(bySess map[string]LiveEntry) uint64 {
 		// A turn that starts and ends between two probes leaves Status where it
 		// was and moves only this, and it turns the row Finished (S4).
 		_, _ = h.Write([]byte(strconv.FormatInt(UnixMilliseconds(bySess[id].LastTurnEndedAt), 10)))
+		_, _ = h.Write([]byte{0})
+		// A Finished row shows its last message, which can land while the
+		// status and the turn end hold still (S1d).
+		_, _ = h.Write([]byte(bySess[id].LastMessage))
 	}
 	return h.Sum64()
 }
@@ -1430,6 +1441,10 @@ func (r *Roster) ResidentEntries() []ResidentEntry {
 // with the prober's result, and a field added to both types is copied in one
 // place.
 func liveEntryFromProbe(e rendezvous.Entry, result ProbeResult) LiveEntry {
+	// CloneLiveEntry deep-copies the whole literal below before it returns, so
+	// a field assigned straight from result (PendingEscalations, Watches, and
+	// so on) is not aliasing the probe's copy: RoboRev has twice flagged this
+	// function on that mistaken reading.
 	return CloneLiveEntry(LiveEntry{
 		Entry:                 e,
 		SessionID:             result.SessionID,
@@ -1454,6 +1469,7 @@ func liveEntryFromProbe(e rendezvous.Entry, result ProbeResult) LiveEntry {
 		Activity:              result.Activity,
 		Subagents:             result.Subagents,
 		LastTurnEndedAt:       result.LastTurnEndedAt,
+		LastMessage:           result.LastMessage,
 	})
 }
 
@@ -1519,6 +1535,7 @@ func (r *Roster) ReadSpawnedThread(ctx context.Context, entry rendezvous.Entry, 
 		PendingEscalations: root.Evener.PendingEscalations,
 		PendingQuestion:    root.Evener.PendingQuestion,
 		Failure:            root.Evener.Failure,
+		LastMessage:        root.Evener.LastMessage,
 		RunningJobs:        runningJobs, CompletedJobs: completedJobs,
 		Watches: diagnosticsWatches(root.Evener.Diagnostics),
 		Tasks:   root.Evener.Tasks,

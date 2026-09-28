@@ -115,6 +115,10 @@ type LocalDaemonEntry struct {
 	// carries it into appwire.EvenerThread.LastTurnEndedAt so a controller
 	// reading this hub can tell Finished from Idle. A read-only alias has none.
 	LastTurnEndedAt int64
+	// LastMessage mirrors hubcore.LiveEntry.LastMessage: the opening of the
+	// root's last agent message (S1d). threadFromEntry carries it into
+	// appwire.EvenerThread.LastMessage. A read-only alias has none.
+	LastMessage string
 	// Tasks mirrors hubcore.LiveEntry.Tasks: the root's task-list progress
 	// (S13b). threadFromEntry carries a copy into appwire.EvenerThread.Tasks,
 	// so a controller hub shows a remote session's task line. nil means the
@@ -1175,6 +1179,7 @@ func (s *LocalDaemonSource) threadFromEntry(item LocalDaemonEntry) appwire.Threa
 			Failure:            appwire.CloneThreadFailure(item.Failure),
 			PendingEscalations: append([]appwire.SandboxEscalationRequested(nil), item.PendingEscalations...),
 			LastTurnEndedAt:    item.LastTurnEndedAt,
+			LastMessage:        item.LastMessage,
 			Tasks:              appwire.CloneTaskAggregate(item.Tasks),
 		},
 		Status: appwire.ThreadStatus{Type: status},
