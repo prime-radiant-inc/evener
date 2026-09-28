@@ -10,6 +10,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -1649,5 +1650,300 @@ func TestHostTeardownRecoverRefusalDoesNotWedgeTheName(t *testing.T) {
 	}
 	if retry.HostTeardownRetryCompleteRemoved == nil {
 		t.Fatalf("retry = %+v, want the teardown-complete arm", retry)
+	}
+}
+
+// TestHostTeardownRetryRetiresTheRemovedHostsDerivedState pins roborev's Medium:
+// a removal whose teardown failed at the commit point skipped the finish phase's
+// derived-state drop, and `teardown-retry` was the only path to completion —
+// without the drop, the removed host's source registration and cached session
+// rows outlived the removal, and `sourceOnline`'s fail-open for an unregistered
+// source kept rendering its sessions as live until a restart.
+func TestHostTeardownRetryRetiresTheRemovedHostsDerivedState(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "hub.toml")
+	if err := writeHubTOMLHosts(configPath, []hostreg.Host{{Name: "side", SSH: "side.example"}}); err != nil {
+		t.Fatalf("seed hub.toml: %v", err)
+	}
+	cfg, err := LoadConfig(configPath)
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	hosts, err := hostreg.New(hostRegistryEntries(cfg))
+	if err != nil {
+		t.Fatalf("hostreg.New: %v", err)
+	}
+	sources := appsource.NewRegistry()
+	cache := &hubcore.RemoteThreadCache{}
+	var forgotten []string
+	m := newHubHostManager(sources, nil, hubcore.WebConfig{RemoteThreadCache: cache}, configPath, hosts, nil)
+	m.cfg.forgetLastGoodThreads = func(sourceID string) { forgotten = append(forgotten, sourceID) }
+	// The seeded host's derived state, exactly as a running hub holds it: a
+	// source registration, its cache generation, a name-keyed attach record, and
+	// a retained last-known-good list.
+	entry, ok := m.cfg.hosts.Get("side")
+	if !ok {
+		t.Fatal("fixture lost the host")
+	}
+	m.registerSource(entry)
+	m.observeEvent(sshconn.Event{Host: "side", Kind: sshconn.EventState, State: sshconn.StatePreflighting})
+	if _, ok := sources.Source("side"); !ok {
+		t.Fatal("the host has no source registration to retire")
+	}
+	if _, ok := cache.SourceGeneration("side"); !ok {
+		t.Fatal("the host's source has no cache generation to retire")
+	}
+	m.cfg.state.mu.Lock()
+	_, hasRecord := m.cfg.state.records["side"]
+	m.cfg.state.mu.Unlock()
+	if !hasRecord {
+		t.Fatal("the host has no attach record to retire")
+	}
+	// The removal's teardown fails at the commit point, so the finish phase's
+	// drop never runs.
+	m.testOnlyTeardown = func(context.Context, string) error { return errors.New("injected teardown failure") }
+	result, err := m.RemoveResult(context.Background(), removeRequest(t, m, "side"))
+	if err != nil {
+		t.Fatalf("Remove = %v", err)
+	}
+	arm := result.HostMutationTeardownFailureRemoved
+	if arm == nil {
+		t.Fatalf("Remove = %+v, want the teardown-failure arm", result)
+	}
+	m.testOnlyTeardown = nil
+
+	// The retry completes the removal, and the name's derived state goes with it.
+	retry, err := m.TeardownRetry(context.Background(), appwire.HostTeardownRetryParams{RemnantID: arm.RemnantID})
+	if err != nil {
+		t.Fatalf("TeardownRetry = %v", err)
+	}
+	if retry.HostTeardownRetryCompleteRemoved == nil {
+		t.Fatalf("retry = %+v, want the teardown-complete removed arm", retry)
+	}
+	if _, ok := sources.Source("side"); ok {
+		t.Fatal("the removed host's source registration survived the retry")
+	}
+	if _, ok := cache.SourceGeneration("side"); ok {
+		t.Fatal("the removed host's remote-thread cache entry survived the retry")
+	}
+	if got := forgotten; !slices.Equal(got, []string{"side"}) {
+		t.Fatalf("forgotten = %v, want the removed host's own last-known-good drop", got)
+	}
+	m.cfg.state.mu.Lock()
+	_, stillRecorded := m.cfg.state.records["side"]
+	m.cfg.state.mu.Unlock()
+	if stillRecorded {
+		t.Fatal("the removed host's attach record survived the retry")
+	}
+}
+
+// TestHostTeardownRetryDeadlineInterruptsAWedgedManager pins roborev's second
+// Medium: the manager's teardown paths take no context — `RemoveHost` blocks on
+// the per-host gate and then on the ssh child — so a genuinely wedged remote
+// used to hold the retry forever, leaving the attempt open under this boot's
+// epoch and every later retry/recover refusing busy until a restart. The retry
+// must instead surface the terminal failure arm and keep the handle usable.
+func TestHostTeardownRetryDeadlineInterruptsAWedgedManager(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "hub.toml")
+	if err := writeHubTOMLHosts(configPath, []hostreg.Host{{Name: "side", SSH: "side.example"}}); err != nil {
+		t.Fatalf("seed hub.toml: %v", err)
+	}
+	cfg, err := LoadConfig(configPath)
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	reg, err := hostreg.New(hostRegistryEntries(cfg))
+	if err != nil {
+		t.Fatalf("hostreg.New: %v", err)
+	}
+	manager := sshconn.New(reg, sshconn.Options{})
+	t.Cleanup(func() { _ = manager.Close() })
+	m := newHubHostManager(appsource.NewRegistry(), manager, hubcore.WebConfig{}, configPath, reg, nil)
+	m.cfg.bootID = "boot-1"
+	m.cfg.policy.teardownTimeout = 250 * time.Millisecond
+
+	before, ok := m.cfg.hosts.Get("side")
+	if !ok {
+		t.Fatal("fixture lost the host")
+	}
+	remnantID := mintRemnantID()
+	remnant := newTeardownRemnant(hostRemnantKindRemove, "remove-host", before, "", m.nowTime())
+	entries := m.cfg.store.snapshot()
+	if err := m.persistHosts(entries, entries, hostPersistChange{remnant: &pendingHostRemnant{RemnantID: remnantID, Remnant: remnant}}); err != nil {
+		t.Fatalf("stage remnant: %v", err)
+	}
+	// The wedge: hold the host gate the manager's own teardown must take, from
+	// the instant the retry releases its reservation until the deadline fires.
+	released := make(chan struct{})
+	var releaseOnce sync.Once
+	unwedge := func() { releaseOnce.Do(func() { close(released) }) }
+	m.testOnlyBeforePinnedRun = func(string) {
+		release, gateErr := m.cfg.gate.TryAcquire("side", hostops.Holder{Kind: hostops.HolderManager, Activity: "wedge"})
+		if gateErr != nil {
+			t.Errorf("the wedge could not take the gate: %v", gateErr)
+			return
+		}
+		go func() {
+			<-released
+			release()
+		}()
+	}
+	defer unwedge()
+
+	start := time.Now()
+	result, err := m.TeardownRetry(context.Background(), appwire.HostTeardownRetryParams{RemnantID: remnantID})
+	if err != nil {
+		t.Fatalf("TeardownRetry against a wedged manager = %v, want the terminal timeout arm", err)
+	}
+	if time.Since(start) > 30*time.Second {
+		t.Fatalf("the retry took %s, want it bounded by the deadline", time.Since(start))
+	}
+	failed := result.HostTeardownRetryFailedRemoved
+	if failed == nil {
+		t.Fatalf("retry = %+v, want the committed-with-teardown-failure arm", result)
+	}
+	if failed.Seam != "remove-host" {
+		t.Fatalf("timeout arm seam = %q, want remove-host", failed.Seam)
+	}
+	// The attempt is timed-out-but-open (takeover-able), not live: repair is not
+	// wedged behind it.
+	if attemptID, live := m.liveAttemptInThisBoot(remnantID); live {
+		t.Fatalf("the timeout left attempt %q live, want it timed-out-but-open", attemptID)
+	}
+	closedAttempts := 0
+	for _, attempt := range m.cfg.store.attemptsSnapshot() {
+		if attempt.timedOut() {
+			closedAttempts++
+		}
+	}
+	if closedAttempts != 1 {
+		t.Fatalf("attempts = %+v, want exactly one timed-out-but-open record", m.cfg.store.attemptsSnapshot())
+	}
+	if _, open := m.cfg.store.markedRemnantFor("side"); !open {
+		t.Fatal("the timeout cleared the remnant, want it still open for a later retry")
+	}
+	// (c) A later retry is not falsely busy: the timed-out attempt is taken over
+	// and the run proceeds to completion once the wedge lifts.
+	unwedge()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		release, gateErr := m.cfg.gate.TryAcquire("side", hostops.Holder{Kind: hostops.HolderManager, Activity: "probe"})
+		if gateErr == nil {
+			release()
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the gate was never released after the wedged run: %v", gateErr)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	m.testOnlyBeforePinnedRun = nil
+	second, err := m.TeardownRetry(context.Background(), appwire.HostTeardownRetryParams{RemnantID: remnantID})
+	if err != nil {
+		if _, busy := errors.AsType[*hostops.BusyError](err); busy {
+			t.Fatalf("the later retry refused busy (%v), want it past the timed-out attempt", err)
+		}
+		t.Fatalf("the later retry = %v, want the teardown-complete arm", err)
+	}
+	if second.HostTeardownRetryCompleteRemoved == nil {
+		t.Fatalf("the later retry = %+v, want the teardown-complete removed arm", second)
+	}
+	// (d) The gate is free once the retry finished: nothing holds the name.
+	if release, gateErr := m.cfg.gate.TryAcquire("side", hostops.Holder{Kind: hostops.HolderManager, Activity: "probe-after"}); gateErr != nil {
+		t.Fatalf("the gate is still held after the retry: %v", gateErr)
+	} else {
+		release()
+	}
+}
+
+// TestHostTeardownRecoverRetiresTheClearedRemovalsDerivedState pins the same
+// rule on the audited path: clearing a removal's remnant completes the removal,
+// so the name's source registration, cache entry, attach record, and retained
+// last-known-good list go with it exactly as they do on the retry's completion.
+// A cleared removal leaves no live handle of the pinned incarnation behind, so
+// nothing would ever retire that state afterwards.
+func TestHostTeardownRecoverRetiresTheClearedRemovalsDerivedState(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "hub.toml")
+	if err := writeHubTOMLHosts(configPath, []hostreg.Host{{Name: "side", SSH: "side.example"}}); err != nil {
+		t.Fatalf("seed hub.toml: %v", err)
+	}
+	cfg, err := LoadConfig(configPath)
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	hosts, err := hostreg.New(hostRegistryEntries(cfg))
+	if err != nil {
+		t.Fatalf("hostreg.New: %v", err)
+	}
+	sources := appsource.NewRegistry()
+	cache := &hubcore.RemoteThreadCache{}
+	var forgotten []string
+	m := newHubHostManager(sources, nil, hubcore.WebConfig{RemoteThreadCache: cache}, configPath, hosts, nil)
+	m.cfg.forgetLastGoodThreads = func(sourceID string) { forgotten = append(forgotten, sourceID) }
+	entry, ok := m.cfg.hosts.Get("side")
+	if !ok {
+		t.Fatal("fixture lost the host")
+	}
+	m.registerSource(entry)
+	m.observeEvent(sshconn.Event{Host: "side", Kind: sshconn.EventState, State: sshconn.StatePreflighting})
+
+	// The removal commits and its teardown fails, so its finish-phase drop never
+	// runs; the pinned handle is then unresolvable, which is the recover case.
+	m.testOnlyTeardown = func(context.Context, string) error { return errors.New("injected teardown failure") }
+	result, err := m.RemoveResult(context.Background(), removeRequest(t, m, "side"))
+	if err != nil {
+		t.Fatalf("Remove = %v", err)
+	}
+	arm := result.HostMutationTeardownFailureRemoved
+	if arm == nil {
+		t.Fatalf("Remove = %+v, want the teardown-failure arm", result)
+	}
+	m.testOnlyTeardown = nil
+	remnant, ok := m.cfg.store.remnantByID(arm.RemnantID)
+	if !ok {
+		t.Fatalf("no durable remnant %q", arm.RemnantID)
+	}
+	remnant.CleanupHandle.Kind = "remote-lease"
+	remnant.CleanupHandle.RemoteGuardFile = "guard.json"
+	entries := m.cfg.store.snapshot()
+	if err := m.persistHosts(entries, entries, hostPersistChange{remnant: &pendingHostRemnant{RemnantID: arm.RemnantID, Remnant: remnant}}); err != nil {
+		t.Fatalf("restage remnant: %v", err)
+	}
+	// No handle of the pinned incarnation is reachable any more — the state the
+	// recover exists for: the injected failure never dropped the registry entry,
+	// so drop it the way a crash/restart leaves it, or the safety check
+	// correctly refuses for a live handle carrying the pinned pair.
+	if err := m.cfg.hosts.Remove("side"); err != nil {
+		t.Fatalf("drop the live entry: %v", err)
+	}
+
+	cleared, err := m.TeardownRecover(context.Background(), appwire.HostTeardownRecoverParams{
+		RemnantID: arm.RemnantID,
+		Attestation: appwire.HostTeardownAttestation{
+			Operator: "op", Statement: hostRecoveryStatement, ObservedAt: "2026-09-27T12:00:00Z",
+		},
+	})
+	if err != nil {
+		t.Fatalf("TeardownRecover = %v", err)
+	}
+	if cleared.Outcome != appwire.HostTeardownOutcomeRecovered || cleared.HostKind != appwire.HostKindRemoved {
+		t.Fatalf("recover response = %+v, want recovered-cleared for the removed generation", cleared)
+	}
+	if _, ok := sources.Source("side"); ok {
+		t.Fatal("the cleared removal's source registration survived the recovery")
+	}
+	if _, ok := cache.SourceGeneration("side"); ok {
+		t.Fatal("the cleared removal's remote-thread cache entry survived the recovery")
+	}
+	if got := forgotten; !slices.Equal(got, []string{"side"}) {
+		t.Fatalf("forgotten = %v, want the cleared removal's own last-known-good drop", got)
+	}
+	m.cfg.state.mu.Lock()
+	_, stillRecorded := m.cfg.state.records["side"]
+	m.cfg.state.mu.Unlock()
+	if stillRecorded {
+		t.Fatal("the cleared removal's attach record survived the recovery")
 	}
 }

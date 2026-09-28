@@ -178,6 +178,9 @@ func (m *hubHostManager) TeardownRetry(ctx context.Context, params appwire.HostT
 	runCtx, cancel := context.WithTimeout(ctx, m.cfg.policy.teardownTimeout)
 	defer cancel()
 	releaseOnce()
+	if m.testOnlyBeforePinnedRun != nil {
+		m.testOnlyBeforePinnedRun(name)
+	}
 	result, runErr := m.runPinnedTeardown(runCtx, remnantID, remnant)
 	// Re-acquire the reservation for the finalizing write. A held gate means
 	// another path is inside the name; the attempt record still owns the
@@ -242,6 +245,17 @@ func (m *hubHostManager) TeardownRetry(ctx context.Context, params appwire.HostT
 	}
 	if err := m.persistHosts(entries, entries, finalize); err != nil {
 		return appwire.HostTeardownRetryResult{}, err
+	}
+	// A completed REMOVAL retirement takes the name's derived state with it,
+	// exactly as the clean removal path does: the committed-with-teardown-failure
+	// branch of `RemoveResult` returns before its own drop, and the retry is the
+	// only other path to completion — so without this the removed host's source
+	// registration and cached session rows would outlive the removal, and
+	// `sourceOnline`'s fail-open for an unregistered source would keep rendering
+	// its sessions as live until a restart. An edit's remnant leaves the name
+	// live and keeps its state.
+	if hostKindOf(remnant.Kind) == hostRemnantHostKindRemoved {
+		m.dropHostDerivedState(remnant.Host)
 	}
 	return m.retryArm(appwire.HostTeardownOutcomeComplete, stored, ""), nil
 }
@@ -396,6 +410,18 @@ func (m *hubHostManager) TeardownRecover(ctx context.Context, params appwire.Hos
 	}
 	if err := m.persistHosts(entries, entries, finalize); err != nil {
 		return appwire.HostTeardownRecoverResult{}, err
+	}
+	// Clearing a REMOVAL's remnant completes the removal, so the name's derived
+	// state goes with it exactly as it does on the retry's completion: the
+	// removal committed (its tombstone and receipt are durable and the fence
+	// forbids a re-add while the remnant was open), and the unattested cleanup is
+	// the operator's forward path precisely because no handle of the pinned
+	// incarnation is reachable — so leaving the source registration and cached
+	// session rows behind would keep rendering the removed host's sessions as
+	// live until a restart. An edit's remnant leaves the name live and keeps its
+	// state.
+	if hostKindOf(remnant.Kind) == hostRemnantHostKindRemoved {
+		m.dropHostDerivedState(remnant.Host)
 	}
 	return recoveredClearedResult(stored), nil
 }
@@ -588,18 +614,24 @@ func (m *hubHostManager) runPinnedTeardown(ctx context.Context, remnantID string
 		if !ok {
 			return teardownRunResult{}, nil
 		}
-		if err := m.reapplyStagedEntry(ctx, entry); err != nil {
-			return teardownRunResult{Seam: "update-host"}, fmt.Errorf("teardown-retry %s: re-apply host %q: %w", remnantID, remnant.Host, err)
-		}
-		return teardownRunResult{}, nil
+		result, err := m.runBoundedTeardown(ctx, "update-host", func() error {
+			if err := m.reapplyStagedEntry(ctx, entry); err != nil {
+				return fmt.Errorf("teardown-retry %s: re-apply host %q: %w", remnantID, remnant.Host, err)
+			}
+			return nil
+		})
+		return result, err
 	}
 	switch remnant.PendingTeardown.Kind {
 	case hostTeardownKindRemove:
 		if m.cfg.manager != nil {
-			if err := m.cfg.manager.RemoveHost(remnant.Host); err != nil {
-				return teardownRunResult{Seam: "remove-host"}, fmt.Errorf("teardown-retry %s: remove host %q: %w", remnantID, remnant.Host, err)
-			}
-			return teardownRunResult{}, nil
+			result, err := m.runBoundedTeardown(ctx, "remove-host", func() error {
+				if err := m.cfg.manager.RemoveHost(remnant.Host); err != nil {
+					return fmt.Errorf("teardown-retry %s: remove host %q: %w", remnantID, remnant.Host, err)
+				}
+				return nil
+			})
+			return result, err
 		}
 		if err := ctx.Err(); err != nil {
 			return teardownRunResult{Seam: "remove-host"}, err
@@ -629,12 +661,15 @@ func (m *hubHostManager) runPinnedTeardown(ctx context.Context, remnantID string
 			return teardownRunResult{}, nil
 		}
 		if m.cfg.manager != nil {
-			if err := m.cfg.manager.UpdateHost(entry, func(retired hostreg.Host) {
-				m.cfg.state.retire(remnant.Host, retired.Generation)
-			}); err != nil {
-				return teardownRunResult{Seam: "update-host"}, fmt.Errorf("teardown-retry %s: update host %q: %w", remnantID, remnant.Host, err)
-			}
-			return teardownRunResult{}, nil
+			result, err := m.runBoundedTeardown(ctx, "update-host", func() error {
+				if err := m.cfg.manager.UpdateHost(entry, func(retired hostreg.Host) {
+					m.cfg.state.retire(remnant.Host, retired.Generation)
+				}); err != nil {
+					return fmt.Errorf("teardown-retry %s: update host %q: %w", remnantID, remnant.Host, err)
+				}
+				return nil
+			})
+			return result, err
 		}
 		if err := ctx.Err(); err != nil {
 			return teardownRunResult{Seam: "update-host"}, err
@@ -645,6 +680,41 @@ func (m *hubHostManager) runPinnedTeardown(ctx context.Context, remnantID string
 		return teardownRunResult{}, nil
 	default:
 		return teardownRunResult{Seam: remnant.Seam}, teardownUnknownKeyRefusal(remnantID)
+	}
+}
+
+// runBoundedTeardown runs one manager teardown step under the retry's bounded
+// deadline. The manager's teardown paths take no context — `RemoveHost` blocks
+// on the per-host gate and then on the ssh child's exit — so a genuinely wedged
+// remote would otherwise hold this call forever: the attempt record would stay
+// open under this boot's epoch and every later retry and recover would refuse
+// busy until a process restart, which is precisely the state the deadline
+// exists to avoid (spec §6: "a stuck remote process therefore surfaces a
+// terminal outcome with a live retry handle, never an indefinitely held gate").
+//
+// The step therefore runs on its own goroutine and this call returns on
+// whichever lands first. A step the deadline abandons keeps running to whatever
+// end it reaches — nothing can cancel a blocking lock acquisition from outside
+// — and that is the honest trade: the attempt record is the fence that keeps a
+// second retry off the same cleanup, and the gate it eventually releases is the
+// manager's own.
+//
+// BOUNDARY (S17-S18, crash-fencing spec §4): kill/waiting a superseded run and
+// compare-and-advancing the guard belong to the crash-fencing slices; this build
+// records the attempt's fencing epoch (boot id + op sequence) and the
+// fenced/timed-out state a later retry takes over, which is what those slices
+// will act on when the lease wrapper lands.
+func (m *hubHostManager) runBoundedTeardown(ctx context.Context, seam string, step func() error) (teardownRunResult, error) {
+	done := make(chan error, 1)
+	go func() { done <- step() }()
+	select {
+	case err := <-done:
+		if err != nil {
+			return teardownRunResult{Seam: seam}, err
+		}
+		return teardownRunResult{}, nil
+	case <-ctx.Done():
+		return teardownRunResult{Seam: seam}, ctx.Err()
 	}
 }
 

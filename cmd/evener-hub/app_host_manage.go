@@ -1288,6 +1288,12 @@ type hubHostManager struct {
 	// deterministically instead of racing it — the testOnlyParkPostCommit
 	// precedent, for the *pre*-commit window. Nil in production.
 	testOnlyParkInCommit func(name string)
+	// testOnlyBeforePinnedRun, when non-nil, is called by `teardown-retry` after
+	// it releases its gate reservation and immediately before the pinned teardown
+	// runs. It exists so a test can hold the host gate at that instant and prove
+	// the bounded deadline still terminates the retry — the manager's teardown
+	// paths block on that gate and take no context. Nil in production.
+	testOnlyBeforePinnedRun func(name string)
 	// testOnlyAfterStage, when non-nil, is called at the end of a commit's
 	// step-(2) write, with the mutation lock still held — the staged-write→flip
 	// window. It exists so a test can open that window deterministically (a
