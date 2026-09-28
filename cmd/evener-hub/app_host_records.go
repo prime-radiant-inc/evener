@@ -594,21 +594,30 @@ func (s hostBootstrapStore) Provisioning(host string) (hostfence.Provisioning, e
 // PersistAttemptFence writes §6:133's durable bootstrap-attempt fence in its
 // own atomic hub.toml write, with the attempt's fencing epoch §6:139's recovery
 // names the crashed attempt by.
-func (s hostBootstrapStore) PersistAttemptFence(host string, epoch hostfence.Epoch) (hostfence.Provisioning, error) {
+func (s hostBootstrapStore) PersistAttemptFence(host string, epoch hostfence.Epoch) (hostfence.Provisioning, bool, error) {
 	if err := epoch.Validate(); err != nil {
-		return hostfence.Provisioning{}, err
+		return hostfence.Provisioning{}, false, err
 	}
-	return s.m.persistProvisioning(host, func(p hostfence.Provisioning) (hostfence.Provisioning, error) {
+	// won is set under persistProvisioning's mutation lock, together with the
+	// read the conditional write compares against: it is the explicit ownership
+	// signal, never inferred from the epoch.
+	won := false
+	record, err := s.m.persistProvisioning(host, func(p hostfence.Provisioning) (hostfence.Provisioning, error) {
 		if p.AttemptFenced {
 			// The conditional write: another attempt already owns the fence, so
 			// this one is returned unchanged — its epoch is what §6:139's recovery
 			// must name — and persistProvisioning writes nothing for it.
 			return p, nil
 		}
+		won = true
 		p.AttemptFenced = true
 		p.AttemptEpoch = epoch
 		return p, nil
 	})
+	if err != nil {
+		return hostfence.Provisioning{}, false, err
+	}
+	return record, won, nil
 }
 
 // FinalizeBootstrap converges helperInstalled with the delivered version in the

@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -40,16 +41,16 @@ func (s *scriptedStore) Provisioning(string) (Provisioning, error) { return s.re
 // already carries a fence is returned unchanged, never overwritten. foreignFence,
 // when set, is the interleaving where a delayed attempt's write finds another
 // attempt's fence already landed.
-func (s *scriptedStore) PersistAttemptFence(_ string, epoch Epoch) (Provisioning, error) {
+func (s *scriptedStore) PersistAttemptFence(_ string, epoch Epoch) (Provisioning, bool, error) {
 	if s.persistErr != nil {
-		return Provisioning{}, s.persistErr
+		return Provisioning{}, false, s.persistErr
 	}
 	if s.foreignFence != nil {
 		s.record = *s.foreignFence
-		return s.record, nil
+		return s.record, false, nil
 	}
 	if s.record.AttemptFenced {
-		return s.record, nil
+		return s.record, false, nil
 	}
 	s.writes = append(s.writes, "attempt")
 	s.record.AttemptFenced = true
@@ -58,7 +59,7 @@ func (s *scriptedStore) PersistAttemptFence(_ string, epoch Epoch) (Provisioning
 		s.record.HelperInstalled = true
 		s.record.HelperVersion = HelperVersion
 	}
-	return s.record, nil
+	return s.record, true, nil
 }
 
 func (s *scriptedStore) FinalizeBootstrap(_ string, version uint64) (Provisioning, error) {
@@ -102,7 +103,9 @@ func (q *scriptedQuiesce) ClaimAndQuiesce(_ context.Context, epoch Epoch) (Quies
 	q.calls++
 	q.epoch = epoch
 	if q.err != nil {
-		return QuiesceReport{}, nil, q.err
+		// A primitive may answer with a claim beside its error: the flow must
+		// release it (L1), so the fake can reproduce that shape.
+		return QuiesceReport{}, q.claim, q.err
 	}
 	if q.noClaim {
 		return q.report, nil, nil
@@ -150,7 +153,7 @@ func (r *scriptedRunner) Run(_ context.Context, command string) (string, string,
 func versionRunner() *scriptedRunner {
 	return &scriptedRunner{fn: func(command string) (string, string, int, error) {
 		if strings.HasSuffix(command, " version") {
-			return "1\n", "", 0, nil
+			return strconv.Itoa(HelperVersion) + "\n", "", 0, nil
 		}
 		return "", "", 0, nil
 	}}
@@ -193,14 +196,17 @@ func TestExemptDeliveryPermitted(t *testing.T) {
 // TestProvisioningPostures pins the two derived record postures: provisioned,
 // and the crash posture §6:137 gives the fenced path forever.
 func TestProvisioningPostures(t *testing.T) {
-	if !(Provisioning{HelperInstalled: true, HelperVersion: 1}).Provisioned() {
-		t.Error("an installed record does not read as provisioned")
+	if !(Provisioning{AttemptFenced: true, HelperInstalled: true, HelperVersion: HelperVersion}).Provisioned() {
+		t.Error("a fully converged record does not read as provisioned")
 	}
 	if (Provisioning{AttemptFenced: true}).Provisioned() {
 		t.Error("an attempt-fenced record reads as provisioned")
 	}
 	if (Provisioning{HelperInstalled: true}).Provisioned() {
 		t.Error("an installed-without-version record reads as provisioned")
+	}
+	if (Provisioning{HelperInstalled: true, HelperVersion: HelperVersion}).Provisioned() {
+		t.Error("an installed-without-fence record reads as provisioned")
 	}
 	fenced := Provisioning{AttemptFenced: true}
 	if !fenced.FencedWithoutHelper() {
@@ -621,8 +627,8 @@ func TestBootstrapRefusesAnUnheldClaim(t *testing.T) {
 // store the flow must refuse before any delivery.
 type unlandedFenceStore struct{ scriptedStore }
 
-func (s *unlandedFenceStore) PersistAttemptFence(string, Epoch) (Provisioning, error) {
-	return Provisioning{}, nil
+func (s *unlandedFenceStore) PersistAttemptFence(string, Epoch) (Provisioning, bool, error) {
+	return Provisioning{}, false, nil
 }
 
 // TestBootstrapRefusesAFenceThatDidNotLand pins §6:133's ordering: a store that
@@ -802,5 +808,87 @@ func TestBootstrapSurfacesAReleaseFailure(t *testing.T) {
 	}
 	if _, ok := errors.AsType[*HelperGateError](err); !ok {
 		t.Fatalf("err = %v, want the primary gate refusal still matchable", err)
+	}
+}
+
+// convergingStore answers Provisioning with the plain record on the first read
+// and a converged record from the second on: a concurrent finalize landing while
+// recovery runs.
+type convergingStore struct {
+	*scriptedStore
+	reads int
+}
+
+func (s *convergingStore) Provisioning(host string) (Provisioning, error) {
+	s.reads++
+	if s.reads >= 2 {
+		return Provisioning{
+			AttemptFenced: true, AttemptEpoch: s.record.AttemptEpoch,
+			HelperInstalled: true, HelperVersion: HelperVersion,
+		}, nil
+	}
+	return s.scriptedStore.Provisioning(host)
+}
+
+// TestBootstrapDoesNotDeliverWhenTwoAttemptsShareTheEpoch pins explicit fence
+// ownership: a call that lost the conditional write must not deliver even when
+// the owner's epoch equals its own (a replay of one operation), so ownership can
+// never be inferred from epoch equality.
+func TestBootstrapDoesNotDeliverWhenTwoAttemptsShareTheEpoch(t *testing.T) {
+	epoch := bootstrapEpoch()
+	owner := Provisioning{AttemptFenced: true, AttemptEpoch: epoch}
+	store := &scriptedStore{foreignFence: &owner}
+	runner := &scriptedRunner{}
+	quiesce := &scriptedQuiesce{report: bareClaim()}
+	probe := &scriptedProbe{}
+	outcome, err := Bootstrap(context.Background(), BootstrapRequest{
+		Host: "h1", Epoch: epoch, Evidence: eligibleFacts(),
+		Store: store, Runner: runner, Quiesce: quiesce, Probe: probe,
+	})
+	if err != nil || outcome.Kind != BootstrapFenced {
+		t.Fatalf("same-epoch loser = (%v, %v), want the fenced recovery path", outcome.Kind, err)
+	}
+	if quiesce.calls != 0 || len(runner.calls) != 0 {
+		t.Fatalf("the same-epoch loser delivered again: quiesce=%d runner=%v", quiesce.calls, runner.calls)
+	}
+}
+
+// TestBootstrapReleasesTheClaimOnAClaimBesideAnError pins that a primitive
+// returning claim+error cannot leak the host-side claim: the release is
+// registered as soon as the claim is observed.
+func TestBootstrapReleasesTheClaimOnAClaimBesideAnError(t *testing.T) {
+	claim := &scriptedClaim{}
+	store := &scriptedStore{}
+	_, err := Bootstrap(context.Background(), BootstrapRequest{
+		Host: "h1", Epoch: bootstrapEpoch(), Evidence: eligibleFacts(),
+		Store: store, Runner: &scriptedRunner{},
+		Quiesce: &scriptedQuiesce{claim: claim, err: errors.New("claim primitive failed")},
+	})
+	if _, ok := errors.AsType[*HelperGateError](err); !ok {
+		t.Fatalf("err = %v, want a typed fencing-helper-absent refusal", err)
+	}
+	if claim.released != 1 {
+		t.Fatalf("the claim returned beside an error was released %d times, want exactly 1", claim.released)
+	}
+}
+
+// TestBootstrapRecoveryReplaysWhenTheRecordConverged pins the recovery re-read:
+// a concurrent finalize that lands while the re-probe runs makes recovery replay
+// as provisioned instead of reporting a stale fenced posture.
+func TestBootstrapRecoveryReplaysWhenTheRecordConverged(t *testing.T) {
+	base := &scriptedStore{record: Provisioning{AttemptFenced: true, AttemptEpoch: Epoch{BootID: "boot-old", OpSeq: 7}}}
+	store := &convergingStore{scriptedStore: base}
+	probe := &scriptedProbe{}
+	outcome, err := Bootstrap(context.Background(), BootstrapRequest{
+		Host: "h1", Epoch: bootstrapEpoch(), Store: store, Runner: &scriptedRunner{}, Probe: probe,
+	})
+	if err != nil {
+		t.Fatalf("recovery = %v", err)
+	}
+	if outcome.Kind != BootstrapProvisioned {
+		t.Fatalf("outcome = %v, want BootstrapProvisioned from the converged re-read", outcome.Kind)
+	}
+	if outcome.Provisioning.HelperVersion != HelperVersion {
+		t.Fatalf("outcome record = %+v, want the converged record", outcome.Provisioning)
 	}
 }

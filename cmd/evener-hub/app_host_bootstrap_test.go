@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -64,10 +65,12 @@ type hubClaimQuiesce struct {
 	err    error
 	calls  int
 	claim  *hubClaim
+	epoch  hostfence.Epoch
 }
 
-func (q *hubClaimQuiesce) ClaimAndQuiesce(context.Context, hostfence.Epoch) (hostfence.QuiesceReport, hostfence.BootstrapClaim, error) {
+func (q *hubClaimQuiesce) ClaimAndQuiesce(_ context.Context, epoch hostfence.Epoch) (hostfence.QuiesceReport, hostfence.BootstrapClaim, error) {
 	q.calls++
+	q.epoch = epoch
 	if q.err != nil {
 		return hostfence.QuiesceReport{}, nil, q.err
 	}
@@ -87,7 +90,11 @@ type hubRunner struct {
 func (r *hubRunner) Run(_ context.Context, command string) (string, string, int, error) {
 	r.calls = append(r.calls, command)
 	if strings.HasSuffix(command, " version") {
-		return r.versionOut, "", 0, nil
+		out := r.versionOut
+		if out == "" {
+			out = strconv.Itoa(hostfence.HelperVersion) + "\n"
+		}
+		return out, "", 0, nil
 	}
 	return "", "", 0, nil
 }
@@ -96,10 +103,12 @@ func (r *hubRunner) Run(_ context.Context, command string) (string, string, int,
 type hubProbe struct {
 	live  bool
 	calls int
+	seen  hostfence.Epoch
 }
 
-func (p *hubProbe) BootstrappedProcessLive(context.Context, hostfence.Epoch) (bool, error) {
+func (p *hubProbe) BootstrappedProcessLive(_ context.Context, epoch hostfence.Epoch) (bool, error) {
 	p.calls++
+	p.seen = epoch
 	return p.live, nil
 }
 
@@ -135,9 +144,12 @@ func TestHostBootstrapFlagsPersistAndSurviveRewrites(t *testing.T) {
 		t.Fatalf("initial provisioning = %+v, want the zero record", initial)
 	}
 
-	fenced, err := store.PersistAttemptFence("alpha", bootstrapEpoch())
+	fenced, won, err := store.PersistAttemptFence("alpha", bootstrapEpoch())
 	if err != nil {
 		t.Fatalf("PersistAttemptFence: %v", err)
+	}
+	if !won {
+		t.Fatal("the first fence write did not win the conditional")
 	}
 	if !fenced.AttemptFenced || fenced.HelperInstalled {
 		t.Fatalf("after the attempt fence = %+v, want attempt-fenced without helperInstalled", fenced)
@@ -169,7 +181,7 @@ func TestHostBootstrapFlagsPersistAndSurviveRewrites(t *testing.T) {
 		t.Fatalf("after the finalize = %+v, want the converged record", finalized)
 	}
 	raw = string(readHostFileBytes(t, f.path))
-	if !strings.Contains(raw, "helper_installed = true") || !strings.Contains(raw, "helper_version = 1") {
+	if !strings.Contains(raw, "helper_installed = true") || !strings.Contains(raw, fmt.Sprintf("helper_version = %d", hostfence.HelperVersion)) {
 		t.Fatalf("the finalizing write did not converge the flags:\n%s", raw)
 	}
 
@@ -193,14 +205,18 @@ func TestHostBootstrapFlagsPersistAndSurviveRewrites(t *testing.T) {
 // attempt takes the fenced recovery path with no second delivery.
 func TestHostBootstrapCrashWindowBeforeSideEffect(t *testing.T) {
 	f := newBootstrapFixture(t)
-	runner := &hubRunner{versionOut: "1\n"}
+	runner := &hubRunner{}
+	quiesce := &hubClaimQuiesce{err: errors.New("the controller crashed")}
 	_, err := hostfence.Bootstrap(context.Background(), hostfence.BootstrapRequest{
 		Host: "alpha", Epoch: bootstrapEpoch(), Store: f.m.bootstrapStore(),
-		Runner: runner, Quiesce: &hubClaimQuiesce{err: errors.New("the controller crashed")},
+		Runner: runner, Quiesce: quiesce,
 	})
 	var gate *hostfence.HelperGateError
 	if !errors.As(err, &gate) || gate.Discriminator != hostfence.DiscriminatorHelperAbsent {
 		t.Fatalf("err = %v, want a typed %s refusal", err, hostfence.DiscriminatorHelperAbsent)
+	}
+	if quiesce.epoch != bootstrapEpoch() {
+		t.Fatalf("the claim primitive received epoch %+v, want the request epoch %+v", quiesce.epoch, bootstrapEpoch())
 	}
 	record := liveRecord(t, f.path, "alpha")
 	if !record.BootstrapAttempted || record.HelperInstalled {
@@ -214,7 +230,7 @@ func TestHostBootstrapCrashWindowBeforeSideEffect(t *testing.T) {
 	// the fenced path opens with the remote untouched.
 	probe := &hubProbe{}
 	retryQuiesce := bareQuiesce()
-	retryRunner := &hubRunner{versionOut: "1\n"}
+	retryRunner := &hubRunner{}
 	outcome, err := hostfence.Bootstrap(context.Background(), hostfence.BootstrapRequest{
 		Host: "alpha", Epoch: bootstrapEpoch(), Store: f.m.bootstrapStore(),
 		Runner: retryRunner, Quiesce: retryQuiesce, Probe: probe,
@@ -236,7 +252,7 @@ func TestHostBootstrapCrashWindowBeforeSideEffect(t *testing.T) {
 // process is live.
 func TestHostBootstrapCrashWindowAfterDelivery(t *testing.T) {
 	f := newBootstrapFixture(t)
-	runner := &hubRunner{versionOut: "1\n"}
+	runner := &hubRunner{}
 	_, err := hostfence.Bootstrap(context.Background(), hostfence.BootstrapRequest{
 		Host: "alpha", Epoch: bootstrapEpoch(), Store: failingFinalizeStore{f.m.bootstrapStore()},
 		Runner: runner, Quiesce: bareQuiesce(),
@@ -270,7 +286,7 @@ func TestHostBootstrapCrashWindowAfterDelivery(t *testing.T) {
 func TestHostBootstrapRetryReplaysProvisioned(t *testing.T) {
 	f := newBootstrapFixture(t)
 	store := f.m.bootstrapStore()
-	first := &hubRunner{versionOut: "1\n"}
+	first := &hubRunner{}
 	outcome, err := hostfence.Bootstrap(context.Background(), hostfence.BootstrapRequest{
 		Host: "alpha", Epoch: bootstrapEpoch(), Store: store,
 		Runner: first, Quiesce: bareQuiesce(),
@@ -278,7 +294,7 @@ func TestHostBootstrapRetryReplaysProvisioned(t *testing.T) {
 	if err != nil || outcome.Kind != hostfence.BootstrapDelivered {
 		t.Fatalf("first Bootstrap = (%v, %v), want delivered", outcome.Kind, err)
 	}
-	retryRunner := &hubRunner{versionOut: "1\n"}
+	retryRunner := &hubRunner{}
 	retryQuiesce := bareQuiesce()
 	replay, err := hostfence.Bootstrap(context.Background(), hostfence.BootstrapRequest{
 		Host: "alpha", Epoch: bootstrapEpoch(), Store: store,
@@ -405,7 +421,7 @@ func TestHelperGateRefusalsRideTheConflictClass(t *testing.T) {
 func TestHostBootstrapProvisioningDoesNotSurviveRemoval(t *testing.T) {
 	f := newBootstrapFixture(t)
 	store := f.m.bootstrapStore()
-	if _, err := store.PersistAttemptFence("alpha", bootstrapEpoch()); err != nil {
+	if _, _, err := store.PersistAttemptFence("alpha", bootstrapEpoch()); err != nil {
 		t.Fatalf("PersistAttemptFence: %v", err)
 	}
 	if _, err := store.FinalizeBootstrap("alpha", hostfence.HelperVersion); err != nil {
@@ -486,7 +502,7 @@ func TestHostBootstrapPersistsTheAttemptEpoch(t *testing.T) {
 	f := newBootstrapFixture(t)
 	store := f.m.bootstrapStore()
 	epoch := hostfence.Epoch{BootID: "boot-9", OpSeq: 42}
-	if _, err := store.PersistAttemptFence("alpha", epoch); err != nil {
+	if _, _, err := store.PersistAttemptFence("alpha", epoch); err != nil {
 		t.Fatalf("PersistAttemptFence: %v", err)
 	}
 	record := liveRecord(t, f.path, "alpha")
@@ -524,14 +540,21 @@ func TestHostBootstrapFenceWriteIsConditional(t *testing.T) {
 	f := newBootstrapFixture(t)
 	store := f.m.bootstrapStore()
 	owner := hostfence.Epoch{BootID: "boot-a", OpSeq: 5}
-	if _, err := store.PersistAttemptFence("alpha", owner); err != nil {
+	_, won, err := store.PersistAttemptFence("alpha", owner)
+	if err != nil {
 		t.Fatalf("first PersistAttemptFence: %v", err)
+	}
+	if !won {
+		t.Fatal("the first fence write did not win the conditional")
 	}
 	before := readHostFileBytes(t, f.path)
 
-	delayed, err := store.PersistAttemptFence("alpha", hostfence.Epoch{BootID: "boot-b", OpSeq: 9})
+	delayed, delayedWon, err := store.PersistAttemptFence("alpha", hostfence.Epoch{BootID: "boot-b", OpSeq: 9})
 	if err != nil {
 		t.Fatalf("second PersistAttemptFence: %v", err)
+	}
+	if delayedWon {
+		t.Fatal("the delayed fence write won the conditional, want the first owner to keep it")
 	}
 	if delayed.AttemptEpoch != owner {
 		t.Fatalf("the delayed fence write returned %+v, want the first owner's %+v", delayed.AttemptEpoch, owner)
@@ -543,5 +566,51 @@ func TestHostBootstrapFenceWriteIsConditional(t *testing.T) {
 	if record.BootstrapEpochBoot != owner.BootID || record.BootstrapEpochOpSeq != owner.OpSeq {
 		t.Fatalf("host_records[alpha] epoch = (%q, %d), want the owner's (%q, %d)",
 			record.BootstrapEpochBoot, record.BootstrapEpochOpSeq, owner.BootID, owner.OpSeq)
+	}
+}
+
+// TestHubBootstrapRecoveryProbesThePersistedEpoch pins the epoch identity at the
+// hub seam: after a crash and a restart with a different request epoch, recovery
+// probes the fence's persisted crashed-attempt epoch.
+func TestHubBootstrapRecoveryProbesThePersistedEpoch(t *testing.T) {
+	f := newBootstrapFixture(t)
+	crashed := hostfence.Epoch{BootID: "boot-old", OpSeq: 7}
+	if _, err := hostfence.Bootstrap(context.Background(), hostfence.BootstrapRequest{
+		Host: "alpha", Epoch: crashed, Store: f.m.bootstrapStore(),
+		Runner: &hubRunner{}, Quiesce: &hubClaimQuiesce{err: errors.New("the controller crashed")},
+	}); err == nil {
+		t.Fatal("Bootstrap = nil error, want the crashed claim")
+	}
+	probe := &hubProbe{}
+	if _, err := hostfence.Bootstrap(context.Background(), hostfence.BootstrapRequest{
+		Host: "alpha", Epoch: hostfence.Epoch{BootID: "boot-new", OpSeq: 3},
+		Store: f.m.bootstrapStore(), Runner: &hubRunner{}, Probe: probe,
+	}); err != nil {
+		t.Fatalf("recovery = %v", err)
+	}
+	if probe.seen != crashed {
+		t.Fatalf("recovery probed %+v, want the persisted crashed attempt %+v", probe.seen, crashed)
+	}
+}
+
+// TestOrphanAttemptRefusalIsTransientBusy pins §8:158's class for a crashed
+// bootstrap attempt whose process is still live: the transient busy refusal,
+// never probe-failed, with the diagnostic naming the crashed epoch.
+func TestOrphanAttemptRefusalIsTransientBusy(t *testing.T) {
+	m := testHostManager(nil, nil)
+	orphan := &hostfence.AttemptOrphanError{
+		Host: "alpha", Epoch: hostfence.Epoch{BootID: "boot-1", OpSeq: 7}, Detail: "live",
+	}
+	err := m.operationProbeRefusal("alpha", orphan)
+	wire, ok := errors.AsType[appwire.WireError](err)
+	if !ok || wire.Code != appwire.CodeConflict {
+		t.Fatalf("orphan refusal = (%v, %v), want a conflict-class wire error", wire, err)
+	}
+	data, ok := wire.Data.(appwire.ErrorData)
+	if !ok || data.EvenerErrorInfo != appwire.ErrorHostBusyTransient {
+		t.Fatalf("orphan refusal data = %#v, want the %s arm", wire.Data, appwire.ErrorHostBusyTransient)
+	}
+	if !strings.Contains(wire.Message, "boot-1/7") {
+		t.Fatalf("orphan refusal message = %q, want the crashed epoch named", wire.Message)
 	}
 }

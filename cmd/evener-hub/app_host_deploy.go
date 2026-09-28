@@ -464,6 +464,15 @@ func (m *hubHostManager) operationProbeRefusal(name string, err error) error {
 		return appwire.InternalError(fmt.Sprintf(
 			"host %q: the helper gate refused with an unknown discriminator %q: %v", name, gate.Discriminator, err))
 	}
+	if orphan, ok := errors.AsType[*hostfence.AttemptOrphanError](err); ok {
+		// A crashed bootstrap attempt whose process is still live fences the host
+		// the way an open orphan-unverified record does (§8:158): the transient
+		// busy class, with the diagnostic naming the crashed epoch. Never
+		// `probe-failed`, which names only a re-probe read failure.
+		return appwire.HostBusyTransient(fmt.Sprintf(
+			"host %q: a bootstrapped process from the crashed attempt at epoch %s/%d is not provably gone: %v",
+			name, orphan.Epoch.BootID, orphan.Epoch.OpSeq, orphan))
+	}
 	switch {
 	case errors.Is(err, errHostDetached):
 		return hostDetachedRefusal(name)

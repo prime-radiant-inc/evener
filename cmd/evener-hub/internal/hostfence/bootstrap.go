@@ -50,11 +50,13 @@ type Provisioning struct {
 }
 
 // Provisioned reports whether the host carries the whole converged record: the
-// installed flag with the version record its finalize wrote. An
-// installed-without-version record is not provisioned — it is a shape no writer
-// emits (the record loader refuses it), and reading it as provisioned would
-// hide that.
-func (p Provisioning) Provisioned() bool { return p.HelperInstalled && p.HelperVersion != 0 }
+// attempt fence, the installed flag, and the version record its finalize wrote.
+// An installed-without-fence or installed-without-version record is not
+// provisioned — both are shapes no writer emits (the record loader refuses
+// them), and reading one as provisioned would hide that.
+func (p Provisioning) Provisioned() bool {
+	return p.AttemptFenced && p.HelperInstalled && p.HelperVersion != 0
+}
 
 // FencedWithoutHelper reports §6:137's crash posture: the attempt fence landed
 // but helperInstalled did not, so every later attempt takes the fenced recovery
@@ -98,10 +100,12 @@ type BootstrapStore interface {
 	// first remote side effect. The write is conditional and atomic: a record
 	// that already carries a fence is returned unchanged — the record still
 	// carries that first attempt's fenced epoch — never overwritten by a later
-	// attempt, so two concurrent first-contacts cannot both deliver. A record
-	// returned without the fence is refused by the caller, never delivered
-	// behind.
-	PersistAttemptFence(host string, epoch Epoch) (Provisioning, error)
+	// attempt, so two concurrent first-contacts cannot both deliver. won is true
+	// exactly when this call performed the fence write, so ownership is explicit
+	// and never inferred from the epoch (two attempts of one operation may share
+	// one persisted epoch). A record returned without the fence is refused by the
+	// caller, never delivered behind.
+	PersistAttemptFence(host string, epoch Epoch) (Provisioning, bool, error)
 	// FinalizeBootstrap converges helperInstalled with the delivered version in
 	// the same atomic hub.toml write that finalizes bootstrap (§6:137). A
 	// failure refuses finalize: the attempt fence stays and helperInstalled is
@@ -320,7 +324,7 @@ func Bootstrap(ctx context.Context, req BootstrapRequest) (outcome BootstrapOutc
 	// remote side effect, so a crash before helperInstalled leaves the host
 	// attempt-fenced, never never-provisioned again.
 	step("attempt")
-	fenced, err := req.Store.PersistAttemptFence(req.Host, req.Epoch)
+	fenced, won, err := req.Store.PersistAttemptFence(req.Host, req.Epoch)
 	if err != nil {
 		return BootstrapOutcome{}, err
 	}
@@ -335,11 +339,12 @@ func Bootstrap(ctx context.Context, req BootstrapRequest) (outcome BootstrapOutc
 		// fence write: replay as provisioned rather than delivering a second time.
 		return BootstrapOutcome{Kind: BootstrapProvisioned, Provisioning: fenced}, nil
 	}
-	if fenced.AttemptEpoch != req.Epoch {
-		// The fence write is conditional: the record already carried another
-		// attempt's fence, so this attempt does not own it. It must never deliver
-		// a second time — the first attempt's remote work may be running — and it
-		// takes the recovery path naming the owning attempt's epoch.
+	if !won || fenced.AttemptEpoch != req.Epoch {
+		// Ownership is explicit: only the call that won the conditional write
+		// delivers, and only under the epoch it wrote. A call that lost the race —
+		// even one sharing the same persisted epoch (a replay of one operation) —
+		// must never deliver a second time; it takes the recovery path naming the
+		// fence owner's epoch.
 		return recoverFencedAttempt(ctx, req, fenced)
 	}
 
@@ -350,19 +355,11 @@ func Bootstrap(ctx context.Context, req BootstrapRequest) (outcome BootstrapOutc
 	}
 	step("claim")
 	report, claim, err := req.Quiesce.ClaimAndQuiesce(ctx, req.Epoch)
-	if err != nil {
-		if ctx.Err() != nil {
-			// The caller's own context ended: that is not the claim's refusal and
-			// nothing about the helper is known, so the raw error stays.
-			return BootstrapOutcome{}, err
-		}
-		return BootstrapOutcome{}, helperAbsentRefusal(req.Host, "the host's atomic claim-plus-quiesce primitive failed: "+err.Error())
-	}
 	if claim != nil {
-		// The claim is held from here on — including on the non-bare refusal just
-		// below — and released on every exit (a crash drops it with the process).
-		// A release failure is surfaced, never silently dropped: the host-side
-		// claim may still be held.
+		// The claim is held from here on and released on every exit, including
+		// the refusal paths below and a claim returned beside an error (a crash
+		// drops it with the process). A release failure is surfaced, never
+		// silently dropped: the host-side claim may still be held.
 		defer func() {
 			if releaseErr := claim.Release(context.WithoutCancel(ctx)); releaseErr != nil {
 				outcome.ReleaseErr = releaseErr
@@ -380,6 +377,14 @@ func Bootstrap(ctx context.Context, req BootstrapRequest) (outcome BootstrapOutc
 			}
 			step("release")
 		}()
+	}
+	if err != nil {
+		if ctx.Err() != nil {
+			// The caller's own context ended: that is not the claim's refusal and
+			// nothing about the helper is known, so the raw error stays.
+			return BootstrapOutcome{}, err
+		}
+		return BootstrapOutcome{}, helperAbsentRefusal(req.Host, "the host's atomic claim-plus-quiesce primitive failed: "+err.Error())
 	}
 	if !report.Bare() {
 		return BootstrapOutcome{}, helperAbsentRefusal(req.Host, describeClaim(report))
@@ -454,7 +459,17 @@ func recoverFencedAttempt(ctx context.Context, req BootstrapRequest, record Prov
 			Detail: "a bootstrapped process from the crashed attempt is live",
 		}
 	}
-	return BootstrapOutcome{Kind: BootstrapFenced, Provisioning: record}, nil
+	// The probe answered about the remote, not the record: a concurrent finalize
+	// may have converged the record meanwhile, so re-read it and replay as
+	// provisioned instead of reporting a stale fenced posture.
+	fresh, err := req.Store.Provisioning(req.Host)
+	if err != nil {
+		return BootstrapOutcome{}, err
+	}
+	if fresh.Provisioned() {
+		return BootstrapOutcome{Kind: BootstrapProvisioned, Provisioning: fresh}, nil
+	}
+	return BootstrapOutcome{Kind: BootstrapFenced, Provisioning: fresh}, nil
 }
 
 // runDelivery executes the one exempt delivery step through the remote runner.
