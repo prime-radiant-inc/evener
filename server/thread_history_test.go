@@ -48,6 +48,14 @@ type historyHarness struct {
 	// commits, when set, is the appserver whose projection commits the
 	// history's publish and resync go through, as production's do.
 	commits *appserver.Server
+
+	// deferredResyncs holds each resync updatesThrough read while it was
+	// waiting for an update. The harness delivers history/updated and
+	// thread/resync on two independent channels, so a resync can be ready
+	// before the update it follows; the reader must not read that channel
+	// order as the delivery order. nextResync and expectQuiet consume these
+	// first, and a test that leaves one unconsumed fails at cleanup.
+	deferredResyncs []uint64
 }
 
 // deliver runs send inside a projection commit when the harness has one.
@@ -101,6 +109,11 @@ func newHistoryHarnessWith(t *testing.T, maxQueuedBytes int64) *historyHarness {
 		updates:      make(chan appwire.HistoryUpdatedParams, 256),
 		resyncs:      make(chan uint64, 256),
 	}
+	t.Cleanup(func() {
+		if len(hx.deferredResyncs) > 0 {
+			t.Errorf("unconsumed resync(s) %v: read past an awaited update but not expected", hx.deferredResyncs)
+		}
+	})
 	hx.history = newThreadHistory(threadHistoryConfig{
 		threadID:       "th_history",
 		ref:            "local:th_history",
@@ -212,7 +225,9 @@ func (hx *historyHarness) writeAt(t *testing.T, data []byte, offset int64) {
 }
 
 // updatesThrough collects history/updated notifications until one covers
-// length.
+// length, keeping any resync it reads meanwhile in deferredResyncs: the harness
+// delivers the two on separate channels, so a resync can be ready before the
+// update it follows, and the reader must not treat that read order as fatal.
 func (hx *historyHarness) updatesThrough(t *testing.T, length int64) []appwire.HistoryUpdatedParams {
 	t.Helper()
 	var got []appwire.HistoryUpdatedParams
@@ -224,7 +239,7 @@ func (hx *historyHarness) updatesThrough(t *testing.T, length int64) []appwire.H
 				return got
 			}
 		case epoch := <-hx.resyncs:
-			t.Fatalf("unexpected resync to epoch %d", epoch)
+			hx.deferredResyncs = append(hx.deferredResyncs, epoch)
 		case <-time.After(historyTestWait):
 			t.Fatalf("no history/updated covering length %d; got %d updates", length, len(got))
 		}
@@ -233,6 +248,11 @@ func (hx *historyHarness) updatesThrough(t *testing.T, length int64) []appwire.H
 
 func (hx *historyHarness) nextResync(t *testing.T) uint64 {
 	t.Helper()
+	if len(hx.deferredResyncs) > 0 {
+		epoch := hx.deferredResyncs[0]
+		hx.deferredResyncs = hx.deferredResyncs[1:]
+		return epoch
+	}
 	select {
 	case epoch := <-hx.resyncs:
 		return epoch
@@ -246,6 +266,9 @@ func (hx *historyHarness) nextResync(t *testing.T) uint64 {
 
 func (hx *historyHarness) expectQuiet(t *testing.T) {
 	t.Helper()
+	if len(hx.deferredResyncs) > 0 {
+		t.Fatalf("unexpected resync to epoch %d", hx.deferredResyncs[0])
+	}
 	select {
 	case params := <-hx.updates:
 		t.Fatalf("unexpected history/updated %+v", params)
