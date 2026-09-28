@@ -1,0 +1,33 @@
+// A question the agent asked earlier (spec 8.2, "Question (history)"): an
+// amber left rule, each question in the reading serif, and your answer
+// beneath. While a question is still open the dock is the question, so the
+// transcript never shows the live one this way.
+import type { AskUserQuestion } from "@evener/appwire-client";
+import { Platform, Text, View } from "react-native";
+import { fonts } from "../design/tokens";
+import { useColors, useTextScale } from "../ui";
+
+const allowFontScaling = Platform.OS !== "ios";
+
+export function QuestionHistory({ questions, answer }: { questions: readonly AskUserQuestion[]; answer: string | undefined }) {
+	const { palette } = useColors();
+	const scale = useTextScale();
+	return (
+		<View style={{ borderLeftWidth: 2, borderLeftColor: palette.attention, paddingLeft: 12, gap: 6 }}>
+			{questions.map((question) => (
+				<Text
+					key={`${question.header}\u0000${question.question}`}
+					allowFontScaling={allowFontScaling}
+					style={{ fontFamily: fonts.serif, fontSize: 15 * scale, lineHeight: 21 * scale, color: palette.prose }}
+				>
+					{question.question}
+				</Text>
+			))}
+			{answer ? (
+				<Text allowFontScaling={allowFontScaling} style={{ fontSize: 13 * scale, lineHeight: 18 * scale, color: palette.inkMid }}>
+					{`You answered: ${answer}`}
+				</Text>
+			) : null}
+		</View>
+	);
+}

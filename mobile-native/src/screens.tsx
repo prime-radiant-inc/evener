@@ -123,6 +123,8 @@ import { SessionSheet } from "./SessionSheet";
 import { NewContentPill } from "./session/NewContentPill";
 import { TranscriptSkeleton } from "./session/TranscriptSkeleton";
 import {
+	answerTo,
+	hideAnswerMessages,
 	latestSettledTurn,
 	liveRunId,
 	newRowCount,
@@ -1114,10 +1116,24 @@ export function ConversationScreen({
 	);
 	const timelineRows = useMemo(
 		() =>
-			sessionRows(groupTimeline(presentation.items), conversation?.turns ?? []),
+			// Your answers to a question show beneath the question itself.
+			hideAnswerMessages(
+				sessionRows(groupTimeline(presentation.items), conversation?.turns ?? []),
+			),
 		[presentation.items, conversation?.turns],
 	);
 	const liveRun = liveRunId(timelineRows, conversation?.activeTurnId);
+	// A subagent row opens the subagent's own transcript, as the Activity
+	// sheet does, until phase 4's subagent screen.
+	const openSubagent = useCallback(
+		(ref: string, title: string) =>
+			navigation.push("Conversation", { hubId: route.params.hubId, ref, title }),
+		[navigation, route.params.hubId],
+	);
+	const answerFor = useCallback(
+		(itemId: string) => answerTo(conversation, itemId),
+		[conversation],
+	);
 	// Stable across renders, so a settled agent message keeps its memoized
 	// markdown view (TimelineItem's AgentMessage) while the list re-renders.
 	const quote = useCallback(
@@ -2001,6 +2017,9 @@ export function ConversationScreen({
 										}
 										quote={quote}
 										live={item.id === liveRun}
+										delegates={conversation?.delegates}
+										openSubagent={openSubagent}
+										answerFor={answerFor}
 									/>
 								</View>
 							)}

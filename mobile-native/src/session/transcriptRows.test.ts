@@ -3,6 +3,8 @@ import { describe, expect, it } from "vitest";
 import { type MobileTimelineItem, projectedRow } from "../projectedRows";
 import type { RunStep, TimelineRow } from "../timeline";
 import {
+	answerTo,
+	hideAnswerMessages,
 	latestSettledTurn,
 	liveRunId,
 	newRowCount,
@@ -338,6 +340,51 @@ describe("the turn you have seen at the end (ruling 31)", () => {
 	it("is nothing without a conversation or a settled turn", () => {
 		expect(latestSettledTurn(null)).toBeUndefined();
 		expect(latestSettledTurn({ turns: [{ id: "turn_1", status: "inProgress" }] })).toBeUndefined();
+	});
+});
+
+describe("answers you gave a question", () => {
+	const question = step("q", "ask_user");
+	const answer: TimelineRow = { kind: "user", id: "ans", text: '[answers]\n1. [Choice] → "Drop them"', turnId: "turn_1" };
+
+	it("leave the transcript: the question row shows the answer", () => {
+		expect(hideAnswerMessages([question, answer, reply("r")]).map((row) => row.id)).toEqual(["q", "r"]);
+	});
+
+	it("stay when no question came before them", () => {
+		expect(hideAnswerMessages([user("u"), answer]).map((row) => row.id)).toEqual(["u", "ans"]);
+	});
+
+	it("leave every other row alone", () => {
+		const rows: TimelineRow[] = [question, user("u"), { kind: "user", id: "plain", text: "[answers] are here", turnId: "turn_1" }, reply("r")];
+		expect(hideAnswerMessages(rows)).toEqual(rows);
+	});
+});
+
+describe("the answer you gave a question", () => {
+	const asked = {
+		id: "ask-1",
+		turnId: "turn_1",
+		type: "commandExecution",
+		toolName: "ask_user",
+		text: "",
+		argumentsJSON: JSON.stringify({
+			questions: [{ header: "Choice", question: "Keep or drop?", options: [{ label: "Drop them", detail: "" }] }],
+		}),
+	};
+	const answered = { id: "ans-1", turnId: "turn_2", type: "userMessage", text: '[answers]\n1. [Choice] → "Drop them"' };
+	const model = (items: unknown[]) => ({ turns: [{ id: "turn_1", items }] }) as unknown as Parameters<typeof answerTo>[0];
+
+	// The answer keeps the wire's own words, a chosen option quoted as the web
+	// shows it: "You answered: "Drop them"".
+	it("reads your answer, without the package's own framing", () => {
+		expect(answerTo(model([asked, answered]), "ask-1")).toBe('"Drop them"');
+	});
+
+	it("is nothing before you answer, or for a row it can't find", () => {
+		expect(answerTo(model([asked]), "ask-1")).toBeUndefined();
+		expect(answerTo(model([asked, answered]), "gone")).toBeUndefined();
+		expect(answerTo(null, "ask-1")).toBeUndefined();
 	});
 });
 

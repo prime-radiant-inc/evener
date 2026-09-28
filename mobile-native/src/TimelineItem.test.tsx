@@ -453,3 +453,116 @@ describe("a run in the transcript", () => {
 		expect(renderedText(tree)).toContain("agent/session.go");
 	});
 });
+
+function texts(root: ReactTestInstance) {
+	return root.findAll((node) => String(node.type) === "Text");
+}
+
+describe("a settled thought", () => {
+	const thought = (durationMs?: number): TimelineRow => ({
+		kind: "activity",
+		id: "r-1",
+		label: "Reasoning",
+		family: "reasoning",
+		state: "completed",
+		detail: { output: "Weigh the options first.", ...(durationMs === undefined ? {} : { durationMs }) },
+	});
+
+	it("reads how long it took, folded, and opens to the thought", () => {
+		const tree = render(<TimelineItem item={thought(12_000)} hubId="hub" sessionRef="thought-open" />);
+		const line = tree.root.findAll((node) => node.props.accessibilityRole === "button")[0];
+		expect(textOf(line)).toBe("Thought for 12s ›");
+		expect(renderedText(tree)).not.toContain("Weigh the options first.");
+		act(() => line.props.onPress());
+		expect(renderedText(tree)).toContain("Weigh the options first.");
+	});
+
+	it("says only that it thought when the length is unknown", () => {
+		const tree = render(<TimelineItem item={thought()} hubId="hub" sessionRef="thought-plain" />);
+		expect(textOf(tree.root.findAll((node) => node.props.accessibilityRole === "button")[0])).toBe("Thought ›");
+	});
+
+	it("reads a thought it can't show as one quiet line, with no rule", () => {
+		const row: TimelineRow = { kind: "failure", id: "r-2", title: "Thought not shown", detail: "", thought: true };
+		const tree = render(<TimelineItem item={row} hubId="hub" sessionRef="thought-hidden" />);
+		expect(renderedText(tree)).toContain("Thought not shown");
+		expect(tree.root.findAll((node) => node.props.style?.borderLeftWidth !== undefined)).toEqual([]);
+		expect(texts(tree.root).find((node) => textOf(node) === "Thought not shown")?.props.style).toMatchObject({ color: INK_LOW });
+	});
+});
+
+describe("a subagent", () => {
+	const ALIVE = "#189A4D";
+	const DANGER = "#E3474C";
+	const EDGE_STRONG = "#B7B6AC";
+	const row = (state: "running" | "failed" | "completed"): TimelineRow => ({
+		kind: "activity",
+		id: "item-1",
+		label: "delegate",
+		family: "tool",
+		state,
+		detail: { callId: "call-1", description: "Audit the store" },
+	});
+	const delegate = {
+		delegateId: "d1",
+		ownerSessionId: "s0",
+		rootSessionId: "s0",
+		childSessionId: "s1",
+		transcriptRef: "local:child-1",
+		type: "delegate",
+		lifecycle: "running",
+		phase: "running",
+		status: "running",
+		resumable: false,
+		needsAttention: false,
+		projectionRevision: 1,
+		description: "Audit the store",
+		originItemId: "item-1",
+		runningForMs: 60_000,
+	};
+	const rail = (root: ReactTestInstance) =>
+		root.findAll((node) => node.props.style?.borderLeftWidth === 2)[0]?.props.style.borderLeftColor;
+
+	it("rails its row in its state's hue", () => {
+		expect(rail(render(<TimelineItem item={row("running")} hubId="hub" sessionRef="s" delegates={[delegate]} />).root)).toBe(ALIVE);
+		expect(rail(render(<TimelineItem item={row("failed")} hubId="hub" sessionRef="s" />).root)).toBe(DANGER);
+		expect(rail(render(<TimelineItem item={row("completed")} hubId="hub" sessionRef="s" />).root)).toBe(EDGE_STRONG);
+	});
+
+	it("opens the subagent's own transcript when pressed", () => {
+		const openSubagent = vi.fn();
+		const tree = render(
+			<TimelineItem item={row("running")} hubId="hub" sessionRef="s" delegates={[delegate]} openSubagent={openSubagent} />,
+		);
+		expect(renderedText(tree)).toContain("running · 1m");
+		tree.root.findAll((node) => node.props.accessibilityRole === "button")[0].props.onPress();
+		expect(openSubagent).toHaveBeenCalledWith("local:child-1", "Audit the store");
+	});
+});
+
+describe("a question you answered", () => {
+	const row: TimelineRow = {
+		kind: "activity",
+		id: "ask-1",
+		label: "ask_user",
+		family: "tool",
+		state: "completed",
+		detail: {
+			arguments: JSON.stringify({
+				questions: [{ header: "Choice", question: "Keep or drop the implied options?", options: [{ label: "Drop them", detail: "" }] }],
+			}),
+		},
+	};
+
+	it("shows the question with your answer beneath", () => {
+		const tree = render(<TimelineItem item={row} hubId="hub" sessionRef="s" answerFor={() => "Drop them"} />);
+		expect(renderedText(tree)).toContain("Keep or drop the implied options?");
+		expect(renderedText(tree)).toContain("You answered: Drop them");
+	});
+
+	it("shows the question alone while it has no answer", () => {
+		const tree = render(<TimelineItem item={row} hubId="hub" sessionRef="s" answerFor={() => undefined} />);
+		expect(renderedText(tree)).toContain("Keep or drop the implied options?");
+		expect(renderedText(tree)).not.toContain("You answered");
+	});
+});

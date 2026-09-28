@@ -1,4 +1,4 @@
-import { scopedDisclosureId } from "@evener/appwire-client";
+import { type EvenerDelegateInfo, type ItemModel, parseAskUserQuestions, scopedDisclosureId } from "@evener/appwire-client";
 import { type ReactNode, useMemo, useState } from "react";
 import {
 	type AccessibilityActionEvent,
@@ -17,7 +17,11 @@ import { MarkdownResponse } from "./MarkdownResponse";
 import { toggleDisclosure, useDisclosureOpen } from "./nativeDisclosure";
 import type { MobileTimelineItem } from "./projectedRows";
 import { useMinuteClock } from "./session/minuteClock";
+import { QuestionHistory } from "./session/QuestionHistory";
 import { RunRow } from "./session/RunRow";
+import { SubagentRow } from "./session/SubagentRow";
+import { subagentLine } from "./session/subagentLine";
+import { ThoughtRow } from "./session/ThoughtRow";
 import { timeMarkerText } from "./session/transcriptRows";
 import { TranscriptImages } from "./TranscriptImages";
 import {
@@ -40,6 +44,9 @@ export function TimelineItem({
 	forkDisabled = false,
 	quote,
 	live = false,
+	delegates,
+	openSubagent,
+	answerFor,
 }: {
 	item: TimelineRow;
 	hubId: string;
@@ -53,6 +60,12 @@ export function TimelineItem({
 	quote?: (text: string) => void;
 	/** This row is the live run: the last run of the turn in progress. */
 	live?: boolean;
+	/** The session's subagents, for a subagent row's state and activity. */
+	delegates?: readonly EvenerDelegateInfo[];
+	/** Opens a subagent's own transcript. */
+	openSubagent?: (ref: string, title: string) => void;
+	/** Your answer to the question an ask_user row asked, when you gave one. */
+	answerFor?: (itemId: string) => string | undefined;
 }) {
 	const disclosureId = scopedDisclosureId(
 		JSON.stringify([hubId, sessionRef]),
@@ -63,6 +76,10 @@ export function TimelineItem({
 	const expanded = useDisclosureOpen(disclosureId, defaultOpen);
 	const toggle = () => toggleDisclosure(disclosureId, defaultOpen);
 	const colors = useColors();
+	// A thought the projector didn't show reads as one quiet line, with no
+	// error rule, unless the thought itself failed.
+	const quietThought = item.kind === "failure" && item.thought === true && item.title !== "Thought failed";
+	const textScale = useTextScale();
 	const noticeLabel =
 		item.kind === "notice" ? steeringNoticeLabel(item) : undefined;
 	let content: ReactNode;
@@ -128,6 +145,17 @@ export function TimelineItem({
 			);
 			break;
 		case "failure":
+			if (quietThought) {
+				content = (
+					<Text
+						allowFontScaling={Platform.OS !== "ios"}
+						style={{ fontSize: 14 * textScale, lineHeight: 19 * textScale, color: colors.palette.inkLow }}
+					>
+						{item.title}
+					</Text>
+				);
+				break;
+			}
 			content = (
 				<>
 					<Copy>{item.title}</Copy>
@@ -166,6 +194,23 @@ export function TimelineItem({
 			);
 			break;
 		case "activity":
+			if (item.family === "reasoning" && item.state !== "running") {
+				content = (
+					<ThoughtRow durationMs={item.detail.durationMs} text={item.detail.output} expanded={expanded} onToggle={toggle} />
+				);
+				break;
+			}
+			if (item.label === "delegate" || item.label === "delegate_send") {
+				content = <Subagent row={item} delegates={delegates} openSubagent={openSubagent} />;
+				break;
+			}
+			if (item.label === "ask_user") {
+				const questions = parseAskUserQuestions({ argumentsJSON: item.detail.arguments } as ItemModel);
+				if (questions) {
+					content = <QuestionHistory questions={questions} answer={answerFor?.(item.id)} />;
+					break;
+				}
+			}
 			if (activityPresentation?.mode === "intent") {
 				content = <Copy muted>{activityPresentation.summary}</Copy>;
 				break;
@@ -234,7 +279,7 @@ export function TimelineItem({
 			style={[
 				{ gap: 8 },
 				item.kind === "question" ||
-				item.kind === "failure" ||
+				(item.kind === "failure" && !quietThought) ||
 				(item.kind === "notice" && isCriticalNotice(item))
 					? {
 							borderLeftWidth: 2,
@@ -410,6 +455,20 @@ function AgentMessage({
 			</Modal>
 		</>
 	);
+}
+
+function Subagent({
+	row,
+	delegates,
+	openSubagent,
+}: {
+	row: Extract<TimelineRow, { kind: "activity" }>;
+	delegates: readonly EvenerDelegateInfo[] | undefined;
+	openSubagent: ((ref: string, title: string) => void) | undefined;
+}) {
+	// The state's time ("failed · 6m") moves on with the minute clock.
+	const now = useMinuteClock();
+	return <SubagentRow line={subagentLine(row, delegates, now)} onOpen={openSubagent} />;
 }
 
 function TimeMarker({ at }: { at: number }) {
