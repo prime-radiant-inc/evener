@@ -138,10 +138,11 @@ export class ActivityList {
     return this.run({ id, continuation });
   };
   private run(branch?: { id: string; continuation: string }) {
-    this.inFlight = this.load(branch).finally(() => {
-      this.inFlight = undefined;
+    const running = this.load(branch).finally(() => {
+      if (this.inFlight === running) this.inFlight = undefined;
     });
-    return this.inFlight;
+    this.inFlight = running;
+    return running;
   }
   private async load(branch?: { id: string; continuation: string }) {
     this.publish({
@@ -210,6 +211,12 @@ export class ActivityList {
         }
       }
     } while ((this.dirty || branch) && !this.disposed);
+    // Clear inFlight before the completion publish. A listener that reacts to
+    // `loading: false` by requesting the next page (or a refresh) must not find
+    // this load still marked in flight: the drain above has already run, so its
+    // request would be queued onto an empty loop and dropped until some later
+    // load. Clearing first lets it start its own run.
+    this.inFlight = undefined;
     this.publish({ loading: false });
   }
   dispose() {
