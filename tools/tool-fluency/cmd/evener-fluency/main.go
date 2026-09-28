@@ -7,7 +7,9 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"io/fs"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -19,6 +21,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"gopkg.in/yaml.v3"
 	"primeradiant.com/evener/agent"
@@ -30,8 +33,10 @@ import (
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/cmdutil"
 	"primeradiant.com/evener/envvars"
+	"primeradiant.com/evener/execsupport/procgroup"
 	"primeradiant.com/evener/llm"
 	_ "primeradiant.com/evener/llm/providers/all"
+	"primeradiant.com/evener/llm/registry"
 )
 
 var exitProcess = os.Exit
@@ -53,6 +58,18 @@ func run(args []string) error {
 		return runCatalog(args[1:])
 	case "run":
 		return runSuite(args[1:])
+	case "prose-stats":
+		return runProseStats(args[1:])
+	case "prose-count":
+		return runProseCount(args[1:])
+	case "review-pack":
+		return runReviewPack(args[1:])
+	case "rank-sets":
+		return runRankSets(args[1:])
+	case "rank-score":
+		return runRankScore(args[1:])
+	case "matrix":
+		return runMatrixCommand(args[1:])
 	case "help", "-h", "--help":
 		usage()
 		return nil
@@ -68,6 +85,13 @@ func usage() {
 USAGE
   evener-fluency catalog [--model provider/model] [--json]
   evener-fluency run [--model provider/model] [--probe id] [--build]
+  evener-fluency prose-stats --results LABEL=DIR [--results LABEL=DIR ...] [--channel to_user|all] [--json]
+  evener-fluency prose-count FILE...
+  evener-fluency review-pack --results LABEL=DIR [...] --mask-root DIR --packets DIR --key FILE [--seed N]
+  evener-fluency rank-sets --review-pack-key FILE --packets DIR --out FILE --key FILE [--skip-task ID ...] [--seed N]
+  evener-fluency rank-score --key FILE --reviews FILE [...] [--detail] [--json]
+  evener-fluency matrix --version LABEL=BIN [...] --models M1,M2 --out DIR [--max-concurrent N] [run flags]
+  evener-fluency matrix --version-manifest FILE --version-cache DIR --models M1,M2 --out DIR [run flags]
 
 `)
 }
@@ -87,7 +111,11 @@ func runCatalog(args []string) error {
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	tools, err := catalogTools(*model)
+	reg, err := runnerLoadRegistry()
+	if err != nil {
+		return fmt.Errorf("provider registry: %w", err)
+	}
+	tools, err := catalogTools(reg, *model)
 	if err != nil {
 		return err
 	}
@@ -102,15 +130,23 @@ func runCatalog(args []string) error {
 	return nil
 }
 
-func catalogTools(modelRef string) ([]catalogTool, error) {
+// runnerLoadRegistry loads the provider registry a run resolves its model on:
+// the one evener itself loads, with the user's configured providers, so the
+// runner reads a run the way evener ran it. TestMain replaces it with the
+// embedded registry, so default tests never read a developer's configuration.
+var runnerLoadRegistry = func() (*registry.Registry, error) {
+	r, _, err := cmdutil.LoadRegistry()
+	return r, err
+}
+
+// catalogTools lists the tools evener offers the model, resolved on reg. The
+// catalog needs only the model's profile: no credentials and no network.
+func catalogTools(reg *registry.Registry, modelRef string) ([]catalogTool, error) {
 	providerName, modelName, err := splitModelRef(modelRef)
 	if err != nil {
 		return nil, err
 	}
-	// The catalog is what a model of this shape is offered, so it resolves on
-	// the embedded registry: no credentials, no network, and no dependence on
-	// whatever the developer happens to have configured.
-	profile, err := provider.Resolve(provider.EmbeddedRegistry(), providerName+"/"+modelName)
+	profile, err := provider.Resolve(reg, providerName+"/"+modelName)
 	if err != nil {
 		return nil, err
 	}
@@ -156,6 +192,9 @@ type probeFile struct {
 	Expect  expectSpec        `yaml:"expect"`
 	Metrics metricsSpec       `yaml:"metrics"`
 	Skip    map[string]string `yaml:"skip,omitempty"`
+	// Reference is a shell script that solves the task. Only the offline
+	// task test runs it, to prove the checks can pass; the runner ignores it.
+	Reference string `yaml:"reference,omitempty"`
 }
 
 // metricsSpec is the validated form of a probe manifest's `metrics:` block
@@ -204,6 +243,12 @@ func (m *metricsSpec) UnmarshalYAML(node *yaml.Node) error {
 
 type fixtureSpec struct {
 	Files map[string]string `yaml:"files"`
+	// Git makes the work directory a repository on branch main whose first
+	// commit holds Files, so a task can check what the agent changed.
+	Git bool `yaml:"git,omitempty"`
+	// Untracked files are written after that commit, so a task can check
+	// that the agent leaves unrelated work alone.
+	Untracked map[string]string `yaml:"untracked,omitempty"`
 }
 
 type expectSpec struct {
@@ -211,6 +256,20 @@ type expectSpec struct {
 	ForbiddenCalls []string         `yaml:"forbidden_calls"`
 	Artifacts      []artifactExpect `yaml:"artifacts"`
 	FinalContains  []string         `yaml:"final_contains"`
+	// MaxCalls caps how many times a tool may be called, by canonical name.
+	MaxCalls map[string]int `yaml:"max_calls,omitempty"`
+	// Checks are shell commands run in the work directory after the agent
+	// finishes. Each must exit zero. They judge the outcome of the work.
+	Checks []checkSpec `yaml:"checks,omitempty"`
+	// AllowToolErrors keeps tool errors from failing the run. A realistic
+	// task meets missing files and failing commands on its way to the outcome.
+	AllowToolErrors bool `yaml:"allow_tool_errors,omitempty"`
+}
+
+// checkSpec is one outcome check: a named shell command.
+type checkSpec struct {
+	Name string `yaml:"name"`
+	Run  string `yaml:"run"`
 }
 
 type expectedCall struct {
@@ -242,6 +301,14 @@ type runConfig struct {
 	clearOpenAIAPIKey  bool
 	sandbox            string
 	sandboxNet         string
+}
+
+// holdsResults reports whether dir exists with anything in it. A run reuses
+// its directories, so a second run into one that holds results would mix the
+// two: the old work tree, the old sessions, and the old counts.
+func holdsResults(dir string) bool {
+	entries, err := os.ReadDir(dir)
+	return err == nil && len(entries) > 0
 }
 
 // defaultMaxRounds is the runner's round cap when --max-rounds is not given.
@@ -301,6 +368,9 @@ func runSuiteWithConfig(cfg runConfig) error {
 	if cfg.outDir == "" {
 		cfg.outDir = filepath.Join("tools", "tool-fluency", "results", time.Now().UTC().Format("20060102T150405Z"))
 	}
+	if holdsResults(cfg.outDir) {
+		return fmt.Errorf("--out %s already holds results; a second run there would mix with them, so name a new directory", cfg.outDir)
+	}
 	if err := os.MkdirAll(cfg.outDir, 0o755); err != nil {
 		return err
 	}
@@ -324,11 +394,15 @@ func runSuiteWithConfig(cfg runConfig) error {
 	// so a scoped request never silently balloons into the full set without
 	// the caller seeing it named. See kata 73cb(a).
 	fmt.Fprint(os.Stderr, selectionSummary(cfg, probes))
-	wireNames, err := wireNameToCanonicalForModel(cfg.model)
+	reg, err := runnerLoadRegistry()
+	if err != nil {
+		return fmt.Errorf("provider registry: %w", err)
+	}
+	wireNames, err := wireNameToCanonicalForModel(reg, cfg.model)
 	if err != nil {
 		return err
 	}
-	catalog, err := catalogTools(cfg.model)
+	catalog, err := catalogTools(reg, cfg.model)
 	if err != nil {
 		return err
 	}
@@ -376,6 +450,19 @@ func buildEvener(outDir string) (string, error) {
 	return bin, nil
 }
 
+// decodeProbe decodes one probe manifest strictly: an unknown field is an
+// error, so a misspelled field cannot silently turn a check off. An empty
+// manifest decodes to an empty probe, which loadProbes reports as missing its id.
+func decodeProbe(data []byte) (probeFile, error) {
+	dec := yaml.NewDecoder(bytes.NewReader(data))
+	dec.KnownFields(true)
+	var probe probeFile
+	if err := dec.Decode(&probe); err != nil && !errors.Is(err, io.EOF) {
+		return probeFile{}, err
+	}
+	return probe, nil
+}
+
 func loadProbes(dir, filter string) ([]probeFile, error) {
 	var probes []probeFile
 	err := filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
@@ -389,8 +476,8 @@ func loadProbes(dir, filter string) ([]probeFile, error) {
 		if err != nil {
 			return err
 		}
-		var probe probeFile
-		if err := yaml.Unmarshal(data, &probe); err != nil {
+		probe, err := decodeProbe(data)
+		if err != nil {
 			return fmt.Errorf("%s: %w", path, err)
 		}
 		if probe.ID == "" {
@@ -468,10 +555,8 @@ type probeMetrics struct {
 // source of truth the renderer renamed tools with. A hand-maintained copy
 // here would silently misclassify metrics the day a profile gains or
 // changes a rename (roborev Medium on f5e1017).
-func wireNameToCanonicalForModel(modelRef string) (map[string]string, error) {
-	// Resolve on the embedded registry, like catalogTools: no credentials,
-	// no network, and no dependence on developer configuration.
-	profile, err := provider.Resolve(provider.EmbeddedRegistry(), modelRef)
+func wireNameToCanonicalForModel(reg *registry.Registry, modelRef string) (map[string]string, error) {
+	profile, err := provider.Resolve(reg, modelRef)
 	if err != nil {
 		return nil, err
 	}
@@ -793,7 +878,7 @@ func runCLIProbe(ctx context.Context, cfg runConfig, probe probeFile, res probeR
 		return err
 	}
 	cmd := exec.CommandContext(ctx, cfg.evenerBin, args...)
-	cmd.Env = os.Environ()
+	cmd.Env = fixtureEnv(res.WorkDir)
 	if cfg.clearOpenAIAPIKey {
 		cmd.Env = append(cmd.Env, envvars.OpenAIAPIKey.Assignment(""))
 	}
@@ -1144,10 +1229,11 @@ func unavailableFinding(probe probeFile, available map[string]bool) *finding {
 }
 
 // walkTranscripts calls fn with every session transcript under stateDir in
-// session-file order. It returns the first error from fn or from reading a
-// transcript. The tool-count aggregation walks every transcript through this
-// enumeration; the phase metrics read the root session's transcript directly.
-func walkTranscripts(stateDir string, fn func(doctor.TranscriptResult) error) error {
+// session-file order, rendered with opts. It returns the first error from fn
+// or from reading a transcript. The tool-count aggregation walks every
+// transcript through this enumeration; the phase metrics read the root
+// session's transcript directly.
+func walkTranscripts(stateDir string, opts doctor.TranscriptOpts, fn func(doctor.TranscriptResult) error) error {
 	matches, err := filepath.Glob(filepath.Join(stateDir, "sessions", "*.transcript.jsonl"))
 	if err != nil {
 		return err
@@ -1158,7 +1244,7 @@ func walkTranscripts(stateDir string, fn func(doctor.TranscriptResult) error) er
 		if !ok || id == "" {
 			continue
 		}
-		tr, err := runnerReadTranscript(stateDir, id, doctor.TranscriptOpts{})
+		tr, err := runnerReadTranscript(stateDir, id, opts)
 		if err != nil {
 			return err
 		}
@@ -1173,7 +1259,21 @@ func materializeFixture(workDir string, fixture fixtureSpec) error {
 	if err := os.MkdirAll(workDir, 0o755); err != nil {
 		return err
 	}
-	for rel, content := range fixture.Files {
+	if err := writeFixtureFiles(workDir, fixture.Files); err != nil {
+		return err
+	}
+	if fixture.Git {
+		if err := commitFixture(workDir); err != nil {
+			return err
+		}
+	}
+	return writeFixtureFiles(workDir, fixture.Untracked)
+}
+
+// writeFixtureFiles writes each file under workDir and refuses a path that
+// escapes it.
+func writeFixtureFiles(workDir string, files map[string]string) error {
+	for rel, content := range files {
 		path := filepath.Join(workDir, filepath.Clean(rel))
 		within, err := filepath.Rel(workDir, path)
 		if err != nil || strings.HasPrefix(within, "..") || filepath.IsAbs(within) {
@@ -1187,6 +1287,44 @@ func materializeFixture(workDir string, fixture fixtureSpec) error {
 		}
 	}
 	return nil
+}
+
+// commitFixture makes workDir a repository on main with one commit holding
+// everything written so far. The identity lives in the repository, so the
+// agent's own commits work on a machine with no global identity. The user's
+// global git setup belongs to their own work and stays out: the repository
+// starts from no template, so no template hooks land in it; it never signs;
+// it uses its own empty hooks directory; and it reads no global ignore file.
+func commitFixture(workDir string) error {
+	for _, args := range [][]string{
+		{"init", "-q", "-b", "main", "--template="},
+		{"config", "user.name", "Evener Fixture"},
+		{"config", "user.email", "fixture@evener.test"},
+		{"config", "commit.gpgsign", "false"},
+		{"config", "core.hooksPath", ".git/hooks"},
+		{"config", "core.excludesFile", os.DevNull},
+		{"add", "-A"},
+		{"commit", "-q", "--allow-empty", "-m", "init"},
+	} {
+		cmd := exec.CommandContext(context.Background(), "git", args...)
+		cmd.Dir = workDir
+		if out, err := cmd.CombinedOutput(); err != nil {
+			return fmt.Errorf("git %s: %w: %s", strings.Join(args, " "), err, strings.TrimSpace(string(out)))
+		}
+	}
+	return nil
+}
+
+// fixtureEnv is the environment for anything that acts on a fixture: the
+// agent's evener process and the task checks. It cuts the fixture off from any
+// Go workspace or git repository above it, so results that land inside a
+// repository, such as evener's own, still run each fixture as its own project.
+func fixtureEnv(workDir string) []string {
+	env := append(os.Environ(), "GOWORK=off")
+	if parent, err := filepath.Abs(filepath.Dir(workDir)); err == nil {
+		env = append(env, "GIT_CEILING_DIRECTORIES="+parent)
+	}
+	return env
 }
 
 func parseEvents(data []byte) (map[string]int, map[string]int, []string) {
@@ -1239,7 +1377,7 @@ func transcriptToolCounts(tr doctor.TranscriptResult) map[string]int {
 
 func allTranscriptToolCounts(stateDir string) (map[string]int, error) {
 	counts := map[string]int{}
-	err := walkTranscripts(stateDir, func(tr doctor.TranscriptResult) error {
+	err := walkTranscripts(stateDir, doctor.TranscriptOpts{}, func(tr doctor.TranscriptResult) error {
 		for tool, n := range transcriptToolCounts(tr) {
 			counts[tool] += n
 		}
@@ -1283,6 +1421,13 @@ func rootSessionID(stateDir string) (string, error) {
 	return selected.ID, nil
 }
 
+// callCount is how many times the run called a tool. A manifest may name a
+// tool by its canonical name or by the name the model saw, so the count is the
+// larger of the two.
+func callCount(res probeResult, name string) int {
+	return max(res.CanonicalToolCounts[name], res.ModelToolCounts[name])
+}
+
 func evaluateExpectations(workDir string, probe probeFile, res probeResult) []finding {
 	var out []finding
 	for _, call := range probe.Expect.Calls {
@@ -1290,7 +1435,7 @@ func evaluateExpectations(workDir string, probe probeFile, res probeResult) []fi
 		if minCalls == 0 {
 			minCalls = 1
 		}
-		got := max(res.CanonicalToolCounts[call.Tool], res.ModelToolCounts[call.Tool])
+		got := callCount(res, call.Tool)
 		if got < minCalls {
 			out = append(out, finding{
 				Category: "selection",
@@ -1300,12 +1445,23 @@ func evaluateExpectations(workDir string, probe probeFile, res probeResult) []fi
 		}
 	}
 	for _, name := range probe.Expect.ForbiddenCalls {
-		got := max(res.CanonicalToolCounts[name], res.ModelToolCounts[name])
+		got := callCount(res, name)
 		if got > 0 {
 			out = append(out, finding{
 				Category: "churn",
 				Title:    "forbidden tool was called",
 				Detail:   fmt.Sprintf("%s calls=%d", name, got),
+			})
+		}
+	}
+	for _, name := range slices.Sorted(maps.Keys(probe.Expect.MaxCalls)) {
+		limit := probe.Expect.MaxCalls[name]
+		got := callCount(res, name)
+		if got > limit {
+			out = append(out, finding{
+				Category: "churn",
+				Title:    "tool called more often than the task allows",
+				Detail:   fmt.Sprintf("%s calls=%d max=%d", name, got, limit),
 			})
 		}
 	}
@@ -1332,6 +1488,15 @@ func evaluateExpectations(workDir string, probe probeFile, res probeResult) []fi
 			}
 		}
 	}
+	for _, check := range probe.Expect.Checks {
+		if ok, detail := runCheck(workDir, check, checkTimeout); !ok {
+			out = append(out, finding{
+				Category: "outcome",
+				Title:    "check failed: " + check.Name,
+				Detail:   detail,
+			})
+		}
+	}
 	for _, want := range probe.Expect.FinalContains {
 		if !resultContains(res, want) {
 			out = append(out, finding{
@@ -1341,13 +1506,15 @@ func evaluateExpectations(workDir string, probe probeFile, res probeResult) []fi
 			})
 		}
 	}
-	for toolName, n := range res.ToolErrors {
-		if n > 0 {
-			out = append(out, finding{
-				Category: "arguments",
-				Title:    "tool returned validation/runtime errors",
-				Detail:   fmt.Sprintf("%s errors=%d", toolName, n),
-			})
+	if !probe.Expect.AllowToolErrors {
+		for toolName, n := range res.ToolErrors {
+			if n > 0 {
+				out = append(out, finding{
+					Category: "arguments",
+					Title:    "tool returned validation/runtime errors",
+					Detail:   fmt.Sprintf("%s errors=%d", toolName, n),
+				})
+			}
 		}
 	}
 	return out
@@ -1363,6 +1530,56 @@ func resultContains(res probeResult, want string) bool {
 		}
 	}
 	return false
+}
+
+// checkTimeout bounds one outcome check, so a command that waits on a
+// terminal or on a child process cannot stall a run.
+const checkTimeout = 2 * time.Minute
+
+// runCheck runs one check in workDir with no stdin. It reports whether the
+// check passed and, when it failed, why.
+func runCheck(workDir string, check checkSpec, timeout time.Duration) (bool, string) {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "bash", "-c", check.Run)
+	cmd.Dir = workDir
+	cmd.Env = fixtureEnv(workDir)
+	// The check runs in its own process group, so the kill at the deadline
+	// reaches everything it started, such as a go test binary stuck in a loop.
+	// The cost: a Ctrl-C of the runner no longer reaches a running check.
+	cmd.SysProcAttr = procgroup.SysProcAttr()
+	cmd.Cancel = func() error {
+		if cmd.Process != nil {
+			procgroup.Kill(cmd.Process.Pid)
+		}
+		return nil
+	}
+	// A descendant that left the group can still hold the output pipe; stop
+	// waiting for it shortly after the kill.
+	cmd.WaitDelay = 5 * time.Second
+	out, err := cmd.CombinedOutput()
+	if err == nil {
+		return true, ""
+	}
+	if ctx.Err() != nil {
+		return false, fmt.Sprintf("timed out after %s", timeout)
+	}
+	return false, fmt.Sprintf("%v: %s", err, lastBytes(strings.TrimSpace(string(out)), 1500))
+}
+
+// lastBytes keeps the end of s, where a failing command says why it failed.
+// The cut point advances forward, never landing inside a multi-byte UTF-8
+// rune (keeping at most n bytes, never more), the same rune-boundary
+// technique agent/doctor.Truncate uses when it cuts from the front.
+func lastBytes(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	cut := len(s) - n
+	for cut < len(s) && !utf8.RuneStart(s[cut]) {
+		cut++
+	}
+	return "..." + s[cut:]
 }
 
 // classifyProbeError decides whether a probe command failure reflects the

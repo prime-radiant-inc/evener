@@ -11,6 +11,7 @@ import { SymbolView } from "expo-symbols";
 import * as WebBrowser from "expo-web-browser";
 import { type ReactNode, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { ActionSheetIOS, Alert, AppState, Platform, Pressable, ScrollView, Text, TextInput, View } from "react-native";
+import { SwipeRow, swipeAccessibility } from "../board/SwipeRow";
 import { typeRoles } from "../design/tokens";
 import type { Routes } from "../screens";
 import { Sheet, useSheet } from "../sheet/Sheet";
@@ -151,9 +152,7 @@ function NotesBody({
 					/>
 				))}
 				{writable && session.sessionUrls.length > 0 ? (
-					// Swipe to remove arrives in PR 12, which changes this to the
-					// spec's "Swipe left on one to remove it."
-					<Quiet small>The agent adds links as it works. Touch and hold one to remove it.</Quiet>
+					<Quiet small>The agent adds links as it works. Swipe left on one to remove it.</Quiet>
 				) : null}
 			</Group>
 		</>
@@ -303,6 +302,8 @@ function LinkRow({
 		void notes.removeLink(link.id).then((removed) =>
 			toast.show({ text: removed ? "Link removed. Only the agent can add links." : "Couldn't remove that link." }),
 		);
+	// VoiceOver names the swipe's remove in full; the panel has room for one word.
+	const removeAction = { key: "remove", label: "Remove link", run: remove };
 	const menu = () => {
 		const items = [
 			...(kind === "web" ? [{ label: "Open", run: open }] : []),
@@ -330,12 +331,14 @@ function LinkRow({
 			{ cancelable: true },
 		);
 	};
-	return (
+	const row = (
 		<Pressable
 			accessibilityRole={press ? "link" : "text"}
 			accessibilityLabel={label ? `${label}, ${link.url}` : link.url}
 			onPress={press}
 			onLongPress={menu}
+			// VoiceOver's stand-in for the swipe.
+			{...(writable ? swipeAccessibility(undefined, [removeAction]) : {})}
 			style={({ pressed }) => ({
 				minHeight: 44,
 				flexDirection: "row",
@@ -373,5 +376,12 @@ function LinkRow({
 				</Text>
 			</View>
 		</Pressable>
+	);
+	return writable ? (
+		<SwipeRow destructive={{ ...removeAction, label: "Remove" }} backdrop={palette.canvas}>
+			{row}
+		</SwipeRow>
+	) : (
+		row
 	);
 }

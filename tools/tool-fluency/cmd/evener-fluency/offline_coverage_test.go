@@ -16,6 +16,7 @@ import (
 	"primeradiant.com/evener/agent/provider"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/llm"
+	"primeradiant.com/evener/llm/registry"
 )
 
 func TestRunRoutesLocalSubcommands(t *testing.T) {
@@ -227,7 +228,7 @@ func TestRunCLIProbe(t *testing.T) {
 }
 
 func TestCatalogAndSuiteOffline(t *testing.T) {
-	tools, err := catalogTools("openai/gpt-5.4-mini")
+	tools, err := catalogTools(provider.EmbeddedRegistry(), "openai/gpt-5.4-mini")
 	if err != nil || len(tools) == 0 {
 		t.Fatalf("catalogTools = %d, %v", len(tools), err)
 	}
@@ -253,6 +254,32 @@ func TestCatalogAndSuiteOffline(t *testing.T) {
 	}
 	if err := runSuite([]string{"--model", "openai/gpt-5.4-mini", "--probes-dir", probes, "--probe", "missing", "--out", filepath.Join(dir, "none"), "--evener-bin", bin}); err == nil {
 		t.Fatal("empty selection returned nil")
+	}
+}
+
+// TestSuiteResolvesModelsOnConfiguredProviders: a run resolves its model on
+// the registry evener itself uses, so a provider instance the user configured,
+// such as a gateway, resolves the way evener resolves it. Not parallel: it
+// replaces the registry loader TestMain installs.
+func TestSuiteResolvesModelsOnConfiguredProviders(t *testing.T) {
+	dir := t.TempDir()
+	config := filepath.Join(dir, "providers.toml")
+	mustWrite(t, config, "[providers.gw]\nprotocol = \"openai-chat\"\nbase_url = \"https://gw.example.test/v1\"\nauth = \"none\"\n\n[providers.gw.models.\"flash-1\"]\n")
+	loadTestDefault := runnerLoadRegistry
+	t.Cleanup(func() { runnerLoadRegistry = loadTestDefault })
+	runnerLoadRegistry = func() (*registry.Registry, error) {
+		return registry.Load(registry.WithConfigPath(config), registry.WithStateRoot(filepath.Join(dir, "state")),
+			registry.WithOffline(true), registry.WithoutCache(), registry.WithEnv(func(string) (string, bool) { return "", false }))
+	}
+	probes := filepath.Join(dir, "probes")
+	mustWrite(t, filepath.Join(probes, "probe.yaml"), "schema: 1\nid: local\nprompt: hello\nexpect:\n  final_contains: [ok]\n")
+	bin := filepath.Join(dir, "fake-evener")
+	mustWrite(t, bin, "#!/bin/sh\nprintf 'ok\\n'\n")
+	if err := os.Chmod(bin, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := runSuite([]string{"--model", "gw/flash-1", "--probes-dir", probes, "--out", filepath.Join(dir, "out"), "--evener-bin", bin}); err != nil {
+		t.Fatalf("run on a configured instance: %v", err)
 	}
 }
 

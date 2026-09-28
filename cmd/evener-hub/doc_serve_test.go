@@ -72,9 +72,19 @@ func docImageRequest(t *testing.T, web *WebServer, session, path string) *httpte
 
 func docRawRequest(t *testing.T, web *WebServer, session, path string) *httptest.ResponseRecorder {
 	t.Helper()
+	return docRawRequestIfNoneMatch(t, web, session, path, "")
+}
+
+// docRawRequestIfNoneMatch issues a raw /doc/file GET carrying If-None-Match,
+// or no such header when etag is empty.
+func docRawRequestIfNoneMatch(t *testing.T, web *WebServer, session, path, etag string) *httptest.ResponseRecorder {
+	t.Helper()
 	u := "/doc/file?format=raw&session=" + session + "&path=" + path
 	req := httptest.NewRequest(http.MethodGet, u, nil)
 	req.Host = "127.0.0.1:9180"
+	if etag != "" {
+		req.Header.Set("If-None-Match", etag)
+	}
 	rec := httptest.NewRecorder()
 	web.Handler().ServeHTTP(rec, req)
 	return rec

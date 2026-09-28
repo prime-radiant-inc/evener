@@ -109,17 +109,17 @@ func FuzzSmallFaultsPass5(f *testing.F) {
 		call(web.handleDocImage, http.MethodGet, "/doc/image?session=01PASS5&path=.")
 		call(web.handleDocImage, http.MethodGet, "/doc/image?session=remote:x&path=out.png")
 		call(web.handleDocImage, http.MethodPost, "/doc/image")
-		_, _ = readDocFile(cwd)
-		_, _ = readDocFile(filepath.Join(cwd, "missing"))
+		_, _ = readDocFile(cwd, cwd)
+		_, _ = readDocFile(cwd, filepath.Join(cwd, "missing"))
 		_ = looksBinaryBytes(append(make([]byte, 9000), 0))
-		docStat = func(string) (os.FileInfo, error) { return nil, errors.New("stat") }
-		_, _ = readDocFile("x")
+		docStat = func(*os.File) (os.FileInfo, error) { return nil, errors.New("stat") }
+		_, _ = readDocFile(cwd, filepath.Join(cwd, "note.txt"))
 		docStat = oldStat
-		docOpen = func(string) (*os.File, error) { return nil, errors.New("open") }
-		_, _ = readDocFile(filepath.Join(cwd, "note.txt"))
+		docOpen = func(string, string) (*os.File, error) { return nil, errors.New("open") }
+		_, _ = readDocFile(cwd, filepath.Join(cwd, "note.txt"))
 		docOpen = oldOpen
-		docOpen = func(string) (*os.File, error) { return os.Open(cwd) }
-		_, _ = readDocFile(filepath.Join(cwd, "note.txt"))
+		docOpen = func(string, string) (*os.File, error) { return os.Open(cwd) }
+		_, _ = readDocFile(cwd, filepath.Join(cwd, "note.txt"))
 		docOpen = oldOpen
 		_, _ = web.localSessionCWD("remote:x")
 		_, _ = web.localSessionCWD("01MISSING")

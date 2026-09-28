@@ -3,6 +3,7 @@
 import type { ReactTestRenderer } from "react-test-renderer";
 import { act } from "react-test-renderer";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { paletteFor } from "./design/tokens";
 import { type QueueHost, QueueSheet, queueHosts } from "./QueueSheet";
 import { pressable, render, renderedText } from "./renderNative.testkit";
 import type { Ghost } from "./session/ghosts";
@@ -15,6 +16,9 @@ vi.mock("react-native", async () => ({
 	ActionSheetIOS: { showActionSheetWithOptions: vi.fn() },
 }));
 vi.mock("expo-symbols", () => ({ SymbolView: "SymbolView" }));
+vi.mock("react-native-gesture-handler/ReanimatedSwipeable", async () =>
+	(await import("./renderNative.testkit")).gestureHandlerModuleMock(),
+);
 vi.mock("@react-navigation/native", () => ({
 	useNavigation: () => navigation,
 	usePreventRemove: () => {},
@@ -84,6 +88,13 @@ it("lists every queued message the session carries, not only the three above the
 	for (const n of [1, 2, 3, 4]) expect(text).toContain(`message ${n}`);
 	expect(text).not.toContain("more queued");
 	expect(pressable(tree, "Steer all now")).toBeUndefined();
+});
+
+it("paints a swiped message the sheet's canvas, since the bubble itself is unfilled", () => {
+	const tree = mountSheet(host());
+	const contents = tree.root.findAllByProps({ testID: "swipe-row-content" });
+	expect(contents).toHaveLength(4);
+	for (const content of contents) expect(content.props.style).toEqual({ backgroundColor: paletteFor("light").canvas });
 });
 
 it("offers Steer all now only when the session can drain its queue", async () => {

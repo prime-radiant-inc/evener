@@ -55,6 +55,7 @@ import { StopSubagentSheet } from "./src/subagents/StopSubagentSheet";
 import { SubagentScreen } from "./src/subagents/SubagentScreen";
 import { SubagentsScreen } from "./src/subagents/SubagentsScreen";
 import { ReaderScreen } from "./src/reader/ReaderScreen";
+import { replaceAnimation } from "./src/session/titleSwipe";
 import { TasksSheet } from "./src/TasksSheet";
 import { TranscriptPreferencesScreen } from "./src/TranscriptPreferencesScreen";
 import { ErrorMessage, useColors } from "./src/ui";
@@ -213,6 +214,7 @@ function Navigation() {
 						component={ConversationScreen}
 						options={({ route }) => ({
 							title: route.params.title || "Conversation",
+							animationTypeForReplace: replaceAnimation(route.params),
 						})}
 					/>
 					<Stack.Screen

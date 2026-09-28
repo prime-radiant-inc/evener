@@ -244,7 +244,7 @@ func summarizeTurn(index int, e transcript.Entry, resultTool string, textMax int
 			ts.ToolCalls = append(ts.ToolCalls, ToolCallSummary{
 				Name:       part.ToolCall.Name,
 				Arguments:  arguments,
-				ArgPreview: truncate(arguments, argPreviewMax),
+				ArgPreview: Truncate(arguments, argPreviewMax),
 				Intent:     intent,
 				IsResult:   part.ToolCall.Name == resultTool,
 			})
@@ -254,12 +254,12 @@ func summarizeTurn(index int, e transcript.Entry, resultTool string, textMax int
 			}
 			ts.ToolResults = append(ts.ToolResults, ToolResultSummary{
 				Name:           part.ToolResult.Name,
-				ContentPreview: truncate(toolResultContentText(part.ToolResult.Content), textMax),
+				ContentPreview: Truncate(toolResultContentText(part.ToolResult.Content), textMax),
 				IsError:        part.ToolResult.IsError,
 			})
 		}
 	}
-	ts.Text = truncate(strings.TrimSpace(text.String()), textMax)
+	ts.Text = Truncate(strings.TrimSpace(text.String()), textMax)
 	return ts
 }
 
@@ -435,12 +435,12 @@ func atoi(s string) int {
 	return n
 }
 
-// truncate caps s at maxLen bytes plus an ellipsis. The cap is a byte budget,
+// Truncate caps s at maxLen bytes plus an ellipsis. The cap is a byte budget,
 // but the cut backs off to the previous rune boundary so a valid input never
 // yields invalid UTF-8: the kept prefix is at most maxLen bytes, never more.
 // It never trims: a caller that wants tidy edges trims before calling, so the
 // full-text tool-result path can report the result's bytes exactly.
-func truncate(s string, maxLen int) string {
+func Truncate(s string, maxLen int) string {
 	if len(s) <= maxLen {
 		return s
 	}
