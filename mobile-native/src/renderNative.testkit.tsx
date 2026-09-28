@@ -75,6 +75,7 @@ export function nativeModuleMock() {
 		keyExtractor?: (item: unknown, index: number) => string;
 		renderItem?: (info: { item: unknown }) => ReactNode;
 		ListHeaderComponent?: ReactNode;
+		ListFooterComponent?: ReactNode;
 		ListEmptyComponent?: ReactNode;
 	}) =>
 		createElement(
@@ -89,6 +90,7 @@ export function nativeModuleMock() {
 				),
 			),
 			(props.data ?? []).length === 0 ? (props.ListEmptyComponent ?? null) : null,
+			props.ListFooterComponent ?? null,
 		);
 
 	// KeyboardAvoidingView only shifts layout; the test tree renders its
