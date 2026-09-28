@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"os"
 	"path/filepath"
 	"testing"
 
@@ -142,18 +143,32 @@ func TestProvisionLiveSandboxEnforcesAndFailsClosed(t *testing.T) {
 // TestCLIProbeArgsForwardSandbox: a declared mode reaches the spawned evener so
 // the CLI harness confines its worker too; the default (off) forwards nothing.
 func TestCLIProbeArgsForwardSandbox(t *testing.T) {
-	args := cliProbeArgs(runConfig{model: "openai/m", sandbox: "restricted", sandboxNet: "off"}, probeFile{Prompt: "p"}, probeResult{WorkDir: "/w", StateDir: "/s"})
+	args, err := cliProbeArgs(runConfig{model: "openai/m", sandbox: "restricted", sandboxNet: "off"}, probeFile{Prompt: "p"}, probeResult{WorkDir: "/w", StateDir: "/s"})
+	if err != nil {
+		t.Fatalf("cliProbeArgs: %v", err)
+	}
 	assertSubsequence(t, args, []string{"--sandbox", "restricted", "--sandbox-net", "off"})
 
 	// The forwarded mode is normalized to the wire name the child expects.
-	normalized := cliProbeArgs(runConfig{model: "openai/m", sandbox: "READ-ONLY"}, probeFile{}, probeResult{})
+	normalized, err := cliProbeArgs(runConfig{model: "openai/m", sandbox: "READ-ONLY"}, probeFile{}, probeResult{})
+	if err != nil {
+		t.Fatalf("cliProbeArgs: %v", err)
+	}
 	assertSubsequence(t, normalized, []string{"--sandbox", "read-only"})
 
-	off := cliProbeArgs(runConfig{model: "openai/m"}, probeFile{}, probeResult{})
+	off, err := cliProbeArgs(runConfig{model: "openai/m"}, probeFile{}, probeResult{})
+	if err != nil {
+		t.Fatalf("cliProbeArgs: %v", err)
+	}
 	for _, a := range off {
 		if a == "--sandbox" || a == "--sandbox-net" {
 			t.Fatalf("off must not forward sandbox flags, got %v", off)
 		}
+	}
+
+	// An invalid mode is an error, not a silent drop into an unsandboxed run.
+	if _, err := cliProbeArgs(runConfig{model: "openai/m", sandbox: "bogus"}, probeFile{}, probeResult{}); err == nil {
+		t.Fatal("an invalid sandbox mode must make cliProbeArgs fail closed")
 	}
 }
 
@@ -197,5 +212,59 @@ func TestRunLiveProbeFailsClosedBeforeSession(t *testing.T) {
 	}
 	if sessionCalled {
 		t.Fatal("the session must not be created before the fail-closed refusal")
+	}
+}
+
+// TestRunLiveProbeSettlesScratchOnSessionFailure: after the sandbox provisions a
+// scratch for the live env, a failing session creation must settle that scratch
+// (via DisposeRootScratchAfterFailure) rather than leak the directory and its
+// lease.
+func TestRunLiveProbeSettlesScratchOnSessionFailure(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv(envvars.XDGConfigHome.Name, dir)
+
+	oldLoad := runnerLoadClient
+	oldAttach := runnerAttachAPILogger
+	oldNew := runnerNewSession
+	oldHost := runnerProbeSandboxHost
+	t.Cleanup(func() {
+		runnerLoadClient = oldLoad
+		runnerAttachAPILogger = oldAttach
+		runnerNewSession = oldNew
+		runnerProbeSandboxHost = oldHost
+	})
+
+	runnerLoadClient = func(string) (*llm.Client, error) { return llm.NewClient(), nil }
+	runnerAttachAPILogger = func(*llm.Client, string, io.Writer, ...string) (func() error, error) {
+		return func() error { return nil }, nil
+	}
+	runnerProbeSandboxHost = func() sandbox.HostFacts { return enforceableSandboxHost(t) }
+
+	var provisioned *execenv.LocalExecutionEnvironment
+	runnerNewSession = func(_ *llm.Client, _ *provider.Profile, env execenv.ExecutionEnvironment, _ agent.SessionConfig) (*agent.Session, error) {
+		provisioned, _ = env.(*execenv.LocalExecutionEnvironment)
+		return nil, errors.New("session creation failed")
+	}
+
+	res := probeResult{StateDir: filepath.Join(dir, "state"), WorkDir: filepath.Join(dir, "work")}
+	for _, d := range []string{res.StateDir, res.WorkDir} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	err := runLiveProbe(context.Background(), runConfig{model: "openai/m", reasoningEffort: "low", sandbox: "restricted"}, probeFile{Prompt: "hi"}, &res, &bytes.Buffer{}, &bytes.Buffer{})
+	if err == nil {
+		t.Fatal("runLiveProbe must return the session-creation error")
+	}
+	if provisioned == nil {
+		t.Fatalf("the session constructor was never reached (runLiveProbe error: %v)", err)
+	}
+	// An enforced env keeps reporting the wrapper's scratch path after its
+	// allocation is settled, so assert on the directory itself: the scratch
+	// must be gone, not merely unreported.
+	if scratch := provisioned.SessionScratchDir(); scratch != "" {
+		if _, statErr := os.Stat(scratch); !os.IsNotExist(statErr) {
+			t.Fatalf("a failed session leaked the provisioned scratch %q (stat: %v)", scratch, statErr)
+		}
 	}
 }

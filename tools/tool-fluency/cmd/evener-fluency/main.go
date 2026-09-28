@@ -788,7 +788,11 @@ func runProbe(cfg runConfig, probe probeFile, rep int, available map[string]bool
 }
 
 func runCLIProbe(ctx context.Context, cfg runConfig, probe probeFile, res probeResult, stdout, stderr *bytes.Buffer) error {
-	cmd := exec.CommandContext(ctx, cfg.evenerBin, cliProbeArgs(cfg, probe, res)...)
+	args, err := cliProbeArgs(cfg, probe, res)
+	if err != nil {
+		return err
+	}
+	cmd := exec.CommandContext(ctx, cfg.evenerBin, args...)
 	cmd.Env = os.Environ()
 	if cfg.clearOpenAIAPIKey {
 		cmd.Env = append(cmd.Env, envvars.OpenAIAPIKey.Assignment(""))
@@ -798,7 +802,7 @@ func runCLIProbe(ctx context.Context, cfg runConfig, probe probeFile, res probeR
 	return cmd.Run()
 }
 
-func cliProbeArgs(cfg runConfig, probe probeFile, res probeResult) []string {
+func cliProbeArgs(cfg runConfig, probe probeFile, res probeResult) ([]string, error) {
 	args := []string{"--model", cfg.model}
 	if strings.TrimSpace(cfg.fastCheapModel) != "" {
 		args = append(args, "--fast-cheap-model", cfg.fastCheapModel)
@@ -810,8 +814,14 @@ func cliProbeArgs(cfg runConfig, probe probeFile, res probeResult) []string {
 	}
 	// A declared sandbox mode reaches the spawned evener too, so the CLI harness
 	// confines its worker exactly as the live harness does. Off forwards nothing,
-	// leaving today's CLI runs byte-identical.
-	if mode, net, err := parseSandboxFlags(cfg.sandbox, cfg.sandboxNet); err == nil && mode != sandbox.ModeOff {
+	// leaving today's CLI runs byte-identical. An invalid mode/net returns the
+	// error rather than silently dropping the flags and running the worker
+	// unsandboxed, so a caller that bypasses runSuiteWithConfig fails closed.
+	mode, net, err := parseSandboxFlags(cfg.sandbox, cfg.sandboxNet)
+	if err != nil {
+		return nil, err
+	}
+	if mode != sandbox.ModeOff {
 		netName := "on"
 		if !net {
 			netName = "off"
@@ -827,7 +837,7 @@ func cliProbeArgs(cfg runConfig, probe probeFile, res probeResult) []string {
 		"--verbose",
 		probe.Prompt,
 	)
-	return args
+	return args, nil
 }
 
 type liveKick struct {
