@@ -8,6 +8,7 @@ import (
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-hub/internal/appsource"
 	"primeradiant.com/evener/cmd/evener-hub/internal/daemonprocess"
+	"primeradiant.com/evener/cmd/evener-hub/internal/hostfence"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hostops"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hostreg"
 	"primeradiant.com/evener/cmd/evener-hub/internal/launchconfig"
@@ -190,12 +191,17 @@ type WebConfig struct {
 	// enumeration seam (crash-fencing spec 08c §5): the read-only per-variant
 	// clean-rule check the resolve runs before its one atomic write, returning
 	// nil only when the persisted boundary is proven clean. Nil takes the
-	// platform default — the hostfence local clean rule, or a fail-closed
-	// "enumeration unavailable" on a platform with no local process boundary.
-	// The remote lease arm's verifier has no production wiring yet, so a
-	// remote-fencing record fails closed (transient busy) until it does. The hub
-	// performs no SSH on this path.
-	RemoteHostOrphanVerify func(record hostops.Record) error
+	// production default: the hostfence local clean rule for the local arms and,
+	// for a remote-fencing record, the helper-gated lease enumeration over
+	// RemoteHostOrphanFenceRunner. Either arm fails closed when it cannot prove
+	// the boundary clean. The resolve performs no SSH of its own; the remote
+	// arm's commands ride the manager's existing process seam.
+	RemoteHostOrphanVerify func(ctx context.Context, record hostops.Record) error
+	// RemoteHostOrphanFenceRunner returns the one-shot remote-command runner the
+	// resolve uses to verify one host's remote-fencing lease entries through the
+	// pinned helper. Nil (tests, embedders) leaves the remote arm's enumeration
+	// unavailable, which fails closed; a hub with an ssh manager wires it.
+	RemoteHostOrphanFenceRunner func(host string) hostfence.Runner
 	// HostOrphanAttestationMaxAge is the owner-set maximum attestation age for
 	// `evener/host/orphan-resolve` (crash-fencing spec 08c §5): an observation
 	// older than this refuses validation with no clearance. Zero takes the

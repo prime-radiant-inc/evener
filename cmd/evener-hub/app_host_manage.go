@@ -21,6 +21,7 @@ import (
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-hub/internal/appsource"
 	"primeradiant.com/evener/cmd/evener-hub/internal/fsdurability"
+	"primeradiant.com/evener/cmd/evener-hub/internal/hostfence"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hostops"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hostreg"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
@@ -174,10 +175,15 @@ type hostManagerConfig struct {
 	// orphanVerify is `evener/host/orphan-resolve`'s boundary enumeration seam
 	// (crash-fencing spec 08c §5): the read-only clean-rule check over a record's
 	// persisted boundary before the resolve's one atomic write, nil only when the
-	// boundary is proven clean. Nil takes the platform default (see
-	// defaultOrphanVerify), which fails a platform with no local process
-	// boundary closed rather than clean.
-	orphanVerify func(record hostops.Record) error
+	// boundary is proven clean. Nil takes verifyOrphanRecord's production
+	// default: the hostfence local clean rule for the local arms, the
+	// helper-gated lease enumeration for a remote-fencing record, and a
+	// fail-closed "enumeration unavailable" wherever neither can run.
+	orphanVerify func(ctx context.Context, record hostops.Record) error
+	// orphanFenceRunner returns the one-shot remote-command runner the resolve's
+	// remote-fencing arm uses (see hubcore.WebConfig). Nil leaves that arm's
+	// enumeration unavailable, which fails closed.
+	orphanFenceRunner func(host string) hostfence.Runner
 	// orphanAttestationMaxAge is §5's owner-set maximum attestation age; zero
 	// takes the shipped default (one hour). See OrphanResolve.
 	orphanAttestationMaxAge time.Duration
@@ -1457,6 +1463,7 @@ func newHubHostManager(sources *appsource.Registry, manager *sshconn.Manager, cf
 		planFacts:               cfg.RemoteHostPlanFacts,
 		planProbe:               cfg.RemoteHostPlanProbe,
 		orphanVerify:            cfg.RemoteHostOrphanVerify,
+		orphanFenceRunner:       cfg.RemoteHostOrphanFenceRunner,
 		orphanAttestationMaxAge: cfg.HostOrphanAttestationMaxAge,
 		gate:                    hostGateFor(manager),
 		bootID:                  strings.TrimSpace(cfg.HubBootID),
@@ -1467,6 +1474,20 @@ func newHubHostManager(sources *appsource.Registry, manager *sshconn.Manager, cf
 		policy:                  hostRecordPolicyFor(cfg),
 		logf:                    logf,
 	}}
+	// The resolve's remote-fencing arm rides the manager's existing ssh process
+	// seam: the helper self-test and lease enumeration are read-only, so the
+	// runner presents no epoch and writes no controller state (crash-fencing
+	// spec 08c §5/§6). A hub with no manager leaves the arm unavailable, which
+	// fails closed.
+	if m.cfg.orphanFenceRunner == nil && manager != nil {
+		m.cfg.orphanFenceRunner = func(name string) hostfence.Runner {
+			entry, ok := hosts.Get(name)
+			if !ok {
+				return nil
+			}
+			return manager.FenceCommandRunnerFor(entry)
+		}
+	}
 	// The remnant fence is wired to the real record set (registry spec 08 §6):
 	// every gate that consults it — the retention and capacity exemptions, the
 	// boot collision rule, `deploy`/`restart`/`plan`, attach, and the

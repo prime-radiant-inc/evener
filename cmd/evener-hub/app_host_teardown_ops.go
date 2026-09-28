@@ -93,6 +93,14 @@ func (m *hubHostManager) TeardownRetry(ctx context.Context, params appwire.HostT
 		return m.alreadyClearedArm(remnant), nil
 	}
 	name := remnant.Host
+	// §8's orphan fence: while the name holds an open orphan-unverified record this
+	// repair call refuses with its own discriminator — orphan-fenced-busy naming
+	// the blocking record, or the quarantine fencing-failure form when the
+	// marker is present — never the generic transient-busy form, because a bare
+	// retry would be silently refused by the fence.
+	if err := m.orphanFenceRefusal(name); err != nil {
+		return appwire.HostTeardownRetryResult{}, err
+	}
 	// Gate first, then the mutation lock (spec §5's fixed order). A held gate —
 	// a live retry attempt holding it, a deploy/restart, an Ensure, a
 	// mutation's own reservation — is the typed busy refusal: "a live attempt
@@ -279,6 +287,12 @@ func (m *hubHostManager) TeardownRecover(ctx context.Context, params appwire.Hos
 		return recoveredClearedResult(remnant), nil
 	}
 	name := remnant.Host
+	// §8's orphan fence, before the gate: the quarantined form wins wherever the
+	// marker is present, and an open orphan-unverified record refuses
+	// orphan-fenced-busy naming the blocking record.
+	if err := m.orphanFenceRefusal(name); err != nil {
+		return appwire.HostTeardownRecoverResult{}, err
+	}
 	// Gate first: "failing fast with the typed busy error when a retry attempt
 	// is live, and holds it through the clearance".
 	releaseGate, err := m.acquireHostGate(name, hostops.Holder{Kind: hostops.HolderManager, Activity: "teardown-recover"})

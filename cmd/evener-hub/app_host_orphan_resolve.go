@@ -42,10 +42,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/cmd/evener-hub/internal/hostfence"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hostops"
 )
 
@@ -55,6 +57,12 @@ import (
 // for the operator's kill-then-resolve round trip and tight enough that a
 // stale observation cannot clear a record whose members may have restarted.
 const defaultOrphanAttestationMaxAge = time.Hour
+
+// orphanAttestationClockSkewAllowance bounds how far an attestation's observedAt
+// may lead this hub's clock. A future observation is not a fresher one: beyond
+// the allowance it would post-date the absence it claims, so it refuses with no
+// clearance exactly as a stale one does.
+const orphanAttestationClockSkewAllowance = 5 * time.Minute
 
 // OrphanResolve implements evener/host/orphan-resolve (§5, §9).
 func (m *hubHostManager) OrphanResolve(ctx context.Context, params appwire.HostOrphanResolveParams) (appwire.OperationRecord, error) {
@@ -88,7 +96,16 @@ func (m *hubHostManager) OrphanResolve(ctx context.Context, params appwire.HostO
 	if err != nil {
 		return appwire.OperationRecord{}, appwire.InternalError(fmt.Sprintf("record %s carries an unreadable orphan boundary: %v", record.ID, err))
 	}
-	custodyRef, unavailable := orphanBoundaryCustodyRef(entries)
+	custodyRef, unavailable, mixed := orphanBoundaryCustodyRef(entries)
+	if mixed {
+		// §9's sentinel is a boundary of exactly one member. A boundary that mixes
+		// it with entries this build can enumerate must not clear on the
+		// attestation alone — the other members would skip verification — so the
+		// mixed shape fails closed as a validation refusal.
+		return appwire.OperationRecord{}, appwire.InvalidParams(fmt.Sprintf(
+			"record %s carries a boundary that mixes the boundary-unavailable sentinel with other entries, a shape this build does not write; the record stays fenced",
+			record.ID))
+	}
 	attestation, err := m.validateOrphanAttestation(ctx, record, params.Attestation, custodyRef, unavailable)
 	if err != nil {
 		return appwire.OperationRecord{}, err
@@ -97,25 +114,45 @@ func (m *hubHostManager) OrphanResolve(ctx context.Context, params appwire.HostO
 		// §5's clean rule, per variant. A boundary the enumeration cannot prove
 		// clean refuses transient busy — "On members still present it refuses with
 		// the transient busy form, never a force-clear" — and so does an
-		// unavailable enumeration, which fails closed.
-		verify := m.cfg.orphanVerify
-		if verify == nil {
-			verify = defaultOrphanVerify
-		}
-		if err := verify(record); err != nil {
+		// unavailable enumeration, which fails closed. A helper the gate refuses
+		// carries §8's own discriminator instead, because installing the pinned
+		// helper out-of-band is a different operator action from waiting out a
+		// busy host.
+		if err := m.verifyOrphanRecord(ctx, record); err != nil {
+			if gate, ok := errors.AsType[*hostfence.HelperGateError](err); ok {
+				message := fmt.Sprintf("host %q: orphan-unverified record %s cannot be resolved: %v", record.Host, record.ID, err)
+				if gate.Discriminator == hostfence.DiscriminatorHelperAbsent {
+					return appwire.OperationRecord{}, appwire.FencingHelperAbsent(record.Host, strconv.Itoa(gate.PinnedVersion), message)
+				}
+				return appwire.OperationRecord{}, appwire.FencingHelperUntrusted(record.Host, strconv.Itoa(gate.ObservedVersion), message)
+			}
+			if errors.Is(err, hostfence.ErrOrphanBoundaryPresent) {
+				return appwire.OperationRecord{}, appwire.HostBusyTransient(fmt.Sprintf(
+					"host %q: orphan-unverified record %s still holds boundary members: %v; confirm them gone, then retry",
+					record.Host, record.ID, err))
+			}
 			return appwire.OperationRecord{}, appwire.HostBusyTransient(fmt.Sprintf(
-				"host %q: orphan-unverified record %s cannot be resolved yet: %v; confirm the listed boundary members are gone, then retry",
+				"host %q: orphan-unverified record %s cannot be enumerated, so it fails closed: %v",
 				record.Host, record.ID, err))
 		}
 	}
 	resolved, err := m.cfg.ops.ResolveOrphan(record.ID, orphanAttestationStore(attestation))
 	switch {
+	case err == nil:
+	case hostops.RenameLanded(err):
+		// The rename landed: the resolution (marker, boundary, intents, quarantine
+		// marker, attestation) is durable and memory adopted it; only the directory
+		// sync behind it failed. Report the resolved record and log the sync issue,
+		// the same landed-write posture the plan mint and the deploy paths take
+		// (hostops.RenameLanded) — the fence is already lifted, so answering a
+		// failure would tell the operator the opposite of the durable state.
+		m.logf("record %s: the resolve's directory sync failed after its rename landed; the resolution is durable: %v", record.ID, err)
 	case errors.Is(err, hostops.ErrRecordNotFound):
 		return appwire.OperationRecord{}, appwire.ResourceNotFound(fmt.Sprintf("unknown operation record %q", id))
 	case errors.Is(err, hostops.ErrInvalidTransition), errors.Is(err, hostops.ErrInvalidRecord),
 		errors.Is(err, hostops.ErrOrphanAttestationRequired):
 		return appwire.OperationRecord{}, appwire.InvalidParams(fmt.Sprintf("record %s cannot be resolved: %v", record.ID, err))
-	case err != nil:
+	default:
 		return appwire.OperationRecord{}, appwire.InternalError(fmt.Sprintf("resolving record %s failed: %v", record.ID, err))
 	}
 	return operationRecordWire(resolved)
@@ -167,7 +204,19 @@ func (m *hubHostManager) validateOrphanAttestation(ctx context.Context, record h
 			"orphan-resolve %s: attestation observedAt %q is not an RFC3339 instant: %v",
 			record.ID, attestation.ObservedAt, err))
 	}
-	if identity := sessionOperator(ctx); identity != "" && identity != attestation.Operator {
+	identity := sessionOperator(ctx)
+	if identity == "" {
+		// §5: the claimed operator "must equal the session's authenticated
+		// identity". An empty identity authorizes nothing: an unattributed
+		// attestation is refused outright, so no caller can write an audit record
+		// under a name nothing verified. (The transport's per-session identity is
+		// the crash-fencing slices' recorded boundary; until it is wired here, the
+		// attested path fails closed and the id-only path is unaffected.)
+		return nil, appwire.InvalidParams(fmt.Sprintf(
+			"orphan-resolve %s: an attestation requires the session's authenticated identity, and this session carries none",
+			record.ID))
+	}
+	if identity != attestation.Operator {
 		return nil, appwire.InvalidParams(fmt.Sprintf(
 			"orphan-resolve %s: attestation operator %q is not the session's authenticated identity",
 			record.ID, attestation.Operator))
@@ -180,6 +229,13 @@ func (m *hubHostManager) validateOrphanAttestation(ctx context.Context, record h
 		return nil, appwire.InvalidParams(fmt.Sprintf(
 			"orphan-resolve %s: attestation observed %s is %s old, over the maximum attestation age %s",
 			record.ID, attestation.ObservedAt, age.Round(time.Second), maxAge))
+	} else if age < -orphanAttestationClockSkewAllowance {
+		// A future observation is not a fresher one: beyond a small clock-skew
+		// allowance it would let an attestation post-date the absence it claims,
+		// so it refuses like a stale one.
+		return nil, appwire.InvalidParams(fmt.Sprintf(
+			"orphan-resolve %s: attestation observed %s is %s in the future, beyond the %s clock-skew allowance",
+			record.ID, attestation.ObservedAt, (-age).Round(time.Second), orphanAttestationClockSkewAllowance))
 	}
 	if unavailable && attestation.BoundaryRef != custodyRef {
 		return nil, appwire.InvalidParams(fmt.Sprintf(
@@ -203,19 +259,25 @@ func decodeOrphanBoundary(raw json.RawMessage) ([]appwire.BoundaryEntry, error) 
 	return entries, nil
 }
 
-// orphanBoundaryCustodyRef reports whether the decoded boundary carries §9's
-// `boundary-unavailable` entry, and the custody reference it names. That entry
-// is proof of nothing — "An empty array means no spawned subprocess survived
-// the crash — verified empty, never unknown. A boundary the corruption
-// destroyed is never an empty array" — so it resolves only through the
-// operator attestation.
-func orphanBoundaryCustodyRef(entries []appwire.BoundaryEntry) (string, bool) {
+// orphanBoundaryCustodyRef reads §9's `boundary-unavailable` entry out of a
+// decoded boundary. It reports the custody reference the attestation is matched
+// through, whether the boundary is exactly that sole sentinel, and whether the
+// sentinel appears mixed with other members. The entry is proof of nothing —
+// "An empty array means no spawned subprocess survived the crash — verified
+// empty, never unknown. A boundary the corruption destroyed is never an empty
+// array" — so only the sole-sentinel shape resolves through the operator
+// attestation; a mixed shape would let the other members skip verification and
+// is refused by the caller.
+func orphanBoundaryCustodyRef(entries []appwire.BoundaryEntry) (custodyRef string, sole bool, mixed bool) {
+	found := 0
 	for _, entry := range entries {
-		if entry.BoundaryEntryUnavailable != nil {
-			return entry.CustodyRef, true
+		if entry.BoundaryEntryUnavailable == nil {
+			continue
 		}
+		found++
+		custodyRef = entry.CustodyRef
 	}
-	return "", false
+	return custodyRef, found == 1 && len(entries) == 1, found > 0 && len(entries) > 1
 }
 
 // orphanAttestationStore maps the validated wire attestation onto the store's
@@ -231,4 +293,33 @@ func orphanAttestationStore(wire *appwire.HostOrphanResolveAttestation) *hostops
 		BoundaryRef: wire.BoundaryRef,
 		ObservedAt:  wire.ObservedAt,
 	}
+}
+
+// orphanFenceRefusal is §8's orphan-fence refusal for the calls that carry it:
+// while a host holds an open `orphan-unverified` record, its
+// `teardown-retry`/`teardown-recover` repair calls refuse with
+// `orphan-fenced-busy` naming the blocking record plus the `orphan-resolve`
+// next step — "never `host-busy-transient`", because a bare retry of the repair
+// call is silently refused by the fence. A host whose open record is a
+// fencing-quarantine record refuses with the `fencing-failure` form instead:
+// "precedence: quarantine refusal wins wherever the marker is present". Nil
+// when neither fences the name, and only the two recovery mutations call this —
+// the read-only calls and `orphan-resolve` itself bypass the fence.
+func (m *hubHostManager) orphanFenceRefusal(name string) error {
+	if m.cfg.ops == nil || strings.TrimSpace(name) == "" {
+		return nil
+	}
+	if _, marked := m.cfg.ops.FencingQuarantine(name); marked {
+		return appwire.FencingFailure(name, fmt.Sprintf(
+			"host %q is fencing-quarantined by its open orphan-unverified record; confirm the old remote command dead, then resolve the record through evener/host/orphan-resolve",
+			name))
+	}
+	for _, record := range m.cfg.ops.OrphanUnverified() {
+		if record.Host == name {
+			return appwire.OrphanFencedBusy(record.ID, fmt.Sprintf(
+				"host %q holds an open orphan-unverified record (%s); resolve it through evener/host/orphan-resolve before repairing this remnant",
+				name, record.ID))
+		}
+	}
+	return nil
 }

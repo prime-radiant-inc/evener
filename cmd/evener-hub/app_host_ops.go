@@ -834,6 +834,12 @@ func operationRecordWire(record hostops.Record) (appwire.OperationRecord, error)
 		if err != nil {
 			return appwire.OperationRecord{}, fmt.Errorf("record %s carries an unreadable orphan boundary: %w", record.ID, err)
 		}
+		if entries == nil {
+			// The wire spelling of a verified-empty boundary is an explicit `[]`,
+			// never null: normalize a nil decode so the pointer always renders the
+			// array §9's presence rule requires.
+			entries = []appwire.BoundaryEntry{}
+		}
 		wire.OrphanBoundary = &entries
 	}
 	if record.OrphanResolved {

@@ -1308,14 +1308,16 @@ var ownedObjectKeys = map[string]map[string]struct{}{
 	// are canonical too — never left opaque, or a case variant would be silently
 	// rewritten on the next save.
 	"records[].pendingSpawns[]": keysOf("nonce", "platform", "cgroupId", "pgid", "sessionId", "pid", "startTime"),
+	"records[].attestation":     keysOf("operator", "statement", "recordId", "boundaryRef", "observedAt"),
 	"records[].result":          keysOf("ok", "message"),
 	"records[].progress[]":      keysOf("ts", "message"),
 	"tombstones[]": keysOf("id", "clientOperationId", "host", "kind", "state", "generation",
-		"incarnationId", "progress", "result", "createdAt", "updatedAt", "hostRemoved",
-		"compactedAt", "compactedSeq"),
-	"tombstones[].result":     keysOf("ok", "message"),
-	"tombstones[].progress[]": keysOf("ts", "message"),
-	"compactionMarks[]":       keysOf("seq", "hosts"),
+		"incarnationId", "orphanResolved", "attestation", "progress", "result", "createdAt", "updatedAt",
+		"hostRemoved", "compactedAt", "compactedSeq"),
+	"tombstones[].attestation": keysOf("operator", "statement", "recordId", "boundaryRef", "observedAt"),
+	"tombstones[].result":      keysOf("ok", "message"),
+	"tombstones[].progress[]":  keysOf("ts", "message"),
+	"compactionMarks[]":        keysOf("seq", "hosts"),
 	// The per-name removal markers are objects this store decodes, so their
 	// keys are canonical too: a case variant (Go matches JSON field names
 	// case-insensitively) would be silently rewritten on the next save.

@@ -2,18 +2,18 @@
 
 package hub
 
-// defaultOrphanVerify is the production boundary-enumeration seam for
+// defaultLocalOrphanVerify is the local-arm production verification for
 // `evener/host/orphan-resolve` (crash-fencing spec 08c §5) on the platforms
 // with a local process boundary: the hostfence read-only clean rule with its
-// production defaults. It never dials — boot and resolve perform no SSH — so a
-// remote-fencing record's lease enumeration fails closed until its verifier is
-// wired.
+// production defaults. A remote-fencing record never reaches it —
+// verifyOrphanRecord routes that variant through the helper — and it never
+// dials.
 
 import (
 	"primeradiant.com/evener/cmd/evener-hub/internal/hostfence"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hostops"
 )
 
-func defaultOrphanVerify(record hostops.Record) error {
+func defaultLocalOrphanVerify(record hostops.Record) error {
 	return hostfence.VerifyOrphanBoundary(record, hostfence.VerifyOptions{})
 }

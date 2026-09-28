@@ -21,6 +21,7 @@ package hostfence
 // out-of-band, then calls `orphan-resolve`.
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -28,24 +29,6 @@ import (
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hostops"
 )
-
-// ErrOrphanBoundaryPresent reports a boundary that still holds members: a
-// verified member (never signaled by resolve), an unrecognized member, or a
-// recorded pair still alive. The caller refuses with the transient busy form.
-var ErrOrphanBoundaryPresent = errors.New("hostfence: the persisted boundary still holds members")
-
-// ErrOrphanBoundaryUnenumerable reports a boundary that cannot be enumerated or
-// whose enumeration cannot prove emptiness (an unreachable boundary with no
-// recorded pair, a non-enforcing platform, a failed observation, or a
-// remote-fencing record with no lease-verification seam). Fail closed: never
-// clean.
-var ErrOrphanBoundaryUnenumerable = errors.New("hostfence: the persisted boundary cannot be enumerated")
-
-// ErrOrphanBoundaryUnavailable reports §9's `boundary-unavailable` custody
-// entry: the boundary was lost to corruption, so it is proof of nothing. Such a
-// record resolves only through the operator attestation, never through
-// enumeration.
-var ErrOrphanBoundaryUnavailable = errors.New("hostfence: the boundary was lost to corruption and requires the operator attestation")
 
 // VerifyOptions are the resolve-time enumeration seams. Nil fields take the
 // production defaults for the local arms; a nil VerifyLeaseEntry means the
@@ -78,6 +61,7 @@ func VerifyOrphanBoundary(record hostops.Record, opts VerifyOptions) error {
 		return nil
 	}
 	var remote []RemoteFencingBoundary
+	unavailable := 0
 	local := false
 	for _, member := range members {
 		var discriminator struct {
@@ -88,7 +72,7 @@ func VerifyOrphanBoundary(record hostops.Record, opts VerifyOptions) error {
 		}
 		switch discriminator.Kind {
 		case "boundary-unavailable":
-			return ErrOrphanBoundaryUnavailable
+			unavailable++
 		case RemoteFencingBoundaryKind:
 			var entry RemoteFencingBoundary
 			if err := json.Unmarshal(member, &entry); err != nil {
@@ -102,6 +86,16 @@ func VerifyOrphanBoundary(record hostops.Record, opts VerifyOptions) error {
 			local = true
 		}
 	}
+	if unavailable > 0 {
+		// §9's custody sentinel is a boundary of exactly one member. The
+		// attestation is the proof for that sole entry; a boundary that mixes it
+		// with members this build can enumerate must never clear on the
+		// attestation alone, so the mixed shape fails closed.
+		if unavailable == 1 && len(members) == 1 {
+			return ErrOrphanBoundaryUnavailable
+		}
+		return fmt.Errorf("%w: the persisted boundary mixes the boundary-unavailable sentinel with other entries", ErrOrphanBoundaryUnenumerable)
+	}
 	if len(remote) > 0 {
 		if local || len(remote) > 1 {
 			return fmt.Errorf("%w: a persisted boundary mixes remote-fencing entries with another variant", ErrOrphanBoundaryUnenumerable)
@@ -111,15 +105,21 @@ func VerifyOrphanBoundary(record hostops.Record, opts VerifyOptions) error {
 	return verifyLocalBoundary(record.OrphanBoundary, opts)
 }
 
-// decodeBoundaryMembers splits a persisted boundary into its raw members. A
-// scalar, an object, or a malformed array is not a boundary this store writes
-// and never reads clean.
+// decodeBoundaryMembers splits a persisted boundary into its raw members. Only a
+// real JSON array is a boundary: `null` unmarshals into a nil slice with no
+// error, so it would otherwise read as verified-empty — the opposite of what a
+// lost value means. A scalar, an object, or a malformed array is refused the
+// same way.
 func decodeBoundaryMembers(raw json.RawMessage) ([]json.RawMessage, error) {
-	if len(raw) == 0 {
+	trimmed := bytes.TrimSpace(raw)
+	if len(trimmed) == 0 {
 		return nil, errors.New("no persisted boundary")
 	}
+	if trimmed[0] != '[' {
+		return nil, errors.New("the persisted boundary is not a JSON array")
+	}
 	var members []json.RawMessage
-	if err := json.Unmarshal(raw, &members); err != nil {
+	if err := json.Unmarshal(trimmed, &members); err != nil {
 		return nil, fmt.Errorf("the persisted boundary is not an array: %w", err)
 	}
 	return members, nil
@@ -195,6 +195,12 @@ func verifyLocalGroup(group boundaryGroup, open func(execenv.BoundaryIdentity) (
 		}
 		return fmt.Errorf("%w: the boundary could not be opened: %w", ErrOrphanBoundaryUnenumerable, err)
 	}
+	// The handle is an open resource even though resolve never signals through
+	// it: close it on every path. Teardown is deliberately not part of §5's clean
+	// rule — the operator confirms the members gone, and removing the boundary is
+	// the reap's or the operator's to do — so a close failure never flips a
+	// proven-clean verdict.
+	defer func() { _ = handle.Close() }()
 	members, err := handle.Members()
 	if err != nil {
 		return fmt.Errorf("%w: enumeration is unavailable: %w", ErrOrphanBoundaryUnenumerable, err)

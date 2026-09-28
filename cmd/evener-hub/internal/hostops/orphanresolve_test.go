@@ -13,6 +13,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/spf13/afero"
@@ -235,5 +236,148 @@ func TestResolveOrphanAttestationSchema(t *testing.T) {
 	}
 	if stored, ok := store.Record(quarantined.ID); !ok || stored.State != StateOrphanUnverified {
 		t.Fatalf("a malformed attestation cleared the record: %+v (ok %v)", stored, ok)
+	}
+}
+
+// TestResolveOrphanLandedWriteReturnsTheRecord pins the durable-write contract
+// the handler reconciles with: a resolve whose rename landed but whose directory
+// sync failed returns the committed record alongside the error, and
+// RenameLanded reports it.
+func TestResolveOrphanLandedWriteReturnsTheRecord(t *testing.T) {
+	path := StorePath(t.TempDir())
+	count, failAt := 0, 0
+	store, err := openFS(afero.NewOsFs(), path, storeFaults{syncDir: func(fs afero.Fs, dir string) error {
+		count++
+		if failAt > 0 && count == failAt {
+			return errors.New("injected directory-sync fault")
+		}
+		return syncDirFS(fs, dir)
+	}})
+	if err != nil {
+		t.Fatalf("openFS: %v", err)
+	}
+	quarantined := quarantinedTestRecord(t, store, "h1", "client-h1")
+	// Learn the per-write directory-sync call count on a write that succeeds, so
+	// the next write's LAST sync (the one behind the rename) can be failed
+	// deterministically.
+	before := count
+	if _, err := store.ArmSpawnIntent(quarantined.ID, SpawnIntent{
+		Nonce: "probe-nonce", Platform: SpawnPlatformLinux, CgroupID: "/cg/probe",
+	}); err != nil {
+		t.Fatalf("ArmSpawnIntent(probe): %v", err)
+	}
+	perWrite := count - before
+	if perWrite <= 0 {
+		t.Fatalf("a store write performed no directory sync (count %d -> %d)", before, count)
+	}
+	failAt = count + perWrite
+	resolved, err := store.ResolveOrphan(quarantined.ID, orphanResolveTestAttestation(quarantined.ID))
+	if err == nil {
+		t.Fatal("ResolveOrphan reported success despite the sync fault")
+	}
+	if !RenameLanded(err) {
+		t.Fatalf("ResolveOrphan error = %v, want a RenameLanded failure", err)
+	}
+	if resolved.ID != quarantined.ID || resolved.State != StateInterrupted || !resolved.OrphanResolved {
+		t.Fatalf("landed resolve returned %+v, want the committed resolved record", resolved)
+	}
+	if marker, marked := store.FencingQuarantine("h1"); marked {
+		t.Fatalf("landed resolve left the marker: %+v", marker)
+	}
+	// The file holds the resolution, and memory adopted it.
+	if stored, ok := store.Record(quarantined.ID); !ok || !stored.OrphanResolved {
+		t.Fatalf("memory after the landed write = %+v (ok %v)", stored, ok)
+	}
+	if fresh, ok := reopenFresh(t, path).Record(quarantined.ID); !ok || !fresh.OrphanResolved {
+		t.Fatalf("file after the landed write = %+v (ok %v)", fresh, ok)
+	}
+}
+
+// TestStoreRefusesCaseVariantAttestationKeys pins the owned-key rule for the
+// newly persisted attestation object: a case variant of a canonical key is
+// refused by the store's byte/key check — the rule the write path runs before
+// every commit, so the variant can never be silently rewritten on the next save.
+func TestStoreRefusesCaseVariantAttestationKeys(t *testing.T) {
+	dir := t.TempDir()
+	path := StorePath(dir)
+	store, err := Open(path)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	quarantined := quarantinedTestRecord(t, store, "h1", "client-h1")
+	if _, err := store.ResolveOrphan(quarantined.ID, orphanResolveTestAttestation(quarantined.ID)); err != nil {
+		t.Fatalf("ResolveOrphan: %v", err)
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read store: %v", err)
+	}
+	if err := checkStoreBytes(raw); err != nil {
+		t.Fatalf("the canonical store bytes were refused: %v", err)
+	}
+	mutated := bytes.Replace(raw, []byte(`"operator"`), []byte(`"Operator"`), 1)
+	if bytes.Equal(mutated, raw) {
+		t.Fatal("the persisted attestation carries no operator key to mutate")
+	}
+	err = checkStoreBytes(mutated)
+	if err == nil {
+		t.Fatal("checkStoreBytes accepted a case-variant attestation key")
+	}
+	if !strings.Contains(err.Error(), "records[].attestation") {
+		t.Fatalf("refusal = %v, want it to name the attestation object", err)
+	}
+}
+
+// TestCompactionRetainsTheResolvedReplay pins §5/§10's replay horizon across
+// compaction: a resolved record's tombstone replay still carries the
+// orphanResolved marker and the attestation, so the lost-response retry answers
+// as the resolved record it stands for.
+func TestCompactionRetainsTheResolvedReplay(t *testing.T) {
+	path := StorePath(t.TempDir())
+	store, err := OpenWithRetention(path, RetentionPolicy{TerminalPerHost: 1, TerminalStoreWide: 10})
+	if err != nil {
+		t.Fatalf("OpenWithRetention: %v", err)
+	}
+	attestation := orphanResolveTestAttestation("00000000000000000001")
+	quarantined := quarantinedTestRecord(t, store, "h1", "client-h1")
+	attestation.RecordID = quarantined.ID
+	if _, err := store.ResolveOrphan(quarantined.ID, attestation); err != nil {
+		t.Fatalf("ResolveOrphan: %v", err)
+	}
+	// A second terminal record for the same host exceeds TerminalPerHost: the
+	// resolved record compacts into a tombstone.
+	sibling := runningTestRecord(t, store, "h1", "client-h1-b")
+	if _, err := store.Transition(sibling.ID, StateComplete, func(r *Record) { r.Result = &Result{OK: true, Message: "done"} }); err != nil {
+		t.Fatalf("Transition(complete): %v", err)
+	}
+	if len(store.Tombstones()) == 0 {
+		t.Fatal("no tombstone was left, so nothing was compacted")
+	}
+	replayed, hit, err := store.LookupOperation(OperationDedupQuery{
+		ClientOperationID: quarantined.ClientOperationID,
+		Host:              quarantined.Host,
+		Kind:              quarantined.Kind,
+		Current:           OperationPair{Generation: quarantined.Generation, IncarnationID: quarantined.IncarnationID},
+	})
+	if err != nil || !hit {
+		t.Fatalf("LookupOperation(resolved) = hit %v, err %v; want the retained replay", hit, err)
+	}
+	if !replayed.Compacted || !replayed.OrphanResolved || replayed.State != StateInterrupted {
+		t.Fatalf("compacted replay = %+v, want the resolved marker retained", replayed)
+	}
+	if replayed.OrphanAttestation == nil || replayed.OrphanAttestation.BoundaryRef != "" ||
+		replayed.OrphanAttestation.Operator != attestation.Operator {
+		t.Fatalf("compacted replay attestation = %+v, want the persisted one", replayed.OrphanAttestation)
+	}
+	// It survives a reload: the tombstone carries the fields.
+	fresh := reopenFresh(t, path)
+	replayed, hit, err = fresh.LookupOperation(OperationDedupQuery{
+		ClientOperationID: quarantined.ClientOperationID,
+		Host:              quarantined.Host,
+		Kind:              quarantined.Kind,
+		Current:           OperationPair{Generation: quarantined.Generation, IncarnationID: quarantined.IncarnationID},
+	})
+	if err != nil || !hit || !replayed.OrphanResolved || replayed.OrphanAttestation == nil {
+		t.Fatalf("reloaded replay = hit %v err %v record %+v; want the marker and attestation", hit, err, replayed)
 	}
 }

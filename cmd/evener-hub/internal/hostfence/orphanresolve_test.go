@@ -183,6 +183,56 @@ func TestVerifyOrphanBoundaryRemoteFencing(t *testing.T) {
 	}
 }
 
+func TestVerifyOrphanBoundaryRejectsNullBoundaries(t *testing.T) {
+	// null is not a boundary: it must never read as verified-empty.
+	if err := VerifyOrphanBoundary(boundaryRecord(`null`), VerifyOptions{}); !errors.Is(err, ErrOrphanBoundaryUnenumerable) {
+		t.Fatalf("null boundary = %v, want %v", err, ErrOrphanBoundaryUnenumerable)
+	}
+	// A scalar and an object are refused the same way: only a real JSON array is
+	// a boundary.
+	for _, raw := range []string{`{}`, `"x"`, `1`} {
+		if err := VerifyOrphanBoundary(boundaryRecord(raw), VerifyOptions{}); !errors.Is(err, ErrOrphanBoundaryUnenumerable) {
+			t.Fatalf("boundary %s = %v, want %v", raw, err, ErrOrphanBoundaryUnenumerable)
+		}
+	}
+}
+
+func TestVerifyOrphanBoundaryRejectsMixedUnavailableBoundaries(t *testing.T) {
+	// A mixed boundary carrying the unavailable sentinel alongside other members
+	// is never attestation-only: the other members must not skip verification.
+	mixed := `[{"kind":"local-linux","cgroupId":"/cg/n1","nonce":"n1","pid":41,"startTime":"777"},` +
+		`{"kind":"boundary-unavailable","reason":"corrupt-store-custody","custodyRef":"/state/custody.json"}]`
+	if err := VerifyOrphanBoundary(boundaryRecord(mixed), VerifyOptions{}); !errors.Is(err, ErrOrphanBoundaryUnenumerable) {
+		t.Fatalf("mixed local+unavailable = %v, want %v", err, ErrOrphanBoundaryUnenumerable)
+	}
+	mixedRemote := `[{"kind":"remote-fencing","fencingEpoch":{"bootId":"b","opSeq":1},"guardEpoch":2,"leaseEntries":[]},` +
+		`{"kind":"boundary-unavailable","reason":"corrupt-store-custody","custodyRef":"/state/custody.json"}]`
+	if err := VerifyOrphanBoundary(boundaryRecord(mixedRemote), VerifyOptions{}); !errors.Is(err, ErrOrphanBoundaryUnenumerable) {
+		t.Fatalf("mixed remote+unavailable = %v, want %v", err, ErrOrphanBoundaryUnenumerable)
+	}
+}
+
+func TestVerifyOrphanBoundaryClosesTheLocalHandle(t *testing.T) {
+	handle := &fakeBoundary{}
+	open := func(execenv.BoundaryIdentity) (LocalBoundaryHandle, error) { return handle, nil }
+	boundary := `[{"kind":"local-linux","cgroupId":"/cg/n1","nonce":"n1","pid":41,"startTime":"777"}]`
+	if err := VerifyOrphanBoundary(boundaryRecord(boundary), VerifyOptions{Open: open, Observe: goneObserve}); err != nil {
+		t.Fatalf("clean local boundary = %v", err)
+	}
+	if !handle.closed {
+		t.Fatal("a verified local boundary handle was left open")
+	}
+	// A refused enumeration closes it too.
+	members := &fakeBoundary{members: []execenv.BoundaryMember{{PID: 41, StartToken: "777"}}}
+	openMembers := func(execenv.BoundaryIdentity) (LocalBoundaryHandle, error) { return members, nil }
+	if err := VerifyOrphanBoundary(boundaryRecord(boundary), VerifyOptions{Open: openMembers, Observe: goneObserve}); !errors.Is(err, ErrOrphanBoundaryPresent) {
+		t.Fatalf("member present = %v, want %v", err, ErrOrphanBoundaryPresent)
+	}
+	if !members.closed {
+		t.Fatal("a refused local boundary handle was left open")
+	}
+}
+
 func TestVerifyOrphanBoundaryUnavailableAndEmpty(t *testing.T) {
 	// A boundary-unavailable entry is never clean by enumeration.
 	unavailable := `[{"kind":"boundary-unavailable","reason":"corrupt-store-custody","custodyRef":"/state/custody.json"}]`
