@@ -10,6 +10,7 @@ import {
   docImageURL,
   filenameOf,
   fileURLToPath,
+  isImagePath,
   isMarkdownPath,
   readDocFile,
 } from "./docContent";
@@ -196,6 +197,19 @@ describe("isMarkdownPath", () => {
 
   test.each(["notes.txt", "script.ts", "a.md.txt", "mdfile", "Makefile"])("does not treat %s as markdown", (path) => {
     expect(isMarkdownPath(path)).toBe(false);
+  });
+});
+
+describe("isImagePath", () => {
+  test.each(["out/shot.png", "a/b.JPEG", "c.jpg", "d.gif", "e.WebP"])(
+    "treats %s as an image /doc/image serves",
+    (path) => {
+      expect(isImagePath(path)).toBe(true);
+    },
+  );
+
+  test.each(["logo.svg", "notes.md", "png", "a.png.txt"])("does not treat %s as one", (path) => {
+    expect(isImagePath(path)).toBe(false);
   });
 });
 

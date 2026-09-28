@@ -154,6 +154,13 @@ export function isMarkdownPath(path: string): boolean {
   return /\.(?:md|markdown)$/i.test(path);
 }
 
+// isImagePath reports whether a path is an image the hub's /doc/image route
+// serves (output_images.go): png, jpeg, gif and webp. SVG is left out there
+// as an XSS guard, so an .svg opens as a file, its source shown as text.
+export function isImagePath(path: string): boolean {
+  return /\.(?:png|jpe?g|gif|webp)$/i.test(path);
+}
+
 // fileURLToPath turns a session link's file URL (agent validation
 // canonicalizes them to file:///absolute) back into the filesystem path a
 // document read takes, percent-escapes decoded. It reads the string itself:

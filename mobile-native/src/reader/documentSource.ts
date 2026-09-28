@@ -8,6 +8,7 @@ import {
 	DocFileError,
 	type DocPort,
 	filenameOf,
+	isImagePath,
 	isMarkdownPath,
 	readDocFile,
 } from "@evener/appwire-client/docContent";
@@ -15,12 +16,10 @@ import { type DocumentBlock, documentBlocks, documentTitle } from "./documentBlo
 
 export type DocumentKind = "Plan" | "Spec" | "Doc" | "Code" | "Image";
 
-const IMAGE_PATH = /\.(?:png|jpe?g|gif|webp)$/i;
-
 /** The label a document chip, a Files row and the Reader's caption show
  * (ruling 19). */
 export function documentKind(path: string): DocumentKind {
-	if (IMAGE_PATH.test(path)) return "Image";
+	if (isImagePath(path)) return "Image";
 	if (!isMarkdownPath(path)) return "Code";
 	if (/(^|\/)plans\//i.test(path)) return "Plan";
 	if (/(^|\/)specs\//i.test(path)) return "Spec";

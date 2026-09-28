@@ -19,24 +19,18 @@
 // effect. The DocParams type is imported type-only (erased, no side effect).
 // The namespace import of paneActions (not a named one) lets the test spy
 // openBeside through the module object, the reliable vitest seam.
-import { cwdRelative } from "@evener/appwire-client/docContent";
+import { cwdRelative, isImagePath } from "@evener/appwire-client/docContent";
 import * as paneActions from "../../../shell/paneActions";
 import { useThreadsStore } from "../../../stores/threads";
 import { useOptionalTranscriptRenderContext } from "../../../transcriptDisplay/renderContext";
 import { OpenButton } from "../../../widgets";
 import type { DocParams } from "../../doc/openDoc";
 
-// A file-path-bearing card whose path is an image file opens as an IMAGE
-// (DECISION C): the doc pane then renders it through docImageURL (/doc/image,
-// raw bytes) instead of the text/binary file path. The set mirrors what
-// /doc/image actually serves (floor §1.5, output_images.go) - png/jpeg/gif/webp;
-// SVG is deliberately excluded there (an XSS guard), so a .svg opens as a file
-// (its source shown as text), not an image.
-const IMAGE_EXT_RE = /\.(?:png|jpe?g|gif|webp)$/i;
-
 // fileDocParams builds the DocParams for openDocBeside, or undefined when the
-// ref/cwd is missing or the path is out of the cwd. `kind` is image for an
-// image-extension path (rendered via docImageURL) and file otherwise.
+// ref/cwd is missing or the path is out of the cwd. A path to an image
+// /doc/image serves opens as an image (DECISION C), rendered through
+// docImageURL instead of the text/binary file path; anything else, an .svg
+// included, opens as a file.
 export function fileDocParams(
   filePath: string | undefined,
   sessionRef: string | undefined,
@@ -45,7 +39,7 @@ export function fileDocParams(
   if (filePath === undefined || sessionRef === undefined || cwd === undefined || cwd === "") return undefined;
   const rel = cwdRelative(filePath, cwd);
   if (rel === undefined) return undefined;
-  return { session: sessionRef, path: rel, kind: IMAGE_EXT_RE.test(rel) ? "image" : "file" };
+  return { session: sessionRef, path: rel, kind: isImagePath(rel) ? "image" : "file" };
 }
 
 function FileOpenBesideButtonBody({ absPath, sessionRef, cwd }: { absPath: string; sessionRef: string; cwd?: string }) {
