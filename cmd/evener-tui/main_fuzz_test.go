@@ -86,7 +86,9 @@ func FuzzRootTUIMain(f *testing.F) {
 		applyTerminalBg = func() { applied = true }
 		resetTerminalBg = func() { reset = true }
 		newTUIProgram = func(model tea.Model, programOpts ...tea.ProgramOption) tuiProgram {
-			altScreen = len(programOpts) == 1
+			// run() supplies a buffer standardOutput, so runWith always adds
+			// WithOutput; any option beyond that one is the alt-screen option.
+			altScreen = len(programOpts) > 1
 			m := model.(hubModel)
 			m.postQuitMessage = "  goodbye  "
 			p := &scriptedTUIProgram{model: m, err: programErr}

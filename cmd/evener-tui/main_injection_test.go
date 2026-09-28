@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"io"
+	"os"
 	"strings"
 	"sync"
 	"testing"
@@ -77,7 +78,8 @@ func TestRunDoesNotSwapPackageIOSeams(t *testing.T) {
 }
 
 // TestRunPassesInjectedReaderToProgram pins tea.WithInput for a supplied
-// reader: the custom input option appears exactly when stdin is non-nil.
+// reader: a genuinely injected reader adds the option, while os.Stdin and nil
+// leave Bubble Tea's default (and its non-TTY /dev/tty fallback) in place.
 func TestRunPassesInjectedReaderToProgram(t *testing.T) {
 	oldGetenv, oldDirs, oldStart := processGetenv, ensureUserConfigDirs, startHubClient
 	oldProbe, oldInit, oldApply, oldReset, oldProgram := probeTerminalDefaults, initThemeFromStateDir, applyTerminalBg, resetTerminalBg, newTUIProgram
@@ -100,18 +102,70 @@ func TestRunPassesInjectedReaderToProgram(t *testing.T) {
 		probeTerminalDefaults, initThemeFromStateDir, applyTerminalBg, resetTerminalBg, newTUIProgram = oldProbe, oldInit, oldApply, oldReset, oldProgram
 	})
 
-	if code := Run([]string{"--state-dir=x", "--debug"}, strings.NewReader("q"), io.Discard, io.Discard); code != 0 {
+	// os.Stdout as the output keeps the injected-output option out of the
+	// count so this test isolates the input option.
+	if code := Run([]string{"--state-dir=x", "--debug"}, strings.NewReader("q"), os.Stdout, io.Discard); code != 0 {
 		t.Fatalf("Run with injected reader = %d, want 0", code)
 	}
 	if optsLen != 1 {
 		t.Fatalf("program opts with injected reader = %d, want 1 (WithInput)", optsLen)
 	}
 
-	if code := Run([]string{"--state-dir=x", "--debug"}, nil, io.Discard, io.Discard); code != 0 {
+	if code := Run([]string{"--state-dir=x", "--debug"}, os.Stdin, os.Stdout, io.Discard); code != 0 {
+		t.Fatalf("Run with os.Stdin = %d, want 0", code)
+	}
+	if optsLen != 0 {
+		t.Fatalf("program opts with os.Stdin = %d, want 0 (no WithInput)", optsLen)
+	}
+
+	if code := Run([]string{"--state-dir=x", "--debug"}, nil, os.Stdout, io.Discard); code != 0 {
 		t.Fatalf("Run with nil reader = %d, want 0", code)
 	}
 	if optsLen != 0 {
 		t.Fatalf("program opts with nil reader = %d, want 0 (no WithInput)", optsLen)
+	}
+}
+
+// TestRunPassesInjectedStdoutToProgram pins tea.WithOutput for a supplied
+// writer: the renderer follows an injected stdout, while os.Stdout needs no
+// explicit option.
+func TestRunPassesInjectedStdoutToProgram(t *testing.T) {
+	oldGetenv, oldDirs, oldStart := processGetenv, ensureUserConfigDirs, startHubClient
+	oldProbe, oldInit, oldApply, oldReset, oldProgram := probeTerminalDefaults, initThemeFromStateDir, applyTerminalBg, resetTerminalBg, newTUIProgram
+	processGetenv = func(string) string { return "" }
+	ensureUserConfigDirs = func() error { return nil }
+	startHubClient = func(context.Context, hubstart.HubStartConfig) (hubstart.HubRuntime, error) {
+		return hubstart.HubRuntime{Address: hubstart.HubAddress{BaseURL: "http://hub"}}, nil
+	}
+	probeTerminalDefaults = func() bool { return true }
+	initThemeFromStateDir = func(string) {}
+	applyTerminalBg = func() {}
+	resetTerminalBg = func() {}
+	var optsLen int
+	newTUIProgram = func(model tea.Model, opts ...tea.ProgramOption) tuiProgram {
+		optsLen = len(opts)
+		return &scriptedCovProgram{model: model}
+	}
+	t.Cleanup(func() {
+		processGetenv, ensureUserConfigDirs, startHubClient = oldGetenv, oldDirs, oldStart
+		probeTerminalDefaults, initThemeFromStateDir, applyTerminalBg, resetTerminalBg, newTUIProgram = oldProbe, oldInit, oldApply, oldReset, oldProgram
+	})
+
+	// os.Stdin as the input keeps the injected-input option out of the count
+	// so this test isolates the output option.
+	var stdout bytes.Buffer
+	if code := Run([]string{"--state-dir=x", "--debug"}, os.Stdin, &stdout, io.Discard); code != 0 {
+		t.Fatalf("Run with injected stdout = %d, want 0", code)
+	}
+	if optsLen != 1 {
+		t.Fatalf("program opts with injected stdout = %d, want 1 (WithOutput)", optsLen)
+	}
+
+	if code := Run([]string{"--state-dir=x", "--debug"}, os.Stdin, os.Stdout, io.Discard); code != 0 {
+		t.Fatalf("Run with os.Stdout = %d, want 0", code)
+	}
+	if optsLen != 0 {
+		t.Fatalf("program opts with os.Stdout = %d, want 0 (no WithOutput)", optsLen)
 	}
 }
 

@@ -147,9 +147,16 @@ func runWith(cfg runConfig) int {
 	if !startupOpts.Debug {
 		programOpts = append(programOpts, tea.WithAltScreen())
 	}
-	// Feed the caller's reader to Bubble Tea. A nil reader leaves the program
-	// on its default stdin, matching run()'s process-bound path.
-	if cfg.stdin != nil {
+	// Route the renderer and the reader to the caller's streams. Bubble Tea
+	// already defaults to os.Stdout/os.Stdin, so only a genuinely injected
+	// stream needs an explicit option. Leaving os.Stdin alone matters: with
+	// customInput Bubble Tea skips the default non-TTY fallback that reopens
+	// /dev/tty, so a redirected stdin (evener tui </dev/null) would otherwise
+	// lose keyboard input.
+	if cfg.stdout != nil && cfg.stdout != io.Writer(os.Stdout) {
+		programOpts = append(programOpts, tea.WithOutput(cfg.stdout))
+	}
+	if cfg.stdin != nil && cfg.stdin != io.Reader(os.Stdin) {
 		programOpts = append(programOpts, tea.WithInput(cfg.stdin))
 	}
 	program := newTUIProgram(m, programOpts...)
