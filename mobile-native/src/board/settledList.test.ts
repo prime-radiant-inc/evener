@@ -197,6 +197,25 @@ it("gives each row that entered Needs you its own full wash, untouched by a row 
 	expect(list.getSnapshot().washed.size).toBe(0);
 });
 
+it("starts a row's wash over when it enters Needs you again before its last wash ended", () => {
+	const list = loaded(item("a", "a", false));
+	list.setItems([item("a", "a", true)]);
+	const firstWash = list.getSnapshot().washed.get("a");
+	vi.advanceTimersByTime(300);
+	list.setItems([item("a", "a", false)]);
+	vi.advanceTimersByTime(300);
+	list.setItems([item("a", "a", true)]);
+	const secondWash = list.getSnapshot().washed.get("a");
+	expect(secondWash).toBeGreaterThan(0);
+	expect(secondWash).not.toBe(firstWash);
+	vi.advanceTimersByTime(WASH_MS - 600);
+	expect(list.getSnapshot().washed.get("a")).toBe(secondWash);
+	vi.advanceTimersByTime(599);
+	expect(list.getSnapshot().washed.get("a")).toBe(secondWash);
+	vi.advanceTimersByTime(1);
+	expect(list.getSnapshot().washed.size).toBe(0);
+});
+
 it("washes a row that entered Needs you while held only when the list settles, in its new place", () => {
 	const list = loaded(item("w", "w", false), item("n", "n", true));
 	list.send("touchStart");
