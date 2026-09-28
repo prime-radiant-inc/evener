@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/appwire"
@@ -315,6 +316,66 @@ func TestRecoverClientMutationFailuresKeepsTheMarkerWhenTheCompletionWriteFails(
 	if !stillOpen {
 		t.Fatal("the open-pending marker was consumed although the completion was never recorded; closeAbandonedExecutions can never close this turn now")
 	}
+}
+
+// recoverClientMutationFailures's wasOpen branch must chase durability for a
+// RETAINED (recorded-but-unsynced) recovered completion the same way
+// completeExecution does, not just adopt it and never retry: without that,
+// a served session's recovered-turn completion could stay undurable forever
+// with nothing ever failing it closed.
+func TestRecoverClientMutationFailuresRetriesADurabilityDebtOnTheRecoveredCompletion(t *testing.T) {
+	dir := t.TempDir()
+	sess := newQueuePersistTestSession(t, dir)
+	started, err := sess.AcceptClientMutationStart(appwire.TurnStartParams{
+		ClientMutationID: "start-retained-completion",
+		Input:            []appwire.InputItem{{Type: "text", Text: "fails, then the process dies"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	claimed, ok, err := sess.claimClientMutationStart()
+	if err != nil || !ok {
+		t.Fatalf("claim: %v %v", ok, err)
+	}
+	failure := errors.New("deterministic pre-append failure")
+	crash := errors.New("simulated crash after both entries are recorded")
+	sess.clientMutationPreAppendFailure = func(schema.Turn) error { return failure }
+	sess.clientMutationFailureRecoveryFault = func(point string) error {
+		if point == "after_failure" {
+			return crash
+		}
+		return nil
+	}
+	if err := sess.acceptUserInput(withQueuedClientMutation(context.Background(), claimed), claimed.Text, claimed.Images, nil, false); !errors.Is(err, crash) {
+		t.Fatalf("acceptUserInput = %v, want the simulated crash", err)
+	}
+	sess.clientMutationFailureRecoveryFault = nil
+
+	sess.mu.Lock()
+	sess.openPendingExecutions = map[string]bool{started.Turn.ID: true}
+	sess.mu.Unlock()
+
+	// Fresh idle tail, as a real restart would have (see the comment on the
+	// sibling test above).
+	if err := sess.attachedTranscript().Close(); err != nil {
+		t.Fatal(err)
+	}
+	clk := agenttest.NewFakeClock()
+	sess.clock = clk
+	served := serveFailClosedSession(sess)
+	// The completion's own fsync and rollback fail (retained), and the
+	// barrier never succeeds either: durability can never be established.
+	attachRetainedBarrierWrite(t, sess, schema.TurnCompletion, durabilityRetryAttempts+1)
+	baseline := clk.BlockedCount()
+	if err := sess.recoverClientMutationFailures(false); err != nil {
+		t.Fatalf("recoverClientMutationFailures = %v, want nil: a retained record is adopted, not an error", err)
+	}
+	driveDurabilityRetries(clk, baseline, durabilityRetryAttempts)
+	sess.sendersWG.Wait() // the retry goroutine fails closed (or not) before this returns
+	if refusal := sess.failedClosedRefusal(); refusal == nil {
+		t.Fatal("the recovered turn's undurable completion never failed the served session closed")
+	}
+	served.settle(sess)
 }
 
 // A crash can land after a failed client start's USER_INPUT entry is recorded

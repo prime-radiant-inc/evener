@@ -1607,7 +1607,12 @@ func (s *Session) recoverClientMutationFailures(publishEnvironment bool) error {
 			// it interrupted instead of failed (the same care the "own"
 			// branch above takes with this same marker).
 			rec, completeErr := s.completeTurn(pending.TurnID, schema.TurnFailed)
-			if completeErr != nil {
+			if retained := retainedUnsyncedError(completeErr); retained != nil {
+				// Recorded but not yet durable: adopted, not an error --
+				// chase durability the same way completeExecution does,
+				// rather than leaving the debt with nothing to retry it.
+				s.settleRetainedUnsynced(retained, "a turn completion")
+			} else if completeErr != nil {
 				err = fmt.Errorf("complete recovered failed turn: %w", completeErr)
 			}
 			if rec.Recorded {
