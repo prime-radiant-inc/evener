@@ -6,7 +6,7 @@
 import { isPlainObject } from "@evener/appwire-client";
 import { readJson, removeKeys, writeJson } from "../deviceStorage";
 import type { SyncStringStorage } from "../syncStringStorage";
-import { type SubagentRow, subtreeStopped } from "./subagentModel";
+import { type SubagentRow, subtreeStops } from "./subagentModel";
 
 const storageKey = (hubId: string) => `evener.native.subagent-stops.${hubId}`;
 const LIMIT = 200;
@@ -18,6 +18,8 @@ interface StopRecord {
 	/** Sent as a direct stop (S6), which ends the subagent's own run and
 	 * leaves its subagents running; else asked of the coordinator. */
 	direct?: true;
+	/** Stops already in its subtree when you asked, which weren't yours. */
+	stopsBefore?: number;
 }
 
 export type StopRequestView = "requested" | "stopped" | null;
@@ -40,13 +42,20 @@ export class StopRequests {
 						requestedAt: record.requestedAt,
 						...(record.stopped === true ? { stopped: true as const } : {}),
 						...(record.direct === true ? { direct: true as const } : {}),
+						...(typeof record.stopsBefore === "number" ? { stopsBefore: record.stopsBefore } : {}),
 					};
 	}
 
 	/** You asked for this subagent to stop: of its coordinator, or directly
 	 * (S6). */
 	request(coordinatorRef: string, row: SubagentRow, now: number, { direct = false } = {}): void {
-		this.records[row.id] = { coordinatorRef, requestedAt: now, ...(direct ? { direct: true as const } : {}) };
+		const stopsBefore = subtreeStops(row.delegate);
+		this.records[row.id] = {
+			coordinatorRef,
+			requestedAt: now,
+			...(direct ? { direct: true as const } : {}),
+			...(stopsBefore > 0 ? { stopsBefore } : {}),
+		};
 		this.save();
 	}
 
@@ -76,8 +85,8 @@ export class StopRequests {
 			if (!record || record.coordinatorRef !== coordinatorRef || record.stopped || stillWorking(record, row)) continue;
 			// A direct stop ended the subagent's own run, so only its own
 			// outcome says it stopped; a request of the coordinator may have
-			// stopped anything under it.
-			if (record.direct ? row.stopped : subtreeStopped(row.delegate)) {
+			// stopped anything under it, but not what had stopped before.
+			if (record.direct ? row.stopped : subtreeStops(row.delegate) > (record.stopsBefore ?? 0)) {
 				record.stopped = true;
 				stopped.push(row);
 			} else delete this.records[row.id];

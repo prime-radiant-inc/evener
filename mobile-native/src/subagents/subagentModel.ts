@@ -63,12 +63,20 @@ export function subagentStateWord(state: SubagentState): string {
 	return STATE_WORDS[state];
 }
 
-/** The subagent ended in a stop: its own run, or a run somewhere under it.
- * For PR 3's stop request ("Stopped at your request"); a row's own "Stopped"
- * is its own outcome (ruling 4). */
+/** How many runs in the subagent's subtree, its own included, ended in a
+ * stop. For PR 3's stop request ("Stopped at your request"); a row's own
+ * "Stopped" is its own outcome (ruling 4). */
+export function subtreeStops(delegate: ActivityDelegate): number {
+	const own = delegate.terminal === true && STOPPED_OUTCOMES.has(delegate.outcome ?? "") ? 1 : 0;
+	return (delegate.child?.entries ?? []).reduce(
+		(count, entry) => count + (entry.kind === "delegate" ? subtreeStops(entry.delegate) : 0),
+		own,
+	);
+}
+
+/** The subagent ended in a stop: its own run, or a run somewhere under it. */
 export function subtreeStopped(delegate: ActivityDelegate): boolean {
-	if (delegate.terminal === true && STOPPED_OUTCOMES.has(delegate.outcome ?? "")) return true;
-	return (delegate.child?.entries ?? []).some((entry) => entry.kind === "delegate" && subtreeStopped(entry.delegate));
+	return subtreeStops(delegate) > 0;
 }
 
 /** The short description (spec 9's "mandate"; the wire's `mandate` is the

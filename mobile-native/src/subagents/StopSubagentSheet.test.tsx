@@ -323,3 +323,25 @@ it("waits for a fresh read of the coordinator after the connection comes back", 
 	await settle();
 	expect(sendDisabled(mounted)).toBe(false);
 });
+
+it("reads and sends only through its own hub's connection", async () => {
+	harness.connection = { ...screenConnection(client, "ready"), activeProfile: { id: "hub-2", name: "Other hub" } };
+	const mounted = await mount();
+	expect(client.calls.filter((call) => call.method === "thread/read")).toEqual([]);
+	expect(sendDisabled(mounted)).toBe(true);
+});
+
+it("stays open while the tree is only partly listed", async () => {
+	client.on("evener/jobs/list", async (params) =>
+		(params as { continuation?: string }).continuation
+			? Promise.reject(new Error("offline"))
+			: ({
+					data: {
+						revision: 1,
+						root: { ...tree().root, entries: [], branch: { truncated: true, continuation: "page-2" } },
+					},
+				} as never),
+	);
+	await mount();
+	expect(sheetNavigation.goBack).not.toHaveBeenCalled();
+});

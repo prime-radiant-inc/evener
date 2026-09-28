@@ -1515,12 +1515,10 @@ export function ConversationScreen({
 	// its coordinator, or on a subagent's screen, under the same coordinator.
 	const openSubagent = useCallback(
 		(ref: string, title: string) => {
-			const coordinator = subagentOf ?? {
-				ref: route.params.ref,
-				threadId: store.getState().conversation?.threadId ?? "",
-				title: route.params.title,
-			};
-			navigation.push("Subagent", { hubId: route.params.hubId, ref, title, coordinator });
+			// A row shows only in a loaded transcript, which names its thread.
+			const threadId = store.getState().conversation?.threadId;
+			const coordinator = subagentOf ?? (threadId ? { ref: route.params.ref, threadId, title: route.params.title } : null);
+			if (coordinator) navigation.push("Subagent", { hubId: route.params.hubId, ref, title, coordinator });
 		},
 		[navigation, route.params.hubId, route.params.ref, route.params.title, subagentOf, store],
 	);

@@ -78,6 +78,7 @@ export function SubagentPanel({ hubId, ref, coordinator, inFront, barShown, show
 	useEffect(() => {
 		// What another connection said doesn't hold on this one.
 		setCapabilities(null);
+		setDirectUnsupported(false);
 		if (!inFront || !connected || !client) return;
 		const link = new SessionLink(client, coordinator.ref);
 		link.read({ follow: false }).then(

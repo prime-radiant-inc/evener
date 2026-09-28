@@ -41,6 +41,7 @@ import { FloatingStack } from "./session/FloatingStack";
 import { Toast } from "./Toast";
 import { forgetStopRequestsForHub, stopRequests } from "./subagents/nativeStopRequests";
 import { SubagentScreen } from "./subagents/SubagentScreen";
+import { flattenSubagents } from "./subagents/subagentModel";
 
 const harness = vi.hoisted(() => ({
 	connection: {} as Record<string, unknown>,
@@ -2308,7 +2309,8 @@ describe("a subagent's own session (spec 9, rulings 10 and 30)", () => {
 
 	it("says Stop requested while a request you sent is pending", async () => {
 		const { tree } = await mountSubagent(subagent(true));
-		const row = { id: "d-fix", active: true, state: "running" } as never;
+		const [row] = flattenSubagents(subagentTree() as never);
+		if (!row) throw new Error("no row");
 		act(() => stopRequests("hub-1").request(COORDINATOR.ref, row, Date.now()));
 		await settle();
 		expect(renderedText(tree)).toContain("Stop requested");
@@ -2379,6 +2381,27 @@ describe("a subagent's own session (spec 9, rulings 10 and 30)", () => {
 		act(() => tree.update(<SubagentScreen route={route as never} navigation={navigation as never} />));
 		await settle();
 		expect(pressable(tree, "Stop subagent")).toBeUndefined();
+	});
+
+	it("tries the direct stop again on a new connection after one hub didn't know it", async () => {
+		coordinatorHub.stop = () => {
+			throw new WireError("method not found", -32601);
+		};
+		const { tree } = await mountSubagent(subagent(true), { stopSubagent: true });
+		act(() => pressable(tree, "Stop subagent")?.props.onPress());
+		await act(async () => alertRequests.at(-1)?.buttons?.find((button) => button.text === "Stop")?.onPress?.());
+		await settle();
+		expect(pressable(tree, "Stop subagent")).toBeUndefined();
+		const route = {
+			key: "subagent-local:fix",
+			name: "Subagent",
+			params: { hubId: "hub-1", ref: "local:fix", title: "Fix race in tree settle", coordinator: COORDINATOR },
+		};
+		const upgraded = hubClient(subagent(true));
+		harness.connection = { ...harness.connection, client: upgraded.client };
+		act(() => tree.update(<SubagentScreen route={route as never} navigation={navigation as never} />));
+		await settle();
+		expect(pressable(tree, "Stop subagent")).toBeDefined();
 	});
 
 	it("asks the coordinator when its thread can't be read to learn whether a direct stop works", async () => {
@@ -2536,7 +2559,8 @@ describe("a subagent's own session (spec 9, rulings 10 and 30)", () => {
 
 	it("shows the toast once when the subagent stops at your request", async () => {
 		const { tree, hub } = await mountSubagent(subagent(true));
-		const row = { id: "d-fix", active: true, state: "running" } as never;
+		const [row] = flattenSubagents(subagentTree() as never);
+		if (!row) throw new Error("no row");
 		act(() => stopRequests("hub-1").request(COORDINATOR.ref, row, Date.now()));
 		coordinatorHub.tree = subagentTree({ terminal: true, outcome: "cancelled", runEndedAt: new Date().toISOString() }, 2);
 		act(() =>

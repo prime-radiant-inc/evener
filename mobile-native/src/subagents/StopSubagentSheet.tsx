@@ -24,8 +24,9 @@ function prefill(row: SubagentRow): string {
 
 export function StopSubagentSheet({ route }: NativeStackScreenProps<Routes, "StopSubagentSheet">) {
 	const { hubId, coordinator, ref } = route.params;
-	const { client, state } = useConnection();
-	const online = state === "ready" && client !== null;
+	const { client, state, activeProfile } = useConnection();
+	// Only this hub's own connection reads the coordinator and sends to it.
+	const online = state === "ready" && client !== null && activeProfile?.id === hubId;
 	const { palette } = useColors();
 	const scale = useTextScale();
 	const { snapshot } = useSubagentTree(hubId, coordinator.ref, coordinator.threadId);
@@ -43,10 +44,11 @@ export function StopSubagentSheet({ route }: NativeStackScreenProps<Routes, "Sto
 	const [sending, setSending] = useState(false);
 	const sheet = useSheet({ dirty: edited, discardTitle: "Discard this message?" });
 
-	// A subagent the tree no longer lists has nothing left to stop.
+	// A subagent the whole tree no longer lists has nothing left to stop. A
+	// tree that's only partly listed may hold it in what's missing.
 	useEffect(() => {
-		if (row === null) sheet.finish();
-	}, [row, sheet]);
+		if (row === null && !snapshot.partial) sheet.finish();
+	}, [row, snapshot.partial, sheet]);
 
 	// The coordinator's state, read without taking the connection's
 	// subscription, which the transcript under this sheet follows.

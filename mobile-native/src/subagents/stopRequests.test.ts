@@ -121,6 +121,25 @@ describe("stop requests you sent a coordinator (spec 9, ruling 10)", () => {
 	});
 });
 
+describe("a request of the coordinator over work that was already stopped", () => {
+	it("isn't stopped at your request when the only stop under it came before you asked", () => {
+		const requests = new StopRequests(memoryStorage(), "hub-1");
+		const stoppedChild = { kind: "delegate" as const, delegate: d("child", { terminal: true, outcome: "stopped" }) };
+		const workingOverStopped = d("fix", {
+			runStartedAt: "2026-09-28T10:00:00.000Z",
+			child: { ...session("local:fix", []), entries: [stoppedChild] },
+		});
+		const finishedOverStopped = d("fix", {
+			terminal: true,
+			outcome: "completed",
+			child: { ...session("local:fix", []), entries: [stoppedChild] },
+		});
+		requests.request("local:coord", row(workingOverStopped), 1000);
+		expect(requests.reconcile("local:coord", rows(finishedOverStopped))).toEqual([]);
+		expect(requests.view(row(finishedOverStopped))).toBeNull();
+	});
+});
+
 // S6: a direct stop ends the subagent's own run and leaves its subagents
 // running (the S6 plan's ruling 1), so it settles on the subagent's own run.
 describe("a stop you sent directly (S6)", () => {
