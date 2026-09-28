@@ -41,12 +41,11 @@ import type {
 const SECTION_LIMIT = 50;
 const CATALOG_LIMIT = 100;
 
-// The generation id demo-hub.mts advertises in the initialize handshake's
-// navigation capability. Every wireV2 response must carry the exact same
-// id: the shared navigation store rejects any other generation as a
-// mismatch (appwire-client/typescript/state/navigation/revalidator.ts's
-// `validate`, "generation mismatch"), so this is exported and imported by
-// demo-hub.mts rather than each file keeping its own string.
+// The generation id the fleet's navigationCapability advertises in demo-hub.mts's
+// initialize handshake. Every wireV2 response must carry the exact same id:
+// the shared navigation store rejects any other generation as a mismatch
+// (appwire-client/typescript/state/navigation/revalidator.ts's `validate`,
+// "generation mismatch"). Exported for the tests that assert it.
 export const DEMO_FLEET_GENERATION = "demo-fleet";
 // Every resource shares one revision, bumped when the fleet changes (the
 // question askQuestion below poses), so an invalidation's target revision is
@@ -54,7 +53,6 @@ export const DEMO_FLEET_GENERATION = "demo-fleet";
 // response below the revision it was told to expect.
 const respond = (revision: number, params: NavigationReadParams, data: unknown): NavigationReadResponse =>
 	wireV2(params, data, `"demo-fleet-${revision}"`, revision, DEMO_FLEET_GENERATION);
-
 
 // A local copy of that same module's relativeAge (now/m/h/d), for the same
 // reason: SearchResult.age needs it and importing it hits the barrel above.
@@ -590,6 +588,7 @@ export interface DemoFleet extends FleetAnswers {
 // local "evener" session with no pin category, subagents or running job, so
 // the only thing that changes on the Board is its band.
 const ASKING_SESSION_ID = "s-gateway";
+const ASKING_PROJECT = SESSIONS.find((raw) => raw.id === ASKING_SESSION_ID)?.project ?? "evener";
 
 export function createDemoFleet(options: DemoFleetOptions = {}): DemoFleet {
 	const startupMs = options.now ?? Date.now();
@@ -599,9 +598,10 @@ export function createDemoFleet(options: DemoFleetOptions = {}): DemoFleet {
 	// answer, keeps every count, section and catalog below in step for free:
 	// a hub with nothing live just has nothing to filter, page or search over.
 	const sessionsList = options.empty ? [] : SESSIONS;
-	let revision = 1;
+	// Every resource's revision is one ahead of the navigation sequence: both
+	// start there and askQuestion advances them together.
 	let sequence = 0;
-	let answers = fleetAnswers(sessionsList, revision, startupMs, offlineHost, clock);
+	let answers = fleetAnswers(sessionsList, sequence + 1, startupMs, offlineHost, clock);
 
 	function askQuestion(): NavigationInvalidatedPayload {
 		// A negative `ago` puts updated_at at the moment of asking, after
@@ -610,8 +610,8 @@ export function createDemoFleet(options: DemoFleetOptions = {}): DemoFleet {
 		const asked = sessionsList.map((raw) =>
 			raw.id === ASKING_SESSION_ID ? { ...raw, state: "question" as const, ago: askedAgo } : raw,
 		);
-		revision += 1;
 		sequence += 1;
+		const revision = sequence + 1;
 		answers = fleetAnswers(asked, revision, startupMs, offlineHost, clock);
 		// The resources a real hub invalidates for one row's state change
 		// (cmd/evener-hub/navigation_service.go): the manifest's counts, both
@@ -624,7 +624,7 @@ export function createDemoFleet(options: DemoFleetOptions = {}): DemoFleet {
 				{ kind: "manifest", revision },
 				{ kind: "section", section: "live", revision },
 				{ kind: "section", section: "needs_you", revision },
-				{ kind: "project", projectKey: "evener", revision },
+				{ kind: "project", projectKey: ASKING_PROJECT, revision },
 			],
 		};
 	}
@@ -666,17 +666,18 @@ function fleetAnswers(
 
 	const pinCategoryIds = ["release", "research"] as const;
 	const pinSessions = (id: string) => liveRaw.filter((raw) => raw.category === id).map(rowOf);
-	// A category with nothing pinned in it doesn't get a row -- true for the
-	// empty fleet (both categories are empty) and, incidentally, for any real
-	// category that happens to hold nothing.
+	// A category with nothing pinned in it doesn't get a row, which is what
+	// empties the pin catalog for the empty fleet. The real hub keeps empty
+	// durable sections (navigation_projection.go buildPinSectionsContext);
+	// both demo categories hold rows in the full fleet, so only the empty
+	// fleet sees the difference.
 	const pinSections = pinCategoryIds
 		.map((id) => ({ id, name: id === "release" ? "Release" : "Research", count: pinSessions(id).length }))
 		.filter((section) => section.count > 0);
 
-	// PROJECT_META and ARCHIVED_TOTAL are static fixture metadata, not derived
-	// from sessionsList -- so an empty fleet needs its own check here (nothing
-	// live means nothing to catalog) rather than falling out of the filters
-	// above for free.
+	// PROJECT_META is static fixture metadata, not derived from sessionsList
+	// (the full fleet lists "home" with no sessions), so an empty fleet needs
+	// its own check here rather than falling out of a filter for free.
 	const projectKeys = sessionsList.length > 0 ? PROJECT_META.map((project) => project.key) : [];
 	const projects = projectKeys.map((key) => projectSummary(sessionsList, key, projectSessionsRaw(sessionsList, key).length));
 	const archivedRaw = sessionsList.filter((raw) => raw.archived);
