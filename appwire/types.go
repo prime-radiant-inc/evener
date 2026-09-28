@@ -4903,6 +4903,9 @@ type OperationResult struct {
 // (deploy pipeline 08b §4, §10). `incarnationId` is the pinned incarnation the
 // record ran against; `result` is present exactly on terminal records;
 // `hostRemoved` marks a record whose pinned incarnation a removal tombstoned.
+// `compacted: true` is present exactly on a replay the operation store
+// answered from a dedup tombstone — the terminal record itself was compacted
+// (§4) — and absent on every retained record.
 // The fencing-epoch and orphan-boundary details a later slice's wire carries
 // (the crash-fencing spec's shapes) stay off this shape until that slice
 // registers its filters.
@@ -4919,6 +4922,7 @@ type OperationRecord struct {
 	CreatedAt         string                   `json:"createdAt"`
 	UpdatedAt         string                   `json:"updatedAt"`
 	HostRemoved       bool                     `json:"hostRemoved"`
+	Compacted         bool                     `json:"compacted,omitempty"`
 }
 
 // HostRunningParams is the evener/host/running payload (deploy pipeline 08b

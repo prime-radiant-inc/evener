@@ -2399,7 +2399,7 @@ func (m *hubHostManager) persistHostsMarked(entries, known []hostreg.Host, chang
 	// and the two files cannot be one write, so the mirror is written last and
 	// a failure here leaves it behind the file rather than unwinding the
 	// commit. See mirrorBoundaries.
-	m.mirrorBoundaries(entries, known, records.highWater)
+	m.mirrorBoundaries(entries, known, records)
 	return nil
 }
 
@@ -2409,7 +2409,10 @@ func (m *hubHostManager) persistHostsMarked(entries, known []hostreg.Host, chang
 // same atomic store writes that mirror the generation"). Every live entry's
 // triple and every retained high-water record for a name with no live entry is
 // carried, names whose entry holds no complete identity (a direct writer
-// fixture) are skipped, and the whole set lands in one atomic store write.
+// fixture) are skipped, and the whole set lands in one atomic store write
+// together with the removal markers §4's removed-host ordering reads: every
+// name carrying a removal tombstone is dated, every live name clears any
+// marker it held.
 //
 // A mirror failure is logged, not returned: the hub.toml commit already landed
 // and cannot be unwound, and the state it leaves — the file ahead of the
@@ -2417,14 +2420,14 @@ func (m *hubHostManager) persistHostsMarked(entries, known []hostreg.Host, chang
 // forward. That pass, and the cursor validation that reads the mirror, belong
 // to later slices; until they land the mirror trails the file and nothing
 // reads it.
-func (m *hubHostManager) mirrorBoundaries(entries, known []hostreg.Host, highWater map[string]HostGeneration) {
+func (m *hubHostManager) mirrorBoundaries(entries, known []hostreg.Host, records hostTOMLRecords) {
 	if m.cfg.ops == nil || strings.TrimSpace(m.cfg.configPath) == "" {
 		return
 	}
 	// The mirrored triples are the same derivation the file's records come from
 	// (hostFileRecordSet), so the mirror and the file cannot be projected by two
 	// rules that drift apart.
-	_, generations := hostFileRecordSet(entries, highWater)
+	_, generations := hostFileRecordSet(entries, records.highWater)
 	boundaries := make(map[string]hostops.Boundary, len(generations))
 	for name, mark := range generations {
 		boundaries[name] = hostops.Boundary{
@@ -2453,10 +2456,30 @@ func (m *hubHostManager) mirrorBoundaries(entries, known []hostreg.Host, highWat
 		}
 	}
 	slices.Sort(remove)
-	if len(boundaries) == 0 && len(remove) == 0 {
+	// The removal markers ride the same write: a tombstoned name is dated from
+	// its own removed_at, a live name clears any marker, and a name the write
+	// cannot classify (a pruned-tombstone high-water record) keeps whatever
+	// marker it had — a removal the store cannot date is never invented, and
+	// one it already knew is never forgotten (deploy pipeline 08b §4's
+	// removed-host horizon).
+	mirror := hostops.HostMirror{Boundaries: boundaries, Remove: remove}
+	for _, entry := range entries {
+		mirror.Live = append(mirror.Live, entry.Name)
+	}
+	for name, tombstone := range records.tombstones {
+		removedAt, err := time.Parse(time.RFC3339, tombstone.RemovedAt)
+		if err != nil {
+			continue
+		}
+		if mirror.Removed == nil {
+			mirror.Removed = map[string]time.Time{}
+		}
+		mirror.Removed[name] = removedAt
+	}
+	if len(mirror.Boundaries) == 0 && len(mirror.Remove) == 0 && len(mirror.Live) == 0 && len(mirror.Removed) == 0 {
 		return
 	}
-	if err := m.cfg.ops.MirrorBoundaries(boundaries, remove); err != nil {
+	if err := m.cfg.ops.MirrorHostState(mirror); err != nil {
 		m.logf("host boundary records not mirrored: %v", err)
 	}
 }

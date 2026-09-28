@@ -1,0 +1,497 @@
+package hostops
+
+// Retention, compaction, and dedup-tombstone tests (deploy pipeline 08b §4,
+// §11, §12's compaction/tombstone rows). S6's store-level half: the per-host
+// and global bounds, the terminal-age bound, removed-host-first ordering past
+// the tombstoneRetention horizon, the bounded dedup tombstones and their
+// compacted:true replay rule.
+
+import (
+	"errors"
+	"fmt"
+	"testing"
+	"time"
+
+	"github.com/spf13/afero"
+)
+
+// openRetentionStore opens a store under a fresh temp root with the policy.
+func openRetentionStore(t *testing.T, policy RetentionPolicy) (*Store, string) {
+	t.Helper()
+	path := StorePath(t.TempDir())
+	store, err := OpenWithRetention(path, policy)
+	if err != nil {
+		t.Fatalf("OpenWithRetention(%s): %v", path, err)
+	}
+	return store, path
+}
+
+// createOp persists one pending deploy record and returns it.
+func createOp(t *testing.T, store *Store, host, clientOperationID string) Record {
+	t.Helper()
+	record, err := store.Create(NewRecord{
+		ClientOperationID: clientOperationID,
+		Host:              host,
+		Kind:              KindDeploy,
+		Generation:        7,
+		IncarnationID:     "inc-" + host,
+	})
+	if err != nil {
+		t.Fatalf("Create(%s/%s): %v", host, clientOperationID, err)
+	}
+	return record
+}
+
+// finish moves a record to complete, landing its terminal state.
+func finish(t *testing.T, store *Store, id string) Record {
+	t.Helper()
+	record, err := store.Transition(id, StateComplete, nil)
+	if err != nil {
+		t.Fatalf("Transition(%s): %v", id, err)
+	}
+	return record
+}
+
+// TestCompactionBoundsTerminalRecordsPerHostAndLeavesTombstones pins §4:
+// "the store keeps at most 50 terminal records per host ... A write that would
+// exceed a global bound first compacts oldest-terminal-first ... Compaction
+// leaves a bounded store dedup tombstone per compacted record". The per-host
+// bound is lowered so the test can watch one write remove one record.
+func TestCompactionBoundsTerminalRecordsPerHostAndLeavesTombstones(t *testing.T) {
+	store, path := openRetentionStore(t, RetentionPolicy{TerminalPerHost: 2})
+
+	first := createOp(t, store, "m4", "op-1")
+	second := createOp(t, store, "m4", "op-2")
+	third := createOp(t, store, "m4", "op-3")
+	finish(t, store, first.ID)
+	finish(t, store, second.ID)
+	if got := len(store.Records()); got != 3 {
+		t.Fatalf("records after two terminal lands = %d, want 3", got)
+	}
+	finish(t, store, third.ID)
+
+	records := store.Records()
+	if len(records) != 2 {
+		t.Fatalf("terminal records after the over-bound land = %d, want 2", len(records))
+	}
+	if _, ok := store.Record(first.ID); ok {
+		t.Fatalf("the oldest terminal record %s survived the per-host bound", first.ID)
+	}
+	tombstones := store.Tombstones()
+	if len(tombstones) != 1 {
+		t.Fatalf("tombstones = %d, want 1", len(tombstones))
+	}
+	tombstone := tombstones[0]
+	if tombstone.ID != first.ID || tombstone.ClientOperationID != "op-1" || tombstone.Host != "m4" ||
+		tombstone.Kind != KindDeploy || tombstone.Generation != 7 || tombstone.IncarnationID != "inc-m4" ||
+		tombstone.State != StateComplete {
+		t.Fatalf("tombstone = %+v, want the compacted first record's full scope", tombstone)
+	}
+	if tombstone.CompactedAt.IsZero() {
+		t.Fatal("tombstone carries no compactedAt")
+	}
+	if store.CursorEpoch().CompactSeq != 1 {
+		t.Fatalf("compactSeq = %d, want 1 after one compacting write", store.CursorEpoch().CompactSeq)
+	}
+
+	// §4: "A replay naming a tombstoned ID returns the full retained record
+	// with `compacted: true` instead of opening a fresh operation" — the pinned
+	// pair still equals the live comparison pair (the host did not move).
+	replayed, hit, err := store.LookupOperation(OperationDedupQuery{
+		ClientOperationID: "op-1",
+		Host:              "m4",
+		Kind:              KindDeploy,
+		Current:           OperationPair{Generation: 7, IncarnationID: "inc-m4"},
+	})
+	if err != nil || !hit {
+		t.Fatalf("LookupOperation(tombstoned op-1) = hit %v, err %v; want a replay", hit, err)
+	}
+	if !replayed.Compacted {
+		t.Fatal("the replayed record does not carry compacted: true")
+	}
+	if replayed.ID != first.ID || replayed.State != StateComplete {
+		t.Fatalf("replayed record = %+v, want the retained tombstone record", replayed)
+	}
+
+	// The file holds exactly what the live store serves: a fresh load keeps the
+	// tombstones and the compactSeq.
+	reloaded := reopenFresh(t, path)
+	if got := len(reloaded.Tombstones()); got != 1 {
+		t.Fatalf("reloaded tombstones = %d, want 1", got)
+	}
+	if reloaded.CursorEpoch().CompactSeq != 1 {
+		t.Fatalf("reloaded compactSeq = %d, want 1", reloaded.CursorEpoch().CompactSeq)
+	}
+	replayed, hit, err = reloaded.LookupOperation(OperationDedupQuery{
+		ClientOperationID: "op-1", Host: "m4", Kind: KindDeploy,
+		Current: OperationPair{Generation: 7, IncarnationID: "inc-m4"},
+	})
+	if err != nil || !hit || !replayed.Compacted {
+		t.Fatalf("reloaded replay = hit %v compacted %v err %v; want the tombstone replay", hit, replayed.Compacted, err)
+	}
+}
+
+// TestCompactionNeverRemovesNonTerminalRecords pins §4: the bounds are on
+// "terminal records ... plus every non-terminal record regardless of count".
+func TestCompactionNeverRemovesNonTerminalRecords(t *testing.T) {
+	store, _ := openRetentionStore(t, RetentionPolicy{TerminalPerHost: 1})
+	pending := createOp(t, store, "m4", "op-pending")
+	a := createOp(t, store, "m4", "op-a")
+	b := createOp(t, store, "m4", "op-b")
+	finish(t, store, a.ID)
+	finish(t, store, b.ID)
+
+	if _, ok := store.Record(pending.ID); !ok {
+		t.Fatal("a non-terminal record was compacted")
+	}
+	if _, ok := store.Record(a.ID); ok {
+		t.Fatal("the oldest terminal record survived the per-host bound")
+	}
+	if _, ok := store.Record(b.ID); !ok {
+		t.Fatal("the newest terminal record was compacted")
+	}
+}
+
+// TestCompactionNeverTouchesHostRemovedMarksOfRetainedRecords pins §4:
+// "Compaction never touches `host-removed` marks of retained records." A
+// retained record's mark survives its neighbours' compaction, and a compacted
+// record's tombstone carries the mark it had.
+func TestCompactionNeverTouchesHostRemovedMarksOfRetainedRecords(t *testing.T) {
+	store, _ := openRetentionStore(t, RetentionPolicy{TerminalPerHost: 3})
+	// The mark write path the store owns: a transition's change callback
+	// carries the host-removed mark, exactly as the boot pass applies it.
+	compactedMarked := createOp(t, store, "m4", "op-compacted")
+	if _, err := store.Transition(compactedMarked.ID, StateComplete, func(r *Record) { r.HostRemoved = true }); err != nil {
+		t.Fatalf("Transition(compactedMarked): %v", err)
+	}
+	newest := createOp(t, store, "m4", "op-newest")
+	finish(t, store, newest.ID)
+	retainedMarked := createOp(t, store, "m4", "op-retained")
+	if _, err := store.Transition(retainedMarked.ID, StateComplete, func(r *Record) { r.HostRemoved = true }); err != nil {
+		t.Fatalf("Transition(retainedMarked): %v", err)
+	}
+	// The fourth terminal land exceeds the per-host bound: the oldest terminal
+	// record (compactedMarked) compacts; the marked retained one must not be
+	// touched.
+	third := createOp(t, store, "m4", "op-third")
+	finish(t, store, third.ID)
+
+	if _, ok := store.Record(compactedMarked.ID); ok {
+		t.Fatal("the oldest terminal record survived the per-host bound")
+	}
+	retained, ok := store.Record(retainedMarked.ID)
+	if !ok {
+		t.Fatal("the marked retained record was compacted")
+	}
+	if !retained.HostRemoved {
+		t.Fatal("compaction cleared a retained record's host-removed mark")
+	}
+	tombstones := store.Tombstones()
+	if len(tombstones) != 1 || !tombstones[0].HostRemoved {
+		t.Fatalf("tombstones = %+v, want the compacted record's mark carried over", tombstones)
+	}
+}
+
+// TestRemovedHostHistoryCompactsOnlyPastTheHorizon pins §4: "Safe compaction
+// of removed-host history: once a removed host's records sit past the
+// `tombstoneRetention` horizon its terminal records compact ... Only past that
+// horizon — the documented, owner-visible horizon of the lost-response retry
+// contract — does a replay open fresh", with registry spec §15's 7-day default
+// horizon.
+func TestRemovedHostHistoryCompactsOnlyPastTheHorizon(t *testing.T) {
+	policy := RetentionPolicy{
+		TerminalPerHost:    50,
+		TerminalStoreWide:  50,
+		TombstonesPerHost:  1,
+		RemovedHostHorizon: 7 * 24 * time.Hour,
+	}
+	store, _ := openRetentionStore(t, policy)
+	base := time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC)
+	store.clock = func() time.Time { return base }
+
+	liveRecord := createOp(t, store, "live", "live-old")
+	finish(t, store, liveRecord.ID)
+	removedOld := createOp(t, store, "gone", "gone-old")
+	finish(t, store, removedOld.ID)
+	removedNew := createOp(t, store, "gone", "gone-new")
+	finish(t, store, removedNew.ID)
+
+	// The removal lands two days before base: inside the 7-day horizon.
+	if err := store.MirrorHostState(HostMirror{
+		Boundaries: map[string]Boundary{
+			"live": {Generation: 7, IncarnationID: "inc-live", PresenceEpoch: 1},
+			"gone": {Generation: 7, IncarnationID: "inc-gone", PresenceEpoch: 2},
+		},
+		Live:    []string{"live"},
+		Removed: map[string]time.Time{"gone": base.Add(-48 * time.Hour)},
+	}); err != nil {
+		t.Fatalf("MirrorHostState: %v", err)
+	}
+	// A later write runs the pass with no bound exceeded: nothing compacts, and
+	// the inside-horizon removed host's history stays whole.
+	liveNew := createOp(t, store, "live", "live-new")
+	finish(t, store, liveNew.ID)
+	for _, record := range []Record{liveRecord, removedOld, removedNew} {
+		if _, ok := store.Record(record.ID); !ok {
+			t.Fatalf("record %s compacted inside the removed host's horizon with no bound exceeded", record.ID)
+		}
+	}
+	if got := store.CursorEpoch().CompactSeq; got != 0 {
+		t.Fatalf("compactSeq = %d, want 0: no bound was exceeded and the horizon had not passed", got)
+	}
+	// §4's boundary sentence: while records remain, the removed host's
+	// historical boundary stays in the store's per-host boundary record.
+	if _, ok := store.Boundary("gone"); !ok {
+		t.Fatal("the removed host's boundary was dropped while records remained")
+	}
+
+	// Past the horizon the removed host's terminal records compact even though
+	// no bound is exceeded and the live host keeps every record.
+	store.clock = func() time.Time { return base.Add(8 * 24 * time.Hour) }
+	next := createOp(t, store, "live", "live-next")
+	finish(t, store, next.ID)
+	if _, ok := store.Record(removedOld.ID); ok {
+		t.Fatal("a past-horizon removed host's terminal record survived compaction")
+	}
+	if _, ok := store.Record(removedNew.ID); ok {
+		t.Fatal("a past-horizon removed host's terminal records did not all compact")
+	}
+	// §4: "its older tombstones drop oldest-first" past the per-host bound: the
+	// newest tombstone survives (TombstonesPerHost is 1) and replays with
+	// compacted: true while its pinned pair equals the tombstone's own removed
+	// pair; the dropped older one opens fresh.
+	tombstones := store.Tombstones()
+	if len(tombstones) != policy.TombstonesPerHost {
+		t.Fatalf("removed host holds %d tombstones, want the %d-per-host bound", len(tombstones), policy.TombstonesPerHost)
+	}
+	if tombstones[0].ClientOperationID != "gone-new" {
+		t.Fatalf("surviving tombstone = %s, want the newest gone-new", tombstones[0].ClientOperationID)
+	}
+	replayed, hit, err := store.LookupOperation(OperationDedupQuery{
+		ClientOperationID: "gone-new", Host: "gone", Kind: KindDeploy,
+		Current: OperationPair{Generation: 7, IncarnationID: "inc-gone"},
+	})
+	if err != nil || !hit || !replayed.Compacted {
+		t.Fatalf("removed-host replay = hit %v compacted %v err %v; want a compacted replay",
+			hit, replayed.Compacted, err)
+	}
+	_, hit, err = store.LookupOperation(OperationDedupQuery{
+		ClientOperationID: "gone-old", Host: "gone", Kind: KindDeploy,
+		Current: OperationPair{Generation: 7, IncarnationID: "inc-gone"},
+	})
+	if err != nil {
+		t.Fatalf("LookupOperation(dropped tombstone): %v", err)
+	}
+	if hit {
+		t.Fatal("a dropped tombstone replayed after the horizon")
+	}
+	// The host's last record compacted above, so the boundary goes with it.
+	if _, ok := store.Boundary("gone"); ok {
+		t.Fatal("the boundary outlived the removed host's last record")
+	}
+}
+
+// TestRemovedHostTombstonesSurviveInsideTheHorizon pins §4's retry contract:
+// inside the horizon a removed host's tombstones are never dropped, even past
+// the per-host bound — "Only past that horizon ... does a replay open fresh".
+func TestRemovedHostTombstonesSurviveInsideTheHorizon(t *testing.T) {
+	store, _ := openRetentionStore(t, RetentionPolicy{
+		TerminalPerHost:    1,
+		TombstonesPerHost:  1,
+		RemovedHostHorizon: 7 * 24 * time.Hour,
+	})
+	base := time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC)
+	store.clock = func() time.Time { return base }
+	if err := store.MirrorHostState(HostMirror{
+		Boundaries: map[string]Boundary{"gone": {Generation: 7, IncarnationID: "inc-gone", PresenceEpoch: 2}},
+		Removed:    map[string]time.Time{"gone": base.Add(-24 * time.Hour)},
+	}); err != nil {
+		t.Fatalf("MirrorHostState: %v", err)
+	}
+	for i := range 4 {
+		record := createOp(t, store, "gone", fmt.Sprintf("gone-%d", i))
+		finish(t, store, record.ID)
+	}
+	// Four terminal lands under a one-record bound leave three compacted
+	// records — and the horizon exempts all three tombstones from the
+	// one-per-host bound.
+	if got := len(store.Tombstones()); got != 3 {
+		t.Fatalf("inside-horizon removed host holds %d tombstones, want all 3 kept", got)
+	}
+	replayed, hit, err := store.LookupOperation(OperationDedupQuery{
+		ClientOperationID: "gone-0", Host: "gone", Kind: KindDeploy,
+		Current: OperationPair{Generation: 7, IncarnationID: "inc-gone"},
+	})
+	if err != nil || !hit || !replayed.Compacted {
+		t.Fatalf("oldest inside-horizon replay = hit %v compacted %v err %v; want the retained replay",
+			hit, replayed.Compacted, err)
+	}
+}
+
+// TestCompactionDropsTheBoundaryWithTheLastRecord pins §4's sentence: "the
+// historical (generation, incarnation id, presenceEpoch) boundary persists in
+// the store's per-host boundary record until the host's last record compacts".
+func TestCompactionDropsTheBoundaryWithTheLastRecord(t *testing.T) {
+	policy := RetentionPolicy{TerminalPerHost: 5, RemovedHostHorizon: time.Hour}
+	store, _ := openRetentionStore(t, policy)
+	base := time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC)
+	store.clock = func() time.Time { return base }
+
+	record := createOp(t, store, "gone", "gone-1")
+	finish(t, store, record.ID)
+	if err := store.MirrorHostState(HostMirror{
+		Boundaries: map[string]Boundary{"gone": {Generation: 7, IncarnationID: "inc-gone", PresenceEpoch: 2}},
+		Removed:    map[string]time.Time{"gone": base.Add(-2 * time.Hour)},
+	}); err != nil {
+		t.Fatalf("MirrorHostState: %v", err)
+	}
+	if _, ok := store.Boundary("gone"); !ok {
+		t.Fatal("the mirror did not persist the boundary")
+	}
+	// A later write runs the pass: the host is past its horizon, its last
+	// record compacts, and the boundary goes with it.
+	other := createOp(t, store, "live", "live-1")
+	finish(t, store, other.ID)
+	if _, ok := store.Record(record.ID); ok {
+		t.Fatal("the removed host's last record did not compact past the horizon")
+	}
+	if _, ok := store.Boundary("gone"); ok {
+		t.Fatal("the boundary outlived the host's last record")
+	}
+}
+
+// TestCompactionEnforcesTheAgeAndGlobalBounds pins the remaining §4 bounds:
+// "at most 500 terminal records store-wide, at most 64 MiB of serialized store
+// bytes, and at most 30 days of terminal-record age".
+func TestCompactionEnforcesTheAgeAndGlobalBounds(t *testing.T) {
+	policy := RetentionPolicy{
+		TerminalPerHost:    100,
+		TerminalStoreWide:  2,
+		StoreMaxBytes:      1 << 20,
+		TerminalMaxAge:     30 * 24 * time.Hour,
+		TombstonesPerHost:  50,
+		RemovedHostHorizon: 7 * 24 * time.Hour,
+	}
+	store, _ := openRetentionStore(t, policy)
+
+	// Store-wide count: a third host's terminal land drops the oldest across
+	// hosts.
+	a := createOp(t, store, "a", "op-a")
+	finish(t, store, a.ID)
+	b := createOp(t, store, "b", "op-b")
+	finish(t, store, b.ID)
+	c := createOp(t, store, "c", "op-c")
+	finish(t, store, c.ID)
+	if _, ok := store.Record(a.ID); ok {
+		t.Fatal("the oldest terminal record survived the store-wide count bound")
+	}
+
+	// Age: a terminal record older than the bound compacts on the next write.
+	// The terminal timestamps are display-only and written from the wall clock,
+	// so the test backdates the stored record instead of moving the clock under
+	// the writer.
+	old := createOp(t, store, "d", "op-old")
+	finish(t, store, old.ID)
+	for i := range store.cell.state.Records {
+		if store.cell.state.Records[i].ID == old.ID {
+			store.cell.state.Records[i].UpdatedAt = time.Now().UTC().Add(-31 * 24 * time.Hour)
+		}
+	}
+	fresh := createOp(t, store, "e", "op-fresh")
+	finish(t, store, fresh.ID)
+	if _, ok := store.Record(old.ID); ok {
+		t.Fatal("a terminal record past the age bound survived")
+	}
+	if _, ok := store.Record(fresh.ID); !ok {
+		t.Fatal("the newest terminal record was compacted by the age bound")
+	}
+
+	// Bytes: a cap that cannot fit any record compacts every removable terminal
+	// record — "compacts ... until the new record fits" has no smaller set to
+	// leave behind — while a roomy cap leaves the same records alone.
+	tight, tightPath := openRetentionStore(t, RetentionPolicy{
+		TerminalPerHost: 100, TerminalStoreWide: 100,
+		StoreMaxBytes: 1, TerminalMaxAge: 30 * 24 * time.Hour, TombstonesPerHost: 50,
+	})
+	for i := range 3 {
+		record := createOp(t, tight, "m4", fmt.Sprintf("byte-%d", i))
+		finish(t, tight, record.ID)
+	}
+	if got := len(tight.Records()); got != 0 {
+		t.Fatalf("records under the unfittable byte cap = %d, want every terminal record compacted", got)
+	}
+	if tight.CursorEpoch().CompactSeq == 0 {
+		t.Fatal("the byte-bound compaction advanced no compactSeq")
+	}
+	// The file cannot fit by construction; the write still lands durably and
+	// the store does not lose the state it must keep.
+	if raw := mustReadFile(t, tightPath); len(raw) == 0 {
+		t.Fatal("the byte-bound write left no store file")
+	}
+
+	roomy, _ := openRetentionStore(t, RetentionPolicy{
+		TerminalPerHost: 100, TerminalStoreWide: 100,
+		StoreMaxBytes: 64 << 20, TerminalMaxAge: 30 * 24 * time.Hour, TombstonesPerHost: 50,
+	})
+	for i := range 3 {
+		record := createOp(t, roomy, "m4", fmt.Sprintf("roomy-%d", i))
+		finish(t, roomy, record.ID)
+	}
+	if got := len(roomy.Records()); got != 3 {
+		t.Fatalf("records under the roomy byte cap = %d, want 3", got)
+	}
+}
+
+// TestTombstoneReplayCleanSlateReAddWins pins §4: "A tombstone pinned to a
+// superseded pair on a live host never replays; the clean-slate re-add rule
+// wins over the tombstone."
+func TestTombstoneReplayCleanSlateReAddWins(t *testing.T) {
+	store, _ := openRetentionStore(t, RetentionPolicy{TerminalPerHost: 1})
+	old := createOp(t, store, "m4", "op-reused")
+	finish(t, store, old.ID)
+	newer := createOp(t, store, "m4", "op-other")
+	finish(t, store, newer.ID)
+	if len(store.Tombstones()) != 1 {
+		t.Fatalf("tombstones = %d, want 1", len(store.Tombstones()))
+	}
+	// The registry re-added the name at a fresh pair: the tombstone pinned to
+	// the superseded pair never replays, so the dedup lookup opens fresh.
+	_, hit, err := store.LookupOperation(OperationDedupQuery{
+		ClientOperationID: "op-reused", Host: "m4", Kind: KindDeploy,
+		Current: OperationPair{Generation: 8, IncarnationID: "inc-new"},
+	})
+	if err != nil {
+		t.Fatalf("LookupOperation(re-added): %v", err)
+	}
+	if hit {
+		t.Fatal("a tombstone pinned to a superseded pair replayed on a live host")
+	}
+}
+
+// TestCompactionLandsAtomicallyWithTheTerminalState pins §4: "Exceeding the
+// cap compacts oldest-terminal-first in the same atomic write that lands the
+// new terminal state." The fault-injected write refuses before the rename:
+// neither the terminal state nor the compaction may be visible.
+func TestCompactionLandsAtomicallyWithTheTerminalState(t *testing.T) {
+	path := StorePath(t.TempDir())
+	store, err := openFSWithRetention(afero.NewOsFs(), path, storeFaults{}, RetentionPolicy{TerminalPerHost: 1})
+	if err != nil {
+		t.Fatalf("openFSWithRetention: %v", err)
+	}
+	first := createOp(t, store, "m4", "op-atomic-1")
+	finish(t, store, first.ID)
+	second := createOp(t, store, "m4", "op-atomic-2")
+	store.faults.beforeRename = func() error { return errors.New("injected: before rename") }
+	if _, err := store.Transition(second.ID, StateComplete, nil); err == nil {
+		t.Fatal("the injected write failure was not reported")
+	}
+	if _, ok := store.Record(first.ID); !ok {
+		t.Fatal("the failed write compacted a record before its rename")
+	}
+	if failed, ok := store.Record(second.ID); !ok || failed.State != StatePending {
+		t.Fatalf("record after the refused write = %+v (present %v), want still pending", failed, ok)
+	}
+	if got := store.CursorEpoch().CompactSeq; got != 0 {
+		t.Fatalf("compactSeq = %d after the refused write, want 0", got)
+	}
+}

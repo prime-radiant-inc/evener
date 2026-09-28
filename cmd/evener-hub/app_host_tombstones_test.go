@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/cmd/evener-hub/internal/hostops"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hostreg"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 )
@@ -958,5 +959,46 @@ rows_truncated = false
 		} else if !strings.Contains(err.Error(), "entry names") {
 			t.Fatalf("refusal = %v, want it to name the disagreeing entry name", err)
 		}
+	}
+}
+
+// TestHostRemovalMirrorsTheRemovalMarker pins the S6 bridge §4's removed-host
+// ordering reads: the same hub.toml write that records a removal tombstone
+// forwards the removal instant into the operation store's mirror, and a re-add
+// clears it — a tombstone's removed_at is the horizon anchor, and the store
+// never dates a removal itself.
+func TestHostRemovalMirrorsTheRemovalMarker(t *testing.T) {
+	f := newUpdateFixture(t)
+	store, err := hostops.Open(hostops.StorePath(t.TempDir()))
+	if err != nil {
+		t.Fatalf("hostops.Open: %v", err)
+	}
+	f.m.cfg.ops = store
+	removedAt := time.Date(2026, 9, 20, 12, 0, 0, 0, time.UTC)
+	f.m.cfg.now = func() time.Time { return removedAt }
+
+	if _, err := f.m.Remove(context.Background(), removeRequest(t, f.m, "side")); err != nil {
+		t.Fatalf("Remove: %v", err)
+	}
+	tombstone := tombstoneFor(t, f.m, "side")
+	markers := store.RemovedHosts()
+	got, ok := markers["side"]
+	if !ok {
+		t.Fatalf("removal markers = %+v, want the removed host dated", markers)
+	}
+	if got.Format(time.RFC3339) != tombstone.RemovedAt {
+		t.Fatalf("mirrored removal = %s, want the tombstone's own removed_at %s", got.Format(time.RFC3339), tombstone.RemovedAt)
+	}
+	if _, ok := store.Boundary("side"); !ok {
+		t.Fatal("the removed host's boundary was not mirrored")
+	}
+
+	// A re-add is the live mirror: the marker goes, so no later pass treats the
+	// name as removed.
+	if _, err := f.m.Add(context.Background(), appwire.HostAddParams{Entry: appwire.HostEntry{Name: "side", Address: "fresh.example"}}); err != nil {
+		t.Fatalf("re-add: %v", err)
+	}
+	if _, ok := store.RemovedHosts()["side"]; ok {
+		t.Fatal("the re-add left the removal marker behind")
 	}
 }

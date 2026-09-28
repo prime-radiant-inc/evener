@@ -6,11 +6,12 @@
 // (§7).
 //
 // What this package deliberately does not own, because the spec hands each to a
-// later slice: dedup and the create-from-consume write (§6), the per-host gate
-// (§5), operations pagination (§8), retention and compaction (§4), cross-file
-// commit intents (§9), and the custody-first quarantine of a corrupt store file
-// (§4, crash-fencing spec). Its record schema, states, one atomic write
-// discipline, one store mutex, and load are the substrate those paths stand on.
+// later slice: the per-host gate (§5), the custody-first quarantine of a corrupt
+// store file (§4, crash-fencing spec), and the live `quarantineEpoch` (S8). Its
+// record schema, states, one atomic write discipline, one store mutex, and load
+// are the substrate those paths stand on; dedup and the create-from-consume
+// write (§6), operations pagination (§8), and retention and compaction with
+// the dedup tombstones (§4) have landed on top of it.
 //
 // The confirmation token's durable half (§3) lives in token.go: the row schema,
 // the mint write's supersede rule, the validate/consume pass, the lazy and boot
@@ -153,6 +154,12 @@ type Record struct {
 	// Sequence is the store's state-transition sequence value the record was
 	// stamped with when it entered a terminal state; 0 until then.
 	Sequence uint64 `json:"sequence,omitempty"`
+	// Compacted marks a read-only replay record rebuilt from a dedup tombstone
+	// (§4's "`compacted: true`"): the operation completed and its terminal
+	// record was compacted, and this value is the retained replay. It is never
+	// a stored record — the file's schema carries no such field — so it is
+	// excluded from every marshal.
+	Compacted bool `json:"-"`
 }
 
 // NewRecord is the caller-supplied half of a record: everything the store

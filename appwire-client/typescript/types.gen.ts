@@ -2595,6 +2595,7 @@ export interface OperationRecord {
   createdAt: string;
   updatedAt: string;
   hostRemoved: boolean;
+  compacted?: boolean;
 }
 
 export interface OperationResult {

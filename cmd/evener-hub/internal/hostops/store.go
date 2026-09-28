@@ -93,6 +93,20 @@ type snapshot struct {
 	Sequence               uint64   `json:"sequence"`
 	AllocatorHighWaterMark uint64   `json:"allocatorHighWaterMark"`
 	Records                []Record `json:"records"`
+	// CompactSeq is §4's durable compaction sequence: advanced by every
+	// compacting write, pinned by every minted cursor (§8). Optional on read
+	// for the same reason as Boundaries: the key arrived after the store
+	// shipped, so a file without it is a store no write has compacted.
+	CompactSeq uint64 `json:"compactSeq"`
+	// Tombstones is §4's bounded dedup-tombstone set: one per compacted
+	// terminal record, the replay source that answers a lost-response retry
+	// with `compacted: true`. Optional on read for the same reason.
+	Tombstones []Tombstone `json:"tombstones"`
+	// RemovedHosts records, per name, when the registry's removal tombstone
+	// was seen: §4 compacts a removed host's history first once its removal is
+	// past the `tombstoneRetention` horizon. Optional on read for the same
+	// reason.
+	RemovedHosts map[string]time.Time `json:"removedHosts"`
 	// Boundaries is the per-host boundary record the registry mirrors (spec 08
 	// §7): the {generation, incarnationId, presenceEpoch} triple per host name.
 	// Unlike every other field it is optional on read: this key arrived after
@@ -165,6 +179,10 @@ type Store struct {
 	// The record paths keep reading nowUTC directly: their timestamps are
 	// display-only and never decide a race.
 	clock func() time.Time
+	// retention is the §4 owner-knob family this handle's compacting writes
+	// apply. The zero value is every shipped default (RetentionPolicy's
+	// withDefaults), so a plain Open gets the spec's numbers.
+	retention RetentionPolicy
 }
 
 // StorePath is the operation store's file under stateRoot, beside the hub's
@@ -183,13 +201,25 @@ func StorePath(stateRoot string) string {
 // that is corrupt or schema-invalid (ErrStoreCorrupt) rather than serving a
 // half-understood store.
 func Open(path string) (*Store, error) {
-	return openFS(afero.NewOsFs(), path, storeFaults{})
+	return openFSWithRetention(afero.NewOsFs(), path, storeFaults{}, RetentionPolicy{})
+}
+
+// OpenWithRetention opens the operation store at path under one §4
+// owner-knob set. Every knob's zero value takes its documented default; a
+// store opened with the zero policy behaves exactly like Open.
+func OpenWithRetention(path string, policy RetentionPolicy) (*Store, error) {
+	return openFSWithRetention(afero.NewOsFs(), path, storeFaults{}, policy)
 }
 
 // openFS is the construction seam beneath Open: it builds a Store over an
 // injected afero.Fs so tests can drive persistence and the write's failure
 // paths.
 func openFS(fs afero.Fs, path string, faults storeFaults) (*Store, error) {
+	return openFSWithRetention(fs, path, faults, RetentionPolicy{})
+}
+
+// openFSWithRetention is openFS with §4's owner knobs threaded through.
+func openFSWithRetention(fs afero.Fs, path string, faults storeFaults, policy RetentionPolicy) (*Store, error) {
 	key, err := canonicalStorePath(path)
 	if err != nil {
 		return nil, err
@@ -211,7 +241,7 @@ func openFS(fs afero.Fs, path string, faults storeFaults) (*Store, error) {
 				// would put them back; the durable store is what the file says,
 				// and there is no file, so this path starts over.
 				storeCells.Delete(key)
-				return openFS(fs, path, faults)
+				return openFSWithRetention(fs, path, faults, policy)
 			}
 		case err != nil:
 			return nil, fmt.Errorf("hostops: stat store %s: %w", path, err)
@@ -223,7 +253,7 @@ func openFS(fs afero.Fs, path string, faults storeFaults) (*Store, error) {
 				return nil, fmt.Errorf("%w: %s has mode %04o", ErrStoreReadableBeyondOwner, path, perm)
 			}
 		}
-		return &Store{path: path, fs: fs, faults: faults, cell: cell}, nil
+		return &Store{path: path, fs: fs, faults: faults, cell: cell, retention: policy}, nil
 	}
 	fileExists := true
 	if _, err := lstat(fs, path); errors.Is(err, os.ErrNotExist) {
@@ -239,7 +269,13 @@ func openFS(fs afero.Fs, path string, faults storeFaults) (*Store, error) {
 	if existing, loaded := storeCells.LoadOrStore(key, cell); loaded {
 		cell = existing.(*storeCell)
 	}
-	return &Store{path: path, fs: fs, faults: faults, cell: cell}, nil
+	return &Store{path: path, fs: fs, faults: faults, cell: cell, retention: policy}, nil
+}
+
+// retentionPolicy is the handle's §4 knob set with every unset value floored
+// to its shipped default.
+func (s *Store) retentionPolicy() RetentionPolicy {
+	return s.retention.withDefaults()
 }
 
 // canonicalStorePath is the key two handles for one store file collide on: two
@@ -377,6 +413,7 @@ func (s *Store) Create(newRecord NewRecord) (Record, error) {
 		return Record{}, err
 	}
 	next.Records = append(next.Records, record)
+	s.compactLocked(&next)
 	adopted, err := s.commitLocked(next)
 	if err != nil && !adopted {
 		// Nothing was written: the refusal reports no record.
@@ -463,6 +500,7 @@ func (s *Store) Transition(id string, to State, change func(*Record)) (Record, e
 	// copied, so progress slices, results and raw messages the callback assigned
 	// (or still holds) cannot alias into store state.
 	next.Records[index] = cloneRecord(record)
+	s.compactLocked(&next)
 	adopted, err := s.commitLocked(next)
 	if err != nil && !adopted {
 		return Record{}, err
@@ -538,6 +576,12 @@ type storeFile struct {
 	Sequence               *uint64       `json:"sequence"`
 	AllocatorHighWaterMark *uint64       `json:"allocatorHighWaterMark"`
 	Records                *[]recordFile `json:"records"`
+	// CompactSeq, Tombstones and RemovedHosts are optional on read (see
+	// snapshot's comments): absent and null both decode to the pre-S6 state,
+	// which is "no compacting write yet".
+	CompactSeq   uint64               `json:"compactSeq"`
+	Tombstones   *[]tombstoneFile     `json:"tombstones"`
+	RemovedHosts map[string]time.Time `json:"removedHosts"`
 	// Boundaries is optional on read (see snapshot.Boundaries): absent and null
 	// both decode to nil, which is "no boundary mirrored yet".
 	Boundaries map[string]Boundary `json:"boundaries"`
@@ -553,6 +597,50 @@ type storeFile struct {
 	// WallClockHighWaterMark is optional on read: absent, null and the zero
 	// instant all mean no pass has observed a clock yet.
 	WallClockHighWaterMark time.Time `json:"wallClockHighWaterMark"`
+}
+
+// tombstoneFile is the decode shape of one dedup tombstone. It carries the
+// same fields as Tombstone, with a present result decoded through resultFile so
+// a tombstone whose result lacks its outcome — a shape the writer never
+// produces — is refused rather than read as a failed outcome.
+type tombstoneFile struct {
+	Tombstone
+	Result   json.RawMessage `json:"result"`
+	Progress json.RawMessage `json:"progress"`
+}
+
+// tombstone maps the decode shape to a tombstone, applying the same
+// omitted-field rules records carry.
+func (f tombstoneFile) tombstone() (Tombstone, error) {
+	tombstone := f.Tombstone
+	if len(f.Progress) > 0 {
+		if jsonFieldIsNull(f.Progress) {
+			return Tombstone{}, fmt.Errorf("tombstone %q carries a null progress list", f.ID)
+		}
+		var progress []ProgressEntry
+		decoder := json.NewDecoder(bytes.NewReader(f.Progress))
+		decoder.DisallowUnknownFields()
+		if err := decoder.Decode(&progress); err != nil {
+			return Tombstone{}, fmt.Errorf("tombstone %q carries an unparseable progress list", f.ID)
+		}
+		tombstone.Progress = progress
+	}
+	if len(f.Result) > 0 {
+		if jsonFieldIsNull(f.Result) {
+			return Tombstone{}, fmt.Errorf("tombstone %q carries a null terminal result", f.ID)
+		}
+		var result resultFile
+		decoder := json.NewDecoder(bytes.NewReader(f.Result))
+		decoder.DisallowUnknownFields()
+		if err := decoder.Decode(&result); err != nil {
+			return Tombstone{}, fmt.Errorf("tombstone %q carries an unparseable terminal result", f.ID)
+		}
+		if result.OK == nil {
+			return Tombstone{}, fmt.Errorf("tombstone %q carries a terminal result with no outcome", f.ID)
+		}
+		tombstone.Result = &Result{OK: *result.OK, Message: result.Message}
+	}
+	return tombstone, nil
 }
 
 // recordFile is the decode shape of one record. It carries the same fields as
@@ -691,7 +779,9 @@ func loadFS(fs afero.Fs, path string) (snapshot, error) {
 		Sequence:               *file.Sequence,
 		AllocatorHighWaterMark: *file.AllocatorHighWaterMark,
 		Records:                records,
+		CompactSeq:             file.CompactSeq,
 		Boundaries:             file.Boundaries,
+		RemovedHosts:           file.RemovedHosts,
 		Tokens:                 tokens,
 		ProbeEpochSeq:          file.ProbeEpochSeq,
 		GuardEpoch:             file.GuardEpoch,
@@ -700,6 +790,22 @@ func loadFS(fs afero.Fs, path string) (snapshot, error) {
 		// year-one string a zero mark marshals to — reads as "no mark yet"
 		// (wallClockMark).
 		WallClockHighWaterMark: wallClockMark(file.WallClockHighWaterMark),
+	}
+	if file.Tombstones != nil {
+		state.Tombstones = make([]Tombstone, len(*file.Tombstones))
+		for i, encoded := range *file.Tombstones {
+			tombstone, err := encoded.tombstone()
+			if err != nil {
+				return snapshot{}, fmt.Errorf("%w: %s: %w", ErrStoreCorrupt, path, err)
+			}
+			tombstone.CreatedAt = tombstone.CreatedAt.UTC()
+			tombstone.UpdatedAt = tombstone.UpdatedAt.UTC()
+			tombstone.CompactedAt = tombstone.CompactedAt.UTC()
+			state.Tombstones[i] = tombstone
+		}
+	}
+	for name, removedAt := range state.RemovedHosts {
+		state.RemovedHosts[name] = removedAt.UTC()
 	}
 	if file.ProbeEpochs != nil {
 		state.ProbeEpochs = make([]ProbeEpoch, len(*file.ProbeEpochs))
@@ -749,6 +855,16 @@ func saveFS(fs afero.Fs, path string, state snapshot, faults storeFaults) (renam
 		// Same rule for the token rows: a store that has minted nothing writes an
 		// empty array, never null.
 		state.Tokens = []Token{}
+	}
+	if state.Tombstones == nil {
+		// Same rule for the dedup tombstones: a store that has compacted nothing
+		// writes an empty array, never null.
+		state.Tombstones = []Tombstone{}
+	}
+	if state.RemovedHosts == nil {
+		// Same rule for the removal markers: a store that has seen no removal
+		// writes an empty object, never null.
+		state.RemovedHosts = map[string]time.Time{}
 	}
 	data, err := json.Marshal(state)
 	if err != nil {
@@ -953,13 +1069,19 @@ func preservedMode(fs afero.Fs, path string) (os.FileMode, bool) {
 // its keys are not this store's to judge.
 var ownedObjectKeys = map[string]map[string]struct{}{
 	"": keysOf("version", "sequence", "allocatorHighWaterMark", "records", "boundaries",
-		"tokens", "probeEpochs", "probeEpochSeq", "guardEpoch", "wallClockHighWaterMark"),
+		"tokens", "probeEpochs", "probeEpochSeq", "guardEpoch", "wallClockHighWaterMark",
+		"compactSeq", "tombstones", "removedHosts"),
 	"records[]": keysOf("id", "clientOperationId", "host", "kind", "state", "generation",
 		"incarnationId", "fencingEpoch", "orphanBoundary", "progress", "result",
 		"createdAt", "updatedAt", "hostRemoved", "sequence"),
 	"records[].result":     keysOf("ok", "message"),
 	"records[].progress[]": keysOf("ts", "message"),
-	"boundaries[]":         keysOf("generation", "incarnationId", "presenceEpoch"),
+	"tombstones[]": keysOf("id", "clientOperationId", "host", "kind", "state", "generation",
+		"incarnationId", "progress", "result", "createdAt", "updatedAt", "hostRemoved",
+		"compactedAt", "compactedSeq"),
+	"tombstones[].result":     keysOf("ok", "message"),
+	"tombstones[].progress[]": keysOf("ts", "message"),
+	"boundaries[]":            keysOf("generation", "incarnationId", "presenceEpoch"),
 	"tokens[]": keysOf("host", "value", "generation", "incarnationId", "entryHash",
 		"hubTomlFingerprint", "factsRevision", "factsCapturedAt", "targetPath",
 		"controllerRevision", "runningVersion", "runningHealthy", "processStartTime",
@@ -1302,6 +1424,34 @@ func validateSnapshot(state snapshot) error {
 			return err
 		}
 	}
+	// Tombstones are the replay source §4 promises a lost-response retry: a
+	// value outside the compacting writers' schema is refused like every other
+	// persisted value, and a tombstone's id can never collide with a retained
+	// record's (a compacted record is gone).
+	tombstones := make(map[string]struct{}, len(state.Tombstones))
+	for _, tombstone := range state.Tombstones {
+		if err := validateTombstone(tombstone, state.CompactSeq); err != nil {
+			return err
+		}
+		if _, duplicate := tombstones[tombstone.ID]; duplicate {
+			return fmt.Errorf("%w: duplicate tombstone id %q", ErrInvalidRecord, tombstone.ID)
+		}
+		tombstones[tombstone.ID] = struct{}{}
+		if _, collides := seen[tombstone.ID]; collides {
+			return fmt.Errorf("%w: tombstone %q collides with a retained record", ErrInvalidRecord, tombstone.ID)
+		}
+	}
+	// Removed hosts date §4's horizon check; a zero instant would make every
+	// pass read the host as freshly removed (or as infinitely old), so no
+	// writer emits one.
+	for name, removedAt := range state.RemovedHosts {
+		if err := validateBoundaryName(name); err != nil {
+			return err
+		}
+		if removedAt.IsZero() {
+			return fmt.Errorf("%w: removed host %q carries a zero removal instant", ErrInvalidRecord, name)
+		}
+	}
 	// Token rows carry the same refuse-always rule: a row outside the schema a
 	// mint writes is never served, and the set-level rules (one row per host
 	// name, one row per value) hold for hand-edited files too. Where a row's
@@ -1354,6 +1504,11 @@ func cloneSnapshot(state snapshot) snapshot {
 		out.Records[i] = cloneRecord(record)
 	}
 	out.Boundaries = maps.Clone(state.Boundaries)
+	out.Tombstones = make([]Tombstone, len(state.Tombstones))
+	for i, tombstone := range state.Tombstones {
+		out.Tombstones[i] = cloneTombstone(tombstone)
+	}
+	out.RemovedHosts = maps.Clone(state.RemovedHosts)
 	out.Tokens = cloneTokens(state.Tokens)
 	out.ProbeEpochs = slices.Clone(state.ProbeEpochs)
 	out.ProbeEpochSeq = maps.Clone(state.ProbeEpochSeq)

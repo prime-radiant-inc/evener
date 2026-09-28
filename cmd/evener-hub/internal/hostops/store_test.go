@@ -205,9 +205,11 @@ func TestOpenRefusesACorruptStore(t *testing.T) {
 		`"kind":"deploy","state":"pending","generation":7,"incarnationId":"inc-1",` +
 		`"createdAt":"2026-09-26T00:00:00Z","updatedAt":"2026-09-26T00:00:00Z","hostRemoved":false}`
 	cases := map[string]string{
-		"truncated json":             `{"version":1,"sequence":0,"allocatorHighWaterMark":0,"records":[`,
-		"trailing json value":        validStoreJSON + `{"version":1}`,
-		"unknown field":              `{"version":1,"sequence":0,"allocatorHighWaterMark":0,"records":[],"compactSeq":0}`,
+		"truncated json":      `{"version":1,"sequence":0,"allocatorHighWaterMark":0,"records":[`,
+		"trailing json value": validStoreJSON + `{"version":1}`,
+		// A key this store's writer never emits (S6 added compactSeq, so the
+		// stand-in for "unknown" moved to a key no slice owns).
+		"unknown field":              `{"version":1,"sequence":0,"allocatorHighWaterMark":0,"records":[],"unknownTopLevelKey":0}`,
 		"unsupported version":        `{"version":2,"sequence":0,"allocatorHighWaterMark":0,"records":[]}`,
 		"duplicate record id":        `{"version":1,"sequence":0,"allocatorHighWaterMark":1,"records":[` + record + `,` + record + `]}`,
 		"invalid state":              `{"version":1,"sequence":0,"allocatorHighWaterMark":1,"records":[` + strings.Replace(record, `"state":"pending"`, `"state":"queued"`, 1) + `]}`,

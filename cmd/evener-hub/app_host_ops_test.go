@@ -673,7 +673,7 @@ func TestOpenHostOpsStoreReapsExpiredTokens(t *testing.T) {
 		t.Fatalf("write store: %v", err)
 	}
 	var logged strings.Builder
-	store := openHostOpsStore(stateRoot, &logged)
+	store := openHostOpsStore(stateRoot, &logged, hostops.RetentionPolicy{})
 	if store == nil {
 		t.Fatalf("openHostOpsStore returned no store: %s", logged.String())
 	}
@@ -800,7 +800,7 @@ func TestOpenHostOpsStoreReapsProbeEpochs(t *testing.T) {
 		t.Fatalf("write store: %v", err)
 	}
 	var logged strings.Builder
-	store := openHostOpsStore(stateRoot, &logged)
+	store := openHostOpsStore(stateRoot, &logged, hostops.RetentionPolicy{})
 	if store == nil {
 		t.Fatalf("openHostOpsStore returned no store: %s", logged.String())
 	}

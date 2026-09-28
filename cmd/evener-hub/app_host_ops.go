@@ -734,12 +734,17 @@ func hostopsState(state appwire.OperationState) (hostops.State, error) {
 }
 
 // operationsRefusal maps the store's read refusals onto §11's envelopes:
-// stale-entry (a cursor pin drifted), cursor-too-large (the over-cap first
-// page), and invalid params for a malformed query. Anything else — a record
-// host without its mirrored boundary included — is an internal error.
+// stale-entry (a cursor pin drifted), cursor-invalidated (a mid-pagination
+// compaction), cursor-too-large (the over-cap first page), and invalid params
+// for a malformed query. Anything else — a record host without its mirrored
+// boundary included — is an internal error.
 func operationsRefusal(err error) error {
 	if stale, ok := errors.AsType[*hostops.CursorStaleError](err); ok {
 		return appwire.StaleEntry(appwire.StaleEntryBinding(stale.Binding), err.Error())
+	}
+	if invalidated, ok := errors.AsType[*hostops.CursorInvalidatedError](err); ok {
+		return appwire.CursorInvalidated(invalidated.CompactSeq, invalidated.Host,
+			cursorBoundWire(invalidated.Bound), err.Error())
 	}
 	if tooLarge, ok := errors.AsType[*hostops.CursorTooLargeError](err); ok {
 		return appwire.CursorTooLarge(tooLarge.CapBytes, err.Error())
@@ -748,6 +753,20 @@ func operationsRefusal(err error) error {
 		return appwire.InvalidParams(err.Error())
 	}
 	return appwire.InternalError(fmt.Sprintf("reading the operation store failed: %v", err))
+}
+
+// cursorBoundWire renders one cursor bounds entry as §11's value union: the
+// {generation, incarnationId, presenceEpoch} object, or the literal "absent"
+// the hostBoundaries map also carries.
+func cursorBoundWire(bound hostops.CursorBound) any {
+	if bound.Absent {
+		return appwire.HostBoundaryAbsent
+	}
+	return appwire.HostBoundary{
+		Generation:    bound.Boundary.Generation,
+		IncarnationID: bound.Boundary.IncarnationID,
+		PresenceEpoch: bound.Boundary.PresenceEpoch,
+	}
 }
 
 // operationsResponse renders one store page as §10's response: the records
@@ -787,9 +806,10 @@ func operationsResponse(page hostops.OperationsPage) (appwire.HostOperationsResp
 }
 
 // operationRecordWire renders one stored record as §10's OperationRecord. The
-// fencing-owned fields (`orphanBoundary`, `orphanResolved`, `attestation`) and
-// S6's `compacted` marker stay absent until their owning slices register them,
-// exactly as appwire.OperationRecord's own comment records.
+// `compacted` marker is set exactly on a read-only replay rebuilt from a dedup
+// tombstone; the fencing-owned fields (`orphanBoundary`, `orphanResolved`,
+// `attestation`) stay absent until their owning slices register them, exactly
+// as appwire.OperationRecord's own comment records.
 func operationRecordWire(record hostops.Record) (appwire.OperationRecord, error) {
 	state, err := operationWireState(record.State)
 	if err != nil {
@@ -806,6 +826,7 @@ func operationRecordWire(record hostops.Record) (appwire.OperationRecord, error)
 		CreatedAt:         record.CreatedAt.Format(time.RFC3339),
 		UpdatedAt:         record.UpdatedAt.Format(time.RFC3339),
 		HostRemoved:       record.HostRemoved,
+		Compacted:         record.Compacted,
 	}
 	for _, entry := range record.Progress {
 		wire.Progress = append(wire.Progress, appwire.OperationProgressEntry{

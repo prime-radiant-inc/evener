@@ -49,6 +49,7 @@ func (s *Store) RecoverInterrupted() (int, error) {
 	if moved == 0 {
 		return 0, nil
 	}
+	s.compactLocked(&next)
 	landed, err := s.commitLocked(next)
 	if err != nil {
 		if landed {

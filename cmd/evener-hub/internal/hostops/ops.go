@@ -14,9 +14,9 @@ package hostops
 //
 // What this file deliberately does not own: the per-host gate and the probe
 // (§6 step 3, the hub package), the worker's execution and post-operation
-// refresh (§6, the hub package), retention and compaction and the
-// compacted-ID tombstone replay path (S6), and the cross-file commit intents
-// (§9, S7).
+// refresh (§6, the hub package), and the cross-file commit intents (§9, S7).
+// Retention and compaction live in retention.go; the compacted-ID tombstone
+// replay rides the dedup lookup below.
 
 import (
 	"encoding/json"
@@ -151,6 +151,25 @@ func lookupOperationLocked(state *snapshot, q OperationDedupQuery) (Record, bool
 			return Record{}, false, &ConflictingOperationIDError{Record: cloneRecord(record)}
 		}
 		return cloneRecord(record), true, nil
+	}
+	// The same-key dedup tombstone (§4): "A replay naming a tombstoned ID
+	// returns the full retained record with `compacted: true` instead of
+	// opening a fresh operation, but only while the tombstone's pinned pair
+	// still equals the comparison pair for the name: the registry's current
+	// pair for a live host, the tombstone's own removed pair for a removed host
+	// (which has no live current pair)."
+	for _, tombstone := range state.Tombstones {
+		if tombstone.Host != q.Host || tombstone.Kind != q.Kind || tombstone.ClientOperationID != q.ClientOperationID {
+			continue
+		}
+		if _, removed := state.RemovedHosts[tombstone.Host]; !removed {
+			// "A tombstone pinned to a superseded pair on a live host never
+			// replays; the clean-slate re-add rule wins over the tombstone."
+			if !q.Current.equal(OperationPair{Generation: tombstone.Generation, IncarnationID: tombstone.IncarnationID}) {
+				continue
+			}
+		}
+		return tombstone.record(), true, nil
 	}
 	// Collisions: any current-generation record with this ID that is not the
 	// same-key record above. A record of this name is judged against the
@@ -366,6 +385,10 @@ func (s *Store) ConsumeTokenAndCreateOperation(req OperationCreateRequest) (Oper
 	if err != nil {
 		return OperationCreateOutcome{}, err
 	}
+	// §4's retention rides the write that lands the record: a new record that
+	// would push the store over a bound compacts first, in this same atomic
+	// write.
+	s.compactLocked(&next)
 	landed, err := s.commitLocked(next)
 	if err != nil && !landed {
 		// Nothing was written: the refusal reports no record and leaves the
@@ -424,6 +447,7 @@ func (s *Store) CreateOperation(req OperationCreateRequest) (OperationCreateOutc
 	if err != nil {
 		return OperationCreateOutcome{}, err
 	}
+	s.compactLocked(&next)
 	landed, err := s.commitLocked(next)
 	if err != nil && !landed {
 		return OperationCreateOutcome{}, err
@@ -639,6 +663,7 @@ func (s *Store) interruptInFlight(note string) (int, error) {
 	if moved == 0 {
 		return 0, nil
 	}
+	s.compactLocked(&next)
 	landed, err := s.commitLocked(next)
 	if err != nil {
 		if landed {

@@ -641,7 +641,7 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 		RemoteHostRegistry:   hostRegistry,
 		RemoteHostSSHManager: sshManager,
 		RemoteHostConfigPath: opts.configPath,
-		RemoteHostOpsStore:   openHostOpsStore(hubStateRoot, stderr),
+		RemoteHostOpsStore:   openHostOpsStore(hubStateRoot, stderr, hostOperationRetention(cfg)),
 		// This hub's own running identity and the two owner-adjustable
 		// deploy-pipeline knobs: the probe deadline the plan's gated probe
 		// uses, and the minimum free space evener/host/running's health
@@ -905,8 +905,8 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 // state-root write probe's crash orphans: an epoch with no mint behind it is
 // inert, and a crashed probe's temp/target file is a stray nothing else will
 // remove.
-func openHostOpsStore(stateRoot string, stderr io.Writer) *hostops.Store {
-	store, err := hostops.Open(hostops.StorePath(stateRoot))
+func openHostOpsStore(stateRoot string, stderr io.Writer, retention hostops.RetentionPolicy) *hostops.Store {
+	store, err := hostops.OpenWithRetention(hostops.StorePath(stateRoot), retention)
 	if err != nil {
 		_, _ = fmt.Fprintf(stderr, "[hub] host operation store not opened, host boundary records will not be mirrored: %v\n", err)
 		return nil
@@ -930,6 +930,21 @@ func openHostOpsStore(stateRoot string, stderr io.Writer) *hostops.Store {
 		_, _ = fmt.Fprintf(stderr, "[hub] host operation store moved %d in-flight operation(s) to interrupted\n", interrupted)
 	}
 	return store
+}
+
+// hostOperationRetention maps the hub's owner knobs onto the operation store's
+// §4 retention policy: the five terminal/tombstone/store-byte/age bounds, with
+// the removed-host horizon being the tombstoneRetention knob §4 cites
+// (registry spec §15). Every zero value floors to the store's shipped default.
+func hostOperationRetention(cfg Config) hostops.RetentionPolicy {
+	return hostops.RetentionPolicy{
+		TerminalPerHost:    cfg.HostOperationTerminalPerHost,
+		TerminalStoreWide:  cfg.HostOperationTerminalStoreWide,
+		StoreMaxBytes:      cfg.HostOperationStoreMaxBytes,
+		TerminalMaxAge:     cfg.HostOperationTerminalMaxAge,
+		TombstonesPerHost:  cfg.HostOperationTombstonesPerHost,
+		RemovedHostHorizon: cfg.HostTombstoneRetention,
+	}
 }
 
 // hostRegistryEntries maps the validated [[hosts]] entries onto the host
