@@ -500,6 +500,15 @@ func (s *Store) cursorEpochLocked() CursorEpoch {
 // client from page one; silently serving on could skip removed rows. The
 // caller holds the store mutex.
 func checkCursorCompactionLocked(state *snapshot, envelope CursorEnvelope, live CursorEpoch) error {
+	// Evidence is complete exactly while the dropped-marks floor sits at or
+	// below the cursor's pin: every compacting write after the pin still has
+	// its per-host marks. Once the floor is above the pin, some write in the
+	// cursor's range lost its marks, the exact answer is unknowable, and a
+	// retained later mark must not be presented as "the compacting" write —
+	// refuse coarsely instead of serving on.
+	if state.CompactionFloor > envelope.CompactSeq {
+		return coarseCursorInvalidated(state, envelope, live)
+	}
 	exact := -1
 	exactHost := ""
 	for i := range state.CompactionMarks {
@@ -518,14 +527,14 @@ func checkCursorCompactionLocked(state *snapshot, envelope CursorEnvelope, live 
 	if exact >= 0 {
 		return cursorInvalidatedFor(state.CompactionMarks[exact].Seq, exactHost, envelope)
 	}
-	// Evidence is complete exactly while the dropped-marks floor sits at or
-	// below the cursor's pin: every compacting write after the pin still has
-	// its per-host marks. Once the floor is above the pin, some write in the
-	// cursor's range lost its marks and the exact answer is unknowable — refuse
-	// coarsely rather than serve on.
-	if state.CompactionFloor <= envelope.CompactSeq {
-		return nil
-	}
+	return nil
+}
+
+// coarseCursorInvalidated is the lost-evidence refusal: the oldest retained
+// in-window mark if the window kept one, else the live compaction value with
+// the window's own host. Over-refusing only re-lists the client from page one;
+// silently serving on could skip removed rows.
+func coarseCursorInvalidated(state *snapshot, envelope CursorEnvelope, live CursorEpoch) error {
 	oldest := -1
 	oldestHost := ""
 	for i := range state.CompactionMarks {

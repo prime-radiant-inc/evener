@@ -558,3 +558,77 @@ func TestLingeringRemovalMarkerNeverReplaysAgainstANewPair(t *testing.T) {
 		t.Fatal("a lingering removal marker replayed the old removal against the new pair")
 	}
 }
+
+// TestCursorRefusalUsesTheCoarseArmWhenEvidenceIsDropped pins the floor-first
+// ordering: with evidence lost (the floor above the pin), the refusal is the
+// coarse arm — the oldest affecting retained in-window mark — even when a
+// later retained mark would match exactly. The exact arm must never present a
+// later retained write as "the compacting" write when an earlier one's marks
+// were evicted.
+func TestCursorRefusalUsesTheCoarseArmWhenEvidenceIsDropped(t *testing.T) {
+	store, _ := openRetentionStore(t, RetentionPolicy{TerminalPerHost: 50, TerminalStoreWide: 50})
+	cursorBoundary(t, store, "y", 7, "inc-y", 1)
+	cursorBoundary(t, store, "x", 7, "inc-x", 1)
+	y1 := createOp(t, store, "y", "y-1")
+	finish(t, store, y1.ID)
+	x0 := createOp(t, store, "x", "x-0")          // pending: keeps x's minted entry a triple.
+	anchor := createOp(t, store, "y", "y-anchor") // pending: never a victim.
+
+	page, err := store.ReadOperations(OperationsQuery{Limit: 5})
+	if err != nil {
+		t.Fatalf("ReadOperations(page 1): %v", err)
+	}
+	if len(page.Records) != 3 || page.Records[2].ID != anchor.ID {
+		t.Fatalf("page 1 = %+v, want the anchor %s last", page.Records, anchor.ID)
+	}
+	// x1 lands after the mint, so its id sits after the cursor's position.
+	x1 := createOp(t, store, "x", "x-1")
+	finish(t, store, x1.ID)
+	// Mark A (seq 1): x1's removal sits after the cursor's position.
+	past := time.Now().UTC().Add(-31 * 24 * time.Hour)
+	for i := range store.cell.state.Records {
+		if store.cell.state.Records[i].ID == x1.ID {
+			store.cell.state.Records[i].UpdatedAt = past
+		}
+	}
+	x2 := createOp(t, store, "x", "x-2") // the pass compacts x1 (id > pos).
+	// Mark B (seq 2): y1's removal sits at or before the cursor's position.
+	for i := range store.cell.state.Records {
+		if store.cell.state.Records[i].ID == y1.ID {
+			store.cell.state.Records[i].UpdatedAt = past
+		}
+	}
+	y2 := createOp(t, store, "y", "y-2") // the pass compacts y1 (id <= pos).
+	if _, ok := store.Record(x1.ID); ok {
+		t.Fatal("test setup: x1 was not compacted")
+	}
+	if _, ok := store.Record(y1.ID); ok {
+		t.Fatal("test setup: y1 was not compacted")
+	}
+	_ = x0
+	_ = x2
+	_ = y2
+
+	// Exact coverage: the refusal names the write whose row sat at or before
+	// the position (seq 2 on y).
+	_, err = store.ReadOperations(OperationsQuery{Cursor: page.NextCursor, Limit: 5})
+	invalidated, ok := errors.AsType[*CursorInvalidatedError](err)
+	if !ok {
+		t.Fatalf("continuation = %v (%T), want *CursorInvalidatedError", err, err)
+	}
+	if invalidated.CompactSeq != 2 {
+		t.Fatalf("exact refusal compactSeq = %d, want 2", invalidated.CompactSeq)
+	}
+	// Evidence dropped above the pin: the coarse arm names the oldest
+	// affecting retained mark (seq 1 on x), never the later exact-looking one.
+	store.cell.state.CompactionFloor = 2
+	_, err = store.ReadOperations(OperationsQuery{Cursor: page.NextCursor, Limit: 5})
+	invalidated, ok = errors.AsType[*CursorInvalidatedError](err)
+	if !ok {
+		t.Fatalf("coarse continuation = %v (%T), want *CursorInvalidatedError", err, err)
+	}
+	if invalidated.CompactSeq != 1 || invalidated.Host != "x" {
+		t.Fatalf("coarse refusal = compactSeq %d host %q, want the oldest affecting mark (1, x)",
+			invalidated.CompactSeq, invalidated.Host)
+	}
+}

@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"strings"
 	"testing"
 	"time"
@@ -686,5 +687,48 @@ func TestByteBoundCompactionMeasuresTheCommittedSize(t *testing.T) {
 	}
 	if got := int64(len(mustReadFile(t, path))); got > store.retention.StoreMaxBytes {
 		t.Fatalf("committed store = %d bytes, over the %d-byte cap", got, store.retention.StoreMaxBytes)
+	}
+}
+
+// TestByteBoundMeasurementPassesAreBounded pins the byte loop's cost: the
+// victim search measures per candidate cheaply and takes only a bounded number
+// of full-store measurements (never one marshal per removed row inside the
+// store mutex). With 301 removable candidates the bound is ~2*log2(N+1)+2;
+// the loop must stay under it while still bringing the store under the cap.
+func TestByteBoundMeasurementPassesAreBounded(t *testing.T) {
+	store, path := openRetentionStore(t, RetentionPolicy{TerminalPerHost: 10000, TerminalStoreWide: 10000, TombstonesPerHost: 10000})
+	pad := strings.Repeat("x", 1024)
+	seed := func(i int) {
+		record := createOp(t, store, "m4", fmt.Sprintf("op-%03d", i))
+		fence := json.RawMessage(fmt.Sprintf(`{"bootId":"boot","opSeq":%d,"pad":%q}`, i+1, pad))
+		if _, err := store.Transition(record.ID, StateComplete, func(r *Record) {
+			r.Result = &Result{OK: true, Message: "done"}
+			r.FencingEpoch = fence
+		}); err != nil {
+			t.Fatalf("Transition(%s): %v", record.ID, err)
+		}
+	}
+	const candidates = 300
+	for i := range candidates {
+		seed(i)
+	}
+	before := int64(len(mustReadFile(t, path)))
+	store.retention.StoreMaxBytes = before / 2
+
+	measurements := 0
+	compactionMeasureHook = func() { measurements++ }
+	defer func() { compactionMeasureHook = nil }()
+	seed(candidates) // the byte-bound compaction rides this commit.
+
+	bound := 2*int(math.Ceil(math.Log2(candidates+1))) + 2
+	if measurements > bound {
+		t.Fatalf("byte-bound measurements = %d, want at most %d for %d candidates (never one marshal per removed row)",
+			measurements, bound, candidates+1)
+	}
+	if got := int64(len(mustReadFile(t, path))); got > store.retention.StoreMaxBytes {
+		t.Fatalf("committed store = %d bytes, over the %d-byte cap", got, store.retention.StoreMaxBytes)
+	}
+	if got := len(store.Records()); got == 0 {
+		t.Fatal("the byte-bound compaction removed every record instead of stopping at the fit")
 	}
 }

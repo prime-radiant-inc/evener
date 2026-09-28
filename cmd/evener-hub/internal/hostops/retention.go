@@ -576,10 +576,12 @@ func (s *Store) compactLocked(next *snapshot) {
 	}
 
 	// Byte bound: compact oldest-first until the serialized store fits, one
-	// victim at a time so the bound is measured against the exact bytes the
-	// write will commit — the ledger marks, the advanced compactSeq and the
-	// writer's own normalizations included.
-	s.compactionVictimsForBytes(next, candidates, victim, pastHorizon, policy, now)
+	// candidate at a time, with the incremental per-candidate estimator and a
+	// bounded number of full-store measurements, so the bound is held against
+	// the exact bytes the write will commit — the ledger marks, the advanced
+	// compactSeq and the writer's own normalizations included — without a full
+	// marshal per removed row inside the store mutex.
+	s.compactionVictimsForBytes(next, candidates, byID, victim, pastHorizon, policy, now)
 
 	if len(victim) == 0 {
 		return
@@ -693,14 +695,25 @@ func sortCompactionCandidates(candidates []compactionCandidate) {
 	})
 }
 
+// compactionMeasureHook, when set, observes one full-store byte measurement of
+// the byte-bound loop: the tests use it to prove the measurement count stays
+// bounded rather than one marshal per removed row. Nil in production.
+var compactionMeasureHook func()
+
 // compactionVictimsForBytes trims the oldest surviving terminal victims until
 // the exact post-compaction snapshot fits StoreMaxBytes or no removable
-// terminal record remains. It measures by applying the same transformation the
-// write will commit to a scratch copy, so the ledger marks, the advanced
-// compactSeq and the writer's normalizations are all counted. It reports
+// terminal record remains. It measures the same transformation the write will
+// commit — ledger marks, the advanced compactSeq and the writer's
+// normalizations included — but does so incrementally: each candidate's record
+// and tombstone bytes are measured once, and a full-store marshal happens only
+// near the boundary (bounded by maxByteMeasurements), so a store whose bulk is
+// many records cannot force one full marshal per removed row. It reports
 // whether it marked any new victim.
-func (s *Store) compactionVictimsForBytes(next *snapshot, candidates []compactionCandidate, victim map[string]bool, pastHorizon map[string]bool, policy RetentionPolicy, now time.Time) bool {
-	size := func() int64 {
+func (s *Store) compactionVictimsForBytes(next *snapshot, candidates []compactionCandidate, byID map[string]Record, victim map[string]bool, pastHorizon map[string]bool, policy RetentionPolicy, now time.Time) bool {
+	exactSize := func() int64 {
+		if compactionMeasureHook != nil {
+			compactionMeasureHook()
+		}
 		scratch := s.applyCompaction(*next, victim, pastHorizon, policy, now)
 		raw, err := json.Marshal(scratch)
 		if err != nil {
@@ -711,27 +724,72 @@ func (s *Store) compactionVictimsForBytes(next *snapshot, candidates []compactio
 		}
 		return int64(len(raw))
 	}
+	const maxByteMeasurements = 64
+	measurements := 1
+	estimated := exactSize() // one exact baseline, then per-candidate deltas
+
 	changed := false
-	for {
-		if size() <= policy.StoreMaxBytes {
+	var added []string
+	hostsMarked := map[string]bool{}
+	for _, candidate := range candidates {
+		if victim[candidate.id] {
+			continue
+		}
+		record := byID[candidate.id]
+		recordBytes, err := json.Marshal(record)
+		if err != nil {
+			continue
+		}
+		tombstoneBytes, err := json.Marshal(tombstoneOf(record, now, next.CompactSeq+1))
+		if err != nil {
+			continue
+		}
+		delta := int64(len(tombstoneBytes) - len(recordBytes))
+		if !hostsMarked[record.Host] {
+			// The write's ledger mark gains one host entry; the exact check at
+			// the boundary absorbs JSON separator drift.
+			delta += int64(len(record.Host) + len(candidate.id) + 8)
+			hostsMarked[record.Host] = true
+		}
+		victim[candidate.id] = true
+		added = append(added, candidate.id)
+		changed = true
+		estimated += delta
+		if estimated > policy.StoreMaxBytes {
+			continue
+		}
+		if measurements >= maxByteMeasurements {
+			// The estimate is at or below the bound: keep this prefix rather
+			// than spending another full-store measurement.
 			return changed
 		}
-		nextVictim := ""
-		for _, candidate := range candidates {
-			if victim[candidate.id] {
+		exact := exactSize()
+		measurements++
+		if exact > policy.StoreMaxBytes {
+			// The estimate crossed early (JSON structure drift): correct it and
+			// keep removing.
+			estimated = exact
+			continue
+		}
+		// The prefix fits exactly; give back the victims the estimate overshot,
+		// newest first, while the smaller prefix still fits.
+		for len(added) > 0 && measurements < maxByteMeasurements {
+			last := added[len(added)-1]
+			// Unmarking must remove the key, not store false: the emptiness
+			// checks read len(victim), and a false entry still counts.
+			delete(victim, last)
+			shrunk := exactSize()
+			measurements++
+			if shrunk <= policy.StoreMaxBytes {
+				added = added[:len(added)-1]
 				continue
 			}
-			// candidates is sorted in victim order, so the first survivor is the
-			// next oldest.
-			nextVictim = candidate.id
+			victim[last] = true
 			break
 		}
-		if nextVictim == "" {
-			return changed
-		}
-		victim[nextVictim] = true
-		changed = true
+		return changed
 	}
+	return changed
 }
 
 // boundedTombstones applies the per-host tombstone bound, oldest-first, and
