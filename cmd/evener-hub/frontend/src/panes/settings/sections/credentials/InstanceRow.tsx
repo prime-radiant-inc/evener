@@ -83,7 +83,16 @@ export function InstanceRow(props: InstanceRowProps) {
             provider whose sign-in needs a browser the host does not have. */}
         {props.onHostSignIn !== undefined && (
           <div className={CLASS.action}>
-            <Button variant="quiet" onClick={() => props.onHostSignIn?.(instance.name)}>
+            {/* The visible text is the same for every Codex row, so the
+                accessible name names the instance this control signs in on:
+                with two Codex-capable instances on one host, a screen-reader or
+                voice-control user is otherwise offered identically named
+                controls and cannot tell which one each acts on (issue #2285). */}
+            <Button
+              variant="quiet"
+              aria-label={`Sign in to ${instance.name} on host`}
+              onClick={() => props.onHostSignIn?.(instance.name)}
+            >
               Sign in on host
             </Button>
           </div>
