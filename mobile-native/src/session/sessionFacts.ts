@@ -1,7 +1,7 @@
 // What the Session sheet shows (spec 8.6): only facts the thread carries
 // (ruling 21). That is where it runs, its access, its plugins and its usage.
 // The same file names the model for the composer's chip (spec 8.5).
-import { type ModelDescriptor, sessionEffortLevels, type ThreadModel } from "@evener/appwire-client";
+import { basename, type ModelDescriptor, sessionEffortLevels, type ThreadModel } from "@evener/appwire-client";
 import type { MobileTimelineItem } from "../projectedRows";
 import { localSessionId } from "../sessionDeletionResult";
 import { compactCount, compactDuration } from "./format";
@@ -17,11 +17,6 @@ export interface WhereFacts {
 	project?: string;
 	directory: string;
 	branch?: string;
-}
-
-function basename(path: string): string {
-	const trimmed = path.replace(/\/+$/, "");
-	return trimmed.slice(trimmed.lastIndexOf("/") + 1);
 }
 
 export function whereFacts(
