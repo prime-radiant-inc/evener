@@ -2535,7 +2535,7 @@ func appDiagnosticsFromDetailedStatus(ds DetailedStatus) *appwire.EvenerDiagnost
 		out.Jobs = append(out.Jobs, appJobFromDetailedStatus(job))
 	}
 	for _, delegate := range ds.Delegates {
-		out.Delegates = append(out.Delegates, appDelegateFromDetailedStatus(delegate))
+		out.Delegates = append(out.Delegates, appwire.SlimDelegateForRoster(appDelegateFromDetailedStatus(delegate)))
 	}
 	for _, watch := range ds.Watches {
 		out.Watches = append(out.Watches, appWatchFromDetailedStatus(watch))

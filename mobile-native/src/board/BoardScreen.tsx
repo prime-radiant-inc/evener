@@ -77,7 +77,7 @@ import { BoardToolbar } from "./BoardToolbar";
 import { type BoardController, type BoardSnapshot, createBoardController } from "./boardData";
 import { useBoardReadRetry } from "./useBoardReadRetry";
 import { BoardStops, stopToast } from "./boardStops";
-import { UPDATE_NEEDED_HINT } from "./connectionStatus";
+import { INCOMPATIBLE_VERSIONS } from "../connectionRecovery";
 import { type HubSeenMarks, hubSeenMarks } from "./hubSeen";
 import { foldedSections, organizeByPreference, recentSearches, seenMarkers, useBoardSeen } from "./nativeBoardMemory";
 import { notices } from "./notices";
@@ -292,7 +292,8 @@ function Board({
 	);
 	useHubSeenMarks(hubMarks, actionsClient, loadedRows);
 	// The document you left partway in the last two hours (spec 7.1). The
-	// window is checked as the Board renders, so it runs no clock.
+	// window is checked as the Board renders, and the Board's minute clock
+	// re-renders it while in view, so the row goes within a minute of expiring.
 	const documents = documentMemory(hubId);
 	useSyncExternalStore(documents.subscribe, documents.getRevision);
 	const continueReading = documents.continueReading();
@@ -972,7 +973,7 @@ function Board({
 						/>
 					) : (
 						<>
-							{fatal ? <NoticeRow text={UPDATE_NEEDED_HINT} /> : null}
+							{fatal ? <NoticeRow text={INCOMPATIBLE_VERSIONS} /> : null}
 							<BoardNotices hubId={hubId} notices={hubNotices} navigation={navigation} />
 							{continueReading ? (
 								<ContinueReadingRow
@@ -1028,8 +1029,6 @@ function Board({
 				/>
 			) : (
 				<BoardToolbar
-					state={state}
-					fatal={fatal}
 					newSessionDisabled={!connected}
 					onNewSession={newSession}
 					onSelect={shownRowItems.length && !searching ? () => setSelecting(true) : undefined}

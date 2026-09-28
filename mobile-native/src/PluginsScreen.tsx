@@ -85,8 +85,9 @@ function PluginsScreenBody({ route }: NativeStackScreenProps<Routes, "Plugins">)
 	// credential store is (credentialStore.ts), as committed state a discarded
 	// render cannot leave behind.
 	const [gate] = useState(createPluginMutationGate);
-	const { activeProfile, client, state, retry, error, display, canUseConnection, renderClient } =
-		useRetainedScreenConnection(route.params.hubId);
+	const { activeProfile, client, state, error, display, canUseConnection, renderClient } = useRetainedScreenConnection(
+		route.params.hubId,
+	);
 	// An applied marketplace removal's residue lives beside the gate, above the
 	// early returns below, for the same reason it does: they unmount and remount
 	// the ready-only child on every connection transition, and the browser that
@@ -250,7 +251,7 @@ function PluginsScreenBody({ route }: NativeStackScreenProps<Routes, "Plugins">)
 	}, []);
 	if (activeProfile?.id !== route.params.hubId) return <Copy>{HUB_NO_LONGER_SELECTED}</Copy>;
 	if (display === "wall" || !renderClient)
-		return <ConnectionWall hubName={activeProfile.name} purpose="manage plugins" error={error} onReconnect={retry} />;
+		return <ConnectionWall hubName={activeProfile.name} purpose="manage plugins" error={error} />;
 	return (
 		<>
 			{display === "banner" ? <ConnectionStatus /> : null}

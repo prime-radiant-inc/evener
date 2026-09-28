@@ -439,6 +439,28 @@ func (s *Store) Record(id string) (Record, bool) {
 	return cloneRecord(s.cell.state.Records[index]), true
 }
 
+// RecordOrReplay returns the retained record with that controller-assigned id:
+// the live record when it is retained, or the replay rebuilt from its dedup
+// tombstone when the record has compacted. Store.Record answers live records
+// only; the resolve's replay contract (§5: "retrying the already-resolved
+// record's id replays the resolved OperationRecord ... from the persisted
+// resolution, never a second transition and never a refusal") needs the
+// tombstone-aware form, or a compacted resolved id would read as not-found.
+// The rebuilt replay carries Compacted: true, exactly as the read path's
+// replays do.
+func (s *Store) RecordOrReplay(id string) (Record, bool) {
+	if s == nil {
+		return Record{}, false
+	}
+	s.cell.mu.Lock()
+	defer s.cell.mu.Unlock()
+	record, ok := anchorRecordLocked(&s.cell.state, id)
+	if !ok {
+		return Record{}, false
+	}
+	return cloneRecord(record), true
+}
+
 // Records returns copies of every stored record, in stored order: ascending id
 // order, which is the order spec §8 sorts and resumes by.
 func (s *Store) Records() []Record {
@@ -1302,20 +1324,22 @@ var ownedObjectKeys = map[string]map[string]struct{}{
 		"compactSeq", "tombstones", "compactionMarks", "compactionFloor", "removedHosts",
 		"pendingCompensation", "fencingQuarantines"),
 	"records[]": keysOf("id", "clientOperationId", "host", "kind", "state", "generation",
-		"incarnationId", "fencingEpoch", "orphanBoundary", "progress", "result",
-		"pendingSpawns", "createdAt", "updatedAt", "hostRemoved", "sequence"),
+		"incarnationId", "fencingEpoch", "orphanBoundary", "orphanResolved", "attestation",
+		"progress", "result", "pendingSpawns", "createdAt", "updatedAt", "hostRemoved", "sequence"),
 	// §3's pending-spawn intents are objects this store decodes, so their keys
 	// are canonical too — never left opaque, or a case variant would be silently
 	// rewritten on the next save.
 	"records[].pendingSpawns[]": keysOf("nonce", "platform", "cgroupId", "pgid", "sessionId", "pid", "startTime"),
+	"records[].attestation":     keysOf("operator", "statement", "recordId", "boundaryRef", "observedAt", "unattributed"),
 	"records[].result":          keysOf("ok", "message"),
 	"records[].progress[]":      keysOf("ts", "message"),
 	"tombstones[]": keysOf("id", "clientOperationId", "host", "kind", "state", "generation",
-		"incarnationId", "progress", "result", "createdAt", "updatedAt", "hostRemoved",
-		"compactedAt", "compactedSeq"),
-	"tombstones[].result":     keysOf("ok", "message"),
-	"tombstones[].progress[]": keysOf("ts", "message"),
-	"compactionMarks[]":       keysOf("seq", "hosts"),
+		"incarnationId", "orphanResolved", "attestation", "progress", "result", "createdAt", "updatedAt",
+		"hostRemoved", "compactedAt", "compactedSeq"),
+	"tombstones[].attestation": keysOf("operator", "statement", "recordId", "boundaryRef", "observedAt", "unattributed"),
+	"tombstones[].result":      keysOf("ok", "message"),
+	"tombstones[].progress[]":  keysOf("ts", "message"),
+	"compactionMarks[]":        keysOf("seq", "hosts"),
 	// The per-name removal markers are objects this store decodes, so their
 	// keys are canonical too: a case variant (Go matches JSON field names
 	// case-insensitively) would be silently rewritten on the next save.
