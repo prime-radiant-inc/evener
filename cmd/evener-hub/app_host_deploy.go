@@ -744,6 +744,15 @@ func (m *hubHostManager) withSpawnScope(ctx context.Context, recordID string) co
 func (m *hubHostManager) runOperationWorker(ctx context.Context, work opWork) {
 	defer work.release()
 
+	// The worker's context is the hub's controller-lifetime context (see
+	// startOperationWorker, its only caller), but a scope it might carry is not
+	// this operation's: clear any inherited scope here and let each mutating
+	// call carry the operation's own scope (withSpawnScope). Without this, the
+	// read-only paths — the attach-first dialing, the post-operation refresh,
+	// the reattach probes — could arm their ssh children against whoever owned
+	// the parent context.
+	ctx = sshconn.WithoutSpawnScope(ctx)
+
 	id := work.record.ID
 	// handoff is the supervisor handoff for the channel a restart left live:
 	// the attach-first attach's, superseded by the post-restart reattach's once

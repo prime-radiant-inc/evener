@@ -124,6 +124,11 @@ func (execRunner) Run(ctx context.Context, argv []string, stdin io.Reader) ([]by
 // call's error.
 func runOneShot(ctx context.Context, argv []string, stdin io.Reader, attr *syscall.SysProcAttr, release func(), afterStart func(pid int) error) ([]byte, error) {
 	if len(argv) == 0 {
+		// The documented contract: a caller that handed a release sees it called
+		// once this call returns, whether or not a child was ever started.
+		if release != nil {
+			release()
+		}
 		return nil, errors.New("empty argv")
 	}
 	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)

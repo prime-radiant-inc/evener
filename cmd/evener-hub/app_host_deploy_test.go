@@ -2223,3 +2223,122 @@ func TestRestartWorkerScopesItsRestartStepAndNotTheReadOnlyRefresh(t *testing.T)
 		t.Fatalf("the post-operation read-only refresh ran armed under record %q, want no scope", refresh.RecordID)
 	}
 }
+
+// TestOperationWorkerClearsAnInheritedSpawnScope pins the worker's scope
+// hygiene discriminately: the hub's controller-lifetime context is injected
+// carrying an OUTER operation's scope, and no read-only path the worker runs
+// may inherit it. Every mutating call carries the operation's own record's
+// scope; the read-only refresh and the attach dialing carry none — never the
+// outer one.
+func TestOperationWorkerClearsAnInheritedSpawnScope(t *testing.T) {
+	t.Run("a deploy worker", func(t *testing.T) {
+		entry := deployTestHost()
+		configPath := deployTestConfigPath(t, entry)
+		var mu sync.Mutex
+		var deployScope, refreshScope *sshconn.SpawnScope
+		seams := deploySeams{
+			probe: deployProbeScript(t),
+			deploy: func(ctx context.Context, host hostreg.Host, f sshconn.Preflight) (string, sshconn.Preflight, error) {
+				mu.Lock()
+				deployScope, _ = sshconn.SpawnScopeFrom(ctx)
+				mu.Unlock()
+				return deployTestTarget(t, host), f, nil
+			},
+			facts: func(ctx context.Context, host hostreg.Host) (hubcore.HostPlanFacts, error) {
+				mu.Lock()
+				refreshScope, _ = sshconn.SpawnScopeFrom(ctx)
+				mu.Unlock()
+				return planTestFacts(host), nil
+			},
+		}
+		m, store, _ := deployTestHub(t, configPath, []hostreg.Host{entry}, seams)
+		outer := sshconn.NewSpawnScope("op-outer", store)
+		m.cfg.opsCtx = sshconn.WithSpawnScope(context.Background(), outer)
+		token := mintDeployToken(t, store, m, entry, "v0.9.0", true, "v1.2.3")
+
+		response, err := m.Deploy(context.Background(), appwire.HostDeployParams{
+			Name: entry.Name, Token: token.Value, OperationID: "op-1",
+		})
+		if err != nil {
+			t.Fatalf("Deploy: %v", err)
+		}
+		waitOperationState(t, store, response.ID, hostops.StateComplete)
+
+		mu.Lock()
+		deploy, refresh := deployScope, refreshScope
+		mu.Unlock()
+		if deploy == nil || deploy.RecordID != response.ID {
+			t.Fatalf("deploy step scope = %+v, want the operation's own record %s", deploy, response.ID)
+		}
+		if refresh == outer {
+			t.Fatal("the read-only refresh inherited the outer operation's scope")
+		}
+		if refresh != nil {
+			t.Fatalf("the read-only refresh ran armed under record %q, want no scope", refresh.RecordID)
+		}
+	})
+
+	t.Run("a restart worker", func(t *testing.T) {
+		entry := deployTestHost()
+		entry.Generation = 2
+		entry.IncarnationID = "inc-new"
+		configPath := deployTestConfigPath(t, entry)
+		var mu sync.Mutex
+		var restartScope, refreshScope, attachScope *sshconn.SpawnScope
+		var attachRan bool
+		before := time.Date(2026, 9, 27, 12, 0, 0, 0, time.UTC)
+		after := before.Add(time.Minute)
+		seams := deploySeams{
+			probe: restartProbeScript(t, "v1.2.3", "v1.2.3", before, after),
+			restart: func(ctx context.Context, _ hostreg.Host, _ sshconn.Preflight) error {
+				mu.Lock()
+				restartScope, _ = sshconn.SpawnScopeFrom(ctx)
+				mu.Unlock()
+				return nil
+			},
+			facts: func(ctx context.Context, host hostreg.Host) (hubcore.HostPlanFacts, error) {
+				mu.Lock()
+				refreshScope, _ = sshconn.SpawnScopeFrom(ctx)
+				mu.Unlock()
+				return planTestFacts(host), nil
+			},
+			attachUnderGate: func(ctx context.Context, _ hostreg.Host, _ hostops.Holder, _ bool) (func() bool, error) {
+				mu.Lock()
+				attachScope, _ = sshconn.SpawnScopeFrom(ctx)
+				attachRan = true
+				mu.Unlock()
+				return func() bool { return true }, nil
+			},
+		}
+		m, store, _ := deployTestHub(t, configPath, []hostreg.Host{entry}, seams)
+		outer := sshconn.NewSpawnScope("op-outer", store)
+		m.cfg.opsCtx = sshconn.WithSpawnScope(context.Background(), outer)
+
+		response, err := m.Restart(context.Background(), appwire.HostRestartParams{
+			Name: entry.Name, OperationID: "op-1", Generation: 2, IncarnationID: "inc-new",
+		})
+		if err != nil {
+			t.Fatalf("Restart: %v", err)
+		}
+		waitOperationState(t, store, response.ID, hostops.StateComplete)
+
+		mu.Lock()
+		restart, refresh, attach, ran := restartScope, refreshScope, attachScope, attachRan
+		mu.Unlock()
+		if restart == nil || restart.RecordID != response.ID {
+			t.Fatalf("restart step scope = %+v, want the operation's own record %s", restart, response.ID)
+		}
+		if !ran {
+			t.Fatal("the reattach seam never ran; the attach coverage would be vacuous")
+		}
+		if refresh == outer || attach == outer {
+			t.Fatal("a read-only path inherited the outer operation's scope")
+		}
+		if refresh != nil {
+			t.Fatalf("the read-only refresh ran armed under record %q, want no scope", refresh.RecordID)
+		}
+		if attach != nil {
+			t.Fatalf("the attach dialing ran armed under record %q, want no scope", attach.RecordID)
+		}
+	})
+}

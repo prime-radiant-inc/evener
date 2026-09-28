@@ -188,6 +188,12 @@ func (s *SpawnScope) runFenced(ctx context.Context, argv []string, stdin io.Read
 	if s == nil || s.store == nil || s.RecordID == "" {
 		return nil, errors.New("sshconn: this spawn's scope names no operation record to arm, so the spawn is refused: a child no record can reap must not be launched")
 	}
+	if len(argv) == 0 {
+		// A spawn with no argv can never exec, so it refuses before the boundary
+		// is created and before any intent is armed: nothing to tear down,
+		// nothing to converge, no handle to leak.
+		return nil, errors.New("sshconn: a fenced spawn needs an argv, so the spawn is refused: empty argv")
+	}
 	create := s.create
 	if create == nil {
 		create = defaultSpawnBoundary

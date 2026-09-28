@@ -261,3 +261,18 @@ func testDeployRecorder(t *testing.T, m *Manager) {
 		return NewSpawnScope("test-deploy-record", &fenceFakeStore{log: &fenceTestLog{}}), func(error) {}, nil
 	})
 }
+
+// TestRunOneShotHonorsReleaseOnAnEmptyArgv pins runOneShot's documented release
+// contract in the empty-argv arm: a caller that handed a release (a boundary
+// spawn handle) sees it called even though no child was ever started, so a
+// fenced spawn cannot leak the handle on that path.
+func TestRunOneShotHonorsReleaseOnAnEmptyArgv(t *testing.T) {
+	released := false
+	_, err := runOneShot(context.Background(), nil, nil, nil, func() { released = true }, nil)
+	if err == nil || !strings.Contains(err.Error(), "empty argv") {
+		t.Fatalf("runOneShot error = %v, want the empty-argv refusal", err)
+	}
+	if !released {
+		t.Fatal("the release closure was not called on the empty-argv return")
+	}
+}

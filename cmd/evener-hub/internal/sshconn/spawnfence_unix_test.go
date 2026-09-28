@@ -893,9 +893,11 @@ func TestSpawnRefusedReportsAnUntrackedBoundaryOnlyWhenTheStoreAndKernelBothRefu
 // TestRestartForOperationCarriesTheScopeToItsCommands is the restart twin of
 // the deploy seam pin: the context the hub hands RestartForOperation reaches
 // every command the restart step runs, so the spawn scope cannot be lost at the
-// seam. §3 arms every worker ssh subprocess, so the read-only pre-restart
-// running probe carries the scope too — §6's exemption is the remote-mutation
-// wrapper, never local ownership of a child the worker spawned.
+// seam. The seam's own read-only pre-restart running probe is explicitly
+// unarmed — it runs via WithoutSpawnScope, the deploy twin of the launch-
+// contract re-read, both §6's exempt read-only one-shots — while the mutating
+// step's commands, including the proven-replacement waits it runs, stay armed
+// (§3 arms what the step spawns).
 func TestRestartForOperationCarriesTheScopeToItsCommands(t *testing.T) {
 	host := hostreg.Host{Name: "alpha", SSH: "alpha.example", EvenerPath: "/opt/evener/bin/evener"}
 	fr := deployRunner(t,
@@ -1048,5 +1050,27 @@ func TestFencedSpawnReportsASuccessfulCommandWhenTheChildIsAlreadyGone(t *testin
 	}
 	if !boundary.closed {
 		t.Fatal("the boundary was not torn down")
+	}
+}
+
+// TestFencedSpawnRefusesAnEmptyArgvBeforeAnySideEffect pins the refusal order: a
+// fenced spawn with no argv can never exec, so it refuses before the boundary is
+// created and before any intent is armed — nothing to tear down, nothing to
+// converge.
+func TestFencedSpawnRefusesAnEmptyArgvBeforeAnySideEffect(t *testing.T) {
+	log := &fenceTestLog{}
+	store := &fenceFakeStore{log: log}
+	boundary := &fenceFakeBoundary{log: log, id: BoundaryID{Platform: BoundaryPlatformLinux, CgroupID: "/cg/op-1"}}
+	scope := fencedTestScope(log, store, boundary)
+
+	_, err := (execRunner{}).Run(WithSpawnScope(context.Background(), scope), nil, nil)
+	if err == nil || !strings.Contains(err.Error(), "empty argv") {
+		t.Fatalf("Run error = %v, want the empty-argv refusal", err)
+	}
+	if got := log.joined(); got != "" {
+		t.Fatalf("the refused spawn touched the boundary machinery: %s", got)
+	}
+	if store.armCalls != 0 || boundary.closeCalls != 0 {
+		t.Fatalf("arm calls = %d, close calls = %d, want no side effects at all", store.armCalls, boundary.closeCalls)
 	}
 }
