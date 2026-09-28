@@ -15,6 +15,7 @@ import type {
 import { createDemoFleet, type DemoFleetOptions } from "../src/dev/demoFleet.js";
 import {
 	createDemoSessions,
+	DEMO_MODEL_LIST,
 	removeLink,
 	resolveEscalation,
 	setHumanNote,
@@ -235,16 +236,20 @@ export async function createDemoHub(
 						};
 						break;
 					case "model/list":
-						result = {
-							data: [
-								{
-									provider: "demonstration",
-									model: "scripted",
-									displayName: "Scripted reply",
-									reasoningEffortLevels: [],
-								},
-							],
-						};
+						// The fleet's sessions pick from real-looking providers; the
+						// playground keeps its one scripted model.
+						result = demoFleet
+							? DEMO_MODEL_LIST
+							: {
+									data: [
+										{
+											provider: "demonstration",
+											model: "scripted",
+											displayName: "Scripted reply",
+											reasoningEffortLevels: [],
+										},
+									],
+								};
 						break;
 					case "thread/list":
 						result = {

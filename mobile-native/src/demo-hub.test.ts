@@ -8,6 +8,7 @@ import { createConversationStore } from "../../mobile/src/state/conversation";
 import { createDemoHub } from "../scripts/demo-hub.mjs";
 import { createHubClient } from "./connection";
 import { type DemoFleetOptions, demoSessionId, fleetSessions } from "./dev/demoFleet.js";
+import { DEMO_MODEL_LIST } from "./dev/demoSessions.js";
 import { readOrganizationNavigation } from "./organizationNavigation";
 import { ghosts } from "./session/ghosts";
 
@@ -596,6 +597,17 @@ describe("native demonstration hub's fleet sessions", () => {
 					approve: false,
 				}),
 			).rejects.toThrow("Method not implemented by demonstration server");
+		});
+	});
+
+	it("lists two providers' models, with a recent one, for the model sheet", async () => {
+		await withHub({}, async (client) => {
+			expect(await client.request("model/list", {})).toEqual(DEMO_MODEL_LIST);
+		});
+		await withHub(undefined, async (client) => {
+			const models = await client.request("model/list", {});
+			expect(models.data.map((model) => model.provider)).toEqual(["demonstration"]);
+			expect(models.recent).toBeUndefined();
 		});
 	});
 
