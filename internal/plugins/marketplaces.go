@@ -1020,6 +1020,26 @@ func restoreRename(what, from, to string) error {
 	return nil
 }
 
+// renameUndo builds the undo step that puts one of a rename's moved
+// directories back, marking the marketplaces store changed when it cannot: the
+// directory is then left under the new name while known_marketplaces.json still
+// records the old one, so the store has changed even though this session wrote
+// no store file. moveMarketplace's own fail and a caller's later runUndo
+// (EditMarketplace, the migration barrier) run these closures through the same
+// path, so a move that fails mid-rename and a rename whose final save fails
+// after it both report the state (#1800). A rollback that succeeds marks
+// nothing, because the store is back at the old name and nothing observable
+// moved — the same rule that keeps moveMarketplace from marking on success.
+func (m *Manager) renameUndo(what, from, to string) func() error {
+	return func() error {
+		if err := restoreRename(what, from, to); err != nil {
+			m.markStoreChanged(StoreChanged{Marketplaces: true})
+			return err
+		}
+		return nil
+	}
+}
+
 // runUndo runs a rename's undo steps in reverse and joins what they could not
 // put back.
 func runUndo(undo []func() error) error {
@@ -1081,7 +1101,7 @@ func (m *Manager) moveMarketplace(name, newName string, ref MarketplaceRef, mk M
 			if err := marketplaceRename(oldDir, newDir); err != nil {
 				return fail(fmt.Errorf("renaming marketplace clone: %w", err))
 			}
-			undo = append(undo, func() error { return restoreRename("marketplace clone", newDir, oldDir) })
+			undo = append(undo, m.renameUndo("marketplace clone", newDir, oldDir))
 		}
 		// A recorded location says where the clone is, so it follows the
 		// clone that moved; with none to move the entry is unfetched, and the
@@ -1132,7 +1152,7 @@ func (m *Manager) moveMarketplace(name, newName string, ref MarketplaceRef, mk M
 		if err := marketplaceRename(oldCache, newCache); err != nil {
 			return fail(fmt.Errorf("renaming plugin cache: %w", err))
 		}
-		undo = append(undo, func() error { return restoreRename("plugin cache", newCache, oldCache) })
+		undo = append(undo, m.renameUndo("plugin cache", newCache, oldCache))
 	}
 	return ref, rekeyRegistry(reg, owners, name, newName, oldCache, newCache), undo, nil
 }
