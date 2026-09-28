@@ -11,7 +11,8 @@ package hostops
 //
 // The cursor is §8's versioned base64url JSON envelope
 // `{v: 2, pos: id, compactSeq: number, bounds: {[host]: [generation,
-// incarnationId, presenceEpoch] | "absent"}, quarantineEpoch: number}`. `pos`
+// incarnationId, presenceEpoch] | "absent"}, window: "host" | "all",
+// quarantineEpoch: number}`. `pos`
 // is the last row's controller-assigned id — never a bare offset — so a
 // wall-clock rollback that stamps a later record with an earlier `createdAt`
 // can never move it before the cursor. The bounds map pins every host in the
@@ -27,19 +28,30 @@ package hostops
 // refusal — never a mixed page. A host created after the mint has no stored
 // triple to validate and is skipped on later pages.
 //
-// The pair a host-pinned page was actually served under is recovered on the
-// continuation from the row `pos` names: that row was listed by the page, so it
-// carries the listed pair. The continuation pins its window to that pair
-// whether the request repeats it or omits it — "An omitted filter on a later
-// page reads as the pinned-cursor window, never as a fresh unpinned query" — and
-// a repeated pair that is not it is refused. That is how a page under a
-// superseded incarnation stays pageable without the envelope carrying a second
-// triple, while the stored entry still detects every boundary advance. An
+// The envelope's `window` key records whether the cursor was minted
+// host-pinned ("host") or unfiltered ("all"). It is part of the cursor's
+// identity because a pinned current pair and an unfiltered entry are
+// byte-identical, so the bounds map alone cannot tell the two windows apart: a
+// continuation whose request shape does not match the recorded window — a
+// pinned cursor presented without its host, a pinned cursor naming a different
+// host, or an unfiltered cursor narrowed to one host — is a typed stale-entry
+// re-list refusal, exactly §8's "a cursor minted for one pair validated
+// against an unfiltered query is a typed `stale-entry` re-list refusal". (The
+// window key is this slice's one addition to §8's five-key literal; the spec
+// carries the amendment.)
+//
+// Within a host-pinned window, the pair the page was actually served under is
+// recovered on the continuation from the row `pos` names: that row was listed
+// by the page, so it carries the listed pair. The continuation pins its window
+// to that pair whether the request repeats it or omits it — "An omitted filter
+// on a later page reads as the pinned-cursor window, never as a fresh unpinned
+// query" — and a repeated pair that is not it is refused. That is how a page
+// under a superseded incarnation stays pageable without the envelope carrying a
+// second triple, while the stored entry still detects every boundary advance. An
 // unfiltered page lists each host's current pair (§10: "generation ... omitted:
-// the current generation"), so the same rule refuses a cursor minted for one
-// pair presented as an unfiltered query; history stays reachable through the
-// host-pinned pair filter and the `id` detail filter. A `pos` row the store no
-// longer holds (S6 compaction's territory) is a stale re-list here.
+// the current generation"), and history stays reachable through the host-pinned
+// pair filter and the `id` detail filter. A `pos` row the store no longer holds
+// (S6 compaction's territory) is a stale re-list here.
 //
 // What this file deliberately does not own, and the named seams its read path
 // leaves:
@@ -146,6 +158,24 @@ type CursorBound struct {
 	Boundary Boundary
 }
 
+// CursorWindow names the scope a cursor was minted over: "host" for a
+// host-pinned read, "all" for an unfiltered cross-host read. §8's envelope
+// otherwise cannot tell a pinned window from an unfiltered one over the same
+// host set — a pinned current pair and an unfiltered entry are byte-identical —
+// so the window is part of the cursor's identity and a continuation whose
+// request does not match the recorded window is a typed stale-entry re-list.
+type CursorWindow string
+
+const (
+	// CursorWindowHost is a cursor minted by a host-pinned read.
+	CursorWindowHost CursorWindow = "host"
+	// CursorWindowAll is a cursor minted by an unfiltered cross-host read.
+	CursorWindowAll CursorWindow = "all"
+)
+
+// valid reports whether w is one of the two window values this codec mints.
+func (w CursorWindow) valid() bool { return w == CursorWindowHost || w == CursorWindowAll }
+
 // MarshalJSON renders §8's bounds value union: the [generation, incarnationId,
 // presenceEpoch] array, or the literal "absent" string.
 func (b CursorBound) MarshalJSON() ([]byte, error) {
@@ -226,6 +256,8 @@ type CursorEnvelope struct {
 	// Bounds pins one entry per host in the query at mint: the triple, or the
 	// "absent" marker for a host that held no records.
 	Bounds map[string]CursorBound
+	// Window records whether the cursor was minted host-pinned or unfiltered.
+	Window CursorWindow
 }
 
 // cursorEnvelopeJSON is the wire literal. Field order is the spec's
@@ -236,17 +268,22 @@ type cursorEnvelopeJSON struct {
 	Pos             string                 `json:"pos"`
 	CompactSeq      uint64                 `json:"compactSeq"`
 	Bounds          map[string]CursorBound `json:"bounds"`
+	Window          CursorWindow           `json:"window"`
 	QuarantineEpoch uint64                 `json:"quarantineEpoch"`
 }
 
 // EncodeCursor renders §8's opaque cursor: the base64url JSON envelope. It
 // refuses an envelope this codec does not mint (a version other than 2, a
-// position outside the allocator form, a malformed bounds entry) and an
-// envelope whose encoded form would exceed MaxCursorBytes — the latter as
-// *CursorTooLargeError, §8's distinct over-cap refusal.
+// window outside the two values, a position outside the allocator form, a
+// malformed bounds entry) and an envelope whose encoded form would exceed
+// MaxCursorBytes — the latter as *CursorTooLargeError, §8's distinct over-cap
+// refusal.
 func EncodeCursor(envelope CursorEnvelope) (string, error) {
 	if envelope.Version != cursorEnvelopeVersion {
 		return "", fmt.Errorf("%w: cannot encode cursor envelope version %d", ErrInvalidOperationsQuery, envelope.Version)
+	}
+	if !envelope.Window.valid() {
+		return "", fmt.Errorf("%w: cannot encode cursor window %q", ErrInvalidOperationsQuery, envelope.Window)
 	}
 	if _, err := parseAllocatorID(envelope.Position); err != nil {
 		return "", fmt.Errorf("%w: cursor position %q: %w", ErrInvalidOperationsQuery, envelope.Position, err)
@@ -268,6 +305,7 @@ func EncodeCursor(envelope CursorEnvelope) (string, error) {
 		Pos:             envelope.Position,
 		CompactSeq:      envelope.CompactSeq,
 		Bounds:          bounds,
+		Window:          envelope.Window,
 		QuarantineEpoch: envelope.QuarantineEpoch,
 	})
 	if err != nil {
@@ -291,6 +329,7 @@ var cursorEnvelopeKeys = map[string]map[string]struct{}{
 		"pos":             {},
 		"compactSeq":      {},
 		"bounds":          {},
+		"window":          {},
 		"quarantineEpoch": {},
 	},
 }
@@ -316,6 +355,21 @@ func DecodeCursor(cursor string) (CursorEnvelope, error) {
 	var fields map[string]json.RawMessage
 	if err := json.Unmarshal(raw, &fields); err != nil {
 		return CursorEnvelope{}, fmt.Errorf("%w: the cursor payload is not the envelope: %w", ErrInvalidOperationsQuery, err)
+	}
+	// The version first: an envelope this codec did not mint is §8's typed
+	// stale-entry re-list — including an older version whose key set this codec
+	// would otherwise refuse as malformed, so a v1 cursor still reads as stale.
+	if rawVersion, ok := fields["v"]; ok {
+		var version int
+		if err := json.Unmarshal(rawVersion, &version); err != nil {
+			return CursorEnvelope{}, fmt.Errorf("%w: the cursor's version is not a number: %w", ErrInvalidOperationsQuery, err)
+		}
+		if version != cursorEnvelopeVersion {
+			return CursorEnvelope{}, &CursorStaleError{
+				Reason:  fmt.Sprintf("the envelope version %d is not %d; re-list from the first page", version, cursorEnvelopeVersion),
+				Binding: StaleBindingGeneration,
+			}
+		}
 	}
 	for key := range fields {
 		if _, ok := cursorEnvelopeKeys[""][key]; !ok {
@@ -345,6 +399,10 @@ func DecodeCursor(cursor string) (CursorEnvelope, error) {
 	if decoded.Bounds == nil {
 		return CursorEnvelope{}, fmt.Errorf("%w: the cursor carries no bounds map", ErrInvalidOperationsQuery)
 	}
+	if !decoded.Window.valid() {
+		return CursorEnvelope{}, fmt.Errorf("%w: the cursor carries the window %q, which is not one this codec writes",
+			ErrInvalidOperationsQuery, decoded.Window)
+	}
 	for host := range decoded.Bounds {
 		if err := validateBoundaryName(host); err != nil {
 			return CursorEnvelope{}, fmt.Errorf("%w: cursor bounds: %w", ErrInvalidOperationsQuery, err)
@@ -359,6 +417,7 @@ func DecodeCursor(cursor string) (CursorEnvelope, error) {
 		CompactSeq:      decoded.CompactSeq,
 		QuarantineEpoch: decoded.QuarantineEpoch,
 		Bounds:          decoded.Bounds,
+		Window:          decoded.Window,
 	}, nil
 }
 
@@ -587,13 +646,33 @@ func readOperationsLocked(state *snapshot, q OperationsQuery, live CursorEpoch) 
 	// pair window stands down for it. A named pair is an explicit window and
 	// keeps its filter.
 	detailOnly := q.ID != "" && q.Generation == nil
+	// The window marker travels with the cursor: a first page records whether
+	// the read named a host, and a continuation preserves the recorded window.
+	mintWindow := window.Window
+	if !continuing {
+		if pinned {
+			mintWindow = CursorWindowHost
+		} else {
+			mintWindow = CursorWindowAll
+		}
+	}
 
 	if pinned {
 		pageHosts[q.Host] = true
 		if continuing {
-			if _, ok := window.Bounds[q.Host]; !ok {
+			// The window is part of the cursor's identity (§8): a cursor minted
+			// unfiltered cannot be narrowed to one host mid-pagination, because
+			// that would truncate the authoritative map and silently drop every
+			// other host's records.
+			if window.Window != CursorWindowHost {
 				return OperationsPage{}, &CursorStaleError{
-					Reason:  fmt.Sprintf("host %q was not in the cursor's pinned window; re-list from the first page", q.Host),
+					Reason:  "the cursor was minted for the unfiltered cross-host window, not a host-pinned one; re-list from the first page",
+					Binding: StaleBindingGeneration,
+				}
+			}
+			if _, ok := window.Bounds[q.Host]; !ok || len(window.Bounds) != 1 {
+				return OperationsPage{}, &CursorStaleError{
+					Reason:  fmt.Sprintf("host %q is not the host this cursor pinned; re-list from the first page", q.Host),
 					Binding: StaleBindingGeneration,
 				}
 			}
@@ -627,8 +706,13 @@ func readOperationsLocked(state *snapshot, q OperationsQuery, live CursorEpoch) 
 					Binding: StaleBindingGeneration,
 				}
 			}
-		} else {
-			pinnedPair, havePinnedPair = resolvePinnedPair(state, q)
+		} else if !detailOnly {
+			// A detail lookup resolves no window pair: the row it returns is the
+			// pair that page lists under, and the response echoes that row.
+			pinnedPair, havePinnedPair, err = resolvePinnedPair(state, q)
+			if err != nil {
+				return OperationsPage{}, err
+			}
 		}
 		if havePinnedPair && !detailOnly {
 			windowPairs[q.Host] = pinnedPair
@@ -644,6 +728,16 @@ func readOperationsLocked(state *snapshot, q OperationsQuery, live CursorEpoch) 
 		}
 	} else {
 		if continuing {
+			// §8: "a cursor minted for one pair validated against an unfiltered
+			// query is a typed `stale-entry` re-list refusal." The recorded window
+			// is the only way to tell a pinned cursor from an unfiltered one over
+			// the same host set, so the request shape must match it exactly.
+			if window.Window != CursorWindowAll {
+				return OperationsPage{}, &CursorStaleError{
+					Reason:  "this cursor was minted for one host-pinned window; pass its host name and pair back, or re-list from the first page",
+					Binding: StaleBindingGeneration,
+				}
+			}
 			for host, stored := range window.Bounds {
 				pageHosts[host] = true
 				if !stored.Absent {
@@ -762,6 +856,7 @@ func readOperationsLocked(state *snapshot, q OperationsQuery, live CursorEpoch) 
 			CompactSeq:      live.CompactSeq,
 			QuarantineEpoch: live.QuarantineEpoch,
 			Bounds:          mintBounds,
+			Window:          mintWindow,
 		})
 		if err != nil {
 			return OperationsPage{}, err
@@ -776,42 +871,32 @@ func readOperationsLocked(state *snapshot, q OperationsQuery, live CursorEpoch) 
 // incarnationId actually listed"; §10: "generation selects the incarnation
 // after client operation-ID reuse (omitted: the current generation)").
 //
-// The named pair is taken exactly. A named generation resolves to one
-// incarnation — the boundary's when that generation is current, else the
-// newest retained record's for that generation, so a same-generation collision
-// (§12's "colliding same-generation incarnation") is disambiguated by naming
-// both halves — and an omitted pair is the host's current pair, the mirrored
-// boundary. ok is false only when the host has no pair at all, which is also a
-// host with no records to list.
-func resolvePinnedPair(state *snapshot, q OperationsQuery) (OperationPair, bool) {
+// The named pair is taken exactly. A named generation resolves to the current
+// incarnation when that generation is the host's current one; a generation the
+// host has moved past is a superseded selection, and §10 requires the
+// incarnationId alongside it ("incarnationId narrows that selection to the
+// exact incarnation — required alongside generation whenever the caller names a
+// superseded pair") — a generation-only superseded read would silently hide
+// every other incarnation of that generation, so it is refused as an invalid
+// query. An omitted pair is the host's current pair, the mirrored boundary. ok
+// is false only when the host has no pair at all, which is also a host with no
+// records to list.
+func resolvePinnedPair(state *snapshot, q OperationsQuery) (OperationPair, bool, error) {
 	boundary, hasBoundary := state.Boundaries[q.Host]
 	switch {
 	case q.Generation != nil && q.IncarnationID != "":
-		return OperationPair{Generation: *q.Generation, IncarnationID: q.IncarnationID}, true
+		return OperationPair{Generation: *q.Generation, IncarnationID: q.IncarnationID}, true, nil
 	case q.Generation != nil:
 		if hasBoundary && boundary.Generation == *q.Generation {
-			return OperationPair{Generation: *q.Generation, IncarnationID: boundary.IncarnationID}, true
+			return OperationPair{Generation: *q.Generation, IncarnationID: boundary.IncarnationID}, true, nil
 		}
-		if record, ok := newestRecordForGeneration(state, q.Host, *q.Generation); ok {
-			return OperationPair{Generation: record.Generation, IncarnationID: record.IncarnationID}, true
-		}
-		return OperationPair{}, false
+		return OperationPair{}, false, fmt.Errorf(
+			"%w: host %q has moved past generation %d, so the read needs its incarnationId",
+			ErrInvalidOperationsQuery, q.Host, *q.Generation)
 	case hasBoundary:
-		return OperationPair{Generation: boundary.Generation, IncarnationID: boundary.IncarnationID}, true
+		return OperationPair{Generation: boundary.Generation, IncarnationID: boundary.IncarnationID}, true, nil
 	}
-	return OperationPair{}, false
-}
-
-// newestRecordForGeneration returns the newest retained record pinned to host
-// under generation, the incarnation a generation-only filter selects when the
-// generation is not the host's current one.
-func newestRecordForGeneration(state *snapshot, host string, generation uint64) (Record, bool) {
-	for _, record := range slices.Backward(state.Records) {
-		if record.Host == host && record.Generation == generation {
-			return record, true
-		}
-	}
-	return Record{}, false
+	return OperationPair{}, false, nil
 }
 
 // recordAtLocked returns the stored record with the controller-assigned id.

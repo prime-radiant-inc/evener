@@ -105,6 +105,7 @@ func TestCursorEnvelopeCarriesTheV2LiteralKeys(t *testing.T) {
 		Position:        pos,
 		CompactSeq:      11,
 		QuarantineEpoch: 3,
+		Window:          CursorWindowHost,
 		Bounds: map[string]CursorBound{
 			"m4": {Boundary: Boundary{Generation: 2, IncarnationID: "inc-m4", PresenceEpoch: 5}},
 			"m5": {Absent: true},
@@ -121,7 +122,7 @@ func TestCursorEnvelopeCarriesTheV2LiteralKeys(t *testing.T) {
 	if strings.ContainsAny(cursor, "+/=") {
 		t.Fatalf("cursor %q is not the URL-safe alphabet without padding", cursor)
 	}
-	want := fmt.Sprintf(`{"v":2,"pos":%q,"compactSeq":11,"bounds":{"m4":[2,"inc-m4",5],"m5":"absent"},"quarantineEpoch":3}`, pos)
+	want := fmt.Sprintf(`{"v":2,"pos":%q,"compactSeq":11,"bounds":{"m4":[2,"inc-m4",5],"m5":"absent"},"window":"host","quarantineEpoch":3}`, pos)
 	if string(raw) != want {
 		t.Fatalf("cursor payload =\n%s\nwant\n%s", raw, want)
 	}
@@ -132,8 +133,20 @@ func TestCursorEnvelopeCarriesTheV2LiteralKeys(t *testing.T) {
 	if decoded.Version != 2 || decoded.Position != pos || decoded.CompactSeq != 11 || decoded.QuarantineEpoch != 3 {
 		t.Fatalf("decoded envelope = %+v, want the minted values", decoded)
 	}
+	if decoded.Window != CursorWindowHost {
+		t.Fatalf("decoded window = %q, want %q", decoded.Window, CursorWindowHost)
+	}
 	if decoded.Bounds["m4"] != envelope.Bounds["m4"] || !decoded.Bounds["m5"].Absent {
 		t.Fatalf("decoded bounds = %+v, want the minted bounds", decoded.Bounds)
+	}
+	unfiltered := envelope
+	unfiltered.Window = CursorWindowAll
+	cursor, err = EncodeCursor(unfiltered)
+	if err != nil {
+		t.Fatalf("EncodeCursor(all): %v", err)
+	}
+	if fields := cursorFields(t, cursor); string(fields["window"]) != `"all"` {
+		t.Fatalf("cursor window field = %s, want \"all\"", fields["window"])
 	}
 }
 
@@ -141,12 +154,14 @@ func TestCursorEnvelopeCarriesTheV2LiteralKeys(t *testing.T) {
 // version is not 2 is a typed stale-entry re-list refusal, never a best-effort
 // decode."
 func TestCursorRefusesAnEnvelopeThatIsNotV2(t *testing.T) {
+	// A v1 cursor predates the window key: the version check must come first, so
+	// it reads as stale rather than as a malformed current envelope.
 	_, err := DecodeCursor(rawCursor(`{"v":1,"pos":"00000000000000000007","compactSeq":0,"bounds":{},"quarantineEpoch":0}`))
 	wantCursorStale(t, err)
 	if _, err := DecodeCursor("not-base64!!"); !errors.Is(err, ErrInvalidOperationsQuery) {
 		t.Fatalf("garbage cursor error = %v, want ErrInvalidOperationsQuery", err)
 	}
-	if _, err := DecodeCursor(rawCursor(`{"v":2,"pos":"nope","compactSeq":0,"bounds":{},"quarantineEpoch":0}`)); !errors.Is(err, ErrInvalidOperationsQuery) {
+	if _, err := DecodeCursor(rawCursor(`{"v":2,"pos":"nope","compactSeq":0,"bounds":{},"window":"all","quarantineEpoch":0}`)); !errors.Is(err, ErrInvalidOperationsQuery) {
 		t.Fatalf("cursor with a bogus pos error = %v, want ErrInvalidOperationsQuery", err)
 	}
 }
@@ -287,6 +302,9 @@ func TestOperationsReadPinsEveryHostInTheQueryAtMint(t *testing.T) {
 	if got := string(fields["v"]); got != "2" {
 		t.Fatalf("cursor v = %s, want 2", got)
 	}
+	if got := string(fields["window"]); got != `"all"` {
+		t.Fatalf("cursor window = %s, want \"all\" for an unfiltered cursor", got)
+	}
 	var bounds map[string]json.RawMessage
 	if err := json.Unmarshal(fields["bounds"], &bounds); err != nil {
 		t.Fatalf("cursor bounds: %v", err)
@@ -413,6 +431,99 @@ func TestOperationsReadFiltersByOperationIDStateAndDetailID(t *testing.T) {
 	}
 }
 
+// TestOperationsReadPinnedDetailEchoesTheListedRecordPair pins §8's "effective
+// generation and incarnationId actually listed" for the `id` detail filter: a
+// host-pinned lookup that names no pair echoes the row it returned — first page
+// and continuation alike — never the host's current pair.
+func TestOperationsReadPinnedDetailEchoesTheListedRecordPair(t *testing.T) {
+	store, _ := openTestStore(t)
+	mirrorCursorBoundary(t, store, "m4", 2, "inc-m4", 3)
+	old1 := cursorTestRecord(t, store, "m4", "op-old-1", 1, "inc-old")
+	old2 := cursorTestRecord(t, store, "m4", "op-old-2", 1, "inc-old")
+	cursorTestRecord(t, store, "m4", "op-current", 2, "inc-m4")
+
+	page, err := store.ReadOperations(OperationsQuery{Host: "m4", ID: old1.ID, Limit: 1})
+	if err != nil {
+		t.Fatalf("ReadOperations(detail): %v", err)
+	}
+	if len(page.Records) != 1 || page.Records[0].ID != old1.ID {
+		t.Fatalf("detail page ids = %v, want %q", recordIDs(page.Records), old1.ID)
+	}
+	if page.Generation == nil || *page.Generation != 1 || page.IncarnationID != "inc-old" {
+		t.Fatalf("detail page pair = %v/%q, want the listed row's 1/inc-old", page.Generation, page.IncarnationID)
+	}
+	if page.NextCursor == "" {
+		t.Fatal("detail page carried no nextCursor")
+	}
+	// The continuation recovers the same listed pair from the row it resumes
+	// after, so the top-level pair does not flip between pages.
+	continued, err := store.ReadOperations(OperationsQuery{Host: "m4", Cursor: page.NextCursor})
+	if err != nil {
+		t.Fatalf("ReadOperations(continuation): %v", err)
+	}
+	if len(continued.Records) != 1 || continued.Records[0].ID != old2.ID {
+		t.Fatalf("continuation ids = %v, want %q", recordIDs(continued.Records), old2.ID)
+	}
+	if continued.Generation == nil || *continued.Generation != 1 || continued.IncarnationID != "inc-old" {
+		t.Fatalf("continuation pair = %v/%q, want the same listed 1/inc-old", continued.Generation, continued.IncarnationID)
+	}
+}
+
+// TestOperationsReadRefusesASupersededGenerationWithoutIncarnation pins §10's
+// "incarnationId ... required alongside generation whenever the caller names a
+// superseded pair": a generation-only filter for a generation that is not the
+// host's current one is invalid params, never the silent selection of whichever
+// incarnation happened to be newest. The current generation still resolves
+// without it.
+func TestOperationsReadRefusesASupersededGenerationWithoutIncarnation(t *testing.T) {
+	store, _ := openTestStore(t)
+	mirrorCursorBoundary(t, store, "m4", 2, "inc-m4", 3)
+	cursorTestRecord(t, store, "m4", "op-old-a", 1, "inc-old-a")
+	cursorTestRecord(t, store, "m4", "op-old-b", 1, "inc-old-b")
+	current := cursorTestRecord(t, store, "m4", "op-current", 2, "inc-m4")
+
+	superseded := uint64(1)
+	if _, err := store.ReadOperations(OperationsQuery{Host: "m4", Generation: &superseded}); !errors.Is(err, ErrInvalidOperationsQuery) {
+		t.Fatalf("superseded generation-only read = %v, want ErrInvalidOperationsQuery", err)
+	}
+	stillCurrent := uint64(2)
+	page, err := store.ReadOperations(OperationsQuery{Host: "m4", Generation: &stillCurrent})
+	if err != nil {
+		t.Fatalf("current generation-only read: %v", err)
+	}
+	if len(page.Records) != 1 || page.Records[0].ID != current.ID {
+		t.Fatalf("current generation-only read ids = %v, want %q", recordIDs(page.Records), current.ID)
+	}
+	if page.IncarnationID != "inc-m4" {
+		t.Fatalf("current generation-only read pair = %v/%q, want the current incarnation", page.Generation, page.IncarnationID)
+	}
+}
+
+// TestOperationsReadRefusesANarrowedUnfilteredCursor pins the other direction
+// of §8's window pinning: a cursor minted over a cross-host window cannot be
+// continued host-pinned, because that would truncate the authoritative map and
+// silently drop every other host's records from the pagination.
+func TestOperationsReadRefusesANarrowedUnfilteredCursor(t *testing.T) {
+	store, _ := openTestStore(t)
+	mirrorCursorBoundary(t, store, "m4", 2, "inc-m4", 3)
+	cursorTestRecord(t, store, "m4", "op-m4", 2, "inc-m4")
+	mirrorCursorBoundary(t, store, "m9", 5, "inc-m9", 1)
+	cursorTestRecord(t, store, "m9", "op-m9", 5, "inc-m9")
+
+	page, err := store.ReadOperations(OperationsQuery{Limit: 1})
+	if err != nil {
+		t.Fatalf("ReadOperations: %v", err)
+	}
+	if page.NextCursor == "" {
+		t.Fatal("no cursor to continue with")
+	}
+	if len(page.HostBoundaries) != 2 {
+		t.Fatalf("first page hostBoundaries = %+v, want both hosts", page.HostBoundaries)
+	}
+	_, err = store.ReadOperations(OperationsQuery{Host: "m4", Cursor: page.NextCursor})
+	wantCursorStale(t, err)
+}
+
 // TestOperationsReadPinnedContinuationKeepsTheListedPair pins the High fix: a
 // cursor minted for a superseded pair keeps listing THAT pair when the
 // continuation repeats it or omits it, and never falls back to the host's
@@ -483,6 +594,31 @@ func TestOperationsReadPinnedContinuationKeepsTheListedPair(t *testing.T) {
 	if len(fresh.Records) != 1 || fresh.Records[0].ID != current.ID {
 		t.Fatalf("fresh pinned read ids = %v, want the current pair's %q", recordIDs(fresh.Records), current.ID)
 	}
+}
+
+// TestOperationsReadRefusesAPinnedCursorWithoutItsName pins the window key's
+// first direction: a cursor minted host-pinned (window "host") cannot be served
+// as an unfiltered query — §8's "a cursor minted for one pair validated against
+// an unfiltered query is a typed stale-entry re-list refusal" — not even when
+// the pinned pair is the host's current one.
+func TestOperationsReadRefusesAPinnedCursorWithoutItsName(t *testing.T) {
+	store, _ := openTestStore(t)
+	mirrorCursorBoundary(t, store, "m4", 2, "inc-m4", 3)
+	cursorTestRecord(t, store, "m4", "op-1", 2, "inc-m4")
+	cursorTestRecord(t, store, "m4", "op-2", 2, "inc-m4")
+
+	page, err := store.ReadOperations(OperationsQuery{Host: "m4", Limit: 1})
+	if err != nil {
+		t.Fatalf("ReadOperations: %v", err)
+	}
+	if page.NextCursor == "" {
+		t.Fatal("no cursor to continue with")
+	}
+	if fields := cursorFields(t, page.NextCursor); string(fields["window"]) != `"host"` {
+		t.Fatalf("pinned cursor window = %s, want \"host\"", fields["window"])
+	}
+	_, err = store.ReadOperations(OperationsQuery{Cursor: page.NextCursor})
+	wantCursorStale(t, err)
 }
 
 // TestOperationsReadRefusesAnUnnamedHistoricalContinuation pins the Low fix: a
@@ -556,10 +692,12 @@ func TestDecodeCursorRefusesMalformedEnvelopes(t *testing.T) {
 	pos := formatAllocatorID(1)
 	cases := map[string]string{
 		"over the encoded cap": strings.Repeat("A", MaxCursorBytes+1),
-		"a missing key":        rawCursor(fmt.Sprintf(`{"v":2,"pos":%q,"bounds":{},"quarantineEpoch":0}`, pos)),
-		"an unknown key":       rawCursor(fmt.Sprintf(`{"v":2,"pos":%q,"compactSeq":0,"bounds":{},"quarantineEpoch":0,"extra":1}`, pos)),
-		"a key named twice":    rawCursor(fmt.Sprintf(`{"v":2,"v":2,"pos":%q,"compactSeq":0,"bounds":{},"quarantineEpoch":0}`, pos)),
-		"an empty host key":    rawCursor(fmt.Sprintf(`{"v":2,"pos":%q,"compactSeq":0,"bounds":{"":"absent"},"quarantineEpoch":0}`, pos)),
+		"a missing key":        rawCursor(fmt.Sprintf(`{"v":2,"pos":%q,"bounds":{},"window":"all","quarantineEpoch":0}`, pos)),
+		"a missing window":     rawCursor(fmt.Sprintf(`{"v":2,"pos":%q,"compactSeq":0,"bounds":{},"quarantineEpoch":0}`, pos)),
+		"an unknown window":    rawCursor(fmt.Sprintf(`{"v":2,"pos":%q,"compactSeq":0,"bounds":{},"window":"bogus","quarantineEpoch":0}`, pos)),
+		"an unknown key":       rawCursor(fmt.Sprintf(`{"v":2,"pos":%q,"compactSeq":0,"bounds":{},"window":"all","quarantineEpoch":0,"extra":1}`, pos)),
+		"a key named twice":    rawCursor(fmt.Sprintf(`{"v":2,"v":2,"pos":%q,"compactSeq":0,"bounds":{},"window":"all","quarantineEpoch":0}`, pos)),
+		"an empty host key":    rawCursor(fmt.Sprintf(`{"v":2,"pos":%q,"compactSeq":0,"bounds":{"":"absent"},"window":"all","quarantineEpoch":0}`, pos)),
 	}
 	for name, cursor := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -574,7 +712,7 @@ func TestDecodeCursorRefusesMalformedEnvelopes(t *testing.T) {
 	for i := range 400 {
 		hosts[fmt.Sprintf("host-%03d", i)] = "absent"
 	}
-	body, err := json.Marshal(map[string]any{"v": 2, "pos": pos, "compactSeq": 0, "bounds": hosts, "quarantineEpoch": 0})
+	body, err := json.Marshal(map[string]any{"v": 2, "pos": pos, "compactSeq": 0, "bounds": hosts, "window": "all", "quarantineEpoch": 0})
 	if err != nil {
 		t.Fatalf("marshal envelope: %v", err)
 	}
@@ -601,6 +739,7 @@ func TestOperationsReadRefusesForgedBoundsEntries(t *testing.T) {
 				Version:  2,
 				Position: formatAllocatorID(1),
 				Bounds:   map[string]CursorBound{"ghost": {Absent: true}},
+				Window:   CursorWindowAll,
 			},
 		},
 		"a fabricated triple for an unknown host": {
@@ -610,6 +749,7 @@ func TestOperationsReadRefusesForgedBoundsEntries(t *testing.T) {
 				Bounds: map[string]CursorBound{"ghost": {Boundary: Boundary{
 					Generation: 9, IncarnationID: "inc-ghost", PresenceEpoch: 9,
 				}}},
+				Window: CursorWindowAll,
 			},
 		},
 		"a position naming no stored row": {
@@ -617,6 +757,7 @@ func TestOperationsReadRefusesForgedBoundsEntries(t *testing.T) {
 				Version:  2,
 				Position: formatAllocatorID(999),
 				Bounds:   map[string]CursorBound{"m4": {Boundary: Boundary{Generation: 2, IncarnationID: "inc-m4", PresenceEpoch: 3}}},
+				Window:   CursorWindowHost,
 			},
 			host: "m4",
 		},
