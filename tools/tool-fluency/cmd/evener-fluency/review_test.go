@@ -40,7 +40,7 @@ func writeReviewRun(t *testing.T, cellDir string, rep int) (workDir, stateDir st
 		assistantTurn(textPart("The directory four levels up lists v1-A.")),
 		assistantTurn(fluencyToolCall("communicate", `{"message":"`+reviewRunReport+`","end_turn":true}`)),
 	})
-	res := probeResult{Probe: "prose.bugfix-tally", Model: "lunarouter/m", Repetition: rep, WorkDir: workDir, StateDir: stateDir}
+	res := probeResult{Probe: "prose.bugfix-tally", Model: "lunarouter/m", Repetition: rep, Status: "passed", WorkDir: workDir, StateDir: stateDir}
 	if err := writeProbeResult(cellDir, res); err != nil {
 		t.Fatal(err)
 	}
@@ -57,7 +57,7 @@ func TestWriteReviewPackMasksRunPaths(t *testing.T) {
 	workDir, stateDir := writeReviewRun(t, filepath.Join(root, "v1-A", "lunarouter-m"), 1)
 
 	packets := filepath.Join(t.TempDir(), "packets")
-	key, err := writeReviewPack([]labeledDir{{Label: "v1-A", Dir: filepath.Join(root, "v1-A")}}, packets, root, rand.New(rand.NewPCG(1, 1)))
+	key, _, err := writeReviewPack([]labeledDir{{Label: "v1-A", Dir: filepath.Join(root, "v1-A")}}, packets, root, rand.New(rand.NewPCG(1, 1)))
 	if err != nil {
 		t.Fatalf("writeReviewPack: %v", err)
 	}
@@ -92,7 +92,7 @@ func TestWriteReviewPackShowsWhatTheUserSawAndNoHarnessChrome(t *testing.T) {
 		writeReviewRun(t, filepath.Join(root, "v1-A", "lunarouter-m"), rep)
 	}
 	packets := filepath.Join(t.TempDir(), "packets")
-	key, err := writeReviewPack([]labeledDir{{Label: "v1-A", Dir: filepath.Join(root, "v1-A")}}, packets, root, rand.New(rand.NewPCG(1, 1)))
+	key, _, err := writeReviewPack([]labeledDir{{Label: "v1-A", Dir: filepath.Join(root, "v1-A")}}, packets, root, rand.New(rand.NewPCG(1, 1)))
 	if err != nil {
 		t.Fatalf("writeReviewPack: %v", err)
 	}
@@ -123,6 +123,42 @@ func TestWriteReviewPackShowsWhatTheUserSawAndNoHarnessChrome(t *testing.T) {
 	}
 	if !modTimes[0].Equal(modTimes[1]) {
 		t.Errorf("packets were modified at %v, want one shared time", modTimes)
+	}
+}
+
+// TestWriteReviewPackSkipsBlockedRunsAndReportsHowMany: a run whose status is
+// skipped_unavailable, blocked_harness, or blocked_infra may have no state
+// dir at all (the harness never got far enough to create one). Packing it
+// anyway would abort the whole pack on rootSessionID's "not found" error;
+// writeReviewPack must skip it instead, the way prose-stats already
+// tolerates these runs, and report how many it skipped.
+func TestWriteReviewPackSkipsBlockedRunsAndReportsHowMany(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	cellDir := filepath.Join(root, "v1-A", "lunarouter-m")
+	writeReviewRun(t, cellDir, 1)
+
+	blocked := probeResult{
+		Probe:      "prose.bugfix-tally",
+		Model:      "lunarouter/m",
+		Repetition: 2,
+		Status:     "blocked_infra",
+		StateDir:   filepath.Join(cellDir, "prose.bugfix-tally", "rep-02", "state"), // never created
+	}
+	if err := writeProbeResult(cellDir, blocked); err != nil {
+		t.Fatal(err)
+	}
+
+	packets := filepath.Join(t.TempDir(), "packets")
+	key, skipped, err := writeReviewPack([]labeledDir{{Label: "v1-A", Dir: filepath.Join(root, "v1-A")}}, packets, root, rand.New(rand.NewPCG(1, 1)))
+	if err != nil {
+		t.Fatalf("writeReviewPack: %v", err)
+	}
+	if len(key) != 1 || key[0].Repetition != 1 {
+		t.Fatalf("key = %+v, want the one passed run only", key)
+	}
+	if skipped != 1 {
+		t.Errorf("skipped = %d, want 1", skipped)
 	}
 }
 

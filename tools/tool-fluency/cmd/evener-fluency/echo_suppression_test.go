@@ -131,3 +131,42 @@ func TestCrossLogicalTurnDuplicateIsKept(t *testing.T) {
 		t.Errorf("prose.All has the text %d times, want 2 (a cross-turn repeat is genuine): %+v", got, prose.All)
 	}
 }
+
+// TestEchoedCallStillCountsADistinctOutputMessage: an echoed communicate
+// call is skipped in "all" only for the piece that echoes. A distinct
+// output.message on that same call is not itself an echo (it never matched
+// the assistant text) and must still reach "all" once.
+func TestEchoedCallStillCountsADistinctOutputMessage(t *testing.T) {
+	t.Parallel()
+	const text = "Fixed the off-by-one bug in Sum(). Tests pass now."
+	const outputText = "Structured summary: fixed the off-by-one in Sum()."
+	stateDir := t.TempDir()
+	rootMeta(t, stateDir, proseRootID)
+	nudge := schema.NewTurn(schema.TurnSteering, llm.User(echoNudgeText))
+	nudge.SteeringKind = events.SteeringKindNoToolCalls
+	message, err := json.Marshal(map[string]any{
+		"message":  text,
+		"output":   map[string]any{"message": outputText},
+		"end_turn": true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeFluencyTranscript(t, stateDir, proseRootID, []schema.Turn{
+		schema.NewTurn(schema.TurnUserInput, llm.User("Fix the tally bug and tell me what changed.")),
+		assistantTurn(textPart(text)),
+		nudge,
+		assistantTurn(fluencyToolCall("communicate", string(message))),
+	})
+
+	prose, err := extractRunProse(stateDir)
+	if err != nil {
+		t.Fatalf("extractRunProse: %v", err)
+	}
+	if got := countExact(prose.All, text); got != 1 {
+		t.Errorf("prose.All has the echoed text %d times, want 1: %+v", got, prose.All)
+	}
+	if got := countExact(prose.All, outputText); got != 1 {
+		t.Errorf("prose.All has the distinct output.message %d times, want 1: %+v", got, prose.All)
+	}
+}

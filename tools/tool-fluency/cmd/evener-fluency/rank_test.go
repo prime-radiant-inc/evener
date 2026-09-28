@@ -31,15 +31,25 @@ func TestGroupForRankingGroupsByModelTaskRepetitionAndSkipsNamedTasks(t *testing
 	}
 }
 
+// TestGroupForRankingRefusesTwoPacketsForOneLabel: this can happen once
+// review-pack skips blocked runs (a blocked run and its retry share label,
+// model, task, and repetition) only if both copies end up passed or failed,
+// which is unusual, so the error must name the two colliding packets and
+// their result.json paths clearly, not just the shape of the collision.
 func TestGroupForRankingRefusesTwoPacketsForOneLabel(t *testing.T) {
 	t.Parallel()
 	entries := []reviewEntry{
-		{Packet: "a.md", Label: "v0", Model: "m1", Probe: "p", Repetition: 1},
-		{Packet: "b.md", Label: "v0", Model: "m1", Probe: "p", Repetition: 1},
+		{Packet: "a.md", Label: "v0", Model: "m1", Probe: "p", Repetition: 1, Result: "results/a/result.json"},
+		{Packet: "b.md", Label: "v0", Model: "m1", Probe: "p", Repetition: 1, Result: "results/b/result.json"},
 	}
 	_, err := groupForRanking(entries, nil)
 	if err == nil || !strings.Contains(err.Error(), "two packets") {
 		t.Fatalf("groupForRanking = %v, want a refusal naming two packets", err)
+	}
+	for _, want := range []string{"a.md", "results/a/result.json", "b.md", "results/b/result.json"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("groupForRanking error %q does not name %q", err, want)
+		}
 	}
 }
 
@@ -293,6 +303,26 @@ func TestReadReviewLinesReportsWhichLineFailedToParse(t *testing.T) {
 	_, err := readReviewLines(path)
 	if err == nil || !strings.Contains(err.Error(), ":2:") {
 		t.Fatalf("readReviewLines = %v, want an error naming line 2", err)
+	}
+}
+
+// TestReadReviewLinesRefusesARepeatedSetWithinOneFile: scoreReviews
+// aggregates across every reviewLine it sees, so a set appearing twice in
+// one reviewer's file would silently double-count that reviewer's judgment.
+// Two different reviewers' files may each cover the same set (that is the
+// point of --reviews being repeatable); only a repeat within ONE file is an
+// error, so this is checked per file, before runRankScore merges them.
+func TestReadReviewLinesRefusesARepeatedSetWithinOneFile(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "reviewer.jsonl")
+	mustWrite(t, path, `{"set":1,"ranking":["A","B"],"writing":{"A":3,"B":4},"why":"ok"}
+{"set":2,"ranking":["A","B"],"writing":{"A":2,"B":5},"why":"fine"}
+{"set":1,"ranking":["B","A"],"writing":{"A":1,"B":2},"why":"again"}
+`)
+	_, err := readReviewLines(path)
+	if err == nil || !strings.Contains(err.Error(), "set 1") || !strings.Contains(err.Error(), path) {
+		t.Fatalf("readReviewLines = %v, want a refusal naming set 1 and %s", err, path)
 	}
 }
 

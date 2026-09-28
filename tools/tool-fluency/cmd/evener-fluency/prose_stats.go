@@ -51,18 +51,24 @@ func extractRunProse(stateDir string) (runProse, error) {
 					continue
 				}
 				msg := shownMessage(call.Arguments)
-				// A message that echoes assistant text already shown within
-				// this same logical turn is one evener itself never rendered
-				// a second time; counting it in "all" would inflate that
-				// channel with a repetition the user never saw ("all"
-				// already has the assistant text). It still counts once in
-				// "to_user": this call is what actually delivered the
+				pieces := resultMessages(call.Arguments)
+				// A piece that echoes assistant text already shown within
+				// this same logical turn is one evener itself never
+				// rendered a second time; counting it in "all" would
+				// inflate that channel with a repetition the user never saw
+				// ("all" already has the assistant text). Only that piece
+				// is dropped: a distinct output.message on the same call
+				// never matched the assistant text, so it never was an
+				// echo, and must still reach "all".
+				if msg != "" && echoes.echoes(turnSeq, msg) {
+					pieces = withoutPiece(pieces, msg)
+				}
+				p.All = append(p.All, pieces...)
+				// "to_user" still counts the call's message once even when
+				// it echoes: this call is what actually delivered the
 				// turn's message (the all-messages-go-through-the-result-
 				// tool contract), even when its text matches what bare
 				// assistant text already showed a moment earlier.
-				if msg == "" || !echoes.echoes(turnSeq, msg) {
-					p.All = append(p.All, resultMessages(call.Arguments)...)
-				}
 				if msg != "" && tr.SessionID == rootID {
 					p.ToUser = append(p.ToUser, msg)
 				}
@@ -108,6 +114,19 @@ func resultMessages(arguments string) []string {
 	}
 	if m := strings.TrimSpace(output.Message); m != "" && m != message {
 		out = append(out, m)
+	}
+	return out
+}
+
+// withoutPiece removes every element of pieces equal to echoed, keeping any
+// other distinct piece (such as an output.message that differs from the
+// echoed message on the same call).
+func withoutPiece(pieces []string, echoed string) []string {
+	var out []string
+	for _, p := range pieces {
+		if p != echoed {
+			out = append(out, p)
+		}
 	}
 	return out
 }

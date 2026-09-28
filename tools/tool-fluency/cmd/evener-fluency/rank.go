@@ -59,20 +59,20 @@ type rankGroupKey struct {
 // between them.
 func groupForRanking(entries []reviewEntry, skipTasks map[string]bool) (map[rankGroupKey][]reviewEntry, error) {
 	groups := map[rankGroupKey][]reviewEntry{}
-	seenLabel := map[rankGroupKey]map[string]bool{}
+	seenLabel := map[rankGroupKey]map[string]reviewEntry{}
 	for _, e := range entries {
 		if skipTasks[e.Probe] {
 			continue
 		}
 		k := rankGroupKey{Model: e.Model, Probe: e.Probe, Repetition: e.Repetition}
 		if seenLabel[k] == nil {
-			seenLabel[k] = map[string]bool{}
+			seenLabel[k] = map[string]reviewEntry{}
 		}
-		if seenLabel[k][e.Label] {
-			return nil, fmt.Errorf("model=%s task=%s repetition=%d has two packets for label %q; rank-sets needs at most one packet per label in a set",
-				e.Model, e.Probe, e.Repetition, e.Label)
+		if prior, ok := seenLabel[k][e.Label]; ok {
+			return nil, fmt.Errorf("model=%s task=%s repetition=%d has two packets for label %q: %s (%s) and %s (%s); rank-sets needs at most one packet per label in a set",
+				e.Model, e.Probe, e.Repetition, e.Label, prior.Packet, prior.Result, e.Packet, e.Result)
 		}
-		seenLabel[k][e.Label] = true
+		seenLabel[k][e.Label] = e
 		groups[k] = append(groups[k], e)
 	}
 	return groups, nil
@@ -287,6 +287,7 @@ func readReviewLines(path string) ([]reviewLine, error) {
 	}
 	defer f.Close() //nolint:errcheck
 	var out []reviewLine
+	seenSets := map[int]bool{}
 	scanner := bufio.NewScanner(f)
 	scanner.Buffer(make([]byte, 0, 64*1024), 1<<20)
 	lineNo := 0
@@ -300,6 +301,15 @@ func readReviewLines(path string) ([]reviewLine, error) {
 		if err := json.Unmarshal([]byte(line), &rl); err != nil {
 			return nil, fmt.Errorf("%s:%d: %w", path, lineNo, err)
 		}
+		// scoreReviews aggregates every reviewLine it sees, so a set
+		// repeated within this one file would silently double-count this
+		// reviewer's judgment. A different file (a different reviewer)
+		// covering the same set is fine and expected; that is checked here,
+		// per file, before runRankScore merges them together.
+		if seenSets[rl.Set] {
+			return nil, fmt.Errorf("%s: set %d appears twice", path, rl.Set)
+		}
+		seenSets[rl.Set] = true
 		out = append(out, rl)
 	}
 	if err := scanner.Err(); err != nil {

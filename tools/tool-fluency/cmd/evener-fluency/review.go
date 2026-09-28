@@ -32,51 +32,63 @@ type reviewEntry struct {
 
 // writeReviewPack renders each run's root transcript into packetsDir under a
 // random name, masks everything that would reveal its prompt version, and
-// returns the key. maskRoot is the directory the labeled results live under.
-// Every packet gets the same modification time, so listing the packets by
-// time does not group them by version.
-func writeReviewPack(dirs []labeledDir, packetsDir, maskRoot string, rng *rand.Rand) ([]reviewEntry, error) {
+// returns the key plus how many results it skipped. maskRoot is the
+// directory the labeled results live under. Every packet gets the same
+// modification time, so listing the packets by time does not group them by
+// version.
+//
+// A result whose status is not "passed" or "failed" (skipped_unavailable,
+// blocked_harness, blocked_infra) may have no state dir at all — the harness
+// never got far enough to create one — so it is skipped rather than packed;
+// prose-stats tolerates the same runs (summarizeProse). Packing it anyway
+// would abort the whole pack on rootSessionID's "not found" error.
+func writeReviewPack(dirs []labeledDir, packetsDir, maskRoot string, rng *rand.Rand) ([]reviewEntry, int, error) {
 	for _, d := range dirs {
 		if !strings.ContainsAny(d.Label, "0123456789") || !strings.ContainsFunc(d.Label, unicode.IsLetter) {
-			return nil, fmt.Errorf("label %q needs a letter and a digit, such as v0 or v1-A: the label is masked wherever it appears, and an ordinary word or number would be masked in the agents' own writing", d.Label)
+			return nil, 0, fmt.Errorf("label %q needs a letter and a digit, such as v0 or v1-A: the label is masked wherever it appears, and an ordinary word or number would be masked in the agents' own writing", d.Label)
 		}
 	}
 	if err := os.MkdirAll(packetsDir, 0o755); err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	written := time.Now()
 	used := map[string]bool{}
 	var key []reviewEntry
+	skipped := 0
 	for _, d := range dirs {
 		results, err := loadResults(d.Dir)
 		if err != nil {
-			return nil, err
+			return nil, 0, err
 		}
 		for _, lr := range results {
 			res := lr.Result
+			if res.Status != "passed" && res.Status != "failed" {
+				skipped++
+				continue
+			}
 			rootID, err := rootSessionID(res.StateDir)
 			if err != nil {
-				return nil, fmt.Errorf("%s: %w", lr.Path, err)
+				return nil, 0, fmt.Errorf("%s: %w", lr.Path, err)
 			}
 			tr, err := runnerReadTranscript(res.StateDir, rootID, doctor.TranscriptOpts{TextMax: doctor.TextMaxFull})
 			if err != nil {
-				return nil, fmt.Errorf("%s: %w", lr.Path, err)
+				return nil, 0, fmt.Errorf("%s: %w", lr.Path, err)
 			}
 			body := maskRunDetails(renderPacket(tr), maskRoot, d.Label)
 			name := uniquePacketName(rng, used)
 			path := filepath.Join(packetsDir, name)
 			content := fmt.Sprintf("# Task %s\n\n%s", res.Probe, body)
 			if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
-				return nil, err
+				return nil, 0, err
 			}
 			if err := os.Chtimes(path, written, written); err != nil {
-				return nil, err
+				return nil, 0, err
 			}
 			key = append(key, reviewEntry{Packet: name, Label: d.Label, Model: res.Model, Probe: res.Probe, Repetition: res.Repetition, Result: lr.Path})
 		}
 	}
 	slices.SortFunc(key, func(a, b reviewEntry) int { return strings.Compare(a.Packet, b.Packet) })
-	return key, nil
+	return key, skipped, nil
 }
 
 // packetSections name the transcript turns a blind reader sees: what the user
@@ -231,9 +243,12 @@ func runReviewPack(args []string) error {
 	if _, err := os.Stat(*keyPath); err == nil {
 		return fmt.Errorf("%s already exists; name a new --key file", *keyPath)
 	}
-	key, err := writeReviewPack(dirs, *packets, *maskRoot, rand.New(rand.NewPCG(*seed, *seed)))
+	key, skipped, err := writeReviewPack(dirs, *packets, *maskRoot, rand.New(rand.NewPCG(*seed, *seed)))
 	if err != nil {
 		return err
+	}
+	if skipped > 0 {
+		fmt.Fprintf(os.Stderr, "review-pack: skipped %d run(s) that did not pass or fail (no transcript to pack)\n", skipped)
 	}
 	data, err := json.MarshalIndent(key, "", "  ")
 	if err != nil {
