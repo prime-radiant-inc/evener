@@ -244,23 +244,27 @@ func validateTombstone(tombstone Tombstone, compactSeq uint64) error {
 }
 
 // MaxCompactionMarks bounds the compaction ledger: one mark per compacting
-// write, oldest dropped first. The ledger is deliberately independent of the
-// dedup tombstones' own bound, because §8's refusal must not lose its evidence
-// when a tombstone is evicted; beyond this many later compacting writes a
-// cursor older than the whole ledger reads as the stale re-list instead, which
-// still restarts the client from the first page.
+// write, oldest dropped first, with the highest dropped write's sequence
+// persisted as the dropped-marks floor (CompactionFloor) so §8's check can
+// tell exact coverage from lost evidence. The ledger is deliberately
+// independent of the dedup tombstones' own bound, because the refusal must not
+// lose its evidence when a tombstone is evicted; beyond this many later
+// compacting writes a cursor older than the whole ledger refuses coarsely
+// instead, which still restarts the client from the first page.
 const MaxCompactionMarks = 500
 
-// CompactionMark records, for one compacting write, the smallest row id it
-// removed and that row's host. A cursor pinned at `pos` was invalidated by
-// this write exactly when mark.Seq is above the cursor's pinned compactSeq and
-// mark.ID is at or before `pos`: some removed row sat at or before the
-// cursor's position, which is §8's condition. The host names the affected host
-// whose stored bounds entry the refusal carries.
+// CompactionMark records, for one compacting write, every host whose rows it
+// removed and that host's smallest removed row id. A cursor pinned at `pos`
+// was invalidated by this write exactly when mark.Seq is above the cursor's
+// pinned compactSeq and some entry names a row at or before `pos` in the
+// cursor's window: that row sat at or before the cursor's position, which is
+// §8's condition, and the named host is the affected host whose stored bounds
+// entry the refusal carries. A single write routinely removes rows on several
+// hosts (age, removed-host horizon, byte bound), so the evidence is per host —
+// a cursor window on any affected host must see its own removal.
 type CompactionMark struct {
-	Seq  uint64 `json:"seq"`
-	ID   string `json:"id"`
-	Host string `json:"host"`
+	Seq   uint64            `json:"seq"`
+	Hosts map[string]string `json:"hosts"`
 }
 
 // validateCompactionMark checks one compaction ledger entry.
@@ -268,11 +272,16 @@ func validateCompactionMark(mark CompactionMark, compactSeq uint64) error {
 	if mark.Seq == 0 || mark.Seq > compactSeq {
 		return fmt.Errorf("%w: compaction mark carries seq %d outside the store's %d", ErrInvalidRecord, mark.Seq, compactSeq)
 	}
-	if _, err := parseAllocatorID(mark.ID); err != nil {
-		return fmt.Errorf("%w: compaction mark id %q is not a controller-assigned id", ErrInvalidRecord, mark.ID)
+	if len(mark.Hosts) == 0 {
+		return fmt.Errorf("%w: compaction mark carries no affected hosts", ErrInvalidRecord)
 	}
-	if err := validateBoundaryName(mark.Host); err != nil {
-		return err
+	for host, id := range mark.Hosts {
+		if err := validateBoundaryName(host); err != nil {
+			return err
+		}
+		if _, err := parseAllocatorID(id); err != nil {
+			return fmt.Errorf("%w: compaction mark id %q is not a controller-assigned id", ErrInvalidRecord, id)
+		}
 	}
 	return nil
 }
@@ -430,7 +439,10 @@ func (s *Store) MirrorHostState(mirror HostMirror) error {
 	}
 	for name, removed := range mirror.Removed {
 		removed.RemovedAt = removed.RemovedAt.UTC()
-		if existing, ok := next.RemovedHosts[name]; ok && existing == removed {
+		if existing, ok := next.RemovedHosts[name]; ok &&
+			existing.Generation == removed.Generation &&
+			existing.IncarnationID == removed.IncarnationID &&
+			existing.RemovedAt.Equal(removed.RemovedAt) {
 			continue
 		}
 		if next.RemovedHosts == nil {
@@ -564,60 +576,99 @@ func (s *Store) compactLocked(next *snapshot) {
 	}
 
 	// Byte bound: compact oldest-first until the serialized store fits, one
-	// victim at a time so the bound is measured against the bytes the write
-	// will actually commit (tombstones included).
-	s.compactionVictimsForBytes(next, candidates, victim, policy, now)
+	// victim at a time so the bound is measured against the exact bytes the
+	// write will commit — the ledger marks, the advanced compactSeq and the
+	// writer's own normalizations included.
+	s.compactionVictimsForBytes(next, candidates, victim, pastHorizon, policy, now)
 
 	if len(victim) == 0 {
 		return
 	}
-	next.CompactSeq++
-	compactedSeq := next.CompactSeq
+	*next = s.applyCompaction(*next, victim, pastHorizon, policy, now)
+}
 
-	// The compaction ledger: one bounded mark per compacting write, carrying
-	// the smallest row id it removed and that row's host. A cursor is
-	// invalidated exactly when some compacting write after its pin removed a
-	// row at or before its position — minID <= pos — so the mark survives the
-	// dedup tombstones' own bound, which must not erase the evidence §8's
-	// refusal needs (retention.go's own CompactSeq advances independently).
-	smallestID, smallestHost := "", ""
-	remaining := make([]Record, 0, len(next.Records))
-	for i := range next.Records {
-		record := next.Records[i]
+// applyCompaction returns the exact state the compacting write commits for the
+// victim set: the victims removed, one tombstone per victim, the durable
+// compactSeq advanced once, one ledger mark per affected host, the tombstone
+// bound applied, and a removed host's historical boundary dropped with its
+// last record. The caller's snapshot is not mutated, so the byte bound can
+// measure this same transformation on a scratch copy.
+func (s *Store) applyCompaction(state snapshot, victim map[string]bool, pastHorizon map[string]bool, policy RetentionPolicy, now time.Time) snapshot {
+	if len(victim) > 0 {
+		state.CompactSeq++
+	}
+	compactedSeq := state.CompactSeq
+	state.Tombstones = slices.Clone(state.Tombstones)
+	state.CompactionMarks = slices.Clone(state.CompactionMarks)
+	state.Boundaries = maps.Clone(state.Boundaries)
+
+	perHostSmallest := map[string]string{}
+	remaining := make([]Record, 0, len(state.Records))
+	for i := range state.Records {
+		record := state.Records[i]
 		if victim[record.ID] {
-			next.Tombstones = append(next.Tombstones, tombstoneOf(record, now, compactedSeq))
-			if smallestID == "" || record.ID < smallestID {
-				smallestID, smallestHost = record.ID, record.Host
+			state.Tombstones = append(state.Tombstones, tombstoneOf(record, now, compactedSeq))
+			if smallest, ok := perHostSmallest[record.Host]; !ok || record.ID < smallest {
+				perHostSmallest[record.Host] = record.ID
 			}
 			continue
 		}
 		remaining = append(remaining, record)
 	}
-	next.Records = remaining
-	if smallestID != "" {
-		next.CompactionMarks = append(next.CompactionMarks, CompactionMark{Seq: compactedSeq, ID: smallestID, Host: smallestHost})
+	state.Records = remaining
+	if len(perHostSmallest) > 0 {
+		state.CompactionMarks = append(state.CompactionMarks, CompactionMark{Seq: compactedSeq, Hosts: perHostSmallest})
 	}
-	if len(next.CompactionMarks) > MaxCompactionMarks {
-		next.CompactionMarks = next.CompactionMarks[len(next.CompactionMarks)-MaxCompactionMarks:]
+	if len(state.CompactionMarks) > MaxCompactionMarks {
+		dropped := state.CompactionMarks[:len(state.CompactionMarks)-MaxCompactionMarks]
+		for _, mark := range dropped {
+			if mark.Seq > state.CompactionFloor {
+				state.CompactionFloor = mark.Seq
+			}
+		}
+		state.CompactionMarks = state.CompactionMarks[len(state.CompactionMarks)-MaxCompactionMarks:]
 	}
 
 	// Tombstone bound: "At most 50 tombstones per host ... oldest-first past
 	// the bound", with removed hosts inside their replay horizon exempt — only
 	// past the horizon does a replay open fresh (§4).
-	next.Tombstones = boundedTombstones(next.Tombstones, next.RemovedHosts, pastHorizon, policy)
+	state.Tombstones = boundedTombstones(state.Tombstones, state.RemovedHosts, pastHorizon, policy)
 
 	// §4: the historical boundary "persists in the store's per-host boundary
 	// record until the host's last record compacts". The removal marker stays:
 	// it is what keeps a removed host's tombstones replaying under the removed
 	// pair, and it is cleared only by a live mirror write.
 	for host := range pastHorizon {
-		if _, ok := next.Boundaries[host]; !ok {
+		if _, ok := state.Boundaries[host]; !ok {
 			continue
 		}
-		if slices.ContainsFunc(next.Records, func(record Record) bool { return record.Host == host }) {
+		if slices.ContainsFunc(state.Records, func(record Record) bool { return record.Host == host }) {
 			continue
 		}
-		delete(next.Boundaries, host)
+		delete(state.Boundaries, host)
+	}
+	normalizeSnapshotCollections(&state)
+	return state
+}
+
+// normalizeSnapshotCollections mirrors saveFS's normalization of the
+// collection fields, so a byte measurement taken before the write matches the
+// bytes saveFS serializes.
+func normalizeSnapshotCollections(state *snapshot) {
+	if state.Boundaries == nil {
+		state.Boundaries = map[string]Boundary{}
+	}
+	if state.Tokens == nil {
+		state.Tokens = []Token{}
+	}
+	if state.Tombstones == nil {
+		state.Tombstones = []Tombstone{}
+	}
+	if state.CompactionMarks == nil {
+		state.CompactionMarks = []CompactionMark{}
+	}
+	if state.RemovedHosts == nil {
+		state.RemovedHosts = map[string]RemovedHost{}
 	}
 }
 
@@ -643,24 +694,14 @@ func sortCompactionCandidates(candidates []compactionCandidate) {
 }
 
 // compactionVictimsForBytes trims the oldest surviving terminal victims until
-// the serialized snapshot fits StoreMaxBytes or no removable terminal record
-// remains. It works on a scratch copy of the snapshot so a size check never
-// leaks a half-applied removal; it reports whether it marked any new victim.
-func (s *Store) compactionVictimsForBytes(next *snapshot, candidates []compactionCandidate, victim map[string]bool, policy RetentionPolicy, now time.Time) bool {
+// the exact post-compaction snapshot fits StoreMaxBytes or no removable
+// terminal record remains. It measures by applying the same transformation the
+// write will commit to a scratch copy, so the ledger marks, the advanced
+// compactSeq and the writer's normalizations are all counted. It reports
+// whether it marked any new victim.
+func (s *Store) compactionVictimsForBytes(next *snapshot, candidates []compactionCandidate, victim map[string]bool, pastHorizon map[string]bool, policy RetentionPolicy, now time.Time) bool {
 	size := func() int64 {
-		scratch := *next
-		scratch.Records = make([]Record, 0, len(next.Records))
-		scratch.Tombstones = slices.Clone(next.Tombstones)
-		for i := range next.Records {
-			record := next.Records[i]
-			if victim[record.ID] {
-				// The compacting write's own value is what the tombstones will
-				// carry; the exact counter does not matter for the byte size.
-				scratch.Tombstones = append(scratch.Tombstones, tombstoneOf(record, now, next.CompactSeq+1))
-				continue
-			}
-			scratch.Records = append(scratch.Records, record)
-		}
+		scratch := s.applyCompaction(*next, victim, pastHorizon, policy, now)
 		raw, err := json.Marshal(scratch)
 		if err != nil {
 			// A snapshot of this store's own values cannot fail to marshal; a

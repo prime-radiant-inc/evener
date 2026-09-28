@@ -172,7 +172,16 @@ func lookupOperationLocked(state *snapshot, q OperationDedupQuery) (Record, bool
 		}
 		comparison := q.Current
 		if removed, ok := state.RemovedHosts[tombstone.Host]; ok {
-			comparison = OperationPair{Generation: removed.Generation, IncarnationID: removed.IncarnationID}
+			marker := OperationPair{Generation: removed.Generation, IncarnationID: removed.IncarnationID}
+			if !q.Current.equal(marker) {
+				// The requested current pair is not the removal the marker
+				// records — a re-add whose mirror write trailed (its failure is
+				// logged, never unwound) leaves the marker behind while the name
+				// lives at a new pair. The clean-slate re-add rule wins: no
+				// tombstone from the earlier removal may replay.
+				continue
+			}
+			comparison = marker
 		}
 		if !comparison.equal(OperationPair{Generation: tombstone.Generation, IncarnationID: tombstone.IncarnationID}) {
 			// "A tombstone pinned to a superseded pair on a live host never

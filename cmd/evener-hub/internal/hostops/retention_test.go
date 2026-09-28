@@ -7,8 +7,10 @@ package hostops
 // compacted:true replay rule.
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -648,5 +650,41 @@ func TestMirrorWriteMeetsTheByteBound(t *testing.T) {
 	}
 	if len(mustReadFile(t, storePath)) == 0 {
 		t.Fatal("the mirror write left no store file")
+	}
+}
+
+// TestByteBoundCompactionMeasuresTheCommittedSize pins the byte bound's exact
+// measurement: the victims are chosen against the bytes the write actually
+// commits — the compaction-ledger marks and the advanced compactSeq included —
+// so a store that can fit once a large record compacts does fit in that same
+// write. The fencing epoch is deliberately large and is not a replay field, so
+// the record's tombstone is much smaller than the record.
+func TestByteBoundCompactionMeasuresTheCommittedSize(t *testing.T) {
+	store, path := openRetentionStore(t, RetentionPolicy{TerminalPerHost: 50, TerminalStoreWide: 50})
+	pad := strings.Repeat("x", 20000)
+	bigFence := json.RawMessage(`{"bootId":"boot","opSeq":1,"pad":"` + pad + `"}`)
+	big := createOp(t, store, "m4", "op-big")
+	if _, err := store.Transition(big.ID, StateComplete, func(r *Record) {
+		r.Result = &Result{OK: true, Message: "done"}
+		r.FencingEpoch = bigFence
+	}); err != nil {
+		t.Fatalf("Transition(big): %v", err)
+	}
+	small := createOp(t, store, "m4", "op-small")
+	finish(t, store, small.ID)
+
+	before := int64(len(mustReadFile(t, path)))
+	store.retention.StoreMaxBytes = before - int64(len(pad))/2
+	next := createOp(t, store, "m4", "op-next")
+	finish(t, store, next.ID)
+
+	if _, ok := store.Record(big.ID); ok {
+		t.Fatal("the byte-bound compaction did not remove the over-cap record")
+	}
+	if _, ok := store.Record(small.ID); !ok {
+		t.Fatal("the compaction removed more than the bound needed")
+	}
+	if got := int64(len(mustReadFile(t, path))); got > store.retention.StoreMaxBytes {
+		t.Fatalf("committed store = %d bytes, over the %d-byte cap", got, store.retention.StoreMaxBytes)
 	}
 }

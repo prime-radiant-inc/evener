@@ -9,6 +9,7 @@ package hostops
 
 import (
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 )
@@ -353,5 +354,207 @@ func TestOperationsDetailResolvesACompactedRecord(t *testing.T) {
 		if record.ID == compacted.ID {
 			t.Fatalf("list page surfaced the compacted record %s", compacted.ID)
 		}
+	}
+}
+
+// TestCursorInvalidatedNamesTheNonArgminPinnedHost pins the per-host ledger:
+// one compacting write removed an age-expired row on host "a" and the cursor
+// row on host "h" (the globally smallest removed id belongs to "a"), so an
+// h-pinned continuation must still refuse cursor-invalidated naming h — never
+// serve on because the write's single mark named another host.
+func TestCursorInvalidatedNamesTheNonArgminPinnedHost(t *testing.T) {
+	store, _ := openRetentionStore(t, RetentionPolicy{TerminalPerHost: 50, TerminalStoreWide: 50})
+	cursorBoundary(t, store, "a", 7, "inc-a", 1)
+	cursorBoundary(t, store, "h", 7, "inc-h", 1)
+	a1 := createOp(t, store, "a", "a-1")
+	finish(t, store, a1.ID)
+	h1 := createOp(t, store, "h", "h-1")
+	finish(t, store, h1.ID)
+	h2 := createOp(t, store, "h", "h-2")
+	finish(t, store, h2.ID)
+
+	page, err := store.ReadOperations(OperationsQuery{Host: "h", Limit: 1})
+	if err != nil {
+		t.Fatalf("ReadOperations(page 1): %v", err)
+	}
+	if len(page.Records) != 1 || page.Records[0].ID != h1.ID {
+		t.Fatalf("page 1 listed %v, want %s", page.Records, h1.ID)
+	}
+	// Backdate a1 and h1 past the age bound: the next write's single compaction
+	// pass removes both, and a1 carries the globally smallest removed id.
+	past := time.Now().UTC().Add(-31 * 24 * time.Hour)
+	for i := range store.cell.state.Records {
+		record := &store.cell.state.Records[i]
+		if record.ID == a1.ID || record.ID == h1.ID {
+			record.UpdatedAt = past
+		}
+	}
+	a2 := createOp(t, store, "a", "a-2")
+	finish(t, store, a2.ID)
+	if _, ok := store.Record(h1.ID); ok {
+		t.Fatal("the multi-host pass did not remove the cursor row")
+	}
+	if _, ok := store.Record(a1.ID); ok {
+		t.Fatal("the multi-host pass did not remove the other host's row")
+	}
+
+	_, err = store.ReadOperations(OperationsQuery{Host: "h", Cursor: page.NextCursor})
+	invalidated, ok := errors.AsType[*CursorInvalidatedError](err)
+	if !ok {
+		t.Fatalf("continuation = %v (%T), want *CursorInvalidatedError naming h", err, err)
+	}
+	if invalidated.Host != "h" {
+		t.Fatalf("refusal host = %q, want the pinned host h", invalidated.Host)
+	}
+}
+
+// TestCursorInvalidationRefusesCoarselyWhenEvidenceIsDropped pins the
+// dropped-marks floor: once marks above the cursor's pin are gone, the check
+// must refuse (the oldest retained in-window mark, or the live value with the
+// window's own host), never serve on.
+func TestCursorInvalidationRefusesCoarselyWhenEvidenceIsDropped(t *testing.T) {
+	store, _ := openRetentionStore(t, RetentionPolicy{TerminalPerHost: 50, TerminalStoreWide: 50})
+	cursorBoundary(t, store, "h", 7, "inc-h", 1)
+	cursorBoundary(t, store, "a", 7, "inc-a", 1)
+	h1 := createOp(t, store, "h", "h-1")
+	finish(t, store, h1.ID)
+	h2 := createOp(t, store, "h", "h-2")
+	finish(t, store, h2.ID)
+	page, err := store.ReadOperations(OperationsQuery{Host: "h", Limit: 1})
+	if err != nil {
+		t.Fatalf("ReadOperations(page 1): %v", err)
+	}
+	if len(page.Records) != 1 || page.Records[0].ID != h1.ID {
+		t.Fatalf("page 1 listed %v, want %s", page.Records, h1.ID)
+	}
+	// A compaction on host a (age-bound) removes no row of the pinned window;
+	// the pinned h cursor is still pageable.
+	a1 := createOp(t, store, "a", "a-1")
+	finish(t, store, a1.ID)
+	a2 := createOp(t, store, "a", "a-2")
+	past := time.Now().UTC().Add(-31 * 24 * time.Hour)
+	for i := range store.cell.state.Records {
+		if store.cell.state.Records[i].ID == a1.ID {
+			store.cell.state.Records[i].UpdatedAt = past
+		}
+	}
+	finish(t, store, a2.ID) // the pass compacts the age-expired a1.
+	if store.CursorEpoch().CompactSeq == 0 {
+		t.Fatal("test setup: no compaction landed on host a")
+	}
+	if _, err := store.ReadOperations(OperationsQuery{Host: "h", Cursor: page.NextCursor}); err != nil {
+		t.Fatalf("continuation before the floor moved: %v", err)
+	}
+	// The floor above the cursor's pin says marks in its range were dropped:
+	// the store cannot know which rows that write removed, so it refuses
+	// coarsely with the window's own host rather than skipping.
+	store.cell.state.CompactionFloor = store.cell.state.CompactSeq
+	_, err = store.ReadOperations(OperationsQuery{Host: "h", Cursor: page.NextCursor})
+	invalidated, ok := errors.AsType[*CursorInvalidatedError](err)
+	if !ok {
+		t.Fatalf("continuation with lost evidence = %v (%T), want the coarse *CursorInvalidatedError", err, err)
+	}
+	if invalidated.Host != "h" {
+		t.Fatalf("coarse refusal host = %q, want the pinned host h", invalidated.Host)
+	}
+}
+
+// TestOperationIDFilterPagesATombstoneOnce pins the continuation guard: a page
+// whose only result is a tombstone replay must not re-append it on the next
+// page (which would mint the identical cursor forever).
+func TestOperationIDFilterPagesATombstoneOnce(t *testing.T) {
+	store, _ := openRetentionStore(t, RetentionPolicy{TerminalPerHost: 1})
+	cursorBoundary(t, store, "m4", 7, "inc-m4", 3)
+	r1 := createOp(t, store, "m4", "op-a")
+	finish(t, store, r1.ID)
+	r2 := createOp(t, store, "m4", "op-b")
+	finish(t, store, r2.ID) // compacts op-a into a tombstone.
+
+	page, err := store.ReadOperations(OperationsQuery{Host: "m4", ClientOperationID: "op-a", Limit: 1})
+	if err != nil {
+		t.Fatalf("ReadOperations(op-a page 1): %v", err)
+	}
+	if len(page.Records) != 1 || !page.Records[0].Compacted || page.Records[0].ID != r1.ID {
+		t.Fatalf("page 1 = %+v, want the compacted op-a replay", page.Records)
+	}
+	if page.NextCursor == "" {
+		t.Fatal("the replay page minted no continuation")
+	}
+	continued, err := store.ReadOperations(OperationsQuery{
+		Host: "m4", ClientOperationID: "op-a", Limit: 1, Cursor: page.NextCursor,
+	})
+	if err != nil {
+		t.Fatalf("ReadOperations(op-a page 2): %v", err)
+	}
+	if len(continued.Records) != 0 {
+		t.Fatalf("page 2 = %+v, want the replay served once", continued.Records)
+	}
+	if continued.NextCursor != "" {
+		t.Fatalf("page 2 minted another cursor (%q); the page loops", continued.NextCursor)
+	}
+}
+
+// TestCursorRefusalNamesTheEarliestInvalidatingWrite pins §8's "the compacting
+// compactSeq": with two invalidating writes after the pin, the refusal names
+// the earliest one, never the latest.
+func TestCursorRefusalNamesTheEarliestInvalidatingWrite(t *testing.T) {
+	store, _ := openRetentionStore(t, RetentionPolicy{TerminalPerHost: 2, TombstonesPerHost: 50})
+	cursorBoundary(t, store, "m4", 7, "inc-m4", 3)
+	var seeded []Record
+	for i := 1; i <= 5; i++ {
+		record := createOp(t, store, "m4", fmt.Sprintf("op-%d", i))
+		finish(t, store, record.ID)
+		seeded = append(seeded, record)
+	}
+	page, err := store.ReadOperations(OperationsQuery{Host: "m4", Limit: 5})
+	if err != nil {
+		t.Fatalf("ReadOperations(page 1): %v", err)
+	}
+	if len(page.Records) != 2 || page.Records[1].ID != seeded[4].ID {
+		t.Fatalf("page 1 = %+v, want the two retained records ending at %s", page.Records, seeded[4].ID)
+	}
+	r6 := createOp(t, store, "m4", "op-6")
+	finish(t, store, r6.ID) // compacts r4: an id at or before pos.
+	r7 := createOp(t, store, "m4", "op-7")
+	finish(t, store, r7.ID) // compacts r5: the cursor's own row.
+	_, err = store.ReadOperations(OperationsQuery{Host: "m4", Cursor: page.NextCursor})
+	invalidated, ok := errors.AsType[*CursorInvalidatedError](err)
+	if !ok {
+		t.Fatalf("continuation = %v (%T), want *CursorInvalidatedError", err, err)
+	}
+	if invalidated.CompactSeq != 4 {
+		t.Fatalf("refusal compactSeq = %d, want the earliest invalidating write's 4", invalidated.CompactSeq)
+	}
+}
+
+// TestLingeringRemovalMarkerNeverReplaysAgainstANewPair pins the re-add
+// clean-slate rule over a marker whose clear mirror write trailed: the request
+// resolves the name's current pair as the new incarnation, so the old
+// removal's tombstone must not replay even though the marker still names it.
+func TestLingeringRemovalMarkerNeverReplaysAgainstANewPair(t *testing.T) {
+	store, _ := openRetentionStore(t, RetentionPolicy{TerminalPerHost: 1})
+	base := time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC)
+	store.clock = func() time.Time { return base }
+	old := createOpPair(t, store, "m4", "op-old", 7, "inc-m4")
+	finish(t, store, old.ID)
+	other := createOpPair(t, store, "m4", "op-other", 7, "inc-m4")
+	finish(t, store, other.ID) // compacts op-old into a tombstone pinned to 7/inc-m4.
+	if err := store.MirrorHostState(HostMirror{
+		Boundaries: map[string]Boundary{"m4": {Generation: 7, IncarnationID: "inc-m4", PresenceEpoch: 2}},
+		Removed:    map[string]RemovedHost{"m4": {RemovedAt: base, Generation: 7, IncarnationID: "inc-m4"}},
+	}); err != nil {
+		t.Fatalf("MirrorHostState: %v", err)
+	}
+	// The name is live again at 8/inc-new (the clear mirror failed and was
+	// logged); the request's current pair is the new incarnation's.
+	_, hit, err := store.LookupOperation(OperationDedupQuery{
+		ClientOperationID: "op-old", Host: "m4", Kind: KindDeploy,
+		Current: OperationPair{Generation: 8, IncarnationID: "inc-new"},
+	})
+	if err != nil {
+		t.Fatalf("LookupOperation: %v", err)
+	}
+	if hit {
+		t.Fatal("a lingering removal marker replayed the old removal against the new pair")
 	}
 }

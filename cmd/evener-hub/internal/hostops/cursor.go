@@ -481,71 +481,68 @@ func (s *Store) cursorEpochLocked() CursorEpoch {
 // cross-host page names the compacted host's entry."
 //
 // The evidence is the compaction ledger, deliberately independent of the
-// bounded dedup tombstones: one mark per compacting write records the smallest
-// row id it removed and that row's host, so the predicate "some compacting
+// bounded dedup tombstones: one mark per compacting write carries every
+// affected host's smallest removed row id, so the predicate "some compacting
 // write after the cursor's pin removed a row at or before `pos` in this
-// cursor's window" is `mark.Seq > cursor.seq && mark.ID <= cursor.pos &&
-// mark.Host in window`, evaluated across every retained mark — exact for every
-// compaction the ledger still covers. The window is the cursor's own bounds
-// map: a pinned cursor lists one host, an unfiltered one every host in its
-// query. The earliest such write (its compacting `compactSeq`) is named.
+// cursor's window" is "a mark with Seq above the pin names a window host whose
+// smallest removed id is at or before `pos`", evaluated across every retained
+// mark — exact for every compaction the ledger still covers, and per host, so
+// a write that removed rows on several hosts cannot hide one window's removal
+// behind another's. The window is the cursor's own bounds map: a pinned cursor
+// lists one host, an unfiltered one every host in its query. The earliest such
+// write (its compacting `compactSeq`) is named.
 //
-// The ledger is bounded (MaxCompactionMarks), so a range with more compacting
-// writes than retained marks has lost evidence. There the check refuses
-// coarsely — over-refusing only re-lists the client from page one, while
-// silently serving on could skip removed rows — naming the oldest retained
-// in-window mark, or, when the window kept none, the live compaction value
-// with the window's own host. A cursor older than the whole ledger is
-// pathological (MaxCompactionMarks compacting writes after its pin) and still
-// refuses rather than skips. The caller holds the store mutex.
+// The ledger is bounded (MaxCompactionMarks), so once marks have been dropped
+// above the cursor's pin the exact answer is unknowable. The store persists
+// that as the dropped-marks floor, and the check refuses coarsely — naming the
+// oldest retained in-window mark, or, when the window kept none, the live
+// compaction value with the window's own host. Over-refusing only re-lists the
+// client from page one; silently serving on could skip removed rows. The
+// caller holds the store mutex.
 func checkCursorCompactionLocked(state *snapshot, envelope CursorEnvelope, live CursorEpoch) error {
 	exact := -1
-	for i := range state.CompactionMarks {
-		mark := state.CompactionMarks[i]
-		if mark.Seq <= envelope.CompactSeq || mark.ID > envelope.Position {
-			continue
-		}
-		if _, inWindow := envelope.Bounds[mark.Host]; !inWindow {
-			continue
-		}
-		if exact < 0 || earlierMark(state.CompactionMarks[exact], mark) {
-			exact = i
-		}
-	}
-	if exact >= 0 {
-		return cursorInvalidatedFor(state.CompactionMarks[exact], envelope)
-	}
-	retained := 0
-	for i := range state.CompactionMarks {
-		if state.CompactionMarks[i].Seq > envelope.CompactSeq {
-			retained++
-		}
-	}
-	compactions := uint64(0)
-	if live.CompactSeq > envelope.CompactSeq {
-		compactions = live.CompactSeq - envelope.CompactSeq
-	}
-	if compactions <= uint64(retained) {
-		// Every compacting write in the cursor's range is on the ledger, and
-		// none of them removed a row at or before the cursor's position in its
-		// window: the continuation still describes its record set.
-		return nil
-	}
-	oldest := -1
+	exactHost := ""
 	for i := range state.CompactionMarks {
 		mark := state.CompactionMarks[i]
 		if mark.Seq <= envelope.CompactSeq {
 			continue
 		}
-		if _, inWindow := envelope.Bounds[mark.Host]; !inWindow {
+		host, invalidates := mark.invalidatingHost(envelope)
+		if !invalidates {
 			continue
 		}
-		if oldest < 0 || earlierMark(mark, state.CompactionMarks[oldest]) {
-			oldest = i
+		if exact < 0 || mark.Seq < state.CompactionMarks[exact].Seq {
+			exact, exactHost = i, host
+		}
+	}
+	if exact >= 0 {
+		return cursorInvalidatedFor(state.CompactionMarks[exact].Seq, exactHost, envelope)
+	}
+	// Evidence is complete exactly while the dropped-marks floor sits at or
+	// below the cursor's pin: every compacting write after the pin still has
+	// its per-host marks. Once the floor is above the pin, some write in the
+	// cursor's range lost its marks and the exact answer is unknowable — refuse
+	// coarsely rather than serve on.
+	if state.CompactionFloor <= envelope.CompactSeq {
+		return nil
+	}
+	oldest := -1
+	oldestHost := ""
+	for i := range state.CompactionMarks {
+		mark := state.CompactionMarks[i]
+		if mark.Seq <= envelope.CompactSeq {
+			continue
+		}
+		host, affects := mark.affectsWindow(envelope)
+		if !affects {
+			continue
+		}
+		if oldest < 0 || mark.Seq < state.CompactionMarks[oldest].Seq {
+			oldest, oldestHost = i, host
 		}
 	}
 	if oldest >= 0 {
-		return cursorInvalidatedFor(state.CompactionMarks[oldest], envelope)
+		return cursorInvalidatedFor(state.CompactionMarks[oldest].Seq, oldestHost, envelope)
 	}
 	host := coarseWindowHost(envelope)
 	if host == "" {
@@ -555,25 +552,50 @@ func checkCursorCompactionLocked(state *snapshot, envelope CursorEnvelope, live 
 	return &CursorInvalidatedError{CompactSeq: live.CompactSeq, Host: host, Bound: envelope.Bounds[host]}
 }
 
-// earlierMark reports whether a comes before b in the ledger order: the
-// earliest compacting write, then the smallest row id.
-func earlierMark(a, b CompactionMark) bool {
-	if a.Seq != b.Seq {
-		return a.Seq < b.Seq
-	}
-	return a.ID < b.ID
+// invalidatingHost returns the host whose removal a mark evidences for the
+// cursor: an affected host in the cursor's window with a removed row id at or
+// before the cursor's position. When several qualify, the smallest removed id
+// (then the host name) is the deterministic choice.
+func (m CompactionMark) invalidatingHost(envelope CursorEnvelope) (string, bool) {
+	return m.windowHost(envelope, true)
 }
 
-// cursorInvalidatedFor builds the refusal one mark names, with the affected
-// host's bounds entry as stored at the cursor's mint.
-func cursorInvalidatedFor(mark CompactionMark, envelope CursorEnvelope) error {
-	bound, stored := envelope.Bounds[mark.Host]
+// affectsWindow reports whether a mark removed rows on any host in the
+// cursor's window, without requiring the row to sit at or before its position.
+// It is the coarse fallback's test for a write whose exact evidence is gone.
+func (m CompactionMark) affectsWindow(envelope CursorEnvelope) (string, bool) {
+	return m.windowHost(envelope, false)
+}
+
+// windowHost picks one affected host from a mark's per-host evidence, smallest
+// removed id first; with atMostPos only hosts whose smallest removed id is at
+// or before the cursor's position qualify.
+func (m CompactionMark) windowHost(envelope CursorEnvelope, atMostPos bool) (string, bool) {
+	best, bestID := "", ""
+	for host, id := range m.Hosts {
+		if _, inWindow := envelope.Bounds[host]; !inWindow {
+			continue
+		}
+		if atMostPos && id > envelope.Position {
+			continue
+		}
+		if best == "" || id < bestID || (id == bestID && host < best) {
+			best, bestID = host, id
+		}
+	}
+	return best, best != ""
+}
+
+// cursorInvalidatedFor builds the refusal one compacting write names, with the
+// affected host's bounds entry as stored at the cursor's mint.
+func cursorInvalidatedFor(compactSeq uint64, host string, envelope CursorEnvelope) error {
+	bound, stored := envelope.Bounds[host]
 	if !stored {
 		// Unreachable by the window checks above; keep the refusal typed rather
 		// than guessing a triple the cursor never carried.
 		bound = CursorBound{Absent: true}
 	}
-	return &CursorInvalidatedError{CompactSeq: mark.Seq, Host: mark.Host, Bound: bound}
+	return &CursorInvalidatedError{CompactSeq: compactSeq, Host: host, Bound: bound}
 }
 
 // coarseWindowHost names the host a lost-evidence refusal carries: the pinned
@@ -815,7 +837,7 @@ func readOperationsLocked(state *snapshot, q OperationsQuery, live CursorEpoch) 
 			// The pinned-cursor window: the pair of the row the cursor resumes
 			// after — the last row the page listed. Never the host's current
 			// pair, so an omitted filter reads as the pinned window (§8).
-			anchor, ok := recordAtLocked(state, window.Position)
+			anchor, ok := anchorRecordLocked(state, window.Position)
 			if !ok {
 				// A row at or before `pos` removed by a compaction since mint
 				// is §8's `cursor-invalidated` arm, and checkCursorCompactionLocked
@@ -894,7 +916,7 @@ func readOperationsLocked(state *snapshot, q OperationsQuery, live CursorEpoch) 
 			// window presented without the host name lands here, and that
 			// mismatch is the refusal — never a mixed page.
 			if !detailOnly {
-				anchor, ok := recordAtLocked(state, window.Position)
+				anchor, ok := anchorRecordLocked(state, window.Position)
 				if !ok {
 					// The compaction arm is checkCursorCompactionLocked's,
 					// answered above; this is the never-held position.
@@ -979,6 +1001,13 @@ func readOperationsLocked(state *snapshot, q OperationsQuery, live CursorEpoch) 
 	if q.ID != "" || q.ClientOperationID != "" {
 		for i := range state.Tombstones {
 			tombstone := state.Tombstones[i]
+			if continuing && tombstone.ID <= window.Position {
+				// A continuation resumes after its cursor's position: the replay
+				// this page already answered is never served again, or a page
+				// whose only result is a tombstone would mint the identical
+				// cursor forever.
+				continue
+			}
 			if !pageHosts[tombstone.Host] {
 				continue
 			}
@@ -1082,6 +1111,23 @@ func recordAtLocked(state *snapshot, id string) (Record, bool) {
 	for i := range state.Records {
 		if state.Records[i].ID == id {
 			return state.Records[i], true
+		}
+	}
+	return Record{}, false
+}
+
+// anchorRecordLocked resolves a cursor's anchor row: the retained record with
+// that id, or — when the previous page's last row was itself a tombstone replay
+// (the `id`/`operationId` detail filters resolve those) — the replay rebuilt
+// from its tombstone. The anchor's host and pair are what a continuation
+// recovers its pinned window from, and a compacted replay carries both.
+func anchorRecordLocked(state *snapshot, id string) (Record, bool) {
+	if record, ok := recordAtLocked(state, id); ok {
+		return record, true
+	}
+	for i := range state.Tombstones {
+		if state.Tombstones[i].ID == id {
+			return state.Tombstones[i].record(), true
 		}
 	}
 	return Record{}, false

@@ -106,6 +106,11 @@ type snapshot struct {
 	// independently of the dedup tombstones' own bound (see
 	// MaxCompactionMarks). Optional on read for the same reason.
 	CompactionMarks []CompactionMark `json:"compactionMarks"`
+	// CompactionFloor is the highest compacting-write sequence whose ledger
+	// marks were evicted by the bound: evidence for a cursor pinned below it is
+	// incomplete, and §8's check refuses coarsely rather than skipping. Zero
+	// means no mark has ever been dropped.
+	CompactionFloor uint64 `json:"compactionFloor"`
 	// RemovedHosts records, per name, when the registry's removal tombstone
 	// was seen and the pair it tombstoned: §4 compacts a removed host's history
 	// first once its removal is past the `tombstoneRetention` horizon, and a
@@ -590,6 +595,7 @@ type storeFile struct {
 	CompactSeq      uint64                 `json:"compactSeq"`
 	Tombstones      *[]tombstoneFile       `json:"tombstones"`
 	CompactionMarks *[]CompactionMark      `json:"compactionMarks"`
+	CompactionFloor uint64                 `json:"compactionFloor"`
 	RemovedHosts    map[string]RemovedHost `json:"removedHosts"`
 	// Boundaries is optional on read (see snapshot.Boundaries): absent and null
 	// both decode to nil, which is "no boundary mirrored yet".
@@ -816,6 +822,7 @@ func loadFS(fs afero.Fs, path string) (snapshot, error) {
 	if file.CompactionMarks != nil {
 		state.CompactionMarks = append([]CompactionMark(nil), (*file.CompactionMarks)...)
 	}
+	state.CompactionFloor = file.CompactionFloor
 	for name, removed := range state.RemovedHosts {
 		removed.RemovedAt = removed.RemovedAt.UTC()
 		state.RemovedHosts[name] = removed
@@ -1087,7 +1094,7 @@ func preservedMode(fs afero.Fs, path string) (os.FileMode, bool) {
 var ownedObjectKeys = map[string]map[string]struct{}{
 	"": keysOf("version", "sequence", "allocatorHighWaterMark", "records", "boundaries",
 		"tokens", "probeEpochs", "probeEpochSeq", "guardEpoch", "wallClockHighWaterMark",
-		"compactSeq", "tombstones", "compactionMarks", "removedHosts"),
+		"compactSeq", "tombstones", "compactionMarks", "compactionFloor", "removedHosts"),
 	"records[]": keysOf("id", "clientOperationId", "host", "kind", "state", "generation",
 		"incarnationId", "fencingEpoch", "orphanBoundary", "progress", "result",
 		"createdAt", "updatedAt", "hostRemoved", "sequence"),
@@ -1098,7 +1105,7 @@ var ownedObjectKeys = map[string]map[string]struct{}{
 		"compactedAt", "compactedSeq"),
 	"tombstones[].result":     keysOf("ok", "message"),
 	"tombstones[].progress[]": keysOf("ts", "message"),
-	"compactionMarks[]":       keysOf("seq", "id", "host"),
+	"compactionMarks[]":       keysOf("seq", "hosts"),
 	"boundaries[]":            keysOf("generation", "incarnationId", "presenceEpoch"),
 	"tokens[]": keysOf("host", "value", "generation", "incarnationId", "entryHash",
 		"hubTomlFingerprint", "factsRevision", "factsCapturedAt", "targetPath",
@@ -1483,6 +1490,10 @@ func validateSnapshot(state snapshot) error {
 			return fmt.Errorf("%w: compaction seq %d is carried by more than one mark", ErrInvalidRecord, mark.Seq)
 		}
 		markSeqs[mark.Seq] = struct{}{}
+	}
+	if state.CompactionFloor > state.CompactSeq {
+		return fmt.Errorf("%w: compaction floor %d is above the store's compactSeq %d",
+			ErrInvalidRecord, state.CompactionFloor, state.CompactSeq)
 	}
 	// Token rows carry the same refuse-always rule: a row outside the schema a
 	// mint writes is never served, and the set-level rules (one row per host
