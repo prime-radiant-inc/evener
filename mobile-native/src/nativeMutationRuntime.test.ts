@@ -1490,3 +1490,54 @@ test("a failed outbox setup unwinds its listeners and channel, and the retry re-
 	expect(lifecycleRemoves).toBe(4);
 	expect(cleared).toEqual([1]);
 });
+
+test("a screen above its session releases the session's blocked target without taking the subscription", async () => {
+	const runtime = new NativeMutationRuntime(openDatabase(), { createMutationId: () => "mutation-1" });
+	const client = new FakeClient("ready");
+	client.on("turn/start", appliedReceipt);
+	client.on("thread/read", () => readResponse("ref-1"));
+	await registerAndStart(runtime, client);
+	await runtime.submit(request("send"));
+	expect(client.calls.filter((call) => call.method === "turn/start")).toHaveLength(0);
+
+	await expect(runtime.settleTarget("hub-1", "ref-1", client)).resolves.toBe("reconciled");
+
+	expect(client.calls.find((call) => call.method === "thread/read")?.params).toEqual({
+		ref: "ref-1",
+		includeTurns: true,
+		itemsView: "fragment",
+		itemLimit: 40,
+	});
+	await vi.waitFor(() => expect(client.calls.filter((call) => call.method === "turn/start")).toHaveLength(1));
+	await runtime.stop();
+});
+
+test("settling leaves an open target alone and refuses a target it can't read for", async () => {
+	const runtime = new NativeMutationRuntime(openDatabase(), { createMutationId: () => "mutation-1" });
+	const client = new FakeClient("ready");
+	await registerAndStart(runtime, client);
+	const lease = runtime.beginAuthoritativeRead("hub-1", "ref-1", client);
+	expect(lease).toBeDefined();
+	await runtime.reconcileAuthoritativeRead(lease!, readResponse("ref-1"));
+
+	await expect(runtime.settleTarget("hub-1", "ref-1", client)).resolves.toBe("open");
+	await expect(runtime.settleTarget("hub-1", "ref-2", client)).resolves.toBe("unregistered");
+	runtime.registerTarget("hub-1", "ref-3", client);
+	await expect(runtime.settleTarget("hub-1", "ref-3", new FakeClient("ready"))).resolves.toBe("blocked");
+	expect(client.calls.filter((call) => call.method === "thread/read")).toHaveLength(0);
+	await runtime.stop();
+});
+
+test("a settling read that fails leaves the target blocked and sends nothing", async () => {
+	const runtime = new NativeMutationRuntime(openDatabase(), { createMutationId: () => "mutation-1" });
+	const client = new FakeClient("ready");
+	client.on("turn/start", appliedReceipt);
+	client.on("thread/read", () => Promise.reject(new Error("offline")));
+	await registerAndStart(runtime, client);
+	await runtime.submit(request("send"));
+
+	await expect(runtime.settleTarget("hub-1", "ref-1", client)).resolves.toBe("blocked");
+
+	expect(client.calls.filter((call) => call.method === "turn/start")).toHaveLength(0);
+	await runtime.stop();
+});

@@ -20,6 +20,7 @@ import {
 	type MutationRecoveryRecord,
 	type SecureRandomSource,
 } from "@evener/appwire-client/state/mutation";
+import { READ_ITEM_LIMIT } from "../../mobile/src/services/conversation";
 import type {
 	ConversationMutationKind,
 	ConversationMutationRequest,
@@ -343,6 +344,42 @@ export class NativeMutationRuntime
 		this.#blockedTargets.delete(lease.targetKey);
 		void this.#dispatcher.dispatchTargets([lease.targetKey]).catch(() => undefined);
 		return "reconciled";
+	}
+
+	/** Releases a registered target that is waiting for an authoritative read,
+	 * with a read that leaves the connection's thread subscription alone.
+	 *
+	 * A screen stacked above a session (a subagent's stop request to its
+	 * coordinator, a review from the Reader) submits to that session while the
+	 * session's own screen is mounted under it but not reading. After a
+	 * reconnect that target stays blocked until an authoritative read, so the
+	 * message would wait for a trip back. This read has the window the
+	 * session's own read uses (conversation.ts readProjection), and so the same
+	 * proof of what already landed; it omits only the subscription, which
+	 * belongs to whatever the screen on top is showing. An open target is left
+	 * alone, and a target registered to another client can't be read for. */
+	async settleTarget(
+		hubId: string,
+		targetRef: string,
+		client: AppwireClientLike,
+	): Promise<"open" | "reconciled" | "blocked" | "stale" | "unregistered"> {
+		const targetKey = nativeMutationTargetKey(hubId, targetRef);
+		if (!this.#targets.has(targetKey)) return "unregistered";
+		if (!this.#blockedTargets.has(targetKey)) return "open";
+		const lease = this.beginAuthoritativeRead(hubId, targetRef, client);
+		if (!lease) return "blocked";
+		let response: ThreadReadResponse;
+		try {
+			response = await client.request("thread/read", {
+				ref: targetRef,
+				includeTurns: true,
+				itemsView: "fragment",
+				itemLimit: READ_ITEM_LIMIT,
+			});
+		} catch {
+			return "blocked";
+		}
+		return this.reconcileAuthoritativeRead(lease, response);
 	}
 
 	#isCurrentRead(lease: NativeMutationReadLease): boolean {
