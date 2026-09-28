@@ -1,9 +1,9 @@
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { cleanup, render, screen } from "@testing-library/react";
+import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { afterEach, expect, test, vi } from "vitest";
+import { expect, test, vi } from "vitest";
 import { CurrentWork } from "./CurrentWork";
 
 function currentWorkCssRule(selector: string): string {
@@ -53,8 +53,6 @@ const states = [
     hasDivider: false,
   },
 ] as const;
-
-afterEach(cleanup);
 
 test.each(states)("renders the $name state", ({ task, goal, label, hasTask, hasGoal, hasDivider }) => {
   render(<CurrentWork task={task} goal={goal} onOpenTasks={vi.fn()} onEditGoal={vi.fn()} />);

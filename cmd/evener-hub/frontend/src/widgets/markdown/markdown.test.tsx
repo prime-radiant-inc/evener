@@ -1,14 +1,13 @@
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { cleanup, render, screen } from "@testing-library/react";
+import { render, screen } from "@testing-library/react";
 import DOMPurify from "dompurify";
 import { afterEach, expect, test, vi } from "vitest";
 import codeblockStyles from "../codeblock/codeblock.module.css";
 import { requireClass } from "../internal/requireClass";
 import { Markdown } from "./index";
 
-afterEach(cleanup);
 afterEach(() => {
   vi.restoreAllMocks();
 });

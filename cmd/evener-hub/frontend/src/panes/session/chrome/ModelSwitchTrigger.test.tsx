@@ -1,15 +1,11 @@
 import { WireError } from "@evener/appwire-client";
-import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { afterEach, expect, test, vi } from "vitest";
+import { expect, test, vi } from "vitest";
 import type { ModelCatalog } from "../../../widgets";
 import { installMobileViewport } from "../testing/mobileViewport";
 import { ModelSwitchTrigger } from "./ModelSwitchTrigger";
 import rawStyles from "./modelswitch.module.css";
-
-afterEach(() => {
-  cleanup();
-});
 
 function catalog(): ModelCatalog {
   return {

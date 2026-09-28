@@ -1,11 +1,9 @@
-import { cleanup, render, screen } from "@testing-library/react";
-import { afterEach, expect, test } from "vitest";
+import { render, screen } from "@testing-library/react";
+import { expect, test } from "vitest";
 import type { CadenceState } from "../cadence";
 import { requireClass } from "../internal/requireClass";
 import { StatusDot } from "./index";
 import rawStyles from "./statusdot.module.css";
-
-afterEach(cleanup);
 
 const styles = {
   alive: requireClass(rawStyles.alive, "statusdot.module.css", "alive"),

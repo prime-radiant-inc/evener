@@ -1,11 +1,9 @@
 import type { ThreadModel } from "@evener/appwire-client";
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
-import { afterEach, beforeEach, expect, test, vi } from "vitest";
+import { fireEvent, render, screen } from "@testing-library/react";
+import { beforeEach, expect, test, vi } from "vitest";
 import * as paneActions from "../../../shell/paneActions";
 import { resetThreadsStoreForTests, threadsStore } from "../../../stores/threads";
 import { FileOpenBesideButton, fileDocParams } from "./fileOpenBeside";
-
-afterEach(cleanup);
 
 // --- fileDocParams: builds a file DocParams, or undefined when anything the
 // affordance needs is missing (no ref, no cwd, or out-of-cwd path) ----------

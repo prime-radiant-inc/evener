@@ -1,6 +1,6 @@
 import type { ThreadModel } from "@evener/appwire-client";
-import { act, cleanup, renderHook, waitFor } from "@testing-library/react";
-import { afterEach, beforeEach, expect, test } from "vitest";
+import { act, renderHook, waitFor } from "@testing-library/react";
+import { beforeEach, expect, test } from "vitest";
 import { resetWorkspaceStoreForTests, workspaceStore } from "../shell/workspace";
 import { resetPanelStoreEvictionForTests } from "./panelStoreEviction";
 import { resetThreadsStoreForTests, threadsStore } from "./threads";
@@ -11,10 +11,6 @@ beforeEach(() => {
   resetPanelStoreEvictionForTests();
   resetWorkspaceStoreForTests();
   resetThreadsStoreForTests();
-});
-
-afterEach(() => {
-  cleanup();
 });
 
 const FULL_CAPABILITIES = {

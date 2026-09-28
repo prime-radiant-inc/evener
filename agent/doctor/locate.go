@@ -198,12 +198,14 @@ func refFor(projectID, sid string) string {
 	return bucketref.RefFor(projectID, sid)
 }
 
-// projRef builds the proj:<projectID>:<sid> selector form. refFor calls
-// it after identifier.ValidateProjectID accepts the name (the canonical
-// [A-Za-z0-9-] alphabet); followSelector calls it after safeTokenForRepro
-// accepts the name (a wider comma- and shell-safety check that also
-// covers non-canonical legacy names like hex-style bucket directories).
-// The grammar-safety check stays at each call site.
+// projRef builds the proj:<projectID>:<sid> selector form. followSelector
+// calls it after safeTokenForRepro accepts the name (a wider comma- and
+// shell-safety check that also covers non-canonical legacy names like
+// hex-style bucket directories); readSelector calls it after projectTokenOK
+// accepts the name (the traversal-safety check internal reads use, wider
+// than safeTokenForRepro because no shell is involved). refFor no longer
+// calls it — it delegates to bucketref.RefFor. The grammar-safety check
+// stays at each call site.
 func projRef(projectID, sid string) string {
 	return bucketref.ProjScheme + projectID + ":" + sid
 }

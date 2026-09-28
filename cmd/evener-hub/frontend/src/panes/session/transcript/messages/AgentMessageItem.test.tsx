@@ -2,14 +2,12 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { ItemModel, TurnModel } from "@evener/appwire-client";
-import { cleanup, render, screen, within } from "@testing-library/react";
+import { render, screen, within } from "@testing-library/react";
 import type { ReactNode } from "react";
-import { afterEach, expect, test } from "vitest";
+import { expect, test } from "vitest";
 import { SessionNowContext } from "../../liveness";
 import { ignoringTurn, itemRendererFor } from "../types";
 import { AgentMessageItem } from "./AgentMessageItem";
-
-afterEach(cleanup);
 
 const turn: TurnModel = { id: "turn_1", status: "inProgress", items: [] };
 

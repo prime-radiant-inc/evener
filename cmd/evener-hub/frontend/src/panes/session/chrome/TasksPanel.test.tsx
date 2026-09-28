@@ -4,9 +4,9 @@ import { fileURLToPath } from "node:url";
 import type { ThreadCapabilities, ThreadModel } from "@evener/appwire-client";
 import { absoluteTime, WireError } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
-import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { afterEach, beforeEach, expect, test } from "vitest";
+import { beforeEach, expect, test } from "vitest";
 import { connectionStore } from "../../../stores/connection";
 import { resetThreadsStoreForTests } from "../../../stores/threads";
 import { readModuleCss, topRuleBlock } from "../../../styles/cssBlock";
@@ -140,10 +140,6 @@ beforeEach(() => {
   // disclosure test performs, so an earlier test's expanded row can't leak
   // into a later test that expects to start collapsed.
   resetDisclosureStoreForTests();
-});
-
-afterEach(() => {
-  cleanup();
 });
 
 // --- trigger badge: unchanged, still driven by the live-pushed aggregate ---

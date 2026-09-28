@@ -1,13 +1,11 @@
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { cleanup, render, screen, within } from "@testing-library/react";
+import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { afterEach, expect, test, vi } from "vitest";
+import { expect, test, vi } from "vitest";
 import { SettingsNav } from "./SettingsNav";
 import { SETTINGS_SECTIONS } from "./sections";
-
-afterEach(cleanup);
 
 function readCss(): string {
   return readFileSync(join(dirname(fileURLToPath(import.meta.url)), "settings.module.css"), "utf8");

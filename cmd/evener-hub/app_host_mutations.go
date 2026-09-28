@@ -512,7 +512,14 @@ func (m *hubHostManager) UpdateResult(ctx context.Context, params appwire.HostUp
 	} else if hit != nil {
 		return m.receiptArm(hit, hostMutationUpdate), nil
 	}
-	releaseGate, err := m.acquireHostGate(name, hostops.Holder{Kind: hostops.HolderManager, Activity: "update"})
+	// Spec 08 §4's "gate released last" (deploy pipeline 08b §5's mutation
+	// rebind ordering): the reservation is held through the staged commit AND
+	// the post-commit rebind/teardown, and released last — the defer below fires
+	// at function exit, after the finish phase. The manager call below is the
+	// gate-inheriting UpdateHostUnderGate, which runs the rebind under this very
+	// hold, so no gate waiter can acquire a half-rebound host.
+	gateHolder := hostops.Holder{Kind: hostops.HolderManager, Activity: "update"}
+	releaseGate, err := m.acquireHostGate(name, gateHolder)
 	if err != nil {
 		return appwire.HostMutationResult{}, err
 	}
@@ -590,7 +597,8 @@ func (m *hubHostManager) UpdateResult(ctx context.Context, params appwire.HostUp
 	}
 	// The intent flip lands as the post-swap form: for an edit and a removal the
 	// runtime transition and the planned teardown are one manager call
-	// (UpdateHost / RemoveHost tears down as it swaps), so there is no window a
+	// (UpdateHostUnderGate / RemoveHostUnderGate tears down as it swaps, under
+	// the mutation's held reservation), so there is no window a
 	// separate `swapStarted`-only flip could describe — a crash inside the call
 	// leaves either side applied, which is exactly what
 	// `runtime-swapped` + `teardownStarted: true` records. The phase-aware
@@ -603,7 +611,13 @@ func (m *hubHostManager) UpdateResult(ctx context.Context, params appwire.HostUp
 	m.cfg.store.addReceipt(receiptKey, receipt)
 	m.markMutating(name)
 	m.cfg.mu.Unlock()
-	releaseGate()
+	// The reservation is deliberately NOT released here: the post-commit live
+	// phase below (the manager's rebind/teardown, through the gate-inheriting
+	// entry) runs under it, and the deferred release fires last. The mutation
+	// mark still fences the name across this window — it is what refuses a
+	// same-name `add`, which checks its mark before any gate acquisition —
+	// while every gate consumer (attach, plan, deploy, another mutation) is
+	// refused busy by the held reservation.
 	if m.testOnlyParkPostCommit != nil {
 		m.testOnlyParkPostCommit(name)
 	}
@@ -615,7 +629,7 @@ func (m *hubHostManager) UpdateResult(ctx context.Context, params appwire.HostUp
 			liveErr = fmt.Errorf("update host %q: %w", name, err)
 		}
 	case m.cfg.manager != nil:
-		if err := m.cfg.manager.UpdateHost(entry, func(retired hostreg.Host) {
+		if err := m.cfg.manager.UpdateHostUnderGate(entry, gateHolder, func(retired hostreg.Host) {
 			m.cfg.state.retire(name, retired.Generation)
 		}); err != nil {
 			liveErr = fmt.Errorf("update host %q: %w", name, err)
@@ -770,7 +784,14 @@ func (m *hubHostManager) RemoveResult(ctx context.Context, params appwire.HostRe
 	} else if hit != nil {
 		return m.receiptArm(hit, hostMutationRemove), nil
 	}
-	releaseGate, err := m.acquireHostGate(name, hostops.Holder{Kind: hostops.HolderManager, Activity: "remove"})
+	// Spec 08 §4's "gate released last" (deploy pipeline 08b §5's mutation
+	// rebind ordering): the reservation is held through the staged commit AND
+	// the post-commit teardown, and released last — the defer below fires at
+	// function exit, after the finish phase. The manager call below is the
+	// gate-inheriting RemoveHostUnderGate, which runs the teardown under this
+	// very hold, so no gate waiter can acquire a half-rebound host.
+	gateHolder := hostops.Holder{Kind: hostops.HolderManager, Activity: "remove"}
+	releaseGate, err := m.acquireHostGate(name, gateHolder)
 	if err != nil {
 		return appwire.HostMutationResult{}, err
 	}
@@ -837,7 +858,8 @@ func (m *hubHostManager) RemoveResult(ctx context.Context, params appwire.HostRe
 	}
 	// The intent flip lands as the post-swap form: for an edit and a removal the
 	// runtime transition and the planned teardown are one manager call
-	// (UpdateHost / RemoveHost tears down as it swaps), so there is no window a
+	// (UpdateHostUnderGate / RemoveHostUnderGate tears down as it swaps, under
+	// the mutation's held reservation), so there is no window a
 	// separate `swapStarted`-only flip could describe — a crash inside the call
 	// leaves either side applied, which is exactly what
 	// `runtime-swapped` + `teardownStarted: true` records. The phase-aware
@@ -850,7 +872,12 @@ func (m *hubHostManager) RemoveResult(ctx context.Context, params appwire.HostRe
 	m.cfg.store.addReceipt(receiptKey, receipt)
 	m.markMutating(host.Name)
 	m.cfg.mu.Unlock()
-	releaseGate()
+	// The reservation is deliberately NOT released here: the post-commit
+	// teardown below (the manager's, through the gate-inheriting entry) runs
+	// under it, and the deferred release fires last. The mutation mark still
+	// fences the name across this window — it is what refuses a same-name
+	// `add`, which checks its mark before any gate acquisition — while every
+	// gate consumer is refused busy by the held reservation.
 	if m.testOnlyParkPostCommit != nil {
 		m.testOnlyParkPostCommit(host.Name)
 	}
@@ -863,7 +890,7 @@ func (m *hubHostManager) RemoveResult(ctx context.Context, params appwire.HostRe
 			teardownErr = fmt.Errorf("remove host %q: %w", host.Name, err)
 		}
 	case m.cfg.manager != nil:
-		if err := m.cfg.manager.RemoveHost(host.Name); err != nil {
+		if err := m.cfg.manager.RemoveHostUnderGate(host.Name, gateHolder); err != nil {
 			teardownErr = fmt.Errorf("remove host %q: %w", host.Name, err)
 		}
 	default:
