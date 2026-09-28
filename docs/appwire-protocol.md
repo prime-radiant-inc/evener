@@ -195,6 +195,7 @@ no router (reserved).
 | `evener/settings/agentsDoc/get` | hub | `EmptyParams` | `AgentsDocResponse` | Reads the personal AGENTS.md under the user config root: its path, whether it exists, and its content. |
 | `evener/settings/agentsDoc/set` | hub | `AgentsDocSetParams` | `AgentsDocResponse` | Replaces the personal AGENTS.md whole (no precondition); broadcasts evener/settings/agentsDoc/changed. |
 | `evener/sandbox/escalation/resolve` | both | `SandboxEscalationResolveParams` | `EmptyResponse` | Delivers a human's approve/deny decision for a pending sandbox-exemption escalation (M7); the daemon unblocks the waiting tool-exec goroutine, the hub relays. |
+| `evener/delegate/stop` | daemon | `DelegateStopParams` | `DelegateStopResponse` | Ends one subagent's current run at the user's request (S6): that subagent alone, while the subagents it started keep running; the root's daemon serves it. Answers stopping or notRunning. |
 | `evener/host/request` | hub | `HostRequestParams` | `HostForwardedResult` | Forwards one hub-scoped admin RPC to a named remote host's hub through the allow-listed proxy (component 07a); the result is the forwarded method's own result, verbatim — an opaque JSON object, not a wrapper, so a typed client must treat the result as unknown and cast it to the forwarded method's own result type (see HostForwardedResult). |
 | `evener/host/attach` | hub | `HostAttachParams` | `HostAttachResponse` | Explicitly attaches one configured remote host by name through the Ensure-backed dialing seam (component 06's Connect action); a mutation and the only browser-reachable attach trigger, idempotent while attached, returning the host's post-attach state. |
 | `evener/host/add` | hub | `HostAddParams` | `HostMutationCommitted \| HostMutationCommittedRemoved \| HostMutationTeardownFailure \| HostMutationTeardownFailureRemoved \| HostMutationCollisionDropped \| HostMutationAmbiguous` | Registers one host entry (its full entry: name, ssh address, user, key path, and the host's paths and roots) into the machine-managed hub.toml; validates like hub.toml loading and refuses a name the live set already holds. Result is the mutation-result union: committed, committed-with-teardown-failure, collision-dropped, or the keyless-add ambiguous arm. |
@@ -568,6 +569,22 @@ _(no fields)_
 | Field | Go type | Omitempty | Embedded |
 |-------|---------|-----------|----------|
 | `lifecycle` | `appwire.DaemonLifecycle` |  |  |
+
+
+### `DelegateStopParams`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `threadId` | `string` | yes |  |
+| `ref` | `string` | yes |  |
+| `delegateId` | `string` |  |  |
+
+
+### `DelegateStopResponse`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `outcome` | `appwire.DelegateStopOutcome` |  |  |
 
 
 ### `DirsCreateParams`

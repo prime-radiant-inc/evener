@@ -1131,6 +1131,7 @@ func (s *Server) registerAppWireHandlers() {
 	appserver.HandleTyped(router, appwire.MethodTurnStart, s.handleAppTurnStart)
 	appserver.HandleTyped(router, appwire.MethodTurnSteer, s.handleAppTurnSteer)
 	appserver.HandleTyped(router, appwire.MethodEvenerSandboxEscalationResolve, s.handleAppSandboxEscalationResolve)
+	appserver.HandleTyped(router, appwire.MethodEvenerDelegateStop, s.handleAppDelegateStop)
 	appserver.HandleTyped(router, appwire.MethodTurnInterrupt, s.handleAppTurnInterrupt)
 	appserver.HandleTyped(router, appwire.MethodTurnQueue, s.handleAppTurnQueue)
 	appserver.HandleTyped(router, appwire.MethodTurnDrainAsSteer, s.handleAppTurnDrainAsSteer)
@@ -1617,6 +1618,34 @@ func (s *Server) handleAppSandboxEscalationResolve(_ context.Context, params app
 		return appwire.EmptyResponse{}, appwire.Conflict(err.Error())
 	}
 	return appwire.EmptyResponse{}, nil
+}
+
+// handleAppDelegateStop ends one subagent's run at the user's request (S6).
+// It targets the root that owns the tree, the way every turn mutation does.
+// Stopping is idempotent, so it needs no client mutation id: a retry finds the
+// run already ending and answers notRunning.
+func (s *Server) handleAppDelegateStop(_ context.Context, params appwire.DelegateStopParams) (appwire.DelegateStopResponse, error) {
+	if err := s.requireRootMutationTarget(params.Ref, params.ThreadID); err != nil {
+		return appwire.DelegateStopResponse{}, err
+	}
+	delegateID := strings.TrimSpace(params.DelegateID)
+	if delegateID == "" {
+		return appwire.DelegateStopResponse{}, appwire.InvalidParams("delegateId is required")
+	}
+	s.mu.RLock()
+	fn := s.delegateStopFunc
+	s.mu.RUnlock()
+	if fn == nil {
+		return appwire.DelegateStopResponse{}, appwire.Unavailable("delegate stop not available")
+	}
+	outcome, err := fn(delegateID)
+	if errors.Is(err, agent.ErrUnknownDelegate) {
+		return appwire.DelegateStopResponse{}, appwire.ResourceNotFound(err.Error())
+	}
+	if err != nil {
+		return appwire.DelegateStopResponse{}, err
+	}
+	return appwire.DelegateStopResponse{Outcome: outcome}, nil
 }
 
 func (s *Server) handleAppTurnInterrupt(ctx context.Context, params appwire.TurnInterruptParams) (appwire.TurnInterruptResponse, error) {

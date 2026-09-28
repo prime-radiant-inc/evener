@@ -444,7 +444,10 @@ type Server struct {
 	// pending sandbox-exemption escalation (M7) to the session, unblocking the
 	// waiting tool-exec goroutine. nil when no session is attached.
 	sandboxEscalationResolveFunc func(escalationID string, approve bool) error
-	processing                   bool
+	// delegateStopFunc ends one delegate's current run at the user's request
+	// (S6). nil when no session is attached.
+	delegateStopFunc func(delegateID string) (appwire.DelegateStopOutcome, error)
+	processing       bool
 	// appMutationGate serializes retry-safe turn mutations with thread/clear.
 	// A clear must not rotate the live instance while an old-generation turn
 	// callback is still admitted, and a delayed turn must not enter after clear
@@ -650,6 +653,14 @@ func (s *Server) SetCancelFunc(cancel context.CancelFunc) {
 func (s *Server) SetSandboxEscalationResolveFunc(fn func(escalationID string, approve bool) error) {
 	s.mu.Lock()
 	s.sandboxEscalationResolveFunc = fn
+	s.mu.Unlock()
+}
+
+// SetDelegateStopFunc sets the callback evener/delegate/stop hands a delegate
+// id to (S6).
+func (s *Server) SetDelegateStopFunc(fn func(delegateID string) (appwire.DelegateStopOutcome, error)) {
+	s.mu.Lock()
+	s.delegateStopFunc = fn
 	s.mu.Unlock()
 }
 
