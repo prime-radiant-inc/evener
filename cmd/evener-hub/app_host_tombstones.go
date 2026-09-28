@@ -152,6 +152,12 @@ type hostTOMLRecords struct {
 	// removal's staged write merges its own intent in; the writer preserves
 	// unowned names' intents verbatim.
 	storeSync map[string]HostStoreSyncIntent
+	// droppedStoreSync names the intents this derivation dropped. The writer's
+	// preservation rule re-emits an intent for a name the write does not own, so
+	// without this set an intent for a name outside the live set (a crash
+	// window's, whose name is neither live nor tombstoned) could never clear:
+	// the file's older copy would ride back in on every boot.
+	droppedStoreSync map[string]struct{}
 }
 
 // hostTombstoneStage is the tombstone a removal stages into the very write

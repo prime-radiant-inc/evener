@@ -7,6 +7,9 @@ package hostops
 
 import (
 	"errors"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -311,5 +314,62 @@ func TestReconcileMirrorPushForwardSkipsAnExpiredRemovedName(t *testing.T) {
 	}
 	if _, ok := store.Boundary("gone"); ok {
 		t.Fatal("the boot recreated a removed name's pruned boundary")
+	}
+}
+
+// TestReconcileMirrorRequiresBothMarkerGenerationsToMatch pins the marker's
+// authority: a marker authorizes a mirror only when BOTH of its generations
+// match the file's current mark and the store mirror — a stale hub.toml
+// generation naming the same store value authorizes nothing.
+func TestReconcileMirrorRequiresBothMarkerGenerationsToMatch(t *testing.T) {
+	store, _ := openTestStore(t)
+	if err := store.MirrorBoundaries(map[string]Boundary{
+		"m4": {Generation: 9, IncarnationID: "inc-9", PresenceEpoch: 5},
+	}, nil); err != nil {
+		t.Fatalf("MirrorBoundaries: %v", err)
+	}
+	result, err := store.ReconcileMirror(MirrorView{
+		Marks:   map[string]Boundary{"m4": {Generation: 7, IncarnationID: "inc-7", PresenceEpoch: 4}},
+		Live:    map[string]struct{}{"m4": {}},
+		Commits: map[string]MirrorCommit{"m4": {HubTOMLGeneration: 5, StoreGeneration: 9}},
+	})
+	if err != nil {
+		t.Fatalf("ReconcileMirror: %v", err)
+	}
+	if len(result.RolledBack) != 1 {
+		t.Fatalf("a stale marker authorized the mirror: %+v", result)
+	}
+	if boundary, ok := store.Boundary("m4"); !ok || boundary.IncarnationID != "inc-7" {
+		t.Fatalf("mirror after the rollback = %+v, want the file mark's identity", boundary)
+	}
+}
+
+// TestLoadRefusesNonCanonicalPendingCompensationKeys pins the store's key rule
+// for the new section: the compensation record's own keys and its preimage
+// rows' keys are canonical, so a case variant (which the decoder matches
+// case-insensitively and would silently rewrite) is refused at load, exactly
+// as it is for every other object this store decodes.
+func TestLoadRefusesNonCanonicalPendingCompensationKeys(t *testing.T) {
+	value, err := newTokenValue()
+	if err != nil {
+		t.Fatalf("newTokenValue: %v", err)
+	}
+	row := tokenRowJSON("m4", value, tokenEpoch, tokenEpoch.Add(5*time.Minute), tokenEpoch)
+	for name, raw := range map[string]string{
+		"record key": `{"version":1,"sequence":0,"allocatorHighWaterMark":0,"records":[],` +
+			`"pendingCompensation":{"m4":{"Host":"m4","phase":"compensating-armed","rows":[` + row + `],"stashReference":"stash","generation":7}}}`,
+		"row key": `{"version":1,"sequence":0,"allocatorHighWaterMark":0,"records":[],` +
+			`"pendingCompensation":{"m4":{"host":"m4","phase":"compensating-armed","rows":[` + strings.Replace(row, `"host":"m4"`, `"Host":"m4"`, 1) + `],"stashReference":"stash","generation":7}}}`,
+	} {
+		path := StorePath(t.TempDir())
+		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+			t.Fatalf("MkdirAll: %v", err)
+		}
+		if err := os.WriteFile(path, []byte(raw), 0o600); err != nil {
+			t.Fatalf("write store: %v", err)
+		}
+		if _, err := Open(path); err == nil {
+			t.Fatalf("the store loaded a pendingCompensation %s outside the canonical spelling", name)
+		}
 	}
 }

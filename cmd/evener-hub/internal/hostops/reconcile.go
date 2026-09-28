@@ -336,9 +336,12 @@ func (s *Store) ReconcileMirror(view MirrorView) (MirrorReconcileResult, error) 
 			result.Preserved = append(result.Preserved, name)
 			result.HighWater[name] = mirror
 		case hasMirror && hasMark:
-			if commit, ok := view.Commits[name]; ok && commit.StoreGeneration == mirror.Generation {
-				// The file's own marker authorizes this mirror value; the state
-				// stands as it is.
+			if commit, ok := view.Commits[name]; ok &&
+				commit.HubTOMLGeneration == mark.Generation && commit.StoreGeneration == mirror.Generation {
+				// The file's own marker authorizes this mirror value only when
+				// both of its generations name the state as it stands: the
+				// file's mark and the store mirror. A stale marker — one whose
+				// hub.toml generation names an older write — authorizes nothing.
 				continue
 			}
 			switch {

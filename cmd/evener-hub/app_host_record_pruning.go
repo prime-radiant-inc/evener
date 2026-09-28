@@ -60,6 +60,9 @@ func nonNilRecords(records hostTOMLRecords) hostTOMLRecords {
 	if records.storeSync == nil {
 		records.storeSync = map[string]HostStoreSyncIntent{}
 	}
+	if records.droppedStoreSync == nil {
+		records.droppedStoreSync = map[string]struct{}{}
+	}
 	if records.prunedReceipts == nil {
 		records.prunedReceipts = map[string]PrunedReceiptMarker{}
 	}
@@ -289,6 +292,9 @@ func (m *hubHostManager) deriveHostTOMLRecords(entries, known []hostreg.Host, ch
 	if records.storeSync == nil {
 		records.storeSync = map[string]HostStoreSyncIntent{}
 	}
+	if records.droppedStoreSync == nil {
+		records.droppedStoreSync = map[string]struct{}{}
+	}
 	if records.droppedRemnants == nil {
 		records.droppedRemnants = map[string]struct{}{}
 	}
@@ -314,10 +320,11 @@ func (m *hubHostManager) deriveHostTOMLRecords(entries, known []hostreg.Host, ch
 	if change.dropStoreSync != "" {
 		// The follow-up write that clears a converged intent, and the
 		// compensation that drops the intent with its hub.toml restore: the
-		// stored set is the write's own, so the removal needs no dropped-name
-		// ledger — the ownership rule already refuses to preserve the file's
-		// older copy for a name this write owns.
+		// dropped ledger records the name so the writer's preservation rule
+		// cannot ride the file's older copy back in for a name this write does
+		// not own (an intent keyed by a name neither live nor tombstoned).
 		delete(records.storeSync, change.dropStoreSync)
+		records.droppedStoreSync[change.dropStoreSync] = struct{}{}
 	}
 	if change.storeSync != nil {
 		records.storeSync[change.storeSync.Name] = change.storeSync.Intent

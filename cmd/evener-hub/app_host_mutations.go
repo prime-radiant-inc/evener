@@ -430,53 +430,117 @@ func (m *hubHostManager) compensateStagedCommit(plan *hostCommitPlan, previous [
 // rows come back exactly as the restored hub.toml's generation revalidates them
 // — only when the purge actually landed, which the compensation record's own
 // phase is the durable evidence of — and the armed record and its stash clear.
+// The clear happens only after every step of the arm succeeded: a failed step
+// returns early leaving the record and its stash for the next boot, never a
+// cleared compensation beside a half-restored state.
 // The mutation lock is held on entry and released before return.
 func (m *hubHostManager) compensateStagedCrossFile(plan *hostCommitPlan, previous []hostreg.Host, cause error, stash string) (appwire.HostMutationResult, error) {
+	// The mutation lock is held on entry; every path releases it here.
+	defer m.cfg.mu.Unlock()
 	adopted := m.adoptedPreimage(plan, previous)
 	err := m.rollbackHubTOML(adopted, unionHosts(adopted, plan.Entries), cause, compensationChange(plan))
 	rollbackConverged := !errors.Is(err, errHubTOMLRollbackFailed)
 	// The live set the rollback restored: the pre-mutation entries (with any
 	// adopted foreign edit for this name).
 	m.cfg.store.set(adopted)
-	if m.cfg.ops != nil {
-		if !rollbackConverged {
-			// The hub.toml restore did not converge: leave the record and its
-			// stash for the next boot to retry, never a cleared compensation
-			// beside a diverged file.
-			m.logf("remove %q compensation: hub.toml rollback did not converge; the store-local record and its stash are left for the next boot", plan.Name)
-			m.cfg.mu.Unlock()
+	m.unmarkMutating(plan.Name)
+	if m.cfg.ops == nil {
+		m.pruneHubTOMLStash(stash)
+		return appwire.HostMutationResult{}, err
+	}
+	record, open := m.cfg.ops.Compensation(plan.Name)
+	if !open {
+		// Nothing armed (the arm itself failed): there is no store state to
+		// compensate, and the stash has no record to serve.
+		m.pruneHubTOMLStash(stash)
+		return appwire.HostMutationResult{}, err
+	}
+	if !rollbackConverged {
+		// The hub.toml restore did not converge: leave the record and its stash
+		// for the next boot to retry, never a cleared compensation beside a
+		// diverged file.
+		m.logf("remove %q compensation: hub.toml rollback did not converge; the store-local record and its stash are left for the next boot", plan.Name)
+		return appwire.HostMutationResult{}, err
+	}
+	// The restored hub.toml's generation revalidates the rows that come back.
+	generation, incarnation := plan.Entry.Generation, plan.Entry.IncarnationID
+	alsoKeep := func(row hostops.Token) bool {
+		return row.Generation == generation && row.IncarnationID == incarnation
+	}
+	failStep := func(step string, stepErr error) {
+		m.logf("remove %q compensation: step %s failed; the record and its stash are left for the next boot: %v", plan.Name, step, stepErr)
+	}
+	seam := func(step string) error { return m.compensationStepFailure(plan.Name, step) }
+	switch hostops.NormalizeCompensationPhase(record.Phase) {
+	case hostops.CompensationArmed:
+		// The purge never landed: the rows are untouched.
+	case hostops.CompensationHubTOML, hostops.CompensationRows:
+		// The purge landed (the record advanced in the same write): the hub.toml
+		// restore is back, so the rows the restored generation revalidates are
+		// re-inserted, then the runtime step advances and the record clears. A
+		// record left in `rows` by an earlier crash resumes the same way.
+		if hostops.NormalizeCompensationPhase(record.Phase) == hostops.CompensationHubTOML {
+			if stepErr := seam("advance-rows"); stepErr != nil {
+				failStep("advance-rows", stepErr)
+				return appwire.HostMutationResult{}, err
+			}
+			if stepErr := m.cfg.ops.AdvanceCompensation(plan.Name, hostops.CompensationRows); stepErr != nil {
+				failStep("advance-rows", stepErr)
+				return appwire.HostMutationResult{}, err
+			}
+		}
+		if stepErr := seam("reinsert"); stepErr != nil {
+			failStep("reinsert", stepErr)
 			return appwire.HostMutationResult{}, err
 		}
-		if record, ok := m.cfg.ops.Compensation(plan.Name); ok {
-			switch hostops.NormalizeCompensationPhase(record.Phase) {
-			case hostops.CompensationArmed:
-				// The purge never landed: the rows are untouched.
-			case hostops.CompensationHubTOML:
-				// The purge landed (the record advanced in the same write): the
-				// hub.toml restore is back, so the rows the restored generation
-				// revalidates are re-inserted, then the runtime step advances and
-				// the record clears.
-				if aerr := m.cfg.ops.AdvanceCompensation(plan.Name, hostops.CompensationRows); aerr != nil {
-					m.logf("remove %q compensation: record not advanced to the rows phase: %v", plan.Name, aerr)
-				} else if _, rerr := m.cfg.ops.ReinsertCompensationRows(plan.Name, func(row hostops.Token) bool {
-					return row.Generation == plan.Entry.Generation
-				}); rerr != nil {
-					m.logf("remove %q compensation: purged token rows not re-inserted: %v", plan.Name, rerr)
-				}
-				if aerr := m.cfg.ops.AdvanceCompensation(plan.Name, hostops.CompensationClear); aerr != nil {
-					m.logf("remove %q compensation: record not advanced past the runtime revert: %v", plan.Name, aerr)
-				}
-			default:
-				m.logf("remove %q compensation: record left in phase %q", plan.Name, record.Phase)
-			}
-			if cerr := m.cfg.ops.ClearCompensation(plan.Name); cerr != nil {
-				m.logf("remove %q compensation: record not cleared: %v", plan.Name, cerr)
-			}
+		if _, stepErr := m.cfg.ops.ReinsertCompensationRows(plan.Name, alsoKeep); stepErr != nil {
+			failStep("reinsert", stepErr)
+			return appwire.HostMutationResult{}, err
 		}
+		if stepErr := seam("advance-clear"); stepErr != nil {
+			failStep("advance-clear", stepErr)
+			return appwire.HostMutationResult{}, err
+		}
+		if stepErr := m.cfg.ops.AdvanceCompensation(plan.Name, hostops.CompensationClear); stepErr != nil {
+			failStep("advance-clear", stepErr)
+			return appwire.HostMutationResult{}, err
+		}
+	case hostops.CompensationRuntime:
+		// A record an earlier crash left past the rows step: advance it.
+		if stepErr := seam("advance-clear"); stepErr != nil {
+			failStep("advance-clear", stepErr)
+			return appwire.HostMutationResult{}, err
+		}
+		if stepErr := m.cfg.ops.AdvanceCompensation(plan.Name, hostops.CompensationClear); stepErr != nil {
+			failStep("advance-clear", stepErr)
+			return appwire.HostMutationResult{}, err
+		}
+	case hostops.CompensationClear:
+		// The rows are already converged; the clear is next.
+	default:
+		m.logf("remove %q compensation: record in unknown phase %q; left for the next boot", plan.Name, record.Phase)
+		return appwire.HostMutationResult{}, err
+	}
+	if stepErr := seam("clear"); stepErr != nil {
+		failStep("clear", stepErr)
+		return appwire.HostMutationResult{}, err
+	}
+	if stepErr := m.cfg.ops.ClearCompensation(plan.Name); stepErr != nil {
+		failStep("clear", stepErr)
+		return appwire.HostMutationResult{}, err
 	}
 	m.pruneHubTOMLStash(stash)
-	m.cfg.mu.Unlock()
 	return appwire.HostMutationResult{}, err
+}
+
+// compensationStepFailure consults the test-only compensation-step seam. It is
+// nil in production, where the store's own write failures are the only way a
+// step fails.
+func (m *hubHostManager) compensationStepFailure(host, step string) error {
+	if m.testOnlyFailCompensationStep == nil {
+		return nil
+	}
+	return m.testOnlyFailCompensationStep(host, step)
 }
 
 // keylessAddObservedRowLocked is spec §5's read-after-unknown comparison for a keyless
@@ -940,6 +1004,10 @@ func (m *hubHostManager) RemoveResult(ctx context.Context, params appwire.HostRe
 	plan.reconcileFingerprint, _ = hubTOMLFingerprintAt(m.cfg.configPath)
 	if err := m.stageCommit(plan, m.nowTime()); err != nil {
 		err = m.compensateStagedWrite(plan, prev, err)
+		// The cross-file commit never armed: the staged write's compensation
+		// drops the intent with the staged records, and the stash has no record
+		// left to serve.
+		m.pruneHubTOMLStash(stash)
 		m.cfg.mu.Unlock()
 		return appwire.HostMutationResult{}, err
 	}
@@ -953,7 +1021,9 @@ func (m *hubHostManager) RemoveResult(ctx context.Context, params appwire.HostRe
 	// recovery then re-runs the pinned teardown to completion, and that re-run is
 	// idempotent ("an already-applied swap lands on the same values").
 	if err := m.flipRuntimeSwapped(plan); err != nil {
-		return m.compensateStagedCommit(plan, prev, nil, err)
+		result, cerr := m.compensateStagedCommit(plan, prev, nil, err)
+		m.pruneHubTOMLStash(stash)
+		return result, cerr
 	}
 	m.cfg.store.remove(host.Name)
 	m.cfg.store.addReceipt(receiptKey, receipt)

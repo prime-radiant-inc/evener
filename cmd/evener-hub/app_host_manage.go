@@ -854,7 +854,7 @@ func writeHubTOMLHostsRecords(path string, entries, known []hostreg.Host, record
 	} else {
 		doc["staged_receipts"] = stagedTables
 	}
-	storeSyncTables := hubTOMLStoreSyncTables(fileCfg, entries, known, records.storeSync)
+	storeSyncTables := hubTOMLStoreSyncTables(fileCfg, entries, known, records.storeSync, records.droppedStoreSync)
 	if len(storeSyncTables) == 0 {
 		delete(doc, "pending_store_sync")
 	} else {
@@ -1392,6 +1392,12 @@ type hubHostManager struct {
 	// cleared compensation beside a diverged runtime — is falsifiable without
 	// a live diverged registry. Nil in production.
 	testOnlyFailRuntimeRevert func(host string) error
+	// testOnlyFailCompensationStep, when non-nil, fails one named step of the
+	// live cross-file compensation ("advance-rows", "reinsert",
+	// "advance-clear", "clear") for the host. It exists so §9's failure posture
+	// — the record and its stash left for the next boot after any failed step —
+	// is falsifiable without a store write failure. Nil in production.
+	testOnlyFailCompensationStep func(host, step string) error
 }
 
 // newHubHostManager builds the manager over the live registries. hosts is the
@@ -2669,7 +2675,7 @@ func validateHostMirrorCommits(commits map[string]HostMirrorCommit) error {
 // this write does not own, preserved verbatim — the same ownership rule the
 // other record tables apply, so an intent a mutation does not own is not
 // silently dropped by its rewrite. A nil known is the exact-write sentinel.
-func hubTOMLStoreSyncTables(cfg Config, entries, known []hostreg.Host, intents map[string]HostStoreSyncIntent) map[string]HostStoreSyncIntent {
+func hubTOMLStoreSyncTables(cfg Config, entries, known []hostreg.Host, intents map[string]HostStoreSyncIntent, dropped map[string]struct{}) map[string]HostStoreSyncIntent {
 	out := make(map[string]HostStoreSyncIntent, len(intents)+len(cfg.PendingStoreSync))
 	maps.Copy(out, intents)
 	owned := ownedRecordNames(entries, known)
@@ -2681,6 +2687,11 @@ func hubTOMLStoreSyncTables(cfg Config, entries, known []hostreg.Host, intents m
 			continue
 		}
 		if _, ok := owned[name]; ok {
+			continue
+		}
+		if _, pruned := dropped[name]; pruned {
+			// The derivation dropped this intent (a converged clear, a
+			// compensation): the file's older copy must not ride back in.
 			continue
 		}
 		out[name] = intent
@@ -2876,6 +2887,31 @@ func (m *hubHostManager) reconcilePipelineBoot() {
 	m.reconcileCompensations()
 	m.reconcileStoreSyncIntents()
 	m.reconcileTokenRows()
+	m.pruneOrphanHubTOMLStash()
+}
+
+// pruneOrphanHubTOMLStash removes the canonical stash when no open
+// compensation record names it: "a stash left by a crash is ignored (safe to
+// prune) at boot — EXCEPT a stash named by a live `pendingCompensation`
+// record's stash reference … that record is the compensation's sole durable
+// authority" (registry spec 08 §6). Only the canonical path is this pass's to
+// prune; a record naming any other path keeps that path, and this pass leaves
+// it alone.
+func (m *hubHostManager) pruneOrphanHubTOMLStash() {
+	path := strings.TrimSpace(m.cfg.configPath)
+	if path == "" {
+		return
+	}
+	stash := hubTOMLStashPath(path)
+	if _, err := os.Stat(stash); err != nil {
+		return
+	}
+	for _, record := range m.cfg.ops.Compensations() {
+		if record.Stash == stash {
+			return
+		}
+	}
+	m.pruneHubTOMLStash(stash)
 }
 
 // reconcileHostRemovedPass applies every loaded tombstone to the store (§4's
@@ -2991,15 +3027,34 @@ func (m *hubHostManager) applyMirrorHighWater(highWater map[string]hostops.Bound
 		raises[name] = raised
 		marks[name] = hostreg.HighWater{Generation: raised.Generation, PresenceEpoch: raised.PresenceEpoch}
 		for i := range entries {
-			if entries[i].Name == name {
-				entries[i].Generation = raised.Generation
+			if entries[i].Name != name {
+				continue
 			}
+			if entries[i].IncarnationID != raised.IncarnationID {
+				// The raise came from a store-mirror identity the live entry
+				// does not carry (a preserved mirror under an unmaterialized
+				// name): only the counters are seeded, never the entry's own
+				// incarnation.
+				continue
+			}
+			// The entry carries the whole raised triple: a live name's
+			// incarnation is the file mark's own (the raise preserves it), and
+			// writing the full triple keeps the live entry, its [generations]
+			// mark and the registry's seeded counters one operation rather than
+			// three that could drift.
+			entries[i].Generation = raised.Generation
+			entries[i].IncarnationID = raised.IncarnationID
+			entries[i].PresenceEpoch = raised.PresenceEpoch
 		}
 	}
 	if err := m.persistHosts(entries, entries, hostPersistChange{highWaterRaises: raises}); err != nil {
 		m.logf("boot generation-mirror high-water for %s not written: %v", m.cfg.configPath, err)
 		return
 	}
+	// SeedHighWater raises the live registry's entry for a name whose counter
+	// sits below the mark (§1: a live entry is never left below its mark), so
+	// the next removal or edit records the raised generation, never the
+	// discarded one.
 	m.cfg.hosts.SeedHighWater(marks)
 	m.cfg.store.set(entries)
 }
@@ -3153,6 +3208,16 @@ func (m *hubHostManager) resumeArmedCompensation(record hostops.Compensation) {
 func (m *hubHostManager) resumeCompensation(record hostops.Compensation) {
 	switch hostops.NormalizeCompensationPhase(record.Phase) {
 	case hostops.CompensationHubTOML:
+		// §9's commit-point check, the same one the armed arm makes: an intent
+		// already cleared means the commit path passed the commit point before
+		// the crash, so the purge stands and nothing is restored. Only this arm
+		// checks it — past it the restore has already run, and the restored
+		// pre-mutation bytes carry no intent by construction.
+		fileCfg, hasFile := m.hostFileRecords()
+		if _, intentLive := fileCfg.PendingStoreSync[record.Host]; !hasFile || !intentLive {
+			m.clearCompensation(record, "the intent is already cleared")
+			return
+		}
 		if err := m.restoreHubTOMLFromStash(record.Stash); err != nil {
 			m.logf("boot compensation for %q: hub.toml not restored: %v", record.Host, err)
 			return
@@ -3165,12 +3230,12 @@ func (m *hubHostManager) resumeCompensation(record hostops.Compensation) {
 		fallthrough
 	case hostops.CompensationRows:
 		restored, ok := m.hostFileRecords()
-		generation, live := uint64(0), false
+		generation, incarnation, live := uint64(0), "", false
 		if ok {
-			generation, live = restoredGeneration(restored, record.Host)
+			generation, incarnation, live = m.restoredIdentity(restored, record.Host)
 		}
 		inserted, err := m.cfg.ops.ReinsertCompensationRows(record.Host, func(row hostops.Token) bool {
-			return live && row.Generation == generation
+			return live && row.Generation == generation && row.IncarnationID == incarnation
 		})
 		if err != nil {
 			m.logf("boot compensation for %q: rows not re-inserted: %v", record.Host, err)
@@ -3211,29 +3276,40 @@ func (m *hubHostManager) clearCompensation(record hostops.Compensation, why stri
 	m.logf("boot compensation for %q cleared: %s", record.Host, why)
 }
 
-// restoredGeneration returns the generation the restored hub.toml records for
-// name, and whether the file carries a live entry for it: the pair the rows arm
-// revalidates a preimage row against.
-func restoredGeneration(cfg Config, name string) (uint64, bool) {
-	live := false
-	for _, entry := range hostRegistryEntries(cfg) {
-		if entry.Name == name {
-			live = true
+// restoredIdentity returns the identity the rows arm revalidates a preimage row
+// against: the restored hub.toml's live entry for name, with the generation and
+// incarnation the restored bytes record. A hand-authored restored file (or one
+// whose machine records were lost) carries no [generations] mark or no
+// [host_records] record; the live registry's own pair is then the identity the
+// row must bind to, exactly what the registry's load minted for the name — a
+// zero pair would re-insert nothing.
+func (m *hubHostManager) restoredIdentity(cfg Config, name string) (uint64, string, bool) {
+	entry, present := hostEntryNamed(hostRegistryEntries(cfg), name)
+	if !present {
+		return 0, "", false
+	}
+	if entry.Generation == 0 || entry.IncarnationID == "" {
+		if current, ok := m.cfg.hosts.Get(name); ok {
+			if entry.Generation == 0 {
+				entry.Generation = current.Generation
+			}
+			if entry.IncarnationID == "" {
+				entry.IncarnationID = current.IncarnationID
+			}
 		}
 	}
-	if !live {
-		return 0, false
-	}
-	return cfg.Generations[name].Generation, true
+	return entry.Generation, entry.IncarnationID, true
 }
 
 // reapplyRestoredRuntime re-applies the restored hub.toml's runtime set to the
 // live handles (§9's runtime arm): the durable entry set converges to the
 // restored file, the registry's counters are seeded to its marks, and a name
-// the restored file no longer carries drops its derived state. A name the
-// restored file carries but the boot registry did not register is logged: the
-// registry has no boot-restore setter for a persisted identity, so it rejoins
-// at the next start; the durable state is converged either way.
+// the restored file no longer carries drops its derived state. The process must
+// actually serve the restored entry before the record may clear: hostreg has no
+// boot-restore setter for a persisted identity, so a name the boot registry did
+// not register (or registered under another identity) returns an error and
+// leaves the compensation open — the next boot loads the restored file with its
+// registry and converges it.
 func (m *hubHostManager) reapplyRestoredRuntime(host string) error {
 	if m.testOnlyFailRuntimeRevert != nil {
 		if err := m.testOnlyFailRuntimeRevert(host); err != nil {
@@ -3245,19 +3321,35 @@ func (m *hubHostManager) reapplyRestoredRuntime(host string) error {
 		return fmt.Errorf("restored %s is unreadable", m.cfg.configPath)
 	}
 	entries := hostRegistryEntries(restored)
-	m.cfg.store.set(entries)
-	m.cfg.hosts.SeedHighWater(hostHighWaterMarks(restored))
 	entry, present := hostEntryNamed(entries, host)
 	if !present {
+		m.cfg.store.set(entries)
+		m.cfg.hosts.SeedHighWater(hostHighWaterMarks(restored))
 		m.cfg.mu.Lock()
 		defer m.cfg.mu.Unlock()
 		m.dropHostDerivedState(host)
 		return nil
 	}
-	if current, ok := m.cfg.hosts.Get(host); ok && sameEffectiveHostEntry(current, entry) {
-		return nil
+	// §9's runtime arm re-applies the restored set to the live handles: the
+	// process must actually serve the restored entry before the record may
+	// clear. hostreg has no boot-restore setter for a persisted identity, so a
+	// name the boot registry did not register (or registered under another
+	// identity) leaves the record open — the next boot loads the restored file
+	// and converges it.
+	current, registered := m.cfg.hosts.Get(host)
+	if !registered {
+		return fmt.Errorf("host %q is live in the restored %s but the boot registry did not register it; leaving the compensation open for the next boot",
+			host, m.cfg.configPath)
 	}
-	m.logf("boot compensation: host %q is live in the restored %s but was not registered at load; it rejoins the live registry at the next hub start", host, m.cfg.configPath)
+	if entry.IncarnationID != "" && current.IncarnationID != entry.IncarnationID {
+		return fmt.Errorf("host %q carries a different restored incarnation id; leaving the compensation open", host)
+	}
+	if completeIdentity(entry) && !sameEffectiveHostEntry(current, entry) {
+		return fmt.Errorf("host %q carries a different identity in the restored %s than the live registry; leaving the compensation open",
+			host, m.cfg.configPath)
+	}
+	m.cfg.store.set(entries)
+	m.cfg.hosts.SeedHighWater(hostHighWaterMarks(restored))
 	return nil
 }
 

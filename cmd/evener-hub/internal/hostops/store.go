@@ -1443,6 +1443,18 @@ func ownedKeysFor(owned map[string]map[string]struct{}, path string) (map[string
 	if key, ok := strings.CutPrefix(path, "removedHosts."); ok && key != "" {
 		return owned["removedHosts[]"], true
 	}
+	if key, ok := strings.CutPrefix(path, "pendingCompensation."); ok && key != "" {
+		// The record's preimage rows are objects this store decodes too, and the
+		// walk reaches them as "<map>.<name>.rows[]" (the array itself carries
+		// no keys).
+		if strings.HasSuffix(key, ".rows[]") {
+			return owned["pendingCompensation[].rows[]"], true
+		}
+		if strings.HasSuffix(key, ".rows") {
+			return nil, false
+		}
+		return owned["pendingCompensation[]"], true
+	}
 	return nil, false
 }
 

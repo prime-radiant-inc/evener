@@ -915,7 +915,13 @@ func openHostOpsStore(stateRoot string, stderr io.Writer, retention hostops.Rete
 	// reap of its local orphan boundary FIRST, before hub.toml loads, before the
 	// interrupted transition, and before anything serves. Crash-fencing §3
 	// (slice S19) owns that reap; this is the named seam it fills, and nothing
-	// here does its work — no host is touched, no epoch is advanced.
+	// here does its work — no host is touched, no epoch is advanced. Its failure
+	// contract is fail-closed and durable, never a startup refusal: an
+	// unverifiable boundary keeps its `pending-spawn` intent open and marks the
+	// affected records `orphan-unverified` with the host admission-fenced,
+	// retried on every boot (crash-fencing §3's local-reap rule and §7's boot
+	// reaping order). The error below is what that implementation reports; the
+	// hub serves either way, exactly as it does when this seam is a no-op.
 	if reaped, err := reapLocalOrphanBoundary(store); err != nil {
 		_, _ = fmt.Fprintf(stderr, "[hub] host operation store opened, but its local orphan boundary was not reaped: %v\n", err)
 	} else if reaped > 0 {
@@ -947,9 +953,17 @@ func openHostOpsStore(stateRoot string, stderr io.Writer, retention hostops.Rete
 // immediately after the operation store loads and before hub.toml loads, the
 // interrupted transition, or any request is served. Slice S19 owns the reap —
 // it resolves the store's local orphan boundary so a crashed epoch's remote
-// fence is never crossed locally; this slice wires the order and the seam, and
-// deliberately builds none of the reap itself (no remote call, no guard
-// advance, no kill/wait).
+// fence is never crossed locally — and this slice deliberately builds none of
+// it (no remote call, no guard advance, no kill/wait); the seam exists so the
+// order and the call site are real today.
+//
+// The reap's failure contract, per crash-fencing §3, is fail-closed and
+// durable, never a startup refusal: enumeration that cannot verify an orphan
+// keeps the boundary's `pending-spawn` intent open and marks the affected
+// records `orphan-unverified` with the host admission-fenced, and every
+// subsequent boot retries it (§7). The returned error is that implementation's
+// to report; this call site logs it and serves, because a failed reap fences
+// affected hosts through the record, not through the hub's startup.
 func reapLocalOrphanBoundary(store *hostops.Store) (int, error) {
 	_ = store
 	return 0, nil
