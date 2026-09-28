@@ -410,6 +410,26 @@ describe("native demonstration hub's redesign fleet", () => {
 		}
 	});
 
+	it("tells a client connecting after the question the sequence it already reached", async () => {
+		const hub = await createDemoHub(0, undefined, {});
+		hub.askQuestion();
+		const client = createHubClient(
+			hub.origin,
+			"",
+			(url) => new WebSocket(url) as unknown as WebSocketLike,
+		);
+		try {
+			// The navigation store refuses a reconnect whose sequence is below
+			// the last one it accepted, so a phone connected through the
+			// question must be told 1 again when it comes back.
+			const handshake = await client.connect();
+			expect(handshake.navigation?.sequence).toBe(1);
+		} finally {
+			client.close();
+			await hub.close();
+		}
+	});
+
 	it("asks the question from its askAfterSeconds timer", async () => {
 		// Only the timer functions are faked: the sockets still need real I/O.
 		// The delay stays under the client's 20s heartbeat, which the same

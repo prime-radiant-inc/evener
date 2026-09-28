@@ -55,15 +55,6 @@ export const DEMO_FLEET_GENERATION = "demo-fleet";
 const respond = (revision: number, params: NavigationReadParams, data: unknown): NavigationReadResponse =>
 	wireV2(params, data, `"demo-fleet-${revision}"`, revision, DEMO_FLEET_GENERATION);
 
-// demo-hub.mts's handshake capability, built here so it is the one file in
-// mobile-native that touches @evener/appwire-client/testing/ at all: that
-// subpath is in-repo test support (AGENTS.md "Importing the AppWire
-// TypeScript package"), and only a test or dev-support file may import it --
-// this one qualifies by living under src/dev/, the way the web's own
-// analogous fixture (cmd/evener-hub/frontend/src/dev/editorial-preview/) does.
-export function navigationCapability(): NavigationCapability {
-	return capability(DEMO_FLEET_GENERATION);
-}
 
 // A local copy of that same module's relativeAge (now/m/h/d), for the same
 // reason: SearchResult.age needs it and importing it hits the barrel above.
@@ -580,6 +571,15 @@ interface FleetAnswers {
 }
 
 export interface DemoFleet extends FleetAnswers {
+	// demo-hub.mts's handshake capability, carrying the sequence the fleet
+	// has reached: the navigation store refuses a reconnect whose sequence
+	// moved backward within the generation. Built here so this is the one
+	// file in mobile-native that touches @evener/appwire-client/testing/ at
+	// all: that subpath is in-repo test support (AGENTS.md "Importing the
+	// AppWire TypeScript package"), and only a test or dev-support file may
+	// import it -- this one qualifies by living under src/dev/, the way the
+	// web's own analogous fixture (cmd/evener-hub/frontend/src/dev/editorial-preview/) does.
+	navigationCapability(): NavigationCapability;
 	// Turns ASKING_SESSION_ID's working row into a pending question and
 	// returns the evener/navigation/invalidated payload a real hub would send
 	// for that change.
@@ -634,6 +634,7 @@ export function createDemoFleet(options: DemoFleetOptions = {}): DemoFleet {
 		answerSearch: (params) => answers.answerSearch(params),
 		answerAuthList: () => answers.answerAuthList(),
 		answerPluginList: () => answers.answerPluginList(),
+		navigationCapability: () => ({ ...capability(DEMO_FLEET_GENERATION), sequence }),
 		askQuestion,
 	};
 }

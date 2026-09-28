@@ -614,6 +614,18 @@ describe("demo fleet question after a delay", () => {
 			],
 		});
 	});
+
+	it("advertises the question's sequence in its capability, so a client reconnecting afterwards never sees it move backward", () => {
+		const demo = fleet();
+		expect(demo.navigationCapability()).toEqual({
+			version: 1,
+			generationId: DEMO_FLEET_GENERATION,
+			sequence: 0,
+			readVersions: [2],
+		});
+		const payload = demo.askQuestion();
+		expect(demo.navigationCapability().sequence).toBe(payload.sequence);
+	});
 });
 
 describe("demo fleet offline propagation", () => {

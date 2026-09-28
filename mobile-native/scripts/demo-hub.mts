@@ -11,7 +11,7 @@ import type {
 	Turn,
 	TurnStartParams,
 } from "@evener/appwire-client";
-import { createDemoFleet, navigationCapability, type DemoFleetOptions } from "../src/dev/demoFleet.js";
+import { createDemoFleet, type DemoFleetOptions } from "../src/dev/demoFleet.js";
 
 export async function createDemoHub(
 	port = 9196,
@@ -97,7 +97,6 @@ export async function createDemoHub(
 			directoryComplete: false,
 			auth: demoFleet !== null,
 		},
-		...(demoFleet ? { navigation: navigationCapability() } : {}),
 	};
 	let turnNumber = 0;
 	// Makes the fleet's working row ask its question and tells every socket
@@ -148,7 +147,9 @@ export async function createDemoHub(
 				const selected = threads.get(params.ref);
 				switch (request.method) {
 					case "initialize":
-						result = handshake;
+						result = demoFleet
+							? { ...handshake, navigation: demoFleet.navigationCapability() }
+							: handshake;
 						break;
 					case "ping":
 						result = {};
