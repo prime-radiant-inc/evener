@@ -67,6 +67,21 @@ func TestSearchSnippetOfEmptyTextIsNeverNil(t *testing.T) {
 	}
 }
 
+// A query word containing an underscore (e.g. "settle_race") must mark a
+// message that holds its parts as separate words, the way the messages
+// index's unicode61 tokenizer actually matched it: it treats "_" as a
+// separator, so the index stored "settle" and "race" as distinct tokens and
+// matched this message on both, never on the joined identifier.
+func TestSearchSnippetMarksWordsAnUnderscoreTokenSplitInTheIndex(t *testing.T) {
+	got := searchSnippet("the settle race pass", []string{"settle_race"})
+	want := []appwire.SearchSnippetPart{
+		{Text: "the "}, {Text: "settle", Match: true}, {Text: " "}, {Text: "race", Match: true}, {Text: " pass"},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("snippet = %+v, want %+v", got, want)
+	}
+}
+
 // A single matched word longer than searchSnippetRunes (a hash, a URL, a
 // stack-trace line with no spaces) must still be marked whole rather than cut
 // mid-word and silently losing its mark: the cut never lands before the
