@@ -5,7 +5,7 @@
 import type { ComponentProps, ReactNode } from "react";
 import { createElement } from "react";
 import { act, type ReactTestRenderer } from "react-test-renderer";
-import { expect, it, vi } from "vitest";
+import { afterEach, expect, it, vi } from "vitest";
 import type { AnyNotification, Thread } from "@evener/appwire-client";
 import { flatListCalls, pressable, render, renderedText, screenConnection } from "./renderNative.testkit";
 import { ConversationScreen } from "./screens";
@@ -231,6 +231,7 @@ function thread(ref: string, status: "idle" | "active", question = false): Threa
  * mutation, recording each request in order. It sends a frame only when a
  * test calls notify(). */
 const otherThreads = new Map<string, Thread>();
+afterEach(() => otherThreads.clear());
 
 function hubClient(served: Thread, failedReads = 0, readLatencyMs = 0, olderCursor?: string) {
 	let readsToFail = failedReads;
