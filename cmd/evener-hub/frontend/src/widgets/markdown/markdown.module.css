@@ -5,8 +5,13 @@
  * ancestor. Thinking blocks are the one caller that overrides it; the rest
  * (doc pane, notifications, agent messages) take the --ink-hi default.
  *
- * --prose-font-size remains a caller override for live/settled parity.
- * The default reading surface uses the shared, body-scaled prose token. */
+ * --prose-font-size remains a caller override for live/settled parity, and
+ * the root now COMPOSES with its host: the fallback is 1em, so a host's own
+ * font-size applies and dense chrome never needs a pin. A true reading
+ * surface (agent messages, the doc pane) pins
+ * --prose-font-size: var(--font-size-prose) on an ancestor to keep the 18px
+ * reading step. Body text composes with the host; headings and GFM tables
+ * stay on the fixed document ramp below regardless - the known boundary. */
 .root {
   color: var(--markdown-ink, var(--ink-hi));
   /* Long unbreakable tokens (paths, URLs) wrap at any point rather than
@@ -15,7 +20,7 @@
    * toward min-content sizing inside fit-content bubbles. */
   overflow-wrap: anywhere;
   font-family: var(--font-prose);
-  font-size: var(--prose-font-size, var(--font-size-prose));
+  font-size: var(--prose-font-size, 1em);
   line-height: var(--line-height-body);
 }
 

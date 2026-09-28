@@ -1,11 +1,9 @@
 import type { AnyNotification, ItemModel, Thread, TurnModel } from "@evener/appwire-client";
 import { applyNotification, hydrateThread, WarningCodeContextBudget } from "@evener/appwire-client";
-import { cleanup, render, screen } from "@testing-library/react";
-import { afterEach, expect, test } from "vitest";
+import { render, screen } from "@testing-library/react";
+import { expect, test } from "vitest";
 import { ignoringTurn, itemRendererFor } from "../types";
 import { WarningItem } from "./WarningItem";
-
-afterEach(cleanup);
 
 const turn: TurnModel = { id: "turn_1", status: "completed", items: [] };
 

@@ -79,6 +79,11 @@
   color: var(--ink-low);
 }
 
+/* The expanded notice body renders through the Markdown widget, which
+ * composes with its host (1em fallback): the notice's text deliberately
+ * declares no size and inherits the ambient body step (see
+ * widgets/markdown) - one step calmer than prose, like the thinking blocks
+ * beside it. */
 .scaffoldBody {
   display: block;
   width: 100%;

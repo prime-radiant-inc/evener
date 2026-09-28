@@ -27,7 +27,6 @@ import { askRowQuestions, timeMarkerText } from "./session/transcriptRows";
 import { TranscriptImages } from "./TranscriptImages";
 import {
 	isCriticalNotice,
-	questionOptionKey,
 	steeringNoticeLabel,
 	type TimelineRow,
 } from "./timeline";
@@ -166,28 +165,6 @@ export function TimelineItem({
 		case "attachments":
 			content = <TranscriptImages images={item.items} hubId={hubId} />;
 			break;
-		case "question":
-			content = (
-				<>
-					{item.questions.map((question) => (
-						<View key={question.key} style={{ gap: 8 }}>
-							<Copy>{question.header}</Copy>
-							<Copy>{question.question}</Copy>
-							{question.options.map((option, index) => (
-								// biome-ignore lint/suspicious/noArrayIndexKey: an ask's options render in the order the agent offered them; their bounded labels can cut to the same string past the display bound, so position is their only collision-free identity.
-								<Copy key={questionOptionKey(question.key, index)}>
-									{option.label}
-									{option.recommended ? " (recommended)" : ""}
-									{option.detail ? ` — ${option.detail}` : ""}
-								</Copy>
-							))}
-							{question.why ? <Copy muted>{question.why}</Copy> : null}
-						</View>
-					))}
-					<Copy muted>Open Questions to answer by the composer.</Copy>
-				</>
-			);
-			break;
 		case "activity":
 			if (item.family === "reasoning" && item.state !== "running") {
 				content = (
@@ -270,20 +247,8 @@ export function TimelineItem({
 			break;
 	}
 	return (
-		<View
-			style={[
-				{ gap: 8 },
-				// A failure and a critical notice draw their own red rule (ErrorRow).
-				item.kind === "question"
-					? {
-							borderLeftWidth: 2,
-							borderLeftColor: colors.accent,
-							paddingLeft: 14,
-							paddingVertical: 8,
-						}
-					: null,
-			]}
-		>
+		// A failure and a critical notice draw their own red rule (ErrorRow).
+		<View style={{ gap: 8 }}>
 			{content}
 		</View>
 	);

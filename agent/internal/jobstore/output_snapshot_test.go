@@ -262,6 +262,33 @@ func TestReadOutputSnapshotPreservesStablePostReadMetadataError(t *testing.T) {
 	}
 }
 
+// TestReadOutputSnapshotReturnsTrailingObservationErrorOverPartialChange pins
+// that a fault in the trailing observation is surfaced instead of being masked
+// as errOutputChanged by the partially observed change it leaves behind.
+func TestReadOutputSnapshotReturnsTrailingObservationErrorOverPartialChange(t *testing.T) {
+	base := afero.NewMemMapFs()
+	const path = "/job.log"
+	mustWriteSnapshotFixture(t, base, path, []byte("AAAA"), 4, 0)
+	fs := &snapshotTrailingObservationFaultFS{Fs: base, path: path, appended: []byte("BBBB")}
+
+	if _, err := readOutputSnapshotOnce(fs, path, 1024, false); !errors.Is(err, errSnapshotTrailingObservation) {
+		t.Fatalf("readOutputSnapshotOnce error = %v, want trailing observation error", err)
+	}
+}
+
+// TestReadOutputWindowSnapshotReturnsTrailingObservationErrorOverPartialChange
+// is the window-reader counterpart to the snapshot-reader regression above.
+func TestReadOutputWindowSnapshotReturnsTrailingObservationErrorOverPartialChange(t *testing.T) {
+	base := afero.NewMemMapFs()
+	const path = "/job.log"
+	mustWriteSnapshotFixture(t, base, path, []byte("AAAA"), 4, 0)
+	fs := &snapshotTrailingObservationFaultFS{Fs: base, path: path, appended: []byte("BBBB")}
+
+	if _, err := readOutputWindowSnapshotOnce(fs, path, 0, 4); !errors.Is(err, errSnapshotTrailingObservation) {
+		t.Fatalf("readOutputWindowSnapshotOnce error = %v, want trailing observation error", err)
+	}
+}
+
 func TestReadOutputSnapshotRetriesCappedPrunePublicationHandoff(t *testing.T) {
 	fs := newSnapshotPruneProtocolFS(t, snapshotPruneDuringInitialHash)
 
@@ -808,6 +835,49 @@ func (fs *snapshotPostReadMetadataFaultFS) Open(name string) (afero.File, error)
 	if name == outputMetaPath(fs.path) && fs.outputOpens > 0 && fs.outputOpens%2 == 0 && !fs.faultedForWindow {
 		fs.faultedForWindow = true
 		return nil, errSnapshotPostReadMetadata
+	}
+	return fs.Fs.Open(name)
+}
+
+var errSnapshotTrailingObservation = errors.New("snapshot test: trailing observation fault")
+
+// snapshotTrailingObservationFaultFS changes the output at the trailing
+// observation's Stat boundary, so the partial after-observation differs from
+// before, then faults the trailing observation's pending-metadata read. It
+// models a concurrent append racing a failed post-read observation.
+type snapshotTrailingObservationFaultFS struct {
+	afero.Fs
+	path         string
+	appended     []byte
+	outputStats  int
+	faultPending bool
+}
+
+func (fs *snapshotTrailingObservationFaultFS) Stat(name string) (os.FileInfo, error) {
+	if name == fs.path {
+		fs.outputStats++
+		if fs.outputStats == 3 {
+			f, err := fs.OpenFile(fs.path, os.O_WRONLY|os.O_APPEND, 0)
+			if err != nil {
+				return nil, err
+			}
+			if _, err := f.Write(fs.appended); err != nil {
+				_ = f.Close()
+				return nil, err
+			}
+			if err := f.Close(); err != nil {
+				return nil, err
+			}
+			fs.faultPending = true
+		}
+	}
+	return fs.Fs.Stat(name)
+}
+
+func (fs *snapshotTrailingObservationFaultFS) Open(name string) (afero.File, error) {
+	if name == outputPendingMetaPath(outputMetaPath(fs.path)) && fs.faultPending {
+		fs.faultPending = false
+		return nil, errSnapshotTrailingObservation
 	}
 	return fs.Fs.Open(name)
 }

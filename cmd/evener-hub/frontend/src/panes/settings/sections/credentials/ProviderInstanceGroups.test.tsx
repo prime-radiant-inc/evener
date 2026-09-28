@@ -1,7 +1,7 @@
 import type { InstanceEntry } from "@evener/appwire-client";
-import { cleanup, render, screen } from "@testing-library/react";
+import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { afterEach, expect, test, vi } from "vitest";
+import { expect, test, vi } from "vitest";
 import { ProviderInstanceGroups } from "./ProviderInstanceGroups";
 
 // The interactive half of the shared listing. Its sibling InstanceRow enforces
@@ -21,8 +21,6 @@ function instance(overrides: Partial<InstanceEntry> & Pick<InstanceEntry, "name"
     ...overrides,
   };
 }
-
-afterEach(cleanup);
 
 test("an interactive row hands its instance name to onSelect", async () => {
   const onSelect = vi.fn();

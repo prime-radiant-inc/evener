@@ -544,3 +544,21 @@ func liveGenerationOwesSteering(live *delegateLiveState) bool {
 	}
 	return false
 }
+
+// generationOwesSteering reports whether delegateID's currently open generation
+// holds an admitted steering message no model request has consumed yet. A run
+// that is parked in its finalization drain reads this to run a turn so the
+// steering is acted on instead of sitting unread until an owned job ends
+// (#2796). The check is scoped to the same open generation that admitted the
+// steering: an admission carried across a covering stop belongs to a successor
+// and liveGenerationOwesSteering already excludes it.
+func (c *delegateTreeController) generationOwesSteering(delegateID string) bool {
+	if c == nil || delegateID == "" {
+		return false
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	aggregate := c.durable[delegateID]
+	live := c.live[delegateID]
+	return aggregate != nil && aggregate.CurrentRunOpen && live != nil && liveGenerationOwesSteering(live)
+}

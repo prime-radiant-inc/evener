@@ -1,6 +1,6 @@
 import { act, cleanup, render, screen } from "@testing-library/react";
 import { Suspense } from "react";
-import { afterEach, beforeAll, expect, test } from "vitest";
+import { beforeAll, expect, test } from "vitest";
 import { paneFor } from "../../shell/paneRegistry";
 
 // Warm BOTH modules up front: ./index runs registerPane() (so paneFor works),
@@ -33,8 +33,6 @@ beforeAll(async () => {
   await screen.findByText("No session open");
   cleanup();
 });
-
-afterEach(cleanup);
 
 test('registers "welcome" as a singleton pane with a constant title', () => {
   const descriptor = paneFor("welcome");

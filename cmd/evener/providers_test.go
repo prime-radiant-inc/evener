@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"errors"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -110,6 +111,36 @@ func openAIProbeServer(t *testing.T) *httptest.Server {
 	}))
 	t.Cleanup(srv.Close)
 	return srv
+}
+
+// unreachableEndpoint returns an http:// address that answers every connection
+// with a network error and keeps its port bound for the whole test.
+//
+// The obvious way to fake "nothing is listening" — bind an ephemeral port, note
+// the address, close the listener — frees the port, and another test's server
+// can be handed it before the probe connects. When that happened the probe got
+// a real HTTP answer and read the endpoint as "unsupported" for one protocol
+// while the others saw a refused connection. Holding the listener open keeps
+// the port out of the pool; closing each accepted connection without a reply
+// gives the probe an immediate network error instead of a protocol verdict, so
+// the probe never waits out its request timeout.
+func unreachableEndpoint(t *testing.T) string {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen for unreachable endpoint: %v", err)
+	}
+	t.Cleanup(func() { _ = ln.Close() })
+	go func() {
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			_ = conn.Close()
+		}
+	}()
+	return "http://" + ln.Addr().String()
 }
 
 func TestProvidersListShowsInstancesCredentialSourcesAndStrayEntries(t *testing.T) {
@@ -245,10 +276,9 @@ func TestProvidersProbeReportsProtocols(t *testing.T) {
 // An endpoint that never answered says nothing about the protocol: a refused
 // connection is an error, not a verdict that the protocol is unsupported.
 func TestProvidersProbeReportsAnUnreachableEndpointAsAnError(t *testing.T) {
-	// A port with nothing listening: the server claims one, then hands it back.
-	closed := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
-	addr := closed.URL
-	closed.Close()
+	// An address that refuses every connection while the test runs, so no other
+	// test's server can be handed its port between the probes.
+	addr := unreachableEndpoint(t)
 
 	root := providersTestEnv(t, nil)
 	writeProvidersToml(t, root, "[providers.gw]\nbase = \"openai-compatible\"\nbase_url = \""+addr+"\"\ndefault_model = \"m1\"\n")

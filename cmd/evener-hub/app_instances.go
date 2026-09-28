@@ -14,6 +14,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"slices"
 	"strings"
@@ -1194,6 +1195,21 @@ func (c *hubInstancesController) edit(params appwire.InstanceEditParams, out *ap
 		}
 		p.Transport.Vars[key] = value
 	}
+	// A clear-only edit on an implicit instance (one the environment or a
+	// curated provider supplies, with no authored entry) has no authored
+	// value to change: the entry it would write carries nothing but its id.
+	// That empty shadow changes no behavior — the name still inherits by
+	// matching (spec §4.2) — but leaves noise in providers.toml (#1024), so
+	// the edit is a no-op rather than a write. A rename is not this case: it
+	// re-keys the entry, and it pins a base below, so it always writes.
+	if !renaming && !authored && providerIsBare(p) {
+		if out != nil {
+			// Still under this edit's write locks, like the listing captured
+			// on the write path, so a concurrent edit cannot slip in.
+			*out = c.listLocked(key, keyErr)
+		}
+		return nil
+	}
 	if renaming {
 		// An entry with no base inherits protocol, surface and models from the
 		// curated provider its own name matches (spec §4.2). The new name
@@ -1300,6 +1316,13 @@ func (c *hubInstancesController) edit(params appwire.InstanceEditParams, out *ap
 	return nil
 }
 
+// providerIsBare reports whether p carries nothing beyond its id: the
+// shape an implicit instance's row keeps when an edit authored no field, so
+// writing it back would only add an empty [providers.<name>] shadow (#1024).
+func providerIsBare(p registry.Provider) bool {
+	return reflect.DeepEqual(p, registry.Provider{ID: p.ID})
+}
+
 // credentialsUnder names the credentials already filed under name, in the
 // vocabulary describeImplicit uses for the same two sources. It is what a
 // rename onto name would overwrite, so the caller can go clear the one it
@@ -1399,26 +1422,23 @@ func (c *hubInstancesController) moveCredentials(oldName, newName string) error 
 		if err := c.auth.saveAuth(c.auth.stateDir, newName, record); err != nil {
 			problems = append(problems, fmt.Sprintf("OAuth record not copied: %v", err))
 		} else {
-			// The old record (and, if refused, its still-valid old marker)
-			// is deleted only once the new name genuinely carries everything
-			// it needs to: deleting it regardless would drop the marker on
-			// both names at once if copying it failed.
-			markerCarried := true
 			if refused {
 				// Without this, the renamed instance reports signed in and
 				// healthy until its next failed refresh re-notes the refusal:
 				// reported like the record copy above, so a caller who reads
 				// "renamed" only for the marker to have silently not followed
-				// it has a way to know.
+				// it has a way to know. Attempted regardless of what happens
+				// to the old record below, like every other layer here: this
+				// function reports each layer's own failure rather than
+				// gating one layer's attempt on another's success, which
+				// would otherwise leave the instance filed under both names
+				// at once.
 				if err := authopenai.RecordRefreshRejection(c.auth.stateDir, newName, record, c.auth.now()); err != nil {
-					markerCarried = false
 					problems = append(problems, fmt.Sprintf("refresh-refusal marker not copied: %v", err))
 				}
 			}
-			if markerCarried {
-				if _, err := c.auth.deleteAuth(c.auth.stateDir, oldName); err != nil {
-					problems = append(problems, fmt.Sprintf("OAuth record for %q left behind: %v", oldName, err))
-				}
+			if _, err := c.auth.deleteAuth(c.auth.stateDir, oldName); err != nil {
+				problems = append(problems, fmt.Sprintf("OAuth record for %q left behind: %v", oldName, err))
 			}
 		}
 	}

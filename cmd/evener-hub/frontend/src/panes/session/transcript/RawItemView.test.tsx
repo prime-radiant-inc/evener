@@ -1,11 +1,9 @@
 import type { ItemModel, TurnModel } from "@evener/appwire-client";
-import { cleanup, render, screen } from "@testing-library/react";
-import { afterEach, expect, test } from "vitest";
+import { render, screen } from "@testing-library/react";
+import { expect, test } from "vitest";
 import { RawItemView } from "./RawItemView";
 import { TurnBlock } from "./TurnBlock";
 import { ignoringTurn } from "./types";
-
-afterEach(cleanup);
 
 const turn: TurnModel = { id: "turn_1", status: "inProgress", items: [] };
 

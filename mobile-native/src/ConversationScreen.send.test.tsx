@@ -5,11 +5,14 @@
 import type { ComponentProps, ReactNode } from "react";
 import { createElement } from "react";
 import { act, type ReactTestRenderer } from "react-test-renderer";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AnyNotification, Thread } from "@evener/appwire-client";
-import { flatListCalls, pressable, render, renderedText, screenConnection } from "./renderNative.testkit";
+import { nativeDrafts } from "./nativeDrafts";
+import { getNativeMutationRuntime, nativeMutationTargetKey } from "./nativeMutationRuntime";
+import { flatListCalls, pressable, render, renderedText, screenConnection, textOf } from "./renderNative.testkit";
 import { queueHosts } from "./QueueSheet";
 import { ConversationScreen } from "./screens";
+import { QuestionDock } from "./session/QuestionDock";
 import { sheetKey } from "./sheet/sheetHosts";
 import { holdQuote, takeQuote } from "./session/pendingQuote";
 
@@ -205,7 +208,7 @@ const QUESTION_TURN = {
 
 // A thread hydrated like the store tests' makeConversation: a minimal wire
 // Thread the hub answers thread/read with.
-function thread(ref: string, status: "idle" | "active", question = false, queued: string[] = []): Thread {
+function thread(ref: string, status: "idle" | "active" | "awaiting", question = false, queued: string[] = []): Thread {
 	return {
 		id: `thread-${ref}`,
 		sessionId: `session-${ref}`,
@@ -394,12 +397,175 @@ it("queues a second Send pressed before the first one's turn is seen", async () 
 	]);
 });
 
-it("hides the message field and Send while a question waits for an answer", async () => {
-	const { tree } = await mount(thread("ref-question", "active", true));
-	expect(renderedText(tree)).toContain("1 question to answer");
-	expect(field(tree)).toBeUndefined();
-	for (const label of ["Send", "Queue message", "Send answer"])
-		expect(pressable(tree, label)).toBeUndefined();
+// The composer's Send, told apart from the dock's own "Send answer" by its
+// paper airplane.
+function composerSend(tree: ReactTestRenderer, label: string) {
+	return tree.root
+		.findAll((node) => String(node.type) === "Pressable" && node.props.accessibilityLabel === label)
+		.find((node) => node.findAll((child) => child.props.name === "paperplane.fill").length > 0);
+}
+
+describe("a question waiting for an answer (spec 8.4)", () => {
+	// "Other answer…" focuses the composer on the next frame; these tests run
+	// that frame at once.
+	beforeEach(() => {
+		vi.stubGlobal("requestAnimationFrame", (frame: (time: number) => void) => {
+			frame(0);
+			return 0;
+		});
+	});
+	afterEach(() => vi.unstubAllGlobals());
+
+	it("shows the dock in the composer's place", async () => {
+		const { tree } = await mount(thread("ref-question", "awaiting", true));
+		const text = renderedText(tree);
+		expect(text).toContain("Question");
+		expect(text).toContain("Keep or drop the implied options?");
+		expect(text).not.toContain("question to answer");
+		expect(field(tree)).toBeUndefined();
+		for (const label of ["Send", "Queue message"]) expect(composerSend(tree, label)).toBeUndefined();
+		expect(composerSend(tree, "Send answer")).toBeUndefined();
+	});
+
+	it("brings the composer back for Other answer…, and sends your text as the answer", async () => {
+		const { tree, hub } = await mount(thread("ref-question-other", "awaiting", true));
+		await press(tree, "Other answer…");
+		expect(field(tree)?.props.placeholder).toBe("Answer or ask…");
+		await type(tree, "Drop them");
+		// The dock's own "Send answer" stays above; the composer's Send says
+		// it sends what you typed, so VoiceOver tells the two apart.
+		expect(composerSend(tree, "Send answer")).toBeUndefined();
+		expect(pressable(tree, "Send answer")).toBeDefined();
+		const send = composerSend(tree, "Send your answer");
+		expect(send?.props.accessibilityState).toMatchObject({ disabled: false });
+		act(() => send?.props.onPress());
+		await settle();
+		const starts = hub.requests.filter((request) => request.method === "turn/start");
+		expect(starts.map((request) => request.params.input)).toEqual([
+			[{ type: "text", text: '[answers]\n1. [Choice] \u2192 free text: "Drop them"' }],
+		]);
+		expect(renderedText(tree)).toContain("Answer sent");
+		expect(field(tree)?.props.value ?? "").toBe("");
+	});
+
+	it("sends the option chosen in the dock, and says so", async () => {
+		const { tree, hub } = await mount(thread("ref-question-option", "awaiting", true));
+		await press(tree, "Drop them");
+		await press(tree, "Send answer");
+		const starts = hub.requests.filter((request) => request.method === "turn/start");
+		expect(starts.map((request) => request.params.input)).toEqual([
+			[{ type: "text", text: '[answers]\n1. [Choice] \u2192 "Drop them"' }],
+		]);
+		expect(renderedText(tree)).toContain("Answer sent");
+	});
+
+	it("keeps a refused message's failed Edit out of the dock, in the screen's error area", async () => {
+		const ref = "ref-question-ghost";
+		const { tree } = await mount(thread(ref, "awaiting", true));
+		// A message the hub refused, as a ghost that offers Edit.
+		const runtime = getNativeMutationRuntime();
+		const targetKey = nativeMutationTargetKey("hub-1", ref);
+		const record = await runtime.storage.enqueueIntent({
+			targetRef: targetKey,
+			method: "turn/queue",
+			payload: { ref, input: [{ type: "text", text: "recover this message" }] },
+			attachments: [],
+			optimisticDisplay: { method: "turn/queue" },
+		});
+		await runtime.storage.transferToRecovery(record.clientMutationId, "rejected", "daemon refused");
+		await act(async () => {
+			await runtime.discardRecovery("no-such-row", targetKey);
+		});
+		await settle();
+		// The device can't write the draft, so Edit can't bring the message back.
+		const drafts = sqlite.ports.get("evener-drafts.db") as { runSync: (...args: unknown[]) => unknown };
+		const runSync = drafts.runSync;
+		drafts.runSync = () => {
+			throw new Error("disk full");
+		};
+		try {
+			await press(tree, "Edit");
+		} finally {
+			drafts.runSync = runSync;
+		}
+		const failure = "This message could not be restored to the draft.";
+		expect(renderedText(tree)).toContain(failure);
+		const dock = tree.root.findAll((node) => node.type === QuestionDock);
+		expect(dock).toHaveLength(1);
+		expect(textOf(dock[0])).toContain("Keep or drop the implied options?");
+		expect(textOf(dock[0])).not.toContain(failure);
+	});
+
+	// The device's saved answers can't be read until the returned function
+	// is called.
+	function questionReadsFail(): () => void {
+		nativeDrafts();
+		const drafts = sqlite.ports.get("evener-drafts.db") as { getFirstSync: (sql: string, ...args: unknown[]) => unknown };
+		const getFirstSync = drafts.getFirstSync;
+		drafts.getFirstSync = (sql, ...args) => {
+			if (sql.includes("question_")) throw new Error("database is locked");
+			return getFirstSync(sql, ...args);
+		};
+		return () => {
+			drafts.getFirstSync = getFirstSync;
+		};
+	}
+
+	function rerender(tree: ReactTestRenderer, ref: string) {
+		const route = { key: `conversation-${ref}`, name: "Conversation", params: { hubId: "hub-1", ref, title: "Session" } };
+		act(() =>
+			tree.update(
+				<ConversationScreen route={route as unknown as ConversationScreenProps["route"]} navigation={navigation} />,
+			),
+		);
+	}
+
+	it("waits to answer until saved answers load, and reads them again when the hub comes back", async () => {
+		const ref = "ref-question-unloaded";
+		const readable = questionReadsFail();
+		const { tree } = await mount(thread(ref, "awaiting", true));
+		expect(pressable(tree, "Drop them")?.props.accessibilityState).toMatchObject({ disabled: true });
+		await press(tree, "Fold");
+		await type(tree, "Drop them");
+		expect(composerSend(tree, "Send answer")?.props.accessibilityState).toMatchObject({ disabled: true });
+		readable();
+		harness.connection = { ...harness.connection, state: "connecting" };
+		rerender(tree, ref);
+		await settle();
+		harness.connection = { ...harness.connection, state: "ready" };
+		rerender(tree, ref);
+		await settle();
+		expect(composerSend(tree, "Send answer")?.props.accessibilityState).toMatchObject({ disabled: false });
+	});
+
+	it("reads saved answers again when the session comes back to front", async () => {
+		const ref = "ref-question-front";
+		const readable = questionReadsFail();
+		const { tree } = await mount(thread(ref, "awaiting", true));
+		await press(tree, "Fold");
+		await type(tree, "Drop them");
+		expect(composerSend(tree, "Send answer")?.props.accessibilityState).toMatchObject({ disabled: true });
+		readable();
+		const own = navigationState.state.routes[0];
+		navigationState.state = { index: 1, routes: [own, { key: "conversation-other", name: "Conversation" }] };
+		rerender(tree, ref);
+		await settle();
+		navigationState.state = { index: 0, routes: [own] };
+		rerender(tree, ref);
+		await settle();
+		expect(composerSend(tree, "Send answer")?.props.accessibilityState).toMatchObject({ disabled: false });
+	});
+
+	it("folds to a bar, and the composer comes back beneath it", async () => {
+		const { tree } = await mount(thread("ref-question-fold", "awaiting", true));
+		await press(tree, "Fold");
+		expect(renderedText(tree)).toContain("Answer the question");
+		expect(field(tree)?.props.placeholder).toBe("Answer or ask…");
+		// Folded, the composer's Send is the only one.
+		expect(composerSend(tree, "Send answer")).toBeDefined();
+		await press(tree, "Answer the question");
+		expect(field(tree)).toBeUndefined();
+	});
 });
 
 it("gives Send a typed command's own label, so VoiceOver hears what it runs", async () => {
@@ -791,6 +957,93 @@ describe("queued messages above the composer (spec 8.5)", () => {
 		});
 		const cancel = hub.requests.filter((request) => request.method === "turn/cancelQueued");
 		expect(cancel.map((request) => request.params)).toMatchObject([{ index: 3, expectedEntryId: "queue_4" }]);
+	});
+});
+
+describe("an approval waiting for a decision (spec 8.4, ruling 38)", () => {
+	function withApproval(ref: string): Thread {
+		const served = thread(ref, "active");
+		(served as unknown as { evener: Record<string, unknown> }).evener.pendingEscalations = [
+			{
+				threadId: served.id,
+				ref,
+				escalationId: "esc-1",
+				mode: "workspace-write",
+				tool: "write_file",
+				kind: "file_tool",
+				deniedPath: "/Users/jesse/sites/docs/index.html",
+			},
+		];
+		return served;
+	}
+
+	it("says how many more wait, and the next takes the dock once the first is settled", async () => {
+		const ref = "ref-approval-two";
+		const served = withApproval(ref);
+		const evener = (served as unknown as { evener: { pendingEscalations: Record<string, unknown>[] } }).evener;
+		evener.pendingEscalations.push({
+			...evener.pendingEscalations[0],
+			escalationId: "esc-2",
+			tool: "read_file",
+			mode: "restricted",
+			deniedPath: "/Users/jesse/notes/todo.md",
+		});
+		const { tree, hub } = await mount(served);
+		expect(renderedText(tree)).toContain("Wants to write outside the workspace");
+		expect(renderedText(tree)).toContain("1 more waiting");
+		await press(tree, "Allow this file only");
+		act(() =>
+			hub.notify({
+				method: "evener/sandbox/escalation/resolved",
+				params: { threadId: served.id, ref, escalationId: "esc-1" },
+			} as unknown as AnyNotification),
+		);
+		await settle();
+		const text = renderedText(tree).replaceAll("\u200b", "");
+		expect(text).toContain("Wants to read outside the workspace");
+		expect(text).toContain("read_file  /Users/jesse/notes/todo.md");
+		expect(text).not.toContain("more waiting");
+		expect(pressable(tree, "Allow this file only")?.props.accessibilityState).toMatchObject({ disabled: false });
+	});
+
+	it("shows the dock in the tray's place, and never the composer", async () => {
+		const { tree } = await mount(withApproval("ref-approval"));
+		expect(renderedText(tree)).toContain("Wants to write outside the workspace");
+		expect(pressable(tree, "Stop")).toBeUndefined();
+		expect(field(tree)).toBeUndefined();
+		expect(renderedText(tree)).not.toContain("approval needed");
+	});
+
+	it("keeps showing what waits while the hub is away, without Allow or Deny", async () => {
+		const { tree } = await mount(withApproval("ref-approval-away"));
+		harness.connection = { ...harness.connection, state: "connecting" };
+		const route = {
+			key: "conversation-ref-approval-away",
+			name: "Conversation",
+			params: { hubId: "hub-1", ref: "ref-approval-away", title: "Session" },
+		};
+		act(() =>
+			tree.update(
+				<ConversationScreen route={route as unknown as ConversationScreenProps["route"]} navigation={navigation} />,
+			),
+		);
+		await settle();
+		const text = renderedText(tree).replaceAll("\u200b", "");
+		expect(text).toContain("Wants to write outside the workspace");
+		expect(text).toContain("write_file  /Users/jesse/sites/docs/index.html");
+		expect(pressable(tree, "Allow this file only")).toBeUndefined();
+		expect(pressable(tree, "Deny")).toBeUndefined();
+		expect(field(tree)).toBeUndefined();
+	});
+
+	it("allows the one file, and says so", async () => {
+		const { tree, hub } = await mount(withApproval("ref-approval-allow"));
+		await press(tree, "Allow this file only");
+		const resolves = hub.requests.filter((request) => request.method === "evener/sandbox/escalation/resolve");
+		expect(resolves.map((request) => request.params)).toEqual([
+			{ ref: "ref-approval-allow", escalationId: "esc-1", approve: true },
+		]);
+		expect(renderedText(tree)).toContain("Allowed once");
 	});
 });
 

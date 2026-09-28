@@ -12808,6 +12808,10 @@ func TestHubRPCRegistersExpectedHandlerSet(t *testing.T) {
 		// mutations, refused to a remote origin exactly like plan.
 		appwire.MethodEvenerHostDeploy,
 		appwire.MethodEvenerHostRestart,
+		// The deploy pipeline's operations read (08b §8/§10): controller-local
+		// like the rest of the host surface — it pages this hub's own operation
+		// store — so it is never forwarded to a peer hub.
+		appwire.MethodEvenerHostOperations,
 		// The deploy pipeline's running probe (08b §10): served by every hub, and
 		// the one host method that admits the attached controller session
 		// instead of refusing it — a browser-origin or forwarded request is

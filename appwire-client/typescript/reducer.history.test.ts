@@ -11,6 +11,7 @@ import type { ThreadModel } from "./model";
 import {
   applyHistoryReadFailure,
   applyNotification,
+  applyReadModel,
   applyReadResponse,
   hydrateThread,
   invalidateHistory,
@@ -989,5 +990,112 @@ describe("display edges", () => {
     const model = hydrate([turn("t1", 1, [item("t1", 0)])]);
     const next = applyNotification(model, updated([item("", 4)]), NOW);
     expect(shown(next)).toEqual([["t1", [itemKey("t1", 0)]]]);
+  });
+});
+
+// applyReadModel: applyReadResponse for a caller (mobile) whose own service
+// layer hydrates the wire response into a ThreadModel before the merge
+// boundary — every case below hydrates "fresh" directly rather than calling
+// applyReadResponse with a raw response, and asserts the same outcomes the
+// wire-response tests above pin.
+describe("applyReadModel", () => {
+  test("a model with no held history adopts the fresh read wholesale", () => {
+    const { history: _held, ...bare } = hydrate([turn("t0", 1, [item("t0", 0)])]);
+    const fresh = hydrate([turn("t1", 4, [item("t1", 3)])]);
+    const next = applyReadModel(bare, fresh);
+    expect(shown(next)).toEqual([["t1", [itemKey("t1", 3)]]]);
+  });
+
+  test("a same-incarnation read merges by version, keeping held turns the fresh read omits", () => {
+    const held = hydrate([turn("t1", 1, [item("t1", 0)])]);
+    const fresh = hydrate([turn("t2", 3, [item("t2", 2)])], { length: 200 });
+    const next = applyReadModel(held, fresh);
+    expect(shown(next)).toEqual([
+      ["t1", [itemKey("t1", 0)]],
+      ["t2", [itemKey("t2", 2)]],
+    ]);
+  });
+
+  test("a shorter same-incarnation read is discarded", () => {
+    const held = hydrate([turn("t1", 1, [item("t1", 0)])], { length: 200 });
+    const fresh = hydrate([turn("t2", 3, [item("t2", 2)])], { length: 100 });
+    const next = applyReadModel(held, fresh);
+    expect(shown(next)).toEqual(shown(held));
+  });
+
+  test("another incarnation replaces the whole history", () => {
+    const held = hydrate([turn("t1", 1, [item("t1", 0)])], { incarnation: "inc_a" });
+    const fresh = hydrate([turn("t2", 3, [item("t2", 2)])], { incarnation: "inc_b" });
+    const next = applyReadModel(held, fresh);
+    expect(shown(next)).toEqual([["t2", [itemKey("t2", 2)]]]);
+  });
+
+  test("a merge keeps the held older cursor when the earliest held item is older than the fresh window", () => {
+    const paged = mergeOlderItemPage(
+      hydrate([turn("t0", 1), turn("t2", 3, [item("t2", 2)])], { olderCursor: "window" }),
+      { ...page([turn("t1", 2, [item("t1", 1)])]), nextCursor: "older" },
+    );
+    expect(paged.olderCursor).toBe("older");
+    const fresh = hydrate([turn("t2", 4, [item("t2", 2), item("t2", 3)])], { olderCursor: "window" });
+    const next = applyReadModel(paged, fresh);
+    expect(next.olderCursor).toBe("older");
+    expect(shown(next)).toEqual([
+      ["t0", []],
+      ["t1", [itemKey("t1", 1)]],
+      ["t2", [itemKey("t2", 2), itemKey("t2", 3)]],
+    ]);
+  });
+
+  // roborev round 1 (High): a caller here (mobile) never issues a request
+  // generation of its own — no issueLatestWindowRead, no requestGeneration
+  // on the wire request — so every read hydrates at appliedGeneration 0.
+  // readDisposition's own invalidation gate (`generation <=
+  // invalidatedAtGeneration`) assumes a caller that bumps its OWN generation
+  // before every read; gating on it here would read every recovering read's
+  // generation (0) as no newer than what invalidated it (0), discard it
+  // forever, and freeze the thread.
+  test("a resync-invalidated model recovers on the next read despite carrying no request generation of its own", () => {
+    const model = hydrate([turn("t1", 1, [item("t1", 0)])], { bootGeneration: "1", epoch: 0 });
+    const invalid = applyNotification(
+      model,
+      { method: "evener/thread/resync", params: { threadId: THREAD_ID, ref: REF, bootGeneration: "1", epoch: 1 } },
+      NOW,
+    );
+    expect(invalid.history?.invalidatedAtGeneration).toBeDefined();
+    const fresh = hydrate([turn("t1", 2, [item("t1", 1)])], { bootGeneration: "1", epoch: 1 });
+    const recovered = applyReadModel(invalid, fresh);
+    expect(recovered.history?.invalidatedAtGeneration).toBeUndefined();
+    expect(shown(recovered)).toEqual([["t1", [itemKey("t1", 1)]]]);
+  });
+
+  // roborev round 1 (Medium): a fresh read with no snapshot of its own must
+  // not blank a held real identity — the next genuinely versioned read would
+  // then read a real incarnation against an emptied one and replace
+  // wholesale, discarding the very history this merge just preserved.
+  test("a fresh read with no snapshot identity keeps the held identity, not an empty one", () => {
+    const held = hydrate([turn("t1", 1, [item("t1", 0)])], {
+      bootGeneration: "1",
+      epoch: 1,
+      incarnation: "inc_a",
+      length: 50,
+    });
+    const { history: _legacyHistory, ...legacyFresh } = hydrate([turn("t1", 2, [item("t1", 1)])]);
+    const merged = applyReadModel(held, legacyFresh);
+    expect(merged.history?.bootGeneration).toBe("1");
+    expect(merged.history?.incarnation).toBe("inc_a");
+    // A later genuinely versioned read at the SAME identity still merges —
+    // the blanked-identity bug would have read this as a new incarnation
+    // and replaced, dropping t1.
+    const laterReal = hydrate([turn("t2", 3, [item("t2", 2)])], {
+      bootGeneration: "1",
+      epoch: 1,
+      incarnation: "inc_a",
+      length: 60,
+    });
+    const next = applyReadModel(merged, laterReal);
+    expect(shown(next)).toEqual([
+      ["t1", [itemKey("t1", 0), itemKey("t1", 1)]],
+      ["t2", [itemKey("t2", 2)]],
+    ]);
   });
 });

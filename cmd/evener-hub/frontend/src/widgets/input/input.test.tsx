@@ -1,13 +1,11 @@
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { cleanup, render, screen } from "@testing-library/react";
+import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { useState } from "react";
-import { afterEach, expect, test, vi } from "vitest";
+import { expect, test, vi } from "vitest";
 import { Input } from "./index";
-
-afterEach(cleanup);
 
 // A controlled-loop test harness: userEvent.type fires one keystroke at a
 // time, and a real controlled <input> only reflects each keystroke if the
