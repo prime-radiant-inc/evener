@@ -571,7 +571,7 @@ function useActivityPoll(client: ConversationClientLike | null, connected: boole
 	const msSinceRead = poll?.msSinceRead() ?? null;
 	const reading = connected && isFreshRead(msSinceRead) ? poll : null;
 	const activityOf = useCallback((ref: string) => reading?.activity(ref), [reading]);
-	return { revision, activityOf, msSinceRead: reading?.msSinceRead() ?? null };
+	return { revision, activityOf, msSinceRead: reading ? msSinceRead : null };
 }
 
 /** While any of the Board's reads has failed on a ready connection (Live,
