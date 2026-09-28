@@ -2862,6 +2862,39 @@ test("a replaced client does not carry the previous connection's published marke
   expect(remoteReads(b)).toBe(1);
 });
 
+// The new connection's first answer can arrive on a QUIET read (the section's
+// poll calls refresh, which never flips the load to "loading"). A byte-identical
+// snapshot must still publish then, or publishedRevision stays null and every
+// remote listing is held on "loading" forever.
+test("a client swap whose new registry answers on a quiet refresh resumes the listing", async () => {
+  const a = connectFakeClient();
+  serveRemoteList(a, REMOTE_LIST);
+  hostsStore.setState({ load: { phase: "ready", hosts: [registryRow({ name: "buildbox" })] } });
+
+  const { result } = renderHook(() => useHostInstances("buildbox"));
+  await waitFor(() => expect(result.current.instances).toEqual([REMOTE_INSTANCE]));
+  expect(result.current.read).toBe(true);
+
+  // Replace the client; the new connection's registry answers the SAME
+  // registration, through refresh alone.
+  let b!: FakeClient;
+  await act(async () => {
+    b = connectFakeClient();
+  });
+  serveRemoteList(b, REMOTE_LIST);
+  b.on("evener/host/list", () => ({ hosts: [registryRow({ name: "buildbox" })] }));
+  await act(async () => {
+    await hostsStore.getState().refresh();
+  });
+
+  // The quiet answer is this connection's first publish, so the revision
+  // advances and the remote listing re-reads and verifies.
+  expect(hostsStore.getState().publishedRevision).not.toBeNull();
+  await waitFor(() => expect(result.current.instances).toEqual([REMOTE_INSTANCE]));
+  expect(result.current.read).toBe(true);
+  expect(remoteReads(b)).toBe(1);
+});
+
 // The rule's cost ceiling: an unchanged snapshot advances no revision, so the
 // poll cadence re-reads nothing.
 test("an unchanged registry snapshot never re-reads a host", async () => {

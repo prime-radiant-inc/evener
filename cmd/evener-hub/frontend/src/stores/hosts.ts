@@ -125,14 +125,11 @@ connectionStore.subscribe((state) => {
     // the new connection has not published anything yet. Advance the revision
     // AND clear the published marker, so a listing read under the new connection
     // is not accepted as verified before its registry has answered (see
-    // stores/credentials.ts's useHostInstances).
+    // stores/credentials.ts's useHostInstances). publishReady lets this
+    // connection's first answer publish - and advance the revision - even when
+    // it is byte-identical to the old connection's, by treating a null
+    // publishedRevision as "nothing published by this connection yet".
     hostsStore.setState((previous) => ({ revision: previous.revision + 1, publishedRevision: null }));
-    // Drop the snapshot memo AFTER that setState, so the revision subscription
-    // below does not read the old connection's still-loaded rows as this
-    // connection's first publish. The new connection's first answer then
-    // publishes and advances the revision even when it is byte-identical to the
-    // old one.
-    lastPublished = null;
   }
 });
 
@@ -347,9 +344,13 @@ function hostRowEqual(a: HostRow, b: HostRow | undefined): boolean {
 // share. A response is discarded only when a NEWER response already
 // published; the accepted decision still advances the published marker so an
 // older in-flight response can never publish after it. When the currently
-// published rows are already exactly the ones this response carries, the
-// setState is skipped: the 2s poll would otherwise swap in a fresh array
-// every tick and force a re-render of an unchanged section. It answers
+// published rows are already exactly the ones this response carries AND a
+// snapshot has been published for this connection, the setState is skipped: the
+// 2s poll would otherwise swap in a fresh array every tick and force a
+// re-render of an unchanged section. The published check is what lets the NEW
+// connection's first answer publish - and advance the revision the caches key
+// on - even when a quiet read (refresh, which never flips the load to
+// "loading") carries rows byte-identical to the replaced connection's. It answers
 // whether THIS generation was accepted (true when it publishes or accepts the
 // equal snapshot, false on either discard) — forcedReRead reports that answer
 // to its caller, and the shared marker cannot stand in for it: a mutation's
@@ -368,15 +369,28 @@ function publishReady(generation: number, client: AppwireClientLike, hosts: Host
   }
   latestPublishedGeneration = generation;
   const load = hostsStore.getState().load;
+  // No snapshot has been published for the CURRENT connection yet: a fresh
+  // session, or a client replacement. This answer is that connection's first, so
+  // the memo is dropped and it publishes - advancing the revision the caches key
+  // on - even when it carries rows byte-identical to the replaced connection's.
+  // Without this a quiet read (refresh, which never flips the load to "loading")
+  // would take the equal-snapshot short-circuit, publish nothing, and leave
+  // publishedRevision null, holding every remote listing on "loading" forever
+  // (useHostInstances' shouldRead requires a published marker once the registry
+  // has been consulted).
+  const firstPublishForConnection = hostsStore.getState().publishedRevision === null;
   if (
+    !firstPublishForConnection &&
     load.phase === "ready" &&
     load.hosts.length === hosts.length &&
     load.hosts.every((row, i) => hostRowEqual(row, hosts[i]))
   ) {
-    // The same answer again: publish nothing and advance nothing, so nothing
-    // derived from the registry re-reads on the poll cadence.
+    // The same answer again, with a snapshot already published for this
+    // connection: publish nothing and advance nothing, so nothing derived from
+    // the registry re-reads on the poll cadence.
     return true;
   }
+  if (firstPublishForConnection) lastPublished = null;
   hostsStore.setState({ load: { phase: "ready", hosts } });
   return true;
 }
