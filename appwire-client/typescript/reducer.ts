@@ -1220,6 +1220,7 @@ function threadFields(resp: ThreadReadResponse, ref: string, now: number): Omit<
     // Passed straight through, undefined and all: absent is "nobody counted"
     // and must not become a 0 that reads as "nothing failed".
     failedToolCalls: thread.evener.failedToolCalls,
+    ...(thread.evener.access ? { access: { ...thread.evener.access } } : {}),
     workMillis: thread.evener.workMillis ?? 0,
     activeTurnStartedAt: epochMsToISO(thread.evener.activeTurnStartedAt),
     lastTurnEndedAt: epochMsToISO(thread.evener.lastTurnEndedAt),

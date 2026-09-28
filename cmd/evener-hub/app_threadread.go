@@ -947,6 +947,7 @@ func pastEntryThreadForList(ctx context.Context, cfg hubcore.WebConfig, entry hu
 		thread = applyHubForkCapability(cfg, thread)
 	}
 	thread.Evener.VisionModel = entry.Meta.VisionModel
+	thread.Evener.Access = appwire.SessionAccess(entry.Meta.Config.Sandbox, entry.Meta.Config.SandboxNet)
 	return thread, nil
 }
 
