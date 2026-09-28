@@ -158,6 +158,19 @@ is_canonical_uint() {
 	esac
 }
 
+# is_uint64 is the schema bound the Go decoders apply: a value the helper
+# persists is unmarshalled into a uint64, so anything above the maximum would
+# wedge every later status/takeover/advance controller-side. A decimal string
+# is bounded by length, then lexically against the maximum when it is 20 digits.
+is_uint64() {
+	is_canonical_uint "$1" || return 1
+	[ "${#1}" -le 20 ] || return 1
+	if [ "${#1}" -eq 20 ] && [ "$1" \> "18446744073709551615" ]; then
+		return 1
+	fi
+	return 0
+}
+
 sync_path() { # best-effort durability for a file or directory
 	sync "$1" 2>/dev/null || sync 2>/dev/null || true
 }
@@ -193,11 +206,14 @@ acquire_lock() {
 		'' | *[!0-9]*)
 			# An empty or contentless claim is a crash artifact: nothing
 			# provable holds it.
-			steal_stale_lock "$observed"
+			steal_stale_lock "$observed" || true
 			;;
 		*)
 			if ! kill -0 "$pid" 2>/dev/null; then
-				steal_stale_lock "$observed"
+				# A failed steal (lost rename, replaced claim, live owner) is
+				# not an error: the bounded loop decides the outcome, so its
+				# nonzero return never aborts the helper under set -e.
+				steal_stale_lock "$observed" || true
 			fi
 			;;
 		esac
@@ -225,13 +241,24 @@ claim_lock() {
 	return 1
 }
 
-# steal_stale_lock takes <observed claim content>. It re-verifies the moved
-# claim: the content must equal what the caller observed AND its owner must be
-# dead (or unprovable). Anything else was replaced in the window and is
-# restored when the path is free, never discarded.
+# steal_stale_lock takes <observed claim content> and removes the observed path
+# only when it still names the claim the caller proved stale. It never unlinks
+# or renames the path to inspect it: it adds one hard link, inspects the LINK
+# (content equal to the observed claim AND the owner dead or unprovable), and
+# removes the path only when the path and the link still name the same inode.
+# A live replacement claim is therefore never detached from its path; the worst
+# an unlucky interleaving can do is drop the extra link.
+#
+# Residual, stated explicitly: the inode comparison and the rm are two steps,
+# so a replacement published in the (single fork-sized) window between them
+# could still be removed. Closing that window needs a kernel lock (flock) that
+# no POSIX shell guarantees; this shape never *moves* a live claim, which is
+# the failure the lease cannot survive.
 steal_stale_lock() {
 	stale=$STATE_DIR/.tmp.stale.$$
-	mv "$LOCK_FILE" "$stale" 2>/dev/null || return 1
+	rm -f "$stale" 2>/dev/null || true
+	ln "$LOCK_FILE" "$stale" 2>/dev/null || return 1
+	link_ino=$(ls -di "$stale" 2>/dev/null | awk '{print $1}')
 	moved=$(cat "$stale" 2>/dev/null || true)
 	moved_pid=${moved%% *}
 	provably_dead=true
@@ -243,20 +270,27 @@ steal_stale_lock() {
 		fi
 		;;
 	esac
-	if [ "$moved" = "$1" ] && [ "$provably_dead" = true ]; then
-		rm -f "$stale" 2>/dev/null || true
-		return 0
-	fi
-	# Restore with a create-if-absent link: a check-then-mv pair is not atomic,
-	# and mv would silently overwrite a claim a newer claimant published in the
-	# window, letting two owners run the same critical section.
-	if ln "$stale" "$LOCK_FILE" 2>/dev/null; then
+	if [ "$moved" != "$1" ] || [ "$provably_dead" != true ]; then
+		# Not the claim we observed, or its owner is alive: drop our extra link
+		# only, and leave the live path exactly as it is.
 		rm -f "$stale" 2>/dev/null || true
 		return 1
 	fi
-	# The path is occupied: never overwrite or delete the live claim. Park the
-	# moved one under a unique name so nothing is lost to the race.
-	mv "$stale" "$STATE_DIR/.claim.abandoned.$$" 2>/dev/null || true
+	if [ "${EVENER_FENCE_FAULT_STEAL_PARK:-0}" = 1 ]; then
+		# Test-only fault injection: park between proving the claim stale and
+		# removing it, so a test can publish a replacement in that window.
+		: >"$STATE_DIR/.tmp.steal.parked" 2>/dev/null || true
+		sleep 1
+	fi
+	now_ino=$(ls -di "$LOCK_FILE" 2>/dev/null | awk '{print $1}')
+	if [ -n "$link_ino" ] && [ "$link_ino" = "$now_ino" ]; then
+		# The path still names the stale claim we hold the link to: remove it.
+		rm -f "$LOCK_FILE" 2>/dev/null || true
+		rm -f "$stale" 2>/dev/null || true
+		return 0
+	fi
+	# A replacement claim took the path: leave it alone and drop only our link.
+	rm -f "$stale" 2>/dev/null || true
 	return 1
 }
 
@@ -287,7 +321,7 @@ guard_file_valid() { # <snapshot>
 		}
 		NF != 2 { bad = 1 }
 		$1 ~ /^boot\./ {
-			if ($1 !~ /^boot\.[A-Za-z0-9._-]+$/ || $1 == "boot.-" || $2 !~ /^[1-9][0-9]*$/) { bad = 1 }
+			if ($1 !~ /^boot\.[A-Za-z0-9._-]+$/ || $1 == "boot.-" || $2 !~ /^[1-9][0-9]*$/ || length($2) > 20) { bad = 1 }
 		}
 		{ seen[$1]++ }
 		END {
@@ -329,8 +363,8 @@ read_guard() {
 	FENCE_SUP_BOOT=$(guard_field "$GUARD_SNAPSHOT" fenceSupersededBootId)
 	FENCE_SUP_SEQ=$(guard_field "$GUARD_SNAPSHOT" fenceSupersededOpSeq)
 	FENCE_GUARD=$(guard_field "$GUARD_SNAPSHOT" fenceGuardEpoch)
-	is_canonical_uint "$GUARD_EPOCH" || return 1
-	is_canonical_uint "$FENCE_GUARD" || return 1
+	is_uint64 "$GUARD_EPOCH" || return 1
+	is_uint64 "$FENCE_GUARD" || return 1
 	check_boot_pair "$EPOCH_BOOT" "$EPOCH_SEQ" || return 1
 	check_boot_pair "$SUP_BOOT" "$SUP_SEQ" || return 1
 	check_boot_pair "$FENCE_BOOT" "$FENCE_SEQ" || return 1
@@ -353,7 +387,7 @@ check_boot_pair() { # <bootId> <opSeq>
 	-) [ "$2" = 0 ] || return 1 ;;
 	'') return 1 ;;
 	*[!A-Za-z0-9._-]*) return 1 ;;
-	*) is_canonical_uint "$2" && [ "$2" -ge 1 ] || return 1 ;;
+	*) is_uint64 "$2" && [ "$2" -ge 1 ] || return 1 ;;
 	esac
 	return 0
 }
@@ -423,7 +457,7 @@ read_holder() { # sets HOLDER_BOOT and HOLDER_SEQ
 	'') return 1 ;;
 	-) [ "$HOLDER_SEQ" = 0 ] || return 1 ;;
 	*[!A-Za-z0-9._-]*) return 1 ;;
-	*) is_canonical_uint "$HOLDER_SEQ" && [ "$HOLDER_SEQ" -ge 1 ] || return 1 ;;
+	*) is_uint64 "$HOLDER_SEQ" && [ "$HOLDER_SEQ" -ge 1 ] || return 1 ;;
 	esac
 	return 0
 }
@@ -548,7 +582,7 @@ load_entry() {
 	exited | killed)
 		# A terminal entry carries its numeric exit and no descendants: the
 		# command's own children must be gone before the entry reads settled.
-		is_canonical_uint "$ENTRY_EXIT" || return 1
+		is_uint64 "$ENTRY_EXIT" || return 1
 		[ -z "$ENTRY_DESCENDANTS" ] || return 1
 		;;
 	*) return 1 ;;
@@ -558,14 +592,14 @@ load_entry() {
 		*:*)
 			descendant_pid=${descendant%%:*}
 			descendant_start=${descendant#*:}
-			is_canonical_uint "$descendant_pid" && [ "$descendant_pid" -ge 1 ] && [ -n "$descendant_start" ] || return 1
+			is_uint64 "$descendant_pid" && [ "$descendant_pid" -ge 1 ] && [ -n "$descendant_start" ] || return 1
 			;;
 		*) return 1 ;;
 		esac
 	done
 	case $ENTRY_KIND in
 	pid)
-		is_canonical_uint "$ENTRY_PID" || return 1
+		is_uint64 "$ENTRY_PID" || return 1
 		[ "$ENTRY_PID" -ge 1 ] || return 1
 		[ -n "$ENTRY_START" ] || return 1
 		[ -z "$ENTRY_NONCE" ] && [ -z "$ENTRY_CGROUP" ] || return 1
@@ -686,7 +720,7 @@ parse_epoch() { # <bootId> <opSeq>
 	*) ;;
 	esac
 	[ "${#E_BOOT}" -le 128 ] || return 1
-	is_canonical_uint "$E_SEQ" || return 1
+	is_uint64 "$E_SEQ" || return 1
 	[ "$E_SEQ" -ge 1 ] || return 1
 	return 0
 }

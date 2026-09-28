@@ -1231,6 +1231,146 @@ func TestScriptNonceMatchIsExact(t *testing.T) {
 	}
 }
 
+// TestScriptLiveClaimIsNeverDetachedInSteal pins the lock-recovery invariant
+// from the reviewer's shape: a live replacement claim published between the
+// stale observation and the removal is never detached from its path. The park
+// seam holds the helper inside the steal so the replacement lands
+// deterministically; the helper must answer the structured busy refusal with
+// the replacement's claim, content and inode intact, and its owner untouched.
+func TestScriptLiveClaimIsNeverDetachedInSteal(t *testing.T) {
+	remote := newFenceRemote(t)
+	// A holder process publishing the replacement claim.
+	holder := exec.Command("sh", "-c", "sleep 30")
+	if err := holder.Start(); err != nil {
+		t.Fatalf("start replacement holder: %v", err)
+	}
+	defer func() { _ = holder.Process.Kill(); _, _ = holder.Process.Wait() }()
+	if err := os.MkdirAll(filepath.Join(remote.state, "leases"), 0o700); err != nil {
+		t.Fatalf("create lease directory: %v", err)
+	}
+	lockFile := filepath.Join(remote.state, "lock")
+	if err := os.WriteFile(lockFile, []byte("999999 0\n"), 0o600); err != nil {
+		t.Fatalf("seed stale lock: %v", err)
+	}
+	// The helper parks inside its steal and leaves a marker.
+	type outcome struct {
+		output string
+		code   int
+	}
+	done := make(chan outcome, 1)
+	go func() {
+		// runFile routes both streams to one file, so the refusal is in its
+		// first return.
+		output, _, code := remote.runFile([]string{
+			"EVENER_FENCE_FAULT_STEAL_PARK=1", "EVENER_FENCE_LOCK_ATTEMPTS=1",
+		}, "takeover", "boot-1", "1")
+		done <- outcome{output: output, code: code}
+	}()
+	waitForFile(t, filepath.Join(remote.state, ".tmp.steal.parked"))
+	// Publish the replacement claim: the helper must never detach it.
+	replacement := filepath.Join(remote.state, "replacement.claim")
+	if err := os.WriteFile(replacement, []byte(fmt.Sprintf("%d 0\n", holder.Process.Pid)), 0o600); err != nil {
+		t.Fatalf("write replacement claim: %v", err)
+	}
+	if err := os.Remove(lockFile); err != nil {
+		t.Fatalf("remove stale claim: %v", err)
+	}
+	if err := os.Link(replacement, lockFile); err != nil {
+		t.Fatalf("publish replacement claim: %v", err)
+	}
+	published, err := os.Stat(lockFile)
+	if err != nil {
+		t.Fatalf("stat published claim: %v", err)
+	}
+	result := <-done
+	if result.code == 0 {
+		t.Fatal("the helper acquired a lock a live replacement holds")
+	}
+	if err := DecodeRefusal([]byte(result.output)); !errors.Is(err, ErrHelperBusy) {
+		t.Fatalf("helper behind a live replacement = %v (exit %d), want the structured busy refusal", err, result.code)
+	}
+	raw, err := os.ReadFile(lockFile)
+	if err != nil {
+		t.Fatalf("the live replacement's claim was detached: %v", err)
+	}
+	if !strings.Contains(string(raw), fmt.Sprintf("%d 0", holder.Process.Pid)) {
+		t.Fatalf("lock file = %q, want the live replacement's claim intact", raw)
+	}
+	after, err := os.Stat(lockFile)
+	if err != nil || !os.SameFile(published, after) {
+		t.Fatalf("the live replacement's path changed identity (err %v)", err)
+	}
+	if !processAlive(t, holder.Process.Pid) {
+		t.Fatal("the live replacement's owner was signaled")
+	}
+}
+
+// TestScriptLockContentionRefusesBusyNotTransport pins the steal-failure path:
+// when a stale lock cannot be taken (a lost race, a replaced claim, or an
+// unwritable state root), the bounded retry loop decides the outcome and
+// answers the structured busy refusal — never an unstructured exit 1 that a
+// controller reads as a transport failure.
+func TestScriptLockContentionRefusesBusyNotTransport(t *testing.T) {
+	remote := newFenceRemote(t)
+	// Pre-create the lease directory: the unwritable root must fail the steal,
+	// not the state setup.
+	if err := os.MkdirAll(filepath.Join(remote.state, "leases"), 0o700); err != nil {
+		t.Fatalf("create lease directory: %v", err)
+	}
+	lockFile := filepath.Join(remote.state, "lock")
+	if err := os.WriteFile(lockFile, []byte("999999 0\n"), 0o600); err != nil {
+		t.Fatalf("seed stale lock: %v", err)
+	}
+	// An unwritable state root makes the steal itself fail.
+	if err := os.Chmod(remote.state, 0o500); err != nil {
+		t.Fatalf("tighten state root: %v", err)
+	}
+	defer func() { _ = os.Chmod(remote.state, 0o700) }()
+	_, stderr, code := remote.run([]string{"EVENER_FENCE_LOCK_ATTEMPTS=2"}, "takeover", "boot-1", "1")
+	if code == 0 {
+		t.Fatal("takeover behind an untakeable lock succeeded, want a refusal")
+	}
+	if err := DecodeRefusal([]byte(stderr)); !errors.Is(err, ErrHelperBusy) {
+		t.Fatalf("takeover behind an untakeable lock = %v (exit %d), want the decodable ErrHelperBusy refusal", err, code)
+	}
+}
+
+// TestScriptOversizedNumbersRefuse pins the magnitude bound: every number the
+// helper persists is decoded as a uint64 controller-side, so a larger value is
+// refused before it can wedge the controller's view of the guard.
+func TestScriptOversizedNumbersRefuse(t *testing.T) {
+	remote := newFenceRemote(t)
+	for _, op := range [][]string{
+		{"takeover", "boot-1", "99999999999999999999999"},
+		{"takeover", "boot-1", "18446744073709551616"},
+		{"advance", "boot-1", "99999999999999999999999"},
+	} {
+		if _, stderr, code := remote.run(nil, op...); code == 0 {
+			t.Fatalf("%v with an oversized op sequence succeeded, want refusal", op)
+		} else if err := DecodeRefusal([]byte(stderr)); !errors.Is(err, ErrMalformed) {
+			t.Fatalf("%v = %v, want ErrMalformed", op, err)
+		}
+	}
+	remote.settle(Epoch{BootID: "boot-1", OpSeq: 1})
+	guard := filepath.Join(remote.state, "guard")
+	raw, err := os.ReadFile(guard)
+	if err != nil {
+		t.Fatalf("read guard: %v", err)
+	}
+	broken := strings.Replace(string(raw), "guardEpoch\t2\n", "guardEpoch\t99999999999999999999\n", 1)
+	if broken == string(raw) {
+		t.Fatalf("guard carried no guardEpoch to break: %q", raw)
+	}
+	if err := os.WriteFile(guard, []byte(broken), 0o600); err != nil {
+		t.Fatalf("write guard: %v", err)
+	}
+	if _, stderr, code := remote.run(nil, "status"); code == 0 {
+		t.Fatal("status with an oversized guard epoch succeeded, want refusal")
+	} else if err := DecodeRefusal([]byte(stderr)); !errors.Is(err, ErrStateCorrupt) {
+		t.Fatalf("status with an oversized guard epoch = %v, want ErrStateCorrupt", err)
+	}
+}
+
 func TestScriptStateFilesAreOwnerOnly(t *testing.T) {
 	remote := newFenceRemote(t)
 	remote.settle(Epoch{BootID: "boot-1", OpSeq: 1})
