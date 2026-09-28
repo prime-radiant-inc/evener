@@ -1510,6 +1510,10 @@ func newHubHostManager(sources *appsource.Registry, manager *sshconn.Manager, cf
 		// publishes it as the gate holder, so an Ensure-triggered deploy is
 		// fenced and named exactly like a user one.
 		manager.SetEnsureDeployHook(m.EnsureDeploy)
+		// A restart-only Ensure attempt (a stale running build, or a recorded
+		// pendingRestart) is its own durable operation for the same reason
+		// (§6), so its ssh subprocesses are armed under the record too.
+		manager.SetEnsureRestartHook(m.EnsureRestart)
 	}
 	if m.cfg.deployHost == nil && manager != nil {
 		// The production deploy step (deploy pipeline 08b §6): the 04b deploy

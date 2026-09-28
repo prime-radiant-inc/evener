@@ -386,9 +386,12 @@ type Manager struct {
 	// SetEnsureDeployHook); nil leaves Ensure-triggered deploys unrecorded.
 	// It is published atomically because Ensure reads it on its hot path.
 	ensureDeploy atomic.Pointer[EnsureDeployHook]
-	reg          *hostreg.Registry
-	opts         Options
-	runner       Runner
+	// ensureRestart is the restart-only Ensure recorder (see
+	// SetEnsureRestartHook); nil leaves a restart-only attempt unrecorded.
+	ensureRestart atomic.Pointer[EnsureRestartHook]
+	reg           *hostreg.Registry
+	opts          Options
+	runner        Runner
 	// diagWriter serializes ssh diagnostics from every host onto one sink. Each
 	// attach builds its own diagSink over Options.Stderr, and os/exec copies each
 	// child's stderr on its own goroutine, so without a shared lock two hosts'
@@ -1933,13 +1936,13 @@ func (m *Manager) ensureOnce(ctx context.Context, host hostreg.Host, explicit bo
 	}
 
 	deploy, restart := m.ensureDecision(host.Name, facts, expected, running, runningKnown, hubPresent)
-	// The Ensure deploy's record spans the restart leg a deploy plans
-	// (crash-fencing §3): ArmSpawnIntent refuses a terminal record, so the
-	// record stays open until the leg's outcome lands, and the leg's ssh
-	// subprocesses are armed into it. A deploy-only attempt finishes at the end
-	// of its deploy block, exactly where it always did.
-	var finishEnsureDeploy func(error)
-	var deployScope *SpawnScope
+	// The restart leg a deploy plans is armed into that deploy's record, and a
+	// restart-only attempt mints its own record below: ArmSpawnIntent refuses a
+	// terminal record, so the record stays open until the leg's outcome lands
+	// and the leg's ssh subprocesses are armed into it. A deploy-only attempt
+	// finishes at the end of its deploy block, exactly where it always did.
+	var finishEnsureOp func(error)
+	var deployScope, restartScope *SpawnScope
 	if deploy {
 		m.stateEvent(host.Name, StateDeploying)
 		// The Ensure-triggered deploy is a durable fenced operation (deploy
@@ -1952,7 +1955,7 @@ func (m *Manager) ensureOnce(ctx context.Context, host hostreg.Host, explicit bo
 			if err != nil {
 				return nil, err
 			}
-			deployScope, finishEnsureDeploy = scope, finish
+			deployScope, finishEnsureOp = scope, finish
 		}
 		deployCtx, cancelDeploy := context.WithTimeout(ctx, m.opts.deployLimit())
 		if deployScope != nil {
@@ -1964,8 +1967,8 @@ func (m *Manager) ensureOnce(ctx context.Context, host hostreg.Host, explicit bo
 		resolvedTarget, err := m.deploy(deployCtx, host, facts)
 		cancelDeploy()
 		if err != nil {
-			if finishEnsureDeploy != nil {
-				finishEnsureDeploy(err)
+			if finishEnsureOp != nil {
+				finishEnsureOp(err)
 			}
 			return nil, err
 		}
@@ -1991,34 +1994,57 @@ func (m *Manager) ensureOnce(ctx context.Context, host hostreg.Host, explicit bo
 		// Judging first makes the permanent cause the one that surfaces.
 		facts, err = m.reReadLaunchContract(ctx, host, facts)
 		if err != nil {
-			if finishEnsureDeploy != nil {
-				finishEnsureDeploy(err)
+			if finishEnsureOp != nil {
+				finishEnsureOp(err)
 			}
 			return nil, err
 		}
 		if err := m.deployedBuildNotStamped(host.Name, facts, expected); err != nil {
-			if finishEnsureDeploy != nil {
-				finishEnsureDeploy(err)
+			if finishEnsureOp != nil {
+				finishEnsureOp(err)
 			}
 			return nil, err
 		}
 		if !restart {
 			// A deploy with no restart leg planned is over: finish where the
 			// deploy-only path always finished.
-			if finishEnsureDeploy != nil {
-				finishEnsureDeploy(nil)
+			if finishEnsureOp != nil {
+				finishEnsureOp(nil)
 			}
+		}
+	}
+	if restart && !deploy {
+		// A restart-only attempt (a stale running build, or a recorded
+		// pendingRestart) is its own durable operation (§6: "a reconnect with
+		// no durable record performs no mutating SSH command"): the hook mints
+		// the record under the held gate before the leg's first remote command,
+		// and the record's scope arms the leg below.
+		if hook := m.ensureRestartHook(); hook != nil {
+			scope, finish, err := hook(host)
+			if err != nil {
+				return nil, err
+			}
+			restartScope, finishEnsureOp = scope, finish
 		}
 	}
 	if restart {
 		m.stateEvent(host.Name, StateRestarting)
 		restartCtx, cancelRestart := context.WithTimeout(ctx, m.opts.deployLimit())
-		if deployScope != nil {
-			// The deploy record owns the restart leg it planned: the leg's ssh
-			// subprocesses are armed into the still-open record, so a crash
-			// during the restart is convergent at the next boot instead of
-			// leaving an unowned ssh child.
-			restartCtx = WithSpawnScope(restartCtx, deployScope)
+		// Every restart leg runs under a durable record it can be armed into:
+		// the deploy's record when a deploy planned the leg, or the restart-only
+		// record the hook above minted (§6's "a reconnect with no durable record
+		// performs no mutating SSH command"). The leg's ssh subprocesses carry
+		// that record's scope, so a crash mid-restart is convergent at the next
+		// boot instead of leaving an unowned ssh child. The one case left
+		// unarmed is a Manager with no restart hook wired at all (tests and
+		// embedders that configure no operation store): production always wires
+		// it, and a wired hook that cannot persist its record refuses the
+		// attempt above instead of running the leg unrecorded.
+		if restartScope == nil {
+			restartScope = deployScope
+		}
+		if restartScope != nil {
+			restartCtx = WithSpawnScope(restartCtx, restartScope)
 		}
 		var restartErr error
 		if pending := m.pendingRestart(host.Name); pending.command != "" && !runningKnown {
@@ -2033,13 +2059,13 @@ func (m *Manager) ensureOnce(ctx context.Context, host hostreg.Host, explicit bo
 			// The record stayed open through the leg, so the leg's failure is
 			// recorded on it — never a `complete` record for an operation that
 			// did not finish.
-			if finishEnsureDeploy != nil {
-				finishEnsureDeploy(restartErr)
+			if finishEnsureOp != nil {
+				finishEnsureOp(restartErr)
 			}
 			return nil, restartErr
 		}
-		if finishEnsureDeploy != nil {
-			finishEnsureDeploy(nil)
+		if finishEnsureOp != nil {
+			finishEnsureOp(nil)
 		}
 	}
 	if restart && !deploy {
@@ -3129,6 +3155,38 @@ func (m *Manager) HoldAs(host string, holder hostops.Holder) error {
 	}
 	entry.gate.holdAs(holder)
 	m.releaseHostLock(name)
+	return nil
+}
+
+// EnsureRestartHook records one restart-only Ensure attempt as a durable
+// operation (deploy pipeline 08b §6, crash-fencing §6: "a reconnect with no
+// durable record performs no mutating SSH command"). It mirrors
+// EnsureDeployHook: called with the host's per-host gate already held and
+// before the restart leg's first remote command, it persists the record
+// carrying the attempt's fencing epoch and returns the finish the leg's
+// outcome is recorded through, plus the spawn scope (crash-fencing §3) the
+// leg's ssh subprocesses are armed under. A non-nil error means no durable
+// record could be persisted, so nothing may be restarted.
+type EnsureRestartHook func(host hostreg.Host) (scope *SpawnScope, finish func(err error), err error)
+
+// SetEnsureRestartHook wires the deploy pipeline's restart recorder into this
+// Manager's Ensure path. It is a setter for the same reason
+// SetEnsureDeployHook is: the hub's host surface is constructed after the
+// Manager. A nil hook clears it, and a nil hook leaves a restart-only Ensure
+// attempt unrecorded (and therefore unarmed) — production always wires it.
+func (m *Manager) SetEnsureRestartHook(hook EnsureRestartHook) {
+	if hook == nil {
+		m.ensureRestart.Store(nil)
+		return
+	}
+	m.ensureRestart.Store(&hook)
+}
+
+// ensureRestartHook returns the wired hook, if any.
+func (m *Manager) ensureRestartHook() EnsureRestartHook {
+	if hook := m.ensureRestart.Load(); hook != nil {
+		return *hook
+	}
 	return nil
 }
 

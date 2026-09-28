@@ -544,3 +544,141 @@ func TestEnsureRestartLegFailureFailsTheStillOpenRecord(t *testing.T) {
 		t.Fatalf("record result = %+v, want the restart leg's failure verbatim", record.Result)
 	}
 }
+
+// ensureRestartTestHarness builds the Ensure ladder for a restart-only attempt:
+// the on-disk build is this controller's, while the running hub serves a stale
+// one, so ensureDecision returns restart without deploy. The restart hook mints
+// a real record and returns its scope plus a finish that transitions it the way
+// the hub's own finish does.
+func ensureRestartTestHarness(t *testing.T, restartErr error) (*Manager, *hostops.Store, *string, *[]ensureCommandSighting) {
+	t.Helper()
+	host := hostreg.Host{Name: "alpha", SSH: "alpha.example", EvenerPath: "/opt/evener/bin/evener"}
+	fr := deployRunner(t,
+		func(int) ([]byte, error) {
+			return []byte(`{"protocol":"` + appwire.ProtocolVersion + `","version":"newsha","launch_flags":["api-log"]}`), nil
+		},
+		func(call int) ([]byte, error) {
+			// The pre-decision probe sees the stale process; the probes after
+			// the restart see the replacement.
+			if call == 0 {
+				return []byte(`{"version":"oldsha","mobile_api_version":1,"hub_addr":"127.0.0.1:9180"}`), nil
+			}
+			return []byte(`{"version":"newsha","mobile_api_version":1,"hub_addr":"127.0.0.1:9180"}`), nil
+		},
+	)
+	store := ensureDeployTestStore(t)
+	var recordID string
+	var seen []ensureCommandSighting
+	innerRun := fr.runFn
+	fr.runFn = func(ctx context.Context, argv []string, stdin io.Reader) ([]byte, error) {
+		command := strings.Join(argv, " ")
+		scope, _ := SpawnScopeFrom(ctx)
+		open := false
+		if recordID != "" {
+			if record, ok := store.Record(recordID); ok {
+				open = !record.State.Terminal()
+			}
+		}
+		seen = append(seen, ensureCommandSighting{command: command, scope: scope, recordOpen: open})
+		if strings.Contains(command, "systemctl restart") && restartErr != nil {
+			return nil, restartErr
+		}
+		return innerRun(ctx, argv, stdin)
+	}
+	m := newTestManager(t, testRegistry(t, host), fr, Options{controllerVersionOverride: "newsha"})
+	m.SetEnsureRestartHook(func(host hostreg.Host) (*SpawnScope, func(error), error) {
+		record, err := store.Create(hostops.NewRecord{
+			ClientOperationID: "ensure-restart-1",
+			Host:              host.Name,
+			Kind:              hostops.KindRestart,
+			Generation:        host.Generation,
+			IncarnationID:     host.IncarnationID,
+		})
+		if err != nil {
+			return nil, nil, err
+		}
+		recordID = record.ID
+		return NewSpawnScope(record.ID, store), func(err error) {
+			if err == nil {
+				_, _ = store.TransitionToState(record.ID, hostops.StateComplete,
+					&hostops.Result{OK: true, Message: "Ensure-triggered restart complete"}, "complete")
+				return
+			}
+			_, _ = store.TransitionToState(record.ID, hostops.StateFailed,
+				&hostops.Result{OK: false, Message: err.Error()}, "failed")
+		}, nil
+	})
+	return m, store, &recordID, &seen
+}
+
+// TestEnsureRestartOnlyMintsRecordAndArmsTheLeg pins the restart-only Ensure
+// path's record: a decision with no deploy still mints a durable restart record
+// through the hook, arms the leg's ssh subprocesses with its scope, keeps the
+// record non-terminal while the leg runs, and completes it after.
+func TestEnsureRestartOnlyMintsRecordAndArmsTheLeg(t *testing.T) {
+	m, store, recordID, seen := ensureRestartTestHarness(t, nil)
+	m.SetEnsureDeployHook(func(hostreg.Host) (*SpawnScope, func(error), error) {
+		t.Error("the deploy hook ran for a restart-only decision")
+		return nil, nil, errors.New("no deploy expected")
+	})
+
+	if _, err := m.Ensure(context.Background(), "alpha"); err != nil {
+		t.Fatalf("Ensure: %v", err)
+	}
+	restarts := restartSightings(*seen)
+	if len(restarts) == 0 {
+		t.Fatalf("the scenario never reached the restart leg; sightings: %+v", *seen)
+	}
+	for _, run := range restarts {
+		if run.scope == nil {
+			t.Fatalf("the restart-only leg ran unarmed: %s", run.command)
+		}
+		if run.scope.RecordID != *recordID {
+			t.Fatalf("the leg's scope names record %q, want %s", run.scope.RecordID, *recordID)
+		}
+		if !run.recordOpen {
+			t.Fatal("the record was already terminal when the leg ran, so ArmSpawnIntent would refuse it")
+		}
+	}
+	record, ok := store.Record(*recordID)
+	if !ok {
+		t.Fatal("the restart record disappeared")
+	}
+	if record.Kind != hostops.KindRestart {
+		t.Fatalf("record kind = %q, want restart", record.Kind)
+	}
+	if record.State != hostops.StateComplete {
+		t.Fatalf("record state = %q, want complete after a clean restart-only leg", record.State)
+	}
+}
+
+// TestEnsureRestartOnlyLegFailureRecordsFailed pins the failure half: a failed
+// restart-only leg records `failed` on the record the hook minted, never a
+// `complete` record for an operation that did not finish.
+func TestEnsureRestartOnlyLegFailureRecordsFailed(t *testing.T) {
+	m, store, recordID, seen := ensureRestartTestHarness(t, errors.New("systemctl restart failed"))
+
+	_, err := m.Ensure(context.Background(), "alpha")
+	if err == nil || !strings.Contains(err.Error(), "systemctl restart failed") {
+		t.Fatalf("Ensure error = %v, want the restart leg's failure surfaced", err)
+	}
+	restarts := restartSightings(*seen)
+	if len(restarts) == 0 {
+		t.Fatal("the scenario never reached the restart leg; the pin would be vacuous")
+	}
+	for _, run := range restarts {
+		if run.scope == nil {
+			t.Fatalf("the failing restart-only leg ran unarmed: %s", run.command)
+		}
+	}
+	record, ok := store.Record(*recordID)
+	if !ok {
+		t.Fatal("the restart record disappeared")
+	}
+	if record.State != hostops.StateFailed {
+		t.Fatalf("record state = %q, want failed after the restart-only leg failed", record.State)
+	}
+	if record.Result == nil || !strings.Contains(record.Result.Message, "systemctl restart failed") {
+		t.Fatalf("record result = %+v, want the leg's failure verbatim", record.Result)
+	}
+}

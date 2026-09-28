@@ -1088,7 +1088,7 @@ func (m *hubHostManager) attachUnderGateOnce(ctx context.Context, id string, ent
 	}
 	// The attach ladder can run an Ensure-triggered deploy, whose recorder
 	// promotes the gate to the inner operation and whose finish restores the
-	// manager holder (finishEnsureDeploy). The returned handoff requires the
+	// manager holder (finishEnsureOperation). The returned handoff requires the
 	// gate to carry this operation's holder when it runs, so re-assert it after
 	// the attach: a holder change performed inside the ladder must not make the
 	// handoff refuse and leave the published channel unsupervised.
@@ -1250,22 +1250,66 @@ func (m *hubHostManager) EnsureDeploy(host hostreg.Host) (*sshconn.SpawnScope, f
 		m.logf("host %q: the Ensure-triggered operation %s could not publish itself as the gate holder: %v",
 			host.Name, record.ID, err)
 	}
-	return sshconn.NewSpawnScope(record.ID, ops), func(err error) { m.finishEnsureDeploy(record.ID, host.Name, err) }, nil
+	return sshconn.NewSpawnScope(record.ID, ops), func(err error) { m.finishEnsureOperation(record.ID, host.Name, hostops.KindDeploy, err) }, nil
 }
 
-// finishEnsureDeploy records the Ensure deploy step's outcome: success is
-// `complete`, a failure is `failed` with the cause verbatim, and a failure
-// whose cause is the manager's own shutdown is `interrupted` — the same
-// controller-lifetime rule the RPC-triggered workers follow. Competing
-// concurrent terminal operations never share a call: the Ensure attempt is
-// serialized by the host's gate. The step is over at this point, so the gate's
-// holder goes back to the manager's attach class: a contender must not be told
-// a finished operation is still running.
-func (m *hubHostManager) finishEnsureDeploy(id, name string, err error) {
+// EnsureRestart records one restart-only Ensure attempt as a durable operation
+// (§6: "a reconnect with no durable record performs no mutating SSH command"),
+// the restart twin of EnsureDeploy: it mints the server-side client operation
+// ID, persists the restart record with its fencing epoch under the caller's
+// held gate before the leg's first remote command, and publishes the operation
+// as the gate's holder so a contender's busy refusal names it. The returned
+// finish records the leg's outcome, and the returned spawn scope arms the
+// leg's ssh subprocesses into the record (crash-fencing §3). A nil hook (no
+// operation store wired) leaves the attempt unrecorded and unarmed, which
+// production never does.
+func (m *hubHostManager) EnsureRestart(host hostreg.Host) (*sshconn.SpawnScope, func(error), error) {
+	ops := m.cfg.ops
+	if ops == nil {
+		return nil, nil, errors.New("the host operation store is not configured, so a restart-only Ensure attempt cannot be recorded; nothing was launched")
+	}
+	if strings.TrimSpace(m.cfg.bootID) == "" {
+		return nil, nil, errors.New("this hub carries no boot id, so a restart-only Ensure attempt cannot bind its fencing epoch; nothing was launched")
+	}
+	clientOperationID, err := newEnsureOperationID()
+	if err != nil {
+		return nil, nil, err
+	}
+	outcome, err := ops.CreateOperation(hostops.OperationCreateRequest{
+		ClientOperationID: clientOperationID,
+		Host:              host.Name,
+		Kind:              hostops.KindRestart,
+		Pair:              hostops.OperationPair{Generation: host.Generation, IncarnationID: host.IncarnationID},
+		BootID:            m.cfg.bootID,
+		// The caller holds the host's gate, so this read is the pre-operation
+		// position: an operation that finished before the Ensure attempt started
+		// must not refuse the attempt (only one that lands while it runs).
+		SequenceBefore: ops.Sequence(),
+	})
+	if err != nil {
+		return nil, nil, fmt.Errorf("persisting the restart-only Ensure attempt's operation record failed, so nothing was launched: %w", err)
+	}
+	record := outcome.Record
+	if err := m.cfg.gate.HoldAs(host.Name, hostops.Holder{Kind: hostops.HolderOperation, OperationID: record.ID}); err != nil {
+		m.logf("host %q: the restart-only Ensure operation %s could not publish itself as the gate holder: %v",
+			host.Name, record.ID, err)
+	}
+	return sshconn.NewSpawnScope(record.ID, ops), func(err error) { m.finishEnsureOperation(record.ID, host.Name, hostops.KindRestart, err) }, nil
+}
+
+// finishEnsureOperation records one Ensure attempt's outcome on the record its
+// hook persisted: success is `complete`, a failure is `failed` with the cause
+// verbatim, and a failure whose cause is the manager's own shutdown is
+// `interrupted` — the same controller-lifetime rule the RPC-triggered workers
+// follow. Competing concurrent terminal operations never share a call: the
+// Ensure attempt is serialized by the host's gate. The step is over at this
+// point, so the gate's holder goes back to the manager's attach class: a
+// contender must not be told a finished operation is still running.
+func (m *hubHostManager) finishEnsureOperation(id, name string, kind hostops.Kind, err error) {
 	defer func() {
 		restored := hostops.Holder{Kind: hostops.HolderManager, Activity: "attach"}
 		if herr := m.cfg.gate.HoldAs(name, restored); herr != nil {
-			m.logf("host %q: the gate's holder could not be restored after the Ensure deploy %s: %v", name, id, herr)
+			m.logf("host %q: the gate's holder could not be restored after the Ensure %s %s: %v", name, kind, id, herr)
 		}
 	}()
 	if m.cfg.ops == nil {
@@ -1273,7 +1317,7 @@ func (m *hubHostManager) finishEnsureDeploy(id, name string, err error) {
 	}
 	switch {
 	case err == nil:
-		m.recordTerminal(id, hostops.StateComplete, true, "Ensure-triggered deploy complete")
+		m.recordTerminal(id, hostops.StateComplete, true, fmt.Sprintf("Ensure-triggered %s complete", kind))
 	case errors.Is(err, sshconn.ErrManagerClosed), errors.Is(err, context.Canceled):
 		m.recordTerminal(id, hostops.StateInterrupted, false, operationsShutdownNote)
 	default:

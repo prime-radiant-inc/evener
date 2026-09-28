@@ -1413,7 +1413,7 @@ func TestHostRestartRestoresTheHolderAfterANestedEnsureDeploy(t *testing.T) {
 			}
 			// The attach ladder ran an Ensure-triggered deploy: its recorder
 			// promoted the gate to the inner operation, and its finish restored
-			// the manager holder, exactly as m.EnsureDeploy/finishEnsureDeploy
+			// the manager holder, exactly as m.EnsureDeploy/finishEnsureOperation
 			// do in production.
 			if err := gate.HoldAs(got.Name, hostops.Holder{Kind: hostops.HolderManager, Activity: "attach"}); err != nil {
 				return nil, err
@@ -1749,6 +1749,80 @@ func TestEnsureTriggeredDeployIsADurableOperationNamingItsRecord(t *testing.T) {
 		t.Fatalf("holder after the finish = %+v, want the manager's attach class", busy.Holder)
 	}
 	release()
+}
+
+// TestEnsureRestartIsADurableOperationNamingItsRecord is the restart-only twin
+// of the Ensure-deploy record test: the hook persists a restart record with its
+// fencing epoch under the held gate before the leg's first remote command,
+// publishes it as the gate holder, and hands back the scope the leg is armed
+// with plus the finish that records the outcome.
+func TestEnsureRestartIsADurableOperationNamingItsRecord(t *testing.T) {
+	entry := deployTestHost()
+	configPath := deployTestConfigPath(t, entry)
+	m, store, registry := deployTestHub(t, configPath, []hostreg.Host{entry}, deploySeams{})
+	live, ok := registry.Get(entry.Name)
+	if !ok {
+		t.Fatal("the registry carries no entry")
+	}
+
+	// The Ensure path holds the host's gate when it restarts.
+	release, err := m.cfg.gate.TryAcquire(entry.Name, hostops.Holder{Kind: hostops.HolderManager, Activity: "attach"})
+	if err != nil {
+		t.Fatalf("TryAcquire: %v", err)
+	}
+	scope, finish, err := m.EnsureRestart(live)
+	if err != nil {
+		t.Fatalf("EnsureRestart: %v", err)
+	}
+	if scope == nil {
+		t.Fatal("EnsureRestart returned no spawn scope for the leg")
+	}
+	records := store.Records()
+	if len(records) != 1 {
+		t.Fatalf("records = %d, want the one Ensure restart", len(records))
+	}
+	record := records[0]
+	if record.State != hostops.StatePending || record.Kind != hostops.KindRestart {
+		t.Fatalf("Ensure restart record = %+v, want a pending restart", record)
+	}
+	if scope.RecordID != record.ID {
+		t.Fatalf("spawn scope record = %q, want the Ensure restart %s", scope.RecordID, record.ID)
+	}
+	if !strings.HasPrefix(record.ClientOperationID, "ensure-") {
+		t.Fatalf("client operation id = %q, want the server-minted ensure- form", record.ClientOperationID)
+	}
+	if len(record.FencingEpoch) == 0 {
+		t.Fatal("the Ensure restart record carries no fencing epoch")
+	}
+
+	// A contender while the restart leg is in flight is refused with the
+	// operation class naming the record.
+	_, err = m.cfg.gate.TryAcquire(entry.Name, hostops.Holder{Kind: hostops.HolderPlan})
+	var busy *hostops.BusyError
+	if !errors.As(err, &busy) || busy.Holder.Kind != hostops.HolderOperation || busy.Holder.OperationID != record.ID {
+		t.Fatalf("contender busy = %+v (%v), want the Ensure restart %s", busy, err, record.ID)
+	}
+
+	finish(nil)
+	done, _ := store.Record(record.ID)
+	if done.State != hostops.StateComplete || done.Result == nil || !done.Result.OK {
+		t.Fatalf("finished Ensure restart record = %+v, want complete", done)
+	}
+	release()
+}
+
+// TestEnsureRestartRefusesWithoutAStore pins persisted-before-launch for the
+// restart-only path too: with no operation store wired the attempt refuses
+// rather than restarting unrecorded (§6's "a reconnect with no durable record
+// performs no mutating SSH command").
+func TestEnsureRestartRefusesWithoutAStore(t *testing.T) {
+	entry := deployTestHost()
+	entry.Generation = 1
+	entry.IncarnationID = "inc-1"
+	m := &hubHostManager{cfg: &hostManagerConfig{logf: func(string, ...any) {}}}
+	if _, _, err := m.EnsureRestart(entry); err == nil {
+		t.Fatal("EnsureRestart without an operation store succeeded")
+	}
 }
 
 // TestEnsureTriggeredDeployRefusesWithoutAStore pins persisted-before-launch:

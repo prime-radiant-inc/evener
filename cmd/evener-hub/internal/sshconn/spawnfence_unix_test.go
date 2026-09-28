@@ -498,10 +498,16 @@ func newFenceStore(t *testing.T) *hostops.Store {
 // newRunningFenceRecord persists one running deploy record the fence arms on.
 func newRunningFenceRecord(t *testing.T, store *hostops.Store) hostops.Record {
 	t.Helper()
+	return newRunningFenceRecordOfKind(t, store, hostops.KindDeploy)
+}
+
+// newRunningFenceRecordOfKind persists one running record of kind.
+func newRunningFenceRecordOfKind(t *testing.T, store *hostops.Store, kind hostops.Kind) hostops.Record {
+	t.Helper()
 	record, err := store.Create(hostops.NewRecord{
-		ClientOperationID: "client-op-1",
+		ClientOperationID: "client-" + string(kind),
 		Host:              "h1",
-		Kind:              hostops.KindDeploy,
+		Kind:              kind,
 		Generation:        7,
 		IncarnationID:     "inc-1",
 	})
@@ -737,10 +743,24 @@ func TestDeployForOperationCarriesTheScopeToItsCommands(t *testing.T) {
 	if len(seen) == 0 {
 		t.Fatal("the deploy ran no commands")
 	}
+	var mutating int
 	for _, run := range seen {
-		if !run.scoped {
-			t.Fatalf("a deploy command ran with no spawn scope: %s", run.command)
+		if strings.Contains(run.command, "launch-check") {
+			// The post-deploy launch-contract re-read is a read-only §6 one-shot:
+			// it runs outside the scope, like the preflight, so only the deploy's
+			// mutating commands are armed.
+			if run.scoped {
+				t.Fatalf("the read-only launch-contract re-read ran armed: %s", run.command)
+			}
+			continue
 		}
+		mutating++
+		if !run.scoped {
+			t.Fatalf("a mutating deploy command ran with no spawn scope: %s", run.command)
+		}
+	}
+	if mutating == 0 {
+		t.Fatalf("the deploy ran no mutating command; sightings: %+v", seen)
 	}
 }
 
@@ -788,5 +808,212 @@ func TestUnverifiedBoundaryTraceIsReapable(t *testing.T) {
 	resolved, ok := store.Record(record.ID)
 	if !ok || resolved.State != hostops.StateInterrupted {
 		t.Fatalf("record = %+v, want interrupted once the trace was reaped", resolved)
+	}
+}
+
+// TestSpawnRefusedRetriesTheTraceWrite pins the compound-failure hardening: a
+// transient store refusal of the §9 unverified-boundary write is retried, so a
+// pre-exec refusal still leaves the untorn boundary durably recorded.
+func TestSpawnRefusedRetriesTheTraceWrite(t *testing.T) {
+	log := &fenceTestLog{}
+	store := &fenceFakeStore{
+		log:        log,
+		armErr:     errors.New("store write failed"),
+		orphanErrs: []error{errors.New("write failed"), errors.New("write failed"), nil},
+	}
+	boundary := &fenceFakeBoundary{log: log, id: BoundaryID{Platform: BoundaryPlatformLinux, CgroupID: "/cg/op-1"}, closeErr: syscall.EBUSY}
+	scope := fencedTestScope(log, store, boundary)
+	scope.settle = 50 * time.Millisecond
+
+	_, err := (execRunner{}).Run(WithSpawnScope(context.Background(), scope),
+		[]string{"/bin/sh", "-c", "printf ran > /dev/null"}, nil)
+	if err == nil || !errors.Is(err, syscall.EBUSY) {
+		t.Fatalf("Run error = %v, want the refusal and the teardown failure joined", err)
+	}
+	if store.orphanCalls != 3 || len(store.orphanWrites) != 1 {
+		t.Fatalf("orphan writes = %d calls / %d persisted, want the write retried to one durable trace", store.orphanCalls, len(store.orphanWrites))
+	}
+}
+
+// TestSpawnRefusedConvergesWhenTheTraceWriteFailsButTheBoundaryComesDown pins
+// the other side of the compound failure: when the store cannot carry the
+// trace, one more bounded teardown window runs — an empty boundary that comes
+// down needs no trace, so the write's failure is reported without an untracked
+// boundary left behind.
+func TestSpawnRefusedConvergesWhenTheTraceWriteFailsButTheBoundaryComesDown(t *testing.T) {
+	log := &fenceTestLog{}
+	store := &fenceFakeStore{log: log, armErr: errors.New("store write failed"), orphanErr: errors.New("store is not writable")}
+	boundary := &fenceFakeBoundary{log: log, id: BoundaryID{Platform: BoundaryPlatformLinux, CgroupID: "/cg/op-1"}}
+	// The teardown refuses until the store has been asked for a trace; the
+	// second bounded window (after the trace write failed) then lets it come
+	// down.
+	boundary.onClose = func() error {
+		if store.orphanCalls > 0 {
+			return nil
+		}
+		return syscall.EBUSY
+	}
+	scope := fencedTestScope(log, store, boundary)
+	scope.settle = 50 * time.Millisecond
+
+	_, err := (execRunner{}).Run(WithSpawnScope(context.Background(), scope),
+		[]string{"/bin/sh", "-c", "printf ran > /dev/null"}, nil)
+	if err == nil || !strings.Contains(err.Error(), "store is not writable") {
+		t.Fatalf("Run error = %v, want the failed trace write reported", err)
+	}
+	if !boundary.closed {
+		t.Fatal("the boundary did not come down on the second bounded teardown window")
+	}
+}
+
+// TestSpawnRefusedReportsAnUntrackedBoundaryOnlyWhenTheStoreAndKernelBothRefuse
+// pins the last-resort honesty: a store that cannot write the trace and a
+// boundary that will not come down leave the (empty, child-less) boundary
+// untracked, and the refusal says so instead of swallowing it.
+func TestSpawnRefusedReportsAnUntrackedBoundaryOnlyWhenTheStoreAndKernelBothRefuse(t *testing.T) {
+	log := &fenceTestLog{}
+	store := &fenceFakeStore{log: log, armErr: errors.New("store write failed"), orphanErr: errors.New("store is not writable")}
+	boundary := &fenceFakeBoundary{log: log, id: BoundaryID{Platform: BoundaryPlatformLinux, CgroupID: "/cg/op-1"}, closeErr: syscall.EBUSY}
+	scope := fencedTestScope(log, store, boundary)
+	scope.settle = 50 * time.Millisecond
+
+	_, err := (execRunner{}).Run(WithSpawnScope(context.Background(), scope),
+		[]string{"/bin/sh", "-c", "printf ran > /dev/null"}, nil)
+	if err == nil || !strings.Contains(err.Error(), "untracked") {
+		t.Fatalf("Run error = %v, want the untracked boundary named", err)
+	}
+	if boundary.closed {
+		t.Fatal("the boundary was closed, so this test does not exercise the untracked arm")
+	}
+	if store.orphanCalls != 3 {
+		t.Fatalf("orphan write calls = %d, want the bounded retries before giving up", store.orphanCalls)
+	}
+}
+
+// TestRestartForOperationCarriesTheScopeToItsCommands is the restart twin of
+// the deploy seam pin: the context the hub hands RestartForOperation reaches
+// every command the restart step runs, so the spawn scope cannot be lost at the
+// seam. §3 arms every worker ssh subprocess, so the read-only pre-restart
+// running probe carries the scope too — §6's exemption is the remote-mutation
+// wrapper, never local ownership of a child the worker spawned.
+func TestRestartForOperationCarriesTheScopeToItsCommands(t *testing.T) {
+	host := hostreg.Host{Name: "alpha", SSH: "alpha.example", EvenerPath: "/opt/evener/bin/evener"}
+	fr := deployRunner(t,
+		func(int) ([]byte, error) {
+			return []byte(`{"protocol":"` + appwire.ProtocolVersion + `","version":"newsha","launch_flags":["api-log"]}`), nil
+		},
+		func(int) ([]byte, error) {
+			return []byte(`{"version":"newsha","mobile_api_version":1,"hub_addr":"127.0.0.1:9180"}`), nil
+		},
+	)
+	type sighting struct {
+		command string
+		scoped  bool
+	}
+	var seen []sighting
+	innerRun := fr.runFn
+	fr.runFn = func(ctx context.Context, argv []string, stdin io.Reader) ([]byte, error) {
+		_, scoped := SpawnScopeFrom(ctx)
+		seen = append(seen, sighting{command: strings.Join(argv, " "), scoped: scoped})
+		return innerRun(ctx, argv, stdin)
+	}
+	m := newTestManager(t, testRegistry(t, host), fr, Options{
+		controllerVersionOverride: "newsha",
+		BuildBinary:               writeStageBinary,
+	})
+
+	facts, err := m.preflight(context.Background(), host)
+	if err != nil {
+		t.Fatalf("preflight: %v", err)
+	}
+	for _, run := range seen {
+		if run.scoped {
+			t.Fatalf("a preflight command ran armed: %s", run.command)
+		}
+	}
+
+	seen = nil
+	scope := NewSpawnScope("op-restart-1", &fenceFakeStore{log: &fenceTestLog{}})
+	if err := m.RestartForOperation(WithSpawnScope(context.Background(), scope), host, facts); err != nil {
+		t.Fatalf("RestartForOperation: %v", err)
+	}
+	if len(seen) == 0 {
+		t.Fatal("the restart step ran no commands")
+	}
+	var restarts, probes int
+	firstProbe := true
+	for _, run := range seen {
+		if strings.Contains(run.command, "api/health") && firstProbe {
+			// The seam's own read-only pre-restart probe runs before the
+			// mutating step, so the first health sighting is it — the restart
+			// twin of the deploy seam's unarmed launch-contract re-read. Later
+			// health probes belong to the restart's proven-replacement wait
+			// inside the mutating step, which §3 arms like the rest of that
+			// step's spawns.
+			firstProbe = false
+			probes++
+			if run.scoped {
+				t.Fatalf("the read-only pre-restart probe ran armed: %s", run.command)
+			}
+			continue
+		}
+		if !run.scoped {
+			t.Fatalf("a mutating restart command ran with no spawn scope: %s", run.command)
+		}
+		if strings.Contains(run.command, "systemctl restart") {
+			restarts++
+		}
+	}
+	if restarts == 0 {
+		t.Fatalf("the restart step ran no restart command; sightings: %+v", seen)
+	}
+	if probes == 0 {
+		t.Fatalf("the read-only pre-restart probe did not run; sightings: %+v", seen)
+	}
+}
+
+// TestRestartRecordIntentStateIsReapable pins the restart record's half of the
+// convergence contract: a restart-only Ensure's record carries a pre-spawn
+// intent exactly like the deploy record's, so `SpawnIntentRecords` surfaces it
+// to the boot reap and the same pass converges a spawnless intent.
+func TestRestartRecordIntentStateIsReapable(t *testing.T) {
+	store := newFenceStore(t)
+	record := newRunningFenceRecordOfKind(t, store, hostops.KindRestart)
+	scope := &SpawnScope{RecordID: record.ID, store: store}
+	boundary := &fenceFakeBoundary{log: &fenceTestLog{}, id: BoundaryID{Platform: BoundaryPlatformLinux, CgroupID: "/cg/op-1"}}
+
+	nonce, landed, err := scope.armSpawnIntent(boundary)
+	if err != nil || !landed || nonce == "" {
+		t.Fatalf("armSpawnIntent = %q/%t/%v, want a landed intent on the restart record", nonce, landed, err)
+	}
+	open := store.SpawnIntentRecords()
+	if len(open) != 1 || open[0].ID != record.ID || open[0].Kind != hostops.KindRestart {
+		t.Fatalf("SpawnIntentRecords = %+v, want the restart record the reap reads", open)
+	}
+
+	// The spawnless intent (the exec never happened) converges through the same
+	// boot reap the deploy record uses.
+	handle := &fenceReapHandle{}
+	dropped, err := hostfence.ReapLocalOrphanBoundary(store, hostfence.ReapOptions{
+		Open: func(execenv.BoundaryIdentity) (hostfence.LocalBoundaryHandle, error) { return handle, nil },
+	})
+	if err != nil {
+		t.Fatalf("ReapLocalOrphanBoundary: %v", err)
+	}
+	if dropped != 1 {
+		t.Fatalf("reap converged %d row(s), want 1", dropped)
+	}
+	if !handle.closed {
+		t.Fatal("the reap did not tear the empty restart boundary down")
+	}
+	if got := store.SpawnIntentRecords(); len(got) != 0 {
+		t.Fatalf("intents after the reap = %d, want none", len(got))
+	}
+	if _, err := store.RecoverInterrupted(); err != nil {
+		t.Fatalf("RecoverInterrupted: %v", err)
+	}
+	resolved, ok := store.Record(record.ID)
+	if !ok || resolved.State != hostops.StateInterrupted {
+		t.Fatalf("restart record = %+v, want interrupted once the reap converged it", resolved)
 	}
 }

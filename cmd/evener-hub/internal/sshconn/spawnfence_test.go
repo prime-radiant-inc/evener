@@ -75,6 +75,9 @@ type fenceFakeStore struct {
 	// orphanWrites are the raw boundaries SetOrphanBoundary persisted.
 	orphanWrites []json.RawMessage
 	orphanErr    error
+	// orphanErrs is consumed one per SetOrphanBoundary call before orphanErr
+	// applies: it models a store that refuses a write and then recovers.
+	orphanErrs []error
 
 	armCalls, matchCalls, dropCalls, orphanCalls int
 }
@@ -118,7 +121,13 @@ func (f *fenceFakeStore) DropSpawnIntent(recordID, nonce string) error {
 func (f *fenceFakeStore) SetOrphanBoundary(recordID string, boundary json.RawMessage, _ []string) (hostops.Record, error) {
 	f.orphanCalls++
 	f.log.add("orphan-boundary")
-	if f.orphanErr != nil {
+	if len(f.orphanErrs) > 0 {
+		err := f.orphanErrs[0]
+		f.orphanErrs = f.orphanErrs[1:]
+		if err != nil {
+			return hostops.Record{}, err
+		}
+	} else if f.orphanErr != nil {
 		return hostops.Record{}, f.orphanErr
 	}
 	f.orphanWrites = append(f.orphanWrites, append(json.RawMessage(nil), boundary...))
@@ -147,6 +156,9 @@ type fenceFakeBoundary struct {
 	// closeErrs is consumed one per Close call before closeErr applies: it
 	// models a boundary that refuses a teardown until its last member is reaped.
 	closeErrs []error
+	// onClose, when set, decides each Close call outright (the compound-failure
+	// pins need the teardown's verdict to depend on what the store already did).
+	onClose func() error
 
 	observedPid int
 	released    bool
@@ -184,6 +196,13 @@ func (b *fenceFakeBoundary) Observe(pid int) (string, error) {
 func (b *fenceFakeBoundary) Close() error {
 	b.closeCalls++
 	b.log.add("close")
+	if b.onClose != nil {
+		if err := b.onClose(); err != nil {
+			return err
+		}
+		b.closed = true
+		return nil
+	}
 	if len(b.closeErrs) > 0 {
 		err := b.closeErrs[0]
 		b.closeErrs = b.closeErrs[1:]

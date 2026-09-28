@@ -47,6 +47,15 @@ const spawnBoundarySettle = time.Second
 // member is still being reaped.
 const spawnBoundaryPollInterval = 25 * time.Millisecond
 
+// spawnBoundaryTraceAttempts bounds how often a refused spawn's durable
+// unverified-boundary write is retried before the boundary is reported as
+// untracked: the store write is the only durable carrier, so a transient store
+// failure is retried rather than accepted.
+const spawnBoundaryTraceAttempts = 3
+
+// spawnBoundaryTraceBackoff separates the trace write's retries.
+const spawnBoundaryTraceBackoff = 25 * time.Millisecond
+
 // SpawnIntentStore is the durable pending-spawn intent surface one fenced spawn
 // drives. *hostops.Store satisfies it; a test substitutes a fake so every
 // disposition is exercisable without an operation store.
@@ -141,13 +150,19 @@ type spawnScopeKey struct{}
 
 // WithSpawnScope returns ctx carrying scope: every one-shot ssh child spawned
 // under it is armed into the scope's record before its exec and matched after
-// it. A nil scope leaves ctx untouched, so the read-only paths that carry no
-// scope never arm anything.
+// it. A nil scope clears any carried scope, so a caller can hand a derived
+// context on without one.
 func WithSpawnScope(ctx context.Context, scope *SpawnScope) context.Context {
-	if scope == nil {
-		return ctx
-	}
 	return context.WithValue(ctx, spawnScopeKey{}, scope)
+}
+
+// WithoutSpawnScope returns ctx with any carried scope removed: a read-only
+// one-shot a scoped step also runs (§6's exempt launches — the pre-restart
+// running probe, the post-deploy launch-contract re-read) is spawned outside
+// the scope, exactly like the preflight. Every mutating command keeps the
+// scope.
+func WithoutSpawnScope(ctx context.Context) context.Context {
+	return context.WithValue(ctx, spawnScopeKey{}, (*SpawnScope)(nil))
 }
 
 // SpawnScopeFrom returns the scope ctx carries, if any. The second result is
@@ -245,7 +260,19 @@ func (s *SpawnScope) refuseSpawn(boundary SpawnBoundary, nonce string, intentLan
 		if intentLanded && nonce != "" {
 			return errors.Join(refusal, closeErr)
 		}
-		return errors.Join(refusal, closeErr, s.recordUnverifiedBoundary(boundary, nonce))
+		traceErr := s.recordUnverifiedBoundary(boundary, nonce)
+		if traceErr == nil {
+			return errors.Join(refusal, closeErr)
+		}
+		// The store could not carry the trace. One more bounded teardown window
+		// runs before the boundary is called untracked: an empty boundary that
+		// comes down needs no trace, so only a store and a kernel that both
+		// refuse leave one untracked — and that is reported, never swallowed.
+		if retryErr := closeBoundaryWithin(boundary, s.settleOrDefault()); retryErr == nil {
+			return errors.Join(refusal, traceErr)
+		}
+		return errors.Join(refusal, closeErr, traceErr,
+			errors.New("the boundary also refused a second bounded teardown window, so the empty pre-created boundary stays untracked"))
 	}
 	// The boundary is proven clean. The drop is idempotent, so it is attempted
 	// whenever a nonce was minted — including after an arm that reported an
@@ -261,9 +288,11 @@ func (s *SpawnScope) refuseSpawn(boundary SpawnBoundary, nonce string, intentLan
 // recordUnverifiedBoundary persists a boundary that would not come down as §9's
 // local-markerless entry on the record, in the store's `orphan-unverified`
 // write, so the boot reap retries the enumeration instead of the boundary going
-// untracked. A boundary with no nonce (the entropy failure that refused the arm
-// before minting one) cannot be named in §9's schema; that failure is reported
-// rather than written as an entry no verifier accepts.
+// untracked. The write is retried within a small bound: it is the only durable
+// carrier of the boundary, so a transient store failure must not become a
+// permanent gap. A boundary with no nonce (the entropy failure that refused the
+// arm before minting one) cannot be named in §9's schema; that failure is
+// reported rather than written as an entry no verifier accepts.
 func (s *SpawnScope) recordUnverifiedBoundary(boundary SpawnBoundary, nonce string) error {
 	if nonce == "" {
 		return errors.New("the boundary could not be recorded as orphan-unverified: no nonce was minted to name it")
@@ -272,10 +301,18 @@ func (s *SpawnScope) recordUnverifiedBoundary(boundary SpawnBoundary, nonce stri
 	if err != nil {
 		return fmt.Errorf("the boundary could not be recorded as orphan-unverified: %w", err)
 	}
-	if _, err := s.store.SetOrphanBoundary(s.RecordID, entries, nil); err != nil {
-		return fmt.Errorf("the boundary could not be recorded as orphan-unverified: %w", err)
+	var last error
+	for attempt := range spawnBoundaryTraceAttempts {
+		if attempt > 0 {
+			time.Sleep(spawnBoundaryTraceBackoff)
+		}
+		if _, err := s.store.SetOrphanBoundary(s.RecordID, entries, nil); err != nil {
+			last = err
+			continue
+		}
+		return nil
 	}
-	return nil
+	return fmt.Errorf("the boundary could not be recorded as orphan-unverified after %d attempts: %w", spawnBoundaryTraceAttempts, last)
 }
 
 // spawnIntentFor renders one boundary identity plus nonce as §3's persisted
