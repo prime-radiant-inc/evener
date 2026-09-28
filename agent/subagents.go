@@ -532,9 +532,6 @@ func stableDelegateToolNameCeiling(reg *tool.Registry, resultToolName string, al
 	}
 	if !canDelegate {
 		for _, name := range rootOnlySubagentTools() {
-			if watchParent && name == "job_watch" {
-				continue
-			}
 			delete(selected, name)
 		}
 	}
@@ -1040,6 +1037,12 @@ func (s *Session) prepareSubagentRunFromSelection(
 	var allTools bool
 	var allowedTools, deniedTools []string
 	if frozen != nil {
+		// The ceiling was captured at creation, when baseSubagentToolPolicy had
+		// already added the intrinsic tools, so a restore honors it instead of
+		// re-applying the current policy: the frozen ceiling is authoritative,
+		// and a descriptor written before an intrinsic tool existed keeps that
+		// older set by design (widening it here is what the session-init ceiling
+		// comment forbids). Fresh spawns carry every intrinsic tool.
 		allowedTools = append([]string(nil), frozen.ToolNameCeiling...)
 		subCfg.spawn.toolNameCeiling = append([]string(nil), allowedTools...)
 	} else {
