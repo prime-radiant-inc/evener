@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import type { ThreadCapabilities, ThreadReadResponse, Turn } from "@evener/appwire-client";
+import type { PendingMutation, ThreadCapabilities, ThreadReadResponse, Turn } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { wireThread } from "@evener/appwire-client/testing/notifications";
 import { NativeMutationRuntime, nativeMutationTargetKey } from "../nativeMutationRuntime";
@@ -59,7 +59,12 @@ describe("the stop request's one Send (spec 9)", () => {
 
 describe("the composer's one Send, from a screen above the session (spec 8.5)", () => {
 	const KEY = nativeMutationTargetKey("hub-1", "local:coord");
-	const reply = (status: string, turns: Turn[] = [], over: Partial<ThreadCapabilities> = {}): ThreadReadResponse => ({
+	const reply = (
+		status: string,
+		turns: Turn[] = [],
+		over: Partial<ThreadCapabilities> = {},
+		pendingMutations: PendingMutation[] = [],
+	): ThreadReadResponse => ({
 		thread: wireThread("local:coord", {
 			id: "thread-1",
 			status: { type: status },
@@ -70,6 +75,7 @@ describe("the composer's one Send, from a screen above the session (spec 8.5)", 
 				capabilities: capabilities(over),
 				queue: { revision: 1 },
 				mutationStateAuthoritative: true,
+				...(pendingMutations.length > 0 ? { pendingMutations } : {}),
 			},
 		}),
 	});
@@ -151,6 +157,30 @@ describe("the composer's one Send, from a screen above the session (spec 8.5)", 
 		expect((await readSendAction(runtime, client, "hub-1", "local:coord")).action).toBe("queue");
 		turns = [shown("mutation-1")];
 		expect((await readSendAction(runtime, client, "hub-1", "local:coord")).action).toBe("send");
+		await runtime.stop();
+	});
+
+	// A read that lists this phone's send as pending, before any turn shows
+	// it, settles the send's durable record out of the outbox. The runtime
+	// still knows the send was this phone's (Review Focus 4).
+	it("queues behind an accepted send the daemon lists as pending after its durable record settled", async () => {
+		const client = new FakeClient("ready");
+		const pending: PendingMutation[] = [
+			{ clientMutationId: "mutation-1", method: "turn/start", executionState: "accepted", projectionState: "pending" },
+		];
+		client.on("thread/read", () => reply("idle", [], {}, pending));
+		client.on("turn/start", accepted);
+		const runtime = await runtimeFor(client);
+		const opening = runtime.beginAuthoritativeRead("hub-1", "local:coord", client);
+		await runtime.reconcileAuthoritativeRead(opening!, reply("idle"));
+		await runtime.submit(firstSend);
+		await vi.waitFor(async () => expect((await runtime.read(KEY)).optimistic).toHaveLength(1));
+		const listing = runtime.beginAuthoritativeRead("hub-1", "local:coord", client);
+		await runtime.reconcileAuthoritativeRead(listing!, reply("idle", [], {}, pending));
+		const held = await runtime.read(KEY);
+		expect([...held.outbox, ...held.optimistic]).toEqual([]);
+
+		expect((await readSendAction(runtime, client, "hub-1", "local:coord")).action).toBe("queue");
 		await runtime.stop();
 	});
 });

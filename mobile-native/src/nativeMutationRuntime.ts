@@ -126,6 +126,12 @@ export class NativeMutationRuntime
 		{ client: AppwireClientLike; token: symbol; readToken?: symbol; unsubscribe: () => void }
 	>();
 	readonly #blockedTargets = new Set<string>();
+	// The mutations this phone submitted to each target, by id, with when:
+	// reconcilePendingEntries' submittedHere. An authoritative read that lists
+	// a send as pending settles its durable record before any turn shows it,
+	// and then only this says the send was this phone's (Review Focus 4). For
+	// this launch only, like the session store's own map, and bounded.
+	readonly #submittedHere = new Map<string, Map<string, number>>();
 	readonly #storageListeners = new Set<NativeMutationStorageListener>();
 	#started = false;
 	// Bumped by every start and stop. A start attempt's failure rollback and
@@ -357,7 +363,13 @@ export class NativeMutationRuntime
 	 * session's own read uses (conversation.ts readProjection), and so the same
 	 * proof of what already landed; it omits only the subscription, which
 	 * belongs to whatever the screen on top is showing. An open target is left
-	 * alone, and a target registered to another client can't be read for. */
+	 * alone, and a target registered to another client can't be read for.
+	 *
+	 * One difference from the session's own read: on a transient failure the
+	 * hub may answer a read that doesn't subscribe from the session's persisted
+	 * history (allowsPastFallbackAfterLiveReadFailure, cmd/evener-hub). That
+	 * answer isn't mutation-authoritative, so reconciling it only marks
+	 * unconfirmed records blockedUnknown and never clears one. */
 	async settleTarget(
 		hubId: string,
 		targetRef: string,
@@ -425,8 +437,30 @@ export class NativeMutationRuntime
 		};
 		await this.start();
 		const record = await this.#outbox.enqueueIntent(intent, undefined, barrier);
+		this.#rememberSubmitted(record.targetRef, record.clientMutationId, record.createdAt);
 		this.#notifyStorageChange([record.targetRef]);
 		return undefined;
+	}
+
+	/** The mutations this phone submitted to a target this launch, by id,
+	 * with when (reconcilePendingEntries' submittedHere). */
+	submittedHere(targetKey: string): ReadonlyMap<string, number> {
+		return this.#submittedHere.get(targetKey) ?? NOTHING_SUBMITTED;
+	}
+
+	#rememberSubmitted(targetKey: string, clientMutationId: string, createdAt: number): void {
+		let submitted = this.#submittedHere.get(targetKey);
+		if (!submitted) {
+			submitted = new Map();
+			this.#submittedHere.set(targetKey, submitted);
+		}
+		submitted.set(clientMutationId, createdAt);
+		// A send the daemon still lists as pending is recent; the oldest ids
+		// have long since shown up in a turn, where they need no provenance.
+		if (submitted.size > SUBMITTED_HERE_LIMIT) {
+			const oldest = submitted.keys().next().value;
+			if (oldest !== undefined) submitted.delete(oldest);
+		}
 	}
 
 	#notifyStorageChange(targetRefs: readonly string[]): void {
@@ -440,6 +474,9 @@ export class NativeMutationRuntime
 		}
 	}
 }
+
+const NOTHING_SUBMITTED: ReadonlyMap<string, number> = new Map();
+const SUBMITTED_HERE_LIMIT = 100;
 
 function createNativeMutationRuntime(): NativeMutationRuntime {
 	const database = openDatabaseSync("evener-mutations.db");

@@ -127,9 +127,11 @@ export interface SessionTarget {
  * the window the session's own read uses, so a send of this client's that the
  * session already shows stops counting as in flight. Every record in this
  * phone's durable outbox is this client's own
- * (createConversationMutationPendingPort). */
+ * (createConversationMutationPendingPort), and the runtime remembers what it
+ * submitted, so a send the daemon lists as pending after its record settled
+ * still counts as this phone's. */
 export async function readSendAction(
-	runtime: Pick<NativeMutationRuntime, "read">,
+	runtime: Pick<NativeMutationRuntime, "read" | "submittedHere">,
 	client: ConversationClientLike,
 	hubId: string,
 	ref: string,
@@ -143,7 +145,15 @@ export async function readSendAction(
 	const session = hydrateThread(response, ref, Date.now());
 	const targetKey = nativeMutationTargetKey(hubId, ref);
 	const held = await runtime.read(targetKey);
-	const pending = reconcilePendingEntries(targetKey, [...held.outbox, ...held.optimistic], session, new Map(), () => true);
+	// Every durable record here is this phone's own; the runtime's record of
+	// what it submitted covers a send the read settled out of the outbox.
+	const pending = reconcilePendingEntries(
+		targetKey,
+		[...held.outbox, ...held.optimistic],
+		session,
+		runtime.submittedHere(targetKey),
+		() => true,
+	);
 	return {
 		// The read just answered, so the connection is up.
 		action: sendAction(session, pending, true),

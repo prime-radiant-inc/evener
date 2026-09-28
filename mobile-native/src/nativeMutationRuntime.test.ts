@@ -1541,3 +1541,17 @@ test("a settling read that fails leaves the target blocked and sends nothing", a
 	expect(client.calls.filter((call) => call.method === "turn/start")).toHaveLength(0);
 	await runtime.stop();
 });
+
+test("remembers what this phone submitted to each target, the most recent hundred", async () => {
+	let next = 0;
+	const runtime = new NativeMutationRuntime(openDatabase(), { createMutationId: () => `mutation-${(next += 1)}` });
+	const client = new FakeClient("ready");
+	await registerAndStart(runtime, client);
+	for (let index = 0; index < 101; index += 1) await runtime.submit(request("queue"));
+	const submitted = runtime.submittedHere(nativeMutationTargetKey("hub-1", "ref-1"));
+	expect(submitted.size).toBe(100);
+	expect(submitted.has("mutation-1")).toBe(false);
+	expect(submitted.has("mutation-101")).toBe(true);
+	expect(runtime.submittedHere(nativeMutationTargetKey("hub-1", "ref-other")).size).toBe(0);
+	await runtime.stop();
+});
