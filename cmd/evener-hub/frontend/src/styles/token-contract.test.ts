@@ -1294,6 +1294,26 @@ for (const [path, text] of Object.entries(STYLESHEETS)) {
   });
 }
 
+// --prose-font-size is the Markdown widget's reading-step pin (see
+// widgets/markdown/markdown.module.css): a surface declares it ONLY to keep
+// the shared prose step where the widget's 1em fallback would otherwise
+// inherit the host's own size. Two reading surfaces own it today - the agent
+// message (.message) and the doc pane (.markdown). Every other Markdown host
+// composes with its host by design; a new declaration means a new reading
+// surface, and that decision belongs in this list, not in a module quietly.
+// Comments are stripped first: markdown.module.css's own header explains the
+// hook by name without declaring it.
+test("--prose-font-size is declared only by the reading-surface hosts", () => {
+  const uncommented = (text: string) => text.replace(/\/\*[\s\S]*?\*\//g, "");
+  const declarers = Object.keys(STYLESHEETS)
+    .filter((path) => /(^|\n)\s*--prose-font-size\s*:/.test(uncommented(STYLESHEETS[path]!)))
+    .sort();
+  expect(declarers).toEqual([
+    "panes/doc/docpane.module.css",
+    "panes/session/transcript/messages/agentmessageitem.module.css",
+  ]);
+});
+
 test("the declared set spans module-local custom properties, not just tokens.css", () => {
   expect(DECLARED_CUSTOM_PROPERTIES.has("--space-4")).toBe(true);
   expect(DECLARED_CUSTOM_PROPERTIES.has("--textarea-min-lines")).toBe(true);

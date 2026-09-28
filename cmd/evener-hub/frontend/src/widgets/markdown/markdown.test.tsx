@@ -182,11 +182,12 @@ test("takes its body ink from --markdown-ink, defaulting to --ink-hi", () => {
 // that streamingtext.module.css exposes the identical hook with the
 // identical fallback, so the live and settled paths can never disagree.
 
-// Approved editorial-instrument spec (2026-09-09) introduces the shared reading step.
-test("takes its font-size from --prose-font-size, defaulting to --font-size-prose", () => {
+// The root composes with its host: a host's own font-size applies unless the
+// surface pins --prose-font-size (reading surfaces pin it to the prose step).
+test("takes its font-size from --prose-font-size, composing with its host at 1em when unset", () => {
   const here = dirname(fileURLToPath(import.meta.url));
   const css = readFileSync(join(here, "markdown.module.css"), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
-  expect(css).toContain("font-size: var(--prose-font-size, var(--font-size-prose))");
+  expect(css).toContain("font-size: var(--prose-font-size, 1em)");
 });
 
 test("inline code is a quiet underline, not a filled chip: no background, no radius, sized relative to the surrounding prose", () => {
@@ -198,10 +199,9 @@ test("inline code is a quiet underline, not a filled chip: no background, no rad
   expect(rule).not.toMatch(/border-radius/);
   expect(rule).not.toMatch(/padding/);
   expect(rule).toContain("border-bottom: 1px solid var(--edge)");
-  // Relative (em), not a ramp token: this same rule renders inside prose at
-  // more than one size (agent messages step up to --font-size-pane-title;
-  // every other Markdown caller stays at --font-size-body), and only a
-  // relative size tracks both.
+  // Relative (em), not a ramp token: this same rule renders at more than one
+  // size across hosts (reading surfaces pin the 18px prose step; dense chrome
+  // inherits its host's smaller step), and only a relative size tracks both.
   expect(rule).toMatch(/font-size:\s*0\.86em/);
 });
 

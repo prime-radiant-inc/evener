@@ -7,6 +7,7 @@ import { afterAll, afterEach, beforeEach, expect, type MockInstance, test, vi } 
 import { registerPaneForTests } from "../../shell/paneRegistry";
 import { registerDockviewApi, resetWorkspaceStoreForTests } from "../../shell/workspace";
 import { resetThreadsStoreForTests } from "../../stores/threads";
+import { readModuleCss } from "../../styles/cssBlock";
 import { browserDocPort } from "./browserDocPort";
 import DocPane from "./DocPane";
 // Side-effect import: registers the real "doc" pane type (index.tsx), needed
@@ -42,6 +43,16 @@ afterEach(() => {
   cleanup();
   vi.restoreAllMocks();
   registerDockviewApi(null); // never leak a fake dockview host to another test
+});
+
+// The doc pane is a reading surface: the Markdown widget composes with its
+// host (1em fallback), so the pane must pin the prose step on its own host
+// element or its documents would render at the ambient body step. jsdom
+// computes no cascade, so this reads the stylesheet's own source.
+test("markdown documents read at the prose step, pinned on the pane's own host element", () => {
+  const css = readModuleCss(import.meta.url, "docpane.module.css").replace(/\/\*[\s\S]*?\*\//g, "");
+  expect(css.match(/--prose-font-size/g)).toHaveLength(1);
+  expect(css).toMatch(/\.markdown\s*\{[^}]*--prose-font-size:\s*var\(--font-size-prose\);/);
 });
 
 function textContent(over: Partial<DocFileContent> = {}): DocFileContent {

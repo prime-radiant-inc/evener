@@ -6,11 +6,13 @@
  * slack-lean spec, 2026-07-29-transcript-slack-lean-messages.md,
  * decision 1), and the live stream's caret (see .stream below).
  *
- * Agent prose is body-size like everything else (tiered-density spec,
- * 2026-07-27): the hierarchy against the user's ink-mid text is carried
- * by CONTRAST alone (Markdown's root is --ink-hi). The earlier pane-title
+ * Agent prose reads at the shared prose step, like the user's own text
+ * (tiered-density spec, 2026-07-27): the hierarchy against the user's
+ * ink-mid text is carried by CONTRAST alone (Markdown's root is --ink-hi).
+ * The earlier pane-title
  * size bump fired on every mid-turn narrative fragment, dozens per
- * session, and cancelled itself. */
+ * session, and cancelled itself. The Markdown root composes with its host,
+ * so .message below pins the prose step explicitly. */
 .message {
   /* One rhythm step inside an exchange: consecutive agent fragments stack
    * tight. The larger steps live on the user message (exchange) and the
@@ -19,6 +21,12 @@
   /* Containing block for the mid-exchange .stamp's out-of-flow rail
    * position (see below). */
   position: relative;
+  /* The transcript's reading surface: the Markdown root composes with its
+   * host (1em fallback), so pin the shared prose step here, on the
+   * ancestor the live and settled children share - without it agent prose
+   * falls to the ambient body step. Steps above prose stay forbidden (see
+   * this file's header). */
+  --prose-font-size: var(--font-size-prose);
 }
 
 /* The agent's answer is the document, not a bubble (typography-spacing-
