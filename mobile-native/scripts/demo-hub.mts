@@ -15,6 +15,7 @@ import type {
 } from "@evener/appwire-client";
 import { createDemoFleet, type DemoFleetOptions } from "../src/dev/demoFleet.js";
 import {
+	clearAvailable,
 	createDemoSessions,
 	DEMO_MODEL_LIST,
 	removeLink,
@@ -195,6 +196,7 @@ export async function createDemoHub(
 			// held by Stop can still be sent; the working state line counts
 			// from the turn's start.
 			thread.evener.activeTurnStartedAt = running ? Date.now() : undefined;
+			thread.evener.capabilities.clear = clearAvailable(thread);
 		} else {
 			thread.evener.capabilities.interrupt = running;
 			thread.evener.capabilities.steer = running;

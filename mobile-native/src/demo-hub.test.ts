@@ -602,11 +602,17 @@ describe("native demonstration hub's fleet sessions", () => {
 				await service.open(refOf("s-gateway"));
 				await service.interrupt();
 				const stopped = await service.open(refOf("s-gateway"));
-				expect(stopped.capabilities).toMatchObject({ send: true, steer: true, interrupt: true, queue: true });
+				expect(stopped.capabilities).toMatchObject({
+					send: true,
+					clear: true,
+					steer: true,
+					interrupt: true,
+					queue: true,
+				});
 				await service.send([{ type: "text", text: "Keep going" }]);
 				const working = await service.open(refOf("s-gateway"));
 				expect(working.status.type).toBe("active");
-				expect(working.capabilities).toMatchObject({ send: false, steer: true, interrupt: true });
+				expect(working.capabilities).toMatchObject({ send: false, clear: false, steer: true, interrupt: true });
 				expect(working.activeTurnStartedAt).toBeDefined();
 			} finally {
 				service.close();

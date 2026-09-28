@@ -174,6 +174,65 @@ describe("the demo sessions behind Appendix A's Session frames", () => {
 		expect(EVIDENCE_PREVIEW_LINES).toBeLessThan(60);
 	});
 
+	it("advertises a live daemon's capabilities, with Send and Clear only while it rests", () => {
+		const daemon = {
+			steer: true,
+			interrupt: true,
+			compact: true,
+			forkFromTurn: false,
+			shutdown: true,
+			changeModel: true,
+			changeVisionModel: true,
+			queue: true,
+			goal: true,
+			sharedNotes: true,
+			rename: true,
+		};
+		expect(threadOf("s-pr2138").evener.capabilities).toEqual({ ...daemon, send: false, clear: false });
+		expect(threadOf("s-diff").evener.capabilities).toEqual({ ...daemon, send: true, clear: true });
+		// A pending question or approval blocks Clear, as the daemon's does.
+		expect(threadOf("s-audit").evener.capabilities).toEqual({ ...daemon, send: true, clear: false });
+	});
+
+	it("advertises the hub's past-session capabilities on a shut-down session", () => {
+		// cmd/evener-hub/app_threadread.go's pastThreadCapabilities.
+		expect(threadOf("s-roster").evener.capabilities).toEqual({
+			send: true,
+			steer: false,
+			interrupt: false,
+			compact: true,
+			clear: true,
+			forkFromTurn: true,
+			shutdown: true,
+			changeModel: true,
+			changeVisionModel: true,
+			queue: true,
+			goal: true,
+			sharedNotes: true,
+			rename: true,
+			skillInput: true,
+		});
+	});
+
+	it("advertises only readable notes on a session that needs a restart", () => {
+		// cmd/evener-hub/internal/appsource/local_daemon.go, ThreadStatusRestartRequired.
+		expect(threadOf("s-namer").evener.capabilities).toEqual({
+			send: false,
+			steer: false,
+			interrupt: false,
+			compact: false,
+			clear: false,
+			forkFromTurn: false,
+			shutdown: false,
+			changeModel: false,
+			changeVisionModel: false,
+			queue: false,
+			goal: false,
+			sharedNotes: true,
+			rename: false,
+		});
+	});
+
 	it("frame 13a: a shut-down session keeps read-only notes and a link", () => {
 		const { model } = open("s-roster");
 		expect(sessionStateLine(model, NOW).text).toBe("Shut down");

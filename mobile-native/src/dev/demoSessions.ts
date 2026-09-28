@@ -37,6 +37,7 @@ import type {
 	Thread,
 	ThreadItem,
 	Turn,
+	ThreadCapabilities,
 	TurnError,
 	UrlsRemoveParams,
 	UrlsRemoveResponse,
@@ -698,6 +699,71 @@ function queueOf(slug: string, texts: string[] = []): QueueState {
 	};
 }
 
+// A session's capabilities as the hub advertises them for its state:
+// - live, a daemon's set (server/appwire_runtime.go's appCapabilitiesLocked),
+//   with Send only while it rests and Clear as clearAvailable says;
+// - shut down, the hub's past-session set (cmd/evener-hub/app_threadread.go's
+//   pastThreadCapabilities), since sending resumes it;
+// - needing a restart, readable notes alone
+//   (cmd/evener-hub/internal/appsource/local_daemon.go).
+function capabilitiesOf(state: ProtoState): ThreadCapabilities {
+	const none: ThreadCapabilities = {
+		send: false,
+		steer: false,
+		interrupt: false,
+		compact: false,
+		clear: false,
+		forkFromTurn: false,
+		shutdown: false,
+		changeModel: false,
+		changeVisionModel: false,
+		queue: false,
+		goal: false,
+		sharedNotes: true,
+		rename: false,
+	};
+	if (state === "restart") return none;
+	if (state === "shutdown")
+		return {
+			...none,
+			send: true,
+			compact: true,
+			clear: true,
+			forkFromTurn: true,
+			shutdown: true,
+			changeModel: true,
+			changeVisionModel: true,
+			queue: true,
+			goal: true,
+			rename: true,
+			skillInput: true,
+		};
+	const resting = THREAD_STATUS[state] !== "active";
+	return {
+		...none,
+		send: resting,
+		steer: true,
+		interrupt: true,
+		compact: true,
+		shutdown: true,
+		changeModel: true,
+		changeVisionModel: true,
+		queue: true,
+		goal: true,
+		rename: true,
+	};
+}
+
+// Whether a live session can Clear: only at rest, and not while a question or
+// an approval waits on you, as the daemon's clearBlockedReasonLocked says.
+export function clearAvailable(thread: Thread): boolean {
+	return (
+		thread.status.type !== "active" &&
+		!thread.evener.askPending &&
+		(thread.evener.pendingEscalations ?? []).length === 0
+	);
+}
+
 function sessionThread(session: FleetSession, now: number): Thread {
 	const content = CONTENT[session.slug] ?? {};
 	const usage = content.usage ?? BASE_USAGE;
@@ -708,7 +774,7 @@ function sessionThread(session: FleetSession, now: number): Thread {
 	const sessionId = demoSessionId(session.slug);
 	const threadId = `demo-thread-${session.slug}`;
 	const updatedAt = Math.floor((now - session.ago * 1000) / 1000);
-	return {
+	const thread: Thread = {
 		id: threadId,
 		sessionId,
 		name: session.title,
@@ -728,25 +794,7 @@ function sessionThread(session: FleetSession, now: number): Thread {
 			ref: session.ref,
 			instanceId: `demo-instance-${session.slug}`,
 			queue: queueOf(session.slug, content.queued),
-			// A live session advertises what a daemon does whatever the turn
-			// (cmd/evener-hub/internal/appsource/local_daemon.go: Steer,
-			// Interrupt and Queue are !closed, Send is !active). A shut-down one
-			// keeps its notes readable and nothing else.
-			capabilities: {
-				send: live && !active,
-				steer: live,
-				interrupt: live,
-				compact: false,
-				clear: false,
-				forkFromTurn: false,
-				shutdown: false,
-				changeModel: live,
-				changeVisionModel: false,
-				sharedNotes: true,
-				queue: live,
-				goal: false,
-				rename: false,
-			},
+			capabilities: capabilitiesOf(session.state),
 			...(active ? { activeTurnId: turn.id, activeTurnStartedAt: turn.startedAt } : {}),
 			...(turn.completedAt === undefined ? {} : { lastTurnEndedAt: turn.completedAt }),
 			reasoningEffort: content.effort ?? DEFAULT_EFFORT,
@@ -788,6 +836,8 @@ function sessionThread(session: FleetSession, now: number): Thread {
 			access: { sandbox: "workspace-write", network: true },
 		},
 	};
+	if (live && session.state !== "restart") thread.evener.capabilities.clear = clearAvailable(thread);
+	return thread;
 }
 
 export interface DemoSessionsOptions {
