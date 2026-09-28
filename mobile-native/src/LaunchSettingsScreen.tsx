@@ -94,11 +94,7 @@ function LaunchDefaults({
 		<SafeAreaView edges={["bottom", "left", "right"]} style={[styles.fill, { backgroundColor: colors.background }]}>
 			<ScrollView keyboardShouldPersistTaps="handled" contentContainerStyle={{ padding: 20, gap: 10 }}>
 				<Copy>{hubName}</Copy>
-				{!client && (
-					<View>
-						<Copy>Disconnected. Your unsaved changes are kept here.</Copy>
-					</View>
-				)}
+				{!client && <Copy>Disconnected. Your unsaved changes are kept here.</Copy>}
 				<Copy muted>
 					{layer === "project"
 						? `Defaults for new Evener sessions in ${cwd}. These override hub and trusted repository settings; per-launch values can override them.`

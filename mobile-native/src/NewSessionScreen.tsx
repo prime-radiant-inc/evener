@@ -122,11 +122,7 @@ export function NewSessionScreen({ route, navigation }: NativeStackScreenProps<R
 					keyboardShouldPersistTaps="handled"
 				>
 					<Copy muted>{route.params.hubName}</Copy>
-					{!ready ? (
-						<View>
-							<Copy muted>You can create a session once the hub is back. Your input is kept.</Copy>
-						</View>
-					) : null}
+					{!ready ? <Copy muted>You can create a session once the hub is back. Your input is kept.</Copy> : null}
 					<ErrorMessage message={form.error} />
 					<ErrorMessage message={form.storageError} />
 					{form.storageError && (
