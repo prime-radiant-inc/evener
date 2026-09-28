@@ -1835,6 +1835,7 @@ func (p navigationProjector) projectShallow(node hubcore.TreeNode) hubapi.Naviga
 		ApprovalPending:     node.ApprovalPending,
 		ApprovalTool:        truncateNavigationBytes(node.ApprovalTool, maxNavigationIdentityBytes),
 		ApprovalTarget:      truncateNavigationRunes(node.ApprovalTarget, maxNavigationLabelRunes),
+		Question:            navigationQuestion(node.Question),
 		Dormant:             node.Dormant,
 		Offline:             p.projection.sourceOffline(ref.HostID),
 		UpdatedAt:           optionalTime(node.UpdatedAt),
@@ -1880,6 +1881,23 @@ func navigationTaskProgress(tasks *appwire.TaskAggregate) *hubapi.NavigationTask
 		return nil
 	}
 	return progress
+}
+
+// navigationQuestion is a row's pending question on the wire: re-cut to the
+// wire's bounds (appwire.BoundedPendingQuestion), so a remote host or an older
+// daemon cannot widen a row, and dropped when the schema would refuse it (no
+// text left, or no question counted), the way navigationTaskProgress drops bad
+// progress rather than fail the resource.
+func navigationQuestion(question *appwire.PendingQuestion) *hubapi.NavigationQuestion {
+	if question == nil {
+		return nil
+	}
+	bounded := appwire.BoundedPendingQuestion(question.Question, question.Options, question.Count)
+	wire := hubapi.NavigationQuestion{Text: bounded.Question, Options: bounded.Options, Count: bounded.Count}
+	if !navigationQuestionValid(wire) {
+		return nil
+	}
+	return &wire
 }
 
 // navigationSubagentTally is a root row's tally on the wire: absent when the
@@ -2180,6 +2198,11 @@ func cloneNavigationSummary(summary hubapi.NavigationSessionSummary) hubapi.Navi
 	}
 	clone.Tasks = clonePointer(summary.Tasks)
 	clone.Subagents = clonePointer(summary.Subagents)
+	if summary.Question != nil {
+		question := *summary.Question
+		question.Options = append([]string(nil), summary.Question.Options...)
+		clone.Question = &question
+	}
 	clone.Children = make(hubapi.NavigationArray[hubapi.NavigationSessionSummary], len(summary.Children))
 	for index, child := range summary.Children {
 		clone.Children[index] = cloneNavigationSummary(child)

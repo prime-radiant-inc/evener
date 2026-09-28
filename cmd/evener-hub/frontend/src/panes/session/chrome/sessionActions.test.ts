@@ -10,7 +10,7 @@ import { lastUserMessageText } from "./sessionActions";
 // the most recent turn that actually has a userMessage item - scanning
 // backward rather than trusting turns[length-1] blindly, since the very
 // last turn may not be user-initiated (e.g. a goal-continuation turn).
-// thread/fork REQUIRES either editedInput or deferInput when sourceTurnId
+// thread/fork REQUIRES either editedInput or deferInput when sourceItemKey
 // is set (cmd/evener-hub/app_threadlifecycle.go:361-363, InvalidParams
 // "editedInput is required") - editedInput is what this feeds, pre-filled
 // from the ALREADY-LOADED transcript so nothing needs a deferInput round

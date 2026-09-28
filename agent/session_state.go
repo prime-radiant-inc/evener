@@ -283,6 +283,7 @@ func (s *Session) metaWithNotes(human, agentNote string, urls []schema.SessionUR
 		WorktreeRestoreRoot:      restoreRoot,
 		WorkMillis:               s.workMillis,
 		LastTurnEndedAt:          s.lastTurnEndedAt,
+		LastMessage:              s.lastMessage,
 		CumulativeUsage:          cumulativeUsageSnapshot(s.contextMgr.CumulativeUsage()),
 		JobTreeRootSessionID:     jobTreeRootSessionID,
 		JobTreeRevision:          jobTreeRevision,

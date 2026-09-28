@@ -40,7 +40,7 @@ export interface TierPage {
 export type ProjectPages = Record<ProjectSessionTier, TierPage>;
 
 export type ProjectTreeItem =
-	| { kind: "host"; key: string; fold: string; host: HostFacts; liveCount: number | null; folded: boolean }
+	| { kind: "host"; key: string; fold: string; depth: 0; host: HostFacts; liveCount: number | null; folded: boolean }
 	| {
 			kind: "project";
 			key: string;
@@ -50,11 +50,13 @@ export type ProjectTreeItem =
 			liveCount: number | null;
 			folded: boolean;
 	  }
-	| { kind: "branch"; key: string; fold: string; host: HostFacts; folded: boolean }
+	| { kind: "branch"; key: string; fold: string; depth: 1; host: HostFacts; folded: boolean }
 	| { kind: "tier"; key: string; depth: number; label: "Today" | "Recent" }
 	| { kind: "archivedGroup"; key: string; fold: string; depth: number; count: number | null; folded: boolean }
 	| { kind: "session"; key: string; depth: number; row: NavigationSessionSummary; archived: boolean }
 	| { kind: "more"; key: string; depth: number; projectKey: string; tier: ProjectSessionTier; remaining: number }
+	/** The section's catalog has more projects than it has read. */
+	| { kind: "moreProjects"; key: string; depth: 0; remaining: number }
 	| { kind: "loading"; key: string; depth: number }
 	| { kind: "failed"; key: string; depth: number };
 
@@ -70,6 +72,8 @@ export interface ProjectTreeInput {
 	isFolded(fold: string, byDefault: boolean): boolean;
 	/** A connected host group's live count, or null when it can't be known. */
 	hostLiveCount(hostId: string): number | null;
+	/** The projects the section's catalog holds past the ones read. */
+	remainingProjects: number;
 }
 
 /** The sections' own folds (part 1's FoldedSections keys): Projects starts
@@ -122,6 +126,8 @@ export function projectTreeItems(input: ProjectTreeInput): ProjectTreeItem[] {
 	const mode = input.section === "projects" ? grouping(input.sources, input.organizeBy) : "flat";
 	if (mode === "host-project") hostFirst(out, input);
 	else for (const project of pinnedFirst(input.projects)) projectFirst(out, input, project, mode === "project-host");
+	if (input.remainingProjects > 0)
+		out.push({ kind: "moreProjects", key: `${input.section}/more-projects`, depth: 0, remaining: input.remainingProjects });
 	return out;
 }
 
@@ -208,7 +214,7 @@ function projectFirst(
 			const branch = branchFold(project.key, host.id);
 			const branchKey = itemKey(input.section, branch);
 			const branchFolded = input.isFolded(branch, true);
-			out.push({ kind: "branch", key: branchKey, fold: branch, host, folded: branchFolded });
+			out.push({ kind: "branch", key: branchKey, fold: branch, depth: 1, host, folded: branchFolded });
 			if (!branchFolded) activeItems(out, branchKey, pages, host.id, 2);
 		}
 	else activeItems(out, prefix, pages, null, 1);
@@ -248,6 +254,7 @@ function hostFirst(out: ProjectTreeItem[], input: ProjectTreeInput): void {
 			kind: "host",
 			key: itemKey(input.section, fold),
 			fold,
+			depth: 0,
 			host,
 			liveCount: host.online ? input.hostLiveCount(host.id) : null,
 			folded,
@@ -317,40 +324,33 @@ export function expandedProjectKeys(items: readonly ProjectTreeItem[]): Set<stri
 	return keys;
 }
 
-/** The pages the visible "more" rows ask for, once each. */
-export function morePagesToLoad(
-	visible: readonly { kind: string; projectKey?: string; tier?: ProjectSessionTier }[],
-): { projectKey: string; tier: ProjectSessionTier }[] {
-	const wanted = new Map<string, { projectKey: string; tier: ProjectSessionTier }>();
-	for (const item of visible)
-		if (item.kind === "more" && item.projectKey !== undefined && item.tier !== undefined)
-			wanted.set(`${item.projectKey}:${item.tier}`, { projectKey: item.projectKey, tier: item.tier });
-	return [...wanted.values()];
-}
-
 export interface ProjectsView {
 	projects: readonly NavigationProjectSummary[];
 	/** A catalog read has landed for this section, on this connection or an earlier one. */
 	loaded: boolean;
+	/** The catalog's projects past the ones read. */
+	remaining: number;
 	pages: ReadonlyMap<string, ProjectPages>;
 }
 
 /** What a section shows: the current connection's reads where they have
  * landed, and the rows shown before until they do, so a reconnect never
- * blanks a section (part 1's Review Focus 1). `retained` is the view shown
- * last; pass null for a new hub. */
+ * blanks a section (part 1's Review Focus 1). Only a tier that loaded is kept,
+ * as boardData keeps pages: a failed first read is never kept, so a retry in
+ * flight reads as loading. `retained` is the view shown last; pass null for a
+ * new hub. */
 export function projectsView(fresh: ProjectBrowserSnapshot, retained: ProjectsView | null): ProjectsView {
-	const before = retained ?? { projects: [], loaded: false, pages: new Map<string, ProjectPages>() };
+	const before = retained ?? { projects: [], loaded: false, remaining: 0, pages: new Map<string, ProjectPages>() };
 	const pages = new Map(before.pages);
 	for (const group of fresh.groups) {
 		const previous = pages.get(group.project.key);
 		const pick = (tier: ProjectSessionTier): TierPage =>
-			group[tier].loaded || !previous ? group[tier] : previous[tier];
+			group[tier].loaded || !previous?.[tier].loaded ? group[tier] : previous[tier];
 		pages.set(group.project.key, { current: pick("current"), recent: pick("recent"), archived: pick("archived") });
 	}
 	return fresh.projects.loaded
-		? { projects: fresh.projects.rows, loaded: true, pages }
-		: { projects: before.projects, loaded: before.loaded, pages };
+		? { projects: fresh.projects.rows, loaded: true, remaining: fresh.projects.remaining, pages }
+		: { projects: before.projects, loaded: before.loaded, remaining: before.remaining, pages };
 }
 
 /** Each host's rows in Live, once each (a session that needs you is in both

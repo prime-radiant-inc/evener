@@ -19,6 +19,9 @@ const (
 	// MaxFailureTitleRunes bounds a failure's headline, a Failed row's why
 	// line ("Provider error", "Usage limit reached").
 	MaxFailureTitleRunes = 80
+	// MaxMessageExcerptRunes bounds the opening of a session's last agent
+	// message, a Finished row's why line (spec 18, S1: "about 200 characters").
+	MaxMessageExcerptRunes = 200
 )
 
 // BoundedPendingQuestion is a pending question cut to the wire's bounds: its
