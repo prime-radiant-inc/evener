@@ -312,7 +312,13 @@ function hostRowEqual(a: HostRow, b: HostRow | undefined): boolean {
     a.arch === b.arch &&
     a.lastAttachError === b.lastAttachError &&
     a.midAttach === b.midAttach &&
-    a.removed === b.removed
+    a.removed === b.removed &&
+    // The remnant fence's own fields are part of the row's contract too
+    // (registry spec 08 §11): a remnant that opens, escalates, or clears with
+    // no other row change must publish, or the repair affordance appears late
+    // or never clears (S16).
+    a.openRemnantId === b.openRemnantId &&
+    a.escalationAgeSec === b.escalationAgeSec
   );
 }
 

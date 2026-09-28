@@ -596,31 +596,54 @@ test("handler-absent surfaces the one-time migration step, never Connect", async
   expect(within(dialog).getByRole("button", { name: "Retry plan" })).toBeTruthy();
 });
 
-test("remnant-open names the blocking remnant and offers neither Connect nor re-plan", async () => {
+test("remnant-open names the blocking remnant and offers teardown-retry, never Connect or re-plan", async () => {
   const user = userEvent.setup();
   const fake = connectFakeClient();
+  let plans = 0;
   fake.on("evener/host/list", () => ({ hosts: [row({ name: "beta", address: "b.example" })] }));
-  fake.on("evener/host/plan", () => ({
-    outcome: "no-token",
-    staleFacts: {
-      message: 'host "beta" is fenced by an open teardown remnant',
-      attached: true,
-      reason: "remnant-open",
-    },
-    terminal: false,
+  fake.on("evener/host/plan", () => {
+    plans += 1;
+    return {
+      outcome: "no-token",
+      staleFacts: {
+        message: 'host "beta" is fenced by an open teardown remnant',
+        attached: true,
+        reason: "remnant-open",
+      },
+      terminal: false,
+      remnantId: "remnant-7",
+    };
+  });
+  fake.on("evener/host/teardown-retry", () => ({
+    outcome: "teardown-complete",
+    hostKind: "live",
+    host: row({ name: "beta", address: "b.example" }),
     remnantId: "remnant-7",
   }));
   render(<HostsSection sectionId="hosts" />);
   const betaRow = (await screen.findByText("beta")).closest("li")!;
   await user.click(within(betaRow).getByRole("button", { name: "Deploy" }));
   const dialog = await screen.findByRole("dialog", { name: "Deploy beta" });
-  // §13: surfaces the blocking remnantId; never Connect, never re-plan (a
-  // re-plan mints nothing while the remnant is open).
+  // §13: surfaces the blocking remnantId with a teardown-retry affordance;
+  // never Connect, never re-plan (a re-plan mints nothing while the remnant is
+  // open).
   await waitFor(() => expect(within(dialog).getByText(/remnant-7/)).toBeTruthy());
   expect(within(dialog).getByText(/fenced by an open teardown remnant/)).toBeTruthy();
   expect(within(dialog).queryByRole("button", { name: /Connect/ })).toBeNull();
   expect(within(dialog).queryByRole("button", { name: /Retry plan/ })).toBeNull();
   expect((within(dialog).getByRole("button", { name: "Deploy" }) as HTMLButtonElement).disabled).toBe(true);
+
+  // Submitting the repair calls teardown-retry with exactly the remnant id and
+  // renders the arm it answers.
+  await user.click(within(dialog).getByRole("button", { name: "Teardown retry" }));
+  await waitFor(() => expect(fake.calls.filter((c) => c.method === "evener/host/teardown-retry")).toHaveLength(1));
+  expect(fake.calls.find((c) => c.method === "evener/host/teardown-retry")?.params).toEqual({ remnantId: "remnant-7" });
+  await waitFor(() =>
+    expect(within(dialog).getByText(/Teardown completed; remnant remnant-7 is resolved\./)).toBeTruthy(),
+  );
+  // Resolved: re-planning is the allowed next step, and only now.
+  await user.click(within(dialog).getByRole("button", { name: "Plan again" }));
+  await waitFor(() => expect(plans).toBe(2));
 });
 
 test("a terminal no-token reason disables the deploy button and offers no retry", async () => {
@@ -1187,4 +1210,204 @@ test("a dedup hit that is still running does not toast a fresh start", async () 
   expect(texts.join(" ")).not.toContain("Deploy started");
   // The row renders the running operation it adopted.
   expect(within(betaRow).getByText("Deploying…")).toBeTruthy();
+});
+
+// --- S16: remnant retry/recover and orphan-must-resolve-first ----------------
+
+test("a remnant-gated row carries the teardown-retry affordance and submits its remnantId", async () => {
+  const user = userEvent.setup();
+  const fake = connectFakeClient();
+  fake.on("evener/host/list", () => ({
+    hosts: [row({ name: "alpha", address: "a.example" }), row({ name: "beta", openRemnantId: "remnant-7" })],
+  }));
+  fake.on("evener/host/teardown-retry", () => ({
+    outcome: "teardown-complete",
+    hostKind: "live",
+    host: row({ name: "beta" }),
+    remnantId: "remnant-7",
+  }));
+  render(<HostsSection sectionId="hosts" />);
+  const alphaRow = (await screen.findByText("alpha")).closest("li")!;
+  // Only a row whose name holds an open remnant carries the repair.
+  expect(within(alphaRow).queryByRole("button", { name: "Teardown retry" })).toBeNull();
+
+  const betaRow = (await screen.findByText("beta")).closest("li")!;
+  await user.click(within(betaRow).getByRole("button", { name: "Teardown retry" }));
+  const dialog = await screen.findByRole("dialog", { name: "Repair remnant remnant-7" });
+  await user.click(within(dialog).getByRole("button", { name: "Teardown retry" }));
+
+  await waitFor(() => expect(fake.calls.filter((c) => c.method === "evener/host/teardown-retry")).toHaveLength(1));
+  expect(fake.calls.find((c) => c.method === "evener/host/teardown-retry")?.params).toEqual({ remnantId: "remnant-7" });
+  await waitFor(() =>
+    expect(within(dialog).getByText(/Teardown completed; remnant remnant-7 is resolved\./)).toBeTruthy(),
+  );
+});
+
+test("a live-attempt busy refusal renders the typed busy with retry-later, never a silent no-op", async () => {
+  const user = userEvent.setup();
+  const fake = connectFakeClient();
+  fake.on("evener/host/list", () => ({ hosts: [row({ name: "beta", openRemnantId: "remnant-7" })] }));
+  fake.on("evener/host/teardown-retry", () => {
+    throw new WireError('host "beta" is busy: a live teardown attempt owns the remnant', -32014, {
+      evenerErrorInfo: "host-busy-transient",
+    });
+  });
+  render(<HostsSection sectionId="hosts" />);
+  const betaRow = (await screen.findByText("beta")).closest("li")!;
+  await user.click(within(betaRow).getByRole("button", { name: "Teardown retry" }));
+  const dialog = await screen.findByRole("dialog", { name: "Repair remnant remnant-7" });
+  await user.click(within(dialog).getByRole("button", { name: "Teardown retry" }));
+
+  await waitFor(() => expect(within(dialog).getByText(/The host is busy right now\./)).toBeTruthy());
+  expect(within(dialog).getByText(/a live teardown attempt owns the remnant/)).toBeTruthy();
+  // Retry later is the affordance the busy class earns.
+  expect(within(dialog).getByRole("button", { name: "Retry teardown" })).toBeTruthy();
+});
+
+test("an escalated row offers the audited recover and collects its attestation", async () => {
+  const user = userEvent.setup();
+  const fake = connectFakeClient();
+  fake.on("evener/host/list", () => ({
+    hosts: [row({ name: "beta", openRemnantId: "remnant-7", escalationAgeSec: 7200 })],
+  }));
+  fake.on("evener/host/teardown-recover", (params) => ({
+    outcome: "recovered-cleared",
+    remnantId: params.remnantId,
+    clearedName: "beta",
+    clearedAt: "2026-09-28T09:30:00Z",
+    hostKind: "live",
+  }));
+  render(<HostsSection sectionId="hosts" />);
+  const betaRow = (await screen.findByText("beta")).closest("li")!;
+  // §13: past the escalation bound the row carries the recover affordance.
+  await user.click(within(betaRow).getByRole("button", { name: "Recover remnant" }));
+  const dialog = await screen.findByRole("dialog", { name: "Repair remnant remnant-7" });
+
+  // The wire's attestation fields, field-for-field (registry spec 08 §11).
+  expect((within(dialog).getByLabelText("Statement") as HTMLInputElement).value).toBe("teardown-verified-absent");
+  await user.type(within(dialog).getByLabelText("Operator"), "operator-1");
+  await user.click(within(dialog).getByRole("button", { name: "Recover remnant" }));
+
+  await waitFor(() => expect(fake.calls.filter((c) => c.method === "evener/host/teardown-recover")).toHaveLength(1));
+  const call = fake.calls.find((c) => c.method === "evener/host/teardown-recover")!;
+  expect(call.params).toMatchObject({
+    remnantId: "remnant-7",
+    attestation: { operator: "operator-1", statement: "teardown-verified-absent" },
+  });
+  // observedAt is prefilled with the operator's current instant (RFC3339).
+  expect((call.params as { attestation: { observedAt: string } }).attestation.observedAt).not.toBe("");
+  await waitFor(() =>
+    expect(
+      within(dialog).getByText(/Recovered: cleared remnant remnant-7 for beta at 2026-09-28T09:30:00Z\./),
+    ).toBeTruthy(),
+  );
+});
+
+test("an orphan-fenced row shows the resolve-first affordance, never the repair button", async () => {
+  vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+  try {
+    const fake = connectFakeClient();
+    fake.on("evener/host/list", () => ({
+      hosts: [row({ name: "beta", address: "b.example", openRemnantId: "remnant-7" })],
+    }));
+    fake.on("evener/host/plan", () => ({ outcome: "planned", plan: planFixture(), token: "tok-1" }));
+    fake.on("evener/host/deploy", () => ({ id: "op-1", clientOperationId: "client-op-1", state: "pending" }));
+    fake.on("evener/host/operations", () => ({ operations: [operationRecord({ state: "orphan-unverified" })] }));
+    render(<HostsSection sectionId="hosts" />);
+    const betaRow = (await screen.findByText("beta")).closest("li")!;
+    fireEvent.click(within(betaRow).getByRole("button", { name: "Deploy" }));
+    const dialog = await screen.findByRole("dialog", { name: "Deploy beta" });
+    await waitFor(() => expect(within(dialog).getByText("/srv/evener/evener")).toBeTruthy());
+    fireEvent.click(within(dialog).getByRole("button", { name: "Deploy" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+
+    // The tracked record reaches `orphan-unverified` through S15's poll: the
+    // grounded signal that the name is fenced. The row degrades to the
+    // resolve-first affordance instead of directing the operator into a repair
+    // the fence would silently refuse.
+    await act(() => vi.advanceTimersByTimeAsync(OPERATION_POLL_MS));
+    await waitFor(() => expect(hostOpsStore.getState().operations.beta?.state).toBe("orphan-unverified"));
+    expect(within(betaRow).getByText(/record op-1/)).toBeTruthy();
+    expect(
+      within(betaRow).getByText(/resolve it through evener\/host\/orphan-resolve before repairing the remnant/),
+    ).toBeTruthy();
+    expect(within(betaRow).queryByRole("button", { name: "Teardown retry" })).toBeNull();
+    expect(within(betaRow).queryByRole("button", { name: "Recover remnant" })).toBeNull();
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+test("an orphan-fenced-busy refusal renders resolve-first, never the repair form", async () => {
+  const user = userEvent.setup();
+  const fake = connectFakeClient();
+  fake.on("evener/host/list", () => ({ hosts: [row({ name: "beta", openRemnantId: "remnant-7" })] }));
+  fake.on("evener/host/teardown-retry", () => {
+    throw new WireError('host "beta": an orphan-unverified record fences teardown repair', -32013, {
+      evenerErrorInfo: "orphan-fenced-busy",
+      recordId: "rec-9",
+    });
+  });
+  render(<HostsSection sectionId="hosts" />);
+  const betaRow = (await screen.findByText("beta")).closest("li")!;
+  await user.click(within(betaRow).getByRole("button", { name: "Teardown retry" }));
+  const dialog = await screen.findByRole("dialog", { name: "Repair remnant remnant-7" });
+  await user.click(within(dialog).getByRole("button", { name: "Teardown retry" }));
+
+  await waitFor(() => expect(within(dialog).getByText(/record rec-9/)).toBeTruthy());
+  expect(
+    within(dialog).getByText(/resolve it through evener\/host\/orphan-resolve before repairing the remnant/),
+  ).toBeTruthy();
+  expect(within(dialog).queryByRole("button", { name: "Retry teardown" })).toBeNull();
+});
+
+test("a tombstone row with an open remnant carries the retry affordance while live actions stay disabled", async () => {
+  const fake = connectFakeClient();
+  fake.on("evener/host/list", () => ({
+    hosts: [row({ name: "beta", removed: true, openRemnantId: "remnant-7", retainedRows: 0 })],
+  }));
+  render(<HostsSection sectionId="hosts" />);
+  const betaRow = (await screen.findByText("beta")).closest("li")!;
+
+  expect(within(betaRow).getByText("removed")).toBeTruthy();
+  // §13: a tombstone row's live-host actions render disabled (never firing);
+  // the remnant repair is its one action.
+  expect((within(betaRow).getByRole("button", { name: "Deploy" }) as HTMLButtonElement).disabled).toBe(true);
+  expect((within(betaRow).getByRole("button", { name: "Restart" }) as HTMLButtonElement).disabled).toBe(true);
+  expect(within(betaRow).queryByRole("button", { name: "Edit" })).toBeNull();
+  expect(within(betaRow).queryByRole("button", { name: "Remove" })).toBeNull();
+  expect(within(betaRow).queryByRole("button", { name: "Connect" })).toBeNull();
+  expect(within(betaRow).getByRole("button", { name: "Teardown retry" })).toBeTruthy();
+});
+
+test("a failed retry arm past the escalation bound escalates to the recover affordance", async () => {
+  const user = userEvent.setup();
+  const fake = connectFakeClient();
+  // The row was stamped inside the bound (escalationAgeSec absent); the retry
+  // arm itself reports the remnant past it, so the escalation must still show.
+  fake.on("evener/host/list", () => ({ hosts: [row({ name: "beta", openRemnantId: "remnant-7" })] }));
+  fake.on("evener/host/teardown-retry", () => ({
+    outcome: "committed-with-teardown-failure",
+    hostKind: "live",
+    host: row({ name: "beta", openRemnantId: "remnant-7" }),
+    remnantId: "remnant-7",
+    seam: "update-host",
+    escalationAgeSec: 7200,
+  }));
+  render(<HostsSection sectionId="hosts" />);
+  const betaRow = (await screen.findByText("beta")).closest("li")!;
+  expect(within(betaRow).queryByRole("button", { name: "Recover remnant" })).toBeNull();
+
+  await user.click(within(betaRow).getByRole("button", { name: "Teardown retry" }));
+  const dialog = await screen.findByRole("dialog", { name: "Repair remnant remnant-7" });
+  await user.click(within(dialog).getByRole("button", { name: "Teardown retry" }));
+
+  await waitFor(() =>
+    expect(
+      within(dialog).getByText(/Teardown failed again at update-host; remnant remnant-7 is still open\./),
+    ).toBeTruthy(),
+  );
+  // The failure arm is a result, not a refusal: retry again or escalate.
+  expect(within(dialog).getByRole("button", { name: "Retry teardown" })).toBeTruthy();
+  expect(within(dialog).getByRole("button", { name: "Recover remnant" })).toBeTruthy();
 });
