@@ -586,8 +586,8 @@ inventing a CSS path; if you need one that isn't here, grep
 |---|---|
 | `[data-testid="composer-input-card"]` | the prompt card; the textarea inside is `[aria-label="Message"]`, placeholder `Message the agent…` (`:783-784`) |
 | `[data-testid="composer-submit"]` | **Send**. Routes to `turn/queue` while a turn runs, `turn/start` otherwise (`submitRouting.ts:19-23`) — one label, two timings |
-| `[data-testid="composer-steer"]` | **Steer**. Renders only while `busy && capabilities.steer` (`:382`) |
-| `[data-testid="composer-stop"]` | **Stop** (interrupt) |
+| `[data-testid="composer-steer"]` | **Steer**. Renders only while `busy && capabilities.steer` (`:382`); above the phone-width boundary only — at or below it (`COMPOSER_PHONE_MAX_WIDTH`, 399) Steer rides in the session menu's leading group |
+| `[data-testid="composer-stop"]` | **Stop** (interrupt). In the control row above the phone-width boundary; in the session menu's leading group at or below it |
 | `[data-testid="composer-attach"]` | the paperclip; opens the hidden `input[type=file]` |
 | `[data-testid="current-work-goal"]` | the CurrentWork goal row, present only while a goal is set; its value button `[data-testid="current-work-goal-value"]` reopens the composer with the `/goal` draft |
 | `[data-testid="pending-chips"]` | optimistic in-flight chips, labelled `Sending` / `Steering` / `Draining` (`pending/PendingChips.tsx:38-42,56`) |

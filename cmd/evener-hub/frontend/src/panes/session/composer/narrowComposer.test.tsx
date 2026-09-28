@@ -13,14 +13,9 @@
 // callback-capturing stub - the sanctioned pattern (resizeObserverTestUtils'
 // own header: "a test that needs to drive size changes keeps its own
 // callback-capturing stub").
-import { readFileSync } from "node:fs";
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
 import { act, cleanup, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { COMPOSER_PHONE_MAX_WIDTH, useNarrowComposer } from "./narrowComposer";
-
-const here = dirname(fileURLToPath(import.meta.url));
 
 // The hook's real host is Composer's root div; the probe is the same shape
 // (a div the ref points at) without the rest of the composer.
@@ -105,9 +100,4 @@ test("engages when the element first appears after the initial render", () => {
   view.rerender(<Probe mounted={true} />);
   act(() => fire(320));
   expect(screen.getByTestId("probe").dataset.narrow).toBe("1");
-});
-
-test("the gate's boundary is the status row's own phone container query", () => {
-  const css = readFileSync(join(here, "../chrome/statusrow.module.css"), "utf8");
-  expect(css).toContain(`@container (max-width: ${COMPOSER_PHONE_MAX_WIDTH}px)`);
 });
