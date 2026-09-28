@@ -810,12 +810,15 @@ function fleetAnswers(
 				if (!raw) throw new Error(`Unknown demonstration session location: ${ref}`);
 				// The hub's location is a shallow summary (navigation_projection.go's
 				// projectShallow), not a row with its descendants: a location resource
-				// holds exactly one entity. servedTier is the one place this row's tier
-				// is decided, so the reveal that asks this exact tier's project_page
-				// cannot drift from what tierRows serves it under.
+				// holds exactly one entity, and projectShallow sets no omitted_descendants
+				// (the child cap is a list-row fact, not the summary's), so the capped
+				// count is dropped with the children. servedTier is the one place this
+				// row's tier is decided, so the reveal that asks this exact tier's
+				// project_page cannot drift from what tierRows serves it under.
 				const tier = servedTier(raw);
+				const { omitted_descendants: _omitted, ...shallow } = rowOf(raw);
 				const response = respond(revision, params, {
-					session: { ...rowOf(raw), children: [] },
+					session: { ...shallow, children: [] },
 					top_level_ref: ref,
 					top_level: true,
 				});

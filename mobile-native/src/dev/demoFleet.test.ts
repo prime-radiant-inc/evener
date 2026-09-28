@@ -249,6 +249,16 @@ describe("demo fleet location", () => {
 		expect(read(fleet, params({ resource: "location", ref: "local:s-gocache" }))).toMatchObject({ tier: "archived" });
 	});
 
+	it("drops the capped-children count from the shallow summary, as projectShallow does", () => {
+		// s-fuzz: 467 subagents capped to 50 in the list rows. The hub's
+		// projectShallow sets no omitted_descendants, so the location's session
+		// must not carry one beside its empty children.
+		const location = read(fleet, params({ resource: "location", ref: "local:s-fuzz" }));
+		const session = location.session as NavigationSessionSummary;
+		expect(session.children).toEqual([]);
+		expect(session.omitted_descendants).toBeUndefined();
+	});
+
 	it("reports an older row as recent, matching the project tier split", () => {
 		// s-roster: ago 1d, not archived -- the same boundary tierRows uses.
 		expect(read(fleet, params({ resource: "location", ref: "local:s-roster" }))).toMatchObject({ tier: "recent" });
