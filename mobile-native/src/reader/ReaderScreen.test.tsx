@@ -181,6 +181,18 @@ async function mount(path = PATH, extra: Record<string, unknown> = {}) {
 	return { tree, navigation, rerender };
 }
 
+/** mount, settling on microtasks alone, for a test that fakes setTimeout. */
+async function mountWithFakeTimers() {
+	const navigation = navigationDouble();
+	const params = { hubId: "studio", sessionRef: "local:fix", path: PATH, reviewRef: "local:coord", reviewTitle: "Coordinator" };
+	const tree = render(<ReaderScreen route={{ key: "reader-1", name: "Reader", params } as never} navigation={navigation as never} />);
+	trees.push(tree);
+	await act(async () => {
+		for (let turn = 0; turn < 50; turn += 1) await Promise.resolve();
+	});
+	return { tree, navigation };
+}
+
 function documentList(tree: ReactTestRenderer): ReactTestInstance {
 	return tree.root.findAllByType(FlatList as never)[0] as ReactTestInstance;
 }
@@ -222,6 +234,21 @@ it("renders a plan's blocks under its caption", async () => {
 	);
 });
 
+it("keeps its update time current while it's open", async () => {
+	vi.useFakeTimers({ toFake: ["setInterval", "clearInterval", "Date"] });
+	try {
+		const updatedAt = new Date(Date.now() - 3 * MINUTE).toISOString();
+		const { tree } = await mount(PATH, { updatedAt });
+		expect(renderedText(tree)).toContain("updated 3m ago");
+		act(() => {
+			vi.advanceTimersByTime(2 * MINUTE);
+		});
+		expect(renderedText(tree)).toContain("updated 5m ago");
+	} finally {
+		vi.useRealTimers();
+	}
+});
+
 it("leaves out an update time that doesn't parse", async () => {
 	const { tree } = await mount(PATH, { updatedAt: "not a time" });
 	expect(renderedText(tree)).toContain("Plan");
@@ -255,6 +282,26 @@ it("marks what changed since your last read, and steps through the changes", asy
 	expect(flatListCalls.at(-1)).toEqual({ method: "scrollToIndex", args: { index: 4, animated: true } });
 });
 
+it("starts the steps over when a re-read changes what changed", async () => {
+	memory.left(KEY, {
+		title: "Settle the race",
+		blocks: documentBlocks(OLDER).map((block) => block.hash),
+		position: null,
+		reviewRef: "local:coord",
+		reviewTitle: "Coordinator",
+	});
+	const { tree } = await mount();
+	act(() => pressable(tree, "Previous change")?.props.onPress());
+	expect(renderedText(tree)).toContain("Change 2 of 2");
+	served[PATH] = { body: OLDER.replace("Patch it.", "Fix it.") };
+	act(() => {
+		for (const listener of harness.appState) listener("active");
+	});
+	await settle();
+	expect(renderedText(tree)).not.toContain("Change 2 of 1");
+	expect(renderedText(tree)).toContain("1 change");
+});
+
 it("shows no changes and no bar on a first read", async () => {
 	const { tree } = await mount();
 	expect(ruled(tree)).toHaveLength(0);
@@ -270,6 +317,32 @@ it("reopens at the remembered block", async () => {
 		method: "scrollToIndex",
 		args: { index: 3, viewOffset: -12, animated: false },
 	});
+});
+
+it("tries a scroll again once the list has measured its row, unless you've jumped elsewhere since", async () => {
+	vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+	try {
+		const { tree } = await mountWithFakeTimers();
+		const list = documentList(tree);
+		const host = readerHosts.get(sheetKey("studio", "local:fix", PATH));
+		flatListCalls.length = 0;
+		act(() => host?.jumpTo(4));
+		act(() => list.props.onScrollToIndexFailed({ index: 4, averageItemLength: 50, highestMeasuredFrameIndex: 2 }));
+		expect(flatListCalls.at(-1)).toEqual({ method: "scrollToOffset", args: { offset: 200, animated: false } });
+		act(() => {
+			vi.advanceTimersByTime(50);
+		});
+		expect(flatListCalls.at(-1)).toEqual({ method: "scrollToIndex", args: { index: 4, animated: true } });
+		act(() => list.props.onScrollToIndexFailed({ index: 4, averageItemLength: 50, highestMeasuredFrameIndex: 2 }));
+		act(() => host?.jumpTo(1));
+		flatListCalls.length = 0;
+		act(() => {
+			vi.advanceTimersByTime(200);
+		});
+		expect(flatListCalls).toEqual([]);
+	} finally {
+		vi.useRealTimers();
+	}
 });
 
 it("remembers where you were and what you read when you leave, and leaves the way back", async () => {
@@ -319,6 +392,25 @@ it("keeps the version you last read when you leave a document that didn't load",
 	const tree0 = trees.pop();
 	act(() => tree0?.unmount());
 	expect(memory.lastRead(KEY)?.blocks).toEqual(older);
+});
+
+it("remembers where you were in a code file, and reopens there", async () => {
+	served["src/race.go"] = { body: "package race\n\nfunc Settle() {}\n" };
+	const code = { sessionRef: "local:fix", path: "src/race.go" };
+	const { tree } = await mount("src/race.go");
+	const list = documentList(tree);
+	act(() => list.props.onViewableItemsChanged({ viewableItems: [{ index: 2 }], changed: [] }));
+	const scroll = {
+		nativeEvent: { contentOffset: { y: 100 }, layoutMeasurement: { height: 400 }, contentSize: { height: 1000 } },
+	};
+	act(() => list.props.onScrollEndDrag(scroll));
+	const tree0 = trees.pop();
+	act(() => tree0?.unmount());
+	expect(memory.position(code)).toMatchObject({ blockIndex: 2, offset: 0, progress: 0.5 });
+	expect(memory.continueReading()).toMatchObject({ path: "src/race.go", progress: 0.5 });
+	flatListCalls.length = 0;
+	await mount("src/race.go");
+	expect(flatListCalls).toContainEqual({ method: "scrollToIndex", args: { index: 2, viewOffset: -0, animated: false } });
 });
 
 it("says a document was cut short", async () => {

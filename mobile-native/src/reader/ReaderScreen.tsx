@@ -26,13 +26,14 @@ import { HubProfiles } from "../connection";
 import { nativeDocImageSource } from "../nativeDocPort";
 import type { Routes } from "../screens";
 import { compactDuration } from "../session/format";
+import { useMinuteClock } from "../session/minuteClock";
 import { returnToSession } from "../session/returnToSession";
 import { SessionLink } from "../session/sessionMessage";
 import { sheetKey, useProvideSheetHost } from "../sheet/sheetHosts";
 import { useScreenInFront } from "../sheet/useScreenInFront";
 import { allowFontScaling, useColors, useTextScale } from "../ui";
-import { type DocumentBlock, outline } from "./documentBlocks";
-import { changedBlocks, changesCaption, restoreBlock } from "./documentChanges";
+import { type DocumentBlock, hashText, outline } from "./documentBlocks";
+import { changedBlocks, changesCaption, type Place, restoreBlock } from "./documentChanges";
 import type { ReadingPosition } from "./documentMemory";
 import { documentKind, documentNotice, type LoadedDocument, truncationNote } from "./documentSource";
 import { documentMemory } from "./nativeDocumentMemory";
@@ -82,11 +83,10 @@ export function ReaderScreen({ route, navigation }: NativeStackScreenProps<Route
 	const insets = useSafeAreaInsets();
 	const list = useRef<FlatList<Row>>(null);
 
-	// This visit's view of the past: the version you last read, and the
-	// clock for "updated 3m ago". A re-read during the visit compares against
-	// the same last read.
+	// This visit's view of the past: the version you last read. A re-read
+	// during the visit compares against the same last read.
 	const [lastRead] = useState(() => memory.lastRead(key));
-	const [now] = useState(Date.now);
+	const now = useMinuteClock();
 	const blocks = document?.kind === "markdown" ? document.blocks : null;
 	const rows = useMemo(() => rowsOf(document), [document]);
 	const changed = useMemo(
@@ -95,12 +95,20 @@ export function ReaderScreen({ route, navigation }: NativeStackScreenProps<Route
 	);
 	const changedSet = useMemo(() => new Set(changed), [changed]);
 	const headings = useMemo(() => (blocks ? outline(blocks) : []), [blocks]);
+	// Where a position can point: each block, or each line of a code file.
+	const places = useMemo<Place[]>(
+		() => rows.map((row) => (row.kind === "block" ? row.block : { index: row.index, hash: hashText(row.text) })),
+		[rows],
+	);
 
 	// Scrolling to a row, and trying again while the list hasn't measured it.
 	const target = useRef<{ index: number; viewOffset?: number; animated: boolean } | null>(null);
 	const tries = useRef(0);
 	const retry = useRef<ReturnType<typeof setTimeout> | null>(null);
 	const scrollTo = useCallback((next: { index: number; viewOffset?: number; animated: boolean }) => {
+		// A retry still pending for an earlier target would undo this scroll.
+		if (retry.current !== null) clearTimeout(retry.current);
+		retry.current = null;
 		target.current = next;
 		tries.current = 0;
 		list.current?.scrollToIndex(next);
@@ -125,16 +133,16 @@ export function ReaderScreen({ route, navigation }: NativeStackScreenProps<Route
 	const metrics = useRef<ScrollMetrics>({ offset: 0, viewport: 0, content: 0 });
 	const position = useCallback((): ReadingPosition | null => {
 		const top = Math.min(...viewable.current);
-		const block = blocks?.[top];
+		const place = places[top];
 		const { offset, viewport, content } = metrics.current;
-		if (!block || viewport <= 0 || content <= 0) return null;
+		if (!place || viewport <= 0 || content <= 0) return null;
 		return {
-			blockIndex: block.index,
-			blockHash: block.hash,
+			blockIndex: place.index,
+			blockHash: place.hash,
 			offset: Math.max(0, offset - (rowTops.get(top) ?? offset)),
 			progress: Math.min(1, Math.max(0, (offset + viewport) / content)),
 		};
-	}, [blocks, rowTops]);
+	}, [places, rowTops]);
 
 	// The nav bar takes the title once the first heading (or the first row)
 	// has scrolled out of view and a later row is on screen.
@@ -162,12 +170,12 @@ export function ReaderScreen({ route, navigation }: NativeStackScreenProps<Route
 	// once, when the first read lands.
 	const restored = useRef(false);
 	useEffect(() => {
-		if (restored.current || !blocks) return;
+		if (restored.current || places.length === 0) return;
 		restored.current = true;
 		const remembered = memory.position(key);
-		const at = remembered ? restoreBlock(remembered, blocks) : null;
+		const at = remembered ? restoreBlock(remembered, places) : null;
 		if (at && (at.index > 0 || at.offset > 0)) scrollTo({ index: at.index, viewOffset: -at.offset, animated: false });
-	}, [blocks, memory, key, scrollTo]);
+	}, [places, memory, key, scrollTo]);
 
 	// Leaving (a screen pushed over this one, never its own sheets, or
 	// closing it) records what you read and where you were.
@@ -295,11 +303,14 @@ export function ReaderScreen({ route, navigation }: NativeStackScreenProps<Route
 		[rowTops],
 	);
 
-	const [step, setStep] = useState<number | null>(null);
+	// The change you stepped to, in the list of changes it belongs to: a
+	// re-read that changes what changed starts the steps over.
+	const [stepped, setStepped] = useState<{ changed: number[]; step: number } | null>(null);
+	const step = stepped?.changed === changed ? stepped.step : null;
 	const stepBy = (delta: 1 | -1) => {
 		const count = changed.length;
 		const next = step === null ? (delta === 1 ? 0 : count - 1) : (step + delta + count) % count;
-		setStep(next);
+		setStepped({ changed, step: next });
 		const index = changed[next];
 		if (index !== undefined) scrollTo({ index, animated: true });
 	};
