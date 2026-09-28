@@ -1427,33 +1427,21 @@ function heldSnapshotFor(baseModel: ThreadModel | undefined): SnapshotIdentity |
   return history?.incarnation === undefined ? undefined : { incarnation: history.incarnation, length: history.length };
 }
 
-// Issues thread/read carrying the held snapshot, and retries once without it
-// when the server answers TranscriptItemCursorStale: a held snapshot whose
-// length the kept update log no longer reaches (spec's "Below-floor
-// update-log requests" follow-up) cannot be answered with the window alone -
-// held items outside it may have changed with no way to tell - so the hub
-// rejects it rather than silently merging a bare window. Asking again with no
-// held snapshot gets a full latest-window replacement instead.
-async function requestThreadRead(
-  client: AppwireClientLike,
-  ref: string,
-  includeTurns: boolean,
-  subscribe: boolean,
-  pending: PendingThreadHydration,
-): Promise<ThreadReadResponse> {
-  const held = heldSnapshotFor(pending.baseModel);
-  try {
-    return await client.request(
-      "thread/read",
-      threadReadParams(ref, includeTurns, subscribe, pending.requestGeneration, held),
-    );
-  } catch (err) {
-    if (held === undefined || !isStaleCursorError(err)) throw err;
-    return await client.request(
-      "thread/read",
-      threadReadParams(ref, includeTurns, subscribe, pending.requestGeneration, undefined),
-    );
-  }
+// A held snapshot whose length the kept update log no longer reaches (spec's
+// "Below-floor update-log requests" follow-up) cannot be answered with the
+// window alone - held items outside it may have changed with no way to tell
+// - so the hub rejects it with TranscriptItemCursorStale rather than
+// silently merging a bare window. retryThreadReadWithoutHeldSnapshot, called
+// from a thread/read catch block that already has `held` and `err` in scope,
+// reports whether the caller should retry (asking again with no held
+// snapshot, for a full latest-window replacement) and, if so, the retried
+// response - both call sites stay inline in their own try/catch (rather than
+// wrapping the whole request in one shared async helper) so the ordinary,
+// non-stale-cursor path awaits client.request() exactly once, matching the
+// microtask timing callers (e.g. a reconnect's response-cut ordering) depend
+// on.
+function shouldRetryWithoutHeldSnapshot(held: SnapshotIdentity | undefined, err: unknown): boolean {
+  return held !== undefined && isStaleCursorError(err);
 }
 
 interface ThreadHydration {
@@ -1519,8 +1507,20 @@ async function hydrateAndSubscribe(
 ): Promise<ThreadHydration> {
   let response: ThreadReadResponse;
   const { subscribe, markSubscribed } = wireSubscribeDecision(ref);
+  const held = heldSnapshotFor(pending.baseModel);
   try {
-    response = await requestThreadRead(client, ref, true, subscribe, pending);
+    try {
+      response = await client.request(
+        "thread/read",
+        threadReadParams(ref, true, subscribe, pending.requestGeneration, held),
+      );
+    } catch (err) {
+      if (!shouldRetryWithoutHeldSnapshot(held, err)) throw err;
+      response = await client.request(
+        "thread/read",
+        threadReadParams(ref, true, subscribe, pending.requestGeneration, undefined),
+      );
+    }
   } catch (err) {
     // thread/read is answered from the daemon's in-memory snapshot, so a
     // rejection here is a transport failure, not a slow file read and not a
@@ -1630,8 +1630,20 @@ async function hydrateAndSubscribeWatch(
 ): Promise<ThreadModel> {
   let resp: ThreadReadResponse;
   const { subscribe, markSubscribed } = wireSubscribeDecision(ref);
+  const held = heldSnapshotFor(pending.baseModel);
   try {
-    resp = await requestThreadRead(client, ref, includeTurns, subscribe, pending);
+    try {
+      resp = await client.request(
+        "thread/read",
+        threadReadParams(ref, includeTurns, subscribe, pending.requestGeneration, held),
+      );
+    } catch (err) {
+      if (!shouldRetryWithoutHeldSnapshot(held, err)) throw err;
+      resp = await client.request(
+        "thread/read",
+        threadReadParams(ref, includeTurns, subscribe, pending.requestGeneration, undefined),
+      );
+    }
   } catch (err) {
     markThreadDeletedIfFenced(ref, err);
     if (isTranscriptHistoryFailedError(err) && pending.baseModel) {
