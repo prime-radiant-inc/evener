@@ -32,15 +32,41 @@ var openLocalJobProjectDirectory = func(path string) (localJobProjectDirectory, 
 
 var lstatJobOutputFile = os.Lstat
 
+// jobOutputOpenRoot returns the descriptor-walk root for a job output path in
+// the evener projects layout, or "" when the path is not laid out that way.
+//
+// The root is the projects directory containing the path's bucket, not the
+// state home: the locate step already validated the state home's evener/ and
+// evener/projects/ prefixes and the bucket itself (validateLayoutPrefix), so
+// rooting the walk above projects/ only re-walks ancestors the read does not
+// need. Stopping at projects/ keeps the bucket a walked component, so the
+// descriptor walk still refuses a bucket — or a sessions/, session, or jobs
+// directory — swapped for a symlink after the locate, and the root open itself
+// refuses a symlinked projects/ (O_NOFOLLOW), while an ancestor above the
+// anchored root stays followable by design.
+//
+// Accepted residual: ancestors above the anchored root — the state home and
+// evener/ — are followed, not no-followed. That is the lane's standing
+// boundary, not new exposure: before this change the root was evener/ and the
+// root open had no O_NOFOLLOW, so a symlinked evener/ was followed too; the
+// transcript and api-log reads anchor lower still (at the bucket), leaving both
+// evener/ and projects/ as followed ancestors. The state root is deliberately
+// trusted so hosts with a symlinked $HOME/XDG_STATE_HOME still read, and
+// validateLayoutPrefix Lstats evener/, projects/, and the bucket at locate time
+// and refuses symlinks there. The residual is a swap of an ancestor above the
+// anchored root inside the locate-to-open window, which #2594-round-3 accepted
+// for this path.
 func jobOutputOpenRoot(path string) string {
-	for candidate := filepath.Dir(filepath.Clean(path)); ; candidate = filepath.Dir(candidate) {
+	candidate := filepath.Dir(filepath.Clean(path))
+	for {
 		if stateHome := stateHomeFor(candidate); stateHome != "" {
-			return filepath.Join(stateHome, "evener")
+			return filepath.Join(stateHome, "evener", "projects")
 		}
 		parent := filepath.Dir(candidate)
 		if parent == candidate {
 			return ""
 		}
+		candidate = parent
 	}
 }
 
@@ -328,8 +354,10 @@ func locateLocalJobRetainedTarget(currentStateDir, jobID string) (localJobRetain
 	}
 	// Downstream output reads narrow the leaf window with their own
 	// Lstat→anchored descriptor walk→SameFile check, then pass that descriptor
-	// to jobstore. The descriptor walk pins each component beneath
-	// stateHome/evener, so an intermediate directory replaced by a symlink after
+	// to jobstore. For an in-layout output the descriptor walk is anchored at
+	// the projects directory (its own final component opened with O_NOFOLLOW),
+	// so the projects directory, the bucket, and the directories below it
+	// (sessions/, the session dir, jobs/) replaced by a symlink after
 	// this locator's pre-walk is refused at open time. The frozen path-only read
 	// seams cannot carry outInfo to that wrapper, so a regular-to-regular leaf
 	// replacement, or a fully consistent directory-tree rename, after this
@@ -337,6 +365,9 @@ func locateLocalJobRetainedTarget(currentStateDir, jobID string) (localJobRetain
 	// baseline. That residual is explicit and accepted because changing those
 	// seam signatures would break the fixed injection boundary; replacements
 	// during the wrapper's own Lstat/open interval are refused.
+	// Swaps of an ancestor above the anchored root (evener/ or the state home)
+	// inside this locator's locate-to-open window are likewise accepted, the
+	// same boundary the transcript and api-log reads carry (see jobOutputOpenRoot).
 	return localJobRetainedTarget{
 		JobID:      jobID,
 		Record:     location.Record,
