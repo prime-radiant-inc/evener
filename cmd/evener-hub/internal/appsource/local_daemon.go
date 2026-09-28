@@ -78,6 +78,11 @@ type LocalDaemonEntry struct {
 	// hub's sessions names the question as a local probe would. A read-only
 	// alias has none.
 	PendingQuestion *appwire.PendingQuestion
+	// Failure mirrors hubcore.LiveEntry.Failure: the summary of the failed turn
+	// the root rests on (S1c). threadFromEntry carries it into
+	// appwire.EvenerThread.Failure, so a controller hub says why a remote
+	// session failed. A read-only alias has none.
+	Failure *appwire.ThreadFailure
 	// RunningJobs carries the roster's non-terminal, non-agent work into the
 	// typed thread diagnostics consumed by hub and TUI status views.
 	RunningJobs []appwire.EvenerJobInfo
@@ -1167,6 +1172,7 @@ func (s *LocalDaemonSource) threadFromEntry(item LocalDaemonEntry) appwire.Threa
 			Capabilities:       listRowCapabilities(item, status),
 			AskPending:         item.PendingAsk,
 			PendingQuestion:    appwire.ClonePendingQuestion(item.PendingQuestion),
+			Failure:            appwire.CloneThreadFailure(item.Failure),
 			PendingEscalations: append([]appwire.SandboxEscalationRequested(nil), item.PendingEscalations...),
 			LastTurnEndedAt:    item.LastTurnEndedAt,
 			Tasks:              appwire.CloneTaskAggregate(item.Tasks),
