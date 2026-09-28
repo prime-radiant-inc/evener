@@ -17,6 +17,7 @@ import { removeOrganizationData } from "./nativeOrganization";
 import { readerPositions } from "./nativeReaderPosition";
 import { forgetDocumentSummaries } from "./reader/documentSummaries";
 import { forgetDocumentsForHub } from "./reader/nativeDocumentMemory";
+import { forgetLaunchMemoryForHub } from "./newSession/nativeLaunchMemory";
 import { forgetStopRequestsForHub } from "./subagents/nativeStopRequests";
 import { forgetSubagentTrees } from "./subagents/subagentTree";
 import { forgetDetailLevelsForHub } from "./session/nativeDetailLevels";
@@ -128,6 +129,7 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
 						forgetDocumentsForHub,
 						forgetDocumentSummaries,
 						forgetSubagentTrees,
+						forgetLaunchMemoryForHub,
 						forgetStopRequestsForHub,
 					]);
 				},

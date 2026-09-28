@@ -277,4 +277,79 @@ describe("NewSessionService", () => {
 		const service = createNewSessionService(client);
 		await expect(service.harnesses()).rejects.toThrow("unavailable");
 	});
+
+	it("asks the hub's own machine directly", async () => {
+		const client = new FakeAppwireClient();
+		client.on("evener/projects/recent", () => ({ data: ["/home/jesse/git/evener"] }) as ProjectsRecentResponse);
+		const service = createNewSessionService(client);
+		expect(await service.recentProjects()).toEqual(["/home/jesse/git/evener"]);
+		expect(await service.recentProjects("local")).toEqual(["/home/jesse/git/evener"]);
+		expect(client.calls.map((call) => call.method)).toEqual(["evener/projects/recent", "evener/projects/recent"]);
+	});
+
+	it("asks another host through the hub, method by method", async () => {
+		const client = new FakeAppwireClient();
+		client.on("evener/host/request", (request) => {
+			switch (request.method) {
+				case "evener/projects/recent":
+					return { data: ["/Users/jesse/git/evener"] };
+				case "model/list":
+					return { data: [{ provider: "lunaroute", model: "glm-5.3-vision" }] };
+				case "evener/plugin/preview":
+					return { plugins: [] };
+				case "evener/path/validate":
+					return { path: "/Users/jesse/git/evener", valid: true };
+				case "evener/dirs/create":
+					return { path: "/Users/jesse/git/scratch", created: true };
+				case "evener/git/head":
+					return { head: "main" };
+				case "evener/launch/resolve":
+					return { effective: { sandbox: "workspace-write" }, layers: {}, provenance: {} };
+				case "evener/harnesses/list":
+					return { data: [{ id: "evener", label: "Evener" }] };
+				default:
+					throw new Error(`unexpected ${request.method}`);
+			}
+		});
+		const service = createNewSessionService(client);
+		const cwd = "/Users/jesse/git/evener";
+		expect(await service.recentProjects("paradise-park")).toEqual([cwd]);
+		await service.models({ cwd }, "paradise-park");
+		await service.previewPlugins({ cwd }, "paradise-park");
+		expect(await service.directoryExists("paradise-park", cwd)).toBe(true);
+		expect(await service.createDirectory("paradise-park", "/Users/jesse/git/scratch")).toBe("/Users/jesse/git/scratch");
+		expect(await service.branch("paradise-park", cwd)).toBe("main");
+		expect((await service.resolveLaunch("paradise-park", cwd, {})).effective.sandbox).toBe("workspace-write");
+		expect(await service.harnesses("paradise-park")).toEqual([{ id: "evener", label: "Evener" }]);
+		expect(client.calls.map((call) => call.params)).toEqual([
+			{ host: "paradise-park", method: "evener/projects/recent", params: {} },
+			{ host: "paradise-park", method: "model/list", params: { cwd } },
+			{ host: "paradise-park", method: "evener/plugin/preview", params: { cwd } },
+			{ host: "paradise-park", method: "evener/path/validate", params: { path: cwd, kind: "dir" } },
+			{ host: "paradise-park", method: "evener/dirs/create", params: { path: "/Users/jesse/git/scratch" } },
+			{ host: "paradise-park", method: "evener/git/head", params: { cwd } },
+			{ host: "paradise-park", method: "evener/launch/resolve", params: { cwd } },
+			{ host: "paradise-park", method: "evener/harnesses/list", params: {} },
+		]);
+	});
+
+	it("says a folder that isn't a repository has no branch", async () => {
+		const client = new FakeAppwireClient();
+		client.on("evener/git/head", () => ({ head: "" }));
+		expect(await createNewSessionService(client).branch("local", "/tmp")).toBeNull();
+	});
+
+	it("starts on another host with its source, and on the hub's own machine without one", async () => {
+		const client = new FakeAppwireClient();
+		client.on("thread/start", () => ({ thread: makeThread(), turn: makeTurn() }) as ThreadStartResponse);
+		const service = createNewSessionService(client);
+		await service.start({ cwd: "/Users/jesse/git/evener", source: "paradise-park" });
+		await service.start({ cwd: "/home/jesse/git/evener", source: "local" });
+		await service.start({ cwd: "/home/jesse/git/evener" });
+		expect(client.calls.map((call) => call.params)).toEqual([
+			{ cwd: "/Users/jesse/git/evener", source: "paradise-park" },
+			{ cwd: "/home/jesse/git/evener" },
+			{ cwd: "/home/jesse/git/evener" },
+		]);
+	});
 });
