@@ -1,9 +1,9 @@
 // The hub's seen marker on the phone (S4). A row that carries turn_ended_at is
 // the hub's to decide: it is Finished while the hub says unseen. Marks this
 // phone makes go to the hub through evener/session/seen/set and show at once
-// through a pending map until the hub's rows catch up. A row without
-// turn_ended_at (an older hub, or a daemon that hasn't stamped a turn end)
-// keeps the device's own SeenMarkers.
+// through a pending map until the hub's rows catch up. A row without a
+// readable turn_ended_at (an older hub, or a daemon that hasn't stamped a turn
+// end) keeps the device's own SeenMarkers.
 //
 // This module must not import expo-sqlite/kv-store: the session screen
 // imports it, and its test harnesses mock kv-store only partly.
@@ -44,13 +44,15 @@ export class HubSeenMarks {
 	private sending = false;
 
 	/** Whether the hub counts this row as seen, with this phone's pending marks
-	 * applied; null when the row has no turn_ended_at and the device decides. */
+	 * applied; null when the row has no readable turn_ended_at and the device
+	 * decides. */
 	isSeenOnHub(row: HubRow): boolean | null {
-		if (!row.turn_ended_at) return null;
+		const ended = hubTurnEnd(row);
+		if (ended === null) return null;
 		const entry = this.pending.get(row.ref);
 		if (entry) {
 			if ("unread" in entry.mark) return false;
-			if (Date.parse(row.turn_ended_at) <= entry.mark.seenThrough) return true;
+			if (ended <= entry.mark.seenThrough) return true;
 		}
 		return row.unseen !== true;
 	}
@@ -97,17 +99,16 @@ export class HubSeenMarks {
 
 	/** Drops each pending mark the hub's rows show landed, or show no longer
 	 * applies: a seen mark once the row reads seen or a newer turn ended, an
-	 * unread mark once the row reads unseen. */
+	 * unread mark once the row reads unseen. Only a row the hub decides can
+	 * show either, so a row without a readable turn_ended_at is skipped. */
 	prune(rows: Iterable<HubRow>): void {
 		let changed = false;
 		for (const row of rows) {
 			const entry = this.pending.get(row.ref);
-			if (!entry) continue;
-			const ended = hubTime(row.turn_ended_at);
+			const ended = hubTurnEnd(row);
+			if (!entry || ended === null) continue;
 			const done =
-				"unread" in entry.mark
-					? row.unseen === true
-					: row.unseen !== true || (ended !== null && ended > entry.mark.seenThrough);
+				"unread" in entry.mark ? row.unseen === true : row.unseen !== true || ended > entry.mark.seenThrough;
 			if (done) {
 				this.pending.delete(row.ref);
 				changed = true;
@@ -159,6 +160,12 @@ export class HubSeenMarks {
 	}
 }
 
+/** When the row's last turn ended, in ms, if the hub decides the row: a row
+ * without a readable turn_ended_at is the device's to decide. */
+function hubTurnEnd(row: Pick<HubRow, "turn_ended_at">): number | null {
+	return hubTime(row.turn_ended_at);
+}
+
 // One controller per hub, in memory only, like seenMarkers(hubId).
 const controllers = perHub(() => new HubSeenMarks());
 
@@ -171,10 +178,10 @@ export function forgetHubSeenMarks(hubId: string): void {
 }
 
 /** The Board's seen state over both paths: the hub decides a row that
- * carries turn_ended_at, and the device's SeenMarkers decides any other.
- * Opening a row marks it read through the turn it showed. Mark as read and
- * Mark as unread (part 3's long-press menu and select mode) call markRead
- * and markUnread; each sends one call for all its hub rows. */
+ * carries a readable turn_ended_at, and the device's SeenMarkers decides any
+ * other. Opening a row marks it read through the turn it showed. Mark as
+ * read and Mark as unread (part 3's long-press menu and select mode) call
+ * markRead and markUnread; each sends one call for all its hub rows. */
 export class BoardSeen {
 	constructor(
 		private readonly markers: SeenMarkers,
@@ -188,7 +195,8 @@ export class BoardSeen {
 	markRead(client: ConversationClientLike | null, rows: readonly NavigationSessionSummary[]): void {
 		const marks: { ref: string; seenThrough: number }[] = [];
 		for (const row of rows) {
-			if (row.turn_ended_at) marks.push({ ref: row.ref, seenThrough: Date.parse(row.turn_ended_at) });
+			const ended = hubTurnEnd(row);
+			if (ended !== null) marks.push({ ref: row.ref, seenThrough: ended });
 			else this.markers.markSeen(row);
 		}
 		this.hub.markSeen(client, marks);
@@ -197,7 +205,7 @@ export class BoardSeen {
 	markUnread(client: ConversationClientLike | null, rows: readonly NavigationSessionSummary[]): void {
 		const refs: string[] = [];
 		for (const row of rows) {
-			if (row.turn_ended_at) refs.push(row.ref);
+			if (hubTurnEnd(row) !== null) refs.push(row.ref);
 			else this.markers.markUnread(row.ref);
 		}
 		this.hub.markUnread(client, refs);

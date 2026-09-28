@@ -84,6 +84,13 @@ describe("which path decides a row", () => {
 		expect(marks.isSeenOnHub(row("a", { turn_ended_at: iso(T) }))).toBe(true);
 	});
 
+	it("leaves a row whose turn_ended_at doesn't parse to the device, pending mark or not", () => {
+		const { marks, client } = setup();
+		expect(marks.isSeenOnHub(row("bad", { turn_ended_at: "not a time", unseen: true }))).toBeNull();
+		marks.markUnread(client, ["bad"]);
+		expect(marks.isSeenOnHub(row("bad", { turn_ended_at: "not a time", unseen: false }))).toBeNull();
+	});
+
 	it("ignores the device's markers for a hub row, and uses them for any other", () => {
 		const { markers, seen } = board();
 		markers.markUnread("unseen-here");
@@ -143,6 +150,18 @@ describe("pending marks", () => {
 		marks.prune([ended("landed", T, true), ended("waiting", T, false)]);
 		expect(marks.isSeenOnHub(ended("landed", T, false))).toBe(true);
 		expect(marks.isSeenOnHub(ended("waiting", T, false))).toBe(false);
+	});
+
+	it("keeps a pending mark when the only rows for its ref have no readable turn end", () => {
+		const { marks, client } = setup();
+		marks.markSeen(client, [{ ref: "seen", seenThrough: T }]);
+		marks.markUnread(client, ["unread"]);
+		const revision = marks.getRevision();
+		// Such a row is the device's to decide, so it can't show a hub mark landed.
+		marks.prune([row("seen"), row("seen", { turn_ended_at: "not a time" }), row("unread", { unseen: true })]);
+		expect(marks.getRevision()).toBe(revision);
+		expect(marks.isSeenOnHub(ended("seen", T, true))).toBe(true);
+		expect(marks.isSeenOnHub(ended("unread", T, false))).toBe(false);
 	});
 
 	it("changes nothing, and tells no one, when pruning drops nothing", () => {
@@ -417,6 +436,18 @@ describe("the Board's marks", () => {
 		]);
 		expect(markers.isSeen(row("d1"))).toBe(false);
 		expect(seen.isSeen(ended("h1", T, false))).toBe(false);
+	});
+
+	it("marks a row whose turn_ended_at doesn't parse with the device's markers, read and unread", () => {
+		const { markers, calls, client, seen } = board();
+		const bad = row("bad", { turn_ended_at: "not a time", unseen: true });
+		seen.markRead(client, [bad]);
+		expect(markers.isSeen(bad)).toBe(true);
+		expect(seen.isSeen(bad)).toBe(true);
+		seen.markUnread(client, [bad]);
+		expect(markers.isSeen(bad)).toBe(false);
+		expect(seen.isSeen(bad)).toBe(false);
+		expect(calls).toHaveLength(0);
 	});
 
 	it("sends nothing when no row is the hub's", () => {
