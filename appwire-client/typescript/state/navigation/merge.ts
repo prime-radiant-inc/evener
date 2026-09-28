@@ -131,7 +131,11 @@ export function reconcileSnapshot(
     complete: true,
     prepared: true,
   });
-  validateGraphForResource(incoming.key, incoming.version, graph);
+  // incoming is a decoded snapshot (snapshotResource(decoded)), which
+  // decodeNavigationResponse already validated with validateGraphForResource.
+  // Re-running it here made a snapshot read validate every value a third time
+  // (#2478); a complete reconcile installs exactly the incoming entities and
+  // containers, so the validated graph passes straight through.
   return Object.freeze({
     ...incoming,
     graph,
