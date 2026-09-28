@@ -20,14 +20,22 @@ const REPO_ROOT = join(SRC, "..", "..", "..", "..");
 // vite.config.ts's test.include runs the AppWire package's tests under the same
 // setupFiles, so a registration there is as redundant as one in src.
 const ROOTS = [SRC, join(REPO_ROOT, "appwire-client", "typescript")];
+// Generated and dependency trees are not test sources: the AppWire package gets
+// a real node_modules from `npm ci --prefix appwire-client/typescript`, and
+// descending it would slow the scan and read third-party files.
+const SKIPPED_DIRS = new Set(["node_modules", "dist"]);
+// The same file set vite.config.ts's test.include collects: `{test,spec}` with
+// an optional `.c`/`.m` and `.js(x)`/`.ts(x)`.
+const TEST_FILE = /\.(?:test|spec)\.(?:c|m)?[jt]sx?$/;
 
 function testFilesUnder(dir: string): string[] {
   const files: string[] = [];
   for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    if (entry.name.startsWith(".") || SKIPPED_DIRS.has(entry.name)) continue;
     const path = join(dir, entry.name);
     if (entry.isDirectory()) {
       files.push(...testFilesUnder(path));
-    } else if (/\.test\.tsx?$/.test(entry.name)) {
+    } else if (TEST_FILE.test(entry.name)) {
       files.push(path);
     }
   }
