@@ -2,6 +2,7 @@ import "fake-indexeddb/auto";
 import type {
   AnyNotification,
   ConnectionState,
+  InitializeResponse,
   MethodName,
   MethodTypes,
   ModelListResponse,
@@ -4167,6 +4168,53 @@ describe("client swap (manual retry) rewiring", () => {
     await flushUntil(() => b.calls.filter((c) => c.method === "thread/read").length > 0);
 
     expect(b.calls.filter((c) => c.method === "thread/read")).toHaveLength(1);
+  });
+
+  // issue #1749: connectionStore losing its client is not a swap to another
+  // client, and rewireClient was only ever reached with a non-null client
+  // (the subscribe below guarded with `if (state.client)`), so the handlers
+  // stayed attached and wiredClient kept pointing at the detached client. A
+  // client that later reaches "ready" then still passed
+  // readyGenerationCallback's `client === currentClient()` guard and ran a
+  // ready generation for a connection the store no longer held.
+  test("dropping connectionStore's client detaches the store: a later ready and a later notification from the dropped client reach nothing", async () => {
+    // A client whose onReady unsubscribe does not detach, standing in for a
+    // real client that already snapshotted this handler into an in-flight
+    // ready dispatch (AppwireClient.setState iterates Array.from(handlers))
+    // before the detach's unsubscribe ran. The identity guard, not the
+    // unsubscribe alone, has to fence the stale firing.
+    class UndetachableReadyClient extends FakeClient {
+      override onReady(cb: (initialize: InitializeResponse) => void): () => void {
+        super.onReady(cb);
+        return () => {};
+      }
+    }
+
+    const a = new UndetachableReadyClient("ready");
+    a.on("thread/read", () => readResponse("ref_a", { turns: [] }));
+    connectionStore.getState().connect(a);
+    await threadsStore.getState().ensureThread("ref_a");
+    const readsAfterHydrate = a.calls.filter((c) => c.method === "thread/read").length;
+    expect(readsAfterHydrate).toBe(1);
+
+    // The connection is dropped: connectionStore no longer holds A.
+    connectionStore.setState({ client: null });
+
+    // A reaches ready after the drop. No ready generation may begin for a
+    // connection the store no longer holds — handleReady's re-read fan-out is
+    // the observable, and it must not run.
+    a.emitStateChange("reconnecting");
+    a.emitReady();
+    await flushUntil(() => false, 30);
+    expect(a.calls.filter((c) => c.method === "thread/read")).toHaveLength(readsAfterHydrate);
+
+    // A's handlers must be gone with it too: a frame it still emits reaches
+    // nothing (the model keeps the idle status its snapshot hydrated).
+    a.emitNotification({
+      method: "thread/status/changed",
+      params: { threadId: "thr_ref_a", ref: "ref_a", status: { type: "active" } },
+    });
+    expect(threadsStore.getState().threads.get("ref_a")?.status).toEqual({ type: "idle" });
   });
 });
 

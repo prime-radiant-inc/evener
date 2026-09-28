@@ -593,6 +593,45 @@ func TestInstances_EditImplicitWritesShadowingEntry(t *testing.T) {
 	}
 }
 
+// TestInstances_EditClearOnlyOnAnImplicitInstanceWritesNoShadow is #1024: a
+// clear flag on an implicit instance (one the environment or a curated
+// provider supplies) has no authored value to clear. Writing the row back
+// would author [providers.<name>] with nothing but its id - an empty shadow
+// that changes no behavior (the name still inherits by matching) but leaves
+// noise in providers.toml. The clear is a no-op, not an error and not a write.
+func TestInstances_EditClearOnlyOnAnImplicitInstanceWritesNoShadow(t *testing.T) {
+	cases := []struct {
+		name   string
+		params appwire.InstanceEditParams
+	}{
+		{"clearBaseUrl", appwire.InstanceEditParams{ClearBaseURL: true}},
+		{"clearProtocol", appwire.InstanceEditParams{ClearProtocol: true}},
+		{"clearSurface", appwire.InstanceEditParams{ClearSurface: true}},
+		{"clearAPIKeyEnv", appwire.InstanceEditParams{ClearAPIKeyEnv: true}},
+		{"clearCredentialHeader", appwire.InstanceEditParams{ClearCredentialHeader: true}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newInstancesFixture(t, map[string]string{"GROQ_API_KEY": "gk"})
+			params := tc.params
+			params.Name = "groq"
+			if err := f.ctl.Edit(params); err != nil {
+				t.Fatalf("Edit(%s): %v", tc.name, err)
+			}
+			if providers := readConfigProviders(t, f.tomlPath); len(providers) != 0 {
+				t.Fatalf("a clear-only edit on an implicit instance authored %v", providers)
+			}
+			after := entry(t, f.ctl.List(), "groq")
+			if !after.Implicit {
+				t.Fatalf("groq stopped being implicit: %+v", after)
+			}
+			if after.ActiveSource != "env:GROQ_API_KEY" {
+				t.Fatalf("ActiveSource = %q, want the inherited credential left alone", after.ActiveSource)
+			}
+		})
+	}
+}
+
 // TestInstances_EditWithoutClearLeavesAnAuthoredBaseURLAlone: neither an
 // omitted BaseURL nor ClearBaseURL=false must disturb an already-authored
 // override — only an explicit new value or an explicit clear touches it

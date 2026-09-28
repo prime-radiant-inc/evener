@@ -59,6 +59,67 @@ index 380c6be..fd7f5cb 100644
        val text = buildCodeText(CodeBlockNode.extractCode(node), style)
        if (text.isEmpty()) return headerH + inset * 2f
        val paint = createCodePaint(style, context)
+diff --git a/node_modules/react-native-enriched-markdown/ios/renderer/CodeRenderer.m b/node_modules/react-native-enriched-markdown/ios/renderer/CodeRenderer.m
+index 7bc14ae..579c228 100644
+--- a/node_modules/react-native-enriched-markdown/ios/renderer/CodeRenderer.m
++++ b/node_modules/react-native-enriched-markdown/ios/renderer/CodeRenderer.m
+@@ -25,6 +25,7 @@
+   UIFontWeight weight = (traits & UIFontDescriptorTraitBold) ? UIFontWeightBold : UIFontWeightRegular;
+ 
+   CGFloat codeFontSize = _config.codeFontSize > 0 ? _config.codeFontSize : blockStyle.fontSize;
++  CGFloat codeScale = [context fontSizeMultiplier];
+ 
+   NSString *codeFontFamily = _config.codeFontFamily;
+   UIFont *codeFont;
+@@ -36,9 +37,9 @@
+                             weight:weightStr
+                              style:nil
+                            variant:nil
+-                   scaleMultiplier:1.0];
++                   scaleMultiplier:codeScale];
+   } else {
+-    codeFont = [UIFont monospacedSystemFontOfSize:codeFontSize weight:weight];
++    codeFont = [UIFont monospacedSystemFontOfSize:codeFontSize * codeScale weight:weight];
+   }
+ 
+   NSUInteger start = output.length;
+diff --git a/node_modules/react-native-enriched-markdown/ios/renderer/RenderContext.h b/node_modules/react-native-enriched-markdown/ios/renderer/RenderContext.h
+index 4bccd4b..08298dd 100644
+--- a/node_modules/react-native-enriched-markdown/ios/renderer/RenderContext.h
++++ b/node_modules/react-native-enriched-markdown/ios/renderer/RenderContext.h
+@@ -50,6 +50,12 @@ typedef NS_ENUM(NSInteger, ListType) { ListTypeUnordered, ListTypeOrdered };
+ - (void)reset;
+ 
+ - (UIFont *)cachedFontForSize:(CGFloat)fontSize family:(NSString *)fontFamily weight:(NSString *)fontWeight;
++
++/** The Dynamic Type scale applied to block text, capped by
++ *  maxFontSizeMultiplier: RCTFontSizeMultiplierWithMax(...) when
++ *  allowFontScaling is on, else 1.0. Inline code multiplies its own size by
++ *  the same value so it grows with the prose around it. */
++- (CGFloat)fontSizeMultiplier;
+ - (NSMutableParagraphStyle *)spacerStyleWithHeight:(CGFloat)height spacing:(CGFloat)spacing;
+ - (NSMutableParagraphStyle *)blockSpacerStyleWithMargin:(CGFloat)margin;
+ - (void)registerLinkRange:(NSRange)range url:(NSString *)url;
+diff --git a/node_modules/react-native-enriched-markdown/ios/renderer/RenderContext.m b/node_modules/react-native-enriched-markdown/ios/renderer/RenderContext.m
+index f7b2f1f..f2e5a17 100644
+--- a/node_modules/react-native-enriched-markdown/ios/renderer/RenderContext.m
++++ b/node_modules/react-native-enriched-markdown/ios/renderer/RenderContext.m
+@@ -70,9 +70,14 @@ static NSArray<NSString *> *ENRMScopedKeyPaths(void)
+ 
+ #pragma mark - Font Cache
+ 
++- (CGFloat)fontSizeMultiplier
++{
++  return _allowFontScaling ? RCTFontSizeMultiplierWithMax(_maxFontSizeMultiplier) : 1.0;
++}
++
+ - (UIFont *)cachedFontForSize:(CGFloat)fontSize family:(NSString *)fontFamily weight:(NSString *)fontWeight
+ {
+-  CGFloat effectiveMultiplier = _allowFontScaling ? RCTFontSizeMultiplierWithMax(_maxFontSizeMultiplier) : 1.0;
++  CGFloat effectiveMultiplier = [self fontSizeMultiplier];
+ 
+   NSString *weightKey = (fontWeight.length > 0) ? fontWeight : @"";
+   NSString *key =
 diff --git a/node_modules/react-native-enriched-markdown/ios/views/ENRMCodeBlockContainerView.m b/node_modules/react-native-enriched-markdown/ios/views/ENRMCodeBlockContainerView.m
 index a668c26..3140e72 100644
 --- a/node_modules/react-native-enriched-markdown/ios/views/ENRMCodeBlockContainerView.m

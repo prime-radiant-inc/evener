@@ -1,10 +1,8 @@
-import { cleanup, render, screen } from "@testing-library/react";
-import { afterEach, expect, test } from "vitest";
+import { render, screen } from "@testing-library/react";
+import { expect, test } from "vitest";
 import { requireClass } from "../internal/requireClass";
 import rawStyles from "./contextcard.module.css";
 import { ContextCard } from "./index";
-
-afterEach(cleanup);
 
 const styles = {
   card: requireClass(rawStyles.card, "contextcard.module.css", "card"),

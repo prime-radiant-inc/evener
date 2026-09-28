@@ -1255,6 +1255,13 @@ func (s *Session) processInputKindWithProvenance(ctx context.Context, input stri
 		ranKind := nextKind
 		ranClientMutation := queuedClientMutationFromContext(processCtx)
 		out, progressed, err := s.processOneInput(processCtx, next, nextImages, nextKind, nextProvenance)
+		// The durable name of the turn that just ran, read before this turn's
+		// completion below releases it. An interrupt's marker is that turn's
+		// last record, written after this function returns, so it must name
+		// the turn it cut short rather than read the slot once the completion
+		// has cleared it -- which is what left the marker unowned and the
+		// projections grouping it as standalone metadata.
+		interruptedTurnOwner := s.activeTurnOwner()
 		// Hand a steering carrier's claim back on every exit, the way
 		// ProcessPendingUserInput does: a queued message's slot is cleared by
 		// its completion below, but nothing settles a carrier's identity --
@@ -1312,7 +1319,7 @@ func (s *Session) processInputKindWithProvenance(ctx context.Context, input stri
 					// This is the user-visible "interrupted here" marker
 					// in the transcript that consumers (TUI / hub) render.
 					interruptMsg := systemReminderBlock("The user interrupted the previous turn before it completed. Any partial tool output above is incomplete. Wait for the user's next message before continuing.")
-					if markerErr := s.appendSteeringTurnDurablyForOwner(interruptMsg, events.SteeringKindInterrupted, s.activeTurnOwner()); markerErr != nil {
+					if markerErr := s.appendSteeringTurnDurablyForOwner(interruptMsg, events.SteeringKindInterrupted, interruptedTurnOwner); markerErr != nil {
 						interruptMarkerRejected = true
 						// The cancellation is still the original turn error, but a
 						// marker that was not admitted cannot resolve the ask or

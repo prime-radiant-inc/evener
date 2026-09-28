@@ -1,13 +1,11 @@
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { cleanup, render } from "@testing-library/react";
-import { afterEach, expect, test } from "vitest";
+import { render } from "@testing-library/react";
+import { expect, test } from "vitest";
 import { requireClass } from "../internal/requireClass";
 import rawStyles from "./diffblock.module.css";
 import { DiffBlock } from "./index";
-
-afterEach(cleanup);
 
 const styles = {
   add: requireClass(rawStyles.add, "diffblock.module.css", "add"),

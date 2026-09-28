@@ -32,7 +32,7 @@ func TestTerminalTransitionsAdvanceAndStampTheDurableSequence(t *testing.T) {
 		t.Fatalf("the running record was stamped with sequence %d, want 0 (non-terminal)", running.Sequence)
 	}
 
-	done, err := store.Transition(first.ID, StateComplete, nil)
+	done, err := store.Transition(first.ID, StateComplete, terminalChange(true))
 	if err != nil {
 		t.Fatalf("Transition(complete): %v", err)
 	}
@@ -46,7 +46,7 @@ func TestTerminalTransitionsAdvanceAndStampTheDurableSequence(t *testing.T) {
 		t.Fatalf("State(%q).Terminal() = false, want true", done.State)
 	}
 
-	failed, err := store.Transition(second.ID, StateFailed, nil)
+	failed, err := store.Transition(second.ID, StateFailed, terminalChange(false))
 	if err != nil {
 		t.Fatalf("Transition(failed): %v", err)
 	}
@@ -68,10 +68,10 @@ func TestSequenceAndStampsSurviveReload(t *testing.T) {
 	store, path := openTestStore(t)
 	first := createTestRecord(t, store, "h1")
 	second := createTestRecord(t, store, "h2")
-	if _, err := store.Transition(first.ID, StateComplete, nil); err != nil {
+	if _, err := store.Transition(first.ID, StateComplete, terminalChange(true)); err != nil {
 		t.Fatalf("Transition(complete): %v", err)
 	}
-	if _, err := store.Transition(second.ID, StateFailed, nil); err != nil {
+	if _, err := store.Transition(second.ID, StateFailed, terminalChange(false)); err != nil {
 		t.Fatalf("Transition(failed): %v", err)
 	}
 
@@ -88,7 +88,7 @@ func TestSequenceAndStampsSurviveReload(t *testing.T) {
 	}
 
 	third := createTestRecord(t, reopened, "h3")
-	next, err := reopened.Transition(third.ID, StateInterrupted, nil)
+	next, err := reopened.Transition(third.ID, StateInterrupted, terminalChange(false))
 	if err != nil {
 		t.Fatalf("Transition(interrupted): %v", err)
 	}
@@ -129,7 +129,7 @@ func TestRefusedTransitionsLeaveTheStoreUntouched(t *testing.T) {
 	record := createTestRecord(t, store, "h1")
 	before := mustReadFile(t, path)
 
-	if _, err := store.Transition("no-such-id", StateComplete, nil); !errors.Is(err, ErrRecordNotFound) {
+	if _, err := store.Transition("no-such-id", StateComplete, terminalChange(true)); !errors.Is(err, ErrRecordNotFound) {
 		t.Fatalf("Transition on an unknown record: err = %v, want ErrRecordNotFound", err)
 	}
 	if _, err := store.Transition(record.ID, State("queued"), nil); !errors.Is(err, ErrInvalidState) {
@@ -171,7 +171,7 @@ func TestRefusedTransitionsLeaveTheStoreUntouched(t *testing.T) {
 func TestTransitionRefusesAFurtherMoveFromATerminalState(t *testing.T) {
 	store, path := openTestStore(t)
 	record := createTestRecord(t, store, "h1")
-	done, err := store.Transition(record.ID, StateComplete, nil)
+	done, err := store.Transition(record.ID, StateComplete, terminalChange(true))
 	if err != nil {
 		t.Fatalf("Transition(complete): %v", err)
 	}
@@ -213,6 +213,7 @@ func TestTransitionResolvesOrphanUnverifiedToInterrupted(t *testing.T) {
 		// The boundary belongs to the orphan state; the fencing slice clears it
 		// with the resolution, and the schema requires exactly that pairing.
 		r.OrphanBoundary = nil
+		r.Result = &Result{OK: false, Message: "test outcome"}
 	})
 	if err != nil {
 		t.Fatalf("resolving orphan-unverified: %v", err)

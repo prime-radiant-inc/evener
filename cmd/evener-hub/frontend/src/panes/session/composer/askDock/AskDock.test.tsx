@@ -7,7 +7,7 @@ import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { IDBFactory } from "fake-indexeddb";
-import { afterEach, beforeEach, describe, expect, onTestFinished, test, vi } from "vitest";
+import { beforeEach, describe, expect, onTestFinished, test, vi } from "vitest";
 import { connectionStore } from "../../../../stores/connection";
 import {
   putThreadModel,
@@ -20,10 +20,6 @@ import { resetComposerFocusStoreForTests, useComposerFocusRequest } from "../com
 import { AskDock, AskDockAnnouncements } from "./AskDock";
 import { askDockStore, resetAskDockStoreForTests } from "./askDockStore";
 import { ackAskUserCall, askArgs, ONE_QUESTION } from "./askDockTestUtils";
-
-afterEach(() => {
-  cleanup();
-});
 
 // --- fixtures (mirrors askDockStore.test.ts's own harness) ---------------
 

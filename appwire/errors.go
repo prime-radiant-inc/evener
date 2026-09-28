@@ -107,6 +107,25 @@ const (
 	// (deploy pipeline 08b §11). It shares CodeConflict with genuine conflicts,
 	// so a client must match this discriminant and its Binding, never the code.
 	ErrorStaleEntry ErrorInfo = "stale-entry"
+	// ErrorCursorTooLarge marks deploy pipeline 08b's over-cap first-page
+	// refusal (§§8, 11): an operations read whose boundary map would exceed the
+	// 8 KiB encoded cursor cap, so no cursor was minted and the client re-lists
+	// with a narrower query. Its data is CursorTooLargeErrorData — never a
+	// compacting `compactSeq`, because there is no cursor to name one. Shares
+	// CodeConflict with the other refusals, so a client matches this
+	// discriminant, never the code.
+	ErrorCursorTooLarge ErrorInfo = "cursor-too-large"
+	// ErrorCursorInvalidated marks deploy pipeline 08b's mid-pagination
+	// compaction refusal (§§8, 11): a compaction removed rows at or before the
+	// cursor's `pos` since the cursor was minted, so the continuation cannot
+	// describe the record set it resumes into and the client restarts from the
+	// first page. Its data is CursorInvalidatedErrorData — the compacting
+	// `compactSeq` (the envelope-global value, never the live one when a later
+	// compaction advanced it) plus the affected host's bounds entry as stored at
+	// mint. Distinct from stale-entry's generation-mismatch re-list refusal;
+	// shares CodeConflict with the other refusals, so a client matches this
+	// discriminant, never the code.
+	ErrorCursorInvalidated ErrorInfo = "cursor-invalidated"
 	// ErrorHostBusyOperation marks a deploy-pipeline refusal because the host's
 	// per-host gate is held by a deploy/restart operation — including an
 	// Ensure-triggered deploy, which holds its own operation-store record
@@ -218,6 +237,59 @@ func StaleEntry(binding StaleEntryBinding, message string) WireError {
 		Data: StaleEntryErrorData{
 			ErrorData: ErrorData{EvenerErrorInfo: ErrorStaleEntry},
 			Binding:   binding,
+		},
+	}
+}
+
+// CursorTooLargeErrorData is the over-cap first-page refusal's data (deploy
+// pipeline 08b §11): the standard ErrorData plus the encoded cursor cap the
+// boundary map exceeded. It never carries a compacting `compactSeq` — no
+// cursor was minted, so there is none to name (§8).
+type CursorTooLargeErrorData struct {
+	ErrorData
+	CapBytes int `json:"capBytes"`
+}
+
+// CursorTooLarge is deploy pipeline 08b's `cursor-too-large` refusal: a first
+// page whose boundary map would exceed the 8 KiB encoded cursor cap. The
+// client re-lists with a narrower query, never a truncated cursor.
+func CursorTooLarge(capBytes int, message string) WireError {
+	return WireError{
+		Code:    CodeConflict,
+		Message: message,
+		Data: CursorTooLargeErrorData{
+			ErrorData: ErrorData{EvenerErrorInfo: ErrorCursorTooLarge},
+			CapBytes:  capBytes,
+		},
+	}
+}
+
+// CursorInvalidatedErrorData is the mid-pagination compaction refusal's data
+// (deploy pipeline 08b §11): the standard ErrorData plus the compacting
+// `compactSeq` (the envelope-global value), the affected host, and that host's
+// `bounds` entry as stored at the cursor's mint — the {generation,
+// incarnationId, presenceEpoch} object, or the literal "absent"
+// (HostBoundaryAbsent), the same value union hostBoundaries carries.
+type CursorInvalidatedErrorData struct {
+	ErrorData
+	CompactSeq uint64 `json:"compactSeq"`
+	Host       string `json:"host"`
+	Bounds     any    `json:"bounds"`
+}
+
+// CursorInvalidated is deploy pipeline 08b's `cursor-invalidated` refusal: a
+// mid-pagination compaction removed rows at or before the cursor's position,
+// so the client restarts from the first page. bounds carries the affected
+// host's stored bounds entry — a HostBoundary, or HostBoundaryAbsent.
+func CursorInvalidated(compactSeq uint64, host string, bounds any, message string) WireError {
+	return WireError{
+		Code:    CodeConflict,
+		Message: message,
+		Data: CursorInvalidatedErrorData{
+			ErrorData:  ErrorData{EvenerErrorInfo: ErrorCursorInvalidated},
+			CompactSeq: compactSeq,
+			Host:       host,
+			Bounds:     bounds,
 		},
 	}
 }

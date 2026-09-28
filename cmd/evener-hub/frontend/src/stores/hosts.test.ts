@@ -88,6 +88,82 @@ describe("refresh", () => {
     if (load.phase !== "ready") throw new Error("unreachable");
     expect(load.hosts).toEqual([row("post-mutation")]);
   });
+
+  test("a snapshot that changes only the remnant fence fields is still published", async () => {
+    // S16: the row's repair affordance keys off HostRow's `openRemnantId` /
+    // `escalationAgeSec` (registry spec 08 §11), so the equal-snapshot skip
+    // must compare them: a remnant that opens, escalates, or clears without
+    // any other row change is a real change the pane has to render — the
+    // repair affordance would otherwise appear late or never clear.
+    const fake = connectFakeClient();
+    let remnant: string | undefined;
+    let escalation: number | undefined;
+    fake.on("evener/host/list", () => ({
+      hosts: [
+        {
+          ...row("beta"),
+          ...(remnant === undefined ? {} : { openRemnantId: remnant }),
+          ...(escalation === undefined ? {} : { escalationAgeSec: escalation }),
+        },
+      ],
+    }));
+    await hostsStore.getState().fetch();
+
+    remnant = "remnant-7";
+    await hostsStore.getState().refresh();
+    let load = hostsStore.getState().load;
+    if (load.phase !== "ready") throw new Error("unreachable");
+    expect(load.hosts[0]?.openRemnantId).toBe("remnant-7");
+
+    // Past the escalation bound: the recover affordance's own field.
+    escalation = 7200;
+    await hostsStore.getState().refresh();
+    load = hostsStore.getState().load;
+    if (load.phase !== "ready") throw new Error("unreachable");
+    expect(load.hosts[0]?.escalationAgeSec).toBe(7200);
+
+    // Resolved: both fields go away together and the affordance must clear.
+    remnant = undefined;
+    escalation = undefined;
+    await hostsStore.getState().refresh();
+    load = hostsStore.getState().load;
+    if (load.phase !== "ready") throw new Error("unreachable");
+    expect(load.hosts[0]?.openRemnantId).toBeUndefined();
+    expect(load.hosts[0]?.escalationAgeSec).toBeUndefined();
+  });
+
+  test("a re-read with a larger escalation age is not republished", async () => {
+    // The age is the whole-second age of the remnant commit instant, so it
+    // changes on every poll once past the bound. Comparing the integer would
+    // republish the section (and advance the revision its caches key on) every
+    // HOST_POLL_MS; presence is what the affordance keys off.
+    const fake = connectFakeClient();
+    let escalation: number | undefined = 7200;
+    fake.on("evener/host/list", () => ({
+      hosts: [
+        {
+          ...row("beta"),
+          openRemnantId: "remnant-7",
+          ...(escalation === undefined ? {} : { escalationAgeSec: escalation }),
+        },
+      ],
+    }));
+    await hostsStore.getState().fetch();
+    const first = hostsStore.getState().load;
+    if (first.phase !== "ready") throw new Error("unreachable");
+
+    escalation = 7201;
+    await hostsStore.getState().refresh();
+    expect(hostsStore.getState().load).toBe(first);
+
+    // The undefined <-> defined transition is still a real change.
+    escalation = undefined;
+    await hostsStore.getState().refresh();
+    const after = hostsStore.getState().load;
+    if (after.phase !== "ready") throw new Error("unreachable");
+    expect(after).not.toBe(first);
+    expect(after.hosts[0]?.escalationAgeSec).toBeUndefined();
+  });
 });
 
 describe("fetch", () => {

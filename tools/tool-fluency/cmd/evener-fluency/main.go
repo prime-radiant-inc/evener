@@ -26,6 +26,7 @@ import (
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/provider"
+	"primeradiant.com/evener/agent/sandbox"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/cmdutil"
 	"primeradiant.com/evener/envvars"
@@ -239,6 +240,8 @@ type runConfig struct {
 	postTurnWait       time.Duration
 	reasoningEffort    string
 	clearOpenAIAPIKey  bool
+	sandbox            string
+	sandboxNet         string
 }
 
 // defaultMaxRounds is the runner's round cap when --max-rounds is not given.
@@ -276,6 +279,8 @@ func defineRunFlags(fs *flag.FlagSet, cfg *runConfig, systemPromptAppend *cmduti
 	fs.DurationVar(&cfg.postTurnWait, "post-turn-wait", 45*time.Second, "live harness post-root-turn wait window")
 	fs.StringVar(&cfg.reasoningEffort, "reasoning-effort", "high", "reasoning effort")
 	fs.BoolVar(&cfg.clearOpenAIAPIKey, "clear-openai-api-key", false, "clear "+envvars.OpenAIAPIKey.Name+" for OAuth-backed OpenAI runs")
+	fs.StringVar(&cfg.sandbox, "sandbox", "off", "sandbox `mode`: off (default), read-only, workspace-write, or restricted (applies to both harnesses)")
+	fs.StringVar(&cfg.sandboxNet, "sandbox-net", "on", "sandbox network egress `on|off` (default on; only applies with a non-off --sandbox mode)")
 }
 
 func runSuiteWithConfig(cfg runConfig) error {
@@ -287,6 +292,11 @@ func runSuiteWithConfig(cfg runConfig) error {
 	}
 	if cfg.harness != "cli" && cfg.harness != "live" {
 		return errors.New("--harness must be cli or live")
+	}
+	// Validate the sandbox flags once, up front, so a typo fails before any
+	// probe launches instead of surfacing late from the spawned evener.
+	if _, _, err := parseSandboxFlags(cfg.sandbox, cfg.sandboxNet); err != nil {
+		return err
 	}
 	if cfg.outDir == "" {
 		cfg.outDir = filepath.Join("tools", "tool-fluency", "results", time.Now().UTC().Format("20060102T150405Z"))
@@ -778,7 +788,11 @@ func runProbe(cfg runConfig, probe probeFile, rep int, available map[string]bool
 }
 
 func runCLIProbe(ctx context.Context, cfg runConfig, probe probeFile, res probeResult, stdout, stderr *bytes.Buffer) error {
-	cmd := exec.CommandContext(ctx, cfg.evenerBin, cliProbeArgs(cfg, probe, res)...)
+	args, err := cliProbeArgs(cfg, probe, res)
+	if err != nil {
+		return err
+	}
+	cmd := exec.CommandContext(ctx, cfg.evenerBin, args...)
 	cmd.Env = os.Environ()
 	if cfg.clearOpenAIAPIKey {
 		cmd.Env = append(cmd.Env, envvars.OpenAIAPIKey.Assignment(""))
@@ -788,7 +802,7 @@ func runCLIProbe(ctx context.Context, cfg runConfig, probe probeFile, res probeR
 	return cmd.Run()
 }
 
-func cliProbeArgs(cfg runConfig, probe probeFile, res probeResult) []string {
+func cliProbeArgs(cfg runConfig, probe probeFile, res probeResult) ([]string, error) {
 	args := []string{"--model", cfg.model}
 	if strings.TrimSpace(cfg.fastCheapModel) != "" {
 		args = append(args, "--fast-cheap-model", cfg.fastCheapModel)
@@ -797,6 +811,22 @@ func cliProbeArgs(cfg runConfig, probe probeFile, res probeResult) []string {
 		if strings.TrimSpace(path) != "" {
 			args = append(args, "--system-prompt-append", path)
 		}
+	}
+	// A declared sandbox mode reaches the spawned evener too, so the CLI harness
+	// confines its worker exactly as the live harness does. Off forwards nothing,
+	// leaving today's CLI runs byte-identical. An invalid mode/net returns the
+	// error rather than silently dropping the flags and running the worker
+	// unsandboxed, so a caller that bypasses runSuiteWithConfig fails closed.
+	mode, net, err := parseSandboxFlags(cfg.sandbox, cfg.sandboxNet)
+	if err != nil {
+		return nil, err
+	}
+	if mode != sandbox.ModeOff {
+		netName := "on"
+		if !net {
+			netName = "off"
+		}
+		args = append(args, "--sandbox", mode.String(), "--sandbox-net", netName)
 	}
 	args = append(args,
 		"--dir", res.WorkDir,
@@ -807,7 +837,7 @@ func cliProbeArgs(cfg runConfig, probe probeFile, res probeResult) []string {
 		"--verbose",
 		probe.Prompt,
 	)
-	return args
+	return args, nil
 }
 
 type liveKick struct {
@@ -818,6 +848,88 @@ type liveKick struct {
 var runnerLoadClient = cmdutil.LoadClient
 var runnerAttachAPILogger = cmdutil.AttachAPILogger
 var runnerMarshalEvent = json.Marshal
+var runnerProbeSandboxHost = func() sandbox.HostFacts { return sandbox.RealProber{}.Probe() }
+
+// parseSandboxFlags validates the runner's --sandbox / --sandbox-net values once,
+// for both harnesses, and returns the normalized wire mode and the resolved
+// network decision. Off (empty or "off") is mode off; the net value parses with
+// empty defaulting to on. An unknown mode or net value is a legible error rather
+// than a silent native run.
+//
+// --sandbox-net is validated even when the mode is off, matching the production
+// CLI (cmd/evener configureSandbox parses the net flag before its off
+// short-circuit); the net decision is only APPLIED when the mode is non-off.
+func parseSandboxFlags(modeName, netName string) (sandbox.Mode, bool, error) {
+	name := strings.TrimSpace(modeName)
+	if name == "" {
+		name = sandbox.ModeOff.String()
+	}
+	mode, err := sandbox.ParseMode(name)
+	if err != nil {
+		return sandbox.ModeOff, false, err
+	}
+	net, err := parseLiveSandboxNet(netName)
+	if err != nil {
+		return sandbox.ModeOff, false, err
+	}
+	return mode, net, nil
+}
+
+// configureLiveSandbox records the validated --sandbox / --sandbox-net decision
+// on the session config's carrier fields. Off (the flag default) leaves the
+// carrier zero, so a default live run is byte-identical to today; a non-off mode
+// records the mode + network so provisionLiveSandbox can enforce it.
+func configureLiveSandbox(cfg runConfig, sessCfg *agent.SessionConfig) error {
+	mode, net, err := parseSandboxFlags(cfg.sandbox, cfg.sandboxNet)
+	if err != nil {
+		return err
+	}
+	if mode == sandbox.ModeOff {
+		return nil
+	}
+	sessCfg.Sandbox = mode.String()
+	sessCfg.SandboxNet = &net
+	return nil
+}
+
+// parseLiveSandboxNet maps the --sandbox-net value to a boolean (on = egress
+// allowed). Empty defaults to on, matching the CLI's flag default.
+func parseLiveSandboxNet(v string) (bool, error) {
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case "on", "":
+		return true, nil
+	case "off":
+		return false, nil
+	default:
+		return false, fmt.Errorf("invalid --sandbox-net %q (want on or off)", v)
+	}
+}
+
+// provisionLiveSandbox engages enforcement on a fresh live run's execution
+// environment from its configured mode. Off returns immediately WITHOUT probing
+// the host, so an unsandboxed run stays byte-identical to today. It reuses the
+// existing sandbox capability (resolve against freshly-probed host facts, then
+// EnableSandbox) exactly as the production CLI does.
+func provisionLiveSandbox(env *execenv.LocalExecutionEnvironment, sessCfg *agent.SessionConfig, cwd string) error {
+	if sandbox.ModeIsOff(sessCfg.Sandbox) {
+		return nil
+	}
+	return provisionLiveSandboxWithHost(env, sessCfg, cwd, runnerProbeSandboxHost())
+}
+
+// provisionLiveSandboxWithHost is provisionLiveSandbox with the host facts
+// supplied by the caller, so a test can drive the exact resolve+enforce path
+// without a live backend. It fails closed: a mode the host cannot enforce
+// surfaces the resolver's *sandbox.RefusalError BEFORE any session or provider
+// call, and EnableSandbox leaves the env unsandboxed on every failure path.
+func provisionLiveSandboxWithHost(env *execenv.LocalExecutionEnvironment, sessCfg *agent.SessionConfig, cwd string, host sandbox.HostFacts) error {
+	infra := agent.SessionInfraRoots(*sessCfg, env)
+	rp, err := sandbox.ResolveNamed(sessCfg.Sandbox, sessCfg.SandboxNet, host, cwd, infra)
+	if err != nil {
+		return err
+	}
+	return env.EnableSandbox(rp)
+}
 
 func runLiveProbe(ctx context.Context, cfg runConfig, probe probeFile, res *probeResult, stdout, stderr *bytes.Buffer) error {
 	restoreEnv := maybeClearOpenAIAPIKey(cfg.clearOpenAIAPIKey)
@@ -858,8 +970,23 @@ func runLiveProbe(ctx context.Context, cfg runConfig, probe probeFile, res *prob
 	if effort.Set {
 		sessCfg.ReasoningEffort = effort.Value
 	}
-	sess, err := runnerNewSession(client, profile, execenv.NewLocalExecutionEnvironment(res.WorkDir), sessCfg)
+	if err := configureLiveSandbox(cfg, &sessCfg); err != nil {
+		return err
+	}
+	env := execenv.NewLocalExecutionEnvironment(res.WorkDir)
+	// Engage enforcement before the session exists so a declared mode the host
+	// cannot serve fails closed here, before any provider call, rather than
+	// silently running the worker native and unsandboxed.
+	if err := provisionLiveSandbox(env, &sessCfg, res.WorkDir); err != nil {
+		return err
+	}
+	sess, err := runnerNewSession(client, profile, env, sessCfg)
 	if err != nil {
+		// The session that would have owned whatever this env provisioned was
+		// never built; settle its scratch against the root retention manifest
+		// the way the production launch path does, rather than removing a
+		// directory a durable manifest may still reference.
+		agent.DisposeRootScratchAfterFailure(sessCfg.StateDir, env)
 		return err
 	}
 	res.SessionID = sess.ID()

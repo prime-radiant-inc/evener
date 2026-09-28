@@ -8,6 +8,11 @@
 // is a browser script (it assigns to `window.EV_DATA`), so its content is
 // transcribed here rather than imported; the mapping choices are recorded
 // inline as each raw session is turned into a NavigationSessionSummary row.
+import {
+	NAVIGATION_CATALOG_LIMIT,
+	NAVIGATION_SECTION_LIMIT,
+	relativeAge,
+} from "@evener/appwire-client/state/navigation";
 import { capability, wireV2 } from "@evener/appwire-client/testing/navigation";
 import type {
 	AuthListResponse,
@@ -24,23 +29,6 @@ import type {
 	Source,
 } from "@evener/appwire-client";
 
-// Mirrors @evener/appwire-client/state/navigation's NAVIGATION_SECTION_LIMIT
-// and NAVIGATION_CATALOG_LIMIT (in turn cmd/evener-hub/navigation_projection.
-// go's maxNavigationSectionRows/maxNavigationCatalogRows) rather than
-// importing them: that module's index.ts re-exports everything with
-// `export * from "./x"`, and demo-hub.mts (which reaches this file through
-// its own import graph) is .mts, always real ESM to Node -- the CommonJS
-// compile a re-export barrel gets there turns `export *` into a dynamic
-// spread Node's real ESM loader can't statically find named exports in, so
-// `import { X } from "@evener/appwire-client/state/navigation"` fails to
-// load from anywhere that graph reaches, even though the identical
-// specifier shape works from testing/navigation (a plain file with direct
-// declarations, not a re-export barrel). Vitest's own resolver doesn't hit
-// this, which is why the test file next to this one can import the real
-// constants directly.
-const SECTION_LIMIT = 50;
-const CATALOG_LIMIT = 100;
-
 // The generation id the fleet's navigationCapability advertises in demo-hub.mts's
 // initialize handshake. Every wireV2 response must carry the exact same id:
 // the shared navigation store rejects any other generation as a mismatch
@@ -53,19 +41,6 @@ export const DEMO_FLEET_GENERATION = "demo-fleet";
 // response below the revision it was told to expect.
 const respond = (revision: number, params: NavigationReadParams, data: unknown): NavigationReadResponse =>
 	wireV2(params, data, `"demo-fleet-${revision}"`, revision, DEMO_FLEET_GENERATION);
-
-// A local copy of that same module's relativeAge (now/m/h/d), for the same
-// reason: SearchResult.age needs it and importing it hits the barrel above.
-// The format is a spec contract (redesign design.md 7.2: "2m", "1h", "3d"),
-// not an implementation detail likely to drift out from under this copy.
-function relativeAge(updatedAt: string | undefined, now: number): string {
-	if (!updatedAt) return "now";
-	const seconds = Math.max(0, Math.floor((now - Date.parse(updatedAt)) / 1000));
-	if (seconds < 60) return "now";
-	if (seconds < 3600) return `${Math.floor(seconds / 60)}m`;
-	if (seconds < 86400) return `${Math.floor(seconds / 3600)}h`;
-	return `${Math.floor(seconds / 86400)}d`;
-}
 
 const M = 60;
 const H = 3600;
@@ -768,17 +743,17 @@ function fleetAnswers(
 				if (params.section !== "live" && params.section !== "needs_you")
 					throw new Error(`Unknown demonstration section: ${params.section}`);
 				const source = params.section === "needs_you" ? needsYouSessions : liveSessions;
-				const { page: sessions, remaining } = page(source, params, SECTION_LIMIT);
+				const { page: sessions, remaining } = page(source, params, NAVIGATION_SECTION_LIMIT);
 				return respond(revision, params, { sessions, remaining, truncated: anyTruncated(sessions) });
 			}
 			case "pin_catalog": {
-				const { page: sections, remaining } = page(pinSections, params, CATALOG_LIMIT);
+				const { page: sections, remaining } = page(pinSections, params, NAVIGATION_CATALOG_LIMIT);
 				return respond(revision, params, { pin_sections: sections, remaining });
 			}
 			case "pin_section": {
 				const id = pinCategoryIds.find((candidate) => candidate === params.sectionId);
 				if (!id) throw new Error(`Unknown demonstration pin section: ${params.sectionId}`);
-				const { page: sessions, remaining } = page(pinSessions(id), params, SECTION_LIMIT);
+				const { page: sessions, remaining } = page(pinSessions(id), params, NAVIGATION_SECTION_LIMIT);
 				return respond(revision, params, { sessions, remaining, truncated: anyTruncated(sessions) });
 			}
 			case "catalog": {
@@ -787,7 +762,7 @@ function fleetAnswers(
 				if (params.catalog !== "projects" && params.catalog !== "archived_projects" && params.catalog !== "test_runs")
 					throw new Error(`Unknown demonstration catalog: ${params.catalog}`);
 				const source = params.catalog === "archived_projects" ? archivedProjects : params.catalog === "test_runs" ? testRunProjects : projects;
-				const { page: rows, remaining } = page(source, params, CATALOG_LIMIT);
+				const { page: rows, remaining } = page(source, params, NAVIGATION_CATALOG_LIMIT);
 				return respond(revision, params, { projects: rows, remaining });
 			}
 			case "project": {
@@ -817,7 +792,7 @@ function fleetAnswers(
 				if (params.tier !== "current" && params.tier !== "recent" && params.tier !== "archived")
 					throw new Error(`Unknown demonstration tier: ${params.tier}`);
 				const tier = params.tier;
-				const { page: sessions, remaining } = page(tierRows(projectKey, tier), params, SECTION_LIMIT);
+				const { page: sessions, remaining } = page(tierRows(projectKey, tier), params, NAVIGATION_SECTION_LIMIT);
 				return respond(revision, params, { key: projectKey, tier, sessions, remaining, truncated: anyTruncated(sessions) });
 			}
 			default:
@@ -833,7 +808,10 @@ function fleetAnswers(
 		const now = clock();
 		const toHit = (raw: RawSession) => {
 			const row = rowOf(raw);
-			const age = relativeAge(row.updated_at, now);
+			// relativeAge answers undefined for a row with no timestamp; a
+			// SearchResult's age is a required string, so a missing one reads
+			// "now", the way this file's own copy used to.
+			const age = relativeAge(row.updated_at, now) ?? "now";
 			return {
 				id: row.session_id,
 				title: row.title,

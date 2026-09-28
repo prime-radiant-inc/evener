@@ -1,7 +1,6 @@
 package msgrender
 
 import (
-	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
@@ -258,7 +257,7 @@ func RenderToolCall(tc transcript.ToolCallInfo, width int, focused bool) string 
 	if rawJSON == "" {
 		rawJSON = argsJSONFromDescription(tc.Description)
 	}
-	args := toolArgsFromJSON(rawJSON)
+	args, isJSONObject := toolArgsFromJSONObject(rawJSON)
 
 	verb := r.Verb(args)
 	target := r.Target(args)
@@ -267,7 +266,7 @@ func RenderToolCall(tc transcript.ToolCallInfo, width int, focused bool) string 
 	// produces an empty target. Mirror the hub's toolInputSummary bounded
 	// fallback (agent/transcript_render.go:1595-1601) so the malformed raw
 	// bytes reach the row instead of a bare verb.
-	if rawJSON != "" && !parsesAsJSONObject(rawJSON) {
+	if rawJSON != "" && !isJSONObject {
 		target = oneLineTrunc(rawJSON, toolCardRawFallbackMaxRunes)
 	}
 	var result string
@@ -469,21 +468,3 @@ func oneLineTrunc(s string, limit int) string {
 // chat view, mirroring the hub's toolInputSummary 120-rune bound for tool
 // cards (agent/transcript_render.go:1600).
 const toolCardRawFallbackMaxRunes = 120
-
-// parsesAsJSONObject reports whether s decodes as a JSON object. Returns
-// false for empty input, invalid JSON, null, and valid non-object JSON
-// (arrays, strings, numbers). Mirrors the hub's parseArgs returning nil on
-// error and for null (where Unmarshal succeeds with a nil map), so
-// RenderToolCall can detect the rejected-call raw-bytes shape without
-// changing toolArgsFromJSON (which the fuzz oracle requires to never return
-// nil).
-func parsesAsJSONObject(s string) bool {
-	if s == "" {
-		return false
-	}
-	var m map[string]any
-	// json.Unmarshal([]byte("null"), &m) succeeds with m == nil, so a bare
-	// null is not a JSON object — require m != nil, mirroring the hub's
-	// parseArgs which returns nil for null.
-	return json.Unmarshal([]byte(s), &m) == nil && m != nil
-}

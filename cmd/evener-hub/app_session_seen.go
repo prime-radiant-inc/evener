@@ -28,18 +28,14 @@ func registerSessionSeenHandler(server *appserver.Server, cfg hubcore.WebConfig,
 	})
 }
 
-// sessionSeenWrite is one validated mark: the store key it writes and what it
-// writes there.
-type sessionSeenWrite struct {
-	source, sessionID string
-	seenThrough       int64
-	unread            bool
-}
-
 // sessionSeenSet answers evener/session/seen/set (S4). Every mark is checked
 // before any is written, so a malformed call changes nothing. A mark names its
 // session by the row's ref as sent; it is not resolved to a current session,
-// because the projection reads markers by that same ref.
+// because the projection reads markers by that same ref. The validated marks
+// are then written in MarkBatch's one transaction, so a write failure partway
+// through a multi-session call cannot leave some sessions marked and others
+// not - the same all-or-nothing guarantee the validation above gives the
+// checks themselves.
 func sessionSeenSet(ctx context.Context, cfg hubcore.WebConfig, navigation *NavigationService, params appwire.SessionSeenSetParams, now time.Time) (appwire.SessionSeenSetResponse, error) {
 	if len(params.Sessions) == 0 || len(params.Sessions) > maxSessionSeenMarks {
 		return appwire.SessionSeenSetResponse{}, appwire.InvalidParams(fmt.Sprintf("sessions must name 1 to %d sessions", maxSessionSeenMarks))
@@ -47,7 +43,7 @@ func sessionSeenSet(ctx context.Context, cfg hubcore.WebConfig, navigation *Navi
 	if cfg.SessionSeen == nil {
 		return appwire.SessionSeenSetResponse{}, appwire.InternalError("seen marker store not configured")
 	}
-	writes := make([]sessionSeenWrite, 0, len(params.Sessions))
+	marks := make([]hubcore.SessionSeenMark, 0, len(params.Sessions))
 	for _, mark := range params.Sessions {
 		ref, err := hubapi.ParseRef(mark.Ref)
 		if err != nil {
@@ -63,21 +59,11 @@ func sessionSeenSet(ctx context.Context, cfg hubcore.WebConfig, navigation *Navi
 		if err := validateDecisionSource(cfg, source); err != nil {
 			return appwire.SessionSeenSetResponse{}, err
 		}
-		writes = append(writes, sessionSeenWrite{source: source, sessionID: ref.SessionID, seenThrough: mark.SeenThrough, unread: mark.Unread})
+		marks = append(marks, hubcore.SessionSeenMark{Source: source, SessionID: ref.SessionID, SeenThrough: hubcore.UnixMilliTime(mark.SeenThrough), Unread: mark.Unread})
 	}
-	changed := false
-	for _, write := range writes {
-		var wrote bool
-		var err error
-		if write.unread {
-			wrote, err = cfg.SessionSeen.MarkUnread(write.source, write.sessionID)
-		} else {
-			wrote, err = cfg.SessionSeen.MarkSeen(write.source, write.sessionID, hubcore.UnixMilliTime(write.seenThrough))
-		}
-		if err != nil {
-			return appwire.SessionSeenSetResponse{}, appwire.InternalError("seen marker store error: " + err.Error())
-		}
-		changed = changed || wrote
+	changed, err := cfg.SessionSeen.MarkBatch(marks)
+	if err != nil {
+		return appwire.SessionSeenSetResponse{}, appwire.InternalError("seen marker store error: " + err.Error())
 	}
 	mutation, err := commitNavigationChange(ctx, cfg, navigation, changed)
 	if err != nil {

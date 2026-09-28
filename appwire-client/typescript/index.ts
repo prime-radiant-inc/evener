@@ -351,6 +351,7 @@ export type {
 export {
   applyHistoryReadFailure,
   applyNotification,
+  applyReadModel,
   applyReadResponse,
   collectAuthoritativeMutationIds,
   comparePositions,

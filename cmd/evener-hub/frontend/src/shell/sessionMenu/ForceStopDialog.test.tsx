@@ -1,9 +1,7 @@
-import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { afterEach, expect, test, vi } from "vitest";
+import { expect, test, vi } from "vitest";
 import { ForceStopDialog } from "./ForceStopDialog";
-
-afterEach(cleanup);
 
 test("retains pending confirmation through Cancel and Escape, then permits retry after failure", async () => {
   let rejectStop: (error: Error) => void = () => {};

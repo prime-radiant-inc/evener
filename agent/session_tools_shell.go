@@ -164,7 +164,7 @@ func registerShellTools(reg *tool.Registry, s *Session, deps *toolDeps) error {
 					return "", errors.New("shell jobs require an initialized JobManager")
 				}
 				shellArgs = applyShellTimeoutPolicy(deps, shellArgs)
-				return marshalShellToolResult(runShell(ctx, s.jobManager, se, shellArgs), shellToolResultMaxChars(reg))
+				return marshalShellToolResult(runShell(ctx, s.jobManager, se, shellArgs), shellToolResultMaxChars(reg), s.cfg.TurnEndsProcess)
 			}
 			return runBufferedShell(ctx, env, deps, shellArgs)
 		},
@@ -458,23 +458,24 @@ func shellToolResultMaxChars(reg *tool.Registry) int {
 	return registered.Limit.MaxChars
 }
 
-func marshalShellToolResult(res shellResult, maxChars int) (tool.StateResult, error) {
+func marshalShellToolResult(res shellResult, maxChars int, turnEndsProcess bool) (tool.StateResult, error) {
 	// complete-or-handle (spec §0.6): within-bound results carry a settle
 	// closure. Apply both layers — ride-whole budget (shellRideWholeBytes)
 	// and tool-result char bound (maxChars) — to decide keep vs discard.
 	if res.settle != nil {
-		return marshalCompleteOrHandleResult(res, maxChars)
+		return marshalCompleteOrHandleResult(res, maxChars, turnEndsProcess)
 	}
 
 	out := shellToolResult{
-		JobID:         res.JobID,
-		Type:          res.Type,
-		Status:        res.Status,
-		Reason:        shellStringPtrOrNil(res.Reason),
-		Mode:          string(shellModeForeground),
-		TimedOut:      res.TimedOut,
-		WaitElapsedMS: res.WaitElapsedMS,
-		ExitCode:      res.ExitCode,
+		JobID:           res.JobID,
+		Type:            res.Type,
+		Status:          res.Status,
+		Reason:          shellStringPtrOrNil(res.Reason),
+		Mode:            string(shellModeForeground),
+		TimedOut:        res.TimedOut,
+		WaitElapsedMS:   res.WaitElapsedMS,
+		ExitCode:        res.ExitCode,
+		TurnEndsProcess: turnEndsProcess,
 	}
 	if res.RunningInBackground {
 		out.Mode = string(shellModeBackground)
@@ -499,19 +500,20 @@ func marshalShellToolResult(res shellResult, maxChars int) (tool.StateResult, er
 // If either layer triggers → settle(true) keeps the delayed job (durable),
 // returns a truncated tail + job_id. Otherwise → settle(false) discards the
 // delayed job (ephemeral), returns complete output inline with no job_id.
-func marshalCompleteOrHandleResult(res shellResult, maxChars int) (tool.StateResult, error) {
+func marshalCompleteOrHandleResult(res shellResult, maxChars int, turnEndsProcess bool) (tool.StateResult, error) {
 	falseVal := false
 	out := shellToolResult{
-		Type:         res.Type,
-		Status:       res.Status,
-		Reason:       shellStringPtrOrNil(res.Reason),
-		Mode:         string(shellModeForeground),
-		TimedOut:     res.TimedOut,
-		ExitCode:     res.ExitCode,
-		Output:       &res.Output,
-		Truncated:    &falseVal,
-		TotalBytes:   res.TotalBytes,
-		DroppedBytes: res.DroppedBytes,
+		Type:            res.Type,
+		Status:          res.Status,
+		Reason:          shellStringPtrOrNil(res.Reason),
+		Mode:            string(shellModeForeground),
+		TimedOut:        res.TimedOut,
+		ExitCode:        res.ExitCode,
+		Output:          &res.Output,
+		Truncated:       &falseVal,
+		TotalBytes:      res.TotalBytes,
+		DroppedBytes:    res.DroppedBytes,
+		TurnEndsProcess: turnEndsProcess,
 	}
 
 	out.OutputStatus = outputWindowStatus(res.TotalBytes, res.DroppedBytes, false)
@@ -642,7 +644,16 @@ func formatShellResult(out shellToolResult) string {
 		foot = append(foot, "running in background as "+out.JobID)
 	}
 	if backgrounded {
-		b.WriteString(systemReminder("This job will notify you when it completes. If your session is idle, the notification will wake it. You do not need to wait for it explicitly."))
+		// The reminder branches on TurnEndsProcess (#2644): a one-shot run exits
+		// once the turn's work drains, so a background job still running then is
+		// stopped unless a job_watch is set — the serve-mode "no need to wait"
+		// promise is false there. Keep the wording aligned with the system
+		// prompt's one-shot Background work section.
+		if out.TurnEndsProcess {
+			b.WriteString(systemReminder("This is a one-shot run: the process exits once this turn's work is drained, and a background job still running then is stopped unless a job_watch is set on it. Set a job_watch on this job if you need its result."))
+		} else {
+			b.WriteString(systemReminder("This job will notify you when it completes. If your session is idle, the notification will wake it. You do not need to wait for it explicitly."))
+		}
 		b.WriteByte(' ')
 	}
 	if len(foot) > 0 {
@@ -683,6 +694,12 @@ type shellToolResult struct {
 	TotalBytes    int64   `json:"total_bytes,omitempty"`
 	DroppedBytes  int64   `json:"dropped_bytes,omitempty"`
 	OutputStatus  string  `json:"output_status,omitempty"`
+	// TurnEndsProcess marks a one-shot run (`evener run`, and any delegate that
+	// inherits it): the process exits once this turn's work drains, so an
+	// unwatched background job is stopped rather than left to notify later. It
+	// selects the background reminder wording and is presentation-only, never
+	// part of the structured result the hub sees.
+	TurnEndsProcess bool `json:"-"`
 }
 
 func shellStringPtrOrNil(s string) *string {

@@ -2,12 +2,10 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { FakeClient, gateSettlements } from "@evener/appwire-client/testing/fakeClient";
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
-import { afterEach, expect, test } from "vitest";
+import { render, screen, waitFor } from "@testing-library/react";
+import { expect, test } from "vitest";
 import { ClientProvider } from "../../../shell/clientContext";
 import { RepoLocation } from "./RepoLocation";
-
-afterEach(cleanup);
 
 function locationCss(): string {
   const cssPath = join(dirname(fileURLToPath(import.meta.url)), "repoLocation.module.css");
