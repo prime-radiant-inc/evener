@@ -72,8 +72,7 @@ func TestTerminalDrainExitsDespiteWatchSendResidue(t *testing.T) {
 		func(llm.Request) llm.Response { return finalResponse("all done") },
 	}}
 	sess := newSession(t, withAdapter(adapter), withConfig(SessionConfig{
-		NoProjectPrompts: true,
-		TurnEndsProcess:  true,
+		TurnEndsProcess: true,
 	}))
 
 	// TRIPWIRE: scripted adapter, in-memory residue, no real I/O. The fixed
@@ -119,8 +118,7 @@ func TestPostTerminalNotificationTurnEmptyResponseFinishesIdle(t *testing.T) {
 		},
 	}}
 	sess := newSession(t, withAdapter(adapter), withConfig(SessionConfig{
-		NoProjectPrompts: true,
-		TurnEndsProcess:  true,
+		TurnEndsProcess: true,
 	}))
 
 	// TRIPWIRE: scripted in-process adapter, no real I/O; 30s only fires on a
@@ -156,8 +154,7 @@ func TestPostTerminalNotificationTurnEmptyResponseFinishesIdle(t *testing.T) {
 func TestNormalDrainStillWaitsOnWatchSendResidue(t *testing.T) {
 	t.Parallel()
 	sess := newSession(t, withConfig(SessionConfig{
-		NoProjectPrompts: true,
-		TurnEndsProcess:  true,
+		TurnEndsProcess: true,
 	}))
 	seedWatchSendResidue(t, sess)
 
@@ -286,8 +283,7 @@ func TestOneShotDrainDeliversCompletionThatLandsDuringTheFinalAnswer(t *testing.
 		func(llm.Request) llm.Response { return finalResponse(finalAnswer) },
 	}}
 	sess = newSession(t, withAdapter(adapter), withConfig(SessionConfig{
-		NoProjectPrompts: true,
-		TurnEndsProcess:  true,
+		TurnEndsProcess: true,
 	}))
 	jobID, releaseShell = startControlledBackgroundShell(t, sess, "controlled build")
 
@@ -353,8 +349,7 @@ func TestOneShotDrainKeepsDrainingWhenTheDeliveredCompletionStartsMoreWork(t *te
 		func(llm.Request) llm.Response { return finalResponse(finalAnswer) },
 	}}
 	sess = newSession(t, withAdapter(adapter), withConfig(SessionConfig{
-		NoProjectPrompts: true,
-		TurnEndsProcess:  true,
+		TurnEndsProcess: true,
 	}))
 	firstJobID, releaseShell = startControlledBackgroundShell(t, sess, "controlled build")
 
@@ -416,8 +411,7 @@ func TestOneShotDrainReturnsAfterAFinalAnswerThatSawEveryCompletion(t *testing.T
 		func(llm.Request) llm.Response { return finalResponse(answer) },
 	}}
 	sess := newSession(t, withAdapter(adapter), withConfig(SessionConfig{
-		NoProjectPrompts: true,
-		TurnEndsProcess:  true,
+		TurnEndsProcess: true,
 	}))
 	jobID, releaseShell := startControlledBackgroundShell(t, sess, "controlled build")
 	if !finalizeShell(t, sess.jobManager, jobID, releaseShell) {
@@ -484,8 +478,7 @@ func TestOneShotDrainDiscardsWatchFramesQueuedBeforeTheFinalAnswer(t *testing.T)
 		func(llm.Request) llm.Response { return finalResponse(finalAnswer) },
 	}}
 	sess = newSession(t, withAdapter(adapter), withConfig(SessionConfig{
-		NoProjectPrompts: true,
-		TurnEndsProcess:  true,
+		TurnEndsProcess: true,
 	}))
 	jobID, releaseShell = startControlledBackgroundShell(t, sess, "controlled build")
 	watchRes := sess.reg.ExecuteCall(context.Background(), sess.env, llm.ToolCallData{

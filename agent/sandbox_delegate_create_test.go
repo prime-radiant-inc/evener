@@ -204,7 +204,6 @@ func TestPrepareSubagentRun_PerDelegateSandboxCleansScratchOnSpawnFailure(t *tes
 	s := newSession(t, withClient(c), withConfig(SessionConfig{
 		StateDir:         packageFixtureTempDir(t, "sbx-leak-*"),
 		MaxSubagentDepth: 1,
-		NoProjectPrompts: true,
 		testOnly: testConfig{
 			skipGitSnapshot:     true,
 			minimalSystemPrompt: true,
@@ -297,7 +296,6 @@ func TestParentClose_RetainsPerDelegateSandboxScratch(t *testing.T) {
 	s := newSession(t, withClient(c), withDir(lane), withConfig(SessionConfig{
 		StateDir:         packageFixtureTempDir(t, "sbx-close-*"),
 		MaxSubagentDepth: 1,
-		NoProjectPrompts: true,
 		testOnly: testConfig{
 			skipGitSnapshot:     true,
 			minimalSystemPrompt: true,
@@ -493,7 +491,6 @@ func TestReadOnlyDelegateDumbModelWritesOnlyToPromptNamedScratch(t *testing.T) {
 	})), withDir(root), withConfig(SessionConfig{
 		StateDir:         t.TempDir(),
 		MaxSubagentDepth: 1,
-		NoProjectPrompts: true,
 		testOnly: testConfig{
 			skipGitSnapshot: true,
 			noSyncJobStore:  true,
@@ -562,7 +559,6 @@ func TestCreateDelegate_ResultEchoesSandboxBox(t *testing.T) {
 	s := newSession(t, withClient(c), withDir(lane), withConfig(SessionConfig{
 		StateDir:         packageFixtureTempDir(t, "sbx-echo-*"),
 		MaxSubagentDepth: 1,
-		NoProjectPrompts: true,
 		testOnly: testConfig{
 			skipGitSnapshot:     true,
 			minimalSystemPrompt: true,
@@ -635,7 +631,6 @@ func TestPrepareSubagentRun_PerDelegateSandboxWithoutIsolationDoesNotMutateParen
 	s := newSession(t, withClient(c), withDir(lane), withConfig(SessionConfig{
 		StateDir:         packageFixtureTempDir(t, "sbx-noiso-*"),
 		MaxSubagentDepth: 1,
-		NoProjectPrompts: true,
 		testOnly: testConfig{
 			skipGitSnapshot:     true,
 			minimalSystemPrompt: true,

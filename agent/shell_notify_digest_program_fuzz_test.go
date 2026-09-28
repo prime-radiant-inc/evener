@@ -146,7 +146,7 @@ func FuzzShellMarshalProgram(f *testing.F) {
 			res.Truncated = flags&4 != 0
 			res.TimedOut = flags&8 != 0
 		}
-		got, err := marshalShellToolResult(res, maxChars)
+		got, err := marshalShellToolResult(res, maxChars, flags&16 != 0)
 		if err != nil {
 			t.Fatalf("marshalShellToolResult: %v", err)
 		}

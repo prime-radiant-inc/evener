@@ -25,7 +25,6 @@ context_strategy = "compact"
 openai_responses_continuation = "auto"
 max_rounds = 200
 max_subagent_depth = 1
-no_project_prompts = false
 app_replay_size = 4096
 skills_dirs = ["/a", "/b"]
 plugin_dirs = ["/p"]
@@ -58,9 +57,6 @@ FOO = "bar"
 	}
 	if got.OpenAIResponsesContinuation != "auto" {
 		t.Errorf("OpenAIResponsesContinuation = %q, want auto", got.OpenAIResponsesContinuation)
-	}
-	if got.NoProjectPrompts == nil || *got.NoProjectPrompts != false {
-		t.Errorf("NoProjectPrompts = %v, want false set", got.NoProjectPrompts)
 	}
 	if len(got.SkillsDirs) != 2 || got.SkillsDirs[0] != "/a" {
 		t.Errorf("SkillsDirs = %v, want [/a /b]", got.SkillsDirs)

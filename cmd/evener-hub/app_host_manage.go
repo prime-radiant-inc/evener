@@ -126,9 +126,11 @@ type hostManagerConfig struct {
 	// the source's last-known-good rows"). Nil (tests, embedders without a web
 	// server): the tombstone is written with no retained rows.
 	lastGoodThreads func(sourceID string) []appwire.Thread
-	// manager owns every live SSH channel; removal goes through its atomic
-	// RemoveHost so a concurrent attach cannot publish past deregistration, and
-	// the row path resolves the entry's attached client through its
+	// manager owns every live SSH channel; removal goes through its atomic,
+	// gate-inheriting RemoveHostUnderGate — under the mutation's own held
+	// reservation, so a concurrent attach cannot publish past deregistration and
+	// no gate waiter can acquire a half-torn-down host (spec 08 §4's "gate
+	// released last") — and the row path resolves the entry's attached client through its
 	// ChannelIfAttached so a row can pair the channel with the very
 	// registration it renders (attachedClient). Nil in tests that only
 	// exercise validation.
@@ -201,14 +203,23 @@ type hostManagerConfig struct {
 	restartHost func(ctx context.Context, host hostreg.Host, facts sshconn.Preflight) error
 	// attachedFacts returns the attached channel's captured preflight facts —
 	// the deploy path's facts source, since deploy runs no fresh preflight of
-	// its own (§6 step 3), and the interim reattach wait's attachment probe.
-	// Nil (tests, embedders with no manager) leaves the workers to their own
-	// seam.
+	// its own (§6 step 3), and the attach-first restart's probe source. Nil
+	// (tests, embedders with no manager) leaves the workers to their own seam.
 	attachedFacts func(name string) (sshconn.Preflight, bool)
-	// awaitReattach, when set, is the test/embedder override for waiting on the
-	// host's channel after a restart released the gate; production with a
-	// manager polls the manager's own attachment.
-	awaitReattach func(ctx context.Context, entry hostreg.Host) (*appwire.Client, bool)
+	// attachUnderGate is the operation-owned attach/reattach seam (§6 seam (d)):
+	// the worker's post-restart reattach (and an initially unattached restart's
+	// attach-first), run under the caller's held gate by the sshconn Manager's
+	// AttachUnderGate. It returns the post-verification handoff that starts the
+	// channel's supervisor under the same held gate. Nil (a hub with no manager)
+	// means no channels are owned to reattach, so the worker's arm is the no-op
+	// success the interim wait had; running the normal attach path instead would
+	// deadlock on the non-reentrant gate.
+	// holder is the operation holder the worker's hold registered, which the
+	// primitive requires the gate to currently carry.
+	// explicit distinguishes the first attach (true: the first-attach bootstrap
+	// applies, as Ensure's explicit attach) from the reconnect-shaped reattach
+	// (false: never start a hub).
+	attachUnderGate func(ctx context.Context, entry hostreg.Host, holder hostops.Holder, explicit bool) (func() bool, error)
 	// remnantFence reports the open teardown remnant fencing a host name, if
 	// one does: §6 step 2's `remnant-open` refusal is emitted from here, past
 	// the dedup check and before any probe or acquisition. Remnant semantics
@@ -251,10 +262,13 @@ type hostManagerConfig struct {
 	// row moved with it, and clear it in their finish phase. Add needs no mark
 	// because its whole mutation is atomic under mu, but it refuses a name that
 	// remove or update already marked. The window a mutation releases the mutex
-	// for — a teardown that blocks on the per-host gate a supervisor's
-	// reconnect/ensure cycle can hold for minutes — must admit no second mutation
-	// of the same name, so every mutation refuses a marked name until its own
-	// finish clears the mark. Guarded by mu.
+	// for — the post-commit teardown, which can be slow — must admit no second
+	// mutation of the same name, so every mutation refuses a marked name until
+	// its own finish clears the mark. The per-host reservation is held across
+	// that same window (spec 08 §4's "gate released last"), so gate consumers
+	// (attach, plan, deploy, another mutation) are refused busy; the mark is the
+	// fence for the paths a held reservation does not reach, `add` first, which
+	// checks its mark before any gate acquisition. Guarded by mu.
 	mutating map[string]struct{}
 	// policy is the resolved host-record retention knob set (registry spec 08
 	// §6/§15): the tombstone retention and bounds and the superseded-receipt,
@@ -1255,8 +1269,10 @@ func (s *hostAttachState) restore(name string, rec *hostAttachRecord) {
 // registry surface. It owns no connections: list and status resolve through
 // the attached-only seams, add validates hub.toml-authoritatively and wires the
 // new host's source with the same seams startup uses, remove tears the host
-// down through the manager's atomic RemoveHost, and update swaps its entry and
-// retires its channel through UpdateHost. It never dials.
+// down through the manager's atomic RemoveHostUnderGate, and update swaps its
+// entry and retires its channel through UpdateHostUnderGate — both under the
+// mutation's held per-host reservation (spec 08 §4's "gate released last"). It
+// never dials.
 //
 // It is controller-LOCAL: these methods act on the controller's own config and
 // channels, so they MUST NOT be added to remoteHostAdminMethods (pinned by
@@ -1275,12 +1291,12 @@ type hubHostManager struct {
 	// NOW, the S10 testOnlyParkPostCommit precedent; nil in production.
 	testOnlyRemnantGated func(name string) bool
 	// testOnlyParkPostCommit, when non-nil, is called by Update and Remove after
-	// their durable commit, after the mutation mutex and the per-host gate
-	// reservation are released, and immediately before the post-commit live
-	// phase (the manager rebind/teardown) — the exact released window spec 08 §5
-	// describes. It exists so a test can hold that window open deterministically
-	// instead of racing it (testing.md's "Prove a Wait with a Signal" rule); nil
-	// in production.
+	// their durable commit, with the mutation mutex released and the per-host
+	// gate reservation still held, and immediately before the post-commit live
+	// phase (the manager rebind/teardown, which runs under that reservation —
+	// spec 08 §4's "gate released last"). It exists so a test can hold that
+	// window open deterministically instead of racing it (testing.md's "Prove a
+	// Wait with a Signal" rule); nil in production.
 	testOnlyParkPostCommit func(name string)
 	// testOnlyParkInCommit, when non-nil, is called by Add immediately after it
 	// enters its mutation critical section (the mutation lock held, nothing
@@ -1421,10 +1437,23 @@ func newHubHostManager(sources *appsource.Registry, manager *sshconn.Manager, cf
 		// under the same gate.
 		m.cfg.restartHost = manager.RestartForOperation
 	}
+	if m.cfg.attachUnderGate == nil && manager != nil {
+		// The production operation-owned reattach (§6 seam (d)): the manager's
+		// gate-aware attach primitive, which accepts the already-held gate,
+		// suppresses supervisor startup until the post-verification handoff, and
+		// never re-acquires the non-reentrant lock.
+		m.cfg.attachUnderGate = func(ctx context.Context, entry hostreg.Host, holder hostops.Holder, explicit bool) (func() bool, error) {
+			_, handoff, err := manager.AttachUnderGate(ctx, entry, holder, explicit)
+			if err != nil {
+				return nil, err
+			}
+			return handoff, nil
+		}
+	}
 	if m.cfg.attachedFacts == nil && manager != nil {
 		// The attached channel's captured preflight is the deploy path's facts
-		// source (deploy runs no fresh preflight of its own) and the interim
-		// reattach wait's attachment probe. PreflightIfAttached never dials.
+		// source (deploy runs no fresh preflight of its own) and the attach-first
+		// restart's probe source. PreflightIfAttached never dials.
 		m.cfg.attachedFacts = manager.PreflightIfAttached
 	}
 	// The file's records are read once, before anything else can mint: its

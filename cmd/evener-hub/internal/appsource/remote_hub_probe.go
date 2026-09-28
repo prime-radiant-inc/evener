@@ -264,7 +264,6 @@ func cloneLaunchConfigLayer(l appwire.LaunchConfigLayer) appwire.LaunchConfigLay
 	out.MaxSubagentDepth = ptrClone(l.MaxSubagentDepth)
 	out.MaxConcurrentDelegateTurns = ptrClone(l.MaxConcurrentDelegateTurns)
 	out.MaxRetainedTerminal = ptrClone(l.MaxRetainedTerminal)
-	out.NoProjectPrompts = ptrClone(l.NoProjectPrompts)
 	out.NonInteractive = ptrClone(l.NonInteractive)
 	out.AppReplaySize = ptrClone(l.AppReplaySize)
 	out.Verbose = ptrClone(l.Verbose)

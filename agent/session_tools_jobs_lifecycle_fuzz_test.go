@@ -180,7 +180,6 @@ func jtlpNewRootSession(t *testing.T) *Session {
 	cfg := SessionConfig{
 		StateDir:         t.TempDir(),
 		MaxSubagentDepth: 2,
-		NoProjectPrompts: true,
 		clock:            agenttest.NewFakeClock(),
 	}
 	cfg.testOnly = testConfig{

@@ -284,8 +284,7 @@ func TestDetailedStatusWatchesStayOffTheDescendantManagers(t *testing.T) {
 func newDescendantWatchSession(t *testing.T) *Session {
 	t.Helper()
 	return newSession(t, withConfig(SessionConfig{
-		NoProjectPrompts: true,
-		AgentsDocPath:    filepath.Join(t.TempDir(), "no-personal-AGENTS.md"),
+		AgentsDocPath: filepath.Join(t.TempDir(), "no-personal-AGENTS.md"),
 	}))
 }
 

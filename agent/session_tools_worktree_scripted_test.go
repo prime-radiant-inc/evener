@@ -230,7 +230,6 @@ func newScriptedWorktreeSession(t *testing.T) *scriptedWorktreeSession {
 	git := newScriptedWorktreeGit(root)
 	cfg := SessionConfig{
 		MaxSubagentDepth: 1,
-		NoProjectPrompts: true,
 		StateDir:         stateDir,
 		clock:            agenttest.NewFakeClock(),
 		testOnly: testConfig{

@@ -1481,8 +1481,9 @@ func TestHostMutationFinalizeKeepsAConcurrentSiblingCommit(t *testing.T) {
 
 	t.Run("a sibling update committed in the window survives", func(t *testing.T) {
 		m, configPath := seed(t)
-		// The outer mutation parks in its released post-commit window and, from
-		// there, a DIFFERENT pre-existing host is edited to completion.
+		// The outer mutation parks in its post-commit window — reservation held
+		// for its own host — and, from there, a DIFFERENT pre-existing host is
+		// edited to completion.
 		parked := make(chan struct{})
 		release := make(chan struct{})
 		var once sync.Once
@@ -1501,7 +1502,7 @@ func TestHostMutationFinalizeKeepsAConcurrentSiblingCommit(t *testing.T) {
 		select {
 		case <-parked:
 		case <-time.After(5 * time.Second):
-			t.Fatal("the outer mutation never reached its released window")
+			t.Fatal("the outer mutation never reached its post-commit window")
 		}
 		if _, err := m.Update(context.Background(), updateRequest(t, m, "keep", appwire.HostEntry{Address: "keep2.example"})); err != nil {
 			t.Fatalf("concurrent Update(keep) inside the window: %v", err)
@@ -1555,7 +1556,7 @@ func TestHostMutationFinalizeKeepsAConcurrentSiblingCommit(t *testing.T) {
 		select {
 		case <-parked:
 		case <-time.After(5 * time.Second):
-			t.Fatal("the outer mutation never reached its released window")
+			t.Fatal("the outer mutation never reached its post-commit window")
 		}
 		if _, err := m.Remove(context.Background(), removeRequest(t, m, "keep")); err != nil {
 			t.Fatalf("concurrent Remove(keep) inside the window: %v", err)

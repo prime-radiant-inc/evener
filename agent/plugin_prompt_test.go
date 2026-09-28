@@ -39,9 +39,8 @@ func availableAgentEntriesForTest(t *testing.T, agents map[string]plugin.Agent, 
 func depthOneSubagentForTest(t *testing.T, allowance int, allowedTools []string) *Session {
 	t.Helper()
 	cfg := SessionConfig{
-		StateDir:         t.TempDir(),
-		NoProjectPrompts: true,
-		AgentsDocPath:    filepath.Join(t.TempDir(), "no-personal-AGENTS.md"),
+		StateDir:      t.TempDir(),
+		AgentsDocPath: filepath.Join(t.TempDir(), "no-personal-AGENTS.md"),
 	}
 	cfg.spawn.depth = 1
 	cfg.spawn.parentSessionID = "parent-session"
@@ -96,7 +95,6 @@ func TestUntypedDelegatingSubagentUsesDelegatingRolePrompt(t *testing.T) {
 
 	sess, err := NewSession(client, withTestSessionNamer(client, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(t.TempDir()), SessionConfig{
 		MaxSubagentDepth: 3,
-		NoProjectPrompts: true,
 		StateDir:         t.TempDir(),
 	})
 	if err != nil {

@@ -19,7 +19,6 @@ func sbxWorktreeSession(t *testing.T) *Session {
 	c.Register(&fakeAdapter{name: "openai"})
 	return newSession(t, withClient(c), withConfig(SessionConfig{
 		MaxSubagentDepth: 1,
-		NoProjectPrompts: true,
 		testOnly:         testConfig{skipGitSnapshot: true, minimalSystemPrompt: true, noSyncJobStore: true},
 	}))
 }

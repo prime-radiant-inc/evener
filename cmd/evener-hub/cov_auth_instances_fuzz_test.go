@@ -96,7 +96,7 @@ func FuzzAuthInstancesFactories(f *testing.F) {
 			{expiry: now.Add(time.Hour), wantStatus: authopenai.AuthStatus{SignedIn: true, Source: authopenai.AuthSourceOAuth, Expiry: now.Add(time.Hour)}, wantNeedsRef: false},
 		} {
 			r := authopenai.AuthRecord{Expiry: tc.expiry, Source: authopenai.AuthSourceOAuth, RefreshToken: tc.refreshToken}
-			if got := openAIStatusFromRecord(now, r); got != tc.wantStatus {
+			if got := openAIStatusFromRecord(now, r, false); got != tc.wantStatus {
 				t.Fatalf("openAIStatusFromRecord(expiry=%v, refreshToken=%q) = %+v, want %+v", tc.expiry, tc.refreshToken, got, tc.wantStatus)
 			}
 			if got := openAIRecordNeedsRefresh(now, r); got != tc.wantNeedsRef {

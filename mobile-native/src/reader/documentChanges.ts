@@ -3,6 +3,9 @@
 // changed since (ruling 14).
 import type { DocumentBlock } from "./documentBlocks";
 
+/** A place in a document: a block, or a code file's line. */
+export type Place = Pick<DocumentBlock, "index" | "hash">;
+
 /** The blocks whose words weren't in the version you last read. A repeated
  * block counts once per copy you read. A first read has no changes. */
 export function changedBlocks(blocks: readonly DocumentBlock[], lastRead: readonly string[] | null): number[] {
@@ -48,7 +51,7 @@ export function changesCaption(count: number, readAt: number, now: number): stri
  * words changed. The comment itself keeps its quote either way. */
 export function anchorBlock(
 	anchor: { blockHash: string; blockIndex: number },
-	blocks: readonly DocumentBlock[],
+	blocks: readonly Place[],
 ): number | null {
 	let best: number | null = null;
 	for (const block of blocks)
@@ -64,7 +67,7 @@ export function anchorBlock(
  * they moved, else the nearest place at the block's top. */
 export function restoreBlock(
 	position: { blockIndex: number; blockHash: string; offset: number },
-	blocks: readonly DocumentBlock[],
+	blocks: readonly Place[],
 ): { index: number; offset: number } | null {
 	if (blocks.length === 0) return null;
 	if (blocks[position.blockIndex]?.hash === position.blockHash)

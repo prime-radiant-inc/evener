@@ -10,7 +10,6 @@ import (
 )
 
 func checkFromWire(t *testing.T) {
-	noProjectPrompts := true
 	appReplaySize := 42
 	in := appwire.LaunchConfigLayer{
 		Model:                       "openai/gpt-5",
@@ -25,7 +24,6 @@ func checkFromWire(t *testing.T) {
 		SkillsDirs:                  []string{"/skills"},
 		PluginDirs:                  []string{"/plugins"},
 		MCPConfigs:                  []string{"/mcp.toml"},
-		NoProjectPrompts:            &noProjectPrompts,
 		AppReplaySize:               &appReplaySize,
 		Env:                         map[string]string{"FOO": "bar"},
 	}
@@ -65,9 +63,6 @@ func checkFromWire(t *testing.T) {
 	}
 	if !reflect.DeepEqual(got.MCPConfigs, []string{"/mcp.toml"}) {
 		t.Errorf("MCPConfigs = %v, want [/mcp.toml]", got.MCPConfigs)
-	}
-	if got.NoProjectPrompts == nil || !*got.NoProjectPrompts {
-		t.Errorf("NoProjectPrompts = %v, want true", got.NoProjectPrompts)
 	}
 	if got.AppReplaySize == nil || *got.AppReplaySize != 42 {
 		t.Errorf("AppReplaySize = %v, want 42", got.AppReplaySize)

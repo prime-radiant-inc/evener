@@ -565,7 +565,6 @@ func copyWorktreeFixtureFile(src, dst string, mode os.FileMode) error {
 func worktreeTestSessionConfig() SessionConfig {
 	return SessionConfig{
 		MaxSubagentDepth: 1,
-		NoProjectPrompts: true,
 		testOnly: testConfig{
 			skipGitSnapshot:             true,
 			minimalSystemPrompt:         true,

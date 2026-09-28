@@ -861,7 +861,6 @@ func newClearServeDeps(t *testing.T) (serveDeps, *clearTestState, []string) {
 		"--dir", t.TempDir(),
 		"--state-dir", t.TempDir(),
 		"--run-dir", t.TempDir(),
-		"--no-project-prompts",
 	}
 	return deps, state, args
 }

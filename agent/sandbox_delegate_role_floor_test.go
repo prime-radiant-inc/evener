@@ -31,7 +31,6 @@ func newReadOnlyRoleFloorSession(t *testing.T, lane string, facts sandbox.HostFa
 		withConfig(SessionConfig{
 			StateDir:         packageFixtureTempDir(t, "role-floor-*"),
 			MaxSubagentDepth: 1,
-			NoProjectPrompts: true,
 			testOnly: testConfig{
 				skipGitSnapshot:     true,
 				minimalSystemPrompt: true,

@@ -29,6 +29,7 @@ export interface AppwireClientOptions {
   url: string;
   socketFactory?: (url: string) => WebSocketLike; // default: real WebSocket
   now?: () => number; // default Date.now, tests inject
+  random?: () => number; // default Math.random; tests inject for a deterministic backoff
   clientInfo?: { name: string; version: string };
   // onSubscriberError observes an isolated subscriber failure (see
   // reportSubscriberError). Optional: applications wire platform logging or
@@ -96,7 +97,9 @@ export const HEARTBEAT_TIMEOUT_MS = 10_000;
 // Reconnect backoff: doubles from the base up to the cap, then holds there
 // until a successful re-handshake. Unlike legacy appwire.js's fixed 250ms
 // retry (renderer.js scheduleAppwireReconnect), this backs off so a
-// prolonged outage doesn't hammer the hub with reconnect attempts.
+// prolonged outage doesn't hammer the hub with reconnect attempts. Each delay
+// also carries bounded jitter (see scheduleReconnect) so clients dropped by
+// the same outage spread their retries instead of reconnecting in lockstep.
 export const RECONNECT_BASE_MS = 250;
 export const RECONNECT_MAX_MS = 5_000;
 
@@ -241,6 +244,7 @@ export class AppwireClient {
   // controllable clock for other purposes (e.g. future timestamp-stamped
   // telemetry) without changing this constructor's shape.
   private readonly now: () => number;
+  private readonly random: () => number;
   private readonly clientInfo: { name: string; version: string };
   private readonly onSubscriberError?: (info: SubscriberErrorInfo) => void;
 
@@ -298,6 +302,7 @@ export class AppwireClient {
     this.url = opts.url;
     this.socketFactory = opts.socketFactory ?? defaultSocketFactory;
     this.now = opts.now ?? Date.now;
+    this.random = opts.random ?? Math.random;
     this.clientInfo = opts.clientInfo ?? DEFAULT_CLIENT_INFO;
     this.onSubscriberError = opts.onSubscriberError;
   }
@@ -661,10 +666,16 @@ export class AppwireClient {
   // "reconnecting". Called once when a ready connection drops (from
   // handleSocketClose) and again after each failed attempt (from
   // attemptReconnect), so the delay it computes doubles attempt over
-  // attempt, capped at RECONNECT_MAX_MS, until one finally succeeds.
+  // attempt, capped at RECONNECT_MAX_MS, until one finally succeeds. Each
+  // delay is jittered (equal jitter) so clients dropped by the same outage do
+  // not retry in lockstep: the exponential value is halved and a random
+  // fraction of that half is added back, landing the delay in
+  // [deterministic/2, deterministic] and so still under the same cap.
   private scheduleReconnect(): void {
     if (this.isClosed()) return;
-    const delay = Math.min(RECONNECT_BASE_MS * 2 ** this.reconnectAttempts, RECONNECT_MAX_MS);
+    const deterministic = Math.min(RECONNECT_BASE_MS * 2 ** this.reconnectAttempts, RECONNECT_MAX_MS);
+    const half = deterministic / 2;
+    const delay = half + this.random() * half;
     this.reconnectAttempts += 1;
     this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = null;
@@ -841,12 +852,19 @@ export class AppwireClient {
     // every response, including a late reply nothing is waiting for.
     if (this.connectionState === "ready") this.armHeartbeat();
     if (typeof data !== "string") return;
-    let msg: WireMessage;
+    let parsed: unknown;
     try {
-      msg = JSON.parse(data) as WireMessage;
+      parsed = JSON.parse(data);
     } catch {
       return;
     }
+    // Only a JSON object is a WireMessage envelope. A syntactically valid frame
+    // that parses to null, a scalar, or an array has no id/method/error to read,
+    // and dereferencing it would throw a TypeError out of the socket callback
+    // (JSON null is the sharp case). Treat it like the other non-envelopes this
+    // boundary already ignores: non-string data and unparseable JSON.
+    if (!isPlainObject(parsed)) return;
+    const msg = parsed as WireMessage;
     if (msg.id != null) {
       const slot = this.pending.get(msg.id);
       if (!slot) return;

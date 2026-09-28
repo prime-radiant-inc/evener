@@ -24,7 +24,6 @@ import (
 	"primeradiant.com/evener/agent/internal/jobstore"
 	"primeradiant.com/evener/agent/internal/runetrim"
 	"primeradiant.com/evener/agent/provenance"
-	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/envvars"
 	"primeradiant.com/evener/identifier"
 )
@@ -74,20 +73,12 @@ type jobManager struct {
 	// and wait only after releasing that mutex.
 	watchPersistDone chan struct{}
 	dir              string
-	// stateDir is the project state dir (parent of sessions/), where session
-	// .meta.json files live. Empty for the temp/test fallback where no project
-	// state dir is configured; observer-link stamping is skipped in that case.
-	stateDir      string
-	sessionID     string
-	transcriptRef string
-	store         *jobstore.Store
-	running       map[string]*runningJob
-	watches       map[watchKey]*watchConfig
-	terminalFlush map[*watchConfig]bool
-	// observerLinkWG tracks scheduled observer-link goroutines so Close() can wait
-	// for them to complete before returning, ensuring observer-link stamps are
-	// durable before the job manager shuts down.
-	observerLinkWG sync.WaitGroup
+	sessionID        string
+	transcriptRef    string
+	store            *jobstore.Store
+	running          map[string]*runningJob
+	watches          map[watchKey]*watchConfig
+	terminalFlush    map[*watchConfig]bool
 	// watchHistory is a bounded, latest-trimmed ring of watches that have left
 	// the active set, surfaced by job_list so a fired-then-removed watch stays
 	// legible. Guarded by jm.mu.
@@ -120,8 +111,6 @@ type jobManager struct {
 	appendEvents           func([]jobstore.Event) error
 	createOutput           outputStoreOpener
 	newJobID               func(string) (string, error)
-	appendObservedBy       func(string, string, string) error
-	scheduleObserverLink   func(func())
 	appendAbandonSnapshots func([]watchSendTerminalSnapshot) ([]watchSendTerminalSnapshot, error)
 	appendTeardown         func([]watchSendTerminalSnapshot, []watchConfigTerminalSnapshot) error
 	appendRegistry         func([]jobstore.Event) error
@@ -673,7 +662,6 @@ func newJobManagerWithRestore(stateDir, sessionID string, enqueue func(jobNotifi
 	}
 	jm := &jobManager{
 		dir:                   dir,
-		stateDir:              stateDir,
 		sessionID:             sessionID,
 		transcriptRef:         encodeRef("", sessionID),
 		store:                 store,
@@ -686,8 +674,6 @@ func newJobManagerWithRestore(stateDir, sessionID string, enqueue func(jobNotifi
 		appendEvents:          store.AppendBatch,
 		createOutput:          createOutput,
 		newJobID:              identifier.NewJobID,
-		appendObservedBy:      schema.AppendSessionObservedBy,
-		scheduleObserverLink:  nil, // Set below after jm is initialized
 		enqueue:               enqueue,
 		now:                   time.Now,
 		clock:                 clock.Real(),
@@ -700,12 +686,6 @@ func newJobManagerWithRestore(stateDir, sessionID string, enqueue func(jobNotifi
 	jm.appendTeardown = jm.appendWatchTeardownBatch
 	jm.appendRegistry = jm.appendWatchRegistryEvents
 	jm.finalizeShellAsync = jm.finalizeShellUntilDurable
-	// Set up scheduleObserverLink to track goroutines with the WaitGroup.
-	jm.scheduleObserverLink = func(fn func()) {
-		jm.observerLinkWG.Go(func() {
-			fn()
-		})
-	}
 	if err := restorePending(jm); err != nil {
 		_ = store.Close()
 		return nil, err
@@ -838,27 +818,6 @@ waitLoop:
 		}
 	}
 
-	// Wait for scheduled observer-link goroutines with an independent timeout.
-	// Create a separate timer so the observer-link wait is bounded even if the
-	// running-jobs wait already timed out (deadline timer was already consumed).
-	observerDeadline := jm.clock.NewTimer(jm.closeGrace)
-	defer observerDeadline.Stop()
-
-	observerLinkDone := make(chan struct{})
-	go func() {
-		jm.observerLinkWG.Wait()
-		close(observerLinkDone)
-	}()
-	select {
-	case <-observerLinkDone:
-		// Observer links completed in time.
-	case <-observerDeadline.C():
-		// Timeout waiting for observer links. This is best-effort, so we don't
-		// fail the close; the dropped wait is reported so a blocked metadata
-		// writer is not silently indistinguishable from a clean drain.
-		jm.warnObserverLinkTimeout("close")
-	}
-
 	return errors.Join(watchCleanupErr, waitErr)
 }
 
@@ -888,41 +847,13 @@ func (jm *jobManager) releaseQuiescentRuntime() error {
 		jm.watchNotifyMu.Unlock()
 		return errors.New("job manager still has runtime obligations")
 	}
-	// Refuse new process-local observer-link work and let idle progress tickers
-	// observe closing rather than being cancelled.
+	// Refuse new process-local work and let idle progress tickers observe
+	// closing rather than being cancelled.
 	jm.closing = true
 	jm.mu.Unlock()
 	jm.watchNotifyMu.Unlock()
 
-	observerDone := make(chan struct{})
-	go func() {
-		jm.observerLinkWG.Wait()
-		close(observerDone)
-	}()
-	deadline := jm.clock.NewTimer(jm.closeGrace)
-	defer deadline.Stop()
-	select {
-	case <-observerDone:
-	case <-deadline.C():
-		jm.warnObserverLinkTimeout("quiescent release")
-	}
 	return jm.closeStoreOnly()
-}
-
-// warnObserverLinkTimeout reports that the named bounded shutdown wait for
-// observer-link metadata persistence expired. The wait stays best-effort: the
-// diagnostic does not fail the close, extend the deadline, or block shutdown.
-// It exists so a slow or blocked metadata writer is not reported as a clean
-// drain, and the phase names which shutdown path gave up. Observer-link
-// metadata is UI/discovery state, not delegate result authority, so one warning
-// per shutdown is the whole obligation.
-func (jm *jobManager) warnObserverLinkTimeout(phase string) {
-	if jm == nil || jm.emit == nil {
-		return
-	}
-	jm.emit(events.EventWarning, events.WarningData{
-		Message: fmt.Sprintf("job manager %s timed out waiting for observer-link metadata", phase),
-	}, nil)
 }
 
 // hasRuntimeObligationsLocked is the single definition of the work
