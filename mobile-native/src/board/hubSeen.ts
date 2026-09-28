@@ -1,9 +1,10 @@
-// The hub's seen marker on the phone (S4). A row that carries turn_ended_at is
-// the hub's to decide: it is Finished while the hub says unseen. Marks this
-// phone makes go to the hub through evener/session/seen/set and show at once
-// through a pending map until the hub's rows catch up. A row without a
-// readable turn_ended_at (an older hub, or a daemon that hasn't stamped a turn
-// end) keeps the device's own SeenMarkers.
+// The hub's seen marker on the phone (S4). A row that carries a readable
+// turn_ended_at is the hub's to decide: it is Finished while the hub says
+// unseen. Marks this phone makes go to the hub through
+// evener/session/seen/set and show at once through a pending map until the
+// hub's rows catch up. A row without a readable turn_ended_at (an older hub,
+// or a daemon that hasn't stamped a turn end) keeps the device's own
+// SeenMarkers.
 //
 // This module must not import expo-sqlite/kv-store: the session screen
 // imports it, and its test harnesses mock kv-store only partly.
