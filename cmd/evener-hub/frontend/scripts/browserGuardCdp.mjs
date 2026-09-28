@@ -542,7 +542,25 @@ export async function navigateTo(
       // response lands resolves at attribution time, once the mapping is
       // built.
       if (message.params.requestId && !requestLoaderIds.has(message.params.requestId)) {
-        requestLoaderIds.set(message.params.requestId, message.params.loaderId ?? null);
+        // A request that reported NO loaderId has no document identity of its
+        // own, so it is anchored HERE, at send time, to the document that is
+        // live and emitting. Letting `??` substitute currentLoaderId only at
+        // failure arrival would hand the request to whichever document is
+        // live THEN - past a re-navigation boundary that is the wrong one.
+        // Storing the send-time document (still possibly null before any
+        // navigation commits) is what lets resolution tell a seen, settled
+        // request from one whose send was never seen at all.
+        requestLoaderIds.set(message.params.requestId, message.params.loaderId ?? currentLoaderId);
+      }
+      if (message.params.loaderId && !loaderAttempts.has(message.params.loaderId)) {
+        // Subframe (iframe) documents get their OWN loaderIds, which no
+        // top-level Page.navigate response ever names. Bind the first-seen
+        // loaderId to the attempt owning the live document now (first writer
+        // wins, mirroring the requestId tagging): an iframe loaderId first
+        // seen in the navigate gap binds to the PREVIOUS document - the one
+        // still live and emitting - and a top-level navigation overwrites its
+        // own mapping when its response commits.
+        loaderAttempts.set(message.params.loaderId, loaderAttempts.get(currentLoaderId) ?? attempts);
       }
       return;
     }
@@ -553,14 +571,20 @@ export async function navigateTo(
     // a wire death, so neither is recorded: evidence must be failures that
     // happened to requests the page wanted kept alive.
     if (message.params.canceled === true || message.params.errorText === "net::ERR_ABORTED") return;
-    // Resolve by identity, degrading only when identity is unavailable: a
-    // seen request resolves through its loaderId; an unseen send anchors to
-    // the last COMMITTED navigation (currentLoaderId - the document that is
-    // live when the failure arrives, which in the navigate gap is still the
-    // previous one); and a loaderId that was never mapped - a navigate
-    // response that reported none - has no identity to honor, so the arrival
-    // counter is the only anchor left.
-    const requestLoaderId = requestLoaderIds.get(message.params.requestId) ?? currentLoaderId;
+    // Resolve by identity, degrading only when identity is unavailable. A
+    // SEEN request uses what was recorded at send time - its own loaderId, or
+    // the live document's for a request that reported none - so a late
+    // failure never drifts past a re-navigation boundary. `has` is what
+    // separates that settled value from a request whose send was never seen
+    // (`undefined`), which alone anchors to the last COMMITTED navigation
+    // (currentLoaderId - the document live when the failure arrives, still
+    // the previous one in the navigate gap). A loaderId that maps to no
+    // attempt - a navigate response that reported none and a send that
+    // reported none - has no identity to honor, so the arrival counter is the
+    // only anchor left.
+    const requestLoaderId = requestLoaderIds.has(message.params.requestId)
+      ? requestLoaderIds.get(message.params.requestId)
+      : currentLoaderId;
     const owner = loaderAttempts.get(requestLoaderId) ?? attempts;
     const bucket = failuresByAttempt.get(owner) ?? [];
     bucket.push(message.params);

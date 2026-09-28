@@ -1400,6 +1400,139 @@ test("without a reported loaderId, attribution degrades to the arrival counter",
 // waitForFonts to die as the fonts misfire. Every document the predicate
 // visits must have linked at least one stylesheet, and every link must have
 // loaded.
+
+// Subframe (iframe) documents get their OWN loaderIds, which no top-level
+// Page.navigate response ever names. Without binding them on first sight the
+// mapping is empty, so a late failure for an iframe resource falls back to the
+// ARRIVAL counter and can be filed under the final attempt - flipping a
+// deterministic death into an environment framing. The first-seen loaderId
+// binds to the attempt owning the live document (first writer wins).
+test("an unmapped iframe loaderId binds to the document that was live when the request was sent", async () => {
+  const socket = fakeSocket();
+  let navigations = 0;
+  const send = async (method) => {
+    switch (method) {
+      case "Page.navigate":
+        navigations++;
+        socket.dispatch("message", { data: JSON.stringify({ method: "Page.loadEventFired" }) });
+        return { result: { frameId: "fixture-frame", loaderId: `loader-${navigations}` } };
+      case "Runtime.evaluate":
+        if (navigations === 1) {
+          // Attempt 1's document is live and commits an iframe document with
+          // its own loaderId - never named by any Page.navigate response.
+          socket.dispatch("message", {
+            data: JSON.stringify({
+              method: "Network.requestWillBeSent",
+              params: { requestId: "req-iframe", loaderId: "loader-iframe" },
+            }),
+          });
+        }
+        if (navigations === 1 + BOOT_RETRY_LIMIT) {
+          // The iframe resource dies on the wire, but its failure is delivered
+          // late - inside the FINAL attempt's window. It belongs to the iframe
+          // document attempt 1 committed, not to the final attempt.
+          socket.dispatch("message", {
+            data: JSON.stringify({
+              method: "Network.loadingFailed",
+              params: { requestId: "req-iframe", type: "Script", errorText: "net::ERR_NETWORK_CHANGED" },
+            }),
+          });
+        }
+        return { result: { result: { value: false } } };
+      default:
+        return {};
+    }
+  };
+  const noteError = vi.spyOn(console, "error").mockImplementation(() => {});
+
+  try {
+    await assert.rejects(
+      navigateTo({ ws: socket, send }, "http://127.0.0.1:65535/layoutharness.html", {
+        bootExpression: "window.measurementAfterStylesheetsLoaded",
+        bootLabel: "the layoutharness boot global window.measurementAfterStylesheetsLoaded",
+        retryDelayMs: 0,
+      }),
+      (error) => {
+        assert.match(error.message, /never booted/);
+        // The death belongs to attempt 1's iframe document; the final attempt's
+        // bucket is empty, so the final diagnosis is the regression framing.
+        assert.doesNotMatch(error.message, /environment problem/);
+        assert.match(error.message, /No request failures were captured/);
+        return true;
+      },
+    );
+  } finally {
+    noteError.mockRestore();
+  }
+
+  assert.equal(navigations, 1 + BOOT_RETRY_LIMIT);
+  assert.equal(socket.listenerCount("message"), 0);
+});
+
+// A request whose send was seen but reported NO loaderId is not the same as an
+// unseen request: it has a decided rule - anchor to the document that was live
+// and emitting WHEN IT WAS SENT, never to whichever document is live when its
+// failure finally arrives. Conflating the recorded null with an unseen send
+// routes both through the arrival-time fallback.
+test("a request that reported no loaderId anchors to the document live at send time, not at failure arrival", async () => {
+  const socket = fakeSocket();
+  let navigations = 0;
+  const send = async (method) => {
+    switch (method) {
+      case "Page.navigate":
+        navigations++;
+        socket.dispatch("message", { data: JSON.stringify({ method: "Page.loadEventFired" }) });
+        return { result: { frameId: "fixture-frame", loaderId: `loader-${navigations}` } };
+      case "Runtime.evaluate":
+        if (navigations === 1) {
+          // The send is seen but reports no loaderId; attempt 1's document
+          // (loader-1) is the one live and emitting right now.
+          socket.dispatch("message", {
+            data: JSON.stringify({
+              method: "Network.requestWillBeSent",
+              params: { requestId: "req-null" },
+            }),
+          });
+        }
+        if (navigations === 1 + BOOT_RETRY_LIMIT) {
+          socket.dispatch("message", {
+            data: JSON.stringify({
+              method: "Network.loadingFailed",
+              params: { requestId: "req-null", type: "Script", errorText: "net::ERR_NETWORK_CHANGED" },
+            }),
+          });
+        }
+        return { result: { result: { value: false } } };
+      default:
+        return {};
+    }
+  };
+  const noteError = vi.spyOn(console, "error").mockImplementation(() => {});
+
+  try {
+    await assert.rejects(
+      navigateTo({ ws: socket, send }, "http://127.0.0.1:65535/spawnguard.html", {
+        bootExpression: "typeof window.settledSpawn !== 'undefined'",
+        bootLabel: "the spawnguard entry global window.settledSpawn",
+        retryDelayMs: 0,
+      }),
+      (error) => {
+        assert.match(error.message, /never booted/);
+        // The death belongs to attempt 1's document; the final attempt's bucket
+        // is empty, so the final diagnosis is the regression framing.
+        assert.doesNotMatch(error.message, /environment problem/);
+        assert.match(error.message, /No request failures were captured/);
+        return true;
+      },
+    );
+  } finally {
+    noteError.mockRestore();
+  }
+
+  assert.equal(navigations, 1 + BOOT_RETRY_LIMIT);
+  assert.equal(socket.listenerCount("message"), 0);
+});
+
 const sheetLoaded = () => ({ sheet: { cssRules: [] } });
 const sheetFailed = () => ({ sheet: null });
 
