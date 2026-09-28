@@ -804,9 +804,12 @@ test("restoreProvenAbsent reopens the omitted set without decoding the target's 
 	const parse = vi.spyOn(JSON, "parse");
 	let parses = 0;
 	try {
-		await expect(storage.restoreProvenAbsent(TARGET, new Set())).resolves.toEqual(
-			expect.arrayContaining([first.clientMutationId, second.clientMutationId]),
-		);
+		// Ascending intent_sequence order, the order the prior listing produced;
+		// RETURNING alone guarantees no order.
+		await expect(storage.restoreProvenAbsent(TARGET, new Set())).resolves.toEqual([
+			first.clientMutationId,
+			second.clientMutationId,
+		]);
 	} finally {
 		parses = parse.mock.calls.length;
 		parse.mockRestore();

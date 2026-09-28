@@ -55,7 +55,7 @@ export function LaunchOverrides({
 				);
 			})
 			.catch(() => {
-				if (active) setError("Could not load per-session settings. Reconnect or retry.");
+				if (active) setError("Could not load per-session settings. Try again.");
 			})
 			.finally(() => {
 				if (active) setLoading(false);

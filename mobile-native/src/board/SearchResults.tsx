@@ -1,7 +1,7 @@
 import type { NavigationProjectSummary, SearchResult } from "@evener/appwire-client";
 import { SymbolView } from "expo-symbols";
-import { Platform, Pressable, Text, View } from "react-native";
-import { useColors, useTextScale } from "../ui";
+import { Pressable, Text, View } from "react-native";
+import { allowFontScaling, useColors, useTextScale } from "../ui";
 import { stateWord } from "./attention";
 import { BandHeader, Hairline, spokenAge } from "./BoardRow";
 import { type SearchScope, type SearchSnapshot, searchResultMark, sessionResults } from "./boardSearch";
@@ -62,7 +62,7 @@ function Recent({ recent, onRecent, onClearRecent }: SearchResultsProps) {
 					})}
 				>
 					<Text
-						allowFontScaling={Platform.OS !== "ios"}
+						allowFontScaling={allowFontScaling}
 						style={{ fontSize: 15 * scale, fontWeight: "600", color: palette.accentInk }}
 					>
 						Clear
@@ -89,7 +89,7 @@ function Recent({ recent, onRecent, onClearRecent }: SearchResultsProps) {
 							<SymbolView name="magnifyingglass" size={15 * scale} tintColor={palette.inkLow} />
 						</View>
 						<Text
-							allowFontScaling={Platform.OS !== "ios"}
+							allowFontScaling={allowFontScaling}
 							numberOfLines={1}
 							style={{ flex: 1, fontSize: 17 * scale, color: palette.inkHi }}
 						>
@@ -173,7 +173,7 @@ function Scopes({ scope, onScope }: { scope: SearchScope; onScope: (scope: Searc
 						})}
 					>
 						<Text
-							allowFontScaling={Platform.OS !== "ios"}
+							allowFontScaling={allowFontScaling}
 							style={{ fontSize: 14 * scale, fontWeight: "600", color: selected ? palette.accentInk : palette.inkHi }}
 						>
 							{chip.name}
@@ -204,7 +204,7 @@ function ResultDetail({ text }: { text: string }) {
 	const scale = useTextScale();
 	return (
 		<Text
-			allowFontScaling={Platform.OS !== "ios"}
+			allowFontScaling={allowFontScaling}
 			numberOfLines={1}
 			ellipsizeMode="middle"
 			style={{ marginTop: 2, fontSize: 13 * scale, lineHeight: 18 * scale, color: palette.inkLow }}
@@ -242,7 +242,7 @@ function ResultRow({
 			<View style={{ flex: 1, minWidth: 0 }}>
 				<View style={{ flexDirection: "row", alignItems: "center", columnGap: 8 }}>
 					<Text
-						allowFontScaling={Platform.OS !== "ios"}
+						allowFontScaling={allowFontScaling}
 						numberOfLines={1}
 						style={{ flex: 1, fontSize: 17 * scale, lineHeight: 22 * scale, fontWeight: "600", color: palette.inkHi }}
 					>
@@ -250,7 +250,7 @@ function ResultRow({
 					</Text>
 					{result.age ? (
 						<Text
-							allowFontScaling={Platform.OS !== "ios"}
+							allowFontScaling={allowFontScaling}
 							style={{ fontSize: 13 * scale, color: palette.inkLow, fontVariant: ["tabular-nums"] }}
 						>
 							{result.age}
@@ -287,7 +287,7 @@ function ProjectResultRow({
 			</View>
 			<View style={{ flex: 1, minWidth: 0 }}>
 				<Text
-					allowFontScaling={Platform.OS !== "ios"}
+					allowFontScaling={allowFontScaling}
 					numberOfLines={1}
 					style={{ fontSize: 17 * scale, lineHeight: 22 * scale, fontWeight: "600", color: palette.inkHi }}
 				>
@@ -304,7 +304,7 @@ function Note({ text }: { text: string }) {
 	const scale = useTextScale();
 	return (
 		<Text
-			allowFontScaling={Platform.OS !== "ios"}
+			allowFontScaling={allowFontScaling}
 			style={{
 				paddingHorizontal: 16,
 				paddingVertical: 24,

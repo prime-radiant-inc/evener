@@ -61,7 +61,7 @@ export function createHubUpgradeController(
 			: checkpoint
 				? {
 						kind: "uncertain",
-						message: "An upgrade may have been installed. Reconnect and verify.",
+						message: "An upgrade may have been installed. Check the running version.",
 					}
 				: { kind: "idle" };
 	} catch {
@@ -90,7 +90,7 @@ export function createHubUpgradeController(
 			? { kind: "installed", response: clone(checkpoint.response) }
 			: {
 					kind: "uncertain",
-					message: "An upgrade may have been installed. Reconnect and verify.",
+					message: "An upgrade may have been installed. Check the running version.",
 				};
 
 	return {
@@ -168,7 +168,7 @@ export function createHubUpgradeController(
 				if (!disposed && current === generation)
 					publish({
 						kind: "uncertain",
-						message: "Upgrade outcome is uncertain. Refresh to verify before retrying.",
+						message: "Upgrade outcome is uncertain. Check the running version before trying again.",
 					});
 			}
 		},

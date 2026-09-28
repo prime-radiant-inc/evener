@@ -47,6 +47,16 @@ export function notesBarPreview(
 	return null;
 }
 
+/** Whether this phone may change your note: the web's canWriteHumanNote
+ * (cmd/evener-hub/frontend/src/stores/humanNoteDrafts.ts). */
+export function canWriteHumanNote(session: Pick<ThreadModel, "status" | "resumeRequired" | "capabilities">): boolean {
+	return (
+		session.capabilities.sharedNotes === true &&
+		session.resumeRequired !== true &&
+		!["ended", "closed", "notLoaded", "restartRequired"].includes(session.status.type)
+	);
+}
+
 export type NotePhase = "clean" | "editing" | "scheduled" | "saving" | "saved" | "failed";
 
 export function noteStatusLine(phase: NotePhase, working: boolean): string {

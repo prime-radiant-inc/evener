@@ -149,7 +149,7 @@ import { configForLevel, currentLevel, levelToast } from "./session/detailLevels
 import { detailLevels } from "./session/nativeDetailLevels";
 import { composerPlaceholder, sendAction, sendLabel } from "./session/sendAction";
 import { NotesBar } from "./session/NotesBar";
-import { canWriteHumanNote, type NotesHost, notesHosts } from "./session/NotesSheet";
+import { type NotesHost, notesHosts } from "./session/NotesSheet";
 import { SessionHeader, useHeaderHiding } from "./session/SessionHeader";
 import { type SessionMenuAction, sessionMenu } from "./session/sessionMenu";
 import {
@@ -162,7 +162,7 @@ import { SessionNotice } from "./session/SessionNotice";
 import { useSessionRestart } from "./session/sessionRestart";
 import { canDeleteSavedSession, canOpenModelSheet, latestForkPoint, modelChipLabel } from "./session/sessionFacts";
 import { type ChipKind, contextChips, SHUT_DOWN, sessionStateLine } from "./session/sessionState";
-import { NotesController, notesBarPreview, type SaveOutcome } from "./session/sessionNotes";
+import { canWriteHumanNote, NotesController, notesBarPreview, type SaveOutcome } from "./session/sessionNotes";
 import { SessionTitle } from "./session/SessionTitle";
 import { LiveStatusTray, useFrameCounter } from "./session/StatusTray";
 import { sheetKey, useProvideSheetHost } from "./sheet/sheetHosts";
@@ -174,7 +174,7 @@ import { Toast, type ToastMessage, useToast } from "./Toast";
 import { TranscriptUsage } from "./TranscriptUsage";
 import { groupTimeline, type TimelineRow, timelineGap } from "./timeline";
 import { projectNativeTranscript } from "./transcriptPresentation";
-import { Action, Copy, ErrorMessage, styles, useColors } from "./ui";
+import { Action, allowFontScaling, Copy, ErrorMessage, styles, useColors } from "./ui";
 import { destructiveButton, haptic } from "./haptics";
 
 const NO_QUESTIONS: AskQuestionRef[] = [];
@@ -365,7 +365,7 @@ export function HubsScreen({ navigation }: NativeStackScreenProps<Routes, "Hubs"
 				<ScrollView keyboardShouldPersistTaps="handled" contentContainerStyle={styles.padded}>
 					<Text
 						accessibilityRole="header"
-						allowFontScaling={Platform.OS !== "ios"}
+						allowFontScaling={allowFontScaling}
 						style={[
 							styles.title,
 							{
@@ -414,7 +414,7 @@ export function HubsScreen({ navigation }: NativeStackScreenProps<Routes, "Hubs"
 					))}
 					<Text
 						accessibilityRole="header"
-						allowFontScaling={Platform.OS !== "ios"}
+						allowFontScaling={allowFontScaling}
 						style={[
 							styles.title,
 							{
@@ -547,7 +547,7 @@ export function ConversationScreen({
 	 * "Subagent" route): the coordinator whose tree it sits in. */
 	subagentOf?: Coordinator;
 }) {
-	const { activeProfile, client, state: connectionState, fatal } = useConnection();
+	const { activeProfile, client, state: connectionState } = useConnection();
 	const focused = useScreenInFront(route.key);
 	const colors = useColors();
 	const [sessionMenuOpen, setSessionMenuOpen] = useState(false);
@@ -693,7 +693,7 @@ export function ConversationScreen({
 	}, [focused, imageSelection]);
 	const unconfirmedSend = draft.submitting ? null : draft.record.unconfirmed;
 	const connected = connectionState === "ready" && activeProfile?.id === route.params.hubId;
-	const connectionText = useConnectionStatusText(connectionState, fatal);
+	const connectionText = useConnectionStatusText();
 	// The same debounced signal the connection bar itself waits on (spec 14:
 	// "a blip shorter than this reconnects without a word"), so the chips
 	// never flicker through a hide-and-show the bar stays silent for, and a
@@ -909,7 +909,7 @@ export function ConversationScreen({
 			if (store.getState().status === "open") await store.getState().rehydrate(service, activitySink);
 			else await store.getState().resumeProjected(service, activitySink, route.params.ref);
 			const current = store.getState();
-			if (current.status !== "open" || current.error) throw new Error("Session refresh failed");
+			if (current.status !== "open" || current.error) throw new Error("Could not read the session.");
 		};
 		return new SessionControls(
 			service,
@@ -970,7 +970,7 @@ export function ConversationScreen({
 							store.getState().conversation?.instanceId === bindingInstance,
 						async () => {
 							await store.getState().rehydrate(service, activitySink);
-							if (store.getState().error) throw new Error("Refresh failed");
+							if (store.getState().error) throw new Error("Could not read the session.");
 						},
 					)
 				: null,

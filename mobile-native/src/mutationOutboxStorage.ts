@@ -510,17 +510,21 @@ export class MutationOutboxSQLite<A extends MutationAttachmentRef = MutationAtta
 			// changed, instead of decoding every row on the target and updating the
 			// blocked ones one at a time. It stays inside the savepoint: a fault on
 			// any row aborts the single UPDATE and rolls the entire restore back,
-			// the same all-or-nothing the loop's savepoint gave.
+			// the same all-or-nothing the loop's savepoint gave. RETURNING promises
+			// no row order, so carry intent_sequence out and sort here to keep the
+			// ascending order callers saw when this listed the target first.
 			const named = [...authoritativeIds];
 			const namedClause = named.length > 0 ? ` AND client_mutation_id NOT IN (${named.map(() => "?").join(", ")})` : "";
-			const restored = this.db.getAllSync<{ client_mutation_id: string }>(
+			const restored = this.db.getAllSync<{ client_mutation_id: string; intent_sequence: number }>(
 				`UPDATE ${TABLES.outbox} SET state = 'submitting'
 				 WHERE target_ref = ? AND state = 'blockedUnknown'${namedClause}
-				 RETURNING client_mutation_id`,
+				 RETURNING client_mutation_id, intent_sequence`,
 				targetRef,
 				...named,
 			);
-			return restored.map((row) => row.client_mutation_id);
+			return restored
+				.sort((left, right) => left.intent_sequence - right.intent_sequence)
+				.map((row) => row.client_mutation_id);
 		});
 	}
 

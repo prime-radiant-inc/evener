@@ -326,7 +326,7 @@ export function MarketplaceBrowser({
 					{loaded?.description && <Copy>{loaded.description}</Copy>}
 					<View style={[styles.row, { flexWrap: "wrap" }]}>
 						<Action disabled={busy || !ready} onPress={refresh}>
-							Refresh source
+							Update source
 						</Action>
 						<Action disabled={busy || !ready || appliedRemovalNames.has(marketplace?.name ?? "")} onPress={remove}>
 							Remove marketplace

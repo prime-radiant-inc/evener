@@ -86,16 +86,14 @@ export function HubUpgradeSection({
 					Upgrade hub
 				</Action>
 			)}
-			{state.kind === "uncertain" && (
-				<Copy muted>The update may have been installed. Refresh to check the running version.</Copy>
-			)}
+			{state.kind === "uncertain" && <Copy muted>The update may have been installed. Check the running version.</Copy>}
 			{state.kind === "storageUnavailable" && (
 				<Copy muted>The update status could not be read or saved on this device. Reopen Hub Settings to check it.</Copy>
 			)}
 			{(state.kind === "installed" || state.kind === "uncertain") && (
 				<>
 					<Action tone="quiet" onPress={onRefresh}>
-						Refresh running version
+						Check running version
 					</Action>
 					<Action tone="quiet" onPress={onReviewAnother}>
 						Review another update

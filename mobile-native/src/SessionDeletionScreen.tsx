@@ -18,7 +18,7 @@ type Readback = Awaited<ReturnType<typeof readSessionDeletion>>;
 
 export function SessionDeletionScreen({ route, navigation }: NativeStackScreenProps<Routes, "SessionDeletion">) {
 	const { hubId, ref, title } = route.params;
-	const { client, activeProfile, state, retry } = useConnection();
+	const { client, activeProfile, state } = useConnection();
 	const focused = useIsFocused();
 	const ready = activeProfile?.id === hubId && !!client && state === "ready";
 	const binding = useMemo(() => ({ client, hubId, ref, ready, focused }), [client, hubId, ref, ready, focused]);
@@ -70,7 +70,6 @@ export function SessionDeletionScreen({ route, navigation }: NativeStackScreenPr
 	function refresh() {
 		setProblem(null);
 		if (ready) void actions?.reconcile();
-		else retry();
 	}
 	function openSessions() {
 		if (owner.current !== binding || !focused || activeProfile?.id !== hubId) return;

@@ -11,9 +11,9 @@ import type { Routes } from "./screens";
 import { Action, Copy, ErrorMessage, styles, useColors } from "./ui";
 import { usePinNavigation } from "./usePinNavigation";
 import { destructiveButton } from "./haptics";
+import { HUB_NO_LONGER_SELECTED } from "./retainedScreen";
 
-const storageError =
-	"Your last saved section name is kept. This edit could not be saved on this device; refresh to retry.";
+const storageError = "Your last saved section name is kept. This edit could not be saved on this device. Try again.";
 export function PinSectionEditorScreen({ route, navigation }: NativeStackScreenProps<Routes, "PinSectionEditor">) {
 	const { hubId, sectionId, title } = route.params;
 	const pin = usePinNavigation(hubId, undefined, sectionId);
@@ -62,7 +62,6 @@ export function PinSectionEditorScreen({ route, navigation }: NativeStackScreenP
 			setProposal((previous) => ({ ...previous, error: storageError }));
 		}
 		if (pin.ready) void pin.actions?.reconcile();
-		else pin.retry();
 	}
 	function change(value: string) {
 		if (blocked) return;
@@ -83,7 +82,7 @@ export function PinSectionEditorScreen({ route, navigation }: NativeStackScreenP
 		} catch {
 			setProposal((previous) => ({
 				...previous,
-				error: "The saved name could not be cleared from this device. Refresh before editing again.",
+				error: "The saved name could not be cleared from this device. Check the section before editing again.",
 			}));
 			return false;
 		}
@@ -118,7 +117,7 @@ export function PinSectionEditorScreen({ route, navigation }: NativeStackScreenP
 	return (
 		<SafeAreaView edges={["bottom", "left", "right"]} style={[styles.fill, { backgroundColor: colors.background }]}>
 			{!pin.belongs ? (
-				<Copy>This hub is no longer selected. Return to Hubs to reconnect.</Copy>
+				<Copy>{HUB_NO_LONGER_SELECTED}</Copy>
 			) : (
 				<KeyboardAvoidingView
 					style={styles.fill}
@@ -133,9 +132,9 @@ export function PinSectionEditorScreen({ route, navigation }: NativeStackScreenP
 						<Copy>{section?.name ?? title}</Copy>
 						<Copy muted>{pin.activeProfile?.name ?? "Hub"}</Copy>
 						<ErrorMessage message={message} />
-						{!pin.ready || pin.action?.uncertain || pin.page?.error || selected?.error ? (
+						{pin.ready && (pin.action?.uncertain || pin.page?.error || selected?.error) ? (
 							<Action disabled={!!pin.action?.pending || !!pin.page?.loading} onPress={refresh}>
-								{pin.ready ? "Refresh section" : "Reconnect"}
+								Check again
 							</Action>
 						) : null}
 						{pin.action?.pending ? (

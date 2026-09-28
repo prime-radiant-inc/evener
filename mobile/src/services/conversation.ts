@@ -552,7 +552,7 @@ export function createConversationService<ReadLease = unknown>(
 	function requireQueueInstance(expected: string): string {
 		const threadRef = requireRef();
 		if (nonemptyString(expected, "observed thread instance id") !== instanceId)
-			throw new Error("The session instance changed. Refresh its queue.");
+			throw new Error("The session instance changed. Try again.");
 		return threadRef;
 	}
 

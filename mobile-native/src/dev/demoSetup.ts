@@ -12,6 +12,7 @@ import type {
 	MarketplaceEntry,
 	MethodTypes,
 	ModelDescriptor,
+	ModelListResponse,
 	PluginLaunchCandidate,
 } from "@evener/appwire-client";
 import { HOST_DEPENDENT_DISCOVERY_METHODS } from "../../../cmd/evener-hub/frontend/src/stores/hostRouting";
@@ -267,10 +268,7 @@ export function createDemoSetup(fleet: DemoFleet, options: { offlineHost?: boole
 				head: on.repos.some((repo) => within(cwd, repo)) ? "main" : "",
 			}),
 			"evener/launch/resolve": () => ({ effective: { ...LAUNCH_DEFAULTS }, layers: {}, provenance: {} }),
-			"model/list": () => ({
-				data: MODELS.map(modelDescriptor),
-				recent: RECENT_MODELS.map((id) => modelDescriptor(modelById(id))),
-			}),
+			"model/list": () => DEMO_MODEL_LIST,
 			"evener/plugin/preview": ({ launchOverrides }: MethodTypes["evener/plugin/preview"]["params"]) => {
 				const chosen = launchOverrides?.enabledPlugins;
 				return {
@@ -395,6 +393,14 @@ function modelDescriptor([
 		reasoningEffortLevels: efforts,
 	};
 }
+
+// The model catalog the demo hub lists with EVENER_DEMO_FLEET, for New
+// session's picker and a session's model sheet alike: data.js's models, with
+// the recent ones first.
+export const DEMO_MODEL_LIST: ModelListResponse = {
+	data: MODELS.map(modelDescriptor),
+	recent: RECENT_MODELS.map((id) => modelDescriptor(modelById(id))),
+};
 
 // Each scheme's sign-in facts as the hub reports them: authModes from
 // app_auth.go's authModesFor, and the source a configured credential of that
