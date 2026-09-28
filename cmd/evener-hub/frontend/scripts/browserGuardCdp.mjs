@@ -400,12 +400,13 @@ function isNetworkChangeFailure(failure) {
  * boot seam correlates request evidence by - or null when the response does
  * not report one; the legacy two-argument callers ignore the return value.
  *
- * `onCommitted`, when given, runs the moment the Page.navigate RESPONSE lands -
- * the navigation's commit - before the load event is awaited. The boot seam
- * needs that instant: a committed document emits its own requests (its module
- * burst, its iframes) between commit and load, and a request that dies on the
- * wire does not delay the load event, so evidence scoped only once the load
- * event fires would still name the previous document.
+ * `onCommitted`, when given, runs the moment the navigation COMMITS - the main
+ * frame's Page.frameNavigated - so the boot seam can scope the new document's
+ * own requests (its module burst, its iframes) without waiting for the load
+ * event. The Page.navigate RESPONSE is NOT that instant: it only signals
+ * initiation, and the old document is still live and emitting until the frame
+ * navigates. When no commit event is observed, the response's loaderId is
+ * reported once the load event fires, preserving the previous behavior.
  *
  * The listener comes off in a finally, not only on the load event: on the
  * timeout path the load never fires, and a handler left behind keeps parsing
@@ -415,11 +416,21 @@ async function navigateToOnce({ ws, send }, url, onCommitted) {
   await withTimeout(send("Page.enable"), 30000, "Page.enable");
   let handler;
   let abandonLoad;
+  let commitReported = false;
+  const reportCommit = (loaderId) => {
+    if (commitReported) return;
+    commitReported = true;
+    onCommitted?.(loaderId ?? null);
+  };
   const loaded = withTimeout(
     new Promise((resolve) => {
       abandonLoad = resolve;
       handler = (event) => {
-        if (JSON.parse(event.data).method === "Page.loadEventFired") resolve();
+        const message = JSON.parse(event.data);
+        if (message.method === "Page.loadEventFired") resolve();
+        else if (message.method === "Page.frameNavigated" && message.params?.frame && !message.params.frame.parentId) {
+          reportCommit(message.params.frame.loaderId);
+        }
       };
       ws.addEventListener("message", handler);
     }),
@@ -430,15 +441,11 @@ async function navigateToOnce({ ws, send }, url, onCommitted) {
     // Observe both immediately: the load tripwire can fire while Page.navigate
     // is still pending. Serial awaits leave that first rejection unhandled.
     const navigateCommand = withTimeout(send("Page.navigate", { url }), 30000, "Page.navigate");
-    // Report the commit as soon as the response lands, then keep the same
-    // resolution for the caller. Composing it into the awaited promise means a
-    // rejected navigate command stays observed by Promise.all rather than
-    // leaving a second, unhandled rejection behind.
-    const committed = navigateCommand.then((navigated) => {
-      onCommitted?.(navigated?.result?.loaderId ?? null);
-      return navigated;
-    });
-    const [, navigated] = await Promise.all([loaded, committed]);
+    const [, navigated] = await Promise.all([loaded, navigateCommand]);
+    // Fallback for a navigation whose main-frame commit event was not observed:
+    // the load event has fired, so the document is certainly live and the
+    // response's loaderId is the best identity available.
+    reportCommit(navigated?.result?.loaderId ?? null);
     return navigated?.result?.loaderId ?? null;
   } finally {
     // A failed command may never produce a load event. Release that wait (and
@@ -517,20 +524,22 @@ export async function navigateTo(
   if (!bootExpression) return navigateToOnce(page, url);
   const { ws, send } = page;
   // EVIDENCE IS SCOPED BY DOCUMENT IDENTITY, never by the attempt counter or
-  // arrival time: each navigation's Page.navigate response names its
-  // loaderId, requests are tagged with the loaderId they reported, and each
-  // loadingFailed resolves through that loaderId to the attempt that
-  // committed the document. The terminal attribution reads only the final
+  // arrival time: a navigation's loaderId is recorded when its main frame
+  // commits, requests are tagged with the loaderId they reported (or the
+  // attempt live at send time when they reported none), and each
+  // loadingFailed resolves through that ownership to the attempt that owns
+  // the request's document. The terminal attribution reads only the final
   // attempt's bucket, so a flap that killed an earlier attempt cannot
   // launder a deterministic death on the final one however late its
   // failures are delivered.
   const requestLoaderIds = new Map();
+  const requestOwners = new Map();
   const loaderAttempts = new Map();
   const failuresByAttempt = new Map();
-  // The last navigation whose response has COMMITTED. It advances only when
-  // a navigateToOnce resolves - never when the counter increments - so in
-  // the gap between attempts++ and the new navigate's response this still
-  // names the PREVIOUS document: the document that is live and emitting.
+  // The last navigation whose main frame has COMMITTED (Page.frameNavigated,
+  // or the load-time fallback). It advances only at that commit - never at the
+  // counter increment - so in the gap between attempts++ and the commit this
+  // still names the PREVIOUS document: the document that is live and emitting.
   let currentLoaderId = null;
   const onLoadingFailed = (event) => {
     // This handler sits on the guards' shared CDP socket, which other
@@ -555,25 +564,27 @@ export async function navigateTo(
       // response lands resolves at attribution time, once the mapping is
       // built.
       if (message.params.requestId && !requestLoaderIds.has(message.params.requestId)) {
-        // A request that reported NO loaderId has no document identity of its
-        // own, so it is anchored HERE, at send time, to the document that is
-        // live and emitting. Letting `??` substitute currentLoaderId only at
-        // failure arrival would hand the request to whichever document is
-        // live THEN - past a re-navigation boundary that is the wrong one.
-        // Storing the send-time document (still possibly null before any
-        // navigation commits) is what lets resolution tell a seen, settled
-        // request from one whose send was never seen at all.
-        requestLoaderIds.set(message.params.requestId, message.params.loaderId ?? currentLoaderId);
-      }
-      if (message.params.loaderId && !loaderAttempts.has(message.params.loaderId)) {
-        // Subframe (iframe) documents get their OWN loaderIds, which no
-        // top-level Page.navigate response ever names. Bind the first-seen
-        // loaderId to the attempt owning the live document now (first writer
-        // wins, mirroring the requestId tagging): an iframe loaderId first
-        // seen in the navigate gap binds to the PREVIOUS document - the one
-        // still live and emitting - and a top-level navigation overwrites its
-        // own mapping when its response commits.
-        loaderAttempts.set(message.params.loaderId, loaderAttempts.get(currentLoaderId) ?? attempts);
+        // The request is anchored HERE, at send time, to the attempt owning
+        // the document that is live and emitting. For a request that reported
+        // NO loaderId there is no identity to resolve later, so this attempt
+        // IS its owner: resolution reads it directly rather than leaving a
+        // null loader id to fall back to whatever attempt is live when the
+        // failure finally arrives (a later retry). The loaderId, when there is
+        // one, is kept too because it may only map to an attempt once its
+        // navigate response commits.
+        const ownerAtSend = loaderAttempts.get(currentLoaderId) ?? attempts;
+        requestLoaderIds.set(message.params.requestId, message.params.loaderId ?? null);
+        requestOwners.set(message.params.requestId, ownerAtSend);
+        if (message.params.loaderId && !loaderAttempts.has(message.params.loaderId)) {
+          // Subframe (iframe) documents get their OWN loaderIds, which no
+          // top-level Page.navigate response ever names. Bind the first-seen
+          // loaderId to the attempt owning the live document now (first writer
+          // wins, mirroring the requestId tagging): an iframe loaderId first
+          // seen in the navigate gap binds to the PREVIOUS document - the one
+          // still live and emitting - and a top-level navigation overwrites
+          // its own mapping when it commits.
+          loaderAttempts.set(message.params.loaderId, ownerAtSend);
+        }
       }
       return;
     }
@@ -585,20 +596,19 @@ export async function navigateTo(
     // happened to requests the page wanted kept alive.
     if (message.params.canceled === true || message.params.errorText === "net::ERR_ABORTED") return;
     // Resolve by identity, degrading only when identity is unavailable. A
-    // SEEN request uses what was recorded at send time - its own loaderId, or
-    // the live document's for a request that reported none - so a late
-    // failure never drifts past a re-navigation boundary. `has` is what
-    // separates that settled value from a request whose send was never seen
-    // (`undefined`), which alone anchors to the last COMMITTED navigation
-    // (currentLoaderId - the document live when the failure arrives, still
-    // the previous one in the navigate gap). A loaderId that maps to no
-    // attempt - a navigate response that reported none and a send that
-    // reported none - has no identity to honor, so the arrival counter is the
-    // only anchor left.
-    const requestLoaderId = requestLoaderIds.has(message.params.requestId)
-      ? requestLoaderIds.get(message.params.requestId)
-      : currentLoaderId;
-    const owner = loaderAttempts.get(requestLoaderId) ?? attempts;
+    // SEEN request was already anchored at send time: a loaderId that has
+    // since mapped to an attempt names it, and a request that reported NO
+    // loaderId (or whose loaderId never mapped) uses the attempt recorded at
+    // send time - so a late failure never drifts past a re-navigation
+    // boundary. `has` separates that settled ownership from a request whose
+    // send was never seen at all (`undefined`), which alone anchors to the
+    // last COMMITTED navigation (currentLoaderId - the document live when the
+    // failure arrives, still the previous one in the navigate gap).
+    const owner = requestLoaderIds.has(message.params.requestId)
+      ? (loaderAttempts.get(requestLoaderIds.get(message.params.requestId)) ??
+        requestOwners.get(message.params.requestId) ??
+        attempts)
+      : (loaderAttempts.get(currentLoaderId) ?? attempts);
     const bucket = failuresByAttempt.get(owner) ?? [];
     bucket.push(message.params);
     failuresByAttempt.set(owner, bucket);

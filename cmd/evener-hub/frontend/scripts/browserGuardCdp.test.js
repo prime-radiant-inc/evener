@@ -1411,12 +1411,18 @@ test("a first-seen loaderId emitted before the load event belongs to the documen
       case "Page.navigate":
         navigations++;
         if (navigations === 1 + BOOT_RETRY_LIMIT) {
-          // The final navigation's RESPONSE lands first (the commit); only
-          // afterwards does its own document emit a request under its loaderId
-          // and lose it on the wire - all before Page.loadEventFired. This is
-          // the real ordering: a request bearing the new loaderId cannot exist
-          // before the navigation that named it has committed.
+          // The final navigation COMMITS (Page.frameNavigated), then its own
+          // document emits a request under its loaderId and loses it on the
+          // wire - all before Page.loadEventFired. A request bearing the new
+          // loaderId cannot exist before the navigation that named it has
+          // committed, so the commit event is the anchor for this window.
           setTimeout(() => {
+            socket.dispatch("message", {
+              data: JSON.stringify({
+                method: "Page.frameNavigated",
+                params: { frame: { loaderId: `loader-${navigations}`, url: "http://127.0.0.1:65535/" } },
+              }),
+            });
             socket.dispatch("message", {
               data: JSON.stringify({
                 method: "Network.requestWillBeSent",
@@ -1586,6 +1592,150 @@ test("a request that reported no loaderId anchors to the document live at send t
         assert.match(error.message, /never booted/);
         // The death belongs to attempt 1's document; the final attempt's bucket
         // is empty, so the final diagnosis is the regression framing.
+        assert.doesNotMatch(error.message, /environment problem/);
+        assert.match(error.message, /No request failures were captured/);
+        return true;
+      },
+    );
+  } finally {
+    noteError.mockRestore();
+  }
+
+  assert.equal(navigations, 1 + BOOT_RETRY_LIMIT);
+  assert.equal(socket.listenerCount("message"), 0);
+});
+
+// A request whose send was seen but reported no loaderId, sent while NO
+// document has committed (currentLoaderId is null), has only its send-time
+// attempt as an anchor. Leaving a null loader id to resolve later hands it to
+// whichever attempt is live when the failure arrives - a later retry - instead
+// of the attempt that was in flight when it was sent.
+test("a loaderless request sent before any document commits owns its send-time attempt", async () => {
+  const socket = fakeSocket();
+  let navigations = 0;
+  const send = async (method) => {
+    switch (method) {
+      case "Page.navigate":
+        navigations++;
+        if (navigations === 1) {
+          // No navigation has committed yet: currentLoaderId is null, and the
+          // in-flight attempt is the request's only owner.
+          socket.dispatch("message", {
+            data: JSON.stringify({ method: "Network.requestWillBeSent", params: { requestId: "req-precommit" } }),
+          });
+        }
+        socket.dispatch("message", {
+          data: JSON.stringify({
+            method: "Page.frameNavigated",
+            params: { frame: { loaderId: `loader-${navigations}` } },
+          }),
+        });
+        socket.dispatch("message", { data: JSON.stringify({ method: "Page.loadEventFired" }) });
+        return { result: { frameId: "fixture-frame", loaderId: `loader-${navigations}` } };
+      case "Runtime.evaluate":
+        if (navigations === 1 + BOOT_RETRY_LIMIT) {
+          socket.dispatch("message", {
+            data: JSON.stringify({
+              method: "Network.loadingFailed",
+              params: { requestId: "req-precommit", type: "Script", errorText: "net::ERR_NETWORK_CHANGED" },
+            }),
+          });
+        }
+        return { result: { result: { value: false } } };
+      default:
+        return {};
+    }
+  };
+  const noteError = vi.spyOn(console, "error").mockImplementation(() => {});
+
+  try {
+    await assert.rejects(
+      navigateTo({ ws: socket, send }, "http://127.0.0.1:65535/spawnguard.html", {
+        bootExpression: "typeof window.settledSpawn !== 'undefined'",
+        bootLabel: "the spawnguard entry global window.settledSpawn",
+        retryDelayMs: 0,
+      }),
+      (error) => {
+        assert.match(error.message, /never booted/);
+        assert.doesNotMatch(error.message, /environment problem/);
+        assert.match(error.message, /No request failures were captured/);
+        return true;
+      },
+    );
+  } finally {
+    noteError.mockRestore();
+  }
+
+  assert.equal(navigations, 1 + BOOT_RETRY_LIMIT);
+  assert.equal(socket.listenerCount("message"), 0);
+});
+
+// The Page.navigate RESPONSE signals initiation, not commit: the previous
+// document is still live and emitting until the frame navigates. Advancing the
+// live-document identity at the response would anchor the old document's own
+// request to the INCOMING attempt, injecting its failure into the new
+// attempt's bucket - on the final attempt, old evidence into the terminal
+// verdict. The identity advances at the commit (Page.frameNavigated) instead.
+test("an old-document request emitted between the navigate response and the commit is not filed under the new attempt", async () => {
+  const socket = fakeSocket();
+  let navigations = 0;
+  const send = async (method) => {
+    switch (method) {
+      case "Page.navigate":
+        navigations++;
+        if (navigations === 1 + BOOT_RETRY_LIMIT) {
+          // The response lands, but the frame has NOT navigated yet: the
+          // previous document emits a loaderless request that dies on the
+          // wire before the incoming commit. It belongs to the previous
+          // document, not the incoming attempt.
+          setTimeout(() => {
+            socket.dispatch("message", {
+              data: JSON.stringify({
+                method: "Network.requestWillBeSent",
+                params: { requestId: "req-old-live" },
+              }),
+            });
+            socket.dispatch("message", {
+              data: JSON.stringify({
+                method: "Network.loadingFailed",
+                params: { requestId: "req-old-live", type: "Script", errorText: "net::ERR_NETWORK_CHANGED" },
+              }),
+            });
+            socket.dispatch("message", {
+              data: JSON.stringify({
+                method: "Page.frameNavigated",
+                params: { frame: { loaderId: `loader-${navigations}` } },
+              }),
+            });
+            socket.dispatch("message", { data: JSON.stringify({ method: "Page.loadEventFired" }) });
+          }, 0);
+          return { result: { frameId: "fixture-frame", loaderId: `loader-${navigations}` } };
+        }
+        socket.dispatch("message", {
+          data: JSON.stringify({
+            method: "Page.frameNavigated",
+            params: { frame: { loaderId: `loader-${navigations}` } },
+          }),
+        });
+        socket.dispatch("message", { data: JSON.stringify({ method: "Page.loadEventFired" }) });
+        return { result: { frameId: "fixture-frame", loaderId: `loader-${navigations}` } };
+      case "Runtime.evaluate":
+        return { result: { result: { value: false } } };
+      default:
+        return {};
+    }
+  };
+  const noteError = vi.spyOn(console, "error").mockImplementation(() => {});
+
+  try {
+    await assert.rejects(
+      navigateTo({ ws: socket, send }, "http://127.0.0.1:65535/shellguard.html", {
+        bootExpression: "typeof window.settledShell !== 'undefined'",
+        bootLabel: "the shellguard entry global window.settledShell",
+        retryDelayMs: 0,
+      }),
+      (error) => {
+        assert.match(error.message, /never booted/);
         assert.doesNotMatch(error.message, /environment problem/);
         assert.match(error.message, /No request failures were captured/);
         return true;
