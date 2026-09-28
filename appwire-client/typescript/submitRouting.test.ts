@@ -9,6 +9,7 @@ import {
   isTurnActive,
   NO_ACTIVE_TURN,
   QUEUE_EMPTY,
+  SHUT_DOWN_STATUSES,
   STEER_UNAVAILABLE,
   sessionControls,
 } from "./submitRouting";
@@ -96,6 +97,19 @@ test.each(["idle", "awaiting", "ended", "closed", "notLoaded", "restartRequired"
   "%s status is not busy",
   (statusType) => {
     expect(isTurnActive(statusType)).toBe(false);
+  },
+);
+
+// A shut-down session resumes on its next message; every other status has a
+// runtime, or (restartRequired) needs one restarted before it takes anything.
+test.each(["ended", "closed", "notLoaded"])("%s status means the session has shut down", (statusType) => {
+  expect(SHUT_DOWN_STATUSES.has(statusType)).toBe(true);
+});
+
+test.each(["idle", "active", "awaiting", "warning", "systemError", "restartRequired"])(
+  "%s status means the session has not shut down",
+  (statusType) => {
+    expect(SHUT_DOWN_STATUSES.has(statusType)).toBe(false);
   },
 );
 
