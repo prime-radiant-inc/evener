@@ -56,7 +56,6 @@ import { type ComposerSetting, ComposerSettings } from "./ComposerSettings";
 import { ComposerSettingsSheet } from "./ComposerSettingsSheet";
 import { useConnection } from "./ConnectionProvider";
 import { ConnectionStatus } from "./ConnectionStatus";
-import { reconnectDelay } from "./hubConnection";
 import {
 	CommandArgumentError,
 	composerCommand,
@@ -123,6 +122,7 @@ import { SessionSheet } from "./SessionSheet";
 import { type ErrorAction, errorAction, RETRY_MESSAGE } from "./session/errorAction";
 import { NewContentPill } from "./session/NewContentPill";
 import { TranscriptSkeleton } from "./session/TranscriptSkeleton";
+import { useReadRetry } from "./session/useReadRetry";
 import {
 	answerTo,
 	hideAnswerMessages,
@@ -585,9 +585,6 @@ export function ConversationScreen({
 	// The reader keys the list held when you left its end; null at the end.
 	// Rows that arrive below it make "↓ 3 new".
 	const [awayKeys, setAwayKeys] = useState<ReadonlySet<string> | null>(null);
-	// Thread reads that failed in a row while connected: each one retries on
-	// its own after reconnectDelay, and from the third the transcript says so.
-	const [readFailures, setReadFailures] = useState(0);
 	const captureSuppressed = useRef(false);
 	const readerDragging = useRef(false);
 	const readerMomentum = useRef(false);
@@ -743,49 +740,23 @@ export function ConversationScreen({
 			service.close();
 		};
 	}, [service, store, activitySink, connected, focused, route.params.ref]);
-	// A read that failed while connected tries again on its own (spec 14): at
-	// once, then after 1, 2 and 4 seconds, and on up to every 30 seconds. There
-	// is no button to press; from the third failure in a row one quiet line
-	// says the session is still trying.
-	useEffect(() => {
-		// A failed read starts the count; after that each retry counts its own
-		// outcome, since a retry that fails fast can go from "error" to "error"
-		// without the screen ever rendering the "opening" between them.
-		if (snapshot.status === "error")
-			setReadFailures((count) => (count === 0 ? 1 : count));
-		else if (snapshot.status === "open") setReadFailures(0);
-	}, [snapshot.status]);
-	// Keyed on the count, never the status: a retry passing through "opening"
-	// must not cancel itself.
-	useEffect(() => {
-		if (readFailures === 0 || !service || !connected || !focused) return;
-		let cancelled = false;
-		const retry = setTimeout(() => {
-			if (store.getState().status !== "error") return;
-			void store
-				.getState()
-				.resumeProjected(service, activitySink, route.params.ref)
-				.then(() => {
-					if (!cancelled && store.getState().status === "error")
-						setReadFailures((count) => count + 1);
-				})
-				.catch((error) => {
-					console.error("ConversationScreen: retried read failed", error);
-				});
-		}, reconnectDelay(readFailures - 1));
-		return () => {
-			cancelled = true;
-			clearTimeout(retry);
-		};
-	}, [
-		readFailures,
-		service,
-		store,
-		activitySink,
-		connected,
-		focused,
-		route.params.ref,
-	]);
+	// A read that failed while connected tries again on its own (spec 14);
+	// from the third failure in a row the transcript says so.
+	const readStatus = useCallback(() => store.getState().status, [store]);
+	const retryRead = useCallback(
+		() =>
+			service
+				? store.getState().resumeProjected(service, activitySink, route.params.ref)
+				: Promise.resolve(),
+		[service, store, activitySink, route.params.ref],
+	);
+	const readFailures = useReadRetry({
+		status: snapshot.status,
+		active: Boolean(service) && connected && focused,
+		resetKey: `${route.params.hubId}\u0000${route.params.ref}`,
+		readStatus,
+		resume: retryRead,
+	});
 	// The durable pending-row seam. The store retires it on EVERY thread open,
 	// and `openProjected` runs from more than the resume effect: the /clear
 	// command's cleared callback, the refresh paths, and resumeProjected's own
@@ -1171,7 +1142,6 @@ export function ConversationScreen({
 		turnsSeen.current = readerAnchor.current?.turnsSeen;
 		openedFor.current = null;
 		setAwayKeys(null);
-		setReadFailures(0);
 	}, [route.params.hubId, route.params.ref]);
 	// Where the session opens (spec 7.3, ruling 31), decided once per route on
 	// the first layout with rows: the live end while a question or approval

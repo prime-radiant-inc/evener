@@ -74,23 +74,26 @@ func TestCov_SaveSessionMetaFS(t *testing.T) {
 	}
 }
 
-// listSessionMetasFS returns nil for a missing sessions dir and lists saved metas.
+// listSessionMetasFSWithErrors returns nil for a missing sessions dir and lists saved metas.
 func TestCov_ListSessionMetasFS(t *testing.T) {
 	mem := afero.NewMemMapFs()
-	metas, err := listSessionMetasFS(mem, "/nowhere")
-	if err != nil || metas != nil {
-		t.Errorf("missing dir should yield (nil,nil), got %v %v", metas, err)
+	metas, failures, err := listSessionMetasFSWithErrors(mem, "/nowhere")
+	if err != nil || metas != nil || failures != nil {
+		t.Errorf("missing dir should yield (nil,nil,nil), got %v %v %v", metas, failures, err)
 	}
 	const sessionID = "02wMz5Txv1C3Hut0M8GCeB"
 	if err := SaveSessionMetaWithFS(mem, "/state", SessionMeta{ID: sessionID}); err != nil {
 		t.Fatal(err)
 	}
-	metas, err = listSessionMetasFS(mem, "/state")
+	metas, failures, err = listSessionMetasFSWithErrors(mem, "/state")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(metas) != 1 || metas[0].ID != sessionID {
 		t.Errorf("list = %+v, want one meta %s", metas, sessionID)
+	}
+	if len(failures) != 0 {
+		t.Errorf("failures = %+v, want none", failures)
 	}
 }
 
