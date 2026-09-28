@@ -417,6 +417,16 @@ export interface DaemonStatusResponse {
   lifecycle: DaemonLifecycle;
 }
 
+export interface DelegateStopParams {
+  threadId?: string;
+  ref?: string;
+  delegateId: string;
+}
+
+export interface DelegateStopResponse {
+  outcome: string;
+}
+
 export interface DeletionSkip {
   id: string;
   reason: string;
@@ -4348,6 +4358,7 @@ export const METHOD_NAMES = [
   "evener/settings/agentsDoc/get",
   "evener/settings/agentsDoc/set",
   "evener/sandbox/escalation/resolve",
+  "evener/delegate/stop",
   "evener/host/request",
   "evener/host/attach",
   "evener/host/add",
@@ -4570,6 +4581,7 @@ export interface MethodTypes {
   "evener/settings/agentsDoc/get": { params: EmptyParams; result: AgentsDocResponse };
   "evener/settings/agentsDoc/set": { params: AgentsDocSetParams; result: AgentsDocResponse };
   "evener/sandbox/escalation/resolve": { params: SandboxEscalationResolveParams; result: EmptyResponse };
+  "evener/delegate/stop": { params: DelegateStopParams; result: DelegateStopResponse };
   "evener/host/request": { params: HostRequestParams; result: HostForwardedResult };
   "evener/host/attach": { params: HostAttachParams; result: HostAttachResponse };
   "evener/host/add": { params: HostAddParams; result: HostMutationCommitted | HostMutationCommittedRemoved | HostMutationTeardownFailure | HostMutationTeardownFailureRemoved | HostMutationCollisionDropped | HostMutationAmbiguous };
