@@ -181,7 +181,11 @@ func (s *Session) retryDurabilityUntilSettledOrExhausted(retained *transcript.Re
 		}
 		lastErr = err
 	}
+	if writer == nil || writer.Closed() {
+		return // the session shut down while the last attempt was in flight
+	}
 	if !s.servedByDaemon() {
+		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("%s could not be made durable after retrying: %v", what, lastErr)})
 		return
 	}
 	if refusal := s.failClosed(fmt.Errorf("%s could not be made durable after retrying: %w", what, lastErr)); refusal != nil {

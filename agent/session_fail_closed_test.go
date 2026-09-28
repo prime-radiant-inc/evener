@@ -618,9 +618,6 @@ func attachRetainedBarrierWrite(t *testing.T, s *Session, kind schema.TurnKind, 
 
 // driveDurabilityRetries advances clk once per pending retry attempt, up to
 // attempts times, waiting for the retry goroutine to park on the clock before
-// each advance -- deterministic, no wall-clock sleep.
-// driveDurabilityRetries advances clk once per pending retry attempt, up to
-// attempts times, waiting for the retry goroutine to park on the clock before
 // each advance -- deterministic, no wall-clock sleep. baseline is the number
 // of unrelated waiters already parked on clk (a session's own background
 // timers, such as its worktree-lane sweep) before the retry goroutine adds
