@@ -645,9 +645,9 @@ func formatNonReproSessions(sessions map[string]nonReproSession, budget int) (de
 }
 
 // sortedNonReproKeys returns the dedup keys of a non-reproducible session set
-// (projectID+"\x00"+sessionID) in deterministic bucket-then-sid order. Shared
-// by formatNonReproSessions (prose) and the SessionLocations construction in
-// RunAudit so both order the same sessions identically.
+// (projectID+"\x00"+sessionID) in deterministic bucket-then-sid order. It is
+// the single ordering site: formatNonReproSessions consumes it and returns the
+// same ordered sessions, which RunAudit emits as structured SessionLocations.
 func sortedNonReproKeys(sessions map[string]nonReproSession) []string {
 	keys := make([]string, 0, len(sessions))
 	for k := range sessions {
