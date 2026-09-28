@@ -2317,9 +2317,14 @@ describe("a subagent's own session (spec 9, rulings 10 and 30)", () => {
 		return served;
 	}
 
-	async function mountSubagent(served: Thread, { stopSubagent = false, jobs = subagentTree() } = {}) {
+	async function mountSubagent(
+		served: Thread,
+		{ stopSubagent = false, jobs = subagentTree(), coordinatorThreadId = COORDINATOR.threadId } = {},
+	) {
 		coordinatorHub.tree = jobs;
-		otherThreads.set(COORDINATOR.ref, coordinator(stopSubagent));
+		const coordinatorThread = coordinator(stopSubagent);
+		(coordinatorThread as unknown as { id: string }).id = coordinatorThreadId;
+		otherThreads.set(COORDINATOR.ref, coordinatorThread);
 		const hub = hubClient(served);
 		harness.connection = {
 			...screenConnection(hub.client, "ready"),
@@ -2404,6 +2409,24 @@ describe("a subagent's own session (spec 9, rulings 10 and 30)", () => {
 		).toEqual([{ ref: COORDINATOR.ref, threadId: COORDINATOR.threadId, delegateId: "d-fix" }]);
 		expect(renderedText(tree)).toContain("Stop requested");
 		expect(stopRequests("hub-1").direct({ id: "d-fix" } as never)).toBe(true);
+	});
+
+	it("stops through the coordinator's thread as it reads now, after a restart gave it a new one", async () => {
+		const { tree, hub } = await mountSubagent(subagent(true), {
+			stopSubagent: true,
+			coordinatorThreadId: "thread-restarted",
+		});
+		act(() => pressable(tree, "Stop subagent")?.props.onPress());
+		await act(async () =>
+			alertRequests
+				.at(-1)
+				?.buttons?.find((button) => button.text === "Stop")
+				?.onPress?.(),
+		);
+		await settle();
+		expect(
+			hub.requests.filter((request) => request.method === "evener/delegate/stop").map((request) => request.params),
+		).toEqual([{ ref: COORDINATOR.ref, threadId: "thread-restarted", delegateId: "d-fix" }]);
 	});
 
 	it("falls back to asking the coordinator when the hub doesn't know the direct stop", async () => {

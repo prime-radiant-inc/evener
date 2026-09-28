@@ -90,6 +90,11 @@ export function SubagentPanel({
 		coordinatorState.capabilities.stopSubagent === true &&
 		!directUnsupported;
 
+	// The stop names the coordinator's thread as it reads now: a coordinator
+	// that restarted since the screen opened runs under a new one. A direct
+	// stop is offered only once a read has answered.
+	const coordinatorThreadId =
+		coordinatorState !== null && coordinatorState !== "unreadable" ? coordinatorState.threadId : coordinator.threadId;
 	const stopDirectly = useCallback(
 		(target: SubagentRow) => {
 			Alert.alert(`Stop “${target.title}”?`, "Anything it started keeps running.", [
@@ -102,7 +107,7 @@ export function SubagentPanel({
 						try {
 							const response = await client.request("evener/delegate/stop", {
 								ref: coordinator.ref,
-								threadId: coordinator.threadId,
+								threadId: coordinatorThreadId,
 								delegateId: target.id,
 							});
 							if (response.outcome === "stopping")
@@ -118,7 +123,7 @@ export function SubagentPanel({
 				},
 			]);
 		},
-		[client, coordinator.ref, coordinator.threadId, requests, tree, showToast],
+		[client, coordinator.ref, coordinatorThreadId, requests, tree, showToast],
 	);
 
 	if (!barShown) return null;
