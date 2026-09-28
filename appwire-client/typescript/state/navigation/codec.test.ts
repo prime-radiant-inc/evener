@@ -1478,10 +1478,13 @@ test("codec keeps every field the hub's value records carry", () => {
 // once in validateSnapshotForResource's entity loop, twice inside the
 // validateGraphForResource it then called, and twice more when merge's
 // reconcileSnapshot re-validated the graph decode had already validated
-// (#2478). The rfc3339 check runs once per session value and never on the
-// copies decode and merge take, so counting its regex is counting the
-// validator itself: a read that validates once runs it once.
-test("a snapshot read validates each session value once", () => {
+// (#2478). Decode now leaves the entity pass to validateGraphForResource, but
+// reconcileSnapshot still validates the graph it installs because it is an
+// exported entry a caller can hand a resource built outside decode. That
+// leaves two passes. The rfc3339 check runs once per session value and never
+// on the copies decode and merge take, so counting its regex counts the
+// validator itself.
+test("a snapshot read runs each session value's validator twice, not five times", () => {
   const snapshot = liveSnapshot();
   const first = snapshot.entities[0];
   if (!first) throw new Error("missing entity");
@@ -1502,21 +1505,5 @@ test("a snapshot read validates each session value once", () => {
     spy.mockRestore();
   }
 
-  expect(timestampChecks).toHaveLength(1);
-});
-
-// #2478: snapshotResource marks a resource decoded so reconcileSnapshot skips
-// re-validating it. The resource and its graph maps are sealed, so a caller
-// cannot mutate the graph after decode and have merge install the mutation
-// without validation.
-test("a decoded snapshot resource is sealed against later mutation", () => {
-  const snapshot = liveSnapshot();
-  const resource = snapshotResource(key, decodedSnapshot(key, snapshot));
-  expect(Object.isFrozen(resource)).toBe(true);
-  const entityKey = snapshot.entities[0]?.key;
-  const entities = resource.graph.entities as unknown as Map<string, unknown>;
-  const containers = resource.graph.containers as unknown as Map<string, unknown>;
-  expect(() => entities.set(entityKey as string, {})).toThrow(TypeError);
-  expect(() => entities.delete(entityKey as string)).toThrow(TypeError);
-  expect(() => containers.clear()).toThrow(TypeError);
+  expect(timestampChecks).toHaveLength(2);
 });

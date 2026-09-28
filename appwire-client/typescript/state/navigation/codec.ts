@@ -800,8 +800,8 @@ const RESPONSE_COMMON_KEYS = ["status", "generationId", "revision", "etag"] as c
 const RESPONSE_SNAPSHOT_KEYS = [...RESPONSE_COMMON_KEYS, "representation", "data"] as const;
 const RESPONSE_DELTA_KEYS = [...RESPONSE_COMMON_KEYS, "representation", "base", "data"] as const;
 
-// The value-record keys of an entity a resource holds; entity() already
-// refused a kind the resource cannot hold.
+// The value-record keys of an entity a resource holds; validateEntity already
+// refused, through entityIdentityForResource, a kind the resource cannot hold.
 function entityValueKeys(key: ResourceKey, kind: string): ValueRecordKeys {
   if (kind === "session") return SESSION_KEYS;
   if (kind === "pin_section") return PIN_SECTION_KEYS;
@@ -931,34 +931,8 @@ const materializedContainerCache = new WeakMap<object, MaterializedContainerCach
 const materializedResourceCache = new WeakMap<object, MaterializedResourceCacheEntry>();
 const emptyMaterializedChildren = Object.freeze([]) as readonly MaterializedValue[];
 
-// snapshotResource is the decode path's bridge from a validated snapshot to a
-// NormalizedResource: decodeNavigationResponse already ran
-// validateGraphForResource on that snapshot. merge's reconcileSnapshot reads
-// this set to skip re-validating a resource that came from decode, while a
-// resource a caller built by hand is still validated (#2478).
-const decodedSnapshotResources = new WeakSet<object>();
-
 function sameIdentities(left: readonly unknown[], right: readonly unknown[]): boolean {
   return left.length === right.length && left.every((item, index) => item === right[index]);
-}
-
-/** Whether a resource was produced by snapshotResource from a decoded
- * snapshot, so its graph was already validated by decodeNavigationResponse. */
-export function isDecodedSnapshotResource(resource: NormalizedResource): boolean {
-  return decodedSnapshotResources.has(resource);
-}
-
-// normalizedGraphFromSnapshot's maps are only read once snapshotResource
-// builds them -- merge copies each into a new Map -- so shadowing their
-// mutators removes the one way a caller could change a marked resource's
-// graph before reconcileSnapshot trusts it (#2478).
-function readonlyMap<K, V>(map: Map<K, V>): void {
-  for (const method of ["set", "delete", "clear"] as const)
-    Object.defineProperty(map, method, {
-      value: () => {
-        throw new TypeError("navigation graph map is immutable");
-      },
-    });
 }
 
 /** The normalized resource a decoded snapshot stands for, built by hand at
@@ -967,20 +941,12 @@ export function snapshotResource(
   key: ResourceKey,
   decoded: Extract<DecodedNavigationResponse, { status: "snapshot" }>,
 ): NormalizedResource {
-  // Freeze the resource and lock the graph's maps so the decoded marker cannot
-  // be moved onto, or a marked graph mutated into, a graph merge would trust
-  // without re-validating it (#2478).
-  const graph = normalizedGraphFromSnapshot(decoded.snapshot);
-  readonlyMap(graph.entities as Map<string, NavigationGraphEntity>);
-  readonlyMap(graph.containers as Map<string, NavigationGraphContainer>);
-  const resource: NormalizedResource = Object.freeze({
+  return {
     key,
-    graph,
+    graph: normalizedGraphFromSnapshot(decoded.snapshot),
     version: decoded.version,
     presence: "present",
-  });
-  decodedSnapshotResources.add(resource);
-  return resource;
+  };
 }
 
 /** The rows a decoded snapshot renders as, for a one-shot reader with no

@@ -345,9 +345,9 @@ test("invalid staged delta preserves the complete prior graph identity", () => {
   expect(before.graph.entities.has(orphanKey)).toBe(false);
 });
 
-// #2478: reconcileSnapshot skips re-validation only for a resource that
-// snapshotResource produced from a decoded snapshot. A resource a caller
-// built by hand is still validated, so a dangling child is rejected here just
+// reconcileSnapshot is an exported entry, so it validates the graph it is
+// given even though decode already validated a snapshot's graph (#2478). A
+// resource a caller built by hand with a dangling child is rejected here just
 // as decode rejects it.
 test("reconcileSnapshot validates a resource built outside decode", () => {
   const entityKey = scopedKey("1");
