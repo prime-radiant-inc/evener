@@ -758,6 +758,44 @@ it("shows no notes bar for a session with nothing shared", async () => {
 	expect(tree.root.findAll((node) => String(node.type) === "SymbolView" && node.props.name === "person")).toEqual([]);
 });
 
+it("retries a note that failed to save once, on its own, without needing a reconnect", async () => {
+	const served = thread("ref-notes-retry", "idle");
+	(served as unknown as { evener: Record<string, unknown> }).evener.capabilities = { ...CAPABILITIES, sharedNotes: true };
+	const { hub } = await mount(served);
+	const client = hub.client as { request: (method: string, params: Record<string, unknown>) => Promise<unknown> };
+	const request = client.request;
+	let attempts = 0;
+	client.request = async (method, params) => {
+		if (method === "notes/human/set") {
+			attempts += 1;
+			if (attempts === 1) throw new Error("offline");
+		}
+		return request(method, params);
+	};
+	const params = { hubId: "hub-1", ref: "ref-notes-retry" };
+	const sheet = render(
+		<NotesSheet
+			route={{ key: "notes-sheet", name: "NotesSheet", params } as unknown as ComponentProps<typeof NotesSheet>["route"]}
+			navigation={navigation as unknown as ComponentProps<typeof NotesSheet>["navigation"]}
+		/>,
+	);
+	const editor = sheet.root
+		.findAll((node) => String(node.type) === "TextInput")
+		.find((node) => node.props.accessibilityLabel === "Your note");
+	if (!editor) throw new Error("no note editor");
+	act(() => editor.props.onChangeText("first try"));
+	act(() => pressable(sheet, "Done")?.props.onPress());
+	act(() => sheet.unmount());
+	await settle();
+	// The session stayed open, connected and in front the whole time: the
+	// screen retries the failed save on its own rather than waiting for an
+	// unrelated reconnect or remount to notice it.
+	expect(attempts).toBe(2);
+	expect(hub.requests.filter((request) => request.method === "notes/human/set").map((request) => request.params.note)).toEqual([
+		"first try",
+	]);
+});
+
 it("sends a note kept on this phone from a failed save once the session opens connected", async () => {
 	harness.kv.set("evener.native.note-draft.hub-1", JSON.stringify({ "ref-kept-note": "kept from before" }));
 	const served = thread("ref-kept-note", "idle");

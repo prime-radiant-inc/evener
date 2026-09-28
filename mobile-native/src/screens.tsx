@@ -1853,11 +1853,34 @@ export function ConversationScreen({
 	useEffect(() => {
 		notes.sync();
 	}, [conversation?.humanNote, notes]);
-	// A note kept on this phone from before, because its save failed, sends
-	// once the session is open, connected and in front.
+	// A note kept on this phone because its save failed sends once the
+	// session is open, connected and in front. The controller is watched, not
+	// only the deps, so a save that fails while already connected is tried
+	// again without waiting for a reconnect. One retry per failure: the
+	// retry's own "failed" publish must not start another.
 	useEffect(() => {
-		if (connected && focused && bindingInstance && notes.getSnapshot().phase === "failed")
-			void notes.flush();
+		let retrying = false;
+		let timer: ReturnType<typeof setTimeout> | null = null;
+		function retryIfNeeded() {
+			if (retrying || !connected || !focused || !bindingInstance) return;
+			if (notes.getSnapshot().phase !== "failed") return;
+			retrying = true;
+			// Next tick: the "failed" publish can come from inside a flush whose
+			// shared saving promise hasn't cleared, and a flush in the same tick
+			// would join that failing promise instead of trying again.
+			timer = setTimeout(() => {
+				timer = null;
+				void notes.flush().finally(() => {
+					retrying = false;
+				});
+			}, 0);
+		}
+		retryIfNeeded();
+		const unsubscribe = notes.subscribe(retryIfNeeded);
+		return () => {
+			unsubscribe();
+			if (timer !== null) clearTimeout(timer);
+		};
 	}, [connected, focused, bindingInstance, notes]);
 	const notesSaved = useCallback(
 		(outcome: SaveOutcome) => {
