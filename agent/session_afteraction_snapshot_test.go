@@ -73,6 +73,13 @@ func TestAfterAction_HistorySnapshot_AttentionReplacement(t *testing.T) {
 	// Attention delivery replaces the resident entry in place, exactly as
 	// appendDelegateAttentionMessageDurably does when the durable content
 	// matches a resident turn but its identity has moved on.
+	//
+	// Release the reader and then mutate deliberately without an intervening
+	// synchronization point: the two accesses stay unordered, which is what
+	// lets -race observe the borrowed-slice defect. Adding a happens-before
+	// edge here (for example, mutating before the release) would mask it. The
+	// assertions below read the aliased slice after the mutation, so they also
+	// fail deterministically when the fix is absent.
 	replacement := resident
 	replacement.StableTurnID = "s2"
 	close(probe.proceed)
@@ -111,6 +118,8 @@ func TestAfterAction_HistorySnapshot_AttentionRemoval(t *testing.T) {
 	<-probe.entered
 
 	close(probe.proceed)
+	// As in the replacement test, the mutation stays unordered with the
+	// reader; do not sequence one before the other, which would hide the race.
 	sess.removeUnverifiedDelegateAttentionTurn(resident)
 	if err := <-done; err != nil {
 		t.Fatalf("notifyStrategyAfterAction: %v", err)
