@@ -76,8 +76,8 @@ Decisions the spec and the server plan leave open, with the reason for each.
 **S9, document revision identity**
 
 1. **The revision is the sha256 of the whole file's bytes.** The server plan sketched a weak tag from size, time and the head's hash. A content hash is simpler and stronger: touching a file without changing it keeps its revision, and an edit past the 512 KiB head changes it. It costs one full read, measured at 7.4 ms for 16 MiB.
-2. **Files over 16 MiB (`docRevisionMaxBytes`) carry no revision.** Reading a huge log on every foreground to hash it is not worth it; the phone falls back to comparing what it was shown, as today. The limit is 5 times the largest markdown file measured.
-3. **Size and revision come from one pass.** The read hashes exactly the bytes it counted, so the total and the revision describe one version even while the file is being written. A file that grows past 16 MiB during the read gets no revision and a size of at least what the read found (found by review on the plan PR). This replaces `docRawTotalSize`'s second stat.
+2. **Files over 16 MiB (`docRevisionMaxBytes`) carry no revision.** A read hashes at most 16 MiB and one byte (about 7 ms), so a huge log costs no more than that on every foreground; past the limit the phone falls back to comparing what it was shown, as today. The limit is 5 times the largest markdown file measured.
+3. **Size and revision come from one pass.** The read hashes exactly the bytes it counted, and those bytes, never the stat's size, decide the revision, so the total and the revision describe one version even while the file is being written. A file that grows past 16 MiB after the stat gets no revision and a size of at least what the read found; one that shrinks below it is hashed and reports the size read (both found by review on the plan PR). This replaces `docRawTotalSize`'s second stat.
 4. **The time rides as `X-Doc-Modified-At` in Unix milliseconds,** and only when it is after the epoch (`docModifiedMillis`), so the server and the shared package agree that zero or less means no time. It is not `Last-Modified`: `Last-Modified` has one-second precision and an HTTP-date the phone would have to parse by hand (whether React Native's Hermes parses that date format was not checked, so the plan avoids it), and it would invite heuristic caching.
 5. **`Cache-Control: private, no-cache`, and `If-None-Match` answered by the rules of RFC 9110 13.1.2** (weak comparison, and `*` matches any current version, including one too large to have a revision). Every cache must revalidate before reuse, so a changed file is never shown from a cache; with the `ETag`, revalidation costs a 304 and no body. Browsers send `If-None-Match` for such a response on their own (RFC 9111). Whether iOS's `NSURLSession` under React Native's `fetch` does the same was not measured, and nothing here relies on it: the phone reads `revision` from the response either way.
 6. **An empty file is served empty, not 404.** The single `f.Read` treated it as missing. The rewrite reads with `io.ReadFull`, so the phone no longer says an empty file "isn't in this session's folder any more".
@@ -87,7 +87,7 @@ Decisions the spec and the server plan leave open, with the reason for each.
 7. **Images need nothing.** They already proxy (What was measured). S7 is documents only.
 8. **The method is `evener/session/document`,** beside `evener/session/image`: params `{sessionId, path}`, response `{data, totalSize, revision?, modifiedAt?}`. `data` is bytes (base64 in JSON), because the head may end mid-rune or be binary. The controller re-derives text or binary from the bytes, as the image proxy re-derives the media type.
 9. **Confinement: the host resolves, by the local rule.** The host runs `sessionCWD` (which refuses an id naming another source, so a request cannot be chained to a third hub) and `fspaths.ResolveInRoot` (lexical and symlink containment) against its own session folder. An escape is a new typed refusal, `pathOutsideSession`, which the controller answers 403 as the local route does. An absolute path inside the folder is accepted, as on `/doc/file`. The controller forwards the path untouched and never resolves it; it holds no path of the host's disk to resolve against. The method opens nothing the HTTP route does not: any client of a hub that could call it could already fetch the same file from that hub's `/doc/file` with the same credentials.
-10. **The controller re-checks the host's answer** (`proxyableSessionDocument`): at most 512 KiB, a total at least that long, a full head when truncated, no revision on a file over 16 MiB, and a revision that is a sha256 and, when the bytes are the whole file, their own sha256. A violation is 502, never served.
+10. **The controller re-checks the host's answer** (`proxyableSessionDocument`): at most 512 KiB, a total at least that long, a full head when truncated, a revision exactly when the total is 16 MiB or less (the host hashes every such file, so a missing one would silently turn S9 off), and a revision that is a sha256 and, when the bytes are the whole file, their own sha256. A violation is 502, never served. The check reuses `imageSha` and `imageShaRegexp`, the package's sha256-hex helpers; renaming them would touch the image code for no behavior change, so it is left out.
 11. **Status mapping** (`sessionDocumentProxyStatus`): `pathOutsideSession` 403, `resourceNotFound` 404, invalid params 400, MethodNotFound 501 (the host predates S7), anything else 503 (host detached, unknown or unreachable). The shared package reads 501 as `host-unsupported`, the phone's cue to keep "Open it on the host".
 12. **The method is denied on the host admin proxy,** like `evener/session/image`.
 13. **One helper finds the owning source.** `sessionImageFetcher` becomes the generic `owningSourceAs[T]`, `hostQualifiedImageRef` becomes `hostQualifiedRouteRef` and `remoteSessionImageBudget` becomes `remoteSessionFileBudget`, since images and documents now share them. The rename is mechanical: three call sites.
@@ -114,8 +114,8 @@ Each has a recommendation; the plan is written to the recommendation, and none b
    - The revision headers must not let a browser or the phone show a document that changed since.
    - Pinned by `TestDocFile_Raw_NamesTheRevisionItServed` (`private, no-cache`) and `TestDocFile_Raw_IfNoneMatchRevalidates` (200 with the new bytes after an edit) (Task 34.1).
 4. **A change the revision misses, or a size that lies.**
-   - An edit past the 512 KiB head must change the revision. A file at exactly the 16 MiB limit is still hashed, and one that grows past it while being read reports no revision and a size no smaller than what was read.
-   - Pinned by `TestDocFile_Raw_RevisionFollowsTheWholeFile`, `TestDocFile_Raw_RevisionAtTheHashLimit` and `TestReadDocFile_GrowingPastTheHashLimitReportsWhatWasRead` (Task 34.1).
+   - An edit past the 512 KiB head must change the revision. A file at exactly the 16 MiB limit is still hashed, one that grows past it after the stat reports no revision and a size no smaller than what was read, and one that shrinks below it is hashed.
+   - Pinned by `TestDocFile_Raw_RevisionFollowsTheWholeFile`, `TestDocFile_Raw_RevisionAtTheHashLimit`, `TestReadDocFile_GrowingPastTheHashLimitReportsWhatWasRead` and `TestReadDocFile_ShrinkingBelowTheHashLimitIsHashed` (Task 34.1).
 5. **An old host that reads as a missing file.**
    - A host without the method must not make the phone say the file is gone.
    - Pinned by the 501 case of `TestDocFileRouteMapsHostRefusals` (Task 35.2) and the `host-unsupported` tests in `docContent.test.ts` and `DocPane.test.tsx` (Task 35.3).
@@ -412,6 +412,37 @@ func TestReadDocFile_GrowingPastTheHashLimitReportsWhatWasRead(t *testing.T) {
 	}
 }
 
+// A file that shrank below the hash limit after the stat is hashed, and its
+// size is what the read found: the stat's larger size never decides the
+// revision.
+func TestReadDocFile_ShrinkingBelowTheHashLimitIsHashed(t *testing.T) {
+	content := []byte("short now")
+	path := filepath.Join(t.TempDir(), "shrunk.log")
+	writeDocAt(t, path, content, time.UnixMilli(1_790_000_000_000))
+	big := filepath.Join(t.TempDir(), "earlier.log")
+	f, err := os.Create(big)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Truncate(docRevisionMaxBytes + 100); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+	oldStat := docStat
+	t.Cleanup(func() { docStat = oldStat })
+	docStat = func(string) (os.FileInfo, error) { return os.Stat(big) }
+
+	read, err := readDocFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if read.Revision != docRevisionOf(content) || read.TotalSize != int64(len(content)) {
+		t.Fatalf("Revision/TotalSize = %q/%d, want %q/%d from the bytes read", read.Revision, read.TotalSize, docRevisionOf(content), len(content))
+	}
+}
+
 // An empty file is a document with nothing in it, not a missing one.
 func TestDocFile_Raw_EmptyFileIsServedEmpty(t *testing.T) {
 	web, cwd, session := docServeTestServer(t)
@@ -429,8 +460,8 @@ func TestDocFile_Raw_EmptyFileIsServedEmpty(t *testing.T) {
 
 - [ ] **Step 2: Run them to see them fail**
 
-Run: `go test ./cmd/evener-hub -run 'TestDocFile_Raw_(NamesThe|RevisionFollows|IfNoneMatch|NoRevision|RevisionAtThe|NoTimeAt|EmptyFile)|TestReadDocFile_Growing' -count=1`
-Expected: build failure, `undefined: docRevisionMaxBytes`. Once the constant alone exists, the `/doc/file` tests fail on the missing `ETag` (and `TestDocFile_Raw_NoTimeAtOrBeforeTheEpoch` passes vacuously until the header exists; it goes red if the header is sent for a pre-epoch time), `TestDocFile_Raw_EmptyFileIsServedEmpty` fails with status 404, and `TestReadDocFile_GrowingPastTheHashLimitReportsWhatWasRead` fails to build until `readDocFile` returns a `docFileRead`.
+Run: `go test ./cmd/evener-hub -run 'TestDocFile_Raw_(NamesThe|RevisionFollows|IfNoneMatch|NoRevision|RevisionAtThe|NoTimeAt|EmptyFile)|TestReadDocFile_' -count=1`
+Expected: build failure, `undefined: docRevisionMaxBytes`. Once the constant alone exists, the `/doc/file` tests fail on the missing `ETag` (and `TestDocFile_Raw_NoTimeAtOrBeforeTheEpoch` passes vacuously until the header exists; it goes red if the header is sent for a pre-epoch time), `TestDocFile_Raw_EmptyFileIsServedEmpty` fails with status 404, and the two `TestReadDocFile_` tests fail to build until `readDocFile` returns a `docFileRead`.
 
 - [ ] **Step 3: Read the file once, and write what the read found**
 
@@ -490,7 +521,7 @@ diff --git a/cmd/evener-hub/doc_serve.go b/cmd/evener-hub/doc_serve.go
  }
  
  // handleDocImage serves a validated image file inside a session's working
-@@ -171,27 +181,59 @@ func sessionCWD(cfg hubcore.WebConfig, session string) (string, bool) {
+@@ -171,27 +181,58 @@ func sessionCWD(cfg hubcore.WebConfig, session string) (string, bool) {
  	return "", false
  }
  
@@ -539,20 +570,19 @@ diff --git a/cmd/evener-hub/doc_serve.go b/cmd/evener-hub/doc_serve.go
  	}
 -	return buf[:n], nil
 +	read := docFileRead{Data: head[:n], TotalSize: info.Size(), ModifiedAt: info.ModTime()}
-+	if info.Size() > docRevisionMaxBytes {
-+		return read, nil
-+	}
++	// The bytes read, never the stat's size, decide the revision: the file
++	// may have grown or shrunk since the stat. Reading stops one byte past the
++	// limit, so a huge file costs at most docRevisionMaxBytes of hashing.
 +	hash := sha256.New()
 +	hash.Write(read.Data)
-+	// The limit keeps a file growing while it is read inside the bound.
 +	rest, err := io.Copy(hash, io.LimitReader(f, docRevisionMaxBytes-int64(n)+1))
 +	if err != nil {
 +		return docFileRead{}, err
 +	}
 +	total := int64(n) + rest
 +	if total > docRevisionMaxBytes {
-+		// The file grew past the limit while it was read: no revision, and a
-+		// size of at least what the read found.
++		// Too large to hash: no revision, and a size of at least what the
++		// read found.
 +		read.TotalSize = max(read.TotalSize, total)
 +		return read, nil
 +	}
@@ -561,7 +591,7 @@ diff --git a/cmd/evener-hub/doc_serve.go b/cmd/evener-hub/doc_serve.go
  }
  
  // looksBinaryBytes reports whether a byte slice looks like binary content. A
-@@ -216,34 +258,59 @@ func looksBinaryBytes(data []byte) bool {
+@@ -216,34 +257,59 @@ func looksBinaryBytes(data []byte) bool {
  // application/octet-stream are both honest about the content and never
  // browser-executable.
  //
@@ -1466,7 +1496,7 @@ func TestDocFileRouteMapsHostRefusals(t *testing.T) {
 
 // A host is bound to answer with at most the cap, a size that covers the bytes,
 // a whole head when it truncates, a revision the bytes carry when they are the
-// whole file, and no revision for a file too large to hash. Anything else is refused as a bad gateway, not served.
+// whole file, and a revision exactly when the file is small enough to hash. Anything else is refused as a bad gateway, not served.
 func TestDocFileRouteRefusesAMalformedHostAnswer(t *testing.T) {
 	hi := []byte("hi")
 	for _, tc := range []struct {
@@ -1478,6 +1508,7 @@ func TestDocFileRouteRefusesAMalformedHostAnswer(t *testing.T) {
 		{"a short head on a truncated read", appwire.SessionDocumentResponse{Data: hi, TotalSize: 10}},
 		{"a revision that is not a sha256", appwire.SessionDocumentResponse{Data: hi, TotalSize: 2, Revision: "abc"}},
 		{"a revision the whole file does not carry", appwire.SessionDocumentResponse{Data: hi, TotalSize: 2, Revision: docRevisionOf([]byte("ho"))}},
+		{"no revision on a file small enough to hash", appwire.SessionDocumentResponse{Data: hi, TotalSize: 2}},
 		{"a revision on a file too large to hash", appwire.SessionDocumentResponse{Data: bytes.Repeat([]byte("a"), docFileMaxBytes), TotalSize: docRevisionMaxBytes + 1, Revision: docRevisionOf(hi)}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1770,9 +1801,9 @@ func sessionDocumentProxyStatus(err error) int {
 
 // proxyableSessionDocument reports whether a host's answer is one the local
 // route could have produced: at most docFileMaxBytes, a total size that covers
-// them, the whole head when the file was truncated, no revision for a file too
-// large to hash, and, when the bytes are the whole file, the revision those
-// bytes carry. The controller cannot check a truncated file's revision (it has
+// them, the whole head when the file was truncated, a revision exactly when
+// the file is small enough to hash, and, when the bytes are the whole file, the
+// revision those bytes carry. The controller cannot check a truncated file's revision (it has
 // only the head), so it checks the form.
 func proxyableSessionDocument(resp appwire.SessionDocumentResponse) bool {
 	n := int64(len(resp.Data))
@@ -1783,10 +1814,11 @@ func proxyableSessionDocument(resp appwire.SessionDocumentResponse) bool {
 	if truncated && n != docFileMaxBytes {
 		return false
 	}
-	if resp.Revision == "" {
-		return true
+	// The host hashes every file up to docRevisionMaxBytes and no larger one.
+	if resp.TotalSize > docRevisionMaxBytes {
+		return resp.Revision == ""
 	}
-	if resp.TotalSize > docRevisionMaxBytes || !imageShaRegexp.MatchString(resp.Revision) {
+	if !imageShaRegexp.MatchString(resp.Revision) {
 		return false
 	}
 	return truncated || resp.Revision == imageSha(resp.Data)
@@ -2018,6 +2050,7 @@ git commit -m "feat(web): a host that can't send documents yet says to open it t
   - These passed: `go build ./...`; `go vet` plain, with `evenerfuzz` and for Windows on `./cmd/evener-hub/...` and `./appwire/...`; `golangci-lint` 2.13.1 on `./cmd/evener-hub/`, `./appwire/` and `./cmd/evener-hub/internal/appsource/`; the whole `./cmd/evener-hub/...`, `./appwire/...` and `./internal/appwirets` suites; the two coverage fuzz seeds; `TestGeneratedFileCurrent`; the frontend typecheck and its `src` vitest suites; the package's vitest suite (2,676 tests); `mobile-native`'s `npm run check` and its Reader tests.
   - Each red step named above was run and failed as described.
   - The first dry run of Task 34.1 found the linter's `modernize` findings (`strings.SplitSeq`, `maps.Copy`); the code above carries the fix.
+  - RoboRev's second round found that a file shrinking below 16 MiB after the stat went unhashed, and that the proxy accepted a missing revision on a hashable file. Both are fixed above with tests.
   - RoboRev on the plan PR found that the proxy accepted a revision on a file too large to hash, that `If-None-Match: *` was ignored for a file with no revision, and that the server sent pre-epoch times the client drops. The code above carries the fixes and their tests.
   - The plan PR's review found `writeDocAt`'s directory creation in the wrong task, a stale size for a file growing past the hash limit mid-read, and no test at the limit itself or for `If-None-Match: *`. The dry run was rebuilt with the fixes and every check above re-run.
 - **Not run.** `make test-web-browser` and `make test-native` as a whole (nothing here renders on the phone), `make lint` as a whole (the pinned linter ran per package), a real two-machine ssh attach (the proxy test runs a real host hub over a WebSocket AppWire channel; the ssh transport carries the same frames), and anything on Linux.
