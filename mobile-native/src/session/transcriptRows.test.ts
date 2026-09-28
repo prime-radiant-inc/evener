@@ -140,6 +140,30 @@ describe("time markers", () => {
 		expect(rows.map((row) => row.kind)).toEqual(["time", "run", "time", "run"]);
 	});
 
+	// The reducer can seat a notice in the display turn that holds its recorded
+	// item, and the notice keeps its own turn id, so one turn's rows can have
+	// another turn's row inside them. When the outer turn resumes, its start is
+	// compared against the notice's turn, which carries no times — read as a
+	// gap — so a second marker for the same turn would appear, and the
+	// transcript's FlatList keys rows by id, so the two markers collide.
+	it("marks a turn once when another turn's row sits inside it", () => {
+		const notice: TimelineRow = {
+			kind: "notice",
+			id: "n",
+			origin: "system",
+			family: "lifecycle",
+			tone: "info",
+			text: "note",
+			turnId: "turn_2",
+		};
+		const rows = sessionRows(
+			[user("u", "turn_1"), notice, reply("r", "turn_1")],
+			[turn("turn_1", at(12, 0), at(12, 5)), turn("turn_2")],
+			"UTC",
+		);
+		expect(rows.map((row) => (row.kind === "time" ? `time:${row.turnId}` : row.id))).toEqual(["time:turn_1", "u", "n", "r"]);
+	});
+
 	// A goal continuation turn can start well inside the ten-minute window, so
 	// no marker separates it from the turn before it. The run still has to end
 	// at the turn change, or its steps mix two turns' worth of work under one

@@ -1,9 +1,9 @@
-// The checkpointed draft editor's port and repository, generic over each
-// store's own checkpoint shape: keybindingsStore.ts keeps its own
-// draftCheckpoint decoder (and its own invalid-draft message); a later piece
-// of the SDK migration brings a second store onto this same repository, and
-// everything downstream of "decode this value or throw" is what the two will
-// share, byte for byte. This module is that shared downstream half.
+// The checkpointed draft editor's port and repository, generic over any
+// store's own checkpoint shape: each store keeps its own draftCheckpoint
+// decoder (and its own invalid-draft message), and everything downstream of
+// "decode this value or throw" - the identity tracking and the
+// compare-and-swap save, remove, and discard - is what the stores share, byte
+// for byte. This module is that shared downstream half.
 
 /** The shape a checkpointed draft editor's storage port has, over any
  * checkpoint type - the same shape testing/draftStorage.ts's in-memory test
