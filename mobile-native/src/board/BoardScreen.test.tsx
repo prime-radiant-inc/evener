@@ -48,7 +48,10 @@ vi.mock("react-native-gesture-handler/ReanimatedSwipeable", async () =>
 	(await import("../renderNative.testkit")).gestureHandlerModuleMock(),
 );
 // Stop goes through the process's real mutation runtime, over an in-memory
-// SQLite double (one per database name, as the device keeps one file).
+// SQLite double (one per database name, as the device keeps one file). The
+// runtime and its double live for the whole file, so every test shares one
+// outbox: records are keyed by hub and session, and hubId() gives each test
+// its own hub. A test must never assert on the outbox as a whole.
 vi.mock("expo-sqlite", async () => {
 	const { openSqliteSyncDouble } = await import("../sqliteSync.testkit");
 	return {
@@ -128,7 +131,7 @@ afterEach(() => {
 });
 
 // Each test uses its own hub, because nativeBoardMemory keeps one SeenMarkers
-// per hub for the life of the module.
+// per hub, and the mutation runtime one outbox, for the life of the module.
 let hubCount = 0;
 function hubId() {
 	hubCount += 1;
