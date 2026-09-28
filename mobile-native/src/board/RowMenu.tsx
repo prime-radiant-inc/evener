@@ -9,11 +9,11 @@ import { useNavigation } from "@react-navigation/native";
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
 import { type SFSymbol, SymbolView } from "expo-symbols";
 import { cloneElement, type ReactElement, useEffect } from "react";
-import { Platform, Pressable, ScrollView, Text, View } from "react-native";
+import { Pressable, ScrollView, Text, View } from "react-native";
 import type { Routes } from "../screens";
 import { Sheet, useSheet } from "../sheet/Sheet";
 import { sheetHosts, sheetKey, useSheetHost } from "../sheet/sheetHosts";
-import { useColors, useTextScale } from "../ui";
+import { allowFontScaling, useColors, useTextScale } from "../ui";
 import { type ClassifiedRow, stateWord, whyLine } from "./attention";
 import { Fact, WhyText } from "./BoardRow";
 import { ROW_ACTION_LABELS, type RowAction } from "./rowActions";
@@ -84,7 +84,7 @@ export function RowPreviewCard({
 					<StateMark state={state} />
 				</View>
 				<Text
-					allowFontScaling={Platform.OS !== "ios"}
+					allowFontScaling={allowFontScaling}
 					numberOfLines={2}
 					style={{ flex: 1, fontSize: 17 * scale, lineHeight: 22 * scale, fontWeight: "600", color: palette.inkHi }}
 				>
@@ -127,7 +127,11 @@ export function RowMenuSheet({ route }: NativeStackScreenProps<Routes, "RowMenuS
 	return (
 		<Sheet done={{ label: "Close", onPress: () => sheet.finish() }}>
 			<ScrollView contentInsetAdjustmentBehavior="automatic">
-				<RowPreviewCard item={item} hostLabel={host.hostLabel} onPress={() => leaveThen(() => host.openSession(item))} />
+				<RowPreviewCard
+					item={item}
+					hostLabel={host.hostLabel}
+					onPress={() => leaveThen(() => host.openSession(item))}
+				/>
 				{host.actions(item, archived).map((action) => (
 					<Pressable
 						key={action}
@@ -145,7 +149,7 @@ export function RowMenuSheet({ route }: NativeStackScreenProps<Routes, "RowMenuS
 					>
 						<SymbolView name={ROW_ACTION_SYMBOLS[action]} size={18 * scale} tintColor={palette.inkMid} />
 						<Text
-							allowFontScaling={Platform.OS !== "ios"}
+							allowFontScaling={allowFontScaling}
 							style={{ fontSize: 17 * scale, color: action === "shutDown" ? palette.dangerInk : palette.inkHi }}
 						>
 							{ROW_ACTION_LABELS[action]}

@@ -4,16 +4,10 @@
 // tray; steering is something you do to a queued message.
 import { SymbolView } from "expo-symbols";
 import { type ReactNode, type RefObject, useState } from "react";
-import {
-	ActionSheetIOS,
-	Alert,
-	Platform,
-	TextInput,
-	useWindowDimensions,
-	View,
-} from "react-native";
-import { useColors } from "../ui";
+import { ActionSheetIOS, Alert, Platform, Pressable, Text, TextInput, useWindowDimensions, View } from "react-native";
+import { allowFontScaling, useColors, useTextScale } from "../ui";
 import { ExpandedEditor } from "./ExpandedEditor";
+import { SendButton } from "./SendButton";
 import { SymbolButton } from "./SymbolButton";
 
 /** The field grows to this many lines, then scrolls. */
@@ -23,7 +17,6 @@ export interface ComposerProps {
 	value: string;
 	editable: boolean;
 	onChangeText(text: string): void;
-	onSelectionChange?(selection: { start: number; end: number }): void;
 	inputRef?: RefObject<TextInput | null>;
 	placeholder: string;
 	sendLabel: string;
@@ -31,11 +24,11 @@ export interface ComposerProps {
 	onSend(): void;
 	onPhotoLibrary(): void;
 	onCamera(): void;
-	/** The model and effort controls: today's ComposerSettings until
-	 * PR 6's chip replaces it. Null hides the slot. */
+	/** Opens Commands and skills. Absent, + doesn't offer it. */
+	onCommands?(): void;
+	/** The model chip. Null hides the slot. */
 	settings: ReactNode;
-	/** What sits above the field: attachments, today's inline command
-	 * completion (until PR 10), and PR 2's ghosts. */
+	/** What sits above the field: attachments and the queued ghosts. */
 	above?: ReactNode;
 }
 
@@ -43,7 +36,6 @@ export function Composer({
 	value,
 	editable,
 	onChangeText,
-	onSelectionChange,
 	inputRef,
 	placeholder,
 	sendLabel,
@@ -51,6 +43,7 @@ export function Composer({
 	onSend,
 	onPhotoLibrary,
 	onCamera,
+	onCommands,
 	settings,
 	above,
 }: ComposerProps) {
@@ -63,23 +56,19 @@ export function Composer({
 	// Typed line breaks count before layout has measured anything; the
 	// measured height catches long lines that wrap. The half line of slack
 	// keeps rounding in the measurement from offering the editor at six.
-	const overflows =
-		value.split("\n").length > MAX_LINES || contentHeight > (MAX_LINES + 0.5) * lineHeight;
+	const overflows = value.split("\n").length > MAX_LINES || contentHeight > (MAX_LINES + 0.5) * lineHeight;
 	function openAddMenu() {
+		const choices = [
+			{ text: "Photo library", onPress: onPhotoLibrary },
+			{ text: "Camera", onPress: onCamera },
+			...(onCommands ? [{ text: "Commands and skills", onPress: onCommands }] : []),
+		];
 		if (Platform.OS === "ios")
 			ActionSheetIOS.showActionSheetWithOptions(
-				{ options: ["Photo library", "Camera", "Cancel"], cancelButtonIndex: 2 },
-				(index) => {
-					if (index === 0) onPhotoLibrary();
-					else if (index === 1) onCamera();
-				},
+				{ options: [...choices.map((choice) => choice.text), "Cancel"], cancelButtonIndex: choices.length },
+				(index) => choices[index]?.onPress(),
 			);
-		else
-			Alert.alert("Add", undefined, [
-				{ text: "Photo library", onPress: onPhotoLibrary },
-				{ text: "Camera", onPress: onCamera },
-				{ text: "Cancel", style: "cancel" },
-			]);
+		else Alert.alert("Add", undefined, [...choices, { text: "Cancel", style: "cancel" }]);
 	}
 	return (
 		<View
@@ -99,14 +88,11 @@ export function Composer({
 				<TextInput
 					ref={inputRef}
 					accessibilityLabel="Message"
-					allowFontScaling={Platform.OS !== "ios"}
+					allowFontScaling={allowFontScaling}
 					multiline
 					scrollEnabled
 					value={value}
 					onChangeText={onChangeText}
-					onSelectionChange={
-						onSelectionChange ? (event) => onSelectionChange(event.nativeEvent.selection) : undefined
-					}
 					onContentSizeChange={(event) => setContentHeight(event.nativeEvent.contentSize.height)}
 					editable={editable}
 					placeholder={placeholder}
@@ -140,20 +126,7 @@ export function Composer({
 					<SymbolView name="plus" tintColor={palette.accentInk} size={20 * scale} />
 				</SymbolButton>
 				<View style={{ flex: 1, minWidth: 0 }}>{settings}</View>
-				<SymbolButton label={sendLabel} disabled={!sendEnabled} onPress={onSend}>
-					<View
-						style={{
-							width: 36,
-							height: 36,
-							borderRadius: 18,
-							alignItems: "center",
-							justifyContent: "center",
-							backgroundColor: palette.accentFill,
-						}}
-					>
-						<SymbolView name="paperplane.fill" tintColor={palette.onFill} size={17} />
-					</View>
-				</SymbolButton>
+				<SendButton label={sendLabel} disabled={!sendEnabled} onPress={onSend} />
 			</View>
 			<ExpandedEditor
 				visible={expanded}
@@ -164,5 +137,39 @@ export function Composer({
 				onDone={() => setExpanded(false)}
 			/>
 		</View>
+	);
+}
+
+/** The model and its effort, "GLM 5.3 Vision · XHigh" (spec 8.5). It opens
+ * the model sheet; with nothing it could change, it only names the model. */
+export function ModelChip({ label, onPress }: { label: string; onPress?: () => void }) {
+	const { palette } = useColors();
+	const scale = useTextScale();
+	const text = (
+		<Text
+			allowFontScaling={allowFontScaling}
+			numberOfLines={1}
+			style={{ flexShrink: 1, color: palette.inkMid, fontSize: 15 * scale, lineHeight: 20 * scale }}
+		>
+			{label}
+		</Text>
+	);
+	if (!onPress) return <View style={{ minHeight: 44, flexDirection: "row", alignItems: "center" }}>{text}</View>;
+	return (
+		<Pressable
+			accessibilityRole="button"
+			accessibilityLabel={`Model: ${label}. Change model or effort`}
+			onPress={onPress}
+			style={({ pressed }) => ({
+				minHeight: 44,
+				flexDirection: "row",
+				alignItems: "center",
+				gap: 4,
+				opacity: pressed ? 0.6 : 1,
+			})}
+		>
+			{text}
+			<SymbolView name="chevron.down" tintColor={palette.inkMid} size={11 * scale} />
+		</Pressable>
 	);
 }

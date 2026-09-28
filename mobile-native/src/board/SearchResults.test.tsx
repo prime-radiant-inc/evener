@@ -63,7 +63,12 @@ const textWith = (within: ReactTestRenderer | ReactTestInstance, content: string
 	);
 const resultRows = (tree: ReactTestRenderer) => tree.root.findAll((node) => node.props.testID === "search-result");
 const projectRows = (tree: ReactTestRenderer) => tree.root.findAll((node) => node.props.testID === "project-result");
-const evener: NavigationProjectSummary = { key: "evener", name: "evener", working_dir: "/home/jesse/git/evener", session_count: 2 };
+const evener: NavigationProjectSummary = {
+	key: "evener",
+	name: "evener",
+	working_dir: "/home/jesse/git/evener",
+	session_count: 2,
+};
 const unnamed: NavigationProjectSummary = { key: "tools", name: "", working_dir: "/srv/tools", session_count: 1 };
 
 it("lists live results then past ones, each with its mark, project and age", () => {
@@ -78,7 +83,11 @@ it("lists live results then past ones, each with its mark, project and age", () 
 	expect(rows.map((row) => row.findByType(StateMark).props.state)).toEqual(["failed", "question", "shutDown"]);
 	expect(textWith(tree, "SESSIONS · 3")).toBeTruthy();
 	const age = textWith(rows[0], "3m");
-	expect(flatten(age.props.style)).toMatchObject({ fontSize: 13, color: palette.inkLow, fontVariant: ["tabular-nums"] });
+	expect(flatten(age.props.style)).toMatchObject({
+		fontSize: 13,
+		color: palette.inkLow,
+		fontVariant: ["tabular-nums"],
+	});
 	expect(flatten(rows[0].props.style).minHeight).toBeGreaterThanOrEqual(44);
 });
 
@@ -133,7 +142,10 @@ it("says a failed search failed, in ink, and never asks you to retry", () => {
 });
 
 it("says search waits for the hub while it's out of reach", () => {
-	const { tree } = mount({ connected: false, search: { query: "fix", results: null, searching: false, failed: false } });
+	const { tree } = mount({
+		connected: false,
+		search: { query: "fix", results: null, searching: false, failed: false },
+	});
 	expect(renderedText(tree)).toContain("Search works when the hub is connected.");
 });
 
@@ -149,7 +161,11 @@ it("shows recent searches when the field is empty, each one searchable, with Cle
 	expect(textWith(tree, "RECENT")).toBeTruthy();
 	expect(resultRows(tree)).toHaveLength(0);
 	// The scope chips show with the field, before there's a query (spec 7.4).
-	expect(pressables(tree).map((node) => node.props.accessibilityLabel).slice(0, 2)).toEqual(["All", "Live"]);
+	expect(
+		pressables(tree)
+			.map((node) => node.props.accessibilityLabel)
+			.slice(0, 2),
+	).toEqual(["All", "Live"]);
 	act(() => labelled(tree, "Search for docs").props.onPress());
 	expect(props.onRecent).toHaveBeenCalledWith("docs");
 	const clear = labelled(tree, "Clear recent searches");

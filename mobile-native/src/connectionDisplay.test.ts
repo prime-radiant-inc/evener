@@ -36,7 +36,7 @@ it("walls a fatal failure even after something has been shown", () => {
 	expect(connectionDisplay("closed", true, true)).toBe("wall");
 });
 
-it("isReady: only \"ready\" is ready", () => {
+it('isReady: only "ready" is ready', () => {
 	expect(isReady("ready")).toBe(true);
 	for (const state of ["idle", "connecting", "reconnecting", "closed"] as ConnectionState[])
 		expect(isReady(state)).toBe(false);
@@ -292,8 +292,7 @@ it("useLiveReadiness recovers when React abandons an identity-changing render", 
 		return null;
 	}
 	const fallback = "connection-loading";
-	const boundary = () =>
-		createElement(Suspense, { fallback }, createElement(Owner));
+	const boundary = () => createElement(Suspense, { fallback }, createElement(Owner));
 	const tree = render(boundary());
 	// hub-1's connection is genuinely ready: the settled predicate authorizes.
 	expect(current()).toBe(true);
@@ -342,8 +341,7 @@ it("useLiveReadiness: an abandoned identity-changing render does not rebuild the
 		return null;
 	}
 	const fallback = "connection-loading";
-	const boundary = () =>
-		createElement(Suspense, { fallback }, createElement(Owner));
+	const boundary = () => createElement(Suspense, { fallback }, createElement(Owner));
 	const tree = render(boundary());
 	expect(current()).toBe(true);
 	const before = current;

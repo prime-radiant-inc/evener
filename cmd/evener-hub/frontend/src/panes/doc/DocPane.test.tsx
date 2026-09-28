@@ -135,6 +135,12 @@ test("a 403 (path escapes the cwd) shows the access-denied empty state", async (
   expect(await screen.findByText("Access denied")).toBeTruthy();
 });
 
+test("a 501 (the session's host can't serve documents yet) says to open it on the host", async () => {
+  mockRead.mockRejectedValue(new DocFileError("host-unsupported", 501));
+  renderFile("plan.md");
+  expect(await screen.findByText("Open it on the host")).toBeTruthy();
+});
+
 test("any other failure shows a generic couldn't-load empty state", async () => {
   mockRead.mockRejectedValue(new DocFileError("error", 500));
   renderFile("x.txt");

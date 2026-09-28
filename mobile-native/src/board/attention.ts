@@ -87,11 +87,7 @@ export function decisiveState(state: string): BoardState | null {
 	return null;
 }
 
-export function boardState(
-	row: NavigationSessionSummary,
-	approval: boolean,
-	seen: boolean,
-): BoardState {
+export function boardState(row: NavigationSessionSummary, approval: boolean, seen: boolean): BoardState {
 	// A row from an offline source can't be reached, whatever state it last
 	// reported: it is never Working, Finished or Needs you.
 	if (row.offline) return "shutDown";
@@ -285,11 +281,7 @@ function subagentsText(count: number): string {
  * command-or-Working text workingActivity falls back to, without its
  * children-based guess: a real read already answered the subagent question,
  * even when the answer is zero. */
-function workingWhyLine(
-	row: NavigationSessionSummary,
-	activity: SessionActivity,
-	msSinceReadMs: number,
-): WhyLine {
+function workingWhyLine(row: NavigationSessionSummary, activity: SessionActivity, msSinceReadMs: number): WhyLine {
 	if (activity.runningSubagents > 0) return { text: subagentsText(activity.runningSubagents) };
 	const quiet = quietState(activity, msSinceReadMs);
 	if (quiet?.state === "stuck")
@@ -392,4 +384,14 @@ export function lastLine(
 	if (row.project && row.project !== usual.project) line.project = row.project;
 	if (row.host_id !== usual.host) line.host = hostLabel(row.host_id);
 	return line.task || line.project || line.host ? line : null;
+}
+
+/** Names a host by its manifest source's label. A host the manifest doesn't
+ * name, or every host before the manifest loads, goes to the fallback. */
+export function hostLabeler(
+	sources: readonly { id: string; label: string }[] | undefined,
+	fallback: (hostId: string) => string = (hostId) => hostId,
+): (hostId: string) => string {
+	const labels = new Map((sources ?? []).map((source) => [source.id, source.label]));
+	return (hostId) => labels.get(hostId) ?? fallback(hostId);
 }

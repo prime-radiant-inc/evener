@@ -21,10 +21,23 @@ missed note costs nothing; a spurious finding makes a human triage noise.
 | `category` | enum | yes | classification (below) — consumers key on this, never on parsing `description`. |
 | `title` | string | yes | one-line label. |
 | `description` | string | yes | what was observed + why it is a problem. |
-| `evidence` | object | yes | carries the always-present `doctorCommand` (empty when every affected session is non-reproducible — see below) plus the other sub-fields when they apply. An all-non-reproducible finding therefore has NO populated sub-field, and that is not malformation — `description` is the disclosure channel, and a machine consumer must treat the empty-evidence finding as valid, keying on `category`/`signature` per this contract (never on evidence shape). |
+| `evidence` | object | yes | carries the always-present `doctorCommand` (empty when every affected session is non-reproducible — see below) plus the other sub-fields when they apply. An all-non-reproducible finding carries `sessionLocations` and `totalSessionRefs`, with `sessionRefs` empty and no runnable `doctorCommand` — and that is not malformation: `description` is the prose disclosure channel, and a machine consumer must treat such a finding as valid, keying on `category`/`signature` per this contract (never on evidence shape). |
 | `suggestedFix` | object | yes | the **routing** directive (below). |
 
-`evidence` sub-fields: `sessionRefs[]`, `watchIds[]`, `deliveryIds[]`,
+`evidence` sub-fields: `sessionRefs[]`, `totalSessionRefs` (the overall
+distinct-session count the finding reached — reproducible plus
+non-reproducible, and including any omitted from the capped lists below; `0`
+means no cap and no dedup discrepancy), `sessionLocations[]` (one
+`{bucket, sessionId}` pair per non-reproducible session — the lossless
+identity of sessions whose bare id is ambiguous across shell-unsafe buckets,
+so they cannot enter `sessionRefs` and `doctorCommand` cannot reproduce them;
+the structured form of the bucket+session context that otherwise appears in
+`description` prose. It draws on the same shared per-finding budget as the
+prose — reproducible refs first, then non-reproducible sessions — so a
+fleet-wide finding truncates it at `evidenceSessionRefCap` (200) and lists
+exactly the non-reproducible sessions the prose names, never one the prose
+omitted. The count dropped from the capped lists is disclosed in
+`description` prose, not per channel), `watchIds[]`, `deliveryIds[]`,
 `transcriptTurns[]`, `doctorCommand` (the reproduction command — an
 `evener doctor <cmd> …` line a human can run to reproduce what the
 `doctor_evener` call surfaced; empty when every affected session is

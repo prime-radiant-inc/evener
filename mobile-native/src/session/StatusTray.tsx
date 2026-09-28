@@ -5,7 +5,7 @@ import { SymbolView } from "expo-symbols";
 import { useEffect, useMemo, useReducer } from "react";
 import { Platform, Pressable, Text, useWindowDimensions, View } from "react-native";
 import { PulseMeter } from "../board/PulseMeter";
-import { useColors } from "../ui";
+import { allowFontScaling, useColors } from "../ui";
 import { SymbolButton } from "./SymbolButton";
 import { FrameCounter, type TrayLine, type TraySource, trayLine } from "./trayLine";
 
@@ -20,15 +20,7 @@ export interface StatusTrayProps {
 	onJumpToLive(): void;
 }
 
-export function StatusTray({
-	line,
-	perMinute,
-	connected,
-	canStop,
-	stopping,
-	onStop,
-	onJumpToLive,
-}: StatusTrayProps) {
+export function StatusTray({ line, perMinute, connected, canStop, stopping, onStop, onJumpToLive }: StatusTrayProps) {
 	const { palette } = useColors();
 	const { fontScale } = useWindowDimensions();
 	const scale = Platform.OS === "ios" ? fontScale : 1;
@@ -46,12 +38,9 @@ export function StatusTray({
 				onPress={onJumpToLive}
 				style={{ flex: 1, flexDirection: "row", alignItems: "center", gap: 8, minHeight: 36 }}
 			>
-				<PulseMeter
-					perMinute={perMinute}
-					tone={!connected ? "gray" : line.attention ? "attention" : "alive"}
-				/>
+				<PulseMeter perMinute={perMinute} tone={!connected ? "gray" : line.attention ? "attention" : "alive"} />
 				<Text
-					allowFontScaling={Platform.OS !== "ios"}
+					allowFontScaling={allowFontScaling}
 					numberOfLines={1}
 					ellipsizeMode="tail"
 					style={{

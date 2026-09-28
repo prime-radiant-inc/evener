@@ -31,7 +31,11 @@ describe("what the phone remembers about a document", () => {
 		memory.left(plan, leaving(0.62));
 		const reopened = new DocumentMemory(storage, "hub-1", () => now);
 		expect(reopened.position(plan)).toEqual({ blockIndex: 1, blockHash: "p1", offset: 12, progress: 0.62 });
-		expect(reopened.lastRead(plan)).toEqual({ blocks: ["h1", "p1", "p2"], readAt: 2_000, updatedAt: "2026-09-26T11:39:00.000Z" });
+		expect(reopened.lastRead(plan)).toEqual({
+			blocks: ["h1", "p1", "p2"],
+			readAt: 2_000,
+			updatedAt: "2026-09-26T11:39:00.000Z",
+		});
 		expect(reopened.lastRead(other)).toBeNull();
 	});
 
@@ -73,9 +77,22 @@ describe("what the phone remembers about a document", () => {
 	it("keeps unsent comments per document, in the order you wrote them", () => {
 		const storage = memoryStorage();
 		const memory = new DocumentMemory(storage, "hub-1", () => 7_000);
-		const first = memory.addComment(plan, { blockIndex: 2, blockHash: "p2", quote: "Both take the tree lock.", text: "Split this." });
-		memory.addComment(plan, { blockIndex: 5, blockHash: "li3", quote: "Add a regression test.", text: "Force settle first." });
-		expect(new DocumentMemory(storage, "hub-1").comments(plan).map((comment) => comment.text)).toEqual(["Split this.", "Force settle first."]);
+		const first = memory.addComment(plan, {
+			blockIndex: 2,
+			blockHash: "p2",
+			quote: "Both take the tree lock.",
+			text: "Split this.",
+		});
+		memory.addComment(plan, {
+			blockIndex: 5,
+			blockHash: "li3",
+			quote: "Add a regression test.",
+			text: "Force settle first.",
+		});
+		expect(new DocumentMemory(storage, "hub-1").comments(plan).map((comment) => comment.text)).toEqual([
+			"Split this.",
+			"Force settle first.",
+		]);
 		expect(memory.comments(other)).toEqual([]);
 		memory.removeComment(plan, first.id);
 		expect(memory.comments(plan).map((comment) => comment.text)).toEqual(["Force settle first."]);
@@ -105,7 +122,10 @@ describe("what the phone remembers about a document", () => {
 		memory.addComment(plan, { blockIndex: 0, blockHash: "h", quote: "q", text: "keep me" });
 		for (let index = 0; index < 120; index += 1) {
 			now = index + 1;
-			memory.savePosition({ sessionRef: "local:s", path: `doc-${index}.md` }, { blockIndex: 0, blockHash: "h", offset: 0, progress: 0.1 });
+			memory.savePosition(
+				{ sessionRef: "local:s", path: `doc-${index}.md` },
+				{ blockIndex: 0, blockHash: "h", offset: 0, progress: 0.1 },
+			);
 		}
 		const stored = JSON.parse(storage.values.get("evener.native.documents.hub-1") as string);
 		expect(Object.keys(stored)).toHaveLength(100);

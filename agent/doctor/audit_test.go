@@ -2337,3 +2337,129 @@ func TestRunAudit_R14F2_NoDoubleReportReproducibleOmission(t *testing.T) {
 		t.Errorf("Description %q double-reports the reproducible-over-cap omission: 'omitted from command' clause alongside the …and N more marker — one disclosure must carry the omission (round 14 finding 2)", desc)
 	}
 }
+
+// TestRunAudit_SessionLocationsForNonReproducible verifies the #2666
+// operator-facing improvement: sessions that cannot enter SessionRefs (bare
+// sid ambiguous across shell-unsafe buckets) and cannot be reproduced by
+// DoctorCommand are today represented by Description prose only. They must
+// also carry a lossless, machine-readable (bucket, sessionId) identity in
+// Evidence.SessionLocations, sorted deterministically by bucket then sid.
+func TestRunAudit_SessionLocationsForNonReproducible(t *testing.T) {
+	base := t.TempDir()
+	// Two shell-unsafe buckets sharing one sid: the bare sid is ambiguous, so
+	// both sessions are non-reproducible.
+	bucketA := stateHomeBucket(base, "has space-a")
+	bucketB := stateHomeBucket(base, "has space-b")
+	sid := newSessionsTestSID(t)
+	writeAuditSession(t, bucketA, sid, oneCleanReadFileTurns(), fiveRunTimeoutJobsFor(sid))
+	writeAuditSession(t, bucketB, sid, oneCleanReadFileTurns(), fiveRunTimeoutJobsFor(sid))
+
+	rb := mustParseFixtureRunbook(t)
+	// The --since sweep resolves both sessions via readSelector (bucket-
+	// qualified), but the emission selector falls back to the bare sid, so
+	// both land as non-reproducible.
+	res, err := RunAudit(base, rb, AuditOpts{Since: 24 * time.Hour})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var runTimeout *Finding
+	for i := range res.Findings {
+		if strings.Contains(res.Findings[i].Title, "Run-timeout") {
+			runTimeout = &res.Findings[i]
+		}
+	}
+	if runTimeout == nil {
+		t.Fatalf("no run-timeout finding: %+v", res.Findings)
+	}
+	// DoctorCommand must stay honest: nothing is reproducible.
+	if dc := runTimeout.Evidence.DoctorCommand; dc != "" {
+		t.Errorf("DoctorCommand = %q, want empty (all sessions non-reproducible)", dc)
+	}
+	want := []SessionLocation{
+		{Bucket: "has space-a", SessionID: sid},
+		{Bucket: "has space-b", SessionID: sid},
+	}
+	got := runTimeout.Evidence.SessionLocations
+	if len(got) != len(want) {
+		t.Fatalf("SessionLocations = %+v, want %+v (one lossless identity per non-reproducible session)", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("SessionLocations[%d] = %+v, want %+v (sorted by bucket then sid)", i, got[i], want[i])
+		}
+	}
+	// The wire contract is camelCase: sessionLocations[].bucket / .sessionId.
+	b, err := json.Marshal(runTimeout)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var m map[string]any
+	if err := json.Unmarshal(b, &m); err != nil {
+		t.Fatal(err)
+	}
+	evidence, _ := m["evidence"].(map[string]any)
+	locs, _ := evidence["sessionLocations"].([]any)
+	if len(locs) != len(want) {
+		t.Fatalf("JSON evidence.sessionLocations = %v, want %d entries (%s)", evidence["sessionLocations"], len(want), b)
+	}
+	first, _ := locs[0].(map[string]any)
+	if first["bucket"] != "has space-a" || first["sessionId"] != sid {
+		t.Errorf("JSON sessionLocations[0] = %v, want bucket=%q sessionId=%q (camelCase wire contract)", first, "has space-a", sid)
+	}
+}
+
+// TestRunAudit_SessionLocationsShareNonReproBudget verifies roborev's finding
+// that SessionLocations must carry the same capped non-reproducible set the
+// Description prose discloses, bounded by the shared evidenceSessionRefCap
+// budget (reproducible refs first, then non-reproducible). Before the fix it
+// applied its own independent cap, so it listed non-reproducible sessions the
+// shared disclosure budget had already omitted.
+func TestRunAudit_SessionLocationsShareNonReproBudget(t *testing.T) {
+	base := t.TempDir()
+	// 150 reproducible sessions fill most of the shared 200-slot budget.
+	reproBucket := stateHomeBucket(base, hash1)
+	const reproCount = 150
+	for range reproCount {
+		s := newSessionsTestSID(t)
+		writeAuditSession(t, reproBucket, s, oneCleanReadFileTurns(), fiveRunTimeoutJobsFor(s))
+	}
+	// 100 non-reproducible sessions (50 sids across two shell-unsafe buckets).
+	const nonReproPairs = 50
+	bucketA := stateHomeBucket(base, "has space-a")
+	bucketB := stateHomeBucket(base, "has space-b")
+	for range nonReproPairs {
+		s := newSessionsTestSID(t)
+		writeAuditSession(t, bucketA, s, oneCleanReadFileTurns(), fiveRunTimeoutJobsFor(s))
+		writeAuditSession(t, bucketB, s, oneCleanReadFileTurns(), fiveRunTimeoutJobsFor(s))
+	}
+
+	rb := mustParseFixtureRunbook(t)
+	res, err := RunAudit(base, rb, AuditOpts{Since: 24 * time.Hour})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var runTimeout *Finding
+	for i := range res.Findings {
+		if strings.Contains(res.Findings[i].Title, "Run-timeout") {
+			runTimeout = &res.Findings[i]
+		}
+	}
+	if runTimeout == nil {
+		t.Fatalf("no run-timeout finding")
+	}
+	// The shared budget leaves evidenceSessionRefCap - reproCount slots for
+	// non-reproducible sessions; SessionLocations must list exactly those.
+	wantNonReproListed := evidenceSessionRefCap - reproCount
+	if got := len(runTimeout.Evidence.SessionLocations); got != wantNonReproListed {
+		t.Errorf("SessionLocations = %d entries, want %d (the shared budget's remaining slots after %d reproducible refs)", got, wantNonReproListed, reproCount)
+	}
+	// SessionLocations and the Description must disclose the same capped set:
+	// no session omitted from the prose may appear as structured evidence.
+	descNonRepro := 0
+	if idx := strings.Index(runTimeout.Description, "not reproducible"); idx >= 0 {
+		descNonRepro = strings.Count(runTimeout.Description[idx:], " in bucket \"")
+	}
+	if len(runTimeout.Evidence.SessionLocations) != descNonRepro {
+		t.Errorf("SessionLocations has %d entries but Description names %d non-reproducible sessions — the structured and prose channels must disclose the same capped set", len(runTimeout.Evidence.SessionLocations), descNonRepro)
+	}
+}

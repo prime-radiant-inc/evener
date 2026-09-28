@@ -10,14 +10,8 @@
 import type { AppwireClientLike, ThreadReadResponse } from "@evener/appwire-client";
 import { sessionControls } from "@evener/appwire-client";
 import { READ_ITEM_LIMIT } from "../../../mobile/src/services/conversation";
-import {
-	createNativeMutationHost,
-	type NativeMutationHost,
-} from "../nativeMutationHost";
-import {
-	type NativeMutationRuntime,
-	nativeMutationTargetKey,
-} from "../nativeMutationRuntime";
+import { createNativeMutationHost, type NativeMutationHost } from "../nativeMutationHost";
+import { type NativeMutationRuntime, nativeMutationTargetKey } from "../nativeMutationRuntime";
 
 /** "stopped": the interrupt is durably admitted, the Session's "Stopped"
  * moment. "notWorking": a fresh read shows no turn to stop, so nothing was

@@ -118,6 +118,8 @@ func TestRound8EnsureFreshHostPushDeployRecordsTarget(t *testing.T) {
 		sleep:                     func(context.Context, time.Duration) error { return nil },
 		BuildBinary:               writeStageBinary,
 	})
+	testDeployRecorder(t, m)
+	testRestartRecorder(t, m)
 
 	if _, err := m.Ensure(context.Background(), "alpha"); err != nil {
 		t.Fatalf("Ensure: %v (a fresh-host push deploy must record the resolved target so the post-deploy probe addresses it)", err)

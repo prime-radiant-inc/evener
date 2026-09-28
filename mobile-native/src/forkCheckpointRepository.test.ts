@@ -15,8 +15,7 @@ function disk() {
 		},
 		deleteIf(key: string, expected: unknown) {
 			if (this.fail) throw Error("disk unavailable");
-			if (JSON.stringify(values.get(key)) !== JSON.stringify(expected))
-				return false;
+			if (JSON.stringify(values.get(key)) !== JSON.stringify(expected)) return false;
 			return values.delete(key);
 		},
 	};
@@ -70,19 +69,11 @@ describe("native fork checkpoints", () => {
 	it("refuses invalid targets, parent-as-child and unacknowledged draft preparation", () => {
 		const backend = disk(),
 			repo = forkCheckpoints("hub", "parent", backend);
-		for (const entryIndex of [
-			0,
-			-1,
-			1.5,
-			Infinity,
-			Number.MAX_SAFE_INTEGER + 1,
-		])
+		for (const entryIndex of [0, -1, 1.5, Infinity, Number.MAX_SAFE_INTEGER + 1])
 			expect(() => repo.begin({ ...target, entryIndex })).toThrow();
 		expect(repo.load()).toBeNull();
 		const saved = repo.begin(target);
-		expect(() =>
-			repo.acknowledge(saved, { ...child, ref: "parent" }),
-		).toThrow();
+		expect(() => repo.acknowledge(saved, { ...child, ref: "parent" })).toThrow();
 		expect(() => repo.prepareDraft(saved)).toThrow();
 		expect(repo.load()).toEqual(saved);
 	});

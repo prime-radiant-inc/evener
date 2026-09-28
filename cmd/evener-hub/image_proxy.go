@@ -9,10 +9,10 @@ import (
 	"primeradiant.com/evener/cmd/evener-hub/internal/appsource"
 )
 
-// remoteSessionImageBudget bounds one proxied image read. The host reads a
-// bounded amount from its own disk, so anything longer is a stalled channel,
-// not a slow read; the request's own context still cancels earlier.
-const remoteSessionImageBudget = 30 * time.Second
+// remoteSessionFileBudget bounds one proxied image or document read. The host
+// reads a bounded amount from its own disk, so anything longer is a stalled
+// channel, not a slow read; the request's own context still cancels earlier.
+const remoteSessionFileBudget = 30 * time.Second
 
 // remoteSessionImageFetcher is the source capability the two image routes use to
 // serve a session that lives on another host. A source that cannot fetch (this
@@ -22,17 +22,18 @@ type remoteSessionImageFetcher interface {
 	FetchSessionImage(ctx context.Context, params appwire.SessionImageParams) (appwire.SessionImageResponse, error)
 }
 
-// sessionImageFetcher resolves the source a host-qualified route id names to the
-// capability the image routes call. A missing registry, an unregistered source,
-// and a source with no fetch capability are one refusal: these routes can only
-// be served from the owning host, never from a local read.
-func sessionImageFetcher(sources *appsource.Registry, ref appwire.Ref) (remoteSessionImageFetcher, bool) {
+// owningSourceAs resolves the source a host-qualified route id names to the
+// capability T a proxied route calls. A missing registry, an unregistered
+// source, and a source without T are one refusal: these routes can only be
+// served from the owning host, never from a local read.
+func owningSourceAs[T any](sources *appsource.Registry, ref appwire.Ref) (T, bool) {
+	var none T
 	source, err := sourceForThread(sources, ref.String(), "")
 	if err != nil {
-		return nil, false
+		return none, false
 	}
-	fetcher, ok := source.(remoteSessionImageFetcher)
-	return fetcher, ok
+	capability, ok := source.(T)
+	return capability, ok
 }
 
 // proxyableSessionImage reports whether a host's answer is one of the shapes the
@@ -58,11 +59,12 @@ func proxyableSessionImage(resp appwire.SessionImageResponse, wantSHA string) bo
 	return ok && mediaType == resp.MediaType
 }
 
-// hostQualifiedImageRef reports whether a route id is the host-qualified form
+// hostQualifiedRouteRef reports whether a route id is the host-qualified form
 // `s.id + ":" + <remote session id>` the outbound image translation writes for a
-// remote session. A bare (legacy local) id and a "local:" id are not
-// host-qualified and resolve against this hub's own state exactly as before.
-func hostQualifiedImageRef(id string) (appwire.Ref, bool) {
+// remote session, and a remote session's thread ref has. A bare (legacy local)
+// id and a "local:" id are not host-qualified and resolve against this hub's
+// own state exactly as before.
+func hostQualifiedRouteRef(id string) (appwire.Ref, bool) {
 	ref, err := appwire.ParseRef(id)
 	if err != nil || ref.SourceID == "local" {
 		return appwire.Ref{}, false
@@ -96,12 +98,12 @@ func (s *WebServer) serveRemoteSessionImage(w http.ResponseWriter, r *http.Reque
 		http.Error(w, "GET required", http.StatusMethodNotAllowed)
 		return
 	}
-	fetcher, ok := sessionImageFetcher(s.sources, ref)
+	fetcher, ok := owningSourceAs[remoteSessionImageFetcher](s.sources, ref)
 	if !ok {
 		http.Error(w, "remote host unavailable", http.StatusServiceUnavailable)
 		return
 	}
-	ctx, cancel := context.WithTimeout(r.Context(), remoteSessionImageBudget)
+	ctx, cancel := context.WithTimeout(r.Context(), remoteSessionFileBudget)
 	defer cancel()
 	resp, err := fetcher.FetchSessionImage(ctx, params)
 	if err != nil {

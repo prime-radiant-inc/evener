@@ -1,4 +1,5 @@
 import { Storage } from "expo-sqlite/kv-store";
+import { useMemo, useSyncExternalStore } from "react";
 import { FoldedSections, forgetBoard, OrganizeByPreference, RecentSearches, SeenMarkers } from "./boardMemory";
 import { BoardSeen, forgetHubSeenMarks, hubSeenMarks } from "./hubSeen";
 import { perHub } from "./perHub";
@@ -18,6 +19,16 @@ export function seenMarkers(hubId: string): SeenMarkers {
  * the device's markers elsewhere (S4). */
 export function boardSeen(hubId: string): BoardSeen {
 	return new BoardSeen(seenMarkers(hubId), hubSeenMarks(hubId));
+}
+
+/** boardSeen for a screen: a new BoardSeen with each mark or pruned mark on
+ * either path, so a memo that reads isSeen lists it alone. */
+export function useBoardSeen(hubId: string): BoardSeen {
+	const markers = seenMarkers(hubId);
+	const hub = hubSeenMarks(hubId);
+	const markersRevision = useSyncExternalStore(markers.subscribe, markers.getRevision);
+	const hubRevision = useSyncExternalStore(hub.subscribe, hub.getRevision);
+	return useMemo(() => boardSeen(hubId), [hubId, markersRevision, hubRevision]);
 }
 
 export function foldedSections(hubId: string): FoldedSections {

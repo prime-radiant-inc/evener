@@ -477,7 +477,7 @@ func (x *Index) extend(length int64) error {
 	// checked against where the scan below actually lands.
 	unsafeOffsets, err := x.leftoverUpdatesToCommittedSlots()
 	if err != nil {
-		return err
+		return x.fail(err)
 	}
 	// Whatever an extension that did not finish left past the counts goes
 	// before this one appends.

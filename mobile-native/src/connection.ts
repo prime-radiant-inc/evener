@@ -28,12 +28,7 @@ export function parsePairingURL(input: string): {
 	origin: string;
 	token: string;
 } {
-	if (
-		typeof input !== "string" ||
-		input.length === 0 ||
-		hasPairingControl(input) ||
-		input.includes("\\")
-	)
+	if (typeof input !== "string" || input.length === 0 || hasPairingControl(input) || input.includes("\\"))
 		throw invalidPairingURL();
 	const match = /^(https?):\/\/([^/?#]+)(\/[^?#]*)$/.exec(input);
 	if (!match || match[2].includes("@")) throw invalidPairingURL();
@@ -43,15 +38,10 @@ export function parsePairingURL(input: string): {
 	} catch {
 		throw invalidPairingURL();
 	}
-	if (!url.hostname || url.username || url.password || url.search || url.hash)
-		throw invalidPairingURL();
+	if (!url.hostname || url.username || url.password || url.search || url.hash) throw invalidPairingURL();
 	const path = match[3];
 	if (url.pathname !== path) throw invalidPairingURL();
-	if (
-		!path.startsWith("/auth/") ||
-		path.slice(6).length === 0 ||
-		path.slice(6).includes("/")
-	)
+	if (!path.startsWith("/auth/") || path.slice(6).length === 0 || path.slice(6).includes("/"))
 		throw invalidPairingURL();
 	let token: string;
 	try {
@@ -84,9 +74,7 @@ export function connectionTarget(input: string): string {
 		url.hash ||
 		url.pathname !== "/"
 	)
-		throw new Error(
-			"Use the hub origin only, with the token in its separate field.",
-		);
+		throw new Error("Use the hub origin only, with the token in its separate field.");
 	url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
 	url.pathname = "/rpc";
 	return url.toString();
@@ -121,16 +109,10 @@ export class HubProfiles {
 		} catch {
 			return [];
 		}
-		if (
-			!Array.isArray(ids) ||
-			!ids.every((id) => typeof id === "string" && /^[a-zA-Z0-9-]+$/.test(id))
-		)
-			return [];
+		if (!Array.isArray(ids) || !ids.every((id) => typeof id === "string" && /^[a-zA-Z0-9-]+$/.test(id))) return [];
 		return ids;
 	}
-	private async read(
-		id: string,
-	): Promise<(HubProfile & { token: string }) | null> {
+	private async read(id: string): Promise<(HubProfile & { token: string }) | null> {
 		const raw = await this.storage.getItemAsync(key(id));
 		if (!raw) return null;
 		// A record is a single hub the caller asked for by id, so an unreadable
@@ -172,17 +154,14 @@ export class HubProfiles {
 				}
 			}),
 		);
-		return values.flatMap((value) =>
-			value ? [{ id: value.id, name: value.name, origin: value.origin }] : [],
-		);
+		return values.flatMap((value) => (value ? [{ id: value.id, name: value.name, origin: value.origin }] : []));
 	}
 	async token(id: string): Promise<string> {
 		return (await this.read(id))?.token ?? "";
 	}
 	update(id: string, input: HubUpdate): Promise<HubProfile> {
 		return this.write(async () => {
-			if (!(await this.ids()).includes(id))
-				throw new Error("This hub is no longer saved.");
+			if (!(await this.ids()).includes(id)) throw new Error("This hub is no longer saved.");
 			const current = await this.read(id);
 			if (!current) throw new Error("This hub is no longer saved.");
 			return this.saveProfile({
@@ -196,54 +175,34 @@ export class HubProfiles {
 	save(input: HubInput & { id: string }): Promise<HubProfile> {
 		return this.write(() => this.saveProfile(input));
 	}
-	private async saveProfile(
-		input: HubInput & { id: string },
-	): Promise<HubProfile> {
+	private async saveProfile(input: HubInput & { id: string }): Promise<HubProfile> {
 		connectionTarget(input.origin);
 		if (!input.name.trim()) throw new Error("Give this hub a name.");
-		if (/[\r\n]/.test(input.token))
-			throw new Error("The token must be a single line.");
+		if (/[\r\n]/.test(input.token)) throw new Error("The token must be a single line.");
 		const profile = {
 			id: input.id,
 			name: input.name.trim(),
 			origin: new URL(input.origin.trim()).origin,
 		};
-		await this.storage.setItemAsync(
-			key(input.id),
-			JSON.stringify({ ...profile, token: input.token.trim() }),
-		);
+		await this.storage.setItemAsync(key(input.id), JSON.stringify({ ...profile, token: input.token.trim() }));
 		const ids = await this.ids();
-		if (!ids.includes(input.id))
-			await this.storage.setItemAsync(
-				INDEX,
-				JSON.stringify([...ids, input.id]),
-			);
+		if (!ids.includes(input.id)) await this.storage.setItemAsync(INDEX, JSON.stringify([...ids, input.id]));
 		return profile;
 	}
 	remove(id: string): Promise<void> {
 		return this.write(() => this.removeProfile(id));
 	}
 	private async removeProfile(id: string): Promise<void> {
-		await this.storage.setItemAsync(
-			INDEX,
-			JSON.stringify((await this.ids()).filter((value) => value !== id)),
-		);
+		await this.storage.setItemAsync(INDEX, JSON.stringify((await this.ids()).filter((value) => value !== id)));
 		await this.storage.deleteItemAsync(key(id));
 	}
 }
 
-export type NativeSocketFactory = (
-	url: string,
-	options: { headers: Record<string, string> },
-) => WebSocketLike;
-export function createHubClient(
-	origin: string,
-	token: string,
-	socketFactory: NativeSocketFactory,
-): AppwireClient {
+export type NativeSocketFactory = (url: string, options: { headers: Record<string, string> }) => WebSocketLike;
+export function createHubClient(origin: string, token: string, socketFactory: NativeSocketFactory): AppwireClient {
 	return new AppwireClient({
 		url: connectionTarget(origin),
-		clientInfo: { name: "evener-native", version: "0.1.0" },
+		clientInfo: { name: "evener-native", version: "0.2.0" },
 		socketFactory: (url) =>
 			socketFactory(url, {
 				headers: token ? { Authorization: `Bearer ${token}` } : {},

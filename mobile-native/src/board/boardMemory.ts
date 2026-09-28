@@ -125,8 +125,7 @@ export class SeenMarkers {
 			// least: the epoch covers old sessions).
 			entries.sort(
 				([, a], [, b]) =>
-					(a.unread ? 0 : 1) - (b.unread ? 0 : 1) ||
-					(hubTime(b.through) ?? 0) - (hubTime(a.through) ?? 0),
+					(a.unread ? 0 : 1) - (b.unread ? 0 : 1) || (hubTime(b.through) ?? 0) - (hubTime(a.through) ?? 0),
 			);
 			this.state.sessions = Object.fromEntries(entries.slice(0, MARK_LIMIT));
 		}

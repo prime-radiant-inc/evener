@@ -139,6 +139,7 @@ func maskRemoteThreadCapabilities(remote appwire.ThreadCapabilities) appwire.Thr
 		SharedNotes:       remote.SharedNotes && forwarded.SharedNotes,
 		Rename:            remote.Rename && forwarded.Rename,
 		SkillInput:        remote.SkillInput && forwarded.SkillInput,
+		StopSubagent:      remote.StopSubagent && forwarded.StopSubagent,
 	}
 }
 

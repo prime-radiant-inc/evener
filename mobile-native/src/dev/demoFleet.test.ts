@@ -10,7 +10,11 @@ import {
 	NAVIGATION_SECTION_LIMIT,
 	navigationParamsToResourceKey,
 } from "@evener/appwire-client/state/navigation";
-import { capChildren, createDemoFleet, DEMO_FLEET_GENERATION } from "./demoFleet.js";
+import { archiveTarget } from "../board/rowActions.js";
+import { localSessionId } from "../sessionDeletionResult.js";
+import { parseActivityTree } from "@evener/appwire-client";
+import { flattenSubagents, subagentLastLine, tallySubagents } from "../subagents/subagentModel";
+import { capChildren, createDemoFleet, DEMO_FLEET_GENERATION, demoSessionId } from "./demoFleet.js";
 
 const STARTUP = Date.parse("2026-09-26T18:00:00.000Z");
 
@@ -38,9 +42,12 @@ function liveRows(fleet: ReturnType<typeof createDemoFleet>): NavigationSessionS
 	return sessionsOf(read(fleet, params({ resource: "section", section: "live" })));
 }
 
-function findRow(rows: NavigationSessionSummary[], sessionId: string): NavigationSessionSummary {
-	const row = rows.find((row) => row.session_id === sessionId);
-	if (!row) throw new Error(`missing session ${sessionId} in [${rows.map((r) => r.session_id).join(", ")}]`);
+// The fixture names a session by its readable slug; the wire carries the
+// derived id (demoFleet.ts's demoSessionId), so the tests keep naming slugs and
+// translate here.
+function findRow(rows: NavigationSessionSummary[], slug: string): NavigationSessionSummary {
+	const row = rows.find((row) => row.session_id === demoSessionId(slug));
+	if (!row) throw new Error(`missing session ${slug} in [${rows.map((r) => r.session_id).join(", ")}]`);
 	return row;
 }
 
@@ -79,6 +86,17 @@ describe("demo fleet manifest", () => {
 	});
 });
 
+describe("demo session ids", () => {
+	// The id is derived, not stored: a slug must always map to the same
+	// 22-character base62 id, so the demo hub and the tests that name a slug
+	// agree without hardcoding ids at each call site.
+	it("derives a stable 22-character id from a slug", () => {
+		expect(demoSessionId("s-gateway")).toBe("C1LNmJiisw9budaNQerUF7");
+		expect(demoSessionId("s-retry")).toBe("hUCudFPZI9OperXRX4oacL");
+		expect(demoSessionId("s-gateway")).not.toBe(demoSessionId("s-retry"));
+	});
+});
+
 describe("demo fleet live and needs-you sections", () => {
 	const fleet = createDemoFleet({ now: STARTUP });
 
@@ -101,9 +119,24 @@ describe("demo fleet live and needs-you sections", () => {
 
 	it("gives local sessions a local: ref and remote ones a host-prefixed ref", () => {
 		const rows = liveRows(fleet);
-		expect(findRow(rows, "s-audit").ref).toBe("local:s-audit");
-		expect(findRow(rows, "s-retry").ref).toBe("paradise-park:s-retry");
+		expect(findRow(rows, "s-audit").ref).toBe(`local:${demoSessionId("s-audit")}`);
+		expect(findRow(rows, "s-retry").ref).toBe(`paradise-park:${demoSessionId("s-retry")}`);
 		expect(findRow(rows, "s-retry").host_id).toBe("paradise-park");
+	});
+
+	// #2786: the Board's archiveTarget accepts a local row only when
+	// localSessionId(row.ref) matches row.session_id, and that check wants a
+	// 22-character alphanumeric id. A slug-shaped id meant no demo row ever
+	// offered Archive.
+	it("gives every session a real-shaped id, so this hub's rows offer Archive", () => {
+		const rows = liveRows(fleet);
+		for (const row of rows) {
+			expect(row.session_id).toMatch(/^[A-Za-z0-9]{22}$/);
+		}
+		for (const row of rows.filter((row) => row.host_id === "local")) {
+			expect(localSessionId(row.ref)).toBe(row.session_id);
+		}
+		expect(new Set(rows.map((row) => row.session_id)).size).toBe(rows.length);
 	});
 
 	it("computes updated_at relative to startup", () => {
@@ -114,7 +147,9 @@ describe("demo fleet live and needs-you sections", () => {
 
 	it("holds exactly the 4 needs-you rows: the failure, the question, the approval and the restart", () => {
 		const rows = sessionsOf(read(fleet, params({ resource: "section", section: "needs_you" })));
-		expect(rows.map((row) => row.session_id).sort()).toEqual(["s-audit", "s-mirror", "s-namer", "s-retry"]);
+		expect(rows.map((row) => row.session_id).sort()).toEqual(
+			["s-audit", "s-mirror", "s-namer", "s-retry"].map(demoSessionId).sort(),
+		);
 		// Approval rows keep state "active"; the phone infers approval from
 		// showing up here, per the task's own background note.
 		expect(findRow(rows, "s-mirror").state).toBe("active");
@@ -160,16 +195,26 @@ describe("demo fleet subagent trees", () => {
 		expect(pr2138.children).toHaveLength(50);
 		expect(pr2138.omitted_descendants).toBe(4);
 		expect(pr2138.children.every((child) => child.kind === "subagent")).toBe(true);
-		const settle = pr2138.children.find((child) => child.session_id === "g-settle");
+		const settle = pr2138.children.find((child) => child.session_id === demoSessionId("g-settle"));
 		expect(settle).toMatchObject({ state: "errored", live: false });
 		expect(settle?.children).toHaveLength(1);
-		expect(settle?.children[0]).toMatchObject({ session_id: "g-settle-1", state: "active", live: true });
+		expect(settle?.children[0]).toMatchObject({
+			session_id: demoSessionId("g-settle-1"),
+			ref: `local:${demoSessionId("g-settle-1")}`,
+			state: "active",
+			live: true,
+		});
 	});
 
 	it("gives a small named swarm its real titles (s-retry: r-1..r-4)", () => {
 		const rows = liveRows(fleet);
 		const retry = findRow(rows, "s-retry");
-		expect(retry.children.map((child) => child.session_id)).toEqual(["r-1", "r-2", "r-3", "r-4"]);
+		// A subagent is named the way the hub names any session, the same id its
+		// parent's delegates carry (demoSessions.ts).
+		expect(retry.children.map((child) => child.session_id)).toEqual(["r-1", "r-2", "r-3", "r-4"].map(demoSessionId));
+		expect(retry.children.map((child) => child.ref)).toEqual(
+			["r-1", "r-2", "r-3", "r-4"].map((slug) => `paradise-park:${demoSessionId(slug)}`),
+		);
 		expect(retry.children.map((child) => child.state)).toEqual(["ended", "ended", "errored", "ended"]);
 		// Children run on the same host as their parent.
 		expect(retry.children.every((child) => child.host_id === "paradise-park")).toBe(true);
@@ -211,11 +256,90 @@ describe("demo fleet pin categories", () => {
 
 	it("lists the release category's two sessions", () => {
 		const rows = sessionsOf(read(fleet, params({ resource: "pin_section", sectionId: "release" })));
-		expect(rows.map((row) => row.session_id).sort()).toEqual(["s-jobdisp", "s-pr2138"]);
+		expect(rows.map((row) => row.session_id).sort()).toEqual(["s-jobdisp", "s-pr2138"].map(demoSessionId).sort());
 	});
 
 	it("rejects an unknown pin section instead of returning an empty page silently", () => {
 		expect(() => fleet.answerNavigationRead(params({ resource: "pin_section", sectionId: "nope" }))).toThrow();
+	});
+});
+
+describe("demo fleet location", () => {
+	const fleet = createDemoFleet({ now: STARTUP });
+	// The wire names a row by its derived id (demoFleet.ts's demoSessionId), not
+	// its slug, so a location read must name the id the row actually carries.
+	const refOf = (hostId: string, slug: string) => `${hostId}:${demoSessionId(slug)}`;
+
+	it("serves a top-level row's location as the shallow summary the archive check reads", () => {
+		const location = read(fleet, params({ resource: "location", ref: refOf("local", "s-jobdisp") }));
+		expect(location).toMatchObject({
+			ref: refOf("local", "s-jobdisp"),
+			top_level_ref: refOf("local", "s-jobdisp"),
+			top_level: true,
+			project_key: "evener",
+			tier: "current",
+			pin_section_id: "release",
+		});
+		// A location resource holds exactly one entity: the row itself, with no
+		// descendant tree (cmd/evener-hub's projectShallow summary).
+		const session = location.session as NavigationSessionSummary;
+		expect(session).toMatchObject({
+			ref: refOf("local", "s-jobdisp"),
+			session_id: demoSessionId("s-jobdisp"),
+			host_id: "local",
+		});
+		expect(session.children).toEqual([]);
+	});
+
+	it("reports a remote row's own host-prefixed ref and project", () => {
+		const location = read(fleet, params({ resource: "location", ref: refOf("paradise-park", "s-wasm") }));
+		expect(location).toMatchObject({
+			ref: refOf("paradise-park", "s-wasm"),
+			project_key: "c-to-wasm",
+			tier: "current",
+		});
+		expect((location.session as NavigationSessionSummary).host_id).toBe("paradise-park");
+	});
+
+	it("reports an archived row's tier as archived, the fact the Board's archive check compares", () => {
+		expect(read(fleet, params({ resource: "location", ref: refOf("local", "s-gocache") }))).toMatchObject({
+			tier: "archived",
+		});
+	});
+
+	it("drops the capped-children count from the shallow summary, as projectShallow does", () => {
+		// s-fuzz: 467 subagents capped to 50 in the list rows. The hub's
+		// projectShallow sets no omitted_descendants, so the location's session
+		// must not carry one beside its empty children.
+		const location = read(fleet, params({ resource: "location", ref: refOf("local", "s-fuzz") }));
+		const session = location.session as NavigationSessionSummary;
+		expect(session.children).toEqual([]);
+		expect(session.omitted_descendants).toBeUndefined();
+	});
+
+	it("reports an older row as recent, matching the project tier split", () => {
+		// s-roster: ago 1d, not archived -- the same boundary tierRows uses.
+		expect(read(fleet, params({ resource: "location", ref: refOf("local", "s-roster") }))).toMatchObject({
+			tier: "recent",
+		});
+	});
+
+	it("reports a test-run session under the tier project_page actually serves it", () => {
+		// tierRows serves every hub-test-env row under "current", so a location must
+		// not derive "recent" from age for s-test2 (26h) or a reveal would ask a
+		// project_page tier that returns an empty page (navigationReveal.ts).
+		for (const ref of ["s-test1", "s-test2", "s-test3"].map((slug) => refOf("local", slug)))
+			expect(read(fleet, params({ resource: "location", ref }))).toMatchObject({ tier: "current" });
+	});
+
+	it("leaves pin_section_id off a row that sits in no pin section", () => {
+		expect(read(fleet, params({ resource: "location", ref: refOf("local", "s-audit") }))).not.toHaveProperty(
+			"pin_section_id",
+		);
+	});
+
+	it("rejects a ref the fleet doesn't hold, like the hub's own not-found error", () => {
+		expect(() => fleet.answerNavigationRead(params({ resource: "location", ref: "local:nope" }))).toThrow(/nope/);
 	});
 });
 
@@ -247,16 +371,22 @@ describe("demo fleet catalogs and projects", () => {
 	it("groups the three test-run sessions under the synthetic hub-test-env project", () => {
 		const catalog = read(fleet, params({ resource: "catalog", catalog: "test_runs", limit: 100 }));
 		expect(catalog.projects).toEqual([expect.objectContaining({ key: "hub-test-env", session_count: 3 })]);
-		const page = sessionsOf(read(fleet, params({ resource: "project_page", projectKey: "hub-test-env", tier: "current" })));
-		expect(page.map((row) => row.session_id).sort()).toEqual(["s-test1", "s-test2", "s-test3"]);
+		const page = sessionsOf(
+			read(fleet, params({ resource: "project_page", projectKey: "hub-test-env", tier: "current" })),
+		);
+		expect(page.map((row) => row.session_id).sort()).toEqual(
+			["s-test1", "s-test2", "s-test3"].map(demoSessionId).sort(),
+		);
 	});
 
 	it("splits a project's sessions into today (current) and older (recent) tiers", () => {
-		const current = sessionsOf(read(fleet, params({ resource: "project_page", projectKey: "evener", tier: "current" })));
+		const current = sessionsOf(
+			read(fleet, params({ resource: "project_page", projectKey: "evener", tier: "current" })),
+		);
 		const recent = sessionsOf(read(fleet, params({ resource: "project_page", projectKey: "evener", tier: "recent" })));
-		expect(current.map((row) => row.session_id)).toContain("s-retry"); // ago 2m: today
-		expect(recent.map((row) => row.session_id)).toContain("s-roster"); // ago 1d: recent
-		expect(recent.map((row) => row.session_id)).not.toContain("s-retry");
+		expect(current.map((row) => row.session_id)).toContain(demoSessionId("s-retry")); // ago 2m: today
+		expect(recent.map((row) => row.session_id)).toContain(demoSessionId("s-roster")); // ago 1d: recent
+		expect(recent.map((row) => row.session_id)).not.toContain(demoSessionId("s-retry"));
 	});
 
 	it("reports the true archived remaining count on the archived tier page, not the zeroed project overview", () => {
@@ -290,9 +420,9 @@ describe("demo fleet search, auth and plugins", () => {
 	it("finds live and past sessions by title", () => {
 		const fleet = createDemoFleet({ now: STARTUP });
 		const response = fleet.answerSearch({ query: "wasm" });
-		expect(response.live.map((hit) => hit.id)).toEqual(["s-wasm"]);
-		expect(response.past.map((hit) => hit.id)).toEqual(["s-wasm2"]);
-		expect(response.live[0]).toMatchObject({ project: "c-to-wasm", ref: "paradise-park:s-wasm" });
+		expect(response.live.map((hit) => hit.id)).toEqual([demoSessionId("s-wasm")]);
+		expect(response.past.map((hit) => hit.id)).toEqual([demoSessionId("s-wasm2")]);
+		expect(response.live[0]).toMatchObject({ project: "c-to-wasm", ref: `paradise-park:${demoSessionId("s-wasm")}` });
 	});
 
 	it("computes a hit's age against the current clock, not frozen at fleet creation", () => {
@@ -310,13 +440,13 @@ describe("demo fleet search, auth and plugins", () => {
 		const fleet = createDemoFleet({ now: STARTUP });
 		// s-audit: state "question" - awaiting an answer, not an escalation.
 		const askHit = fleet.answerSearch({ query: "audit" }).live[0];
-		expect(askHit).toMatchObject({ id: "s-audit", askPending: true });
+		expect(askHit).toMatchObject({ id: demoSessionId("s-audit"), askPending: true });
 		expect(askHit?.approvalPending).toBeUndefined();
 
 		// s-mirror: state "approval" - blocked on a sandbox escalation, not a
 		// question.
 		const approvalHit = fleet.answerSearch({ query: "mirror" }).live[0];
-		expect(approvalHit).toMatchObject({ id: "s-mirror", approvalPending: true });
+		expect(approvalHit).toMatchObject({ id: demoSessionId("s-mirror"), approvalPending: true });
 		expect(approvalHit?.askPending).toBeUndefined();
 
 		// s-wasm: ordinary working session - neither flag applies, and the wire's
@@ -358,8 +488,8 @@ describe("demo fleet search, auth and plugins", () => {
 describe("demo fleet error handling", () => {
 	const fleet = createDemoFleet({ now: STARTUP });
 
-	it("fails loudly on a navigation resource kind it doesn't serve", () => {
-		expect(() => fleet.answerNavigationRead(params({ resource: "location", ref: "local:s-retry" }))).toThrow();
+	it("fails loudly on a navigation resource name it doesn't serve", () => {
+		expect(() => fleet.answerNavigationRead(params({ resource: "mystery" }))).toThrow(/mystery/);
 	});
 
 	// cmd/evener-hub/app_navigation.go's navigationReadKeyWithFields: an
@@ -378,7 +508,11 @@ describe("demo fleet generation", () => {
 	it("advertises the same generation id every response actually carries", () => {
 		const fleet = createDemoFleet({ now: STARTUP });
 		const key = navigationParamsToResourceKey(params({ resource: "manifest" }));
-		const decoded = decodeNavigationResponse(key, undefined, fleet.answerNavigationRead(params({ resource: "manifest" })));
+		const decoded = decodeNavigationResponse(
+			key,
+			undefined,
+			fleet.answerNavigationRead(params({ resource: "manifest" })),
+		);
 		if (decoded.status !== "snapshot") throw new Error(`expected a snapshot, got ${decoded.status}`);
 		expect(decoded.version.generationId).toBe(DEMO_FLEET_GENERATION);
 	});
@@ -397,7 +531,9 @@ describe("demo fleet paging", () => {
 		const third = read(fleet, params({ resource: "section", section: "live", offset: 14, limit: 7 }));
 		expect(sessionsOf(third)).toHaveLength(6);
 		expect(third.remaining).toBe(0);
-		const seen = new Set([...sessionsOf(first), ...sessionsOf(second), ...sessionsOf(third)].map((row) => row.session_id));
+		const seen = new Set(
+			[...sessionsOf(first), ...sessionsOf(second), ...sessionsOf(third)].map((row) => row.session_id),
+		);
 		expect(seen.size).toBe(20);
 	});
 
@@ -422,9 +558,13 @@ describe("demo fleet paging", () => {
 			if (guard > 20) throw new Error("archived paging never reached the end");
 			// 50 is the real protocol's own maximum for a section-shaped page
 			// (NAVIGATION_SECTION_LIMIT); the hub rejects a request over it.
-			const page = read(fleet, params({ resource: "project_page", projectKey: "evener", tier: "archived", offset, limit: 50 }));
+			const page = read(
+				fleet,
+				params({ resource: "project_page", projectKey: "evener", tier: "archived", offset, limit: 50 }),
+			);
 			const rows = sessionsOf(page);
-			if (rows.length === 0) throw new Error(`page at offset ${offset} returned no rows while ${page.remaining} still remain`);
+			if (rows.length === 0)
+				throw new Error(`page at offset ${offset} returned no rows while ${page.remaining} still remain`);
 			for (const row of rows) seen.add(row.session_id);
 			remaining = page.remaining as number;
 			offset += rows.length;
@@ -437,22 +577,30 @@ describe("demo fleet paging", () => {
 	// the demo fleet's own page() must match, not silently coerce.
 	it("rejects a limit over the section maximum, like the hub's own validation", () => {
 		expect(() =>
-			fleet.answerNavigationRead(params({ resource: "section", section: "live", offset: 0, limit: NAVIGATION_SECTION_LIMIT + 1 })),
+			fleet.answerNavigationRead(
+				params({ resource: "section", section: "live", offset: 0, limit: NAVIGATION_SECTION_LIMIT + 1 }),
+			),
 		).toThrow(/limit/i);
 	});
 
 	it("rejects a limit over the catalog maximum, like the hub's own validation", () => {
 		expect(() =>
-			fleet.answerNavigationRead(params({ resource: "catalog", catalog: "projects", offset: 0, limit: NAVIGATION_CATALOG_LIMIT + 1 })),
+			fleet.answerNavigationRead(
+				params({ resource: "catalog", catalog: "projects", offset: 0, limit: NAVIGATION_CATALOG_LIMIT + 1 }),
+			),
 		).toThrow(/limit/i);
 	});
 
 	it("rejects a limit of zero, like the hub's own validation", () => {
-		expect(() => fleet.answerNavigationRead(params({ resource: "section", section: "live", offset: 0, limit: 0 }))).toThrow(/limit/i);
+		expect(() =>
+			fleet.answerNavigationRead(params({ resource: "section", section: "live", offset: 0, limit: 0 })),
+		).toThrow(/limit/i);
 	});
 
 	it("rejects a negative offset, like the hub's own validation", () => {
-		expect(() => fleet.answerNavigationRead(params({ resource: "section", section: "live", offset: -1, limit: 7 }))).toThrow(/offset/i);
+		expect(() =>
+			fleet.answerNavigationRead(params({ resource: "section", section: "live", offset: -1, limit: 7 })),
+		).toThrow(/offset/i);
 	});
 
 	// The wire protocol's offset/limit are uint32 fields, so a fractional or
@@ -462,19 +610,27 @@ describe("demo fleet paging", () => {
 	// silently truncating to a partial page or reporting a NaN remaining
 	// count.
 	it("rejects a fractional offset", () => {
-		expect(() => fleet.answerNavigationRead(params({ resource: "section", section: "live", offset: 1.5, limit: 7 }))).toThrow(/offset/i);
+		expect(() =>
+			fleet.answerNavigationRead(params({ resource: "section", section: "live", offset: 1.5, limit: 7 })),
+		).toThrow(/offset/i);
 	});
 
 	it("rejects a NaN offset", () => {
-		expect(() => fleet.answerNavigationRead(params({ resource: "section", section: "live", offset: Number.NaN, limit: 7 }))).toThrow(/offset/i);
+		expect(() =>
+			fleet.answerNavigationRead(params({ resource: "section", section: "live", offset: Number.NaN, limit: 7 })),
+		).toThrow(/offset/i);
 	});
 
 	it("rejects a fractional limit", () => {
-		expect(() => fleet.answerNavigationRead(params({ resource: "section", section: "live", offset: 0, limit: 7.5 }))).toThrow(/limit/i);
+		expect(() =>
+			fleet.answerNavigationRead(params({ resource: "section", section: "live", offset: 0, limit: 7.5 })),
+		).toThrow(/limit/i);
 	});
 
 	it("rejects a NaN limit", () => {
-		expect(() => fleet.answerNavigationRead(params({ resource: "section", section: "live", offset: 0, limit: Number.NaN }))).toThrow(/limit/i);
+		expect(() =>
+			fleet.answerNavigationRead(params({ resource: "section", section: "live", offset: 0, limit: Number.NaN })),
+		).toThrow(/limit/i);
 	});
 
 	// An integer can still be too big for the wire: its offset/limit fields are
@@ -482,12 +638,16 @@ describe("demo fleet paging", () => {
 	// trustworthy either. page() must reject both instead of paging with a
 	// value the real hub's wire type could never carry.
 	it("rejects an offset past the wire's uint32 range", () => {
-		expect(() => fleet.answerNavigationRead(params({ resource: "section", section: "live", offset: 2 ** 32, limit: 7 }))).toThrow(/offset/i);
+		expect(() =>
+			fleet.answerNavigationRead(params({ resource: "section", section: "live", offset: 2 ** 32, limit: 7 })),
+		).toThrow(/offset/i);
 	});
 
 	it("rejects a limit past what a safe integer can carry", () => {
 		expect(() =>
-			fleet.answerNavigationRead(params({ resource: "section", section: "live", offset: 0, limit: Number.MAX_SAFE_INTEGER + 2 })),
+			fleet.answerNavigationRead(
+				params({ resource: "section", section: "live", offset: 0, limit: Number.MAX_SAFE_INTEGER + 2 }),
+			),
 		).toThrow(/limit/i);
 	});
 });
@@ -510,6 +670,124 @@ describe("demo fleet truncation", () => {
 	});
 });
 
+describe("demo fleet empty option", () => {
+	const fleet = createDemoFleet({ now: STARTUP, empty: true });
+
+	it("reports zero live, needs-you, working and errored counts, with sources unaffected", () => {
+		const manifest = read(fleet, params({ resource: "manifest" }));
+		expect(manifest.sections).toMatchObject({
+			live: { count: 0 },
+			needs_you: { count: 0 },
+			pin_sections: { count: 0 },
+		});
+		expect(manifest.catalogs).toMatchObject({
+			projects: { count: 0 },
+			archived_projects: { count: 0 },
+			test_runs: { count: 0 },
+		});
+		expect(manifest.attentionSummary).toEqual({ needsYou: 0, error: 0, working: 0 });
+		// The header still names a host: sources are untouched by emptiness.
+		expect(manifest.sources).toEqual([
+			{ id: "local", label: "this host", kind: "local", online: true },
+			{ id: "paradise-park", label: "paradise-park", kind: "appwire", online: true },
+		]);
+	});
+
+	it("has no live or needs-you rows", () => {
+		expect(liveRows(fleet)).toHaveLength(0);
+		const needsYou = sessionsOf(read(fleet, params({ resource: "section", section: "needs_you" })));
+		expect(needsYou).toHaveLength(0);
+	});
+
+	it("has no pin sections", () => {
+		const catalog = read(fleet, params({ resource: "pin_catalog", limit: 100 }));
+		expect(catalog.pin_sections).toEqual([]);
+	});
+
+	it("has no projects, archived projects or test-run projects in the catalogs", () => {
+		const projects = read(fleet, params({ resource: "catalog", catalog: "projects", limit: 100 }));
+		expect(projects.projects).toEqual([]);
+		const archived = read(fleet, params({ resource: "catalog", catalog: "archived_projects", limit: 100 }));
+		expect(archived.projects).toEqual([]);
+		const testRuns = read(fleet, params({ resource: "catalog", catalog: "test_runs", limit: 100 }));
+		expect(testRuns.projects).toEqual([]);
+	});
+
+	it("finds nothing in search, with or without a query", () => {
+		const withQuery = fleet.answerSearch({ query: "wasm" });
+		expect(withQuery.live).toEqual([]);
+		expect(withQuery.past).toEqual([]);
+		const noQuery = fleet.answerSearch({});
+		expect(noQuery.live).toEqual([]);
+		expect(noQuery.past).toEqual([]);
+	});
+});
+
+describe("demo fleet question after a delay", () => {
+	const askedAt = STARTUP + 30 * 1000;
+	const fleet = () => createDemoFleet({ now: STARTUP, clock: () => askedAt });
+	const needsYouRows = (demo: ReturnType<typeof createDemoFleet>) =>
+		sessionsOf(read(demo, params({ resource: "section", section: "needs_you" })));
+
+	it("keeps s-gateway working until the question is asked", () => {
+		const demo = fleet();
+		const gateway = findRow(liveRows(demo), "s-gateway");
+		expect(gateway.state).toBe("active");
+		expect(gateway.ask_pending).toBeUndefined();
+		expect(needsYouRows(demo).map((row) => row.session_id)).not.toContain(demoSessionId("s-gateway"));
+		const manifest = read(demo, params({ resource: "manifest" }));
+		expect(manifest.attentionSummary).toEqual({ needsYou: 4, error: 1, working: 9 });
+		expect(manifest.sections).toMatchObject({ live: { count: 20 }, needs_you: { count: 4 } });
+	});
+
+	it("moves s-gateway into Needs you, shaped like the fleet's own question row, once asked", () => {
+		const demo = fleet();
+		demo.askQuestion();
+		const gateway = findRow(liveRows(demo), "s-gateway");
+		const audit = findRow(liveRows(demo), "s-audit");
+		expect(gateway.state).toBe(audit.state);
+		expect(gateway.ask_pending).toBe(true);
+		expect(gateway.updated_at).toBe(new Date(askedAt).toISOString());
+		expect(findRow(needsYouRows(demo), "s-gateway")).toEqual(gateway);
+		const manifest = read(demo, params({ resource: "manifest" }));
+		expect(manifest.attentionSummary).toEqual({ needsYou: 5, error: 1, working: 8 });
+		expect(manifest.sections).toMatchObject({ live: { count: 20 }, needs_you: { count: 5 } });
+		const hit = demo.answerSearch({ query: "gateway" }).live[0];
+		expect(hit).toMatchObject({ id: demoSessionId("s-gateway"), state: "awaiting", askPending: true });
+	});
+
+	it("answers at a higher revision after the question, so an invalidated read is not below target", () => {
+		const demo = fleet();
+		const before = demo.answerNavigationRead(params({ resource: "section", section: "needs_you" }));
+		const payload = demo.askQuestion();
+		const after = demo.answerNavigationRead(params({ resource: "section", section: "needs_you" }));
+		expect(after.revision).toBeGreaterThan(before.revision);
+		expect(after.etag).not.toBe(before.etag);
+		expect(payload).toEqual({
+			generationId: DEMO_FLEET_GENERATION,
+			sequence: 1,
+			targets: [
+				{ kind: "manifest", revision: after.revision },
+				{ kind: "section", section: "live", revision: after.revision },
+				{ kind: "section", section: "needs_you", revision: after.revision },
+				{ kind: "project", projectKey: "evener", revision: after.revision },
+			],
+		});
+	});
+
+	it("advertises the question's sequence in its capability, so a client reconnecting afterwards never sees it move backward", () => {
+		const demo = fleet();
+		expect(demo.navigationCapability()).toEqual({
+			version: 1,
+			generationId: DEMO_FLEET_GENERATION,
+			sequence: 0,
+			readVersions: [2],
+		});
+		const payload = demo.askQuestion();
+		expect(demo.navigationCapability().sequence).toBe(payload.sequence);
+	});
+});
+
 describe("demo fleet offline propagation", () => {
 	it("marks an offline-host session's own children offline too, not just the parent row", () => {
 		const fleet = createDemoFleet({ now: STARTUP, offlineHost: true });
@@ -523,5 +801,181 @@ describe("demo fleet offline propagation", () => {
 		const pr2138 = findRow(liveRows(fleet), "s-pr2138"); // local/magic-kingdom
 		expect(pr2138.children.length).toBeGreaterThan(0);
 		expect(pr2138.children.every((child) => child.offline === undefined)).toBe(true);
+	});
+});
+
+describe("demo fleet archive", () => {
+	const fleet = () => createDemoFleet({ now: STARTUP });
+	const tierOf = (demo: ReturnType<typeof createDemoFleet>, ref: string) =>
+		read(demo, params({ resource: "location", ref })).tier;
+	// Every resource the archive changes, at the fleet's one new revision,
+	// and the loaded project pages, as the real hub's session archive names
+	// them (cmd/evener-hub/app_archive.go, navigation_service.go's
+	// commitTargetsLocked).
+	const archiveTargets = (revision: number, projectKey: string) => [
+		{ kind: "manifest", revision },
+		{ kind: "section", section: "live", revision },
+		{ kind: "section", section: "needs_you", revision },
+		{ kind: "catalog", catalog: "projects", revision },
+		{ kind: "catalog", catalog: "archived_projects", revision },
+		{ kind: "project", projectKey, revision },
+		{ kind: "all_loaded_projects" },
+	];
+
+	it("offers Archive on every Live row: a local row by its session id, another host's by its ref", () => {
+		for (const row of liveRows(fleet())) {
+			expect(archiveTarget(row)).toEqual({ kind: "session", id: row.host_id === "local" ? row.session_id : row.ref });
+		}
+	});
+
+	it("takes an archived session out of Live and answers with the receipt and invalidation a real hub sends", () => {
+		const demo = fleet();
+		const deslop = findRow(liveRows(demo), "s-deslop");
+		const before = demo.answerNavigationRead(params({ resource: "section", section: "live" }));
+		const { response, invalidated } = demo.archive({ kind: "session", id: deslop.session_id, archived: true });
+		const after = demo.answerNavigationRead(params({ resource: "section", section: "live" }));
+		expect(after.revision).toBeGreaterThan(before.revision);
+		expect(liveRows(demo).map((row) => row.session_id)).not.toContain(deslop.session_id);
+		expect(liveRows(demo)).toHaveLength(19);
+		expect(tierOf(demo, deslop.ref)).toBe("archived");
+		const targets = archiveTargets(after.revision, "deslop");
+		expect(response).toEqual({ ok: true, navigation: { generation_id: DEMO_FLEET_GENERATION, targets } });
+		expect(invalidated).toEqual({ generationId: DEMO_FLEET_GENERATION, sequence: 1, targets });
+		expect(demo.navigationCapability().sequence).toBe(1);
+	});
+
+	it("brings an unarchived session back to Live as it was, where it was", () => {
+		const demo = fleet();
+		const order = liveRows(demo).map((row) => row.session_id);
+		const deslop = findRow(liveRows(demo), "s-deslop");
+		demo.archive({ kind: "session", id: deslop.session_id, archived: true });
+		const { invalidated } = demo.archive({ kind: "session", id: deslop.session_id, archived: false });
+		expect(findRow(liveRows(demo), "s-deslop")).toEqual(deslop);
+		expect(liveRows(demo).map((row) => row.session_id)).toEqual(order);
+		expect(tierOf(demo, deslop.ref)).toBe("current");
+		expect(invalidated.sequence).toBe(2);
+	});
+
+	it("archives another host's session by its ref, and a local one by its local: ref", () => {
+		const demo = fleet();
+		const retry = findRow(liveRows(demo), "s-retry");
+		const deslop = findRow(liveRows(demo), "s-deslop");
+		demo.archive({ kind: "session", id: retry.ref, archived: true });
+		demo.archive({ kind: "session", id: deslop.ref, archived: true });
+		expect(tierOf(demo, retry.ref)).toBe("archived");
+		expect(tierOf(demo, deslop.ref)).toBe("archived");
+	});
+
+	it("keeps an archive when the working row later asks its question", () => {
+		const demo = fleet();
+		const deslop = findRow(liveRows(demo), "s-deslop");
+		demo.archive({ kind: "session", id: deslop.session_id, archived: true });
+		demo.askQuestion();
+		expect(liveRows(demo).map((row) => row.session_id)).not.toContain(deslop.session_id);
+		expect(findRow(liveRows(demo), "s-gateway").ask_pending).toBe(true);
+	});
+
+	it("keeps an archived session in its own project's Archived tier, where its location sends a reveal", () => {
+		const demo = fleet();
+		const deslop = findRow(liveRows(demo), "s-deslop");
+		demo.archive({ kind: "session", id: deslop.session_id, archived: true });
+		const location = read(demo, params({ resource: "location", ref: deslop.ref }));
+		expect(location).toMatchObject({ project_key: "deslop", tier: "archived" });
+		const tier = sessionsOf(read(demo, params({ resource: "project_page", projectKey: "deslop", tier: "archived" })));
+		expect(tier.map((row) => row.session_id)).toEqual([deslop.session_id]);
+	});
+
+	it("moves a project whose every session is archived into Archived projects, and back on unarchive", () => {
+		const demo = fleet();
+		const keys = (catalog: string) =>
+			(read(demo, params({ resource: "catalog", catalog, limit: 100 })).projects as { key: string }[]).map(
+				(project) => project.key,
+			);
+		const projectsBefore = keys("projects");
+		demo.archive({ kind: "session", id: demoSessionId("s-deslop"), archived: true });
+		expect(keys("projects")).not.toContain("deslop");
+		expect(read(demo, params({ resource: "catalog", catalog: "archived_projects", limit: 100 })).projects).toEqual([
+			expect.objectContaining({ key: "evener", session_count: 271 }),
+			expect.objectContaining({ key: "deslop", session_count: 1 }),
+		]);
+		expect(read(demo, params({ resource: "manifest" })).catalogs).toMatchObject({
+			projects: { count: projectsBefore.length - 1 },
+			archived_projects: { count: 2 },
+		});
+		demo.archive({ kind: "session", id: demoSessionId("s-deslop"), archived: false });
+		expect(keys("projects")).toEqual(projectsBefore);
+		expect(keys("archived_projects")).toEqual(["evener"]);
+	});
+
+	it("keeps an archived pinned session in its pin section", () => {
+		const demo = fleet();
+		const pinCatalog = () => read(demo, params({ resource: "pin_catalog", limit: 100 })).pin_sections;
+		const research = () =>
+			sessionsOf(read(demo, params({ resource: "pin_section", sectionId: "research" }))).map((row) => row.session_id);
+		const catalogBefore = pinCatalog();
+		const researchBefore = research();
+		const pinSectionsBefore = (read(demo, params({ resource: "manifest" })).sections as { pin_sections: unknown })
+			.pin_sections;
+		demo.archive({ kind: "session", id: demoSessionId("s-diff"), archived: true });
+		expect(research()).toContain(demoSessionId("s-diff"));
+		expect(research()).toEqual(researchBefore);
+		expect(pinCatalog()).toEqual(catalogBefore);
+		expect((read(demo, params({ resource: "manifest" })).sections as { pin_sections: unknown }).pin_sections).toEqual(
+			pinSectionsBefore,
+		);
+	});
+
+	it("stops counting an archived working or failed row in the manifest's summary", () => {
+		const demo = fleet();
+		demo.archive({ kind: "session", id: demoSessionId("s-gateway"), archived: true });
+		demo.archive({ kind: "session", id: findRow(liveRows(demo), "s-retry").ref, archived: true });
+		const manifest = read(demo, params({ resource: "manifest" }));
+		expect(manifest.attentionSummary).toEqual({ needsYou: 3, error: 0, working: 8 });
+		expect(manifest.sections).toMatchObject({ live: { count: 18 }, needs_you: { count: 3 } });
+	});
+
+	it("refuses a project archive and a session it doesn't hold, changing nothing", () => {
+		const demo = fleet();
+		expect(() => demo.archive({ kind: "project", id: "deslop", archived: true })).toThrow(
+			"The demo fleet archives sessions only",
+		);
+		expect(() => demo.archive({ kind: "session", id: "0000000000000000000000", archived: true })).toThrow(
+			"Unknown demonstration session: 0000000000000000000000",
+		);
+		expect(demo.navigationCapability().sequence).toBe(0);
+	});
+});
+
+// The Subagents list, a subagent's screen and the Reader read the same swarm
+// the Board's rows come from (spec Appendix B).
+describe("demo fleet subagents", () => {
+	const fleet = createDemoFleet({ now: STARTUP });
+	const pr2138 = `local:${demoSessionId("s-pr2138")}`;
+
+	it("lists Get PR 2138 Test Clean's 55 subagents in its activity tree, with data.js's details", () => {
+		const tree = parseActivityTree(fleet.answerJobsList({ ref: pr2138 }).data);
+		if (!tree) throw new Error("no tree");
+		const rows = flattenSubagents(tree);
+		expect(tallySubagents(rows)).toEqual({ total: 55, running: 32, failed: 2, done: 21 });
+		const settle = rows.find((row) => row.title === "Fix race in tree settle");
+		expect(settle?.delegate).toMatchObject({ outcome: "failed" });
+		expect(subagentLastLine(settle as never, "glm-5.3-vision", (model) => model)).toMatchObject({
+			branch: "fix-settle-race",
+			tokens: "1.2M tokens",
+		});
+	});
+
+	it("gives a subagent that started subagents its own tree, as its transcript's delegates name them", () => {
+		const coordinator = parseActivityTree(fleet.answerJobsList({ ref: pr2138 }).data);
+		const settle = flattenSubagents(coordinator as never).find((row) => row.title === "Fix race in tree settle");
+		if (!settle) throw new Error("no Fix race in tree settle");
+		const tree = parseActivityTree(fleet.answerJobsList({ ref: settle.ref }).data);
+		expect(tree?.root.ref).toBe(settle.ref);
+		expect(flattenSubagents(tree as never).map((row) => row.title)).toEqual(["Check drain ordering in tests"]);
+	});
+
+	it("gives a session with no subagents an empty tree", () => {
+		const other = parseActivityTree(fleet.answerJobsList({ ref: `local:${demoSessionId("s-gateway")}` }).data);
+		expect(other?.root.entries).toEqual([]);
 	});
 });

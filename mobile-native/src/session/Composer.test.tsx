@@ -5,7 +5,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { palettes } from "../design/tokens";
 import { Platform } from "react-native";
 import { alertRequests, pressable, render, renderedText } from "../renderNative.testkit";
-import { Composer } from "./Composer";
+import { Composer, ModelChip } from "./Composer";
 
 const actionSheet = vi.hoisted(() => ({ show: vi.fn() }));
 
@@ -41,9 +41,7 @@ function composer(overrides: Partial<Parameters<typeof Composer>[0]> = {}) {
 }
 
 function fields(tree: ReactTestRenderer): ReactTestInstance[] {
-	return tree.root.findAll(
-		(node) => String(node.type) === "TextInput" && node.props.accessibilityLabel === "Message",
-	);
+	return tree.root.findAll((node) => String(node.type) === "TextInput" && node.props.accessibilityLabel === "Message");
 }
 
 describe("Composer", () => {
@@ -80,7 +78,25 @@ describe("Composer", () => {
 		expect(send?.props.accessibilityState).toMatchObject({ disabled: true });
 	});
 
-	it("opens Photo library and Camera from +", () => {
+	it("opens Photo library, Camera, and Commands and skills from +", () => {
+		const onCommands = vi.fn();
+		const { props, tree } = composer({ onCommands });
+		act(() => pressable(tree, "Add")?.props.onPress());
+		const [options, choose] = actionSheet.show.mock.calls[0] as [
+			{ options: string[]; cancelButtonIndex: number },
+			(index: number) => void,
+		];
+		expect(options.options).toEqual(["Photo library", "Camera", "Commands and skills", "Cancel"]);
+		expect(options.cancelButtonIndex).toBe(3);
+		act(() => choose(2));
+		expect(onCommands).toHaveBeenCalledTimes(1);
+		act(() => choose(3));
+		expect(onCommands).toHaveBeenCalledTimes(1);
+		expect(props.onPhotoLibrary).not.toHaveBeenCalled();
+		expect(props.onCamera).not.toHaveBeenCalled();
+	});
+
+	it("keeps Commands and skills out of + when the session can't list them", () => {
 		const { props, tree } = composer();
 		act(() => pressable(tree, "Add")?.props.onPress());
 		expect(actionSheet.show).toHaveBeenCalledTimes(1);
@@ -103,16 +119,24 @@ describe("Composer", () => {
 		const platform = Platform as { OS: string };
 		platform.OS = "android";
 		try {
-			const { props, tree } = composer();
+			const onCommands = vi.fn();
+			const { props, tree } = composer({ onCommands });
 			alertRequests.length = 0;
 			act(() => pressable(tree, "Add")?.props.onPress());
 			expect(actionSheet.show).not.toHaveBeenCalled();
 			const buttons = alertRequests[0]?.buttons ?? [];
-			expect(buttons.map((button) => button.text)).toEqual(["Photo library", "Camera", "Cancel"]);
+			expect(buttons.map((button) => button.text)).toEqual([
+				"Photo library",
+				"Camera",
+				"Commands and skills",
+				"Cancel",
+			]);
 			act(() => buttons[0]?.onPress?.());
 			act(() => buttons[1]?.onPress?.());
+			act(() => buttons[2]?.onPress?.());
 			expect(props.onPhotoLibrary).toHaveBeenCalledTimes(1);
 			expect(props.onCamera).toHaveBeenCalledTimes(1);
+			expect(onCommands).toHaveBeenCalledTimes(1);
 		} finally {
 			platform.OS = "ios";
 		}
@@ -125,9 +149,7 @@ describe("Composer", () => {
 
 		act(() => tree.update(<Composer {...props} value={`${six}\n7`} />));
 		const expand = pressable(tree, "Expand editor");
-		expect(expand?.findByType("SymbolView" as never).props.name).toBe(
-			"arrow.up.left.and.arrow.down.right",
-		);
+		expect(expand?.findByType("SymbolView" as never).props.name).toBe("arrow.up.left.and.arrow.down.right");
 		act(() => expand?.props.onPress());
 		expect(renderedText(tree)).toContain("Done");
 		const editor = fields(tree)[1];
@@ -155,7 +177,29 @@ describe("Composer", () => {
 			.findAll((node) => typeof node.props.accessibilityLabel === "string")
 			.map((node) => node.props.accessibilityLabel as string);
 		const words = [...labels, ...renderedText(tree).split(" ")];
-		for (const word of ["Stop", "Steer", "Queue", "Reconnect", "Refresh"])
-			expect(words).not.toContain(word);
+		for (const word of ["Stop", "Steer", "Queue", "Reconnect", "Refresh"]) expect(words).not.toContain(word);
+	});
+});
+
+describe("the model chip (spec 8.5)", () => {
+	it("names the model and effort on one line in ink-mid, and opens the model sheet", () => {
+		const onPress = vi.fn();
+		const tree = render(<ModelChip label="GLM 5.3 Vision · XHigh" onPress={onPress} />);
+		const chip = pressable(tree, "Model: GLM 5.3 Vision · XHigh. Change model or effort");
+		if (!chip) throw new Error("no chip");
+		expect(chip.props.style({ pressed: false })).toMatchObject({ minHeight: 44 });
+		const text = chip.findByType("Text" as never);
+		expect(text.props).toMatchObject({ numberOfLines: 1 });
+		expect(text.props.style).toMatchObject({ fontSize: 15, lineHeight: 20, color: light.inkMid });
+		expect(chip.findByType("SymbolView" as never).props).toMatchObject({ name: "chevron.down", size: 11 });
+		act(() => chip.props.onPress());
+		expect(onPress).toHaveBeenCalledOnce();
+	});
+
+	it("only names the model when there's nothing to change", () => {
+		const tree = render(<ModelChip label="muse-spark-1.3" />);
+		expect(tree.root.findAll((node) => String(node.type) === "Pressable")).toEqual([]);
+		expect(tree.root.findAll((node) => String(node.type) === "SymbolView")).toEqual([]);
+		expect(renderedText(tree)).toBe("muse-spark-1.3");
 	});
 });

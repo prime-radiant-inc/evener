@@ -1,0 +1,232 @@
+// The demo fleet's subagents and documents, as the hub serves them: the
+// activity tree behind the Subagents list (evener/jobs/list) and the
+// documents the Reader opens (/doc/file). Built from the same raw swarm the
+// Board's navigation rows come from (demoFleet.ts, after the prototype's
+// data.js), so the Board, the list and the transcript agree (spec Appendix
+// B). Each subagent's own session (thread/read) is demoSessions.ts's.
+export interface DemoSubagent {
+	id: string;
+	title: string;
+	state: "running" | "failed" | "done";
+	/** Seconds since its last activity (running), or since it ended (data.js "ago"). */
+	ago: number;
+	/** Seconds it ran (data.js "elapsed"). */
+	elapsed?: number;
+	model?: string;
+	/** Its own worktree's branch (data.js "lane"). */
+	lane?: string;
+	/** data.js's token label: "1.2M", "210K". */
+	tokens?: string;
+	/** data.js's why line: "Running go test ./agent/...", "Failed: …", "Tests pass". */
+	line?: string;
+	children?: DemoSubagent[];
+}
+
+export interface DemoCoordinator {
+	/** Its ref, "local:s-pr2138". */
+	ref: string;
+	title: string;
+	model: string;
+	subagents: readonly DemoSubagent[];
+	/** How the fleet names a subagent's own session (demoFleet.ts hostSessionRef). */
+	subagentRef: (id: string) => string;
+}
+
+export function demoTokens(label: string | undefined): number {
+	const match = /^(\d+(?:\.\d+)?)([KM]?)$/.exec(label ?? "");
+	if (!match) return 0;
+	const scale = match[2] === "M" ? 1_000_000 : match[2] === "K" ? 1_000 : 1;
+	return Math.round(Number(match[1]) * scale);
+}
+
+const idOf = (ref: string) => ref.slice(ref.indexOf(":") + 1);
+const iso = (ms: number) => new Date(ms).toISOString();
+const DEFAULT_ELAPSED_SECONDS = 300;
+const MANDATE = (title: string) => `${title}. Report what you find; don't change unrelated code.`;
+
+interface Counts {
+	active: number;
+	failed: number;
+	completed: number;
+	complete: true;
+}
+
+const noCounts = (): Counts => ({ active: 0, failed: 0, completed: 0, complete: true });
+
+function addCounts(into: Counts, from: Counts): void {
+	into.active += from.active;
+	into.failed += from.failed;
+	into.completed += from.completed;
+}
+
+function session(sessionId: string, ref: string, label: string, entries: unknown[], counts: Counts) {
+	const aggregate = counts.active > 0 ? "working" : counts.failed > 0 ? "failed" : "ended";
+	return { kind: "session", sessionId, ref, label, aggregate, counts, entries, branch: {} };
+}
+
+/** evener/jobs/list's answer for a coordinator: its subagents, nested as they were started. */
+export function demoActivityTree(coordinator: DemoCoordinator, startupMs: number): { data: unknown } {
+	const toEntry = (sub: DemoSubagent, ownerSessionId: string): { entry: unknown; counts: Counts } => {
+		const ref = coordinator.subagentRef(sub.id);
+		const sessionId = idOf(ref);
+		const running = sub.state === "running";
+		const elapsed = (sub.elapsed ?? DEFAULT_ELAPSED_SECONDS) * 1000;
+		const lastEvent = startupMs - sub.ago * 1000;
+		const counts: Counts = {
+			active: running ? 1 : 0,
+			failed: sub.state === "failed" ? 1 : 0,
+			completed: sub.state === "done" ? 1 : 0,
+			complete: true,
+		};
+		const childEntries: unknown[] = [];
+		const childCounts = noCounts();
+		if (running && sub.line?.startsWith("Running ")) {
+			childEntries.push({
+				kind: "shell",
+				job: {
+					jobId: `job-${sub.id}`,
+					ownerSessionId: sessionId,
+					ownerRef: ref,
+					type: "shell",
+					status: "running",
+					terminal: false,
+					background: true,
+					hasOutput: true,
+					description: sub.line,
+					command: sub.line.slice("Running ".length),
+					startedAt: iso(startupMs - 42_000),
+					outputBytes: 2048,
+				},
+			});
+			childCounts.active += 1;
+		}
+		for (const child of sub.children ?? []) {
+			const nested = toEntry(child, sessionId);
+			childEntries.push(nested.entry);
+			addCounts(childCounts, nested.counts);
+		}
+		addCounts(counts, childCounts);
+		const tokens = demoTokens(sub.tokens);
+		const reason = sub.state === "failed" ? (sub.line ?? "").replace(/^Failed:\s*/, "") : "";
+		const delegate = {
+			delegateId: `d-${sub.id}`,
+			ownerSessionId,
+			childSessionId: sessionId,
+			childRef: ref,
+			type: "delegate",
+			description: sub.title,
+			mandate: MANDATE(sub.title),
+			task: MANDATE(sub.title),
+			...(sub.model ? { resolvedModel: sub.model, model: sub.model } : {}),
+			runStartedAt: iso(running ? startupMs - elapsed : lastEvent - elapsed),
+			...(running
+				? { latestActivityAt: iso(lastEvent) }
+				: {
+						terminal: true,
+						outcome: sub.state === "failed" ? "failed" : "completed",
+						runEndedAt: iso(lastEvent),
+						...(reason ? { reason } : {}),
+						...(sub.state === "done" && sub.line ? { message: `${sub.line}.` } : {}),
+					}),
+			...(tokens > 0 ? { usage: { inputTokens: tokens, outputTokens: 0, totalTokens: tokens } } : {}),
+			...(sub.lane
+				? {
+						worktree: {
+							path: `/home/jesse/git/evener/.worktrees/${sub.lane}`,
+							branch: sub.lane,
+							headSha: "0000000",
+							ahead: 1,
+							dirty: false,
+						},
+					}
+				: {}),
+			branch: {},
+			...(childEntries.length > 0 ? { child: session(sessionId, ref, sub.title, childEntries, childCounts) } : {}),
+		};
+		return { entry: { kind: "delegate", delegate }, counts };
+	};
+	const counts = noCounts();
+	const entries = coordinator.subagents.map((sub) => {
+		const built = toEntry(sub, idOf(coordinator.ref));
+		addCounts(counts, built.counts);
+		return built.entry;
+	});
+	return {
+		data: { revision: 1, root: session(idOf(coordinator.ref), coordinator.ref, coordinator.title, entries, counts) },
+	};
+}
+
+// data.js's settle-race plan (data.js:505-531), as the first read serves it.
+export const SETTLE_RACE_PLAN = `# Fix the settle/drain race
+
+## Problem
+
+The retirement drain and the tree settle pass both take the tree lock. When settle runs first, it can mark the tree idle before the drain has seen pending work, so the root's attention is never delivered.
+
+## Fix
+
+1. Settle waits for the drain to finish before it takes the tree lock.
+2. The drain signals completion through a channel, not a shared flag.
+3. Add a regression test that forces settle to run first.
+
+## Proof
+
+- Run every affected package under \`-race\` on macOS **and** Linux.
+- Run the three flaky tests 200 times each with \`-count=200\`.
+- No skipped or quarantined tests.
+
+## Subagents
+
+| Work | Subagents |
+|---|---|
+| Fix the race | 1 |
+| -race runs, macOS | 14 |
+| -race runs, Linux | 14 |
+| Flake loops | 3 |
+`;
+
+// The version later reads serve: three changed blocks, so reading the plan
+// twice shows "3 changes since you read it earlier today" (frame 17).
+export const SETTLE_RACE_PLAN_REVISED = SETTLE_RACE_PLAN.replace(
+	"so the root's attention is never delivered.",
+	"so the root's attention is never delivered. It shows up as three flaky tests.",
+)
+	.replace(
+		"2. The drain signals completion through a channel, not a shared flag.",
+		"2. The drain closes a channel when it finishes, and settle waits on it.",
+	)
+	.replace(
+		"- No skipped or quarantined tests.",
+		"- No skipped or quarantined tests.\n- Keep the -race runs in CI for a week.",
+	);
+
+export interface DemoDocument {
+	sessionRef: string;
+	/** Relative to the demo sessions' folder (createDemoDocuments' `folder`). */
+	path: string;
+	versions: readonly string[];
+}
+
+/** /doc/file for the demo hub, as the hub answers it (doc_serve.go): a known
+ * document's text by session and path (relative, or absolute under the demo
+ * folder, as a file link names it), 404 for anything else, 400 without
+ * format=raw. A document's first read after startup gets its first version;
+ * later reads get its last. */
+export function createDemoDocuments(documents: readonly DemoDocument[], folder: string) {
+	const root = `${folder}/`;
+	const reads = new Map<string, number>();
+	return {
+		answerDocFile(url: URL): { status: number; body: string } {
+			const session = url.searchParams.get("session") ?? "";
+			const raw = url.searchParams.get("path") ?? "";
+			const path = raw.startsWith(root) ? raw.slice(root.length) : raw;
+			const document = documents.find((candidate) => candidate.sessionRef === session && candidate.path === path);
+			if (!document) return { status: 404, body: "not found" };
+			if (url.searchParams.get("format") !== "raw") return { status: 400, body: "format=raw required" };
+			const key = JSON.stringify([session, path]);
+			const count = reads.get(key) ?? 0;
+			reads.set(key, count + 1);
+			return { status: 200, body: document.versions[Math.min(count, document.versions.length - 1)] ?? "" };
+		},
+	};
+}

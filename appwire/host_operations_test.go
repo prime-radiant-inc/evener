@@ -101,9 +101,10 @@ func TestHostOperationsResponsePresenceRules(t *testing.T) {
 }
 
 // TestOperationRecordCarriesTheOperationsFields pins §10's OperationRecord
-// field-for-field on this slice's wire: the S5-servable fields are all present
-// (fencing-owned orphanBoundary/orphanResolved/attestation and S6's compacted
-// stay off it until their slices, per the type's own comment).
+// field-for-field: every servable field is present, and S6's `compacted`
+// marker appears exactly on a tombstone replay (fencing-owned
+// orphanBoundary/orphanResolved/attestation stay off it until their slices,
+// per the type's own comment).
 func TestOperationRecordCarriesTheOperationsFields(t *testing.T) {
 	record := OperationRecord{
 		ID:                "00000000000000000007",
@@ -127,6 +128,66 @@ func TestOperationRecordCarriesTheOperationsFields(t *testing.T) {
 	}
 	if !strings.Contains(string(raw), `"incarnationId":"inc-m4"`) {
 		t.Fatalf("record bytes %s carry no incarnationId", raw)
+	}
+	record.Compacted = true
+	raw, err = json.Marshal(record)
+	if err != nil {
+		t.Fatalf("marshal(compacted): %v", err)
+	}
+	if !strings.Contains(string(raw), `"compacted":true`) {
+		t.Fatalf("tombstone-replay record bytes %s carry no compacted marker", raw)
+	}
+	record.Compacted = false
+	raw, err = json.Marshal(record)
+	if err != nil {
+		t.Fatalf("marshal(retained): %v", err)
+	}
+	if strings.Contains(string(raw), `"compacted"`) {
+		t.Fatalf("retained record bytes %s carry a compacted marker", raw)
+	}
+}
+
+// TestCursorInvalidatedRefusalPairsTheDiscriminator pins §11's
+// `cursor-invalidated` entry: a conflict-class error carrying the
+// discriminator, the compacting compactSeq, the affected host, and its bounds
+// entry as stored at mint (the triple, or the literal "absent").
+func TestCursorInvalidatedRefusalPairsTheDiscriminator(t *testing.T) {
+	refusal := CursorInvalidated(7, "m4",
+		HostBoundary{Generation: 2, IncarnationID: "inc-m4", PresenceEpoch: 3},
+		"a compaction removed rows at or before the cursor's position")
+	if refusal.Code != CodeConflict {
+		t.Fatalf("code = %d, want %d", refusal.Code, CodeConflict)
+	}
+	data, ok := refusal.Data.(CursorInvalidatedErrorData)
+	if !ok {
+		t.Fatalf("data = %T, want CursorInvalidatedErrorData", refusal.Data)
+	}
+	if data.EvenerErrorInfo != ErrorCursorInvalidated {
+		t.Fatalf("evenerErrorInfo = %q, want %q", data.EvenerErrorInfo, ErrorCursorInvalidated)
+	}
+	if data.CompactSeq != 7 || data.Host != "m4" {
+		t.Fatalf("data = %+v, want compactSeq 7 on host m4", data)
+	}
+	raw, err := json.Marshal(refusal)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	for _, want := range []string{
+		`"evenerErrorInfo":"cursor-invalidated"`,
+		`"compactSeq":7`,
+		`"host":"m4"`,
+		`"bounds":{"generation":2,"incarnationId":"inc-m4","presenceEpoch":3}`,
+	} {
+		if !strings.Contains(string(raw), want) {
+			t.Fatalf("refusal bytes %s carry no %s", raw, want)
+		}
+	}
+	absent, err := json.Marshal(CursorInvalidated(7, "ghost", HostBoundaryAbsent, "absent bounds"))
+	if err != nil {
+		t.Fatalf("marshal(absent): %v", err)
+	}
+	if !strings.Contains(string(absent), `"bounds":"absent"`) {
+		t.Fatalf("absent-bounds refusal bytes %s carry no absent marker", absent)
 	}
 }
 

@@ -31,17 +31,14 @@ export function isCriticalNotice(item: Notice): boolean {
 		item.family === "warning" ||
 		item.eventKind === "error" ||
 		item.eventKind === "tool_repair" ||
-		(item.eventKind === "hook_completed" &&
-			item.exitCode !== undefined &&
-			item.exitCode !== 0)
+		(item.eventKind === "hook_completed" && item.exitCode !== undefined && item.exitCode !== 0)
 	);
 }
 
 export function isInterruptedNotice(item: Notice): boolean {
 	return (
 		item.origin === "steering" &&
-		(item.steeringKind === "interrupted" ||
-			item.steeringKind === "interrupted-salvage") &&
+		(item.steeringKind === "interrupted" || item.steeringKind === "interrupted-salvage") &&
 		item.tone !== "warning"
 	);
 }
@@ -72,21 +69,6 @@ export function rowTurnId(row: TimelineRow): string | undefined {
 	return row.kind === "details" ? row.entries[0]?.turnId : row.turnId;
 }
 
-// A question option row's React key (TimelineItem.tsx's "question" case): the
-// option's POSITION in the question, never its label. The store's publish
-// bounds every label a timeline question row carries (projectedRows.ts's
-// truncateItem through boundQuestion, at MAX_ITEM_BYTES), so two options whose
-// labels share a prefix past the bound cut to the same string — a key that
-// reads the label keys both rows identically. Options render in the order the
-// ask offered them, so their position is the one field that cannot collide
-// past the display bound.
-export function questionOptionKey(
-	questionKey: string,
-	index: number,
-): string {
-	return `${questionKey}:${index}`;
-}
-
 export function timelineGap(before: TimelineRow, after?: TimelineRow): number {
 	if (!after) return 0;
 	const needsAttention = (item: TimelineRow) =>
@@ -99,30 +81,26 @@ export function timelineGap(before: TimelineRow, after?: TimelineRow): number {
 		item.kind === "details" ||
 		item.kind === "run" ||
 		item.kind === "time" ||
+		item.kind === "note" ||
 		(item.kind === "notice" && steeringNoticeLabel(item) !== undefined);
 	return routine(before) || routine(after) ? 8 : 24;
 }
 
 // Keep technical context available without putting it between the reader and the conversation.
-export function groupTimeline(
-	items: readonly MobileTimelineItem[],
-): TimelineRow[] {
+export function groupTimeline(items: readonly MobileTimelineItem[]): TimelineRow[] {
 	const rows: TimelineRow[] = [];
 	for (const item of items) {
 		const internal =
 			item.kind === "notice" &&
 			!isCriticalNotice(item) &&
-			(item.family === "hidden-instruction" ||
-				item.family === "system-prelude" ||
-				item.family === "diagnostic");
+			(item.family === "hidden-instruction" || item.family === "system-prelude" || item.family === "diagnostic");
 		if (!internal) {
 			rows.push(item);
 			continue;
 		}
 		const previous = rows.at(-1);
 		if (previous?.kind === "details") previous.entries.push(item);
-		else
-			rows.push({ kind: "details", id: `details:${item.id}`, entries: [item] });
+		else rows.push({ kind: "details", id: `details:${item.id}`, entries: [item] });
 	}
 	return rows;
 }

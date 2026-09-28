@@ -1,16 +1,30 @@
 // The Session's compact numbers (spec 5): durations as 40s, 12m, 3h, 2d and
 // counts as 1.2K, 39.8K, 412K, 46M. The package's formatTokenCount stops at
 // "k" and relativeAge says "now" under a minute, so neither reads the way the
-// spec's copy does.
+// spec's copy does. Paths and URLs wrap only at their slashes.
+
+type DurationUnit = "second" | "minute" | "hour" | "day";
+
+/** A duration in its one largest whole unit, rounded down. */
+function durationIn(ms: number): { count: number; unit: DurationUnit } {
+	const seconds = Number.isFinite(ms) ? Math.max(0, Math.floor(ms / 1000)) : 0;
+	if (seconds < 60) return { count: seconds, unit: "second" };
+	const minutes = Math.floor(seconds / 60);
+	if (minutes < 60) return { count: minutes, unit: "minute" };
+	const hours = Math.floor(minutes / 60);
+	if (hours < 24) return { count: hours, unit: "hour" };
+	return { count: Math.floor(hours / 24), unit: "day" };
+}
 
 export function compactDuration(ms: number): string {
-	const seconds = Number.isFinite(ms) ? Math.max(0, Math.floor(ms / 1000)) : 0;
-	if (seconds < 60) return `${seconds}s`;
-	const minutes = Math.floor(seconds / 60);
-	if (minutes < 60) return `${minutes}m`;
-	const hours = Math.floor(minutes / 60);
-	if (hours < 24) return `${hours}h`;
-	return `${Math.floor(hours / 24)}d`;
+	const { count, unit } = durationIn(ms);
+	return `${count}${unit[0]}`;
+}
+
+/** The same duration as VoiceOver should read it: "3 minutes", "1 day". */
+export function spokenDuration(ms: number): string {
+	const { count, unit } = durationIn(ms);
+	return `${count} ${unit}${count === 1 ? "" : "s"}`;
 }
 
 const UNITS = [
@@ -30,3 +44,7 @@ export function compactCount(n: number): string {
 	}
 	return String(value);
 }
+
+/** A path or URL may wrap only after a slash: a zero-width space follows each
+ * one. */
+export const wrapAfterSlashes = (path: string) => path.replace(/\//g, "/​");

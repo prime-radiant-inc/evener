@@ -37,10 +37,22 @@ describe("a sheet's size (spec 6)", () => {
 		expect(isSheetRoute("Conversation")).toBe(false);
 		expect(isSheetRoute("toString")).toBe(false);
 		expect(SHEET_ROUTES.TasksSheet).toEqual(sheetOptions(["medium", "large"], "medium"));
+		expect(isSheetRoute("NotesSheet")).toBe(true);
+		// Notes & links opens at large (spec 8.8) and drags to half.
+		expect(SHEET_ROUTES.NotesSheet).toEqual(sheetOptions(["medium", "large"], "large"));
 		expect(isSheetRoute("RowMenuSheet")).toBe(true);
 		expect(SHEET_ROUTES.RowMenuSheet).toEqual(sheetOptions(["medium", "large"], "medium"));
 		expect(isSheetRoute("QueueSheet")).toBe(true);
 		expect(SHEET_ROUTES.QueueSheet).toEqual(sheetOptions(["medium", "large"], "medium"));
+		// The Session sheet opens at large (spec 8.6) and drags to half.
+		expect(isSheetRoute("SessionInfoSheet")).toBe(true);
+		expect(SHEET_ROUTES.SessionInfoSheet).toEqual(sheetOptions(["medium", "large"], "large"));
+		// The model sheet is a picker, so it opens at half height (spec 8.5).
+		expect(isSheetRoute("ModelSheet")).toBe(true);
+		expect(SHEET_ROUTES.ModelSheet).toEqual(sheetOptions(["medium", "large"], "medium"));
+		// Commands and skills is a picker too (spec 8.5).
+		expect(isSheetRoute("CommandsSheet")).toBe(true);
+		expect(SHEET_ROUTES.CommandsSheet).toEqual(sheetOptions(["medium", "large"], "medium"));
 	});
 });
 

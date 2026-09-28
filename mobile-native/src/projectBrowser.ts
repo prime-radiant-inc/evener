@@ -1,7 +1,4 @@
-import type {
-	NavigationProjectSummary,
-	NavigationSessionSummary,
-} from "@evener/appwire-client";
+import type { NavigationProjectSummary, NavigationSessionSummary } from "@evener/appwire-client";
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
 import { NavigationPages } from "./navigationPages";
 
@@ -116,8 +113,7 @@ export function createProjectBrowserController(
 	};
 	const eachPage = (visit: (page: Page | typeof catalog) => void) => {
 		visit(catalog);
-		for (const group of groups.values())
-			for (const page of tierPages(group)) visit(page);
+		for (const group of groups.values()) for (const page of tierPages(group)) visit(page);
 	};
 	const groupFor = (project: NavigationProjectSummary): Group => {
 		const existing = groups.get(project.key);
@@ -149,18 +145,12 @@ export function createProjectBrowserController(
 		const group = groups.get(key);
 		if (!group || disposed || !group.expanded) return;
 		await Promise.all(
-			tierPages(group).map((page) =>
-				force || !page.getSnapshot().loaded
-					? page.refresh()
-					: Promise.resolve(),
-			),
+			tierPages(group).map((page) => (force || !page.getSnapshot().loaded ? page.refresh() : Promise.resolve())),
 		);
 	};
 	const reloadExpanded = () =>
 		Promise.all(
-			[...groups.values()]
-				.filter((group) => group.expanded)
-				.map((group) => loadExpanded(group.project.key, true)),
+			[...groups.values()].filter((group) => group.expanded).map((group) => loadExpanded(group.project.key, true)),
 		);
 	const controller: ProjectBrowserController = {
 		getSnapshot: () => cachedSnapshot,
@@ -169,12 +159,7 @@ export function createProjectBrowserController(
 			return () => listeners.delete(listener);
 		},
 		async initialLoad() {
-			if (
-				disposed ||
-				catalog.getSnapshot().loading ||
-				catalog.getSnapshot().loaded
-			)
-				return;
+			if (disposed || catalog.getSnapshot().loading || catalog.getSnapshot().loaded) return;
 			if (!catalogWatchStarted) {
 				unwatchCatalog = catalog.watch();
 				catalogWatchStarted = true;

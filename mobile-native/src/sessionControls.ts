@@ -1,9 +1,7 @@
+import { useSyncExternalStore } from "react";
 import { WireError } from "@evener/appwire-client";
 import type { ModelListResponse } from "@evener/appwire-client";
-import {
-	effortOptionLevels,
-	sessionEffortLevels,
-} from "@evener/appwire-client";
+import { effortOptionLevels, sessionEffortLevels } from "@evener/appwire-client";
 import type { MobileConversation } from "./projectedRows";
 import type {
 	ConversationModelCatalog,
@@ -20,7 +18,7 @@ type Operation =
 	| "setReasoningEffort"
 	| "setVisionModel"
 	| "changeModel";
-interface ControlsState {
+export interface ControlsState {
 	pending: Operation | null;
 	lastAction: Operation | null;
 	error: string | null;
@@ -44,10 +42,7 @@ export class SessionControls {
 	private listeners = new Set<() => void>();
 	private disposed = false;
 	constructor(
-		private service: Pick<
-			ConversationService,
-			Exclude<Operation, "forceStop" | "resume">
-		> &
+		private service: Pick<ConversationService, Exclude<Operation, "forceStop" | "resume">> &
 			ConversationRecoveryActions &
 			ConversationModelCatalog,
 		private refresh: () => Promise<void>,
@@ -94,34 +89,17 @@ export class SessionControls {
 	setReasoningEffort(effort: string) {
 		const current = this.getReasoning();
 		if (!current) return Promise.resolve();
-		const levels = sessionEffortLevels(
-			current.reasoningEffortLevels,
-			current.supportsReasoning,
-		);
+		const levels = sessionEffortLevels(current.reasoningEffortLevels, current.supportsReasoning);
 		const selected = current.reasoningEffort ?? "";
-		if (
-			!levels.length ||
-			!effortOptionLevels(levels, selected).includes(effort) ||
-			selected === effort
-		)
+		if (!levels.length || !effortOptionLevels(levels, selected).includes(effort) || selected === effort)
 			return Promise.resolve();
-		return this.run("setReasoningEffort", () =>
-			this.service.setReasoningEffort(effort),
-		);
+		return this.run("setReasoningEffort", () => this.service.setReasoningEffort(effort));
 	}
 	setVisionModel(visionModel: string) {
-		return this.run("setVisionModel", () =>
-			this.service.setVisionModel(visionModel),
-		);
+		return this.run("setVisionModel", () => this.service.setVisionModel(visionModel));
 	}
 	async loadModels() {
-		if (
-			this.disposed ||
-			!this.isCurrent() ||
-			this.state.loadingModels ||
-			this.state.pending
-		)
-			return;
+		if (this.disposed || !this.isCurrent() || this.state.loadingModels || this.state.pending) return;
 		this.publish({ catalog: null, loadingModels: true, modelError: null });
 		try {
 			const catalog = await this.service.models();
@@ -131,40 +109,25 @@ export class SessionControls {
 			if (this.disposed || !this.isCurrent()) return;
 			this.publish({
 				loadingModels: false,
-				modelError:
-					error instanceof Error ? error.message : "Could not load models.",
+				modelError: error instanceof Error ? error.message : "Could not load models.",
 			});
 		}
 	}
 	changeModel(provider: string, model: string): Promise<boolean> {
-		if (
-			!this.state.catalog?.data.some(
-				(entry) => entry.provider === provider && entry.model === model,
-			)
-		)
+		if (!this.state.catalog?.data.some((entry) => entry.provider === provider && entry.model === model))
 			return Promise.resolve(false);
-		return this.run("changeModel", () =>
-			this.service.changeModel(provider, model),
-		);
+		return this.run("changeModel", () => this.service.changeModel(provider, model));
 	}
 	changeVisionModel(provider: string, model: string): Promise<boolean> {
 		if (
 			!this.state.catalog?.data.some(
-				(entry) =>
-					entry.provider === provider &&
-					entry.model === model &&
-					entry.supportsVision !== false,
+				(entry) => entry.provider === provider && entry.model === model && entry.supportsVision !== false,
 			)
 		)
 			return Promise.resolve(false);
-		return this.run("setVisionModel", () =>
-			this.service.setVisionModel(`${provider}/${model}`),
-		);
+		return this.run("setVisionModel", () => this.service.setVisionModel(`${provider}/${model}`));
 	}
-	private async run(
-		kind: Operation,
-		operation: () => Promise<void>,
-	): Promise<boolean> {
+	private async run(kind: Operation, operation: () => Promise<void>): Promise<boolean> {
 		if (
 			this.disposed ||
 			!this.isCurrent() ||
@@ -194,10 +157,7 @@ export class SessionControls {
 				this.publish({
 					pending: null,
 					error: null,
-					notice:
-						kind === "forceStop"
-							? "Runtime stopped. Saved history is available to resume."
-							: null,
+					notice: kind === "forceStop" ? "Runtime stopped. Saved history is available to resume." : null,
 				});
 				this.stopped();
 				return true;
@@ -223,10 +183,7 @@ export class SessionControls {
 			return true;
 		} catch (cause) {
 			if (this.disposed || !this.isCurrent()) return false;
-			if (
-				cause instanceof WireError &&
-				cause.evenerErrorInfo === "actionUnavailable"
-			) {
+			if (cause instanceof WireError && cause.evenerErrorInfo === "actionUnavailable") {
 				try {
 					await this.refresh();
 				} catch {
@@ -245,4 +202,13 @@ export class SessionControls {
 			return false;
 		}
 	}
+}
+
+const noSubscription = () => () => {};
+const noState = () => null;
+
+/** The controls' state, or null while there are none: the hub is away, or
+ * the session isn't in front. */
+export function useControlsState(controls: SessionControls | null): ControlsState | null {
+	return useSyncExternalStore(controls?.subscribe ?? noSubscription, controls?.getSnapshot ?? noState);
 }

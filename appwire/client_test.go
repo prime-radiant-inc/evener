@@ -402,41 +402,31 @@ func TestClientFailsPendingWhenNotificationsOverflow(t *testing.T) {
 	}
 	client := NewClient(transport)
 
-	startCtx := t.Context()
-	client.Start(startCtx)
+	client.Start(t.Context())
 
-	requestCtx, cancelRequest := context.WithTimeout(context.Background(), 250*time.Millisecond)
-	defer cancelRequest()
+	// No deadline on the request or on the waits below: the overflow is what
+	// must end the request, and a wall-clock bound races the read loop's
+	// drain of the burst, which a loaded -race runner can starve past it.
 	done := make(chan struct {
 		resp ThreadListResponse
 		err  error
 	}, 1)
 	go func() {
-		resp, err := client.ThreadList(requestCtx, ThreadListParams{Limit: 1})
+		resp, err := client.ThreadList(t.Context(), ThreadListParams{Limit: 1})
 		done <- struct {
 			resp ThreadListResponse
 			err  error
 		}{resp: resp, err: err}
 	}()
 
-	var written Message
-	select {
-	case written = <-transport.writes:
-	case <-time.After(time.Second):
-		t.Fatal("request was not written")
-	}
+	written := <-transport.writes
 	for i := 0; i < cap(client.notifications)+1; i++ {
 		transport.reads <- NotificationMessage(NotifyThreadStatusChanged, map[string]int{"seq": i})
 	}
 	transport.reads <- ResponseMessage(written.Request.ID, ThreadListResponse{Data: []Thread{{ID: "th_backpressure", Source: "evener"}}})
 
-	select {
-	case result := <-done:
-		if result.err == nil || !strings.Contains(result.err.Error(), "notification buffer overflow") {
-			t.Fatalf("ThreadList err=%v resp=%+v, want notification overflow", result.err, result.resp)
-		}
-	case <-time.After(time.Second):
-		t.Fatal("pending request was not failed after notification buffer overflow")
+	if result := <-done; result.err == nil || !strings.Contains(result.err.Error(), "notification buffer overflow") {
+		t.Fatalf("ThreadList err=%v resp=%+v, want notification overflow", result.err, result.resp)
 	}
 }
 

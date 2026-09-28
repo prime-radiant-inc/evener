@@ -1,8 +1,5 @@
 import { describe, expect, it } from "vitest";
-import {
-	type PinAssignmentDraftBackend,
-	pinAssignmentDrafts,
-} from "./pinAssignmentDrafts";
+import { type PinAssignmentDraftBackend, pinAssignmentDrafts } from "./pinAssignmentDrafts";
 
 function backend() {
 	const values = new Map<string, unknown>();
@@ -20,8 +17,7 @@ function backend() {
 			values.set(key, structuredClone(value));
 		},
 		deleteIf: (key, expected) => {
-			if (JSON.stringify(values.get(key)) !== JSON.stringify(expected))
-				return false;
+			if (JSON.stringify(values.get(key)) !== JSON.stringify(expected)) return false;
 			values.delete(key);
 			return true;
 		},
@@ -60,15 +56,13 @@ describe("pin assignment drafts", () => {
 		const input = { kind: "new" as const, name: "Draft" };
 		const saved = a.save(input);
 		input.name = "changed after save";
-		if (saved.selection?.kind === "new")
-			saved.selection.name = "changed after return";
+		if (saved.selection?.kind === "new") saved.selection.name = "changed after return";
 		expect(a.load()).toEqual({
 			id: "draft-1",
 			selection: { kind: "new", name: "Draft" },
 		});
 		const loaded = a.load();
-		if (loaded?.selection?.kind === "new")
-			loaded.selection.name = "changed after load";
+		if (loaded?.selection?.kind === "new") loaded.selection.name = "changed after load";
 		expect(a.load()).toEqual({
 			id: "draft-1",
 			selection: { kind: "new", name: "Draft" },

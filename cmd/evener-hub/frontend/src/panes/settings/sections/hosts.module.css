@@ -41,6 +41,32 @@
   font-size: var(--font-size-caption);
 }
 
+/* The operation progress/terminal segment on its host row (S15). */
+.rowOperation {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+}
+
+.rowOperationError {
+  color: var(--danger);
+  font-size: var(--font-size-caption);
+}
+
+/* The remnant repair segment on its host row (S16). */
+.rowRepair {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+}
+
+.rowRepairNotice {
+  color: var(--ink-mid);
+  font-size: var(--font-size-caption);
+}
+
 .rowActions {
   margin-left: auto;
   display: flex;

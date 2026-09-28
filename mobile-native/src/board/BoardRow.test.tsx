@@ -58,9 +58,7 @@ const flatten = (style: unknown): Style =>
 const styleOf = (node: ReactTestInstance): Style => flatten(node.props.style);
 /** The Text whose own children include `content`. */
 const textWith = (tree: ReactTestRenderer, content: string) =>
-	tree.root.findAll(
-		(node) => node.type === ("Text" as never) && [node.props.children].flat().includes(content),
-	);
+	tree.root.findAll((node) => node.type === ("Text" as never) && [node.props.children].flat().includes(content));
 const symbols = (tree: ReactTestRenderer) =>
 	tree.root.findAllByType("SymbolView" as never).map((node) => node.props.name as string);
 const pressable = (tree: ReactTestRenderer) => tree.root.findByType("Pressable" as never);

@@ -141,7 +141,11 @@ describe("messages on their way", () => {
 
 	it("asks you to check a send whose answer was lost", () => {
 		const [ghost] = ghosts(session("idle"), [pending({ state: "blockedUnknown" })], null, []);
-		expect(ghost).toMatchObject({ state: "unconfirmed", caption: "Couldn't confirm this was sent", buttons: ["check"] });
+		expect(ghost).toMatchObject({
+			state: "unconfirmed",
+			caption: "Couldn't confirm this was sent",
+			buttons: ["check"],
+		});
 	});
 });
 
@@ -172,7 +176,13 @@ describe("messages that didn't make it (spec 14)", () => {
 		// Still on its way: nothing to do yet, like any send in flight. Discard
 		// here would read as cancelling a send that will still land.
 		expect(held("submitting")).toEqual([
-			expect.objectContaining({ state: "sending", text: "look at [image 1]", buttons: [], menu: [], origin: { kind: "draft" } }),
+			expect.objectContaining({
+				state: "sending",
+				text: "look at [image 1]",
+				buttons: [],
+				menu: [],
+				origin: { kind: "draft" },
+			}),
 		]);
 		// The outbox lost track of it: the draft's actions are yours again.
 		expect(held("blockedUnknown")).toEqual([
@@ -265,7 +275,10 @@ describe("messages that didn't make it (spec 14)", () => {
 });
 
 it("shows what the phone knows before the session has loaded", () => {
-	expect(ghosts(null, [], unsent("maybe sent"), [row()]).map((ghost) => ghost.state)).toEqual(["unconfirmed", "refused"]);
+	expect(ghosts(null, [], unsent("maybe sent"), [row()]).map((ghost) => ghost.state)).toEqual([
+		"unconfirmed",
+		"refused",
+	]);
 });
 
 describe("acting on the message you saw (Review Focus 2)", () => {

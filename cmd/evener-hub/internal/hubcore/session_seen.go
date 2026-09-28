@@ -166,30 +166,93 @@ func (s *SessionSeenStore) epoch(ctx context.Context, db *sql.DB) (time.Time, er
 	return UnixMilliTime(epoch), nil
 }
 
+// markSeenQuery and markUnreadQuery back both a single MarkSeen/MarkUnread
+// call (autocommitted through write) and MarkBatch (run against a shared
+// *sql.Tx instead) - one copy of each statement either path executes.
+const markSeenQuery = `
+INSERT INTO session_seen (source, session_id, seen_through, unread, updated_at) VALUES (?, ?, ?, 0, ?)
+ON CONFLICT(source, session_id) DO UPDATE SET
+  seen_through = max(session_seen.seen_through, excluded.seen_through),
+  unread = 0,
+  updated_at = excluded.updated_at
+WHERE session_seen.seen_through < excluded.seen_through OR session_seen.unread != 0`
+
+const markUnreadQuery = `
+INSERT INTO session_seen (source, session_id, seen_through, unread, updated_at) VALUES (?, ?, 0, 1, ?)
+ON CONFLICT(source, session_id) DO UPDATE SET unread = 1, updated_at = excluded.updated_at
+WHERE session_seen.unread = 0`
+
 // MarkSeen records that a client showed the session's last turn ending at
 // through: the row's turn_ended_at, a hub timestamp, never the client's clock.
 // The mark only moves forward, so a device showing an older Board cannot
 // un-see a turn another device already marked, and it clears an explicit
 // unread. It reports whether anything changed, and fires onChange only then.
 func (s *SessionSeenStore) MarkSeen(source, sessionID string, through time.Time) (bool, error) {
-	return s.write(`
-INSERT INTO session_seen (source, session_id, seen_through, unread, updated_at) VALUES (?, ?, ?, 0, ?)
-ON CONFLICT(source, session_id) DO UPDATE SET
-  seen_through = max(session_seen.seen_through, excluded.seen_through),
-  unread = 0,
-  updated_at = excluded.updated_at
-WHERE session_seen.seen_through < excluded.seen_through OR session_seen.unread != 0`,
-		NormalizeDecisionSource(source), sessionID, through.UnixMilli(), s.now().Unix())
+	return s.write(markSeenQuery, NormalizeDecisionSource(source), sessionID, through.UnixMilli(), s.now().Unix())
 }
 
 // MarkUnread records an explicit "Mark as unread" (spec 7.3): the session reads
 // unseen until it is next marked seen.
 func (s *SessionSeenStore) MarkUnread(source, sessionID string) (bool, error) {
-	return s.write(`
-INSERT INTO session_seen (source, session_id, seen_through, unread, updated_at) VALUES (?, ?, 0, 1, ?)
-ON CONFLICT(source, session_id) DO UPDATE SET unread = 1, updated_at = excluded.updated_at
-WHERE session_seen.unread = 0`,
-		NormalizeDecisionSource(source), sessionID, s.now().Unix())
+	return s.write(markUnreadQuery, NormalizeDecisionSource(source), sessionID, s.now().Unix())
+}
+
+// SessionSeenMark is one mark for MarkBatch: the same fields MarkSeen and
+// MarkUnread take separately, so a caller building a batch has one type to
+// fill in instead of calling one method or the other in a loop.
+type SessionSeenMark struct {
+	Source, SessionID string
+	SeenThrough       time.Time
+	Unread            bool
+}
+
+// MarkBatch applies every mark in marks inside one index.db transaction:
+// either all of them land, or an error rolls back every one of them,
+// including marks that individually would have succeeded. sessionSeenSet
+// (evener/session/seen/set, S4) validates a whole call before writing any of
+// it; writing each mark in its own autocommitted statement, as MarkSeen and
+// MarkUnread do on their own, would let a failure partway through leave some
+// sessions marked and others not, defeating that all-or-nothing validation.
+// It reports whether any mark changed a row, and fires onChange once if so.
+func (s *SessionSeenStore) MarkBatch(marks []SessionSeenMark) (bool, error) {
+	if s == nil || s.dbPath == "" || len(marks) == 0 {
+		return false, nil
+	}
+	db, err := s.open()
+	if err != nil {
+		return false, err
+	}
+	defer func() { _ = db.Close() }()
+	ctx := context.Background()
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return false, err
+	}
+	changed := false
+	for _, mark := range marks {
+		var result sql.Result
+		if mark.Unread {
+			result, err = tx.ExecContext(ctx, markUnreadQuery, NormalizeDecisionSource(mark.Source), mark.SessionID, s.now().Unix())
+		} else {
+			result, err = tx.ExecContext(ctx, markSeenQuery, NormalizeDecisionSource(mark.Source), mark.SessionID, mark.SeenThrough.UnixMilli(), s.now().Unix())
+		}
+		if err == nil {
+			var rows int64
+			rows, err = result.RowsAffected()
+			changed = changed || rows > 0
+		}
+		if err != nil {
+			_ = tx.Rollback()
+			return false, err
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return false, err
+	}
+	if changed && s.onChange != nil {
+		s.onChange()
+	}
+	return changed, nil
 }
 
 // Delete forgets one session's marker, for session deletion.

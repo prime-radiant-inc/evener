@@ -417,6 +417,16 @@ export interface DaemonStatusResponse {
   lifecycle: DaemonLifecycle;
 }
 
+export interface DelegateStopParams {
+  threadId?: string;
+  ref?: string;
+  delegateId: string;
+}
+
+export interface DelegateStopResponse {
+  outcome: string;
+}
+
 export interface DeletionSkip {
   id: string;
   reason: string;
@@ -861,6 +871,14 @@ export interface EvenerThread {
    * never a thread/read snapshot: no notification announces its changes.
    */
   subagents?: SubagentTally;
+  /**
+   * Access is what the session's sandbox lets it reach (S15): the sandbox
+   * mode it started under and whether that sandbox allows the network. Every
+   * current producer sets it; it is absent from an older daemon or hub, which
+   * a client reads as "not known". Snapshot-only: a session's sandbox is
+   * fixed when it starts, so no notification carries it.
+   */
+  access?: ThreadAccess;
 }
 
 export interface EvenerToolInfo {
@@ -2410,6 +2428,14 @@ export interface NavigationSessionSummary {
    * none.
    */
   last_message?: string;
+  /**
+   * ModelName is the display name of the model the session runs (S17), for
+   * the row's last line when a client shows models on rows: the name the
+   * hub's model/list gives the same model, so a row and the model picker
+   * agree. A live session's is its current model, which follows a switch;
+   * an ended one's is its meta's; subagent rows carry none.
+   */
+  model_name?: string;
   dormant?: boolean;
   /**
    * Offline marks a row folded into the merged list from a source that is
@@ -2595,6 +2621,7 @@ export interface OperationRecord {
   createdAt: string;
   updatedAt: string;
   hostRemoved: boolean;
+  compacted?: boolean;
 }
 
 export interface OperationResult {
@@ -2947,13 +2974,45 @@ export interface SandboxEscalationResolved {
   escalationId: string;
 }
 
+export interface SearchHit {
+  /**
+   * TranscriptKey and Position name the transcript item the message is, as
+   * a thread read's items carry them, so a client opens the session at it.
+   */
+  transcriptKey: string;
+  position: ThreadItemPosition;
+  /**
+   * Snippet is the message around its first match, one line, in parts: a
+   * part with match set is text the search matched.
+   */
+  snippet: SearchSnippetPart[];
+}
+
 export interface SearchParams {
   query?: string;
+  /**
+   * Scope narrows every group of the answer (S14, spec 7.4): SearchScopeAll
+   * (the default when absent), SearchScopeLive or SearchScopeArchived. An
+   * older hub ignores it and answers as for all; SearchResponse.Scope says
+   * whether it was applied.
+   */
+  scope?: string;
 }
 
 export interface SearchResponse {
   live: SearchResult[];
   past: SearchResult[];
+  /**
+   * InSessions lists the sessions whose messages match, each with its hits
+   * (S14), newest session first: live sessions, then ended ones. Absent when
+   * none match, and from an older hub.
+   */
+  inSessions?: SearchResult[];
+  /**
+   * Scope is the scope the answer applied. An older hub leaves it out, so a
+   * client knows it offers no Archived scope and no message hits.
+   */
+  scope?: string;
 }
 
 export interface SearchResult {
@@ -2973,6 +3032,24 @@ export interface SearchResult {
    */
   askPending?: boolean;
   approvalPending?: boolean;
+  /**
+   * Archived says the rail files the session as archived: its own archive
+   * decision, its project's, or two weeks without activity (S14). Absent
+   * when it is not, and from an older hub.
+   */
+  archived?: boolean;
+  /**
+   * Hits are the session's newest messages that match the search, newest
+   * first, and HitCount how many match in all. Only an InSessions result
+   * carries them (S14).
+   */
+  hits?: SearchHit[];
+  hitCount?: number;
+}
+
+export interface SearchSnippetPart {
+  text: string;
+  match?: boolean;
 }
 
 export interface ServerInfo {
@@ -3014,6 +3091,18 @@ export interface SessionDeleteResponse {
   deleted: string[];
   skipped: DeletionSkip[];
   navigation: NavigationMutation;
+}
+
+export interface SessionDocumentParams {
+  sessionId: string;
+  path: string;
+}
+
+export interface SessionDocumentResponse {
+  data: string;
+  totalSize: number;
+  revision?: string;
+  modifiedAt?: number;
 }
 
 export interface SessionImageParams {
@@ -3300,6 +3389,11 @@ export interface Thread {
   evener: EvenerThread;
 }
 
+export interface ThreadAccess {
+  sandbox: string;
+  network: boolean;
+}
+
 export interface ThreadActivity {
   minutes: number[];
   lastActivityAt: number;
@@ -3358,6 +3452,14 @@ export interface ThreadCapabilities {
    * rejected wherever this capability is false.
    */
   skillInput?: boolean;
+  /**
+   * StopSubagent advertises evener/delegate/stop on a root session (S6):
+   * true while its daemon wires the stop and the session is open. Absent
+   * from an older daemon, from a session with no daemon running (it runs no
+   * subagents), and from a subagent's own thread: the stop targets the root
+   * that owns the tree.
+   */
+  stopSubagent?: boolean;
 }
 
 export interface ThreadClearParams {
@@ -4284,6 +4386,7 @@ export const METHOD_NAMES = [
   "evener/settings/agentsDoc/get",
   "evener/settings/agentsDoc/set",
   "evener/sandbox/escalation/resolve",
+  "evener/delegate/stop",
   "evener/host/request",
   "evener/host/attach",
   "evener/host/add",
@@ -4300,6 +4403,7 @@ export const METHOD_NAMES = [
   "evener/host/running",
   "evener/host/pushCredentials",
   "evener/session/image",
+  "evener/session/document",
 ] as const;
 
 export type MethodName = (typeof METHOD_NAMES)[number];
@@ -4506,6 +4610,7 @@ export interface MethodTypes {
   "evener/settings/agentsDoc/get": { params: EmptyParams; result: AgentsDocResponse };
   "evener/settings/agentsDoc/set": { params: AgentsDocSetParams; result: AgentsDocResponse };
   "evener/sandbox/escalation/resolve": { params: SandboxEscalationResolveParams; result: EmptyResponse };
+  "evener/delegate/stop": { params: DelegateStopParams; result: DelegateStopResponse };
   "evener/host/request": { params: HostRequestParams; result: HostForwardedResult };
   "evener/host/attach": { params: HostAttachParams; result: HostAttachResponse };
   "evener/host/add": { params: HostAddParams; result: HostMutationCommitted | HostMutationCommittedRemoved | HostMutationTeardownFailure | HostMutationTeardownFailureRemoved | HostMutationCollisionDropped | HostMutationAmbiguous };
@@ -4522,6 +4627,7 @@ export interface MethodTypes {
   "evener/host/running": { params: HostRunningParams; result: HostRunningResponse };
   "evener/host/pushCredentials": { params: HostPushCredentialsParams; result: HostPushCredentialsResponse };
   "evener/session/image": { params: SessionImageParams; result: SessionImageResponse };
+  "evener/session/document": { params: SessionDocumentParams; result: SessionDocumentResponse };
 }
 
 export interface NotificationTypes {

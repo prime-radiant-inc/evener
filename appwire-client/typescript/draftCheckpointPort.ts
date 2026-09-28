@@ -1,9 +1,9 @@
-// The checkpointed draft editor's port and repository, generic over each
-// store's own checkpoint shape: keybindingsStore.ts keeps its own
-// draftCheckpoint decoder (and its own invalid-draft message); a later piece
-// of the SDK migration brings a second store onto this same repository, and
-// everything downstream of "decode this value or throw" is what the two will
-// share, byte for byte. This module is that shared downstream half.
+// The checkpointed draft editor's port and repository, generic over any
+// store's own checkpoint shape: each store keeps its own draftCheckpoint
+// decoder (and its own invalid-draft message), and everything downstream of
+// "decode this value or throw" - the identity tracking and the
+// compare-and-swap save, remove, and discard - is what the stores share, byte
+// for byte. This module is that shared downstream half.
 
 /** The shape a checkpointed draft editor's storage port has, over any
  * checkpoint type - the same shape testing/draftStorage.ts's in-memory test
@@ -45,15 +45,33 @@ export interface DraftPort<Checkpoint> {
  * so a same-fields-different-key-order record behaves identically in tests
  * and in production. */
 export function canonicalJson(value: unknown): string {
-  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
+  if (Array.isArray(value))
+    // A non-serializable item is what JSON.stringify turns into null, so do
+    // the same: the canonical form must be stable under a JSON round-trip.
+    return `[${value.map((item) => (hasNoJsonText(item) ? "null" : canonicalJson(item))).join(",")}]`;
   if (value !== null && typeof value === "object") {
     const record = value as Record<string, unknown>;
     return `{${Object.keys(record)
+      // A non-serializable property value is what JSON.stringify omits.
+      .filter((key) => !hasNoJsonText(record[key]))
       .sort()
       .map((key) => `${JSON.stringify(key)}:${canonicalJson(record[key])}`)
       .join(",")}}`;
   }
-  return JSON.stringify(value);
+  // JSON.stringify returns the undefined VALUE, not a string, for a
+  // leaf it has no text for (undefined, a function, a symbol) - which would
+  // violate this function's declared return type and let a bare
+  // canonicalJson(undefined) flow into a byte compare as the non-string it
+  // is. String() always yields a string, preserving undefined -> "undefined".
+  const encoded = JSON.stringify(value);
+  return encoded === undefined ? String(value) : encoded;
+}
+
+/** Whether JSON.stringify has no text for `value` (returns the undefined
+ * VALUE): undefined, a function or a symbol. Nested, that is what the JSON
+ * encoding drops (an object key) or nulls (an array item). */
+function hasNoJsonText(value: unknown): boolean {
+  return JSON.stringify(value) === undefined;
 }
 
 /** What the port held is not a checkpoint this build can read. Distinct from

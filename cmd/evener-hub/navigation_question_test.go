@@ -16,7 +16,7 @@ import (
 // bounds, so a remote host or an older daemon cannot widen a row, and a row
 // with no question carries no key.
 func TestNavigationRowsCarryThePendingQuestion(t *testing.T) {
-	rows := liveTaskRows(t, []hubcore.TreeNode{
+	rows := liveNavigationRows(t, []hubcore.TreeNode{
 		{ID: "session-asking", Title: "asking", Kind: "session", State: "awaiting", AskPending: true, Question: &appwire.PendingQuestion{
 			Question: "Keep or drop the implied options?", Options: []string{"Drop them", "Keep them"}, Count: 2,
 		}},
@@ -47,7 +47,7 @@ func TestNavigationRowsCarryThePendingQuestion(t *testing.T) {
 // carry, is dropped from its row instead of failing the whole resource; the
 // row keeps its ask flag.
 func TestNavigationRowsDropAQuestionTheSchemaRefuses(t *testing.T) {
-	rows := liveTaskRows(t, []hubcore.TreeNode{
+	rows := liveNavigationRows(t, []hubcore.TreeNode{
 		{ID: "session-blank", Title: "blank", Kind: "session", State: "awaiting", AskPending: true, Question: &appwire.PendingQuestion{Question: " \n ", Count: 1}},
 		{ID: "session-uncounted", Title: "uncounted", Kind: "session", State: "awaiting", AskPending: true, Question: &appwire.PendingQuestion{Question: "Which?"}},
 	})
