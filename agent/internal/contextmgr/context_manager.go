@@ -1203,7 +1203,9 @@ func collectCheckpointData(history []schema.Turn, cutoff int, resultToolName str
 // … [END CHECKPOINT] block: the fixed metadata sections (transcript pointer,
 // modified files, tool counts, recent shell results, activated skills), then the
 // conversation and working notes fit into maxChars by shedding the oldest working
-// notes first and then the oldest conversation entries.
+// notes first and then the oldest conversation entries after the original task
+// (the earliest user entry), which is pinned so budget pressure never drops what
+// the user asked for.
 func formatCheckpoint(data checkpointData, meta *CompactionMeta, maxChars int) string {
 	// Build the fixed-size sections first (metadata), then fill remaining
 	// budget with user messages and agent responses.
@@ -1282,11 +1284,22 @@ func formatCheckpoint(data checkpointData, meta *CompactionMeta, maxChars int) s
 	variableBudget := max(maxChars-overhead, 1000)
 
 	// Encode conversation and working notes as Markdown. Shed oldest notes
-	// first, then oldest user or agent messages if needed to fit budget.
+	// first, then the oldest messages after the pinned original task if needed
+	// to fit budget.
 	conversation := data.conversation
 	workingNotes := data.workingNotes
 	conversationMarkdown := renderCheckpointConversation(conversation)
 	notesMarkdown := renderCheckpointWorkingNotes(workingNotes)
+
+	// Pin the original task — the earliest user entry — so the checkpoint keeps
+	// what the user asked for instead of shedding it under budget pressure.
+	pinnedOriginal := 0
+	for i, entry := range conversation {
+		if entry.Role == "user" {
+			pinnedOriginal = i
+			break
+		}
+	}
 
 	for len(conversationMarkdown)+len(notesMarkdown) > variableBudget {
 		if len(workingNotes) > 1 {
@@ -1295,7 +1308,15 @@ func formatCheckpoint(data checkpointData, meta *CompactionMeta, maxChars int) s
 			continue
 		}
 		if len(conversation) > 1 {
-			conversation = conversation[1:] // then drop oldest conversation entry
+			// Drop the oldest entry that is not the pinned original task.
+			drop := 0
+			if drop == pinnedOriginal {
+				drop = 1
+			}
+			conversation = slices.Concat(conversation[:drop], conversation[drop+1:])
+			if drop < pinnedOriginal {
+				pinnedOriginal--
+			}
 			conversationMarkdown = renderCheckpointConversation(conversation)
 			continue
 		}

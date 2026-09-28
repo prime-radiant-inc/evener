@@ -123,11 +123,11 @@ func TestSetCumulativeUsage(t *testing.T) {
 	}
 }
 
-// formatCheckpoint sheds oldest conversation entries once working notes are
-// exhausted and the variable budget floors at its 1000-char minimum. A tiny
-// maxChars with more than three shell results and two oversized conversation
-// entries drives the >3-shell tail slice, the budget floor, and the
-// conversation-shedding loop (drop + final break).
+// formatCheckpoint sheds the oldest conversation entries after the pinned
+// original task once working notes are exhausted and the variable budget floors
+// at its 1000-char minimum. A tiny maxChars with more than three shell results
+// and two oversized conversation entries drives the >3-shell tail slice, the
+// budget floor, and the conversation-shedding loop (drop + final break).
 func TestW3Sub_FormatCheckpoint_ShedAndFloorArms(t *testing.T) {
 	data := checkpointData{
 		lastShellResults: []string{"r1", "r2", "r3", "r4", "r5"}, // > 3 -> tail slice
@@ -149,11 +149,11 @@ func TestW3Sub_FormatCheckpoint_ShedAndFloorArms(t *testing.T) {
 	if !strings.Contains(cp, "r5") {
 		t.Fatalf("expected most recent shell result retained:\n%s", cp)
 	}
-	// The oldest conversation entry is shed; the newest survives.
-	if strings.Contains(cp, strings.Repeat("x", 2000)) {
-		t.Fatalf("oldest conversation entry should have been shed")
+	// The pinned original task survives; the oldest entry after it is shed.
+	if !strings.Contains(cp, strings.Repeat("x", 2000)) {
+		t.Fatalf("original task (first conversation entry) should survive")
 	}
-	if !strings.Contains(cp, strings.Repeat("y", 2000)) {
-		t.Fatalf("newest conversation entry should survive")
+	if strings.Contains(cp, strings.Repeat("y", 2000)) {
+		t.Fatalf("oldest conversation entry after the original task should be shed")
 	}
 }
