@@ -435,7 +435,10 @@ if (
 			? readFileSync(process.env.EVENER_DEMO_MARKDOWN, "utf8")
 			: undefined,
 		process.env.EVENER_DEMO_FLEET === "1"
-			? { offlineHost: process.env.EVENER_DEMO_FLEET_OFFLINE_HOST === "1" }
+			? {
+					offlineHost: process.env.EVENER_DEMO_FLEET_OFFLINE_HOST === "1",
+					empty: process.env.EVENER_DEMO_FLEET_EMPTY === "1",
+				}
 			: undefined,
 	);
 	console.info(

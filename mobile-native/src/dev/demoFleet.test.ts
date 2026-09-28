@@ -510,6 +510,59 @@ describe("demo fleet truncation", () => {
 	});
 });
 
+describe("demo fleet empty option", () => {
+	const fleet = createDemoFleet({ now: STARTUP, empty: true });
+
+	it("reports zero live, needs-you, working and errored counts, with sources unaffected", () => {
+		const manifest = read(fleet, params({ resource: "manifest" }));
+		expect(manifest.sections).toMatchObject({
+			live: { count: 0 },
+			needs_you: { count: 0 },
+			pin_sections: { count: 0 },
+		});
+		expect(manifest.catalogs).toMatchObject({
+			projects: { count: 0 },
+			archived_projects: { count: 0 },
+			test_runs: { count: 0 },
+		});
+		expect(manifest.attentionSummary).toEqual({ needsYou: 0, error: 0, working: 0 });
+		// The header still names a host: sources are untouched by emptiness.
+		expect(manifest.sources).toEqual([
+			{ id: "local", label: "this host", kind: "local", online: true },
+			{ id: "paradise-park", label: "paradise-park", kind: "appwire", online: true },
+		]);
+	});
+
+	it("has no live or needs-you rows", () => {
+		expect(liveRows(fleet)).toHaveLength(0);
+		const needsYou = sessionsOf(read(fleet, params({ resource: "section", section: "needs_you" })));
+		expect(needsYou).toHaveLength(0);
+	});
+
+	it("has no pin sections", () => {
+		const catalog = read(fleet, params({ resource: "pin_catalog", limit: 100 }));
+		expect(catalog.pin_sections).toEqual([]);
+	});
+
+	it("has no projects, archived projects or test-run projects in the catalogs", () => {
+		const projects = read(fleet, params({ resource: "catalog", catalog: "projects", limit: 100 }));
+		expect(projects.projects).toEqual([]);
+		const archived = read(fleet, params({ resource: "catalog", catalog: "archived_projects", limit: 100 }));
+		expect(archived.projects).toEqual([]);
+		const testRuns = read(fleet, params({ resource: "catalog", catalog: "test_runs", limit: 100 }));
+		expect(testRuns.projects).toEqual([]);
+	});
+
+	it("finds nothing in search, with or without a query", () => {
+		const withQuery = fleet.answerSearch({ query: "wasm" });
+		expect(withQuery.live).toEqual([]);
+		expect(withQuery.past).toEqual([]);
+		const noQuery = fleet.answerSearch({});
+		expect(noQuery.live).toEqual([]);
+		expect(noQuery.past).toEqual([]);
+	});
+});
+
 describe("demo fleet offline propagation", () => {
 	it("marks an offline-host session's own children offline too, not just the parent row", () => {
 		const fleet = createDemoFleet({ now: STARTUP, offlineHost: true });
