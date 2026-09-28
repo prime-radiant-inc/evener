@@ -314,3 +314,19 @@ it("marks the same session ref and turn end again when the screen's hub changes"
 	]);
 	hook.unmount();
 });
+
+it("doesn't mark the fleet row again for a turn end the snapshot already marked in this stay", async () => {
+	const { sent, view, hook, hubId } = setup();
+	view.conversation = { lastTurnEndedAt: iso(T) };
+	hook.rerender();
+	await settle();
+	expect(sent).toHaveLength(1);
+	// The hub took the mark, and its row caught up.
+	hubSeenMarks(hubId).prune([fleetRow({ turn_ended_at: iso(T), unseen: false })]);
+	// Another device then marks it unread, and only now does the fleet row arrive.
+	view.row = fleetRow({ turn_ended_at: iso(T), unseen: true });
+	hook.rerender();
+	await settle();
+	expect(sent).toHaveLength(1);
+	hook.unmount();
+});

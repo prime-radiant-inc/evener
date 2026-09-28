@@ -16,10 +16,10 @@ import { type BoardSeen, hubSeenMarks } from "./hubSeen";
  *   invalidates it, as it does when a turn ends. The snapshot's turn end has
  *   no live push, so this is what catches a turn that ends while you watch.
  *   A row with no hub turn end is the device's SeenMarkers' to mark.
- * Each source marks a given turn end at most once while the screen stays in
- * front. So a mark the hub refuses is not sent again on every re-render, and
- * a Mark as unread made elsewhere at a turn end already marked here wins; a
- * newer turn end is marked again.
+ * A given turn end is marked at most once while the screen stays in front,
+ * whichever source sees it first. So a mark the hub refuses is not sent again
+ * on every re-render, and a Mark as unread made elsewhere at a turn end
+ * already marked here wins; a newer turn end is marked again.
  * A mark made with no ready client waits in the hub's controller, and goes
  * out when this screen next has one: the Board may not be mounted to flush
  * it. */
@@ -32,36 +32,34 @@ export function useMarkSeenInFront(
 	seen: BoardSeen,
 ): void {
 	const { hubId, ref } = session;
+	// The turn ends marked in this stay in front, shared by the snapshot and
+	// the fleet row so one turn end is marked once whichever source sees it
+	// first. Keys hold the turn end in milliseconds, the hub's precision.
+	const marked = useRef(new Set<string>());
+	const turnKey = (ms: number) => `${hubId}\u0000${ref}\u0000${ms}`;
 	const lastTurnEndedAt = conversation?.lastTurnEndedAt;
-	const snapshotKey = lastTurnEndedAt ? `${hubId}\u0000${ref}\u0000${lastTurnEndedAt}` : undefined;
-	useOncePerStayInFront(inFront, snapshotKey, () => {
-		if (!lastTurnEndedAt) return;
-		// The model's ISO string round-trips the hub's milliseconds exactly.
-		hubSeenMarks(hubId).markSeen(client, [{ ref, seenThrough: Date.parse(lastTurnEndedAt) }]);
+	const snapshotEnd = hubTime(lastTurnEndedAt);
+	useEffect(() => {
+		if (!inFront) {
+			marked.current.clear();
+			return;
+		}
+		if (snapshotEnd === null || marked.current.has(turnKey(snapshotEnd))) return;
+		marked.current.add(turnKey(snapshotEnd));
+		hubSeenMarks(hubId).markSeen(client, [{ ref, seenThrough: snapshotEnd }]);
 	});
-	// The device decides a row without a readable hub turn end by its
+	// A row without a readable hub turn end is the device's to decide, by its
 	// updated_at, so that is what a new mark follows for such a row.
-	const rowKey = fleetRow && `${hubId}\u0000${ref}\u0000${hubTime(fleetRow.turn_ended_at) ?? fleetRow.updated_at ?? ""}`;
+	const rowEnd = fleetRow ? hubTime(fleetRow.turn_ended_at) : null;
+	const rowKey = fleetRow && (rowEnd !== null ? turnKey(rowEnd) : `${hubId}\u0000${ref}\u0000updated ${fleetRow.updated_at ?? ""}`);
 	// Recorded even when the row already reads seen: an unread marked
 	// elsewhere at this same turn end later is left alone.
-	useOncePerStayInFront(inFront, rowKey, () => {
+	useEffect(() => {
+		if (!inFront || rowKey === undefined || marked.current.has(rowKey)) return;
+		marked.current.add(rowKey);
 		if (fleetRow && !seen.isSeen(fleetRow)) seen.markRead(client, [fleetRow]);
 	});
 	useEffect(() => {
 		if (client) hubSeenMarks(hubId).flush(client);
 	}, [hubId, client]);
-}
-
-/** Runs `mark` once per `key` while in front, and again for the same key on
- * a new visit to the front; an undefined key marks nothing. The effect runs
- * on every new `mark`, and the key check is what keeps it to once. */
-function useOncePerStayInFront(inFront: boolean, key: string | undefined, mark: () => void): void {
-	// The key last marked in this stay in front, or null.
-	const marked = useRef<string | null>(null);
-	useEffect(() => {
-		if (!inFront) marked.current = null;
-		if (!inFront || key === undefined || marked.current === key) return;
-		marked.current = key;
-		mark();
-	}, [inFront, key, mark]);
 }
