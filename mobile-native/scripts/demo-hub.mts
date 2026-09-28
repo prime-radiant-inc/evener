@@ -6,20 +6,74 @@ import { WebSocket, WebSocketServer } from "ws";
 import { WireError } from "@evener/appwire-client";
 import type {
 	InitializeResponse,
+	InputItem,
+	ModelListResponse,
 	MutationReceipt,
 	NavigationInvalidatedPayload,
+	NotesHumanSetParams,
 	Thread,
 	Turn,
 	TurnStartParams,
+	UrlsRemoveParams,
 } from "@evener/appwire-client";
-import { createDemoFleet, type DemoFleetOptions } from "../src/dev/demoFleet.js";
+import {
+	ASKING_SESSION_ID,
+	createDemoFleet,
+	type DemoFleetOptions,
+	fleetSessionRef,
+} from "../src/dev/demoFleet.js";
+import {
+	askWorkingSessionQuestion,
+	createDemoSessions,
+	endTurn,
+	queuePreview,
+	refreshCapabilities,
+	removeLink,
+	resolveEscalation,
+	restFleetSession,
+	setHumanNote,
+	startFleetTurn,
+} from "../src/dev/demoSessions.js";
+import { createDemoSetup } from "../src/dev/demoSetup.js";
+
+// The playground's one scripted model; with EVENER_DEMO_FLEET, demoSetup.ts
+// answers model/list instead.
+const PLAYGROUND_MODEL_LIST = {
+	data: [
+		{
+			provider: "demonstration",
+			model: "scripted",
+			displayName: "Scripted reply",
+			reasoningEffortLevels: [],
+		},
+	],
+} satisfies ModelListResponse;
+
+// The fleet sessions' shared-notes and approval methods, served only with
+// EVENER_DEMO_FLEET.
+const FLEET_SESSION_METHODS = {
+	"notes/human/set": (thread: Thread, params: NotesHumanSetParams) =>
+		setHumanNote(thread, params, Date.now()),
+	"urls/remove": (thread: Thread, params: UrlsRemoveParams) =>
+		removeLink(thread, params, Date.now()),
+	"evener/sandbox/escalation/resolve": resolveEscalation,
+} as const;
+type FleetSessionMethod = keyof typeof FLEET_SESSION_METHODS;
 
 export async function createDemoHub(
 	port = 9196,
 	initialMarkdown?: string,
 	fleetOptions?: DemoFleetOptions,
 ) {
-	const demoFleet = fleetOptions ? createDemoFleet(fleetOptions) : null;
+	// One instant the fleet's rows and its sessions' threads both measure
+	// "ago" from, so a row and its thread agree on when it last changed.
+	const startedAt = fleetOptions?.now ?? Date.now();
+	const demoFleet = fleetOptions
+		? createDemoFleet({ ...fleetOptions, now: startedAt })
+		: null;
+	// With the fleet on, New session and the Hub read the prototype's hosts,
+	// providers, plugins, models and folders (demoSetup.ts).
+	const demoSetup = demoFleet ? createDemoSetup(demoFleet, fleetOptions) : null;
 	const server = new WebSocketServer({ host: "0.0.0.0", port, path: "/rpc" });
 	await once(server, "listening");
 	const address = server.address();
@@ -79,6 +133,15 @@ export async function createDemoHub(
 		},
 	};
 	const threads = new Map([[thread.evener.ref, thread]]);
+	// Each fleet session's own thread, on the ref its Board row names, so
+	// opening a row reads a real conversation. An empty fleet has none.
+	const fleetThreads =
+		fleetOptions && !fleetOptions.empty
+			? createDemoSessions({ now: startedAt })
+			: [];
+	for (const fleetThread of fleetThreads)
+		threads.set(fleetThread.evener.ref, fleetThread);
+	const fleetRefs = new Set(fleetThreads.map((value) => value.evener.ref));
 	let sessionNumber = 0;
 	const handshake: InitializeResponse = {
 		serverInfo: { name: "Native UI demonstration", version: "1" },
@@ -115,6 +178,12 @@ export async function createDemoHub(
 	// fire on demand.
 	function askQuestion() {
 		broadcastNavigation(requireFleet().askQuestion());
+		const asking = threads.get(fleetSessionRef(ASKING_SESSION_ID));
+		// Asked once: a second ask finds the session already waiting.
+		if (asking?.status.type === "active") {
+			askWorkingSessionQuestion(asking, Date.now());
+			resync(asking);
+		}
 	}
 	// EVENER_DEMO_FLEET_ASK_AFTER: counted from the hub's start, not from any
 	// one client's connection.
@@ -132,6 +201,67 @@ export async function createDemoHub(
 						params: { threadId: thread.id, ref: thread.evener.ref },
 					}),
 				);
+	}
+	// Starts the scripted turn: your message, stamped with its mutation id as
+	// the real projector stamps it (appwire_projection.go, EventUserInput), so
+	// a client recognizes its own send reflected back rather than treating it
+	// as a message from elsewhere, then the scripted reply.
+	function startScriptedTurn(
+		thread: Thread,
+		text: string,
+		clientMutationId: string,
+	): Turn {
+		turnNumber += 1;
+		const turn = {
+			id: `demo-turn-${turnNumber}`,
+			itemsView: "full",
+			status: "inProgress",
+			startedAt: Date.now(),
+			items: [
+				{
+					id: `demo-user-${turnNumber}`,
+					type: "userMessage",
+					text,
+					clientMutationId,
+					status: "completed",
+				},
+				{
+					id: `demo-assistant-${turnNumber}`,
+					type: "agentMessage",
+					text: "Demonstration reply: your message reached this scripted test server. Tap Stop to end this demonstration turn.",
+					status: "completed",
+				},
+			],
+		} satisfies Turn;
+		thread.turns?.push(turn);
+		// Your message answers any question the session was waiting on, as
+		// the daemon clears its pending ask on user input.
+		delete thread.evener.askPending;
+		delete thread.evener.pendingQuestion;
+		setTurnRunning(thread, turn);
+		return turn;
+	}
+	// Stop: the turn ends interrupted (demoSessions.ts's endTurn).
+	function stopTurn(thread: Thread, turn: Turn) {
+		endTurn(thread, turn, "interrupted", Date.now());
+		setTurnRunning(thread, undefined);
+	}
+	// Moves the thread to `turn` running, or with no turn, to resting. A
+	// fleet session follows demoSessions.ts's rules; the playground offers
+	// Stop and steering only while its scripted turn runs.
+	function setTurnRunning(thread: Thread, turn: Turn | undefined) {
+		if (fleetRefs.has(thread.evener.ref)) {
+			if (turn) startFleetTurn(thread, turn, Date.now());
+			else restFleetSession(thread, "idle", Date.now());
+			return;
+		}
+		const running = turn !== undefined;
+		thread.status = { type: running ? "active" : "idle" };
+		thread.evener.capabilities.send = !running;
+		thread.evener.capabilities.interrupt = running;
+		thread.evener.capabilities.steer = running;
+		thread.evener.activeTurnId = turn?.id;
+		thread.updatedAt += 1;
 	}
 	function requireFleet() {
 		if (!demoFleet)
@@ -151,7 +281,10 @@ export async function createDemoHub(
 				let changed: Thread | null = null;
 				let navigationChange: NavigationInvalidatedPayload | null = null;
 				const selected = threads.get(params.ref);
-				switch (request.method) {
+				if (demoSetup?.handles(request.method))
+					result = demoSetup.answer(request.method, params);
+				else
+					switch (request.method) {
 					case "initialize":
 						result = demoFleet
 							? { ...handshake, navigation: demoFleet.navigationCapability() }
@@ -169,16 +302,7 @@ export async function createDemoHub(
 						};
 						break;
 					case "model/list":
-						result = {
-							data: [
-								{
-									provider: "demonstration",
-									model: "scripted",
-									displayName: "Scripted reply",
-									reasoningEffortLevels: [],
-								},
-							],
-						};
+						result = PLAYGROUND_MODEL_LIST;
 						break;
 					case "thread/list":
 						result = {
@@ -195,7 +319,9 @@ export async function createDemoHub(
 						const created: Thread = structuredClone(thread);
 						created.id = `demo-thread-created-${sessionNumber}`;
 						created.sessionId = `demo-session-created-${sessionNumber}`;
-						created.evener.ref = `demo:created-${sessionNumber}`;
+						// Another host's session is named by that host, as a real
+						// hub qualifies a remote ref (appwire/refs.go).
+						created.evener.ref = `${params.source || "demo"}:created-${sessionNumber}`;
 						created.evener.instanceId = `demo-instance-created-${sessionNumber}`;
 						created.cwd = params.cwd;
 						created.modelProvider = params.modelProvider ?? "demonstration";
@@ -205,21 +331,20 @@ export async function createDemoHub(
 						created.evener.capabilities.send = true;
 						created.evener.capabilities.interrupt = false;
 						delete created.evener.activeTurnId;
-						const inputText = (params.input ?? [])
-							.map((item: { text?: string }) => item.text ?? "")
-							.join("\n");
+						const openingText = inputText(params.input);
 						const turn: Turn = {
 							id: `demo-opening-${sessionNumber}`,
-							status: inputText ? "inProgress" : "completed",
+							status: openingText ? "inProgress" : "completed",
 							itemsView: "full",
 							items: [],
 						};
-						if (inputText) {
+						if (openingText) {
 							turn.items = [
 								{
 									id: `demo-opening-user-${sessionNumber}`,
 									type: "userMessage",
-									text: inputText,
+									text: openingText,
+									status: "completed",
 								},
 								{
 									id: `demo-opening-assistant-${sessionNumber}`,
@@ -276,19 +401,23 @@ export async function createDemoHub(
 						const queue = selected.evener.queue;
 						const ids = queue.ids ?? [];
 						const texts = queue.texts ?? [];
+						// The phone clears a queued message's ghost once its mutation id
+						// shows here (pendingEntries.ts's reflectedMutationIds), so the
+						// ids stay in step with the entries, as the daemon keeps them.
+						const mutationIds = queue.clientMutationIds ?? [];
 						const method = request.method;
-						let removedText: string | undefined;
+						let removedTexts: string[] = [];
+						let consumedIds: string[] = [];
 						let entryIds: string[] | undefined;
 						if (method === "turn/queue") {
 							const id = `demo-queue-${params.clientMutationId}`;
 							ids.push(id);
-							texts.push(
-								(params.input ?? [])
-									.map((item: { text?: string }) => item.text ?? "")
-									.join("\n"),
-							);
+							texts.push(inputText(params.input));
+							mutationIds.push(params.clientMutationId);
 							entryIds = [id];
-						} else if (method !== "turn/steer") {
+						} else if (method === "turn/steer") {
+							removedTexts = [inputText(params.input)];
+						} else {
 							if (method === "turn/drainAsSteer") {
 								if (
 									params.expectedQueueRevision !== queue.revision ||
@@ -297,8 +426,9 @@ export async function createDemoHub(
 									throw new WireError("Queue revision changed", -32013, {
 										evenerErrorInfo: "conflict",
 									});
-								texts.splice(0);
+								removedTexts = texts.splice(0);
 								entryIds = ids.splice(0);
+								consumedIds = mutationIds.splice(0);
 							} else {
 								if (
 									params.index < 0 ||
@@ -308,17 +438,47 @@ export async function createDemoHub(
 									throw new WireError("Queue entry changed", -32013, {
 										evenerErrorInfo: "conflict",
 									});
-								removedText = texts.splice(params.index, 1)[0];
+								removedTexts = texts.splice(params.index, 1);
 								entryIds = ids.splice(params.index, 1);
+								mutationIds.splice(params.index, 1);
 							}
 						}
 						if (method !== "turn/steer") {
 							queue.revision += 1;
 							queue.ids = ids;
 							queue.texts = texts;
-							queue.preview = texts.map((text) => text.slice(0, 80));
+							queue.clientMutationIds = mutationIds;
+							queue.preview = queuePreview(texts);
 							queue.depth = ids.length;
 						}
+						const steering =
+							method === "turn/steer" ||
+							method === "turn/promoteQueuedAsSteer" ||
+							method === "turn/drainAsSteer";
+						const running = selected.turns?.find(
+							(turn) => turn.id === selected.evener.activeTurnId,
+						);
+						if (steering && running && selected.status.type === "active")
+							// While a turn runs, the steer lands in it as the daemon
+							// records one (apptranscript.go, TurnSteering), carrying the
+							// mutation's id so the phone sees it arrive.
+							running.items?.push({
+								id: `demo-steering-${params.clientMutationId}`,
+								type: "steering",
+								source: "user",
+								text: removedTexts.join("\n"),
+								clientMutationId: params.clientMutationId,
+								status: "completed",
+							});
+						else if (steering)
+							// A resting session wakes with the message: a steer, or a
+							// held message sent (Stop parked the queue), starts a turn
+							// with it, as the daemon's wakeForPendingSteering does.
+							startScriptedTurn(
+								selected,
+								removedTexts.join("\n"),
+								params.clientMutationId,
+							);
 						const receipt: MutationReceipt = {
 							clientMutationId: params.clientMutationId,
 							disposition: "applied",
@@ -327,13 +487,16 @@ export async function createDemoHub(
 							projectionState:
 								method === "turn/cancelQueued" ? "removed" : "pending",
 							...(entryIds ? { queueEntryIds: entryIds } : {}),
+							...(method === "turn/drainAsSteer"
+								? { consumedClientMutationIds: consumedIds }
+								: {}),
 							...(method === "turn/queue" || method === "turn/cancelQueued"
 								? {}
 								: { turnId: selected.evener.activeTurnId }),
 						};
 						result =
 							method === "turn/cancelQueued"
-								? { removedText, receipt }
+								? { removedText: removedTexts[0], receipt }
 								: { receipt };
 						changed = selected;
 						break;
@@ -356,45 +519,16 @@ export async function createDemoHub(
 						if (starting) {
 							if (thread.status.type === "active")
 								throw new Error("Stop the demonstration before another send");
-							turnNumber += 1;
-							turn = {
-								id: `demo-turn-${turnNumber}`,
-								itemsView: "full",
-								status: "inProgress",
-								items: [
-									{
-										id: `demo-user-${turnNumber}`,
-										type: "userMessage",
-										text: (mutation.input ?? [])
-											.map((item) => item.text ?? "")
-											.join("\n"),
-										// The real projector stamps this too
-										// (appwire_projection.go, EventUserInput), so a client
-										// recognizes its own send reflected back rather than
-										// treating it as a message from elsewhere.
-										clientMutationId: mutation.clientMutationId,
-									},
-									{
-										id: `demo-assistant-${turnNumber}`,
-										type: "agentMessage",
-										text: "Demonstration reply: your message reached this scripted test server. Tap Stop to end this demonstration turn.",
-										status: "completed",
-									},
-								],
-							} satisfies Turn;
-							thread.turns?.push(turn);
+							turn = startScriptedTurn(
+								thread,
+								inputText(mutation.input),
+								mutation.clientMutationId,
+							);
 						} else {
 							if (!turn || thread.status.type !== "active")
 								throw new Error("No active demonstration turn");
-							turn.status = "interrupted";
+							stopTurn(thread, turn);
 						}
-						if (!turn) throw new Error("Missing demonstration turn");
-						thread.status = { type: starting ? "active" : "idle" };
-						thread.evener.capabilities.send = !starting;
-						thread.evener.capabilities.interrupt = starting;
-						thread.evener.capabilities.steer = starting;
-						thread.evener.activeTurnId = starting ? turn.id : undefined;
-						thread.updatedAt += 1;
 						const receipt: MutationReceipt = {
 							clientMutationId: mutation.clientMutationId,
 							disposition: "applied",
@@ -407,6 +541,17 @@ export async function createDemoHub(
 						changed = thread;
 						break;
 					}
+					case "notes/human/set":
+					case "urls/remove":
+					case "evener/sandbox/escalation/resolve":
+						requireFleet();
+						if (!selected) throw new Error("Unknown demonstration session");
+						result = FLEET_SESSION_METHODS[request.method as FleetSessionMethod](
+							selected,
+							params,
+						);
+						changed = selected;
+						break;
 					case "evener/navigation/read":
 						result = requireFleet().answerNavigationRead(params);
 						break;
@@ -428,6 +573,9 @@ export async function createDemoHub(
 					default:
 						throw new Error("Method not implemented by demonstration server");
 				}
+				// What a fleet session offers follows every change to it.
+				if (changed && fleetRefs.has(changed.evener.ref))
+					refreshCapabilities(changed);
 				socket.send(JSON.stringify({ jsonrpc: "2.0", id, result }));
 				if (changed) resync(changed);
 				if (navigationChange) broadcastNavigation(navigationChange);
@@ -457,6 +605,12 @@ export async function createDemoHub(
 				server.close((error) => (error ? reject(error) : resolve()));
 			}),
 	};
+}
+
+// A mutation's input as the text a transcript item carries: its text parts,
+// one per line.
+function inputText(input: InputItem[] | undefined): string {
+	return (input ?? []).map((item) => item.text ?? "").join("\n");
 }
 
 // EVENER_DEMO_FLEET_ASK_AFTER is a number of seconds; anything else is a

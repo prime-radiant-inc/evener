@@ -11,8 +11,8 @@ import { alertRequests, pressable, render, renderedText, swipeRowFully, textOf }
 import type { Routes } from "../screens";
 import { sheetKey } from "../sheet/sheetHosts";
 import type { SyncStringStorage } from "../syncStringStorage";
-import { canWriteHumanNote, type NotesHost, NotesSheet, notesHosts } from "./NotesSheet";
-import { NOTE_LIMIT, NotesController, type SaveOutcome } from "./sessionNotes";
+import { type NotesHost, NotesSheet, notesHosts } from "./NotesSheet";
+import { canWriteHumanNote, NOTE_LIMIT, NotesController, type SaveOutcome } from "./sessionNotes";
 
 const navigation = vi.hoisted(() => ({ goBack: vi.fn(), dispatch: vi.fn(), navigate: vi.fn() }));
 const appState = vi.hoisted(() => ({ listeners: [] as ((state: string) => void)[] }));

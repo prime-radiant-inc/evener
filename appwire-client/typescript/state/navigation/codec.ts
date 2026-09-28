@@ -4,11 +4,28 @@
 // into a deep-frozen graph, and materializes that graph back into the rows a
 // view renders.
 import type {
+  AttentionSummary,
+  NavigationCatalogs,
   NavigationDelta,
   NavigationEntityRecord,
+  NavigationFailure,
+  NavigationJobSummary,
+  NavigationManifest,
   NavigationOrderContainer,
+  NavigationPinSectionDescriptor,
+  NavigationProjectSummary,
+  NavigationQuestion,
   NavigationReadBase,
+  NavigationResourceDescriptor,
+  NavigationSections,
+  NavigationSessionLocation,
+  NavigationSessionSummary,
   NavigationSnapshot,
+  NavigationSubagentTally,
+  NavigationTaskProgress,
+  NavigationWatchCadence,
+  NavigationWatchSummary,
+  Source,
 } from "../../types.gen";
 import { cloneAndDeepFreezeJSON } from "./immutable";
 import {
@@ -80,11 +97,28 @@ interface ValueRecordKeys {
   readonly known: readonly string[];
   readonly nested?: Readonly<Record<string, ValueRecordKeys>>;
 }
-const valueRecordKeys = (
-  required: readonly string[],
-  optional: readonly string[] = [],
-  nested?: ValueRecordKeys["nested"],
-): ValueRecordKeys => ({ required, known: [...required, ...optional], nested });
+
+// A value record's key table, mapped over its generated interface: every key
+// of the interface must be listed, and each entry must say whether the
+// interface marks that key optional. A key the interface dropped, one added
+// without a table entry, or one flipped between required and optional stops
+// the table from compiling (#2477).
+export type ValueRecordKeyTable<T> = {
+  readonly [K in keyof T]-?: Record<never, never> extends Pick<T, K> ? "optional" : "required";
+};
+
+// valueRecordKeys turns that table back into the runtime lists the validators
+// read: the required keys, every key (in the table's own order, required keys
+// written first), and the nested value records on the keys that hold them.
+const valueRecordKeys = <T>(table: ValueRecordKeyTable<T>, nested?: ValueRecordKeys["nested"]): ValueRecordKeys => {
+  const required: string[] = [];
+  const known: string[] = [];
+  for (const [key, mark] of Object.entries(table as Record<string, "required" | "optional">)) {
+    known.push(key);
+    if (mark === "required") required.push(key);
+  }
+  return { required, known, nested };
+};
 
 // knownKeys is exactKeys for a value record: every required key is present,
 // and a key the record's keys do not name is allowed. A newer hub adds
@@ -149,49 +183,103 @@ const version = (value: unknown): value is NavigationReadBase =>
   (value.revision as number) >= 0 &&
   safeString(value.etag, 1024);
 
-const JOB_KEYS = valueRecordKeys(
-  ["job_id", "job_type", "status"],
-  ["command", "task", "reason", "intent", "full_command"],
-);
-const WATCH_CADENCE_KEYS = valueRecordKeys(["kind"], ["seconds", "derived_next_fire_at", "every", "filter"]);
-const WATCH_KEYS = valueRecordKeys(
-  ["id", "source", "deliveries", "created_at", "active"],
-  ["target", "send_to", "note", "cadence", "output_match", "events", "wildcard_events", "delivery_times", "end_reason"],
+const JOB_KEYS = valueRecordKeys<NavigationJobSummary>({
+  job_id: "required",
+  job_type: "required",
+  status: "required",
+  command: "optional",
+  task: "optional",
+  reason: "optional",
+  intent: "optional",
+  full_command: "optional",
+});
+const WATCH_CADENCE_KEYS = valueRecordKeys<NavigationWatchCadence>({
+  kind: "required",
+  seconds: "optional",
+  derived_next_fire_at: "optional",
+  every: "optional",
+  filter: "optional",
+});
+const WATCH_KEYS = valueRecordKeys<NavigationWatchSummary>(
+  {
+    id: "required",
+    source: "required",
+    deliveries: "required",
+    created_at: "required",
+    active: "required",
+    target: "optional",
+    send_to: "optional",
+    note: "optional",
+    cadence: "optional",
+    output_match: "optional",
+    events: "optional",
+    wildcard_events: "optional",
+    delivery_times: "optional",
+    end_reason: "optional",
+  },
   { cadence: WATCH_CADENCE_KEYS },
 );
-const TASKS_KEYS = valueRecordKeys(["total", "done"], ["cancelled", "current_id", "current"]);
-const SUBAGENT_TALLY_KEYS = valueRecordKeys(["running", "failed", "done"]);
-const QUESTION_KEYS = valueRecordKeys(["text", "count"], ["options"]);
-const FAILURE_KEYS = valueRecordKeys([], ["title", "cause_kind", "provider", "status"]);
-const SESSION_KEYS = valueRecordKeys(
-  ["ref", "host_id", "session_id", "title", "project", "state", "kind", "live", "children"],
-  [
-    "branch",
-    "cluster_count",
-    "favorite",
-    "rename",
-    "ask_pending",
-    "approval_pending",
-    "approval_tool",
-    "approval_target",
-    "question",
-    "failure",
-    "last_message",
-    "dormant",
-    "offline",
-    "updated_at",
-    "turn_ended_at",
-    "unseen",
-    "more_subagents",
-    "subagents",
-    "omitted_descendants",
-    "omitted_watches",
-    "omitted_armed_watches",
-    "running_jobs",
-    "completed_jobs",
-    "watches",
-    "tasks",
-  ],
+const TASKS_KEYS = valueRecordKeys<NavigationTaskProgress>({
+  total: "required",
+  done: "required",
+  cancelled: "optional",
+  current_id: "optional",
+  current: "optional",
+});
+const SUBAGENT_TALLY_KEYS = valueRecordKeys<NavigationSubagentTally>({
+  running: "required",
+  failed: "required",
+  done: "required",
+});
+const QUESTION_KEYS = valueRecordKeys<NavigationQuestion>({
+  text: "required",
+  count: "required",
+  options: "optional",
+});
+const FAILURE_KEYS = valueRecordKeys<NavigationFailure>({
+  title: "optional",
+  cause_kind: "optional",
+  provider: "optional",
+  status: "optional",
+});
+const SESSION_KEYS = valueRecordKeys<NavigationSessionSummary>(
+  {
+    ref: "required",
+    host_id: "required",
+    session_id: "required",
+    title: "required",
+    project: "required",
+    state: "required",
+    kind: "required",
+    live: "required",
+    children: "required",
+    branch: "optional",
+    cluster_count: "optional",
+    favorite: "optional",
+    rename: "optional",
+    ask_pending: "optional",
+    approval_pending: "optional",
+    approval_tool: "optional",
+    approval_target: "optional",
+    question: "optional",
+    failure: "optional",
+    last_message: "optional",
+    model_name: "optional",
+    dormant: "optional",
+    offline: "optional",
+    updated_at: "optional",
+    turn_ended_at: "optional",
+    unseen: "optional",
+    more_subagents: "optional",
+    subagents: "optional",
+    omitted_descendants: "optional",
+    omitted_watches: "optional",
+    omitted_armed_watches: "optional",
+    running_jobs: "optional",
+    completed_jobs: "optional",
+    watches: "optional",
+    tasks: "optional",
+  },
   {
     running_jobs: JOB_KEYS,
     completed_jobs: JOB_KEYS,
@@ -202,47 +290,76 @@ const SESSION_KEYS = valueRecordKeys(
     failure: FAILURE_KEYS,
   },
 );
-const PROJECT_KEYS = valueRecordKeys(
-  ["key", "name", "session_count"],
-  [
-    "working_dir",
-    "rollup_state",
-    "rollup_live",
-    "rollup_attn",
-    "default_expanded",
-    "more_current",
-    "more_recent",
-    "more_archived",
-    "worktrees",
-    "is_archived",
-    "favorite",
-    "sources",
-  ],
+const PROJECT_KEYS = valueRecordKeys<NavigationProjectSummary>({
+  key: "required",
+  name: "required",
+  session_count: "required",
+  working_dir: "optional",
+  rollup_state: "optional",
+  rollup_live: "optional",
+  rollup_attn: "optional",
+  default_expanded: "optional",
+  more_current: "optional",
+  more_recent: "optional",
+  more_archived: "optional",
+  worktrees: "optional",
+  is_archived: "optional",
+  favorite: "optional",
+  sources: "optional",
+});
+// A project resource's anchor entity carries only key; the rest of the summary
+// arrives through the owned containers, so the table is the generated
+// summary's key field and nothing more.
+const PROJECT_ANCHOR_KEYS = valueRecordKeys<Pick<NavigationProjectSummary, "key">>({ key: "required" });
+const PIN_SECTION_KEYS = valueRecordKeys<NavigationPinSectionDescriptor>({
+  id: "required",
+  name: "required",
+  count: "required",
+});
+const SOURCE_KEYS = valueRecordKeys<Source>({
+  id: "required",
+  label: "required",
+  kind: "required",
+  online: "required",
+});
+const COUNT_KEYS = valueRecordKeys<NavigationResourceDescriptor>({ count: "required" });
+const ATTENTION_SUMMARY_KEYS = valueRecordKeys<AttentionSummary>({
+  needsYou: "required",
+  error: "required",
+  working: "required",
+});
+const SECTIONS_KEYS = valueRecordKeys<NavigationSections>(
+  { live: "required", needs_you: "required", pin_sections: "required" },
+  { live: COUNT_KEYS, needs_you: COUNT_KEYS, pin_sections: COUNT_KEYS },
 );
-const PROJECT_ANCHOR_KEYS = valueRecordKeys(["key"]);
-const PIN_SECTION_KEYS = valueRecordKeys(["id", "name", "count"]);
-const SOURCE_KEYS = valueRecordKeys(["id", "label", "kind", "online"]);
-const COUNT_KEYS = valueRecordKeys(["count"]);
-const ATTENTION_SUMMARY_KEYS = valueRecordKeys(["needsYou", "error", "working"]);
-const SECTIONS_KEYS = valueRecordKeys(["live", "needs_you", "pin_sections"], [], {
-  live: COUNT_KEYS,
-  needs_you: COUNT_KEYS,
-  pin_sections: COUNT_KEYS,
-});
-const CATALOGS_KEYS = valueRecordKeys(["projects", "archived_projects", "test_runs"], [], {
-  projects: COUNT_KEYS,
-  archived_projects: COUNT_KEYS,
-  test_runs: COUNT_KEYS,
-});
-const MANIFEST_KEYS = valueRecordKeys(
-  ["generation_id", "revision", "sources", "attentionSummary", "sections", "catalogs"],
-  [],
+const CATALOGS_KEYS = valueRecordKeys<NavigationCatalogs>(
+  { projects: "required", archived_projects: "required", test_runs: "required" },
+  { projects: COUNT_KEYS, archived_projects: COUNT_KEYS, test_runs: COUNT_KEYS },
+);
+const MANIFEST_KEYS = valueRecordKeys<NavigationManifest>(
+  {
+    generation_id: "required",
+    revision: "required",
+    sources: "required",
+    attentionSummary: "required",
+    sections: "required",
+    catalogs: "required",
+  },
   { sources: SOURCE_KEYS, attentionSummary: ATTENTION_SUMMARY_KEYS, sections: SECTIONS_KEYS, catalogs: CATALOGS_KEYS },
 );
-const LOCATION_KEYS = valueRecordKeys(
-  ["generation_id", "revision", "ref", "top_level_ref", "top_level"],
-  ["project_key", "tier", "pin_section_id"],
-);
+// A location resource's metadata is the generated response type without the
+// session the resource carries through its containers; the metadata wire type
+// has no generated name of its own.
+const LOCATION_KEYS = valueRecordKeys<Omit<NavigationSessionLocation, "session">>({
+  generation_id: "required",
+  revision: "required",
+  ref: "required",
+  top_level_ref: "required",
+  top_level: "required",
+  project_key: "optional",
+  tier: "optional",
+  pin_section_id: "optional",
+});
 
 function jobValue(value: unknown): boolean {
   return (
@@ -362,6 +479,7 @@ function sessionValue(value: unknown): value is Record<string, unknown> {
     optional(value.question, questionValue) &&
     optional(value.failure, failureValue) &&
     optional(value.last_message, (item) => boundedString(item, 200) && item !== "") &&
+    optional(value.model_name, (item) => boundedString(item, 512) && item !== "") &&
     optional(value.dormant, bool) &&
     optional(value.offline, bool) &&
     optional(value.updated_at, rfc3339Timestamp) &&

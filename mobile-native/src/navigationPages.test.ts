@@ -454,6 +454,40 @@ it("keeps an owed re-read when the read it interrupted is cancelled", async () =
 	expect(pages.getSnapshot().rows).toMatchObject([{ key: "b" }]);
 	expect(requests).toHaveLength(3);
 });
+it("re-reads after cancel and resume when the cancelled re-read never settles", async () => {
+	// #2466: cancel() dropped the re-read in flight, but a transport the app's
+	// backgrounding silently abandoned may never settle. The single flight then
+	// stayed running, so every later invalidation for the page was dropped.
+	const { requests, pages, invalidate } = boundary();
+	pages.watch();
+	const first = pages.refresh();
+	requests[0].resolve(response(["a"], 0, 1));
+	await first;
+	invalidate({
+		generationId: "hub-generation",
+		sequence: 1,
+		targets: [{ kind: "catalog", catalog: "projects", revision: 2 }],
+	});
+	// The re-read is in flight and never answers.
+	expect(requests).toHaveLength(2);
+	pages.cancel();
+	pages.resume();
+	expect(requests).toHaveLength(3);
+	requests[2].resolve(response(["b"], 0, 2));
+	await settled(pages);
+	expect(pages.getSnapshot().rows).toMatchObject([{ key: "b" }]);
+	// A later invalidation still re-reads rather than sticking.
+	await tick();
+	invalidate({
+		generationId: "hub-generation",
+		sequence: 2,
+		targets: [{ kind: "catalog", catalog: "projects", revision: 3 }],
+	});
+	expect(requests).toHaveLength(4);
+	requests[3].resolve(response(["c"], 0, 3));
+	await settled(pages);
+	expect(pages.getSnapshot().rows).toMatchObject([{ key: "c" }]);
+});
 it("an explicit refresh resumes a cancelled store and satisfies the owed re-read", async () => {
 	// A revealing list refreshes on focus instead of calling resume(); that
 	// read must both lift the pause and stand in for the re-read owed.

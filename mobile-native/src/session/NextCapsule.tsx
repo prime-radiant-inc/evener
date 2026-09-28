@@ -3,8 +3,8 @@
 // lists every session that needs you.
 import type { NavigationSessionSummary } from "@evener/appwire-client";
 import { SymbolView } from "expo-symbols";
-import { Platform, Pressable, Text, useWindowDimensions } from "react-native";
-import { useColors, useTextScale } from "../ui";
+import { Pressable, Text, useWindowDimensions } from "react-native";
+import { allowFontScaling, useColors, useTextScale } from "../ui";
 import { floatingCapsule } from "./FloatingStack";
 
 export function NextCapsule({
@@ -34,11 +34,11 @@ export function NextCapsule({
 				opacity: pressed ? 0.6 : 1,
 			})}
 		>
-			<Text allowFontScaling={Platform.OS !== "ios"} style={{ ...text, color: palette.accentInk, fontWeight: "600" }}>
+			<Text allowFontScaling={allowFontScaling} style={{ ...text, color: palette.accentInk, fontWeight: "600" }}>
 				Next
 			</Text>
 			<Text
-				allowFontScaling={Platform.OS !== "ios"}
+				allowFontScaling={allowFontScaling}
 				numberOfLines={1}
 				ellipsizeMode="tail"
 				style={{ ...text, color: palette.inkHi, maxWidth: width * 0.6 }}

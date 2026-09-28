@@ -138,6 +138,7 @@ func localDaemonEntriesFromRoster(live []hubcore.LiveEntry) []appsource.LocalDae
 			LastTurnEndedAt:    hubcore.UnixMilliseconds(item.LastTurnEndedAt),
 			LastMessage:        item.LastMessage,
 			Tasks:              item.Tasks,
+			CurrentModel:       item.CurrentModel,
 		}
 		entries = append(entries, entry)
 		// In-process descendants are addressed as their own AppWire threads,

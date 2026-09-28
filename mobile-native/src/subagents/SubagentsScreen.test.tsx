@@ -2,7 +2,7 @@
 // evener/jobs/list, in failed, running and done sections, with the strip, the
 // chips, search, and each row's why and last line.
 import type { NativeStackNavigationOptions } from "@react-navigation/native-stack";
-import { WireError } from "@evener/appwire-client";
+import { ACTIVITY_REFRESH_MIN_INTERVAL_MS, WireError } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import type { ReactElement } from "react";
 import { act, type ReactTestRenderer } from "react-test-renderer";
@@ -145,6 +145,21 @@ async function settle() {
 		for (let turn = 0; turn < 20; turn += 1) await Promise.resolve();
 		await new Promise((resolve) => setTimeout(resolve, 0));
 	});
+}
+
+// The list paces whole-tree reads, so the read a notification asks for runs
+// once the minimum interval has passed.
+async function treeUpdatedAndRead(hubClient: FakeClient) {
+	vi.useFakeTimers();
+	hubClient.emitNotification({
+		method: "evener/jobs/treeUpdated",
+		params: { threadId: "coord", ref: "local:coord", revision: 2 },
+	} as never);
+	await act(async () => {
+		await vi.advanceTimersByTimeAsync(ACTIVITY_REFRESH_MIN_INTERVAL_MS);
+	});
+	vi.useRealTimers();
+	await settle();
 }
 
 async function mount(flush = true) {
@@ -372,11 +387,7 @@ it("keeps the search field while it has words, even once the list shrinks", asyn
 	const tree = await mount();
 	act(() => tree.root.find((node) => String(node.type) === "TextInput").props.onChangeText("race"));
 	small = true;
-	client.emitNotification({
-		method: "evener/jobs/treeUpdated",
-		params: { threadId: "coord", ref: "local:coord", revision: 2 },
-	} as never);
-	await settle();
+	await treeUpdatedAndRead(client);
 	expect(pressable(tree, "Clear filter")).toBeDefined();
 	act(() => pressable(tree, "Clear filter")?.props.onPress());
 	expect(text(tree)).toContain("Only one");
@@ -412,11 +423,7 @@ it("says a stop you asked for is pending, then that it stopped, with the toast o
 	await settle();
 	expect(text(tree)).toContain("Stop requested from the coordinator");
 	stopped = true;
-	client.emitNotification({
-		method: "evener/jobs/treeUpdated",
-		params: { threadId: "coord", ref: "local:coord", revision: 2 },
-	} as never);
-	await settle();
+	await treeUpdatedAndRead(client);
 	// A stopped subagent is done, under the fold.
 	act(() => pressable(tree, "Done · 22")?.props.onPress());
 	expect(text(tree)).toContain("Stopped at your request");

@@ -85,6 +85,20 @@ describe("hostRequest (remote host)", () => {
     ]);
   });
 
+  test("forwards through a client that offers only request", async () => {
+    const calls: unknown[][] = [];
+    const client = {
+      request: async (...args: unknown[]) => {
+        calls.push(args);
+        return { data: [] };
+      },
+    } as unknown as Parameters<typeof hostRequest>[0];
+    await hostRequest(client, "paradise-park", "model/list", {});
+    expect(calls).toEqual([
+      ["evener/host/request", { host: "paradise-park", method: "model/list", params: {} }, undefined],
+    ]);
+  });
+
   test("returns the forwarded method's own result verbatim", async () => {
     const fake = new FakeClient("ready");
     fake.on(
