@@ -4396,16 +4396,18 @@ it("offers to continue a document you left in the last two hours, under the noti
 	const id = hubId();
 	adoptedAnHourAgo(id);
 	leaveDocument(id, 90);
-	connect(id, hub(fleet).client, "ready");
+	// A notice above the Board (Update needed) shows where the row sits.
+	connect(id, hub(fleet).client, "ready", { fatal: true });
 	const nav = { ...navigation(), push: vi.fn() };
 	const tree = await mount(nav);
 	const row = tree.root.findAll(
 		(node) => node.props.accessibilityLabel === "Continue reading, 62 percent, Fix the settle/drain race",
 	)[0];
 	if (!row) throw new Error("no Continue reading row");
+	const notice = tree.root.findAll((node) => node.props.testID === "notice")[0];
 	const live = tree.root.find((node) => node.props.testID === "live-block");
-	const order = tree.root.findAll((node) => node === row || node === live);
-	expect(order[0]).toBe(row);
+	if (!notice) throw new Error("no notice");
+	expect(tree.root.findAll((node) => node === notice || node === row || node === live)).toEqual([notice, row, live]);
 	act(() => row.props.onPress());
 	expect(nav.push.mock.calls).toEqual([
 		["Conversation", { hubId: id, ref: "local:fix", title: "Fix race" }],

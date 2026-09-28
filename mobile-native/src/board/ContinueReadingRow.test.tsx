@@ -2,7 +2,6 @@
 import { act } from "react-test-renderer";
 import { expect, it, vi } from "vitest";
 import { pressable, render, renderedText } from "../renderNative.testkit";
-import { openDocumentInSession } from "../reader/openDocument";
 import { ContinueReadingRow } from "./ContinueReadingRow";
 
 vi.mock("react-native", async () => (await import("../renderNative.testkit")).nativeModuleMock());
@@ -28,30 +27,4 @@ it("says how far you read and what, and reads that way to VoiceOver", () => {
 	if (!row) throw new Error("no row");
 	act(() => row.props.onPress());
 	expect(onOpen).toHaveBeenCalledWith(trail);
-});
-
-it("opens the document inside its session, so Back lands in the session", () => {
-	const pushed: [string, object][] = [];
-	openDocumentInSession({ push: (name: string, params: object) => pushed.push([name, params]) } as never, {
-		hubId: "studio",
-		sessionRef: trail.sessionRef,
-		path: trail.path,
-		reviewRef: trail.reviewRef,
-		reviewTitle: trail.reviewTitle,
-		updatedAt: trail.updatedAt,
-	});
-	expect(pushed).toEqual([
-		["Conversation", { hubId: "studio", ref: "local:coord", title: "Get PR 2138 Test Clean" }],
-		[
-			"Reader",
-			{
-				hubId: "studio",
-				sessionRef: trail.sessionRef,
-				path: trail.path,
-				reviewRef: trail.reviewRef,
-				reviewTitle: trail.reviewTitle,
-				updatedAt: trail.updatedAt,
-			},
-		],
-	]);
 });
