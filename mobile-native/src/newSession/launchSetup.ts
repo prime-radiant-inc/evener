@@ -1,6 +1,6 @@
 // A new session's setup (spec 11): where it runs and how. The sheet's rows,
-// "Same as last time", recipes and a host change all speak in this shape, and
-// every rule applied to it is a pure function here.
+// the latest start it opens on, and a host change all speak in this shape,
+// and every rule applied to it is a pure function here.
 import { basename, type LaunchConfigLayer } from "@evener/appwire-client";
 import { effortName } from "../session/sessionFacts";
 
@@ -60,45 +60,11 @@ export function ownedOverrides(layer: LaunchConfigLayer): OwnedOverrides {
 }
 
 /** `layer` with its owned fields replaced by `owned`'s. A field `owned` leaves
- * out is removed, so a recipe with no sandbox falls back to the hub's. */
+ * out is removed, so a setup with no sandbox falls back to the hub's. */
 export function withOwnedOverrides(layer: LaunchConfigLayer, owned: OwnedOverrides): LaunchConfigLayer {
 	const next: LaunchConfigLayer = { ...layer };
 	for (const field of OWNED_FIELDS) delete next[field];
 	return { ...next, ...ownedOverrides(owned) };
-}
-
-function sameNames(a: readonly string[] | undefined, b: readonly string[] | undefined): boolean {
-	if (a === undefined || b === undefined) return a === b;
-	if (a.length !== b.length) return false;
-	const sorted = [...b].sort();
-	return [...a].sort().every((name, index) => name === sorted[index]);
-}
-
-/** Two setups start the same session: the same place, model, effort and owned
- * overrides. Plugin order doesn't matter, since the hub loads a set. */
-export function sameSetup(a: LaunchSetup, b: LaunchSetup): boolean {
-	return (
-		a.host === b.host &&
-		a.cwd === b.cwd &&
-		a.model?.provider === b.model?.provider &&
-		a.model?.model === b.model?.model &&
-		a.effort === b.effort &&
-		OWNED_FIELDS.every((field) =>
-			field === "enabledPlugins"
-				? sameNames(a.overrides.enabledPlugins, b.overrides.enabledPlugins)
-				: a.overrides[field] === b.overrides[field],
-		)
-	);
-}
-
-/** "Same as last time" for a host and project (spec 11; ruling 16): the newest
- * setup started for that project on that host; else the newest setup on this
- * hub, moved there; null when nothing was ever started from this phone. */
-export function lastSetupFor(history: readonly RememberedSetup[], host: string, cwd: string): LaunchSetup | null {
-	const exact = newestSetup(history.filter((entry) => entry.setup.host === host && entry.setup.cwd === cwd));
-	if (exact) return exact;
-	const newest = newestSetup(history);
-	return newest ? { ...newest, host, cwd } : null;
 }
 
 /** The newest setup started from this phone: where a sheet with nothing in
@@ -107,21 +73,6 @@ export function newestSetup(history: readonly RememberedSetup[]): LaunchSetup | 
 	let newest: RememberedSetup | null = null;
 	for (const entry of history) if (!newest || entry.at > newest.at) newest = entry;
 	return newest?.setup ?? null;
-}
-
-export type LitChip = { kind: "last" } | { kind: "recipe"; id: string } | { kind: "custom" };
-
-/** Which chip is lit (spec 11): "Same as last time" when the setup is exactly
- * the last one for its project, a recipe when it is exactly that recipe, and
- * Custom otherwise. Derived, never stored, so it can't disagree with the rows. */
-export function litChip(
-	current: LaunchSetup,
-	last: LaunchSetup | null,
-	recipes: readonly { id: string; setup: LaunchSetup }[],
-): LitChip {
-	if (last && sameSetup(current, last)) return { kind: "last" };
-	const recipe = recipes.find((candidate) => sameSetup(current, candidate.setup));
-	return recipe ? { kind: "recipe", id: recipe.id } : { kind: "custom" };
 }
 
 export interface HostMove {
@@ -193,22 +144,6 @@ export function accessOf(sandbox: string | undefined, hubDefault: string | undef
  * effect unless a sandbox mode is set"), so its switch shows only then. */
 export function networkApplies(access: AccessLevel): boolean {
 	return access.mode !== FULL_ACCESS.mode;
-}
-
-/** A setup in one line, for a recipe's row and the Save sheet (the
- * prototype's hub.js): the caller names the host, the model and the access. */
-export function setupSummary(setup: LaunchSetup, words: { host: string; model: string; access: string }): string {
-	const plugins = setup.overrides.enabledPlugins;
-	return [
-		words.host,
-		setup.cwd ? projectName(setup.cwd) : "",
-		words.model,
-		setup.effort ? effortLabel(setup.effort) : "",
-		plugins === undefined ? "Default plugins" : `${plugins.length} ${plugins.length === 1 ? "plugin" : "plugins"}`,
-		words.access,
-	]
-		.filter(Boolean)
-		.join(" · ");
 }
 
 /** The creation form's fields as a setup. */

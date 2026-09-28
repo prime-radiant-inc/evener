@@ -100,7 +100,7 @@ export function createNewSessionStore(
 	// model list to find it (applySeed). A move drops it, so it never lands in
 	// another project's or host's list.
 	let pendingModelId: string | null = null;
-	/** The form moves: to another host or project, a recipe, a seed, or an
+	/** The form moves: to another host or project, the latest start, a seed, or an
 	 * empty form after a start. Answers for the old place are dropped, a
 	 * session's model waiting for them goes, and a host change still answering
 	 * stops placing the project. */
@@ -465,7 +465,7 @@ export function createNewSessionStore(
 				...(get().source === host ? { projects: recent } : {}),
 			});
 			// The form moved on while this host answered (a project chosen, a
-			// recipe, another host): its choice stands.
+			// latest start, another host): its choice stands.
 			if (mine !== placement) return;
 			const moved = moveToHost(cwd, hostLabel, exists !== false, recent);
 			set({ cwd: moved.cwd, hostNote: moved.note });

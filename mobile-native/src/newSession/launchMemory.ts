@@ -1,26 +1,18 @@
-// What this phone remembers about starting sessions on one hub (spec 11; S8's
-// fallback, ruling 16): recipes, in the order you keep them, and the setups
-// sessions were started with, for "Same as last time". Both are per hub,
-// because a setup names that hub's hosts and folders.
+// What this phone remembers about starting sessions on one hub: the setups
+// sessions were started with, so New session opens on the latest one (spec
+// 11's "Same as last time"; recipes are deferred). It is per hub, because a
+// setup names that hub's hosts and folders.
 import type { LaunchConfigLayer } from "@evener/appwire-client";
 import { readJson, removeKeys } from "../deviceStorage";
 import type { SyncStringStorage } from "../syncStringStorage";
 import { type LaunchSetup, ownedOverrides, type RememberedSetup } from "./launchSetup";
 
-export interface Recipe {
-	id: string;
-	name: string;
-	setup: LaunchSetup;
-}
-
-export const recipesKey = (hubId: string) => `evener.native.recipes.${hubId}`;
 export const historyKey = (hubId: string) => `evener.native.launch-history.${hubId}`;
 
 /** Starts remembered per hub: one per host and project, enough for every
  * project in use (the spec's fleet has 14) and small enough to rewrite on
  * every start. */
 export const HISTORY_LIMIT = 50;
-export const RECIPE_NAME_LIMIT = 40;
 
 function record(value: unknown): Record<string, unknown> | null {
 	return value !== null && typeof value === "object" && !Array.isArray(value)
@@ -64,14 +56,6 @@ function toSetup(value: unknown): LaunchSetup | null {
 	};
 }
 
-function toRecipe(value: unknown): Recipe | null {
-	const recipe = record(value);
-	const setup = toSetup(recipe?.setup);
-	return recipe && setup && typeof recipe.id === "string" && typeof recipe.name === "string"
-		? { id: recipe.id, name: recipe.name, setup }
-		: null;
-}
-
 function toRemembered(value: unknown): RememberedSetup | null {
 	const entry = record(value);
 	const setup = toSetup(entry?.setup);
@@ -89,71 +73,20 @@ function parseList<T>(value: unknown, item: (value: unknown) => T | null): T[] {
 }
 
 export class LaunchMemory {
-	private recipeList: Recipe[];
 	private historyList: RememberedSetup[];
-	private revision = 0;
-	private readonly listeners = new Set<() => void>();
 
 	constructor(
 		private readonly storage: SyncStringStorage,
 		private readonly hubId: string,
-		private readonly createId: () => string,
 	) {
-		this.recipeList = parseList(readJson(storage, recipesKey(hubId)), toRecipe);
 		this.historyList = parseList(readJson(storage, historyKey(hubId)), toRemembered);
-	}
-
-	recipes(): readonly Recipe[] {
-		return this.recipeList;
 	}
 
 	history(): readonly RememberedSetup[] {
 		return this.historyList;
 	}
 
-	getRevision = (): number => this.revision;
-
-	subscribe = (listener: () => void): (() => void) => {
-		this.listeners.add(listener);
-		return () => {
-			this.listeners.delete(listener);
-		};
-	};
-
-	/** Saves a setup under a name. A recipe with the same name, ignoring case
-	 * and surrounding spaces, takes the new setup and keeps its place (ruling
-	 * 16); a new one goes last. */
-	saveRecipe(name: string, setup: LaunchSetup): Recipe {
-		const trimmed = name.trim();
-		const existing = this.recipeList.find((recipe) => recipe.name.toLowerCase() === trimmed.toLowerCase());
-		const saved: Recipe = existing ? { ...existing, setup } : { id: this.createId(), name: trimmed, setup };
-		this.writeRecipes(
-			existing
-				? this.recipeList.map((recipe) => (recipe.id === saved.id ? saved : recipe))
-				: [...this.recipeList, saved],
-		);
-		return saved;
-	}
-
-	renameRecipe(id: string, name: string): void {
-		this.writeRecipes(this.recipeList.map((recipe) => (recipe.id === id ? { ...recipe, name: name.trim() } : recipe)));
-	}
-
-	deleteRecipe(id: string): void {
-		this.writeRecipes(this.recipeList.filter((recipe) => recipe.id !== id));
-	}
-
-	/** Moves a recipe one place up (-1) or down (1); at an end it stays. */
-	moveRecipe(id: string, by: -1 | 1): void {
-		const index = this.recipeList.findIndex((recipe) => recipe.id === id);
-		const target = index + by;
-		if (index < 0 || target < 0 || target >= this.recipeList.length) return;
-		const next = [...this.recipeList];
-		[next[index], next[target]] = [next[target] as Recipe, next[index] as Recipe];
-		this.writeRecipes(next);
-	}
-
-	/** Remembers a start (ruling 16): it replaces older starts for the same
+	/** Remembers a start: it replaces older starts for the same
 	 * host and project, and the oldest fall off past the limit. */
 	recordStart(setup: LaunchSetup, at: number): void {
 		const others = this.historyList.filter((entry) => entry.setup.host !== setup.host || entry.setup.cwd !== setup.cwd);
@@ -161,33 +94,14 @@ export class LaunchMemory {
 	}
 
 	/** Stores first, so a failed write leaves this memory as it was. */
-	private writeRecipes(next: Recipe[]): void {
-		this.storage.setItemSync(recipesKey(this.hubId), JSON.stringify(next));
-		this.recipeList = next;
-		this.changed();
-	}
-
 	private writeHistory(next: RememberedSetup[]): void {
 		this.storage.setItemSync(historyKey(this.hubId), JSON.stringify(next));
 		this.historyList = next;
-		this.changed();
-	}
-
-	private changed(): void {
-		this.revision += 1;
-		for (const listener of this.listeners) listener();
 	}
 }
 
-export function recipeNameIssue(name: string): string | null {
-	const trimmed = name.trim();
-	if (!trimmed) return "Name the recipe.";
-	if (Array.from(trimmed).length > RECIPE_NAME_LIMIT) return `Keep it under ${RECIPE_NAME_LIMIT} characters.`;
-	return null;
-}
-
-/** Removes a hub's recipes and starts, trying both keys before it reports a
- * failure (deviceStorage's removeKeys). */
+/** Removes a hub's remembered starts (deviceStorage's removeKeys reports a
+ * storage that won't let go of them). */
 export function forgetLaunchMemory(storage: SyncStringStorage, hubId: string): void {
-	removeKeys(storage, [recipesKey(hubId), historyKey(hubId)]);
+	removeKeys(storage, [historyKey(hubId)]);
 }

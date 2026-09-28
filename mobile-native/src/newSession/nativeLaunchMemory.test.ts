@@ -14,7 +14,6 @@ vi.mock("expo-sqlite/kv-store", () => ({
 		},
 	},
 }));
-vi.mock("expo-crypto", () => ({ randomUUID: () => "recipe-id" }));
 
 it("forgets a removed hub's cached memory even when the phone can't delete its keys", async () => {
 	const { forgetLaunchMemoryForHub, launchMemory } = await import("./nativeLaunchMemory");

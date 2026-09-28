@@ -3,17 +3,13 @@ import {
 	accessOf,
 	effortLabel,
 	type LaunchSetup,
-	lastSetupFor,
-	litChip,
 	modelFromId,
 	moveToHost,
 	networkApplies,
 	newestSetup,
 	ownedOverrides,
 	projectName,
-	sameSetup,
 	setupOf,
-	setupSummary,
 	withOwnedOverrides,
 } from "./launchSetup";
 
@@ -50,78 +46,18 @@ describe("the overrides the sheet owns", () => {
 	});
 });
 
-describe("comparing setups", () => {
-	it("ignores plugin order", () => {
-		const reordered = setup({ overrides: { enabledPlugins: ["go", "superpowers"], sandbox: "workspace-write" } });
-		expect(sameSetup(setup(), reordered)).toBe(true);
-	});
-
-	const differences: [string, Partial<LaunchSetup>][] = [
-		["host", { host: "paradise-park" }],
-		["project", { cwd: "/home/jesse/git/docs" }],
-		["model", { model: { provider: "meta", model: "muse-spark-1.3" } }],
-		["hub default model", { model: null }],
-		["effort", { effort: "high" }],
-		["plugins", { overrides: { enabledPlugins: ["superpowers"], sandbox: "workspace-write" } }],
-		["default plugins", { overrides: { sandbox: "workspace-write" } }],
-		["access", { overrides: { enabledPlugins: ["superpowers", "go"], sandbox: "read-only" } }],
-		[
-			"network",
-			{ overrides: { enabledPlugins: ["superpowers", "go"], sandbox: "workspace-write", sandboxNet: false } },
-		],
-		[
-			"turn limit",
-			{ overrides: { enabledPlugins: ["superpowers", "go"], sandbox: "workspace-write", maxRounds: 100 } },
-		],
-	];
-	it.each(differences)("tells a different %s apart", (_name, over) => {
-		expect(sameSetup(setup(), setup(over))).toBe(false);
-	});
-});
-
-describe("Same as last time (ruling 16)", () => {
-	const history = [
-		{ setup: setup({ effort: "high" }), at: 1 },
-		{ setup: setup({ cwd: "/home/jesse/git/docs", effort: "max" }), at: 3 },
-		{ setup: setup({ effort: "xhigh" }), at: 2 },
-	];
-
-	it("is the newest setup started for that host and project", () => {
-		expect(lastSetupFor(history, "local", "/home/jesse/git/evener")?.effort).toBe("xhigh");
-	});
-
-	it("moves the newest setup on this hub to a project never started from here", () => {
-		expect(lastSetupFor(history, "paradise-park", "/Users/jesse/git/evener")).toEqual({
-			...setup({ cwd: "/home/jesse/git/docs", effort: "max" }),
-			host: "paradise-park",
-			cwd: "/Users/jesse/git/evener",
-		});
+describe("the latest start (spec 11's Same as last time)", () => {
+	it("opens a new sheet on the newest start", () => {
+		const history = [
+			{ setup: setup({ effort: "high" }), at: 1 },
+			{ setup: setup({ cwd: "/home/jesse/git/docs", effort: "max" }), at: 3 },
+			{ setup: setup({ effort: "xhigh" }), at: 2 },
+		];
+		expect(newestSetup(history)?.cwd).toBe("/home/jesse/git/docs");
 	});
 
 	it("is nothing when nothing was ever started from this phone", () => {
-		expect(lastSetupFor([], "local", "/home/jesse/git/evener")).toBeNull();
 		expect(newestSetup([])).toBeNull();
-	});
-
-	it("opens a new sheet on the newest start", () => {
-		expect(newestSetup(history)?.cwd).toBe("/home/jesse/git/docs");
-	});
-});
-
-describe("the lit chip (spec 11)", () => {
-	const recipes = [{ id: "quick", setup: setup({ effort: "medium" }) }];
-
-	it("is Same as last time when the setup is exactly the last one", () => {
-		expect(litChip(setup(), setup(), recipes)).toEqual({ kind: "last" });
-	});
-
-	it("is a recipe when the setup is exactly that recipe", () => {
-		expect(litChip(setup({ effort: "medium" }), setup(), recipes)).toEqual({ kind: "recipe", id: "quick" });
-	});
-
-	it("is Custom after any change that matches nothing", () => {
-		expect(litChip(setup({ effort: "low" }), setup(), recipes)).toEqual({ kind: "custom" });
-		expect(litChip(setup(), null, [])).toEqual({ kind: "custom" });
 	});
 });
 
@@ -183,19 +119,6 @@ describe("labels", () => {
 	it("offers the network switch only inside a sandbox", () => {
 		expect(networkApplies(accessOf("off", undefined))).toBe(false);
 		expect(networkApplies(accessOf("restricted", undefined))).toBe(true);
-	});
-
-	it("sums a setup up in one line", () => {
-		expect(setupSummary(setup(), { host: "magic-kingdom", model: "GLM 5.3 Vision", access: "Workspace write" })).toBe(
-			"magic-kingdom · evener · GLM 5.3 Vision · XHigh · 2 plugins · Workspace write",
-		);
-		expect(
-			setupSummary(setup({ effort: "", overrides: {} }), {
-				host: "magic-kingdom",
-				model: "Hub default model",
-				access: "Full access",
-			}),
-		).toBe("magic-kingdom · evener · Hub default model · Default plugins · Full access");
 	});
 });
 

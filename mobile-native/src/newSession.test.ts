@@ -694,7 +694,7 @@ it("forgets a session's model once the form moves somewhere else", async () => {
 	expect(store.getState().model).toBeNull();
 });
 
-it("reads the recent projects of the host a recipe names, dropping the old host's at once", async () => {
+it("reads the recent projects of the host an applied setup names, dropping the old host's at once", async () => {
 	const { store, calls } = setup();
 	const metadata = store.getState().loadMetadata();
 	answer(calls, "evener/projects/recent", null, { data: ["/home/jesse/git/evener"] });
