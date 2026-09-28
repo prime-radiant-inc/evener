@@ -187,6 +187,21 @@ func (s *RemoteHubSource) ResolveSandboxEscalation(ctx context.Context, params a
 	return s.call(ctx, appwire.MethodEvenerSandboxEscalationResolve, remote, nil)
 }
 
+// StopDelegate forwards evener/delegate/stop to the host hub that owns the
+// root, which relays it to the root's daemon.
+func (s *RemoteHubSource) StopDelegate(ctx context.Context, params appwire.DelegateStopParams) (appwire.DelegateStopResponse, error) {
+	ref, err := s.toRemoteRef(params.Ref, params.ThreadID)
+	if err != nil {
+		return appwire.DelegateStopResponse{}, err
+	}
+	remote := params
+	remote.Ref = ref.String()
+	remote.ThreadID = ref.ThreadID
+	var out appwire.DelegateStopResponse
+	err = s.call(ctx, appwire.MethodEvenerDelegateStop, remote, &out)
+	return out, err
+}
+
 func (s *RemoteHubSource) InterruptTurn(ctx context.Context, params appwire.TurnInterruptParams) (appwire.TurnInterruptResponse, error) {
 	ref, err := s.toRemoteRef(params.Ref, params.ThreadID)
 	if err != nil {

@@ -508,6 +508,20 @@ func (s *LocalDaemonSource) ResolveSandboxEscalation(ctx context.Context, params
 	})
 }
 
+// StopDelegate forwards evener/delegate/stop to the root's daemon. Like every
+// root mutation it targets the root's own entry, never a subagent's alias.
+func (s *LocalDaemonSource) StopDelegate(ctx context.Context, params appwire.DelegateStopParams) (appwire.DelegateStopResponse, error) {
+	entry, err := s.entryForRef(params.Ref, params.ThreadID)
+	if err != nil {
+		return appwire.DelegateStopResponse{}, err
+	}
+	var out appwire.DelegateStopResponse
+	err = s.withClient(ctx, entry, func(ctx context.Context, client *appwire.Client) error {
+		return client.Request(ctx, appwire.MethodEvenerDelegateStop, params, &out)
+	})
+	return out, err
+}
+
 func (s *LocalDaemonSource) InterruptTurn(ctx context.Context, params appwire.TurnInterruptParams) (appwire.TurnInterruptResponse, error) {
 	entry, err := s.entryForRef(params.Ref, params.ThreadID)
 	if err != nil {

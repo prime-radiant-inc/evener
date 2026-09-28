@@ -153,8 +153,8 @@ const (
 	// MethodEvenerDelegateStop ends one subagent's current run at the user's
 	// request (S6): that subagent alone, never the subagents it started. It
 	// targets the root session (ref/threadId) and names the delegate.
-	// ScopeDaemon (the root's daemon serves it). A UI-only request, never
-	// advertised to the model.
+	// ScopeBoth (the root's daemon serves it; the hub relays). A UI-only
+	// request, never advertised to the model.
 	MethodEvenerDelegateStop = "evener/delegate/stop"
 	// MethodEvenerHostRequest forwards one hub-scoped admin RPC to a named
 	// remote host's hub (component 07a). Host is the component-03 source ID;
