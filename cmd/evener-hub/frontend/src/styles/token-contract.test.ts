@@ -1247,7 +1247,9 @@ const BARE_VAR_RE = /var\(\s*(--[a-zA-Z0-9-]+)\s*\)/g;
 //     useKeyboardInset.ts), --rail-width (shell/rail/RailResizeHandle.tsx),
 //     --fill (Meter and RecommendationCard paint their fill width).
 //   - A theming hook a container sets to retint the content it owns:
-//     --markdown-ink, --prose-ink, --prose-font-size.
+//     --markdown-ink, --prose-ink. (--prose-font-size left this set when the
+//     reading-surface hosts began declaring it; the declarer guardrail test
+//     below owns that contract now.)
 //   - Declared today only under a media query or an attribute selector
 //     (--tap-min, --density-scale, --font-scale). The declaration scan
 //     picks those up anyway; they are named here so this check never
@@ -1258,7 +1260,6 @@ const UNDECLARED_BY_DESIGN = new Set([
   "--fill",
   "--markdown-ink",
   "--prose-ink",
-  "--prose-font-size",
   "--tap-min",
   "--density-scale",
   "--font-scale",
