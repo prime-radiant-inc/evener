@@ -116,14 +116,9 @@ export class NotesController {
 	private timer: ReturnType<typeof setTimeout> | null = null;
 	private saving: Promise<SaveOutcome> | null = null;
 	private listeners = new Set<() => void>();
-	// Read once, then kept in memory: keep()/forget() mutate this in place, so
-	// every keystroke's durable write costs one JSON.stringify, not also a
-	// fresh read and parse of every draft this hub holds.
-	private drafts: Record<string, string>;
 
 	constructor(private readonly options: NotesControllerOptions) {
-		this.drafts = readDrafts(options.storage, options.hubId);
-		const kept = this.drafts[options.ref];
+		const kept = readDrafts(options.storage, options.hubId)[options.ref];
 		this.state = kept !== undefined ? { text: kept, phase: "failed" } : { text: options.savedNote(), phase: "clean" };
 	}
 
@@ -145,6 +140,15 @@ export class NotesController {
 	edit(text: string): void {
 		this.cancelTimer();
 		const clipped = text.slice(0, NOTE_LIMIT);
+		// Typed back to exactly the hub's current text: nothing to keep or send,
+		// and going clean lets sync() resume following the hub. Otherwise a
+		// later hub update would sit unseen behind this stale "editing" text,
+		// and a blur's save would overwrite it (RoboRev #2769).
+		if (clipped === this.options.savedNote()) {
+			this.storeDraft(undefined);
+			this.publish({ text: clipped, phase: "clean" });
+			return;
+		}
 		this.storeDraft(clipped);
 		this.publish({ text: clipped, phase: "editing" });
 	}
@@ -171,10 +175,24 @@ export class NotesController {
 	flush(): Promise<SaveOutcome> {
 		this.cancelTimer();
 		if (!this.unsaved()) return Promise.resolve({ saved: false, woke: false });
-		this.saving ??= this.save().finally(() => {
+		this.saving ??= this.saveUntilClean().finally(() => {
 			this.saving = null;
 		});
 		return this.saving;
+	}
+
+	/** Keeps saving while text typed during a save leaves something new
+	 * unsaved, so a caller's outcome is never "saved" while newer text is
+	 * still sitting there unsent (RoboRev #2769). Stops the moment a save
+	 * itself fails, rather than retrying in a tight loop. */
+	private async saveUntilClean(): Promise<SaveOutcome> {
+		let outcome = await this.save();
+		// save() itself tells "typed on during the save" apart from "settled"
+		// by the phase it publishes (see below); unsaved() can't: savedNote()
+		// only catches up once the hub's own notes/updated notification
+		// arrives, which would make this loop forever on a settled save.
+		while (outcome.saved && this.state.phase === "editing") outcome = await this.save();
+		return outcome;
 	}
 
 	async removeLink(id: string): Promise<boolean> {
@@ -235,11 +253,15 @@ export class NotesController {
 		}
 	}
 
-	/** Keep `text` on the phone, or forget it (`undefined`) once it's saved. */
+	/** Keep `text` on the phone, or forget it (`undefined`) once it's saved.
+	 * Reads the hub's whole drafts map fresh each time: two sessions open
+	 * under one hub each keep their own controller, and a cached copy here
+	 * would let the second writer's save erase the first's draft. */
 	private storeDraft(text: string | undefined): void {
-		if (text === undefined) delete this.drafts[this.options.ref];
-		else this.drafts[this.options.ref] = text;
-		writeDrafts(this.options.storage, this.options.hubId, this.drafts);
+		const drafts = readDrafts(this.options.storage, this.options.hubId);
+		if (text === undefined) delete drafts[this.options.ref];
+		else drafts[this.options.ref] = text;
+		writeDrafts(this.options.storage, this.options.hubId, drafts);
 	}
 
 	private cancelTimer(): void {

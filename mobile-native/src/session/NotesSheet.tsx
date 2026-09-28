@@ -50,7 +50,10 @@ export function NotesSheet({ route }: NativeStackScreenProps<Routes, "NotesSheet
 		},
 	});
 	const host = useSheetHost(notesHosts, sheetKey(hubId, ref), sheet);
-	live.current = host;
+	// Keep the last real host once the screen's gone: its own release can
+	// land before this sheet's unmount does (a real goBack()'s ordering), and
+	// onClosed still needs something to flush through.
+	if (host) live.current = host;
 	useEffect(() => {
 		const subscription = AppState.addEventListener("change", (state) => {
 			if (state === "background") void live.current?.notes.flush();

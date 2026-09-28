@@ -376,4 +376,20 @@ describe("closing the sheet", () => {
 		expect(navigation.goBack).toHaveBeenCalledOnce();
 		expect(tree.toJSON()).toBeNull();
 	});
+
+	it("still saves an unsaved note when its own session screen goes away first (RoboRev #2769)", async () => {
+		const { requests } = provide(session());
+		const tree = sheet();
+		act(() => editor(tree)?.props.onChangeText("keep the tests"));
+		// The session screen (and its host) can go before the sheet's own
+		// unmount runs: a real navigator's goBack() from useSheetHost's
+		// finish() unmounts this component after that release, in that order.
+		act(() => notesHosts.release(sheetKey(HUB, REF), owner));
+		act(() => tree.unmount());
+		mounted.splice(mounted.indexOf(tree), 1);
+		await flush();
+		expect(requests.filter((request) => request.method === "notes/human/set").map((request) => request.params.note)).toEqual([
+			"keep the tests",
+		]);
+	});
 });

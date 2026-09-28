@@ -198,15 +198,68 @@ describe("saving your note (spec 8.8; Review Focus 5)", () => {
 		expect(notes.getSnapshot().text).toBe("Mine");
 	});
 
-	it("never forgets newer text typed while a save was in flight", async () => {
+	it("goes clean again when you type back to the hub's current text, so it keeps following it (RoboRev #2769)", () => {
+		const hub = harness();
+		const notes = hub.make();
+		hub.setSaved("A");
+		notes.sync();
+		notes.edit("B");
+		notes.edit("A");
+		expect(notes.getSnapshot()).toEqual({ text: "A", phase: "clean" });
+		// The hub moves on while you're back at its old text; since you're
+		// clean again, sync() follows it rather than leaving a stale value
+		// that a later blur would send and overwrite the hub's newer note.
+		hub.setSaved("C");
+		notes.sync();
+		expect(notes.getSnapshot()).toEqual({ text: "C", phase: "clean" });
+	});
+
+	it("chains a second save for newer text typed while the first was in flight, rather than reporting it saved when it isn't (RoboRev #2769)", async () => {
 		const hub = harness();
 		const notes = hub.make();
 		notes.edit("First");
 		const saving = notes.flush();
 		notes.edit("First and more");
-		await saving;
-		expect(notes.getSnapshot()).toEqual({ text: "First and more", phase: "editing" });
-		expect(hub.storage.values.get("evener.native.note-draft.hub-1")).toBe(JSON.stringify({ "local:s1": "First and more" }));
+		expect(await saving).toEqual({ saved: true, woke: true });
+		// flush() didn't resolve until the newer text's own save landed too.
+		expect(notes.getSnapshot()).toEqual({ text: "First and more", phase: "saved" });
+		expect(hub.requests.map((request) => request.params.note)).toEqual(["First", "First and more"]);
+		expect(hub.storage.values.has("evener.native.note-draft.hub-1")).toBe(false);
+	});
+
+	it("stops chaining once a save fails, rather than retrying in a tight loop", async () => {
+		const hub = harness({ fail: new Error("offline") });
+		const notes = hub.make();
+		notes.edit("First");
+		const saving = notes.flush();
+		notes.edit("First and more");
+		expect(await saving).toEqual({ saved: false, woke: false });
+		expect(hub.requests).toHaveLength(1);
+		expect(notes.getSnapshot().phase).toBe("failed");
+	});
+
+	it("keeps both sessions' drafts when two are open under the same hub (RoboRev #2769)", () => {
+		const client = { request: async () => ({}) } as unknown as Pick<ConversationClientLike, "request">;
+		const storage = memoryStorage();
+		const make = (ref: string) =>
+			new NotesController({
+				client,
+				hubId: "hub-1",
+				ref,
+				instanceId: () => "instance-1",
+				savedNote: () => "",
+				working: () => false,
+				storage,
+				uuid: () => "m-1",
+			});
+		const first = make("local:s1");
+		const second = make("local:s2");
+		first.edit("From the first session");
+		second.edit("From the second session");
+		expect(JSON.parse(storage.values.get("evener.native.note-draft.hub-1") ?? "{}")).toEqual({
+			"local:s1": "From the first session",
+			"local:s2": "From the second session",
+		});
 	});
 });
 
