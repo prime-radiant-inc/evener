@@ -162,10 +162,10 @@ function Board({
 			),
 		// seenRevision re-runs isSeen after a mark or first run. activityRevision
 		// re-runs isStuck after each read, and activityOf changes when the
-		// connection drops or returns. msSinceRead is left out on purpose: it
-		// changes on every render, so it would re-sort Working every time, and a
-		// row's place only needs to be as fresh as the last read (its why line
-		// reads msSinceRead live).
+		// connection drops or returns, or the read goes stale. msSinceRead is
+		// left out on purpose: it changes on every render, so it would re-sort
+		// Working every time, and a row's place only needs to be as fresh as the
+		// last read (its why line reads msSinceRead live).
 		[snapshot.live.rows, snapshot.needsYou.rows, markers, seenRevision, activityOf, activityRevision],
 	);
 	useFirstRun(board, markers, snapshot, focused);
@@ -532,7 +532,8 @@ const noRevision = () => 0;
 /** S5's activity for every live session (activityPoll.ts), polled while
  * connected and in front. A poll is bound to the client it was made with, so
  * each client gets a fresh one, and there is none without a client. The
- * revision changes with each read that lands.
+ * revision changes whenever the poll's report does: a read lands, or the hub
+ * turns out to predate S5.
  *
  * The underlying client survives a reconnect (hubConnection.ts), so a poll
  * that stops on disconnect still holds its last read, and a hub that reports
@@ -544,15 +545,12 @@ const noRevision = () => 0;
  * never handing back the poll itself, means no caller can read around this:
  * every row, its meter and the Working order all fall back to their pre-S5
  * appearance the moment either one fails, and agree with each other since
- * there is only the one gate. A read going stale with no new poll attempt to
- * reveal it needs its own nudge to be noticed, since activityRevision only
- * changes when a read actually lands: the tick below re-renders at the same
- * cadence polling itself runs on, comfortably ahead of the two-interval
- * staleness bound. It stops for good once the poll confirms the hub doesn't
- * support S5 at all (ActivityPoll notifies on that transition too, same as a
- * landed read, so this re-renders and re-checks `supported` right then): an
- * old hub must not get the Board re-rendered every ACTIVITY_POLL_MS forever
- * for a feature it will never answer. */
+ * there is only the one gate. Nothing re-renders the Board when a read merely
+ * ages, so while a fresh read is on screen the recheck below re-renders at
+ * the polling cadence, dropping the read within one interval of its going
+ * stale, whatever becomes of the poll meanwhile. With no fresh read on screen
+ * there is nothing to expire, so it doesn't run: not before the first read
+ * lands, not while reads keep failing, and never on a hub that predates S5. */
 function useActivityPoll(client: ConversationClientLike | null, connected: boolean, inFront: boolean) {
 	const poll = useMemo(() => (client ? new ActivityPoll(client) : null), [client]);
 	const revision = useSyncExternalStore(poll?.subscribe ?? noSubscription, poll?.getRevision ?? noRevision);
@@ -561,15 +559,14 @@ function useActivityPoll(client: ConversationClientLike | null, connected: boole
 		poll.start();
 		return () => poll.stop();
 	}, [poll, connected, inFront]);
-	const [, forceTick] = useReducer((n: number) => n + 1, 0);
-	const supported = poll?.supported ?? false;
-	useEffect(() => {
-		if (!connected || !inFront || !supported) return;
-		const timer = setInterval(forceTick, ACTIVITY_POLL_MS);
-		return () => clearInterval(timer);
-	}, [connected, inFront, supported]);
 	const msSinceRead = poll?.msSinceRead() ?? null;
 	const reading = connected && isFreshRead(msSinceRead) ? poll : null;
+	const [, recheck] = useReducer((n: number) => n + 1, 0);
+	useEffect(() => {
+		if (!reading || !inFront) return;
+		const timer = setInterval(recheck, ACTIVITY_POLL_MS);
+		return () => clearInterval(timer);
+	}, [reading, inFront]);
 	const activityOf = useCallback((ref: string) => reading?.activity(ref), [reading]);
 	return { revision, activityOf, msSinceRead: reading ? msSinceRead : null };
 }

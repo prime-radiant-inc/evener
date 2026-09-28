@@ -1051,10 +1051,8 @@ it("stops retrying a failed first read when it unmounts", async () => {
 	connect(id, fake.client, "ready");
 	const tree = await mount(navigation());
 	expect(liveReads(fake)).toEqual([0]);
-	// The row-age ticker and the retry: S5's activity poll already tried and
-	// failed with method-not-found (this fleet carries no activity fixture),
-	// so its own recheck tick stopped too - an old hub never gets re-rendered
-	// every 10 seconds forever for a feature it will never support.
+	// The row-age ticker and the retry. This fleet's hub predates S5, so the
+	// activity poll has stopped and there is no read to recheck.
 	expect(vi.getTimerCount()).toBe(2);
 	act(() => tree.unmount());
 	expect(vi.getTimerCount()).toBe(0);
@@ -1071,9 +1069,7 @@ it("schedules no retry while the Board is out of view", async () => {
 	expect(liveReads(fake)).toEqual([0]);
 	setFocused(false);
 	await settle();
-	// This fleet carries no activity fixture, so S5's poll already gave up
-	// with method-not-found during mount and stopped its own recheck tick -
-	// it was never a factor here regardless of focus.
+	// This fleet's hub predates S5, so no activity timers run either.
 	expect(vi.getTimerCount()).toBe(0);
 	await advance(60_000);
 	expect(liveReads(fake)).toEqual([0]);
@@ -1542,6 +1538,30 @@ it("stays out of Working's stuck slot for as long as reads keep failing, not jus
 	await advance(ACTIVITY_POLL_MS * 5);
 	expect(textsIn(rowTitled(tree, "Migrate schema"))).toContain("Working");
 	expect(workingTitles(tree)).toEqual(["Build docs", "Tidy imports", "Migrate schema"]);
+	// With no fresh read on screen there is nothing to recheck: only the
+	// row-age ticker and the poll itself are left.
+	expect(vi.getTimerCount()).toBe(2);
+	act(() => tree.unmount());
+});
+
+it("still lets a read on screen go stale once the hub stops answering activity reads", async () => {
+	const id = hubId();
+	adoptedAnHourAgo(id);
+	const shape: Fleet = { ...busyFleet, activity: [migrateRead(4)] };
+	const fake = hub(shape);
+	connect(id, fake.client, "ready");
+	const tree = await mount(navigation());
+
+	// A hub rolled back to before S5 answers method-not-found: the poll stops
+	// for good at its next attempt, with its last read still fresh on screen.
+	shape.activity = undefined;
+	await advance(ACTIVITY_POLL_MS);
+	expect(textsIn(rowTitled(tree, "Migrate schema"))).toContain("Quiet 4m");
+
+	await advance(ACTIVITY_POLL_MS + 1_000);
+	expect(fake.activityReads).toHaveLength(2);
+	expect(textsIn(rowTitled(tree, "Migrate schema"))).not.toContain("Quiet 4m");
+	expect(textsIn(rowTitled(tree, "Migrate schema"))).toContain("Working");
 	act(() => tree.unmount());
 });
 
@@ -1556,9 +1576,9 @@ it("keeps every working row as it was before S5 on a hub that has no activity re
 	expect(meterIn(building).props.perMinute).toBeUndefined();
 	expect(textsIn(building)).toContain("Waiting on 1 subagent");
 	expect(textsIn(rowTitled(tree, "Tidy imports"))).toContain("Working");
-	// method-not-found stops the poll's own recheck tick too, so an old hub
-	// doesn't get the Board re-rendered every ACTIVITY_POLL_MS forever for a
-	// feature it will never support: only the row-age ticker is left.
+	// With no read to go stale, nothing rechecks one either: an old hub never
+	// gets the Board re-rendered every ACTIVITY_POLL_MS. Only the row-age
+	// ticker is left.
 	expect(vi.getTimerCount()).toBe(1);
 	await advance(ACTIVITY_POLL_MS * 3);
 	expect(fake.activityReads).toHaveLength(1);
