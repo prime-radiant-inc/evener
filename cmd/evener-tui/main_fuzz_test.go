@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"flag"
+	"io"
 	"strings"
 	"testing"
 
@@ -70,7 +71,7 @@ func FuzzRootTUIMain(f *testing.F) {
 		processArgs = func() []string { return []string{"evener-tui", "--fixture"} }
 		processGetenv = func(string) string { return "fixture" }
 		standardError, standardOutput = &stderr, &stdout
-		parseStartupOptions = func(args []string, getenv func(string) string) (hubstart.TUIStartupOptions, error) {
+		parseStartupOptions = func(args []string, getenv func(string) string, _ io.Writer) (hubstart.TUIStartupOptions, error) {
 			if len(args) != 1 || getenv("x") != "fixture" {
 				t.Fatal("process inputs not forwarded")
 			}
@@ -134,7 +135,7 @@ func testRootTUIMainAndExecutableBoundaries(t *testing.T) {
 		processArgs, processExecutable, parseStartupOptions = oldArgs, oldExe, oldParse
 	})
 	processArgs = func() []string { return nil }
-	parseStartupOptions = func([]string, func(string) string) (hubstart.TUIStartupOptions, error) {
+	parseStartupOptions = func([]string, func(string) string, io.Writer) (hubstart.TUIStartupOptions, error) {
 		return hubstart.TUIStartupOptions{}, flag.ErrHelp
 	}
 	exited := run()
