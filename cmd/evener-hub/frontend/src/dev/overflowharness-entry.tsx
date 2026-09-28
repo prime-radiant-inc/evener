@@ -1908,8 +1908,10 @@ async function measureMenuVerbs(): Promise<{ open: boolean; stop: boolean; steer
   // must fail the guard as "could not be opened", not as missing verbs.
   return {
     open: items.length > 0,
-    stop: items.some((item) => item.textContent === "Stop"),
-    steer: items.some((item) => item.textContent === "Steer"),
+    // Trimmed so whitespace or an icon's stray text node cannot hide a verb
+    // the unit tests' accessible-name queries still find.
+    stop: items.some((item) => item.textContent?.trim() === "Stop"),
+    steer: items.some((item) => item.textContent?.trim() === "Steer"),
   };
 }
 

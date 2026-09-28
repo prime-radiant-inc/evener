@@ -44,9 +44,20 @@ export function useNarrowComposer(): [boolean, (element: HTMLElement | null) => 
     if (element === null || typeof ResizeObserver === "undefined") return;
     // Seed from the live box before the first paint so a phone-width mount
     // never flashes the wide row - the wrap CSS is retired, so wide genuinely
-    // overflows there. Zero-width boxes (jsdom, an undisplayed ancestor)
-    // skip the seed and wait for the observer's own initial delivery instead.
-    const seedWidth = element.getBoundingClientRect().width;
+    // overflows there. The seed reads the content box the observer reports
+    // (border box minus padding and border): at the threshold edge the two
+    // disagree on a padded host, and the composer root is only padding- and
+    // border-free by construction (composer.module.css), not by contract.
+    // jsdom's unset computed styles parse as zero, so its zero-width boxes
+    // skip the seed exactly as before and wait for the observer's own
+    // initial delivery instead.
+    const seedStyle = getComputedStyle(element);
+    const seedWidth =
+      element.getBoundingClientRect().width -
+      (Number.parseFloat(seedStyle.paddingLeft) || 0) -
+      (Number.parseFloat(seedStyle.paddingRight) || 0) -
+      (Number.parseFloat(seedStyle.borderLeftWidth) || 0) -
+      (Number.parseFloat(seedStyle.borderRightWidth) || 0);
     if (seedWidth > 0) setNarrow(seedWidth <= COMPOSER_PHONE_MAX_WIDTH);
     const observer = new ResizeObserver((entries) => {
       const entry = entries[0];
