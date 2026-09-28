@@ -59,13 +59,14 @@ func verifyDeployArtifactIdentity(subject string, info *buildinfo.BuildInfo) err
 	return fmt.Errorf("%w: %s is not evener: its main package is %q, want %q; supply a pre-built evener for the host's target", errArtifactNotEvener, subject, info.Path, evenerMainPackage)
 }
 
-// hubDeployHelp is the remedy the sshconn refusals append when the hub has no
-// deploy source or turned deploying off. It names the hub's own state and flags;
+// hubDeployHelp is the shared remedy: it names the hub's own state and flags for
+// the states where both of its clauses are real actions — a hub started with
+// -no-deploy (whose way back is the leading clause) and a hub whose explicitly
+// named source refused (which can still fall back to its own executable).
 // sshconn's default ("set Options.BuildSource") names an internal field the
-// operator cannot act on. The default sentence leads because that is how a hub
-// normally has a deploy source — its own executable — so the refusals a
-// -no-deploy hub (or a hub that refused the deploy it had) produces tell the
-// operator the shortest way back to a deploy.
+// operator cannot act on. The unwired states and the defaulted-source state read
+// their own texts (below), each because one of this text's clauses would name an
+// action that state cannot take.
 const hubDeployHelp = "run this hub without -no-deploy so it deploys its own executable, or set -deploy-binary <path> (a pre-built evener for the host's target) or -build-source <path> (an evener checkout to cross-compile from)"
 
 // hubDeployHelpUnwired is hubDeployHelp for the one state whose first clause
@@ -169,6 +170,17 @@ func (o hubOptions) deployBinarySeam() func(ctx context.Context, goos, goarch, o
 	return deployBinaryBuild(o.deployBinary)
 }
 
+// hubDeployHelpDefaultedSource is the remedy for the refusals a hub with the
+// defaulted own-executable source produces — today the cross-target refusal
+// (errOwnExecutableCannotServe): its own executable cannot serve this host, and
+// that is the source it is already deploying, so the shared text's leading
+// clause ("run this hub without -no-deploy so it deploys its own executable")
+// names the state the hub is in and the one source that cannot work here. The
+// flags that change the outcome lead instead; the shared text stays for the
+// states where its clause is genuinely the action to take (a -no-deploy hub, and
+// a hub whose named source refused).
+const hubDeployHelpDefaultedSource = "set -deploy-binary <path> (a pre-built evener built for the host's target) or -build-source <path> (an evener checkout to cross-compile from, which can build for any target), or run the hub on the host's platform"
+
 // deployHelp picks the remedy the refusals name for the state this hub is in.
 // After validateDeployFlags, a hub that did not set -no-deploy and validated no
 // source at all is the unwired state — the default resolves for every evener
@@ -177,11 +189,21 @@ func (o hubOptions) deployBinarySeam() func(ctx context.Context, goos, goarch, o
 // two unwired texts, the one that asserts a cause ("not an evener build") is
 // returned only when that cause is what validateDeployFlags recorded
 // (defaultFailure); every other adoption failure reads the text that asserts
-// nothing beyond the missing source. Every other state reads the shared text,
-// whose default sentence is exactly the action -no-deploy (and a refusal of a
-// source that IS configured) has a way back to.
+// nothing beyond the missing source. The -no-deploy state reads the shared text,
+// whose leading clause — run the hub without -no-deploy — is exactly its way
+// back. The defaulted source reads the flags-first text: the source it is
+// already deploying is the one that refused, so pointing at it (and at
+// -no-deploy, which is already off) would name no action. A hub whose explicitly
+// named source refused keeps the shared text, whose clause is a real alternative
+// for it.
 func (o hubOptions) deployHelp() string {
-	if o.noDeploy || o.deployBinary != "" || o.buildSource != "" {
+	if o.noDeploy {
+		return hubDeployHelp
+	}
+	if o.deployDefault {
+		return hubDeployHelpDefaultedSource
+	}
+	if o.deployBinary != "" || o.buildSource != "" {
 		return hubDeployHelp
 	}
 	switch o.defaultFailure {

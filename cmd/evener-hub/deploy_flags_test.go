@@ -466,6 +466,55 @@ func TestHubDeployHelpNamesBothFlags(t *testing.T) {
 	}
 }
 
+// TestDefaultedSourceRefusalLeadsWithTheFlags pins the remedy split the
+// cross-target refusal needs: a hub whose source is the defaulted own executable
+// is already running without -no-deploy and already deploying that executable,
+// so the shared text's leading clause names no action for it — and points at the
+// one source that cannot serve this host. The defaulted state therefore reads a
+// text that leads with the flags that change the outcome, while the -no-deploy
+// state keeps the shared text whose leading clause is exactly its way back.
+func TestDefaultedSourceRefusalLeadsWithTheFlags(t *testing.T) {
+	stubHubExecutable(t, evenerArtifact(t), nil)
+
+	t.Run("defaulted source", func(t *testing.T) {
+		opts, err := parseHubOptions(nil, &bytes.Buffer{})
+		if err != nil {
+			t.Fatalf("parseHubOptions: %v", err)
+		}
+		if !opts.deployDefault {
+			t.Fatal("the own-executable default did not resolve, so this subtest would assert the unwired state")
+		}
+		help := opts.deployWiring().help
+		if help != hubDeployHelpDefaultedSource {
+			t.Fatalf("defaulted-source remedy = %q, want the flags-first text %q", help, hubDeployHelpDefaultedSource)
+		}
+		if strings.Contains(help, "without "+noDeployFlag) {
+			t.Fatalf("the defaulted-source remedy leads with the state the hub is already in: %q", help)
+		}
+		for _, flag := range []string{deployBinaryFlag, buildSourceFlag} {
+			if !strings.Contains(help, flag) {
+				t.Fatalf("the defaulted-source remedy does not name %s: %q", flag, help)
+			}
+		}
+	})
+
+	t.Run("disabled keeps its way back", func(t *testing.T) {
+		opts, err := parseHubOptions([]string{noDeployFlag}, &bytes.Buffer{})
+		if err != nil {
+			t.Fatalf("parseHubOptions(%s): %v", noDeployFlag, err)
+		}
+		help := opts.deployWiring().help
+		if !strings.Contains(help, "without "+noDeployFlag) {
+			t.Fatalf("the disabled state's remedy lost its way back: %q", help)
+		}
+		for _, flag := range []string{deployBinaryFlag, buildSourceFlag} {
+			if !strings.Contains(help, flag) {
+				t.Fatalf("the disabled state's remedy does not name %s: %q", flag, help)
+			}
+		}
+	})
+}
+
 // TestRunMainWithoutDeployFlagsStarts pins that a local-only controller needs no
 // deploy path: a hub started with neither flag comes up, as it does today.
 func TestRunMainWithoutDeployFlagsStarts(t *testing.T) {
@@ -1057,6 +1106,9 @@ func TestRunMainWiresAndLogsTheOwnExecutableDeploy(t *testing.T) {
 	}
 	if !got.OwnExecutable {
 		t.Fatal("the own-executable default was not marked as the hub's own executable, so a dirty controller would still refuse to install it")
+	}
+	if got.DeployHelp != hubDeployHelpDefaultedSource {
+		t.Fatalf("sshconn.Options.DeployHelp = %q, want the defaulted-source remedy %q (the shared text's leading clause names no action for this state)", got.DeployHelp, hubDeployHelpDefaultedSource)
 	}
 	logged := deployPathLogLines(stderr.String())
 	wantLine := "[hub] deploy path: -deploy-binary " + want + " (default: this hub's own executable)"
