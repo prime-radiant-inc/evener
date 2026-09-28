@@ -4,8 +4,11 @@
 // decodeActivityRead and keeps the latest read by ref. A response only ever
 // applies if it answers the newest poll this instance sent, so a slow answer
 // to an older request can never overwrite a fresher one - the caller starts
-// and stops this as screen focus and connection state change, and a poll
-// already in flight when the next tick fires must not win a race against it.
+// and stops this as screen focus and connection state change, a poll already
+// in flight when the next tick fires must not win a race against it, and
+// stop() itself retires the request tag so an answer already in flight when
+// it's called - success or failure alike - lands as a no-op instead of
+// reviving a stopped poll's data or verdict.
 // A method-not-found answer (the JSON-RPC code the hub's dispatcher returns
 // for a method it has never heard of: appwire.CodeMethodNotFound,
 // appwire/errors.go) means this hub predates S5: polling stops for good and
@@ -79,6 +82,10 @@ export class ActivityPoll {
 		if (this.timer === undefined) return;
 		clearInterval(this.timer);
 		this.timer = undefined;
+		// Invalidates a poll already in flight: its answer, whichever way it
+		// lands, must not apply after stopping (a fresh-looking read right
+		// after a later restart, or a stale hub predates S5 verdict).
+		this.latestRequestId++;
 	}
 
 	subscribe = (listener: () => void): (() => void) => {
@@ -97,6 +104,7 @@ export class ActivityPoll {
 				this.refs?.length ? { refs: [...this.refs] } : {},
 			);
 		} catch (error) {
+			if (requestId !== this.latestRequestId) return; // superseded by a newer poll, or stopped
 			if (error instanceof WireError && error.code === CODE_METHOD_NOT_FOUND) {
 				this.unsupported = true;
 				this.stop();
