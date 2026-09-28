@@ -508,18 +508,21 @@ function delegateInfo(overrides: Record<string, unknown> = {}) {
 
 // A client whose jobs/list answers after latencyMs of fake time. Each request
 // records when it started and when it answered.
-function timedClient(latencyMs: number, respond: (call: number) => ActivityTree) {
-  const calls: Array<{ startedAt: number; answeredAt?: number }> = [];
+function timedClient(latencyMs: number, respond: (call: number, params: Record<string, string>) => ActivityTree) {
+  const calls: Array<{ startedAt: number; answeredAt?: number; params: Record<string, string> }> = [];
   let handler: ((n: Notification) => void) | undefined;
   const client: ActivityClient = {
     onNotification(callback) {
       handler = callback as (n: Notification) => void;
       return () => undefined;
     },
-    request() {
-      const call: { startedAt: number; answeredAt?: number } = { startedAt: Date.now() };
+    request(_method, params) {
+      const call: { startedAt: number; answeredAt?: number; params: Record<string, string> } = {
+        startedAt: Date.now(),
+        params: params as Record<string, string>,
+      };
       calls.push(call);
-      const data = respond(calls.length);
+      const data = respond(calls.length, call.params);
       return new Promise((resolve) =>
         setTimeout(() => {
           call.answeredAt = Date.now();
@@ -723,4 +726,31 @@ test("a trailing refresh does not start inside the interval of a fetch made whil
   expect(t.calls).toHaveLength(baseline + 1);
   await vi.advanceTimersByTimeAsync(ACTIVITY_REFRESH_MIN_INTERVAL_MS);
   expect(t.calls).toHaveLength(baseline + 2);
+});
+
+test("a queued page is not starved by notifications that keep invalidating the root", async () => {
+  vi.useFakeTimers();
+  const held = activityTree([delegateEntry("delegate", "next")], 1);
+  // Once the page has been served the daemon's roots no longer truncate.
+  let served = false;
+  const t = timedClient(1000, (_call, params) => {
+    if (params.continuation) served = true;
+    return activityTree([delegateEntry("delegate", served ? undefined : "next")], 1);
+  });
+  const list = new ActivityList(t.client, "local:session", "session", held);
+  list.start();
+  await vi.advanceTimersByTimeAsync(100);
+  const branch = list.branches()[0];
+  if (!branch?.continuation) throw new Error("missing continuation");
+  void list.loadMore(branch.id, branch.continuation);
+  for (let at = 100; at < 20_000; at += 500) {
+    t.delegateUpdated({ delegateId: "brand-new", childSessionId: "brand-new-child" });
+    await vi.advanceTimersByTimeAsync(500);
+  }
+
+  const pageAt = t.calls.findIndex((call) => call.params.continuation);
+  expect(pageAt).toBeGreaterThan(-1);
+  // At most the load already running and one root fetched after the click come first.
+  expect(pageAt).toBeLessThanOrEqual(2);
+  expect(list.branches()).toEqual([]);
 });

@@ -48,6 +48,10 @@ export class ActivityList {
   private queuedBranches: string[] = [];
   private inFlight?: Promise<void>;
   private lastRootLoadEnd?: number;
+  // Whole-tree fetches started so far, and how many had started when the
+  // latest page was queued.
+  private rootLoads = 0;
+  private queuedAfterRoot = 0;
   private trailing = false;
   constructor(
     private client: ActivityClient,
@@ -177,11 +181,17 @@ export class ActivityList {
     )
       return Promise.resolve();
     if (this.inFlight) {
-      if (!this.queuedBranches.includes(id)) this.queuedBranches.push(id);
+      this.queuePage(id);
       return this.inFlight;
     }
     return this.run({ id, continuation });
   };
+  // A page waits for a root fetch that starts after this call: its token comes
+  // from that tree, not from one a notification may already have outdated.
+  private queuePage(id: string) {
+    if (!this.queuedBranches.includes(id)) this.queuedBranches.push(id);
+    this.queuedAfterRoot = this.rootLoads;
+  }
   private run(branch?: { id: string; continuation: string }) {
     const running = this.load(branch).finally(() => {
       if (this.inFlight === running) this.inFlight = undefined;
@@ -195,18 +205,26 @@ export class ActivityList {
       error: null,
       ...(branch ? {} : { unsupported: false, ended: false }),
     });
+    // A root fetch is owed after the pages that ran ahead of it.
+    let rootOwed = false;
     do {
       this.dirty = false;
+      if (!branch) this.rootLoads++;
+      const rootLoad = this.rootLoads;
+      // The page this iteration asked for was thrown away and has to be asked
+      // for again against a fresh root; accepted means its answer is on screen.
+      let retry = false;
+      let accepted = false;
       try {
         const result = await this.client.request("evener/jobs/list", {
           ref: this.ref,
           ...(branch ? { continuation: branch.continuation } : {}),
         });
-        // A whole-tree answer is still a valid tree when a notification has
-        // asked for another; showing it keeps a burst of notifications from
-        // starving every load of its result. A continuation page is different:
-        // it is only good against the tree it was minted for.
-        if ((!this.dirty || !branch) && !this.disposed) {
+        // An answer is shown even when a notification has arrived since the
+        // request, which keeps a burst of notifications from starving every
+        // load of its result. A continuation page is checked against the
+        // revision of the tree it is grafted onto instead.
+        if (!this.disposed) {
           const tree = parseActivityTree((result as { data: unknown }).data);
           if (!tree) throw new Error("Invalid activity response");
           if (tree.root.sessionId !== this.threadId || tree.root.ref !== this.ref)
@@ -221,6 +239,7 @@ export class ActivityList {
             // the fresh root still carries its continuation, re-issued against
             // the new revision's token.
             this.dirty = true;
+            retry = true;
           } else {
             if (current && tree.revision < current.revision)
               throw new Error("Activity response is older than the displayed activity");
@@ -235,10 +254,12 @@ export class ActivityList {
                   : { ...tree, root: fenceRootSession(current.root, tree.root) }
                 : tree,
             });
+            accepted = true;
           }
         }
       } catch (error) {
-        if (!this.dirty && !this.disposed) {
+        if (this.dirty) retry = true;
+        else if (!this.disposed) {
           if (!branch && isActionUnavailable(error)) this.publish({ unsupported: true });
           else if (!branch && isThreadNotFound(error)) this.publish({ ended: true });
           else
@@ -249,16 +270,28 @@ export class ActivityList {
         }
       }
       if (!branch) this.lastRootLoadEnd = Date.now();
-      // Invalidation always gets a full refresh before any queued page. A
-      // page click targets a branch; its token comes from the refreshed tree.
-      if (this.dirty && branch && !this.queuedBranches.includes(branch.id)) this.queuedBranches.push(branch.id);
+      if (rootOwed) {
+        this.dirty = true;
+        rootOwed = false;
+      }
+      if (retry && branch && !this.queuedBranches.includes(branch.id)) this.queuePage(branch.id);
+      const wasPage = branch !== undefined;
       branch = undefined;
-      if (!this.dirty) {
+      // Pages queued behind a load drain before the next whole-tree fetch. The
+      // one exception is a page whose tree is out of date: an invalidation
+      // before the page was asked for gets a full refresh first, since a page
+      // click targets a branch and its token comes from the refreshed tree. A
+      // root fetch that started after the page was queued is that refresh, or
+      // a page that just landed left the tree current, even if a notification
+      // has arrived since; the notification's own root fetch follows the pages.
+      const treeCurrent = accepted && (wasPage || rootLoad > this.queuedAfterRoot);
+      if (!this.dirty || treeCurrent) {
         while (this.queuedBranches.length && !branch) {
           const id = this.queuedBranches.shift();
           const current = this.branches().find((candidate) => candidate.id === id);
           if (current?.continuation) branch = { id: current.id, continuation: current.continuation };
         }
+        if (branch && this.dirty) rootOwed = true;
       }
       // The whole-tree fetch an invalidation asks for waits out the minimum
       // interval since the last one; a queued page is not held to it.
