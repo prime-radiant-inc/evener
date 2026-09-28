@@ -1,8 +1,8 @@
+import type { NavigationSessionSummary } from "@evener/appwire-client";
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
 import { useMemo } from "react";
 import { ScrollView, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
-import type { NavigationSessionSummary } from "@evener/appwire-client";
 import { NavigationPages } from "./navigationPages";
 import { PinCatalogList } from "./PinCatalogList";
 import { PageList } from "./ProjectsScreen";
@@ -38,6 +38,7 @@ export function PinSectionsScreen({
 					uncertain={
 						!!pin.action?.uncertain || !!pin.action?.storageUnavailable
 					}
+					previousChange={!!pin.action?.recovery}
 					error={pin.action?.error ?? pin.page?.error ?? null}
 					refresh={() => {
 						if (pin.ready) void pin.actions?.reconcile();
