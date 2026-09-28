@@ -254,7 +254,7 @@ function Board({
 		],
 		[snapshot.live.rows, snapshot.needsYou.rows, snapshot.pinSections, ...projectViews],
 	);
-	useHubSeenMarks(hubMarks, connected ? client : null, loadedRows);
+	useHubSeenMarks(hubMarks, actionsConnected ? client : null, loadedRows);
 	const hubNotices = useMemo(
 		() => notices({ auth: snapshot.auth, sources: sources ?? [], plugins: snapshot.plugins, loadedRows }),
 		[snapshot.auth, sources, snapshot.plugins, loadedRows],
