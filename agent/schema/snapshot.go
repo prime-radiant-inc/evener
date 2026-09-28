@@ -476,10 +476,34 @@ func LoadSessionMetaWithFS(fs afero.Fs, dir, id string) (SessionMeta, error) {
 	return loadSessionMetaFS(fs, dir, id)
 }
 
+// SessionMetaLoadError is one *.meta.json file whose filename names a valid
+// session id but whose contents could not be loaded. It carries the identity
+// recovered from the filename — the only identity a corrupt file offers — so a
+// forensic sweep can report the session by name instead of dropping it.
+type SessionMetaLoadError struct {
+	ID    string
+	Error error
+}
+
+// ListSessionMetasWithErrors returns every valid session meta, sorted by
+// UpdatedAt descending, together with the load failures for metadata files
+// whose filename names a valid session id but whose bytes could not be loaded.
+//
+// ListSessionMetas tolerates corrupt metadata by dropping it, which is the
+// right call for a UI listing that must survive one bad record. A forensic
+// sweep that promises to report unreadable sessions cannot use that tolerant
+// view: it needs the per-file failure so the session is named rather than
+// silently absent. This is that enumeration; callers that want the tolerant
+// listing keep using ListSessionMetas.
+func ListSessionMetasWithErrors(dir string) ([]SessionMeta, []SessionMetaLoadError, error) {
+	return listSessionMetasFSWithErrors(sessionMetaFS, dir)
+}
+
 // ListSessionMetas returns all valid session metas sorted by UpdatedAt descending.
 // Scans for .meta.json files. Corrupt files are silently skipped.
 func ListSessionMetas(dir string) ([]SessionMeta, error) {
-	return listSessionMetasFS(sessionMetaFS, dir)
+	metas, _, err := listSessionMetasFSWithErrors(sessionMetaFS, dir)
+	return metas, err
 }
 
 // saveSessionMetaLocked performs the write with the session's write lock already
@@ -766,18 +790,20 @@ func wrapperSourceIsOS(w afero.Fs) bool {
 	return ct == reflect.TypeFor[*afero.OsFs]() || ct == reflect.TypeFor[afero.OsFs]()
 }
 
-// listSessionMetasFS is the filesystem seam beneath ListSessionMetas.
-func listSessionMetasFS(fs afero.Fs, dir string) ([]SessionMeta, error) {
+// listSessionMetasFSWithErrors is the filesystem seam beneath ListSessionMetas
+// and ListSessionMetasWithErrors.
+func listSessionMetasFSWithErrors(fs afero.Fs, dir string) ([]SessionMeta, []SessionMetaLoadError, error) {
 	sessDir := filepath.Join(dir, sessionsSubdir)
 	entries, err := afero.ReadDir(fs, sessDir)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return nil, nil
+			return nil, nil, nil
 		}
-		return nil, fmt.Errorf("read sessions dir: %w", err)
+		return nil, nil, fmt.Errorf("read sessions dir: %w", err)
 	}
 
 	var metas []SessionMeta
+	var failures []SessionMetaLoadError
 	for _, e := range entries {
 		// Reject non-regular files: a symlinked .meta.json pointing outside the
 		// state root would otherwise be loaded via afero.ReadFile which follows
@@ -791,9 +817,12 @@ func listSessionMetasFS(fs afero.Fs, dir string) ([]SessionMeta, error) {
 			continue
 		}
 		meta, err := loadSessionMetaFS(fs, dir, id)
-		if err != nil || identifier.ValidateSessionID(meta.ID) != nil || meta.ID != id {
-			continue // skip corrupt files
+		if err != nil {
+			failures = append(failures, SessionMetaLoadError{ID: id, Error: err})
+			continue
 		}
+		// loadSessionMetaFS has already validated the id and required
+		// meta.ID == id, so a loaded meta is an eligible, matching identity.
 		metas = append(metas, meta)
 	}
 
@@ -801,5 +830,5 @@ func listSessionMetasFS(fs afero.Fs, dir string) ([]SessionMeta, error) {
 		return metas[i].UpdatedAt.After(metas[j].UpdatedAt)
 	})
 
-	return metas, nil
+	return metas, failures, nil
 }
