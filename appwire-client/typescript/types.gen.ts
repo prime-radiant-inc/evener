@@ -861,6 +861,14 @@ export interface EvenerThread {
    * never a thread/read snapshot: no notification announces its changes.
    */
   subagents?: SubagentTally;
+  /**
+   * Access is what the session's sandbox lets it reach (S15): the sandbox
+   * mode it started under and whether that sandbox allows the network. Every
+   * current producer sets it; it is absent from an older daemon or hub, which
+   * a client reads as "not known". Snapshot-only: a session's sandbox is
+   * fixed when it starts, so no notification carries it.
+   */
+  access?: ThreadAccess;
 }
 
 export interface EvenerToolInfo {
@@ -3254,6 +3262,11 @@ export interface Thread {
   name?: string;
   turns?: Turn[];
   evener: EvenerThread;
+}
+
+export interface ThreadAccess {
+  sandbox: string;
+  network: boolean;
 }
 
 export interface ThreadActivity {
