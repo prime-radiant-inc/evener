@@ -58,6 +58,7 @@ import type {
 	Turn,
 	TurnModel,
 } from "@evener/appwire-client";
+import { hubTime } from "./board/attention";
 
 // --- the conversation native holds -------------------------------------------
 
@@ -469,11 +470,9 @@ function activityDescription(it: ItemModel): string | undefined {
 // producing NaN, so durationMs, startedAtMs and endedAtMs never disagree
 // about whether this item's timing is known.
 function parsedItemTimes(it: ItemModel): { start?: number; end?: number } {
-	if (it.startedAt === undefined || it.completedAt === undefined) return {};
-	const start = Date.parse(it.startedAt);
-	const end = Date.parse(it.completedAt);
-	if (Number.isNaN(start) || Number.isNaN(end)) return {};
-	return { start, end };
+	const start = hubTime(it.startedAt);
+	const end = hubTime(it.completedAt);
+	return start === null || end === null ? {} : { start, end };
 }
 
 function activityDetail(it: ItemModel): ActivityDetail {

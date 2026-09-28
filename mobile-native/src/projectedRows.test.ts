@@ -641,6 +641,18 @@ describe("projectedRow: turn id, origin, and step timing", () => {
 		expect(detail.endedAtMs).toBeUndefined();
 	});
 
+	it("keeps neither time, and no duration, when only one of them is known", () => {
+		for (const times of [
+			{ startedAt: "2024-01-01T00:00:00.000Z" },
+			{ startedAt: "2024-01-01T00:00:00.000Z", completedAt: "also-not" },
+			{ startedAt: "", completedAt: "2024-01-01T00:00:01.000Z" },
+		]) {
+			const row = projectedRow(itemEntry(item({ type: "commandExecution", toolName: "shell", ...times })));
+			const detail = (row as Extract<MobileTimelineItem, { kind: "activity" }>).detail;
+			expect([detail.startedAtMs, detail.endedAtMs, detail.durationMs]).toEqual([undefined, undefined, undefined]);
+		}
+	});
+
 	it("gives a turn-error failure row its turn's id, not any item's", () => {
 		const turn = { id: "turn_9", status: "failed", items: [], error: { message: "boom" } } as TurnModel;
 		const rows = projectTimeline({ turns: [turn] } as unknown as ThreadModel, new Map());
