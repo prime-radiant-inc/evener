@@ -137,6 +137,13 @@ vi.mock("./NativePreferencesProvider", () => ({
 	}),
 }));
 
+// The screen focuses the composer on the next frame; the test runs that frame
+// at once.
+vi.stubGlobal("requestAnimationFrame", (frame: (time: number) => void) => {
+	frame(0);
+	return 0;
+});
+
 type ConversationScreenProps = ComponentProps<typeof ConversationScreen>;
 
 const navigation = {
@@ -204,7 +211,7 @@ const QUESTION_TURN = {
 
 // A thread hydrated like the store tests' makeConversation: a minimal wire
 // Thread the hub answers thread/read with.
-function thread(ref: string, status: "idle" | "active", question = false, queued: string[] = []): Thread {
+function thread(ref: string, status: "idle" | "active" | "awaiting", question = false, queued: string[] = []): Thread {
 	return {
 		id: `thread-${ref}`,
 		sessionId: `session-${ref}`,
@@ -390,12 +397,62 @@ it("queues a second Send pressed before the first one's turn is seen", async () 
 	]);
 });
 
-it("hides the message field and Send while a question waits for an answer", async () => {
-	const { tree } = await mount(thread("ref-question", "active", true));
-	expect(renderedText(tree)).toContain("1 question to answer");
-	expect(field(tree)).toBeUndefined();
-	for (const label of ["Send", "Queue message", "Send answer"])
-		expect(pressable(tree, label)).toBeUndefined();
+// The composer's Send, told apart from the dock's own "Send answer" by its
+// paper airplane.
+function composerSend(tree: ReactTestRenderer, label: string) {
+	return tree.root
+		.findAll((node) => String(node.type) === "Pressable" && node.props.accessibilityLabel === label)
+		.find((node) => node.findAll((child) => child.props.name === "paperplane.fill").length > 0);
+}
+
+describe("a question waiting for an answer (spec 8.4)", () => {
+	it("shows the dock in the composer's place", async () => {
+		const { tree } = await mount(thread("ref-question", "awaiting", true));
+		const text = renderedText(tree);
+		expect(text).toContain("Question");
+		expect(text).toContain("Keep or drop the implied options?");
+		expect(text).not.toContain("question to answer");
+		expect(field(tree)).toBeUndefined();
+		for (const label of ["Send", "Queue message"]) expect(composerSend(tree, label)).toBeUndefined();
+		expect(composerSend(tree, "Send answer")).toBeUndefined();
+	});
+
+	it("brings the composer back for Other answer…, and sends your text as the answer", async () => {
+		const { tree, hub } = await mount(thread("ref-question-other", "awaiting", true));
+		await press(tree, "Other answer…");
+		expect(field(tree)?.props.placeholder).toBe("Answer or ask…");
+		await type(tree, "Drop them");
+		const send = composerSend(tree, "Send answer");
+		expect(send?.props.accessibilityState).toMatchObject({ disabled: false });
+		act(() => send?.props.onPress());
+		await settle();
+		const starts = hub.requests.filter((request) => request.method === "turn/start");
+		expect(starts.map((request) => request.params.input)).toEqual([
+			[{ type: "text", text: '[answers]\n1. [Choice] \u2192 free text: "Drop them"' }],
+		]);
+		expect(renderedText(tree)).toContain("Answer sent");
+		expect(field(tree)?.props.value ?? "").toBe("");
+	});
+
+	it("sends the option chosen in the dock, and says so", async () => {
+		const { tree, hub } = await mount(thread("ref-question-option", "awaiting", true));
+		await press(tree, "Drop them");
+		await press(tree, "Send answer");
+		const starts = hub.requests.filter((request) => request.method === "turn/start");
+		expect(starts.map((request) => request.params.input)).toEqual([
+			[{ type: "text", text: '[answers]\n1. [Choice] \u2192 "Drop them"' }],
+		]);
+		expect(renderedText(tree)).toContain("Answer sent");
+	});
+
+	it("folds to a bar, and the composer comes back beneath it", async () => {
+		const { tree } = await mount(thread("ref-question-fold", "awaiting", true));
+		await press(tree, "Fold");
+		expect(renderedText(tree)).toContain("Answer the question");
+		expect(field(tree)?.props.placeholder).toBe("Answer or ask…");
+		await press(tree, "Answer the question");
+		expect(field(tree)).toBeUndefined();
+	});
 });
 
 it("gives Send a typed command's own label, so VoiceOver hears what it runs", async () => {

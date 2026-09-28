@@ -33,6 +33,7 @@ import {
 import { SafeAreaView } from "react-native-safe-area-context";
 import {
 	type AskBatch,
+	type AskQuestionRef,
 	buildComposerInput,
 	formatQuoteBlock,
 	mergeDraftText,
@@ -94,7 +95,6 @@ import {
 	importPairing as importReviewedPairing,
 	reviewPairingInput,
 } from "./pairingImport";
-import { QuestionSheet } from "./QuestionSheet";
 import { queueHosts, type QueueHost } from "./QueueSheet";
 import {
 	composeQuestionAnswers,
@@ -102,6 +102,9 @@ import {
 	type QuestionSelections,
 	questionsIdentity,
 } from "./questionAnswers";
+import { answerWithText } from "./session/askDockCopy";
+import { QuestionDock } from "./session/QuestionDock";
+import { useQuestionDraft } from "./session/useQuestionDraft";
 import { QuestionBatches } from "./questionBatches";
 import {
 	captureReaderAnchor,
@@ -177,6 +180,7 @@ import { Action, Copy, ErrorMessage, styles, useColors } from "./ui";
 
 const noControls = () => null;
 const noControlSubscription = () => () => {};
+const NO_QUESTIONS: AskQuestionRef[] = [];
 const STEER_FAILED = { text: "Couldn't steer with this message now." };
 const STEER_ALL_FAILED = { text: "Couldn't steer with these messages now." };
 
@@ -659,7 +663,6 @@ export function ConversationScreen({
 		client: NonNullable<typeof client>;
 	} | null>(null);
 	const [approvalsOpen, setApprovalsOpen] = useState(false);
-	const [questionsOpen, setQuestionsOpen] = useState(false);
 	// biome-ignore lint/correctness/useExhaustiveDependencies: Question ownership follows the destination store.
 	const questionBatches = useMemo(() => new QuestionBatches(), [store]);
 	const batches = useSyncExternalStore(
@@ -681,7 +684,6 @@ export function ConversationScreen({
 			() => () => {
 				setSessionOpen(false);
 				setApprovalsOpen(false);
-				setQuestionsOpen(false);
 				setComposerSetting(null);
 			},
 			[],
@@ -1540,6 +1542,25 @@ export function ConversationScreen({
 		!pending &&
 		!settingsPending;
 	const questions = batches.flatMap((batch) => batch.questions);
+	// The ask dock shows the first batch only; the rest wait behind it.
+	const questionBatch = batches[0] ?? null;
+	const questionDraft = useQuestionDraft(
+		{ hubId: route.params.hubId, sessionRef: route.params.ref },
+		questionBatch?.questions ?? NO_QUESTIONS,
+	);
+	// Whether the dock is folded, and whether "Other answer…" brought the
+	// composer back: both start over for each new batch of questions.
+	const [questionFolded, setQuestionFolded] = useState(false);
+	const [composerBack, setComposerBack] = useState(false);
+	const dockBatch = questionBatch
+		? questionBatch.id + questionsIdentity(questionBatch.questions)
+		: null;
+	const [dockFor, setDockFor] = useState(dockBatch);
+	if (dockFor !== dockBatch) {
+		setDockFor(dockBatch);
+		setQuestionFolded(false);
+		setComposerBack(false);
+	}
 	// What this conversation may be asked to do now (conversationControls.ts):
 	// every affordance and submission below reads it, never a raw capability.
 	const permitted = conversation ? conversationControls(conversation) : null;
@@ -1729,7 +1750,12 @@ export function ConversationScreen({
 			);
 		else replace();
 	}
-	async function sendAnswers(batch: AskBatch, selections: QuestionSelections) {
+	// Sends a batch's answers as one message, and says whether the hub took
+	// them.
+	async function sendAnswers(
+		batch: AskBatch,
+		selections: QuestionSelections,
+	): Promise<boolean> {
 		const current = store.getState();
 		questionBatches.reconcile(pendingQuestions(current.conversation));
 		const text = composeQuestionAnswers(batch.questions, selections);
@@ -1747,7 +1773,7 @@ export function ConversationScreen({
 			text === null ||
 			!questionBatches.getSnapshot().includes(batch)
 		)
-			return;
+			return false;
 		setActionError(null);
 		let acceptedAnswers = false;
 		try {
@@ -1759,10 +1785,13 @@ export function ConversationScreen({
 				if (!accepted || accepted === previous || accepted.kind !== "send")
 					return false;
 				questionBatches.finish(batch.id, true);
-				setQuestionsOpen(false);
 				acceptedAnswers = true;
 				return true;
 			});
+			if (acceptedAnswers)
+				toaster.show({
+					text: batch.questions.length > 1 ? "Answers sent" : "Answer sent",
+				});
 			if (
 				acceptedAnswers &&
 				connectionReady.current &&
@@ -1778,6 +1807,7 @@ export function ConversationScreen({
 		} finally {
 			questionBatches.finish(batch.id, false);
 		}
+		return acceptedAnswers;
 	}
 	const frames = useFrameCounter(store);
 	const toaster = useToast();
@@ -1829,8 +1859,14 @@ export function ConversationScreen({
 		!draft.submitting &&
 		unconfirmedSend === null &&
 		!imageState.busy;
-	const sendEnabled =
-		command !== null
+	// While a question waits, Send answers it with your text (ruling 14).
+	const answering = questionBatch !== null;
+	const sendEnabled = answering
+		? composerReady &&
+			!!draft.record.draft.trim() &&
+			!!permitted?.send &&
+			!questionBatch.sending
+		: command !== null
 			? composerReady &&
 				!(command.command.id === "goal" && !goalCommand && !conversation?.goal) &&
 				!!conversation &&
@@ -1839,8 +1875,8 @@ export function ConversationScreen({
 				(!!draft.record.draft.trim() || !!draft.record.images?.length) &&
 				action !== "none";
 	const composerSendLabel =
-		command === null
-			? sendLabel(action, false)
+		answering || command === null
+			? sendLabel(action, answering)
 			: command.command.id === "compact"
 				? "Compact transcript"
 				: command.command.id === "goal"
@@ -1849,6 +1885,10 @@ export function ConversationScreen({
 						: "Clear goal"
 					: command.command.label;
 	async function send() {
+		if (questionBatch) {
+			await answerWithComposer(questionBatch);
+			return;
+		}
 		if (command !== null) {
 			void applyCommand();
 			return;
@@ -1866,6 +1906,32 @@ export function ConversationScreen({
 			// A refused Send adds no text of its own: the draft stays, and the
 			// unconfirmed ghost document.submit leaves says what happened and
 			// what to do.
+		}
+	}
+	// Your text as the free answer to the question the dock is on. When that
+	// completes the ask, every answer goes out as one message; otherwise the
+	// dock returns at the next unanswered question and the composer steps
+	// aside again (ruling 14).
+	async function answerWithComposer(batch: AskBatch) {
+		const text = document.getSnapshot().record.draft;
+		const result = answerWithText(
+			batch.questions,
+			questionDraft.selections,
+			questionDraft.activeIndex,
+			text,
+		);
+		if (result.message === null) {
+			questionDraft.setSelections(() => result.selections);
+			if (result.nextIndex !== undefined)
+				questionDraft.setActiveIndex(result.nextIndex);
+			document.edit("");
+			setComposerBack(false);
+			return;
+		}
+		if (await sendAnswers(batch, result.selections)) {
+			// Only the text you typed is cleared: an edit made while the answer
+			// was on its way stays.
+			if (document.getSnapshot().record.draft === text) document.edit("");
 		}
 	}
 	// Whether a message can go out right now, and whether it sends or queues:
@@ -2143,14 +2209,18 @@ export function ConversationScreen({
 		sheetKey(route.params.hubId, route.params.ref),
 		queueHost,
 	);
-	const composerShown = canCompose && questions.length === 0;
+	// While a question waits the dock is the input: the composer comes back
+	// when the dock folds or after "Other answer…".
+	const composerShown =
+		canCompose && (!questionBatch || questionFolded || composerBack);
 	// What sits above the composer: failures only you can act on, then
 	// everything waiting to reach the agent. While the composer is hidden
-	// (a question is pending) it sits in the composer's place, so a queued
+	// (the dock is open) it sits in the composer's place, so a queued
 	// message never drops out of sight.
 	const waitingForAgent = (
 		<>
-			<ErrorMessage message={actionError} />
+			{/* While a question waits, the dock says why its answer didn't go. */}
+			<ErrorMessage message={questionBatch ? null : actionError} />
 			{draft.error ? (
 				<View style={{ alignItems: "flex-start" }}>
 					<ErrorMessage message={draft.error} />
@@ -2228,34 +2298,6 @@ export function ConversationScreen({
 					choose={openSessionDestination}
 				/>
 			) : null}
-			{batches.map((batch, index) => (
-				<QuestionSheet
-					key={batch.id + questionsIdentity(batch.questions)}
-					visible={questionsOpen && index === 0}
-					destination={{
-						hubId: route.params.hubId,
-						sessionRef: route.params.ref,
-					}}
-					questions={batch.questions}
-					hubName={activeProfile?.name ?? "Hub"}
-					ready={
-						ready &&
-						!!permitted?.send &&
-						draft.loaded &&
-						!draft.error &&
-						unconfirmedSend === null &&
-						!batch.sending
-					}
-					pending={draft.submitting}
-					error={
-						unconfirmedSend !== null
-							? "Delivery is unconfirmed. Close this sheet and check your message before sending again."
-							: actionError
-					}
-					close={() => setQuestionsOpen(false)}
-					send={(selections) => sendAnswers(batch, selections)}
-				/>
-			))}
 			{approvalsOpen && conversation && approvalControls ? (
 				<ApprovalSheet
 					approvals={conversation.pendingEscalations}
@@ -2591,18 +2633,6 @@ export function ConversationScreen({
 							keyboardShouldPersistTaps="handled"
 							nestedScrollEnabled
 						>
-							{questions.length ? (
-								<Action
-									disabled={!ready}
-									expanded={questionsOpen}
-									onPress={() => {
-										Keyboard.dismiss();
-										setQuestionsOpen(true);
-									}}
-								>
-									{`${questions.length} ${questions.length === 1 ? "question" : "questions"} to answer`}
-								</Action>
-							) : null}
 							{conversation?.pendingEscalations.length ? (
 								<Action
 									disabled={!ready || !approvalControls}
@@ -2668,17 +2698,42 @@ export function ConversationScreen({
 							>
 								<Toast toast={toaster.toast} dismiss={toaster.dismiss} />
 							</View>
-							<LiveStatusTray
-								session={conversation}
-								frames={frames}
-								connected={connected}
-								canStop={!!permitted?.stop}
-								stopping={stopping || pending}
-								onStop={() => {
-									void stop();
-								}}
-								onJumpToLive={jumpToLive}
-							/>
+							{questionBatch ? (
+								<QuestionDock
+									questions={questionBatch.questions}
+									draft={questionDraft}
+									ready={
+										ready &&
+										!!permitted?.send &&
+										draft.loaded &&
+										!draft.error &&
+										unconfirmedSend === null
+									}
+									sending={draft.submitting || questionBatch.sending}
+									folded={questionFolded}
+									onFold={setQuestionFolded}
+									onOtherAnswer={() => {
+										setComposerBack(true);
+										requestAnimationFrame(() => composerInput.current?.focus());
+									}}
+									onSend={(selections) => {
+										void sendAnswers(questionBatch, selections);
+									}}
+									error={actionError}
+								/>
+							) : (
+								<LiveStatusTray
+									session={conversation}
+									frames={frames}
+									connected={connected}
+									canStop={!!permitted?.stop}
+									stopping={stopping || pending}
+									onStop={() => {
+										void stop();
+									}}
+									onJumpToLive={jumpToLive}
+								/>
+							)}
 							{composerShown ? (
 								<Composer
 									value={draft.record.draft}
@@ -2686,7 +2741,7 @@ export function ConversationScreen({
 									onChangeText={(text) => document.edit(text)}
 									onSelectionChange={setComposerSelection}
 									inputRef={composerInput}
-									placeholder={composerPlaceholder(action, false)}
+									placeholder={composerPlaceholder(action, answering)}
 									sendLabel={composerSendLabel}
 									sendEnabled={sendEnabled}
 									onSend={() => {
@@ -2700,7 +2755,8 @@ export function ConversationScreen({
 										Keyboard.dismiss();
 										void imageSelection.choose("camera");
 									}}
-									settings={composerSettings}
+									// While the dock is open above it, the model chip steps aside.
+									settings={answering && !questionFolded ? null : composerSettings}
 									above={
 										<>
 											{waitingForAgent}

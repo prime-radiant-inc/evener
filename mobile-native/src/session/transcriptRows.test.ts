@@ -70,6 +70,18 @@ describe("runs of steps (spec 8.2)", () => {
 		]);
 	});
 
+	it("leaves a question still waiting to the dock (spec 8.2)", () => {
+		const live: TimelineRow = {
+			kind: "question",
+			id: "ask",
+			questions: [
+				{ key: "q1", callId: "ask", header: "Choice", question: "Keep them?", options: [], multiSelect: false },
+			],
+		};
+		const rows = sessionRows([user("u"), live, reply("r")], [turn("turn_1")]);
+		expect(rows.map((row) => row.id)).toEqual(["u", "r"]);
+	});
+
 	it("leaves the step in progress, and a live thought, to the tray (ruling 10)", () => {
 		const rows = sessionRows(
 			[
