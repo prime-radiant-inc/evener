@@ -912,6 +912,35 @@ describe("an approval waiting for a decision (spec 8.4, ruling 38)", () => {
 		return served;
 	}
 
+	it("says how many more wait, and the next takes the dock once the first is settled", async () => {
+		const ref = "ref-approval-two";
+		const served = withApproval(ref);
+		const evener = (served as unknown as { evener: { pendingEscalations: Record<string, unknown>[] } }).evener;
+		evener.pendingEscalations.push({
+			...evener.pendingEscalations[0],
+			escalationId: "esc-2",
+			tool: "read_file",
+			mode: "restricted",
+			deniedPath: "/Users/jesse/notes/todo.md",
+		});
+		const { tree, hub } = await mount(served);
+		expect(renderedText(tree)).toContain("Wants to write outside the workspace");
+		expect(renderedText(tree)).toContain("1 more waiting");
+		await press(tree, "Allow this file only");
+		act(() =>
+			hub.notify({
+				method: "evener/sandbox/escalation/resolved",
+				params: { threadId: served.id, ref, escalationId: "esc-1" },
+			} as unknown as AnyNotification),
+		);
+		await settle();
+		const text = renderedText(tree).replaceAll("\u200b", "");
+		expect(text).toContain("Wants to read outside the workspace");
+		expect(text).toContain("read_file  /Users/jesse/notes/todo.md");
+		expect(text).not.toContain("more waiting");
+		expect(pressable(tree, "Allow this file only")?.props.accessibilityState).toMatchObject({ disabled: false });
+	});
+
 	it("shows the dock in the tray's place, and never the composer", async () => {
 		const { tree } = await mount(withApproval("ref-approval"));
 		expect(renderedText(tree)).toContain("Wants to write outside the workspace");

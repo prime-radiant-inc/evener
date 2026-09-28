@@ -87,6 +87,15 @@ describe("the approval dock (spec 8.4)", () => {
 		expect(renderedText(tree)).toContain("/\u200bUsers/\u200bjesse/\u200b");
 	});
 
+	it("says how many more approvals wait behind this one", () => {
+		const one = render(<ApprovalDock request={request()} controls={fakeControls().asControls} onDecided={vi.fn()} waiting={1} />);
+		expect(renderedText(one)).toContain("1 more waiting");
+		const three = render(<ApprovalDock request={request()} controls={fakeControls().asControls} onDecided={vi.fn()} waiting={3} />);
+		expect(renderedText(three)).toContain("3 more waiting");
+		const alone = render(<ApprovalDock request={request()} controls={fakeControls().asControls} onDecided={vi.fn()} />);
+		expect(renderedText(alone)).not.toContain("waiting");
+	});
+
 	it("allows once when the hub couldn't name the path, and says part of it ran", () => {
 		const { tree } = mount(request({ deniedPath: "<denied>", partiallyRan: true }), fakeControls());
 		const text = readable(tree);

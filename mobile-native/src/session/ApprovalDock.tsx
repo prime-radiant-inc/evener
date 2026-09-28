@@ -19,6 +19,9 @@ export interface ApprovalDockProps {
 	controls: ApprovalControls | null;
 	/** A decision the hub took and the session re-read confirms. */
 	onDecided(allowed: boolean): void;
+	/** How many more approvals wait behind this one. Each takes the dock in
+	 * turn, in the order the hub raised them. */
+	waiting?: number;
 }
 
 // A path wraps only at its slashes: a zero-width space after each one gives
@@ -29,7 +32,7 @@ const NO_DECISION = { pending: null, refreshing: false, error: null };
 const noDecision = () => NO_DECISION;
 const noSubscription = () => () => {};
 
-export function ApprovalDock({ request, controls, onDecided }: ApprovalDockProps) {
+export function ApprovalDock({ request, controls, onDecided, waiting = 0 }: ApprovalDockProps) {
 	const { palette } = useColors();
 	const scale = useTextScale();
 	const state = useSyncExternalStore(
@@ -128,6 +131,14 @@ export function ApprovalDock({ request, controls, onDecided }: ApprovalDockProps
 			<Text {...body}>
 				{card.partiallyRan ? `${card.scope} Part of this may already have run.` : card.scope}
 			</Text>
+			{waiting > 0 ? (
+				<Text
+					allowFontScaling={allowFontScaling}
+					style={{ fontSize: 13 * scale, lineHeight: 18 * scale, color: palette.inkMid, fontVariant: ["tabular-nums"] }}
+				>
+					{`${waiting} more waiting`}
+				</Text>
+			) : null}
 			{controls && state.error ? (
 				<Text {...body} numberOfLines={1} style={{ ...body.style, color: palette.dangerInk }}>
 					{state.error}

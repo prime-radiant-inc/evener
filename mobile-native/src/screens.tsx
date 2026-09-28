@@ -2707,6 +2707,7 @@ export function ConversationScreen({
 									// Null while the hub is away: the dock still says what
 									// waits, without Allow or Deny.
 									controls={approvalControls}
+									waiting={(conversation?.pendingEscalations.length ?? 1) - 1}
 									onDecided={(allowed) =>
 										toaster.show({ text: allowed ? "Allowed once" : "Denied" })
 									}
