@@ -20,6 +20,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -1116,6 +1117,104 @@ func TestHostRestartAttachFirstHandsOffWhenTheRestartFails(t *testing.T) {
 	}
 	if !handoffSawGateHeld.Load() {
 		t.Fatal("the handoff ran after the gate was released")
+	}
+}
+
+// promotionFailingGate fails the first HoldAs it sees — the record promotion
+// startOperation logs as non-fatal — and tracks the holder its inner gate
+// carries, so a test can prove the worker restores the holder before its attach
+// (the gate-aware primitive requires the gate to carry the holder presented).
+type promotionFailingGate struct {
+	inner hostops.Gate
+	mu    sync.Mutex
+	calls int
+	// effective is the holder the inner gate carries: what TryAcquire
+	// registered, or what the last successful HoldAs published.
+	effective hostops.Holder
+}
+
+func (g *promotionFailingGate) TryAcquire(host string, holder hostops.Holder) (func(), error) {
+	release, err := g.inner.TryAcquire(host, holder)
+	if err == nil {
+		g.mu.Lock()
+		g.effective = holder
+		g.mu.Unlock()
+	}
+	return release, err
+}
+
+func (g *promotionFailingGate) HoldAs(host string, holder hostops.Holder) error {
+	g.mu.Lock()
+	g.calls++
+	fail := g.calls == 1
+	g.mu.Unlock()
+	if fail {
+		// The promotion that could not publish: the inner gate keeps the
+		// pre-record holder TryAcquire registered.
+		return hostops.ErrGateNotHeld
+	}
+	if err := g.inner.HoldAs(host, holder); err != nil {
+		return err
+	}
+	g.mu.Lock()
+	g.effective = holder
+	g.mu.Unlock()
+	return nil
+}
+
+func (g *promotionFailingGate) effectiveHolder() hostops.Holder {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.effective
+}
+
+// TestHostRestartRestoresTheOperationHolderBeforeTheAttach pins the contract
+// agreement between the non-fatal record promotion and the primitive's
+// own-holder precondition: a promotion that could not publish must not leave
+// the worker presenting a holder the gate does not carry.
+func TestHostRestartRestoresTheOperationHolderBeforeTheAttach(t *testing.T) {
+	entry := deployTestHost()
+	entry.Generation = 2
+	entry.IncarnationID = "inc-new"
+	configPath := deployTestConfigPath(t, entry)
+	before := time.Date(2026, 9, 27, 12, 0, 0, 0, time.UTC)
+	after := before.Add(time.Minute)
+	var gate *promotionFailingGate
+	var m *hubHostManager
+	var store *hostops.Store
+	m, store, _ = deployTestHub(t, configPath, []hostreg.Host{entry}, deploySeams{
+		probe: restartProbeScript(t, "dev", "dev", before, after),
+		attachUnderGate: func(_ context.Context, _ hostreg.Host, holder hostops.Holder) (func() bool, error) {
+			// The primitive refuses unless the gate carries the presented
+			// holder, so standing that check in here makes a lost promotion
+			// observably fatal without it.
+			if got := gate.effectiveHolder(); got.OperationID != holder.OperationID {
+				return nil, fmt.Errorf("the gate carries holder %+v, the attach presents %+v", got, holder)
+			}
+			return func() bool { return true }, nil
+		},
+	})
+	gate = &promotionFailingGate{inner: m.cfg.gate}
+	m.cfg.gate = gate
+
+	response, err := m.Restart(context.Background(), appwire.HostRestartParams{
+		Name: entry.Name, OperationID: "op-1", Generation: 2, IncarnationID: "inc-new",
+	})
+	if err != nil {
+		t.Fatalf("Restart despite the failed record promotion: %v", err)
+	}
+	record := waitOperationState(t, store, response.ID, hostops.StateComplete)
+	if record.Result == nil || !record.Result.OK {
+		t.Fatalf("restart record result = %+v, want ok", record.Result)
+	}
+	gate.mu.Lock()
+	calls, effective := gate.calls, gate.effective
+	gate.mu.Unlock()
+	if calls < 2 {
+		t.Fatalf("HoldAs calls = %d, want the failed promotion plus the worker's restore", calls)
+	}
+	if effective.OperationID != record.ID {
+		t.Fatalf("the gate carries holder %+v, want the record holder %q restored", effective, record.ID)
 	}
 }
 

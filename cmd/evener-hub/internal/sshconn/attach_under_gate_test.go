@@ -86,6 +86,9 @@ func TestAttachUnderGatePublishesUnderTheHeldGateAndSuppressesTheSupervisor(t *t
 	if !handoff() {
 		t.Fatal("the handoff did not start the supervisor")
 	}
+	if !handoff() {
+		t.Fatal("a repeat handoff reported failure after succeeding")
+	}
 	if n := supervisorLoops(m, host.Name); n != 1 {
 		t.Fatalf("supervisor loops after the handoff = %d, want 1", n)
 	}
@@ -329,6 +332,80 @@ func TestAttachUnderGateReapsAndNeverAnnouncesADropAfterPublish(t *testing.T) {
 	m.mu.Unlock()
 	if announced != nil {
 		t.Fatalf("announced = %v, want none", announced)
+	}
+}
+
+// TestAttachUnderGateLiveChannelHandoffEnsuresSupervision pins the already-live
+// branch: a channel this primitive published earlier has no supervisor until a
+// handoff starts one, so a second call that finds it live must still return a
+// handoff that ensures supervision — never a no-op that strands the channel.
+func TestAttachUnderGateLiveChannelHandoffEnsuresSupervision(t *testing.T) {
+	m, _, host := attachUnderGateManager(t, Options{})
+	release, err := m.TryAcquire(host.Name, attachUnderGateCaller())
+	if err != nil {
+		t.Fatalf("TryAcquire: %v", err)
+	}
+	defer release()
+
+	// The first attach publishes the channel and deliberately starts no
+	// supervisor; its handoff is not taken.
+	first, _, err := m.AttachUnderGate(context.Background(), host, attachUnderGateCaller())
+	if err != nil {
+		t.Fatalf("first AttachUnderGate: %v", err)
+	}
+	if n := supervisorLoops(m, host.Name); n != 0 {
+		t.Fatalf("supervisor loops after the suppressed attach = %d, want 0", n)
+	}
+
+	// The restart's channel drop has not been observed yet: the second call
+	// finds the channel live. Its handoff must still give the channel a
+	// supervisor.
+	second, handoff, err := m.AttachUnderGate(context.Background(), host, attachUnderGateCaller())
+	if err != nil {
+		t.Fatalf("second AttachUnderGate: %v", err)
+	}
+	if second != first {
+		t.Fatalf("the live call replaced the channel: first=%v second=%v", first, second)
+	}
+	if !handoff() {
+		t.Fatal("the live-channel handoff did not start the supervisor")
+	}
+	if !handoff() {
+		t.Fatal("a repeat live-channel handoff reported failure after succeeding")
+	}
+	if n := supervisorLoops(m, host.Name); n != 1 {
+		t.Fatalf("supervisor loops after the live-channel handoff = %d, want 1", n)
+	}
+}
+
+// TestAttachUnderGateHandoffRefusesAfterTheHolderChanged pins the handoff's
+// ownership recheck: if the caller's hold is gone — the gate now held by a
+// different holder — the handoff refuses instead of starting a supervisor
+// under another holder's exclusion.
+func TestAttachUnderGateHandoffRefusesAfterTheHolderChanged(t *testing.T) {
+	m, _, host := attachUnderGateManager(t, Options{})
+	release, err := m.TryAcquire(host.Name, attachUnderGateCaller())
+	if err != nil {
+		t.Fatalf("TryAcquire: %v", err)
+	}
+	_, handoff, err := m.AttachUnderGate(context.Background(), host, attachUnderGateCaller())
+	if err != nil {
+		t.Fatalf("AttachUnderGate: %v", err)
+	}
+	// The operation's hold ends and another holder takes the gate (a contract
+	// break the handoff must refuse, not publish under).
+	release()
+	otherRelease, err := m.TryAcquire(host.Name, hostops.Holder{Kind: hostops.HolderManager, Activity: "attach"})
+	if err != nil {
+		t.Fatalf("TryAcquire (other holder): %v", err)
+	}
+	defer otherRelease()
+
+	if handoff() {
+		t.Fatal("the handoff started a supervisor after the caller's hold ended")
+	}
+	if n := supervisorLoops(m, host.Name); n != 0 {
+		t.Fatalf("supervisor loops after the refused handoff = %d, want 0", n)
 	}
 }
 

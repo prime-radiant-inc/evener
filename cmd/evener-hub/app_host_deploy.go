@@ -1013,7 +1013,16 @@ func (m *hubHostManager) attachOperationChannel(ctx context.Context, id string, 
 	if m.cfg.attachUnderGate == nil {
 		return nil, errors.New("this hub has no operation-owned attach wired, so the host cannot be attached under the held gate")
 	}
-	handoff, err := m.cfg.attachUnderGate(ctx, entry, hostops.Holder{Kind: hostops.HolderOperation, OperationID: id})
+	// The record's holder promotion is logged, never fatal (the record is
+	// durable and the worker still runs), but the gate-aware primitive requires
+	// the gate to carry the operation holder the worker presents. Re-assert it
+	// here so a promotion that could not publish cannot turn into a failed
+	// operation.
+	holder := hostops.Holder{Kind: hostops.HolderOperation, OperationID: id}
+	if err := m.cfg.gate.HoldAs(entry.Name, holder); err != nil {
+		return nil, fmt.Errorf("the operation holder could not be published on host %q's gate, so the attach under it cannot run: %w", entry.Name, err)
+	}
+	handoff, err := m.cfg.attachUnderGate(ctx, entry, holder)
 	if err != nil {
 		return nil, fmt.Errorf("the operation-owned attach for host %q failed: %w", entry.Name, err)
 	}

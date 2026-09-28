@@ -761,25 +761,77 @@ func (m *Manager) Ensure(ctx context.Context, name string) (*Channel, error) {
 	return ch, nil
 }
 
-// hostGateHeldBy reports whether name's per-host gate is currently held by
-// holder: the same holder the hold published through TryAcquire/HoldAs
-// (deploy pipeline 08b §5's holder vocabulary). The entry is fetched under the
-// manager mutex; the held flag and holder themselves are atomic by design
-// (hostLockGate), so the read does not disturb a contender's registration. It
-// is a cooperative precondition, not a security boundary: it proves the
-// caller presents the hold the gate currently carries, which is the strongest
-// check the try-acquire/release API allows.
-func (m *Manager) hostGateHeldBy(name string, holder hostops.Holder) bool {
+// hostGateEntryFor returns name's per-host gate while it is held by holder:
+// the same holder the hold published through TryAcquire/HoldAs (deploy
+// pipeline 08b §5's holder vocabulary), compared exactly. It returns nil for a
+// free gate, a missing entry, or one carrying a different holder. The entry is
+// fetched under the manager mutex; the held flag and holder themselves are
+// atomic by design (hostLockGate), so the read does not disturb a contender's
+// registration. It is a cooperative precondition, not a security boundary: it
+// proves the caller presents the hold the gate currently carries, which is the
+// strongest check the try-acquire/release API allows. The caller's own hold
+// pins the entry's live-user reference, so a returned entry cannot be dropped
+// while the caller uses it.
+func (m *Manager) hostGateEntryFor(name string, holder hostops.Holder) *hostLockGate {
 	m.mu.Lock()
 	entry := m.locks[name]
 	m.mu.Unlock()
 	if entry == nil || !entry.gate.isHeld() {
-		return false
+		return nil
 	}
 	held := entry.gate.holderOf()
-	return held.Kind == holder.Kind &&
-		strings.TrimSpace(held.OperationID) == strings.TrimSpace(holder.OperationID) &&
-		strings.TrimSpace(held.Activity) == strings.TrimSpace(holder.Activity)
+	if held.Kind != holder.Kind ||
+		strings.TrimSpace(held.OperationID) != strings.TrimSpace(holder.OperationID) ||
+		strings.TrimSpace(held.Activity) != strings.TrimSpace(holder.Activity) {
+		return nil
+	}
+	return &entry.gate
+}
+
+// hostGateHeldBy reports whether name's per-host gate is currently held by
+// holder, exactly as hostGateEntryFor compares it.
+func (m *Manager) hostGateHeldBy(name string, holder hostops.Holder) bool {
+	return m.hostGateEntryFor(name, holder) != nil
+}
+
+// supervisesChannel reports whether a live reconnect loop already owns ch.
+func (m *Manager) supervisesChannel(name string, ch *Channel) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for loop := range m.supervisors[name] {
+		if loop.ch == ch {
+			return true
+		}
+	}
+	return false
+}
+
+// attachHandoff builds the caller's post-verification handoff for ch: under the
+// caller's still-held gate it starts the supervisor that owns the channel,
+// unless one already supervises it (the already-live path), in which case the
+// handoff is a no-op. It refuses when the gate is no longer held by holder — a
+// released or re-registered hold must not start a supervisor under another
+// holder's exclusion — and it is safe to call more than once: the first call's
+// result is reported for every repeat.
+func (m *Manager) attachHandoff(host hostreg.Host, ch *Channel, holder hostops.Holder) func() bool {
+	var once sync.Once
+	result := false
+	return func() bool {
+		once.Do(func() {
+			entry := m.hostGateEntryFor(host.Name, holder)
+			if entry == nil {
+				return
+			}
+			if m.supervisesChannel(host.Name, ch) {
+				// An existing loop owns this channel; a second would only race
+				// it to the same reconnect.
+				result = true
+				return
+			}
+			result = m.startSupervise(host, ch, entry)
+		})
+		return result
+	}
 }
 
 // AttachUnderGate re-attaches host under the caller's already-held per-host
@@ -805,10 +857,12 @@ func (m *Manager) hostGateHeldBy(name string, holder hostops.Holder) bool {
 // operation reattaches) is replaced and reaped here, with its outstanding
 // Attached paired by a Detached before the replacement's Attached, exactly as
 // Ensure's replacement does — otherwise the predecessor's consumer would keep
-// a source nothing owns. The handoff is safe to call once per attach: a repeat
-// call reports the first result without starting a second supervisor, and a
-// call after the caller released the gate refuses instead of starting a
-// supervisor against a gate nobody holds.
+// a source nothing owns. The handoff always ensures the channel is supervised
+// at most once: an already-live channel whose loop exists is left to it, and
+// one without a loop gets the missing supervisor. It is safe to call more than
+// once — a repeat reports the first result — and it refuses when the gate is no
+// longer held by the caller's own holder, so a released or stolen hold never
+// starts a supervisor outside the caller's exclusion.
 func (m *Manager) AttachUnderGate(ctx context.Context, host hostreg.Host, holder hostops.Holder) (*Channel, func() bool, error) {
 	name := strings.TrimSpace(host.Name)
 	if name == "" {
@@ -832,10 +886,13 @@ func (m *Manager) AttachUnderGate(ctx context.Context, host hostreg.Host, holder
 		return nil, nil, fmt.Errorf("%w: %q", ErrHostNotFound, name)
 	}
 	// An already-live channel for this same registration is the host attached:
-	// hand it back untouched (it keeps the supervisor that owns it), exactly the
-	// state Ensure reports for an idempotent re-attach.
+	// hand it back untouched, exactly the state Ensure reports for an
+	// idempotent re-attach. The returned handoff still ensures supervision: a
+	// channel this primitive published earlier has no supervisor until a
+	// handoff starts one (the attach suppresses startup), so the handoff starts
+	// the missing loop; a channel with an existing loop is left to it.
 	if ch := m.liveChannel(name); ch != nil && ch.MatchesRegistration(host) {
-		return ch, func() bool { return true }, nil
+		return ch, m.attachHandoff(host, ch, holder), nil
 	}
 	stale := m.currentChannel(name)
 	// Tie the attempt to the manager's lifetime, exactly as Ensure does: a
@@ -893,24 +950,7 @@ func (m *Manager) AttachUnderGate(ctx context.Context, host hostreg.Host, holder
 		// the operation's restart left).
 		_ = stale.Close()
 	}
-	var handedOff sync.Once
-	handoffResult := false
-	handoff := func() bool {
-		handedOff.Do(func() {
-			m.mu.Lock()
-			entry := m.locks[name]
-			m.mu.Unlock()
-			if entry == nil || !entry.gate.isHeld() {
-				// The caller released the gate before the handoff (or Close
-				// cleared the world): never start a supervisor against a gate
-				// nobody holds.
-				return
-			}
-			handoffResult = m.startSupervise(host, ch, &entry.gate)
-		})
-		return handoffResult
-	}
-	return ch, handoff, nil
+	return ch, m.attachHandoff(host, ch, holder), nil
 }
 
 // ClientIfAttached returns name's current initialized client ONLY while a live,
@@ -2313,7 +2353,7 @@ func (m *Manager) supervise(ctx context.Context, host hostreg.Host, ch *Channel,
 // predecessor still parked in backoff instead of leaking it.
 func (m *Manager) startSupervise(host hostreg.Host, ch *Channel, lock *hostLockGate) bool {
 	ctx, cancel := context.WithCancel(m.baseCtx)
-	loop := &supervisorLoop{host: host, cancel: cancel}
+	loop := &supervisorLoop{host: host, ch: ch, cancel: cancel}
 	m.mu.Lock()
 	if m.closed {
 		// Close already ran. A supervisor started now would only race its Wait, and
@@ -2372,7 +2412,11 @@ type supervisorLoop struct {
 	// host is the registration this loop reconnects. The teardown fences read
 	// it, so a stale removal cannot cancel the reconnect of a host that was
 	// re-added under the same name after the removal looked.
-	host   hostreg.Host
+	host hostreg.Host
+	// ch is the channel this loop owns. It lets an attach-handoff ask whether a
+	// channel already has a supervisor instead of starting a second loop that
+	// would only race the first to the same reconnect.
+	ch     *Channel
 	cancel context.CancelFunc
 }
 
