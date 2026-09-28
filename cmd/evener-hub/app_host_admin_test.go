@@ -389,9 +389,10 @@ func TestHostAdminAllowListMatchesCatalog(t *testing.T) {
 	// refused with appwire.InvalidParams without reaching the remote. The denied
 	// families are controller-local state or UI (navigation, jobs, tasks,
 	// thread/turn, keybindings, overview, transcript display), local-process
-	// control (upgrade, update, mobile pairing, sandbox escalation), other
-	// mutating local surfaces (archive, pin, favorite, project delete, URLs,
-	// search, subagent preview), and the proxy method itself (no chaining).
+	// control (upgrade, update, mobile pairing, sandbox escalation, subagent
+	// stop), other mutating local surfaces (archive, pin, favorite, project
+	// delete, URLs, search, subagent preview), and the proxy method itself (no
+	// chaining).
 	// Rows are added one method at a time: a catalog method with no row fails the
 	// coverage check below, so a future addition still forces a decision.
 	//
@@ -428,6 +429,7 @@ func TestHostAdminAllowListMatchesCatalog(t *testing.T) {
 		// and never forwarded.
 		"evener/daemon/list":    false,
 		"evener/daemon/retire":  false,
+		"evener/delegate/stop":  false,
 		"evener/dirs/create":    true, // discovery: create the host directory the spawn form asked for
 		"evener/favorite/set":   false,
 		"evener/git/head":       true, // discovery: read-only branch metadata for a remote path

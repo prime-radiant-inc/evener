@@ -1785,6 +1785,22 @@ func registerThreadHandlers(
 			return appwire.EmptyResponse{}, source.ResolveSandboxEscalation(ctx, params)
 		})
 	})
+	appserver.HandleTyped(server.Router(), appwire.MethodEvenerDelegateStop, func(ctx context.Context, params appwire.DelegateStopParams) (appwire.DelegateStopResponse, error) {
+		return withSessionActionOwnership(ctx, cfg, params.Ref, params.ThreadID, func() (appwire.DelegateStopResponse, error) {
+			if err := refreshDaemonRestartRequiredError(ctx, cfg, params.Ref, params.ThreadID, ""); err != nil {
+				return appwire.DelegateStopResponse{}, err
+			}
+			source, err := sourceForThread(sources, params.Ref, params.ThreadID)
+			if err != nil {
+				return appwire.DelegateStopResponse{}, err
+			}
+			stopper, ok := source.(appsource.DelegateStopSource)
+			if !ok {
+				return appwire.DelegateStopResponse{}, appwire.Unavailable("this session's source cannot stop a subagent")
+			}
+			return stopper.StopDelegate(ctx, params)
+		})
+	})
 	appserver.HandleTyped(server.Router(), appwire.MethodTurnQueue, func(ctx context.Context, params appwire.TurnQueueParams) (appwire.TurnQueueResponse, error) {
 		if err := validateAppWireInputItems(params.Input); err != nil {
 			return appwire.TurnQueueResponse{}, appwire.InvalidParams(err.Error())
