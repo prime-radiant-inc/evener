@@ -593,6 +593,67 @@ describe("AppwireClient", () => {
     expect(received).toHaveLength(1);
   });
 
+  // The socket hands handleMessage the raw data of every message event. The
+  // transport boundary accepts only a JSON object as a WireMessage envelope: a
+  // frame that parses to null, a scalar, or an array carries no id/method/error
+  // to read, and reading one off JSON null throws a TypeError straight out of
+  // the socket callback. Every such non-envelope is ignored like the non-string
+  // and unparseable frames the boundary already drops, and the socket keeps
+  // working afterward.
+  test("ignores a frame that parses to null instead of throwing", async () => {
+    const fake = new FakeSocket({ autoInitialize: true });
+    const client = new AppwireClient({ url: "ws://x/rpc", socketFactory: () => fake });
+    await connectReady(fake, client);
+    const received: AnyNotification[] = [];
+    client.onNotification((n) => received.push(n));
+
+    expect(() => fake.receive(null)).not.toThrow();
+    expect(received).toHaveLength(0);
+  });
+
+  test("ignores a frame that parses to a scalar or an array", async () => {
+    const fake = new FakeSocket({ autoInitialize: true });
+    const client = new AppwireClient({ url: "ws://x/rpc", socketFactory: () => fake });
+    await connectReady(fake, client);
+    const received: AnyNotification[] = [];
+    client.onNotification((n) => received.push(n));
+
+    expect(() => fake.receive(42)).not.toThrow();
+    expect(() => fake.receive("thread/started")).not.toThrow();
+    expect(() => fake.receive([1, 2])).not.toThrow();
+    expect(received).toHaveLength(0);
+  });
+
+  test("a malformed error payload rejects the pending request without throwing", async () => {
+    const fake = new FakeSocket({ autoInitialize: true });
+    const client = new AppwireClient({ url: "ws://x/rpc", socketFactory: () => fake });
+    await connectReady(fake, client);
+
+    const reqPromise = client.request("thread/list", { limit: 10 });
+    const frame = lastSentFrame(fake);
+    const rejection = expect(reqPromise).rejects.toBeInstanceOf(WireError);
+
+    expect(() => fake.receive({ id: frame.id, error: "not-an-object" })).not.toThrow();
+
+    await rejection;
+  });
+
+  test("a valid response still resolves and a valid notification still dispatches", async () => {
+    const fake = new FakeSocket({ autoInitialize: true });
+    const client = new AppwireClient({ url: "ws://x/rpc", socketFactory: () => fake });
+    await connectReady(fake, client);
+
+    const reqPromise = client.request("thread/list", { limit: 10 });
+    const frame = lastSentFrame(fake);
+    fake.receive({ id: frame.id, result: { data: [], nextCursor: "" } });
+    await expect(reqPromise).resolves.toEqual({ data: [], nextCursor: "" });
+
+    const received: AnyNotification[] = [];
+    client.onNotification((n) => received.push(n));
+    fake.receive({ method: "thread/started", params: {} });
+    expect(received).toEqual([{ method: "thread/started", params: {} }]);
+  });
+
   test("requests before ready are rejected except initialize/ping", async () => {
     const fake = new FakeSocket({ autoInitialize: false });
     const client = new AppwireClient({ url: "ws://x/rpc", socketFactory: () => fake });
