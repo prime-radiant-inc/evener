@@ -2904,13 +2904,45 @@ export interface SandboxEscalationResolved {
   escalationId: string;
 }
 
+export interface SearchHit {
+  /**
+   * TranscriptKey and Position name the transcript item the message is, as
+   * a thread read's items carry them, so a client opens the session at it.
+   */
+  transcriptKey: string;
+  position: ThreadItemPosition;
+  /**
+   * Snippet is the message around its first match, one line, in parts: a
+   * part with match set is text the search matched.
+   */
+  snippet: SearchSnippetPart[];
+}
+
 export interface SearchParams {
   query?: string;
+  /**
+   * Scope narrows every group of the answer (S14, spec 7.4): SearchScopeAll
+   * (the default when absent), SearchScopeLive or SearchScopeArchived. An
+   * older hub ignores it and answers as for all; SearchResponse.Scope says
+   * whether it was applied.
+   */
+  scope?: string;
 }
 
 export interface SearchResponse {
   live: SearchResult[];
   past: SearchResult[];
+  /**
+   * InSessions lists the sessions whose messages match, each with its hits
+   * (S14), newest session first: live sessions, then ended ones. Absent when
+   * none match, and from an older hub.
+   */
+  inSessions?: SearchResult[];
+  /**
+   * Scope is the scope the answer applied. An older hub leaves it out, so a
+   * client knows it offers no Archived scope and no message hits.
+   */
+  scope?: string;
 }
 
 export interface SearchResult {
@@ -2930,6 +2962,24 @@ export interface SearchResult {
    */
   askPending?: boolean;
   approvalPending?: boolean;
+  /**
+   * Archived says the rail files the session as archived: its own archive
+   * decision, its project's, or two weeks without activity (S14). Absent
+   * when it is not, and from an older hub.
+   */
+  archived?: boolean;
+  /**
+   * Hits are the session's newest messages that match the search, newest
+   * first, and HitCount how many match in all. Only an InSessions result
+   * carries them (S14).
+   */
+  hits?: SearchHit[];
+  hitCount?: number;
+}
+
+export interface SearchSnippetPart {
+  text: string;
+  match?: boolean;
 }
 
 export interface ServerInfo {
