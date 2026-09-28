@@ -50,6 +50,34 @@ func TestDecodeEntryClassifiesNonEntryKindsAsUnsupported(t *testing.T) {
 	}
 }
 
+// A NOTICE entry's payload must match schema.NoticeInfo.Validate()'s own doc
+// contract (exactly one payload, matching Kind), or the read side
+// (internal/apptranscript/notice.go) drops it silently instead of the whole
+// transcript failing loudly the way an unknown field does.
+func TestDecodeEntryRejectsAMismatchedNoticePayload(t *testing.T) {
+	tests := []struct {
+		name string
+		turn string
+	}{
+		{name: "zero payloads", turn: `{"kind":"NOTICE","notice":{"kind":"goal_ended"}}`},
+		{name: "two payloads", turn: `{"kind":"NOTICE","notice":{"kind":"goal_ended","goal_ended":{"status":"complete"},"turn_limit":{"max_turns":4}}}`},
+		{name: "mismatched kind", turn: `{"kind":"NOTICE","notice":{"kind":"goal_ended","turn_limit":{"max_turns":4}}}`},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			line := `{"kind":"entry","seq":0,"turn":` + tc.turn + `}`
+			if _, err := DecodeEntry([]byte(line)); err == nil {
+				t.Fatalf("DecodeEntry(%q) succeeded, want the invalid notice rejected", line)
+			}
+		})
+	}
+	// A valid notice still decodes fine.
+	valid := `{"kind":"entry","seq":0,"turn":{"kind":"NOTICE","notice":{"kind":"goal_ended","goal_ended":{"status":"complete"}}}}`
+	if _, err := DecodeEntry([]byte(valid)); err != nil {
+		t.Fatalf("DecodeEntry(%q) = %v, want nil", valid, err)
+	}
+}
+
 func TestReadLineBoundExcludesNewlineAndDrainsOversizedRecords(t *testing.T) {
 	reader := bufio.NewReader(strings.NewReader("1234\n12345\nok\n"))
 
