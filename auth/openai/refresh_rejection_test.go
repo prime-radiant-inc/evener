@@ -158,7 +158,7 @@ func TestDeleteAuthClearsARefreshRefusal(t *testing.T) {
 	if _, err := DeleteAuth(stateDir, "openai"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := os.Stat(refreshRejectionPath(stateDir, "openai")); !errors.Is(err, os.ErrNotExist) {
+	if _, err := os.Stat(RefreshRejectionPath(stateDir, "openai")); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("the note survived signing out: %v", err)
 	}
 }
@@ -170,7 +170,7 @@ func TestRefreshRefusalNoteIsPrivateAndNotARecord(t *testing.T) {
 	if err := RecordRefreshRejection(stateDir, "openai", AuthRecord{RefreshToken: "secret-refresh-token"}, time.Now()); err != nil {
 		t.Fatal(err)
 	}
-	path := refreshRejectionPath(stateDir, "openai")
+	path := RefreshRejectionPath(stateDir, "openai")
 	if filepath.Ext(path) == ".json" {
 		t.Fatalf("note %s ends in .json", path)
 	}

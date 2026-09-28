@@ -1271,6 +1271,47 @@ func TestInstances_RemoveRestoresCredentialsWhenTheConfigWriteFails(t *testing.T
 	}
 }
 
+// A rollback restores the OAuth record byte for byte (the test above), but
+// the refresh-refusal marker (#2479) sits beside it in its own sidecar file:
+// without restoring that too, a removal that rolls back after deleting it
+// would leave the instance reporting signed-in and healthy even though its
+// refresh token is still permanently refused.
+func TestInstances_RemoveRestoresARefreshRefusalMarkerWhenTheConfigWriteFails(t *testing.T) {
+	f := newInstancesFixture(t, nil)
+	if err := f.ctl.Create(appwire.InstanceCreateParams{Name: "work", Base: "openai-codex"}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	record := makeOAuthRecord("work", "")
+	if err := authopenai.SaveAuth(f.stateDir, "work", record); err != nil {
+		t.Fatalf("SaveAuth: %v", err)
+	}
+	if err := authopenai.RecordRefreshRejection(f.stateDir, "work", record, time.Now()); err != nil {
+		t.Fatalf("RecordRefreshRejection: %v", err)
+	}
+	originalDelete := f.ctl.auth.deleteAuth
+	f.ctl.auth.deleteAuth = func(dir, name string) (bool, error) {
+		if err := os.Remove(f.tomlPath); err != nil {
+			t.Errorf("Remove(%s): %v", f.tomlPath, err)
+		}
+		if err := os.Mkdir(f.tomlPath, 0o700); err != nil {
+			t.Errorf("Mkdir(%s): %v", f.tomlPath, err)
+		}
+		return originalDelete(dir, name)
+	}
+
+	if err := f.ctl.Remove(appwire.InstanceRemoveParams{Name: "work"}); err == nil {
+		t.Fatal("Remove = nil, want the config write failure")
+	}
+
+	restored, err := authopenai.LoadAuth(f.stateDir, "work")
+	if err != nil {
+		t.Fatalf("the OAuth record was not restored: %v", err)
+	}
+	if !authopenai.RefreshRejected(f.stateDir, "work", restored) {
+		t.Fatal("the refresh-refusal marker was not restored with the record")
+	}
+}
+
 // The cleanup is two destructive steps, so its own failure has the same
 // asymmetry the config write has: the stored key is deleted before the OAuth
 // record is even attempted, and a failure on the second step leaves the

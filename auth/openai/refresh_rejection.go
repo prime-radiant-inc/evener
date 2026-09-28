@@ -30,7 +30,11 @@ type refreshRejection struct {
 	RejectedAt         time.Time `json:"rejected_at"`
 }
 
-func refreshRejectionPath(stateDir, instanceName string) string {
+// RefreshRejectionPath is the path of instanceName's refresh-refusal note
+// beside its auth record, for a caller that must capture and restore it
+// byte for byte (a failed removal's rollback: cmd/evener-hub's
+// restoreFailedRemoval).
+func RefreshRejectionPath(stateDir, instanceName string) string {
 	return AuthFilePath(stateDir, instanceName) + refreshRejectionSuffix
 }
 
@@ -55,7 +59,7 @@ func RecordRefreshRejection(stateDir, instanceName string, record AuthRecord, at
 	if err != nil {
 		return fmt.Errorf("marshal refresh rejection: %w", err)
 	}
-	path := refreshRejectionPath(stateDir, instanceName)
+	path := RefreshRejectionPath(stateDir, instanceName)
 	if err := authMkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return fmt.Errorf("create auth directory: %w", err)
 	}
@@ -68,7 +72,7 @@ func RecordRefreshRejection(stateDir, instanceName string, record AuthRecord, at
 // token on a record a concurrent successful refresh already moved past) is
 // false.
 func RefreshRejected(stateDir, instanceName string, record AuthRecord) bool {
-	data, err := os.ReadFile(refreshRejectionPath(stateDir, instanceName))
+	data, err := os.ReadFile(RefreshRejectionPath(stateDir, instanceName))
 	if err != nil {
 		return false
 	}
@@ -85,7 +89,7 @@ func RefreshRejected(stateDir, instanceName string, record AuthRecord) bool {
 // only an issuer that never rotates refresh tokens keeps on the record, and
 // the next save clears it again.
 func clearRefreshRejection(stateDir, instanceName string) error {
-	if err := authRemove(refreshRejectionPath(stateDir, instanceName)); err != nil && !errors.Is(err, os.ErrNotExist) {
+	if err := authRemove(RefreshRejectionPath(stateDir, instanceName)); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return fmt.Errorf("clear refresh rejection: %w", err)
 	}
 	return nil

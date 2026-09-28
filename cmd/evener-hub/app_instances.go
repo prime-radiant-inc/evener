@@ -1631,6 +1631,10 @@ func (c *hubInstancesController) Remove(params appwire.InstanceRemoveParams) (er
 	if err != nil {
 		return err
 	}
+	refusalBytes, hasRefusal, err := c.captureRefreshRejectionFile(name)
+	if err != nil {
+		return err
+	}
 
 	// Whether the config authored this instance is read before the cleanup, so
 	// its failure below is classified by the same question every later branch
@@ -1665,7 +1669,7 @@ func (c *hubInstancesController) Remove(params appwire.InstanceRemoveParams) (er
 				frame = "the removal stands"
 			}
 		}
-		_, restoreErr := c.restoreFailedRemoval(name, storedKey, hasStoredKey && removed.storedKey, oauthBytes, hasOAuth && removed.oauthRecord, err, frame, supplies)
+		_, restoreErr := c.restoreFailedRemoval(name, storedKey, hasStoredKey && removed.storedKey, oauthBytes, hasOAuth && removed.oauthRecord, refusalBytes, hasRefusal && removed.oauthRecord, err, frame, supplies)
 		return restoreErr
 	}
 
@@ -1715,7 +1719,7 @@ func (c *hubInstancesController) Remove(params appwire.InstanceRemoveParams) (er
 					frame = "the removal stands"
 				}
 			}
-			restored, restoreErr := c.restoreFailedRemoval(name, storedKey, hasStoredKey, oauthBytes, hasOAuth, err, frame, supplies)
+			restored, restoreErr := c.restoreFailedRemoval(name, storedKey, hasStoredKey, oauthBytes, hasOAuth, refusalBytes, hasRefusal, err, frame, supplies)
 			if restored {
 				// The carrying layer is back, so the removal did not stand, and
 				// restoreFailedRemoval answers such a rollback with the
@@ -1751,7 +1755,7 @@ func (c *hubInstancesController) Remove(params appwire.InstanceRemoveParams) (er
 			// row missing), and the state the file describes is unchanged, so a
 			// second attempt is the recovery rather than a repetition.
 			cause := fmt.Errorf("removing %q failed: %w", name, err)
-			restored, restoreErr := c.restoreFailedRemoval(name, storedKey, hasStoredKey, oauthBytes, hasOAuth,
+			restored, restoreErr := c.restoreFailedRemoval(name, storedKey, hasStoredKey, oauthBytes, hasOAuth, refusalBytes, hasRefusal,
 				cause, "the removal stands", supplyOf(locked))
 			if !restored {
 				return restoreErr
@@ -1796,7 +1800,7 @@ func (c *hubInstancesController) Remove(params appwire.InstanceRemoveParams) (er
 			// credential restore below also fails, so the applied state is
 			// re-marked here rather than left to restoreFailedRemoval, which
 			// clears it when it puts every credential back.
-			_, standingErr := c.restoreFailedRemoval(name, storedKey, hasStoredKey, oauthBytes, hasOAuth,
+			_, standingErr := c.restoreFailedRemoval(name, storedKey, hasStoredKey, oauthBytes, hasOAuth, refusalBytes, hasRefusal,
 				fmt.Errorf("%w; the rollback could not be written, so the removal stands in the config (%w)", err, restoreErr),
 				"the entry is gone from the config", supplyAny)
 			c.applied.markApplied()
@@ -1846,7 +1850,7 @@ func (c *hubInstancesController) Remove(params appwire.InstanceRemoveParams) (er
 		// removal stands, ..."). The rollback wording is built below, once the
 		// restore has actually carried the instance, the way the !configChanged
 		// sibling builds it.
-		restored, restoreErr := c.restoreFailedRemoval(name, storedKey, hasStoredKey, oauthBytes, hasOAuth,
+		restored, restoreErr := c.restoreFailedRemoval(name, storedKey, hasStoredKey, oauthBytes, hasOAuth, refusalBytes, hasRefusal,
 			fmt.Errorf("removing %q failed: %w", name, err), frame, supplies)
 		if restored {
 			// The carrying layer is back, so the config this rollback restored is
@@ -1898,6 +1902,24 @@ func (c *hubInstancesController) captureOAuthFile(name string) ([]byte, bool, er
 		return nil, false, nil
 	}
 	return nil, false, fmt.Errorf("remove %s: read OAuth state to preserve it: %w", name, err)
+}
+
+// captureRefreshRejectionFile reads the refresh-refusal marker (#2479) beside
+// the OAuth state file a removal's cleanup is about to delete, so a later
+// failure can write it back too. DeleteAuth clears the marker once the record
+// delete succeeds, so a rollback that restores only the record would report
+// the instance signed in and healthy even though its refresh token is still
+// permanently refused. A missing marker (the common case: nothing was ever
+// refused) is (nil, false, nil), the same shape captureOAuthFile uses.
+func (c *hubInstancesController) captureRefreshRejectionFile(name string) ([]byte, bool, error) {
+	raw, err := os.ReadFile(authopenai.RefreshRejectionPath(c.auth.stateDir, name))
+	if err == nil {
+		return raw, true, nil
+	}
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, false, nil
+	}
+	return nil, false, fmt.Errorf("remove %s: read refresh-refusal marker to preserve it: %w", name, err)
 }
 
 // removalSupply names the layer an instance resolves from, so a failed
@@ -1960,7 +1982,7 @@ func supplyOf(inst registry.Instance) removalSupply {
 // rewrites - and never reports a failure to rewrite - a credential that is
 // still where it was. A restore that puts every deleted layer back clears the
 // applied mark, because the removal is then undone.
-func (c *hubInstancesController) restoreFailedRemoval(name, storedKey string, hasStoredKey bool, oauthBytes []byte, hasOAuth bool, cause error, frame string, supplies removalSupply) (bool, error) {
+func (c *hubInstancesController) restoreFailedRemoval(name, storedKey string, hasStoredKey bool, oauthBytes []byte, hasOAuth bool, refusalBytes []byte, hasRefusal bool, cause error, frame string, supplies removalSupply) (bool, error) {
 	var problems []string
 	storedKeyRestored := true
 	if hasStoredKey {
@@ -1978,6 +2000,16 @@ func (c *hubInstancesController) restoreFailedRemoval(name, storedKey string, ha
 		if err := authopenai.WriteAuthFile(authopenai.AuthFilePath(c.auth.stateDir, name), oauthBytes); err != nil {
 			oauthRestored = false
 			problems = append(problems, fmt.Sprintf("its OAuth record could not be restored (%v)", err))
+		} else if hasRefusal {
+			// The refresh-refusal marker (#2479) is a sidecar of the record
+			// that just came back: restore it too, best effort, so the
+			// instance does not report signed-in and healthy while its
+			// refresh token is still permanently refused. It never carries
+			// the instance on its own, so a failure here is a stray leftover
+			// rather than a reason to call the restore incomplete.
+			if err := authopenai.WriteAuthFile(authopenai.RefreshRejectionPath(c.auth.stateDir, name), refusalBytes); err != nil {
+				problems = append(problems, fmt.Sprintf("its refresh-refusal marker could not be restored (%v)", err))
+			}
 		}
 	}
 	var carried bool
