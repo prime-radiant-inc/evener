@@ -1,7 +1,8 @@
 import type { ReactNode } from "react";
 import type { TextProps } from "react-native";
 import { Platform, Pressable, StyleSheet, Text, useColorScheme, useWindowDimensions } from "react-native";
-import { paletteFor, typeRoles } from "./design/tokens";
+import { paletteFor } from "./design/tokens";
+import { useReadingType } from "./display/displayContext";
 
 /** The app's colors: the redesign palette (src/design/tokens.ts) under the
  * keys every existing screen already reads, plus the full palette for new
@@ -144,6 +145,7 @@ export function Copy({
 }) {
 	const colors = useColors();
 	const textScale = useTextScale();
+	const reading = useReadingType();
 	return (
 		<Text
 			selectable={selectable}
@@ -154,9 +156,9 @@ export function Copy({
 			style={
 				variant !== "ui"
 					? {
-							fontFamily: typeRoles[variant].fontFamily,
-							fontSize: typeRoles[variant].fontSize * textScale,
-							lineHeight: typeRoles[variant].lineHeight * textScale,
+							fontFamily: reading[variant].fontFamily,
+							fontSize: reading[variant].fontSize * textScale,
+							lineHeight: reading[variant].lineHeight * textScale,
 							color: colors.palette.prose,
 						}
 					: {

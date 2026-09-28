@@ -10,6 +10,7 @@ import { Children, type ReactElement, type ReactNode, useState } from "react";
 import { Alert, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
 import { markFor } from "../board/StateMark";
 import { typeRoles } from "../design/tokens";
+import { useReadingType } from "../display/displayContext";
 import type { MobileConversation } from "../projectedRows";
 import type { Routes } from "../screens";
 import { type SessionControls, useControlsState } from "../sessionControls";
@@ -596,13 +597,14 @@ function ContextGauge({ text, fraction }: { text: string; fraction: number }) {
 function Serif({ children }: { children: string }) {
 	const { palette } = useColors();
 	const scale = useTextScale();
+	const reading = useReadingType();
 	return (
 		<Text
 			allowFontScaling={allowFontScaling}
 			style={{
-				fontFamily: typeRoles.yourMessage.fontFamily,
-				fontSize: typeRoles.yourMessage.fontSize * scale,
-				lineHeight: typeRoles.yourMessage.lineHeight * scale,
+				fontFamily: reading.yourMessage.fontFamily,
+				fontSize: reading.yourMessage.fontSize * scale,
+				lineHeight: reading.yourMessage.lineHeight * scale,
 				color: palette.prose,
 			}}
 		>

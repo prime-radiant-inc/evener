@@ -13,6 +13,7 @@ import { type ReactNode, useEffect, useRef, useState, useSyncExternalStore } fro
 import { ActionSheetIOS, Alert, AppState, Platform, Pressable, ScrollView, Text, TextInput, View } from "react-native";
 import { SwipeRow, swipeAccessibility } from "../board/SwipeRow";
 import { typeRoles } from "../design/tokens";
+import { useReadingType } from "../display/displayContext";
 import type { Routes } from "../screens";
 import { Sheet, useSheet } from "../sheet/Sheet";
 import { sheetHosts, sheetKey, useSheetHost } from "../sheet/sheetHosts";
@@ -193,6 +194,7 @@ function Quiet({ children, small = false }: { children: string; small?: boolean 
 function NoteEditor({ notes, working, focus }: { notes: NotesController; working: boolean; focus: boolean }) {
 	const { palette } = useColors();
 	const scale = useTextScale();
+	const reading = useReadingType();
 	const note = useSyncExternalStore(notes.subscribe, notes.getSnapshot);
 	const [focused, setFocused] = useState(false);
 	// Opened from the bar's "Your note: …", the caret waits at the end, ready to
@@ -224,9 +226,9 @@ function NoteEditor({ notes, working, focus }: { notes: NotesController; working
 				}}
 				allowFontScaling={allowFontScaling}
 				style={{
-					fontFamily: typeRoles.yourMessage.fontFamily,
-					fontSize: typeRoles.yourMessage.fontSize * scale,
-					lineHeight: typeRoles.yourMessage.lineHeight * scale,
+					fontFamily: reading.yourMessage.fontFamily,
+					fontSize: reading.yourMessage.fontSize * scale,
+					lineHeight: reading.yourMessage.lineHeight * scale,
 					color: palette.prose,
 					minHeight: 120,
 					textAlignVertical: "top",

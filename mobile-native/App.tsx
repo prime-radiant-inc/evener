@@ -13,6 +13,8 @@ import { SafeAreaProvider } from "react-native-safe-area-context";
 import { BoardScreen } from "./src/board/BoardScreen";
 import { RowMenuSheet } from "./src/board/RowMenu";
 import { ConnectionProvider, useConnection } from "./src/ConnectionProvider";
+import { DisplayProvider } from "./src/display/displayContext";
+import { displayPreferences, followAppearanceChoice } from "./src/display/nativeDisplay";
 import { HubSheet } from "./src/hub/HubSheet";
 import { ForkScreen } from "./src/ForkScreen";
 import { HubSettingsScreen } from "./src/HubSettingsScreen";
@@ -63,17 +65,23 @@ import { ErrorMessage, useColors } from "./src/ui";
 
 const Stack = createNativeStackNavigator<Routes>();
 
+// Runs before the first render, so the first frame already has the
+// appearance chosen in Display (spec 12), native chrome included.
+followAppearanceChoice();
+
 export default function App() {
 	// Gesture handlers recognize touches only inside this view, so it wraps
 	// everything, and it fills the screen.
 	return (
 		<GestureHandlerRootView style={{ flex: 1 }}>
 			<SafeAreaProvider>
-				<ConnectionProvider>
-					<NativePreferencesProvider>
-						<Navigation />
-					</NativePreferencesProvider>
-				</ConnectionProvider>
+				<DisplayProvider value={displayPreferences}>
+					<ConnectionProvider>
+						<NativePreferencesProvider>
+							<Navigation />
+						</NativePreferencesProvider>
+					</ConnectionProvider>
+				</DisplayProvider>
 			</SafeAreaProvider>
 		</GestureHandlerRootView>
 	);
