@@ -28,7 +28,6 @@ import { SessionHeader } from "./session/SessionHeader";
 import { SessionTitle } from "./session/SessionTitle";
 import { SessionSheet } from "./SessionSheet";
 import { ActivitySheet } from "./ActivitySheet";
-import { QueueSheet } from "./QueueSheet";
 
 const harness = vi.hoisted(() => ({
 	connection: {} as Record<string, unknown>,
@@ -677,9 +676,8 @@ it("floats the context chips over the list, opens each one's sheet, and hides th
 	act(() => chip("Goal, blocked").props.onPress());
 	expect(tree.root.findAllByType(SessionSheet)).toHaveLength(1);
 
-	expect(tree.root.findAllByType(QueueSheet)).toEqual([]);
 	act(() => chip("2 queued messages").props.onPress());
-	expect(tree.root.findAllByType(QueueSheet)).toHaveLength(1);
+	expect(navigation.navigate).toHaveBeenCalledWith("QueueSheet", { hubId: "hub-1", ref });
 
 	act(() => session.list().props.onScrollBeginDrag());
 	session.scroll(40);

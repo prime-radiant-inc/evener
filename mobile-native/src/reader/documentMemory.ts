@@ -207,8 +207,15 @@ export class DocumentMemory {
 
 	addComment(key: DocumentKey, comment: Pick<DocumentComment, "blockIndex" | "blockHash" | "quote" | "text">): DocumentComment {
 		const now = this.clock();
-		this.sequence += 1;
-		const added: DocumentComment = { ...comment, id: `${now.toString(36)}-${this.sequence.toString(36)}`, createdAt: now };
+		// The sequence starts over each launch, so skip any id a comment kept
+		// from an earlier launch already has.
+		const taken = new Set(this.comments(key).map((existing) => existing.id));
+		let id: string;
+		do {
+			this.sequence += 1;
+			id = `${now.toString(36)}-${this.sequence.toString(36)}`;
+		} while (taken.has(id));
+		const added: DocumentComment = { ...comment, id, createdAt: now };
 		this.update(key, (record) => ({ ...record, comments: [...(record.comments ?? []), added] }));
 		return added;
 	}
