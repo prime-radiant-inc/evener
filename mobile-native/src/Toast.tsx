@@ -3,14 +3,7 @@
 // toast replaces the older one. The screen that owns it decides where it sits;
 // it floats on the raised surface, and VoiceOver hears it once.
 import { useCallback, useEffect, useRef, useState } from "react";
-import {
-	AccessibilityInfo,
-	Platform,
-	Pressable,
-	Text,
-	useWindowDimensions,
-	View,
-} from "react-native";
+import { AccessibilityInfo, Platform, Pressable, Text, useWindowDimensions, View } from "react-native";
 import { styles, useColors } from "./ui";
 
 export interface ToastAction {

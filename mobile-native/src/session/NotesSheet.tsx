@@ -267,7 +267,6 @@ function linkKind(url: string): LinkKind {
 	return "other";
 }
 
-
 function LinkRow({
 	link,
 	writable,
@@ -299,9 +298,11 @@ function LinkRow({
 		}).catch(() => toast.show({ text: "Couldn't open that link." }));
 	const press = kind === "web" ? open : document !== undefined ? () => openDocument(document) : undefined;
 	const remove = () =>
-		void notes.removeLink(link.id).then((removed) =>
-			toast.show({ text: removed ? "Link removed. Only the agent can add links." : "Couldn't remove that link." }),
-		);
+		void notes
+			.removeLink(link.id)
+			.then((removed) =>
+				toast.show({ text: removed ? "Link removed. Only the agent can add links." : "Couldn't remove that link." }),
+			);
 	// VoiceOver names the swipe's remove in full; the panel has room for one word.
 	const removeAction = { key: "remove", label: "Remove link", run: remove };
 	const menu = () => {

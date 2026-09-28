@@ -16,10 +16,7 @@ import {
 	type TranscriptDraftStorage,
 } from "@evener/appwire-client";
 
-type NativeFeatures = Pick<
-	FeatureSet,
-	"keybindingsSettings" | "transcriptDisplaySettings"
->;
+type NativeFeatures = Pick<FeatureSet, "keybindingsSettings" | "transcriptDisplaySettings">;
 export interface PreferenceState<T> {
 	support: KeybindingsSupport;
 	loading: boolean;
@@ -82,9 +79,7 @@ export function keybindingsErrorMessage(
 // hub-sourced failure surfaces as fixed copy (a raw client error may carry a
 // token or a path) while the draft port's own messages pass through. An
 // unconfirmed write is the `writeUncertain` fact, rendered as its own notice.
-function keybindingsDomain(
-	state: KeybindingsStoreState,
-): KeybindingsPreferenceState {
+function keybindingsDomain(state: KeybindingsStoreState): KeybindingsPreferenceState {
 	return {
 		support: state.hubSupport,
 		loading: state.hubLoading,
@@ -104,11 +99,7 @@ function keybindingsDomain(
 			state.draft === null
 				? null
 				: { version: state.draft.version, revision: state.draft.revision, rules: state.draft.rules },
-		error: keybindingsErrorMessage(
-			state.draftError,
-			state.hubError,
-			state.loadError,
-		),
+		error: keybindingsErrorMessage(state.draftError, state.hubError, state.loadError),
 		conflict: state.draftConflict,
 		writeUncertain: state.writeUncertain,
 		storageUnavailable: state.storageUnavailable,
@@ -127,18 +118,12 @@ function keybindingsDomain(
 // has no field for it), and a hub-sourced failure is fixed copy. An
 // unconfirmed write is `writeUncertain`; its message is that fact, so the
 // screen's error slot and its write-uncertain notice never disagree.
-function transcriptErrorMessage(
-	state: TranscriptDisplayStoreState,
-): string | null {
+function transcriptErrorMessage(state: TranscriptDisplayStoreState): string | null {
 	if (state.draftError !== null) return state.draftError;
-	return state.hubError !== null || state.writeUncertain
-		? HUB_UNCONFIRMED_MESSAGE
-		: null;
+	return state.hubError !== null || state.writeUncertain ? HUB_UNCONFIRMED_MESSAGE : null;
 }
 
-function transcriptDomain(
-	state: TranscriptDisplayStoreState,
-): TranscriptMobilePreferenceState {
+function transcriptDomain(state: TranscriptDisplayStoreState): TranscriptMobilePreferenceState {
 	return {
 		support: state.hubSupport,
 		loading: state.hubLoading,
@@ -232,9 +217,7 @@ export class NativePreferences {
 		this.keybindings.getState().editDraft(rules);
 	}
 
-	async saveKeybindings(
-		rules?: readonly KeybindingsRule[],
-	): Promise<KeybindingsOverrides> {
+	async saveKeybindings(rules?: readonly KeybindingsRule[]): Promise<KeybindingsOverrides> {
 		return this.keybindings.getState().saveDraft(rules);
 	}
 

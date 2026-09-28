@@ -11,14 +11,10 @@ import { pinSectionDrafts } from "./pinSectionDrafts";
 // whitespace normalized), so clearing a record whose bytes are an older
 // build's formatting still matches the value rather than wedging the draft.
 const backend = rawStringDraftBackend(Storage, () => Crypto.randomUUID());
-export const organizationJournal = (hubId: string) =>
-	nativeNavigationActions(hubId, backend);
-export const pinDrafts = (hubId: string, ref: string) =>
-	pinAssignmentDrafts(hubId, ref, backend);
-export const sectionDrafts = (hubId: string, sectionId: string) =>
-	pinSectionDrafts(hubId, sectionId, backend);
-export const forkJournal = (hubId: string, parentRef: string) =>
-	forkCheckpoints(hubId, parentRef, backend);
+export const organizationJournal = (hubId: string) => nativeNavigationActions(hubId, backend);
+export const pinDrafts = (hubId: string, ref: string) => pinAssignmentDrafts(hubId, ref, backend);
+export const sectionDrafts = (hubId: string, sectionId: string) => pinSectionDrafts(hubId, sectionId, backend);
+export const forkJournal = (hubId: string, parentRef: string) => forkCheckpoints(hubId, parentRef, backend);
 export function removeOrganizationData(hubId: string) {
 	Storage.removeItemSync(`evener.native.navigation-action.${hubId}`);
 	const prefixes = [

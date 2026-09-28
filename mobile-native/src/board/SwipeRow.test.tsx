@@ -49,11 +49,7 @@ function mount(options: { leading?: SwipeAction | null } = {}) {
 	const pin = action("pin", "Pin");
 	const onActiveChange = vi.fn();
 	const tree: ReactTestRenderer = render(
-		<SwipeRow
-			leading={options.leading === null ? undefined : leading}
-			trailing={[pin]}
-			onActiveChange={onActiveChange}
-		>
+		<SwipeRow leading={options.leading === null ? undefined : leading} trailing={[pin]} onActiveChange={onActiveChange}>
 			<Text>row</Text>
 		</SwipeRow>,
 	);

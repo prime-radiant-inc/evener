@@ -112,8 +112,7 @@ function stepFor(item: ItemModel): Step | null {
 	if (item.type !== "commandExecution") return null;
 	const command = item.toolName === "shell" ? str(parseArgs(item.argumentsJSON), "command") : undefined;
 	const firstLine = command?.split("\n")[0]?.trim();
-	const text =
-		firstLine ? `Running ${firstLine}` : item.description?.trim() || `Running ${item.toolName ?? "a step"}`;
+	const text = firstLine ? `Running ${firstLine}` : item.description?.trim() || `Running ${item.toolName ?? "a step"}`;
 	return { text, startedAt: timeOf(item.startedAt), waitsOnSubagents: WAITING_TOOLS.has(item.toolName ?? "") };
 }
 

@@ -1,25 +1,12 @@
 import { describe, expect, it } from "vitest";
-import type {
-	AnyNotification,
-	NavigationReadParams,
-} from "@evener/appwire-client";
+import type { AnyNotification, NavigationReadParams } from "@evener/appwire-client";
 import { wireV2 } from "@evener/appwire-client/testing/navigation";
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
 import type { NavigationActionCheckpoint } from "./navigationActionRepository";
 import { NavigationPages } from "./navigationPages";
-import {
-	followPinCatalog,
-	pinSectionAsShown,
-	readPinLocation,
-	refreshPinNavigation,
-} from "./pinNavigation";
+import { followPinCatalog, pinSectionAsShown, readPinLocation, refreshPinNavigation } from "./pinNavigation";
 
-function boundary({
-	locationGeneration = "g",
-	catalogGeneration = "g",
-	catalogRevision = 2,
-	missing = false,
-} = {}) {
+function boundary({ locationGeneration = "g", catalogGeneration = "g", catalogRevision = 2, missing = false } = {}) {
 	const calls: NavigationReadParams[] = [];
 	const client = {
 		onNotification: () => () => {},
@@ -55,8 +42,7 @@ function boundary({
 					4,
 					locationGeneration,
 				);
-				(response.data as { metadata: Record<string, unknown> }).metadata.pin_section_id =
-					"focus";
+				(response.data as { metadata: Record<string, unknown> }).metadata.pin_section_id = "focus";
 				return response;
 			}
 			const offset = p.offset ?? 0;
@@ -96,82 +82,76 @@ const checkpoint: NavigationActionCheckpoint = {
 	},
 };
 describe("native pin navigation readback", () => {
-	it.each([false, true])(
-		"bounds receipt readback when notification gaps continue: %s",
-		async (repeatGap) => {
-			let notify: (event: AnyNotification) => void = () => {};
-			const calls: string[] = [];
-			const client = {
-				onNotification: (listener: typeof notify) => {
-					notify = listener;
-					return () => {
-						notify = () => {};
-					};
-				},
-				request: async (method: string, params: NavigationReadParams) => {
-					calls.push(method);
-					if (calls.length === 1 || repeatGap)
-						notify({
-							method: "evener/navigation/invalidated",
-							params: {
-								generationId: "g",
-								sequence: calls.length * 3,
-								targets: [{ kind: "pin_catalog", revision: 2 }],
-							},
-						});
-					return wireV2(
-						params,
-						{
-							pin_sections: [{ id: "focus", name: "Renamed", count: 1 }],
-							remaining: 0,
+	it.each([false, true])("bounds receipt readback when notification gaps continue: %s", async (repeatGap) => {
+		let notify: (event: AnyNotification) => void = () => {};
+		const calls: string[] = [];
+		const client = {
+			onNotification: (listener: typeof notify) => {
+				notify = listener;
+				return () => {
+					notify = () => {};
+				};
+			},
+			request: async (method: string, params: NavigationReadParams) => {
+				calls.push(method);
+				if (calls.length === 1 || repeatGap)
+					notify({
+						method: "evener/navigation/invalidated",
+						params: {
+							generationId: "g",
+							sequence: calls.length * 3,
+							targets: [{ kind: "pin_catalog", revision: 2 }],
 						},
-						"catalog",
-						2,
-						"g",
-					);
-				},
-			} as unknown as ConversationClientLike;
-			const pages = new NavigationPages<{
-				id: string;
-				name: string;
-				count: number;
-			}>(client, { resource: "pin_catalog" }, "pin_sections", (row) => row.id);
-			const stop = pages.watch();
-			try {
-				const result = refreshPinNavigation(client, pages, {
-					sectionId: "focus",
-					current: () => true,
-					confirmReceipt: true,
-					checkpoint: {
-						...checkpoint,
-						operation: {
-							kind: "renamePinSection",
-							params: { sectionId: "focus", name: "Renamed" },
-						},
+					});
+				return wireV2(
+					params,
+					{
+						pin_sections: [{ id: "focus", name: "Renamed", count: 1 }],
+						remaining: 0,
 					},
+					"catalog",
+					2,
+					"g",
+				);
+			},
+		} as unknown as ConversationClientLike;
+		const pages = new NavigationPages<{
+			id: string;
+			name: string;
+			count: number;
+		}>(client, { resource: "pin_catalog" }, "pin_sections", (row) => row.id);
+		const stop = pages.watch();
+		try {
+			const result = refreshPinNavigation(client, pages, {
+				sectionId: "focus",
+				current: () => true,
+				confirmReceipt: true,
+				checkpoint: {
+					...checkpoint,
+					operation: {
+						kind: "renamePinSection",
+						params: { sectionId: "focus", name: "Renamed" },
+					},
+				},
+			});
+			if (repeatGap) {
+				await expect(result).rejects.toThrow();
+				expect(pages.getSnapshot().stale).toBe(true);
+			} else {
+				await expect(result).resolves.toMatchObject({
+					section: { id: "focus", name: "Renamed" },
 				});
-				if (repeatGap) {
-					await expect(result).rejects.toThrow();
-					expect(pages.getSnapshot().stale).toBe(true);
-				} else {
-					await expect(result).resolves.toMatchObject({
-						section: { id: "focus", name: "Renamed" },
-					});
-					expect(pages.getSnapshot()).toMatchObject({
-						stale: false,
-						loading: false,
-						error: null,
-					});
-				}
-				expect(calls).toEqual([
-					"evener/navigation/read",
-					"evener/navigation/read",
-				]);
-			} finally {
-				stop();
+				expect(pages.getSnapshot()).toMatchObject({
+					stale: false,
+					loading: false,
+					error: null,
+				});
 			}
-		},
-	);
+			expect(calls).toEqual(["evener/navigation/read", "evener/navigation/read"]);
+		} finally {
+			stop();
+		}
+	});
 	it("looks up a section across pages without a session location", async () => {
 		const { client, pages, calls } = boundary();
 		const result = await refreshPinNavigation(client, pages, {
@@ -221,12 +201,8 @@ describe("native pin navigation readback", () => {
 			current: () => true,
 			confirmReceipt: true,
 		});
-		expect(
-			calls.filter((p) => p.resource === "location").map((p) => p.ref),
-		).toEqual(["local:s", "local:other"]);
-		expect(
-			calls.filter((p) => p.resource === "pin_catalog").map((p) => p.offset),
-		).toEqual([0, 1]);
+		expect(calls.filter((p) => p.resource === "location").map((p) => p.ref)).toEqual(["local:s", "local:other"]);
+		expect(calls.filter((p) => p.resource === "pin_catalog").map((p) => p.offset)).toEqual([0, 1]);
 		expect(result.location?.ref).toBe("local:other");
 		expect(result.section?.name).toBe("Focus");
 	});
@@ -265,9 +241,9 @@ describe("native pin navigation readback", () => {
 				confirmReceipt: true,
 			}),
 		).rejects.toThrow();
-		await expect(
-			refreshPinNavigation(client, pages, { checkpoint, current: () => true }),
-		).resolves.toMatchObject({ generationId: "new" });
+		await expect(refreshPinNavigation(client, pages, { checkpoint, current: () => true })).resolves.toMatchObject({
+			generationId: "new",
+		});
 	});
 	it("recognizes a disappeared target without inventing a pin assignment", async () => {
 		const { client } = boundary({ missing: true });
@@ -300,9 +276,7 @@ describe("native pin navigation readback", () => {
 });
 
 describe("following the pin catalog", () => {
-	function harness({
-		canRead = () => true,
-	}: { canRead?: () => boolean } = {}) {
+	function harness({ canRead = () => true }: { canRead?: () => boolean } = {}) {
 		let onInvalidated: (() => void) | null = null;
 		let stale = false;
 		const reads: { resolve(): void; reject(): void }[] = [];

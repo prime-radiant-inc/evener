@@ -18,9 +18,7 @@ export function reviewPairingInput(input: string): PairingReview {
 	}
 }
 
-export function importPairing(
-	review: PairingReview,
-): { origin: string; token: string; state: PairingReview } | null {
+export function importPairing(review: PairingReview): { origin: string; token: string; state: PairingReview } | null {
 	if (!review.preview) return null;
 	return {
 		...review.preview,

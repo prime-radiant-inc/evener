@@ -103,7 +103,13 @@ export function SubagentsScreen({ route, navigation }: NativeStackScreenProps<Ro
 		navigation.setOptions({ headerTitle: () => <HeaderTitle count={count} title={title} /> });
 	}, [navigation, count, title]);
 
-	const quiet = { color: palette.inkMid, fontSize: 15 * scale, lineHeight: 20 * scale, paddingHorizontal: 16, paddingTop: 16 };
+	const quiet = {
+		color: palette.inkMid,
+		fontSize: 15 * scale,
+		lineHeight: 20 * scale,
+		paddingHorizontal: 16,
+		paddingTop: 16,
+	};
 	const notice = snapshot.tree
 		? null
 		: snapshot.failed
@@ -262,7 +268,9 @@ function FilterChip({
 				backgroundColor: selected ? palette.accentBg : palette.canvas,
 			}}
 		>
-			{state ? <View style={{ width: 8, height: 8, borderRadius: 2, backgroundColor: stateColors(palette)[state] }} /> : null}
+			{state ? (
+				<View style={{ width: 8, height: 8, borderRadius: 2, backgroundColor: stateColors(palette)[state] }} />
+			) : null}
 			<Text
 				allowFontScaling={allowFontScaling}
 				style={{ fontSize: 15 * scale, lineHeight: 20 * scale, color: selected ? palette.accentInk : palette.inkHi }}

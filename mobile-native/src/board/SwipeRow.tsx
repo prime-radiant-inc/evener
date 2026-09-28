@@ -21,13 +21,7 @@
 // start-x guard, which reads window points.
 import { type SFSymbol, SymbolView } from "expo-symbols";
 import { type ReactNode, useMemo, useRef } from "react";
-import {
-	type AccessibilityActionEvent,
-	Pressable,
-	Text,
-	useWindowDimensions,
-	View,
-} from "react-native";
+import { type AccessibilityActionEvent, Pressable, Text, useWindowDimensions, View } from "react-native";
 import { Gesture, GestureDetector } from "react-native-gesture-handler";
 import ReanimatedSwipeable, {
 	SwipeDirection,
@@ -218,7 +212,8 @@ export function SwipeRow({
 							close();
 							return;
 						}
-						const action = direction === LEADING_OPENED ? leading : direction === TRAILING_OPENED ? destructive : undefined;
+						const action =
+							direction === LEADING_OPENED ? leading : direction === TRAILING_OPENED ? destructive : undefined;
 						if (!action) return;
 						close();
 						// A flick that opened the panel short of half closes it

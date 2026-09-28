@@ -1,27 +1,9 @@
 import { useFocusEffect, useIsFocused } from "@react-navigation/native";
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
-import {
-	type ReactElement,
-	useCallback,
-	useEffect,
-	useMemo,
-	useRef,
-	useState,
-	useSyncExternalStore,
-} from "react";
-import {
-	ActivityIndicator,
-	Alert,
-	FlatList,
-	Pressable,
-	View,
-} from "react-native";
+import { type ReactElement, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import { ActivityIndicator, Alert, FlatList, Pressable, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
-import type {
-	ArchiveParams,
-	NavigationProjectSummary,
-	NavigationSessionSummary,
-} from "@evener/appwire-client";
+import type { ArchiveParams, NavigationProjectSummary, NavigationSessionSummary } from "@evener/appwire-client";
 import { useConnection } from "./ConnectionProvider";
 import { organizationJournal } from "./nativeOrganization";
 import type { NavigationActionCheckpoint } from "./navigationActionRepository";
@@ -41,15 +23,7 @@ import { Action, Copy, ErrorMessage, styles, useColors } from "./ui";
 const noSnapshot = () => null;
 const noSubscription = () => () => {};
 
-function FilterTab({
-	label,
-	selected,
-	onPress,
-}: {
-	label: string;
-	selected: boolean;
-	onPress: () => void;
-}) {
+function FilterTab({ label, selected, onPress }: { label: string; selected: boolean; onPress: () => void }) {
 	const colors = useColors();
 	return (
 		<Pressable
@@ -131,47 +105,21 @@ export function PageList<T>({
 		} | null = null;
 		let checkedPage: ReturnType<typeof pages.getSnapshot> | null = null;
 		const isCurrent = () => current.current === binding;
-		const refresh = async (
-			checkpoint?: NavigationActionCheckpoint,
-			confirmReceipt = false,
-			acceptCurrent = false,
-		) => {
+		const refresh = async (checkpoint?: NavigationActionCheckpoint, confirmReceipt = false, acceptCurrent = false) => {
 			setReview(null);
 			const observation = checkpoint
-				? await readOrganizationNavigation(
-						client,
-						checkpoint,
-						isCurrent,
-						confirmReceipt,
-					)
+				? await readOrganizationNavigation(client, checkpoint, isCurrent, confirmReceipt)
 				: null;
-			if (confirmReceipt && checkpoint?.receipt)
-				await pages.refreshAfter(checkpoint.receipt);
+			if (confirmReceipt && checkpoint?.receipt) await pages.refreshAfter(checkpoint.receipt);
 			else await pages.refresh();
 			const page = pages.getSnapshot();
-			if (
-				!isCurrent() ||
-				!page.loaded ||
-				page.loading ||
-				page.stale ||
-				page.error
-			)
+			if (!isCurrent() || !page.loaded || page.loading || page.stale || page.error)
 				throw Error("The current navigation could not be confirmed.");
-			if (
-				observation &&
-				pages.getResourceVersion()?.generationId !== observation.generationId
-			)
+			if (observation && pages.getResourceVersion()?.generationId !== observation.generationId)
 				throw Error("The hub restarted during the check.");
-			const same =
-				previous !== null &&
-				JSON.stringify(previous) ===
-					JSON.stringify({ checkpoint, observation });
+			const same = previous !== null && JSON.stringify(previous) === JSON.stringify({ checkpoint, observation });
 			previous = checkpoint && observation ? { checkpoint, observation } : null;
-			setReview(
-				checkpoint && observation
-					? { owner: binding, checkpoint, observation }
-					: null,
-			);
+			setReview(checkpoint && observation ? { owner: binding, checkpoint, observation } : null);
 			if (observation && !observation.settled && !(acceptCurrent && same))
 				throw Error("Review the current organization before continuing.");
 			checkedPage = page;
@@ -189,17 +137,13 @@ export function PageList<T>({
 		);
 	}, [client, pages, ready, focused, binding, organizationHubId]);
 	useEffect(() => () => actions?.dispose(), [actions]);
-	const actionState = useSyncExternalStore(
-		actions?.subscribe ?? noSubscription,
-		actions?.getSnapshot ?? noSnapshot,
-	);
+	const actionState = useSyncExternalStore(actions?.subscribe ?? noSubscription, actions?.getSnapshot ?? noSnapshot);
 
 	const [expansion, setExpansion] = useState({
 		owner: pages,
 		keys: new Set<string>(),
 	});
-	const expanded =
-		expansion.owner === pages ? expansion.keys : new Set<string>();
+	const expanded = expansion.owner === pages ? expansion.keys : new Set<string>();
 	const rows = navigationTree(state.rows, rowKey, childRows, expanded);
 	function toggle(row: T) {
 		const keys = new Set(expanded);
@@ -281,12 +225,7 @@ export function PageList<T>({
 						setRevealed(pages);
 					})
 					.catch((error) => {
-						if (active)
-							setRevealError(
-								error instanceof Error
-									? error.message
-									: "Could not locate this session.",
-							);
+						if (active) setRevealError(error instanceof Error ? error.message : "Could not locate this session.");
 					});
 			} else if (ready && !pages.getSnapshot().loaded) void pages.refresh();
 			return () => {
@@ -296,9 +235,7 @@ export function PageList<T>({
 			};
 		}, [pages, ready, revealRef, revealRequest]),
 	);
-	const targetIndex = revealRef
-		? rows.findIndex((row) => rowKey(row.item) === revealRef)
-		: -1;
+	const targetIndex = revealRef ? rows.findIndex((row) => rowKey(row.item) === revealRef) : -1;
 	useEffect(() => {
 		if (revealed === pages && targetIndex >= 0)
 			list.current?.scrollToIndex({
@@ -340,10 +277,7 @@ export function PageList<T>({
 					<>
 						{header}
 						{actions ? (
-							<OrganizationStatus
-								actions={actions}
-								review={review?.owner === binding ? review : null}
-							/>
+							<OrganizationStatus actions={actions} review={review?.owner === binding ? review : null} />
 						) : null}
 					</>
 				}
@@ -379,35 +313,22 @@ export function PageList<T>({
 					state.loading ? (
 						<ActivityIndicator accessibilityLabel="Loading list" />
 					) : (
-						<Copy muted>
-							{ready ? empty : "Connect to this hub to load the list."}
-						</Copy>
+						<Copy muted>{ready ? empty : "Connect to this hub to load the list."}</Copy>
 					)
 				}
 				ListFooterComponent={
 					<View style={{ gap: 8 }}>
 						{state.truncated ? (
-							<Copy muted>
-								The hub returned a partial session tree. Some related sessions
-								may be missing.
-							</Copy>
+							<Copy muted>The hub returned a partial session tree. Some related sessions may be missing.</Copy>
 						) : null}
 						{loadingMore ? (
-							<View
-								accessibilityLiveRegion="polite"
-								style={{ alignItems: "center", paddingVertical: 8 }}
-							>
+							<View accessibilityLiveRegion="polite" style={{ alignItems: "center", paddingVertical: 8 }}>
 								<ActivityIndicator accessibilityLabel="Loading more results" />
 								<Copy muted>Loading more…</Copy>
 							</View>
 						) : state.remaining > 0 ? (
-							<Action
-								disabled={!ready || !focused || state.loading}
-								onPress={state.error ? retryMore : loadMore}
-							>
-								{state.error
-									? "Retry loading more"
-									: `Load more · ${state.remaining} remaining`}
+							<Action disabled={!ready || !focused || state.loading} onPress={state.error ? retryMore : loadMore}>
+								{state.error ? "Retry loading more" : `Load more · ${state.remaining} remaining`}
 							</Action>
 						) : null}
 					</View>
@@ -415,8 +336,7 @@ export function PageList<T>({
 				renderItem={({ item: { item, depth } }) => (
 					<View
 						style={{
-							backgroundColor:
-								rowKey(item) === revealRef ? colors.surface : "transparent",
+							backgroundColor: rowKey(item) === revealRef ? colors.surface : "transparent",
 							paddingLeft: Math.min(depth, 2) * 12,
 							borderBottomWidth: 0.5,
 							borderColor: colors.border,
@@ -448,12 +368,7 @@ export function PageList<T>({
 									onPress={() => {
 										const value = organization(item, depth);
 										const actionState = actions.getSnapshot();
-										if (
-											!value ||
-											actionState.pending ||
-											actionState.uncertain ||
-											actionState.storageUnavailable
-										)
+										if (!value || actionState.pending || actionState.uncertain || actionState.storageUnavailable)
 											return;
 										const invoke = (operation: () => void) => {
 											if (current.current === binding) operation();
@@ -466,15 +381,10 @@ export function PageList<T>({
 													? []
 													: [
 															{
-																text: value.favorite
-																	? "Remove from pinned"
-																	: "Add to pinned",
+																text: value.favorite ? "Remove from pinned" : "Add to pinned",
 																onPress: () =>
 																	invoke(() => {
-																		void actions.favorite(
-																			value.target.id,
-																			!value.favorite,
-																		);
+																		void actions.favorite(value.target.id, !value.favorite);
 																	}),
 															},
 														]),
@@ -482,10 +392,7 @@ export function PageList<T>({
 													text: value.archived ? "Unarchive" : "Archive",
 													onPress: () =>
 														invoke(() => {
-															void actions.archive(
-																value.target,
-																!value.archived,
-															);
+															void actions.archive(value.target, !value.archived);
 														}),
 												},
 												{ text: "Cancel", style: "cancel" },
@@ -506,9 +413,7 @@ export function PageList<T>({
 							>{`${expanded.has(rowKey(item)) ? "▾" : "▸"} ${childRows(item).length} related session${childRows(item).length === 1 ? "" : "s"}`}</Action>
 						) : null}
 						{(omitted?.(item) ?? 0) > 0 ? (
-							<Copy
-								muted
-							>{`${omitted?.(item)} related sessions were omitted by the hub.`}</Copy>
+							<Copy muted>{`${omitted?.(item)} related sessions were omitted by the hub.`}</Copy>
 						) : null}
 					</View>
 				)}
@@ -529,9 +434,7 @@ function OrganizationStatus({
 	const state = useSyncExternalStore(actions.subscribe, actions.getSnapshot);
 	if (!state.pending && !state.error) return null;
 	const observation =
-		review &&
-		!review.observation.settled &&
-		JSON.stringify(review.checkpoint) === JSON.stringify(state.recovery)
+		review && !review.observation.settled && JSON.stringify(review.checkpoint) === JSON.stringify(state.recovery)
 			? review.observation
 			: null;
 	const descriptions = {
@@ -544,12 +447,8 @@ function OrganizationStatus({
 	};
 	return (
 		<View style={{ gap: 8, paddingVertical: 8 }}>
-			{state.pending ? (
-				<ActivityIndicator accessibilityLabel="Updating organization" />
-			) : null}
-			<ErrorMessage
-				message={state.pending || observation ? null : state.error}
-			/>
+			{state.pending ? <ActivityIndicator accessibilityLabel="Updating organization" /> : null}
+			<ErrorMessage message={state.pending || observation ? null : state.error} />
 			{observation ? (
 				<>
 					<Copy>
@@ -575,8 +474,7 @@ function OrganizationStatus({
 					{observation && !observation.settled && review ? (
 						<>
 							<Copy muted>
-								The current state is shown above. Continue to keep it without
-								sending the previous request again.
+								The current state is shown above. Continue to keep it without sending the previous request again.
 							</Copy>
 							<Action
 								disabled={state.pending}
@@ -596,10 +494,7 @@ function OrganizationStatus({
 const projectKey = (row: NavigationProjectSummary) => row.key;
 const sessionRef = (row: NavigationSessionSummary) => row.ref;
 
-export function ProjectsScreen({
-	route,
-	navigation,
-}: NativeStackScreenProps<Routes, "Projects">) {
+export function ProjectsScreen({ route, navigation }: NativeStackScreenProps<Routes, "Projects">) {
 	const { client, activeProfile, state } = useConnection();
 	const colors = useColors();
 	const archived = route.params.archived ?? false;
@@ -620,18 +515,11 @@ export function ProjectsScreen({
 		[client, belongs, archived],
 	);
 	return (
-		<SafeAreaView
-			edges={["bottom", "left", "right"]}
-			style={[styles.fill, { backgroundColor: colors.background }]}
-		>
+		<SafeAreaView edges={["bottom", "left", "right"]} style={[styles.fill, { backgroundColor: colors.background }]}>
 			<View style={{ paddingHorizontal: 20, gap: 8 }}>
 				<Copy muted>{belongs ? activeProfile?.name : "Disconnected hub"}</Copy>
 				<View style={[styles.row, { flexWrap: "wrap" }]}>
-					<FilterTab
-						label="Projects"
-						selected={!archived}
-						onPress={() => navigation.setParams({ archived: false })}
-					/>
+					<FilterTab label="Projects" selected={!archived} onPress={() => navigation.setParams({ archived: false })} />
 					<FilterTab
 						label="Archived projects"
 						selected={archived}
@@ -662,9 +550,7 @@ export function ProjectsScreen({
 					detail={(row) =>
 						`${row.favorite ? "Pinned · " : ""}${row.session_count} sessions${row.working_dir ? ` · ${row.working_dir}` : ""}`
 					}
-					empty={
-						archived ? "No archived projects." : "No projects on this hub yet."
-					}
+					empty={archived ? "No archived projects." : "No projects on this hub yet."}
 					open={(row) =>
 						navigation.navigate("Project", {
 							hubId: route.params.hubId,
@@ -680,10 +566,7 @@ export function ProjectsScreen({
 		</SafeAreaView>
 	);
 }
-export function ProjectScreen({
-	route,
-	navigation,
-}: NativeStackScreenProps<Routes, "Project">) {
+export function ProjectScreen({ route, navigation }: NativeStackScreenProps<Routes, "Project">) {
 	const { client, activeProfile, state } = useConnection();
 	const colors = useColors();
 	const tier = route.params.tier ?? "current";
@@ -705,10 +588,7 @@ export function ProjectScreen({
 		[client, belongs, route.params.projectKey, tier],
 	);
 	return (
-		<SafeAreaView
-			edges={["bottom", "left", "right"]}
-			style={[styles.fill, { backgroundColor: colors.background }]}
-		>
+		<SafeAreaView edges={["bottom", "left", "right"]} style={[styles.fill, { backgroundColor: colors.background }]}>
 			<View style={{ paddingHorizontal: 20, gap: 8 }}>
 				<Copy muted>{belongs ? activeProfile?.name : "Disconnected hub"}</Copy>
 				<View style={[styles.row, { flexWrap: "wrap" }]}>
@@ -717,13 +597,7 @@ export function ProjectScreen({
 							key={value}
 							selected={tier === value}
 							onPress={() => navigation.setParams({ tier: value })}
-							label={
-								value === "current"
-									? "Current"
-									: value === "recent"
-										? "Recent"
-										: "Archived"
-							}
+							label={value === "current" ? "Current" : value === "recent" ? "Recent" : "Archived"}
 						/>
 					))}
 				</View>
@@ -746,9 +620,7 @@ export function ProjectScreen({
 								}
 					}
 					childRows={(row) => row.children ?? []}
-					omitted={(row) =>
-						(row.omitted_descendants ?? 0) + (row.more_subagents ?? 0)
-					}
+					omitted={(row) => (row.omitted_descendants ?? 0) + (row.more_subagents ?? 0)}
 					title={(row) => row.title || "Untitled session"}
 					detail={(row) =>
 						`${row.ask_pending || row.state === "awaiting" ? "Needs you" : row.state}${row.branch ? ` · ${row.branch}` : ""}`
@@ -770,10 +642,7 @@ export function ProjectScreen({
 }
 
 const sessionChildren = (row: NavigationSessionSummary) => row.children ?? [];
-export function SessionLocationScreen({
-	route,
-	navigation,
-}: NativeStackScreenProps<Routes, "SessionLocation">) {
+export function SessionLocationScreen({ route, navigation }: NativeStackScreenProps<Routes, "SessionLocation">) {
 	const { client, activeProfile, state } = useConnection();
 	const colors = useColors();
 	const belongs = activeProfile?.id === route.params.hubId;
@@ -781,20 +650,12 @@ export function SessionLocationScreen({
 	const pages = useMemo(
 		() =>
 			client && belongs
-				? new NavigationPages<NavigationSessionSummary>(
-						client,
-						location.params,
-						"sessions",
-						sessionRef,
-					)
+				? new NavigationPages<NavigationSessionSummary>(client, location.params, "sessions", sessionRef)
 				: null,
 		[client, belongs, location],
 	);
 	return (
-		<SafeAreaView
-			edges={["bottom", "left", "right"]}
-			style={[styles.fill, { backgroundColor: colors.background }]}
-		>
+		<SafeAreaView edges={["bottom", "left", "right"]} style={[styles.fill, { backgroundColor: colors.background }]}>
 			<View style={{ paddingHorizontal: 20, gap: 8 }}>
 				<Copy muted>
 					{belongs ? activeProfile?.name : "Disconnected hub"}
@@ -808,15 +669,9 @@ export function SessionLocationScreen({
 					revealRef={location.ref}
 					rowKey={sessionRef}
 					childRows={sessionChildren}
-					omitted={(row) =>
-						(row.omitted_descendants ?? 0) + (row.more_subagents ?? 0)
-					}
+					omitted={(row) => (row.omitted_descendants ?? 0) + (row.more_subagents ?? 0)}
 					title={(row) => row.title || "Untitled session"}
-					detail={(row) =>
-						row.ask_pending || row.state === "awaiting"
-							? "Needs you"
-							: row.state
-					}
+					detail={(row) => (row.ask_pending || row.state === "awaiting" ? "Needs you" : row.state)}
 					empty="No sessions in this location."
 					organization={() => null}
 					open={(row) =>

@@ -50,7 +50,11 @@ it("names each provider whose sign-in expired, with the provider as the hub spel
 	expect(
 		notices({
 			...none,
-			auth: [provider("anthropic"), provider("codex-jesse-fsck.com", { needsLogin: true }), provider("openai", { needsLogin: true })],
+			auth: [
+				provider("anthropic"),
+				provider("codex-jesse-fsck.com", { needsLogin: true }),
+				provider("openai", { needsLogin: true }),
+			],
 		}),
 	).toEqual([
 		{
@@ -74,7 +78,13 @@ it("counts an offline host's loaded sessions once each, even a session loaded fr
 			loadedRows: [row("laptop:x", "laptop"), ...studio, studio[0]],
 		}),
 	).toEqual([
-		{ key: "host:studio", kind: "host", text: "Studio Mac is offline · 3 sessions", action: "Details", sourceId: "studio" },
+		{
+			key: "host:studio",
+			kind: "host",
+			text: "Studio Mac is offline · 3 sessions",
+			action: "Details",
+			sourceId: "studio",
+		},
 	]);
 });
 

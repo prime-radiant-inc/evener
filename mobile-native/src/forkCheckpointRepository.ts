@@ -24,9 +24,7 @@ function record(value: unknown, required: string[], optional: string[] = []) {
 	const result = value as Record<string, unknown>;
 	valid(
 		required.every((key) => Object.hasOwn(result, key)) &&
-			Object.keys(result).every(
-				(key) => required.includes(key) || optional.includes(key),
-			),
+			Object.keys(result).every((key) => required.includes(key) || optional.includes(key)),
 	);
 	return result;
 }
@@ -50,12 +48,7 @@ export function decodeForkTarget(value: unknown): ForkTarget {
 }
 function decodeChild(value: unknown, parentRef: string): ForkChild {
 	const r = record(value, ["ref", "title", "input"]);
-	valid(
-		text(r.ref) &&
-			r.ref !== parentRef &&
-			typeof r.title === "string" &&
-			typeof r.input === "string",
-	);
+	valid(text(r.ref) && r.ref !== parentRef && typeof r.title === "string" && typeof r.input === "string");
 	return { ref: r.ref, title: r.title, input: r.input };
 }
 function decode(value: unknown, parentRef: string): ForkCheckpoint {
@@ -72,15 +65,10 @@ function decode(value: unknown, parentRef: string): ForkCheckpoint {
 	}
 	return result;
 }
-const equal = (a: ForkCheckpoint, b: ForkCheckpoint) =>
-	JSON.stringify(a) === JSON.stringify(b);
+const equal = (a: ForkCheckpoint, b: ForkCheckpoint) => JSON.stringify(a) === JSON.stringify(b);
 
 /** Acknowledgement and composer preparation survive screen and connection loss. */
-export function forkCheckpoints(
-	hubId: string,
-	parentRef: string,
-	backend: NavigationActionBackend,
-) {
+export function forkCheckpoints(hubId: string, parentRef: string, backend: NavigationActionBackend) {
 	valid(text(hubId) && text(parentRef));
 	const key = `evener.native.fork-checkpoint.${JSON.stringify([hubId, parentRef])}`;
 	const load = () => {
@@ -90,8 +78,7 @@ export function forkCheckpoints(
 	const requireCurrent = (expected: ForkCheckpoint) => {
 		const checked = decode(expected, parentRef),
 			current = load();
-		if (!current || !equal(current, checked))
-			throw Error("The saved fork request changed.");
+		if (!current || !equal(current, checked)) throw Error("The saved fork request changed.");
 		return current;
 	};
 	const save = (value: ForkCheckpoint) => {
@@ -119,9 +106,7 @@ export function forkCheckpoints(
 		removeIf(expected: ForkCheckpoint) {
 			const checked = decode(expected, parentRef),
 				current = load();
-			return (
-				!!current && equal(current, checked) && backend.deleteIf(key, current)
-			);
+			return !!current && equal(current, checked) && backend.deleteIf(key, current);
 		},
 	};
 }

@@ -1,11 +1,7 @@
 import type { ComponentProps } from "react";
 import { act } from "react-test-renderer";
 import { beforeEach, expect, it, vi } from "vitest";
-import type {
-	AnyNotification,
-	AppwireClient,
-	InitializeResponse,
-} from "@evener/appwire-client";
+import type { AnyNotification, AppwireClient, InitializeResponse } from "@evener/appwire-client";
 import { KeybindingPreferencesScreen } from "./KeybindingPreferencesScreen";
 import { NativePreferencesProvider } from "./NativePreferencesProvider";
 import { render, renderedText } from "./renderNative.testkit";
@@ -54,19 +50,13 @@ function screen() {
 	return (
 		<KeybindingPreferencesScreen
 			route={route as ComponentProps<typeof KeybindingPreferencesScreen>["route"]}
-			navigation={
-				navigation as unknown as ComponentProps<typeof KeybindingPreferencesScreen>["navigation"]
-			}
+			navigation={navigation as unknown as ComponentProps<typeof KeybindingPreferencesScreen>["navigation"]}
 		/>
 	);
 }
 
 function app() {
-	return (
-		<NativePreferencesProvider>
-			{screen()}
-		</NativePreferencesProvider>
-	);
+	return <NativePreferencesProvider>{screen()}</NativePreferencesProvider>;
 }
 
 function alertNodes(tree: ReturnType<typeof render>) {
@@ -106,8 +96,7 @@ function clientFixture() {
 		request: async (method: string) => {
 			requestWaiter?.();
 			requestWaiter = null;
-			if (method === "evener/settings/keybindings/get")
-				return { version: 1, revision: 1, rules: [] };
+			if (method === "evener/settings/keybindings/get") return { version: 1, revision: 1, rules: [] };
 			throw new Error(`Unexpected request: ${method}`);
 		},
 	} as unknown as AppwireClient;
@@ -143,9 +132,7 @@ it("shows and invokes cold-offline discard for an unreadable stored record", () 
 	act(() => action.props.onPress());
 
 	expect(harness.values.has(draftKey(hub.id))).toBe(false);
-	expect(
-		tree.root.findAllByProps({ accessibilityLabel: "Discard unreadable draft" }),
-	).toHaveLength(0);
+	expect(tree.root.findAllByProps({ accessibilityLabel: "Discard unreadable draft" })).toHaveLength(0);
 	act(() => tree.unmount());
 });
 
@@ -166,15 +153,11 @@ it("keeps the storage-unavailable diagnostic after a discard-time storage throw"
 	act(() => action.props.onPress());
 
 	expect(harness.values.has(draftKey(hub.id))).toBe(true);
-	expect(
-		tree.root.findAllByProps({ accessibilityLabel: "Discard unreadable draft" }),
-	).toHaveLength(1);
+	expect(tree.root.findAllByProps({ accessibilityLabel: "Discard unreadable draft" })).toHaveLength(1);
 	const alerts = alertNodes(tree);
 	expect(alerts).toHaveLength(1);
 	const text = renderedText(tree);
-	expect(text).toContain(
-		"Could not read the saved shortcut draft on this phone. Check current shortcuts to retry.",
-	);
+	expect(text).toContain("Could not read the saved shortcut draft on this phone. Check current shortcuts to retry.");
 	expect(text).not.toContain("The change could not be completed.");
 	act(() => tree.unmount());
 });

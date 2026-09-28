@@ -5,10 +5,7 @@ import {
 	projectThread as sharedProjectThread,
 	THREAD_ITEM_EVENT_KINDS,
 } from "@evener/appwire-client";
-import type {
-	MobileConversation,
-	MobileTimelineItem,
-} from "./projectedRows";
+import type { MobileConversation, MobileTimelineItem } from "./projectedRows";
 import { projectConversation } from "./projectedRows";
 import type {
 	TranscriptDisplayAdvancedV1,
@@ -39,9 +36,7 @@ const member = (
 	id: string,
 	description: string,
 	item: number,
-): NonNullable<
-	Extract<MobileTimelineItem, { kind: "activity" }>["members"]
->[number] => ({
+): NonNullable<Extract<MobileTimelineItem, { kind: "activity" }>["members"]>[number] => ({
 	id,
 	label: "shell",
 	family: "tool",
@@ -111,11 +106,7 @@ it("unrolls members, applies preset content, and keeps source-linked attachments
 		conversation(items),
 		makeTranscriptDisplayConfig({ kind: "preset", level: "tools" }),
 	);
-	expect(result.items.map((item) => item.id)).toEqual([
-		"a",
-		"b",
-		"b:attachments",
-	]);
+	expect(result.items.map((item) => item.id)).toEqual(["a", "b", "b:attachments"]);
 	expect(result.items[0]).toMatchObject({ position: { entry: 1, item: 0 } });
 	expect(result.activityPresentation.get("a")).toEqual({ mode: "full" });
 	expect(result.activityPresentation.get("b")).toEqual({ mode: "full" });
@@ -193,13 +184,7 @@ it("renders summary-only rows as intent, active or failed as critical, and never
 		conversation(items),
 		makeTranscriptDisplayConfig({ kind: "custom", ...presetContent("chat") }),
 	);
-	expect(result.items.map((item) => item.id)).toEqual([
-		"summarized",
-		"settled",
-		"failed",
-		"active",
-		"unknown",
-	]);
+	expect(result.items.map((item) => item.id)).toEqual(["summarized", "settled", "failed", "active", "unknown"]);
 	expect(result.activityPresentation.get("summarized")).toEqual({
 		mode: "intent",
 		summary: "Inspect source",
@@ -286,20 +271,27 @@ it("keeps every system-event row the seam produced and masks usage fields indepe
 			{ promptEvents: true, tokenCounts: false, estimatedCost: false },
 		),
 	);
-	expect(result.items.map((item) => item.id)).toEqual([
-		"prompt",
-		"hook",
-			"routine",
-		"error",
-	]);
+	expect(result.items.map((item) => item.id)).toEqual(["prompt", "hook", "routine", "error"]);
 	expect(result.usage).toEqual({ derived: null, cumulative: null, cost: null });
 });
 
 // tokenCounts gates the token aggregate and estimatedCost gates the cost, each
 // on its own: a crossed gate or an always-null branch fails one of these rows.
 it.each([
-	{ tokenCounts: true, estimatedCost: true, derived: { inputTokens: 10, outputTokens: 20, scope: "session" }, cumulative: null, cost: "$1" },
-	{ tokenCounts: true, estimatedCost: false, derived: { inputTokens: 10, outputTokens: 20, scope: "session" }, cumulative: null, cost: null },
+	{
+		tokenCounts: true,
+		estimatedCost: true,
+		derived: { inputTokens: 10, outputTokens: 20, scope: "session" },
+		cumulative: null,
+		cost: "$1",
+	},
+	{
+		tokenCounts: true,
+		estimatedCost: false,
+		derived: { inputTokens: 10, outputTokens: 20, scope: "session" },
+		cumulative: null,
+		cost: null,
+	},
 	{ tokenCounts: false, estimatedCost: true, derived: null, cumulative: null, cost: "$1" },
 	{ tokenCounts: false, estimatedCost: false, derived: null, cumulative: null, cost: null },
 ])(
@@ -307,10 +299,7 @@ it.each([
 	({ tokenCounts, estimatedCost, derived, cumulative, cost }) => {
 		const result = projectNativeTranscript(
 			conversation([]),
-			makeTranscriptDisplayConfig(
-				{ kind: "preset", level: "chat" },
-				{ tokenCounts, estimatedCost },
-			),
+			makeTranscriptDisplayConfig({ kind: "preset", level: "chat" }, { tokenCounts, estimatedCost }),
 		);
 		expect(result.usage).toEqual({ derived, cumulative, cost });
 	},
@@ -319,10 +308,7 @@ it.each([
 it("reads an unknown cost as null even when estimatedCost is on", () => {
 	const result = projectNativeTranscript(
 		{ ...conversation([]), cost: undefined },
-		makeTranscriptDisplayConfig(
-			{ kind: "preset", level: "chat" },
-			{ tokenCounts: true, estimatedCost: true },
-		),
+		makeTranscriptDisplayConfig({ kind: "preset", level: "chat" }, { tokenCounts: true, estimatedCost: true }),
 	);
 	expect(result.usage).toEqual({
 		derived: { inputTokens: 10, outputTokens: 20, scope: "session" },
@@ -500,13 +486,7 @@ it("preserves canonical interleaving and defers source-linked attachments to mem
 		conversation(items),
 		makeTranscriptDisplayConfig({ kind: "preset", level: "tools" }),
 	);
-	expect(result.items.map((item) => item.id)).toEqual([
-		"before",
-		"a",
-		"b",
-		"b:image",
-		"after",
-	]);
+	expect(result.items.map((item) => item.id)).toEqual(["before", "a", "b", "b:image", "after"]);
 });
 
 it("renders a missing-description tool call in full rather than second-guessing the level", () => {
@@ -623,15 +603,7 @@ it("keeps each member attachment adjacent while messages and unkeyed warnings re
 		conversation(items),
 		makeTranscriptDisplayConfig({ kind: "preset", level: "full" }),
 	);
-	expect(full.items.map((item) => item.id)).toEqual([
-		"user",
-		"warning",
-		"a",
-		"image-a",
-		"b",
-		"image-b",
-		"reply",
-	]);
+	expect(full.items.map((item) => item.id)).toEqual(["user", "warning", "a", "image-a", "b", "image-b", "reply"]);
 	const hidden = projectNativeTranscript(
 		conversation(items),
 		makeTranscriptDisplayConfig({
@@ -645,15 +617,7 @@ it("keeps each member attachment adjacent while messages and unkeyed warnings re
 	// D24-6: the members survive whatever the config — a custom vector that
 	// disables calls and intent would have the PROJECTOR drop these rows at
 	// the seam, and the presentation layer no longer re-decides it here.
-	expect(hidden.items.map((item) => item.id)).toEqual([
-		"user",
-		"warning",
-		"a",
-		"image-a",
-		"b",
-		"image-b",
-		"reply",
-	]);
+	expect(hidden.items.map((item) => item.id)).toEqual(["user", "warning", "a", "image-a", "b", "image-b", "reply"]);
 });
 
 it("falls back safely for malformed or empty write_file arguments", () => {
@@ -684,9 +648,7 @@ it("falls back safely for malformed or empty write_file arguments", () => {
 			]),
 			makeTranscriptDisplayConfig({ kind: "preset", level: "chat" }),
 		);
-		expect(result.activityPresentation.get(argumentsValue)?.summary).toBe(
-			"Action summary unavailable",
-		);
+		expect(result.activityPresentation.get(argumentsValue)?.summary).toBe("Action summary unavailable");
 	}
 });
 
@@ -735,46 +697,41 @@ it("keeps an authoritative write_file description ahead of derived details", () 
 		]),
 		makeTranscriptDisplayConfig({ kind: "preset", level: "chat" }),
 	);
-	expect(result.activityPresentation.get("write-described")?.summary).toBe(
-		"Save the fixture",
-	);
+	expect(result.activityPresentation.get("write-described")?.summary).toBe("Save the fixture");
 });
 
-it.each([null, undefined])(
-	"keeps each clustered member's attachment beside it when preferences are %s",
-	(config) => {
-		const items: MobileTimelineItem[] = [
-			{
-				kind: "activity",
-				id: "cluster",
-				label: "shell",
-				family: "tool",
-				state: "completed",
-				detail: {},
-				members: [member("a", "first", 0), member("b", "second", 1)],
-			},
-			{
-				kind: "attachments",
-				id: "a:attachments",
-				sourceTranscriptKey: "key-a",
-				items: [{ id: "image-a", src: "data:image/png;base64,a" }],
-			},
-			{
-				kind: "attachments",
-				id: "b:attachments",
-				sourceTranscriptKey: "key-b",
-				items: [{ id: "image-b", src: "data:image/png;base64,b" }],
-			},
-		];
-		const result = projectNativeTranscript(conversation(items), config);
-		expect(result.items).toEqual([
-			{ kind: "activity", ...member("a", "first", 0) },
-			items[1],
-			{ kind: "activity", ...member("b", "second", 1) },
-			items[2],
-		]);
-	},
-);
+it.each([null, undefined])("keeps each clustered member's attachment beside it when preferences are %s", (config) => {
+	const items: MobileTimelineItem[] = [
+		{
+			kind: "activity",
+			id: "cluster",
+			label: "shell",
+			family: "tool",
+			state: "completed",
+			detail: {},
+			members: [member("a", "first", 0), member("b", "second", 1)],
+		},
+		{
+			kind: "attachments",
+			id: "a:attachments",
+			sourceTranscriptKey: "key-a",
+			items: [{ id: "image-a", src: "data:image/png;base64,a" }],
+		},
+		{
+			kind: "attachments",
+			id: "b:attachments",
+			sourceTranscriptKey: "key-b",
+			items: [{ id: "image-b", src: "data:image/png;base64,b" }],
+		},
+	];
+	const result = projectNativeTranscript(conversation(items), config);
+	expect(result.items).toEqual([
+		{ kind: "activity", ...member("a", "first", 0) },
+		items[1],
+		{ kind: "activity", ...member("b", "second", 1) },
+		items[2],
+	]);
+});
 
 // tokenUnitLabel itself moved to appwire-client/typescript/threadUsage.ts
 // (D18 B3 round 3): its tests moved with it, to threadUsage.test.ts.
@@ -866,10 +823,7 @@ const EVENT_KIND_CASES: { eventKind?: string; exitCode?: number }[] = [
 // the seam's projectConversation keep or drop an event exactly as projectThread
 // does, at the same config? The probe thread ids every entry "system-event-probe"
 // and the seam's notice row carries the same id.
-function expectSeamVisibilityLikeProjector(
-	model: ThreadModel,
-	config: TranscriptDisplayConfigV1,
-): void {
+function expectSeamVisibilityLikeProjector(model: ThreadModel, config: TranscriptDisplayConfigV1): void {
 	const seamVisible = projectConversation(model, undefined, config).items.some(
 		(item) => item.id === "system-event-probe",
 	);
@@ -882,10 +836,7 @@ function expectSeamVisibilityLikeProjector(
 // A one-item thread for classifying a single system event (the deleted
 // project.ts's systemEventProbe, kept here as the sweep's local fixture):
 // projectThread reads only `turns`, so the rest of the shape is inert.
-function systemEventModel(
-	eventKind: string | undefined,
-	exitCode: number | undefined,
-): ThreadModel {
+function systemEventModel(eventKind: string | undefined, exitCode: number | undefined): ThreadModel {
 	return {
 		ref: "system-event-probe",
 		threadId: "system-event-probe",
@@ -993,10 +944,7 @@ it.each([
 			...(eventKind ? { eventKind } : {}),
 			...(exitCode !== undefined ? { exitCode } : {}),
 		};
-		const result = projectNativeTranscript(
-			conversation([notice]),
-			NEVER_EVENTS_CONFIG,
-		);
+		const result = projectNativeTranscript(conversation([notice]), NEVER_EVENTS_CONFIG);
 		expect(result.items.map((item) => item.id)).toEqual(["notice"]);
 	},
 );

@@ -55,14 +55,33 @@ const session = (ref: string, label: string, entries: unknown[], branch: Record<
 });
 const delegate = (id: string, description: string, over: Record<string, unknown> = {}) => ({
 	kind: "delegate",
-	delegate: { delegateId: id, childSessionId: id, childRef: `local:${id}`, type: "delegate", description, branch: {}, ...over },
+	delegate: {
+		delegateId: id,
+		childSessionId: id,
+		childRef: `local:${id}`,
+		type: "delegate",
+		description,
+		branch: {},
+		...over,
+	},
 });
 const runningOne = (id: string, description: string, over: Record<string, unknown> = {}) =>
 	delegate(id, description, { runStartedAt: ago(4 * MIN), ...over });
 const failedOne = (id: string, description: string, over: Record<string, unknown> = {}) =>
-	delegate(id, description, { terminal: true, outcome: "failed", runStartedAt: ago(20 * MIN), runEndedAt: ago(6 * MIN), ...over });
+	delegate(id, description, {
+		terminal: true,
+		outcome: "failed",
+		runStartedAt: ago(20 * MIN),
+		runEndedAt: ago(6 * MIN),
+		...over,
+	});
 const doneOne = (id: string, description: string) =>
-	delegate(id, description, { terminal: true, outcome: "completed", runStartedAt: ago(30 * MIN), runEndedAt: ago(10 * MIN) });
+	delegate(id, description, {
+		terminal: true,
+		outcome: "completed",
+		runStartedAt: ago(30 * MIN),
+		runEndedAt: ago(10 * MIN),
+	});
 
 /** The spec's coordinator: 2 failed (one with a running child), 32 running
  * and 21 done, 55 in all. */
@@ -101,7 +120,10 @@ const trees: ReactTestRenderer[] = [];
 function hub(pages: (continuation: string | undefined) => unknown) {
 	const next = new FakeClient("ready");
 	next.on("evener/jobs/list", async (params) => ({ data: await pages(params.continuation) }));
-	next.on("thread/read", () => ({ thread: { id: "coord", modelProvider: "anthropic/claude-opus", status: { type: "active" } } }) as never);
+	next.on(
+		"thread/read",
+		() => ({ thread: { id: "coord", modelProvider: "anthropic/claude-opus", status: { type: "active" } } }) as never,
+	);
 	next.on("model/list", () => ({ data: [{ model: "gpt-5", displayName: "GPT-5" }] }) as never);
 	return next;
 }
@@ -128,7 +150,10 @@ async function settle() {
 async function mount(flush = true) {
 	const params = { hubId: "hub-1", ...COORDINATOR };
 	const tree = render(
-		<SubagentsScreen route={{ key: "subagents", name: "Subagents", params } as never} navigation={navigation as never} />,
+		<SubagentsScreen
+			route={{ key: "subagents", name: "Subagents", params } as never}
+			navigation={navigation as never}
+		/>,
 	);
 	trees.push(tree);
 	if (flush) await settle();
@@ -172,7 +197,10 @@ it("filters to a chip's state, and offers no chip for a state with no subagents"
 	expect(shown).not.toContain("Running task 1");
 	expect(shown).not.toContain("RUNNING");
 
-	client = hub(() => ({ revision: 1, root: session("local:coord", COORDINATOR.title, [runningOne("solo", "Only one")]) }));
+	client = hub(() => ({
+		revision: 1,
+		root: session("local:coord", COORDINATOR.title, [runningOne("solo", "Only one")]),
+	}));
 	harness.connection = screenConnection(client, "ready");
 	forgetSubagentTrees("hub-1");
 	const other = await mount();
@@ -237,7 +265,9 @@ it("follows the coordinator when it comes into focus", async () => {
 it("follows the coordinator again when the connection comes back while it's in front", async () => {
 	const tree = await mount();
 	const follows = () =>
-		client.calls.filter((call) => call.method === "thread/read" && (call.params as { subscribe?: boolean }).subscribe === true).length;
+		client.calls.filter(
+			(call) => call.method === "thread/read" && (call.params as { subscribe?: boolean }).subscribe === true,
+		).length;
 	expect(follows()).toBe(1);
 	const again = () =>
 		act(() =>
@@ -260,7 +290,9 @@ it("follows the coordinator again when the connection comes back while it's in f
 it("follows the coordinator on a new client when the connection changes under it without leaving ready", async () => {
 	const tree = await mount();
 	const follows = (on: FakeClient) =>
-		on.calls.filter((call) => call.method === "thread/read" && (call.params as { subscribe?: boolean }).subscribe === true).length;
+		on.calls.filter(
+			(call) => call.method === "thread/read" && (call.params as { subscribe?: boolean }).subscribe === true,
+		).length;
 	const next = hub(() => specTree());
 	harness.connection = screenConnection(next, "ready");
 	act(() =>
@@ -295,12 +327,10 @@ it("says the count is partial and whose subagents are missing when a later page 
 		if (continuation === "page-2") throw new Error("offline");
 		return {
 			revision: 1,
-			root: session(
-				"local:coord",
-				COORDINATOR.title,
-				[runningOne("a", "First"), runningOne("b", "Second")],
-				{ truncated: true, continuation: "page-2" },
-			),
+			root: session("local:coord", COORDINATOR.title, [runningOne("a", "First"), runningOne("b", "Second")], {
+				truncated: true,
+				continuation: "page-2",
+			}),
 		};
 	});
 	harness.connection = screenConnection(client, "ready");
@@ -310,7 +340,11 @@ it("says the count is partial and whose subagents are missing when a later page 
 });
 
 it.each([
-	["can't list its activity", new WireError("unavailable", -32603, { evenerErrorInfo: "actionUnavailable" }), "This session can't list its subagents."],
+	[
+		"can't list its activity",
+		new WireError("unavailable", -32603, { evenerErrorInfo: "actionUnavailable" }),
+		"This session can't list its subagents.",
+	],
 	[
 		"is shut down",
 		new WireError("thread not found: coord", -32603, { evenerErrorInfo: "sessionUnavailable" }),
@@ -330,13 +364,18 @@ it.each([
 it("keeps the search field while it has words, even once the list shrinks", async () => {
 	let small = false;
 	client = hub(() =>
-		small ? { revision: 2, root: session("local:coord", COORDINATOR.title, [runningOne("solo", "Only one")]) } : specTree(),
+		small
+			? { revision: 2, root: session("local:coord", COORDINATOR.title, [runningOne("solo", "Only one")]) }
+			: specTree(),
 	);
 	harness.connection = screenConnection(client, "ready");
 	const tree = await mount();
 	act(() => tree.root.find((node) => String(node.type) === "TextInput").props.onChangeText("race"));
 	small = true;
-	client.emitNotification({ method: "evener/jobs/treeUpdated", params: { threadId: "coord", ref: "local:coord", revision: 2 } } as never);
+	client.emitNotification({
+		method: "evener/jobs/treeUpdated",
+		params: { threadId: "coord", ref: "local:coord", revision: 2 },
+	} as never);
 	await settle();
 	expect(pressable(tree, "Clear filter")).toBeDefined();
 	act(() => pressable(tree, "Clear filter")?.props.onPress());

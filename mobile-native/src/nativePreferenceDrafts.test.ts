@@ -94,7 +94,7 @@ describe("nativeKeybindingDrafts", () => {
 		expect(storage.load()).toBeNull();
 	});
 
-	it("classifies a stored JSON string \"null\" as an unreadable record, distinct from a stored JSON null", () => {
+	it('classifies a stored JSON string "null" as an unreadable record, distinct from a stored JSON null', () => {
 		// The stored bytes `"null"` (six characters, a JSON string) decode to
 		// the SAME primitive a stored JSON `null` would if either returned a
 		// bare string - the collision that used to let a corrupt checkpoint
@@ -287,7 +287,7 @@ describe("nativeTranscriptDrafts", () => {
 		expect(storage.load()).toBeNull();
 	});
 
-	it("does not treat a stored JSON string \"null\" as no draft - it is a present, invalid checkpoint", () => {
+	it('does not treat a stored JSON string "null" as no draft - it is a present, invalid checkpoint', () => {
 		// Distinct from the stored-JSON-null case above: the bytes `"null"`
 		// (a JSON string) decode to the JS string "null", which used to be
 		// indistinguishable from a stored JSON null once both came back as
@@ -342,8 +342,7 @@ describe("nativeTranscriptDrafts", () => {
 });
 
 describe("classifyDraftRead", () => {
-	const isReadable = (value: unknown) =>
-		typeof value === "object" && value !== null && "id" in value;
+	const isReadable = (value: unknown) => typeof value === "object" && value !== null && "id" in value;
 
 	it("is absent when nothing is stored", () => {
 		expect(classifyDraftRead(null, isReadable)).toBe("absent");
@@ -360,8 +359,7 @@ describe("classifyDraftRead", () => {
 });
 
 describe("readDraftOutcome", () => {
-	const isReadable = (value: unknown) =>
-		typeof value === "object" && value !== null && "id" in value;
+	const isReadable = (value: unknown) => typeof value === "object" && value !== null && "id" in value;
 
 	it("classifies a normal read the same as classifyDraftRead", () => {
 		expect(readDraftOutcome({ load: () => null }, isReadable)).toBe("absent");
@@ -381,8 +379,7 @@ describe("readDraftOutcome", () => {
 });
 
 describe("readDraftOutcomeWithValue", () => {
-	const isReadable = (value: unknown) =>
-		typeof value === "object" && value !== null && "id" in value;
+	const isReadable = (value: unknown) => typeof value === "object" && value !== null && "id" in value;
 
 	it("returns the classification and the exact value from one read", () => {
 		const record = { id: "d1" };
@@ -407,15 +404,15 @@ describe("readDraftOutcomeWithValue", () => {
 		expect(readDraftOutcomeWithValue(storage, isReadable).outcome).toBe("readable");
 		expect(calls).toBe(1);
 		expect(
-		readDraftOutcomeWithValue(
-			{
-				load: () => {
-					throw new Error("disk unavailable");
+			readDraftOutcomeWithValue(
+				{
+					load: () => {
+						throw new Error("disk unavailable");
+					},
 				},
-			},
-			isReadable,
-		),
-	).toEqual({ outcome: "storageUnavailable", value: undefined });
+				isReadable,
+			),
+		).toEqual({ outcome: "storageUnavailable", value: undefined });
 	});
 });
 
@@ -436,7 +433,7 @@ describe("matchesStoredBytes", () => {
 		expect(matchesStoredBytes("null", parseDraftBytes("null"))).toBe(true);
 	});
 
-	it("does not match a StoredNullRecord identity against a stored JSON string \"null\"", () => {
+	it('does not match a StoredNullRecord identity against a stored JSON string "null"', () => {
 		// The two decode to the same JS primitive if either comes back as a
 		// bare string - the collision parseDraftBytes's tagged markers exist
 		// to close.
@@ -494,7 +491,7 @@ describe("parseDraftBytes", () => {
 		expect(isStoredNullRecord(value)).toBe(true);
 	});
 
-	it("returns the plain JS string for a stored JSON string \"null\", distinct from a stored JSON null", () => {
+	it('returns the plain JS string for a stored JSON string "null", distinct from a stored JSON null', () => {
 		// Both used to collide on the bare string "null" - the bug this
 		// marker design closes (see nativeTranscriptDrafts' own test).
 		const value = parseDraftBytes('"null"');

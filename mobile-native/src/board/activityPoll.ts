@@ -98,10 +98,7 @@ export class ActivityPoll {
 		const requestId = ++this.latestRequestId;
 		let response: unknown;
 		try {
-			response = await this.client.request(
-				"evener/activity/read",
-				this.refs?.length ? { refs: [...this.refs] } : {},
-			);
+			response = await this.client.request("evener/activity/read", this.refs?.length ? { refs: [...this.refs] } : {});
 		} catch (error) {
 			if (requestId !== this.latestRequestId) return; // superseded by a newer poll, or stopped
 			if (isMethodNotFound(error)) {

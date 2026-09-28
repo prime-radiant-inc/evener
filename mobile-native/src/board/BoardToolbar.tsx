@@ -27,7 +27,15 @@ export function ToolbarFrame({ children }: { children: ReactNode }) {
 
 /** A text button in the Board's bottom bars: 17pt accent ink, or inkLow
  * and inert while disabled. */
-export function BarButton({ label, disabled = false, onPress }: { label: string; disabled?: boolean; onPress: () => void }) {
+export function BarButton({
+	label,
+	disabled = false,
+	onPress,
+}: {
+	label: string;
+	disabled?: boolean;
+	onPress: () => void;
+}) {
 	const { palette } = useColors();
 	const scale = useTextScale();
 	return (

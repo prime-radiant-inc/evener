@@ -85,11 +85,18 @@ export function QuestionDock({
 				})}
 			>
 				<View style={{ flex: 1, paddingVertical: 4 }}>
-					<Text allowFontScaling={allowFontScaling} style={{ fontSize: 15 * scale, lineHeight: 20 * scale, color: palette.inkHi }}>
+					<Text
+						allowFontScaling={allowFontScaling}
+						style={{ fontSize: 15 * scale, lineHeight: 20 * scale, color: palette.inkHi }}
+					>
 						{label}
 					</Text>
 					{error ? (
-						<Text allowFontScaling={allowFontScaling} numberOfLines={1} style={{ ...caption, color: palette.dangerInk }}>
+						<Text
+							allowFontScaling={allowFontScaling}
+							numberOfLines={1}
+							style={{ ...caption, color: palette.dangerInk }}
+						>
 							{error}
 						</Text>
 					) : null}
@@ -128,7 +135,9 @@ export function QuestionDock({
 	);
 	return (
 		<View style={{ ...card, paddingTop: 4, paddingBottom: 8 }}>
-			<View style={{ flexDirection: "row", alignItems: "center", paddingLeft: activeIndex > 0 ? 4 : 16, paddingRight: 4 }}>
+			<View
+				style={{ flexDirection: "row", alignItems: "center", paddingLeft: activeIndex > 0 ? 4 : 16, paddingRight: 4 }}
+			>
 				{activeIndex > 0 ? (
 					<SymbolButton label="Previous question" onPress={() => draft.setActiveIndex(activeIndex - 1)}>
 						<SymbolView name="chevron.left" tintColor={palette.accentInk} size={15 * scale} />
@@ -144,7 +153,12 @@ export function QuestionDock({
 			<View style={{ paddingHorizontal: 16, gap: 4 }}>
 				<Text
 					allowFontScaling={allowFontScaling}
-					style={{ fontFamily: fonts.serifSemibold, fontSize: 17 * scale, lineHeight: 24 * scale, color: palette.prose }}
+					style={{
+						fontFamily: fonts.serifSemibold,
+						fontSize: 17 * scale,
+						lineHeight: 24 * scale,
+						color: palette.prose,
+					}}
 				>
 					{display.question}
 				</Text>
@@ -216,12 +230,20 @@ export function QuestionDock({
 									borderTopColor: palette.edge,
 								}}
 							>
-								<Text allowFontScaling={allowFontScaling} style={{ fontSize: 17 * scale, lineHeight: 22 * scale, color: palette.inkHi }}>
+								<Text
+									allowFontScaling={allowFontScaling}
+									style={{ fontSize: 17 * scale, lineHeight: 22 * scale, color: palette.inkHi }}
+								>
 									{option.shown?.label ?? option.label}
-									{option.recommended ? <Text style={{ fontSize: 13 * scale, color: palette.inkMid }}> · Recommended</Text> : null}
+									{option.recommended ? (
+										<Text style={{ fontSize: 13 * scale, color: palette.inkMid }}> · Recommended</Text>
+									) : null}
 								</Text>
 								{option.shown?.detail ? (
-									<Text allowFontScaling={allowFontScaling} style={{ fontSize: 15 * scale, lineHeight: 20 * scale, color: palette.inkMid }}>
+									<Text
+										allowFontScaling={allowFontScaling}
+										style={{ fontSize: 15 * scale, lineHeight: 20 * scale, color: palette.inkMid }}
+									>
 										{option.shown.detail}
 									</Text>
 								) : null}
@@ -231,11 +253,23 @@ export function QuestionDock({
 				})}
 			</View>
 			{error || draft.error ? (
-				<Text allowFontScaling={allowFontScaling} numberOfLines={1} style={{ ...caption, color: palette.dangerInk, paddingHorizontal: 16 }}>
+				<Text
+					allowFontScaling={allowFontScaling}
+					numberOfLines={1}
+					style={{ ...caption, color: palette.dangerInk, paddingHorizontal: 16 }}
+				>
 					{error ?? draft.error}
 				</Text>
 			) : null}
-			<View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between", paddingHorizontal: 8, marginTop: 4 }}>
+			<View
+				style={{
+					flexDirection: "row",
+					alignItems: "center",
+					justifyContent: "space-between",
+					paddingHorizontal: 8,
+					marginTop: 4,
+				}}
+			>
 				<Pressable
 					accessibilityRole="button"
 					accessibilityLabel="Other answer…"
@@ -249,7 +283,10 @@ export function QuestionDock({
 						opacity: !editable ? 0.4 : pressed ? 0.6 : 1,
 					})}
 				>
-					<Text allowFontScaling={allowFontScaling} style={{ fontSize: 17 * scale, lineHeight: 22 * scale, color: palette.accentInk }}>
+					<Text
+						allowFontScaling={allowFontScaling}
+						style={{ fontSize: 17 * scale, lineHeight: 22 * scale, color: palette.accentInk }}
+					>
 						Other answer…
 					</Text>
 				</Pressable>

@@ -14,9 +14,19 @@ const session = (entries: unknown[], branch: Record<string, unknown> = {}) => ({
 });
 const subagent = (id: string) => ({
 	kind: "delegate",
-	delegate: { delegateId: id, childSessionId: id, childRef: `local:${id}`, type: "delegate", description: id, branch: {} },
+	delegate: {
+		delegateId: id,
+		childSessionId: id,
+		childRef: `local:${id}`,
+		type: "delegate",
+		description: id,
+		branch: {},
+	},
 });
-const firstPage = { revision: 1, root: session([subagent("a"), subagent("b")], { truncated: true, continuation: "page-2" }) };
+const firstPage = {
+	revision: 1,
+	root: session([subagent("a"), subagent("b")], { truncated: true, continuation: "page-2" }),
+};
 const secondPage = { revision: 1, root: session([subagent("c")]) };
 const whole = { revision: 1, root: session([subagent("a")]) };
 
@@ -26,7 +36,9 @@ function hub(pages: (continuation: string | undefined) => unknown) {
 	return client;
 }
 const listed = (tree: SubagentTree) =>
-	tree.getSnapshot().tree?.root.entries.map((entry) => (entry.kind === "delegate" ? entry.delegate.delegateId : entry.job.jobId));
+	tree
+		.getSnapshot()
+		.tree?.root.entries.map((entry) => (entry.kind === "delegate" ? entry.delegate.delegateId : entry.job.jobId));
 const reads = (client: FakeClient) =>
 	client.calls
 		.filter((call) => call.method === "evener/jobs/list")

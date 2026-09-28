@@ -6,9 +6,7 @@ import { expect, it, vi } from "vitest";
 import { PinCatalogList } from "./PinCatalogList";
 import { render, renderedText } from "./renderNative.testkit";
 
-vi.mock("react-native", async () =>
-	(await import("./renderNative.testkit")).nativeModuleMock(),
-);
+vi.mock("react-native", async () => (await import("./renderNative.testkit")).nativeModuleMock());
 
 function props(previousChange: boolean) {
 	return {
@@ -30,9 +28,7 @@ function props(previousChange: boolean) {
 }
 
 it("blames the failed load when there is no previous pin change", () => {
-	const text = renderedText(
-		render(createElement(PinCatalogList, props(false))),
-	);
+	const text = renderedText(render(createElement(PinCatalogList, props(false))));
 	expect(text).toContain("Refresh to reload the pinned sections.");
 	expect(text).not.toContain("previous pin change");
 });

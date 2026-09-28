@@ -243,14 +243,7 @@ function Board({
 		// landing, quiet time alone reaching STUCK_AFTER_MS - still floats to
 		// the top within one poll interval of its why-line saying so, instead
 		// of waiting for the next successful read.
-		[
-			snapshot.live.rows,
-			snapshot.needsYou.rows,
-			seen,
-			activityOf,
-			activityRevision,
-			activityTick,
-		],
+		[snapshot.live.rows, snapshot.needsYou.rows, seen, activityOf, activityRevision, activityTick],
 	);
 	useFirstRun(board, markers, snapshot, focused);
 
@@ -382,7 +375,8 @@ function Board({
 	const readMoreLiveIfNear = () => {
 		const page = board.getSnapshot().live;
 		// Search results fill the scroller in Live's place.
-		if (searching || liveEnd.current === null || page.remaining === 0 || page.loading || page.stale || page.error) return;
+		if (searching || liveEnd.current === null || page.remaining === 0 || page.loading || page.stale || page.error)
+			return;
 		const { offset, height } = viewport.current;
 		if (offset + 2 * height >= liveEnd.current) void board.loadMoreLive();
 	};
@@ -529,8 +523,16 @@ function Board({
 			label: projectGrouping === "host-project" ? "Hosts" : "Projects",
 			shown: projectsShown,
 		},
-		"test-runs": { title: `Test runs · ${testRuns}`, label: sectionLabel("Test runs", testRuns, "project"), shown: testRuns > 0 },
-		archived: { title: `ARCHIVED · ${archived}`, label: sectionLabel("Archived", archived, "project"), shown: archived > 0 },
+		"test-runs": {
+			title: `Test runs · ${testRuns}`,
+			label: sectionLabel("Test runs", testRuns, "project"),
+			shown: testRuns > 0,
+		},
+		archived: {
+			title: `ARCHIVED · ${archived}`,
+			label: sectionLabel("Archived", archived, "project"),
+			shown: archived > 0,
+		},
 	};
 	const shownProjectSections = PROJECT_SECTIONS.filter((section) => projectHeaders[section].shown);
 	const { live: livePage, needsYou: needsYouPage } = snapshot;
@@ -619,13 +621,18 @@ function Board({
 	// (a fold hides them, but they stay loaded) and the project sessions in
 	// the shown tree.
 	const shownRows = useShownRows([
-		...[...bands.needsYou, ...bands.finished, ...bands.working, ...bands.idle].map((item) => ({ item, archived: false })),
+		...[...bands.needsYou, ...bands.finished, ...bands.working, ...bands.idle].map((item) => ({
+			item,
+			archived: false,
+		})),
 		...pins.flatMap((pin) => {
 			const page = snapshot.pinSections[pin.id];
 			return page?.loaded ? page.rows.map((row) => ({ item: classify(row), archived: false })) : [];
 		}),
 		...shownSections.flatMap(({ items }) =>
-			items.flatMap((item) => (item.kind === "session" ? [{ item: projectRow(item.row), archived: item.archived }] : [])),
+			items.flatMap((item) =>
+				item.kind === "session" ? [{ item: projectRow(item.row), archived: item.archived }] : [],
+			),
 		),
 	]);
 	// The sheet reads the row live, so its actions follow the row while it's
@@ -698,7 +705,12 @@ function Board({
 		const { view } = projectSections.projects;
 		const project = view.projects.find((candidate) => candidate.key === projectKey);
 		if (!project) return;
-		const target = projectRevealTarget({ project, pages: view.pages.get(projectKey), sources: hostSources, organizeBy });
+		const target = projectRevealTarget({
+			project,
+			pages: view.pages.get(projectKey),
+			sources: hostSources,
+			organizeBy,
+		});
 		for (const fold of target.unfold) setFolded(fold, false);
 		reveal.current = { sectionTop: null, row: null };
 		setRevealKey(target.scrollTo);
@@ -947,8 +959,8 @@ function Board({
 							onOpen={openSearchResult}
 							onRecent={typeSearch}
 							onClearRecent={clearRecent}
-						projects={projectResults(projectSections.projects.view.projects, search.snapshot.query)}
-						onOpenProject={openProjectResult}
+							projects={projectResults(projectSections.projects.view.projects, search.snapshot.query)}
+							onOpenProject={openProjectResult}
 						/>
 					) : (
 						<>
@@ -1055,7 +1067,12 @@ function pinnedCategoryMenu(organization: BoardOrganization, catalog: () => read
 		if (!organizationOpen(organization)) return;
 		if (Platform.OS === "ios") {
 			ActionSheetIOS.showActionSheetWithOptions(
-				{ title: section.name, options: ["Rename", "Delete", "Cancel"], destructiveButtonIndex: 1, cancelButtonIndex: 2 },
+				{
+					title: section.name,
+					options: ["Rename", "Delete", "Cancel"],
+					destructiveButtonIndex: 1,
+					cancelButtonIndex: 2,
+				},
 				(index) => {
 					if (index === 0) rename(section);
 					else if (index === 1) remove(section);
@@ -1191,7 +1208,11 @@ function confirmShutDown(
 
 /** Rename from the row menu (iOS only: Alert.prompt), starting from the
  * row's title. An empty name sends nothing. */
-function promptRename(client: ConversationClientLike | null, row: NavigationSessionSummary, toast: Pick<ToastController, "show">) {
+function promptRename(
+	client: ConversationClientLike | null,
+	row: NavigationSessionSummary,
+	toast: Pick<ToastController, "show">,
+) {
 	Alert.prompt(
 		"Rename session",
 		undefined,
@@ -1235,7 +1256,11 @@ function openProjectMenu(
 	const title = projectName(project);
 	if (Platform.OS === "ios") {
 		ActionSheetIOS.showActionSheetWithOptions(
-			{ title, options: [...actions.map((action) => PROJECT_MENU_LABELS[action]), "Cancel"], cancelButtonIndex: actions.length },
+			{
+				title,
+				options: [...actions.map((action) => PROJECT_MENU_LABELS[action]), "Cancel"],
+				cancelButtonIndex: actions.length,
+			},
 			(index) => {
 				const action = actions[index];
 				if (action) act(action);
@@ -1286,7 +1311,14 @@ function SearchField({
 	return (
 		<View
 			testID="search-field"
-			style={{ height, paddingHorizontal: 16, paddingVertical: 8, flexDirection: "row", alignItems: "center", columnGap: 12 }}
+			style={{
+				height,
+				paddingHorizontal: 16,
+				paddingVertical: 8,
+				flexDirection: "row",
+				alignItems: "center",
+				columnGap: 12,
+			}}
 		>
 			<View
 				style={{
@@ -1585,7 +1617,10 @@ function Chips({ chips }: { chips: ChipProps[] }) {
 						})}
 					>
 						{chip.pinned ? <SymbolView name="pin.fill" size={12 * scale} tintColor={palette.inkLow} /> : null}
-						<Text allowFontScaling={Platform.OS !== "ios"} style={{ fontSize: 14 * scale, fontWeight: "600", color: palette.inkHi }}>
+						<Text
+							allowFontScaling={Platform.OS !== "ios"}
+							style={{ fontSize: 14 * scale, fontWeight: "600", color: palette.inkHi }}
+						>
 							{chip.name}
 						</Text>
 						<Text
@@ -1727,7 +1762,11 @@ function IdleFold({ count, folded, onToggle }: { count: number; folded: boolean;
 				backgroundColor: pressed ? palette.pressed : palette.page,
 			})}
 		>
-			<Text testID="band-header" allowFontScaling={Platform.OS !== "ios"} style={{ fontSize: 15 * scale, color: palette.inkMid }}>
+			<Text
+				testID="band-header"
+				allowFontScaling={Platform.OS !== "ios"}
+				style={{ fontSize: 15 * scale, color: palette.inkMid }}
+			>
 				{`Idle · ${count}`}
 			</Text>
 			<FoldChevron folded={folded} />
@@ -1741,7 +1780,11 @@ function Skeleton() {
 	return (
 		<View style={{ paddingTop: 12, paddingHorizontal: 16, rowGap: 8 }} accessibilityLabel="Loading sessions">
 			{["first", "second", "third"].map((key) => (
-				<View key={key} testID="skeleton-row" style={{ height: 64, borderRadius: 10, backgroundColor: palette.inset }} />
+				<View
+					key={key}
+					testID="skeleton-row"
+					style={{ height: 64, borderRadius: 10, backgroundColor: palette.inset }}
+				/>
 			))}
 		</View>
 	);

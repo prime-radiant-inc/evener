@@ -25,7 +25,13 @@ export function HubHome({ navigation }: NativeStackScreenProps<HubRoutes, "HubHo
 		<GroupedPage>
 			<Text
 				allowFontScaling={allowFontScaling}
-				style={{ color: palette.inkMid, fontSize: 15 * scale, lineHeight: 20 * scale, paddingHorizontal: 32, paddingTop: 4 }}
+				style={{
+					color: palette.inkMid,
+					fontSize: 15 * scale,
+					lineHeight: 20 * scale,
+					paddingHorizontal: 32,
+					paddingTop: 4,
+				}}
 			>
 				{line}
 			</Text>
@@ -37,12 +43,7 @@ export function HubHome({ navigation }: NativeStackScreenProps<HubRoutes, "HubHo
 			<GroupLabel>This phone</GroupLabel>
 			<Group>
 				<Row icon="textformat.size" label="Display" chevron onPress={() => leaveFor("TranscriptPreferences")} />
-				<Row
-					icon="point.3.connected.trianglepath.dotted"
-					label="Hubs"
-					chevron
-					onPress={() => root?.navigate("Hubs")}
-				/>
+				<Row icon="point.3.connected.trianglepath.dotted" label="Hubs" chevron onPress={() => root?.navigate("Hubs")} />
 			</Group>
 			<GroupLabel>More</GroupLabel>
 			<Group>

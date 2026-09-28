@@ -36,10 +36,16 @@ export function CommentsSheet({ route, navigation }: NativeStackScreenProps<Rout
 				contentContainerStyle={{ padding: 16, gap: 20 }}
 				ListEmptyComponent={
 					<View style={{ gap: 4, paddingTop: 24, alignItems: "center" }}>
-						<Text allowFontScaling={allowFontScaling} style={{ color: palette.inkHi, fontSize: 17 * scale, lineHeight: 22 * scale }}>
+						<Text
+							allowFontScaling={allowFontScaling}
+							style={{ color: palette.inkHi, fontSize: 17 * scale, lineHeight: 22 * scale }}
+						>
 							No comments yet
 						</Text>
-						<Text allowFontScaling={allowFontScaling} style={{ color: palette.inkMid, fontSize: 15 * scale, lineHeight: 20 * scale }}>
+						<Text
+							allowFontScaling={allowFontScaling}
+							style={{ color: palette.inkMid, fontSize: 15 * scale, lineHeight: 20 * scale }}
+						>
 							Touch and hold a paragraph to comment on it.
 						</Text>
 					</View>
@@ -66,7 +72,10 @@ export function CommentsSheet({ route, navigation }: NativeStackScreenProps<Rout
 					return (
 						<View style={{ gap: 8 }}>
 							<QuoteBlock words={comment.quote} limit={140} size={14} lineHeight={19} />
-							<Text allowFontScaling={allowFontScaling} style={{ color: palette.inkHi, fontSize: 15 * scale, lineHeight: 20 * scale }}>
+							<Text
+								allowFontScaling={allowFontScaling}
+								style={{ color: palette.inkHi, fontSize: 15 * scale, lineHeight: 20 * scale }}
+							>
 								{comment.text}
 							</Text>
 							<View style={{ flexDirection: "row", gap: 16 }}>
@@ -92,7 +101,10 @@ function TextButton({ label, onPress }: { label: string; onPress(): void }) {
 			hitSlop={8}
 			style={{ minHeight: 44, justifyContent: "center" }}
 		>
-			<Text allowFontScaling={allowFontScaling} style={{ color: palette.inkMid, fontSize: 15 * scale, lineHeight: 20 * scale }}>
+			<Text
+				allowFontScaling={allowFontScaling}
+				style={{ color: palette.inkMid, fontSize: 15 * scale, lineHeight: 20 * scale }}
+			>
 				{label}
 			</Text>
 		</Pressable>

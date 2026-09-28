@@ -97,7 +97,9 @@ export function documentBlocks(markdown: string): DocumentBlock[] {
 			kind,
 			markdown: source,
 			hash: identity(kind, source),
-			text: extra.code ? extra.code.text : plainText(kind === "heading" ? source.replace(SETEXT_UNDERLINE, "") : source),
+			text: extra.code
+				? extra.code.text
+				: plainText(kind === "heading" ? source.replace(SETEXT_UNDERLINE, "") : source),
 			...extra,
 		});
 	};
@@ -113,10 +115,7 @@ export function documentBlocks(markdown: string): DocumentBlock[] {
 				const list = token as Tokens.List;
 				const start = typeof list.start === "number" ? list.start : 1;
 				list.items.forEach((item, position) => {
-					push(
-						"listItem",
-						list.ordered ? item.raw.replace(/^(\s*)\d+([.)])/, `$1${start + position}$2`) : item.raw,
-					);
+					push("listItem", list.ordered ? item.raw.replace(/^(\s*)\d+([.)])/, `$1${start + position}$2`) : item.raw);
 				});
 				break;
 			}

@@ -69,6 +69,8 @@ func TestRound13DirtyControllerDeployRefusalIsTerminal(t *testing.T) {
 		},
 		sleep: func(context.Context, time.Duration) error { return nil },
 	})
+	testDeployRecorder(t, m)
+	testRestartRecorder(t, m)
 
 	// Round twelve's rule stands: the identical dirty version on both sides is not
 	// a match, so the deploy is still required.

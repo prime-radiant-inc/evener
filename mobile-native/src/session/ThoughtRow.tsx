@@ -6,7 +6,6 @@ import { fonts } from "../design/tokens";
 import { allowFontScaling, useColors, useTextScale } from "../ui";
 import { compactDuration } from "./format";
 
-
 export function ThoughtRow({
 	durationMs,
 	text,

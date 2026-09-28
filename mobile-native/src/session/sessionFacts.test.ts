@@ -26,7 +26,12 @@ describe("where a session runs (spec 8.6)", () => {
 		const label = (id: string) => (id === "local" ? "magic-kingdom" : id);
 		expect(
 			whereFacts(
-				{ ref: "local:s1", cwd: "/Users/jesse/git/evener", projectPath: "/Users/jesse/git/evener/", gitBranch: "fix-settle" },
+				{
+					ref: "local:s1",
+					cwd: "/Users/jesse/git/evener",
+					projectPath: "/Users/jesse/git/evener/",
+					gitBranch: "fix-settle",
+				},
 				label,
 			),
 		).toEqual({ host: "magic-kingdom", project: "evener", directory: "/Users/jesse/git/evener", branch: "fix-settle" });
@@ -78,7 +83,12 @@ describe("usage", () => {
 	it("says tokens, their split, cost, work time, context and failed calls", () => {
 		expect(
 			usageFacts({
-				usage: { totalTokens: 46_000_000, inputTokens: 12_000_000, outputTokens: 1_200_000, cacheReadTokens: 33_000_000 },
+				usage: {
+					totalTokens: 46_000_000,
+					inputTokens: 12_000_000,
+					outputTokens: 1_200_000,
+					cacheReadTokens: 33_000_000,
+				},
 				cost: "~$4.12",
 				workMillis: 3 * 3_600_000 + 12 * 60_000,
 				contextUsed: 39_800,
@@ -97,7 +107,14 @@ describe("usage", () => {
 
 	it("leaves out what it doesn't know", () => {
 		expect(
-			usageFacts({ usage: null, cost: null, workMillis: 0, contextUsed: 0, contextWindow: 0, failedToolCalls: undefined }),
+			usageFacts({
+				usage: null,
+				cost: null,
+				workMillis: 0,
+				contextUsed: 0,
+				contextWindow: 0,
+				failedToolCalls: undefined,
+			}),
 		).toEqual({});
 		expect(
 			usageFacts({ usage: null, cost: undefined, workMillis: 0, contextUsed: 0, contextWindow: 0, failedToolCalls: 1 })
@@ -113,7 +130,12 @@ describe("the model chip (spec 8.5)", () => {
 	it("names the model the way the catalog does, with its effort", () => {
 		expect(
 			modelChipLabel(
-				{ modelProvider: "lunaroute/glm-5.3-vision", reasoningEffort: "xhigh", reasoningEffortLevels: ["low", "high", "xhigh"], supportsReasoning: true },
+				{
+					modelProvider: "lunaroute/glm-5.3-vision",
+					reasoningEffort: "xhigh",
+					reasoningEffortLevels: ["low", "high", "xhigh"],
+					supportsReasoning: true,
+				},
 				catalog,
 			),
 		).toBe("GLM 5.3 Vision · XHigh");
@@ -121,13 +143,23 @@ describe("the model chip (spec 8.5)", () => {
 	it("falls back to the model id before the catalog loads, and drops effort a model lacks", () => {
 		expect(
 			modelChipLabel(
-				{ modelProvider: "meta/muse-spark-1.3", reasoningEffort: undefined, reasoningEffortLevels: [], supportsReasoning: false },
+				{
+					modelProvider: "meta/muse-spark-1.3",
+					reasoningEffort: undefined,
+					reasoningEffortLevels: [],
+					supportsReasoning: false,
+				},
 				undefined,
 			),
 		).toBe("muse-spark-1.3");
 		expect(
 			modelChipLabel(
-				{ modelProvider: "lunaroute/glm-5.3-vision", reasoningEffort: "", reasoningEffortLevels: ["high"], supportsReasoning: true },
+				{
+					modelProvider: "lunaroute/glm-5.3-vision",
+					reasoningEffort: "",
+					reasoningEffortLevels: ["high"],
+					supportsReasoning: true,
+				},
 				catalog,
 			),
 		).toBe("GLM 5.3 Vision · Default");
@@ -148,7 +180,9 @@ describe("the model chip (spec 8.5)", () => {
 });
 
 describe("the vision model row", () => {
-	const catalog: ModelDescriptor[] = [{ provider: "lunaroute", model: "glm-5.3-vision", displayName: "GLM 5.3 Vision" }];
+	const catalog: ModelDescriptor[] = [
+		{ provider: "lunaroute", model: "glm-5.3-vision", displayName: "GLM 5.3 Vision" },
+	];
 	it("reads Off, Session model, or the model as the catalog names it", () => {
 		expect(visionModelLabel("off", catalog)).toBe("Off");
 		expect(visionModelLabel("", catalog)).toBe("Session model");
