@@ -2,10 +2,12 @@ import * as SecureStore from "expo-secure-store";
 import { useEffect, useState } from "react";
 import {
 	ActivityIndicator,
+	FlatList,
 	Image,
 	Modal,
 	Pressable,
 	ScrollView,
+	useWindowDimensions,
 	View,
 } from "react-native";
 import { SafeAreaProvider, SafeAreaView } from "react-native-safe-area-context";
@@ -75,6 +77,8 @@ function HubImage({ image, hubId }: { image: AttachmentRef; hubId: string }) {
 	);
 }
 
+// A row of images in the transcript (spec 8.2, "Images"): 96pt thumbnails,
+// and a full-screen viewer that swipes between them.
 export function TranscriptImages({
 	images,
 	hubId,
@@ -83,46 +87,39 @@ export function TranscriptImages({
 	hubId: string;
 }) {
 	const colors = useColors();
-	const [openId, setOpenId] = useState<string | null>(null);
-	const index = images.findIndex((image) => image.id === openId);
-	const current = images[index];
-	function step(direction: number) {
-		const next = images[(index + direction + images.length) % images.length];
-		if (next) setOpenId(next.id);
-	}
+	const { width } = useWindowDimensions();
+	// The page the viewer shows, or null while it's closed.
+	const [page, setPage] = useState<number | null>(null);
 	return (
 		<>
 			<ScrollView
 				horizontal
 				showsHorizontalScrollIndicator={false}
-				contentContainerStyle={{ gap: 12 }}
+				contentContainerStyle={{ gap: 8 }}
 			>
 				{images.map((image, position) => (
-					<View key={image.id} style={{ width: 112, gap: 4 }}>
-						<Pressable
-							accessibilityRole="button"
-							accessibilityLabel={`Open image ${position + 1} of ${images.length}: ${image.name ?? "attachment"}`}
-							onPress={() => setOpenId(image.id)}
-							style={{
-								height: 112,
-								borderRadius: 12,
-								overflow: "hidden",
-								backgroundColor: colors.surface,
-							}}
-						>
-							<HubImage image={image} hubId={hubId} />
-						</Pressable>
-						<Copy muted numberOfLines={2} ellipsizeMode="middle">
-							{image.name ?? `Image ${position + 1}`}
-						</Copy>
-					</View>
+					<Pressable
+						key={image.id}
+						accessibilityRole="button"
+						accessibilityLabel={`Open image ${position + 1} of ${images.length}: ${image.name ?? "attachment"}`}
+						onPress={() => setPage(position)}
+						style={{
+							width: 96,
+							height: 96,
+							borderRadius: 12,
+							overflow: "hidden",
+							backgroundColor: colors.surface,
+						}}
+					>
+						<HubImage image={image} hubId={hubId} />
+					</Pressable>
 				))}
 			</ScrollView>
-			{current ? (
+			{page !== null ? (
 				<Modal
 					animationType="fade"
 					presentationStyle="fullScreen"
-					onRequestClose={() => setOpenId(null)}
+					onRequestClose={() => setPage(null)}
 				>
 					<SafeAreaProvider>
 						<SafeAreaView
@@ -137,28 +134,28 @@ export function TranscriptImages({
 								}}
 							>
 								<View style={{ flex: 1 }}>
-									<Copy>{current.name ?? "Attached image"}</Copy>
-									<Copy muted>
-										{index + 1} of {images.length}
-									</Copy>
+									<Copy>{images[page]?.name ?? "Attached image"}</Copy>
+									<Copy muted>{`${page + 1} of ${images.length}`}</Copy>
 								</View>
-								<Action onPress={() => setOpenId(null)}>Done</Action>
+								<Action onPress={() => setPage(null)}>Done</Action>
 							</View>
-							<View style={{ flex: 1, padding: 16 }}>
-								<HubImage key={current.id} image={current} hubId={hubId} />
-							</View>
-							{images.length > 1 ? (
-								<View
-									style={{
-										flexDirection: "row",
-										justifyContent: "space-between",
-										padding: 16,
-									}}
-								>
-									<Action onPress={() => step(-1)}>Previous image</Action>
-									<Action onPress={() => step(1)}>Next image</Action>
-								</View>
-							) : null}
+							<FlatList
+								data={images}
+								keyExtractor={(image) => image.id}
+								horizontal
+								pagingEnabled
+								showsHorizontalScrollIndicator={false}
+								initialScrollIndex={page}
+								getItemLayout={(_data, index) => ({ length: width, offset: width * index, index })}
+								onMomentumScrollEnd={(event) =>
+									setPage(Math.round(event.nativeEvent.contentOffset.x / Math.max(1, width)))
+								}
+								renderItem={({ item }) => (
+									<View style={{ width, flex: 1, padding: 16 }}>
+										<HubImage image={item} hubId={hubId} />
+									</View>
+								)}
+							/>
 						</SafeAreaView>
 					</SafeAreaProvider>
 				</Modal>

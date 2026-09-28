@@ -1,4 +1,4 @@
-import { scopedDisclosureId } from "@evener/appwire-client";
+import { type EvenerDelegateInfo, type ItemModel, parseAskUserQuestions, scopedDisclosureId } from "@evener/appwire-client";
 import { type ReactNode, useMemo, useState } from "react";
 import {
 	type AccessibilityActionEvent,
@@ -17,7 +17,14 @@ import { MarkdownResponse } from "./MarkdownResponse";
 import { toggleDisclosure, useDisclosureOpen } from "./nativeDisclosure";
 import type { MobileTimelineItem } from "./projectedRows";
 import { useMinuteClock } from "./session/minuteClock";
+import type { ErrorAction } from "./session/errorAction";
+import { ErrorRow } from "./session/ErrorRow";
+import { QuestionHistory } from "./session/QuestionHistory";
 import { RunRow } from "./session/RunRow";
+import { SubagentRow } from "./session/SubagentRow";
+import { SystemEvent } from "./session/SystemEvent";
+import { subagentLine } from "./session/subagentLine";
+import { ThoughtRow } from "./session/ThoughtRow";
 import { timeMarkerText } from "./session/transcriptRows";
 import { TranscriptImages } from "./TranscriptImages";
 import {
@@ -40,6 +47,11 @@ export function TimelineItem({
 	forkDisabled = false,
 	quote,
 	live = false,
+	delegates,
+	openSubagent,
+	answerFor,
+	errorActionFor,
+	onErrorAction,
 }: {
 	item: TimelineRow;
 	hubId: string;
@@ -53,6 +65,15 @@ export function TimelineItem({
 	quote?: (text: string) => void;
 	/** This row is the live run: the last run of the turn in progress. */
 	live?: boolean;
+	/** The session's subagents, for a subagent row's state and activity. */
+	delegates?: readonly EvenerDelegateInfo[];
+	/** Opens a subagent's own transcript. */
+	openSubagent?: (ref: string, title: string) => void;
+	/** Your answer to the question an ask_user row asked, when you gave one. */
+	answerFor?: (itemId: string) => string | undefined;
+	/** The one action an error row offers (errorAction), and running it. */
+	errorActionFor?: (row: { id: string; title: string; detail: string; turnId?: string }) => ErrorAction | null;
+	onErrorAction?: (action: ErrorAction) => void;
 }) {
 	const disclosureId = scopedDisclosureId(
 		JSON.stringify([hubId, sessionRef]),
@@ -63,30 +84,32 @@ export function TimelineItem({
 	const expanded = useDisclosureOpen(disclosureId, defaultOpen);
 	const toggle = () => toggleDisclosure(disclosureId, defaultOpen);
 	const colors = useColors();
+	// A thought the projector didn't show reads as one quiet line, with no
+	// error rule, unless the thought itself failed.
+	const quietThought = item.kind === "failure" && item.thought === true && item.title !== "Thought failed";
+	const textScale = useTextScale();
 	const noticeLabel =
 		item.kind === "notice" ? steeringNoticeLabel(item) : undefined;
 	let content: ReactNode;
 	switch (item.kind) {
 		case "details":
 			content = (
-				<>
-					<Action
-						tone="quiet"
-						label={`Session details, ${item.entries.length} ${item.entries.length === 1 ? "entry" : "entries"}`}
-						expanded={expanded}
-						onPress={toggle}
-					>{`${expanded ? "▾" : "▸"} Session details · ${item.entries.length}`}</Action>
-					{expanded
-						? item.entries.map((entry) => (
-								<TimelineItem
-									key={entry.id}
-									item={entry}
-									hubId={hubId}
-									sessionRef={sessionRef}
-								/>
-							))
-						: null}
-				</>
+				<SystemEvent
+					label={`Session details · ${item.entries.length}`}
+					expanded={expanded}
+					onToggle={toggle}
+				>
+					{item.entries.map((entry) => (
+						<TimelineItem
+							key={entry.id}
+							item={entry}
+							hubId={hubId}
+							sessionRef={sessionRef}
+							errorActionFor={errorActionFor}
+							onErrorAction={onErrorAction}
+						/>
+					))}
+				</SystemEvent>
 			);
 			break;
 		case "user":
@@ -110,38 +133,40 @@ export function TimelineItem({
 			content = <AgentMessage markdown={item.markdown} quote={quote} />;
 			break;
 		case "notice":
-			content = noticeLabel ? (
-				<>
-					<Action
-						tone="quiet"
-						label={`${noticeLabel}, ${expanded ? "hide" : "show"} notice`}
-						expanded={expanded}
-						onPress={toggle}
-					>{`${expanded ? "▾" : "▸"} ${noticeLabel}`}</Action>
-					{expanded ? <Copy>{item.text}</Copy> : null}
-				</>
+			content = isCriticalNotice(item) ? (
+				<ErrorRow
+					title={item.text}
+					detail=""
+					action={errorActionFor?.({ id: item.id, title: item.text, detail: "", turnId: item.turnId }) ?? null}
+					onAction={onErrorAction}
+				/>
 			) : (
-				<>
-					<Copy muted>{isCriticalNotice(item) ? "Warning" : "Notice"}</Copy>
-					<Copy>{item.text}</Copy>
-				</>
+				<SystemEvent label={noticeLabel} text={item.text} expanded={expanded} onToggle={toggle} />
 			);
 			break;
 		case "failure":
+			if (quietThought) {
+				content = (
+					<Text
+						allowFontScaling={Platform.OS !== "ios"}
+						style={{ fontSize: 14 * textScale, lineHeight: 19 * textScale, color: colors.palette.inkLow }}
+					>
+						{item.title}
+					</Text>
+				);
+				break;
+			}
 			content = (
-				<>
-					<Copy>{item.title}</Copy>
-					<Copy>{item.detail}</Copy>
-				</>
+				<ErrorRow
+					title={item.title}
+					detail={item.detail}
+					action={errorActionFor?.(item) ?? null}
+					onAction={onErrorAction}
+				/>
 			);
 			break;
 		case "attachments":
-			content = (
-				<>
-					<Copy muted>Attachments</Copy>
-					<TranscriptImages images={item.items} hubId={hubId} />
-				</>
-			);
+			content = <TranscriptImages images={item.items} hubId={hubId} />;
 			break;
 		case "question":
 			content = (
@@ -166,6 +191,23 @@ export function TimelineItem({
 			);
 			break;
 		case "activity":
+			if (item.family === "reasoning" && item.state !== "running") {
+				content = (
+					<ThoughtRow durationMs={item.detail.durationMs} text={item.detail.output} expanded={expanded} onToggle={toggle} />
+				);
+				break;
+			}
+			if (item.label === "delegate" || item.label === "delegate_send") {
+				content = <Subagent row={item} delegates={delegates} openSubagent={openSubagent} />;
+				break;
+			}
+			if (item.label === "ask_user") {
+				const questions = parseAskUserQuestions({ argumentsJSON: item.detail.arguments } as ItemModel);
+				if (questions) {
+					content = <QuestionHistory questions={questions} answer={answerFor?.(item.id)} />;
+					break;
+				}
+			}
 			if (activityPresentation?.mode === "intent") {
 				content = <Copy muted>{activityPresentation.summary}</Copy>;
 				break;
@@ -233,13 +275,11 @@ export function TimelineItem({
 		<View
 			style={[
 				{ gap: 8 },
-				item.kind === "question" ||
-				item.kind === "failure" ||
-				(item.kind === "notice" && isCriticalNotice(item))
+				// A failure and a critical notice draw their own red rule (ErrorRow).
+				item.kind === "question"
 					? {
 							borderLeftWidth: 2,
-							borderLeftColor:
-								item.kind === "failure" ? colors.error : colors.accent,
+							borderLeftColor: colors.accent,
 							paddingLeft: 14,
 							paddingVertical: 8,
 						}
@@ -410,6 +450,20 @@ function AgentMessage({
 			</Modal>
 		</>
 	);
+}
+
+function Subagent({
+	row,
+	delegates,
+	openSubagent,
+}: {
+	row: Extract<TimelineRow, { kind: "activity" }>;
+	delegates: readonly EvenerDelegateInfo[] | undefined;
+	openSubagent: ((ref: string, title: string) => void) | undefined;
+}) {
+	// The state's time ("failed · 6m") moves on with the minute clock.
+	const now = useMinuteClock();
+	return <SubagentRow line={subagentLine(row, delegates, now)} onOpen={openSubagent} />;
 }
 
 function TimeMarker({ at }: { at: number }) {

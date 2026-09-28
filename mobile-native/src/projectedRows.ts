@@ -185,7 +185,9 @@ export type MobileTimelineItem = (
 	// (AskQuestionRef.callId); the composer renders them as interactive cards
 	// with a single "Send answers" action.
 	| { kind: "question"; id: string; questions: AskQuestionRef[] }
-	| { kind: "failure"; id: string; title: string; detail: string }
+	// thought: a thought the projector didn't show (its redacted critical
+	// reasoning), which the transcript reads as one quiet line.
+	| { kind: "failure"; id: string; title: string; detail: string; thought?: boolean }
 	| { kind: "attachments"; id: string; items: AttachmentRef[] }
 ) & {
 	transcriptKey?: string;
@@ -329,7 +331,7 @@ function rowForItem(it: ItemModel, context: ProjectedRowContext): MobileTimeline
 			label: "Reasoning",
 			family: "reasoning",
 			state,
-			detail: { ...activityDetail(it), output: reasoningText(it) },
+			detail: reasoningDetail(it),
 			...identity,
 		};
 	}
@@ -396,7 +398,7 @@ function criticalReasoningRow(
 	const it = entry.item;
 	const identity = itemIdentity(it);
 	if (entry.redacted) {
-		return { kind: "failure", id: it.id, title: entry.summary, detail: "", ...identity };
+		return { kind: "failure", id: it.id, title: entry.summary, detail: "", thought: true, ...identity };
 	}
 	// Defensive: a critical reasoning that is not redacted keeps its thought as
 	// a failed reasoning activity.
@@ -406,7 +408,7 @@ function criticalReasoningRow(
 		label: "Reasoning",
 		family: "reasoning",
 		state: "failed",
-		detail: { ...activityDetail(it), output: reasoningText(it) },
+		detail: reasoningDetail(it),
 		...identity,
 	};
 }
@@ -432,6 +434,21 @@ function itemIdentity(it: ItemModel): {
 // The settled text plus any in-flight delta chunks a live reducer accumulated.
 function itemMarkdown(it: ItemModel): string {
 	return it.pendingText ? it.text + pendingTextJoined(it.pendingText) : it.text;
+}
+
+// A reasoning row's detail: its text, and how long the thought took. The wire
+// never times reasoning, so the duration falls back to the times this phone's
+// reducer saw the thought arrive and settle ("Thought for 12s").
+function reasoningDetail(it: ItemModel): ActivityDetail {
+	const detail = activityDetail(it);
+	const observed = parsedTimes(it.observedStartedAt, it.observedCompletedAt);
+	return {
+		...detail,
+		output: reasoningText(it),
+		...(detail.durationMs === undefined && observed.start !== undefined && observed.end !== undefined
+			? { durationMs: observed.end - observed.start }
+			: {}),
+	};
 }
 
 // A reasoning item's text as the reader sees it: the longer of the settled
@@ -463,19 +480,19 @@ function activityDescription(it: ItemModel): string | undefined {
 		.join("; ")}`;
 }
 
-// The item's started/completed timestamps as epoch milliseconds. The
+// A started/completed pair of timestamps as epoch milliseconds. The
 // canonical duration behavior (D24-3's deferred delta): absent (both, not
 // just one) when either timestamp is missing or fails to parse, instead of
 // producing NaN, so durationMs, startedAtMs and endedAtMs never disagree
 // about whether this item's timing is known.
-function parsedItemTimes(it: ItemModel): { start?: number; end?: number } {
-	const start = hubTime(it.startedAt);
-	const end = hubTime(it.completedAt);
+function parsedTimes(startedAt: string | undefined, completedAt: string | undefined): { start?: number; end?: number } {
+	const start = hubTime(startedAt);
+	const end = hubTime(completedAt);
 	return start === null || end === null ? {} : { start, end };
 }
 
 function activityDetail(it: ItemModel): ActivityDetail {
-	const { start, end } = parsedItemTimes(it);
+	const { start, end } = parsedTimes(it.startedAt, it.completedAt);
 	return {
 		description: activityDescription(it),
 		arguments: it.argumentsJSON,
