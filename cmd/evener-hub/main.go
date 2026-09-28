@@ -62,6 +62,12 @@ var (
 	hubProcessArgs = func() []string { return os.Args }
 	hubHostname    = os.Hostname
 	hubRunMain     = runMain
+	// hubBuildDirty reports whether this hub was built from a dirty tree, by the
+	// same rule sshconn refuses deploy sources under (a "<sha>-dirty" controller
+	// version, isDirtyVersion). It is a seam so a test can put the hub in either
+	// state without stamping the binary it runs in; deploy_flags.go reads it to
+	// pick the remedy that matches what sshconn will actually do with the source.
+	hubBuildDirty = func() bool { return strings.HasSuffix(strings.TrimSpace(buildinfo.Version()), "-dirty") }
 	// hubProcessStart is this hub process's own start instant, captured when
 	// the package initializes. It is what evener/host/running reports as its
 	// processStartTime (deploy pipeline 08b §10: "present exactly when the

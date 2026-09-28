@@ -424,7 +424,8 @@ different build to push, and a third disables deploying:
   hub's log line says it was ignored), and every deploy path is off — including
   the installer fallback below. A host that needs a build is refused with the
   remedy named, or keeps its own build when it is already protocol-compatible.
-  This is the pre-default behavior, chosen explicitly.
+  This restores a deploy-off controller: the pre-default flagless push opt-in,
+  without the installer fallback the pre-default hub still had.
 
 `-deploy-binary` wins over `-build-source`, `-no-deploy` wins over both, and the
 hub logs which source is effective at startup — including when the default

@@ -185,6 +185,15 @@ func (o hubOptions) deployBinarySeam() func(ctx context.Context, goos, goarch, o
 // a hub whose named source refused).
 const hubDeployHelpDefaultedSource = "set -deploy-binary <path> (a pre-built evener built for the host's target) or -build-source <path> (an evener checkout to cross-compile from, which can build for any target), or run the hub on the host's platform"
 
+// hubDeployHelpDefaultedDirtySource is hubDeployHelpDefaultedSource for a DIRTY
+// controller: the cross-target refusal fires there too, and the flags the clean
+// text leads with cannot work — a dirty controller refuses a named artifact and
+// a source checkout terminally (errControllerDirty), so recommending them would
+// name the two things guaranteed to fail. The actions that can succeed lead
+// instead, and no deploy flag is named: rebuild the hub from a clean checkout, or
+// get an evener built for the host's platform onto that host some other way.
+const hubDeployHelpDefaultedDirtySource = "rebuild this hub from a clean checkout, or install an evener built for the host's platform on the host itself: this controller is a dirty build, so it cannot install a named deploy source or a source compile"
+
 // deployHelp picks the remedy the refusals name for the state this hub is in.
 // After validateDeployFlags, a hub that did not set -no-deploy and validated no
 // source at all is the unwired state — the default resolves for every evener
@@ -205,6 +214,9 @@ func (o hubOptions) deployHelp() string {
 		return hubDeployHelp
 	}
 	if o.deployDefault {
+		if hubBuildDirty() {
+			return hubDeployHelpDefaultedDirtySource
+		}
 		return hubDeployHelpDefaultedSource
 	}
 	if o.deployBinary != "" || o.buildSource != "" {
@@ -308,8 +320,8 @@ func (o *hubOptions) validateDeployFlags() error {
 // assumption: cmd/evener-hub is a library package (package hub — no main func,
 // no executable), and ./cmd/evener links it in behind `evener hub`
 // (cmd/evener/main.go imports it as hubcmd and its command table runs it for
-// both `hub` and `serve`), so every launch path a hub has runs the evener
-// binary, and the binary `make build-hub` builds is ./cmd/evener/. os.Executable()
+// `hub`), so every launch path a hub has runs the evener binary, and the binary
+// `make build-hub` builds is ./cmd/evener/. os.Executable()
 // in a running hub is therefore exactly the artifact validateDeployBinary
 // accepts (buildinfo.Path == evenerMainPackage) — the test that boots a real hub
 // and reads the line this resolution logs asserts it (deploy_default_e2e_test.go).

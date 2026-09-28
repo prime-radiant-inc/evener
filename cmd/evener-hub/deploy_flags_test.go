@@ -455,6 +455,49 @@ func TestDeployWiringWithNeitherSetsHelpOnly(t *testing.T) {
 	}
 }
 
+// stubHubBuildDirty puts this hub's dirty-build seam in a known state for one
+// test, so the remedy selected for a dirty or clean controller is the test's own
+// rather than a property of the binary running it.
+func stubHubBuildDirty(t *testing.T, dirty bool) {
+	t.Helper()
+	orig := hubBuildDirty
+	hubBuildDirty = func() bool { return dirty }
+	t.Cleanup(func() { hubBuildDirty = orig })
+}
+
+// TestDirtyDefaultedSourceRefusalNamesNoDeployFlag pins the remedy for a dirty
+// controller whose defaulted source cannot serve a cross-target host: the clean
+// text leads with -deploy-binary and -build-source, and a dirty controller
+// refuses both terminally (errControllerDirty), so naming them would recommend
+// the two things guaranteed to fail. The dirty remedy must name no deploy flag
+// and point at the actions that can succeed instead.
+func TestDirtyDefaultedSourceRefusalNamesNoDeployFlag(t *testing.T) {
+	stubHubBuildDirty(t, true)
+	stubHubExecutable(t, evenerArtifact(t), nil)
+
+	opts, err := parseHubOptions(nil, &bytes.Buffer{})
+	if err != nil {
+		t.Fatalf("parseHubOptions: %v", err)
+	}
+	if !opts.deployDefault {
+		t.Fatal("the own-executable default did not resolve, so this test would assert the unwired state")
+	}
+	help := opts.deployWiring().help
+	if help != hubDeployHelpDefaultedDirtySource {
+		t.Fatalf("dirty defaulted-source remedy = %q, want %q", help, hubDeployHelpDefaultedDirtySource)
+	}
+	for _, flag := range []string{deployBinaryFlag, buildSourceFlag} {
+		if strings.Contains(help, flag) {
+			t.Fatalf("the dirty controller's remedy names %s, which a dirty controller refuses terminally: %q", flag, help)
+		}
+	}
+	for _, want := range []string{"clean checkout", "host's platform"} {
+		if !strings.Contains(help, want) {
+			t.Fatalf("the dirty controller's remedy does not name %q: %q", want, help)
+		}
+	}
+}
+
 // TestHubDeployHelpNamesBothFlags pins what the operator is told when no deploy
 // path is configured: the hub's own flags, not sshconn's internal field name.
 func TestHubDeployHelpNamesBothFlags(t *testing.T) {
@@ -498,6 +541,7 @@ func TestDisabledRemedyNamesTheFlagsItMustAlsoDrop(t *testing.T) {
 // text that leads with the flags that change the outcome, while the -no-deploy
 // state keeps the shared text whose leading clause is exactly its way back.
 func TestDefaultedSourceRefusalLeadsWithTheFlags(t *testing.T) {
+	stubHubBuildDirty(t, false)
 	stubHubExecutable(t, evenerArtifact(t), nil)
 
 	t.Run("defaulted source", func(t *testing.T) {
@@ -1106,6 +1150,7 @@ func evenerCheckoutFixture(t *testing.T) string {
 // BuildSource, and startup logs the defaulted source instead of the old
 // no-deploy-path silence.
 func TestRunMainWiresAndLogsTheOwnExecutableDeploy(t *testing.T) {
+	stubHubBuildDirty(t, false)
 	exe := evenerArtifact(t)
 	stubHubExecutable(t, exe, nil)
 	want, err := filepath.EvalSymlinks(exe)
