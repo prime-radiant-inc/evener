@@ -41,6 +41,7 @@ import {
 	type Routes,
 } from "./src/screens";
 import { ModelSheet } from "./src/session/ModelSheet";
+import { CommandsSheet } from "./src/session/CommandsSheet";
 import { NotesSheet } from "./src/session/NotesSheet";
 import { SessionInfoSheet } from "./src/session/SessionInfoSheet";
 import { SHEET_ROUTES } from "./src/sheet/sheetRoutes";
@@ -270,6 +271,11 @@ function Navigation() {
 							name="ModelSheet"
 							component={ModelSheet}
 							options={SHEET_ROUTES.ModelSheet}
+						/>
+						<Stack.Screen
+							name="CommandsSheet"
+							component={CommandsSheet}
+							options={SHEET_ROUTES.CommandsSheet}
 						/>
 						<Stack.Screen
 							name="FilesSheet"

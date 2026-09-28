@@ -38,8 +38,6 @@ import {
 	buildComposerInput,
 	formatQuoteBlock,
 	mergeDraftText,
-	parseSlashToken,
-	spliceSlashCommand,
 	type TranscriptDisplayConfigV1,
 	translateAttachmentMarkers,
 } from "@evener/appwire-client";
@@ -53,7 +51,6 @@ import {
 import { ActivitySheet } from "./ActivitySheet";
 import { ApprovalControls } from "./approvalControls";
 import { useMarkSeenInFront } from "./board/sessionSeen";
-import { CommandCompletion } from "./CommandCompletion";
 import { useConnection } from "./ConnectionProvider";
 import {
 	CommandArgumentError,
@@ -151,6 +148,9 @@ import { SessionControls, useControlsState } from "./sessionControls";
 import { useConnectionStatusText } from "./board/connectionStatus";
 import { Composer, ModelChip } from "./session/Composer";
 import { type ModelHost, modelHosts } from "./session/ModelSheet";
+import { type CommandsHost, commandHosts, insertInvocation } from "./session/CommandsSheet";
+import { FindBar } from "./session/FindBar";
+import { findMatches, matchLabel, stepMatch } from "./session/findInSession";
 import {
 	configForLevel,
 	currentLevel,
@@ -197,6 +197,22 @@ const NO_QUESTIONS: AskQuestionRef[] = [];
 const STEER_FAILED = { text: "Couldn't steer with this message now." };
 const STEER_ALL_FAILED = { text: "Couldn't steer with these messages now." };
 
+/** Find in session while it's open: what you typed, the current match's
+ * reader key, whether older history is being searched, and whether that
+ * search reached the start of history with nothing older. */
+interface FindState {
+	query: string;
+	key: string | null;
+	seeking: boolean;
+	exhausted: boolean;
+}
+
+/** A new query starts a new search: no current match yet, and older history
+ * is searched only when there is something to look for. */
+function newFind(query: string): FindState {
+	return { query, key: null, seeking: query.trim() !== "", exhausted: false };
+}
+
 export type Routes = {
 	SessionDeletion: { hubId: string; ref: string; title: string };
 	Fork: {
@@ -238,6 +254,7 @@ export type Routes = {
 	QueueSheet: { hubId: string; ref: string };
 	SessionInfoSheet: { hubId: string; ref: string };
 	ModelSheet: { hubId: string; ref: string; setting: "model" | "vision" };
+	CommandsSheet: { hubId: string; ref: string };
 	RowMenuSheet: { hubId: string; ref: string; archived: boolean };
 	Reader: {
 		hubId: string;
@@ -582,9 +599,10 @@ export function ConversationScreen({
 	} = useConnection();
 	const focused = useScreenInFront(route.key);
 	const colors = useColors();
-	const { height: windowHeight } = useWindowDimensions();
-	const [viewportHeight, setViewportHeight] = useState(windowHeight);
 	const [sessionMenuOpen, setSessionMenuOpen] = useState(false);
+	// Find in session (ruling 29), open while non-null. The current match is
+	// remembered by its row's reader key, since older pages prepend rows.
+	const [find, setFind] = useState<FindState | null>(null);
 	const headerHeight = useHeaderHeight();
 	// The durable-mutation wiring: the store admits every mutation through a
 	// lazily-acquired process runtime (a screen that never sends never opens the
@@ -691,13 +709,16 @@ export function ConversationScreen({
 	const readerMomentum = useRef(false);
 	const restoreFrame = useRef<number | null>(null);
 	const composerInput = useRef<TextInput>(null);
-	const [composerSelection, setComposerSelection] = useState({
-		start: 0,
-		end: 0,
-	});
-	const [completionClosedAt, setCompletionClosedAt] = useState<string | null>(
-		null,
-	);
+	// Puts the caret at `caret` in the composer and focuses it, on the next
+	// frame so the field has the text the caret is placed in.
+	const focusComposerAt = useCallback((caret: number) => {
+		requestAnimationFrame(() => {
+			composerInput.current?.setNativeProps({
+				selection: { start: caret, end: caret },
+			});
+			composerInput.current?.focus();
+		});
+	}, []);
 	const focusAfterModal = useRef(false);
 	useFocusAfterModal(navigation, focusAfterModal, composerInput);
 	const [activityContext, setActivityContext] = useState<{
@@ -1247,6 +1268,8 @@ export function ConversationScreen({
 				levels.set(route.params.ref, action.level);
 				toaster.show({ text: levelToast(action.level) });
 				return;
+			case "find":
+				setFind(newFind(""));
 			case "files":
 				openFiles();
 				return;
@@ -1390,15 +1413,9 @@ export function ConversationScreen({
 			if (quoted === "") return;
 			const merged = mergeDraftText(document.getSnapshot().record.draft, quoted);
 			document.edit(merged);
-			setComposerSelection({ start: merged.length, end: merged.length });
-			requestAnimationFrame(() => {
-				composerInput.current?.setNativeProps({
-					selection: { start: merged.length, end: merged.length },
-				});
-				composerInput.current?.focus();
-			});
+			focusComposerAt(merged.length);
 		},
-		[document],
+		[document, focusComposerAt],
 	);
 	// The documents the agent names become chips under its messages (spec
 	// 8.2), aged by the session's own writes. Every publish hands the screen
@@ -1544,6 +1561,100 @@ export function ConversationScreen({
 				// Keep failed page attempts guarded until a binding or route reset.
 			});
 	}
+	const findQuery = find?.query ?? "";
+	const findHits = useMemo(
+		() => findMatches(timelineRows, findQuery),
+		[timelineRows, findQuery],
+	);
+	const findKey = find?.key ?? null;
+	const findIndex =
+		findKey === null
+			? -1
+			: timelineRows.findIndex((row) => readerKey(row) === findKey);
+	const findCurrent = findIndex < 0 ? null : findIndex;
+	function stepFind(direction: 1 | -1) {
+		if (!find) return;
+		const next = stepMatch(findHits, findCurrent, direction);
+		if (next !== null)
+			setFind({
+				...find,
+				key: readerKey(timelineRows[next]),
+				seeking: false,
+				exhausted: false,
+			});
+		// Nothing older is loaded: look in older history.
+		else if (direction === -1)
+			setFind({ ...find, seeking: true, exhausted: false });
+	}
+	// While seeking, find the newest match older than the current one (or
+	// the newest of all), loading one older page at a time until a match
+	// appears or history ends.
+	useEffect(() => {
+		if (!find?.seeking) return;
+		const next = stepMatch(findHits, findCurrent, -1);
+		if (next !== null) {
+			setFind({ ...find, key: readerKey(timelineRows[next]), seeking: false });
+			return;
+		}
+		if (snapshot.loadingOlder) return;
+		const cursor = snapshot.olderCursor;
+		if (!cursor) {
+			// Stepped past the oldest match: say so. With none at all, the
+			// label already reads "No matches".
+			setFind({ ...find, seeking: false, exhausted: findHits.length > 0 });
+			return;
+		}
+		// Offline, or this page already failed: stop, and the next step asks again.
+		if (!service || !connected || readerPageAttempts.current.has(cursor)) {
+			setFind({ ...find, seeking: false });
+			return;
+		}
+		loadOlderPage();
+	});
+	// The current match comes into view, 30% down the list. A row the list
+	// hasn't measured fails the jump (onScrollToIndexFailed, while
+	// findJumping holds); the list then moves near it and tries again, for as
+	// long as each try measures rows closer to it, as the reader's restore
+	// does (ReaderRestoreAttempts.retryUnmeasured). A retry belongs to the
+	// match it started for: a new match or closing find cancels it, and it
+	// finds its row again when it runs, since older pages may have prepended.
+	const findJumping = useRef(false);
+	const findAttempts = useRef(new ReaderRestoreAttempts());
+	const findRetryFrame = useRef<number | null>(null);
+	const findCurrentNow = useRef(findCurrent);
+	useEffect(() => {
+		findCurrentNow.current = findCurrent;
+	});
+	function cancelFindRetry() {
+		if (findRetryFrame.current !== null)
+			cancelAnimationFrame(findRetryFrame.current);
+		findRetryFrame.current = null;
+	}
+	function retryFindMatch() {
+		findRetryFrame.current = null;
+		if (findCurrentNow.current !== null)
+			scrollToFindMatch(findCurrentNow.current);
+	}
+	function scrollToFindMatch(index: number) {
+		readerLatest.current = false;
+		readerHeader.current = false;
+		// The reading position follows the jump, so nothing pulls the list back.
+		captureSuppressed.current = false;
+		findJumping.current = true;
+		timeline.current?.scrollToIndex({ index, viewPosition: 0.3, animated: true });
+		findJumping.current = false;
+	}
+	// biome-ignore lint/correctness/useExhaustiveDependencies: only a new current match scrolls; rows prepending above it keep it in view.
+	useEffect(() => {
+		cancelFindRetry();
+		findAttempts.current.reset();
+		if (findCurrent !== null) scrollToFindMatch(findCurrent);
+		return cancelFindRetry;
+	}, [findKey]);
+	// Leaving the screen closes find.
+	useEffect(() => {
+		if (!focused) setFind(null);
+	}, [focused]);
 	// biome-ignore lint/correctness/useExhaustiveDependencies: Cell layout revisions intentionally retrigger semantic restoration.
 	useEffect(() => {
 		const anchor = readerAnchor.current;
@@ -1725,11 +1836,6 @@ export function ConversationScreen({
 			(!conversation.resumeRequired &&
 				conversation.status.type !== "restartRequired")) &&
 		(!conversation || canComposeFor(conversation));
-	const slashToken =
-		composerSelection.start === composerSelection.end &&
-		draft.record.draft !== completionClosedAt
-			? parseSlashToken(draft.record.draft, composerSelection.start)
-			: null;
 	const goalCommand = goalObjective(
 		draft.record.draft,
 		draft.record.images?.length,
@@ -2141,6 +2247,30 @@ export function ConversationScreen({
 		sheetKey(route.params.hubId, route.params.ref),
 		modelHost,
 	);
+	// The Commands and skills sheet's host (ruling 37). A choice lands at the
+	// start of the draft, with the caret after it for the command's argument.
+	const commandsHost = useMemo<CommandsHost | undefined>(
+		() =>
+			conversation
+				? {
+						session: conversation,
+						choose: (invocation) => {
+							const inserted = insertInvocation(
+								document.getSnapshot().record.draft,
+								invocation,
+							);
+							document.edit(inserted.text);
+							focusComposerAt(inserted.caret);
+						},
+					}
+				: undefined,
+		[conversation, document, focusComposerAt],
+	);
+	useProvideSheetHost(
+		commandHosts,
+		sheetKey(route.params.hubId, route.params.ref),
+		commandsHost,
+	);
 	// The chip names the model the way the catalog does, so the screen loads
 	// the catalog once for each binding it opens connected.
 	useEffect(() => {
@@ -2346,6 +2476,13 @@ export function ConversationScreen({
 		},
 		[controls, navigation, route.params.hubId, retryFailedTurn],
 	);
+	function openCommands() {
+		Keyboard.dismiss();
+		navigation.navigate("CommandsSheet", {
+			hubId: route.params.hubId,
+			ref: route.params.ref,
+		});
+	}
 	function openModelSheet(setting: "model" | "vision") {
 		Keyboard.dismiss();
 		navigation.navigate("ModelSheet", {
@@ -2509,12 +2646,7 @@ export function ConversationScreen({
 			const merged = mergeDraftText(document.getSnapshot().record.draft, text);
 			document.edit(merged);
 			const cancelled = await cancel();
-			requestAnimationFrame(() => {
-				composerInput.current?.setNativeProps({
-					selection: { start: merged.length, end: merged.length },
-				});
-				composerInput.current?.focus();
-			});
+			focusComposerAt(merged.length);
 			return cancelled
 				? null
 				: { text: "Moved to your message, but it's still queued." };
@@ -2651,8 +2783,8 @@ export function ConversationScreen({
 
 	// One render function for the list's lifetime: FlatList sees the same
 	// reference across a re-render that changes nothing a row reads (the
-	// composer's selection, the reader keying, a sheet opening), so it does not
-	// rebuild every visible transcript cell for them.
+	// reader keying, a sheet opening), so it does not rebuild every visible
+	// transcript cell for them.
 	const renderItem = useCallback(
 		({ item, index }: { item: TimelineRow; index: number }) => (
 			<View
@@ -2660,36 +2792,52 @@ export function ConversationScreen({
 					paddingBottom: timelineGap(item, timelineRows[index + 1]),
 				}}
 			>
-				<TimelineItem
-					item={item}
-					hubId={route.params.hubId}
-					sessionRef={route.params.ref}
-					activityPresentation={presentation.activityPresentation.get(item.id)}
-					expandByDefault={presentation.expandByDefault}
-					showDuration={presentation.showDuration}
-					fork={
-						snapshot.conversation?.capabilities?.forkFromTurn
-							? forkMessage
+				<View
+					style={
+						findKey !== null && readerKey(item) === findKey
+							? {
+									// The current match (ruling 29): blue means selected.
+									backgroundColor: colors.palette.accentBg,
+									borderRadius: 12,
+									marginHorizontal: -8,
+									paddingHorizontal: 8,
+								}
 							: undefined
 					}
-					forkDisabled={!connected || !focused || snapshot.status !== "open"}
-					quote={quote}
-					live={item.id === liveRun}
-					delegates={conversation?.delegates}
-					openSubagent={openSubagent}
-					answerFor={answerFor}
-					errorActionFor={(row) =>
-						conversation
-							? // Retry shows only when a press would send.
-								errorAction(row, conversation, liveSendKind() !== null)
-							: null
-					}
-					onErrorAction={runErrorAction}
-					documentChips={documentChips}
-				/>
+				>
+					<TimelineItem
+						item={item}
+						hubId={route.params.hubId}
+						sessionRef={route.params.ref}
+						activityPresentation={presentation.activityPresentation.get(item.id)}
+						expandByDefault={presentation.expandByDefault}
+						showDuration={presentation.showDuration}
+						fork={
+							snapshot.conversation?.capabilities?.forkFromTurn
+								? forkMessage
+								: undefined
+						}
+						forkDisabled={!connected || !focused || snapshot.status !== "open"}
+						quote={quote}
+						live={item.id === liveRun}
+						delegates={conversation?.delegates}
+						openSubagent={openSubagent}
+						answerFor={answerFor}
+						errorActionFor={(row) =>
+							conversation
+								? // Retry shows only when a press would send.
+									errorAction(row, conversation, liveSendKind() !== null)
+								: null
+						}
+						onErrorAction={runErrorAction}
+						documentChips={documentChips}
+					/>
+				</View>
 			</View>
 		),
 		[
+			findKey,
+			colors.palette.accentBg,
 			timelineRows,
 			route.params.hubId,
 			route.params.ref,
@@ -2750,12 +2898,7 @@ export function ConversationScreen({
 				behavior={Platform.OS === "ios" ? "padding" : "height"}
 				keyboardVerticalOffset={headerHeight}
 			>
-				<View
-					style={styles.fill}
-					onLayout={(event) =>
-						setViewportHeight(event.nativeEvent.layout.height)
-					}
-				>
+				<View style={styles.fill}>
 					<View style={{ flex: 1 }}>
 						<FlatList
 							ref={timeline}
@@ -2862,6 +3005,23 @@ export function ConversationScreen({
 								setLayoutRevision((revision) => revision + 1);
 							}}
 							onScrollToIndexFailed={({ index, averageItemLength }) => {
+								// A match beyond the measured rows: move near it, so the
+								// rows on the way render, then try again.
+								if (findJumping.current) {
+									const progress = furthestMeasuredRowBeforeTarget(
+										timelineRows,
+										index,
+										[...readerMeasurements.current.values()],
+									);
+									if (!findAttempts.current.retryUnmeasured(progress)) return;
+									timeline.current?.scrollToOffset({
+										offset: index * Math.max(1, averageItemLength),
+										animated: false,
+									});
+									findRetryFrame.current =
+										requestAnimationFrame(retryFindMatch);
+									return;
+								}
 								const anchor = readerAnchor.current;
 								const targetIndex = anchor
 									? resolveReaderAnchor(anchor, timelineRows)
@@ -2950,6 +3110,28 @@ export function ConversationScreen({
 							<SessionHeader
 								status={connectionText}
 								chips={chips}
+								find={
+									find ? (
+										<FindBar
+											query={find.query}
+											label={
+												find.exhausted
+													? "No older matches"
+													: find.query.trim()
+														? matchLabel(findHits, findCurrent)
+														: ""
+											}
+											searchingOlder={find.seeking && snapshot.loadingOlder}
+											settled={!find.seeking}
+											onQuery={(query) => setFind(newFind(query))}
+											onStep={stepFind}
+											onDone={() => {
+												Keyboard.dismiss();
+												setFind(null);
+											}}
+										/>
+									) : undefined
+								}
 								hidden={headerHiding.hidden}
 								onChip={openChip}
 								notes={
@@ -3099,8 +3281,19 @@ export function ConversationScreen({
 								<Composer
 									value={draft.record.draft}
 									editable={draft.loaded}
-									onChangeText={(text) => document.edit(text)}
-									onSelectionChange={setComposerSelection}
+									onChangeText={(text) => {
+										// A "/" that starts an empty draft opens Commands and
+										// skills in its place (spec 8.5).
+										if (
+											text === "/" &&
+											draft.record.draft === "" &&
+											commandsHost
+										) {
+											openCommands();
+											return;
+										}
+										document.edit(text);
+									}}
 									inputRef={composerInput}
 									placeholder={composerPlaceholder(action, answering)}
 									// Under an open dock, whose own button reads "Send answer",
@@ -3122,48 +3315,11 @@ export function ConversationScreen({
 										Keyboard.dismiss();
 										void imageSelection.choose("camera");
 									}}
+									onCommands={commandsHost ? openCommands : undefined}
 									settings={bottom.modelChip ? composerSettings : null}
 									above={
 										<>
 											{waitingForAgent}
-											{connected && client && conversation && slashToken ? (
-												<CommandCompletion
-													// Suggestions use at most 40% of the composer's 80% viewport cap.
-													maxHeight={Math.min(160, viewportHeight * 0.32)}
-													client={client}
-													sessionRef={route.params.ref}
-													session={conversation}
-													query={slashToken.query}
-													close={() => setCompletionClosedAt(draft.record.draft)}
-													choose={(item) => {
-														if (
-															document.getSnapshot().record.draft !==
-															draft.record.draft
-														)
-															return;
-														const inserted = spliceSlashCommand(
-															draft.record.draft,
-															slashToken,
-															item.invocation,
-														);
-														document.edit(inserted.text);
-														setCompletionClosedAt(inserted.text);
-														setComposerSelection({
-															start: inserted.caret,
-															end: inserted.caret,
-														});
-														requestAnimationFrame(() => {
-															composerInput.current?.setNativeProps({
-																selection: {
-																	start: inserted.caret,
-																	end: inserted.caret,
-																},
-															});
-															composerInput.current?.focus();
-														});
-													}}
-												/>
-											) : null}
 											<ImageAttachments
 												document={document}
 												selection={imageSelection}
