@@ -84,6 +84,13 @@ describe("which path decides a row", () => {
 		expect(marks.isSeenOnHub(row("a", { turn_ended_at: iso(T) }))).toBe(true);
 	});
 
+	it("leaves a row whose turn_ended_at doesn't parse to the device, pending mark or not", () => {
+		const { marks, client } = setup();
+		expect(marks.isSeenOnHub(row("bad", { turn_ended_at: "not a time", unseen: true }))).toBeNull();
+		marks.markUnread(client, ["bad"]);
+		expect(marks.isSeenOnHub(row("bad", { turn_ended_at: "not a time", unseen: false }))).toBeNull();
+	});
+
 	it("ignores the device's markers for a hub row, and uses them for any other", () => {
 		const { markers, seen } = board();
 		markers.markUnread("unseen-here");
@@ -143,6 +150,18 @@ describe("pending marks", () => {
 		marks.prune([ended("landed", T, true), ended("waiting", T, false)]);
 		expect(marks.isSeenOnHub(ended("landed", T, false))).toBe(true);
 		expect(marks.isSeenOnHub(ended("waiting", T, false))).toBe(false);
+	});
+
+	it("keeps a pending mark when the only rows for its ref have no readable turn end", () => {
+		const { marks, client } = setup();
+		marks.markSeen(client, [{ ref: "seen", seenThrough: T }]);
+		marks.markUnread(client, ["unread"]);
+		const revision = marks.getRevision();
+		// Such a row is the device's to decide, so it can't show a hub mark landed.
+		marks.prune([row("seen"), row("seen", { turn_ended_at: "not a time" }), row("unread", { unseen: true })]);
+		expect(marks.getRevision()).toBe(revision);
+		expect(marks.isSeenOnHub(ended("seen", T, true))).toBe(true);
+		expect(marks.isSeenOnHub(ended("unread", T, false))).toBe(false);
 	});
 
 	it("changes nothing, and tells no one, when pruning drops nothing", () => {
@@ -294,6 +313,42 @@ describe("sending", () => {
 		expect(calls).toHaveLength(2);
 	});
 
+	it("keeps a call's marks when the hub fails for now, and sends them again on the next flush", async () => {
+		const { marks, client, calls } = setup();
+		marks.markSeen(client, [{ ref: "a", seenThrough: T }]);
+		// A store error (-32603) or an unavailable navigation service (-32014)
+		// says nothing about the mark itself.
+		calls[0].refuse(-32603);
+		await settle();
+		expect(marks.isSeenOnHub(ended("a", T, true))).toBe(true);
+		expect(calls).toHaveLength(1);
+		marks.flush(client);
+		calls[1].refuse(-32014);
+		await settle();
+		expect(marks.isSeenOnHub(ended("a", T, true))).toBe(true);
+		marks.flush(client);
+		expect(calls.map((call) => call.sessions)).toEqual([
+			[{ ref: "a", seenThrough: T }],
+			[{ ref: "a", seenThrough: T }],
+			[{ ref: "a", seenThrough: T }],
+		]);
+	});
+
+	it("sends over the new connection the marks a replaced connection's hub refused", async () => {
+		const { marks, client, calls } = setup();
+		marks.markSeen(client, [{ ref: "a", seenThrough: T }]);
+		// The connection is replaced while the call is out, and the old hub then
+		// answers that it has no seen/set: the new connection's hub may.
+		marks.flush(fakeClient("b", calls));
+		calls[0].refuse(-32601);
+		await settle();
+		expect(calls.map((call) => [call.client, call.sessions])).toEqual([
+			["a", [{ ref: "a", seenThrough: T }]],
+			["b", [{ ref: "a", seenThrough: T }]],
+		]);
+		expect(marks.isSeenOnHub(ended("a", T, true))).toBe(true);
+	});
+
 	it("keeps a mark whose call failed in transit, and sends it again on the next flush", async () => {
 		const { marks, client, calls } = setup();
 		marks.markSeen(client, [{ ref: "a", seenThrough: T }]);
@@ -328,6 +383,13 @@ describe("sending", () => {
 				],
 			],
 		]);
+	});
+
+	it("sends a mark made right after a flush that found nothing to send", () => {
+		const { marks, client, calls } = setup();
+		marks.flush(client);
+		marks.markSeen(client, [{ ref: "a", seenThrough: T }]);
+		expect(calls.map((call) => call.sessions)).toEqual([[{ ref: "a", seenThrough: T }]]);
 	});
 
 	it("records marks made with no connection, and sends them once one is ready", () => {
@@ -417,6 +479,18 @@ describe("the Board's marks", () => {
 		]);
 		expect(markers.isSeen(row("d1"))).toBe(false);
 		expect(seen.isSeen(ended("h1", T, false))).toBe(false);
+	});
+
+	it("marks a row whose turn_ended_at doesn't parse with the device's markers, read and unread", () => {
+		const { markers, calls, client, seen } = board();
+		const bad = row("bad", { turn_ended_at: "not a time", unseen: true });
+		seen.markRead(client, [bad]);
+		expect(markers.isSeen(bad)).toBe(true);
+		expect(seen.isSeen(bad)).toBe(true);
+		seen.markUnread(client, [bad]);
+		expect(markers.isSeen(bad)).toBe(false);
+		expect(seen.isSeen(bad)).toBe(false);
+		expect(calls).toHaveLength(0);
 	});
 
 	it("sends nothing when no row is the hub's", () => {

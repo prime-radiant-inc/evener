@@ -1062,6 +1062,20 @@ it("narrows results to live sessions in the Live scope", async () => {
 	act(() => tree.unmount());
 });
 
+it("lists a live session once when the hub's past results name it too", async () => {
+	const id = hubId();
+	adoptedAnHourAgo(id);
+	// The real hub's past index holds live sessions' records too.
+	connect(id, hub({ ...fleet, searchOnly: [finished] }).client, "ready");
+	const tree = await mount(navigation());
+	const bar = searchField(tree);
+	bar.focus();
+	await bar.type("ship");
+	expect(resultTitles(tree)).toEqual(["Ship it"]);
+	expect(texts(tree)).toContain("SESSIONS · 1");
+	act(() => tree.unmount());
+});
+
 it("holds a scope picked before you type", async () => {
 	const id = hubId();
 	adoptedAnHourAgo(id);
@@ -2219,6 +2233,41 @@ it("classifies a project's session rows by the hub's seen marker too (S4)", asyn
 	await settle();
 	expect(stateOf(tree, "Project hub seen")).toBe("Idle");
 	expect(stateOf(tree, "Project hub unseen")).toBe("Finished");
+	act(() => tree.unmount());
+});
+
+it("drops a project row's pending mark once the project's page shows it landed (S4)", async () => {
+	const id = hubId();
+	adoptedAnHourAgo(id);
+	const projectUnseen = session("local:project-unseen", {
+		title: "Project hub unseen",
+		live: false,
+		updated_at: minutesAgo(90),
+		turn_ended_at: minutesAgo(90),
+		unseen: true,
+	});
+	const shape: Fleet = {
+		...hubFleet,
+		catalogs: { projects: [evenerProject()] },
+		projectPages: { "evener:current": [projectUnseen] },
+	};
+	const fake = hub(shape);
+	connect(id, fake.client, "ready");
+	const tree = await mount(navigation());
+	pressLabel(tree, "evener");
+	await settle();
+	act(() => rowTitled(tree, "Project hub unseen").props.onPress());
+	await settle();
+	expect(fake.seen).toEqual([[{ ref: "local:project-unseen", seenThrough: Date.parse(minutesAgo(90)) }]]);
+	expect(stateOf(tree, "Project hub unseen")).toBe("Idle");
+	// The project's page catches up, and the pending mark goes: a later
+	// unseen for the same turn would show again. This fake hub answers every
+	// read at revision 1, so the change names none.
+	shape.projectPages = { "evener:current": [{ ...projectUnseen, unseen: false }] };
+	act(() => fake.invalidate(1, [{ kind: "project", projectKey: "evener" }]));
+	await settle();
+	expect(fake.requests.filter((read) => read.resource === "project_page" && read.tier === "current")).toHaveLength(2);
+	expect(hubSeenMarks(id).isSeenOnHub(projectUnseen)).toBe(false);
 	act(() => tree.unmount());
 });
 

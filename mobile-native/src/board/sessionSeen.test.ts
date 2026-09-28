@@ -31,7 +31,7 @@ function setup() {
 	const hook = renderHook(() =>
 		useMarkSeenInFront({ hubId, ref: "local:s" }, view.inFront, view.client, view.conversation),
 	);
-	return { hubId, sent, view, hook };
+	return { hubId, sent, view, hook, client };
 }
 
 it("marks the session seen through its turn end once it has loaded in front", () => {
@@ -97,5 +97,17 @@ it("keeps the mark for the next ready connection while there is none", () => {
 	hook.rerender();
 	expect(sent).toEqual([]);
 	expect(hubSeenMarks(hubId).isSeenOnHub({ ref: "local:s", turn_ended_at: iso(T), unseen: true })).toBe(true);
+	hook.unmount();
+});
+
+it("sends a mark it queued without a client once one arrives, with no Board to flush it", () => {
+	const { sent, view, hook, client } = setup();
+	view.client = null;
+	view.conversation = { lastTurnEndedAt: iso(T) };
+	hook.rerender();
+	expect(sent).toEqual([]);
+	view.client = client;
+	hook.rerender();
+	expect(sent).toEqual([[{ ref: "local:s", seenThrough: T }]]);
 	hook.unmount();
 });
