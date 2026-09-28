@@ -1,6 +1,6 @@
 import type { TurnModel } from "@evener/appwire-client";
 import { describe, expect, it } from "vitest";
-import type { MobileTimelineItem } from "../projectedRows";
+import { type MobileTimelineItem, projectedRow } from "../projectedRows";
 import type { RunStep, TimelineRow } from "../timeline";
 import {
 	emptyTranscriptText,
@@ -232,9 +232,9 @@ describe("a run's one line", () => {
 		expect(runSummary([shell("a", "ls -la")]).parts).toEqual([{ family: "shell", text: "ran ls", failed: 0 }]);
 	});
 
-	// A settled step at a compact detail level carries no clock times, so a
-	// duration read from only some steps would understate the run. It is said
-	// only when every step in the run carries both.
+	// A step whose times the hub didn't send, or that don't parse, carries no
+	// clock times, so a duration read from only some steps would understate
+	// the run. It is said only when every step in the run carries both.
 	it("says how long only when every step carries its clock times", () => {
 		expect(
 			runSummary([
@@ -253,6 +253,30 @@ describe("a run's one line", () => {
 		).toBeUndefined();
 		expect(runSummary([step("a", "grep")]).durationMs).toBeUndefined();
 		expect(runSummaryText(runSummary([step("a", "grep")]))).toBe("1 step · searched once");
+	});
+
+	// At Intent, the phone's default level, every settled step shows only its
+	// summary. It still keeps its two clock times, so the run it folds into
+	// says how long it took, as spec 8.2's run line does (Jesse, 2026-09-27).
+	it("says how long a run of summary-only steps took, as at Intent", () => {
+		const summarized = (id: string, startedAt: string, completedAt: string) =>
+			projectedRow({
+				kind: "intent",
+				id: `intent:${id}`,
+				turnId: "turn_1",
+				sourceIndex: 0,
+				sourceItemId: id,
+				rationale: `Read ${id}`,
+				failed: false,
+				item: { id, turnId: "turn_1", type: "commandExecution", toolName: "read_file", text: "", startedAt, completedAt },
+			});
+		const steps = [summarized("a", at(12, 0), at(12, 1)), summarized("b", at(12, 2), at(12, 8))];
+		expect(steps.every((row) => row?.kind === "activity" && row.summaryOnly === true)).toBe(true);
+		const [run] = sessionRows(
+			steps.filter((row) => row !== null),
+			[turn("turn_1")],
+		);
+		expect(run?.kind === "run" && runSummaryText(runSummary(run.steps))).toBe("2 steps · 8m · read 2 files");
 	});
 
 	it("groups the rest by kind, in the order they first appear", () => {

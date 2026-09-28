@@ -24,7 +24,8 @@
 // code, duration, call id) returns at tools/activity/full, where the
 // projector routes the same call through its "item" entry. The row is marked
 // summaryOnly so the presentation layer renders the line without an
-// expansion affordance.
+// expansion affordance. Its two clock times stay as metadata, so the run it
+// folds into can say how long it took (Jesse, 2026-09-27).
 //
 // Two robustness behaviors are canonical here (D24-3 deferred them to the
 // re-home): a blank/whitespace tool label falls back to "Tool" instead of "",
@@ -161,10 +162,11 @@ export type MobileTimelineItem = (
 			family: ActivityFamily;
 			state: ActivityState;
 			detail: ActivityDetail;
-			// The operator's summary-only ruling: the row carries ONLY its
+			// The operator's summary-only ruling: the row shows ONLY its
 			// summary line (detail.description) — nothing to expand. Set on the
 			// projector's intent entries; the presentation layer renders the line
-			// without an expansion affordance.
+			// without an expansion affordance. Its clock times stay in detail
+			// for the run it folds into (intentRow).
 			summaryOnly?: boolean;
 			members?: ActivityMember[];
 		}
@@ -256,7 +258,9 @@ function unhandledEntryKind(_entry: never): null {
 // ARGUMENTS survive, because they are what the presentation layer's own
 // summary fallback parses to render the line a descriptionless write_file
 // call shows (RoboRev panel: with them dropped, "Write /tmp/x" degraded to
-// the literal placeholder).
+// the literal placeholder). Either way the row keeps its two clock times as
+// metadata that nothing shows on it, so the run it folds into can say how
+// long it took (spec 8.2's run line; Jesse, 2026-09-27).
 //
 // The native attention rule outranks the summarization (D24-4's disclosed
 // contract: a failed or running activity renders critical, with its full
@@ -272,10 +276,12 @@ function intentRow(
 	if (entry.failed || row.state !== "completed") {
 		return { ...row, state: entry.failed ? "failed" : row.state };
 	}
+	const { startedAtMs, endedAtMs } = row.detail;
+	const clock = startedAtMs !== undefined && endedAtMs !== undefined ? { startedAtMs, endedAtMs } : {};
 	const detail =
 		entry.rationale === ACTION_SUMMARY_UNAVAILABLE
-			? { arguments: row.detail.arguments }
-			: { description: entry.rationale };
+			? { arguments: row.detail.arguments, ...clock }
+			: { description: entry.rationale, ...clock };
 	return {
 		...row,
 		state: entry.failed ? "failed" : row.state,

@@ -248,10 +248,10 @@ function partText(group: Group): string {
 const isNumber = (value: number | undefined): value is number => value !== undefined;
 
 // How long the run took: from its first step's start to its last step's end,
-// only when EVERY step carries both clock times. A settled step at a compact
-// detail level carries no clock times at all (Jesse's summary-only ruling), so
-// reading a duration from only some of a run's steps (say, just its failed
-// ones) would understate the run rather than say nothing.
+// only when EVERY step carries both clock times. Every step keeps them at
+// every level, a summary-only step included, but a step whose times the hub
+// didn't send or that don't parse has none, and a duration read from only
+// some of a run's steps would understate the run rather than say nothing.
 function runDuration(steps: readonly RunStep[]): number | undefined {
 	if (steps.length === 0) return undefined;
 	const starts = steps.map((step) => step.detail.startedAtMs);

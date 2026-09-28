@@ -409,8 +409,10 @@ describe("projectedRow — intent entries", () => {
 	// output, error, exit code, duration, call id) appears at
 	// tools/activity/full, where the projector routes the call through its
 	// item entry instead. The row is marked summaryOnly so the presentation
-	// layer renders the line without an expansion affordance.
-	it("carries only its summary line, dropping the full detail the source item holds", () => {
+	// layer renders the line without an expansion affordance. It keeps its
+	// two clock times as metadata, which nothing shows on the row itself, so
+	// the run it folds into can say how long it took (Jesse, 2026-09-27).
+	it("carries only its summary line and its clock times, dropping the rest of the source item's detail", () => {
 		const row = projectedRow(
 			intentEntry(
 				item({
@@ -433,7 +435,11 @@ describe("projectedRow — intent entries", () => {
 			family: "tool",
 			state: "completed",
 			summaryOnly: true,
-			detail: { description: "Run ls" },
+			detail: {
+				description: "Run ls",
+				startedAtMs: Date.parse("2024-01-01T00:00:00.000Z"),
+				endedAtMs: Date.parse("2024-01-01T00:00:01.000Z"),
+			},
 			turnId: "t1",
 		});
 	});
@@ -445,7 +451,8 @@ describe("projectedRow — intent entries", () => {
 		// instead of its write line. ACTION_SUMMARY_UNAVAILABLE means the
 		// source carried no description; the ruling still drops the output,
 		// exit code, duration and call id, and only the arguments the derived
-		// summary reads survive.
+		// summary reads survive, beside the clock times every summarized row
+		// keeps for its run.
 		const row = projectedRow(
 			intentEntry(
 				item({
@@ -453,13 +460,16 @@ describe("projectedRow — intent entries", () => {
 					toolName: "shell",
 					argumentsJSON: '{"cmd":"ls"}',
 					output: "a\nb",
+					startedAt: "2024-01-01T00:00:00.000Z",
+					completedAt: "2024-01-01T00:00:01.000Z",
 				}),
 			),
 		);
-		expect(row).toMatchObject({
-			kind: "activity",
-			summaryOnly: true,
-			detail: { arguments: '{"cmd":"ls"}' },
+		expect(row).toMatchObject({ kind: "activity", summaryOnly: true });
+		expect(row?.kind === "activity" && row.detail).toEqual({
+			arguments: '{"cmd":"ls"}',
+			startedAtMs: Date.parse("2024-01-01T00:00:00.000Z"),
+			endedAtMs: Date.parse("2024-01-01T00:00:01.000Z"),
 		});
 	});
 
@@ -1292,8 +1302,9 @@ describe("the timeline projection delegates to the shared projector", () => {
 				expect(c1.detail.arguments).toBeUndefined();
 				expect(c1.detail.output).toBeUndefined();
 				expect(c1.detail.durationMs).toBeUndefined();
-				expect(c1.detail.startedAtMs).toBeUndefined();
-				expect(c1.detail.endedAtMs).toBeUndefined();
+				// The clock times stay, as metadata for the run's duration.
+				expect(c1.detail.startedAtMs).toBe(1000);
+				expect(c1.detail.endedAtMs).toBe(1500);
 				expect(c1.detail.callId).toBeUndefined();
 			} else {
 				expect(c1.summaryOnly).toBeUndefined();
