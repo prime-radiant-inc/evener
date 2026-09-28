@@ -455,7 +455,7 @@ describe("TranscriptBody", () => {
     },
   );
 
-  test("refreshes ordinary ask_user suffix, delegate terminal outcome, and supersession", async () => {
+  test("refreshes ordinary ask_user suffix, delegate terminal outcome, and keeps a failed row collapsed", async () => {
     const askItem = {
       id: "ordinary_ask",
       turnId: "ask_turn",
@@ -591,7 +591,8 @@ describe("TranscriptBody", () => {
         disclosureScope="ordinary:supersede"
       />,
     );
-    expect(firstToolExpanded()).toBe("true");
+    // A failed row is collapsed at tools level (no auto-open)...
+    expect(firstToolExpanded()).toBe("false");
     rerender(
       <TranscriptBody
         model={supersedeAfter}
@@ -600,6 +601,7 @@ describe("TranscriptBody", () => {
         disclosureScope="ordinary:supersede"
       />,
     );
+    // ...and stays collapsed once the model's next same-tool call lands.
     expect(firstToolExpanded()).toBe("false");
   });
 

@@ -25,7 +25,6 @@ import { OpenTranscriptButton } from "./openTranscript";
 import { statedIntentOf, ToolRow } from "./ToolRow";
 import styles from "./toolcallitem.module.css";
 import { type ToolRendererDescriptor, toolCallFailed, toolRendererFor } from "./toolRenderers";
-import { supersededBySuccess } from "./toolSupersession";
 import { rowFromDelegateItem } from "./tools/subagentModule";
 import {
   delegateStableState,
@@ -215,15 +214,15 @@ function ToolCallItemBody({ item, live, sessionRef, projectedSummary, renderCont
 
   // Every row with a body starts collapsed (parity-m4-transcript.md's own
   // Highlights: "every tool row, including diffs, starts collapsed" - the
-  // only default-expanded states are descriptor.autoExpand (a failed shell
-  // call once it settles, and an image read whose picture IS its output) OR
-  // a tool error/denial (item.error, parity §11: "only failure earns the
-  // eye"; §2:100's force-open on error)). autoExpand only means anything once
-  // the call has actually finished (e.g. shell's own exit-code heuristic
-  // can't resolve mid-stream), so it is consulted exactly once, at the live
-  // -> settled transition, and stashed as autoDefault - never re-consulted
-  // on every render (both to honor that "once" contract and so a settled
-  // row's later re-renders never re-fight the reader's toggle).
+  // only default-expanded states a descriptor can request are its own
+  // autoExpand calls (a read_file image read whose picture IS its output; a
+  // delegate card); a failure does NOT auto-open).
+  // autoExpand only means anything once the call has actually finished (a
+  // descriptor's own heuristic can't resolve mid-stream), so it is consulted
+  // exactly once, at the live -> settled transition, and stashed as
+  // autoDefault - never re-consulted on every render (both to honor that
+  // "once" contract and so a settled row's later re-renders never re-fight
+  // the reader's toggle).
   //
   // The open/closed state itself lives in the shared disclosureStore keyed by
   // session ref plus item id, so it survives the VirtualList/dockview remount
@@ -235,27 +234,13 @@ function ToolCallItemBody({ item, live, sessionRef, projectedSummary, renderCont
   // biome-ignore lint/correctness/useExhaustiveDependencies: deliberately edge-triggered on live only, see the comment inside
   useLayoutEffect(() => {
     if (live) return;
-    setAutoDefault((descriptor.autoExpand?.(item) ?? false) || failed);
+    setAutoDefault(descriptor.autoExpand?.(item) ?? false);
     // Edge-triggered on the live -> settled transition (and on an
     // already-settled initial mount) - deliberately NOT depending on
-    // `item`/`descriptor`/`failed` too, so a settled row's later re-renders
+    // `item`/`descriptor` too, so a settled row's later re-renders
     // never re-run this and re-fight a manual toggle.
   }, [live]);
 
-  // kata hgm1: "only failure earns the eye" stays the rule for every real
-  // execution failure/denial, unchanged. The one carve-out is a preval-only
-  // bounce (item.prevalOnly - never reached the tool's real execution)
-  // whose very next same-tool call went on to succeed: the model corrected
-  // itself, so the failure that force-opens by default demotes to the same
-  // fallback a clean call gets. It stays fully attributable (failed/
-  // data-failed/the error text itself are untouched, see below) - only the
-  // default OPEN state changes. Read reactively off the live thread model
-  // (like summarySuffix above) rather than folded into autoDefault's own
-  // edge-triggered effect, so a row that settled BEFORE its correction
-  // landed still collapses the moment it does - autoDefault itself is only
-  // ever a fallback, so recomputing what it feeds into here never re-fights
-  // an explicit reader toggle (disclosureStore's own contract).
-  const superseded = supersededBySuccess(item, thread);
   const disclosureKey = scopedDisclosureId(disclosureScope, item.id);
   const bodyId = useId();
   // foldByDefault opts the body out of every open-by-default posture: the
@@ -263,18 +248,14 @@ function ToolCallItemBody({ item, live, sessionRef, projectedSummary, renderCont
   // otherwise), the full preset's open baseline - the strongest form of
   // that default, which an ordinary fallback can never beat, so the read
   // below skips it for these rows - and the descriptor's own autoExpand
-  // nudge, which is just another fallback. The one carve-out is failure:
-  // a failed call's force-open is attribution, not posture ("only failure
-  // earns the eye"), so an error never hides behind the fold - hence the
-  // `failed` term in the fallback below, read reactively like superseded so
-  // a row that settled before its failure was corroborated still opens the
-  // moment it is. Otherwise the fallback stays closed at every level, so
-  // only the reader's own toggle opens it - and that explicit store entry
-  // still wins over everything afterward.
-  const configDefault = descriptor.foldByDefault
+  // nudge, which is just another fallback. Otherwise the fallback stays
+  // closed at every level, so only the reader's own toggle opens it - and
+  // that explicit store entry still wins over everything afterward. A
+  // failure earns the row's glyph and data-attention, not an open body: the
+  // reader opens it to read the error like any other call.
+  const disclosureFallback = descriptor.foldByDefault
     ? false
-    : expandDetailsByDefault(config) || disclosureDefault(disclosureScope, item.id, false);
-  const disclosureFallback = configDefault || ((failed || (!descriptor.foldByDefault && autoDefault)) && !superseded);
+    : expandDetailsByDefault(config) || disclosureDefault(disclosureScope, item.id, false) || autoDefault;
   const expanded = isDisclosureOpen(
     disclosureKey,
     disclosureFallback,
@@ -308,10 +289,10 @@ function ToolCallItemBody({ item, live, sessionRef, projectedSummary, renderCont
   // open. A delegate row deliberately renders none (subagentModule owns its
   // presentation) even though its descriptor's own summary() returns the
   // description the intent line already carries. A row with no summary text
-  // has no summary line to open, so the failure force-open below must never
-  // carry an EMPTY one open (the regression: a failed, non-superseded delegate
-  // took the two-level path with an empty summary and moved the body chevron
-  // onto a stray empty line).
+  // has no summary line to open, so hasSummaryText must never let the
+  // two-level path open an EMPTY one (the regression: a delegate took the
+  // two-level path with an empty summary and moved the body chevron onto a
+  // stray empty line).
   const rowSummaryText = isDelegate ? "" : summary;
   const hasSummaryText = rowSummaryText.trim() !== "";
 
@@ -324,16 +305,10 @@ function ToolCallItemBody({ item, live, sessionRef, projectedSummary, renderCont
   // across verbosity level changes — the default only applies when there is
   // no explicit choice.
   const summaryDisclosureKey = scopedDisclosureId(disclosureScope, `summary:${item.id}`);
-  const summaryConfigDefault = summaryOpenByDefault(config);
-  // The failure force-open above opens the body; it carries the summary line
-  // with it, so a failed row lands on the complete level 2 (intent + one-line
-  // tool call + body) instead of skipping the call on its way down. A
-  // superseded preval-only bounce demotes exactly as the body does (kata hgm1),
-  // and an explicit reader toggle still wins in the store. Only a row that
-  // actually has summary text is carried open: a summary-less intent-bearing
-  // row (a delegate) stays single-level, keeping the body chevron on the
-  // intent line.
-  const summaryFallback = summaryConfigDefault || (failed && !superseded && hasSummaryText);
+  // The summary line follows the level's own default (and any explicit reader
+  // toggle) exactly like a clean call's: a failure does not carry it open, so a
+  // failed row at chat/intent stays intent-only until the reader opens it.
+  const summaryFallback = summaryOpenByDefault(config);
   const summaryDisclosureOpen = isDisclosureOpen(summaryDisclosureKey, summaryFallback);
   const summaryOpen = statedIntent === undefined ? true : summaryDisclosureOpen;
   // The intent-only density hook (toolcallitem.module.css's
