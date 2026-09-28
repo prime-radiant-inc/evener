@@ -2059,6 +2059,15 @@ _(no fields)_
 | `escalationId` | `string` |  |  |
 
 
+### `SearchHit`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `transcriptKey` | `string` |  |  |
+| `position` | `appwire.ThreadItemPosition` |  |  |
+| `snippet` | `[]appwire.SearchSnippetPart` |  |  |
+
+
 ### `SearchParams`
 
 | Field | Go type | Omitempty | Embedded |
@@ -2075,6 +2084,31 @@ _(no fields)_
 | `past` | `[]appwire.SearchResult` |  |  |
 | `inSessions` | `[]appwire.SearchResult` | yes |  |
 | `scope` | `string` | yes |  |
+
+
+### `SearchResult`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `id` | `string` |  |  |
+| `title` | `string` |  |  |
+| `project` | `string` |  |  |
+| `state` | `string` |  |  |
+| `age` | `string` |  |  |
+| `ref` | `string` |  |  |
+| `askPending` | `bool` | yes |  |
+| `approvalPending` | `bool` | yes |  |
+| `archived` | `bool` | yes |  |
+| `hits` | `[]appwire.SearchHit` | yes |  |
+| `hitCount` | `int` | yes |  |
+
+
+### `SearchSnippetPart`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `text` | `string` |  |  |
+| `match` | `bool` | yes |  |
 
 
 ### `SessionDeleteParams`

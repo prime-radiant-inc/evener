@@ -143,6 +143,15 @@ func build() docData {
 	// while the TypeScript output emits them.
 	register(appwire.HostPlan{})
 	register(appwire.HostPlanStaleFacts{})
+	// SearchResult is the element type of SearchResponse.Live/.Past/.InSessions
+	// (S14), never a method's own Params/Result, so without this it would name
+	// the array but document none of its fields (archived, hits, hitCount
+	// included). SearchHit and SearchSnippetPart are in turn SearchResult.Hits'
+	// and SearchHit.Snippet's own element types, so they need the same
+	// explicit registration (roborev review of PR 25).
+	register(appwire.SearchResult{})
+	register(appwire.SearchHit{})
+	register(appwire.SearchSnippetPart{})
 	// HostRow and RemovedRow are the row shapes the registry mutations' union
 	// arms carry — HostMutationCommitted.Host, the teardown-failure arms' Host,
 	// HostMutationAmbiguous.ObservedRow, HostMutationCollisionDropped.Host and
