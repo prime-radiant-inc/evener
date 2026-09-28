@@ -59,9 +59,8 @@ func TestSetModel_CrossProvider_SwapsProfileAndPreservesOverride(t *testing.T) {
 	startProfile := WithCommunicateOutputSchema(NewOpenAIProfile("gpt-5.4"), customSchema)
 
 	sess, err := NewSession(c, startProfile, execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
-		NoProjectPrompts: true,
-		ResolveProfile:   testResolver,
-		testOnly:         testConfig{skipGitSnapshot: true},
+		ResolveProfile: testResolver,
+		testOnly:       testConfig{skipGitSnapshot: true},
 	})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
@@ -126,10 +125,9 @@ func TestSetModel_CrossProvider_PreservesConfiguredCheapRoute(t *testing.T) {
 			client.Register(&fakeAdapter{name: "anthropic"})
 			startProfile := WithCheapModel(NewOpenAIProfile("gpt-5.4"), tc.cheapRef)
 			sess, err := NewSession(client, startProfile, execenv.NewLocalExecutionEnvironment(t.TempDir()), SessionConfig{
-				NoProjectPrompts: true,
-				ResolveProfile:   testResolver,
-				StateDir:         stateDir,
-				testOnly:         testConfig{skipGitSnapshot: true},
+				ResolveProfile: testResolver,
+				StateDir:       stateDir,
+				testOnly:       testConfig{skipGitSnapshot: true},
 			})
 			if err != nil {
 				t.Fatalf("NewSession: %v", err)
@@ -195,7 +193,6 @@ func TestSelectSubagentModel_CrossProviderPreservesConfiguredCheapRoute(t *testi
 			startProfile := WithCheapModel(NewOpenAIProfile("gpt-5.4"), tc.cheapRef)
 			sess, err := NewSession(client, startProfile, execenv.NewLocalExecutionEnvironment(t.TempDir()), SessionConfig{
 				MaxSubagentDepth: 1,
-				NoProjectPrompts: true,
 				ResolveProfile:   testResolver,
 				testOnly:         testConfig{skipGitSnapshot: true},
 			})
@@ -231,8 +228,7 @@ func TestSetModel_CrossProvider_WithoutResolver_NoSwap(t *testing.T) {
 	c.Register(&fakeAdapter{name: "openai"})
 
 	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.4"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
-		NoProjectPrompts: true,
-		testOnly:         testConfig{skipGitSnapshot: true},
+		testOnly: testConfig{skipGitSnapshot: true},
 		// No ResolveProfile — cross-provider switch must NOT happen.
 	})
 	if err != nil {
@@ -268,7 +264,7 @@ func TestRestoreSessionFromMetaWithConfig_InstallsResolveProfile(t *testing.T) {
 		ID:        "01JRESTORERESOLVER0000000001",
 		ProfileID: "openai",
 		Model:     "gpt-5.4",
-		Config:    (SessionConfig{NoProjectPrompts: true}).toSnapshot(),
+		Config:    (SessionConfig{}).toSnapshot(),
 	}
 	sess, err := RestoreSessionFromMetaWithConfig(c, NewOpenAIProfile("gpt-5.4"), execenv.NewLocalExecutionEnvironment(dir), meta, RestoreSessionConfig{
 		StateDir:       dir,
@@ -303,8 +299,7 @@ func TestRestoreSessionFromMetaWithConfig_LayersModelFallbacks(t *testing.T) {
 		ProfileID: "openai",
 		Model:     "gpt-5.4",
 		Config: (SessionConfig{
-			NoProjectPrompts: true,
-			ModelFallbacks:   []string{"openai/persisted-fallback"},
+			ModelFallbacks: []string{"openai/persisted-fallback"},
 		}).toSnapshot(),
 	}
 	sess, err := RestoreSessionFromMetaWithConfig(c, NewOpenAIProfile("gpt-5.4"), execenv.NewLocalExecutionEnvironment(dir), meta, RestoreSessionConfig{
@@ -379,9 +374,8 @@ func TestSetModel_SameProvider_WithResolver_UsesWithModel(t *testing.T) {
 	}
 
 	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.4"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
-		NoProjectPrompts: true,
-		ResolveProfile:   resolver,
-		testOnly:         testConfig{skipGitSnapshot: true},
+		ResolveProfile: resolver,
+		testOnly:       testConfig{skipGitSnapshot: true},
 	})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
@@ -412,9 +406,8 @@ func TestSetModel_CrossProvider_SwitchToGoogle_RegistersWebSearch(t *testing.T) 
 	c.Register(&fakeAdapter{name: "gemini"})
 
 	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.4"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
-		NoProjectPrompts: true,
-		ResolveProfile:   testResolver,
-		testOnly:         testConfig{skipGitSnapshot: true},
+		ResolveProfile: testResolver,
+		testOnly:       testConfig{skipGitSnapshot: true},
 	})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
@@ -444,9 +437,8 @@ func TestSetModel_CrossProvider_SwitchAwayFromGoogle_RemovesWebSearch(t *testing
 	c.Register(&fakeAdapter{name: "openai"})
 
 	sess, err := NewSession(c, newGeminiProfile("gemini-2.5-pro"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
-		NoProjectPrompts: true,
-		ResolveProfile:   testResolver,
-		testOnly:         testConfig{skipGitSnapshot: true},
+		ResolveProfile: testResolver,
+		testOnly:       testConfig{skipGitSnapshot: true},
 	})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
@@ -477,10 +469,9 @@ func TestValidateModelFallbacks_CrossSurface_Errors(t *testing.T) {
 	c.Register(&fakeAdapter{name: "anthropic"})
 
 	_, err := NewSession(c, NewOpenAIProfile("gpt-5.4"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
-		NoProjectPrompts: true,
-		ResolveProfile:   testResolver,
-		ModelFallbacks:   []string{"anthropic/claude-opus-4-6"},
-		testOnly:         testConfig{skipGitSnapshot: true},
+		ResolveProfile: testResolver,
+		ModelFallbacks: []string{"anthropic/claude-opus-4-6"},
+		testOnly:       testConfig{skipGitSnapshot: true},
 	})
 	if err == nil {
 		t.Fatal("NewSession succeeded with cross-surface fallback (with resolver), want error")
@@ -501,10 +492,9 @@ func TestValidateModelFallbacks_SameSurface_Allowed(t *testing.T) {
 
 	// Same-surface fallback: openai/gpt-5.4 → openai/gpt-4.1-mini.
 	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.4"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
-		NoProjectPrompts: true,
-		ResolveProfile:   testResolver,
-		ModelFallbacks:   []string{"openai/gpt-4.1-mini"},
-		testOnly:         testConfig{skipGitSnapshot: true},
+		ResolveProfile: testResolver,
+		ModelFallbacks: []string{"openai/gpt-4.1-mini"},
+		testOnly:       testConfig{skipGitSnapshot: true},
 	})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err) // must succeed for same-surface fallback
@@ -533,10 +523,9 @@ func TestValidateModelFallbacks_CrossInstanceSameSurface_Allowed(t *testing.T) {
 	c.Register(&fakeAdapter{name: "work"})
 
 	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.4"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
-		NoProjectPrompts: true,
-		ResolveProfile:   workInstanceResolver,
-		ModelFallbacks:   []string{"work/gpt-4.1-mini"},
-		testOnly:         testConfig{skipGitSnapshot: true},
+		ResolveProfile: workInstanceResolver,
+		ModelFallbacks: []string{"work/gpt-4.1-mini"},
+		testOnly:       testConfig{skipGitSnapshot: true},
 	})
 	if err != nil {
 		t.Fatalf("NewSession with a same-surface cross-instance fallback: %v", err)
@@ -555,10 +544,9 @@ func TestSetModel_CrossInstanceFallback_KeptWhileSurfacesMatch(t *testing.T) {
 		withAdapter(&fakeAdapter{name: "work"}),
 		withAdapter(&fakeAdapter{name: "anthropic"}),
 		withConfig(SessionConfig{
-			NoProjectPrompts: true,
-			ResolveProfile:   workInstanceResolver,
-			ModelFallbacks:   []string{"work/gpt-4.1-mini"},
-			testOnly:         testConfig{skipGitSnapshot: true},
+			ResolveProfile: workInstanceResolver,
+			ModelFallbacks: []string{"work/gpt-4.1-mini"},
+			testOnly:       testConfig{skipGitSnapshot: true},
 		}),
 	)
 
@@ -698,9 +686,8 @@ func TestSetModel_CrossProvider(t *testing.T) {
 				withAdapter(&fakeAdapter{name: tc.baseAdapter}),
 				withAdapter(&fakeAdapter{name: tc.targetAdapter}),
 				withConfig(SessionConfig{
-					NoProjectPrompts: true,
-					ResolveProfile:   testResolverFull,
-					testOnly:         testConfig{skipGitSnapshot: true},
+					ResolveProfile: testResolverFull,
+					testOnly:       testConfig{skipGitSnapshot: true},
 				}),
 			)
 
@@ -725,9 +712,8 @@ func TestSetModel_CrossProvider_ToOllama_WithCatalog(t *testing.T) {
 	c.Register(&fakeAdapter{name: "ollama"})
 
 	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.4"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
-		NoProjectPrompts: true,
-		ResolveProfile:   testResolverFull,
-		testOnly:         testConfig{skipGitSnapshot: true},
+		ResolveProfile: testResolverFull,
+		testOnly:       testConfig{skipGitSnapshot: true},
 	})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
@@ -756,9 +742,8 @@ func TestSetModel_CrossProvider_ToOpenRouter_PreservesSlashModel(t *testing.T) {
 	c.Register(&fakeAdapter{name: "openrouter"})
 
 	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.4"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
-		NoProjectPrompts: true,
-		ResolveProfile:   testResolverFull,
-		testOnly:         testConfig{skipGitSnapshot: true},
+		ResolveProfile: testResolverFull,
+		testOnly:       testConfig{skipGitSnapshot: true},
 	})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)

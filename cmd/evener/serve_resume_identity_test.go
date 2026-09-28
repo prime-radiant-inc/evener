@@ -90,7 +90,6 @@ func runServeResumeWithProbe(t *testing.T, stateDir, sessionID string) (*serveRe
 		"--dir", t.TempDir(),
 		"--state-dir", stateDir,
 		"--run-dir", t.TempDir(),
-		"--no-project-prompts",
 	}
 	serveErr := runServeWithDeps(args, deps)
 	return probe, serveErr

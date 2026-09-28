@@ -72,7 +72,6 @@ func newScriptedLaneRepoWithConfig(t *testing.T, cfg SessionConfig) *scriptedLan
 
 	git := newScriptedWorktreeGit(root)
 	cfg.StateDir = stateDir
-	cfg.NoProjectPrompts = true
 	if cfg.MaxSubagentDepth == 0 {
 		cfg.MaxSubagentDepth = 1
 	}
@@ -397,7 +396,6 @@ func (r *scriptedLaneRepo) restoreSessionOn(env execenv.ExecutionEnvironment, me
 	if meta.Model == "" {
 		meta.Model = "gpt-5.2"
 	}
-	meta.Config.NoProjectPrompts = true
 	return RestoreSessionFromMetaWithConfig(w3init_restoreClient(), NewOpenAIProfile("gpt-5.2"), env, meta, cfg)
 }
 

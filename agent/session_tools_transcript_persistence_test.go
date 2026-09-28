@@ -22,9 +22,8 @@ func TestSessionCanceledAPILogReadStaysOutOfSemanticTranscript(t *testing.T) {
 	client := llm.NewClient()
 	client.Register(&agenttest.ScriptedAdapter{Provider: "openai"})
 	sess, err := NewSession(client, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(t.TempDir()), SessionConfig{
-		StateDir:         stateDir,
-		NoProjectPrompts: true,
-		clock:            agenttest.NewFakeClock(),
+		StateDir: stateDir,
+		clock:    agenttest.NewFakeClock(),
 		testOnly: testConfig{
 			skipGitSnapshot:     true,
 			minimalSystemPrompt: true,

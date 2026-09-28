@@ -188,9 +188,7 @@ func TestPhase1b_CompatX_NoOpenAIBehavior(t *testing.T) {
 	}
 
 	// ── work instance: the session stamps the prompt-cache fields ──
-	workSess, err := NewSession(c, workProfile, execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
-		NoProjectPrompts: true,
-	})
+	workSess, err := NewSession(c, workProfile, execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
 	if err != nil {
 		t.Fatalf("NewSession(work): %v", err)
 	}
@@ -206,9 +204,7 @@ func TestPhase1b_CompatX_NoOpenAIBehavior(t *testing.T) {
 	}
 
 	// ── compat-x instance: stamped the same way ──
-	compatSess, err := NewSession(c, compatProfile, execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
-		NoProjectPrompts: true,
-	})
+	compatSess, err := NewSession(c, compatProfile, execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
 	if err != nil {
 		t.Fatalf("NewSession(compat-x): %v", err)
 	}
@@ -308,8 +304,7 @@ func TestPhase1b_SetModel_Work2_PreservesOutputSchema(t *testing.T) {
 	resolver := resolvePhase1bProfile
 
 	sess, err := NewSession(c, startProfile, execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
-		NoProjectPrompts: true,
-		ResolveProfile:   resolver,
+		ResolveProfile: resolver,
 	})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
@@ -373,9 +368,7 @@ func TestPhase1b_Resume_ProfileIDPreserved(t *testing.T) {
 		t.Fatalf("Resolve(work): %v", err)
 	}
 
-	sess, err := NewSession(c, workProfile, execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
-		NoProjectPrompts: true,
-	})
+	sess, err := NewSession(c, workProfile, execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}

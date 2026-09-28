@@ -77,7 +77,6 @@ func TestCommunicate_EndTurnWarningIsHonestInOneShot(t *testing.T) {
 	t.Parallel()
 	s := newSession(t, withConfig(SessionConfig{
 		MaxSubagentDepth: 1,
-		NoProjectPrompts: true,
 		TurnEndsProcess:  true,
 		testOnly:         testConfig{skipGitSnapshot: true, minimalSystemPrompt: true, noSyncJobStore: true},
 	}))
@@ -100,7 +99,6 @@ func TestCommunicate_EndTurnWarningKeepsTheServeContract(t *testing.T) {
 	t.Parallel()
 	s := newSession(t, withConfig(SessionConfig{
 		MaxSubagentDepth: 1,
-		NoProjectPrompts: true,
 		testOnly:         testConfig{skipGitSnapshot: true, minimalSystemPrompt: true, noSyncJobStore: true},
 	}))
 
@@ -121,7 +119,6 @@ func TestCommunicate_EndTurnWarningKeepsTheServeContract(t *testing.T) {
 func TestCommunicate_EndTurnWarnsForLiveDetachedProcess(t *testing.T) {
 	s := newSession(t, withConfig(SessionConfig{
 		MaxSubagentDepth: 1,
-		NoProjectPrompts: true,
 		TurnEndsProcess:  true,
 		testOnly:         testConfig{skipGitSnapshot: true, minimalSystemPrompt: true, noSyncJobStore: true},
 	}))
@@ -176,7 +173,6 @@ func TestCommunicate_EndTurnDoesNotWarnForExitedDetachedProcess(t *testing.T) {
 	t.Parallel()
 	s := newSession(t, withConfig(SessionConfig{
 		MaxSubagentDepth: 1,
-		NoProjectPrompts: true,
 		TurnEndsProcess:  true,
 		testOnly:         testConfig{skipGitSnapshot: true, minimalSystemPrompt: true, noSyncJobStore: true},
 	}))

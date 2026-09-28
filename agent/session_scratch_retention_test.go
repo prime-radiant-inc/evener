@@ -30,7 +30,6 @@ func newResumeScratchLane(t *testing.T) (*scriptedLaneRepo, *Session) {
 	git := newScriptedWorktreeGit(root)
 	cfg := worktreeTestSessionConfig()
 	cfg.StateDir = stateDir
-	cfg.NoProjectPrompts = true
 	cfg.MaxSubagentDepth = 1
 	cfg.testOnly.skipGitSnapshot = true
 	cfg.testOnly.minimalSystemPrompt = true

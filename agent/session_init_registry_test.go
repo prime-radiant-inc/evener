@@ -31,8 +31,7 @@ func TestChildRegistryKeepsDelegateWithAllowance(t *testing.T) {
 		c.Register(&fakeAdapter{name: "openai"})
 
 		cfg := SessionConfig{
-			NoProjectPrompts: true,
-			StateDir:         dir,
+			StateDir: dir,
 		}
 		cfg.spawn.depth = 1
 		cfg.spawn.parentSessionID = "parent-session"
@@ -59,8 +58,7 @@ func TestChildRegistryKeepsDelegateWithAllowance(t *testing.T) {
 		c.Register(&fakeAdapter{name: "openai"})
 
 		cfg := SessionConfig{
-			NoProjectPrompts: true,
-			StateDir:         dir,
+			StateDir: dir,
 		}
 		cfg.spawn.depth = 1
 		cfg.spawn.parentSessionID = "parent-session"
@@ -343,8 +341,7 @@ func TestLeafDelegateWatchesItsOwnJobsOnly(t *testing.T) {
 	c.Register(&fakeAdapter{name: "openai"})
 
 	cfg := SessionConfig{
-		NoProjectPrompts: true,
-		StateDir:         dir,
+		StateDir: dir,
 	}
 	cfg.spawn.depth = 1
 	cfg.spawn.parentSessionID = "parent-session"

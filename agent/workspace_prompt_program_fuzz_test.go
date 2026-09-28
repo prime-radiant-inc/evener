@@ -339,7 +339,6 @@ func wppPromptDataAndRender(t *testing.T, token string) {
 	client.Register(&fakeAdapter{name: "openai"})
 	sess, err := NewSession(client, NewOpenAIProfile("gpt-5.2"), env, SessionConfig{
 		MaxSubagentDepth:   1,
-		NoProjectPrompts:   true,
 		StateDir:           root,
 		SystemPromptAppend: []string{appendPath, filepath.Join(root, "missing.md")},
 		testOnly: testConfig{

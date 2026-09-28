@@ -36,9 +36,8 @@ func doctorToolForTest(t *testing.T, stateHome string) tool.RegisteredTool {
 	client := llm.NewClient()
 	client.Register(&agenttest.ScriptedAdapter{Provider: "openai"})
 	sess, err := NewSession(client, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(t.TempDir()), SessionConfig{
-		StateDir:         stateHome,
-		NoProjectPrompts: true,
-		clock:            agenttest.NewFakeClock(),
+		StateDir: stateHome,
+		clock:    agenttest.NewFakeClock(),
 		testOnly: testConfig{
 			skipGitSnapshot:     true,
 			minimalSystemPrompt: true,

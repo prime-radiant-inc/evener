@@ -44,7 +44,6 @@ type runConfig struct {
 	exportATIFProviderHandles string   // --export-atif-provider-handles
 	outputSchema              string   // --output-schema: raw JSON schema applied to communicate.output
 	verbose                   bool
-	noProjectPrompts          bool
 	agentName                 string // --agent persona name (default: default)
 	stdout                    io.Writer
 	stderr                    io.Writer
@@ -313,7 +312,6 @@ func run(ctx context.Context, cfg runConfig) error {
 		Project:                     project,
 		SystemPromptFile:            cfg.systemPrompt,
 		SystemPromptAppend:          cfg.systemPromptAppend,
-		NoProjectPrompts:            cfg.noProjectPrompts,
 		AgentName:                   cfg.agentName,
 		SkillsDirs:                  cfg.skillsDirs,
 		MCPConfigFiles:              cfg.mcpConfigs,

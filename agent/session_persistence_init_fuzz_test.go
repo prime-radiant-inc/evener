@@ -235,7 +235,6 @@ func pifSessionConfig(
 		PluginDirs:         []string{pluginDir},
 		SystemPromptFile:   promptFile,
 		SystemPromptAppend: []string{appendFile},
-		NoProjectPrompts:   true,
 		ContextStrategy:    program.strategy,
 		ResultToolName:     program.resultToolName,
 		NonInteractive:     program.nonInteractive,

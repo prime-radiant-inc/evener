@@ -31,7 +31,6 @@ func task7LocalSession(t *testing.T) (*Session, string) {
 		SessionConfig{
 			StateDir:         t.TempDir(),
 			MaxSubagentDepth: 1,
-			NoProjectPrompts: true,
 			testOnly: testConfig{
 				skipGitSnapshot:     true,
 				minimalSystemPrompt: true,

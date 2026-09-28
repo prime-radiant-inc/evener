@@ -57,7 +57,6 @@ func TestRenderedEnvironmentUsesTrustedStructuredResourcesWhenModelShellMasked(t
 	}
 
 	sess := newSession(t, withConfig(SessionConfig{
-		NoProjectPrompts: true,
 		testOnly: testConfig{
 			skipGitSnapshot: true,
 			environmentInfo: func(execenv.ExecutionEnvironment, clock.Clock) schema.EnvironmentInfo {
@@ -94,7 +93,6 @@ func TestRenderedEnvironmentOmitsUnknownOrUnlimitedResources(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			info := schema.EnvironmentInfo{WorkingDir: t.TempDir(), Platform: "linux", Resources: resources}
 			sess := newSession(t, withConfig(SessionConfig{
-				NoProjectPrompts: true,
 				testOnly: testConfig{
 					skipGitSnapshot: true,
 					environmentInfo: func(execenv.ExecutionEnvironment, clock.Clock) schema.EnvironmentInfo {

@@ -66,7 +66,7 @@ func TestSessionTokenBudgetOutputReductionEmitsOneWarning(t *testing.T) {
 	resolved.Caps.ContextWindow = new(524_288)
 	resolved.Caps.MaxOutputTokens = new(131_072)
 	profile = profile.WithResolved(resolved)
-	sess, err := NewSession(client, profile, execenv.NewLocalExecutionEnvironment(t.TempDir()), SessionConfig{NoProjectPrompts: true})
+	sess, err := NewSession(client, profile, execenv.NewLocalExecutionEnvironment(t.TempDir()), SessionConfig{})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
@@ -124,7 +124,6 @@ func TestSessionContinuationOutputReductionsEmitOneFinalWarning(t *testing.T) {
 	resolved.Caps.MaxOutputTokens = new(131_072)
 	profile = withTestSessionNamer(client, profile.WithResolved(resolved))
 	sess, err := NewSession(client, profile, execenv.NewLocalExecutionEnvironment(t.TempDir()), SessionConfig{
-		NoProjectPrompts:            true,
 		OpenAIResponsesContinuation: "auto",
 		testOnly: testConfig{
 			responsesContinuationSupportRegistry: map[llm.ResponsesEndpointFamily]llm.ResponsesContinuationSupport{
@@ -189,7 +188,7 @@ func TestSessionFallbackTokenBudgetReductionEmitsOneWarning(t *testing.T) {
 	fallbackResolved.Caps.ContextWindow = new(5_000)
 	fallbackResolved.Caps.MaxOutputTokens = new(1_000)
 	fallback = fallback.WithResolved(fallbackResolved)
-	sess, err := NewSession(client, primary, execenv.NewLocalExecutionEnvironment(t.TempDir()), SessionConfig{NoProjectPrompts: true})
+	sess, err := NewSession(client, primary, execenv.NewLocalExecutionEnvironment(t.TempDir()), SessionConfig{})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
@@ -230,7 +229,7 @@ func TestSessionLocalAdmissionCompactionEmitsOneWarningBeforeCompaction(t *testi
 	resolved.Caps.ContextWindow = new(100)
 	resolved.Caps.MaxOutputTokens = new(8)
 	profile = profile.WithResolved(resolved)
-	sess, err := NewSession(client, profile, execenv.NewLocalExecutionEnvironment(t.TempDir()), SessionConfig{NoProjectPrompts: true})
+	sess, err := NewSession(client, profile, execenv.NewLocalExecutionEnvironment(t.TempDir()), SessionConfig{})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
@@ -260,7 +259,7 @@ func TestSessionLocalAdmissionWithoutContextManagerEmitsNoRecoveryWarning(t *tes
 	resolved.Caps.ContextWindow = new(100)
 	resolved.Caps.MaxOutputTokens = new(8)
 	profile = profile.WithResolved(resolved)
-	sess, err := NewSession(client, profile, execenv.NewLocalExecutionEnvironment(t.TempDir()), SessionConfig{NoProjectPrompts: true})
+	sess, err := NewSession(client, profile, execenv.NewLocalExecutionEnvironment(t.TempDir()), SessionConfig{})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
@@ -295,7 +294,7 @@ func TestSessionPostDispatchLocalBudgetWithoutContextManagerDoesNotRetry(t *test
 	}}
 	client.Register(adapter)
 	profile := testOpenAICompatProfile("local-post-dispatch", "local-model", 0)
-	sess, err := NewSession(client, profile, execenv.NewLocalExecutionEnvironment(t.TempDir()), SessionConfig{NoProjectPrompts: true})
+	sess, err := NewSession(client, profile, execenv.NewLocalExecutionEnvironment(t.TempDir()), SessionConfig{})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
@@ -327,7 +326,7 @@ func TestSessionProviderContextWithoutContextManagerDoesNotRetry(t *testing.T) {
 	}}
 	client.Register(adapter)
 	profile := testOpenAICompatProfile("provider-no-manager", "provider-model", 0)
-	sess, err := NewSession(client, profile, execenv.NewLocalExecutionEnvironment(t.TempDir()), SessionConfig{NoProjectPrompts: true})
+	sess, err := NewSession(client, profile, execenv.NewLocalExecutionEnvironment(t.TempDir()), SessionConfig{})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
@@ -366,7 +365,7 @@ func TestSessionProviderContextRecoveryEmitsOneWarningBeforeCompaction(t *testin
 	resolved.Caps.ContextWindow = new(524_288)
 	resolved.Caps.MaxOutputTokens = new(8_192)
 	profile = profile.WithResolved(resolved)
-	sess, err := NewSession(client, profile, execenv.NewLocalExecutionEnvironment(t.TempDir()), SessionConfig{NoProjectPrompts: true})
+	sess, err := NewSession(client, profile, execenv.NewLocalExecutionEnvironment(t.TempDir()), SessionConfig{})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
@@ -407,7 +406,7 @@ func TestSessionOutputOnlyBudgetErrorDoesNotCompact(t *testing.T) {
 	}}
 	client.Register(adapter)
 	profile := testOpenAICompatProfile("output-budget", "output-model", 0)
-	sess, err := NewSession(client, profile, execenv.NewLocalExecutionEnvironment(t.TempDir()), SessionConfig{NoProjectPrompts: true})
+	sess, err := NewSession(client, profile, execenv.NewLocalExecutionEnvironment(t.TempDir()), SessionConfig{})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
@@ -442,7 +441,7 @@ func TestSessionFallbackBudgetAfterLocalRecoveryEmitsOneWarning(t *testing.T) {
 	fallbackResolved := fallback.Resolved()
 	fallbackResolved.Caps.MaxInputTokens = new(1)
 	fallback = fallback.WithResolved(fallbackResolved)
-	sess, err := NewSession(client, primary, execenv.NewLocalExecutionEnvironment(t.TempDir()), SessionConfig{NoProjectPrompts: true})
+	sess, err := NewSession(client, primary, execenv.NewLocalExecutionEnvironment(t.TempDir()), SessionConfig{})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
@@ -488,7 +487,7 @@ func TestSessionFallbackProviderContextWarningUsesFallbackIdentity(t *testing.T)
 	client.Register(fallbackAdapter)
 	primary := testOpenAICompatProfile("identity-primary", "primary-model", 0)
 	fallback := testOpenAICompatProfile("identity-fallback", "fallback-model", 0)
-	sess, err := NewSession(client, primary, execenv.NewLocalExecutionEnvironment(t.TempDir()), SessionConfig{NoProjectPrompts: true})
+	sess, err := NewSession(client, primary, execenv.NewLocalExecutionEnvironment(t.TempDir()), SessionConfig{})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
@@ -522,7 +521,7 @@ func TestSessionUnrelatedErrorEmitsNoTokenBudgetRecoveryWarning(t *testing.T) {
 		},
 	}})
 	profile := testOpenAICompatProfile("unrelated-warning", "unrelated-model", 0)
-	sess, err := NewSession(client, profile, execenv.NewLocalExecutionEnvironment(t.TempDir()), SessionConfig{NoProjectPrompts: true})
+	sess, err := NewSession(client, profile, execenv.NewLocalExecutionEnvironment(t.TempDir()), SessionConfig{})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}

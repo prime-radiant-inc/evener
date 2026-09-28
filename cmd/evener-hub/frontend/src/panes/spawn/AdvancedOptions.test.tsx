@@ -128,13 +128,13 @@ test("is collapsed by default and reveals the panel on toggle", async () => {
 test("a boolean control collects true/false and drops the (default)", async () => {
   const user = userEvent.setup();
   const { onOverridesChange } = renderPanel([
-    option({ wireField: "noProjectPrompts", kind: "boolean", label: "No project prompts" }),
+    option({ wireField: "apiLog", kind: "boolean", label: "Log API requests" }),
   ]);
 
   await user.click(screen.getByRole("button", { name: "Advanced options" }));
-  await user.selectOptions(screen.getByLabelText("No project prompts"), "On");
+  await user.selectOptions(screen.getByLabelText("Log API requests"), "On");
 
-  expect(onOverridesChange).toHaveBeenLastCalledWith({ noProjectPrompts: true });
+  expect(onOverridesChange).toHaveBeenLastCalledWith({ apiLog: true });
 });
 
 // --- resolved-default labels -------------------------------------------------
@@ -148,18 +148,18 @@ test("a boolean control's (default) option names the resolved default (On/Off)",
   const user = userEvent.setup();
   renderPanel(
     [
-      option({ wireField: "noProjectPrompts", kind: "boolean", label: "No project prompts" }),
+      option({ wireField: "apiLog", kind: "boolean", label: "Log API requests" }),
       option({ wireField: "verbose", kind: "boolean", label: "Verbose event log" }),
       option({ wireField: "nonInteractive", kind: "boolean", label: "Non-interactive" }),
     ],
-    { resolvedDefaults: { noProjectPrompts: true, verbose: false } },
+    { resolvedDefaults: { apiLog: true, verbose: false } },
   );
 
   await user.click(screen.getByRole("button", { name: "Advanced options" }));
 
   const labels = (name: string) =>
     Array.from((screen.getByLabelText(name) as HTMLSelectElement).options).map((o) => o.textContent);
-  expect(labels("No project prompts")).toEqual(["On (default)", "On", "Off"]);
+  expect(labels("Log API requests")).toEqual(["On (default)", "On", "Off"]);
   expect(labels("Verbose event log")).toEqual(["Off (default)", "On", "Off"]);
   // No layer sets this one: the plain word stays.
   expect(labels("Non-interactive")).toEqual(["(default)", "On", "Off"]);
