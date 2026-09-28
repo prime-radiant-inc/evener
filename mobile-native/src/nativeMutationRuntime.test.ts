@@ -1555,3 +1555,25 @@ test("remembers what this phone submitted to each target, the most recent hundre
 	expect(runtime.submittedHere(nativeMutationTargetKey("hub-1", "ref-other")).size).toBe(0);
 	await runtime.stop();
 });
+
+test("keeps what it submitted across a reconnect, and forgets the targets it wrote to longest ago", async () => {
+	let next = 0;
+	const runtime = new NativeMutationRuntime(openDatabase(), { createMutationId: () => `mutation-${(next += 1)}` });
+	const client = new FakeClient("ready");
+	const release = runtime.registerTarget("hub-1", "ref-0", client);
+	await runtime.start();
+	const submitTo = async (ref: string) => runtime.submit({ ...request("queue"), targetRef: ref });
+	await submitTo("ref-0");
+	// A reconnect re-registers the target: what was sent just before still
+	// counts as this phone's.
+	release();
+	runtime.registerTarget("hub-1", "ref-0", client);
+	expect(runtime.submittedHere(nativeMutationTargetKey("hub-1", "ref-0")).size).toBe(1);
+	for (let index = 1; index <= 50; index += 1) {
+		runtime.registerTarget("hub-1", `ref-${index}`, client);
+		await submitTo(`ref-${index}`);
+	}
+	expect(runtime.submittedHere(nativeMutationTargetKey("hub-1", "ref-0")).size).toBe(0);
+	expect(runtime.submittedHere(nativeMutationTargetKey("hub-1", "ref-50")).size).toBe(1);
+	await runtime.stop();
+});
