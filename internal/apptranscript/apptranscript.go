@@ -400,17 +400,18 @@ func ProjectTurn(turnID string, turnIndex int, turn schema.Turn, reg *ToolCallRe
 // hub's resultLineMaxRunes limit (agent/transcript_render.go).
 const communicateRawFallbackMaxRunes = 300
 
-// oneLineTruncRunes collapses newlines to spaces, strips carriage returns, and
-// truncates to at most limit runes with an ellipsis — mirroring the hub's
-// oneLine + truncRunes bounding of the raw-arguments fallback
-// (agent/transcript_render.go).
-func oneLineTruncRunes(s string, limit int) string {
-	s = strings.ReplaceAll(strings.ReplaceAll(s, "\n", " "), "\r", "")
-	r := []rune(s)
-	if len(r) <= limit {
-		return s
+// communicateRawFallbackText renders a healed communicate's raw bytes for the
+// no-message fallback exactly as the hub does: truncate to
+// communicateRawFallbackMaxRunes runes, appending an ellipsis (so the result
+// may be one rune longer), then collapse newlines to spaces and strip carriage
+// returns — agent/transcript_render.go's oneLine(truncRunes(...)) order. The
+// agent package cannot be imported here (it imports this package), so the
+// mirror lives locally; keep it in step with the hub's helper.
+func communicateRawFallbackText(s string) string {
+	if r := []rune(s); len(r) > communicateRawFallbackMaxRunes {
+		s = string(r[:communicateRawFallbackMaxRunes]) + "…"
 	}
-	return string(r[:limit]) + "…"
+	return strings.ReplaceAll(strings.ReplaceAll(s, "\n", " "), "\r", "")
 }
 
 // ProjectTurnParts is ProjectTurn plus, for each item, the index of the entry
@@ -825,7 +826,7 @@ func projectTurn(turnID string, turnIndex int, turn schema.Turn, reg *ToolCallRe
 								Type:   "agentMessage",
 								ID:     fmt.Sprintf("item_assistant_%d_%d", turnIndex, i),
 								TurnID: turnID,
-								Text:   oneLineTruncRunes(rawArgs, communicateRawFallbackMaxRunes),
+								Text:   communicateRawFallbackText(rawArgs),
 								Status: appwire.TurnStatusCompleted,
 							})
 							recordPart(parts, i)
