@@ -823,8 +823,10 @@ func (m *hubHostManager) runOperationWorker(ctx context.Context, work opWork) {
 		// the record. The pre-restart probe then reads the identity of the
 		// process the restart must replace over that channel. The handoff from
 		// this attach is provisional: the reattach below supersedes it when its
-		// replacement publishes, and the deferred finish hands this channel off
-		// on any earlier exit (a failed probe or restart must not strand it).
+		// replacement publishes, and an earlier exit hands this channel off
+		// through fail() before the failure is recorded — the deferred finish
+		// is the backstop for an exit that records no failure — so a failed
+		// probe or restart cannot strand it.
 		if _, attached := m.attachedClient(work.entry); !attached {
 			h, err := m.attachOperationChannel(ctx, id, work.entry,
 				"attach-first: the host had no usable attached channel, so the restart attaches it under the held host gate", true)
@@ -1023,20 +1025,22 @@ func (m *hubHostManager) refreshOperation(ctx context.Context, id string, work o
 }
 
 // attachOperationChannel runs §6's operation-owned attach/reattach under the
-// caller's held gate: it records the progress line naming the path (the
-// attach-first arm and the post-restart reattach share this entry), then hands
-// the work to the gate-aware primitive, which never re-acquires the
-// non-reentrant gate. The returned handoff starts the channel's supervisor
-// under the same held gate after the post-operation verification.
+// caller's held gate: where a channel manager is wired, it records the progress
+// line naming the path (the attach-first arm and the post-restart reattach
+// share this entry), then hands the work to the gate-aware primitive, which
+// never re-acquires the non-reentrant gate. The returned handoff starts the
+// channel's supervisor under the same held gate after the post-operation
+// verification.
 func (m *hubHostManager) attachOperationChannel(ctx context.Context, id string, entry hostreg.Host, progress string, explicit bool) (func() bool, error) {
-	m.recordProgress(id, progress)
 	if m.cfg.attachUnderGate == nil {
 		// No manager owns channels here (tests, embedders): there is nothing to
-		// reattach, so the arm is the no-op success the interim wait had. The
-		// post-operation refresh's own attachment check still decides whether
-		// the operation can complete.
+		// reattach, so the arm is the no-op success the interim wait had — and
+		// no progress line is recorded, because the record must not claim an
+		// attach that never ran. The post-operation refresh's own attachment
+		// check still decides whether the operation can complete.
 		return func() bool { return true }, nil
 	}
+	m.recordProgress(id, progress)
 	// The record's holder promotion is logged, never fatal (the record is
 	// durable and the worker still runs), but the gate-aware primitive requires
 	// the gate to carry the operation holder the worker presents. Re-assert it

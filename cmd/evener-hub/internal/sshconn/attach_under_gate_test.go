@@ -590,3 +590,92 @@ func TestAttachUnderGateEmitsFailedOnATerminalAttachFailure(t *testing.T) {
 		t.Fatal("a terminal attach failure emitted no EventFailed")
 	}
 }
+
+// TestAttachUnderGateHandoffNeverSkipsADeregisteredLoopsMark pins the handoff's
+// supervision question against a teardown already in progress: a loop that has
+// deregistered is gone even though its channel's mark may not be cleared yet,
+// and a handoff that read the stale mark as live supervision would skip the
+// only supervisor the channel will have and leave it unsupervised. The
+// teardown is parked at its own decision point, so the interleaving is exact
+// rather than a race.
+func TestAttachUnderGateHandoffNeverSkipsADeregisteredLoopsMark(t *testing.T) {
+	parked := make(chan struct{}, 1)
+	resume := make(chan struct{})
+	exited := make(chan struct{}, 1)
+	var parkOnce sync.Once
+	m, _, host := attachUnderGateManager(t, Options{
+		beforeSuperviseClear: func(string, *Channel) {
+			parkOnce.Do(func() {
+				parked <- struct{}{}
+				<-resume
+			})
+		},
+		superviseExited: func(string) {
+			select {
+			case exited <- struct{}{}:
+			default:
+			}
+		},
+	})
+
+	gate, err := m.TryAcquire(host.Name, attachUnderGateCaller())
+	if err != nil {
+		t.Fatalf("TryAcquire: %v", err)
+	}
+	defer gate()
+
+	ch, handoff, err := m.AttachUnderGate(context.Background(), host, attachUnderGateCaller(), true)
+	if err != nil {
+		t.Fatalf("AttachUnderGate: %v", err)
+	}
+	if !handoff() {
+		t.Fatal("the handoff did not start the supervisor")
+	}
+	if n := supervisorLoops(m, host.Name); n != 1 {
+		t.Fatalf("supervisor loops after the handoff = %d, want 1", n)
+	}
+
+	// End that loop and park its teardown after the deregistration, so the
+	// channel's mark is all that is left of it when the late handoff asks.
+	m.stopSupervisor(host.Name)
+	select {
+	case <-parked:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the loop's teardown never reached its parked decision point")
+	}
+
+	late := m.attachHandoff(host, ch, attachUnderGateCaller())
+	done := make(chan bool, 1)
+	go func() { done <- late() }()
+	var started, decided bool
+	// An arm that decides without consulting the teardown answers inside the
+	// parked window; the arm that consults it blocks until the teardown
+	// resumes. Give the deciding arm its window, then resume regardless.
+	select {
+	case started = <-done:
+		decided = true
+	case <-time.After(250 * time.Millisecond):
+	}
+	close(resume)
+	if !decided {
+		select {
+		case started = <-done:
+		case <-time.After(5 * time.Second):
+			t.Fatal("the handoff did not return after the teardown resumed")
+		}
+	}
+	if !started {
+		t.Fatal("the handoff reported failure after the teardown")
+	}
+	select {
+	case <-exited:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the torn-down loop never announced its exit")
+	}
+	if n := supervisorLoops(m, host.Name); n != 1 {
+		t.Fatalf("supervisor loops after the handoff interleaved with the teardown = %d, want 1: the handoff read a deregistered loop's mark as live supervision and skipped the only supervisor the channel has", n)
+	}
+	if !m.supervisesChannel(ch) {
+		t.Fatal("the channel's supervision mark is clear after the handoff")
+	}
+}

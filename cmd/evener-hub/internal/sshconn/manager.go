@@ -190,6 +190,13 @@ type Options struct {
 	// and released any gate it held. Tests use it to observe "the supervisor
 	// stood down" instead of sleeping long enough to hope it did.
 	superviseExited func(name string)
+	// beforeSuperviseClear, when set, runs in a supervisor's teardown while the
+	// teardown holds the manager mutex, after its loop has deregistered and
+	// before the channel's supervision mark is cleared. Tests use it to park a
+	// teardown at that decision point, so an attach handoff's supervision
+	// question interleaves with it exactly instead of racing the window
+	// between the two.
+	beforeSuperviseClear func(name string, ch *Channel)
 	// afterChildExit, when set, runs in the child-wait goroutine once the exited
 	// SSH child's exit edge has been published. Tests use it to inspect, without
 	// a sleep or a scheduling race, what a consumer could observe at the moment
@@ -796,16 +803,27 @@ func (m *Manager) hostGateHeldBy(name string, holder hostops.Holder) bool {
 
 // supervisesChannel reports whether a live reconnect loop already owns ch. The
 // mark lives on the channel and is maintained by the loop that owns it
-// (startSupervise sets it, the loop's exit clears it), so the answer cannot go
-// stale behind a loop whose channel changed.
+// (startSupervise sets it; the loop's teardown deregisters and clears it in one
+// critical section), and this read takes the same mutex, so the answer cannot
+// be a stale mark from a loop that has already let the channel go: true means
+// the loop still owns it, and false means no loop does, which is exactly the
+// distinction the attach handoff's start-or-skip decision needs.
 func (m *Manager) supervisesChannel(ch *Channel) bool {
-	return ch != nil && ch.supervised.Load()
+	if ch == nil {
+		return false
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return ch.supervised.Load()
 }
 
 // attachHandoff builds the caller's post-verification handoff for ch: under the
 // caller's still-held gate it starts the supervisor that owns the channel,
-// unless one already supervises it (the already-live path), in which case the
-// handoff is a no-op. It refuses when the gate is no longer held by holder — a
+// unless one already supervises it (the already-live path) — a question asked
+// under the same mutex the loop's teardown deregisters and clears under, so the
+// answer can never come from a loop that has already let the channel go — in
+// which case the handoff is a no-op. It refuses when the gate is no longer held
+// by holder — a
 // released or re-registered hold must not start a supervisor under another
 // holder's exclusion — and it is safe to call more than once: the first call's
 // result is reported for every repeat.
@@ -820,7 +838,9 @@ func (m *Manager) attachHandoff(host hostreg.Host, ch *Channel, holder hostops.H
 			}
 			if m.supervisesChannel(ch) {
 				// An existing loop owns this channel; a second would only race
-				// it to the same reconnect.
+				// it to the same reconnect. The check is serialized with the
+				// teardown that deregisters a loop and clears this mark, so
+				// this is a live owner, never a mark a gone loop left behind.
 				result = true
 				return
 			}
@@ -2390,9 +2410,10 @@ func (m *Manager) startSupervise(host hostreg.Host, ch *Channel, lock *hostLockG
 	m.supervisors[host.Name][loop] = struct{}{}
 	// Supervision is tracked on the channel itself, not on the loop's
 	// start-time copy: a channel is supervised exactly while a loop owns it,
-	// and the loop clears the mark as it deregisters. An attach-handoff asks
-	// the channel, so it cannot miss a loop that has moved past the state it
-	// started with.
+	// and the loop's teardown deregisters and clears the mark in one critical
+	// section. An attach-handoff asks the channel under that same mutex, so it
+	// cannot miss a loop that has moved past the state it started with, nor
+	// read a deregistered loop's mark as live supervision.
 	ch.supervised.Store(true)
 	// The supervisor goroutine outlives this call and keeps gating on lock, so
 	// it takes its own live-user reference here — under m.mu, before the
@@ -2417,8 +2438,17 @@ func (m *Manager) startSupervise(host hostreg.Host, ch *Channel, lock *hostLockG
 					delete(m.supervisors, host.Name)
 				}
 			}
-			m.mu.Unlock()
+			// The mark is cleared inside this critical section, not after it: an
+			// attach handoff reads it under the same mutex (supervisesChannel),
+			// so it can never observe a mark whose loop has already
+			// deregistered — the stale-true window the round-6 review named.
+			// The handoff sees the live registration or the cleared mark, and a
+			// cleared mark sends it to start the missing supervisor.
+			if m.opts.beforeSuperviseClear != nil {
+				m.opts.beforeSuperviseClear(host.Name, ch)
+			}
 			ch.supervised.Store(false)
+			m.mu.Unlock()
 			cancel()
 			// The loop no longer touches the gate, so its reference goes with
 			// it — the last one out drops the entry.

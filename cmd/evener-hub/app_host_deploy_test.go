@@ -1132,8 +1132,11 @@ func TestHostRestartAttachFirstHandsOffWhenTheRestartFails(t *testing.T) {
 	if record.Result == nil || record.Result.OK {
 		t.Fatalf("failed restart record result = %+v, want a failure", record.Result)
 	}
-	// The handoff runs after the failure is recorded (the worker's deferred
-	// finish), so wait for it rather than racing the record's terminal write.
+	// The restart-failure path records its outcome through fail(), which hands
+	// the channel off before m.failOperation writes the terminal state, so the
+	// handoff has run by the time the record reads failed; the worker's
+	// deferred finish is only the backstop for exits that return without a
+	// failure. Wait on the handoff signal rather than assuming it already ran.
 	select {
 	case <-handedOffCh:
 	case <-time.After(5 * time.Second):
