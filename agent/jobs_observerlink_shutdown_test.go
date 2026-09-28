@@ -58,13 +58,14 @@ func observerLinkTimeoutRig(t *testing.T) (
 	}, release
 }
 
-func requireOneObserverLinkTimeoutWarning(t *testing.T, warnings []events.WarningData) {
+func requireObserverLinkTimeoutWarning(t *testing.T, warnings []events.WarningData, phase string) {
 	t.Helper()
 	if len(warnings) != 1 {
 		t.Fatalf("warnings = %+v, want exactly one observer-link timeout diagnostic", warnings)
 	}
-	if !strings.Contains(warnings[0].Message, "observer-link") {
-		t.Fatalf("warning message = %q, want it to name the observer-link timeout", warnings[0].Message)
+	msg := warnings[0].Message
+	if !strings.Contains(msg, "observer-link") || !strings.Contains(msg, phase) {
+		t.Fatalf("warning message = %q, want it to name the %s observer-link timeout", msg, phase)
 	}
 }
 
@@ -88,13 +89,13 @@ func TestCloseRuntimeState_ObserverLinkTimeoutIsReported(t *testing.T) {
 		t.Fatalf("closeRuntimeState error = %v, want a best-effort nil", err)
 	}
 
-	requireOneObserverLinkTimeoutWarning(t, warnings())
+	requireObserverLinkTimeoutWarning(t, warnings(), "close")
 
 	// Releasing the blocked task after the bounded wait must not add another
 	// diagnostic or re-run any shutdown step.
 	release()
 	jm.observerLinkWG.Wait()
-	requireOneObserverLinkTimeoutWarning(t, warnings())
+	requireObserverLinkTimeoutWarning(t, warnings(), "close")
 }
 
 // TestReleaseQuiescentRuntime_ObserverLinkTimeoutIsReported covers the
@@ -114,9 +115,44 @@ func TestReleaseQuiescentRuntime_ObserverLinkTimeoutIsReported(t *testing.T) {
 		t.Fatalf("releaseQuiescentRuntime error = %v, want a best-effort nil", err)
 	}
 
-	requireOneObserverLinkTimeoutWarning(t, warnings())
+	requireObserverLinkTimeoutWarning(t, warnings(), "quiescent release")
 
 	release()
 	jm.observerLinkWG.Wait()
-	requireOneObserverLinkTimeoutWarning(t, warnings())
+	requireObserverLinkTimeoutWarning(t, warnings(), "quiescent release")
+}
+
+// TestCloseRuntimeState_ObserverLinkCleanDrainWarnsNothing is the counterpart
+// to the timeout case: when the observer-link task drains before the deadline,
+// the close emits no warning, pinning that the diagnostic is timeout-gated.
+func TestCloseRuntimeState_ObserverLinkCleanDrainWarnsNothing(t *testing.T) {
+	t.Parallel()
+	jm, _, warnings, release := observerLinkTimeoutRig(t)
+	release()
+
+	done := make(chan error, 1)
+	go func() { done <- jm.closeRuntimeState() }()
+	if err := <-done; err != nil {
+		t.Fatalf("closeRuntimeState error = %v, want a best-effort nil", err)
+	}
+	if got := warnings(); len(got) != 0 {
+		t.Fatalf("warnings = %+v, want none when the observer link drains in time", got)
+	}
+}
+
+// TestReleaseQuiescentRuntime_ObserverLinkCleanDrainWarnsNothing pins the same
+// clean-drain silence for the non-terminal release path.
+func TestReleaseQuiescentRuntime_ObserverLinkCleanDrainWarnsNothing(t *testing.T) {
+	t.Parallel()
+	jm, _, warnings, release := observerLinkTimeoutRig(t)
+	release()
+
+	done := make(chan error, 1)
+	go func() { done <- jm.releaseQuiescentRuntime() }()
+	if err := <-done; err != nil {
+		t.Fatalf("releaseQuiescentRuntime error = %v, want a best-effort nil", err)
+	}
+	if got := warnings(); len(got) != 0 {
+		t.Fatalf("warnings = %+v, want none when the observer link drains in time", got)
+	}
 }
