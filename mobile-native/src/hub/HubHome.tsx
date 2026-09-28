@@ -1,26 +1,49 @@
 // The Hub's first page (spec 12): the hub's status line, then one row per
 // page. A row whose page hasn't landed yet leaves the sheet for today's screen
-// (ruling 10); each later PR swaps its row for a push.
+// (ruling 10); each later PR swaps its row for a push. MORE keeps today's
+// administration screens reachable (ruling 12), and ABOUT names this app's
+// version and offers the hub's update (ruling 22).
 import { StackActions } from "@react-navigation/native";
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
-import { Text } from "react-native";
-import { Group, GroupedPage, GroupLabel, Row } from "../sheet/Grouped";
+import { nativeApplicationVersion, nativeBuildVersion } from "expo-application";
+import { useSyncExternalStore } from "react";
+import { Alert, Text } from "react-native";
+import { Group, GroupedPage, GroupFooter, GroupLabel, Row } from "../sheet/Grouped";
 import { useConnectionLine } from "../sheet/SheetStatus";
 import { allowFontScaling, useColors, useTextScale } from "../ui";
-import { hubStatusLine } from "./hubHeader";
+import { appVersionText, hubStatusLine } from "./hubHeader";
 import { type HubRoutes, useHubSheet } from "./hubSheetContext";
 
-type InterimScreen = "Providers" | "Plugins" | "TranscriptPreferences" | "HubSettings";
+type InterimScreen =
+	| "Providers"
+	| "Plugins"
+	| "TranscriptPreferences"
+	| "KeybindingPreferences"
+	| "LaunchSettings"
+	| "HubSettings";
 
 export function HubHome({ navigation }: NativeStackScreenProps<HubRoutes, "HubHome">) {
-	const { hubId, ready } = useHubSheet();
+	const { hubId, hubName, ready, updates } = useHubSheet();
+	const update = useSyncExternalStore(updates.subscribe, updates.getState);
 	const { palette } = useColors();
 	const scale = useTextScale();
-	const line = hubStatusLine(ready, useConnectionLine(), null);
+	const line = hubStatusLine(ready, useConnectionLine(), update.check);
 	// The root stack: the sheet's own route sits on it, so a replace there
 	// closes the sheet and opens the screen in one step.
 	const root = navigation.getParent();
 	const leaveFor = (screen: InterimScreen) => root?.dispatch(StackActions.replace(screen, { hubId }));
+	const check = update.check;
+	const updateWaiting = !!check?.applicable && check.updateAvailable && !update.restarting;
+	const confirmUpdate = () =>
+		Alert.alert(
+			`Update ${hubName}?`,
+			`Install evener ${check?.latestTag ?? "the latest release"} on ${hubName}. The hub restarts, and the app reconnects on its own.`,
+			[
+				{ text: "Cancel", style: "cancel" },
+				{ text: "Update", onPress: () => void updates.apply() },
+			],
+		);
+	const updateProblem = update.applyError ?? update.checkError;
 	return (
 		<GroupedPage>
 			<Text
@@ -47,8 +70,31 @@ export function HubHome({ navigation }: NativeStackScreenProps<HubRoutes, "HubHo
 			</Group>
 			<GroupLabel>More</GroupLabel>
 			<Group>
-				<Row icon="info.circle" label="Hub settings" chevron onPress={() => leaveFor("HubSettings")} />
+				<Row icon="keyboard" label="Keyboard shortcuts" chevron onPress={() => leaveFor("KeybindingPreferences")} />
+				<Row icon="slider.horizontal.3" label="Launch defaults" chevron onPress={() => leaveFor("LaunchSettings")} />
+				<Row icon="gearshape" label="Hub settings" chevron onPress={() => leaveFor("HubSettings")} />
 			</Group>
+			<GroupLabel>About</GroupLabel>
+			<Group>
+				<Row
+					icon="info.circle"
+					label="Evener for iPhone"
+					value={appVersionText(nativeApplicationVersion, nativeBuildVersion)}
+				/>
+				{updateWaiting ? (
+					<Row
+						label={update.applying ? "Updating…" : "Update hub"}
+						accessibilityLabel="Update hub"
+						tone="accent"
+						disabled={!ready || update.applying}
+						onPress={confirmUpdate}
+					/>
+				) : null}
+			</Group>
+			{update.restarting ? (
+				<GroupFooter>{`Restarting into ${check?.latestTag ?? "the new release"}…`}</GroupFooter>
+			) : null}
+			{updateProblem ? <GroupFooter tone="danger">{updateProblem}</GroupFooter> : null}
 		</GroupedPage>
 	);
 }

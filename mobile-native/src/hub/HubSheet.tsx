@@ -3,7 +3,7 @@
 // hub, its client and the connection's readiness from the sheet's context
 // (hubSheetContext.tsx).
 import { createNativeStackNavigator, type NativeStackScreenProps } from "@react-navigation/native-stack";
-import { useCallback, useMemo } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { Pressable, Text } from "react-native";
 import { useConnection } from "../ConnectionProvider";
 import { isReady } from "../connectionDisplay";
@@ -12,6 +12,7 @@ import type { Routes } from "../screens";
 import { useColors } from "../ui";
 import { HubHome } from "./HubHome";
 import { type HubRoutes, type HubSheetContextValue, HubSheetProvider, useClosesOnHubChange } from "./hubSheetContext";
+import { createPhoneHubUpdates, createReadiness } from "./hubUpdates";
 
 const HubStack = createNativeStackNavigator<HubRoutes>();
 
@@ -23,15 +24,27 @@ export function HubSheet({ navigation }: NativeStackScreenProps<Routes, "Hub">) 
 	const close = useCallback(() => navigation.goBack(), [navigation]);
 	const leave = useCallback(() => navigation.navigate("Hubs"), [navigation]);
 	useClosesOnHubChange(hubId, close, leave);
+	const ready = isReady(state);
+	// One update controller per client, checked each time the connection is
+	// ready: on opening, and after every reconnect, which is also how a
+	// restarted hub is noticed (hubUpdates.ts).
+	const [readiness] = useState(createReadiness);
+	const updates = useMemo(() => createPhoneHubUpdates(renderClient, readiness), [renderClient, readiness]);
+	useEffect(() => () => updates.dispose(), [updates]);
+	useEffect(() => {
+		readiness.set(ready);
+		if (ready) void updates.controller.runCheck();
+	}, [ready, readiness, updates]);
 	const value = useMemo<HubSheetContextValue>(
 		() => ({
 			hubId,
 			hubName: activeProfile?.name ?? "",
 			client: renderClient,
-			ready: isReady(state),
+			ready,
 			canUseConnection,
+			updates: updates.controller,
 		}),
-		[hubId, activeProfile?.name, renderClient, state, canUseConnection],
+		[hubId, activeProfile?.name, renderClient, ready, canUseConnection, updates],
 	);
 	if (!activeProfile) return null;
 	return (

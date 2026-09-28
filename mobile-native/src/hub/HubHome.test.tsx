@@ -1,9 +1,11 @@
+import type { UpdateCheckResponse } from "@evener/appwire-client";
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
 import { act } from "react-test-renderer";
-import { beforeEach, expect, it, vi } from "vitest";
-import { render, renderedText } from "../renderNative.testkit";
+import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { alertRequests, render, renderedText } from "../renderNative.testkit";
 import { HubHome } from "./HubHome";
 import { type HubRoutes, type HubSheetContextValue, HubSheetProvider } from "./hubSheetContext";
+import { createPhoneHubUpdates, createReadiness, type PhoneHubUpdates } from "./hubUpdates";
 
 const status = { line: null as string | null };
 vi.mock("../board/connectionStatus", async (importOriginal) => ({
@@ -20,17 +22,50 @@ vi.mock("react-native", async () => ({
 	...(await import("../renderNative.testkit")).nativeModuleMock(),
 }));
 vi.mock("expo-symbols", () => ({ SymbolView: "SymbolView" }));
+vi.mock("expo-application", () => ({ nativeApplicationVersion: "0.1.0", nativeBuildVersion: "5" }));
 
-let context: HubSheetContextValue;
-const liveContext: HubSheetContextValue = {
-	hubId: "hub-1",
-	hubName: "Work hub",
-	client: null,
-	ready: true,
-	canUseConnection: () => true,
+const UP_TO_DATE: UpdateCheckResponse = {
+	channel: "release",
+	buildChannel: "release",
+	currentVersion: "0.9.412",
+	currentCommit: "abc1234",
+	updateAvailable: false,
+	applicable: true,
 };
+const WAITING: UpdateCheckResponse = { ...UP_TO_DATE, updateAvailable: true, latestTag: "v0.9.413" };
 
-function mount() {
+/** A hub that answers update checks from `check` (or refuses them) and
+ * restarts on apply. */
+function hub(check: UpdateCheckResponse | Error) {
+	const calls: string[] = [];
+	const client = {
+		request: (async (method: string) => {
+			calls.push(method);
+			if (method === "evener/update/apply") return { restarting: true };
+			if (check instanceof Error) throw check;
+			return check;
+		}) as never,
+	};
+	return { client, calls };
+}
+
+let updates: PhoneHubUpdates;
+let context: HubSheetContextValue;
+
+async function mount(options: { check?: UpdateCheckResponse | Error; ready?: boolean } = {}) {
+	const fake = hub(options.check ?? UP_TO_DATE);
+	const readiness = createReadiness();
+	readiness.set(true);
+	updates = createPhoneHubUpdates(fake.client, readiness);
+	context = {
+		hubId: "hub-1",
+		hubName: "Work hub",
+		client: null,
+		ready: options.ready ?? true,
+		canUseConnection: () => options.ready ?? true,
+		updates: updates.controller,
+	};
+	if (options.check) await updates.controller.runCheck();
 	const root = { dispatch: vi.fn(), navigate: vi.fn(), goBack: vi.fn() };
 	const navigation = { getParent: () => root } as unknown as NativeStackScreenProps<HubRoutes, "HubHome">["navigation"];
 	const route = { key: "HubHome", name: "HubHome", params: { hubId: "hub-1" } } as const;
@@ -39,34 +74,37 @@ function mount() {
 			<HubHome navigation={navigation} route={route} />
 		</HubSheetProvider>,
 	);
+	const find = (label: string) =>
+		tree.root.findAllByProps({ accessibilityRole: "button", accessibilityLabel: label })[0] ?? null;
 	const press = (label: string) =>
 		act(() => {
-			tree.root.findByProps({ accessibilityRole: "button", accessibilityLabel: label }).props.onPress();
+			find(label)?.props.onPress();
 		});
-	const disabled = (label: string) =>
-		tree.root.findByProps({ accessibilityRole: "button", accessibilityLabel: label }).props.disabled;
-	return { tree, root, press, disabled };
+	return { tree, root, find, press, calls: fake.calls };
 }
 
-const ROWS = ["Providers", "Plugins", "Display", "Hubs", "Hub settings"];
+const ROWS = ["Providers", "Plugins", "Display", "Hubs", "Keyboard shortcuts", "Launch defaults", "Hub settings"];
 
 beforeEach(() => {
 	status.line = null;
-	context = liveContext;
+	alertRequests.length = 0;
 });
+afterEach(() => updates.dispose());
 
-it("says the hub is connected and lists its pages", () => {
-	const { tree } = mount();
+it("says the hub is connected and lists its pages", async () => {
+	const { tree, find } = await mount();
 	expect(renderedText(tree)).toContain("Connected");
-	for (const label of ROWS) expect(tree.root.findAllByProps({ accessibilityLabel: label })).not.toHaveLength(0);
+	for (const label of ROWS) expect(find(label)).not.toBeNull();
 });
 
-it("leaves the sheet for today's screens until their pages land (ruling 10)", () => {
-	const { root, press } = mount();
+it("leaves the sheet for today's screens until their pages land (rulings 10 and 12)", async () => {
+	const { root, press } = await mount();
 	const interim: [string, string][] = [
 		["Providers", "Providers"],
 		["Plugins", "Plugins"],
 		["Display", "TranscriptPreferences"],
+		["Keyboard shortcuts", "KeybindingPreferences"],
+		["Launch defaults", "LaunchSettings"],
 		["Hub settings", "HubSettings"],
 	];
 	for (const [label, screen] of interim) {
@@ -80,19 +118,62 @@ it("leaves the sheet for today's screens until their pages land (ruling 10)", ()
 	expect(root.navigate).toHaveBeenLastCalledWith("Hubs");
 });
 
-it("keeps every row, pressable, while the connection is down, and never asks to reconnect (Review Focus 4)", () => {
+it("keeps every row, pressable, while the connection is down, and never asks to reconnect (Review Focus 4)", async () => {
 	status.line = "Reconnecting…";
-	const { tree, root, press, disabled } = mount();
+	const { tree, root, find, press } = await mount();
 	expect(renderedText(tree)).toContain("Reconnecting…");
 	expect(renderedText(tree)).not.toMatch(/\bReconnect\b/);
-	for (const label of ROWS) expect(disabled(label)).toBe(false);
+	for (const label of ROWS) expect(find(label)?.props.disabled).toBe(false);
 	press("Providers");
 	expect(root.dispatch).toHaveBeenCalledTimes(1);
 });
 
-it("says Connecting… rather than Connected while the hub isn't ready and the line is still quiet", () => {
-	context = { ...liveContext, ready: false };
-	const { tree } = mount();
+it("says Connecting… rather than Connected while the hub isn't ready and the line is still quiet", async () => {
+	const { tree } = await mount({ ready: false });
 	expect(renderedText(tree)).toContain("Connecting…");
 	expect(renderedText(tree)).not.toContain("Connected");
+});
+
+it("names this app's version in About", async () => {
+	const { tree } = await mount();
+	const about = tree.root.findByProps({ accessibilityLabel: "Evener for iPhone, 0.1.0 (5)" });
+	expect(about).toBeTruthy();
+});
+
+it("says the hub is up to date, and offers no update", async () => {
+	const { tree, find } = await mount({ check: UP_TO_DATE });
+	expect(renderedText(tree)).toContain("Connected · evener 0.9.412 · up to date");
+	expect(find("Update hub")).toBeNull();
+});
+
+it("offers a waiting update, confirms it, installs it, and says the hub is restarting", async () => {
+	const { tree, find, press, calls } = await mount({ check: WAITING });
+	expect(renderedText(tree)).toContain("Connected · evener 0.9.412 · Update available");
+	press("Update hub");
+	expect(alertRequests).toHaveLength(1);
+	expect(alertRequests[0]?.title).toBe("Update Work hub?");
+	expect(alertRequests[0]?.message).toBe(
+		"Install evener v0.9.413 on Work hub. The hub restarts, and the app reconnects on its own.",
+	);
+	await act(async () => {
+		alertRequests[0]?.buttons?.find((button) => button.text === "Update")?.onPress?.();
+	});
+	expect(calls).toContain("evener/update/apply");
+	expect(find("Update hub")).toBeNull();
+	expect(renderedText(tree)).toContain("Restarting into v0.9.413…");
+});
+
+it("holds the update while the hub isn't ready", async () => {
+	const { find } = await mount({ check: WAITING, ready: false });
+	expect(find("Update hub")?.props.disabled).toBe(true);
+});
+
+it("shows a failed check as a line, with nothing to press", async () => {
+	const { tree } = await mount({ check: new Error("socket hung up") });
+	const texts = tree.root.findAllByType("Text" as never).map((node) => node.props.children);
+	expect(renderedText(tree)).toMatch(/\S/);
+	expect(texts).not.toContain("Retry");
+	expect(renderedText(tree)).not.toMatch(/\bReconnect\b/);
+	expect(updates.controller.getState().checkError).not.toBeNull();
+	expect(renderedText(tree)).toContain(updates.controller.getState().checkError ?? "");
 });

@@ -21,8 +21,11 @@ describe("last mobile location", () => {
 		repository.save(locationForRoute({ name: "KeybindingPreferences", params: { hubId: "studio", editor } }, "studio"));
 		const saved = new LocationRepository(disk).read(["studio"]);
 		expect(saved).toEqual({ hubId: "studio", keybindings: { editor } });
-		expect(restoredStack(saved).routes.slice(-2)).toEqual([
-			{ name: "HubSettings", params: { hubId: "studio" } },
+		// The Hub's MORE row opens the shortcuts from the Board, so the editor
+		// reopens over the Board, with no Hub settings screen under it.
+		expect(restoredStack(saved).routes).toEqual([
+			{ name: "Hubs" },
+			{ name: "Sessions" },
 			{ name: "KeybindingPreferences", params: { hubId: "studio", editor } },
 		]);
 		expect(new LocationRepository(disk).read(["other"])).toBeNull();
