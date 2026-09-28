@@ -2055,7 +2055,6 @@ export function ConversationScreen({
 	const recoveryRows = projectNativeMutationRecovery(
 		recovery.targetKey,
 		recovery.snapshot,
-		() => true,
 	);
 	const allGhosts = whatCanActNow(
 		ghosts(
