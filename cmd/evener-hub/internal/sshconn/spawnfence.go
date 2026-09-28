@@ -36,6 +36,13 @@ import (
 // launching a child no boundary can own.
 var ErrSpawnBoundaryUnavailable = errors.New("sshconn: no local process boundary is available")
 
+// ErrSpawnMemberGone reports that a spawn's child had already exited when the
+// launcher tried to observe it (§3's gone rule: gone reads as already clean,
+// never an ownership failure). The unix adapter translates execenv's sentinel
+// into this one so the fence can tell "gone" from "unobservable" without
+// importing the platform's boundary package.
+var ErrSpawnMemberGone = errors.New("sshconn: the spawned process is already gone")
+
 // spawnBoundarySettle bounds a fenced spawn's post-exit teardown. The kernel
 // refuses to remove a boundary whose member tasks it has not reaped yet, so the
 // teardown retries within this bound; it only ever runs after the direct child
@@ -202,6 +209,14 @@ func (s *SpawnScope) runFenced(ctx context.Context, argv []string, stdin io.Read
 	}
 	out, err := runOneShot(ctx, argv, stdin, attr, release, func(pid int) error {
 		token, observeErr := boundary.Observe(pid)
+		if errors.Is(observeErr, ErrSpawnMemberGone) {
+			// The child exited between Start and the observation: §3 reads gone
+			// as already clean, so the intent stays markerless and the normal
+			// child-exit convergence below decides clean-vs-keep-open — a fast
+			// command whose side effects landed is a success, never a spurious
+			// ownership failure.
+			return nil
+		}
 		if observeErr != nil {
 			return fmt.Errorf("observe the spawned process %d: %w", pid, observeErr)
 		}

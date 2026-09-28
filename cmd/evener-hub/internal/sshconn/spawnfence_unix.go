@@ -8,6 +8,7 @@ package sshconn
 // onto the fence's neutral surface.
 
 import (
+	"errors"
 	"fmt"
 	"syscall"
 
@@ -53,6 +54,14 @@ func (u unixBoundary) SpawnAttr() (*syscall.SysProcAttr, func(), error) {
 	return u.boundary.SpawnAttr()
 }
 
-func (u unixBoundary) Observe(pid int) (string, error) { return u.boundary.Observe(pid) }
+func (u unixBoundary) Observe(pid int) (string, error) {
+	token, err := u.boundary.Observe(pid)
+	if err != nil && errors.Is(err, execenv.ErrBoundaryMemberGone) {
+		// §3's gone rule, translated for the neutral fence: a child that exited
+		// before the observation is already clean, never an ownership failure.
+		return "", fmt.Errorf("%w: %w", ErrSpawnMemberGone, err)
+	}
+	return token, err
+}
 
 func (u unixBoundary) Close() error { return u.boundary.Close() }

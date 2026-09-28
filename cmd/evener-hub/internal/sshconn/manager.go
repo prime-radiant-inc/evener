@@ -1842,6 +1842,15 @@ func (m *Manager) clearHostCaches(name string) {
 // which is the only place the first-attach bootstrap start may run; a reconnect
 // passes false so it never starts a hub.
 func (m *Manager) ensureOnce(ctx context.Context, host hostreg.Host, explicit bool) (*Channel, error) {
+	// A scope carried by the caller's context belongs to the caller's operation
+	// record, and this ladder is not that operation: the worker's scoped ctx
+	// reaches here through AttachUnderGate (and Ensure), so without this the
+	// ladder's read-only steps — the preflight, the probes, the post-phase
+	// re-reads — would arm their ssh children against the outer record and a
+	// crash mid-probe would leave it a pending spawn intent no work backs. Only
+	// the attempt's own deploy and restart legs are armed, from the scopes
+	// their hooks return.
+	ctx = WithoutSpawnScope(ctx)
 	// Address the executable this Manager already resolved for the host when the
 	// registry has no evener_path: a deploy target from an earlier attempt (or a
 	// discovered install) is the binary the host actually runs, and probing the

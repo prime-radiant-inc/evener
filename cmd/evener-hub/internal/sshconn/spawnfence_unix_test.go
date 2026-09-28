@@ -1017,3 +1017,36 @@ func TestRestartRecordIntentStateIsReapable(t *testing.T) {
 		t.Fatalf("restart record = %+v, want interrupted once the reap converged it", resolved)
 	}
 }
+
+// TestFencedSpawnReportsASuccessfulCommandWhenTheChildIsAlreadyGone pins the
+// gone-vs-unobservable rule: a child that exits between Start and Observe reads
+// as already clean (§3), so the caller sees the command's own successful result
+// and the empty boundary's intent is dropped — never a spurious failure for a
+// fast command whose side effects landed.
+func TestFencedSpawnReportsASuccessfulCommandWhenTheChildIsAlreadyGone(t *testing.T) {
+	log := &fenceTestLog{}
+	store := &fenceFakeStore{log: log}
+	boundary := &fenceFakeBoundary{
+		log:        log,
+		id:         BoundaryID{Platform: BoundaryPlatformLinux, CgroupID: "/cg/op-1"},
+		observeErr: ErrSpawnMemberGone,
+	}
+	scope := fencedTestScope(log, store, boundary)
+
+	out, err := (execRunner{}).Run(WithSpawnScope(context.Background(), scope), []string{"/bin/sh", "-c", "printf fast"}, nil)
+	if err != nil {
+		t.Fatalf("Run = %q/%v, want the command's own success: a child gone before Observe is already clean", out, err)
+	}
+	if string(out) != "fast" {
+		t.Fatalf("output = %q, want fast", out)
+	}
+	if len(store.dropped) != 1 || len(store.open) != 0 {
+		t.Fatalf("drops = %v, open = %d, want the markerless intent dropped once the boundary proved empty", store.dropped, len(store.open))
+	}
+	if len(store.matched) != 0 {
+		t.Fatal("a gone child was matched as if it had been observed")
+	}
+	if !boundary.closed {
+		t.Fatal("the boundary was not torn down")
+	}
+}

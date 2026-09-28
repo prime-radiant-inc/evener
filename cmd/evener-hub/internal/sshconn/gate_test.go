@@ -682,3 +682,46 @@ func TestEnsureRestartOnlyLegFailureRecordsFailed(t *testing.T) {
 		t.Fatalf("record result = %+v, want the leg's failure verbatim", record.Result)
 	}
 }
+
+// TestEnsureNeverInheritsAnOuterSpawnScope pins the ladder's scope hygiene: an
+// operation worker's scoped context reaches ensureOnce through AttachUnderGate
+// (and Ensure), and a nested Ensure must not arm its read-only steps — the
+// preflight, the probes, the post-phase re-reads — against the outer
+// operation's record. Only the attempt's own mutating legs carry a scope, and
+// it is the record the attempt's hook just minted.
+func TestEnsureNeverInheritsAnOuterSpawnScope(t *testing.T) {
+	m, store, recordID, seen := ensureRestartTestHarness(t, nil)
+	outer := NewSpawnScope("op-outer", &fenceFakeStore{log: &fenceTestLog{}})
+
+	if _, err := m.Ensure(WithSpawnScope(context.Background(), outer), "alpha"); err != nil {
+		t.Fatalf("Ensure: %v", err)
+	}
+	if len(*seen) == 0 {
+		t.Fatal("the ladder ran no commands")
+	}
+	var legArmed int
+	for _, run := range *seen {
+		if run.scope == outer {
+			t.Fatalf("a command ran armed under the outer operation's record: %s", run.command)
+		}
+		if run.scope == nil {
+			continue
+		}
+		if run.scope.RecordID != *recordID {
+			t.Fatalf("a command carried record %q, want only the attempt's own %s", run.scope.RecordID, *recordID)
+		}
+		legArmed++
+	}
+	if legArmed == 0 {
+		t.Fatal("the attempt's mutating leg carried no scope at all")
+	}
+	for _, run := range *seen {
+		if strings.Contains(run.command, "launch-check") && run.scope != nil {
+			t.Fatalf("a read-only launch-check ran armed: %s", run.command)
+		}
+	}
+	record, ok := store.Record(*recordID)
+	if !ok || record.State != hostops.StateComplete {
+		t.Fatalf("record = %+v, want complete", record)
+	}
+}
