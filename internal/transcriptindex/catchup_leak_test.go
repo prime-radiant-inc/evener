@@ -1,10 +1,13 @@
 package transcriptindex
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 
+	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/appwire"
 )
 
@@ -144,5 +147,76 @@ func TestCatchUpToShorterThanAKilledExtensionsReachRedoesTheLeftoverUpdate(t *te
 	if got.Version != want.Version || got.Status != want.Status {
 		t.Fatalf("daemon's target turn = status %v version %d, want the reference's (never touched by the killed extension's reach past shortOfSecond) status %v version %d",
 			got.Status, got.Version, want.Status, want.Version)
+	}
+}
+
+// TestAddContributorLogsBeforeOverwritingSoAKillLeavesTheCommittedItemUntouched
+// pins the ordering fix for the roborev finding on this PR's CatchUpTo fix:
+// addContributor used to overwrite a tool call item's record in place and
+// only log that update afterward, so a kill between the write and the log
+// left the committed slot already changed with no leftover update-log row
+// to make unsafeLeftoverUpdate notice it -- any reader sharing the sidecar
+// (regardless of what length it has itself caught up to, since a table read
+// goes straight to the slot on disk) would see the call completed before
+// its own covered length admits the completing entry exists. addContributor
+// now logs first, matching stampTurn: a kill between the two
+// (testKillAfterItemUpdateLog) leaves a leftover row with the item's
+// committed slot still genuinely unmodified, so a second handle that never
+// even asks to extend past the call entry reads it exactly as a reference
+// that was never interrupted does.
+func TestAddContributorLogsBeforeOverwritingSoAKillLeavesTheCommittedItemUntouched(t *testing.T) {
+	header := transcript.Header{SessionID: "kill_item", CreatedAt: fixtureClock, ProfileID: "openai", Model: "gpt-test"}
+	lines := [][]byte{
+		encodeEntry(t, 1, assistant(call("call_1", "shell", `{"cmd":"ls"}`))),
+		encodeEntry(t, 2, results(result("call_1", "shell", "a.txt"))),
+	}
+
+	path := filepath.Join(t.TempDir(), "session.transcript.jsonl")
+	if err := os.WriteFile(path, encodeHeader(t, header), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+
+	appendBytes(t, path, lines[0])
+	hub := openIndex(t, path, dir)
+	floor := hub.meta.Length
+	if floor == 0 {
+		t.Fatal("hub did not cover the call entry")
+	}
+
+	// daemon and reference open now, at the same floor, before the result
+	// entry (and the kill) land. Neither ever asks to extend past floor:
+	// the point is that a reader who never requested the completing entry
+	// must not see its effect anyway, just from reading the shared slot.
+	daemon := openIndex(t, path, dir)
+	reference := openIndex(t, path, filepath.Join(t.TempDir(), "reference"))
+
+	appendBytes(t, path, lines[1])
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	full := info.Size()
+
+	testKillAfterItemUpdateLog = func() error {
+		return errors.New("killed between the update-log row and the item overwrite")
+	}
+	t.Cleanup(func() { testKillAfterItemUpdateLog = nil })
+	if err := hub.CatchUpTo(full); err == nil {
+		t.Fatal("the killed extension returned success")
+	}
+	testKillAfterItemUpdateLog = nil
+
+	got, err := daemon.ChangedSince(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want, err := reference.ChangedSince(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got.Incarnation, want.Incarnation = "", ""
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("daemon after the kill (never asked past floor %d) = %s, want the reference (never interrupted) %s", floor, dump(got), dump(want))
 	}
 }

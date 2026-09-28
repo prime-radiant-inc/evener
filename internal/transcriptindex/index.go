@@ -71,6 +71,14 @@ var ErrUpdateLogTruncated = errors.New("transcript index update log no longer re
 // only; nil in production.
 var testKillAfterRecordWrites func() error
 
+// testKillAfterItemUpdateLog, when set, runs in addContributor right after
+// its update-log row is written and before the item record's own in-place
+// overwrite: it stands for the process being killed at exactly that point,
+// leaving the log row on disk (uncommitted, past the committed count) with
+// the item slot it names still unmodified. Test seam only; nil in
+// production.
+var testKillAfterItemUpdateLog func() error
+
 // The sidecar directory holds a lock file, a pointer to the live build, and one
 // directory per build. A rebuild writes a new build and renames the pointer
 // over, so a reader never sees a half-built index.
